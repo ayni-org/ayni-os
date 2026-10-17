@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1490" viewBox="0 0 1680 1490" role="img" aria-labelledby="title desc">
+  <title id="title">Ayni planned architecture</title>
+  <desc id="desc">Ayni applications and strategies use typed C99 and C++ interfaces to reach one Kernel state owner per device. Shared Kernel services coordinate execution, authority, resources, knowledge, requests, persistence and recovery. Versioned asynchronous ports connect Host services and Providers to the operating system, drivers and hardware. The model gateway does not own tasks. An independent local stop path reaches the supervisor and motor disable without depending on the ordinary Core event queue. All components are planned, not implemented capabilities.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#52677c"/></marker>
+    <marker id="stop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#c85b36"/></marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; fill: #24364b; }
+      .heading { font-size: 34px; font-weight: 700; letter-spacing: -.6px; }
+      .subtitle { font-size: 18px; fill: #62758a; }
+      .layer { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; fill: #7a8a9b; }
+      .layer-number { font-size: 28px; font-weight: 600; fill: #bbc5cf; }
+      .label { font-size: 22px; font-weight: 650; }
+      .small { font-size: 18px; fill: #52677c; }
+      .detail { font-size: 17px; fill: #52677c; }
+      .service-title { font-size: 19px; font-weight: 700; }
+      .service-detail { font-size: 17px; fill: #52677c; }
+      .connector { fill: none; stroke: #52677c; stroke-width: 2.5; marker-end: url(#arrow); }
+      .duplex { fill: none; stroke: #52677c; stroke-width: 2.5; marker-start: url(#arrow); marker-end: url(#arrow); }
+      .stop-line { fill: none; stroke: #c85b36; stroke-width: 3.2; marker-end: url(#stop-arrow); }
+      .stop-title { font-size: 18px; font-weight: 700; fill: #a3482a; }
+      .stop-detail { font-size: 15px; fill: #a3482a; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="1490" fill="#f8fafc"/>
+  <text x="48" y="56" class="heading">Ayni architecture</text>
+  <text x="48" y="88" class="subtitle">Shared Agent infrastructure · one Kernel per device · asynchronous I/O</text>
+  <rect x="1320" y="28" width="312" height="52" rx="12" fill="#e8eef6" stroke="#c4d1df"/>
+  <text x="1476" y="60" text-anchor="middle" font-size="18" font-weight="650">Planned architecture / 待实现</text>
+
+  <!-- Layer 1: interaction. The orange branch is the independent stop path. -->
+  <text x="48" y="160" class="layer-number">01</text>
+  <text x="48" y="185" class="layer">INTERACTION</text>
+  <rect x="210" y="120" width="1240" height="100" rx="16" fill="#edf5ee" stroke="#bdcebf"/>
+  <rect x="230" y="137" width="355" height="66" rx="10" fill="#ffffff" stroke="#cad8cb"/>
+  <text x="407" y="178" text-anchor="middle" class="label">User / unified assistant</text>
+  <rect x="605" y="137" width="445" height="66" rx="10" fill="#ffffff" stroke="#cad8cb"/>
+  <text x="827" y="178" text-anchor="middle" class="label">Management client / binding</text>
+  <rect x="1070" y="137" width="360" height="66" rx="10" fill="#ffffff" stroke="#cad8cb"/>
+  <text x="1250" y="178" text-anchor="middle" class="label">Button / voice / stop input</text>
+  <path d="M 830 220 V 262" class="connector"/>
+
+  <!-- Layer 2: product semantics and replaceable behavior are above Core. -->
+  <text x="48" y="305" class="layer-number">02</text>
+  <text x="48" y="330" class="layer">APPLICATION</text>
+  <rect x="210" y="262" width="1240" height="135" rx="16" fill="#eef0fa" stroke="#c6cbe0"/>
+  <rect x="230" y="282" width="670" height="95" rx="10" fill="#ffffff" stroke="#cbd0e5"/>
+  <text x="565" y="317" text-anchor="middle" class="label">Application coordinator</text>
+  <text x="565" y="349" text-anchor="middle" class="small">Goal types · Scenes · Notifications · Assistant presentation</text>
+  <rect x="920" y="282" width="510" height="95" rx="10" fill="#ffffff" stroke="#cbd0e5"/>
+  <text x="1175" y="317" text-anchor="middle" class="label">Strategies / Skills</text>
+  <text x="1175" y="349" text-anchor="middle" class="small">Rules · Tool loops · Reusable behaviors</text>
+  <path d="M 830 397 V 440" class="connector"/>
+
+  <!-- Layer 3: a common typed interface, independent of transport. -->
+  <text x="48" y="472" class="layer-number">03</text>
+  <text x="48" y="497" class="layer">INTERFACE</text>
+  <rect x="210" y="440" width="1240" height="78" rx="14" fill="#e5f0f7" stroke="#a9c7db"/>
+  <text x="830" y="472" text-anchor="middle" class="label">C99 API / C++ SDK</text>
+  <text x="830" y="501" text-anchor="middle" class="small">Typed commands · Queries · Events · Explicit ownership and bounded data</text>
+  <path d="M 830 518 V 560" class="connector"/>
+
+  <!-- Layer 4: all mutable logical state is owned and committed here. -->
+  <text x="48" y="605" class="layer-number">04</text>
+  <text x="48" y="630" class="layer">CORE</text>
+  <rect x="210" y="560" width="1240" height="338" rx="18" fill="#eaf0f8" stroke="#9cb2ca" stroke-width="2"/>
+  <text x="234" y="594" class="label">Ayni Kernel</text>
+  <text x="1425" y="593" text-anchor="end" class="detail">Common mechanisms for every Agent instance</text>
+  <rect x="234" y="612" width="1192" height="73" rx="10" fill="#d5e2f1" stroke="#a8bdd4"/>
+  <text x="830" y="642" text-anchor="middle" class="label">Single state owner + commit coordinator</text>
+  <text x="830" y="669" text-anchor="middle" class="detail">Intent validation · Bounded event progression · Durable state transitions</text>
+  <path d="M 830 685 V 705 M 350 705 H 1310" fill="none" stroke="#839ab3" stroke-width="2"/>
+  <path d="M 350 705 V 724 M 590 705 V 724 M 830 705 V 724 M 1070 705 V 724 M 1310 705 V 724" fill="none" stroke="#839ab3" stroke-width="2"/>
+
+  <rect x="238" y="724" width="224" height="146" rx="11" fill="#ffffff" stroke="#bccbdc"/>
+  <text x="350" y="756" text-anchor="middle" class="service-title">Execution</text>
+  <text x="350" y="789" text-anchor="middle" class="service-detail">Agent · Goal · Task</text>
+  <text x="350" y="817" text-anchor="middle" class="service-detail">Scheduler</text>
+  <text x="350" y="845" text-anchor="middle" class="service-detail">Lifecycle</text>
+
+  <rect x="478" y="724" width="224" height="146" rx="11" fill="#fffaf0" stroke="#d9cba9"/>
+  <text x="590" y="756" text-anchor="middle" class="service-title">Authority</text>
+  <text x="590" y="789" text-anchor="middle" class="service-detail">Capability · Grant</text>
+  <text x="590" y="817" text-anchor="middle" class="service-detail">Action ledger</text>
+  <text x="590" y="845" text-anchor="middle" class="service-detail">Revocation</text>
+
+  <rect x="718" y="724" width="224" height="146" rx="11" fill="#f1f8f4" stroke="#b8d0c0"/>
+  <text x="830" y="756" text-anchor="middle" class="service-title">Resources</text>
+  <text x="830" y="789" text-anchor="middle" class="service-detail">Device · Resource</text>
+  <text x="830" y="817" text-anchor="middle" class="service-detail">Budget</text>
+  <text x="830" y="845" text-anchor="middle" class="service-detail">Arbitration</text>
+
+  <rect x="958" y="724" width="224" height="146" rx="11" fill="#f4f2fb" stroke="#c9c1de"/>
+  <text x="1070" y="756" text-anchor="middle" class="service-title">Knowledge &amp; I/O</text>
+  <text x="1070" y="789" text-anchor="middle" class="service-detail">Observation · Memory</text>
+  <text x="1070" y="817" text-anchor="middle" class="service-detail">Context</text>
+  <text x="1070" y="845" text-anchor="middle" class="service-detail">Request management</text>
+
+  <rect x="1198" y="724" width="224" height="146" rx="11" fill="#ffffff" stroke="#bccbdc"/>
+  <text x="1310" y="756" text-anchor="middle" class="service-title">Durability</text>
+  <text x="1310" y="789" text-anchor="middle" class="service-detail">State · Storage policy</text>
+  <text x="1310" y="817" text-anchor="middle" class="service-detail">Recovery</text>
+  <text x="1310" y="845" text-anchor="middle" class="service-detail">Observability</text>
+
+  <!-- Execution and completion cross a versioned asynchronous boundary. -->
+  <path d="M 830 900 V 945" class="duplex"/>
+  <rect x="210" y="947" width="1240" height="64" rx="12" fill="#ffffff" stroke="#8aa4bd" stroke-dasharray="7 5"/>
+  <text x="830" y="973" text-anchor="middle" font-size="20" font-weight="650">Versioned asynchronous Host / Provider ports</text>
+  <text x="830" y="998" text-anchor="middle" class="detail">Submit · Completion events · Cancellation · Backpressure</text>
+  <path d="M 440 1013 V 1058" class="duplex"/>
+  <path d="M 880 1013 V 1058" class="duplex"/>
+
+  <!-- Layer 5: implementations depend on the platform, Core does not. -->
+  <text x="48" y="1110" class="layer-number">05</text>
+  <text x="48" y="1135" class="layer">ADAPTERS</text>
+  <rect x="230" y="1060" width="420" height="150" rx="14" fill="#eef3f5" stroke="#bacbd2"/>
+  <text x="440" y="1098" text-anchor="middle" class="label">Host services</text>
+  <text x="440" y="1133" text-anchor="middle" class="small">Clock · Durable storage I/O</text>
+  <text x="440" y="1163" text-anchor="middle" class="small">Network · Crypto · Lifecycle</text>
+  <text x="440" y="1192" text-anchor="middle" class="detail">Asynchronous platform implementations</text>
+
+  <rect x="680" y="1060" width="400" height="150" rx="14" fill="#edf5ef" stroke="#b4ccbc"/>
+  <text x="880" y="1098" text-anchor="middle" class="label">Providers</text>
+  <text x="880" y="1133" text-anchor="middle" class="small">Model · Perception · Media · Motion</text>
+  <text x="880" y="1163" text-anchor="middle" class="small">Typed results / controlled device I/O</text>
+  <text x="880" y="1192" text-anchor="middle" class="detail">Selected and admitted by the Kernel</text>
+
+  <path d="M 1082 1135 H 1108" class="duplex"/>
+  <rect x="1110" y="1060" width="320" height="150" rx="14" fill="#ffffff" stroke="#b8c6d4" stroke-dasharray="6 4"/>
+  <text x="1270" y="1098" text-anchor="middle" font-size="21" font-weight="650">Model gateway</text>
+  <text x="1270" y="1133" text-anchor="middle" class="small">External model APIs</text>
+  <text x="1270" y="1163" text-anchor="middle" class="detail">Credentials / service quota</text>
+  <text x="1270" y="1192" text-anchor="middle" class="detail" font-weight="650">Does not own tasks</text>
+  <path d="M 440 1210 V 1255" class="connector"/>
+  <path d="M 880 1210 V 1255" class="connector"/>
+
+  <!-- Layer 6: OS scheduling and physical control remain with the host. -->
+  <text x="48" y="1287" class="layer-number">06</text>
+  <text x="48" y="1312" class="layer">PLATFORM</text>
+  <rect x="230" y="1255" width="850" height="73" rx="13" fill="#edf0f3" stroke="#bfc8d1"/>
+  <text x="655" y="1286" text-anchor="middle" class="label">Operating system / Drivers</text>
+  <text x="655" y="1313" text-anchor="middle" class="small">ESP-IDF / FreeRTOS · Native OS · Board-specific control</text>
+  <path d="M 655 1328 V 1370" class="connector"/>
+
+  <text x="48" y="1402" class="layer-number">07</text>
+  <text x="48" y="1427" class="layer">HARDWARE</text>
+  <rect x="230" y="1370" width="1200" height="78" rx="13" fill="#eef1f4" stroke="#bfc8d1"/>
+  <text x="830" y="1403" text-anchor="middle" class="label">Physical device</text>
+  <text x="830" y="1432" text-anchor="middle" class="small">CPU / RAM / Flash · Camera · Audio · Sensors · Actuators</text>
+
+  <!-- Stop has its own local path, outside normal admission and event queues. -->
+  <path d="M 1432 170 H 1568 V 1078" class="stop-line"/>
+  <rect x="1514" y="430" width="108" height="310" rx="15" fill="#fff3ec" stroke="#e4b69f"/>
+  <text x="1568" y="468" text-anchor="middle" class="stop-title">LOCAL</text>
+  <text x="1568" y="495" text-anchor="middle" class="stop-title">STOP</text>
+  <text x="1568" y="545" text-anchor="middle" class="stop-detail">Independent</text>
+  <text x="1568" y="570" text-anchor="middle" class="stop-detail">priority path</text>
+  <text x="1568" y="622" text-anchor="middle" class="stop-detail">No ordinary</text>
+  <text x="1568" y="647" text-anchor="middle" class="stop-detail">Core queue</text>
+  <text x="1568" y="672" text-anchor="middle" class="stop-detail">dependency</text>
+  <rect x="1486" y="1080" width="164" height="130" rx="13" fill="#fff0e7" stroke="#d78e68" stroke-width="2"/>
+  <text x="1568" y="1112" text-anchor="middle" class="stop-title">Local stop</text>
+  <text x="1568" y="1138" text-anchor="middle" class="stop-title">supervisor</text>
+  <text x="1568" y="1170" text-anchor="middle" class="stop-detail">Deadline / fault</text>
+  <text x="1568" y="1193" text-anchor="middle" class="stop-detail">Default disabled</text>
+  <path d="M 1568 1210 V 1368" class="stop-line"/>
+  <rect x="1486" y="1370" width="164" height="78" rx="13" fill="#ffe8da" stroke="#d78e68" stroke-width="2"/>
+  <text x="1568" y="1403" text-anchor="middle" class="stop-title">Motor disable</text>
+  <text x="1568" y="1430" text-anchor="middle" class="stop-detail">Safe physical output</text>
+  <path d="M 1486 1409 H 1432" class="stop-line"/>
+
+  <text x="48" y="1478" font-size="13" fill="#7a8a9b">Architecture contract only. Platform support, APIs, limits and recovery guarantees require implementation and validation evidence.</text>
+</svg>

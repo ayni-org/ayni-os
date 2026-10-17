@@ -1,0 +1,82 @@
+# Ayni
+
+[中文](README.md) · English
+
+**A cross-device personal assistant AgentOS: one assistant for the user, with multiple Agents sharing managed system services.**
+
+> This repository is at the architecture and planning stage. There is no runnable Core, firmware, SDK, or build script yet. This README describes intended behavior; implementation and platform support require corresponding validation evidence.
+
+See the [Ayni implementation plan](docs/ayni_v1.0.md) (Chinese) for the complete design, scope, draft interfaces, and acceptance gates.
+
+## Architecture
+
+Ayni defines its architecture around its own task, authorization, resource, and recovery requirements. It plans a portable C++17 Core for desktops and constrained devices, with a C99-compatible API and a C++ wrapper. The first hardware validation target is an existing ESP32-S3 board; its exact model and capacities still require measurement.
+
+![Ayni architecture](docs/assets/ayni-architecture.svg)
+
+| Layer | Responsibilities and function abstractions |
+|---|---|
+| Applications, Coordinator, strategies, and Skills | Define reminders and observation workflows, route user requests, select Agents, and compose bounded work; rules, Tool Loops, and planners remain above the Kernel |
+| C API / SDK | Submit typed intents or commands, query snapshots, and register goal types and capabilities, while preserving common authorization, error, and lifecycle semantics |
+| Shared Kernel services | Agent/Task scheduling, context and memory, storage commit coordination, Capability/Tool, Access/Policy, Resource/Budget, and Observation/Request |
+| Async execution and platform services | Hosts supply clocks, storage, networking, and lifecycle services; Providers implement models, perception, media, and actions |
+| OS, drivers, and hardware | Reuse existing OS scheduling; Drivers access specific hardware; a local stop supervisor operates independently of models and ordinary work queues |
+
+A Skill is a reusable application workflow; a Capability is a system-validated execution contract; a Provider implements an execution interface; a Driver accesses hardware. New applications, models, and hardware should enter through registration and adapters. Changes to authorization, recovery, or resource semantics still require contract versions and tests.
+
+## Core responsibilities
+
+The Kernel owns the logical state of Agent instances, Goals/Tasks, authorization, action records, resources, and memory. Each device has one logical state owner, advanced through bounded events and `step` calls. Networking, Flash, model calls, and device operations use asynchronous interfaces.
+
+Key design constraints include:
+
+- Define consistent commit and recovery boundaries across trigger cursors, Tasks, budgets, and action records. Durable acceptance is reported only after commit confirmation.
+- Persist a possible-dispatch barrier before requests with side effects. Uncertain outcomes enter `RESULT_UNKNOWN` for authoritative queries or human resolution; recovery must not blindly replay actions.
+- Validate principals, Grants, arguments, resources, budgets, observation freshness, and deadlines. Models propose; the local Kernel controls execution.
+- Bound media, queues, context, Tasks, and storage. Resource cancellation, timeout, and stopping require explicit release or quarantine states.
+
+Business completion rules, planning, model inference, perception algorithms, codecs, TLS, and motor control belong in applications, Hosts, Providers, or Drivers. The first release uses trusted built-in code, with authorization guarantees at managed entry points. Isolation against arbitrary native code on ESP32 requires separate future validation.
+
+## Agreed product semantics
+
+1. **Shared assistant profile:** Agents receive explicit access to a common assistant profile. Agent memory remains private by default; sharing requires authorization.
+2. **One owner:** v0.1 has a single device owner. Push-button voice requests use existing authorization; sensitive operations such as adding permissions require confirmation through the bound management client.
+3. **Pausing the assistant:** Accepted reminders remain active. New autonomous observation, reflection, and motion are paused, and related in-flight work is brought to a stop or checkpoint. Pause, cancellation, and emergency stop have distinct meanings.
+4. **Forgetting:** Deleted memory cannot be used again. In-flight results and derived content that depend on it are invalidated. Data already sent to a model remains subject to the upstream retention policy.
+5. **Reminder completion:** A reminder completes after successful presentation through the user's selected method, without requiring acknowledgement for ordinary reminders. Creating a notification record or queuing output alone does not count as success; failures remain pending.
+
+v0.1 plans local-network management, push-button voice interaction, continuous visual capture with bounded analysis, and four built-in goal types: reminders, device checks, memory organization, and scene observation. Motion uses calibrated, bounded short actions; autonomous motion is limited to a user-enabled turn-to-observe scene. Additional hardware is limited to CNY 300 per device, excluding the existing board, model fees, and labor. Raw media is temporary by default. Mobile background push, autonomous navigation, isolation for arbitrary third-party plugins, and automatic cross-device task takeover are outside this release's commitment.
+
+## Three versioned contracts
+
+| Contract | Compatibility boundary |
+|---|---|
+| Core—Host / native SDK | ABI major version, structure size, and feature bits; no STL types, exceptions, or OS handles across the ABI |
+| Management and device protocols | Protocol major/minor versions, capability versions, and feature negotiation; shared domain semantics with authentication and local authorization checks |
+| Persistent storage | Schema, record, and migration versions; migration, corruption recovery, and firmware rollback are validated together |
+
+These contracts evolve independently and remain aligned through domain definitions and conformance fixtures. The API is experimental. Message IDs, operation IDs, and local request epochs serve different purposes; the protocol makes no universal exactly-once execution guarantee.
+
+## Roadmap and validation
+
+| Stage | Target and gate |
+|---|---|
+| M0 | Contracts, project skeletons, pinned tooling, and board/BOM feasibility |
+| M1 · Core Alpha | Native Core, simulator, and SDK; E1–E4 pass on desktop and reproduce in Linux CI |
+| M2 · Core Beta | The same Core, E1–E4, and hardware/model/strategy/composite-workflow extension examples validated on ESP32 |
+| M3 | Camera, push-button voice, chassis, independent stopping, and authorized turning; real concurrency and cost validation |
+| M4 · v0.1 | Provisioning, binding, management UX, gateway, and controlled user trials; real OTA/rollback and at least 72 hours of integrated hardware endurance testing |
+| M5 · v0.2 | Independent PC and ESP32 instances, authentication, remote calls, deduplication, queries, and disconnection recovery |
+| M6 | Separately gated hosts, durable subtask delegation, MCP/A2A adapters, more sensors and mechanisms, and third-party isolation |
+
+E1 checks multiple Agents sharing system services. E2 checks restarts at critical action stages. E3 checks replacing a model or compatible strategy after restart. E4 checks bounded composition, subscription dependencies, and semantic upgrades/rollback. It covers invalidating in-flight dependencies, step recovery, pausing on incompatible versions, and simulated storage migration/rollback; real OTA is validated in M4. Experiments pass in a deterministic simulator first, then on ESP32, followed by real hardware validation.
+
+Planned extension examples include `new_hardware`, `new_model`, `new_strategy`, and `composite_workflow`. A new composite application must work through public interfaces without changing Kernel source.
+
+Build, simulation, hardware functionality, and endurance results are reported separately. None of these results exist yet. Build commands, directories, and API examples in the plan are proposed implementation entry points.
+
+## Contributing and acknowledgements
+
+Read [AGENTS.md](AGENTS.md) and the [implementation plan](docs/ayni_v1.0.md) before contributing. Contract, migration, and material semantic changes need corresponding ADRs and validation evidence. Code, logs, and public firmware must not contain private media, vendor API keys, or reusable device credentials.
+
+The architecture diagram's visual presentation references [AIOS](https://github.com/agiresearch/AIOS); its components, layers, and contracts follow Ayni's own design. Thanks to the durable execution, device, protocol, and embedded projects listed in the plan's appendix. References acknowledge research; they do not imply integration, compatibility, or upstream endorsement. A project license has not yet been selected. Dependency selection and any source reuse require review of the relevant licenses.
