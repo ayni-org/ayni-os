@@ -12,6 +12,8 @@ See the [Ayni implementation plan](docs/ayni_v1.0.md) (Chinese) for the complete
 
 Ayni defines its architecture around its own task, authorization, resource, and recovery requirements. It plans a portable C++17 Core for desktops and constrained devices, with a C99-compatible API and a C++ wrapper. The first hardware validation target is an existing ESP32-S3 board; its exact model and capacities still require measurement.
 
+Ayni's domain contracts govern tasks, authorization, and execution; external ROS 2, MHS, and MCP protocols connect through adapters, which normally absorb field changes, while new execution semantics require versioned evolution and may change Core.
+
 ![Ayni architecture](docs/assets/ayni-architecture.svg)
 
 | Layer | Responsibilities and function abstractions |
@@ -57,21 +59,37 @@ v0.1 plans local-network management, push-button voice interaction, continuous v
 
 These contracts evolve independently and remain aligned through domain definitions and conformance fixtures. The API is experimental. Message IDs, operation IDs, and local request epochs serve different purposes; the protocol makes no universal exactly-once execution guarantee.
 
+## Optional embodied profiles and adapters
+
+The optional `EMBODIMENT_V1` profile defines schemas and constraints on existing primitives for embodied capabilities, negotiated by feature and governed by the three versioned contracts. Ordinary devices need neither robot-specific fields nor a ROS dependency.
+
+| Contract | Planned boundary |
+|---|---|
+| Observations and robot state | Specify frames, clock domains/epochs, units, calibration versions, and `RobotState`; tf2, URDF, perception, and coordinate transforms remain in Providers or bridges |
+| Control authority and local execution | `ControlAuthority` binds control epochs, command sequences, and maximum command age; local control sessions are bounded and subject to interlocks, while local controllers run real-time loops |
+| Motion outcomes and models | `MotionOutcome` distinguishes accepted, executed, stopped, and physically verified states; VLA outputs are candidates that require authorization, resource admission, and local control checks |
+
+The ROS 2 Bridge remains outside Core and maps Topics/Services/Actions to `subscription/unary/action`. Imports and exports use existing managed entry points. The Bridge records mappings between ROS goal UUIDs and Ayni call identities; ROS acceptance, cancellation responses, and QoS do not themselves provide durable deduplication, authorization, or physical-stop guarantees. M3 first validates a Linux Native Kernel and ROS simulation nodes on the same computer. PC/ESP32 paths wait for M5; MCU micro-ROS requires later capacity, concurrency, and disconnection testing.
+
+As of 2026-10-18, MHS (Model Hardware Standard) remains a research preview; see the [official introduction](https://www.anthropic.com/news/model-hardware-standard-research-preview) and [preview portal](https://www.modelhardwarestandard.com/). Adaptation requires a specific, actionable specification, lawful access, licensing, and test fixtures; any SDK used must have a pinned version. Current compatibility is not claimed. Import/export must use the same authorization, schema validation, and execution entry points. Arbitrary generated code must not be deployed directly to the MCU.
+
 ## Roadmap and validation
 
 | Stage | Target and gate |
 |---|---|
-| M0 | Contracts, project skeletons, pinned tooling, and board/BOM feasibility |
-| M1 · Core Alpha | Native Core, simulator, and SDK; E1–E4 pass on desktop and reproduce in Linux CI |
+| M0 | Contracts, project skeletons, pinned tooling, board/BOM feasibility, and an optional embodied-profile draft |
+| M1 · Core Alpha | Native Core, simulator, and SDK; E1–E4 pass on desktop and reproduce in Linux CI; optional Mock conformance R1.a |
 | M2 · Core Beta | The same Core, E1–E4, and hardware/model/strategy/composite-workflow extension examples validated on ESP32 |
-| M3 | Camera, push-button voice, chassis, independent stopping, and authorized turning; real concurrency and cost validation |
+| M3 | Camera, push-button voice, chassis, independent stopping, and authorized turning; real concurrency and cost validation; optional Linux ROS 2 Bridge/simulation R1.b |
 | M4 · v0.1 | Provisioning, binding, management UX, gateway, and controlled user trials; real OTA/rollback and at least 72 hours of integrated hardware endurance testing |
 | M5 · v0.2 | Independent PC and ESP32 instances, authentication, remote calls, deduplication, queries, and disconnection recovery |
-| M6 | Separately gated hosts, durable subtask delegation, MCP/A2A adapters, more sensors and mechanisms, and third-party isolation |
+| M6 | Separately gated hosts, durable subtask delegation, MCP/A2A adapters, more sensors and mechanisms, third-party isolation, and conditional MHS adaptation R1.c |
 
 E1 checks multiple Agents sharing system services. E2 checks restarts at critical action stages. E3 checks replacing a model or compatible strategy after restart. E4 checks bounded composition, subscription dependencies, and semantic upgrades/rollback. It covers invalidating in-flight dependencies, step recovery, pausing on incompatible versions, and simulated storage migration/rollback; real OTA is validated in M4. Experiments pass in a deterministic simulator first, then on ESP32, followed by real hardware validation.
 
 Planned extension examples include `new_hardware`, `new_model`, `new_strategy`, and `composite_workflow`. A new composite application must work through public interfaces without changing Kernel source.
+
+R1 is a separate optional conformance suite; E1–E4 remain the four mandatory experiments. R1.a checks Mock profile contracts. R1.b validates the Linux Bridge/simulation after M2 Core Beta. R1.c depends on MHS specifications, access, licensing, and test fixtures. These optional routes do not block v0.1. Claims of profile, ROS Bridge, or MHS support require the applicable R1.a, R1.a/b, or R1.a/c gates respectively, without exemption.
 
 Build, simulation, hardware functionality, and endurance results are reported separately. None of these results exist yet. Build commands, directories, and API examples in the plan are proposed implementation entry points.
 

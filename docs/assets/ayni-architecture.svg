@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1490" viewBox="0 0 1680 1490" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1585" viewBox="0 0 1680 1585" role="img" aria-labelledby="title desc">
   <title id="title">Ayni planned architecture</title>
-  <desc id="desc">Ayni applications and strategies use typed C99 and C++ interfaces to reach one Kernel state owner per device. Shared Kernel services coordinate execution, authority, resources, knowledge, requests, persistence and recovery. Versioned asynchronous ports connect Host services and Providers to the operating system, drivers and hardware. The model gateway does not own tasks. An independent local stop path reaches the supervisor and motor disable without depending on the ordinary Core event queue. All components are planned, not implemented capabilities.</desc>
+  <desc id="desc">Ayni applications and strategies use typed C99 and C++ interfaces to reach one Kernel state owner per device. Shared Kernel services coordinate execution, authority, resources, knowledge, requests, persistence and recovery. An optional Embodiment Profile extends the boundary contracts with physical types, state, frames, time, calibration, control authority and verified motion outcomes; it does not require every device to run a robotics stack. Optional world-model and VLA components propose bounded goals or action chunks and cannot grant execution authority. Versioned asynchronous ports connect Host services and Providers to the operating system, drivers and hardware. Optional ROS 2 bridges and an MHS adapter stay outside Core and use managed boundaries. MHS integration is conditional on preview or specification access and conformance validation. Local real-time control loops and optional ROS controllers stay below Core. The model gateway does not own tasks. An independent local stop path reaches the supervisor and motor disable without depending on the ordinary Core event queue. All components are planned, not implemented capabilities.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#52677c"/></marker>
     <marker id="stop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#c85b36"/></marker>
@@ -17,13 +17,14 @@
       .service-detail { font-size: 17px; fill: #52677c; }
       .connector { fill: none; stroke: #52677c; stroke-width: 2.5; marker-end: url(#arrow); }
       .duplex { fill: none; stroke: #52677c; stroke-width: 2.5; marker-start: url(#arrow); marker-end: url(#arrow); }
+      .optional-link { fill: none; stroke: #8995af; stroke-width: 2; stroke-dasharray: 6 4; }
       .stop-line { fill: none; stroke: #c85b36; stroke-width: 3.2; marker-end: url(#stop-arrow); }
       .stop-title { font-size: 18px; font-weight: 700; fill: #a3482a; }
       .stop-detail { font-size: 15px; fill: #a3482a; }
     </style>
   </defs>
 
-  <rect width="1680" height="1490" fill="#f8fafc"/>
+  <rect width="1680" height="1585" fill="#f8fafc"/>
   <text x="48" y="56" class="heading">Ayni architecture</text>
   <text x="48" y="88" class="subtitle">Shared Agent infrastructure · one Kernel per device · asynchronous I/O</text>
   <rect x="1320" y="28" width="312" height="52" rx="12" fill="#e8eef6" stroke="#c4d1df"/>
@@ -49,17 +50,26 @@
   <text x="565" y="317" text-anchor="middle" class="label">Application coordinator</text>
   <text x="565" y="349" text-anchor="middle" class="small">Goal types · Scenes · Notifications · Assistant presentation</text>
   <rect x="920" y="282" width="510" height="95" rx="10" fill="#ffffff" stroke="#cbd0e5"/>
-  <text x="1175" y="317" text-anchor="middle" class="label">Strategies / Skills</text>
-  <text x="1175" y="349" text-anchor="middle" class="small">Rules · Tool loops · Reusable behaviors</text>
+  <text x="1175" y="309" text-anchor="middle" class="label">Strategies / Skills</text>
+  <text x="1175" y="335" text-anchor="middle" class="small">Rules · Tool loops · Reusable behaviors</text>
+  <text x="1175" y="360" text-anchor="middle" class="detail">Optional world model / VLA proposals*</text>
   <path d="M 830 397 V 440" class="connector"/>
 
   <!-- Layer 3: a common typed interface, independent of transport. -->
   <text x="48" y="472" class="layer-number">03</text>
   <text x="48" y="497" class="layer">INTERFACE</text>
-  <rect x="210" y="440" width="1240" height="78" rx="14" fill="#e5f0f7" stroke="#a9c7db"/>
-  <text x="830" y="472" text-anchor="middle" class="label">C99 API / C++ SDK</text>
-  <text x="830" y="501" text-anchor="middle" class="small">Typed commands · Queries · Events · Explicit ownership and bounded data</text>
-  <path d="M 830 518 V 560" class="connector"/>
+  <rect x="210" y="430" width="810" height="100" rx="14" fill="#e5f0f7" stroke="#a9c7db"/>
+  <text x="615" y="460" text-anchor="middle" class="label">C99 API / C++ SDK</text>
+  <text x="615" y="489" text-anchor="middle" class="small">Typed commands · Queries · Events</text>
+  <text x="615" y="516" text-anchor="middle" class="detail">Bounded data · Explicit ownership</text>
+  <path d="M 830 530 V 560" class="connector"/>
+  <!-- Optional contract extension at the Core boundary, not a mandatory execution layer. -->
+  <path d="M 1020 480 H 1058" class="optional-link"/>
+  <rect x="1060" y="418" width="390" height="125" rx="14" fill="#f5f2fc" stroke="#aaa0c6" stroke-dasharray="6 4"/>
+  <text x="1255" y="448" text-anchor="middle" font-size="20" font-weight="650">Embodiment Profile (optional)</text>
+  <text x="1255" y="477" text-anchor="middle" class="detail">Types · State · Frame · Time</text>
+  <text x="1255" y="503" text-anchor="middle" class="detail">Calibration · Control authority</text>
+  <text x="1255" y="529" text-anchor="middle" class="detail">Motion outcome / verification evidence</text>
 
   <!-- Layer 4: all mutable logical state is owned and committed here. -->
   <text x="48" y="605" class="layer-number">04</text>
@@ -122,9 +132,9 @@
 
   <rect x="680" y="1060" width="400" height="150" rx="14" fill="#edf5ef" stroke="#b4ccbc"/>
   <text x="880" y="1098" text-anchor="middle" class="label">Providers</text>
-  <text x="880" y="1133" text-anchor="middle" class="small">Model · Perception · Media · Motion</text>
-  <text x="880" y="1163" text-anchor="middle" class="small">Typed results / controlled device I/O</text>
-  <text x="880" y="1192" text-anchor="middle" class="detail">Selected and admitted by the Kernel</text>
+  <text x="880" y="1133" text-anchor="middle" class="small">Inference · Perception · Media · Motion</text>
+  <text x="880" y="1163" text-anchor="middle" class="small">Kernel-admitted I/O · Typed results</text>
+  <text x="880" y="1192" text-anchor="middle" class="detail">Optional world-model / VLA inference*</text>
 
   <path d="M 1082 1135 H 1108" class="duplex"/>
   <rect x="1110" y="1060" width="320" height="150" rx="14" fill="#ffffff" stroke="#b8c6d4" stroke-dasharray="6 4"/>
@@ -132,16 +142,24 @@
   <text x="1270" y="1133" text-anchor="middle" class="small">External model APIs</text>
   <text x="1270" y="1163" text-anchor="middle" class="detail">Credentials / service quota</text>
   <text x="1270" y="1192" text-anchor="middle" class="detail" font-weight="650">Does not own tasks</text>
-  <path d="M 440 1210 V 1255" class="connector"/>
-  <path d="M 880 1210 V 1255" class="connector"/>
+  <path d="M 440 1210 V 1235" class="connector"/>
+  <path d="M 880 1210 V 1235" class="connector"/>
 
   <!-- Layer 6: OS scheduling and physical control remain with the host. -->
   <text x="48" y="1287" class="layer-number">06</text>
   <text x="48" y="1312" class="layer">PLATFORM</text>
-  <rect x="230" y="1255" width="850" height="73" rx="13" fill="#edf0f3" stroke="#bfc8d1"/>
-  <text x="655" y="1286" text-anchor="middle" class="label">Operating system / Drivers</text>
-  <text x="655" y="1313" text-anchor="middle" class="small">ESP-IDF / FreeRTOS · Native OS · Board-specific control</text>
-  <path d="M 655 1328 V 1370" class="connector"/>
+  <rect x="230" y="1235" width="850" height="100" rx="13" fill="#edf0f3" stroke="#bfc8d1"/>
+  <text x="655" y="1265" text-anchor="middle" class="label">Operating system / Drivers / Local control</text>
+  <text x="655" y="1292" text-anchor="middle" class="small">ESP-IDF / FreeRTOS · Native OS</text>
+  <text x="655" y="1319" text-anchor="middle" class="small">Optional ROS controllers · Local real-time loops</text>
+  <path d="M 655 1335 V 1370" class="connector"/>
+
+  <!-- External integrations can only reach managed boundaries; they never enter Core. -->
+  <path d="M 1450 979 H 1466 V 1285 H 1432" class="optional-link" marker-end="url(#arrow)"/>
+  <rect x="1110" y="1235" width="320" height="100" rx="13" fill="#ffffff" stroke="#aaa0c6" stroke-dasharray="6 4"/>
+  <text x="1270" y="1261" text-anchor="middle" font-size="19" font-weight="650">Optional external integrations</text>
+  <text x="1270" y="1287" text-anchor="middle" class="detail">ROS 2 Bridge / Provider</text>
+  <text x="1270" y="1313" text-anchor="middle" font-size="15" fill="#52677c">MHS adapter*: preview / spec access gated</text>
 
   <text x="48" y="1402" class="layer-number">07</text>
   <text x="48" y="1427" class="layer">HARDWARE</text>
@@ -170,5 +188,8 @@
   <text x="1568" y="1430" text-anchor="middle" class="stop-detail">Safe physical output</text>
   <path d="M 1486 1409 H 1432" class="stop-line"/>
 
-  <text x="48" y="1478" font-size="13" fill="#7a8a9b">Architecture contract only. Platform support, APIs, limits and recovery guarantees require implementation and validation evidence.</text>
+  <text x="230" y="1485" class="detail" font-weight="650">Optional profiles and integrations do not become prerequisites for Core.</text>
+  <text x="230" y="1513" class="detail">* World model / VLA: bounded goals or action-chunk proposals only; Kernel authorization and local limits apply.</text>
+  <text x="230" y="1541" class="detail">* MHS: adapter requires preview/spec access and conformance evidence; compatibility is not claimed.</text>
+  <text x="48" y="1573" font-size="13" fill="#7a8a9b">Architecture contract only. Platform support, APIs, limits and recovery guarantees require implementation and validation evidence.</text>
 </svg>

@@ -12,6 +12,8 @@
 
 Ayni 根据自身的任务、授权、资源与恢复需求设计架构，面向桌面与受限设备规划可移植 C++17 Core，并提供 C99 兼容 API 和 C++ 封装。首发验证目标是现有 ESP32-S3 开发板；具体板型和容量仍需实测。
 
+Ayni 的领域契约是任务、权限与执行语义的权威；ROS 2、MHS、MCP 等外部协议通过适配层接入，字段变化优先由适配层消化，新的执行语义按版本化契约演进，必要时调整 Core。
+
 ![Ayni 架构](docs/assets/ayni-architecture.svg)
 
 | 层级 | 职责与函数抽象 |
@@ -57,21 +59,37 @@ v0.1 计划提供局域网管理、按键语音、持续视觉采集与受限分
 
 三类版本独立演进，以领域契约和一致性用例保持对应；API 当前仍是实验性草案。消息 ID、操作 ID 与本机请求代际各司其职，协议不作通用“恰好执行一次”承诺。
 
+## 可选具身 Profile 与协议适配
+
+可选 `EMBODIMENT_V1` 是现有原语的具身领域 Schema 与约束，按特性协商，沿用三类版本契约；普通设备无需携带机器人字段，也无需依赖 ROS。
+
+| 契约 | 规划边界 |
+|---|---|
+| 观察与机器人状态 | 明确 frame、时间域/代际、单位、校准版本及 `RobotState`；tf2、URDF、感知与坐标变换实现留在 Provider/桥接侧 |
+| 控制权与本地执行 | `ControlAuthority` 绑定控制代际、命令序号与最大年龄；本地控制会话有界并受 interlock 约束，实时闭环由本地控制器执行 |
+| 运动结果与模型 | `MotionOutcome` 分别记录已接收、已执行、已停止及物理确认；VLA 输出仅为候选，经授权、资源及本地控制约束检查后才可执行 |
+
+ROS 2 Bridge 位于 Core 外，将 Topic/Service/Action 分别映射到 `subscription/unary/action`，导入与导出均走原有受管理入口。Bridge 保存 ROS goal UUID 与 Ayni 调用身份的映射；ROS 接收、取消响应及 QoS 本身不赋予持久去重、授权或物理停止保证。M3 优先验证同机 Linux Native Kernel 与 ROS 模拟节点；跨电脑/ESP32 路径另待 M5，MCU micro-ROS 留待容量、并发和失联行为验证。
+
+截至 2026-10-18，MHS（Model Hardware Standard）仍为研究预览，见[官方介绍](https://www.anthropic.com/news/model-hardware-standard-research-preview)与[预览入口](https://www.modelhardwarestandard.com/)。在确切可实施规范、合法访问、许可及验证夹具可得并经评估后才安排适配；使用 SDK 时另行锁定版本，不声明当前兼容。导入/导出须经过同一授权、Schema 和执行入口，不允许生成任意代码直接部署到 MCU。
+
 ## 实施路线与验证
 
 | 阶段 | 目标与门槛 |
 |---|---|
-| M0 | 固化契约、工程骨架、工具链和板级/BOM 可行性 |
-| M1 · Core Alpha | Native Core、模拟器与 SDK；电脑通过 E1–E4，Linux CI 重现 |
+| M0 | 固化契约、工程骨架、工具链和板级/BOM 可行性；可选具身 Profile 草案 |
+| M1 · Core Alpha | Native Core、模拟器与 SDK；电脑通过 E1–E4，Linux CI 重现；可选 Mock conformance R1.a |
 | M2 · Core Beta | ESP32 复核同一 Core、E1–E4、硬件/模型/策略及组合工作流接入示例 |
-| M3 | 摄像头、按键语音、底盘、停止监督器与授权转向；真实并发与成本验证 |
+| M3 | 摄像头、按键语音、底盘、停止监督器与授权转向；真实并发与成本验证；可选 Linux ROS 2 Bridge/模拟 R1.b |
 | M4 · v0.1 | 配网绑定、管理体验、网关与受控试用；真实 OTA/回滚及完整硬件至少 72 小时长稳 |
 | M5 · v0.2 | PC 与 ESP32 独立驻留、认证、远程调用、去重、查询与断连恢复 |
-| M6 | 按独立门槛扩展宿主、持久子任务委派、MCP/A2A、更多感知/机构及第三方隔离 |
+| M6 | 按独立门槛扩展宿主、持久子任务委派、MCP/A2A、更多感知/机构及第三方隔离；有条件的 MHS 适配 R1.c |
 
 E1 验证多个 Agent 共用系统服务；E2 验证动作关键阶段重启；E3 验证重启后替换模型或兼容策略；E4 验证有界组合、订阅依赖与语义升级/回滚。E4 包含在途依赖失效、步骤恢复、不兼容版本暂停及模拟存储迁移回滚；真实 OTA 在 M4 验证。先在确定性模拟器通过，再在 ESP32 复核，最后补齐真实硬件结果。
 
 计划接入示例包括 `new_hardware`、`new_model`、`new_strategy` 与 `composite_workflow`；新组合应用应复用公开接口完成，无需修改 Kernel 源码。
+
+R1 是独立的可选一致性套件，E1–E4 仍为四个必需实验。R1.a 验证 Profile 的 Mock 契约，R1.b 在 M2 Core Beta 通过后验证 Linux Bridge/模拟接入，R1.c 以 MHS 的规格、访问、许可及夹具为前提。可选路线不阻断 v0.1；声明 Profile、ROS Bridge 或 MHS 支持分别须通过相关 R1.a、R1.a/b 或 R1.a/c，门槛不得豁免。
 
 构建、模拟、实机功能和长稳结果分别报告。当前尚无这些验证结果；实施计划中的构建命令、目录和 API 示例均为待实现入口。
 
