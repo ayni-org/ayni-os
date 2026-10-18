@@ -1,21 +1,70 @@
-# Repository Guidelines
+# AGENTS.md — Ayni 工程约定
 
-## Project Structure & Module Organization
+适用于本仓库的设计、实现、架构审查、重构、测试与交付。对公共 API、故障恢复和长期维护负责，以正确、可靠、安全、简洁、可组合、可测试、可维护、可移植为目标。
 
-Implementation is currently limited to `docs/ayni_v1.0.md`, the Ayni AgentOS plan. Read it before contributing; APIs, directories, and platform support remain proposed. Preserve its filename when updating the internal document version.
+## 项目现状与工作原则
 
-Follow the planned layout when implementation begins:
+- 贡献前阅读 [实施计划](docs/ayni_v1.0.md)。更新内部文档版本时保留文件名 `docs/ayni_v1.0.md`，保留计划的中文正文与标题结构。
+- 当前版本化内容以实施计划、双语 README、架构图和贡献约定为主，尚无版本化构建脚本或可运行应用。下述目录、API、平台支持和构建命令仍属规划；实现落地时同步更新约定与验证入口。
+- 质量冲突时优先正确性与安全性、显式契约与兼容性、可理解性与可维护性。性能满足已知约束，敏感路径以测量为据；实时性、资源或安全要求导致的权衡须说明理由。
+- 遵守用户当前任务与仓库已有约定；不得借架构改进扩大范围、重写无关模块或改变产品行为。保留计划中已确认的产品语义与每台新增硬件不超过 300 元的预算边界。
 
-- `core/`: portable Kernel state, scheduling, authorization, and recovery.
-- `include/ayni/`, `contracts/`: public C/C++ interfaces and versioned contracts.
-- `hosts/`, `providers/`, `drivers/esp32/`: platform services, asynchronous I/O, and hardware drivers.
-- `apps/`, `ui/web/`: simulator, ESP32 assistant, and management UI/assets.
-- `tests/`: unit, contract, integration, fault-injection, fuzz, and hardware-in-loop tests.
-- `docs/adr/`, `reports/`: architectural decisions and validation evidence.
+## 规划目录与职责
 
-## Build, Test, and Development Commands
+实施时遵循计划布局，不因目录存在就宣称能力已实现：
 
-No build scripts or runnable application exist yet. Planned native commands:
+- `core/`：可移植 Kernel 的领域规则、状态转换、调度、授权、资源、预算、记忆与恢复机制。
+- `include/ayni/`、`contracts/`、`sdk/`：公共 C/C++ 接口、版本化领域/宿主/协议/存储契约与便捷封装。
+- `strategies/`、`applications/`：规则、Tool Loop、目标类型、场景、Skill、助理编排与通知策略。
+- `hosts/`、`providers/`、`drivers/esp32/`、`safety/`：平台服务、异步能力实现、硬件驱动与独立停止机制。
+- `protocol/`、`gateway/`：管理/设备协议、外部互操作适配与认证模型访问；具体供应商及 ROS/MHS 等 SDK 留在 Core 外。
+- `apps/`、`ui/web/`、`examples/`：模拟器、ESP32 应用、管理界面与接入/组合示例。
+- `tests/`、`docs/adr/`、`reports/`：单元、契约、集成、故障注入、fuzz、硬件在环测试，以及决策与验收证据。
+
+## 架构与模块边界（优先审查）
+
+- 编码前识别稳定机制、可变策略、外部依赖和副作用。按能力、状态与不变量的所有权、变化原因和依赖关系划分模块；共同变化聚合，独立变化隔离，不机械按行数、文件格式或调用步骤拆分。
+- 每个模块应能用一句话说明职责，并明确不负责什么、公开什么契约、谁拥有数据和资源。函数与类型归属能够维护其不变量、理解其数据语义的模块，不跨模块操作内部状态。
+- Core 不反向依赖 UI、应用编排、平台头文件、存储/网络框架或具体供应商 SDK。应用、策略与 Provider 经公开契约交互，使用只读快照及命令/事件，不直接修改 Core 对象；公共机制不包含 UI 文案、部署环境或特定业务流程假设。
+- 同时审查职责混杂的巨型 Manager/Service、万能工具模块、职责重叠、共享可变状态、隐式单例与全局注册表，以及只转发参数的空壳层、无独立职责的小模块和过深间接层。目录整齐、文件短小不等于边界合理。
+- 调整边界前，基于证据比较保持现状、合并、拆分、移动职责或重定义接口，选择认知负担与迁移成本可控的方案。允许局部重复以保持独立演进，不为形式上的 DRY 耦合不同变化原因。
+- 跨模块、公共 API 或重要扩展点设计，至少用一个相关场景推演影响：替换模型/存储 Provider、增加 Host 或修改目标规则。说明触及哪些模块及原因，区分推演与验证；必要的跨契约修改本身不是缺陷。
+- 区分编译/导入、运行时调用、构建与测试依赖。依赖结构可检查后，将无循环依赖、Core 不依赖平台 SDK、模块仅经公开接口交互等确定性规则固化到构建、架构测试或 CI。
+
+## 抽象、函数与公共契约
+
+- 新增机制前先查找并复用已有合理实现；小缺陷优先局部修复，避免并行建立第二套体系。
+- 仅为真实重复、稳定概念、已知变化点或必要的平台/第三方边界提取抽象。每处新抽象须说明隔离何种变化、减少何种耦合、当前为何需要及增加多少维护成本；回答不清时采用直接实现。
+- 共性下沉、差异上浮，机制与策略分离，优先组合。扩展优先实现现有契约或增加适配器；不预建插件系统、泛型框架、工厂层级或配置 DSL，不强制继承、依赖注入容器、微服务或某种架构模式，也不包装所有标准库调用。仅有一个实现且无需隔离不稳定外部边界时，优先直接使用清晰的具体实现。
+- 函数表达一个完整、可命名的行为或决策，尽量保持同一语义抽象层次。高层流程说明做什么与顺序，底层封装具体机制；副作用、失败和资源释放显式，避免无理由混杂业务判断、解析、SDK 与重试细节。
+- 检查自上而下阅读是否顺畅，同时避免巨型函数、深层嵌套、重复实现及无语义增益的一行包装、过深转发链和过度委托；紧密相关的步骤可保留在一起，不机械拆函数。
+- 公共 API 只暴露最小充分能力；参数、返回值、所有权、生命周期、容量、失败与取消语义明确，避免布尔参数堆积、过度配置及内部类型泄漏。Core—Host ABI、管理/设备协议、持久化格式分别版本化，不直接保存 C++ 内存布局。
+
+## Ayni 状态、恢复与安全约束
+
+- 每设备一份 Kernel 逻辑状态源，跨服务变更经统一提交协调器。`step` 按工作项与耗时预算推进，不等待网络、Flash、模型或设备操作；Host/Provider 异步回送事件，控制完成与存储确认不得因队列满而丢失。
+- 持久提交确认前不得报告“已持久接受”。副作用必须先保存准备记录、确认 `DISPATCHING` 屏障，再复核授权、任务/场景版本、观察有效期及停止栅栏后提交 Host；屏障失败禁止派发。
+- 不盲目重试 `RESULT_UNKNOWN`，不换 Provider 或操作 ID 绕过未知结果；按原操作做权威查询、对账或暂停处理，不单凭无回执或 `NOT_FOUND` 推断未执行。恢复只重建状态，不重放旧运动命令，不宣称通用“恰好执行一次”。
+- 步骤、逻辑调用与操作身份跨重启/策略替换保持稳定，I/O 尝试与订阅使用独立代际。旧结果不能覆盖新版本、复活已删除记忆或恢复已取消工作；任务固定 owner，不自动跨设备接管或同步私有状态。
+- 取消请求、执行结束和物理停止分别确认；资源仅在确认释放或隔离后处理，未确认停止的执行器不得重新分配。独立本地停止不依赖模型、网页或普通队列；启动/故障默认禁用运动，未校准不开启真实自主动作。
+- 默认拒绝越权；模型输出、语音文本和外部设备描述不能授予权限。私有记忆、公共档案、共享与外发分别授权；删除使源记录、可追溯派生摘要及在途依赖失效。凭据在运行时配置，凭据和私有媒体不得进入提交或日志。
+- 保留已确认语义：暂停助理保留到期提醒；普通提醒按选定方式成功呈现才完成；新增权限、敏感删除和所有权变更由已绑定管理端确认。v0.1 的可信内置代码与受管理入口不等于任意原生代码的强隔离。
+
+## 编码规范
+
+- Core 目标为 C++17，公共 API 兼容 C99，Core 与 C++ 封装禁用异常/RTTI。STL 类型、异常、OS 句柄和第三方 SDK 类型不得跨公共 ABI。
+- 使用有界存储、显式容量与可失败分配；队列、媒体、上下文、并发与重试均有上限和耗尽处理，保留停止与诊断能力。
+- 新 C/C++ 文件采用四空格缩进，函数/文件使用 `snake_case`，公共符号使用 `ayni_` 前缀。当前没有格式化配置，不宣称格式或静态检查已经强制执行。
+
+## 构建与检查命令
+
+当前文档改动可执行：
+
+```sh
+git diff --check
+```
+
+以下是计划中的 Native 配置、构建、测试和模拟器入口，工程骨架落地前不可执行：
 
 ```sh
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
@@ -24,22 +73,18 @@ ctest --test-dir build/native --output-on-failure
 ./build/native/apps/simulator/ayni-sim
 ```
 
-These configure, build, test, and launch the simulator. Future firmware builds use `idf.py build` from `apps/esp32_assistant/` after activating the pinned ESP-IDF environment.
+未来固件在激活已锁定 ESP-IDF 环境后，从 `apps/esp32_assistant/` 执行 `idf.py build`。实施时补齐工具链/组件版本、配置和 bootstrap 说明；格式检查、编译器告警、clang-tidy、ASan/UBSan 及依赖检查先提供配置与可执行入口，再报告检查结果。
 
-## Coding Style & Naming Conventions
+## 测试与交付证据
 
-Target C++17 Core and a C99-compatible public API. Keep STL types, exceptions, and OS handles outside the ABI; disable exceptions/RTTI in the C++ wrapper. Use bounded storage and explicit allocation failures.
+- 按改动风险验证行为与契约，覆盖状态不变量、越权、资源竞争、容量耗尽、提交中断、重启恢复及模型/策略替换。测试名表达场景，如 `recovery_after_dispatch_barrier`；GoogleTest 仍是候选，仓库尚未引入。
+- E1–E4 使用确定性夹具，先电脑、再 ESP32 复核，通过 Core 门槛后才进入完整硬件集成；真实模型偶然输出不作为 Core 正确性的判据。具身 Profile、ROS/MHS 等可选扩展另按对应 R1 验收，不由接口存在推定支持。
+- Core 覆盖率目标 ≥75%，安全关键分支 ≥90%；偏差需证据、补测记录与 ADR。权限、动作恢复、真实停止及预算等发布硬门槛不能以覆盖率或签字替代。
+- 区分可编译、模拟通过、实机通过和长稳通过；报告记录代码/契约/工具链版本、配置、故障点、状态轨迹与结论。只在有对应构建、运行和验收证据时标记“已实现/已验证”，说明未运行项与限制。
+- 执行与变更相称的检查；纯文档修改检查差异与一致性，不运行尚不存在的构建，也不把规划命令或目标写成已通过结果。
 
-No formatter configuration exists. For new C/C++ files, use four-space indentation, `snake_case` functions/files, and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. Planned checks include formatting, compiler warnings, clang-tidy, and ASan/UBSan; add configurations before claiming enforcement.
+## 提交与文档维护
 
-## Testing Guidelines
-
-GoogleTest is a candidate, not an installed framework. Use descriptive scenario names such as `recovery_after_dispatch_barrier`. Plan deterministic fixtures for multi-Agent resource sharing, crash recovery, and model/strategy replacement. Target Core coverage ≥75% and safety-critical branch coverage ≥90%; record deviations with evidence and an ADR. Distinguish compilation, simulation, hardware, and endurance results.
-
-## Commit & Pull Request Guidelines
-
-Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and traces for recovery changes. Update contracts, migrations, and ADRs when semantics change.
-
-## Architecture & Security Constraints
-
-Keep Kernel state under one logical owner and I/O asynchronous. Never blindly retry `RESULT_UNKNOWN` actions. Keep credentials and private media out of commits and logs; configure secrets at runtime. Mark capabilities implemented only with corresponding validation evidence.
+- 提交信息简洁、祈使式并带范围，如 `docs: clarify recovery guarantees`；初始历史聚焦文档与仓库准备。
+- PR 说明具体行为变化、相关 issue/计划章节、验证结果与限制；UI 改动附截图，恢复改动附轨迹。
+- 语义变化同步更新契约、迁移、ADR 与测试；影响公开说明时保持中英文 README、架构图和计划一致。新增依赖记录来源、锁定版本、许可证及修改，不把候选依赖当成已集成能力。
