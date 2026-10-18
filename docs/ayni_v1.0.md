@@ -92,7 +92,7 @@ v0.1 是受控的普通用户试用版本。提供已刷固件的轮式设备及
 | 可选具身契约与外部适配 | Profile 约束现有 Observation/Capability/Binding；ROS 2 Bridge、未来 MHS 适配器复用受管理入口 | 可选域约束不另造 Kernel；ROS/DDS/tf2/运动规划与控制器实现留在 Core 外；适配器以权限受限的进程运行 |
 | 宿主 OS 与硬件 | ESP-IDF/FreeRTOS、Native OS、驱动、传感器、执行器 | 停止链依赖的时钟、中断、内存与硬件超时须写明并实测（第 4.1 节） |
 
-Core 内部依赖按 `foundation/event → state 提交与版本 → 共享领域服务 → 系统调用分派`组织；跨服务修改经同一提交协调器。`state/` 只提供持久前缀、快照、已提交批次重放与迁移等机制；恢复顺序与领域恢复规则由系统调用分派层按各服务规则编排，底层模块不反向依赖领域服务。每项不变量有唯一属主（第 2.3 节）；按不变量属主重组 Core 模块的方案记录为 ADR-0008 候选，须在首个 Core 实现提交前接受或修订。应用和 Provider 依赖公开契约，Core 不依赖具体应用、SDK 便捷层、外部协议 SDK 或平台头文件。`memory/context` 保留归属、访问、依赖和预算机制；提示词、摘要、排序、业务规划及模型偏好在上层或 Provider。
+Core 按不变量属主分为八个模块（第 2.3 节、ADR-0008），依赖方向为 `kernel → work → {authority, resources, knowledge} → catalog → durability → foundation`；`authority`、`resources`、`knowledge` 之间不互相依赖，跨模块修改由 `kernel` 在同一 transition 中编排并经同一提交协调。`durability` 只提供持久前缀、快照、已提交批次重放与迁移等机制；恢复顺序与领域恢复规则由 `kernel` 按各模块规则编排，底层模块不反向依赖领域模块。应用和 Provider 依赖公开契约，Core 不依赖具体应用、SDK 便捷层、外部协议 SDK 或平台头文件。`knowledge` 保留记忆与上下文的归属、访问、依赖和预算机制；提示词、摘要、排序、业务规划及模型偏好在上层或 Provider。
 
 Ayni 自主定义设备能力模型与安全执行机制，领域契约是系统权威；设备发现由 Host/适配器完成，候选描述经可信注册后进入 Core 目录。ROS 2、MHS、MCP 都是外部互操作体系，与 Ayni 的关系是版本化映射和明确声明的支持子集，不宣称结构等同；其字段和传输版本变化优先在适配层消化，不反向规定 Kernel 对象或执行权。若外部需求新增控制、资源或恢复语义，则通过领域版本、ADR、迁移和验收演进，不能承诺核心永久无需变化，也不能为了兼容削弱本机保证。
 
@@ -126,19 +126,16 @@ Observation 的 TTL、动作 deadline 在本机采用单调时间执行；跨设
 
 | 系统服务 / 建议目录 | Core 负责 | Host、Provider 或应用负责 |
 |---|---|---|
-| 实例监督 `agent/` | 实例注册、生命周期、身份绑定、隔离命名空间、停止和回收 | 实例角色与用户可理解的助理呈现 |
-| 目标与任务 `goal/`、`task/` | 接受、调度、触发去重、暂停取消、检查点、归属与恢复 | 提醒等目标类型、完成判定和规划策略 |
-| 设备目录与资源协调 `device/`、`resource/` | 设备/组件/资源/能力注册、Binding 关系、容量、冲突、队列、租期、准入、释放；执行许可的签发、续租与失效 | 发现硬件、采集/驱动、设备健康探测 |
-| 能力与授权 `capability/`、`policy/` | Schema 校验、包络静态准入、Grant、撤销与受限委派、审批绑定、动作账本 | 本地执行、物理限值、持续联锁与独立停止机制 |
-| 身份与绑定 `identity/`、`binding/` | 主体、节点与实例身份及其绑定证据；ProviderBinding / 远程绑定的版本与选择约束 | 认证凭据存储与传输由 Host / 协议适配层实现 |
-| 请求管理 `request/` | request ID、boot epoch、超时、取消、晚到结果；引用 `budget/` 的预留标识，不自行结算 | 非阻塞 I/O、结果验证和取消尝试 |
-| 订阅 `subscription/` | 订阅代际、租期、事件序号、gap 与续租复核 | 采集与流传输 |
-| 观察、记忆与上下文 `observation/`、`memory/`、`context/` | 来源、有效期、私有/共享范围、版本、引用、上下文预算 | 感知算法、模型解释、可选检索 Provider |
-| 预算与公平性 `budget/` | 多实例配额、设备总额、预留与结算的唯一属主、优先级、限流及饥饿监测 | 试用额度配置；网关同步执行外部费用限制 |
-| 状态与诊断 `state/`、`observability/` | 持久前缀、日志/快照、已提交批次重放、迁移机制、trace、脱敏诊断；恢复编排由系统调用分派层完成 | 存储原子性/flush 能力、日志出口与性能测量 |
-| 事件与基础定义 `event/`、`foundation/` | 有界队列、合并、路由、错误、时间、通用代际栅栏类型 | ISR 安全桥接、线程唤醒；不从 ISR 调用普通 API |
+| 编排与入口 `kernel/` | Kernel 生命周期、step、事件入口（有界队列、合并、路由）与完成槽；受管入口（解码 → 校验 → 分派）与命令幂等映射；跨模块编排、恢复编排、输出门控；trace 与脱敏诊断 | ISR 安全桥接、线程唤醒，不从 ISR 调用普通 API；日志出口与性能测量 |
+| 执行 `work/` | AgentInstance 注册、生命周期、隔离命名空间、停止与回收；Goal/Task 的接受、调度、触发去重、暂停取消、检查点与归属；步骤、LogicalCall 与请求尝试（request ID、boot epoch、超时、取消、晚到结果）；ActionRecord 与派发屏障；过程、会话与订阅（代际、租期、序号、gap）的生命周期 | 实例角色与助理呈现；提醒等目标类型、完成判定和规划策略；非阻塞 I/O、结果验证、取消尝试与流传输 |
+| 授权 `authority/` | 主体、节点与实例身份及其绑定证据；Session 信任级别；Grant、撤销与受限委派、审批绑定；Scene 授权；包络静态准入判定 | 认证凭据存储与传输；本地执行、物理限值、持续联锁与独立停止机制 |
+| 资源 `resources/` | 资源准入（全有或全无）、队列、冲突、租期与隔离；执行许可的签发、续租与失效；预算层级、设备总额、预留与结算；优先级、限流、公平与饥饿监测 | 设备健康探测；试用额度配置，网关同步执行外部费用限制 |
+| 知识 `knowledge/` | Observation 的来源、采集时间与有效期；私有/共享记忆的范围与版本；上下文预算；lineage、tombstone 与依赖失效 | 感知算法、模型解释、可选检索 Provider |
+| 目录 `catalog/` | 设备、组件、资源、能力（Schema、副作用与恢复属性）、Binding、目标类型与策略的版本化描述与选择约束；可信注册；兼容矩阵；注册的纯函数校验器 | 发现硬件、采集/驱动，生成候选描述 |
+| 持久 `durability/` | 持久前缀、日志/快照、已提交批次重放、迁移机制；不含领域恢复策略 | 存储原子性/flush 能力 |
+| 基础 `foundation/` | ID、时间、状态码与原因、有界容器、通用代际栅栏类型 | — |
 
-上表每行是对应不变量的唯一属主；跨行状态转换由系统调用分派层在同一 transition 中编排，服务之间不修改彼此的内部状态。
+上表每行是对应不变量的唯一属主；跨模块状态转换由 `kernel/` 在同一 transition 中编排，模块之间不修改彼此的内部状态。模块内部可按实体分文件，文件划分不构成模块边界。
 
 资源按 Capability 声明由系统自动申请、协调和释放，Agent 不直接持有驱动锁。资源组采用全有或全无准入，避免部分占用互相等待；首版不强制抢占不可中断的物理动作，采用排队、超时或可取消操作释放。优先级次序为本地停止路径、前台交互/已到期提醒、普通工作、后台反思；同级使用有界公平排队并记录最长等待时间。每类工作声明等待期限及超限后的延后、过期或暂停原因；后台反思允许不运行，但不能保持无原因的永久等待。模型占用槽期间其他本地工作继续推进，优先级不意味着可以中断既有物理副作用。
 
@@ -203,7 +200,7 @@ ROS 2、MHS、MCP 等适配器在 Full Profile 宿主上以独立进程运行；
 | `CORE_FULL` | 桌面使用；同一 Core，更多容量、存储和检索 Provider | M1 最小实现；扩展后续 |
 | `DEVICE_NODE_C` | 无 Kernel 的受控设备端点；实现身份、设备模型与受控调用协议，并在本地强制限值、执行许可与停止；其控制域由唯一 authority-owner Kernel 治理，换主、分区与端点重启均使旧许可失效 | M6 待评估，不称为独立 Agent 实例或授权决策者 |
 
-部署 Profile 与领域契约 Profile 分开：`EMBODIMENT_V1` 是第 2.9 节的可选类型/行为约束，可由 Lite 或 Full 按声明的特性实现；不意味着额外内核运行时或默认启用 ROS。第 2.10 节的执行许可与运动结果阶段属于基础契约，不随 Profile 启用与否改变。未支持的类型、控制模式及必需特性显式拒绝，不静默降级。
+部署 Profile 与领域契约 Profile 分开：`EMBODIMENT_V1` 是第 2.9 节的可选类型/行为约束，可由 Lite 或 Full 按声明的特性实现；不意味着额外内核运行时或默认启用 ROS。第 2.10 节的执行许可与运动结果阶段属于基础契约，不随 Profile 启用与否改变。各部署 Profile 由组合根 `runtime/` 装配：它是唯一引用具体 Host、Provider、控制与停止实现的位置，可执行程序与固件只调用它（第 8 节、ADR-0010）。未支持的类型、控制模式及必需特性显式拒绝，不静默降级。
 
 ### 2.7 函数层级、能力绑定与最小组合
 
@@ -227,7 +224,7 @@ v0.1 至少支持有界顺序组合：`转向 → 停止确认 → 拍照 → �
 
 单逻辑 owner 保证串行状态推进；持久一致性由 `transition_id + commit_seq` 的提交批次保证。提交与对外输出由两层协议配合：
 
-- **持久层**（`state/`）只证明持久前缀：`append(batch)` 以 `OK / FAILED / UNKNOWN` 完成，对外只暴露 `durable_seq`，即连续已持久的最长前缀。Host 的日志批次包含长度、校验与提交标记；恢复精确返回该前缀并忽略不完整尾部，同一 transition 重放不重复应用。持久层不理解输出语义。
+- **持久层**（`durability/`）只证明持久前缀：`append(batch)` 以 `OK / FAILED / UNKNOWN` 完成，对外只暴露 `durable_seq`，即连续已持久的最长前缀。Host 的日志批次包含长度、校验与提交标记；恢复精确返回该前缀并忽略不完整尾部，同一 transition 重放不重复应用。持久层不理解输出语义。
 - **Kernel 层**只维护一份内存状态，transition 按 `commit_seq` 顺序立即应用，不另建暂存副本或跨 transition 依赖追踪。每个对外输出带 `requires_seq`：持久接受回复、对外事件和通知在 `durable_seq ≥ requires_seq` 后释放；具有副作用的 Host submit 还须通过第 4.3 节的最终复核，复核与 submit 之间不处理其他普通意图。查询可返回已应用状态，但须标注 `durable_seq`，不得把未覆盖部分报告为已持久。
 - **写入失败或结果未知**：以相同 `transition_id / commit_seq` 有界重试，重试成功按幂等重放处理。仍失败时 Kernel 进入受限栅栏（FENCED）：立即停止新输出、新准入与执行许可续租；已越过持久屏障的在途动作按能力属性继续或取消，其完成事件只进入有界易失缓冲供对账；随后以新 `boot_epoch` 从持久前缀重载，在途动作按第 4.3 节转为 `RESULT_UNKNOWN`，存储可写后经 Host 查询对账，易失缓冲不直接改写状态。存储仍不可写时进入只读诊断，本地停止路径照常可用。
 
@@ -720,10 +717,10 @@ ayni/
 ├── include/ayni/client.h               # PC management client
 ├── contracts/{domain,host,wire,storage,fixtures}/ # commands/calls/subscriptions/commits/permits
 ├── contracts/profiles/embodiment/       # optional robot-specific types/outcome evidence; planned
-├── core/                               # module grouping may change per ADR-0008 (proposed)
-│   ├── foundation/ event/ identity/ agent/ goal/ task/
-│   ├── device/ resource/ capability/ binding/ policy/ request/ budget/
-│   └── observation/ subscription/ memory/ context/ state/ observability/
+├── core/                               # modules by invariant owner (ADR-0008)
+│   ├── kernel/ work/ authority/ resources/
+│   └── knowledge/ catalog/ durability/ foundation/
+├── runtime/                            # composition root: wires node profiles (ADR-0010)
 ├── strategies/{rule,tool_loop}/
 ├── applications/{assistant,goal_types,scenes,skills,notifications}/
 ├── hosts/{native,esp_idf,sim}/          # sim: deterministic multi-node FakeTransport
@@ -736,7 +733,7 @@ ayni/
 ├── sdk/{cpp,client}/
 ├── examples/{new_hardware,new_model,new_strategy,composite_workflow}/
 ├── examples/embodiment/                # optional Mock/ROS simulation; planned
-├── apps/{simulator,esp32_assistant}/
+├── targets/{simulator,esp32_assistant}/ # thin executables and firmware images over runtime/
 ├── gateway/                           # authenticated model access
 ├── ui/web/
 ├── tests/{unit,contract,integration,fault_injection,fuzz,hil}/
@@ -750,9 +747,11 @@ ayni/
 
 Core 不依赖 OS 型 STL 组件；采用有界容器、显式容量和可失败分配。格式检查、编译器告警、clang-tidy、ASan/UBSan 和关键契约测试进入 CI，第三方组件例外单独记录。对可信 C++ 的管理不等于内存安全隔离。
 
-依赖规则：`core/` 不依赖 `hosts/`、`providers/`、`drivers/`、`control/`、`protocol/` 或任何外部 SDK；`safety/` 只依赖自身平台端口与限值契约，不依赖 `core/`；`control/` 只依赖公开契约；ROS、MHS、MCP 与模型厂商 SDK 只出现在对应适配器、Provider 或网关目录。实现开始后，这些规则进入 CI 自动检查。
+依赖规则：`core/` 不依赖 `runtime/`、`hosts/`、`providers/`、`drivers/`、`control/`、`protocol/` 或任何外部 SDK，内部按第 2.0 节的模块方向依赖；`safety/` 只依赖自身平台端口与限值契约，不依赖 `core/`；`control/` 只依赖公开契约。`runtime/` 是唯一引用具体实现的组合根，按第 2.6 节部署 Profile 装配 Kernel、Host、Provider、控制与停止组件；`targets/` 只调用 `runtime/`，`examples/` 只使用公开 SDK。ROS、MHS、MCP 与模型厂商 SDK 只出现在对应适配器、Provider 或网关目录。实现开始后，这些规则进入 CI 自动检查。
 
-已记录的 ADR 见 `docs/adr/README.md`：ADR-0001～0007 为本版接受的设计基线，ADR-0008、0009 为待定候选；均待实现与验证证据。其余初批 ADR：Ayni 分层与依赖、原语与状态机、单状态所有者、逻辑提交与命令幂等、策略位于内核之上、函数层级与绑定、顺序组合与共同检查点、订阅代际、资源协调、身份/授权/撤销、动作屏障与未知结果、私有记忆/公共档案及删除 lineage、三类版本与升级兼容矩阵、C/C++ SDK、模型网关、通知呈现、暂停与独立停止、固定任务归属；可选扩展另立具身 Profile、控制权/连续会话/物理验证、ROS 2 Binding/QoS/恢复映射与 MHS 实施条件 ADR。重大语义改变同步更新契约、迁移与实验。
+`applications/` 是运行在 Ayni 之上的应用层（助理协调器、目标类型、场景、Skill、通知规则）；`targets/` 是构建出的可执行程序与固件镜像，与 ESP-IDF 的芯片 target（`idf.py set-target`）是不同概念。
+
+已记录的 ADR 见 `docs/adr/README.md`：ADR-0001～0008 与 ADR-0010 为已接受的设计基线，ADR-0009 为待定候选；均待实现与验证证据。其余初批 ADR：Ayni 分层与依赖、原语与状态机、单状态所有者、逻辑提交与命令幂等、策略位于内核之上、函数层级与绑定、顺序组合与共同检查点、订阅代际、资源协调、身份/授权/撤销、动作屏障与未知结果、私有记忆/公共档案及删除 lineage、三类版本与升级兼容矩阵、C/C++ SDK、模型网关、通知呈现、暂停与独立停止、固定任务归属；可选扩展另立具身 Profile、控制权/连续会话/物理验证、ROS 2 Binding/QoS/恢复映射与 MHS 实施条件 ADR。重大语义改变同步更新契约、迁移与实验。
 
 开源许可证暂以 Apache-2.0 为候选，首次公开发布前由用户确定并审查依赖许可证。复用上游记录版本、许可证、修改与来源；本次修订不代表已经选择或集成任何第三方代码。
 
@@ -794,7 +793,7 @@ Core 不依赖 OS 型 STL 组件；采用有界容器、显式容量和可失败
 | `MA-014` | M6 | 国产发行版、LoongArch 等平台验证 | `013` | 明确工具链/ISA/OS/设备和四级验证状态；无真机仅报告已获得证据 |
 | `MA-015` | M3 | 原生 Perception/Motion Provider、观察/媒体资源 | `024` | 真实摄像头、音频/底盘无需 Kernel 业务分支；并发/释放可测，不要求启用完整具身 Profile |
 | `MA-016` | M5 | Device Protocol：认证、节点到主体绑定、ObjectRef、绑定与受控调用 | `012`、`038` | 来源/用途/时效、`receiver_tick` 新鲜度、错误端点拒绝、重试去重和断连查询；不自动转移 owner |
-| `MA-017` | M0 | Ayni 分层、函数/提交/输出门控/身份契约、执行许可与失效、信任模型、三类版本和 E1–E4 ADR | 无；结合 `001`、`002` 关闭可行性问题 | 第 2.5/2.7/2.8/2.10/3.4/3.6 节及五项产品语义可判定；ADR-0001～0007 与正文一致；架构图样式不构成 AIOS 依赖 |
+| `MA-017` | M0 | Ayni 分层、函数/提交/输出门控/身份契约、执行许可与失效、信任模型、三类版本和 E1–E4 ADR | 无；结合 `001`、`002` 关闭可行性问题 | 第 2.5/2.7/2.8/2.10/3.4/3.6 节及五项产品语义可判定；ADR-0001～0008、0010 与正文一致；架构图样式不构成 AIOS 依赖 |
 | `MA-018` | M1 | Device/Component/Resource、Binding 准入、执行许可签发/续租/失效、预算/请求/订阅管理 | `003`、`005`、`006` | 全有或全无、公平/超时、续租、隔离、可靠完成、预算预留/结算、第 2.10 节失效矩阵（模拟执行端） |
 | `MA-019` | M1 | 助理协调器、四类目标、暂停集合与通知计划 | `004`、`009`、`011`、`018` | 意图路由/回复合并、语音信任、提醒保留、通知呈现与安静规则 |
 | `MA-020` | M1 | SDK、管理客户端、三个接入示例及组合示例 | `005`、`009`、`011`、`018` | 类型/绑定匹配、幂等命令、订阅/查询和 E4 应用，无 Kernel 业务分支改动 |
@@ -999,21 +998,21 @@ cmake -S . -B build/native \
   -DAYNI_HOST=native
 cmake --build build/native -j
 ctest --test-dir build/native --output-on-failure
-./build/native/apps/simulator/ayni-sim
+./build/native/targets/simulator/ayni-sim
 
 # planned: independent experiment runners with deterministic fixtures
-./build/native/apps/simulator/ayni-sim --experiment E1
-./build/native/apps/simulator/ayni-sim --experiment E2
-./build/native/apps/simulator/ayni-sim --experiment E3
-./build/native/apps/simulator/ayni-sim --experiment E4
+./build/native/targets/simulator/ayni-sim --experiment E1
+./build/native/targets/simulator/ayni-sim --experiment E2
+./build/native/targets/simulator/ayni-sim --experiment E3
+./build/native/targets/simulator/ayni-sim --experiment E4
 
 # planned optional build: enabled EMBODIMENT_V1 Mock fixtures only
-./build/native/apps/simulator/ayni-sim --suite R1.a
+./build/native/targets/simulator/ayni-sim --suite R1.a
 # R1.b uses a separately pinned Linux ROS 2 integration runner (MA-036).
 # R1.c has no compatibility runner until the MHS entry conditions are met.
 
 # planned: execute in activated ESP-IDF environment
-cd apps/esp32_assistant
+cd targets/esp32_assistant
 idf.py set-target esp32s3
 idf.py build
 idf.py -p <SERIAL_PORT> flash monitor
@@ -1028,8 +1027,8 @@ idf.py -p <SERIAL_PORT> flash monitor
 | 总览与真实能力范围 | `README.md`、`README.en.md`、架构图、普通用户指南 | 明确 v0.1 已验证与后续规划，说明局域网/模型网络边界 |
 | 原语与版本契约 | `contracts/`、架构/API/协议文档、ADR | 字段、状态、错误、权限、取消、恢复、三类版本一致 |
 | 原生 SDK 与客户端 | `include/ayni/`、`sdk/`、三个接入及一个组合 `examples/` | C/C++ 两种调用；Native/ESP 示例与 PC 管理查询/订阅通过 |
-| Core 与模拟器 | `core/`、`strategies/`、`applications/`、`apps/simulator/` | E1–E4、回归和契约测试可复现 |
-| ESP32 固件及已刷设备 | `apps/esp32_assistant/`、版本发布包、分区/配置/回滚说明 | 对实际板型可重复构建/升级；出厂电机禁用，凭据单设备配置 |
+| Core 与模拟器 | `core/`、`runtime/`、`strategies/`、`applications/`、`targets/simulator/` | E1–E4、回归和契约测试可复现 |
+| ESP32 固件及已刷设备 | `targets/esp32_assistant/`、版本发布包、分区/配置/回滚说明 | 对实际板型可重复构建/升级；出厂电机禁用，凭据单设备配置 |
 | 硬件资料 | `docs/hardware/`、BOM/接线/供电/校准说明 | 成本、资源、停止证据齐全，不能只给购物链接 |
 | 模型网关 | `gateway/`、部署/认证/额度/保留说明 | 文本/视觉/ASR/TTS 接入契约及错误处理通过 |
 | 本地网页与引导 | `ui/web/`、配网与助理使用说明 | 授权、任务、记忆、通知、行为、停止/恢复可由普通用户使用 |
@@ -1105,7 +1104,7 @@ Ayni 架构按上述需求设计；AIOS 仅作为架构图视觉表达参考。�
 
 本轮扩展基线为可选 `EMBODIMENT_V1`、Core 外 Linux ROS 2 Bridge 和有条件 MHS 适配；E1–E4 必需门槛保持不变，R1.a/b/c 对声明的扩展分别强制。
 
-v1.4 并入的设计基线（ADR-0001～0007）：设备治理模型与执行许可失效协议、提交与输出门控协议、信任两轴与适配器约束、跨设备身份/新鲜度/幂等契约、ESP32 分层停止链、Kernel 生命周期与 Host/Provider 边界及策略接口、通知呈现复用能力调用与 Task 状态维度。Core 模块按不变量属主重组（ADR-0008）须在首个 Core 实现提交前决定；IDL 与本地 API 编码（ADR-0009）在 M1 早期按实测决定。以上均为设计决策，不代表已实现或已验证。MHS 规范可得性不阻塞 Ayni Core 或原生设备；不据本次文档更新宣称 ROS、micro-ROS、MHS、完整机器人或 VLA 已支持。
+v1.4 并入的设计基线（ADR-0001～0008、ADR-0010）：设备治理模型与执行许可失效协议、提交与输出门控协议、信任两轴与适配器约束、跨设备身份/新鲜度/幂等契约、ESP32 分层停止链、Kernel 生命周期与 Host/Provider 边界及策略接口、通知呈现复用能力调用与 Task 状态维度、Core 按不变量属主划分为八个模块、组合根 `runtime/` 与可执行目标目录 `targets/`。IDL 与本地 API 编码（ADR-0009）在 M1 早期按实测决定。以上均为设计决策，不代表已实现或已验证。MHS 规范可得性不阻塞 Ayni Core 或原生设备；不据本次文档更新宣称 ROS、micro-ROS、MHS、完整机器人或 VLA 已支持。
 
 模型额度、视觉频率、反思频率是有限且可配置的系统参数；初始工程值先由 Mock 压测和硬件测量验证，试用套餐和用户可见含义再确认。运动数值没有未经测量的默认启用值。
 
