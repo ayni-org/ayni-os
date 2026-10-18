@@ -22,7 +22,8 @@ Ayni's domain contracts govern tasks, authorization, and execution; external ROS
 | C API / SDK | Submit typed intents or commands, query snapshots, and register goal types and capabilities, while preserving common authorization, error, and lifecycle semantics |
 | Shared Kernel services | Agent/Task scheduling, context and memory, storage commit coordination, Capability/Tool, Access/Policy, Resource/Budget, and Observation/Request |
 | Async execution and platform services | Hosts supply clocks, storage, networking, and lifecycle services; Providers implement models, perception, media, and actions |
-| OS, drivers, and hardware | Reuse existing OS scheduling; Drivers access specific hardware; a local stop supervisor operates independently of models and ordinary work queues |
+| Local control and stopping | Controllers execute within admitted envelopes under short, renewable permits, and executors can only tighten authority; a local stop supervisor operates independently of models and ordinary work queues, and the stop chain includes hardware disable |
+| OS, drivers, and hardware | Reuse existing OS scheduling; Drivers access specific hardware; the clocks, interrupts, and hardware timeouts that the stop chain depends on require measurement |
 
 A Skill is a reusable application workflow; a Capability is a system-validated execution contract; a Provider implements an execution interface; a Driver accesses hardware. New applications, models, and hardware should enter through registration and adapters. Changes to authorization, recovery, or resource semantics still require contract versions and tests.
 
@@ -32,12 +33,13 @@ The Kernel owns the logical state of Agent instances, Goals/Tasks, authorization
 
 Key design constraints include:
 
-- Define consistent commit and recovery boundaries across trigger cursors, Tasks, budgets, and action records. Durable acceptance is reported only after commit confirmation.
+- Define consistent commit and recovery boundaries across trigger cursors, Tasks, budgets, and action records. Durable-acceptance replies, external events, and side-effect dispatches are released only after their commit enters the durable prefix. On a storage write failure, the Kernel enters a restricted fence, stops new outputs and permit renewal, and reuses the restart recovery path.
 - Persist a possible-dispatch barrier before requests with side effects. Uncertain outcomes enter `RESULT_UNKNOWN` for authoritative queries or human resolution; recovery must not blindly replay actions.
 - Validate principals, Grants, arguments, resources, budgets, observation freshness, and deadlines. Models propose; the local Kernel controls execution.
+- Actuators run only under short, actively renewed permits issued by the control domain's authority owner. Revocation, Kernel or executor restarts, calibration invalidation, emergency-stop reset, and network partitions all invalidate old permits; worst-case stop bounds are measured term by term.
 - Bound media, queues, context, Tasks, and storage. Resource cancellation, timeout, and stopping require explicit release or quarantine states.
 
-Business completion rules, planning, model inference, perception algorithms, codecs, TLS, and motor control belong in applications, Hosts, Providers, or Drivers. The first release uses trusted built-in code, with authorization guarantees at managed entry points. Isolation against arbitrary native code on ESP32 requires separate future validation.
+Business completion rules, planning, model inference, perception algorithms, codecs, TLS, and motor control belong in applications, Hosts, Providers, or Drivers. The first release uses trusted built-in code, with authorization guarantees at managed entry points. Isolation against arbitrary native code on ESP32 requires separate future validation. Model, VLA, and external-message outputs are untrusted data; pure-function strategy interfaces are not a security boundary; ROS, MHS, and MCP adapters run as permission-restricted processes, and executor-side permit checks are the final line of defense.
 
 ## Agreed product semantics
 
@@ -57,28 +59,28 @@ v0.1 plans local-network management, push-button voice interaction, continuous v
 | Management and device protocols | Protocol major/minor versions, capability versions, and feature negotiation; shared domain semantics with authentication and local authorization checks |
 | Persistent storage | Schema, record, and migration versions; migration, corruption recovery, and firmware rollback are validated together |
 
-These contracts evolve independently and remain aligned through domain definitions and conformance fixtures. The API is experimental. Message IDs, operation IDs, and local request epochs serve different purposes; the protocol makes no universal exactly-once execution guarantee.
+These contracts evolve independently and remain aligned through domain definitions and conformance fixtures. The API is experimental. Message IDs, operation IDs, and local request epochs serve different purposes, and each message kind has exactly one idempotency key. Node authentication must be complemented by evidence binding the node to the calling principal. The protocol makes no universal exactly-once execution guarantee.
 
 ## Optional embodied profiles and adapters
 
-The optional `EMBODIMENT_V1` profile defines schemas and constraints on existing primitives for embodied capabilities, negotiated by feature and governed by the three versioned contracts. Ordinary devices need neither robot-specific fields nor a ROS dependency.
+Execution permits, control sessions, stop bounds, and motion-outcome phases are base contracts shared by every actuator, and the v0.1 wheeled motion uses them directly. The optional `EMBODIMENT_V1` profile only adds robot-specific types for space and time, state, trajectories, and model candidates, negotiated by feature and governed by the three versioned contracts. Ordinary devices need neither robot-specific fields nor a ROS dependency.
 
 | Contract | Planned boundary |
 |---|---|
 | Observations and robot state | Specify frames, clock domains/epochs, units, calibration versions, and `RobotState`; tf2, URDF, perception, and coordinate transforms remain in Providers or bridges |
-| Control authority and local execution | `ControlAuthority` binds control epochs, command sequences, and maximum command age; local control sessions are bounded and subject to interlocks, while local controllers run real-time loops |
-| Motion outcomes and models | `MotionOutcome` distinguishes accepted, executed, stopped, and physically verified states; VLA outputs are candidates that require authorization, resource admission, and local control checks |
+| Control authority and local execution | `ControlAuthority` declares control modes and command interfaces on top of the base execution permit; epochs, command sequences, and maximum command age are checked by the executor, local control sessions are bounded and subject to interlocks, and local controllers run real-time loops |
+| Motion outcomes and models | The accepted, executed, stop-confirmed, and goal-verification phases of `MotionOutcome` are base contracts, and the profile adds pose and joint verification evidence; VLA outputs are candidates that can execute only inside an admitted control session after executor permit and envelope checks |
 
-The ROS 2 Bridge remains outside Core and maps Topics/Services/Actions to `subscription/unary/action`. Imports and exports use existing managed entry points. The Bridge records mappings between ROS goal UUIDs and Ayni call identities; ROS acceptance, cancellation responses, and QoS do not themselves provide durable deduplication, authorization, or physical-stop guarantees. M3 first validates a Linux Native Kernel and ROS simulation nodes on the same computer. PC/ESP32 paths wait for M5; MCU micro-ROS requires later capacity, concurrency, and disconnection testing.
+The ROS 2 Bridge remains outside Core and maps Topics/Services/Actions to `subscription/unary/action`. Imports and exports use existing managed entry points. The Bridge records mappings between ROS goal UUIDs and Ayni call identities; ROS acceptance, cancellation responses, and QoS do not themselves provide durable deduplication, authorization, or physical-stop guarantees. ROS 2 DDS-Security provides authentication and topic access control, and the Bridge must enable its strict mode; it complements rather than replaces Ayni Grants, budgets, and recovery semantics. Ayni relates to external ecosystems through versioned mappings with explicitly declared supported subsets. M3 first validates a Linux Native Kernel and ROS simulation nodes on the same computer. PC/ESP32 paths wait for M5; MCU micro-ROS requires later capacity, concurrency, and disconnection testing.
 
-As of 2026-10-18, MHS (Model Hardware Standard) remains a research preview; see the [official introduction](https://www.anthropic.com/news/model-hardware-standard-research-preview) and [preview portal](https://www.modelhardwarestandard.com/). Adaptation requires a specific, actionable specification, lawful access, licensing, and test fixtures; any SDK used must have a pinned version. Current compatibility is not claimed. Import/export must use the same authorization, schema validation, and execution entry points. Arbitrary generated code must not be deployed directly to the MCU.
+As of 2026-10-18, MHS (Model Hardware Standard) remains a research preview; see the [official introduction](https://www.anthropic.com/news/model-hardware-standard-research-preview) and [preview portal](https://www.modelhardwarestandard.com/). Adaptation requires a specific, actionable specification, lawful access, licensing, and test fixtures; any SDK used must have a pinned version. Current compatibility is not claimed. Import/export must use the same authorization, schema validation, and execution entry points. Arbitrary generated code must not be deployed directly to the MCU, and MHS code files are accepted only for the subset convertible into bounded Procedure data.
 
 ## Roadmap and validation
 
 | Stage | Target and gate |
 |---|---|
-| M0 | Contracts, project skeletons, pinned tooling, board/BOM feasibility, and an optional embodied-profile draft |
-| M1 · Core Alpha | Native Core, simulator, and SDK; E1–E4 pass on desktop and reproduce in Linux CI; optional Mock conformance R1.a |
+| M0 | Contracts (including output gating, execution permits, cross-device identity, and idempotency), project skeletons, pinned tooling, board/BOM feasibility including stop-chain hardware, and an optional embodied-profile draft |
+| M1 · Core Alpha | Native Core, simulator, and SDK; E1–E4 pass on desktop and reproduce in Linux CI; deterministic multi-node simulation (does not block M2, required before M5); optional Mock conformance R1.a |
 | M2 · Core Beta | The same Core, E1–E4, and hardware/model/strategy/composite-workflow extension examples validated on ESP32 |
 | M3 | Camera, push-button voice, chassis, independent stopping, and authorized turning; real concurrency and cost validation; optional Linux ROS 2 Bridge/simulation R1.b |
 | M4 · v0.1 | Provisioning, binding, management UX, gateway, and controlled user trials; real OTA/rollback and at least 72 hours of integrated hardware endurance testing |
@@ -95,6 +97,6 @@ Build, simulation, hardware functionality, and endurance results are reported se
 
 ## Contributing and acknowledgements
 
-Read [AGENTS.md](AGENTS.md) and the [implementation plan](docs/ayni_v1.0.md) before contributing. Contract, migration, and material semantic changes need corresponding ADRs and validation evidence. Code, logs, and public firmware must not contain private media, vendor API keys, or reusable device credentials.
+Read [AGENTS.md](AGENTS.md) and the [implementation plan](docs/ayni_v1.0.md) before contributing. Contract, migration, and material semantic changes need corresponding ADRs (see [docs/adr/](docs/adr/README.md)) and validation evidence. Code, logs, and public firmware must not contain private media, vendor API keys, or reusable device credentials.
 
 The architecture diagram's visual presentation references [AIOS](https://github.com/agiresearch/AIOS); its components, layers, and contracts follow Ayni's own design. Thanks to the durable execution, device, protocol, and embedded projects listed in the plan's appendix. References acknowledge research; they do not imply integration, compatibility, or upstream endorsement. A project license has not yet been selected. Dependency selection and any source reuse require review of the relevant licenses.

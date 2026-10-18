@@ -12,6 +12,7 @@ Follow the planned layout when implementation begins:
 - `include/ayni/`, `contracts/`: public C/C++ interfaces and versioned contracts.
 - `strategies/`, `applications/`: variable policies, goal types, scenes, and assistant workflows.
 - `hosts/`, `providers/`, `drivers/esp32/`: platform services, asynchronous I/O, and hardware drivers.
+- `control/`, `safety/`: permit-checked local execution and the independent stop chain; neither depends on `core/`.
 - `apps/`, `ui/web/`: simulator, ESP32 assistant, and management UI/assets.
 - `tests/`: unit, contract, integration, fault-injection, fuzz, and hardware-in-loop tests.
 - `docs/adr/`, `reports/`: architectural decisions and validation evidence.
