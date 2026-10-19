@@ -13,7 +13,7 @@ Follow the planned layout when implementation begins:
 - `strategies/`, `applications/`: variable policies, goal types, scenes, and assistant workflows.
 - `hosts/`, `providers/`, `drivers/esp32/`: platform services, asynchronous I/O, and hardware drivers.
 - `control/`, `safety/`: permit-checked local execution and the independent stop chain; neither depends on `core/`.
-- `runtime/`: the composition root that wires each deployment profile; the only place that references concrete Host, Provider, control, and safety implementations.
+- `runtime/`: the composition root that wires each deployment profile; the only place that selects deployments and assembles concrete Host, Provider, control, and safety components. Hosts, Providers, and adapters may still encapsulate their own platform implementations.
 - `targets/`, `ui/web/`: simulator and ESP32 firmware entry points built on `runtime/`, and management UI/assets.
 - `tests/`: unit, contract, integration, fault-injection, fuzz, and hardware-in-loop tests.
 - `docs/adr/`, `reports/`: architectural decisions and validation evidence.
