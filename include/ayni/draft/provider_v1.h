@@ -15,7 +15,6 @@
 #include <ayni/ayni.h>
 #include <ayni/draft/host_v1.h>
 #include <ayni/draft/kernel_api.h>
-#include <ayni/draft/types_v1.h>
 
 #include <stdint.h>
 

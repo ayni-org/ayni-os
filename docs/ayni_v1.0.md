@@ -1,12 +1,12 @@
 # Ayni：Core 优先的跨设备个人助理 AgentOS 实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.6 · 2026-10-19；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.7 · 2026-10-19；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：面向个人消费者；用户面对一个统一助理，内部由多个 Agent 分工。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **首发验证设备**：现有 ESP32-S3 N16R8 开发板；型号、引脚、16 MB Flash / 8 MB PSRAM 均须实测确认。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：M0 已建立工程骨架（Native 与 ESP-IDF 构建、依赖检查、CI）、`contracts/` 契约与 C 头文件草案、实验夹具格式与候选硬件资料，复核见 `reports/core/m0-review.md`；板级实测与 BOM 询价尚未完成。除这些报告列出的已验证项外，下文的目录、API、示例、固件、SDK、平台支持和测试结果均为待实现、待验证。
+> **当前状态**：M0 已建立工程骨架（Native 与 ESP-IDF 构建、依赖检查、CI）、`contracts/` 契约与 C 头文件草案、实验夹具格式与候选硬件资料，复核见 `reports/core/m0-review.md`；板级实测与 BOM 询价尚未完成。M1 进行中：事件入口与完成槽（`MA-003`）、Kernel 生命周期与启动恢复（`MA-005`）、主体与会话、Agent 实例和 Goal 意图（`MA-004` 第一部分，Goal 尚未持久化）已在 Native 与模拟 Host 上实现并通过测试，逐条状态见 `contracts/traceability.md`。除这些报告列出的已验证项外，下文的目录、API、示例、固件、SDK、平台支持和测试结果均为待实现、待验证。
 
 ## 0. 执行摘要与已确定决策
 
@@ -313,7 +313,7 @@ WorldModel/状态估计位于 Provider，VLA 位于策略或推理 Provider。�
 
 统一接口覆盖在电脑或 ESP32 嵌入 Core、注册设备/资源/能力/目标类型/策略、连接模型/感知/媒体/检索/动作 Provider，并经 Host 端口提供时钟、持久存储、网络与加密；另外提供电脑端管理客户端，用于调用设备 API、查询任务及订阅事件。客户端操作设备不等于在电脑创建了另一个任务所有者。
 
-接口以头文件为准，不在本计划中维护第二份：已实现部分在 `include/ayni/ayni.h`（ABI 0.1，experimental），计划部分是 `include/ayni/draft/` 中可编译、无符号的草案（ADR-0013）。与 v1.5 节选相比的变化：`ayni_create` 改为使用调用方提供的内存，并先由 `ayni_kernel_memory_requirements` 查询大小与对齐（ADR-0014）；`ayni_destroy` 返回状态码，非 `CONFIGURING`/`STOPPED` 时拒绝；`ayni_step` 增加步进报告，给出下一次必须调用的时刻；返回类型统一为 `ayni_status_t`。下表的接口问题仍是这些头文件遵守的契约，条款见 `contracts/`。
+接口以头文件为准，不在本计划中维护第二份：已实现部分在 `include/ayni/ayni.h`（当前 ABI 见 `AYNI_ABI_MAJOR`/`AYNI_ABI_MINOR`，experimental），计划部分是 `include/ayni/draft/` 中可编译、无符号的草案（ADR-0013）。与 v1.5 节选相比的变化：`ayni_create` 改为使用调用方提供的内存，并先由 `ayni_kernel_memory_requirements` 查询大小与对齐（ADR-0014）；`ayni_destroy` 返回状态码，非 `CONFIGURING`/`STOPPED` 时拒绝；`ayni_step` 增加步进报告，给出下一次必须调用的时刻；返回类型统一为 `ayni_status_t`。下表的接口问题仍是这些头文件遵守的契约，条款见 `contracts/`。
 
 | 接口问题 | 首版契约 |
 |---|---|
@@ -340,9 +340,9 @@ ayni_register_resource(kernel, &button_resource);
 ayni_register_provider(kernel, &button_provider);
 ayni_register_capability(kernel, &button_read_capability);
 ayni_register_binding(kernel, &button_binding);
-ayni_start(kernel, NULL);  // catalog frozen; recovery advances through ayni_step
+ayni_start(kernel);  // catalog frozen; recovery advances through ayni_step
 // After the lifecycle reaches RUNNING:
-ayni_submit_intent(kernel, &button_subscribe_intent, NULL);
+ayni_submit_intent(kernel, &button_subscribe_intent, NULL, NULL);
 // After STARTED, post Observation with subscription generation/sequence/time/quality.
 ayni_post_event(kernel, &button_observation_event);
 ```
@@ -362,9 +362,9 @@ ayni_register_binding(kernel, &second_gateway_binding);
 // planned examples/new_strategy/: callbacks return bounded work, no direct I/O
 ayni_register_goal_type(kernel, &device_check_goal_type);
 ayni_register_strategy(kernel, &event_rule_strategy);
-ayni_start(kernel, NULL);
+ayni_start(kernel);
 // After the lifecycle reaches RUNNING:
-ayni_submit_intent(kernel, &proposed_device_check_goal, NULL);
+ayni_submit_intent(kernel, &proposed_device_check_goal, NULL, NULL);
 ```
 
 ### 3.4 管理 API 与统一消息信封
@@ -1080,6 +1080,7 @@ idf.py -p <SERIAL_PORT> flash monitor
 | 暂停助理 | 保留到期提醒；暂停新自主观察、反思和运动并收敛在途，独立紧急停止另行恢复 |
 | 忘记 | 源记录、可追溯派生摘要及在途依赖失效；已外发数据按保留说明处理 |
 | 提醒完成 | 按用户选定方式成功呈现才完成，无需用户确认；失败/未知待处理，仅入列不算完成 |
+| 错过的提醒 | 默认补发一次：断电、恢复或待校时期间错过的提醒在恢复后呈现一次并标明原定时间；周期提醒错过多次也只补一次（C-PROD-018） |
 
 Ayni 架构按上述需求设计；AIOS 仅作为架构图视觉表达参考。首版有界顺序组合、调用/订阅代际、跨对象提交与升级安全暂停均是必要机制，不等待将来的分布式委派阶段。
 
@@ -1090,6 +1091,8 @@ v1.4 并入的设计基线（ADR-0001～0008、ADR-0010）：设备治理模型�
 v1.5 根据 PR #4 的审查补齐三项契约：续租截止以执行端签发 nonce 的时刻为锚、到期会话不可由续租恢复（第 2.10 节、ADR-0001）；停止上限按故障类型分别预算，覆盖 Kernel 单独失效（第 4.1 节、ADR-0005）；受限栅栏重载前须排空或隔离旧写入方（第 2.8 节、ADR-0002）。同时收窄 `runtime/` 的规则为“部署选择与跨组件装配的唯一位置”（ADR-0010），并上调阶段估算。MHS 规范可得性不阻塞 Ayni Core 或原生设备；不据本次文档更新宣称 ROS、micro-ROS、MHS、完整机器人或 VLA 已支持。
 
 v1.6 记录 M0 的执行结果与用户决定：M0 范围为契约、骨架与可行性（不做可选 `MA-034`）；契约以 Markdown 条款加可编译 C 头文件草案表达（ADR-0013）；Native 测试使用 GoogleTest，ESP32 后续使用 Unity（ADR-0012）；开发机以 Linux 为准；300 元为可按实际增加的目标；停止链 L0/L1 计入候选 BOM；许可证仍待决定。新增 ADR-0011～0014，契约复核补充了持续联锁、运动配置名与重连幂等作用域三条条款（`reports/core/m0-review.md`）。
+
+v1.7 记录 M1 中的用户决定：本地 API 采用类型化 C 结构直调，IDL 与线格式在 ESP32 实测后、最迟在 `MA-038` 编写消息解码器之前选定（ADR-0009 部分决定）；错过的提醒默认补发一次（上表，C-PROD-018，`MA-019` 验证）。同时记录 `MA-004` 第一部分的设计（ADR-0017）：Kernel ID 以持久化的 `boot_epoch` 为前缀，Goal 意图在日志记录落地（`MA-010`）之前只在内存中应用并如实报告未持久，Grant（`MA-006`）之前所有者的会话可以提交全部 Goal 意图。
 
 模型额度、视觉频率、反思频率是有限且可配置的系统参数；初始工程值先由 Mock 压测和硬件测量验证，试用套餐和用户可见含义再确认。运动数值没有未经测量的默认启用值。
 
@@ -1119,7 +1122,7 @@ v1.6 记录 M0 的执行结果与用户决定：M0 范围为契约、骨架与�
 
 **可选扩展支持声明**：Profile 经 R1.a、ROS Bridge 经 R1.a/b、MHS 经条件审查与 R1.a/c，对应特性及版本报告齐全才可声明相应支持；真机声明另有真实校准、联锁、停止与目标验证证据。未完成扩展可关闭并保持原版本发布范围；其失败不能被隐瞒为“已支持但可选”。
 
-本次 v1.6 文档修订通过条件：
+本次 v1.7 文档修订通过条件：
 
 - 名称、摘要、架构、模块、接口、硬件、工作包、阶段依赖、验收和发布范围一致；保留原工作包编号。
 - 四个实验都有准备、步骤、故障点、预期轨迹和可判定门槛，电脑先于 ESP32，Core 先于完整硬件集成。
@@ -1135,6 +1138,7 @@ v1.6 记录 M0 的执行结果与用户决定：M0 范围为契约、骨架与�
 - 中文/英文 README、架构图与计划一致；AIOS 仅参考图示样式，原文件名与已有工作包编号保留。
 - 无固定开工日期或固定总周数承诺；各阶段是工作量参考，门槛不可跳过。
 - 未实施能力、平台、SDK、目录、命令和示例明确标记待实现/待验证；M0 的编译与测试结果只按 `reports/core/m0-review.md` 报告的范围声明，不报告硬件验收已经通过。
+- M1 的用户决定（ADR-0009 部分决定、错过的提醒默认补发一次）已写入第 14.1 节与契约；条款只在验证列给出已存在的测试名时标为已实现，Goal 尚未持久化等缺口在 ADR-0017 与对应条款中写明。
 
 实施主线：**先打好共享 Agent Kernel 的契约、资源、授权与恢复基础，再完成 ESP32 轮式个人助理的受控试用，随后验证最小跨设备互通，并以证据扩展宿主与系统深度。**
 

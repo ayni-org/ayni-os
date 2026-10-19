@@ -2,9 +2,17 @@
  * DRAFT, not part of the published ABI (C-VER-007): no symbols; calling these
  * functions fails at link time instead of returning a fabricated result.
  *
- * Planned kernel API beyond ayni.h: catalog registration, intents and events
- * (plan section 3.2; contracts/domain/lifecycles.md). Implemented functions
- * stay in ayni.h and are not redeclared.
+ * Planned kernel API beyond ayni.h: catalog registration, further intents and
+ * events (plan section 3.2; contracts/domain/lifecycles.md). Implemented
+ * functions and types stay in ayni.h and are not redeclared.
+ *
+ * Conventions for every draft struct and enumeration, as in ayni.h:
+ * enumerations are uint32_t typedefs whose states and kinds start at 1, and 0
+ * means "none" only where a field may be empty; strings are ayni_string_v1
+ * views that the kernel copies during the call and checks against the
+ * configured limit (contracts/domain/limits.md); 64-bit identifiers are plain
+ * integers here, and only their JSON form is a decimal string
+ * (contracts/wire/json_subset.md C-JSON-004).
  *
  * Calling rules (contracts/host/host_ports.md, lifecycles.md):
  * - Every function except ayni_post_event runs on the kernel owner thread.
@@ -17,7 +25,6 @@
 #define AYNI_DRAFT_KERNEL_API_H
 
 #include <ayni/ayni.h>
-#include <ayni/draft/types_v1.h>
 
 #include <stdint.h>
 
@@ -129,12 +136,11 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
 
 /* ---- Intents --------------------------------------------------------- */
 
-typedef uint32_t ayni_intent_kind_t;
-
-#define AYNI_INTENT_GOAL_CREATE ((ayni_intent_kind_t)1)
-#define AYNI_INTENT_GOAL_CANCEL ((ayni_intent_kind_t)2)
-#define AYNI_INTENT_GOAL_PAUSE ((ayni_intent_kind_t)3)
-#define AYNI_INTENT_GOAL_RESUME ((ayni_intent_kind_t)4)
+/*
+ * Further intent kinds for ayni_intent_v1 and ayni_submit_intent (ayni.h).
+ * Until a kind is implemented, ayni_submit_intent returns AYNI_UNSUPPORTED
+ * for it. Their body types are fixed together with each kind (C-WIRE-014).
+ */
 #define AYNI_INTENT_GRANT_CREATE ((ayni_intent_kind_t)5)
 #define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)6)
 #define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)7)
@@ -143,34 +149,6 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_SUBSCRIPTION_CLOSE ((ayni_intent_kind_t)10)
 #define AYNI_INTENT_ASSISTANT_PAUSE ((ayni_intent_kind_t)11)
 #define AYNI_INTENT_ASSISTANT_RESUME ((ayni_intent_kind_t)12)
-
-/*
- * One envelope for every intent kind. body points at the kind's domain type;
- * those types and their single semantic validator are fixed in M1 together
- * with the encoding decision of ADR-0009 (C-WIRE-014). A management command
- * carries command_id (nonzero); other intents leave it 0 (C-WIRE-003).
- */
-typedef struct ayni_intent_v1 {
-    uint32_t struct_size;
-    ayni_intent_kind_t kind;
-    uint64_t command_id;
-    uint64_t principal_id; /* authenticated by the Host; never self-reported */
-    uint64_t session_id;
-    uint32_t trust_level;       /* set by the Host from the verified channel, C-AUTH-010 */
-    uint32_t expected_revision; /* 0: object does not exist yet */
-    uint32_t body_size;         /* struct_size of the body type */
-    uint32_t reserved;          /* 0 */
-    const void *body;
-} ayni_intent_v1;
-
-/*
- * Validates the intent and applies its transition. AYNI_OK means accepted in
- * memory, not durable: durability is reported by a later event once
- * durable_seq covers the transition (C-COMMIT-004). Returns AYNI_NOT_READY
- * outside RUNNING without queueing (C-LIFE-004). out_error is nullable.
- */
-ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
-                                 ayni_error_v1 *out_error);
 
 /* ---- Events ---------------------------------------------------------- */
 

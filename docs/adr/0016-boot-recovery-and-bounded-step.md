@@ -1,6 +1,7 @@
 # ADR-0016：启动恢复、持久 boot_epoch 与有界 step
 
 - **状态**：已接受（`MA-005` 部分在 M1 已实现）
+- **修订**：`boot_epoch` 上限改为 2^32−1，日志中 `transition_id` 的上限改为 2^63−1（ADR-0017 决策 2）；下文决策 4 保留原文
 - **日期**：2026-10-19
 - **关联**：计划 §3.2「生命周期」「所有权/异步/线程」、§4.2「持久化」、§4.3；`MA-005`、`MA-010`；E2 F7、F12；ADR-0002、ADR-0006、ADR-0014、ADR-0015
 
@@ -18,7 +19,7 @@ M1 第 1 步 A 部分（ADR-0015）给了 Kernel 事件队列与完成槽，但 
    - Host 只返回完整批次，所以 Kernel 读到的每个批次都属于已提交区域：校验失败或 `commit_seq` 不连续都是损坏（C-STORE-009），进入 `RESTRICTED`，不跳过，也不截断。C-STORE-003 据此修订：缺口不再表示前缀在缺口前结束。
    - 不认识的 `storage_schema`、批次 `flags` 位、记录 `flags` 位，或置 `REQUIRED` 位的未知记录类型或版本，进入 `RESTRICTED`（C-STORE-004）；未置位的未知记录跳过。
    - `BOOT_EPOCH` 记录类型为 1、版本 1，正文是 8 字节小端 epoch，并置 `REQUIRED` 位，旧固件无法跳过它。日志中的 epoch 必须严格递增且不为 0，否则视为损坏。
-   - 读完后写一个只含 `BOOT_EPOCH` 的批次：epoch 为日志中的最大值加 1，`commit_seq` 为下一个值，`transition_id` 为已见最大值加 1，`writer_epoch` 为已见最大值（空日志为 1）。最大 epoch 已是 `UINT64_MAX` 时以 `BOOT_EPOCH_EXHAUSTED` 进入 `RESTRICTED`，不回绕；已见最大 `transition_id` 为 `UINT64_MAX` 时新批次没有可用的 id，而每次转换只取下一个 id，正常写入方到不了这个值，所以按 `LOG_CORRUPT` 处理。
+   - 读完后写一个只含 `BOOT_EPOCH` 的批次：epoch 为日志中的最大值加 1，`commit_seq` 为下一个值，`transition_id` 为已见最大值加 1，`writer_epoch` 为已见最大值（空日志为 1）。最大 epoch 已是 `UINT64_MAX` 时以 `BOOT_EPOCH_EXHAUSTED` 进入 `RESTRICTED`，不回绕；已见最大 `transition_id` 为 `UINT64_MAX` 时新批次没有可用的 id，而每次转换只取下一个 id，正常写入方到不了这个值，所以按 `LOG_CORRUPT` 处理。（两个上限已由 ADR-0017 收紧为 2^32−1 与 2^63−1。）
    - append 以 `AYNI_WRITE_OK` 完成后才进入 `RUNNING`，`ayni_get_kernel_info` 从此报告该 epoch（C-ID-009）。`FAILED`、`UNKNOWN` 与未定义的 outcome 都进入 `RESTRICTED`。`UNKNOWN` 时批次可能已经落盘，下一次启动读到它就会跳过这个 epoch，所以同一 epoch 不会被两次启动使用。
    - 恢复期间的请求以 `boot_epoch` 0 命名（C-ID-006），因为本次启动的 epoch 尚未持久化。所以尝试 `(boot_epoch, request_id)` 只在一个 Kernel 实例内唯一：`request_id` 随每次 `ayni_create` 从 1 重新开始，两次启动的恢复请求会得到相同的尝试。区分它们的是完成槽与 Host 的义务，而不是尝试本身：同一进程内，Kernel 只有在全部完成槽都已完成之后才能销毁（C-HOST-018）；进程崩溃后，Host 不得把上一个实例发出的请求的结果投递给新实例，结果只能经发出请求时交给它的那个完成投递。
 5. **`RESTRICTED` 带原因。** 新增 `ayni_restriction_t`：`STORAGE_REJECTED`、`STORAGE_READ_FAILED`、`STORAGE_WRITE_FAILED`、`STORAGE_WRITE_UNKNOWN`、`LOG_CORRUPT`、`LOG_UNSUPPORTED`、`BOOT_EPOCH_EXHAUSTED`，经 `ayni_get_kernel_info` 读取。原因由恢复序列保存，Kernel 只在 `RESTRICTED` 状态下报告它，其余状态（包括从 `RESTRICTED` 进入的 `DRAINING`）报告 `NONE`，不另存一份需要同步清除的副本。M1 中进入 `RESTRICTED` 之后只能停机；自动重试与受限栅栏随 `MA-010`。

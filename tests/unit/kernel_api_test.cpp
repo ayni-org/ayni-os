@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -47,6 +48,13 @@ ayni_config_v1 valid_config() {
     config.event_body_max_bytes = 16;
     config.completion_slot_count = 2;
     config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN;
+    config.agent_capacity = 2;
+    config.goal_type_capacity = 2;
+    config.goal_capacity = 4;
+    config.goal_parameter_max_bytes = 16;
+    config.session_capacity = 2;
+    config.goal_depth_max = 2;
+    config.goal_children_max = 2;
     return config;
 }
 
@@ -282,9 +290,23 @@ TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
         {&ayni_config_v1::completion_slot_count, 1U, AYNI_COMPLETION_SLOT_COUNT_MAX},
         {&ayni_config_v1::storage_buffer_bytes, AYNI_STORAGE_BUFFER_BYTES_MIN,
          AYNI_STORAGE_BUFFER_BYTES_MAX},
+        {&ayni_config_v1::agent_capacity, 1U, AYNI_AGENT_CAPACITY_MAX},
+        {&ayni_config_v1::goal_type_capacity, 1U, AYNI_GOAL_TYPE_CAPACITY_MAX},
+        {&ayni_config_v1::goal_capacity, 1U, AYNI_GOAL_CAPACITY_MAX},
+        {&ayni_config_v1::goal_parameter_max_bytes, AYNI_GOAL_PARAMETER_MAX_BYTES_MIN,
+         AYNI_GOAL_PARAMETER_MAX_BYTES_MAX},
+        {&ayni_config_v1::session_capacity, 1U, AYNI_SESSION_CAPACITY_MAX},
+        {&ayni_config_v1::goal_depth_max, AYNI_GOAL_DEPTH_MAX_MIN, AYNI_GOAL_DEPTH_MAX_MAX},
+        {&ayni_config_v1::goal_children_max, AYNI_GOAL_CHILDREN_MAX_MIN,
+         AYNI_GOAL_CHILDREN_MAX_MAX},
     };
     for (const auto &capacity : capacities) {
-        for (const uint32_t value : {0U, capacity.min - 1U, capacity.max + 1U}) {
+        std::vector<uint32_t> invalid{capacity.max + 1U};
+        if (capacity.min > 0U) {
+            invalid.push_back(0U);
+            invalid.push_back(capacity.min - 1U);
+        }
+        for (const uint32_t value : invalid) {
             ayni_config_v1 config = valid_config();
             config.*capacity.field = value;
             EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT) << value;
@@ -315,12 +337,41 @@ TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
     config = valid_config();
     config.storage_buffer_bytes += 1;
     EXPECT_GT(required_size(config), base);
+    for (uint32_t ayni_config_v1::*field :
+         {&ayni_config_v1::agent_capacity, &ayni_config_v1::goal_type_capacity,
+          &ayni_config_v1::goal_capacity, &ayni_config_v1::goal_parameter_max_bytes,
+          &ayni_config_v1::session_capacity}) {
+        config = valid_config();
+        config.*field += 1;
+        EXPECT_GT(required_size(config), base);
+    }
+}
+
+// The goal tree limits bound what may be created, not what is stored.
+TEST_F(KernelApi, goal_tree_limits_need_no_memory) {
+    const std::size_t base = required_size(valid_config());
+    ayni_config_v1 config = valid_config();
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_MAX;
+    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_MAX;
+    EXPECT_EQ(required_size(config), base);
 }
 
 // C-VER-003: a field that struct_size does not cover is never read and takes
 // its documented default.
+// The work model fields of 0.5 at their defaults.
+ayni_config_v1 with_work_defaults(ayni_config_v1 config) {
+    config.agent_capacity = AYNI_AGENT_CAPACITY_DEFAULT;
+    config.goal_type_capacity = AYNI_GOAL_TYPE_CAPACITY_DEFAULT;
+    config.goal_capacity = AYNI_GOAL_CAPACITY_DEFAULT;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT;
+    config.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
+    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
+    return config;
+}
+
 TEST_F(KernelApi, uncovered_capacities_take_their_defaults) {
-    ayni_config_v1 defaults = valid_config();
+    ayni_config_v1 defaults = with_work_defaults(valid_config());
     defaults.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
     defaults.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
     defaults.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
@@ -330,15 +381,23 @@ TEST_F(KernelApi, uncovered_capacities_take_their_defaults) {
     short_config.struct_size = offsetof(ayni_config_v1, ingress_capacity);
     short_config.ingress_capacity = 0; // would be rejected if it were read
     short_config.storage_buffer_bytes = 0;
+    short_config.agent_capacity = 0;
     EXPECT_EQ(required_size(short_config), required_size(defaults));
 
     // A config ending before storage_buffer_bytes keeps its own capacities.
-    ayni_config_v1 only_storage_default = valid_config();
+    ayni_config_v1 only_storage_default = with_work_defaults(valid_config());
     only_storage_default.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
     short_config = valid_config();
     short_config.struct_size = offsetof(ayni_config_v1, storage_buffer_bytes);
     short_config.storage_buffer_bytes = 0;
+    short_config.goal_capacity = 0;
     EXPECT_EQ(required_size(short_config), required_size(only_storage_default));
+
+    // So does one ending before the work model fields.
+    short_config = valid_config();
+    short_config.struct_size = offsetof(ayni_config_v1, agent_capacity);
+    short_config.session_capacity = 0;
+    EXPECT_EQ(required_size(short_config), required_size(with_work_defaults(valid_config())));
 }
 
 TEST_F(KernelApi, struct_size_from_newer_minor_is_unsupported_version) {

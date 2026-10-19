@@ -1,15 +1,20 @@
 #include "kernel/boot/boot_sequence.h"
 
 #include "durability/batch/batch_codec.h"
+#include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 
 #include <array>
-#include <limits>
 
 namespace ayni::kernel {
 namespace {
 
 constexpr uint64_t recovery_boot_epoch = 0;
+// Each transition takes the next id, so no writer reaches 2^63: at a million
+// transitions a second that takes 290,000 years. A larger id means a damaged
+// or foreign log, and the bound leaves this boot more ids than it can use, so
+// the transition clock never wraps (ADR-0017).
+constexpr uint64_t max_logged_transition_id = (uint64_t{1} << 63U) - 1U;
 constexpr std::size_t boot_epoch_batch_size = durability::batch_size(boot_epoch_record_length, 1);
 static_assert(boot_epoch_batch_size <= AYNI_STORAGE_BUFFER_BYTES_MIN,
               "the BOOT_EPOCH batch must fit the smallest storage buffer");
@@ -37,6 +42,23 @@ bool BootSequence::advance() {
 
 bool BootSequence::wants_advance() const {
     return phase_ == Phase::read_due || phase_ == Phase::append_due;
+}
+
+durability::BatchIdentity BootSequence::boot_batch() const {
+    return next_batch();
+}
+
+uint64_t BootSequence::durable_seq() const {
+    return phase_ == Phase::done ? scan_.next_commit_seq() : scan_.next_commit_seq() - 1U;
+}
+
+// Writer fencing (MA-010) is what changes writer_epoch; an empty log starts
+// at 1. The scan does not move once reading is done, so the identity stays
+// the same through the append and after it.
+durability::BatchIdentity BootSequence::next_batch() const {
+    const uint32_t max_writer_epoch = scan_.max_writer_epoch();
+    return {max_writer_epoch == 0U ? 1U : max_writer_epoch, scan_.next_commit_seq(),
+            scan_.max_transition_id() + 1U};
 }
 
 BootSequence::Outcome BootSequence::outcome() const {
@@ -80,12 +102,7 @@ ayni_submit_result_t BootSequence::call_read(void *context, ayni_attempt_ref_v1 
 ayni_submit_result_t BootSequence::call_append(void *context, ayni_attempt_ref_v1 attempt,
                                                ayni_completion_t *completion) {
     const BootSequence &self = *static_cast<BootSequence *>(context);
-    // Writer fencing (MA-010) is what changes writer_epoch; an empty log
-    // starts at 1.
-    const uint32_t max_writer_epoch = self.scan_.max_writer_epoch();
-    const durability::BatchIdentity identity{max_writer_epoch == 0U ? 1U : max_writer_epoch,
-                                             self.scan_.next_commit_seq(),
-                                             self.scan_.max_transition_id() + 1U};
+    const durability::BatchIdentity identity = self.next_batch();
     std::array<uint8_t, boot_epoch_record_length> body{};
     foundation::store_le64(body.data(), self.last_boot_epoch_ + 1U);
 
@@ -123,11 +140,9 @@ void BootSequence::finish_read(const ayni_completion_result_v1 &result) {
         return;
     }
     if (result.value == 0U) {
-        if (last_boot_epoch_ == std::numeric_limits<uint64_t>::max()) {
+        if (last_boot_epoch_ >= foundation::max_boot_epoch) {
             enter_restricted(AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED);
-        } else if (scan_.max_transition_id() == std::numeric_limits<uint64_t>::max()) {
-            // Each transition takes the next id, so no writer reaches the
-            // last one; the next batch would have none.
+        } else if (scan_.max_transition_id() > max_logged_transition_id) {
             enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         } else {
             phase_ = Phase::append_due;

@@ -5,9 +5,11 @@
 
 #include "durability/batch/batch_codec.h"
 #include "foundation/crc32.h"
+#include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/boot/boot_sequence.h"
 #include "kernel/kernel_state.h"
+#include "kernel_node.h"
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>
@@ -32,9 +34,11 @@ using ayni::hosts::sim::StoredBatch;
 using ayni::kernel::boot_epoch_record_type;
 using ayni::kernel::boot_epoch_record_version;
 
+using ayni::test::Node;
+using ayni::test::unbounded_items;
+using ayni::test::unbounded_time_us;
+
 constexpr uint32_t required = ayni::durability::record_required;
-constexpr uint32_t unbounded_items = 1000;
-constexpr uint32_t unbounded_time_us = 1000000;
 
 struct Record {
     RecordHeader header;
@@ -68,125 +72,6 @@ void reseal_header(StoredBatch &batch) {
     ayni::foundation::store_le32(batch.bytes.data() + crc_at,
                                  ayni::foundation::crc32(batch.bytes.data(), crc_at));
 }
-
-// One sim Host and one kernel in memory the test owns. The destructor drives
-// the kernel to STOPPED and destroys it, so every test leaves no slot in use.
-class Node {
-  public:
-    explicit Node(uint32_t storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN,
-                  bool with_storage = true) {
-        config_.struct_size = sizeof(config_);
-        config_.abi_major = AYNI_ABI_MAJOR;
-        config_.abi_minor = AYNI_ABI_MINOR;
-        config_.ingress_capacity = 2;
-        config_.event_body_max_bytes = 8;
-        config_.completion_slot_count = 4;
-        config_.storage_buffer_bytes = storage_buffer_bytes;
-        table_ = sim_.table();
-        if (!with_storage) {
-            table_.storage_append = nullptr;
-            table_.storage_read_prefix = nullptr;
-        }
-        std::size_t size = 0;
-        std::size_t align = 0;
-        EXPECT_EQ(ayni_kernel_memory_requirements(&config_, &size, &align), AYNI_OK);
-        EXPECT_LE(align, alignof(uint64_t));
-        memory_.resize(size / sizeof(uint64_t) + 1U);
-        memory_size_ = size;
-    }
-
-    Node(const Node &) = delete;
-    Node &operator=(const Node &) = delete;
-
-    ~Node() { EXPECT_EQ(stop_and_destroy(), AYNI_OK); }
-
-    ayni::hosts::sim::Host &sim() { return sim_; }
-    ayni_kernel_t *kernel() { return kernel_; }
-
-    // Before create(): reads go to port instead of the sim log.
-    void replace_read_port(decltype(ayni_host_v1::storage_read_prefix) port) {
-        table_.storage_read_prefix = port;
-    }
-
-    void create() {
-        ASSERT_EQ(ayni_create(&config_, &table_, memory_.data(), memory_size_, &kernel_), AYNI_OK);
-    }
-
-    void create_and_start() {
-        create();
-        ASSERT_EQ(ayni_start(kernel_), AYNI_OK);
-    }
-
-    ayni_step_report_v1 step(uint32_t max_items = unbounded_items,
-                             uint32_t max_time_us = unbounded_time_us) {
-        ayni_step_report_v1 report{};
-        report.struct_size = sizeof(report);
-        EXPECT_EQ(ayni_step(kernel_, max_items, max_time_us, &report), AYNI_OK);
-        return report;
-    }
-
-    // Steps and completes storage until recovery has an outcome.
-    void recover() {
-        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
-            step();
-            sim_.complete_storage();
-        }
-        EXPECT_NE(lifecycle(), AYNI_LIFECYCLE_RECOVERING);
-    }
-
-    ayni_lifecycle_t lifecycle() const {
-        ayni_lifecycle_t state = 0;
-        EXPECT_EQ(ayni_get_lifecycle(kernel_, &state), AYNI_OK);
-        return state;
-    }
-
-    ayni_kernel_info_v1 info() const {
-        ayni_kernel_info_v1 out{};
-        out.struct_size = sizeof(out);
-        EXPECT_EQ(ayni_get_kernel_info(kernel_, &out), AYNI_OK);
-        return out;
-    }
-
-    // ayni_destroy; the node forgets the kernel once it is gone.
-    ayni_status_t destroy() {
-        const ayni_status_t status = ayni_destroy(kernel_);
-        if (status == AYNI_OK) {
-            kernel_ = nullptr;
-        }
-        return status;
-    }
-
-    // Brings the kernel from any state to destroyed; harmless when there is
-    // no kernel.
-    ayni_status_t stop_and_destroy() {
-        if (kernel_ == nullptr) {
-            return AYNI_OK;
-        }
-        if (lifecycle() != AYNI_LIFECYCLE_CONFIGURING) {
-            EXPECT_EQ(ayni_begin_shutdown(kernel_), AYNI_OK);
-            for (int round = 0; round < 10 && lifecycle() != AYNI_LIFECYCLE_STOPPED; ++round) {
-                sim_.complete_storage();
-                step();
-            }
-        }
-        return destroy();
-    }
-
-    // Destroys this kernel and creates another in the same memory over the
-    // same log: a reboot.
-    void reboot() {
-        ASSERT_EQ(stop_and_destroy(), AYNI_OK);
-        create_and_start();
-    }
-
-  private:
-    ayni::hosts::sim::Host sim_;
-    ayni_config_v1 config_{};
-    ayni_host_v1 table_{};
-    std::vector<uint64_t> memory_;
-    std::size_t memory_size_ = 0;
-    ayni_kernel_t *kernel_ = nullptr;
-};
 
 // The single record of a batch the kernel appended, decoded.
 struct AppendedEpoch {
@@ -274,6 +159,23 @@ TEST(KernelLifecycle, first_boot_persists_epoch_1_before_running) {
     EXPECT_EQ(node.sim().calls_under_lock(), 0U);
 }
 
+// C-ID-010: kernel ids embed the epoch in 32 bits, so the last epoch that
+// fits is still written. A log at the largest transition id a writer can
+// reach still boots, and the boot batch takes the next one.
+TEST(KernelLifecycle, largest_epoch_and_transition_id_still_boot) {
+    Node node;
+    const uint64_t last_transition_id = (uint64_t{1} << 63U) - 1U;
+    node.sim().log() = {encode({1, 1, last_transition_id},
+                               {boot_epoch_record(ayni::foundation::max_boot_epoch - 1U)})};
+    node.create_and_start();
+    node.recover();
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.info().boot_epoch, ayni::foundation::max_boot_epoch);
+    ASSERT_EQ(node.sim().log().size(), 2U);
+    EXPECT_EQ(decode_boot_batch(node.sim().log()[1]).batch.identity.transition_id,
+              last_transition_id + 1U);
+}
+
 TEST(KernelLifecycle, each_reboot_persists_the_next_epoch) {
     Node node;
     node.create_and_start();
@@ -323,6 +225,26 @@ TEST(KernelLifecycle, recovery_lasts_until_the_epoch_append_completes) {
     EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.info().boot_epoch, 1U);
+}
+
+// C-COMMIT-004: durable_seq covers the log read so far during recovery,
+// and the boot batch once its append is known durable.
+TEST(KernelLifecycle, durable_seq_follows_the_log_read_and_then_the_boot_batch) {
+    Node node;
+    node.sim().log() = {encode({1, 1, 1}, {boot_epoch_record(1)}),
+                        encode({1, 2, 2}, {boot_epoch_record(2)})};
+    node.create_and_start();
+    EXPECT_EQ(node.info().durable_seq, 0U);
+    uint64_t last_seen = 0;
+    for (int round = 0; round < 100 && node.lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
+        last_seen = node.info().durable_seq;
+        EXPECT_LE(last_seen, 2U);
+        node.step();
+        node.sim().complete_storage();
+    }
+    ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(last_seen, 2U); // the read was applied before the append completed
+    EXPECT_EQ(node.info().durable_seq, 3U);
 }
 
 TEST(KernelLifecycle, more_ready_while_recovery_has_a_request_due) {
@@ -410,6 +332,9 @@ std::vector<LogCase> bad_logs() {
     cases.push_back({"last transition_id used up",
                      {encode({1, 1, std::numeric_limits<uint64_t>::max()}, {boot_epoch_record(1)})},
                      AYNI_RESTRICTION_LOG_CORRUPT});
+    cases.push_back({"transition_id no writer reaches",
+                     {encode({1, 1, uint64_t{1} << 63U}, {boot_epoch_record(1)})},
+                     AYNI_RESTRICTION_LOG_CORRUPT});
     cases.push_back(
         {"BOOT_EPOCH body of the wrong length",
          {encode({1, 1, 1}, {{{boot_epoch_record_type, boot_epoch_record_version, required, 4},
@@ -433,6 +358,9 @@ std::vector<LogCase> bad_logs() {
     }
     cases.push_back({"last epoch exhausted",
                      {boot_epoch_batch(1, std::numeric_limits<uint64_t>::max())},
+                     AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED});
+    cases.push_back({"last epoch that kernel ids can embed",
+                     {boot_epoch_batch(1, ayni::foundation::max_boot_epoch)},
                      AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED});
     return cases;
 }
@@ -487,6 +415,9 @@ TEST(KernelLifecycle, storage_faults_restrict_with_their_reason) {
         EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
         EXPECT_EQ(node.info().restriction, fault.restriction);
         EXPECT_EQ(node.info().boot_epoch, 0U);
+        // An append whose result is unknown is not reported durable, even
+        // when the store kept it.
+        EXPECT_EQ(node.info().durable_seq, 0U);
         EXPECT_EQ(node.sim().log().size(), fault.log_size_after);
         EXPECT_EQ(node.kernel()->completions.in_flight(), 0U);
     }
@@ -710,42 +641,6 @@ ayni_status_t invoke(Node &node, Call call) {
     return AYNI_INTERNAL;
 }
 
-// Builds a fresh kernel in the given state.
-void enter(Node &node, ayni_lifecycle_t state) {
-    switch (state) {
-    case AYNI_LIFECYCLE_CONFIGURING:
-        node.create();
-        break;
-    case AYNI_LIFECYCLE_RECOVERING:
-        node.create_and_start();
-        node.step(); // a read in flight
-        break;
-    case AYNI_LIFECYCLE_RUNNING:
-        node.create_and_start();
-        node.recover();
-        break;
-    case AYNI_LIFECYCLE_RESTRICTED:
-        node.sim().inject_fault(StoragePort::read_prefix, StorageFault::reject);
-        node.create_and_start();
-        node.recover();
-        break;
-    case AYNI_LIFECYCLE_DRAINING:
-        node.create_and_start();
-        node.step();
-        ASSERT_EQ(ayni_begin_shutdown(node.kernel()), AYNI_OK);
-        break;
-    case AYNI_LIFECYCLE_STOPPED:
-        node.create_and_start();
-        node.recover();
-        ASSERT_EQ(ayni_begin_shutdown(node.kernel()), AYNI_OK);
-        node.step();
-        break;
-    default:
-        FAIL() << "no such state " << state;
-    }
-    ASSERT_EQ(node.lifecycle(), state);
-}
-
 TEST(KernelLifecycle, return_values_follow_the_state_table) {
     constexpr ayni_status_t ok = AYNI_OK;
     constexpr ayni_status_t bad = AYNI_INVALID_STATE;
@@ -769,7 +664,7 @@ TEST(KernelLifecycle, return_values_follow_the_state_table) {
         for (std::size_t column = 0; column < 6; ++column) {
             SCOPED_TRACE(::testing::Message() << row.name << " in state " << states[column]);
             Node node;
-            enter(node, states[column]);
+            node.enter(states[column]);
             const ayni_lifecycle_t before = node.lifecycle();
             const ayni_status_t status = invoke(node, row.call);
             EXPECT_EQ(status, row.expected[column]);
@@ -795,8 +690,10 @@ TEST(KernelLifecycle, kernel_info_checks_its_output) {
     Node node;
     node.create();
     EXPECT_EQ(ayni_get_kernel_info(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
+    // The first layout, from ABI 0.4, ends after boot_epoch.
+    const uint32_t first_layout = offsetof(ayni_kernel_info_v1, durable_seq);
     ayni_kernel_info_v1 info{};
-    info.struct_size = sizeof(info) - 1;
+    info.struct_size = first_layout - 1U;
     EXPECT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_INVALID_ARGUMENT);
     info.struct_size = sizeof(info) + 8;
     EXPECT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_UNSUPPORTED_VERSION);
@@ -809,6 +706,23 @@ TEST(KernelLifecycle, kernel_info_checks_its_output) {
     EXPECT_EQ(info.restriction, AYNI_RESTRICTION_NONE);
     EXPECT_EQ(info.reserved, 0U);
     EXPECT_EQ(info.boot_epoch, 0U);
+    EXPECT_EQ(info.durable_seq, 0U);
+
+    // An older caller gets the fields it has and nothing beyond them.
+    std::memset(&info, 0xA5, sizeof(info));
+    info.struct_size = first_layout;
+    ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
+    EXPECT_EQ(info.struct_size, first_layout);
+    EXPECT_EQ(info.boot_epoch, 0U);
+    EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
+
+    // A size that ends inside durable_seq gets whole fields only.
+    std::memset(&info, 0xA5, sizeof(info));
+    info.struct_size = first_layout + 4U;
+    ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
+    EXPECT_EQ(info.struct_size, first_layout + 4U);
+    EXPECT_EQ(info.boot_epoch, 0U);
+    EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
 }
 
 // A rejected step has no effect: no storage request is issued.

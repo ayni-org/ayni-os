@@ -1,6 +1,6 @@
 # 提交与输出门控
 
-- **关联**：计划 §2.4、§2.8、§4.3；ADR-0002；`MA-010`、`MA-022`；E2 F0–F13
+- **关联**：计划 §2.4、§2.8、§4.3；ADR-0002、ADR-0017；`MA-004`、`MA-010`、`MA-022`；E2 F0–F13
 - **属主**：`durability`（持久前缀、重放、栅栏记录）；`kernel`（transition 编排、输出门控、受限栅栏、恢复编排）
 
 ## 术语
@@ -32,8 +32,8 @@
 |---|---|---|---|
 | C-COMMIT-001 | 持久层的 `append(batch)` 以 `OK`、`FAILED`、`UNKNOWN` 三者之一完成；对外只暴露 `durable_seq` | 存储 Host 在数据进入写缓冲时就报告 OK | `MA-010`；C-HOST-010 |
 | C-COMMIT-002 | 恢复精确返回连续持久前缀并忽略不完整的尾部；同一 transition 重放不重复应用 | 短写的尾部批次被部分应用 | E2 F7、F8 |
-| C-COMMIT-003 | Kernel 只维护一份内存状态，transition 按 `commit_seq` 立即应用；不建暂存副本，不在内存中回滚部分 transition | 写失败后把内存中的预算扣减“退回”，但后续准入已依赖它 | `MA-010` 属性测试（ADR-0002 验证） |
-| C-COMMIT-004 | 每个对外输出带 `requires_seq`，只在 `durable_seq ≥ requires_seq` 后释放；查询可以返回已应用的状态，但必须标注 `durable_seq`，不得把未覆盖部分报告为已持久 | 创建提醒的 HTTP 回复在日志写入前发出，掉电后提醒消失 | E2 F6、F9；属性测试：每个已释放输出的 seq ≤ 恢复后的 `durable_seq` |
+| C-COMMIT-003 | Kernel 只维护一份内存状态，transition 按 `commit_seq` 立即应用；不建暂存副本，不在内存中回滚部分 transition | 写失败后把内存中的预算扣减“退回”，但后续准入已依赖它 | `MA-010` 属性测试（ADR-0002 验证）；Goal 意图在校验全部通过后才取得 ID 与 transition 并应用，拒绝不改变状态：`WorkModel.full_goal_table_refuses_without_side_effects`、`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing` |
+| C-COMMIT-004 | 每个对外输出带 `requires_seq`，只在 `durable_seq ≥ requires_seq` 后释放；查询可以返回已应用的状态，但必须标注 `durable_seq`，不得把未覆盖部分报告为已持久 | 创建提醒的 HTTP 回复在日志写入前发出，掉电后提醒消失 | M1 已实现（查询标注：对象带 `commit_seq`，`ayni_get_kernel_info` 报告 `durable_seq`，结果未知的追加不计入）：`KernelLifecycle.durable_seq_follows_the_log_read_and_then_the_boot_batch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`；输出的 `requires_seq` 门控随 `MA-010`；E2 F6、F9；属性测试：每个已释放输出的 seq ≤ 恢复后的 `durable_seq` |
 | C-COMMIT-005 | 上表 B1–B5 的每组记录在同一提交批次中 | Task 已创建但 occurrence 游标未提交，重启后再次触发 | E2 F8、F11 |
 | C-COMMIT-006 | 必须先持久化 `DISPATCHING` 屏障（`durable_seq` 覆盖屏障），再允许 Host 发出有副作用的请求；屏障写失败则禁止派发 | 屏障与 submit 并行发出，屏障写失败但动作已执行 | E2 F2 |
 | C-COMMIT-007 | 屏障确认后，在所有者线程再次检查 Grant/Task/Scene/观察、依赖 tombstone 与停止栅栏；复核与 submit 之间不处理其他普通意图。复核失败且可证明未交给 Host 时持久记录 `CANCELLED` 与 `effect=NONE`；该记录提交前重启仍保守为 `RESULT_UNKNOWN` | 复核通过后先处理了一条撤销意图，再 submit 已被撤销的动作 | E2 F10 |
@@ -41,10 +41,11 @@
 | C-COMMIT-009 | 受限栅栏中：立即停止新输出、新准入与执行许可续租；已越过屏障的在途动作按能力属性继续或取消；其完成事件只进入有界易失缓冲供对账，不直接改写状态 | 栅栏期间继续续租执行许可，电机凭新租期一直转 | E2 F12；C-PERMIT-009 |
 | C-COMMIT-010 | 重载前，持久层须确认旧写入方已失去修改日志的能力：存储 Host 报告旧 append/flush 全部终止（排空），或原子地安装新的 writer epoch 使旧 epoch 写入被拒绝；日志随之写入栅栏记录，恢复时忽略栅栏记录之后出现的旧 epoch 批次 | 只拒绝旧代际的完成事件，旧 flush 在恢复读取之后落盘，状态与日志分叉 | E2 F12（旧写延迟到重载之后） |
 | C-COMMIT-011 | 两种确认都无法取得时保持只读诊断（`RESTRICTED`），不重载、不恢复输出；存储仍不可写时同样进入只读诊断，本地停止路径照常可用 | 无法隔离旧写入方时仍然重载并恢复输出 | E2 F12（无法排空也无法隔离） |
-| C-COMMIT-012 | 所有策略意图携带 `expected_revision` 与关键依赖版本；过时写入返回 `AYNI_REVISION_CONFLICT`，由上层重新评估，不静默覆盖 | 旧模型结果覆盖了用户刚修改的记忆 | E1 步骤 9；E4 步骤 4 |
+| C-COMMIT-012 | 所有策略意图携带 `expected_revision` 与关键依赖版本；过时写入返回 `AYNI_REVISION_CONFLICT`，由上层重新评估，不静默覆盖。`revision` 不回绕：意图要改变的对象中有版本已是 2^32−1 的，整个意图返回 `AYNI_CAPACITY_EXCEEDED`（`REVISION_EXHAUSTED`），不改变任何对象 | 旧模型结果覆盖了用户刚修改的记忆 | M1 已实现（Goal 意图：创建取 0，其余取目标的当前版本）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing`；策略意图及其依赖版本随 `MA-004` 第三部分；E1 步骤 9；E4 步骤 4 |
 | C-COMMIT-013 | 外部副作用不参加本地原子事务；通过持久待派发记录、屏障与执行回执对账 | 把“发送通知”当作批次中的一条记录，认为回滚批次就撤销了通知 | E2；评审 |
 | C-COMMIT-014 | 跨存储介质（如 NVS 与日志分区）的原子性须有可验证的协调日志或等价协议，不能假定不同分区天然原子 | 预算在 NVS、Task 在日志分区，掉电后只更新了一边 | `MA-010` 故障注入 |
 | C-COMMIT-015 | 存储没有空间保存动作屏障时拒绝新的副作用（`AYNI_STORAGE_FAILED`），不跳过屏障 | 日志满时为了不影响体验跳过屏障直接执行 | E2 末段；§10.6 存储行 |
+| C-COMMIT-016 | `transition_id` 与 `commit_seq` 在 `durable_seq` 覆盖后才跨启动稳定：没有存下的 transition 不在日志中，之后的启动从自己的启动批次之后重新编号，把同一位置交给另一个 transition。因此高于 `durable_seq` 的值只能与同一次启动的 `durable_seq` 比较，跨启动识别对象使用带代际的 ID（C-ID-010） | 调用方记下重启前一个 Goal 的 `commit_seq`，重启后看到 `durable_seq` 达到该值，就认为那个 Goal 已持久 | M1 已实现：`WorkModel.commit_seq_of_unstored_work_is_reused_by_later_boots`；输出的 `requires_seq` 门控随 `MA-010` |
 | C-OUT-001 | 恢复只重建状态，不直接重放硬件调用；恢复目标也不恢复旧运动命令 | 重启后按日志重新发出最后一条转向命令 | E2 总通过标准 |
 | C-OUT-002 | 屏障提交后、真正发出前重启，也只能保守判为 `RESULT_UNKNOWN`；只有可证明没有越过屏障或有权威未执行证据的记录才可重新评估 | 屏障已提交但计数器为 0，就当作未派发直接重做 | E2 F3 |
 | C-OUT-003 | Host `submit` 区分“确定拒绝且未保留工作”与“已受理/受理结果未知”；后两者都算在途，Host 内部排队不算确定未派发 | Host 队列中的请求被当成未派发，撤销后不做任何处理 | E2 F10；C-HOST-004 |

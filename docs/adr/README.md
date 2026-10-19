@@ -20,7 +20,7 @@
 | [0006](0006-kernel-lifecycle-ports-and-policy-interface.md) | Kernel 生命周期、Host/Provider 边界与策略接口 | 已接受 | §2.0、§2.5、§3.2、§4.4 |
 | [0007](0007-notification-presentation-and-task-state.md) | 通知呈现复用能力调用与 Task 状态维度 | 已接受 | §2.4、§5.4 |
 | [0008](0008-core-modules-by-invariant-owner.md) | Core 模块按不变量属主划分（两级目录，2026-10-19 修订） | 已接受 | §2.0、§2.3、§8 |
-| [0009](0009-idl-and-local-api-encoding.md) | IDL 与本地 API 编码 | 提议 | §3.1、§3.2 |
+| [0009](0009-idl-and-local-api-encoding.md) | IDL 与本地 API 编码 | 提议（本地 API 形态已于 2026-10-19 接受） | §3.1、§3.2 |
 | [0010](0010-composition-root-and-targets.md) | 组合根 `runtime/` 与可执行目标 `targets/` | 已接受 | §2.6、§8、§11 |
 | [0011](0011-build-layout-and-dependency-checks.md) | 构建布局与依赖检查 | 已接受 | §2.0、§2.3、§8、§11 |
 | [0012](0012-test-framework.md) | 测试框架 | 已接受 | §10.1、§10.6 |
@@ -28,6 +28,7 @@
 | [0014](0014-core-does-not-allocate.md) | Core 不自行分配内存 | 已接受 | §3.2、§4.2、§8 |
 | [0015](0015-ingress-lock-and-completion-slots.md) | 入口临界区、有界事件队列与完成槽 | 已接受 | §3.2、§4.2 |
 | [0016](0016-boot-recovery-and-bounded-step.md) | 启动恢复、持久 boot_epoch 与有界 step | 已接受 | §3.2、§4.2、§4.3 |
+| [0017](0017-work-model-principals-agents-goals.md) | 工作模型第一部分：主体与会话、Agent 实例、GoalType 与 Goal 意图 | 已接受 | §2.2、§2.4、§3.2、§3.6、§5.3 |
 
 ## 模板
 

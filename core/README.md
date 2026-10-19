@@ -17,17 +17,17 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
-| `kernel` | `kernel_api.cpp`：C ABI 入口与参数检查；`kernel_lifecycle.cpp`：`ayni_start`、`ayni_step`、`ayni_begin_shutdown` 的状态转换；`kernel_layout`：按配置容量排布内存块；`ingress/`：有界事件队列；`completion/`：完成槽池（`MA-003`，ADR-0015）；`boot/`：读日志前缀并持久化 `boot_epoch` 的启动序列（`MA-005`，ADR-0016） | M0 |
-| `work` | 无代码 | M1（`MA-004`） |
-| `authority` | 无代码 | M1（`MA-006`） |
+| `kernel` | `kernel_api.cpp`：C ABI 入口与参数检查；`kernel_lifecycle.cpp`：`ayni_start`、`ayni_step`、`ayni_begin_shutdown` 的状态转换；`kernel_layout`：按配置容量排布内存块；`ingress/`：有界事件队列；`completion/`：完成槽池（`MA-003`，ADR-0015）；`boot/`：读日志前缀并持久化 `boot_epoch` 的启动序列（`MA-005`，ADR-0016）；`kernel_config.h`：容量、限额与调用方内存的划分；`work_api.cpp`：注册、会话、意图与查询的 C ABI 入口；`intent/`：意图的领域类型、C ABI 解码、`WorkModel`（意图读写的工作表、ID 分配器、transition 计数器与回调标记）以及会话与 Goal 意图的规则；`transition_clock.h`：transition 的 id 与 `commit_seq`（`MA-004`，ADR-0017）。GoalType 校验回调运行期间，修改 Kernel 的入口返回 `AYNI_INVALID_STATE`（C-POLICY-001） | M0 |
+| `work` | `agent/`：Agent 与驻留实例；`goal/`：Goal 树、生命周期、版本与取消级联（`MA-004` 第一部分，ADR-0017）；Task、调用与动作随后续工作包 | M1（`MA-004`） |
+| `authority` | `principal/`：所有者主体与会话表（ADR-0017）；Grant 与 Scene 随 `MA-006` | M1（`MA-004`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |
 | `knowledge` | 无代码 | M1（`MA-011`） |
-| `catalog` | 无代码 | M1（`MA-005`、`MA-008`） |
+| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本注册与参数校验（ADR-0017）；设备、能力与绑定随 `MA-008` | M1（`MA-004`） |
 | `durability` | `batch/`：提交批次的编码与校验，日志前缀的连续性与记录 flags 检查（`storage/records.md`，ADR-0016）；快照、重放与栅栏随 `MA-010` | M1（`MA-005`） |
-| `foundation` | `crc32`：CRC-32/ISO-HDLC；`little_endian.h`：持久格式的定长小端读写。状态码只在公开头文件 `include/ayni/ayni.h` 定义一次 | M1（`MA-005`） |
+| `foundation` | `crc32`：CRC-32/ISO-HDLC；`little_endian.h`：持久格式的定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器（C-ID-010）；`transition_stamp.h`；`bounded_array.h`：调用方内存上的定长数组。状态码只在公开头文件 `include/ayni/ayni.h` 定义一次 | M1（`MA-005`） |
 
-模块在有源文件时才建立构建目标，避免空目标给人“已实现”的印象。`foundation` 将来承载 ID、时间、有界容器等内部类型；对外状态码仍以公开头文件为唯一来源，不在 Core 内复制一份。
+模块在有源文件时才建立构建目标，避免空目标给人“已实现”的印象。`foundation` 承载 ID、时间、有界容器等内部类型；对外状态码仍以公开头文件为唯一来源，不在 Core 内复制一份。
 
 ## 内存
 

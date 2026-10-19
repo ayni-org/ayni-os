@@ -50,8 +50,15 @@ class BootSequence {
 
     Outcome outcome() const;
     ayni_restriction_t restriction() const { return restriction_; }
-    // 0 until the BOOT_EPOCH batch is durable.
+    // 0 until the BOOT_EPOCH batch is durable; then at most
+    // foundation::max_boot_epoch, so that kernel ids can embed it.
     uint64_t boot_epoch() const { return boot_epoch_; }
+    // The batch that stored this boot's epoch. Only once outcome() is
+    // epoch_durable; transitions after it take the following ids.
+    durability::BatchIdentity boot_batch() const;
+    // The last commit_seq known durable: the end of the log read so far, and
+    // once the epoch is durable, its batch.
+    uint64_t durable_seq() const;
 
   private:
     enum class Phase { read_due, reading, append_due, appending, done, restricted };
@@ -66,6 +73,8 @@ class BootSequence {
                                            const uint8_t *body);
 
     bool issue(Phase in_flight, CompletionHandler handler, PortCall call);
+    // Identity of the BOOT_EPOCH batch, from the log read so far.
+    durability::BatchIdentity next_batch() const;
     void finish_read(const ayni_completion_result_v1 &result);
     void finish_append(const ayni_completion_result_v1 &result);
     durability::RecordUse apply_record(const durability::RecordHeader &header, const uint8_t *body);

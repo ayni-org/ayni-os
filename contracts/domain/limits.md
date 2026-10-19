@@ -1,6 +1,6 @@
 # 容量与限额
 
-- **关联**：计划 §2.7、§3.2「容量」、§3.4「消息限额」、§4.2、§5.3；ADR-0014、ADR-0015、ADR-0016；`MA-003`、`MA-005`、`MA-018`；E1 步骤 10，第 10.6 节「事件与容量」
+- **关联**：计划 §2.7、§3.2「容量」、§3.4「消息限额」、§4.2、§5.3；ADR-0014、ADR-0015、ADR-0016、ADR-0017；`MA-003`、`MA-004`、`MA-005`、`MA-018`；E1 步骤 10，第 10.6 节「事件与容量」
 - **属主**：`kernel`（配置校验与分发）；各限额由其对象的属主模块执行（如 Task 数由 `work/task`，预留完成槽由 `kernel`）
 
 ## 初始值
@@ -9,10 +9,14 @@
 
 | 项目 | 初始值 | 来源 | 耗尽时 |
 |---|---:|---|---|
-| Agent 实例 | ≥ 2 | §4.2 | 注册返回 `CAPACITY_EXCEEDED` |
+| Agent（`agent_capacity`，1–64；每个 Agent 一个驻留实例） | 4（计划要求 ≥ 2） | §4.2 | 注册返回 `CAPACITY_EXCEEDED` |
 | 活跃与可恢复的 Task（每设备） | 16 | §4.2 | 新 Task 准入返回 `CAPACITY_EXCEEDED` 或按 GoalType 延后 |
-| Goal（每设备） | 单独有界，M1 由压测确定 | §4.2 | 新 Goal 返回 `CAPACITY_EXCEEDED` |
-| 子目标深度 / 每目标子目标数 | 有界，M1 确定 | §5.3 | 拒绝派生 |
+| Goal（`goal_capacity`，1–1024，终态 Goal 也占用） | 32；M1 压测后复核 | §4.2 | 新 Goal 返回 `CAPACITY_EXCEEDED`（`GOAL_CAPACITY`）；终态 Goal 的回收随 `MA-010` |
+| Goal 参数（`goal_parameter_max_bytes`，0–4096） | 128 字节 | ADR-0017 | 超出返回 `INVALID_ARGUMENT`（`GOAL_PARAMETERS`） |
+| 子目标深度（`goal_depth_max`，0–8）/ 每目标未终结的子目标数（`goal_children_max`，0–64） | 2 / 4 | §5.3 | 拒绝创建，返回 `CAPACITY_EXCEEDED`（`GOAL_DEPTH`、`GOAL_CHILDREN`）；0 表示不允许子目标 |
+| GoalType 版本（`goal_type_capacity`，1–64） | 8 | ADR-0017 | 注册返回 `CAPACITY_EXCEEDED` |
+| 同时打开的会话（`session_capacity`，1–64） | 4 | ADR-0017 | `ayni_open_session` 返回 `CAPACITY_EXCEEDED` |
+| Kernel 分配的 ID（每次启动，不可配置） | 2^32−1 | C-ID-010 | 新 Goal 与会话返回 `CAPACITY_EXCEEDED`（`ID_EXHAUSTED`） |
 | 普通事件入口（`ingress_capacity`，1–4096） | 128 项 | §4.2 | 可丢弃事件覆盖同一订阅、同一非零合并键的最新一条，否则逐出最旧的可丢弃事件；其他返回 `BUSY`（ADR-0015） |
 | 单个事件正文（`event_body_max_bytes`，1–4096） | 128 字节 | ADR-0015 | 超出返回 `INVALID_ARGUMENT` |
 | 预留控制容量（完成槽，`completion_slot_count`，1–1024） | 16，且不小于在途请求上限 | §4.2 | 不调用端口，返回 `BUSY`（C-HOST-006） |
@@ -44,13 +48,13 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-LIMIT-001 | 全部容量由配置在创建时给出；Core 不无界增长，达到上限返回 `AYNI_CAPACITY_EXCEEDED`（或文档规定的 `BUSY`），不得静默丢弃持久工作 | 事件队列满时最旧的存储确认被覆盖 | M1 已实现（入口、完成槽与存储缓冲）：`KernelLifecycle.batch_larger_than_the_buffer_restricts_as_read_failed`、`IngressQueue.ten_thousand_events_pass_in_order_without_loss`、`KernelApi.capacity_outside_its_range_is_invalid_argument`、`KernelApi.memory_requirements_grow_with_each_capacity`；其余容量随各自工作包；`MA-003`；第 10.6 节 |
-| C-LIMIT-002 | 每项限额都有耗尽测试，断言耗尽时的返回值、状态不变与恢复路径 | Grant 上限只在文档中出现，没有任何测试触及 | `MA-018`；`MA-005` |
+| C-LIMIT-001 | 全部容量由配置在创建时给出；Core 不无界增长，达到上限返回 `AYNI_CAPACITY_EXCEEDED`（或文档规定的 `BUSY`），不得静默丢弃持久工作 | 事件队列满时最旧的存储确认被覆盖 | M1 已实现（入口、完成槽、存储缓冲与工作模型）：`KernelLifecycle.batch_larger_than_the_buffer_restricts_as_read_failed`、`IngressQueue.ten_thousand_events_pass_in_order_without_loss`、`KernelApi.capacity_outside_its_range_is_invalid_argument`、`KernelApi.memory_requirements_grow_with_each_capacity`、`KernelApi.goal_tree_limits_need_no_memory`、`WorkModel.full_goal_table_refuses_without_side_effects`；其余容量随各自工作包；`MA-003`；第 10.6 节 |
+| C-LIMIT-002 | 每项限额都有耗尽测试，断言耗尽时的返回值、状态不变与恢复路径 | Grant 上限只在文档中出现，没有任何测试触及 | M1 已实现（已有的限额）：入口 `IngressQueue.full_queue_rejects_other_events_with_busy`；完成槽 `CompletionPoolTest.exhausted_slots_return_busy_without_calling_the_port`；存储缓冲 `KernelLifecycle.batch_larger_than_the_buffer_restricts_as_read_failed`；主体、Agent 与 GoalType `WorkModel.registration_refuses_duplicates_and_capacity`；Goal `WorkModel.full_goal_table_refuses_without_side_effects`；Goal 参数 `WorkModel.parameters_are_checked_last_by_size_and_by_the_goal_type`；子目标 `WorkModel.child_goals_follow_their_parent_and_the_tree_limits`；会话 `WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`；ID `WorkModel.used_up_ids_refuse_goals_and_sessions`；其余限额随各自工作包；`MA-018`；`MA-005` |
 | C-LIMIT-003 | 初始值是未实测的工程假设；修改须附测量证据并记录 ADR | 压测失败后把 Task 上限从 16 改为 4，没有记录原因 | 评审；`reports/core/` |
 | C-LIMIT-004 | Core 的存储全部来自调用方提供的内存与配置声明的容量；Core 不调用堆分配（ADR-0014） | Core 在注册 Capability 时调用 `new` 扩展数组 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，也不引用 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数；ctest `heap_check_detects_allocator` 与 ctest `heap_check_detects_strdup` 证明该检查有效 |
 | C-LIMIT-005 | 每个 Task 的模型决策次数达到上限时，Task 暂停并报告原因，不继续请求模型 | Tool Loop 在模型反复返回同一工具调用时无限循环 | `MA-009`；E1 步骤 5 |
 | C-LIMIT-006 | 单轮最多 8 个能力调用是受理上限；超出时整轮拒绝并报告原因，不截断后执行前 8 个 | 策略返回 12 个调用，Kernel 默默执行前 8 个，后 4 个丢失 | E4 步骤 3；`MA-009`；C-CALL-006 |
-| C-LIMIT-007 | 子目标深度与数量有界；周期触发在重启后不一次性补建无限 Task，同一触发窗口去重 | 断电一周后重启，每小时一次的检查一次性生成 168 个 Task | E2 F8；`MA-004` |
+| C-LIMIT-007 | 子目标深度与数量有界；周期触发在重启后不一次性补建无限 Task，同一触发窗口去重 | 断电一周后重启，每小时一次的检查一次性生成 168 个 Task | M1 已实现（子目标深度与数量）：`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.tree_limits_refuse_deeper_or_more_children`、`GoalTable.zero_limits_allow_top_level_goals_only`、`WorkModel.tree_limits_missing_from_the_config_take_their_defaults`；周期触发随 `MA-004` 第二部分；E2 F8 |
 | C-LIMIT-008 | 普通事件入口有界；遥测按声明合并或丢旧并报告 gap；存储确认、终态、撤销与资源回收使用预留控制容量；停止不经队列（C-STOP-001） | 摄像头遥测占满队列，撤销事件被丢弃 | M1 已实现（入口与完成槽）：`IngressQueue.full_queue_rejects_other_events_with_busy`、`IngressQueue.full_queue_replaces_newest_value_of_the_same_stream`、`IngressQueue.telemetry_flood_keeps_each_stream_in_order_and_accounted`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；E1 步骤 10；`MA-003` |
 | C-LIMIT-009 | 媒体缓冲与上下文使用独立的缓冲池与字节上限，不挤占关键任务栈与内部 RAM | 一张大图片占满内部 RAM，停止监督任务栈溢出 | M2/M3 资源测量；E1 步骤 8 |
 | C-LIMIT-010 | 分配失败、存储满、TLS 失败都返回明确状态；拒绝新负载，同时保留停止与诊断能力 | 存储满时 Kernel 崩溃重启，停止按键失效 | 第 10.6 节「存储与恢复」；`MA-012` |
