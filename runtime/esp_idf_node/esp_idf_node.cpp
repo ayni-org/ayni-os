@@ -52,6 +52,9 @@ ayni_status_t run_hello() {
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;
     config.abi_minor = AYNI_ABI_MINOR;
+    config.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
+    config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
+    config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
     std::size_t size = 0;
     std::size_t align = 0;
     status = ayni_kernel_memory_requirements(&config, &size, &align);
@@ -63,7 +66,9 @@ ayni_status_t run_hello() {
         return AYNI_CAPACITY_EXCEEDED;
     }
 
-    const ayni_host_v1 host = hosts::esp_idf::host_table();
+    // Outlives the Kernel on every path that destroys it.
+    hosts::esp_idf::Host platform;
+    const ayni_host_v1 host = platform.table();
     ayni_kernel_t *kernel = nullptr;
     status = ayni_create(&config, &host, memory, size, &kernel);
     if (status != AYNI_OK) {

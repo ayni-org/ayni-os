@@ -9,6 +9,11 @@
 #include <ayni/ayni.h>
 
 #include <cstddef>
+#include <memory>
+
+namespace ayni::hosts::native {
+class Host;
+}
 
 namespace ayni::runtime {
 
@@ -16,22 +21,23 @@ namespace ayni::runtime {
 // release it. Used from one thread, which becomes the Kernel owner thread.
 class NativeNode {
   public:
-    NativeNode() = default;
+    NativeNode();
     // Releases an assembled Kernel. If ayni_destroy refuses (the owner
-    // skipped shutdown), the memory is left allocated instead of being freed
-    // under a live Kernel; callers that need the outcome call release().
+    // skipped shutdown), the memory and the Host are left allocated instead
+    // of being freed under a live Kernel; callers that need the outcome call
+    // release().
     ~NativeNode();
 
     NativeNode(const NativeNode &) = delete;
     NativeNode &operator=(const NativeNode &) = delete;
 
-    // Allocates the Kernel memory and creates the Kernel. Returns
-    // AYNI_INVALID_STATE if already assembled and AYNI_CAPACITY_EXCEEDED if
-    // the allocation fails; other failures come from the C API unchanged. On
-    // failure the node holds nothing.
+    // Allocates the Host and the Kernel memory and creates the Kernel.
+    // Returns AYNI_INVALID_STATE if already assembled and
+    // AYNI_CAPACITY_EXCEEDED if an allocation fails; other failures come from
+    // the C API unchanged. On failure the node holds nothing.
     ayni_status_t assemble();
 
-    // Destroys the Kernel and frees its memory. Returns AYNI_INVALID_STATE if
+    // Destroys the Kernel, then frees its memory and the Host. Returns AYNI_INVALID_STATE if
     // nothing is assembled; a failure from ayni_destroy is returned unchanged
     // and the node keeps the Kernel.
     ayni_status_t release();
@@ -40,6 +46,9 @@ class NativeNode {
     ayni_kernel_t *kernel() const { return kernel_; }
 
   private:
+    // Kept out of this header so that targets depend on runtime/ only
+    // (ADR-0010); outlives the Kernel it serves.
+    std::unique_ptr<hosts::native::Host> host_;
     void *memory_ = nullptr;
     std::size_t memory_align_ = 0;
     ayni_kernel_t *kernel_ = nullptr;

@@ -7,7 +7,11 @@ cmake_minimum_required(VERSION 3.22)
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/AyniLayers.cmake")
 
 ayni_add_core_module(kernel
-    SOURCES kernel/kernel_api.cpp)
+    SOURCES
+        kernel/completion/completion_pool.cpp
+        kernel/ingress/event_queue.cpp
+        kernel/kernel_api.cpp
+        kernel/kernel_layout.cpp)
 
 # What consumers link: the top module pulls in every module below it.
 add_library(ayni_core INTERFACE)

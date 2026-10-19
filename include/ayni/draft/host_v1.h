@@ -1,24 +1,23 @@
 /*
  * DRAFT, not part of the published ABI (C-VER-007): no symbols.
  *
- * Planned Host ports beyond the clock in ayni_host_v1: wake, persistent
- * storage, completion slots and the trace sink (contracts/host/
+ * Planned Host ports beyond those in ayni_host_v1 (clock, wake, ingress
+ * lock): persistent storage and the trace sink (contracts/host/
  * host_ports.md). When implemented, these members are appended to
  * ayni_host_v1 in ayni.h (C-VER-002); the separate struct name keeps the
  * draft from colliding with the published one.
  *
  * Every function pointer here is called on the kernel owner thread and must
- * not block or call back into the kernel, except wake, which any thread may
- * call (C-HOST-002, C-HOST-007).
+ * not block or call back into the kernel (C-HOST-002).
  *
  * Asynchronous ports (C-HOST-018, C-HOST-019): the kernel reserves a
- * completion and names the attempt before each call. When the port returns
- * ACCEPTED or ACCEPT_UNKNOWN, the Host owes exactly one ayni_completion_post
- * for that attempt, even when the outcome is unknown, and until it posts it
- * may keep the completion pointer and the request's kernel-owned buffers.
- * After the post it touches neither. The kernel reaches STOPPED only after
- * every reserved completion has been posted, so ayni_destroy can never free
- * memory a Host still points into.
+ * completion (ayni_completion_t in ayni.h) and names the attempt before each
+ * call. When the port returns ACCEPTED or ACCEPT_UNKNOWN, the Host owes
+ * exactly one ayni_completion_post for that attempt, even when the outcome is
+ * unknown, and until it posts it may keep the completion pointer and the
+ * request's kernel-owned buffers. After the post it touches neither. The
+ * kernel reaches STOPPED only after every reserved completion has been
+ * posted, so ayni_destroy can never free memory a Host still points into.
  */
 #ifndef AYNI_DRAFT_HOST_V1_H
 #define AYNI_DRAFT_HOST_V1_H
@@ -33,28 +32,12 @@ extern "C" {
 #endif
 
 /*
- * Synchronous answer of every submit-like port (C-HOST-004). Only
- * REJECTED_NOT_RETAINED proves that no work exists; ACCEPTED and
- * ACCEPT_UNKNOWN are both in flight, including work queued inside the Host.
+ * ayni_completion_result_v1.outcome of the storage ports. Storage writes
+ * (C-COMMIT-001, C-HOST-010); reads use AYNI_WRITE_OK, AYNI_WRITE_FAILED, or
+ * AYNI_WRITE_UNKNOWN when the buffer content is not reliable, and report the
+ * bytes read in value. Distinct from the AYNI_STORAGE_FAILED status code,
+ * which reports a failed kernel call.
  */
-typedef uint32_t ayni_submit_result_t;
-
-#define AYNI_SUBMIT_REJECTED_NOT_RETAINED ((ayni_submit_result_t)1)
-#define AYNI_SUBMIT_ACCEPTED ((ayni_submit_result_t)2)
-#define AYNI_SUBMIT_ACCEPT_UNKNOWN ((ayni_submit_result_t)3)
-
-/*
- * A completion slot reserved by the kernel before it calls a port (C-HOST-006).
- * Owned by the kernel and reused for later attempts once its result has been
- * applied, so every post names the attempt it answers; a post whose attempt
- * is not the one the slot is reserved for is ignored (C-CALL-012). The Host
- * keeps the pointer until it posts the terminal result (ayni_completion_post
- * here, ayni_provider_post for Provider attempts).
- */
-typedef struct ayni_completion ayni_completion_t;
-
-/* Outcomes of storage writes (C-COMMIT-001, C-HOST-010). Distinct from the
- * AYNI_STORAGE_FAILED status code, which reports a failed kernel call. */
 #define AYNI_WRITE_OK 1u
 #define AYNI_WRITE_FAILED 2u
 #define AYNI_WRITE_UNKNOWN 3u
@@ -63,27 +46,6 @@ typedef struct ayni_completion ayni_completion_t;
 #define AYNI_FENCE_DRAINED 1u
 #define AYNI_FENCE_EPOCH_INSTALLED 2u
 #define AYNI_FENCE_UNAVAILABLE 3u
-
-typedef struct ayni_completion_result_v1 {
-    uint32_t struct_size;
-    /* AYNI_WRITE_* or AYNI_FENCE_*, per port. Reads use AYNI_WRITE_OK,
-     * AYNI_WRITE_FAILED, or AYNI_WRITE_UNKNOWN when the buffer content is
-     * not reliable. */
-    uint32_t outcome;
-    ayni_attempt_ref_v1 attempt; /* as passed to the port call */
-    uint64_t value;              /* bytes read for read ports; 0 otherwise */
-} ayni_completion_result_v1;
-
-/*
- * Posts the single result of a reserved completion and wakes the owner
- * thread. Callable from any non-ISR thread; never fails for lack of queue
- * space because the slot was reserved before the request was issued. A post
- * for another attempt, or a second post for the same attempt, is a Host
- * defect: it is ignored and counted (C-CALL-012). Must not be called once
- * ayni_destroy has been entered (C-HOST-018).
- */
-ayni_status_t ayni_completion_post(ayni_completion_t *completion,
-                                   const ayni_completion_result_v1 *result);
 
 /* One commit batch, encoded per contracts/storage/records.md. The struct is
  * copied during the call; encoded.data stays kernel-owned and unchanged until
@@ -112,9 +74,6 @@ typedef struct ayni_host_ports_v1 {
     uint32_t struct_size;
     uint32_t storage_flags; /* AYNI_STORAGE_ATOMIC_REPLACE */
     void *ctx;
-
-    /* Any thread, idempotent; schedules ayni_step on the owner thread. */
-    void (*wake)(void *ctx);
 
     /* Durable append; completes with AYNI_WRITE_OK only once the batch
      * survives power loss (C-HOST-010). */

@@ -3,14 +3,18 @@
 #include <ayni/hosts/native.h>
 
 #include <new>
+#include <utility>
 
 namespace ayni::runtime {
 
+NativeNode::NativeNode() = default;
+
 NativeNode::~NativeNode() {
-    if (kernel_ != nullptr) {
-        // On failure the Kernel still uses the block, so it is deliberately
-        // left allocated; release() is where the failure is reported.
-        static_cast<void>(release());
+    if (kernel_ != nullptr && release() != AYNI_OK) {
+        // The Kernel still uses the block and the Host, so both are
+        // deliberately left allocated; release() is where the failure is
+        // reported.
+        static_cast<void>(host_.release());
     }
 }
 
@@ -23,6 +27,9 @@ ayni_status_t NativeNode::assemble() {
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;
     config.abi_minor = AYNI_ABI_MINOR;
+    config.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
+    config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
+    config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
 
     std::size_t size = 0;
     std::size_t align = 0;
@@ -31,19 +38,22 @@ ayni_status_t NativeNode::assemble() {
         return status;
     }
 
+    std::unique_ptr<hosts::native::Host> host(new (std::nothrow) hosts::native::Host());
     void *memory = ::operator new(size, std::align_val_t{align}, std::nothrow);
-    if (memory == nullptr) {
+    if (host == nullptr || memory == nullptr) {
+        ::operator delete(memory, std::align_val_t{align});
         return AYNI_CAPACITY_EXCEEDED;
     }
 
-    const ayni_host_v1 host = hosts::native::host_table();
+    const ayni_host_v1 table = host->table();
     ayni_kernel_t *kernel = nullptr;
-    status = ayni_create(&config, &host, memory, size, &kernel);
+    status = ayni_create(&config, &table, memory, size, &kernel);
     if (status != AYNI_OK) {
         ::operator delete(memory, std::align_val_t{align});
         return status;
     }
 
+    host_ = std::move(host);
     memory_ = memory;
     memory_align_ = align;
     kernel_ = kernel;
@@ -59,6 +69,7 @@ ayni_status_t NativeNode::release() {
         return status;
     }
     ::operator delete(memory_, std::align_val_t{memory_align_});
+    host_.reset();
     kernel_ = nullptr;
     memory_ = nullptr;
     memory_align_ = 0;

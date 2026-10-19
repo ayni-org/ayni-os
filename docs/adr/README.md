@@ -26,6 +26,7 @@
 | [0012](0012-test-framework.md) | 测试框架 | 已接受 | §10.1、§10.6 |
 | [0013](0013-contract-format-before-idl.md) | IDL 选定之前的契约表达方式 | 已接受 | §3.1、§3.2 |
 | [0014](0014-core-does-not-allocate.md) | Core 不自行分配内存 | 已接受 | §3.2、§4.2、§8 |
+| [0015](0015-ingress-lock-and-completion-slots.md) | 入口临界区、有界事件队列与完成槽 | 已接受 | §3.2、§4.2 |
 
 ## 模板
 

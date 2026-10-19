@@ -1,5 +1,6 @@
-// Contract of the M0 C ABI in include/ayni/ayni.h: version query, memory
-// requirements, create, lifecycle query and destroy.
+// Contract of the C ABI in include/ayni/ayni.h: version query, memory
+// requirements, create, lifecycle query and destroy. Completion posting is
+// covered by completion_pool_test.cpp.
 
 #include "kernel/kernel_state.h"
 
@@ -19,11 +20,19 @@ uint64_t fixed_clock(void * /*ctx*/) {
     return 42;
 }
 
+void no_wake(void * /*ctx*/) {}
+void no_lock(void * /*ctx*/) {}
+void no_unlock(void * /*ctx*/) {}
+
+// Small capacities keep the kernel inside KernelMemory.
 ayni_config_v1 valid_config() {
     ayni_config_v1 config{};
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;
     config.abi_minor = AYNI_ABI_MINOR;
+    config.ingress_capacity = 4;
+    config.event_body_max_bytes = 16;
+    config.completion_slot_count = 2;
     return config;
 }
 
@@ -31,13 +40,23 @@ ayni_host_v1 valid_host() {
     ayni_host_v1 host{};
     host.struct_size = sizeof(host);
     host.monotonic_now_us = &fixed_clock;
+    host.wake = &no_wake;
+    host.ingress_lock = &no_lock;
+    host.ingress_unlock = &no_unlock;
     return host;
+}
+
+std::size_t required_size(const ayni_config_v1 &config) {
+    std::size_t size = 0;
+    std::size_t align = 0;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_OK);
+    return size;
 }
 
 // Caller-provided kernel memory, over-sized and over-aligned so tests can
 // also hand out misaligned or short views of it.
 struct KernelMemory {
-    alignas(64) std::array<unsigned char, 1024> bytes{};
+    alignas(64) std::array<unsigned char, 4096> bytes{};
     std::size_t size = 0;
     std::size_t align = 0;
 };
@@ -122,6 +141,9 @@ TEST_F(KernelApi, create_copies_host_table_before_return) {
     EXPECT_EQ(kernel->host.ctx, &ctx_target);
     ASSERT_EQ(kernel->host.monotonic_now_us, &fixed_clock);
     EXPECT_EQ(kernel->host.monotonic_now_us(kernel->host.ctx), 42U);
+    EXPECT_EQ(kernel->host.wake, &no_wake);
+    EXPECT_EQ(kernel->host.ingress_lock, &no_lock);
+    EXPECT_EQ(kernel->host.ingress_unlock, &no_unlock);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
@@ -144,6 +166,34 @@ TEST_F(KernelApi, create_rejects_missing_clock) {
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
 }
 
+TEST_F(KernelApi, create_rejects_missing_wake_or_ingress_lock) {
+    const ayni_config_v1 config = valid_config();
+    ayni_kernel_t *kernel = nullptr;
+    ayni_host_v1 host = valid_host();
+    host.wake = nullptr;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    host = valid_host();
+    host.ingress_lock = nullptr;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    host = valid_host();
+    host.ingress_unlock = nullptr;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(kernel, nullptr);
+}
+
+// A table that ends inside or before the 0.3 ports lacks required ports; the
+// partly covered pointer must not be read as one.
+TEST_F(KernelApi, host_table_without_0_3_ports_is_invalid_argument) {
+    const ayni_config_v1 config = valid_config();
+    ayni_kernel_t *kernel = nullptr;
+    ayni_host_v1 host = valid_host();
+    host.struct_size = offsetof(ayni_host_v1, wake);
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    host.struct_size = sizeof(host) - 1;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(kernel, nullptr);
+}
+
 TEST_F(KernelApi, struct_size_below_first_layout_is_invalid_argument) {
     ayni_config_v1 config = valid_config();
     ayni_host_v1 host = valid_host();
@@ -152,8 +202,64 @@ TEST_F(KernelApi, struct_size_below_first_layout_is_invalid_argument) {
     config.struct_size = offsetof(ayni_config_v1, abi_major) + sizeof(config.abi_major) - 1;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
     config = valid_config();
-    host.struct_size = sizeof(host) - 1;
+    host.struct_size = offsetof(ayni_host_v1, monotonic_now_us) + sizeof(host.monotonic_now_us) - 1;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+}
+
+TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
+    const ayni_host_v1 host = valid_host();
+    ayni_kernel_t *kernel = nullptr;
+    std::size_t size = 0;
+    std::size_t align = 0;
+    const struct {
+        uint32_t ayni_config_v1::*field;
+        uint32_t max;
+    } capacities[] = {
+        {&ayni_config_v1::ingress_capacity, AYNI_INGRESS_CAPACITY_MAX},
+        {&ayni_config_v1::event_body_max_bytes, AYNI_EVENT_BODY_MAX_BYTES_MAX},
+        {&ayni_config_v1::completion_slot_count, AYNI_COMPLETION_SLOT_COUNT_MAX},
+    };
+    for (const auto &capacity : capacities) {
+        for (const uint32_t value : {0U, capacity.max + 1U}) {
+            ayni_config_v1 config = valid_config();
+            config.*capacity.field = value;
+            EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT) << value;
+            EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align),
+                      AYNI_INVALID_ARGUMENT)
+                << value;
+        }
+        ayni_config_v1 config = valid_config();
+        config.*capacity.field = capacity.max;
+        EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_OK);
+    }
+    EXPECT_EQ(kernel, nullptr);
+}
+
+TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
+    const std::size_t base = required_size(valid_config());
+    ayni_config_v1 config = valid_config();
+    config.ingress_capacity += 1;
+    EXPECT_GT(required_size(config), base);
+    config = valid_config();
+    config.event_body_max_bytes += 64;
+    EXPECT_GT(required_size(config), base);
+    config = valid_config();
+    config.completion_slot_count += 1;
+    EXPECT_GT(required_size(config), base);
+}
+
+// C-VER-003: a field that struct_size does not cover is never read and takes
+// its documented default.
+TEST_F(KernelApi, uncovered_capacities_take_their_defaults) {
+    ayni_config_v1 defaults = valid_config();
+    defaults.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
+    defaults.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
+    defaults.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
+
+    ayni_config_v1 short_config = valid_config();
+    short_config.struct_size = offsetof(ayni_config_v1, ingress_capacity);
+    short_config.ingress_capacity = 0; // would be rejected if it were read
+    EXPECT_EQ(required_size(short_config), required_size(defaults));
 }
 
 TEST_F(KernelApi, struct_size_from_newer_minor_is_unsupported_version) {

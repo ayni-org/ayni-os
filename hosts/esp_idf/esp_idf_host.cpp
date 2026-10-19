@@ -8,8 +8,6 @@
 #include <esp_psram.h>
 #include <esp_system.h>
 #include <esp_timer.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 #include <cstdint>
 
@@ -68,12 +66,36 @@ void log_heap(const char *name, uint32_t caps) {
 
 } // namespace
 
-ayni_host_v1 host_table() {
+Host::Host()
+    : ingress_(xSemaphoreCreateMutexStatic(&ingress_storage_)),
+      owner_(xTaskGetCurrentTaskHandle()) {}
+
+Host::~Host() {
+    vSemaphoreDelete(ingress_);
+}
+
+ayni_host_v1 Host::table() {
     ayni_host_v1 host{};
     host.struct_size = sizeof(ayni_host_v1);
-    host.ctx = nullptr;
+    host.ctx = this;
     host.monotonic_now_us = &monotonic_now_us;
+    host.wake = &Host::wake;
+    host.ingress_lock = &Host::ingress_lock;
+    host.ingress_unlock = &Host::ingress_unlock;
     return host;
+}
+
+void Host::wake(void *ctx) {
+    xTaskNotifyGive(static_cast<Host *>(ctx)->owner_);
+}
+
+void Host::ingress_lock(void *ctx) {
+    // With portMAX_DELAY the take waits until it succeeds.
+    static_cast<void>(xSemaphoreTake(static_cast<Host *>(ctx)->ingress_, portMAX_DELAY));
+}
+
+void Host::ingress_unlock(void *ctx) {
+    static_cast<void>(xSemaphoreGive(static_cast<Host *>(ctx)->ingress_));
 }
 
 void log_platform_baseline() {

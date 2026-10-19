@@ -8,6 +8,7 @@ Checks:
   - every clause ID mentioned in contracts/, include/, docs/, reports/ or source directories is defined;
   - every GoogleTest name cited as `Suite.test` and every CTest name cited as ctest `name` exists, and
     no defined GoogleTest test is cited by its bare name, which this check could not follow;
+  - a verification cell that says "M<n> 已实现" starts with it, so that the matrix counts the clause;
   - every step of experiments E1-E4 in the plan is named by at least one clause's verification cell;
   - contracts/traceability.md equals the matrix generated from the clauses.
 
@@ -55,7 +56,7 @@ FAULT_CITE_RE = re.compile(rf"E2 (F\d+(?:{DASH}F?\d+)?(?:、F\d+(?:{DASH}F?\d+)?
 EXPERIMENT_HEADING_RE = re.compile(r"^### [\d.]+ (E[1-4])[：:]")
 STEP_ROW_RE = re.compile(r"^\|\s*(\d+)\.\s")
 FAULT_ROW_RE = re.compile(r"^\|\s*(F\d+)[：:]")
-IMPLEMENTED_MARK = "M0 已实现"
+IMPLEMENTED_RE = re.compile(r"M\d+ 已实现")
 
 
 class InputError(Exception):
@@ -234,6 +235,11 @@ def join(items) -> str:
     return "、".join(items) if items else "—"
 
 
+def is_implemented(clause: Clause) -> bool:
+    """A clause is implemented once its verification cell starts with "M<n> 已实现"."""
+    return IMPLEMENTED_RE.match(clause.verification) is not None
+
+
 def generate_traceability(documents: list[Document], steps: list[str]) -> str:
     clauses = [clause for document in documents for clause in document.clauses]
     sections, adrs = defaultdict(set), defaultdict(set)
@@ -260,15 +266,15 @@ def generate_traceability(documents: list[Document], steps: list[str]) -> str:
         "",
         "## 概览",
         "",
-        "| 文档 | 条款数 | M0 已实现 |",
+        "| 文档 | 条款数 | 已实现 |",
         "|---|---:|---:|",
     ]
     for document in documents:
         if document.clauses:
-            implemented = sum(IMPLEMENTED_MARK in clause.verification for clause in document.clauses)
+            implemented = sum(is_implemented(clause) for clause in document.clauses)
             name = document.path.relative_to(CONTRACTS).as_posix()
             lines.append(f"| [{name}]({name}) | {len(document.clauses)} | {implemented} |")
-    total_implemented = sum(IMPLEMENTED_MARK in clause.verification for clause in clauses)
+    total_implemented = sum(is_implemented(clause) for clause in clauses)
     lines += [f"| 合计 | {len(clauses)} | {total_implemented} |", ""]
 
     lines += ["## 计划章节 → 契约文档", "", "| 计划章节 | 契约文档 |", "|---|---|"]
@@ -283,9 +289,9 @@ def generate_traceability(documents: list[Document], steps: list[str]) -> str:
     lines += ["", "## 实验步骤 → 条款", "", "| 实验步骤 | 条款 |", "|---|---|"]
     for step in steps:
         lines.append(f"| {step} | {join(by_step.get(step, []))} |")
-    lines += ["", "## M0 已实现的条款", "", "| 条款 | 验证 |", "|---|---|"]
+    lines += ["", "## 已实现的条款", "", "| 条款 | 验证 |", "|---|---|"]
     for clause in clauses:
-        if IMPLEMENTED_MARK in clause.verification:
+        if is_implemented(clause):
             lines.append(f"| {clause.id} | {clause.verification} |")
     lines.append("")
     return "\n".join(lines)
@@ -333,6 +339,9 @@ def check(root: Path, write: bool = False) -> list[str]:
                 spelled = " or ".join(f"`{suite}.{name}`" for suite in sorted(suites_by_name[name]))
                 problems.append(f"{clause.doc}:{clause.line}: {clause.id} cites test `{name}` without its "
                                 f"suite; write {spelled} so that a rename is caught")
+        if not is_implemented(clause) and IMPLEMENTED_RE.search(clause.verification):
+            problems.append(f"{clause.doc}:{clause.line}: {clause.id} must start its verification cell "
+                            "with \"M<n> 已实现\" to count as implemented")
         for name in CTEST_CITE_RE.findall(clause.verification):
             if name not in ctests:
                 problems.append(f"{clause.doc}:{clause.line}: {clause.id} cites ctest {name}, "
