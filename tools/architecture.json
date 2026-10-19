@@ -1,0 +1,32 @@
+{
+  "_comment": "Single source of the dependency rules. Read by cmake/AyniLayers.cmake (Core link graph) and tools/check_deps.py (#include graph). See ADR-0008, ADR-0010 and ADR-0011.",
+  "core_layers": [
+    ["kernel"],
+    ["work"],
+    ["authority", "resources", "budget", "knowledge"],
+    ["catalog"],
+    ["durability"],
+    ["foundation"]
+  ],
+  "_core_subdir_deps": "Per module: which sibling entity subdirectories each subdirectory may include, e.g. {\"work\": {\"task\": [\"call\"]}}. Undeclared pairs are forbidden; files at a module's root may include any of its subdirectories.",
+  "core_subdir_deps": {},
+  "core_std_headers": ["array", "cstddef", "cstdint", "cstring", "limits", "new", "type_traits", "utility"],
+  "public_c_headers": ["stddef.h", "stdint.h"],
+  "header_kinds": {
+    "ayni/draft/": "draft",
+    "ayni/hosts/": "hosts",
+    "ayni/runtime/": "runtime",
+    "ayni/": "api"
+  },
+  "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. core/, include/ and tests/ have fixed rules in check_deps.py.",
+  "components": {
+    "hosts": ["api", "own", "external"],
+    "runtime": ["api", "hosts", "own", "external"],
+    "targets": ["api", "runtime", "external"],
+    "control": ["api", "external"],
+    "safety": ["api", "external"],
+    "examples": ["api", "external"]
+  },
+  "unchecked_dirs": [".git", ".github", "cmake", "contracts", "docs", "reports", "tests", "tools"],
+  "skipped_dir_names": ["build", "managed_components"]
+}

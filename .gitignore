@@ -1,5 +1,11 @@
 .DS_Store
 build/
+__pycache__/
+
+# ESP-IDF generated files (targets/esp32_assistant)
+sdkconfig
+sdkconfig.old
+managed_components/
 
 # Local credentials; sanitized examples may be committed.
 .env

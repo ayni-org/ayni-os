@@ -1,0 +1,13 @@
+# clang-format 18 (docs/development.md). CI checks the files listed there.
+BasedOnStyle: LLVM
+IndentWidth: 4
+AccessModifierOffset: -2
+ColumnLimit: 100
+PointerAlignment: Right
+IndentCaseLabels: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+InsertBraces: true
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive

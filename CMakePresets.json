@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {"major": 3, "minor": 22, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "native-debug",
+      "displayName": "Native Debug with tests",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "AYNI_BUILD_TESTS": "ON",
+        "AYNI_HOST": "native"
+      }
+    },
+    {
+      "name": "native-release",
+      "displayName": "Native Release with tests",
+      "inherits": "native-debug",
+      "binaryDir": "${sourceDir}/build/native-release",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+    },
+    {
+      "name": "native-asan",
+      "displayName": "Native Debug with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "inherits": "native-debug",
+      "binaryDir": "${sourceDir}/build/native-asan",
+      "cacheVariables": {"AYNI_SANITIZE": "address,undefined"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "native-debug", "configurePreset": "native-debug"},
+    {"name": "native-release", "configurePreset": "native-release"},
+    {"name": "native-asan", "configurePreset": "native-asan"}
+  ],
+  "testPresets": [
+    {"name": "native-debug", "configurePreset": "native-debug", "output": {"outputOnFailure": true}},
+    {"name": "native-release", "configurePreset": "native-release", "output": {"outputOnFailure": true}},
+    {
+      "name": "native-asan",
+      "configurePreset": "native-asan",
+      "output": {"outputOnFailure": true},
+      "environment": {"ASAN_OPTIONS": "detect_leaks=1", "UBSAN_OPTIONS": "print_stacktrace=1"}
+    }
+  ]
+}
