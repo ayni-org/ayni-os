@@ -1,7 +1,7 @@
 # ADR-0010：组合根 `runtime/` 与可执行目标 `targets/`
 
 - **状态**：已接受（设计基线，待实现与验证）
-- **日期**：2026-10-18
+- **日期**：2026-10-18（初版）、2026-10-19（修订：收窄“唯一引用具体实现”的范围）
 - **关联**：计划 §2.6、§8、§11；ADR-0006、ADR-0008
 
 ## 背景
@@ -11,7 +11,7 @@
 
 ## 决策
 
-1. 新增组合根 `runtime/`：按部署 Profile（`CORE_LITE`、`CORE_FULL`，以及未来的设备端点）装配 Kernel、Host、Provider、控制与停止组件，完成注册与 `ayni_start`。`runtime/` 是唯一引用具体实现的位置。
+1. 新增组合根 `runtime/`：按部署 Profile（`CORE_LITE`、`CORE_FULL`，以及未来的设备端点）装配 Kernel、Host、Provider、控制与停止组件，完成注册与 `ayni_start`。`runtime/` 是部署选择与跨组件装配的唯一位置；各 Host、Provider 与适配器仍可在内部封装自身的平台实现（例如 ESP-IDF Host 引用 ESP-IDF 驱动、ROS 适配器引用 ROS 客户端库），但不互相装配。初版写作“唯一引用具体实现的位置”，会误禁止适配器封装自身平台实现，已收窄。
 2. 可执行程序与固件目录由 `apps/` 更名为 `targets/`（例如 `targets/simulator/`、`targets/esp32_assistant/`）。它们只调用 `runtime/`，不直接装配组件。
 3. 保留 `applications/` 作为应用层目录名，与计划正文中“应用注册”“应用层”的用语一致。
 4. `targets/` 指构建产物的入口，与 ESP-IDF 的芯片 target（`idf.py set-target`）是不同概念，计划 §8 对此另有说明。
@@ -30,4 +30,4 @@
 
 ## 验证
 
-实现开始后，在 CI 的依赖检查中确认：只有 `runtime/` 依赖 `hosts/`、`providers/`、`drivers/`、`control/` 与 `safety/` 的具体实现；`targets/` 只依赖 `runtime/`；`examples/` 只依赖公开 SDK。
+实现开始后，在 CI 的依赖检查中确认：跨组件引用 `hosts/`、`providers/`、`drivers/`、`control/` 与 `safety/` 具体实现的只有 `runtime/`，各组件对自身平台实现的内部引用不受此限；`targets/` 只依赖 `runtime/`；`examples/` 只依赖公开 SDK。
