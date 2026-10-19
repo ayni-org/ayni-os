@@ -6,12 +6,25 @@ cmake_minimum_required(VERSION 3.22)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/AyniLayers.cmake")
 
+ayni_add_core_module(foundation
+    SOURCES
+        foundation/crc32.cpp)
+
+ayni_add_core_module(durability
+    SOURCES
+        durability/batch/batch_codec.cpp
+        durability/batch/prefix_scan.cpp
+    DEPENDS foundation)
+
 ayni_add_core_module(kernel
     SOURCES
+        kernel/boot/boot_sequence.cpp
         kernel/completion/completion_pool.cpp
         kernel/ingress/event_queue.cpp
         kernel/kernel_api.cpp
-        kernel/kernel_layout.cpp)
+        kernel/kernel_layout.cpp
+        kernel/kernel_lifecycle.cpp
+    DEPENDS durability foundation)
 
 # What consumers link: the top module pulls in every module below it.
 add_library(ayni_core INTERFACE)

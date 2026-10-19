@@ -1,6 +1,6 @@
 # 生命周期与状态转换
 
-- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
+- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
 - **原则**：生命周期、持久化状态与等待原因是三个维度。生命周期写在枚举里；“是否已持久接受”由提交序号表达（C-COMMIT-004）；等待原因由待决调用派生（ADR-0007）。表中未列出的转换都是非法转换，返回 `AYNI_INVALID_STATE` 并保持原状态。
 
 ## Kernel
@@ -8,9 +8,9 @@
 | 状态 | 值 | 含义 |
 |---|---:|---|
 | `CONFIGURING` | 1 | 已创建，可以注册目录；不处理意图 |
-| `RECOVERING` | 2 | `ayni_start` 已冻结目录并通过交叉引用校验，`step` 正在异步重放持久前缀 |
+| `RECOVERING` | 2 | `ayni_start` 已冻结目录并通过交叉引用校验，`step` 正在异步重放持久前缀并持久化新的 `boot_epoch` |
 | `RUNNING` | 3 | 开放准入 |
-| `RESTRICTED` | 4 | 恢复发现不兼容、损坏或存储不可写；只读诊断，本地停止路径照常可用 |
+| `RESTRICTED` | 4 | 恢复发现不兼容、损坏或存储不可写；只读诊断，本地停止路径照常可用；原因经 `ayni_get_kernel_info` 读取 |
 | `DRAINING` | 5 | `ayni_begin_shutdown` 之后，收敛在途工作，不再接受新意图 |
 | `STOPPED` | 6 | 停机完成，可以 `ayni_destroy` |
 
@@ -18,27 +18,28 @@
 |---|---|---|
 | — | `CONFIGURING` | `ayni_create` 成功 |
 | `CONFIGURING` | `RECOVERING` | `ayni_start` 校验通过 |
-| `CONFIGURING` | `CONFIGURING` | `ayni_start` 校验失败（返回错误与 `ayni_error_v1`，可修正后重试） |
-| `RECOVERING` | `RUNNING` | 持久前缀重放完成、幂等映射重建、授权与资源检查完成 |
-| `RECOVERING` | `RESTRICTED` | 版本不支持、已提交区域损坏、关键记录无法验证 |
+| `CONFIGURING` | `CONFIGURING` | `ayni_start` 校验失败（返回错误与 `ayni_error_v1`，可修正后重试）；Host 没有存储端口（`AYNI_UNSUPPORTED`） |
+| `RECOVERING` | `RUNNING` | 持久前缀重放完成、新的 `boot_epoch` 已持久化（C-ID-009）、幂等映射重建、授权与资源检查完成 |
+| `RECOVERING` | `RESTRICTED` | 版本不支持、已提交区域损坏、关键记录无法验证，或存储拒绝请求、读写失败或结果未知、`boot_epoch` 耗尽（ADR-0016） |
 | `RUNNING` | `RESTRICTED` | 受限栅栏中无法确认旧写入方已排空或隔离，或存储仍不可写（C-COMMIT-008） |
 | `RUNNING` | `RECOVERING` | 受限栅栏确认旧写入方已隔离，以新 `boot_epoch` 重载 |
 | `RUNNING`、`RECOVERING`、`RESTRICTED` | `DRAINING` | `ayni_begin_shutdown` |
 | `DRAINING` | `STOPPED` | 在途工作已终结或记录为未知，资源已释放或隔离，全部预留完成槽已收到完成（C-HOST-018） |
 
-各状态下公开函数的返回值（M0 已实现的函数在前，其余为计划）：
+各状态下公开函数的返回值（已实现的函数在前，其余为计划；参数错误先于状态检查）：
 
 | 函数 | CONFIGURING | RECOVERING | RUNNING | RESTRICTED | DRAINING | STOPPED |
 |---|---|---|---|---|---|---|
 | `ayni_get_lifecycle` | OK | OK | OK | OK | OK | OK |
+| `ayni_get_kernel_info` | OK | OK | OK | OK | OK | OK |
 | `ayni_destroy` | OK | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | OK |
+| `ayni_start` | OK；无存储端口时 UNSUPPORTED；校验错误（计划） | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| `ayni_step` | INVALID_STATE | OK | OK | OK | OK | INVALID_STATE |
+| `ayni_begin_shutdown` | INVALID_STATE | OK | OK | OK | OK（幂等） | OK（幂等） |
 | `ayni_register_*` | OK 或参数错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
-| `ayni_start` | OK 或校验错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
 | `ayni_submit_intent` | NOT_READY | NOT_READY | 按意图校验 | NOT_READY | NOT_READY | NOT_READY |
 | 查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
 | `ayni_post_event` | INVALID_STATE | OK | OK | OK（只用于对账与诊断） | OK | INVALID_STATE |
-| `ayni_step` | INVALID_STATE | OK | OK | OK | OK | INVALID_STATE |
-| `ayni_begin_shutdown` | INVALID_STATE | OK | OK | OK | OK（幂等） | OK（幂等） |
 
 ## AgentInstance
 
@@ -73,11 +74,12 @@
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-LIFE-001 | `ayni_create` 成功后 Kernel 处于 `CONFIGURING` | 创建后直接处于 `RUNNING` 并开始接受意图 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
-| C-LIFE-002 | `ayni_destroy` 只在 `CONFIGURING` 或 `STOPPED` 成功；其他状态返回 `AYNI_INVALID_STATE` 且 Kernel 不变；`STOPPED` 意味着没有 Host 或 Provider 仍持有完成槽（C-HOST-018） | 运行中的 Kernel 被销毁，在途 I/O 回调写入已释放的内存 | M0 已实现 `CONFIGURING` 路径：`KernelApi.kernel_memory_is_reusable_after_destroy`；其他状态待 `MA-005` |
+| C-LIFE-002 | `ayni_destroy` 只在 `CONFIGURING` 或 `STOPPED` 成功；其他状态返回 `AYNI_INVALID_STATE` 且 Kernel 不变；`STOPPED` 意味着没有 Host 或 Provider 仍持有完成槽（C-HOST-018） | 运行中的 Kernel 被销毁，在途 I/O 回调写入已释放的内存 | M1 已实现：`KernelApi.kernel_memory_is_reusable_after_destroy`、`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`；`MA-005` |
 | C-LIFE-003 | 注册只在 `CONFIGURING` 进行；`ayni_start` 一次性校验全部交叉引用，注册顺序无关；引用缺失时 start 失败并保持 `CONFIGURING` | 先注册 Binding 后注册 Capability 导致失败 | `MA-005` |
 | C-LIFE-004 | 非 `RUNNING` 时 `ayni_submit_intent` 返回 `AYNI_NOT_READY`，不排队、不改变状态 | 恢复期间到达的创建提醒命令被排队，恢复后又按重建的幂等映射再次创建 | E2 F13 |
 | C-LIFE-005 | 生命周期变化经事件与 `ayni_get_lifecycle` 同时可见；事件在状态已应用之后发出 | 事件报告 `RUNNING` 时查询仍返回 `RECOVERING` | `MA-005` |
 | C-LIFE-006 | 首版不提供运行时注销；运行时发现的目录变化另行定义为经提交协调的 transition | 运行中删除 Capability，在途 ActionRecord 失去语义 | `MA-005` |
+| C-LIFE-007 | 已实现的函数在每个状态下按上表返回；表中的 `INVALID_STATE` 不改变状态；进入 `RESTRICTED` 时记录原因，`ayni_get_kernel_info` 只在 `RESTRICTED` 中报告它（ADR-0016） | 恢复失败后状态停在 `RECOVERING`，调用方无法区分“仍在恢复”与“已经失败” | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |
 | C-LIFE-010 | ActionRecord 只按上表转换；`RESULT_UNKNOWN` 只能经权威查询离开 | `RESULT_UNKNOWN` 超时后自动改为 `FAILED` 并重试 | E2 F3–F5；状态转换表测试 |
 | C-LIFE-011 | 运行终态与副作用结果分开：`CANCELLED`/`FAILED` 的记录列出已完成、未执行与未知的步骤，不推导“没有影响” | 取消后报告“无影响”，但第一步转向已执行 | E4 步骤 3 |
 | C-LIFE-012 | 取消请求已受理、停止指令已送达、物理输出已停止是三种事实，分别表达 | 把“已发送停止”显示为“已停止” | E1 步骤 4；C-STOP-006 |

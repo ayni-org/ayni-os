@@ -32,11 +32,6 @@ typedef struct ayni_string_v1 {
     uint32_t size;    /* bytes, not characters */
 } ayni_string_v1;
 
-typedef struct ayni_bytes_v1 {
-    const uint8_t *data;
-    uint32_t size;
-} ayni_bytes_v1;
-
 /* Object kinds an ayni_object_ref_v1 or ayni_error_v1 can name. */
 typedef uint32_t ayni_object_kind_t;
 

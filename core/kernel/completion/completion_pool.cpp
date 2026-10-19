@@ -120,6 +120,11 @@ bool CompletionPool::owns(const ayni_completion *completion) const {
            &slots_[completion->index] == completion;
 }
 
+uint32_t CompletionPool::posted_count() const {
+    const IngressGuard guard(host_);
+    return posted_count_;
+}
+
 CompletionPool::Counters CompletionPool::counters() const {
     const IngressGuard guard(host_);
     return counters_;

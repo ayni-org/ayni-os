@@ -1,6 +1,7 @@
 // Contract of the C ABI in include/ayni/ayni.h: version query, memory
 // requirements, create, lifecycle query and destroy. Completion posting is
-// covered by completion_pool_test.cpp.
+// covered by completion_pool_test.cpp; start, step, shutdown and kernel info
+// by kernel_lifecycle_test.cpp.
 
 #include "kernel/kernel_state.h"
 
@@ -24,6 +25,18 @@ void no_wake(void * /*ctx*/) {}
 void no_lock(void * /*ctx*/) {}
 void no_unlock(void * /*ctx*/) {}
 
+ayni_submit_result_t reject_append(void * /*ctx*/, const ayni_storage_batch_v1 * /*batch*/,
+                                   ayni_attempt_ref_v1 /*attempt*/,
+                                   ayni_completion_t * /*completion*/) {
+    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+}
+
+ayni_submit_result_t reject_read(void * /*ctx*/, uint64_t /*from_commit_seq*/, uint8_t * /*buffer*/,
+                                 uint32_t /*buffer_size*/, ayni_attempt_ref_v1 /*attempt*/,
+                                 ayni_completion_t * /*completion*/) {
+    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+}
+
 // Small capacities keep the kernel inside KernelMemory.
 ayni_config_v1 valid_config() {
     ayni_config_v1 config{};
@@ -33,6 +46,7 @@ ayni_config_v1 valid_config() {
     config.ingress_capacity = 4;
     config.event_body_max_bytes = 16;
     config.completion_slot_count = 2;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN;
     return config;
 }
 
@@ -125,8 +139,7 @@ TEST_F(KernelApi, create_in_caller_memory_starts_configuring) {
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
-// White-box: no implemented function calls the host yet, so the copy is
-// checked through the kernel's own representation.
+// White-box: the copy is checked through the kernel's own representation.
 TEST_F(KernelApi, create_copies_host_table_before_return) {
     const ayni_config_v1 config = valid_config();
     int ctx_target = 0;
@@ -144,6 +157,54 @@ TEST_F(KernelApi, create_copies_host_table_before_return) {
     EXPECT_EQ(kernel->host.wake, &no_wake);
     EXPECT_EQ(kernel->host.ingress_lock, &no_lock);
     EXPECT_EQ(kernel->host.ingress_unlock, &no_unlock);
+    EXPECT_EQ(kernel->host.storage_append, nullptr);
+    EXPECT_EQ(kernel->host.storage_read_prefix, nullptr);
+    EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
+}
+
+TEST_F(KernelApi, create_copies_storage_ports) {
+    const ayni_config_v1 config = valid_config();
+    ayni_host_v1 host = valid_host();
+    host.storage_append = &reject_append;
+    host.storage_read_prefix = &reject_read;
+    ayni_kernel_t *kernel = nullptr;
+    ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
+    EXPECT_EQ(kernel->host.storage_append, &reject_append);
+    EXPECT_EQ(kernel->host.storage_read_prefix, &reject_read);
+    EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
+}
+
+// ADR-0016: storage is optional, but only as a pair.
+TEST_F(KernelApi, create_rejects_only_one_storage_port) {
+    const ayni_config_v1 config = valid_config();
+    ayni_kernel_t *kernel = nullptr;
+    ayni_host_v1 host = valid_host();
+    host.storage_append = &reject_append;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    host = valid_host();
+    host.storage_read_prefix = &reject_read;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    // A table ending inside storage_read_prefix has storage_append alone.
+    host = valid_host();
+    host.storage_append = &reject_append;
+    host.storage_read_prefix = &reject_read;
+    host.struct_size = sizeof(host) - 1;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(kernel, nullptr);
+}
+
+// A 0.3 Host table ends before the storage ports; it is still valid, and the
+// kernel it creates cannot start (kernel_lifecycle_test.cpp).
+TEST_F(KernelApi, host_table_without_storage_ports_is_accepted) {
+    const ayni_config_v1 config = valid_config();
+    ayni_host_v1 host = valid_host();
+    host.storage_append = &reject_append;
+    host.storage_read_prefix = &reject_read;
+    host.struct_size = offsetof(ayni_host_v1, storage_append);
+    ayni_kernel_t *kernel = nullptr;
+    ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
+    EXPECT_EQ(kernel->host.storage_append, nullptr);
+    EXPECT_EQ(kernel->host.storage_read_prefix, nullptr);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
@@ -189,7 +250,7 @@ TEST_F(KernelApi, host_table_without_0_3_ports_is_invalid_argument) {
     ayni_host_v1 host = valid_host();
     host.struct_size = offsetof(ayni_host_v1, wake);
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
-    host.struct_size = sizeof(host) - 1;
+    host.struct_size = offsetof(ayni_host_v1, ingress_unlock) + sizeof(host.ingress_unlock) - 1;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(kernel, nullptr);
 }
@@ -213,14 +274,17 @@ TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
     std::size_t align = 0;
     const struct {
         uint32_t ayni_config_v1::*field;
+        uint32_t min;
         uint32_t max;
     } capacities[] = {
-        {&ayni_config_v1::ingress_capacity, AYNI_INGRESS_CAPACITY_MAX},
-        {&ayni_config_v1::event_body_max_bytes, AYNI_EVENT_BODY_MAX_BYTES_MAX},
-        {&ayni_config_v1::completion_slot_count, AYNI_COMPLETION_SLOT_COUNT_MAX},
+        {&ayni_config_v1::ingress_capacity, 1U, AYNI_INGRESS_CAPACITY_MAX},
+        {&ayni_config_v1::event_body_max_bytes, 1U, AYNI_EVENT_BODY_MAX_BYTES_MAX},
+        {&ayni_config_v1::completion_slot_count, 1U, AYNI_COMPLETION_SLOT_COUNT_MAX},
+        {&ayni_config_v1::storage_buffer_bytes, AYNI_STORAGE_BUFFER_BYTES_MIN,
+         AYNI_STORAGE_BUFFER_BYTES_MAX},
     };
     for (const auto &capacity : capacities) {
-        for (const uint32_t value : {0U, capacity.max + 1U}) {
+        for (const uint32_t value : {0U, capacity.min - 1U, capacity.max + 1U}) {
             ayni_config_v1 config = valid_config();
             config.*capacity.field = value;
             EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT) << value;
@@ -228,9 +292,11 @@ TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
                       AYNI_INVALID_ARGUMENT)
                 << value;
         }
-        ayni_config_v1 config = valid_config();
-        config.*capacity.field = capacity.max;
-        EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_OK);
+        for (const uint32_t value : {capacity.min, capacity.max}) {
+            ayni_config_v1 config = valid_config();
+            config.*capacity.field = value;
+            EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_OK) << value;
+        }
     }
     EXPECT_EQ(kernel, nullptr);
 }
@@ -246,6 +312,9 @@ TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
     config = valid_config();
     config.completion_slot_count += 1;
     EXPECT_GT(required_size(config), base);
+    config = valid_config();
+    config.storage_buffer_bytes += 1;
+    EXPECT_GT(required_size(config), base);
 }
 
 // C-VER-003: a field that struct_size does not cover is never read and takes
@@ -255,11 +324,21 @@ TEST_F(KernelApi, uncovered_capacities_take_their_defaults) {
     defaults.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
     defaults.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
     defaults.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
+    defaults.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
 
     ayni_config_v1 short_config = valid_config();
     short_config.struct_size = offsetof(ayni_config_v1, ingress_capacity);
     short_config.ingress_capacity = 0; // would be rejected if it were read
+    short_config.storage_buffer_bytes = 0;
     EXPECT_EQ(required_size(short_config), required_size(defaults));
+
+    // A config ending before storage_buffer_bytes keeps its own capacities.
+    ayni_config_v1 only_storage_default = valid_config();
+    only_storage_default.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    short_config = valid_config();
+    short_config.struct_size = offsetof(ayni_config_v1, storage_buffer_bytes);
+    short_config.storage_buffer_bytes = 0;
+    EXPECT_EQ(required_size(short_config), required_size(only_storage_default));
 }
 
 TEST_F(KernelApi, struct_size_from_newer_minor_is_unsupported_version) {

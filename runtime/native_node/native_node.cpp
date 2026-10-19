@@ -30,6 +30,7 @@ ayni_status_t NativeNode::assemble() {
     config.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
     config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
     config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
 
     std::size_t size = 0;
     std::size_t align = 0;
