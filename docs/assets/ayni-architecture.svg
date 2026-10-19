@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1585" viewBox="0 0 1680 1585" role="img" aria-labelledby="title desc">
   <title id="title">Ayni planned architecture</title>
-  <desc id="desc">Ayni applications and strategies use typed C99 and C++ interfaces to reach one Kernel state owner per device. The Kernel validates intents, applies transitions in commit order and releases outputs only after the durable prefix covers them. The Kernel is split by invariant owner into kernel, work, authority, resources, knowledge, catalog, durability and foundation modules: work owns goals, tasks, calls, the action ledger and sessions; resources owns admission, leases, execution permits and budgets; knowledge owns observations, memory, context and lineage. Execution permits, control sessions and motion-outcome phases are base contracts; an optional Embodiment Profile adds robot-specific frames, units, clock domains, robot state, trajectory segments and verification evidence, and does not require every device to run a robotics stack. Optional world-model and VLA components only propose bounded goals or action chunks, which execute inside an admitted session after executor permit and envelope checks. Versioned asynchronous ports connect Host services and Providers to the operating system, drivers and hardware, where local controllers check permits. Optional ROS 2 bridges and an MHS adapter run as confined processes outside Core and use managed boundaries; MHS integration is conditional on specification access and conformance validation. The model gateway does not own tasks. An independent local stop path reaches the supervisor, a hardware timeout gate and motor disable without depending on the ordinary Core event queue; stop bounds require measurement. All components are planned, not implemented capabilities.</desc>
+  <desc id="desc">Ayni applications and strategies use typed C99 and C++ interfaces to reach one Kernel state owner per device. The Kernel validates intents, applies transitions in commit order and releases outputs only after the durable prefix covers them. The Kernel is split by invariant owner into nine modules: kernel orchestrates; work owns goals, tasks, calls, the action ledger and sessions; authority, resources, budget and knowledge are independent peers that own grants, leases and execution permits, budgets, and observations and memory respectively; catalog, durability and foundation sit beneath them. Execution permits, control sessions and motion-outcome phases are base contracts; an optional Embodiment Profile adds robot-specific frames, units, clock domains, robot state, trajectory segments and verification evidence, and does not require every device to run a robotics stack. Optional world-model and VLA components only propose bounded goals or action chunks, which execute inside an admitted session after executor permit and envelope checks. Versioned asynchronous ports connect Host services and Providers to the operating system, drivers and hardware, where local controllers check permits. Optional ROS 2 bridges and an MHS adapter run as confined processes outside Core and use managed boundaries; MHS integration is conditional on specification access and conformance validation. The model gateway does not own tasks. An independent local stop path reaches the supervisor, a hardware timeout gate and motor disable without depending on the ordinary Core event queue; stop bounds require measurement. All components are planned, not implemented capabilities.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#52677c"/></marker>
     <marker id="stop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#c85b36"/></marker>
@@ -86,8 +86,8 @@
   <rect x="238" y="724" width="224" height="118" rx="11" fill="#ffffff" stroke="#bccbdc"/>
   <text x="350" y="752" text-anchor="middle" class="service-title">Work</text>
   <text x="350" y="780" text-anchor="middle" class="service-detail">Agent · Goal · Task</text>
-  <text x="350" y="804" text-anchor="middle" class="service-detail">Calls · Action ledger</text>
-  <text x="350" y="828" text-anchor="middle" class="service-detail">Sessions · Subscriptions</text>
+  <text x="350" y="804" text-anchor="middle" class="service-detail">Call · Action ledger</text>
+  <text x="350" y="828" text-anchor="middle" class="service-detail">Session · Subscription</text>
 
   <rect x="478" y="724" width="224" height="118" rx="11" fill="#fffaf0" stroke="#d9cba9"/>
   <text x="590" y="752" text-anchor="middle" class="service-title">Authority</text>
@@ -99,23 +99,27 @@
   <text x="830" y="752" text-anchor="middle" class="service-title">Resources</text>
   <text x="830" y="780" text-anchor="middle" class="service-detail">Admission · Leases</text>
   <text x="830" y="804" text-anchor="middle" class="service-detail">Execution permits</text>
-  <text x="830" y="828" text-anchor="middle" class="service-detail">Budget</text>
+  <text x="830" y="828" text-anchor="middle" class="service-detail">Quarantine</text>
 
-  <rect x="958" y="724" width="224" height="118" rx="11" fill="#f4f2fb" stroke="#c9c1de"/>
-  <text x="1070" y="752" text-anchor="middle" class="service-title">Knowledge</text>
-  <text x="1070" y="780" text-anchor="middle" class="service-detail">Observation · Memory</text>
-  <text x="1070" y="804" text-anchor="middle" class="service-detail">Context</text>
-  <text x="1070" y="828" text-anchor="middle" class="service-detail">Lineage · Tombstones</text>
+  <rect x="958" y="724" width="224" height="118" rx="11" fill="#eef5fb" stroke="#b5cbe0"/>
+  <text x="1070" y="752" text-anchor="middle" class="service-title">Budget</text>
+  <text x="1070" y="780" text-anchor="middle" class="service-detail">Quota hierarchy</text>
+  <text x="1070" y="804" text-anchor="middle" class="service-detail">Reservation</text>
+  <text x="1070" y="828" text-anchor="middle" class="service-detail">Settlement</text>
 
-  <rect x="1198" y="724" width="224" height="118" rx="11" fill="#ffffff" stroke="#bccbdc"/>
-  <text x="1310" y="752" text-anchor="middle" class="service-title">Durability</text>
-  <text x="1310" y="780" text-anchor="middle" class="service-detail">Durable prefix</text>
-  <text x="1310" y="804" text-anchor="middle" class="service-detail">Snapshot · Replay</text>
-  <text x="1310" y="828" text-anchor="middle" class="service-detail">Migration</text>
+  <rect x="1198" y="724" width="224" height="118" rx="11" fill="#f4f2fb" stroke="#c9c1de"/>
+  <text x="1310" y="752" text-anchor="middle" class="service-title">Knowledge</text>
+  <text x="1310" y="780" text-anchor="middle" class="service-detail">Observation · Memory</text>
+  <text x="1310" y="804" text-anchor="middle" class="service-detail">Context</text>
+  <text x="1310" y="828" text-anchor="middle" class="service-detail">Lineage · Tombstones</text>
 
-  <!-- catalog and foundation sit beneath every other Core module. -->
-  <rect x="238" y="852" width="1184" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
-  <text x="830" y="875" text-anchor="middle" class="detail">Catalog: versioned descriptions · trusted registration · validators   |   Foundation: IDs · time · errors · fences</text>
+  <!-- Lower Core layers in dependency order: catalog -> durability -> foundation. -->
+  <rect x="238" y="852" width="389" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
+  <text x="432.5" y="875" text-anchor="middle" class="detail">Catalog: descriptions · registration</text>
+  <rect x="635" y="852" width="390" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
+  <text x="830" y="875" text-anchor="middle" class="detail">Durability: prefix · snapshot · migration</text>
+  <rect x="1033" y="852" width="389" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
+  <text x="1227.5" y="875" text-anchor="middle" class="detail">Foundation: IDs · time · fences · trace</text>
 
   <!-- Execution and completion cross a versioned asynchronous boundary. -->
   <path d="M 830 900 V 945" class="duplex"/>

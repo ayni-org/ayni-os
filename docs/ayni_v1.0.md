@@ -92,7 +92,7 @@ v0.1 是受控的普通用户试用版本。提供已刷固件的轮式设备及
 | 可选具身契约与外部适配 | Profile 约束现有 Observation/Capability/Binding；ROS 2 Bridge、未来 MHS 适配器复用受管理入口 | 可选域约束不另造 Kernel；ROS/DDS/tf2/运动规划与控制器实现留在 Core 外；适配器以权限受限的进程运行 |
 | 宿主 OS 与硬件 | ESP-IDF/FreeRTOS、Native OS、驱动、传感器、执行器 | 停止链依赖的时钟、中断、内存与硬件超时须写明并实测（第 4.1 节） |
 
-Core 按不变量属主分为八个模块（第 2.3 节、ADR-0008），依赖方向为 `kernel → work → {authority, resources, knowledge} → catalog → durability → foundation`；`authority`、`resources`、`knowledge` 之间不互相依赖，跨模块修改由 `kernel` 在同一 transition 中编排并经同一提交协调。`durability` 只提供持久前缀、快照、已提交批次重放与迁移等机制；恢复顺序与领域恢复规则由 `kernel` 按各模块规则编排，底层模块不反向依赖领域模块。应用和 Provider 依赖公开契约，Core 不依赖具体应用、SDK 便捷层、外部协议 SDK 或平台头文件。`knowledge` 保留记忆与上下文的归属、访问、依赖和预算机制；提示词、摘要、排序、业务规划及模型偏好在上层或 Provider。
+Core 按不变量属主分为九个模块，采用两级目录：第一级是模块边界，第二级按实体命名以便查找（第 2.3 节、ADR-0008）。依赖方向为 `kernel → work → {authority, resources, budget, knowledge} → catalog → durability → foundation`；`authority`、`resources`、`budget`、`knowledge` 之间不互相依赖，跨模块修改由 `kernel` 在同一 transition 中编排并经同一提交协调。`durability` 只提供持久前缀、快照、已提交批次重放与迁移等机制；恢复顺序与领域恢复规则由 `kernel` 按各模块规则编排，底层模块不反向依赖领域模块。应用和 Provider 依赖公开契约，Core 不依赖具体应用、SDK 便捷层、外部协议 SDK 或平台头文件。`knowledge` 保留记忆与上下文的归属、访问、依赖和预算机制；提示词、摘要、排序、业务规划及模型偏好在上层或 Provider。
 
 Ayni 自主定义设备能力模型与安全执行机制，领域契约是系统权威；设备发现由 Host/适配器完成，候选描述经可信注册后进入 Core 目录。ROS 2、MHS、MCP 都是外部互操作体系，与 Ayni 的关系是版本化映射和明确声明的支持子集，不宣称结构等同；其字段和传输版本变化优先在适配层消化，不反向规定 Kernel 对象或执行权。若外部需求新增控制、资源或恢复语义，则通过领域版本、ADR、迁移和验收演进，不能承诺核心永久无需变化，也不能为了兼容削弱本机保证。
 
@@ -126,16 +126,17 @@ Observation 的 TTL、动作 deadline 在本机采用单调时间执行；跨设
 
 | 系统服务 / 建议目录 | Core 负责 | Host、Provider 或应用负责 |
 |---|---|---|
-| 编排与入口 `kernel/` | Kernel 生命周期、step、事件入口（有界队列、合并、路由）与完成槽；受管入口（解码 → 校验 → 分派）与命令幂等映射；跨模块编排、恢复编排、输出门控；trace 与脱敏诊断 | ISR 安全桥接、线程唤醒，不从 ISR 调用普通 API；日志出口与性能测量 |
-| 执行 `work/` | AgentInstance 注册、生命周期、隔离命名空间、停止与回收；Goal/Task 的接受、调度、触发去重、暂停取消、检查点与归属；步骤、LogicalCall 与请求尝试（request ID、boot epoch、超时、取消、晚到结果）；ActionRecord 与派发屏障；过程、会话与订阅（代际、租期、序号、gap）的生命周期 | 实例角色与助理呈现；提醒等目标类型、完成判定和规划策略；非阻塞 I/O、结果验证、取消尝试与流传输 |
-| 授权 `authority/` | 主体、节点与实例身份及其绑定证据；Session 信任级别；Grant、撤销与受限委派、审批绑定；Scene 授权；包络静态准入判定 | 认证凭据存储与传输；本地执行、物理限值、持续联锁与独立停止机制 |
-| 资源 `resources/` | 资源准入（全有或全无）、队列、冲突、租期与隔离；执行许可的签发、续租与失效；预算层级、设备总额、预留与结算；优先级、限流、公平与饥饿监测 | 设备健康探测；试用额度配置，网关同步执行外部费用限制 |
-| 知识 `knowledge/` | Observation 的来源、采集时间与有效期；私有/共享记忆的范围与版本；上下文预算；lineage、tombstone 与依赖失效 | 感知算法、模型解释、可选检索 Provider |
-| 目录 `catalog/` | 设备、组件、资源、能力（Schema、副作用与恢复属性）、Binding、目标类型与策略的版本化描述与选择约束；可信注册；兼容矩阵；注册的纯函数校验器 | 发现硬件、采集/驱动，生成候选描述 |
+| 编排与入口 `kernel/` | Kernel 生命周期、step、事件入口（有界队列、合并、路由）与完成槽；受管入口（解码 → 校验 → 分派）与命令幂等映射；跨模块编排、恢复编排、输出门控；诊断的脱敏与导出 | ISR 安全桥接、线程唤醒，不从 ISR 调用普通 API；日志出口与性能测量 |
+| 执行 `work/`：`agent/`、`goal/`、`task/`、`call/`、`action/`、`session/`、`subscription/` | AgentInstance 注册、生命周期、隔离命名空间、停止与回收；Goal/Task 的接受、调度、触发去重、暂停取消、检查点与归属；步骤、LogicalCall 与请求尝试（request ID、boot epoch、超时、取消、晚到结果）；ActionRecord 与派发屏障；过程、控制会话与订阅（代际、租期、序号、gap）的生命周期 | 实例角色与助理呈现；提醒等目标类型、完成判定和规划策略；非阻塞 I/O、结果验证、取消尝试与流传输 |
+| 授权 `authority/`：`principal/`、`grant/`、`scene/` | 主体、节点与实例身份及其绑定证据；Session 信任级别；Grant、撤销与受限委派、审批绑定；Scene 授权；包络静态准入判定 | 认证凭据存储与传输；本地执行、物理限值、持续联锁与独立停止机制 |
+| 资源 `resources/`：`admission/`、`lease/`、`permit/` | 资源准入（全有或全无）、排队、冲突、公平与饥饿监测；租期与隔离；执行许可的签发、续租与失效；设备在线、占用与健康等运行时状态 | 设备健康探测的具体实现 |
+| 预算 `budget/` | 设备总额与实例/目标/任务子预算层级、预留与结算、限流；重启不清零已花额度，不确定调用按保守规则结算 | 试用额度配置，网关同步执行外部费用限制 |
+| 知识 `knowledge/`：`observation/`、`memory/`、`context/`、`lineage/` | Observation 的来源、采集时间与有效期；私有/共享记忆的范围与版本；上下文预算；lineage、tombstone 与依赖失效 | 感知算法、模型解释、可选检索 Provider |
+| 目录 `catalog/`：`device/`、`capability/`、`binding/`、`goal_type/`、`strategy/` | 设备、组件、资源、能力（Schema、副作用与恢复属性）、Binding、目标类型与策略的版本化描述与选择约束；可信注册；兼容矩阵；注册的纯函数校验器 | 发现硬件、采集/驱动，生成候选描述 |
 | 持久 `durability/` | 持久前缀、日志/快照、已提交批次重放、迁移机制；不含领域恢复策略 | 存储原子性/flush 能力 |
-| 基础 `foundation/` | ID、时间、状态码与原因、有界容器、通用代际栅栏类型 | — |
+| 基础 `foundation/` | ID、时间、状态码与原因、有界容器、通用代际栅栏、trace 记录类型与注入式 sink | — |
 
-上表每行是对应不变量的唯一属主；跨模块状态转换由 `kernel/` 在同一 transition 中编排，模块之间不修改彼此的内部状态。模块内部可按实体分文件，文件划分不构成模块边界。
+上表每行是对应不变量的唯一属主；跨模块状态转换由 `kernel/` 在同一 transition 中编排，模块之间不修改彼此的内部状态。资源与预算的联合准入由 `kernel/` 在同一 transition 中先判定、后应用。第二级子目录按实体命名以便查找，子目录之间的单向 include 规则在模块内声明并检查；`kernel/`、`budget/`、`durability/`、`foundation/` 职责集中，不再细分子目录。设备与能力的描述同在 `catalog/`，因为 Binding 同时引用二者、注册时须交叉核对且共用一个兼容矩阵；它们的运行时状态分属 `resources/`（在线、占用、租期、许可）、`authority/`（Grant）与 `work/`（调用实例）。
 
 资源按 Capability 声明由系统自动申请、协调和释放，Agent 不直接持有驱动锁。资源组采用全有或全无准入，避免部分占用互相等待；首版不强制抢占不可中断的物理动作，采用排队、超时或可取消操作释放。优先级次序为本地停止路径、前台交互/已到期提醒、普通工作、后台反思；同级使用有界公平排队并记录最长等待时间。每类工作声明等待期限及超限后的延后、过期或暂停原因；后台反思允许不运行，但不能保持无原因的永久等待。模型占用槽期间其他本地工作继续推进，优先级不意味着可以中断既有物理副作用。
 
@@ -717,9 +718,16 @@ ayni/
 ├── include/ayni/client.h               # PC management client
 ├── contracts/{domain,host,wire,storage,fixtures}/ # commands/calls/subscriptions/commits/permits
 ├── contracts/profiles/embodiment/       # optional robot-specific types/outcome evidence; planned
-├── core/                               # modules by invariant owner (ADR-0008)
-│   ├── kernel/ work/ authority/ resources/
-│   └── knowledge/ catalog/ durability/ foundation/
+├── core/                               # modules by invariant owner; level 2 = entities (ADR-0008)
+│   ├── kernel/
+│   ├── work/{agent,goal,task,call,action,session,subscription}/
+│   ├── authority/{principal,grant,scene}/
+│   ├── resources/{admission,lease,permit}/
+│   ├── budget/
+│   ├── knowledge/{observation,memory,context,lineage}/
+│   ├── catalog/{device,capability,binding,goal_type,strategy}/
+│   ├── durability/
+│   └── foundation/
 ├── runtime/                            # composition root: wires node profiles (ADR-0010)
 ├── strategies/{rule,tool_loop}/
 ├── applications/{assistant,goal_types,scenes,skills,notifications}/
@@ -1104,7 +1112,7 @@ Ayni 架构按上述需求设计；AIOS 仅作为架构图视觉表达参考。�
 
 本轮扩展基线为可选 `EMBODIMENT_V1`、Core 外 Linux ROS 2 Bridge 和有条件 MHS 适配；E1–E4 必需门槛保持不变，R1.a/b/c 对声明的扩展分别强制。
 
-v1.4 并入的设计基线（ADR-0001～0008、ADR-0010）：设备治理模型与执行许可失效协议、提交与输出门控协议、信任两轴与适配器约束、跨设备身份/新鲜度/幂等契约、ESP32 分层停止链、Kernel 生命周期与 Host/Provider 边界及策略接口、通知呈现复用能力调用与 Task 状态维度、Core 按不变量属主划分为八个模块、组合根 `runtime/` 与可执行目标目录 `targets/`。IDL 与本地 API 编码（ADR-0009）在 M1 早期按实测决定。以上均为设计决策，不代表已实现或已验证。MHS 规范可得性不阻塞 Ayni Core 或原生设备；不据本次文档更新宣称 ROS、micro-ROS、MHS、完整机器人或 VLA 已支持。
+v1.4 并入的设计基线（ADR-0001～0008、ADR-0010）：设备治理模型与执行许可失效协议、提交与输出门控协议、信任两轴与适配器约束、跨设备身份/新鲜度/幂等契约、ESP32 分层停止链、Kernel 生命周期与 Host/Provider 边界及策略接口、通知呈现复用能力调用与 Task 状态维度、Core 按不变量属主划分为九个模块并采用两级目录、组合根 `runtime/` 与可执行目标目录 `targets/`。IDL 与本地 API 编码（ADR-0009）在 M1 早期按实测决定。以上均为设计决策，不代表已实现或已验证。MHS 规范可得性不阻塞 Ayni Core 或原生设备；不据本次文档更新宣称 ROS、micro-ROS、MHS、完整机器人或 VLA 已支持。
 
 模型额度、视觉频率、反思频率是有限且可配置的系统参数；初始工程值先由 Mock 压测和硬件测量验证，试用套餐和用户可见含义再确认。运动数值没有未经测量的默认启用值。
 

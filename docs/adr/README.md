@@ -19,7 +19,7 @@
 | [0005](0005-esp32-layered-stop-chain.md) | ESP32 分层停止链 | 已接受 | §4.1、§7.1、§7.3 |
 | [0006](0006-kernel-lifecycle-ports-and-policy-interface.md) | Kernel 生命周期、Host/Provider 边界与策略接口 | 已接受 | §2.0、§2.5、§3.2、§4.4 |
 | [0007](0007-notification-presentation-and-task-state.md) | 通知呈现复用能力调用与 Task 状态维度 | 已接受 | §2.4、§5.4 |
-| [0008](0008-core-modules-by-invariant-owner.md) | Core 模块按不变量属主划分 | 已接受 | §2.0、§2.3、§8 |
+| [0008](0008-core-modules-by-invariant-owner.md) | Core 模块按不变量属主划分（两级目录，2026-10-19 修订） | 已接受 | §2.0、§2.3、§8 |
 | [0009](0009-idl-and-local-api-encoding.md) | IDL 与本地 API 编码 | 提议 | §3.1、§3.2 |
 | [0010](0010-composition-root-and-targets.md) | 组合根 `runtime/` 与可执行目标 `targets/` | 已接受 | §2.6、§8、§11 |
 

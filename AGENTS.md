@@ -8,7 +8,7 @@ This checkout is at the documentation and planning stage. Read `docs/ayni_v1.0.m
 
 Follow the planned layout when implementation begins:
 
-- `core/`: portable Kernel state, scheduling, authorization, and recovery, split by invariant owner into `kernel/`, `work/`, `authority/`, `resources/`, `knowledge/`, `catalog/`, `durability/`, and `foundation/` (ADR-0008).
+- `core/`: portable Kernel state, scheduling, authorization, and recovery, split by invariant owner into `kernel/`, `work/`, `authority/`, `resources/`, `budget/`, `knowledge/`, `catalog/`, `durability/`, and `foundation/`, with entity-named subdirectories such as `work/task/` (ADR-0008).
 - `include/ayni/`, `contracts/`: public C/C++ interfaces and versioned contracts.
 - `strategies/`, `applications/`: variable policies, goal types, scenes, and assistant workflows.
 - `hosts/`, `providers/`, `drivers/esp32/`: platform services, asynchronous I/O, and hardware drivers.

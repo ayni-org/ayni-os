@@ -1,58 +1,90 @@
 # ADR-0008：Core 模块按不变量属主划分
 
-- **状态**：已接受（设计基线，待实现与验证）
-- **日期**：2026-10-18
-- **关联**：计划 §2.0、§2.3、§2.8、§4.3、§8；`MA-017`
+- **状态**：已接受（设计基线，待实现与验证）；2026-10-19 经两轮对抗式评审修订
+- **日期**：2026-10-18（初版）、2026-10-19（修订）
+- **关联**：计划 §2.0、§2.3、§2.4、§2.8、§4.3、§8；`MA-017`
 
 ## 背景
 
-v1.3 的计划 §8 按实体名词把 Core 切分为 19 个目录。派发屏障这一关键安全链路分布在 `capability/`、`policy/`、`request/`、`binding/` 与 `state/`；LogicalCall 没有归属；架构图中的 Core 分组也与目录划分不一致。v1.4 首先在原有目录内为每项不变量指定唯一属主，并把本 ADR 记为候选，约定在首个 Core 实现提交前按下述标准决定。
+v1.3 按实体名词把 Core 平铺为 19 个目录。提交 `48b5fae` 保留这些目录，并在 §2.3 为每行指定唯一属主，但仍有三处缝隙：
 
-**决定标准**：以 §2.8 的每个提交批次和 §4.3 的动作提交顺序为样例，列出每项不变量的写入方；若在原有目录下仍有不变量需要 3 个或以上目录共同写入，则采纳候选划分。
+- 恢复编排的属主“系统调用分派层”在目录中没有落点；
+- 命令幂等映射与 LogicalCall 身份没有属主；
+- 动作账本与 Schema、Grant 同在 `capability/`、`policy/` 一行，三者的变更理由各不相同。
 
-## 评估
+初版本 ADR 改为 8 个模块。随后用户反馈新结构“不如之前直观”，于是安排两位评审分别为平铺结构与 8 模块结构辩护，各写开场论证和一轮反驳。本修订记录评审结论。
 
-| 不变量 | 来源 | 原有目录下的写入方 | 候选划分下的写入方 |
-|---|---|---|---|
-| 命令重试返回原对象 | §2.8 批次 1 | 命令幂等映射（未指定属主）、`goal/`、`task/` | `kernel`（幂等映射）、`work` |
-| 触发不漏不重 | §2.8 批次 2 | `goal/`、`task/`、`budget/` | `work`；预算预留由 `resources` 独立保证 |
-| 步骤调用身份稳定 | §2.8 批次 3 | `task/`、`binding/`、`capability/`/`policy/`；LogicalCall 未指定属主 | `work` |
-| 结果只应用一次 | §2.8 批次 4 | `request/`、`task/`、`capability/`/`policy/` | `work` |
-| 删除与撤销不复活 | §2.8 批次 5 | `memory/`、`context/`、`observation/`、`request/` | `knowledge`；在途结果拒绝由 `kernel` 编排、`work` 执行 |
-| 派发屏障 | §4.3 | `capability/`/`policy/`、`request/`、`binding/`、`resource/`、`state/` | `work`；许可由 `resources` 签发，持久机制由 `durability` 提供 |
-| 预算不超、不双重结算 | §2.2 | `budget/` | `resources` |
-| 执行许可失效 | §2.10 | `resource/`、`policy/` | `resources`、`authority` |
+**初版评估表的更正**：初版称“原有目录下前六项不变量各需 3 个或以上目录共同写入”，这一说法夸大了。原因有三：
 
-在原有目录下，前六项不变量各需 3 个或以上目录共同写入，并有两项状态（命令幂等映射、LogicalCall 身份）没有属主。在候选划分下，每项不变量最多两个写入方，且属主唯一。结论：满足采纳条件。
+- 旧侧按目录计数，而 `48b5fae` 的属主单位是 §2.3 的行；
+- 旧侧计入了批次参与者，新侧却把同批的预算、许可、持久层记为“独立保证”，口径不对称；
+- 同一提交批次涉及多个目录，并不等于同一不变量被多个目录写入。
+
+下表改用统一口径重算。
+
+## 评估（统一口径：只计“保证该不变量所须持有写权限的模块”）
+
+| 不变量 | 来源 | A：平铺（`48b5fae`） | A′：平铺加 `kernel/`、`call/` | 采纳的划分 |
+|---|---|---|---|---|
+| 命令重试返回原对象 | §2.8 批次 1 | 幂等映射无属主；`goal/`/`task/` | `kernel/`、`goal/`/`task/` | `kernel`、`work` |
+| 触发不漏不重 | §2.8 批次 2 | `goal/`、`task/` | `goal/`、`task/` | `work` |
+| 步骤调用身份稳定 | §2.8 批次 3 | `task/`、`capability/`/`policy/`；LogicalCall 无属主 | `task/`、`call/` | `work` |
+| 结果只应用一次 | §2.8 批次 4 | `request/`、`task/`、`capability/`/`policy/` | `call/`、`task/` | `work` |
+| 删除与撤销不复活 | §2.8 批次 5 | `memory/`、`context/`、`request/` | `memory/`、`context/`、`call/` | `knowledge`、`work` |
+| 派发屏障 | §4.3 | `capability/`/`policy/`、`request/`；输出门控无属主 | `call/`、`kernel/` | `work`、`kernel` |
+| 预算不超、不双重结算 | §2.2 | `budget/` | `budget/` | `budget` |
+| 执行许可失效 | §2.10 | `resource/`、`policy/` | `resource/`、`policy/` | `resources`、`authority` |
+
+结论：
+
+- **A 的缺口确凿**：有三项状态没有属主，“结果只应用一次”需要 3 个目录共同写入。
+- **A′ 与采纳方案在计数上接近**：两者在派发屏障、预算、许可上持平，差距集中在 Task 与调用之间。§2.8 批次 3 中“步骤检查点 + 调用身份”是同一不变量；`blocked_on` 由待决调用派生（§2.4）；屏障后复核还要读取 Task（§4.3）。A′ 把这些分在 `task/` 与 `call/` 两处，二者要么双向依赖，要么全靠 `kernel/` 转发。
+- **计数之外的决定性差别**：A′ 约有 20 个构建目标，需要逐对写出横向依赖规则；采纳方案的顶层只有 9 个节点，依赖关系现在就能写进 CI 检查。按实体直接找到代码这一 A′ 的长处，由第二级子目录保留。
 
 ## 决策
 
-Core 由以下八个模块组成。模块内部可按实体分文件（例如 `work/` 内的 goal、task、call、action_record、subscription），但文件划分不构成模块边界。
+```text
+core/
+├── kernel/
+├── work/{agent,goal,task,call,action,session,subscription}/
+├── authority/{principal,grant,scene}/
+├── resources/{admission,lease,permit}/
+├── budget/
+├── knowledge/{observation,memory,context,lineage}/
+├── catalog/{device,capability,binding,goal_type,strategy}/
+├── durability/
+└── foundation/
+```
 
-| 模块 | 负责的不变量 |
-|---|---|
-| `kernel` | Kernel 生命周期、step、事件入口与完成槽、受管入口（解码 → 校验 → 分派）、命令幂等映射、跨模块编排、恢复编排、输出门控、trace 与脱敏诊断 |
-| `work` | AgentInstance 生命周期与资源归属；Goal、Task、步骤与检查点；LogicalCall 与请求尝试；ActionRecord 与派发屏障；过程、会话与订阅的生命周期 |
-| `authority` | 主体、节点与实例身份及其绑定证据；Session 信任级别；Grant、撤销与受限委派；Scene；包络静态准入判定 |
-| `resources` | 准入、队列与冲突；租期与隔离；执行许可的签发、续租与失效；预算层级、预留与结算；优先级与公平 |
-| `knowledge` | Observation 来源与有效期；记忆范围与版本；上下文预算；lineage、tombstone 与依赖失效 |
-| `catalog` | 设备、组件、资源、能力、绑定、目标类型与策略的版本化描述；可信注册；兼容矩阵；注册的纯函数校验器 |
-| `durability` | 持久前缀、日志与快照、已提交批次重放、迁移机制；不含领域策略 |
-| `foundation` | ID、时间、状态码与原因、有界容器、通用代际栅栏 |
+- **第一级是模块边界**，由构建目标与 CI 依赖检查强制。依赖方向为 `kernel → work → {authority, resources, budget, knowledge} → catalog → durability → foundation`，同层四个模块之间禁止互相依赖。
+- **第二级按实体命名，用于查找。** 子目录之间的单向 include 规则在模块内声明并检查。`kernel/`、`budget/`、`durability/`、`foundation/` 职责集中，不再细分。
+- **预算独立成 `budget/` 模块**，不放在 `resources/` 中，理由有三：
+  - 变更理由不同：一边是计费配额，一边是 §2.10 的停止上限；
+  - 恢复规则相反：已花的额度重启后不清零，许可则跨启动代际失效；
+  - 保证等级不同：许可属于安全关键代码，分支覆盖率要求 ≥90%。
 
-依赖方向为 `kernel → work → {authority, resources, knowledge} → catalog → durability → foundation`。`authority`、`resources`、`knowledge` 之间不互相依赖；需要多方参与的状态转换由 `kernel` 在同一 transition 中编排。具身包络等类型相关的校验器以纯函数注册到 `catalog`，Core 不按机器人类型编译。
+  资源与预算的联合准入由 `kernel` 在同一 transition 中先判定、后应用。
+- **trace 记录类型与注入式 sink 放在 `foundation`**，所有模块都可以记录 trace；脱敏与导出留在 `kernel`。
+- **设备与能力的描述同在 `catalog/`**，分设 `device/`、`capability/` 子目录。Binding 同时引用二者，注册时须交叉核对类型、Schema、模态、资源及取消/查询特性（§2.7），二者也共用一个兼容矩阵。运行时状态分属不同模块：在线、占用、租期与许可归 `resources/`，Grant 归 `authority/`，调用实例归 `work/`。
+
+**命名取舍**：
+
+- **保留 `kernel`**：Linux 源码树中也有 `kernel/` 子目录，“Kernel 内的 kernel 模块”有先例。`coordinator` 会与应用层的助理协调器（Application coordinator）撞名，`dispatch` 会与 `DISPATCHING` 和“派发屏障”撞名。
+- **保留 `work`**：`execution` 会与“执行端”“执行许可”撞名。可发现性由第二级子目录解决。
 
 ## 后果
 
-- 修改副作用类别或屏障规则时，改动集中在 `work`，必要时加上 `authority` 中的一项判定；原有目录下需要同时修改 5 个目录。
-- 更换存储 Host 只改持久层的 Host 端口；新增机器人类型不改 Core。两种划分在这两个场景下相同。
-- 模块较大，需要依靠内部文件结构保持可读。
+- 修改调用、动作与屏障语义时，改动集中在 `work/`，可能附带 `kernel/` 的输出门控；修改计费不影响许可代码，反之亦然。
+- 按名词查找只比平铺结构多一级目录，例如 `core/work/task/`。
+- `kernel/` 与 `work/` 仍有变成大模块的风险。评审时应检查二者是否开始承担其他模块的不变量。
 
 ## 备选方案
 
-- **保留原有 19 个实体目录，只约定唯一属主**：评估中有六项不变量仍需 3 个以上目录写入，属主约定无法由依赖检查自动保证，否决。
-- **按调用流程分层（入口 → 校验 → 执行 → 持久）**：同一实体的不变量会散落在多个层次，否决。
+- **A：平铺 19 个目录并约定唯一属主**：有三项状态没有属主，横向依赖没有规则，否决。
+- **A′：平铺并补 `kernel/`、`call/`**：可发现性最好，但 Task 与调用之间的同一不变量被拆在两个目录，约 20 个构建目标需要逐对定义依赖规则，否决。
+- **初版 8 模块（单级目录）**：依赖检查简单，但一级名称不直观，`resources/` 混合了计费与安全两种风险等级，trace 放在最上层使下层无法调用，被本修订取代。
+- **改名为 `dispatch/`、`execution/`**：会与既有术语撞名，否决。
 
 ## 验证
 
-实现开始后，在 CI 中用构建目标依赖检查强制上述依赖方向，禁止依赖环以及 `authority`、`resources`、`knowledge` 之间的横向依赖。
+实现开始后，在 CI 中用构建目标依赖检查强制上述方向，禁止依赖环与同层模块间的横向依赖，并检查各模块内声明的子目录 include 规则。许可相关代码与预算代码分别统计覆盖率，许可适用安全关键分支 ≥90% 的门槛。

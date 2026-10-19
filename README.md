@@ -20,7 +20,7 @@ Ayni 的领域契约是任务、权限与执行语义的权威；ROS 2、MHS、M
 |---|---|
 | 应用、Coordinator、策略与 Skills | 提醒、观察等业务语义；路由用户请求、选择 Agent、组合有界工作流；规则、Tool Loop 和规划器均位于 Kernel 之上 |
 | C API / SDK | 提交类型化意图或命令、查询快照、注册目标类型与能力；封装保持同一套权限、错误和生命周期语义 |
-| 共享 Kernel 服务 | 按不变量属主分为八个模块：`kernel`（入口、编排与输出门控）、`work`（Agent/Goal/Task、调用与动作账本）、`authority`（主体、Grant、Scene）、`resources`（准入、许可与预算）、`knowledge`（观察、记忆与上下文）、`catalog`、`durability`、`foundation` |
+| 共享 Kernel 服务 | 按不变量属主分为九个模块，第二级按实体命名：`kernel`（入口、编排与输出门控）、`work`（Agent/Goal/Task、调用与动作账本）、`authority`（主体、Grant、Scene）、`resources`（准入、租期与许可）、`budget`（预算层级、预留与结算）、`knowledge`（观察、记忆与上下文）、`catalog`、`durability`、`foundation` |
 | 异步执行与平台服务 | Host 提供时钟、存储、网络和生命周期；Provider 承担模型、感知、媒体及动作 |
 | 本地控制与停止 | 控制器在已准入包络内凭短租约许可执行，执行端只能收紧；本地停止监督器独立于模型和普通工作队列，停止链含硬件失能 |
 | OS、驱动与硬件 | 使用现有操作系统调度；Driver 接入具体硬件；停止链依赖的时钟、中断与硬件超时须实测 |
