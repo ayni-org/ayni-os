@@ -8,11 +8,13 @@ This checkout is at the documentation and planning stage. Read `docs/ayni_v1.0.m
 
 Follow the planned layout when implementation begins:
 
-- `core/`: portable Kernel state, scheduling, authorization, and recovery.
+- `core/`: portable Kernel state, scheduling, authorization, and recovery, split by invariant owner into `kernel/`, `work/`, `authority/`, `resources/`, `budget/`, `knowledge/`, `catalog/`, `durability/`, and `foundation/`, with entity-named subdirectories such as `work/task/` (ADR-0008).
 - `include/ayni/`, `contracts/`: public C/C++ interfaces and versioned contracts.
 - `strategies/`, `applications/`: variable policies, goal types, scenes, and assistant workflows.
 - `hosts/`, `providers/`, `drivers/esp32/`: platform services, asynchronous I/O, and hardware drivers.
-- `apps/`, `ui/web/`: simulator, ESP32 assistant, and management UI/assets.
+- `control/`, `safety/`: permit-checked local execution and the independent stop chain; neither depends on `core/`.
+- `runtime/`: the composition root that wires each deployment profile; the only place that references concrete Host, Provider, control, and safety implementations.
+- `targets/`, `ui/web/`: simulator and ESP32 firmware entry points built on `runtime/`, and management UI/assets.
 - `tests/`: unit, contract, integration, fault-injection, fuzz, and hardware-in-loop tests.
 - `docs/adr/`, `reports/`: architectural decisions and validation evidence.
 
@@ -24,10 +26,10 @@ No versioned build scripts or runnable application exist yet. For current docume
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
 cmake --build build/native -j
 ctest --test-dir build/native --output-on-failure
-./build/native/apps/simulator/ayni-sim
+./build/native/targets/simulator/ayni-sim
 ```
 
-These will configure, build, test, and launch the simulator once implemented. Future firmware builds use `idf.py build` from `apps/esp32_assistant/` after activating the pinned ESP-IDF environment. Document actual toolchain versions and executable checks when adding implementation; do not report planned commands as completed validation.
+These will configure, build, test, and launch the simulator once implemented. Future firmware builds use `idf.py build` from `targets/esp32_assistant/` after activating the pinned ESP-IDF environment. Document actual toolchain versions and executable checks when adding implementation; do not report planned commands as completed validation.
 
 ## Coding Style & Naming Conventions
 
