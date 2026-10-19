@@ -117,10 +117,35 @@ TEST(TaskTable, pause_resume_and_cancel_follow_the_task_lifecycle) {
     EXPECT_EQ(tasks.task(id).lifecycle, AYNI_TASK_CANCELLED);
     EXPECT_EQ(tasks.task(id).revision, 5U);
     EXPECT_EQ(tasks.task(id).cancel_revision, 5U);
-    for (const TaskChange kind : {TaskChange::pause, TaskChange::resume, TaskChange::cancel}) {
+    for (const TaskChange kind :
+         {TaskChange::pause, TaskChange::resume, TaskChange::cancel, TaskChange::expire}) {
         EXPECT_EQ(tasks.change(id, kind), ChangeCheck::invalid_state);
     }
     EXPECT_EQ(tasks.task(id).revision, 5U);
+}
+
+// ADR-0020: a READY or PAUSED task expires with its goal; EXPIRED has no exit
+// and, unlike CANCELLED, no cancel revision.
+TEST(TaskTable, ready_and_paused_tasks_expire) {
+    Tasks tasks(2);
+    const uint64_t ready = tasks.create();
+    const uint64_t paused = tasks.create();
+    ASSERT_EQ(tasks.change(paused, TaskChange::pause), ChangeCheck::allowed);
+    for (const uint64_t id : {ready, paused}) {
+        const uint32_t revision = tasks.task(id).revision;
+        ASSERT_EQ(tasks.change(id, TaskChange::expire), ChangeCheck::allowed);
+        EXPECT_EQ(tasks.task(id).lifecycle, AYNI_TASK_EXPIRED);
+        EXPECT_EQ(tasks.task(id).revision, revision + 1U);
+        EXPECT_EQ(tasks.task(id).cancel_revision, 0U);
+        EXPECT_EQ(tasks.task(id).commit_seq, tasks.last_seq());
+        for (const TaskChange kind :
+             {TaskChange::pause, TaskChange::resume, TaskChange::cancel, TaskChange::expire}) {
+            EXPECT_EQ(tasks.change(id, kind), ChangeCheck::invalid_state);
+        }
+    }
+    // An expired task has ended, so it gives its place to a new one.
+    EXPECT_NE(tasks.create(), 0U);
+    EXPECT_FALSE(tasks.exists(ready));
 }
 
 // C-COMMIT-012: a stale revision is a conflict before the state is checked,

@@ -81,6 +81,9 @@ TEST(WorkModel, registration_checks_its_arguments) {
     type = goal_type_desc("reminder", 1);
     type.struct_size -= 1U;
     EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
+    // The 0.7 layout, before the wait limit, is not read either.
+    type.struct_size = offsetof(ayni_goal_type_v1, occurrence_wait_max_us);
+    EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
 }
 
 // C-PROD-001 and the configured capacities: a refused registration changes
@@ -159,6 +162,8 @@ TEST(WorkModel, queries_check_their_arguments) {
     agent.struct_size = sizeof(agent) + 8U;
     EXPECT_EQ(ayni_get_agent(work.kernel(), agent_a, &agent), AYNI_UNSUPPORTED_VERSION);
     goal.struct_size = sizeof(goal) - 1U;
+    EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_INVALID_ARGUMENT);
+    goal.struct_size = offsetof(ayni_goal_info_v1, expires_us); // the 0.7 layout
     EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_INVALID_ARGUMENT);
     goal.struct_size = sizeof(goal) + 8U;
     EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_UNSUPPORTED_VERSION);
@@ -576,6 +581,10 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
     abi_0_6_body = body;
     abi_0_6_body.struct_size = offsetof(ayni_goal_create_v1, trigger_delay_us);
     invalid.emplace_back("0.6 body", work.intent(AYNI_INTENT_GOAL_CREATE, &abi_0_6_body));
+    static ayni_goal_create_v1 abi_0_7_body;
+    abi_0_7_body = body;
+    abi_0_7_body.struct_size = offsetof(ayni_goal_create_v1, expiry_us);
+    invalid.emplace_back("0.7 body", work.intent(AYNI_INTENT_GOAL_CREATE, &abi_0_7_body));
     static ayni_goal_create_v1 bad_type;
     bad_type = body;
     bad_type.goal_type_id = text("Reminder");

@@ -105,6 +105,8 @@ struct Submitted {
 // A node with an owner, two agents and three goal types registered on every
 // kernel it creates: "reminder" with a validator and "timer" without, both
 // taking every trigger kind, and "folder", whose goals derive no tasks.
+// Occurrences of "timer" goals wait without limit unless a test sets
+// timer_wait_max_us before the kernel is created.
 class WorkNode {
   public:
     WorkNode() {
@@ -118,7 +120,7 @@ class WorkNode {
             }
             const ayni_goal_type_v1 types[] = {
                 goal_type_desc("reminder", 1, &ReminderRules::validate, &rules_),
-                goal_type_desc("timer", 1),
+                goal_type_desc("timer", 1, nullptr, nullptr, any_trigger, timer_wait_max_us),
                 goal_type_desc("folder", 1, nullptr, nullptr, AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)),
             };
             for (const ayni_goal_type_v1 &type : types) {
@@ -129,6 +131,7 @@ class WorkNode {
 
     Node &node() { return node_; }
     ayni_kernel_t *kernel() { return node_.kernel(); }
+    uint64_t timer_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     ReminderRules &rules() { return rules_; }
 
     // Into RUNNING with one management session open.
