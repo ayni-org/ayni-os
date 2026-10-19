@@ -63,4 +63,6 @@ function(ayni_add_core_module module)
     target_link_libraries(ayni_core_${module}
         PUBLIC ayni_api ${dependency_targets}
         PRIVATE ayni_core_internal ayni_core_options)
+    # Read by tests that inspect every Core archive (ADR-0014 heap check).
+    set_property(GLOBAL APPEND PROPERTY AYNI_CORE_MODULE_TARGETS ayni_core_${module})
 endfunction()

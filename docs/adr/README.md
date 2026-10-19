@@ -22,6 +22,10 @@
 | [0008](0008-core-modules-by-invariant-owner.md) | Core 模块按不变量属主划分（两级目录，2026-10-19 修订） | 已接受 | §2.0、§2.3、§8 |
 | [0009](0009-idl-and-local-api-encoding.md) | IDL 与本地 API 编码 | 提议 | §3.1、§3.2 |
 | [0010](0010-composition-root-and-targets.md) | 组合根 `runtime/` 与可执行目标 `targets/` | 已接受 | §2.6、§8、§11 |
+| [0011](0011-build-layout-and-dependency-checks.md) | 构建布局与依赖检查 | 已接受 | §2.0、§2.3、§8、§11 |
+| [0012](0012-test-framework.md) | 测试框架 | 已接受 | §10.1、§10.6 |
+| [0013](0013-contract-format-before-idl.md) | IDL 选定之前的契约表达方式 | 已接受 | §3.1、§3.2 |
+| [0014](0014-core-does-not-allocate.md) | Core 不自行分配内存 | 已接受 | §3.2、§4.2、§8 |
 
 ## 模板
 

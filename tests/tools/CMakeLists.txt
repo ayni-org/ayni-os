@@ -3,6 +3,11 @@ add_test(NAME check_deps_rules
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME check_deps_repository
     COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tools/check_deps.py" --root "${AYNI_ROOT}")
+add_test(NAME check_contracts_rules
+    COMMAND "${Python3_EXECUTABLE}" -m unittest -v test_check_contracts
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME check_contracts_repository
+    COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tools/check_contracts.py" --root "${AYNI_ROOT}")
 
 # ayni_add_core_module enforces the layer order at configure time. Each case
 # configures a probe project; rejections must name the offending dependency.

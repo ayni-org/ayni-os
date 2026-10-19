@@ -12,7 +12,7 @@
 | GCC | 13.3.0 | Native 构建，含 ASan/UBSan |
 | Clang | 18.1.3 | Native 构建 |
 | clang-format / clang-tidy | 18.1.3 | 格式检查（阻断）与静态分析（仅报告） |
-| Python | 3.9 及以上（本地 3.13.16） | `tools/check_deps.py` 与其测试 |
+| Python | 3.9 及以上（本地 3.13.16） | `tools/check_deps.py`、`tools/check_contracts.py` 与其测试 |
 | GoogleTest | 1.17.0，按 SHA-256 锁定 | Native 单元测试（ADR-0012） |
 | ESP-IDF | v6.0.3，工具链 `esp-15.2.0_20251204` | ESP32-S3 固件；CI 使用镜像 `espressif/idf:v6.0.3` |
 
@@ -60,16 +60,17 @@ ctest --test-dir build/native --output-on-failure
 cmake --preset native-debug -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest-1.17.0
 ```
 
-## 依赖、格式与静态分析
+## 依赖、契约、格式与静态分析
 
 ```sh
 python3 tools/check_deps.py                                   # 依赖规则（ADR-0011）
+python3 tools/check_contracts.py                              # 契约条款与追踪矩阵（ADR-0013）
 git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
 run-clang-tidy-18 -p build/native -quiet 'core/|hosts/|runtime/|targets/'
 git diff --check
 ```
 
-`ctest` 也会运行依赖检查及其测试。clang-tidy 在 M0 只报告，不阻断 CI。
+`ctest` 也会运行依赖检查、契约检查及其测试，并检查每个 Core 静态库不引用堆分配函数（ADR-0014）。修改 `contracts/` 中的条款后运行 `python3 tools/check_contracts.py --write` 重新生成 `contracts/traceability.md`，否则检查失败。clang-tidy 在 M0 只报告，不阻断 CI。
 
 ## ESP32-S3 固件
 
