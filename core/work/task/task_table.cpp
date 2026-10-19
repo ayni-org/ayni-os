@@ -83,6 +83,9 @@ void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionS
     case TaskChange::cancel:
         task.lifecycle = AYNI_TASK_CANCELLED;
         break;
+    case TaskChange::expire:
+        task.lifecycle = AYNI_TASK_EXPIRED;
+        break;
     }
     ++task.revision;
     task.commit_seq = stamp.commit_seq;
@@ -100,6 +103,7 @@ bool TaskTable::allows(const Task &task, TaskChange change) {
     case TaskChange::resume:
         return task.lifecycle == AYNI_TASK_PAUSED;
     case TaskChange::cancel:
+    case TaskChange::expire:
         return task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_PAUSED;
     }
     return false;

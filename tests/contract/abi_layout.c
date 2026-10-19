@@ -131,7 +131,9 @@ AYNI_LAYOUT(goal_type_validate, offsetof(ayni_goal_type_v1, validate) == 8 + 3 *
 AYNI_LAYOUT(goal_type_trigger_kinds,
             offsetof(ayni_goal_type_v1, trigger_kinds) == 8 + 4 * AYNI_PTR);
 AYNI_LAYOUT(goal_type_reserved, offsetof(ayni_goal_type_v1, reserved) == 12 + 4 * AYNI_PTR);
-AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 16 + 4 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_occurrence_wait_max_us,
+            offsetof(ayni_goal_type_v1, occurrence_wait_max_us) == 16 + 4 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 24 + 4 * AYNI_PTR);
 
 AYNI_LAYOUT(goal_info_struct_size, offsetof(ayni_goal_info_v1, struct_size) == 0);
 AYNI_LAYOUT(goal_info_lifecycle, offsetof(ayni_goal_info_v1, lifecycle) == 4);
@@ -157,7 +159,12 @@ AYNI_LAYOUT(goal_info_last_task_id, offsetof(ayni_goal_info_v1, last_task_id) ==
 AYNI_LAYOUT(goal_info_trigger_delay_us, offsetof(ayni_goal_info_v1, trigger_delay_us) == 136);
 AYNI_LAYOUT(goal_info_trigger_period_us, offsetof(ayni_goal_info_v1, trigger_period_us) == 144);
 AYNI_LAYOUT(goal_info_next_due_us, offsetof(ayni_goal_info_v1, next_due_us) == 152);
-AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 160);
+AYNI_LAYOUT(goal_info_expires_us, offsetof(ayni_goal_info_v1, expires_us) == 160);
+AYNI_LAYOUT(goal_info_occurrences_skipped, offsetof(ayni_goal_info_v1, occurrences_skipped) == 168);
+AYNI_LAYOUT(goal_info_skip_reason, offsetof(ayni_goal_info_v1, skip_reason) == 172);
+AYNI_LAYOUT(goal_info_wait_reason, offsetof(ayni_goal_info_v1, wait_reason) == 176);
+AYNI_LAYOUT(goal_info_reserved, offsetof(ayni_goal_info_v1, reserved) == 180);
+AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 184);
 
 AYNI_LAYOUT(intent_struct_size, offsetof(ayni_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(intent_kind, offsetof(ayni_intent_v1, kind) == 4);
@@ -182,7 +189,8 @@ AYNI_LAYOUT(create_trigger_delay_us,
             offsetof(ayni_goal_create_v1, trigger_delay_us) == 32 + 4 * AYNI_PTR);
 AYNI_LAYOUT(create_trigger_period_us,
             offsetof(ayni_goal_create_v1, trigger_period_us) == 40 + 4 * AYNI_PTR);
-AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == 48 + 4 * AYNI_PTR);
+AYNI_LAYOUT(create_expiry_us, offsetof(ayni_goal_create_v1, expiry_us) == 48 + 4 * AYNI_PTR);
+AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == 56 + 4 * AYNI_PTR);
 
 AYNI_LAYOUT(target_struct_size, offsetof(ayni_goal_target_v1, struct_size) == 0);
 AYNI_LAYOUT(target_reserved, offsetof(ayni_goal_target_v1, reserved) == 4);

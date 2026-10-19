@@ -40,9 +40,9 @@ class Goals {
     // Admits and inserts; returns the new goal's id, or 0 if refused.
     uint64_t create(uint64_t parent_goal_id = 0, uint64_t owner_instance_id = owner,
                     ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
-                    uint64_t created_us = 0) {
+                    uint64_t created_us = 0, uint64_t expiry_us = 0) {
         const NewGoal goal =
-            new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us);
+            new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us, expiry_us);
         if (table_.admit(goal) != Admission::admitted) {
             return 0;
         }
@@ -54,14 +54,16 @@ class Goals {
 
     static NewGoal new_goal(uint64_t parent_goal_id, uint64_t owner_instance_id = owner,
                             ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
-                            uint64_t created_us = 0) {
+                            uint64_t created_us = 0, uint64_t expiry_us = 0) {
         return {owner_instance_id,
                 parent_goal_id,
                 0,
                 {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
                 parameters,
                 trigger,
-                created_us};
+                created_us,
+                expiry_us,
+                ayni::work::no_time};
     }
 
     const Goal &goal(uint64_t goal_id) {

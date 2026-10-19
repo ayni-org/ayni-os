@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 7u
+#define AYNI_ABI_MINOR 8u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -323,10 +323,12 @@ typedef struct ayni_step_report_v1 {
     uint32_t more_ready; /* nonzero: call ayni_step again without waiting for a wake */
     uint32_t reserved;   /* written as 0 */
     /* Host monotonic time by which to call ayni_step even if nothing wakes
-     * the owner; UINT64_MAX: none. Since 0.7, in RUNNING, the earliest time
-     * an occurrence of a goal whose tasks may advance falls due, or the
-     * step's start when one already has and more_ready is set; UINT64_MAX
-     * while the task table has no room or no id is left (ADR-0019). */
+     * the owner; UINT64_MAX: none. Since 0.7, in RUNNING, when the goals'
+     * next due work comes (ADR-0019, ADR-0020), or the step's start when
+     * some already has and more_ready is set. That is the earliest of the
+     * goals' expiries and either the next occurrence of a goal whose tasks
+     * may advance, while the task table has room and an id is left, or else
+     * the end of such an occurrence's wait. */
     uint64_t next_deadline_us;
 } ayni_step_report_v1;
 
@@ -393,16 +395,20 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
 
 /*
  * Applies posted completions, advances recovery and shutdown and, in
- * RUNNING, derives due tasks from goals, one task per item and transition
- * (ADR-0018). A task stands for every occurrence of its goal due by the
- * step's start (ADR-0019). Deriving sets the goal's occurrences,
- * next_due_us, last_task_id and commit_seq but keeps its revision, so the
- * revision a caller holds for the goal stays valid. Does at most max_items items and stops once
- * max_time_us has passed on the host clock, checked after each item; never waits on storage or any
- * other I/O (C-LIMIT-011). out_report (nullable) receives the fields its struct_size covers.
- * Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or max_items or max_time_us is 0;
- * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE
- * in CONFIGURING and STOPPED, and when called from a goal type's validator.
+ * RUNNING, does the goals' due work, one item and transition each: expires
+ * goals (ADR-0020), derives tasks (ADR-0018) and skips occurrences that
+ * waited too long (ADR-0020). A task stands for every occurrence of its
+ * goal due by the step's start (ADR-0019). Deriving and skipping set the
+ * goal's occurrences, next_due_us, last_task_id or occurrences_skipped, and
+ * commit_seq but keep its revision, so the revision a caller holds for the
+ * goal stays valid. Does at most max_items items and stops once max_time_us
+ * has passed on the host clock, checked after each item; never waits on
+ * storage or any other I/O (C-LIMIT-011). out_report (nullable) receives
+ * the fields its struct_size covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT
+ * if kernel is NULL or max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT
+ * or AYNI_UNSUPPORTED_VERSION for out_report->struct_size;
+ * AYNI_INVALID_STATE in CONFIGURING and STOPPED, and when called from a goal
+ * type's validator.
  */
 ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
                         ayni_step_report_v1 *out_report);
@@ -566,6 +572,9 @@ typedef uint32_t ayni_reason_t;
 #define AYNI_REASON_INSTANCE_REVISION ((ayni_reason_t)25)
 /* INVALID_STATE: the instance's lifecycle does not allow this change. */
 #define AYNI_REASON_INSTANCE_STATE ((ayni_reason_t)26)
+/* Since 0.8. In ayni_goal_info_v1 only: the task table has no room for the
+ * task an occurrence would become (ADR-0020). */
+#define AYNI_REASON_TASK_CAPACITY ((ayni_reason_t)27)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -652,6 +661,14 @@ typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 paramete
  * before a step runs, wait and become one task, which names the latest of
  * them and how many it stands for (C-PROD-018, C-LIMIT-007); an interval
  * goal then keeps its schedule.
+ *
+ * Since 0.8 (ADR-0020). While the task table has no room or no id is left,
+ * a due occurrence of a goal that may advance waits for at most its goal
+ * type's occurrence_wait_max_us, counted from when it fell due; then every
+ * occurrence due by then is skipped, counted and given the reason
+ * (C-RES-005). A goal created with an expiry becomes EXPIRED at that time,
+ * paused or not, together with its descendants and their tasks that have
+ * not ended; a goal expiring takes no occurrence due at the same step.
  */
 typedef uint32_t ayni_trigger_kind_t;
 
@@ -668,6 +685,9 @@ typedef uint32_t ayni_trigger_kind_t;
 #define AYNI_TRIGGER_PERIOD_MIN_US 1000000u
 /* The bit of a trigger kind in ayni_goal_type_v1.trigger_kinds. */
 #define AYNI_TRIGGER_BIT(kind) (1u << (kind))
+/* Since 0.8. An occurrence_wait_max_us under which occurrences are never
+ * skipped: they wait until a task can be derived. */
+#define AYNI_OCCURRENCE_WAIT_UNBOUNDED UINT64_MAX
 
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
@@ -679,6 +699,10 @@ typedef struct ayni_goal_type_v1 {
      * each, at least one, only kinds this library defines. */
     uint32_t trigger_kinds;
     uint32_t reserved; /* must be 0 */
+    /* Since 0.8. How long a due occurrence may wait for a task before it is
+     * skipped (ADR-0020): 0 skips it at once, AYNI_OCCURRENCE_WAIT_UNBOUNDED
+     * never. */
+    uint64_t occurrence_wait_max_us;
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -728,12 +752,25 @@ typedef struct ayni_goal_info_v1 {
      * clock; UINT64_MAX when none will: the trigger has none left or the
      * goal is terminal. */
     uint64_t next_due_us;
+    /* Since 0.8. When the goal expires, on the host monotonic clock;
+     * UINT64_MAX: never. */
+    uint64_t expires_us;
+    uint32_t occurrences_skipped; /* since 0.8; occurrences that waited too long */
+    /* Since 0.8. Why the latest skipped occurrences could not become a task:
+     * AYNI_REASON_TASK_CAPACITY or AYNI_REASON_ID_EXHAUSTED; NONE before any. */
+    ayni_reason_t skip_reason;
+    /* Since 0.8. While the goal has an occurrence to come, what would keep it
+     * from becoming a task now, as skip_reason; AYNI_REASON_NONE when
+     * nothing would or none will come. Holding by a pause is in the
+     * lifecycles, not here. */
+    ayni_reason_t wait_reason;
+    uint32_t reserved; /* written as 0 */
 } ayni_goal_info_v1;
 
 /*
  * Since 0.6. Task lifecycle (contracts/domain/lifecycles.md). This library
- * reaches READY, PAUSED and CANCELLED only; the others need strategies,
- * cancellable requests or time (ADR-0018).
+ * reaches READY, PAUSED, CANCELLED and, since 0.8, EXPIRED only; the others
+ * need strategies or cancellable requests (ADR-0018, ADR-0020).
  */
 typedef uint32_t ayni_task_lifecycle_t;
 
@@ -818,6 +855,9 @@ typedef struct ayni_goal_create_v1 {
     /* Since 0.7. INTERVAL: at least AYNI_TRIGGER_PERIOD_MIN_US. 0 for other
      * kinds. */
     uint64_t trigger_period_us;
+    /* Since 0.8. From creation to when the goal expires; 0: never. A time
+     * past the clock's range never comes. */
+    uint64_t expiry_us;
 } ayni_goal_create_v1;
 
 typedef struct ayni_goal_target_v1 {
@@ -957,9 +997,10 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * RUNNING, and PAUSED otherwise; the tasks of a cancelled goal are cancelled
  * with it (ADR-0018). An intent raises the revision of each goal, task and
  * instance it changes by one; others keep theirs. When the intent may let
- * ayni_step derive a task, or creates a goal whose first occurrence is still
- * to come, the host's wake is called before ayni_submit_intent returns, so
- * the owner steps and learns its next deadline.
+ * ayni_step derive a task, or creates a goal whose first occurrence or
+ * expiry is still to come, the host's wake is called before
+ * ayni_submit_intent returns, so the owner steps and learns its next
+ * deadline.
  */
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
                                  ayni_intent_result_v1 *out_result, ayni_error_v1 *out_error);

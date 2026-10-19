@@ -77,6 +77,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     goal_type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) |
                               AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
                               AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
+    goal_type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     failures +=
         expect(ayni_register_goal_type(kernel, &goal_type) == AYNI_OK, "register goal type");
 

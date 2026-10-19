@@ -7,6 +7,8 @@ namespace ayni::work {
 namespace {
 
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
+// So an unbounded wait, added to when an occurrence fell due, never ends.
+static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
 
 } // namespace
 
@@ -61,6 +63,9 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
     created.parameter_size = goal.parameters.size;
     created.trigger = goal.trigger;
     created.cursor = start_schedule(goal.trigger, goal.created_us);
+    created.expires_us =
+        goal.expiry_us == 0U ? no_time : time_after(goal.created_us, goal.expiry_us);
+    created.occurrence_wait_max_us = goal.occurrence_wait_max_us;
     created.lifecycle = AYNI_GOAL_ACTIVE;
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {
         created.depth = goals_[created.parent_index].depth + 1U;
@@ -90,7 +95,7 @@ GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
     if (at_largest_revision(goal)) {
         return ChangeCheck::revision_exhausted;
     }
-    if (change == GoalChange::cancel) {
+    if (change == GoalChange::cancel || change == GoalChange::expire) {
         for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
             const Goal &other = goals_[later];
             if (is_live(other.lifecycle) && at_largest_revision(other) &&
@@ -112,14 +117,17 @@ void GoalTable::apply(uint32_t index, GoalChange change, foundation::TransitionS
         set_lifecycle(goal, AYNI_GOAL_ACTIVE, stamp);
         return;
     case GoalChange::cancel:
+    case GoalChange::expire:
         break;
     }
-    set_lifecycle(goal, AYNI_GOAL_CANCELLED, stamp);
+    const ayni_goal_lifecycle_t ended =
+        change == GoalChange::cancel ? AYNI_GOAL_CANCELLED : AYNI_GOAL_EXPIRED;
+    set_lifecycle(goal, ended, stamp);
     // Descendants come after their ancestor.
     for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
         Goal &other = goals_[later];
         if (is_live(other.lifecycle) && descends_from(later, index)) {
-            set_lifecycle(other, AYNI_GOAL_CANCELLED, stamp);
+            set_lifecycle(other, ended, stamp);
         }
     }
 }
@@ -131,6 +139,21 @@ TakenOccurrences GoalTable::take_due(uint32_t index, uint64_t now_us, uint64_t t
     goal.last_task_id = task_id;
     goal.commit_seq = stamp.commit_seq;
     return taken;
+}
+
+void GoalTable::skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
+                         foundation::TransitionStamp stamp) {
+    Goal &goal = goals_[index];
+    // At most every number the goal has, so the count cannot overflow.
+    goal.occurrences_skipped += work::take_due(goal.trigger, now_us, goal.cursor).count;
+    goal.skip_reason = reason;
+    goal.commit_seq = stamp.commit_seq;
+}
+
+void GoalTable::drop_expiry(uint32_t index, foundation::TransitionStamp stamp) {
+    Goal &goal = goals_[index];
+    goal.expires_us = no_time;
+    goal.commit_seq = stamp.commit_seq;
 }
 
 bool GoalTable::owned_at_largest_revision(uint64_t instance_id) const {
@@ -208,6 +231,7 @@ bool GoalTable::allows(const Goal &goal, GoalChange change) {
     case GoalChange::resume:
         return goal.lifecycle == AYNI_GOAL_PAUSED;
     case GoalChange::cancel:
+    case GoalChange::expire:
         return is_live(goal.lifecycle);
     }
     return false;
@@ -223,6 +247,7 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
     }
     if (!is_live(lifecycle)) {
         goal.cursor.next_due_us = no_time;
+        goal.expires_us = no_time;
     }
 }
 

@@ -45,7 +45,8 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
                              body->owner_instance_id,
                              body->parent_goal_id,
                              body->parameters,
-                             {body->trigger, body->trigger_delay_us, body->trigger_period_us}};
+                             {body->trigger, body->trigger_delay_us, body->trigger_period_us},
+                             body->expiry_us};
         return AYNI_OK;
     }
     case AYNI_INTENT_TASK_CANCEL:
