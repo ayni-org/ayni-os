@@ -9,7 +9,7 @@
 | Ubuntu | 24.04.5 LTS，x86_64 | 本地与 CI（`ubuntu-24.04`） |
 | CMake | 3.28.3（最低要求 3.22） | Native 构建 |
 | Ninja | 1.11.1 | CMake 预设使用的生成器 |
-| GCC | 13.3.0 | Native 构建，含 ASan/UBSan |
+| GCC | 13.3.0 | Native 构建，含 ASan/UBSan 与 TSan |
 | Clang | 18.1.3 | Native 构建 |
 | clang-format / clang-tidy | 18.1.3 | 格式检查（阻断）与静态分析（仅报告） |
 | Python | 3.9 及以上（本地 3.13.16） | `tools/check_deps.py`、`tools/check_contracts.py` 与其测试 |
@@ -34,6 +34,9 @@ sudo apt-get install -y build-essential clang cmake ninja-build python3 \
 | `native-debug` | `build/native` | Debug，含测试 |
 | `native-release` | `build/native-release` | Release，含测试 |
 | `native-asan` | `build/native-asan` | Debug，启用 AddressSanitizer 与 UndefinedBehaviorSanitizer |
+| `native-tsan` | `build/native-tsan` | Debug，启用 ThreadSanitizer，覆盖入口队列与完成槽的多线程测试（ADR-0015） |
+
+GCC 13 自带的 ThreadSanitizer 在 mmap 随机化为 32 位（`/proc/sys/vm/mmap_rnd_bits`）的内核上可能报 `unexpected memory mapping` 而无法启动，这时先执行 `sudo sysctl vm.mmap_rnd_bits=28`；CI 的 TSan 任务固定这样设置。本地开发机该值为 28。
 
 ```sh
 cmake --preset native-debug
@@ -107,7 +110,7 @@ Hello 固件启动后打印芯片型号与版本、ESP-IDF 版本、复位原因
 
 按 AGENTS.md 与计划 §6 区分：
 
-- **编译通过**：Native（GCC、Clang、ASan/UBSan）与 ESP32-S3 固件均已在本地和 CI 编译。
+- **编译通过**：Native（GCC、Clang、ASan/UBSan、TSan）在本地与 CI 编译；ESP32-S3 固件由 CI 的 ESP-IDF 任务编译，本地未安装 ESP-IDF 时不编译。
 - **模拟器运行**：`ayni-sim` 与全部 `ctest` 用例在 Linux 运行通过。
 - **实机运行**：尚未进行，需要开发板。
 - **长稳**：不适用于 M0。

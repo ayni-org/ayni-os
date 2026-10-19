@@ -26,12 +26,20 @@
       "inherits": "native-debug",
       "binaryDir": "${sourceDir}/build/native-asan",
       "cacheVariables": {"AYNI_SANITIZE": "address,undefined"}
+    },
+    {
+      "name": "native-tsan",
+      "displayName": "Native Debug with ThreadSanitizer",
+      "inherits": "native-debug",
+      "binaryDir": "${sourceDir}/build/native-tsan",
+      "cacheVariables": {"AYNI_SANITIZE": "thread"}
     }
   ],
   "buildPresets": [
     {"name": "native-debug", "configurePreset": "native-debug"},
     {"name": "native-release", "configurePreset": "native-release"},
-    {"name": "native-asan", "configurePreset": "native-asan"}
+    {"name": "native-asan", "configurePreset": "native-asan"},
+    {"name": "native-tsan", "configurePreset": "native-tsan"}
   ],
   "testPresets": [
     {"name": "native-debug", "configurePreset": "native-debug", "output": {"outputOnFailure": true}},
@@ -41,6 +49,12 @@
       "configurePreset": "native-asan",
       "output": {"outputOnFailure": true},
       "environment": {"ASAN_OPTIONS": "detect_leaks=1", "UBSAN_OPTIONS": "print_stacktrace=1"}
+    },
+    {
+      "name": "native-tsan",
+      "configurePreset": "native-tsan",
+      "output": {"outputOnFailure": true},
+      "environment": {"TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1"}
     }
   ]
 }

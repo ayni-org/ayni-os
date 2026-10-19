@@ -83,12 +83,6 @@ typedef struct ayni_error_v1 {
     ayni_object_ref_v1 object;
 } ayni_error_v1;
 
-/* Correlates an asynchronous attempt with its result (C-ID-006). */
-typedef struct ayni_attempt_ref_v1 {
-    uint64_t boot_epoch;
-    uint64_t request_id;
-} ayni_attempt_ref_v1;
-
 #ifdef __cplusplus
 }
 #endif

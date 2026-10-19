@@ -4,7 +4,8 @@
 file(GLOB_RECURSE ayni_c_headers CONFIGURE_DEPENDS
     RELATIVE "${AYNI_ROOT}/include" "${AYNI_ROOT}/include/ayni/*.h")
 file(GLOB_RECURSE ayni_cxx_headers CONFIGURE_DEPENDS
-    RELATIVE "${AYNI_ROOT}" "${AYNI_ROOT}/hosts/native/include/*.h" "${AYNI_ROOT}/runtime/native_node/include/*.h")
+    RELATIVE "${AYNI_ROOT}" "${AYNI_ROOT}/hosts/native/include/*.h" "${AYNI_ROOT}/hosts/sim/include/*.h"
+    "${AYNI_ROOT}/runtime/native_node/include/*.h")
 
 set(header_check_sources)
 function(ayni_header_check_source header extension)
@@ -33,8 +34,9 @@ foreach(header IN LISTS ayni_cxx_headers)
     ayni_header_check_source("${header}" cpp)
 endforeach()
 
-add_library(ayni_header_checks OBJECT ${header_check_sources})
-target_link_libraries(ayni_header_checks PRIVATE ayni_api ayni_host_native ayni_runtime_native_node ayni_warnings)
+# abi_layout.c pins the published struct layouts at compile time (C-VER-002).
+add_library(ayni_header_checks OBJECT ${header_check_sources} abi_layout.c)
+target_link_libraries(ayni_header_checks PRIVATE ayni_api ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_warnings)
 target_compile_options(ayni_header_checks PRIVATE $<$<COMPILE_LANGUAGE:C>:-pedantic-errors>)
 
 # The implemented ABI is callable and linkable from a plain C99 program.

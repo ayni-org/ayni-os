@@ -193,7 +193,8 @@ typedef struct ayni_event_v1 {
     ayni_event_kind_t kind;
     uint64_t subscription_id; /* 0: not from a subscription */
     uint32_t generation;
-    uint32_t coalesce_key; /* telemetry with equal keys may replace each other */
+    uint32_t
+        coalesce_key; /* telemetry: equal nonzero keys of one subscription may replace each other */
     uint64_t sequence;
     uint64_t captured_at_us; /* Host monotonic time of capture */
     uint32_t body_size;
@@ -202,13 +203,16 @@ typedef struct ayni_event_v1 {
 } ayni_event_v1;
 
 /*
- * The only kernel entry that may run off the owner thread (any non-ISR
- * thread; ISRs go through the Host bridge, C-HOST-008). Copies the event into
- * the bounded ingress queue and wakes the owner thread. When the queue is
- * full, telemetry is coalesced or the oldest droppable entry replaced with a
- * gap record; other kinds return AYNI_BUSY. Must not run concurrently with
- * ayni_create or ayni_destroy (C-HOST-018); how it reads the lifecycle
- * safely from another thread is fixed with the ingress queue in MA-003.
+ * Callable from any thread except an ISR (ISRs go through the Host bridge,
+ * C-HOST-008). Copies the event into the bounded ingress queue under the
+ * ingress lock and wakes the owner thread (ADR-0015). When the queue is full,
+ * a telemetry event replaces the queued telemetry of the same subscription
+ * and nonzero coalesce_key, or else evicts the oldest queued telemetry; both
+ * are counted, and the consumer sees the loss as a gap in the subscription's
+ * sequence. Other kinds return AYNI_BUSY. A body larger than
+ * event_body_max_bytes is AYNI_INVALID_ARGUMENT. The lifecycle check reads a
+ * flag kept under the same lock. Must not run concurrently with ayni_create
+ * or ayni_destroy (C-HOST-018).
  */
 ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event);
 

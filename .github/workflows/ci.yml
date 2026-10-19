@@ -45,6 +45,7 @@ jobs:
           - {compiler: gcc, cc: gcc, cxx: g++, preset: native-debug}
           - {compiler: gcc, cc: gcc, cxx: g++, preset: native-release}
           - {compiler: gcc, cc: gcc, cxx: g++, preset: native-asan}
+          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-tsan}
           - {compiler: clang, cc: clang, cxx: clang++, preset: native-debug}
     env:
       CC: ${{ matrix.cc }}
@@ -53,6 +54,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+      # GCC 13's ThreadSanitizer may fail to start with 32 bits of mmap
+      # randomization, which some runner kernels default to.
+      - name: Limit ASLR for ThreadSanitizer
+        if: matrix.preset == 'native-tsan'
+        run: sudo sysctl vm.mmap_rnd_bits=28
       - name: Tool versions
         run: cmake --version && ninja --version && "$CC" --version && "$CXX" --version
       - name: Configure

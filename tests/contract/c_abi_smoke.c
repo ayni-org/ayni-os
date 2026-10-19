@@ -9,6 +9,17 @@ static uint64_t test_clock(void *ctx) {
     return 1u;
 }
 
+/* Single-threaded, so wake and the ingress lock have nothing to do. */
+static void test_wake(void *ctx) {
+    (void)ctx;
+}
+static void test_lock(void *ctx) {
+    (void)ctx;
+}
+static void test_unlock(void *ctx) {
+    (void)ctx;
+}
+
 /* C99 has no alignas; a union of the widest scalar types gives the strictest
  * fundamental alignment, which the reported requirement must not exceed. */
 typedef union {
@@ -39,8 +50,14 @@ int main(void) {
     config.struct_size = (uint32_t)sizeof config;
     config.abi_major = AYNI_ABI_MAJOR;
     config.abi_minor = AYNI_ABI_MINOR;
+    config.ingress_capacity = 2u;
+    config.event_body_max_bytes = 8u;
+    config.completion_slot_count = 1u;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
+    host.wake = test_wake;
+    host.ingress_lock = test_lock;
+    host.ingress_unlock = test_unlock;
 
     failures += expect(ayni_kernel_memory_requirements(&config, &size, &align) == AYNI_OK,
                        "memory requirements");
@@ -57,6 +74,8 @@ int main(void) {
     failures +=
         expect(ayni_get_lifecycle(kernel, &state) == AYNI_OK && state == AYNI_LIFECYCLE_CONFIGURING,
                "lifecycle is CONFIGURING");
+    failures += expect(ayni_completion_post(NULL, NULL) == AYNI_INVALID_ARGUMENT,
+                       "completion post links and rejects NULL");
     failures += expect(ayni_destroy(kernel) == AYNI_OK, "destroy");
     return failures == 0 ? 0 : 1;
 }

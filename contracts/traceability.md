@@ -4,27 +4,27 @@
 
 ## 概览
 
-| 文档 | 条款数 | M0 已实现 |
+| 文档 | 条款数 | 已实现 |
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 21 | 0 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 0 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 18 | 0 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 17 | 1 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 15 | 2 |
-| [domain/limits.md](domain/limits.md) | 12 | 1 |
+| [domain/limits.md](domain/limits.md) | 12 | 3 |
 | [domain/permits_and_stop.md](domain/permits_and_stop.md) | 27 | 0 |
 | [domain/primitives.md](domain/primitives.md) | 8 | 0 |
 | [domain/product_semantics.md](domain/product_semantics.md) | 27 | 0 |
 | [domain/resources_and_budget.md](domain/resources_and_budget.md) | 23 | 0 |
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 2 |
-| [domain/versions.md](domain/versions.md) | 17 | 3 |
-| [host/host_ports.md](host/host_ports.md) | 19 | 2 |
+| [domain/versions.md](domain/versions.md) | 17 | 4 |
+| [host/host_ports.md](host/host_ports.md) | 20 | 6 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 0 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 14 | 0 |
 | [wire/envelope.md](wire/envelope.md) | 16 | 0 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 297 | 11 |
+| 合计 | 298 | 18 |
 
 ## 计划章节 → 契约文档
 
@@ -73,17 +73,18 @@
 | ADR-0009 | domain/versions.md、wire/envelope.md、wire/json_subset.md |
 | ADR-0013 | domain/versions.md |
 | ADR-0014 | domain/limits.md、host/host_ports.md |
+| ADR-0015 | domain/limits.md、host/host_ports.md |
 
 ## 工作包 → 条款
 
 | 工作包 | 条款 |
 |---|---|
 | `MA-001` | C-STOP-003、C-STOP-004 |
-| `MA-003` | C-TIME-001、C-LIMIT-001、C-LIMIT-008、C-LIMIT-011、C-STOP-001、C-HOST-002、C-HOST-003、C-HOST-006、C-HOST-007、C-HOST-018 |
+| `MA-003` | C-TIME-001、C-LIMIT-001、C-LIMIT-008、C-LIMIT-011、C-STOP-001、C-HOST-002、C-HOST-003、C-HOST-006、C-HOST-018 |
 | `MA-004` | C-AUTH-004、C-ID-001、C-LIFE-020、C-LIFE-021、C-LIFE-022、C-LIMIT-007、C-POLICY-009 |
-| `MA-005` | C-LIFE-002、C-LIFE-003、C-LIFE-005、C-LIFE-006、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-015、C-HOST-018、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
+| `MA-005` | C-LIFE-002、C-LIFE-003、C-LIFE-005、C-LIFE-006、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-015、C-HOST-018、C-HOST-020、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
 | `MA-006` | C-AUTH-001、C-AUTH-003、C-AUTH-008 |
-| `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
+| `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-HOST-020、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
 | `MA-008` | C-CALL-001、C-CALL-003、C-BIND-002、C-BIND-003、C-BUDGET-005、C-PROV-002、C-PROV-003、C-PROV-010 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-011 |
 | `MA-010` | C-COMMIT-001、C-COMMIT-003、C-COMMIT-014、C-TIME-003、C-VER-020、C-VER-023、C-HOST-009、C-HOST-010、C-HOST-011、C-HOST-019、C-STORE-001、C-STORE-003、C-STORE-006、C-STORE-007、C-STORE-013、C-STORE-014 |
@@ -146,18 +147,25 @@
 | E4 步骤 6 | C-VER-020、C-VER-021、C-VER-022、C-VER-031、C-STORE-004、C-STORE-010 |
 | E4 步骤 7 | C-PROD-010、C-PROD-011、C-PROD-013、C-PROD-015、C-PROD-017 |
 
-## M0 已实现的条款
+## 已实现的条款
 
 | 条款 | 验证 |
 |---|---|
 | C-TIME-008 | M0 已实现：`NativeHost.monotonic_clock_never_decreases`（Native）；ESP32 使用 `esp_timer_get_time`，M2 补测 |
 | C-LIFE-001 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
 | C-LIFE-002 | M0 已实现 `CONFIGURING` 路径：`KernelApi.kernel_memory_is_reusable_after_destroy`；其他状态待 `MA-005` |
+| C-LIMIT-001 | M1 已实现（入口与完成槽）：`IngressQueue.ten_thousand_events_pass_in_order_without_loss`、`KernelApi.capacity_outside_its_range_is_invalid_argument`、`KernelApi.memory_requirements_grow_with_each_capacity`；其余容量随各自工作包；`MA-003`；第 10.6 节 |
 | C-LIMIT-004 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，也不引用 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数；ctest `heap_check_detects_allocator` 与 ctest `heap_check_detects_strdup` 证明该检查有效 |
+| C-LIMIT-008 | M1 已实现（入口与完成槽）：`IngressQueue.full_queue_rejects_other_events_with_busy`、`IngressQueue.full_queue_replaces_newest_value_of_the_same_stream`、`IngressQueue.telemetry_flood_keeps_each_stream_in_order_and_accounted`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；E1 步骤 10；`MA-003` |
 | C-STATUS-001 | M0 已实现：`include/ayni/ayni.h` 为每个已实现函数列出返回码，`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表 |
 | C-STATUS-002 | M0 已实现：`KernelApi.failed_create_leaves_memory_untouched` |
 | C-VER-001 | M0 已实现：`KernelApi.create_rejects_other_abi_major`、`KernelApi.create_rejects_other_abi_minor`、`KernelApi.config_from_abi_0_1_is_unsupported_version`、`KernelApi.failed_create_leaves_memory_untouched` |
-| C-VER-003 | M0 已实现：`KernelApi.create_copies_host_table_before_return`；`KernelApi.config_from_abi_0_1_is_unsupported_version`（`struct_size` 不含 `abi_minor` 时按 0.1 处理）；M1 补 Host 表旧尺寸用例 |
+| C-VER-002 | M1 已实现：编译期检查 `tests/contract/abi_layout.c` 以 `offsetof` 与 `sizeof` 固定已发布结构体的布局；评审 |
+| C-VER-003 | M0 已实现：`KernelApi.create_copies_host_table_before_return`；`KernelApi.config_from_abi_0_1_is_unsupported_version`（`struct_size` 不含 `abi_minor` 时按 0.1 处理）；M1 起另有 `KernelApi.host_table_without_0_3_ports_is_invalid_argument`、`KernelApi.uncovered_capacities_take_their_defaults` |
 | C-VER-004 | M0 已实现：`KernelApi.struct_size_below_first_layout_is_invalid_argument`、`KernelApi.struct_size_from_newer_minor_is_unsupported_version` |
 | C-HOST-001 | M0 已实现：`KernelApi.create_copies_host_table_before_return` |
-| C-HOST-016 | M0 已实现：`KernelApi.create_rejects_missing_clock` |
+| C-HOST-004 | M1 已实现（Kernel 侧）：`CompletionPoolTest.rejected_request_frees_the_slot_and_runs_no_handler`、`CompletionPoolTest.accept_unknown_waits_for_the_post`、`CompletionPoolTest.undefined_submit_result_counts_as_in_flight`、`CompletionPoolTest.post_before_a_rejection_is_still_applied`；E2 F10；C-OUT-003 |
+| C-HOST-006 | M1 已实现（完成槽部分）：`CompletionPoolTest.exhausted_slots_return_busy_without_calling_the_port`、`CompletionPoolTest.result_is_applied_once`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`、`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.stale_posts_racing_slot_reuse_are_ignored`、`CompletionPoolTest.concurrent_posts_apply_each_result_exactly_once`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；遥测合并见 C-LIMIT-008，订阅的 gap 报告随订阅实现；E1 步骤 10；`MA-003` |
+| C-HOST-007 | M1 已实现：`NativeHost.wakes_from_other_threads_merge_into_one`、`CompletionPoolTest.post_wakes_the_owner_and_no_host_call_runs_under_the_lock`；ESP-IDF Host 随 `MA-007` 复核 |
+| C-HOST-016 | M0 已实现：`KernelApi.create_rejects_missing_clock`；M1 起另有 `KernelApi.create_rejects_missing_wake_or_ingress_lock`、`KernelApi.host_table_without_0_3_ports_is_invalid_argument` |
+| C-HOST-020 | M1 已实现（完成槽部分）：`CompletionPoolTest.post_wakes_the_owner_and_no_host_call_runs_under_the_lock`、`CompletionPoolTest.stale_posts_racing_slot_reuse_are_ignored`、`CompletionWake.result_is_applicable_when_the_owner_is_woken`、`NativeHost.ingress_lock_excludes_other_threads`、`SimHost.host_calls_under_the_ingress_lock_are_recorded`、`SimHostDeathTest.second_ingress_lock_on_one_thread_aborts`；事件部分随 `MA-005` 的 `ayni_post_event` 与 `ayni_step`；ESP-IDF Host 随 `MA-007` 复核 |

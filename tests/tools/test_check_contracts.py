@@ -156,6 +156,19 @@ class CheckContractsTest(unittest.TestCase):
         self.assertIn("| C-AAA-002 | M0 已实现：`Sample.works` |", matrix)
         self.assertIn("| 合计 | 2 | 1 |", matrix)
 
+    def test_later_milestones_count_as_implemented(self):
+        self.add_rows("| C-AAA-002 | rule | counter | M1 已实现：`Sample.works` |\n"
+                      "| C-AAA-003 | rule | counter | M1 实现 |\n")
+        self.problems()
+        matrix = (self.root / "contracts/traceability.md").read_text(encoding="utf-8")
+        self.assertIn("| C-AAA-002 | M1 已实现：`Sample.works` |", matrix)
+        self.assertNotIn("| C-AAA-003 | M1 实现 |", matrix)
+        self.assertIn("| 合计 | 3 | 1 |", matrix)
+
+    def test_implemented_mark_must_start_the_cell(self):
+        self.add_rows("| C-AAA-002 | rule | counter | 评审；M1 已实现：`Sample.works` |\n")
+        self.assert_single_problem("C-AAA-002 must start its verification cell with \"M<n> 已实现\"")
+
     def test_bare_test_cite_is_rejected(self):
         self.add_rows("| C-AAA-002 | rule | counter | M0 已实现：`works` |\n")
         self.assert_single_problem("cites test `works` without its suite; write `Sample.works`")
