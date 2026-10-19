@@ -324,7 +324,9 @@ typedef struct ayni_step_report_v1 {
     uint32_t reserved;   /* written as 0 */
     /* Host monotonic time by which to call ayni_step even if nothing wakes
      * the owner; UINT64_MAX: none. Since 0.7, in RUNNING, the earliest time
-     * an occurrence of a goal whose tasks may advance falls due (ADR-0019). */
+     * an occurrence of a goal whose tasks may advance falls due, or the
+     * step's start when one already has and more_ready is set; UINT64_MAX
+     * while the task table has no room or no id is left (ADR-0019). */
     uint64_t next_deadline_us;
 } ayni_step_report_v1;
 
@@ -392,15 +394,15 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
 /*
  * Applies posted completions, advances recovery and shutdown and, in
  * RUNNING, derives due tasks from goals, one task per item and transition
- * (ADR-0018). Deriving sets the goal's occurrences, last_task_id and
- * commit_seq but keeps its revision, so the revision a caller holds for the
- * goal stays valid. Does at most max_items items and stops once max_time_us
- * has passed on the host clock, checked after each item; never waits on
- * storage or any other I/O (C-LIMIT-011). out_report (nullable) receives the
- * fields its struct_size covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if
- * kernel is NULL or max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
- * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE in
- * CONFIGURING and STOPPED, and when called from a goal type's validator.
+ * (ADR-0018). A task stands for every occurrence of its goal due by the
+ * step's start (ADR-0019). Deriving sets the goal's occurrences,
+ * next_due_us, last_task_id and commit_seq but keeps its revision, so the
+ * revision a caller holds for the goal stays valid. Does at most max_items items and stops once
+ * max_time_us has passed on the host clock, checked after each item; never waits on storage or any
+ * other I/O (C-LIMIT-011). out_report (nullable) receives the fields its struct_size covers.
+ * Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or max_items or max_time_us is 0;
+ * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE
+ * in CONFIGURING and STOPPED, and when called from a goal type's validator.
  */
 ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
                         ayni_step_report_v1 *out_report);
@@ -759,7 +761,8 @@ typedef struct ayni_task_info_v1 {
      * for. */
     uint32_t occurrence;
     uint32_t occurrence_count; /* since 0.7; how many it stands for, at least 1 */
-    /* Since 0.7. When its occurrence fell due, on the host monotonic clock. */
+    /* Since 0.7. When the latest occurrence it stands for fell due, on the
+     * host monotonic clock. */
     uint64_t due_us;
 } ayni_task_info_v1;
 
@@ -915,8 +918,10 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    knows. Applies to intent, out_result, out_error and, for the kinds
  *    implemented here, the body, which must not be NULL. GOAL_CREATE also
  *    needs expected_revision 0, a goal_type_id that is a catalog id,
- *    parameters whose data is not NULL unless their size is 0, and a
- *    trigger kind this library defines.
+ *    parameters whose data is not NULL unless their size is 0, a trigger
+ *    kind this library defines, and trigger times that fit it (an INTERVAL
+ *    period of at least AYNI_TRIGGER_PERIOD_MIN_US, zero where the kind
+ *    takes none).
  * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement, or a
  *    nonzero command_id.
  * 3. AYNI_INVALID_STATE when called from a goal type's validator; then
@@ -952,8 +957,9 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * RUNNING, and PAUSED otherwise; the tasks of a cancelled goal are cancelled
  * with it (ADR-0018). An intent raises the revision of each goal, task and
  * instance it changes by one; others keep theirs. When the intent may let
- * ayni_step derive a task, the host's wake is called before
- * ayni_submit_intent returns.
+ * ayni_step derive a task, or creates a goal whose first occurrence is still
+ * to come, the host's wake is called before ayni_submit_intent returns, so
+ * the owner steps and learns its next deadline.
  */
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
                                  ayni_intent_result_v1 *out_result, ayni_error_v1 *out_error);

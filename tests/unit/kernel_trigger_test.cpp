@@ -64,6 +64,35 @@ void advance_to(WorkNode &work, uint64_t time_us) {
     advance(work, time_us - now(work));
 }
 
+// White-box: one request whose completion the test posts, so that DRAINING
+// waits for it and a step has a completion to apply before it derives.
+struct HeldRequest {
+    static void applied(void * /*context*/, const ayni_completion_result_v1 & /*result*/) {}
+    static ayni_submit_result_t accept(void *context, ayni_attempt_ref_v1 attempt,
+                                       ayni_completion_t *completion) {
+        auto &self = *static_cast<HeldRequest *>(context);
+        self.attempt = attempt;
+        self.completion = completion;
+        return AYNI_SUBMIT_ACCEPTED;
+    }
+
+    void issue(WorkNode &work) {
+        ASSERT_EQ(work.kernel()->completions.issue(work.node().info().boot_epoch, &applied, nullptr,
+                                                   &accept, this),
+                  ayni::kernel::IssueResult::in_flight);
+    }
+    void post() {
+        ayni_completion_result_v1 result{};
+        result.struct_size = sizeof(result);
+        result.outcome = 1;
+        result.attempt = attempt;
+        ASSERT_EQ(ayni_completion_post(completion, &result), AYNI_OK);
+    }
+
+    ayni_attempt_ref_v1 attempt{};
+    ayni_completion_t *completion = nullptr;
+};
+
 // --- Delay -----------------------------------------------------------------
 
 // ADR-0019: the occurrence falls due delay_us after creation, and the step
@@ -278,16 +307,67 @@ TEST(WorkTrigger, deadline_counts_only_goals_that_could_derive) {
     EXPECT_EQ(work.task(task_of(work, later)).due_us, start + 3U * second);
 }
 
-// lifecycles.md: only RUNNING derives, so no other state reports a
-// deadline for an occurrence.
+// lifecycles.md: only RUNNING derives, so DRAINING reports no deadline for
+// an occurrence, even one already due.
 TEST(WorkTrigger, draining_reports_no_deadline) {
     WorkNode work;
     work.run();
-    delay_goal(work, second);
+    const uint64_t goal_id = delay_goal(work, second);
+    HeldRequest request;
+    request.issue(work);
     ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
+    advance(work, 2U * second);
+    const ayni_step_report_v1 report = work.node().step();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_DRAINING);
+    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
+    request.post();
+}
+
+// With no id left a task cannot derive until the next boot, so the deadline
+// goes once the last id is used, whatever used it, and does not come back
+// when the occurrence falls due.
+TEST(WorkTrigger, used_up_ids_report_no_deadline) {
+    WorkNode work;
+    work.run();
+    const uint64_t start = now(work);
+    work.kernel()->work.ids.start(1, 0xFFFFFFFEU);
+    const uint64_t goal_id = delay_goal(work, second);
+    EXPECT_EQ(work.node().step().next_deadline_us, start + second);
+    create(work, timed_body(work, AYNI_TRIGGER_NONE, 0)); // takes the last id
+    EXPECT_EQ(work.node().step().next_deadline_us, no_time);
+    advance(work, 2U * second);
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
+}
+
+// A step whose time budget is spent before it derives still reports the due
+// occurrence, so the owner calls it again at once.
+TEST(WorkTrigger, budget_spent_before_deriving_still_reports_the_due_occurrence) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal_id = delay_goal(work, second);
+    EXPECT_EQ(work.node().step().items_done, 0U); // nothing due yet
+    advance(work, 2U * second);
+    HeldRequest request;
+    request.issue(work);
+    request.post();
+    work.node().sim().advance_per_read_us(10);
+    const uint64_t started = now(work);
+    ayni_step_report_v1 report = work.node().step(unbounded_items, 5);
+    work.node().sim().advance_per_read_us(0);
+    EXPECT_EQ(report.items_done, 1U); // the completion only
+    EXPECT_EQ(report.more_ready, 1U);
+    EXPECT_EQ(report.next_deadline_us, started);
+    EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
+    report = work.node().step();
+    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(work.goal(goal_id).occurrences, 1U);
 }
 
 // A step takes occurrences as of the time it started, so a clock that moves

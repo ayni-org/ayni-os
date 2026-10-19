@@ -29,14 +29,16 @@ namespace {
 
 // Clears derivation_changed when there is nothing to derive, so later calls
 // skip the search until a change sets it again or next_due_us comes. Keeps it
-// set when a goal is found: deriving from it changes the tables.
+// set when a goal is found: deriving from it changes the tables. Ids are
+// checked first because whatever takes the last one (a goal, a session)
+// need not mark the search.
 bool next_derivable(WorkModel &model, uint64_t now_us, uint32_t &out_goal_index) {
-    if (!model.derivation_changed && now_us < model.next_due_us) {
-        return false;
-    }
     if (!model.ids.available()) {
         model.derivation_changed = false;
         model.next_due_us = work::no_time;
+        return false;
+    }
+    if (!model.derivation_changed && now_us < model.next_due_us) {
         return false;
     }
     uint64_t next_due_us = work::no_time;

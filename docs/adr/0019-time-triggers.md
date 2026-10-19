@@ -22,7 +22,7 @@ ADR-0018 把 `MA-004` 第二部分拆为 Task 与传播、时间、事件三个 
 3. **计时不因暂停而停止（产品语义，推荐项）。** 时间按创建时刻在 Host 单调时钟上推算，Goal、祖先或实例暂停期间照常走。暂停期间到期的 occurrence 留在 Goal 上，放行后派生；这与“错过的提醒默认补发一次”（C-PROD-018）一致，暂停与断电、恢复使用同一规则。
 4. **等待的 occurrence 合并为一个 Task，节拍不变（产品语义，推荐项）。** `ayni_step` 派生时取走截至当时已到期的全部 occurrence，生成一个 Task，记下最新一次的编号与到期时间以及代表的个数；下一次 occurrence 仍按原节拍，是当前时刻之后的第一个。例如每 30 分钟一次、从 9:00 开始，9:10 到 10:20 暂停：10:20 补发一次，代表 9:30 与 10:00，下一次在 10:30。这样同一触发窗口只产生一个 Task，等待多久都不会补建多个 Task（C-LIMIT-007）。是否把多次合并呈现为“汇总”由 GoalType 与呈现层决定（`MA-019`）；“跳过”需要先定义何为错过，随失效与有界等待和 `MA-011`。
 5. **最早到期的先派生。** 每次派生在放行且已到期的 Goal 中取到期时间最早的，相同时取先创建的。`ONCE` 的到期时间即创建时间，所以 ADR-0018 的创建顺序是它的特例。一次 `ayni_step` 以开始时读取的时钟取 occurrence，同一 step 中的多次派生看到同一时刻。
-6. **`next_deadline_us`。** `RUNNING` 中，step 报告放行的 Goal 中最早的下一次到期时间；有可派生的 Goal 时 `more_ready` 为 1；其他状态报告 `UINT64_MAX`。被暂停的 Goal、Task 表没有槽位、ID 用尽时不报告期限：这些情况只能由意图解除（恢复、结束 Task），意图会唤醒 owner（ADR-0018 决策 8），因此 Host 不会为等不到的期限反复醒来。创建有 occurrence 的 Goal 也唤醒 owner，Host 由下一次 step 得知新期限。暂停不使任何 Task 可以派生，所以仍不唤醒 owner，但下一次 step 会重新扫描，报告去掉被暂停 Goal 后的期限；Host 手中较早的旧期限至多使它多醒一次。
+6. **`next_deadline_us`。** `RUNNING` 中，step 报告放行的 Goal 中最早的下一次到期时间；有可派生的 Goal 时 `more_ready` 为 1；其他状态报告 `UINT64_MAX`。被暂停的 Goal、Task 表没有槽位、ID 用尽时不报告期限：前两种只能由意图解除（恢复、结束 Task），意图会唤醒 owner（ADR-0018 决策 8），ID 只有重启后才再有，因此 Host 不会为等不到的期限反复醒来。创建有 occurrence 的 Goal 也唤醒 owner，Host 由下一次 step 得知新期限。暂停不使任何 Task 可以派生，所以仍不唤醒 owner，但下一次 step 会重新扫描，报告去掉被暂停 Goal 后的期限；Host 手中较早的旧期限至多使它多醒一次。
 7. **只在需要时扫描。** 搜索没有找到可派生的 Goal 时，`WorkModel` 记下下一次到期时间；之后的 step 只在意图改变了哪些 Goal 可以派生（包括暂停）、或该时间已到时才扫描 Goal 表。
 8. **意图读取时钟。** `ayni_submit_intent` 在应用意图前读取一次 Host 单调时钟，新 Goal 的时间从这一刻起算（C-TIME-008：所有者线程、不阻塞）。
 
@@ -47,6 +47,6 @@ ADR-0018 把 `MA-004` 第二部分拆为 Task 与传播、时间、事件三个 
 ## 验证
 
 - `tests/unit/trigger_schedule_test.cpp`（`TriggerSchedule.*`）：各种类接受的时间、第一次到期、超出时钟范围的时间、一次性触发结束、周期按节拍到期、等待的 occurrence 合并且节拍不变、编号用尽时结束。
-- `tests/unit/kernel_trigger_test.cpp`（`WorkTrigger.*`）：经 C ABI 的延时与周期目标、`next_deadline_us`、Step 之间错过的 occurrence 合并为一个 Task、暂停的 Goal 与实例恢复后补发一次且暂停期间不设期限、取消的 Goal 不再到期、最早到期的先派生、Task 表满时不设期限、`DRAINING` 不报告期限、一次 step 以开始时刻取 occurrence。
+- `tests/unit/kernel_trigger_test.cpp`（`WorkTrigger.*`）：经 C ABI 的延时与周期目标、`next_deadline_us`、Step 之间错过的 occurrence 合并为一个 Task、暂停的 Goal 与实例恢复后补发一次且暂停期间不设期限、取消的 Goal 不再到期、最早到期的先派生、Task 表满或 ID 用尽时不设期限、时间预算在派生前用尽时仍报告 `more_ready`、`DRAINING` 不报告期限、一次 step 以开始时刻取 occurrence。
 - `tests/unit/goal_table_test.cpp`、`tests/unit/kernel_work_test.cpp`、`tests/contract/abi_layout.c`：游标、终态 Goal 不再有下一次 occurrence、格式错误的触发时间、ABI 0.7 布局。
 - 失效、等待上限、日历规则与重启后的补发相应条款不标为已实现。

@@ -165,7 +165,7 @@ bool find_derivable(const WorkTables &tables, uint64_t now_us, uint32_t &out_goa
             earliest = index;
         }
     }
-    if (earliest == GoalTable::no_parent || out_next_due_us > now_us) {
+    if (earliest == GoalTable::no_parent || !tables.goals.at(earliest).cursor.due_by(now_us)) {
         return false;
     }
     out_goal_index = earliest;
