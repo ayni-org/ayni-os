@@ -391,11 +391,13 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
 /*
  * Applies posted completions, advances recovery and shutdown and, in
  * RUNNING, derives due tasks from goals, one task per item and transition
- * (ADR-0018). Does at most max_items items and stops once max_time_us has
- * passed on the host clock, checked after each item; never waits on storage
- * or any other I/O (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
- * covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or
- * max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
+ * (ADR-0018). Deriving sets the goal's occurrences, last_task_id and
+ * commit_seq but keeps its revision, so the revision a caller holds for the
+ * goal stays valid. Does at most max_items items and stops once max_time_us
+ * has passed on the host clock, checked after each item; never waits on
+ * storage or any other I/O (C-LIMIT-011). out_report (nullable) receives the
+ * fields its struct_size covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if
+ * kernel is NULL or max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
  * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE in
  * CONFIGURING and STOPPED, and when called from a goal type's validator.
  */
@@ -908,13 +910,14 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * takes it back; INSTANCE_STOP takes a RUNNING or PAUSED instance to
  * STOPPED and cancels every goal and task it owns that is not yet terminal.
  *
- * In the same transition, every READY or PAUSED task whose goal or owner
- * the intent changed becomes READY if its goal and all the goal's ancestors
- * are ACTIVE and its owner is RUNNING, and PAUSED otherwise; the tasks of a
- * cancelled goal are cancelled with it (ADR-0018). An intent raises the
- * revision of each goal, task and instance it changes by one; others keep
- * theirs. When the intent may let ayni_step derive a task, the host's wake
- * is called before ayni_submit_intent returns.
+ * In the same transition, every READY or PAUSED task of the named goal or
+ * of one of its descendants, or owned by the named instance, becomes READY
+ * if its goal and all the goal's ancestors are ACTIVE and its owner is
+ * RUNNING, and PAUSED otherwise; the tasks of a cancelled goal are cancelled
+ * with it (ADR-0018). An intent raises the revision of each goal, task and
+ * instance it changes by one; others keep theirs. When the intent may let
+ * ayni_step derive a task, the host's wake is called before
+ * ayni_submit_intent returns.
  */
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
                                  ayni_intent_result_v1 *out_result, ayni_error_v1 *out_error);
@@ -931,7 +934,7 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
                              ayni_agent_info_v1 *out_info);
 ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
                             ayni_goal_info_v1 *out_info);
-/* Since 0.6. A task whose place an ended task gave up is NOT_FOUND
+/* Since 0.6. An ended task whose place went to a new task is NOT_FOUND
  * (ADR-0018). */
 ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
                             ayni_task_info_v1 *out_info);

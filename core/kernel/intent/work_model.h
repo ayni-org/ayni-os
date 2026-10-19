@@ -83,8 +83,10 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, IntentOutcome
 // Derives the next due task as one transition (ADR-0018). Returns false,
 // changing nothing, when no goal can derive one now or no id is left.
 bool derive_next_task(WorkModel &model);
-// Whether derive_next_task would derive a task.
-bool has_derivable_task(WorkModel &model);
+// Whether derive_next_task would derive a task. Clears derivation_due when
+// it would not. While derivation_due is set this scans the goal table, each
+// goal along at most goal_depth_max ancestors.
+bool refresh_derivation_due(WorkModel &model);
 
 } // namespace ayni::kernel
 

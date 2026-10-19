@@ -79,7 +79,8 @@ void exhaust_goal(WorkNode &work, uint64_t goal_id) {
 
 // ADR-0018 decisions 4 and 8: the intent creates the goal and wakes the
 // owner; the next step derives the one occurrence as a READY task in a
-// transition of its own, with an id from the shared allocator.
+// transition of its own, with an id from the shared allocator. The goal
+// records the task and keeps its revision.
 TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     WorkNode work;
     work.run();
@@ -98,7 +99,7 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     const ayni_goal_info_v1 goal = work.goal(goal_id);
     EXPECT_EQ(goal.lifecycle, AYNI_GOAL_ACTIVE);
     EXPECT_EQ(goal.occurrences, 1U);
-    EXPECT_EQ(goal.revision, 2U);
+    EXPECT_EQ(goal.revision, 1U);
     ASSERT_NE(goal.last_task_id, 0U);
 
     const ayni_task_info_v1 task = work.task(goal.last_task_id);
@@ -121,7 +122,7 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     // ONCE has no second occurrence.
     EXPECT_EQ(step_items(work), 0U);
     EXPECT_EQ(work.goal(goal_id).occurrences, 1U);
-    EXPECT_EQ(work.goal(goal_id).revision, 2U);
+    EXPECT_EQ(work.goal(goal_id).revision, 1U);
 }
 
 TEST(WorkTask, none_goal_derives_no_task_and_wakes_no_one) {
@@ -136,6 +137,28 @@ TEST(WorkTask, none_goal_derives_no_task_and_wakes_no_one) {
     EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
     EXPECT_EQ(work.goal(goal_id).last_task_id, 0U);
     EXPECT_EQ(work.goal(goal_id).revision, 1U);
+}
+
+// ADR-0018 decision 8: deriving is the kernel's own progress through the
+// trigger, so the revision the caller got from GOAL_CREATE still names the
+// goal; a goal at the largest revision still derives.
+TEST(WorkTask, deriving_keeps_the_goal_revision_the_caller_holds) {
+    WorkNode work;
+    work.run();
+    const Submitted created = work.create(WorkNode::create_body(
+        work.instance(agent_a), 0, "reminder", 1, {nullptr, 0}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(created.status, AYNI_OK);
+    const uint64_t goal_id = created.result.object.id;
+    ASSERT_EQ(step_items(work), 1U);
+    EXPECT_EQ(work.goal(goal_id).revision, created.result.object.revision);
+    EXPECT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, goal_id, created.result.object.revision).status,
+              AYNI_OK);
+
+    const uint64_t exhausted = once_goal(work);
+    exhaust_goal(work, exhausted);
+    EXPECT_EQ(step_items(work), 1U);
+    EXPECT_EQ(work.goal(exhausted).occurrences, 1U);
+    EXPECT_EQ(work.goal(exhausted).revision, max_revision);
 }
 
 // C-LIMIT-011: one derived task is one item, in creation order.
@@ -207,6 +230,21 @@ TEST(WorkTask, used_up_ids_leave_the_occurrence_waiting) {
     EXPECT_EQ(work.goal(goal_id).revision, 1U);
 }
 
+// ADR-0018 decision 8: derivation takes the first goal in creation order that
+// may advance, so a held goal keeps no later goal waiting.
+TEST(WorkTask, held_goal_keeps_no_later_goal_from_deriving) {
+    WorkNode work;
+    work.run();
+    ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
+    const uint64_t held = once_goal(work);
+    const uint64_t later = once_goal(work, 0, agent_b);
+    const ayni_step_report_v1 report = work.node().step();
+    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(task_of(work, held), 0U);
+    EXPECT_NE(task_of(work, later), 0U);
+}
+
 // ADR-0018 decision 3: an ended task gives its place to a new one when the
 // table is full; a task that has not ended never does.
 TEST(WorkTask, full_task_table_reclaims_the_task_that_ended_first) {
@@ -237,19 +275,6 @@ TEST(WorkTask, full_task_table_reclaims_the_task_that_ended_first) {
     EXPECT_EQ(task_of(work, fourth), 0U);
 }
 
-// ADR-0018 decision 9: a goal at the largest revision cannot record its
-// occurrence, so it derives nothing.
-TEST(WorkTask, goal_at_the_largest_revision_derives_nothing) {
-    WorkNode work;
-    work.run();
-    const uint64_t goal_id = once_goal(work);
-    exhaust_goal(work, goal_id);
-    const ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
-}
-
 // --- Goal changes reach their tasks ---------------------------------------
 
 // ADR-0018 decision 5: pausing a goal does not rewrite its descendants, but
@@ -274,7 +299,7 @@ TEST(WorkTask, paused_ancestor_holds_the_tasks_below_it_until_resumed) {
         EXPECT_EQ(task.commit_seq, paused.result.commit_seq) << task_id;
     }
     EXPECT_EQ(work.goal(child).lifecycle, AYNI_GOAL_ACTIVE);
-    EXPECT_EQ(work.goal(child).revision, 2U);
+    EXPECT_EQ(work.goal(child).revision, 1U);
 
     // Pausing the child as well changes no task, and resuming the root
     // leaves both tasks held by the paused child.
@@ -324,6 +349,29 @@ TEST(WorkTask, paused_goal_holds_its_own_task) {
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal_id).status, AYNI_OK);
     EXPECT_EQ(wakes(work), wakes_before); // pausing lets nothing derive
     EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal_id).status, AYNI_OK);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(work.task(task_id).revision, 3U);
+}
+
+// ADR-0018 decision 5: a task needs its goal and its owner at once, so
+// releasing either one alone leaves it held.
+TEST(WorkTask, task_waits_for_both_its_goal_and_its_owner) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal_id = once_goal(work);
+    ASSERT_EQ(step_items(work), 1U);
+    const uint64_t task_id = task_of(work, goal_id);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal_id).status, AYNI_OK);
+    ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
+
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal_id).status, AYNI_OK);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal_id).status, AYNI_OK);
+    ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_RESUME, agent_a).status, AYNI_OK);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.task(task_id).revision, 2U);
+
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal_id).status, AYNI_OK);
     EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
     EXPECT_EQ(work.task(task_id).revision, 3U);
@@ -575,12 +623,39 @@ TEST(WorkTask, change_that_would_exhaust_a_task_revision_is_refused) {
                        AYNI_REASON_REVISION_EXHAUSTED, AYNI_OBJECT_AGENT_INSTANCE, instance);
     }
     EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
-    EXPECT_EQ(work.goal(goal_id).revision, 2U);
+    EXPECT_EQ(work.goal(goal_id).revision, 1U);
     EXPECT_EQ(work.goal(root).lifecycle, AYNI_GOAL_ACTIVE);
     EXPECT_EQ(work.goal(root).revision, 1U);
     EXPECT_EQ(work.agent(agent_a).revision, agent_before.revision);
     EXPECT_EQ(work.agent(agent_a).commit_seq, agent_before.commit_seq);
     EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+}
+
+// Resuming raises the revision of each task it releases, so a held task at
+// the largest revision refuses the resume of its goal or of its owner.
+TEST(WorkTask, resume_that_would_exhaust_a_task_revision_is_refused) {
+    WorkNode work;
+    work.run();
+    const uint64_t mine = once_goal(work);
+    const uint64_t theirs = once_goal(work, 0, agent_b);
+    ASSERT_EQ(step_items(work), 2U);
+    const uint64_t my_task = task_of(work, mine);
+    const uint64_t their_task = task_of(work, theirs);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, mine).status, AYNI_OK);
+    ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_b).status, AYNI_OK);
+    exhaust_task(work, my_task);
+    exhaust_task(work, their_task);
+
+    expect_refused(work.change(AYNI_INTENT_GOAL_RESUME, mine), AYNI_CAPACITY_EXCEEDED,
+                   AYNI_REASON_REVISION_EXHAUSTED, AYNI_OBJECT_GOAL, mine);
+    EXPECT_EQ(work.goal(mine).lifecycle, AYNI_GOAL_PAUSED);
+    EXPECT_EQ(work.task(my_task).lifecycle, AYNI_TASK_PAUSED);
+    expect_refused(work.change_agent(AYNI_INTENT_INSTANCE_RESUME, agent_b), AYNI_CAPACITY_EXCEEDED,
+                   AYNI_REASON_REVISION_EXHAUSTED, AYNI_OBJECT_AGENT_INSTANCE,
+                   work.instance(agent_b));
+    EXPECT_EQ(work.agent(agent_b).lifecycle, AYNI_AGENT_PAUSED);
+    EXPECT_EQ(work.task(their_task).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.task(their_task).revision, max_revision);
 }
 
 // Only tasks whose state changes get a new revision, so a change that leaves

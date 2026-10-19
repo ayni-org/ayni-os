@@ -14,7 +14,7 @@ ADR-0017 把 `MA-004` 拆成三部分，第二部分覆盖 Task、occurrence 与
 
 ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.1 把“暂停集合”交给助理协调器（`MA-019`），C-PROD-020 的集合由它选择，本部分只提供它要使用的暂停机制。
 
-文档对 Task 只有一句生命周期描述（`lifecycles.md`），没有值、转换表或传播矩阵，也没有说 GoalType 怎样产生 Task。其中三个产品语义问题已请用户决定（见决策 3、5、6）；本 ADR 按推荐项实现，用户改选时修订本 ADR 与相应实现。
+文档对 Task 只有一句生命周期描述（`lifecycles.md`），没有值、转换表或传播矩阵，也没有说 GoalType 怎样产生 Task。其中三个产品语义问题与一个实施细则已请用户决定（见决策 3、5、6、8）；本 ADR 按推荐项实现，用户改选时修订本 ADR 与相应实现。
 
 ## 决策
 
@@ -35,8 +35,9 @@ ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.
 8. **派生在 `ayni_step` 中进行。** 每次派生是一个 transition、一个 step 项：按创建顺序找到第一个放行、有待派生 occurrence、且有 Task 槽位与 ID 的 Goal，推进它的触发游标并创建 Task（批次 B2 的 occurrence 游标与 Task 同属一个 transition；预算预留随 `MA-018`）。这样意图的 transition 只改变它点名的对象，派生单独检查（C-AUTH-004），也与时间部分的定时触发共用同一入口。
    - 只在 Kernel `RUNNING` 时派生；`DRAINING` 与 `RESTRICTED` 不产生新工作。
    - 意图使派生可能到期时（创建 `ONCE` 目标、恢复目标或实例、Task 结束腾出槽位），`ayni_submit_intent` 在返回前调用 Host 的 `wake`；还有可派生的 Goal 时 `more_ready` 为 1。
-   - 槽位或 ID 不足时 occurrence 留在 Goal 上等待，不丢弃、不返回给任何调用方；它在何处可见随第三部分的 `blocked_on` 与时间部分的等待上限（C-RES-005）。
-9. **修订号上限覆盖整个 transition。** 意图要改变的 Goal、Task 与实例中有版本已是 2^32−1 的，整个意图返回 `CAPACITY_EXCEEDED`（`REVISION_EXHAUSTED`），不改变任何对象（C-COMMIT-012）。检查与应用使用同一个判定函数，先完整检查，再应用，不在内存中回滚（C-COMMIT-003）。
+   - 槽位或 ID 不足时 occurrence 留在 Goal 上等待，不丢弃、不返回给任何调用方；它在何处可见随第三部分的 `blocked_on` 与时间部分的等待上限（C-RES-005）。前面的 Goal 不放行时跳过它，不挡住后面的 Goal。
+   - **派生不提升 Goal 的版本（实施细则，推荐项）。** 派生只更新 Goal 的 occurrence 数、最近一个 Task 与 `commit_seq`。`revision` 是意图的 `expected_revision`，用来拒绝基于过时状态的改变（C-COMMIT-012）；派生是 Kernel 自己推进触发进度，不是别人的改变。若派生也提升版本，调用方用 `GOAL_CREATE` 返回的版本暂停或取消目标就会冲突，周期目标的每次触发都会如此。要发现 Goal 的任何变化，比较 `commit_seq`。
+9. **修订号上限覆盖整个 transition。** 意图要改变的 Goal、Task 与实例中有版本已是 2^32−1 的，整个意图返回 `CAPACITY_EXCEEDED`（`REVISION_EXHAUSTED`），不改变任何对象（C-COMMIT-012）。派生不改变 Goal 的版本，新 Task 的版本为 1，所以派生不受此限。检查与应用使用同一个判定函数，先完整检查，再应用，不在内存中回滚（C-COMMIT-003）。
 10. **ABI 0.6。** `ayni_config_v1` 追加 `task_capacity`；`ayni_goal_type_v1` 追加 `trigger_kinds`；`ayni_goal_create_v1` 追加 `trigger`；`ayni_goal_info_v1` 追加 `trigger`、已派生的 occurrence 数与最近一个 Task 的 ID；`ayni_agent_info_v1` 追加 `revision`。新增 Task 生命周期值、`ayni_task_info_v1`、`ayni_get_task`、`ayni_task_target_v1`、`ayni_instance_target_v1`、四种意图（`TASK_CANCEL` 5、`INSTANCE_PAUSE` 6、`INSTANCE_RESUME` 7、`INSTANCE_STOP` 8，草案中的种类顺延到 9 起）和八个原因码。0.x 中小版本须完全一致（C-VER-006），0.5 新增或改变的结构体仍只接受各自的 `sizeof`。
 11. **模块落位（ADR-0008）。**
     - `work/task/task_table`：Task 的生命周期、版本、容量与回收。
@@ -59,6 +60,7 @@ ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.
 - **暂停级联到子目标与 Task 的状态**：恢复时无法区分随父目标暂停与单独暂停，需要记录原因。推荐用放行条件代替。
 - **意图的 transition 里直接派生 Task**：创建或恢复一个目标就要在同一 transition 中派生其下全部 Task，transition 大小取决于树的规模；派生也就无法与定时触发共用入口。否决。
 - **由 GoalType 的回调把参数映射为触发**：Kernel 要多调用一次调用方代码，而触发种类仍需 Kernel 能理解的类型。否决，改为类型化字段加类型声明的集合。
+- **派生也提升 Goal 的版本**：版本反映 Goal 记录的每次变化，但持有旧版本的暂停与取消在每次派生后都要重读，`commit_seq` 已能表示记录变化。推荐不提升。
 - **结束的 Task 一直占位，或结束即回收**：前者让周期目标最终耗尽容量，后者让刚结束的结果无法查询。推荐表满时回收最早结束的。
 - **停止实例时保留名下目标，或要求先清空**：前者留下无法推进的目标，后者把一次停止拆成许多意图。推荐一并取消。
 - **为 Task 意图提供暂停/恢复**：计划只要求取消 Goal/Task；单个 Task 的暂停随第三部分的暂停点再定。
@@ -67,5 +69,5 @@ ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.
 
 - `tests/unit/task_table_test.cpp`（`TaskTable.*`）：版本与取消版本、允许的转换、表满时回收最早结束的 Task 而不挤掉未结束的、版本上限。
 - `tests/unit/agent_table_test.cpp`：实例暂停、恢复、停止的允许转换与版本。
-- `tests/unit/kernel_task_test.cpp`（`WorkTask.*`）：经 C ABI 的派生（`ONCE` 只派生一次、`NONE` 不派生、`ayni_step` 每次派生一项、`more_ready` 与 `wake`）、放行条件（暂停父目标停下子目标的 Task、恢复后继续）、Goal 与实例变化传到 Task、取消级联到 Task、`TASK_CANCEL`、实例停止取消名下工作、owner 检查、版本冲突与版本上限、容量与回收、`DRAINING` 不派生、各函数在六个状态下的返回值。
+- `tests/unit/kernel_task_test.cpp`（`WorkTask.*`）：经 C ABI 的派生（`ONCE` 只派生一次、`NONE` 不派生、`ayni_step` 每次派生一项、`more_ready` 与 `wake`）、放行条件（暂停父目标停下子目标的 Task、恢复后继续；Goal 与 owner 须同时放行；不放行的 Goal 不挡住后面的 Goal）、派生不提升 Goal 版本、Goal 与实例变化传到 Task、取消级联到 Task、`TASK_CANCEL`、实例停止取消名下工作、owner 检查、版本冲突与版本上限（含恢复时的 Task 版本上限）、容量与回收、`DRAINING` 不派生、各函数在六个状态下的返回值。
 - 未实现的部分（运行、完成、失效、时间触发、事件触发、等待原因）相应条款不标为已实现。

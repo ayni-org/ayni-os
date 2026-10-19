@@ -155,7 +155,7 @@ bool find_derivable(const WorkTables &tables, uint32_t &out_goal_index) {
     }
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
-        if (tables.goals.has_due_occurrence(index) && !GoalTable::at_largest_revision(goal) &&
+        if (tables.goals.has_due_occurrence(index) &&
             may_advance(tables, index, goal.owner_instance_id, After{})) {
             out_goal_index = index;
             return true;

@@ -39,7 +39,7 @@ bool next_derivable(WorkModel &model, uint32_t &out_goal_index) {
 
 } // namespace
 
-bool has_derivable_task(WorkModel &model) {
+bool refresh_derivation_due(WorkModel &model) {
     uint32_t goal_index = 0;
     return next_derivable(model, goal_index);
 }

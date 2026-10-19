@@ -314,8 +314,8 @@ TEST(GoalTable, change_past_the_largest_revision_is_refused) {
     EXPECT_EQ(goals.change(root, GoalChange::resume), ChangeCheck::revision_exhausted);
 }
 
-// ADR-0018: ONCE has one occurrence and NONE has none; recording it is a
-// change of the goal, so it raises the revision.
+// ADR-0018: ONCE has one occurrence and NONE has none; recording it gives
+// the goal a new commit_seq and keeps its revision.
 TEST(GoalTable, once_has_one_due_occurrence_and_none_has_none) {
     Goals goals(small);
     const uint64_t none = goals.create();
@@ -328,7 +328,7 @@ TEST(GoalTable, once_has_one_due_occurrence_and_none_has_none) {
     EXPECT_EQ(goal.trigger, AYNI_TRIGGER_ONCE);
     EXPECT_EQ(goal.occurrences, 1U);
     EXPECT_EQ(goal.last_task_id, 77U);
-    EXPECT_EQ(goal.revision, 2U);
+    EXPECT_EQ(goal.revision, 1U);
     EXPECT_EQ(goal.commit_seq, goals.last_stamp().commit_seq);
     EXPECT_EQ(goal.lifecycle, AYNI_GOAL_ACTIVE);
     EXPECT_FALSE(goals->has_due_occurrence(goals.index_of(once)));

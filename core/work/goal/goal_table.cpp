@@ -133,7 +133,6 @@ void GoalTable::record_occurrence(uint32_t index, uint64_t task_id,
     Goal &goal = goals_[index];
     ++goal.occurrences;
     goal.last_task_id = task_id;
-    ++goal.revision;
     goal.commit_seq = stamp.commit_seq;
 }
 

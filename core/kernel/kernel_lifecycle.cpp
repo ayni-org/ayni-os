@@ -64,9 +64,10 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // wakes the owner.
     const bool boot_due = lifecycle == AYNI_LIFECYCLE_RECOVERING && boot.wants_advance() &&
                           completions.has_free_slot();
-    // DRAINING and RESTRICTED derive nothing (ADR-0018).
+    // DRAINING and RESTRICTED derive nothing (ADR-0018). Runs after the
+    // time budget is spent too: more_ready must not drop a due derivation.
     const bool derivation_due =
-        lifecycle == AYNI_LIFECYCLE_RUNNING && ayni::kernel::has_derivable_task(work);
+        lifecycle == AYNI_LIFECYCLE_RUNNING && ayni::kernel::refresh_derivation_due(work);
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
     report.items_done = items;

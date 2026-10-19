@@ -122,9 +122,11 @@ class GoalTable {
     // Whether the trigger of goal index has an occurrence not yet derived.
     // Says nothing about whether the goal may advance.
     bool has_due_occurrence(uint32_t index) const;
-    // Records that the next occurrence became task_id: the goal gets the
-    // next revision and stamp.commit_seq. Only when has_due_occurrence(index)
-    // and the revision is below the largest.
+    // Records that the next occurrence became task_id and gives the goal
+    // stamp.commit_seq. The revision stays: it is what intents name the goal
+    // by, and the kernel's own progress through the trigger must not make a
+    // caller's pause or cancel stale (ADR-0018). Only when
+    // has_due_occurrence(index).
     void record_occurrence(uint32_t index, uint64_t task_id, foundation::TransitionStamp stamp);
 
     // Whether some goal of the instance that is not terminal is at the

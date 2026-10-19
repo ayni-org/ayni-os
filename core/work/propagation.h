@@ -47,8 +47,8 @@ void apply_instance_change(WorkTables &tables, uint32_t instance_index, Instance
                            foundation::TransitionStamp stamp);
 
 // The goal whose next occurrence becomes a task: the first in creation order
-// with a due occurrence that may advance and is below the largest revision,
-// provided the task table has room. Returns false when there is none.
+// with a due occurrence that may advance, provided the task table has room.
+// Returns false when there is none.
 bool find_derivable(const WorkTables &tables, uint32_t &out_goal_index);
 // Derives that occurrence as the READY task task_id. Only right after
 // find_derivable returned goal_index.
