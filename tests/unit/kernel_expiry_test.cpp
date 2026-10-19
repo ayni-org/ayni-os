@@ -264,6 +264,8 @@ TEST(WorkExpiry, paused_goal_still_expires) {
     EXPECT_EQ(work.node().step().items_done, 2U);
     EXPECT_EQ(work.goal(paused).lifecycle, AYNI_GOAL_EXPIRED);
     EXPECT_EQ(work.goal(held_by_instance).lifecycle, AYNI_GOAL_EXPIRED);
+    // Of equal expiries, the goal created first expires first.
+    EXPECT_LT(work.goal(paused).commit_seq, work.goal(held_by_instance).commit_seq);
 }
 
 // ADR-0020: a goal that expires takes no occurrence due in the same step;
