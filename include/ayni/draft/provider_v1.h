@@ -5,7 +5,9 @@
  * implements capabilities; it is trusted built-in code but its output is
  * untrusted data that the kernel validates (C-TRUST-001). submit, cancel and
  * query run on the kernel owner thread and must not block; results come back
- * through the completion reserved for the attempt.
+ * through the completion reserved for the attempt. As for Host ports
+ * (ayni/draft/host_v1.h), an accepted submit or query owes exactly one
+ * terminal post, so the kernel can reach STOPPED (C-HOST-018).
  */
 #ifndef AYNI_DRAFT_PROVIDER_V1_H
 #define AYNI_DRAFT_PROVIDER_V1_H
@@ -42,6 +44,10 @@ typedef uint32_t ayni_call_outcome_t;
 #define AYNI_CALL_PROGRESS ((ayni_call_outcome_t)4)
 #define AYNI_CALL_CANNOT_CANCEL ((ayni_call_outcome_t)5)
 #define AYNI_CALL_CANCEL_UNKNOWN ((ayni_call_outcome_t)6)
+/* Terminal: the Provider stops tracking the attempt without knowing its
+ * outcome (its own timeout or shutdown). The kernel records the call as
+ * RESULT_UNKNOWN, never as failed (C-STATUS-004). */
+#define AYNI_CALL_ABANDONED ((ayni_call_outcome_t)7)
 
 /* Query results; NOT_ACCEPTED only from AYNI_QUERY_AUTHORITATIVE providers
  * (C-PROV-005). */
@@ -75,9 +81,16 @@ typedef struct ayni_provider_result_v1 {
 
 /*
  * Posts a result on the completion reserved for an attempt. Any non-ISR
- * thread. A completion takes any number of non-terminal results, of which
- * only the latest not yet applied is kept, and one terminal result, which
- * releases it; a later terminal post is ignored (C-CALL-012).
+ * thread, never once ayni_destroy has been entered. A result whose attempt is
+ * not the one the completion is reserved for is ignored (C-CALL-012). Until
+ * applied, the completion keeps:
+ * - the latest PROGRESS (earlier unapplied progress is replaced);
+ * - the cancel outcome (CANNOT_CANCEL or CANCEL_UNKNOWN), which a later
+ *   PROGRESS never replaces; the kernel cancels an attempt at most once, so
+ *   there is at most one (C-PROV-006);
+ * - one terminal result, which releases the completion; a later terminal post
+ *   is ignored.
+ * The kernel applies a kept cancel outcome before the terminal result.
  */
 ayni_status_t ayni_provider_post(ayni_completion_t *completion,
                                  const ayni_provider_result_v1 *result);
@@ -86,7 +99,7 @@ typedef struct ayni_provider_v1 {
     uint32_t struct_size;
     uint32_t version;
     ayni_string_v1 provider_id;
-    void *ctx; /* caller-owned until the kernel reaches STOPPED */
+    void *ctx; /* caller-owned until ayni_destroy returns AYNI_OK */
 
     uint32_t capability_count;
     uint32_t reserved;                           /* 0 */

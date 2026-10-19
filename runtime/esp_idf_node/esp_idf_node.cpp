@@ -51,6 +51,7 @@ ayni_status_t run_hello() {
     ayni_config_v1 config{};
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;
+    config.abi_minor = AYNI_ABI_MINOR;
     std::size_t size = 0;
     std::size_t align = 0;
     status = ayni_kernel_memory_requirements(&config, &size, &align);

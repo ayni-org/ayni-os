@@ -37,13 +37,13 @@ Target C++17 Core and a C99-compatible public API; disable exceptions/RTTI in Co
 
 Use types, construction rules, and boundary validation to express identities, units, ranges, and legal states. Keep invariant checks with their owner; avoid implicit state machines built from unrelated boolean flags or scattered duplicate validation.
 
-No formatter configuration exists. For new C/C++ files, use four-space indentation, `snake_case` functions/files, and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. Planned checks include formatting, compiler warnings, clang-tidy, and ASan/UBSan; add configurations before claiming enforcement.
+`.clang-format` defines C/C++ formatting (four-space indentation), and CI checks it with clang-format 18. Use `snake_case` functions/files and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. CI builds with warnings as errors (`AYNI_WARNINGS_AS_ERRORS`) on GCC and Clang and runs the `native-asan` preset (ASan/UBSan); clang-tidy runs as an advisory job and does not fail the build. Add configurations before claiming further enforcement.
 
 Comments should explain invariants, ownership, design reasons, and non-obvious tradeoffs. Do not introduce unused dependencies or fields, commented-out implementations, or comments that merely narrate the code. Remove obsolete code and comments caused by the current change without expanding into unrelated cleanup.
 
 ## Testing Guidelines
 
-GoogleTest is a candidate, not an installed framework. Verify public behavior, contracts, invariants, boundaries, and failure paths with tests proportionate to the change and risk. Use descriptive scenario names such as `recovery_after_dispatch_barrier`. Plan deterministic fixtures for multi-Agent resource sharing, crash recovery, and model/strategy replacement; follow the plan's E1–E4 gates before full hardware integration.
+Native tests use GoogleTest 1.17.0, fetched and pinned by `cmake/AyniGoogleTest.cmake` (ADR-0012); ESP32 tests will use ESP-IDF's Unity from M2. Verify public behavior, contracts, invariants, boundaries, and failure paths with tests proportionate to the change and risk. Use descriptive scenario names such as `recovery_after_dispatch_barrier`. Plan deterministic fixtures for multi-Agent resource sharing, crash recovery, and model/strategy replacement; follow the plan's E1–E4 gates before full hardware integration.
 
 Target Core coverage ≥75% and safety-critical branch coverage ≥90%; record deviations with evidence and an ADR. Distinguish compilation, simulation, hardware, and endurance results. Record versions, configuration, fault points, and traces needed to reproduce results; report unexecuted checks and limitations explicitly.
 

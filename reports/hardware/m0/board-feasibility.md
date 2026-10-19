@@ -18,7 +18,7 @@
 
 ## 固件基线（编译结果，非实机）
 
-`targets/esp32_assistant` 的 Hello 固件在本地与 CI 均编译通过（ESP-IDF v6.0.3，工具链 `esp-15.2.0_20251204`，`sdkconfig.defaults` 指定 16 MB Flash 与 8 MB Octal PSRAM）。本地 `idf.py size` 的结果（2026-10-19）：
+`targets/esp32_assistant` 的 Hello 固件在本地与 CI 均编译通过（ESP-IDF v6.0.3，工具链 `esp-15.2.0_20251204`，`sdkconfig.defaults` 指定 8 MB Octal PSRAM，Flash 暂按所有模组都有的 2 MB 配置，见下文自检第 3 步）。本地 `idf.py size` 的结果（2026-10-19）：
 
 | 内存区 | 已用（字节） | 总量（字节） | 说明 |
 |---|---|---|---|
@@ -38,7 +38,7 @@ Hello 固件启动后打印：芯片型号与版本、ESP-IDF 版本、复位原
 
 1. **拍照与丝印**：板子正反面照片；记录模组丝印（如 `ESP32-S3-WROOM-1` 与 `N16R8`）、板子型号与版本、是否附带摄像头。若模组是 1.8 V 版本（型号带 `V`，如 R16V），GPIO47/48 只有 1.8 V，停止链须改用其他引脚（stop-chain.md）。
 2. **找原理图**：确认摄像头接法是否与 `BOARD_ESP32S3_WROOM` 相同，RGB LED 在 GPIO38 还是 GPIO48，GPIO38、47、48 是否引出。
-3. **烧录 Hello 固件**：`idf.py -p <SERIAL_PORT> flash monitor`（`docs/development.md`），保存完整串口日志，核对 Flash 为 16 MB、PSRAM 为 8 MB 且已初始化。
+3. **烧录 Hello 固件**：`idf.py -p <SERIAL_PORT> flash monitor`（`docs/development.md`），保存完整串口日志，核对日志中的实测 Flash（`flash detected`）为 16 MB、PSRAM 为 8 MB 且已初始化。确认后把 `sdkconfig.defaults` 的 Flash 容量改为实测值，重新执行 `idf.py size` 并更新上面的表格。
 4. **只读查看 eFuse**：用 ESP-IDF 自带的 espefuse 工具执行只读的 summary 命令（命令名以 v6.0.3 文档为准），确认 `EFUSE_STRAP_JTAG_SEL` 未烧写、VDD_SPI 相关 eFuse 与模组电压一致。**不得执行任何 burn 类命令。**
 5. **测量供电**：USB 供电时 3V3 引脚电压；Hello 运行期间的 USB 电流（如有 USB 电流表）。
 6. **更新分配**：按 1～2 的结果修改 gpio-candidates.md 的“分配”一节；“约束”一节不随板型变化。

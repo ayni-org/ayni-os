@@ -12,6 +12,11 @@ Rules:
              "components". Core-internal headers are never allowed outside core/.
   tests/     Not checked: tests may reach any layer.
 
+Every C/C++ suffix in SOURCE_SUFFIXES is read. In core/ and include/ any other
+file type is a violation unless it is documentation or build script
+(NON_SOURCE_SUFFIXES), so that a header with an unexpected suffix cannot escape
+the check. A source file that is not UTF-8 is a violation, not a crash.
+
 Prints one line per violation as "path:line: message". Exit status: 0 clean,
 1 violations found, 2 invalid configuration.
 """
@@ -27,7 +32,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"\n]+)[>"]', re.MULTILINE)
-SOURCE_SUFFIXES = {".h", ".hpp", ".c", ".cc", ".cpp"}
+SOURCE_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".tpp", ".ixx", ".c", ".cc", ".cpp", ".cxx"}
+STRICT_DIRS = {"core", "include"}
+NON_SOURCE_SUFFIXES = {".md", ".txt", ".cmake"}
 FIXED_RULE_DIRS = {"core", "include", "tests"}
 
 
@@ -118,8 +125,8 @@ def classify(arch: Architecture, root: Path, source: PurePosixPath, include: Inc
         return Target("external")
     if kind in ("hosts", "runtime"):
         name = parts[2] if len(parts) > 2 else None
-        if name is not None and name.endswith(".h"):
-            name = name[: -len(".h")]
+        if name is not None and PurePosixPath(name).suffix in SOURCE_SUFFIXES:
+            name = PurePosixPath(name).stem
         return Target(kind, name)
     return Target(kind)
 
@@ -200,7 +207,7 @@ def describe(include: Include, target: Target) -> str:
     return f"{spelled} ({target.kind} header)"
 
 
-def iter_sources(arch: Architecture, root: Path):
+def iter_files(arch: Architecture, root: Path):
     for directory, subdirs, files in os.walk(root):
         relative_dir = PurePosixPath(Path(directory).relative_to(root).as_posix())
         subdirs[:] = sorted(
@@ -209,14 +216,18 @@ def iter_sources(arch: Architecture, root: Path):
             and not (relative_dir == PurePosixPath(".") and name in arch.unchecked_dirs)
         )
         for name in sorted(files):
-            if Path(name).suffix in SOURCE_SUFFIXES:
-                yield Path(directory) / name, relative_dir / name
+            yield Path(directory) / name, relative_dir / name
 
 
 def check(root: Path, arch: Architecture) -> list[str]:
     violations = []
-    for path, relative in iter_sources(arch, root):
+    for path, relative in iter_files(arch, root):
         top = relative.parts[0]
+        if relative.suffix not in SOURCE_SUFFIXES:
+            if top in STRICT_DIRS and len(relative.parts) > 1 and relative.suffix not in NON_SOURCE_SUFFIXES:
+                violations.append(f"{relative}: file type '{relative.suffix or 'none'}' is not read by the include check; "
+                                  f"use a suffix from SOURCE_SUFFIXES in tools/check_deps.py")
+            continue
         if len(relative.parts) == 1:
             violations.append(f"{relative}: source files at the repository root have no dependency rule")
             continue
@@ -232,7 +243,11 @@ def check(root: Path, arch: Architecture) -> list[str]:
         else:
             violations.append(f"{relative}: no include rule for {top}/; add it to tools/architecture.json")
             continue
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            violations.append(f"{relative}: not UTF-8 ({error.reason} at byte {error.start}); includes not checked")
+            continue
         for include in parse_includes(text):
             message = rule(arch, relative, include, classify(arch, root, relative, include))
             if message is not None:

@@ -10,6 +10,15 @@
  * Every function pointer here is called on the kernel owner thread and must
  * not block or call back into the kernel, except wake, which any thread may
  * call (C-HOST-002, C-HOST-007).
+ *
+ * Asynchronous ports (C-HOST-018, C-HOST-019): the kernel reserves a
+ * completion and names the attempt before each call. When the port returns
+ * ACCEPTED or ACCEPT_UNKNOWN, the Host owes exactly one ayni_completion_post
+ * for that attempt, even when the outcome is unknown, and until it posts it
+ * may keep the completion pointer and the request's kernel-owned buffers.
+ * After the post it touches neither. The kernel reaches STOPPED only after
+ * every reserved completion has been posted, so ayni_destroy can never free
+ * memory a Host still points into.
  */
 #ifndef AYNI_DRAFT_HOST_V1_H
 #define AYNI_DRAFT_HOST_V1_H
@@ -36,9 +45,11 @@ typedef uint32_t ayni_submit_result_t;
 
 /*
  * A completion slot reserved by the kernel before it calls a port (C-HOST-006).
- * Owned by the kernel; the Host keeps the pointer until it posts the
- * terminal result (ayni_completion_post here, ayni_provider_post for
- * Provider attempts).
+ * Owned by the kernel and reused for later attempts once its result has been
+ * applied, so every post names the attempt it answers; a post whose attempt
+ * is not the one the slot is reserved for is ignored (C-CALL-012). The Host
+ * keeps the pointer until it posts the terminal result (ayni_completion_post
+ * here, ayni_provider_post for Provider attempts).
  */
 typedef struct ayni_completion ayni_completion_t;
 
@@ -55,20 +66,28 @@ typedef struct ayni_completion ayni_completion_t;
 
 typedef struct ayni_completion_result_v1 {
     uint32_t struct_size;
-    uint32_t outcome; /* AYNI_WRITE_* or AYNI_FENCE_*, per port; AYNI_WRITE_OK for reads */
-    uint64_t value;   /* bytes read for read ports; 0 otherwise */
+    /* AYNI_WRITE_* or AYNI_FENCE_*, per port. Reads use AYNI_WRITE_OK,
+     * AYNI_WRITE_FAILED, or AYNI_WRITE_UNKNOWN when the buffer content is
+     * not reliable. */
+    uint32_t outcome;
+    ayni_attempt_ref_v1 attempt; /* as passed to the port call */
+    uint64_t value;              /* bytes read for read ports; 0 otherwise */
 } ayni_completion_result_v1;
 
 /*
  * Posts the single result of a reserved completion and wakes the owner
  * thread. Callable from any non-ISR thread; never fails for lack of queue
- * space because the slot was reserved before the request was issued. A
- * second post on the same slot is a Host defect and is ignored (C-CALL-012).
+ * space because the slot was reserved before the request was issued. A post
+ * for another attempt, or a second post for the same attempt, is a Host
+ * defect: it is ignored and counted (C-CALL-012). Must not be called once
+ * ayni_destroy has been entered (C-HOST-018).
  */
 ayni_status_t ayni_completion_post(ayni_completion_t *completion,
                                    const ayni_completion_result_v1 *result);
 
-/* One commit batch, encoded per contracts/storage/records.md. */
+/* One commit batch, encoded per contracts/storage/records.md. The struct is
+ * copied during the call; encoded.data stays kernel-owned and unchanged until
+ * the completion for the attempt is posted. */
 typedef struct ayni_storage_batch_v1 {
     uint32_t struct_size;
     uint32_t writer_epoch;
@@ -100,24 +119,31 @@ typedef struct ayni_host_ports_v1 {
     /* Durable append; completes with AYNI_WRITE_OK only once the batch
      * survives power loss (C-HOST-010). */
     ayni_submit_result_t (*storage_append)(void *ctx, const ayni_storage_batch_v1 *batch,
+                                           ayni_attempt_ref_v1 attempt,
                                            ayni_completion_t *completion);
 
-    /* Reads complete committed batches from from_commit_seq on into buffer;
-     * the completion value is the number of bytes written. */
+    /* Reads complete committed batches from from_commit_seq on into buffer,
+     * which the Host may write only until it posts; the completion value is
+     * the number of bytes written. */
     ayni_submit_result_t (*storage_read_prefix)(void *ctx, uint64_t from_commit_seq,
                                                 uint8_t *buffer, uint32_t buffer_size,
+                                                ayni_attempt_ref_v1 attempt,
                                                 ayni_completion_t *completion);
 
     /* Makes the previous writer unable to modify the log (C-COMMIT-010). */
     ayni_submit_result_t (*storage_fence_writers)(void *ctx, uint32_t new_writer_epoch,
+                                                  ayni_attempt_ref_v1 attempt,
                                                   ayni_completion_t *completion);
 
     /* Snapshot slots 0 and 1; with AYNI_STORAGE_ATOMIC_REPLACE the Host may
-     * back both by one replaceable file (C-STORE-006). */
+     * back both by one replaceable file (C-STORE-006). snapshot.data and the
+     * read buffer follow the same ownership rule as batch->encoded and the
+     * prefix buffer. */
     ayni_submit_result_t (*storage_write_snapshot)(void *ctx, uint32_t slot, ayni_bytes_v1 snapshot,
+                                                   ayni_attempt_ref_v1 attempt,
                                                    ayni_completion_t *completion);
     ayni_submit_result_t (*storage_read_snapshot)(void *ctx, uint32_t slot, uint8_t *buffer,
-                                                  uint32_t buffer_size,
+                                                  uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
                                                   ayni_completion_t *completion);
 
     /* Synchronous; bytes still writable to the log (C-HOST-013). */

@@ -8,13 +8,14 @@
  * Rules that apply to every function here:
  * - Kernel functions are called on the kernel owner thread only.
  * - Inputs are copied before return unless a parameter says otherwise.
+ * - Each function lists every status it can return (C-STATUS-001). A failed
+ *   call has no effect and writes no output unless its comment says so.
  * - Every ABI struct starts with struct_size, set to sizeof the caller's view
- *   of the struct (contracts/domain/versions.md). Fields are only appended
- *   within an ABI major. A struct_size below the first published layout of
- *   that major is AYNI_INVALID_ARGUMENT; one larger than this library knows
- *   means the caller was built against a newer minor and is
- *   AYNI_UNSUPPORTED_VERSION. A shorter struct from an older caller gets
- *   defaults for the fields it lacks.
+ *   of the struct (contracts/domain/versions.md). A struct_size below the
+ *   first published layout of the ABI major is AYNI_INVALID_ARGUMENT; one
+ *   larger than this library knows means the caller was built against a
+ *   newer minor and is AYNI_UNSUPPORTED_VERSION. A shorter struct from an
+ *   older caller gets defaults for the fields it lacks.
  */
 #ifndef AYNI_AYNI_H
 #define AYNI_AYNI_H
@@ -26,10 +27,14 @@
 extern "C" {
 #endif
 
-/* A major change is incompatible and rejected by ayni_create; a minor change
- * only appends fields or functions. Major 0 means experimental. */
+/*
+ * Major 0 is experimental: any minor may change published semantics
+ * (C-VER-006), so ayni_create accepts only the exact major and minor of this
+ * library. From major 1 on, a minor only appends fields or functions and a
+ * caller built against an older minor of the same major is accepted.
+ */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 1u
+#define AYNI_ABI_MINOR 2u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -73,6 +78,9 @@ typedef struct ayni_kernel ayni_kernel_t;
 typedef struct ayni_config_v1 {
     uint32_t struct_size;
     uint32_t abi_major; /* must equal AYNI_ABI_MAJOR */
+    /* Since 0.2; must equal AYNI_ABI_MINOR while the major is 0. A caller
+     * whose struct_size ends before this field was built against 0.1. */
+    uint32_t abi_minor;
 } ayni_config_v1;
 
 /*
@@ -93,13 +101,17 @@ typedef struct ayni_host_v1 {
     uint64_t (*monotonic_now_us)(void *ctx);
 } ayni_host_v1;
 
-/* Writes the ABI version this library implements. Callable from any thread. */
+/*
+ * Writes the ABI version this library implements. Callable from any thread.
+ * Returns AYNI_OK, or AYNI_INVALID_ARGUMENT if an output pointer is NULL.
+ */
 ayni_status_t ayni_get_abi_version(uint32_t *out_major, uint32_t *out_minor);
 
 /*
  * Reports the size and alignment of the memory block that ayni_create needs
  * for this configuration. Core never allocates memory itself (ADR-0014).
- * *out_align is a power of two. Fails with AYNI_INVALID_ARGUMENT or
+ * *out_align is a power of two. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if
+ * an output pointer is NULL; otherwise AYNI_INVALID_ARGUMENT or
  * AYNI_UNSUPPORTED_VERSION exactly as ayni_create would for the same
  * configuration.
  */
@@ -117,21 +129,25 @@ ayni_status_t ayni_kernel_memory_requirements(const ayni_config_v1 *config, size
  * - AYNI_INVALID_ARGUMENT: a null pointer, a struct_size shorter than the
  *   first published layout, a missing required host function, or memory not
  *   aligned as reported by ayni_kernel_memory_requirements;
- * - AYNI_UNSUPPORTED_VERSION: config->abi_major differs from AYNI_ABI_MAJOR,
- *   or a struct_size is larger than this library knows;
+ * - AYNI_UNSUPPORTED_VERSION: the caller's ABI version is not accepted (see
+ *   AYNI_ABI_MAJOR), or a struct_size is larger than this library knows;
  * - AYNI_BUFFER_TOO_SMALL: memory_size is below the reported size.
  */
 ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host, void *memory,
                           size_t memory_size, ayni_kernel_t **out_kernel);
 
-/* Writes the current lifecycle state. */
+/*
+ * Writes the current lifecycle state. Returns AYNI_OK, or
+ * AYNI_INVALID_ARGUMENT if kernel or out_state is NULL.
+ */
 ayni_status_t ayni_get_lifecycle(const ayni_kernel_t *kernel, ayni_lifecycle_t *out_state);
 
 /*
  * Ends the kernel's use of its memory and of the host functions and ctx.
- * Allowed only in CONFIGURING or STOPPED; otherwise returns
- * AYNI_INVALID_STATE and leaves the kernel unchanged. After AYNI_OK the handle
- * is invalid and the caller may release the memory block and ctx.
+ * Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL; AYNI_INVALID_STATE
+ * outside CONFIGURING and STOPPED, leaving the kernel unchanged. After
+ * AYNI_OK the handle is invalid and the caller may release the memory block
+ * and ctx.
  */
 ayni_status_t ayni_destroy(ayni_kernel_t *kernel);
 

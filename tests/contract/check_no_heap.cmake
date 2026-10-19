@@ -7,7 +7,15 @@ if(NOT NM)
     message(FATAL_ERROR "no nm tool: CMAKE_NM is empty")
 endif()
 string(REPLACE "," ";" archives "${ARCHIVES}")
-set(forbidden "^(malloc|calloc|realloc|free|aligned_alloc|posix_memalign|memalign|valloc|_Znw.*|_Zna.*|_Zdl.*|_Zda.*)$")
+# Allocators, and libc functions that return memory the caller must free.
+# _FORTIFY_SOURCE and older glibc emit some under other names (__strdup,
+# __asprintf_chk).
+set(allocators
+    malloc calloc realloc reallocarray free aligned_alloc posix_memalign memalign valloc pvalloc
+    strdup strndup __strdup __strndup wcsdup asprintf vasprintf __asprintf_chk __vasprintf_chk
+    getline getdelim open_memstream open_wmemstream)
+list(JOIN allocators "|" allocator_pattern)
+set(forbidden "^(${allocator_pattern}|_Znw.*|_Zna.*|_Zdl.*|_Zda.*)$")
 
 set(found)
 foreach(archive IN LISTS archives)

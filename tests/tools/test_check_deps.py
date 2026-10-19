@@ -134,6 +134,32 @@ class CheckDepsTest(unittest.TestCase):
         self.write("targets/esp32_assistant/build/generated.c", "#include <ayni/hosts/esp_idf.h>\n")
         self.assertEqual(self.violations(), [])
 
+    def test_every_cpp_suffix_is_checked(self):
+        for suffix in (".hh", ".hxx", ".inl", ".ipp", ".tpp", ".ixx", ".cxx"):
+            with self.subTest(suffix=suffix):
+                self.write(f"core/foundation/ids{suffix}", '#include "kernel/kernel.h"\n')
+                self.assert_single_violation("core/foundation may not include core/kernel")
+                (self.root / f"core/foundation/ids{suffix}").unlink()
+
+    def test_host_own_header_with_hpp_suffix_is_own(self):
+        self.write("hosts/native/native_host.cpp", "#include <ayni/hosts/native.hpp>\n")
+        self.assertEqual(self.violations(), [])
+
+    def test_unrecognized_file_type_in_core_or_include_is_rejected(self):
+        self.write("core/kernel/README.md")
+        self.write("core/kernel/CMakeLists.txt")
+        self.write("include/ayni/layers.cmake")
+        self.write("hosts/native/notes.def")
+        self.assertEqual(self.violations(), [])
+        self.write("core/kernel/table.def", '#include "work/task/task.h"\n')
+        self.assert_single_violation("core/kernel/table.def: file type '.def' is not read")
+
+    def test_non_utf8_source_is_a_violation(self):
+        path = self.root / "core/kernel/kernel.cpp"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"// caf\xe9\n#include <vector>\n")
+        self.assert_single_violation("core/kernel/kernel.cpp: not UTF-8")
+
     def test_unknown_top_level_directory_needs_a_rule(self):
         self.write("providers/model/mock.cpp")
         self.assert_single_violation("no include rule for providers/")

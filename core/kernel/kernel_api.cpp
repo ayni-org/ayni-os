@@ -2,19 +2,14 @@
 // create, lifecycle query and destroy. Everything else in the planned API
 // (include/ayni/draft/) has no symbol yet.
 
+#include "kernel/kernel_state.h"
+
 #include <ayni/ayni.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <new>
-
-struct ayni_kernel {
-    // Copy of the caller's table, with fields an older caller lacks left
-    // zeroed. ctx and the functions stay caller-owned (see ayni_host_v1).
-    ayni_host_v1 host;
-    ayni_lifecycle_t lifecycle;
-};
 
 namespace {
 
@@ -23,6 +18,10 @@ namespace {
 // beyond it and read only when struct_size covers them.
 constexpr std::size_t config_v1_min_size =
     offsetof(ayni_config_v1, abi_major) + sizeof(ayni_config_v1::abi_major);
+// Callers whose config ends before abi_minor were built against ABI 0.1.
+constexpr std::size_t config_v1_minor_end =
+    offsetof(ayni_config_v1, abi_minor) + sizeof(ayni_config_v1::abi_minor);
+constexpr uint32_t first_minor_of_major_0 = 1;
 constexpr std::size_t host_v1_min_size =
     offsetof(ayni_host_v1, monotonic_now_us) + sizeof(ayni_host_v1::monotonic_now_us);
 
@@ -46,7 +45,11 @@ ayni_status_t validate_config(const ayni_config_v1 *config) {
     if (status != AYNI_OK) {
         return status;
     }
-    if (config->abi_major != AYNI_ABI_MAJOR) {
+    const uint32_t caller_minor =
+        config->struct_size >= config_v1_minor_end ? config->abi_minor : first_minor_of_major_0;
+    // Major 0 is experimental (C-VER-006): any minor may change published
+    // semantics, so only the exact version this library implements is safe.
+    if (config->abi_major != AYNI_ABI_MAJOR || caller_minor != AYNI_ABI_MINOR) {
         return AYNI_UNSUPPORTED_VERSION;
     }
     return AYNI_OK;

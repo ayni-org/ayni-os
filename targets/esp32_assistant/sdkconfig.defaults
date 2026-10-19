@@ -2,7 +2,12 @@
 # Hello baseline only; the partition layout is fixed after measuring the real
 # firmware (plan section 4.2).
 CONFIG_IDF_TARGET="esp32s3"
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 2 MB, the smallest flash on any ESP32-S3 module. An image whose header names
+# more flash than the chip has stops at boot, before the baseline log; the
+# Hello firmware logs the physical size from esp_flash_get_physical_size, and
+# the size and layout are set from that measurement.
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
 
 # 8 MB octal PSRAM. Keep booting if the module turns out to differ, so the
 # baseline log can report what is actually fitted.

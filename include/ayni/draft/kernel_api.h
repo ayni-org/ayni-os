@@ -206,7 +206,9 @@ typedef struct ayni_event_v1 {
  * thread; ISRs go through the Host bridge, C-HOST-008). Copies the event into
  * the bounded ingress queue and wakes the owner thread. When the queue is
  * full, telemetry is coalesced or the oldest droppable entry replaced with a
- * gap record; other kinds return AYNI_BUSY.
+ * gap record; other kinds return AYNI_BUSY. Must not run concurrently with
+ * ayni_create or ayni_destroy (C-HOST-018); how it reads the lifecycle
+ * safely from another thread is fixed with the ingress queue in MA-003.
  */
 ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event);
 
@@ -236,8 +238,11 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
 /*
  * Enters DRAINING (idempotent in DRAINING and STOPPED). In-flight work is
  * driven to a terminal state or recorded as unknown through further steps;
- * the kernel reaches STOPPED once resources are released or quarantined, and
- * only then may ayni_destroy succeed (C-LIFE-002).
+ * the kernel reaches STOPPED once resources are released or quarantined and
+ * every reserved completion has received its terminal post (C-HOST-018), and
+ * only then may ayni_destroy succeed (C-LIFE-002). Before calling
+ * ayni_destroy the composition root stops every thread that may call
+ * ayni_post_event, ayni_completion_post or ayni_provider_post.
  */
 ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel);
 

@@ -2,14 +2,15 @@
 
 #include <ayni/hosts/native.h>
 
-#include <cstdlib>
 #include <new>
 
 namespace ayni::runtime {
 
 NativeNode::~NativeNode() {
-    if (kernel_ != nullptr && release() != AYNI_OK) {
-        std::abort();
+    if (kernel_ != nullptr) {
+        // On failure the Kernel still uses the block, so it is deliberately
+        // left allocated; release() is where the failure is reported.
+        static_cast<void>(release());
     }
 }
 
@@ -21,6 +22,7 @@ ayni_status_t NativeNode::assemble() {
     ayni_config_v1 config{};
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;
+    config.abi_minor = AYNI_ABI_MINOR;
 
     std::size_t size = 0;
     std::size_t align = 0;

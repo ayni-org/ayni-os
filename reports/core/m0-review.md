@@ -235,3 +235,38 @@ ctest --test-dir build/native               # 36/36 通过
 idf.py size                                 # targets/esp32_assistant，结果见 board-feasibility.md
 git diff --check
 ```
+
+## 8. 合并后的代码审查
+
+PR #6 合并后，对合并结果（`2a8be17`）做了一次独立审查：公开头文件与 Core、头文件草案与契约、检查脚本、固件配置和硬件文档。16 条发现均经核实成立，已在后续 PR 中修正。契约新增 C-HOST-018、C-HOST-019，条款数由 295 增至 297。
+
+| # | 发现 | 影响 | 修正 |
+|---|---|---|---|
+| 1 | 完成槽在 `ayni_destroy` 之后仍可能被 Host 线程写入 | 释放后使用；`STOPPED` 时可能还有未完成的 I/O | C-HOST-018：每个被接受的请求恰好一次终结完成，`STOPPED` 要求所有完成槽已收到完成，销毁前先停止全部投递线程；`host_v1.h`、`kernel_api.h`、`lifecycles.md` 同步 |
+| 2 | 完成结果不带尝试身份，槽复用后迟到的完成会被当作新请求的结果 | 把旧写入的结果记到新请求上 | `ayni_completion_result_v1` 与全部异步存储端口增加 `ayni_attempt_ref_v1`；不匹配或重复的投递被忽略并计数（C-HOST-006） |
+| 3 | `ayni_create` 只检查主版本 | 主版本 0 期间不同 minor 的布局可能静默不兼容（C-VER-006） | `ayni_config_v1` 增加 `abi_minor`，ABI 升为 0.2；主版本 0 要求 minor 完全相等，不含该字段的 0.1 调用方返回 `AYNI_UNSUPPORTED_VERSION` |
+| 4 | Provider 的进度合并会覆盖取消结果 | Kernel 不知道取消已失败，按已取消处理 | 只合并 PROGRESS；取消结果保留到被应用（C-PROV-006）；新增终结结果 `AYNI_CALL_ABANDONED`，记为 `RESULT_UNKNOWN` |
+| 5 | `check_contracts.py` 扫描 `build/` 并在非 UTF-8 文件上崩溃 | 本地构建后检查误报或异常退出 | 与 `check_deps.py` 共用 `skipped_dir_names`；读不了的文件按输入错误退出（退出码 2） |
+| 6 | `sdkconfig.defaults` 写死 16 MB Flash | 板子实际 Flash 更小时固件在启动时停下，拿不到基线日志 | 暂按所有模组都有的 2 MB 配置，到板实测后改为实际容量 |
+| 7 | `create_copies_host_table_before_return` 无法失败 | C-HOST-001 的证据无效 | 改为白盒测试，直接检查 Kernel 内保存的 Host 表；Kernel 状态移到 `core/kernel/kernel_state.h` |
+| 8 | 部分已实现函数没有列出返回码 | 违反 C-STATUS-001 | `ayni.h` 为四个函数补全返回码 |
+| 9 | 存储缓冲区所有权未写明，契约中的端口名与头文件不一致 | Host 实现者可能在完成前复用缓冲区 | C-HOST-019；端口表改用头文件中的成员名 |
+| 10 | `check_deps.py` 不读 `.hh`、`.inl`、`.cxx` 等后缀 | 用这些后缀的头文件可绕过依赖检查 | 扩展后缀；`core/`、`include/` 中无法识别的文件类型和非 UTF-8 文件报告为违规 |
+| 11 | 堆检查漏掉 `strdup`、`asprintf`、`getline` 等替调用方分配内存的函数 | Core 可能间接分配内存而检查通过 | 扩展禁止列表，新增 ctest `heap_check_detects_strdup` |
+| 12 | 存储批次头的 `header_crc` 位置不固定 | 新版本加字段后旧读者找不到 CRC | `header_crc` 固定为头部最后 4 字节（C-STORE-001） |
+| 13 | `ayni-sim` 的析构在释放失败时 `abort` | 析构中终止进程，掩盖原错误 | 释放失败时保留内存不释放，不再终止 |
+| 14 | 契约验证列用裸测试名引用测试 | 测试改名后检查发现不了 | `check_contracts.py` 拒绝裸名引用；C-VER-004 改为 `Suite.name` |
+| 15 | `AGENTS.md` 仍说没有格式配置、GoogleTest 只是候选 | 贡献者按过时说明工作 | 改为当前状态：clang-format 18、GoogleTest 1.17.0（ADR-0012）、CI 中的检查 |
+| 16 | 停止链 Cext 选 X7R，但 20～27 ms 的估算没有计入直流偏压与温度 | 小封装电容的实际 `T_hw` 可能明显偏短 | 规定额定 ≥25 V、0805 及以上（或 C0G/薄膜）；说明漂移由启动自检的 15～35 ms 窗口发现 |
+
+修正后执行过的检查（2026-10-19，本地）：
+
+```sh
+python3 tools/check_contracts.py            # 通过，297 条条款
+python3 tools/check_deps.py                 # 通过
+ctest --preset native-debug                 # 39/39 通过；native-release、native-asan、Clang Debug 同样 39/39
+clang-format-18 --dry-run --Werror          # 全部 C/C++ 文件通过
+git diff --check
+```
+
+本地没有 ESP-IDF 环境，固件在修正后的构建结果以 PR 的 CI 为准；Flash 改为 2 MB 不影响上文 `idf.py size` 的应用镜像与分区数据。

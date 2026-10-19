@@ -38,6 +38,7 @@ int main(void) {
 
     config.struct_size = (uint32_t)sizeof config;
     config.abi_major = AYNI_ABI_MAJOR;
+    config.abi_minor = AYNI_ABI_MINOR;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
 

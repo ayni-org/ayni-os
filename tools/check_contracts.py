@@ -6,23 +6,29 @@ Checks:
   - every clause has four non-empty cells and an ID used by no other clause;
   - every clause lives in the document that contracts/README.md assigns to its prefix;
   - every clause ID mentioned in contracts/, include/, docs/, reports/ or source directories is defined;
-  - every GoogleTest name cited as `Suite.test` and every CTest name cited as ctest `name` exists;
+  - every GoogleTest name cited as `Suite.test` and every CTest name cited as ctest `name` exists, and
+    no defined GoogleTest test is cited by its bare name, which this check could not follow;
   - every step of experiments E1-E4 in the plan is named by at least one clause's verification cell;
   - contracts/traceability.md equals the matrix generated from the clauses.
 
 --write regenerates contracts/traceability.md instead of comparing it.
-Prints one line per problem. Exit status: 0 clean, 1 problems found, 2 inputs that cannot be read.
+Directories named in skipped_dir_names of tools/architecture.json (build output, fetched components)
+are not scanned. Prints one line per problem. Exit status: 0 clean, 1 problems found, 2 inputs that
+cannot be read, including files that are not UTF-8.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+ARCHITECTURE = Path(__file__).resolve().with_name("architecture.json")
 PLAN = PurePosixPath("docs/ayni_v1.0.md")
 CONTRACTS = PurePosixPath("contracts")
 README = CONTRACTS / "README.md"
@@ -39,6 +45,7 @@ SECTION_RE = re.compile(r"§(\d+(?:\.\d+)?)|第 (\d+(?:\.\d+)?) 节")
 ADR_RE = re.compile(r"ADR-(\d{4})")
 PACKAGE_RE = re.compile(r"MA-(\d{3})")
 GTEST_CITE_RE = re.compile(r"`([A-Z][A-Za-z0-9]*)\.([a-z][a-z0-9_]*)`")
+BARE_NAME_RE = re.compile(r"`([a-z][a-z0-9_]*)`")
 CTEST_CITE_RE = re.compile(r"ctest `([a-z][a-z0-9_]*)`")
 GTEST_DEF_RE = re.compile(r"\bTEST(?:_F|_P)?\(\s*(\w+)\s*,\s*(\w+)\s*\)")
 CTEST_DEF_RE = re.compile(r"\badd_test\(\s*NAME\s+(\w+)")
@@ -77,10 +84,32 @@ class Document:
 
 
 def read(root: Path, relative: PurePosixPath) -> str:
+    return read_path(root / relative, relative)
+
+
+def read_path(path: Path, shown: PurePosixPath) -> str:
     try:
-        return (root / relative).read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except OSError as error:
-        raise InputError(f"cannot read {relative}: {error.strerror}") from error
+        raise InputError(f"cannot read {shown}: {error.strerror}") from error
+    except UnicodeDecodeError as error:
+        raise InputError(f"cannot read {shown}: not UTF-8 ({error.reason} at byte {error.start})") from error
+
+
+def skipped_dir_names() -> frozenset[str]:
+    """Shared with check_deps.py so that both tools skip the same generated trees."""
+    shown = PurePosixPath("tools/architecture.json")
+    try:
+        return frozenset(json.loads(read_path(ARCHITECTURE, shown))["skipped_dir_names"])
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise InputError(f"cannot read skipped_dir_names from {shown}: {error}") from error
+
+
+def walk_files(base: Path, skipped: frozenset[str]):
+    for directory, subdirs, files in os.walk(base):
+        subdirs[:] = sorted(name for name in subdirs if name not in skipped)
+        for name in sorted(files):
+            yield Path(directory) / name
 
 
 def split_row(line: str) -> list[str]:
@@ -178,26 +207,22 @@ def cited_steps(verification: str) -> list[str]:
     return steps
 
 
-def defined_tests(root: Path) -> tuple[set[tuple[str, str]], set[str]]:
+def defined_tests(root: Path, skipped: frozenset[str]) -> tuple[set[tuple[str, str]], set[str]]:
     gtests, ctests = set(), set()
-    tests = root / "tests"
-    if tests.is_dir():
-        for path in tests.rglob("*"):
-            if path.suffix in {".cpp", ".cc"}:
-                gtests.update(GTEST_DEF_RE.findall(path.read_text(encoding="utf-8")))
-            elif path.name == "CMakeLists.txt":
-                ctests.update(CTEST_DEF_RE.findall(path.read_text(encoding="utf-8")))
+    for path in walk_files(root / "tests", skipped):
+        relative = PurePosixPath(path.relative_to(root).as_posix())
+        if path.suffix in {".cpp", ".cc"}:
+            gtests.update(GTEST_DEF_RE.findall(read_path(path, relative)))
+        elif path.name == "CMakeLists.txt":
+            ctests.update(CTEST_DEF_RE.findall(read_path(path, relative)))
     return gtests, ctests
 
 
-def reference_files(root: Path):
+def reference_files(root: Path, skipped: frozenset[str]):
     for directory in REFERENCE_DIRS:
-        base = root / directory
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*")):
+        for path in walk_files(root / directory, skipped):
             relative = PurePosixPath(path.relative_to(root).as_posix())
-            if path.is_file() and path.suffix in REFERENCE_SUFFIXES and relative != TRACEABILITY:
+            if path.suffix in REFERENCE_SUFFIXES and relative != TRACEABILITY:
                 yield path, relative
 
 
@@ -272,6 +297,7 @@ def check(root: Path, write: bool = False) -> list[str]:
     documents = parse_documents(root, problems, malformed)
     prefixes = parse_prefixes(root)
     steps = experiment_steps(root)
+    skipped = skipped_dir_names()
     clauses = [clause for document in documents for clause in document.clauses]
 
     seen: dict[str, Clause] = {}
@@ -287,18 +313,26 @@ def check(root: Path, write: bool = False) -> list[str]:
         elif expected != clause.doc:
             problems.append(f"{clause.doc}:{clause.line}: {clause.id} belongs in {expected} per {README}")
 
-    for path, relative in reference_files(root):
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for path, relative in reference_files(root, skipped):
+        for number, line in enumerate(read_path(path, relative).splitlines(), start=1):
             for cited in CLAUSE_ID_RE.findall(line):
                 if cited not in seen and cited not in malformed:
                     problems.append(f"{relative}:{number}: {cited} is not defined in any contract")
 
-    gtests, ctests = defined_tests(root)
+    gtests, ctests = defined_tests(root, skipped)
+    suites_by_name = defaultdict(set)
+    for suite, name in gtests:
+        suites_by_name[name].add(suite)
     for clause in clauses:
         for suite, name in GTEST_CITE_RE.findall(clause.verification):
             if (suite, name) not in gtests:
                 problems.append(f"{clause.doc}:{clause.line}: {clause.id} cites test {suite}.{name}, "
                                 "which is not defined under tests/")
+        for name in BARE_NAME_RE.findall(clause.verification):
+            if name in suites_by_name:
+                spelled = " or ".join(f"`{suite}.{name}`" for suite in sorted(suites_by_name[name]))
+                problems.append(f"{clause.doc}:{clause.line}: {clause.id} cites test `{name}` without its "
+                                f"suite; write {spelled} so that a rename is caught")
         for name in CTEST_CITE_RE.findall(clause.verification):
             if name not in ctests:
                 problems.append(f"{clause.doc}:{clause.line}: {clause.id} cites ctest {name}, "
