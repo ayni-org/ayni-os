@@ -35,7 +35,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 3u
+#define AYNI_ABI_MINOR 4u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -84,13 +84,16 @@ typedef struct ayni_config_v1 {
     uint32_t abi_minor;
     /*
      * Since 0.3. Capacities fixed for the kernel's lifetime (ADR-0014,
-     * contracts/domain/limits.md). Each must be between 1 and its _MAX; a field
-     * that struct_size does not cover takes its _DEFAULT. The defaults are
-     * unmeasured initial assumptions (C-LIMIT-003).
+     * contracts/domain/limits.md). Each must be between its _MIN (1 unless
+     * defined) and its _MAX; a field that struct_size does not cover takes its
+     * _DEFAULT. The defaults are unmeasured initial assumptions (C-LIMIT-003).
      */
     uint32_t ingress_capacity;      /* events queued by ayni_post_event */
     uint32_t event_body_max_bytes;  /* largest event body accepted */
     uint32_t completion_slot_count; /* asynchronous Host requests in flight */
+    /* Since 0.4. The buffer for log reads during recovery and for one
+     * encoded commit batch (ADR-0016); it bounds the largest batch. */
+    uint32_t storage_buffer_bytes;
 } ayni_config_v1;
 
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
@@ -99,6 +102,78 @@ typedef struct ayni_config_v1 {
 #define AYNI_EVENT_BODY_MAX_BYTES_MAX 4096u
 #define AYNI_COMPLETION_SLOT_COUNT_DEFAULT 16u
 #define AYNI_COMPLETION_SLOT_COUNT_MAX 1024u
+#define AYNI_STORAGE_BUFFER_BYTES_DEFAULT 1024u
+#define AYNI_STORAGE_BUFFER_BYTES_MIN 256u
+#define AYNI_STORAGE_BUFFER_BYTES_MAX 65536u
+
+/* Correlates an asynchronous attempt with its result (C-ID-006). */
+typedef struct ayni_attempt_ref_v1 {
+    uint64_t boot_epoch; /* 0 for requests made before this boot's epoch is durable */
+    uint64_t request_id;
+} ayni_attempt_ref_v1;
+
+/*
+ * Synchronous answer of every asynchronous port (C-HOST-004). Only
+ * REJECTED_NOT_RETAINED proves that no work exists; ACCEPTED and
+ * ACCEPT_UNKNOWN are both in flight, including work queued inside the host,
+ * and each owes exactly one completion post. Any other value is treated as
+ * ACCEPT_UNKNOWN and counted as a host defect.
+ */
+typedef uint32_t ayni_submit_result_t;
+
+#define AYNI_SUBMIT_REJECTED_NOT_RETAINED ((ayni_submit_result_t)1)
+#define AYNI_SUBMIT_ACCEPTED ((ayni_submit_result_t)2)
+#define AYNI_SUBMIT_ACCEPT_UNKNOWN ((ayni_submit_result_t)3)
+
+/*
+ * A completion slot that the kernel reserved before calling an asynchronous
+ * host port (C-HOST-006). Kernel-owned; the host keeps the pointer from the
+ * accepted call until its single post, and never afterwards (C-HOST-018).
+ */
+typedef struct ayni_completion ayni_completion_t;
+
+/* Result of one asynchronous host request. */
+typedef struct ayni_completion_result_v1 {
+    uint32_t struct_size;
+    /* Defined per port. 0 is never defined: a post with outcome 0 still
+     * completes the slot, is counted as a host defect and is handled as an
+     * unknown result. */
+    uint32_t outcome;
+    ayni_attempt_ref_v1 attempt; /* as passed to the port call */
+    uint64_t value;              /* defined per port, e.g. bytes read; 0 otherwise */
+} ayni_completion_result_v1;
+
+/* Since 0.4. A byte view; data may be NULL only when size is 0. */
+typedef struct ayni_bytes_v1 {
+    const uint8_t *data;
+    uint32_t size;
+} ayni_bytes_v1;
+
+/*
+ * Since 0.4. One commit batch handed to storage_append, encoded as in
+ * contracts/storage/records.md. The struct is copied during the call;
+ * encoded.data stays kernel-owned and unchanged until the completion for the
+ * attempt is posted, and the host may read it from any thread until then
+ * (C-HOST-019).
+ */
+typedef struct ayni_storage_batch_v1 {
+    uint32_t struct_size;
+    uint32_t writer_epoch;
+    uint64_t transition_id;
+    uint64_t commit_seq;
+    ayni_bytes_v1 encoded; /* header, records and commit marker */
+} ayni_storage_batch_v1;
+
+/*
+ * Since 0.4. ayni_completion_result_v1.outcome of the storage ports. A write
+ * is OK only once the batch survives power loss (C-HOST-010). A read is OK
+ * when the buffer holds what the log contains, and reports the bytes read in
+ * value; FAILED or UNKNOWN when its content is not reliable. Distinct from
+ * the AYNI_STORAGE_FAILED status code, which reports a failed kernel call.
+ */
+#define AYNI_WRITE_OK 1u
+#define AYNI_WRITE_FAILED 2u
+#define AYNI_WRITE_UNKNOWN 3u
 
 /*
  * Platform services the kernel uses to maintain its own invariants (ADR-0006).
@@ -134,44 +209,66 @@ typedef struct ayni_host_v1 {
      */
     void (*ingress_lock)(void *ctx);
     void (*ingress_unlock)(void *ctx);
+    /*
+     * Since 0.4. Persistent log (C-HOST-009, ADR-0016): both or neither. A
+     * host without them can create a kernel, but ayni_start returns
+     * AYNI_UNSUPPORTED. Called on the kernel owner thread; must not block.
+     * Each one stores or reads whole batches and answers once through the
+     * completion it is given, as ayni_submit_result_t describes.
+     *
+     * storage_append stores one batch after all earlier ones; a batch is
+     * either readable whole or not at all, even after power loss mid-write.
+     *
+     * storage_read_prefix copies into buffer the stored batches whose
+     * commit_seq is at least from_commit_seq, in log order and only whole
+     * batches, as many as fit. The completion value is the number of bytes
+     * written; 0 means no batch is left. AYNI_WRITE_FAILED when the next
+     * batch is larger than buffer_size. The host may write the buffer only
+     * until it posts.
+     */
+    ayni_submit_result_t (*storage_append)(void *ctx, const ayni_storage_batch_v1 *batch,
+                                           ayni_attempt_ref_v1 attempt,
+                                           ayni_completion_t *completion);
+    ayni_submit_result_t (*storage_read_prefix)(void *ctx, uint64_t from_commit_seq,
+                                                uint8_t *buffer, uint32_t buffer_size,
+                                                ayni_attempt_ref_v1 attempt,
+                                                ayni_completion_t *completion);
 } ayni_host_v1;
 
-/* Correlates an asynchronous attempt with its result (C-ID-006). */
-typedef struct ayni_attempt_ref_v1 {
-    uint64_t boot_epoch;
-    uint64_t request_id;
-} ayni_attempt_ref_v1;
-
 /*
- * Synchronous answer of every asynchronous port (C-HOST-004). Only
- * REJECTED_NOT_RETAINED proves that no work exists; ACCEPTED and
- * ACCEPT_UNKNOWN are both in flight, including work queued inside the host,
- * and each owes exactly one completion post. Any other value is treated as
- * ACCEPT_UNKNOWN and counted as a host defect.
+ * Since 0.4. Why a kernel is RESTRICTED (ADR-0016); NONE in every other
+ * state. The kernel keeps only read-only diagnostics and shutdown.
  */
-typedef uint32_t ayni_submit_result_t;
+typedef uint32_t ayni_restriction_t;
 
-#define AYNI_SUBMIT_REJECTED_NOT_RETAINED ((ayni_submit_result_t)1)
-#define AYNI_SUBMIT_ACCEPTED ((ayni_submit_result_t)2)
-#define AYNI_SUBMIT_ACCEPT_UNKNOWN ((ayni_submit_result_t)3)
+#define AYNI_RESTRICTION_NONE ((ayni_restriction_t)0)
+#define AYNI_RESTRICTION_STORAGE_REJECTED ((ayni_restriction_t)1)      /* host refused a request */
+#define AYNI_RESTRICTION_STORAGE_READ_FAILED ((ayni_restriction_t)2)   /* log read not reliable */
+#define AYNI_RESTRICTION_STORAGE_WRITE_FAILED ((ayni_restriction_t)3)  /* boot epoch not stored */
+#define AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN ((ayni_restriction_t)4) /* may be stored */
+#define AYNI_RESTRICTION_LOG_CORRUPT ((ayni_restriction_t)5)           /* C-STORE-009 */
+#define AYNI_RESTRICTION_LOG_UNSUPPORTED ((ayni_restriction_t)6)       /* C-STORE-004 */
+#define AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED ((ayni_restriction_t)7)
 
-/*
- * A completion slot that the kernel reserved before calling an asynchronous
- * host port (C-HOST-006). Kernel-owned; the host keeps the pointer from the
- * accepted call until its single post, and never afterwards (C-HOST-018).
- */
-typedef struct ayni_completion ayni_completion_t;
-
-/* Result of one asynchronous host request. */
-typedef struct ayni_completion_result_v1 {
+/* Since 0.4. Kernel-wide state for diagnostics. */
+typedef struct ayni_kernel_info_v1 {
     uint32_t struct_size;
-    /* Defined per port. 0 is never defined: a post with outcome 0 still
-     * completes the slot, is counted as a host defect and is handled as an
-     * unknown result. */
-    uint32_t outcome;
-    ayni_attempt_ref_v1 attempt; /* as passed to the port call */
-    uint64_t value;              /* defined per port, e.g. bytes read; 0 otherwise */
-} ayni_completion_result_v1;
+    ayni_lifecycle_t lifecycle;
+    ayni_restriction_t restriction;
+    uint32_t reserved;   /* written as 0 */
+    uint64_t boot_epoch; /* 0 until this boot's epoch is durable (C-ID-009) */
+} ayni_kernel_info_v1;
+
+/* Since 0.4. What one ayni_step did. */
+typedef struct ayni_step_report_v1 {
+    uint32_t struct_size;
+    uint32_t items_done;
+    uint32_t more_ready; /* nonzero: call ayni_step again without waiting for a wake */
+    uint32_t reserved;   /* written as 0 */
+    /* Host monotonic time by which to call ayni_step even if nothing wakes
+     * the owner; UINT64_MAX: none. */
+    uint64_t next_deadline_us;
+} ayni_step_report_v1;
 
 /*
  * Writes the ABI version this library implements. Callable from any thread.
@@ -200,8 +297,8 @@ ayni_status_t ayni_kernel_memory_requirements(const ayni_config_v1 *config, size
  * the memory left untouched:
  * - AYNI_INVALID_ARGUMENT: a null pointer, a struct_size shorter than the
  *   first published layout, a capacity outside its range, a missing required
- *   host function, or memory not aligned as reported by
- *   ayni_kernel_memory_requirements;
+ *   host function, only one of the two storage ports, or memory not aligned
+ *   as reported by ayni_kernel_memory_requirements;
  * - AYNI_UNSUPPORTED_VERSION: the caller's ABI version is not accepted (see
  *   AYNI_ABI_MAJOR), or a struct_size is larger than this library knows;
  * - AYNI_BUFFER_TOO_SMALL: memory_size is below the reported size.
@@ -214,6 +311,47 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
  * AYNI_INVALID_ARGUMENT if kernel or out_state is NULL.
  */
 ayni_status_t ayni_get_lifecycle(const ayni_kernel_t *kernel, ayni_lifecycle_t *out_state);
+
+/*
+ * Writes the fields of out_info that out_info->struct_size covers. Callable in
+ * every lifecycle state. Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL
+ * pointer; AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
+ * out_info->struct_size as for every ABI struct.
+ */
+ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info_v1 *out_info);
+
+/*
+ * Starts recovery: CONFIGURING -> RECOVERING (ADR-0016). Recovery then runs
+ * in ayni_step: it reads the log, persists this boot's epoch in its own batch
+ * and only then enters RUNNING (C-ID-009), or enters RESTRICTED with a reason
+ * (ayni_get_kernel_info). Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is
+ * NULL; AYNI_INVALID_STATE outside CONFIGURING; AYNI_UNSUPPORTED, staying in
+ * CONFIGURING, when the host table has no storage ports (C-HOST-015).
+ */
+ayni_status_t ayni_start(ayni_kernel_t *kernel);
+
+/*
+ * Applies posted completions and advances recovery and shutdown. Does at most
+ * max_items items and stops once max_time_us has passed on the host clock,
+ * checked after each item; never waits on storage or any other I/O
+ * (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
+ * covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or
+ * max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
+ * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE in
+ * CONFIGURING and STOPPED.
+ */
+ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
+                        ayni_step_report_v1 *out_report);
+
+/*
+ * Enters DRAINING from RECOVERING, RUNNING or RESTRICTED; no new storage
+ * request is started after that. Later ayni_step calls enter STOPPED once
+ * every reserved completion has been posted and applied (C-HOST-018). Returns
+ * AYNI_OK, also in DRAINING and STOPPED; AYNI_INVALID_ARGUMENT if kernel is
+ * NULL; AYNI_INVALID_STATE in CONFIGURING, where ayni_destroy applies
+ * directly.
+ */
+ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel);
 
 /*
  * Posts the single result of a reserved completion, then calls wake. Callable

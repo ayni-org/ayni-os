@@ -20,8 +20,10 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
         layout.ingress_offset +
         EventQueue::storage_size(capacities.ingress_capacity, capacities.event_body_max_bytes);
     layout.completions_offset = align_up(ingress_end, CompletionPool::storage_alignment);
-    layout.size =
+    // The storage buffer holds bytes only, so it needs no alignment.
+    layout.storage_buffer_offset =
         layout.completions_offset + CompletionPool::storage_size(capacities.completion_slot_count);
+    layout.size = layout.storage_buffer_offset + capacities.storage_buffer_bytes;
     layout.alignment = larger(alignof(ayni_kernel), larger(EventQueue::storage_alignment,
                                                            CompletionPool::storage_alignment));
     return layout;

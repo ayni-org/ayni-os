@@ -2,9 +2,9 @@
  * DRAFT, not part of the published ABI (C-VER-007): no symbols; calling these
  * functions fails at link time instead of returning a fabricated result.
  *
- * Planned kernel API beyond ayni.h: catalog registration, start, intents,
- * events, step and shutdown (plan section 3.2; contracts/domain/
- * lifecycles.md). Implemented functions stay in ayni.h and are not redeclared.
+ * Planned kernel API beyond ayni.h: catalog registration, intents and events
+ * (plan section 3.2; contracts/domain/lifecycles.md). Implemented functions
+ * stay in ayni.h and are not redeclared.
  *
  * Calling rules (contracts/host/host_ports.md, lifecycles.md):
  * - Every function except ayni_post_event runs on the kernel owner thread.
@@ -121,12 +121,11 @@ ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
 ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding);
 
 /*
- * Freezes the catalog, validates every cross reference and starts
- * asynchronous recovery (CONFIGURING -> RECOVERING). On failure the kernel
- * stays in CONFIGURING and out_error (nullable) names the first offending
- * object, so the caller can fix the catalog and call again (C-LIFE-003).
+ * ayni_start (ayni.h) will also freeze the catalog and validate every cross
+ * reference once registration exists: on failure the kernel stays in
+ * CONFIGURING and an ayni_error_v1 names the first offending object, so the
+ * caller can fix the catalog and call again (C-LIFE-003).
  */
-ayni_status_t ayni_start(ayni_kernel_t *kernel, ayni_error_v1 *out_error);
 
 /* ---- Intents --------------------------------------------------------- */
 
@@ -184,8 +183,8 @@ typedef uint32_t ayni_event_kind_t;
 
 /*
  * Host-originated events that are not completions of a kernel request.
- * Completions use the reserved slots of ayni/draft/host_v1.h instead, so a
- * full ingress queue can never drop them (C-HOST-006). Stop and safety state
+ * Completions use the reserved slots of ayni.h instead, so a full ingress
+ * queue can never drop them (C-HOST-006). Stop and safety state
  * never travel as events (C-STOP-001).
  */
 typedef struct ayni_event_v1 {
@@ -215,40 +214,6 @@ typedef struct ayni_event_v1 {
  * or ayni_destroy (C-HOST-018).
  */
 ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event);
-
-/* ---- Step and shutdown ----------------------------------------------- */
-
-/*
- * Result of one step. next_deadline_us tells the Host when to call step
- * again even if nothing is posted (timers, leases, wait limits live inside
- * the kernel); without it the Host would have to poll.
- */
-typedef struct ayni_step_report_v1 {
-    uint32_t struct_size;
-    uint32_t items_done;
-    uint32_t more_ready;       /* nonzero: work remained when the budget ran out */
-    uint32_t reserved;         /* 0 */
-    uint64_t next_deadline_us; /* Host monotonic time; UINT64_MAX: none */
-} ayni_step_report_v1;
-
-/*
- * Processes at most max_items work items and returns once max_time_us is used
- * up; never waits on network, storage, models or devices (C-LIMIT-011).
- * out_report is nullable.
- */
-ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
-                        ayni_step_report_v1 *out_report);
-
-/*
- * Enters DRAINING (idempotent in DRAINING and STOPPED). In-flight work is
- * driven to a terminal state or recorded as unknown through further steps;
- * the kernel reaches STOPPED once resources are released or quarantined and
- * every reserved completion has received its terminal post (C-HOST-018), and
- * only then may ayni_destroy succeed (C-LIFE-002). Before calling
- * ayni_destroy the composition root stops every thread that may call
- * ayni_post_event, ayni_completion_post or ayni_provider_post.
- */
-ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel);
 
 #ifdef __cplusplus
 }

@@ -31,10 +31,10 @@
 | C-ID-003 | `logical_call_id` 与 `(task_id, step_key)` 一一对应，在首次接受该步骤时与步骤检查点同批持久化；重启、重连和策略替换都不重新生成 | 换策略后同一步骤得到新 `logical_call_id`，已完成的动作被当成新动作再做 | E3 步骤 2–4；E4 步骤 2 |
 | C-ID-004 | `operation_id` 与 `(logical_call_id, binding_id)` 一一对应；只有取得原 operation 的权威未执行结论并封禁旧 ID 后，才能为同一逻辑调用换绑定并分配新 `operation_id` | 结果未知时换一个 Provider 并用新 ID 重做 | E2 F5；E3 步骤 2；`C-CALL-008` |
 | C-ID-005 | `operation_id` 取自每个调用主体单调递增的序号；接收方回收去重记录时保留每主体低水位，低于低水位且无记录的请求返回 `EXPIRED`；去重记录的保留期不短于协商的最长重试期 | 去重记录回收后，迟到的旧请求被当作新动作执行 | `MA-038`；ADR-0004 |
-| C-ID-006 | `request_id` 只在一个 `boot_epoch` 内唯一；结果以 `(boot_epoch, request_id)` 关联，旧代结果不得修改新状态 | 重启前发出的请求在重启后返回，被应用到新请求上 | E2 F7；E3 步骤 2 |
+| C-ID-006 | `request_id` 只在一个 `boot_epoch` 内唯一；结果以 `(boot_epoch, request_id)` 关联，旧代结果不得修改新状态 | 重启前发出的请求在重启后返回，被应用到新请求上 | M1 已实现（完成槽）：`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`；恢复请求以 `boot_epoch` 0 命名：`KernelLifecycle.recovery_requests_use_boot_epoch_0`；E2 F7；E3 步骤 2 |
 | C-ID-007 | `message_id` 每次重试可以改变，不得用作业务幂等键；业务幂等只看 `command_id` 或 `operation_id` | 以 `message_id` 去重，重连重发的同一命令创建第二个提醒 | E2 F9 |
 | C-ID-008 | 一条消息只携带一种幂等键：管理命令用 `command_id`，设备间调用用 `operation_id` | 一条 `capability.invoke` 同时带两个键，二者冲突时无法判定 | `wire/envelope.md` C-WIRE-003 |
-| C-ID-009 | `boot_epoch` 在 Kernel 开放任何输出之前已持久化递增；从受限栅栏重载也视为新的启动 | 重载后沿用旧 `boot_epoch`，旧写入方的完成事件被当作当前代际 | E2 F12 |
+| C-ID-009 | `boot_epoch` 在 Kernel 开放任何输出之前已持久化递增；从受限栅栏重载也视为新的启动 | 重载后沿用旧 `boot_epoch`，旧写入方的完成事件被当作当前代际 | M1 已实现（启动）：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.each_reboot_persists_the_next_epoch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`；受限栅栏重载随 `MA-010`；E2 F12 |
 
 ## 时间
 

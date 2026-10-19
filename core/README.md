@@ -17,15 +17,15 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
-| `kernel` | `kernel_api.cpp`：ABI 版本查询、内存需求、`ayni_create`、生命周期查询、`ayni_destroy`、`ayni_completion_post`；`kernel_layout`：按配置容量排布内存块；`ingress/`：有界事件队列；`completion/`：完成槽池（`MA-003`，ADR-0015） | M0 |
+| `kernel` | `kernel_api.cpp`：C ABI 入口与参数检查；`kernel_lifecycle.cpp`：`ayni_start`、`ayni_step`、`ayni_begin_shutdown` 的状态转换；`kernel_layout`：按配置容量排布内存块；`ingress/`：有界事件队列；`completion/`：完成槽池（`MA-003`，ADR-0015）；`boot/`：读日志前缀并持久化 `boot_epoch` 的启动序列（`MA-005`，ADR-0016） | M0 |
 | `work` | 无代码 | M1（`MA-004`） |
 | `authority` | 无代码 | M1（`MA-006`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |
 | `knowledge` | 无代码 | M1（`MA-011`） |
 | `catalog` | 无代码 | M1（`MA-005`、`MA-008`） |
-| `durability` | 无代码 | M1（`MA-010`） |
-| `foundation` | 无代码；状态码只在公开头文件 `include/ayni/ayni.h` 定义一次 | M1（`MA-005`、`MA-010`：CRC 与 ID 类型） |
+| `durability` | `batch/`：提交批次的编码与校验，日志前缀的连续性与记录 flags 检查（`storage/records.md`，ADR-0016）；快照、重放与栅栏随 `MA-010` | M1（`MA-005`） |
+| `foundation` | `crc32`：CRC-32/ISO-HDLC；`little_endian.h`：持久格式的定长小端读写。状态码只在公开头文件 `include/ayni/ayni.h` 定义一次 | M1（`MA-005`） |
 
 模块在有源文件时才建立构建目标，避免空目标给人“已实现”的印象。`foundation` 将来承载 ID、时间、有界容器等内部类型；对外状态码仍以公开头文件为唯一来源，不在 Core 内复制一份。
 

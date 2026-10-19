@@ -29,7 +29,7 @@ typedef union {
     void (*fn)(void);
 } max_aligned_t;
 
-static max_aligned_t kernel_memory[64];
+static max_aligned_t kernel_memory[128];
 
 static int expect(int condition, const char *what) {
     if (!condition) {
@@ -43,6 +43,8 @@ int main(void) {
     ayni_host_v1 host = {0};
     ayni_kernel_t *kernel = NULL;
     ayni_lifecycle_t state = 0;
+    ayni_kernel_info_v1 info = {0};
+    ayni_step_report_v1 report = {0};
     size_t size = 0;
     size_t align = 0;
     int failures = 0;
@@ -53,6 +55,7 @@ int main(void) {
     config.ingress_capacity = 2u;
     config.event_body_max_bytes = 8u;
     config.completion_slot_count = 1u;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
     host.wake = test_wake;
@@ -76,6 +79,17 @@ int main(void) {
                "lifecycle is CONFIGURING");
     failures += expect(ayni_completion_post(NULL, NULL) == AYNI_INVALID_ARGUMENT,
                        "completion post links and rejects NULL");
+    /* No storage ports: the kernel cannot recover, so it stays CONFIGURING. */
+    failures += expect(ayni_start(kernel) == AYNI_UNSUPPORTED, "start without storage");
+    info.struct_size = (uint32_t)sizeof info;
+    failures += expect(ayni_get_kernel_info(kernel, &info) == AYNI_OK &&
+                           info.lifecycle == AYNI_LIFECYCLE_CONFIGURING && info.boot_epoch == 0u,
+                       "kernel info");
+    report.struct_size = (uint32_t)sizeof report;
+    failures +=
+        expect(ayni_step(kernel, 1u, 1u, &report) == AYNI_INVALID_STATE, "step in CONFIGURING");
+    failures +=
+        expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");
     failures += expect(ayni_destroy(kernel) == AYNI_OK, "destroy");
     return failures == 0 ? 0 : 1;
 }

@@ -2,10 +2,10 @@
  * DRAFT, not part of the published ABI (C-VER-007): no symbols.
  *
  * Planned Host ports beyond those in ayni_host_v1 (clock, wake, ingress
- * lock): persistent storage and the trace sink (contracts/host/
- * host_ports.md). When implemented, these members are appended to
- * ayni_host_v1 in ayni.h (C-VER-002); the separate struct name keeps the
- * draft from colliding with the published one.
+ * lock, log append and prefix read): writer fencing, snapshots, free space
+ * and the trace sink (contracts/host/host_ports.md). When implemented, these members are appended
+ * to ayni_host_v1 in ayni.h (C-VER-002); the separate struct name keeps the draft from colliding
+ * with the published one.
  *
  * Every function pointer here is called on the kernel owner thread and must
  * not block or call back into the kernel (C-HOST-002).
@@ -31,32 +31,10 @@
 extern "C" {
 #endif
 
-/*
- * ayni_completion_result_v1.outcome of the storage ports. Storage writes
- * (C-COMMIT-001, C-HOST-010); reads use AYNI_WRITE_OK, AYNI_WRITE_FAILED, or
- * AYNI_WRITE_UNKNOWN when the buffer content is not reliable, and report the
- * bytes read in value. Distinct from the AYNI_STORAGE_FAILED status code,
- * which reports a failed kernel call.
- */
-#define AYNI_WRITE_OK 1u
-#define AYNI_WRITE_FAILED 2u
-#define AYNI_WRITE_UNKNOWN 3u
-
 /* Writer fence outcomes (C-HOST-012). */
 #define AYNI_FENCE_DRAINED 1u
 #define AYNI_FENCE_EPOCH_INSTALLED 2u
 #define AYNI_FENCE_UNAVAILABLE 3u
-
-/* One commit batch, encoded per contracts/storage/records.md. The struct is
- * copied during the call; encoded.data stays kernel-owned and unchanged until
- * the completion for the attempt is posted. */
-typedef struct ayni_storage_batch_v1 {
-    uint32_t struct_size;
-    uint32_t writer_epoch;
-    uint64_t transition_id;
-    uint64_t commit_seq;
-    ayni_bytes_v1 encoded; /* header, records and commit marker */
-} ayni_storage_batch_v1;
 
 /* Storage capability flags (C-HOST-011). */
 #define AYNI_STORAGE_ATOMIC_REPLACE 0x1u /* power-safe replace and flush */
@@ -75,20 +53,6 @@ typedef struct ayni_host_ports_v1 {
     uint32_t storage_flags; /* AYNI_STORAGE_ATOMIC_REPLACE */
     void *ctx;
 
-    /* Durable append; completes with AYNI_WRITE_OK only once the batch
-     * survives power loss (C-HOST-010). */
-    ayni_submit_result_t (*storage_append)(void *ctx, const ayni_storage_batch_v1 *batch,
-                                           ayni_attempt_ref_v1 attempt,
-                                           ayni_completion_t *completion);
-
-    /* Reads complete committed batches from from_commit_seq on into buffer,
-     * which the Host may write only until it posts; the completion value is
-     * the number of bytes written. */
-    ayni_submit_result_t (*storage_read_prefix)(void *ctx, uint64_t from_commit_seq,
-                                                uint8_t *buffer, uint32_t buffer_size,
-                                                ayni_attempt_ref_v1 attempt,
-                                                ayni_completion_t *completion);
-
     /* Makes the previous writer unable to modify the log (C-COMMIT-010). */
     ayni_submit_result_t (*storage_fence_writers)(void *ctx, uint32_t new_writer_epoch,
                                                   ayni_attempt_ref_v1 attempt,
@@ -96,8 +60,8 @@ typedef struct ayni_host_ports_v1 {
 
     /* Snapshot slots 0 and 1; with AYNI_STORAGE_ATOMIC_REPLACE the Host may
      * back both by one replaceable file (C-STORE-006). snapshot.data and the
-     * read buffer follow the same ownership rule as batch->encoded and the
-     * prefix buffer. */
+     * read buffer follow the same ownership rule as the batch and prefix
+     * buffers of ayni_host_v1. Outcomes are AYNI_WRITE_* from ayni.h. */
     ayni_submit_result_t (*storage_write_snapshot)(void *ctx, uint32_t slot, ayni_bytes_v1 snapshot,
                                                    ayni_attempt_ref_v1 attempt,
                                                    ayni_completion_t *completion);

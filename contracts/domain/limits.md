@@ -1,6 +1,6 @@
 # 容量与限额
 
-- **关联**：计划 §2.7、§3.2「容量」、§3.4「消息限额」、§4.2、§5.3；ADR-0014、ADR-0015；`MA-003`、`MA-005`、`MA-018`；E1 步骤 10，第 10.6 节「事件与容量」
+- **关联**：计划 §2.7、§3.2「容量」、§3.4「消息限额」、§4.2、§5.3；ADR-0014、ADR-0015、ADR-0016；`MA-003`、`MA-005`、`MA-018`；E1 步骤 10，第 10.6 节「事件与容量」
 - **属主**：`kernel`（配置校验与分发）；各限额由其对象的属主模块执行（如 Task 数由 `work/task`，预留完成槽由 `kernel`）
 
 ## 初始值
@@ -16,6 +16,7 @@
 | 普通事件入口（`ingress_capacity`，1–4096） | 128 项 | §4.2 | 可丢弃事件覆盖同一订阅、同一非零合并键的最新一条，否则逐出最旧的可丢弃事件；其他返回 `BUSY`（ADR-0015） |
 | 单个事件正文（`event_body_max_bytes`，1–4096） | 128 字节 | ADR-0015 | 超出返回 `INVALID_ARGUMENT` |
 | 预留控制容量（完成槽，`completion_slot_count`，1–1024） | 16，且不小于在途请求上限 | §4.2 | 不调用端口，返回 `BUSY`（C-HOST-006） |
+| 存储缓冲（`storage_buffer_bytes`，256–65536） | 1024 字节 | ADR-0016 | 单个批次的上限；恢复读到放不下的批次时以 `STORAGE_READ_FAILED` 进入 `RESTRICTED` |
 | 活跃外部推理槽 | 1 | §4.2 | 排队（C-RES-004） |
 | 每个 Task 的模型决策次数 | 8 | §4.2 | Task 暂停并报告原因 |
 | 单轮能力请求数 | 8 | §2.7、§4.2 | 整轮拒绝 |
@@ -43,7 +44,7 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-LIMIT-001 | 全部容量由配置在创建时给出；Core 不无界增长，达到上限返回 `AYNI_CAPACITY_EXCEEDED`（或文档规定的 `BUSY`），不得静默丢弃持久工作 | 事件队列满时最旧的存储确认被覆盖 | M1 已实现（入口与完成槽）：`IngressQueue.ten_thousand_events_pass_in_order_without_loss`、`KernelApi.capacity_outside_its_range_is_invalid_argument`、`KernelApi.memory_requirements_grow_with_each_capacity`；其余容量随各自工作包；`MA-003`；第 10.6 节 |
+| C-LIMIT-001 | 全部容量由配置在创建时给出；Core 不无界增长，达到上限返回 `AYNI_CAPACITY_EXCEEDED`（或文档规定的 `BUSY`），不得静默丢弃持久工作 | 事件队列满时最旧的存储确认被覆盖 | M1 已实现（入口、完成槽与存储缓冲）：`KernelLifecycle.batch_larger_than_the_buffer_restricts_as_read_failed`、`IngressQueue.ten_thousand_events_pass_in_order_without_loss`、`KernelApi.capacity_outside_its_range_is_invalid_argument`、`KernelApi.memory_requirements_grow_with_each_capacity`；其余容量随各自工作包；`MA-003`；第 10.6 节 |
 | C-LIMIT-002 | 每项限额都有耗尽测试，断言耗尽时的返回值、状态不变与恢复路径 | Grant 上限只在文档中出现，没有任何测试触及 | `MA-018`；`MA-005` |
 | C-LIMIT-003 | 初始值是未实测的工程假设；修改须附测量证据并记录 ADR | 压测失败后把 Task 上限从 16 改为 4，没有记录原因 | 评审；`reports/core/` |
 | C-LIMIT-004 | Core 的存储全部来自调用方提供的内存与配置声明的容量；Core 不调用堆分配（ADR-0014） | Core 在注册 Capability 时调用 `new` 扩展数组 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，也不引用 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数；ctest `heap_check_detects_allocator` 与 ctest `heap_check_detects_strdup` 证明该检查有效 |
@@ -53,5 +54,5 @@
 | C-LIMIT-008 | 普通事件入口有界；遥测按声明合并或丢旧并报告 gap；存储确认、终态、撤销与资源回收使用预留控制容量；停止不经队列（C-STOP-001） | 摄像头遥测占满队列，撤销事件被丢弃 | M1 已实现（入口与完成槽）：`IngressQueue.full_queue_rejects_other_events_with_busy`、`IngressQueue.full_queue_replaces_newest_value_of_the_same_stream`、`IngressQueue.telemetry_flood_keeps_each_stream_in_order_and_accounted`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；E1 步骤 10；`MA-003` |
 | C-LIMIT-009 | 媒体缓冲与上下文使用独立的缓冲池与字节上限，不挤占关键任务栈与内部 RAM | 一张大图片占满内部 RAM，停止监督任务栈溢出 | M2/M3 资源测量；E1 步骤 8 |
 | C-LIMIT-010 | 分配失败、存储满、TLS 失败都返回明确状态；拒绝新负载，同时保留停止与诊断能力 | 存储满时 Kernel 崩溃重启，停止按键失效 | 第 10.6 节「存储与恢复」；`MA-012` |
-| C-LIMIT-011 | 一次 `ayni_step` 最多处理 `max_items` 个工作项，并在 `max_time_us` 用尽后返回；`step` 内不等待网络、存储、模型或设备 | 一次 `step` 内同步等待 Flash 写完 | `MA-003`；第 10.6 节「事件与容量」 |
+| C-LIMIT-011 | 一次 `ayni_step` 最多处理 `max_items` 个工作项，并在 `max_time_us` 用尽后返回；`step` 内不等待网络、存储、模型或设备 | 一次 `step` 内同步等待 Flash 写完 | M1 已实现：`KernelLifecycle.step_applies_at_most_max_items`、`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`（请求在之后的 step 中完成）；`MA-003`；第 10.6 节「事件与容量」 |
 | C-LIMIT-012 | 派生摘要的 lineage 条目数有上限，上限随配置给出；达到上限时按 C-PROD-032 处理 | lineage 数组写满后静默丢弃最早的依赖 | `MA-011` |

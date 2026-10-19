@@ -1,6 +1,6 @@
 # 持久记录格式
 
-- **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002；`MA-010`；E2 F0–F8、F11、F12，E4 步骤 6
+- **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016；`MA-010`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
 - **状态**：本文是 M1 实现的起点。字节布局为草案，M1 以故障注入（短写、掉电、CRC 错误、旧写延迟）验证后定稿，定稿前 `storage_schema` 为 0（experimental）
 
@@ -36,17 +36,17 @@
 |---:|---|---|
 | 2 | `record_type` | 见“记录类型” |
 | 2 | `record_version` | 该类型的版本 |
-| 4 | `record_flags` | 位 0 = `REQUIRED`：读不懂时必须进入 `RESTRICTED`；其余位保留 |
+| 4 | `record_flags` | 位 0 = `REQUIRED`：读不懂时必须进入 `RESTRICTED`；其余位保留，写 0，读到未知位时进入 `RESTRICTED` |
 | 4 | `length` | 记录体字节数 |
 | `length` | 记录体 | 由属主模块定义的字段编码 |
 
 ## 记录类型
 
-数值编码在 M1 分配；名称、所属批次与属主在此固定。
+名称、所属批次与属主在此固定；类型编码在实现该记录的工作包中分配，记入下表。
 
 | 记录 | 属主 | 所属批次 |
 |---|---|---|
-| `BOOT_EPOCH` | `kernel` | 单独批次，开放输出前提交（C-ID-009） |
+| `BOOT_EPOCH`（类型 1，版本 1，置 `REQUIRED`；正文为 8 字节小端 `boot_epoch`） | `kernel` | 单独批次，开放输出前提交（C-ID-009、ADR-0016） |
 | `WRITER_FENCE` | `durability` | 单独批次（C-STORE-005） |
 | `COMMAND_MAPPING` | `kernel` | B1 |
 | `GOAL`、`TASK` | `work/goal`、`work/task` | B1、B2 |
@@ -78,15 +78,15 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-STORE-001 | 批次按上表编码：头部、记录区、提交标记；`header_crc` 位于 `header_length − 4` 并覆盖其前的全部头部字节；`header_length` 小于 44 时批次不完整；`header_crc`、`payload_crc` 与 `commit_seq_low` 都校验通过才算完整 | 只检查头部 CRC，记录区短写的批次被当作完整 | `MA-010` 短写注入；E2 F7 |
+| C-STORE-001 | 批次按上表编码：头部、记录区、提交标记；`header_crc` 位于 `header_length − 4` 并覆盖其前的全部头部字节；`header_length` 小于 44 时批次不完整；`header_crc`、`payload_crc` 与 `commit_seq_low` 都校验通过才算完整 | 只检查头部 CRC，记录区短写的批次被当作完整 | M1 已实现（编解码）：`BatchCodec.every_damaged_byte_is_corrupt`、`BatchCodec.every_short_write_is_corrupt`、`BatchCodec.header_shorter_than_44_bytes_is_corrupt`、`BatchCodec.longer_header_from_a_later_writer_is_accepted`、`BatchCodec.commit_marker_of_another_commit_seq_is_corrupt`；`MA-010` 短写注入；E2 F7 |
 | C-STORE-002 | 只有提交标记完整的批次可见；日志末尾不完整的批次被忽略，不部分应用 | 尾部批次只写了一半记录，恢复时应用了前半 | E2 F0、F7、F8 |
-| C-STORE-003 | `commit_seq` 从持久前缀起连续递增；遇到缺口时前缀在缺口前结束 | `commit_seq` 7 缺失，恢复跳过它继续应用 8 和 9 | `MA-010` |
-| C-STORE-004 | 读到 `REQUIRED` 位置位的未知记录类型或版本、未知的 `flags` 位或不支持的 `storage_schema` 时进入 `RESTRICTED`；未置位的未知记录可以跳过 | 新固件写入的授权记录被旧固件跳过，旧固件按更宽的权限运行 | E4 步骤 6；C-VER-020 |
+| C-STORE-003 | `commit_seq` 从 1（有快照后从快照覆盖的下一个）起连续递增。Host 只交回完整批次，所以读到的缺口或与 Host 分帧不一致的 `commit_seq` 都是已提交区域损坏，按 C-STORE-009 处理（ADR-0016） | `commit_seq` 7 缺失，恢复跳过它继续应用 8 和 9；或把前缀截断在 7 之前，下一次 append 又写出一个 7，日志分叉 | M1 已实现：`PrefixScan.commit_seq_must_continue_exactly`、`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`；快照之后的起点随 `MA-010` |
+| C-STORE-004 | 读到 `REQUIRED` 位置位的未知记录类型或版本、未知的 `flags` 位或不支持的 `storage_schema` 时进入 `RESTRICTED`；未置位的未知记录可以跳过 | 新固件写入的授权记录被旧固件跳过，旧固件按更宽的权限运行 | M1 已实现（恢复读取）：`BatchCodec.other_schema_or_flags_are_unsupported`、`PrefixScan.unknown_records_follow_the_required_flag`、`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`KernelLifecycle.unknown_optional_records_are_skipped`；E4 步骤 6；C-VER-020 |
 | C-STORE-005 | 受限栅栏确认旧写入方隔离后，写入 `WRITER_FENCE` 记录（含新 `writer_epoch`）；恢复时忽略栅栏记录之后出现的旧 epoch 批次 | 旧 flush 在重载后落盘，恢复时被当作新批次应用 | E2 F12；C-COMMIT-010 |
 | C-STORE-006 | 快照先写内容、校验后再写提交标记；没有断电原子替换时使用双槽与 `generation`，恢复选提交标记有效且 `generation` 最大的槽 | 覆盖写唯一的快照文件时掉电，旧快照和新快照都不可用 | `MA-010` 掉电注入；C-HOST-011 |
 | C-STORE-007 | 恢复从最近有效快照开始，重放 `commit_seq > covers_commit_seq` 的已提交批次；同一 transition 重放不重复应用（C-COMMIT-002） | 快照已包含的批次被再次重放，预算结算了两次 | E2 F11；`MA-010` |
 | C-STORE-008 | CRC 只用于发现损坏，不作为授权或防篡改依据 | 以 CRC 正确为由信任一条从外部导入的 Grant 记录 | 评审 |
-| C-STORE-009 | 已提交区域（不是末尾的不完整批次）出现损坏时进入 `RESTRICTED`，不跳过损坏批次继续应用后续批次 | 中间批次 CRC 错误，恢复跳过它，导致后续撤销记录引用不存在的 Grant | E2 F7（已提交区域损坏） |
+| C-STORE-009 | 已提交区域（不是末尾的不完整批次）出现损坏时进入 `RESTRICTED`，不跳过损坏批次继续应用后续批次 | 中间批次 CRC 错误，恢复跳过它，导致后续撤销记录引用不存在的 Grant | M1 已实现（恢复读取）：`PrefixScan.damaged_batch_stops_the_scan`、`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`；E2 F7（已提交区域损坏） |
 | C-STORE-010 | 迁移在切换提交前保留旧格式；迁移结果以新 `storage_schema` 写入并经校验后才切换 | 原地改写日志段为新格式时掉电，两种格式都无法读取 | E4 步骤 6；C-VER-021 |
 | C-STORE-011 | 日志轮转、快照与历史大小、写频率都有上限；动作屏障不能为节省写入而跳过；空间不足时新副作用返回 `AYNI_STORAGE_FAILED` | 为减少 Flash 磨损，把屏障与终态合并为一次写入 | E2 末段；C-COMMIT-015 |
 | C-STORE-012 | 日志扇区擦除在没有活动执行器会话时预先完成；会话期间只做页编程，以免擦除挂起停止监督（C-STOP-005） | 会话中日志写满一个扇区，触发擦除，L2 心跳超时误停 | `MA-026` 故障矩阵 |

@@ -1,7 +1,8 @@
 // Composition root for native targets (ADR-0010): assembles one Kernel with
-// the native Host. In M0 the node only creates the Kernel, which stays in
-// CONFIGURING; registration, ayni_start and the CORE_FULL capacity profile
-// arrive with the APIs that implement them (M1).
+// the native Host. The node only creates the Kernel, which stays in
+// CONFIGURING: the native Host has no persistent log yet, so ayni_start would
+// return AYNI_UNSUPPORTED. Storage (MA-010), registration and the CORE_FULL
+// capacity profile arrive with the work packages that implement them.
 
 #ifndef AYNI_RUNTIME_NATIVE_NODE_H
 #define AYNI_RUNTIME_NATIVE_NODE_H

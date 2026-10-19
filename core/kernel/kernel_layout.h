@@ -14,6 +14,7 @@ namespace ayni::kernel {
 struct KernelLayout {
     std::size_t ingress_offset;
     std::size_t completions_offset;
+    std::size_t storage_buffer_offset;
     std::size_t size;
     std::size_t alignment; // a power of two
 };
