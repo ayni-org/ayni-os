@@ -45,7 +45,7 @@
 | C-LIMIT-001 | 全部容量由配置在创建时给出；Core 不无界增长，达到上限返回 `AYNI_CAPACITY_EXCEEDED`（或文档规定的 `BUSY`），不得静默丢弃持久工作 | 事件队列满时最旧的存储确认被覆盖 | `MA-003` 1 万事件测试；第 10.6 节 |
 | C-LIMIT-002 | 每项限额都有耗尽测试，断言耗尽时的返回值、状态不变与恢复路径 | Grant 上限只在文档中出现，没有任何测试触及 | `MA-018`；`MA-005` |
 | C-LIMIT-003 | 初始值是未实测的工程假设；修改须附测量证据并记录 ADR | 压测失败后把 Task 上限从 16 改为 4，没有记录原因 | 评审；`reports/core/` |
-| C-LIMIT-004 | Core 的存储全部来自调用方提供的内存与配置声明的容量；Core 不调用堆分配（ADR-0014） | Core 在注册 Capability 时调用 `new` 扩展数组 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，ctest `heap_check_detects_allocator` 证明该检查有效 |
+| C-LIMIT-004 | Core 的存储全部来自调用方提供的内存与配置声明的容量；Core 不调用堆分配（ADR-0014） | Core 在注册 Capability 时调用 `new` 扩展数组 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，也不引用 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数；ctest `heap_check_detects_allocator` 与 ctest `heap_check_detects_strdup` 证明该检查有效 |
 | C-LIMIT-005 | 每个 Task 的模型决策次数达到上限时，Task 暂停并报告原因，不继续请求模型 | Tool Loop 在模型反复返回同一工具调用时无限循环 | `MA-009`；E1 步骤 5 |
 | C-LIMIT-006 | 单轮最多 8 个能力调用是受理上限；超出时整轮拒绝并报告原因，不截断后执行前 8 个 | 策略返回 12 个调用，Kernel 默默执行前 8 个，后 4 个丢失 | E4 步骤 3；`MA-009`；C-CALL-006 |
 | C-LIMIT-007 | 子目标深度与数量有界；周期触发在重启后不一次性补建无限 Task，同一触发窗口去重 | 断电一周后重启，每小时一次的检查一次性生成 168 个 Task | E2 F8；`MA-004` |

@@ -156,8 +156,24 @@ class CheckContractsTest(unittest.TestCase):
         self.assertIn("| C-AAA-002 | M0 已实现：`Sample.works` |", matrix)
         self.assertIn("| 合计 | 2 | 1 |", matrix)
 
+    def test_bare_test_cite_is_rejected(self):
+        self.add_rows("| C-AAA-002 | rule | counter | M0 已实现：`works` |\n")
+        self.assert_single_problem("cites test `works` without its suite; write `Sample.works`")
+
+    def test_build_directories_are_not_scanned(self):
+        (self.root / "targets/esp32_assistant/build").mkdir(parents=True)
+        (self.root / "targets/esp32_assistant/build/generated.h").write_bytes(b"/* C-AAA-099 \xff */\n")
+        self.write("tests/unit/build/_deps/gtest.cc", "TEST(Gtest, internal) {}\n")
+        self.add_rows("| C-AAA-002 | rule | counter | `Gtest.internal` |\n")
+        self.assert_single_problem("cites test Gtest.internal, which is not defined under tests/")
+
     def test_missing_readme_is_an_input_error(self):
         (self.root / "contracts/README.md").unlink()
+        self.assertEqual(check_contracts.main(["--root", str(self.root)]), 2)
+
+    def test_non_utf8_source_is_an_input_error(self):
+        (self.root / "include").mkdir()
+        (self.root / "include/latin1.h").write_bytes(b"/* caf\xe9 */\n")
         self.assertEqual(check_contracts.main(["--root", str(self.root)]), 2)
 
 

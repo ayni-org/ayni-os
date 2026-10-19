@@ -24,7 +24,7 @@
 | `RUNNING` | `RESTRICTED` | 受限栅栏中无法确认旧写入方已排空或隔离，或存储仍不可写（C-COMMIT-008） |
 | `RUNNING` | `RECOVERING` | 受限栅栏确认旧写入方已隔离，以新 `boot_epoch` 重载 |
 | `RUNNING`、`RECOVERING`、`RESTRICTED` | `DRAINING` | `ayni_begin_shutdown` |
-| `DRAINING` | `STOPPED` | 在途工作已终结或记录为未知，资源已释放或隔离 |
+| `DRAINING` | `STOPPED` | 在途工作已终结或记录为未知，资源已释放或隔离，全部预留完成槽已收到完成（C-HOST-018） |
 
 各状态下公开函数的返回值（M0 已实现的函数在前，其余为计划）：
 
@@ -73,7 +73,7 @@
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-LIFE-001 | `ayni_create` 成功后 Kernel 处于 `CONFIGURING` | 创建后直接处于 `RUNNING` 并开始接受意图 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
-| C-LIFE-002 | `ayni_destroy` 只在 `CONFIGURING` 或 `STOPPED` 成功；其他状态返回 `AYNI_INVALID_STATE` 且 Kernel 不变 | 运行中的 Kernel 被销毁，在途 I/O 回调写入已释放的内存 | M0 已实现 `CONFIGURING` 路径：`KernelApi.kernel_memory_is_reusable_after_destroy`；其他状态待 `MA-005` |
+| C-LIFE-002 | `ayni_destroy` 只在 `CONFIGURING` 或 `STOPPED` 成功；其他状态返回 `AYNI_INVALID_STATE` 且 Kernel 不变；`STOPPED` 意味着没有 Host 或 Provider 仍持有完成槽（C-HOST-018） | 运行中的 Kernel 被销毁，在途 I/O 回调写入已释放的内存 | M0 已实现 `CONFIGURING` 路径：`KernelApi.kernel_memory_is_reusable_after_destroy`；其他状态待 `MA-005` |
 | C-LIFE-003 | 注册只在 `CONFIGURING` 进行；`ayni_start` 一次性校验全部交叉引用，注册顺序无关；引用缺失时 start 失败并保持 `CONFIGURING` | 先注册 Binding 后注册 Capability 导致失败 | `MA-005` |
 | C-LIFE-004 | 非 `RUNNING` 时 `ayni_submit_intent` 返回 `AYNI_NOT_READY`，不排队、不改变状态 | 恢复期间到达的创建提醒命令被排队，恢复后又按重建的幂等映射再次创建 | E2 F13 |
 | C-LIFE-005 | 生命周期变化经事件与 `ayni_get_lifecycle` 同时可见；事件在状态已应用之后发出 | 事件报告 `RUNNING` 时查询仍返回 `RECOVERING` | `MA-005` |

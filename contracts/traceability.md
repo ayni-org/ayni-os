@@ -18,13 +18,13 @@
 | [domain/resources_and_budget.md](domain/resources_and_budget.md) | 23 | 0 |
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 2 |
 | [domain/versions.md](domain/versions.md) | 17 | 3 |
-| [host/host_ports.md](host/host_ports.md) | 17 | 2 |
+| [host/host_ports.md](host/host_ports.md) | 19 | 2 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 0 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 14 | 0 |
 | [wire/envelope.md](wire/envelope.md) | 16 | 0 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 295 | 11 |
+| 合计 | 297 | 11 |
 
 ## 计划章节 → 契约文档
 
@@ -79,14 +79,14 @@
 | 工作包 | 条款 |
 |---|---|
 | `MA-001` | C-STOP-003、C-STOP-004 |
-| `MA-003` | C-TIME-001、C-LIMIT-001、C-LIMIT-008、C-LIMIT-011、C-STOP-001、C-HOST-002、C-HOST-003、C-HOST-006、C-HOST-007 |
+| `MA-003` | C-TIME-001、C-LIMIT-001、C-LIMIT-008、C-LIMIT-011、C-STOP-001、C-HOST-002、C-HOST-003、C-HOST-006、C-HOST-007、C-HOST-018 |
 | `MA-004` | C-AUTH-004、C-ID-001、C-LIFE-020、C-LIFE-021、C-LIFE-022、C-LIMIT-007、C-POLICY-009 |
-| `MA-005` | C-LIFE-002、C-LIFE-003、C-LIFE-005、C-LIFE-006、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-015、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
+| `MA-005` | C-LIFE-002、C-LIFE-003、C-LIFE-005、C-LIFE-006、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-015、C-HOST-018、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
 | `MA-006` | C-AUTH-001、C-AUTH-003、C-AUTH-008 |
-| `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
+| `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
 | `MA-008` | C-CALL-001、C-CALL-003、C-BIND-002、C-BIND-003、C-BUDGET-005、C-PROV-002、C-PROV-003、C-PROV-010 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-011 |
-| `MA-010` | C-COMMIT-001、C-COMMIT-003、C-COMMIT-014、C-TIME-003、C-VER-020、C-VER-023、C-HOST-009、C-HOST-010、C-HOST-011、C-STORE-001、C-STORE-003、C-STORE-006、C-STORE-007、C-STORE-013、C-STORE-014 |
+| `MA-010` | C-COMMIT-001、C-COMMIT-003、C-COMMIT-014、C-TIME-003、C-VER-020、C-VER-023、C-HOST-009、C-HOST-010、C-HOST-011、C-HOST-019、C-STORE-001、C-STORE-003、C-STORE-006、C-STORE-007、C-STORE-013、C-STORE-014 |
 | `MA-011` | C-TIME-004、C-TIME-005、C-TIME-006、C-TIME-007、C-LIMIT-012、C-PROD-032、C-PROD-034、C-PROD-042、C-JSON-010 |
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
@@ -153,11 +153,11 @@
 | C-TIME-008 | M0 已实现：`NativeHost.monotonic_clock_never_decreases`（Native）；ESP32 使用 `esp_timer_get_time`，M2 补测 |
 | C-LIFE-001 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
 | C-LIFE-002 | M0 已实现 `CONFIGURING` 路径：`KernelApi.kernel_memory_is_reusable_after_destroy`；其他状态待 `MA-005` |
-| C-LIMIT-004 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，ctest `heap_check_detects_allocator` 证明该检查有效 |
-| C-STATUS-001 | M0 已实现：`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表 |
+| C-LIMIT-004 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，也不引用 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数；ctest `heap_check_detects_allocator` 与 ctest `heap_check_detects_strdup` 证明该检查有效 |
+| C-STATUS-001 | M0 已实现：`include/ayni/ayni.h` 为每个已实现函数列出返回码，`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表 |
 | C-STATUS-002 | M0 已实现：`KernelApi.failed_create_leaves_memory_untouched` |
-| C-VER-001 | M0 已实现：`KernelApi.create_rejects_other_abi_major`、`failed_create_leaves_memory_untouched` |
-| C-VER-003 | M0 已实现：`KernelApi.create_copies_host_table_before_return`；M1 补旧尺寸用例 |
-| C-VER-004 | M0 已实现：`KernelApi.struct_size_below_first_layout_is_invalid_argument`、`struct_size_from_newer_minor_is_unsupported_version` |
+| C-VER-001 | M0 已实现：`KernelApi.create_rejects_other_abi_major`、`KernelApi.create_rejects_other_abi_minor`、`KernelApi.config_from_abi_0_1_is_unsupported_version`、`KernelApi.failed_create_leaves_memory_untouched` |
+| C-VER-003 | M0 已实现：`KernelApi.create_copies_host_table_before_return`；`KernelApi.config_from_abi_0_1_is_unsupported_version`（`struct_size` 不含 `abi_minor` 时按 0.1 处理）；M1 补 Host 表旧尺寸用例 |
+| C-VER-004 | M0 已实现：`KernelApi.struct_size_below_first_layout_is_invalid_argument`、`KernelApi.struct_size_from_newer_minor_is_unsupported_version` |
 | C-HOST-001 | M0 已实现：`KernelApi.create_copies_host_table_before_return` |
 | C-HOST-016 | M0 已实现：`KernelApi.create_rejects_missing_clock` |

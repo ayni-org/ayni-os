@@ -44,7 +44,8 @@ target_compile_options(ayni_c_abi_smoke PRIVATE -pedantic-errors)
 add_test(NAME c_abi_create_destroy_from_c99 COMMAND ayni_c_abi_smoke)
 
 # Core takes all memory from its caller (ADR-0014): no Core archive may
-# reference a heap allocator. The probe case proves the check detects one.
+# reference a heap allocator. The probe cases prove the check detects a
+# direct allocator call and a libc function that allocates for its caller.
 get_property(core_module_targets GLOBAL PROPERTY AYNI_CORE_MODULE_TARGETS)
 set(core_archives)
 foreach(target IN LISTS core_module_targets)
@@ -62,3 +63,11 @@ add_test(NAME heap_check_detects_allocator
         -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_heap.cmake")
 set_tests_properties(heap_check_detects_allocator PROPERTIES
     PASS_REGULAR_EXPRESSION "Core references heap allocator symbols: malloc")
+
+add_library(ayni_heap_probe_strdup STATIC heap_probe_strdup.c)
+target_link_libraries(ayni_heap_probe_strdup PRIVATE ayni_warnings)
+add_test(NAME heap_check_detects_strdup
+    COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "-DARCHIVES=$<TARGET_FILE:ayni_heap_probe_strdup>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_heap.cmake")
+set_tests_properties(heap_check_detects_strdup PROPERTIES
+    PASS_REGULAR_EXPRESSION "Core references heap allocator symbols: (__)?strdup")

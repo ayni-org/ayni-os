@@ -1,6 +1,8 @@
 // Contract of the M0 C ABI in include/ayni/ayni.h: version query, memory
 // requirements, create, lifecycle query and destroy.
 
+#include "kernel/kernel_state.h"
+
 #include <ayni/ayni.h>
 
 #include <gtest/gtest.h>
@@ -21,6 +23,7 @@ ayni_config_v1 valid_config() {
     ayni_config_v1 config{};
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;
+    config.abi_minor = AYNI_ABI_MINOR;
     return config;
 }
 
@@ -103,16 +106,22 @@ TEST_F(KernelApi, create_in_caller_memory_starts_configuring) {
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
+// White-box: no implemented function calls the host yet, so the copy is
+// checked through the kernel's own representation.
 TEST_F(KernelApi, create_copies_host_table_before_return) {
     const ayni_config_v1 config = valid_config();
+    int ctx_target = 0;
     ayni_kernel_t *kernel = nullptr;
     {
         ayni_host_v1 host = valid_host();
+        host.ctx = &ctx_target;
         ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
         std::memset(&host, 0xA5, sizeof(host));
     }
-    ayni_lifecycle_t state = 0;
-    EXPECT_EQ(ayni_get_lifecycle(kernel, &state), AYNI_OK);
+    EXPECT_EQ(kernel->host.struct_size, sizeof(ayni_host_v1));
+    EXPECT_EQ(kernel->host.ctx, &ctx_target);
+    ASSERT_EQ(kernel->host.monotonic_now_us, &fixed_clock);
+    EXPECT_EQ(kernel->host.monotonic_now_us(kernel->host.ctx), 42U);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
@@ -140,7 +149,7 @@ TEST_F(KernelApi, struct_size_below_first_layout_is_invalid_argument) {
     ayni_host_v1 host = valid_host();
     ayni_kernel_t *kernel = nullptr;
 
-    config.struct_size = sizeof(config) - 1;
+    config.struct_size = offsetof(ayni_config_v1, abi_major) + sizeof(config.abi_major) - 1;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
     config = valid_config();
     host.struct_size = sizeof(host) - 1;
@@ -165,6 +174,29 @@ TEST_F(KernelApi, create_rejects_other_abi_major) {
     const ayni_host_v1 host = valid_host();
     ayni_kernel_t *kernel = nullptr;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_UNSUPPORTED_VERSION);
+}
+
+TEST_F(KernelApi, create_rejects_other_abi_minor) {
+    ayni_config_v1 config = valid_config();
+    const ayni_host_v1 host = valid_host();
+    ayni_kernel_t *kernel = nullptr;
+    config.abi_minor = AYNI_ABI_MINOR + 1;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_UNSUPPORTED_VERSION);
+    config.abi_minor = AYNI_ABI_MINOR - 1;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(kernel, nullptr);
+}
+
+// A 0.1 caller's config ends before abi_minor; major 0 accepts no other minor.
+TEST_F(KernelApi, config_from_abi_0_1_is_unsupported_version) {
+    ayni_config_v1 config = valid_config();
+    config.struct_size = offsetof(ayni_config_v1, abi_minor);
+    const ayni_host_v1 host = valid_host();
+    ayni_kernel_t *kernel = nullptr;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_UNSUPPORTED_VERSION);
+    std::size_t size = 0;
+    std::size_t align = 0;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_UNSUPPORTED_VERSION);
 }
 
 TEST_F(KernelApi, create_rejects_misaligned_memory) {

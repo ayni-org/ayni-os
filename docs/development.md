@@ -91,7 +91,7 @@ idf.py build
 idf.py size
 ```
 
-`sdkconfig.defaults` 已指定 `esp32s3`、16 MB Flash 与 8 MB Octal PSRAM，因此首次构建无需 `idf.py set-target`。生成的 `sdkconfig` 与 `build/` 不进入版本库。
+`sdkconfig.defaults` 已指定 `esp32s3` 与 8 MB Octal PSRAM，因此首次构建无需 `idf.py set-target`。Flash 暂按 2 MB 配置：镜像头声明的容量大于芯片实际容量时固件在启动时停下，来不及打印基线日志；2 MB 是所有 ESP32-S3 模组的最小容量，Hello 固件会打印实测容量，到板实测后再改为实际容量并确定分区。生成的 `sdkconfig` 与 `build/` 不进入版本库。
 
 烧录与串口监视（板子到手后执行，M0 尚未执行）：
 

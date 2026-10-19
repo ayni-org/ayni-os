@@ -17,8 +17,9 @@ namespace ayni::runtime {
 class NativeNode {
   public:
     NativeNode() = default;
-    // Releases an assembled Kernel. Aborts if ayni_destroy refuses: the owner
-    // skipped shutdown, and freeing the memory under a live Kernel is unsafe.
+    // Releases an assembled Kernel. If ayni_destroy refuses (the owner
+    // skipped shutdown), the memory is left allocated instead of being freed
+    // under a live Kernel; callers that need the outcome call release().
     ~NativeNode();
 
     NativeNode(const NativeNode &) = delete;

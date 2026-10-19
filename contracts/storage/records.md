@@ -17,14 +17,14 @@
 |---:|---:|---|---|
 | 0 | 4 | `magic` | ASCII `AYJB` |
 | 4 | 2 | `storage_schema` | 存储格式版本 |
-| 6 | 2 | `header_length` | 本头部长度（当前 44），便于追加头部字段 |
+| 6 | 2 | `header_length` | 本头部长度（当前 44），含末尾的 `header_crc`；追加的头部字段插在 `header_crc` 之前 |
 | 8 | 4 | `writer_epoch` | 写入方代际（C-STORE-005） |
 | 12 | 4 | `flags` | 保留，写 0；读到未知位时进入 `RESTRICTED` |
 | 16 | 8 | `commit_seq` | 连续递增 |
 | 24 | 8 | `transition_id` | 重试同一 transition 时不变（C-COMMIT-008） |
 | 32 | 4 | `record_count` | 记录数 |
 | 36 | 4 | `payload_length` | 记录区字节数 |
-| 40 | 4 | `header_crc` | 覆盖偏移 0–39 |
+| 40 | 4 | `header_crc` | 始终是头部最后 4 字节（偏移 `header_length − 4`），覆盖偏移 0 至 `header_length − 5`，追加字段因此同样受保护 |
 | 44 | `payload_length` | 记录区 | 见下表 |
 | — | 4 | `commit_magic` | ASCII `AYJC` |
 | — | 4 | `commit_seq_low` | `commit_seq` 的低 32 位，把提交标记绑定到本批次 |
@@ -78,7 +78,7 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-STORE-001 | 批次按上表编码：头部、记录区、提交标记；`header_crc`、`payload_crc` 与 `commit_seq_low` 都校验通过才算完整 | 只检查头部 CRC，记录区短写的批次被当作完整 | `MA-010` 短写注入；E2 F7 |
+| C-STORE-001 | 批次按上表编码：头部、记录区、提交标记；`header_crc` 位于 `header_length − 4` 并覆盖其前的全部头部字节；`header_length` 小于 44 时批次不完整；`header_crc`、`payload_crc` 与 `commit_seq_low` 都校验通过才算完整 | 只检查头部 CRC，记录区短写的批次被当作完整 | `MA-010` 短写注入；E2 F7 |
 | C-STORE-002 | 只有提交标记完整的批次可见；日志末尾不完整的批次被忽略，不部分应用 | 尾部批次只写了一半记录，恢复时应用了前半 | E2 F0、F7、F8 |
 | C-STORE-003 | `commit_seq` 从持久前缀起连续递增；遇到缺口时前缀在缺口前结束 | `commit_seq` 7 缺失，恢复跳过它继续应用 8 和 9 | `MA-010` |
 | C-STORE-004 | 读到 `REQUIRED` 位置位的未知记录类型或版本、未知的 `flags` 位或不支持的 `storage_schema` 时进入 `RESTRICTED`；未置位的未知记录可以跳过 | 新固件写入的授权记录被旧固件跳过，旧固件按更宽的权限运行 | E4 步骤 6；C-VER-020 |

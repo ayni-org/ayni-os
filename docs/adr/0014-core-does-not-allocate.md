@@ -33,5 +33,5 @@
 
 - `tests/unit/kernel_api_test.cpp`：内存不足返回 `AYNI_BUFFER_TOO_SMALL`，对齐不足返回 `AYNI_INVALID_ARGUMENT`，失败时内存块保持原样，同一块内存可反复创建与销毁。
 - `check_deps_repository`：Core 只包含白名单中的标准头文件。
-- `core_does_not_reference_heap_allocator`：每个 Core 静态库的未定义符号中没有 `malloc`、`free`、`operator new` 或 `operator delete`；`heap_check_detects_allocator` 用一个故意分配内存的探针库证明该检查能发现违规。
+- `core_does_not_reference_heap_allocator`：每个 Core 静态库的未定义符号中没有 `malloc`、`free`、`operator new` 或 `operator delete`，也没有 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数（完整列表见 `tests/contract/check_no_heap.cmake`）；`heap_check_detects_allocator` 与 `heap_check_detects_strdup` 各用一个故意分配内存的探针库证明该检查能发现违规。
 - M2：报告 ESP32 上 Kernel 在内部 RAM 中的实际占用。
