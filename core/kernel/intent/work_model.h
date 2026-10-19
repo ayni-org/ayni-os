@@ -3,7 +3,8 @@
 // the rules here take it instead of the whole kernel, so they cannot reach
 // the Host, recovery or the event queue. Every function runs on the kernel
 // owner thread, and every check runs before anything changes, so a refusal
-// allocates no id and takes no transition.
+// allocates no id and takes no transition; only AYNI_INTERNAL, a defect, may
+// leave both used up.
 
 #ifndef AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
 #define AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
@@ -51,8 +52,9 @@ struct WorkModel {
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal
-    // type's validator). Kernel functions that change state then refuse to
-    // run (ayni.h, C-POLICY-001), so nothing changes between a check and the
+    // type's validator). Caller code must not call the kernel; as a
+    // fail-safe, owner-thread functions that change state then refuse to run
+    // (ayni.h, C-POLICY-001), so nothing changes between a check and the
     // change it allows.
     bool calling_out = false;
 };

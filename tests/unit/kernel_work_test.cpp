@@ -688,10 +688,10 @@ TEST(WorkModel, change_past_the_largest_revision_is_refused_and_changes_nothing)
     EXPECT_EQ(paused.result.commit_seq, work.goal(child).commit_seq + 1U);
 }
 
-// C-POLICY-001: a validator that calls back into the kernel cannot change
-// it. Every function that would returns INVALID_STATE, queries still answer,
-// and the outer intent then completes as usual. With room for one goal, a
-// nested create that got through would have overrun the goal table.
+// C-POLICY-001: a validator must not call the kernel. As a fail-safe, every
+// function that would change it returns INVALID_STATE, and the outer intent
+// then completes as usual. With room for one goal, a nested create that got
+// through would have overrun the goal table.
 TEST(WorkModel, validator_cannot_change_the_kernel_while_it_runs) {
     WorkNode work;
     work.node().config().goal_capacity = 1;
@@ -700,7 +700,6 @@ TEST(WorkModel, validator_cannot_change_the_kernel_while_it_runs) {
     const ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a));
     const ayni_intent_v1 nested = work.intent(AYNI_INTENT_GOAL_CREATE, &body);
     std::vector<ayni_status_t> inside;
-    ayni_status_t query = AYNI_INTERNAL;
     work.rules().during = [&] {
         inside.push_back(ayni_submit_intent(kernel, &nested, nullptr, nullptr));
         const ayni_session_desc_v1 session = session_desc();
@@ -717,15 +716,11 @@ TEST(WorkModel, validator_cannot_change_the_kernel_while_it_runs) {
         inside.push_back(ayni_register_agent(kernel, &agent));
         const ayni_goal_type_v1 type = goal_type_desc("other", 1);
         inside.push_back(ayni_register_goal_type(kernel, &type));
-        ayni_agent_info_v1 info{};
-        info.struct_size = sizeof(info);
-        query = ayni_get_agent(kernel, agent_a, &info);
     };
 
     const Submitted created = work.create(body);
     ASSERT_EQ(created.status, AYNI_OK);
     EXPECT_EQ(inside, std::vector<ayni_status_t>(10, AYNI_INVALID_STATE));
-    EXPECT_EQ(query, AYNI_OK);
     EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     // The session is still open, and the guard is gone once the call returns.
     EXPECT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, created.result.object.id).status, AYNI_OK);
@@ -885,35 +880,43 @@ TEST(WorkModel, draining_answers_queries_and_closes_sessions_but_takes_no_work) 
 
 // --- Reboots --------------------------------------------------------------
 
-// C-ID-001, C-ID-010: a later boot never assigns an id an earlier boot
-// assigned. Until the log stores them (MA-010), goals, instances and sessions
-// do not survive the reboot.
-// C-COMMIT-016: commit_seq is a position in the log, and a later boot
-// reuses the positions of transitions that were never durable. Within the
-// boot that assigned it, durable_seq never reaches the goal's commit_seq;
-// two boots later it has, although the goal is gone. So a commit_seq is
-// compared only with durable_seq of its own boot.
+// C-COMMIT-016: transition_id and commit_seq place a transition in the log,
+// and a later boot reuses the places of transitions that were never durable.
+// One boot later a new goal takes the place of an unstored one; two boots
+// later durable_seq covers the first goal's commit_seq although the goal is
+// gone. So both are compared only with durable_seq of their own boot.
 TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
     WorkNode work;
     work.run();
-    const uint64_t goal = work.create_goal();
-    const uint64_t created_at = work.goal(goal).commit_seq;
-    const uint64_t first_epoch = work.node().info().boot_epoch;
-    EXPECT_EQ(goal >> 32U, first_epoch);
-    EXPECT_GT(created_at, work.node().info().durable_seq);
+    const ayni_goal_info_v1 first = work.goal(work.create_goal());
+    const ayni_goal_info_v1 second = work.goal(work.create_goal());
+    EXPECT_GT(first.commit_seq, work.node().info().durable_seq);
 
-    for (int boot = 0; boot < 2; ++boot) {
-        work.node().reboot();
-        work.node().recover();
-        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    }
-    EXPECT_NE(work.node().info().boot_epoch, first_epoch);
-    EXPECT_GE(work.node().info().durable_seq, created_at);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a));
+    ayni_intent_v1 intent = work.intent(AYNI_INTENT_GOAL_CREATE, &body);
+    intent.session_id = work.open_session();
+    const Submitted created = work.submit(intent);
+    ASSERT_EQ(created.status, AYNI_OK);
+    const ayni_goal_info_v1 reused = work.goal(created.result.object.id);
+    EXPECT_NE(reused.goal_id, second.goal_id);
+    EXPECT_EQ(reused.transition_id, second.transition_id);
+    EXPECT_EQ(reused.commit_seq, second.commit_seq);
+
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_GE(work.node().info().durable_seq, first.commit_seq);
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
-    EXPECT_EQ(ayni_get_goal(work.kernel(), goal, &info), AYNI_NOT_FOUND);
+    EXPECT_EQ(ayni_get_goal(work.kernel(), first.goal_id, &info), AYNI_NOT_FOUND);
 }
 
+// C-ID-001, C-ID-010: a later boot never assigns an id an earlier boot
+// assigned. Until the log stores them (MA-010), goals, instances and sessions
+// do not survive the reboot.
 TEST(WorkModel, a_reboot_assigns_new_ids_and_forgets_unstored_work) {
     WorkNode work;
     work.run();

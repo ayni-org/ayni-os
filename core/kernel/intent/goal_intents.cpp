@@ -101,7 +101,8 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     const foundation::TransitionStamp stamp = model.transitions.next();
     uint32_t index = 0;
     if (!model.goals.insert(goal, goal_id, stamp, index)) {
-        // admit() found room and nothing could run since.
+        // admit() found room and nothing could run since. The id and stamp
+        // stay used up, as ayni.h says for this defect.
         return AYNI_INTERNAL;
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, goal_id, model.goals.at(index).revision);

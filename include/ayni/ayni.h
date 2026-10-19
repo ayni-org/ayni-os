@@ -10,8 +10,9 @@
  *   their comment names other threads.
  * - A function the kernel calls, such as a host function or a goal type's
  *   validator, must not call kernel functions unless its comment allows it.
- *   While a validator runs, every function that takes a non-const
- *   ayni_kernel_t returns AYNI_INVALID_STATE without effect; queries answer.
+ *   As a fail-safe, the owner-thread functions that take a non-const
+ *   ayni_kernel_t return AYNI_INVALID_STATE without effect when called from
+ *   a validator, after their argument checks and before their state checks.
  * - Inputs are copied before return unless a parameter says otherwise.
  * - Each function lists every status it can return (C-STATUS-001). A failed
  *   call has no effect and writes no output unless its comment says so.
@@ -390,7 +391,7 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or
  * max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
  * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE in
- * CONFIGURING and STOPPED.
+ * CONFIGURING and STOPPED, and when called from a goal type's validator.
  */
 ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
                         ayni_step_report_v1 *out_report);
@@ -402,7 +403,7 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
  * has been posted and applied (C-HOST-018). Returns
  * AYNI_OK, also in DRAINING and STOPPED; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE in CONFIGURING, where ayni_destroy applies
- * directly.
+ * directly, and when called from a goal type's validator.
  */
 ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel);
 
@@ -601,10 +602,10 @@ typedef struct ayni_agent_info_v1 {
  * Checks the parameters of a goal before it is accepted (C-POLICY-009).
  * Returns AYNI_OK to accept them; any other status refuses the goal. Called
  * on the kernel owner thread inside ayni_submit_intent; parameters are valid
- * only during the call. It must not block or perform I/O. Kernel functions it
- * calls that take a non-const ayni_kernel_t return AYNI_INVALID_STATE without
- * effect, so the goal it checks cannot change before it is accepted
- * (C-POLICY-001).
+ * only during the call. It must not call kernel functions, block or perform
+ * I/O (C-POLICY-001). If it calls one that changes the kernel, that call
+ * returns AYNI_INVALID_STATE without effect, so the goal it checks cannot
+ * change before it is accepted.
  */
 typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 parameters);
 
@@ -745,6 +746,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
  * AYNI_OK, *out_session_id receives a new id, never 0. Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT for a NULL pointer or an unknown channel;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size;
+ * AYNI_INVALID_STATE when called from a goal type's validator;
  * AYNI_NOT_READY outside RUNNING; AYNI_NOT_FOUND for an unregistered
  * principal; AYNI_CAPACITY_EXCEEDED once session_capacity sessions are open
  * or no id is left this boot (C-ID-010).
@@ -755,7 +757,8 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
 /*
  * Closes an open session; intents can no longer name it. Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT if kernel is NULL; AYNI_INVALID_STATE in CONFIGURING
- * and STOPPED; AYNI_NOT_FOUND when no open session has this id.
+ * and STOPPED, and when called from a goal type's validator; AYNI_NOT_FOUND
+ * when no open session has this id.
  */
 ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
 
@@ -790,7 +793,8 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    revision (REVISION_CONFLICT), then its lifecycle (INVALID_STATE), then
  *    the revisions it would raise (CAPACITY_EXCEEDED).
  * AYNI_INTERNAL reports a defect in this library, not in the call: the goal
- * table refused a goal the checks admitted. The intent is not applied.
+ * table refused a goal the checks admitted. The goal is not created, but the
+ * id and the commit_seq reserved for it are used up.
  *
  * GOAL_CREATE creates an ACTIVE goal at revision 1. GOAL_PAUSE takes an
  * ACTIVE goal to PAUSED and GOAL_RESUME takes it back; neither changes its

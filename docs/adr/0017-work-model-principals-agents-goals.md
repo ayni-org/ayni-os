@@ -44,7 +44,7 @@
    - 变化类意图依次检查目标是否存在、`expected_revision`、生命周期、版本上限。
    - 任何拒绝都不取 ID、不取 transition，也不改变状态；`out_error` 在自身 `struct_size` 合法后每次都写，`out_result` 只在 `AYNI_OK` 时写。
 7. **会话属于 `authority`，授权先只看会话。** primitives.md 把 UserPrincipal 与 Session 归 `authority`，所以会话表放在 `authority/principal/`；ADR-0008 中的 `work/session` 是控制会话（ControlSession，`permits_and_stop.md`），与此无关。Host 认证主体与渠道（`VOICE`、`MANAGEMENT`）后打开会话；意图只带 `session_id`，Goal 的来源（`USER`、渠道、主体、`binding_revision`）取自会话，意图无法自报（C-AUTH-010）。`ayni_open_session` 是公开函数，Kernel 分辨不出调用者是谁，所以本部分只保证意图不能自报主体与渠道；只让 Host 打开会话、不把这个入口交给应用，随 `MA-006` 与组合根一起实现。会话不持久化，重启后全部关闭。Grant（`MA-006`）之前，所有者的任何已打开会话都可以提交全部 Goal 意图；`MA-006` 在检查顺序第 4 步加入 Grant 与渠道信任级别的检查。
-8. **GoalType 校验在 `ayni_submit_intent` 内调用。** `validate(ctx, parameters)` 在 Kernel 所有者线程上同步调用，参数只在调用期间有效，回调不得阻塞或执行 I/O。回调运行期间，所有接受非 const Kernel 的公开函数都返回 `INVALID_STATE` 且不产生效果，查询照常回答；否则回调可以在校验通过与插入之间关闭会话、取消父目标或改变生命周期，让已经检查过的条件失效。C-POLICY-001 据此修订：策略回调在 `step` 内，GoalType 的参数校验在 `ayni_submit_intent` 内。被接受的参数复制进调用方内存块中为每个 Goal 预留的 `goal_parameter_max_bytes` 字节。
+8. **GoalType 校验在 `ayni_submit_intent` 内调用。** `validate(ctx, parameters)` 在 Kernel 所有者线程上同步调用，参数只在调用期间有效，回调不得调用 Kernel、阻塞或执行 I/O。作为兜底，回调运行期间，接受非 const Kernel 的所有者线程函数都返回 `INVALID_STATE` 且不产生效果；否则违反约定的回调可以在校验通过与插入之间关闭会话、取消父目标或改变生命周期，让已经检查过的条件失效。查询不拦截，但同样不属于回调可以依赖的行为，`MA-009` 的策略回调可以据重放需要收紧。C-POLICY-001 据此修订：策略回调在 `step` 内，GoalType 的参数校验在 `ayni_submit_intent` 内。被接受的参数复制进调用方内存块中为每个 Goal 预留的 `goal_parameter_max_bytes` 字节。
 9. **模块落位（ADR-0008）。**
    - `foundation`：`kernel_id.h`（ID 布局与分配器）、`transition_stamp.h`、`bounded_array.h`（调用方内存上的定长数组）。
    - `catalog`：`catalog_id`（目录 ID 规则）、`goal_type/goal_type_registry`。

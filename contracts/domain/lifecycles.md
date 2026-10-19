@@ -45,7 +45,7 @@
 | 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
 | `ayni_post_event` | INVALID_STATE | OK | OK | OK（只用于对账与诊断） | OK | INVALID_STATE |
 
-`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。在 GoalType 的校验回调内，接受非 const Kernel 的函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果；查询照常回答（C-POLICY-001）。
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。GoalType 的校验回调不得调用 Kernel（C-POLICY-001）。作为兜底，回调内调用接受非 const Kernel 的所有者线程函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）时，它们在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果。
 
 ## AgentInstance
 

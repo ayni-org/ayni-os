@@ -206,7 +206,6 @@ TEST(GoalTable, capacity_counts_terminal_goals) {
     EXPECT_EQ(goals.goal(first).lifecycle, AYNI_GOAL_CANCELLED);
 }
 
-// C-LIFE-021: pause keeps the goal and does not reach its children.
 // insert() checks the room itself, so a caller that skipped admit() cannot
 // write past the table.
 TEST(GoalTable, insert_into_a_full_table_changes_nothing) {
@@ -222,6 +221,7 @@ TEST(GoalTable, insert_into_a_full_table_changes_nothing) {
     EXPECT_FALSE(goals->find(99, found));
 }
 
+// C-LIFE-021: pause keeps the goal and does not reach its children.
 TEST(GoalTable, pause_and_resume_change_only_the_goal) {
     Goals goals(small);
     const uint64_t root = goals.create();
