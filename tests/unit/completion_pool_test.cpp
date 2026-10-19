@@ -284,8 +284,10 @@ TEST_F(CompletionPoolTest, concurrent_posts_apply_each_result_exactly_once) {
 
 // A Host thread keeps re-posting the first attempt's result while the owner
 // reuses the only slot for new attempts. The stale result never completes a
-// later attempt, and each attempt is applied once with its own result. Under
-// TSan this also catches slot fields written outside the ingress lock.
+// later attempt, and each attempt is applied once with its own result. Each
+// round waits until a stale post has started after the slot was reserved for
+// the new attempt, so every round meets the race whatever the scheduler does.
+// Under TSan this also catches slot fields written outside the ingress lock.
 TEST_F(CompletionPoolTest, stale_posts_racing_slot_reuse_are_ignored) {
     make_pool(1);
     ASSERT_EQ(issue(), IssueResult::in_flight);
@@ -295,36 +297,49 @@ TEST_F(CompletionPoolTest, stale_posts_racing_slot_reuse_are_ignored) {
     ASSERT_EQ(pool_->apply_posted(1), 1U);
 
     std::atomic<bool> stop{false};
-    uint64_t stale_posts = 0; // the stale thread's own count, read after join
+    std::atomic<uint64_t> stale_posts{0};
     // C++17 lambdas cannot capture a structured binding, hence the copy.
     std::thread stale_poster([&, stale_slot = slot] {
         while (!stop.load()) {
             EXPECT_EQ(ayni_completion_post(stale_slot, &stale), AYNI_INVALID_STATE);
-            ++stale_posts;
+            stale_posts.fetch_add(1);
         }
     });
-    constexpr uint32_t attempts = 2000;
-    for (uint32_t round = 1; round <= attempts; ++round) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    constexpr uint32_t attempts = 500;
+    uint32_t rounds = 0;
+    while (rounds < attempts) {
         if (issue() != IssueResult::in_flight) {
-            ADD_FAILURE() << "issue failed in round " << round;
+            ADD_FAILURE() << "issue failed in round " << rounds + 1U;
             break;
         }
+        // A post counted after `reserved` may have begun before it; the next
+        // one began after, so it met the slot reserved for the new attempt.
+        const uint64_t reserved = stale_posts.load();
+        while (stale_posts.load() < reserved + 2U && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        if (stale_posts.load() < reserved + 2U) {
+            ADD_FAILURE() << "the stale thread stopped posting in round " << rounds + 1U;
+            break;
+        }
+        ++rounds;
         const auto [attempt, completion] = port_.accepted.back();
-        const ayni_completion_result_v1 result = result_for(attempt, round);
+        const ayni_completion_result_v1 result = result_for(attempt, rounds);
         EXPECT_EQ(ayni_completion_post(completion, &result), AYNI_OK);
         EXPECT_EQ(pool_->apply_posted(1), 1U);
     }
     stop.store(true);
     stale_poster.join();
 
+    ASSERT_EQ(rounds, attempts);
     ASSERT_EQ(applied_.results.size(), attempts + 1U);
     for (uint32_t round = 0; round <= attempts; ++round) {
         EXPECT_EQ(applied_.results[round].attempt.request_id,
                   port_.accepted[round].first.request_id);
         EXPECT_EQ(applied_.results[round].value, round);
     }
-    EXPECT_GT(stale_posts, 0U);
-    EXPECT_EQ(pool_->counters().ignored_posts, stale_posts);
+    EXPECT_EQ(pool_->counters().ignored_posts, stale_posts.load());
     EXPECT_EQ(pool_->in_flight(), 0U);
 }
 
