@@ -1,0 +1,3 @@
+add_library(ayni_host_native STATIC native_host.cpp)
+target_include_directories(ayni_host_native PUBLIC include)
+target_link_libraries(ayni_host_native PUBLIC ayni_api PRIVATE ayni_warnings)

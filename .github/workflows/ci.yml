@@ -1,0 +1,89 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: dependency and format checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format 18
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format-18
+      - name: Dependency rules
+        run: python3 tools/check_deps.py
+      - name: Dependency checker tests
+        run: python3 -m unittest -v test_check_deps
+        working-directory: tests/tools
+      - name: Formatting
+        run: git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
+      - name: Whitespace
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+
+  native:
+    name: native ${{ matrix.compiler }} ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-debug}
+          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-release}
+          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-asan}
+          - {compiler: clang, cc: clang, cxx: clang++, preset: native-debug}
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+      - name: Tool versions
+        run: cmake --version && ninja --version && "$CC" --version && "$CXX" --version
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+      - name: Simulator
+        run: ./build/${{ matrix.preset == 'native-debug' && 'native' || matrix.preset }}/targets/simulator/ayni-sim
+
+  clang-tidy:
+    name: clang-tidy (advisory)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build clang-tidy-18
+      - name: Configure
+        run: cmake --preset native-debug
+      - name: Build generated sources
+        run: cmake --build --preset native-debug
+      - name: clang-tidy
+        run: run-clang-tidy-18 -p build/native -quiet 'core/|hosts/|runtime/|targets/'
+
+  esp-idf:
+    name: ESP32-S3 hello firmware (ESP-IDF v6.0.3)
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v6.0.3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd targets/esp32_assistant
+          idf.py build
+          idf.py size

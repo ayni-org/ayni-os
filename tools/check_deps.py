@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Check #include dependencies against tools/architecture.json (ADR-0011).
+
+Rules:
+  core/      Core modules include only strictly lower layers (ADR-0008), their
+             own entity subdirectories as declared in core_subdir_deps, the
+             implemented public API and core_std_headers. No draft, Host,
+             runtime or platform headers.
+  include/   Implemented public headers include only public_c_headers and other
+             implemented public headers; drafts may also include drafts.
+  others     Each listed top-level directory includes only the header kinds in
+             "components". Core-internal headers are never allowed outside core/.
+  tests/     Not checked: tests may reach any layer.
+
+Prints one line per violation as "path:line: message". Exit status: 0 clean,
+1 violations found, 2 invalid configuration.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"\n]+)[>"]', re.MULTILINE)
+SOURCE_SUFFIXES = {".h", ".hpp", ".c", ".cc", ".cpp"}
+FIXED_RULE_DIRS = {"core", "include", "tests"}
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Include:
+    line: int
+    quoted: bool
+    path: str
+
+
+@dataclass(frozen=True)
+class Target:
+    """What an include refers to. kind is one of: core, api, draft, hosts,
+    runtime, external, local, foreign."""
+
+    kind: str
+    module: str | None = None  # core module, or instance for hosts/runtime
+    subdir: str | None = None  # core entity subdirectory
+    owner: str | None = None  # top-level directory for kind == "foreign"
+
+
+class Architecture:
+    def __init__(self, data: dict):
+        try:
+            self.layer_of: dict[str, int] = {}
+            for index, layer in enumerate(data["core_layers"]):
+                for module in layer:
+                    if module in self.layer_of:
+                        raise ConfigError(f"core module '{module}' listed twice")
+                    self.layer_of[module] = index
+            self.subdir_deps: dict[str, dict[str, list[str]]] = data["core_subdir_deps"]
+            self.core_std_headers = set(data["core_std_headers"])
+            self.public_c_headers = set(data["public_c_headers"])
+            self.header_kinds: dict[str, str] = data["header_kinds"]
+            self.components: dict[str, list[str]] = data["components"]
+            self.unchecked_dirs = set(data["unchecked_dirs"])
+            self.skipped_dir_names = set(data["skipped_dir_names"])
+        except KeyError as missing:
+            raise ConfigError(f"missing key {missing}") from None
+        for module in self.subdir_deps:
+            if module not in self.layer_of:
+                raise ConfigError(f"core_subdir_deps names unknown module '{module}'")
+        overlap = FIXED_RULE_DIRS & set(self.components)
+        if overlap:
+            raise ConfigError(f"{sorted(overlap)} have fixed rules and cannot be listed in components")
+
+    @classmethod
+    def load(cls, path: Path) -> "Architecture":
+        try:
+            return cls(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ConfigError(f"{path}: {error}") from None
+
+    def header_kind(self, include_path: str) -> str | None:
+        for prefix in sorted(self.header_kinds, key=len, reverse=True):
+            if include_path.startswith(prefix):
+                return self.header_kinds[prefix]
+        return None
+
+
+def parse_includes(text: str) -> list[Include]:
+    includes = []
+    for match in INCLUDE_RE.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        includes.append(Include(line, match.group(1) == '"', match.group(2).strip()))
+    return includes
+
+
+def instance_of(parts: tuple[str, ...]) -> str | None:
+    return parts[1] if len(parts) > 2 else None
+
+
+def classify(arch: Architecture, root: Path, source: PurePosixPath, include: Include) -> Target:
+    if include.quoted:
+        resolved = (root / source.parent / include.path).resolve()
+        if resolved.is_file() and resolved.is_relative_to(root.resolve()):
+            return classify_resolved(arch, source, PurePosixPath(resolved.relative_to(root.resolve()).as_posix()))
+
+    parts = PurePosixPath(include.path).parts
+    if len(parts) >= 2 and parts[0] in arch.layer_of:
+        return Target("core", parts[0], parts[1] if len(parts) >= 3 else None)
+    kind = arch.header_kind(include.path)
+    if kind is None:
+        return Target("external")
+    if kind in ("hosts", "runtime"):
+        name = parts[2] if len(parts) > 2 else None
+        if name is not None and name.endswith(".h"):
+            name = name[: -len(".h")]
+        return Target(kind, name)
+    return Target(kind)
+
+
+def classify_resolved(arch: Architecture, source: PurePosixPath, target: PurePosixPath) -> Target:
+    """A quoted include that names a file in this repository by relative path."""
+    source_parts, target_parts = source.parts, target.parts
+    if target_parts[0] == "include":
+        public_path = PurePosixPath(*target_parts[1:]).as_posix()
+        return Target(arch.header_kind(public_path) or "foreign", owner="include")
+    if target_parts[0] == "core":
+        if len(target_parts) >= 3 and target_parts[1] in arch.layer_of:
+            subdir = target_parts[2] if len(target_parts) >= 4 else None
+            return Target("core", target_parts[1], subdir)
+        return Target("foreign", owner="core")
+    same_instance = source_parts[0] == target_parts[0] and (
+        source_parts[0] not in ("hosts", "runtime") or instance_of(source_parts) == instance_of(target_parts)
+    )
+    if same_instance:
+        return Target("local")
+    return Target("foreign", owner="/".join(target_parts[:2]))
+
+
+def check_core(arch: Architecture, source: PurePosixPath, include: Include, target: Target) -> str | None:
+    module = source.parts[1]
+    subdir = source.parts[2] if len(source.parts) >= 4 else None
+    if target.kind == "core":
+        if target.module == module:
+            if subdir is None or target.subdir is None or target.subdir == subdir:
+                return None
+            allowed = arch.subdir_deps.get(module, {}).get(subdir, [])
+            if target.subdir in allowed:
+                return None
+            return (f"core/{module}/{subdir} may not include core/{module}/{target.subdir}: "
+                    f"not declared in core_subdir_deps")
+        if arch.layer_of[target.module] > arch.layer_of[module]:
+            return None
+        return (f"core/{module} may not include core/{target.module}: dependencies point to "
+                f"strictly lower layers only (ADR-0008)")
+    if target.kind == "api":
+        return None
+    if target.kind == "external" and not include.quoted and include.path in arch.core_std_headers:
+        return None
+    reason = ": not in core_std_headers" if target.kind == "external" else ""
+    return f"Core may not include {describe(include, target)}{reason}"
+
+
+def check_public_header(arch: Architecture, source: PurePosixPath, include: Include, target: Target) -> str | None:
+    is_draft = source.as_posix().startswith("include/ayni/draft/")
+    if target.kind == "api" or (is_draft and target.kind == "draft"):
+        return None
+    if target.kind == "external" and not include.quoted and include.path in arch.public_c_headers:
+        return None
+    which = "draft" if is_draft else "implemented public"
+    return f"{which} header may not include {describe(include, target)}"
+
+
+def check_component(arch: Architecture, source: PurePosixPath, include: Include, target: Target) -> str | None:
+    component = source.parts[0]
+    allowed = arch.components[component]
+    if target.kind == "local":
+        return None
+    if target.kind in allowed:
+        return None
+    if "own" in allowed and target.kind == component and target.module == instance_of(source.parts):
+        return None
+    return f"{component}/ may not include {describe(include, target)}"
+
+
+def describe(include: Include, target: Target) -> str:
+    spelled = f'"{include.path}"' if include.quoted else f"<{include.path}>"
+    if target.kind == "core":
+        return f"{spelled} (Core-internal header of core/{target.module})"
+    if target.kind == "foreign":
+        return f"{spelled} (file of {target.owner}/)"
+    if target.kind == "external":
+        return spelled
+    return f"{spelled} ({target.kind} header)"
+
+
+def iter_sources(arch: Architecture, root: Path):
+    for directory, subdirs, files in os.walk(root):
+        relative_dir = PurePosixPath(Path(directory).relative_to(root).as_posix())
+        subdirs[:] = sorted(
+            name for name in subdirs
+            if name not in arch.skipped_dir_names
+            and not (relative_dir == PurePosixPath(".") and name in arch.unchecked_dirs)
+        )
+        for name in sorted(files):
+            if Path(name).suffix in SOURCE_SUFFIXES:
+                yield Path(directory) / name, relative_dir / name
+
+
+def check(root: Path, arch: Architecture) -> list[str]:
+    violations = []
+    for path, relative in iter_sources(arch, root):
+        top = relative.parts[0]
+        if len(relative.parts) == 1:
+            violations.append(f"{relative}: source files at the repository root have no dependency rule")
+            continue
+        if top == "core":
+            if len(relative.parts) < 3 or relative.parts[1] not in arch.layer_of:
+                violations.append(f"{relative}: Core sources must live in one of the modules in core_layers")
+                continue
+            rule = check_core
+        elif top == "include":
+            rule = check_public_header
+        elif top in arch.components:
+            rule = check_component
+        else:
+            violations.append(f"{relative}: no include rule for {top}/; add it to tools/architecture.json")
+            continue
+        text = path.read_text(encoding="utf-8")
+        for include in parse_includes(text):
+            message = rule(arch, relative, include, classify(arch, root, relative, include))
+            if message is not None:
+                violations.append(f"{relative}:{include.line}: {message}")
+    return violations
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    default_root = Path(__file__).resolve().parent.parent
+    parser.add_argument("--root", type=Path, default=default_root, help="repository root")
+    parser.add_argument("--architecture", type=Path, help="defaults to <root>/tools/architecture.json")
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    try:
+        arch = Architecture.load(args.architecture or root / "tools" / "architecture.json")
+    except ConfigError as error:
+        print(f"check_deps: invalid configuration: {error}", file=sys.stderr)
+        return 2
+    violations = check(root, arch)
+    for violation in violations:
+        print(violation)
+    if violations:
+        print(f"check_deps: {len(violations)} violation(s)", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
