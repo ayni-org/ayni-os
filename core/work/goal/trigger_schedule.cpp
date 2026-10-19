@@ -1,0 +1,53 @@
+#include "work/goal/trigger_schedule.h"
+
+namespace ayni::work {
+namespace {
+
+constexpr uint32_t last_number = UINT32_MAX;
+
+uint64_t saturating_add(uint64_t a, uint64_t b) {
+    return b > no_time - a ? no_time : a + b;
+}
+
+} // namespace
+
+bool Trigger::fits() const {
+    switch (kind) {
+    case AYNI_TRIGGER_DELAY:
+        return period_us == 0U;
+    case AYNI_TRIGGER_INTERVAL:
+        return period_us >= AYNI_TRIGGER_PERIOD_MIN_US;
+    default: // NONE and ONCE take no times
+        return delay_us == 0U && period_us == 0U;
+    }
+}
+
+TriggerCursor start_schedule(const Trigger &trigger, uint64_t created_us) {
+    // ONCE has delay_us 0, so it is due at creation.
+    const uint64_t first_due =
+        trigger.kind == AYNI_TRIGGER_NONE ? no_time : saturating_add(created_us, trigger.delay_us);
+    return {0, first_due};
+}
+
+TakenOccurrences take_due(const Trigger &trigger, uint64_t now_us, TriggerCursor &cursor) {
+    const uint64_t first_due = cursor.next_due_us;
+    if (trigger.kind != AYNI_TRIGGER_INTERVAL) {
+        cursor = {cursor.taken + 1U, no_time};
+        return {cursor.taken, 1U, first_due};
+    }
+    // A cursor with an occurrence to come has a number left for it, so
+    // more_left is at most last_number - 1 and count below fits.
+    const uint64_t more_left = last_number - cursor.taken - 1U;
+    uint64_t more = (now_us - first_due) / trigger.period_us;
+    if (more > more_left) {
+        more = more_left;
+    }
+    // more * period_us <= now_us - first_due, so due_us cannot overflow.
+    const uint64_t due_us = first_due + more * trigger.period_us;
+    const auto count = static_cast<uint32_t>(more + 1U);
+    const uint32_t latest = cursor.taken + count;
+    cursor = {latest, latest == last_number ? no_time : saturating_add(due_us, trigger.period_us)};
+    return {latest, count, due_us};
+}
+
+} // namespace ayni::work

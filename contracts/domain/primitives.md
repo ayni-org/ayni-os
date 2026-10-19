@@ -1,6 +1,6 @@
 # 原语的最小字段
 
-- **关联**：计划 §2.2、§2.3、§2.7、§3.6；ADR-0001、ADR-0007、ADR-0008、ADR-0017、ADR-0018；`MA-004`、`MA-006`、`MA-008`、`MA-011`、`MA-018`
+- **关联**：计划 §2.2、§2.3、§2.7、§3.6；ADR-0001、ADR-0007、ADR-0008、ADR-0017、ADR-0018、ADR-0019；`MA-004`、`MA-006`、`MA-008`、`MA-011`、`MA-018`
 - **说明**：本文固化每个原语在 M1 实现前必须具备的最小字段（计划 §2.2：“M0 固化最小字段、状态与提交不变量”）。编码（字段宽度、可选字段的表示）在 M1 由 fixtures 收敛，选定 IDL 后由 ADR-0009 生成。表中“持久”指写入日志或快照；“重建”指重启后由 Host 重新探测或重新建立，不从持久记录恢复为可用对象。
 
 所有可修改对象都带 `revision`（每次提交的修改递增），作为 `expected_revision` 的比较对象（C-COMMIT-012）。所有对象都带创建它的 `transition_id`，用于追溯。
@@ -27,11 +27,11 @@
 | `parent_goal_id`、`depth` | 父目标与深度（受 C-LIMIT 限制） | 是 |
 | `completion_rule`、`expiry` | 完成或持续条件、失效规则（恢复策略，不存单调值） | 是 |
 | `dedupe_key` | 去重键 | 是 |
-| `trigger`、`trigger_cursor` | 触发种类，由 GoalType 的 `trigger_kinds` 限定；触发游标，M1 为已派生的 occurrence 数与最近一个 Task 的 ID，周期触发的窗口随时间部分（ADR-0018） | 是 |
+| `trigger`、`trigger_cursor` | 触发种类与时间，由 GoalType 的 `trigger_kinds` 限定，M1 为 `NONE`、`ONCE`、`DELAY`、`INTERVAL`（单调时钟上的延时与周期，ADR-0019）；触发游标，M1 为已派生的最新 occurrence 编号、下一次到期时间与最近一个 Task 的 ID。到期时间是本机单调值，持久化时保存恢复策略而不是该值（C-TIME-003，`MA-010`） | 是 |
 | `budget_ref` | 子预算引用（在 `budget`） | 是 |
 | `notify_plan` | 通知计划（主方式与获准备选，C-PROD-012） | 是 |
 | `lifecycle`、`revision`、`cancel_revision` | 生命周期、版本、取消版本 | 是 |
-| Task：`task_id`、`goal_id`、`occurrence` | 一次执行及其来源 occurrence（该 Goal 的第几次，从 1 开始，ADR-0018） | 是 |
+| Task：`task_id`、`goal_id`、`occurrence` | 一次执行及其来源 occurrence（该 Goal 的第几次，从 1 开始，ADR-0018）；等待的多个 occurrence 合并为一个 Task 时为其中最新的一次，另记代表的个数与该次的到期时间（ADR-0019） | 是 |
 | Task：`owner_instance_id` | 继承自 Goal，之后不变（C-LIFE-020） | 是 |
 | Task：`lifecycle`、`revision`、`cancel_revision` | 生命周期、版本、取消版本 | 是 |
 | Task：`checkpoint`（共同检查点，C-CALL-004） | 步骤版本、绑定、输入摘要、结果引用、已提交进度、未知状态 | 是 |

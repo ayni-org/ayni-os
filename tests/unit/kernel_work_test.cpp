@@ -71,7 +71,7 @@ TEST(WorkModel, registration_checks_its_arguments) {
          {goal_type_desc("reminder", 0), goal_type_desc("", 1), goal_type_desc("Reminder", 1),
           goal_type_desc("abcdefghijklmnopqrstuvwxyz0123456", 1),
           goal_type_desc("reminder", 1, nullptr, nullptr, 0),
-          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(2)),
+          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(4)),
           goal_type_desc("reminder", 1, nullptr, nullptr, 0x80000000U)}) {
         EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
     }
@@ -571,6 +571,11 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
     short_body = body;
     short_body.struct_size -= 1U;
     invalid.emplace_back("short body", work.intent(AYNI_INTENT_GOAL_CREATE, &short_body));
+    // The 0.6 layout, before the trigger times, is not read either.
+    static ayni_goal_create_v1 abi_0_6_body;
+    abi_0_6_body = body;
+    abi_0_6_body.struct_size = offsetof(ayni_goal_create_v1, trigger_delay_us);
+    invalid.emplace_back("0.6 body", work.intent(AYNI_INTENT_GOAL_CREATE, &abi_0_6_body));
     static ayni_goal_create_v1 bad_type;
     bad_type = body;
     bad_type.goal_type_id = text("Reminder");
@@ -582,11 +587,32 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
     // Only kinds this library defines; the shift must not overflow either.
     static ayni_goal_create_v1 unknown_triggers[2];
     unknown_triggers[0] = body;
-    unknown_triggers[0].trigger = 2;
+    unknown_triggers[0].trigger = 4;
     unknown_triggers[1] = body;
     unknown_triggers[1].trigger = 0xFFFFFFFFU;
     for (const ayni_goal_create_v1 &unknown : unknown_triggers) {
         invalid.emplace_back("unknown trigger", work.intent(AYNI_INTENT_GOAL_CREATE, &unknown));
+    }
+    // ADR-0019: each kind takes only its own times, and an interval has a
+    // shortest period.
+    static ayni_goal_create_v1 mistimed[5];
+    const struct {
+        ayni_trigger_kind_t kind;
+        uint64_t delay_us;
+        uint64_t period_us;
+    } timings[] = {
+        {AYNI_TRIGGER_NONE, 1, 0},
+        {AYNI_TRIGGER_ONCE, 0, AYNI_TRIGGER_PERIOD_MIN_US},
+        {AYNI_TRIGGER_DELAY, 5, AYNI_TRIGGER_PERIOD_MIN_US},
+        {AYNI_TRIGGER_INTERVAL, 5, 0},
+        {AYNI_TRIGGER_INTERVAL, 5, AYNI_TRIGGER_PERIOD_MIN_US - 1U},
+    };
+    for (std::size_t i = 0; i < std::size(timings); ++i) {
+        mistimed[i] = body;
+        mistimed[i].trigger = timings[i].kind;
+        mistimed[i].trigger_delay_us = timings[i].delay_us;
+        mistimed[i].trigger_period_us = timings[i].period_us;
+        invalid.emplace_back("trigger times", work.intent(AYNI_INTENT_GOAL_CREATE, &mistimed[i]));
     }
     static ayni_goal_create_v1 reserved_create;
     reserved_create = body;

@@ -1,6 +1,6 @@
 # 生命周期与状态转换
 
-- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
+- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
 - **原则**：生命周期、持久化状态与等待原因是三个维度。生命周期写在枚举里；“是否已持久接受”由提交序号表达（C-COMMIT-004）；等待原因由待决调用派生（ADR-0007）。表中未列出的转换都是非法转换，返回 `AYNI_INVALID_STATE` 并保持原状态。
 
 ## Kernel
@@ -93,7 +93,7 @@ M1 已实现的转换：
 | `PAUSED` | `ACTIVE` | `GOAL_RESUME`；不改变子目标 |
 | `PROPOSED`、`ACTIVE`、`PAUSED` | `CANCELLED` | `GOAL_CANCEL` 作用于它或它的祖先，或 `INSTANCE_STOP` 作用于它的 owner；同一 transition 中取消其下未结束的 Task |
 
-每次转换使该 Goal 的 `revision` 加 1；改变已是 `2^32−1` 的版本时拒绝整个意图（C-COMMIT-012）。`ayni_step` 把 Goal 的一个 occurrence 派生为 Task 时，Goal 的生命周期与 `revision` 都不变，只更新已派生的 occurrence 数、最近一个 Task 与 `commit_seq`，调用方持有的版本仍可用于暂停或取消（ADR-0018）。M1 不生成 `PROPOSED`：确认流程随授权与审批（`MA-006`）；`SATISFIED`、`FAILED` 随 Task 的完成与失败（`MA-004` 第三部分），`EXPIRED` 随失效规则（`MA-004` 第二部分的时间部分）。
+每次转换使该 Goal 的 `revision` 加 1；改变已是 `2^32−1` 的版本时拒绝整个意图（C-COMMIT-012）。`ayni_step` 把 Goal 已到期的 occurrence 派生为 Task 时，Goal 的生命周期与 `revision` 都不变，只更新触发游标（已派生的最新 occurrence 编号与下一次到期时间）、最近一个 Task 与 `commit_seq`，调用方持有的版本仍可用于暂停或取消（ADR-0018、ADR-0019）。终态 Goal 不再有下一次 occurrence。M1 不生成 `PROPOSED`：确认流程随授权与审批（`MA-006`）；`SATISFIED`、`FAILED` 随 Task 的完成与失败（`MA-004` 第三部分），`EXPIRED` 随失效规则（`MA-004` 第二部分的失效与有界等待）。
 
 ## Task
 
@@ -114,12 +114,12 @@ M1 已实现的转换（ADR-0018）：
 
 | 从 | 到 | 触发 |
 |---|---|---|
-| — | `READY` | `ayni_step` 派生 Goal 的一个 occurrence；版本为 1 |
+| — | `READY` | `ayni_step` 派生 Goal 的 occurrence，截至当时已到期的全部 occurrence 合并为一个 Task（ADR-0019）；版本为 1 |
 | `READY` | `PAUSED` | Goal 或实例的改变使它不再满足放行条件 |
 | `PAUSED` | `READY` | Goal 或实例的改变使它重新满足放行条件 |
 | `READY`、`PAUSED` | `CANCELLED` | `TASK_CANCEL`；`GOAL_CANCEL` 作用于它的 Goal 或其祖先；`INSTANCE_STOP` 作用于它的 owner；同一 transition |
 
-放行条件：Task 只在它的 Goal 与该 Goal 的全部祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时前进。暂停不级联：暂停的 Goal 或实例不改写子目标的状态，只让其下的 Task 停下，恢复后自动继续。Goal 或实例的每次改变在同一个 transition 中按放行条件重算它触及的 `READY`/`PAUSED` Task，状态改变的才提升版本；派生也只发生在放行的 Goal 上。每次转换使该 Task 的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。M1 只到达 `READY`、`PAUSED`、`CANCELLED`：`RUNNING`、`COMPLETED`、`FAILED` 随策略推进步骤（`MA-004` 第三部分），`CANCELLING` 随可取消的在途请求，`EXPIRED` 随时间部分。结束的 Task 在 Task 表满时让位给新 Task，此后查询返回 `NOT_FOUND`（ADR-0018）。
+放行条件：Task 只在它的 Goal 与该 Goal 的全部祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时前进。暂停不级联：暂停的 Goal 或实例不改写子目标的状态，只让其下的 Task 停下，恢复后自动继续。Goal 或实例的每次改变在同一个 transition 中按放行条件重算它触及的 `READY`/`PAUSED` Task，状态改变的才提升版本；派生也只发生在放行的 Goal 上。每次转换使该 Task 的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。M1 只到达 `READY`、`PAUSED`、`CANCELLED`：`RUNNING`、`COMPLETED`、`FAILED` 随策略推进步骤（`MA-004` 第三部分），`CANCELLING` 随可取消的在途请求，`EXPIRED` 随失效与有界等待。结束的 Task 在 Task 表满时让位给新 Task，此后查询返回 `NOT_FOUND`（ADR-0018）。
 
 ## ActionRecord
 

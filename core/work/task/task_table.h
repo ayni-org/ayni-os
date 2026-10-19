@@ -20,12 +20,14 @@
 
 namespace ayni::work {
 
-// A task the kernel derives from an occurrence of a goal.
+// A task the kernel derives from occurrences of a goal.
 struct NewTask {
     uint64_t goal_id;
     uint64_t owner_instance_id; // the goal's
+    uint64_t due_us;            // when its latest occurrence fell due
     uint32_t goal_index;        // in the goal table
-    uint32_t occurrence;        // which of the goal's occurrences, from 1
+    uint32_t occurrence;        // the number of the latest occurrence it stands for
+    uint32_t occurrence_count;  // how many it stands for, at least 1
 };
 
 struct Task {
@@ -34,8 +36,10 @@ struct Task {
     uint64_t owner_instance_id;
     uint64_t created_transition_id;
     uint64_t commit_seq; // of the last change
+    uint64_t due_us;
     uint32_t goal_index;
     uint32_t occurrence;
+    uint32_t occurrence_count;
     uint32_t revision;        // 1 at creation, raised by each change
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     ayni_task_lifecycle_t lifecycle;

@@ -31,6 +31,7 @@ ayni_add_core_module(work
     SOURCES
         work/agent/agent_table.cpp
         work/goal/goal_table.cpp
+        work/goal/trigger_schedule.cpp
         work/propagation.cpp
         work/task/task_table.cpp
     DEPENDS foundation)

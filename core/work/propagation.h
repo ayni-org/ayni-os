@@ -46,13 +46,18 @@ bool instance_change_exhausts(const WorkTables &tables, uint32_t instance_index,
 void apply_instance_change(WorkTables &tables, uint32_t instance_index, InstanceChange change,
                            foundation::TransitionStamp stamp);
 
-// The goal whose next occurrence becomes a task: the first in creation order
-// with a due occurrence that may advance, provided the task table has room.
-// Returns false when there is none.
-bool find_derivable(const WorkTables &tables, uint32_t &out_goal_index);
-// Derives that occurrence as the READY task task_id. Only right after
-// find_derivable returned goal_index.
-void derive(WorkTables &tables, uint32_t goal_index, uint64_t task_id,
+// The goal whose occurrences become the next task at now_us: of the goals
+// that may advance and have an occurrence due by now_us, the one due
+// earliest, the first created among equals; provided the task table has
+// room. Otherwise returns false and sets out_next_due_us to when the next
+// occurrence of a goal that may advance falls due, or to no_time when none
+// will or the table has no room: only a task that ends makes room, and the
+// change that ends it says so.
+bool find_derivable(const WorkTables &tables, uint64_t now_us, uint32_t &out_goal_index,
+                    uint64_t &out_next_due_us);
+// Derives the occurrences of goal_index due by now_us as the READY task
+// task_id. Only right after find_derivable(now_us) returned goal_index.
+void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t task_id,
             foundation::TransitionStamp stamp);
 
 } // namespace ayni::work

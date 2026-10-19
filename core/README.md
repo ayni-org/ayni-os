@@ -18,7 +18,7 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
 | `kernel` | `kernel_api.cpp`：C ABI 入口与参数检查；`kernel_lifecycle.cpp`：`ayni_start`、`ayni_step`（含 `RUNNING` 中的 Task 派生）、`ayni_begin_shutdown` 的状态转换；`kernel_layout`：按配置容量排布内存块；`ingress/`：有界事件队列；`completion/`：完成槽池（`MA-003`，ADR-0015）；`boot/`：读日志前缀并持久化 `boot_epoch` 的启动序列（`MA-005`，ADR-0016）；`kernel_config.h`：容量、限额与调用方内存的划分；`work_api.cpp`：注册、会话、意图与查询的 C ABI 入口；`intent/`：意图的领域类型、C ABI 解码、`WorkModel`（意图读写的工作表、ID 分配器、transition 计数器、回调标记与派生入口）以及会话、Goal、Task 与实例意图的规则；`transition_clock.h`：transition 的 id 与 `commit_seq`（`MA-004`，ADR-0017、ADR-0018）。GoalType 校验回调运行期间，修改 Kernel 的入口返回 `AYNI_INVALID_STATE`（C-POLICY-001） | M0 |
-| `work` | `agent/`：Agent 与驻留实例的暂停、恢复与停止；`goal/`：Goal 树、生命周期、版本、取消级联与触发游标（ADR-0017、ADR-0018）；`task/`：Task 的生命周期、版本与容量回收；`propagation`：跨 Goal、Task 与实例的放行条件、派生选择与传播（ADR-0018）；调用与动作随后续工作包 | M1（`MA-004`） |
+| `work` | `agent/`：Agent 与驻留实例的暂停、恢复与停止；`goal/`：Goal 树、生命周期、版本、取消级联与触发游标，`goal/trigger_schedule` 推算 occurrence 的到期时间（ADR-0017、ADR-0018、ADR-0019）；`task/`：Task 的生命周期、版本与容量回收；`propagation`：跨 Goal、Task 与实例的放行条件、派生选择与传播（ADR-0018）；调用与动作随后续工作包 | M1（`MA-004`） |
 | `authority` | `principal/`：所有者主体与会话表（ADR-0017）；Grant 与 Scene 随 `MA-006` | M1（`MA-004`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |

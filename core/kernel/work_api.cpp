@@ -3,7 +3,7 @@
 // They check arguments and struct sizes, then whether a callback is running,
 // then the lifecycle state (contracts/domain/lifecycles.md); the rules of
 // sessions and intents live in kernel/intent/. Every struct here is new in
-// 0.5 or new or changed in 0.6, so its only layout is its sizeof.
+// 0.5 or later or changed since, so its only layout is its sizeof.
 
 #include "kernel/abi_checks.h"
 #include "kernel/intent/intent.h"
@@ -70,7 +70,8 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         return AYNI_NOT_READY;
     }
     ayni::kernel::IntentOutcome outcome{};
-    status = ayni::kernel::apply_intent(kernel->work, decoded, outcome, failure);
+    const uint64_t now_us = kernel->host.monotonic_now_us(kernel->host.ctx);
+    status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, outcome, failure);
     if (status == AYNI_OK && out_result != nullptr) {
         ayni_intent_result_v1 result{};
         result.struct_size = sizeof(result);
@@ -105,9 +106,12 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.goal_type_version = type.version;
     info.goal_type_id_size = type.id.size();
     std::memcpy(info.goal_type_id, type.id.data(), type.id.size());
-    info.trigger = goal.trigger;
-    info.occurrences = goal.occurrences;
+    info.trigger = goal.trigger.kind;
+    info.occurrences = goal.cursor.taken;
     info.last_task_id = goal.last_task_id;
+    info.trigger_delay_us = goal.trigger.delay_us;
+    info.trigger_period_us = goal.trigger.period_us;
+    info.next_due_us = goal.cursor.next_due_us;
     out = info;
 }
 
@@ -123,6 +127,8 @@ void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     info.revision = task.revision;
     info.cancel_revision = task.cancel_revision;
     info.occurrence = task.occurrence;
+    info.occurrence_count = task.occurrence_count;
+    info.due_us = task.due_us;
     out = info;
 }
 

@@ -153,10 +153,12 @@ TEST(GoalTypeRegistry, trigger_kinds_decide_the_accepted_triggers) {
     EXPECT_FALSE(registry->accepts_trigger(0, 0xFFFFFFFFU));
 }
 
-TEST(GoalTypeRegistry, defines_none_and_once_only) {
-    EXPECT_TRUE(GoalTypeRegistry::defines_trigger(AYNI_TRIGGER_NONE));
-    EXPECT_TRUE(GoalTypeRegistry::defines_trigger(AYNI_TRIGGER_ONCE));
-    for (const ayni_trigger_kind_t kind : {2U, 31U, 32U, 0xFFFFFFFFU}) {
+TEST(GoalTypeRegistry, defines_none_once_delay_and_interval_only) {
+    for (const ayni_trigger_kind_t kind :
+         {AYNI_TRIGGER_NONE, AYNI_TRIGGER_ONCE, AYNI_TRIGGER_DELAY, AYNI_TRIGGER_INTERVAL}) {
+        EXPECT_TRUE(GoalTypeRegistry::defines_trigger(kind)) << kind;
+    }
+    for (const ayni_trigger_kind_t kind : {4U, 31U, 32U, 0xFFFFFFFFU}) {
         EXPECT_FALSE(GoalTypeRegistry::defines_trigger(kind)) << kind;
     }
 }

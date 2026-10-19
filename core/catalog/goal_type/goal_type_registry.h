@@ -27,10 +27,11 @@ struct GoalType {
 
 class GoalTypeRegistry {
   public:
-    // The trigger kinds this library defines (ADR-0018), as trigger_kinds
-    // bits; work/goal derives their occurrences.
+    // The trigger kinds this library defines (ADR-0018, ADR-0019), as
+    // trigger_kinds bits; work/goal schedules their occurrences.
     static constexpr uint32_t defined_trigger_kinds =
-        AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_DELAY) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
     static bool defines_trigger(ayni_trigger_kind_t kind) {
         return kind < 32U && (defined_trigger_kinds & AYNI_TRIGGER_BIT(kind)) != 0U;
     }
