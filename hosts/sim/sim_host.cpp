@@ -107,6 +107,7 @@ void Host::note_call() {
 }
 
 ayni_submit_result_t Host::accept(const Pending &request) {
+    attempts_.push_back(request.attempt);
     if (request.fault == StorageFault::reject) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }

@@ -209,6 +209,40 @@ AppendedEpoch decode_boot_batch(const StoredBatch &stored) {
     return out;
 }
 
+// White-box requests that hold completion slots, for the step budget and
+// slot exhaustion tests.
+struct Recorder {
+    static void handle(void *context, const ayni_completion_result_v1 & /*result*/) {
+        ++static_cast<Recorder *>(context)->applied;
+    }
+    int applied = 0;
+};
+
+// A port that accepts and leaves the completion to the test.
+struct HoldingPort {
+    static ayni_submit_result_t call(void *context, ayni_attempt_ref_v1 attempt,
+                                     ayni_completion_t *completion) {
+        auto &self = *static_cast<HoldingPort *>(context);
+        self.held.push_back({attempt, completion});
+        return AYNI_SUBMIT_ACCEPTED;
+    }
+    void post_all() {
+        for (const auto &request : held) {
+            ayni_completion_result_v1 result{};
+            result.struct_size = sizeof(result);
+            result.outcome = 1;
+            result.attempt = request.attempt;
+            EXPECT_EQ(ayni_completion_post(request.completion, &result), AYNI_OK);
+        }
+        held.clear();
+    }
+    struct Held {
+        ayni_attempt_ref_v1 attempt;
+        ayni_completion_t *completion;
+    };
+    std::vector<Held> held;
+};
+
 TEST(KernelLifecycle, start_without_storage_is_unsupported_and_stays_configuring) {
     Node node(AYNI_STORAGE_BUFFER_BYTES_MIN, false);
     node.create();
@@ -327,8 +361,8 @@ TEST(KernelLifecycle, log_longer_than_the_buffer_is_read_in_chunks) {
 // appended batch keeps the largest writer_epoch and transition_id seen.
 TEST(KernelLifecycle, unknown_optional_records_are_skipped) {
     Node node;
-    node.sim().log().push_back(encode({2, 1, 7}, {{{999, 1, 0, 2}, {1, 2}}, boot_epoch_record(5)}));
-    node.sim().log().push_back(encode({1, 2, 3}, {{{boot_epoch_record_type, 9, 0, 3}, {0, 0, 0}}}));
+    node.sim().log().push_back(encode({1, 1, 7}, {{{999, 1, 0, 2}, {1, 2}}, boot_epoch_record(5)}));
+    node.sim().log().push_back(encode({2, 2, 3}, {{{boot_epoch_record_type, 9, 0, 3}, {0, 0, 0}}}));
     node.create_and_start();
     node.recover();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
@@ -370,6 +404,12 @@ std::vector<LogCase> bad_logs() {
                      {boot_epoch_batch(1, 4), boot_epoch_batch(2, 4)},
                      AYNI_RESTRICTION_LOG_CORRUPT});
     cases.push_back({"epoch 0", {boot_epoch_batch(1, 0)}, AYNI_RESTRICTION_LOG_CORRUPT});
+    cases.push_back({"older writer after a newer one",
+                     {encode({2, 1, 1}, {boot_epoch_record(1)}), encode({1, 2, 2}, {})},
+                     AYNI_RESTRICTION_LOG_CORRUPT});
+    cases.push_back({"last transition_id used up",
+                     {encode({1, 1, std::numeric_limits<uint64_t>::max()}, {boot_epoch_record(1)})},
+                     AYNI_RESTRICTION_LOG_CORRUPT});
     cases.push_back(
         {"BOOT_EPOCH body of the wrong length",
          {encode({1, 1, 1}, {{{boot_epoch_record_type, boot_epoch_record_version, required, 4},
@@ -495,21 +535,78 @@ TEST(KernelLifecycle, read_count_beyond_the_buffer_restricts_as_read_failed) {
     EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_STORAGE_READ_FAILED);
 }
 
-// Recovery requests carry boot_epoch 0: no epoch of this boot is durable yet.
+// Recovery requests carry boot_epoch 0, since no epoch of this boot is
+// durable yet, and distinct request ids; the first request after RUNNING
+// carries the new epoch.
 TEST(KernelLifecycle, recovery_requests_use_boot_epoch_0) {
     Node node;
-    node.replace_read_port(&HeldRead::call);
+    for (uint64_t seq = 1; seq <= 6; ++seq) {
+        node.sim().log().push_back(boot_epoch_batch(seq, seq));
+    }
     node.create_and_start();
+    node.recover();
+    ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const std::vector<ayni_attempt_ref_v1> &attempts = node.sim().storage_attempts();
+    ASSERT_GE(attempts.size(), 4U); // at least two chunks, the end of log and the append
+    for (std::size_t index = 0; index < attempts.size(); ++index) {
+        EXPECT_EQ(attempts[index].boot_epoch, 0U) << index;
+        EXPECT_EQ(attempts[index].request_id, index + 1U) << index;
+    }
+
+    Recorder recorder;
+    HoldingPort port;
+    ASSERT_EQ(node.kernel()->completions.issue(node.info().boot_epoch, &Recorder::handle, &recorder,
+                                               &HoldingPort::call, &port),
+              ayni::kernel::IssueResult::in_flight);
+    ASSERT_EQ(port.held.size(), 1U);
+    EXPECT_EQ(port.held[0].attempt.boot_epoch, 7U);
+    EXPECT_EQ(port.held[0].attempt.request_id, attempts.size() + 1U);
+    port.post_all();
     node.step();
-    EXPECT_EQ(HeldRead::last.attempt.boot_epoch, 0U);
-    EXPECT_NE(HeldRead::last.attempt.request_id, 0U);
-    // Let shutdown finish: answer the read as end of log.
-    ayni_completion_result_v1 result{};
-    result.struct_size = sizeof(result);
-    result.outcome = AYNI_WRITE_OK;
-    result.attempt = HeldRead::last.attempt;
-    ASSERT_EQ(ayni_begin_shutdown(node.kernel()), AYNI_OK);
-    ASSERT_EQ(ayni_completion_post(HeldRead::last.completion, &result), AYNI_OK);
+    EXPECT_EQ(recorder.applied, 1);
+}
+
+// An append that ends UNKNOWN may be stored. If it was, the next boot reads
+// it and moves past that epoch, so no two boots share one.
+TEST(KernelLifecycle, reboot_after_an_unknown_append_skips_its_epoch) {
+    Node node;
+    node.sim().inject_fault(StoragePort::append, StorageFault::unknown_persisted);
+    node.create_and_start();
+    node.recover();
+    ASSERT_EQ(node.info().restriction, AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
+    node.reboot();
+    node.recover();
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.info().boot_epoch, 2U);
+    ASSERT_EQ(node.sim().log().size(), 2U);
+    EXPECT_EQ(decode_boot_batch(node.sim().log()[1]).batch.identity.commit_seq, 2U);
+}
+
+// With every slot taken, recovery waits without asking to be called again;
+// the post that frees a slot wakes the owner, and recovery goes on.
+TEST(KernelLifecycle, recovery_waits_for_a_free_slot_without_spinning) {
+    Node node;
+    node.create_and_start();
+    Recorder recorder;
+    HoldingPort port;
+    for (int request = 0; request < 4; ++request) { // completion_slot_count
+        ASSERT_EQ(node.kernel()->completions.issue(0, &Recorder::handle, &recorder,
+                                                   &HoldingPort::call, &port),
+                  ayni::kernel::IssueResult::in_flight);
+    }
+    ayni_step_report_v1 report = node.step();
+    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(node.sim().pending_storage(), 0U);
+
+    const uint64_t wakes = node.sim().wake_count();
+    port.post_all();
+    EXPECT_GT(node.sim().wake_count(), wakes);
+    report = node.step();
+    EXPECT_EQ(recorder.applied, 4);
+    EXPECT_EQ(node.sim().pending_storage(), 1U); // the first read
+    node.recover();
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
 }
 
 TEST(KernelLifecycle, restriction_is_reported_only_while_restricted) {
@@ -733,38 +830,6 @@ TEST(KernelLifecycle, step_rejects_bad_arguments_without_effect) {
 }
 
 // --- Step budget (white-box: several completions posted at once) ---------
-
-struct Recorder {
-    static void handle(void *context, const ayni_completion_result_v1 & /*result*/) {
-        ++static_cast<Recorder *>(context)->applied;
-    }
-    int applied = 0;
-};
-
-// A port that accepts and leaves the completion to the test.
-struct HoldingPort {
-    static ayni_submit_result_t call(void *context, ayni_attempt_ref_v1 attempt,
-                                     ayni_completion_t *completion) {
-        auto &self = *static_cast<HoldingPort *>(context);
-        self.held.push_back({attempt, completion});
-        return AYNI_SUBMIT_ACCEPTED;
-    }
-    void post_all() {
-        for (const auto &request : held) {
-            ayni_completion_result_v1 result{};
-            result.struct_size = sizeof(result);
-            result.outcome = 1;
-            result.attempt = request.attempt;
-            EXPECT_EQ(ayni_completion_post(request.completion, &result), AYNI_OK);
-        }
-        held.clear();
-    }
-    struct Held {
-        ayni_attempt_ref_v1 attempt;
-        ayni_completion_t *completion;
-    };
-    std::vector<Held> held;
-};
 
 void post_four(Node &node, Recorder &recorder, HoldingPort &port) {
     for (int request = 0; request < 4; ++request) {

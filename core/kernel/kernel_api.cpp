@@ -258,7 +258,7 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
     ayni_kernel_info_v1 info{};
     info.struct_size = out_info->struct_size;
     info.lifecycle = kernel->lifecycle;
-    info.restriction = kernel->restriction;
+    info.restriction = kernel->restriction();
     info.boot_epoch = kernel->boot.boot_epoch();
     std::memcpy(out_info, &info, out_info->struct_size);
     return AYNI_OK;

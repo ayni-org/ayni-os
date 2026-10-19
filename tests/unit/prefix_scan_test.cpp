@@ -60,7 +60,7 @@ TEST(PrefixScan, continues_across_reads_and_tracks_identity) {
     append(first, {2, 1, 10}, {{known_type, 1, record_required, 0}});
     append(first, {3, 2, 9}, {{known_type, 1, 0, 0}, {known_type, 1, 0, 0}});
     std::vector<uint8_t> second;
-    append(second, {1, 3, 4}, {});
+    append(second, {3, 3, 4}, {});
 
     PrefixScan prefix(1);
     Owner owner;
@@ -97,6 +97,23 @@ TEST(PrefixScan, commit_seq_must_continue_exactly) {
     PrefixScan prefix(1);
     Owner owner;
     EXPECT_EQ(scan(prefix, log, owner), BatchCheck::corrupt);
+}
+
+// Until fence records exist, a batch from an older writer after a newer one
+// has no explanation (C-STORE-005).
+TEST(PrefixScan, older_writer_after_a_newer_one_is_corrupt) {
+    std::vector<uint8_t> log;
+    append(log, {2, 1, 1}, {});
+    append(log, {1, 2, 2}, {});
+    PrefixScan prefix(1);
+    Owner owner;
+    EXPECT_EQ(scan(prefix, log, owner), BatchCheck::corrupt);
+
+    std::vector<uint8_t> newer;
+    append(newer, {1, 1, 1}, {});
+    append(newer, {2, 2, 2}, {});
+    PrefixScan growing(1);
+    EXPECT_EQ(scan(growing, newer, owner), BatchCheck::ok);
 }
 
 // C-STORE-009: damage stops the scan; later batches are not handed out.

@@ -18,7 +18,10 @@ BatchCheck PrefixScan::scan(const uint8_t *bytes, std::size_t size, RecordHandle
         if (check != BatchCheck::ok) {
             return check;
         }
-        if (batch.identity.commit_seq != next_commit_seq_) {
+        // Until WRITER_FENCE records exist (C-STORE-005, MA-010), nothing
+        // explains a batch from an older writer after a newer one.
+        if (batch.identity.commit_seq != next_commit_seq_ ||
+            batch.identity.writer_epoch < max_writer_epoch_) {
             return BatchCheck::corrupt;
         }
         check = scan_records(batch, handler, context);

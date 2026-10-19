@@ -29,10 +29,17 @@ class PrefixScan {
     explicit PrefixScan(uint64_t first_commit_seq) : next_commit_seq_(first_commit_seq) {}
 
     // Checks every batch in bytes, which holds whole batches only, and passes
-    // each record to handler in order. Unknown record flag bits, and unknown
-    // records marked REQUIRED, are unsupported; other unknown records are
-    // skipped. Returns at the first problem, after which the scan is not
-    // continued.
+    // each record to handler in order. A batch must carry next_commit_seq()
+    // and no smaller writer_epoch than the batches before it. Unknown record
+    // flag bits, and unknown records marked REQUIRED, are unsupported; other
+    // unknown records are skipped. Returns at the first problem, after which
+    // the scan is not continued.
+    //
+    // Records reach handler as they are read, so a batch that fails later
+    // has already shown its earlier records. That is safe while any failure
+    // ends recovery in RESTRICTED; replay that keeps domain state (MA-010)
+    // must stage a batch and apply it only once the whole batch passes
+    // (C-STORE-002).
     BatchCheck scan(const uint8_t *bytes, std::size_t size, RecordHandler handler, void *context);
 
     // The commit_seq the next batch must carry.

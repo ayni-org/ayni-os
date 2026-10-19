@@ -106,7 +106,14 @@ typedef struct ayni_config_v1 {
 #define AYNI_STORAGE_BUFFER_BYTES_MIN 256u
 #define AYNI_STORAGE_BUFFER_BYTES_MAX 65536u
 
-/* Correlates an asynchronous attempt with its result (C-ID-006). */
+/*
+ * Correlates an asynchronous attempt with its result (C-ID-006). Unique
+ * within one kernel instance only: request_id restarts with each ayni_create,
+ * and every recovery request uses boot_epoch 0. A host posts a result only
+ * through the completion it was given with the attempt, and never posts the
+ * result of a request made by an earlier kernel instance, such as one
+ * outstanding when the previous process crashed.
+ */
 typedef struct ayni_attempt_ref_v1 {
     uint64_t boot_epoch; /* 0 for requests made before this boot's epoch is durable */
     uint64_t request_id;
@@ -218,6 +225,10 @@ typedef struct ayni_host_v1 {
      *
      * storage_append stores one batch after all earlier ones; a batch is
      * either readable whole or not at all, even after power loss mid-write.
+     * The host drops a trailing batch it cannot prove complete, for example
+     * by its own checksum or a flag written after the data; a length prefix
+     * alone proves nothing. The kernel treats every batch it reads as
+     * committed, so a damaged one makes it RESTRICTED (ADR-0016).
      *
      * storage_read_prefix copies into buffer the stored batches whose
      * commit_seq is at least from_commit_seq, in log order and only whole
@@ -345,8 +356,9 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
 
 /*
  * Enters DRAINING from RECOVERING, RUNNING or RESTRICTED; no new storage
- * request is started after that. Later ayni_step calls enter STOPPED once
- * every reserved completion has been posted and applied (C-HOST-018). Returns
+ * request is started after that. It does not wake the owner: the caller goes
+ * on calling ayni_step, which enters STOPPED once every reserved completion
+ * has been posted and applied (C-HOST-018). Returns
  * AYNI_OK, also in DRAINING and STOPPED; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE in CONFIGURING, where ayni_destroy applies
  * directly.

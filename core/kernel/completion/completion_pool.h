@@ -96,6 +96,9 @@ class CompletionPool {
     // requires 0 (C-HOST-018).
     uint32_t in_flight() const { return slot_count_ - free_count_; }
 
+    // Owner thread. Whether issue() would find a slot.
+    bool has_free_slot() const { return free_count_ > 0U; }
+
     // Owner thread. Posted results waiting for apply_posted.
     uint32_t posted_count() const;
 

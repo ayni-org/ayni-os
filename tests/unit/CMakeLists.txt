@@ -12,6 +12,6 @@ add_executable(ayni_unit_tests
     sim_host_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE
-    ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_core ayni_core_internal
+    ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node
     ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_unit_tests)

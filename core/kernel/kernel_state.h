@@ -46,13 +46,14 @@ struct ayni_kernel {
     ayni_status_t start();
     ayni_status_t step(uint32_t max_items, uint32_t max_time_us, ayni_step_report_v1 &report);
     ayni_status_t begin_shutdown();
+    // Why the kernel is RESTRICTED; NONE in every other state. Recovery is
+    // the only way into RESTRICTED so far.
+    ayni_restriction_t restriction() const;
 
     // Copy of the caller's table, with fields an older caller lacks left
     // zeroed. ctx and the functions stay caller-owned (see ayni_host_v1).
     ayni_host_v1 host;
     ayni_lifecycle_t lifecycle = AYNI_LIFECYCLE_CONFIGURING;
-    // Not NONE exactly while lifecycle is RESTRICTED.
-    ayni_restriction_t restriction = AYNI_RESTRICTION_NONE;
     // Filled by ayni_post_event and drained by ayni_step (MA-004).
     ayni::kernel::EventQueue ingress;
     ayni::kernel::CompletionPool completions;

@@ -63,8 +63,8 @@ bool BootSequence::issue(Phase in_flight, CompletionHandler handler, PortCall ca
         enter_restricted(AYNI_RESTRICTION_STORAGE_REJECTED);
         return true;
     case IssueResult::busy:
-        // Only reachable if something else holds every slot; the sequence
-        // has at most one request in flight. It retries on the next step.
+        // Something else holds every slot; the sequence itself has at most
+        // one request in flight. It retries once a slot is free.
         break;
     }
     return false;
@@ -125,6 +125,10 @@ void BootSequence::finish_read(const ayni_completion_result_v1 &result) {
     if (result.value == 0U) {
         if (last_boot_epoch_ == std::numeric_limits<uint64_t>::max()) {
             enter_restricted(AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED);
+        } else if (scan_.max_transition_id() == std::numeric_limits<uint64_t>::max()) {
+            // Each transition takes the next id, so no writer reaches the
+            // last one; the next batch would have none.
+            enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         } else {
             phase_ = Phase::append_due;
         }

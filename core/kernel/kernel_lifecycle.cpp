@@ -51,7 +51,10 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
         lifecycle = AYNI_LIFECYCLE_STOPPED;
     }
 
-    const bool boot_due = lifecycle == AYNI_LIFECYCLE_RECOVERING && boot.wants_advance();
+    // A request waiting for a slot is not ready: the post that frees one
+    // wakes the owner.
+    const bool boot_due = lifecycle == AYNI_LIFECYCLE_RECOVERING && boot.wants_advance() &&
+                          completions.has_free_slot();
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
     report.items_done = items;
@@ -70,9 +73,12 @@ ayni_status_t ayni_kernel::begin_shutdown() {
     default:
         // A boot request in flight still completes; no new one is issued.
         lifecycle = AYNI_LIFECYCLE_DRAINING;
-        restriction = AYNI_RESTRICTION_NONE;
         return AYNI_OK;
     }
+}
+
+ayni_restriction_t ayni_kernel::restriction() const {
+    return lifecycle == AYNI_LIFECYCLE_RESTRICTED ? boot.restriction() : AYNI_RESTRICTION_NONE;
 }
 
 void ayni_kernel::settle_recovery() {
@@ -85,7 +91,6 @@ void ayni_kernel::settle_recovery() {
         break;
     case ayni::kernel::BootSequence::Outcome::restricted:
         lifecycle = AYNI_LIFECYCLE_RESTRICTED;
-        restriction = boot.restriction();
         break;
     case ayni::kernel::BootSequence::Outcome::pending:
         break;

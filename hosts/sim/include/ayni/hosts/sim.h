@@ -69,6 +69,8 @@ class Host {
     // The next call of port meets fault.
     void inject_fault(StoragePort port, StorageFault fault);
     std::size_t pending_storage() const { return pending_.size(); }
+    // The attempt of every storage call so far, in call order.
+    const std::vector<ayni_attempt_ref_v1> &storage_attempts() const { return attempts_; }
     // Completes every pending request in order and returns how many posts
     // the kernel accepted.
     std::size_t complete_storage();
@@ -109,6 +111,7 @@ class Host {
     std::atomic<std::thread::id> holder_{};
     std::vector<StoredBatch> log_;
     std::deque<Pending> pending_;
+    std::vector<ayni_attempt_ref_v1> attempts_;
     std::optional<StorageFault> append_fault_;
     std::optional<StorageFault> read_fault_;
 };
