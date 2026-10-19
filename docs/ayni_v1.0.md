@@ -1,12 +1,12 @@
 # Ayni：Core 优先的跨设备个人助理 AgentOS 实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.5 · 2026-10-19；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.6 · 2026-10-19；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：面向个人消费者；用户面对一个统一助理，内部由多个 Agent 分工。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **首发验证设备**：现有 ESP32-S3 N16R8 开发板；型号、引脚、16 MB Flash / 8 MB PSRAM 均须实测确认。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：本仓库目前只有实施计划、项目说明、架构图和贡献约定。下文的目录、API、示例、固件、SDK、平台支持和测试结果均为待实现、待验证，除非另附实际验收证据。
+> **当前状态**：M0 已建立工程骨架（Native 与 ESP-IDF 构建、依赖检查、CI）、`contracts/` 契约与 C 头文件草案、实验夹具格式与候选硬件资料，复核见 `reports/core/m0-review.md`；板级实测与 BOM 询价尚未完成。除这些报告列出的已验证项外，下文的目录、API、示例、固件、SDK、平台支持和测试结果均为待实现、待验证。
 
 ## 0. 执行摘要与已确定决策
 
@@ -34,7 +34,7 @@ Ayni 的 Core 是多个 Agent 共用的系统基础设施：每台设备运行�
 | 自主动作 | 用户开启的“转向观察”预授权场景 | 仅校准后的短动作；其他场景通过能力与场景契约扩展 |
 | 数据 | 原始媒体默认临时处理；经授权保存事件、事实、摘要 | 不默认持续录像、录音或上传全部个人记忆 |
 | 管理与通知 | 局域网管理；重要变化及时提醒，其余汇总，支持安静时段 | 网页关闭后使用本地声光及待展示通知；不承诺手机后台推送 |
-| 硬件预算 | 每台新增硬件不超过 300 元 | 不含已有 ESP32、模型费用及工时；不可私自加预算或删体验 |
+| 硬件预算 | 每台新增硬件以 300 元为目标；用户已确认可按实际需要增加（2026-10-19） | 不含已有 ESP32、模型费用及工时；超出目标时列明原因、替代方案与代价并告知用户，不以删减体验代替 |
 | 发布顺序 | Core 实验 → ESP32 复核 → 轮式集成 → ToC 试用 → 最小设备互通 | 国产系统扩展保留，但不阻断早期 Core 与个人助理验证 |
 
 **完成定义**：某项能力只有在附有构建、运行和对应验收证据后才标记“已实现”；某个平台只有通过相应功能及恢复测试才标记“已验证”。源码可编译、模拟器通过、实机通过、长稳通过分别记录。
@@ -69,7 +69,7 @@ v0.1 是受控的普通用户试用版本。提供已刷固件的轮式设备及
 |---|---|
 | 现有板型是 ESP32-S3 N16R8 | M0 保存板型照片/资料、启动日志、实测 Flash/PSRAM、GPIO 与启动引脚表 |
 | 摄像头、麦克风、扬声器、底盘可共同接入 | 同时审查引脚、I²S/摄像头接口、DMA、供电、内部 RAM、PSRAM、无线和 OTA 容量；不能按单模块成功推定并发可用 |
-| 新增硬件可在 300 元内完成 | M0 给出候选 BOM 与价格证据，M3 记录实际采购及实测；若不成立，带选项回到用户决策 |
+| 新增硬件接近 300 元目标 | M0 给出候选 BOM 与价格证据，M3 记录实际采购及实测；超出目标时带原因与选项告知用户 |
 | 模型需要外网 | Wi-Fi STA 优先；设备 AP 用于初始配网，不能假定 AP 自身有互联网 |
 | 试用者使用家庭局域网 | 明确局域网访问、认证和通知限制；不对公网开放设备管理入口 |
 | 后续兼容国产软硬件 | M6 按真实工具链/设备推进，不把规划平台写成已经支持 |
@@ -313,45 +313,7 @@ WorldModel/状态估计位于 Provider，VLA 位于策略或推理 Provider。�
 
 统一接口覆盖在电脑或 ESP32 嵌入 Core、注册设备/资源/能力/目标类型/策略、连接模型/感知/媒体/检索/动作 Provider，并经 Host 端口提供时钟、持久存储、网络与加密；另外提供电脑端管理客户端，用于调用设备 API、查询任务及订阅事件。客户端操作设备不等于在电脑创建了另一个任务所有者。
 
-以下为**拟议接口节选，尚未实现，不是完整可编译头文件**；最小结构、字段限额与错误清单在 M0 定义，M1 通过契约用例收敛：
-
-```c
-/* planned: include/ayni/ayni.h — C99-compatible ABI */
-typedef struct ayni_kernel ayni_kernel_t;
-typedef struct ayni_client ayni_client_t;
-typedef struct ayni_config_v1 ayni_config_v1;
-typedef struct ayni_host_v1 ayni_host_v1;
-typedef struct ayni_event_v1 ayni_event_v1;
-typedef struct ayni_intent_v1 ayni_intent_v1;
-typedef struct ayni_device_desc_v1 ayni_device_desc_v1;
-typedef struct ayni_resource_desc_v1 ayni_resource_desc_v1;
-typedef struct ayni_capability_desc_v1 ayni_capability_desc_v1;
-typedef struct ayni_provider_v1 ayni_provider_v1;
-typedef struct ayni_binding_v1 ayni_binding_v1;
-typedef struct ayni_goal_type_v1 ayni_goal_type_v1;
-typedef struct ayni_strategy_v1 ayni_strategy_v1;
-typedef struct ayni_error_v1 ayni_error_v1; /* reason code + object ref, no sensitive data */
-
-int32_t ayni_create(const ayni_config_v1 *, const ayni_host_v1 *,
-                    ayni_kernel_t **out_kernel);
-int32_t ayni_register_device(ayni_kernel_t *, const ayni_device_desc_v1 *);
-int32_t ayni_register_resource(ayni_kernel_t *, const ayni_resource_desc_v1 *);
-int32_t ayni_register_capability(ayni_kernel_t *,
-                                const ayni_capability_desc_v1 *);
-int32_t ayni_register_provider(ayni_kernel_t *, const ayni_provider_v1 *);
-int32_t ayni_register_binding(ayni_kernel_t *, const ayni_binding_v1 *);
-int32_t ayni_register_goal_type(ayni_kernel_t *, const ayni_goal_type_v1 *);
-int32_t ayni_register_strategy(ayni_kernel_t *, const ayni_strategy_v1 *);
-/* Freezes the catalog, validates references, starts asynchronous recovery. */
-int32_t ayni_start(ayni_kernel_t *, ayni_error_v1 *out_error /* nullable */);
-int32_t ayni_get_lifecycle(const ayni_kernel_t *, uint32_t *out_state);
-int32_t ayni_submit_intent(ayni_kernel_t *, const ayni_intent_v1 *,
-                           ayni_error_v1 *out_error /* nullable */);
-int32_t ayni_post_event(ayni_kernel_t *, const ayni_event_v1 *);
-int32_t ayni_step(ayni_kernel_t *, uint32_t max_items, uint32_t max_time_us);
-int32_t ayni_begin_shutdown(ayni_kernel_t *);
-void ayni_destroy(ayni_kernel_t *);
-```
+接口以头文件为准，不在本计划中维护第二份：已实现部分在 `include/ayni/ayni.h`（ABI 0.1，experimental），计划部分是 `include/ayni/draft/` 中可编译、无符号的草案（ADR-0013）。与 v1.5 节选相比的变化：`ayni_create` 改为使用调用方提供的内存，并先由 `ayni_kernel_memory_requirements` 查询大小与对齐（ADR-0014）；`ayni_destroy` 返回状态码，非 `CONFIGURING`/`STOPPED` 时拒绝；`ayni_step` 增加步进报告，给出下一次必须调用的时刻；返回类型统一为 `ayni_status_t`。下表的接口问题仍是这些头文件遵守的契约，条款见 `contracts/`。
 
 | 接口问题 | 首版契约 |
 |---|---|
@@ -462,7 +424,7 @@ v0.1 提供局域网管理传输：经认证的目标创建/取消、任务查�
 | 授权与资源 | 接收设备重新校验主体、Grant、场景、配额、资源、条件和期限；相同 Agent ID 不免检 |
 | 时间与结果 | 本地以 monotonic 限时；TTL 为首次接收后的执行预算，重试不续期，也不证明传输前的新鲜度。副作用请求另校验授权期限、会话防重放和必要的可信时间：首次执行须携带接收方在会话中最近下发的本地 `receiver_tick`，超出接收方新鲜窗口返回 `STALE`，调用方以同一 `operation_id` 携带新 tick 重试；无法验证时拒绝。返回结构化错误、终态或待确认状态 |
 | 查询结果 | `FOUND`（附状态）、`EXPIRED_UNKNOWN`（低于低水位，结果未知）与 `NOT_ACCEPTED`；`NOT_ACCEPTED` 仅在接收方于同一提交中持久封禁该 ID、使迟到的原消息被拒绝时，才是权威未执行结论。查询不到记录本身不推断未执行 |
-| 消息限额 | 初始控制帧最大 8 KiB、嵌套深度 8、集合长度受字段 Schema 限定；数值、UTF-8、未知必需字段均校验。M0 测试后锁定 |
+| 消息限额 | 初始控制帧最大 8 KiB、嵌套深度 8、集合长度受字段 Schema 限定；数值、UTF-8、未知必需字段均校验。JSON 解码器实现时（`MA-038` 或 `MA-007` 中较早者）测试后锁定 |
 | 媒体通道 | 不在普通控制 JSON 中放 base64 大文件；引用过期、取消和重启时回收，单独限制字节与并发 |
 
 接收结果区分：`RECEIVED`（已校验接收，可能尚未持久化）、`DURABLY_ACCEPTED`（已承担持久处理责任）、`IN_PROGRESS`、`COMPLETED`（结果可查询）、`RESULT_UNKNOWN`。客户端未收到响应不能推定未执行，应以同 operation 查询/重试；只有能力明确允许时才能重新尝试。协议不宣称通用的“恰好执行一次”。
@@ -669,8 +631,8 @@ Goal 登记创建来源（用户、规则、反思、远程主体）、父目标
 
 | 目标环境 | 顺序和实现形式 | 当前状态 |
 |---|---|---|
-| macOS ARM64 | M1 当前开发机：Native Host、模拟器、C/C++ SDK | 规划，待构建与功能测试 |
-| Linux CI | M1 运行 Core 契约、故障注入、ASan/UBSan；记录 CI ISA/发行版 | 规划，待建立 |
+| Linux x86-64 | 当前开发机与 CI：Native Host、模拟器、C/C++ SDK；Core 契约、故障注入、ASan/UBSan | M0 已建立：Ubuntu 24.04 本地与 CI 编译、单元与契约测试通过（`docs/development.md`） |
+| macOS ARM64 | 按需求补充的 Native 宿主 | 未验证 |
 | ESP32-S3 / ESP-IDF | M0 可行性，M2 同一 Core Lite，M3/M4 完整试用设备 | 规划，待板级与集成验证 |
 | PC 与 ESP32 双设备 | M5 独立驻留、认证与远程能力调用 | 规划，待互通测试 |
 | Linux ROS 2 Bridge / 模拟机器人 | M2 通过后 M3 可选同机 Native Provider；锁定 distro/RMW/接口 | 待 R1.a/b，不构成 ESP32 原生 ROS 支持或真机验证 |
@@ -688,18 +650,18 @@ Goal 登记创建来源（用户、规则、反思、远程主体）、父目标
 
 ### 7.1 BOM 与接线门槛
 
-目前只有开发板，以下模块均未选型/未验证。M0 建立候选 BOM、引脚/供电/内存可行性；M1/M2 四个实验通过后进入 M3 完整硬件集成。采购和接线以验证过的 BOM 为依据，不按示例型号直接下单。
+目前只有开发板，以下模块均未选型/未验证。M0 建立候选 BOM、引脚/供电/内存可行性（`reports/hardware/m0/`，停止链候选电路见 `docs/hardware/stop-chain.md`）；M1/M2 四个实验通过后进入 M3 完整硬件集成。采购和接线以验证过的 BOM 为依据，不按示例型号直接下单。
 
 | 子系统 | 需验证内容 | 证据 |
 |---|---|---|
 | 一路摄像头 | 引脚、PSRAM/DMA、帧大小、低成本变化检测、抓拍与分析并发 | 帧率/内存/丢帧记录及 GPIO 表 |
 | 麦克风、功放、扬声器、录音按键 | 音频接口、采样/回放、回声与录音播放互斥、按键可用性 | 录音识别与播报样例、并发和电源测试 |
 | 轮式底盘、电机及驱动 | 电机电流、驱动禁用、转向可控性、反馈或可验证限时控制 | 校准范围、短动作误差、停止延迟与异常测试 |
-| 停止链硬件 | 驱动器硬件使能输入、急停直接切断或接入 MCPWM fault、使能脚下拉、外部看门电路（第 4.1 节 L0/L1） | 原理图、元件价格、使能脚与实际停止的分项实测时间；计入 300 元 |
+| 停止链硬件 | 驱动器硬件使能输入、急停直接切断或接入 MCPWM fault、使能脚下拉、外部看门电路（第 4.1 节 L0/L1） | 原理图、元件价格、使能脚与实际停止的分项实测时间；计入新增硬件成本 |
 | 电源和结构 | 电池/供电保护、峰值电流、共地/噪声、固定与电机干扰 | 同时采集/上传/播放/转向的供电记录 |
-| 成本 | 模块、线材、电源、驱动、底盘及必要结构件全部计入 | 每台新增硬件 ≤300 元的实际价格和合计；运费单列 |
+| 成本 | 模块、线材、电源、驱动、底盘及必要结构件全部计入 | 每台新增硬件的实际价格和合计，与 300 元目标对比；运费单列 |
 
-如果现有板型引脚或资源不够、停止机制无法验证，或必须的配置超出 300 元，应给用户展示测量结果和可行选项，等待决定后再改变体验或硬件边界。不得把第二块控制器、传感器或供电配件排除在成本之外。
+如果现有板型引脚或资源不够、停止机制无法验证，或必须的配置超出 300 元目标，应给用户展示测量结果、原因和可行选项，等待决定后再改变体验或硬件边界。不得把第二块控制器、传感器或供电配件排除在成本之外。
 
 ### 7.2 视觉、语音与资源协作
 
@@ -719,12 +681,13 @@ Kernel 提交有界高层动作，不生成任意 PWM。底盘本地控制负责
 
 ## 8. 计划中的仓库、交付与工程规范
 
-以下为目标结构；当前仅有项目文档与 `docs/assets/` 架构图，其余工程目录待实现。目录存在本身不表示相应平台已支持。
+以下为目标结构；M0 已建立 `core/` 骨架、`include/ayni/`、`contracts/`、`hosts/{native,esp_idf}`、`runtime/`、`targets/`、`tests/`、`tools/` 与 `reports/`，其余目录待实现。目录存在本身不表示相应平台已支持。
 
 ```text
 ayni/
 ├── CMakeLists.txt
 ├── include/ayni/ayni.h                 # experimental C API
+├── include/ayni/draft/                 # M0 interface drafts, no symbols (ADR-0013)
 ├── include/ayni/ayni.hpp               # C++ wrapper
 ├── include/ayni/client.h               # PC management client
 ├── contracts/{domain,host,wire,storage,fixtures}/ # commands/calls/subscriptions/commits/permits
@@ -766,11 +729,11 @@ ayni/
 
 Core 不依赖 OS 型 STL 组件；采用有界容器、显式容量和可失败分配。格式检查、编译器告警、clang-tidy、ASan/UBSan 和关键契约测试进入 CI，第三方组件例外单独记录。对可信 C++ 的管理不等于内存安全隔离。
 
-依赖规则：`core/` 不依赖 `runtime/`、`hosts/`、`providers/`、`drivers/`、`control/`、`protocol/` 或任何外部 SDK，内部按第 2.0 节的模块方向依赖；`safety/` 只依赖自身平台端口与限值契约，不依赖 `core/`；`control/` 只依赖公开契约。`runtime/` 是部署选择与跨组件装配的唯一位置（组合根），按第 2.6 节部署 Profile 装配 Kernel、Host、Provider、控制与停止组件；Host、Provider 与适配器可在各自内部封装平台实现，但不互相装配；`targets/` 只调用 `runtime/`，`examples/` 只使用公开 SDK。ROS、MHS、MCP 与模型厂商 SDK 只出现在对应适配器、Provider 或网关目录。实现开始后，这些规则进入 CI 自动检查。
+依赖规则：`core/` 不依赖 `runtime/`、`hosts/`、`providers/`、`drivers/`、`control/`、`protocol/` 或任何外部 SDK，内部按第 2.0 节的模块方向依赖；`safety/` 只依赖自身平台端口与限值契约，不依赖 `core/`；`control/` 只依赖公开契约。`runtime/` 是部署选择与跨组件装配的唯一位置（组合根），按第 2.6 节部署 Profile 装配 Kernel、Host、Provider、控制与停止组件；Host、Provider 与适配器可在各自内部封装平台实现，但不互相装配；`targets/` 只调用 `runtime/`，`examples/` 只使用公开 SDK。ROS、MHS、MCP 与模型厂商 SDK 只出现在对应适配器、Provider 或网关目录。这些规则由 `tools/check_deps.py`（包含关系）与 CMake 层级检查（链接关系）在 CI 中执行，新增顶层目录须先登记规则（ADR-0011）。
 
 `applications/` 是运行在 Ayni 之上的应用层（助理协调器、目标类型、场景、Skill、通知规则）；`targets/` 是构建出的可执行程序与固件镜像，与 ESP-IDF 的芯片 target（`idf.py set-target`）是不同概念。
 
-已记录的 ADR 见 `docs/adr/README.md`：ADR-0001～0008 与 ADR-0010 为已接受的设计基线，ADR-0009 为待定候选；均待实现与验证证据。其余初批 ADR：Ayni 分层与依赖、原语与状态机、单状态所有者、逻辑提交与命令幂等、策略位于内核之上、函数层级与绑定、顺序组合与共同检查点、订阅代际、资源协调、身份/授权/撤销、动作屏障与未知结果、私有记忆/公共档案及删除 lineage、三类版本与升级兼容矩阵、C/C++ SDK、模型网关、通知呈现、暂停与独立停止、固定任务归属；可选扩展另立具身 Profile、控制权/连续会话/物理验证、ROS 2 Binding/QoS/恢复映射与 MHS 实施条件 ADR。重大语义改变同步更新契约、迁移与实验。
+已记录的 ADR 见 `docs/adr/README.md`：ADR-0001～0008、0010～0014 为已接受的决策，ADR-0009 为待定候选；ADR-0011～0014（构建布局与依赖检查、测试框架、IDL 之前的契约表达、Core 不自行分配内存）已有 M0 实现证据，其余待实现与验证证据。其余初批 ADR：Ayni 分层与依赖、原语与状态机、单状态所有者、逻辑提交与命令幂等、策略位于内核之上、函数层级与绑定、顺序组合与共同检查点、订阅代际、资源协调、身份/授权/撤销、动作屏障与未知结果、私有记忆/公共档案及删除 lineage、三类版本与升级兼容矩阵、C/C++ SDK、模型网关、通知呈现、暂停与独立停止、固定任务归属；可选扩展另立具身 Profile、控制权/连续会话/物理验证、ROS 2 Binding/QoS/恢复映射与 MHS 实施条件 ADR。重大语义改变同步更新契约、迁移与实验。
 
 开源许可证暂以 Apache-2.0 为候选，首次公开发布前由用户确定并审查依赖许可证。复用上游记录版本、许可证、修改与来源；本次修订不代表已经选择或集成任何第三方代码。
 
@@ -782,7 +745,7 @@ Core 不依赖 OS 型 STL 组件；采用有界容器、显式容量和可失败
 
 | 阶段 | 估算 | 工作包与依赖 | 产出与证据 / Exit Gate |
 |---|---:|---|---|
-| **M0：契约与可行性** | 2–3 周 | `MA-001`、`002`、`017`；可选 `034`；无前置阶段 | 分层/函数/提交与输出门控、执行许可与失效、信任模型、Fabric 身份/新鲜度/幂等、五项语义、版本/API、E1–E4 与可选 R1 规范及 ROS/MHS 边界；空 Core/ESP Hello Host 可启动，含停止链硬件的 ≤300 元方案与板级可行性有证据；可选：具身 Profile 草案，未完成不阻断 M0 |
+| **M0：契约与可行性** | 2–3 周 | `MA-001`、`002`、`017`；可选 `034`；无前置阶段 | 分层/函数/提交与输出门控、执行许可与失效、信任模型、Fabric 身份/新鲜度/幂等、五项语义、版本/API、E1–E4 与可选 R1 规范及 ROS/MHS 边界；空 Core/ESP Hello Host 可启动，含停止链硬件、以 300 元为目标的方案与板级可行性有证据；可选：具身 Profile 草案，未完成不阻断 M0 |
 | **M1：Core Alpha** | 5–7 周 | M0 通过；`MA-003`～`006`、`008`～`011`、`018`～`023`、`033`；`038`（不阻断 M2）；可选 `035` | 必需：电脑 E1/E2/E3/E4 与 Linux CI、SDK、独立 Core 报告；`038` 多节点仿真报告在 M5 前完成；可选：Mock 具身 R1.a，未通过不得声明 Profile 支持；不依赖真实 ROS/MHS |
 | **M2：Core Beta** | 2–4 周 | M1 通过；`MA-007`、`024` | 同一 Core 上 ESP32，异步 Host、基本管理 API、LED/测试适配器、资源测量；**ESP32 复核 E1/E2/E3/E4**，三个接入示例及组合示例在 Native/ESP32 通过；出具 Core Beta 报告后才进入完整硬件集成 |
 | **M3：轮式感知交互** | 5–7 周 | M2 通过；`MA-015`、`025`、`026`；可选 `036` 另估 | 必需：摄像头/语音/底盘、停止、并发/校准、预算及硬件报告；可选：同机 Linux ROS 2 Bridge + 模拟机器人 R1.b，不阻断首发硬件集成或试用 |
@@ -797,7 +760,7 @@ Core 不依赖 OS 型 STL 组件；采用有界容器、显式容量和可失败
 | ID | 阶段 | 工作内容 | 依赖 | 完成定义与证据 |
 |---|---|---|---|---|
 | `MA-001` | M0 | 板型自检、GPIO/电源/接口/内存与预算可行性，含停止链硬件候选 | 现有板与厂商资料 | 实测启动日志、引脚冲突表、候选 BOM（含 L0/L1 失能电路）和价格来源；板型差异明确 |
-| `MA-002` | M0 | Native/ESP-IDF 工程骨架、工具链锁定、Linux CI | 无；与 `001` 并行，板级配置使用其结果 | macOS ARM64 空 Core、Linux 构建、ESP Hello Host；环境记录可复现 |
+| `MA-002` | M0 | Native/ESP-IDF 工程骨架、工具链锁定、Linux CI | 无；与 `001` 并行，板级配置使用其结果 | Linux 空 Core 与本地/CI 构建、ESP Hello Host；环境记录可复现 |
 | `MA-003` | M1 | 类型化 Event、有界队列、FakeClock、控制完成槽预留 | `002`、`017` | 1 万事件；完成槽耗尽时 submit 返回 `BUSY` 且控制确认不丢失，无双重释放/结算 |
 | `MA-004` | M1 | Principal/Session、Agent/Goal/Task/步骤调度与暂停取消 | `003`、`005` | 固定 owner、共同检查点、occurrence、传播矩阵、`blocked_on` 派生视图、版本冲突及有界等待 |
 | `MA-005` | M1 | C ABI、Kernel 生命周期（start/恢复/`NOT_READY`）、类型化系统接口、Native Mock Host | `002`、`017` | C/C++ 调用、缓冲/容量、三形态生命周期、各 Kernel 生命周期状态下的 API 返回值表与失配版本用例 |
@@ -943,7 +906,7 @@ E1–E4 先在电脑确定性模拟器完成，再在 ESP32 以同一契约复�
 
 | 维度 | 可执行验证 | 门槛 / 证据 |
 |---|---|---|
-| Core 基础 | macOS ARM64 Native、Linux CI、ESP32 clean build；C/C++ SDK 示例 | 同一 Core 与契约，版本/配置/构建日志齐全 |
+| Core 基础 | Linux Native 与 CI、ESP32 clean build；C/C++ SDK 示例 | 同一 Core 与契约，版本/配置/构建日志齐全 |
 | 四个实验 | E1、E2、E3、E4 分别在电脑与 ESP32 运行 | 全部通过；真实模型不替代确定性夹具 |
 | 事件与容量 | 1 万事件，含重复、过期、溢出、连续大输入 | 无崩溃、无无界增长；背压/丢弃只符合声明策略 |
 | 状态与预算 | 非法转换、组合取消/未知、暂停传播、预留/结算及公平性 | 无未定义永久等待、泄漏或双重结算；暂停保留提醒 |
@@ -952,7 +915,7 @@ E1–E4 先在电脑确定性模拟器完成，再在 ESP32 以同一契约复�
 | 网络与模型 | TLS 错误、断连、慢/重复/畸形结果、额度耗尽 | 本地规则和停止持续可用，错误分类、重试和晚到处理正确 |
 | 感知交互 | 订阅续租/停止/尾部、变化分析/抽查、ASR/TTS、录放冲突 | 符合频率/费用；关闭观察停止采集，旧代观察不再使用 |
 | 通知与时间 | 呈现失败/未知/回执丢失、安静时段、时区/DST/校时跳变 | 仅选定方式成功呈现才完成；不要求 ACK，重启不重复已确认呈现 |
-| 硬件与自主动作 | 供电/资源峰值、校准、场景授权、撤销、过期、本地停止、重启；停止链分项测量与许可失效矩阵 | 全部停止/禁用规则通过，BOM ≤300 元；运动限值与停止上限有实测证据，开环估计不伪装实测达成 |
+| 硬件与自主动作 | 供电/资源峰值、校准、场景授权、撤销、过期、本地停止、重启；停止链分项测量与许可失效矩阵 | 全部停止/禁用规则通过，BOM 实际成本及其与 300 元目标的差异和原因已记录；运动限值与停止上限有实测证据，开环估计不伪装实测达成 |
 | 安全接入 | 配网/绑定/解绑、敏感确认、凭据、速率、真实 OTA/迁移后回滚 | 无公网管理及凭据泄露；旧固件不能回退消费/删除/动作事实，新所有者不继承数据 |
 | 长稳 | 完整 ESP32 硬件连续至少 72h，持续感知/交互/网络重连/任务 | 无不可恢复死机；最小堆/栈、泄漏趋势、Watchdog、Flash 和重连有报告 |
 | 可维护性 | Core 测试、静态分析、格式、解析 fuzz；Linux ASan/UBSan | 必需检查通过；覆盖率目标 Core ≥75%、安全关键分支 ≥90%，偏差说明与补测记录 |
@@ -1007,10 +970,10 @@ R1 是扩展专用套件，不增加第五个必需 Core 实验。所有版本�
 
 ### 11.1 拟议开发命令
 
-以下为未来工程入口，**目前只有项目文档，命令尚不可执行**。M0/M1 应提供依赖锁定与 bootstrap 说明；macOS ARM64 为当前本机验证，Linux 为 CI，ESP32 需激活已锁定 ESP-IDF 环境。
+Native 构建、测试与 `ayni-sim` 以及 ESP32 固件构建已在 M0 可执行，实际版本与命令以 `docs/development.md` 为准；下列标为 planned 的入口仍待实现。Linux 为本机与 CI 验证环境，ESP32 需激活已锁定的 ESP-IDF 环境。
 
 ```bash
-# planned: Native Core + simulator
+# M0: Native Core + simulator (see docs/development.md for presets)
 cmake -S . -B build/native \
   -DCMAKE_BUILD_TYPE=Debug \
   -DAYNI_BUILD_TESTS=ON \
@@ -1030,9 +993,8 @@ ctest --test-dir build/native --output-on-failure
 # R1.b uses a separately pinned Linux ROS 2 integration runner (MA-036).
 # R1.c has no compatibility runner until the MHS entry conditions are met.
 
-# planned: execute in activated ESP-IDF environment
+# M0: build in activated ESP-IDF environment (sdkconfig.defaults sets esp32s3)
 cd targets/esp32_assistant
-idf.py set-target esp32s3
 idf.py build
 idf.py -p <SERIAL_PORT> flash monitor
 ```
@@ -1061,7 +1023,7 @@ idf.py -p <SERIAL_PORT> flash monitor
 | 风险/信号 | 先做的工程处置 | 必须停止或回到用户决策的条件 |
 |---|---|---|
 | 摄像头/音频/电机引脚或供电冲突 | M0 板级表与并发预算；M3 真实组合测试 | 现有板不满足已确认体验；不得自行删功能或更换主板 |
-| 300 元硬件不足 | 补完整 BOM、实际价格、可行替代及代价 | 无满足预算与停止机制的方案；不私自提高预算 |
+| 超出 300 元目标 | 补完整 BOM、实际价格、可行替代及代价 | 必需配置超出目标；预算可按实际增加，但每项增加须列明原因并告知用户 |
 | 内部 RAM/连续堆不足 | 限并发、有界缓冲、PSRAM 合理放置、测量 DMA/栈 | 降低频率/尺寸仍不能实现确认体验，需要用户决定取舍 |
 | 动作结果不确定 | 屏障、账本、能力查询、暂停与对账 | 无法阻止恢复重演、无法解释结果时禁止开放该动作 |
 | 自主运动不受控/停止不可靠 | 本地监督、默认禁用、重新校准 | 立即关闭真实运动并停止试用，修复后复测全部停止场景 |
@@ -1107,7 +1069,7 @@ idf.py -p <SERIAL_PORT> flash monitor
 
 ### 14.1 已接受的实施默认值
 
-项目名 Ayni；C API 使用 `ayni_*`；可信编译时注册；单设备一 Kernel、多实例；私有记忆、明确共享；外部模型认证网关；局域网管理；四类自主目标；事件/周期/可暂停空闲反思；原始媒体临时处理；轮式、按键语音、持续视觉采集；用户开启的“转向观察”；每台新增硬件上限 300 元；电脑与 ESP32 通过四个实验后再完整硬件集成。这些已确定事项不在开工时重新提请确认。
+项目名 Ayni；C API 使用 `ayni_*`；可信编译时注册；单设备一 Kernel、多实例；私有记忆、明确共享；外部模型认证网关；局域网管理；四类自主目标；事件/周期/可暂停空闲反思；原始媒体临时处理；轮式、按键语音、持续视觉采集；用户开启的“转向观察”；每台新增硬件目标 300 元（可按实际需要增加）；电脑与 ESP32 通过四个实验后再完整硬件集成。这些已确定事项不在开工时重新提请确认。
 
 本轮已确认并作为实现基线的产品语义：
 
@@ -1127,6 +1089,8 @@ v1.4 并入的设计基线（ADR-0001～0008、ADR-0010）：设备治理模型�
 
 v1.5 根据 PR #4 的审查补齐三项契约：续租截止以执行端签发 nonce 的时刻为锚、到期会话不可由续租恢复（第 2.10 节、ADR-0001）；停止上限按故障类型分别预算，覆盖 Kernel 单独失效（第 4.1 节、ADR-0005）；受限栅栏重载前须排空或隔离旧写入方（第 2.8 节、ADR-0002）。同时收窄 `runtime/` 的规则为“部署选择与跨组件装配的唯一位置”（ADR-0010），并上调阶段估算。MHS 规范可得性不阻塞 Ayni Core 或原生设备；不据本次文档更新宣称 ROS、micro-ROS、MHS、完整机器人或 VLA 已支持。
 
+v1.6 记录 M0 的执行结果与用户决定：M0 范围为契约、骨架与可行性（不做可选 `MA-034`）；契约以 Markdown 条款加可编译 C 头文件草案表达（ADR-0013）；Native 测试使用 GoogleTest，ESP32 后续使用 Unity（ADR-0012）；开发机以 Linux 为准；300 元为可按实际增加的目标；停止链 L0/L1 计入候选 BOM；许可证仍待决定。新增 ADR-0011～0014，契约复核补充了持续联锁、运动配置名与重连幂等作用域三条条款（`reports/core/m0-review.md`）。
+
 模型额度、视觉频率、反思频率是有限且可配置的系统参数；初始工程值先由 Mock 压测和硬件测量验证，试用套餐和用户可见含义再确认。运动数值没有未经测量的默认启用值。
 
 ### 14.2 决策清单与最晚时点
@@ -1134,7 +1098,7 @@ v1.5 根据 PR #4 的审查补齐三项契约：续租截止以执行端签发 n
 | 问题 | 先准备的证据/默认处理 | 需要用户决定的时点 |
 |---|---|---|
 | 开源许可证 | 以 Apache-2.0 为候选，审查实际依赖许可 | M0 建议确认，最迟首次公开发布或引入会限制许可选择的依赖前决定；不阻塞独立契约与模拟工作 |
-| 具体硬件 BOM、必要的体验取舍 | 开发者先查板型、列 GPIO/供电/资源与 ≤300 元候选及价格；不把选型责任只交给用户 | M0 可行性关闭、M3 采购前确认具体组合；不满足已定条件必须重新决策 |
+| 具体硬件 BOM、必要的体验取舍 | 开发者先查板型、列 GPIO/供电/资源与以 300 元为目标的候选及价格；不把选型责任只交给用户 | M0 可行性关闭、M3 采购前确认具体组合；不满足已定条件必须重新决策 |
 | 模型/网关部署、费用承担与试用额度 | 双 Mock 不阻塞 M1；准备文本/视觉/ASR/TTS 供应、费用、保留和部署选项 | M2 真实接入前选方案，M4 前确定试用额度和超额提示 |
 | 试用人群、人数/天数及数据同意 | 准备试用任务、已知限制、媒体/记忆/网关说明；不擅自承诺目标年龄/敏感照护场景 | M4 招募和开放试用前决定 |
 | 通知重要性与安静时段例外 | 默认普通事件汇总，安静时段不普通语音播报；给出重要事件与告警样例 | M4 前确认用户可见分级、默认时段及是否允许例外 |
@@ -1149,13 +1113,13 @@ v1.5 根据 PR #4 的审查补齐三项契约：续租截止以执行端签发 n
 
 **Core Alpha / Beta**：核心原语与共享服务具有可执行契约；电脑 E1/E2/E3/E4 全通过后，ESP32 复核同一用例、三个接入及一个组合示例；状态、预算、授权、恢复和 SDK 报告齐全。没有这些证据不得越过 Core 门槛。
 
-**Ayni v0.1**：在现有板型与已验证的 ≤300 元新增硬件上，完成统一助理、按键语音、视觉观察、轮式短动作、停止、公共档案/私有记忆/删除、身份授权、暂停保留提醒、通知呈现、网关、故障恢复和普通用户试用；真实 OTA/迁移后回滚、完整硬件 72h 长稳、三份报告及可重复发布交付件齐全。仅有文本/LED 演示或模拟器通过不能发布为本计划的 v0.1。
+**Ayni v0.1**：在现有板型与已验证的新增硬件（目标 300 元，超出部分有记录的原因）上，完成统一助理、按键语音、视觉观察、轮式短动作、停止、公共档案/私有记忆/删除、身份授权、暂停保留提醒、通知呈现、网关、故障恢复和普通用户试用；真实 OTA/迁移后回滚、完整硬件 72h 长稳、三份报告及可重复发布交付件齐全。仅有文本/LED 演示或模拟器通过不能发布为本计划的 v0.1。
 
 **Ayni v0.2**：在 v0.1 之上，PC 与 ESP32 独立驻留，认证/协商、远程调用、操作去重、状态查询、断连恢复和本地授权通过；不以此宣称完整分布式委派或自动接管。
 
 **可选扩展支持声明**：Profile 经 R1.a、ROS Bridge 经 R1.a/b、MHS 经条件审查与 R1.a/c，对应特性及版本报告齐全才可声明相应支持；真机声明另有真实校准、联锁、停止与目标验证证据。未完成扩展可关闭并保持原版本发布范围；其失败不能被隐瞒为“已支持但可选”。
 
-本次 v1.5 文档修订通过条件：
+本次 v1.6 文档修订通过条件：
 
 - 名称、摘要、架构、模块、接口、硬件、工作包、阶段依赖、验收和发布范围一致；保留原工作包编号。
 - 四个实验都有准备、步骤、故障点、预期轨迹和可判定门槛，电脑先于 ESP32，Core 先于完整硬件集成。
@@ -1170,7 +1134,7 @@ v1.5 根据 PR #4 的审查补齐三项契约：续租截止以执行端签发 n
 - 在途续租、到期会话、按故障类型的停止上限与旧写入方隔离各有可判定规则，并分别进入 F14、`MA-026`、F12 与 `MA-010` 的验收。
 - 中文/英文 README、架构图与计划一致；AIOS 仅参考图示样式，原文件名与已有工作包编号保留。
 - 无固定开工日期或固定总周数承诺；各阶段是工作量参考，门槛不可跳过。
-- 未实施能力、平台、SDK、目录、命令和示例明确标记待实现/待验证；本次交付实施计划、中英文 README、架构图与 `docs/adr/` 设计记录，不报告代码测试或硬件验收已经通过。
+- 未实施能力、平台、SDK、目录、命令和示例明确标记待实现/待验证；M0 的编译与测试结果只按 `reports/core/m0-review.md` 报告的范围声明，不报告硬件验收已经通过。
 
 实施主线：**先打好共享 Agent Kernel 的契约、资源、授权与恢复基础，再完成 ESP32 轮式个人助理的受控试用，随后验证最小跨设备互通，并以证据扩展宿主与系统深度。**
 

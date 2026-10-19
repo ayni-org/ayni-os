@@ -12,7 +12,7 @@
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 17 | 1 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 15 | 2 |
 | [domain/limits.md](domain/limits.md) | 12 | 1 |
-| [domain/permits_and_stop.md](domain/permits_and_stop.md) | 25 | 0 |
+| [domain/permits_and_stop.md](domain/permits_and_stop.md) | 27 | 0 |
 | [domain/primitives.md](domain/primitives.md) | 8 | 0 |
 | [domain/product_semantics.md](domain/product_semantics.md) | 27 | 0 |
 | [domain/resources_and_budget.md](domain/resources_and_budget.md) | 23 | 0 |
@@ -22,9 +22,9 @@
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 0 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 14 | 0 |
-| [wire/envelope.md](wire/envelope.md) | 15 | 0 |
+| [wire/envelope.md](wire/envelope.md) | 16 | 0 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 292 | 11 |
+| 合计 | 295 | 11 |
 
 ## 计划章节 → 契约文档
 
@@ -91,16 +91,16 @@
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
 | `MA-016` | C-AUTH-002、C-AUTH-012、C-AUTH-015、C-LIFE-020、C-PRIM-007、C-VER-010、C-WIRE-003、C-WIRE-006、C-WIRE-007、C-WIRE-009、C-WIRE-010 |
-| `MA-018` | C-AUTH-016、C-LIMIT-002、C-PERMIT-001、C-PERMIT-003、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-006、C-RES-012、C-RES-013 |
+| `MA-018` | C-AUTH-016、C-LIMIT-002、C-PERMIT-001、C-PERMIT-003、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-006、C-RES-012、C-RES-013 |
 | `MA-019` | C-PROD-012、C-PROD-015、C-PROD-050 |
-| `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
+| `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-PERMIT-016、C-PERMIT-017、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
 | `MA-027` | C-PROD-033、C-BUDGET-010、C-PROV-011 |
 | `MA-028` | C-PROD-001、C-PROD-003、C-PROD-004、C-PROD-051 |
 | `MA-030` | C-WIRE-015 |
 | `MA-034` | C-TRUST-002 |
 | `MA-035` | C-PERMIT-014、C-JSON-011 |
 | `MA-037` | C-TRUST-005 |
-| `MA-038` | C-AUTH-012、C-AUTH-013、C-ID-005、C-TIME-002、C-PERMIT-001、C-PERMIT-015、C-RES-012、C-WIRE-006、C-WIRE-008、C-WIRE-009、C-JSON-010 |
+| `MA-038` | C-AUTH-012、C-AUTH-013、C-ID-005、C-TIME-002、C-PERMIT-001、C-PERMIT-015、C-PERMIT-017、C-RES-012、C-WIRE-006、C-WIRE-008、C-WIRE-009、C-JSON-010 |
 
 ## 实验步骤 → 条款
 
@@ -126,7 +126,7 @@
 | E2 F6 | C-COMMIT-004、C-WIRE-007 |
 | E2 F7 | C-CALL-002、C-CALL-011、C-COMMIT-002、C-ID-006、C-HOST-003、C-HOST-009、C-HOST-011、C-STORE-001、C-STORE-002、C-STORE-009 |
 | E2 F8 | C-COMMIT-002、C-COMMIT-005、C-LIMIT-007、C-BUDGET-002、C-HOST-009、C-STORE-002 |
-| E2 F9 | C-COMMIT-004、C-ID-007、C-WIRE-004、C-WIRE-005 |
+| E2 F9 | C-COMMIT-004、C-ID-007、C-WIRE-004、C-WIRE-005、C-WIRE-016 |
 | E2 F10 | C-AUTH-005、C-AUTH-006、C-COMMIT-007、C-OUT-003、C-LIFE-013、C-PERMIT-002、C-PRIM-006、C-HOST-004 |
 | E2 F11 | C-CALL-012、C-COMMIT-005、C-BUDGET-002、C-STORE-007 |
 | E2 F12 | C-COMMIT-008、C-COMMIT-009、C-COMMIT-010、C-COMMIT-011、C-ID-009、C-PERMIT-009、C-HOST-012、C-STORE-005 |

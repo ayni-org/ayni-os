@@ -12,7 +12,7 @@
 
 1. **Native 单元与契约测试使用 GoogleTest 1.17.0**，通过 CMake FetchContent 下载官方发布包，并以 SHA-256 锁定（`cmake/AyniGoogleTest.cmake`）。离线构建可用 `FETCHCONTENT_SOURCE_DIR_GOOGLETEST` 指向本地解压目录。
 2. **ESP32 上的测试使用 ESP-IDF 自带的 Unity**，M2 引入，不把 GoogleTest 移植到固件。
-3. **用例数据与框架无关。** E1–E4 的场景、注入点与断言写成数据（`contracts/fixtures/`），两边的测试运行器读取同一份数据；断言逻辑放在与框架无关的 C++ 函数中，GoogleTest 与 Unity 只负责调用和报告。这一层在 M1 随第一批 fixtures 实现，M0 只规定格式。
+3. **用例数据与框架无关。** E1–E4 的场景、注入点与断言写成数据（`contracts/fixtures/`），两边的测试运行器读取同一份数据；断言逻辑放在与框架无关的 C++ 函数中，GoogleTest 与 Unity 只负责调用和报告。这一层在 M1 随第一批 fixtures 实现，M0 只规定格式（[`contracts/fixtures/README.md`](../../contracts/fixtures/README.md)：用例文件在构建时生成为 C++ 只读表，设备上不解析 JSON）。
 4. **测试命名采用场景名**，例如 `create_rejects_memory_below_requirement`，与 AGENTS.md 一致。
 5. **工具脚本的测试使用 Python 标准库 `unittest`**，经 `ctest` 运行，不引入额外的 Python 依赖。
 6. **测试框架只链接测试程序**，不进入 Core、runtime、Host 或固件镜像。

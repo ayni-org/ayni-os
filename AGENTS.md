@@ -4,7 +4,7 @@ Apply these guidelines to design, implementation, review, refactoring, and deliv
 
 ## Project Structure & Module Organization
 
-This checkout is at the documentation and planning stage. Read `docs/ayni_v1.0.md`, the Ayni AgentOS plan, before contributing; APIs, implementation directories, and platform support remain proposed unless backed by implementation and validation evidence. Preserve its filename when updating the internal document version.
+This checkout is at M0: a buildable skeleton with an empty Core, contracts in `contracts/`, and draft headers in `include/ayni/draft/`. Read `docs/ayni_v1.0.md`, the Ayni AgentOS plan, before contributing; APIs, implementation directories, and platform support remain proposed unless backed by implementation and validation evidence. Preserve its filename when updating the internal document version.
 
 Follow the planned layout when implementation begins:
 
@@ -20,7 +20,7 @@ Follow the planned layout when implementation begins:
 
 ## Build, Test, and Development Commands
 
-No versioned build scripts or runnable application exist yet. For current documentation changes, run `git diff --check` and check consistency with the plan. Planned native commands:
+`docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan. Native commands:
 
 ```sh
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
@@ -29,7 +29,7 @@ ctest --test-dir build/native --output-on-failure
 ./build/native/targets/simulator/ayni-sim
 ```
 
-These will configure, build, test, and launch the simulator once implemented. Future firmware builds use `idf.py build` from `targets/esp32_assistant/` after activating the pinned ESP-IDF environment. Document actual toolchain versions and executable checks when adding implementation; do not report planned commands as completed validation.
+These configure, build, test, and launch the simulator; `ayni-sim` takes no arguments until the M1 experiment fixtures land. Firmware builds use `idf.py build` from `targets/esp32_assistant/` after activating the pinned ESP-IDF environment. Document actual toolchain versions and executable checks when adding implementation; do not report planned commands as completed validation.
 
 ## Coding Style & Naming Conventions
 

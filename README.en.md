@@ -4,7 +4,7 @@
 
 **A cross-device personal assistant AgentOS: one assistant for the user, with multiple Agents sharing managed system services.**
 
-> This repository is at the architecture and planning stage. There is no runnable Core, firmware, SDK, or build script yet. This README describes intended behavior; implementation and platform support require corresponding validation evidence.
+> This repository is at M0: it has a project skeleton (an empty Core, Native and ESP-IDF builds, dependency checks, CI), contracts, and draft C headers, but no working Kernel features, SDK, or hardware-validated firmware. This README describes intended behavior; implementation and platform support require corresponding validation evidence. See the [development guide](docs/development.md) for building and [reports/core/m0-review.md](reports/core/m0-review.md) for the M0 review (both in Chinese).
 
 See the [Ayni implementation plan](docs/ayni_v1.0.md) (Chinese) for the complete design, scope, draft interfaces, and acceptance gates.
 
@@ -49,7 +49,7 @@ Business completion rules, planning, model inference, perception algorithms, cod
 4. **Forgetting:** Deleted memory cannot be used again. In-flight results and derived content that depend on it are invalidated. Data already sent to a model remains subject to the upstream retention policy.
 5. **Reminder completion:** A reminder completes after successful presentation through the user's selected method, without requiring acknowledgement for ordinary reminders. Creating a notification record or queuing output alone does not count as success; failures remain pending.
 
-v0.1 plans local-network management, push-button voice interaction, continuous visual capture with bounded analysis, and four built-in goal types: reminders, device checks, memory organization, and scene observation. Motion uses calibrated, bounded short actions; autonomous motion is limited to a user-enabled turn-to-observe scene. Additional hardware is limited to CNY 300 per device, excluding the existing board, model fees, and labor. Raw media is temporary by default. Mobile background push, autonomous navigation, isolation for arbitrary third-party plugins, and automatic cross-device task takeover are outside this release's commitment.
+v0.1 plans local-network management, push-button voice interaction, continuous visual capture with bounded analysis, and four built-in goal types: reminders, device checks, memory organization, and scene observation. Motion uses calibrated, bounded short actions; autonomous motion is limited to a user-enabled turn-to-observe scene. Additional hardware targets CNY 300 per device and may grow when needed, with the reason recorded; this excludes the existing board, model fees, and labor. Raw media is temporary by default. Mobile background push, autonomous navigation, isolation for arbitrary third-party plugins, and automatic cross-device task takeover are outside this release's commitment.
 
 ## Three versioned contracts
 
@@ -93,7 +93,7 @@ Planned extension examples include `new_hardware`, `new_model`, `new_strategy`, 
 
 R1 is a separate optional conformance suite; E1–E4 remain the four mandatory experiments. R1.a checks Mock profile contracts. R1.b validates the Linux Bridge/simulation after M2 Core Beta. R1.c depends on MHS specifications, access, licensing, and test fixtures. These optional routes do not block v0.1. Claims of profile, ROS Bridge, or MHS support require the applicable R1.a, R1.a/b, or R1.a/c gates respectively, without exemption.
 
-Build, simulation, hardware functionality, and endurance results are reported separately. None of these results exist yet. Build commands, directories, and API examples in the plan are proposed implementation entry points.
+Build, simulation, hardware functionality, and endurance results are reported separately. So far only the M0 skeleton has results: Linux builds and unit/contract tests ([M0 review](reports/core/m0-review.md)). There are no experiment, hardware, or endurance results yet; commands, directories, and APIs in the plan that are not marked as implemented remain proposed.
 
 ## Contributing and acknowledgements
 
