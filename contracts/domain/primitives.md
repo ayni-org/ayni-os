@@ -1,6 +1,6 @@
 # 原语的最小字段
 
-- **关联**：计划 §2.2、§2.3、§2.7、§3.6；ADR-0001、ADR-0007、ADR-0008；`MA-004`、`MA-006`、`MA-008`、`MA-011`、`MA-018`
+- **关联**：计划 §2.2、§2.3、§2.7、§3.6；ADR-0001、ADR-0007、ADR-0008、ADR-0017；`MA-004`、`MA-006`、`MA-008`、`MA-011`、`MA-018`
 - **说明**：本文固化每个原语在 M1 实现前必须具备的最小字段（计划 §2.2：“M0 固化最小字段、状态与提交不变量”）。编码（字段宽度、可选字段的表示）在 M1 由 fixtures 收敛，选定 IDL 后由 ADR-0009 生成。表中“持久”指写入日志或快照；“重建”指重启后由 Host 重新探测或重新建立，不从持久记录恢复为可用对象。
 
 所有可修改对象都带 `revision`（每次提交的修改递增），作为 `expected_revision` 的比较对象（C-COMMIT-012）。所有对象都带创建它的 `transition_id`，用于追溯。
@@ -63,7 +63,7 @@
 | 对象 | 最小字段 | 持久 |
 |---|---|---|
 | UserPrincipal | `principal_id`、`binding_revision`、认证渠道 | 是 |
-| Session | `session_id`、`principal_id`、输入渠道、信任级别 | 否（按 Host 规则重建） |
+| Session | `session_id`、`principal_id`、输入渠道（`VOICE`、`MANAGEMENT`，由 Host 认证后打开会话时给出）、信任级别（由渠道决定，不单独保存） | 否（重启后全部关闭，由 Host 重新打开） |
 | Grant | `grant_id`、`subject`、`target`、`scope`（能力、参数约束、Scene）、`expiry`、`quota`、`revoke_revision`、`delegation`（父 Grant 与可否再委派） | 是 |
 | Scene | `scene_id`、`version`、`enabled`、授权主体与范围、参数约束、前置条件、观察新鲜度、次数/费用预算、停止条件 | 是 |
 

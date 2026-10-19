@@ -56,6 +56,13 @@ ayni_status_t run_hello() {
     config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
     config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
     config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    config.agent_capacity = AYNI_AGENT_CAPACITY_DEFAULT;
+    config.goal_type_capacity = AYNI_GOAL_TYPE_CAPACITY_DEFAULT;
+    config.goal_capacity = AYNI_GOAL_CAPACITY_DEFAULT;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT;
+    config.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
+    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
     std::size_t size = 0;
     std::size_t align = 0;
     status = ayni_kernel_memory_requirements(&config, &size, &align);

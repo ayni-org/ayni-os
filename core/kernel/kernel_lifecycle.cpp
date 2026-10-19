@@ -1,6 +1,7 @@
 // Kernel lifecycle (contracts/domain/lifecycles.md, ADR-0016): recovery runs
-// in bounded steps after ayni_start, and shutdown completes in a step once no
-// completion slot is in flight (C-HOST-018).
+// in bounded steps after ayni_start, entering RUNNING starts the work model
+// (ADR-0017), and shutdown completes in a step once no completion slot is in
+// flight (C-HOST-018).
 
 #include "kernel/kernel_state.h"
 
@@ -87,7 +88,7 @@ void ayni_kernel::settle_recovery() {
     }
     switch (boot.outcome()) {
     case ayni::kernel::BootSequence::Outcome::epoch_durable:
-        lifecycle = AYNI_LIFECYCLE_RUNNING;
+        enter_running();
         break;
     case ayni::kernel::BootSequence::Outcome::restricted:
         lifecycle = AYNI_LIFECYCLE_RESTRICTED;
@@ -95,4 +96,17 @@ void ayni_kernel::settle_recovery() {
     case ayni::kernel::BootSequence::Outcome::pending:
         break;
     }
+}
+
+// Ids embed the durable boot epoch, so none repeats an earlier boot's
+// (C-ID-010); transitions follow the boot batch. The agents' instances start
+// in one transition before any intent is accepted.
+void ayni_kernel::enter_running() {
+    const ayni::durability::BatchIdentity boot_batch = boot.boot_batch();
+    ids.start(boot.boot_epoch());
+    transitions.start({boot_batch.transition_id + 1U, boot_batch.commit_seq + 1U});
+    if (agents.has_registered()) {
+        agents.start_all(ids, transitions.next());
+    }
+    lifecycle = AYNI_LIFECYCLE_RUNNING;
 }

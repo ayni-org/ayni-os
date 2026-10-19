@@ -23,7 +23,6 @@
 #define AYNI_DRAFT_HOST_V1_H
 
 #include <ayni/ayni.h>
-#include <ayni/draft/types_v1.h>
 
 #include <stdint.h>
 

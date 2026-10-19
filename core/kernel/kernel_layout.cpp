@@ -11,21 +11,53 @@ constexpr std::size_t larger(std::size_t a, std::size_t b) {
     return a > b ? a : b;
 }
 
+// Places each store after the previous one at its own alignment.
+class Placer {
+  public:
+    explicit Placer(std::size_t start) : end_(start) {}
+
+    std::size_t place(std::size_t alignment, std::size_t size) {
+        const std::size_t offset = align_up(end_, alignment);
+        end_ = offset + size;
+        alignment_ = larger(alignment_, alignment);
+        return offset;
+    }
+
+    std::size_t end() const { return end_; }
+    std::size_t alignment() const { return alignment_; }
+
+  private:
+    std::size_t end_;
+    std::size_t alignment_ = alignof(ayni_kernel);
+};
+
 } // namespace
 
 KernelLayout layout_for(const KernelCapacities &capacities) {
+    Placer placer(sizeof(ayni_kernel));
     KernelLayout layout{};
-    layout.ingress_offset = align_up(sizeof(ayni_kernel), EventQueue::storage_alignment);
-    const std::size_t ingress_end =
-        layout.ingress_offset +
-        EventQueue::storage_size(capacities.ingress_capacity, capacities.event_body_max_bytes);
-    layout.completions_offset = align_up(ingress_end, CompletionPool::storage_alignment);
+    layout.ingress_offset = placer.place(
+        EventQueue::storage_alignment,
+        EventQueue::storage_size(capacities.ingress_capacity, capacities.event_body_max_bytes));
+    layout.completions_offset =
+        placer.place(CompletionPool::storage_alignment,
+                     CompletionPool::storage_size(capacities.completion_slot_count));
     // The storage buffer holds bytes only, so it needs no alignment.
-    layout.storage_buffer_offset =
-        layout.completions_offset + CompletionPool::storage_size(capacities.completion_slot_count);
-    layout.size = layout.storage_buffer_offset + capacities.storage_buffer_bytes;
-    layout.alignment = larger(alignof(ayni_kernel), larger(EventQueue::storage_alignment,
-                                                           CompletionPool::storage_alignment));
+    layout.storage_buffer_offset = placer.place(1, capacities.storage_buffer_bytes);
+    layout.agents_offset = placer.place(work::AgentTable::storage_alignment,
+                                        work::AgentTable::storage_size(capacities.agent_capacity));
+    layout.goal_types_offset =
+        placer.place(catalog::GoalTypeRegistry::storage_alignment,
+                     catalog::GoalTypeRegistry::storage_size(capacities.goal_type_capacity));
+    layout.goals_offset =
+        placer.place(work::GoalTable::storage_alignment,
+                     work::GoalTable::storage_size(capacities.goal_capacity,
+                                                   capacities.goal_parameter_max_bytes));
+    layout.sessions_offset =
+        placer.place(authority::SessionTable::storage_alignment,
+                     authority::SessionTable::storage_size(capacities.session_capacity));
+    layout.size = placer.end();
+    layout.alignment = placer.alignment();
     return layout;
 }
 

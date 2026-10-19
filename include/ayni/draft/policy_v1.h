@@ -1,7 +1,7 @@
 /*
  * DRAFT, not part of the published ABI (C-VER-007): no symbols.
  *
- * Strategy and GoalType interfaces as bounded decision functions
+ * Strategy interfaces as bounded decision functions
  * (contracts/host/policy_interface.md, ADR-0006). The kernel calls decide()
  * inside ayni_step on the owner thread with a read-only snapshot; the
  * callback returns bounded intents and a new private checkpoint and must not
@@ -13,7 +13,6 @@
 #define AYNI_DRAFT_POLICY_V1_H
 
 #include <ayni/ayni.h>
-#include <ayni/draft/types_v1.h>
 
 #include <stdint.h>
 
@@ -84,19 +83,15 @@ typedef struct ayni_strategy_v1 {
     ayni_decide_fn decide;
 } ayni_strategy_v1;
 
-typedef struct ayni_goal_type_v1 {
-    uint32_t struct_size;
-    uint32_t version;
-    ayni_string_v1 goal_type_id; /* e.g. "reminder" */
-    ayni_string_v1 default_strategy_id;
-    uint32_t max_wait_ms; /* wait limit before defer/expire/pause, C-RES-005 */
-    uint32_t reserved;    /* 0 */
-    void *ctx;
-    ayni_decide_fn decide; /* completion and pause-point decisions */
-} ayni_goal_type_v1;
+/*
+ * ayni_goal_type_v1 and ayni_register_goal_type are in ayni.h. The strategy
+ * fields planned for the goal type (default_strategy_id, max_wait_ms before
+ * defer, expire or pause per C-RES-005, and a decide function for completion
+ * and pause-point decisions) are appended there when strategies are
+ * implemented.
+ */
 
 ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_v1 *strategy);
-ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type);
 
 #ifdef __cplusplus
 }

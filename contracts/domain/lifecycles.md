@@ -1,6 +1,6 @@
 # 生命周期与状态转换
 
-- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
+- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
 - **原则**：生命周期、持久化状态与等待原因是三个维度。生命周期写在枚举里；“是否已持久接受”由提交序号表达（C-COMMIT-004）；等待原因由待决调用派生（ADR-0007）。表中未列出的转换都是非法转换，返回 `AYNI_INVALID_STATE` 并保持原状态。
 
 ## Kernel
@@ -36,18 +36,55 @@
 | `ayni_start` | OK；无存储端口时 UNSUPPORTED；校验错误（计划） | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
 | `ayni_step` | INVALID_STATE | OK | OK | OK | OK | INVALID_STATE |
 | `ayni_begin_shutdown` | INVALID_STATE | OK | OK | OK | OK（幂等） | OK（幂等） |
-| `ayni_register_*` | OK 或参数错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| `ayni_register_principal`、`ayni_register_agent`、`ayni_register_goal_type` | OK、参数错误或 CAPACITY_EXCEEDED | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| `ayni_open_session` | NOT_READY | NOT_READY | OK、NOT_FOUND 或 CAPACITY_EXCEEDED | NOT_READY | NOT_READY | NOT_READY |
+| `ayni_close_session` | INVALID_STATE | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | INVALID_STATE |
 | `ayni_submit_intent` | NOT_READY | NOT_READY | 按意图校验 | NOT_READY | NOT_READY | NOT_READY |
-| 查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
+| `ayni_get_agent`、`ayni_get_goal` | INVALID_STATE | OK 或 NOT_FOUND（标注 `durable_seq`） | OK 或 NOT_FOUND | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND | INVALID_STATE |
+| 其余 `ayni_register_*` | OK 或参数错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
 | `ayni_post_event` | INVALID_STATE | OK | OK | OK（只用于对账与诊断） | OK | INVALID_STATE |
+
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。
 
 ## AgentInstance
 
 `REGISTERED → STARTING → RUNNING ↔ PAUSED → STOPPING → STOPPED`；初始化或检查点不兼容时进入 `FAULTED`，或带原因进入 `PAUSED`。结束一次任务不结束实例。
 
+| 状态 | 值 | 含义 |
+|---|---:|---|
+| `REGISTERED` | 1 | 已注册，尚无驻留实例（`instance_id` 为 0） |
+| `STARTING` | 2 | 策略初始化中 |
+| `RUNNING` | 3 | 可以拥有并推进工作 |
+| `PAUSED` | 4 | 带原因暂停，不新增工作 |
+| `STOPPING` | 5 | 收敛全部所属工作 |
+| `STOPPED` | 6 | 已停止，资源已回收 |
+| `FAULTED` | 7 | 初始化失败或检查点不兼容 |
+
+M1 已实现的转换只有一条：Kernel 进入 `RUNNING` 时，在一个 transition 中给每个 `REGISTERED` 的 Agent 分配 `instance_id` 并转为 `RUNNING`（C-LIFE-025）。策略尚未接入，所以暂不经过 `STARTING`。
+
 ## Goal
 
 `PROPOSED → ACTIVE ↔ PAUSED → SATISFIED / CANCELLED / EXPIRED / FAILED`。需要确认的 Goal 停留在 `PROPOSED`，不生成可执行工作；持续目标在 `ACTIVE` 期间可以多次产生 Task。
+
+| 状态 | 值 | 含义 |
+|---|---:|---|
+| `PROPOSED` | 1 | 待确认，不生成可执行工作，也不能有子目标 |
+| `ACTIVE` | 2 | 可以产生 Task |
+| `PAUSED` | 3 | 保留目标，不产生新 Task |
+| `SATISFIED` | 4 | 终态：完成条件已满足 |
+| `CANCELLED` | 5 | 终态：已取消，`cancel_revision` 记录取消它的版本 |
+| `EXPIRED` | 6 | 终态：已失效 |
+| `FAILED` | 7 | 终态：已失败 |
+
+| 从 | 到 | 触发 |
+|---|---|---|
+| — | `ACTIVE` | `GOAL_CREATE` 通过校验；版本为 1 |
+| `ACTIVE` | `PAUSED` | `GOAL_PAUSE`；不改变子目标 |
+| `PAUSED` | `ACTIVE` | `GOAL_RESUME`；不改变子目标 |
+| `PROPOSED`、`ACTIVE`、`PAUSED` | `CANCELLED` | `GOAL_CANCEL` 作用于它或它的祖先，同一 transition |
+
+每次转换使该 Goal 的 `revision` 加 1；改变已是 `2^32−1` 的版本时拒绝整个意图（C-COMMIT-012）。M1 第一部分不生成 `PROPOSED`：确认流程随授权与审批（`MA-006`）；`SATISFIED`、`EXPIRED`、`FAILED` 随 Task 与失效规则（`MA-004` 第二部分）。
 
 ## Task
 
@@ -75,17 +112,18 @@
 |---|---|---|---|
 | C-LIFE-001 | `ayni_create` 成功后 Kernel 处于 `CONFIGURING` | 创建后直接处于 `RUNNING` 并开始接受意图 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
 | C-LIFE-002 | `ayni_destroy` 只在 `CONFIGURING` 或 `STOPPED` 成功；其他状态返回 `AYNI_INVALID_STATE` 且 Kernel 不变；`STOPPED` 意味着没有 Host 或 Provider 仍持有完成槽（C-HOST-018） | 运行中的 Kernel 被销毁，在途 I/O 回调写入已释放的内存 | M1 已实现：`KernelApi.kernel_memory_is_reusable_after_destroy`、`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`；`MA-005` |
-| C-LIFE-003 | 注册只在 `CONFIGURING` 进行；`ayni_start` 一次性校验全部交叉引用，注册顺序无关；引用缺失时 start 失败并保持 `CONFIGURING` | 先注册 Binding 后注册 Capability 导致失败 | `MA-005` |
-| C-LIFE-004 | 非 `RUNNING` 时 `ayni_submit_intent` 返回 `AYNI_NOT_READY`，不排队、不改变状态 | 恢复期间到达的创建提醒命令被排队，恢复后又按重建的幂等映射再次创建 | E2 F13 |
+| C-LIFE-003 | 注册只在 `CONFIGURING` 进行；`ayni_start` 一次性校验全部交叉引用，注册顺序无关；引用缺失时 start 失败并保持 `CONFIGURING` | 先注册 Binding 后注册 Capability 导致失败 | M1 已实现（注册只在 `CONFIGURING`）：`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.return_values_follow_the_state_table`；交叉引用校验随引用其他目录项的注册（策略：`MA-004` 第三部分；绑定：`MA-008`） |
+| C-LIFE-004 | 非 `RUNNING` 时 `ayni_submit_intent` 返回 `AYNI_NOT_READY`，不排队、不改变状态 | 恢复期间到达的创建提醒命令被排队，恢复后又按重建的幂等映射再次创建 | M1 已实现：`WorkModel.intent_outside_running_is_not_ready`、`WorkModel.return_values_follow_the_state_table`；E2 F13 |
 | C-LIFE-005 | 生命周期变化经事件与 `ayni_get_lifecycle` 同时可见；事件在状态已应用之后发出 | 事件报告 `RUNNING` 时查询仍返回 `RECOVERING` | `MA-005` |
 | C-LIFE-006 | 首版不提供运行时注销；运行时发现的目录变化另行定义为经提交协调的 transition | 运行中删除 Capability，在途 ActionRecord 失去语义 | `MA-005` |
-| C-LIFE-007 | 已实现的函数在每个状态下按上表返回；表中的 `INVALID_STATE` 不改变状态；进入 `RESTRICTED` 时记录原因，`ayni_get_kernel_info` 只在 `RESTRICTED` 中报告它（ADR-0016） | 恢复失败后状态停在 `RECOVERING`，调用方无法区分“仍在恢复”与“已经失败” | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |
+| C-LIFE-007 | 已实现的函数在每个状态下按上表返回；表中的 `INVALID_STATE` 不改变状态；进入 `RESTRICTED` 时记录原因，`ayni_get_kernel_info` 只在 `RESTRICTED` 中报告它（ADR-0016） | 恢复失败后状态停在 `RECOVERING`，调用方无法区分“仍在恢复”与“已经失败” | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |
 | C-LIFE-010 | ActionRecord 只按上表转换；`RESULT_UNKNOWN` 只能经权威查询离开 | `RESULT_UNKNOWN` 超时后自动改为 `FAILED` 并重试 | E2 F3–F5；状态转换表测试 |
 | C-LIFE-011 | 运行终态与副作用结果分开：`CANCELLED`/`FAILED` 的记录列出已完成、未执行与未知的步骤，不推导“没有影响” | 取消后报告“无影响”，但第一步转向已执行 | E4 步骤 3 |
 | C-LIFE-012 | 取消请求已受理、停止指令已送达、物理输出已停止是三种事实，分别表达 | 把“已发送停止”显示为“已停止” | E1 步骤 4；C-STOP-006 |
 | C-LIFE-013 | 撤销响应区分 `ACCEPTED`、`DURABLY_EFFECTIVE`、`CANCELLING`、`STOP_CONFIRMED`；只有最后一项证明本地物理停止 | 授权版本生效即报告设备已停止 | E1 步骤 6；E2 F10 |
-| C-LIFE-020 | 已接受的 Goal/Task 固定 owner 实例与设备；失联不自动转交其他实例 | 设备 A 离线后，设备 B 上的同名实例接管 A 的提醒 | `MA-004`；`MA-016` |
-| C-LIFE-021 | 暂停 Goal 保留目标与检查点，停止产生新 Task；在途 Task 按该类型声明的暂停点收敛；无法立即暂停时显示“暂停中” | 暂停目标后仍派生新 Task | `MA-004` 传播矩阵 |
-| C-LIFE-022 | 取消 Goal/Task 标记取消版本，禁止新增派生步骤，并传播到所属在途请求；已完成影响保留，补偿是另一次需授权的操作 | 取消后自动反向转动以“回滚”物理世界 | `MA-004`；E4 步骤 3 |
+| C-LIFE-020 | 已接受的 Goal/Task 固定 owner 实例与设备；失联不自动转交其他实例 | 设备 A 离线后，设备 B 上的同名实例接管 A 的提醒 | M1 已实现（Goal：创建时指定本 Kernel 的实例，之后没有改变 owner 的意图）：`WorkModel.owner_must_be_an_instance_of_this_kernel`、`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.child_must_have_its_parents_owner`；Task 随 `MA-004` 第二部分；`MA-016` |
+| C-LIFE-021 | 暂停 Goal 保留目标与检查点，停止产生新 Task；在途 Task 按该类型声明的暂停点收敛；无法立即暂停时显示“暂停中” | 暂停目标后仍派生新 Task | M1 已实现（Goal 状态与版本）：`WorkModel.pause_stays_on_the_goal_and_cancel_reaches_its_descendants`、`GoalTable.pause_and_resume_change_only_the_goal`、`GoalTable.lifecycle_decides_which_changes_are_allowed`；停止派生 Task 与在途 Task 的暂停点随 `MA-004` 第二部分传播矩阵 |
+| C-LIFE-022 | 取消 Goal/Task 标记取消版本，禁止新增派生步骤，并传播到所属在途请求；已完成影响保留，补偿是另一次需授权的操作 | 取消后自动反向转动以“回滚”物理世界 | M1 已实现（Goal 及其后代在一个 transition 中取消并记录 `cancel_revision`）：`WorkModel.pause_stays_on_the_goal_and_cancel_reaches_its_descendants`、`GoalTable.cancel_reaches_every_live_descendant_and_nothing_else`；传播到 Task 与在途请求随 `MA-004` 第二、三部分；E4 步骤 3 |
 | C-LIFE-023 | 实例暂停阻止其新增工作并到兼容检查点；停止收敛全部所属工作并回收资源；“暂停助理”不映射为暂停全部实例（C-PROD-020） | 暂停助理时把提醒所属实例一并暂停 | E1 步骤 11 |
 | C-LIFE-024 | 不兼容的私有检查点或未知策略版本使 Task 暂停并报告原因，保留原记录，不重置 Task 或改写完成条件 | 换策略失败后 Task 被重置为 `READY` 重新开始 | E3 步骤 5 |
+| C-LIFE-025 | Kernel 进入 `RUNNING` 时，在一个 transition 中为每个已注册的 Agent 创建驻留实例并分配 `instance_id`（C-ID-010）；没有 Agent 时不产生 transition。每个 Agent 在一个 Kernel 上只有一个实例，Goal 只能以本 Kernel 的实例为 owner | 两个实例在不同 transition 中启动，查询看到一个已运行、一个仍未分配 ID 的中间状态 | M1 已实现（实例尚未持久化，每次启动重新创建）：`WorkModel.instances_start_with_the_kernel_in_one_transition`、`AgentTable.start_all_gives_each_instance_an_id_and_the_stamp`、`AgentTable.registers_each_agent_once_up_to_capacity`；跨重启保持实例随 `MA-010`；策略初始化与 `STARTING` 随 `MA-004` 第三部分 |
