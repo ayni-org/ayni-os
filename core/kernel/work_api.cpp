@@ -3,7 +3,7 @@
 // They check arguments and struct sizes, then whether a callback is running,
 // then the lifecycle state (contracts/domain/lifecycles.md); the rules of
 // sessions and intents live in kernel/intent/. Every struct here is new in
-// 0.5, so its only layout is its sizeof.
+// 0.5 or new or changed in 0.6, so its only layout is its sizeof.
 
 #include "kernel/abi_checks.h"
 #include "kernel/intent/intent.h"
@@ -78,6 +78,9 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         result.commit_seq = outcome.commit_seq;
         *out_result = result;
     }
+    if (status == AYNI_OK && outcome.derivation_due) {
+        kernel->host.wake(kernel->host.ctx);
+    }
     return status;
 }
 
@@ -102,6 +105,24 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.goal_type_version = type.version;
     info.goal_type_id_size = type.id.size();
     std::memcpy(info.goal_type_id, type.id.data(), type.id.size());
+    info.trigger = goal.trigger;
+    info.occurrences = goal.occurrences;
+    info.last_task_id = goal.last_task_id;
+    out = info;
+}
+
+void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
+    ayni_task_info_v1 info{};
+    info.struct_size = sizeof(info);
+    info.lifecycle = task.lifecycle;
+    info.task_id = task.task_id;
+    info.goal_id = task.goal_id;
+    info.owner_instance_id = task.owner_instance_id;
+    info.transition_id = task.created_transition_id;
+    info.commit_seq = task.commit_seq;
+    info.revision = task.revision;
+    info.cancel_revision = task.cancel_revision;
+    info.occurrence = task.occurrence;
     out = info;
 }
 
@@ -156,8 +177,12 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     if (status != AYNI_OK) {
         return status;
     }
+    using ayni::catalog::GoalTypeRegistry;
     ayni::catalog::GoalType type{};
-    if (goal_type->version == 0U || !type.id.assign(goal_type->goal_type_id)) {
+    if (goal_type->version == 0U || !type.id.assign(goal_type->goal_type_id) ||
+        goal_type->trigger_kinds == 0U ||
+        (goal_type->trigger_kinds & ~GoalTypeRegistry::defined_trigger_kinds) != 0U ||
+        goal_type->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
@@ -166,6 +191,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     type.version = goal_type->version;
     type.ctx = goal_type->ctx;
     type.validate = goal_type->validate;
+    type.trigger_kinds = goal_type->trigger_kinds;
     return add_status(kernel->work.goal_types.add(type));
 }
 
@@ -244,6 +270,7 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
     info.agent_id = agent->agent_id;
     info.instance_id = agent->instance_id;
     info.commit_seq = agent->stamp.commit_seq;
+    info.revision = agent->revision;
     *out_info = info;
     return AYNI_OK;
 }
@@ -265,6 +292,26 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
         return AYNI_NOT_FOUND;
     }
     write_goal_info(*kernel, index, *out_info);
+    return AYNI_OK;
+}
+
+ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
+                            ayni_task_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const ayni_status_t status = check_size(*out_info);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.tasks.find(task_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    write_task_info(kernel->work.tasks.at(index), *out_info);
     return AYNI_OK;
 }
 

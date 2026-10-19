@@ -25,4 +25,35 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
     return AYNI_OK;
 }
 
+namespace {
+
+// Clears derivation_due when there is nothing to derive, so later calls skip
+// the search until a change sets it again.
+bool next_derivable(WorkModel &model, uint32_t &out_goal_index) {
+    if (model.derivation_due &&
+        !(model.ids.available() && work::find_derivable(model.tables(), out_goal_index))) {
+        model.derivation_due = false;
+    }
+    return model.derivation_due;
+}
+
+} // namespace
+
+bool refresh_derivation_due(WorkModel &model) {
+    uint32_t goal_index = 0;
+    return next_derivable(model, goal_index);
+}
+
+bool derive_next_task(WorkModel &model) {
+    uint32_t goal_index = 0;
+    if (!next_derivable(model, goal_index)) {
+        return false;
+    }
+    uint64_t task_id = 0;
+    static_cast<void>(model.ids.allocate(task_id)); // available() above
+    work::WorkTables tables = model.tables();
+    work::derive(tables, goal_index, task_id, model.transitions.next());
+    return true;
+}
+
 } // namespace ayni::kernel

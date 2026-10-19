@@ -1,6 +1,6 @@
 # ID 与时间
 
-- **关联**：计划 §2.2、§2.7、§3.4、§3.6、§4.4；ADR-0004、ADR-0017；`MA-003`、`MA-004`、`MA-038`；E2 F9、F13，E3 步骤 2
+- **关联**：计划 §2.2、§2.7、§3.4、§3.6、§4.4；ADR-0004、ADR-0017、ADR-0018；`MA-003`、`MA-004`、`MA-038`；E2 F9、F13，E3 步骤 2
 - **属主**：`core/foundation`（类型与生成规则），各 ID 的分配者见下表
 
 ## ID 一览
@@ -36,7 +36,7 @@
 | C-ID-007 | `message_id` 每次重试可以改变，不得用作业务幂等键；业务幂等只看 `command_id` 或 `operation_id` | 以 `message_id` 去重，重连重发的同一命令创建第二个提醒 | E2 F9 |
 | C-ID-008 | 一条消息只携带一种幂等键：管理命令用 `command_id`，设备间调用用 `operation_id` | 一条 `capability.invoke` 同时带两个键，二者冲突时无法判定 | `wire/envelope.md` C-WIRE-003 |
 | C-ID-009 | `boot_epoch` 在 Kernel 开放任何输出之前已持久化递增；从受限栅栏重载也视为新的启动 | 重载后沿用旧 `boot_epoch`，旧写入方的完成事件被当作当前代际 | M1 已实现（启动）：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.each_reboot_persists_the_next_epoch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.reboot_after_an_unknown_append_skips_its_epoch`；受限栅栏重载随 `MA-010`；E2 F12 |
-| C-ID-010 | Kernel 分配的 `instance_id`、`goal_id`、`session_id` 共用一个分配器，取值为 `boot_epoch × 2^32 + seq`：高 32 位是本次启动已持久化的 `boot_epoch`，`seq` 从 1 开始逐个递增，每次启动最多 2^32−1 个，用尽后新的分配返回 `CAPACITY_EXCEEDED`（`ID_EXHAUSTED`），不回绕；`boot_epoch` 因此以 2^32−1 为上限，日志中的最后一个代际已到上限时启动进入 `RESTRICTED`（`BOOT_EPOCH_EXHAUSTED`）。ID 0 不指向任何对象。不同启动分配的 ID 因代际不同而不相等，不需要持久化计数器（ADR-0017） | 每次启动的序号从 1 开始而不带代际，重启后新 Goal 取得旧 Goal 的 `goal_id` | M1 已实现：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.used_up_ids_refuse_goals_and_sessions`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`、`KernelLifecycle.largest_epoch_and_transition_id_still_boot`；实例跨重启保持同一 `instance_id` 随 `MA-010` |
+| C-ID-010 | Kernel 分配的 `instance_id`、`goal_id`、`task_id`、`session_id` 共用一个分配器，取值为 `boot_epoch × 2^32 + seq`：高 32 位是本次启动已持久化的 `boot_epoch`，`seq` 从 1 开始逐个递增，每次启动最多 2^32−1 个，用尽后新的 Goal 与会话返回 `CAPACITY_EXCEEDED`（`ID_EXHAUSTED`），Task 不再派生（ADR-0018），不回绕；`boot_epoch` 因此以 2^32−1 为上限，日志中的最后一个代际已到上限时启动进入 `RESTRICTED`（`BOOT_EPOCH_EXHAUSTED`）。ID 0 不指向任何对象。不同启动分配的 ID 因代际不同而不相等，不需要持久化计数器（ADR-0017） | 每次启动的序号从 1 开始而不带代际，重启后新 Goal 取得旧 Goal 的 `goal_id` | M1 已实现：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.used_up_ids_refuse_goals_and_sessions`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`、`KernelLifecycle.largest_epoch_and_transition_id_still_boot`、`WorkTask.once_goal_derives_one_task_in_the_next_step`、`WorkTask.used_up_ids_leave_the_occurrence_waiting`；实例跨重启保持同一 `instance_id` 随 `MA-010` |
 
 ## 时间
 

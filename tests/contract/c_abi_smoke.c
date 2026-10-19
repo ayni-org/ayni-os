@@ -57,6 +57,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_error_v1 error = {0};
     ayni_agent_info_v1 agent_info = {0};
     ayni_goal_info_v1 goal_info = {0};
+    ayni_task_info_v1 task_info = {0};
     uint64_t session_id = 0;
     int failures = 0;
 
@@ -73,6 +74,8 @@ static int check_work_model(ayni_kernel_t *kernel) {
     goal_type.goal_type_id.data = "reminder";
     goal_type.goal_type_id.size = 8u;
     goal_type.validate = accept_parameters;
+    goal_type.trigger_kinds =
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     failures +=
         expect(ayni_register_goal_type(kernel, &goal_type) == AYNI_OK, "register goal type");
 
@@ -88,6 +91,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     create.goal_type_version = 1u;
     create.goal_type_id = goal_type.goal_type_id;
     create.owner_instance_id = 1u;
+    create.trigger = AYNI_TRIGGER_ONCE;
     intent.struct_size = (uint32_t)sizeof intent;
     intent.kind = AYNI_INTENT_GOAL_CREATE;
     intent.body = &create;
@@ -99,10 +103,13 @@ static int check_work_model(ayni_kernel_t *kernel) {
 
     agent_info.struct_size = (uint32_t)sizeof agent_info;
     goal_info.struct_size = (uint32_t)sizeof goal_info;
+    task_info.struct_size = (uint32_t)sizeof task_info;
     failures += expect(ayni_get_agent(kernel, agent.agent_id, &agent_info) == AYNI_INVALID_STATE,
                        "agent query in CONFIGURING");
     failures += expect(ayni_get_goal(kernel, 1u, &goal_info) == AYNI_INVALID_STATE,
                        "goal query in CONFIGURING");
+    failures += expect(ayni_get_task(kernel, 1u, &task_info) == AYNI_INVALID_STATE,
+                       "task query in CONFIGURING");
     return failures;
 }
 
@@ -131,6 +138,7 @@ int main(void) {
     config.session_capacity = 1u;
     config.goal_depth_max = 1u;
     config.goal_children_max = 1u;
+    config.task_capacity = 1u;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
     host.wake = test_wake;

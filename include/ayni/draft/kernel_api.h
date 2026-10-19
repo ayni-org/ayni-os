@@ -141,14 +141,16 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
  * Until a kind is implemented, ayni_submit_intent returns AYNI_UNSUPPORTED
  * for it. Their body types are fixed together with each kind (C-WIRE-014).
  */
-#define AYNI_INTENT_GRANT_CREATE ((ayni_intent_kind_t)5)
-#define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)6)
-#define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)7)
-#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)8)
-#define AYNI_INTENT_SUBSCRIPTION_OPEN ((ayni_intent_kind_t)9)
-#define AYNI_INTENT_SUBSCRIPTION_CLOSE ((ayni_intent_kind_t)10)
-#define AYNI_INTENT_ASSISTANT_PAUSE ((ayni_intent_kind_t)11)
-#define AYNI_INTENT_ASSISTANT_RESUME ((ayni_intent_kind_t)12)
+#define AYNI_INTENT_GRANT_CREATE ((ayni_intent_kind_t)9)
+#define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)10)
+#define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)11)
+#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)12)
+#define AYNI_INTENT_SUBSCRIPTION_OPEN ((ayni_intent_kind_t)13)
+#define AYNI_INTENT_SUBSCRIPTION_CLOSE ((ayni_intent_kind_t)14)
+/* Whether the kernel or the assistant coordinator owns the pause set is
+ * decided with MA-019 (ADR-0018). */
+#define AYNI_INTENT_ASSISTANT_PAUSE ((ayni_intent_kind_t)15)
+#define AYNI_INTENT_ASSISTANT_RESUME ((ayni_intent_kind_t)16)
 
 /* ---- Events ---------------------------------------------------------- */
 

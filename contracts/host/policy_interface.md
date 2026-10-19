@@ -1,6 +1,6 @@
 # 策略与 GoalType 接口
 
-- **关联**：计划 §2.5、§2.7、§3.3「新策略」、§5.3；ADR-0006、ADR-0017；`MA-004`、`MA-009`、`MA-019`；E3 步骤 2–5，E4 步骤 1–2
+- **关联**：计划 §2.5、§2.7、§3.3「新策略」、§5.3；ADR-0006、ADR-0017、ADR-0018；`MA-004`、`MA-009`、`MA-019`；E3 步骤 2–5，E4 步骤 1–2
 - **属主**：`catalog/strategy`、`catalog/goal_type`（注册与版本）；`kernel`（在 `step` 内调用并校验返回的意图）；各实现（`strategies/`、`applications/`）
 - **头文件**：GoalType 注册在 `include/ayni/ayni.h`（已实现）；策略在 `include/ayni/draft/policy_v1.h`（草案）
 
@@ -43,6 +43,6 @@ decide(ctx, snapshot, private_checkpoint) -> (intents[≤N], new_private_checkpo
 | C-POLICY-006 | 相同快照与私有检查点产生相同输出；回调不依赖隐藏的全局状态、真实时间或未经快照提供的随机数 | 规则策略读取系统时间决定是否触发，重放轨迹不一致 | E3 步骤 1–5（确定性轨迹） |
 | C-POLICY-007 | 私有检查点带策略 ID 与版本；版本不兼容或策略未知时 Task 暂停并报告原因，不重置 Task（C-LIFE-024） | 新版本策略读不懂旧检查点，于是从头开始规划并重做已完成步骤 | E3 步骤 5 |
 | C-POLICY-008 | 策略只通过共同检查点中的 `step_key` 指代步骤；`step_key` 在 Task 内唯一，跨策略替换保持稳定 | 两个策略对同一步骤使用不同名字，换策略后该步骤被当成新步骤 | E3 步骤 4；E4 步骤 2；C-ID-003 |
-| C-POLICY-009 | GoalType 声明目标语义、触发、完成条件、暂停点与等待上限；Kernel 只执行通用生命周期与约束；未知的 GoalType 拒绝 | 提交未注册类型的 Goal，Kernel 按默认规则执行 | M1 已实现（未知的类型或版本拒绝，参数由 GoalType 校验）：`WorkModel.unknown_goal_type_or_version_is_refused`、`WorkModel.parameters_are_checked_last_by_size_and_by_the_goal_type`、`GoalTypeRegistry.tells_an_unknown_id_from_an_unknown_version`、`GoalTypeRegistry.validator_decides_the_parameters`、`GoalTypeRegistry.type_without_validator_takes_no_parameters`；触发、完成条件、暂停点与等待上限随 `MA-004` 第二、三部分；E4 步骤 5 |
+| C-POLICY-009 | GoalType 声明目标语义、触发、完成条件、暂停点与等待上限；Kernel 只执行通用生命周期与约束；未知的 GoalType 拒绝 | 提交未注册类型的 Goal，Kernel 按默认规则执行 | M1 已实现（未知的类型或版本拒绝，参数由 GoalType 校验；GoalType 声明它接受的触发种类，Goal 只能选择其中之一，ADR-0018）：`WorkModel.unknown_goal_type_or_version_is_refused`、`WorkModel.parameters_are_checked_last_by_size_and_by_the_goal_type`、`GoalTypeRegistry.tells_an_unknown_id_from_an_unknown_version`、`GoalTypeRegistry.validator_decides_the_parameters`、`GoalTypeRegistry.type_without_validator_takes_no_parameters`、`GoalTypeRegistry.trigger_kinds_decide_the_accepted_triggers`、`WorkTask.goal_type_must_accept_the_trigger`、`WorkModel.registration_checks_its_arguments`；时间与事件触发随 `MA-004` 第二部分，完成条件、暂停点与等待上限随第三部分；E4 步骤 5 |
 | C-POLICY-010 | v0.1 只在停机与重启时替换策略，不支持在线热替换 | 运行中替换策略导致同一 Task 同时被两个策略推进 | E3 步骤 2、4 |
 | C-POLICY-011 | 策略与 GoalType 的复杂计算放入异步 Provider；回调的工作量上限在 M1 测量并写入注册描述 | 规划算法在回调中运行 2 秒，阻塞停止事件处理 | `MA-009`；C-LIMIT-011 |

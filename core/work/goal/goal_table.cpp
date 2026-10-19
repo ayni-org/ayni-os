@@ -59,6 +59,7 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
     created.goal_type_index = goal.goal_type_index;
     created.revision = 1;
     created.parameter_size = goal.parameters.size;
+    created.trigger = goal.trigger;
     created.lifecycle = AYNI_GOAL_ACTIVE;
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {
         created.depth = goals_[created.parent_index].depth + 1U;
@@ -85,13 +86,13 @@ GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
     if (!allows(goal, change)) {
         return ChangeCheck::invalid_state;
     }
-    if (goal.revision == max_revision) {
+    if (at_largest_revision(goal)) {
         return ChangeCheck::revision_exhausted;
     }
     if (change == GoalChange::cancel) {
         for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
             const Goal &other = goals_[later];
-            if (is_live(other.lifecycle) && other.revision == max_revision &&
+            if (is_live(other.lifecycle) && at_largest_revision(other) &&
                 descends_from(later, index)) {
                 return ChangeCheck::revision_exhausted;
             }
@@ -118,6 +119,39 @@ void GoalTable::apply(uint32_t index, GoalChange change, foundation::TransitionS
         Goal &other = goals_[later];
         if (is_live(other.lifecycle) && descends_from(later, index)) {
             set_lifecycle(other, AYNI_GOAL_CANCELLED, stamp);
+        }
+    }
+}
+
+bool GoalTable::has_due_occurrence(uint32_t index) const {
+    const Goal &goal = goals_[index];
+    return goal.trigger == AYNI_TRIGGER_ONCE && goal.occurrences == 0U;
+}
+
+void GoalTable::record_occurrence(uint32_t index, uint64_t task_id,
+                                  foundation::TransitionStamp stamp) {
+    Goal &goal = goals_[index];
+    ++goal.occurrences;
+    goal.last_task_id = task_id;
+    goal.commit_seq = stamp.commit_seq;
+}
+
+bool GoalTable::owned_at_largest_revision(uint64_t instance_id) const {
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        const Goal &goal = goals_[index];
+        if (goal.owner_instance_id == instance_id && is_live(goal.lifecycle) &&
+            at_largest_revision(goal)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GoalTable::cancel_owned(uint64_t instance_id, foundation::TransitionStamp stamp) {
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        Goal &goal = goals_[index];
+        if (goal.owner_instance_id == instance_id && is_live(goal.lifecycle)) {
+            set_lifecycle(goal, AYNI_GOAL_CANCELLED, stamp);
         }
     }
 }
@@ -150,6 +184,14 @@ uint32_t GoalTable::live_children(uint32_t parent_index) const {
         }
     }
     return count;
+}
+
+bool GoalTable::in_subtree(uint32_t index, uint32_t root) const {
+    return index == root || (index > root && descends_from(index, root));
+}
+
+bool GoalTable::at_largest_revision(const Goal &goal) {
+    return goal.revision == max_revision;
 }
 
 // Walks up at most depth_max parents.

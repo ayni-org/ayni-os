@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1：在 M0 的工程骨架（Native 与 ESP-IDF 构建、依赖检查、CI）、契约与 C 头文件草案之上，Core 已有事件入口与完成槽、Kernel 生命周期与启动恢复、主体与会话、Agent 实例和 Goal 意图（Goal 尚未持久化），只在 Native 与模拟 Host 上测试；尚无 SDK、持久存储 Host 或经实机验证的固件，逐条状态见 [contracts/traceability.md](contracts/traceability.md)。本文描述设计目标；平台支持和能力均须取得对应验证证据后才能标记为已实现。构建方法见 [开发指南](docs/development.md)，M0 复核见 [reports/core/m0-review.md](reports/core/m0-review.md)。
+> 当前仓库处于 M1：在 M0 的工程骨架（Native 与 ESP-IDF 构建、依赖检查、CI）、契约与 C 头文件草案之上，Core 已有事件入口与完成槽、Kernel 生命周期与启动恢复、主体与会话、Agent 实例、Goal 意图，以及 Task 派生与暂停、恢复、取消的传播（Goal 与 Task 尚未持久化），只在 Native 与模拟 Host 上测试；尚无 SDK、持久存储 Host 或经实机验证的固件，逐条状态见 [contracts/traceability.md](contracts/traceability.md)。本文描述设计目标；平台支持和能力均须取得对应验证证据后才能标记为已实现。构建方法见 [开发指南](docs/development.md)，M0 复核见 [reports/core/m0-review.md](reports/core/m0-review.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 

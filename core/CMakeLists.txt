@@ -31,6 +31,8 @@ ayni_add_core_module(work
     SOURCES
         work/agent/agent_table.cpp
         work/goal/goal_table.cpp
+        work/propagation.cpp
+        work/task/task_table.cpp
     DEPENDS foundation)
 
 ayni_add_core_module(kernel
@@ -38,8 +40,8 @@ ayni_add_core_module(kernel
         kernel/boot/boot_sequence.cpp
         kernel/completion/completion_pool.cpp
         kernel/ingress/event_queue.cpp
-        kernel/intent/goal_intents.cpp
         kernel/intent/intent.cpp
+        kernel/intent/intent_rules.cpp
         kernel/intent/work_model.cpp
         kernel/kernel_api.cpp
         kernel/kernel_layout.cpp
