@@ -8,7 +8,7 @@
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 21 | 1 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 0 |
-| [domain/commit_and_output.md](domain/commit_and_output.md) | 18 | 2 |
+| [domain/commit_and_output.md](domain/commit_and_output.md) | 19 | 3 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 5 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 17 | 9 |
 | [domain/limits.md](domain/limits.md) | 12 | 6 |
@@ -24,7 +24,7 @@
 | [storage/records.md](storage/records.md) | 14 | 4 |
 | [wire/envelope.md](wire/envelope.md) | 16 | 0 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 302 | 45 |
+| 合计 | 303 | 46 |
 
 ## 计划章节 → 契约文档
 
@@ -89,7 +89,7 @@
 | `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-HOST-020、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
 | `MA-008` | C-CALL-001、C-CALL-003、C-BIND-002、C-BIND-003、C-LIFE-003、C-BUDGET-005、C-PROV-002、C-PROV-003、C-PROV-010 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-011 |
-| `MA-010` | C-COMMIT-001、C-COMMIT-003、C-COMMIT-004、C-COMMIT-014、C-ID-001、C-ID-006、C-ID-009、C-ID-010、C-TIME-003、C-LIFE-025、C-VER-020、C-VER-023、C-HOST-009、C-HOST-010、C-HOST-011、C-HOST-019、C-STORE-001、C-STORE-002、C-STORE-003、C-STORE-006、C-STORE-007、C-STORE-013、C-STORE-014 |
+| `MA-010` | C-COMMIT-001、C-COMMIT-003、C-COMMIT-004、C-COMMIT-014、C-COMMIT-016、C-ID-001、C-ID-006、C-ID-009、C-ID-010、C-TIME-003、C-LIFE-025、C-VER-020、C-VER-023、C-HOST-009、C-HOST-010、C-HOST-011、C-HOST-019、C-STORE-001、C-STORE-002、C-STORE-003、C-STORE-006、C-STORE-007、C-STORE-013、C-STORE-014 |
 | `MA-011` | C-TIME-004、C-TIME-005、C-TIME-006、C-TIME-007、C-LIMIT-012、C-PROD-018、C-PROD-032、C-PROD-034、C-PROD-042、C-JSON-010 |
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
@@ -153,9 +153,10 @@
 
 | 条款 | 验证 |
 |---|---|
-| C-AUTH-010 | M1 已实现（会话由 Host 以已认证的主体与渠道打开，意图只带 `session_id`，来源取自会话）：`WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`、`SessionTable.closed_session_is_gone_and_frees_its_place`；渠道信任级别对授权的影响随 `MA-006`；E1 步骤 7 |
+| C-AUTH-010 | M1 已实现（范围：意图只带 `session_id`，主体、渠道与来源取自会话，意图不能自报；`ayni_open_session` 仍是任何调用方都能调用的公开函数，只许 Host 打开会话随 `MA-006` 与组合根）：`WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`、`SessionTable.closed_session_is_gone_and_frees_its_place`；渠道信任级别对授权的影响随 `MA-006`；E1 步骤 7 |
 | C-COMMIT-004 | M1 已实现（查询标注：对象带 `commit_seq`，`ayni_get_kernel_info` 报告 `durable_seq`，结果未知的追加不计入）：`KernelLifecycle.durable_seq_follows_the_log_read_and_then_the_boot_batch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`；输出的 `requires_seq` 门控随 `MA-010`；E2 F6、F9；属性测试：每个已释放输出的 seq ≤ 恢复后的 `durable_seq` |
-| C-COMMIT-012 | M1 已实现（Goal 意图：创建取 0，其余取目标的当前版本）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`；策略意图及其依赖版本随 `MA-004` 第三部分；E1 步骤 9；E4 步骤 4 |
+| C-COMMIT-012 | M1 已实现（Goal 意图：创建取 0，其余取目标的当前版本）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing`；策略意图及其依赖版本随 `MA-004` 第三部分；E1 步骤 9；E4 步骤 4 |
+| C-COMMIT-016 | M1 已实现：`WorkModel.commit_seq_of_unstored_work_is_reused_by_later_boots`；输出的 `requires_seq` 门控随 `MA-010` |
 | C-ID-001 | M1 已实现（Kernel 分配的 ID 不复用；对象尚未持久化，重启后不恢复）：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`；删除与 tombstone 随 `MA-010`；E1 步骤 9 |
 | C-ID-006 | M1 已实现（完成槽）：`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`；恢复请求以 `boot_epoch` 0 命名且 `request_id` 依次递增：`KernelLifecycle.recovery_requests_use_boot_epoch_0`；Host 不投递旧实例结果的契约测试随 `MA-010`；E2 F7；E3 步骤 2 |
 | C-ID-009 | M1 已实现（启动）：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.each_reboot_persists_the_next_epoch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.reboot_after_an_unknown_append_skips_its_epoch`；受限栅栏重载随 `MA-010`；E2 F12 |
@@ -164,7 +165,7 @@
 | C-LIFE-001 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
 | C-LIFE-002 | M1 已实现：`KernelApi.kernel_memory_is_reusable_after_destroy`、`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`；`MA-005` |
 | C-LIFE-003 | M1 已实现（注册只在 `CONFIGURING`）：`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.return_values_follow_the_state_table`；交叉引用校验随引用其他目录项的注册（策略：`MA-004` 第三部分；绑定：`MA-008`） |
-| C-LIFE-004 | M1 已实现：`WorkModel.intent_outside_running_is_not_ready`、`WorkModel.return_values_follow_the_state_table`；E2 F13 |
+| C-LIFE-004 | M1 已实现：`WorkModel.intent_outside_running_is_not_ready`、`WorkModel.draining_answers_queries_and_closes_sessions_but_takes_no_work`、`WorkModel.return_values_follow_the_state_table`；E2 F13 |
 | C-LIFE-007 | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |
 | C-LIFE-020 | M1 已实现（Goal：创建时指定本 Kernel 的实例，之后没有改变 owner 的意图）：`WorkModel.owner_must_be_an_instance_of_this_kernel`、`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.child_must_have_its_parents_owner`；Task 随 `MA-004` 第二部分；`MA-016` |
 | C-LIFE-021 | M1 已实现（Goal 状态与版本）：`WorkModel.pause_stays_on_the_goal_and_cancel_reaches_its_descendants`、`GoalTable.pause_and_resume_change_only_the_goal`、`GoalTable.lifecycle_decides_which_changes_are_allowed`；停止派生 Task 与在途 Task 的暂停点随 `MA-004` 第二部分传播矩阵 |
@@ -173,7 +174,7 @@
 | C-LIMIT-001 | M1 已实现（入口、完成槽、存储缓冲与工作模型）：`KernelLifecycle.batch_larger_than_the_buffer_restricts_as_read_failed`、`IngressQueue.ten_thousand_events_pass_in_order_without_loss`、`KernelApi.capacity_outside_its_range_is_invalid_argument`、`KernelApi.memory_requirements_grow_with_each_capacity`、`KernelApi.goal_tree_limits_need_no_memory`、`WorkModel.full_goal_table_refuses_without_side_effects`；其余容量随各自工作包；`MA-003`；第 10.6 节 |
 | C-LIMIT-002 | M1 已实现（已有的限额）：入口 `IngressQueue.full_queue_rejects_other_events_with_busy`；完成槽 `CompletionPoolTest.exhausted_slots_return_busy_without_calling_the_port`；存储缓冲 `KernelLifecycle.batch_larger_than_the_buffer_restricts_as_read_failed`；主体、Agent 与 GoalType `WorkModel.registration_refuses_duplicates_and_capacity`；Goal `WorkModel.full_goal_table_refuses_without_side_effects`；Goal 参数 `WorkModel.parameters_are_checked_last_by_size_and_by_the_goal_type`；子目标 `WorkModel.child_goals_follow_their_parent_and_the_tree_limits`；会话 `WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`；ID `WorkModel.used_up_ids_refuse_goals_and_sessions`；其余限额随各自工作包；`MA-018`；`MA-005` |
 | C-LIMIT-004 | M0 已实现：ctest `core_does_not_reference_heap_allocator` 检查每个 Core 静态库不引用 `malloc`/`free`/`operator new`/`operator delete`，也不引用 `strdup`、`asprintf`、`getline` 等替调用方分配内存的 libc 函数；ctest `heap_check_detects_allocator` 与 ctest `heap_check_detects_strdup` 证明该检查有效 |
-| C-LIMIT-007 | M1 已实现（子目标深度与数量）：`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.tree_limits_refuse_deeper_or_more_children`、`GoalTable.zero_limits_allow_top_level_goals_only`；周期触发随 `MA-004` 第二部分；E2 F8 |
+| C-LIMIT-007 | M1 已实现（子目标深度与数量）：`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.tree_limits_refuse_deeper_or_more_children`、`GoalTable.zero_limits_allow_top_level_goals_only`、`WorkModel.tree_limits_missing_from_the_config_take_their_defaults`；周期触发随 `MA-004` 第二部分；E2 F8 |
 | C-LIMIT-008 | M1 已实现（入口与完成槽）：`IngressQueue.full_queue_rejects_other_events_with_busy`、`IngressQueue.full_queue_replaces_newest_value_of_the_same_stream`、`IngressQueue.telemetry_flood_keeps_each_stream_in_order_and_accounted`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；E1 步骤 10；`MA-003` |
 | C-LIMIT-011 | M1 已实现：`KernelLifecycle.step_applies_at_most_max_items`、`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`（请求在之后的 step 中完成）、`KernelLifecycle.recovery_waits_for_a_free_slot_without_spinning`（等待空闲槽时不报告 `more_ready`）；`MA-003`；第 10.6 节「事件与容量」 |
 | C-STATUS-001 | M0 已实现：`include/ayni/ayni.h` 为每个已实现函数列出返回码，`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表：`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.step_rejects_bad_arguments_without_effect`、`KernelLifecycle.kernel_info_checks_its_output`；工作模型：`WorkModel.return_values_follow_the_state_table`、`WorkModel.intent_arguments_are_refused_before_anything_else`、`WorkModel.registration_checks_its_arguments`、`WorkModel.queries_check_their_arguments` |

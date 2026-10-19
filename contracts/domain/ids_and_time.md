@@ -19,7 +19,7 @@
 | `request_id` | Kernel | 每 `boot_epoch` | 不跨启动 | 一次异步 I/O 尝试 |
 | `command_id` | 管理端 | `(principal_id, target_device_id)` | 稳定 | 管理命令幂等键 |
 | `message_id` | 发送方 | 每条传输消息 | 不承担业务含义 | 传输去重与追踪 |
-| `transition_id`、`commit_seq` | Kernel | 每设备日志 | 稳定 | 提交批次与持久前缀 |
+| `transition_id`、`commit_seq` | Kernel | 每设备日志 | 持久后稳定；未持久的位置由之后的启动重用（C-COMMIT-016） | 提交批次与持久前缀 |
 | `subscription_id`、`generation` | Kernel | 每设备 | 订阅 ID 稳定，代际每次重新准入递增 | 订阅与旧尾部隔离 |
 | `permit_id` | 控制域 authority-owner | 每控制域 | 不跨 `kernel_boot_epoch` 有效 | 执行许可 |
 

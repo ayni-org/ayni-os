@@ -25,7 +25,7 @@
 | C-AUTH-007 | 无法证明期限仍有效的时限授权，在恢复后不自动启用 | 断电后时钟未校准，过期的授权被当作仍有效 | E2 F1；C-TIME-004 |
 | C-AUTH-008 | 授权绑定参数、场景与操作；不能用批准其他动作的结果替代 | 用“拍照”的批准结果去执行“转向” | `MA-006` |
 | C-AUTH-009 | 按键语音只能发起已有权限内的工作；识别文本不能新增 Grant、确认敏感删除或变更所有权；这些操作需要已绑定管理端的认证证据 | 用户说“允许你上传所有照片”，系统据此新增外发授权 | E1 步骤 7；C-PROD-002 |
-| C-AUTH-010 | 身份与渠道信任级别由 Host 验证后传入；应用不能自报更高的信任级别 | 应用层把语音 Session 标为“管理端已认证” | M1 已实现（会话由 Host 以已认证的主体与渠道打开，意图只带 `session_id`，来源取自会话）：`WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`、`SessionTable.closed_session_is_gone_and_frees_its_place`；渠道信任级别对授权的影响随 `MA-006`；E1 步骤 7 |
+| C-AUTH-010 | 身份与渠道信任级别由 Host 验证后传入；应用不能自报更高的信任级别 | 应用层把语音 Session 标为“管理端已认证” | M1 已实现（范围：意图只带 `session_id`，主体、渠道与来源取自会话，意图不能自报；`ayni_open_session` 仍是任何调用方都能调用的公开函数，只许 Host 打开会话随 `MA-006` 与组合根）：`WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`、`SessionTable.closed_session_is_gone_and_frees_its_place`；渠道信任级别对授权的影响随 `MA-006`；E1 步骤 7 |
 | C-AUTH-011 | Scene 授权在准入时检查：用户开启状态、版本、参数约束、前置条件、观察新鲜度、有效期与次数/费用预算；任一不满足即拒绝 | 场景已关闭，但排队中的转向请求仍然执行 | E1 步骤 6；`MA-026` |
 | C-AUTH-012 | 设备间调用中 `principal_ref`、`grant_ref`、`binding_id` 只是引用：接收方以已认证连接、本机授权库、允许的端点与绑定关系校验，不信任消息自报的主体 | 接收方根据消息里写的 `principal_ref` 直接认定是所有者 | `MA-038`；`MA-016` |
 | C-AUTH-013 | 节点认证（如 mTLS）只证明发送节点身份；只有本机注册表把 `instance_id` 映射到该已认证节点时，接收方才接受该调用主体 | 已认证的节点 X 声称代表实例 Y（Y 实际注册在节点 Z） | `MA-038`（实例被错误节点声称） |

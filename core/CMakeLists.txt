@@ -40,6 +40,7 @@ ayni_add_core_module(kernel
         kernel/ingress/event_queue.cpp
         kernel/intent/goal_intents.cpp
         kernel/intent/intent.cpp
+        kernel/intent/work_model.cpp
         kernel/kernel_api.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp

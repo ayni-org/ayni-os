@@ -7,11 +7,12 @@
  * functions and types stay in ayni.h and are not redeclared.
  *
  * Conventions for every draft struct and enumeration, as in ayni.h:
- * enumerations are uint32_t typedefs whose value 0 is never valid; strings
- * are ayni_string_v1 views that the kernel copies during the call and checks
- * against the configured limit (contracts/domain/limits.md); 64-bit
- * identifiers are plain integers here, and only their JSON form is a decimal
- * string (contracts/wire/json_subset.md C-JSON-004).
+ * enumerations are uint32_t typedefs whose states and kinds start at 1, and 0
+ * means "none" only where a field may be empty; strings are ayni_string_v1
+ * views that the kernel copies during the call and checks against the
+ * configured limit (contracts/domain/limits.md); 64-bit identifiers are plain
+ * integers here, and only their JSON form is a decimal string
+ * (contracts/wire/json_subset.md C-JSON-004).
  *
  * Calling rules (contracts/host/host_ports.md, lifecycles.md):
  * - Every function except ayni_post_event runs on the kernel owner thread.

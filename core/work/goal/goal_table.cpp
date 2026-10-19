@@ -46,8 +46,8 @@ GoalTable::Admission GoalTable::admit(const NewGoal &goal) const {
     return goals_.full() ? Admission::full : Admission::admitted;
 }
 
-uint32_t GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
-                           foundation::TransitionStamp stamp) {
+bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
+                       uint32_t &out_index) {
     Goal created{};
     created.goal_id = goal_id;
     created.parent_goal_id = goal.parent_goal_id;
@@ -65,13 +65,15 @@ uint32_t GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
     }
 
     const uint32_t index = goals_.size();
-    // Cannot fail: admit() found room.
-    static_cast<void>(goals_.push_back(created));
+    if (!goals_.push_back(created)) {
+        return false;
+    }
     if (goal.parameters.size > 0U) {
         std::memcpy(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_,
                     goal.parameters.data, goal.parameters.size);
     }
-    return index;
+    out_index = index;
+    return true;
 }
 
 GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,

@@ -715,6 +715,14 @@ TEST(KernelLifecycle, kernel_info_checks_its_output) {
     EXPECT_EQ(info.struct_size, first_layout);
     EXPECT_EQ(info.boot_epoch, 0U);
     EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
+
+    // A size that ends inside durable_seq gets whole fields only.
+    std::memset(&info, 0xA5, sizeof(info));
+    info.struct_size = first_layout + 4U;
+    ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
+    EXPECT_EQ(info.struct_size, first_layout + 4U);
+    EXPECT_EQ(info.boot_epoch, 0U);
+    EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
 }
 
 // A rejected step has no effect: no storage request is issued.

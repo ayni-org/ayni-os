@@ -1,12 +1,13 @@
 // C ABI entry points of the work model (ADR-0017): registration of
 // principals, agents and goal types, sessions, intents and their queries.
-// They check arguments and struct sizes before the lifecycle state
-// (contracts/domain/lifecycles.md); the intent rules live in
-// kernel/intent/. Every struct here is new in 0.5, so its only layout is its
-// sizeof.
+// They check arguments and struct sizes, then whether a callback is running,
+// then the lifecycle state (contracts/domain/lifecycles.md); the rules of
+// sessions and intents live in kernel/intent/. Every struct here is new in
+// 0.5, so its only layout is its sizeof.
 
 #include "kernel/abi_checks.h"
 #include "kernel/intent/intent.h"
+#include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 
 #include <ayni/ayni.h>
@@ -62,8 +63,14 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     if (status != AYNI_OK) {
         return status;
     }
+    if (kernel->in_callback()) {
+        return AYNI_INVALID_STATE;
+    }
+    if (kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
+        return AYNI_NOT_READY;
+    }
     ayni::kernel::IntentOutcome outcome{};
-    status = kernel->submit_intent(decoded, outcome, failure);
+    status = ayni::kernel::apply_intent(kernel->work, decoded, outcome, failure);
     if (status == AYNI_OK && out_result != nullptr) {
         ayni_intent_result_v1 result{};
         result.struct_size = sizeof(result);
@@ -75,8 +82,8 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
 }
 
 void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v1 &out) {
-    const ayni::work::Goal &goal = kernel.goals.at(index);
-    const ayni::catalog::GoalType &type = kernel.goal_types.at(goal.goal_type_index);
+    const ayni::work::Goal &goal = kernel.work.goals.at(index);
+    const ayni::catalog::GoalType &type = kernel.work.goal_types.at(goal.goal_type_index);
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = goal.lifecycle;
@@ -115,10 +122,10 @@ ayni_status_t ayni_register_principal(ayni_kernel_t *kernel,
         principal->binding_revision == 0U || principal->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
+    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->principals.add_owner(
+    return kernel->work.principals.add_owner(
                {principal->principal_id, principal->binding_revision, principal->kind})
                ? AYNI_OK
                : AYNI_CAPACITY_EXCEEDED;
@@ -135,10 +142,10 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
     if (agent->agent_id == 0U || agent->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
+    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return add_status(kernel->agents.add(agent->agent_id));
+    return add_status(kernel->work.agents.add(agent->agent_id));
 }
 
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type) {
@@ -153,13 +160,13 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     if (goal_type->version == 0U || !type.id.assign(goal_type->goal_type_id)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
+    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
     type.version = goal_type->version;
     type.ctx = goal_type->ctx;
     type.validate = goal_type->validate;
-    return add_status(kernel->goal_types.add(type));
+    return add_status(kernel->work.goal_types.add(type));
 }
 
 ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v1 *session,
@@ -174,30 +181,24 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
     if (!is_channel(session->channel)) {
         return AYNI_INVALID_ARGUMENT;
     }
+    if (kernel->in_callback()) {
+        return AYNI_INVALID_STATE;
+    }
     if (kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
         return AYNI_NOT_READY;
     }
-    if (kernel->principals.find(session->principal_id) == nullptr) {
-        return AYNI_NOT_FOUND;
-    }
-    uint64_t session_id = 0;
-    if (kernel->sessions.full() || !kernel->ids.allocate(session_id)) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    // Cannot fail: the table has room.
-    static_cast<void>(kernel->sessions.open({session_id, session->principal_id, session->channel}));
-    *out_session_id = session_id;
-    return AYNI_OK;
+    return ayni::kernel::open_session(kernel->work, session->principal_id, session->channel,
+                                      *out_session_id);
 }
 
 ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (!answers_queries(kernel->lifecycle)) {
+    if (kernel->in_callback() || !answers_queries(kernel->lifecycle)) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->sessions.close(session_id) ? AYNI_OK : AYNI_NOT_FOUND;
+    return kernel->work.sessions.close(session_id) ? AYNI_OK : AYNI_NOT_FOUND;
 }
 
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
@@ -233,7 +234,7 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
     if (!answers_queries(kernel->lifecycle)) {
         return AYNI_INVALID_STATE;
     }
-    const ayni::work::AgentInstance *agent = kernel->agents.find_agent(agent_id);
+    const ayni::work::AgentInstance *agent = kernel->work.agents.find_agent(agent_id);
     if (agent == nullptr) {
         return AYNI_NOT_FOUND;
     }
@@ -260,7 +261,7 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
         return AYNI_INVALID_STATE;
     }
     uint32_t index = 0;
-    if (!kernel->goals.find(goal_id, index)) {
+    if (!kernel->work.goals.find(goal_id, index)) {
         return AYNI_NOT_FOUND;
     }
     write_goal_info(*kernel, index, *out_info);

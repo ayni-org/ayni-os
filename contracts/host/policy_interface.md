@@ -35,7 +35,7 @@ decide(ctx, snapshot, private_checkpoint) -> (intents[≤N], new_private_checkpo
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-POLICY-001 | 策略回调在 `step` 内调用，GoalType 的参数校验在 `ayni_submit_intent` 内调用，二者都在 Kernel 所有者线程上；回调内不得调用 Kernel API、执行 I/O 或阻塞 | Tool Loop 在回调中同步发 HTTP 请求等待模型 | `MA-009`；评审 |
+| C-POLICY-001 | 策略回调在 `step` 内调用，GoalType 的参数校验在 `ayni_submit_intent` 内调用，二者都在 Kernel 所有者线程上；回调内不得调用 Kernel API、执行 I/O 或阻塞，回调期间修改 Kernel 的调用返回 `AYNI_INVALID_STATE` 且不产生效果 | Tool Loop 在回调中同步发 HTTP 请求等待模型 | `MA-009`；GoalType 校验部分：`WorkModel.validator_cannot_change_the_kernel_while_it_runs`；评审 |
 | C-POLICY-002 | 回调只能返回有界意图集合与新的私有检查点；意图数超过注册时声明的上限时整次返回被拒绝，Task 暂停并报告原因 | 策略返回 1,000 个调用意图，Kernel 逐个处理导致 `step` 超时 | `MA-009`；C-LIMIT-006 |
 | C-POLICY-003 | Kernel 校验每个意图的 Schema、授权、预算、资源与版本；策略不能修改内部对象、绕过资源入口、提升权限或自行恢复结果未知的动作 | 策略返回“把 ActionRecord 改为 COMPLETED”的意图并被接受 | E3 步骤 2；E4 步骤 1；C-TRUST-001 |
 | C-POLICY-004 | 快照只读，且在回调返回后失效；策略不得保存快照中的指针供下次使用 | 策略缓存上次快照中的记忆指针，下次读到已删除的记录 | ASan 用例（M1）；评审 |

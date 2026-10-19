@@ -13,6 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <limits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -35,6 +38,12 @@ struct ReminderRules {
         auto &self = *static_cast<ReminderRules *>(ctx);
         ++self.calls;
         self.last.assign(parameters.data, parameters.data + parameters.size);
+        if (self.during) {
+            // Runs once, from a copy, so that it may call the kernel freely.
+            const std::function<void()> during = std::move(self.during);
+            self.during = nullptr;
+            during();
+        }
         if (parameters.size > 4U || (parameters.size > 0U && parameters.data[0] == 0xFFU)) {
             return AYNI_INVALID_ARGUMENT;
         }
@@ -42,6 +51,7 @@ struct ReminderRules {
     }
     int calls = 0;
     std::vector<uint8_t> last;
+    std::function<void()> during; // runs once inside the next validation
 };
 
 ayni_principal_desc_v1 owner_desc(uint64_t principal_id = owner_id) {
@@ -527,6 +537,27 @@ TEST(WorkModel, child_goals_follow_their_parent_and_the_tree_limits) {
                    AYNI_INVALID_STATE, AYNI_REASON_PARENT_STATE, AYNI_OBJECT_GOAL, root);
 }
 
+// A config that ends before goal_depth_max gets the default tree limits
+// (limits.md): depth 2 and 4 live children per goal.
+TEST(WorkModel, tree_limits_missing_from_the_config_take_their_defaults) {
+    WorkNode work;
+    work.node().config().struct_size = offsetof(ayni_config_v1, goal_depth_max);
+    work.node().config().goal_capacity = 16;
+    work.run();
+    const uint64_t root = work.create_goal();
+    const uint64_t child = work.create_goal(root);
+    const uint64_t grandchild = work.create_goal(child);
+    ASSERT_NE(grandchild, 0U);
+    EXPECT_EQ(work.goal(grandchild).depth, AYNI_GOAL_DEPTH_MAX_DEFAULT);
+    expect_refused(work.create(WorkNode::create_body(work.instance(agent_a), grandchild)),
+                   AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_DEPTH, AYNI_OBJECT_GOAL, grandchild);
+    for (uint32_t children = 1; children < AYNI_GOAL_CHILDREN_MAX_DEFAULT; ++children) {
+        ASSERT_NE(work.create_goal(root), 0U);
+    }
+    expect_refused(work.create(WorkNode::create_body(work.instance(agent_a), root)),
+                   AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_CHILDREN, AYNI_OBJECT_GOAL, root);
+}
+
 // Capacity counts terminal goals; a refused goal allocates no id and takes no
 // transition.
 TEST(WorkModel, full_goal_table_refuses_without_side_effects) {
@@ -553,7 +584,7 @@ TEST(WorkModel, full_goal_table_refuses_without_side_effects) {
 TEST(WorkModel, used_up_ids_refuse_goals_and_sessions) {
     WorkNode work;
     work.run();
-    work.kernel()->ids.start(1, 0xFFFFFFFFU);
+    work.kernel()->work.ids.start(1, 0xFFFFFFFFU);
     const uint64_t last = work.create_goal();
     EXPECT_EQ(last, (uint64_t{1} << 32U) | 0xFFFFFFFFU);
     const int calls = work.rules().calls;
@@ -625,6 +656,80 @@ TEST(WorkModel, stale_revision_is_a_conflict_and_changes_nothing) {
                    AYNI_REASON_GOAL_STATE, AYNI_OBJECT_GOAL, goal);
     expect_refused(work.change(AYNI_INTENT_GOAL_RESUME, goal + 1U, 1), AYNI_NOT_FOUND,
                    AYNI_REASON_GOAL_UNKNOWN, AYNI_OBJECT_GOAL, goal + 1U);
+    // The refusals took no transition: the next change follows the pause.
+    const uint64_t paused_at = work.goal(goal).commit_seq;
+    const Submitted resumed = work.change(AYNI_INTENT_GOAL_RESUME, goal);
+    ASSERT_EQ(resumed.status, AYNI_OK);
+    EXPECT_EQ(resumed.result.commit_seq, paused_at + 1U);
+}
+
+// C-COMMIT-012 through the C ABI: a cancel that would raise a descendant
+// past the largest revision is refused as a whole and takes no transition.
+// White-box: reaching the largest revision would take 2^32 changes.
+TEST(WorkModel, change_past_the_largest_revision_is_refused_and_changes_nothing) {
+    WorkNode work;
+    work.run();
+    const uint64_t root = work.create_goal();
+    const uint64_t child = work.create_goal(root);
+    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    uint32_t index = 0;
+    ASSERT_TRUE(goals.find(child, index));
+    const_cast<ayni::work::Goal &>(goals.at(index)).revision = std::numeric_limits<uint32_t>::max();
+
+    expect_refused(work.change(AYNI_INTENT_GOAL_CANCEL, root), AYNI_CAPACITY_EXCEEDED,
+                   AYNI_REASON_REVISION_EXHAUSTED, AYNI_OBJECT_GOAL, root);
+    EXPECT_EQ(work.goal(root).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(root).revision, 1U);
+    EXPECT_EQ(work.goal(child).lifecycle, AYNI_GOAL_ACTIVE);
+    expect_refused(work.change(AYNI_INTENT_GOAL_PAUSE, child), AYNI_CAPACITY_EXCEEDED,
+                   AYNI_REASON_REVISION_EXHAUSTED, AYNI_OBJECT_GOAL, child);
+    const Submitted paused = work.change(AYNI_INTENT_GOAL_PAUSE, root);
+    ASSERT_EQ(paused.status, AYNI_OK);
+    EXPECT_EQ(paused.result.commit_seq, work.goal(child).commit_seq + 1U);
+}
+
+// C-POLICY-001: a validator that calls back into the kernel cannot change
+// it. Every function that would returns INVALID_STATE, queries still answer,
+// and the outer intent then completes as usual. With room for one goal, a
+// nested create that got through would have overrun the goal table.
+TEST(WorkModel, validator_cannot_change_the_kernel_while_it_runs) {
+    WorkNode work;
+    work.node().config().goal_capacity = 1;
+    work.run();
+    ayni_kernel_t *kernel = work.kernel();
+    const ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a));
+    const ayni_intent_v1 nested = work.intent(AYNI_INTENT_GOAL_CREATE, &body);
+    std::vector<ayni_status_t> inside;
+    ayni_status_t query = AYNI_INTERNAL;
+    work.rules().during = [&] {
+        inside.push_back(ayni_submit_intent(kernel, &nested, nullptr, nullptr));
+        const ayni_session_desc_v1 session = session_desc();
+        uint64_t session_id = 0;
+        inside.push_back(ayni_open_session(kernel, &session, &session_id));
+        inside.push_back(ayni_close_session(kernel, work.session()));
+        inside.push_back(ayni_step(kernel, 1, 1, nullptr));
+        inside.push_back(ayni_begin_shutdown(kernel));
+        inside.push_back(ayni_start(kernel));
+        inside.push_back(ayni_destroy(kernel));
+        const ayni_principal_desc_v1 principal = owner_desc(owner_id + 1U);
+        inside.push_back(ayni_register_principal(kernel, &principal));
+        const ayni_agent_desc_v1 agent = agent_desc(agent_b + 1U);
+        inside.push_back(ayni_register_agent(kernel, &agent));
+        const ayni_goal_type_v1 type = goal_type_desc("other", 1);
+        inside.push_back(ayni_register_goal_type(kernel, &type));
+        ayni_agent_info_v1 info{};
+        info.struct_size = sizeof(info);
+        query = ayni_get_agent(kernel, agent_a, &info);
+    };
+
+    const Submitted created = work.create(body);
+    ASSERT_EQ(created.status, AYNI_OK);
+    EXPECT_EQ(inside, std::vector<ayni_status_t>(10, AYNI_INVALID_STATE));
+    EXPECT_EQ(query, AYNI_OK);
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    // The session is still open, and the guard is gone once the call returns.
+    EXPECT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, created.result.object.id).status, AYNI_OK);
+    expect_refused(work.create(body), AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_CAPACITY);
 }
 
 // --- Check order and arguments -------------------------------------------
@@ -758,11 +863,57 @@ TEST(WorkModel, intent_outside_running_is_not_ready) {
     }
 }
 
+// lifecycles.md: DRAINING still answers queries and closes sessions, but
+// takes no new session or intent, with the goals and sessions of RUNNING
+// still in place.
+TEST(WorkModel, draining_answers_queries_and_closes_sessions_but_takes_no_work) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal = work.create_goal();
+    ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_DRAINING);
+
+    expect_refused(work.change(AYNI_INTENT_GOAL_PAUSE, goal, 1), AYNI_NOT_READY, AYNI_REASON_NONE);
+    const ayni_session_desc_v1 desc = session_desc();
+    uint64_t session_id = 0;
+    EXPECT_EQ(ayni_open_session(work.kernel(), &desc, &session_id), AYNI_NOT_READY);
+    EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.agent(agent_a).lifecycle, AYNI_AGENT_RUNNING);
+    EXPECT_EQ(ayni_close_session(work.kernel(), work.session()), AYNI_OK);
+    EXPECT_EQ(ayni_close_session(work.kernel(), work.session()), AYNI_NOT_FOUND);
+}
+
 // --- Reboots --------------------------------------------------------------
 
 // C-ID-001, C-ID-010: a later boot never assigns an id an earlier boot
 // assigned. Until the log stores them (MA-010), goals, instances and sessions
 // do not survive the reboot.
+// C-COMMIT-016: commit_seq is a position in the log, and a later boot
+// reuses the positions of transitions that were never durable. Within the
+// boot that assigned it, durable_seq never reaches the goal's commit_seq;
+// two boots later it has, although the goal is gone. So a commit_seq is
+// compared only with durable_seq of its own boot.
+TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal = work.create_goal();
+    const uint64_t created_at = work.goal(goal).commit_seq;
+    const uint64_t first_epoch = work.node().info().boot_epoch;
+    EXPECT_EQ(goal >> 32U, first_epoch);
+    EXPECT_GT(created_at, work.node().info().durable_seq);
+
+    for (int boot = 0; boot < 2; ++boot) {
+        work.node().reboot();
+        work.node().recover();
+        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    }
+    EXPECT_NE(work.node().info().boot_epoch, first_epoch);
+    EXPECT_GE(work.node().info().durable_seq, created_at);
+    ayni_goal_info_v1 info{};
+    info.struct_size = sizeof(info);
+    EXPECT_EQ(ayni_get_goal(work.kernel(), goal, &info), AYNI_NOT_FOUND);
+}
+
 TEST(WorkModel, a_reboot_assigns_new_ids_and_forgets_unstored_work) {
     WorkNode work;
     work.run();

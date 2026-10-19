@@ -45,7 +45,7 @@
 | 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
 | `ayni_post_event` | INVALID_STATE | OK | OK | OK（只用于对账与诊断） | OK | INVALID_STATE |
 
-`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。在 GoalType 的校验回调内，接受非 const Kernel 的函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果；查询照常回答（C-POLICY-001）。
 
 ## AgentInstance
 
@@ -113,7 +113,7 @@ M1 已实现的转换只有一条：Kernel 进入 `RUNNING` 时，在一个 tran
 | C-LIFE-001 | `ayni_create` 成功后 Kernel 处于 `CONFIGURING` | 创建后直接处于 `RUNNING` 并开始接受意图 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
 | C-LIFE-002 | `ayni_destroy` 只在 `CONFIGURING` 或 `STOPPED` 成功；其他状态返回 `AYNI_INVALID_STATE` 且 Kernel 不变；`STOPPED` 意味着没有 Host 或 Provider 仍持有完成槽（C-HOST-018） | 运行中的 Kernel 被销毁，在途 I/O 回调写入已释放的内存 | M1 已实现：`KernelApi.kernel_memory_is_reusable_after_destroy`、`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`；`MA-005` |
 | C-LIFE-003 | 注册只在 `CONFIGURING` 进行；`ayni_start` 一次性校验全部交叉引用，注册顺序无关；引用缺失时 start 失败并保持 `CONFIGURING` | 先注册 Binding 后注册 Capability 导致失败 | M1 已实现（注册只在 `CONFIGURING`）：`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.return_values_follow_the_state_table`；交叉引用校验随引用其他目录项的注册（策略：`MA-004` 第三部分；绑定：`MA-008`） |
-| C-LIFE-004 | 非 `RUNNING` 时 `ayni_submit_intent` 返回 `AYNI_NOT_READY`，不排队、不改变状态 | 恢复期间到达的创建提醒命令被排队，恢复后又按重建的幂等映射再次创建 | M1 已实现：`WorkModel.intent_outside_running_is_not_ready`、`WorkModel.return_values_follow_the_state_table`；E2 F13 |
+| C-LIFE-004 | 非 `RUNNING` 时 `ayni_submit_intent` 返回 `AYNI_NOT_READY`，不排队、不改变状态 | 恢复期间到达的创建提醒命令被排队，恢复后又按重建的幂等映射再次创建 | M1 已实现：`WorkModel.intent_outside_running_is_not_ready`、`WorkModel.draining_answers_queries_and_closes_sessions_but_takes_no_work`、`WorkModel.return_values_follow_the_state_table`；E2 F13 |
 | C-LIFE-005 | 生命周期变化经事件与 `ayni_get_lifecycle` 同时可见；事件在状态已应用之后发出 | 事件报告 `RUNNING` 时查询仍返回 `RECOVERING` | `MA-005` |
 | C-LIFE-006 | 首版不提供运行时注销；运行时发现的目录变化另行定义为经提交协调的 transition | 运行中删除 Capability，在途 ActionRecord 失去语义 | `MA-005` |
 | C-LIFE-007 | 已实现的函数在每个状态下按上表返回；表中的 `INVALID_STATE` 不改变状态；进入 `RESTRICTED` 时记录原因，`ayni_get_kernel_info` 只在 `RESTRICTED` 中报告它（ADR-0016） | 恢复失败后状态停在 `RECOVERING`，调用方无法区分“仍在恢复”与“已经失败” | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |

@@ -1,7 +1,8 @@
 // Identity of each transition the kernel applies (C-COMMIT-003): the next
 // transition_id and commit_seq after the boot batch. Until the log stores
 // these transitions (MA-010), the stamps order them in memory and stay above
-// durable_seq, so no state they produce is reported as durable.
+// durable_seq, so no state they produce is reported as durable, and the next
+// boot starts again after its own boot batch and reuses them (C-COMMIT-016).
 
 #ifndef AYNI_CORE_KERNEL_TRANSITION_CLOCK_H
 #define AYNI_CORE_KERNEL_TRANSITION_CLOCK_H

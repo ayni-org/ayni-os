@@ -101,10 +101,11 @@ class GoalTable {
 
     Admission admit(const NewGoal &goal) const;
 
-    // Creates an ACTIVE goal at revision 1 and copies its parameters. Only
-    // after admit(goal) returned admitted, with no change in between. Returns
-    // the new goal's index.
-    uint32_t insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp);
+    // Creates an ACTIVE goal at revision 1, copies its parameters and sets
+    // out_index. Only after admit(goal) returned admitted, with no change in
+    // between; returns false, changing nothing, if the table is full anyway.
+    bool insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
+                uint32_t &out_index);
 
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every

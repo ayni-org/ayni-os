@@ -8,6 +8,10 @@
  * Rules that apply to every function here:
  * - Kernel functions are called on the kernel owner thread only, unless
  *   their comment names other threads.
+ * - A function the kernel calls, such as a host function or a goal type's
+ *   validator, must not call kernel functions unless its comment allows it.
+ *   While a validator runs, every function that takes a non-const
+ *   ayni_kernel_t returns AYNI_INVALID_STATE without effect; queries answer.
  * - Inputs are copied before return unless a parameter says otherwise.
  * - Each function lists every status it can return (C-STATUS-001). A failed
  *   call has no effect and writes no output unless its comment says so.
@@ -299,7 +303,9 @@ typedef struct ayni_kernel_info_v1 {
      * power loss (C-COMMIT-004). During recovery it is the end of the log
      * read so far; from RUNNING on, the batch that stored the boot epoch.
      * Transitions applied in RUNNING are not yet written (ADR-0017), so it
-     * stays there and never covers them.
+     * stays there and never covers them. Compare a commit_seq with it only
+     * within the boot that assigned that commit_seq: a later boot assigns
+     * the positions above durable_seq again (C-COMMIT-016).
      */
     uint64_t durable_seq;
 } ayni_kernel_info_v1;
@@ -358,8 +364,9 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
 ayni_status_t ayni_get_lifecycle(const ayni_kernel_t *kernel, ayni_lifecycle_t *out_state);
 
 /*
- * Writes the fields of out_info that out_info->struct_size covers. Callable in
- * every lifecycle state. Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL
+ * Writes the fields of out_info that out_info->struct_size covers whole; a
+ * field it covers in part is left as it was. Callable in every lifecycle
+ * state. Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL
  * pointer; AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
  * out_info->struct_size as for every ABI struct.
  */
@@ -430,8 +437,11 @@ ayni_status_t ayni_destroy(ayni_kernel_t *kernel);
  * contracts/domain/primitives.md and lifecycles.md). A goal intent is applied
  * in memory before ayni_submit_intent returns and is given a commit_seq
  * (C-COMMIT-003); the log does not store it yet, so durable_seq never covers
- * it and a reboot forgets it (ADR-0017). Enumerations are uint32_t typedefs
- * in which 0 is never a valid value.
+ * it and a reboot forgets it, and the next boot gives its commit_seq to
+ * other transitions (ADR-0017, C-COMMIT-016). Enumerations are uint32_t
+ * typedefs. Lifecycles, kinds, channels and origins start at 1; a reason of
+ * 0 is AYNI_REASON_NONE, and an object reference of all zeros names no
+ * object.
  */
 
 /* A UTF-8 view with an explicit size and no terminator; data may be NULL
@@ -584,15 +594,17 @@ typedef struct ayni_agent_info_v1 {
     ayni_agent_lifecycle_t lifecycle;
     uint64_t agent_id;
     uint64_t instance_id; /* 0 until the kernel first enters RUNNING */
-    uint64_t commit_seq;  /* of the last change to the instance; 0 before RUNNING */
+    uint64_t commit_seq;  /* of the last change to the instance this boot; 0 before RUNNING */
 } ayni_agent_info_v1;
 
 /*
  * Checks the parameters of a goal before it is accepted (C-POLICY-009).
  * Returns AYNI_OK to accept them; any other status refuses the goal. Called
  * on the kernel owner thread inside ayni_submit_intent; parameters are valid
- * only during the call. It must not call kernel functions, block or perform
- * I/O.
+ * only during the call. It must not block or perform I/O. Kernel functions it
+ * calls that take a non-const ayni_kernel_t return AYNI_INVALID_STATE without
+ * effect, so the goal it checks cannot change before it is accepted
+ * (C-POLICY-001).
  */
 typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 parameters);
 
@@ -629,7 +641,7 @@ typedef struct ayni_goal_info_v1 {
     uint64_t parent_goal_id; /* 0: a top-level goal */
     uint64_t owner_instance_id;
     uint64_t origin_principal_id;
-    uint64_t transition_id; /* that created the goal */
+    uint64_t transition_id; /* that created the goal, this boot */
     uint64_t commit_seq;    /* of the last change; durable once durable_seq covers it */
     uint32_t revision;
     uint32_t cancel_revision; /* the revision that cancelled it; 0 if not cancelled */
@@ -692,7 +704,7 @@ typedef struct ayni_intent_result_v1 {
     uint32_t struct_size;
     uint32_t reserved;         /* written as 0 */
     ayni_object_ref_v1 object; /* the goal, with its revision after the intent */
-    uint64_t commit_seq;       /* of the transition the intent applied */
+    uint64_t commit_seq;       /* of the transition the intent applied, this boot */
 } ayni_intent_result_v1;
 
 /*
@@ -765,7 +777,8 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    parameters whose data is not NULL unless their size is 0.
  * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement, or a
  *    nonzero command_id.
- * 3. AYNI_NOT_READY outside RUNNING, without queueing (C-LIFE-004).
+ * 3. AYNI_INVALID_STATE when called from a goal type's validator; then
+ *    AYNI_NOT_READY outside RUNNING, without queueing (C-LIFE-004).
  * 4. AYNI_DENIED: session_id names no open session. Until grants exist, a
  *    session of the owner may submit every goal intent (ADR-0017).
  * 5. The intent's own rules, each with the reason named in its comment
@@ -776,6 +789,8 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    GOAL_CANCEL, GOAL_PAUSE and GOAL_RESUME: the goal (NOT_FOUND), then its
  *    revision (REVISION_CONFLICT), then its lifecycle (INVALID_STATE), then
  *    the revisions it would raise (CAPACITY_EXCEEDED).
+ * AYNI_INTERNAL reports a defect in this library, not in the call: the goal
+ * table refused a goal the checks admitted. The intent is not applied.
  *
  * GOAL_CREATE creates an ACTIVE goal at revision 1. GOAL_PAUSE takes an
  * ACTIVE goal to PAUSED and GOAL_RESUME takes it back; neither changes its

@@ -298,13 +298,23 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
     info.restriction = kernel->restriction();
     info.boot_epoch = kernel->boot.boot_epoch();
     info.durable_seq = kernel->boot.durable_seq();
-    std::memcpy(out_info, &info, out_info->struct_size);
+    // Whole fields only: a struct_size that ends inside durable_seq gets the
+    // first layout.
+    const std::size_t written =
+        covers(out_info->struct_size, offsetof(ayni_kernel_info_v1, durable_seq),
+               sizeof(info.durable_seq))
+            ? sizeof(info)
+            : kernel_info_v1_min_size;
+    std::memcpy(out_info, &info, written);
     return AYNI_OK;
 }
 
 ayni_status_t ayni_start(ayni_kernel_t *kernel) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (kernel->in_callback()) {
+        return AYNI_INVALID_STATE;
     }
     return kernel->start();
 }
@@ -321,6 +331,9 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
             return status;
         }
     }
+    if (kernel->in_callback()) {
+        return AYNI_INVALID_STATE;
+    }
     ayni_step_report_v1 report{};
     const ayni_status_t status = kernel->step(max_items, max_time_us, report);
     if (status == AYNI_OK && out_report != nullptr) {
@@ -334,6 +347,9 @@ ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
+    if (kernel->in_callback()) {
+        return AYNI_INVALID_STATE;
+    }
     return kernel->begin_shutdown();
 }
 
@@ -341,8 +357,8 @@ ayni_status_t ayni_destroy(ayni_kernel_t *kernel) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING &&
-        kernel->lifecycle != AYNI_LIFECYCLE_STOPPED) {
+    if (kernel->in_callback() || (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING &&
+                                  kernel->lifecycle != AYNI_LIFECYCLE_STOPPED)) {
         return AYNI_INVALID_STATE;
     }
     kernel->~ayni_kernel();

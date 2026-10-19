@@ -41,7 +41,8 @@ class Goals {
             return 0;
         }
         const uint64_t goal_id = ++last_id_;
-        table_.insert(goal, goal_id, next_stamp());
+        uint32_t index = 0;
+        EXPECT_TRUE(table_.insert(goal, goal_id, next_stamp(), index));
         return goal_id;
     }
 
@@ -206,6 +207,21 @@ TEST(GoalTable, capacity_counts_terminal_goals) {
 }
 
 // C-LIFE-021: pause keeps the goal and does not reach its children.
+// insert() checks the room itself, so a caller that skipped admit() cannot
+// write past the table.
+TEST(GoalTable, insert_into_a_full_table_changes_nothing) {
+    Goals goals({1, 4, 2, 2});
+    ASSERT_NE(goals.create(), 0U);
+    const uint8_t bytes[] = {1, 2, 3, 4};
+    uint32_t index = 77;
+    EXPECT_FALSE(
+        goals->insert(Goals::new_goal(0, owner, {bytes, sizeof(bytes)}), 99, {1, 1}, index));
+    EXPECT_EQ(index, 77U);
+    EXPECT_EQ(goals->size(), 1U);
+    uint32_t found = 0;
+    EXPECT_FALSE(goals->find(99, found));
+}
+
 TEST(GoalTable, pause_and_resume_change_only_the_goal) {
     Goals goals(small);
     const uint64_t root = goals.create();

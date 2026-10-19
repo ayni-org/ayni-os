@@ -98,15 +98,10 @@ void ayni_kernel::settle_recovery() {
     }
 }
 
-// Ids embed the durable boot epoch, so none repeats an earlier boot's
-// (C-ID-010); transitions follow the boot batch. The agents' instances start
-// in one transition before any intent is accepted.
+// Transitions follow the boot batch, and the work model starts before any
+// intent is accepted.
 void ayni_kernel::enter_running() {
     const ayni::durability::BatchIdentity boot_batch = boot.boot_batch();
-    ids.start(boot.boot_epoch());
-    transitions.start({boot_batch.transition_id + 1U, boot_batch.commit_seq + 1U});
-    if (agents.has_registered()) {
-        agents.start_all(ids, transitions.next());
-    }
+    work.start(boot.boot_epoch(), {boot_batch.transition_id + 1U, boot_batch.commit_seq + 1U});
     lifecycle = AYNI_LIFECYCLE_RUNNING;
 }
