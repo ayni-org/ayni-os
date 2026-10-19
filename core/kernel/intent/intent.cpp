@@ -1,45 +1,63 @@
 #include "kernel/intent/intent.h"
 
 #include "catalog/catalog_id.h"
+#include "catalog/goal_type/goal_type_registry.h"
 #include "kernel/abi_checks.h"
 
 namespace ayni::kernel {
 namespace {
 
-// The body structs are new in 0.5, so each has one layout.
+// Each body struct is new in 0.5 or changed in 0.6, so each has one layout.
 template <typename Body> ayni_status_t read_body(const void *body, const Body *&out_body) {
     out_body = static_cast<const Body *>(body);
     return check_struct_size(out_body->struct_size, sizeof(Body), sizeof(Body));
 }
 
+// The body of every kind but GOAL_CREATE names one object by id.
+template <typename Body>
+ayni_status_t read_target(const void *body, uint64_t Body::*id, uint64_t &out_id) {
+    const Body *target = nullptr;
+    const ayni_status_t status = read_body(body, target);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (target->reserved != 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    out_id = target->*id;
+    return AYNI_OK;
+}
+
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
-    if (raw.kind == AYNI_INTENT_GOAL_CREATE) {
+    switch (raw.kind) {
+    case AYNI_INTENT_GOAL_CREATE: {
         const ayni_goal_create_v1 *body = nullptr;
         const ayni_status_t status = read_body(raw.body, body);
         if (status != AYNI_OK) {
             return status;
         }
-        out_intent.create = {body->goal_type_id, body->goal_type_version, body->owner_instance_id,
-                             body->parent_goal_id, body->parameters};
+        if (body->reserved != 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        out_intent.create = {body->goal_type_id,   body->goal_type_version, body->owner_instance_id,
+                             body->parent_goal_id, body->parameters,        body->trigger};
         return AYNI_OK;
     }
-    const ayni_goal_target_v1 *body = nullptr;
-    const ayni_status_t status = read_body(raw.body, body);
-    if (status != AYNI_OK) {
-        return status;
+    case AYNI_INTENT_TASK_CANCEL:
+        return read_target(raw.body, &ayni_task_target_v1::task_id, out_intent.target_id);
+    case AYNI_INTENT_INSTANCE_PAUSE:
+    case AYNI_INTENT_INSTANCE_RESUME:
+    case AYNI_INTENT_INSTANCE_STOP:
+        return read_target(raw.body, &ayni_instance_target_v1::instance_id, out_intent.target_id);
+    default: // GOAL_CANCEL, GOAL_PAUSE, GOAL_RESUME
+        return read_target(raw.body, &ayni_goal_target_v1::goal_id, out_intent.target_id);
     }
-    if (body->reserved != 0U) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    out_intent.goal_id = body->goal_id;
-    return AYNI_OK;
 }
 
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind == AYNI_INTENT_GOAL_CREATE || kind == AYNI_INTENT_GOAL_CANCEL ||
-           kind == AYNI_INTENT_GOAL_PAUSE || kind == AYNI_INTENT_GOAL_RESUME;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_INSTANCE_STOP;
 }
 
 ayni_status_t check_form(const Intent &intent) {
@@ -48,7 +66,8 @@ ayni_status_t check_form(const Intent &intent) {
     }
     const GoalCreate &create = intent.create;
     if (intent.expected_revision != 0U || !catalog::CatalogId::is_valid(create.goal_type_id) ||
-        (create.parameters.data == nullptr && create.parameters.size != 0U)) {
+        (create.parameters.data == nullptr && create.parameters.size != 0U) ||
+        !catalog::GoalTypeRegistry::defines_trigger(create.trigger)) {
         return AYNI_INVALID_ARGUMENT;
     }
     return AYNI_OK;

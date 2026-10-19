@@ -4,6 +4,7 @@
 
 #include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "work_node.h"
 
 #include <ayni/ayni.h>
 
@@ -20,209 +21,7 @@
 
 namespace {
 
-using ayni::test::Node;
-
-constexpr uint64_t owner_id = 7;
-constexpr uint32_t owner_binding = 3;
-constexpr uint64_t agent_a = 100;
-constexpr uint64_t agent_b = 200;
-
-ayni_string_v1 text(const char *value) {
-    return {value, static_cast<uint32_t>(std::strlen(value))};
-}
-
-// The reminder goal type's validator: at most 4 bytes, and not starting with
-// 0xFF. Counts its calls so tests can see when it runs.
-struct ReminderRules {
-    static ayni_status_t validate(void *ctx, ayni_bytes_v1 parameters) {
-        auto &self = *static_cast<ReminderRules *>(ctx);
-        ++self.calls;
-        self.last.assign(parameters.data, parameters.data + parameters.size);
-        if (self.during) {
-            // Runs once, from a copy, so that it may call the kernel freely.
-            const std::function<void()> during = std::move(self.during);
-            self.during = nullptr;
-            during();
-        }
-        if (parameters.size > 4U || (parameters.size > 0U && parameters.data[0] == 0xFFU)) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        return AYNI_OK;
-    }
-    int calls = 0;
-    std::vector<uint8_t> last;
-    std::function<void()> during; // runs once inside the next validation
-};
-
-ayni_principal_desc_v1 owner_desc(uint64_t principal_id = owner_id) {
-    ayni_principal_desc_v1 desc{};
-    desc.struct_size = sizeof(desc);
-    desc.kind = AYNI_PRINCIPAL_OWNER;
-    desc.principal_id = principal_id;
-    desc.binding_revision = owner_binding;
-    return desc;
-}
-
-ayni_agent_desc_v1 agent_desc(uint64_t agent_id) {
-    ayni_agent_desc_v1 desc{};
-    desc.struct_size = sizeof(desc);
-    desc.agent_id = agent_id;
-    return desc;
-}
-
-ayni_goal_type_v1 goal_type_desc(const char *id, uint32_t version,
-                                 ayni_goal_validate_fn validate = nullptr, void *ctx = nullptr) {
-    ayni_goal_type_v1 desc{};
-    desc.struct_size = sizeof(desc);
-    desc.version = version;
-    desc.goal_type_id = text(id);
-    desc.ctx = ctx;
-    desc.validate = validate;
-    return desc;
-}
-
-ayni_session_desc_v1 session_desc(ayni_channel_t channel = AYNI_CHANNEL_MANAGEMENT,
-                                  uint64_t principal_id = owner_id) {
-    ayni_session_desc_v1 desc{};
-    desc.struct_size = sizeof(desc);
-    desc.channel = channel;
-    desc.principal_id = principal_id;
-    return desc;
-}
-
-struct Submitted {
-    ayni_status_t status;
-    ayni_intent_result_v1 result;
-    ayni_error_v1 error;
-};
-
-// A node with an owner, two agents and three goal type versions registered
-// on every kernel it creates.
-class WorkNode {
-  public:
-    WorkNode() {
-        node_.on_create([this](ayni_kernel_t *kernel) {
-            const ayni_principal_desc_v1 owner = owner_desc();
-            ASSERT_EQ(ayni_register_principal(kernel, &owner), AYNI_OK);
-            for (const uint64_t agent_id : {agent_a, agent_b}) {
-                const ayni_agent_desc_v1 agent = agent_desc(agent_id);
-                ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
-            }
-            const ayni_goal_type_v1 types[] = {
-                goal_type_desc("reminder", 1, &ReminderRules::validate, &rules_),
-                goal_type_desc("timer", 1),
-            };
-            for (const ayni_goal_type_v1 &type : types) {
-                ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
-            }
-        });
-    }
-
-    Node &node() { return node_; }
-    ayni_kernel_t *kernel() { return node_.kernel(); }
-    ReminderRules &rules() { return rules_; }
-
-    // Into RUNNING with one management session open.
-    void run() {
-        node_.run();
-        session_ = open_session();
-    }
-
-    uint64_t session() const { return session_; }
-
-    uint64_t open_session(ayni_channel_t channel = AYNI_CHANNEL_MANAGEMENT) {
-        const ayni_session_desc_v1 desc = session_desc(channel);
-        uint64_t session_id = 0;
-        EXPECT_EQ(ayni_open_session(kernel(), &desc, &session_id), AYNI_OK);
-        return session_id;
-    }
-
-    ayni_agent_info_v1 agent(uint64_t agent_id) {
-        ayni_agent_info_v1 info{};
-        info.struct_size = sizeof(info);
-        EXPECT_EQ(ayni_get_agent(kernel(), agent_id, &info), AYNI_OK);
-        return info;
-    }
-
-    uint64_t instance(uint64_t agent_id) { return agent(agent_id).instance_id; }
-
-    ayni_goal_info_v1 goal(uint64_t goal_id) {
-        ayni_goal_info_v1 info{};
-        info.struct_size = sizeof(info);
-        EXPECT_EQ(ayni_get_goal(kernel(), goal_id, &info), AYNI_OK);
-        return info;
-    }
-
-    Submitted submit(const ayni_intent_v1 &intent) {
-        Submitted out{};
-        out.result.struct_size = sizeof(out.result);
-        out.error.struct_size = sizeof(out.error);
-        out.status = ayni_submit_intent(kernel(), &intent, &out.result, &out.error);
-        EXPECT_EQ(out.error.status, out.status);
-        return out;
-    }
-
-    static ayni_goal_create_v1 create_body(uint64_t owner_instance_id, uint64_t parent_goal_id = 0,
-                                           const char *type = "reminder", uint32_t version = 1,
-                                           ayni_bytes_v1 parameters = {nullptr, 0}) {
-        ayni_goal_create_v1 body{};
-        body.struct_size = sizeof(body);
-        body.goal_type_version = version;
-        body.goal_type_id = text(type);
-        body.owner_instance_id = owner_instance_id;
-        body.parent_goal_id = parent_goal_id;
-        body.parameters = parameters;
-        return body;
-    }
-
-    ayni_intent_v1 intent(ayni_intent_kind_t kind, const void *body,
-                          uint32_t expected_revision = 0) const {
-        ayni_intent_v1 intent{};
-        intent.struct_size = sizeof(intent);
-        intent.kind = kind;
-        intent.session_id = session_;
-        intent.expected_revision = expected_revision;
-        intent.body = body;
-        return intent;
-    }
-
-    Submitted create(const ayni_goal_create_v1 &body) {
-        return submit(intent(AYNI_INTENT_GOAL_CREATE, &body));
-    }
-
-    // Creates a goal owned by agent_a's instance and returns its id.
-    uint64_t create_goal(uint64_t parent_goal_id = 0) {
-        const Submitted created = create(create_body(instance(agent_a), parent_goal_id));
-        EXPECT_EQ(created.status, AYNI_OK);
-        return created.result.object.id;
-    }
-
-    Submitted change(ayni_intent_kind_t kind, uint64_t goal_id, uint32_t expected_revision) {
-        ayni_goal_target_v1 body{};
-        body.struct_size = sizeof(body);
-        body.goal_id = goal_id;
-        return submit(intent(kind, &body, expected_revision));
-    }
-
-    // Changes the goal at its current revision.
-    Submitted change(ayni_intent_kind_t kind, uint64_t goal_id) {
-        return change(kind, goal_id, goal(goal_id).revision);
-    }
-
-  private:
-    ReminderRules rules_;
-    Node node_;
-    uint64_t session_ = 0;
-};
-
-void expect_refused(const Submitted &submitted, ayni_status_t status, ayni_reason_t reason,
-                    ayni_object_kind_t kind = 0, uint64_t id = 0) {
-    EXPECT_EQ(submitted.status, status);
-    EXPECT_EQ(submitted.error.reason, reason);
-    EXPECT_EQ(submitted.error.object.kind, kind);
-    EXPECT_EQ(submitted.error.object.id, id);
-    EXPECT_EQ(submitted.error.reserved, 0U);
-}
+using namespace ayni::test;
 
 // --- Registration ---------------------------------------------------------
 
@@ -270,10 +69,16 @@ TEST(WorkModel, registration_checks_its_arguments) {
     EXPECT_EQ(ayni_register_goal_type(kernel, nullptr), AYNI_INVALID_ARGUMENT);
     for (const ayni_goal_type_v1 &type :
          {goal_type_desc("reminder", 0), goal_type_desc("", 1), goal_type_desc("Reminder", 1),
-          goal_type_desc("abcdefghijklmnopqrstuvwxyz0123456", 1)}) {
+          goal_type_desc("abcdefghijklmnopqrstuvwxyz0123456", 1),
+          goal_type_desc("reminder", 1, nullptr, nullptr, 0),
+          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(2)),
+          goal_type_desc("reminder", 1, nullptr, nullptr, 0x80000000U)}) {
         EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
     }
     ayni_goal_type_v1 type = goal_type_desc("reminder", 1);
+    type.reserved = 1;
+    EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
+    type = goal_type_desc("reminder", 1);
     type.struct_size -= 1U;
     EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
 }
@@ -320,6 +125,7 @@ TEST(WorkModel, instances_start_with_the_kernel_in_one_transition) {
     EXPECT_EQ(before.lifecycle, AYNI_AGENT_REGISTERED);
     EXPECT_EQ(before.instance_id, 0U);
     EXPECT_EQ(before.commit_seq, 0U);
+    EXPECT_EQ(before.revision, 0U);
 
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
@@ -331,6 +137,8 @@ TEST(WorkModel, instances_start_with_the_kernel_in_one_transition) {
     EXPECT_NE(a.instance_id, b.instance_id);
     EXPECT_EQ(a.commit_seq, 2U); // the boot batch is commit_seq 1
     EXPECT_EQ(b.commit_seq, a.commit_seq);
+    EXPECT_EQ(a.revision, 1U);
+    EXPECT_EQ(a.reserved, 0U);
     EXPECT_EQ(work.node().info().durable_seq, 1U);
 
     ayni_agent_info_v1 unknown{};
@@ -447,6 +255,9 @@ TEST(WorkModel, created_goal_is_applied_at_once_and_not_yet_durable) {
     EXPECT_EQ(goal.goal_type_version, 1U);
     ASSERT_EQ(goal.goal_type_id_size, 8U);
     EXPECT_EQ(std::memcmp(goal.goal_type_id, "reminder", 8), 0);
+    EXPECT_EQ(goal.trigger, AYNI_TRIGGER_NONE);
+    EXPECT_EQ(goal.occurrences, 0U);
+    EXPECT_EQ(goal.last_task_id, 0U);
 
     ayni_goal_info_v1 missing{};
     missing.struct_size = sizeof(missing);
@@ -768,6 +579,19 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
     no_data = body;
     no_data.parameters = {nullptr, 2};
     invalid.emplace_back("parameters without data", work.intent(AYNI_INTENT_GOAL_CREATE, &no_data));
+    // Only kinds this library defines; the shift must not overflow either.
+    static ayni_goal_create_v1 unknown_triggers[2];
+    unknown_triggers[0] = body;
+    unknown_triggers[0].trigger = 2;
+    unknown_triggers[1] = body;
+    unknown_triggers[1].trigger = 0xFFFFFFFFU;
+    for (const ayni_goal_create_v1 &unknown : unknown_triggers) {
+        invalid.emplace_back("unknown trigger", work.intent(AYNI_INTENT_GOAL_CREATE, &unknown));
+    }
+    static ayni_goal_create_v1 reserved_create;
+    reserved_create = body;
+    reserved_create.reserved = 1;
+    invalid.emplace_back("create reserved", work.intent(AYNI_INTENT_GOAL_CREATE, &reserved_create));
     static ayni_goal_target_v1 reserved_target;
     reserved_target = target;
     reserved_target.reserved = 1;
@@ -830,7 +654,7 @@ TEST(WorkModel, unsupported_intents_come_before_readiness_and_the_session) {
     intent.command_id = 5;
     expect_refused(work.submit(intent), AYNI_UNSUPPORTED, AYNI_REASON_COMMAND_ID_UNSUPPORTED);
     intent.command_id = 0;
-    for (const ayni_intent_kind_t kind : {5U, 12U, 13U, 0xFFFFFFFFU}) {
+    for (const ayni_intent_kind_t kind : {9U, 16U, 17U, 0xFFFFFFFFU}) {
         intent.kind = kind;
         intent.body = nullptr; // not checked for a kind that is not implemented
         expect_refused(work.submit(intent), AYNI_UNSUPPORTED, AYNI_REASON_INTENT_UNSUPPORTED);
@@ -962,6 +786,7 @@ enum class Call {
     submit_intent,
     get_agent,
     get_goal,
+    get_task,
 };
 
 ayni_status_t invoke(ayni_kernel_t *kernel, Call call) {
@@ -1006,6 +831,11 @@ ayni_status_t invoke(ayni_kernel_t *kernel, Call call) {
         info.struct_size = sizeof(info);
         return ayni_get_goal(kernel, 1, &info);
     }
+    case Call::get_task: {
+        ayni_task_info_v1 info{};
+        info.struct_size = sizeof(info);
+        return ayni_get_task(kernel, 1, &info);
+    }
     }
     return AYNI_INTERNAL;
 }
@@ -1042,6 +872,7 @@ TEST(WorkModel, return_values_follow_the_state_table) {
          {not_ready, not_ready, AYNI_DENIED, not_ready, not_ready, not_ready}},
         {Call::get_agent, "ayni_get_agent", true, {bad, ok, ok, ok, ok, bad}},
         {Call::get_goal, "ayni_get_goal", true, {bad, none, none, none, none, bad}},
+        {Call::get_task, "ayni_get_task", true, {bad, none, none, none, none, bad}},
     };
     for (const auto &row : table) {
         for (std::size_t column = 0; column < 6; ++column) {

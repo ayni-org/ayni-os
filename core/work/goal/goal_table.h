@@ -1,7 +1,7 @@
 // Goals (contracts/domain/lifecycles.md, primitives.md). The table owns each
-// goal's lifecycle, revision, place in the goal tree and parameter block. It
-// enforces the fixed owner (C-LIFE-020), the tree limits (C-LIMIT-007) and
-// the cancel cascade (C-LIFE-022).
+// goal's lifecycle, revision, place in the goal tree, parameter block and
+// trigger cursor (ADR-0018). It enforces the fixed owner (C-LIFE-020), the
+// tree limits (C-LIMIT-007) and the cancel cascade (C-LIFE-022).
 //
 // Goals are never removed: a terminal goal stays queryable and counts toward
 // the capacity until the log defines when it may be dropped (MA-010). So the
@@ -35,6 +35,7 @@ struct NewGoal {
     uint32_t goal_type_index;   // in the goal type registry
     GoalOrigin origin;
     ayni_bytes_v1 parameters; // fits parameters_fit()
+    ayni_trigger_kind_t trigger;
 };
 
 struct Goal {
@@ -42,7 +43,8 @@ struct Goal {
     uint64_t parent_goal_id;
     uint64_t owner_instance_id;
     uint64_t created_transition_id;
-    uint64_t commit_seq; // of the last change
+    uint64_t commit_seq;   // of the last change
+    uint64_t last_task_id; // of the latest occurrence; 0 before the first
     GoalOrigin origin;
     uint32_t parent_index; // GoalTable::no_parent for a top-level goal
     uint32_t goal_type_index;
@@ -50,6 +52,8 @@ struct Goal {
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     uint32_t depth;
     uint32_t parameter_size;
+    uint32_t occurrences; // derived so far: the trigger cursor
+    ayni_trigger_kind_t trigger;
     ayni_goal_lifecycle_t lifecycle;
 };
 
@@ -115,8 +119,26 @@ class GoalTable {
     // goal it changes gets the next revision and stamp.commit_seq.
     void apply(uint32_t index, GoalChange change, foundation::TransitionStamp stamp);
 
+    // Whether the trigger of goal index has an occurrence not yet derived.
+    // Says nothing about whether the goal may advance.
+    bool has_due_occurrence(uint32_t index) const;
+    // Records that the next occurrence became task_id: the goal gets the
+    // next revision and stamp.commit_seq. Only when has_due_occurrence(index)
+    // and the revision is below the largest.
+    void record_occurrence(uint32_t index, uint64_t task_id, foundation::TransitionStamp stamp);
+
+    // Whether some goal of the instance that is not terminal is at the
+    // largest revision.
+    bool owned_at_largest_revision(uint64_t instance_id) const;
+    // Cancels every goal of the instance that is not terminal, as cancel
+    // does; their descendants have the same owner.
+    void cancel_owned(uint64_t instance_id, foundation::TransitionStamp stamp);
+
     // Returns false when no goal has the id.
     bool find(uint64_t goal_id, uint32_t &out_index) const;
+    // Whether goal index is root or one of its descendants.
+    bool in_subtree(uint32_t index, uint32_t root) const;
+    static bool at_largest_revision(const Goal &goal);
 
     // index < size().
     const Goal &at(uint32_t index) const { return goals_[index]; }

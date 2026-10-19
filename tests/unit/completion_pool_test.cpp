@@ -453,6 +453,7 @@ TEST(KernelCompletions, posts_succeed_while_the_event_queue_is_full) {
     config.session_capacity = 2;
     config.goal_depth_max = 2;
     config.goal_children_max = 2;
+    config.task_capacity = 4;
     std::size_t size = 0;
     std::size_t align = 0;
     ASSERT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_OK);

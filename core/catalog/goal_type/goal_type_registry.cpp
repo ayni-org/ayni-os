@@ -40,4 +40,8 @@ bool GoalTypeRegistry::accepts(uint32_t index, ayni_bytes_v1 parameters) const {
     return type.validate(type.ctx, parameters) == AYNI_OK;
 }
 
+bool GoalTypeRegistry::accepts_trigger(uint32_t index, ayni_trigger_kind_t trigger) const {
+    return trigger < 32U && (types_[index].trigger_kinds & AYNI_TRIGGER_BIT(trigger)) != 0U;
+}
+
 } // namespace ayni::catalog

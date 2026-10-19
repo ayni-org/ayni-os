@@ -22,10 +22,19 @@ struct GoalType {
     uint32_t version = 0;
     void *ctx = nullptr;
     ayni_goal_validate_fn validate = nullptr; // null: the type takes no parameters
+    uint32_t trigger_kinds = 0;               // AYNI_TRIGGER_BIT of each kind it accepts
 };
 
 class GoalTypeRegistry {
   public:
+    // The trigger kinds this library defines (ADR-0018), as trigger_kinds
+    // bits; work/goal derives their occurrences.
+    static constexpr uint32_t defined_trigger_kinds =
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
+    static bool defines_trigger(ayni_trigger_kind_t kind) {
+        return kind < 32U && (defined_trigger_kinds & AYNI_TRIGGER_BIT(kind)) != 0U;
+    }
+
     enum class AddResult { added, duplicate, full };
 
     struct Lookup {
@@ -42,7 +51,8 @@ class GoalTypeRegistry {
     // storage as for BoundedArray<GoalType>.
     GoalTypeRegistry(void *storage, uint32_t capacity) : types_(storage, capacity) {}
 
-    // type has a valid id and a nonzero version.
+    // type has a valid id, a nonzero version and trigger_kinds that is a
+    // nonempty subset of defined_trigger_kinds.
     AddResult add(const GoalType &type);
 
     Lookup find(ayni_string_v1 id, uint32_t version) const;
@@ -53,6 +63,8 @@ class GoalTypeRegistry {
     // Whether the type at index accepts these parameters: none when it has
     // no validator, otherwise whatever the validator returns AYNI_OK for.
     bool accepts(uint32_t index, ayni_bytes_v1 parameters) const;
+    // Whether goals of the type at index may choose trigger.
+    bool accepts_trigger(uint32_t index, ayni_trigger_kind_t trigger) const;
 
   private:
     foundation::BoundedArray<GoalType> types_;

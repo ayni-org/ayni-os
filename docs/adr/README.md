@@ -29,6 +29,7 @@
 | [0015](0015-ingress-lock-and-completion-slots.md) | 入口临界区、有界事件队列与完成槽 | 已接受 | §3.2、§4.2 |
 | [0016](0016-boot-recovery-and-bounded-step.md) | 启动恢复、持久 boot_epoch 与有界 step | 已接受 | §3.2、§4.2、§4.3 |
 | [0017](0017-work-model-principals-agents-goals.md) | 工作模型第一部分：主体与会话、Agent 实例、GoalType 与 Goal 意图 | 已接受 | §2.2、§2.4、§3.2、§3.6、§5.3 |
+| [0018](0018-tasks-and-propagation.md) | 工作模型第二部分（一）：Task、派生与传播 | 已接受 | §2.2、§2.4、§3.2、§4.2、§5.3、§9.1 |
 
 ## 模板
 

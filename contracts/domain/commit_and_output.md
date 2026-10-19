@@ -1,6 +1,6 @@
 # 提交与输出门控
 
-- **关联**：计划 §2.4、§2.8、§4.3；ADR-0002、ADR-0017；`MA-004`、`MA-010`、`MA-022`；E2 F0–F13
+- **关联**：计划 §2.4、§2.8、§4.3；ADR-0002、ADR-0017、ADR-0018；`MA-004`、`MA-010`、`MA-022`；E2 F0–F13
 - **属主**：`durability`（持久前缀、重放、栅栏记录）；`kernel`（transition 编排、输出门控、受限栅栏、恢复编排）
 
 ## 术语
@@ -41,7 +41,7 @@
 | C-COMMIT-009 | 受限栅栏中：立即停止新输出、新准入与执行许可续租；已越过屏障的在途动作按能力属性继续或取消；其完成事件只进入有界易失缓冲供对账，不直接改写状态 | 栅栏期间继续续租执行许可，电机凭新租期一直转 | E2 F12；C-PERMIT-009 |
 | C-COMMIT-010 | 重载前，持久层须确认旧写入方已失去修改日志的能力：存储 Host 报告旧 append/flush 全部终止（排空），或原子地安装新的 writer epoch 使旧 epoch 写入被拒绝；日志随之写入栅栏记录，恢复时忽略栅栏记录之后出现的旧 epoch 批次 | 只拒绝旧代际的完成事件，旧 flush 在恢复读取之后落盘，状态与日志分叉 | E2 F12（旧写延迟到重载之后） |
 | C-COMMIT-011 | 两种确认都无法取得时保持只读诊断（`RESTRICTED`），不重载、不恢复输出；存储仍不可写时同样进入只读诊断，本地停止路径照常可用 | 无法隔离旧写入方时仍然重载并恢复输出 | E2 F12（无法排空也无法隔离） |
-| C-COMMIT-012 | 所有策略意图携带 `expected_revision` 与关键依赖版本；过时写入返回 `AYNI_REVISION_CONFLICT`，由上层重新评估，不静默覆盖。`revision` 不回绕：意图要改变的对象中有版本已是 2^32−1 的，整个意图返回 `AYNI_CAPACITY_EXCEEDED`（`REVISION_EXHAUSTED`），不改变任何对象 | 旧模型结果覆盖了用户刚修改的记忆 | M1 已实现（Goal 意图：创建取 0，其余取目标的当前版本）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing`；策略意图及其依赖版本随 `MA-004` 第三部分；E1 步骤 9；E4 步骤 4 |
+| C-COMMIT-012 | 所有策略意图携带 `expected_revision` 与关键依赖版本；过时写入返回 `AYNI_REVISION_CONFLICT`，由上层重新评估，不静默覆盖。`revision` 不回绕：意图要改变的对象中有版本已是 2^32−1 的，整个意图返回 `AYNI_CAPACITY_EXCEEDED`（`REVISION_EXHAUSTED`），不改变任何对象 | 旧模型结果覆盖了用户刚修改的记忆 | M1 已实现（Goal、Task 与实例意图：创建取 0，其余取所指对象的当前版本；上限检查覆盖一个意图连带改变的全部 Goal、Task 与实例，ADR-0018）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing`、`WorkTask.task_cancel_checks_the_task_then_its_revision_then_its_state`、`WorkTask.instance_intents_check_the_instance_then_its_revision_then_its_state`、`WorkTask.change_that_would_exhaust_a_task_revision_is_refused`、`WorkTask.stop_that_would_exhaust_a_goal_revision_is_refused`、`TaskTable.revision_is_checked_before_the_state_and_never_wraps`、`AgentTable.revision_is_checked_before_the_state_and_never_wraps`；策略意图及其依赖版本随 `MA-004` 第三部分；E1 步骤 9；E4 步骤 4 |
 | C-COMMIT-013 | 外部副作用不参加本地原子事务；通过持久待派发记录、屏障与执行回执对账 | 把“发送通知”当作批次中的一条记录，认为回滚批次就撤销了通知 | E2；评审 |
 | C-COMMIT-014 | 跨存储介质（如 NVS 与日志分区）的原子性须有可验证的协调日志或等价协议，不能假定不同分区天然原子 | 预算在 NVS、Task 在日志分区，掉电后只更新了一边 | `MA-010` 故障注入 |
 | C-COMMIT-015 | 存储没有空间保存动作屏障时拒绝新的副作用（`AYNI_STORAGE_FAILED`），不跳过屏障 | 日志满时为了不影响体验跳过屏障直接执行 | E2 末段；§10.6 存储行 |

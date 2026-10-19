@@ -1,4 +1,5 @@
-// Catalog ids and goal type versions owned by catalog (C-POLICY-009).
+// Catalog ids and goal type versions owned by catalog (C-POLICY-009), and
+// the trigger kinds a goal type accepts (ADR-0018).
 
 #include "catalog/catalog_id.h"
 #include "catalog/goal_type/goal_type_registry.h"
@@ -138,6 +139,26 @@ TEST(GoalTypeRegistry, type_without_validator_takes_no_parameters) {
     const uint8_t one[] = {1};
     EXPECT_TRUE(registry->accepts(0, {nullptr, 0}));
     EXPECT_FALSE(registry->accepts(0, {one, 1}));
+}
+
+TEST(GoalTypeRegistry, trigger_kinds_decide_the_accepted_triggers) {
+    Registry registry(1);
+    GoalType folder = goal_type("folder", 1);
+    folder.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(registry->add(folder), GoalTypeRegistry::AddResult::added);
+    EXPECT_TRUE(registry->accepts_trigger(0, AYNI_TRIGGER_NONE));
+    EXPECT_FALSE(registry->accepts_trigger(0, AYNI_TRIGGER_ONCE));
+    // Kinds past the mask's width are never accepted, rather than shifted.
+    EXPECT_FALSE(registry->accepts_trigger(0, 32U));
+    EXPECT_FALSE(registry->accepts_trigger(0, 0xFFFFFFFFU));
+}
+
+TEST(GoalTypeRegistry, defines_none_and_once_only) {
+    EXPECT_TRUE(GoalTypeRegistry::defines_trigger(AYNI_TRIGGER_NONE));
+    EXPECT_TRUE(GoalTypeRegistry::defines_trigger(AYNI_TRIGGER_ONCE));
+    for (const ayni_trigger_kind_t kind : {2U, 31U, 32U, 0xFFFFFFFFU}) {
+        EXPECT_FALSE(GoalTypeRegistry::defines_trigger(kind)) << kind;
+    }
 }
 
 } // namespace

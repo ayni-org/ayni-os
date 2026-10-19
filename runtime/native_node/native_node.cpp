@@ -38,6 +38,7 @@ ayni_status_t NativeNode::assemble() {
     config.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
     config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
     config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
+    config.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
 
     std::size_t size = 0;
     std::size_t align = 0;

@@ -55,6 +55,7 @@ ayni_config_v1 valid_config() {
     config.session_capacity = 2;
     config.goal_depth_max = 2;
     config.goal_children_max = 2;
+    config.task_capacity = 4;
     return config;
 }
 
@@ -299,6 +300,7 @@ TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
         {&ayni_config_v1::goal_depth_max, AYNI_GOAL_DEPTH_MAX_MIN, AYNI_GOAL_DEPTH_MAX_MAX},
         {&ayni_config_v1::goal_children_max, AYNI_GOAL_CHILDREN_MAX_MIN,
          AYNI_GOAL_CHILDREN_MAX_MAX},
+        {&ayni_config_v1::task_capacity, 1U, AYNI_TASK_CAPACITY_MAX},
     };
     for (const auto &capacity : capacities) {
         std::vector<uint32_t> invalid{capacity.max + 1U};
@@ -340,7 +342,7 @@ TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
     for (uint32_t ayni_config_v1::*field :
          {&ayni_config_v1::agent_capacity, &ayni_config_v1::goal_type_capacity,
           &ayni_config_v1::goal_capacity, &ayni_config_v1::goal_parameter_max_bytes,
-          &ayni_config_v1::session_capacity}) {
+          &ayni_config_v1::session_capacity, &ayni_config_v1::task_capacity}) {
         config = valid_config();
         config.*field += 1;
         EXPECT_GT(required_size(config), base);
@@ -358,7 +360,7 @@ TEST_F(KernelApi, goal_tree_limits_need_no_memory) {
 
 // C-VER-003: a field that struct_size does not cover is never read and takes
 // its documented default.
-// The work model fields of 0.5 at their defaults.
+// The work model fields of 0.5 and 0.6 at their defaults.
 ayni_config_v1 with_work_defaults(ayni_config_v1 config) {
     config.agent_capacity = AYNI_AGENT_CAPACITY_DEFAULT;
     config.goal_type_capacity = AYNI_GOAL_TYPE_CAPACITY_DEFAULT;
@@ -367,6 +369,7 @@ ayni_config_v1 with_work_defaults(ayni_config_v1 config) {
     config.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
     config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
     config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
+    config.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
     return config;
 }
 
@@ -398,6 +401,14 @@ TEST_F(KernelApi, uncovered_capacities_take_their_defaults) {
     short_config.struct_size = offsetof(ayni_config_v1, agent_capacity);
     short_config.session_capacity = 0;
     EXPECT_EQ(required_size(short_config), required_size(with_work_defaults(valid_config())));
+
+    // And one ending before the field of 0.6 takes only its default.
+    ayni_config_v1 only_task_default = valid_config();
+    only_task_default.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
+    short_config = valid_config();
+    short_config.struct_size = offsetof(ayni_config_v1, task_capacity);
+    short_config.task_capacity = 0;
+    EXPECT_EQ(required_size(short_config), required_size(only_task_default));
 }
 
 TEST_F(KernelApi, struct_size_from_newer_minor_is_unsupported_version) {

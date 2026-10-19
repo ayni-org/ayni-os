@@ -9,7 +9,7 @@
 `MA-004` 覆盖 Principal/Session、Agent/Goal/Task、步骤调度与暂停取消，一个 PR 装不下，按依赖拆成三部分：
 
 - **第一部分（本 ADR）**：主体与会话、Agent 实例、GoalType 注册、Goal 的创建/暂停/恢复/取消意图与查询。
-- **第二部分**：Task、occurrence 与触发、`ayni_post_event`、Task 生命周期与传播矩阵、实例暂停/恢复/停止、“暂停助理”作用的集合、失效与有界等待（`next_deadline_us`）、owner 生命周期检查。
+- **第二部分**：Task、occurrence 与触发、`ayni_post_event`、Task 生命周期与传播矩阵、实例暂停/恢复/停止、“暂停助理”作用的集合、失效与有界等待（`next_deadline_us`）、owner 生命周期检查。它再拆为 Task 与传播、时间、事件三个 PR，见 ADR-0018；“暂停助理”作用的集合按计划 §9.1 交给 `MA-019`。
 - **第三部分**：策略与 `decide` 循环、检查点、步骤、策略意图、`blocked_on`、C-LIFE-024。
 
 第一部分要先回答几个问题：意图以什么形式进入 Kernel（ADR-0009 尚未决定）；Kernel 分配的 ID 怎样跨重启不重复，而持久化计数器要等 `MA-010`；在 Grant（`MA-006`）之前谁可以提交意图；日志记录（`MA-010`）落地之前，已接受的 transition 怎样如实报告“尚未持久”。

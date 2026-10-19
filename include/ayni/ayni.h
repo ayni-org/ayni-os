@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 5u
+#define AYNI_ABI_MINOR 6u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -108,6 +108,9 @@ typedef struct ayni_config_v1 {
     uint32_t session_capacity;         /* sessions open at once */
     uint32_t goal_depth_max;           /* deepest child goal; a top-level goal has depth 0 */
     uint32_t goal_children_max;        /* children per goal that are not yet terminal */
+    /* Since 0.6 (ADR-0018). Tasks in memory; an ended task gives its place to
+     * a new one when the table is full. */
+    uint32_t task_capacity;
 } ayni_config_v1;
 
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
@@ -136,6 +139,8 @@ typedef struct ayni_config_v1 {
 #define AYNI_GOAL_CHILDREN_MAX_DEFAULT 4u
 #define AYNI_GOAL_CHILDREN_MAX_MIN 0u
 #define AYNI_GOAL_CHILDREN_MAX_MAX 64u
+#define AYNI_TASK_CAPACITY_DEFAULT 16u
+#define AYNI_TASK_CAPACITY_MAX 256u
 
 /*
  * Correlates an asynchronous attempt with its result (C-ID-006). Unique
@@ -384,10 +389,11 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
 ayni_status_t ayni_start(ayni_kernel_t *kernel);
 
 /*
- * Applies posted completions and advances recovery and shutdown. Does at most
- * max_items items and stops once max_time_us has passed on the host clock,
- * checked after each item; never waits on storage or any other I/O
- * (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
+ * Applies posted completions, advances recovery and shutdown and, in
+ * RUNNING, derives due tasks from goals, one task per item and transition
+ * (ADR-0018). Does at most max_items items and stops once max_time_us has
+ * passed on the host clock, checked after each item; never waits on storage
+ * or any other I/O (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
  * covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or
  * max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
  * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE in
@@ -434,15 +440,16 @@ ayni_status_t ayni_destroy(ayni_kernel_t *kernel);
 
 /* ---- Work model (since 0.5) --------------------------------------------
  *
- * Principals, sessions, agents, goal types and goals (ADR-0017,
- * contracts/domain/primitives.md and lifecycles.md). A goal intent is applied
- * in memory before ayni_submit_intent returns and is given a commit_seq
- * (C-COMMIT-003); the log does not store it yet, so durable_seq never covers
- * it and a reboot forgets it, and the next boot gives its commit_seq to
- * other transitions (ADR-0017, C-COMMIT-016). Enumerations are uint32_t
- * typedefs. Lifecycles, kinds, channels and origins start at 1; a reason of
- * 0 is AYNI_REASON_NONE, and an object reference of all zeros names no
- * object.
+ * Principals, sessions, agents, goal types, goals and tasks (ADR-0017,
+ * ADR-0018, contracts/domain/primitives.md and lifecycles.md). An intent is
+ * applied in memory before ayni_submit_intent returns and is given a
+ * commit_seq (C-COMMIT-003); ayni_step derives tasks from goals in
+ * transitions of their own. The log does not store these transitions yet,
+ * so durable_seq never covers them and a reboot forgets them, and the next
+ * boot gives their commit_seq to other transitions (ADR-0017,
+ * C-COMMIT-016). Enumerations are uint32_t typedefs. Lifecycles, kinds,
+ * channels and origins start at 1; a reason of 0 is AYNI_REASON_NONE, and an
+ * object reference of all zeros names no object.
  */
 
 /* A UTF-8 view with an explicit size and no terminator; data may be NULL
@@ -534,9 +541,26 @@ typedef uint32_t ayni_reason_t;
 #define AYNI_REASON_GOAL_REVISION ((ayni_reason_t)16)
 /* INVALID_STATE: the goal's lifecycle does not allow this change. */
 #define AYNI_REASON_GOAL_STATE ((ayni_reason_t)17)
-/* CAPACITY_EXCEEDED: a goal the change would raise is at the largest
- * revision. */
+/* CAPACITY_EXCEEDED: a goal, task or instance the change would raise is at
+ * the largest revision. */
 #define AYNI_REASON_REVISION_EXHAUSTED ((ayni_reason_t)18)
+/* Since 0.6 (ADR-0018). */
+/* INVALID_ARGUMENT: the goal type does not accept the trigger kind. */
+#define AYNI_REASON_TRIGGER_KIND ((ayni_reason_t)19)
+/* INVALID_STATE: the owner instance is STOPPED or FAULTED. */
+#define AYNI_REASON_OWNER_STATE ((ayni_reason_t)20)
+/* NOT_FOUND: task_id names no task in memory. */
+#define AYNI_REASON_TASK_UNKNOWN ((ayni_reason_t)21)
+/* REVISION_CONFLICT: expected_revision is not the task's revision. */
+#define AYNI_REASON_TASK_REVISION ((ayni_reason_t)22)
+/* INVALID_STATE: the task's lifecycle does not allow this change. */
+#define AYNI_REASON_TASK_STATE ((ayni_reason_t)23)
+/* NOT_FOUND: instance_id names no agent instance. */
+#define AYNI_REASON_INSTANCE_UNKNOWN ((ayni_reason_t)24)
+/* REVISION_CONFLICT: expected_revision is not the instance's revision. */
+#define AYNI_REASON_INSTANCE_REVISION ((ayni_reason_t)25)
+/* INVALID_STATE: the instance's lifecycle does not allow this change. */
+#define AYNI_REASON_INSTANCE_STATE ((ayni_reason_t)26)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -596,6 +620,8 @@ typedef struct ayni_agent_info_v1 {
     uint64_t agent_id;
     uint64_t instance_id; /* 0 until the kernel first enters RUNNING */
     uint64_t commit_seq;  /* of the last change to the instance this boot; 0 before RUNNING */
+    uint32_t revision;    /* since 0.6; 1 when the instance starts; 0 before RUNNING */
+    uint32_t reserved;    /* written as 0 */
 } ayni_agent_info_v1;
 
 /*
@@ -609,12 +635,28 @@ typedef struct ayni_agent_info_v1 {
  */
 typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 parameters);
 
+/*
+ * Since 0.6. When a goal produces tasks (ADR-0018). A goal's tasks advance
+ * only while the goal and all its ancestors are ACTIVE and its owner
+ * instance is RUNNING; ayni_step then derives each due occurrence as a task.
+ */
+typedef uint32_t ayni_trigger_kind_t;
+
+#define AYNI_TRIGGER_NONE ((ayni_trigger_kind_t)0) /* no tasks of its own */
+#define AYNI_TRIGGER_ONCE ((ayni_trigger_kind_t)1) /* one task, as soon as it may advance */
+/* The bit of a trigger kind in ayni_goal_type_v1.trigger_kinds. */
+#define AYNI_TRIGGER_BIT(kind) (1u << (kind))
+
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
     uint32_t version;               /* nonzero */
     ayni_string_v1 goal_type_id;    /* a catalog id, e.g. "reminder" */
     void *ctx;                      /* caller-owned until ayni_destroy returns AYNI_OK */
     ayni_goal_validate_fn validate; /* NULL: the goal type takes no parameters */
+    /* Since 0.6. The trigger kinds its goals may choose: AYNI_TRIGGER_BIT of
+     * each, at least one, only kinds this library defines. */
+    uint32_t trigger_kinds;
+    uint32_t reserved; /* must be 0 */
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -653,7 +695,41 @@ typedef struct ayni_goal_info_v1 {
     uint32_t goal_type_version;
     uint32_t goal_type_id_size;
     char goal_type_id[AYNI_CATALOG_ID_MAX_BYTES]; /* not terminated */
+    ayni_trigger_kind_t trigger;                  /* since 0.6 */
+    uint32_t occurrences;                         /* since 0.6; tasks derived so far */
+    uint64_t last_task_id;                        /* since 0.6; 0 before the first task */
 } ayni_goal_info_v1;
+
+/*
+ * Since 0.6. Task lifecycle (contracts/domain/lifecycles.md). This library
+ * reaches READY, PAUSED and CANCELLED only; the others need strategies,
+ * cancellable requests or time (ADR-0018).
+ */
+typedef uint32_t ayni_task_lifecycle_t;
+
+#define AYNI_TASK_READY ((ayni_task_lifecycle_t)1)
+#define AYNI_TASK_RUNNING ((ayni_task_lifecycle_t)2)
+#define AYNI_TASK_PAUSED ((ayni_task_lifecycle_t)3)
+#define AYNI_TASK_CANCELLING ((ayni_task_lifecycle_t)4)
+#define AYNI_TASK_COMPLETED ((ayni_task_lifecycle_t)5)
+#define AYNI_TASK_CANCELLED ((ayni_task_lifecycle_t)6)
+#define AYNI_TASK_FAILED ((ayni_task_lifecycle_t)7)
+#define AYNI_TASK_EXPIRED ((ayni_task_lifecycle_t)8)
+
+/* Since 0.6. A task of a goal; its owner is the goal's (C-LIFE-020). */
+typedef struct ayni_task_info_v1 {
+    uint32_t struct_size;
+    ayni_task_lifecycle_t lifecycle;
+    uint64_t task_id;
+    uint64_t goal_id;
+    uint64_t owner_instance_id;
+    uint64_t transition_id; /* that created the task, this boot */
+    uint64_t commit_seq;    /* of the last change; durable once durable_seq covers it */
+    uint32_t revision;
+    uint32_t cancel_revision; /* the revision that cancelled it; 0 if not cancelled */
+    uint32_t occurrence;      /* which of the goal's occurrences, from 1 */
+    uint32_t reserved;        /* written as 0 */
+} ayni_task_info_v1;
 
 /*
  * Intents a principal submits through a session (contracts/domain/
@@ -666,6 +742,11 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_GOAL_CANCEL ((ayni_intent_kind_t)2) /* body: ayni_goal_target_v1 */
 #define AYNI_INTENT_GOAL_PAUSE ((ayni_intent_kind_t)3)  /* body: ayni_goal_target_v1 */
 #define AYNI_INTENT_GOAL_RESUME ((ayni_intent_kind_t)4) /* body: ayni_goal_target_v1 */
+/* Since 0.6 (ADR-0018). */
+#define AYNI_INTENT_TASK_CANCEL ((ayni_intent_kind_t)5)     /* body: ayni_task_target_v1 */
+#define AYNI_INTENT_INSTANCE_PAUSE ((ayni_intent_kind_t)6)  /* body: ayni_instance_target_v1 */
+#define AYNI_INTENT_INSTANCE_RESUME ((ayni_intent_kind_t)7) /* body: ayni_instance_target_v1 */
+#define AYNI_INTENT_INSTANCE_STOP ((ayni_intent_kind_t)8)   /* body: ayni_instance_target_v1 */
 
 /*
  * One envelope for every intent kind. The principal and channel are the
@@ -679,8 +760,8 @@ typedef struct ayni_intent_v1 {
      * kernel keeps command mappings (MA-010). */
     uint64_t command_id;
     uint64_t session_id;
-    /* GOAL_CREATE: 0. Other kinds: the goal's current revision
-     * (C-COMMIT-012). */
+    /* GOAL_CREATE: 0. Other kinds: the current revision of the goal, task
+     * or instance they name (C-COMMIT-012). */
     uint32_t expected_revision;
     uint32_t reserved; /* must be 0 */
     const void *body;  /* the kind's body struct, starting with its struct_size */
@@ -693,6 +774,9 @@ typedef struct ayni_goal_create_v1 {
     uint64_t owner_instance_id; /* fixed for the goal's life (C-LIFE-020) */
     uint64_t parent_goal_id;    /* 0: a top-level goal */
     ayni_bytes_v1 parameters;   /* at most goal_parameter_max_bytes; copied */
+    /* Since 0.6. A kind this library defines and the goal type accepts. */
+    ayni_trigger_kind_t trigger;
+    uint32_t reserved; /* must be 0 */
 } ayni_goal_create_v1;
 
 typedef struct ayni_goal_target_v1 {
@@ -700,6 +784,20 @@ typedef struct ayni_goal_target_v1 {
     uint32_t reserved; /* must be 0 */
     uint64_t goal_id;
 } ayni_goal_target_v1;
+
+/* Since 0.6. */
+typedef struct ayni_task_target_v1 {
+    uint32_t struct_size;
+    uint32_t reserved; /* must be 0 */
+    uint64_t task_id;
+} ayni_task_target_v1;
+
+/* Since 0.6. */
+typedef struct ayni_instance_target_v1 {
+    uint32_t struct_size;
+    uint32_t reserved; /* must be 0 */
+    uint64_t instance_id;
+} ayni_instance_target_v1;
 
 typedef struct ayni_intent_result_v1 {
     uint32_t struct_size;
@@ -733,10 +831,12 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
 /*
  * Registers one version of a goal type; several versions of one id may
  * coexist. Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL pointer, a zero
- * version, a goal_type_id that is not a catalog id, or an id and version
- * already registered; AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
- * struct_size; AYNI_INVALID_STATE outside CONFIGURING;
- * AYNI_CAPACITY_EXCEEDED once goal_type_capacity versions are registered.
+ * version, a goal_type_id that is not a catalog id, trigger_kinds that is 0
+ * or holds a kind this library does not define, a nonzero reserved field,
+ * or an id and version already registered; AYNI_INVALID_ARGUMENT or
+ * AYNI_UNSUPPORTED_VERSION for struct_size; AYNI_INVALID_STATE outside
+ * CONFIGURING; AYNI_CAPACITY_EXCEEDED once goal_type_capacity versions are
+ * registered.
  */
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type);
 
@@ -776,22 +876,25 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    AYNI_UNSUPPORTED_VERSION for a struct_size larger than this library
  *    knows. Applies to intent, out_result, out_error and, for the kinds
  *    implemented here, the body, which must not be NULL. GOAL_CREATE also
- *    needs expected_revision 0, a goal_type_id that is a catalog id and
- *    parameters whose data is not NULL unless their size is 0.
+ *    needs expected_revision 0, a goal_type_id that is a catalog id,
+ *    parameters whose data is not NULL unless their size is 0, and a
+ *    trigger kind this library defines.
  * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement, or a
  *    nonzero command_id.
  * 3. AYNI_INVALID_STATE when called from a goal type's validator; then
  *    AYNI_NOT_READY outside RUNNING, without queueing (C-LIFE-004).
  * 4. AYNI_DENIED: session_id names no open session. Until grants exist, a
- *    session of the owner may submit every goal intent (ADR-0017).
+ *    session of the owner may submit every intent (ADR-0017).
  * 5. The intent's own rules, each with the reason named in its comment
- *    above. GOAL_CREATE: the goal type (NOT_FOUND, UNSUPPORTED_VERSION), the
- *    owner instance (NOT_FOUND), the parent goal (NOT_FOUND, INVALID_STATE,
- *    INVALID_ARGUMENT, CAPACITY_EXCEEDED for depth and children), capacity
- *    and ids (CAPACITY_EXCEEDED), then the parameters (INVALID_ARGUMENT).
- *    GOAL_CANCEL, GOAL_PAUSE and GOAL_RESUME: the goal (NOT_FOUND), then its
- *    revision (REVISION_CONFLICT), then its lifecycle (INVALID_STATE), then
- *    the revisions it would raise (CAPACITY_EXCEEDED).
+ *    above. GOAL_CREATE: the goal type (NOT_FOUND, UNSUPPORTED_VERSION) and
+ *    whether it accepts the trigger (INVALID_ARGUMENT), the owner instance
+ *    (NOT_FOUND, then INVALID_STATE when STOPPED or FAULTED), the parent goal
+ *    (NOT_FOUND, INVALID_STATE, INVALID_ARGUMENT, CAPACITY_EXCEEDED for depth
+ *    and children), capacity and ids (CAPACITY_EXCEEDED), then the
+ *    parameters (INVALID_ARGUMENT). Every other kind: the goal, task or
+ *    instance it names (NOT_FOUND), then its revision (REVISION_CONFLICT),
+ *    then its lifecycle (INVALID_STATE), then the revisions it would raise
+ *    (CAPACITY_EXCEEDED).
  * AYNI_INTERNAL reports a defect in this library, not in the call: the goal
  * table refused a goal the checks admitted. The goal is not created, but the
  * id and the commit_seq reserved for it are used up.
@@ -800,8 +903,18 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * ACTIVE goal to PAUSED and GOAL_RESUME takes it back; neither changes its
  * children. GOAL_CANCEL takes a goal that is not yet terminal, and every
  * descendant that is not yet terminal, to CANCELLED in one transition
- * (C-LIFE-022). An intent raises the revision of each goal it changes by
- * one; other goals keep theirs.
+ * (C-LIFE-022). TASK_CANCEL takes a READY or PAUSED task to CANCELLED.
+ * INSTANCE_PAUSE takes a RUNNING instance to PAUSED and INSTANCE_RESUME
+ * takes it back; INSTANCE_STOP takes a RUNNING or PAUSED instance to
+ * STOPPED and cancels every goal and task it owns that is not yet terminal.
+ *
+ * In the same transition, every READY or PAUSED task whose goal or owner
+ * the intent changed becomes READY if its goal and all the goal's ancestors
+ * are ACTIVE and its owner is RUNNING, and PAUSED otherwise; the tasks of a
+ * cancelled goal are cancelled with it (ADR-0018). An intent raises the
+ * revision of each goal, task and instance it changes by one; others keep
+ * theirs. When the intent may let ayni_step derive a task, the host's wake
+ * is called before ayni_submit_intent returns.
  */
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
                                  ayni_intent_result_v1 *out_result, ayni_error_v1 *out_error);
@@ -818,6 +931,10 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
                              ayni_agent_info_v1 *out_info);
 ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
                             ayni_goal_info_v1 *out_info);
+/* Since 0.6. A task whose place an ended task gave up is NOT_FOUND
+ * (ADR-0018). */
+ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
+                            ayni_task_info_v1 *out_info);
 
 #ifdef __cplusplus
 }

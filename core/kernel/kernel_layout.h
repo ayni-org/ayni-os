@@ -19,6 +19,7 @@ struct KernelLayout {
     std::size_t goal_types_offset;
     std::size_t goals_offset;
     std::size_t sessions_offset;
+    std::size_t tasks_offset;
     std::size_t size;
     std::size_t alignment; // a power of two
 };

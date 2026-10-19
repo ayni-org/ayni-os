@@ -1,10 +1,10 @@
-// The state that intents read and change (ADR-0017): the stores of the work
-// model, the id allocator and the transition clock. ayni_kernel holds one;
-// the rules here take it instead of the whole kernel, so they cannot reach
-// the Host, recovery or the event queue. Every function runs on the kernel
-// owner thread, and every check runs before anything changes, so a refusal
-// allocates no id and takes no transition; only AYNI_INTERNAL, a defect, may
-// leave both used up.
+// The state that intents read and change (ADR-0017, ADR-0018): the stores of
+// the work model, the id allocator and the transition clock. ayni_kernel
+// holds one; the rules here take it instead of the whole kernel, so they
+// cannot reach the Host, recovery or the event queue. Every function runs on
+// the kernel owner thread, and every check runs before anything changes, so
+// a refusal allocates no id and takes no transition; only AYNI_INTERNAL, a
+// defect, may leave both used up.
 
 #ifndef AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
 #define AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
@@ -18,6 +18,8 @@
 #include "kernel/transition_clock.h"
 #include "work/agent/agent_table.h"
 #include "work/goal/goal_table.h"
+#include "work/propagation.h"
+#include "work/task/task_table.h"
 
 #include <ayni/ayni.h>
 
@@ -32,7 +34,8 @@ struct WorkModel {
           goal_types(storage.goal_types, capacities.goal_type_capacity),
           agents(storage.agents, capacities.agent_capacity),
           goals(storage.goals, {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
-                                limits.goal_depth_max, limits.goal_children_max}) {}
+                                limits.goal_depth_max, limits.goal_children_max}),
+          tasks(storage.tasks, capacities.task_capacity) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -42,6 +45,8 @@ struct WorkModel {
     // start in that one transition when there are any (C-LIFE-025).
     void start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
+    work::WorkTables tables() { return {goals, tasks, agents}; }
+
     // Registration fills principals, goal types and agents in CONFIGURING;
     // the rest changes only in RUNNING.
     authority::PrincipalRegistry principals;
@@ -49,6 +54,7 @@ struct WorkModel {
     catalog::GoalTypeRegistry goal_types;
     work::AgentTable agents;
     work::GoalTable goals;
+    work::TaskTable tasks;
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal
@@ -57,6 +63,9 @@ struct WorkModel {
     // (ayni.h, C-POLICY-001), so nothing changes between a check and the
     // change it allows.
     bool calling_out = false;
+    // Set by a change that may let a goal derive a task; cleared once a
+    // search finds none, so ayni_step searches only after such a change.
+    bool derivation_due = false;
 };
 
 // Opens a session for a registered principal: AYNI_OK with a new id,
@@ -70,6 +79,12 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
 // kernel is RUNNING. failure is reset, then says why on a refusal.
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
                            IntentFailure &failure);
+
+// Derives the next due task as one transition (ADR-0018). Returns false,
+// changing nothing, when no goal can derive one now or no id is left.
+bool derive_next_task(WorkModel &model);
+// Whether derive_next_task would derive a task.
+bool has_derivable_task(WorkModel &model);
 
 } // namespace ayni::kernel
 

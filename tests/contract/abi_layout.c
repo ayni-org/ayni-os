@@ -31,7 +31,8 @@ AYNI_LAYOUT(config_goal_parameter_max_bytes,
 AYNI_LAYOUT(config_session_capacity, offsetof(ayni_config_v1, session_capacity) == 44);
 AYNI_LAYOUT(config_goal_depth_max, offsetof(ayni_config_v1, goal_depth_max) == 48);
 AYNI_LAYOUT(config_goal_children_max, offsetof(ayni_config_v1, goal_children_max) == 52);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 56);
+AYNI_LAYOUT(config_task_capacity, offsetof(ayni_config_v1, task_capacity) == 56);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 60);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);
@@ -118,14 +119,19 @@ AYNI_LAYOUT(agent_info_lifecycle, offsetof(ayni_agent_info_v1, lifecycle) == 4);
 AYNI_LAYOUT(agent_info_agent_id, offsetof(ayni_agent_info_v1, agent_id) == 8);
 AYNI_LAYOUT(agent_info_instance_id, offsetof(ayni_agent_info_v1, instance_id) == 16);
 AYNI_LAYOUT(agent_info_commit_seq, offsetof(ayni_agent_info_v1, commit_seq) == 24);
-AYNI_LAYOUT(agent_info_size, sizeof(ayni_agent_info_v1) == 32);
+AYNI_LAYOUT(agent_info_revision, offsetof(ayni_agent_info_v1, revision) == 32);
+AYNI_LAYOUT(agent_info_reserved, offsetof(ayni_agent_info_v1, reserved) == 36);
+AYNI_LAYOUT(agent_info_size, sizeof(ayni_agent_info_v1) == 40);
 
 AYNI_LAYOUT(goal_type_struct_size, offsetof(ayni_goal_type_v1, struct_size) == 0);
 AYNI_LAYOUT(goal_type_version, offsetof(ayni_goal_type_v1, version) == 4);
 AYNI_LAYOUT(goal_type_id, offsetof(ayni_goal_type_v1, goal_type_id) == 8);
 AYNI_LAYOUT(goal_type_ctx, offsetof(ayni_goal_type_v1, ctx) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(goal_type_validate, offsetof(ayni_goal_type_v1, validate) == 8 + 3 * AYNI_PTR);
-AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 8 + 4 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_trigger_kinds,
+            offsetof(ayni_goal_type_v1, trigger_kinds) == 8 + 4 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_reserved, offsetof(ayni_goal_type_v1, reserved) == 12 + 4 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 16 + 4 * AYNI_PTR);
 
 AYNI_LAYOUT(goal_info_struct_size, offsetof(ayni_goal_info_v1, struct_size) == 0);
 AYNI_LAYOUT(goal_info_lifecycle, offsetof(ayni_goal_info_v1, lifecycle) == 4);
@@ -145,7 +151,10 @@ AYNI_LAYOUT(goal_info_depth, offsetof(ayni_goal_info_v1, depth) == 76);
 AYNI_LAYOUT(goal_info_goal_type_version, offsetof(ayni_goal_info_v1, goal_type_version) == 80);
 AYNI_LAYOUT(goal_info_goal_type_id_size, offsetof(ayni_goal_info_v1, goal_type_id_size) == 84);
 AYNI_LAYOUT(goal_info_goal_type_id, offsetof(ayni_goal_info_v1, goal_type_id) == 88);
-AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 120);
+AYNI_LAYOUT(goal_info_trigger, offsetof(ayni_goal_info_v1, trigger) == 120);
+AYNI_LAYOUT(goal_info_occurrences, offsetof(ayni_goal_info_v1, occurrences) == 124);
+AYNI_LAYOUT(goal_info_last_task_id, offsetof(ayni_goal_info_v1, last_task_id) == 128);
+AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 136);
 
 AYNI_LAYOUT(intent_struct_size, offsetof(ayni_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(intent_kind, offsetof(ayni_intent_v1, kind) == 4);
@@ -164,12 +173,37 @@ AYNI_LAYOUT(create_owner_instance_id,
 AYNI_LAYOUT(create_parent_goal_id,
             offsetof(ayni_goal_create_v1, parent_goal_id) == 16 + 2 * AYNI_PTR);
 AYNI_LAYOUT(create_parameters, offsetof(ayni_goal_create_v1, parameters) == 24 + 2 * AYNI_PTR);
-AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == 24 + 4 * AYNI_PTR);
+AYNI_LAYOUT(create_trigger, offsetof(ayni_goal_create_v1, trigger) == 24 + 4 * AYNI_PTR);
+AYNI_LAYOUT(create_reserved, offsetof(ayni_goal_create_v1, reserved) == 28 + 4 * AYNI_PTR);
+AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == 32 + 4 * AYNI_PTR);
 
 AYNI_LAYOUT(target_struct_size, offsetof(ayni_goal_target_v1, struct_size) == 0);
 AYNI_LAYOUT(target_reserved, offsetof(ayni_goal_target_v1, reserved) == 4);
 AYNI_LAYOUT(target_goal_id, offsetof(ayni_goal_target_v1, goal_id) == 8);
 AYNI_LAYOUT(target_size, sizeof(ayni_goal_target_v1) == 16);
+
+AYNI_LAYOUT(task_info_struct_size, offsetof(ayni_task_info_v1, struct_size) == 0);
+AYNI_LAYOUT(task_info_lifecycle, offsetof(ayni_task_info_v1, lifecycle) == 4);
+AYNI_LAYOUT(task_info_task_id, offsetof(ayni_task_info_v1, task_id) == 8);
+AYNI_LAYOUT(task_info_goal_id, offsetof(ayni_task_info_v1, goal_id) == 16);
+AYNI_LAYOUT(task_info_owner_instance_id, offsetof(ayni_task_info_v1, owner_instance_id) == 24);
+AYNI_LAYOUT(task_info_transition_id, offsetof(ayni_task_info_v1, transition_id) == 32);
+AYNI_LAYOUT(task_info_commit_seq, offsetof(ayni_task_info_v1, commit_seq) == 40);
+AYNI_LAYOUT(task_info_revision, offsetof(ayni_task_info_v1, revision) == 48);
+AYNI_LAYOUT(task_info_cancel_revision, offsetof(ayni_task_info_v1, cancel_revision) == 52);
+AYNI_LAYOUT(task_info_occurrence, offsetof(ayni_task_info_v1, occurrence) == 56);
+AYNI_LAYOUT(task_info_reserved, offsetof(ayni_task_info_v1, reserved) == 60);
+AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 64);
+
+AYNI_LAYOUT(task_target_struct_size, offsetof(ayni_task_target_v1, struct_size) == 0);
+AYNI_LAYOUT(task_target_reserved, offsetof(ayni_task_target_v1, reserved) == 4);
+AYNI_LAYOUT(task_target_task_id, offsetof(ayni_task_target_v1, task_id) == 8);
+AYNI_LAYOUT(task_target_size, sizeof(ayni_task_target_v1) == 16);
+
+AYNI_LAYOUT(instance_target_struct_size, offsetof(ayni_instance_target_v1, struct_size) == 0);
+AYNI_LAYOUT(instance_target_reserved, offsetof(ayni_instance_target_v1, reserved) == 4);
+AYNI_LAYOUT(instance_target_instance_id, offsetof(ayni_instance_target_v1, instance_id) == 8);
+AYNI_LAYOUT(instance_target_size, sizeof(ayni_instance_target_v1) == 16);
 
 AYNI_LAYOUT(intent_result_struct_size, offsetof(ayni_intent_result_v1, struct_size) == 0);
 AYNI_LAYOUT(intent_result_reserved, offsetof(ayni_intent_result_v1, reserved) == 4);

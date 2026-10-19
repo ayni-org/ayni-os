@@ -1,6 +1,6 @@
 // Goals owned by work/goal: the fixed owner (C-LIFE-020), the tree limits
 // (C-LIMIT-007), revisions (C-COMMIT-012), pause and the cancel cascade
-// (C-LIFE-021, C-LIFE-022).
+// (C-LIFE-021, C-LIFE-022), and the trigger cursor (ADR-0018).
 
 #include "work/goal/goal_table.h"
 
@@ -35,8 +35,9 @@ class Goals {
 
     // Admits and inserts; returns the new goal's id, or 0 if refused.
     uint64_t create(uint64_t parent_goal_id = 0, uint64_t owner_instance_id = owner,
-                    ayni_bytes_v1 parameters = {nullptr, 0}) {
-        const NewGoal goal = new_goal(parent_goal_id, owner_instance_id, parameters);
+                    ayni_bytes_v1 parameters = {nullptr, 0},
+                    ayni_trigger_kind_t trigger = AYNI_TRIGGER_NONE) {
+        const NewGoal goal = new_goal(parent_goal_id, owner_instance_id, parameters, trigger);
         if (table_.admit(goal) != Admission::admitted) {
             return 0;
         }
@@ -47,12 +48,11 @@ class Goals {
     }
 
     static NewGoal new_goal(uint64_t parent_goal_id, uint64_t owner_instance_id = owner,
-                            ayni_bytes_v1 parameters = {nullptr, 0}) {
-        return {owner_instance_id,
-                parent_goal_id,
-                0,
-                {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
-                parameters};
+                            ayni_bytes_v1 parameters = {nullptr, 0},
+                            ayni_trigger_kind_t trigger = AYNI_TRIGGER_NONE) {
+        return {
+            owner_instance_id, parent_goal_id, 0, {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
+            parameters,        trigger};
     }
 
     const Goal &goal(uint64_t goal_id) {
@@ -84,12 +84,12 @@ class Goals {
 
     ayni::foundation::TransitionStamp last_stamp() const { return {last_seq_ + 10U, last_seq_}; }
 
-  private:
     ayni::foundation::TransitionStamp next_stamp() {
         ++last_seq_;
         return last_stamp();
     }
 
+  private:
     std::vector<uint64_t> storage_;
     GoalTable table_;
     uint64_t last_id_ = 0;
@@ -115,6 +115,9 @@ TEST(GoalTable, new_goal_is_active_at_revision_1_with_its_own_copy_of_the_parame
     EXPECT_EQ(goal.created_transition_id, 11U);
     EXPECT_EQ(goal.commit_seq, 1U);
     EXPECT_EQ(goal.origin.principal_id, 7U);
+    EXPECT_EQ(goal.trigger, AYNI_TRIGGER_NONE);
+    EXPECT_EQ(goal.occurrences, 0U);
+    EXPECT_EQ(goal.last_task_id, 0U);
     const ayni_bytes_v1 stored = goals->parameters(goals.index_of(id));
     ASSERT_EQ(stored.size, 3U);
     EXPECT_EQ(std::vector<uint8_t>(stored.data, stored.data + 3), (std::vector<uint8_t>{1, 2, 3}));
@@ -309,6 +312,79 @@ TEST(GoalTable, change_past_the_largest_revision_is_refused) {
     EXPECT_EQ(goals.change(root, GoalChange::pause), ChangeCheck::allowed);
     goals.raw(root).revision = max_revision;
     EXPECT_EQ(goals.change(root, GoalChange::resume), ChangeCheck::revision_exhausted);
+}
+
+// ADR-0018: ONCE has one occurrence and NONE has none; recording it is a
+// change of the goal, so it raises the revision.
+TEST(GoalTable, once_has_one_due_occurrence_and_none_has_none) {
+    Goals goals(small);
+    const uint64_t none = goals.create();
+    const uint64_t once = goals.create(0, owner, {nullptr, 0}, AYNI_TRIGGER_ONCE);
+    EXPECT_FALSE(goals->has_due_occurrence(goals.index_of(none)));
+    ASSERT_TRUE(goals->has_due_occurrence(goals.index_of(once)));
+
+    goals->record_occurrence(goals.index_of(once), 77, goals.next_stamp());
+    const Goal &goal = goals.goal(once);
+    EXPECT_EQ(goal.trigger, AYNI_TRIGGER_ONCE);
+    EXPECT_EQ(goal.occurrences, 1U);
+    EXPECT_EQ(goal.last_task_id, 77U);
+    EXPECT_EQ(goal.revision, 2U);
+    EXPECT_EQ(goal.commit_seq, goals.last_stamp().commit_seq);
+    EXPECT_EQ(goal.lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_FALSE(goals->has_due_occurrence(goals.index_of(once)));
+}
+
+TEST(GoalTable, subtree_holds_the_goal_and_its_descendants_only) {
+    Goals goals(small);
+    const uint64_t root = goals.create();
+    const uint64_t child = goals.create(root);
+    const uint64_t grandchild = goals.create(child);
+    const uint64_t other = goals.create();
+    const uint32_t root_index = goals.index_of(root);
+    for (const uint64_t id : {root, child, grandchild}) {
+        EXPECT_TRUE(goals->in_subtree(goals.index_of(id), root_index)) << id;
+    }
+    EXPECT_FALSE(goals->in_subtree(goals.index_of(other), root_index));
+    EXPECT_FALSE(goals->in_subtree(root_index, goals.index_of(child)));
+}
+
+// Stopping an instance cancels its goals that are not terminal (ADR-0018);
+// another owner's goals and terminal goals keep their revision.
+TEST(GoalTable, cancel_owned_reaches_the_owners_live_goals_only) {
+    Goals goals(small);
+    const uint64_t root = goals.create();
+    const uint64_t child = goals.create(root);
+    const uint64_t done = goals.create();
+    const uint64_t foreign = goals.create(0, other_owner);
+    ASSERT_EQ(goals.change(done, GoalChange::cancel), ChangeCheck::allowed);
+    ASSERT_EQ(goals.change(child, GoalChange::pause), ChangeCheck::allowed);
+    EXPECT_FALSE(goals->owned_at_largest_revision(owner));
+
+    goals->cancel_owned(owner, goals.next_stamp());
+    const uint64_t seq = goals.last_stamp().commit_seq;
+    for (const uint64_t id : {root, child}) {
+        EXPECT_EQ(goals.goal(id).lifecycle, AYNI_GOAL_CANCELLED) << id;
+        EXPECT_EQ(goals.goal(id).commit_seq, seq) << id;
+        EXPECT_EQ(goals.goal(id).cancel_revision, goals.goal(id).revision) << id;
+    }
+    EXPECT_EQ(goals.goal(child).revision, 3U);
+    EXPECT_EQ(goals.goal(done).revision, 2U);
+    EXPECT_EQ(goals.goal(foreign).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(goals.goal(foreign).revision, 1U);
+}
+
+TEST(GoalTable, owned_at_largest_revision_ignores_terminal_and_foreign_goals) {
+    constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
+    Goals goals(small);
+    const uint64_t live = goals.create();
+    const uint64_t done = goals.create();
+    const uint64_t foreign = goals.create(0, other_owner);
+    ASSERT_EQ(goals.change(done, GoalChange::cancel), ChangeCheck::allowed);
+    goals.raw(done).revision = max_revision;
+    goals.raw(foreign).revision = max_revision;
+    EXPECT_FALSE(goals->owned_at_largest_revision(owner));
+    goals.raw(live).revision = max_revision;
+    EXPECT_TRUE(goals->owned_at_largest_revision(owner));
 }
 
 } // namespace

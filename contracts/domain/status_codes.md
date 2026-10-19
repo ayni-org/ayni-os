@@ -1,6 +1,6 @@
 # 状态码
 
-- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017；`MA-004`、`MA-005`
+- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018；`MA-004`、`MA-005`
 - **定义位置**：`include/ayni/ayni.h`（唯一来源；Core 内部不复制一份）
 
 ## 取值
@@ -53,13 +53,21 @@
 | 15 | `AYNI_REASON_GOAL_UNKNOWN` | `NOT_FOUND` | `goal_id` 不存在 |
 | 16 | `AYNI_REASON_GOAL_REVISION` | `REVISION_CONFLICT` | `expected_revision` 不是目标的当前版本 |
 | 17 | `AYNI_REASON_GOAL_STATE` | `INVALID_STATE` | 目标的生命周期不允许该变化 |
-| 18 | `AYNI_REASON_REVISION_EXHAUSTED` | `CAPACITY_EXCEEDED` | 该变化要提升的某个版本已是最大值（C-COMMIT-012） |
+| 18 | `AYNI_REASON_REVISION_EXHAUSTED` | `CAPACITY_EXCEEDED` | 该变化要提升的某个 Goal、Task 或实例的版本已是最大值（C-COMMIT-012） |
+| 19 | `AYNI_REASON_TRIGGER_KIND` | `INVALID_ARGUMENT` | GoalType 不接受该触发种类（ADR-0018） |
+| 20 | `AYNI_REASON_OWNER_STATE` | `INVALID_STATE` | owner 实例已 `STOPPED` 或 `FAULTED` |
+| 21 | `AYNI_REASON_TASK_UNKNOWN` | `NOT_FOUND` | `task_id` 不是内存中的 Task（含已让位的 Task） |
+| 22 | `AYNI_REASON_TASK_REVISION` | `REVISION_CONFLICT` | `expected_revision` 不是 Task 的当前版本 |
+| 23 | `AYNI_REASON_TASK_STATE` | `INVALID_STATE` | Task 的生命周期不允许该变化 |
+| 24 | `AYNI_REASON_INSTANCE_UNKNOWN` | `NOT_FOUND` | `instance_id` 不是本 Kernel 的实例 |
+| 25 | `AYNI_REASON_INSTANCE_REVISION` | `REVISION_CONFLICT` | `expected_revision` 不是实例的当前版本 |
+| 26 | `AYNI_REASON_INSTANCE_STATE` | `INVALID_STATE` | 实例的生命周期不允许该变化 |
 
 ## 规则
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-STATUS-001 | 每个公开函数在文档中列出它可能返回的全部状态码；返回列表外的值视为缺陷 | `ayni_create` 在内存不足时返回 `AYNI_INTERNAL` | M0 已实现：`include/ayni/ayni.h` 为每个已实现函数列出返回码，`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表：`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.step_rejects_bad_arguments_without_effect`、`KernelLifecycle.kernel_info_checks_its_output`；工作模型：`WorkModel.return_values_follow_the_state_table`、`WorkModel.intent_arguments_are_refused_before_anything_else`、`WorkModel.registration_checks_its_arguments`、`WorkModel.queries_check_their_arguments` |
+| C-STATUS-001 | 每个公开函数在文档中列出它可能返回的全部状态码；返回列表外的值视为缺陷 | `ayni_create` 在内存不足时返回 `AYNI_INTERNAL` | M0 已实现：`include/ayni/ayni.h` 为每个已实现函数列出返回码，`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表：`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.step_rejects_bad_arguments_without_effect`、`KernelLifecycle.kernel_info_checks_its_output`；工作模型：`WorkModel.return_values_follow_the_state_table`、`WorkModel.intent_arguments_are_refused_before_anything_else`、`WorkModel.registration_checks_its_arguments`、`WorkModel.queries_check_their_arguments`、`WorkTask.task_and_instance_bodies_are_checked_before_anything_else`、`WorkTask.task_query_checks_its_arguments`、`WorkTask.task_and_instance_intents_outside_running_are_not_ready` |
 | C-STATUS-002 | 失败调用不产生部分效果：输出参数要么不写，要么写入文档规定的值（如 `*out_kernel = NULL`），调用方内存保持不变 | 版本不符时 `ayni_create` 已经清零了调用方的内存块 | M0 已实现：`KernelApi.failed_create_leaves_memory_untouched` |
 | C-STATUS-003 | 状态码区分“参数错”（`INVALID_ARGUMENT`）、“时机不对”（`INVALID_STATE`/`NOT_READY`/`BUSY`）、“不支持”（`UNSUPPORTED*`）与“被拒绝”（`DENIED`/`EXPIRED`/`STALE`/`BUDGET_EXHAUSTED`），不合并为通用失败 | 所有失败都返回 `-1`，调用方无法决定是否重试 | 评审；`MA-005` |
 | C-STATUS-004 | `AYNI_RESULT_UNKNOWN` 不是失败：调用方不得因它自动重试或换身份重做，只能查询、对账或交给人工 | Provider 超时后 Kernel 自动用新 `operation_id` 重发 | E2 F3–F5 |
