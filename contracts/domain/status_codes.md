@@ -1,6 +1,6 @@
 # 状态码
 
-- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018；`MA-004`、`MA-005`
+- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020；`MA-004`、`MA-005`
 - **定义位置**：`include/ayni/ayni.h`（唯一来源；Core 内部不复制一份）
 
 ## 取值
@@ -31,7 +31,7 @@
 
 ## 原因码
 
-`ayni_error_v1.reason` 在状态码之外说明拒绝的原因，`object` 指出它涉及的对象（ID、版本与种类）。每个原因码只属于一个状态码；调用方不认识的原因码按其状态码处理。目前由 `ayni_submit_intent` 输出（`include/ayni/ayni.h`）。
+`ayni_error_v1.reason` 在状态码之外说明拒绝的原因，`object` 指出它涉及的对象（ID、版本与种类）。每个原因码只属于一个状态码；调用方不认识的原因码按其状态码处理。目前由 `ayni_submit_intent` 输出（`include/ayni/ayni.h`）；自 0.8 起 `ayni_goal_info_v1` 的 `skip_reason`、`wait_reason` 也用其中的 `ID_EXHAUSTED` 与只用于 Goal 信息的 `TASK_CAPACITY` 说明 occurrence 为什么跳过或等待（ADR-0020）。
 
 | 值 | 名称 | 状态码 | 含义 |
 |---:|---|---|---|
@@ -62,6 +62,7 @@
 | 24 | `AYNI_REASON_INSTANCE_UNKNOWN` | `NOT_FOUND` | `instance_id` 不是本 Kernel 的实例 |
 | 25 | `AYNI_REASON_INSTANCE_REVISION` | `REVISION_CONFLICT` | `expected_revision` 不是实例的当前版本 |
 | 26 | `AYNI_REASON_INSTANCE_STATE` | `INVALID_STATE` | 实例的生命周期不允许该变化 |
+| 27 | `AYNI_REASON_TASK_CAPACITY` | `CAPACITY_EXCEEDED` | 只用于 Goal 信息：Task 表没有槽位，occurrence 不能成为 Task（ADR-0020） |
 
 ## 规则
 

@@ -399,16 +399,18 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * goals (ADR-0020), derives tasks (ADR-0018) and skips occurrences that
  * waited too long (ADR-0020). A task stands for every occurrence of its
  * goal due by the step's start (ADR-0019). Deriving and skipping set the
- * goal's occurrences, next_due_us, last_task_id or occurrences_skipped, and
- * commit_seq but keep its revision, so the revision a caller holds for the
- * goal stays valid. Does at most max_items items and stops once max_time_us
- * has passed on the host clock, checked after each item; never waits on
- * storage or any other I/O (C-LIMIT-011). out_report (nullable) receives
- * the fields its struct_size covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT
- * if kernel is NULL or max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT
- * or AYNI_UNSUPPORTED_VERSION for out_report->struct_size;
- * AYNI_INVALID_STATE in CONFIGURING and STOPPED, and when called from a goal
- * type's validator.
+ * goal's occurrences, next_due_us, last_task_id or occurrences_skipped and
+ * skip_reason, and commit_seq but keep its revision, so the revision a
+ * caller holds for the goal stays valid. An expiry that would raise a
+ * revision past the largest is dropped instead, the same way: the goal
+ * keeps its lifecycle and never expires (C-COMMIT-012). Does at most
+ * max_items items and stops once max_time_us has passed on the host clock,
+ * checked after each item; never waits on storage or any other I/O
+ * (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
+ * covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or
+ * max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
+ * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE
+ * in CONFIGURING and STOPPED, and when called from a goal type's validator.
  */
 ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
                         ayni_step_report_v1 *out_report);
@@ -664,11 +666,12 @@ typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 paramete
  *
  * Since 0.8 (ADR-0020). While the task table has no room or no id is left,
  * a due occurrence of a goal that may advance waits for at most its goal
- * type's occurrence_wait_max_us, counted from when it fell due; then every
- * occurrence due by then is skipped, counted and given the reason
- * (C-RES-005). A goal created with an expiry becomes EXPIRED at that time,
- * paused or not, together with its descendants and their tasks that have
- * not ended; a goal expiring takes no occurrence due at the same step.
+ * type's occurrence_wait_max_us, counted from when it fell due; then the
+ * step that finds its wait over skips every occurrence of the goal due by
+ * the step's start, counting them and giving the reason (C-RES-005). A goal
+ * created with an expiry becomes EXPIRED at that time, paused or not,
+ * together with its descendants and their tasks that have not ended; a goal
+ * expiring takes no occurrence due at the same step.
  */
 typedef uint32_t ayni_trigger_kind_t;
 
@@ -742,8 +745,8 @@ typedef struct ayni_goal_info_v1 {
     uint32_t goal_type_id_size;
     char goal_type_id[AYNI_CATALOG_ID_MAX_BYTES]; /* not terminated */
     ayni_trigger_kind_t trigger;                  /* since 0.6 */
-    /* Since 0.6; since 0.7 the number of the latest occurrence derived; 0
-     * before the first. */
+    /* Since 0.6; since 0.7 the number of the latest occurrence derived, and
+     * since 0.8 derived or skipped; 0 before the first. */
     uint32_t occurrences;
     uint64_t last_task_id;      /* since 0.6; 0 before the first task */
     uint64_t trigger_delay_us;  /* since 0.7; as created */
@@ -753,7 +756,8 @@ typedef struct ayni_goal_info_v1 {
      * goal is terminal. */
     uint64_t next_due_us;
     /* Since 0.8. When the goal expires, on the host monotonic clock;
-     * UINT64_MAX: never. */
+     * UINT64_MAX when it never will: it has no expiry, its expiry was
+     * dropped (ayni_step), or it is terminal. */
     uint64_t expires_us;
     uint32_t occurrences_skipped; /* since 0.8; occurrences that waited too long */
     /* Since 0.8. Why the latest skipped occurrences could not become a task:
