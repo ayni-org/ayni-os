@@ -26,8 +26,15 @@ ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, ayni_object_ref
 // A change that may let ayni_step derive a task: ayni_submit_intent wakes
 // the owner so that it steps.
 void mark_derivation_due(WorkModel &model, IntentOutcome &outcome) {
-    model.derivation_due = true;
+    model.derivation_changed = true;
     outcome.derivation_due = true;
+}
+
+// Pause lets nothing derive, so it wakes no one (ADR-0018), but the goals
+// it holds may include the one due earliest: the next step searches again
+// and reports the deadline without them (ADR-0019).
+void mark_derivation_held(WorkModel &model) {
+    model.derivation_changed = true;
 }
 
 // One check result type per table, with the same four outcomes.
@@ -96,7 +103,7 @@ ayni_status_t refuse_admission(GoalTable::Admission admission, const Intent &int
 }
 
 ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::GoalOrigin &origin,
-                          IntentOutcome &outcome, IntentFailure &failure) {
+                          uint64_t now_us, IntentOutcome &outcome, IntentFailure &failure) {
     const GoalCreate &create = intent.create;
     const catalog::GoalTypeRegistry::Lookup type =
         model.goal_types.find(create.goal_type_id, create.goal_type_version);
@@ -110,7 +117,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     case catalog::GoalTypeRegistry::Lookup::Kind::found:
         break;
     }
-    if (!model.goal_types.accepts_trigger(type.index, create.trigger)) {
+    if (!model.goal_types.accepts_trigger(type.index, create.trigger.kind)) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_TRIGGER_KIND,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
@@ -127,7 +134,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
             failure);
     }
     const work::NewGoal goal{create.owner_instance_id, create.parent_goal_id, type.index, origin,
-                             create.parameters,        create.trigger};
+                             create.parameters,        create.trigger,        now_us};
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);
@@ -159,7 +166,9 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         // stay used up, as ayni.h says for this defect.
         return AYNI_INTERNAL;
     }
-    if (model.goals.has_due_occurrence(index)) {
+    // Also when the occurrence is still to come: the host learns its time
+    // from the next step's next_deadline_us.
+    if (model.goals.at(index).cursor.has_next()) {
         mark_derivation_due(model, outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, goal_id, model.goals.at(index).revision);
@@ -192,7 +201,9 @@ ayni_status_t change_goal(WorkModel &model, const Intent &intent, IntentOutcome 
     work::apply_goal_change(tables, index, change, stamp);
     // Resume may let the goal's subtree advance; cancel ends tasks, whose
     // places other goals may be waiting for.
-    if (change != work::GoalChange::pause) {
+    if (change == work::GoalChange::pause) {
+        mark_derivation_held(model);
+    } else {
         mark_derivation_due(model, outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, intent.target_id, model.goals.at(index).revision);
@@ -250,7 +261,9 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
     work::apply_instance_change(tables, index, change, stamp);
     // Resume may let the instance's goals advance; stop ends tasks, whose
     // places other instances' goals may be waiting for.
-    if (change != work::InstanceChange::pause) {
+    if (change == work::InstanceChange::pause) {
+        mark_derivation_held(model);
+    } else {
         mark_derivation_due(model, outcome);
     }
     outcome.object =
@@ -261,8 +274,8 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
 
 } // namespace
 
-ayni_status_t apply_intent(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
-                           IntentFailure &failure) {
+ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us,
+                           IntentOutcome &outcome, IntentFailure &failure) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
@@ -278,7 +291,7 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, IntentOutcome
         const authority::Principal &principal = *model.principals.find(session->principal_id);
         const work::GoalOrigin origin{AYNI_ORIGIN_USER, session->channel, principal.principal_id,
                                       principal.binding_revision};
-        return create_goal(model, intent, origin, outcome, failure);
+        return create_goal(model, intent, origin, now_us, outcome, failure);
     }
     case AYNI_INTENT_TASK_CANCEL:
         return cancel_task(model, intent, outcome, failure);

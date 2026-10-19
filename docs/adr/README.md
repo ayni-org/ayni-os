@@ -30,6 +30,7 @@
 | [0016](0016-boot-recovery-and-bounded-step.md) | 启动恢复、持久 boot_epoch 与有界 step | 已接受 | §3.2、§4.2、§4.3 |
 | [0017](0017-work-model-principals-agents-goals.md) | 工作模型第一部分：主体与会话、Agent 实例、GoalType 与 Goal 意图 | 已接受 | §2.2、§2.4、§3.2、§3.6、§5.3 |
 | [0018](0018-tasks-and-propagation.md) | 工作模型第二部分（一）：Task、派生与传播 | 已接受 | §2.2、§2.4、§3.2、§4.2、§5.3、§9.1 |
+| [0019](0019-time-triggers.md) | 工作模型第二部分（二）：延时与周期触发 | 已接受 | §2.1、§2.2、§4.4、§5.3、§14.1 |
 
 ## 模板
 

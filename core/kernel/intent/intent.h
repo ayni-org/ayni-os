@@ -7,6 +7,8 @@
 #ifndef AYNI_CORE_KERNEL_INTENT_INTENT_H
 #define AYNI_CORE_KERNEL_INTENT_INTENT_H
 
+#include "work/goal/trigger_schedule.h"
+
 #include <ayni/ayni.h>
 
 #include <cstdint>
@@ -19,7 +21,7 @@ struct GoalCreate {
     uint64_t owner_instance_id;
     uint64_t parent_goal_id; // 0: a top-level goal
     ayni_bytes_v1 parameters;
-    ayni_trigger_kind_t trigger;
+    work::Trigger trigger;
 };
 
 struct Intent {

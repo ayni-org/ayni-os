@@ -149,28 +149,37 @@ void apply_instance_change(WorkTables &tables, uint32_t instance_index, Instance
     tables.agents.apply(instance_index, change, stamp);
 }
 
-bool find_derivable(const WorkTables &tables, uint32_t &out_goal_index) {
+bool find_derivable(const WorkTables &tables, uint64_t now_us, uint32_t &out_goal_index,
+                    uint64_t &out_next_due_us) {
+    out_next_due_us = no_time;
     if (!tables.tasks.has_room()) {
         return false;
     }
+    uint32_t earliest = GoalTable::no_parent;
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
-        if (tables.goals.has_due_occurrence(index) &&
+        // Strictly earlier, so the first created wins a tie.
+        if (goal.cursor.next_due_us < out_next_due_us &&
             may_advance(tables, index, goal.owner_instance_id, After{})) {
-            out_goal_index = index;
-            return true;
+            out_next_due_us = goal.cursor.next_due_us;
+            earliest = index;
         }
     }
-    return false;
+    if (earliest == GoalTable::no_parent || !tables.goals.at(earliest).cursor.due_by(now_us)) {
+        return false;
+    }
+    out_goal_index = earliest;
+    return true;
 }
 
-void derive(WorkTables &tables, uint32_t goal_index, uint64_t task_id,
+void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t task_id,
             foundation::TransitionStamp stamp) {
+    const TakenOccurrences taken = tables.goals.take_due(goal_index, now_us, task_id, stamp);
     const Goal &goal = tables.goals.at(goal_index);
-    const NewTask task{goal.goal_id, goal.owner_instance_id, goal_index, goal.occurrences + 1U};
+    const NewTask task{goal.goal_id, goal.owner_instance_id, taken.due_us,
+                       goal_index,   taken.latest,           taken.count};
     // Cannot fail: find_derivable checked for room.
     static_cast<void>(tables.tasks.insert(task, task_id, stamp));
-    tables.goals.record_occurrence(goal_index, task_id, stamp);
 }
 
 } // namespace ayni::work

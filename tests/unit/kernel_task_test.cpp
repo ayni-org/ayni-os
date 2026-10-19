@@ -85,6 +85,8 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     WorkNode work;
     work.run();
     const uint64_t wakes_before = wakes(work);
+    work.node().sim().advance_us(1000);
+    const uint64_t created_at = work.node().sim().now_us();
     const Submitted created = work.create(WorkNode::create_body(
         work.instance(agent_a), 0, "reminder", 1, {nullptr, 0}, AYNI_TRIGGER_ONCE));
     ASSERT_EQ(created.status, AYNI_OK);
@@ -92,6 +94,7 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     const uint64_t goal_id = created.result.object.id;
     EXPECT_EQ(work.goal(goal_id).trigger, AYNI_TRIGGER_ONCE);
     EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
+    EXPECT_EQ(work.goal(goal_id).next_due_us, created_at);
 
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
@@ -113,7 +116,10 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     EXPECT_EQ(task.revision, 1U);
     EXPECT_EQ(task.cancel_revision, 0U);
     EXPECT_EQ(task.occurrence, 1U);
-    EXPECT_EQ(task.reserved, 0U);
+    EXPECT_EQ(task.occurrence_count, 1U);
+    EXPECT_EQ(task.due_us, created_at);
+    EXPECT_EQ(goal.next_due_us, std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(report.next_deadline_us, std::numeric_limits<uint64_t>::max());
     EXPECT_EQ(task.commit_seq, created.result.commit_seq + 1U);
     EXPECT_EQ(task.transition_id, task.commit_seq + 0U); // both start after the boot batch
     EXPECT_EQ(goal.commit_seq, task.commit_seq);
@@ -212,7 +218,7 @@ TEST(WorkTask, only_running_derives_tasks) {
     const ayni::kernel::WorkModel &model = work.kernel()->work;
     uint32_t index = 0;
     ASSERT_TRUE(model.goals.find(goal_id, index));
-    EXPECT_EQ(model.goals.at(index).occurrences, 0U);
+    EXPECT_EQ(model.goals.at(index).cursor.taken, 0U);
     EXPECT_EQ(model.tasks.size(), 0U);
 }
 

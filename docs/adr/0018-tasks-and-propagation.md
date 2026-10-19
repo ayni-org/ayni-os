@@ -9,7 +9,7 @@
 ADR-0017 把 `MA-004` 拆成三部分，第二部分覆盖 Task、occurrence 与触发、`ayni_post_event`、传播、实例暂停/恢复/停止、失效与有界等待。第二部分本身仍然过大，按依赖再拆为三个 PR：
 
 - **Task 与传播（本 ADR）**：Task 表、从 Goal 派生 Task、Goal 与实例的变化传到 Task、实例意图与 owner 检查。
-- **时间**：延时与周期触发、occurrence 去重与补发、失效、有界等待与 `next_deadline_us`。
+- **时间**：延时与周期触发、occurrence 去重与补发、失效、有界等待与 `next_deadline_us`。它后来再拆为触发、失效与有界等待两个 PR（ADR-0019）。
 - **事件**：`ayni_post_event` 与事件触发。
 
 ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.1 把“暂停集合”交给助理协调器（`MA-019`），C-PROD-020 的集合由它选择，本部分只提供它要使用的暂停机制。
@@ -25,7 +25,7 @@ ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.
    - `NONE`（0）：Goal 自己不产生 Task，例如只用来组织子目标的父目标。
    - `ONCE`（1）：Goal 第一次满足放行条件时产生一个 Task。
 
-   时间部分加入延时与周期种类及其参数，事件部分加入事件种类；GoalType 的校验函数仍只看参数。
+   时间部分加入延时与周期种类及其参数（ADR-0019），事件部分加入事件种类；GoalType 的校验函数仍只看参数。
 5. **放行条件，暂停不级联（产品语义，推荐项）。** 一个 Goal 的 Task 只有在该 Goal 与它的所有祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时才能前进。ADR-0017 的“暂停不改变子目标”不变：暂停父目标不改写子目标的状态，但子目标的 Task 随之停下，恢复父目标后自动继续，不需要记录暂停原因。据此：
    - **派生**：放行的 Goal 有待派生的 occurrence 时才产生 Task，新 Task 为 `READY`。
    - **传播**：`GOAL_PAUSE`、`GOAL_RESUME`、`INSTANCE_PAUSE`、`INSTANCE_RESUME` 在同一个 transition 中重算受影响的 Task：未结束的 `READY`/`PAUSED` Task 按放行条件取 `READY` 或 `PAUSED`，状态变化的才提升版本。

@@ -1,6 +1,6 @@
 // Goals (contracts/domain/lifecycles.md, primitives.md). The table owns each
 // goal's lifecycle, revision, place in the goal tree, parameter block and
-// trigger cursor (ADR-0018). It enforces the fixed owner (C-LIFE-020), the
+// trigger cursor (ADR-0018, ADR-0019). It enforces the fixed owner (C-LIFE-020), the
 // tree limits (C-LIMIT-007) and the cancel cascade (C-LIFE-022).
 //
 // Goals are never removed: a terminal goal stays queryable and counts toward
@@ -13,6 +13,7 @@
 
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
+#include "work/goal/trigger_schedule.h"
 
 #include <ayni/ayni.h>
 
@@ -35,7 +36,8 @@ struct NewGoal {
     uint32_t goal_type_index;   // in the goal type registry
     GoalOrigin origin;
     ayni_bytes_v1 parameters; // fits parameters_fit()
-    ayni_trigger_kind_t trigger;
+    Trigger trigger;          // trigger.fits()
+    uint64_t created_us;      // on the host monotonic clock
 };
 
 struct Goal {
@@ -44,7 +46,9 @@ struct Goal {
     uint64_t owner_instance_id;
     uint64_t created_transition_id;
     uint64_t commit_seq;   // of the last change
-    uint64_t last_task_id; // of the latest occurrence; 0 before the first
+    uint64_t last_task_id; // 0 before the first task
+    Trigger trigger;
+    TriggerCursor cursor; // no next occurrence once the goal is terminal
     GoalOrigin origin;
     uint32_t parent_index; // GoalTable::no_parent for a top-level goal
     uint32_t goal_type_index;
@@ -52,8 +56,6 @@ struct Goal {
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     uint32_t depth;
     uint32_t parameter_size;
-    uint32_t occurrences; // derived so far: the trigger cursor
-    ayni_trigger_kind_t trigger;
     ayni_goal_lifecycle_t lifecycle;
 };
 
@@ -119,15 +121,14 @@ class GoalTable {
     // goal it changes gets the next revision and stamp.commit_seq.
     void apply(uint32_t index, GoalChange change, foundation::TransitionStamp stamp);
 
-    // Whether the trigger of goal index has an occurrence not yet derived.
-    // Says nothing about whether the goal may advance.
-    bool has_due_occurrence(uint32_t index) const;
-    // Records that the next occurrence became task_id and gives the goal
-    // stamp.commit_seq. The revision stays: it is what intents name the goal
-    // by, and the kernel's own progress through the trigger must not make a
-    // caller's pause or cancel stale (ADR-0018). Only when
-    // has_due_occurrence(index).
-    void record_occurrence(uint32_t index, uint64_t task_id, foundation::TransitionStamp stamp);
+    // Takes the occurrences of goal index due by now_us for task_id and
+    // gives the goal stamp.commit_seq. The revision stays: it is what intents
+    // name the goal by, and the kernel's own progress through the trigger
+    // must not make a caller's pause or cancel stale (ADR-0018). Says nothing
+    // about whether the goal may advance; only when
+    // at(index).cursor.due_by(now_us).
+    TakenOccurrences take_due(uint32_t index, uint64_t now_us, uint64_t task_id,
+                              foundation::TransitionStamp stamp);
 
     // Whether some goal of the instance that is not terminal is at the
     // largest revision.

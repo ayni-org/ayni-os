@@ -60,6 +60,7 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
     created.revision = 1;
     created.parameter_size = goal.parameters.size;
     created.trigger = goal.trigger;
+    created.cursor = start_schedule(goal.trigger, goal.created_us);
     created.lifecycle = AYNI_GOAL_ACTIVE;
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {
         created.depth = goals_[created.parent_index].depth + 1U;
@@ -123,17 +124,13 @@ void GoalTable::apply(uint32_t index, GoalChange change, foundation::TransitionS
     }
 }
 
-bool GoalTable::has_due_occurrence(uint32_t index) const {
-    const Goal &goal = goals_[index];
-    return goal.trigger == AYNI_TRIGGER_ONCE && goal.occurrences == 0U;
-}
-
-void GoalTable::record_occurrence(uint32_t index, uint64_t task_id,
-                                  foundation::TransitionStamp stamp) {
+TakenOccurrences GoalTable::take_due(uint32_t index, uint64_t now_us, uint64_t task_id,
+                                     foundation::TransitionStamp stamp) {
     Goal &goal = goals_[index];
-    ++goal.occurrences;
+    const TakenOccurrences taken = work::take_due(goal.trigger, now_us, goal.cursor);
     goal.last_task_id = task_id;
     goal.commit_seq = stamp.commit_seq;
+    return taken;
 }
 
 bool GoalTable::owned_at_largest_revision(uint64_t instance_id) const {
@@ -223,6 +220,9 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
     goal.commit_seq = stamp.commit_seq;
     if (lifecycle == AYNI_GOAL_CANCELLED) {
         goal.cancel_revision = goal.revision;
+    }
+    if (!is_live(lifecycle)) {
+        goal.cursor.next_due_us = no_time;
     }
 }
 

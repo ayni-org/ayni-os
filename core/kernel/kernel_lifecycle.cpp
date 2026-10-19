@@ -6,8 +6,6 @@
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 
-#include <limits>
-
 namespace {
 
 bool time_is_up(const ayni_host_v1 &host, uint64_t started_us, uint32_t max_time_us) {
@@ -50,8 +48,11 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
         ++items;
         settle_recovery();
     }
+    // Occurrences are taken as of the start of the step, so one step sees
+    // one schedule.
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
-        while (items < max_items && !out_of_time && ayni::kernel::derive_next_task(work)) {
+        while (items < max_items && !out_of_time &&
+               ayni::kernel::derive_next_task(work, started_us)) {
             ++items;
             out_of_time = time_is_up(host, started_us, max_time_us);
         }
@@ -66,13 +67,14 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                           completions.has_free_slot();
     // DRAINING and RESTRICTED derive nothing (ADR-0018). Runs after the
     // time budget is spent too: more_ready must not drop a due derivation.
-    const bool derivation_due =
-        lifecycle == AYNI_LIFECYCLE_RUNNING && ayni::kernel::refresh_derivation_due(work);
+    uint64_t next_due_us = ayni::work::no_time;
+    const bool derivation_due = lifecycle == AYNI_LIFECYCLE_RUNNING &&
+                                ayni::kernel::refresh_derivation_due(work, started_us, next_due_us);
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
     report.items_done = items;
     report.more_ready = completions.posted_count() > 0U || boot_due || derivation_due ? 1U : 0U;
-    report.next_deadline_us = std::numeric_limits<uint64_t>::max();
+    report.next_deadline_us = next_due_us;
     return AYNI_OK;
 }
 

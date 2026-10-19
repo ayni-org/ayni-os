@@ -68,7 +68,8 @@ inline ayni_agent_desc_v1 agent_desc(uint64_t agent_id) {
 }
 
 constexpr uint32_t any_trigger =
-    AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
+    AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
+    AYNI_TRIGGER_BIT(AYNI_TRIGGER_DELAY) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
 
 inline ayni_goal_type_v1 goal_type_desc(const char *id, uint32_t version,
                                         ayni_goal_validate_fn validate = nullptr,
@@ -100,7 +101,7 @@ struct Submitted {
 
 // A node with an owner, two agents and three goal types registered on every
 // kernel it creates: "reminder" with a validator and "timer" without, both
-// taking either trigger, and "folder", whose goals derive no tasks.
+// taking every trigger kind, and "folder", whose goals derive no tasks.
 class WorkNode {
   public:
     WorkNode() {

@@ -74,8 +74,9 @@ static int check_work_model(ayni_kernel_t *kernel) {
     goal_type.goal_type_id.data = "reminder";
     goal_type.goal_type_id.size = 8u;
     goal_type.validate = accept_parameters;
-    goal_type.trigger_kinds =
-        AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
+    goal_type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) |
+                              AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
+                              AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
     failures +=
         expect(ayni_register_goal_type(kernel, &goal_type) == AYNI_OK, "register goal type");
 
@@ -91,7 +92,9 @@ static int check_work_model(ayni_kernel_t *kernel) {
     create.goal_type_version = 1u;
     create.goal_type_id = goal_type.goal_type_id;
     create.owner_instance_id = 1u;
-    create.trigger = AYNI_TRIGGER_ONCE;
+    create.trigger = AYNI_TRIGGER_INTERVAL;
+    create.trigger_delay_us = 0u;
+    create.trigger_period_us = AYNI_TRIGGER_PERIOD_MIN_US;
     intent.struct_size = (uint32_t)sizeof intent;
     intent.kind = AYNI_INTENT_GOAL_CREATE;
     intent.body = &create;

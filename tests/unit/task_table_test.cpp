@@ -31,7 +31,7 @@ class Tasks {
     // Inserts the next task; returns its id, or 0 if refused.
     uint64_t create(uint32_t occurrence = 1) {
         const uint64_t task_id = last_id_ + 1U;
-        if (!table_.insert({goal_id, owner, 3, occurrence}, task_id, next_stamp())) {
+        if (!table_.insert({goal_id, owner, 900, 3, occurrence, 2}, task_id, next_stamp())) {
             return 0;
         }
         last_id_ = task_id;
@@ -92,6 +92,8 @@ TEST(TaskTable, new_task_is_ready_at_revision_1) {
     EXPECT_EQ(task.owner_instance_id, owner);
     EXPECT_EQ(task.goal_index, 3U);
     EXPECT_EQ(task.occurrence, 4U);
+    EXPECT_EQ(task.occurrence_count, 2U);
+    EXPECT_EQ(task.due_us, 900U);
     EXPECT_EQ(task.created_transition_id, 11U);
     EXPECT_EQ(task.commit_seq, 1U);
     EXPECT_FALSE(tasks.exists(id + 1U));

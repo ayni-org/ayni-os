@@ -47,6 +47,8 @@ bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::Transi
     created.commit_seq = stamp.commit_seq;
     created.goal_index = task.goal_index;
     created.occurrence = task.occurrence;
+    created.occurrence_count = task.occurrence_count;
+    created.due_us = task.due_us;
     created.revision = 1;
     created.lifecycle = AYNI_TASK_READY;
     // Cannot fail: there is room now.

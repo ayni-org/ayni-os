@@ -1,6 +1,6 @@
 # ID 与时间
 
-- **关联**：计划 §2.2、§2.7、§3.4、§3.6、§4.4；ADR-0004、ADR-0017、ADR-0018；`MA-003`、`MA-004`、`MA-038`；E2 F9、F13，E3 步骤 2
+- **关联**：计划 §2.2、§2.7、§3.4、§3.6、§4.4；ADR-0004、ADR-0017、ADR-0018、ADR-0019；`MA-003`、`MA-004`、`MA-038`；E2 F9、F13，E3 步骤 2
 - **属主**：`core/foundation`（类型与生成规则），各 ID 的分配者见下表
 
 ## ID 一览
@@ -42,11 +42,11 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-TIME-001 | 本机期限（TTL、deadline、租期、等待上限）一律用 Host 提供的单调时钟（微秒，`monotonic_now_us`）计算 | 用墙上时钟计算动作 deadline，校时后动作提前或延后数小时 | `MA-003` FakeClock 测试 |
+| C-TIME-001 | 本机期限（TTL、deadline、租期、等待上限）一律用 Host 提供的单调时钟（微秒，`monotonic_now_us`）计算 | 用墙上时钟计算动作 deadline，校时后动作提前或延后数小时 | M1 已实现（step 时间预算与触发时间）：`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`WorkTrigger.delay_goal_derives_once_its_time_comes`、`WorkTrigger.interval_goal_derives_each_occurrence_on_its_schedule`、`WorkTrigger.step_takes_occurrences_as_of_its_start`；TTL、租期与等待上限随各自工作包 |
 | C-TIME-002 | 单调时间值不持久化为可恢复的期限，不跨设备传递或比较；跨设备只传相对时限与可信时间信息 | 把对端的单调时间戳与本机时间相减判断新鲜度 | 评审；`MA-038` |
 | C-TIME-003 | 持久记录保存期限的恢复策略（如“重启后重新计时”或“依赖绝对时间”），不保存旧的单调数值 | 重启后用重启前的单调时间戳判断 Observation 仍然有效 | E2 F1；`MA-010` |
 | C-TIME-004 | 绝对时间不可信时，依赖日历或绝对期限的工作进入待校时状态，不按猜测的时间执行 | 断电重启后以 1970 年时间触发全部提醒 | `MA-011` 日历边界测试 |
 | C-TIME-005 | 日历目标保存时区与规则版本，以计划发生时刻形成稳定 occurrence ID；同一 occurrence 只触发一次 | 夏令时回拨的重复一小时内同一提醒触发两次 | E1 步骤 11；`MA-011` |
 | C-TIME-006 | 夏令时缺失时段跳到下一个有效时刻；向后校时不重新触发已提交 occurrence；向前跨过时刻按目标的错过策略处理 | 向后校时一小时，已呈现的提醒再次播报 | `MA-011` |
-| C-TIME-007 | 单调间隔（“每两分钟”）与日历规则（“每天 14:00”）是两种类型，不互相换算 | 把“每天 14:00”实现为每 86,400 秒触发 | `MA-011` |
+| C-TIME-007 | 单调间隔（“每两分钟”）与日历规则（“每天 14:00”）是两种类型，不互相换算 | 把“每天 14:00”实现为每 86,400 秒触发 | `MA-011`；M1 只有单调时钟上的 `DELAY`、`INTERVAL`（ADR-0019），日历规则随 `MA-011` 另设类型 |
 | C-TIME-008 | `ayni_host_v1.monotonic_now_us` 在一次启动内不减小，不阻塞，并在 Kernel 所有者线程上调用 | Host 返回墙上时钟，校时后时间倒退 | M0 已实现：`NativeHost.monotonic_clock_never_decreases`（Native）；ESP32 使用 `esp_timer_get_time`，M2 补测 |

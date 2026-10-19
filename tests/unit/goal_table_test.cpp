@@ -16,10 +16,14 @@ using ayni::work::Goal;
 using ayni::work::GoalChange;
 using ayni::work::GoalTable;
 using ayni::work::NewGoal;
+using ayni::work::no_time;
+using ayni::work::TakenOccurrences;
+using ayni::work::Trigger;
 using Admission = GoalTable::Admission;
 using ChangeCheck = GoalTable::ChangeCheck;
 
 constexpr uint64_t owner = 50;
+constexpr Trigger no_trigger{AYNI_TRIGGER_NONE, 0, 0};
 constexpr uint64_t other_owner = 60;
 
 class Goals {
@@ -35,9 +39,10 @@ class Goals {
 
     // Admits and inserts; returns the new goal's id, or 0 if refused.
     uint64_t create(uint64_t parent_goal_id = 0, uint64_t owner_instance_id = owner,
-                    ayni_bytes_v1 parameters = {nullptr, 0},
-                    ayni_trigger_kind_t trigger = AYNI_TRIGGER_NONE) {
-        const NewGoal goal = new_goal(parent_goal_id, owner_instance_id, parameters, trigger);
+                    ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
+                    uint64_t created_us = 0) {
+        const NewGoal goal =
+            new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us);
         if (table_.admit(goal) != Admission::admitted) {
             return 0;
         }
@@ -48,11 +53,15 @@ class Goals {
     }
 
     static NewGoal new_goal(uint64_t parent_goal_id, uint64_t owner_instance_id = owner,
-                            ayni_bytes_v1 parameters = {nullptr, 0},
-                            ayni_trigger_kind_t trigger = AYNI_TRIGGER_NONE) {
-        return {
-            owner_instance_id, parent_goal_id, 0, {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
-            parameters,        trigger};
+                            ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
+                            uint64_t created_us = 0) {
+        return {owner_instance_id,
+                parent_goal_id,
+                0,
+                {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
+                parameters,
+                trigger,
+                created_us};
     }
 
     const Goal &goal(uint64_t goal_id) {
@@ -115,8 +124,9 @@ TEST(GoalTable, new_goal_is_active_at_revision_1_with_its_own_copy_of_the_parame
     EXPECT_EQ(goal.created_transition_id, 11U);
     EXPECT_EQ(goal.commit_seq, 1U);
     EXPECT_EQ(goal.origin.principal_id, 7U);
-    EXPECT_EQ(goal.trigger, AYNI_TRIGGER_NONE);
-    EXPECT_EQ(goal.occurrences, 0U);
+    EXPECT_EQ(goal.trigger.kind, AYNI_TRIGGER_NONE);
+    EXPECT_EQ(goal.cursor.taken, 0U);
+    EXPECT_EQ(goal.cursor.next_due_us, no_time);
     EXPECT_EQ(goal.last_task_id, 0U);
     const ayni_bytes_v1 stored = goals->parameters(goals.index_of(id));
     ASSERT_EQ(stored.size, 3U);
@@ -314,24 +324,42 @@ TEST(GoalTable, change_past_the_largest_revision_is_refused) {
     EXPECT_EQ(goals.change(root, GoalChange::resume), ChangeCheck::revision_exhausted);
 }
 
-// ADR-0018: ONCE has one occurrence and NONE has none; recording it gives
-// the goal a new commit_seq and keeps its revision.
-TEST(GoalTable, once_has_one_due_occurrence_and_none_has_none) {
+// ADR-0018, ADR-0019: ONCE has one occurrence, due at creation, and NONE has
+// none; taking it gives the goal a new commit_seq and keeps its revision.
+TEST(GoalTable, once_has_one_occurrence_due_at_creation_and_none_has_none) {
     Goals goals(small);
-    const uint64_t none = goals.create();
-    const uint64_t once = goals.create(0, owner, {nullptr, 0}, AYNI_TRIGGER_ONCE);
-    EXPECT_FALSE(goals->has_due_occurrence(goals.index_of(none)));
-    ASSERT_TRUE(goals->has_due_occurrence(goals.index_of(once)));
+    const uint64_t none = goals.create(0, owner, {nullptr, 0}, no_trigger, 500);
+    const uint64_t once = goals.create(0, owner, {nullptr, 0}, {AYNI_TRIGGER_ONCE, 0, 0}, 500);
+    EXPECT_FALSE(goals.goal(none).cursor.due_by(no_time - 1U));
+    EXPECT_FALSE(goals.goal(once).cursor.due_by(499));
+    ASSERT_TRUE(goals.goal(once).cursor.due_by(500));
 
-    goals->record_occurrence(goals.index_of(once), 77, goals.next_stamp());
+    const TakenOccurrences taken =
+        goals->take_due(goals.index_of(once), 900, 77, goals.next_stamp());
+    EXPECT_EQ(taken.latest, 1U);
+    EXPECT_EQ(taken.count, 1U);
+    EXPECT_EQ(taken.due_us, 500U);
     const Goal &goal = goals.goal(once);
-    EXPECT_EQ(goal.trigger, AYNI_TRIGGER_ONCE);
-    EXPECT_EQ(goal.occurrences, 1U);
+    EXPECT_EQ(goal.trigger.kind, AYNI_TRIGGER_ONCE);
+    EXPECT_EQ(goal.cursor.taken, 1U);
+    EXPECT_FALSE(goal.cursor.has_next());
     EXPECT_EQ(goal.last_task_id, 77U);
     EXPECT_EQ(goal.revision, 1U);
     EXPECT_EQ(goal.commit_seq, goals.last_stamp().commit_seq);
     EXPECT_EQ(goal.lifecycle, AYNI_GOAL_ACTIVE);
-    EXPECT_FALSE(goals->has_due_occurrence(goals.index_of(once)));
+}
+
+// A terminal goal has no occurrence to come; a paused one keeps its schedule.
+TEST(GoalTable, only_a_terminal_goal_drops_its_next_occurrence) {
+    Goals goals(small);
+    const Trigger every_second{AYNI_TRIGGER_INTERVAL, 0, AYNI_TRIGGER_PERIOD_MIN_US};
+    const uint64_t root = goals.create(0, owner, {nullptr, 0}, every_second, 10);
+    const uint64_t child = goals.create(root, owner, {nullptr, 0}, every_second, 20);
+    EXPECT_EQ(goals.change(root, GoalChange::pause), ChangeCheck::allowed);
+    EXPECT_EQ(goals.goal(root).cursor.next_due_us, 10U);
+    EXPECT_EQ(goals.change(root, GoalChange::cancel), ChangeCheck::allowed);
+    EXPECT_FALSE(goals.goal(root).cursor.has_next());
+    EXPECT_FALSE(goals.goal(child).cursor.has_next());
 }
 
 TEST(GoalTable, subtree_holds_the_goal_and_its_descendants_only) {

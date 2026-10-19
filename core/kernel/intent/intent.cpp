@@ -7,7 +7,8 @@
 namespace ayni::kernel {
 namespace {
 
-// Each body struct is new in 0.5 or changed in 0.6, so each has one layout.
+// Each body struct is new in 0.5 or later or changed since, so each has one
+// layout.
 template <typename Body> ayni_status_t read_body(const void *body, const Body *&out_body) {
     out_body = static_cast<const Body *>(body);
     return check_struct_size(out_body->struct_size, sizeof(Body), sizeof(Body));
@@ -39,8 +40,12 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
         if (body->reserved != 0U) {
             return AYNI_INVALID_ARGUMENT;
         }
-        out_intent.create = {body->goal_type_id,   body->goal_type_version, body->owner_instance_id,
-                             body->parent_goal_id, body->parameters,        body->trigger};
+        out_intent.create = {body->goal_type_id,
+                             body->goal_type_version,
+                             body->owner_instance_id,
+                             body->parent_goal_id,
+                             body->parameters,
+                             {body->trigger, body->trigger_delay_us, body->trigger_period_us}};
         return AYNI_OK;
     }
     case AYNI_INTENT_TASK_CANCEL:
@@ -67,7 +72,8 @@ ayni_status_t check_form(const Intent &intent) {
     const GoalCreate &create = intent.create;
     if (intent.expected_revision != 0U || !catalog::CatalogId::is_valid(create.goal_type_id) ||
         (create.parameters.data == nullptr && create.parameters.size != 0U) ||
-        !catalog::GoalTypeRegistry::defines_trigger(create.trigger)) {
+        !catalog::GoalTypeRegistry::defines_trigger(create.trigger.kind) ||
+        !create.trigger.fits()) {
         return AYNI_INVALID_ARGUMENT;
     }
     return AYNI_OK;
