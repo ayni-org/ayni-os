@@ -10,7 +10,7 @@
 | 项目 | 初始值 | 来源 | 耗尽时 |
 |---|---:|---|---|
 | Agent（`agent_capacity`，1–64；每个 Agent 一个驻留实例） | 4（计划要求 ≥ 2） | §4.2 | 注册返回 `CAPACITY_EXCEEDED` |
-| 活跃与可恢复的 Task（`task_capacity`，1–256；结束的 Task 在表满时让位，最早结束的先让） | 16 | §4.2 | 没有已结束的 Task 可让位时不派生，occurrence 留在 Goal 上至多等待 GoalType 声明的上限，超限跳过并计数、记原因 `TASK_CAPACITY`；无界等待不跳过（ADR-0018、ADR-0020）。有停下的 Task 的 Goal 同样等待，原因 `TASK_HELD`，所以一个策略的拒绝不会占满 Task 表（ADR-0022） |
+| 活跃与可恢复的 Task（`task_capacity`，1–256；结束的 Task 在表满时让位，最早结束的先让） | 16 | §4.2 | 没有已结束的 Task 可让位时不派生，occurrence 留在 Goal 上至多等待 GoalType 声明的上限，超限跳过并计数、记原因 `TASK_CAPACITY`；无界等待不跳过（ADR-0018、ADR-0020）。有停下的 Task 的 Goal 同样等待，原因 `TASK_HELD`，所以一个 Goal 停下的 Task 不随 occurrence 增加；停下的 Task 仍占位置，拒绝许多 Goal 的策略仍可能占满 Task 表（ADR-0022） |
 | Goal（`goal_capacity`，1–1024，终态 Goal 也占用） | 32；M1 压测后复核 | §4.2 | 新 Goal 返回 `CAPACITY_EXCEEDED`（`GOAL_CAPACITY`）；终态 Goal 的回收随 `MA-010` |
 | Goal 参数（`goal_parameter_max_bytes`，0–4096） | 128 字节 | ADR-0017 | 超出返回 `INVALID_ARGUMENT`（`GOAL_PARAMETERS`） |
 | 子目标深度（`goal_depth_max`，0–8）/ 每目标未终结的子目标数（`goal_children_max`，0–64） | 2 / 4 | §5.3 | 拒绝创建，返回 `CAPACITY_EXCEEDED`（`GOAL_DEPTH`、`GOAL_CHILDREN`）；0 表示不允许子目标 |
