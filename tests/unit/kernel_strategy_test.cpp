@@ -556,7 +556,8 @@ TEST(WorkDecision, held_task_stays_paused_until_it_ends) {
     EXPECT_EQ(cancelled.lifecycle, AYNI_TASK_CANCELLED);
     EXPECT_EQ(cancelled.hold_status, AYNI_UNSUPPORTED);
     EXPECT_EQ(cancelled.hold_reason, AYNI_REASON_NONE);
-    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+    // It was the one-shot goal's last task (ADR-0023).
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_CANCELLED);
 
     work.node().sim().advance_us(5U * second);
     EXPECT_EQ(step_items(work), 1U);

@@ -34,6 +34,7 @@
 | [0020](0020-goal-expiry-and-bounded-waits.md) | 工作模型第二部分（三）：Goal 失效与有界等待 | 已接受 | §2.2、§2.4、§4.4、§5.3 |
 | [0021](0021-local-input-events.md) | 工作模型第二部分（四）：事件投递与本地输入触发 | 已接受 | §2.1、§2.2、§3.2、§4.2、§5.3 |
 | [0022](0022-strategies-and-decisions.md) | 工作模型第三部分（一）：策略与决策 | 已接受 | §2.4、§2.5、§2.7、§3.2、§4.2、§5.3 |
+| [0023](0023-goals-end-with-their-last-task-or-occurrence.md) | Goal 随最后一个 Task 的取消或最后一个 occurrence 的跳过结束 | 已接受 | §2.2、§2.4、§5.3 |
 
 ## 模板
 

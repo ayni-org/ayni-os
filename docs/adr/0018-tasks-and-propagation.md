@@ -29,7 +29,7 @@ ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.
 5. **放行条件，暂停不级联（产品语义，推荐项）。** 一个 Goal 的 Task 只有在该 Goal 与它的所有祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时才能前进。ADR-0017 的“暂停不改变子目标”不变：暂停父目标不改写子目标的状态，但子目标的 Task 随之停下，恢复父目标后自动继续，不需要记录暂停原因。据此：
    - **派生**：放行的 Goal 有待派生的 occurrence 时才产生 Task，新 Task 为 `READY`。
    - **传播**：`GOAL_PAUSE`、`GOAL_RESUME`、`INSTANCE_PAUSE`、`INSTANCE_RESUME` 在同一个 transition 中重算受影响的 Task：未结束的 `READY`/`PAUSED` Task 按放行条件取 `READY` 或 `PAUSED`，状态变化的才提升版本。
-   - **取消**：`GOAL_CANCEL` 取消目标及其未结束的后代时，在同一个 transition 中取消它们的全部未结束 Task，并记录各自的 `cancel_revision`（C-LIFE-022）。`TASK_CANCEL` 只取消一个 Task，Goal 不变。
+   - **取消**：`GOAL_CANCEL` 取消目标及其未结束的后代时，在同一个 transition 中取消它们的全部未结束 Task，并记录各自的 `cancel_revision`（C-LIFE-022）。`TASK_CANCEL` 只取消一个 Task，Goal 不变。（自 ADR-0023 起，被取消的是 Goal 最后一个未结束的 Task、Goal 也不会再有 occurrence 时，Goal 随之取消。）
 6. **实例意图；停止即取消名下工作（产品语义，推荐项）。** 新增 `INSTANCE_PAUSE`（`RUNNING → PAUSED`）、`INSTANCE_RESUME`（`PAUSED → RUNNING`）与 `INSTANCE_STOP`（`RUNNING`、`PAUSED → STOPPED`），以实例的 `revision` 作为 `expected_revision`。Owner 固定且 `STOPPED` 没有出口，保留名下目标只会留下永远无法推进的工作，所以停止在同一个 transition 中取消该实例全部未结束的 Goal 与 Task。没有在途调用可收敛，本部分不经过 `STOPPING`。
 7. **owner 检查。** `GOAL_CREATE` 的 owner 为 `STOPPED` 或 `FAULTED` 时返回 `INVALID_STATE`（`OWNER_STATE`）。`PAUSED` 的实例仍可接收新目标：用户刚下的命令不会丢失，Task 等实例恢复后再派生（C-LIFE-023 “不新增工作”约束的是派生）。
 8. **派生在 `ayni_step` 中进行。** 每次派生是一个 transition、一个 step 项：按创建顺序找到第一个放行、有待派生 occurrence、且有 Task 槽位与 ID 的 Goal，推进它的触发游标并创建 Task（批次 B2 的 occurrence 游标与 Task 同属一个 transition；预算预留随 `MA-018`）。这样意图的 transition 只改变它点名的对象，派生单独检查（C-AUTH-004），也与时间部分的定时触发共用同一入口。
@@ -49,7 +49,7 @@ ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.
 ## 后果
 
 - Goal 可以产生可查询的 Task，暂停、恢复、取消与停止按上面的规则传到 Task；但 Task 还不会运行或完成，Goal 也还到不了 `SATISFIED`、`FAILED`、`EXPIRED`。
-- 一个 `ONCE` 目标只产生一个 Task；`TASK_CANCEL` 之后该目标保持 `ACTIVE` 而不再产生 Task，调用方需要另行取消目标。
+- 一个 `ONCE` 目标只产生一个 Task；`TASK_CANCEL` 之后该目标保持 `ACTIVE` 而不再产生 Task，调用方需要另行取消目标。（ADR-0023 改为随之取消。）
 - 槽位不足时派生等待而不报告原因，等待上限与原因码随时间部分与第三部分补齐。
 - 停止实例是不可撤销的批量取消；只想临时停下应使用暂停。
 - 每次 Goal 或实例变化都要扫描其下 Task（至多 `task_capacity` 个，每个沿至多 `goal_depth_max` 层祖先），派生每次扫描 Goal 表；在已配置上限内可以接受，尚未测量，随 M1 的 `step` 时长测量复核。

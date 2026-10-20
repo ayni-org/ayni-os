@@ -77,7 +77,8 @@ struct Goal {
 
 // Expire comes from the kernel at expires_us, never from an intent; satisfy
 // and fail come from the kernel when the goal's last task ends by its
-// strategy's decision (ADR-0022).
+// strategy's decision (ADR-0022), and fail also when its last occurrence
+// is skipped with no task left (ADR-0023).
 enum class GoalChange { pause, resume, cancel, expire, satisfy, fail };
 
 class GoalTable {

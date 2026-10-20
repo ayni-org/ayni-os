@@ -1,8 +1,9 @@
 // Tasks through the C ABI (ADR-0018): derivation in ayni_step, the rule that
 // a task advances only while its goal, the goal's ancestors and its owner
-// allow it, how goal and instance changes reach tasks, TASK_CANCEL, instance
-// pause, resume and stop, revisions, capacity and the return values in each
-// kernel state. Runs on the simulation Host.
+// allow it, how goal and instance changes reach tasks, TASK_CANCEL and the
+// goal it ends with the goal's last task (ADR-0023), instance pause, resume
+// and stop, revisions, capacity and the return values in each kernel state.
+// Runs on the simulation Host.
 
 #include "kernel/kernel_state.h"
 #include "kernel_node.h"
@@ -39,6 +40,17 @@ uint64_t once_goal(WorkNode &work, uint64_t parent_goal_id = 0, uint64_t agent_i
 // A goal that only organizes its children.
 uint64_t folder_goal(WorkNode &work, uint64_t parent_goal_id = 0) {
     return create_goal(work, AYNI_TRIGGER_NONE, parent_goal_id, agent_a, "folder");
+}
+
+// An INTERVAL goal whose first occurrence is due a second after creation.
+uint64_t every_second_goal(WorkNode &work) {
+    ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a), 0, "reminder", 1,
+                                                     {nullptr, 0}, AYNI_TRIGGER_INTERVAL);
+    body.trigger_delay_us = AYNI_TRIGGER_PERIOD_MIN_US;
+    body.trigger_period_us = AYNI_TRIGGER_PERIOD_MIN_US;
+    const Submitted created = work.create(body);
+    EXPECT_EQ(created.status, AYNI_OK);
+    return created.result.object.id;
 }
 
 // The goal's latest task, 0 before the first.
@@ -425,15 +437,19 @@ TEST(WorkTask, cancel_reaches_the_tasks_of_the_goal_and_its_descendants) {
 
 // --- TASK_CANCEL ----------------------------------------------------------
 
-// ADR-0018 decision 5: TASK_CANCEL ends one task and leaves its goal as it
-// is; a ONCE goal then derives no other task.
-TEST(WorkTask, task_cancel_ends_one_task_and_keeps_its_goal) {
+// ADR-0023: TASK_CANCEL of a ONCE goal's one task cancels the goal in the
+// same transition, with its descendants and their tasks, as GOAL_CANCEL
+// would; other goals keep their revision.
+TEST(WorkTask, task_cancel_of_a_one_shot_goals_task_cancels_the_goal) {
     WorkNode work;
     work.run();
     const uint64_t goal_id = once_goal(work);
-    ASSERT_EQ(step_items(work), 1U);
+    const uint64_t child = once_goal(work, goal_id);
+    const uint64_t folder = folder_goal(work, goal_id);
+    const uint64_t other = once_goal(work);
+    ASSERT_EQ(step_items(work), 3U);
     const uint64_t task_id = task_of(work, goal_id);
-    const ayni_goal_info_v1 goal_before = work.goal(goal_id);
+    const ayni_task_info_v1 other_task = work.task(task_of(work, other));
 
     const Submitted cancelled = work.cancel_task(task_id);
     ASSERT_EQ(cancelled.status, AYNI_OK);
@@ -444,12 +460,88 @@ TEST(WorkTask, task_cancel_ends_one_task_and_keeps_its_goal) {
     EXPECT_EQ(task.lifecycle, AYNI_TASK_CANCELLED);
     EXPECT_EQ(task.cancel_revision, 2U);
     EXPECT_EQ(task.commit_seq, cancelled.result.commit_seq);
-    const ayni_goal_info_v1 goal_after = work.goal(goal_id);
-    EXPECT_EQ(goal_after.lifecycle, AYNI_GOAL_ACTIVE);
-    EXPECT_EQ(goal_after.revision, goal_before.revision);
-    EXPECT_EQ(goal_after.commit_seq, goal_before.commit_seq);
-    EXPECT_EQ(step_items(work), 0U);
+    for (const uint64_t ended : {goal_id, child, folder}) {
+        const ayni_goal_info_v1 goal = work.goal(ended);
+        EXPECT_EQ(goal.lifecycle, AYNI_GOAL_CANCELLED) << ended;
+        EXPECT_EQ(goal.revision, 2U) << ended;
+        EXPECT_EQ(goal.cancel_revision, 2U) << ended;
+        EXPECT_EQ(goal.commit_seq, cancelled.result.commit_seq) << ended;
+    }
+    const ayni_task_info_v1 child_task = work.task(task_of(work, child));
+    EXPECT_EQ(child_task.lifecycle, AYNI_TASK_CANCELLED);
+    EXPECT_EQ(child_task.cancel_revision, 2U);
+    EXPECT_EQ(child_task.commit_seq, cancelled.result.commit_seq);
+    EXPECT_EQ(work.goal(other).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(other).revision, 1U);
+    EXPECT_EQ(work.task(task_of(work, other)).commit_seq, other_task.commit_seq);
+    EXPECT_EQ(step_items(work), 1U); // only the other goal's task is decided
     EXPECT_EQ(work.goal(goal_id).occurrences, 1U);
+}
+
+// The goal of a PAUSED task may itself be PAUSED, or held back by a paused
+// ancestor or owner; it is cancelled all the same.
+TEST(WorkTask, task_cancel_cancels_a_one_shot_goal_whatever_holds_its_task) {
+    for (int holder = 0; holder < 3; ++holder) {
+        SCOPED_TRACE(holder);
+        WorkNode work;
+        work.run();
+        const uint64_t root = folder_goal(work);
+        const uint64_t goal_id = once_goal(work, root);
+        ASSERT_EQ(step_items(work), 1U);
+        const uint64_t task_id = task_of(work, goal_id);
+        if (holder == 2) {
+            ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
+        } else {
+            const uint64_t paused = holder == 0 ? goal_id : root;
+            ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, paused).status, AYNI_OK);
+        }
+        ASSERT_EQ(work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+        const ayni_goal_info_v1 before = work.goal(goal_id);
+
+        const Submitted cancelled = work.cancel_task(task_id);
+        ASSERT_EQ(cancelled.status, AYNI_OK);
+        const ayni_goal_info_v1 goal = work.goal(goal_id);
+        EXPECT_EQ(goal.lifecycle, AYNI_GOAL_CANCELLED);
+        EXPECT_EQ(goal.revision, before.revision + 1U);
+        EXPECT_EQ(goal.commit_seq, cancelled.result.commit_seq);
+        EXPECT_EQ(work.goal(root).lifecycle, holder == 1 ? AYNI_GOAL_PAUSED : AYNI_GOAL_ACTIVE);
+    }
+}
+
+// ADR-0023: the goal ends with its last task only, once no occurrence is to
+// come and no other task has not ended; a recurring goal goes on, its
+// revision staying.
+TEST(WorkTask, task_cancel_ends_a_goal_only_with_its_last_task) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal_id = every_second_goal(work);
+    work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    const uint64_t first = task_of(work, goal_id);
+    const ayni_goal_info_v1 before = work.goal(goal_id);
+    ASSERT_EQ(work.cancel_task(first).status, AYNI_OK);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(goal_id).revision, before.revision);
+    EXPECT_EQ(work.goal(goal_id).commit_seq, before.commit_seq);
+
+    work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    const uint64_t second_task = task_of(work, goal_id);
+    work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    const uint64_t third_task = task_of(work, goal_id);
+    // White-box: the third occurrence was the last.
+    uint32_t index = 0;
+    ASSERT_TRUE(work.kernel()->work.goals.find(goal_id, index));
+    const_cast<ayni::work::Goal &>(work.kernel()->work.goals.at(index)).cursor.next_due_us =
+        UINT64_MAX;
+    ASSERT_EQ(work.cancel_task(second_task).status, AYNI_OK);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(goal_id).revision, before.revision);
+    const Submitted last = work.cancel_task(third_task);
+    ASSERT_EQ(last.status, AYNI_OK);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(work.goal(goal_id).commit_seq, last.result.commit_seq);
 }
 
 // C-COMMIT-012: the task, then its revision, then its lifecycle.
@@ -648,6 +740,55 @@ TEST(WorkTask, change_that_would_exhaust_a_task_revision_is_refused) {
     EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
 }
 
+// ADR-0023: a TASK_CANCEL that ends its goal raises every revision the
+// goal's end raises, so one that would raise any of them past the largest,
+// the goal's, a descendant's or a descendant's task's, is refused. One that
+// leaves the goal as it is goes through.
+TEST(WorkTask, task_cancel_that_would_exhaust_a_revision_its_goals_end_raises_is_refused) {
+    for (int exhausted = 0; exhausted < 3; ++exhausted) {
+        SCOPED_TRACE(exhausted);
+        WorkNode work;
+        work.run();
+        const uint64_t goal_id = once_goal(work);
+        const uint64_t child =
+            exhausted == 2 ? once_goal(work, goal_id) : folder_goal(work, goal_id);
+        ASSERT_EQ(step_items(work), exhausted == 2 ? 2U : 1U);
+        const uint64_t task_id = task_of(work, goal_id);
+        switch (exhausted) {
+        case 0:
+            exhaust_goal(work, goal_id);
+            break;
+        case 1:
+            exhaust_goal(work, child);
+            break;
+        default:
+            exhaust_task(work, task_of(work, child));
+            break;
+        }
+        const ayni_goal_info_v1 before = work.goal(goal_id);
+
+        const Submitted refused = work.cancel_task(task_id);
+        expect_refused(refused, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED,
+                       AYNI_OBJECT_TASK, task_id);
+        EXPECT_EQ(refused.error.object.revision, 1U);
+        EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+        EXPECT_EQ(work.task(task_id).revision, 1U);
+        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+        EXPECT_EQ(work.goal(goal_id).commit_seq, before.commit_seq);
+        EXPECT_EQ(work.goal(child).lifecycle, AYNI_GOAL_ACTIVE);
+    }
+
+    WorkNode work;
+    work.run();
+    const uint64_t goal_id = every_second_goal(work);
+    work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    exhaust_goal(work, goal_id);
+    EXPECT_EQ(work.cancel_task(task_of(work, goal_id)).status, AYNI_OK);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(goal_id).revision, max_revision);
+}
+
 // Resuming raises the revision of each task it releases, so a held task at
 // the largest revision refuses the resume of its goal or of its owner.
 TEST(WorkTask, resume_that_would_exhaust_a_task_revision_is_refused) {
@@ -715,12 +856,14 @@ TEST(WorkTask, stop_that_would_exhaust_a_goal_revision_is_refused) {
 TEST(WorkTask, intents_that_may_let_a_task_derive_wake_the_owner) {
     WorkNode work;
     work.run();
-    work.strategy().answer = cannot_decide; // the task stays live
+    work.strategy().answer = cannot_decide; // the tasks stay live
     const uint64_t goal_id = once_goal(work);
-    ASSERT_EQ(step_items(work), 1U);
-    const uint64_t task_id = task_of(work, goal_id);
+    // Its own goal, which the cancel of its one task cancels too.
+    const uint64_t task_goal = once_goal(work);
+    ASSERT_EQ(step_items(work), 2U);
+    const uint64_t task_id = task_of(work, task_goal);
     const uint64_t other = once_goal(work, 0, agent_b);
-    ASSERT_EQ(step_items(work), 2U); // the other goal's task, and the hold
+    ASSERT_EQ(step_items(work), 3U); // the other goal's task, and the holds
 
     const struct {
         const char *name;

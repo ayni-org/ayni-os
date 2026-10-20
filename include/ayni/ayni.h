@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 10u
+#define AYNI_ABI_MINOR 11u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -421,9 +421,11 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * its goal due by the step's start (ADR-0019). Deriving and skipping set
  * the goal's occurrences, next_due_us, last_task_id or occurrences_skipped
  * and skip_reason, and commit_seq but keep its revision, so the revision a
- * caller holds for the goal stays valid. An expiry that would raise a
- * revision past the largest is dropped instead, the same way: the goal
- * keeps its lifecycle and never expires (C-COMMIT-012). Since 0.10 it then
+ * caller holds for the goal stays valid; since 0.11 a skip that leaves the
+ * goal with no occurrence to come and no task that has not ended also makes
+ * it FAILED, as ayni_trigger_kind_t says (ADR-0023). An expiry that would
+ * raise a revision past the largest is dropped instead, the same way: the
+ * goal keeps its lifecycle and never expires (C-COMMIT-012). Since 0.10 it then
  * has the strategies decide the tasks that were READY when the step began,
  * one item and transition each, the task READY longest first (ADR-0022,
  * ayni_register_strategy). Since 0.9 it then takes the events queued when
@@ -714,6 +716,12 @@ typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 paramete
  * its goal type's occurrence_wait_max_us, counted from when it fell due;
  * then the step that finds its wait over skips every occurrence of the goal
  * due by the step's start, counting them and giving the reason (C-RES-005).
+ * Since 0.11, when the goal then has no occurrence to come and no task that
+ * has not ended, as after a ONCE or DELAY goal's one occurrence, the same
+ * transition makes it FAILED, keeping the skip's reason in skip_reason,
+ * and cancels its descendants that are not terminal with their tasks
+ * (ADR-0023); a goal whose end would raise a revision past the largest
+ * stays ACTIVE instead.
  * A goal created with an expiry becomes EXPIRED at that time, paused or not,
  * together with its descendants and their tasks that have not ended; a goal
  * expiring takes no occurrence due at the same step.
@@ -819,7 +827,9 @@ typedef struct ayni_goal_info_v1 {
     uint32_t occurrences_skipped; /* since 0.8; occurrences that waited too long */
     /* Since 0.8. Why the latest skipped occurrences could not become a task:
      * AYNI_REASON_TASK_CAPACITY, AYNI_REASON_ID_EXHAUSTED or, since 0.10,
-     * AYNI_REASON_TASK_HELD; NONE before any. */
+     * AYNI_REASON_TASK_HELD; NONE before any. Since 0.11 a goal that
+     * becomes FAILED when its last occurrence is skipped keeps that skip's
+     * reason here (ayni_trigger_kind_t). */
     ayni_reason_t skip_reason;
     /* Since 0.8. While the goal has an occurrence to come, what would keep it
      * from becoming a task now, as skip_reason; AYNI_REASON_NONE when
@@ -1181,7 +1191,10 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * ACTIVE goal to PAUSED and GOAL_RESUME takes it back; neither changes its
  * children. GOAL_CANCEL takes a goal that is not yet terminal, and every
  * descendant that is not yet terminal, to CANCELLED in one transition
- * (C-LIFE-022). TASK_CANCEL takes a READY or PAUSED task to CANCELLED.
+ * (C-LIFE-022). TASK_CANCEL takes a READY or PAUSED task to CANCELLED;
+ * since 0.11, when that leaves its goal with no task that has not ended and
+ * no occurrence to come, as for a ONCE or DELAY goal's one task, the goal
+ * and its descendants are cancelled with it as by GOAL_CANCEL (ADR-0023).
  * INSTANCE_PAUSE takes a RUNNING instance to PAUSED and INSTANCE_RESUME
  * takes it back; INSTANCE_STOP takes a RUNNING or PAUSED instance to
  * STOPPED and cancels every goal and task it owns that is not yet terminal.

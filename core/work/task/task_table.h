@@ -61,6 +61,8 @@ enum class TaskChange { pause, resume, cancel, expire, complete, fail };
 
 class TaskTable {
   public:
+    static constexpr uint32_t no_index = 0xFFFFFFFFU; // no task's index
+
     // Why a change is refused, in the order check() checks.
     enum class ChangeCheck {
         allowed,
@@ -118,7 +120,8 @@ class TaskTable {
     bool next_ready(uint64_t ready_before, uint32_t &out_index) const;
     // Whether some task below the largest revision is READY.
     bool has_ready() const;
-    // Whether a task of goal goal_index other than task_index has not ended.
+    // Whether a task of goal goal_index other than task_index has not ended;
+    // with no_index, whether any of its tasks has not ended.
     bool live_task_besides(uint32_t goal_index, uint32_t task_index) const;
     // Whether some task is still_held(), without looking at the tasks.
     bool has_held() const { return held_count_ > 0U; }

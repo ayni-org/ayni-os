@@ -108,19 +108,37 @@ After after_goal_change(uint32_t goal_index, GoalChange change) {
     return after;
 }
 
-// Whether ending task_index by change ends its goal, and how. The goal of a
-// READY task is ACTIVE; it ends once it has had its last occurrence and its
-// last task. A recurring goal goes on after a failed task, as after a
-// completed one.
+// Whether goal_index has had its last occurrence and has no task that has
+// not ended besides task_index (TaskTable::no_index: none is ending), so
+// that nothing more will happen to it but a change from outside.
+bool has_had_its_last(const WorkTables &tables, uint32_t goal_index, uint32_t task_index) {
+    const Goal &goal = tables.goals.at(goal_index);
+    return !occurs_again(goal.trigger, goal.cursor) &&
+           !tables.tasks.live_task_besides(goal_index, task_index);
+}
+
+// Whether ending task_index by change, complete, fail or cancel, ends its
+// goal, and how: the goal ends once it has had its last occurrence and its
+// last task, as that task did (ADR-0022, ADR-0023). A recurring goal goes on
+// after a failed or cancelled task, as after a completed one. The goal of a
+// READY task is ACTIVE; a cancelled task's goal may also be PAUSED, and
+// cancel ends either.
 bool ends_goal(const WorkTables &tables, uint32_t task_index, TaskChange change,
                GoalChange &out_change) {
-    const uint32_t goal_index = tables.tasks.at(task_index).goal_index;
-    const Goal &goal = tables.goals.at(goal_index);
-    if (occurs_again(goal.trigger, goal.cursor) ||
-        tables.tasks.live_task_besides(goal_index, task_index)) {
+    if (!has_had_its_last(tables, tables.tasks.at(task_index).goal_index, task_index)) {
         return false;
     }
-    out_change = change == TaskChange::complete ? GoalChange::satisfy : GoalChange::fail;
+    switch (change) {
+    case TaskChange::complete:
+        out_change = GoalChange::satisfy;
+        break;
+    case TaskChange::cancel:
+        out_change = GoalChange::cancel;
+        break;
+    default: // fail; pause, resume and expire end no goal through here
+        out_change = GoalChange::fail;
+        break;
+    }
     return true;
 }
 
@@ -317,6 +335,18 @@ void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t t
                        goal_index,   taken.latest,           taken.count};
     // Cannot fail: find_due_work checked for room.
     static_cast<void>(tables.tasks.insert(task, task_id, stamp));
+}
+
+void skip(WorkTables &tables, uint32_t goal_index, uint64_t now_us, ayni_reason_t reason,
+          foundation::TransitionStamp stamp) {
+    tables.goals.skip_due(goal_index, now_us, reason, stamp);
+    // Nothing more comes of a goal skipped past its last occurrence with no
+    // task left, so it fails as after a failed last task. The skip raised
+    // no revision, so the check sees every revision the end would raise.
+    if (has_had_its_last(tables, goal_index, TaskTable::no_index) &&
+        !goal_end_exhausts(tables, goal_index, GoalChange::fail)) {
+        apply_goal_change(tables, goal_index, GoalChange::fail, stamp);
+    }
 }
 
 } // namespace ayni::work

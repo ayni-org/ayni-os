@@ -6,7 +6,6 @@ namespace ayni::work {
 namespace {
 
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
-constexpr uint32_t no_index = std::numeric_limits<uint32_t>::max();
 
 } // namespace
 

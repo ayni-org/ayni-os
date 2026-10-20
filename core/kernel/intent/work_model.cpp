@@ -89,7 +89,7 @@ bool do_due_work(WorkModel &model, uint64_t now_us) {
         return true;
     }
     case work::DueWork::Kind::skip:
-        model.goals.skip_due(work.goal_index, now_us, work.skip_reason, model.transitions.next());
+        work::skip(tables, work.goal_index, now_us, work.skip_reason, model.transitions.next());
         return true;
     }
     return false;
