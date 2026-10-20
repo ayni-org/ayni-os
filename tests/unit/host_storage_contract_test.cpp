@@ -100,6 +100,26 @@ TEST_P(HostStorage, read_from_a_later_commit_seq_skips_earlier_batches) {
     EXPECT_EQ(requests.read_now(4), Bytes{});
 }
 
+// The Host keeps the order of the appends and compares commit_seq only to
+// skip; making sense of a log whose commit_seq goes back is the kernel's
+// job (C-STORE-003).
+TEST_P(HostStorage, reads_follow_log_order_whatever_the_commit_seq) {
+    const std::unique_ptr<StorageHost> host = make_host();
+    StorageRequests requests(*host);
+    const Bytes fifth = test_batch(5, 30);
+    const Bytes third = test_batch(3, 40);
+    const Bytes seventh = test_batch(7, 50);
+    ASSERT_TRUE(requests.append_now(5, fifth));
+    ASSERT_TRUE(requests.append_now(3, third));
+    ASSERT_TRUE(requests.append_now(7, seventh));
+    EXPECT_EQ(requests.read_now(1), joined({fifth, third, seventh}));
+    EXPECT_EQ(requests.read_now(4), joined({fifth, seventh}));
+    EXPECT_EQ(requests.read_now(1, 30), fifth);
+    EXPECT_EQ(requests.read_now(6), seventh);
+    EXPECT_EQ(requests.read_now(8), Bytes{});
+    EXPECT_EQ(requests.read_now(3, 40), fifth); // the first one at or after 3 in log order
+}
+
 TEST_P(HostStorage, only_whole_batches_fit_the_buffer) {
     const std::unique_ptr<StorageHost> host = make_host();
     StorageRequests requests(*host);
