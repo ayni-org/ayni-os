@@ -8,7 +8,7 @@
 // then posts the result with ayni_completion_post, after which it touches
 // neither the buffer nor the completion (C-HOST-019). An append is OK only
 // once the file is synced to the device (C-HOST-010). The file's framing
-// and what a power cut leaves are described in file_log.h.
+// and what a power cut leaves are described in hosts/native/file_log.h.
 
 #ifndef AYNI_HOSTS_NATIVE_H
 #define AYNI_HOSTS_NATIVE_H

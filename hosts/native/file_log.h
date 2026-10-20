@@ -14,16 +14,18 @@
 //
 // Appends only ever write at the end and each one is synced before the next
 // starts, so a power cut can tear only the last frame. Opening checks every
-// frame. One that is not whole and is followed by nothing that looks like a
-// later frame is that torn tail: reads end before it and the next append
-// truncates it. One that is not whole with a later frame behind it was
-// damaged after it was synced: a read that reaches it fails and appends
-// fail, so the kernel becomes RESTRICTED rather than lose the batches behind
-// it (C-STORE-009). A last frame damaged on the medium cannot be told from a
-// torn one and is dropped.
+// frame. A frame that is not whole is that torn tail when nothing was
+// written after it: the file ends inside it or right at its end, or, when
+// its own header does not check out, no header that does follows it. Reads
+// end before it and the next append truncates it. Any other frame that is
+// not whole was damaged after it was synced: a read that reaches it fails
+// and appends fail, so the kernel becomes RESTRICTED rather than lose the
+// batches behind it (C-STORE-009). A last frame damaged on the medium cannot
+// be told from a torn one and is dropped.
 //
 // Not thread-safe. open() runs on the caller's thread; afterwards the Host's
-// I/O thread alone calls it. Every call may block on the file.
+// I/O thread alone calls it until the Host joins that thread and closes the
+// log. Every call may block on the file.
 
 #ifndef AYNI_HOSTS_NATIVE_FILE_LOG_H
 #define AYNI_HOSTS_NATIVE_FILE_LOG_H
