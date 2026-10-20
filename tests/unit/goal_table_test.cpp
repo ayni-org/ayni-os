@@ -1,7 +1,8 @@
 // Goals owned by work/goal: the fixed owner (C-LIFE-020), the tree limits
 // (C-LIMIT-007), revisions (C-COMMIT-012), pause and the cancel cascade
 // (C-LIFE-021, C-LIFE-022), the trigger cursor (ADR-0018), expiry and
-// skipped occurrences (ADR-0020), and recorded local inputs (ADR-0021).
+// skipped occurrences (ADR-0020), recorded local inputs (ADR-0021), and the
+// end a goal's last task brings (ADR-0022).
 
 #include "work/goal/goal_table.h"
 
@@ -282,11 +283,18 @@ TEST(GoalTable, lifecycle_decides_which_changes_are_allowed) {
     ASSERT_EQ(goals.change(id, GoalChange::pause), ChangeCheck::allowed);
     EXPECT_EQ(goals.change(id, GoalChange::pause), ChangeCheck::invalid_state);
     ASSERT_EQ(goals.change(id, GoalChange::cancel), ChangeCheck::allowed);
-    for (const GoalChange change :
-         {GoalChange::pause, GoalChange::resume, GoalChange::cancel, GoalChange::expire}) {
+    for (const GoalChange change : {GoalChange::pause, GoalChange::resume, GoalChange::cancel,
+                                    GoalChange::expire, GoalChange::satisfy, GoalChange::fail}) {
         EXPECT_EQ(goals.change(id, change), ChangeCheck::invalid_state);
     }
     EXPECT_EQ(goals.goal(id).revision, 3U);
+
+    // Only an ACTIVE goal's last task ends, so only an ACTIVE goal is
+    // satisfied or fails.
+    const uint64_t paused = goals.create();
+    ASSERT_EQ(goals.change(paused, GoalChange::pause), ChangeCheck::allowed);
+    EXPECT_EQ(goals.change(paused, GoalChange::satisfy), ChangeCheck::invalid_state);
+    EXPECT_EQ(goals.change(paused, GoalChange::fail), ChangeCheck::invalid_state);
 }
 
 // C-LIFE-022: cancelling reaches every live descendant in one transition and
@@ -348,6 +356,44 @@ TEST(GoalTable, expiry_reaches_every_live_descendant_and_nothing_else) {
     EXPECT_EQ(goals.goal(done_child).revision, 2U);
     EXPECT_EQ(goals.goal(other_root).lifecycle, AYNI_GOAL_ACTIVE);
     EXPECT_EQ(goals.goal(other_root).expires_us, 100U);
+}
+
+// ADR-0022: a goal satisfied or failed by its last task ends with that
+// outcome, and its live descendants are cancelled, so a goal that is not
+// terminal never has a terminal ancestor.
+TEST(GoalTable, satisfy_and_fail_end_the_goal_and_cancel_its_live_descendants) {
+    for (const GoalChange change : {GoalChange::satisfy, GoalChange::fail}) {
+        Goals goals({8, 0, 2, 2});
+        const Trigger every_second{AYNI_TRIGGER_INTERVAL, 0, AYNI_TRIGGER_PERIOD_MIN_US};
+        const uint64_t root = goals.create(0, owner, {nullptr, 0}, no_trigger, 0, 100);
+        const uint64_t child = goals.create(root, owner, {nullptr, 0}, every_second);
+        const uint64_t grandchild = goals.create(child);
+        const uint64_t done_child = goals.create(root);
+        const uint64_t other_root = goals.create();
+        ASSERT_EQ(goals.change(done_child, GoalChange::cancel), ChangeCheck::allowed);
+        ASSERT_EQ(goals.change(child, GoalChange::pause), ChangeCheck::allowed);
+
+        ASSERT_EQ(goals.change(root, change), ChangeCheck::allowed);
+        const uint64_t seq = goals.last_stamp().commit_seq;
+        const Goal &ended = goals.goal(root);
+        EXPECT_EQ(ended.lifecycle,
+                  change == GoalChange::satisfy ? AYNI_GOAL_SATISFIED : AYNI_GOAL_FAILED);
+        EXPECT_EQ(ended.revision, 2U);
+        EXPECT_EQ(ended.cancel_revision, 0U);
+        EXPECT_EQ(ended.commit_seq, seq);
+        EXPECT_EQ(ended.expires_us, no_time);
+        for (const uint64_t id : {child, grandchild}) {
+            const Goal &goal = goals.goal(id);
+            EXPECT_EQ(goal.lifecycle, AYNI_GOAL_CANCELLED) << id;
+            EXPECT_EQ(goal.cancel_revision, goal.revision) << id;
+            EXPECT_EQ(goal.commit_seq, seq) << id;
+            EXPECT_FALSE(goal.cursor.has_next()) << id;
+        }
+        EXPECT_EQ(goals.goal(child).revision, 3U);
+        EXPECT_EQ(goals.goal(done_child).revision, 2U);
+        EXPECT_NE(goals.goal(done_child).commit_seq, seq);
+        EXPECT_EQ(goals.goal(other_root).lifecycle, AYNI_GOAL_ACTIVE);
+    }
 }
 
 // ADR-0020: the expiry is counted from creation, saturating at no_time,
@@ -419,8 +465,10 @@ TEST(GoalTable, change_past_the_largest_revision_is_refused) {
     const uint64_t child = goals.create(root);
     goals.raw(child).revision = max_revision;
     EXPECT_EQ(goals.change(child, GoalChange::pause), ChangeCheck::revision_exhausted);
-    EXPECT_EQ(goals.change(root, GoalChange::cancel), ChangeCheck::revision_exhausted);
-    EXPECT_EQ(goals.change(root, GoalChange::expire), ChangeCheck::revision_exhausted);
+    for (const GoalChange change :
+         {GoalChange::cancel, GoalChange::expire, GoalChange::satisfy, GoalChange::fail}) {
+        EXPECT_EQ(goals.change(root, change), ChangeCheck::revision_exhausted);
+    }
     EXPECT_EQ(goals.goal(root).lifecycle, AYNI_GOAL_ACTIVE);
     // Pausing the root raises only the root's revision.
     EXPECT_EQ(goals.change(root, GoalChange::pause), ChangeCheck::allowed);

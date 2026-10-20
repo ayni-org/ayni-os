@@ -44,12 +44,24 @@ static ayni_status_t accept_parameters(void *ctx, ayni_bytes_v1 parameters) {
     return AYNI_OK;
 }
 
+/* Completes every task it decides. */
+static ayni_status_t complete_task(void *ctx, const ayni_task_snapshot_v1 *snapshot,
+                                   ayni_policy_output_v1 *output) {
+    (void)ctx;
+    output->intents[0].struct_size = (uint32_t)sizeof output->intents[0];
+    output->intents[0].kind = AYNI_POLICY_REPORT_COMPLETION;
+    output->intents[0].expected_revision = snapshot->revision;
+    output->intent_count = 1u;
+    return AYNI_OK;
+}
+
 /* Registration works in CONFIGURING; sessions, intents and queries wait for
  * RUNNING, which this storage-less kernel never reaches. */
 static int check_work_model(ayni_kernel_t *kernel) {
     ayni_principal_desc_v1 owner = {0};
     ayni_agent_desc_v1 agent = {0};
     ayni_goal_type_v1 goal_type = {0};
+    ayni_strategy_v1 strategy = {0};
     ayni_session_desc_v1 session = {0};
     ayni_goal_create_v1 create = {0};
     ayni_intent_v1 intent = {0};
@@ -78,8 +90,16 @@ static int check_work_model(ayni_kernel_t *kernel) {
                               AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
                               AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
     goal_type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    goal_type.strategy_id.data = "complete";
+    goal_type.strategy_id.size = 8u;
     failures +=
         expect(ayni_register_goal_type(kernel, &goal_type) == AYNI_OK, "register goal type");
+    strategy.struct_size = (uint32_t)sizeof strategy;
+    strategy.version = 1u;
+    strategy.strategy_id = goal_type.strategy_id;
+    strategy.decide = complete_task;
+    strategy.max_intents_per_call = 1u;
+    failures += expect(ayni_register_strategy(kernel, &strategy) == AYNI_OK, "register strategy");
 
     session.struct_size = (uint32_t)sizeof session;
     session.channel = AYNI_CHANNEL_MANAGEMENT;
@@ -144,6 +164,8 @@ int main(void) {
     config.goal_depth_max = 1u;
     config.goal_children_max = 1u;
     config.task_capacity = 1u;
+    config.strategy_capacity = 1u;
+    config.policy_intent_capacity = 1u;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
     host.wake = test_wake;

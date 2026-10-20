@@ -1,6 +1,7 @@
 // The work model fixture shared by the tests that drive it through the C
-// ABI: an owner, two agents and three goal types registered on every kernel,
-// one session, and helpers that submit intents and query what they changed.
+// ABI: an owner, two agents, a strategy and three goal types registered on
+// every kernel, one session, and helpers that submit intents and query what
+// they changed.
 
 #ifndef AYNI_TESTS_UNIT_WORK_NODE_H
 #define AYNI_TESTS_UNIT_WORK_NODE_H
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -51,6 +53,63 @@ struct ReminderRules {
     std::function<void()> during; // runs once inside the next validation
 };
 
+// What a strategy saw of a task, copied out of the views that end with the
+// decide call.
+struct Seen {
+    ayni_task_snapshot_v1 snapshot;
+    std::string goal_type_id;
+    std::vector<uint8_t> parameters;
+};
+
+// Writes one intent of kind for the snapshot's revision into the output.
+inline ayni_status_t report(ayni_policy_intent_kind_t kind, const ayni_task_snapshot_v1 &snapshot,
+                            ayni_policy_output_v1 &output) {
+    output.intents[0] =
+        ayni_policy_intent_v1{sizeof(ayni_policy_intent_v1), kind, snapshot.revision};
+    output.intent_count = 1;
+    return AYNI_OK;
+}
+
+// An answer that cannot decide, so the strategy holds every task it decides
+// PAUSED with AYNI_UNSUPPORTED: the task stays live without advancing.
+inline ayni_status_t cannot_decide(const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &) {
+    return AYNI_UNSUPPORTED;
+}
+
+// The strategy of the reminder and timer goal types. It records what it saw
+// and answers as the test scripts it; by default it reports completion, so
+// a task ends in the step after it became READY.
+struct ScriptedStrategy {
+    using Answer =
+        std::function<ayni_status_t(const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &)>;
+
+    static ayni_status_t decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
+                                ayni_policy_output_v1 *output) {
+        auto &self = *static_cast<ScriptedStrategy *>(ctx);
+        self.seen.push_back({*snapshot,
+                             std::string(snapshot->goal_type_id.data, snapshot->goal_type_id.size),
+                             std::vector<uint8_t>(snapshot->goal_parameters.data,
+                                                  snapshot->goal_parameters.data +
+                                                      snapshot->goal_parameters.size)});
+        self.outputs.push_back(*output);
+        if (self.during) {
+            // Runs once, from a copy, so that it may call the kernel freely.
+            const std::function<void()> during = std::move(self.during);
+            self.during = nullptr;
+            during();
+        }
+        if (self.answer) {
+            return self.answer(*snapshot, *output);
+        }
+        return report(AYNI_POLICY_REPORT_COMPLETION, *snapshot, *output);
+    }
+
+    std::vector<Seen> seen;
+    std::vector<ayni_policy_output_v1> outputs; // as each decide call got it
+    Answer answer;                              // null: report completion
+    std::function<void()> during;               // runs once inside the next decision
+};
+
 inline ayni_principal_desc_v1 owner_desc(uint64_t principal_id = owner_id) {
     ayni_principal_desc_v1 desc{};
     desc.struct_size = sizeof(desc);
@@ -72,7 +131,10 @@ constexpr uint32_t any_trigger =
     AYNI_TRIGGER_BIT(AYNI_TRIGGER_DELAY) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL) |
     AYNI_TRIGGER_BIT(AYNI_TRIGGER_LOCAL_INPUT);
 
+constexpr const char *strategy_id = "scripted";
+
 // Occurrences wait without limit unless a test asks for one (ADR-0020).
+// Types whose goals may have tasks name the scripted strategy.
 inline ayni_goal_type_v1
 goal_type_desc(const char *id, uint32_t version, ayni_goal_validate_fn validate = nullptr,
                void *ctx = nullptr, uint32_t trigger_kinds = any_trigger,
@@ -85,6 +147,21 @@ goal_type_desc(const char *id, uint32_t version, ayni_goal_validate_fn validate 
     desc.validate = validate;
     desc.trigger_kinds = trigger_kinds;
     desc.occurrence_wait_max_us = occurrence_wait_max_us;
+    if (trigger_kinds != AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)) {
+        desc.strategy_id = text(strategy_id);
+    }
+    return desc;
+}
+
+inline ayni_strategy_v1 strategy_desc(const char *id, uint32_t version, ayni_decide_fn decide,
+                                      void *ctx, uint32_t max_intents_per_call = 1) {
+    ayni_strategy_v1 desc{};
+    desc.struct_size = sizeof(desc);
+    desc.version = version;
+    desc.strategy_id = text(id);
+    desc.ctx = ctx;
+    desc.decide = decide;
+    desc.max_intents_per_call = max_intents_per_call;
     return desc;
 }
 
@@ -103,11 +180,13 @@ struct Submitted {
     ayni_error_v1 error;
 };
 
-// A node with an owner, two agents and three goal types registered on every
-// kernel it creates: "reminder" with a validator and "timer" without, both
-// taking every trigger kind, and "folder", whose goals derive no tasks.
-// Occurrences of "timer" goals wait without limit unless a test sets
-// timer_wait_max_us before the kernel is created.
+// A node with an owner, two agents, the scripted strategy and three goal
+// types registered on every kernel it creates: "reminder" with a validator
+// and "timer" without, both taking every trigger kind and decided by the
+// strategy, and "folder", whose goals derive no tasks. Occurrences of
+// "timer" goals wait without limit unless a test sets timer_wait_max_us
+// before the kernel is created; the strategy takes max_intents_per_call
+// intents, likewise.
 class WorkNode {
   public:
     WorkNode() {
@@ -127,13 +206,18 @@ class WorkNode {
             for (const ayni_goal_type_v1 &type : types) {
                 ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
             }
+            const ayni_strategy_v1 strategy = strategy_desc(
+                strategy_id, 1, &ScriptedStrategy::decide, &strategy_, max_intents_per_call);
+            ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
         });
     }
 
     Node &node() { return node_; }
     ayni_kernel_t *kernel() { return node_.kernel(); }
     uint64_t timer_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    uint32_t max_intents_per_call = 1;
     ReminderRules &rules() { return rules_; }
+    ScriptedStrategy &strategy() { return strategy_; }
 
     // Into RUNNING with one management session open.
     void run() {
@@ -257,6 +341,7 @@ class WorkNode {
 
   private:
     ReminderRules rules_;
+    ScriptedStrategy strategy_;
     Node node_;
     uint64_t session_ = 0;
 };

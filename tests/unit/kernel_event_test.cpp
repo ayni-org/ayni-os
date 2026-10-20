@@ -255,10 +255,12 @@ TEST(KernelEvents, events_posted_during_a_step_wait_for_the_next) {
     posting_kernel = work.kernel();
     const ayni_step_report_v1 report = work.node().step();
     posting_kernel = nullptr;
-    // The task, then the events posted before the step and as it started.
+    // The task, then the events posted before the step and as it started;
+    // the next step decides the task and takes the events posted during
+    // this one.
     EXPECT_EQ(report.items_done, 3U);
     EXPECT_EQ(report.more_ready, 1U);
-    EXPECT_EQ(work.node().step().items_done, 2U);
+    EXPECT_EQ(work.node().step().items_done, 3U);
     EXPECT_EQ(work.node().info().events_unmatched, 4U);
 }
 
@@ -438,7 +440,7 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     advance(work, 300);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.more_ready, 1U); // the task awaits its decision
     EXPECT_EQ(report.next_deadline_us, no_time);
     const ayni_goal_info_v1 derived = work.goal(goal_id);
     EXPECT_EQ(derived.occurrences, 1U);
@@ -451,12 +453,14 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     EXPECT_EQ(task.occurrence_count, 1U);
     EXPECT_EQ(task.due_us, pressed_at);
 
-    // An input from another source reaches no goal.
+    // An input from another source reaches no goal; the step also decides
+    // the task, which leaves the goal for its next input.
     ASSERT_EQ(post(work, "knob"), AYNI_OK);
     report = work.node().step();
-    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.items_done, 2U);
     EXPECT_EQ(work.node().info().events_unmatched, 1U);
     EXPECT_EQ(work.goal(goal_id).commit_seq, derived.commit_seq);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
 
     advance(work, 500);
     ASSERT_EQ(post(work), AYNI_OK);
@@ -485,6 +489,10 @@ TEST(WorkInput, steady_events_do_not_hold_back_due_work) {
     }
     EXPECT_EQ(work.goal(expiring).lifecycle, AYNI_GOAL_EXPIRED);
     EXPECT_NE(work.goal(once).last_task_id, 0U);
+    EXPECT_EQ(work.node().info().events_unmatched, 0U);
+    // Decisions come before events too (ADR-0022).
+    EXPECT_EQ(work.node().step(1).items_done, 1U);
+    EXPECT_EQ(work.task(work.goal(once).last_task_id).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(work.node().info().events_unmatched, 0U);
     const ayni_step_report_v1 report = work.node().step(1);
     EXPECT_EQ(report.items_done, 1U);
@@ -599,6 +607,9 @@ TEST(WorkInput, inputs_waiting_too_long_are_skipped) {
     ayni_goal_create_v1 holder = WorkNode::create_body(work.instance(agent_b), 0, "reminder", 1,
                                                        {nullptr, 0}, AYNI_TRIGGER_ONCE);
     ASSERT_EQ(work.create(holder).status, AYNI_OK);
+    ASSERT_EQ(work.node().step().items_done, 1U);
+    // The strategy holds the task, so it keeps its place.
+    work.strategy().answer = cannot_decide;
     ASSERT_EQ(work.node().step().items_done, 1U);
     const uint64_t goal_id = input_goal(work, "button");
     EXPECT_EQ(work.goal(goal_id).wait_reason, AYNI_REASON_NONE); // none to come yet

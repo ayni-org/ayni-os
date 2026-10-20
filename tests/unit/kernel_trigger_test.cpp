@@ -125,7 +125,7 @@ TEST(WorkTrigger, delay_goal_derives_once_its_time_comes) {
     advance(work, 1);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.more_ready, 1U); // the task awaits its decision
     EXPECT_EQ(report.next_deadline_us, no_time);
     goal = work.goal(goal_id);
     EXPECT_EQ(goal.occurrences, 1U);
@@ -163,9 +163,14 @@ TEST(WorkTrigger, interval_goal_derives_each_occurrence_on_its_schedule) {
         const uint64_t due_at = start + 2U * second + (number - 1U) * 3U * second;
         // A little late, as a host that wakes after its deadline is.
         advance_to(work, due_at + 40U);
+        // From the second on, the step also decides the task before it,
+        // which ends that task but not the goal.
         const ayni_step_report_v1 report = work.node().step();
-        EXPECT_EQ(report.items_done, 1U) << number;
+        EXPECT_EQ(report.items_done, number == 1U ? 1U : 2U) << number;
         EXPECT_EQ(report.next_deadline_us, due_at + 3U * second) << number;
+        if (previous_task != 0U) {
+            EXPECT_EQ(work.task(previous_task).lifecycle, AYNI_TASK_COMPLETED);
+        }
         const ayni_task_info_v1 task = work.task(task_of(work, goal_id));
         EXPECT_GT(task.task_id, previous_task);
         EXPECT_EQ(task.occurrence, number);
@@ -188,7 +193,7 @@ TEST(WorkTrigger, occurrences_missed_between_steps_become_one_task) {
     advance(work, 3U * second + second / 2U);
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.more_ready, 1U); // the task awaits its decision
     EXPECT_EQ(report.next_deadline_us, start + 4U * second);
     const ayni_task_info_v1 task = work.task(task_of(work, goal_id));
     EXPECT_EQ(task.occurrence, 4U);
@@ -280,11 +285,13 @@ TEST(WorkTrigger, goal_due_earliest_derives_first) {
 // task table sets none for occurrences that wait without limit (ADR-0020),
 // since only a task that ends makes room, and the intent that ends it wakes
 // the owner. Pausing the goal due earliest wakes no one, but the next step
-// reports the deadline without it.
+// reports the deadline without it. The strategy holds the task, so only the
+// intent ends it.
 TEST(WorkTrigger, deadline_counts_only_goals_that_could_derive) {
     WorkNode work;
     work.node().config().task_capacity = 1;
     work.run();
+    work.strategy().answer = cannot_decide;
     const uint64_t start = now(work);
     const uint64_t held = delay_goal(work, second);
     const uint64_t later = delay_goal(work, 3U * second, agent_b);
@@ -296,7 +303,7 @@ TEST(WorkTrigger, deadline_counts_only_goals_that_could_derive) {
     EXPECT_EQ(work.node().step().items_done, 1U); // takes the only place
     advance(work, 4U * second);
     ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.items_done, 1U); // the hold
     EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(report.next_deadline_us, no_time);
 

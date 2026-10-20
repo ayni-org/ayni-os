@@ -1,7 +1,7 @@
 // The schedule of a goal's occurrences (ADR-0019, ADR-0021): which times each
 // trigger kind takes, when occurrences fall due, taking every due occurrence
-// at once, recording local inputs, and the ends of the clock and of the
-// occurrence numbers.
+// at once, recording local inputs, the ends of the clock and of the
+// occurrence numbers, and whether an occurrence is still to come (ADR-0022).
 
 #include "work/goal/trigger_schedule.h"
 
@@ -13,6 +13,7 @@ namespace {
 
 using ayni::work::can_record;
 using ayni::work::no_time;
+using ayni::work::occurs_again;
 using ayni::work::record;
 using ayni::work::start_schedule;
 using ayni::work::take_due;
@@ -183,6 +184,38 @@ TEST(TriggerSchedule, last_occurrence_number_ends_recording) {
     EXPECT_EQ(taken.due_us, 20U);
     EXPECT_FALSE(cursor.has_next());
     EXPECT_FALSE(can_record(cursor));
+}
+
+// ADR-0022: a goal ends with its last task only once no occurrence is to
+// come: none scheduled or waiting, and for LOCAL_INPUT no number left for
+// another input.
+TEST(TriggerSchedule, occurrence_is_to_come_until_the_trigger_has_had_its_last) {
+    const Trigger none{AYNI_TRIGGER_NONE, 0, 0};
+    EXPECT_FALSE(occurs_again(none, start_schedule(none, 100)));
+
+    const Trigger once{AYNI_TRIGGER_ONCE, 0, 0};
+    TriggerCursor cursor = start_schedule(once, 100);
+    EXPECT_TRUE(occurs_again(once, cursor));
+    take_due(once, 100, cursor);
+    EXPECT_FALSE(occurs_again(once, cursor));
+
+    const Trigger interval{AYNI_TRIGGER_INTERVAL, 0, second};
+    cursor = start_schedule(interval, 100);
+    take_due(interval, 100, cursor);
+    EXPECT_TRUE(occurs_again(interval, cursor));
+    TriggerCursor last{UINT32_MAX, no_time};
+    EXPECT_FALSE(occurs_again(interval, last));
+
+    // An input trigger with nothing waiting still has inputs to come, until
+    // the last number is taken.
+    const Trigger input{AYNI_TRIGGER_LOCAL_INPUT, 0, 0};
+    cursor = start_schedule(input, 100);
+    EXPECT_TRUE(occurs_again(input, cursor));
+    TriggerCursor almost{UINT32_MAX - 1U, no_time};
+    record(10, almost);
+    EXPECT_TRUE(occurs_again(input, almost));
+    take_due(input, 10, almost);
+    EXPECT_FALSE(occurs_again(input, almost));
 }
 
 } // namespace
