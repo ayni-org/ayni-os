@@ -37,6 +37,18 @@ std::size_t Host::complete_storage() {
     return accepted;
 }
 
+void Host::power_cut(CutAppend append) {
+    for (const Pending &request : pending_) {
+        if (request.port != StoragePort::append || append == CutAppend::lost) {
+            continue;
+        }
+        const uint32_t kept = append == CutAppend::stored ? request.size : request.size / 2U;
+        log_.push_back({request.commit_seq, std::vector<uint8_t>(request.data, request.data + kept),
+                        append == CutAppend::torn});
+    }
+    pending_.clear();
+}
+
 uint64_t Host::monotonic_now_us(void *ctx) {
     Host &self = *static_cast<Host *>(ctx);
     self.note_call();
@@ -128,6 +140,9 @@ ayni_completion_result_v1 Host::run(const Pending &request) {
         return result;
     }
     if (request.port == StoragePort::append) {
+        while (!log_.empty() && log_.back().torn) {
+            log_.pop_back();
+        }
         log_.push_back(
             {request.commit_seq, std::vector<uint8_t>(request.data, request.data + request.size)});
         result.outcome = AYNI_WRITE_OK;
@@ -148,6 +163,9 @@ ayni_completion_result_v1 Host::read(const Pending &request) const {
     result.attempt = request.attempt;
     uint32_t written = 0;
     for (const StoredBatch &batch : log_) {
+        if (batch.torn) {
+            break;
+        }
         if (batch.commit_seq < request.commit_seq) {
             continue;
         }
