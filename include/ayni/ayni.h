@@ -402,28 +402,28 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
 ayni_status_t ayni_start(ayni_kernel_t *kernel);
 
 /*
- * Applies posted completions and advances recovery and shutdown. Since 0.9
- * it then takes the events queued when it comes to them, one item each
- * (ADR-0021): in RUNNING each is recorded, in one transition, as an
- * occurrence of every goal whose trigger takes it, or counted as unmatched;
- * in DRAINING and RESTRICTED each is discarded and counted; in RECOVERING
- * they stay queued. In RUNNING it then does the goals' due work, one item
- * and transition each: expires goals (ADR-0020), derives tasks (ADR-0018)
- * and skips occurrences that waited too long (ADR-0020). A task stands for
- * every occurrence of its goal due by the step's start (ADR-0019).
- * Deriving and skipping set the goal's occurrences, next_due_us,
- * last_task_id or occurrences_skipped and skip_reason, and commit_seq but
- * keep its revision, so the revision a caller holds for the goal stays
- * valid. An expiry that would raise a revision past the largest is dropped
- * instead, the same way: the goal keeps its lifecycle and never expires
- * (C-COMMIT-012). Does at most
- * max_items items and stops once max_time_us has passed on the host clock,
- * checked after each item; never waits on storage or any other I/O
- * (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
- * covers. Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is NULL or
- * max_items or max_time_us is 0; AYNI_INVALID_ARGUMENT or
- * AYNI_UNSUPPORTED_VERSION for out_report->struct_size; AYNI_INVALID_STATE
- * in CONFIGURING and STOPPED, and when called from a goal type's validator.
+ * Applies posted completions and advances recovery and shutdown. In
+ * RUNNING it then does the goals' due work, one item and transition each:
+ * expires goals (ADR-0020), derives tasks (ADR-0018) and skips occurrences
+ * that waited too long (ADR-0020). A task stands for every occurrence of
+ * its goal due by the step's start (ADR-0019). Deriving and skipping set
+ * the goal's occurrences, next_due_us, last_task_id or occurrences_skipped
+ * and skip_reason, and commit_seq but keep its revision, so the revision a
+ * caller holds for the goal stays valid. An expiry that would raise a
+ * revision past the largest is dropped instead, the same way: the goal
+ * keeps its lifecycle and never expires (C-COMMIT-012). Since 0.9 it then
+ * takes the events queued when it comes to them, one item each (ADR-0021):
+ * in RUNNING each is recorded, in one transition, as an occurrence of every
+ * goal whose trigger takes it, due at the step's start, or counted as
+ * unmatched; in DRAINING and RESTRICTED each is discarded and counted; in
+ * RECOVERING they stay queued. Does at most max_items items and stops once
+ * max_time_us has passed on the host clock, checked after each item; never
+ * waits on storage or any other I/O (C-LIMIT-011). out_report (nullable)
+ * receives the fields its struct_size covers. Returns AYNI_OK;
+ * AYNI_INVALID_ARGUMENT if kernel is NULL or max_items or max_time_us is 0;
+ * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
+ * out_report->struct_size; AYNI_INVALID_STATE in CONFIGURING and STOPPED,
+ * and when called from a goal type's validator.
  */
 ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
                         ayni_step_report_v1 *out_report);

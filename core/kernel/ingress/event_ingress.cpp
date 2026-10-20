@@ -53,7 +53,8 @@ uint32_t EventIngress::queued() const {
 
 bool EventIngress::take_local_input(catalog::CatalogId &out_source) {
     EventHeader header{};
-    // Every entry holds a source, which fits here.
+    // post_local_input() is the only push, so every entry holds a source,
+    // which fits here.
     std::array<uint8_t, catalog::CatalogId::max_size> body{};
     {
         const IngressGuard guard(host_);

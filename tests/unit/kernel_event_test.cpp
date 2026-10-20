@@ -231,6 +231,9 @@ ayni_kernel_t *posting_kernel = nullptr;
 
 // A Host clock that posts a local input each time the kernel reads it, as a
 // Host thread posting while the step runs would; a full queue refuses some.
+// ayni.h forbids a Host to post from a function the kernel calls; this
+// stands in for another thread only because the kernel never reads the
+// clock while it holds the ingress lock.
 uint64_t posting_clock(void *ctx) {
     if (posting_kernel != nullptr) {
         const ayni_status_t status = post(posting_kernel);
@@ -239,9 +242,8 @@ uint64_t posting_clock(void *ctx) {
     return static_cast<ayni::hosts::sim::Host *>(ctx)->now_us();
 }
 
-// A step takes only the events queued when it comes to them, so a Host that
-// keeps posting cannot hold it there, and the due work after them still
-// runs in the same step.
+// A step takes only the events queued when it comes to them, after the due
+// work, so a Host that keeps posting cannot hold it there.
 TEST(KernelEvents, events_posted_during_a_step_wait_for_the_next) {
     WorkNode work;
     work.node().replace_clock_port(&posting_clock);
@@ -253,7 +255,7 @@ TEST(KernelEvents, events_posted_during_a_step_wait_for_the_next) {
     posting_kernel = work.kernel();
     const ayni_step_report_v1 report = work.node().step();
     posting_kernel = nullptr;
-    // The events posted before the step and as it started, then the task.
+    // The task, then the events posted before the step and as it started.
     EXPECT_EQ(report.items_done, 3U);
     EXPECT_EQ(report.more_ready, 1U);
     EXPECT_EQ(work.node().step().items_done, 2U);
@@ -375,11 +377,15 @@ ayni_goal_create_v1 input_body(WorkNode &work, ayni_string_v1 source, const char
     return body;
 }
 
-uint64_t input_goal(WorkNode &work, const char *source, const char *type = "timer",
-                    uint64_t agent_id = agent_a) {
-    const Submitted created = work.create(input_body(work, text(source), type, agent_id));
+uint64_t create(WorkNode &work, const ayni_goal_create_v1 &body) {
+    const Submitted created = work.create(body);
     EXPECT_EQ(created.status, AYNI_OK);
     return created.result.object.id;
+}
+
+uint64_t input_goal(WorkNode &work, const char *source, const char *type = "timer",
+                    uint64_t agent_id = agent_a) {
+    return create(work, input_body(work, text(source), type, agent_id));
 }
 
 uint64_t now(WorkNode &work) {
@@ -419,14 +425,26 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     const uint64_t pressed_at = now(work);
     ASSERT_EQ(post(work), AYNI_OK);
     ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 2U); // the event, then the task
+    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.more_ready, 1U); // the occurrence is due
+    EXPECT_EQ(report.next_deadline_us, pressed_at);
+    const ayni_goal_info_v1 recorded = work.goal(goal_id);
+    EXPECT_EQ(recorded.next_due_us, pressed_at);
+    EXPECT_EQ(recorded.occurrences, 0U);
+    EXPECT_EQ(recorded.revision, created.revision);
+    EXPECT_GT(recorded.commit_seq, created.commit_seq);
+
+    // The next step derives the task, still due when the input was taken.
+    advance(work, 300);
+    report = work.node().step();
+    EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(report.next_deadline_us, no_time);
     const ayni_goal_info_v1 derived = work.goal(goal_id);
     EXPECT_EQ(derived.occurrences, 1U);
     EXPECT_EQ(derived.next_due_us, no_time);
     EXPECT_EQ(derived.revision, created.revision);
-    EXPECT_GT(derived.commit_seq, created.commit_seq);
+    EXPECT_GT(derived.commit_seq, recorded.commit_seq);
     const ayni_task_info_v1 task = work.task(derived.last_task_id);
     EXPECT_EQ(task.lifecycle, AYNI_TASK_READY);
     EXPECT_EQ(task.occurrence, 1U);
@@ -442,10 +460,36 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
 
     advance(work, 500);
     ASSERT_EQ(post(work), AYNI_OK);
-    EXPECT_EQ(work.node().step().items_done, 2U);
+    EXPECT_EQ(work.node().step().items_done, 1U);
+    EXPECT_EQ(work.node().step().items_done, 1U);
     const ayni_task_info_v1 second_task = work.task(work.goal(goal_id).last_task_id);
     EXPECT_EQ(second_task.occurrence, 2U);
-    EXPECT_EQ(second_task.due_us, pressed_at + 500U);
+    EXPECT_EQ(second_task.due_us, pressed_at + 800U);
+}
+
+// Due work comes before events in a step, so a Host that keeps the queue
+// full cannot hold back a goal's expiry or its tasks.
+TEST(WorkInput, steady_events_do_not_hold_back_due_work) {
+    WorkNode work;
+    work.run();
+    const uint64_t once = create(work, WorkNode::create_body(work.instance(agent_a), 0, "timer", 1,
+                                                             {nullptr, 0}, AYNI_TRIGGER_ONCE));
+    ayni_goal_create_v1 expiring_body = WorkNode::create_body(work.instance(agent_b), 0, "timer");
+    expiring_body.expiry_us = 10;
+    const uint64_t expiring = create(work, expiring_body);
+    for (int round = 0; round < 2; ++round) {
+        while (post(work, "knob") == AYNI_OK) {
+        }
+        advance(work, 10);
+        EXPECT_EQ(work.node().step(1).items_done, 1U);
+    }
+    EXPECT_EQ(work.goal(expiring).lifecycle, AYNI_GOAL_EXPIRED);
+    EXPECT_NE(work.goal(once).last_task_id, 0U);
+    EXPECT_EQ(work.node().info().events_unmatched, 0U);
+    const ayni_step_report_v1 report = work.node().step(1);
+    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.more_ready, 1U);
+    EXPECT_EQ(work.node().info().events_unmatched, 1U);
 }
 
 // One input records an occurrence on every live goal that takes its source,
@@ -598,7 +642,8 @@ TEST(WorkInput, small_event_bodies_still_hold_a_source) {
     work.run();
     const uint64_t goal_id = input_goal(work, longest);
     ASSERT_EQ(post(work, longest), AYNI_OK);
-    EXPECT_EQ(work.node().step().items_done, 2U);
+    EXPECT_EQ(work.node().step().items_done, 1U);
+    EXPECT_EQ(work.node().step().items_done, 1U);
     EXPECT_EQ(work.goal(goal_id).occurrences, 1U);
 
     ayni_config_v1 config = work.node().config();

@@ -31,9 +31,10 @@ ayni_status_t ayni_kernel::start() {
 
 // Each applied completion is one item and the clock is read after each; the
 // boot sequence then issues at most one storage request, also one item. The
-// request is never awaited: its result arrives in a later step. Each event
-// queued when the step comes to them is then one item, and in RUNNING each
-// piece of the goals' due work, again with the clock read after each.
+// request is never awaited: its result arrives in a later step. In RUNNING
+// each piece of the goals' due work is then one item, and after it each
+// event queued when the step comes to the events, again with the clock read
+// after each.
 ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                                 ayni_step_report_v1 &report) {
     if (lifecycle == AYNI_LIFECYCLE_CONFIGURING || lifecycle == AYNI_LIFECYCLE_STOPPED) {
@@ -52,8 +53,18 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
         ++items;
         settle_recovery();
     }
-    // Events posted while the step runs wait for the next one. An event's
-    // occurrences fall due at the step's start, with the rest of its work.
+    // Due work is taken as of the start of the step, so one step sees one
+    // schedule. It comes before events: a Host can keep the queue full, but
+    // the due work at one time is finite, so neither starves the other.
+    if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
+        while (items < max_items && !out_of_time && ayni::kernel::do_due_work(work, started_us)) {
+            ++items;
+            out_of_time = time_is_up(host, started_us, max_time_us);
+        }
+    }
+    // Only the events already queued are taken; later ones wait for the next
+    // step. An event's occurrences fall due at the step's start, and the
+    // step reports the work they make due as ready.
     if (takes_events()) {
         uint32_t waiting = ingress.queued();
         ayni::catalog::CatalogId source;
@@ -62,14 +73,6 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
             --waiting;
             ++items;
             handle_local_input(source, started_us);
-            out_of_time = time_is_up(host, started_us, max_time_us);
-        }
-    }
-    // Due work is taken as of the start of the step, so one step sees one
-    // schedule.
-    if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
-        while (items < max_items && !out_of_time && ayni::kernel::do_due_work(work, started_us)) {
-            ++items;
             out_of_time = time_is_up(host, started_us, max_time_us);
         }
     }

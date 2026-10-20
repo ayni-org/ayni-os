@@ -726,16 +726,23 @@ TEST(KernelLifecycle, kernel_info_checks_its_output) {
     EXPECT_EQ(info.boot_epoch, 0U);
     EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
 
-    // The 0.5 layout ends after durable_seq, before the event counters; a
-    // size that ends inside them gets that layout.
+    // The 0.5 layout ends after durable_seq, before the event counters (0.9);
+    // each counter is written once the size covers it whole.
     const uint32_t layout_0_5 = offsetof(ayni_kernel_info_v1, events_unmatched);
-    for (const uint32_t size : {layout_0_5, layout_0_5 + 8U, layout_0_5 + 12U}) {
+    for (const uint32_t size : {layout_0_5, layout_0_5 + 4U}) {
         std::memset(&info, 0xA5, sizeof(info));
         info.struct_size = size;
         ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
-        EXPECT_EQ(info.durable_seq, 0U);
-        EXPECT_EQ(info.events_unmatched, 0xA5A5A5A5A5A5A5A5U);
-        EXPECT_EQ(info.events_discarded, 0xA5A5A5A5A5A5A5A5U);
+        EXPECT_EQ(info.durable_seq, 0U) << size;
+        EXPECT_EQ(info.events_unmatched, 0xA5A5A5A5A5A5A5A5U) << size;
+        EXPECT_EQ(info.events_discarded, 0xA5A5A5A5A5A5A5A5U) << size;
+    }
+    for (const uint32_t size : {layout_0_5 + 8U, layout_0_5 + 12U}) {
+        std::memset(&info, 0xA5, sizeof(info));
+        info.struct_size = size;
+        ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
+        EXPECT_EQ(info.events_unmatched, 0U) << size;
+        EXPECT_EQ(info.events_discarded, 0xA5A5A5A5A5A5A5A5U) << size;
     }
 }
 

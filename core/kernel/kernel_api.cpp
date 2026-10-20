@@ -34,10 +34,13 @@ constexpr std::size_t host_v1_min_size =
 constexpr std::size_t completion_result_v1_min_size = sizeof(ayni_completion_result_v1);
 constexpr std::size_t kernel_info_v1_min_size =
     offsetof(ayni_kernel_info_v1, boot_epoch) + sizeof(ayni_kernel_info_v1::boot_epoch);
-// Where the 0.5 layout of ayni_kernel_info_v1 ends; 0.9 appends the event
-// counters.
-constexpr std::size_t kernel_info_v1_0_5_size =
-    offsetof(ayni_kernel_info_v1, durable_seq) + sizeof(ayni_kernel_info_v1::durable_seq);
+// Where each field after the first layout ends: durable_seq since 0.5, the
+// event counters since 0.9.
+constexpr std::size_t kernel_info_v1_field_ends[] = {
+    offsetof(ayni_kernel_info_v1, durable_seq) + sizeof(ayni_kernel_info_v1::durable_seq),
+    offsetof(ayni_kernel_info_v1, events_unmatched) + sizeof(ayni_kernel_info_v1::events_unmatched),
+    offsetof(ayni_kernel_info_v1, events_discarded) + sizeof(ayni_kernel_info_v1::events_discarded),
+};
 constexpr std::size_t step_report_v1_min_size = sizeof(ayni_step_report_v1);
 
 using ayni::kernel::check_struct_size;
@@ -310,13 +313,13 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
     info.durable_seq = kernel->boot.durable_seq();
     info.events_unmatched = kernel->events_unmatched;
     info.events_discarded = kernel->events_discarded;
-    // Whole layouts only: a struct_size that ends inside a later layout gets
-    // the one before it.
+    // Whole fields only: one that struct_size covers in part is left as it
+    // was (ayni.h).
     std::size_t written = kernel_info_v1_min_size;
-    if (out_info->struct_size >= sizeof(info)) {
-        written = sizeof(info);
-    } else if (out_info->struct_size >= kernel_info_v1_0_5_size) {
-        written = kernel_info_v1_0_5_size;
+    for (const std::size_t field_end : kernel_info_v1_field_ends) {
+        if (out_info->struct_size >= field_end) {
+            written = field_end;
+        }
     }
     std::memcpy(out_info, &info, written);
     return AYNI_OK;
