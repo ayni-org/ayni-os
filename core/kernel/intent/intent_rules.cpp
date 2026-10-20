@@ -137,6 +137,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     if (create.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) {
         static_cast<void>(trigger_source.assign(create.trigger_source)); // check_form()
     }
+    const catalog::GoalType &goal_type = model.goal_types.at(type.index);
     const work::NewGoal goal{create.owner_instance_id,
                              create.parent_goal_id,
                              type.index,
@@ -146,7 +147,9 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
                              trigger_source,
                              now_us,
                              create.expiry_us,
-                             model.goal_types.at(type.index).occurrence_wait_max_us};
+                             goal_type.occurrence_wait_max_us,
+                             goal_type.id,
+                             goal_type.version};
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);
@@ -291,24 +294,18 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
     return AYNI_OK;
 }
 
-} // namespace
-
-ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us,
-                           IntentOutcome &outcome, IntentFailure &failure) {
-    failure = IntentFailure{};
-    const authority::Session *session = model.sessions.find(intent.session_id);
-    if (session == nullptr) {
-        return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
-                      object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
-    }
+// Steps 4 and 5 once the session is known: the intent as such, without its
+// command id.
+ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authority::Session &session,
+                          uint64_t now_us, IntentOutcome &outcome, IntentFailure &failure) {
     // Until grants exist (MA-006), every session belongs to the owner, who
     // may submit every intent.
     switch (intent.kind) {
     case AYNI_INTENT_GOAL_CREATE: {
         // Principals are never removed, so the session's principal is
         // registered.
-        const authority::Principal &principal = *model.principals.find(session->principal_id);
-        const work::GoalOrigin origin{AYNI_ORIGIN_USER, session->channel, principal.principal_id,
+        const authority::Principal &principal = *model.principals.find(session.principal_id);
+        const work::GoalOrigin origin{AYNI_ORIGIN_USER, session.channel, principal.principal_id,
                                       principal.binding_revision};
         return create_goal(model, intent, origin, now_us, outcome, failure);
     }
@@ -321,6 +318,47 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     default: // GOAL_CANCEL, GOAL_PAUSE, GOAL_RESUME
         return change_goal(model, intent, outcome, failure);
     }
+}
+
+} // namespace
+
+ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
+                           IntentOutcome &outcome, IntentFailure &failure) {
+    failure = IntentFailure{};
+    const authority::Session *session = model.sessions.find(intent.session_id);
+    if (session == nullptr) {
+        return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
+                      object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
+    }
+    const uint64_t digest = intent.command_id != 0U ? command_digest(intent) : 0U;
+    if (intent.command_id != 0U) {
+        const CommandMapping *mapping = nullptr;
+        switch (model.commands.find(session->principal_id, intent.command_id, digest, mapping)) {
+        case CommandTable::Lookup::retried:
+            outcome.object = mapping->object;
+            outcome.commit_seq = mapping->commit_seq;
+            outcome.retried = true;
+            return AYNI_OK;
+        case CommandTable::Lookup::conflict:
+            return refuse(AYNI_IDEMPOTENCY_CONFLICT, AYNI_REASON_COMMAND_CONFLICT,
+                          ayni_object_ref_v1{}, failure);
+        case CommandTable::Lookup::expired:
+            return refuse(AYNI_EXPIRED, AYNI_REASON_COMMAND_EXPIRED, ayni_object_ref_v1{}, failure);
+        case CommandTable::Lookup::unmapped:
+            break;
+        }
+    }
+    if (!has_room) {
+        return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
+    }
+    const ayni_status_t status = apply_rules(model, intent, *session, now_us, outcome, failure);
+    // The mapping joins the transition, so the log stores both or neither.
+    // The registry holds one principal and the table a row for it.
+    if (status == AYNI_OK && intent.command_id != 0U) {
+        model.commands.insert({session->principal_id, intent.command_id, digest, outcome.commit_seq,
+                               intent.kind, outcome.object});
+    }
+    return status;
 }
 
 } // namespace ayni::kernel

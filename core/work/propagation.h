@@ -78,6 +78,14 @@ void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
 // Nothing lowers a revision, so such a goal never could end that way.
 bool goal_end_exhausts(const WorkTables &tables, uint32_t goal_index, GoalChange change);
 
+// Whether entering RUNNING settles a task recovery restored (ADR-0026): a
+// READY or PAUSED task below the largest revision, not held, that the rule
+// above takes to the other of the two, as when its owner's agent is no
+// longer registered or is again.
+bool settles_restored(const WorkTables &tables);
+// Settles each of them in stamp, as a change does.
+void settle_restored(WorkTables &tables, foundation::TransitionStamp stamp);
+
 // The goals' due work, one item and transition each (ADR-0020).
 struct DueWork {
     enum class Kind {

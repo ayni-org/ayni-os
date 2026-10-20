@@ -39,23 +39,31 @@ BatchWriter::BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdent
     : buffer_(buffer), capacity_(capacity), identity_(identity) {}
 
 bool BatchWriter::add_record(const RecordHeader &header, const uint8_t *body) {
+    uint8_t *out = add_record_body(header);
+    if (out == nullptr) {
+        return false;
+    }
+    if (header.length > 0U) {
+        std::memcpy(out, body, header.length);
+    }
+    return true;
+}
+
+uint8_t *BatchWriter::add_record_body(const RecordHeader &header) {
     // Room stays for the commit marker, so finish() cannot fail afterwards.
     constexpr std::size_t framing = record_header_size + commit_marker_size;
     if (capacity_ < end_ || capacity_ - end_ < framing ||
         capacity_ - end_ - framing < header.length) {
-        return false;
+        return nullptr;
     }
     uint8_t *out = buffer_ + end_;
     store_le16(out, header.type);
     store_le16(out + 2, header.version);
     store_le32(out + 4, header.flags);
     store_le32(out + 8, header.length);
-    if (header.length > 0U) {
-        std::memcpy(out + record_header_size, body, header.length);
-    }
     end_ += record_header_size + header.length;
     ++record_count_;
-    return true;
+    return out + record_header_size;
 }
 
 std::size_t BatchWriter::finish() {

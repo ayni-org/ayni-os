@@ -411,7 +411,8 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     advance(work, 1000);
     const uint64_t wakes = work.node().sim().wake_count();
     const uint64_t goal_id = input_goal(work, "button");
-    EXPECT_EQ(work.node().sim().wake_count(), wakes); // nothing falls due
+    // Only for the append of its batch (ADR-0026): nothing falls due.
+    EXPECT_EQ(work.node().sim().wake_count(), wakes + 1U);
     const ayni_goal_info_v1 created = work.goal(goal_id);
     EXPECT_EQ(created.trigger, AYNI_TRIGGER_LOCAL_INPUT);
     ASSERT_EQ(created.trigger_source_size, 6U);
@@ -420,7 +421,7 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     EXPECT_EQ(created.trigger_period_us, 0U);
     EXPECT_EQ(created.next_due_us, no_time);
     EXPECT_EQ(created.wait_reason, AYNI_REASON_NONE);
-    EXPECT_EQ(created.reserved, 0U);
+    EXPECT_EQ(created.hold_reason, AYNI_REASON_NONE);
     EXPECT_EQ(work.node().step().next_deadline_us, no_time);
 
     advance(work, 500);

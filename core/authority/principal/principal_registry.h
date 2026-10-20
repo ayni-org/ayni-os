@@ -25,6 +25,7 @@ struct Principal {
 // v0.1 has exactly one principal, the owner (C-PROD-001).
 class PrincipalRegistry {
   public:
+    static constexpr uint32_t capacity = 1; // the owner
     // principal is an owner with a nonzero id and binding revision. Returns
     // false, changing nothing, when an owner is already registered.
     bool add_owner(const Principal &principal);

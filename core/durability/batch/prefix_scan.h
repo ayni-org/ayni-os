@@ -19,9 +19,14 @@ enum class RecordUse {
     applied, // a type and version the owner knows, with a valid body
     unknown, // not a type and version the owner knows
     corrupt, // known, but the body breaks the owner's rules
+    // Valid, but more than the owner's capacities hold: the log was written
+    // under larger ones (C-LIMIT-007).
+    no_room,
 };
 
-using RecordHandler = RecordUse (*)(void *context, const RecordHeader &header, const uint8_t *body);
+// batch is the identity of the batch the record is in.
+using RecordHandler = RecordUse (*)(void *context, const BatchIdentity &batch,
+                                    const RecordHeader &header, const uint8_t *body);
 
 class PrefixScan {
   public:
@@ -36,10 +41,9 @@ class PrefixScan {
     // the scan is not continued.
     //
     // Records reach handler as they are read, so a batch that fails later
-    // has already shown its earlier records. That is safe while any failure
-    // ends recovery in RESTRICTED; replay that keeps domain state (MA-010)
-    // must stage a batch and apply it only once the whole batch passes
-    // (C-STORE-002).
+    // has already shown its earlier records. Every failure ends recovery in
+    // RESTRICTED, and the kernel then drops all it replayed, so no part of
+    // a failed batch is ever visible (C-STORE-002, ADR-0026).
     BatchCheck scan(const uint8_t *bytes, std::size_t size, RecordHandler handler, void *context);
 
     // The commit_seq the next batch must carry.

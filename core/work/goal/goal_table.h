@@ -14,6 +14,10 @@
 // the place given up and no other goal moves, so an index stays valid while
 // its goal is in the table; the places are not in creation order, goal ids
 // are.
+//
+// Recovery rebuilds the table from the log (ADR-0026): restore() and
+// restore_state() replay what each committed transition changed, and
+// resolve_types() and reanchor() then fit the goals to this boot.
 
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
 #define AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
@@ -53,22 +57,31 @@ struct NewGoal {
     // The goal type's: how long a due occurrence may wait for a task;
     // no_time: unbounded (ADR-0020).
     uint64_t occurrence_wait_max_us;
+    // The goal type's id and version, which a later boot resolves again.
+    catalog::CatalogId goal_type_id;
+    uint32_t goal_type_version;
 };
 
 struct Goal {
     uint64_t goal_id;
     uint64_t parent_goal_id;
     uint64_t owner_instance_id;
+    uint64_t replaced_goal_id; // the terminal goal whose place it took; 0: none
     uint64_t created_transition_id;
     uint64_t commit_seq;   // of the last change
     uint64_t last_task_id; // 0 before the first task
     Trigger trigger;
     TriggerCursor cursor; // no next occurrence, none waiting, once the goal is terminal
     catalog::CatalogId trigger_source;
-    uint64_t expires_us; // no_time: never
+    uint64_t expires_us;      // no_time: never
+    uint64_t expiry_after_us; // from creation, or from recovery (ADR-0026); 0: none
     uint64_t occurrence_wait_max_us;
     GoalOrigin origin;
+    catalog::CatalogId goal_type_id;
+    uint32_t goal_type_version;
     uint32_t parent_index; // GoalTable::no_parent for a top-level goal
+    // In the goal type registry; GoalTable::no_index when this boot has no
+    // goal type of goal_type_id at goal_type_version (resolve_types()).
     uint32_t goal_type_index;
     uint32_t revision;        // 1 at creation, raised by each change
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
@@ -76,7 +89,26 @@ struct Goal {
     uint32_t parameter_size;
     uint32_t occurrences_skipped;
     ayni_reason_t skip_reason; // of the latest skip; AYNI_REASON_NONE before any
+    // Why this boot holds the goal that is not terminal (ADR-0026):
+    // AYNI_REASON_GOAL_TYPE_UNKNOWN or AYNI_REASON_GOAL_TYPE_VERSION; NONE
+    // while it is not held. In memory only.
+    ayni_reason_t hold_reason;
     ayni_goal_lifecycle_t lifecycle;
+};
+
+// What a GOAL_STATE record (ADR-0026) holds. The times are this boot's, so
+// the record says only whether there are any.
+struct GoalState {
+    uint64_t last_task_id;
+    ayni_goal_lifecycle_t lifecycle;
+    uint32_t revision;
+    uint32_t cancel_revision;
+    uint32_t occurrences_skipped;
+    ayni_reason_t skip_reason;
+    uint32_t taken;   // TriggerCursor::taken
+    uint32_t waiting; // TriggerCursor::waiting
+    bool next_scheduled;
+    bool expiry_pending;
 };
 
 // Expire comes from the kernel at expires_us, never from an intent; satisfy
@@ -115,6 +147,9 @@ class GoalTable {
         invalid_state,
         revision_exhausted, // a goal it changes is at the largest revision
     };
+
+    // How a record replayed, as TaskTable::Restore.
+    enum class Restore { restored, corrupt, no_room };
 
     static constexpr std::size_t storage_alignment =
         foundation::BoundedArray<Goal>::storage_alignment;
@@ -202,6 +237,40 @@ class GoalTable {
     // does; their descendants have the same owner.
     void cancel_owned(uint64_t instance_id, foundation::TransitionStamp stamp);
 
+    // Replays a GOAL record: the goal as insert() created it in stamp, in the
+    // place of replaced_goal_id, a terminal goal, or in a new place when
+    // that is 0. goal.goal_type_index is ignored until resolve_types(), and
+    // the times until reanchor(). The tasks of a goal that gave way still
+    // name out_index, so the caller removes them.
+    Restore restore(const NewGoal &goal, uint64_t goal_id, uint64_t replaced_goal_id,
+                    foundation::TransitionStamp stamp, uint32_t &out_index);
+    // Replays a GOAL_STATE record of goal index.
+    Restore restore_state(uint32_t index, const GoalState &state,
+                          foundation::TransitionStamp stamp);
+    // Sets each goal's goal_type_index from its type's id and version
+    // (ADR-0026): resolve(id, version, out_index) says whether this boot
+    // has that type, as AYNI_REASON_NONE, else why not; a goal that is not
+    // terminal and lacks it is held for that reason.
+    template <typename Resolve> void resolve_types(Resolve resolve) {
+        for (uint32_t index = 0; index < goals_.size(); ++index) {
+            Goal &goal = goals_[index];
+            goal.goal_type_index = no_index;
+            const ayni_reason_t lacks =
+                resolve(goal.goal_type_id, goal.goal_type_version, goal.goal_type_index);
+            goal.hold_reason = is_live(goal.lifecycle) ? lacks : AYNI_REASON_NONE;
+        }
+    }
+    // Puts the goals' next occurrences and expiries, which a replay leaves
+    // undetermined, on this boot's clock at now_us, the time recovery ended
+    // (ADR-0026): each wait starts again in full.
+    void reanchor(uint64_t now_us);
+    // Empties the table, as a recovery that failed leaves it.
+    void clear() { goals_.clear(); }
+
+    // Whether this boot holds the goal: it has no due work and takes no
+    // input (ADR-0026).
+    static bool is_held(const Goal &goal) { return goal.hold_reason != AYNI_REASON_NONE; }
+
     // Returns false when no goal has the id.
     bool find(uint64_t goal_id, uint32_t &out_index) const;
     // Whether goal index is root or one of its descendants.
@@ -229,6 +298,12 @@ class GoalTable {
     static bool takes(const Goal &goal, const catalog::CatalogId &source);
     void set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
                        foundation::TransitionStamp stamp);
+    // The goal insert() and restore() create.
+    Goal created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t replaced_goal_id,
+                      foundation::TransitionStamp stamp) const;
+    // Puts created at index, a new place when index is size(), with its
+    // parameters.
+    void place(const Goal &created, uint32_t index, ayni_bytes_v1 parameters);
 
     foundation::BoundedArray<Goal> goals_;
     uint8_t *parameter_blocks_;

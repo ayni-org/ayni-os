@@ -120,7 +120,7 @@ TEST(WorkModel, registration_refuses_duplicates_and_capacity) {
 // --- Agents ---------------------------------------------------------------
 
 // Instances start in one transition when the kernel enters RUNNING; the
-// transition follows the boot batch and is not durable yet.
+// transition follows the boot batch, and recover() stores it.
 TEST(WorkModel, instances_start_with_the_kernel_in_one_transition) {
     WorkNode work;
     work.node().create_and_start();
@@ -144,8 +144,8 @@ TEST(WorkModel, instances_start_with_the_kernel_in_one_transition) {
     EXPECT_EQ(a.commit_seq, 2U); // the boot batch is commit_seq 1
     EXPECT_EQ(b.commit_seq, a.commit_seq);
     EXPECT_EQ(a.revision, 1U);
-    EXPECT_EQ(a.reserved, 0U);
-    EXPECT_EQ(work.node().info().durable_seq, 1U);
+    EXPECT_EQ(a.fault_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(work.node().info().durable_seq, 2U);
 
     ayni_agent_info_v1 unknown{};
     unknown.struct_size = sizeof(unknown);
@@ -724,9 +724,6 @@ TEST(WorkModel, unsupported_intents_come_before_readiness_and_the_session) {
     const ayni_goal_create_v1 body = WorkNode::create_body(1);
     ayni_intent_v1 intent = work.intent(AYNI_INTENT_GOAL_CREATE, &body);
 
-    intent.command_id = 5;
-    expect_refused(work.submit(intent), AYNI_UNSUPPORTED, AYNI_REASON_COMMAND_ID_UNSUPPORTED);
-    intent.command_id = 0;
     for (const ayni_intent_kind_t kind : {9U, 16U, 17U, 0xFFFFFFFFU}) {
         intent.kind = kind;
         intent.body = nullptr; // not checked for a kind that is not implemented
@@ -779,9 +776,10 @@ TEST(WorkModel, draining_answers_queries_and_closes_sessions_but_takes_no_work) 
 
 // C-COMMIT-016: transition_id and commit_seq place a transition in the log,
 // and a later boot reuses the places of transitions that were never durable.
-// One boot later a new goal takes the place of an unstored one; two boots
-// later durable_seq covers the first goal's commit_seq although the goal is
-// gone. So both are compared only with durable_seq of their own boot.
+// After power loss a new goal takes the place of an unstored one, after the
+// boot batch took the other; one boot later durable_seq covers the first
+// goal's commit_seq although the goal is gone. So both are compared only
+// with durable_seq of their own boot.
 TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
     WorkNode work;
     work.run();
@@ -789,7 +787,7 @@ TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
     const ayni_goal_info_v1 second = work.goal(work.create_goal());
     EXPECT_GT(first.commit_seq, work.node().info().durable_seq);
 
-    work.node().reboot();
+    work.node().power_cut_and_start(ayni::hosts::sim::CutAppend::lost);
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     const ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a));
@@ -812,8 +810,8 @@ TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
 }
 
 // C-ID-001, C-ID-010: a later boot never assigns an id an earlier boot
-// assigned. Until the log stores them (MA-010), goals, instances and sessions
-// do not survive the reboot.
+// assigned, also one whose transition power loss took. The instances'
+// start was stored, so they come back (ADR-0026); sessions never do.
 TEST(WorkModel, a_reboot_assigns_new_ids_and_forgets_unstored_work) {
     WorkNode work;
     work.run();
@@ -821,16 +819,15 @@ TEST(WorkModel, a_reboot_assigns_new_ids_and_forgets_unstored_work) {
     const uint64_t first_session = work.session();
     const uint64_t first_goal = work.create_goal();
 
-    work.node().reboot();
+    work.node().power_cut_and_start(ayni::hosts::sim::CutAppend::lost);
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     EXPECT_EQ(ayni_get_goal(work.kernel(), first_goal, &info), AYNI_NOT_FOUND);
-    EXPECT_EQ(work.node().info().durable_seq, 2U); // two boot batches, nothing else
+    EXPECT_EQ(work.node().info().durable_seq, 3U); // two boot batches and the start
     const uint64_t second_instance = work.instance(agent_a);
-    EXPECT_EQ(second_instance >> 32U, 2U);
-    EXPECT_NE(second_instance, first_instance);
+    EXPECT_EQ(second_instance, first_instance);
 
     const ayni_goal_create_v1 body = WorkNode::create_body(second_instance);
     ayni_intent_v1 intent = work.intent(AYNI_INTENT_GOAL_CREATE, &body);

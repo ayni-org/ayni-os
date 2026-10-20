@@ -1,7 +1,8 @@
 // Recovery from ayni_start up to RUNNING (ADR-0016). Reads the whole log
 // prefix, which durability checks batch by batch, then persists this boot's
 // epoch in a batch of its own before the kernel opens any output (C-ID-009).
-// Replaying domain records joins as those records are introduced (MA-010).
+// It keeps the BOOT_EPOCH records and hands every other record to the
+// domain handler, which replays the work model (ADR-0026).
 //
 // One storage request is in flight at a time, so the kernel's storage buffer
 // serves every read and then the append. Requests use boot_epoch 0: this
@@ -33,10 +34,11 @@ class BootSequence {
         restricted,    // restriction() says why
     };
 
-    // host has both storage ports, and it, completions and buffer outlive
-    // the sequence. buffer_size is within the ayni.h storage buffer range.
+    // host has both storage ports, and it, completions, buffer and the
+    // domain handler's context outlive the sequence. buffer_size is within
+    // the ayni.h storage buffer range.
     BootSequence(const ayni_host_v1 &host, CompletionPool &completions, uint8_t *buffer,
-                 uint32_t buffer_size);
+                 uint32_t buffer_size, durability::RecordHandler domain, void *domain_context);
 
     BootSequence(const BootSequence &) = delete;
     BootSequence &operator=(const BootSequence &) = delete;
@@ -69,7 +71,8 @@ class BootSequence {
                                             ayni_completion_t *completion);
     static void on_read(void *context, const ayni_completion_result_v1 &result);
     static void on_append(void *context, const ayni_completion_result_v1 &result);
-    static durability::RecordUse on_record(void *context, const durability::RecordHeader &header,
+    static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
+                                           const durability::RecordHeader &header,
                                            const uint8_t *body);
 
     bool issue(Phase in_flight, CompletionHandler handler, PortCall call);
@@ -77,13 +80,16 @@ class BootSequence {
     durability::BatchIdentity next_batch() const;
     void finish_read(const ayni_completion_result_v1 &result);
     void finish_append(const ayni_completion_result_v1 &result);
-    durability::RecordUse apply_record(const durability::RecordHeader &header, const uint8_t *body);
+    durability::RecordUse apply_record(const durability::BatchIdentity &batch,
+                                       const durability::RecordHeader &header, const uint8_t *body);
     void enter_restricted(ayni_restriction_t reason);
 
     const ayni_host_v1 &host_;
     CompletionPool &completions_;
     uint8_t *buffer_;
     uint32_t buffer_size_;
+    durability::RecordHandler domain_;
+    void *domain_context_;
     Phase phase_ = Phase::read_due;
     ayni_restriction_t restriction_ = AYNI_RESTRICTION_NONE;
     // Without snapshots (MA-010) the log starts at commit_seq 1.

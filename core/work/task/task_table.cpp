@@ -9,6 +9,22 @@ namespace {
 
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
 
+// The lifecycles this library brings a task to: RUNNING and CANCELLING come
+// with requests tasks wait for (ADR-0022).
+bool is_reached(ayni_task_lifecycle_t lifecycle) {
+    switch (lifecycle) {
+    case AYNI_TASK_READY:
+    case AYNI_TASK_PAUSED:
+    case AYNI_TASK_COMPLETED:
+    case AYNI_TASK_CANCELLED:
+    case AYNI_TASK_FAILED:
+    case AYNI_TASK_EXPIRED:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static_assert(sizeof(Task) % alignof(catalog::CatalogId) == 0,
               "the steps after the tasks are aligned");
 
@@ -50,29 +66,29 @@ bool TaskTable::has_room() const {
 
 bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp) {
     uint32_t slot = 0;
+    uint64_t replaced_task_id = 0;
     if (tasks_.full()) {
-        // An ended task never changes again, so the one with the smallest
-        // commit_seq ended first.
-        uint32_t oldest = no_index;
-        for (uint32_t index = 0; index < tasks_.size(); ++index) {
-            const Task &ended = tasks_[index];
-            if (!is_live(ended.lifecycle) &&
-                (oldest == no_index || ended.commit_seq < tasks_[oldest].commit_seq)) {
-                oldest = index;
-            }
-        }
+        const uint32_t oldest = giving_way();
         if (oldest == no_index) {
             return false;
         }
         slot = tasks_[oldest].slot;
+        replaced_task_id = tasks_[oldest].task_id;
         tasks_.remove_at(oldest);
     } else {
         slot = free_slot();
     }
+    place(task, task_id, replaced_task_id, slot, stamp);
+    return true;
+}
+
+void TaskTable::place(const NewTask &task, uint64_t task_id, uint64_t replaced_task_id,
+                      uint32_t slot, foundation::TransitionStamp stamp) {
     Task created{};
     created.task_id = task_id;
     created.goal_id = task.goal_id;
     created.owner_instance_id = task.owner_instance_id;
+    created.replaced_task_id = replaced_task_id;
     created.created_transition_id = stamp.transition_id;
     created.commit_seq = stamp.commit_seq;
     created.goal_index = task.goal_index;
@@ -81,11 +97,9 @@ bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::Transi
     created.due_us = task.due_us;
     created.revision = 1;
     created.lifecycle = AYNI_TASK_READY;
-    created.checkpoint_writer = no_writer;
     created.slot = slot;
-    // Cannot fail: there is room now.
+    // Cannot fail: the caller made room.
     static_cast<void>(tasks_.push_back(created));
-    return true;
 }
 
 void TaskTable::remove_goal(uint32_t goal_index) {
@@ -157,24 +171,32 @@ void TaskTable::hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
     ++held_count_;
 }
 
-bool TaskTable::add_step(uint32_t index, ayni_string_v1 key) {
+bool TaskTable::add_step(uint32_t index, ayni_string_v1 key, foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
     if (task.step_count == step_capacity_ || has_step(index, key) ||
         !steps_of(index)[task.step_count].assign(key)) {
         return false;
     }
+    if (task.steps_seq != stamp.commit_seq) {
+        task.steps_seq = stamp.commit_seq;
+        task.steps_before = task.step_count;
+    }
     ++task.step_count;
     return true;
 }
 
-void TaskTable::set_checkpoint(uint32_t index, uint32_t writer, ayni_bytes_v1 state) {
+void TaskTable::set_checkpoint(uint32_t index, const catalog::CatalogId &writer_id,
+                               uint32_t writer_version, ayni_bytes_v1 state,
+                               foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
     if (state.size > 0U) {
         std::memcpy(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
                     state.data, state.size);
     }
     task.checkpoint_size = state.size;
-    task.checkpoint_writer = writer;
+    task.checkpoint_writer_id = writer_id;
+    task.checkpoint_writer_version = writer_version;
+    task.checkpoint_seq = stamp.commit_seq;
 }
 
 void TaskTable::progress(uint32_t index, foundation::TransitionStamp stamp) {
@@ -217,6 +239,25 @@ uint32_t TaskTable::free_slot() const {
         ++slot;
     }
     return slot;
+}
+
+// An ended task never changes again, so the one with the smallest
+// commit_seq ended first; ids break ties so that a replay of the log, whose
+// tasks may lie in other places, gives the same one.
+uint32_t TaskTable::giving_way() const {
+    uint32_t oldest = no_index;
+    for (uint32_t index = 0; index < tasks_.size(); ++index) {
+        const Task &ended = tasks_[index];
+        if (is_live(ended.lifecycle)) {
+            continue;
+        }
+        if (oldest == no_index || ended.commit_seq < tasks_[oldest].commit_seq ||
+            (ended.commit_seq == tasks_[oldest].commit_seq &&
+             ended.task_id < tasks_[oldest].task_id)) {
+            oldest = index;
+        }
+    }
+    return oldest;
 }
 
 catalog::CatalogId *TaskTable::steps_of(uint32_t index) const {
@@ -291,6 +332,105 @@ bool TaskTable::find(uint64_t task_id, uint32_t &out_index) const {
         }
     }
     return false;
+}
+
+TaskTable::Restore TaskTable::restore(const NewTask &task, uint64_t task_id,
+                                      uint64_t replaced_task_id,
+                                      foundation::TransitionStamp stamp) {
+    uint32_t existing = 0;
+    if (task_id == 0U || task.occurrence == 0U || task.occurrence_count == 0U ||
+        task.occurrence_count > task.occurrence || find(task_id, existing)) {
+        return Restore::corrupt;
+    }
+    if (replaced_task_id == 0U) {
+        if (tasks_.full()) {
+            return Restore::no_room;
+        }
+        place(task, task_id, 0, free_slot(), stamp);
+        return Restore::restored;
+    }
+    uint32_t replaced = 0;
+    if (!find(replaced_task_id, replaced) || is_live(tasks_[replaced].lifecycle)) {
+        return Restore::corrupt;
+    }
+    const uint32_t slot = tasks_[replaced].slot;
+    tasks_.remove_at(replaced);
+    place(task, task_id, replaced_task_id, slot, stamp);
+    return Restore::restored;
+}
+
+TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &state,
+                                            foundation::TransitionStamp stamp) {
+    Task &task = tasks_[index];
+    const bool held = state.hold_status != AYNI_OK;
+    if (!is_reached(state.lifecycle) || state.revision < task.revision ||
+        state.step_count != task.step_count || state.cancel_revision > state.revision ||
+        (state.cancel_revision != 0U) != (state.lifecycle == AYNI_TASK_CANCELLED) ||
+        (!held && state.hold_reason != AYNI_REASON_NONE) ||
+        (held && state.lifecycle == AYNI_TASK_READY)) {
+        return Restore::corrupt;
+    }
+    if (still_held(task)) {
+        --held_count_;
+    }
+    task.lifecycle = state.lifecycle;
+    task.revision = state.revision;
+    task.cancel_revision = state.cancel_revision;
+    task.hold_status = state.hold_status;
+    task.hold_reason = state.hold_reason;
+    task.commit_seq = stamp.commit_seq;
+    if (still_held(task)) {
+        ++held_count_;
+    }
+    return Restore::restored;
+}
+
+TaskTable::Restore TaskTable::restore_step(uint32_t index, uint32_t step, ayni_string_v1 key,
+                                           foundation::TransitionStamp stamp) {
+    const Task &task = tasks_[index];
+    if (step != task.step_count) {
+        return Restore::corrupt;
+    }
+    if (task.step_count == step_capacity_) {
+        return Restore::no_room;
+    }
+    return add_step(index, key, stamp) ? Restore::restored : Restore::corrupt;
+}
+
+TaskTable::Restore TaskTable::restore_checkpoint(uint32_t index, ayni_string_v1 writer_id,
+                                                 uint32_t writer_version, ayni_bytes_v1 state,
+                                                 foundation::TransitionStamp stamp) {
+    catalog::CatalogId writer;
+    if (writer_version == 0U || !writer.assign(writer_id)) {
+        return Restore::corrupt;
+    }
+    if (state.size > checkpoint_max_bytes_) {
+        return Restore::no_room;
+    }
+    set_checkpoint(index, writer, writer_version, state, stamp);
+    return Restore::restored;
+}
+
+void TaskTable::hold_restored(uint32_t index, ayni_status_t status, ayni_reason_t reason) {
+    Task &task = tasks_[index];
+    if (!is_live(task.lifecycle) || still_held(task)) {
+        return;
+    }
+    task.lifecycle = AYNI_TASK_PAUSED;
+    task.hold_status = status;
+    task.hold_reason = reason;
+    ++held_count_;
+}
+
+void TaskTable::reanchor(uint64_t now_us) {
+    for (uint32_t index = 0; index < tasks_.size(); ++index) {
+        tasks_[index].due_us = now_us;
+    }
+}
+
+void TaskTable::clear() {
+    tasks_.clear();
+    held_count_ = 0;
 }
 
 bool TaskTable::is_live(ayni_task_lifecycle_t lifecycle) {

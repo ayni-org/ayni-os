@@ -25,8 +25,65 @@ AgentTable::AddResult AgentTable::add(uint64_t agent_id) {
     if (find_agent(agent_id) != nullptr) {
         return AddResult::duplicate;
     }
-    const AgentInstance agent{agent_id, 0, {0, 0}, 0, AYNI_AGENT_REGISTERED};
+    const AgentInstance agent{agent_id,         0,   {0, 0}, 0, AYNI_AGENT_REGISTERED,
+                              AYNI_REASON_NONE, true};
     return agents_.push_back(agent) ? AddResult::added : AddResult::full;
+}
+
+AgentTable::Restore AgentTable::restore(uint64_t agent_id, uint64_t instance_id, uint32_t revision,
+                                        ayni_agent_lifecycle_t lifecycle,
+                                        foundation::TransitionStamp stamp) {
+    const bool restorable = lifecycle == AYNI_AGENT_RUNNING || lifecycle == AYNI_AGENT_PAUSED ||
+                            lifecycle == AYNI_AGENT_STOPPED;
+    if (agent_id == 0U || instance_id == 0U || revision == 0U || !restorable) {
+        return Restore::corrupt;
+    }
+    uint32_t holder = 0;
+    const bool held = find_instance(instance_id, holder);
+    for (uint32_t index = 0; index < agents_.size(); ++index) {
+        AgentInstance &agent = agents_[index];
+        if (agent.agent_id != agent_id) {
+            continue;
+        }
+        // An agent has one instance for its life, and an id one holder.
+        if ((agent.instance_id != 0U && agent.instance_id != instance_id) ||
+            (held && holder != index)) {
+            return Restore::corrupt;
+        }
+        agent.instance_id = instance_id;
+        agent.stamp = stamp;
+        agent.revision = revision;
+        agent.lifecycle = lifecycle;
+        return Restore::restored;
+    }
+    if (held) {
+        return Restore::corrupt;
+    }
+    const AgentInstance orphan{agent_id,  instance_id,      stamp, revision,
+                               lifecycle, AYNI_REASON_NONE, false};
+    return agents_.push_back(orphan) ? Restore::restored : Restore::no_room;
+}
+
+void AgentTable::fault_unregistered() {
+    for (uint32_t index = 0; index < agents_.size(); ++index) {
+        AgentInstance &agent = agents_[index];
+        if (!agent.registered && agent.lifecycle != AYNI_AGENT_STOPPED) {
+            agent.lifecycle = AYNI_AGENT_FAULTED;
+            agent.fault_reason = AYNI_REASON_AGENT_UNREGISTERED;
+        }
+    }
+}
+
+// Registration closed before recovery, so the rows of unregistered agents
+// come after every registered one.
+void AgentTable::drop_restored() {
+    while (agents_.size() > 0U && !agents_[agents_.size() - 1U].registered) {
+        agents_.remove_at(agents_.size() - 1U);
+    }
+    for (uint32_t index = 0; index < agents_.size(); ++index) {
+        agents_[index] = {agents_[index].agent_id, 0,   {0, 0}, 0, AYNI_AGENT_REGISTERED,
+                          AYNI_REASON_NONE,        true};
+    }
 }
 
 bool AgentTable::has_registered() const {

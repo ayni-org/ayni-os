@@ -2,6 +2,7 @@
 
 #include "catalog/catalog_id.h"
 #include "catalog/goal_type/goal_type_registry.h"
+#include "foundation/digest.h"
 #include "kernel/abi_checks.h"
 
 namespace ayni::kernel {
@@ -107,20 +108,36 @@ ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, Inten
     }
     out_intent = Intent{};
     out_intent.kind = raw.kind;
+    out_intent.command_id = raw.command_id;
     out_intent.session_id = raw.session_id;
     out_intent.expected_revision = raw.expected_revision;
     status = decode_body(raw, out_intent);
     if (status == AYNI_OK) {
         status = check_form(out_intent);
     }
-    if (status != AYNI_OK) {
-        return status;
+    return status;
+}
+
+uint64_t command_digest(const Intent &intent) {
+    foundation::Digest digest;
+    digest.add_u32(intent.kind);
+    digest.add_u32(intent.expected_revision);
+    if (intent.kind != AYNI_INTENT_GOAL_CREATE) {
+        digest.add_u64(intent.target_id);
+        return digest.value();
     }
-    if (raw.command_id != 0U) {
-        failure.reason = AYNI_REASON_COMMAND_ID_UNSUPPORTED;
-        return AYNI_UNSUPPORTED;
-    }
-    return AYNI_OK;
+    const GoalCreate &create = intent.create;
+    digest.add_bytes(create.goal_type_id.data, create.goal_type_id.size);
+    digest.add_u32(create.goal_type_version);
+    digest.add_u64(create.owner_instance_id);
+    digest.add_u64(create.parent_goal_id);
+    digest.add_bytes(create.parameters.data, create.parameters.size);
+    digest.add_u32(create.trigger.kind);
+    digest.add_u64(create.trigger.delay_us);
+    digest.add_u64(create.trigger.period_us);
+    digest.add_u64(create.expiry_us);
+    digest.add_bytes(create.trigger_source.data, create.trigger_source.size);
+    return digest.value();
 }
 
 } // namespace ayni::kernel

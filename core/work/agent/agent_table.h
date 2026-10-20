@@ -1,11 +1,14 @@
 // Agents and their resident instances (contracts/domain/lifecycles.md
 // AgentInstance). Each registered agent has one instance on this kernel. The
 // instance is created when the kernel first enters RUNNING, because its id
-// embeds the durable boot epoch (C-ID-010); until the log stores instances
-// (MA-010), each boot creates them again with new ids. STARTING takes no time
-// until strategies have a start step, so start_all goes straight to RUNNING,
-// and STOPPING has nothing to wait for until tasks run, so stop goes straight
-// to STOPPED (ADR-0018). Kernel shutdown does not change instance lifecycles.
+// embeds the durable boot epoch (C-ID-010), and the log keeps it across
+// restarts (ADR-0026): recovery restores it, and only an agent registered
+// for the first time gets a new one. An instance whose agent is no longer
+// registered is restored in a row of its own and FAULTED, so its record and
+// its goals stay. STARTING takes no time until strategies have a start step,
+// so start_all goes straight to RUNNING, and STOPPING has nothing to wait
+// for until tasks run, so stop goes straight to STOPPED (ADR-0018). Kernel
+// shutdown does not change instance lifecycles.
 
 #ifndef AYNI_CORE_WORK_AGENT_AGENT_TABLE_H
 #define AYNI_CORE_WORK_AGENT_AGENT_TABLE_H
@@ -27,6 +30,10 @@ struct AgentInstance {
     foundation::TransitionStamp stamp; // of the last change; 0 while REGISTERED
     uint32_t revision;                 // 1 once started, raised by each change
     ayni_agent_lifecycle_t lifecycle;
+    // AYNI_REASON_AGENT_UNREGISTERED for a FAULTED instance whose agent is no
+    // longer registered; AYNI_REASON_NONE otherwise.
+    ayni_reason_t fault_reason;
+    bool registered; // false: a restored instance whose agent is not
 };
 
 // Pause takes RUNNING to PAUSED and resume takes it back; stop takes RUNNING
@@ -60,6 +67,22 @@ class AgentTable {
 
     // Whether some agent is still REGISTERED.
     bool has_registered() const;
+
+    enum class Restore { restored, corrupt, no_room };
+    // Replays an instance's record from the log, before the kernel first
+    // enters RUNNING (ADR-0026): instance_id is nonzero and stays with one
+    // agent, revision is at least 1 and lifecycle RUNNING, PAUSED or
+    // STOPPED. An agent that is not registered gets a row of its own;
+    // no_room when the table is full. Returns corrupt, changing nothing,
+    // for a record that breaks those rules.
+    Restore restore(uint64_t agent_id, uint64_t instance_id, uint32_t revision,
+                    ayni_agent_lifecycle_t lifecycle, foundation::TransitionStamp stamp);
+    // After the last record: a restored instance whose agent is not
+    // registered becomes FAULTED, unless it is STOPPED, for which nothing
+    // remains to fault (D4, ADR-0026).
+    void fault_unregistered();
+    // Drops everything restore() did, as when recovery fails.
+    void drop_restored();
 
     // Creates the instance of every REGISTERED agent in one transition: each
     // gets an id from ids and becomes RUNNING. ids has just been started, so

@@ -68,6 +68,10 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
                      DecisionBuffer::storage_size({capacities.policy_intent_capacity,
                                                    capacities.task_step_capacity,
                                                    capacities.task_checkpoint_max_bytes}));
+    layout.commands_offset =
+        placer.place(CommandTable::storage_alignment,
+                     CommandTable::storage_size(authority::PrincipalRegistry::capacity,
+                                                capacities.command_capacity));
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

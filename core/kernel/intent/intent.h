@@ -28,6 +28,7 @@ struct GoalCreate {
 
 struct Intent {
     ayni_intent_kind_t kind; // one of the kinds implemented
+    uint64_t command_id;     // 0: not a command (command_table.h)
     uint64_t session_id;
     uint32_t expected_revision;
     GoalCreate create;  // GOAL_CREATE
@@ -47,6 +48,9 @@ struct IntentOutcome {
     // The goals' due work may have come or come sooner: ayni_submit_intent
     // wakes the owner (ADR-0018, ADR-0020).
     bool due_work;
+    // A command accepted before: the result is its first, and nothing was
+    // applied now.
+    bool retried;
 };
 
 // Whether the kind is one this library implements.
@@ -61,9 +65,14 @@ ayni_status_t check_form(const Intent &intent);
 
 // Decodes and checks an intent from the C ABI in the order of ayni.h,
 // steps 1 and 2: struct sizes, reserved fields and the body, then
-// check_form(), then unsupported kinds and command ids. On a failure, failure
-// says why; out_intent is complete only on AYNI_OK.
+// check_form(), then unsupported kinds. On a failure, failure says why;
+// out_intent is complete only on AYNI_OK.
 ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, IntentFailure &failure);
+
+// The digest of a command's content (C-WIRE-004): the kind, the expected
+// revision and the body, not the session, so that a retry over another
+// session, also after a restart, is the same command.
+uint64_t command_digest(const Intent &intent);
 
 } // namespace ayni::kernel
 

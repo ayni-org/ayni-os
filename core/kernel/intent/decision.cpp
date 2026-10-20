@@ -135,10 +135,10 @@ ayni_task_snapshot_v1 snapshot_of(const WorkModel &model, DecisionBuffer &decisi
     snapshot.goal_type_version = type.version;
     snapshot.goal_type_id = {type.id.data(), type.id.size()};
     snapshot.goal_parameters = model.goals.parameters(task.goal_index);
-    if (task.checkpoint_writer != work::TaskTable::no_writer) {
-        const catalog::Strategy &writer = model.strategies.at(task.checkpoint_writer);
-        snapshot.checkpoint.strategy_id = {writer.id.data(), writer.id.size()};
-        snapshot.checkpoint.strategy_version = writer.version;
+    if (task.checkpoint_writer_version != 0U) {
+        snapshot.checkpoint.strategy_id = {task.checkpoint_writer_id.data(),
+                                           task.checkpoint_writer_id.size()};
+        snapshot.checkpoint.strategy_version = task.checkpoint_writer_version;
     }
     snapshot.checkpoint.state = model.tasks.checkpoint(task_index);
     ayni_task_step_v1 *steps = decisions.steps();
@@ -154,17 +154,19 @@ ayni_task_snapshot_v1 snapshot_of(const WorkModel &model, DecisionBuffer &decisi
 
 // Commits what a decision that does not hold the task brings with it: the
 // steps of its REPORT_PROGRESS intents, in their order, and the private
-// checkpoint its strategy, writer, left in the buffer.
+// checkpoint its strategy, writer, left in the buffer, all in stamp.
 void record(work::TaskTable &tasks, uint32_t task_index, const DecisionBuffer &decisions,
-            uint32_t intent_count, uint32_t writer, uint32_t checkpoint_size) {
+            uint32_t intent_count, const catalog::Strategy &writer, uint32_t checkpoint_size,
+            foundation::TransitionStamp stamp) {
     for (uint32_t index = 0; index < intent_count; ++index) {
         const ayni_policy_intent_v1 &intent = decisions.at(index);
         if (intent.kind == AYNI_POLICY_REPORT_PROGRESS) {
             // Cannot fail: judge_intents checked each step.
-            static_cast<void>(tasks.add_step(task_index, step_key_of(intent)));
+            static_cast<void>(tasks.add_step(task_index, step_key_of(intent), stamp));
         }
     }
-    tasks.set_checkpoint(task_index, writer, decisions.checkpoint(checkpoint_size));
+    tasks.set_checkpoint(task_index, writer.id, writer.version,
+                         decisions.checkpoint(checkpoint_size), stamp);
 }
 
 } // namespace
@@ -243,15 +245,15 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
     const foundation::TransitionStamp stamp = model.transitions.next();
     switch (verdict.kind) {
     case Verdict::Kind::end:
-        record(model.tasks, index, decisions, output.intent_count, strategy_index,
-               output.checkpoint_size);
+        record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
+               stamp);
         work::end_task(tables, index, verdict.end, stamp);
         // An end frees a place in the task table and may end goals.
         model.due_work_changed = true;
         break;
     case Verdict::Kind::progress:
-        record(model.tasks, index, decisions, output.intent_count, strategy_index,
-               output.checkpoint_size);
+        record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
+               stamp);
         model.tasks.progress(index, stamp);
         break;
     case Verdict::Kind::hold:

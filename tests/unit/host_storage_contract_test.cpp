@@ -325,7 +325,7 @@ class KernelRun {
         config_.ingress_capacity = 2;
         config_.event_body_max_bytes = 8;
         config_.completion_slot_count = 4;
-        config_.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN;
+        config_.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
         config_.agent_capacity = 1;
         config_.goal_type_capacity = 1;
         config_.goal_capacity = 1;
@@ -338,6 +338,7 @@ class KernelRun {
         config_.policy_intent_capacity = 1;
         config_.task_step_capacity = 1;
         config_.task_checkpoint_max_bytes = 0;
+        config_.command_capacity = 1;
     }
 
     KernelRun(const KernelRun &) = delete;

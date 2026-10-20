@@ -157,7 +157,7 @@ int main(void) {
     config.ingress_capacity = 2u;
     config.event_body_max_bytes = 8u;
     config.completion_slot_count = 1u;
-    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
     config.agent_capacity = 1u;
     config.goal_type_capacity = 1u;
     config.goal_capacity = 2u;
@@ -170,6 +170,7 @@ int main(void) {
     config.policy_intent_capacity = 1u;
     config.task_step_capacity = 1u;
     config.task_checkpoint_max_bytes = 0u;
+    config.command_capacity = 1u;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
     host.wake = test_wake;

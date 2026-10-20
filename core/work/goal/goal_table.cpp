@@ -61,15 +61,18 @@ uint32_t GoalTable::giving_way() const {
     return oldest;
 }
 
-GoalTable::Placement GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
-                                       foundation::TransitionStamp stamp, uint32_t &out_index) {
+Goal GoalTable::created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t replaced_goal_id,
+                             foundation::TransitionStamp stamp) const {
     Goal created{};
     created.goal_id = goal_id;
     created.parent_goal_id = goal.parent_goal_id;
     created.owner_instance_id = goal.owner_instance_id;
+    created.replaced_goal_id = replaced_goal_id;
     created.created_transition_id = stamp.transition_id;
     created.commit_seq = stamp.commit_seq;
     created.origin = goal.origin;
+    created.goal_type_id = goal.goal_type_id;
+    created.goal_type_version = goal.goal_type_version;
     created.parent_index = no_parent;
     created.goal_type_index = goal.goal_type_index;
     created.revision = 1;
@@ -77,6 +80,7 @@ GoalTable::Placement GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
     created.trigger = goal.trigger;
     created.cursor = start_schedule(goal.trigger, goal.created_us);
     created.trigger_source = goal.trigger_source;
+    created.expiry_after_us = goal.expiry_us;
     created.expires_us =
         goal.expiry_us == 0U ? no_time : time_after(goal.created_us, goal.expiry_us);
     created.occurrence_wait_max_us = goal.occurrence_wait_max_us;
@@ -84,29 +88,140 @@ GoalTable::Placement GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {
         created.depth = goals_[created.parent_index].depth + 1U;
     }
+    return created;
+}
 
+void GoalTable::place(const Goal &created, uint32_t index, ayni_bytes_v1 parameters) {
+    if (index == goals_.size()) {
+        // Cannot fail: the caller checked for room.
+        static_cast<void>(goals_.push_back(created));
+    } else {
+        goals_[index] = created;
+    }
+    if (parameters.size > 0U) {
+        std::memcpy(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_,
+                    parameters.data, parameters.size);
+    }
+}
+
+GoalTable::Placement GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
+                                       foundation::TransitionStamp stamp, uint32_t &out_index) {
     // Only a full table gives up a place, and the new goal takes it at once.
     uint32_t index = goals_.size();
-    Placement placement = Placement::new_place;
+    uint64_t replaced_goal_id = 0;
     if (goals_.full()) {
         index = giving_way();
-        // admit() admits only an ACTIVE or PAUSED parent, which never gives
-        // way; one that did would leave the new goal its own parent.
-        if (index == no_index || index == created.parent_index) {
+        if (index == no_index) {
             return Placement::refused;
         }
-        goals_[index] = created;
-        placement = Placement::given_way;
-    } else {
-        // Cannot fail: the table is not full.
-        static_cast<void>(goals_.push_back(created));
+        replaced_goal_id = goals_[index].goal_id;
     }
-    if (goal.parameters.size > 0U) {
-        std::memcpy(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_,
-                    goal.parameters.data, goal.parameters.size);
+    const Goal created = created_goal(goal, goal_id, replaced_goal_id, stamp);
+    // admit() admits only an ACTIVE or PAUSED parent, which never gives
+    // way; one that did would leave the new goal its own parent.
+    if (index == created.parent_index) {
+        return Placement::refused;
     }
+    place(created, index, goal.parameters);
     out_index = index;
-    return placement;
+    return replaced_goal_id == 0U ? Placement::new_place : Placement::given_way;
+}
+
+GoalTable::Restore GoalTable::restore(const NewGoal &goal, uint64_t goal_id,
+                                      uint64_t replaced_goal_id, foundation::TransitionStamp stamp,
+                                      uint32_t &out_index) {
+    uint32_t existing = 0;
+    if (goal_id == 0U || goal.goal_type_version == 0U || !goal.trigger.fits() ||
+        find(goal_id, existing)) {
+        return Restore::corrupt;
+    }
+    // The checks admit() made when the goal was created, against this
+    // boot's limits.
+    if (goal.parent_goal_id != 0U) {
+        uint32_t parent = 0;
+        if (!find(goal.parent_goal_id, parent) || !is_live(goals_[parent].lifecycle) ||
+            goals_[parent].owner_instance_id != goal.owner_instance_id) {
+            return Restore::corrupt;
+        }
+        if (goals_[parent].depth >= depth_max_ || live_children(parent) >= children_max_) {
+            return Restore::no_room;
+        }
+    }
+    if (!parameters_fit(goal.parameters.size)) {
+        return Restore::no_room;
+    }
+    uint32_t index = goals_.size();
+    if (replaced_goal_id != 0U) {
+        if (!find(replaced_goal_id, index) || is_live(goals_[index].lifecycle)) {
+            return Restore::corrupt;
+        }
+    } else if (goals_.full()) {
+        return Restore::no_room;
+    }
+    const Goal created = created_goal(goal, goal_id, replaced_goal_id, stamp);
+    if (index == created.parent_index) {
+        return Restore::corrupt;
+    }
+    place(created, index, goal.parameters);
+    out_index = index;
+    return Restore::restored;
+}
+
+GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &state,
+                                            foundation::TransitionStamp stamp) {
+    Goal &goal = goals_[index];
+    const bool live = is_live(state.lifecycle);
+    // A goal is created ACTIVE; PROPOSED needs goals that wait for approval.
+    const bool reached = state.lifecycle >= AYNI_GOAL_ACTIVE && state.lifecycle <= AYNI_GOAL_FAILED;
+    const bool local = goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT;
+    if (!reached || state.revision < goal.revision || state.taken < goal.cursor.taken ||
+        state.cancel_revision > state.revision ||
+        (state.cancel_revision != 0U) != (state.lifecycle == AYNI_GOAL_CANCELLED) ||
+        (!live && (state.next_scheduled || state.expiry_pending || state.waiting != 0U)) ||
+        (!local && state.waiting != 0U) ||
+        (local && state.next_scheduled != (state.waiting != 0U)) ||
+        (state.expiry_pending && goal.expiry_after_us == 0U)) {
+        return Restore::corrupt;
+    }
+    goal.last_task_id = state.last_task_id;
+    goal.lifecycle = state.lifecycle;
+    goal.revision = state.revision;
+    goal.cancel_revision = state.cancel_revision;
+    goal.occurrences_skipped = state.occurrences_skipped;
+    goal.skip_reason = state.skip_reason;
+    goal.commit_seq = stamp.commit_seq;
+    // Times other than no_time stand for those reanchor() sets.
+    goal.cursor.taken = state.taken;
+    goal.cursor.waiting = state.waiting;
+    goal.cursor.next_due_us = state.next_scheduled ? 0U : no_time;
+    goal.cursor.latest_due_us = state.waiting != 0U ? 0U : no_time;
+    goal.expires_us = state.expiry_pending ? 0U : no_time;
+    return Restore::restored;
+}
+
+void GoalTable::reanchor(uint64_t now_us) {
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        Goal &goal = goals_[index];
+        if (goal.expires_us != no_time) {
+            goal.expires_us = time_after(now_us, goal.expiry_after_us);
+        }
+        if (!goal.cursor.has_next()) {
+            continue;
+        }
+        switch (goal.trigger.kind) {
+        case AYNI_TRIGGER_LOCAL_INPUT:
+            goal.cursor.next_due_us = now_us;
+            goal.cursor.latest_due_us = now_us;
+            break;
+        case AYNI_TRIGGER_INTERVAL:
+            goal.cursor.next_due_us = time_after(
+                now_us, goal.cursor.taken == 0U ? goal.trigger.delay_us : goal.trigger.period_us);
+            break;
+        default: // ONCE, whose delay_us is 0, and DELAY, before its occurrence
+            goal.cursor.next_due_us = time_after(now_us, goal.trigger.delay_us);
+            break;
+        }
+    }
 }
 
 GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
@@ -330,7 +445,8 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
 
 bool GoalTable::takes(const Goal &goal, const catalog::CatalogId &source) {
     return goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && is_live(goal.lifecycle) &&
-           goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor);
+           !is_held(goal) && goal.trigger_source.equals({source.data(), source.size()}) &&
+           can_record(goal.cursor);
 }
 
 } // namespace ayni::work

@@ -22,8 +22,10 @@ static_assert(boot_epoch_batch_size <= AYNI_STORAGE_BUFFER_BYTES_MIN,
 } // namespace
 
 BootSequence::BootSequence(const ayni_host_v1 &host, CompletionPool &completions, uint8_t *buffer,
-                           uint32_t buffer_size)
-    : host_(host), completions_(completions), buffer_(buffer), buffer_size_(buffer_size) {}
+                           uint32_t buffer_size, durability::RecordHandler domain,
+                           void *domain_context)
+    : host_(host), completions_(completions), buffer_(buffer), buffer_size_(buffer_size),
+      domain_(domain), domain_context_(domain_context) {}
 
 bool BootSequence::advance() {
     switch (phase_) {
@@ -160,6 +162,9 @@ void BootSequence::finish_read(const ayni_completion_result_v1 &result) {
     case durability::BatchCheck::unsupported:
         enter_restricted(AYNI_RESTRICTION_LOG_UNSUPPORTED);
         break;
+    case durability::BatchCheck::no_room:
+        enter_restricted(AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
+        break;
     }
 }
 
@@ -179,16 +184,21 @@ void BootSequence::finish_append(const ayni_completion_result_v1 &result) {
     }
 }
 
-durability::RecordUse BootSequence::on_record(void *context, const durability::RecordHeader &header,
+durability::RecordUse BootSequence::on_record(void *context, const durability::BatchIdentity &batch,
+                                              const durability::RecordHeader &header,
                                               const uint8_t *body) {
-    return static_cast<BootSequence *>(context)->apply_record(header, body);
+    return static_cast<BootSequence *>(context)->apply_record(batch, header, body);
 }
 
 // Each boot writes one more than the largest epoch before it, so epochs only
 // grow along the log; 0 is never written.
-durability::RecordUse BootSequence::apply_record(const durability::RecordHeader &header,
+durability::RecordUse BootSequence::apply_record(const durability::BatchIdentity &batch,
+                                                 const durability::RecordHeader &header,
                                                  const uint8_t *body) {
-    if (header.type != boot_epoch_record_type || header.version != boot_epoch_record_version) {
+    if (header.type != boot_epoch_record_type) {
+        return domain_(domain_context_, batch, header, body);
+    }
+    if (header.version != boot_epoch_record_version) {
         return durability::RecordUse::unknown;
     }
     if (header.length != boot_epoch_record_length) {
