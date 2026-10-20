@@ -34,12 +34,13 @@ ayni_add_core_module(work
         work/goal/trigger_schedule.cpp
         work/propagation.cpp
         work/task/task_table.cpp
-    DEPENDS foundation)
+    DEPENDS catalog foundation)
 
 ayni_add_core_module(kernel
     SOURCES
         kernel/boot/boot_sequence.cpp
         kernel/completion/completion_pool.cpp
+        kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
         kernel/intent/intent.cpp
         kernel/intent/intent_rules.cpp

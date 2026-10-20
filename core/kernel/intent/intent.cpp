@@ -46,7 +46,8 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
                              body->parent_goal_id,
                              body->parameters,
                              {body->trigger, body->trigger_delay_us, body->trigger_period_us},
-                             body->expiry_us};
+                             body->expiry_us,
+                             body->trigger_source};
         return AYNI_OK;
     }
     case AYNI_INTENT_TASK_CANCEL:
@@ -58,6 +59,14 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     default: // GOAL_CANCEL, GOAL_PAUSE, GOAL_RESUME
         return read_target(raw.body, &ayni_goal_target_v1::goal_id, out_intent.target_id);
     }
+}
+
+// A local input trigger names its input by a catalog id; other kinds take
+// none.
+bool trigger_source_fits(const GoalCreate &create) {
+    return create.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT
+               ? catalog::CatalogId::is_valid(create.trigger_source)
+               : create.trigger_source.size == 0U;
 }
 
 } // namespace
@@ -74,7 +83,7 @@ ayni_status_t check_form(const Intent &intent) {
     if (intent.expected_revision != 0U || !catalog::CatalogId::is_valid(create.goal_type_id) ||
         (create.parameters.data == nullptr && create.parameters.size != 0U) ||
         !catalog::GoalTypeRegistry::defines_trigger(create.trigger.kind) ||
-        !create.trigger.fits()) {
+        !create.trigger.fits() || !trigger_source_fits(create)) {
         return AYNI_INVALID_ARGUMENT;
     }
     return AYNI_OK;

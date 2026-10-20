@@ -62,6 +62,12 @@ class Node {
         table_.storage_read_prefix = port;
     }
 
+    // Before create(): the kernel reads the clock through port, whose ctx is
+    // the sim Host.
+    void replace_clock_port(decltype(ayni_host_v1::monotonic_now_us) port) {
+        table_.monotonic_now_us = port;
+    }
+
     // Called on each new kernel right after ayni_create, so that a reboot
     // registers the same catalog again.
     void on_create(std::function<void(ayni_kernel_t *)> registration) {

@@ -86,6 +86,11 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us,
                            IntentOutcome &outcome, IntentFailure &failure);
 
+// Records a local input from source as an occurrence, due at now_us, of
+// every goal whose trigger takes it, all in one transition (ADR-0021).
+// Returns false, changing nothing, when no goal takes it.
+bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us);
+
 // Does the goals' next due work by now_us (work::find_due_work): expires a
 // goal, derives a task or skips occurrences, each as one transition.
 // Returns false, changing nothing, when none is due. An expiry that would

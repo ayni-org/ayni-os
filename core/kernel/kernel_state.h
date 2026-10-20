@@ -6,7 +6,7 @@
 
 #include "kernel/boot/boot_sequence.h"
 #include "kernel/completion/completion_pool.h"
-#include "kernel/ingress/event_queue.h"
+#include "kernel/ingress/event_ingress.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_config.h"
 
@@ -20,8 +20,8 @@ struct ayni_kernel {
     ayni_kernel(const ayni_host_v1 &host_table, const ayni::kernel::KernelCapacities &capacities,
                 const ayni::kernel::KernelLimits &limits,
                 const ayni::kernel::KernelStorage &storage)
-        : host(host_table),
-          ingress(storage.ingress, capacities.ingress_capacity, capacities.event_body_max_bytes),
+        : host(host_table), ingress(storage.ingress, capacities.ingress_capacity,
+                                    capacities.event_body_max_bytes, host),
           completions(storage.completions, capacities.completion_slot_count, host),
           boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes),
           work(capacities, limits, storage) {}
@@ -43,8 +43,12 @@ struct ayni_kernel {
     // zeroed. ctx and the functions stay caller-owned (see ayni_host_v1).
     ayni_host_v1 host;
     ayni_lifecycle_t lifecycle = AYNI_LIFECYCLE_CONFIGURING;
-    // Filled by ayni_post_event and drained by ayni_step (MA-004).
-    ayni::kernel::EventQueue ingress;
+    // Filled by ayni_post_event and drained by ayni_step (ADR-0021).
+    ayni::kernel::EventIngress ingress;
+    // Events ayni_step took in RUNNING that no goal took, and events it
+    // discarded outside RUNNING or left queued on entering STOPPED.
+    uint64_t events_unmatched = 0;
+    uint64_t events_discarded = 0;
     ayni::kernel::CompletionPool completions;
     ayni::kernel::BootSequence boot;
 
@@ -54,6 +58,9 @@ struct ayni_kernel {
   private:
     void settle_recovery();
     void enter_running();
+    // Whether ayni_step takes events in the current state (ADR-0021).
+    bool takes_events() const;
+    void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us);
 };
 
 #endif // AYNI_CORE_KERNEL_KERNEL_STATE_H

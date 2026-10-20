@@ -3,7 +3,6 @@
 // matching across slot reuse, and posts that never depend on queue space.
 
 #include "kernel/completion/completion_pool.h"
-#include "kernel/ingress_lock.h"
 #include "kernel/kernel_state.h"
 
 #include <ayni/ayni.h>
@@ -462,14 +461,15 @@ TEST(KernelCompletions, posts_succeed_while_the_event_queue_is_full) {
     ayni_kernel_t *kernel = nullptr;
     ASSERT_EQ(ayni_create(&config, &host, memory.data(), size, &kernel), AYNI_OK);
 
-    ayni::kernel::EventHeader event{};
-    event.kind = 3;
-    {
-        ayni::kernel::IngressGuard guard(kernel->host);
-        ASSERT_EQ(kernel->ingress.push(event, nullptr), AYNI_OK);
-        ASSERT_EQ(kernel->ingress.push(event, nullptr), AYNI_OK);
-        ASSERT_EQ(kernel->ingress.push(event, nullptr), AYNI_BUSY);
-    }
+    // Started but never stepped: recovery has issued no request yet.
+    ASSERT_EQ(ayni_start(kernel), AYNI_OK);
+    ayni_event_v1 event{};
+    event.struct_size = sizeof(event);
+    event.kind = AYNI_EVENT_LOCAL_INPUT;
+    event.source = {"button.record", 13};
+    ASSERT_EQ(ayni_post_event(kernel, &event), AYNI_OK);
+    ASSERT_EQ(ayni_post_event(kernel, &event), AYNI_OK);
+    ASSERT_EQ(ayni_post_event(kernel, &event), AYNI_BUSY);
 
     FakePort port;
     Applied applied;
@@ -485,6 +485,11 @@ TEST(KernelCompletions, posts_succeed_while_the_event_queue_is_full) {
     EXPECT_EQ(kernel->completions.apply_posted(8), 4U);
     EXPECT_EQ(applied.results.size(), 4U);
     EXPECT_EQ(kernel->completions.in_flight(), 0U);
+    ASSERT_EQ(ayni_begin_shutdown(kernel), AYNI_OK);
+    ayni_step_report_v1 report{};
+    report.struct_size = sizeof(report);
+    ASSERT_EQ(ayni_step(kernel, 100, 1000000, &report), AYNI_OK);
+    ASSERT_EQ(kernel->lifecycle, AYNI_LIFECYCLE_STOPPED);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 

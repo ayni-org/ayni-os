@@ -124,6 +124,7 @@ int main(void) {
     ayni_lifecycle_t state = 0;
     ayni_kernel_info_v1 info = {0};
     ayni_step_report_v1 report = {0};
+    ayni_event_v1 event = {0};
     size_t size = 0;
     size_t align = 0;
     int failures = 0;
@@ -170,8 +171,15 @@ int main(void) {
     failures += expect(ayni_start(kernel) == AYNI_UNSUPPORTED, "start without storage");
     info.struct_size = (uint32_t)sizeof info;
     failures += expect(ayni_get_kernel_info(kernel, &info) == AYNI_OK &&
-                           info.lifecycle == AYNI_LIFECYCLE_CONFIGURING && info.boot_epoch == 0u,
+                           info.lifecycle == AYNI_LIFECYCLE_CONFIGURING && info.boot_epoch == 0u &&
+                           info.events_unmatched == 0u && info.events_discarded == 0u,
                        "kernel info");
+    event.struct_size = (uint32_t)sizeof event;
+    event.kind = AYNI_EVENT_LOCAL_INPUT;
+    event.source.data = "button.record";
+    event.source.size = 13u;
+    failures +=
+        expect(ayni_post_event(kernel, &event) == AYNI_INVALID_STATE, "event in CONFIGURING");
     report.struct_size = (uint32_t)sizeof report;
     failures +=
         expect(ayni_step(kernel, 1u, 1u, &report) == AYNI_INVALID_STATE, "step in CONFIGURING");

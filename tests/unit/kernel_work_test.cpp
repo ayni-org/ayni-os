@@ -71,7 +71,7 @@ TEST(WorkModel, registration_checks_its_arguments) {
          {goal_type_desc("reminder", 0), goal_type_desc("", 1), goal_type_desc("Reminder", 1),
           goal_type_desc("abcdefghijklmnopqrstuvwxyz0123456", 1),
           goal_type_desc("reminder", 1, nullptr, nullptr, 0),
-          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(4)),
+          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(5)),
           goal_type_desc("reminder", 1, nullptr, nullptr, 0x80000000U)}) {
         EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
     }
@@ -164,6 +164,8 @@ TEST(WorkModel, queries_check_their_arguments) {
     goal.struct_size = sizeof(goal) - 1U;
     EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_INVALID_ARGUMENT);
     goal.struct_size = offsetof(ayni_goal_info_v1, expires_us); // the 0.7 layout
+    EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_INVALID_ARGUMENT);
+    goal.struct_size = offsetof(ayni_goal_info_v1, trigger_source_size); // the 0.8 layout
     EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_INVALID_ARGUMENT);
     goal.struct_size = sizeof(goal) + 8U;
     EXPECT_EQ(ayni_get_goal(work.kernel(), 1, &goal), AYNI_UNSUPPORTED_VERSION);
@@ -585,6 +587,10 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
     abi_0_7_body = body;
     abi_0_7_body.struct_size = offsetof(ayni_goal_create_v1, expiry_us);
     invalid.emplace_back("0.7 body", work.intent(AYNI_INTENT_GOAL_CREATE, &abi_0_7_body));
+    static ayni_goal_create_v1 abi_0_8_body;
+    abi_0_8_body = body;
+    abi_0_8_body.struct_size = offsetof(ayni_goal_create_v1, trigger_source);
+    invalid.emplace_back("0.8 body", work.intent(AYNI_INTENT_GOAL_CREATE, &abi_0_8_body));
     static ayni_goal_create_v1 bad_type;
     bad_type = body;
     bad_type.goal_type_id = text("Reminder");
@@ -596,7 +602,7 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
     // Only kinds this library defines; the shift must not overflow either.
     static ayni_goal_create_v1 unknown_triggers[2];
     unknown_triggers[0] = body;
-    unknown_triggers[0].trigger = 4;
+    unknown_triggers[0].trigger = 5;
     unknown_triggers[1] = body;
     unknown_triggers[1].trigger = 0xFFFFFFFFU;
     for (const ayni_goal_create_v1 &unknown : unknown_triggers) {
@@ -623,6 +629,31 @@ TEST(WorkModel, intent_arguments_are_refused_before_anything_else) {
         mistimed[i].trigger_period_us = timings[i].period_us;
         invalid.emplace_back("trigger times", work.intent(AYNI_INTENT_GOAL_CREATE, &mistimed[i]));
     }
+    // ADR-0021: a local input trigger names its source by a catalog id, and
+    // no other kind takes one.
+    static ayni_goal_create_v1 misnamed[5];
+    const struct {
+        ayni_trigger_kind_t kind;
+        ayni_string_v1 source;
+    } sources[] = {
+        {AYNI_TRIGGER_LOCAL_INPUT, {nullptr, 0}},
+        {AYNI_TRIGGER_LOCAL_INPUT, text("Button")},
+        {AYNI_TRIGGER_LOCAL_INPUT, text("abcdefghijklmnopqrstuvwxyz0123456")},
+        {AYNI_TRIGGER_LOCAL_INPUT, {nullptr, 6}},
+        {AYNI_TRIGGER_ONCE, text("button")},
+    };
+    for (std::size_t i = 0; i < std::size(sources); ++i) {
+        misnamed[i] = body;
+        misnamed[i].trigger = sources[i].kind;
+        misnamed[i].trigger_source = sources[i].source;
+        invalid.emplace_back("trigger source", work.intent(AYNI_INTENT_GOAL_CREATE, &misnamed[i]));
+    }
+    static ayni_goal_create_v1 timed_input;
+    timed_input = body;
+    timed_input.trigger = AYNI_TRIGGER_LOCAL_INPUT;
+    timed_input.trigger_source = text("button");
+    timed_input.trigger_delay_us = 5;
+    invalid.emplace_back("input times", work.intent(AYNI_INTENT_GOAL_CREATE, &timed_input));
     static ayni_goal_create_v1 reserved_create;
     reserved_create = body;
     reserved_create.reserved = 1;

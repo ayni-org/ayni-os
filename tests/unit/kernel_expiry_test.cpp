@@ -620,7 +620,6 @@ TEST(WorkWait, wait_reason_reports_what_would_hold_the_next_occurrence) {
     EXPECT_EQ(work.goal(goal_id).wait_reason, AYNI_REASON_TASK_CAPACITY);
     ASSERT_EQ(work.cancel_task(task_of(work, holder)).status, AYNI_OK);
     EXPECT_EQ(work.goal(goal_id).wait_reason, AYNI_REASON_ID_EXHAUSTED);
-    EXPECT_EQ(work.goal(goal_id).reserved, 0U);
 }
 
 } // namespace

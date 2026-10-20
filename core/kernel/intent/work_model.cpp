@@ -60,6 +60,15 @@ bool expiry_exhausts(const work::WorkTables &tables, uint32_t goal_index) {
 
 } // namespace
 
+bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us) {
+    if (!model.goals.takes_input(source)) {
+        return false;
+    }
+    model.goals.record_input(source, now_us, model.transitions.next());
+    model.due_work_changed = true;
+    return true;
+}
+
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us) {
     work::DueWork work{};
     const bool due = next_due_work(model, now_us, work);

@@ -22,7 +22,8 @@ struct GoalCreate {
     uint64_t parent_goal_id; // 0: a top-level goal
     ayni_bytes_v1 parameters;
     work::Trigger trigger;
-    uint64_t expiry_us; // from creation; 0: never
+    uint64_t expiry_us;            // from creation; 0: never
+    ayni_string_v1 trigger_source; // LOCAL_INPUT: the input it takes; empty otherwise
 };
 
 struct Intent {
@@ -53,8 +54,9 @@ bool is_implemented(ayni_intent_kind_t kind);
 
 // The argument rules that do not depend on kernel state: GOAL_CREATE has
 // expected_revision 0, a goal type id that is a catalog id, parameter data
-// unless their size is 0, and a trigger kind this library defines. AYNI_OK
-// or AYNI_INVALID_ARGUMENT.
+// unless their size is 0, a trigger kind this library defines with times
+// that fit it, and a trigger source that is a catalog id for LOCAL_INPUT and
+// empty otherwise. AYNI_OK or AYNI_INVALID_ARGUMENT.
 ayni_status_t check_form(const Intent &intent);
 
 // Decodes and checks an intent from the C ABI in the order of ayni.h,
