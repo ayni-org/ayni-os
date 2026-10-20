@@ -226,6 +226,40 @@ TEST(KernelEvents, stopping_counts_the_events_left_queued) {
     EXPECT_EQ(node.info().events_discarded, 2U);
 }
 
+// The kernel that posting_clock posts to; only the test using it sets it.
+ayni_kernel_t *posting_kernel = nullptr;
+
+// A Host clock that posts a local input each time the kernel reads it, as a
+// Host thread posting while the step runs would; a full queue refuses some.
+uint64_t posting_clock(void *ctx) {
+    if (posting_kernel != nullptr) {
+        const ayni_status_t status = post(posting_kernel);
+        EXPECT_TRUE(status == AYNI_OK || status == AYNI_BUSY) << status;
+    }
+    return static_cast<ayni::hosts::sim::Host *>(ctx)->now_us();
+}
+
+// A step takes only the events queued when it comes to them, so a Host that
+// keeps posting cannot hold it there, and the due work after them still
+// runs in the same step.
+TEST(KernelEvents, events_posted_during_a_step_wait_for_the_next) {
+    WorkNode work;
+    work.node().replace_clock_port(&posting_clock);
+    work.run();
+    ayni_goal_create_v1 once = WorkNode::create_body(work.instance(agent_a), 0, "timer", 1,
+                                                     {nullptr, 0}, AYNI_TRIGGER_ONCE);
+    ASSERT_EQ(work.create(once).status, AYNI_OK);
+    ASSERT_EQ(post(work.kernel()), AYNI_OK);
+    posting_kernel = work.kernel();
+    const ayni_step_report_v1 report = work.node().step();
+    posting_kernel = nullptr;
+    // The events posted before the step and as it started, then the task.
+    EXPECT_EQ(report.items_done, 3U);
+    EXPECT_EQ(report.more_ready, 1U);
+    EXPECT_EQ(work.node().step().items_done, 2U);
+    EXPECT_EQ(work.node().info().events_unmatched, 4U);
+}
+
 // --- Host threads ----------------------------------------------------------------
 
 // Bounded so that a stuck owner fails the test instead of hanging it.
@@ -286,12 +320,12 @@ TEST(KernelEvents, posts_from_host_threads_are_each_taken_once) {
 // DRAINING or left queued at STOPPED, and every thread sees the gate close.
 TEST(KernelEvents, posts_racing_shutdown_are_each_counted_once) {
     constexpr uint32_t producers = 4;
+    const auto deadline = ten_seconds_from_now(); // for all rounds together
     for (int round = 0; round < 20; ++round) {
         SCOPED_TRACE(round);
         Node node;
         node.config().ingress_capacity = 8;
         node.run();
-        const auto deadline = ten_seconds_from_now();
         std::atomic<uint64_t> accepted{0};
         std::vector<std::thread> threads;
         for (uint32_t thread = 0; thread < producers; ++thread) {
