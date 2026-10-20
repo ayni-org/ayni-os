@@ -281,6 +281,30 @@ TEST(WorkTrigger, goal_due_earliest_derives_first) {
     EXPECT_LT(task_of(work, tie_second), task_of(work, late));
 }
 
+// ADR-0025: equal times still go in creation order when the goal created
+// later took an earlier place from a goal that gave way.
+TEST(WorkTrigger, tie_goes_to_the_goal_created_first_whatever_its_place) {
+    WorkNode work;
+    work.node().config().goal_capacity = 2;
+    work.run();
+    const uint64_t ended = work.create_goal();
+    const uint64_t first = delay_goal(work, second);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
+    const uint64_t later = delay_goal(work, second);
+    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    uint32_t first_index = 0;
+    uint32_t later_index = 0;
+    ASSERT_TRUE(goals.find(first, first_index));
+    ASSERT_TRUE(goals.find(later, later_index));
+    ASSERT_LT(later_index, first_index);
+    advance(work, second);
+    ASSERT_EQ(work.node().step(1).items_done, 1U);
+    EXPECT_NE(task_of(work, first), 0U);
+    EXPECT_EQ(task_of(work, later), 0U);
+    ASSERT_EQ(work.node().step(1).items_done, 1U);
+    EXPECT_LT(task_of(work, first), task_of(work, later));
+}
+
 // The deadline is the earliest occurrence of a goal that may advance; a full
 // task table sets none for occurrences that wait without limit (ADR-0020),
 // since only a task that ends makes room, and the intent that ends it wakes

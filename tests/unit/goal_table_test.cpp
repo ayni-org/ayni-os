@@ -1,8 +1,9 @@
 // Goals owned by work/goal: the fixed owner (C-LIFE-020), the tree limits
 // (C-LIMIT-007), revisions (C-COMMIT-012), pause and the cancel cascade
 // (C-LIFE-021, C-LIFE-022), the trigger cursor (ADR-0018), expiry and
-// skipped occurrences (ADR-0020), recorded local inputs (ADR-0021), and the
-// end a goal's last task brings (ADR-0022).
+// skipped occurrences (ADR-0020), recorded local inputs (ADR-0021), the end
+// a goal's last task brings (ADR-0022), and the places terminal goals give
+// up when the table is full (ADR-0025).
 
 #include "work/goal/goal_table.h"
 
@@ -233,14 +234,94 @@ TEST(GoalTable, admission_reports_the_first_rule_broken) {
     EXPECT_EQ(goals->admit(Goals::new_goal(0)), Admission::full);
 }
 
-// Terminal goals stay and count until the log defines their retention.
-TEST(GoalTable, capacity_counts_terminal_goals) {
-    Goals goals({2, 0, 2, 2});
+// ADR-0025: only a full table gives up a place, that of the terminal goal
+// that ended first, whenever it was created. The new goal takes it with its
+// parameter block; the other goals keep theirs.
+TEST(GoalTable, terminal_goal_that_ended_first_gives_way) {
+    Goals goals({3, 4, 2, 2});
+    const uint8_t kept_bytes[] = {1, 2};
     const uint64_t first = goals.create();
-    ASSERT_NE(goals.create(), 0U);
+    const uint64_t second = goals.create();
+    ASSERT_EQ(goals.change(second, GoalChange::cancel), ChangeCheck::allowed);
+    EXPECT_EQ(goals->giving_way(), GoalTable::no_index); // not full
+    const uint64_t kept = goals.create(0, owner, {kept_bytes, sizeof(kept_bytes)});
     ASSERT_EQ(goals.change(first, GoalChange::cancel), ChangeCheck::allowed);
-    EXPECT_EQ(goals->admit(Goals::new_goal(0)), Admission::full);
+    const uint32_t second_place = goals.index_of(second);
+    EXPECT_EQ(goals->giving_way(), second_place);
+    EXPECT_EQ(goals->admit(Goals::new_goal(0)), Admission::admitted);
+
+    const uint8_t bytes[] = {9, 8, 7};
+    const uint64_t created = goals.create(0, owner, {bytes, sizeof(bytes)});
+    ASSERT_NE(created, 0U);
+    EXPECT_EQ(goals->size(), 3U);
+    EXPECT_EQ(goals.index_of(created), second_place);
+    uint32_t found = 0;
+    EXPECT_FALSE(goals->find(second, found));
+    EXPECT_EQ(goals.goal(created).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(goals.goal(created).revision, 1U);
+    const ayni_bytes_v1 parameters = goals->parameters(second_place);
+    ASSERT_EQ(parameters.size, sizeof(bytes));
+    EXPECT_EQ(std::memcmp(parameters.data, bytes, sizeof(bytes)), 0);
+    const ayni_bytes_v1 kept_parameters = goals->parameters(goals.index_of(kept));
+    ASSERT_EQ(kept_parameters.size, sizeof(kept_bytes));
+    EXPECT_EQ(std::memcmp(kept_parameters.data, kept_bytes, sizeof(kept_bytes)), 0);
     EXPECT_EQ(goals.goal(first).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(goals->giving_way(), goals.index_of(first));
+
+    // A table of goals that are not terminal is full.
+    ASSERT_NE(goals.create(), 0U);
+    EXPECT_FALSE(goals->find(first, found));
+    EXPECT_EQ(goals->giving_way(), GoalTable::no_index);
+    EXPECT_EQ(goals->admit(Goals::new_goal(0)), Admission::full);
+}
+
+// Goals that end in one transition give way the deepest first, so a parent
+// outlasts its children in the table, and then the first created.
+TEST(GoalTable, goals_ended_together_give_way_deepest_first) {
+    Goals goals({4, 0, 2, 2});
+    const uint64_t root = goals.create();
+    const uint64_t child = goals.create(root);
+    const uint64_t sibling = goals.create(root);
+    const uint64_t grandchild = goals.create(child);
+    ASSERT_EQ(goals.change(root, GoalChange::cancel), ChangeCheck::allowed);
+    for (const uint64_t ended : {grandchild, child, sibling, root}) {
+        const uint32_t place = goals.index_of(ended);
+        EXPECT_EQ(goals->giving_way(), place) << ended;
+        const uint64_t created = goals.create();
+        ASSERT_NE(created, 0U);
+        EXPECT_EQ(goals.index_of(created), place) << ended;
+        uint32_t found = 0;
+        EXPECT_FALSE(goals->find(ended, found)) << ended;
+    }
+    EXPECT_EQ(goals->admit(Goals::new_goal(0)), Admission::full);
+}
+
+// ADR-0025: a child may take a place before its parent's. The tree rules and
+// the cascades do not depend on the order of the places.
+TEST(GoalTable, child_in_an_earlier_place_is_still_in_its_parents_tree) {
+    constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
+    Goals goals({2, 0, 2, 1});
+    const uint64_t ended = goals.create();
+    const uint64_t parent = goals.create();
+    ASSERT_EQ(goals.change(ended, GoalChange::cancel), ChangeCheck::allowed);
+    const uint64_t child = goals.create(parent);
+    ASSERT_NE(child, 0U);
+    const uint32_t child_index = goals.index_of(child);
+    const uint32_t parent_index = goals.index_of(parent);
+    ASSERT_LT(child_index, parent_index);
+    EXPECT_EQ(goals.goal(child).depth, 1U);
+    EXPECT_EQ(goals.goal(child).parent_index, parent_index);
+    EXPECT_TRUE(goals->in_subtree(child_index, parent_index));
+    EXPECT_FALSE(goals->in_subtree(parent_index, child_index));
+    EXPECT_EQ(goals->admit(Goals::new_goal(parent)), Admission::too_many_children);
+
+    goals.raw(child).revision = max_revision;
+    EXPECT_EQ(goals.change(parent, GoalChange::cancel), ChangeCheck::revision_exhausted);
+    goals.raw(child).revision = 4;
+    ASSERT_EQ(goals.change(parent, GoalChange::cancel), ChangeCheck::allowed);
+    EXPECT_EQ(goals.goal(child).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(goals.goal(child).revision, 5U);
+    EXPECT_EQ(goals.goal(child).commit_seq, goals.goal(parent).commit_seq);
 }
 
 // insert() checks the room itself, so a caller that skipped admit() cannot

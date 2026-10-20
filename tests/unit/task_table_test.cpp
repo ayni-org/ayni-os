@@ -1,12 +1,14 @@
 // Tasks owned by work/task (ADR-0018, ADR-0022, ADR-0024): revisions and the
 // cancel revision (C-COMMIT-012), the transitions this part reaches, holds,
 // steps, private checkpoints and progress, the order in which READY tasks
-// are decided, and the places ended tasks give up when the table is full.
+// are decided, the places ended tasks give up when the table is full, and
+// the tasks a goal that gives way takes with it (ADR-0025).
 
 #include "work/task/task_table.h"
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -486,6 +488,53 @@ TEST(TaskTable, full_table_reclaims_the_task_that_ended_first) {
     EXPECT_FALSE(tasks.exists(first));
     EXPECT_TRUE(tasks.exists(live));
     EXPECT_TRUE(tasks.exists(fourth));
+}
+
+// ADR-0025: a goal that gives way takes its tasks, which have all ended,
+// with it. The others keep their steps and checkpoints, and new tasks take
+// the slots no task holds rather than one of theirs.
+TEST(TaskTable, goal_giving_way_takes_its_tasks_and_frees_their_slots) {
+    Tasks tasks(5, 1, 1);
+    const uint64_t first = tasks.create(1, 0);
+    const uint64_t kept = tasks.create(1, 1);
+    const uint64_t second = tasks.create(2, 0);
+    const uint64_t last = tasks.create(1, 2);
+    const uint64_t third = tasks.create(3, 0);
+    const uint8_t bytes[] = {5, 6, 7, 8, 9};
+    for (const uint64_t id : {first, second, third}) {
+        ASSERT_EQ(tasks.change(id, TaskChange::cancel), ChangeCheck::allowed);
+    }
+    EXPECT_TRUE(tasks->add_step(tasks.index_of(kept), key("k")));
+    tasks->set_checkpoint(tasks.index_of(kept), 1, {bytes, 1});
+    EXPECT_TRUE(tasks->add_step(tasks.index_of(last), key("l")));
+    tasks->set_checkpoint(tasks.index_of(last), 1, {bytes + 1, 1});
+
+    tasks->remove_goal(0);
+    EXPECT_EQ(tasks->size(), 2U);
+    for (const uint64_t id : {first, second, third}) {
+        EXPECT_FALSE(tasks.exists(id)) << id;
+    }
+
+    const char *const keys[] = {"x", "y", "z"};
+    std::vector<uint64_t> created;
+    for (int task = 0; task < 3; ++task) {
+        const uint64_t id = tasks.create(1, 3);
+        ASSERT_NE(id, 0U);
+        EXPECT_EQ(tasks.task(id).step_count, 0U);
+        EXPECT_TRUE(tasks.checkpoint(id).empty());
+        EXPECT_TRUE(tasks->add_step(tasks.index_of(id), key(keys[task])));
+        tasks->set_checkpoint(tasks.index_of(id), 2, {bytes + 2 + task, 1});
+        created.push_back(id);
+    }
+    EXPECT_FALSE(tasks->has_room());
+    EXPECT_EQ(tasks.steps(kept), (std::vector<std::string>{"k"}));
+    EXPECT_EQ(tasks.checkpoint(kept), (std::vector<uint8_t>{5}));
+    EXPECT_EQ(tasks.steps(last), (std::vector<std::string>{"l"}));
+    EXPECT_EQ(tasks.checkpoint(last), (std::vector<uint8_t>{6}));
+    for (std::size_t task = 0; task < created.size(); ++task) {
+        EXPECT_EQ(tasks.steps(created[task]), (std::vector<std::string>{keys[task]}));
+        EXPECT_EQ(tasks.checkpoint(created[task]), (std::vector<uint8_t>{bytes[2 + task]}));
+    }
 }
 
 TEST(TaskTable, full_table_of_live_tasks_refuses_and_changes_nothing) {

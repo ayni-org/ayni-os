@@ -48,7 +48,7 @@
 | 10 | `AYNI_REASON_PARENT_OWNER` | `INVALID_ARGUMENT` | 子目标的 owner 与父目标不同 |
 | 11 | `AYNI_REASON_GOAL_DEPTH` | `CAPACITY_EXCEEDED` | 子目标会超过 `goal_depth_max` |
 | 12 | `AYNI_REASON_GOAL_CHILDREN` | `CAPACITY_EXCEEDED` | 父目标已有 `goal_children_max` 个未终结子目标 |
-| 13 | `AYNI_REASON_GOAL_CAPACITY` | `CAPACITY_EXCEEDED` | 已有 `goal_capacity` 个 Goal（含终态） |
+| 13 | `AYNI_REASON_GOAL_CAPACITY` | `CAPACITY_EXCEEDED` | 已有 `goal_capacity` 个 Goal；自 0.13 起其中没有可让位的终态 Goal（ADR-0025） |
 | 14 | `AYNI_REASON_ID_EXHAUSTED` | `CAPACITY_EXCEEDED` | 本次启动的 ID 已分配完（C-ID-010） |
 | 15 | `AYNI_REASON_GOAL_UNKNOWN` | `NOT_FOUND` | `goal_id` 不存在 |
 | 16 | `AYNI_REASON_GOAL_REVISION` | `REVISION_CONFLICT` | `expected_revision` 不是目标的当前版本 |

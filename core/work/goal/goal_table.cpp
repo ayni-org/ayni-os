@@ -43,7 +43,22 @@ GoalTable::Admission GoalTable::admit(const NewGoal &goal) const {
             return Admission::too_many_children;
         }
     }
-    return goals_.full() ? Admission::full : Admission::admitted;
+    return goals_.full() && giving_way() == no_index ? Admission::full : Admission::admitted;
+}
+
+uint32_t GoalTable::giving_way() const {
+    if (!goals_.full()) {
+        return no_index;
+    }
+    uint32_t oldest = no_index;
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        const Goal &ended = goals_[index];
+        if (!is_live(ended.lifecycle) &&
+            (oldest == no_index || gives_way_before(ended, goals_[oldest]))) {
+            oldest = index;
+        }
+    }
+    return oldest;
 }
 
 bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
@@ -70,9 +85,18 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
         created.depth = goals_[created.parent_index].depth + 1U;
     }
 
-    const uint32_t index = goals_.size();
-    if (!goals_.push_back(created)) {
-        return false;
+    // Only a full table gives up a place, and the new goal takes it at once.
+    uint32_t index = goals_.size();
+    if (goals_.full()) {
+        // The parent is ACTIVE or PAUSED (admit()), so it is not giving way.
+        index = giving_way();
+        if (index == no_index) {
+            return false;
+        }
+        goals_[index] = created;
+    } else {
+        // Cannot fail: the table is not full.
+        static_cast<void>(goals_.push_back(created));
     }
     if (goal.parameters.size > 0U) {
         std::memcpy(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_,
@@ -95,10 +119,9 @@ GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
         return ChangeCheck::revision_exhausted;
     }
     if (ends(change)) {
-        for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
-            const Goal &other = goals_[later];
-            if (is_live(other.lifecycle) && at_largest_revision(other) &&
-                descends_from(later, index)) {
+        for (uint32_t other = 0; other < goals_.size(); ++other) {
+            if (is_live(goals_[other].lifecycle) && at_largest_revision(goals_[other]) &&
+                descends_from(other, index)) {
                 return ChangeCheck::revision_exhausted;
             }
         }
@@ -133,11 +156,11 @@ void GoalTable::apply(uint32_t index, GoalChange change, foundation::TransitionS
         ended = AYNI_GOAL_FAILED;
     }
     set_lifecycle(goal, ended, stamp);
-    // Descendants come after their ancestor.
-    for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
-        Goal &other = goals_[later];
-        if (is_live(other.lifecycle) && descends_from(later, index)) {
-            set_lifecycle(other, descendants_end, stamp);
+    // A descendant may lie before or after its ancestor; a change of one
+    // does not change whether another descends from the goal.
+    for (uint32_t other = 0; other < goals_.size(); ++other) {
+        if (is_live(goals_[other].lifecycle) && descends_from(other, index)) {
+            set_lifecycle(goals_[other], descendants_end, stamp);
         }
     }
 }
@@ -228,7 +251,7 @@ bool GoalTable::is_live(ayni_goal_lifecycle_t lifecycle) {
 
 uint32_t GoalTable::live_children(uint32_t parent_index) const {
     uint32_t count = 0;
-    for (uint32_t index = parent_index + 1U; index < goals_.size(); ++index) {
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
         if (goals_[index].parent_index == parent_index && is_live(goals_[index].lifecycle)) {
             ++count;
         }
@@ -236,22 +259,36 @@ uint32_t GoalTable::live_children(uint32_t parent_index) const {
     return count;
 }
 
+// Walks up at most depth_max parents.
 bool GoalTable::in_subtree(uint32_t index, uint32_t root) const {
-    return index == root || (index > root && descends_from(index, root));
+    const uint32_t root_depth = goals_[root].depth;
+    uint32_t current = index;
+    while (goals_[current].depth > root_depth) {
+        current = goals_[current].parent_index;
+    }
+    return current == root;
 }
 
 bool GoalTable::at_largest_revision(const Goal &goal) {
     return goal.revision == max_revision;
 }
 
-// Walks up at most depth_max parents.
 bool GoalTable::descends_from(uint32_t index, uint32_t ancestor) const {
-    const uint32_t ancestor_depth = goals_[ancestor].depth;
-    uint32_t current = index;
-    while (goals_[current].depth > ancestor_depth) {
-        current = goals_[current].parent_index;
+    return index != ancestor && in_subtree(index, ancestor);
+}
+
+// A terminal goal never changes again, so the one with the smaller
+// commit_seq ended first. A descendant ends with its ancestor or before it,
+// so of the goals that ended in one transition the deepest has no child
+// left in the table.
+bool GoalTable::gives_way_before(const Goal &goal, const Goal &other) {
+    if (goal.commit_seq != other.commit_seq) {
+        return goal.commit_seq < other.commit_seq;
     }
-    return current == ancestor;
+    if (goal.depth != other.depth) {
+        return goal.depth > other.depth;
+    }
+    return goal.goal_id < other.goal_id;
 }
 
 bool GoalTable::allows(const Goal &goal, GoalChange change) {

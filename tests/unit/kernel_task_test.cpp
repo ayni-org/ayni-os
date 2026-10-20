@@ -2,8 +2,9 @@
 // a task advances only while its goal, the goal's ancestors and its owner
 // allow it, how goal and instance changes reach tasks, TASK_CANCEL and the
 // goal it ends with the goal's last task (ADR-0023), instance pause, resume
-// and stop, revisions, capacity and the return values in each kernel state.
-// Runs on the simulation Host.
+// and stop, revisions, capacity, the goals that give way with their tasks
+// (ADR-0025) and the return values in each kernel state. Runs on the
+// simulation Host.
 
 #include "kernel/kernel_state.h"
 #include "kernel_node.h"
@@ -302,6 +303,84 @@ TEST(WorkTask, full_task_table_reclaims_the_task_that_ended_first) {
     const uint64_t fourth = once_goal(work);
     EXPECT_EQ(step_items(work), 1U);
     EXPECT_EQ(task_of(work, fourth), 0U);
+}
+
+// --- Goals giving way ------------------------------------------------------
+
+// ADR-0025: a full goal table gives the place of the goal that ended first,
+// whenever it was created, to the new goal, and the goal's tasks leave the
+// task table with it. Their ids then name nothing. Goals that are not
+// terminal keep their places, and a table of them refuses the next goal.
+TEST(WorkTask, goal_that_ended_first_gives_way_with_its_tasks) {
+    WorkNode work;
+    work.node().config().goal_capacity = 3;
+    work.run();
+    work.strategy().answer = cannot_decide;
+    const uint64_t later = once_goal(work);
+    const uint64_t earlier = once_goal(work);
+    const uint64_t live = once_goal(work);
+    ASSERT_EQ(step_items(work), 3U);
+    ASSERT_EQ(step_items(work), 3U); // each task held
+    const uint64_t later_task = task_of(work, later);
+    const uint64_t earlier_task = task_of(work, earlier);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, earlier).status, AYNI_OK);
+    ASSERT_EQ(work.cancel_task(later_task).status, AYNI_OK); // and with it the goal
+    ASSERT_EQ(work.goal(later).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_TRUE(task_exists(work, earlier_task)); // until a goal needs the place
+
+    const uint64_t first_created = work.create_goal();
+    EXPECT_TRUE(task_exists(work, later_task));
+    EXPECT_EQ(work.goal(later).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_FALSE(task_exists(work, earlier_task));
+    ayni_goal_info_v1 info{};
+    info.struct_size = sizeof(info);
+    EXPECT_EQ(ayni_get_goal(work.kernel(), earlier, &info), AYNI_NOT_FOUND);
+    expect_refused(work.change(AYNI_INTENT_GOAL_CANCEL, earlier, 2), AYNI_NOT_FOUND,
+                   AYNI_REASON_GOAL_UNKNOWN, AYNI_OBJECT_GOAL, earlier);
+    expect_refused(work.cancel_task(earlier_task, 3), AYNI_NOT_FOUND, AYNI_REASON_TASK_UNKNOWN,
+                   AYNI_OBJECT_TASK, earlier_task);
+    expect_refused(work.create(WorkNode::create_body(work.instance(agent_a), earlier)),
+                   AYNI_NOT_FOUND, AYNI_REASON_PARENT_UNKNOWN, AYNI_OBJECT_GOAL, earlier);
+
+    const uint64_t second_created = work.create_goal();
+    EXPECT_FALSE(task_exists(work, later_task));
+    EXPECT_EQ(ayni_get_goal(work.kernel(), later, &info), AYNI_NOT_FOUND);
+    EXPECT_EQ(work.task(task_of(work, live)).lifecycle, AYNI_TASK_PAUSED);
+    for (const uint64_t goal_id : {live, first_created, second_created}) {
+        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE) << goal_id;
+    }
+    expect_refused(work.create(WorkNode::create_body(work.instance(agent_a))),
+                   AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_CAPACITY);
+}
+
+// ADR-0025: a child may take a place before its parent's; its parent's
+// pause, resume and cancel still reach it and its task.
+TEST(WorkTask, child_in_an_earlier_place_follows_its_parent) {
+    WorkNode work;
+    work.node().config().goal_capacity = 2;
+    work.run();
+    const uint64_t ended = folder_goal(work);
+    const uint64_t parent = folder_goal(work);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
+    const uint64_t child = once_goal(work, parent);
+    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    uint32_t child_index = 0;
+    uint32_t parent_index = 0;
+    ASSERT_TRUE(goals.find(child, child_index));
+    ASSERT_TRUE(goals.find(parent, parent_index));
+    ASSERT_LT(child_index, parent_index);
+    ASSERT_EQ(step_items(work), 1U);
+    const uint64_t task_id = task_of(work, child);
+
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, parent).status, AYNI_OK);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, parent).status, AYNI_OK);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+    const Submitted cancelled = work.change(AYNI_INTENT_GOAL_CANCEL, parent);
+    ASSERT_EQ(cancelled.status, AYNI_OK);
+    EXPECT_EQ(work.goal(child).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_CANCELLED);
+    EXPECT_EQ(work.task(task_id).commit_seq, cancelled.result.commit_seq);
 }
 
 // --- Goal changes reach their tasks ---------------------------------------

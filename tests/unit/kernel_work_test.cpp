@@ -379,14 +379,15 @@ TEST(WorkModel, tree_limits_missing_from_the_config_take_their_defaults) {
                    AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_CHILDREN, AYNI_OBJECT_GOAL, root);
 }
 
-// Capacity counts terminal goals; a refused goal allocates no id and takes no
+// A table of goals that are not terminal, paused ones included, refuses a
+// new goal (ADR-0025); a refused goal allocates no id and takes no
 // transition.
 TEST(WorkModel, full_goal_table_refuses_without_side_effects) {
     WorkNode work;
     work.node().config().goal_capacity = 2;
     work.run();
     const uint64_t first = work.create_goal();
-    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, first).status, AYNI_OK);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, first).status, AYNI_OK);
     const Submitted second = work.create(WorkNode::create_body(work.instance(agent_a)));
     ASSERT_EQ(second.status, AYNI_OK);
     const int calls = work.rules().calls;

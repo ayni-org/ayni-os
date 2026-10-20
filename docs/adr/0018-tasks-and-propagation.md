@@ -14,13 +14,13 @@ ADR-0017 把 `MA-004` 拆成三部分，第二部分覆盖 Task、occurrence 与
 
 ADR-0017 曾把“暂停助理作用的集合”列入第二部分；计划 §9.1 把“暂停集合”交给助理协调器（`MA-019`），C-PROD-020 的集合由它选择，本部分只提供它要使用的暂停机制。
 
-文档对 Task 只有一句生命周期描述（`lifecycles.md`），没有值、转换表或传播矩阵，也没有说 GoalType 怎样产生 Task。其中三个产品语义问题与一个实施细则已请用户决定（见决策 3、5、6、8）；本 ADR 按推荐项实现，用户改选时修订本 ADR 与相应实现。
+文档对 Task 只有一句生命周期描述（`lifecycles.md`），没有值、转换表或传播矩阵，也没有说 GoalType 怎样产生 Task。其中三个产品语义问题与一个实施细则已请用户决定（见决策 3、5、6、8）；本 ADR 按推荐项实现，用户改选时修订本 ADR 与相应实现。（2026-10-20 用户确认了这些推荐项。）
 
 ## 决策
 
 1. **Task 表在 `work/task/`（ADR-0008）。** Task 属于创建它的 Goal，owner 继承自 Goal，之后不变（C-LIFE-020）。字段：`task_id`、`goal_id`、owner、occurrence 序号（该 Goal 的第几次触发，从 1 开始）、生命周期、`revision`（创建时为 1，每次改变加 1，不回绕）、`cancel_revision`、创建它的 `transition_id` 与最后一次改变的 `commit_seq`。`task_id` 与其他 Kernel ID 共用同一个带启动代际的分配器（C-ID-010 修订）。
 2. **生命周期值与本部分的转换。** 值按 `lifecycles.md` 的描述编号：`READY` 1、`RUNNING` 2、`PAUSED` 3、`CANCELLING` 4、`COMPLETED` 5、`CANCELLED` 6、`FAILED` 7、`EXPIRED` 8，全部发布。本部分只到达 `READY`、`PAUSED`、`CANCELLED`：`RUNNING`、`COMPLETED`、`FAILED` 要等策略推进步骤（第三部分），`CANCELLING` 要等可取消的在途请求，`EXPIRED` 随时间部分。没有 `RUNNING` 时 Task 的 `READY`/`PAUSED` 正好等于决策 5 的放行条件；第三部分里运行中的 Task 要到暂停点才进入 `PAUSED`，所以它仍是生命周期字段，不是派生视图（ADR-0007）。
-3. **容量：结束的 Task 在表满时让位（产品语义，推荐项）。** `task_capacity`（1–256，默认 16，计划 §4.2 的“活跃与可恢复的 Task”）。表满时新 Task 取代最早结束的 Task（终态中 `commit_seq` 最小者）；没有已结束的 Task 时不派生。未结束的 Task 永不被挤掉；回收前仍可查询，回收后查询返回 `NOT_FOUND`，长期历史由日志提供（`MA-010`）。ID 不重用，回收的只是槽位（C-ID-001）。Goal 仍按 ADR-0017 计入终态。
+3. **容量：结束的 Task 在表满时让位（产品语义，推荐项）。** `task_capacity`（1–256，默认 16，计划 §4.2 的“活跃与可恢复的 Task”）。表满时新 Task 取代最早结束的 Task（终态中 `commit_seq` 最小者）；没有已结束的 Task 时不派生。未结束的 Task 永不被挤掉；回收前仍可查询，回收后查询返回 `NOT_FOUND`，长期历史由日志提供（`MA-010`）。ID 不重用，回收的只是槽位（C-ID-001）。Goal 仍按 ADR-0017 计入终态。（自 ADR-0025 起，终态 Goal 也在表满时让位，连同它已结束的 Task 一起移除；新 Task 在表未满时取没有 Task 占用的最小槽位。）
 4. **触发由 Goal 选择、由 GoalType 限定。** `ayni_goal_create_v1.trigger` 选择触发种类，`ayni_goal_type_v1.trigger_kinds` 是该类型接受的种类集合（`AYNI_TRIGGER_BIT(kind)`），注册时不得为空，也不得含未知种类；目标的种类不在集合中时 `INVALID_ARGUMENT`（`TRIGGER_KIND`）。本部分实现两种：
    - `NONE`（0）：Goal 自己不产生 Task，例如只用来组织子目标的父目标。
    - `ONCE`（1）：Goal 第一次满足放行条件时产生一个 Task。
