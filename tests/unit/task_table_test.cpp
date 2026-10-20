@@ -284,6 +284,10 @@ TEST(TaskTable, live_task_besides_looks_at_the_other_tasks_of_the_goal) {
     ASSERT_EQ(tasks.change(second, TaskChange::cancel), ChangeCheck::allowed);
     EXPECT_FALSE(tasks->live_task_besides(goal_index, tasks.index_of(first)));
     EXPECT_TRUE(tasks->live_task_besides(goal_index, tasks.index_of(second)));
+    // no_index sets no task aside.
+    EXPECT_TRUE(tasks->live_task_besides(goal_index, TaskTable::no_index));
+    ASSERT_EQ(tasks.change(first, TaskChange::cancel), ChangeCheck::allowed);
+    EXPECT_FALSE(tasks->live_task_besides(goal_index, TaskTable::no_index));
 }
 
 // C-COMMIT-012: a stale revision is a conflict before the state is checked,

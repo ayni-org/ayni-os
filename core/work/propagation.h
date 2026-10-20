@@ -1,11 +1,12 @@
-// How changes to goals and instances reach their tasks, how a task's end
-// reaches its goal, and which of the goals' due work comes next (ADR-0018,
-// ADR-0020, ADR-0022). The goal, task and agent tables each keep their own
-// invariants; the rule here spans them: a task may advance only while its
-// goal and all the goal's ancestors are ACTIVE and its owner instance is
-// RUNNING. A change re-settles every READY or PAUSED task it reaches against
-// that rule in the same transition, except a task its strategy's decision
-// holds, and a goal's end takes the tasks it reaches with it.
+// How changes to goals and instances reach their tasks, how a task's end or
+// a skip reaches its goal, and which of the goals' due work comes next
+// (ADR-0018, ADR-0020, ADR-0022, ADR-0023). The goal, task and agent tables
+// each keep their own invariants; the rule here spans them: a task may
+// advance only while its goal and all the goal's ancestors are ACTIVE and
+// its owner instance is RUNNING. A change re-settles every READY or PAUSED
+// task it reaches against that rule in the same transition, except a task
+// its strategy's decision holds, and a goal's end takes the tasks it reaches
+// with it.
 //
 // The kernel calls these inside one transition on the owner thread: first
 // the exhausts check, then apply_* or end_task, which use the same reach
@@ -47,23 +48,25 @@ bool instance_change_exhausts(const WorkTables &tables, uint32_t instance_index,
 void apply_instance_change(WorkTables &tables, uint32_t instance_index, InstanceChange change,
                            foundation::TransitionStamp stamp);
 
-// Whether ending the READY task task_index, below the largest revision, by
-// change, complete or fail, would raise a revision past the largest: when
-// its goal ends with it, that of the goal, of a descendant or of a task the
-// goal's end reaches. A task at the largest revision is never decided
-// (TaskTable::next_ready).
+// Whether ending the task task_index, below the largest revision, by change
+// would raise a revision past the largest: when its goal ends with it, that
+// of the goal, of a descendant or of a task the goal's end reaches. change
+// is complete or fail for a READY task (its strategy's decision; a task at
+// the largest revision is never decided, TaskTable::next_ready) or cancel
+// for one TaskTable::check allowed to be cancelled (TASK_CANCEL).
 bool task_end_exhausts(const WorkTables &tables, uint32_t task_index, TaskChange change);
 // Only after task_end_exhausts returned false. Ends the task. If its goal
 // then has no task that has not ended and no occurrence to come, the goal
-// ends too, SATISFIED for complete and FAILED for fail, and its descendants
-// that are not terminal are cancelled with their tasks.
+// ends too, SATISFIED for complete, FAILED for fail and CANCELLED for
+// cancel, and its descendants that are not terminal are cancelled with
+// their tasks (ADR-0022, ADR-0023).
 void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
               foundation::TransitionStamp stamp);
 
-// Whether ending goal_index by change, satisfy or fail while it is ACTIVE or
-// expire while it is not terminal, would raise a revision past the largest:
-// the goal's own, a descendant's or that of a task the end reaches. Nothing
-// lowers a revision, so such a goal never could end that way.
+// Whether ending goal_index by change, satisfy or fail while it is ACTIVE,
+// cancel or expire while it is not terminal, would raise a revision past the
+// largest: the goal's own, a descendant's or that of a task the end reaches.
+// Nothing lowers a revision, so such a goal never could end that way.
 bool goal_end_exhausts(const WorkTables &tables, uint32_t goal_index, GoalChange change);
 
 // The goals' due work, one item and transition each (ADR-0020).
@@ -100,6 +103,14 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
 // task_id. Only right after find_due_work(now_us) returned derive for it.
 void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t task_id,
             foundation::TransitionStamp stamp);
+// Skips the occurrences of goal_index due by now_us for reason
+// (GoalTable::skip_due). Only right after find_due_work(now_us) returned
+// skip for it, with its skip_reason. If the goal then has no task that has
+// not ended and no occurrence to come, it becomes FAILED in the same
+// transition, its descendants that are not terminal cancelled with their
+// tasks (ADR-0023), unless goal_end_exhausts: then it stays ACTIVE.
+void skip(WorkTables &tables, uint32_t goal_index, uint64_t now_us, ayni_reason_t reason,
+          foundation::TransitionStamp stamp);
 
 } // namespace ayni::work
 

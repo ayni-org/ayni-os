@@ -239,9 +239,14 @@ ayni_status_t cancel_task(WorkModel &model, const Intent &intent, IntentOutcome 
     if (status != AYNI_OK) {
         return status;
     }
+    // The goal's last task takes the goal with it (ADR-0023).
+    work::WorkTables tables = model.tables();
+    if (work::task_end_exhausts(tables, index, work::TaskChange::cancel)) {
+        return refuse_exhausted(current, failure);
+    }
 
     const foundation::TransitionStamp stamp = model.transitions.next();
-    model.tasks.apply(index, work::TaskChange::cancel, stamp);
+    work::end_task(tables, index, work::TaskChange::cancel, stamp);
     // The ended task's place may be what another goal is waiting for.
     mark_due_work(model, outcome);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
