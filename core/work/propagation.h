@@ -3,9 +3,10 @@
 // (ADR-0018, ADR-0020, ADR-0022, ADR-0023). The goal, task and agent tables
 // each keep their own invariants; the rule here spans them: a task may
 // advance only while its goal and all the goal's ancestors are ACTIVE and
-// its owner instance is RUNNING. A change re-settles every READY or PAUSED task it reaches against
-// that rule in the same transition, except a task its strategy's decision
-// holds, and a goal's end takes the tasks it reaches with it.
+// its owner instance is RUNNING. A change re-settles every READY or PAUSED
+// task it reaches against that rule in the same transition, except a task
+// its strategy's decision holds, and a goal's end takes the tasks it reaches
+// with it.
 //
 // The kernel calls these inside one transition on the owner thread: first
 // the exhausts check, then apply_* or end_task, which use the same reach
@@ -62,10 +63,10 @@ bool task_end_exhausts(const WorkTables &tables, uint32_t task_index, TaskChange
 void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
               foundation::TransitionStamp stamp);
 
-// Whether ending goal_index by change, satisfy or fail while it is ACTIVE or
-// expire while it is not terminal, would raise a revision past the largest:
-// the goal's own, a descendant's or that of a task the end reaches. Nothing
-// lowers a revision, so such a goal never could end that way.
+// Whether ending goal_index by change, satisfy or fail while it is ACTIVE,
+// cancel or expire while it is not terminal, would raise a revision past the
+// largest: the goal's own, a descendant's or that of a task the end reaches.
+// Nothing lowers a revision, so such a goal never could end that way.
 bool goal_end_exhausts(const WorkTables &tables, uint32_t goal_index, GoalChange change);
 
 // The goals' due work, one item and transition each (ADR-0020).

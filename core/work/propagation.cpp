@@ -117,29 +117,29 @@ bool has_had_its_last(const WorkTables &tables, uint32_t goal_index, uint32_t ta
            !tables.tasks.live_task_besides(goal_index, task_index);
 }
 
-// Whether ending task_index by change, complete, fail or cancel, ends its
-// goal, and how: the goal ends once it has had its last occurrence and its
-// last task, as that task did (ADR-0022, ADR-0023). A recurring goal goes on
-// after a failed or cancelled task, as after a completed one. The goal of a
-// READY task is ACTIVE; a cancelled task's goal may also be PAUSED, and
-// cancel ends either.
+// Whether ending task_index by change ends its goal, and how: the goal ends
+// once it has had its last occurrence and its last task, as that task did
+// (ADR-0022, ADR-0023). A recurring goal goes on after a failed or cancelled
+// task, as after a completed one. The goal of a READY task is ACTIVE; a
+// cancelled task's goal may also be PAUSED, and cancel ends either.
 bool ends_goal(const WorkTables &tables, uint32_t task_index, TaskChange change,
                GoalChange &out_change) {
-    if (!has_had_its_last(tables, tables.tasks.at(task_index).goal_index, task_index)) {
-        return false;
-    }
     switch (change) {
     case TaskChange::complete:
         out_change = GoalChange::satisfy;
         break;
+    case TaskChange::fail:
+        out_change = GoalChange::fail;
+        break;
     case TaskChange::cancel:
         out_change = GoalChange::cancel;
         break;
-    default: // fail; pause, resume and expire end no goal through here
-        out_change = GoalChange::fail;
-        break;
+    case TaskChange::pause:
+    case TaskChange::resume:
+    case TaskChange::expire: // only with its goal's own end
+        return false;
     }
-    return true;
+    return has_had_its_last(tables, tables.tasks.at(task_index).goal_index, task_index);
 }
 
 After after_instance_change(uint64_t instance_id, InstanceChange change) {

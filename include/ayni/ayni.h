@@ -421,14 +421,14 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * its goal due by the step's start (ADR-0019). Deriving and skipping set
  * the goal's occurrences, next_due_us, last_task_id or occurrences_skipped
  * and skip_reason, and commit_seq but keep its revision, so the revision a
- * caller holds for the goal stays valid; since 0.11 a skip that leaves the
- * goal with no occurrence to come and no task that has not ended also makes
- * it FAILED, as ayni_trigger_kind_t says (ADR-0023). An expiry that would
- * raise a revision past the largest is dropped instead, the same way: the
- * goal keeps its lifecycle and never expires (C-COMMIT-012). Since 0.10 it then
- * has the strategies decide the tasks that were READY when the step began,
- * one item and transition each, the task READY longest first (ADR-0022,
- * ayni_register_strategy). Since 0.9 it then takes the events queued when
+ * caller holds for the goal stays valid. An expiry that would raise a
+ * revision past the largest is dropped instead, the same way: the goal
+ * keeps its lifecycle and never expires (C-COMMIT-012). Since 0.11 a skip
+ * that leaves the goal with no occurrence to come and no task that has not
+ * ended also makes it FAILED, as ayni_trigger_kind_t says (ADR-0023).
+ * Since 0.10 it then has the strategies decide the tasks that were READY
+ * when the step began, one item and transition each, the task READY
+ * longest first (ADR-0022, ayni_register_strategy). Since 0.9 it then takes the events queued when
  * it comes to them, one item each (ADR-0021):
  * in RUNNING each is recorded, in one transition, as an occurrence of every
  * goal whose trigger takes it, due at the step's start, or counted as
@@ -969,9 +969,13 @@ typedef struct ayni_instance_target_v1 {
 
 typedef struct ayni_intent_result_v1 {
     uint32_t struct_size;
-    uint32_t reserved;         /* written as 0 */
-    ayni_object_ref_v1 object; /* the goal, with its revision after the intent */
-    uint64_t commit_seq;       /* of the transition the intent applied, this boot */
+    uint32_t reserved; /* written as 0 */
+    /* The goal, task or instance the intent names, or the goal it created,
+     * with its revision after the intent. Other objects it changed, such as
+     * the goal a TASK_CANCEL ends (since 0.11), are read with their query
+     * functions. */
+    ayni_object_ref_v1 object;
+    uint64_t commit_seq; /* of the transition the intent applied, this boot */
 } ayni_intent_result_v1;
 
 /*

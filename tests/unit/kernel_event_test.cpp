@@ -471,6 +471,31 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     EXPECT_EQ(second_task.due_us, pressed_at + 800U);
 }
 
+// ADR-0023: a LOCAL_INPUT goal has an occurrence to come while another
+// input would have a number, so cancelling its one task leaves it ACTIVE
+// with its revision, and the next input becomes a task.
+TEST(WorkInput, task_cancel_leaves_the_goal_taking_inputs) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal_id = input_goal(work, "button");
+    ASSERT_EQ(post(work), AYNI_OK);
+    ASSERT_EQ(work.node().step().items_done, 1U);
+    ASSERT_EQ(work.node().step(1).items_done, 1U);
+    const uint64_t task_id = work.goal(goal_id).last_task_id;
+    const ayni_goal_info_v1 before = work.goal(goal_id);
+    ASSERT_EQ(before.next_due_us, no_time);
+
+    ASSERT_EQ(work.cancel_task(task_id).status, AYNI_OK);
+    const ayni_goal_info_v1 after = work.goal(goal_id);
+    EXPECT_EQ(after.lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(after.revision, before.revision);
+    EXPECT_EQ(after.commit_seq, before.commit_seq);
+    ASSERT_EQ(post(work), AYNI_OK);
+    EXPECT_EQ(work.node().step().items_done, 1U);
+    EXPECT_EQ(work.node().step().items_done, 1U);
+    EXPECT_EQ(work.task(work.goal(goal_id).last_task_id).occurrence, 2U);
+}
+
 // Due work comes before events in a step, so a Host that keeps the queue
 // full cannot hold back a goal's expiry or its tasks.
 TEST(WorkInput, steady_events_do_not_hold_back_due_work) {

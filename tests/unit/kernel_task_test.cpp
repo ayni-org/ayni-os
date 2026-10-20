@@ -479,9 +479,10 @@ TEST(WorkTask, task_cancel_of_a_one_shot_goals_task_cancels_the_goal) {
 }
 
 // The goal of a PAUSED task may itself be PAUSED, or held back by a paused
-// ancestor or owner; it is cancelled all the same.
+// ancestor or owner, and the task may be held by its strategy's decision as
+// well; the goal is cancelled all the same.
 TEST(WorkTask, task_cancel_cancels_a_one_shot_goal_whatever_holds_its_task) {
-    for (int holder = 0; holder < 3; ++holder) {
+    for (int holder = 0; holder < 4; ++holder) {
         SCOPED_TRACE(holder);
         WorkNode work;
         work.run();
@@ -489,10 +490,14 @@ TEST(WorkTask, task_cancel_cancels_a_one_shot_goal_whatever_holds_its_task) {
         const uint64_t goal_id = once_goal(work, root);
         ASSERT_EQ(step_items(work), 1U);
         const uint64_t task_id = task_of(work, goal_id);
+        if (holder == 3) {
+            work.strategy().answer = cannot_decide;
+            ASSERT_EQ(step_items(work), 1U);
+        }
         if (holder == 2) {
             ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
         } else {
-            const uint64_t paused = holder == 0 ? goal_id : root;
+            const uint64_t paused = holder == 1 ? root : goal_id;
             ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, paused).status, AYNI_OK);
         }
         ASSERT_EQ(work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
@@ -738,6 +743,23 @@ TEST(WorkTask, change_that_would_exhaust_a_task_revision_is_refused) {
     EXPECT_EQ(work.agent(agent_a).revision, agent_before.revision);
     EXPECT_EQ(work.agent(agent_a).commit_seq, agent_before.commit_seq);
     EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+}
+
+// ADR-0023: an INTERVAL goal whose next time would be past the clock's
+// range has no occurrence to come either, so it ends with its task.
+TEST(WorkTask, task_cancel_ends_an_interval_goal_whose_next_time_never_comes) {
+    WorkNode work;
+    work.run();
+    ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a), 0, "reminder", 1,
+                                                     {nullptr, 0}, AYNI_TRIGGER_INTERVAL);
+    body.trigger_period_us = UINT64_MAX;
+    const Submitted created = work.create(body);
+    ASSERT_EQ(created.status, AYNI_OK);
+    const uint64_t goal_id = created.result.object.id;
+    ASSERT_EQ(step_items(work), 1U);
+    ASSERT_EQ(work.goal(goal_id).next_due_us, UINT64_MAX);
+    ASSERT_EQ(work.cancel_task(task_of(work, goal_id)).status, AYNI_OK);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_CANCELLED);
 }
 
 // ADR-0023: a TASK_CANCEL that ends its goal raises every revision the

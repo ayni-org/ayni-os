@@ -519,7 +519,8 @@ TEST(WorkWait, used_up_ids_skip_with_their_reason) {
 // ADR-0023: a skip that leaves a goal with no occurrence to come and no task
 // that has not ended makes it FAILED in the same transition, keeping the
 // skip's count and reason, and cancels its live descendants with their
-// tasks, as a failed last task would.
+// tasks, as a failed last task would. The place that frees goes to a goal
+// waiting for one in the same step.
 TEST(WorkWait, skipping_the_last_occurrence_fails_the_goal) {
     WorkNode work;
     work.timer_wait_max_us = 2U * second;
@@ -539,11 +540,14 @@ TEST(WorkWait, skipping_the_last_occurrence_fails_the_goal) {
     ASSERT_EQ(work.node().step().items_done, 2U);
     const uint64_t child_task = task_of(work, child);
     ASSERT_EQ(work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    GoalSpec waiting_spec = once(0, agent_b);
+    waiting_spec.type = "reminder";
+    const uint64_t waiting = create(work, waiting_spec);
     const ayni_goal_info_v1 created = work.goal(goal_id);
 
     advance_to(work, start + 3U * second);
     const ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.items_done, 2U); // the skip, then the waiting goal's task
     EXPECT_EQ(report.next_deadline_us, no_time);
     const ayni_goal_info_v1 failed = work.goal(goal_id);
     EXPECT_EQ(failed.lifecycle, AYNI_GOAL_FAILED);
@@ -559,16 +563,18 @@ TEST(WorkWait, skipping_the_last_occurrence_fails_the_goal) {
     EXPECT_EQ(cancelled.lifecycle, AYNI_GOAL_CANCELLED);
     EXPECT_EQ(cancelled.cancel_revision, cancelled.revision);
     EXPECT_EQ(cancelled.commit_seq, failed.commit_seq);
-    EXPECT_EQ(work.task(child_task).lifecycle, AYNI_TASK_CANCELLED);
-    EXPECT_EQ(work.task(child_task).commit_seq, failed.commit_seq);
     EXPECT_EQ(work.goal(holder).lifecycle, AYNI_GOAL_ACTIVE);
+    // The child's task ended, so its place went to the waiting goal's task;
+    // the skip and the end took one commit_seq, the derivation the next.
+    ayni_task_info_v1 gone{};
+    gone.struct_size = sizeof(gone);
+    EXPECT_EQ(ayni_get_task(work.kernel(), child_task, &gone), AYNI_NOT_FOUND);
+    const ayni_task_info_v1 derived = work.task(task_of(work, waiting));
+    EXPECT_EQ(derived.lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(derived.commit_seq, failed.commit_seq + 1U);
     // The revision the caller held is stale now.
     expect_refused(work.change(AYNI_INTENT_GOAL_PAUSE, goal_id, created.revision),
                    AYNI_REVISION_CONFLICT, AYNI_REASON_GOAL_REVISION, AYNI_OBJECT_GOAL, goal_id);
-    // The skip and the end took one commit_seq.
-    const Submitted next = work.cancel_task(task_of(work, holder));
-    ASSERT_EQ(next.status, AYNI_OK);
-    EXPECT_EQ(next.result.commit_seq, failed.commit_seq + 1U);
 }
 
 // A goal skipped past its last occurrence while a task of its own has not
@@ -601,21 +607,35 @@ TEST(WorkWait, skip_leaves_a_goal_with_a_live_task_active) {
 }
 
 // C-COMMIT-012: a goal whose end would raise a revision past the largest,
-// its own or a descendant's, is only skipped and stays ACTIVE with nothing
-// to come, as for an expiry that is dropped.
+// its own, a descendant's or a descendant's task's, is only skipped and
+// stays ACTIVE with nothing to come, as for an expiry that is dropped.
 TEST(WorkWait, skip_whose_end_would_exhaust_a_revision_leaves_the_goal_active) {
-    for (const bool own : {true, false}) {
-        SCOPED_TRACE(own ? "own" : "descendant");
+    for (int exhausted = 0; exhausted < 3; ++exhausted) {
+        SCOPED_TRACE(exhausted);
         WorkNode work;
         work.timer_wait_max_us = 0;
         work.node().config().task_capacity = 1;
         work.run();
-        place_holder(work);
         const uint64_t goal_id = create(work, delayed(second));
-        GoalSpec child_spec;
-        child_spec.parent_goal_id = goal_id;
+        GoalSpec child_spec = once(goal_id);
+        child_spec.type = "reminder";
         const uint64_t child = create(work, child_spec);
-        exhaust_goal(work, own ? goal_id : child);
+        // The strategy holds the child's task, which fills the table.
+        work.strategy().answer = cannot_decide;
+        ASSERT_EQ(work.node().step().items_done, 1U);
+        ASSERT_EQ(work.node().step().items_done, 1U);
+        const uint64_t child_task = task_of(work, child);
+        switch (exhausted) {
+        case 0:
+            exhaust_goal(work, goal_id);
+            break;
+        case 1:
+            exhaust_goal(work, child);
+            break;
+        default:
+            exhaust_task(work, child_task);
+            break;
+        }
         const ayni_goal_info_v1 before = work.goal(goal_id);
 
         advance(work, second);
@@ -627,6 +647,7 @@ TEST(WorkWait, skip_whose_end_would_exhaust_a_revision_leaves_the_goal_active) {
         EXPECT_EQ(skipped.skip_reason, AYNI_REASON_TASK_CAPACITY);
         EXPECT_EQ(skipped.next_due_us, no_time);
         EXPECT_EQ(work.goal(child).lifecycle, AYNI_GOAL_ACTIVE);
+        EXPECT_EQ(work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
         EXPECT_EQ(work.node().step().items_done, 0U);
     }
 }
