@@ -1,6 +1,6 @@
 # 调用、绑定与订阅
 
-- **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
+- **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
 - **属主**：`work/call`、`work/action`、`work/subscription`（调用实例）；`catalog/capability`、`catalog/binding`（描述与选择约束）
 
 ## 调用形态
@@ -47,4 +47,4 @@
 | C-SUB-001 | 订阅在 `ACTIVE`（Provider 确认开始）之前不接纳业务观察 | 订阅请求刚发出就把事件写入上下文 | E1 步骤 8 |
 | C-SUB-002 | 订阅事件按 `(subscription_id, generation, sequence)` 校验；旧代际或旧 `boot_epoch` 的事件只可用于必要的脱敏对账，不重新启用观察，也不进入新上下文 | 关闭观察后迟到的旧帧触发了一次分析 | E1 步骤 8；E4 步骤 4 |
 | C-SUB-003 | 订阅续租重新检查权限与预算；续租失败立即停止新采集与上传；Provider 未确认结束时资源按原规则释放或隔离 | 撤销授权后订阅凭旧租期继续上传 | E1 步骤 8 |
-| C-SUB-004 | 每类事件声明是否可合并、可丢弃及 gap 行为；遥测不承诺无限历史，控制事件不使用遥测的丢弃策略 | 队列满时丢弃存储确认事件 | E1 步骤 10；C-HOST-006 |
+| C-SUB-004 | 每类事件声明是否可合并、可丢弃及 gap 行为；遥测不承诺无限历史，控制事件不使用遥测的丢弃策略 | 队列满时丢弃存储确认事件 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |

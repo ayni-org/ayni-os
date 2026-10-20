@@ -1,6 +1,6 @@
 # 生命周期与状态转换
 
-- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
+- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
 - **原则**：生命周期、持久化状态与等待原因是三个维度。生命周期写在枚举里；“是否已持久接受”由提交序号表达（C-COMMIT-004）；等待原因由待决调用派生（ADR-0007）。表中未列出的转换都是非法转换，返回 `AYNI_INVALID_STATE` 并保持原状态。
 
 ## Kernel
@@ -43,9 +43,9 @@
 | `ayni_get_agent`、`ayni_get_goal`、`ayni_get_task` | INVALID_STATE | OK 或 NOT_FOUND（标注 `durable_seq`） | OK 或 NOT_FOUND | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND | INVALID_STATE |
 | 其余 `ayni_register_*` | OK 或参数错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
 | 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
-| `ayni_post_event` | INVALID_STATE | OK | OK | OK（只用于对账与诊断） | OK | INVALID_STATE |
+| `ayni_post_event` | INVALID_STATE | OK（保留到进入 `RUNNING`） | OK（应用） | OK（本地输入丢弃并计数；对账与诊断事件随 `MA-018`、`MA-010`） | OK（丢弃并计数） | INVALID_STATE |
 
-`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。GoalType 的校验回调不得调用 Kernel（C-POLICY-001）。作为兜底，回调内调用接受非 const Kernel 的所有者线程函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）时，它们在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果。
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。GoalType 的校验回调不得调用 Kernel（C-POLICY-001）。作为兜底，回调内调用接受非 const Kernel 的所有者线程函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）时，它们在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果。
 
 ## AgentInstance
 

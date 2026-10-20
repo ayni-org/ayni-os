@@ -410,12 +410,13 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * they stay queued. In RUNNING it then does the goals' due work, one item
  * and transition each: expires goals (ADR-0020), derives tasks (ADR-0018)
  * and skips occurrences that waited too long (ADR-0020). A task stands for
- * every occurrence of its goal due by the step's start (ADR-0019). Deriving and skipping set the
- * goal's occurrences, next_due_us, last_task_id or occurrences_skipped and
- * skip_reason, and commit_seq but keep its revision, so the revision a
- * caller holds for the goal stays valid. An expiry that would raise a
- * revision past the largest is dropped instead, the same way: the goal
- * keeps its lifecycle and never expires (C-COMMIT-012). Does at most
+ * every occurrence of its goal due by the step's start (ADR-0019).
+ * Deriving and skipping set the goal's occurrences, next_due_us,
+ * last_task_id or occurrences_skipped and skip_reason, and commit_seq but
+ * keep its revision, so the revision a caller holds for the goal stays
+ * valid. An expiry that would raise a revision past the largest is dropped
+ * instead, the same way: the goal keeps its lifecycle and never expires
+ * (C-COMMIT-012). Does at most
  * max_items items and stops once max_time_us has passed on the host clock,
  * checked after each item; never waits on storage or any other I/O
  * (C-LIMIT-011). out_report (nullable) receives the fields its struct_size
