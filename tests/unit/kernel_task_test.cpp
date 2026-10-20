@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -98,7 +99,7 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
 
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.more_ready, 1U); // the task awaits its strategy's decision
     const ayni_goal_info_v1 goal = work.goal(goal_id);
     EXPECT_EQ(goal.lifecycle, AYNI_GOAL_ACTIVE);
     EXPECT_EQ(goal.occurrences, 1U);
@@ -125,10 +126,11 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     EXPECT_EQ(goal.commit_seq, task.commit_seq);
     EXPECT_GT(task.commit_seq, work.node().info().durable_seq);
 
-    // ONCE has no second occurrence.
+    // ONCE has no second occurrence: the next step only decides the task
+    // (ADR-0022), and the one after has nothing to do.
+    EXPECT_EQ(step_items(work), 1U);
     EXPECT_EQ(step_items(work), 0U);
     EXPECT_EQ(work.goal(goal_id).occurrences, 1U);
-    EXPECT_EQ(work.goal(goal_id).revision, 1U);
 }
 
 TEST(WorkTask, none_goal_derives_no_task_and_wakes_no_one) {
@@ -167,7 +169,8 @@ TEST(WorkTask, deriving_keeps_the_goal_revision_the_caller_holds) {
     EXPECT_EQ(work.goal(exhausted).revision, max_revision);
 }
 
-// C-LIMIT-011: one derived task is one item, in creation order.
+// C-LIMIT-011: one derived task is one item, in creation order, and so is
+// each decision, made after the derivations of its step (ADR-0022).
 TEST(WorkTask, step_derives_one_task_per_item_and_reports_more_ready) {
     WorkNode work;
     work.run();
@@ -182,9 +185,11 @@ TEST(WorkTask, step_derives_one_task_per_item_and_reports_more_ready) {
     EXPECT_EQ(report.more_ready, 1U);
     EXPECT_NE(task_of(work, goals[1]), 0U);
     report = work.node().step();
-    EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.items_done, 3U); // the third task, then the first two decided
+    EXPECT_EQ(report.more_ready, 1U); // the third task awaits its decision
     EXPECT_NE(task_of(work, goals[2]), 0U);
+    EXPECT_EQ(work.task(task_of(work, goals[1])).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(work.task(task_of(work, goals[2])).lifecycle, AYNI_TASK_READY);
     EXPECT_LT(task_of(work, goals[0]), task_of(work, goals[1]));
     EXPECT_LT(task_of(work, goals[1]), task_of(work, goals[2]));
 }
@@ -201,7 +206,7 @@ TEST(WorkTask, step_stops_deriving_once_its_time_budget_is_spent) {
     EXPECT_EQ(report.more_ready, 1U);
     EXPECT_NE(task_of(work, first), 0U);
     EXPECT_EQ(task_of(work, second), 0U);
-    EXPECT_EQ(step_items(work), 1U);
+    EXPECT_EQ(step_items(work), 2U); // the second task, and the first one's decision
 }
 
 // lifecycles.md: DRAINING takes no new work, and derivation is new work.
@@ -244,24 +249,30 @@ TEST(WorkTask, held_goal_keeps_no_later_goal_from_deriving) {
     ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
     const uint64_t held = once_goal(work);
     const uint64_t later = once_goal(work, 0, agent_b);
+    EXPECT_EQ(step_items(work), 1U);
+    EXPECT_EQ(task_of(work, held), 0U);
+    EXPECT_NE(task_of(work, later), 0U);
+    // Once the later task is decided, the held goal leaves nothing ready.
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(task_of(work, held), 0U);
-    EXPECT_NE(task_of(work, later), 0U);
 }
 
 // ADR-0018 decision 3: an ended task gives its place to a new one when the
-// table is full; a task that has not ended never does.
+// table is full; a task that has not ended never does. The strategy holds
+// the tasks, so they stay live.
 TEST(WorkTask, full_task_table_reclaims_the_task_that_ended_first) {
     WorkNode work;
     work.node().config().task_capacity = 2;
     work.run();
+    work.strategy().answer = cannot_decide;
     const uint64_t first = once_goal(work);
     const uint64_t second = once_goal(work);
     const uint64_t third = once_goal(work);
+    EXPECT_EQ(step_items(work), 2U);
     ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 2U);
+    EXPECT_EQ(report.items_done, 2U); // both decided
     EXPECT_EQ(report.more_ready, 0U); // the third waits for a place
     EXPECT_EQ(task_of(work, third), 0U);
 
@@ -275,9 +286,9 @@ TEST(WorkTask, full_task_table_reclaims_the_task_that_ended_first) {
     EXPECT_TRUE(task_exists(work, task_of(work, second)));
     EXPECT_EQ(work.task(task_of(work, third)).lifecycle, AYNI_TASK_READY);
 
-    // Both places hold live tasks again.
+    // Both places hold live tasks again; the step only decides the third.
     const uint64_t fourth = once_goal(work);
-    EXPECT_EQ(step_items(work), 0U);
+    EXPECT_EQ(step_items(work), 1U);
     EXPECT_EQ(task_of(work, fourth), 0U);
 }
 
@@ -704,11 +715,12 @@ TEST(WorkTask, stop_that_would_exhaust_a_goal_revision_is_refused) {
 TEST(WorkTask, intents_that_may_let_a_task_derive_wake_the_owner) {
     WorkNode work;
     work.run();
+    work.strategy().answer = cannot_decide; // the task stays live
     const uint64_t goal_id = once_goal(work);
     ASSERT_EQ(step_items(work), 1U);
     const uint64_t task_id = task_of(work, goal_id);
     const uint64_t other = once_goal(work, 0, agent_b);
-    ASSERT_EQ(step_items(work), 1U);
+    ASSERT_EQ(step_items(work), 2U); // the other goal's task, and the hold
 
     const struct {
         const char *name;
@@ -792,6 +804,9 @@ TEST(WorkTask, task_query_checks_its_arguments) {
     EXPECT_EQ(ayni_get_task(nullptr, task_id, &info), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(ayni_get_task(work.kernel(), task_id, nullptr), AYNI_INVALID_ARGUMENT);
     info.struct_size = sizeof(info) - 1U;
+    EXPECT_EQ(ayni_get_task(work.kernel(), task_id, &info), AYNI_INVALID_ARGUMENT);
+    // The 0.9 layout, before the hold, is not written either.
+    info.struct_size = offsetof(ayni_task_info_v1, hold_status);
     EXPECT_EQ(ayni_get_task(work.kernel(), task_id, &info), AYNI_INVALID_ARGUMENT);
     info.struct_size = sizeof(info) + 8U;
     EXPECT_EQ(ayni_get_task(work.kernel(), task_id, &info), AYNI_UNSUPPORTED_VERSION);

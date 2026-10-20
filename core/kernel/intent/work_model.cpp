@@ -49,15 +49,6 @@ bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work) {
     return false;
 }
 
-// Expiring would exhaust a revision: the goal's own, a descendant's or a
-// task's. Nothing lowers a revision, so the goal never could expire.
-bool expiry_exhausts(const work::WorkTables &tables, uint32_t goal_index) {
-    const work::GoalTable &goals = tables.goals;
-    return goals.check(goal_index, work::GoalChange::expire, goals.at(goal_index).revision) !=
-               work::GoalTable::ChangeCheck::allowed ||
-           work::goal_change_exhausts_tasks(tables, goal_index, work::GoalChange::expire);
-}
-
 } // namespace
 
 bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us) {
@@ -84,7 +75,7 @@ bool do_due_work(WorkModel &model, uint64_t now_us) {
     work::WorkTables tables = model.tables();
     switch (work.kind) {
     case work::DueWork::Kind::expire:
-        if (expiry_exhausts(tables, work.goal_index)) {
+        if (work::goal_end_exhausts(tables, work.goal_index, work::GoalChange::expire)) {
             model.goals.drop_expiry(work.goal_index, model.transitions.next());
         } else {
             work::apply_goal_change(tables, work.goal_index, work::GoalChange::expire,

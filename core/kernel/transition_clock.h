@@ -25,6 +25,10 @@ class TransitionClock {
         return stamp;
     }
 
+    // The commit_seq next() gives next: every transition applied so far has
+    // a smaller one.
+    uint64_t next_commit_seq() const { return next_.commit_seq; }
+
   private:
     foundation::TransitionStamp next_{0, 0};
 };

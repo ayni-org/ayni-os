@@ -86,6 +86,10 @@ uint64_t place_holder(WorkNode &work, uint64_t agent_id = agent_b) {
     spec.type = "reminder";
     const uint64_t goal_id = create(work, spec);
     EXPECT_EQ(work.node().step().items_done, 1U);
+    // The strategy holds the task, so it stays live until a test ends it.
+    work.strategy().answer = cannot_decide;
+    EXPECT_EQ(work.node().step().items_done, 1U);
+    work.strategy().answer = nullptr;
     return goal_id;
 }
 
@@ -189,6 +193,7 @@ TEST(WorkExpiry, expiry_past_the_clock_never_comes) {
 // each revision by one; ended work and other goals keep their revision.
 TEST(WorkExpiry, expiry_takes_live_descendants_and_their_tasks) {
     WorkNode work;
+    work.node().config().task_capacity = 5;
     work.run();
     const uint64_t start = now(work);
     const uint64_t root = create(work, expiring(5U * second));
@@ -197,6 +202,9 @@ TEST(WorkExpiry, expiry_takes_live_descendants_and_their_tasks) {
     const uint64_t done_child = create(work, once(root));
     const uint64_t other = create(work, once());
     EXPECT_EQ(work.node().step().items_done, 4U);
+    // The strategy holds the tasks, so they stay live, PAUSED.
+    work.strategy().answer = cannot_decide;
+    EXPECT_EQ(work.node().step().items_done, 4U);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, grandchild).status, AYNI_OK);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, done_child).status, AYNI_OK);
     const ayni_goal_info_v1 done_before = work.goal(done_child);
@@ -204,6 +212,13 @@ TEST(WorkExpiry, expiry_takes_live_descendants_and_their_tasks) {
                                          work.goal(grandchild).revision};
     const ayni_task_info_v1 paused_task = work.task(task_of(work, grandchild));
     ASSERT_EQ(paused_task.lifecycle, AYNI_TASK_PAUSED);
+    const ayni_task_info_v1 other_task = work.task(task_of(work, other));
+    // Derived in the step before the expiry, this task is still READY when
+    // the expiry comes: a step does its due work before its decisions.
+    const uint64_t ready_child = create(work, once(root));
+    EXPECT_EQ(work.node().step().items_done, 1U);
+    const ayni_task_info_v1 ready_task = work.task(task_of(work, ready_child));
+    ASSERT_EQ(ready_task.lifecycle, AYNI_TASK_READY);
 
     advance_to(work, start + 5U * second);
     EXPECT_EQ(work.node().step().items_done, 1U);
@@ -215,19 +230,21 @@ TEST(WorkExpiry, expiry_takes_live_descendants_and_their_tasks) {
         EXPECT_EQ(goal.commit_seq, seq) << i;
         EXPECT_EQ(goal.revision, revisions_before[i] + 1U) << i;
     }
-    for (const uint64_t goal_id : {child, grandchild}) {
+    EXPECT_EQ(work.goal(ready_child).lifecycle, AYNI_GOAL_EXPIRED);
+    for (const uint64_t goal_id : {child, grandchild, ready_child}) {
         const ayni_task_info_v1 task = work.task(task_of(work, goal_id));
         EXPECT_EQ(task.lifecycle, AYNI_TASK_EXPIRED) << goal_id;
         EXPECT_EQ(task.commit_seq, seq) << goal_id;
         EXPECT_EQ(task.cancel_revision, 0U) << goal_id;
     }
     EXPECT_EQ(work.task(task_of(work, grandchild)).revision, paused_task.revision + 1U);
+    EXPECT_EQ(work.task(task_of(work, ready_child)).revision, ready_task.revision + 1U);
     const ayni_goal_info_v1 done_after = work.goal(done_child);
     EXPECT_EQ(done_after.lifecycle, AYNI_GOAL_CANCELLED);
     EXPECT_EQ(done_after.revision, done_before.revision);
     EXPECT_EQ(work.task(task_of(work, done_child)).lifecycle, AYNI_TASK_CANCELLED);
     EXPECT_EQ(work.goal(other).lifecycle, AYNI_GOAL_ACTIVE);
-    EXPECT_EQ(work.task(task_of(work, other)).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(work.task(task_of(work, other)).revision, other_task.revision);
 }
 
 // A descendant's own earlier expiry ends it alone.

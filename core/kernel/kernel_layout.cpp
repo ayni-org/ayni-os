@@ -58,6 +58,12 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
                      authority::SessionTable::storage_size(capacities.session_capacity));
     layout.tasks_offset = placer.place(work::TaskTable::storage_alignment,
                                        work::TaskTable::storage_size(capacities.task_capacity));
+    layout.strategies_offset =
+        placer.place(catalog::StrategyRegistry::storage_alignment,
+                     catalog::StrategyRegistry::storage_size(capacities.strategy_capacity));
+    layout.policy_intents_offset =
+        placer.place(DecisionBuffer::storage_alignment,
+                     DecisionBuffer::storage_size(capacities.policy_intent_capacity));
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

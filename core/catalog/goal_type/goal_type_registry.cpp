@@ -44,4 +44,16 @@ bool GoalTypeRegistry::accepts_trigger(uint32_t index, ayni_trigger_kind_t trigg
     return trigger < 32U && (types_[index].trigger_kinds & AYNI_TRIGGER_BIT(trigger)) != 0U;
 }
 
+bool GoalTypeRegistry::link_strategies(const StrategyRegistry &strategies) {
+    for (uint32_t index = 0; index < types_.size(); ++index) {
+        GoalType &type = types_[index];
+        if (type.strategy_id.size() == 0U) {
+            type.strategy_index = GoalType::no_strategy;
+        } else if (!strategies.find(type.strategy_id, type.strategy_index)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace ayni::catalog

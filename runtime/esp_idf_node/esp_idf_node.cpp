@@ -64,6 +64,8 @@ ayni_status_t run_hello() {
     config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
     config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
     config.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
+    config.strategy_capacity = AYNI_STRATEGY_CAPACITY_DEFAULT;
+    config.policy_intent_capacity = AYNI_POLICY_INTENT_CAPACITY_DEFAULT;
     std::size_t size = 0;
     std::size_t align = 0;
     status = ayni_kernel_memory_requirements(&config, &size, &align);

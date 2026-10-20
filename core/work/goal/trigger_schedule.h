@@ -73,6 +73,11 @@ bool can_record(const TriggerCursor &cursor);
 // times recorded before.
 void record(uint64_t at_us, TriggerCursor &cursor);
 
+// Whether an occurrence is still to come: one is scheduled or waiting, or,
+// for LOCAL_INPUT, another input would have a number. Without one, the
+// trigger has had every occurrence it ever will.
+bool occurs_again(const Trigger &trigger, const TriggerCursor &cursor);
+
 } // namespace ayni::work
 
 #endif // AYNI_CORE_WORK_GOAL_TRIGGER_SCHEDULE_H

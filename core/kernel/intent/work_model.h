@@ -11,6 +11,7 @@
 
 #include "authority/principal/principal_registry.h"
 #include "catalog/goal_type/goal_type_registry.h"
+#include "catalog/strategy/strategy_registry.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
 #include "kernel/intent/intent.h"
@@ -35,7 +36,8 @@ struct WorkModel {
           agents(storage.agents, capacities.agent_capacity),
           goals(storage.goals, {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
                                 limits.goal_depth_max, limits.goal_children_max}),
-          tasks(storage.tasks, capacities.task_capacity) {}
+          tasks(storage.tasks, capacities.task_capacity),
+          strategies(storage.strategies, capacities.strategy_capacity) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -47,27 +49,29 @@ struct WorkModel {
 
     work::WorkTables tables() { return {goals, tasks, agents}; }
 
-    // Registration fills principals, goal types and agents in CONFIGURING;
-    // the rest changes only in RUNNING.
+    // Registration fills principals, goal types, agents and strategies in
+    // CONFIGURING; the rest changes only in RUNNING.
     authority::PrincipalRegistry principals;
     authority::SessionTable sessions;
     catalog::GoalTypeRegistry goal_types;
     work::AgentTable agents;
     work::GoalTable goals;
     work::TaskTable tasks;
+    catalog::StrategyRegistry strategies;
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal
-    // type's validator). Caller code must not call the kernel; as a
-    // fail-safe, owner-thread functions that change state then refuse to run
-    // (ayni.h, C-POLICY-001), so nothing changes between a check and the
-    // change it allows.
+    // type's validator or a strategy's decide function). Caller code must
+    // not call the kernel; as a fail-safe, owner-thread functions that
+    // change state then refuse to run (ayni.h, C-POLICY-001), so nothing
+    // changes between a check and the change it allows.
     bool calling_out = false;
     // Set by a change to the goals' due work (which goals may advance or
-    // expire, or room in the task table); cleared once a search finds none
-    // due. That search also records when the next due work comes and whether
-    // an id was left, so ayni_step searches again only after such a change,
-    // once that time has come or once no id is left (ADR-0019, ADR-0020).
+    // expire, room in the task table, or a held task); cleared once a search
+    // finds none due. That search also records when the next due work comes
+    // and whether an id was left, so ayni_step searches again only after
+    // such a change, once that time has come or once no id is left
+    // (ADR-0019, ADR-0020, ADR-0022).
     bool due_work_changed = false;
     uint64_t next_due_work_us = work::no_time;
     bool searched_with_id = true;
@@ -99,8 +103,9 @@ bool do_due_work(WorkModel &model, uint64_t now_us);
 // Whether do_due_work(now_us) would do something; out_next_us is then now_us.
 // When it would not, clears due_work_changed and sets out_next_us to when the
 // next due work comes (work::no_time: none will without a change). Scans the
-// goal table, each goal along at most goal_depth_max ancestors, only while
-// due_work_changed is set, that time has come or the ids have just run out.
+// goal table, each goal along at most goal_depth_max ancestors, and the task
+// table, only while due_work_changed is set, that time has come or the ids
+// have just run out.
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us);
 
 } // namespace ayni::kernel

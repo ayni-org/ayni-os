@@ -1,10 +1,12 @@
 // Kernel lifecycle (contracts/domain/lifecycles.md, ADR-0016): recovery runs
 // in bounded steps after ayni_start, entering RUNNING starts the work model
 // (ADR-0017), steps take posted events (ADR-0021) and, in RUNNING, do the
-// goals' due work (ADR-0018, ADR-0020), and shutdown completes in a step
-// once no completion slot is in flight (C-HOST-018).
+// goals' due work (ADR-0018, ADR-0020) and have the strategies decide READY
+// tasks (ADR-0022), and shutdown completes in a step once no completion slot
+// is in flight (C-HOST-018).
 
 #include "catalog/catalog_id.h"
+#include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 
@@ -24,6 +26,11 @@ ayni_status_t ayni_kernel::start() {
     if (host.storage_append == nullptr) {
         return AYNI_UNSUPPORTED;
     }
+    // Registration is closed from here on, so each goal type's strategy is
+    // resolved once and its index stays valid (C-LIFE-003).
+    if (!work.goal_types.link_strategies(work.strategies)) {
+        return AYNI_NOT_FOUND;
+    }
     ingress.open();
     lifecycle = AYNI_LIFECYCLE_RECOVERING;
     return AYNI_OK;
@@ -32,9 +39,9 @@ ayni_status_t ayni_kernel::start() {
 // Each applied completion is one item and the clock is read after each; the
 // boot sequence then issues at most one storage request, also one item. The
 // request is never awaited: its result arrives in a later step. In RUNNING
-// each piece of the goals' due work is then one item, and after it each
-// event queued when the step comes to the events, again with the clock read
-// after each.
+// each piece of the goals' due work is then one item, then each decision,
+// and after them each event queued when the step comes to the events, again
+// with the clock read after each.
 ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                                 ayni_step_report_v1 &report) {
     if (lifecycle == AYNI_LIFECYCLE_CONFIGURING || lifecycle == AYNI_LIFECYCLE_STOPPED) {
@@ -56,8 +63,17 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // Due work is taken as of the start of the step, so one step sees one
     // schedule. It comes before events: a Host can keep the queue full, but
     // the due work at one time is finite, so neither starves the other.
+    // Decisions likewise take only the tasks READY before the due work, so a
+    // task derived in this step is decided in the next and a step does
+    // finite work however the strategies answer.
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
+        const uint64_t ready_before = work.transitions.next_commit_seq();
         while (items < max_items && !out_of_time && ayni::kernel::do_due_work(work, started_us)) {
+            ++items;
+            out_of_time = time_is_up(host, started_us, max_time_us);
+        }
+        while (items < max_items && !out_of_time &&
+               ayni::kernel::decide_next(work, decisions, ready_before, started_us)) {
             ++items;
             out_of_time = time_is_up(host, started_us, max_time_us);
         }
@@ -85,11 +101,14 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // wakes the owner.
     const bool boot_due = lifecycle == AYNI_LIFECYCLE_RECOVERING && boot.wants_advance() &&
                           completions.has_free_slot();
-    // DRAINING and RESTRICTED do no due work (ADR-0018). Runs after the
-    // time budget is spent too: more_ready must not drop due work.
+    // DRAINING and RESTRICTED do no due work and decide nothing (ADR-0018).
+    // Runs after the time budget is spent too: more_ready must not drop due
+    // work. A decision ends or holds its task, so a task still READY waits
+    // for one.
     uint64_t next_deadline_us = ayni::work::no_time;
     const bool work_due = lifecycle == AYNI_LIFECYCLE_RUNNING &&
-                          ayni::kernel::refresh_due_work(work, started_us, next_deadline_us);
+                          (ayni::kernel::refresh_due_work(work, started_us, next_deadline_us) ||
+                           ayni::kernel::awaits_decision(work));
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
     report.items_done = items;

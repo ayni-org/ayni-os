@@ -81,8 +81,11 @@ TEST(WorkModel, registration_checks_its_arguments) {
     type = goal_type_desc("reminder", 1);
     type.struct_size -= 1U;
     EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
-    // The 0.7 layout, before the wait limit, is not read either.
+    // The 0.7 layout, before the wait limit, is not read either, nor the 0.9
+    // one, before the strategy id.
     type.struct_size = offsetof(ayni_goal_type_v1, occurrence_wait_max_us);
+    EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
+    type.struct_size = offsetof(ayni_goal_type_v1, strategy_id);
     EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
 }
 
@@ -534,11 +537,14 @@ TEST(WorkModel, validator_cannot_change_the_kernel_while_it_runs) {
         inside.push_back(ayni_register_agent(kernel, &agent));
         const ayni_goal_type_v1 type = goal_type_desc("other", 1);
         inside.push_back(ayni_register_goal_type(kernel, &type));
+        const ayni_strategy_v1 strategy =
+            strategy_desc("other", 1, &ScriptedStrategy::decide, &work.strategy());
+        inside.push_back(ayni_register_strategy(kernel, &strategy));
     };
 
     const Submitted created = work.create(body);
     ASSERT_EQ(created.status, AYNI_OK);
-    EXPECT_EQ(inside, std::vector<ayni_status_t>(10, AYNI_INVALID_STATE));
+    EXPECT_EQ(inside, std::vector<ayni_status_t>(11, AYNI_INVALID_STATE));
     EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     // The session is still open, and the guard is gone once the call returns.
     EXPECT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, created.result.object.id).status, AYNI_OK);
@@ -847,6 +853,7 @@ enum class Call {
     register_principal,
     register_agent,
     register_goal_type,
+    register_strategy,
     open_session,
     close_session,
     submit_intent,
@@ -868,6 +875,10 @@ ayni_status_t invoke(ayni_kernel_t *kernel, Call call) {
     case Call::register_goal_type: {
         const ayni_goal_type_v1 desc = goal_type_desc("reminder", 1);
         return ayni_register_goal_type(kernel, &desc);
+    }
+    case Call::register_strategy: {
+        const ayni_strategy_v1 desc = strategy_desc("plan", 1, &ScriptedStrategy::decide, nullptr);
+        return ayni_register_strategy(kernel, &desc);
     }
     case Call::open_session: {
         const ayni_session_desc_v1 desc = session_desc();
@@ -927,6 +938,7 @@ TEST(WorkModel, return_values_follow_the_state_table) {
         {Call::register_principal, "ayni_register_principal", false, {ok, bad, bad, bad, bad, bad}},
         {Call::register_agent, "ayni_register_agent", false, {ok, bad, bad, bad, bad, bad}},
         {Call::register_goal_type, "ayni_register_goal_type", false, {ok, bad, bad, bad, bad, bad}},
+        {Call::register_strategy, "ayni_register_strategy", false, {ok, bad, bad, bad, bad, bad}},
         {Call::open_session,
          "ayni_open_session",
          true,

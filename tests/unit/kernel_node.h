@@ -41,6 +41,8 @@ class Node {
         config_.goal_depth_max = 2;
         config_.goal_children_max = 2;
         config_.task_capacity = 4;
+        config_.strategy_capacity = 1;
+        config_.policy_intent_capacity = 2;
         table_ = sim_.table();
         if (!with_storage) {
             table_.storage_append = nullptr;
