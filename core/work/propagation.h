@@ -1,14 +1,15 @@
-// How changes to goals and instances reach their tasks, and which of the
-// goals' due work comes next (ADR-0018, ADR-0020). The goal, task and agent
-// tables each keep their own invariants; the rule here spans them: a task may
-// advance only while its goal and all the goal's ancestors are ACTIVE and its
-// owner instance is RUNNING. A change re-settles every READY or PAUSED task
-// it reaches against that rule in the same transition, and a cancel or an
-// expiry takes the tasks it reaches with it.
+// How changes to goals and instances reach their tasks, how a task's end
+// reaches its goal, and which of the goals' due work comes next (ADR-0018,
+// ADR-0020, ADR-0022). The goal, task and agent tables each keep their own
+// invariants; the rule here spans them: a task may advance only while its
+// goal and all the goal's ancestors are ACTIVE and its owner instance is
+// RUNNING. A change re-settles every READY or PAUSED task it reaches against
+// that rule in the same transition, except a task its strategy's decision
+// holds, and a goal's end takes the tasks it reaches with it.
 //
 // The kernel calls these inside one transition on the owner thread: first
-// the exhausts_* check, then apply_*, which uses the same reach and the same
-// rule, so a change that passes the check never stops halfway.
+// the exhausts check, then apply_* or end_task, which use the same reach
+// and the same rule, so a change that passes the check never stops halfway.
 
 #ifndef AYNI_CORE_WORK_PROPAGATION_H
 #define AYNI_CORE_WORK_PROPAGATION_H
@@ -45,6 +46,19 @@ bool instance_change_exhausts(const WorkTables &tables, uint32_t instance_index,
 // the instance owns that is not yet terminal.
 void apply_instance_change(WorkTables &tables, uint32_t instance_index, InstanceChange change,
                            foundation::TransitionStamp stamp);
+
+// Whether ending the READY task task_index, below the largest revision, by
+// change, complete or fail, would raise a revision past the largest: when
+// its goal ends with it, that of the goal, of a descendant or of a task the
+// goal's end reaches. A task at the largest revision is never decided
+// (TaskTable::next_ready).
+bool task_end_exhausts(const WorkTables &tables, uint32_t task_index, TaskChange change);
+// Only after task_end_exhausts returned false. Ends the task. If its goal
+// then has no task that has not ended and no occurrence to come, the goal
+// ends too, SATISFIED for complete and FAILED for fail, and its descendants
+// that are not terminal are cancelled with their tasks.
+void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
+              foundation::TransitionStamp stamp);
 
 // The goals' due work, one item and transition each (ADR-0020).
 struct DueWork {

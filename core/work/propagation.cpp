@@ -94,8 +94,34 @@ After after_goal_change(uint32_t goal_index, GoalChange change) {
         after.ends = true;
         after.ending = TaskChange::expire;
         break;
+    case GoalChange::satisfy:
+        after.goal_lifecycle = AYNI_GOAL_SATISFIED;
+        after.ends = true;
+        after.ending = TaskChange::cancel;
+        break;
+    case GoalChange::fail:
+        after.goal_lifecycle = AYNI_GOAL_FAILED;
+        after.ends = true;
+        after.ending = TaskChange::cancel;
+        break;
     }
     return after;
+}
+
+// Whether ending task_index by change ends its goal, and how. The goal of a
+// READY task is ACTIVE; it ends once it has had its last occurrence and its
+// last task. A recurring goal goes on after a failed task, as after a
+// completed one.
+bool ends_goal(const WorkTables &tables, uint32_t task_index, TaskChange change,
+               GoalChange &out_change) {
+    const uint32_t goal_index = tables.tasks.at(task_index).goal_index;
+    const Goal &goal = tables.goals.at(goal_index);
+    if (occurs_again(goal.trigger, goal.cursor) ||
+        tables.tasks.live_task_besides(goal_index, task_index)) {
+        return false;
+    }
+    out_change = change == TaskChange::complete ? GoalChange::satisfy : GoalChange::fail;
+    return true;
 }
 
 After after_instance_change(uint64_t instance_id, InstanceChange change) {
@@ -155,6 +181,30 @@ void apply_instance_change(WorkTables &tables, uint32_t instance_index, Instance
         tables.goals.cancel_owned(instance_id, stamp);
     }
     tables.agents.apply(instance_index, change, stamp);
+}
+
+bool task_end_exhausts(const WorkTables &tables, uint32_t task_index, TaskChange change) {
+    GoalChange goal_change = GoalChange::satisfy;
+    if (!ends_goal(tables, task_index, change, goal_change)) {
+        return false;
+    }
+    // The goal is ACTIVE, so only a revision can refuse its end.
+    const uint32_t goal_index = tables.tasks.at(task_index).goal_index;
+    return tables.goals.check(goal_index, goal_change, tables.goals.at(goal_index).revision) !=
+               GoalTable::ChangeCheck::allowed ||
+           goal_change_exhausts_tasks(tables, goal_index, goal_change);
+}
+
+void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
+              foundation::TransitionStamp stamp) {
+    GoalChange goal_change = GoalChange::satisfy;
+    const bool goal_ends = ends_goal(tables, task_index, change, goal_change);
+    const uint32_t goal_index = tables.tasks.at(task_index).goal_index;
+    tables.tasks.apply(task_index, change, stamp);
+    // The ended task is no longer one the goal's end cancels.
+    if (goal_ends) {
+        apply_goal_change(tables, goal_index, goal_change, stamp);
+    }
 }
 
 ayni_reason_t derivation_blocker(const TaskTable &tasks, bool id_left) {

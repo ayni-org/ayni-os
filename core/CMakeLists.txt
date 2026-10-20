@@ -20,6 +20,7 @@ ayni_add_core_module(catalog
     SOURCES
         catalog/catalog_id.cpp
         catalog/goal_type/goal_type_registry.cpp
+        catalog/strategy/strategy_registry.cpp
     DEPENDS foundation)
 
 ayni_add_core_module(authority
@@ -42,6 +43,7 @@ ayni_add_core_module(kernel
         kernel/completion/completion_pool.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
+        kernel/intent/decision.cpp
         kernel/intent/intent.cpp
         kernel/intent/intent_rules.cpp
         kernel/intent/work_model.cpp

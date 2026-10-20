@@ -1,5 +1,6 @@
 // C ABI entry points of the work model (ADR-0017): registration of
-// principals, agents and goal types, sessions, intents and their queries.
+// principals, agents, goal types and strategies, sessions, intents and their
+// queries.
 // They check arguments and struct sizes, then whether a callback is running,
 // then the lifecycle state (contracts/domain/lifecycles.md); the rules of
 // sessions and intents live in kernel/intent/. Every struct here is new in
@@ -139,6 +140,8 @@ void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     info.occurrence = task.occurrence;
     info.occurrence_count = task.occurrence_count;
     info.due_us = task.due_us;
+    info.hold_status = task.hold_status;
+    info.hold_reason = task.hold_reason;
     out = info;
 }
 
@@ -195,10 +198,14 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     }
     using ayni::catalog::GoalTypeRegistry;
     ayni::catalog::GoalType type{};
+    // Goals that may only have no trigger have no tasks to decide.
+    const bool has_tasks = goal_type->trigger_kinds != AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE);
     if (goal_type->version == 0U || !type.id.assign(goal_type->goal_type_id) ||
         goal_type->trigger_kinds == 0U ||
         (goal_type->trigger_kinds & ~GoalTypeRegistry::defined_trigger_kinds) != 0U ||
-        goal_type->reserved != 0U) {
+        goal_type->reserved != 0U ||
+        (has_tasks ? !type.strategy_id.assign(goal_type->strategy_id)
+                   : goal_type->strategy_id.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
@@ -210,6 +217,30 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     type.trigger_kinds = goal_type->trigger_kinds;
     type.occurrence_wait_max_us = goal_type->occurrence_wait_max_us;
     return add_status(kernel->work.goal_types.add(type));
+}
+
+ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_v1 *strategy) {
+    if (kernel == nullptr || strategy == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const ayni_status_t status = check_size(*strategy);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    ayni::catalog::Strategy entry{};
+    if (strategy->version == 0U || !entry.id.assign(strategy->strategy_id) ||
+        strategy->decide == nullptr || strategy->max_intents_per_call == 0U ||
+        strategy->max_intents_per_call > kernel->decisions.capacity() || strategy->reserved != 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
+        return AYNI_INVALID_STATE;
+    }
+    entry.version = strategy->version;
+    entry.ctx = strategy->ctx;
+    entry.decide = strategy->decide;
+    entry.max_intents_per_call = strategy->max_intents_per_call;
+    return add_status(kernel->work.strategies.add(entry));
 }
 
 ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v1 *session,

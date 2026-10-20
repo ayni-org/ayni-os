@@ -11,6 +11,7 @@
 
 #include "authority/principal/principal_registry.h"
 #include "catalog/goal_type/goal_type_registry.h"
+#include "catalog/strategy/strategy_registry.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
 #include "kernel/intent/intent.h"
@@ -35,7 +36,8 @@ struct WorkModel {
           agents(storage.agents, capacities.agent_capacity),
           goals(storage.goals, {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
                                 limits.goal_depth_max, limits.goal_children_max}),
-          tasks(storage.tasks, capacities.task_capacity) {}
+          tasks(storage.tasks, capacities.task_capacity),
+          strategies(storage.strategies, capacities.strategy_capacity) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -47,21 +49,22 @@ struct WorkModel {
 
     work::WorkTables tables() { return {goals, tasks, agents}; }
 
-    // Registration fills principals, goal types and agents in CONFIGURING;
-    // the rest changes only in RUNNING.
+    // Registration fills principals, goal types, agents and strategies in
+    // CONFIGURING; the rest changes only in RUNNING.
     authority::PrincipalRegistry principals;
     authority::SessionTable sessions;
     catalog::GoalTypeRegistry goal_types;
     work::AgentTable agents;
     work::GoalTable goals;
     work::TaskTable tasks;
+    catalog::StrategyRegistry strategies;
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal
-    // type's validator). Caller code must not call the kernel; as a
-    // fail-safe, owner-thread functions that change state then refuse to run
-    // (ayni.h, C-POLICY-001), so nothing changes between a check and the
-    // change it allows.
+    // type's validator or a strategy's decide function). Caller code must
+    // not call the kernel; as a fail-safe, owner-thread functions that
+    // change state then refuse to run (ayni.h, C-POLICY-001), so nothing
+    // changes between a check and the change it allows.
     bool calling_out = false;
     // Set by a change to the goals' due work (which goals may advance or
     // expire, or room in the task table); cleared once a search finds none

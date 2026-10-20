@@ -94,7 +94,7 @@ GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
     if (at_largest_revision(goal)) {
         return ChangeCheck::revision_exhausted;
     }
-    if (change == GoalChange::cancel || change == GoalChange::expire) {
+    if (ends(change)) {
         for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
             const Goal &other = goals_[later];
             if (is_live(other.lifecycle) && at_largest_revision(other) &&
@@ -117,16 +117,27 @@ void GoalTable::apply(uint32_t index, GoalChange change, foundation::TransitionS
         return;
     case GoalChange::cancel:
     case GoalChange::expire:
+    case GoalChange::satisfy:
+    case GoalChange::fail:
         break;
     }
-    const ayni_goal_lifecycle_t ended =
-        change == GoalChange::cancel ? AYNI_GOAL_CANCELLED : AYNI_GOAL_EXPIRED;
+    // An expiry reaches the descendants as it is; any other end cancels them.
+    ayni_goal_lifecycle_t ended = AYNI_GOAL_CANCELLED;
+    ayni_goal_lifecycle_t descendants_end = AYNI_GOAL_CANCELLED;
+    if (change == GoalChange::expire) {
+        ended = AYNI_GOAL_EXPIRED;
+        descendants_end = AYNI_GOAL_EXPIRED;
+    } else if (change == GoalChange::satisfy) {
+        ended = AYNI_GOAL_SATISFIED;
+    } else if (change == GoalChange::fail) {
+        ended = AYNI_GOAL_FAILED;
+    }
     set_lifecycle(goal, ended, stamp);
     // Descendants come after their ancestor.
     for (uint32_t later = index + 1U; later < goals_.size(); ++later) {
         Goal &other = goals_[later];
         if (is_live(other.lifecycle) && descends_from(later, index)) {
-            set_lifecycle(other, ended, stamp);
+            set_lifecycle(other, descendants_end, stamp);
         }
     }
 }
@@ -252,8 +263,15 @@ bool GoalTable::allows(const Goal &goal, GoalChange change) {
     case GoalChange::cancel:
     case GoalChange::expire:
         return is_live(goal.lifecycle);
+    case GoalChange::satisfy:
+    case GoalChange::fail:
+        return goal.lifecycle == AYNI_GOAL_ACTIVE;
     }
     return false;
+}
+
+bool GoalTable::ends(GoalChange change) {
+    return change != GoalChange::pause && change != GoalChange::resume;
 }
 
 void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,

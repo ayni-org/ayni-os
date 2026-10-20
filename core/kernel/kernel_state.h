@@ -7,6 +7,7 @@
 #include "kernel/boot/boot_sequence.h"
 #include "kernel/completion/completion_pool.h"
 #include "kernel/ingress/event_ingress.h"
+#include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_config.h"
 
@@ -24,7 +25,8 @@ struct ayni_kernel {
                                     capacities.event_body_max_bytes, host),
           completions(storage.completions, capacities.completion_slot_count, host),
           boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes),
-          work(capacities, limits, storage) {}
+          work(capacities, limits, storage),
+          decisions(storage.policy_intents, capacities.policy_intent_capacity) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
@@ -54,6 +56,8 @@ struct ayni_kernel {
 
     // The work model (ADR-0017), started when the kernel enters RUNNING.
     ayni::kernel::WorkModel work;
+    // Where the strategies write the decisions ayni_step applies (ADR-0022).
+    ayni::kernel::DecisionBuffer decisions;
 
   private:
     void settle_recovery();

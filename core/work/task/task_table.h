@@ -1,6 +1,7 @@
-// Tasks (contracts/domain/lifecycles.md Task, ADR-0018). The table owns each
-// task's lifecycle, revision and place. A task belongs to one goal and keeps
-// that goal's owner for its life (C-LIFE-020).
+// Tasks (contracts/domain/lifecycles.md Task, ADR-0018, ADR-0022). The table
+// owns each task's lifecycle, revision, hold and place. A task belongs to one
+// goal and keeps that goal's owner for its life (C-LIFE-020). A READY task
+// waits for its strategy's decision, which ends it or holds it.
 //
 // An ended task keeps its place until a new task needs one: then the task
 // that ended first gives way, and a task that has not ended never does. A
@@ -43,13 +44,19 @@ struct Task {
     uint32_t revision;        // 1 at creation, raised by each change
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     ayni_task_lifecycle_t lifecycle;
+    // Why its strategy's decision holds it PAUSED; AYNI_OK and
+    // AYNI_REASON_NONE if it never did. Kept once the task ends.
+    ayni_status_t hold_status;
+    ayni_reason_t hold_reason;
 };
 
-// Pause takes READY to PAUSED and resume takes it back; cancel takes a READY
-// or PAUSED task to CANCELLED, and expire, which comes only with its goal's
-// expiry (ADR-0020), to EXPIRED. Tasks do not reach RUNNING or CANCELLING
+// Pause takes READY to PAUSED and resume takes it back, unless a decision
+// holds it; cancel takes a READY or PAUSED task to CANCELLED, and expire,
+// which comes only with its goal's expiry (ADR-0020), to EXPIRED. Complete
+// and fail come from its strategy's decision and take a READY task to
+// COMPLETED and FAILED (ADR-0022). Tasks do not reach RUNNING or CANCELLING
 // yet.
-enum class TaskChange { pause, resume, cancel, expire };
+enum class TaskChange { pause, resume, cancel, expire, complete, fail };
 
 class TaskTable {
   public:
@@ -89,8 +96,25 @@ class TaskTable {
     // largest. The task gets the next revision and stamp.commit_seq.
     void apply(uint32_t index, TaskChange change, foundation::TransitionStamp stamp);
 
+    // Its strategy's decision holds the READY task index, below the largest
+    // revision: it becomes PAUSED and no change but an end takes it out.
+    // It gets the next revision and stamp.commit_seq.
+    void hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
+              foundation::TransitionStamp stamp);
+
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
+    static bool is_held(const Task &task) { return task.hold_status != AYNI_OK; }
+
+    // The task that has been READY longest among those READY since before
+    // commit_seq ready_before, by commit_seq and then task id; a task at
+    // the largest revision can take no decision and is left out. Returns
+    // false when there is none.
+    bool next_ready(uint64_t ready_before, uint32_t &out_index) const;
+    // Whether some task below the largest revision is READY.
+    bool has_ready() const;
+    // Whether a task of goal goal_index other than task_index has not ended.
+    bool live_task_besides(uint32_t goal_index, uint32_t task_index) const;
 
     // Returns false when no task in memory has the id.
     bool find(uint64_t task_id, uint32_t &out_index) const;

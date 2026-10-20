@@ -8,11 +8,12 @@
  * Rules that apply to every function here:
  * - Kernel functions are called on the kernel owner thread only, unless
  *   their comment names other threads.
- * - A function the kernel calls, such as a host function or a goal type's
- *   validator, must not call kernel functions unless its comment allows it.
- *   As a fail-safe, the owner-thread functions that take a non-const
- *   ayni_kernel_t return AYNI_INVALID_STATE without effect when called from
- *   a validator, after their argument checks and before their state checks.
+ * - A function the kernel calls, such as a host function, a goal type's
+ *   validator or a strategy's decide function, must not call kernel
+ *   functions unless its comment allows it. As a fail-safe, the owner-thread
+ *   functions that take a non-const ayni_kernel_t return AYNI_INVALID_STATE
+ *   without effect when called from a validator or a decide function (a
+ *   callback), after their argument checks and before their state checks.
  * - Inputs are copied before return unless a parameter says otherwise.
  * - Each function lists every status it can return (C-STATUS-001). A failed
  *   call has no effect and writes no output unless its comment says so.
@@ -40,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 9u
+#define AYNI_ABI_MINOR 10u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -114,6 +115,11 @@ typedef struct ayni_config_v1 {
     /* Since 0.6 (ADR-0018). Tasks in memory; an ended task gives its place to
      * a new one when the table is full. */
     uint32_t task_capacity;
+    /* Since 0.10 (ADR-0022). */
+    uint32_t strategy_capacity; /* registered strategies */
+    /* The intents one decision may hold; each strategy declares its own
+     * max_intents_per_call up to this. */
+    uint32_t policy_intent_capacity;
 } ayni_config_v1;
 
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
@@ -144,6 +150,10 @@ typedef struct ayni_config_v1 {
 #define AYNI_GOAL_CHILDREN_MAX_MAX 64u
 #define AYNI_TASK_CAPACITY_DEFAULT 16u
 #define AYNI_TASK_CAPACITY_MAX 256u
+#define AYNI_STRATEGY_CAPACITY_DEFAULT 4u
+#define AYNI_STRATEGY_CAPACITY_MAX 64u
+#define AYNI_POLICY_INTENT_CAPACITY_DEFAULT 8u
+#define AYNI_POLICY_INTENT_CAPACITY_MAX 64u
 
 /*
  * Correlates an asynchronous attempt with its result (C-ID-006). Unique
@@ -397,7 +407,9 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
  * and only then enters RUNNING (C-ID-009), or enters RESTRICTED with a reason
  * (ayni_get_kernel_info). Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE outside CONFIGURING; AYNI_UNSUPPORTED, staying in
- * CONFIGURING, when the host table has no storage ports (C-HOST-015).
+ * CONFIGURING, when the host table has no storage ports (C-HOST-015); since
+ * 0.10 AYNI_NOT_FOUND, staying in CONFIGURING, when a goal type names a
+ * strategy that is not registered (C-LIFE-003).
  */
 ayni_status_t ayni_start(ayni_kernel_t *kernel);
 
@@ -411,8 +423,11 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * and skip_reason, and commit_seq but keep its revision, so the revision a
  * caller holds for the goal stays valid. An expiry that would raise a
  * revision past the largest is dropped instead, the same way: the goal
- * keeps its lifecycle and never expires (C-COMMIT-012). Since 0.9 it then
- * takes the events queued when it comes to them, one item each (ADR-0021):
+ * keeps its lifecycle and never expires (C-COMMIT-012). Since 0.10 it then
+ * has the strategies decide the tasks that were READY when the step began,
+ * one item and transition each, the task READY longest first (ADR-0022,
+ * ayni_register_strategy). Since 0.9 it then takes the events queued when
+ * it comes to them, one item each (ADR-0021):
  * in RUNNING each is recorded, in one transition, as an occurrence of every
  * goal whose trigger takes it, due at the step's start, or counted as
  * unmatched; in DRAINING and RESTRICTED each is discarded and counted; in
@@ -423,7 +438,7 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * AYNI_INVALID_ARGUMENT if kernel is NULL or max_items or max_time_us is 0;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
  * out_report->struct_size; AYNI_INVALID_STATE in CONFIGURING and STOPPED,
- * and when called from a goal type's validator.
+ * and when called from a callback.
  */
 ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_time_us,
                         ayni_step_report_v1 *out_report);
@@ -435,7 +450,7 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
  * has been posted and applied (C-HOST-018). Returns
  * AYNI_OK, also in DRAINING and STOPPED; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE in CONFIGURING, where ayni_destroy applies
- * directly, and when called from a goal type's validator.
+ * directly, and when called from a callback.
  */
 ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel);
 
@@ -590,6 +605,18 @@ typedef uint32_t ayni_reason_t;
 /* Since 0.8. In ayni_goal_info_v1 only: the task table has no room for the
  * task an occurrence would become (ADR-0020). */
 #define AYNI_REASON_TASK_CAPACITY ((ayni_reason_t)27)
+/* Since 0.10. In ayni_task_info_v1 only, for a task its strategy's decision
+ * holds (ADR-0022). INTENT_UNSUPPORTED, TASK_REVISION and
+ * REVISION_EXHAUSTED hold tasks too. */
+/* CAPACITY_EXCEEDED: the decision holds more intents than the strategy's
+ * max_intents_per_call, or the strategy returned AYNI_CAPACITY_EXCEEDED. */
+#define AYNI_REASON_POLICY_OUTPUT_LIMIT ((ayni_reason_t)28)
+/* INVALID_ARGUMENT: an intent of the decision has another struct_size, or
+ * two of its intents would each end the task. */
+#define AYNI_REASON_POLICY_INTENT ((ayni_reason_t)29)
+/* INVALID_ARGUMENT: the strategy returned AYNI_OK without an intent, which
+ * leaves the task with nothing to wait for. */
+#define AYNI_REASON_POLICY_NO_PROGRESS ((ayni_reason_t)30)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -726,6 +753,10 @@ typedef struct ayni_goal_type_v1 {
      * skipped (ADR-0020): 0 skips it at once, AYNI_OCCURRENCE_WAIT_UNBOUNDED
      * never. */
     uint64_t occurrence_wait_max_us;
+    /* Since 0.10. The id of the strategy that decides its goals' tasks
+     * (ayni_register_strategy), resolved by ayni_start. Empty exactly when
+     * trigger_kinds holds NONE alone, since such goals have no tasks. */
+    ayni_string_v1 strategy_id;
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -797,8 +828,9 @@ typedef struct ayni_goal_info_v1 {
 
 /*
  * Since 0.6. Task lifecycle (contracts/domain/lifecycles.md). This library
- * reaches READY, PAUSED, CANCELLED and, since 0.8, EXPIRED only; the others
- * need strategies or cancellable requests (ADR-0018, ADR-0020).
+ * reaches READY, PAUSED, CANCELLED, since 0.8 EXPIRED and, since 0.10,
+ * COMPLETED and FAILED; RUNNING and CANCELLING need requests a task waits
+ * for (ADR-0018, ADR-0020, ADR-0022).
  */
 typedef uint32_t ayni_task_lifecycle_t;
 
@@ -829,6 +861,13 @@ typedef struct ayni_task_info_v1 {
     /* Since 0.7. When the latest occurrence it stands for fell due, on the
      * host monotonic clock. */
     uint64_t due_us;
+    /* Since 0.10 (ADR-0022). Why its strategy's decision holds the task
+     * PAUSED: the status and reason of the hold, the status being the one
+     * the strategy returned or the one the kernel refused its decision
+     * with. A held task stays PAUSED while its goal and owner may advance,
+     * until it ends. AYNI_OK and AYNI_REASON_NONE for a task never held. */
+    ayni_status_t hold_status;
+    ayni_reason_t hold_reason;
 } ayni_task_info_v1;
 
 /*
@@ -944,13 +983,124 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
  * Registers one version of a goal type; several versions of one id may
  * coexist. Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL pointer, a zero
  * version, a goal_type_id that is not a catalog id, trigger_kinds that is 0
- * or holds a kind this library does not define, a nonzero reserved field,
- * or an id and version already registered; AYNI_INVALID_ARGUMENT or
- * AYNI_UNSUPPORTED_VERSION for struct_size; AYNI_INVALID_STATE outside
- * CONFIGURING; AYNI_CAPACITY_EXCEEDED once goal_type_capacity versions are
- * registered.
+ * or holds a kind this library does not define, a nonzero reserved field, a
+ * strategy_id that is not a catalog id, or is not empty when trigger_kinds
+ * holds NONE alone, or an id and version already registered;
+ * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size;
+ * AYNI_INVALID_STATE outside CONFIGURING; AYNI_CAPACITY_EXCEEDED once
+ * goal_type_capacity versions are registered.
  */
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type);
+
+/* ---- Strategies (since 0.10) --------------------------------------------
+ *
+ * A strategy decides the tasks of the goal types that name it
+ * (contracts/host/policy_interface.md, ADR-0022). It is a bounded decision
+ * function: ayni_step calls decide on the owner thread with a snapshot of
+ * one READY task, and the strategy answers with intents in an output the
+ * kernel provides. decide must not call kernel functions, block or perform
+ * I/O (C-POLICY-001). Given the same snapshot it gives the same decision,
+ * reading no clock or state the snapshot does not hold (C-POLICY-006). The
+ * shape serves deterministic replay and replacing strategies; it is not a
+ * security boundary.
+ */
+
+/* What a strategy sees of a task. The views point into kernel memory and
+ * are valid only during the decide call (C-POLICY-004). */
+typedef struct ayni_task_snapshot_v1 {
+    uint32_t struct_size;
+    uint32_t revision; /* the task's; each intent names it (C-COMMIT-012) */
+    uint64_t task_id;
+    uint64_t goal_id;
+    uint64_t owner_instance_id;
+    uint64_t due_us;           /* when the latest occurrence it stands for fell due */
+    uint64_t now_us;           /* when the step deciding it started */
+    uint32_t occurrence;       /* the latest of the goal's occurrences it stands for */
+    uint32_t occurrence_count; /* how many it stands for, at least 1 */
+    uint32_t goal_type_version;
+    uint32_t reserved; /* written as 0 */
+    ayni_string_v1 goal_type_id;
+    ayni_bytes_v1 goal_parameters; /* as the goal type accepted them */
+} ayni_task_snapshot_v1;
+
+/* The intent kinds this library implements; the other planned kinds are in
+ * include/ayni/draft/policy_v1.h. Both end the task. */
+typedef uint32_t ayni_policy_intent_kind_t;
+
+#define AYNI_POLICY_REPORT_COMPLETION ((ayni_policy_intent_kind_t)5) /* the task is done */
+#define AYNI_POLICY_REPORT_FAILURE ((ayni_policy_intent_kind_t)6)    /* it cannot be done */
+
+typedef struct ayni_policy_intent_v1 {
+    uint32_t struct_size;
+    ayni_policy_intent_kind_t kind;
+    uint32_t expected_revision; /* the snapshot's revision (C-COMMIT-012) */
+} ayni_policy_intent_v1;
+
+/* Where decide writes its decision. The kernel provides intents and sets
+ * intent_capacity to the strategy's max_intents_per_call; decide writes
+ * intents[0] to intents[intent_count - 1] and sets intent_count. The kernel
+ * reads back only intent_count and its own array. */
+typedef struct ayni_policy_output_v1 {
+    uint32_t struct_size;
+    uint32_t intent_capacity;
+    uint32_t intent_count;
+    uint32_t reserved; /* written as 0 */
+    ayni_policy_intent_v1 *intents;
+} ayni_policy_output_v1;
+
+/*
+ * Decides one task: returns AYNI_OK with the decision in output,
+ * AYNI_CAPACITY_EXCEEDED when the decision needs more than intent_capacity
+ * intents (C-POLICY-002), or any other failure status when it cannot
+ * decide.
+ *
+ * The kernel applies the decision as one transition. One intent that ends
+ * the task makes it COMPLETED or FAILED. If its goal then has no other task
+ * that has not ended and no occurrence to come, as a ONCE or DELAY goal
+ * after its one task, the goal becomes SATISFIED or FAILED likewise, and its
+ * descendants that are not terminal are CANCELLED with their tasks. Any
+ * other decision holds the task: it becomes PAUSED with the status and
+ * reason in ayni_task_info_v1, and stays PAUSED until it is cancelled or
+ * expires (C-POLICY-002, C-POLICY-003). It is held when decide fails, with
+ * the status decide returned and AYNI_REASON_POLICY_OUTPUT_LIMIT for
+ * AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE otherwise; with
+ * CAPACITY_EXCEEDED and POLICY_OUTPUT_LIMIT when intent_count exceeds
+ * intent_capacity; with INVALID_ARGUMENT and POLICY_NO_PROGRESS for
+ * AYNI_OK without an intent; then, for each intent in turn, with
+ * INVALID_ARGUMENT and POLICY_INTENT for another struct_size, UNSUPPORTED
+ * and INTENT_UNSUPPORTED for a kind this library does not implement,
+ * REVISION_CONFLICT and TASK_REVISION for another expected_revision, and
+ * INVALID_ARGUMENT and POLICY_INTENT when an earlier intent already ends
+ * the task; and with CAPACITY_EXCEEDED and REVISION_EXHAUSTED when ending
+ * the task would raise a revision past the largest (C-COMMIT-012).
+ */
+typedef ayni_status_t (*ayni_decide_fn)(void *ctx, const ayni_task_snapshot_v1 *snapshot,
+                                        ayni_policy_output_v1 *output);
+
+typedef struct ayni_strategy_v1 {
+    uint32_t struct_size;
+    uint32_t version;              /* nonzero */
+    ayni_string_v1 strategy_id;    /* a catalog id */
+    void *ctx;                     /* caller-owned until ayni_destroy returns AYNI_OK */
+    ayni_decide_fn decide;         /* not NULL */
+    uint32_t max_intents_per_call; /* 1 to policy_intent_capacity */
+    uint32_t reserved;             /* must be 0 */
+} ayni_strategy_v1;
+
+/*
+ * Registers a strategy. One version of an id is registered at a time: goal
+ * types name strategies by id, and a strategy is replaced only across a
+ * restart (C-POLICY-010). ayni_step has it decide each task of those goal
+ * types that was READY when the step began, so each such task once per
+ * step at most, and none at the largest revision. Returns AYNI_OK;
+ * AYNI_INVALID_ARGUMENT for a NULL pointer or decide, a zero version, a
+ * strategy_id that is not a catalog id, a max_intents_per_call of 0 or
+ * above policy_intent_capacity, a nonzero reserved field, or a strategy_id
+ * already registered; AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
+ * struct_size; AYNI_INVALID_STATE outside CONFIGURING;
+ * AYNI_CAPACITY_EXCEEDED once strategy_capacity strategies are registered.
+ */
+ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_v1 *strategy);
 
 /*
  * Opens a session for a principal on a channel the host has authenticated
@@ -958,10 +1108,10 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
  * AYNI_OK, *out_session_id receives a new id, never 0. Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT for a NULL pointer or an unknown channel;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size;
- * AYNI_INVALID_STATE when called from a goal type's validator;
- * AYNI_NOT_READY outside RUNNING; AYNI_NOT_FOUND for an unregistered
- * principal; AYNI_CAPACITY_EXCEEDED once session_capacity sessions are open
- * or no id is left this boot (C-ID-010).
+ * AYNI_INVALID_STATE when called from a callback; AYNI_NOT_READY outside
+ * RUNNING; AYNI_NOT_FOUND for an unregistered principal;
+ * AYNI_CAPACITY_EXCEEDED once session_capacity sessions are open or no id is
+ * left this boot (C-ID-010).
  */
 ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v1 *session,
                                 uint64_t *out_session_id);
@@ -969,7 +1119,7 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
 /*
  * Closes an open session; intents can no longer name it. Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT if kernel is NULL; AYNI_INVALID_STATE in CONFIGURING
- * and STOPPED, and when called from a goal type's validator; AYNI_NOT_FOUND
+ * and STOPPED, and when called from a callback; AYNI_NOT_FOUND
  * when no open session has this id.
  */
 ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
@@ -996,7 +1146,7 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    LOCAL_INPUT and empty for other kinds.
  * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement, or a
  *    nonzero command_id.
- * 3. AYNI_INVALID_STATE when called from a goal type's validator; then
+ * 3. AYNI_INVALID_STATE when called from a callback; then
  *    AYNI_NOT_READY outside RUNNING, without queueing (C-LIFE-004).
  * 4. AYNI_DENIED: session_id names no open session. Until grants exist, a
  *    session of the owner may submit every intent (ADR-0017).
@@ -1026,8 +1176,9 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * In the same transition, every READY or PAUSED task of the named goal or
  * of one of its descendants, or owned by the named instance, becomes READY
  * if its goal and all the goal's ancestors are ACTIVE and its owner is
- * RUNNING, and PAUSED otherwise; the tasks of a cancelled goal are cancelled
- * with it (ADR-0018). An intent raises the revision of each goal, task and
+ * RUNNING, and PAUSED otherwise; a task its strategy's decision holds stays
+ * PAUSED (ayni_decide_fn). The tasks of a cancelled goal are cancelled with
+ * it (ADR-0018). An intent raises the revision of each goal, task and
  * instance it changes by one; others keep theirs. When the intent may bring
  * the goals' due work forward (resume, cancel, stop, a task cancel that
  * frees a place), or creates a goal whose first occurrence or expiry is

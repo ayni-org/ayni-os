@@ -2,12 +2,15 @@
 // catalog id and version; several versions of one id coexist, so a goal
 // keeps the semantics of the version it was created with. Registration is
 // closed once the kernel leaves CONFIGURING (C-LIFE-006), so an index stays
-// valid for the kernel's life.
+// valid for the kernel's life. A goal type names the strategy that decides
+// its goals' tasks by id; ayni_start resolves the ids (C-LIFE-003), so the
+// order of registration does not matter.
 
 #ifndef AYNI_CORE_CATALOG_GOAL_TYPE_GOAL_TYPE_REGISTRY_H
 #define AYNI_CORE_CATALOG_GOAL_TYPE_GOAL_TYPE_REGISTRY_H
 
 #include "catalog/catalog_id.h"
+#include "catalog/strategy/strategy_registry.h"
 #include "foundation/bounded_array.h"
 
 #include <ayni/ayni.h>
@@ -18,6 +21,8 @@
 namespace ayni::catalog {
 
 struct GoalType {
+    static constexpr uint32_t no_strategy = 0xFFFFFFFFU;
+
     CatalogId id;
     uint32_t version = 0;
     void *ctx = nullptr;
@@ -26,6 +31,12 @@ struct GoalType {
     // How long a due occurrence may wait for a task (ADR-0020);
     // AYNI_OCCURRENCE_WAIT_UNBOUNDED: no limit.
     uint64_t occurrence_wait_max_us = 0;
+    // Empty exactly when trigger_kinds holds NONE alone: such goals have no
+    // tasks to decide (ADR-0022).
+    CatalogId strategy_id;
+    // In the strategy registry, once link_strategies() succeeded; no_strategy
+    // for an empty strategy_id.
+    uint32_t strategy_index = no_strategy;
 };
 
 class GoalTypeRegistry {
@@ -57,8 +68,9 @@ class GoalTypeRegistry {
     // storage as for BoundedArray<GoalType>.
     GoalTypeRegistry(void *storage, uint32_t capacity) : types_(storage, capacity) {}
 
-    // type has a valid id, a nonzero version and trigger_kinds that is a
-    // nonempty subset of defined_trigger_kinds.
+    // type has a valid id, a nonzero version, trigger_kinds that is a
+    // nonempty subset of defined_trigger_kinds and a strategy_id that is
+    // empty exactly when trigger_kinds holds NONE alone.
     AddResult add(const GoalType &type);
 
     Lookup find(ayni_string_v1 id, uint32_t version) const;
@@ -71,6 +83,12 @@ class GoalTypeRegistry {
     bool accepts(uint32_t index, ayni_bytes_v1 parameters) const;
     // Whether goals of the type at index may choose trigger.
     bool accepts_trigger(uint32_t index, ayni_trigger_kind_t trigger) const;
+
+    // Resolves the strategy id of every type. Returns false when one names
+    // a strategy that is not registered; the indexes are then incomplete,
+    // and ayni_start, which stays in CONFIGURING, resolves them again on
+    // its next call.
+    bool link_strategies(const StrategyRegistry &strategies);
 
   private:
     foundation::BoundedArray<GoalType> types_;

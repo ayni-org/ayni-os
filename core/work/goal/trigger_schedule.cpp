@@ -71,4 +71,8 @@ void record(uint64_t at_us, TriggerCursor &cursor) {
     cursor.latest_due_us = at_us;
 }
 
+bool occurs_again(const Trigger &trigger, const TriggerCursor &cursor) {
+    return cursor.has_next() || (trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && can_record(cursor));
+}
+
 } // namespace ayni::work

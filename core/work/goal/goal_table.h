@@ -3,7 +3,8 @@
 // trigger cursor and expiry (ADR-0018, ADR-0019, ADR-0020), and records the
 // local inputs its triggers take (ADR-0021). It enforces the fixed owner
 // (C-LIFE-020), the tree limits (C-LIMIT-007) and the cascades of cancel
-// (C-LIFE-022) and expiry.
+// (C-LIFE-022), expiry and a goal's end (ADR-0022), so a goal that is not
+// terminal never has a terminal ancestor.
 //
 // Goals are never removed: a terminal goal stays queryable and counts toward
 // the capacity until the log defines when it may be dropped (MA-010). So the
@@ -74,8 +75,10 @@ struct Goal {
     ayni_goal_lifecycle_t lifecycle;
 };
 
-// Expire comes from the kernel at expires_us, never from an intent.
-enum class GoalChange { pause, resume, cancel, expire };
+// Expire comes from the kernel at expires_us, never from an intent; satisfy
+// and fail come from the kernel when the goal's last task ends by its
+// strategy's decision (ADR-0022).
+enum class GoalChange { pause, resume, cancel, expire, satisfy, fail };
 
 class GoalTable {
   public:
@@ -132,7 +135,8 @@ class GoalTable {
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every
     // descendant that is not terminal, to CANCELLED; expire likewise to
-    // EXPIRED.
+    // EXPIRED. Satisfy and fail take an ACTIVE goal to SATISFIED and FAILED
+    // and every descendant that is not terminal to CANCELLED.
     ChangeCheck check(uint32_t index, GoalChange change, uint32_t expected_revision) const;
     // Only after check() returned allowed, with no change in between. Each
     // goal it changes gets the next revision and stamp.commit_seq.
@@ -193,6 +197,9 @@ class GoalTable {
     // Whether goal index is a descendant of ancestor, which comes before it.
     bool descends_from(uint32_t index, uint32_t ancestor) const;
     static bool allows(const Goal &goal, GoalChange change);
+    // Whether the change makes the goal terminal and so reaches its
+    // descendants.
+    static bool ends(GoalChange change);
     static bool takes(const Goal &goal, const catalog::CatalogId &source);
     void set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
                        foundation::TransitionStamp stamp);
