@@ -79,6 +79,14 @@ ScriptedStrategy::Answer in_turn(WorkNode &work, std::vector<ScriptedStrategy::A
     };
 }
 
+// White-box: sets the goal's revision.
+void set_goal_revision(WorkNode &work, uint64_t goal_id, uint32_t revision) {
+    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    uint32_t index = 0;
+    ASSERT_TRUE(goals.find(goal_id, index));
+    const_cast<ayni::work::Goal &>(goals.at(index)).revision = revision;
+}
+
 // White-box: the private checkpoint the kernel keeps for the task.
 std::vector<uint8_t> kept_checkpoint(WorkNode &work, uint64_t task_id) {
     const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
@@ -145,13 +153,15 @@ TEST(WorkCheckpoint, progress_commits_steps_and_leaves_the_task_ready) {
     EXPECT_EQ(step_items(work), 0U);
 }
 
-// The steps of a decision that ends its task are committed in the same
-// transition, whichever intent comes first.
+// The steps and private checkpoint of a decision that ends its task are
+// committed in the same transition, whichever intent comes first.
 TEST(WorkCheckpoint, decision_that_ends_its_task_commits_its_steps) {
     WorkNode work;
     work.max_intents_per_call = 2;
+    work.max_checkpoint_bytes = 2;
     work.run();
     work.strategy().answer = [](Snapshot s, Output o) {
+        set_checkpoint(o, {4});
         return decide_with(o, {complete(s), progress_intent("last", s.revision)});
     };
     const uint64_t goal_id = once_goal(work);
@@ -163,8 +173,35 @@ TEST(WorkCheckpoint, decision_that_ends_its_task_commits_its_steps) {
     EXPECT_EQ(done.lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(done.revision, 2U);
     EXPECT_EQ(done.step_count, 1U);
+    EXPECT_EQ(kept_checkpoint(work, task_id), (std::vector<uint8_t>{4}));
     EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_SATISFIED);
     EXPECT_EQ(work.goal(goal_id).commit_seq, done.commit_seq);
+}
+
+// Steps are told apart by their whole key: a key that is a prefix of
+// another is a step of its own.
+TEST(WorkCheckpoint, steps_that_share_a_prefix_are_distinct) {
+    WorkNode work;
+    work.max_intents_per_call = 2;
+    work.run();
+    work.strategy().answer =
+        in_turn(work, {[](Snapshot s, Output o) {
+                           return decide_with(o, {progress_intent("cd", s.revision),
+                                                  progress_intent("c", s.revision)});
+                       },
+                       [](Snapshot s, Output o) {
+                           return decide_with(o, {progress_intent("cde", s.revision), complete(s)});
+                       }});
+    const uint64_t goal_id = once_goal(work);
+    ASSERT_EQ(step_items(work), 1U);
+    const uint64_t task_id = task_of(work, goal_id);
+    ASSERT_EQ(step_items(work), 1U);
+    ASSERT_EQ(step_items(work), 1U);
+
+    const ayni_task_info_v1 done = work.task(task_id);
+    EXPECT_EQ(done.lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(done.step_count, 3U);
+    EXPECT_EQ(work.strategy().seen[1].steps, (std::vector<std::string>{"cd", "c"}));
 }
 
 // C-POLICY-007: the output starts with a copy of the task's private
@@ -345,6 +382,12 @@ TEST(WorkCheckpoint, refused_decisions_commit_nothing_and_hold_with_their_reason
              return decide_with(o, {progress_intent("a", s.revision - 1U)});
          },
          AYNI_REVISION_CONFLICT, AYNI_REASON_TASK_REVISION},
+        {"revision before an end's step key",
+         [](Snapshot s, Output o) {
+             return decide_with(
+                 o, {policy_intent(AYNI_POLICY_REPORT_COMPLETION, s.revision - 1U, "c")});
+         },
+         AYNI_REVISION_CONFLICT, AYNI_REASON_TASK_REVISION},
         {"progress then a stale end",
          [](Snapshot s, Output o) {
              return decide_with(o, {progress_intent("c", s.revision),
@@ -394,6 +437,39 @@ TEST(WorkCheckpoint, refused_decisions_commit_nothing_and_hold_with_their_reason
         EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
         EXPECT_EQ(step_items(work), 0U);
     }
+}
+
+// An end that would raise its goal's revision past the largest holds the
+// task with REVISION_EXHAUSTED, and like every refused decision commits
+// neither its steps nor its private checkpoint.
+TEST(WorkCheckpoint, end_that_would_exhaust_a_revision_commits_nothing) {
+    WorkNode work;
+    work.max_intents_per_call = 2;
+    work.max_checkpoint_bytes = 2;
+    work.run();
+    work.strategy().answer =
+        in_turn(work, {[](Snapshot s, Output o) {
+                           set_checkpoint(o, {5, 6});
+                           return decide_with(o, {progress_intent("a", s.revision)});
+                       },
+                       [](Snapshot s, Output o) {
+                           set_checkpoint(o, {8});
+                           return decide_with(o, {progress_intent("b", s.revision), complete(s)});
+                       }});
+    const uint64_t goal_id = once_goal(work);
+    ASSERT_EQ(step_items(work), 1U);
+    const uint64_t task_id = task_of(work, goal_id);
+    ASSERT_EQ(step_items(work), 1U);
+    set_goal_revision(work, goal_id, max_revision);
+    ASSERT_EQ(step_items(work), 1U);
+
+    const ayni_task_info_v1 held = work.task(task_id);
+    EXPECT_EQ(held.lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(held.hold_status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(held.hold_reason, AYNI_REASON_REVISION_EXHAUSTED);
+    EXPECT_EQ(held.step_count, 1U);
+    EXPECT_EQ(kept_checkpoint(work, task_id), (std::vector<uint8_t>{5, 6}));
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
 }
 
 // The project owner's choice (ADR-0024): a decision that only changes the

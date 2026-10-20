@@ -103,8 +103,8 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                           completions.has_free_slot();
     // DRAINING and RESTRICTED do no due work and decide nothing (ADR-0018).
     // Runs after the time budget is spent too: more_ready must not drop due
-    // work. A decision ends or holds its task, so a task still READY waits
-    // for one.
+    // work. A task still READY waits for a decision, also one that a
+    // decision reporting progress left READY for a later step (ADR-0024).
     uint64_t next_deadline_us = ayni::work::no_time;
     const bool work_due = lifecycle == AYNI_LIFECYCLE_RUNNING &&
                           (ayni::kernel::refresh_due_work(work, started_us, next_deadline_us) ||

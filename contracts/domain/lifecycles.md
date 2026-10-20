@@ -114,14 +114,15 @@ M1 已实现的转换：
 | `FAILED` | 7 | 终态：已失败 |
 | `EXPIRED` | 8 | 终态：已失效 |
 
-M1 已实现的转换（ADR-0018、ADR-0022）：
+M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 
 | 从 | 到 | 触发 |
 |---|---|---|
 | — | `READY` | `ayni_step` 派生 Goal 的 occurrence，截至当时已到期的全部 occurrence 合并为一个 Task（ADR-0019）；版本为 1 |
 | `READY` | `PAUSED` | Goal 或实例的改变使它不再满足放行条件 |
 | `PAUSED` | `READY` | Goal 或实例的改变使它重新满足放行条件；策略的决定使其停下的 Task 除外 |
-| `READY` | `COMPLETED`、`FAILED` | `ayni_step` 中策略的决定结束它 |
+| `READY` | `COMPLETED`、`FAILED` | `ayni_step` 中策略的决定结束它；决定中报告进度的意图同时提交其步骤，私有检查点替换 Task 的 |
+| `READY` | `READY` | `ayni_step` 中策略的决定报告进度而不结束它（自 0.12）：提交步骤并替换私有检查点，版本加 1，`commit_seq` 取该 transition 的值，在之后的 step 中再被决定（ADR-0024） |
 | `READY` | `PAUSED` | `ayni_step` 中策略的决定被拒绝，`hold_status`、`hold_reason` 记下原因；之后不再被决定，也不再放行，结束前它的 Goal 不派生新 Task（`TASK_HELD`） |
 | `READY`、`PAUSED` | `CANCELLED` | `TASK_CANCEL`；`GOAL_CANCEL` 作用于它的 Goal 或其祖先；`INSTANCE_STOP` 作用于它的 owner；同一 transition |
 | `READY`、`PAUSED` | `EXPIRED` | 它的 Goal 或其祖先失效；同一 transition（ADR-0020） |

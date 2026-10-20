@@ -160,7 +160,8 @@ void record(work::TaskTable &tasks, uint32_t task_index, const DecisionBuffer &d
     for (uint32_t index = 0; index < intent_count; ++index) {
         const ayni_policy_intent_v1 &intent = decisions.at(index);
         if (intent.kind == AYNI_POLICY_REPORT_PROGRESS) {
-            tasks.add_step(task_index, step_key_of(intent));
+            // Cannot fail: judge_intents checked each step.
+            static_cast<void>(tasks.add_step(task_index, step_key_of(intent)));
         }
     }
     tasks.set_checkpoint(task_index, writer, decisions.checkpoint(checkpoint_size));

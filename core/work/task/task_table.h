@@ -129,12 +129,13 @@ class TaskTable {
 
     // The steps and private checkpoint a decision of the READY task index
     // commits, in the transition that then applies the decision by
-    // progress() or work::end_task() (ADR-0024). add_step: key is a catalog
-    // id that is not yet a step of the task, which has fewer than
-    // step_capacity(). set_checkpoint: writer is the strategy's index and
-    // state.size at most checkpoint_max_bytes(); state replaces the task's
-    // private checkpoint.
-    void add_step(uint32_t index, ayni_string_v1 key);
+    // progress() or work::end_task() (ADR-0024). add_step appends key and
+    // returns true when it is a catalog id that is not yet a step of the
+    // task and the task has fewer than step_capacity() steps; otherwise it
+    // returns false, changing nothing. set_checkpoint: writer is the
+    // strategy's index and state.size at most checkpoint_max_bytes(); state
+    // replaces the task's private checkpoint.
+    bool add_step(uint32_t index, ayni_string_v1 key);
     void set_checkpoint(uint32_t index, uint32_t writer, ayni_bytes_v1 state);
     // A decision of the READY task index, below the largest revision, that
     // neither ends nor holds it: it stays READY with the next revision and

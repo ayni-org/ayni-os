@@ -273,8 +273,8 @@ TEST(TaskTable, decisions_commit_steps_checkpoints_and_progress) {
     EXPECT_TRUE(tasks.checkpoint(id).empty());
     EXPECT_FALSE(tasks->has_step(index, key("turn")));
 
-    tasks->add_step(index, key("turn"));
-    tasks->add_step(index, key("photo"));
+    EXPECT_TRUE(tasks->add_step(index, key("turn")));
+    EXPECT_TRUE(tasks->add_step(index, key("photo")));
     const uint8_t state[] = {1, 2, 3, 4};
     tasks->set_checkpoint(index, 5, {state, 4});
     tasks.progress(id);
@@ -295,7 +295,7 @@ TEST(TaskTable, decisions_commit_steps_checkpoints_and_progress) {
     ASSERT_TRUE(tasks->next_ready(tasks.last_seq() + 1U, next));
     EXPECT_EQ(next, tasks.index_of(other));
 
-    tasks->add_step(index, key("notify.owner"));
+    EXPECT_TRUE(tasks->add_step(index, key("notify.owner")));
     tasks->set_checkpoint(index, 5, {state + 2, 1});
     ASSERT_EQ(tasks.change(id, TaskChange::complete), ChangeCheck::allowed);
     EXPECT_EQ(tasks.steps(id), (std::vector<std::string>{"turn", "photo", "notify.owner"}));
@@ -318,7 +318,7 @@ TEST(TaskTable, tasks_keep_their_steps_and_checkpoints_as_places_change) {
     const uint64_t ids[] = {ended, middle, last};
     for (int task = 0; task < 3; ++task) {
         const uint32_t index = tasks.index_of(ids[task]);
-        tasks->add_step(index, key(keys[task]));
+        EXPECT_TRUE(tasks->add_step(index, key(keys[task])));
         tasks->set_checkpoint(index, 1, {bytes + task, 1});
     }
     ASSERT_EQ(tasks.change(ended, TaskChange::cancel), ChangeCheck::allowed);
@@ -337,8 +337,8 @@ TEST(TaskTable, tasks_keep_their_steps_and_checkpoints_as_places_change) {
 
     // The new task's steps and checkpoint do not touch the others'.
     const uint32_t index = tasks.index_of(created);
-    tasks->add_step(index, key("d"));
-    tasks->add_step(index, key("e"));
+    EXPECT_TRUE(tasks->add_step(index, key("d")));
+    EXPECT_TRUE(tasks->add_step(index, key("e")));
     tasks->set_checkpoint(index, 2, {bytes, 2});
     EXPECT_EQ(tasks.steps(created), (std::vector<std::string>{"d", "e"}));
     EXPECT_EQ(tasks.checkpoint(created), (std::vector<uint8_t>{7, 8}));
@@ -355,7 +355,7 @@ TEST(TaskTable, tasks_keep_their_steps_and_checkpoints_as_places_change) {
     EXPECT_FALSE(tasks.exists(last));
     EXPECT_EQ(tasks.task(fourth).step_count, 0U);
     EXPECT_TRUE(tasks.checkpoint(fourth).empty());
-    tasks->add_step(tasks.index_of(fourth), key("f"));
+    EXPECT_TRUE(tasks->add_step(tasks.index_of(fourth), key("f")));
     tasks->set_checkpoint(tasks.index_of(fourth), 3, {bytes + 2, 1});
     EXPECT_EQ(tasks.steps(fourth), (std::vector<std::string>{"f"}));
     EXPECT_EQ(tasks.checkpoint(fourth), (std::vector<uint8_t>{9}));
@@ -363,6 +363,20 @@ TEST(TaskTable, tasks_keep_their_steps_and_checkpoints_as_places_change) {
     EXPECT_EQ(tasks.checkpoint(created), (std::vector<uint8_t>{7, 8}));
     EXPECT_EQ(tasks.steps(middle), (std::vector<std::string>{"b"}));
     EXPECT_EQ(tasks.checkpoint(middle), (std::vector<uint8_t>{8}));
+}
+
+// add_step keeps a task's steps unique, valid and within step_capacity.
+TEST(TaskTable, add_step_refuses_a_taken_invalid_or_extra_step) {
+    Tasks tasks(1, 2, 0);
+    const uint64_t id = tasks.create();
+    const uint32_t index = tasks.index_of(id);
+    EXPECT_TRUE(tasks->add_step(index, key("a")));
+    EXPECT_FALSE(tasks->add_step(index, key("a")));
+    EXPECT_FALSE(tasks->add_step(index, key("A")));
+    EXPECT_FALSE(tasks->add_step(index, key("")));
+    EXPECT_TRUE(tasks->add_step(index, key("b")));
+    EXPECT_FALSE(tasks->add_step(index, key("c")));
+    EXPECT_EQ(tasks.steps(id), (std::vector<std::string>{"a", "b"}));
 }
 
 // A table without checkpoints keeps empty ones.

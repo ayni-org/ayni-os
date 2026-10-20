@@ -148,11 +148,14 @@ void TaskTable::hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
     ++held_count_;
 }
 
-void TaskTable::add_step(uint32_t index, ayni_string_v1 key) {
+bool TaskTable::add_step(uint32_t index, ayni_string_v1 key) {
     Task &task = tasks_[index];
-    // Cannot fail: key is a catalog id.
-    static_cast<void>(steps_of(index)[task.step_count].assign(key));
+    if (task.step_count == step_capacity_ || has_step(index, key) ||
+        !steps_of(index)[task.step_count].assign(key)) {
+        return false;
+    }
     ++task.step_count;
+    return true;
 }
 
 void TaskTable::set_checkpoint(uint32_t index, uint32_t writer, ayni_bytes_v1 state) {
