@@ -35,14 +35,14 @@ M1 已实现的形态（ABI 0.10，ADR-0022）是 `decide(ctx, snapshot, output)
 
 ## 策略注册与决策
 
-`ayni_register_strategy` 在 `CONFIGURING` 中登记一个策略：目录 ID、非零版本、调用方持有的 `ctx`、`decide` 与每次调用的意图上限 `max_intents_per_call`（1 到 `policy_intent_capacity`）。同一 ID 同时只登记一个版本（C-POLICY-010）。`ayni_step` 在 `RUNNING` 中做完到期工作后，按进入 `READY` 的先后请策略决定本次 step 之前已是 `READY` 的 Task，每个决定是一个 item 与一个 transition（ADR-0022）：
+`ayni_register_strategy` 在 `CONFIGURING` 中登记一个策略：目录 ID、非零版本、调用方持有的 `ctx`、`decide`、每次调用的意图上限 `max_intents_per_call`（1 到 `policy_intent_capacity`），以及策略写意图的步长 `intent_size`（它编译时的 `sizeof(ayni_policy_intent_v1)`，须等于本库的大小，规则同 `struct_size`）。同一 ID 同时只登记一个版本（C-POLICY-010）。`ayni_step` 在 `RUNNING` 中做完到期工作后，按进入 `READY` 的先后请策略决定本次 step 之前已是 `READY` 的 Task，每个决定是一个 item 与一个 transition（ADR-0022）：
 
 | 决定 | 结果 |
 |---|---|
 | 一个结束意图，版本与快照一致 | Task 进入 `COMPLETED` 或 `FAILED`；Goal 不再有未结束的 Task、也不会再有 occurrence 时，同一 transition 中进入 `SATISFIED` 或 `FAILED`，其未终结的后代与它们的 Task 取消 |
-| 其他任何决定 | Task 停在 `PAUSED`，`hold_status` 与 `hold_reason` 记下第一项未通过的检查；不再被决定，Goal 与实例的恢复也不放行它，取消与失效照常结束它 |
+| 其他任何决定 | Task 停在 `PAUSED`，`hold_status` 与 `hold_reason` 记下第一项未通过的检查；不再被决定，Goal 与实例的恢复也不放行它，取消与失效照常结束它。它结束之前，它的 Goal 不派生新 Task，occurrence 以 `TASK_HELD` 等待，超过等待上限后跳过 |
 
-检查顺序见 `ayni_decide_fn` 的注释：`decide` 的失败状态，意图数，没有意图，然后逐个意图检查结构大小、种类、版本与重复的结束意图，最后是会使版本越过最大值的结束。
+检查顺序见 `ayni_decide_fn` 的注释：`decide` 的失败状态或不是状态码的返回值，意图数，没有意图，然后逐个意图检查结构大小、种类、版本与重复的结束意图，最后是会使版本越过最大值的结束。
 
 ## 规则
 
@@ -50,7 +50,7 @@ M1 已实现的形态（ABI 0.10，ADR-0022）是 `decide(ctx, snapshot, output)
 |---|---|---|---|
 | C-POLICY-001 | 策略回调在 `step` 内调用，GoalType 的参数校验在 `ayni_submit_intent` 内调用，二者都在 Kernel 所有者线程上；回调内不得调用 Kernel API、执行 I/O 或阻塞；作为兜底，回调期间修改 Kernel 的调用返回 `AYNI_INVALID_STATE` 且不产生效果 | Tool Loop 在回调中同步发 HTTP 请求等待模型 | M1 已实现（GoalType 的校验与策略的 `decide` 期间，修改 Kernel 的调用返回 `INVALID_STATE` 且不产生效果，ADR-0022）：`WorkModel.validator_cannot_change_the_kernel_while_it_runs`、`WorkDecision.strategy_cannot_change_the_kernel_while_it_decides`；不执行 I/O、不阻塞只能评审；`MA-009` |
 | C-POLICY-002 | 回调只能返回有界意图集合与新的私有检查点；意图数超过注册时声明的上限时整次返回被拒绝，Task 暂停并报告原因 | 策略返回 1,000 个调用意图，Kernel 逐个处理导致 `step` 超时 | M1 已实现（意图集合：超过 `max_intents_per_call` 或策略返回 `CAPACITY_EXCEEDED` 时整次决定被拒绝，Task 停下并记 `POLICY_OUTPUT_LIMIT`；上限在注册时检查，ADR-0022）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkStrategy.registration_checks_its_arguments`；私有检查点随第三部分第二个 PR；`MA-009`；C-LIMIT-006 |
-| C-POLICY-003 | Kernel 校验每个意图的 Schema、授权、预算、资源与版本；策略不能修改内部对象、绕过资源入口、提升权限或自行恢复结果未知的动作 | 策略返回“把 ActionRecord 改为 COMPLETED”的意图并被接受 | M1 已实现（结构大小、种类、版本与互相矛盾的结束意图；策略只写 Kernel 提供的意图数组，Kernel 只读回自己的数组，ADR-0022）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkDecision.strategy_starts_from_cleared_intents_that_only_the_kernel_reads`、`WorkDecision.end_that_would_exhaust_a_revision_holds_the_task`；授权、预算与资源随 `MA-006`、`MA-018`；E3 步骤 2；E4 步骤 1；C-TRUST-001 |
+| C-POLICY-003 | Kernel 校验每个意图的 Schema、授权、预算、资源与版本；策略不能修改内部对象、绕过资源入口、提升权限或自行恢复结果未知的动作 | 策略返回“把 ActionRecord 改为 COMPLETED”的意图并被接受 | M1 已实现（结构大小、种类、版本与互相矛盾的结束意图；策略只写 Kernel 提供的意图数组，注册时确认它写意图的步长与 Kernel 一致，Kernel 只读回自己的数组，ADR-0022）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkStrategy.registration_checks_its_arguments`、`WorkDecision.strategy_starts_from_cleared_intents_that_only_the_kernel_reads`、`WorkDecision.end_that_would_exhaust_a_revision_holds_the_task`；授权、预算与资源随 `MA-006`、`MA-018`；E3 步骤 2；E4 步骤 1；C-TRUST-001 |
 | C-POLICY-004 | 快照只读，且在回调返回后失效；策略不得保存快照中的指针供下次使用 | 策略缓存上次快照中的记忆指针，下次读到已删除的记录 | ASan 用例（M1）；评审 |
 | C-POLICY-005 | 模型调用以 `REQUEST_MODEL` 意图表达；模型结果只在后续快照中出现，不在同一次回调中同步获得 | 策略在回调内等待模型结果再决定下一步 | `MA-009` |
 | C-POLICY-006 | 相同快照与私有检查点产生相同输出；回调不依赖隐藏的全局状态、真实时间或未经快照提供的随机数 | 规则策略读取系统时间决定是否触发，重放轨迹不一致 | E3 步骤 1–5（确定性轨迹） |

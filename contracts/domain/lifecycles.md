@@ -120,7 +120,7 @@ M1 已实现的转换（ADR-0018、ADR-0022）：
 | `READY` | `PAUSED` | Goal 或实例的改变使它不再满足放行条件 |
 | `PAUSED` | `READY` | Goal 或实例的改变使它重新满足放行条件；策略的决定使其停下的 Task 除外 |
 | `READY` | `COMPLETED`、`FAILED` | `ayni_step` 中策略的决定结束它 |
-| `READY` | `PAUSED` | `ayni_step` 中策略的决定被拒绝，`hold_status`、`hold_reason` 记下原因；之后不再被决定，也不再放行 |
+| `READY` | `PAUSED` | `ayni_step` 中策略的决定被拒绝，`hold_status`、`hold_reason` 记下原因；之后不再被决定，也不再放行，结束前它的 Goal 不派生新 Task（`TASK_HELD`） |
 | `READY`、`PAUSED` | `CANCELLED` | `TASK_CANCEL`；`GOAL_CANCEL` 作用于它的 Goal 或其祖先；`INSTANCE_STOP` 作用于它的 owner；同一 transition |
 | `READY`、`PAUSED` | `EXPIRED` | 它的 Goal 或其祖先失效；同一 transition（ADR-0020） |
 
