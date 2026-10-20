@@ -5,11 +5,11 @@ namespace {
 
 constexpr uint32_t last_number = UINT32_MAX;
 
-uint64_t saturating_add(uint64_t a, uint64_t b) {
-    return b > no_time - a ? no_time : a + b;
-}
-
 } // namespace
+
+uint64_t time_after(uint64_t start_us, uint64_t delay_us) {
+    return delay_us > no_time - start_us ? no_time : start_us + delay_us;
+}
 
 bool Trigger::fits() const {
     switch (kind) {
@@ -25,7 +25,7 @@ bool Trigger::fits() const {
 TriggerCursor start_schedule(const Trigger &trigger, uint64_t created_us) {
     // ONCE has delay_us 0, so it is due at creation.
     const uint64_t first_due =
-        trigger.kind == AYNI_TRIGGER_NONE ? no_time : saturating_add(created_us, trigger.delay_us);
+        trigger.kind == AYNI_TRIGGER_NONE ? no_time : time_after(created_us, trigger.delay_us);
     return {0, first_due};
 }
 
@@ -46,7 +46,7 @@ TakenOccurrences take_due(const Trigger &trigger, uint64_t now_us, TriggerCursor
     const uint64_t due_us = first_due + more * trigger.period_us;
     const auto count = static_cast<uint32_t>(more + 1U);
     const uint32_t latest = cursor.taken + count;
-    cursor = {latest, latest == last_number ? no_time : saturating_add(due_us, trigger.period_us)};
+    cursor = {latest, latest == last_number ? no_time : time_after(due_us, trigger.period_us)};
     return {latest, count, due_us};
 }
 

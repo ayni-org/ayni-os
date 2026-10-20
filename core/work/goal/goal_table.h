@@ -1,7 +1,8 @@
 // Goals (contracts/domain/lifecycles.md, primitives.md). The table owns each
-// goal's lifecycle, revision, place in the goal tree, parameter block and
-// trigger cursor (ADR-0018, ADR-0019). It enforces the fixed owner (C-LIFE-020), the
-// tree limits (C-LIMIT-007) and the cancel cascade (C-LIFE-022).
+// goal's lifecycle, revision, place in the goal tree, parameter block,
+// trigger cursor and expiry (ADR-0018, ADR-0019, ADR-0020). It enforces the
+// fixed owner (C-LIFE-020), the tree limits (C-LIMIT-007) and the cascades
+// of cancel (C-LIFE-022) and expiry.
 //
 // Goals are never removed: a terminal goal stays queryable and counts toward
 // the capacity until the log defines when it may be dropped (MA-010). So the
@@ -38,6 +39,10 @@ struct NewGoal {
     ayni_bytes_v1 parameters; // fits parameters_fit()
     Trigger trigger;          // trigger.fits()
     uint64_t created_us;      // on the host monotonic clock
+    uint64_t expiry_us;       // from created_us to the expiry; 0: none
+    // The goal type's: how long a due occurrence may wait for a task;
+    // no_time: unbounded (ADR-0020).
+    uint64_t occurrence_wait_max_us;
 };
 
 struct Goal {
@@ -49,6 +54,8 @@ struct Goal {
     uint64_t last_task_id; // 0 before the first task
     Trigger trigger;
     TriggerCursor cursor; // no next occurrence once the goal is terminal
+    uint64_t expires_us;  // no_time: never
+    uint64_t occurrence_wait_max_us;
     GoalOrigin origin;
     uint32_t parent_index; // GoalTable::no_parent for a top-level goal
     uint32_t goal_type_index;
@@ -56,10 +63,13 @@ struct Goal {
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     uint32_t depth;
     uint32_t parameter_size;
+    uint32_t occurrences_skipped;
+    ayni_reason_t skip_reason; // of the latest skip; AYNI_REASON_NONE before any
     ayni_goal_lifecycle_t lifecycle;
 };
 
-enum class GoalChange { pause, resume, cancel };
+// Expire comes from the kernel at expires_us, never from an intent.
+enum class GoalChange { pause, resume, cancel, expire };
 
 class GoalTable {
   public:
@@ -115,7 +125,8 @@ class GoalTable {
 
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every
-    // descendant that is not terminal, to CANCELLED.
+    // descendant that is not terminal, to CANCELLED; expire likewise to
+    // EXPIRED.
     ChangeCheck check(uint32_t index, GoalChange change, uint32_t expected_revision) const;
     // Only after check() returned allowed, with no change in between. Each
     // goal it changes gets the next revision and stamp.commit_seq.
@@ -129,6 +140,17 @@ class GoalTable {
     // at(index).cursor.due_by(now_us).
     TakenOccurrences take_due(uint32_t index, uint64_t now_us, uint64_t task_id,
                               foundation::TransitionStamp stamp);
+    // Takes the occurrences of goal index due by now_us without a task,
+    // counts them as skipped for reason and gives the goal stamp.commit_seq;
+    // the revision stays, as for take_due. Same precondition as take_due.
+    void skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
+                  foundation::TransitionStamp stamp);
+    // Drops the expiry of goal index, which then never expires, and gives it
+    // stamp.commit_seq; the revision stays. Only when expiring it would raise
+    // a revision past the largest, its own or one of the goals or tasks the
+    // expiry reaches (C-COMMIT-012): nothing lowers a revision, so it never
+    // could.
+    void drop_expiry(uint32_t index, foundation::TransitionStamp stamp);
 
     // Whether some goal of the instance that is not terminal is at the
     // largest revision.

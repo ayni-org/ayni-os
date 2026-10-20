@@ -23,18 +23,18 @@ ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, ayni_object_ref
     return status;
 }
 
-// A change that may let ayni_step derive a task: ayni_submit_intent wakes
-// the owner so that it steps.
-void mark_derivation_due(WorkModel &model, IntentOutcome &outcome) {
-    model.derivation_changed = true;
-    outcome.derivation_due = true;
+// A change that may bring the goals' due work forward: ayni_submit_intent
+// wakes the owner so that it steps.
+void mark_due_work(WorkModel &model, IntentOutcome &outcome) {
+    model.due_work_changed = true;
+    outcome.due_work = true;
 }
 
-// Pause lets nothing derive, so it wakes no one (ADR-0018), but the goals
+// Pause brings nothing forward, so it wakes no one (ADR-0018), but the goals
 // it holds may include the one due earliest: the next step searches again
 // and reports the deadline without them (ADR-0019).
-void mark_derivation_held(WorkModel &model) {
-    model.derivation_changed = true;
+void mark_due_work_held(WorkModel &model) {
+    model.due_work_changed = true;
 }
 
 // One check result type per table, with the same four outcomes.
@@ -133,8 +133,15 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
             object_ref(AYNI_OBJECT_AGENT_INSTANCE, create.owner_instance_id, owner->revision),
             failure);
     }
-    const work::NewGoal goal{create.owner_instance_id, create.parent_goal_id, type.index, origin,
-                             create.parameters,        create.trigger,        now_us};
+    const work::NewGoal goal{create.owner_instance_id,
+                             create.parent_goal_id,
+                             type.index,
+                             origin,
+                             create.parameters,
+                             create.trigger,
+                             now_us,
+                             create.expiry_us,
+                             model.goal_types.at(type.index).occurrence_wait_max_us};
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);
@@ -166,10 +173,11 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         // stay used up, as ayni.h says for this defect.
         return AYNI_INTERNAL;
     }
-    // Also when the occurrence is still to come: the host learns its time
-    // from the next step's next_deadline_us.
-    if (model.goals.at(index).cursor.has_next()) {
-        mark_derivation_due(model, outcome);
+    // Also when the occurrence or expiry is still to come: the host learns
+    // its time from the next step's next_deadline_us.
+    const work::Goal &created = model.goals.at(index);
+    if (created.cursor.has_next() || created.expires_us != work::no_time) {
+        mark_due_work(model, outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, goal_id, model.goals.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
@@ -202,9 +210,9 @@ ayni_status_t change_goal(WorkModel &model, const Intent &intent, IntentOutcome 
     // Resume may let the goal's subtree advance; cancel ends tasks, whose
     // places other goals may be waiting for.
     if (change == work::GoalChange::pause) {
-        mark_derivation_held(model);
+        mark_due_work_held(model);
     } else {
-        mark_derivation_due(model, outcome);
+        mark_due_work(model, outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, intent.target_id, model.goals.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
@@ -230,7 +238,7 @@ ayni_status_t cancel_task(WorkModel &model, const Intent &intent, IntentOutcome 
     const foundation::TransitionStamp stamp = model.transitions.next();
     model.tasks.apply(index, work::TaskChange::cancel, stamp);
     // The ended task's place may be what another goal is waiting for.
-    mark_derivation_due(model, outcome);
+    mark_due_work(model, outcome);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
     return AYNI_OK;
@@ -262,9 +270,9 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
     // Resume may let the instance's goals advance; stop ends tasks, whose
     // places other instances' goals may be waiting for.
     if (change == work::InstanceChange::pause) {
-        mark_derivation_held(model);
+        mark_due_work_held(model);
     } else {
-        mark_derivation_due(model, outcome);
+        mark_due_work(model, outcome);
     }
     outcome.object =
         object_ref(AYNI_OBJECT_AGENT_INSTANCE, intent.target_id, model.agents.at(index).revision);

@@ -1,6 +1,7 @@
 // Goals owned by work/goal: the fixed owner (C-LIFE-020), the tree limits
 // (C-LIMIT-007), revisions (C-COMMIT-012), pause and the cancel cascade
-// (C-LIFE-021, C-LIFE-022), and the trigger cursor (ADR-0018).
+// (C-LIFE-021, C-LIFE-022), the trigger cursor (ADR-0018), and expiry and
+// skipped occurrences (ADR-0020).
 
 #include "work/goal/goal_table.h"
 
@@ -40,9 +41,9 @@ class Goals {
     // Admits and inserts; returns the new goal's id, or 0 if refused.
     uint64_t create(uint64_t parent_goal_id = 0, uint64_t owner_instance_id = owner,
                     ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
-                    uint64_t created_us = 0) {
+                    uint64_t created_us = 0, uint64_t expiry_us = 0) {
         const NewGoal goal =
-            new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us);
+            new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us, expiry_us);
         if (table_.admit(goal) != Admission::admitted) {
             return 0;
         }
@@ -54,14 +55,16 @@ class Goals {
 
     static NewGoal new_goal(uint64_t parent_goal_id, uint64_t owner_instance_id = owner,
                             ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
-                            uint64_t created_us = 0) {
+                            uint64_t created_us = 0, uint64_t expiry_us = 0) {
         return {owner_instance_id,
                 parent_goal_id,
                 0,
                 {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
                 parameters,
                 trigger,
-                created_us};
+                created_us,
+                expiry_us,
+                ayni::work::no_time};
     }
 
     const Goal &goal(uint64_t goal_id) {
@@ -259,7 +262,8 @@ TEST(GoalTable, lifecycle_decides_which_changes_are_allowed) {
     ASSERT_EQ(goals.change(id, GoalChange::pause), ChangeCheck::allowed);
     EXPECT_EQ(goals.change(id, GoalChange::pause), ChangeCheck::invalid_state);
     ASSERT_EQ(goals.change(id, GoalChange::cancel), ChangeCheck::allowed);
-    for (const GoalChange change : {GoalChange::pause, GoalChange::resume, GoalChange::cancel}) {
+    for (const GoalChange change :
+         {GoalChange::pause, GoalChange::resume, GoalChange::cancel, GoalChange::expire}) {
         EXPECT_EQ(goals.change(id, change), ChangeCheck::invalid_state);
     }
     EXPECT_EQ(goals.goal(id).revision, 3U);
@@ -295,6 +299,85 @@ TEST(GoalTable, cancel_reaches_every_live_descendant_and_nothing_else) {
     EXPECT_EQ(goals.goal(other_child).revision, 1U);
 }
 
+// ADR-0020: expiry ends a goal, paused or not, and its live descendants as
+// cancel does, with EXPIRED and no cancel revision, and clears their next
+// occurrence and expiry.
+TEST(GoalTable, expiry_reaches_every_live_descendant_and_nothing_else) {
+    Goals goals({8, 0, 2, 2});
+    const Trigger every_second{AYNI_TRIGGER_INTERVAL, 0, AYNI_TRIGGER_PERIOD_MIN_US};
+    const uint64_t root = goals.create(0, owner, {nullptr, 0}, no_trigger, 0, 100);
+    const uint64_t child = goals.create(root, owner, {nullptr, 0}, every_second, 0, 50);
+    const uint64_t done_child = goals.create(root);
+    const uint64_t other_root = goals.create(0, owner, {nullptr, 0}, no_trigger, 0, 100);
+    ASSERT_EQ(goals.change(done_child, GoalChange::cancel), ChangeCheck::allowed);
+    ASSERT_EQ(goals.change(root, GoalChange::pause), ChangeCheck::allowed);
+
+    ASSERT_EQ(goals.change(root, GoalChange::expire), ChangeCheck::allowed);
+    const uint64_t seq = goals.last_stamp().commit_seq;
+    for (const uint64_t id : {root, child}) {
+        const Goal &goal = goals.goal(id);
+        EXPECT_EQ(goal.lifecycle, AYNI_GOAL_EXPIRED) << id;
+        EXPECT_EQ(goal.commit_seq, seq) << id;
+        EXPECT_EQ(goal.cancel_revision, 0U) << id;
+        EXPECT_EQ(goal.expires_us, no_time) << id;
+        EXPECT_FALSE(goal.cursor.has_next()) << id;
+    }
+    EXPECT_EQ(goals.goal(root).revision, 3U);
+    EXPECT_EQ(goals.goal(child).revision, 2U);
+    EXPECT_EQ(goals.goal(done_child).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(goals.goal(done_child).revision, 2U);
+    EXPECT_EQ(goals.goal(other_root).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(goals.goal(other_root).expires_us, 100U);
+}
+
+// ADR-0020: the expiry is counted from creation, saturating at no_time,
+// which never comes; 0 means none.
+TEST(GoalTable, expiry_is_counted_from_creation) {
+    Goals goals(small);
+    const auto expiry_after = [&](uint64_t expiry_us) {
+        return goals.goal(goals.create(0, owner, {nullptr, 0}, no_trigger, 300, expiry_us))
+            .expires_us;
+    };
+    EXPECT_EQ(expiry_after(50), 350U);
+    EXPECT_EQ(expiry_after(0), no_time);
+    EXPECT_EQ(expiry_after(no_time - 301U), no_time - 1U);
+    EXPECT_EQ(expiry_after(no_time - 300U), no_time);
+    EXPECT_EQ(expiry_after(no_time), no_time);
+}
+
+// ADR-0020: a skip takes the due occurrences without a task, counts them and
+// keeps the revision, as taking them for a task does; dropping an expiry
+// keeps the goal as it is.
+TEST(GoalTable, skips_and_dropped_expiries_keep_the_revision) {
+    Goals goals(small);
+    const Trigger every_second{AYNI_TRIGGER_INTERVAL, 0, AYNI_TRIGGER_PERIOD_MIN_US};
+    const uint64_t id = goals.create(0, owner, {nullptr, 0}, every_second, 0, 100);
+    const uint32_t index = goals.index_of(id);
+    goals->skip_due(index, 2U * AYNI_TRIGGER_PERIOD_MIN_US, AYNI_REASON_TASK_CAPACITY,
+                    goals.next_stamp());
+    Goal goal = goals.goal(id);
+    EXPECT_EQ(goal.occurrences_skipped, 3U);
+    EXPECT_EQ(goal.skip_reason, AYNI_REASON_TASK_CAPACITY);
+    EXPECT_EQ(goal.cursor.taken, 3U);
+    EXPECT_EQ(goal.cursor.next_due_us, 3U * AYNI_TRIGGER_PERIOD_MIN_US);
+    EXPECT_EQ(goal.last_task_id, 0U);
+    EXPECT_EQ(goal.revision, 1U);
+    EXPECT_EQ(goal.commit_seq, goals.last_stamp().commit_seq);
+
+    goals->skip_due(index, 3U * AYNI_TRIGGER_PERIOD_MIN_US, AYNI_REASON_ID_EXHAUSTED,
+                    goals.next_stamp());
+    EXPECT_EQ(goals.goal(id).occurrences_skipped, 4U);
+    EXPECT_EQ(goals.goal(id).skip_reason, AYNI_REASON_ID_EXHAUSTED);
+
+    goals->drop_expiry(index, goals.next_stamp());
+    goal = goals.goal(id);
+    EXPECT_EQ(goal.expires_us, no_time);
+    EXPECT_EQ(goal.lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(goal.revision, 1U);
+    EXPECT_EQ(goal.commit_seq, goals.last_stamp().commit_seq);
+    EXPECT_EQ(goal.cursor.next_due_us, 4U * AYNI_TRIGGER_PERIOD_MIN_US);
+}
+
 // C-COMMIT-012: a stale revision is a conflict, whatever the state.
 TEST(GoalTable, stale_revision_is_a_conflict_before_the_state_is_checked) {
     Goals goals(small);
@@ -317,6 +400,7 @@ TEST(GoalTable, change_past_the_largest_revision_is_refused) {
     goals.raw(child).revision = max_revision;
     EXPECT_EQ(goals.change(child, GoalChange::pause), ChangeCheck::revision_exhausted);
     EXPECT_EQ(goals.change(root, GoalChange::cancel), ChangeCheck::revision_exhausted);
+    EXPECT_EQ(goals.change(root, GoalChange::expire), ChangeCheck::revision_exhausted);
     EXPECT_EQ(goals.goal(root).lifecycle, AYNI_GOAL_ACTIVE);
     // Pausing the root raises only the root's revision.
     EXPECT_EQ(goals.change(root, GoalChange::pause), ChangeCheck::allowed);

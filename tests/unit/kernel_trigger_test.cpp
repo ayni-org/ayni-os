@@ -277,9 +277,10 @@ TEST(WorkTrigger, goal_due_earliest_derives_first) {
 }
 
 // The deadline is the earliest occurrence of a goal that may advance; a full
-// task table sets none, since only a task that ends makes room, and the
-// intent that ends it wakes the owner. Pausing the goal due earliest wakes
-// no one, but the next step reports the deadline without it.
+// task table sets none for occurrences that wait without limit (ADR-0020),
+// since only a task that ends makes room, and the intent that ends it wakes
+// the owner. Pausing the goal due earliest wakes no one, but the next step
+// reports the deadline without it.
 TEST(WorkTrigger, deadline_counts_only_goals_that_could_derive) {
     WorkNode work;
     work.node().config().task_capacity = 1;
@@ -326,9 +327,10 @@ TEST(WorkTrigger, draining_reports_no_deadline) {
     request.post();
 }
 
-// With no id left a task cannot derive until the next boot, so the deadline
-// goes once the last id is used, whatever used it, and does not come back
-// when the occurrence falls due.
+// With no id left a task cannot derive until the next boot, so for an
+// occurrence that waits without limit (ADR-0020) the deadline goes once the
+// last id is used, whatever used it, and does not come back when the
+// occurrence falls due.
 TEST(WorkTrigger, used_up_ids_report_no_deadline) {
     WorkNode work;
     work.run();

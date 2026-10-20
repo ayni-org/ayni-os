@@ -22,6 +22,7 @@ struct GoalCreate {
     uint64_t parent_goal_id; // 0: a top-level goal
     ayni_bytes_v1 parameters;
     work::Trigger trigger;
+    uint64_t expiry_us; // from creation; 0: never
 };
 
 struct Intent {
@@ -42,7 +43,9 @@ struct IntentFailure {
 struct IntentOutcome {
     ayni_object_ref_v1 object;
     uint64_t commit_seq;
-    bool derivation_due; // ayni_step may now derive a task (ADR-0018)
+    // The goals' due work may have come or come sooner: ayni_submit_intent
+    // wakes the owner (ADR-0018, ADR-0020).
+    bool due_work;
 };
 
 // Whether the kind is one this library implements.

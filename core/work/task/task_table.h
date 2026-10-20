@@ -46,8 +46,10 @@ struct Task {
 };
 
 // Pause takes READY to PAUSED and resume takes it back; cancel takes a READY
-// or PAUSED task to CANCELLED. Tasks do not reach RUNNING or CANCELLING yet.
-enum class TaskChange { pause, resume, cancel };
+// or PAUSED task to CANCELLED, and expire, which comes only with its goal's
+// expiry (ADR-0020), to EXPIRED. Tasks do not reach RUNNING or CANCELLING
+// yet.
+enum class TaskChange { pause, resume, cancel, expire };
 
 class TaskTable {
   public:

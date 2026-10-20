@@ -10,7 +10,8 @@ struct After {
     ayni_goal_lifecycle_t goal_lifecycle = 0;
     uint64_t instance_id = 0;
     ayni_agent_lifecycle_t instance_lifecycle = 0;
-    bool cancel = false; // the tasks it reaches are cancelled
+    bool ends = false;                      // the tasks it reaches end...
+    TaskChange ending = TaskChange::cancel; // ...by this change
 };
 
 // Walks up at most goal_depth_max parents.
@@ -38,8 +39,8 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
 // The change a task the change reaches undergoes, if any.
 bool settles(const WorkTables &tables, const Task &task, const After &after,
              TaskChange &out_change) {
-    if (after.cancel) {
-        out_change = TaskChange::cancel;
+    if (after.ends) {
+        out_change = after.ending;
         return TaskTable::allows(task, out_change);
     }
     out_change = may_advance(tables, task.goal_index, task.owner_instance_id, after)
@@ -85,7 +86,13 @@ After after_goal_change(uint32_t goal_index, GoalChange change) {
         break;
     case GoalChange::cancel:
         after.goal_lifecycle = AYNI_GOAL_CANCELLED;
-        after.cancel = true;
+        after.ends = true;
+        after.ending = TaskChange::cancel;
+        break;
+    case GoalChange::expire:
+        after.goal_lifecycle = AYNI_GOAL_EXPIRED;
+        after.ends = true;
+        after.ending = TaskChange::expire;
         break;
     }
     return after;
@@ -103,7 +110,8 @@ After after_instance_change(uint64_t instance_id, InstanceChange change) {
         break;
     case InstanceChange::stop:
         after.instance_lifecycle = AYNI_AGENT_STOPPED;
-        after.cancel = true;
+        after.ends = true;
+        after.ending = TaskChange::cancel;
         break;
     }
     return after;
@@ -149,27 +157,53 @@ void apply_instance_change(WorkTables &tables, uint32_t instance_index, Instance
     tables.agents.apply(instance_index, change, stamp);
 }
 
-bool find_derivable(const WorkTables &tables, uint64_t now_us, uint32_t &out_goal_index,
-                    uint64_t &out_next_due_us) {
-    out_next_due_us = no_time;
-    if (!tables.tasks.has_room()) {
-        return false;
+ayni_reason_t derivation_blocker(const TaskTable &tasks, bool id_left) {
+    if (!tasks.has_room()) {
+        return AYNI_REASON_TASK_CAPACITY;
     }
-    uint32_t earliest = GoalTable::no_parent;
+    return id_left ? AYNI_REASON_NONE : AYNI_REASON_ID_EXHAUSTED;
+}
+
+// So an unbounded wait, added to when an occurrence fell due, never ends.
+static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
+
+bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
+                   uint64_t &out_next_us) {
+    const ayni_reason_t blocker = derivation_blocker(tables.tasks, id_left);
+    // Strictly earlier throughout, so the first created wins a tie. A
+    // terminal goal has neither an expiry nor a next occurrence.
+    uint32_t expiring = GoalTable::no_parent;
+    uint64_t expires_us = no_time;
+    uint32_t advancing = GoalTable::no_parent;
+    uint64_t advances_us = no_time;
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
-        // Strictly earlier, so the first created wins a tie.
-        if (goal.cursor.next_due_us < out_next_due_us &&
-            may_advance(tables, index, goal.owner_instance_id, After{})) {
-            out_next_due_us = goal.cursor.next_due_us;
-            earliest = index;
+        if (goal.expires_us < expires_us) {
+            expires_us = goal.expires_us;
+            expiring = index;
+        }
+        const uint64_t due_us =
+            blocker == AYNI_REASON_NONE
+                ? goal.cursor.next_due_us
+                : time_after(goal.cursor.next_due_us, goal.occurrence_wait_max_us);
+        if (due_us < advances_us && may_advance(tables, index, goal.owner_instance_id, After{})) {
+            advances_us = due_us;
+            advancing = index;
         }
     }
-    if (earliest == GoalTable::no_parent || !tables.goals.at(earliest).cursor.due_by(now_us)) {
-        return false;
+    out_next_us = expires_us < advances_us ? expires_us : advances_us;
+    // A clock at no_time has reached every time, the never of no candidate
+    // included.
+    if (expiring != GoalTable::no_parent && expires_us <= now_us) {
+        out_work = {DueWork::Kind::expire, expiring, AYNI_REASON_NONE};
+        return true;
     }
-    out_goal_index = earliest;
-    return true;
+    if (advancing != GoalTable::no_parent && advances_us <= now_us) {
+        out_work = {blocker == AYNI_REASON_NONE ? DueWork::Kind::derive : DueWork::Kind::skip,
+                    advancing, blocker};
+        return true;
+    }
+    return false;
 }
 
 void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t task_id,
@@ -178,7 +212,7 @@ void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t t
     const Goal &goal = tables.goals.at(goal_index);
     const NewTask task{goal.goal_id, goal.owner_instance_id, taken.due_us,
                        goal_index,   taken.latest,           taken.count};
-    // Cannot fail: find_derivable checked for room.
+    // Cannot fail: find_due_work checked for room.
     static_cast<void>(tables.tasks.insert(task, task_id, stamp));
 }
 

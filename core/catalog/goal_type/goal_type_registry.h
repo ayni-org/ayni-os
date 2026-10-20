@@ -23,6 +23,9 @@ struct GoalType {
     void *ctx = nullptr;
     ayni_goal_validate_fn validate = nullptr; // null: the type takes no parameters
     uint32_t trigger_kinds = 0;               // AYNI_TRIGGER_BIT of each kind it accepts
+    // How long a due occurrence may wait for a task (ADR-0020);
+    // AYNI_OCCURRENCE_WAIT_UNBOUNDED: no limit.
+    uint64_t occurrence_wait_max_us = 0;
 };
 
 class GoalTypeRegistry {

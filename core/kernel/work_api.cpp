@@ -79,7 +79,7 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         result.commit_seq = outcome.commit_seq;
         *out_result = result;
     }
-    if (status == AYNI_OK && outcome.derivation_due) {
+    if (status == AYNI_OK && outcome.due_work) {
         kernel->host.wake(kernel->host.ctx);
     }
     return status;
@@ -112,6 +112,14 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.trigger_delay_us = goal.trigger.delay_us;
     info.trigger_period_us = goal.trigger.period_us;
     info.next_due_us = goal.cursor.next_due_us;
+    info.expires_us = goal.expires_us;
+    info.occurrences_skipped = goal.occurrences_skipped;
+    info.skip_reason = goal.skip_reason;
+    // Read from the tables rather than kept, so a query needs no clock.
+    if (goal.cursor.has_next()) {
+        info.wait_reason =
+            ayni::work::derivation_blocker(kernel.work.tasks, kernel.work.ids.available());
+    }
     out = info;
 }
 
@@ -198,6 +206,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     type.ctx = goal_type->ctx;
     type.validate = goal_type->validate;
     type.trigger_kinds = goal_type->trigger_kinds;
+    type.occurrence_wait_max_us = goal_type->occurrence_wait_max_us;
     return add_status(kernel->work.goal_types.add(type));
 }
 

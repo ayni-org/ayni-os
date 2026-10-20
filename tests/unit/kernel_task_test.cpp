@@ -222,8 +222,8 @@ TEST(WorkTask, only_running_derives_tasks) {
     EXPECT_EQ(model.tasks.size(), 0U);
 }
 
-// ADR-0018 decision 8: without an id the occurrence waits on its goal; it is
-// neither dropped nor reported.
+// ADR-0018 decision 8: without an id the occurrence waits on its goal; with
+// no wait limit (ADR-0020) it is never dropped.
 TEST(WorkTask, used_up_ids_leave_the_occurrence_waiting) {
     WorkNode work;
     work.run();

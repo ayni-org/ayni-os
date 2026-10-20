@@ -19,6 +19,9 @@ namespace ayni::work {
 
 constexpr uint64_t no_time = UINT64_MAX;
 
+// start_us + delay_us, or no_time when that is past the clock's range.
+uint64_t time_after(uint64_t start_us, uint64_t delay_us);
+
 struct Trigger {
     ayni_trigger_kind_t kind;
     uint64_t delay_us;  // DELAY and INTERVAL: from creation to the first occurrence

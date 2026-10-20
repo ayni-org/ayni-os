@@ -63,12 +63,14 @@ struct WorkModel {
     // (ayni.h, C-POLICY-001), so nothing changes between a check and the
     // change it allows.
     bool calling_out = false;
-    // Set by a change to which goals may derive a task; cleared once a
-    // search finds none. That search also records when the next occurrence
-    // of a goal that may advance falls due, so ayni_step searches again only
-    // after such a change or once that time has come (ADR-0019).
-    bool derivation_changed = false;
-    uint64_t next_due_us = work::no_time;
+    // Set by a change to the goals' due work (which goals may advance or
+    // expire, or room in the task table); cleared once a search finds none
+    // due. That search also records when the next due work comes and whether
+    // an id was left, so ayni_step searches again only after such a change,
+    // once that time has come or once no id is left (ADR-0019, ADR-0020).
+    bool due_work_changed = false;
+    uint64_t next_due_work_us = work::no_time;
+    bool searched_with_id = true;
 };
 
 // Opens a session for a registered principal: AYNI_OK with a new id,
@@ -84,16 +86,17 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us,
                            IntentOutcome &outcome, IntentFailure &failure);
 
-// Derives the next task due by now_us as one transition (ADR-0018). Returns
-// false, changing nothing, when no goal can derive one now or no id is left.
-bool derive_next_task(WorkModel &model, uint64_t now_us);
-// Whether derive_next_task(now_us) would derive a task; out_next_due_us is
-// then now_us. When it would not, clears derivation_changed and sets
-// out_next_due_us to when a goal that may advance next has an occurrence due
-// (work::no_time: none, no room in the task table, or no id left).
-// Scans the goal table, each goal along at most goal_depth_max ancestors,
-// only while derivation_changed is set or that time has come.
-bool refresh_derivation_due(WorkModel &model, uint64_t now_us, uint64_t &out_next_due_us);
+// Does the goals' next due work by now_us (work::find_due_work): expires a
+// goal, derives a task or skips occurrences, each as one transition.
+// Returns false, changing nothing, when none is due. An expiry that would
+// exhaust a revision drops the goal's expiry instead (C-COMMIT-012).
+bool do_due_work(WorkModel &model, uint64_t now_us);
+// Whether do_due_work(now_us) would do something; out_next_us is then now_us.
+// When it would not, clears due_work_changed and sets out_next_us to when the
+// next due work comes (work::no_time: none will without a change). Scans the
+// goal table, each goal along at most goal_depth_max ancestors, only while
+// due_work_changed is set, that time has come or the ids have just run out.
+bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us);
 
 } // namespace ayni::kernel
 

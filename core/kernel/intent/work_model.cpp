@@ -27,49 +27,72 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
 
 namespace {
 
-// Clears derivation_changed when there is nothing to derive, so later calls
-// skip the search until a change sets it again or next_due_us comes. Keeps it
-// set when a goal is found: deriving from it changes the tables. Ids are
-// checked first because whatever takes the last one (a goal, a session)
-// need not mark the search.
-bool next_derivable(WorkModel &model, uint64_t now_us, uint32_t &out_goal_index) {
-    if (!model.ids.available()) {
-        model.derivation_changed = false;
-        model.next_due_us = work::no_time;
+// Clears due_work_changed when nothing is due, so later calls skip the
+// search until a change sets it again, next_due_work_us comes or the ids run
+// out. Keeps it set when work is found: doing it changes the tables. Ids are
+// compared rather than marked because whatever takes the last one (a goal, a
+// session) need not know about due work.
+bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work) {
+    const bool id_left = model.ids.available();
+    if (!model.due_work_changed && id_left == model.searched_with_id &&
+        now_us < model.next_due_work_us) {
         return false;
     }
-    if (!model.derivation_changed && now_us < model.next_due_us) {
-        return false;
-    }
-    uint64_t next_due_us = work::no_time;
-    if (work::find_derivable(model.tables(), now_us, out_goal_index, next_due_us)) {
-        model.derivation_changed = true;
+    model.searched_with_id = id_left;
+    uint64_t next_us = work::no_time;
+    if (work::find_due_work(model.tables(), now_us, id_left, out_work, next_us)) {
+        model.due_work_changed = true;
         return true;
     }
-    model.derivation_changed = false;
-    model.next_due_us = next_due_us;
+    model.due_work_changed = false;
+    model.next_due_work_us = next_us;
     return false;
+}
+
+// Expiring would exhaust a revision: the goal's own, a descendant's or a
+// task's. Nothing lowers a revision, so the goal never could expire.
+bool expiry_exhausts(const work::WorkTables &tables, uint32_t goal_index) {
+    const work::GoalTable &goals = tables.goals;
+    return goals.check(goal_index, work::GoalChange::expire, goals.at(goal_index).revision) !=
+               work::GoalTable::ChangeCheck::allowed ||
+           work::goal_change_exhausts_tasks(tables, goal_index, work::GoalChange::expire);
 }
 
 } // namespace
 
-bool refresh_derivation_due(WorkModel &model, uint64_t now_us, uint64_t &out_next_due_us) {
-    uint32_t goal_index = 0;
-    const bool due = next_derivable(model, now_us, goal_index);
-    out_next_due_us = due ? now_us : model.next_due_us;
+bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us) {
+    work::DueWork work{};
+    const bool due = next_due_work(model, now_us, work);
+    out_next_us = due ? now_us : model.next_due_work_us;
     return due;
 }
 
-bool derive_next_task(WorkModel &model, uint64_t now_us) {
-    uint32_t goal_index = 0;
-    if (!next_derivable(model, now_us, goal_index)) {
+bool do_due_work(WorkModel &model, uint64_t now_us) {
+    work::DueWork work{};
+    if (!next_due_work(model, now_us, work)) {
         return false;
     }
-    uint64_t task_id = 0;
-    static_cast<void>(model.ids.allocate(task_id)); // available() above
     work::WorkTables tables = model.tables();
-    work::derive(tables, goal_index, now_us, task_id, model.transitions.next());
-    return true;
+    switch (work.kind) {
+    case work::DueWork::Kind::expire:
+        if (expiry_exhausts(tables, work.goal_index)) {
+            model.goals.drop_expiry(work.goal_index, model.transitions.next());
+        } else {
+            work::apply_goal_change(tables, work.goal_index, work::GoalChange::expire,
+                                    model.transitions.next());
+        }
+        return true;
+    case work::DueWork::Kind::derive: {
+        uint64_t task_id = 0;
+        static_cast<void>(model.ids.allocate(task_id)); // find_due_work saw one left
+        work::derive(tables, work.goal_index, now_us, task_id, model.transitions.next());
+        return true;
+    }
+    case work::DueWork::Kind::skip:
+        model.goals.skip_due(work.goal_index, now_us, work.skip_reason, model.transitions.next());
+        return true;
+    }
+    return false;
 }
 
 } // namespace ayni::kernel
