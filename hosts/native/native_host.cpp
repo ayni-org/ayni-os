@@ -235,9 +235,8 @@ ayni_submit_result_t Host::storage_append(void *ctx, const ayni_storage_batch_v1
                             batch->encoded.data, nullptr, batch->encoded.size});
 }
 
-ayni_submit_result_t Host::storage_read_prefix(void *ctx, uint64_t from_commit_seq,
-                                               uint8_t *buffer, uint32_t buffer_size,
-                                               ayni_attempt_ref_v1 attempt,
+ayni_submit_result_t Host::storage_read_prefix(void *ctx, uint64_t from_commit_seq, uint8_t *buffer,
+                                               uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
                                                ayni_completion_t *completion) {
     Storage *storage = static_cast<Host *>(ctx)->storage_.get();
     if (storage == nullptr || completion == nullptr || (buffer == nullptr && buffer_size != 0U)) {

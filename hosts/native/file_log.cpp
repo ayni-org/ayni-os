@@ -149,7 +149,8 @@ FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
         return {OpenStatus::file_error, errno};
     }
     fd_ = ::openat(directory_fd, file_name, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    Opened opened = fd_ < 0 ? Opened{OpenStatus::file_error, errno} : check_file_header(directory_fd);
+    Opened opened =
+        fd_ < 0 ? Opened{OpenStatus::file_error, errno} : check_file_header(directory_fd);
     if (opened.status == OpenStatus::ok) {
         opened = scan();
     }
@@ -188,7 +189,8 @@ FileLog::Opened FileLog::check_file_header(int directory_fd) {
 
     const std::array<uint8_t, file_header_size> expected = file_header();
     std::array<uint8_t, file_header_size> found{};
-    const std::size_t present = static_cast<std::size_t>(std::min<uint64_t>(file_size_, found.size()));
+    const std::size_t present =
+        static_cast<std::size_t>(std::min<uint64_t>(file_size_, found.size()));
     int error = read_exact(fd_, 0, found.data(), present);
     if (error != 0) {
         return {OpenStatus::file_error, error};
@@ -270,7 +272,8 @@ int FileLog::find_later_header(uint64_t at, bool &found) const {
     std::array<uint8_t, chunk_size> chunk{};
     uint64_t from = at + 1U;
     while (file_size_ - from >= frame_header_size) {
-        const auto size = static_cast<std::size_t>(std::min<uint64_t>(chunk.size(), file_size_ - from));
+        const auto size =
+            static_cast<std::size_t>(std::min<uint64_t>(chunk.size(), file_size_ - from));
         int error = read_exact(fd_, from, chunk.data(), size);
         if (error != 0) {
             return error;
@@ -300,8 +303,7 @@ int FileLog::find_later_header(uint64_t at, bool &found) const {
 bool FileLog::read_header(uint64_t at, Frame &frame, int &error) const {
     std::array<uint8_t, frame_header_size> header{};
     error = read_exact(fd_, at, header.data(), header.size());
-    if (error != 0 ||
-        std::memcmp(header.data(), frame_magic.data(), frame_magic.size()) != 0 ||
+    if (error != 0 || std::memcmp(header.data(), frame_magic.data(), frame_magic.size()) != 0 ||
         load_le32(header.data() + frame_header_crc_at) !=
             crc32(header.data(), frame_header_crc_at)) {
         return false;
@@ -319,9 +321,9 @@ bool FileLog::check_payload(const Frame &frame, uint8_t *out, int &error) const 
     uint32_t crc = 0;
     for (uint32_t done = 0; done < frame.payload_size;) {
         uint8_t *into = out != nullptr ? out : chunk.data();
-        const uint32_t size =
-            out != nullptr ? frame.payload_size
-                           : std::min<uint32_t>(chunk_size, frame.payload_size - done);
+        const uint32_t size = out != nullptr
+                                  ? frame.payload_size
+                                  : std::min<uint32_t>(chunk_size, frame.payload_size - done);
         error = read_exact(fd_, frame.payload_at + done, into, size);
         if (error != 0) {
             return false;

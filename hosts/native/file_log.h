@@ -100,9 +100,9 @@ class FileLog {
     bool sync();
 
     int fd_ = -1;
-    uint64_t file_size_ = 0; // at open, for the scan
-    uint64_t end_ = 0;       // past the last whole frame; where the next frame goes
-    bool damaged_ = false;   // the frame at end_ is damaged and a later frame follows
+    uint64_t file_size_ = 0;  // at open, for the scan
+    uint64_t end_ = 0;        // past the last whole frame; where the next frame goes
+    bool damaged_ = false;    // the frame at end_ is damaged and a later frame follows
     bool tail_dirty_ = false; // bytes past end_ that the next append truncates
     bool sync_failed_ = false;
     // Every frame before read_from_ has a commit_seq of at most read_max_seq_,

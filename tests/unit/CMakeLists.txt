@@ -7,6 +7,7 @@ add_executable(ayni_unit_tests
     event_queue_test.cpp
     goal_table_test.cpp
     goal_type_registry_test.cpp
+    host_storage_contract_test.cpp
     kernel_api_test.cpp
     kernel_checkpoint_test.cpp
     kernel_event_test.cpp
