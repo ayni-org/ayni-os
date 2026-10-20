@@ -1,18 +1,20 @@
 // Goals owned by work/goal: the fixed owner (C-LIFE-020), the tree limits
 // (C-LIMIT-007), revisions (C-COMMIT-012), pause and the cancel cascade
-// (C-LIFE-021, C-LIFE-022), the trigger cursor (ADR-0018), and expiry and
-// skipped occurrences (ADR-0020).
+// (C-LIFE-021, C-LIFE-022), the trigger cursor (ADR-0018), expiry and
+// skipped occurrences (ADR-0020), and recorded local inputs (ADR-0021).
 
 #include "work/goal/goal_table.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <vector>
 
 namespace {
 
+using ayni::catalog::CatalogId;
 using ayni::work::Goal;
 using ayni::work::GoalChange;
 using ayni::work::GoalTable;
@@ -26,6 +28,12 @@ using ChangeCheck = GoalTable::ChangeCheck;
 constexpr uint64_t owner = 50;
 constexpr Trigger no_trigger{AYNI_TRIGGER_NONE, 0, 0};
 constexpr uint64_t other_owner = 60;
+
+CatalogId catalog_id(const char *text) {
+    CatalogId id;
+    EXPECT_TRUE(id.assign({text, static_cast<uint32_t>(std::strlen(text))}));
+    return id;
+}
 
 class Goals {
   public:
@@ -42,8 +50,19 @@ class Goals {
     uint64_t create(uint64_t parent_goal_id = 0, uint64_t owner_instance_id = owner,
                     ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
                     uint64_t created_us = 0, uint64_t expiry_us = 0) {
-        const NewGoal goal =
-            new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us, expiry_us);
+        return insert(new_goal(parent_goal_id, owner_instance_id, parameters, trigger, created_us,
+                               expiry_us));
+    }
+
+    // A goal that takes local inputs from source.
+    uint64_t create_input(const char *source, uint64_t parent_goal_id = 0) {
+        NewGoal goal =
+            new_goal(parent_goal_id, owner, {nullptr, 0}, {AYNI_TRIGGER_LOCAL_INPUT, 0, 0});
+        goal.trigger_source = catalog_id(source);
+        return insert(goal);
+    }
+
+    uint64_t insert(const NewGoal &goal) {
         if (table_.admit(goal) != Admission::admitted) {
             return 0;
         }
@@ -498,6 +517,65 @@ TEST(GoalTable, owned_at_largest_revision_ignores_terminal_and_foreign_goals) {
     EXPECT_FALSE(goals->owned_at_largest_revision(owner));
     goals.raw(live).revision = max_revision;
     EXPECT_TRUE(goals->owned_at_largest_revision(owner));
+}
+
+// ADR-0021: an input reaches every live goal that takes its source, paused
+// ones included, in the one transition it is recorded in; each records an
+// occurrence and keeps its revision.
+TEST(GoalTable, input_is_recorded_on_every_live_goal_with_its_source) {
+    Goals goals(small);
+    const uint64_t active = goals.create_input("button");
+    const uint64_t paused = goals.create_input("button");
+    const uint64_t other = goals.create_input("knob");
+    const uint64_t timed = goals.create(0, owner, {nullptr, 0}, {AYNI_TRIGGER_ONCE, 0, 0}, 5);
+    const uint64_t cancelled = goals.create_input("button");
+    ASSERT_EQ(goals.change(paused, GoalChange::pause), ChangeCheck::allowed);
+    ASSERT_EQ(goals.change(cancelled, GoalChange::cancel), ChangeCheck::allowed);
+    const uint64_t other_seq = goals.goal(other).commit_seq;
+    const uint64_t timed_seq = goals.goal(timed).commit_seq;
+    const uint64_t cancelled_seq = goals.goal(cancelled).commit_seq;
+    EXPECT_FALSE(goals.goal(active).cursor.has_next());
+
+    const CatalogId button = catalog_id("button");
+    ASSERT_TRUE(goals->takes_input(button));
+    EXPECT_FALSE(goals->takes_input(catalog_id("dial")));
+    goals->record_input(button, 700, goals.next_stamp());
+    const uint64_t seq = goals.last_stamp().commit_seq;
+    for (const uint64_t id : {active, paused}) {
+        const Goal &goal = goals.goal(id);
+        EXPECT_EQ(goal.cursor.next_due_us, 700U) << id;
+        EXPECT_EQ(goal.cursor.waiting, 1U) << id;
+        EXPECT_EQ(goal.commit_seq, seq) << id;
+    }
+    EXPECT_EQ(goals.goal(active).revision, 1U);
+    EXPECT_EQ(goals.goal(paused).revision, 2U);
+    EXPECT_EQ(goals.goal(other).cursor.waiting, 0U);
+    EXPECT_EQ(goals.goal(other).commit_seq, other_seq);
+    EXPECT_EQ(goals.goal(timed).cursor.next_due_us, 5U);
+    EXPECT_EQ(goals.goal(timed).commit_seq, timed_seq);
+    EXPECT_FALSE(goals.goal(cancelled).cursor.has_next());
+    EXPECT_EQ(goals.goal(cancelled).commit_seq, cancelled_seq);
+}
+
+// A goal leaving the live states drops the inputs it has not taken, and a
+// goal with no number left takes none.
+TEST(GoalTable, terminal_and_exhausted_goals_take_no_input) {
+    Goals goals(small);
+    const uint64_t root = goals.create_input("button");
+    const uint64_t child = goals.create_input("button", root);
+    const CatalogId button = catalog_id("button");
+    goals->record_input(button, 700, goals.next_stamp());
+    ASSERT_EQ(goals.change(root, GoalChange::cancel), ChangeCheck::allowed);
+    for (const uint64_t id : {root, child}) {
+        EXPECT_FALSE(goals.goal(id).cursor.has_next()) << id;
+        EXPECT_EQ(goals.goal(id).cursor.waiting, 0U) << id;
+        EXPECT_EQ(goals.goal(id).cursor.taken, 0U) << id;
+    }
+    EXPECT_FALSE(goals->takes_input(button));
+
+    const uint64_t full = goals.create_input("button");
+    goals.raw(full).cursor.taken = std::numeric_limits<uint32_t>::max();
+    EXPECT_FALSE(goals->takes_input(button));
 }
 
 } // namespace

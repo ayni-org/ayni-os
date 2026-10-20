@@ -1,6 +1,7 @@
-// The schedule of a goal's occurrences (ADR-0019): which times each trigger
-// kind takes, when occurrences fall due, taking every due occurrence at
-// once, and the ends of the clock and of the occurrence numbers.
+// The schedule of a goal's occurrences (ADR-0019, ADR-0021): which times each
+// trigger kind takes, when occurrences fall due, taking every due occurrence
+// at once, recording local inputs, and the ends of the clock and of the
+// occurrence numbers.
 
 #include "work/goal/trigger_schedule.h"
 
@@ -10,7 +11,9 @@
 
 namespace {
 
+using ayni::work::can_record;
 using ayni::work::no_time;
+using ayni::work::record;
 using ayni::work::start_schedule;
 using ayni::work::take_due;
 using ayni::work::TakenOccurrences;
@@ -31,6 +34,9 @@ TEST(TriggerSchedule, each_kind_takes_only_its_own_times) {
     EXPECT_TRUE((Trigger{AYNI_TRIGGER_INTERVAL, no_time, no_time}.fits()));
     EXPECT_FALSE((Trigger{AYNI_TRIGGER_INTERVAL, 0, second - 1U}.fits()));
     EXPECT_FALSE((Trigger{AYNI_TRIGGER_INTERVAL, 0, 0}.fits()));
+    EXPECT_TRUE((Trigger{AYNI_TRIGGER_LOCAL_INPUT, 0, 0}.fits()));
+    EXPECT_FALSE((Trigger{AYNI_TRIGGER_LOCAL_INPUT, 1, 0}.fits()));
+    EXPECT_FALSE((Trigger{AYNI_TRIGGER_LOCAL_INPUT, 0, second}.fits()));
 }
 
 TEST(TriggerSchedule, first_occurrence_falls_due_after_the_delay) {
@@ -42,6 +48,9 @@ TEST(TriggerSchedule, first_occurrence_falls_due_after_the_delay) {
     EXPECT_TRUE(once.due_by(100));
     EXPECT_EQ(start_schedule({AYNI_TRIGGER_DELAY, 50, 0}, 100).next_due_us, 150U);
     EXPECT_EQ(start_schedule({AYNI_TRIGGER_INTERVAL, 0, second}, 100).next_due_us, 100U);
+    const TriggerCursor input = start_schedule({AYNI_TRIGGER_LOCAL_INPUT, 0, 0}, 100);
+    EXPECT_FALSE(input.has_next());
+    EXPECT_EQ(input.waiting, 0U);
 }
 
 // A time past the clock's range never comes, rather than wrapping to an
@@ -123,6 +132,57 @@ TEST(TriggerSchedule, last_occurrence_number_ends_the_schedule) {
     EXPECT_EQ(last.latest, UINT32_MAX);
     EXPECT_EQ(last.count, 1U);
     EXPECT_FALSE(almost.has_next());
+}
+
+// ADR-0021: a local input trigger has an occurrence for each recorded input.
+// Those waiting are taken together, numbered in the order recorded; the
+// cursor falls due at the earliest and the task names the latest.
+TEST(TriggerSchedule, recorded_inputs_are_taken_together) {
+    const Trigger trigger{AYNI_TRIGGER_LOCAL_INPUT, 0, 0};
+    TriggerCursor cursor = start_schedule(trigger, 100);
+    ASSERT_TRUE(can_record(cursor));
+    record(200, cursor);
+    EXPECT_EQ(cursor.next_due_us, 200U);
+    EXPECT_EQ(cursor.waiting, 1U);
+    EXPECT_FALSE(cursor.due_by(199));
+    EXPECT_TRUE(cursor.due_by(200));
+    record(300, cursor);
+    record(300, cursor);
+    EXPECT_EQ(cursor.next_due_us, 200U);
+    EXPECT_EQ(cursor.waiting, 3U);
+    EXPECT_EQ(cursor.latest_due_us, 300U);
+
+    const TakenOccurrences taken = take_due(trigger, 400, cursor);
+    EXPECT_EQ(taken.latest, 3U);
+    EXPECT_EQ(taken.count, 3U);
+    EXPECT_EQ(taken.due_us, 300U);
+    EXPECT_EQ(cursor.taken, 3U);
+    EXPECT_FALSE(cursor.has_next());
+    EXPECT_EQ(cursor.waiting, 0U);
+
+    record(500, cursor);
+    const TakenOccurrences next = take_due(trigger, 500, cursor);
+    EXPECT_EQ(next.latest, 4U);
+    EXPECT_EQ(next.count, 1U);
+    EXPECT_EQ(next.due_us, 500U);
+}
+
+// The last number ends a local input trigger too: inputs past it are not
+// recorded, and those recorded before it are still taken.
+TEST(TriggerSchedule, last_occurrence_number_ends_recording) {
+    const Trigger trigger{AYNI_TRIGGER_LOCAL_INPUT, 0, 0};
+    TriggerCursor cursor{UINT32_MAX - 2U, no_time};
+    ASSERT_TRUE(can_record(cursor));
+    record(10, cursor);
+    ASSERT_TRUE(can_record(cursor));
+    record(20, cursor);
+    EXPECT_FALSE(can_record(cursor));
+    const TakenOccurrences taken = take_due(trigger, 20, cursor);
+    EXPECT_EQ(taken.latest, UINT32_MAX);
+    EXPECT_EQ(taken.count, 2U);
+    EXPECT_EQ(taken.due_us, 20U);
+    EXPECT_FALSE(cursor.has_next());
+    EXPECT_FALSE(can_record(cursor));
 }
 
 } // namespace
