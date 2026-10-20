@@ -30,9 +30,10 @@ class Tasks {
     TaskTable *operator->() { return &table_; }
 
     // Inserts the next task; returns its id, or 0 if refused.
-    uint64_t create(uint32_t occurrence = 1) {
+    uint64_t create(uint32_t occurrence = 1, uint32_t goal_index = 3) {
         const uint64_t task_id = last_id_ + 1U;
-        if (!table_.insert({goal_id, owner, 900, 3, occurrence, 2}, task_id, next_stamp())) {
+        if (!table_.insert({goal_id, owner, 900, goal_index, occurrence, 2}, task_id,
+                           next_stamp())) {
             return 0;
         }
         last_id_ = task_id;
@@ -206,6 +207,33 @@ TEST(TaskTable, held_task_stays_paused_until_it_ends) {
     const uint64_t expiring = tasks.create();
     tasks->hold(tasks.index_of(expiring), AYNI_UNSUPPORTED, AYNI_REASON_NONE, {50, 40});
     EXPECT_EQ(tasks.change(expiring, TaskChange::expire), ChangeCheck::allowed);
+}
+
+// ADR-0022: a goal holds a task while one of its tasks is held and has not
+// ended.
+TEST(TaskTable, holds_task_of_finds_the_goals_with_a_held_task) {
+    Tasks tasks(4);
+    const uint64_t held = tasks.create(1, 3);
+    const uint64_t other = tasks.create(1, 4);
+    const uint64_t paused = tasks.create(1, 5);
+    EXPECT_FALSE(tasks->holds_task_of(3));
+    ASSERT_EQ(tasks.change(paused, TaskChange::pause), ChangeCheck::allowed);
+    tasks->hold(tasks.index_of(held), AYNI_UNSUPPORTED, AYNI_REASON_NONE, {40, 30});
+    tasks->hold(tasks.index_of(other), AYNI_INTERNAL, AYNI_REASON_NONE, {41, 31});
+    EXPECT_TRUE(tasks->holds_task_of(3));
+    EXPECT_TRUE(tasks->holds_task_of(4));
+    EXPECT_FALSE(tasks->holds_task_of(5));
+    EXPECT_FALSE(tasks->holds_task_of(6));
+
+    ASSERT_EQ(tasks.change(held, TaskChange::cancel), ChangeCheck::allowed);
+    EXPECT_FALSE(tasks->holds_task_of(3));
+    EXPECT_TRUE(tasks->holds_task_of(4));
+    ASSERT_EQ(tasks.change(other, TaskChange::expire), ChangeCheck::allowed);
+    EXPECT_FALSE(tasks->holds_task_of(4));
+    // White-box: with no held task left the table no longer looks, so a hold
+    // planted on a task is not seen.
+    tasks.raw(paused).hold_status = AYNI_UNSUPPORTED;
+    EXPECT_FALSE(tasks->holds_task_of(5));
 }
 
 // ADR-0022: the next task to decide is the one READY longest, by commit_seq

@@ -44,8 +44,8 @@ uint64_t folder_goal(WorkNode &work, uint64_t parent_goal_id) {
                                               {nullptr, 0}, AYNI_TRIGGER_NONE));
 }
 
-uint64_t every_second_goal(WorkNode &work) {
-    ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_a), 0, "timer", 1,
+uint64_t every_second_goal(WorkNode &work, uint64_t agent_id = agent_a) {
+    ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_id), 0, "timer", 1,
                                                      {nullptr, 0}, AYNI_TRIGGER_INTERVAL);
     body.trigger_period_us = second;
     return create(work, body);
@@ -102,7 +102,14 @@ TEST(WorkStrategy, registration_checks_its_arguments) {
     EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_INVALID_ARGUMENT);
     desc.struct_size = sizeof(desc) + 8U;
     EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_UNSUPPORTED_VERSION);
-    for (int field = 0; field < 8; ++field) {
+    desc = valid;
+    desc.intent_size -= 1U;
+    EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_INVALID_ARGUMENT);
+    desc.intent_size = 0U;
+    EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_INVALID_ARGUMENT);
+    desc.intent_size = sizeof(ayni_policy_intent_v1) + 4U;
+    EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_UNSUPPORTED_VERSION);
+    for (int field = 0; field < 7; ++field) {
         desc = valid;
         switch (field) {
         case 0:
@@ -123,11 +130,8 @@ TEST(WorkStrategy, registration_checks_its_arguments) {
         case 5:
             desc.max_intents_per_call = 0;
             break;
-        case 6:
-            desc.max_intents_per_call = 4; // above policy_intent_capacity
-            break;
         default:
-            desc.reserved = 1;
+            desc.max_intents_per_call = 4; // above policy_intent_capacity
             break;
         }
         EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_INVALID_ARGUMENT) << field;
@@ -378,6 +382,12 @@ TEST(WorkDecision, refused_decisions_hold_the_task_with_their_reason) {
     const HoldCase cases[] = {
         {"decide fails", [](Snapshot, Output) { return AYNI_INTERNAL; }, AYNI_INTERNAL,
          AYNI_REASON_NONE},
+        {"no status",
+         [](Snapshot s, Output o) {
+             report(AYNI_POLICY_REPORT_COMPLETION, s, o);
+             return static_cast<ayni_status_t>(1);
+         },
+         AYNI_INVALID_ARGUMENT, AYNI_REASON_NONE},
         {"status before intents",
          [](Snapshot s, Output o) {
              report(AYNI_POLICY_REPORT_COMPLETION, s, o);
@@ -468,7 +478,7 @@ TEST(WorkDecision, refused_decisions_hold_the_task_with_their_reason) {
         EXPECT_GT(held.commit_seq, ready.commit_seq);
         EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
         EXPECT_EQ(work.goal(goal_id).revision, 1U);
-        // Asking again would give the same decision (C-POLICY-006).
+        // A held task is not decided again.
         EXPECT_EQ(step_items(work), 0U);
         EXPECT_EQ(work.strategy().seen.size(), 1U);
     }
@@ -552,6 +562,96 @@ TEST(WorkDecision, held_task_stays_paused_until_it_ends) {
     EXPECT_EQ(step_items(work), 1U);
     EXPECT_EQ(work.goal(expiring).lifecycle, AYNI_GOAL_EXPIRED);
     EXPECT_EQ(work.task(task_of(work, expiring)).lifecycle, AYNI_TASK_EXPIRED);
+}
+
+// ADR-0022: a goal with a held task derives no other: its occurrences wait
+// with TASK_HELD and are skipped once their wait ends, while the goals of
+// other agents go on through the task table they share. Cancelling the held
+// task lets the goal derive again.
+TEST(WorkDecision, held_task_keeps_its_goal_from_deriving_until_it_ends) {
+    WorkNode work;
+    work.timer_wait_max_us = 2U * second;
+    work.node().config().task_capacity = 2;
+    work.run();
+    const uint64_t start_us = work.node().sim().now_us();
+    const uint64_t refused = every_second_goal(work, agent_a);
+    const uint64_t other = every_second_goal(work, agent_b);
+    work.strategy().answer = [&](const ayni_task_snapshot_v1 &snapshot,
+                                 ayni_policy_output_v1 &output) {
+        return snapshot.goal_id == refused
+                   ? AYNI_UNSUPPORTED
+                   : report(AYNI_POLICY_REPORT_COMPLETION, snapshot, output);
+    };
+    ASSERT_EQ(step_items(work), 2U);
+    ASSERT_EQ(step_items(work), 2U);
+    const uint64_t held = task_of(work, refused);
+    ASSERT_EQ(work.task(held).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.goal(refused).wait_reason, AYNI_REASON_TASK_HELD);
+    EXPECT_EQ(work.goal(other).wait_reason, AYNI_REASON_NONE);
+
+    // The other goal takes the place of its own ended task; the refused one
+    // waits, though it is first in a tie.
+    work.node().sim().advance_us(second);
+    const uint64_t before = task_of(work, other);
+    EXPECT_EQ(step_items(work), 1U);
+    EXPECT_NE(task_of(work, other), before);
+    EXPECT_EQ(step_items(work), 1U);
+    EXPECT_EQ(work.task(task_of(work, other)).lifecycle, AYNI_TASK_COMPLETED);
+    ayni_goal_info_v1 waiting = work.goal(refused);
+    EXPECT_EQ(waiting.last_task_id, held);
+    EXPECT_EQ(waiting.occurrences, 1U);
+    EXPECT_EQ(waiting.next_due_us, start_us + second);
+    EXPECT_EQ(waiting.wait_reason, AYNI_REASON_TASK_HELD);
+    EXPECT_EQ(waiting.occurrences_skipped, 0U);
+
+    // The wait of the second occurrence, due at one second, ends at three,
+    // when the fourth falls due.
+    work.node().sim().advance_us(2U * second);
+    EXPECT_EQ(step_items(work), 2U);
+    const ayni_goal_info_v1 skipped = work.goal(refused);
+    EXPECT_EQ(skipped.last_task_id, held);
+    EXPECT_EQ(skipped.occurrences, 4U);
+    EXPECT_EQ(skipped.occurrences_skipped, 3U);
+    EXPECT_EQ(skipped.skip_reason, AYNI_REASON_TASK_HELD);
+    EXPECT_EQ(skipped.next_due_us, start_us + 4U * second);
+    EXPECT_EQ(work.task(task_of(work, other)).occurrence_count, 2U);
+    EXPECT_EQ(work.task(held).lifecycle, AYNI_TASK_PAUSED);
+
+    ASSERT_EQ(work.cancel_task(held).status, AYNI_OK);
+    EXPECT_EQ(work.goal(refused).wait_reason, AYNI_REASON_NONE);
+    // The refused goal derives its fifth occurrence, and the other goal's
+    // task from the step before is decided.
+    work.node().sim().advance_us(second);
+    EXPECT_EQ(step_items(work), 2U);
+    const ayni_goal_info_v1 derived = work.goal(refused);
+    EXPECT_NE(derived.last_task_id, held);
+    EXPECT_EQ(derived.occurrences, 5U);
+    EXPECT_EQ(derived.occurrences_skipped, 3U);
+    EXPECT_EQ(work.task(derived.last_task_id).lifecycle, AYNI_TASK_READY);
+}
+
+// A goal with a held task waits even while the task table has room: the
+// step that holds the task reports the end of the goal's wait as the next
+// deadline, and the occurrences are skipped then.
+TEST(WorkDecision, held_task_keeps_its_goal_waiting_with_room_in_the_table) {
+    WorkNode work;
+    work.timer_wait_max_us = 2U * second;
+    work.run();
+    const uint64_t start_us = work.node().sim().now_us();
+    const uint64_t goal_id = every_second_goal(work);
+    work.strategy().answer = cannot_decide;
+    ASSERT_EQ(work.node().step().next_deadline_us, start_us + second);
+    const ayni_step_report_v1 report = work.node().step();
+    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.next_deadline_us, start_us + 3U * second);
+    const uint64_t held = task_of(work, goal_id);
+
+    work.node().sim().advance_us(3U * second);
+    EXPECT_EQ(step_items(work), 1U);
+    const ayni_goal_info_v1 skipped = work.goal(goal_id);
+    EXPECT_EQ(skipped.last_task_id, held);
+    EXPECT_EQ(skipped.occurrences_skipped, 3U);
+    EXPECT_EQ(skipped.skip_reason, AYNI_REASON_TASK_HELD);
 }
 
 // C-COMMIT-012: an end that would raise a revision past the largest, the
@@ -717,8 +817,9 @@ TEST(WorkDecision, only_running_decides) {
     EXPECT_EQ(model.tasks.at(index).lifecycle, AYNI_TASK_READY);
 }
 
-// C-POLICY-001: the kernel refuses every function that changes it while a
-// strategy decides, so the task the strategy saw is the one it decides.
+// C-POLICY-001: while a strategy decides, the kernel refuses each owner-thread
+// function that changes it (contracts/domain/lifecycles.md), so the task the
+// strategy saw is the one it decides.
 TEST(WorkDecision, strategy_cannot_change_the_kernel_while_it_decides) {
     WorkNode work;
     work.run();

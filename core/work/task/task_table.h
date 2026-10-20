@@ -44,8 +44,9 @@ struct Task {
     uint32_t revision;        // 1 at creation, raised by each change
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     ayni_task_lifecycle_t lifecycle;
-    // Why its strategy's decision holds it PAUSED; AYNI_OK and
-    // AYNI_REASON_NONE if it never did. Kept once the task ends.
+    // Why its strategy's decision holds it PAUSED, hold_status being a
+    // failure; AYNI_OK and AYNI_REASON_NONE if it never did. Kept once the
+    // task ends.
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
 };
@@ -98,7 +99,7 @@ class TaskTable {
 
     // Its strategy's decision holds the READY task index, below the largest
     // revision: it becomes PAUSED and no change but an end takes it out.
-    // It gets the next revision and stamp.commit_seq.
+    // It gets the next revision and stamp.commit_seq. status is a failure.
     void hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
               foundation::TransitionStamp stamp);
 
@@ -115,6 +116,9 @@ class TaskTable {
     bool has_ready() const;
     // Whether a task of goal goal_index other than task_index has not ended.
     bool live_task_besides(uint32_t goal_index, uint32_t task_index) const;
+    // Whether a task of goal goal_index is held and has not ended. Looks at
+    // the tasks only while some task is.
+    bool holds_task_of(uint32_t goal_index) const;
 
     // Returns false when no task in memory has the id.
     bool find(uint64_t task_id, uint32_t &out_index) const;
@@ -128,6 +132,7 @@ class TaskTable {
 
   private:
     foundation::BoundedArray<Task> tasks_;
+    uint32_t held_count_ = 0; // held tasks that have not ended
 };
 
 } // namespace ayni::work

@@ -121,7 +121,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     // Read from the tables rather than kept, so a query needs no clock.
     if (goal.cursor.has_next()) {
         info.wait_reason =
-            ayni::work::derivation_blocker(kernel.work.tasks, kernel.work.ids.available());
+            ayni::work::derivation_blocker(kernel.work.tasks, index, kernel.work.ids.available());
     }
     out = info;
 }
@@ -223,14 +223,20 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     if (kernel == nullptr || strategy == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const ayni_status_t status = check_size(*strategy);
+    ayni_status_t status = check_size(*strategy);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    // The kernel lays out the intents at its own stride (DecisionBuffer).
+    status = check_struct_size(strategy->intent_size, sizeof(ayni_policy_intent_v1),
+                               sizeof(ayni_policy_intent_v1));
     if (status != AYNI_OK) {
         return status;
     }
     ayni::catalog::Strategy entry{};
     if (strategy->version == 0U || !entry.id.assign(strategy->strategy_id) ||
         strategy->decide == nullptr || strategy->max_intents_per_call == 0U ||
-        strategy->max_intents_per_call > kernel->decisions.capacity() || strategy->reserved != 0U) {
+        strategy->max_intents_per_call > kernel->decisions.capacity()) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {

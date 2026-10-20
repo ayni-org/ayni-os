@@ -185,14 +185,8 @@ void apply_instance_change(WorkTables &tables, uint32_t instance_index, Instance
 
 bool task_end_exhausts(const WorkTables &tables, uint32_t task_index, TaskChange change) {
     GoalChange goal_change = GoalChange::satisfy;
-    if (!ends_goal(tables, task_index, change, goal_change)) {
-        return false;
-    }
-    // The goal is ACTIVE, so only a revision can refuse its end.
-    const uint32_t goal_index = tables.tasks.at(task_index).goal_index;
-    return tables.goals.check(goal_index, goal_change, tables.goals.at(goal_index).revision) !=
-               GoalTable::ChangeCheck::allowed ||
-           goal_change_exhausts_tasks(tables, goal_index, goal_change);
+    return ends_goal(tables, task_index, change, goal_change) &&
+           goal_end_exhausts(tables, tables.tasks.at(task_index).goal_index, goal_change);
 }
 
 void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
@@ -207,11 +201,34 @@ void end_task(WorkTables &tables, uint32_t task_index, TaskChange change,
     }
 }
 
-ayni_reason_t derivation_blocker(const TaskTable &tasks, bool id_left) {
+bool goal_end_exhausts(const WorkTables &tables, uint32_t goal_index, GoalChange change) {
+    // Its lifecycle allows the end, so only a revision can refuse it.
+    return tables.goals.check(goal_index, change, tables.goals.at(goal_index).revision) !=
+               GoalTable::ChangeCheck::allowed ||
+           goal_change_exhausts_tasks(tables, goal_index, change);
+}
+
+namespace {
+
+// What keeps every goal from deriving a task now.
+ayni_reason_t table_blocker(const TaskTable &tasks, bool id_left) {
     if (!tasks.has_room()) {
         return AYNI_REASON_TASK_CAPACITY;
     }
     return id_left ? AYNI_REASON_NONE : AYNI_REASON_ID_EXHAUSTED;
+}
+
+// A held task is not decided again, so a task derived beside it would only
+// wait for the same strategy, and a goal held this way at each occurrence
+// would fill the task table that every goal shares.
+ayni_reason_t goal_blocker(const TaskTable &tasks, uint32_t goal_index, ayni_reason_t table) {
+    return tasks.holds_task_of(goal_index) ? AYNI_REASON_TASK_HELD : table;
+}
+
+} // namespace
+
+ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bool id_left) {
+    return goal_blocker(tasks, goal_index, table_blocker(tasks, id_left));
 }
 
 // So an unbounded wait, added to when an occurrence fell due, never ends.
@@ -219,26 +236,35 @@ static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits satura
 
 bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
                    uint64_t &out_next_us) {
-    const ayni_reason_t blocker = derivation_blocker(tables.tasks, id_left);
+    const ayni_reason_t table = table_blocker(tables.tasks, id_left);
     // Strictly earlier throughout, so the first created wins a tie. A
     // terminal goal has neither an expiry nor a next occurrence.
     uint32_t expiring = GoalTable::no_parent;
     uint64_t expires_us = no_time;
     uint32_t advancing = GoalTable::no_parent;
     uint64_t advances_us = no_time;
+    ayni_reason_t blocker = AYNI_REASON_NONE; // advancing's
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
         if (goal.expires_us < expires_us) {
             expires_us = goal.expires_us;
             expiring = index;
         }
+        // A blocker only puts the due work later, so a goal whose next
+        // occurrence is not earlier cannot win.
+        if (goal.cursor.next_due_us >= advances_us ||
+            !may_advance(tables, index, goal.owner_instance_id, After{})) {
+            continue;
+        }
+        const ayni_reason_t goal_blocked = goal_blocker(tables.tasks, index, table);
         const uint64_t due_us =
-            blocker == AYNI_REASON_NONE
+            goal_blocked == AYNI_REASON_NONE
                 ? goal.cursor.next_due_us
                 : time_after(goal.cursor.next_due_us, goal.occurrence_wait_max_us);
-        if (due_us < advances_us && may_advance(tables, index, goal.owner_instance_id, After{})) {
+        if (due_us < advances_us) {
             advances_us = due_us;
             advancing = index;
+            blocker = goal_blocked;
         }
     }
     out_next_us = expires_us < advances_us ? expires_us : advances_us;

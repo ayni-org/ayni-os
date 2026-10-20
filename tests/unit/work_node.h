@@ -162,6 +162,7 @@ inline ayni_strategy_v1 strategy_desc(const char *id, uint32_t version, ayni_dec
     desc.ctx = ctx;
     desc.decide = decide;
     desc.max_intents_per_call = max_intents_per_call;
+    desc.intent_size = sizeof(ayni_policy_intent_v1);
     return desc;
 }
 

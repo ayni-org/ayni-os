@@ -29,6 +29,11 @@ Verdict judge(ayni_status_t status, uint32_t intent_count, uint32_t intent_capac
     if (status == AYNI_CAPACITY_EXCEEDED) {
         return hold(status, AYNI_REASON_POLICY_OUTPUT_LIMIT);
     }
+    // Statuses are failures below AYNI_OK; anything above is no status, and
+    // a hold keeps a failure (TaskTable::hold).
+    if (status > AYNI_OK) {
+        return hold(AYNI_INVALID_ARGUMENT, AYNI_REASON_NONE);
+    }
     if (status != AYNI_OK) {
         return hold(status, AYNI_REASON_NONE);
     }
@@ -126,11 +131,12 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
     const foundation::TransitionStamp stamp = model.transitions.next();
     if (verdict.ends) {
         work::end_task(tables, index, verdict.end, stamp);
-        // The end frees a place in the task table and may end goals.
-        model.due_work_changed = true;
     } else {
         model.tasks.hold(index, verdict.hold_status, verdict.hold_reason, stamp);
     }
+    // An end frees a place in the task table and may end goals; a hold
+    // keeps the goal from deriving (work::derivation_blocker).
+    model.due_work_changed = true;
     return true;
 }
 

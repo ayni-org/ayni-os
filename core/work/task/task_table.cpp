@@ -73,6 +73,10 @@ TaskTable::ChangeCheck TaskTable::check(uint32_t index, TaskChange change,
 
 void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
+    // A held task takes no change but an end (allows()).
+    if (is_held(task)) {
+        --held_count_;
+    }
     switch (change) {
     case TaskChange::pause:
         task.lifecycle = AYNI_TASK_PAUSED;
@@ -108,11 +112,13 @@ void TaskTable::hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
     task.hold_reason = reason;
     ++task.revision;
     task.commit_seq = stamp.commit_seq;
+    ++held_count_;
 }
 
 // How RUNNING and CANCELLING tasks pause and cancel comes with the requests
-// tasks wait for (ADR-0022). Deciding again would not lift a hold: the same
-// snapshot gives the same decision (C-POLICY-006).
+// tasks wait for (ADR-0022). A hold waits for someone to end the task:
+// nothing its strategy sees has changed but the revision and the time, so
+// releasing it would mostly bring the same refusal again.
 bool TaskTable::allows(const Task &task, TaskChange change) {
     switch (change) {
     case TaskChange::pause:
@@ -163,6 +169,19 @@ bool TaskTable::live_task_besides(uint32_t goal_index, uint32_t task_index) cons
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
         if (index != task_index && tasks_[index].goal_index == goal_index &&
             is_live(tasks_[index].lifecycle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TaskTable::holds_task_of(uint32_t goal_index) const {
+    if (held_count_ == 0U) {
+        return false;
+    }
+    for (uint32_t index = 0; index < tasks_.size(); ++index) {
+        const Task &task = tasks_[index];
+        if (task.goal_index == goal_index && task.lifecycle == AYNI_TASK_PAUSED && is_held(task)) {
             return true;
         }
     }

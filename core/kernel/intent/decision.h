@@ -3,8 +3,9 @@
 // the strategy a snapshot of the task and a buffer for its intents, then
 // applies the decision as one transition. A decision ends the task or, when
 // the kernel refuses it or the strategy fails, holds it PAUSED with the
-// reason. Deciding again would only repeat the same decision (C-POLICY-006),
-// so a held task waits for an end.
+// reason. A held task is not decided again, and its goal derives no task,
+// until someone cancels the task or the goal expires: asking again would
+// mostly repeat the refusal and keep more_ready set.
 
 #ifndef AYNI_CORE_KERNEL_INTENT_DECISION_H
 #define AYNI_CORE_KERNEL_INTENT_DECISION_H

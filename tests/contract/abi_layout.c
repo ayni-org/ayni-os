@@ -258,7 +258,7 @@ AYNI_LAYOUT(strategy_ctx, offsetof(ayni_strategy_v1, ctx) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(strategy_decide, offsetof(ayni_strategy_v1, decide) == 8 + 3 * AYNI_PTR);
 AYNI_LAYOUT(strategy_max_intents_per_call,
             offsetof(ayni_strategy_v1, max_intents_per_call) == 8 + 4 * AYNI_PTR);
-AYNI_LAYOUT(strategy_reserved, offsetof(ayni_strategy_v1, reserved) == 12 + 4 * AYNI_PTR);
+AYNI_LAYOUT(strategy_intent_size, offsetof(ayni_strategy_v1, intent_size) == 12 + 4 * AYNI_PTR);
 AYNI_LAYOUT(strategy_size, sizeof(ayni_strategy_v1) == 16 + 4 * AYNI_PTR);
 
 AYNI_LAYOUT(task_target_struct_size, offsetof(ayni_task_target_v1, struct_size) == 0);

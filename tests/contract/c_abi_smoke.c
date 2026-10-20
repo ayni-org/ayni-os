@@ -44,7 +44,8 @@ static ayni_status_t accept_parameters(void *ctx, ayni_bytes_v1 parameters) {
     return AYNI_OK;
 }
 
-/* Completes every task it decides. */
+/* A decide function in C, completing every task it decides. It never runs:
+ * this kernel never reaches RUNNING. */
 static ayni_status_t complete_task(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                                    ayni_policy_output_v1 *output) {
     (void)ctx;
@@ -99,6 +100,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     strategy.strategy_id = goal_type.strategy_id;
     strategy.decide = complete_task;
     strategy.max_intents_per_call = 1u;
+    strategy.intent_size = (uint32_t)sizeof(ayni_policy_intent_v1);
     failures += expect(ayni_register_strategy(kernel, &strategy) == AYNI_OK, "register strategy");
 
     session.struct_size = (uint32_t)sizeof session;
