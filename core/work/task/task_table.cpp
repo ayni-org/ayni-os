@@ -175,19 +175,6 @@ bool TaskTable::live_task_besides(uint32_t goal_index, uint32_t task_index) cons
     return false;
 }
 
-bool TaskTable::holds_task_of(uint32_t goal_index) const {
-    if (held_count_ == 0U) {
-        return false;
-    }
-    for (uint32_t index = 0; index < tasks_.size(); ++index) {
-        const Task &task = tasks_[index];
-        if (task.goal_index == goal_index && task.lifecycle == AYNI_TASK_PAUSED && is_held(task)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool TaskTable::find(uint64_t task_id, uint32_t &out_index) const {
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
         if (tasks_[index].task_id == task_id) {

@@ -654,6 +654,76 @@ TEST(WorkDecision, held_task_keeps_its_goal_waiting_with_room_in_the_table) {
     EXPECT_EQ(skipped.skip_reason, AYNI_REASON_TASK_HELD);
 }
 
+// ADR-0022: a held task concerns its own goal, so TASK_HELD comes before a
+// full table in the goal's wait and skip reasons, while another goal waits
+// for the table. Waits that end together skip the first created first.
+TEST(WorkDecision, held_reason_comes_before_a_full_table) {
+    WorkNode work;
+    work.timer_wait_max_us = 2U * second;
+    work.node().config().task_capacity = 1;
+    work.run();
+    const uint64_t refused = every_second_goal(work);
+    ayni_goal_create_v1 body = WorkNode::create_body(work.instance(agent_b), 0, "timer", 1,
+                                                     {nullptr, 0}, AYNI_TRIGGER_DELAY);
+    body.trigger_delay_us = second;
+    const uint64_t other = create(work, body);
+    work.strategy().answer = cannot_decide;
+    ASSERT_EQ(step_items(work), 1U);
+    ASSERT_EQ(step_items(work), 1U);
+    EXPECT_EQ(work.goal(refused).wait_reason, AYNI_REASON_TASK_HELD);
+    EXPECT_EQ(work.goal(other).wait_reason, AYNI_REASON_TASK_CAPACITY);
+
+    work.node().sim().advance_us(3U * second);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    EXPECT_EQ(work.goal(refused).occurrences_skipped, 3U);
+    EXPECT_EQ(work.goal(other).occurrences_skipped, 0U);
+    ASSERT_EQ(step_items(work), 1U);
+    const ayni_goal_info_v1 refused_info = work.goal(refused);
+    EXPECT_EQ(refused_info.occurrences_skipped, 3U);
+    EXPECT_EQ(refused_info.skip_reason, AYNI_REASON_TASK_HELD);
+    const ayni_goal_info_v1 other_info = work.goal(other);
+    EXPECT_EQ(other_info.occurrences_skipped, 1U);
+    EXPECT_EQ(other_info.skip_reason, AYNI_REASON_TASK_CAPACITY);
+}
+
+// ADR-0022: a goal can hold several tasks, those derived before the first
+// hold, and waits until the last of them ends; an occurrence that waited
+// then derives at the next step. The goal lies past the first 32, which a
+// search gathers in one word.
+TEST(WorkDecision, goal_waits_until_its_last_held_task_ends) {
+    WorkNode work;
+    work.node().config().goal_capacity = 40;
+    work.run();
+    for (int folder = 0; folder < 32; ++folder) {
+        folder_goal(work, 0);
+    }
+    const uint64_t refused = every_second_goal(work);
+    work.strategy().answer = cannot_decide;
+    ASSERT_EQ(step_items(work), 1U);
+    const uint64_t first = task_of(work, refused);
+    // The second occurrence derives before the first task is decided.
+    work.node().sim().advance_us(second);
+    ASSERT_EQ(step_items(work), 2U);
+    const uint64_t second_task = task_of(work, refused);
+    ASSERT_NE(second_task, first);
+    ASSERT_EQ(step_items(work), 1U);
+    ASSERT_EQ(work.task(first).lifecycle, AYNI_TASK_PAUSED);
+    ASSERT_EQ(work.task(second_task).lifecycle, AYNI_TASK_PAUSED);
+    work.node().sim().advance_us(second);
+    EXPECT_EQ(step_items(work), 0U);
+    EXPECT_EQ(work.goal(refused).wait_reason, AYNI_REASON_TASK_HELD);
+
+    ASSERT_EQ(work.cancel_task(first).status, AYNI_OK);
+    EXPECT_EQ(work.goal(refused).wait_reason, AYNI_REASON_TASK_HELD);
+    EXPECT_EQ(step_items(work), 0U);
+    ASSERT_EQ(work.cancel_task(second_task).status, AYNI_OK);
+    EXPECT_EQ(work.goal(refused).wait_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(step_items(work), 1U);
+    const ayni_task_info_v1 derived = work.task(task_of(work, refused));
+    EXPECT_EQ(derived.occurrence, 3U);
+    EXPECT_EQ(derived.occurrence_count, 1U);
+}
+
 // C-COMMIT-012: an end that would raise a revision past the largest, the
 // task's goal's, a descendant's or a descendant's task's, holds the task
 // instead; an end that leaves the goal as it is still applies.

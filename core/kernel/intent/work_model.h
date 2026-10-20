@@ -67,10 +67,11 @@ struct WorkModel {
     // changes between a check and the change it allows.
     bool calling_out = false;
     // Set by a change to the goals' due work (which goals may advance or
-    // expire, or room in the task table); cleared once a search finds none
-    // due. That search also records when the next due work comes and whether
-    // an id was left, so ayni_step searches again only after such a change,
-    // once that time has come or once no id is left (ADR-0019, ADR-0020).
+    // expire, room in the task table, or a held task); cleared once a search
+    // finds none due. That search also records when the next due work comes
+    // and whether an id was left, so ayni_step searches again only after
+    // such a change, once that time has come or once no id is left
+    // (ADR-0019, ADR-0020, ADR-0022).
     bool due_work_changed = false;
     uint64_t next_due_work_us = work::no_time;
     bool searched_with_id = true;
@@ -102,8 +103,9 @@ bool do_due_work(WorkModel &model, uint64_t now_us);
 // Whether do_due_work(now_us) would do something; out_next_us is then now_us.
 // When it would not, clears due_work_changed and sets out_next_us to when the
 // next due work comes (work::no_time: none will without a change). Scans the
-// goal table, each goal along at most goal_depth_max ancestors, only while
-// due_work_changed is set, that time has come or the ids have just run out.
+// goal table, each goal along at most goal_depth_max ancestors, and the task
+// table, only while due_work_changed is set, that time has come or the ids
+// have just run out.
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us);
 
 } // namespace ayni::kernel

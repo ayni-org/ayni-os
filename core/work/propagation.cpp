@@ -218,17 +218,43 @@ ayni_reason_t table_blocker(const TaskTable &tasks, bool id_left) {
     return id_left ? AYNI_REASON_NONE : AYNI_REASON_ID_EXHAUSTED;
 }
 
+// The goals with a still_held() task, gathered in one pass over the tasks so
+// that a search looks at each task once, not once for each goal it weighs.
+// Goal indexes are below AYNI_GOAL_CAPACITY_MAX.
+class HeldGoals {
+  public:
+    explicit HeldGoals(const TaskTable &tasks) {
+        if (!tasks.has_held()) {
+            return;
+        }
+        for (uint32_t index = 0; index < tasks.size(); ++index) {
+            const Task &task = tasks.at(index);
+            if (TaskTable::still_held(task)) {
+                bits_[task.goal_index / 32U] |= 1U << (task.goal_index % 32U);
+            }
+        }
+    }
+
+    bool contains(uint32_t goal_index) const {
+        return ((bits_[goal_index / 32U] >> (goal_index % 32U)) & 1U) != 0U;
+    }
+
+  private:
+    static_assert(AYNI_GOAL_CAPACITY_MAX % 32U == 0U, "whole words");
+    uint32_t bits_[AYNI_GOAL_CAPACITY_MAX / 32U] = {};
+};
+
 // A held task is not decided again, so a task derived beside it would only
 // wait for the same strategy, and a goal held this way at each occurrence
 // would fill the task table that every goal shares.
-ayni_reason_t goal_blocker(const TaskTable &tasks, uint32_t goal_index, ayni_reason_t table) {
-    return tasks.holds_task_of(goal_index) ? AYNI_REASON_TASK_HELD : table;
+ayni_reason_t goal_blocker(const HeldGoals &held, uint32_t goal_index, ayni_reason_t table) {
+    return held.contains(goal_index) ? AYNI_REASON_TASK_HELD : table;
 }
 
 } // namespace
 
 ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bool id_left) {
-    return goal_blocker(tasks, goal_index, table_blocker(tasks, id_left));
+    return goal_blocker(HeldGoals(tasks), goal_index, table_blocker(tasks, id_left));
 }
 
 // So an unbounded wait, added to when an occurrence fell due, never ends.
@@ -237,6 +263,7 @@ static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits satura
 bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
                    uint64_t &out_next_us) {
     const ayni_reason_t table = table_blocker(tables.tasks, id_left);
+    const HeldGoals held(tables.tasks);
     // Strictly earlier throughout, so the first created wins a tie. A
     // terminal goal has neither an expiry nor a next occurrence.
     uint32_t expiring = GoalTable::no_parent;
@@ -256,7 +283,7 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
             !may_advance(tables, index, goal.owner_instance_id, After{})) {
             continue;
         }
-        const ayni_reason_t goal_blocked = goal_blocker(tables.tasks, index, table);
+        const ayni_reason_t goal_blocked = goal_blocker(held, index, table);
         const uint64_t due_us =
             goal_blocked == AYNI_REASON_NONE
                 ? goal.cursor.next_due_us

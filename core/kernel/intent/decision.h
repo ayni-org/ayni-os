@@ -4,7 +4,7 @@
 // applies the decision as one transition. A decision ends the task or, when
 // the kernel refuses it or the strategy fails, holds it PAUSED with the
 // reason. A held task is not decided again, and its goal derives no task,
-// until someone cancels the task or the goal expires: asking again would
+// until the task is cancelled or ends with its goal: asking again would
 // mostly repeat the refusal and keep more_ready set.
 
 #ifndef AYNI_CORE_KERNEL_INTENT_DECISION_H

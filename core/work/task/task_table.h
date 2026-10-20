@@ -105,7 +105,11 @@ class TaskTable {
 
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
+    // Whether a decision ever held it; still_held() while it has not ended.
     static bool is_held(const Task &task) { return task.hold_status != AYNI_OK; }
+    static bool still_held(const Task &task) {
+        return task.lifecycle == AYNI_TASK_PAUSED && is_held(task);
+    }
 
     // The task that has been READY longest among those READY since before
     // commit_seq ready_before, by commit_seq and then task id; a task at
@@ -116,9 +120,8 @@ class TaskTable {
     bool has_ready() const;
     // Whether a task of goal goal_index other than task_index has not ended.
     bool live_task_besides(uint32_t goal_index, uint32_t task_index) const;
-    // Whether a task of goal goal_index is held and has not ended. Looks at
-    // the tasks only while some task is.
-    bool holds_task_of(uint32_t goal_index) const;
+    // Whether some task is still_held(), without looking at the tasks.
+    bool has_held() const { return held_count_ > 0U; }
 
     // Returns false when no task in memory has the id.
     bool find(uint64_t task_id, uint32_t &out_index) const;
@@ -132,7 +135,7 @@ class TaskTable {
 
   private:
     foundation::BoundedArray<Task> tasks_;
-    uint32_t held_count_ = 0; // held tasks that have not ended
+    uint32_t held_count_ = 0; // still_held() tasks
 };
 
 } // namespace ayni::work
