@@ -1320,6 +1320,8 @@ ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *in
  */
 ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
                              ayni_agent_info_v1 *out_info);
+/* Since 0.13 a terminal goal whose place went to a new goal is NOT_FOUND
+ * (ADR-0025). */
 ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
                             ayni_goal_info_v1 *out_info);
 /* Since 0.6. An ended task whose place went to a new task is NOT_FOUND

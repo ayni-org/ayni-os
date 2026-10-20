@@ -27,7 +27,7 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-ID-001 | 稳定 ID 一经分配不复用，即使对象已删除或终结；删除只留 tombstone。Kernel 分配的 ID 由分配器保证不复用（C-ID-010），所以让位的 Goal 与 Task 不另留 tombstone，按旧 ID 返回 `NOT_FOUND`（ADR-0018、ADR-0025） | 删除 Goal 后新 Goal 取得相同 `goal_id`，旧回执把新 Goal 标为完成 | M1 已实现（Kernel 分配的 ID 不复用；对象尚未持久化，重启后不恢复；让位的 Goal 与 Task 按旧 ID 返回 `NOT_FOUND`）：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`、`WorkTask.goal_that_ended_first_gives_way_with_its_tasks`；记忆删除的 tombstone 随 `MA-011`；E1 步骤 9 |
+| C-ID-001 | 稳定 ID 一经分配不复用，即使对象已删除或终结。别的记录依赖其内容的删除（如记忆删除与派生摘要失效，C-PROD-031）只留 tombstone；让位的 Goal 与 Task 没有这种依赖，Kernel 分配的 ID 又由分配器保证不复用（C-ID-010），所以不另留 tombstone，按旧 ID 返回 `NOT_FOUND`（ADR-0018、ADR-0025） | 删除 Goal 后新 Goal 取得相同 `goal_id`，旧回执把新 Goal 标为完成 | M1 已实现（Kernel 分配的 ID 不复用；对象尚未持久化，重启后不恢复；让位的 Goal 与 Task 按旧 ID 返回 `NOT_FOUND`）：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`、`WorkTask.goal_that_ended_first_gives_way_with_its_tasks`；记忆删除的 tombstone 随 `MA-011`；E1 步骤 9 |
 | C-ID-002 | Core 内部以定长整数表示 ID；需要文本形式时（日志、JSON）按 C-JSON-004 以十进制字符串表示 64 位值 | 64 位 ID 以 JSON 数字传给 JavaScript 客户端后丢失精度 | `wire/json_subset.md`；M1 编解码测试 |
 | C-ID-003 | `logical_call_id` 与 `(task_id, step_key)` 一一对应，在首次接受该步骤时与步骤检查点同批持久化；重启、重连和策略替换都不重新生成 | 换策略后同一步骤得到新 `logical_call_id`，已完成的动作被当成新动作再做 | E3 步骤 2–4；E4 步骤 2 |
 | C-ID-004 | `operation_id` 与 `(logical_call_id, binding_id)` 一一对应；只有取得原 operation 的权威未执行结论并封禁旧 ID 后，才能为同一逻辑调用换绑定并分配新 `operation_id` | 结果未知时换一个 Provider 并用新 ID 重做 | E2 F5；E3 步骤 2；`C-CALL-008` |

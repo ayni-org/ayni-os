@@ -180,14 +180,11 @@ void apply_goal_change(WorkTables &tables, uint32_t goal_index, GoalChange chang
 
 bool insert_goal(WorkTables &tables, const NewGoal &goal, uint64_t goal_id,
                  foundation::TransitionStamp stamp, uint32_t &out_index) {
-    const uint32_t replaced = tables.goals.giving_way();
-    if (!tables.goals.insert(goal, goal_id, stamp, out_index)) {
-        return false;
+    const GoalTable::Placement placement = tables.goals.insert(goal, goal_id, stamp, out_index);
+    if (placement == GoalTable::Placement::given_way) {
+        tables.tasks.remove_goal(out_index);
     }
-    if (replaced != GoalTable::no_index) {
-        tables.tasks.remove_goal(replaced);
-    }
-    return true;
+    return placement != GoalTable::Placement::refused;
 }
 
 bool instance_change_exhausts(const WorkTables &tables, uint32_t instance_index,

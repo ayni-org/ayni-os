@@ -135,16 +135,26 @@ class GoalTable {
     // The place the next insert() takes from a goal that gives way: when the
     // table is full, that of the terminal goal that ended first, by
     // commit_seq, then the deepest, then the first created (ADR-0025).
-    // no_index when the table is not full or no goal is terminal.
+    // no_index when the table is not full or no goal is terminal. A goal
+    // gives way with its tasks, so it must have none that has not ended: no
+    // task outlives its goal's end yet, but one that does (RUNNING or
+    // CANCELLING, MA-008, MA-018) must keep its goal from giving way.
     uint32_t giving_way() const;
 
+    // Where insert() put a new goal.
+    enum class Placement {
+        refused,   // no room: nothing changed
+        new_place, // a place no goal held
+        given_way, // the place giving_way() named, whose goal is gone
+    };
+
     // Creates an ACTIVE goal at revision 1, copies its parameters and sets
-    // out_index: a new place, or the one giving_way() names, whose goal is
-    // then gone. Only after admit(goal) returned admitted, with no change in
-    // between; returns false, changing nothing, if the table has no room
-    // anyway.
-    bool insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
-                uint32_t &out_index);
+    // out_index. Only after admit(goal) returned admitted, with no change in
+    // between; refuses, changing nothing, if the table has no room anyway.
+    // The tasks of a goal that gave way still name out_index, so the caller
+    // removes them (work::insert_goal()).
+    Placement insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
+                     uint32_t &out_index);
 
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every

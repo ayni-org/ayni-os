@@ -116,8 +116,9 @@ class TaskTable {
     // that ended first if the table is full. Returns false, changing
     // nothing, when has_room() is false.
     bool insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp);
-    // Removes the tasks of goal goal_index, which have all ended, as the goal
-    // gives way (GoalTable::giving_way()).
+    // Removes the tasks of goal goal_index as the goal gives way
+    // (GoalTable::giving_way()). They have all ended: a goal with a task that
+    // has not ended does not give way.
     void remove_goal(uint32_t goal_index);
 
     // The checks of a change a caller asked for by revision (TASK_CANCEL).

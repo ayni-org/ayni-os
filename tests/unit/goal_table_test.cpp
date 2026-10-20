@@ -26,6 +26,7 @@ using ayni::work::TakenOccurrences;
 using ayni::work::Trigger;
 using Admission = GoalTable::Admission;
 using ChangeCheck = GoalTable::ChangeCheck;
+using Placement = GoalTable::Placement;
 
 constexpr uint64_t owner = 50;
 constexpr Trigger no_trigger{AYNI_TRIGGER_NONE, 0, 0};
@@ -70,9 +71,13 @@ class Goals {
         }
         const uint64_t goal_id = ++last_id_;
         uint32_t index = 0;
-        EXPECT_TRUE(table_.insert(goal, goal_id, next_stamp(), index));
+        last_placement_ = table_.insert(goal, goal_id, next_stamp(), index);
+        EXPECT_NE(last_placement_, Placement::refused);
         return goal_id;
     }
+
+    // Where insert() put the goal create() or insert() last created.
+    Placement last_placement() const { return last_placement_; }
 
     static NewGoal new_goal(uint64_t parent_goal_id, uint64_t owner_instance_id = owner,
                             ayni_bytes_v1 parameters = {nullptr, 0}, Trigger trigger = no_trigger,
@@ -128,6 +133,7 @@ class Goals {
     GoalTable table_;
     uint64_t last_id_ = 0;
     uint64_t last_seq_ = 0;
+    Placement last_placement_ = Placement::refused;
 };
 
 constexpr GoalTable::Limits small{8, 4, 2, 2};
@@ -245,6 +251,7 @@ TEST(GoalTable, terminal_goal_that_ended_first_gives_way) {
     ASSERT_EQ(goals.change(second, GoalChange::cancel), ChangeCheck::allowed);
     EXPECT_EQ(goals->giving_way(), GoalTable::no_index); // not full
     const uint64_t kept = goals.create(0, owner, {kept_bytes, sizeof(kept_bytes)});
+    EXPECT_EQ(goals.last_placement(), Placement::new_place);
     ASSERT_EQ(goals.change(first, GoalChange::cancel), ChangeCheck::allowed);
     const uint32_t second_place = goals.index_of(second);
     EXPECT_EQ(goals->giving_way(), second_place);
@@ -253,6 +260,7 @@ TEST(GoalTable, terminal_goal_that_ended_first_gives_way) {
     const uint8_t bytes[] = {9, 8, 7};
     const uint64_t created = goals.create(0, owner, {bytes, sizeof(bytes)});
     ASSERT_NE(created, 0U);
+    EXPECT_EQ(goals.last_placement(), Placement::given_way);
     EXPECT_EQ(goals->size(), 3U);
     EXPECT_EQ(goals.index_of(created), second_place);
     uint32_t found = 0;
@@ -325,18 +333,29 @@ TEST(GoalTable, child_in_an_earlier_place_is_still_in_its_parents_tree) {
 }
 
 // insert() checks the room itself, so a caller that skipped admit() cannot
-// write past the table.
+// write past the table, nor make a goal its own parent by giving it the
+// place of a terminal parent.
 TEST(GoalTable, insert_into_a_full_table_changes_nothing) {
     Goals goals({1, 4, 2, 2});
     ASSERT_NE(goals.create(), 0U);
     const uint8_t bytes[] = {1, 2, 3, 4};
     uint32_t index = 77;
-    EXPECT_FALSE(
-        goals->insert(Goals::new_goal(0, owner, {bytes, sizeof(bytes)}), 99, {1, 1}, index));
+    EXPECT_EQ(goals->insert(Goals::new_goal(0, owner, {bytes, sizeof(bytes)}), 99, {1, 1}, index),
+              Placement::refused);
     EXPECT_EQ(index, 77U);
     EXPECT_EQ(goals->size(), 1U);
     uint32_t found = 0;
     EXPECT_FALSE(goals->find(99, found));
+
+    Goals ended({2, 0, 2, 2});
+    const uint64_t parent = ended.create();
+    ASSERT_EQ(ended.change(parent, GoalChange::cancel), ChangeCheck::allowed);
+    ASSERT_NE(ended.create(), 0U);
+    ASSERT_EQ(ended->giving_way(), ended.index_of(parent));
+    EXPECT_EQ(ended->insert(Goals::new_goal(parent), 99, {9, 9}, index), Placement::refused);
+    EXPECT_EQ(index, 77U);
+    EXPECT_EQ(ended.goal(parent).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_FALSE(ended->find(99, found));
 }
 
 // C-LIFE-021: pause keeps the goal and does not reach its children.

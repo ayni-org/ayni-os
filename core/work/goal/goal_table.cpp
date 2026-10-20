@@ -61,8 +61,8 @@ uint32_t GoalTable::giving_way() const {
     return oldest;
 }
 
-bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
-                       uint32_t &out_index) {
+GoalTable::Placement GoalTable::insert(const NewGoal &goal, uint64_t goal_id,
+                                       foundation::TransitionStamp stamp, uint32_t &out_index) {
     Goal created{};
     created.goal_id = goal_id;
     created.parent_goal_id = goal.parent_goal_id;
@@ -87,13 +87,16 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
 
     // Only a full table gives up a place, and the new goal takes it at once.
     uint32_t index = goals_.size();
+    Placement placement = Placement::new_place;
     if (goals_.full()) {
-        // The parent is ACTIVE or PAUSED (admit()), so it is not giving way.
         index = giving_way();
-        if (index == no_index) {
-            return false;
+        // admit() admits only an ACTIVE or PAUSED parent, which never gives
+        // way; one that did would leave the new goal its own parent.
+        if (index == no_index || index == created.parent_index) {
+            return Placement::refused;
         }
         goals_[index] = created;
+        placement = Placement::given_way;
     } else {
         // Cannot fail: the table is not full.
         static_cast<void>(goals_.push_back(created));
@@ -103,7 +106,7 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
                     goal.parameters.data, goal.parameters.size);
     }
     out_index = index;
-    return true;
+    return placement;
 }
 
 GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
