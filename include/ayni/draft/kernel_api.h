@@ -15,7 +15,7 @@
  * (contracts/wire/json_subset.md C-JSON-004).
  *
  * Calling rules (contracts/host/host_ports.md, lifecycles.md):
- * - Every function except ayni_post_event runs on the kernel owner thread.
+ * - Every function here runs on the kernel owner thread.
  * - ayni_register_* only in CONFIGURING; descriptors are copied and checked
  *   against the configured limits before return; registration order does not
  *   matter because ayni_start validates all cross references at once.
@@ -154,46 +154,21 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
 
 /* ---- Events ---------------------------------------------------------- */
 
-typedef uint32_t ayni_event_kind_t;
-
-#define AYNI_EVENT_OBSERVATION ((ayni_event_kind_t)1)
-#define AYNI_EVENT_TELEMETRY ((ayni_event_kind_t)2)
-#define AYNI_EVENT_LOCAL_INPUT ((ayni_event_kind_t)3) /* button, rule trigger */
-#define AYNI_EVENT_CLOCK_TRUST ((ayni_event_kind_t)4) /* absolute time became trusted */
-
 /*
- * Host-originated events that are not completions of a kernel request.
- * Completions use the reserved slots of ayni.h instead, so a full ingress
- * queue can never drop them (C-HOST-006). Stop and safety state
- * never travel as events (C-STOP-001).
- */
-typedef struct ayni_event_v1 {
-    uint32_t struct_size;
-    ayni_event_kind_t kind;
-    uint64_t subscription_id; /* 0: not from a subscription */
-    uint32_t generation;
-    uint32_t
-        coalesce_key; /* telemetry: equal nonzero keys of one subscription may replace each other */
-    uint64_t sequence;
-    uint64_t captured_at_us; /* Host monotonic time of capture */
-    uint32_t body_size;
-    uint32_t reserved; /* 0 */
-    const void *body;
-} ayni_event_v1;
-
-/*
- * Callable from any thread except an ISR (ISRs go through the Host bridge,
- * C-HOST-008). Copies the event into the bounded ingress queue under the
- * ingress lock and wakes the owner thread (ADR-0015). When the queue is full,
- * a telemetry event replaces the queued telemetry of the same subscription
+ * Further event kinds for ayni_event_v1 and ayni_post_event (ayni.h). Until a
+ * kind is implemented, ayni_post_event returns AYNI_UNSUPPORTED for it.
+ * Observations and telemetry come with subscriptions (MA-018), which append
+ * the fields they need to ayni_event_v1: subscription_id, generation,
+ * sequence, captured_at_us (host monotonic time of capture), coalesce_key
+ * and a body of at most event_body_max_bytes. When the queue is full, a
+ * telemetry event replaces the queued telemetry of the same subscription
  * and nonzero coalesce_key, or else evicts the oldest queued telemetry; both
  * are counted, and the consumer sees the loss as a gap in the subscription's
- * sequence. Other kinds return AYNI_BUSY. A body larger than
- * event_body_max_bytes is AYNI_INVALID_ARGUMENT. The lifecycle check reads a
- * flag kept under the same lock. Must not run concurrently with ayni_create
- * or ayni_destroy (C-HOST-018).
+ * sequence (ADR-0015).
  */
-ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event);
+#define AYNI_EVENT_OBSERVATION ((ayni_event_kind_t)1)
+#define AYNI_EVENT_TELEMETRY ((ayni_event_kind_t)2)
+#define AYNI_EVENT_CLOCK_TRUST ((ayni_event_kind_t)4) /* absolute time became trusted */
 
 #ifdef __cplusplus
 }

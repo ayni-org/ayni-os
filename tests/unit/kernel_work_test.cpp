@@ -71,7 +71,7 @@ TEST(WorkModel, registration_checks_its_arguments) {
          {goal_type_desc("reminder", 0), goal_type_desc("", 1), goal_type_desc("Reminder", 1),
           goal_type_desc("abcdefghijklmnopqrstuvwxyz0123456", 1),
           goal_type_desc("reminder", 1, nullptr, nullptr, 0),
-          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(4)),
+          goal_type_desc("reminder", 1, nullptr, nullptr, any_trigger | AYNI_TRIGGER_BIT(5)),
           goal_type_desc("reminder", 1, nullptr, nullptr, 0x80000000U)}) {
         EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
     }

@@ -1,8 +1,9 @@
 // Goals (contracts/domain/lifecycles.md, primitives.md). The table owns each
 // goal's lifecycle, revision, place in the goal tree, parameter block,
-// trigger cursor and expiry (ADR-0018, ADR-0019, ADR-0020). It enforces the
-// fixed owner (C-LIFE-020), the tree limits (C-LIMIT-007) and the cascades
-// of cancel (C-LIFE-022) and expiry.
+// trigger cursor and expiry (ADR-0018, ADR-0019, ADR-0020), and records the
+// local inputs its triggers take (ADR-0021). It enforces the fixed owner
+// (C-LIFE-020), the tree limits (C-LIMIT-007) and the cascades of cancel
+// (C-LIFE-022) and expiry.
 //
 // Goals are never removed: a terminal goal stays queryable and counts toward
 // the capacity until the log defines when it may be dropped (MA-010). So the
@@ -12,6 +13,7 @@
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
 #define AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
 
+#include "catalog/catalog_id.h"
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
 #include "work/goal/trigger_schedule.h"
@@ -38,8 +40,11 @@ struct NewGoal {
     GoalOrigin origin;
     ayni_bytes_v1 parameters; // fits parameters_fit()
     Trigger trigger;          // trigger.fits()
-    uint64_t created_us;      // on the host monotonic clock
-    uint64_t expiry_us;       // from created_us to the expiry; 0: none
+    // LOCAL_INPUT: the local input whose events are its occurrences; empty
+    // for other kinds.
+    catalog::CatalogId trigger_source;
+    uint64_t created_us; // on the host monotonic clock
+    uint64_t expiry_us;  // from created_us to the expiry; 0: none
     // The goal type's: how long a due occurrence may wait for a task;
     // no_time: unbounded (ADR-0020).
     uint64_t occurrence_wait_max_us;
@@ -53,8 +58,9 @@ struct Goal {
     uint64_t commit_seq;   // of the last change
     uint64_t last_task_id; // 0 before the first task
     Trigger trigger;
-    TriggerCursor cursor; // no next occurrence once the goal is terminal
-    uint64_t expires_us;  // no_time: never
+    TriggerCursor cursor; // no next occurrence, none waiting, once the goal is terminal
+    catalog::CatalogId trigger_source;
+    uint64_t expires_us; // no_time: never
     uint64_t occurrence_wait_max_us;
     GoalOrigin origin;
     uint32_t parent_index; // GoalTable::no_parent for a top-level goal
@@ -145,6 +151,15 @@ class GoalTable {
     // the revision stays, as for take_due. Same precondition as take_due.
     void skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
                   foundation::TransitionStamp stamp);
+    // Whether some goal takes a local input from source: its trigger is
+    // LOCAL_INPUT from that source, it is not terminal, paused or not, and
+    // one more occurrence has a number (ADR-0021).
+    bool takes_input(const catalog::CatalogId &source) const;
+    // Records the input as one occurrence, due at now_us, of every goal that
+    // takes it, and gives each of them stamp.commit_seq; the revision stays,
+    // as for take_due. Only after takes_input(source) returned true.
+    void record_input(const catalog::CatalogId &source, uint64_t now_us,
+                      foundation::TransitionStamp stamp);
     // Drops the expiry of goal index, which then never expires, and gives it
     // stamp.commit_seq; the revision stays. Only when expiring it would raise
     // a revision past the largest, its own or one of the goals or tasks the
@@ -178,6 +193,7 @@ class GoalTable {
     // Whether goal index is a descendant of ancestor, which comes before it.
     bool descends_from(uint32_t index, uint32_t ancestor) const;
     static bool allows(const Goal &goal, GoalChange change);
+    static bool takes(const Goal &goal, const catalog::CatalogId &source);
     void set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
                        foundation::TransitionStamp stamp);
 

@@ -115,6 +115,8 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.expires_us = goal.expires_us;
     info.occurrences_skipped = goal.occurrences_skipped;
     info.skip_reason = goal.skip_reason;
+    info.trigger_source_size = goal.trigger_source.size();
+    std::memcpy(info.trigger_source, goal.trigger_source.data(), goal.trigger_source.size());
     // Read from the tables rather than kept, so a query needs no clock.
     if (goal.cursor.has_next()) {
         info.wait_reason =

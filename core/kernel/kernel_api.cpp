@@ -1,10 +1,11 @@
 // C ABI entry points of the kernel itself: version query, memory
 // requirements, create, lifecycle and kernel info queries, start, step,
-// shutdown, destroy and completion posting. They check arguments and struct
-// sizes; lifecycle semantics live in kernel_lifecycle.cpp. The work model's
-// entry points are in work_api.cpp. Everything else in the planned API
-// (include/ayni/draft/) has no symbol yet.
+// shutdown, destroy, completion and event posting. They check arguments and
+// struct sizes; lifecycle semantics live in kernel_lifecycle.cpp. The work
+// model's entry points are in work_api.cpp. Everything else in the planned
+// API (include/ayni/draft/) has no symbol yet.
 
+#include "catalog/catalog_id.h"
 #include "kernel/abi_checks.h"
 #include "kernel/kernel_layout.h"
 #include "kernel/kernel_state.h"
@@ -33,6 +34,10 @@ constexpr std::size_t host_v1_min_size =
 constexpr std::size_t completion_result_v1_min_size = sizeof(ayni_completion_result_v1);
 constexpr std::size_t kernel_info_v1_min_size =
     offsetof(ayni_kernel_info_v1, boot_epoch) + sizeof(ayni_kernel_info_v1::boot_epoch);
+// Where the 0.5 layout of ayni_kernel_info_v1 ends; 0.9 appends the event
+// counters.
+constexpr std::size_t kernel_info_v1_0_5_size =
+    offsetof(ayni_kernel_info_v1, durable_seq) + sizeof(ayni_kernel_info_v1::durable_seq);
 constexpr std::size_t step_report_v1_min_size = sizeof(ayni_step_report_v1);
 
 using ayni::kernel::check_struct_size;
@@ -303,13 +308,16 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
     info.restriction = kernel->restriction();
     info.boot_epoch = kernel->boot.boot_epoch();
     info.durable_seq = kernel->boot.durable_seq();
-    // Whole fields only: a struct_size that ends inside durable_seq gets the
-    // first layout.
-    const std::size_t written =
-        covers(out_info->struct_size, offsetof(ayni_kernel_info_v1, durable_seq),
-               sizeof(info.durable_seq))
-            ? sizeof(info)
-            : kernel_info_v1_min_size;
+    info.events_unmatched = kernel->events_unmatched;
+    info.events_discarded = kernel->events_discarded;
+    // Whole layouts only: a struct_size that ends inside a later layout gets
+    // the one before it.
+    std::size_t written = kernel_info_v1_min_size;
+    if (out_info->struct_size >= sizeof(info)) {
+        written = sizeof(info);
+    } else if (out_info->struct_size >= kernel_info_v1_0_5_size) {
+        written = kernel_info_v1_0_5_size;
+    }
     std::memcpy(out_info, &info, written);
     return AYNI_OK;
 }
@@ -385,6 +393,37 @@ ayni_status_t ayni_completion_post(ayni_completion_t *completion,
     std::memcpy(&copy, result, result->struct_size);
     copy.struct_size = sizeof(ayni_completion_result_v1);
     return completion->pool->post(*completion, copy);
+}
+
+// Reads nothing the owner thread changes outside the ingress lock: the host
+// table is fixed at ayni_create, and the gate stands in for the lifecycle
+// (ADR-0021). That is also why it cannot refuse a call from a function the
+// kernel calls, as owner-thread functions do.
+ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event) {
+    if (kernel == nullptr || event == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    // New in 0.9, so it has one layout.
+    const ayni_status_t size_status =
+        check_struct_size(event->struct_size, sizeof(ayni_event_v1), sizeof(ayni_event_v1));
+    if (size_status != AYNI_OK) {
+        return size_status;
+    }
+    if (event->kind == 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (event->kind != AYNI_EVENT_LOCAL_INPUT) {
+        return AYNI_UNSUPPORTED;
+    }
+    ayni::catalog::CatalogId source;
+    if (!source.assign(event->source)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const ayni_status_t status = kernel->ingress.post_local_input(source);
+    if (status == AYNI_OK) {
+        kernel->host.wake(kernel->host.ctx);
+    }
+    return status;
 }
 
 } // extern "C"

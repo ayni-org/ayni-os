@@ -37,8 +37,8 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
     Placer placer(sizeof(ayni_kernel));
     KernelLayout layout{};
     layout.ingress_offset = placer.place(
-        EventQueue::storage_alignment,
-        EventQueue::storage_size(capacities.ingress_capacity, capacities.event_body_max_bytes));
+        EventIngress::storage_alignment,
+        EventIngress::storage_size(capacities.ingress_capacity, capacities.event_body_max_bytes));
     layout.completions_offset =
         placer.place(CompletionPool::storage_alignment,
                      CompletionPool::storage_size(capacities.completion_slot_count));

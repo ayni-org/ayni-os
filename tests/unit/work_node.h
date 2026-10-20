@@ -69,7 +69,8 @@ inline ayni_agent_desc_v1 agent_desc(uint64_t agent_id) {
 
 constexpr uint32_t any_trigger =
     AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
-    AYNI_TRIGGER_BIT(AYNI_TRIGGER_DELAY) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
+    AYNI_TRIGGER_BIT(AYNI_TRIGGER_DELAY) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL) |
+    AYNI_TRIGGER_BIT(AYNI_TRIGGER_LOCAL_INPUT);
 
 // Occurrences wait without limit unless a test asks for one (ADR-0020).
 inline ayni_goal_type_v1

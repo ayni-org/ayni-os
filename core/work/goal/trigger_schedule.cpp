@@ -17,20 +17,28 @@ bool Trigger::fits() const {
         return period_us == 0U;
     case AYNI_TRIGGER_INTERVAL:
         return period_us >= AYNI_TRIGGER_PERIOD_MIN_US;
-    default: // NONE and ONCE take no times
+    default: // NONE, ONCE and LOCAL_INPUT take no times
         return delay_us == 0U && period_us == 0U;
     }
 }
 
 TriggerCursor start_schedule(const Trigger &trigger, uint64_t created_us) {
-    // ONCE has delay_us 0, so it is due at creation.
-    const uint64_t first_due =
-        trigger.kind == AYNI_TRIGGER_NONE ? no_time : time_after(created_us, trigger.delay_us);
-    return {0, first_due};
+    // ONCE has delay_us 0, so it is due at creation. A local input trigger
+    // has nothing due until an input arrives.
+    const bool scheduled =
+        trigger.kind != AYNI_TRIGGER_NONE && trigger.kind != AYNI_TRIGGER_LOCAL_INPUT;
+    return {0, scheduled ? time_after(created_us, trigger.delay_us) : no_time};
 }
 
 TakenOccurrences take_due(const Trigger &trigger, uint64_t now_us, TriggerCursor &cursor) {
     const uint64_t first_due = cursor.next_due_us;
+    if (trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) {
+        // record() numbered them all, so latest fits.
+        const TakenOccurrences taken{cursor.taken + cursor.waiting, cursor.waiting,
+                                     cursor.latest_due_us};
+        cursor = {taken.latest, no_time};
+        return taken;
+    }
     if (trigger.kind != AYNI_TRIGGER_INTERVAL) {
         cursor = {cursor.taken + 1U, no_time};
         return {cursor.taken, 1U, first_due};
@@ -48,6 +56,19 @@ TakenOccurrences take_due(const Trigger &trigger, uint64_t now_us, TriggerCursor
     const uint32_t latest = cursor.taken + count;
     cursor = {latest, latest == last_number ? no_time : time_after(due_us, trigger.period_us)};
     return {latest, count, due_us};
+}
+
+bool can_record(const TriggerCursor &cursor) {
+    // taken + waiting never passes last_number, so this cannot wrap.
+    return cursor.taken + cursor.waiting < last_number;
+}
+
+void record(uint64_t at_us, TriggerCursor &cursor) {
+    if (cursor.waiting == 0U) {
+        cursor.next_due_us = at_us;
+    }
+    ++cursor.waiting;
+    cursor.latest_due_us = at_us;
 }
 
 } // namespace ayni::work

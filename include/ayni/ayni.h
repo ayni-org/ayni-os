@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 8u
+#define AYNI_ABI_MINOR 9u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -93,8 +93,11 @@ typedef struct ayni_config_v1 {
      * defined) and its _MAX; a field that struct_size does not cover takes its
      * _DEFAULT. The defaults are unmeasured initial assumptions (C-LIMIT-003).
      */
-    uint32_t ingress_capacity;      /* events queued by ayni_post_event */
-    uint32_t event_body_max_bytes;  /* largest event body accepted */
+    uint32_t ingress_capacity; /* events queued by ayni_post_event */
+    /* Room for an event body in each queued event. No implemented event kind
+     * carries a body yet; since 0.9 each queued event keeps at least
+     * AYNI_CATALOG_ID_MAX_BYTES for a local input's source (ADR-0021). */
+    uint32_t event_body_max_bytes;
     uint32_t completion_slot_count; /* asynchronous Host requests in flight */
     /* Since 0.4. The buffer for log reads during recovery and for one
      * encoded commit batch (ADR-0016); it bounds the largest batch. */
@@ -314,6 +317,11 @@ typedef struct ayni_kernel_info_v1 {
      * the positions above durable_seq again (C-COMMIT-016).
      */
     uint64_t durable_seq;
+    /* Since 0.9 (ADR-0021). Events ayni_step took in RUNNING that no goal's
+     * trigger took, and events it discarded in DRAINING or RESTRICTED or
+     * left queued on entering STOPPED. */
+    uint64_t events_unmatched;
+    uint64_t events_discarded;
 } ayni_kernel_info_v1;
 
 /* Since 0.4. What one ayni_step did. */
@@ -394,11 +402,15 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
 ayni_status_t ayni_start(ayni_kernel_t *kernel);
 
 /*
- * Applies posted completions, advances recovery and shutdown and, in
- * RUNNING, does the goals' due work, one item and transition each: expires
- * goals (ADR-0020), derives tasks (ADR-0018) and skips occurrences that
- * waited too long (ADR-0020). A task stands for every occurrence of its
- * goal due by the step's start (ADR-0019). Deriving and skipping set the
+ * Applies posted completions and advances recovery and shutdown. Since 0.9
+ * it then takes the events queued when it comes to them, one item each
+ * (ADR-0021): in RUNNING each is recorded, in one transition, as an
+ * occurrence of every goal whose trigger takes it, or counted as unmatched;
+ * in DRAINING and RESTRICTED each is discarded and counted; in RECOVERING
+ * they stay queued. In RUNNING it then does the goals' due work, one item
+ * and transition each: expires goals (ADR-0020), derives tasks (ADR-0018)
+ * and skips occurrences that waited too long (ADR-0020). A task stands for
+ * every occurrence of its goal due by the step's start (ADR-0019). Deriving and skipping set the
  * goal's occurrences, next_due_us, last_task_id or occurrences_skipped and
  * skip_reason, and commit_seq but keep its revision, so the revision a
  * caller holds for the goal stays valid. An expiry that would raise a
@@ -672,6 +684,11 @@ typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 paramete
  * created with an expiry becomes EXPIRED at that time, paused or not,
  * together with its descendants and their tasks that have not ended; a goal
  * expiring takes no occurrence due at the same step.
+ *
+ * Since 0.9 (ADR-0021). A LOCAL_INPUT goal's occurrences are the local
+ * inputs from its trigger_source that ayni_step takes while the goal is not
+ * terminal, paused or not (ayni_post_event); each falls due when the step
+ * that takes it started. They wait and become one task like any other.
  */
 typedef uint32_t ayni_trigger_kind_t;
 
@@ -682,6 +699,8 @@ typedef uint32_t ayni_trigger_kind_t;
 /* Since 0.7. The first occurrence is due trigger_delay_us after creation,
  * each next one trigger_period_us after the one before. */
 #define AYNI_TRIGGER_INTERVAL ((ayni_trigger_kind_t)3)
+/* Since 0.9. One occurrence for each local input from trigger_source. */
+#define AYNI_TRIGGER_LOCAL_INPUT ((ayni_trigger_kind_t)4)
 /* Since 0.7. The shortest trigger_period_us: goals work on a scale of
  * seconds (plan §2.1), and occurrence numbers then last beyond any device's
  * life. */
@@ -753,7 +772,8 @@ typedef struct ayni_goal_info_v1 {
     uint64_t trigger_period_us; /* since 0.7; as created */
     /* Since 0.7. When the next occurrence falls due, on the host monotonic
      * clock; UINT64_MAX when none will: the trigger has none left or the
-     * goal is terminal. */
+     * goal is terminal. Since 0.9, LOCAL_INPUT: when the earliest recorded
+     * occurrence not yet taken fell due; UINT64_MAX while none waits. */
     uint64_t next_due_us;
     /* Since 0.8. When the goal expires, on the host monotonic clock;
      * UINT64_MAX when it never will: it has no expiry, its expiry was
@@ -766,9 +786,12 @@ typedef struct ayni_goal_info_v1 {
     /* Since 0.8. While the goal has an occurrence to come, what would keep it
      * from becoming a task now, as skip_reason; AYNI_REASON_NONE when
      * nothing would or none will come. Holding by a pause is in the
-     * lifecycles, not here. */
+     * lifecycles, not here. A LOCAL_INPUT goal has one to come while an
+     * occurrence waits. */
     ayni_reason_t wait_reason;
-    uint32_t reserved; /* written as 0 */
+    uint32_t reserved;            /* written as 0 */
+    uint32_t trigger_source_size; /* since 0.9; 0 unless the trigger is LOCAL_INPUT */
+    char trigger_source[AYNI_CATALOG_ID_MAX_BYTES]; /* since 0.9; as created, not terminated */
 } ayni_goal_info_v1;
 
 /*
@@ -862,6 +885,9 @@ typedef struct ayni_goal_create_v1 {
     /* Since 0.8. From creation to when the goal expires; 0: never. A time
      * past the clock's range never comes. */
     uint64_t expiry_us;
+    /* Since 0.9. LOCAL_INPUT: a catalog id naming the local input whose
+     * events are its occurrences (ayni_post_event). Empty for other kinds. */
+    ayni_string_v1 trigger_source;
 } ayni_goal_create_v1;
 
 typedef struct ayni_goal_target_v1 {
@@ -963,9 +989,10 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    implemented here, the body, which must not be NULL. GOAL_CREATE also
  *    needs expected_revision 0, a goal_type_id that is a catalog id,
  *    parameters whose data is not NULL unless their size is 0, a trigger
- *    kind this library defines, and trigger times that fit it (an INTERVAL
+ *    kind this library defines, trigger times that fit it (an INTERVAL
  *    period of at least AYNI_TRIGGER_PERIOD_MIN_US, zero where the kind
- *    takes none).
+ *    takes none), and a trigger_source that is a catalog id for
+ *    LOCAL_INPUT and empty for other kinds.
  * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement, or a
  *    nonzero command_id.
  * 3. AYNI_INVALID_STATE when called from a goal type's validator; then
@@ -1025,6 +1052,47 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
  * (ADR-0018). */
 ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
                             ayni_task_info_v1 *out_info);
+
+/* ---- Events (since 0.9) ------------------------------------------------
+ *
+ * Events a host posts from its own threads, other than completions of the
+ * kernel's requests (ADR-0015, ADR-0021). They wait in a queue of
+ * ingress_capacity events until ayni_step takes them. The kinds this library
+ * implements; the other planned kinds are in include/ayni/draft/
+ * kernel_api.h. Stop and safety state never travel as events (C-STOP-001).
+ */
+typedef uint32_t ayni_event_kind_t;
+
+/* A local input, such as a button press or a local rule firing. It is never
+ * dropped for room: a full queue refuses it. */
+#define AYNI_EVENT_LOCAL_INPUT ((ayni_event_kind_t)3)
+
+typedef struct ayni_event_v1 {
+    uint32_t struct_size;
+    ayni_event_kind_t kind;
+    /* LOCAL_INPUT: a catalog id naming the input, e.g. "button.record". It
+     * triggers the goals created with it as their trigger_source. */
+    ayni_string_v1 source;
+} ayni_event_v1;
+
+/*
+ * Queues a copy of the event, then calls wake once the ingress lock is
+ * released (ADR-0015). Callable from any thread except an ISR (C-HOST-008),
+ * but not from a function the kernel calls, and not while ayni_create or
+ * ayni_destroy runs (C-HOST-018). Checks run in this order:
+ * - AYNI_INVALID_ARGUMENT for a NULL kernel or event, a struct_size below
+ *   sizeof(ayni_event_v1), or kind 0; AYNI_UNSUPPORTED_VERSION for a larger
+ *   struct_size;
+ * - AYNI_UNSUPPORTED for a kind this library does not implement;
+ * - AYNI_INVALID_ARGUMENT for a source that is not a catalog id;
+ * - AYNI_INVALID_STATE in CONFIGURING and STOPPED;
+ * - AYNI_BUSY when ingress_capacity events are queued: nothing is queued,
+ *   and the host posts it again after the owner has stepped.
+ * Returns AYNI_OK otherwise, in RECOVERING, RUNNING, DRAINING and
+ * RESTRICTED (ayni_step says what each does with it). A failed call does
+ * not call wake.
+ */
+ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event);
 
 #ifdef __cplusplus
 }

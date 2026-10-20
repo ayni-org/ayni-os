@@ -62,6 +62,7 @@ class Goals {
                 {AYNI_ORIGIN_USER, AYNI_CHANNEL_MANAGEMENT, 7, 1},
                 parameters,
                 trigger,
+                {},
                 created_us,
                 expiry_us,
                 ayni::work::no_time};

@@ -133,12 +133,17 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
             object_ref(AYNI_OBJECT_AGENT_INSTANCE, create.owner_instance_id, owner->revision),
             failure);
     }
+    catalog::CatalogId trigger_source;
+    if (create.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) {
+        static_cast<void>(trigger_source.assign(create.trigger_source)); // check_form()
+    }
     const work::NewGoal goal{create.owner_instance_id,
                              create.parent_goal_id,
                              type.index,
                              origin,
                              create.parameters,
                              create.trigger,
+                             trigger_source,
                              now_us,
                              create.expiry_us,
                              model.goal_types.at(type.index).occurrence_wait_max_us};

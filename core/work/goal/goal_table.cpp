@@ -61,6 +61,7 @@ bool GoalTable::insert(const NewGoal &goal, uint64_t goal_id, foundation::Transi
     created.parameter_size = goal.parameters.size;
     created.trigger = goal.trigger;
     created.cursor = start_schedule(goal.trigger, goal.created_us);
+    created.trigger_source = goal.trigger_source;
     created.expires_us =
         goal.expiry_us == 0U ? no_time : time_after(goal.created_us, goal.expiry_us);
     created.occurrence_wait_max_us = goal.occurrence_wait_max_us;
@@ -146,6 +147,26 @@ void GoalTable::skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
     goal.occurrences_skipped += work::take_due(goal.trigger, now_us, goal.cursor).count;
     goal.skip_reason = reason;
     goal.commit_seq = stamp.commit_seq;
+}
+
+bool GoalTable::takes_input(const catalog::CatalogId &source) const {
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        if (takes(goals_[index], source)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GoalTable::record_input(const catalog::CatalogId &source, uint64_t now_us,
+                             foundation::TransitionStamp stamp) {
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        Goal &goal = goals_[index];
+        if (takes(goal, source)) {
+            work::record(now_us, goal.cursor);
+            goal.commit_seq = stamp.commit_seq;
+        }
+    }
 }
 
 void GoalTable::drop_expiry(uint32_t index, foundation::TransitionStamp stamp) {
@@ -244,9 +265,14 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
         goal.cancel_revision = goal.revision;
     }
     if (!is_live(lifecycle)) {
-        goal.cursor.next_due_us = no_time;
+        goal.cursor = {goal.cursor.taken, no_time};
         goal.expires_us = no_time;
     }
+}
+
+bool GoalTable::takes(const Goal &goal, const catalog::CatalogId &source) {
+    return goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && is_live(goal.lifecycle) &&
+           goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor);
 }
 
 } // namespace ayni::work
