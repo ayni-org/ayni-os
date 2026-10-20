@@ -1,6 +1,6 @@
 # 状态码
 
-- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020；`MA-004`、`MA-005`
+- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022；`MA-004`、`MA-005`
 - **定义位置**：`include/ayni/ayni.h`（唯一来源；Core 内部不复制一份）
 
 ## 取值
@@ -31,7 +31,7 @@
 
 ## 原因码
 
-`ayni_error_v1.reason` 在状态码之外说明拒绝的原因，`object` 指出它涉及的对象（ID、版本与种类）。每个原因码只属于一个状态码；调用方不认识的原因码按其状态码处理。目前由 `ayni_submit_intent` 输出（`include/ayni/ayni.h`）；自 0.8 起 `ayni_goal_info_v1` 的 `skip_reason`、`wait_reason` 也用其中的 `ID_EXHAUSTED` 与只用于 Goal 信息的 `TASK_CAPACITY` 说明 occurrence 为什么跳过或等待（ADR-0020）。
+`ayni_error_v1.reason` 在状态码之外说明拒绝的原因，`object` 指出它涉及的对象（ID、版本与种类）。每个原因码只属于一个状态码；调用方不认识的原因码按其状态码处理。目前由 `ayni_submit_intent` 输出（`include/ayni/ayni.h`）；自 0.8 起 `ayni_goal_info_v1` 的 `skip_reason`、`wait_reason` 也用其中的 `ID_EXHAUSTED` 与只用于 Goal 信息的 `TASK_CAPACITY` 说明 occurrence 为什么跳过或等待（ADR-0020）；自 0.10 起 `ayni_task_info_v1` 的 `hold_status`、`hold_reason` 说明策略的决定为什么使 Task 停下，原因码为只用于 Task 信息的 28–30 与 `INTENT_UNSUPPORTED`、`TASK_REVISION`、`REVISION_EXHAUSTED`，策略自己返回的其他失败配 `NONE`（ADR-0022）。
 
 | 值 | 名称 | 状态码 | 含义 |
 |---:|---|---|---|
@@ -63,6 +63,9 @@
 | 25 | `AYNI_REASON_INSTANCE_REVISION` | `REVISION_CONFLICT` | `expected_revision` 不是实例的当前版本 |
 | 26 | `AYNI_REASON_INSTANCE_STATE` | `INVALID_STATE` | 实例的生命周期不允许该变化 |
 | 27 | `AYNI_REASON_TASK_CAPACITY` | `CAPACITY_EXCEEDED` | 只用于 Goal 信息：Task 表没有槽位，occurrence 不能成为 Task（ADR-0020） |
+| 28 | `AYNI_REASON_POLICY_OUTPUT_LIMIT` | `CAPACITY_EXCEEDED` | 只用于 Task 信息：决定的意图超过策略的 `max_intents_per_call`，或策略返回 `CAPACITY_EXCEEDED`（ADR-0022） |
+| 29 | `AYNI_REASON_POLICY_INTENT` | `INVALID_ARGUMENT` | 只用于 Task 信息：某个意图的 `struct_size` 不符，或两个意图都要结束 Task（ADR-0022） |
+| 30 | `AYNI_REASON_POLICY_NO_PROGRESS` | `INVALID_ARGUMENT` | 只用于 Task 信息：策略返回 `AYNI_OK` 却没有意图，Task 没有可等的东西（ADR-0022） |
 
 ## 规则
 

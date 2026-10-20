@@ -31,7 +31,7 @@
 | C-RES-002 | 一次调用所需的资源组全有或全无地准入；不允许部分占用后等待其余资源 | A 占住麦克风等扬声器，B 占住扬声器等麦克风，二者互相等待 | E1 步骤 3（多资源请求） |
 | C-RES-003 | 资源与预算的联合准入在同一 transition 中先判定、后应用；任一项不满足时两者都不改变 | 资源已标为占用，预算检查失败后资源没有归还 | `MA-018` 单元测试；E1 步骤 5 |
 | C-RES-004 | 准入按上表的优先级排序；同级使用有界公平队列，并记录每个请求的最长等待时间 | 后台反思持续占用模型槽，到期提醒的语音合成一直排不上 | E1 步骤 3、10 |
-| C-RES-005 | 每类工作声明等待上限与超限后的处理（延后、过期或暂停）及原因码；等待超限不得静默保留在队列中 | 资源被长期占用时，排队请求无期限等待且没有任何原因可查 | M1 已实现（occurrence 等待 Task 槽位或 ID：GoalType 声明等待上限，超限跳过并计数、记原因码，可声明无界等待；Goal 信息给出当前的等待原因，ADR-0020）：`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.wait_reason_reports_what_would_hold_the_next_occurrence`；Task 执行中的等待（资源、预算）与延后、暂停两种处理随 `MA-004` 第三部分与 `MA-018`；E1 步骤 10 |
+| C-RES-005 | 每类工作声明等待上限与超限后的处理（延后、过期或暂停）及原因码；等待超限不得静默保留在队列中 | 资源被长期占用时，排队请求无期限等待且没有任何原因可查 | M1 已实现（occurrence 等待 Task 槽位或 ID：GoalType 声明等待上限，超限跳过并计数、记原因码，可声明无界等待；Goal 信息给出当前的等待原因，ADR-0020）：`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.wait_reason_reports_what_would_hold_the_next_occurrence`；Task 执行中的等待（资源、预算）与延后、暂停两种处理随 `MA-018`（ADR-0022 决策 1）；E1 步骤 10 |
 | C-RES-006 | 首版不强制抢占不可中断的物理动作；优先级不意味着可以中断已开始的物理副作用，只能排队、超时或经可取消操作释放 | 前台请求到达时直接夺走正在转向的底盘资源 | `MA-018`；E1 步骤 3 |
 | C-RES-007 | 调用完成、失败、取消、超时或所属实例停止时释放其资源；释放与调用终态在同一 transition 中应用 | 调用超时后资源仍标为占用，后续请求永远无法准入 | E1 步骤 4 |
 | C-RES-008 | 未确认已停止的执行器资源进入 `QUARANTINED`，不分配给下一请求；许可结束或租期结束不解除隔离，Provider 也不能无限续租；只有停止确认回到 ActionRecord 后才释放 | 许可到期后资源立即可分配，下一个动作在电机仍在转动时被准入 | E1 步骤 4；C-STOP-006 |
