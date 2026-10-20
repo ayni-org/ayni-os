@@ -1,13 +1,40 @@
 #include "work/task/task_table.h"
 
+#include <cstring>
 #include <limits>
+#include <new>
 
 namespace ayni::work {
 namespace {
 
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
 
+static_assert(sizeof(Task) % alignof(catalog::CatalogId) == 0,
+              "the steps after the tasks are aligned");
+
+std::size_t steps_size(const TaskTable::Limits &limits) {
+    return sizeof(catalog::CatalogId) * limits.capacity * limits.step_capacity;
+}
+
 } // namespace
+
+std::size_t TaskTable::storage_size(const Limits &limits) {
+    return foundation::BoundedArray<Task>::storage_size(limits.capacity) + steps_size(limits) +
+           static_cast<std::size_t>(limits.capacity) * limits.checkpoint_max_bytes;
+}
+
+TaskTable::TaskTable(void *storage, const Limits &limits)
+    : tasks_(storage, limits.capacity),
+      steps_(reinterpret_cast<catalog::CatalogId *>(
+          static_cast<uint8_t *>(storage) +
+          foundation::BoundedArray<Task>::storage_size(limits.capacity))),
+      checkpoints_(reinterpret_cast<uint8_t *>(steps_) + steps_size(limits)),
+      step_capacity_(limits.step_capacity), checkpoint_max_bytes_(limits.checkpoint_max_bytes) {
+    const uint32_t steps = limits.capacity * limits.step_capacity;
+    for (uint32_t index = 0; index < steps; ++index) {
+        new (steps_ + index) catalog::CatalogId();
+    }
+}
 
 bool TaskTable::has_room() const {
     if (!tasks_.full()) {
@@ -22,6 +49,10 @@ bool TaskTable::has_room() const {
 }
 
 bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp) {
+    // Only a full table gives up a place, and the new task takes it at
+    // once, so the tasks of a table that is not full hold slots 0 to
+    // size() - 1.
+    uint32_t slot = tasks_.size();
     if (tasks_.full()) {
         // An ended task never changes again, so the one with the smallest
         // commit_seq ended first.
@@ -36,6 +67,7 @@ bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::Transi
         if (oldest == no_index) {
             return false;
         }
+        slot = tasks_[oldest].slot;
         tasks_.remove_at(oldest);
     }
     Task created{};
@@ -50,6 +82,8 @@ bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::Transi
     created.due_us = task.due_us;
     created.revision = 1;
     created.lifecycle = AYNI_TASK_READY;
+    created.checkpoint_writer = no_writer;
+    created.slot = slot;
     // Cannot fail: there is room now.
     static_cast<void>(tasks_.push_back(created));
     return true;
@@ -112,6 +146,53 @@ void TaskTable::hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
     ++task.revision;
     task.commit_seq = stamp.commit_seq;
     ++held_count_;
+}
+
+void TaskTable::add_step(uint32_t index, ayni_string_v1 key) {
+    Task &task = tasks_[index];
+    // Cannot fail: key is a catalog id.
+    static_cast<void>(steps_of(index)[task.step_count].assign(key));
+    ++task.step_count;
+}
+
+void TaskTable::set_checkpoint(uint32_t index, uint32_t writer, ayni_bytes_v1 state) {
+    Task &task = tasks_[index];
+    if (state.size > 0U) {
+        std::memcpy(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
+                    state.data, state.size);
+    }
+    task.checkpoint_size = state.size;
+    task.checkpoint_writer = writer;
+}
+
+void TaskTable::progress(uint32_t index, foundation::TransitionStamp stamp) {
+    Task &task = tasks_[index];
+    ++task.revision;
+    task.commit_seq = stamp.commit_seq;
+}
+
+const catalog::CatalogId &TaskTable::step(uint32_t index, uint32_t step) const {
+    return steps_of(index)[step];
+}
+
+bool TaskTable::has_step(uint32_t index, ayni_string_v1 key) const {
+    const catalog::CatalogId *steps = steps_of(index);
+    for (uint32_t step = 0; step < tasks_[index].step_count; ++step) {
+        if (steps[step].equals(key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ayni_bytes_v1 TaskTable::checkpoint(uint32_t index) const {
+    const Task &task = tasks_[index];
+    return {checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
+            task.checkpoint_size};
+}
+
+catalog::CatalogId *TaskTable::steps_of(uint32_t index) const {
+    return steps_ + static_cast<std::size_t>(tasks_[index].slot) * step_capacity_;
 }
 
 // How RUNNING and CANCELLING tasks pause and cancel comes with the requests

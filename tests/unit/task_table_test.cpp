@@ -1,14 +1,16 @@
-// Tasks owned by work/task (ADR-0018, ADR-0022): revisions and the cancel
-// revision (C-COMMIT-012), the transitions this part reaches, holds, the
-// order in which READY tasks are decided, and the places ended tasks give up
-// when the table is full.
+// Tasks owned by work/task (ADR-0018, ADR-0022, ADR-0024): revisions and the
+// cancel revision (C-COMMIT-012), the transitions this part reaches, holds,
+// steps, private checkpoints and progress, the order in which READY tasks
+// are decided, and the places ended tasks give up when the table is full.
 
 #include "work/task/task_table.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -21,11 +23,17 @@ using ChangeCheck = TaskTable::ChangeCheck;
 constexpr uint64_t owner = 50;
 constexpr uint64_t goal_id = 70;
 
+ayni_string_v1 key(const char *text) {
+    return {text, static_cast<uint32_t>(std::strlen(text))};
+}
+
 class Tasks {
   public:
-    explicit Tasks(uint32_t capacity)
-        : storage_(TaskTable::storage_size(capacity) / sizeof(uint64_t) + 1U),
-          table_(storage_.data(), capacity) {}
+    explicit Tasks(uint32_t capacity, uint32_t step_capacity = 2, uint32_t checkpoint_max_bytes = 4)
+        : storage_(TaskTable::storage_size({capacity, step_capacity, checkpoint_max_bytes}) /
+                       sizeof(uint64_t) +
+                   1U),
+          table_(storage_.data(), {capacity, step_capacity, checkpoint_max_bytes}) {}
 
     TaskTable *operator->() { return &table_; }
 
@@ -61,6 +69,24 @@ class Tasks {
             table_.apply(index, kind, next_stamp());
         }
         return check;
+    }
+
+    void progress(uint64_t task_id) { table_.progress(index_of(task_id), next_stamp()); }
+
+    // In the order they were committed.
+    std::vector<std::string> steps(uint64_t task_id) {
+        const uint32_t index = index_of(task_id);
+        std::vector<std::string> keys;
+        for (uint32_t step = 0; step < table_.at(index).step_count; ++step) {
+            const ayni::catalog::CatalogId &id = table_.step(index, step);
+            keys.emplace_back(id.data(), id.size());
+        }
+        return keys;
+    }
+
+    std::vector<uint8_t> checkpoint(uint64_t task_id) {
+        const ayni_bytes_v1 state = table_.checkpoint(index_of(task_id));
+        return {state.data, state.data + state.size};
     }
 
     // White-box: the tasks lie at the start of the storage.
@@ -230,6 +256,122 @@ TEST(TaskTable, task_is_still_held_from_its_hold_until_it_ends) {
     EXPECT_TRUE(tasks->has_held());
     ASSERT_EQ(tasks.change(other, TaskChange::expire), ChangeCheck::allowed);
     EXPECT_FALSE(tasks->has_held());
+}
+
+// ADR-0024: a decision's steps are kept in their order and its private
+// checkpoint replaces the last; progress leaves the task READY at the next
+// revision, and both stay once the task ends.
+TEST(TaskTable, decisions_commit_steps_checkpoints_and_progress) {
+    Tasks tasks(2, 3, 4);
+    const uint64_t id = tasks.create();
+    const uint64_t other = tasks.create();
+    const uint32_t index = tasks.index_of(id);
+    EXPECT_EQ(tasks->step_capacity(), 3U);
+    EXPECT_EQ(tasks->checkpoint_max_bytes(), 4U);
+    EXPECT_EQ(tasks.task(id).step_count, 0U);
+    EXPECT_EQ(tasks.task(id).checkpoint_writer, TaskTable::no_writer);
+    EXPECT_TRUE(tasks.checkpoint(id).empty());
+    EXPECT_FALSE(tasks->has_step(index, key("turn")));
+
+    tasks->add_step(index, key("turn"));
+    tasks->add_step(index, key("photo"));
+    const uint8_t state[] = {1, 2, 3, 4};
+    tasks->set_checkpoint(index, 5, {state, 4});
+    tasks.progress(id);
+    const Task &task = tasks.task(id);
+    EXPECT_EQ(task.lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(task.revision, 2U);
+    EXPECT_EQ(task.commit_seq, tasks.last_seq());
+    EXPECT_EQ(task.step_count, 2U);
+    EXPECT_EQ(task.checkpoint_writer, 5U);
+    EXPECT_EQ(tasks.steps(id), (std::vector<std::string>{"turn", "photo"}));
+    EXPECT_TRUE(tasks->has_step(index, key("photo")));
+    EXPECT_FALSE(tasks->has_step(index, key("phot")));
+    EXPECT_FALSE(tasks->has_step(tasks.index_of(other), key("turn")));
+    EXPECT_EQ(tasks.checkpoint(id), (std::vector<uint8_t>{1, 2, 3, 4}));
+    EXPECT_TRUE(tasks.checkpoint(other).empty());
+    // Progress puts the task behind the tasks READY before it.
+    uint32_t next = 99;
+    ASSERT_TRUE(tasks->next_ready(tasks.last_seq() + 1U, next));
+    EXPECT_EQ(next, tasks.index_of(other));
+
+    tasks->add_step(index, key("notify.owner"));
+    tasks->set_checkpoint(index, 5, {state + 2, 1});
+    ASSERT_EQ(tasks.change(id, TaskChange::complete), ChangeCheck::allowed);
+    EXPECT_EQ(tasks.steps(id), (std::vector<std::string>{"turn", "photo", "notify.owner"}));
+    EXPECT_EQ(tasks.checkpoint(id), (std::vector<uint8_t>{3}));
+    tasks->set_checkpoint(tasks.index_of(other), 6, {nullptr, 0});
+    EXPECT_TRUE(tasks.checkpoint(other).empty());
+    EXPECT_EQ(tasks.task(other).checkpoint_writer, 6U);
+}
+
+// A task keeps its steps and checkpoint when another task moves into its
+// place or takes the place of an ended task, and the new task starts with
+// none of the ended task's.
+TEST(TaskTable, tasks_keep_their_steps_and_checkpoints_as_places_change) {
+    Tasks tasks(3, 2, 2);
+    const uint64_t ended = tasks.create();
+    const uint64_t middle = tasks.create();
+    const uint64_t last = tasks.create();
+    const uint8_t bytes[] = {7, 8, 9};
+    const char *const keys[] = {"a", "b", "c"};
+    const uint64_t ids[] = {ended, middle, last};
+    for (int task = 0; task < 3; ++task) {
+        const uint32_t index = tasks.index_of(ids[task]);
+        tasks->add_step(index, key(keys[task]));
+        tasks->set_checkpoint(index, 1, {bytes + task, 1});
+    }
+    ASSERT_EQ(tasks.change(ended, TaskChange::cancel), ChangeCheck::allowed);
+
+    const uint64_t created = tasks.create();
+    ASSERT_NE(created, 0U);
+    EXPECT_FALSE(tasks.exists(ended));
+    EXPECT_EQ(tasks.task(created).step_count, 0U);
+    EXPECT_EQ(tasks.task(created).checkpoint_writer, TaskTable::no_writer);
+    EXPECT_TRUE(tasks.checkpoint(created).empty());
+    EXPECT_FALSE(tasks->has_step(tasks.index_of(created), key("a")));
+    EXPECT_EQ(tasks.steps(middle), (std::vector<std::string>{"b"}));
+    EXPECT_EQ(tasks.checkpoint(middle), (std::vector<uint8_t>{8}));
+    EXPECT_EQ(tasks.steps(last), (std::vector<std::string>{"c"}));
+    EXPECT_EQ(tasks.checkpoint(last), (std::vector<uint8_t>{9}));
+
+    // The new task's steps and checkpoint do not touch the others'.
+    const uint32_t index = tasks.index_of(created);
+    tasks->add_step(index, key("d"));
+    tasks->add_step(index, key("e"));
+    tasks->set_checkpoint(index, 2, {bytes, 2});
+    EXPECT_EQ(tasks.steps(created), (std::vector<std::string>{"d", "e"}));
+    EXPECT_EQ(tasks.checkpoint(created), (std::vector<uint8_t>{7, 8}));
+    EXPECT_EQ(tasks.steps(middle), (std::vector<std::string>{"b"}));
+    EXPECT_EQ(tasks.checkpoint(middle), (std::vector<uint8_t>{8}));
+    EXPECT_EQ(tasks.steps(last), (std::vector<std::string>{"c"}));
+    EXPECT_EQ(tasks.checkpoint(last), (std::vector<uint8_t>{9}));
+
+    // last moved into the place given up, so the slot of the task now
+    // giving way is not its place.
+    ASSERT_EQ(tasks.change(last, TaskChange::cancel), ChangeCheck::allowed);
+    const uint64_t fourth = tasks.create();
+    ASSERT_NE(fourth, 0U);
+    EXPECT_FALSE(tasks.exists(last));
+    EXPECT_EQ(tasks.task(fourth).step_count, 0U);
+    EXPECT_TRUE(tasks.checkpoint(fourth).empty());
+    tasks->add_step(tasks.index_of(fourth), key("f"));
+    tasks->set_checkpoint(tasks.index_of(fourth), 3, {bytes + 2, 1});
+    EXPECT_EQ(tasks.steps(fourth), (std::vector<std::string>{"f"}));
+    EXPECT_EQ(tasks.checkpoint(fourth), (std::vector<uint8_t>{9}));
+    EXPECT_EQ(tasks.steps(created), (std::vector<std::string>{"d", "e"}));
+    EXPECT_EQ(tasks.checkpoint(created), (std::vector<uint8_t>{7, 8}));
+    EXPECT_EQ(tasks.steps(middle), (std::vector<std::string>{"b"}));
+    EXPECT_EQ(tasks.checkpoint(middle), (std::vector<uint8_t>{8}));
+}
+
+// A table without checkpoints keeps empty ones.
+TEST(TaskTable, table_without_checkpoints_keeps_empty_ones) {
+    Tasks tasks(1, 1, 0);
+    const uint64_t id = tasks.create();
+    tasks->set_checkpoint(tasks.index_of(id), 0, {nullptr, 0});
+    EXPECT_TRUE(tasks.checkpoint(id).empty());
+    EXPECT_EQ(tasks.task(id).checkpoint_writer, 0U);
 }
 
 // ADR-0022: the next task to decide is the one READY longest, by commit_seq

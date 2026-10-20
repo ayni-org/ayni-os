@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 11u
+#define AYNI_ABI_MINOR 12u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -120,6 +120,11 @@ typedef struct ayni_config_v1 {
     /* The intents one decision may hold; each strategy declares its own
      * max_intents_per_call up to this. */
     uint32_t policy_intent_capacity;
+    /* Since 0.12 (ADR-0024). The steps one task's decisions may commit. */
+    uint32_t task_step_capacity;
+    /* Room for one task's private checkpoint; each strategy declares its
+     * own max_checkpoint_bytes up to this. */
+    uint32_t task_checkpoint_max_bytes;
 } ayni_config_v1;
 
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
@@ -154,6 +159,11 @@ typedef struct ayni_config_v1 {
 #define AYNI_STRATEGY_CAPACITY_MAX 64u
 #define AYNI_POLICY_INTENT_CAPACITY_DEFAULT 8u
 #define AYNI_POLICY_INTENT_CAPACITY_MAX 64u
+#define AYNI_TASK_STEP_CAPACITY_DEFAULT 8u
+#define AYNI_TASK_STEP_CAPACITY_MAX 64u
+#define AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT 64u
+#define AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN 0u
+#define AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX 4096u
 
 /*
  * Correlates an asynchronous attempt with its result (C-ID-006). Unique
@@ -428,8 +438,10 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * ended also makes it FAILED, as ayni_trigger_kind_t says (ADR-0023).
  * Since 0.10 it then has the strategies decide the tasks that were READY
  * when the step began, one item and transition each, the task READY
- * longest first (ADR-0022, ayni_register_strategy). Since 0.9 it then takes the events queued when
- * it comes to them, one item each (ADR-0021):
+ * longest first (ADR-0022, ayni_register_strategy); since 0.12 a task a
+ * decision leaves READY waits for a later step (ADR-0024). Since 0.9 it
+ * then takes the events queued when it comes to them, one item each
+ * (ADR-0021):
  * in RUNNING each is recorded, in one transition, as an occurrence of every
  * goal whose trigger takes it, due at the step's start, or counted as
  * unmatched; in DRAINING and RESTRICTED each is discarded and counted; in
@@ -611,10 +623,14 @@ typedef uint32_t ayni_reason_t;
  * holds (ADR-0022). INTENT_UNSUPPORTED, TASK_REVISION and
  * REVISION_EXHAUSTED hold tasks too. */
 /* CAPACITY_EXCEEDED: the decision holds more intents than the strategy's
- * max_intents_per_call, or the strategy returned AYNI_CAPACITY_EXCEEDED. */
+ * max_intents_per_call, or the strategy returned AYNI_CAPACITY_EXCEEDED;
+ * since 0.12 also a private checkpoint larger than its
+ * max_checkpoint_bytes. */
 #define AYNI_REASON_POLICY_OUTPUT_LIMIT ((ayni_reason_t)28)
 /* INVALID_ARGUMENT: an intent of the decision has another struct_size, or
- * two of its intents would each end the task. */
+ * two of its intents would each end the task; since 0.12 also a step_key
+ * that is not a catalog id on a REPORT_PROGRESS intent, or any step_key on
+ * an intent that ends the task. */
 #define AYNI_REASON_POLICY_INTENT ((ayni_reason_t)29)
 /* INVALID_ARGUMENT: the strategy returned AYNI_OK without an intent, which
  * leaves the task with nothing to wait for. */
@@ -623,6 +639,14 @@ typedef uint32_t ayni_reason_t;
  * decision holds a task of the goal, which keeps the goal from deriving
  * another until that task ends (ADR-0022). */
 #define AYNI_REASON_TASK_HELD ((ayni_reason_t)31)
+/* Since 0.12. In ayni_task_info_v1 only, for a task its strategy's decision
+ * holds (ADR-0024). */
+/* INVALID_ARGUMENT: a REPORT_PROGRESS intent names a step the task, or an
+ * earlier intent of the decision, already commits (C-POLICY-008). */
+#define AYNI_REASON_STEP_TAKEN ((ayni_reason_t)32)
+/* CAPACITY_EXCEEDED: the decision would leave the task with more steps than
+ * task_step_capacity. */
+#define AYNI_REASON_STEP_CAPACITY ((ayni_reason_t)33)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -885,6 +909,10 @@ typedef struct ayni_task_info_v1 {
      * a task never held. */
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
+    /* Since 0.12 (ADR-0024). The steps its strategy's decisions committed;
+     * the strategy sees them in ayni_task_snapshot_v1. */
+    uint32_t step_count;
+    uint32_t reserved; /* written as 0 */
 } ayni_task_info_v1;
 
 /*
@@ -1019,12 +1047,31 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
  * (contracts/host/policy_interface.md, ADR-0022). It is a bounded decision
  * function: ayni_step calls decide on the owner thread with a snapshot of
  * one READY task, and the strategy answers with intents in an output the
- * kernel provides. decide must not call kernel functions, block or perform
- * I/O (C-POLICY-001). Given the same snapshot it gives the same decision,
- * reading no clock or state the snapshot does not hold (C-POLICY-006). The
- * shape serves deterministic replay and replacing strategies; it is not a
- * security boundary.
+ * kernel provides. Since 0.12 a decision may commit steps of the task and
+ * leave it READY to be decided again, and it returns the private
+ * checkpoint that the task's next snapshot holds (ADR-0024). decide must
+ * not call kernel functions, block or perform I/O (C-POLICY-001). Given the
+ * same snapshot, its private checkpoint included, it gives the same
+ * decision, reading no clock or state the snapshot does not hold
+ * (C-POLICY-006). The shape serves deterministic replay and replacing
+ * strategies; it is not a security boundary.
  */
+
+/* Since 0.12. A task's private checkpoint as a strategy last returned it,
+ * with that strategy's id and version (C-POLICY-007, ADR-0024). It holds
+ * only the strategy's own state; the task's steps are the kernel's. */
+typedef struct ayni_private_checkpoint_v1 {
+    ayni_string_v1 strategy_id; /* empty before the first decision applied */
+    uint32_t strategy_version;  /* 0 before the first decision applied */
+    uint32_t reserved;          /* written as 0 */
+    ayni_bytes_v1 state;
+} ayni_private_checkpoint_v1;
+
+/* Since 0.12. A step a decision of the task committed (C-POLICY-008,
+ * ADR-0024). */
+typedef struct ayni_task_step_v1 {
+    ayni_string_v1 step_key; /* a catalog id, unique in the task */
+} ayni_task_step_v1;
 
 /* What a strategy sees of a task. The views point into kernel memory and
  * are valid only during the decide call (C-POLICY-004). */
@@ -1042,12 +1089,23 @@ typedef struct ayni_task_snapshot_v1 {
     uint32_t reserved; /* written as 0 */
     ayni_string_v1 goal_type_id;
     ayni_bytes_v1 goal_parameters; /* as the goal type accepted them */
+    /* Since 0.12 (ADR-0024). As the last decision of the task that the
+     * kernel applied returned it; the output starts with a copy. */
+    ayni_private_checkpoint_v1 checkpoint;
+    /* Since 0.12. The steps the task's decisions committed, in the order
+     * they committed them: steps[0] to steps[step_count - 1]. A task may
+     * commit step_capacity steps in all, the kernel's task_step_capacity. */
+    uint32_t step_count;
+    uint32_t step_capacity;
+    const ayni_task_step_v1 *steps;
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in
- * include/ayni/draft/policy_v1.h. Both end the task. */
+ * include/ayni/draft/policy_v1.h. REPORT_COMPLETION and REPORT_FAILURE end
+ * the task; since 0.12, REPORT_PROGRESS commits a step of it. */
 typedef uint32_t ayni_policy_intent_kind_t;
 
+#define AYNI_POLICY_REPORT_PROGRESS ((ayni_policy_intent_kind_t)4)   /* a step is done */
 #define AYNI_POLICY_REPORT_COMPLETION ((ayni_policy_intent_kind_t)5) /* the task is done */
 #define AYNI_POLICY_REPORT_FAILURE ((ayni_policy_intent_kind_t)6)    /* it cannot be done */
 
@@ -1055,48 +1113,71 @@ typedef struct ayni_policy_intent_v1 {
     uint32_t struct_size;
     ayni_policy_intent_kind_t kind;
     uint32_t expected_revision; /* the snapshot's revision (C-COMMIT-012) */
+    /* Since 0.12 (ADR-0024). REPORT_PROGRESS: the step it commits, a
+     * catalog id. 0 for the kinds that end the task. */
+    uint32_t step_key_size;
+    char step_key[AYNI_CATALOG_ID_MAX_BYTES]; /* not terminated */
 } ayni_policy_intent_v1;
 
 /* Where decide writes its decision. The kernel provides intents and sets
  * intent_capacity to the strategy's max_intents_per_call; decide writes
- * intents[0] to intents[intent_count - 1] and sets intent_count. The kernel
- * reads back only intent_count and its own array. */
+ * intents[0] to intents[intent_count - 1] and sets intent_count. Since 0.12
+ * the kernel also provides checkpoint, checkpoint_capacity bytes (the
+ * strategy's max_checkpoint_bytes), holding a copy of the task's private
+ * checkpoint, and sets checkpoint_size to its size: decide may leave both
+ * or write the private checkpoint the decision returns there. The kernel
+ * reads back only intent_count, checkpoint_size and its own buffers. */
 typedef struct ayni_policy_output_v1 {
     uint32_t struct_size;
     uint32_t intent_capacity;
     uint32_t intent_count;
     uint32_t reserved; /* written as 0 */
     ayni_policy_intent_v1 *intents;
+    uint32_t checkpoint_capacity; /* since 0.12 */
+    uint32_t checkpoint_size;     /* since 0.12 */
+    uint8_t *checkpoint;          /* since 0.12 */
 } ayni_policy_output_v1;
 
 /*
  * Decides one task: returns AYNI_OK with the decision in output,
  * AYNI_CAPACITY_EXCEEDED when the decision needs more than intent_capacity
- * intents (C-POLICY-002), or any other failure status when it cannot
- * decide.
+ * intents or, since 0.12, checkpoint_capacity bytes (C-POLICY-002), or any
+ * other failure status when it cannot decide.
  *
- * The kernel applies the decision as one transition. One intent that ends
- * the task makes it COMPLETED or FAILED. If its goal then has no other task
- * that has not ended and no occurrence to come, as a ONCE or DELAY goal
- * after its one task, the goal becomes SATISFIED or FAILED likewise, and its
- * descendants that are not terminal are CANCELLED with their tasks. Any
- * other decision holds the task: it becomes PAUSED with the status and
- * reason in ayni_task_info_v1, and stays PAUSED until it is cancelled or
- * expires (C-POLICY-002, C-POLICY-003). Meanwhile its goal derives no task:
- * the goal's occurrences wait, and are skipped, with AYNI_REASON_TASK_HELD.
- * It is held when decide fails, with the status decide returned and
- * AYNI_REASON_POLICY_OUTPUT_LIMIT for AYNI_CAPACITY_EXCEEDED,
- * AYNI_REASON_NONE otherwise; with INVALID_ARGUMENT and AYNI_REASON_NONE
- * when decide returns a value above AYNI_OK, which is no status; with
- * CAPACITY_EXCEEDED and POLICY_OUTPUT_LIMIT when intent_count exceeds
- * intent_capacity; with INVALID_ARGUMENT and POLICY_NO_PROGRESS for
+ * The kernel applies the decision as one transition. Since 0.12 the
+ * decision's REPORT_PROGRESS intents commit their steps, and its private
+ * checkpoint replaces the task's. One intent that ends the task makes it
+ * COMPLETED or FAILED. If its goal then has no other task that has not
+ * ended and no occurrence to come, as a ONCE or DELAY goal after its one
+ * task, the goal becomes SATISFIED or FAILED likewise, and its descendants
+ * that are not terminal are CANCELLED with their tasks. Since 0.12 a
+ * decision without such an intent leaves the task READY at its next
+ * revision, to be decided again in a later step after the tasks READY
+ * before it. So each decision applied ends the task or commits a step, and
+ * a task takes at most task_step_capacity + 1 (ADR-0024). Any other
+ * decision holds the task: it becomes PAUSED with the status and reason in
+ * ayni_task_info_v1, keeps its steps and private checkpoint, and stays
+ * PAUSED until it is cancelled or expires (C-POLICY-002, C-POLICY-003).
+ * Meanwhile its goal derives no task: the goal's occurrences wait, and are
+ * skipped, with AYNI_REASON_TASK_HELD. It is held when decide fails, with
+ * the status decide returned and AYNI_REASON_POLICY_OUTPUT_LIMIT for
+ * AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE otherwise; with INVALID_ARGUMENT
+ * and AYNI_REASON_NONE when decide returns a value above AYNI_OK, which is
+ * no status; with CAPACITY_EXCEEDED and POLICY_OUTPUT_LIMIT when
+ * intent_count exceeds intent_capacity or checkpoint_size exceeds
+ * checkpoint_capacity; with INVALID_ARGUMENT and POLICY_NO_PROGRESS for
  * AYNI_OK without an intent; then, for each intent in turn, with
  * INVALID_ARGUMENT and POLICY_INTENT for another struct_size, UNSUPPORTED
- * and INTENT_UNSUPPORTED for a kind this library does not implement,
- * REVISION_CONFLICT and TASK_REVISION for another expected_revision, and
- * INVALID_ARGUMENT and POLICY_INTENT when an earlier intent already ends
- * the task; and with CAPACITY_EXCEEDED and REVISION_EXHAUSTED when ending
- * the task would raise a revision past the largest (C-COMMIT-012).
+ * and INTENT_UNSUPPORTED for a kind this library does not implement, and
+ * REVISION_CONFLICT and TASK_REVISION for another expected_revision; for
+ * REPORT_PROGRESS, with INVALID_ARGUMENT and POLICY_INTENT for a step_key
+ * that is not a catalog id, INVALID_ARGUMENT and STEP_TAKEN for a step the
+ * task or an earlier intent already commits, and CAPACITY_EXCEEDED and
+ * STEP_CAPACITY for a step beyond task_step_capacity; for an intent that
+ * ends the task, with INVALID_ARGUMENT and POLICY_INTENT for a nonzero
+ * step_key_size or when an earlier intent already ends the task; and with
+ * CAPACITY_EXCEEDED and REVISION_EXHAUSTED when ending the task would raise
+ * a revision past the largest (C-COMMIT-012).
  */
 typedef ayni_status_t (*ayni_decide_fn)(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                                         ayni_policy_output_v1 *output);
@@ -1111,6 +1192,10 @@ typedef struct ayni_strategy_v1 {
     /* sizeof(ayni_policy_intent_v1) as the strategy was built: the stride
      * of the intents it writes, which a later version may lengthen. */
     uint32_t intent_size;
+    /* Since 0.12 (ADR-0024). The largest private checkpoint it returns, 0
+     * to task_checkpoint_max_bytes; 0 when it keeps none. */
+    uint32_t max_checkpoint_bytes;
+    uint32_t reserved; /* must be 0 */
 } ayni_strategy_v1;
 
 /*
@@ -1121,7 +1206,9 @@ typedef struct ayni_strategy_v1 {
  * step at most, and none at the largest revision. Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT for a NULL pointer or decide, a zero version, a
  * strategy_id that is not a catalog id, a max_intents_per_call of 0 or
- * above policy_intent_capacity, or a strategy_id already registered;
+ * above policy_intent_capacity, a max_checkpoint_bytes above
+ * task_checkpoint_max_bytes, a nonzero reserved field, or a strategy_id
+ * already registered;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size, and
  * likewise for an intent_size below or above this library's
  * sizeof(ayni_policy_intent_v1); AYNI_INVALID_STATE outside CONFIGURING;

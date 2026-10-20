@@ -142,6 +142,7 @@ void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     info.due_us = task.due_us;
     info.hold_status = task.hold_status;
     info.hold_reason = task.hold_reason;
+    info.step_count = task.step_count;
     out = info;
 }
 
@@ -236,7 +237,9 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     ayni::catalog::Strategy entry{};
     if (strategy->version == 0U || !entry.id.assign(strategy->strategy_id) ||
         strategy->decide == nullptr || strategy->max_intents_per_call == 0U ||
-        strategy->max_intents_per_call > kernel->decisions.capacity()) {
+        strategy->max_intents_per_call > kernel->decisions.intent_capacity() ||
+        strategy->max_checkpoint_bytes > kernel->work.tasks.checkpoint_max_bytes() ||
+        strategy->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
@@ -246,6 +249,7 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     entry.ctx = strategy->ctx;
     entry.decide = strategy->decide;
     entry.max_intents_per_call = strategy->max_intents_per_call;
+    entry.max_checkpoint_bytes = strategy->max_checkpoint_bytes;
     return add_status(kernel->work.strategies.add(entry));
 }
 

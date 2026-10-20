@@ -455,6 +455,8 @@ TEST(KernelCompletions, posts_succeed_while_the_event_queue_is_full) {
     config.task_capacity = 4;
     config.strategy_capacity = 1;
     config.policy_intent_capacity = 1;
+    config.task_step_capacity = 1;
+    config.task_checkpoint_max_bytes = 0;
     std::size_t size = 0;
     std::size_t align = 0;
     ASSERT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_OK);

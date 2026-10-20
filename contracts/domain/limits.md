@@ -18,6 +18,8 @@
 | 同时打开的会话（`session_capacity`，1–64） | 4 | ADR-0017 | `ayni_open_session` 返回 `CAPACITY_EXCEEDED` |
 | 策略（`strategy_capacity`，1–64；每个 ID 一个版本） | 4 | ADR-0022 | 注册返回 `CAPACITY_EXCEEDED` |
 | 一次决定的意图（`policy_intent_capacity`，1–64；每个策略另声明不超过它的 `max_intents_per_call`） | 8 | §4.2、ADR-0022 | 整次决定被拒绝，Task 停下并记原因 `POLICY_OUTPUT_LIMIT`，不截断（C-POLICY-002） |
+| 每个 Task 的步骤（`task_step_capacity`，1–64；步骤唯一、只增不删） | 8 | ADR-0024 | 整次决定被拒绝，Task 停下并记原因 `STEP_CAPACITY`；所以一个 Task 至多被应用 `task_step_capacity` + 1 个决定 |
+| 每个 Task 的私有检查点（`task_checkpoint_max_bytes`，0–4096；每个策略另声明不超过它的 `max_checkpoint_bytes`） | 64 字节 | ADR-0024 | 整次决定被拒绝，Task 停下并记原因 `POLICY_OUTPUT_LIMIT`，不截断（C-POLICY-002）；注册时超过上限返回 `INVALID_ARGUMENT` |
 | 周期触发的最短周期（`AYNI_TRIGGER_PERIOD_MIN_US`，不可配置） | 1 s | ADR-0019 | 更短的周期返回 `INVALID_ARGUMENT`；occurrence 编号用尽时触发结束，不回绕 |
 | Kernel 分配的 ID（每次启动，不可配置） | 2^32−1 | C-ID-010 | 新 Goal 与会话返回 `CAPACITY_EXCEEDED`（`ID_EXHAUSTED`）；Task 不派生，occurrence 等待至 GoalType 的上限后以 `ID_EXHAUSTED` 跳过（ADR-0020） |
 | 普通事件入口（`ingress_capacity`，1–4096） | 128 项 | §4.2 | 可丢弃事件覆盖同一订阅、同一非零合并键的最新一条，否则逐出最旧的可丢弃事件；其他返回 `BUSY`（ADR-0015） |

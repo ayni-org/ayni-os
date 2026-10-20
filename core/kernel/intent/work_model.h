@@ -36,7 +36,8 @@ struct WorkModel {
           agents(storage.agents, capacities.agent_capacity),
           goals(storage.goals, {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
                                 limits.goal_depth_max, limits.goal_children_max}),
-          tasks(storage.tasks, capacities.task_capacity),
+          tasks(storage.tasks, {capacities.task_capacity, capacities.task_step_capacity,
+                                capacities.task_checkpoint_max_bytes}),
           strategies(storage.strategies, capacities.strategy_capacity) {}
 
     WorkModel(const WorkModel &) = delete;
