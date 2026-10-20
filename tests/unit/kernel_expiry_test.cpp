@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -183,9 +184,9 @@ TEST(WorkExpiry, expiry_past_the_clock_never_comes) {
     EXPECT_EQ(work.node().step().next_deadline_us, no_time);
 }
 
-// ADR-0020 (the expiry-cascade card's recommended option): expiry takes the
-// goal's live descendants and their tasks that have not ended, READY or
-// PAUSED, in one transition; ended work and other goals keep their revision.
+// ADR-0020 decision 3: expiry takes the goal's live descendants and their
+// tasks that have not ended, READY or PAUSED, in one transition, raising
+// each revision by one; ended work and other goals keep their revision.
 TEST(WorkExpiry, expiry_takes_live_descendants_and_their_tasks) {
     WorkNode work;
     work.run();
@@ -199,16 +200,20 @@ TEST(WorkExpiry, expiry_takes_live_descendants_and_their_tasks) {
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, grandchild).status, AYNI_OK);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, done_child).status, AYNI_OK);
     const ayni_goal_info_v1 done_before = work.goal(done_child);
+    const uint32_t revisions_before[] = {work.goal(root).revision, work.goal(child).revision,
+                                         work.goal(grandchild).revision};
     const ayni_task_info_v1 paused_task = work.task(task_of(work, grandchild));
     ASSERT_EQ(paused_task.lifecycle, AYNI_TASK_PAUSED);
 
     advance_to(work, start + 5U * second);
     EXPECT_EQ(work.node().step().items_done, 1U);
     const uint64_t seq = work.goal(root).commit_seq;
-    for (const uint64_t goal_id : {root, child, grandchild}) {
-        const ayni_goal_info_v1 goal = work.goal(goal_id);
-        EXPECT_EQ(goal.lifecycle, AYNI_GOAL_EXPIRED) << goal_id;
-        EXPECT_EQ(goal.commit_seq, seq) << goal_id;
+    const uint64_t expired_goals[] = {root, child, grandchild};
+    for (std::size_t i = 0; i < 3U; ++i) {
+        const ayni_goal_info_v1 goal = work.goal(expired_goals[i]);
+        EXPECT_EQ(goal.lifecycle, AYNI_GOAL_EXPIRED) << i;
+        EXPECT_EQ(goal.commit_seq, seq) << i;
+        EXPECT_EQ(goal.revision, revisions_before[i] + 1U) << i;
     }
     for (const uint64_t goal_id : {child, grandchild}) {
         const ayni_task_info_v1 task = work.task(task_of(work, goal_id));
@@ -393,12 +398,29 @@ TEST(WorkExpiry, expiry_that_would_exhaust_a_revision_is_dropped) {
     EXPECT_EQ(report.items_done, 0U);
 }
 
+// A step that starts with the clock at its largest value finds no due work
+// where there is none: that value is also the never of no candidate.
+TEST(WorkExpiry, clock_at_its_largest_value_finds_no_due_work) {
+    WorkNode work;
+    work.run();
+    advance_to(work, no_time);
+    ayni_step_report_v1 report = work.node().step();
+    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(report.next_deadline_us, no_time);
+    const uint64_t goal_id = create(work, expiring(0));
+    report = work.node().step();
+    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+}
+
 // --- Bounded waits -----------------------------------------------------------
 
-// C-RES-005, ADR-0020 (the wait-limit card's recommended option): while the
-// task table has no room, a due occurrence waits for its goal type's limit,
-// counted from when it fell due; then every occurrence due by then is
-// skipped and counted with the reason, the revision staying.
+// C-RES-005, ADR-0020 decision 5: while the task table has no room, a due
+// occurrence waits for its goal type's limit, counted from when it fell due;
+// then every occurrence due by then is skipped and counted with the reason,
+// the revision staying.
 TEST(WorkWait, occurrences_are_skipped_once_their_wait_ends) {
     WorkNode work;
     work.timer_wait_max_us = 2U * second;
@@ -552,6 +574,31 @@ TEST(WorkWait, earliest_ended_wait_is_skipped_first) {
     EXPECT_EQ(work.goal(later).occurrences_skipped, 0U);
     EXPECT_EQ(work.node().step().items_done, 1U);
     EXPECT_EQ(work.goal(later).occurrences_skipped, 1U);
+}
+
+// ADR-0020 decision 10: without room the deadline is the end of the
+// earliest bounded wait, not the earliest due occurrence, which here waits
+// without limit.
+TEST(WorkWait, deadline_is_the_end_of_the_earliest_bounded_wait) {
+    WorkNode work;
+    work.timer_wait_max_us = second;
+    work.node().config().task_capacity = 1;
+    work.run();
+    const uint64_t start = now(work);
+    place_holder(work);
+    GoalSpec unbounded = delayed(second);
+    unbounded.type = "reminder";
+    const uint64_t waiting = create(work, unbounded);
+    const uint64_t bounded = create(work, delayed(2U * second, agent_b));
+    EXPECT_EQ(work.node().step().next_deadline_us, start + 3U * second);
+
+    advance_to(work, start + 3U * second);
+    const ayni_step_report_v1 report = work.node().step();
+    EXPECT_EQ(report.items_done, 1U);
+    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(work.goal(bounded).occurrences_skipped, 1U);
+    EXPECT_EQ(work.goal(waiting).occurrences_skipped, 0U);
+    EXPECT_EQ(work.goal(waiting).wait_reason, AYNI_REASON_TASK_CAPACITY);
 }
 
 // wait_reason is read from the tables when queried: what would keep the next

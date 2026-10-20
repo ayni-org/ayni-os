@@ -49,7 +49,7 @@ ADR-0019 把 `MA-004` 第二部分的时间部分拆为触发、失效与有界�
 
 ## 验证
 
-- `tests/unit/kernel_expiry_test.cpp`（`WorkExpiry.*`、`WorkWait.*`）：Goal 按时失效且创建时唤醒 owner；没有或超出时钟范围的失效时间不失效、不唤醒；失效级联到未终结的后代与它们的 `READY`、`PAUSED` Task，已终结的不变；后代较早的失效只结束它自己；暂停的 Goal 与实例暂停的 Goal 仍失效；失效先于同一 step 中到期的 occurrence；失效计入期限；失效不需要槽位与 ID；失效释放的槽位在同一 step 中派生等待的 occurrence；会使版本越过最大值的失效被放弃；槽位不足时超限的 occurrence 被跳过、计数、记原因且版本不变；ID 用尽时以 `ID_EXHAUSTED` 跳过；等待上限 0 立即跳过；无界等待不跳过、不设期限；暂停的 Goal 不跳过、恢复后立即跳过；等待最早结束的先跳过；`wait_reason` 的派生规则。
+- `tests/unit/kernel_expiry_test.cpp`（`WorkExpiry.*`、`WorkWait.*`）：Goal 按时失效且创建时唤醒 owner；没有或超出时钟范围的失效时间不失效、不唤醒；失效级联到未终结的后代与它们的 `READY`、`PAUSED` Task，已终结的不变；后代较早的失效只结束它自己；暂停的 Goal 与实例暂停的 Goal 仍失效；失效先于同一 step 中到期的 occurrence；失效计入期限；失效不需要槽位与 ID；失效释放的槽位在同一 step 中派生等待的 occurrence；会使版本越过最大值的失效被放弃；槽位不足时超限的 occurrence 被跳过、计数、记原因且版本不变；ID 用尽时以 `ID_EXHAUSTED` 跳过；等待上限 0 立即跳过；无界等待不跳过、不设期限；暂停的 Goal 不跳过、恢复后立即跳过；等待最早结束的先跳过，期限取最早结束的有界等待，不取更早到期的无界等待；时钟到最大值时没有到期工作；`wait_reason` 的派生规则。
 - `tests/unit/goal_table_test.cpp`、`tests/unit/task_table_test.cpp`：Goal 失效的级联、失效时刻的计算与饱和、跳过与放弃失效不改版本、失效时的版本检查、Task 从 `READY` 与 `PAUSED` 失效。
 - `tests/unit/kernel_work_test.cpp`、`tests/contract/abi_layout.c`：0.7 布局的 `ayni_goal_type_v1`、`ayni_goal_create_v1`、`ayni_goal_info_v1` 被拒绝，ABI 0.8 布局。
 - Task 执行中的等待、延后与暂停两种超限处理、失效时刻的恢复策略不标为已实现。

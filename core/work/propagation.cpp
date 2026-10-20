@@ -164,6 +164,9 @@ ayni_reason_t derivation_blocker(const TaskTable &tasks, bool id_left) {
     return id_left ? AYNI_REASON_NONE : AYNI_REASON_ID_EXHAUSTED;
 }
 
+// So an unbounded wait, added to when an occurrence fell due, never ends.
+static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
+
 bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
                    uint64_t &out_next_us) {
     const ayni_reason_t blocker = derivation_blocker(tables.tasks, id_left);
@@ -189,11 +192,13 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
         }
     }
     out_next_us = expires_us < advances_us ? expires_us : advances_us;
-    if (expires_us <= now_us) {
+    // A clock at no_time has reached every time, the never of no candidate
+    // included.
+    if (expiring != GoalTable::no_parent && expires_us <= now_us) {
         out_work = {DueWork::Kind::expire, expiring, AYNI_REASON_NONE};
         return true;
     }
-    if (advances_us <= now_us) {
+    if (advancing != GoalTable::no_parent && advances_us <= now_us) {
         out_work = {blocker == AYNI_REASON_NONE ? DueWork::Kind::derive : DueWork::Kind::skip,
                     advancing, blocker};
         return true;

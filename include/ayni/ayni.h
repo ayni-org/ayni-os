@@ -1000,11 +1000,11 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * if its goal and all the goal's ancestors are ACTIVE and its owner is
  * RUNNING, and PAUSED otherwise; the tasks of a cancelled goal are cancelled
  * with it (ADR-0018). An intent raises the revision of each goal, task and
- * instance it changes by one; others keep theirs. When the intent may let
- * ayni_step derive a task, or creates a goal whose first occurrence or
- * expiry is still to come, the host's wake is called before
- * ayni_submit_intent returns, so the owner steps and learns its next
- * deadline.
+ * instance it changes by one; others keep theirs. When the intent may bring
+ * the goals' due work forward (resume, cancel, stop, a task cancel that
+ * frees a place), or creates a goal whose first occurrence or expiry is
+ * still to come, the host's wake is called before ayni_submit_intent
+ * returns, so the owner steps and learns its next deadline.
  */
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
                                  ayni_intent_result_v1 *out_result, ayni_error_v1 *out_error);

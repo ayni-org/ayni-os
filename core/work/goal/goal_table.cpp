@@ -7,8 +7,6 @@ namespace ayni::work {
 namespace {
 
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
-// So an unbounded wait, added to when an occurrence fell due, never ends.
-static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
 
 } // namespace
 
