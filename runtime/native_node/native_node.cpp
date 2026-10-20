@@ -41,6 +41,8 @@ ayni_status_t NativeNode::assemble() {
     config.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
     config.strategy_capacity = AYNI_STRATEGY_CAPACITY_DEFAULT;
     config.policy_intent_capacity = AYNI_POLICY_INTENT_CAPACITY_DEFAULT;
+    config.task_step_capacity = AYNI_TASK_STEP_CAPACITY_DEFAULT;
+    config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT;
 
     std::size_t size = 0;
     std::size_t align = 0;

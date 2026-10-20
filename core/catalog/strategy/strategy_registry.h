@@ -24,6 +24,7 @@ struct Strategy {
     void *ctx = nullptr;
     ayni_decide_fn decide = nullptr;
     uint32_t max_intents_per_call = 0;
+    uint32_t max_checkpoint_bytes = 0; // its private checkpoints' largest size
 };
 
 class StrategyRegistry {

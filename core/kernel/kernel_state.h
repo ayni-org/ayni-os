@@ -26,7 +26,9 @@ struct ayni_kernel {
           completions(storage.completions, capacities.completion_slot_count, host),
           boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes),
           work(capacities, limits, storage),
-          decisions(storage.policy_intents, capacities.policy_intent_capacity) {}
+          decisions(storage.decisions,
+                    {capacities.policy_intent_capacity, capacities.task_step_capacity,
+                     capacities.task_checkpoint_max_bytes}) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
@@ -56,7 +58,8 @@ struct ayni_kernel {
 
     // The work model (ADR-0017), started when the kernel enters RUNNING.
     ayni::kernel::WorkModel work;
-    // Where the strategies write the decisions ayni_step applies (ADR-0022).
+    // What the strategies read beyond the tasks and write the decisions
+    // ayni_step applies into (ADR-0022, ADR-0024).
     ayni::kernel::DecisionBuffer decisions;
 
   private:

@@ -168,6 +168,8 @@ int main(void) {
     config.task_capacity = 1u;
     config.strategy_capacity = 1u;
     config.policy_intent_capacity = 1u;
+    config.task_step_capacity = 1u;
+    config.task_checkpoint_max_bytes = 0u;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
     host.wake = test_wake;

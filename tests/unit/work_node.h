@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -59,13 +60,57 @@ struct Seen {
     ayni_task_snapshot_v1 snapshot;
     std::string goal_type_id;
     std::vector<uint8_t> parameters;
+    std::string checkpoint_strategy_id;
+    std::vector<uint8_t> checkpoint;
+    std::vector<std::string> steps;
 };
+
+inline std::string string_of(ayni_string_v1 view) {
+    return view.size > 0U ? std::string(view.data, view.size) : std::string();
+}
+
+inline std::vector<uint8_t> bytes_of(ayni_bytes_v1 view) {
+    return view.size > 0U ? std::vector<uint8_t>(view.data, view.data + view.size)
+                          : std::vector<uint8_t>();
+}
+
+inline Seen seen_of(const ayni_task_snapshot_v1 &snapshot) {
+    Seen seen{snapshot,
+              string_of(snapshot.goal_type_id),
+              bytes_of(snapshot.goal_parameters),
+              string_of(snapshot.checkpoint.strategy_id),
+              bytes_of(snapshot.checkpoint.state),
+              {}};
+    for (uint32_t step = 0; step < snapshot.step_count; ++step) {
+        seen.steps.push_back(string_of(snapshot.steps[step].step_key));
+    }
+    return seen;
+}
+
+// An intent of kind for expected_revision, with step_key for
+// REPORT_PROGRESS.
+inline ayni_policy_intent_v1 policy_intent(ayni_policy_intent_kind_t kind,
+                                           uint32_t expected_revision,
+                                           const std::string &step_key = std::string()) {
+    ayni_policy_intent_v1 intent{};
+    intent.struct_size = sizeof(intent);
+    intent.kind = kind;
+    intent.expected_revision = expected_revision;
+    intent.step_key_size = static_cast<uint32_t>(step_key.size());
+    std::memcpy(intent.step_key, step_key.data(),
+                std::min(step_key.size(), sizeof(intent.step_key)));
+    return intent;
+}
+
+inline ayni_policy_intent_v1 progress_intent(const std::string &step_key,
+                                             uint32_t expected_revision) {
+    return policy_intent(AYNI_POLICY_REPORT_PROGRESS, expected_revision, step_key);
+}
 
 // Writes one intent of kind for the snapshot's revision into the output.
 inline ayni_status_t report(ayni_policy_intent_kind_t kind, const ayni_task_snapshot_v1 &snapshot,
                             ayni_policy_output_v1 &output) {
-    output.intents[0] =
-        ayni_policy_intent_v1{sizeof(ayni_policy_intent_v1), kind, snapshot.revision};
+    output.intents[0] = policy_intent(kind, snapshot.revision);
     output.intent_count = 1;
     return AYNI_OK;
 }
@@ -86,12 +131,10 @@ struct ScriptedStrategy {
     static ayni_status_t decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                                 ayni_policy_output_v1 *output) {
         auto &self = *static_cast<ScriptedStrategy *>(ctx);
-        self.seen.push_back({*snapshot,
-                             std::string(snapshot->goal_type_id.data, snapshot->goal_type_id.size),
-                             std::vector<uint8_t>(snapshot->goal_parameters.data,
-                                                  snapshot->goal_parameters.data +
-                                                      snapshot->goal_parameters.size)});
+        self.seen.push_back(seen_of(*snapshot));
         self.outputs.push_back(*output);
+        self.output_checkpoints.emplace_back(output->checkpoint,
+                                             output->checkpoint + output->checkpoint_capacity);
         if (self.during) {
             // Runs once, from a copy, so that it may call the kernel freely.
             const std::function<void()> during = std::move(self.during);
@@ -106,8 +149,11 @@ struct ScriptedStrategy {
 
     std::vector<Seen> seen;
     std::vector<ayni_policy_output_v1> outputs; // as each decide call got it
-    Answer answer;                              // null: report completion
-    std::function<void()> during;               // runs once inside the next decision
+    // The checkpoint_capacity bytes of each output's checkpoint as decide
+    // got them.
+    std::vector<std::vector<uint8_t>> output_checkpoints;
+    Answer answer;                // null: report completion
+    std::function<void()> during; // runs once inside the next decision
 };
 
 inline ayni_principal_desc_v1 owner_desc(uint64_t principal_id = owner_id) {
@@ -154,7 +200,8 @@ goal_type_desc(const char *id, uint32_t version, ayni_goal_validate_fn validate 
 }
 
 inline ayni_strategy_v1 strategy_desc(const char *id, uint32_t version, ayni_decide_fn decide,
-                                      void *ctx, uint32_t max_intents_per_call = 1) {
+                                      void *ctx, uint32_t max_intents_per_call = 1,
+                                      uint32_t max_checkpoint_bytes = 0) {
     ayni_strategy_v1 desc{};
     desc.struct_size = sizeof(desc);
     desc.version = version;
@@ -163,6 +210,7 @@ inline ayni_strategy_v1 strategy_desc(const char *id, uint32_t version, ayni_dec
     desc.decide = decide;
     desc.max_intents_per_call = max_intents_per_call;
     desc.intent_size = sizeof(ayni_policy_intent_v1);
+    desc.max_checkpoint_bytes = max_checkpoint_bytes;
     return desc;
 }
 
@@ -187,7 +235,8 @@ struct Submitted {
 // strategy, and "folder", whose goals derive no tasks. Occurrences of
 // "timer" goals wait without limit unless a test sets timer_wait_max_us
 // before the kernel is created; the strategy takes max_intents_per_call
-// intents, likewise.
+// intents and returns private checkpoints of up to max_checkpoint_bytes,
+// likewise.
 class WorkNode {
   public:
     WorkNode() {
@@ -207,8 +256,9 @@ class WorkNode {
             for (const ayni_goal_type_v1 &type : types) {
                 ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
             }
-            const ayni_strategy_v1 strategy = strategy_desc(
-                strategy_id, 1, &ScriptedStrategy::decide, &strategy_, max_intents_per_call);
+            const ayni_strategy_v1 strategy =
+                strategy_desc(strategy_id, 1, &ScriptedStrategy::decide, &strategy_,
+                              max_intents_per_call, max_checkpoint_bytes);
             ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
         });
     }
@@ -217,6 +267,7 @@ class WorkNode {
     ayni_kernel_t *kernel() { return node_.kernel(); }
     uint64_t timer_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     uint32_t max_intents_per_call = 1;
+    uint32_t max_checkpoint_bytes = 0;
     ReminderRules &rules() { return rules_; }
     ScriptedStrategy &strategy() { return strategy_; }
 

@@ -43,6 +43,8 @@ class Node {
         config_.task_capacity = 4;
         config_.strategy_capacity = 1;
         config_.policy_intent_capacity = 2;
+        config_.task_step_capacity = 4;
+        config_.task_checkpoint_max_bytes = 8;
         table_ = sim_.table();
         if (!with_storage) {
             table_.storage_append = nullptr;

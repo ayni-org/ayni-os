@@ -8,6 +8,7 @@ add_executable(ayni_unit_tests
     goal_table_test.cpp
     goal_type_registry_test.cpp
     kernel_api_test.cpp
+    kernel_checkpoint_test.cpp
     kernel_event_test.cpp
     kernel_expiry_test.cpp
     kernel_id_test.cpp

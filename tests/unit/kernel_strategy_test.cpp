@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -60,7 +61,7 @@ uint32_t step_items(WorkNode &work, uint32_t max_items = unbounded_items) {
 }
 
 ayni_policy_intent_v1 intent(ayni_policy_intent_kind_t kind, uint32_t expected_revision) {
-    return {sizeof(ayni_policy_intent_v1), kind, expected_revision};
+    return policy_intent(kind, expected_revision);
 }
 
 ayni_status_t fail(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output) {
@@ -92,8 +93,9 @@ TEST(WorkStrategy, registration_checks_its_arguments) {
     node.create();
     ayni_kernel_t *kernel = node.kernel();
     ScriptedStrategy strategy;
+    // task_checkpoint_max_bytes is 8 (kernel_node.h).
     const ayni_strategy_v1 valid =
-        strategy_desc("plan", 1, &ScriptedStrategy::decide, &strategy, 3);
+        strategy_desc("plan", 1, &ScriptedStrategy::decide, &strategy, 3, 8);
 
     EXPECT_EQ(ayni_register_strategy(nullptr, &valid), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(ayni_register_strategy(kernel, nullptr), AYNI_INVALID_ARGUMENT);
@@ -109,7 +111,7 @@ TEST(WorkStrategy, registration_checks_its_arguments) {
     EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_INVALID_ARGUMENT);
     desc.intent_size = sizeof(ayni_policy_intent_v1) + 4U;
     EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_UNSUPPORTED_VERSION);
-    for (int field = 0; field < 7; ++field) {
+    for (int field = 0; field < 9; ++field) {
         desc = valid;
         switch (field) {
         case 0:
@@ -130,8 +132,14 @@ TEST(WorkStrategy, registration_checks_its_arguments) {
         case 5:
             desc.max_intents_per_call = 0;
             break;
-        default:
+        case 6:
             desc.max_intents_per_call = 4; // above policy_intent_capacity
+            break;
+        case 7:
+            desc.max_checkpoint_bytes = 9; // above task_checkpoint_max_bytes
+            break;
+        default:
+            desc.reserved = 1;
             break;
         }
         EXPECT_EQ(ayni_register_strategy(kernel, &desc), AYNI_INVALID_ARGUMENT) << field;
@@ -251,6 +259,17 @@ TEST(WorkDecision, task_is_decided_in_the_step_after_it_became_ready) {
     EXPECT_EQ(output.intent_count, 0U);
     EXPECT_EQ(output.reserved, 0U);
     EXPECT_NE(output.intents, nullptr);
+    // ADR-0024: no steps yet, and a strategy without a private checkpoint
+    // gets an empty one.
+    EXPECT_EQ(snapshot.checkpoint.strategy_id.size, 0U);
+    EXPECT_EQ(snapshot.checkpoint.strategy_version, 0U);
+    EXPECT_EQ(snapshot.checkpoint.reserved, 0U);
+    EXPECT_EQ(snapshot.checkpoint.state.size, 0U);
+    EXPECT_EQ(snapshot.step_count, 0U);
+    EXPECT_EQ(snapshot.step_capacity, 4U); // task_step_capacity
+    EXPECT_NE(snapshot.steps, nullptr);
+    EXPECT_EQ(output.checkpoint_capacity, 0U);
+    EXPECT_EQ(output.checkpoint_size, 0U);
 
     const ayni_task_info_v1 task = work.task(task_id);
     EXPECT_EQ(task.lifecycle, AYNI_TASK_COMPLETED);
@@ -258,6 +277,8 @@ TEST(WorkDecision, task_is_decided_in_the_step_after_it_became_ready) {
     EXPECT_EQ(task.cancel_revision, 0U);
     EXPECT_EQ(task.hold_status, AYNI_OK);
     EXPECT_EQ(task.hold_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(task.step_count, 0U);
+    EXPECT_EQ(task.reserved, 0U);
     EXPECT_GT(task.commit_seq, ready.commit_seq);
     EXPECT_GT(task.commit_seq, work.node().info().durable_seq);
     const ayni_goal_info_v1 goal = work.goal(goal_id);
@@ -414,7 +435,8 @@ TEST(WorkDecision, refused_decisions_hold_the_task_with_their_reason) {
          AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT},
         {"size before kind",
          [](Snapshot s, Output o) {
-             o.intents[0] = {1, 99, s.revision};
+             o.intents[0] = intent(99, s.revision);
+             o.intents[0].struct_size = 1;
              o.intent_count = 1;
              return AYNI_OK;
          },
@@ -497,9 +519,17 @@ TEST(WorkDecision, strategy_starts_from_cleared_intents_that_only_the_kernel_rea
             EXPECT_EQ(output.intents[index].struct_size, 0U) << index;
             EXPECT_EQ(output.intents[index].kind, 0U) << index;
             EXPECT_EQ(output.intents[index].expected_revision, 0U) << index;
+            EXPECT_EQ(output.intents[index].step_key_size, 0U) << index;
+            const char *key = output.intents[index].step_key;
+            EXPECT_TRUE(std::all_of(key, key + AYNI_CATALOG_ID_MAX_BYTES, [](char byte) {
+                return byte == '\0';
+            })) << index;
         }
         if (work.strategy().seen.size() == 1U) {
-            output.intents[0] = intent(AYNI_POLICY_REPORT_COMPLETION, snapshot.revision);
+            // A step key on an end is refused, and left for the next decision
+            // to find cleared.
+            output.intents[0] =
+                policy_intent(AYNI_POLICY_REPORT_COMPLETION, snapshot.revision, "left");
             output.intents[1] = intent(AYNI_POLICY_REPORT_COMPLETION, snapshot.revision);
             output.intent_count = 2;
             return AYNI_OK;

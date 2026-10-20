@@ -1,16 +1,22 @@
-// Tasks (contracts/domain/lifecycles.md Task, ADR-0018, ADR-0022). The table
-// owns each task's lifecycle, revision, hold and place. A task belongs to one
-// goal and keeps that goal's owner for its life (C-LIFE-020). A READY task
-// waits for its strategy's decision, which ends it or holds it.
+// Tasks (contracts/domain/lifecycles.md Task, ADR-0018, ADR-0022, ADR-0024).
+// The table owns each task's lifecycle, revision, hold, place, steps and
+// private checkpoint. A task belongs to one goal and keeps that goal's owner
+// for its life (C-LIFE-020). A READY task waits for its strategy's decision,
+// which ends it, holds it, or commits steps and leaves it READY. A task's
+// steps are unique, bounded and only ever added to, so a task takes at most
+// step_capacity + 1 decisions that do not hold it.
 //
 // An ended task keeps its place until a new task needs one: then the task
 // that ended first gives way, and a task that has not ended never does. A
 // place given up moves another task into it, so tasks are found by id and
-// an index is valid only until the next insert().
+// an index is valid only until the next insert(). Steps and checkpoints lie
+// in blocks of their own, one per slot, and a task keeps its slot for its
+// life: a new task takes the slot of the task it replaces.
 
 #ifndef AYNI_CORE_WORK_TASK_TASK_TABLE_H
 #define AYNI_CORE_WORK_TASK_TASK_TABLE_H
 
+#include "catalog/catalog_id.h"
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
 
@@ -49,19 +55,35 @@ struct Task {
     // task ends.
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
+    // What its strategy's decisions committed (ADR-0024): how many steps,
+    // and how large a private checkpoint the strategy at checkpoint_writer
+    // in the strategy registry wrote; TaskTable::no_writer before the
+    // first. Kept once the task ends.
+    uint32_t step_count;
+    uint32_t checkpoint_size;
+    uint32_t checkpoint_writer;
+    uint32_t slot; // the table's own: which blocks hold them
 };
 
 // Pause takes READY to PAUSED and resume takes it back, unless a decision
 // holds it; cancel takes a READY or PAUSED task to CANCELLED, and expire,
 // which comes only with its goal's expiry (ADR-0020), to EXPIRED. Complete
 // and fail come from its strategy's decision and take a READY task to
-// COMPLETED and FAILED (ADR-0022). Tasks do not reach RUNNING or CANCELLING
-// yet.
+// COMPLETED and FAILED (ADR-0022); a decision may also hold the task
+// (hold()) or leave it READY (progress()). Tasks do not reach RUNNING or
+// CANCELLING yet.
 enum class TaskChange { pause, resume, cancel, expire, complete, fail };
 
 class TaskTable {
   public:
-    static constexpr uint32_t no_index = 0xFFFFFFFFU; // no task's index
+    static constexpr uint32_t no_index = 0xFFFFFFFFU;  // no task's index
+    static constexpr uint32_t no_writer = 0xFFFFFFFFU; // no strategy's index
+
+    struct Limits {
+        uint32_t capacity;             // at most AYNI_TASK_CAPACITY_MAX
+        uint32_t step_capacity;        // per task, at most AYNI_TASK_STEP_CAPACITY_MAX
+        uint32_t checkpoint_max_bytes; // per task, at most AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX
+    };
 
     // Why a change is refused, in the order check() checks.
     enum class ChangeCheck {
@@ -71,15 +93,15 @@ class TaskTable {
         revision_exhausted,
     };
 
+    // The tasks, then step_capacity steps per slot, then a private
+    // checkpoint of checkpoint_max_bytes per slot.
     static constexpr std::size_t storage_alignment =
         foundation::BoundedArray<Task>::storage_alignment;
-    static constexpr std::size_t storage_size(uint32_t capacity) {
-        return foundation::BoundedArray<Task>::storage_size(capacity);
-    }
+    static std::size_t storage_size(const Limits &limits);
 
-    // storage as for BoundedArray<Task>; capacity is at most
-    // AYNI_TASK_CAPACITY_MAX.
-    TaskTable(void *storage, uint32_t capacity) : tasks_(storage, capacity) {}
+    // storage holds storage_size(limits) bytes aligned to storage_alignment
+    // and outlives the table.
+    TaskTable(void *storage, const Limits &limits);
 
     TaskTable(const TaskTable &) = delete;
     TaskTable &operator=(const TaskTable &) = delete;
@@ -104,6 +126,31 @@ class TaskTable {
     // It gets the next revision and stamp.commit_seq. status is a failure.
     void hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
               foundation::TransitionStamp stamp);
+
+    // The steps and private checkpoint a decision of the READY task index
+    // commits, in the transition that then applies the decision by
+    // progress() or work::end_task() (ADR-0024). add_step appends key and
+    // returns true when it is a catalog id that is not yet a step of the
+    // task and the task has fewer than step_capacity() steps; otherwise it
+    // returns false, changing nothing. set_checkpoint: writer is the
+    // strategy's index and state.size at most checkpoint_max_bytes(); state
+    // replaces the task's private checkpoint.
+    bool add_step(uint32_t index, ayni_string_v1 key);
+    void set_checkpoint(uint32_t index, uint32_t writer, ayni_bytes_v1 state);
+    // A decision of the READY task index, below the largest revision, that
+    // neither ends nor holds it: it stays READY with the next revision and
+    // stamp.commit_seq, so next_ready() takes the tasks READY before it
+    // first.
+    void progress(uint32_t index, foundation::TransitionStamp stamp);
+
+    uint32_t step_capacity() const { return step_capacity_; }
+    uint32_t checkpoint_max_bytes() const { return checkpoint_max_bytes_; }
+    // The step < at(index).step_count of task index, in the order the
+    // steps were committed.
+    const catalog::CatalogId &step(uint32_t index, uint32_t step) const;
+    bool has_step(uint32_t index, ayni_string_v1 key) const;
+    // Valid until the task's next change.
+    ayni_bytes_v1 checkpoint(uint32_t index) const;
 
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
@@ -137,7 +184,13 @@ class TaskTable {
     static bool is_live(ayni_task_lifecycle_t lifecycle);
 
   private:
+    catalog::CatalogId *steps_of(uint32_t index) const;
+
     foundation::BoundedArray<Task> tasks_;
+    catalog::CatalogId *steps_;
+    uint8_t *checkpoints_;
+    uint32_t step_capacity_;
+    uint32_t checkpoint_max_bytes_;
     uint32_t held_count_ = 0; // still_held() tasks
 };
 

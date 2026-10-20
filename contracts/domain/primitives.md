@@ -34,8 +34,8 @@
 | Task：`task_id`、`goal_id`、`occurrence` | 一次执行及其来源 occurrence（该 Goal 的第几次，从 1 开始，ADR-0018）；等待的多个 occurrence 合并为一个 Task 时为其中最新的一次，另记代表的个数与该次的到期时间（ADR-0019） | 是 |
 | Task：`owner_instance_id` | 继承自 Goal，之后不变（C-LIFE-020） | 是 |
 | Task：`lifecycle`、`revision`、`cancel_revision` | 生命周期、版本、取消版本 | 是 |
-| Task：`checkpoint`（共同检查点，C-CALL-004） | 步骤版本、绑定、输入摘要、结果引用、已提交进度、未知状态 | 是 |
-| Task：`strategy_checkpoint_ref` | 策略私有检查点（ID、版本、内容引用） | 是 |
+| Task：`checkpoint`（共同检查点，C-CALL-004） | 步骤版本、绑定、输入摘要、结果引用、已提交进度、未知状态；M1 只有已提交进度：按提交顺序的步骤（`step_key`，在 Task 内唯一），尚未持久化（ADR-0024） | 是 |
+| Task：`strategy_checkpoint_ref` | 策略私有检查点（ID、版本、内容引用）；M1 在内存中保存内容与写入它的策略，尚未持久化（ADR-0024） | 是 |
 | Task：`blocked_on` | 由待决调用派生的视图，不存储（ADR-0007） | 否 |
 
 ## Observation（属主 `knowledge/observation`）

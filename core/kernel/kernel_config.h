@@ -22,6 +22,8 @@ struct KernelCapacities {
     uint32_t task_capacity;
     uint32_t strategy_capacity;
     uint32_t policy_intent_capacity;
+    uint32_t task_step_capacity;
+    uint32_t task_checkpoint_max_bytes;
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -41,7 +43,7 @@ struct KernelStorage {
     void *sessions;
     void *tasks;
     void *strategies;
-    void *policy_intents;
+    void *decisions;
 };
 
 } // namespace ayni::kernel
