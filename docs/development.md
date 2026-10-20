@@ -53,7 +53,7 @@ cmake --build build/native -j
 ctest --test-dir build/native --output-on-failure
 ```
 
-换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 在 M0 不接受参数，`--experiment E1` 等入口随 M1 的实验夹具加入。
+换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 仍不接受参数，`--experiment E1` 等入口随 M1 的实验夹具加入；它每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除日志文件，所以运行它们需要可写、支持 `fdatasync` 的临时目录。
 
 ### 离线配置 GoogleTest
 
