@@ -49,10 +49,7 @@ bool TaskTable::has_room() const {
 }
 
 bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp) {
-    // Only a full table gives up a place, and the new task takes it at
-    // once, so the tasks of a table that is not full hold slots 0 to
-    // size() - 1.
-    uint32_t slot = tasks_.size();
+    uint32_t slot = 0;
     if (tasks_.full()) {
         // An ended task never changes again, so the one with the smallest
         // commit_seq ended first.
@@ -69,6 +66,8 @@ bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::Transi
         }
         slot = tasks_[oldest].slot;
         tasks_.remove_at(oldest);
+    } else {
+        slot = free_slot();
     }
     Task created{};
     created.task_id = task_id;
@@ -87,6 +86,16 @@ bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::Transi
     // Cannot fail: there is room now.
     static_cast<void>(tasks_.push_back(created));
     return true;
+}
+
+void TaskTable::remove_goal(uint32_t goal_index) {
+    // Downwards, so the task that remove_at() moves into a place has been
+    // looked at already.
+    for (uint32_t index = tasks_.size(); index > 0U; --index) {
+        if (tasks_[index - 1U].goal_index == goal_index) {
+            tasks_.remove_at(index - 1U);
+        }
+    }
 }
 
 TaskTable::ChangeCheck TaskTable::check(uint32_t index, TaskChange change,
@@ -192,6 +201,22 @@ ayni_bytes_v1 TaskTable::checkpoint(uint32_t index) const {
     const Task &task = tasks_[index];
     return {checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
             task.checkpoint_size};
+}
+
+// The tasks hold fewer than capacity distinct slots, so one of 0 to size()
+// is free.
+uint32_t TaskTable::free_slot() const {
+    static_assert(AYNI_TASK_CAPACITY_MAX % 32U == 0U, "whole words");
+    uint32_t held[AYNI_TASK_CAPACITY_MAX / 32U] = {};
+    for (uint32_t index = 0; index < tasks_.size(); ++index) {
+        const uint32_t slot = tasks_[index].slot;
+        held[slot / 32U] |= 1U << (slot % 32U);
+    }
+    uint32_t slot = 0;
+    while (((held[slot / 32U] >> (slot % 32U)) & 1U) != 0U) {
+        ++slot;
+    }
+    return slot;
 }
 
 catalog::CatalogId *TaskTable::steps_of(uint32_t index) const {

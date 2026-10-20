@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 12u
+#define AYNI_ABI_MINOR 13u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -104,7 +104,9 @@ typedef struct ayni_config_v1 {
      * encoded commit batch (ADR-0016); it bounds the largest batch. */
     uint32_t storage_buffer_bytes;
     /* Since 0.5. The work model (ADR-0017). The last two are limits rather
-     * than storage, with the same range and default rules. */
+     * than storage, with the same range and default rules. Since 0.13 a
+     * terminal goal gives its place to a new one once goal_capacity goals
+     * exist (ADR-0025). */
     uint32_t agent_capacity;           /* registered agents, one instance each */
     uint32_t goal_type_capacity;       /* registered goal type versions */
     uint32_t goal_capacity;            /* goals in memory, terminal ones included */
@@ -586,7 +588,8 @@ typedef uint32_t ayni_reason_t;
 #define AYNI_REASON_GOAL_DEPTH ((ayni_reason_t)11)
 /* CAPACITY_EXCEEDED: the parent has goal_children_max live children. */
 #define AYNI_REASON_GOAL_CHILDREN ((ayni_reason_t)12)
-/* CAPACITY_EXCEEDED: goal_capacity goals exist, terminal ones included. */
+/* CAPACITY_EXCEEDED: goal_capacity goals exist; since 0.13, none of them
+ * terminal (ADR-0025). */
 #define AYNI_REASON_GOAL_CAPACITY ((ayni_reason_t)13)
 /* CAPACITY_EXCEEDED: this boot has assigned every id it can (C-ID-010). */
 #define AYNI_REASON_ID_EXHAUSTED ((ayni_reason_t)14)
@@ -1278,11 +1281,13 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * table refused a goal the checks admitted. The goal is not created, but the
  * id and the commit_seq reserved for it are used up.
  *
- * GOAL_CREATE creates an ACTIVE goal at revision 1. GOAL_PAUSE takes an
- * ACTIVE goal to PAUSED and GOAL_RESUME takes it back; neither changes its
- * children. GOAL_CANCEL takes a goal that is not yet terminal, and every
- * descendant that is not yet terminal, to CANCELLED in one transition
- * (C-LIFE-022). TASK_CANCEL takes a READY or PAUSED task to CANCELLED;
+ * GOAL_CREATE creates an ACTIVE goal at revision 1; since 0.13, when the
+ * goal table is full, in the place of the terminal goal that ended first,
+ * which leaves with its tasks (ADR-0025). GOAL_PAUSE takes an ACTIVE goal
+ * to PAUSED and GOAL_RESUME takes it back; neither changes its children.
+ * GOAL_CANCEL takes a goal that is not yet terminal, and every descendant
+ * that is not yet terminal, to CANCELLED in one transition (C-LIFE-022).
+ * TASK_CANCEL takes a READY or PAUSED task to CANCELLED;
  * since 0.11, when that leaves its goal with no task that has not ended and
  * no occurrence to come, as for a ONCE or DELAY goal's one task, the goal
  * and its descendants are cancelled with it as by GOAL_CANCEL (ADR-0023).
@@ -1315,10 +1320,13 @@ ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *in
  */
 ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
                              ayni_agent_info_v1 *out_info);
+/* Since 0.13 a terminal goal whose place went to a new goal is NOT_FOUND
+ * (ADR-0025). */
 ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
                             ayni_goal_info_v1 *out_info);
 /* Since 0.6. An ended task whose place went to a new task is NOT_FOUND
- * (ADR-0018). */
+ * (ADR-0018). Since 0.13 so is a terminal goal whose place went to a new
+ * goal, with its tasks (ADR-0025). */
 ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
                             ayni_task_info_v1 *out_info);
 

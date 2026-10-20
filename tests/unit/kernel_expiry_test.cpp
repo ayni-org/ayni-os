@@ -299,6 +299,31 @@ TEST(WorkExpiry, paused_goal_still_expires) {
     EXPECT_LT(work.goal(paused).commit_seq, work.goal(held_by_instance).commit_seq);
 }
 
+// ADR-0025: of equal expiries the goal created first expires first, also
+// when the goal created later took an earlier place from a goal that gave
+// way.
+TEST(WorkExpiry, equal_expiries_go_in_creation_order_whatever_the_places) {
+    WorkNode work;
+    work.node().config().goal_capacity = 2;
+    work.run();
+    const uint64_t ended = work.create_goal();
+    const uint64_t first = create(work, expiring(2U * second));
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
+    const uint64_t later = create(work, expiring(2U * second));
+    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    uint32_t first_index = 0;
+    uint32_t later_index = 0;
+    ASSERT_TRUE(goals.find(first, first_index));
+    ASSERT_TRUE(goals.find(later, later_index));
+    ASSERT_LT(later_index, first_index);
+    advance(work, 2U * second);
+    ASSERT_EQ(work.node().step(1).items_done, 1U);
+    EXPECT_EQ(work.goal(first).lifecycle, AYNI_GOAL_EXPIRED);
+    EXPECT_EQ(work.goal(later).lifecycle, AYNI_GOAL_ACTIVE);
+    ASSERT_EQ(work.node().step(1).items_done, 1U);
+    EXPECT_EQ(work.goal(later).lifecycle, AYNI_GOAL_EXPIRED);
+}
+
 // ADR-0020: a goal that expires takes no occurrence due in the same step;
 // one taken by an earlier step expires with it as a task.
 TEST(WorkExpiry, expiry_wins_over_an_occurrence_due_in_the_same_step) {

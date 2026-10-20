@@ -6,7 +6,8 @@
 // its owner instance is RUNNING. A change re-settles every READY or PAUSED
 // task it reaches against that rule in the same transition, except a task
 // its strategy's decision holds, and a goal's end takes the tasks it reaches
-// with it.
+// with it. A goal that gives way to a new one takes its ended tasks out of
+// the task table (ADR-0025).
 //
 // The kernel calls these inside one transition on the owner thread: first
 // the exhausts check, then apply_* or end_task, which use the same reach
@@ -37,6 +38,14 @@ bool goal_change_exhausts_tasks(const WorkTables &tables, uint32_t goal_index, G
 // goal_change_exhausts_tasks returned false.
 void apply_goal_change(WorkTables &tables, uint32_t goal_index, GoalChange change,
                        foundation::TransitionStamp stamp);
+
+// Creates the goal (GoalTable::insert). The goal that gives way to it, if
+// any, takes its tasks out of the task table with it: they have all ended,
+// since a goal's end takes the tasks it reaches with it and no task is
+// derived for a terminal goal (ADR-0025). Returns false, changing nothing,
+// when the goal table has no room.
+bool insert_goal(WorkTables &tables, const NewGoal &goal, uint64_t goal_id,
+                 foundation::TransitionStamp stamp, uint32_t &out_index);
 
 // Whether a task, or for stop a goal, the change would reach is at the
 // largest revision. The agent table checks the instance itself.
@@ -88,13 +97,14 @@ struct DueWork {
 // AYNI_REASON_NONE.
 ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bool id_left);
 
-// The due work at now_us, in this order, the first created goal winning a
-// tie: the goal that expires earliest, once its expiry has come; else the
-// goal that may advance whose due work comes first: its next occurrence when
-// a task can be derived for it (no derivation_blocker()), to be derived, or
-// the end of that occurrence's wait, its occurrence_wait_max_us from when it
-// fell due, to be skipped (GoalTable::skip_due). Returns false when none of
-// that has come by now_us. Either way sets out_next_us to the earliest time
+// The due work at now_us, in this order, the first created goal (the
+// smaller goal id) winning a tie: the goal that expires earliest, once its
+// expiry has come; else the goal that may advance whose due work comes
+// first: its next occurrence when a task can be derived for it (no
+// derivation_blocker()), to be derived, or the end of that occurrence's
+// wait, its occurrence_wait_max_us from when it fell due, to be skipped
+// (GoalTable::skip_due). Returns false when none of that has come by
+// now_us. Either way sets out_next_us to the earliest time
 // one of them comes, or to no_time when none will: only a change makes
 // another come, and the change says so.
 bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,

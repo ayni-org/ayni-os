@@ -6,10 +6,14 @@
 // (C-LIFE-022), expiry and a goal's end (ADR-0022), so a goal that is not
 // terminal never has a terminal ancestor.
 //
-// Goals are never removed: a terminal goal stays queryable and counts toward
-// the capacity until the log defines when it may be dropped (MA-010). So the
-// goals stay in creation order, a parent before its children, and an index
-// stays valid for the kernel's life.
+// A terminal goal keeps its place until a new goal needs one: then the goal
+// that ended first gives way, and a goal that is not terminal never does
+// (ADR-0025). A descendant never ends after its ancestor, and of the goals
+// that ended in one transition the deepest gives way first, so a goal's
+// parent stays in the table as long as the goal does. The new goal takes
+// the place given up and no other goal moves, so an index stays valid while
+// its goal is in the table; the places are not in creation order, goal ids
+// are.
 
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
 #define AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
@@ -83,7 +87,8 @@ enum class GoalChange { pause, resume, cancel, expire, satisfy, fail };
 
 class GoalTable {
   public:
-    static constexpr uint32_t no_parent = 0xFFFFFFFFU;
+    static constexpr uint32_t no_index = 0xFFFFFFFFU; // no goal's index
+    static constexpr uint32_t no_parent = no_index;   // parent_index of a top-level goal
 
     struct Limits {
         uint32_t capacity;            // at most AYNI_GOAL_CAPACITY_MAX
@@ -127,11 +132,29 @@ class GoalTable {
 
     Admission admit(const NewGoal &goal) const;
 
+    // The place the next insert() takes from a goal that gives way: when the
+    // table is full, that of the terminal goal that ended first, by
+    // commit_seq, then the deepest, then the first created (ADR-0025).
+    // no_index when the table is not full or no goal is terminal. A goal
+    // gives way with its tasks, so it must have none that has not ended: no
+    // task outlives its goal's end yet, but one that does (RUNNING or
+    // CANCELLING, MA-008, MA-018) must keep its goal from giving way.
+    uint32_t giving_way() const;
+
+    // Where insert() put a new goal.
+    enum class Placement {
+        refused,   // no room: nothing changed
+        new_place, // a place no goal held
+        given_way, // the place giving_way() named, whose goal is gone
+    };
+
     // Creates an ACTIVE goal at revision 1, copies its parameters and sets
     // out_index. Only after admit(goal) returned admitted, with no change in
-    // between; returns false, changing nothing, if the table is full anyway.
-    bool insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
-                uint32_t &out_index);
+    // between; refuses, changing nothing, if the table has no room anyway.
+    // The tasks of a goal that gave way still name out_index, so the caller
+    // removes them (work::insert_goal()).
+    Placement insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
+                     uint32_t &out_index);
 
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every
@@ -195,8 +218,10 @@ class GoalTable {
 
   private:
     uint32_t live_children(uint32_t parent_index) const;
-    // Whether goal index is a descendant of ancestor, which comes before it.
+    // Whether goal index is a descendant of ancestor, not ancestor itself.
     bool descends_from(uint32_t index, uint32_t ancestor) const;
+    // Whether goal gives way before other, both terminal.
+    static bool gives_way_before(const Goal &goal, const Goal &other);
     static bool allows(const Goal &goal, GoalChange change);
     // Whether the change makes the goal terminal and so reaches its
     // descendants.

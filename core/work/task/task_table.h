@@ -8,10 +8,12 @@
 //
 // An ended task keeps its place until a new task needs one: then the task
 // that ended first gives way, and a task that has not ended never does. A
-// place given up moves another task into it, so tasks are found by id and
-// an index is valid only until the next insert(). Steps and checkpoints lie
-// in blocks of their own, one per slot, and a task keeps its slot for its
-// life: a new task takes the slot of the task it replaces.
+// goal that gives way takes its tasks, which have all ended, with it
+// (ADR-0025). A place given up moves another task into it, so tasks are
+// found by id and an index is valid only until the next insert() or
+// remove_goal(). Steps and checkpoints lie in blocks of their own, one per
+// slot, and a task keeps its slot for its life: a new task takes the slot
+// of the task it replaces, or one no task holds.
 
 #ifndef AYNI_CORE_WORK_TASK_TASK_TABLE_H
 #define AYNI_CORE_WORK_TASK_TASK_TABLE_H
@@ -114,6 +116,10 @@ class TaskTable {
     // that ended first if the table is full. Returns false, changing
     // nothing, when has_room() is false.
     bool insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp);
+    // Removes the tasks of goal goal_index as the goal gives way
+    // (GoalTable::giving_way()). They have all ended: a goal with a task that
+    // has not ended does not give way.
+    void remove_goal(uint32_t goal_index);
 
     // The checks of a change a caller asked for by revision (TASK_CANCEL).
     ChangeCheck check(uint32_t index, TaskChange change, uint32_t expected_revision) const;
@@ -184,6 +190,8 @@ class TaskTable {
     static bool is_live(ayni_task_lifecycle_t lifecycle);
 
   private:
+    // The lowest slot no task holds; only when the table is not full.
+    uint32_t free_slot() const;
     catalog::CatalogId *steps_of(uint32_t index) const;
 
     foundation::BoundedArray<Task> tasks_;

@@ -6,7 +6,7 @@ namespace {
 // The state a change leaves, applied over the tables while the change is
 // checked and while it is applied, so both see the same outcome.
 struct After {
-    uint32_t goal_index = GoalTable::no_parent;
+    uint32_t goal_index = GoalTable::no_index;
     ayni_goal_lifecycle_t goal_lifecycle = 0;
     uint64_t instance_id = 0;
     ayni_agent_lifecycle_t instance_lifecycle = 0;
@@ -178,6 +178,15 @@ void apply_goal_change(WorkTables &tables, uint32_t goal_index, GoalChange chang
     tables.goals.apply(goal_index, change, stamp);
 }
 
+bool insert_goal(WorkTables &tables, const NewGoal &goal, uint64_t goal_id,
+                 foundation::TransitionStamp stamp, uint32_t &out_index) {
+    const GoalTable::Placement placement = tables.goals.insert(goal, goal_id, stamp, out_index);
+    if (placement == GoalTable::Placement::given_way) {
+        tables.tasks.remove_goal(out_index);
+    }
+    return placement != GoalTable::Placement::refused;
+}
+
 bool instance_change_exhausts(const WorkTables &tables, uint32_t instance_index,
                               InstanceChange change) {
     const uint64_t instance_id = tables.agents.at(instance_index).instance_id;
@@ -269,6 +278,18 @@ ayni_reason_t goal_blocker(const HeldGoals &held, uint32_t goal_index, ayni_reas
     return held.contains(goal_index) ? AYNI_REASON_TASK_HELD : table;
 }
 
+// Whether goal index, at time_us, comes before goal best, at best_us:
+// earlier, or as early and created first. Goal ids give the order of
+// creation, places do not (ADR-0025). best is GoalTable::no_index, and
+// best_us no_time, until a goal comes, and nothing comes at no_time.
+bool comes_first(const GoalTable &goals, uint64_t time_us, uint32_t index, uint64_t best_us,
+                 uint32_t best) {
+    if (time_us != best_us) {
+        return time_us < best_us;
+    }
+    return best != GoalTable::no_index && goals.at(index).goal_id < goals.at(best).goal_id;
+}
+
 } // namespace
 
 ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bool id_left) {
@@ -282,22 +303,21 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
                    uint64_t &out_next_us) {
     const ayni_reason_t table = table_blocker(tables.tasks, id_left);
     const HeldGoals held(tables.tasks);
-    // Strictly earlier throughout, so the first created wins a tie. A
-    // terminal goal has neither an expiry nor a next occurrence.
-    uint32_t expiring = GoalTable::no_parent;
+    // A terminal goal has neither an expiry nor a next occurrence.
+    uint32_t expiring = GoalTable::no_index;
     uint64_t expires_us = no_time;
-    uint32_t advancing = GoalTable::no_parent;
+    uint32_t advancing = GoalTable::no_index;
     uint64_t advances_us = no_time;
     ayni_reason_t blocker = AYNI_REASON_NONE; // advancing's
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
-        if (goal.expires_us < expires_us) {
+        if (comes_first(tables.goals, goal.expires_us, index, expires_us, expiring)) {
             expires_us = goal.expires_us;
             expiring = index;
         }
         // A blocker only puts the due work later, so a goal whose next
-        // occurrence is not earlier cannot win.
-        if (goal.cursor.next_due_us >= advances_us ||
+        // occurrence does not come first cannot win.
+        if (!comes_first(tables.goals, goal.cursor.next_due_us, index, advances_us, advancing) ||
             !may_advance(tables, index, goal.owner_instance_id, After{})) {
             continue;
         }
@@ -306,7 +326,7 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
             goal_blocked == AYNI_REASON_NONE
                 ? goal.cursor.next_due_us
                 : time_after(goal.cursor.next_due_us, goal.occurrence_wait_max_us);
-        if (due_us < advances_us) {
+        if (comes_first(tables.goals, due_us, index, advances_us, advancing)) {
             advances_us = due_us;
             advancing = index;
             blocker = goal_blocked;
@@ -315,11 +335,11 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
     out_next_us = expires_us < advances_us ? expires_us : advances_us;
     // A clock at no_time has reached every time, the never of no candidate
     // included.
-    if (expiring != GoalTable::no_parent && expires_us <= now_us) {
+    if (expiring != GoalTable::no_index && expires_us <= now_us) {
         out_work = {DueWork::Kind::expire, expiring, AYNI_REASON_NONE};
         return true;
     }
-    if (advancing != GoalTable::no_parent && advances_us <= now_us) {
+    if (advancing != GoalTable::no_index && advances_us <= now_us) {
         out_work = {blocker == AYNI_REASON_NONE ? DueWork::Kind::derive : DueWork::Kind::skip,
                     advancing, blocker};
         return true;

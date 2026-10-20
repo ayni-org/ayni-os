@@ -36,7 +36,7 @@
    - 子目标的父目标必须存在、处于 `ACTIVE` 或 `PAUSED`、与子目标同一 owner；子目标深度不超过 `goal_depth_max`，父目标的未终结子目标少于 `goal_children_max`（C-LIMIT-007）。
    - `GOAL_PAUSE`、`GOAL_RESUME` 只改变目标本身。暂停可以撤回：若暂停级联，恢复父目标时就要区分哪些子目标是随父目标暂停的、哪些是用户单独暂停的，得为每个子目标记录暂停原因。取消是终态，没有这个问题，所以 `GOAL_CANCEL` 在同一 transition 中取消目标及其全部未终结的后代，并记录 `cancel_revision`（C-LIFE-022）。
    - 每个被改变的 Goal 版本加 1，其余不变。`revision` 是 `uint32_t` 且不回绕：要改变的 Goal 中有版本已到 2^32−1 的，整个意图返回 `CAPACITY_EXCEEDED`（`REVISION_EXHAUSTED`），取消时也检查每个后代（C-COMMIT-012）。
-   - `goal_capacity` 计入终态 Goal。Goal 从不移除，所以下标与创建顺序始终有效：父目标总排在后代之前，取消的级联只需向后扫描一遍。回收终态 Goal 需要 tombstone 与保留策略（C-ID-001），随 `MA-010`。
+   - `goal_capacity` 计入终态 Goal。Goal 从不移除，所以下标与创建顺序始终有效：父目标总排在后代之前，取消的级联只需向后扫描一遍。回收终态 Goal 需要 tombstone 与保留策略（C-ID-001），随 `MA-010`。（自 ADR-0025 起，Goal 表满时最早结束的终态 Goal 让位给新 Goal，其他 Goal 不移动，位置不再是创建顺序，级联改为遍历整张表；ID 不复用，所以不留 tombstone。）
 6. **检查顺序固定，拒绝没有副作用。** `ayni_submit_intent` 依次检查：参数与结构体大小；`UNSUPPORTED`（先意图种类，后非零 `command_id`）；从 GoalType 校验内调用时 `INVALID_STATE`，不在 `RUNNING` 时 `NOT_READY`，不排队（C-LIFE-004）；会话不存在时 `DENIED`；最后是意图自身的规则。
    - 未实现的种类在任何状态下都不受支持，放在 `NOT_READY` 之前，调用方就不会等到 `RUNNING` 再重试。
    - 命令幂等映射随 `MA-010`；在此之前接受并忽略 `command_id`，重发的命令就会悄悄创建第二个目标（C-WIRE-003），所以显式拒绝。
@@ -58,7 +58,7 @@
 ## 后果
 
 - 在 `MA-010` 之前，重启会丢失全部 Goal，实例 ID 也会改变；调用方能从 `commit_seq > durable_seq` 看出这一点，但应用层还不能依赖 Goal 跨重启存在。这是已知缺口，不是可以宣称的能力。
-- 终态 Goal 一直占用容量，长期运行的设备会填满 Goal 表并得到 `GOAL_CAPACITY`；回收要等 tombstone 与保留策略。
+- 终态 Goal 一直占用容量，长期运行的设备会填满 Goal 表并得到 `GOAL_CAPACITY`；回收要等 tombstone 与保留策略。（自 ADR-0025 起，表满时终态 Goal 让位，只有未终结的 Goal 占满表时才得到 `GOAL_CAPACITY`。）
 - 查找按 ID 线性扫描（至多 1024 个），取消级联最坏 O(n × depth)。在已配置的上限内可以接受，但尚未测量，随 M1 的 `step` 时长测量一起复核。
 - ABI 升至 0.5，0.4 的调用方须重新编译（C-VER-006）。默认配置下 Kernel 内存需求增加，由 `ayni_kernel_memory_requirements` 报告；Native 与 ESP-IDF 组合根使用默认值。
 - 状态码之外新增原因码，二者同属 ABI，已发布值不改作他用（C-STATUS-007）。
@@ -70,7 +70,7 @@
 - **随机 64 位 ID**：碰撞概率不为 0，没有顺序，启动时还需要熵源。否决。
 - **本地 API 也先编码再提交（ADR-0009 方案 (b)）**：用户选了 (a)；网络解码器仍构造同一领域类型（C-WIRE-014）。
 - **暂停级联到子目标**：见决策 5，需要为每个子目标记录暂停原因。否决。
-- **终态 Goal 立即移除以腾出容量**：回执与查询仍可能引用旧 ID，移除需要 tombstone（C-ID-001），还会打乱下标与创建顺序。推迟到 `MA-010`。
+- **终态 Goal 立即移除以腾出容量**：回执与查询仍可能引用旧 ID，移除需要 tombstone（C-ID-001），还会打乱下标与创建顺序。推迟到 `MA-010`。（ADR-0025 改为表满时才让位，ID 不复用所以不留 tombstone。）
 - **先调用 GoalType 校验**：调用方代码会看到随后被拒绝的 Goal，原因码的顺序也取决于调用方代码。否决。
 - **等 `MA-010` 后再开放意图**：把两项大改动绑进一个 PR。否决；本 ADR 如实报告“未持久”。
 - **会话放在 `work/`**：与 primitives.md 的属主不符，也与 ControlSession 撞名。否决。
@@ -82,7 +82,7 @@
 - `tests/unit/kernel_id_test.cpp`（`KernelId.*`、`BoundedArray.*`）：ID 带代际且序号从 1 开始；开始之前与用尽之后拒绝分配，不回绕；定长数组的容量、交换删除与零容量。
 - `tests/unit/goal_type_registry_test.cpp`（`CatalogId.*`、`GoalTypeRegistry.*`）：目录 ID 的字符与长度；同一 ID 的多个版本；区分未知 ID 与未知版本；重复与容量；校验函数决定参数，没有校验函数时只接受空参数。
 - `tests/unit/principal_registry_test.cpp`、`tests/unit/agent_table_test.cpp`：只有一个所有者；会话表的容量与关闭；Agent 注册一次、实例在一个 transition 中取得 ID 与印记、`instance_id` 0 不指向任何实例。
-- `tests/unit/goal_table_test.cpp`（`GoalTable.*`）：父目标、owner、深度与子目标数的规则及其报告顺序；零限额只允许顶层目标；容量计入终态 Goal；暂停与恢复只改变目标本身；取消到达每个未终结后代且不波及其他目标；过时版本先于状态检查；版本上限（白盒设置）；表满时插入失败且不改变任何东西。
+- `tests/unit/goal_table_test.cpp`（`GoalTable.*`）：父目标、owner、深度与子目标数的规则及其报告顺序；零限额只允许顶层目标；容量计入终态 Goal；暂停与恢复只改变目标本身；取消到达每个未终结后代且不波及其他目标；过时版本先于状态检查；版本上限（白盒设置）；表满时插入失败且不改变任何东西。（自 ADR-0025 起，容量与让位见 `GoalTable.terminal_goal_that_ended_first_gives_way`。）
 - `tests/unit/kernel_work_test.cpp`（`WorkModel.*`）：经 C ABI 的注册、会话、意图与查询，包括参数与结构体大小、检查顺序、每个原因码与对象引用、拒绝不改变状态、ID 用尽、取消级联、过时版本与版本上限、非 `RUNNING` 时 `NOT_READY`、校验回调不能改动 Kernel、缺省的树限额、`DRAINING` 中只答查询与关闭会话、重启分配新 ID 并丢失未持久的工作且重用其 `commit_seq`，以及八个函数在六个状态下的返回值表。
 - `tests/unit/kernel_lifecycle_test.cpp`：`durable_seq` 在恢复中跟随已读日志，进入 `RUNNING` 后是启动批次，追加结果未知时不前进；最大代际与最大 `transition_id` 仍能启动，超出时进入 `RESTRICTED`。
 - `tests/unit/kernel_api_test.cpp`：新配置项的范围与默认值、内存需求随各容量增长、树限额不占内存。`tests/contract/abi_layout.c` 固定新结构体的布局，`tests/contract/c_abi_smoke.c` 从 C99 调用新增的八个函数（没有存储端口，所以只到 `CONFIGURING`）。
