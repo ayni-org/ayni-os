@@ -20,11 +20,15 @@ Keep implementations within the planned layout:
 
 ## Build, Test, and Development Commands
 
-`docs/workflow.md` records the per-package workflow used since M1 (decisions, tests, documents, validation, review, and merge), and `reports/core/m1-progress.md` records the M1 order, PR split, decisions made, and current status; follow both when taking over work. Start from the current "交接状态" section of `reports/core/m1-progress.md`; section 7 of `docs/workflow.md` retains the original handoff procedure after `MA-010` B+C+D (#20). `docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan. Native commands:
+`docs/workflow.md` records the per-package workflow used since M1 (decisions, tests, documents, validation, review, and merge), and `reports/core/m1-progress.md` records the M1 order, PR split, decisions made, and current status; follow both when taking over work. Start from the current "交接状态" section of `reports/core/m1-progress.md`; section 7 of `docs/workflow.md` retains the original handoff procedure after `MA-010` B+C+D (#20). `docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan.
+
+Before builds, test suites, or mutation runs, inspect available host memory, swap pressure, CPU capacity, and other active jobs. Choose explicit build and test parallelism from their combined peak resource budget, including other agents and containers, and leave headroom for the desktop and other applications. Set `CMAKE_BUILD_PARALLEL_LEVEL` to the chosen positive job count; when using containers, set CPU and memory limits from that budget. Monitor resource use during execution and reduce concurrency or pause work if pressure rises. Parallel execution is allowed when resources permit; serial execution and a fixed 2 GiB limit are not universal requirements. Do not use unbounded `-j` or choose concurrency from CPU count alone.
+
+Native commands (after setting `CMAKE_BUILD_PARALLEL_LEVEL`):
 
 ```sh
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
-cmake --build build/native -j
+cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ./build/native/targets/simulator/ayni-sim
 ```
