@@ -363,7 +363,10 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
                                             foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
     const bool held = state.hold_status != AYNI_OK;
-    if (!is_reached(state.lifecycle) || state.revision < task.revision ||
+    // An ended task never changes again, and a held one takes no change but
+    // an end (allows()).
+    if (!is_live(task.lifecycle) || (still_held(task) && is_live(state.lifecycle)) ||
+        !is_reached(state.lifecycle) || state.revision < task.revision ||
         state.step_count != task.step_count || state.cancel_revision > state.revision ||
         (state.cancel_revision != 0U) != (state.lifecycle == AYNI_TASK_CANCELLED) ||
         (!held && state.hold_reason != AYNI_REASON_NONE) ||

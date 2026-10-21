@@ -85,7 +85,9 @@ RecordUse WorkReplay::restore_instance(const uint8_t *body, uint32_t size,
 RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::GoalRecord record{};
-    if (pending_goal_id_ != 0U || !work::read_goal_record(body, size, record)) {
+    // A goal is created for an instance that has started.
+    if (pending_goal_id_ != 0U || !work::read_goal_record(body, size, record) ||
+        model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return RecordUse::corrupt;
     }
     record.goal.goal_type_index = work::GoalTable::no_index;
@@ -198,8 +200,25 @@ RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64
     if (model_.principals.find(mapping.principal_id) == nullptr) {
         return RecordUse::applied;
     }
+    if (!model_.commands.has_row(mapping.principal_id)) {
+        return RecordUse::no_room;
+    }
     mapping.commit_seq = commit_seq;
     return model_.commands.restore(mapping, floor) ? RecordUse::applied : RecordUse::corrupt;
+}
+
+// Ending a goal ends every task it reaches in the same transition (ADR-0025
+// decision 5), so no stored transition leaves a live task under a terminal
+// goal.
+bool WorkReplay::consistent() const {
+    for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
+        const work::Task &task = model_.tasks.at(index);
+        if (work::TaskTable::is_live(task.lifecycle) &&
+            !work::GoalTable::is_live(model_.goals.at(task.goal_index).lifecycle)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void WorkReplay::finish(uint64_t now_us) {

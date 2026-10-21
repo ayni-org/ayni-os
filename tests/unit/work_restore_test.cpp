@@ -59,6 +59,7 @@ using ayni::work::TaskTable;
 using ayni::work::Trigger;
 
 constexpr uint64_t owner = 0x1'0000'0002ULL;
+constexpr uint64_t owner_agent = 0x41;
 constexpr uint64_t other_owner = 0x1'0000'0003ULL;
 constexpr uint64_t principal = 7;
 constexpr Trigger no_trigger{AYNI_TRIGGER_NONE, 0, 0};
@@ -150,6 +151,19 @@ TEST(AgentRestore, record_no_transition_writes_is_corrupt) {
     EXPECT_EQ(agents->size(), 1U);
     EXPECT_EQ(agents.agent(100).lifecycle, AYNI_AGENT_REGISTERED);
     EXPECT_EQ(agents.agent(100).instance_id, 0U);
+
+    // A stopped instance never changes again, and no change lowers a
+    // revision.
+    ASSERT_EQ(agents.restore(100, 0x1'0000'0001ULL, 3, AYNI_AGENT_RUNNING, 2),
+              AgentRestore::restored);
+    EXPECT_EQ(agents.restore(100, 0x1'0000'0001ULL, 2, AYNI_AGENT_PAUSED, 3),
+              AgentRestore::corrupt);
+    ASSERT_EQ(agents.restore(100, 0x1'0000'0001ULL, 4, AYNI_AGENT_STOPPED, 3),
+              AgentRestore::restored);
+    EXPECT_EQ(agents.restore(100, 0x1'0000'0001ULL, 5, AYNI_AGENT_RUNNING, 4),
+              AgentRestore::corrupt);
+    EXPECT_EQ(agents.agent(100).lifecycle, AYNI_AGENT_STOPPED);
+    EXPECT_EQ(agents.agent(100).revision, 4U);
 }
 
 // C-ID-010: an agent has one instance for its life, and an instance id one
@@ -595,6 +609,33 @@ TEST(GoalRestore, restore_state_refuses_a_state_no_transition_writes) {
     EXPECT_EQ(goals.state(1, expiring, 5), GoalRestore::restored);
 }
 
+// A terminal goal never changes again; a goal without a trigger has no
+// occurrence, and an input goal's occurrences fit their counter. A state
+// against either rule is corrupt and changes nothing.
+TEST(GoalRestore, restore_state_refuses_a_change_to_a_terminal_goal_or_an_impossible_cursor) {
+    Goals goals({4, 0, 2, 2});
+    goals.created(1, new_goal(0, {AYNI_TRIGGER_DELAY, 30, 0}), 1,
+                  goal_state(AYNI_GOAL_ACTIVE, 1, 0, true));
+    GoalState cancelled = goal_state(AYNI_GOAL_CANCELLED, 2);
+    cancelled.cancel_revision = 2;
+    ASSERT_EQ(goals.state(1, cancelled, 2), GoalRestore::restored);
+    EXPECT_EQ(goals.state(1, goal_state(AYNI_GOAL_ACTIVE, 3, 0, true), 3), GoalRestore::corrupt);
+    EXPECT_EQ(goals.state(1, cancelled, 3), GoalRestore::corrupt);
+    EXPECT_EQ(goals.goal(1).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(goals.goal(1).commit_seq, 2U);
+
+    goals.created(2);
+    EXPECT_EQ(goals.state(2, goal_state(AYNI_GOAL_ACTIVE, 1, 0, true), 3), GoalRestore::corrupt);
+    EXPECT_FALSE(goals.goal(2).cursor.has_next());
+
+    goals.created(3, input_goal("button.top"), 1);
+    GoalState overflowing = goal_state(AYNI_GOAL_ACTIVE, 1, UINT32_MAX, true);
+    overflowing.waiting = 1;
+    EXPECT_EQ(goals.state(3, overflowing, 3), GoalRestore::corrupt);
+    overflowing.taken = UINT32_MAX - 1U;
+    EXPECT_EQ(goals.state(3, overflowing, 3), GoalRestore::restored);
+}
+
 // ADR-0026 decision 7: goal types are registered anew each boot. A goal
 // that is not terminal and whose type this boot lacks, by id or by version,
 // is held for that reason in memory, its revision unchanged; a terminal
@@ -907,11 +948,28 @@ TEST(TaskRestore, restore_state_replays_what_a_change_left) {
     EXPECT_EQ(tasks.task(2).hold_reason, AYNI_REASON_POLICY_NO_PROGRESS);
     EXPECT_TRUE(TaskTable::still_held(tasks.task(2)));
     EXPECT_TRUE(tasks->has_held());
-    // The same state again, at the same revision, counts the hold once.
-    ASSERT_EQ(tasks.state(2, held_state(AYNI_TASK_PAUSED, 2), 7), TaskRestore::restored);
     ASSERT_EQ(tasks.state(2, held_state(AYNI_TASK_FAILED, 3), 8), TaskRestore::restored);
     EXPECT_EQ(tasks.task(2).hold_status, AYNI_UNSUPPORTED);
     EXPECT_FALSE(tasks->has_held());
+}
+
+// An ended task never changes again, and a held one takes no change but an
+// end, so a later live state of either is corrupt and changes nothing.
+TEST(TaskRestore, restore_state_refuses_a_change_to_an_ended_or_held_task) {
+    Tasks tasks(2);
+    ASSERT_EQ(tasks.restore(1), TaskRestore::restored);
+    ASSERT_EQ(tasks.restore(2), TaskRestore::restored);
+    ASSERT_EQ(tasks.state(1, task_state(AYNI_TASK_CANCELLED, 2), 4), TaskRestore::restored);
+    ASSERT_EQ(tasks.state(2, held_state(AYNI_TASK_PAUSED, 2), 5), TaskRestore::restored);
+
+    EXPECT_EQ(tasks.state(1, task_state(AYNI_TASK_READY, 3), 6), TaskRestore::corrupt);
+    EXPECT_EQ(tasks.state(1, task_state(AYNI_TASK_CANCELLED, 3), 6), TaskRestore::corrupt);
+    EXPECT_EQ(tasks.task(1).lifecycle, AYNI_TASK_CANCELLED);
+    EXPECT_EQ(tasks.task(1).commit_seq, 4U);
+    EXPECT_EQ(tasks.state(2, held_state(AYNI_TASK_PAUSED, 3), 6), TaskRestore::corrupt);
+    EXPECT_EQ(tasks.state(2, task_state(AYNI_TASK_READY, 3), 6), TaskRestore::corrupt);
+    EXPECT_EQ(tasks.task(2).revision, 2U);
+    EXPECT_TRUE(tasks->has_held());
 }
 
 // A TASK_STATE record no transition writes is corrupt and changes nothing:
@@ -1142,7 +1200,9 @@ KernelCapacities small_capacities() {
 // A work model in its own storage with the owner registered.
 class Model {
   public:
-    explicit Model(const KernelCapacities &capacities)
+    // with_owner: the instance the goals belong to, as an earlier batch
+    // started it.
+    explicit Model(const KernelCapacities &capacities, bool with_owner = false)
         : agents_(AgentTable::storage_size(capacities.agent_capacity)),
           goal_types_(ayni::catalog::GoalTypeRegistry::storage_size(capacities.goal_type_capacity)),
           goals_(GoalTable::storage_size(capacities.goal_capacity,
@@ -1155,6 +1215,10 @@ class Model {
               ayni::authority::PrincipalRegistry::capacity, capacities.command_capacity)),
           work_(capacities, {2, 4}, storage()) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
+        if (with_owner) {
+            EXPECT_EQ(work_.agents.restore(owner_agent, owner, 1, AYNI_AGENT_RUNNING, {1, 1}),
+                      AgentTable::Restore::restored);
+        }
     }
 
     WorkModel &operator*() { return work_; }
@@ -1254,7 +1318,7 @@ std::vector<uint8_t> task_state_record(uint64_t id, uint32_t revision = 1) {
 // into LOG_CORRUPT); a state of another goal does not stand in for it.
 TEST(WorkReplay, goal_created_without_its_state_is_corrupt) {
     {
-        Model model(small_capacities());
+        Model model(small_capacities(), true);
         WorkReplay replay(*model);
         EXPECT_TRUE(replay.complete());
         ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
@@ -1271,7 +1335,7 @@ TEST(WorkReplay, goal_created_without_its_state_is_corrupt) {
                   RecordUse::corrupt);
     }
     {
-        Model model(small_capacities());
+        Model model(small_capacities(), true);
         WorkReplay replay(*model);
         ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(5)),
                   RecordUse::applied);
@@ -1282,7 +1346,7 @@ TEST(WorkReplay, goal_created_without_its_state_is_corrupt) {
 // Likewise a TASK without its TASK_STATE.
 TEST(WorkReplay, task_created_without_its_state_is_corrupt) {
     {
-        Model model(small_capacities());
+        Model model(small_capacities(), true);
         WorkReplay replay(*model);
         ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
                   RecordUse::applied);
@@ -1295,7 +1359,7 @@ TEST(WorkReplay, task_created_without_its_state_is_corrupt) {
                   RecordUse::corrupt);
     }
     {
-        Model model(small_capacities());
+        Model model(small_capacities(), true);
         WorkReplay replay(*model);
         ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
                   RecordUse::applied);
@@ -1310,7 +1374,7 @@ TEST(WorkReplay, task_created_without_its_state_is_corrupt) {
 // The states in the same batch complete the creations, and later batches
 // replay on.
 TEST(WorkReplay, state_in_the_same_batch_completes_a_creation) {
-    Model model(small_capacities());
+    Model model(small_capacities(), true);
     WorkReplay replay(*model);
     ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)), RecordUse::applied);
     ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
@@ -1330,7 +1394,7 @@ TEST(WorkReplay, state_in_the_same_batch_completes_a_creation) {
 // before the first one's state is corrupt.
 TEST(WorkReplay, second_creation_before_the_first_state_is_corrupt) {
     {
-        Model model(small_capacities());
+        Model model(small_capacities(), true);
         WorkReplay replay(*model);
         ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
                   RecordUse::applied);
@@ -1338,7 +1402,7 @@ TEST(WorkReplay, second_creation_before_the_first_state_is_corrupt) {
                   RecordUse::corrupt);
     }
     {
-        Model model(small_capacities());
+        Model model(small_capacities(), true);
         WorkReplay replay(*model);
         ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
                   RecordUse::applied);

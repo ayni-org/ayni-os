@@ -45,8 +45,12 @@ AgentTable::Restore AgentTable::restore(uint64_t agent_id, uint64_t instance_id,
         if (agent.agent_id != agent_id) {
             continue;
         }
-        // An agent has one instance for its life, and an id one holder.
-        if ((agent.instance_id != 0U && agent.instance_id != instance_id) ||
+        // An agent has one instance for its life, and an id one holder. A
+        // stopped instance never changes again, and no change lowers a
+        // revision.
+        if ((agent.instance_id != 0U &&
+             (agent.instance_id != instance_id || agent.lifecycle == AYNI_AGENT_STOPPED ||
+              revision < agent.revision)) ||
             (held && holder != index)) {
             return Restore::corrupt;
         }

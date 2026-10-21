@@ -39,8 +39,11 @@ class WorkReplay {
     // After the last batch: whether every goal and task a batch created came
     // with its state in the same batch.
     bool complete() const { return pending_goal_id_ == 0U && pending_task_id_ == 0U; }
-    // Only once complete(): holds and faults what this boot lacks, then puts
-    // every wait on the clock at now_us.
+    // After the last batch: whether the tables hold a state a transition
+    // leaves, beyond what each record's own checks cover.
+    bool consistent() const;
+    // Only once complete() and consistent(): holds and faults what this boot
+    // lacks, then puts every wait on the clock at now_us.
     void finish(uint64_t now_us);
     // Drops everything replayed, as when recovery fails.
     void discard();

@@ -178,7 +178,12 @@ GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &sta
     // A goal is created ACTIVE; PROPOSED needs goals that wait for approval.
     const bool reached = state.lifecycle >= AYNI_GOAL_ACTIVE && state.lifecycle <= AYNI_GOAL_FAILED;
     const bool local = goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT;
-    if (!reached || state.revision < goal.revision || state.taken < goal.cursor.taken ||
+    // A terminal goal never changes again, and a goal without a trigger has
+    // no occurrence.
+    if (!is_live(goal.lifecycle) || !reached || state.revision < goal.revision ||
+        state.taken < goal.cursor.taken ||
+        (goal.trigger.kind == AYNI_TRIGGER_NONE && state.next_scheduled) ||
+        (local && state.waiting > std::numeric_limits<uint32_t>::max() - state.taken) ||
         state.cancel_revision > state.revision ||
         (state.cancel_revision != 0U) != (state.lifecycle == AYNI_GOAL_CANCELLED) ||
         (!live && (state.next_scheduled || state.expiry_pending || state.waiting != 0U)) ||

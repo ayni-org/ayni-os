@@ -247,7 +247,7 @@ void ayni_kernel::settle_recovery() {
 // Transitions follow the boot batch, and the work model starts before any
 // intent is accepted. The log takes the storage buffer over from recovery.
 void ayni_kernel::enter_running() {
-    if (!replay.complete()) {
+    if (!replay.complete() || !replay.consistent()) {
         replay.discard();
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         return;
