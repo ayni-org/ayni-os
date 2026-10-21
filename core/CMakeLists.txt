@@ -14,6 +14,7 @@ ayni_add_core_module(durability
     SOURCES
         durability/batch/batch_codec.cpp
         durability/batch/prefix_scan.cpp
+        durability/journal/journal_ring.cpp
     DEPENDS foundation)
 
 ayni_add_core_module(catalog
@@ -30,16 +31,22 @@ ayni_add_core_module(authority
 
 ayni_add_core_module(work
     SOURCES
+        work/agent/agent_records.cpp
         work/agent/agent_table.cpp
+        work/goal/goal_records.cpp
         work/goal/goal_table.cpp
         work/goal/trigger_schedule.cpp
         work/propagation.cpp
+        work/task/task_records.cpp
         work/task/task_table.cpp
-    DEPENDS catalog foundation)
+    DEPENDS catalog durability foundation)
 
 ayni_add_core_module(kernel
     SOURCES
         kernel/boot/boot_sequence.cpp
+        kernel/command/command_records.cpp
+        kernel/command/command_table.cpp
+        kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
@@ -51,6 +58,8 @@ ayni_add_core_module(kernel
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
         kernel/work_api.cpp
+        kernel/work_journal.cpp
+        kernel/work_replay.cpp
     DEPENDS work authority catalog durability foundation)
 
 # What consumers link: the top module pulls in every module below it.

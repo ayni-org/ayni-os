@@ -6,7 +6,9 @@
 //
 // Storage is an in-memory log. Requests stay pending until the test calls
 // complete_storage(), which reads or fills the kernel's buffer only then, as
-// a Host I/O thread would (C-HOST-019). Faults are injected per request.
+// a Host I/O thread would (C-HOST-019). Faults are injected per request, and
+// power_cut() ends the kernel's requests without a result, as power loss
+// would, leaving each pending append lost, stored or torn.
 
 #ifndef AYNI_HOSTS_SIM_H
 #define AYNI_HOSTS_SIM_H
@@ -25,13 +27,24 @@
 namespace ayni::hosts::sim {
 
 // One batch as the Host frames it: commit_seq as the kernel named it at
-// append time, and the encoded bytes.
+// append time, and the encoded bytes. A torn batch holds only the bytes a
+// power cut left of it; the Host can tell, as a real one would by its own
+// framing (C-HOST-009), so reads end before it and the next append replaces
+// it.
 struct StoredBatch {
     uint64_t commit_seq;
     std::vector<uint8_t> bytes;
+    bool torn = false;
 };
 
 enum class StoragePort { append, read_prefix };
+
+// What a power cut leaves of an append still pending.
+enum class CutAppend {
+    lost,   // nothing
+    stored, // the whole batch, though the kernel never learned it
+    torn,   // its first half
+};
 
 enum class StorageFault {
     reject,            // the port returns AYNI_SUBMIT_REJECTED_NOT_RETAINED
@@ -74,6 +87,12 @@ class Host {
     // Completes every pending request in order and returns how many posts
     // the kernel accepted.
     std::size_t complete_storage();
+    // Ends every pending request without posting it, as power loss ends the
+    // kernel that made them: no later kernel sees their results (C-ID-006).
+    // Each pending append leaves what append says. The kernel must not be
+    // used again, and its slots never complete, so a test abandons its
+    // memory instead of calling ayni_destroy.
+    void power_cut(CutAppend append);
 
   private:
     struct Pending {

@@ -89,3 +89,22 @@ git diff --check origin/main
 - 不执行任何 burn 类命令，不烧写 eFuse；查看 eFuse 只用只读的 summary 命令（`docs/development.md`）。
 - 开发板相关的实机操作（烧录 Hello、确认 Flash 与 PSRAM、读取 eFuse 摘要）须在用户的 Linux 电脑上、经用户允许后进行。
 - 不关闭 TLS 校验；凭据只在运行时配置，不写入提交或日志。
+
+## 7. 接手
+
+用户 2026-10-21 要求 Claude 做完 `MA-010` B+C+D（#20）后停止，M1 的其余工作交给其他大模型。接手方按第 2 至 6 节的流程继续，并注意以下几点。
+
+1. **读的顺序。** `AGENTS.md`；本文；`reports/core/m1-progress.md` 的“交接状态”“剩余工作”“已作的决定”“需要用户的事项”；计划 §9.1 中下一个包的行与依赖，以及 §14；该包涉及的 ADR 与契约（`MA-010` E+F 先读 ADR-0025、ADR-0026 与 `contracts/storage/records.md`）；最后读相邻的代码与测试。
+2. **分支。** 从最新 main 开自己的分支（`git fetch origin main && git checkout -b <分支> origin/main`），PR 合并后按第 2 节第 13 步重置。不推送到其他代理的分支（如 `claude/project-thread-6xckzw`），不改写别人分支的历史。合并按第 2 节第 12 步。
+3. **独立审查。** 在新会话或另一个代理中做，只读，发现带文件与行号或执行轨迹。审查用的 worktree 放在仓库目录之外（如 `git worktree add ../ayni-review <分支>`）；放在仓库内会让 `tools/check_deps.py` 报错（第 4 节）。审查结束后用 `git worktree remove` 删掉。
+4. **植入缺陷测试的做法。** 用一个脚本逐项处理缺陷清单，每项为文件、原文片段与缺陷片段：
+   - 原文片段在文件中必须恰好出现一次，否则跳过并记下；
+   - 替换后只编译单元测试目标：`cmake --build --preset native-debug --target ayni_unit_tests`；编译失败的不计入总数；
+   - 运行 `./build/native/tests/unit/ayni_unit_tests --gtest_brief=1`，非零退出即为“被发现”，记下失败的测试名；
+   - 无论结果如何，都用脚本保存的原文写回文件（不用 `git checkout`，以免丢掉未提交的改动）；全部做完后重新编译一次。
+
+   脚本与原始结果放在仓库之外，不提交。总数、发现数与每个未被发现的缺陷的理由写进 ADR 的“验证”（格式见 ADR-0026）。
+5. **内存数字。** ABI 或容量变化后，用一个小 C 程序调用 `ayni_kernel_memory_requirements` 量两组数字，与上一版比较后写进 ADR 与 PR 正文：
+   - 默认配置：`ayni_config_v1` 只填 `abi_major` 与 `abi_minor`，`struct_size` 设为 12，只覆盖这三个字段，其余取默认值；
+   - 最小工作容量：`struct_size` 为整个结构，各工作容量取其 `_MIN` 或 1，`command_capacity` 取 1（结构覆盖该字段时 0 无效），其余取默认值。
+6. **提问。** 产品语义问题仍按第 2 节第 3 步提问，并按推荐项继续。没有决策卡时，在回复或 PR 正文中用同样的格式提问，ADR 中写明“按推荐项实现，改选再改”。

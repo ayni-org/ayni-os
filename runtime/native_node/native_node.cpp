@@ -6,6 +6,30 @@
 #include <utility>
 
 namespace ayni::runtime {
+namespace {
+
+ayni_status_t storage_status(hosts::native::StorageStatus status) {
+    switch (status) {
+    case hosts::native::StorageStatus::ok:
+        return AYNI_OK;
+    case hosts::native::StorageStatus::invalid_argument:
+        return AYNI_INVALID_ARGUMENT;
+    case hosts::native::StorageStatus::already_open:
+        return AYNI_INVALID_STATE;
+    case hosts::native::StorageStatus::no_memory:
+    case hosts::native::StorageStatus::thread_error:
+        return AYNI_CAPACITY_EXCEEDED;
+    case hosts::native::StorageStatus::in_use:
+        return AYNI_BUSY;
+    case hosts::native::StorageStatus::not_a_log:
+        return AYNI_UNSUPPORTED_VERSION;
+    case hosts::native::StorageStatus::file_error:
+        break;
+    }
+    return AYNI_STORAGE_FAILED;
+}
+
+} // namespace
 
 NativeNode::NativeNode() = default;
 
@@ -18,7 +42,7 @@ NativeNode::~NativeNode() {
     }
 }
 
-ayni_status_t NativeNode::assemble() {
+ayni_status_t NativeNode::assemble(const char *state_directory) {
     if (kernel_ != nullptr) {
         return AYNI_INVALID_STATE;
     }
@@ -43,6 +67,7 @@ ayni_status_t NativeNode::assemble() {
     config.policy_intent_capacity = AYNI_POLICY_INTENT_CAPACITY_DEFAULT;
     config.task_step_capacity = AYNI_TASK_STEP_CAPACITY_DEFAULT;
     config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT;
+    config.command_capacity = AYNI_COMMAND_CAPACITY_DEFAULT;
 
     std::size_t size = 0;
     std::size_t align = 0;
@@ -52,9 +77,17 @@ ayni_status_t NativeNode::assemble() {
     }
 
     std::unique_ptr<hosts::native::Host> host(new (std::nothrow) hosts::native::Host());
+    if (host == nullptr) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    // Every request the Kernel can have in flight fits the Host's queue.
+    status =
+        storage_status(host->open_storage(state_directory, config.completion_slot_count).status);
+    if (status != AYNI_OK) {
+        return status;
+    }
     void *memory = ::operator new(size, std::align_val_t{align}, std::nothrow);
-    if (host == nullptr || memory == nullptr) {
-        ::operator delete(memory, std::align_val_t{align});
+    if (memory == nullptr) {
         return AYNI_CAPACITY_EXCEEDED;
     }
 
@@ -73,11 +106,28 @@ ayni_status_t NativeNode::assemble() {
     return AYNI_OK;
 }
 
+bool NativeNode::wait_for_wake(std::chrono::microseconds timeout) {
+    return host_ != nullptr && host_->wait_for_wake(timeout);
+}
+
 ayni_status_t NativeNode::release() {
     if (kernel_ == nullptr) {
         return AYNI_INVALID_STATE;
     }
-    const ayni_status_t status = ayni_destroy(kernel_);
+    // The I/O thread must be stopped before ayni_destroy, because its last
+    // ayni_completion_post may still be returning (C-HOST-018). Stopping it
+    // is safe only where ayni_destroy succeeds: in these two states no
+    // request is in flight.
+    ayni_lifecycle_t state = 0;
+    ayni_status_t status = ayni_get_lifecycle(kernel_, &state);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (state != AYNI_LIFECYCLE_CONFIGURING && state != AYNI_LIFECYCLE_STOPPED) {
+        return AYNI_INVALID_STATE;
+    }
+    host_->close_storage();
+    status = ayni_destroy(kernel_);
     if (status != AYNI_OK) {
         return status;
     }

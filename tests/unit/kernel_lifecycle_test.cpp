@@ -35,6 +35,8 @@ using ayni::kernel::boot_epoch_record_type;
 using ayni::kernel::boot_epoch_record_version;
 
 using ayni::test::Node;
+using ayni::test::smallest_storage_buffer;
+using ayni::test::test_storage_buffer_bytes;
 using ayni::test::unbounded_items;
 using ayni::test::unbounded_time_us;
 
@@ -129,7 +131,7 @@ struct HoldingPort {
 };
 
 TEST(KernelLifecycle, start_without_storage_is_unsupported_and_stays_configuring) {
-    Node node(AYNI_STORAGE_BUFFER_BYTES_MIN, false);
+    Node node(test_storage_buffer_bytes, false);
     node.create();
     EXPECT_EQ(ayni_start(node.kernel()), AYNI_UNSUPPORTED);
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_CONFIGURING);
@@ -258,25 +260,32 @@ TEST(KernelLifecycle, more_ready_while_recovery_has_a_request_due) {
     EXPECT_EQ(node.sim().pending_storage(), 0U);
 }
 
-// A small buffer still reads a long log, a few whole batches per read.
-TEST(KernelLifecycle, log_longer_than_the_buffer_is_read_in_chunks) {
-    Node node(AYNI_STORAGE_BUFFER_BYTES_MIN);
-    for (uint64_t seq = 1; seq <= 10; ++seq) {
-        node.sim().log().push_back(boot_epoch_batch(seq, seq * 3));
-    }
+// Fills the log with BOOT_EPOCH batches, epoch 3 * commit_seq, until it is
+// more than twice buffer_bytes, and returns how many.
+uint64_t fill_log_beyond(Node &node, uint32_t buffer_bytes) {
     std::size_t log_bytes = 0;
-    for (const StoredBatch &batch : node.sim().log()) {
-        log_bytes += batch.bytes.size();
+    uint64_t seq = 0;
+    while (log_bytes <= std::size_t{buffer_bytes} * 2U) {
+        ++seq;
+        node.sim().log().push_back(boot_epoch_batch(seq, seq * 3U));
+        log_bytes += node.sim().log().back().bytes.size();
     }
-    ASSERT_GT(log_bytes, std::size_t{AYNI_STORAGE_BUFFER_BYTES_MIN} * 2);
+    return seq;
+}
+
+// The smallest buffer still reads a long log, a few whole batches per read.
+TEST(KernelLifecycle, log_longer_than_the_buffer_is_read_in_chunks) {
+    Node node;
+    node.config().storage_buffer_bytes = smallest_storage_buffer(node.config());
+    const uint64_t batches = fill_log_beyond(node, node.config().storage_buffer_bytes);
 
     node.create_and_start();
     node.recover();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(node.info().boot_epoch, 31U);
+    EXPECT_EQ(node.info().boot_epoch, batches * 3U + 1U);
     const AppendedEpoch appended = decode_boot_batch(node.sim().log().back());
-    EXPECT_EQ(appended.batch.identity.commit_seq, 11U);
-    EXPECT_EQ(appended.batch.identity.transition_id, 11U);
+    EXPECT_EQ(appended.batch.identity.commit_seq, batches + 1U);
+    EXPECT_EQ(appended.batch.identity.transition_id, batches + 1U);
 }
 
 // Optional records the kernel does not know are skipped (C-STORE-004); the
@@ -425,9 +434,11 @@ TEST(KernelLifecycle, storage_faults_restrict_with_their_reason) {
 
 // The buffer bounds the largest batch: the Host cannot deliver a bigger one.
 TEST(KernelLifecycle, batch_larger_than_the_buffer_restricts_as_read_failed) {
-    Node node(AYNI_STORAGE_BUFFER_BYTES_MIN);
-    node.sim().log().push_back(encode(
-        {1, 1, 1}, {{{999, 1, 0, AYNI_STORAGE_BUFFER_BYTES_MIN}, std::vector<uint8_t>(256)}}));
+    Node node;
+    const uint32_t buffer = smallest_storage_buffer(node.config());
+    node.config().storage_buffer_bytes = buffer;
+    node.sim().log().push_back(
+        encode({1, 1, 1}, {{{999, 1, 0, buffer}, std::vector<uint8_t>(buffer)}}));
     node.create_and_start();
     node.recover();
     EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_STORAGE_READ_FAILED);
@@ -454,7 +465,7 @@ TEST(KernelLifecycle, read_count_beyond_the_buffer_restricts_as_read_failed) {
     node.replace_read_port(&HeldRead::call);
     node.create_and_start();
     node.step();
-    ASSERT_EQ(HeldRead::last.buffer_size, AYNI_STORAGE_BUFFER_BYTES_MIN);
+    ASSERT_EQ(HeldRead::last.buffer_size, test_storage_buffer_bytes);
     ayni_completion_result_v1 result{};
     result.struct_size = sizeof(result);
     result.outcome = AYNI_WRITE_OK;
@@ -471,9 +482,8 @@ TEST(KernelLifecycle, read_count_beyond_the_buffer_restricts_as_read_failed) {
 // carries the new epoch.
 TEST(KernelLifecycle, recovery_requests_use_boot_epoch_0) {
     Node node;
-    for (uint64_t seq = 1; seq <= 6; ++seq) {
-        node.sim().log().push_back(boot_epoch_batch(seq, seq));
-    }
+    node.config().storage_buffer_bytes = smallest_storage_buffer(node.config());
+    const uint64_t batches = fill_log_beyond(node, node.config().storage_buffer_bytes);
     node.create_and_start();
     node.recover();
     ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
@@ -490,7 +500,7 @@ TEST(KernelLifecycle, recovery_requests_use_boot_epoch_0) {
                                                &HoldingPort::call, &port),
               ayni::kernel::IssueResult::in_flight);
     ASSERT_EQ(port.held.size(), 1U);
-    EXPECT_EQ(port.held[0].attempt.boot_epoch, 7U);
+    EXPECT_EQ(port.held[0].attempt.boot_epoch, batches * 3U + 1U);
     EXPECT_EQ(port.held[0].attempt.request_id, attempts.size() + 1U);
     port.post_all();
     node.step();
@@ -754,7 +764,8 @@ TEST(KernelLifecycle, step_rejects_bad_arguments_without_effect) {
     report.struct_size = sizeof(report);
     EXPECT_EQ(ayni_step(node.kernel(), 0, 1, &report), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(ayni_step(node.kernel(), 1, 0, &report), AYNI_INVALID_ARGUMENT);
-    report.struct_size = sizeof(report) - 1;
+    // Smaller than the report of 0.2, which ends with next_deadline_us.
+    report.struct_size = offsetof(ayni_step_report_v1, next_deadline_us) + 7U;
     EXPECT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_INVALID_ARGUMENT);
     report.struct_size = sizeof(report) + 8;
     EXPECT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_UNSUPPORTED_VERSION);
@@ -762,6 +773,26 @@ TEST(KernelLifecycle, step_rejects_bad_arguments_without_effect) {
 
     EXPECT_EQ(ayni_step(node.kernel(), 1, 1, nullptr), AYNI_OK); // report is optional
     EXPECT_EQ(node.sim().pending_storage(), 1U);
+}
+
+// C-VER-003: a report from before 0.14 ends before durable_seq, which the
+// step then leaves as it was; a newer one gets durable_seq too.
+TEST(KernelLifecycle, step_reports_durable_seq_when_the_report_covers_it) {
+    Node node;
+    node.create_and_start();
+    node.recover();
+    ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    ayni_step_report_v1 report{};
+    std::memset(&report, 0xA5, sizeof(report));
+    report.struct_size = offsetof(ayni_step_report_v1, durable_seq);
+    ASSERT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_OK);
+    EXPECT_EQ(report.struct_size, offsetof(ayni_step_report_v1, durable_seq));
+    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.durable_seq, 0xA5A5A5A5A5A5A5A5U);
+    report.struct_size = sizeof(report);
+    ASSERT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_OK);
+    EXPECT_EQ(report.durable_seq, 1U); // the boot batch
+    EXPECT_EQ(report.durable_seq, node.info().durable_seq);
 }
 
 // --- Step budget (white-box: several completions posted at once) ---------

@@ -47,6 +47,9 @@ class BatchWriter {
     // false, with nothing written, when the record and the commit marker
     // after it do not fit. body may be null only when header.length is 0.
     bool add_record(const RecordHeader &header, const uint8_t *body);
+    // As add_record, but returns where the caller writes the header.length
+    // body bytes; null, with nothing written, when they do not fit.
+    uint8_t *add_record_body(const RecordHeader &header);
 
     // Writes the header and commit marker and returns the encoded size; 0
     // only when capacity cannot hold even an empty batch.
@@ -64,6 +67,7 @@ enum class BatchCheck {
     ok,
     corrupt,     // cut short, or a magic, CRC or commit marker does not match
     unsupported, // another storage_schema or unknown flag bits (C-STORE-004)
+    no_room,     // a record's owner has no room for it (prefix_scan.h)
 };
 
 // A checked batch; payload points into the bytes given to read_batch.

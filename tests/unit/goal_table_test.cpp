@@ -91,7 +91,9 @@ class Goals {
                 {},
                 created_us,
                 expiry_us,
-                ayni::work::no_time};
+                ayni::work::no_time,
+                catalog_id("reminder"),
+                1};
     }
 
     const Goal &goal(uint64_t goal_id) {

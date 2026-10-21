@@ -72,7 +72,15 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     }
     ayni::kernel::IntentOutcome outcome{};
     const uint64_t now_us = kernel->host.monotonic_now_us(kernel->host.ctx);
-    status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, outcome, failure);
+    const uint64_t first_seq = kernel->work.transitions.next_commit_seq();
+    const bool log_was_idle = kernel->log.idle();
+    status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->log.has_room(),
+                                        outcome, failure);
+    // Also AYNI_INTERNAL, which used up a commit_seq (ayni.h).
+    const bool committed = kernel->work.transitions.next_commit_seq() != first_seq;
+    if (committed) {
+        kernel->journal(first_seq);
+    }
     if (status == AYNI_OK && out_result != nullptr) {
         ayni_intent_result_v1 result{};
         result.struct_size = sizeof(result);
@@ -80,7 +88,10 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         result.commit_seq = outcome.commit_seq;
         *out_result = result;
     }
-    if (status == AYNI_OK && outcome.due_work) {
+    // The owner appends the batch, and learns the next deadline, in its next
+    // step. A batch already waiting woke it, and the post of an append's
+    // result wakes it again.
+    if ((committed && log_was_idle) || (status == AYNI_OK && outcome.due_work)) {
         kernel->host.wake(kernel->host.ctx);
     }
     return status;
@@ -88,7 +99,6 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
 
 void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v1 &out) {
     const ayni::work::Goal &goal = kernel.work.goals.at(index);
-    const ayni::catalog::GoalType &type = kernel.work.goal_types.at(goal.goal_type_index);
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = goal.lifecycle;
@@ -104,9 +114,9 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.origin_channel = goal.origin.channel;
     info.origin_binding_revision = goal.origin.binding_revision;
     info.depth = goal.depth;
-    info.goal_type_version = type.version;
-    info.goal_type_id_size = type.id.size();
-    std::memcpy(info.goal_type_id, type.id.data(), type.id.size());
+    info.goal_type_version = goal.goal_type_version;
+    info.goal_type_id_size = goal.goal_type_id.size();
+    std::memcpy(info.goal_type_id, goal.goal_type_id.data(), goal.goal_type_id.size());
     info.trigger = goal.trigger.kind;
     info.occurrences = goal.cursor.taken;
     info.last_task_id = goal.last_task_id;
@@ -116,6 +126,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.expires_us = goal.expires_us;
     info.occurrences_skipped = goal.occurrences_skipped;
     info.skip_reason = goal.skip_reason;
+    info.hold_reason = goal.hold_reason;
     info.trigger_source_size = goal.trigger_source.size();
     std::memcpy(info.trigger_source, goal.trigger_source.data(), goal.trigger_source.size());
     // Read from the tables rather than kept, so a query needs no clock.
@@ -329,6 +340,7 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
     info.instance_id = agent->instance_id;
     info.commit_seq = agent->stamp.commit_seq;
     info.revision = agent->revision;
+    info.fault_reason = agent->fault_reason;
     *out_info = info;
     return AYNI_OK;
 }

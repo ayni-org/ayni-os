@@ -37,7 +37,8 @@ AYNI_LAYOUT(config_policy_intent_capacity, offsetof(ayni_config_v1, policy_inten
 AYNI_LAYOUT(config_task_step_capacity, offsetof(ayni_config_v1, task_step_capacity) == 68);
 AYNI_LAYOUT(config_task_checkpoint_max_bytes,
             offsetof(ayni_config_v1, task_checkpoint_max_bytes) == 72);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 76);
+AYNI_LAYOUT(config_command_capacity, offsetof(ayni_config_v1, command_capacity) == 76);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 80);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);
@@ -85,7 +86,8 @@ AYNI_LAYOUT(report_items_done, offsetof(ayni_step_report_v1, items_done) == 4);
 AYNI_LAYOUT(report_more_ready, offsetof(ayni_step_report_v1, more_ready) == 8);
 AYNI_LAYOUT(report_reserved, offsetof(ayni_step_report_v1, reserved) == 12);
 AYNI_LAYOUT(report_next_deadline_us, offsetof(ayni_step_report_v1, next_deadline_us) == 16);
-AYNI_LAYOUT(report_size, sizeof(ayni_step_report_v1) == 24);
+AYNI_LAYOUT(report_durable_seq, offsetof(ayni_step_report_v1, durable_seq) == 24);
+AYNI_LAYOUT(report_size, sizeof(ayni_step_report_v1) == 32);
 
 AYNI_LAYOUT(string_data, offsetof(ayni_string_v1, data) == 0);
 AYNI_LAYOUT(string_size, offsetof(ayni_string_v1, size) == AYNI_PTR);
@@ -127,7 +129,7 @@ AYNI_LAYOUT(agent_info_agent_id, offsetof(ayni_agent_info_v1, agent_id) == 8);
 AYNI_LAYOUT(agent_info_instance_id, offsetof(ayni_agent_info_v1, instance_id) == 16);
 AYNI_LAYOUT(agent_info_commit_seq, offsetof(ayni_agent_info_v1, commit_seq) == 24);
 AYNI_LAYOUT(agent_info_revision, offsetof(ayni_agent_info_v1, revision) == 32);
-AYNI_LAYOUT(agent_info_reserved, offsetof(ayni_agent_info_v1, reserved) == 36);
+AYNI_LAYOUT(agent_info_fault_reason, offsetof(ayni_agent_info_v1, fault_reason) == 36);
 AYNI_LAYOUT(agent_info_size, sizeof(ayni_agent_info_v1) == 40);
 
 AYNI_LAYOUT(goal_type_struct_size, offsetof(ayni_goal_type_v1, struct_size) == 0);
@@ -171,7 +173,7 @@ AYNI_LAYOUT(goal_info_expires_us, offsetof(ayni_goal_info_v1, expires_us) == 160
 AYNI_LAYOUT(goal_info_occurrences_skipped, offsetof(ayni_goal_info_v1, occurrences_skipped) == 168);
 AYNI_LAYOUT(goal_info_skip_reason, offsetof(ayni_goal_info_v1, skip_reason) == 172);
 AYNI_LAYOUT(goal_info_wait_reason, offsetof(ayni_goal_info_v1, wait_reason) == 176);
-AYNI_LAYOUT(goal_info_reserved, offsetof(ayni_goal_info_v1, reserved) == 180);
+AYNI_LAYOUT(goal_info_hold_reason, offsetof(ayni_goal_info_v1, hold_reason) == 180);
 AYNI_LAYOUT(goal_info_trigger_source_size, offsetof(ayni_goal_info_v1, trigger_source_size) == 184);
 AYNI_LAYOUT(goal_info_trigger_source, offsetof(ayni_goal_info_v1, trigger_source) == 188);
 AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 224);

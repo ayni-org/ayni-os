@@ -9,6 +9,7 @@
 #include "kernel/abi_checks.h"
 #include "kernel/kernel_layout.h"
 #include "kernel/kernel_state.h"
+#include "kernel/work_journal.h"
 
 #include <ayni/ayni.h>
 
@@ -41,7 +42,11 @@ constexpr std::size_t kernel_info_v1_field_ends[] = {
     offsetof(ayni_kernel_info_v1, events_unmatched) + sizeof(ayni_kernel_info_v1::events_unmatched),
     offsetof(ayni_kernel_info_v1, events_discarded) + sizeof(ayni_kernel_info_v1::events_discarded),
 };
-constexpr std::size_t step_report_v1_min_size = sizeof(ayni_step_report_v1);
+constexpr std::size_t step_report_v1_min_size =
+    offsetof(ayni_step_report_v1, next_deadline_us) + sizeof(ayni_step_report_v1::next_deadline_us);
+// durable_seq since 0.14.
+constexpr std::size_t step_report_v1_durable_end =
+    offsetof(ayni_step_report_v1, durable_seq) + sizeof(ayni_step_report_v1::durable_seq);
 
 using ayni::kernel::check_struct_size;
 using ayni::kernel::covers;
@@ -71,6 +76,22 @@ ayni_status_t read_capacity(const ayni_config_v1 *config, std::size_t field_offs
     }
     *out = value;
     return AYNI_OK;
+}
+
+// The storage buffer holds the largest batch a transition writes (ADR-0026);
+// 0 takes twice that, which the maxima keep within the buffer's own.
+ayni_status_t resolve_storage_buffer(KernelCapacities &capacities) {
+    const uint32_t needed = ayni::kernel::storage_buffer_min(capacities);
+    static_assert(AYNI_STORAGE_BUFFER_BYTES_DEFAULT == 0U, "0 is the default");
+    if (capacities.storage_buffer_bytes == 0U) {
+        capacities.storage_buffer_bytes =
+            2U * (needed > AYNI_STORAGE_BUFFER_BYTES_MIN ? needed : AYNI_STORAGE_BUFFER_BYTES_MIN);
+        return AYNI_OK;
+    }
+    return capacities.storage_buffer_bytes < AYNI_STORAGE_BUFFER_BYTES_MIN ||
+                   capacities.storage_buffer_bytes < needed
+               ? AYNI_INVALID_ARGUMENT
+               : AYNI_OK;
 }
 
 ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *out_capacities,
@@ -107,10 +128,11 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
                           &capacities.completion_slot_count);
     }
     if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, storage_buffer_bytes),
-                               {AYNI_STORAGE_BUFFER_BYTES_DEFAULT, AYNI_STORAGE_BUFFER_BYTES_MIN,
-                                AYNI_STORAGE_BUFFER_BYTES_MAX},
-                               &capacities.storage_buffer_bytes);
+        // 0, the default, is resolved once the other capacities are known.
+        status =
+            read_capacity(config, offsetof(ayni_config_v1, storage_buffer_bytes),
+                          {AYNI_STORAGE_BUFFER_BYTES_DEFAULT, 0U, AYNI_STORAGE_BUFFER_BYTES_MAX},
+                          &capacities.storage_buffer_bytes);
     }
     if (status == AYNI_OK) {
         status = read_capacity(config, offsetof(ayni_config_v1, agent_capacity),
@@ -166,6 +188,14 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
                           {AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT,
                            AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN, AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX},
                           &capacities.task_checkpoint_max_bytes);
+    }
+    if (status == AYNI_OK) {
+        status = read_capacity(config, offsetof(ayni_config_v1, command_capacity),
+                               {AYNI_COMMAND_CAPACITY_DEFAULT, 1U, AYNI_COMMAND_CAPACITY_MAX},
+                               &capacities.command_capacity);
+    }
+    if (status == AYNI_OK) {
+        status = resolve_storage_buffer(capacities);
     }
     KernelLimits limits{};
     if (status == AYNI_OK) {
@@ -307,7 +337,8 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
         base + layout.storage_buffer_offset, base + layout.agents_offset,
         base + layout.goal_types_offset,     base + layout.goals_offset,
         base + layout.sessions_offset,       base + layout.tasks_offset,
-        base + layout.strategies_offset,     base + layout.decisions_offset};
+        base + layout.strategies_offset,     base + layout.decisions_offset,
+        base + layout.commands_offset};
     *out_kernel = new (memory) ayni_kernel(copy_host(host), capacities, limits, storage);
     return AYNI_OK;
 }
@@ -334,7 +365,7 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
     info.lifecycle = kernel->lifecycle;
     info.restriction = kernel->restriction();
     info.boot_epoch = kernel->boot.boot_epoch();
-    info.durable_seq = kernel->boot.durable_seq();
+    info.durable_seq = kernel->durable_seq();
     info.events_unmatched = kernel->events_unmatched;
     info.events_discarded = kernel->events_discarded;
     // Whole fields only: one that struct_size covers in part is left as it
@@ -378,7 +409,11 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
     const ayni_status_t status = kernel->step(max_items, max_time_us, report);
     if (status == AYNI_OK && out_report != nullptr) {
         report.struct_size = out_report->struct_size;
-        std::memcpy(out_report, &report, out_report->struct_size);
+        // Whole fields only, as for ayni_kernel_info_v1.
+        const std::size_t written = out_report->struct_size >= step_report_v1_durable_end
+                                        ? step_report_v1_durable_end
+                                        : step_report_v1_min_size;
+        std::memcpy(out_report, &report, written);
     }
     return status;
 }

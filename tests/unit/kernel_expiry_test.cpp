@@ -191,7 +191,9 @@ TEST(WorkExpiry, expiry_past_the_clock_never_comes) {
     const uint64_t wakes_before = wakes(work);
     const uint64_t never = create(work, expiring(0));
     const uint64_t beyond = create(work, expiring(no_time - 1U));
-    EXPECT_EQ(wakes(work), wakes_before);
+    // Only for the append of the first batch (ADR-0026), which the second
+    // waits behind.
+    EXPECT_EQ(wakes(work), wakes_before + 1U);
     EXPECT_EQ(work.goal(never).expires_us, no_time);
     EXPECT_EQ(work.goal(beyond).expires_us, no_time);
     EXPECT_EQ(work.node().step().next_deadline_us, no_time);

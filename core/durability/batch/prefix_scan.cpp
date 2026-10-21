@@ -54,7 +54,7 @@ BatchCheck PrefixScan::scan_records(const BatchView &batch, RecordHandler handle
         if ((header.flags & ~record_required) != 0U) {
             return BatchCheck::unsupported;
         }
-        switch (handler(context, header, body)) {
+        switch (handler(context, batch.identity, header, body)) {
         case RecordUse::applied:
             break;
         case RecordUse::unknown:
@@ -64,6 +64,8 @@ BatchCheck PrefixScan::scan_records(const BatchView &batch, RecordHandler handle
             break;
         case RecordUse::corrupt:
             return BatchCheck::corrupt;
+        case RecordUse::no_room:
+            return BatchCheck::no_room;
         }
     }
 }

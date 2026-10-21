@@ -151,9 +151,9 @@ TEST(WorkTask, none_goal_derives_no_task_and_wakes_no_one) {
     work.run();
     const uint64_t wakes_before = wakes(work);
     const uint64_t goal_id = create_goal(work, AYNI_TRIGGER_NONE);
-    EXPECT_EQ(wakes(work), wakes_before);
+    EXPECT_EQ(wakes(work), wakes_before + 1U); // only for the append of its batch
     const ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 0U);
+    EXPECT_EQ(report.items_done, 0U); // issuing the append is not one
     EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
     EXPECT_EQ(work.goal(goal_id).last_task_id, 0U);
@@ -228,9 +228,14 @@ TEST(WorkTask, only_running_derives_tasks) {
     work.run();
     const uint64_t goal_id = once_goal(work);
     ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
-    const ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.more_ready, 0U);
+    // DRAINING still appends the batches RUNNING committed (ADR-0026); the
+    // result of each append is the only item of its step.
+    for (int round = 0; round < 10 && work.node().lifecycle() == AYNI_LIFECYCLE_DRAINING; ++round) {
+        const ayni_step_report_v1 report = work.node().step();
+        EXPECT_LE(report.items_done, 1U);
+        EXPECT_EQ(report.more_ready, 0U);
+        work.node().sim().complete_storage();
+    }
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     // White-box: STOPPED answers no query, but the tables are still there.
     const ayni::kernel::WorkModel &model = work.kernel()->work;

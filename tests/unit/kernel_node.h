@@ -5,6 +5,10 @@
 #ifndef AYNI_TESTS_UNIT_KERNEL_NODE_H
 #define AYNI_TESTS_UNIT_KERNEL_NODE_H
 
+#include "kernel/kernel_config.h"
+#include "kernel/kernel_state.h"
+#include "kernel/work_journal.h"
+
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>
 
@@ -20,11 +24,33 @@ namespace ayni::test {
 
 constexpr uint32_t unbounded_items = 1000;
 constexpr uint32_t unbounded_time_us = 1000000;
+// Holds every batch a test commits, so that the batches a test never stores
+// wait without room running out.
+constexpr uint32_t test_storage_buffer_bytes = 65536;
+
+// White-box: the capacities ayni_create reads from config, which covers
+// every field.
+inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config) {
+    return {config.ingress_capacity,      config.event_body_max_bytes,
+            config.completion_slot_count, config.storage_buffer_bytes,
+            config.agent_capacity,        config.goal_type_capacity,
+            config.goal_capacity,         config.goal_parameter_max_bytes,
+            config.session_capacity,      config.task_capacity,
+            config.strategy_capacity,     config.policy_intent_capacity,
+            config.task_step_capacity,    config.task_checkpoint_max_bytes,
+            config.command_capacity};
+}
+
+// White-box: the smallest storage buffer ayni_create accepts with config's
+// other capacities, which holds the largest batch a transition writes.
+inline uint32_t smallest_storage_buffer(const ayni_config_v1 &config) {
+    return ayni::kernel::storage_buffer_min(capacities_of(config));
+}
 
 class Node {
   public:
     // Small capacities; a test may change config() before create().
-    explicit Node(uint32_t storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_MIN,
+    explicit Node(uint32_t storage_buffer_bytes = test_storage_buffer_bytes,
                   bool with_storage = true) {
         config_.struct_size = sizeof(config_);
         config_.abi_major = AYNI_ABI_MAJOR;
@@ -45,6 +71,7 @@ class Node {
         config_.policy_intent_capacity = 2;
         config_.task_step_capacity = 4;
         config_.task_checkpoint_max_bytes = 8;
+        config_.command_capacity = 4;
         table_ = sim_.table();
         if (!with_storage) {
             table_.storage_append = nullptr;
@@ -103,13 +130,23 @@ class Node {
         return report;
     }
 
-    // Steps and completes storage until recovery has an outcome.
+    // Steps and completes storage until recovery has an outcome, one item a
+    // step, so that the step entering RUNNING does nothing else.
     void recover() {
-        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
-            step();
+        for (int round = 0; round < 1000 && lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
+            step(1);
             sim_.complete_storage();
         }
         EXPECT_NE(lifecycle(), AYNI_LIFECYCLE_RECOVERING);
+        // White-box: applies the result of the append of the batch that
+        // started the work model, one item and nothing else, so that a test
+        // in RUNNING begins with nothing in flight or done.
+        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                            kernel_->completions.posted_count() > 0U;
+             ++round) {
+            step(1);
+            sim_.complete_storage();
+        }
     }
 
     // create_and_start() and recover() into RUNNING.
@@ -186,7 +223,8 @@ class Node {
         }
         if (lifecycle() != AYNI_LIFECYCLE_CONFIGURING) {
             EXPECT_EQ(ayni_begin_shutdown(kernel_), AYNI_OK);
-            for (int round = 0; round < 10 && lifecycle() != AYNI_LIFECYCLE_STOPPED; ++round) {
+            // DRAINING appends the batches waiting one at a time.
+            for (int round = 0; round < 10000 && lifecycle() != AYNI_LIFECYCLE_STOPPED; ++round) {
                 sim_.complete_storage();
                 step();
             }
@@ -198,6 +236,16 @@ class Node {
     // same log: a reboot.
     void reboot() {
         ASSERT_EQ(stop_and_destroy(), AYNI_OK);
+        create_and_start();
+    }
+
+    // Power fails: each pending append leaves what append says, the batches
+    // not yet appended are gone with the kernel's memory, and no request
+    // completes. A new kernel then starts over the same log in new memory.
+    void power_cut_and_start(ayni::hosts::sim::CutAppend append) {
+        sim_.power_cut(append);
+        kernel_ = nullptr;
+        std::vector<uint64_t>().swap(memory_);
         create_and_start();
     }
 

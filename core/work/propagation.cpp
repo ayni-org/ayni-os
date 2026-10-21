@@ -292,6 +292,25 @@ bool comes_first(const GoalTable &goals, uint64_t time_us, uint32_t index, uint6
 
 } // namespace
 
+bool settles_restored(const WorkTables &tables) {
+    for (uint32_t index = 0; index < tables.tasks.size(); ++index) {
+        const Task &task = tables.tasks.at(index);
+        TaskChange change = TaskChange::cancel;
+        if (!TaskTable::at_largest_revision(task) && settles(tables, task, After{}, change)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A task at the largest revision stays: no decision takes it
+// (TaskTable::next_ready), and nothing lowers a revision.
+void settle_restored(WorkTables &tables, foundation::TransitionStamp stamp) {
+    settle(
+        tables, After{}, [](const Task &task) { return !TaskTable::at_largest_revision(task); },
+        stamp);
+}
+
 ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bool id_left) {
     return goal_blocker(HeldGoals(tasks), goal_index, table_blocker(tasks, id_left));
 }
@@ -311,6 +330,10 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
     ayni_reason_t blocker = AYNI_REASON_NONE; // advancing's
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
+        // A held goal neither expires nor takes occurrences (ADR-0026).
+        if (GoalTable::is_held(goal)) {
+            continue;
+        }
         if (comes_first(tables.goals, goal.expires_us, index, expires_us, expiring)) {
             expires_us = goal.expires_us;
             expiring = index;

@@ -2,12 +2,20 @@
 
 namespace ayni::kernel {
 
-void WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp) {
+bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp) {
     ids.start(boot_epoch);
     transitions.start(first_stamp);
-    if (agents.has_registered()) {
-        agents.start_all(ids, transitions.next());
+    const bool starts = agents.has_registered();
+    work::WorkTables work = tables();
+    if (!starts && !work::settles_restored(work)) {
+        return false;
     }
+    const foundation::TransitionStamp stamp = transitions.next();
+    if (starts) {
+        agents.start_all(ids, stamp);
+    }
+    work::settle_restored(work, stamp);
+    return true;
 }
 
 ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel_t channel,

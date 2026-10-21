@@ -45,6 +45,8 @@ template <typename T> class BoundedArray {
         return true;
     }
 
+    void clear() { size_ = 0; }
+
     // Removes the element at index < size() by moving the last one into its
     // place, so the order of the others is not kept.
     void remove_at(uint32_t index) {

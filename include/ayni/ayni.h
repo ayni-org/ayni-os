@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 13u
+#define AYNI_ABI_MINOR 14u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -100,8 +100,12 @@ typedef struct ayni_config_v1 {
      * AYNI_CATALOG_ID_MAX_BYTES for a local input's source (ADR-0021). */
     uint32_t event_body_max_bytes;
     uint32_t completion_slot_count; /* asynchronous Host requests in flight */
-    /* Since 0.4. The buffer for log reads during recovery and for one
-     * encoded commit batch (ADR-0016); it bounds the largest batch. */
+    /* Since 0.4. The buffer for log reads during recovery (ADR-0016) and,
+     * since 0.14, for the batches committed in RUNNING until the host has
+     * stored them (ADR-0026). Each transition needs room for the largest
+     * batch the other capacities allow before it starts, so the buffer must
+     * hold at least that; 0, also the default, takes twice that. A larger
+     * buffer lets more batches wait for the host. */
     uint32_t storage_buffer_bytes;
     /* Since 0.5. The work model (ADR-0017). The last two are limits rather
      * than storage, with the same range and default rules. Since 0.13 a
@@ -127,6 +131,9 @@ typedef struct ayni_config_v1 {
     /* Room for one task's private checkpoint; each strategy declares its
      * own max_checkpoint_bytes up to this. */
     uint32_t task_checkpoint_max_bytes;
+    /* Since 0.14 (ADR-0026). Accepted commands each principal keeps mapped
+     * to their results (ayni_intent_v1 command_id). */
+    uint32_t command_capacity;
 } ayni_config_v1;
 
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
@@ -135,9 +142,11 @@ typedef struct ayni_config_v1 {
 #define AYNI_EVENT_BODY_MAX_BYTES_MAX 4096u
 #define AYNI_COMPLETION_SLOT_COUNT_DEFAULT 16u
 #define AYNI_COMPLETION_SLOT_COUNT_MAX 1024u
-#define AYNI_STORAGE_BUFFER_BYTES_DEFAULT 1024u
+/* Since 0.14 the default is 0: twice the largest batch (storage_buffer_bytes),
+ * and a nonzero value must also hold that batch. */
+#define AYNI_STORAGE_BUFFER_BYTES_DEFAULT 0u
 #define AYNI_STORAGE_BUFFER_BYTES_MIN 256u
-#define AYNI_STORAGE_BUFFER_BYTES_MAX 65536u
+#define AYNI_STORAGE_BUFFER_BYTES_MAX 1048576u
 #define AYNI_AGENT_CAPACITY_DEFAULT 4u
 #define AYNI_AGENT_CAPACITY_MAX 64u
 #define AYNI_GOAL_TYPE_CAPACITY_DEFAULT 8u
@@ -166,6 +175,8 @@ typedef struct ayni_config_v1 {
 #define AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT 64u
 #define AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN 0u
 #define AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX 4096u
+#define AYNI_COMMAND_CAPACITY_DEFAULT 32u
+#define AYNI_COMMAND_CAPACITY_MAX 1024u
 
 /*
  * Correlates an asynchronous attempt with its result (C-ID-006). Unique
@@ -316,11 +327,19 @@ typedef uint32_t ayni_restriction_t;
 #define AYNI_RESTRICTION_NONE ((ayni_restriction_t)0)
 #define AYNI_RESTRICTION_STORAGE_REJECTED ((ayni_restriction_t)1)      /* host refused a request */
 #define AYNI_RESTRICTION_STORAGE_READ_FAILED ((ayni_restriction_t)2)   /* log read not reliable */
-#define AYNI_RESTRICTION_STORAGE_WRITE_FAILED ((ayni_restriction_t)3)  /* boot epoch not stored */
+#define AYNI_RESTRICTION_STORAGE_WRITE_FAILED ((ayni_restriction_t)3)  /* a batch not stored */
 #define AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN ((ayni_restriction_t)4) /* may be stored */
 #define AYNI_RESTRICTION_LOG_CORRUPT ((ayni_restriction_t)5)           /* C-STORE-009 */
 #define AYNI_RESTRICTION_LOG_UNSUPPORTED ((ayni_restriction_t)6)       /* C-STORE-004 */
 #define AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED ((ayni_restriction_t)7)
+/* Since 0.14 (ADR-0026). The log holds more state than this kernel's
+ * capacities and limits do: it was written under larger ones. A batch
+ * larger than this kernel's storage buffer fails the read instead, as
+ * STORAGE_READ_FAILED. */
+#define AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY ((ayni_restriction_t)8)
+/* Since 0.14. A defect in this library: a transition's batch did not fit
+ * the room it was given. */
+#define AYNI_RESTRICTION_INTERNAL ((ayni_restriction_t)9)
 
 /* Since 0.4. Kernel-wide state for diagnostics. */
 typedef struct ayni_kernel_info_v1 {
@@ -332,11 +351,11 @@ typedef struct ayni_kernel_info_v1 {
     /*
      * Since 0.5. Every transition with a commit_seq up to this one survives
      * power loss (C-COMMIT-004). During recovery it is the end of the log
-     * read so far; from RUNNING on, the batch that stored the boot epoch.
-     * Transitions applied in RUNNING are not yet written (ADR-0017), so it
-     * stays there and never covers them. Compare a commit_seq with it only
-     * within the boot that assigned that commit_seq: a later boot assigns
-     * the positions above durable_seq again (C-COMMIT-016).
+     * read so far; from RUNNING on, the batch that stored the boot epoch,
+     * and since 0.14 the last batch of a transition the host has stored
+     * (ADR-0026). Compare a commit_seq with it only within the boot that
+     * assigned that commit_seq: a later boot assigns the positions above
+     * durable_seq again (C-COMMIT-016).
      */
     uint64_t durable_seq;
     /* Since 0.9 (ADR-0021). Events ayni_step took in RUNNING that no goal's
@@ -358,8 +377,12 @@ typedef struct ayni_step_report_v1 {
      * some already has and more_ready is set. That is the earliest of the
      * goals' expiries and either the next occurrence of a goal whose tasks
      * may advance, while the task table has room and an id is left, or else
-     * the end of such an occurrence's wait. */
+     * the end of such an occurrence's wait. Since 0.14 none while the
+     * storage buffer has no room for another transition: the post of the
+     * append that frees it wakes the owner. */
     uint64_t next_deadline_us;
+    /* Since 0.14. ayni_kernel_info_v1 durable_seq when the step returned. */
+    uint64_t durable_seq;
 } ayni_step_report_v1;
 
 /*
@@ -450,7 +473,26 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * RECOVERING they stay queued. Does at most max_items items and stops once
  * max_time_us has passed on the host clock, checked after each item; never
  * waits on storage or any other I/O (C-LIMIT-011). out_report (nullable)
- * receives the fields its struct_size covers. Returns AYNI_OK;
+ * receives the fields its struct_size covers.
+ *
+ * Since 0.14 every transition, in RUNNING, writes one batch into the
+ * storage buffer and waits there until the host has stored it (ADR-0026):
+ * a step ends by starting the append of the oldest batch waiting when no
+ * append is in flight, whatever is left of max_items and max_time_us; that
+ * call is not an item, and applying its completion is one. When the buffer has no room for another
+ * transition, the due work, decisions and events wait for the appends in flight, and more_ready
+ * leaves them out. A failed or unknown append makes the kernel RESTRICTED, with
+ * AYNI_RESTRICTION_STORAGE_WRITE_FAILED or _UNKNOWN, and the batches still waiting are never
+ * stored. Recovery replays the log into the work model before it enters RUNNING: instances, goals,
+ * tasks with their steps and checkpoints, and command mappings come back as the last stored
+ * transition left them, while sessions do not. Every wait on the host clock starts again in full
+ * from the end of recovery. A log that holds more than this kernel's capacities and limits makes it
+ * RESTRICTED with AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY, and a log recovery cannot replay leaves
+ * nothing of it in memory. Entering RUNNING is one transition when it starts the instance of an
+ * agent registered for the first time, or settles a restored task against its goal and owner as
+ * ayni_submit_intent does.
+ *
+ * Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT if kernel is NULL or max_items or max_time_us is 0;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
  * out_report->struct_size; AYNI_INVALID_STATE in CONFIGURING and STOPPED,
@@ -461,9 +503,11 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
 
 /*
  * Enters DRAINING from RECOVERING, RUNNING or RESTRICTED; no new storage
- * request is started after that. It does not wake the owner: the caller goes
- * on calling ayni_step, which enters STOPPED once every reserved completion
- * has been posted and applied (C-HOST-018). Returns
+ * request is started after that, except, since 0.14, the appends of the
+ * batches RUNNING committed (ADR-0026). It does not wake the owner: the
+ * caller goes on calling ayni_step, which enters STOPPED once every reserved
+ * completion has been posted and applied (C-HOST-018) and those batches are
+ * stored or an append failed. Returns
  * AYNI_OK, also in DRAINING and STOPPED; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE in CONFIGURING, where ayni_destroy applies
  * directly, and when called from a callback.
@@ -566,7 +610,7 @@ typedef uint32_t ayni_reason_t;
 #define AYNI_REASON_NONE ((ayni_reason_t)0) /* no detail beyond the status */
 /* DENIED: session_id names no open session. */
 #define AYNI_REASON_SESSION_UNKNOWN ((ayni_reason_t)1)
-/* UNSUPPORTED: a nonzero command_id; command idempotency is not built yet. */
+/* UNSUPPORTED: a nonzero command_id, before 0.14; no longer returned. */
 #define AYNI_REASON_COMMAND_ID_UNSUPPORTED ((ayni_reason_t)2)
 /* UNSUPPORTED: an intent kind this library does not implement. */
 #define AYNI_REASON_INTENT_UNSUPPORTED ((ayni_reason_t)3)
@@ -650,6 +694,24 @@ typedef uint32_t ayni_reason_t;
 /* CAPACITY_EXCEEDED: the decision would leave the task with more steps than
  * task_step_capacity. */
 #define AYNI_REASON_STEP_CAPACITY ((ayni_reason_t)33)
+/* Since 0.14 (ADR-0026). NOT_FOUND, in ayni_agent_info_v1 only: the log
+ * holds the instance of an agent this boot did not register, so it is
+ * FAULTED. */
+#define AYNI_REASON_AGENT_UNREGISTERED ((ayni_reason_t)34)
+/* UNSUPPORTED_VERSION: a restored goal with a trigger whose goal type names
+ * no strategy now (ayni_goal_info_v1 hold_reason, and its tasks'), or a
+ * restored task whose private checkpoint was written by another strategy
+ * or version than the one its goal type names now (ayni_task_info_v1). */
+#define AYNI_REASON_STRATEGY_CHANGED ((ayni_reason_t)35)
+/* EXPIRED: the command_id is not mapped and at or below the principal's
+ * floor, so the command may have been accepted once (ayni_submit_intent). */
+#define AYNI_REASON_COMMAND_EXPIRED ((ayni_reason_t)36)
+/* IDEMPOTENCY_CONFLICT: the principal's command with this command_id was
+ * accepted with other content. */
+#define AYNI_REASON_COMMAND_CONFLICT ((ayni_reason_t)37)
+/* BUSY: the storage buffer has no room for another transition until the
+ * host stores the batches before it. */
+#define AYNI_REASON_STORAGE_BACKLOG ((ayni_reason_t)38)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -707,10 +769,14 @@ typedef struct ayni_agent_info_v1 {
     uint32_t struct_size;
     ayni_agent_lifecycle_t lifecycle;
     uint64_t agent_id;
-    uint64_t instance_id; /* 0 until the kernel first enters RUNNING */
-    uint64_t commit_seq;  /* of the last change to the instance this boot; 0 before RUNNING */
-    uint32_t revision;    /* since 0.6; 1 when the instance starts; 0 before RUNNING */
-    uint32_t reserved;    /* written as 0 */
+    /* 0 until the kernel first enters RUNNING; since 0.14 the log keeps it
+     * across restarts (ADR-0026). */
+    uint64_t instance_id;
+    uint64_t commit_seq; /* of the last change to the instance; 0 before RUNNING */
+    uint32_t revision;   /* since 0.6; 1 when the instance starts; 0 before RUNNING */
+    /* Since 0.14. AYNI_REASON_AGENT_UNREGISTERED for an instance FAULTED
+     * because its agent is no longer registered; NONE otherwise. */
+    ayni_reason_t fault_reason;
 } ayni_agent_info_v1;
 
 /*
@@ -824,7 +890,7 @@ typedef struct ayni_goal_info_v1 {
     uint64_t parent_goal_id; /* 0: a top-level goal */
     uint64_t owner_instance_id;
     uint64_t origin_principal_id;
-    uint64_t transition_id; /* that created the goal, this boot */
+    uint64_t transition_id; /* that created the goal, in whichever boot did */
     uint64_t commit_seq;    /* of the last change; durable once durable_seq covers it */
     uint32_t revision;
     uint32_t cancel_revision; /* the revision that cancelled it; 0 if not cancelled */
@@ -864,7 +930,16 @@ typedef struct ayni_goal_info_v1 {
      * the lifecycles, not here. A LOCAL_INPUT goal has one to come while an
      * occurrence waits. */
     ayni_reason_t wait_reason;
-    uint32_t reserved;            /* written as 0 */
+    /* Since 0.14 (ADR-0026). Why this boot holds a goal the log restored
+     * that is not terminal: AYNI_REASON_GOAL_TYPE_UNKNOWN when no goal type
+     * has its goal_type_id, AYNI_REASON_GOAL_TYPE_VERSION when none has it
+     * at goal_type_version, AYNI_REASON_STRATEGY_CHANGED when its type names
+     * no strategy now and the goal has a trigger. A held goal neither
+     * expires nor takes occurrences or local input, and its tasks are held,
+     * until a boot can serve it again; next_due_us and expires_us show what
+     * the log has pending. It can still be cancelled, which ends the hold.
+     * NONE otherwise. */
+    ayni_reason_t hold_reason;
     uint32_t trigger_source_size; /* since 0.9; 0 unless the trigger is LOCAL_INPUT */
     char trigger_source[AYNI_CATALOG_ID_MAX_BYTES]; /* since 0.9; as created, not terminated */
 } ayni_goal_info_v1;
@@ -893,7 +968,7 @@ typedef struct ayni_task_info_v1 {
     uint64_t task_id;
     uint64_t goal_id;
     uint64_t owner_instance_id;
-    uint64_t transition_id; /* that created the task, this boot */
+    uint64_t transition_id; /* that created the task, in whichever boot did */
     uint64_t commit_seq;    /* of the last change; durable once durable_seq covers it */
     uint32_t revision;
     uint32_t cancel_revision; /* the revision that cancelled it; 0 if not cancelled */
@@ -902,14 +977,24 @@ typedef struct ayni_task_info_v1 {
     uint32_t occurrence;
     uint32_t occurrence_count; /* since 0.7; how many it stands for, at least 1 */
     /* Since 0.7. When the latest occurrence it stands for fell due, on the
-     * host monotonic clock. */
+     * host monotonic clock; since 0.14, for a task the log restored, when
+     * recovery ended (ADR-0026). */
     uint64_t due_us;
     /* Since 0.10 (ADR-0022). Why its strategy's decision holds the task
      * PAUSED: the status and reason of the hold, the status being the
      * failure the strategy returned or the one the kernel refused its
      * decision with, never AYNI_OK. A held task stays PAUSED while its goal
      * and owner may advance, until it ends. AYNI_OK and AYNI_REASON_NONE for
-     * a task never held. */
+     * a task never held. Since 0.14 a boot also holds a restored task it
+     * cannot decide (ADR-0026), without changing its revision: its goal is
+     * held, with AYNI_NOT_FOUND and AYNI_REASON_GOAL_TYPE_UNKNOWN, or
+     * AYNI_UNSUPPORTED_VERSION and the goal's hold_reason; or its goal type
+     * names another strategy or version than the one that wrote its private
+     * checkpoint, with AYNI_UNSUPPORTED_VERSION and
+     * AYNI_REASON_STRATEGY_CHANGED; or its
+     * checkpoint is larger than that strategy's max_checkpoint_bytes, with
+     * AYNI_CAPACITY_EXCEEDED and AYNI_REASON_POLICY_OUTPUT_LIMIT. A later
+     * boot that has what was lacking finds the task as the log left it. */
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
     /* Since 0.12 (ADR-0024). The steps its strategy's decisions committed;
@@ -943,8 +1028,9 @@ typedef uint32_t ayni_intent_kind_t;
 typedef struct ayni_intent_v1 {
     uint32_t struct_size;
     ayni_intent_kind_t kind;
-    /* Management command idempotency key (C-WIRE-003); must be 0 until the
-     * kernel keeps command mappings (MA-010). */
+    /* Management command idempotency key (C-WIRE-003); 0: none. Since 0.14
+     * a nonzero id names a command of the session's principal, kept as
+     * ayni_submit_intent says (ADR-0026). */
     uint64_t command_id;
     uint64_t session_id;
     /* GOAL_CREATE: 0. Other kinds: the current revision of the goal, task
@@ -1006,7 +1092,9 @@ typedef struct ayni_intent_result_v1 {
      * the goal a TASK_CANCEL ends (since 0.11), are read with their query
      * functions. */
     ayni_object_ref_v1 object;
-    uint64_t commit_seq; /* of the transition the intent applied, this boot */
+    /* Of the transition the intent applied; for a retried command, of the
+     * transition that first applied it, in whichever boot did. */
+    uint64_t commit_seq;
 } ayni_intent_result_v1;
 
 /*
@@ -1244,10 +1332,12 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
 /*
  * Validates an intent and applies its transition in memory (C-COMMIT-003).
  * AYNI_OK means accepted, not durable: the transition is durable once
- * durable_seq reaches the commit_seq in out_result (C-COMMIT-004), which
- * does not happen yet (ADR-0017). out_result (nullable) is written on AYNI_OK
- * only. out_error (nullable) is written on every return once its own
- * struct_size is accepted, with status AYNI_OK and no reason on success.
+ * durable_seq reaches the commit_seq in out_result (C-COMMIT-004), which,
+ * since 0.14, happens once the host has stored its batch (ADR-0026);
+ * ayni_step appends it, and the host's wake is called so that the owner
+ * steps. out_result (nullable) is written on AYNI_OK only. out_error
+ * (nullable) is written on every return once its own struct_size is
+ * accepted, with status AYNI_OK and no reason on success.
  *
  * Checks run in this order, and the first failure is returned:
  * 1. arguments: AYNI_INVALID_ARGUMENT for a NULL kernel or intent, kind 0,
@@ -1261,12 +1351,24 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    period of at least AYNI_TRIGGER_PERIOD_MIN_US, zero where the kind
  *    takes none), and a trigger_source that is a catalog id for
  *    LOCAL_INPUT and empty for other kinds.
- * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement, or a
- *    nonzero command_id.
+ * 2. AYNI_UNSUPPORTED: an intent kind this library does not implement.
  * 3. AYNI_INVALID_STATE when called from a callback; then
  *    AYNI_NOT_READY outside RUNNING, without queueing (C-LIFE-004).
  * 4. AYNI_DENIED: session_id names no open session. Until grants exist, a
  *    session of the owner may submit every intent (ADR-0017).
+ *    Since 0.14, a nonzero command_id is then looked up among the commands
+ *    of the session's principal (C-WIRE-003, C-WIRE-004, ADR-0026): one
+ *    accepted before with the same kind, expected_revision and body, over
+ *    any session and across restarts, returns AYNI_OK and its first result
+ *    again, applying nothing and calling no wake; with other content,
+ *    AYNI_IDEMPOTENCY_CONFLICT; an id not mapped and at or below the
+ *    principal's floor, AYNI_EXPIRED. Each principal keeps its last
+ *    command_capacity accepted commands: a new one beyond that drops the one
+ *    with the smallest id and raises the floor to it. A refused command is
+ *    not kept, so its retry is judged anew.
+ *    Then AYNI_BUSY when the storage buffer has no room for another
+ *    transition until the host stores the batches before it; ayni_step
+ *    makes room once their appends complete.
  * 5. The intent's own rules, each with the reason named in its comment
  *    above. GOAL_CREATE: the goal type (NOT_FOUND, UNSUPPORTED_VERSION) and
  *    whether it accepts the trigger (INVALID_ARGUMENT), the owner instance
@@ -1279,7 +1381,8 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    (CAPACITY_EXCEEDED).
  * AYNI_INTERNAL reports a defect in this library, not in the call: the goal
  * table refused a goal the checks admitted. The goal is not created, but the
- * id and the commit_seq reserved for it are used up.
+ * id and the commit_seq reserved for it are used up; since 0.14 that
+ * commit_seq is stored as an empty batch.
  *
  * GOAL_CREATE creates an ACTIVE goal at revision 1; since 0.13, when the
  * goal table is full, in the place of the terminal goal that ended first,

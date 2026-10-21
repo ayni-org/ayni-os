@@ -1,6 +1,6 @@
 # 状态码
 
-- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022；`MA-004`、`MA-005`
+- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022、ADR-0026；`MA-004`、`MA-005`、`MA-010`
 - **定义位置**：`include/ayni/ayni.h`（唯一来源；Core 内部不复制一份）
 
 ## 取值
@@ -31,13 +31,13 @@
 
 ## 原因码
 
-`ayni_error_v1.reason` 在状态码之外说明拒绝的原因，`object` 指出它涉及的对象（ID、版本与种类）。每个原因码只属于一个状态码；调用方不认识的原因码按其状态码处理。目前由 `ayni_submit_intent` 输出（`include/ayni/ayni.h`）；自 0.8 起 `ayni_goal_info_v1` 的 `skip_reason`、`wait_reason` 也用其中的 `ID_EXHAUSTED` 与只用于 Goal 信息的 `TASK_CAPACITY` 说明 occurrence 为什么跳过或等待（ADR-0020）；自 0.10 起 `ayni_task_info_v1` 的 `hold_status`、`hold_reason` 说明策略的决定为什么使 Task 停下，原因码为只用于 Task 信息的 28–30 与 `INTENT_UNSUPPORTED`、`TASK_REVISION`、`REVISION_EXHAUSTED`，策略自己返回的其他失败配 `NONE`，不是状态码的返回值（大于 `AYNI_OK`）记为 `INVALID_ARGUMENT` 配 `NONE`，所以 `hold_status` 总是失败；Goal 信息的 `skip_reason`、`wait_reason` 另用只用于 Goal 信息的 `TASK_HELD`（31）说明停下的 Task 使 Goal 不派生（ADR-0022）；自 0.12 起 Task 信息另用只用于 Task 信息的 `STEP_TAKEN`（32）与 `STEP_CAPACITY`（33）说明报告进度的意图为什么被拒绝（ADR-0024）。
+`ayni_error_v1.reason` 在状态码之外说明拒绝的原因，`object` 指出它涉及的对象（ID、版本与种类）。每个原因码只属于一个状态码；调用方不认识的原因码按其状态码处理。目前由 `ayni_submit_intent` 输出（`include/ayni/ayni.h`）；自 0.8 起 `ayni_goal_info_v1` 的 `skip_reason`、`wait_reason` 也用其中的 `ID_EXHAUSTED` 与只用于 Goal 信息的 `TASK_CAPACITY` 说明 occurrence 为什么跳过或等待（ADR-0020）；自 0.10 起 `ayni_task_info_v1` 的 `hold_status`、`hold_reason` 说明策略的决定为什么使 Task 停下，原因码为只用于 Task 信息的 28–30 与 `INTENT_UNSUPPORTED`、`TASK_REVISION`、`REVISION_EXHAUSTED`，策略自己返回的其他失败配 `NONE`，不是状态码的返回值（大于 `AYNI_OK`）记为 `INVALID_ARGUMENT` 配 `NONE`，所以 `hold_status` 总是失败；Goal 信息的 `skip_reason`、`wait_reason` 另用只用于 Goal 信息的 `TASK_HELD`（31）说明停下的 Task 使 Goal 不派生（ADR-0022）；自 0.12 起 Task 信息另用只用于 Task 信息的 `STEP_TAKEN`（32）与 `STEP_CAPACITY`（33）说明报告进度的意图为什么被拒绝（ADR-0024）。自 0.14 起，恢复时本次启动不能服务的对象也用原因码说明（ADR-0026）：`ayni_agent_info_v1.fault_reason` 用只用于实例信息的 `AGENT_UNREGISTERED`（34），`ayni_goal_info_v1.hold_reason` 用 `GOAL_TYPE_UNKNOWN` 与 `GOAL_TYPE_VERSION`，Task 信息另用只用于 Task 信息的 `STRATEGY_CHANGED`（35）；`ayni_submit_intent` 另输出命令幂等的 `COMMAND_EXPIRED`（36）、`COMMAND_CONFLICT`（37）与存储缓冲没有空间时的 `STORAGE_BACKLOG`（38），不再输出 `COMMAND_ID_UNSUPPORTED`。
 
 | 值 | 名称 | 状态码 | 含义 |
 |---:|---|---|---|
 | 0 | `AYNI_REASON_NONE` | 任意 | 状态码之外没有更多说明 |
 | 1 | `AYNI_REASON_SESSION_UNKNOWN` | `DENIED` | `session_id` 不是已打开的会话 |
-| 2 | `AYNI_REASON_COMMAND_ID_UNSUPPORTED` | `UNSUPPORTED` | 非零 `command_id`；命令幂等随 `MA-010` |
+| 2 | `AYNI_REASON_COMMAND_ID_UNSUPPORTED` | `UNSUPPORTED` | 0.14 之前：非零 `command_id`；自 0.14 起不再返回（ADR-0026） |
 | 3 | `AYNI_REASON_INTENT_UNSUPPORTED` | `UNSUPPORTED` | 本库未实现的意图种类 |
 | 4 | `AYNI_REASON_GOAL_TYPE_UNKNOWN` | `NOT_FOUND` | 没有这个 GoalType ID |
 | 5 | `AYNI_REASON_GOAL_TYPE_VERSION` | `UNSUPPORTED_VERSION` | GoalType ID 已注册，版本未注册 |
@@ -69,6 +69,11 @@
 | 31 | `AYNI_REASON_TASK_HELD` | `INVALID_STATE` | 只用于 Goal 信息：策略的决定使 Goal 的一个 Task 停下，它结束前 Goal 不派生新 Task（ADR-0022） |
 | 32 | `AYNI_REASON_STEP_TAKEN` | `INVALID_ARGUMENT` | 只用于 Task 信息：`REPORT_PROGRESS` 指名的步骤已由 Task 或同一决定中前面的意图提交（C-POLICY-008，ADR-0024） |
 | 33 | `AYNI_REASON_STEP_CAPACITY` | `CAPACITY_EXCEEDED` | 只用于 Task 信息：决定会使 Task 的步骤超过 `task_step_capacity`（ADR-0024） |
+| 34 | `AYNI_REASON_AGENT_UNREGISTERED` | `NOT_FOUND` | 只用于实例信息：日志中有本次启动没有注册的 Agent 的实例，它因此为 `FAULTED`（ADR-0026） |
+| 35 | `AYNI_REASON_STRATEGY_CHANGED` | `UNSUPPORTED_VERSION` | 只用于 Task 信息：恢复的 Task 的 GoalType 本次没有策略，或它的私有检查点不是该策略当前版本写的（C-POLICY-007，ADR-0026） |
+| 36 | `AYNI_REASON_COMMAND_EXPIRED` | `EXPIRED` | `command_id` 未映射且不大于该 principal 的下限，命令可能已被接受过（C-WIRE-005，ADR-0026） |
+| 37 | `AYNI_REASON_COMMAND_CONFLICT` | `IDEMPOTENCY_CONFLICT` | 该 principal 以同一 `command_id` 接受过内容不同的命令（C-WIRE-004，ADR-0026） |
+| 38 | `AYNI_REASON_STORAGE_BACKLOG` | `BUSY` | Host 存下已提交的批次之前，存储缓冲没有空间容纳另一个 transition（ADR-0026） |
 
 ## 规则
 

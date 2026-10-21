@@ -35,20 +35,27 @@ void append(std::vector<uint8_t> &log, const BatchIdentity &identity,
     log.insert(log.end(), bytes.begin(), bytes.end());
 }
 
-// Knows known_type version 1; counts what it is shown. A record with
-// version 1 and flags 0 but type known_type + 1 stands for a body the owner
-// rejects.
+// Knows known_type version 1; counts what it is shown and notes the batch of
+// the last record. A record with version 1 but type known_type + 1 stands
+// for a body the owner rejects, and one of type known_type + 2 for one it
+// has no room for.
 struct Owner {
-    static RecordUse handle(void *context, const RecordHeader &header, const uint8_t * /*body*/) {
+    static RecordUse handle(void *context, const BatchIdentity &batch, const RecordHeader &header,
+                            const uint8_t * /*body*/) {
         Owner &self = *static_cast<Owner *>(context);
         ++self.seen;
+        self.last_batch = batch;
         if (header.type == known_type + 1 && header.version == 1) {
             return RecordUse::corrupt;
+        }
+        if (header.type == known_type + 2 && header.version == 1) {
+            return RecordUse::no_room;
         }
         return header.type == known_type && header.version == 1 ? RecordUse::applied
                                                                 : RecordUse::unknown;
     }
     int seen = 0;
+    BatchIdentity last_batch{};
 };
 
 BatchCheck scan(PrefixScan &prefix, const std::vector<uint8_t> &log, Owner &owner) {
@@ -70,6 +77,30 @@ TEST(PrefixScan, continues_across_reads_and_tracks_identity) {
     EXPECT_EQ(prefix.next_commit_seq(), 4U);
     EXPECT_EQ(prefix.max_transition_id(), 10U);
     EXPECT_EQ(prefix.max_writer_epoch(), 3U);
+}
+
+// Replay stamps what it restores with the batch a record came in.
+TEST(PrefixScan, each_record_comes_with_its_batch) {
+    std::vector<uint8_t> log;
+    append(log, {2, 1, 10}, {{known_type, 1, 0, 0}});
+    append(log, {2, 2, 11}, {{known_type, 1, 0, 0}});
+    PrefixScan prefix(1);
+    Owner owner;
+    ASSERT_EQ(scan(prefix, log, owner), BatchCheck::ok);
+    EXPECT_EQ(owner.last_batch.writer_epoch, 2U);
+    EXPECT_EQ(owner.last_batch.commit_seq, 2U);
+    EXPECT_EQ(owner.last_batch.transition_id, 11U);
+}
+
+TEST(PrefixScan, record_without_room_stops_the_scan) {
+    std::vector<uint8_t> log;
+    append(log, {1, 1, 1}, {{known_type + 2, 1, record_required, 0}, {known_type, 1, 0, 0}});
+    append(log, {1, 2, 2}, {{known_type, 1, 0, 0}});
+    PrefixScan prefix(1);
+    Owner owner;
+    EXPECT_EQ(scan(prefix, log, owner), BatchCheck::no_room);
+    EXPECT_EQ(owner.seen, 1);
+    EXPECT_EQ(prefix.next_commit_seq(), 1U);
 }
 
 TEST(PrefixScan, empty_prefix_leaves_the_start_unchanged) {

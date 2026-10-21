@@ -906,9 +906,14 @@ TEST(WorkDecision, only_running_decides) {
     ASSERT_EQ(step_items(work), 1U);
     const uint64_t task_id = task_of(work, goal_id);
     ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
-    const ayni_step_report_v1 report = work.node().step();
-    EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.more_ready, 0U);
+    // DRAINING still appends the batches RUNNING committed (ADR-0026); the
+    // result of each append is the only item of its step.
+    for (int round = 0; round < 10 && work.node().lifecycle() == AYNI_LIFECYCLE_DRAINING; ++round) {
+        const ayni_step_report_v1 report = work.node().step();
+        EXPECT_LE(report.items_done, 1U);
+        EXPECT_EQ(report.more_ready, 0U);
+        work.node().sim().complete_storage();
+    }
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     EXPECT_TRUE(work.strategy().seen.empty());
     // White-box: STOPPED answers no query, but the tables are still there.

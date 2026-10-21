@@ -3,16 +3,20 @@ include(GoogleTest)
 add_executable(ayni_unit_tests
     agent_table_test.cpp
     batch_codec_test.cpp
+    command_table_test.cpp
     completion_pool_test.cpp
     event_queue_test.cpp
     goal_table_test.cpp
     goal_type_registry_test.cpp
+    host_storage_contract_test.cpp
+    journal_ring_test.cpp
     kernel_api_test.cpp
     kernel_checkpoint_test.cpp
     kernel_event_test.cpp
     kernel_expiry_test.cpp
     kernel_id_test.cpp
     kernel_lifecycle_test.cpp
+    kernel_recovery_test.cpp
     kernel_strategy_test.cpp
     kernel_task_test.cpp
     kernel_trigger_test.cpp
@@ -24,7 +28,9 @@ add_executable(ayni_unit_tests
     sim_host_test.cpp
     strategy_registry_test.cpp
     task_table_test.cpp
-    trigger_schedule_test.cpp)
+    trigger_schedule_test.cpp
+    work_records_test.cpp
+    work_restore_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE
     ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node

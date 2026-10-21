@@ -14,6 +14,10 @@
 // remove_goal(). Steps and checkpoints lie in blocks of their own, one per
 // slot, and a task keeps its slot for its life: a new task takes the slot
 // of the task it replaces, or one no task holds.
+//
+// Recovery rebuilds the table from the log (ADR-0026): restore() and the
+// restore_* functions replay what each committed transition changed, and
+// hold_restored() and reanchor() then fit the tasks to this boot.
 
 #ifndef AYNI_CORE_WORK_TASK_TASK_TABLE_H
 #define AYNI_CORE_WORK_TASK_TASK_TABLE_H
@@ -43,8 +47,13 @@ struct Task {
     uint64_t task_id;
     uint64_t goal_id;
     uint64_t owner_instance_id;
+    uint64_t replaced_task_id; // the ended task whose place it took; 0: none
     uint64_t created_transition_id;
     uint64_t commit_seq; // of the last change
+    // The commit_seq of the last transition that added steps, and of the
+    // last that wrote the private checkpoint; 0: none has.
+    uint64_t steps_seq;
+    uint64_t checkpoint_seq;
     uint64_t due_us;
     uint32_t goal_index;
     uint32_t occurrence;
@@ -58,13 +67,25 @@ struct Task {
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
     // What its strategy's decisions committed (ADR-0024): how many steps,
-    // and how large a private checkpoint the strategy at checkpoint_writer
-    // in the strategy registry wrote; TaskTable::no_writer before the
-    // first. Kept once the task ends.
+    // how many of them there were before steps_seq, and how large a private
+    // checkpoint which version of which strategy wrote; version 0 and an
+    // empty id before the first. Kept once the task ends.
     uint32_t step_count;
+    uint32_t steps_before;
     uint32_t checkpoint_size;
-    uint32_t checkpoint_writer;
+    uint32_t checkpoint_writer_version;
+    catalog::CatalogId checkpoint_writer_id;
     uint32_t slot; // the table's own: which blocks hold them
+};
+
+// What a TASK_STATE record (ADR-0026) holds.
+struct TaskState {
+    ayni_task_lifecycle_t lifecycle;
+    uint32_t revision;
+    uint32_t cancel_revision;
+    ayni_status_t hold_status;
+    ayni_reason_t hold_reason;
+    uint32_t step_count;
 };
 
 // Pause takes READY to PAUSED and resume takes it back, unless a decision
@@ -78,8 +99,7 @@ enum class TaskChange { pause, resume, cancel, expire, complete, fail };
 
 class TaskTable {
   public:
-    static constexpr uint32_t no_index = 0xFFFFFFFFU;  // no task's index
-    static constexpr uint32_t no_writer = 0xFFFFFFFFU; // no strategy's index
+    static constexpr uint32_t no_index = 0xFFFFFFFFU; // no task's index
 
     struct Limits {
         uint32_t capacity;             // at most AYNI_TASK_CAPACITY_MAX
@@ -94,6 +114,11 @@ class TaskTable {
         invalid_state,
         revision_exhausted,
     };
+
+    // How a record replayed: restored; corrupt when no transition this
+    // library commits writes it in this state; no_room when the limits of
+    // this boot cannot hold it. Neither of the last two changes anything.
+    enum class Restore { restored, corrupt, no_room };
 
     // The tasks, then step_capacity steps per slot, then a private
     // checkpoint of checkpoint_max_bytes per slot.
@@ -113,8 +138,8 @@ class TaskTable {
     bool has_room() const;
 
     // Creates a READY task at revision 1, giving it the place of the task
-    // that ended first if the table is full. Returns false, changing
-    // nothing, when has_room() is false.
+    // that ended first, by commit_seq and then task id, if the table is
+    // full. Returns false, changing nothing, when has_room() is false.
     bool insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp);
     // Removes the tasks of goal goal_index as the goal gives way
     // (GoalTable::giving_way()). They have all ended: a goal with a task that
@@ -134,15 +159,17 @@ class TaskTable {
               foundation::TransitionStamp stamp);
 
     // The steps and private checkpoint a decision of the READY task index
-    // commits, in the transition that then applies the decision by
+    // commits, in the transition stamp that then applies the decision by
     // progress() or work::end_task() (ADR-0024). add_step appends key and
     // returns true when it is a catalog id that is not yet a step of the
     // task and the task has fewer than step_capacity() steps; otherwise it
-    // returns false, changing nothing. set_checkpoint: writer is the
-    // strategy's index and state.size at most checkpoint_max_bytes(); state
-    // replaces the task's private checkpoint.
-    bool add_step(uint32_t index, ayni_string_v1 key);
-    void set_checkpoint(uint32_t index, uint32_t writer, ayni_bytes_v1 state);
+    // returns false, changing nothing. set_checkpoint: the strategy
+    // writer_id at writer_version, nonzero, wrote state, at most
+    // checkpoint_max_bytes(), which replaces the task's private checkpoint.
+    bool add_step(uint32_t index, ayni_string_v1 key, foundation::TransitionStamp stamp);
+    void set_checkpoint(uint32_t index, const catalog::CatalogId &writer_id,
+                        uint32_t writer_version, ayni_bytes_v1 state,
+                        foundation::TransitionStamp stamp);
     // A decision of the READY task index, below the largest revision, that
     // neither ends nor holds it: it stays READY with the next revision and
     // stamp.commit_seq, so next_ready() takes the tasks READY before it
@@ -182,6 +209,34 @@ class TaskTable {
     // Returns false when no task in memory has the id.
     bool find(uint64_t task_id, uint32_t &out_index) const;
 
+    // Replays a TASK record: the task as insert() created it in stamp, of
+    // goal task.goal_index, in the place of replaced_task_id, an ended task,
+    // or in a free place when that is 0. due_us is set by reanchor().
+    Restore restore(const NewTask &task, uint64_t task_id, uint64_t replaced_task_id,
+                    foundation::TransitionStamp stamp);
+    // Replays a TASK_STATE record of task index, after the steps of the same
+    // transition: state.step_count is the task's.
+    Restore restore_state(uint32_t index, const TaskState &state,
+                          foundation::TransitionStamp stamp);
+    // Replays one key of a TASK_STEPS record of task index, the step at
+    // position step.
+    Restore restore_step(uint32_t index, uint32_t step, ayni_string_v1 key,
+                         foundation::TransitionStamp stamp);
+    // Replays a TASK_CHECKPOINT record of task index.
+    Restore restore_checkpoint(uint32_t index, ayni_string_v1 writer_id, uint32_t writer_version,
+                               ayni_bytes_v1 state, foundation::TransitionStamp stamp);
+    // Holds the live task index, unless a decision already holds it, for
+    // what this boot lacks to decide it (ADR-0026): it becomes PAUSED at
+    // its revision and commit_seq, so what the log holds is unchanged and a
+    // later boot that has what was lacking finds the task as it was. status
+    // is a failure.
+    void hold_restored(uint32_t index, ayni_status_t status, ayni_reason_t reason);
+    // Every task's latest occurrence falls due at now_us, the time recovery
+    // ended (ADR-0026): a time before this boot is not on its clock.
+    void reanchor(uint64_t now_us);
+    // Empties the table, as a recovery that failed leaves it.
+    void clear();
+
     // index < size().
     const Task &at(uint32_t index) const { return tasks_[index]; }
     uint32_t size() const { return tasks_.size(); }
@@ -192,6 +247,12 @@ class TaskTable {
   private:
     // The lowest slot no task holds; only when the table is not full.
     uint32_t free_slot() const;
+    // The ended task that gives way to the next insert(): the one that
+    // ended first, by commit_seq and then task id; no_index when none has.
+    uint32_t giving_way() const;
+    // Adds the new task in slot, after the caller made room.
+    void place(const NewTask &task, uint64_t task_id, uint64_t replaced_task_id, uint32_t slot,
+               foundation::TransitionStamp stamp);
     catalog::CatalogId *steps_of(uint32_t index) const;
 
     foundation::BoundedArray<Task> tasks_;

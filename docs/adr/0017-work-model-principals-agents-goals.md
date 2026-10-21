@@ -29,7 +29,7 @@
    - `boot_epoch` 以 2^32−1 为上限：日志中的最大代际已到上限时以 `BOOT_EPOCH_EXHAUSTED` 进入 `RESTRICTED`。这修订了 ADR-0016 的 `UINT64_MAX` 上限；每分钟重启一次也要八千年以上才会到达。
 
    同时，日志中出现大于 2^63−1 的 `transition_id` 按 `LOG_CORRUPT` 处理（修订 ADR-0016 的 `UINT64_MAX`）：每次转换只取下一个 id，以每秒一百万次计算，正常写入方也要约 29 万年才到达这个值，于是本次启动可用的 id 远多于它能用掉的，内存中的 transition 计数器不会回绕。
-3. **transition 先只在内存中应用（直到 `MA-010`）。** 每个被接受的意图是一个 transition：取启动批次之后的下一个 `transition_id` 与 `commit_seq`，立即应用到唯一的内存状态（C-COMMIT-003），但还不写日志。`durable_seq` 如实报告持久前缀：恢复期间是已读取的日志末尾，进入 `RUNNING` 后是启动批次；结果未知的追加不计入。因此每个对象的 `commit_seq` 都大于 `durable_seq`，调用方能看出它尚未持久（C-COMMIT-004）。这些位置没有存下，之后的启动从自己的启动批次之后重新编号，把同一 `commit_seq` 交给另一个 transition，所以 `commit_seq` 只能与同一次启动的 `durable_seq` 比较（C-COMMIT-016）；`MA-010` 之后，崩溃前没有写成的尾部同样如此。重启会丢失这些 Goal，实例也会取得新的 `instance_id`，`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work` 固定了这一现状；Goal 与实例记录、重放和命令幂等随 `MA-010`。
+3. **transition 先只在内存中应用（直到 `MA-010`）。** 每个被接受的意图是一个 transition：取启动批次之后的下一个 `transition_id` 与 `commit_seq`，立即应用到唯一的内存状态（C-COMMIT-003），但还不写日志。`durable_seq` 如实报告持久前缀：恢复期间是已读取的日志末尾，进入 `RUNNING` 后是启动批次；结果未知的追加不计入。因此每个对象的 `commit_seq` 都大于 `durable_seq`，调用方能看出它尚未持久（C-COMMIT-004）。这些位置没有存下，之后的启动从自己的启动批次之后重新编号，把同一 `commit_seq` 交给另一个 transition，所以 `commit_seq` 只能与同一次启动的 `durable_seq` 比较（C-COMMIT-016）；`MA-010` 之后，崩溃前没有写成的尾部同样如此。重启会丢失这些 Goal，实例也会取得新的 `instance_id`，`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work` 固定了这一现状；Goal 与实例记录、重放和命令幂等随 `MA-010`。（自 ADR-0026 起，每个 transition 在应用的同一步写入一个批次，`durable_seq` 推进到 Host 已存储的批次；重启后实例保持同一 `instance_id`，Goal 回到最后一个已存储 transition 之后的状态，断电时尚未存储的 transition 仍会丢失。）
 4. **实例随 Kernel 进入 `RUNNING` 而创建（C-LIFE-025）。** 进入 `RUNNING` 时，在一个 transition 中给每个已注册的 Agent 分配 `instance_id` 并转为 `RUNNING`；没有 Agent 时不产生 transition。策略尚未接入，所以暂不经过 `STARTING`（第三部分）。
 5. **Goal 规则（`lifecycles.md`）。**
    - `GOAL_CREATE` 创建 `ACTIVE`、版本 1 的 Goal；需要确认的 `PROPOSED` 随审批流程（`MA-006`）。owner 必须是本 Kernel 的实例，之后不变（C-LIFE-020）。
@@ -39,7 +39,7 @@
    - `goal_capacity` 计入终态 Goal。Goal 从不移除，所以下标与创建顺序始终有效：父目标总排在后代之前，取消的级联只需向后扫描一遍。回收终态 Goal 需要 tombstone 与保留策略（C-ID-001），随 `MA-010`。（自 ADR-0025 起，Goal 表满时最早结束的终态 Goal 让位给新 Goal，其他 Goal 不移动，位置不再是创建顺序，级联改为遍历整张表；ID 不复用，所以不留 tombstone。）
 6. **检查顺序固定，拒绝没有副作用。** `ayni_submit_intent` 依次检查：参数与结构体大小；`UNSUPPORTED`（先意图种类，后非零 `command_id`）；从 GoalType 校验内调用时 `INVALID_STATE`，不在 `RUNNING` 时 `NOT_READY`，不排队（C-LIFE-004）；会话不存在时 `DENIED`；最后是意图自身的规则。
    - 未实现的种类在任何状态下都不受支持，放在 `NOT_READY` 之前，调用方就不会等到 `RUNNING` 再重试。
-   - 命令幂等映射随 `MA-010`；在此之前接受并忽略 `command_id`，重发的命令就会悄悄创建第二个目标（C-WIRE-003），所以显式拒绝。
+   - 命令幂等映射随 `MA-010`；在此之前接受并忽略 `command_id`，重发的命令就会悄悄创建第二个目标（C-WIRE-003），所以显式拒绝。（自 ADR-0026 起，Kernel 为每个 principal 保留有界的命令映射，非零 `command_id` 按 C-WIRE-004 处理，不再返回 `COMMAND_ID_UNSUPPORTED`。）
    - `GOAL_CREATE` 依次检查 GoalType 与版本、owner、父目标规则、容量与 ID，最后检查参数：先看大小，再调用 GoalType 的 `validate`。调用方代码放在最后，只看到其余条件都满足的 Goal，也不会影响前面原因码的顺序。
    - 变化类意图依次检查目标是否存在、`expected_revision`、生命周期、版本上限。
    - 任何拒绝都不取 ID、不取 transition，也不改变状态；`out_error` 在自身 `struct_size` 合法后每次都写，`out_result` 只在 `AYNI_OK` 时写。
@@ -57,7 +57,7 @@
 
 ## 后果
 
-- 在 `MA-010` 之前，重启会丢失全部 Goal，实例 ID 也会改变；调用方能从 `commit_seq > durable_seq` 看出这一点，但应用层还不能依赖 Goal 跨重启存在。这是已知缺口，不是可以宣称的能力。
+- 在 `MA-010` 之前，重启会丢失全部 Goal，实例 ID 也会改变；调用方能从 `commit_seq > durable_seq` 看出这一点，但应用层还不能依赖 Goal 跨重启存在。这是已知缺口，不是可以宣称的能力。（自 ADR-0026 起，已存储的 Goal 与实例跨重启保留，实例 ID 不变；`commit_seq > durable_seq` 的 transition 仍可能在断电时丢失。）
 - 终态 Goal 一直占用容量，长期运行的设备会填满 Goal 表并得到 `GOAL_CAPACITY`；回收要等 tombstone 与保留策略。（自 ADR-0025 起，表满时终态 Goal 让位，只有未终结的 Goal 占满表时才得到 `GOAL_CAPACITY`。）
 - 查找按 ID 线性扫描（至多 1024 个），取消级联最坏 O(n × depth)。在已配置的上限内可以接受，但尚未测量，随 M1 的 `step` 时长测量一起复核。
 - ABI 升至 0.5，0.4 的调用方须重新编译（C-VER-006）。默认配置下 Kernel 内存需求增加，由 `ayni_kernel_memory_requirements` 报告；Native 与 ESP-IDF 组合根使用默认值。
