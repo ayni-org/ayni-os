@@ -1,5 +1,7 @@
 #include "work/goal/goal_table.h"
 
+#include "catalog/goal_type/goal_type_registry.h"
+
 #include <cstring>
 #include <limits>
 
@@ -131,7 +133,9 @@ GoalTable::Restore GoalTable::restore(const NewGoal &goal, uint64_t goal_id,
                                       uint64_t replaced_goal_id, foundation::TransitionStamp stamp,
                                       uint32_t &out_index) {
     uint32_t existing = 0;
-    if (goal_id == 0U || goal.goal_type_version == 0U || !goal.trigger.fits() ||
+    // fits() judges the times of a kind the catalog defines.
+    if (goal_id == 0U || goal.goal_type_version == 0U ||
+        !catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) || !goal.trigger.fits() ||
         find(goal_id, existing)) {
         return Restore::corrupt;
     }
