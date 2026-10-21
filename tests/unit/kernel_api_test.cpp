@@ -203,7 +203,8 @@ TEST_F(KernelApi, create_rejects_only_one_storage_port) {
     host = valid_host();
     host.storage_append = &reject_append;
     host.storage_read_prefix = &reject_read;
-    host.struct_size = sizeof(host) - 1;
+    host.struct_size =
+        offsetof(ayni_host_v1, storage_read_prefix) + sizeof(host.storage_read_prefix) - 1U;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(kernel, nullptr);
 }
@@ -353,12 +354,12 @@ TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
     EXPECT_EQ(kernel, nullptr);
 }
 
-// The default storage buffer holds two of the largest batches a transition
-// writes, so one can be appended while the next is encoded.
-TEST_F(KernelApi, default_storage_buffer_holds_two_of_the_largest_batches) {
+// ADR-0027: three batches avoid false fullness when one in-flight batch
+// splits the free space into two pieces.
+TEST_F(KernelApi, default_storage_buffer_holds_three_of_the_largest_batches) {
     ayni_config_v1 config = valid_config();
     const std::size_t by_default = required_size(config);
-    config.storage_buffer_bytes = 2U * ayni::test::smallest_storage_buffer(config);
+    config.storage_buffer_bytes = 3U * ayni::test::smallest_storage_buffer(config);
     EXPECT_EQ(required_size(config), by_default);
 }
 
@@ -374,7 +375,7 @@ TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
     config.completion_slot_count += 1;
     EXPECT_GT(required_size(config), base);
     config = valid_config();
-    config.storage_buffer_bytes = 2U * ayni::test::smallest_storage_buffer(config) + 1U;
+    config.storage_buffer_bytes = 3U * ayni::test::smallest_storage_buffer(config) + 8U;
     EXPECT_GT(required_size(config), base);
     for (uint32_t ayni_config_v1::*field :
          {&ayni_config_v1::agent_capacity, &ayni_config_v1::goal_type_capacity,

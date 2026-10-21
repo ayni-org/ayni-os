@@ -116,17 +116,17 @@ TEST(WorkTrigger, delay_goal_derives_once_its_time_comes) {
     ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
     EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(report.next_deadline_us, due_at);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(due_at));
     advance_to(work, due_at - 1U);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.next_deadline_us, due_at);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(due_at));
 
     advance(work, 1);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(report.more_ready, 1U); // the task awaits its decision
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
     goal = work.goal(goal_id);
     EXPECT_EQ(goal.occurrences, 1U);
     EXPECT_EQ(goal.next_due_us, no_time);
@@ -145,7 +145,7 @@ TEST(WorkTrigger, delay_past_the_clock_never_falls_due) {
     EXPECT_EQ(work.goal(goal_id).next_due_us, no_time);
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
 }
 
 // --- Interval --------------------------------------------------------------
@@ -156,7 +156,8 @@ TEST(WorkTrigger, interval_goal_derives_each_occurrence_on_its_schedule) {
     const uint64_t start = now(work);
     const uint64_t goal_id = interval_goal(work, 2U * second, 3U * second);
     EXPECT_EQ(work.goal(goal_id).trigger_period_us, 3U * second);
-    EXPECT_EQ(work.node().step().next_deadline_us, start + 2U * second);
+    EXPECT_EQ(work.node().step().next_deadline_us,
+              work.node().with_storage_deadline(start + 2U * second));
 
     uint64_t previous_task = 0;
     for (uint32_t number = 1; number <= 3; ++number) {
@@ -194,7 +195,7 @@ TEST(WorkTrigger, occurrences_missed_between_steps_become_one_task) {
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(report.more_ready, 1U); // the task awaits its decision
-    EXPECT_EQ(report.next_deadline_us, start + 4U * second);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(start + 4U * second));
     const ayni_task_info_v1 task = work.task(task_of(work, goal_id));
     EXPECT_EQ(task.occurrence, 4U);
     EXPECT_EQ(task.occurrence_count, 4U);
@@ -218,14 +219,14 @@ TEST(WorkTrigger, paused_goal_takes_what_fell_due_when_resumed) {
     ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
     EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
 
     const uint64_t wakes_before = work.node().sim().wake_count();
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal_id).status, AYNI_OK);
     EXPECT_EQ(work.node().sim().wake_count(), wakes_before + 1U);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.next_deadline_us, start + 7U * second);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(start + 7U * second));
     const ayni_task_info_v1 task = work.task(task_of(work, goal_id));
     EXPECT_EQ(task.occurrence, 3U); // at 1, 3 and 5 seconds
     EXPECT_EQ(task.occurrence_count, 3U);
@@ -237,9 +238,10 @@ TEST(WorkTrigger, paused_instance_holds_the_occurrence_until_resumed) {
     work.run();
     const uint64_t start = now(work);
     const uint64_t goal_id = delay_goal(work, second);
-    EXPECT_EQ(work.node().step().next_deadline_us, start + second);
+    EXPECT_EQ(work.node().step().next_deadline_us,
+              work.node().with_storage_deadline(start + second));
     ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
-    EXPECT_EQ(work.node().step().next_deadline_us, no_time);
+    EXPECT_EQ(work.node().step().next_deadline_us, work.node().with_storage_deadline(no_time));
     advance(work, 2U * second);
     EXPECT_EQ(work.node().step().items_done, 0U);
     ASSERT_EQ(work.change_agent(AYNI_INTENT_INSTANCE_RESUME, agent_a).status, AYNI_OK);
@@ -256,7 +258,7 @@ TEST(WorkTrigger, cancelled_goal_has_no_occurrence_to_come) {
     advance(work, 5U * second);
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
     EXPECT_EQ(task_of(work, goal_id), 0U);
 }
 
@@ -319,9 +321,11 @@ TEST(WorkTrigger, deadline_counts_only_goals_that_could_derive) {
     const uint64_t start = now(work);
     const uint64_t held = delay_goal(work, second);
     const uint64_t later = delay_goal(work, 3U * second, agent_b);
-    EXPECT_EQ(work.node().step().next_deadline_us, start + second);
+    EXPECT_EQ(work.node().step().next_deadline_us,
+              work.node().with_storage_deadline(start + second));
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, held).status, AYNI_OK);
-    EXPECT_EQ(work.node().step().next_deadline_us, start + 3U * second);
+    EXPECT_EQ(work.node().step().next_deadline_us,
+              work.node().with_storage_deadline(start + 3U * second));
 
     const uint64_t first = create(work, timed_body(work, AYNI_TRIGGER_ONCE, 0, 0, agent_b));
     EXPECT_EQ(work.node().step().items_done, 1U); // takes the only place
@@ -329,7 +333,7 @@ TEST(WorkTrigger, deadline_counts_only_goals_that_could_derive) {
     ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U); // the hold
     EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
 
     const uint64_t wakes_before = work.node().sim().wake_count();
     ASSERT_EQ(work.cancel_task(task_of(work, first)).status, AYNI_OK);
@@ -353,7 +357,7 @@ TEST(WorkTrigger, draining_reports_no_deadline) {
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_DRAINING);
     EXPECT_EQ(report.items_done, 0U);
     EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
     EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
     request.post();
 }
@@ -368,14 +372,15 @@ TEST(WorkTrigger, used_up_ids_report_no_deadline) {
     const uint64_t start = now(work);
     work.kernel()->work.ids.start(1, 0xFFFFFFFEU);
     const uint64_t goal_id = delay_goal(work, second);
-    EXPECT_EQ(work.node().step().next_deadline_us, start + second);
+    EXPECT_EQ(work.node().step().next_deadline_us,
+              work.node().with_storage_deadline(start + second));
     create(work, timed_body(work, AYNI_TRIGGER_NONE, 0)); // takes the last id
-    EXPECT_EQ(work.node().step().next_deadline_us, no_time);
+    EXPECT_EQ(work.node().step().next_deadline_us, work.node().with_storage_deadline(no_time));
     advance(work, 2U * second);
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
     EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
     EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
 }
 
@@ -396,7 +401,7 @@ TEST(WorkTrigger, budget_spent_before_deriving_still_reports_the_due_occurrence)
     work.node().sim().advance_per_read_us(0);
     EXPECT_EQ(report.items_done, 1U); // the completion only
     EXPECT_EQ(report.more_ready, 1U);
-    EXPECT_EQ(report.next_deadline_us, started);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(started));
     EXPECT_EQ(work.goal(goal_id).occurrences, 0U);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
@@ -416,7 +421,7 @@ TEST(WorkTrigger, step_takes_occurrences_as_of_its_start) {
     work.node().sim().advance_per_read_us(0);
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(work.task(task_of(work, goal_id)).occurrence_count, 1U);
-    EXPECT_EQ(report.next_deadline_us, start + second);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(start + second));
 }
 
 } // namespace

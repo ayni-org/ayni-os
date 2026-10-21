@@ -39,6 +39,8 @@
 | [0025](0025-persistence-split-and-terminal-goals-give-way.md) | 持久化与恢复（一）：拆分与终态 Goal 让位 | 已接受 | §2.8、§4.2、§9.1 |
 | [0026](0026-work-journal-replay-native-file-log-and-commands.md) | 持久化与恢复（二）：工作日志、重放、Native 文件存储与命令幂等 | 已接受 | §2.8、§4.2、§4.3、§9.1 |
 
+| [0027](0027-retries-writer-fences-snapshots-and-migration.md) | 持久化与恢复（三）：重试、写入栅栏、快照与迁移 | 已接受 | §2.8、§4.2、§4.3、§4.4、§9.1 |
+
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。

@@ -35,10 +35,10 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-VER-020 | 每个持久记录带记录版本；每个快照与日志段带 `storage_schema`。读取到不支持的版本时进入 `RESTRICTED`（只读诊断），不得当作空数据重建 | 无法识别的快照被丢弃，Kernel 以空状态启动 | E4 步骤 6；`MA-010` |
-| C-VER-021 | 迁移在切换提交前保留旧格式；迁移中断后可从旧格式重新开始 | 迁移写到一半掉电，新旧格式都不完整 | E4 步骤 6 |
-| C-VER-022 | 回滚到旧固件时，若旧固件无法读取当前有效状态，只能进入安全诊断，不得回到过时快照继续执行 | 回滚后旧快照让已结算的预算或已删除的记忆复活 | E4 步骤 6；M4 实机 OTA |
-| C-VER-023 | 不持久化 C++ 内存布局；持久格式由 `storage/records.md` 定义，与编译器和 ABI 无关 | 直接 `memcpy` 内存中的对象写入 Flash | 评审；`MA-010` 跨编译器读取测试 |
+| C-VER-020 | 每个持久记录带记录版本；每个快照与日志段带 `storage_schema`。读取到不支持的版本时进入 `RESTRICTED`（只读诊断），不得当作空数据重建 | 无法识别的快照被丢弃，Kernel 以空状态启动 | M1 已实现（日志、快照版本拒绝）：`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6 |
+| C-VER-021 | 迁移在切换提交前保留旧格式；迁移中断后可从旧格式重新开始 | 迁移写到一半掉电，新旧格式都不完整 | M1 已实现（schema 0→1 迁移中断）：`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`；E4 步骤 6 |
+| C-VER-022 | 回滚到旧固件时，若旧固件无法读取当前有效状态，只能进入安全诊断，不得回到过时快照继续执行 | 回滚后旧快照让已结算的预算或已删除的记忆复活 | M1 部分实现（模拟旧 reader 拒绝 REQUIRED 激活，保留原物理文件格式）：`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`；完整 E4 步骤 6、M4 实机 OTA |
+| C-VER-023 | 不持久化 C++ 内存布局；持久格式由 `storage/records.md` 定义，与编译器和 ABI 无关 | 直接 `memcpy` 内存中的对象写入 Flash | M1 已实现（定长小端编解码与分页）：`BatchCodec.round_trip_keeps_identity_and_records`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`；GCC/Clang 共用固定格式测试；评审 |
 
 ## 领域语义
 

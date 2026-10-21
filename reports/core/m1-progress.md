@@ -12,7 +12,7 @@
 | 步骤 | 工作包 | 内容 | 状态 |
 |---|---|---|---|
 | 1 | `MA-003`、`MA-005` | 事件入口、完成槽、Kernel 生命周期与启动恢复、模拟 Host | 完成 |
-| 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004` 完成；`MA-010` 的 A、B+C+D 完成，E+F 未开始 |
+| 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004` 完成；`MA-010` 的 A、B+C+D 已合并，E+F 已完成本地验证与独立审查，待 PR/CI 合并 |
 | 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖依次做 `006`、`018`、`008` | 未开始 |
 | 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | 未开始 |
 | 5 | `MA-019`、`MA-020` | 助理协调器、SDK 与接入示例 | 未开始 |
@@ -50,21 +50,22 @@
 
 ## 交接状态（2026-10-21）
 
-- **没有进行中的工作。** main 包含 #20 及之前的全部工作；Claude 的分支 `claude/project-thread-6xckzw` 已重置到 main，不含未合并的提交。接手方从最新 main 开自己的分支。
-- **下一步：`MA-010` E+F**（见下文“剩余工作”）。它做完后 `MA-010` 结束，再按执行顺序做第 3 步。
-- **E+F 的起点：**
-  - 设计与已定决定：ADR-0025（拆分、终态 Goal 让位）、ADR-0026（日志、重放、计时、停下、命令、Native 文件存储；它的“后果”列出留给 E、F 的事项）；`contracts/storage/records.md`（批次与记录布局、重放规则，快照布局已有草案）；契约中验证列写着“随 `MA-010` 的 E、F 部分”的条目（`grep -rn "MA-010" contracts`）。
-  - 代码：`core/durability/journal`（日志环）、`core/kernel/kernel_lifecycle.cpp`（`journal()`、追加结果与受限）、`core/kernel/boot/`（启动序列与读取）、`core/kernel/work_replay.*`（重放与恢复后的适配）、`hosts/sim`、`hosts/native/file_log.*`（两个 Host 的存储端口）、`tests/unit/host_storage_contract_test.cpp`（各 Host 共用的存储契约测试）。
-  - 测试辅助：`tests/unit/kernel_node.h` 的 `Node`（模拟 Host，可控制存储完成、断电与重启）、`tests/unit/work_node.h` 的 `WorkNode`；`tests/unit/kernel_recovery_test.cpp` 中的 `Catalog`、`use_catalog`、`restart_with`（换目录重启）与 `log_that_leaves_a_live_task_under_an_ended_goal_is_corrupt`（用 `BatchWriter`、`RecordReader` 改写真实日志）。
-  - 编号：下一个 ADR 是 ADR-0027；ABI 改动时升到 0.15；计划升到 v1.17。
+- **进行中：`MA-010` E+F。** 分支 `codex/ma010-recovery-snapshots` 从 #20 的 main 开始；已完成实现及针对性测试，尚未提交、创建 PR 或合并。完整验收与实际结果以 ADR-0027 的「验证」为准。
+- **当前范围：** 同身份三次重试、10/50 ms 退避、`FENCED=7` 与隔离后重载、物理 cursor、读取缓冲不足的准确容量错误、分页双槽快照与唯一激活、轮转、共享 10 ms 写频、schema 0→1 迁移及模拟旧 reader 拒绝。当前可查询对象与命令窗口采用保留 A；默认缓冲三倍。ABI 0.15，计划 v1.17，ADR-0027。
+- **已执行：** 受限单线程下的 571 个单元测试完整基线通过，Native 专项 24/24 通过（含最终文件与目录同步修复）。独立全量只读审查已收尾，全部发现均已修复并回看；不能把中途的 Debug 结果替代五组最终构建、缺陷植入或 CI。
+- **资源约束：** 用户报告并行构建导致电脑崩溃，已停止所有并行验证并恢复残留植入缺陷；Core 已逐文件与正常源码快照核对一致。后续只能单任务、`CMAKE_BUILD_PARALLEL_LEVEL=1`，容器限 1 CPU、2 GiB 内存、无额外 swap。脚本和原始结果保存在仓库外的持久目录，不能只放会随重启丢失的 `/tmp`。
+- **最终本地验证：** 40/40 可编译植入缺陷被命名断言发现（32 项跑完整套件，8 项断言后 SIGSEGV，原文均精确恢复）；GCC Debug/Release/ASan+UBSan/TSan、Clang Debug 各 584/584 CTest；模拟器、依赖、契约、格式与 diff 检查通过。独立完整审查的八项发现全部修复并回看。完整记录见 ADR-0027。
+- **交付前仍须：** 英文六节 PR、CI 全绿及 merge commit；合并后更新本页并重置自己的分支。
+- **下一包：** 本 PR 合并后 `MA-010` 结束，再按第 3 步开始 `MA-006`，然后 `MA-018`、`MA-008`。不要在 E+F 中提前实现这些包。后续编号从 ADR-0028 开始；ABI/计划有变化再按 workflow 递增。
+- **代码与测试入口：** `core/kernel/boot/`、`commit/`、`storage_maintenance.*`、`work_snapshot.*`、`core/durability/snapshot/`、`hosts/native/file_log.*`、`hosts/sim/`；`kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 及两个 Host 共用的 `host_storage_contract_test.cpp`。
 
 ## 剩余工作
 
-### `MA-010` E+F（一个 PR）
+### `MA-010` E+F（一个 PR，验证与交付收尾中）
 
 - **E**：追加结果为 `UNKNOWN` 或 `FAILED` 后，以同一身份（同一 `transition_id` 与 `commit_seq`，C-COMMIT-008）有界重试；重试仍失败时进入受限栅栏，生命周期新增 `FENCED`，取值 7（产品语义，用户选定推荐项）；以 `storage_fence_writers` 端口与 `WRITER_FENCE` 记录隔离旧写入方，之后重载（C-STORE-005、C-COMMIT-010、E2 F12）。
 - **F**：双槽快照与 `generation`（用户选定推荐项，C-STORE-006）、从快照恢复（C-STORE-007）、日志轮转与写入频率上限（C-STORE-011）、`storage_schema` 从 0 迁移到 1，切换前保留旧格式（用户选定推荐项，C-STORE-010、C-VER-021）、模拟回滚（E4 步骤 6）。
-- 输出门控（`requires_seq`）随产生对外输出的包实现；在此之前写入失败即进入 `RESTRICTED`，不发出新输出。
+- 输出门控（`requires_seq`）随产生对外输出的包实现；当前存储失败先按同一批次重试、耗尽后隔离并重载，不能证明隔离或恢复时只读受限，不发出新输出。
 - #20 的独立审查留给 E、F 的事项（ADR-0026“后果”）：日志由容量更大的配置写入、某个批次大于本次存储缓冲时，Host 的读取以 `FAILED` 完成，恢复报告 `STORAGE_READ_FAILED` 而不是 `STATE_EXCEEDS_CAPACITY`，区分两者需要 Host 报告所需的大小；默认缓冲为两个最大批次，bip buffer 的空闲区分在两段时，一个批次在途也可能让下一个意图返回 `BUSY`，F 部分定写入频率上限时一并评估缓冲大小。
 - ESP-IDF Host 仍没有存储端口（`ayni_start` 在其上返回 `UNSUPPORTED`），随开发板实测的工作补上。
 
@@ -80,7 +81,7 @@
 
 - **流程**：每个工作包至少一个 PR；用户 2026-10-20 要求提速后，`MA-010` 剩余部分合为 B+C+D 与 E+F 两个 PR，植入缺陷测试与独立审查只对核心逻辑做（`docs/workflow.md` 第 2 节）。M1 的 PR 在 CI 全绿且审查发现处理完后由 Claude 自行合并（用户授权给 Claude；其他代理按用户的指示合并）。实现时使用 xhigh 推理强度。
 - **交接**：用户 2026-10-21 要求 Claude 做完当前工作后停止，并在决策卡上选了“只做当前 PR”：Claude 在 #20 合并后停止，`MA-010` E+F 起的工作由其他大模型按本文与 `docs/workflow.md` 接手。
-- **产品语义**：各包中由用户决定的事项记在对应 ADR 的决策中，标注“用户选定推荐项”或用户的选择；影响计划的写在计划 §14.1。`MA-010` 的见 ADR-0025 决策 2、3 与 ADR-0026（重启后的计时、目录缺失时保留并停下、`durable_seq` 进入步骤报告、按 principal 有界的命令表），以及上文 E+F 的三项。
+- **产品语义**：各包中由用户决定的事项记在对应 ADR 的决策中，标注“用户选定推荐项”或用户的选择；影响计划的写在计划 §14.1。`MA-010` 的见 ADR-0025 决策 2、3 与 ADR-0026（重启后的计时、目录缺失时保留并停下、`durable_seq` 进入步骤报告、按 principal 有界的命令表），以及 ADR-0027 的历史保留 A、异常与维护冻结、未注册所有者命令窗口、共享 10 ms 写频、三倍默认缓冲和不合成请求超时等用户决定。
 - **M0 遗留**：开源许可证暂缓决定，仓库私有期间不受影响（计划 §14.2）；本地 API 的形态已由用户决定，IDL 与线格式仍待定（ADR-0009），在 ESP32 实测之后、最迟在 `MA-038` 编写消息解码器之前决定；开发机以 Linux 为准；300 元是目标值，超出须写明理由并由用户确认。
 
 ## 需要用户的事项

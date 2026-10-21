@@ -671,10 +671,12 @@ TEST(WorkDecision, held_task_keeps_its_goal_waiting_with_room_in_the_table) {
     const uint64_t start_us = work.node().sim().now_us();
     const uint64_t goal_id = every_second_goal(work);
     work.strategy().answer = cannot_decide;
-    ASSERT_EQ(work.node().step().next_deadline_us, start_us + second);
+    const ayni_step_report_v1 derived_report = work.node().step();
+    ASSERT_EQ(derived_report.next_deadline_us,
+              work.node().with_storage_deadline(start_us + second));
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.next_deadline_us, start_us + 3U * second);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(start_us + 3U * second));
     const uint64_t held = task_of(work, goal_id);
 
     work.node().sim().advance_us(3U * second);
@@ -913,6 +915,10 @@ TEST(WorkDecision, only_running_decides) {
         EXPECT_LE(report.items_done, 1U);
         EXPECT_EQ(report.more_ready, 0U);
         work.node().sim().complete_storage();
+        if (report.next_deadline_us != UINT64_MAX &&
+            report.next_deadline_us > work.node().sim().now_us()) {
+            work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
+        }
     }
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     EXPECT_TRUE(work.strategy().seen.empty());

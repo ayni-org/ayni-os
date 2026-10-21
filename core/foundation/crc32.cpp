@@ -25,8 +25,8 @@ constexpr std::array<uint32_t, 16> nibble_table = make_nibble_table();
 
 } // namespace
 
-uint32_t crc32(const uint8_t *data, std::size_t size) {
-    uint32_t crc = 0xFFFFFFFFU;
+uint32_t crc32(const uint8_t *data, std::size_t size, uint32_t previous) {
+    uint32_t crc = ~previous;
     for (std::size_t index = 0; index < size; ++index) {
         crc ^= data[index];
         crc = (crc >> 4U) ^ nibble_table[crc & 0xFU];

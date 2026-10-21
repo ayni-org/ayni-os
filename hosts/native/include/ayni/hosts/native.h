@@ -94,6 +94,26 @@ class Host {
                                                     uint8_t *buffer, uint32_t buffer_size,
                                                     ayni_attempt_ref_v1 attempt,
                                                     ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_log(void *ctx, uint64_t cursor, uint8_t *buffer,
+                                                 uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
+                                                 ayni_completion_t *completion);
+    static ayni_submit_result_t storage_fence_writers(void *ctx, uint32_t minimum_epoch,
+                                                      ayni_attempt_ref_v1 attempt,
+                                                      ayni_completion_t *completion);
+    static ayni_submit_result_t storage_write_snapshot(void *ctx, uint32_t writer_epoch,
+                                                       uint32_t slot, uint64_t offset,
+                                                       ayni_bytes_v1 bytes,
+                                                       ayni_attempt_ref_v1 attempt,
+                                                       ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_snapshot(void *ctx, uint32_t slot, uint64_t offset,
+                                                      uint8_t *buffer, uint32_t buffer_size,
+                                                      ayni_attempt_ref_v1 attempt,
+                                                      ayni_completion_t *completion);
+    static ayni_submit_result_t storage_trim_prefix(void *ctx, uint32_t writer_epoch,
+                                                    uint64_t transition_id, uint64_t commit_seq,
+                                                    ayni_attempt_ref_v1 attempt,
+                                                    ayni_completion_t *completion);
+    static ayni_status_t storage_free_bytes(void *ctx, uint64_t *out_free_bytes);
 
     std::mutex ingress_;
     std::mutex wake_mutex_;

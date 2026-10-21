@@ -76,6 +76,12 @@ class Node {
         if (!with_storage) {
             table_.storage_append = nullptr;
             table_.storage_read_prefix = nullptr;
+            table_.storage_read_log = nullptr;
+            table_.storage_fence_writers = nullptr;
+            table_.storage_write_snapshot = nullptr;
+            table_.storage_read_snapshot = nullptr;
+            table_.storage_trim_prefix = nullptr;
+            table_.storage_free_bytes = nullptr;
         }
     }
 
@@ -88,9 +94,32 @@ class Node {
     ayni_kernel_t *kernel() { return kernel_; }
     ayni_config_v1 &config() { return config_; }
 
+    // White-box: deadline assertions about goals account for the separate
+    // storage deadline added by ADR-0027. A due write sets more_ready instead.
+    uint64_t with_storage_deadline(uint64_t goal_deadline) const {
+        const auto storage_deadline = kernel_->log.next_deadline();
+        return storage_deadline > sim_.now_us() && storage_deadline < goal_deadline
+                   ? storage_deadline
+                   : goal_deadline;
+    }
+
+    // Drives a requested shutdown to completion, respecting storage timers.
+    // No new application transition is allowed in DRAINING.
+    void drain() {
+        for (unsigned round = 0; round < 10000 && lifecycle() == AYNI_LIFECYCLE_DRAINING; ++round) {
+            sim_.complete_storage();
+            const auto report = step();
+            if (report.more_ready == 0U && sim_.pending_storage() == 0U &&
+                report.next_deadline_us != UINT64_MAX && report.next_deadline_us > sim_.now_us()) {
+                sim_.advance_us(report.next_deadline_us - sim_.now_us());
+            }
+        }
+    }
+
     // Before create(): reads go to port instead of the sim log.
     void replace_read_port(decltype(ayni_host_v1::storage_read_prefix) port) {
         table_.storage_read_prefix = port;
+        table_.storage_read_log = port;
     }
 
     // Before create(): the kernel reads the clock through port, whose ctx is
@@ -134,17 +163,32 @@ class Node {
     // step, so that the step entering RUNNING does nothing else.
     void recover() {
         for (int round = 0; round < 1000 && lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
-            step(1);
+            const auto report = step(1);
             sim_.complete_storage();
+            if (lifecycle() == AYNI_LIFECYCLE_RECOVERING && report.more_ready == 0U &&
+                sim_.pending_storage() == 0U && report.next_deadline_us != UINT64_MAX &&
+                report.next_deadline_us > sim_.now_us()) {
+                sim_.advance_us(report.next_deadline_us - sim_.now_us());
+            }
         }
         EXPECT_NE(lifecycle(), AYNI_LIFECYCLE_RECOVERING);
         // White-box: applies the result of the append of the batch that
         // started the work model, one item and nothing else, so that a test
         // in RUNNING begins with nothing in flight or done.
-        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING &&
-                            kernel_->completions.posted_count() > 0U;
+        for (int round = 0;
+             round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING && !kernel_->log.idle();
              ++round) {
-            step(1);
+            if (kernel_->completions.posted_count() > 0U) {
+                step(1);
+            } else {
+                // White-box: drive only the already committed startup batch,
+                // without deriving or deciding restored work in this fixture.
+                const auto deadline = kernel_->log.next_deadline();
+                if (deadline != UINT64_MAX && deadline > sim_.now_us()) {
+                    sim_.advance_us(deadline - sim_.now_us());
+                }
+                kernel_->log.advance(sim_.now_us());
+            }
             sim_.complete_storage();
         }
     }
@@ -226,7 +270,12 @@ class Node {
             // DRAINING appends the batches waiting one at a time.
             for (int round = 0; round < 10000 && lifecycle() != AYNI_LIFECYCLE_STOPPED; ++round) {
                 sim_.complete_storage();
-                step();
+                const auto report = step();
+                if (report.more_ready == 0U && sim_.pending_storage() == 0U &&
+                    report.next_deadline_us != UINT64_MAX &&
+                    report.next_deadline_us > sim_.now_us()) {
+                    sim_.advance_us(report.next_deadline_us - sim_.now_us());
+                }
             }
         }
         return destroy();

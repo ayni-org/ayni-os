@@ -1,103 +1,123 @@
-// Recovery from ayni_start up to RUNNING (ADR-0016). Reads the whole log
-// prefix, which durability checks batch by batch, then persists this boot's
-// epoch in a batch of its own before the kernel opens any output (C-ID-009).
-// It keeps the BOOT_EPOCH records and hands every other record to the
-// domain handler, which replays the work model (ADR-0026).
-//
-// One storage request is in flight at a time, so the kernel's storage buffer
-// serves every read and then the append. Requests use boot_epoch 0: this
-// boot's epoch is not durable until the append completes (C-ID-006).
-
+// Bounded asynchronous recovery, activation selection and writer isolation.
 #ifndef AYNI_CORE_KERNEL_BOOT_BOOT_SEQUENCE_H
 #define AYNI_CORE_KERNEL_BOOT_BOOT_SEQUENCE_H
 
 #include "durability/batch/prefix_scan.h"
 #include "kernel/completion/completion_pool.h"
+#include "kernel/storage/write_schedule.h"
+#include "kernel/work_replay.h"
+#include "kernel/work_snapshot.h"
 
 #include <ayni/ayni.h>
-
 #include <cstdint>
 
 namespace ayni::kernel {
 
-// BOOT_EPOCH (contracts/storage/records.md): a REQUIRED record whose body is
-// the epoch as a little-endian uint64.
 constexpr uint16_t boot_epoch_record_type = 1;
 constexpr uint16_t boot_epoch_record_version = 1;
 constexpr uint32_t boot_epoch_record_length = 8;
+constexpr uint32_t activation_record_length = 32;
+
+struct SnapshotActivation {
+    uint32_t slot = 0;
+    uint32_t payload_crc = 0;
+    uint64_t generation = 0;
+    uint64_t covers_commit_seq = 0;
+    uint64_t max_transition_id = 0;
+};
+bool read_activation(const uint8_t *body, uint32_t size, SnapshotActivation &out);
+void write_activation(const SnapshotActivation &activation, uint8_t *body);
+bool activation_matches(const SnapshotActivation &activation,
+                        const durability::SnapshotMetadata &metadata);
 
 class BootSequence {
   public:
-    enum class Outcome {
-        pending,
-        epoch_durable, // RUNNING may start; boot_epoch() is set
-        restricted,    // restriction() says why
-    };
-
-    // host has both storage ports, and it, completions, buffer and the
-    // domain handler's context outlive the sequence. buffer_size is within
-    // the ayni.h storage buffer range.
+    enum class Outcome { pending, epoch_durable, migration_ready, writers_isolated, restricted };
     BootSequence(const ayni_host_v1 &host, CompletionPool &completions, uint8_t *buffer,
-                 uint32_t buffer_size, durability::RecordHandler domain, void *domain_context);
-
-    BootSequence(const BootSequence &) = delete;
-    BootSequence &operator=(const BootSequence &) = delete;
-
-    // Owner thread. Issues the next storage request when one is due and
-    // returns whether it called the Host.
-    bool advance();
-
-    // A request is due: advance() would call the Host.
-    bool wants_advance() const;
-
+                 uint32_t buffer_size, WorkModel &model, WorkReplay &replay, WriteSchedule &writes);
+    void reset(uint32_t isolated_epoch = 0);
+    void isolate(uint32_t minimum_epoch);
+    bool advance(uint64_t now_us);
+    bool wants_advance(uint64_t now_us) const;
+    uint64_t next_deadline() const;
     Outcome outcome() const;
     ayni_restriction_t restriction() const { return restriction_; }
-    // 0 until the BOOT_EPOCH batch is durable; then at most
-    // foundation::max_boot_epoch, so that kernel ids can embed it.
     uint64_t boot_epoch() const { return boot_epoch_; }
-    // The batch that stored this boot's epoch. Only once outcome() is
-    // epoch_durable; transitions after it take the following ids.
-    durability::BatchIdentity boot_batch() const;
-    // The last commit_seq known durable: the end of the log read so far, and
-    // once the epoch is durable, its batch.
-    uint64_t durable_seq() const;
+    durability::BatchIdentity boot_batch() const { return boot_batch_; }
+    uint64_t durable_seq() const { return known_durable_seq_; }
+    uint64_t max_transition_id() const { return scan_.max_transition_id(); }
+    uint32_t writer_epoch() const { return isolated_epoch_; }
+    uint64_t last_boot_epoch() const { return last_boot_epoch_; }
+    uint64_t generation() const { return selected_.generation; }
+    uint32_t active_slot() const { return activation_.slot; }
+    uint64_t log_bytes() const { return log_bytes_; }
+    const durability::SnapshotMetadata &snapshot() const { return selected_; }
+    uint32_t recovered_writer_epoch() const { return scan_.max_writer_epoch(); }
 
   private:
-    enum class Phase { read_due, reading, append_due, appending, done, restricted };
-
-    static ayni_submit_result_t call_read(void *context, ayni_attempt_ref_v1 attempt,
-                                          ayni_completion_t *completion);
-    static ayni_submit_result_t call_append(void *context, ayni_attempt_ref_v1 attempt,
-                                            ayni_completion_t *completion);
-    static void on_read(void *context, const ayni_completion_result_v1 &result);
-    static void on_append(void *context, const ayni_completion_result_v1 &result);
+    enum class Phase {
+        header,
+        discover,
+        marker,
+        payload,
+        replay,
+        fence,
+        writer_record,
+        boot_record,
+        pre_fence,
+        isolated,
+        done,
+        migration,
+        restricted
+    };
+    static ayni_submit_result_t call(void *context, ayni_attempt_ref_v1 attempt,
+                                     ayni_completion_t *completion);
+    static void on_complete(void *context, const ayni_completion_result_v1 &result);
     static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body);
-
-    bool issue(Phase in_flight, CompletionHandler handler, PortCall call);
-    // Identity of the BOOT_EPOCH batch, from the log read so far.
-    durability::BatchIdentity next_batch() const;
-    void finish_read(const ayni_completion_result_v1 &result);
-    void finish_append(const ayni_completion_result_v1 &result);
-    durability::RecordUse apply_record(const durability::BatchIdentity &batch,
-                                       const durability::RecordHeader &header, const uint8_t *body);
-    void enter_restricted(ayni_restriction_t reason);
+    ayni_submit_result_t port(ayni_attempt_ref_v1 attempt, ayni_completion_t *completion);
+    void complete(const ayni_completion_result_v1 &result);
+    durability::RecordUse record(const durability::BatchIdentity &batch,
+                                 const durability::RecordHeader &header, const uint8_t *body);
+    bool read_log(const ayni_completion_result_v1 &result);
+    bool scan_bytes(uint32_t size);
+    void begin_replay();
+    void after_replay();
+    void prepare_append();
+    bool mutates() const;
+    void fail(ayni_restriction_t reason);
+    void check(durability::BatchCheck result);
 
     const ayni_host_v1 &host_;
     CompletionPool &completions_;
     uint8_t *buffer_;
     uint32_t buffer_size_;
-    durability::RecordHandler domain_;
-    void *domain_context_;
-    Phase phase_ = Phase::read_due;
-    ayni_restriction_t restriction_ = AYNI_RESTRICTION_NONE;
-    // Without snapshots (MA-010) the log starts at commit_seq 1.
+    WorkReplay &replay_;
+    WriteSchedule &writes_;
+    WorkSnapshotReader reader_;
+    Phase phase_ = Phase::discover;
+    bool in_flight_ = false;
+    AppendRetry retry_;
+    durability::SnapshotMetadata selected_{};
+    SnapshotActivation activation_{};
+    bool activation_seen_ = false;
+    bool first_physical_ = true;
+    bool legacy_ = false;
+    uint64_t cursor_ = 0;
+    uint64_t log_bytes_ = 0;
+    uint64_t known_durable_seq_ = 0;
+    uint64_t payload_read_ = 0;
+    uint32_t carry_ = 0;
+    uint32_t payload_crc_ = 0;
     durability::PrefixScan scan_{1};
-    uint64_t last_boot_epoch_ = 0; // the largest in the log so far
+    uint64_t last_boot_epoch_ = 0;
     uint64_t boot_epoch_ = 0;
+    uint32_t isolated_epoch_ = 0;
+    uint32_t fence_minimum_ = 1;
+    uint32_t append_size_ = 0;
+    durability::BatchIdentity boot_batch_{};
+    ayni_restriction_t restriction_ = AYNI_RESTRICTION_NONE;
 };
-
 } // namespace ayni::kernel
-
-#endif // AYNI_CORE_KERNEL_BOOT_BOOT_SEQUENCE_H
+#endif

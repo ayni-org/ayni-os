@@ -4,9 +4,9 @@ Apply these guidelines to design, implementation, review, refactoring, and deliv
 
 ## Project Structure & Module Organization
 
-This checkout is in M1: `core/` implements the Kernel lifecycle, event ingress, work model, and persistence through the journal and replay (retries, writer fences, snapshots, and schema migration remain) behind the C ABI in `include/ayni/ayni.h`; contracts are in `contracts/` (`contracts/traceability.md` lists the tests behind each clause), and headers not yet implemented remain drafts in `include/ayni/draft/`. Read `docs/ayni_v1.0.md`, the Ayni AgentOS plan, before contributing; APIs, implementation directories, and platform support remain proposed unless backed by implementation and validation evidence. Preserve its filename when updating the internal document version.
+This checkout is in M1: `core/` implements the Kernel lifecycle, event ingress, work model, journal/replay, bounded storage retries, writer fencing and reload, double-slot snapshots, log rotation, and schema 0→1 migration behind the experimental C ABI 0.15 in `include/ayni/ayni.h`. Native and simulated Hosts provide the storage ports; ESP-IDF storage and the full E1–E4 experiments remain outstanding. Implementation, validation, and merge status are recorded in ADR-0027 and `reports/core/m1-progress.md`; contracts are in `contracts/` (`contracts/traceability.md` lists the tests behind each clause), and headers not yet implemented remain drafts in `include/ayni/draft/`. Read `docs/ayni_v1.0.md`, the Ayni AgentOS plan, before contributing; APIs, implementation directories, and platform support remain proposed unless backed by implementation and validation evidence. Preserve its filename when updating the internal document version.
 
-Follow the planned layout when implementation begins:
+Keep implementations within the planned layout:
 
 - `core/`: portable Kernel state, scheduling, authorization, and recovery, split by invariant owner into `kernel/`, `work/`, `authority/`, `resources/`, `budget/`, `knowledge/`, `catalog/`, `durability/`, and `foundation/`, with entity-named subdirectories such as `work/task/` (ADR-0008).
 - `include/ayni/`, `contracts/`: public C/C++ interfaces and versioned contracts.
@@ -20,7 +20,7 @@ Follow the planned layout when implementation begins:
 
 ## Build, Test, and Development Commands
 
-`docs/workflow.md` records the per-package workflow used since M1 (decisions, tests, documents, validation, review, and merge), and `reports/core/m1-progress.md` records the M1 order, PR split, decisions made, and current status; follow both when taking over work. Claude stopped after `MA-010` B+C+D (#20); start from the "交接状态" section of `reports/core/m1-progress.md` and section 7 of `docs/workflow.md`. `docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan. Native commands:
+`docs/workflow.md` records the per-package workflow used since M1 (decisions, tests, documents, validation, review, and merge), and `reports/core/m1-progress.md` records the M1 order, PR split, decisions made, and current status; follow both when taking over work. Start from the current "交接状态" section of `reports/core/m1-progress.md`; section 7 of `docs/workflow.md` retains the original handoff procedure after `MA-010` B+C+D (#20). `docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan. Native commands:
 
 ```sh
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native

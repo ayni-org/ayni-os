@@ -81,6 +81,12 @@ class AgentTable {
     // registered becomes FAULTED, unless it is STOPPED, for which nothing
     // remains to fault (ADR-0026 decision 7).
     void fault_unregistered();
+    // Registration compatibility belongs to this boot, not the stored
+    // lifecycle. Snapshot and journal codecs read lifecycle unchanged.
+    static ayni_agent_lifecycle_t effective_lifecycle(const AgentInstance &instance) {
+        return instance.fault_reason == AYNI_REASON_AGENT_UNREGISTERED ? AYNI_AGENT_FAULTED
+                                                                       : instance.lifecycle;
+    }
     // Drops everything restore() did, as when recovery fails.
     void drop_restored();
 

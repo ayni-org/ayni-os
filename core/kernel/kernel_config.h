@@ -31,6 +31,8 @@ struct KernelCapacities {
 struct KernelLimits {
     uint32_t goal_depth_max;
     uint32_t goal_children_max;
+    uint32_t storage_write_interval_us = 10000;
+    uint32_t storage_log_max_bytes = 0;
 };
 
 // The bounded stores that follow the kernel in the caller's memory block.

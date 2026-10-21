@@ -4,7 +4,7 @@
 
 **A cross-device personal assistant AgentOS: one assistant for the user, with multiple Agents sharing managed system services.**
 
-> This repository is at M1. On top of the M0 skeleton (Native and ESP-IDF builds, dependency checks, CI), contracts, and draft C headers, the Core has an event ingress and completion slots, the Kernel lifecycle with boot recovery, principals and sessions, Agent instances, goal intents, task derivation with pause, resume, and cancel propagation, delay and interval triggers, goal expiry with bounded waits, posting local input events that trigger goals, and registered strategies whose decisions end tasks and goals (goals and tasks are not yet persisted), tested only on the Native and simulated Hosts. There is no SDK, persistent storage Host, or hardware-validated firmware yet; [contracts/traceability.md](contracts/traceability.md) tracks each clause (in Chinese). This README describes intended behavior; implementation and platform support require corresponding validation evidence. See the [development guide](docs/development.md) for building and [reports/core/m0-review.md](reports/core/m0-review.md) for the M0 review (both in Chinese).
+> This repository is at M1. The Core implements event ingress, the Kernel lifecycle, the Agent/Goal/Task work model, triggers, strategy steps and checkpoints, transition journaling, recovery, and command idempotency. The Native Host provides file storage. `MA-010` E+F adds bounded retries, writer fencing and reload, double-slot snapshots, log rotation, and schema 0→1 migration. See [ADR-0027](docs/adr/0027-retries-writer-fences-snapshots-and-migration.md), [M1 progress](reports/core/m1-progress.md), and [contract traceability](contracts/traceability.md) for implementation, validation, and delivery status (in Chinese). These implementations target the Native and simulated Hosts; ESP-IDF storage, the complete E1–E4 experiments, an SDK, and hardware results remain outstanding. The rest of this README describes intended behavior. See the [development guide](docs/development.md) and [M0 review](reports/core/m0-review.md) (in Chinese).
 
 See the [Ayni implementation plan](docs/ayni_v1.0.md) (Chinese) for the complete design, scope, draft interfaces, and acceptance gates.
 
@@ -55,11 +55,11 @@ v0.1 plans local-network management, push-button voice interaction, continuous v
 
 | Contract | Compatibility boundary |
 |---|---|
-| Core—Host / native SDK | ABI major version, structure size, and feature bits; no STL types, exceptions, or OS handles across the ABI |
+| Core—Host / native SDK | ABI major/minor versions, structure size, and feature bits (0.x minor versions must match exactly); no STL types, exceptions, or OS handles across the ABI |
 | Management and device protocols | Protocol major/minor versions, capability versions, and feature negotiation; shared domain semantics with authentication and local authorization checks |
 | Persistent storage | Schema, record, and migration versions; migration, corruption recovery, and firmware rollback are validated together |
 
-These contracts evolve independently and remain aligned through domain definitions and conformance fixtures. The API is experimental. Message IDs, operation IDs, and local request epochs serve different purposes, and each message kind has exactly one idempotency key. Node authentication must be complemented by evidence binding the node to the calling principal. The protocol makes no universal exactly-once execution guarantee.
+These contracts evolve independently and remain aligned through domain definitions and conformance fixtures. The implemented C ABI is experimental version 0.15; unimplemented interfaces remain in draft headers. Message IDs, operation IDs, and local request epochs serve different purposes, and each message kind has exactly one idempotency key. Node authentication must be complemented by evidence binding the node to the calling principal. The protocol makes no universal exactly-once execution guarantee.
 
 ## Optional embodied profiles and adapters
 

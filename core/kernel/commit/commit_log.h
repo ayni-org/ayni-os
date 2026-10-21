@@ -17,6 +17,7 @@
 #include "durability/batch/batch_codec.h"
 #include "durability/journal/journal_ring.h"
 #include "kernel/completion/completion_pool.h"
+#include "kernel/storage/write_schedule.h"
 
 #include <ayni/ayni.h>
 
@@ -29,7 +30,7 @@ class CommitLog {
     // host has storage_append, and it, completions and buffer outlive the
     // log.
     CommitLog(const ayni_host_v1 &host, CompletionPool &completions, uint8_t *buffer,
-              uint32_t buffer_size);
+              uint32_t buffer_size, WriteSchedule &writes);
 
     CommitLog(const CommitLog &) = delete;
     CommitLog &operator=(const CommitLog &) = delete;
@@ -52,9 +53,11 @@ class CommitLog {
 
     // Owner thread. Appends the oldest queued batch when none is in flight
     // and returns whether it called the Host.
-    bool advance();
+    bool advance(uint64_t now_us);
     // A batch is queued, none is in flight and the writer has not failed.
-    bool wants_advance() const;
+    bool wants_advance(uint64_t now_us) const;
+    uint64_t next_deadline() const;
+    bool paused() const { return retry_.retrying(); }
     // Nothing queued and nothing in flight.
     bool idle() const { return !in_flight_ && ring_.empty(); }
 
@@ -72,6 +75,8 @@ class CommitLog {
 
     const ayni_host_v1 &host_;
     CompletionPool &completions_;
+    WriteSchedule &writes_;
+    AppendRetry retry_;
     durability::JournalRing ring_;
     uint64_t boot_epoch_ = 0;
     uint32_t writer_epoch_ = 0;

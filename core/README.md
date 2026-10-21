@@ -15,20 +15,33 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 
 ## 当前状态
 
+`MA-010` E+F 的实现与验证范围见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md) 与 [契约追踪](../contracts/traceability.md)。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
+
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
-| `kernel` | `kernel_api.cpp`：C ABI 入口与参数检查；`kernel_lifecycle.cpp`：`ayni_start`、`ayni_step`（含 `RUNNING` 中的 Task 派生）、`ayni_begin_shutdown` 的状态转换；`kernel_layout`：按配置容量排布内存块；`ingress/`：有界事件队列；`completion/`：完成槽池（`MA-003`，ADR-0015）；`boot/`：读日志前缀并持久化 `boot_epoch` 的启动序列（`MA-005`，ADR-0016）；`kernel_config.h`：容量、限额与调用方内存的划分；`work_api.cpp`：注册、会话、意图与查询的 C ABI 入口；`intent/`：意图的领域类型、C ABI 解码、`WorkModel`（意图读写的工作表、ID 分配器、transition 计数器、回调标记与派生入口）以及会话、Goal、Task 与实例意图的规则；`transition_clock.h`：transition 的 id 与 `commit_seq`（`MA-004`，ADR-0017、ADR-0018）。GoalType 校验回调运行期间，修改 Kernel 的入口返回 `AYNI_INVALID_STATE`（C-POLICY-001） | M0 |
-| `work` | `agent/`：Agent 与驻留实例的暂停、恢复与停止；`goal/`：Goal 树、生命周期、版本、取消级联与触发游标，`goal/trigger_schedule` 推算 occurrence 的到期时间（ADR-0017、ADR-0018、ADR-0019）；`task/`：Task 的生命周期、版本与容量回收；`propagation`：跨 Goal、Task 与实例的放行条件、派生选择与传播（ADR-0018）；调用与动作随后续工作包 | M1（`MA-004`） |
+| `kernel` | `kernel_api`、`work_api`：C ABI 参数检查、注册、会话、意图与查询；`kernel_lifecycle`：所有者线程的启动、工作、栅栏重载、维护与关闭编排；`kernel_layout`、`kernel_config`：有界内存与配置；`ingress/`、`completion/`：事件队列与完成槽；`boot/`：物理日志发现、快照与尾部恢复、writer 握手及启动记录；`commit/`、`command/`：日志提交与按 principal 有界的命令窗口；`storage/`：共享写频与重试调度，`storage_maintenance`：快照发布与轮转状态机；`intent/`：工作模型、意图解码/规则、触发和策略决定；`work_journal`、`work_replay`、`work_snapshot`：按领域属主编排持久导出与恢复（ADR-0015～0027） | M0 |
+| `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效与记录；`task/`：Task 生命周期、容量回收、步骤与私有检查点；各表提供静态快照导入并保留原始 stamp，恢复的临时兼容覆盖与持久状态分开；`propagation`：跨表放行、派生选择与传播。调用与动作仍随后续包（ADR-0017～0027） | M1（`MA-004`） |
 | `authority` | `principal/`：所有者主体与会话表（ADR-0017）；Grant 与 Scene 随 `MA-006` | M1（`MA-004`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |
 | `knowledge` | 无代码 | M1（`MA-011`） |
-| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本注册与参数校验（ADR-0017）；设备、能力与绑定随 `MA-008` | M1（`MA-004`） |
-| `durability` | `batch/`：提交批次的编码与校验，日志前缀的连续性与记录 flags 检查（`storage/records.md`，ADR-0016）；快照、重放与栅栏随 `MA-010` | M1（`MA-005`） |
-| `foundation` | `crc32`：CRC-32/ISO-HDLC；`little_endian.h`：持久格式的定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器（C-ID-010）；`transition_stamp.h`；`bounded_array.h`：调用方内存上的定长数组。状态码只在公开头文件 `include/ayni/ayni.h` 定义一次 | M1（`MA-005`） |
+| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本、触发种类及参数校验；`strategy/`：策略版本、决定和检查点上限注册。设备、能力与绑定随 `MA-008` | M1（`MA-004`） |
+| `durability` | `batch/`：schema 0/1 批次、记录 flags、提交连续性及 writer fence 扫描；`journal/`：有界日志环；`snapshot/`：静态快照头部/尾标记及 CRC。只提供持久机制，不理解工作领域，不选择 Host，也不编排领域恢复次序（ADR-0016、0026、0027） | M1（`MA-005`） |
+| `foundation` | `crc32`：可跨页累计的 CRC-32/ISO-HDLC；`little_endian.h`：定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器；`transition_stamp.h`；`bounded_array.h`：调用方内存上的有界数组。状态码仍只在公开头文件 `include/ayni/ayni.h` 定义 | M1（`MA-005`） |
 
 模块在有源文件时才建立构建目标，避免空目标给人“已实现”的印象。`foundation` 承载 ID、时间、有界容器等内部类型；对外状态码仍以公开头文件为唯一来源，不在 Core 内复制一份。
 
 ## 内存
 
 Core 不自行分配内存（ADR-0014）。调用方先用 `ayni_kernel_memory_requirements` 查询大小与对齐，再把内存块交给 `ayni_create`；Native 组合根从堆分配，ESP32 组合根从内部 RAM 分配。
+
+日志与恢复、快照维护分时使用同一存储缓冲；维护先冻结新 transition 并排空 journal，再按完整记录分页，不复制 WorkModel，也不为整份快照分配另一块内存。默认缓冲为 `3 × max(W+4, 256)`，W 为配置允许的最大 transition 批次；显式容量还须容纳最大的静态快照记录。
+
+ABI 0.15 在本次 64 位环境中经 `ayni_kernel_memory_requirements` 实测：
+
+| 配置 | 字节数 | 较 ABI 0.14 | 对齐 |
+|---|---:|---:|---:|
+| 默认值（配置 `struct_size=12`） | 62,608 | +4,664 | 8 |
+| 最小工作容量（完整配置，命令容量 1） | 28,816 | +1,472 | 8 |
+
+这里是调用方内存需求，不包括 Host 的线程、文件缓存或运行时自身的分配；复现配置及完整验证结果见 ADR-0027。

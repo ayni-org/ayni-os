@@ -20,7 +20,7 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
     ayni_agent_lifecycle_t owner = after.instance_lifecycle;
     if (owner_instance_id != after.instance_id) {
         const AgentInstance *instance = tables.agents.find_instance(owner_instance_id);
-        owner = instance != nullptr ? instance->lifecycle : 0;
+        owner = instance != nullptr ? AgentTable::effective_lifecycle(*instance) : 0;
     }
     if (owner != AYNI_AGENT_RUNNING) {
         return false;

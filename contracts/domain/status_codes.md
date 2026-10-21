@@ -1,6 +1,6 @@
 # 状态码
 
-- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022、ADR-0026；`MA-004`、`MA-005`、`MA-010`
+- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022、ADR-0026、ADR-0027；`MA-004`、`MA-005`、`MA-010`
 - **定义位置**：`include/ayni/ayni.h`（唯一来源；Core 内部不复制一份）
 
 ## 取值
@@ -73,7 +73,8 @@
 | 35 | `AYNI_REASON_STRATEGY_CHANGED` | `UNSUPPORTED_VERSION` | 只用于 Task 信息：恢复的 Task 的 GoalType 本次没有策略，或它的私有检查点不是该策略当前版本写的（C-POLICY-007，ADR-0026） |
 | 36 | `AYNI_REASON_COMMAND_EXPIRED` | `EXPIRED` | `command_id` 未映射且不大于该 principal 的下限，命令可能已被接受过（C-WIRE-005，ADR-0026） |
 | 37 | `AYNI_REASON_COMMAND_CONFLICT` | `IDEMPOTENCY_CONFLICT` | 该 principal 以同一 `command_id` 接受过内容不同的命令（C-WIRE-004，ADR-0026） |
-| 38 | `AYNI_REASON_STORAGE_BACKLOG` | `BUSY` | Host 存下已提交的批次之前，存储缓冲没有空间容纳另一个 transition（ADR-0026） |
+| 38 | `AYNI_REASON_STORAGE_BACKLOG` | `BUSY` | 缓冲不足、异常重试或快照维护暂停新 transition；已映射命令仍先返回首次结果（ADR-0027） |
+| 39 | `AYNI_REASON_STORAGE_SPACE` | `STORAGE_FAILED` | 可用介质空间不足以接纳新的 transition 及维护预留，拒绝发生在状态改变前（ADR-0027） |
 
 ## 规则
 

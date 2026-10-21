@@ -11,6 +11,7 @@
 #include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_config.h"
+#include "kernel/storage_maintenance.h"
 #include "kernel/work_journal.h"
 #include "kernel/work_replay.h"
 
@@ -27,21 +28,28 @@ struct ayni_kernel {
         : host(host_table), ingress(storage.ingress, capacities.ingress_capacity,
                                     capacities.event_body_max_bytes, host),
           completions(storage.completions, capacities.completion_slot_count, host),
-          boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes,
-               &ayni::kernel::WorkReplay::on_record, &replay),
-          log(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes),
-          work(capacities, limits, storage), replay(work),
+          writes(limits.storage_write_interval_us), work(capacities, limits, storage), replay(work),
+          boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes, work,
+               replay, writes),
+          log(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes, writes),
+          maintenance(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes,
+                      work, writes),
           decisions(storage.decisions,
                     {capacities.policy_intent_capacity, capacities.task_step_capacity,
                      capacities.task_checkpoint_max_bytes}),
-          batch_max(ayni::kernel::transition_batch_max(capacities)) {}
+          batch_max(ayni::kernel::transition_batch_max(capacities)),
+          log_max_bytes_(limits.storage_log_max_bytes),
+          snapshot_max_bytes_(ayni::kernel::snapshot_payload_max(capacities) +
+                              ayni::durability::snapshot_header_size +
+                              ayni::durability::snapshot_marker_size),
+          journal_buffer_bytes_(capacities.storage_buffer_bytes) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
     ayni_status_t start();
     ayni_status_t step(uint32_t max_items, uint32_t max_time_us, ayni_step_report_v1 &report);
     ayni_status_t begin_shutdown();
-    // Why the kernel is RESTRICTED; NONE in every other state.
+    // Why the kernel is RESTRICTED or FENCED; NONE otherwise.
     ayni_restriction_t restriction() const;
     // Writes the batches of the transitions from commit_seq first_seq up to
     // the latest into the log, right after the call that applied them; a
@@ -65,29 +73,36 @@ struct ayni_kernel {
     uint64_t events_unmatched = 0;
     uint64_t events_discarded = 0;
     ayni::kernel::CompletionPool completions;
-    ayni::kernel::BootSequence boot;
-    // Takes the storage buffer over from boot once RUNNING (ADR-0026).
-    ayni::kernel::CommitLog log;
-
-    // The work model (ADR-0017), started when the kernel enters RUNNING.
+    ayni::kernel::WriteSchedule writes;
     ayni::kernel::WorkModel work;
-    // Rebuilds work from the records boot reads.
     ayni::kernel::WorkReplay replay;
+    ayni::kernel::BootSequence boot;
+    ayni::kernel::CommitLog log;
+    ayni::kernel::StorageMaintenance maintenance;
     // What the strategies read beyond the tasks and write the decisions
     // ayni_step applies into (ADR-0022, ADR-0024).
     ayni::kernel::DecisionBuffer decisions;
 
     // The largest batch one transition writes (work_journal.h).
     uint32_t batch_max;
+    ayni_status_t storage_admission_status() const;
+    bool storage_has_room() const {
+        return !storage_space_blocked_ && !maintenance_requested_ &&
+               maintenance_mode_ == MaintenanceMode::none && log.has_room();
+    }
 
   private:
     void settle_recovery();
     void enter_running();
     void enter_restricted(ayni_restriction_t reason);
     // Owner thread: whether a transition may start now.
-    bool has_room() const { return log.has_room(); }
-    // Enters RESTRICTED once the log writer has failed, in RUNNING.
+    bool has_room() const { return storage_has_room(); }
+    // Enters FENCED after the RUNNING writer exhausts its retries.
     void settle_log();
+    void enter_fenced(ayni_restriction_t reason);
+    void settle_maintenance();
+    void begin_maintenance(bool migration);
+    void refresh_storage();
     // Whether ayni_step appends the batches waiting.
     bool appends() const;
     // Whether ayni_step takes events in the current state (ADR-0021).
@@ -95,6 +110,20 @@ struct ayni_kernel {
     bool takes_event_now() const;
     void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us);
 
+    enum class MaintenanceMode { none, runtime, migration };
+    MaintenanceMode maintenance_mode_ = MaintenanceMode::none;
+    bool maintenance_requested_ = false;
+    bool storage_space_blocked_ = false;
+    bool reloading_ = false;
+    uint32_t writer_epoch_ = 0;
+    uint64_t boot_epoch_current_ = 0;
+    uint64_t generation_ = 0;
+    uint32_t active_slot_ = 0;
+    uint64_t log_bytes_ = 0;
+    uint64_t durable_floor_ = 0;
+    uint64_t log_max_bytes_;
+    uint64_t snapshot_max_bytes_;
+    uint64_t journal_buffer_bytes_;
     ayni_restriction_t restriction_ = AYNI_RESTRICTION_NONE;
     bool log_started_ = false; // the log has the storage buffer
 };

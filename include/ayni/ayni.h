@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 14u
+#define AYNI_ABI_MINOR 15u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -79,6 +79,8 @@ typedef uint32_t ayni_lifecycle_t;
 #define AYNI_LIFECYCLE_RESTRICTED ((ayni_lifecycle_t)4)
 #define AYNI_LIFECYCLE_DRAINING ((ayni_lifecycle_t)5)
 #define AYNI_LIFECYCLE_STOPPED ((ayni_lifecycle_t)6)
+/* Since 0.15. Writer isolation is pending; no new work is admitted. */
+#define AYNI_LIFECYCLE_FENCED ((ayni_lifecycle_t)7)
 
 typedef struct ayni_kernel ayni_kernel_t;
 
@@ -104,7 +106,7 @@ typedef struct ayni_config_v1 {
      * since 0.14, for the batches committed in RUNNING until the host has
      * stored them (ADR-0026). Each transition needs room for the largest
      * batch the other capacities allow before it starts, so the buffer must
-     * hold at least that; 0, also the default, takes twice that. A larger
+     * hold at least that; since 0.15, 0 takes three times that. A larger
      * buffer lets more batches wait for the host. */
     uint32_t storage_buffer_bytes;
     /* Since 0.5. The work model (ADR-0017). The last two are limits rather
@@ -134,6 +136,12 @@ typedef struct ayni_config_v1 {
     /* Since 0.14 (ADR-0026). Accepted commands each principal keeps mapped
      * to their results (ayni_intent_v1 command_id). */
     uint32_t command_capacity;
+    /* Since 0.15. Minimum time between persistent requests, including
+     * retries and maintenance. 0 selects 10 ms; reads are not limited. */
+    uint32_t storage_write_interval_us;
+    /* Since 0.15. Encoded log byte limit. 0 selects the larger of 1 MiB
+     * and eight storage buffers. Maintenance reserves space before admit. */
+    uint32_t storage_log_max_bytes;
 } ayni_config_v1;
 
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
@@ -142,8 +150,8 @@ typedef struct ayni_config_v1 {
 #define AYNI_EVENT_BODY_MAX_BYTES_MAX 4096u
 #define AYNI_COMPLETION_SLOT_COUNT_DEFAULT 16u
 #define AYNI_COMPLETION_SLOT_COUNT_MAX 1024u
-/* Since 0.14 the default is 0: twice the largest batch (storage_buffer_bytes),
- * and a nonzero value must also hold that batch. */
+/* Since 0.15 the default 0 selects three times the maximum batch plus ring
+ * overhead. An explicit buffer must hold that batch and any snapshot record. */
 #define AYNI_STORAGE_BUFFER_BYTES_DEFAULT 0u
 #define AYNI_STORAGE_BUFFER_BYTES_MIN 256u
 #define AYNI_STORAGE_BUFFER_BYTES_MAX 1048576u
@@ -177,6 +185,10 @@ typedef struct ayni_config_v1 {
 #define AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX 4096u
 #define AYNI_COMMAND_CAPACITY_DEFAULT 32u
 #define AYNI_COMMAND_CAPACITY_MAX 1024u
+#define AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT 10000u
+#define AYNI_STORAGE_WRITE_INTERVAL_US_MAX 1000000u
+#define AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT 0u
+#define AYNI_STORAGE_LOG_MAX_BYTES_MAX 67108864u
 
 /*
  * Correlates an asynchronous attempt with its result (C-ID-006). Unique
@@ -220,6 +232,11 @@ typedef struct ayni_completion_result_v1 {
     uint32_t outcome;
     ayni_attempt_ref_v1 attempt; /* as passed to the port call */
     uint64_t value;              /* defined per port, e.g. bytes read; 0 otherwise */
+    /* Since 0.15. Opaque next physical cursor for storage_read_log.
+     * Valid until log rotation. Within one log instance, a nonempty read
+     * returns a cursor strictly greater than its input. 0 begins a read;
+     * after rotation restart at 0. Other ports write 0. */
+    uint64_t next_cursor;
 } ayni_completion_result_v1;
 
 /* Since 0.4. A byte view; data may be NULL only when size is 0. */
@@ -253,6 +270,13 @@ typedef struct ayni_storage_batch_v1 {
 #define AYNI_WRITE_OK 1u
 #define AYNI_WRITE_FAILED 2u
 #define AYNI_WRITE_UNKNOWN 3u
+/* Since 0.15. Read only: value is the exact required first batch size,
+ * greater than the supplied buffer; no bytes or cursor were consumed. */
+#define AYNI_READ_BUFFER_TOO_SMALL 4u
+/* Since 0.15. Fence success returns its actual new writer epoch in value. */
+#define AYNI_FENCE_DRAINED 1u
+#define AYNI_FENCE_EPOCH_INSTALLED 2u
+#define AYNI_FENCE_UNAVAILABLE 3u
 
 /*
  * Platform services the kernel uses to maintain its own invariants (ADR-0006).
@@ -305,8 +329,8 @@ typedef struct ayni_host_v1 {
      * storage_read_prefix copies into buffer the stored batches whose
      * commit_seq is at least from_commit_seq, in log order and only whole
      * batches, as many as fit. The completion value is the number of bytes
-     * written; 0 means no batch is left. AYNI_WRITE_FAILED when the next
-     * batch is larger than buffer_size. The host may write the buffer only
+     * written; 0 means no batch is left. Since 0.15 READ_BUFFER_TOO_SMALL
+     * reports the exact first batch size when it cannot fit. The host may write the buffer only
      * until it posts.
      */
     ayni_submit_result_t (*storage_append)(void *ctx, const ayni_storage_batch_v1 *batch,
@@ -316,6 +340,45 @@ typedef struct ayni_host_v1 {
                                                 uint8_t *buffer, uint32_t buffer_size,
                                                 ayni_attempt_ref_v1 attempt,
                                                 ayni_completion_t *completion);
+    /* Since 0.15. Physical-order log reading. cursor 0 begins at the first
+     * frame. OK reports bytes in value and the next cursor in next_cursor;
+     * zero bytes is EOF. Whole batches only, including stale writer epochs:
+     * the Core, not the Host, owns the fence/replay rules. */
+    ayni_submit_result_t (*storage_read_log)(void *ctx, uint64_t cursor, uint8_t *buffer,
+                                             uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
+                                             ayni_completion_t *completion);
+    /* Isolates every older writer for all mutating storage ports. A success
+     * allocates an epoch >= minimum_epoch and strictly above every epoch
+     * previously installed by this Host. Isolation does not return borrowed
+     * buffers: each accepted attempt still owes its completion. */
+    ayni_submit_result_t (*storage_fence_writers)(void *ctx, uint32_t minimum_epoch,
+                                                  ayni_attempt_ref_v1 attempt,
+                                                  ayni_completion_t *completion);
+    /* Writes one immutable chunk. offset 0 resets an inactive slot; later
+     * chunks are sequential. Repeating identical bytes at the same offset
+     * is idempotent. OK means power-loss durable. Slots are 0 and 1. */
+    ayni_submit_result_t (*storage_write_snapshot)(void *ctx, uint32_t writer_epoch, uint32_t slot,
+                                                   uint64_t offset, ayni_bytes_v1 bytes,
+                                                   ayni_attempt_ref_v1 attempt,
+                                                   ayni_completion_t *completion);
+    /* Reads up to buffer_size bytes from a slot, including an uncommitted
+     * candidate for read-back verification. OK value is bytes copied,
+     * zero at EOF or for an absent slot. */
+    ayni_submit_result_t (*storage_read_snapshot)(void *ctx, uint32_t slot, uint64_t offset,
+                                                  uint8_t *buffer, uint32_t buffer_size,
+                                                  ayni_attempt_ref_v1 attempt,
+                                                  ayni_completion_t *completion);
+    /* Atomically retains the named activation batch and every physical
+     * frame after it. Repeating a completed trim is idempotent. The matching
+     * batch has writer_epoch, transition_id and commit_seq as given. On OK
+     * old physical cursors are invalid; restart reads with cursor 0. */
+    ayni_submit_result_t (*storage_trim_prefix)(void *ctx, uint32_t writer_epoch,
+                                                uint64_t transition_id, uint64_t commit_seq,
+                                                ayni_attempt_ref_v1 attempt,
+                                                ayni_completion_t *completion);
+    /* Nonblocking cached usable space, net of pending reservations and
+     * Host quotas. AYNI_STORAGE_FAILED means space cannot be established. */
+    ayni_status_t (*storage_free_bytes)(void *ctx, uint64_t *out_bytes);
 } ayni_host_v1;
 
 /*
@@ -333,13 +396,16 @@ typedef uint32_t ayni_restriction_t;
 #define AYNI_RESTRICTION_LOG_UNSUPPORTED ((ayni_restriction_t)6)       /* C-STORE-004 */
 #define AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED ((ayni_restriction_t)7)
 /* Since 0.14 (ADR-0026). The log holds more state than this kernel's
- * capacities and limits do: it was written under larger ones. A batch
- * larger than this kernel's storage buffer fails the read instead, as
- * STORAGE_READ_FAILED. */
+ * capacities and limits do: it was written under larger ones. Since 0.15
+ * an explicit READ_BUFFER_TOO_SMALL from the Host has this cause too. */
 #define AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY ((ayni_restriction_t)8)
 /* Since 0.14. A defect in this library: a transition's batch did not fit
  * the room it was given. */
 #define AYNI_RESTRICTION_INTERNAL ((ayni_restriction_t)9)
+/* Since 0.15. Counters never wrap, and space failure never drops a barrier. */
+#define AYNI_RESTRICTION_WRITER_EPOCH_EXHAUSTED ((ayni_restriction_t)10)
+#define AYNI_RESTRICTION_STORAGE_FULL ((ayni_restriction_t)11)
+#define AYNI_RESTRICTION_GENERATION_EXHAUSTED ((ayni_restriction_t)12)
 
 /* Since 0.4. Kernel-wide state for diagnostics. */
 typedef struct ayni_kernel_info_v1 {
@@ -359,8 +425,8 @@ typedef struct ayni_kernel_info_v1 {
      */
     uint64_t durable_seq;
     /* Since 0.9 (ADR-0021). Events ayni_step took in RUNNING that no goal's
-     * trigger took, and events it discarded in DRAINING or RESTRICTED or
-     * left queued on entering STOPPED. */
+     * trigger took, and events it discarded in DRAINING, RESTRICTED or
+     * FENCED (since 0.15), or left queued on entering STOPPED. */
     uint64_t events_unmatched;
     uint64_t events_discarded;
 } ayni_kernel_info_v1;
@@ -379,7 +445,9 @@ typedef struct ayni_step_report_v1 {
      * may advance, while the task table has room and an id is left, or else
      * the end of such an occurrence's wait. Since 0.14 none while the
      * storage buffer has no room for another transition: the post of the
-     * append that frees it wakes the owner. */
+     * append that frees it wakes the owner. Since 0.15 also includes
+     * storage write intervals and retry backoff while new work is frozen;
+     * an accepted request waits for its completion wake without a timer. */
     uint64_t next_deadline_us;
     /* Since 0.14. ayni_kernel_info_v1 durable_seq when the step returned. */
     uint64_t durable_seq;
@@ -412,7 +480,7 @@ ayni_status_t ayni_kernel_memory_requirements(const ayni_config_v1 *config, size
  * the memory left untouched:
  * - AYNI_INVALID_ARGUMENT: a null pointer, a struct_size shorter than the
  *   first published layout, a capacity outside its range, a missing required
- *   host function, only one of the two storage ports, or memory not aligned
+ *   host function, an incomplete storage port group, or memory not aligned
  *   as reported by ayni_kernel_memory_requirements;
  * - AYNI_UNSUPPORTED_VERSION: the caller's ABI version is not accepted (see
  *   AYNI_ABI_MAJOR), or a struct_size is larger than this library knows;
@@ -442,7 +510,8 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
  * and only then enters RUNNING (C-ID-009), or enters RESTRICTED with a reason
  * (ayni_get_kernel_info). Returns AYNI_OK; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE outside CONFIGURING; AYNI_UNSUPPORTED, staying in
- * CONFIGURING, when the host table has no storage ports (C-HOST-015); since
+ * CONFIGURING, when the host lacks the complete storage port group
+ * (including a legacy table with only append/read_prefix); since
  * 0.10 AYNI_NOT_FOUND, staying in CONFIGURING, when a goal type names a
  * strategy that is not registered (C-LIFE-003).
  */
@@ -469,7 +538,7 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * (ADR-0021):
  * in RUNNING each is recorded, in one transition, as an occurrence of every
  * goal whose trigger takes it, due at the step's start, or counted as
- * unmatched; in DRAINING and RESTRICTED each is discarded and counted; in
+ * unmatched; in DRAINING, RESTRICTED and FENCED each is discarded and counted; in
  * RECOVERING they stay queued. Does at most max_items items and stops once
  * max_time_us has passed on the host clock, checked after each item; never
  * waits on storage or any other I/O (C-LIMIT-011). out_report (nullable)
@@ -481,9 +550,14 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * append is in flight, whatever is left of max_items and max_time_us; that
  * call is not an item, and applying its completion is one. When the buffer has no room for another
  * transition, the due work, decisions and events wait for the appends in flight, and more_ready
- * leaves them out. A failed or unknown append makes the kernel RESTRICTED, with
- * AYNI_RESTRICTION_STORAGE_WRITE_FAILED or _UNKNOWN, and the batches still waiting are never
- * stored. Recovery replays the log into the work model before it enters RUNNING: instances, goals,
+ * leaves them out. Since 0.15 failures and unknown results retry the same batch
+ * at most three times, with 10/50 ms backoff; only a failed attempt freezes
+ * new transitions. Exhaustion enters FENCED, isolates the old writer and
+ * reloads the durable state under a new boot epoch, or stays RESTRICTED if
+ * isolation or recovery fails. Automatic snapshots drain the log, publish
+ * an inactive slot and activate it before trimming covered history. These
+ * maintenance stages also pause new work and report storage deadlines.
+ * Recovery replays the log into the work model before it enters RUNNING: instances, goals,
  * tasks with their steps and checkpoints, and command mappings come back as the last stored
  * transition left them, while sessions do not. Every wait on the host clock starts again in full
  * from the end of recovery. A log that holds more than this kernel's capacities and limits makes it
@@ -502,12 +576,14 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
                         ayni_step_report_v1 *out_report);
 
 /*
- * Enters DRAINING from RECOVERING, RUNNING or RESTRICTED; no new storage
+ * Since 0.15 also accepts FENCED. Enters DRAINING from RECOVERING, RUNNING
+ * or RESTRICTED; no new storage
  * request is started after that, except, since 0.14, the appends of the
  * batches RUNNING committed (ADR-0026). It does not wake the owner: the
  * caller goes on calling ayni_step, which enters STOPPED once every reserved
  * completion has been posted and applied (C-HOST-018) and those batches are
- * stored or an append failed. Returns
+ * stored or the bounded append retries failed. Borrowed storage buffers
+ * are never released merely because a request times out. Returns
  * AYNI_OK, also in DRAINING and STOPPED; AYNI_INVALID_ARGUMENT if kernel is
  * NULL; AYNI_INVALID_STATE in CONFIGURING, where ayni_destroy applies
  * directly, and when called from a callback.
@@ -712,6 +788,9 @@ typedef uint32_t ayni_reason_t;
 /* BUSY: the storage buffer has no room for another transition until the
  * host stores the batches before it. */
 #define AYNI_REASON_STORAGE_BACKLOG ((ayni_reason_t)38)
+/* Since 0.15. STORAGE_FAILED: not enough usable space for a new transition
+ * and its maintenance reserve; previously accepted commands remain readable. */
+#define AYNI_REASON_STORAGE_SPACE ((ayni_reason_t)39)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -1366,9 +1445,12 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    command_capacity accepted commands: a new one beyond that drops the one
  *    with the smallest id and raises the floor to it. A refused command is
  *    not kept, so its retry is judged anew.
- *    Then AYNI_BUSY when the storage buffer has no room for another
- *    transition until the host stores the batches before it; ayni_step
- *    makes room once their appends complete.
+ *    Since 0.15, a new command requiring an unavailable principal row
+ *    returns CAPACITY_EXCEEDED before changing state. Then STORAGE_FAILED
+ *    with STORAGE_SPACE if usable medium space cannot cover the transition
+ *    and maintenance reserve; otherwise BUSY when the buffer is full or
+ *    retry/snapshot maintenance has paused transitions. The original result
+ *    of a mapped command is returned before all of these storage checks.
  * 5. The intent's own rules, each with the reason named in its comment
  *    above. GOAL_CREATE: the goal type (NOT_FOUND, UNSUPPORTED_VERSION) and
  *    whether it accepts the trigger (INVALID_ARGUMENT), the owner instance

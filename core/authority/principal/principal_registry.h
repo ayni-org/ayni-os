@@ -62,6 +62,7 @@ class SessionTable {
 
     // Returns false when no open session has the id.
     bool close(uint64_t session_id);
+    void clear() { sessions_.clear(); }
 
     const Session *find(uint64_t session_id) const;
 

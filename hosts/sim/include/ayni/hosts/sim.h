@@ -15,6 +15,7 @@
 
 #include <ayni/ayni.h>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -37,7 +38,16 @@ struct StoredBatch {
     bool torn = false;
 };
 
-enum class StoragePort { append, read_prefix };
+enum class StoragePort {
+    append,
+    read_prefix,
+    read_log,
+    fence,
+    write_snapshot,
+    read_snapshot,
+    trim_prefix,
+    fence_writers = fence
+};
 
 // What a power cut leaves of an append still pending.
 enum class CutAppend {
@@ -51,6 +61,16 @@ enum class StorageFault {
     fail,              // completes with AYNI_WRITE_FAILED; nothing stored or read
     unknown_lost,      // completes with AYNI_WRITE_UNKNOWN; nothing stored or read
     unknown_persisted, // does the work, then completes with AYNI_WRITE_UNKNOWN
+    short_write,       // keeps a torn append or partial snapshot, then FAILED
+    unknown_deferred,  // copies an append; its owned bytes can arrive later
+    accept_unknown,    // accepted request whose synchronous result is unknown
+    unavailable,       // a writer fence cannot isolate its predecessor
+};
+
+struct StorageImage {
+    std::vector<StoredBatch> log;
+    std::array<std::vector<uint8_t>, 2> snapshots;
+    uint32_t writer_epoch = 1;
 };
 
 // Serves one Kernel. The table's ctx points at this object, so it is neither
@@ -78,7 +98,13 @@ class Host {
     uint64_t calls_under_lock() const { return calls_under_lock_.load(); }
 
     // The durable log, in append order; tests may preload or damage it.
-    std::vector<StoredBatch> &log() { return log_; }
+    std::vector<StoredBatch> &log() { return storage_.log; }
+    StorageImage &durable_storage() { return storage_; }
+    void set_storage_capacity(uint64_t bytes) { storage_capacity_ = bytes; }
+    uint32_t writer_epoch() const { return storage_.writer_epoch; }
+    // Delayed backend work owns copies, never Kernel buffers. A successful
+    // fence rejects these old-epoch writes even after their UNKNOWN post.
+    std::size_t complete_late_storage();
     // The next call of port meets fault.
     void inject_fault(StoragePort port, StorageFault fault);
     std::size_t pending_storage() const { return pending_.size(); }
@@ -104,6 +130,9 @@ class Host {
         const uint8_t *data; // append: the encoded batch
         uint8_t *buffer;     // read: the kernel's buffer
         uint32_t size;       // encoded size, or buffer size
+        uint32_t writer_epoch = 0;
+        uint64_t transition_id = 0;
+        uint32_t slot = 0;
     };
 
     static uint64_t monotonic_now_us(void *ctx);
@@ -117,10 +146,33 @@ class Host {
                                                     uint8_t *buffer, uint32_t buffer_size,
                                                     ayni_attempt_ref_v1 attempt,
                                                     ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_log(void *ctx, uint64_t cursor, uint8_t *buffer,
+                                                 uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
+                                                 ayni_completion_t *completion);
+    static ayni_submit_result_t storage_fence_writers(void *ctx, uint32_t minimum_epoch,
+                                                      ayni_attempt_ref_v1 attempt,
+                                                      ayni_completion_t *completion);
+    static ayni_submit_result_t storage_write_snapshot(void *ctx, uint32_t writer_epoch,
+                                                       uint32_t slot, uint64_t offset,
+                                                       ayni_bytes_v1 bytes,
+                                                       ayni_attempt_ref_v1 attempt,
+                                                       ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_snapshot(void *ctx, uint32_t slot, uint64_t offset,
+                                                      uint8_t *buffer, uint32_t buffer_size,
+                                                      ayni_attempt_ref_v1 attempt,
+                                                      ayni_completion_t *completion);
+    static ayni_submit_result_t storage_trim_prefix(void *ctx, uint32_t writer_epoch,
+                                                    uint64_t transition_id, uint64_t commit_seq,
+                                                    ayni_attempt_ref_v1 attempt,
+                                                    ayni_completion_t *completion);
+    static ayni_status_t storage_free_bytes(void *ctx, uint64_t *out_free_bytes);
     void note_call();
     ayni_submit_result_t accept(const Pending &request);
     ayni_completion_result_v1 run(const Pending &request);
     ayni_completion_result_v1 read(const Pending &request) const;
+    ayni_completion_result_v1 snapshot(const Pending &request);
+    uint64_t used_bytes() const;
+    std::optional<StorageFault> next_fault(StoragePort port);
 
     uint64_t now_us_;
     uint64_t advance_per_read_us_ = 0;
@@ -128,11 +180,16 @@ class Host {
     std::atomic<uint64_t> calls_under_lock_{0};
     std::mutex ingress_;
     std::atomic<std::thread::id> holder_{};
-    std::vector<StoredBatch> log_;
+    StorageImage storage_;
+    uint64_t storage_capacity_ = 64U * 1024U * 1024U;
     std::deque<Pending> pending_;
     std::vector<ayni_attempt_ref_v1> attempts_;
-    std::optional<StorageFault> append_fault_;
-    std::optional<StorageFault> read_fault_;
+    std::array<std::deque<StorageFault>, 7> faults_;
+    struct LateAppend {
+        uint32_t writer_epoch;
+        StoredBatch batch;
+    };
+    std::vector<LateAppend> late_appends_;
 };
 
 } // namespace ayni::hosts::sim

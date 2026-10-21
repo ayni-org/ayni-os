@@ -4,6 +4,7 @@
 // legitimately differ, the scenario asks it (checks_frames) instead of
 // naming it. The last scenarios run recovery on a real kernel.
 
+#include "durability/batch/batch_codec.h"
 #include "storage_hosts.h"
 
 #include <ayni/ayni.h>
@@ -133,7 +134,7 @@ TEST_P(HostStorage, only_whole_batches_fit_the_buffer) {
     EXPECT_EQ(requests.read_now(4, 250), Bytes{});
 }
 
-TEST_P(HostStorage, first_batch_larger_than_the_buffer_fails_the_read) {
+TEST_P(HostStorage, first_batch_larger_than_the_buffer_reports_its_required_size) {
     const std::unique_ptr<StorageHost> host = make_host();
     StorageRequests requests(*host);
     const Bytes small = test_batch(1, 50);
@@ -145,8 +146,282 @@ TEST_P(HostStorage, first_batch_larger_than_the_buffer_fails_the_read) {
     StorageRequest &too_small = requests.read(2, 256);
     requests.finish();
     EXPECT_EQ(too_small.applied, 1);
-    EXPECT_EQ(too_small.result.outcome, AYNI_WRITE_FAILED);
+    EXPECT_EQ(too_small.result.outcome, AYNI_READ_BUFFER_TOO_SMALL);
+    EXPECT_EQ(too_small.result.value, large.size());
+    EXPECT_EQ(too_small.result.next_cursor, 0U);
     EXPECT_EQ(requests.read_now(2, 400), large);
+}
+
+Bytes identified_batch(uint32_t epoch, uint64_t transition, uint64_t seq, uint8_t value = 1) {
+    Bytes bytes(128);
+    ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), {epoch, seq, transition});
+    EXPECT_TRUE(writer.add_record({900, 1, 0, 1}, &value));
+    bytes.resize(writer.finish());
+    return bytes;
+}
+
+// C-COMMIT-008: the same identity acknowledges only the same full bytes,
+// whether the first completion was lost or its writer has reopened.
+TEST_P(HostStorage, repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes) {
+    const std::unique_ptr<StorageHost> host = make_host();
+    StorageRequests requests(*host);
+    const Bytes batch = identified_batch(1, 20, 1);
+    StorageRequest &first = requests.append_identity(1, 20, 1, batch);
+    requests.finish();
+    ASSERT_EQ(first.result.outcome, AYNI_WRITE_OK);
+    StorageRequest &retry = requests.append_identity(1, 20, 1, batch);
+    requests.finish();
+    EXPECT_EQ(retry.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(requests.read_now(1), batch);
+    StorageRequest &changed = requests.append_identity(1, 20, 1, identified_batch(1, 20, 1, 2));
+    requests.finish();
+    EXPECT_EQ(changed.result.outcome, AYNI_WRITE_FAILED);
+    host->stop();
+    host->start();
+    requests.reset();
+    StorageRequest &reopened_retry = requests.append_identity(1, 20, 1, batch);
+    requests.finish();
+    EXPECT_EQ(reopened_retry.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(requests.read_now(1), batch);
+}
+
+// C-STORE-005: cursors preserve physical order even when stale writers put
+// a lower sequence after a higher one. The Kernel owns their interpretation.
+TEST_P(HostStorage, physical_cursor_reads_every_frame_without_filtering_its_sequence) {
+    const std::unique_ptr<StorageHost> host = make_host();
+    StorageRequests requests(*host);
+    const Bytes fifth = test_batch(5, 40);
+    const Bytes third = test_batch(3, 30);
+    const Bytes seventh = test_batch(7, 50);
+    ASSERT_TRUE(requests.append_now(5, fifth));
+    ASSERT_TRUE(requests.append_now(3, third));
+    ASSERT_TRUE(requests.append_now(7, seventh));
+    StorageRequest &small = requests.physical_read(0, 39);
+    requests.finish();
+    EXPECT_EQ(small.result.outcome, AYNI_READ_BUFFER_TOO_SMALL);
+    EXPECT_EQ(small.result.value, fifth.size());
+    StorageRequest &first = requests.physical_read(0, 40);
+    requests.finish();
+    ASSERT_EQ(first.result.outcome, AYNI_WRITE_OK);
+    ASSERT_NE(first.result.next_cursor, 0U);
+    EXPECT_EQ(first.received, fifth);
+    StorageRequest &next = requests.physical_read(first.result.next_cursor, 80);
+    requests.finish();
+    EXPECT_EQ(next.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(next.received, joined({third, seventh}));
+    StorageRequest &end = requests.physical_read(next.result.next_cursor, 80);
+    requests.finish();
+    EXPECT_EQ(end.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(end.result.value, 0U);
+}
+
+// C-HOST-012/C-STORE-005: the isolation boundary applies to every mutating
+// port, and repeated fence calls allocate strictly newer epochs.
+TEST_P(HostStorage, writer_fence_isolates_append_snapshot_and_trim) {
+    const std::unique_ptr<StorageHost> host = make_host();
+    StorageRequests requests(*host);
+    StorageRequest &fence = requests.fence(10);
+    requests.finish();
+    ASSERT_TRUE(fence.result.outcome == AYNI_FENCE_DRAINED ||
+                fence.result.outcome == AYNI_FENCE_EPOCH_INSTALLED);
+    ASSERT_GE(fence.result.value, 10U);
+    const uint32_t epoch = static_cast<uint32_t>(fence.result.value);
+    StorageRequest &old_append = requests.append_identity(1, 1, 1, identified_batch(1, 1, 1));
+    StorageRequest &old_snapshot = requests.write_snapshot(1, 0, 0, {1, 2});
+    StorageRequest &old_trim = requests.trim(1, 1, 1);
+    requests.finish();
+    EXPECT_EQ(old_append.result.outcome, AYNI_WRITE_FAILED);
+    EXPECT_EQ(old_snapshot.result.outcome, AYNI_WRITE_FAILED);
+    EXPECT_EQ(old_trim.result.outcome, AYNI_WRITE_FAILED);
+    StorageRequest &new_append =
+        requests.append_identity(epoch, 1, 1, identified_batch(epoch, 1, 1));
+    requests.finish();
+    EXPECT_EQ(new_append.result.outcome, AYNI_WRITE_OK);
+    StorageRequest &second_fence = requests.fence(2);
+    requests.finish();
+    EXPECT_GT(second_fence.result.value, epoch);
+}
+
+// C-STORE-006: slots are independent, chunk writes and read-back survive
+// a new Host, and an identical chunk retry cannot truncate later chunks.
+TEST_P(HostStorage, snapshot_slots_keep_sequential_chunks_and_idempotent_retries) {
+    const std::unique_ptr<StorageHost> host = make_host();
+    StorageRequests requests(*host);
+    StorageRequest &absent = requests.read_snapshot(0, 0, 8);
+    requests.finish();
+    ASSERT_EQ(absent.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(absent.result.value, 0U);
+    StorageRequest &first = requests.write_snapshot(1, 0, 0, {1, 2, 3});
+    requests.finish();
+    ASSERT_EQ(first.result.outcome, AYNI_WRITE_OK);
+    StorageRequest &second = requests.write_snapshot(1, 0, 3, {4, 5});
+    requests.finish();
+    ASSERT_EQ(second.result.outcome, AYNI_WRITE_OK);
+    StorageRequest &retry = requests.write_snapshot(1, 0, 0, {1, 2, 3});
+    StorageRequest &other = requests.write_snapshot(1, 1, 0, {8, 9});
+    requests.finish();
+    EXPECT_EQ(retry.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(other.result.outcome, AYNI_WRITE_OK);
+    host->stop();
+    host->start();
+    requests.reset();
+    StorageRequest &whole = requests.read_snapshot(0, 0, 8);
+    StorageRequest &tail = requests.read_snapshot(0, 3, 8);
+    StorageRequest &slot_one = requests.read_snapshot(1, 0, 8);
+    requests.finish();
+    EXPECT_EQ(whole.received, (Bytes{1, 2, 3, 4, 5}));
+    EXPECT_EQ(tail.received, (Bytes{4, 5}));
+    EXPECT_EQ(slot_one.received, (Bytes{8, 9}));
+    StorageRequest &gap = requests.write_snapshot(1, 0, 9, {10});
+    requests.finish();
+    EXPECT_EQ(gap.result.outcome, AYNI_WRITE_FAILED);
+    StorageRequest &oversized = requests.write_snapshot(1, 0, 8U * 1024U * 1024U, {10});
+    requests.finish();
+    EXPECT_EQ(oversized.result.outcome, AYNI_WRITE_FAILED);
+}
+
+// C-STORE-007/C-STORE-011: reclaim only bytes before the durable activation
+// batch. A crash/reopen or repeated trim retains that batch and its tail.
+TEST_P(HostStorage, trimming_keeps_the_activation_and_tail_and_is_idempotent) {
+    const std::unique_ptr<StorageHost> host = make_host();
+    StorageRequests requests(*host);
+    const Bytes first = identified_batch(1, 11, 1);
+    const Bytes activation = identified_batch(1, 12, 2);
+    const Bytes tail = identified_batch(1, 13, 3);
+    for (const auto &item :
+         std::vector<std::pair<uint64_t, Bytes>>{{11, first}, {12, activation}, {13, tail}}) {
+        StorageRequest &append =
+            requests.append_identity(1, item.first, item.first - 10U, item.second);
+        requests.finish();
+        ASSERT_EQ(append.result.outcome, AYNI_WRITE_OK);
+    }
+    StorageRequest &trim = requests.trim(1, 12, 2);
+    requests.finish();
+    ASSERT_EQ(trim.result.outcome, AYNI_WRITE_OK);
+    StorageRequest &physical = requests.physical_read(0, 4096);
+    requests.finish();
+    EXPECT_EQ(physical.received, joined({activation, tail}));
+    host->stop();
+    host->start();
+    requests.reset();
+    StorageRequest &retry = requests.trim(1, 12, 2);
+    requests.finish();
+    EXPECT_EQ(retry.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(requests.read_now(1), joined({activation, tail}));
+    StorageRequest &missing = requests.trim(1, 999, 2);
+    requests.finish();
+    EXPECT_EQ(missing.result.outcome, AYNI_WRITE_FAILED);
+    EXPECT_EQ(requests.read_now(1), joined({activation, tail}));
+}
+
+// C-COMMIT-008: UNKNOWN can mean persisted or lost; identical retries must
+// recover both cases without storing the transition twice.
+TEST(SimStorageFaults, retry_after_unknown_persisted_or_lost_stores_one_batch) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    for (StorageFault fault :
+         {StorageFault::unknown_persisted, StorageFault::unknown_lost, StorageFault::short_write}) {
+        ayni::test::SimStorage storage;
+        StorageRequests requests(storage);
+        const Bytes batch = identified_batch(1, 10, 1);
+        storage.sim().inject_fault(StoragePort::append, fault);
+        StorageRequest &first = requests.append_identity(1, 10, 1, batch);
+        requests.finish();
+        EXPECT_NE(first.result.outcome, AYNI_WRITE_OK);
+        StorageRequest &retry = requests.append_identity(1, 10, 1, batch);
+        requests.finish();
+        EXPECT_EQ(retry.result.outcome, AYNI_WRITE_OK);
+        EXPECT_EQ(requests.read_now(1), batch);
+        ASSERT_EQ(storage.sim().log().size(), 1U);
+        EXPECT_FALSE(storage.sim().log().front().torn);
+    }
+}
+
+// C-HOST-019/C-COMMIT-010: deferred backend work owns its bytes after the
+// completion, and a durable epoch fence prevents its eventual mutation.
+TEST(SimStorageFaults, fence_rejects_an_owned_late_write_after_its_unknown_completion) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    ayni::test::SimStorage storage;
+    StorageRequests requests(storage);
+    storage.sim().inject_fault(StoragePort::append, StorageFault::unknown_deferred);
+    StorageRequest &append = requests.append_identity(1, 10, 1, identified_batch(1, 10, 1));
+    requests.finish();
+    ASSERT_EQ(append.result.outcome, AYNI_WRITE_UNKNOWN);
+    ASSERT_TRUE(append.memory.empty()); // helper released the borrowed bytes
+    StorageRequest &fence = requests.fence(2);
+    requests.finish();
+    ASSERT_EQ(fence.result.outcome, AYNI_FENCE_EPOCH_INSTALLED);
+    EXPECT_EQ(storage.sim().complete_late_storage(), 0U);
+    EXPECT_TRUE(storage.sim().log().empty());
+    const uint32_t epoch = storage.sim().writer_epoch();
+    storage.stop();
+    storage.start();
+    EXPECT_EQ(storage.sim().writer_epoch(), epoch);
+}
+
+// A retry torn before the original deferred bytes arrive must not leave
+// an unreadable middle frame hiding the complete original or its tail.
+TEST(SimStorageFaults, late_complete_copy_replaces_a_torn_retry_before_later_batches) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    ayni::test::SimStorage storage;
+    StorageRequests requests(storage);
+    const Bytes batch = identified_batch(1, 10, 1);
+    const Bytes tail = identified_batch(1, 11, 2);
+    storage.sim().inject_fault(StoragePort::append, StorageFault::unknown_deferred);
+    StorageRequest &deferred = requests.append_identity(1, 10, 1, batch);
+    requests.finish();
+    ASSERT_EQ(deferred.result.outcome, AYNI_WRITE_UNKNOWN);
+    storage.sim().inject_fault(StoragePort::append, StorageFault::short_write);
+    StorageRequest &torn = requests.append_identity(1, 10, 1, batch);
+    requests.finish();
+    ASSERT_EQ(torn.result.outcome, AYNI_WRITE_FAILED);
+    ASSERT_EQ(storage.sim().complete_late_storage(), 1U);
+    ASSERT_EQ(storage.sim().log().size(), 1U);
+    EXPECT_FALSE(storage.sim().log().front().torn);
+    StorageRequest &next = requests.append_identity(1, 11, 2, tail);
+    requests.finish();
+    ASSERT_EQ(next.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(requests.read_now(1), joined({batch, tail}));
+}
+
+TEST(SimStorageFaults, a_torn_snapshot_chunk_can_be_retried_without_touching_the_other_slot) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    ayni::test::SimStorage storage;
+    StorageRequests requests(storage);
+    StorageRequest &old = requests.write_snapshot(1, 1, 0, {8, 9});
+    requests.finish();
+    ASSERT_EQ(old.result.outcome, AYNI_WRITE_OK);
+    storage.sim().inject_fault(StoragePort::write_snapshot, StorageFault::short_write);
+    StorageRequest &torn = requests.write_snapshot(1, 0, 0, {1, 2, 3, 4, 5, 6});
+    requests.finish();
+    EXPECT_EQ(torn.result.outcome, AYNI_WRITE_FAILED);
+    StorageRequest &retry = requests.write_snapshot(1, 0, 0, {1, 2, 3, 4, 5, 6});
+    requests.finish();
+    EXPECT_EQ(retry.result.outcome, AYNI_WRITE_OK);
+    StorageRequest &candidate = requests.read_snapshot(0, 0, 8);
+    StorageRequest &prior = requests.read_snapshot(1, 0, 8);
+    requests.finish();
+    EXPECT_EQ(candidate.received, (Bytes{1, 2, 3, 4, 5, 6}));
+    EXPECT_EQ(prior.received, (Bytes{8, 9}));
+}
+
+TEST(SimStorageFaults, cached_free_space_accounts_for_pending_writes_and_exhaustion) {
+    ayni::test::SimStorage storage;
+    storage.sim().set_storage_capacity(100);
+    StorageRequests requests(storage);
+    EXPECT_EQ(requests.free_bytes(), 92U); // the framing header consumes 8
+    StorageRequest &first = requests.append(1, test_batch(1, 60));
+    EXPECT_EQ(requests.free_bytes(), 8U);
+    requests.finish();
+    ASSERT_EQ(first.result.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(requests.free_bytes(), 8U);
+    StorageRequest &full = requests.append(2, test_batch(2, 10));
+    requests.finish();
+    EXPECT_EQ(full.result.outcome, AYNI_WRITE_FAILED);
+    EXPECT_EQ(requests.read_now(1), test_batch(1, 60));
 }
 
 // C-HOST-004, C-HOST-006, C-HOST-018: several requests in flight at once,
@@ -393,7 +668,7 @@ class KernelRun {
             report.struct_size = sizeof(report);
             ASSERT_EQ(ayni_step(kernel_, 1000, 1000000, &report), AYNI_OK);
             if (report.more_ready == 0U && lifecycle() == state) {
-                host_.serve();
+                host_.serve(report.next_deadline_us);
             }
         }
         EXPECT_NE(lifecycle(), state);

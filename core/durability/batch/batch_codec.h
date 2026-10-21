@@ -13,8 +13,10 @@
 
 namespace ayni::durability {
 
-// Experimental until fault injection settles the layout (records.md).
-constexpr uint16_t storage_schema = 0;
+// Schema 0 remains readable for the transactional migration to schema 1.
+constexpr uint16_t storage_schema = 1;
+constexpr uint16_t writer_fence_record_type = 10;
+constexpr uint16_t snapshot_commit_record_type = 11;
 constexpr std::size_t batch_header_size = 44;
 constexpr std::size_t record_header_size = 12;
 constexpr std::size_t commit_marker_size = 12;
@@ -42,7 +44,8 @@ struct RecordHeader {
 // Encodes one batch into caller memory: add the records, then finish().
 class BatchWriter {
   public:
-    BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity);
+    BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity,
+                uint16_t schema = storage_schema);
 
     // false, with nothing written, when the record and the commit marker
     // after it do not fit. body may be null only when header.length is 0.
@@ -59,6 +62,7 @@ class BatchWriter {
     uint8_t *buffer_;
     std::size_t capacity_;
     BatchIdentity identity_;
+    uint16_t schema_;
     std::size_t end_ = batch_header_size;
     uint32_t record_count_ = 0;
 };
@@ -73,6 +77,7 @@ enum class BatchCheck {
 // A checked batch; payload points into the bytes given to read_batch.
 struct BatchView {
     BatchIdentity identity;
+    uint16_t schema;
     uint32_t record_count;
     const uint8_t *payload;
     uint32_t payload_length;

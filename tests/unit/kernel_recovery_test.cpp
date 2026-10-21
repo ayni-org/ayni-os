@@ -88,10 +88,27 @@ void run_until_idle(WorkNode &work) {
     for (int round = 0; round < 100; ++round) {
         const ayni_step_report_v1 report = work.node().step();
         if (work.node().sim().complete_storage() == 0U && report.more_ready == 0U) {
+            // White-box: only advance the storage deadline, never a future
+            // goal deadline merely because the application is idle.
+            if (!work.kernel()->log.idle() && report.next_deadline_us != no_time &&
+                report.next_deadline_us > work.node().sim().now_us()) {
+                work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
+                continue;
+            }
             return;
         }
     }
     ADD_FAILURE() << "the kernel never went idle";
+}
+
+// Waits for the next write budget without completing the write. This lets
+// scenarios place a power cut or inspect acceptance at a real I/O boundary.
+ayni_step_report_v1 storage_step(WorkNode &work) {
+    const uint64_t due = work.kernel()->log.next_deadline();
+    if (due != no_time && due > work.node().sim().now_us()) {
+        work.node().sim().advance_us(due - work.node().sim().now_us());
+    }
+    return work.node().step();
 }
 
 // Reminder tasks report a step and a checkpoint, then complete; timer tasks
@@ -216,6 +233,12 @@ class Views {
             const ayni_step_report_v1 report = work_.node().step(1);
             record();
             if (work_.node().sim().complete_storage() == 0U && report.more_ready == 0U) {
+                if (!work_.kernel()->log.idle() && report.next_deadline_us != no_time &&
+                    report.next_deadline_us > work_.node().sim().now_us()) {
+                    work_.node().sim().advance_us(report.next_deadline_us -
+                                                  work_.node().sim().now_us());
+                    continue;
+                }
                 return;
             }
         }
@@ -294,13 +317,13 @@ TEST(WorkRecovery, every_stored_prefix_recovers_the_state_after_its_last_batch) 
     ASSERT_GE(log.size(), 12U);
     // The batches up to the instances' start: the agents are back RUNNING,
     // so recovery itself applies no transition.
-    for (std::size_t kept = 2; kept <= log.size(); ++kept) {
+    for (std::size_t kept = views.begin()->first; kept <= log.size(); ++kept) {
         SCOPED_TRACE(kept);
         WorkNode later;
         prepare(later);
         later.node().sim().log().assign(log.begin(), log.begin() + static_cast<long>(kept));
         later.run();
-        EXPECT_EQ(later.node().info().durable_seq, kept + 1U); // and its own boot batch
+        EXPECT_EQ(later.node().info().durable_seq, kept + 2U); // its writer fence and boot batch
         EXPECT_EQ(describe(later), views.at(kept));
     }
 }
@@ -317,7 +340,7 @@ TEST(WorkRecovery, restart_after_shutdown_keeps_all_the_work) {
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(describe(work), before);
-    EXPECT_EQ(work.node().info().durable_seq, views.rbegin()->first + 1U);
+    EXPECT_EQ(work.node().info().durable_seq, views.rbegin()->first + 2U);
 }
 
 // --- Power loss -------------------------------------------------------------
@@ -335,7 +358,7 @@ TEST(WorkRecovery, append_cut_by_power_loss_counts_only_when_whole) {
         const std::string stored = describe(work);
         const uint64_t cut_goal = create(work, goal_body(work, AYNI_TRIGGER_NONE, "folder"));
         const std::string cut_view = describe(work);
-        work.node().step(); // the append is in flight
+        storage_step(work); // the append is in flight
         ASSERT_EQ(work.node().sim().pending_storage(), 1U);
 
         work.node().power_cut_and_start(cut);
@@ -348,7 +371,7 @@ TEST(WorkRecovery, append_cut_by_power_loss_counts_only_when_whole) {
         EXPECT_EQ(ayni_get_goal(work.kernel(), cut_goal, &info),
                   cut == CutAppend::stored ? AYNI_OK : AYNI_NOT_FOUND);
         // The goal after the boot batch is the fourth transition either way.
-        EXPECT_EQ(work.node().info().durable_seq, cut == CutAppend::stored ? 5U : 4U);
+        EXPECT_EQ(work.node().info().durable_seq, cut == CutAppend::stored ? 7U : 6U);
     }
 }
 
@@ -397,9 +420,9 @@ TEST(WorkRecovery, timers_restart_from_the_recovery_clock_with_their_full_length
 
     ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
     work.node().sim().advance_us(60U * period_us);
-    const uint64_t recovered_us = work.node().sim().now_us();
     work.node().create_and_start();
     work.node().recover();
+    const uint64_t recovered_us = work.node().sim().now_us();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     // None of the 60 periods the power was off for is made up (C-LIMIT-007).
     EXPECT_EQ(work.goal(taken).occurrences, 1U);
@@ -726,7 +749,7 @@ TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
 
     Catalog catalog;
     catalog.agent_b = false;
-    EXPECT_EQ(restart_with(work, catalog), 2U); // the boot batch and the settling
+    EXPECT_EQ(restart_with(work, catalog), 3U); // the boot batch and the settling
     const ayni_agent_info_v1 agent = work.agent(agent_b);
     EXPECT_EQ(agent.lifecycle, AYNI_AGENT_FAULTED);
     EXPECT_EQ(agent.fault_reason, AYNI_REASON_AGENT_UNREGISTERED);
@@ -743,7 +766,7 @@ TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
                    AYNI_INVALID_STATE, AYNI_REASON_OWNER_STATE, AYNI_OBJECT_AGENT_INSTANCE,
                    agent.instance_id);
 
-    EXPECT_EQ(restart_with(work, Catalog{}), 2U);
+    EXPECT_EQ(restart_with(work, Catalog{}), 3U);
     EXPECT_EQ(work.agent(agent_b).lifecycle, AYNI_AGENT_RUNNING);
     EXPECT_EQ(work.agent(agent_b).fault_reason, AYNI_REASON_NONE);
     EXPECT_EQ(work.task(their_task).lifecycle, AYNI_TASK_READY);
@@ -762,7 +785,7 @@ TEST(WorkRecovery, agent_registered_for_the_first_time_starts_after_the_logged_o
     const ayni_agent_info_v1 before = work.agent(agent_a);
     ASSERT_EQ(before.lifecycle, AYNI_AGENT_RUNNING);
 
-    EXPECT_EQ(restart_with(work, Catalog{}), 2U); // the boot batch and the start
+    EXPECT_EQ(restart_with(work, Catalog{}), 3U); // the boot batch and the start
     const ayni_agent_info_v1 a = work.agent(agent_a);
     EXPECT_EQ(a.instance_id, before.instance_id);
     EXPECT_EQ(a.revision, before.revision);
@@ -775,7 +798,7 @@ TEST(WorkRecovery, agent_registered_for_the_first_time_starts_after_the_logged_o
     EXPECT_NE(b.instance_id, a.instance_id);
 
     // With every instance logged, a restart starts none.
-    EXPECT_EQ(restart_with(work, Catalog{}), 1U);
+    EXPECT_EQ(restart_with(work, Catalog{}), 2U);
     EXPECT_EQ(work.agent(agent_b).instance_id, b.instance_id);
 }
 
@@ -999,7 +1022,7 @@ TEST(WorkJournal, transition_waits_for_room_for_its_batch) {
     expect_refused(create_command(work, body, 8), AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG);
     EXPECT_EQ(next_commit_seq(work), next);
 
-    ayni_step_report_v1 report = work.node().step(); // issues the append, derives nothing
+    ayni_step_report_v1 report = storage_step(work); // issues the append, derives nothing
     EXPECT_EQ(report.items_done, 0U);
     EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(report.next_deadline_us, no_time);
@@ -1009,7 +1032,7 @@ TEST(WorkJournal, transition_waits_for_room_for_its_batch) {
     const uint64_t wakes = work.node().sim().wake_count();
     ASSERT_EQ(work.node().sim().complete_storage(), 1U);
     EXPECT_EQ(work.node().sim().wake_count(), wakes + 1U);
-    report = work.node().step(); // the append's result, then the derivation
+    report = storage_step(work); // the append's result, then the derivation
     EXPECT_EQ(report.items_done, 2U);
     EXPECT_NE(task_of(work, goal_id), 0U);
     // A command refused BUSY is not kept, so its retry applies.
@@ -1025,14 +1048,16 @@ TEST(WorkJournal, event_waits_for_room_queued) {
     work.run();
     const uint64_t goal_id = create(work, goal_body(work, AYNI_TRIGGER_LOCAL_INPUT));
     ASSERT_EQ(post_input(work), AYNI_OK);
-    EXPECT_EQ(work.node().step().items_done, 0U);
+    EXPECT_EQ(storage_step(work).items_done, 0U);
     EXPECT_EQ(work.node().info().events_discarded, 0U);
     EXPECT_EQ(task_of(work, goal_id), 0U);
     work.node().sim().complete_storage();
-    EXPECT_EQ(work.node().step().items_done, 2U); // the result, then the event
+    EXPECT_EQ(storage_step(work).items_done, 2U); // the result, then the event
     EXPECT_EQ(work.goal(goal_id).next_due_us, work.node().sim().now_us());
-    work.node().sim().complete_storage();
-    work.node().step(); // the result, then the derivation
+    EXPECT_EQ(work.node().sim().complete_storage(), 0U); // the write budget has not opened
+    storage_step(work); // issues the event's batch at its storage deadline
+    ASSERT_EQ(work.node().sim().complete_storage(), 1U);
+    storage_step(work); // the result, then the derivation
     EXPECT_NE(task_of(work, goal_id), 0U);
 }
 
@@ -1047,21 +1072,19 @@ TEST(WorkJournal, result_is_durable_once_the_host_stores_its_batch) {
     const Submitted created = work.create(goal_body(work, AYNI_TRIGGER_NONE, "folder"));
     ASSERT_EQ(created.status, AYNI_OK);
     EXPECT_GT(created.result.commit_seq, durable);
-    ayni_step_report_v1 report = work.node().step(); // issues the append
+    ayni_step_report_v1 report = storage_step(work); // issues the append
     EXPECT_EQ(report.durable_seq, durable);
     ASSERT_EQ(work.node().sim().complete_storage(), 1U);
     EXPECT_EQ(work.node().info().durable_seq, durable); // posted, not yet applied
-    report = work.node().step();
+    report = storage_step(work);
     EXPECT_EQ(report.durable_seq, created.result.commit_seq);
     EXPECT_EQ(work.node().info().durable_seq, created.result.commit_seq);
 }
 
 // --- Append failures ---------------------------------------------------------
 
-// C-STORE-009: a batch the Host did not store, or may not have, ends the
-// writer, since a later batch could not follow it in the log: the kernel
-// becomes RESTRICTED and stores nothing more. One the Host refuses at the
-// call does too.
+// C-COMMIT-008/010: only exhausted retries enter FENCED. Failure to
+// isolate then leaves read-only diagnostics, without storing later work.
 TEST(WorkJournal, append_that_fails_restricts_the_kernel) {
     const struct {
         StorageFault fault;
@@ -1077,14 +1100,25 @@ TEST(WorkJournal, append_that_fails_restricts_the_kernel) {
         SCOPED_TRACE(static_cast<int>(c.fault));
         WorkNode work;
         work.run();
+        const uint64_t durable = work.node().info().durable_seq;
         const uint64_t goal_id = create(work, goal_body(work, AYNI_TRIGGER_NONE, "folder"));
-        work.node().sim().inject_fault(StoragePort::append, c.fault);
-        work.node().step();
-        work.node().sim().complete_storage();
-        work.node().step();
-        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            work.node().sim().inject_fault(StoragePort::append, attempt != 0 && c.stored
+                                                                    ? StorageFault::unknown_lost
+                                                                    : c.fault);
+        }
+        for (int round = 0; round < 12 && work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING;
+             ++round) {
+            storage_step(work);
+            work.node().sim().complete_storage();
+            work.node().step(1);
+        }
+        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_FENCED);
         EXPECT_EQ(work.node().info().restriction, c.restriction);
-        EXPECT_EQ(work.node().info().durable_seq, 2U);
+        EXPECT_EQ(work.node().info().durable_seq, durable);
+        work.node().sim().inject_fault(StoragePort::fence, StorageFault::unavailable);
+        run_until_idle(work);
+        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
         const std::size_t stored = work.node().sim().log().size();
         work.node().step();
         EXPECT_EQ(work.node().sim().pending_storage(), 0U);
@@ -1113,13 +1147,11 @@ TEST(WorkJournal, draining_stores_every_batch_before_it_stops) {
     }
     const uint64_t last_seq = next_commit_seq(work) - 1U;
     ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
-    for (int append = 0; append < 3; ++append) {
-        EXPECT_EQ(work.node().step().more_ready, 0U); // waits for the append
-        EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_DRAINING) << append;
-        work.node().sim().complete_storage();
-    }
-    work.node().step();
+    EXPECT_EQ(storage_step(work).more_ready, 0U); // waits for the append
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_DRAINING);
+    work.node().drain(); // later requests respect the shared write interval
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
+    EXPECT_EQ(work.node().info().durable_seq, last_seq);
     EXPECT_EQ(work.node().sim().log().size(), last_seq);
 
     work.node().reboot();
@@ -1137,13 +1169,13 @@ TEST(WorkJournal, draining_stops_when_an_append_fails) {
     create(work, goal_body(work, AYNI_TRIGGER_NONE, "folder"));
     create(work, goal_body(work, AYNI_TRIGGER_NONE, "folder"));
     ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
-    work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
-    work.node().step();
-    work.node().sim().complete_storage();
-    work.node().step();
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+    }
+    work.node().drain();
     EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     EXPECT_EQ(work.node().sim().pending_storage(), 0U);
-    EXPECT_EQ(work.node().info().durable_seq, 2U);
+    EXPECT_EQ(work.node().info().durable_seq, 3U);
 }
 
 } // namespace

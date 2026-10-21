@@ -80,22 +80,48 @@ uint64_t CommandTable::floor(uint64_t principal_id) const {
 }
 
 bool CommandTable::restore(const CommandMapping &mapping, uint64_t floor) {
+    return restore_checked(mapping, floor) == Restore::restored;
+}
+
+CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mapping, uint64_t floor) {
     const CommandMapping *existing = nullptr;
-    if (mapping.principal_id == 0U || mapping.command_id == 0U || !has_row(mapping.principal_id)) {
-        return false;
+    if (mapping.principal_id == 0U || mapping.command_id == 0U) {
+        return Restore::corrupt;
+    }
+    if (!has_row(mapping.principal_id)) {
+        return Restore::no_room;
     }
     // Expired is fine: a boot with a smaller capacity gives way to more, so
     // its floor may be above the one the mapping was added under.
     const Lookup lookup = find(mapping.principal_id, mapping.command_id, mapping.digest, existing);
     if (lookup == Lookup::retried || lookup == Lookup::conflict) {
-        return false;
+        return Restore::corrupt;
     }
     insert(mapping);
     Row &row = *row_of(mapping.principal_id);
     if (floor > row.floor) {
         row.floor = floor;
     }
-    return true;
+    return Restore::restored;
+}
+
+uint32_t CommandTable::size() const {
+    uint32_t count = 0;
+    for (uint32_t row = 0; row < row_count_; ++row) {
+        count += rows_[row].count;
+    }
+    return count;
+}
+
+const CommandMapping &CommandTable::at(uint32_t index) const {
+    for (uint32_t row = 0; row < row_count_; ++row) {
+        if (index < rows_[row].count) {
+            return mappings_of(rows_[row])[index];
+        }
+        index -= rows_[row].count;
+    }
+    // Only called with index < size().
+    return mappings_[0];
 }
 
 void CommandTable::clear() {

@@ -1,0 +1,531 @@
+// White-box module tests: snapshot round trips preserve durable ownership,
+// stamps and selection order without persisting boot compatibility holds.
+
+#include "durability/snapshot/snapshot_codec.h"
+#include "foundation/crc32.h"
+#include "foundation/little_endian.h"
+#include "kernel/work_replay.h"
+#include "kernel/work_snapshot.h"
+#include "work/task/task_records.h"
+
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+namespace {
+
+using ayni::durability::BatchCheck;
+using ayni::durability::SnapshotMetadata;
+using ayni::kernel::WorkModel;
+using ayni::kernel::WorkSnapshotReader;
+using ayni::kernel::WorkSnapshotWriter;
+using ayni::work::GoalTable;
+using ayni::work::TaskTable;
+
+constexpr uint64_t instance_id = 0x1'0000'0001ULL;
+constexpr uint64_t goal_id = 0x1'0000'0002ULL;
+constexpr uint64_t task_id = 0x1'0000'0003ULL;
+
+std::vector<uint64_t> store(std::size_t bytes) {
+    return std::vector<uint64_t>((bytes + 7U) / 8U);
+}
+
+ayni::kernel::KernelCapacities capacities() {
+    ayni::kernel::KernelCapacities result{};
+    result.agent_capacity = 2;
+    result.goal_type_capacity = 2;
+    result.goal_capacity = 8;
+    result.goal_parameter_max_bytes = 32;
+    result.session_capacity = 2;
+    result.task_capacity = 4;
+    result.strategy_capacity = 2;
+    result.policy_intent_capacity = 2;
+    result.task_step_capacity = 4;
+    result.task_checkpoint_max_bytes = 16;
+    result.command_capacity = 2;
+    return result;
+}
+
+class Model {
+  public:
+    explicit Model(ayni::kernel::KernelCapacities config = capacities())
+        : capacities_(config),
+          agents_(store(ayni::work::AgentTable::storage_size(config.agent_capacity))),
+          types_(store(ayni::catalog::GoalTypeRegistry::storage_size(config.goal_type_capacity))),
+          goals_(store(
+              GoalTable::storage_size(config.goal_capacity, config.goal_parameter_max_bytes))),
+          sessions_(store(ayni::authority::SessionTable::storage_size(config.session_capacity))),
+          tasks_(store(TaskTable::storage_size({config.task_capacity, config.task_step_capacity,
+                                                config.task_checkpoint_max_bytes}))),
+          strategies_(
+              store(ayni::catalog::StrategyRegistry::storage_size(config.strategy_capacity))),
+          commands_(store(ayni::kernel::CommandTable::storage_size(1, config.command_capacity))),
+          storage_(storage()), model_(capacities_, {3, 4}, storage_) {}
+
+    WorkModel &get() { return model_; }
+
+  private:
+    ayni::kernel::KernelStorage storage() {
+        ayni::kernel::KernelStorage result{};
+        result.agents = agents_.data();
+        result.goal_types = types_.data();
+        result.goals = goals_.data();
+        result.sessions = sessions_.data();
+        result.tasks = tasks_.data();
+        result.strategies = strategies_.data();
+        result.commands = commands_.data();
+        return result;
+    }
+
+    ayni::kernel::KernelCapacities capacities_;
+    std::vector<uint64_t> agents_, types_, goals_, sessions_, tasks_, strategies_, commands_;
+    ayni::kernel::KernelStorage storage_;
+    WorkModel model_;
+};
+
+ayni::work::NewGoal goal(uint64_t parent = 0) {
+    ayni::work::NewGoal result{};
+    result.owner_instance_id = instance_id;
+    result.parent_goal_id = parent;
+    result.goal_type_version = 1;
+    static_cast<void>(result.goal_type_id.assign({"timer", 5}));
+    result.trigger.kind = AYNI_TRIGGER_ONCE;
+    result.occurrence_wait_max_us = ayni::work::no_time;
+    return result;
+}
+
+void populate(WorkModel &model) {
+    ASSERT_EQ(model.agents.restore(100, instance_id, 1, AYNI_AGENT_RUNNING, {2, 2}),
+              ayni::work::AgentTable::Restore::restored);
+    uint32_t index = 0;
+    ASSERT_EQ(model.goals.restore(goal(), goal_id, 0, {3, 3}, index), GoalTable::Restore::restored);
+    ayni::work::GoalState state{};
+    state.lifecycle = AYNI_GOAL_ACTIVE;
+    state.revision = 1;
+    state.taken = 1;
+    state.last_task_id = task_id;
+    ASSERT_EQ(model.goals.restore_state(index, state, {4, 4}), GoalTable::Restore::restored);
+    const ayni::work::NewTask task{goal_id, instance_id, 123, index, 1, 1};
+    ASSERT_EQ(model.tasks.restore(task, task_id, 0, {4, 4}), TaskTable::Restore::restored);
+    ASSERT_TRUE(model.tasks.add_step(0, {"first", 5}, {5, 5}));
+    model.tasks.progress(0, {5, 5});
+    ASSERT_TRUE(model.tasks.add_step(0, {"second", 6}, {7, 7}));
+    ayni::catalog::CatalogId writer;
+    ASSERT_TRUE(writer.assign({"strategy", 8}));
+    const uint8_t checkpoint[] = {9, 8, 7};
+    model.tasks.set_checkpoint(0, writer, 1, {checkpoint, sizeof(checkpoint)}, {7, 7});
+    model.tasks.progress(0, {7, 7});
+}
+
+SnapshotMetadata metadata(const WorkModel &model) {
+    SnapshotMetadata result{};
+    result.generation = 4;
+    result.covers_commit_seq = 100;
+    result.max_transition_id = 100;
+    result.boot_epoch = 1;
+    result.writer_epoch = 2;
+    const auto layout = ayni::kernel::measure_snapshot(model);
+    result.payload_length = layout.payload_length;
+    result.record_count = layout.record_count;
+    return result;
+}
+
+std::vector<uint8_t> export_model(const WorkModel &model, uint32_t page_size = 256) {
+    WorkSnapshotWriter writer(model);
+    std::vector<uint8_t> page(page_size);
+    std::vector<uint8_t> result;
+    for (;;) {
+        uint32_t size = 0;
+        const auto next = writer.next(page.data(), page_size, size);
+        EXPECT_NE(next, WorkSnapshotWriter::Page::no_room);
+        if (next != WorkSnapshotWriter::Page::page) {
+            break;
+        }
+        result.insert(result.end(), page.begin(), page.begin() + size);
+    }
+    return result;
+}
+
+BatchCheck import_model(WorkModel &model, const SnapshotMetadata &meta,
+                        const std::vector<uint8_t> &bytes) {
+    WorkSnapshotReader reader(model, meta);
+    std::size_t at = 0;
+    while (at < bytes.size()) {
+        if (bytes.size() - at < ayni::durability::record_header_size) {
+            return BatchCheck::corrupt;
+        }
+        const uint8_t *record = bytes.data() + at;
+        const ayni::durability::RecordHeader header{
+            ayni::foundation::load_le16(record), ayni::foundation::load_le16(record + 2),
+            ayni::foundation::load_le32(record + 4), ayni::foundation::load_le32(record + 8)};
+        at += ayni::durability::record_header_size;
+        if (header.length > bytes.size() - at) {
+            return BatchCheck::corrupt;
+        }
+        const auto check = reader.apply(header, bytes.data() + at);
+        if (check != BatchCheck::ok) {
+            return check;
+        }
+        at += header.length;
+    }
+    return reader.complete();
+}
+
+// C-STORE-007, C-STORE-014: an arbitrarily paged snapshot keeps the exact
+// durable view, including original transition stamps and checkpoint order.
+TEST(WorkSnapshot, paged_round_trip_keeps_the_original_stamps_and_checkpoint) {
+    Model original;
+    populate(original.get());
+    const auto bytes = export_model(original.get());
+    const auto meta = metadata(original.get());
+    ASSERT_GT(bytes.size(), 256U);
+    EXPECT_EQ(bytes.size(), meta.payload_length);
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::ok);
+    const auto &task = restored.get().tasks.at(0);
+    EXPECT_EQ(task.created_transition_id, 4U);
+    EXPECT_EQ(task.commit_seq, 7U);
+    EXPECT_EQ(task.steps_seq, 7U);
+    EXPECT_EQ(task.steps_before, 1U);
+    EXPECT_EQ(task.checkpoint_seq, 7U);
+    EXPECT_EQ(task.step_count, 2U);
+    EXPECT_TRUE(restored.get().tasks.step(0, 0).equals({"first", 5}));
+    EXPECT_TRUE(restored.get().tasks.step(0, 1).equals({"second", 6}));
+    EXPECT_EQ(restored.get().tasks.checkpoint(0).size, 3U);
+    EXPECT_EQ(std::memcmp(restored.get().tasks.checkpoint(0).data,
+                          original.get().tasks.checkpoint(0).data, 3),
+              0);
+    EXPECT_EQ(restored.get().goals.at(0).created_transition_id, 3U);
+    EXPECT_EQ(restored.get().goals.at(0).commit_seq, 4U);
+    EXPECT_EQ(restored.get().agents.at(0).stamp.commit_seq, 2U);
+}
+
+// ADR-0026 decision 7: a temporary inability to serve an object must not
+// become a permanent hold when the log holding its original state rotates.
+TEST(WorkSnapshot, compatibility_faults_and_holds_are_not_written) {
+    Model original;
+    populate(original.get());
+    original.get().agents.fault_unregistered();
+    original.get().tasks.hold_restored(0, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
+    EXPECT_EQ(ayni::work::AgentTable::effective_lifecycle(original.get().agents.at(0)),
+              AYNI_AGENT_FAULTED);
+    EXPECT_EQ(TaskTable::effective_lifecycle(original.get().tasks.at(0)), AYNI_TASK_PAUSED);
+    Model restored;
+    ASSERT_EQ(restored.get().agents.add(100), ayni::work::AgentTable::AddResult::added);
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    EXPECT_EQ(ayni::work::AgentTable::effective_lifecycle(restored.get().agents.at(0)),
+              AYNI_AGENT_RUNNING);
+    EXPECT_EQ(TaskTable::effective_lifecycle(restored.get().tasks.at(0)), AYNI_TASK_READY);
+    EXPECT_EQ(TaskTable::effective_hold_status(restored.get().tasks.at(0)), AYNI_OK);
+}
+
+// Static snapshots contain parents that have already ended. Journal GOAL
+// creation rules cannot import such a retained tree.
+TEST(WorkSnapshot, terminal_parent_and_child_keep_their_reclamation_order) {
+    Model original;
+    populate(original.get());
+    uint32_t child = 0;
+    ASSERT_EQ(original.get().goals.restore(goal(goal_id), goal_id + 5U, 0, {9, 9}, child),
+              GoalTable::Restore::restored);
+    original.get().tasks.apply(0, ayni::work::TaskChange::cancel, {10, 10});
+    original.get().goals.apply(0, ayni::work::GoalChange::cancel, {10, 10});
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    ASSERT_EQ(restored.get().goals.size(), 2U);
+    EXPECT_EQ(restored.get().goals.at(0).lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(restored.get().goals.at(1).parent_index, 0U);
+    EXPECT_EQ(restored.get().goals.at(1).depth, 1U);
+    EXPECT_EQ(restored.get().goals.at(1).commit_seq, 10U);
+}
+
+// An absent owner still owns its bounded command retry window.
+TEST(WorkSnapshot, commands_keep_their_floor_and_original_acceptance_order) {
+    Model original;
+    auto &commands = original.get().commands;
+    const ayni_object_ref_v1 object{0, goal_id, 1, AYNI_OBJECT_GOAL};
+    commands.insert({7, 100, 1, 3, AYNI_INTENT_GOAL_CREATE, object});
+    commands.insert({7, 200, 2, 4, AYNI_INTENT_GOAL_CREATE, object});
+    commands.insert({7, 1, 3, 5, AYNI_INTENT_GOAL_CREATE, object});
+    EXPECT_EQ(commands.floor(7), 100U);
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    const ayni::kernel::CommandMapping *mapping = nullptr;
+    EXPECT_EQ(restored.get().commands.find(7, 1, 3, mapping),
+              ayni::kernel::CommandTable::Lookup::retried);
+    ASSERT_NE(mapping, nullptr);
+    EXPECT_EQ(mapping->commit_seq, 5U);
+    EXPECT_EQ(restored.get().commands.floor(7), 100U);
+    auto smaller_config = capacities();
+    smaller_config.command_capacity = 1;
+    Model smaller(smaller_config);
+    ASSERT_EQ(import_model(smaller.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    EXPECT_EQ(smaller.get().commands.find(7, 1, 3, mapping),
+              ayni::kernel::CommandTable::Lookup::retried);
+    EXPECT_EQ(smaller.get().commands.floor(7), 200U);
+    EXPECT_EQ(
+        smaller.get().commands.restore_checked({8, 2, 1, 6, AYNI_INTENT_GOAL_CREATE, object}, 0),
+        ayni::kernel::CommandTable::Restore::no_room);
+}
+
+TEST(WorkSnapshot, unknown_required_records_and_incomplete_tasks_refuse_recovery) {
+    Model model;
+    SnapshotMetadata meta{};
+    meta.record_count = 1;
+    WorkSnapshotReader reader(model.get(), meta);
+    EXPECT_EQ(reader.apply({999, 1, ayni::durability::record_required, 0}, nullptr),
+              BatchCheck::unsupported);
+    reader.reset(meta);
+    EXPECT_EQ(reader.apply({999, 1, 0, 0}, nullptr), BatchCheck::ok);
+    EXPECT_EQ(reader.complete(), BatchCheck::ok);
+    Model original;
+    populate(original.get());
+    auto bytes = export_model(original.get());
+    bytes.resize(bytes.size() -
+                 (ayni::durability::record_header_size + ayni::work::task_state_record_size));
+    auto incomplete = metadata(original.get());
+    --incomplete.record_count;
+    EXPECT_EQ(import_model(model.get(), incomplete, bytes), BatchCheck::corrupt);
+}
+
+TEST(WorkSnapshot, writer_reports_a_record_that_does_not_fit_and_reset_is_repeatable) {
+    Model original;
+    populate(original.get());
+    WorkSnapshotWriter writer(original.get());
+    uint8_t small[1]{};
+    uint32_t size = 123;
+    EXPECT_EQ(writer.next(small, sizeof(small), size), WorkSnapshotWriter::Page::no_room);
+    EXPECT_EQ(size, 0U);
+    writer.reset();
+    std::array<uint8_t, 4096> bytes{};
+    EXPECT_EQ(writer.next(bytes.data(), bytes.size(), size), WorkSnapshotWriter::Page::page);
+    EXPECT_EQ(size, metadata(original.get()).payload_length);
+    EXPECT_EQ(ayni::kernel::snapshot_record_max(capacities()) <= bytes.size(), true);
+}
+
+TEST(WorkSnapshot, reload_discard_clears_sessions_and_due_work_but_keeps_registration) {
+    Model model;
+    ASSERT_EQ(model.get().agents.add(100), ayni::work::AgentTable::AddResult::added);
+    populate(model.get());
+    ASSERT_TRUE(model.get().sessions.open({7, 8, 0}));
+    model.get().next_due_work_us = 123;
+    model.get().due_work_changed = true;
+    ayni::kernel::WorkReplay(model.get()).discard_for_reload();
+    EXPECT_EQ(model.get().agents.size(), 1U);
+    EXPECT_EQ(model.get().agents.at(0).lifecycle, AYNI_AGENT_REGISTERED);
+    EXPECT_EQ(model.get().goals.size(), 0U);
+    EXPECT_EQ(model.get().tasks.size(), 0U);
+    EXPECT_EQ(model.get().sessions.find(7), nullptr);
+    EXPECT_EQ(model.get().next_due_work_us, ayni::work::no_time);
+    EXPECT_FALSE(model.get().ids.available());
+}
+
+// C-STORE-007: READY fairness and terminal-object reclamation depend on
+// their original commits, not the snapshot's later covers_commit_seq.
+TEST(WorkSnapshot, ready_and_reclamation_choices_match_the_uncompacted_model) {
+    Model original;
+    populate(original.get());
+    uint32_t second_goal = 0;
+    ASSERT_EQ(original.get().goals.restore(goal(), goal_id + 1U, 0, {8, 8}, second_goal),
+              GoalTable::Restore::restored);
+    ASSERT_EQ(original.get().tasks.restore({goal_id + 1U, instance_id, 456, second_goal, 1, 1},
+                                           task_id + 1U, 0, {9, 9}),
+              TaskTable::Restore::restored);
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    uint32_t first = 0;
+    uint32_t second = 0;
+    ASSERT_TRUE(original.get().tasks.next_ready(101, first));
+    ASSERT_TRUE(restored.get().tasks.next_ready(101, second));
+    EXPECT_EQ(original.get().tasks.at(first).task_id, task_id);
+    EXPECT_EQ(restored.get().tasks.at(second).task_id, task_id);
+
+    // Fill the task tables, ending the lower-id task later than its peer.
+    for (WorkModel *model : {&original.get(), &restored.get()}) {
+        model->tasks.apply(0, ayni::work::TaskChange::cancel, {20, 20});
+        model->tasks.apply(1, ayni::work::TaskChange::cancel, {15, 15});
+        for (uint32_t index = 2; index < 4; ++index) {
+            ASSERT_TRUE(model->tasks.insert({goal_id, instance_id, 0, 0, index, 1}, task_id + index,
+                                            {30U + index, 30U + index}));
+            model->tasks.apply(index, ayni::work::TaskChange::cancel, {40U + index, 40U + index});
+        }
+    }
+    Model after_terminal_snapshot;
+    ASSERT_EQ(import_model(after_terminal_snapshot.get(), metadata(original.get()),
+                           export_model(original.get())),
+              BatchCheck::ok);
+    for (WorkModel *model : {&original.get(), &after_terminal_snapshot.get()}) {
+        ASSERT_TRUE(
+            model->tasks.insert({goal_id, instance_id, 0, 0, 8, 1}, task_id + 99U, {90, 90}));
+        uint32_t created = 0;
+        ASSERT_TRUE(model->tasks.find(task_id + 99U, created));
+        EXPECT_EQ(model->tasks.at(created).replaced_task_id, task_id + 1U);
+    }
+}
+
+TEST(WorkSnapshot, a_retained_object_can_name_a_predecessor_already_reclaimed) {
+    Model original;
+    populate(original.get());
+    original.get().tasks.apply(0, ayni::work::TaskChange::cancel, {10, 10});
+    original.get().goals.apply(0, ayni::work::GoalChange::cancel, {10, 10});
+    uint32_t index = 0;
+    ASSERT_EQ(original.get().goals.restore(goal(), goal_id + 50U, goal_id, {11, 11}, index),
+              GoalTable::Restore::restored);
+    original.get().tasks.remove_goal(index);
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    EXPECT_EQ(restored.get().goals.size(), 1U);
+    EXPECT_EQ(restored.get().goals.at(0).replaced_goal_id, goal_id);
+    EXPECT_EQ(restored.get().goals.at(0).created_transition_id, 11U);
+}
+
+// C-LIMIT-007: valid state written under larger limits is capacity failure,
+// not corruption and not permission to omit checkpoints or steps.
+TEST(WorkSnapshot, smaller_object_and_checkpoint_capacities_report_no_room) {
+    Model original;
+    populate(original.get());
+    const auto bytes = export_model(original.get());
+    const auto meta = metadata(original.get());
+    for (const bool steps : {false, true}) {
+        auto config = capacities();
+        if (steps) {
+            config.task_step_capacity = 1;
+        } else {
+            config.task_checkpoint_max_bytes = 2;
+        }
+        Model smaller(config);
+        EXPECT_EQ(import_model(smaller.get(), meta, bytes), BatchCheck::no_room);
+        ayni::kernel::WorkReplay(smaller.get()).discard();
+        EXPECT_EQ(smaller.get().tasks.size(), 0U);
+        EXPECT_EQ(smaller.get().goals.size(), 0U);
+    }
+    ASSERT_EQ(original.get().agents.restore(200, instance_id + 100U, 1, AYNI_AGENT_RUNNING, {9, 9}),
+              ayni::work::AgentTable::Restore::restored);
+    auto fewer_agents = capacities();
+    fewer_agents.agent_capacity = 1;
+    Model smaller(fewer_agents);
+    EXPECT_EQ(import_model(smaller.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::no_room);
+}
+
+TEST(WorkSnapshot, smaller_goal_parameter_limit_is_capacity_failure) {
+    Model original;
+    ASSERT_EQ(original.get().agents.restore(100, instance_id, 1, AYNI_AGENT_RUNNING, {2, 2}),
+              ayni::work::AgentTable::Restore::restored);
+    auto parameterized = goal();
+    const uint8_t parameters[] = {1, 2, 3};
+    parameterized.parameters = {parameters, sizeof(parameters)};
+    uint32_t index = 0;
+    ASSERT_EQ(original.get().goals.restore(parameterized, goal_id, 0, {3, 3}, index),
+              GoalTable::Restore::restored);
+    auto config = capacities();
+    config.goal_parameter_max_bytes = 2;
+    Model smaller(config);
+    EXPECT_EQ(import_model(smaller.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::no_room);
+}
+
+TEST(WorkSnapshot, object_stamp_beyond_the_snapshot_boundary_is_corrupt) {
+    Model original;
+    populate(original.get());
+    auto bytes = export_model(original.get());
+    // The first record is an instance: its snapshot stamp follows the
+    // 24-byte INSTANCE body. Mutate the original commit beyond covers.
+    ayni::foundation::store_le64(bytes.data() + ayni::durability::record_header_size + 32U, 101);
+    Model restored;
+    EXPECT_EQ(import_model(restored.get(), metadata(original.get()), bytes), BatchCheck::corrupt);
+}
+
+TEST(WorkSnapshot, bytes_are_independent_of_this_boots_monotonic_clock) {
+    Model original;
+    populate(original.get());
+    auto scheduled = goal();
+    scheduled.trigger.kind = AYNI_TRIGGER_INTERVAL;
+    scheduled.trigger.delay_us = 500;
+    scheduled.trigger.period_us = 1000000;
+    scheduled.created_us = 1000;
+    scheduled.expiry_us = 10000;
+    uint32_t index = 0;
+    ASSERT_EQ(original.get().goals.restore(scheduled, goal_id + 99U, 0, {9, 9}, index),
+              GoalTable::Restore::restored);
+    const auto before = export_model(original.get());
+    original.get().goals.reanchor(99999999);
+    original.get().tasks.reanchor(99999999);
+    EXPECT_EQ(export_model(original.get()), before);
+}
+
+// C-STORE-006: header and marker corruption never masquerade as a commit.
+TEST(SnapshotCodec, every_header_and_marker_byte_is_checked) {
+    SnapshotMetadata meta{};
+    meta.generation = 2;
+    meta.covers_commit_seq = 10;
+    meta.max_transition_id = 10;
+    meta.boot_epoch = 1;
+    meta.writer_epoch = 1;
+    std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
+    ayni::durability::write_snapshot_header(meta, header.data());
+    SnapshotMetadata read{};
+    ASSERT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
+              BatchCheck::ok);
+    for (std::size_t index = 0; index < header.size(); ++index) {
+        auto damaged = header;
+        damaged[index] ^= 1U;
+        EXPECT_EQ(ayni::durability::read_snapshot_header(damaged.data(), damaged.size(), read),
+                  BatchCheck::corrupt)
+            << index;
+    }
+    std::array<uint8_t, ayni::durability::snapshot_marker_size> marker{};
+    ayni::durability::write_snapshot_marker(meta, marker.data());
+    for (std::size_t index = 0; index < marker.size(); ++index) {
+        auto damaged = marker;
+        damaged[index] ^= 1U;
+        EXPECT_EQ(ayni::durability::read_snapshot_marker(damaged.data(), damaged.size(), meta),
+                  BatchCheck::corrupt)
+            << index;
+        EXPECT_EQ(ayni::durability::read_snapshot_marker(marker.data(),
+                                                         static_cast<uint32_t>(index), meta),
+                  BatchCheck::corrupt)
+            << index;
+    }
+}
+
+TEST(SnapshotCodec, newer_schema_is_unsupported_and_crc_continues_between_pages) {
+    SnapshotMetadata meta{};
+    meta.generation = 1;
+    meta.writer_epoch = 1;
+    meta.schema = 2;
+    std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
+    ayni::durability::write_snapshot_header(meta, header.data());
+    SnapshotMetadata read{};
+    EXPECT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
+              BatchCheck::unsupported);
+    const uint8_t bytes[] = {1, 2, 3, 4, 5, 6};
+    const uint32_t prefix = ayni::durability::snapshot_crc32(bytes, 2);
+    EXPECT_EQ(ayni::durability::snapshot_crc32(bytes + 2, 4, prefix),
+              ayni::foundation::crc32(bytes, sizeof(bytes)));
+}
+
+} // namespace
+
+// C-STORE-003/006: CRC-correct metadata cannot wrap the logical baseline.
+TEST(SnapshotCodec, coverage_cannot_exceed_the_transition_baseline) {
+    for (const uint64_t covers : {uint64_t{1}, UINT64_MAX}) {
+        ayni::durability::SnapshotMetadata meta{};
+        meta.generation = 1;
+        meta.writer_epoch = 1;
+        meta.covers_commit_seq = covers;
+        std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
+        ayni::durability::write_snapshot_header(meta, header.data());
+        ayni::durability::SnapshotMetadata read{};
+        EXPECT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
+                  ayni::durability::BatchCheck::corrupt);
+    }
+}

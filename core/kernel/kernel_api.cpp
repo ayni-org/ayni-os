@@ -32,7 +32,8 @@ constexpr uint32_t first_minor_of_major_0 = 1;
 constexpr std::size_t host_v1_min_size =
     offsetof(ayni_host_v1, monotonic_now_us) + sizeof(ayni_host_v1::monotonic_now_us);
 // New in 0.3 and 0.4, so their first layout is the whole 0.4 struct.
-constexpr std::size_t completion_result_v1_min_size = sizeof(ayni_completion_result_v1);
+constexpr std::size_t completion_result_v1_min_size =
+    offsetof(ayni_completion_result_v1, next_cursor);
 constexpr std::size_t kernel_info_v1_min_size =
     offsetof(ayni_kernel_info_v1, boot_epoch) + sizeof(ayni_kernel_info_v1::boot_epoch);
 // Where each field after the first layout ends: durable_seq since 0.5, the
@@ -79,13 +80,15 @@ ayni_status_t read_capacity(const ayni_config_v1 *config, std::size_t field_offs
 }
 
 // The storage buffer holds the largest batch a transition writes (ADR-0026);
-// 0 takes twice that, which the maxima keep within the buffer's own.
+// 0 takes three times that, avoiding fragmentation with one batch in flight.
 ayni_status_t resolve_storage_buffer(KernelCapacities &capacities) {
-    const uint32_t needed = ayni::kernel::storage_buffer_min(capacities);
+    const uint32_t journal_needed = ayni::kernel::storage_buffer_min(capacities);
+    const uint32_t snapshot_needed = ayni::kernel::snapshot_record_max(capacities);
+    const uint32_t needed = journal_needed > snapshot_needed ? journal_needed : snapshot_needed;
     static_assert(AYNI_STORAGE_BUFFER_BYTES_DEFAULT == 0U, "0 is the default");
     if (capacities.storage_buffer_bytes == 0U) {
         capacities.storage_buffer_bytes =
-            2U * (needed > AYNI_STORAGE_BUFFER_BYTES_MIN ? needed : AYNI_STORAGE_BUFFER_BYTES_MIN);
+            3U * (needed > AYNI_STORAGE_BUFFER_BYTES_MIN ? needed : AYNI_STORAGE_BUFFER_BYTES_MIN);
         return AYNI_OK;
     }
     return capacities.storage_buffer_bytes < AYNI_STORAGE_BUFFER_BYTES_MIN ||
@@ -211,6 +214,30 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
                                &limits.goal_children_max);
     }
     if (status == AYNI_OK) {
+        status = read_capacity(
+            config, offsetof(ayni_config_v1, storage_write_interval_us),
+            {AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT, 0U, AYNI_STORAGE_WRITE_INTERVAL_US_MAX},
+            &limits.storage_write_interval_us);
+        if (limits.storage_write_interval_us == 0U) {
+            limits.storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
+        }
+    }
+    if (status == AYNI_OK) {
+        status =
+            read_capacity(config, offsetof(ayni_config_v1, storage_log_max_bytes),
+                          {AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT, 0U, AYNI_STORAGE_LOG_MAX_BYTES_MAX},
+                          &limits.storage_log_max_bytes);
+        if (limits.storage_log_max_bytes == 0U) {
+            const uint32_t scaled = 8U * capacities.storage_buffer_bytes;
+            limits.storage_log_max_bytes = scaled > 1048576U ? scaled : 1048576U;
+        } else if (limits.storage_log_max_bytes <
+                   capacities.storage_buffer_bytes +
+                       3U * ayni::kernel::transition_batch_max(capacities) + 1024U +
+                       ayni::durability::batch_size(ayni::kernel::activation_record_length, 1)) {
+            status = AYNI_INVALID_ARGUMENT;
+        }
+    }
+    if (status == AYNI_OK) {
         *out_capacities = capacities;
         *out_limits = limits;
     }
@@ -245,6 +272,30 @@ ayni_host_v1 copy_host(const ayni_host_v1 *host) {
                sizeof(host->storage_read_prefix))) {
         copy.storage_read_prefix = host->storage_read_prefix;
     }
+    if (covers(host->struct_size, offsetof(ayni_host_v1, storage_read_log),
+               sizeof(host->storage_read_log))) {
+        copy.storage_read_log = host->storage_read_log;
+    }
+    if (covers(host->struct_size, offsetof(ayni_host_v1, storage_fence_writers),
+               sizeof(host->storage_fence_writers))) {
+        copy.storage_fence_writers = host->storage_fence_writers;
+    }
+    if (covers(host->struct_size, offsetof(ayni_host_v1, storage_write_snapshot),
+               sizeof(host->storage_write_snapshot))) {
+        copy.storage_write_snapshot = host->storage_write_snapshot;
+    }
+    if (covers(host->struct_size, offsetof(ayni_host_v1, storage_read_snapshot),
+               sizeof(host->storage_read_snapshot))) {
+        copy.storage_read_snapshot = host->storage_read_snapshot;
+    }
+    if (covers(host->struct_size, offsetof(ayni_host_v1, storage_trim_prefix),
+               sizeof(host->storage_trim_prefix))) {
+        copy.storage_trim_prefix = host->storage_trim_prefix;
+    }
+    if (covers(host->struct_size, offsetof(ayni_host_v1, storage_free_bytes),
+               sizeof(host->storage_free_bytes))) {
+        copy.storage_free_bytes = host->storage_free_bytes;
+    }
     return copy;
 }
 
@@ -267,6 +318,17 @@ ayni_status_t validate_host(const ayni_host_v1 *host) {
     // Storage is optional, but a log that can be written and not read back,
     // or the reverse, is a broken table (ADR-0016).
     if ((copy.storage_append == nullptr) != (copy.storage_read_prefix == nullptr)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const bool some_maintenance =
+        copy.storage_read_log != nullptr || copy.storage_fence_writers != nullptr ||
+        copy.storage_write_snapshot != nullptr || copy.storage_read_snapshot != nullptr ||
+        copy.storage_trim_prefix != nullptr || copy.storage_free_bytes != nullptr;
+    if (some_maintenance &&
+        (copy.storage_append == nullptr || copy.storage_read_log == nullptr ||
+         copy.storage_fence_writers == nullptr || copy.storage_write_snapshot == nullptr ||
+         copy.storage_read_snapshot == nullptr || copy.storage_trim_prefix == nullptr ||
+         copy.storage_free_bytes == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
     }
     return AYNI_OK;
@@ -450,6 +512,10 @@ ayni_status_t ayni_completion_post(ayni_completion_t *completion,
         result->struct_size, completion_result_v1_min_size, sizeof(ayni_completion_result_v1));
     if (status != AYNI_OK) {
         return status;
+    }
+    if (result->struct_size != completion_result_v1_min_size &&
+        result->struct_size < sizeof(ayni_completion_result_v1)) {
+        return AYNI_INVALID_ARGUMENT;
     }
     ayni_completion_result_v1 copy{};
     std::memcpy(&copy, result, result->struct_size);

@@ -208,6 +208,37 @@ GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &sta
     return Restore::restored;
 }
 
+GoalTable::Restore GoalTable::restore_snapshot(const NewGoal &goal, uint64_t goal_id,
+                                               uint64_t replaced_goal_id, uint32_t depth,
+                                               const GoalState &state,
+                                               foundation::TransitionStamp stamp,
+                                               uint32_t &out_index) {
+    uint32_t existing = 0;
+    if (goal_id == 0U || goal.goal_type_version == 0U || find(goal_id, existing) ||
+        !catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) || !goal.trigger.fits()) {
+        return Restore::corrupt;
+    }
+    if (goals_.full() || !parameters_fit(goal.parameters.size) || depth > depth_max_) {
+        return Restore::no_room;
+    }
+    if (goal.parent_goal_id != 0U) {
+        uint32_t parent = 0;
+        if (!find(goal.parent_goal_id, parent) ||
+            goals_[parent].owner_instance_id != goal.owner_instance_id ||
+            goals_[parent].depth + 1U != depth) {
+            return Restore::corrupt;
+        }
+        if (is_live(state.lifecycle) && live_children(parent) >= children_max_) {
+            return Restore::no_room;
+        }
+    } else if (depth != 0U) {
+        return Restore::corrupt;
+    }
+    out_index = goals_.size();
+    place(created_goal(goal, goal_id, replaced_goal_id, stamp), out_index, goal.parameters);
+    return restore_state(out_index, state, stamp);
+}
+
 void GoalTable::reanchor(uint64_t now_us) {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
         Goal &goal = goals_[index];

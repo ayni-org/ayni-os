@@ -14,9 +14,13 @@ add_executable(ayni_unit_tests
     kernel_checkpoint_test.cpp
     kernel_event_test.cpp
     kernel_expiry_test.cpp
+    kernel_fence_test.cpp
     kernel_id_test.cpp
     kernel_lifecycle_test.cpp
     kernel_recovery_test.cpp
+    kernel_storage_recovery_test.cpp
+    kernel_snapshot_fault_test.cpp
+    kernel_storage_admission_test.cpp
     kernel_strategy_test.cpp
     kernel_task_test.cpp
     kernel_trigger_test.cpp
@@ -30,6 +34,7 @@ add_executable(ayni_unit_tests
     task_table_test.cpp
     trigger_schedule_test.cpp
     work_records_test.cpp
+    work_snapshot_test.cpp
     work_restore_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE

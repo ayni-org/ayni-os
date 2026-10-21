@@ -247,6 +247,11 @@ class GoalTable {
     // Replays a GOAL_STATE record of goal index.
     Restore restore_state(uint32_t index, const GoalState &state,
                           foundation::TransitionStamp stamp);
+    // Static snapshots contain terminal parents and retained objects whose
+    // replaced predecessors have already gone. Parents precede children.
+    Restore restore_snapshot(const NewGoal &goal, uint64_t goal_id, uint64_t replaced_goal_id,
+                             uint32_t depth, const GoalState &state,
+                             foundation::TransitionStamp stamp, uint32_t &out_index);
     // Sets each goal's goal_type_index from its type's id and version
     // (ADR-0026): resolve(id, version, trigger_kind, out_index) says whether
     // this boot has that type, and can serve a goal of that trigger kind,
