@@ -1,6 +1,6 @@
 # 生命周期与状态转换
 
-- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022；`MA-004`、`MA-005`；E2 F13，E3 步骤 5
+- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022、ADR-0026；`MA-004`、`MA-005`、`MA-010`；E2 F13，E3 步骤 5
 - **原则**：生命周期、持久化状态与等待原因是三个维度。生命周期写在枚举里；“是否已持久接受”由提交序号表达（C-COMMIT-004）；等待原因由待决调用派生（ADR-0007）。表中未列出的转换都是非法转换，返回 `AYNI_INVALID_STATE` 并保持原状态。
 
 ## Kernel
@@ -20,11 +20,11 @@
 | `CONFIGURING` | `RECOVERING` | `ayni_start` 校验通过 |
 | `CONFIGURING` | `CONFIGURING` | `ayni_start` 校验失败（返回错误与 `ayni_error_v1`，可修正后重试）；Host 没有存储端口（`AYNI_UNSUPPORTED`） |
 | `RECOVERING` | `RUNNING` | 持久前缀重放完成、新的 `boot_epoch` 已持久化（C-ID-009）、幂等映射重建、授权与资源检查完成 |
-| `RECOVERING` | `RESTRICTED` | 版本不支持、已提交区域损坏、关键记录无法验证，或存储拒绝请求、读写失败或结果未知、`boot_epoch` 耗尽（ADR-0016） |
-| `RUNNING` | `RESTRICTED` | 受限栅栏中无法确认旧写入方已排空或隔离，或存储仍不可写（C-COMMIT-008） |
+| `RECOVERING` | `RESTRICTED` | 版本不支持、已提交区域损坏、关键记录无法验证，或存储拒绝请求、读写失败或结果未知、`boot_epoch` 耗尽（ADR-0016）；本次容量或限值放不下日志中的状态（ADR-0026）。已重放的内容全部丢弃 |
+| `RUNNING` | `RESTRICTED` | 受限栅栏中无法确认旧写入方已排空或隔离，或存储仍不可写（C-COMMIT-008）。M1 在栅栏（`MA-010` 的 E 部分）之前：批次的追加结果为 `FAILED`、`UNKNOWN` 或请求被拒绝时直接进入（ADR-0026 决策 4） |
 | `RUNNING` | `RECOVERING` | 受限栅栏确认旧写入方已隔离，以新 `boot_epoch` 重载 |
 | `RUNNING`、`RECOVERING`、`RESTRICTED` | `DRAINING` | `ayni_begin_shutdown` |
-| `DRAINING` | `STOPPED` | 在途工作已终结或记录为未知，资源已释放或隔离，全部预留完成槽已收到完成（C-HOST-018） |
+| `DRAINING` | `STOPPED` | 在途工作已终结或记录为未知，资源已释放或隔离，全部预留完成槽已收到完成（C-HOST-018）；`RUNNING` 中提交的批次已全部存储，或日志已失败（ADR-0026 决策 4） |
 
 各状态下公开函数的返回值（已实现的函数在前，其余为计划；参数错误先于状态检查）：
 
@@ -45,11 +45,11 @@
 | 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
 | `ayni_post_event` | INVALID_STATE | OK（保留到进入 `RUNNING`） | OK（应用） | OK（本地输入丢弃并计数；对账与诊断事件随 `MA-018`、`MA-010`） | OK（丢弃并计数） | INVALID_STATE |
 
-`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类、非零 `command_id`）先于状态检查，所以在任何状态下都先返回（`ayni.h`）；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。`ayni_step` 只在 `RUNNING` 中做到期工作并请策略决定 `READY` 的 Task（ADR-0022）。GoalType 的校验函数与策略的 `decide` 都是 Kernel 调用的回调，不得调用 Kernel（C-POLICY-001）。作为兜底，回调内调用接受非 const Kernel 的所有者线程函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）时，它们在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果。
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类）先于状态检查，所以在任何状态下都先返回（`ayni.h`）；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。`ayni_step` 只在 `RUNNING` 中做到期工作并请策略决定 `READY` 的 Task（ADR-0022）。GoalType 的校验函数与策略的 `decide` 都是 Kernel 调用的回调，不得调用 Kernel（C-POLICY-001）。作为兜底，回调内调用接受非 const Kernel 的所有者线程函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）时，它们在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果。
 
 ## AgentInstance
 
-`REGISTERED → STARTING → RUNNING ↔ PAUSED → STOPPING → STOPPED`；初始化或检查点不兼容时进入 `FAULTED`，或带原因进入 `PAUSED`。结束一次任务不结束实例。
+`REGISTERED → STARTING → RUNNING ↔ PAUSED → STOPPING → STOPPED`；初始化或检查点不兼容时进入 `FAULTED`，或带原因进入 `PAUSED`。结束一次任务不结束实例。实例记入日志，`instance_id` 跨重启不变（ADR-0026 决策 8）。
 
 | 状态 | 值 | 含义 |
 |---|---:|---|
@@ -59,7 +59,7 @@
 | `PAUSED` | 4 | 带原因暂停，不新增工作 |
 | `STOPPING` | 5 | 收敛全部所属工作 |
 | `STOPPED` | 6 | 已停止，资源已回收 |
-| `FAULTED` | 7 | 初始化失败或检查点不兼容 |
+| `FAULTED` | 7 | 初始化失败或检查点不兼容；M1 中为本次启动没有注册该 Agent（`fault_reason` 为 `AGENT_UNREGISTERED`） |
 
 M1 已实现的转换：
 
@@ -69,8 +69,9 @@ M1 已实现的转换：
 | `RUNNING` | `PAUSED` | `INSTANCE_PAUSE`；名下 Task 停下 |
 | `PAUSED` | `RUNNING` | `INSTANCE_RESUME`；名下 Task 按放行条件继续 |
 | `RUNNING`、`PAUSED` | `STOPPED` | `INSTANCE_STOP`；同一 transition 中取消名下全部未终结的 Goal 与 Task |
+| `RUNNING`、`PAUSED` | `FAULTED` | 恢复时本次启动没有注册该 Agent；只在内存中，不改变 `revision`，不写入日志，下一次注册了该 Agent 的启动看到日志中的状态（ADR-0026 决策 7）；名下 `READY` 的 Task 在启动 transition 中转为 `PAUSED` |
 
-每次转换使该实例的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。策略尚无需初始化，所以暂不经过 `STARTING`；没有在途调用可收敛，所以停止暂不经过 `STOPPING`（ADR-0018）。`PAUSED` 的实例仍可接收新 Goal，其 Task 在恢复后派生；`STOPPED` 或 `FAULTED` 的实例不能成为新 Goal 的 owner（`OWNER_STATE`）。`STARTING`、`FAULTED` 与暂停原因随策略初始化与重启后的检查点兼容（`MA-010`，ADR-0022 决策 1）。
+每次转换使该实例的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。策略尚无需初始化，所以暂不经过 `STARTING`；没有在途调用可收敛，所以停止暂不经过 `STOPPING`（ADR-0018）。`PAUSED` 的实例仍可接收新 Goal，其 Task 在恢复后派生；`STOPPED` 或 `FAULTED` 的实例不能成为新 Goal 的 owner（`OWNER_STATE`）。`STARTING`、`FAULTED` 与暂停原因随策略初始化与重启后的检查点兼容（`MA-010`，ADR-0022 决策 1）。（自 ADR-0026 起，`FAULTED` 用于本次没有注册的 Agent；检查点不兼容时停下的是 Task 而不是实例，见 C-LIFE-024；策略仍无初始化，`STARTING` 不使用。）
 
 ## Goal
 
@@ -160,9 +161,9 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | C-LIFE-011 | 运行终态与副作用结果分开：`CANCELLED`/`FAILED` 的记录列出已完成、未执行与未知的步骤，不推导“没有影响” | 取消后报告“无影响”，但第一步转向已执行 | E4 步骤 3 |
 | C-LIFE-012 | 取消请求已受理、停止指令已送达、物理输出已停止是三种事实，分别表达 | 把“已发送停止”显示为“已停止” | E1 步骤 4；C-STOP-006 |
 | C-LIFE-013 | 撤销响应区分 `ACCEPTED`、`DURABLY_EFFECTIVE`、`CANCELLING`、`STOP_CONFIRMED`；只有最后一项证明本地物理停止 | 授权版本生效即报告设备已停止 | E1 步骤 6；E2 F10 |
-| C-LIFE-020 | 已接受的 Goal/Task 固定 owner 实例与设备；失联不自动转交其他实例 | 设备 A 离线后，设备 B 上的同名实例接管 A 的提醒 | M1 已实现（Goal：创建时指定本 Kernel 的实例，之后没有改变 owner 的意图；Task 继承其 Goal 的 owner，ADR-0018）：`WorkModel.owner_must_be_an_instance_of_this_kernel`、`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.child_must_have_its_parents_owner`、`WorkTask.once_goal_derives_one_task_in_the_next_step`、`WorkTask.instance_pause_holds_its_tasks_and_resume_releases_them`；`MA-016` |
+| C-LIFE-020 | 已接受的 Goal/Task 固定 owner 实例与设备；失联不自动转交其他实例 | 设备 A 离线后，设备 B 上的同名实例接管 A 的提醒 | M1 已实现（Goal：创建时指定本 Kernel 的实例，之后没有改变 owner 的意图；Task 继承其 Goal 的 owner，ADR-0018）：`WorkModel.owner_must_be_an_instance_of_this_kernel`、`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.child_must_have_its_parents_owner`、`WorkTask.once_goal_derives_one_task_in_the_next_step`、`WorkTask.instance_pause_holds_its_tasks_and_resume_releases_them`；跨重启（owner 随 Goal 与 Task 记入日志；本次没有注册的 Agent 的实例 `FAULTED`，名下工作停下而不转交，ADR-0026 决策 7）：`WorkRecovery.instance_of_an_agent_no_longer_registered_is_faulted`、`WorkReplay.goal_of_an_instance_no_record_started_is_corrupt`；`MA-016` |
 | C-LIFE-021 | 暂停 Goal 保留目标与检查点，停止产生新 Task；在途 Task 按该类型声明的暂停点收敛；无法立即暂停时显示“暂停中” | 暂停目标后仍派生新 Task | M1 已实现（Goal 状态与版本；暂停的 Goal 及其后代不派生 Task，已有的 Task 停下，ADR-0018）：`WorkModel.pause_stays_on_the_goal_and_cancel_reaches_its_descendants`、`GoalTable.pause_and_resume_change_only_the_goal`、`GoalTable.lifecycle_decides_which_changes_are_allowed`、`WorkTask.paused_ancestor_holds_the_tasks_below_it_until_resumed`、`WorkTask.goal_created_under_a_paused_parent_derives_once_the_parent_resumes`、`WorkTask.paused_goal_holds_its_own_task`、`WorkTask.task_waits_for_both_its_goal_and_its_owner`；暂停与恢复保留 Task 的步骤与私有检查点，恢复后的决定从它们开始（ADR-0024）：`WorkCheckpoint.pause_keeps_the_steps_and_checkpoint_for_the_next_decision`；在途 Task 的暂停点随 `MA-008`、`MA-018`（ADR-0022） |
 | C-LIFE-022 | 取消 Goal/Task 标记取消版本，禁止新增派生步骤，并传播到所属在途请求；已完成影响保留，补偿是另一次需授权的操作 | 取消后自动反向转动以“回滚”物理世界 | M1 已实现（Goal 及其后代与它们的 Task 在一个 transition 中取消并记录 `cancel_revision`；取消的 Goal 不再派生 Task；取消 Goal 的最后一个 Task 而它不会再有 occurrence 时 Goal 随之取消，ADR-0023）：`WorkModel.pause_stays_on_the_goal_and_cancel_reaches_its_descendants`、`GoalTable.cancel_reaches_every_live_descendant_and_nothing_else`、`WorkTask.cancel_reaches_the_tasks_of_the_goal_and_its_descendants`、`WorkTask.task_cancel_of_a_one_shot_goals_task_cancels_the_goal`、`WorkTask.task_cancel_cancels_a_one_shot_goal_whatever_holds_its_task`、`WorkTask.task_cancel_ends_a_goal_only_with_its_last_task`、`WorkTask.task_cancel_ends_an_interval_goal_whose_next_time_never_comes`、`WorkInput.task_cancel_leaves_the_goal_taking_inputs`、`TaskTable.pause_resume_and_cancel_follow_the_task_lifecycle`，子目标排在父目标之前时同样（ADR-0025）`WorkTask.child_in_an_earlier_place_follows_its_parent`；传播到在途请求随 `MA-008`、`MA-018`（ADR-0022）；E4 步骤 3 |
-| C-LIFE-023 | 实例暂停阻止其新增工作并到兼容检查点；停止收敛全部所属工作并回收资源；“暂停助理”不映射为暂停全部实例（C-PROD-020） | 暂停助理时把提醒所属实例一并暂停 | M1 已实现（实例暂停使名下 Task 停下、恢复后继续，暂停中的实例仍接收新 Goal 而不派生；停止在一个 transition 中取消名下全部未终结的 Goal 与 Task，ADR-0018）：`WorkTask.instance_pause_holds_its_tasks_and_resume_releases_them`、`WorkTask.paused_instance_takes_goals_and_derives_after_resume`、`WorkTask.held_goal_keeps_no_later_goal_from_deriving`、`WorkTask.task_waits_for_both_its_goal_and_its_owner`、`WorkTask.instance_stop_cancels_its_goals_and_tasks`、`AgentTable.pause_resume_and_stop_follow_the_instance_lifecycle`；实例暂停保留 Task 的步骤与私有检查点（ADR-0024）：`WorkCheckpoint.pause_keeps_the_steps_and_checkpoint_for_the_next_decision`；重启后的兼容检查点随 `MA-010`，资源回收随 `MA-018`；“暂停助理”的集合随 `MA-019`；E1 步骤 11 |
-| C-LIFE-024 | 不兼容的私有检查点或未知策略版本使 Task 暂停并报告原因，保留原记录，不重置 Task 或改写完成条件 | 换策略失败后 Task 被重置为 `READY` 重新开始 | E3 步骤 5 |
-| C-LIFE-025 | Kernel 进入 `RUNNING` 时，在一个 transition 中为每个已注册的 Agent 创建驻留实例并分配 `instance_id`（C-ID-010）；没有 Agent 时不产生 transition。每个 Agent 在一个 Kernel 上只有一个实例，Goal 只能以本 Kernel 的实例为 owner | 两个实例在不同 transition 中启动，查询看到一个已运行、一个仍未分配 ID 的中间状态 | M1 已实现（实例尚未持久化，每次启动重新创建）：`WorkModel.instances_start_with_the_kernel_in_one_transition`、`AgentTable.start_all_gives_each_instance_an_id_and_the_stamp`、`AgentTable.registers_each_agent_once_up_to_capacity`；跨重启保持实例随 `MA-010`；策略初始化与 `STARTING` 随 `MA-010`（ADR-0022） |
+| C-LIFE-023 | 实例暂停阻止其新增工作并到兼容检查点；停止收敛全部所属工作并回收资源；“暂停助理”不映射为暂停全部实例（C-PROD-020） | 暂停助理时把提醒所属实例一并暂停 | M1 已实现（实例暂停使名下 Task 停下、恢复后继续，暂停中的实例仍接收新 Goal 而不派生；停止在一个 transition 中取消名下全部未终结的 Goal 与 Task，ADR-0018）：`WorkTask.instance_pause_holds_its_tasks_and_resume_releases_them`、`WorkTask.paused_instance_takes_goals_and_derives_after_resume`、`WorkTask.held_goal_keeps_no_later_goal_from_deriving`、`WorkTask.task_waits_for_both_its_goal_and_its_owner`、`WorkTask.instance_stop_cancels_its_goals_and_tasks`、`AgentTable.pause_resume_and_stop_follow_the_instance_lifecycle`；实例暂停保留 Task 的步骤与私有检查点（ADR-0024）：`WorkCheckpoint.pause_keeps_the_steps_and_checkpoint_for_the_next_decision`；重启后检查点不兼容时停下的是 Task 而不是实例（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；资源回收随 `MA-018`；“暂停助理”的集合随 `MA-019`；E1 步骤 11 |
+| C-LIFE-024 | 不兼容的私有检查点或未知策略版本使 Task 暂停并报告原因，保留原记录，不重置 Task 或改写完成条件 | 换策略失败后 Task 被重置为 `READY` 重新开始 | M1 已实现（恢复时检查点不是当前策略及其版本写的、GoalType 不再有策略或其版本缺失时，Task 停下并报告原因；只在内存中，步骤、检查点、完成条件与版本不变，注册了原策略的启动从检查点继续，ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`、`WorkRecovery.goal_type_this_boot_lacks_holds_its_goals_and_tasks`、`TaskRestore.hold_restored_holds_a_live_task_at_its_revision`；E3 步骤 5 |
+| C-LIFE-025 | Kernel 进入 `RUNNING` 时，在一个 transition 中为每个已注册的 Agent 创建驻留实例并分配 `instance_id`（C-ID-010）；没有 Agent 时不产生 transition。每个 Agent 在一个 Kernel 上只有一个实例，Goal 只能以本 Kernel 的实例为 owner | 两个实例在不同 transition 中启动，查询看到一个已运行、一个仍未分配 ID 的中间状态 | M1 已实现（首次进入 `RUNNING` 时）：`WorkModel.instances_start_with_the_kernel_in_one_transition`、`AgentTable.start_all_gives_each_instance_an_id_and_the_stamp`、`AgentTable.registers_each_agent_once_up_to_capacity`；M1 已实现（重启后：实例记入日志，`instance_id` 与版本不变，启动 transition 只启动首次注册的 Agent 的实例，ADR-0026 决策 8）：`WorkRecovery.agent_registered_for_the_first_time_starts_after_the_logged_ones`、`AgentRestore.registered_agent_gets_its_logged_instance`；策略尚无初始化，不经过 `STARTING` |

@@ -37,6 +37,7 @@
 | [0023](0023-goals-end-with-their-last-task-or-occurrence.md) | Goal 随最后一个 Task 的取消或最后一个 occurrence 的跳过结束 | 已接受 | §2.2、§2.4、§5.3 |
 | [0024](0024-steps-and-private-checkpoints.md) | 工作模型第三部分（二）：步骤与私有检查点 | 已接受 | §2.4、§2.5、§3.2、§4.2、§5.3 |
 | [0025](0025-persistence-split-and-terminal-goals-give-way.md) | 持久化与恢复（一）：拆分与终态 Goal 让位 | 已接受 | §2.8、§4.2、§9.1 |
+| [0026](0026-work-journal-replay-native-file-log-and-commands.md) | 持久化与恢复（二）：工作日志、重放、Native 文件存储与命令幂等 | 已接受 | §2.8、§4.2、§4.3、§9.1 |
 
 ## 模板
 

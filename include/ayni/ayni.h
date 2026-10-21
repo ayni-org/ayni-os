@@ -692,12 +692,14 @@ typedef uint32_t ayni_reason_t;
 /* CAPACITY_EXCEEDED: the decision would leave the task with more steps than
  * task_step_capacity. */
 #define AYNI_REASON_STEP_CAPACITY ((ayni_reason_t)33)
-/* Since 0.14 (ADR-0026). In ayni_agent_info_v1 only: the log holds the
- * instance of an agent this boot did not register, so it is FAULTED. */
+/* Since 0.14 (ADR-0026). NOT_FOUND, in ayni_agent_info_v1 only: the log
+ * holds the instance of an agent this boot did not register, so it is
+ * FAULTED. */
 #define AYNI_REASON_AGENT_UNREGISTERED ((ayni_reason_t)34)
-/* In ayni_task_info_v1 only: the task's checkpoint is not one its goal
- * type's strategy can read now (ayni_task_info_v1 hold_status). */
-#define AYNI_REASON_CHECKPOINT_WRITER ((ayni_reason_t)35)
+/* UNSUPPORTED_VERSION, in ayni_task_info_v1 only: a restored task's goal
+ * type names no strategy now, or its private checkpoint was written by
+ * another strategy or version than the one its goal type names now. */
+#define AYNI_REASON_STRATEGY_CHANGED ((ayni_reason_t)35)
 /* EXPIRED: the command_id is not mapped and at or below the principal's
  * floor, so the command may have been accepted once (ayni_submit_intent). */
 #define AYNI_REASON_COMMAND_EXPIRED ((ayni_reason_t)36)
@@ -981,12 +983,12 @@ typedef struct ayni_task_info_v1 {
      * cannot decide (ADR-0026), without changing its revision: its goal is
      * held, with AYNI_NOT_FOUND and AYNI_REASON_GOAL_TYPE_UNKNOWN or
      * AYNI_UNSUPPORTED_VERSION and AYNI_REASON_GOAL_TYPE_VERSION; or its
-     * goal type names no strategy now, with AYNI_NOT_FOUND and
-     * AYNI_REASON_CHECKPOINT_WRITER; or its checkpoint is not one that
-     * strategy wrote, with AYNI_UNSUPPORTED_VERSION and the same reason, or
-     * is larger than its max_checkpoint_bytes, with AYNI_CAPACITY_EXCEEDED
-     * and the same reason. A later boot that has what was lacking finds the
-     * task as the log left it. */
+     * goal type names no strategy now, or another strategy or version than
+     * the one that wrote its private checkpoint, with
+     * AYNI_UNSUPPORTED_VERSION and AYNI_REASON_STRATEGY_CHANGED; or its
+     * checkpoint is larger than that strategy's max_checkpoint_bytes, with
+     * AYNI_CAPACITY_EXCEEDED and AYNI_REASON_POLICY_OUTPUT_LIMIT. A later
+     * boot that has what was lacking finds the task as the log left it. */
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
     /* Since 0.12 (ADR-0024). The steps its strategy's decisions committed;

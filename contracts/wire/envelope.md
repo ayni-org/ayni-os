@@ -1,6 +1,6 @@
 # 消息信封
 
-- **关联**：计划 §3.1、§3.4、§3.5、§3.6；ADR-0004、ADR-0009；`MA-004`、`MA-007`、`MA-016`、`MA-038`；E2 F9、F13，E3 步骤 2
+- **关联**：计划 §3.1、§3.4、§3.5、§3.6；ADR-0004、ADR-0009、ADR-0026；`MA-004`、`MA-007`、`MA-016`、`MA-038`；E2 F9、F13，E3 步骤 2
 - **属主**：`kernel`（受管入口：解码 → 校验 → 分派，命令幂等映射）；协议适配层（编解码与传输）
 - **状态**：语义在 M0 定义；M1 以多节点确定性仿真与 FakeTransport 验证（`MA-038`）；M2 实现局域网管理 API（`MA-007`）；M5 实现真实认证与设备间调用（`MA-016`）
 
@@ -47,8 +47,8 @@
 | C-WIRE-001 | 每条消息携带上表的必需字段；缺少必需字段、`kind` 未知或必需功能未知时拒绝，返回结构化错误 | 缺少 `target_device_id` 的消息被路由到默认设备执行 | `MA-007` 解析测试；C-VER-010 |
 | C-WIRE-002 | 局域网管理传输的每个请求都经认证；停止入口同时连接独立的本地停止路径；管理入口不对公网开放 | 未认证的局域网请求可以查询记忆 | `MA-007`；第 10.6 节「安全接入」 |
 | C-WIRE-003 | 每条消息只携带一种幂等键：管理端持久变更命令携带 `command_id`，`capability.invoke` 携带 `operation_id`；两者同时出现或应有而缺失时以 `AYNI_INVALID_ARGUMENT` 拒绝 | 一条 `capability.invoke` 同时带 `command_id` 与 `operation_id`，两个去重表给出不同结论 | `MA-007`、`MA-016` 解析测试；C-ID-008 |
-| C-WIRE-004 | `command_id` 的幂等作用域是 `(已认证 principal_id, target_device_id, command_id)`，绑定命令类型与规范化参数摘要；相同命令重试返回原对象或原结果；同 ID 不同摘要返回 `AYNI_IDEMPOTENCY_CONFLICT`；映射与业务接受结果同批提交（批次 B1） | 创建提醒的响应丢失，客户端重试后设备上出现两个提醒 | E2 F9；C-COMMIT-005 |
-| C-WIRE-005 | 命令映射的保留期不短于该命令允许的重试期限；以主体命令代际/窗口与有界拒绝标记防止过期旧命令被当作新命令；不得仅凭参数相同合并用户确实想创建的两个目标 | 去重记录回收后，一周前滞留的创建命令又创建了一个提醒 | E2 F9（过期命令） |
+| C-WIRE-004 | `command_id` 的幂等作用域是 `(已认证 principal_id, target_device_id, command_id)`，绑定命令类型与规范化参数摘要；相同命令重试返回原对象或原结果；同 ID 不同摘要返回 `AYNI_IDEMPOTENCY_CONFLICT`；映射与业务接受结果同批提交（批次 B1） | 创建提醒的响应丢失，客户端重试后设备上出现两个提醒 | M1 部分实现（Kernel 侧：作用域为会话的 principal 与 `command_id`，`target_device_id` 随管理端协议；摘要覆盖意图种类、`expected_revision` 与正文；重试返回原结果，跨会话与重启；同 ID 不同摘要返回 `IDEMPOTENCY_CONFLICT`；映射与接受结果同批提交，ADR-0026）：`WorkCommands.retried_command_returns_its_first_result`、`WorkCommands.refused_command_is_not_kept`、`WorkCommands.mappings_survive_a_restart_with_their_transitions`；E2 F9；C-COMMIT-005 |
+| C-WIRE-005 | 命令映射的保留期不短于该命令允许的重试期限；以主体命令代际/窗口与有界拒绝标记防止过期旧命令被当作新命令；不得仅凭参数相同合并用户确实想创建的两个目标 | 去重记录回收后，一周前滞留的创建命令又创建了一个提醒 | M1 部分实现（Kernel 侧：每个 principal 保留最近 `command_capacity` 个映射，让位时把下限提高到让位的 `command_id`，不大于下限的未映射命令以 `EXPIRED` 拒绝；下限随映射记录持久；参数相同而 `command_id` 不同的命令各自应用，ADR-0026）：`WorkCommands.full_table_drops_the_smallest_id_and_raises_the_floor`、`WorkCommands.floor_survives_a_restart_with_more_room`；重试期限与命令代际随管理端协议（`MA-038`）；E2 F9（过期命令） |
 | C-WIRE-006 | `operation_id` 的作用域是 `(已认证调用主体, 控制域 authority-owner, operation_id)`，绑定能力 ID/版本与规范化参数摘要；同 ID 不同摘要拒绝；调用方在屏障前、接收方在持久接受时保存映射 | 接收方只按 `operation_id` 去重，不同主体的同号请求被当作重复返回了别人的结果 | `MA-038`；`MA-016`；C-ID-005 |
 | C-WIRE-007 | 接收结果按上表区分；客户端没有收到响应不能推定未执行，应以同一幂等键查询或重试；协议不宣称通用的“恰好执行一次” | 客户端超时后以新 `operation_id` 重发转向 | E2 F6；`MA-016` |
 | C-WIRE-008 | 查询结果按上表区分；`NOT_ACCEPTED` 只在接收方于同一次提交中持久封禁该 ID 时返回；查不到记录本身不推断未执行 | 接收方回收记录后对旧 ID 返回 `NOT_ACCEPTED`，调用方据此改用其他设备执行 | `MA-038`（查询后原消息迟到）；C-CALL-010 |

@@ -79,7 +79,7 @@ class AgentTable {
                     ayni_agent_lifecycle_t lifecycle, foundation::TransitionStamp stamp);
     // After the last record: a restored instance whose agent is not
     // registered becomes FAULTED, unless it is STOPPED, for which nothing
-    // remains to fault (D4, ADR-0026).
+    // remains to fault (ADR-0026 decision 7).
     void fault_unregistered();
     // Drops everything restore() did, as when recovery fails.
     void drop_restored();

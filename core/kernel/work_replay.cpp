@@ -247,7 +247,7 @@ void WorkReplay::hold_tasks() {
         const catalog::GoalType &type = model_.goal_types.at(goal.goal_type_index);
         if (type.strategy_index == catalog::GoalType::no_strategy) {
             // The type no longer has tasks to decide.
-            tasks.hold_restored(index, AYNI_NOT_FOUND, AYNI_REASON_CHECKPOINT_WRITER);
+            tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
             continue;
         }
         const catalog::Strategy &strategy = model_.strategies.at(type.strategy_index);
@@ -257,9 +257,9 @@ void WorkReplay::hold_tasks() {
         if (strategy.version != task.checkpoint_writer_version ||
             !strategy.id.equals(
                 {task.checkpoint_writer_id.data(), task.checkpoint_writer_id.size()})) {
-            tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_CHECKPOINT_WRITER);
+            tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
         } else if (task.checkpoint_size > strategy.max_checkpoint_bytes) {
-            tasks.hold_restored(index, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_CHECKPOINT_WRITER);
+            tasks.hold_restored(index, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT);
         }
     }
 }

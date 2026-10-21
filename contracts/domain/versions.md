@@ -1,6 +1,6 @@
 # 版本与兼容
 
-- **关联**：计划 §3.1、§3.2「版本」、§4.4；ADR-0004、ADR-0009、ADR-0013；`MA-005`、`MA-010`；E3、E4 步骤 5–6
+- **关联**：计划 §3.1、§3.2「版本」、§4.4；ADR-0004、ADR-0009、ADR-0013、ADR-0026；`MA-005`、`MA-010`；E3、E4 步骤 5–6
 
 Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本。三者不要求数字同步；任何一个变化都不能借另一个的版本号表达。
 
@@ -44,6 +44,6 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-VER-030 | ActionRecord、步骤检查点与 Binding 保存所用的能力、Scene、GoalType 版本；恢复时只有明确兼容的实现或迁移可以继续处理，缺失时保留记录并暂停 | 能力升级后旧 ActionRecord 被新语义重新执行 | E4 步骤 5；E3 步骤 5 |
+| C-VER-030 | ActionRecord、步骤检查点与 Binding 保存所用的能力、Scene、GoalType 版本；恢复时只有明确兼容的实现或迁移可以继续处理，缺失时保留记录并暂停 | 能力升级后旧 ActionRecord 被新语义重新执行 | M1 部分实现（Goal 保存 GoalType ID 与版本，私有检查点保存写入它的策略 ID 与版本；恢复时本次没有该 GoalType 版本或兼容策略的，保留记录并停下，ADR-0026 决策 7）：`WorkRecovery.goal_type_this_boot_lacks_holds_its_goals_and_tasks`、`WorkRecovery.task_its_strategy_cannot_serve_is_held`、`GoalRestore.resolve_types_holds_live_goals_whose_type_this_boot_lacks`；ActionRecord、调用步骤与 Binding 的版本随 `MA-008`、`MA-018`；E4 步骤 5；E3 步骤 5 |
 | C-VER-031 | 升级清单给出 firmware、`storage_schema`、能力/Scene/GoalType/检查点的读、写、执行兼容矩阵；矩阵与实际行为不一致视为缺陷 | 清单声称兼容，实测旧检查点被拒绝 | E4 步骤 6；M4 |
 | C-VER-032 | 幂等参数摘要按契约列出的领域字段规范化计算，不对任何序列化字节取哈希 | 两个语义相同的请求因字段顺序不同得到不同摘要，被判为 `IDEMPOTENCY_CONFLICT` | ADR-0009 选型后的摘要测试；`wire/envelope.md` C-WIRE-012 |

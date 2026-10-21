@@ -29,8 +29,8 @@ M1 第 1 步 A 部分（ADR-0015）给了 Kernel 事件队列与完成槽，但 
 ## 后果
 
 - 任何 Host 都可以暂不实现存储；需要恢复的部署必须实现两个端口，并由 Host 负责分帧与掉电原子性，Host 契约测试套件（C-HOST-017）须覆盖这两点。
-- Kernel 不区分“尾部撕裂”与“中间损坏”，所以 Host 必须丢弃自己没写完的尾部批次。Host 若把撕裂的尾部交给 Kernel，结果是 `RESTRICTED`：偏保守，但不会悄悄跳过数据。C-STORE-002 与 E2 F7 的“忽略不完整尾部”因此由 Host 与 Kernel 共同满足：Host 丢弃尾部，Kernel 拒绝任何未通过校验的批次。`E2.F7.tail_short_write`、`E2.F7.tail_crc_error` 须在有真实存储的 Host 上运行（`MA-010`），模拟 Host 只验证 Kernel 一侧。
-- 每次启动写一个批次，读取量随启动次数线性增加；日志轮转与快照（`MA-010`）把读取限制在快照之后。M1 读取整个日志，耗时与日志长度成正比，但分摊在多次有界 step 中。
+- Kernel 不区分“尾部撕裂”与“中间损坏”，所以 Host 必须丢弃自己没写完的尾部批次。Host 若把撕裂的尾部交给 Kernel，结果是 `RESTRICTED`：偏保守，但不会悄悄跳过数据。C-STORE-002 与 E2 F7 的“忽略不完整尾部”因此由 Host 与 Kernel 共同满足：Host 丢弃尾部，Kernel 拒绝任何未通过校验的批次。`E2.F7.tail_short_write`、`E2.F7.tail_crc_error` 须在有真实存储的 Host 上运行（`MA-010`），模拟 Host 只验证 Kernel 一侧。（自 ADR-0026 起，Native 文件 Host 丢弃撕裂的尾部并在下一次追加时截断它，末帧之前的损坏使读取失败；各 Host 共用的存储契约测试覆盖这两种情形，见 `HostStorage.torn_tail_is_dropped_and_overwritten`、`HostStorage.damaged_batch_before_the_last_is_never_dropped`。）
+- 每次启动写一个批次，读取量随启动次数线性增加；日志轮转与快照（`MA-010`）把读取限制在快照之后。M1 读取整个日志，耗时与日志长度成正比，但分摊在多次有界 step 中。（ADR-0026 起每个 transition 也写一个批次，恢复同样读取整个日志；快照与轮转随 `MA-010` 的 F 部分。）
 - 缓冲大小限制最大批次。超过缓冲的批次使恢复以 `STORAGE_READ_FAILED` 停下，所以缩小 `storage_buffer_bytes` 的固件升级需要先迁移日志。
 - ABI 升至 0.4：`ayni_config_v1` 与 `ayni_host_v1` 追加字段；新增 `ayni_bytes_v1`、`ayni_storage_batch_v1`、`ayni_kernel_info_v1`、`ayni_step_report_v1` 与四个函数，这些声明从 `include/ayni/draft/` 移入 `ayni.h`（C-VER-007）。
 - Core 新增 `foundation`（CRC-32、小端读写）与 `durability` 两个模块。日志格式的规则归 `durability`：`batch/batch_codec` 编解码并校验单个批次，`batch/prefix_scan` 检查 `commit_seq` 连续性与记录 flags，并把每条记录交给其类型的属主判断；`kernel/boot` 只解释 `BOOT_EPOCH` 并驱动存储请求。`kernel/boot` 依赖 `kernel/completion`，已在 `tools/architecture.json` 声明。`MA-010` 的重放沿用同一扫描，让各属主模块处理自己的记录。扫描在校验到批次末尾之前就把前面的记录交给属主；M1 中任何失败都以 `RESTRICTED` 结束恢复，所以无妨，但保存领域状态的重放必须先暂存整个批次，批次全部通过后再应用（C-STORE-002）。

@@ -1,10 +1,10 @@
 // The work log through the C ABI (ADR-0026): each transition's batch is
 // appended in commit order, recovery replays the stored prefix and nothing
-// after it, timers restart from the recovery clock (D3), what this boot's
-// catalog cannot serve is held (D4), command ids return their first result
-// across restarts (D6), a transition waits for room for its batch, a failed
-// append restricts the kernel, and DRAINING stores what RUNNING committed.
-// Runs on the simulation Host.
+// after it, timers restart from the recovery clock (decision 6), what this
+// boot's catalog cannot serve is held (decision 7), command ids return their
+// first result across restarts (decision 9), a transition waits for room for
+// its batch, a failed append restricts the kernel, and DRAINING stores what
+// RUNNING committed. Runs on the simulation Host.
 
 #include "kernel/kernel_state.h"
 #include "kernel_node.h"
@@ -114,9 +114,9 @@ void prepare(WorkNode &work) {
     work.max_checkpoint_bytes = 4;
 }
 
-// What the queries show of every agent, goal and task, by id, with
-// white-box what replay restores that no query shows; the times each boot
-// sets afresh (D3) are left out.
+// What the queries show of every agent, goal and task, by id, with white-box
+// what replay restores that no query shows; the times each boot sets afresh
+// (decision 6) are left out.
 std::string describe(WorkNode &work) {
     const ayni::kernel::WorkModel &model = work.kernel()->work;
     std::ostringstream out;
@@ -365,12 +365,12 @@ TEST(WorkRecovery, power_loss_takes_the_batches_never_appended) {
     EXPECT_EQ(describe(work), stored);
 }
 
-// --- Timers after a restart (D3) ---------------------------------------------
+// --- Timers after a restart (decision 6) -------------------------------------
 
-// D3: each timer restarts from the recovery clock R with its full length:
-// an INTERVAL with an occurrence taken after its period, one without after
-// its delay, a DELAY after its delay, an expiry after its full duration,
-// and a live task is due at R.
+// ADR-0026 decision 6: each timer restarts from the recovery clock R with its
+// full length: an INTERVAL with an occurrence taken after its period, one
+// without after its delay, a DELAY after its delay, an expiry after its full
+// duration, and a live task is due at R.
 TEST(WorkRecovery, timers_restart_from_the_recovery_clock_with_their_full_length) {
     WorkNode work;
     work.run();
@@ -409,8 +409,9 @@ TEST(WorkRecovery, timers_restart_from_the_recovery_clock_with_their_full_length
     EXPECT_EQ(work.node().step().next_deadline_us, recovered_us + 5U * period_us);
 }
 
-// D3: an input goal's occurrences are counted from the recovery clock, so an
-// input waits its full occurrence_wait_max_us from when it arrives.
+// ADR-0026 decision 6: an input goal's occurrences are counted from the
+// recovery clock, so an input waits its full occurrence_wait_max_us from when
+// it arrives.
 TEST(WorkRecovery, input_goal_takes_inputs_after_a_restart) {
     WorkNode work;
     work.run();
@@ -424,7 +425,7 @@ TEST(WorkRecovery, input_goal_takes_inputs_after_a_restart) {
     EXPECT_NE(task_of(work, goal_id), 0U);
 }
 
-// --- What this boot cannot serve (D4) ----------------------------------------
+// --- What this boot cannot serve (decision 7) --------------------------------
 
 struct Catalog {
     uint32_t reminder_version = 1; // 0: not registered
@@ -521,9 +522,9 @@ uint64_t restart_with(WorkNode &work, const Catalog &catalog) {
     return next_commit_seq(work) - next;
 }
 
-// D4: a goal whose type this boot does not register, or not at its
-// version, is kept and held, and so are its live tasks; the holds change no
-// revision, so a later boot with the type back serves them again.
+// ADR-0026 decision 7: a goal whose type this boot does not register, or not
+// at its version, is kept and held, and so are its live tasks; the holds
+// change no revision, so a later boot with the type back serves them again.
 TEST(WorkRecovery, goal_type_this_boot_lacks_holds_its_goals_and_tasks) {
     const struct {
         const char *name;
@@ -570,9 +571,9 @@ TEST(WorkRecovery, goal_type_this_boot_lacks_holds_its_goals_and_tasks) {
     }
 }
 
-// D4, C-POLICY-010: only the strategy that wrote a checkpoint, at that
-// version, reads it; a task whose type has no strategy now cannot be
-// decided. Either task is held, PAUSED in memory only.
+// ADR-0026 decision 7, C-POLICY-010: only the strategy that wrote a
+// checkpoint, at that version, reads it; a task whose type has no strategy
+// now cannot be decided. Either task is held, PAUSED in memory only.
 TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
     {
         SCOPED_TRACE("other strategy version");
@@ -586,7 +587,7 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
         EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
         EXPECT_EQ(task.revision, revision);
         EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION);
-        EXPECT_EQ(task.hold_reason, AYNI_REASON_CHECKPOINT_WRITER);
+        EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED);
         // The timer's task has no checkpoint, so any version may decide it.
         EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_READY);
     }
@@ -599,17 +600,17 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
         restart_with(work, catalog);
         const ayni_task_info_v1 task = work.task(held.timer_task);
         EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-        EXPECT_EQ(task.hold_status, AYNI_NOT_FOUND);
-        EXPECT_EQ(task.hold_reason, AYNI_REASON_CHECKPOINT_WRITER);
+        EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED);
         EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_READY);
     }
 }
 
-// D4: the instance of an agent this boot does not register is FAULTED with
-// AGENT_UNREGISTERED in memory, without a revision, and its live tasks
-// settle to PAUSED in the transition that starts the work model; the other
-// agent's are untouched. A later boot that registers the agent again has
-// its instance back and settles its tasks again.
+// ADR-0026 decision 7: the instance of an agent this boot does not register
+// is FAULTED with AGENT_UNREGISTERED in memory, without a revision, and its
+// live tasks settle to PAUSED in the transition that starts the work model;
+// the other agent's are untouched. A later boot that registers the agent
+// again has its instance back and settles its tasks again.
 TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
     WorkNode work;
     prepare(work);
@@ -674,7 +675,7 @@ TEST(WorkRecovery, log_beyond_the_capacities_restricts_and_shows_nothing) {
     EXPECT_EQ(model.agents.at(0).instance_id, 0U);
 }
 
-// --- Commands (D6) -------------------------------------------------------------
+// --- Commands (decision 9) -----------------------------------------------------
 
 // C-WIRE-003, C-WIRE-004: a command retried with the same content returns
 // its first result, applies nothing and wakes no one; with other content it
@@ -731,9 +732,9 @@ TEST(WorkCommands, refused_command_is_not_kept) {
     EXPECT_EQ(create_command(work, body, 5).status, AYNI_OK);
 }
 
-// D6: each principal keeps its last command_capacity commands; a new one
-// beyond that drops the smallest id and raises the floor to it, so that id
-// and every unmapped one below it are expired.
+// ADR-0026 decision 9: each principal keeps its last command_capacity
+// commands; a new one beyond that drops the smallest id and raises the floor
+// to it, so that id and every unmapped one below it are expired.
 TEST(WorkCommands, full_table_drops_the_smallest_id_and_raises_the_floor) {
     WorkNode work;
     work.run();
@@ -753,9 +754,9 @@ TEST(WorkCommands, full_table_drops_the_smallest_id_and_raises_the_floor) {
     expect_refused(create_command(work, body, 15 - 1), AYNI_EXPIRED, AYNI_REASON_COMMAND_EXPIRED);
 }
 
-// D6, C-WIRE-004: the mappings and floor are stored with their transitions,
-// so a retry after a restart returns the first result, whichever boot gave
-// it; one whose batch power loss took is applied anew.
+// ADR-0026 decision 9, C-WIRE-004: the mappings and floor are stored with
+// their transitions, so a retry after a restart returns the first result,
+// whichever boot gave it; one whose batch power loss took is applied anew.
 TEST(WorkCommands, mappings_survive_a_restart_with_their_transitions) {
     WorkNode work;
     work.run();
@@ -784,10 +785,10 @@ TEST(WorkCommands, mappings_survive_a_restart_with_their_transitions) {
     EXPECT_NE(anew.result.object.id, unstored.result.object.id);
 }
 
-// D6: each mapping's record carries the floor, so a later boot with room
-// for more commands still expires the unmapped ids at or below it. The
-// mappings it replays all fit, so it keeps the one the earlier boot dropped
-// and returns its first result.
+// ADR-0026 decision 9: each mapping's record carries the floor, so a later
+// boot with room for more commands still expires the unmapped ids at or below
+// it. The mappings it replays all fit, so it keeps the one the earlier boot
+// dropped and returns its first result.
 TEST(WorkCommands, floor_survives_a_restart_with_more_room) {
     WorkNode work;
     work.run();
@@ -859,6 +860,26 @@ TEST(WorkJournal, event_waits_for_room_queued) {
     work.node().sim().complete_storage();
     work.node().step(); // the result, then the derivation
     EXPECT_NE(task_of(work, goal_id), 0U);
+}
+
+// C-COMMIT-004, ADR-0026 decision 3: an accepted intent is applied at once
+// and durable once the Host has stored its batch: durable_seq reaches its
+// commit_seq when a step applies the append's result, in the kernel info and
+// in the step report alike.
+TEST(WorkJournal, result_is_durable_once_the_host_stores_its_batch) {
+    WorkNode work;
+    work.run();
+    const uint64_t durable = work.node().info().durable_seq;
+    const Submitted created = work.create(goal_body(work, AYNI_TRIGGER_NONE, "folder"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    EXPECT_GT(created.result.commit_seq, durable);
+    ayni_step_report_v1 report = work.node().step(); // issues the append
+    EXPECT_EQ(report.durable_seq, durable);
+    ASSERT_EQ(work.node().sim().complete_storage(), 1U);
+    EXPECT_EQ(work.node().info().durable_seq, durable); // posted, not yet applied
+    report = work.node().step();
+    EXPECT_EQ(report.durable_seq, created.result.commit_seq);
+    EXPECT_EQ(work.node().info().durable_seq, created.result.commit_seq);
 }
 
 // --- Append failures ---------------------------------------------------------
