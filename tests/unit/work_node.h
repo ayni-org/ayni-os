@@ -251,7 +251,8 @@ class WorkNode {
             const ayni_goal_type_v1 types[] = {
                 goal_type_desc("reminder", 1, &ReminderRules::validate, &rules_),
                 goal_type_desc("timer", 1, nullptr, nullptr, any_trigger, timer_wait_max_us),
-                goal_type_desc("folder", 1, nullptr, nullptr, AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)),
+                goal_type_desc("folder", 1, folder_validate, nullptr,
+                               AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)),
             };
             for (const ayni_goal_type_v1 &type : types) {
                 ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
@@ -266,6 +267,8 @@ class WorkNode {
     Node &node() { return node_; }
     ayni_kernel_t *kernel() { return node_.kernel(); }
     uint64_t timer_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    // Without a validator, "folder" goals take no parameters.
+    ayni_goal_validate_fn folder_validate = nullptr;
     uint32_t max_intents_per_call = 1;
     uint32_t max_checkpoint_bytes = 0;
     ReminderRules &rules() { return rules_; }

@@ -122,6 +122,75 @@ TEST(KernelFence, unavailable_isolation_preserves_diagnostics_without_new_boot) 
     EXPECT_EQ(work.goal(accepted.result.object.id).revision, 1U);
 }
 
+// C-COMMIT-004: a reload counts recovery again from the start of the log,
+// but durable_seq never falls below what it was at the fence.
+TEST(KernelFence, durable_seq_never_falls_while_a_fence_reloads) {
+    WorkNode work;
+    work.run();
+    ASSERT_EQ(work.create(folder(work)).status, AYNI_OK);
+    settle(work);
+    const uint64_t durable = work.node().info().durable_seq;
+    ASSERT_GT(durable, 0U);
+    ASSERT_EQ(work.create(folder(work)).status, AYNI_OK);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+    }
+    bool reloaded = false;
+    for (int round = 0; round < 1000; ++round) {
+        const auto report = tick(work);
+        EXPECT_GE(report.durable_seq, durable) << round;
+        EXPECT_GE(work.node().info().durable_seq, durable) << round;
+        reloaded = reloaded || work.node().lifecycle() == AYNI_LIFECYCLE_RECOVERING;
+        if (reloaded && work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+            work.kernel()->log.idle()) {
+            break;
+        }
+    }
+    EXPECT_TRUE(reloaded);
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+}
+
+// The sim Host's fence port, and whether a fence reports one epoch below the
+// minimum asked for, as a Host that installed too small an epoch would.
+decltype(ayni_host_v1::storage_fence_writers) sim_fence = nullptr;
+bool fence_short = false;
+
+ayni_submit_result_t short_fence(void *ctx, uint32_t minimum_epoch, ayni_attempt_ref_v1 attempt,
+                                 ayni_completion_t *completion) {
+    if (!fence_short) {
+        return sim_fence(ctx, minimum_epoch, attempt, completion);
+    }
+    ayni_completion_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.attempt = attempt;
+    result.outcome = AYNI_FENCE_EPOCH_INSTALLED;
+    result.value = minimum_epoch - 1U;
+    EXPECT_EQ(ayni_completion_post(completion, &result), AYNI_OK);
+    return AYNI_SUBMIT_ACCEPTED;
+}
+
+// ADR-0027 decision 5: the fence of a RUNNING writer must install an epoch
+// above it; less leaves that writer possibly able to store, so the kernel
+// restricts and keeps the model for diagnosis.
+TEST(KernelFence, isolation_below_the_epoch_asked_for_restricts) {
+    WorkNode work;
+    sim_fence = work.node().sim().table().storage_fence_writers;
+    fence_short = false;
+    work.node().replace_fence_port(&short_fence);
+    work.run();
+    const auto accepted = work.create(folder(work));
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+    }
+    fence_short = true;
+    settle(work);
+    fence_short = false;
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
+    EXPECT_EQ(work.goal(accepted.result.object.id).revision, 1U);
+}
+
 TEST(KernelFence, shutdown_during_retry_never_starts_recovery) {
     WorkNode work;
     work.run();

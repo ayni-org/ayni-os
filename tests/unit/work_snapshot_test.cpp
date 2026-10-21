@@ -3,6 +3,7 @@
 
 #include "durability/snapshot/snapshot_codec.h"
 #include "foundation/crc32.h"
+#include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/work_replay.h"
 #include "kernel/work_snapshot.h"
@@ -527,5 +528,59 @@ TEST(SnapshotCodec, coverage_cannot_exceed_the_transition_baseline) {
         ayni::durability::SnapshotMetadata read{};
         EXPECT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
                   ayni::durability::BatchCheck::corrupt);
+    }
+}
+
+// records.md: a slot's boot_epoch fits the 32-bit epoch of an ID (C-ID-009).
+TEST(SnapshotCodec, boot_epoch_beyond_the_id_epoch_is_corrupt) {
+    const uint64_t largest = ayni::foundation::max_boot_epoch;
+    for (const uint64_t boot_epoch : {largest, largest + 1U}) {
+        ayni::durability::SnapshotMetadata meta{};
+        meta.generation = 1;
+        meta.writer_epoch = 1;
+        meta.covers_commit_seq = 1;
+        meta.max_transition_id = 1;
+        meta.boot_epoch = boot_epoch;
+        std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
+        ayni::durability::write_snapshot_header(meta, header.data());
+        ayni::durability::SnapshotMetadata read{};
+        EXPECT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
+                  boot_epoch == largest ? ayni::durability::BatchCheck::ok
+                                        : ayni::durability::BatchCheck::corrupt)
+            << boot_epoch;
+    }
+}
+
+// records.md: SNAPSHOT_COMMIT names one of the two slots and a generation,
+// and covers no more than its transition baseline, which stays below 2^63.
+TEST(SnapshotCodec, an_activation_reads_back_only_what_a_writer_can_store) {
+    using ayni::durability::SnapshotActivation;
+    const uint64_t largest = ayni::durability::transition_id_max;
+    std::array<uint8_t, ayni::durability::snapshot_commit_record_length> body{};
+    for (const SnapshotActivation &valid : {SnapshotActivation{1, 0x1234, 2, 10, 12},
+                                            SnapshotActivation{0, 0, 1, largest, largest}}) {
+        ayni::durability::write_snapshot_activation(valid, body.data());
+        SnapshotActivation read{};
+        ASSERT_TRUE(ayni::durability::read_snapshot_activation(body.data(), body.size(), read));
+        EXPECT_EQ(read.slot, valid.slot);
+        EXPECT_EQ(read.payload_crc, valid.payload_crc);
+        EXPECT_EQ(read.generation, valid.generation);
+        EXPECT_EQ(read.covers_commit_seq, valid.covers_commit_seq);
+        EXPECT_EQ(read.max_transition_id, valid.max_transition_id);
+        EXPECT_FALSE(
+            ayni::durability::read_snapshot_activation(body.data(), body.size() - 1U, read));
+    }
+    const SnapshotActivation invalid[] = {
+        {2, 0, 2, 10, 12},           // a third slot
+        {1, 0, 0, 10, 12},           // generation 0
+        {1, 0, 2, 10, largest + 1U}, // a transition_id beyond 2^63 - 1
+        {1, 0, 2, 13, 12},           // covers past its baseline
+    };
+    for (const SnapshotActivation &activation : invalid) {
+        ayni::durability::write_snapshot_activation(activation, body.data());
+        SnapshotActivation read{};
+        EXPECT_FALSE(ayni::durability::read_snapshot_activation(body.data(), body.size(), read))
+            << activation.slot << " " << activation.generation << " "
+            << activation.covers_commit_seq << " " << activation.max_transition_id;
     }
 }
