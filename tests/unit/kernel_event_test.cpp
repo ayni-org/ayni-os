@@ -182,6 +182,7 @@ TEST(KernelEvents, recovering_keeps_events_for_running) {
 
     node.recover();
     ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.step().items_done, 1U); // the first step in RUNNING takes it
     EXPECT_EQ(node.info().events_unmatched, 1U);
     EXPECT_EQ(node.info().events_discarded, 0U);
 }

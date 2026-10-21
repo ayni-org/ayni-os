@@ -279,6 +279,9 @@ class WorkNode {
 
     uint64_t session() const { return session_; }
 
+    // After a restart: sessions are never stored, so the node opens another.
+    void reopen_session() { session_ = open_session(); }
+
     uint64_t open_session(ayni_channel_t channel = AYNI_CHANNEL_MANAGEMENT) {
         const ayni_session_desc_v1 desc = session_desc(channel);
         uint64_t session_id = 0;

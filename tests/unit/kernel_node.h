@@ -6,6 +6,7 @@
 #define AYNI_TESTS_UNIT_KERNEL_NODE_H
 
 #include "kernel/kernel_config.h"
+#include "kernel/kernel_state.h"
 #include "kernel/work_journal.h"
 
 #include <ayni/ayni.h>
@@ -129,20 +130,22 @@ class Node {
         return report;
     }
 
-    // Steps and completes storage until recovery has an outcome.
+    // Steps and completes storage until recovery has an outcome, one item a
+    // step, so that the step entering RUNNING does nothing else.
     void recover() {
-        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
-            step();
+        for (int round = 0; round < 1000 && lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
+            step(1);
             sim_.complete_storage();
         }
         EXPECT_NE(lifecycle(), AYNI_LIFECYCLE_RECOVERING);
-        // Stores the batch that started the work model, so that a test in
-        // RUNNING begins with nothing in flight.
-        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING; ++round) {
-            const ayni_step_report_v1 report = step();
-            if (sim_.complete_storage() == 0U && report.more_ready == 0U) {
-                break;
-            }
+        // White-box: applies the result of the append of the batch that
+        // started the work model, one item and nothing else, so that a test
+        // in RUNNING begins with nothing in flight or done.
+        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                            kernel_->completions.posted_count() > 0U;
+             ++round) {
+            step(1);
+            sim_.complete_storage();
         }
     }
 
