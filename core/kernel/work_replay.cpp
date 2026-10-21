@@ -190,7 +190,7 @@ RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size
 
 // A principal is registered anew each boot; the mappings of one this boot
 // did not register stay in the log, where none of its sessions can reach
-// them.
+// them. The table has a row for each principal the registry can hold.
 RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq) {
     CommandMapping mapping{};
     uint64_t floor = 0;
@@ -199,9 +199,6 @@ RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64
     }
     if (model_.principals.find(mapping.principal_id) == nullptr) {
         return RecordUse::applied;
-    }
-    if (!model_.commands.has_row(mapping.principal_id)) {
-        return RecordUse::no_room;
     }
     mapping.commit_seq = commit_seq;
     return model_.commands.restore(mapping, floor) ? RecordUse::applied : RecordUse::corrupt;

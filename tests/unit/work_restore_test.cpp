@@ -1415,6 +1415,47 @@ TEST(WorkReplay, second_creation_before_the_first_state_is_corrupt) {
     }
 }
 
+// A goal is created for an instance an earlier record started (C-LIFE-020).
+TEST(WorkReplay, goal_of_an_instance_no_record_started_is_corrupt) {
+    Model model(small_capacities());
+    WorkReplay replay(*model);
+    EXPECT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)), RecordUse::corrupt);
+}
+
+// Ending a goal ends its live tasks in the same transition (ADR-0025
+// decision 5), so a log that ends a goal and leaves a task of it live is
+// inconsistent, which the kernel turns into LOG_CORRUPT.
+TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
+    Model model(small_capacities(), true);
+    WorkReplay replay(*model);
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)), RecordUse::applied);
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+              RecordUse::applied);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(8, 4)), RecordUse::applied);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(8)),
+              RecordUse::applied);
+    EXPECT_TRUE(replay.consistent());
+
+    Goal cancelled = created_goal(4);
+    cancelled.lifecycle = AYNI_GOAL_CANCELLED;
+    cancelled.revision = 2;
+    cancelled.cancel_revision = 2;
+    std::vector<uint8_t> body(ayni::work::goal_state_record_size);
+    ayni::work::write_goal_state_record(cancelled, body.data());
+    ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
+    EXPECT_TRUE(replay.complete());
+    EXPECT_FALSE(replay.consistent());
+
+    // The same transition ending the task as well leaves it consistent.
+    Task cancelled_task = created_task(8, 0, 2);
+    cancelled_task.lifecycle = AYNI_TASK_CANCELLED;
+    cancelled_task.cancel_revision = 2;
+    std::vector<uint8_t> task_body(ayni::work::task_state_record_size);
+    ayni::work::write_task_state_record(cancelled_task, task_body.data());
+    ASSERT_EQ(feed(replay, 3, ayni::work::task_state_record_type, task_body), RecordUse::applied);
+    EXPECT_TRUE(replay.consistent());
+}
+
 constexpr TransitionStamp everything{110, 9};
 
 // Applies one transition, everything, that changes all a transition can

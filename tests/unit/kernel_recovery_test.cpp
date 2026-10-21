@@ -6,8 +6,10 @@
 // its batch, a failed append restricts the kernel, and DRAINING stores what
 // RUNNING committed. Runs on the simulation Host.
 
+#include "durability/batch/batch_codec.h"
 #include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "work/task/task_records.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -399,6 +401,8 @@ TEST(WorkRecovery, timers_restart_from_the_recovery_clock_with_their_full_length
     work.node().create_and_start();
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    // None of the 60 periods the power was off for is made up (C-LIMIT-007).
+    EXPECT_EQ(work.goal(taken).occurrences, 1U);
     EXPECT_EQ(work.goal(taken).next_due_us, recovered_us + period_us);
     EXPECT_EQ(work.goal(not_taken).next_due_us, recovered_us + 5U * period_us);
     EXPECT_EQ(work.goal(delayed).next_due_us, recovered_us + 7U * period_us);
@@ -571,24 +575,55 @@ TEST(WorkRecovery, goal_type_this_boot_lacks_holds_its_goals_and_tasks) {
     }
 }
 
-// ADR-0026 decision 7, C-POLICY-010: only the strategy that wrote a
-// checkpoint, at that version, reads it; a task whose type has no strategy
-// now cannot be decided. Either task is held, PAUSED in memory only.
+// ADR-0026 decision 7, C-POLICY-007, C-POLICY-010, C-LIFE-024: only the
+// strategy that wrote a checkpoint, at that version, reads it; a task whose
+// type has no strategy now cannot be decided, and a checkpoint larger than
+// its strategy now keeps cannot be handed to it. Each task is held, PAUSED
+// in memory only, with its steps, checkpoint and revision as stored, so a
+// later boot with the strategy back decides it from where it stopped.
 TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
     {
         SCOPED_TRACE("other strategy version");
         WorkNode work;
         const HeldWork held = live_tasks(work);
-        const uint32_t revision = work.task(held.reminder_task).revision;
+        const ayni_task_info_v1 before = work.task(held.reminder_task);
         Catalog catalog;
         catalog.strategy_version = 2;
         restart_with(work, catalog);
         const ayni_task_info_v1 task = work.task(held.reminder_task);
         EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-        EXPECT_EQ(task.revision, revision);
+        EXPECT_EQ(task.revision, before.revision);
+        EXPECT_EQ(task.step_count, before.step_count);
         EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED);
         // The timer's task has no checkpoint, so any version may decide it.
+        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_READY);
+
+        restart_with(work, Catalog{});
+        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_READY);
+        EXPECT_EQ(work.task(held.reminder_task).hold_status, AYNI_OK);
+        work.strategy().seen.clear();
+        work.node().step();
+        // The decision starts from the steps and the checkpoint written
+        // before the version changed: {7, step_count when written}.
+        const auto seen =
+            std::find_if(work.strategy().seen.begin(), work.strategy().seen.end(),
+                         [](const Seen &decided) { return decided.goal_type_id == "reminder"; });
+        ASSERT_NE(seen, work.strategy().seen.end());
+        EXPECT_EQ(seen->steps.size(), before.step_count);
+        const std::vector<uint8_t> resumed = {7, static_cast<uint8_t>(before.step_count - 1U)};
+        EXPECT_EQ(seen->checkpoint, resumed);
+    }
+    {
+        SCOPED_TRACE("checkpoint larger than the strategy keeps");
+        WorkNode work;
+        const HeldWork held = live_tasks(work);
+        work.max_checkpoint_bytes = 1;
+        restart_with(work, Catalog{});
+        const ayni_task_info_v1 task = work.task(held.reminder_task);
+        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(task.hold_status, AYNI_CAPACITY_EXCEEDED);
+        EXPECT_EQ(task.hold_reason, AYNI_REASON_POLICY_OUTPUT_LIMIT);
         EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_READY);
     }
     {
@@ -606,7 +641,8 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
     }
 }
 
-// ADR-0026 decision 7: the instance of an agent this boot does not register
+// ADR-0026 decision 7, C-LIFE-020: the instance of an agent this boot does
+// not register keeps its goals and tasks, which no other instance takes; it
 // is FAULTED with AGENT_UNREGISTERED in memory, without a revision, and its
 // live tasks settle to PAUSED in the transition that starts the work model;
 // the other agent's are untouched. A later boot that registers the agent
@@ -653,8 +689,39 @@ TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
     EXPECT_EQ(work.task(their_task).lifecycle, AYNI_TASK_READY);
 }
 
-// C-LIFE-020: a log that holds more than this boot's capacities restricts
-// the kernel, and none of it is visible.
+// ADR-0026 decision 8, C-LIFE-025: an instance keeps its id and revision
+// across restarts, and an agent registered for the first time has its
+// instance started by the transition that starts the work model.
+TEST(WorkRecovery, agent_registered_for_the_first_time_starts_after_the_logged_ones) {
+    WorkNode work;
+    prepare(work);
+    Catalog without_b;
+    without_b.agent_b = false;
+    use_catalog(work, without_b);
+    work.run();
+    const ayni_agent_info_v1 before = work.agent(agent_a);
+    ASSERT_EQ(before.lifecycle, AYNI_AGENT_RUNNING);
+
+    EXPECT_EQ(restart_with(work, Catalog{}), 2U); // the boot batch and the start
+    const ayni_agent_info_v1 a = work.agent(agent_a);
+    EXPECT_EQ(a.instance_id, before.instance_id);
+    EXPECT_EQ(a.revision, before.revision);
+    EXPECT_EQ(a.commit_seq, before.commit_seq);
+    const ayni_agent_info_v1 b = work.agent(agent_b);
+    EXPECT_EQ(b.lifecycle, AYNI_AGENT_RUNNING);
+    EXPECT_EQ(b.revision, 1U);
+    EXPECT_EQ(b.commit_seq, next_commit_seq(work) - 1U);
+    EXPECT_NE(b.instance_id, 0U);
+    EXPECT_NE(b.instance_id, a.instance_id);
+
+    // With every instance logged, a restart starts none.
+    EXPECT_EQ(restart_with(work, Catalog{}), 1U);
+    EXPECT_EQ(work.agent(agent_b).instance_id, b.instance_id);
+}
+
+// ADR-0026 decision 5, C-LIMIT-001: a log that holds more than this boot's
+// capacities restricts the kernel instead of dropping work, and none of it
+// is visible.
 TEST(WorkRecovery, log_beyond_the_capacities_restricts_and_shows_nothing) {
     WorkNode work;
     work.run();
@@ -667,12 +734,59 @@ TEST(WorkRecovery, log_beyond_the_capacities_restricts_and_shows_nothing) {
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
-    // White-box: RESTRICTED answers no query, and the tables are empty.
+    ayni_goal_info_v1 info{};
+    info.struct_size = sizeof(info);
+    EXPECT_EQ(ayni_get_goal(work.kernel(), goal_id, &info), AYNI_NOT_FOUND);
+    // White-box: the tables hold nothing of the log.
     const ayni::kernel::WorkModel &model = work.kernel()->work;
-    uint32_t index = 0;
-    EXPECT_FALSE(model.goals.find(goal_id, index));
     EXPECT_EQ(model.goals.size(), 0U);
     EXPECT_EQ(model.agents.at(0).instance_id, 0U);
+}
+
+// ADR-0026 decision 5: ending a goal ends its live tasks in the same
+// transition, so a log that ends a goal and leaves a task of it live was
+// not written by this library; it is LOG_CORRUPT, and none of it is
+// visible.
+TEST(WorkRecovery, log_that_leaves_a_live_task_under_an_ended_goal_is_corrupt) {
+    WorkNode work;
+    work.run();
+    work.strategy().answer = cannot_decide; // the task stays live
+    const uint64_t goal_id = create(work, goal_body(work, AYNI_TRIGGER_ONCE));
+    run_until_idle(work);
+    ASSERT_NE(task_of(work, goal_id), 0U);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, goal_id).status, AYNI_OK);
+    run_until_idle(work);
+    ASSERT_EQ(work.node().sim().pending_storage(), 0U);
+
+    // Drops the task's state from the batch that cancelled the goal and it.
+    StoredBatch &last = work.node().sim().log().back();
+    ayni::durability::BatchView batch{};
+    ASSERT_EQ(ayni::durability::read_batch(last.bytes.data(), last.bytes.size(), batch),
+              ayni::durability::BatchCheck::ok);
+    std::vector<uint8_t> bytes(last.bytes.size());
+    ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity);
+    ayni::durability::RecordReader reader(batch);
+    ayni::durability::RecordHeader header{};
+    const uint8_t *body = nullptr;
+    uint32_t dropped = 0;
+    while (reader.next(header, body) == ayni::durability::RecordReader::Next::record) {
+        if (header.type == ayni::work::task_state_record_type) {
+            ++dropped;
+            continue;
+        }
+        ASSERT_TRUE(writer.add_record(header, body));
+    }
+    ASSERT_EQ(dropped, 1U);
+    bytes.resize(writer.finish());
+    last.bytes = bytes;
+
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    ayni_goal_info_v1 info{};
+    info.struct_size = sizeof(info);
+    EXPECT_EQ(ayni_get_goal(work.kernel(), goal_id, &info), AYNI_NOT_FOUND);
 }
 
 // --- Commands (decision 9) -----------------------------------------------------
