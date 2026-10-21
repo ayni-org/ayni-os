@@ -195,10 +195,16 @@ FileLog::Opened FileLog::check_file_header(int directory_fd) {
     if (error != 0) {
         return {OpenStatus::file_error, error};
     }
-    if (std::memcmp(found.data(), expected.data(), present) != 0) {
+    // A power cut while the header was first written can leave a prefix of
+    // it, or, where the length reached the disk before the bytes, zeros.
+    const bool unwritten =
+        file_size_ <= found.size() &&
+        std::all_of(found.begin(), found.begin() + static_cast<std::ptrdiff_t>(present),
+                    [](uint8_t byte) { return byte == 0U; });
+    if (!unwritten && std::memcmp(found.data(), expected.data(), present) != 0) {
         return {OpenStatus::not_a_log, 0};
     }
-    if (present == expected.size()) {
+    if (!unwritten && present == expected.size()) {
         return {OpenStatus::ok, 0};
     }
     // A new file, or one whose creation a power cut tore: nothing is appended

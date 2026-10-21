@@ -169,14 +169,19 @@ TEST(NativeHost, file_that_is_not_this_log_format_is_refused_and_kept) {
 }
 
 // The file header is synced before any frame, so a file holding only part
-// of it holds no batch.
+// of it, or only zeros where it would be, holds no batch.
 TEST(NativeHost, header_torn_at_creation_is_written_again) {
-    const TempDirectory directory;
-    write_file(directory.file(Host::log_file_name), {'A', 'Y', 'N'});
-    Host native;
-    ASSERT_EQ(native.open_storage(directory.path().c_str(), 4).status, StorageStatus::ok);
-    native.close_storage();
-    EXPECT_EQ(std::filesystem::file_size(directory.file(Host::log_file_name)), 8U);
+    const Bytes torn_headers[] = {{'A', 'Y', 'N'}, Bytes(8, 0), Bytes(3, 0)};
+    for (const Bytes &torn : torn_headers) {
+        const TempDirectory directory;
+        write_file(directory.file(Host::log_file_name), torn);
+        Host native;
+        ASSERT_EQ(native.open_storage(directory.path().c_str(), 4).status, StorageStatus::ok);
+        native.close_storage();
+        std::ifstream in(directory.file(Host::log_file_name), std::ios::binary);
+        EXPECT_EQ(Bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()),
+                  joined({{'A', 'Y', 'N', 'L'}, le32(1)}));
+    }
 }
 
 // The layout documented in hosts/native/file_log.h, with CRC-32/ISO-HDLC as

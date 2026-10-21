@@ -333,7 +333,9 @@ typedef uint32_t ayni_restriction_t;
 #define AYNI_RESTRICTION_LOG_UNSUPPORTED ((ayni_restriction_t)6)       /* C-STORE-004 */
 #define AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED ((ayni_restriction_t)7)
 /* Since 0.14 (ADR-0026). The log holds more state than this kernel's
- * capacities and limits do: it was written under larger ones. */
+ * capacities and limits do: it was written under larger ones. A batch
+ * larger than this kernel's storage buffer fails the read instead, as
+ * STORAGE_READ_FAILED. */
 #define AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY ((ayni_restriction_t)8)
 /* Since 0.14. A defect in this library: a transition's batch did not fit
  * the room it was given. */
@@ -696,9 +698,10 @@ typedef uint32_t ayni_reason_t;
  * holds the instance of an agent this boot did not register, so it is
  * FAULTED. */
 #define AYNI_REASON_AGENT_UNREGISTERED ((ayni_reason_t)34)
-/* UNSUPPORTED_VERSION, in ayni_task_info_v1 only: a restored task's goal
- * type names no strategy now, or its private checkpoint was written by
- * another strategy or version than the one its goal type names now. */
+/* UNSUPPORTED_VERSION: a restored goal with a trigger whose goal type names
+ * no strategy now (ayni_goal_info_v1 hold_reason, and its tasks'), or a
+ * restored task whose private checkpoint was written by another strategy
+ * or version than the one its goal type names now (ayni_task_info_v1). */
 #define AYNI_REASON_STRATEGY_CHANGED ((ayni_reason_t)35)
 /* EXPIRED: the command_id is not mapped and at or below the principal's
  * floor, so the command may have been accepted once (ayni_submit_intent). */
@@ -930,9 +933,12 @@ typedef struct ayni_goal_info_v1 {
     /* Since 0.14 (ADR-0026). Why this boot holds a goal the log restored
      * that is not terminal: AYNI_REASON_GOAL_TYPE_UNKNOWN when no goal type
      * has its goal_type_id, AYNI_REASON_GOAL_TYPE_VERSION when none has it
-     * at goal_type_version. A held goal has no due work, takes no local
-     * input and its tasks are held, until a boot registers its type again;
-     * it can still be cancelled. NONE otherwise. */
+     * at goal_type_version, AYNI_REASON_STRATEGY_CHANGED when its type names
+     * no strategy now and the goal has a trigger. A held goal neither
+     * expires nor takes occurrences or local input, and its tasks are held,
+     * until a boot can serve it again; next_due_us and expires_us show what
+     * the log has pending. It can still be cancelled, which ends the hold.
+     * NONE otherwise. */
     ayni_reason_t hold_reason;
     uint32_t trigger_source_size; /* since 0.9; 0 unless the trigger is LOCAL_INPUT */
     char trigger_source[AYNI_CATALOG_ID_MAX_BYTES]; /* since 0.9; as created, not terminated */
@@ -981,11 +987,11 @@ typedef struct ayni_task_info_v1 {
      * and owner may advance, until it ends. AYNI_OK and AYNI_REASON_NONE for
      * a task never held. Since 0.14 a boot also holds a restored task it
      * cannot decide (ADR-0026), without changing its revision: its goal is
-     * held, with AYNI_NOT_FOUND and AYNI_REASON_GOAL_TYPE_UNKNOWN or
-     * AYNI_UNSUPPORTED_VERSION and AYNI_REASON_GOAL_TYPE_VERSION; or its
-     * goal type names no strategy now, or another strategy or version than
-     * the one that wrote its private checkpoint, with
-     * AYNI_UNSUPPORTED_VERSION and AYNI_REASON_STRATEGY_CHANGED; or its
+     * held, with AYNI_NOT_FOUND and AYNI_REASON_GOAL_TYPE_UNKNOWN, or
+     * AYNI_UNSUPPORTED_VERSION and the goal's hold_reason; or its goal type
+     * names another strategy or version than the one that wrote its private
+     * checkpoint, with AYNI_UNSUPPORTED_VERSION and
+     * AYNI_REASON_STRATEGY_CHANGED; or its
      * checkpoint is larger than that strategy's max_checkpoint_bytes, with
      * AYNI_CAPACITY_EXCEEDED and AYNI_REASON_POLICY_OUTPUT_LIMIT. A later
      * boot that has what was lacking finds the task as the log left it. */

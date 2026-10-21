@@ -330,6 +330,10 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
     ayni_reason_t blocker = AYNI_REASON_NONE; // advancing's
     for (uint32_t index = 0; index < tables.goals.size(); ++index) {
         const Goal &goal = tables.goals.at(index);
+        // A held goal neither expires nor takes occurrences (ADR-0026).
+        if (GoalTable::is_held(goal)) {
+            continue;
+        }
         if (comes_first(tables.goals, goal.expires_us, index, expires_us, expiring)) {
             expires_us = goal.expires_us;
             expiring = index;

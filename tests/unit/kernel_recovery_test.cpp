@@ -641,6 +641,66 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
     }
 }
 
+// ADR-0026 decision 7: a held goal has no due work. Its pending occurrence
+// and expiry neither derive a task nor end it, and give no deadline, so the
+// log keeps them as they were for a boot that registers its type again; a
+// goal whose type lost its strategy is held the same way, since nothing
+// could decide its tasks. A held goal can still be cancelled, which ends
+// the hold.
+TEST(WorkRecovery, held_goal_has_no_due_work) {
+    const struct {
+        const char *name;
+        const char *type;
+        Catalog catalog;
+        ayni_reason_t reason;
+    } cases[] = {
+        {"type unknown", "reminder", Catalog{0, true, true, 1}, AYNI_REASON_GOAL_TYPE_UNKNOWN},
+        {"type without a strategy", "timer", Catalog{1, false, true, 1},
+         AYNI_REASON_STRATEGY_CHANGED},
+    };
+    for (const auto &c : cases) {
+        SCOPED_TRACE(c.name);
+        WorkNode work;
+        prepare(work);
+        use_catalog(work, Catalog{});
+        work.run();
+        ayni_goal_create_v1 body = goal_body(work, AYNI_TRIGGER_DELAY, c.type);
+        body.trigger_delay_us = 7U * period_us;
+        body.expiry_us = 9U * period_us;
+        const uint64_t goal_id = create(work, body);
+        run_until_idle(work);
+
+        restart_with(work, c.catalog);
+        EXPECT_EQ(work.goal(goal_id).hold_reason, c.reason);
+        work.node().sim().advance_us(10U * period_us);
+        run_until_idle(work);
+        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+        EXPECT_EQ(task_of(work, goal_id), 0U);
+        EXPECT_EQ(work.node().step().next_deadline_us, no_time);
+
+        restart_with(work, Catalog{});
+        EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_NONE);
+        work.node().sim().advance_us(7U * period_us);
+        run_until_idle(work);
+        EXPECT_NE(task_of(work, goal_id), 0U);
+    }
+    {
+        SCOPED_TRACE("cancelled");
+        WorkNode work;
+        prepare(work);
+        use_catalog(work, Catalog{});
+        work.run();
+        const uint64_t goal_id = create(work, goal_body(work, AYNI_TRIGGER_NONE, "reminder"));
+        Catalog catalog;
+        catalog.reminder_version = 0;
+        restart_with(work, catalog);
+        ASSERT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_GOAL_TYPE_UNKNOWN);
+        ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, goal_id).status, AYNI_OK);
+        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_CANCELLED);
+        EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_NONE);
+    }
+}
+
 // ADR-0026 decision 7, C-LIFE-020: the instance of an agent this boot does
 // not register keeps its goals and tasks, which no other instance takes; it
 // is FAULTED with AGENT_UNREGISTERED in memory, without a revision, and its

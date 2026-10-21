@@ -204,10 +204,24 @@ RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64
     return model_.commands.restore(mapping, floor) ? RecordUse::applied : RecordUse::corrupt;
 }
 
-// Ending a goal ends every task it reaches in the same transition (ADR-0025
-// decision 5), so no stored transition leaves a live task under a terminal
-// goal.
+// Ending a goal ends its descendants and every task it reaches, and
+// stopping an instance ends every goal it owns, in the same transition
+// (ADR-0018, ADR-0025 decision 5); so no stored transition leaves a live
+// goal under a terminal parent or a stopped owner, or a live task under a
+// terminal goal.
 bool WorkReplay::consistent() const {
+    for (uint32_t index = 0; index < model_.goals.size(); ++index) {
+        const work::Goal &goal = model_.goals.at(index);
+        if (!work::GoalTable::is_live(goal.lifecycle)) {
+            continue;
+        }
+        const work::AgentInstance *owner = model_.agents.find_instance(goal.owner_instance_id);
+        if ((goal.parent_index != work::GoalTable::no_parent &&
+             !work::GoalTable::is_live(model_.goals.at(goal.parent_index).lifecycle)) ||
+            owner == nullptr || owner->lifecycle == AYNI_AGENT_STOPPED) {
+            return false;
+        }
+    }
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         const work::Task &task = model_.tasks.at(index);
         if (work::TaskTable::is_live(task.lifecycle) &&
@@ -220,21 +234,27 @@ bool WorkReplay::consistent() const {
 
 void WorkReplay::finish(uint64_t now_us) {
     model_.agents.fault_unregistered();
-    model_.goals.resolve_types(
-        [this](const catalog::CatalogId &id, uint32_t version, uint32_t &out_index) {
-            const catalog::GoalTypeRegistry::Lookup type =
-                model_.goal_types.find({id.data(), id.size()}, version);
-            switch (type.kind) {
-            case catalog::GoalTypeRegistry::Lookup::Kind::found:
-                out_index = type.index;
-                return AYNI_REASON_NONE;
-            case catalog::GoalTypeRegistry::Lookup::Kind::unknown_version:
-                return AYNI_REASON_GOAL_TYPE_VERSION;
-            case catalog::GoalTypeRegistry::Lookup::Kind::unknown_id:
-                break;
-            }
-            return AYNI_REASON_GOAL_TYPE_UNKNOWN;
-        });
+    model_.goals.resolve_types([this](const catalog::CatalogId &id, uint32_t version,
+                                      ayni_trigger_kind_t trigger, uint32_t &out_index) {
+        const catalog::GoalTypeRegistry::Lookup type =
+            model_.goal_types.find({id.data(), id.size()}, version);
+        switch (type.kind) {
+        case catalog::GoalTypeRegistry::Lookup::Kind::found:
+            out_index = type.index;
+            // A goal with a trigger derives tasks, and the type no longer
+            // has a strategy to decide them.
+            return trigger != AYNI_TRIGGER_NONE &&
+                           model_.goal_types.at(type.index).strategy_index ==
+                               catalog::GoalType::no_strategy
+                       ? AYNI_REASON_STRATEGY_CHANGED
+                       : AYNI_REASON_NONE;
+        case catalog::GoalTypeRegistry::Lookup::Kind::unknown_version:
+            return AYNI_REASON_GOAL_TYPE_VERSION;
+        case catalog::GoalTypeRegistry::Lookup::Kind::unknown_id:
+            break;
+        }
+        return AYNI_REASON_GOAL_TYPE_UNKNOWN;
+    });
     hold_tasks();
     model_.goals.reanchor(now_us);
     model_.tasks.reanchor(now_us);
@@ -262,7 +282,10 @@ void WorkReplay::hold_tasks() {
         }
         const catalog::GoalType &type = model_.goal_types.at(goal.goal_type_index);
         if (type.strategy_index == catalog::GoalType::no_strategy) {
-            // The type no longer has tasks to decide.
+            // A goal without a trigger derives no task, and one with a
+            // trigger is held above, so only a log this library did not
+            // write gets here; hold rather than ask a strategy that is not
+            // there.
             tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
             continue;
         }

@@ -449,6 +449,7 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
     if (!is_live(lifecycle)) {
         goal.cursor = {goal.cursor.taken, no_time};
         goal.expires_us = no_time;
+        goal.hold_reason = AYNI_REASON_NONE;
     }
 }
 

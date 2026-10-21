@@ -654,7 +654,8 @@ TEST(GoalRestore, resolve_types_holds_live_goals_whose_type_this_boot_lacks) {
     goals.created(4, typed("gone", 1));
     goals.cancel(4, 2);
     const auto resolve = [](bool all_known) {
-        return [all_known](const CatalogId &id, uint32_t version, uint32_t &out_index) {
+        return [all_known](const CatalogId &id, uint32_t version, ayni_trigger_kind_t,
+                           uint32_t &out_index) {
             if (all_known || (id.equals(key("kept")) && version == 1U)) {
                 out_index = 7;
                 return AYNI_REASON_NONE;
@@ -1454,6 +1455,49 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     ayni::work::write_task_state_record(cancelled_task, task_body.data());
     ASSERT_EQ(feed(replay, 3, ayni::work::task_state_record_type, task_body), RecordUse::applied);
     EXPECT_TRUE(replay.consistent());
+}
+
+// Ending a goal ends its descendants, and stopping an instance ends its
+// goals, in the same transition (ADR-0018), so a live goal under an ended
+// parent or a stopped owner is inconsistent too.
+TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsistent) {
+    {
+        Model model(small_capacities(), true);
+        WorkReplay replay(*model);
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
+                  RecordUse::applied);
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+                  RecordUse::applied);
+        Goal child = created_goal(5);
+        child.parent_goal_id = 4;
+        child.depth = 1;
+        std::vector<uint8_t> child_body(ayni::work::goal_record_size(child));
+        ayni::work::write_goal_record(child, {nullptr, 0}, child_body.data());
+        ASSERT_EQ(feed(replay, 2, ayni::work::goal_record_type, child_body), RecordUse::applied);
+        ASSERT_EQ(feed(replay, 2, ayni::work::goal_state_record_type, goal_state_record(5)),
+                  RecordUse::applied);
+        EXPECT_TRUE(replay.consistent());
+        Goal cancelled = created_goal(4);
+        cancelled.lifecycle = AYNI_GOAL_CANCELLED;
+        cancelled.revision = 2;
+        cancelled.cancel_revision = 2;
+        std::vector<uint8_t> body(ayni::work::goal_state_record_size);
+        ayni::work::write_goal_state_record(cancelled, body.data());
+        ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
+        EXPECT_FALSE(replay.consistent());
+    }
+    {
+        Model model(small_capacities(), true);
+        WorkReplay replay(*model);
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
+                  RecordUse::applied);
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+                  RecordUse::applied);
+        EXPECT_TRUE(replay.consistent());
+        ASSERT_EQ((*model).agents.restore(owner_agent, owner, 2, AYNI_AGENT_STOPPED, {102, 2}),
+                  AgentTable::Restore::restored);
+        EXPECT_FALSE(replay.consistent());
+    }
 }
 
 constexpr TransitionStamp everything{110, 9};

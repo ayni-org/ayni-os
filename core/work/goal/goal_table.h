@@ -248,15 +248,16 @@ class GoalTable {
     Restore restore_state(uint32_t index, const GoalState &state,
                           foundation::TransitionStamp stamp);
     // Sets each goal's goal_type_index from its type's id and version
-    // (ADR-0026): resolve(id, version, out_index) says whether this boot
-    // has that type, as AYNI_REASON_NONE, else why not; a goal that is not
-    // terminal and lacks it is held for that reason.
+    // (ADR-0026): resolve(id, version, trigger_kind, out_index) says whether
+    // this boot has that type, and can serve a goal of that trigger kind,
+    // as AYNI_REASON_NONE, else why not; a goal that is not terminal and
+    // lacks it is held for that reason.
     template <typename Resolve> void resolve_types(Resolve resolve) {
         for (uint32_t index = 0; index < goals_.size(); ++index) {
             Goal &goal = goals_[index];
             goal.goal_type_index = no_index;
-            const ayni_reason_t lacks =
-                resolve(goal.goal_type_id, goal.goal_type_version, goal.goal_type_index);
+            const ayni_reason_t lacks = resolve(goal.goal_type_id, goal.goal_type_version,
+                                                goal.trigger.kind, goal.goal_type_index);
             goal.hold_reason = is_live(goal.lifecycle) ? lacks : AYNI_REASON_NONE;
         }
     }
@@ -268,7 +269,8 @@ class GoalTable {
     void clear() { goals_.clear(); }
 
     // Whether this boot holds the goal: it has no due work and takes no
-    // input (ADR-0026).
+    // input (ADR-0026). Its times stay as recovery set them, so a GOAL_STATE
+    // written for it, by a pause say, keeps what the log had pending.
     static bool is_held(const Goal &goal) { return goal.hold_reason != AYNI_REASON_NONE; }
 
     // Returns false when no goal has the id.

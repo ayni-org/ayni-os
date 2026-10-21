@@ -69,10 +69,12 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // the due work at one time is finite, so neither starves the other.
     // Decisions likewise take only the tasks READY before the due work, so a
     // task derived in this step is decided in the next and a step does
-    // finite work however the strategies answer.
+    // finite work however the strategies answer. A transition that
+    // journal() restricts on ends both loops: nothing after it is stored.
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
-        while (items < max_items && !out_of_time && has_room()) {
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && items < max_items && !out_of_time &&
+               has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
             if (!ayni::kernel::do_due_work(work, started_us)) {
                 break;
@@ -81,7 +83,8 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
             ++items;
             out_of_time = time_is_up(host, started_us, max_time_us);
         }
-        while (items < max_items && !out_of_time && has_room()) {
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && items < max_items && !out_of_time &&
+               has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
             if (!ayni::kernel::decide_next(work, decisions, ready_before, started_us)) {
                 break;
