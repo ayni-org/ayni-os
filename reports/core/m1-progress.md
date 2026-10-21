@@ -2,7 +2,7 @@
 
 - **关联**：计划 §9、§9.1、§14；`docs/workflow.md`；`reports/core/m0-review.md` §5（每个工作包记下开始与结束日期）
 - **更新**：每个 PR 合并时更新本文的 PR 表、工作包日期与“交接状态”。日期为合并提交的日期。
-- **交接**：用户 2026-10-21 要求 Claude 做完当前 PR（`MA-010` B+C+D，#20）后停止，其余工作交给其他大模型。接手时先读下文“交接状态”，再按 `docs/workflow.md` 第 7 节开始。
+- **交接**：#20 后的原始交接流程保留在 `docs/workflow.md` 第 7 节；本页记录 #21 完成 E+F 后的状态。接手时先读下文“交接状态”，再按 workflow 开始下一包。
 - **范围**：M1 的目标是在电脑上完成 Core，并通过 E1–E4（计划 §9 的 M1 行）。工作包的内容、依赖与完成定义以计划 §9.1 为准，本文只记顺序、拆分、已定决定与进度。
 
 ## 执行顺序
@@ -12,7 +12,7 @@
 | 步骤 | 工作包 | 内容 | 状态 |
 |---|---|---|---|
 | 1 | `MA-003`、`MA-005` | 事件入口、完成槽、Kernel 生命周期与启动恢复、模拟 Host | 完成 |
-| 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004` 完成；`MA-010` 的 A、B+C+D 已合并，E+F 已完成本地验证与独立审查，待 PR/CI 合并 |
+| 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004`、`MA-010` 完成 |
 | 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖依次做 `006`、`018`、`008` | 未开始 |
 | 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | 未开始 |
 | 5 | `MA-019`、`MA-020` | 助理协调器、SDK 与接入示例 | 未开始 |
@@ -38,6 +38,7 @@
 | #18 | 2026-10-21 | `MA-010` A | Goal 表满时终态 Goal 让位 | ADR-0025 |
 | #19 | 2026-10-21 | 流程文档 | 开发流程（`docs/workflow.md`）与本文 | — |
 | #20 | 2026-10-21 | `MA-010` B+C+D | 每个 transition 一个日志批次、整批暂存的重放与校验、重启后重新计时、目录缺失时保留并停下、Native 文件存储、命令幂等，ABI 0.14 | ADR-0026 |
+| #21 | 2026-10-21 | `MA-010` E+F | 同身份重试、写入栅栏与重载、物理游标及准确容量错误、分页双槽快照、日志轮转与写频、schema 0→1 迁移及模拟旧 reader 拒绝，ABI 0.15 | ADR-0027 |
 
 ## 工作包日期
 
@@ -46,28 +47,25 @@
 | `MA-003` | 2026-10-19 | 2026-10-19 |
 | `MA-005` | 2026-10-19 | 2026-10-19 |
 | `MA-004` | 2026-10-19 | 2026-10-20 |
-| `MA-010` | 2026-10-20 | 进行中 |
+| `MA-010` | 2026-10-20 | 2026-10-21 |
 
 ## 交接状态（2026-10-21）
 
-- **进行中：`MA-010` E+F。** 分支 `codex/ma010-recovery-snapshots` 从 #20 的 main 开始；已完成实现及针对性测试，尚未提交、创建 PR 或合并。完整验收与实际结果以 ADR-0027 的「验证」为准。
-- **当前范围：** 同身份三次重试、10/50 ms 退避、`FENCED=7` 与隔离后重载、物理 cursor、读取缓冲不足的准确容量错误、分页双槽快照与唯一激活、轮转、共享 10 ms 写频、schema 0→1 迁移及模拟旧 reader 拒绝。当前可查询对象与命令窗口采用保留 A；默认缓冲三倍。ABI 0.15，计划 v1.17，ADR-0027。
-- **已执行：** 受限单线程下的 571 个单元测试完整基线通过，Native 专项 24/24 通过（含最终文件与目录同步修复）。独立全量只读审查已收尾，全部发现均已修复并回看；不能把中途的 Debug 结果替代五组最终构建、缺陷植入或 CI。
-- **资源约束：** 用户报告并行构建导致电脑崩溃，已停止所有并行验证并恢复残留植入缺陷；Core 已逐文件与正常源码快照核对一致。后续只能单任务、`CMAKE_BUILD_PARALLEL_LEVEL=1`，容器限 1 CPU、2 GiB 内存、无额外 swap。脚本和原始结果保存在仓库外的持久目录，不能只放会随重启丢失的 `/tmp`。
-- **最终本地验证：** 40/40 可编译植入缺陷被命名断言发现（32 项跑完整套件，8 项断言后 SIGSEGV，原文均精确恢复）；GCC Debug/Release/ASan+UBSan/TSan、Clang Debug 各 584/584 CTest；模拟器、依赖、契约、格式与 diff 检查通过。独立完整审查的八项发现全部修复并回看。完整记录见 ADR-0027。
-- **交付前仍须：** 英文六节 PR、CI 全绿及 merge commit；合并后更新本页并重置自己的分支。
-- **下一包：** 本 PR 合并后 `MA-010` 结束，再按第 3 步开始 `MA-006`，然后 `MA-018`、`MA-008`。不要在 E+F 中提前实现这些包。后续编号从 ADR-0028 开始；ABI/计划有变化再按 workflow 递增。
-- **代码与测试入口：** `core/kernel/boot/`、`commit/`、`storage_maintenance.*`、`work_snapshot.*`、`core/durability/snapshot/`、`hosts/native/file_log.*`、`hosts/sim/`；`kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 及两个 Host 共用的 `host_storage_contract_test.cpp`。
+- **`MA-010` 已完成。** main 包含 #21 的 E+F 和之前的全部工作；没有继续中的 E+F 代码。开发分支 `codex/ma010-recovery-snapshots` 在合并后按 workflow 重置到 main。本文的完成状态随 #21 合并生效，CI 与实际合并记录见 [#21](https://github.com/RobotSe7en/ayni/pull/21)。
+- **下一步：`MA-006`。** 然后按第 3 步完成 `MA-018`、`MA-008`；不要直接跳到完整 E2/E4 或硬件。每包先读计划 §9.1、相关契约与 ADR，再列产品决策和 PR 拆分。
+- **已实现：** 同身份三次重试、10/50 ms 退避、`FENCED=7` 与隔离后重载、物理 cursor、读取缓冲不足的准确容量错误、分页双槽快照及唯一激活、轮转、共享 10 ms 写频、schema 0→1 迁移与模拟旧 reader 拒绝。当前可查询对象与命令窗口采用保留 A；默认缓冲三倍。ABI 0.15，计划 v1.17，ADR-0027。
+- **实际验证：** 571/571 完整单元基线、Native 专项 24/24；40/40 可编译植入缺陷由命名断言发现（32 项跑完整套件，8 项断言后 SIGSEGV，原文均精确恢复）；GCC Debug/Release/ASan+UBSan/TSan、Clang Debug 各 584/584 CTest；模拟器、依赖、契约、格式、diff 检查通过。独立完整审查八项发现全部修复并回看。详细结果见 ADR-0027，本机原始记录在仓库外 `../ayni-ma010-evidence/`。
+- **资源约束：** 用户报告并行构建导致电脑崩溃。已恢复残留植入缺陷、逐文件核对正常 Core，所有最终验证重跑为单任务、`CMAKE_BUILD_PARALLEL_LEVEL=1`；唯一运行容器限 1 CPU、2 GiB 内存、无额外 swap，使用较低 CPU/I/O 优先级。峰值约 797 MiB、零 OOM，swap 为 0。后续在本机继续保持串行及硬限制，检查可用内存；脚本与原始结果用持久目录，不能只放 `/tmp`。
+- **边界：** 没有动作、Grant、预算、记忆、对外输出屏障或完整 E1–E4/实机验收；已接受但不完成的 I/O 没有合成超时，安全关闭可能继续等待。Native 重开后的首次变更会重写并同步继承前缀及目录。未注册 principal 的命令窗口仍保留，所有权迁移与清理随 `MA-006`。
+- **编号与入口：** 下一个 ADR 是 ADR-0028；后续 ABI/计划变更按 workflow 递增。先读 `core/kernel/boot/`、`commit/`、`storage_maintenance.*`、`work_snapshot.*`、`core/durability/snapshot/`，以及 `kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 和共享 `host_storage_contract_test.cpp`。
 
 ## 剩余工作
 
-### `MA-010` E+F（一个 PR，验证与交付收尾中）
+### `MA-010` 之后的恢复验收边界
 
-- **E**：追加结果为 `UNKNOWN` 或 `FAILED` 后，以同一身份（同一 `transition_id` 与 `commit_seq`，C-COMMIT-008）有界重试；重试仍失败时进入受限栅栏，生命周期新增 `FENCED`，取值 7（产品语义，用户选定推荐项）；以 `storage_fence_writers` 端口与 `WRITER_FENCE` 记录隔离旧写入方，之后重载（C-STORE-005、C-COMMIT-010、E2 F12）。
-- **F**：双槽快照与 `generation`（用户选定推荐项，C-STORE-006）、从快照恢复（C-STORE-007）、日志轮转与写入频率上限（C-STORE-011）、`storage_schema` 从 0 迁移到 1，切换前保留旧格式（用户选定推荐项，C-STORE-010、C-VER-021）、模拟回滚（E4 步骤 6）。
-- 输出门控（`requires_seq`）随产生对外输出的包实现；当前存储失败先按同一批次重试、耗尽后隔离并重载，不能证明隔离或恢复时只读受限，不发出新输出。
-- #20 的独立审查留给 E、F 的事项（ADR-0026“后果”）：日志由容量更大的配置写入、某个批次大于本次存储缓冲时，Host 的读取以 `FAILED` 完成，恢复报告 `STORAGE_READ_FAILED` 而不是 `STATE_EXCEEDS_CAPACITY`，区分两者需要 Host 报告所需的大小；默认缓冲为两个最大批次，bip buffer 的空闲区分在两段时，一个批次在途也可能让下一个意图返回 `BUSY`，F 部分定写入频率上限时一并评估缓冲大小。
-- ESP-IDF Host 仍没有存储端口（`ayni_start` 在其上返回 `UNSUPPORTED`），随开发板实测的工作补上。
+- E+F 已在 #21 完成当前工作模型的重试、栅栏、快照、轮转、限频和 schema 0→1 迁移；旧批次大于本次缓冲的交接问题已通过 `READ_BUFFER_TOO_SMALL` 和严格回包校验修复。默认三倍缓冲避免一个最大批次在途造成的分段问题，显式小缓冲仍允许并按契约背压。
+- 输出门控（`requires_seq`）随产生对外输出的包实现；当前故障路径不能证明隔离或恢复时只读受限，不发出新输出。在途动作并存、动作账本/Grant/预算/记忆记录的恢复与完整 E2/E4，仍由各所属包验收。
+- ESP-IDF Host 尚无存储端口，`ayni_start` 返回 `UNSUPPORTED`；真实 Flash 擦写和执行器调度随 `MA-026`，真实 OTA/回滚随 M4。模拟旧 reader 的拒绝不等同于旧固件二进制或硬件回滚实测。
 
 ### 第 3 至 6 步
 
