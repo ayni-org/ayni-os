@@ -1040,15 +1040,15 @@ TEST(TaskRestore, hold_restored_holds_a_live_task_at_its_revision) {
     ASSERT_EQ(tasks.state(3, held_state(AYNI_TASK_PAUSED, 2), 4), TaskRestore::restored);
     ASSERT_EQ(tasks.state(4, task_state(AYNI_TASK_COMPLETED, 2), 5), TaskRestore::restored);
     for (const uint64_t task_id : {1U, 2U, 3U, 4U}) {
-        tasks->hold_restored(tasks.index_of(task_id), AYNI_NOT_FOUND,
-                             AYNI_REASON_CHECKPOINT_WRITER);
+        tasks->hold_restored(tasks.index_of(task_id), AYNI_UNSUPPORTED_VERSION,
+                             AYNI_REASON_STRATEGY_CHANGED);
     }
 
     for (const uint64_t task_id : {1U, 2U}) {
         const Task &task = tasks.task(task_id);
         EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED) << task_id;
-        EXPECT_EQ(task.hold_status, AYNI_NOT_FOUND) << task_id;
-        EXPECT_EQ(task.hold_reason, AYNI_REASON_CHECKPOINT_WRITER) << task_id;
+        EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION) << task_id;
+        EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED) << task_id;
         EXPECT_TRUE(TaskTable::still_held(task)) << task_id;
     }
     EXPECT_EQ(tasks.task(1).revision, 1U);
