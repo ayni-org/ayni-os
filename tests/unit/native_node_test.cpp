@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -34,7 +35,16 @@ void step_while(NativeNode &node, ayni_lifecycle_t state) {
         report.struct_size = sizeof(report);
         ASSERT_EQ(ayni_step(node.kernel(), 64, 10000, &report), AYNI_OK);
         if (report.more_ready == 0U && lifecycle_of(node) == state) {
-            static_cast<void>(node.wait_for_wake(1s));
+            const uint64_t now =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+            const uint64_t delay = report.next_deadline_us == UINT64_MAX ? 1000000U
+                                   : report.next_deadline_us > now
+                                       ? std::min<uint64_t>(1000000U, report.next_deadline_us - now)
+                                       : 0U;
+            static_cast<void>(node.wait_for_wake(
+                std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(delay))));
         }
     }
     EXPECT_NE(lifecycle_of(node), state);

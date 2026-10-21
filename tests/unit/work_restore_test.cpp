@@ -216,7 +216,8 @@ TEST(AgentRestore, fault_unregistered_faults_live_orphans_only) {
     agents->fault_unregistered();
 
     for (const uint64_t faulted : {300U, 400U}) {
-        EXPECT_EQ(agents.agent(faulted).lifecycle, AYNI_AGENT_FAULTED) << faulted;
+        EXPECT_EQ(AgentTable::effective_lifecycle(agents.agent(faulted)), AYNI_AGENT_FAULTED)
+            << faulted;
         EXPECT_EQ(agents.agent(faulted).fault_reason, AYNI_REASON_AGENT_UNREGISTERED) << faulted;
     }
     EXPECT_EQ(agents.agent(300).revision, 4U);
@@ -1105,9 +1106,9 @@ TEST(TaskRestore, hold_restored_holds_a_live_task_at_its_revision) {
 
     for (const uint64_t task_id : {1U, 2U}) {
         const Task &task = tasks.task(task_id);
-        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED) << task_id;
-        EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION) << task_id;
-        EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED) << task_id;
+        EXPECT_EQ(TaskTable::effective_lifecycle(task), AYNI_TASK_PAUSED) << task_id;
+        EXPECT_EQ(TaskTable::effective_hold_status(task), AYNI_UNSUPPORTED_VERSION) << task_id;
+        EXPECT_EQ(TaskTable::effective_hold_reason(task), AYNI_REASON_STRATEGY_CHANGED) << task_id;
         EXPECT_TRUE(TaskTable::still_held(task)) << task_id;
     }
     EXPECT_EQ(tasks.task(1).revision, 1U);

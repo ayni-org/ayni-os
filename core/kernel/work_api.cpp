@@ -74,8 +74,8 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     const uint64_t now_us = kernel->host.monotonic_now_us(kernel->host.ctx);
     const uint64_t first_seq = kernel->work.transitions.next_commit_seq();
     const bool log_was_idle = kernel->log.idle();
-    status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->log.has_room(),
-                                        outcome, failure);
+    status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
+                                        outcome, failure, kernel->storage_admission_status());
     // Also AYNI_INTERNAL, which used up a commit_seq (ayni.h).
     const bool committed = kernel->work.transitions.next_commit_seq() != first_seq;
     if (committed) {
@@ -140,7 +140,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
 void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     ayni_task_info_v1 info{};
     info.struct_size = sizeof(info);
-    info.lifecycle = task.lifecycle;
+    info.lifecycle = ayni::work::TaskTable::effective_lifecycle(task);
     info.task_id = task.task_id;
     info.goal_id = task.goal_id;
     info.owner_instance_id = task.owner_instance_id;
@@ -151,8 +151,8 @@ void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     info.occurrence = task.occurrence;
     info.occurrence_count = task.occurrence_count;
     info.due_us = task.due_us;
-    info.hold_status = task.hold_status;
-    info.hold_reason = task.hold_reason;
+    info.hold_status = ayni::work::TaskTable::effective_hold_status(task);
+    info.hold_reason = ayni::work::TaskTable::effective_hold_reason(task);
     info.step_count = task.step_count;
     out = info;
 }
@@ -335,7 +335,7 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
     }
     ayni_agent_info_v1 info{};
     info.struct_size = sizeof(info);
-    info.lifecycle = agent->lifecycle;
+    info.lifecycle = ayni::work::AgentTable::effective_lifecycle(*agent);
     info.agent_id = agent->agent_id;
     info.instance_id = agent->instance_id;
     info.commit_seq = agent->stamp.commit_seq;

@@ -47,6 +47,9 @@ class WorkReplay {
     void finish(uint64_t now_us);
     // Drops everything replayed, as when recovery fails.
     void discard();
+    // Reload retains registration, but no session or cached due-work from
+    // the discarded boot may reach the recovered model.
+    void discard_for_reload();
 
   private:
     durability::RecordUse apply(const durability::BatchIdentity &batch,

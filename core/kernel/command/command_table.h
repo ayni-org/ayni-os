@@ -41,6 +41,7 @@ class CommandTable {
         conflict, // accepted before with another digest
         expired,  // not mapped, at or below the principal's floor
     };
+    enum class Restore { restored, corrupt, no_room };
 
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
     // rows principals with capacity mappings each.
@@ -69,6 +70,9 @@ class CommandTable {
     // insert() does, and the floor it left. Returns false, changing
     // nothing, for a mapping the table already has or with no row left.
     bool restore(const CommandMapping &mapping, uint64_t floor);
+    Restore restore_checked(const CommandMapping &mapping, uint64_t floor);
+    uint32_t size() const;
+    const CommandMapping &at(uint32_t index) const;
     // Empties the table, as a recovery that failed leaves it.
     void clear();
 

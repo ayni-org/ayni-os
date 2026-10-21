@@ -1,6 +1,6 @@
 # 生命周期与状态转换
 
-- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022、ADR-0026；`MA-004`、`MA-005`、`MA-010`；E2 F13，E3 步骤 5
+- **关联**：计划 §2.4、§3.2「生命周期」、§3.6、§4.3、§4.4；ADR-0006、ADR-0007、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022、ADR-0026、ADR-0027；`MA-004`、`MA-005`、`MA-010`；E2 F13，E3 步骤 5
 - **原则**：生命周期、持久化状态与等待原因是三个维度。生命周期写在枚举里；“是否已持久接受”由提交序号表达（C-COMMIT-004）；等待原因由待决调用派生（ADR-0007）。表中未列出的转换都是非法转换，返回 `AYNI_INVALID_STATE` 并保持原状态。
 
 ## Kernel
@@ -8,44 +8,53 @@
 | 状态 | 值 | 含义 |
 |---|---:|---|
 | `CONFIGURING` | 1 | 已创建，可以注册目录；不处理意图 |
-| `RECOVERING` | 2 | `ayni_start` 已冻结目录并通过交叉引用校验，`step` 正在异步重放持久前缀并持久化新的 `boot_epoch` |
-| `RUNNING` | 3 | 开放准入 |
-| `RESTRICTED` | 4 | 恢复发现不兼容、损坏或存储不可写；只读诊断，本地停止路径照常可用；原因经 `ayni_get_kernel_info` 读取 |
-| `DRAINING` | 5 | `ayni_begin_shutdown` 之后，收敛在途工作，不再接受新意图 |
+| `RECOVERING` | 2 | 目录已冻结；分步校验、恢复 active 快照及物理日志，隔离写入方后提交 `WRITER_FENCE` 与新的 `boot_epoch` |
+| `RUNNING` | 3 | 开放准入；存储重试、维护与空间不足可暂时阻挡新 transition |
+| `RESTRICTED` | 4 | 不兼容、损坏、存储无法安全恢复或代际耗尽；只读诊断，本地停止路径照常可用 |
+| `DRAINING` | 5 | `ayni_begin_shutdown` 之后，不再接受新意图；等待已受理请求归还借用，并收尾已提交日志 |
 | `STOPPED` | 6 | 停机完成，可以 `ayni_destroy` |
+| `FENCED` | 7 | 运行中写入有界重试耗尽或维护失败；停止新 transition，正在确认旧写入方隔离 |
 
 | 从 | 到 | 触发 |
 |---|---|---|
 | — | `CONFIGURING` | `ayni_create` 成功 |
-| `CONFIGURING` | `RECOVERING` | `ayni_start` 校验通过 |
-| `CONFIGURING` | `CONFIGURING` | `ayni_start` 校验失败（返回错误与 `ayni_error_v1`，可修正后重试）；Host 没有存储端口（`AYNI_UNSUPPORTED`） |
-| `RECOVERING` | `RUNNING` | 持久前缀重放完成、新的 `boot_epoch` 已持久化（C-ID-009）、幂等映射重建、授权与资源检查完成 |
-| `RECOVERING` | `RESTRICTED` | 版本不支持、已提交区域损坏、关键记录无法验证，或存储拒绝请求、读写失败或结果未知、`boot_epoch` 耗尽（ADR-0016）；本次容量或限值放不下日志中的状态（ADR-0026）。已重放的内容全部丢弃 |
-| `RUNNING` | `RESTRICTED` | 受限栅栏中无法确认旧写入方已排空或隔离，或存储仍不可写（C-COMMIT-008）。M1 在栅栏（`MA-010` 的 E 部分）之前：批次的追加结果为 `FAILED`、`UNKNOWN` 或请求被拒绝时直接进入（ADR-0026 决策 4） |
-| `RUNNING` | `RECOVERING` | 受限栅栏确认旧写入方已隔离，以新 `boot_epoch` 重载 |
-| `RUNNING`、`RECOVERING`、`RESTRICTED` | `DRAINING` | `ayni_begin_shutdown` |
-| `DRAINING` | `STOPPED` | 在途工作已终结或记录为未知，资源已释放或隔离，全部预留完成槽已收到完成（C-HOST-018）；`RUNNING` 中提交的批次已全部存储，或日志已失败（ADR-0026 决策 4） |
+| `CONFIGURING` | `RECOVERING` | `ayni_start` 校验目录与完整存储端口组通过 |
+| `CONFIGURING` | `CONFIGURING` | `ayni_start` 校验失败；缺少当前恢复协议所需端口，包括只有旧 append/read pair 的短 Host 表时返回 `AYNI_UNSUPPORTED` |
+| `RECOVERING` | `RUNNING` | 持久状态校验、重放与必要迁移完成；写入方已隔离，`WRITER_FENCE` 与新的 `boot_epoch` 已持久化（C-ID-009）；幂等映射已重建 |
+| `RECOVERING` | `RESTRICTED` | 不支持的版本、损坏、状态超过容量、存储请求失败、隔离无法确认或代际耗尽；丢弃本次恢复的内容，不再嵌套发起自动重载 |
+| `RUNNING` | `FENCED` | 日志追加总三次尝试仍失败，或快照维护失败；原失败原因保留为诊断 |
+| `FENCED` | `RECOVERING` | Host 确认旧写入方已排空或隔离，相关 Kernel 缓冲借用全部归还；整体丢弃易失状态、会话与计时缓存，从真正持久前缀重载一次 |
+| `FENCED` | `RESTRICTED` | 隔离不可用、请求被拒绝、结果无法确认或 writer epoch 耗尽；隔离前失败保留原工作状态供只读诊断 |
+| `RUNNING` | `RESTRICTED` | 内部编码不变量失败或快照代际耗尽等无法安全继续的边界 |
+| `RUNNING`、`RECOVERING`、`FENCED`、`RESTRICTED` | `DRAINING` | `ayni_begin_shutdown` |
+| `DRAINING` | `STOPPED` | 全部预留完成槽已归还（C-HOST-018）；`RUNNING` 已提交批次存完或有界重试耗尽；不启动新的恢复、快照、切换或轮转 |
+
+普通追加在途时仍可按日志环容量接受后续 transition。首次失败或 `UNKNOWN` 后暂停新 transition，总三次尝试沿用相同批次身份与字节，后两次分别至少等待 10 ms、50 ms；所有持久写入还共享限频（ADR-0027）。重试暂停与快照维护都保留 `RUNNING`：查询仍可用，已映射命令先返回首次结果，其余需要 transition 的意图返回 `BUSY/STORAGE_BACKLOG`；实际可用空间不足时新意图返回 `STORAGE_FAILED/STORAGE_SPACE`。due work、策略决定与本地输入的应用等待放行。维护先排空日志，再分页生成 inactive 快照、读回校验、提交 marker、追加 activation、清理旧日志；不新增生命周期。验证：`KernelFence.normal_append_in_flight_keeps_room_for_later_transitions`、`KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`、`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`。
+
+冷启动先校验、恢复持久状态，再握手取得新 writer epoch；运行中重载先隔离，之后才重读。schema 0 迁移在 activation 切换前保留旧格式源，切换后重新恢复并提交新启动记录；从 inactive 候选或未验证内容不开放准入。恢复结果未知时不靠回滚单个 transition 继续运行。验证：`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`、`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`、`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`。
 
 各状态下公开函数的返回值（已实现的函数在前，其余为计划；参数错误先于状态检查）：
 
-| 函数 | CONFIGURING | RECOVERING | RUNNING | RESTRICTED | DRAINING | STOPPED |
-|---|---|---|---|---|---|---|
-| `ayni_get_lifecycle` | OK | OK | OK | OK | OK | OK |
-| `ayni_get_kernel_info` | OK | OK | OK | OK | OK | OK |
-| `ayni_destroy` | OK | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | OK |
-| `ayni_start` | OK；无存储端口时 UNSUPPORTED；GoalType 指定的策略未注册时 NOT_FOUND；其余交叉引用的校验错误（计划） | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
-| `ayni_step` | INVALID_STATE | OK | OK | OK | OK | INVALID_STATE |
-| `ayni_begin_shutdown` | INVALID_STATE | OK | OK | OK | OK（幂等） | OK（幂等） |
-| `ayni_register_principal`、`ayni_register_agent`、`ayni_register_goal_type`、`ayni_register_strategy` | OK、参数错误或 CAPACITY_EXCEEDED | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
-| `ayni_open_session` | NOT_READY | NOT_READY | OK、NOT_FOUND 或 CAPACITY_EXCEEDED | NOT_READY | NOT_READY | NOT_READY |
-| `ayni_close_session` | INVALID_STATE | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | INVALID_STATE |
-| `ayni_submit_intent` | NOT_READY | NOT_READY | 按意图校验 | NOT_READY | NOT_READY | NOT_READY |
-| `ayni_get_agent`、`ayni_get_goal`、`ayni_get_task` | INVALID_STATE | OK 或 NOT_FOUND（标注 `durable_seq`） | OK 或 NOT_FOUND | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND | INVALID_STATE |
-| 其余 `ayni_register_*` | OK 或参数错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
-| 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK | INVALID_STATE |
-| `ayni_post_event` | INVALID_STATE | OK（保留到进入 `RUNNING`） | OK（应用） | OK（本地输入丢弃并计数；对账与诊断事件随 `MA-018`、`MA-010`） | OK（丢弃并计数） | INVALID_STATE |
+| 函数 | CONFIGURING | RECOVERING | RUNNING | FENCED | RESTRICTED | DRAINING | STOPPED |
+|---|---|---|---|---|---|---|---|
+| `ayni_get_lifecycle` | OK | OK | OK | OK | OK | OK | OK |
+| `ayni_get_kernel_info` | OK | OK | OK | OK | OK | OK | OK |
+| `ayni_destroy` | OK | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | OK |
+| `ayni_start` | OK；端口组不完整时 UNSUPPORTED；GoalType 指定的策略未注册时 NOT_FOUND | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| `ayni_step` | INVALID_STATE | OK | OK | OK | OK | OK | INVALID_STATE |
+| `ayni_begin_shutdown` | INVALID_STATE | OK | OK | OK | OK | OK（幂等） | OK（幂等） |
+| `ayni_register_principal`、`ayni_register_agent`、`ayni_register_goal_type`、`ayni_register_strategy` | OK、参数错误或 CAPACITY_EXCEEDED | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| `ayni_open_session` | NOT_READY | NOT_READY | OK、NOT_FOUND 或 CAPACITY_EXCEEDED | NOT_READY | NOT_READY | NOT_READY | NOT_READY |
+| `ayni_close_session` | INVALID_STATE | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | INVALID_STATE |
+| `ayni_submit_intent` | NOT_READY | NOT_READY | 按意图、幂等映射与存储准入校验 | NOT_READY | NOT_READY | NOT_READY | NOT_READY |
+| `ayni_get_agent`、`ayni_get_goal`、`ayni_get_task` | INVALID_STATE | OK 或 NOT_FOUND（标注 `durable_seq`） | OK 或 NOT_FOUND | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND | INVALID_STATE |
+| 其余 `ayni_register_*` | OK 或参数错误 | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
+| 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK（只读诊断） | OK | INVALID_STATE |
+| `ayni_post_event` | INVALID_STATE | OK（保留到进入 RUNNING） | OK（存储允许后应用） | OK（本地输入丢弃并计数） | OK（本地输入丢弃并计数） | OK（丢弃并计数） | INVALID_STATE |
 
-`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类）先于状态检查，所以在任何状态下都先返回（`ayni.h`）；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。会话不持久化，重启后为空；`RECOVERING` 与 `RESTRICTED` 中尚无会话，`ayni_close_session` 返回 NOT_FOUND。`ayni_step` 只在 `RUNNING` 中做到期工作并请策略决定 `READY` 的 Task（ADR-0022）。GoalType 的校验函数与策略的 `decide` 都是 Kernel 调用的回调，不得调用 Kernel（C-POLICY-001）。作为兜底，回调内调用接受非 const Kernel 的所有者线程函数（`ayni_destroy`、`ayni_start`、`ayni_step`、`ayni_begin_shutdown`、注册、会话与 `ayni_submit_intent`）时，它们在参数检查之后、按上表检查状态之前返回 INVALID_STATE，不产生效果。
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类）先于状态检查；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。重载清空旧会话；隔离尚未确认或隔离失败保留旧诊断时，已有会话仍可关闭，但不能开放新准入。`ayni_step` 只在 `RUNNING` 且存储允许新 transition 时做到期工作并调用策略。M1 尚无动作完成对账事件，FENCED 中的在途动作、许可与对账验收随 `MA-008`、`MA-018`、`MA-022`；本地输入不替代这些事件。
+
+GoalType 校验与策略 `decide` 回调不得调用 Kernel（C-POLICY-001）；回调内调用接受非 const Kernel 的所有者线程函数，仍在参数检查后、生命周期检查前返回 `INVALID_STATE`。已受理存储请求不因重试期限或 shutdown 被合成完成；缓冲与完成槽等 Host 真正 post 后才归还。验证：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.short_host_with_only_legacy_storage_cannot_start`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`、`KernelFence.shutdown_during_retry_never_starts_recovery`。
 
 ## AgentInstance
 

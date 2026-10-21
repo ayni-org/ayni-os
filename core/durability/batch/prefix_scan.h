@@ -33,6 +33,10 @@ class PrefixScan {
     // The first batch scanned must carry first_commit_seq.
     explicit PrefixScan(uint64_t first_commit_seq) : next_commit_seq_(first_commit_seq) {}
 
+    void reset(uint64_t first_commit_seq, uint64_t max_transition_id = 0,
+               uint32_t writer_epoch = 0);
+    bool saw_legacy() const { return saw_legacy_; }
+
     // Checks every batch in bytes, which holds whole batches only, and passes
     // each record to handler in order. A batch must carry next_commit_seq()
     // and no smaller writer_epoch than the batches before it. Unknown record
@@ -58,6 +62,8 @@ class PrefixScan {
     uint64_t next_commit_seq_;
     uint64_t max_transition_id_ = 0;
     uint32_t max_writer_epoch_ = 0;
+    uint32_t fenced_epoch_ = 0;
+    bool saw_legacy_ = false;
 };
 
 } // namespace ayni::durability

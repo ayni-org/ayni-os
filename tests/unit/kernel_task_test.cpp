@@ -133,7 +133,8 @@ TEST(WorkTask, once_goal_derives_one_task_in_the_next_step) {
     EXPECT_EQ(task.occurrence_count, 1U);
     EXPECT_EQ(task.due_us, created_at);
     EXPECT_EQ(goal.next_due_us, std::numeric_limits<uint64_t>::max());
-    EXPECT_EQ(report.next_deadline_us, std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(report.next_deadline_us,
+              work.node().with_storage_deadline(std::numeric_limits<uint64_t>::max()));
     EXPECT_EQ(task.commit_seq, created.result.commit_seq + 1U);
     EXPECT_EQ(task.transition_id, task.commit_seq + 0U); // both start after the boot batch
     EXPECT_EQ(goal.commit_seq, task.commit_seq);
@@ -235,6 +236,10 @@ TEST(WorkTask, only_running_derives_tasks) {
         EXPECT_LE(report.items_done, 1U);
         EXPECT_EQ(report.more_ready, 0U);
         work.node().sim().complete_storage();
+        if (report.next_deadline_us != UINT64_MAX &&
+            report.next_deadline_us > work.node().sim().now_us()) {
+            work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
+        }
     }
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     // White-box: STOPPED answers no query, but the tables are still there.

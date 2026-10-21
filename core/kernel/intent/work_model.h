@@ -98,7 +98,8 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
 // The kernel is RUNNING; now_us is the host monotonic clock, from which a
 // new goal's schedule starts. failure is reset, then says why on a refusal.
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
-                           IntentOutcome &outcome, IntentFailure &failure);
+                           IntentOutcome &outcome, IntentFailure &failure,
+                           ayni_status_t storage_status = AYNI_OK);
 
 // Records a local input from source as an occurrence, due at now_us, of
 // every goal whose trigger takes it, all in one transition (ADR-0021).

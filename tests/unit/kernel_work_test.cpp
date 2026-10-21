@@ -141,11 +141,11 @@ TEST(WorkModel, instances_start_with_the_kernel_in_one_transition) {
     EXPECT_EQ(a.agent_id, agent_a);
     EXPECT_EQ(a.instance_id >> 32U, 1U); // the boot epoch
     EXPECT_NE(a.instance_id, b.instance_id);
-    EXPECT_EQ(a.commit_seq, 2U); // the boot batch is commit_seq 1
+    EXPECT_EQ(a.commit_seq, 3U); // writer fence, boot, then instance start
     EXPECT_EQ(b.commit_seq, a.commit_seq);
     EXPECT_EQ(a.revision, 1U);
     EXPECT_EQ(a.fault_reason, AYNI_REASON_NONE);
-    EXPECT_EQ(work.node().info().durable_seq, 2U);
+    EXPECT_EQ(work.node().info().durable_seq, 3U);
 
     ayni_agent_info_v1 unknown{};
     unknown.struct_size = sizeof(unknown);
@@ -244,7 +244,7 @@ TEST(WorkModel, created_goal_is_applied_at_once_and_not_yet_durable) {
     EXPECT_EQ(created.result.object.origin_device_id, 0U);
     EXPECT_EQ(created.result.object.revision, 1U);
     EXPECT_EQ(created.result.object.id >> 32U, 1U);
-    EXPECT_EQ(created.result.commit_seq, 3U); // boot batch 1, agents 2
+    EXPECT_EQ(created.result.commit_seq, 4U); // fence 1, boot 2, agents 3
     EXPECT_GT(created.result.commit_seq, work.node().info().durable_seq);
     EXPECT_EQ(work.rules().last, (std::vector<uint8_t>{1, 2, 3}));
 
@@ -777,7 +777,7 @@ TEST(WorkModel, draining_answers_queries_and_closes_sessions_but_takes_no_work) 
 // C-COMMIT-016: transition_id and commit_seq place a transition in the log,
 // and a later boot reuses the places of transitions that were never durable.
 // After power loss a new goal takes the place of an unstored one, after the
-// boot batch took the other; one boot later durable_seq covers the first
+// fence and boot batches took the others; one boot later durable_seq covers the first
 // goal's commit_seq although the goal is gone. So both are compared only
 // with durable_seq of their own boot.
 TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
@@ -785,6 +785,7 @@ TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
     work.run();
     const ayni_goal_info_v1 first = work.goal(work.create_goal());
     const ayni_goal_info_v1 second = work.goal(work.create_goal());
+    const ayni_goal_info_v1 third = work.goal(work.create_goal());
     EXPECT_GT(first.commit_seq, work.node().info().durable_seq);
 
     work.node().power_cut_and_start(ayni::hosts::sim::CutAppend::lost);
@@ -797,8 +798,8 @@ TEST(WorkModel, commit_seq_of_unstored_work_is_reused_by_later_boots) {
     ASSERT_EQ(created.status, AYNI_OK);
     const ayni_goal_info_v1 reused = work.goal(created.result.object.id);
     EXPECT_NE(reused.goal_id, second.goal_id);
-    EXPECT_EQ(reused.transition_id, second.transition_id);
-    EXPECT_EQ(reused.commit_seq, second.commit_seq);
+    EXPECT_EQ(reused.transition_id, third.transition_id);
+    EXPECT_EQ(reused.commit_seq, third.commit_seq);
 
     work.node().reboot();
     work.node().recover();
@@ -825,7 +826,7 @@ TEST(WorkModel, a_reboot_assigns_new_ids_and_forgets_unstored_work) {
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     EXPECT_EQ(ayni_get_goal(work.kernel(), first_goal, &info), AYNI_NOT_FOUND);
-    EXPECT_EQ(work.node().info().durable_seq, 3U); // two boot batches and the start
+    EXPECT_EQ(work.node().info().durable_seq, 5U); // two fences, two boots and the start
     const uint64_t second_instance = work.instance(agent_a);
     EXPECT_EQ(second_instance, first_instance);
 

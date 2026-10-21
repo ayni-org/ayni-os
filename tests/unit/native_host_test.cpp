@@ -4,6 +4,8 @@
 // closing. Behavior shared with the sim Host is in
 // host_storage_contract_test.cpp.
 
+#include "../../hosts/native/file_log.h"
+#include "durability/batch/batch_codec.h"
 #include "foundation/crc32.h"
 #include "storage_hosts.h"
 #include "temp_directory.h"
@@ -23,9 +25,14 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 namespace {
 
 using namespace std::chrono_literals;
+using ayni::hosts::native::FileLog;
 using ayni::hosts::native::Host;
 using ayni::hosts::native::StorageStatus;
 using ayni::kernel::IssueResult;
@@ -46,6 +53,404 @@ void write_file(const std::string &path, const Bytes &bytes) {
 Bytes le32(uint32_t value) {
     return {static_cast<uint8_t>(value), static_cast<uint8_t>(value >> 8U),
             static_cast<uint8_t>(value >> 16U), static_cast<uint8_t>(value >> 24U)};
+}
+
+// Real files with deterministic failures at the mutation boundary. A sync
+// can return EIO while its complete bytes remain readable, as cached pages
+// do after writeback errors; writes are recorded to prove they are redirtied.
+struct FileIoProbe {
+    struct Write {
+        uint64_t offset;
+        Bytes bytes;
+    };
+    std::vector<Write> writes;
+    int fail_file_sync = 0;
+    int fail_directory_sync = 0;
+    bool tear_next_write = false;
+    int file_syncs = 0;
+    int directory_syncs = 0;
+
+    FileLog::Io io() {
+        return {this, &FileIoProbe::write, &FileIoProbe::sync_file, &FileIoProbe::sync_directory};
+    }
+
+    static int write(void *context, int fd, uint64_t offset, const uint8_t *data,
+                     std::size_t size) {
+        auto &probe = *static_cast<FileIoProbe *>(context);
+        const bool torn = std::exchange(probe.tear_next_write, false);
+        const std::size_t count = torn ? size / 2U : size;
+        probe.writes.push_back({offset, Bytes(data, data + count)});
+        std::size_t done = 0;
+        while (done < count) {
+            const ssize_t put =
+                ::pwrite(fd, data + done, count - done, static_cast<off_t>(offset + done));
+            if (put < 0 && errno == EINTR) {
+                continue;
+            }
+            if (put <= 0) {
+                return put == 0 ? EIO : errno;
+            }
+            done += static_cast<std::size_t>(put);
+        }
+        return torn ? EIO : 0;
+    }
+
+    static int sync_file(void *context, int fd) {
+        auto &probe = *static_cast<FileIoProbe *>(context);
+        ++probe.file_syncs;
+        if (::fdatasync(fd) != 0) {
+            return errno;
+        }
+        if (probe.fail_file_sync > 0) {
+            --probe.fail_file_sync;
+            return EIO;
+        }
+        return 0;
+    }
+
+    static int sync_directory(void *context, int fd) {
+        auto &probe = *static_cast<FileIoProbe *>(context);
+        ++probe.directory_syncs;
+        if (::fsync(fd) != 0) {
+            return errno;
+        }
+        if (probe.fail_directory_sync > 0) {
+            --probe.fail_directory_sync;
+            return EIO;
+        }
+        return 0;
+    }
+};
+
+TEST(NativeHost, unknown_log_sync_rewrites_the_entire_frame_before_a_successful_retry) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    FileLog log(probe.io());
+    ASSERT_EQ(log.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    const Bytes first = test_batch(1, 30);
+    const Bytes uncertain = test_batch(2, 50);
+    ASSERT_EQ(log.append(1, first.data(), static_cast<uint32_t>(first.size())).outcome,
+              AYNI_WRITE_OK);
+    probe.fail_file_sync = 2;
+    ASSERT_EQ(log.append(2, uncertain.data(), static_cast<uint32_t>(uncertain.size())).outcome,
+              AYNI_WRITE_UNKNOWN);
+    probe.writes.clear();
+    EXPECT_EQ(log.append(2, uncertain.data(), static_cast<uint32_t>(uncertain.size())).outcome,
+              AYNI_WRITE_UNKNOWN);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().offset, 8U + 24U + first.size());
+    EXPECT_EQ(probe.writes.front().bytes.size(), 24U + uncertain.size());
+    EXPECT_EQ(Bytes(probe.writes.front().bytes.begin() + 20, probe.writes.front().bytes.end() - 4),
+              uncertain);
+    Bytes prefix(256);
+    const auto still_uncertain =
+        log.read_log(0, prefix.data(), static_cast<uint32_t>(prefix.size()));
+    ASSERT_EQ(still_uncertain.outcome, AYNI_WRITE_OK);
+    prefix.resize(static_cast<std::size_t>(still_uncertain.value));
+    EXPECT_EQ(prefix, first);
+    probe.writes.clear();
+    EXPECT_EQ(log.append(2, uncertain.data(), static_cast<uint32_t>(uncertain.size())).outcome,
+              AYNI_WRITE_OK);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    Bytes read(256);
+    const FileLog::Result result = log.read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+    ASSERT_EQ(result.outcome, AYNI_WRITE_OK);
+    read.resize(static_cast<std::size_t>(result.value));
+    EXPECT_EQ(read, joined({first, uncertain}));
+}
+
+// Closing a process loses its in-memory EIO marker, not the requirement to
+// redirty inherited cached bytes before acknowledging any durable mutation.
+TEST(NativeHost, reopened_unknown_batch_is_rewritten_before_an_identical_retry_succeeds) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    const Bytes batch = test_batch(1, 30);
+    {
+        FileLog first(probe.io());
+        ASSERT_EQ(first.open(directory.path().c_str(), Host::log_file_name).status,
+                  FileLog::OpenStatus::ok);
+        probe.fail_file_sync = 1;
+        ASSERT_EQ(first.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+                  AYNI_WRITE_UNKNOWN);
+    }
+    probe.writes.clear();
+    FileLog reopened(probe.io());
+    ASSERT_EQ(reopened.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    Bytes read(128);
+    const auto inherited = reopened.read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+    ASSERT_EQ(inherited.outcome, AYNI_WRITE_OK);
+    read.resize(static_cast<std::size_t>(inherited.value));
+    ASSERT_EQ(read, batch);
+    EXPECT_TRUE(probe.writes.empty()); // open and recovery reads never repair blindly
+    const int initial_syncs = probe.file_syncs;
+    probe.fail_file_sync = 1;
+    EXPECT_EQ(reopened.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+              AYNI_WRITE_UNKNOWN);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().offset, 0U);
+    EXPECT_EQ(probe.writes.front().bytes.size(), 8U + 24U + batch.size());
+    EXPECT_EQ(probe.file_syncs, initial_syncs + 1);
+    probe.writes.clear();
+    EXPECT_EQ(reopened.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+              AYNI_WRITE_OK);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().offset, 0U);
+    EXPECT_EQ(probe.file_syncs, initial_syncs + 2);
+    read.assign(128, 0);
+    const auto complete = reopened.read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+    ASSERT_EQ(complete.outcome, AYNI_WRITE_OK);
+    read.resize(static_cast<std::size_t>(complete.value));
+    EXPECT_EQ(read, batch);
+}
+
+TEST(NativeHost, first_new_append_cannot_bypass_an_unknown_prefix_from_an_earlier_process) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    const Bytes previous = test_batch(1, 30);
+    const Bytes next = test_batch(2, 40);
+    {
+        FileLog first(probe.io());
+        ASSERT_EQ(first.open(directory.path().c_str(), Host::log_file_name).status,
+                  FileLog::OpenStatus::ok);
+        probe.fail_file_sync = 1;
+        ASSERT_EQ(first.append(1, previous.data(), static_cast<uint32_t>(previous.size())).outcome,
+                  AYNI_WRITE_UNKNOWN);
+    }
+    probe.writes.clear();
+    FileLog reopened(probe.io());
+    ASSERT_EQ(reopened.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    ASSERT_TRUE(probe.writes.empty());
+    probe.fail_file_sync = 1;
+    EXPECT_EQ(reopened.append(2, next.data(), static_cast<uint32_t>(next.size())).outcome,
+              AYNI_WRITE_UNKNOWN);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().offset, 0U);
+    EXPECT_EQ(probe.writes.front().bytes.size(), 8U + 24U + previous.size());
+    probe.writes.clear();
+    EXPECT_EQ(reopened.append(2, next.data(), static_cast<uint32_t>(next.size())).outcome,
+              AYNI_WRITE_OK);
+    ASSERT_EQ(probe.writes.size(), 4U); // inherited prefix, then the new frame's three parts
+    EXPECT_EQ(probe.writes.front().offset, 0U);
+    EXPECT_EQ(probe.writes[1].offset, 8U + 24U + previous.size());
+    Bytes read(256);
+    const auto result = reopened.read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+    ASSERT_EQ(result.outcome, AYNI_WRITE_OK);
+    read.resize(static_cast<std::size_t>(result.value));
+    EXPECT_EQ(read, joined({previous, next}));
+}
+
+TEST(NativeHost, fence_snapshot_and_trim_confirm_the_inherited_prefix_before_mutating) {
+    for (int operation = 0; operation < 3; ++operation) {
+        SCOPED_TRACE(operation);
+        const TempDirectory directory;
+        FileIoProbe probe;
+        Bytes batch(128);
+        ayni::durability::BatchWriter writer(batch.data(), batch.size(), {1, 1, 1});
+        batch.resize(writer.finish());
+        {
+            FileLog first(probe.io());
+            ASSERT_EQ(first.open(directory.path().c_str(), Host::log_file_name).status,
+                      FileLog::OpenStatus::ok);
+            probe.fail_file_sync = 1;
+            ASSERT_EQ(first.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+                      AYNI_WRITE_UNKNOWN);
+        }
+        probe.writes.clear();
+        FileLog reopened(probe.io());
+        ASSERT_EQ(reopened.open(directory.path().c_str(), Host::log_file_name).status,
+                  FileLog::OpenStatus::ok);
+        ASSERT_TRUE(probe.writes.empty());
+        const Bytes candidate{7, 8, 9};
+        const auto mutate = [&] {
+            if (operation == 0) {
+                return reopened.fence(2);
+            }
+            if (operation == 1) {
+                return reopened.write_snapshot(0, 1, 0, candidate.data(),
+                                               static_cast<uint32_t>(candidate.size()));
+            }
+            return reopened.trim_prefix(1, 1, 1);
+        };
+        probe.fail_file_sync = 1;
+        EXPECT_EQ(mutate().outcome, operation == 0 ? AYNI_FENCE_UNAVAILABLE : AYNI_WRITE_UNKNOWN);
+        ASSERT_EQ(probe.writes.size(), 1U);
+        EXPECT_EQ(probe.writes.front().offset, 0U);
+        EXPECT_EQ(probe.writes.front().bytes.size(), 8U + 24U + batch.size());
+        probe.writes.clear();
+        EXPECT_EQ(mutate().outcome, operation == 0 ? AYNI_FENCE_DRAINED : AYNI_WRITE_OK);
+        ASSERT_FALSE(probe.writes.empty());
+        EXPECT_EQ(probe.writes.front().offset, 0U);
+    }
+}
+
+TEST(NativeHost, unknown_snapshot_sync_rewrites_an_identical_chunk_on_each_retry) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    FileLog log(probe.io());
+    ASSERT_EQ(log.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    const Bytes chunk{1, 2, 3, 4, 5};
+    probe.fail_file_sync = 2;
+    ASSERT_EQ(
+        log.write_snapshot(0, 1, 0, chunk.data(), static_cast<uint32_t>(chunk.size())).outcome,
+        AYNI_WRITE_UNKNOWN);
+    probe.writes.clear();
+    EXPECT_EQ(
+        log.write_snapshot(0, 1, 0, chunk.data(), static_cast<uint32_t>(chunk.size())).outcome,
+        AYNI_WRITE_UNKNOWN);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().offset, 0U);
+    EXPECT_EQ(probe.writes.front().bytes, chunk);
+    probe.writes.clear();
+    EXPECT_EQ(
+        log.write_snapshot(0, 1, 0, chunk.data(), static_cast<uint32_t>(chunk.size())).outcome,
+        AYNI_WRITE_OK);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().bytes, chunk);
+}
+
+TEST(NativeHost, retry_after_a_short_file_write_replaces_the_torn_tail) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    FileLog log(probe.io());
+    ASSERT_EQ(log.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    const Bytes batch = test_batch(1, 30);
+    probe.tear_next_write = true;
+    EXPECT_EQ(log.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+              AYNI_WRITE_FAILED);
+    EXPECT_EQ(log.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+              AYNI_WRITE_OK);
+    Bytes read(128);
+    const auto result = log.read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+    ASSERT_EQ(result.outcome, AYNI_WRITE_OK);
+    read.resize(static_cast<std::size_t>(result.value));
+    EXPECT_EQ(read, batch);
+}
+
+TEST(NativeHost, trimming_retries_the_directory_sync_after_rename_was_unknown) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    FileLog log(probe.io());
+    ASSERT_EQ(log.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    for (uint64_t seq = 1; seq <= 2; ++seq) {
+        Bytes batch(128);
+        ayni::durability::BatchWriter writer(batch.data(), batch.size(), {1, seq, seq});
+        batch.resize(writer.finish());
+        ASSERT_EQ(log.append(seq, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+                  AYNI_WRITE_OK);
+    }
+    const int initial_syncs = probe.directory_syncs;
+    probe.fail_directory_sync = 2;
+    ASSERT_EQ(log.trim_prefix(1, 2, 2).outcome, AYNI_WRITE_UNKNOWN);
+    EXPECT_EQ(log.trim_prefix(1, 2, 2).outcome, AYNI_WRITE_UNKNOWN);
+    EXPECT_EQ(probe.directory_syncs, initial_syncs + 2);
+    EXPECT_EQ(log.trim_prefix(1, 2, 2).outcome, AYNI_WRITE_OK);
+    // Reconfirm file and directory, then finish the idempotent trim.
+    EXPECT_EQ(probe.directory_syncs, initial_syncs + 4);
+}
+
+TEST(NativeHost, unknown_rotation_requires_directory_confirmation_before_append_or_fence) {
+    for (bool reopen : {false, true}) {
+        SCOPED_TRACE(reopen);
+        for (bool use_fence : {false, true}) {
+            SCOPED_TRACE(use_fence);
+            const TempDirectory directory;
+            FileIoProbe probe;
+            FileLog first(probe.io());
+            ASSERT_EQ(first.open(directory.path().c_str(), Host::log_file_name).status,
+                      FileLog::OpenStatus::ok);
+            Bytes activation;
+            for (uint64_t seq = 1; seq <= 2; ++seq) {
+                Bytes batch(128);
+                ayni::durability::BatchWriter writer(batch.data(), batch.size(), {1, seq, seq});
+                batch.resize(writer.finish());
+                ASSERT_EQ(
+                    first.append(seq, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+                    AYNI_WRITE_OK);
+                activation = std::move(batch);
+            }
+            probe.fail_directory_sync = 1;
+            ASSERT_EQ(first.trim_prefix(1, 2, 2).outcome, AYNI_WRITE_UNKNOWN);
+            FileLog reopened(probe.io());
+            FileLog *active = &first;
+            probe.writes.clear();
+            if (reopen) {
+                first.close();
+                ASSERT_EQ(reopened.open(directory.path().c_str(), Host::log_file_name).status,
+                          FileLog::OpenStatus::ok);
+                active = &reopened;
+                EXPECT_TRUE(probe.writes.empty());
+            }
+            const Bytes next = test_batch(3, 30);
+            const auto mutate = [&] {
+                return use_fence
+                           ? active->fence(2)
+                           : active->append(3, next.data(), static_cast<uint32_t>(next.size()));
+            };
+            const int initial_syncs = probe.directory_syncs;
+            probe.fail_directory_sync = 2;
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                EXPECT_EQ(mutate().outcome,
+                          use_fence ? AYNI_FENCE_UNAVAILABLE : AYNI_WRITE_UNKNOWN);
+                ASSERT_EQ(probe.writes.size(), 1U);
+                EXPECT_EQ(probe.writes.front().offset, 0U);
+                EXPECT_EQ(probe.writes.front().bytes.size(), 8U + 24U + activation.size());
+                EXPECT_EQ(probe.directory_syncs, initial_syncs + attempt + 1);
+                probe.writes.clear();
+            }
+            EXPECT_EQ(mutate().outcome, use_fence ? AYNI_FENCE_DRAINED : AYNI_WRITE_OK);
+            EXPECT_EQ(probe.directory_syncs, initial_syncs + 3);
+            ASSERT_FALSE(probe.writes.empty());
+            EXPECT_EQ(probe.writes.front().offset, 0U);
+            Bytes read(256);
+            const auto result =
+                active->read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+            ASSERT_EQ(result.outcome, AYNI_WRITE_OK);
+            read.resize(static_cast<std::size_t>(result.value));
+            EXPECT_EQ(read, use_fence ? activation : joined({activation, next}));
+        }
+    }
+}
+
+TEST(NativeHost, reopened_header_creation_confirms_its_directory_before_new_work) {
+    const TempDirectory directory;
+    FileIoProbe probe;
+    {
+        FileLog first(probe.io());
+        probe.fail_directory_sync = 1;
+        const auto created = first.open(directory.path().c_str(), Host::log_file_name);
+        ASSERT_EQ(created.status, FileLog::OpenStatus::file_error);
+        EXPECT_EQ(created.error, EIO);
+    }
+    FileLog reopened(probe.io());
+    probe.writes.clear();
+    ASSERT_EQ(reopened.open(directory.path().c_str(), Host::log_file_name).status,
+              FileLog::OpenStatus::ok);
+    EXPECT_TRUE(probe.writes.empty());
+    const int initial_syncs = probe.directory_syncs;
+    const Bytes batch = test_batch(1, 30);
+    probe.fail_directory_sync = 1;
+    EXPECT_EQ(reopened.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+              AYNI_WRITE_UNKNOWN);
+    ASSERT_EQ(probe.writes.size(), 1U);
+    EXPECT_EQ(probe.writes.front().bytes.size(), 8U);
+    EXPECT_EQ(probe.directory_syncs, initial_syncs + 1);
+    probe.fail_directory_sync = 1;
+    EXPECT_EQ(reopened.fence(2).outcome, AYNI_FENCE_UNAVAILABLE);
+    EXPECT_EQ(probe.directory_syncs, initial_syncs + 2);
+    EXPECT_EQ(reopened.append(1, batch.data(), static_cast<uint32_t>(batch.size())).outcome,
+              AYNI_WRITE_OK);
+    EXPECT_EQ(probe.directory_syncs, initial_syncs + 3);
+    Bytes read(128);
+    const auto result = reopened.read_log(0, read.data(), static_cast<uint32_t>(read.size()));
+    ASSERT_EQ(result.outcome, AYNI_WRITE_OK);
+    read.resize(static_cast<std::size_t>(result.value));
+    EXPECT_EQ(read, batch);
 }
 
 TEST(NativeHost, table_is_complete_and_points_at_the_host) {
@@ -113,12 +518,30 @@ TEST(NativeHost, table_has_storage_ports_only_while_storage_is_open) {
     Host native;
     EXPECT_EQ(native.table().storage_append, nullptr);
     EXPECT_EQ(native.table().storage_read_prefix, nullptr);
+    EXPECT_EQ(native.table().storage_read_log, nullptr);
+    EXPECT_EQ(native.table().storage_fence_writers, nullptr);
+    EXPECT_EQ(native.table().storage_write_snapshot, nullptr);
+    EXPECT_EQ(native.table().storage_read_snapshot, nullptr);
+    EXPECT_EQ(native.table().storage_trim_prefix, nullptr);
+    EXPECT_EQ(native.table().storage_free_bytes, nullptr);
     ASSERT_EQ(native.open_storage(directory.path().c_str(), 4).status, StorageStatus::ok);
     EXPECT_NE(native.table().storage_append, nullptr);
     EXPECT_NE(native.table().storage_read_prefix, nullptr);
+    EXPECT_NE(native.table().storage_read_log, nullptr);
+    EXPECT_NE(native.table().storage_fence_writers, nullptr);
+    EXPECT_NE(native.table().storage_write_snapshot, nullptr);
+    EXPECT_NE(native.table().storage_read_snapshot, nullptr);
+    EXPECT_NE(native.table().storage_trim_prefix, nullptr);
+    EXPECT_NE(native.table().storage_free_bytes, nullptr);
     native.close_storage();
     EXPECT_EQ(native.table().storage_append, nullptr);
     EXPECT_EQ(native.table().storage_read_prefix, nullptr);
+    EXPECT_EQ(native.table().storage_read_log, nullptr);
+    EXPECT_EQ(native.table().storage_fence_writers, nullptr);
+    EXPECT_EQ(native.table().storage_write_snapshot, nullptr);
+    EXPECT_EQ(native.table().storage_read_snapshot, nullptr);
+    EXPECT_EQ(native.table().storage_trim_prefix, nullptr);
+    EXPECT_EQ(native.table().storage_free_bytes, nullptr);
 }
 
 TEST(NativeHost, open_storage_checks_its_arguments_and_opens_once) {
@@ -140,6 +563,32 @@ TEST(NativeHost, second_host_on_the_same_log_is_in_use) {
     EXPECT_EQ(second.open_storage(directory.path().c_str(), 4).status, StorageStatus::in_use);
     first.close_storage();
     EXPECT_EQ(second.open_storage(directory.path().c_str(), 4).status, StorageStatus::ok);
+}
+
+// The directory lock survives inode replacement, and the replacement log
+// is locked too so an older Host using only the file lock stays excluded.
+TEST(NativeHost, rotation_keeps_the_directory_and_replacement_log_exclusive) {
+    NativeFileStorage storage;
+    StorageRequests requests(storage);
+    for (uint64_t seq = 1; seq <= 2; ++seq) {
+        Bytes encoded(128);
+        ayni::durability::BatchWriter writer(encoded.data(), encoded.size(), {1, seq, seq});
+        encoded.resize(writer.finish());
+        ASSERT_TRUE(requests.append_now(seq, encoded));
+    }
+    StorageRequest &trim = requests.trim(1, 2, 2);
+    requests.finish();
+    ASSERT_EQ(trim.result.outcome, AYNI_WRITE_OK);
+    Host contender;
+    const std::string directory = std::filesystem::path(storage.log_path()).parent_path().string();
+    EXPECT_EQ(contender.open_storage(directory.c_str(), 4).status, StorageStatus::in_use);
+    const int replacement = ::open(storage.log_path().c_str(), O_RDWR | O_CLOEXEC);
+    ASSERT_GE(replacement, 0);
+    EXPECT_EQ(::flock(replacement, LOCK_EX | LOCK_NB), -1);
+    EXPECT_EQ(errno, EWOULDBLOCK);
+    ::close(replacement);
+    storage.stop();
+    EXPECT_EQ(contender.open_storage(directory.c_str(), 4).status, StorageStatus::ok);
 }
 
 TEST(NativeHost, missing_directory_is_a_file_error) {

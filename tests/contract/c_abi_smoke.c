@@ -171,6 +171,8 @@ int main(void) {
     config.task_step_capacity = 1u;
     config.task_checkpoint_max_bytes = 0u;
     config.command_capacity = 1u;
+    config.storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
+    config.storage_log_max_bytes = AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT;
     host.struct_size = (uint32_t)sizeof host;
     host.monotonic_now_us = test_clock;
     host.wake = test_wake;

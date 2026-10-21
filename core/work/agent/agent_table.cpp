@@ -8,13 +8,14 @@ namespace {
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
 
 bool allows(const AgentInstance &agent, InstanceChange change) {
+    const ayni_agent_lifecycle_t lifecycle = AgentTable::effective_lifecycle(agent);
     switch (change) {
     case InstanceChange::pause:
-        return agent.lifecycle == AYNI_AGENT_RUNNING;
+        return lifecycle == AYNI_AGENT_RUNNING;
     case InstanceChange::resume:
-        return agent.lifecycle == AYNI_AGENT_PAUSED;
+        return lifecycle == AYNI_AGENT_PAUSED;
     case InstanceChange::stop:
-        return agent.lifecycle == AYNI_AGENT_RUNNING || agent.lifecycle == AYNI_AGENT_PAUSED;
+        return lifecycle == AYNI_AGENT_RUNNING || lifecycle == AYNI_AGENT_PAUSED;
     }
     return false;
 }
@@ -72,7 +73,6 @@ void AgentTable::fault_unregistered() {
     for (uint32_t index = 0; index < agents_.size(); ++index) {
         AgentInstance &agent = agents_[index];
         if (!agent.registered && agent.lifecycle != AYNI_AGENT_STOPPED) {
-            agent.lifecycle = AYNI_AGENT_FAULTED;
             agent.fault_reason = AYNI_REASON_AGENT_UNREGISTERED;
         }
     }

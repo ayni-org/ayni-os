@@ -35,8 +35,9 @@ uint32_t low_32(uint64_t value) {
 
 } // namespace
 
-BatchWriter::BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity)
-    : buffer_(buffer), capacity_(capacity), identity_(identity) {}
+BatchWriter::BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity,
+                         uint16_t schema)
+    : buffer_(buffer), capacity_(capacity), identity_(identity), schema_(schema) {}
 
 bool BatchWriter::add_record(const RecordHeader &header, const uint8_t *body) {
     uint8_t *out = add_record_body(header);
@@ -72,7 +73,7 @@ std::size_t BatchWriter::finish() {
     }
     const std::size_t payload_length = end_ - batch_header_size;
     std::memcpy(buffer_, batch_magic, sizeof(batch_magic));
-    store_le16(buffer_ + schema_at, storage_schema);
+    store_le16(buffer_ + schema_at, schema_);
     store_le16(buffer_ + header_length_at, static_cast<uint16_t>(batch_header_size));
     store_le32(buffer_ + writer_epoch_at, identity_.writer_epoch);
     store_le32(buffer_ + flags_at, 0);
@@ -102,7 +103,7 @@ BatchCheck read_batch(const uint8_t *bytes, std::size_t size, BatchView &out) {
     if (load_le32(bytes + header_length - 4U) != crc32(bytes, header_length - 4U)) {
         return BatchCheck::corrupt;
     }
-    if (load_le16(bytes + schema_at) != storage_schema || load_le32(bytes + flags_at) != 0U) {
+    if (load_le16(bytes + schema_at) > storage_schema || load_le32(bytes + flags_at) != 0U) {
         return BatchCheck::unsupported;
     }
     const uint32_t payload_length = load_le32(bytes + payload_length_at);
@@ -118,6 +119,7 @@ BatchCheck read_batch(const uint8_t *bytes, std::size_t size, BatchView &out) {
         load_le32(marker + 8) != crc32(payload, payload_length)) {
         return BatchCheck::corrupt;
     }
+    out.schema = load_le16(bytes + schema_at);
     out.identity.writer_epoch = load_le32(bytes + writer_epoch_at);
     out.identity.commit_seq = commit_seq;
     out.identity.transition_id = load_le64(bytes + transition_id_at);

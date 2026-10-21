@@ -64,7 +64,7 @@ class StorageHost {
     virtual ayni_host_v1 table() = 0;
     // Owner thread. Lets accepted requests progress; false when nothing was
     // posted (sim) or no wake came within seconds (native).
-    virtual bool serve() = 0;
+    virtual bool serve(uint64_t deadline_us = UINT64_MAX) = 0;
     // Ends this instance as a shutdown or a crash does: the native Host
     // answers what it accepted and stops its thread; the sim Host loses it,
     // as at a power cut. Owner thread, before the kernel is destroyed.
@@ -93,13 +93,22 @@ class SimStorage final : public StorageHost {
     SimStorage() : sim_(std::make_unique<hosts::sim::Host>()) {}
 
     ayni_host_v1 table() override { return sim_->table(); }
-    bool serve() override { return sim_->complete_storage() > 0U; }
+    bool serve(uint64_t deadline_us = UINT64_MAX) override {
+        if (sim_->complete_storage() > 0U) {
+            return true;
+        }
+        if (deadline_us != UINT64_MAX && deadline_us > sim_->now_us()) {
+            sim_->advance_us(deadline_us - sim_->now_us());
+            return true;
+        }
+        return false;
+    }
     void stop() override { sim_->power_cut(hosts::sim::CutAppend::lost); }
 
     void start() override {
-        std::vector<hosts::sim::StoredBatch> log = std::move(sim_->log());
+        hosts::sim::StorageImage image = std::move(sim_->durable_storage());
         sim_ = std::make_unique<hosts::sim::Host>();
-        sim_->log() = std::move(log);
+        sim_->durable_storage() = std::move(image);
     }
 
     bool cut_power_in_last_append(std::size_t way) override {
@@ -120,6 +129,7 @@ class SimStorage final : public StorageHost {
     }
 
     bool checks_frames() const override { return false; }
+    hosts::sim::Host &sim() { return *sim_; }
 
   private:
     std::unique_ptr<hosts::sim::Host> sim_;
@@ -140,7 +150,15 @@ class NativeFileStorage final : public StorageHost {
     NativeFileStorage() { start(); }
 
     ayni_host_v1 table() override { return native_->table(); }
-    bool serve() override { return native_->wait_for_wake(std::chrono::seconds(5)); }
+    bool serve(uint64_t deadline_us = UINT64_MAX) override {
+        const ayni_host_v1 host = table();
+        const uint64_t now = host.monotonic_now_us(host.ctx);
+        const uint64_t delay = deadline_us == UINT64_MAX ? 5000000U
+                               : deadline_us > now ? std::min<uint64_t>(5000000U, deadline_us - now)
+                                                   : 0U;
+        return native_->wait_for_wake(
+            std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(delay)));
+    }
     void stop() override { native_->close_storage(); }
 
     void start() override {
@@ -219,6 +237,8 @@ class NativeFileStorage final : public StorageHost {
 
 // One request issued through the completion slots, and what came back.
 struct StorageRequest {
+    enum class Port { append, prefix, physical, fence, write_snapshot, read_snapshot, trim };
+    Port port = Port::prefix;
     bool append = false;
     uint64_t commit_seq = 0; // the batch's, or from_commit_seq
     const ayni_host_v1 *host = nullptr;
@@ -228,6 +248,9 @@ struct StorageRequest {
     int applied = 0;
     ayni_completion_result_v1 result{};
     Bytes received; // what a read returned
+    uint32_t writer_epoch = 1;
+    uint64_t transition_id = 0;
+    uint32_t slot = 0;
 };
 
 // The kernel's side of the storage ports. The slots live in memory of their
@@ -260,9 +283,17 @@ class StorageRequests {
     }
 
     StorageRequest &append(uint64_t commit_seq, Bytes batch) {
+        return append_identity(1, commit_seq, commit_seq, std::move(batch));
+    }
+
+    StorageRequest &append_identity(uint32_t writer_epoch, uint64_t transition_id,
+                                    uint64_t commit_seq, Bytes batch) {
         StorageRequest request;
+        request.port = StorageRequest::Port::append;
         request.append = true;
         request.commit_seq = commit_seq;
+        request.writer_epoch = writer_epoch;
+        request.transition_id = transition_id;
         request.memory = std::move(batch);
         return issue(std::move(request), &StorageRequests::call_append);
     }
@@ -272,6 +303,58 @@ class StorageRequests {
         request.commit_seq = from_commit_seq;
         request.memory.assign(buffer_size, 0);
         return issue(std::move(request), &StorageRequests::call_read);
+    }
+
+    StorageRequest &physical_read(uint64_t cursor, uint32_t buffer_size) {
+        StorageRequest request;
+        request.port = StorageRequest::Port::physical;
+        request.commit_seq = cursor;
+        request.memory.assign(buffer_size, 0);
+        return issue(std::move(request), &StorageRequests::call_extended);
+    }
+
+    StorageRequest &fence(uint32_t minimum_epoch) {
+        StorageRequest request;
+        request.port = StorageRequest::Port::fence;
+        request.append = true;
+        request.writer_epoch = minimum_epoch;
+        return issue(std::move(request), &StorageRequests::call_extended);
+    }
+
+    StorageRequest &write_snapshot(uint32_t epoch, uint32_t slot, uint64_t offset, Bytes bytes) {
+        StorageRequest request;
+        request.port = StorageRequest::Port::write_snapshot;
+        request.append = true;
+        request.writer_epoch = epoch;
+        request.slot = slot;
+        request.commit_seq = offset;
+        request.memory = std::move(bytes);
+        return issue(std::move(request), &StorageRequests::call_extended);
+    }
+
+    StorageRequest &read_snapshot(uint32_t slot, uint64_t offset, uint32_t size) {
+        StorageRequest request;
+        request.port = StorageRequest::Port::read_snapshot;
+        request.slot = slot;
+        request.commit_seq = offset;
+        request.memory.assign(size, 0);
+        return issue(std::move(request), &StorageRequests::call_extended);
+    }
+
+    StorageRequest &trim(uint32_t epoch, uint64_t transition_id, uint64_t commit_seq) {
+        StorageRequest request;
+        request.port = StorageRequest::Port::trim;
+        request.append = true;
+        request.writer_epoch = epoch;
+        request.transition_id = transition_id;
+        request.commit_seq = commit_seq;
+        return issue(std::move(request), &StorageRequests::call_extended);
+    }
+
+    uint64_t free_bytes() {
+        uint64_t available = 0;
+        EXPECT_EQ(table_.storage_free_bytes(table_.ctx, &available), AYNI_OK);
+        return available;
     }
 
     // Serves the Host and applies results until no request is in flight.
@@ -319,8 +402,8 @@ class StorageRequests {
         request.attempt = attempt;
         ayni_storage_batch_v1 batch{};
         batch.struct_size = sizeof(batch);
-        batch.writer_epoch = 1;
-        batch.transition_id = request.commit_seq;
+        batch.writer_epoch = request.writer_epoch;
+        batch.transition_id = request.transition_id;
         batch.commit_seq = request.commit_seq;
         batch.encoded.data = request.memory.data();
         batch.encoded.size = static_cast<uint32_t>(request.memory.size());
@@ -334,6 +417,33 @@ class StorageRequests {
         return request.host->storage_read_prefix(
             request.host->ctx, request.commit_seq, request.memory.data(),
             static_cast<uint32_t>(request.memory.size()), attempt, completion);
+    }
+
+    static ayni_submit_result_t call_extended(void *context, ayni_attempt_ref_v1 attempt,
+                                              ayni_completion_t *completion) {
+        StorageRequest &request = *static_cast<StorageRequest *>(context);
+        request.attempt = attempt;
+        const ayni_host_v1 &host = *request.host;
+        const uint32_t size = static_cast<uint32_t>(request.memory.size());
+        switch (request.port) {
+        case StorageRequest::Port::physical:
+            return host.storage_read_log(host.ctx, request.commit_seq, request.memory.data(), size,
+                                         attempt, completion);
+        case StorageRequest::Port::fence:
+            return host.storage_fence_writers(host.ctx, request.writer_epoch, attempt, completion);
+        case StorageRequest::Port::write_snapshot:
+            return host.storage_write_snapshot(host.ctx, request.writer_epoch, request.slot,
+                                               request.commit_seq, {request.memory.data(), size},
+                                               attempt, completion);
+        case StorageRequest::Port::read_snapshot:
+            return host.storage_read_snapshot(host.ctx, request.slot, request.commit_seq,
+                                              request.memory.data(), size, attempt, completion);
+        case StorageRequest::Port::trim:
+            return host.storage_trim_prefix(host.ctx, request.writer_epoch, request.transition_id,
+                                            request.commit_seq, attempt, completion);
+        default:
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
     }
 
     static void on_result(void *context, const ayni_completion_result_v1 &result) {

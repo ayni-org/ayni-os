@@ -127,7 +127,8 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
                       object_ref(AYNI_OBJECT_AGENT_INSTANCE, create.owner_instance_id), failure);
     }
     // A PAUSED owner still takes goals; their tasks wait until it resumes.
-    if (owner->lifecycle == AYNI_AGENT_STOPPED || owner->lifecycle == AYNI_AGENT_FAULTED) {
+    const ayni_agent_lifecycle_t owner_lifecycle = work::AgentTable::effective_lifecycle(*owner);
+    if (owner_lifecycle == AYNI_AGENT_STOPPED || owner_lifecycle == AYNI_AGENT_FAULTED) {
         return refuse(
             AYNI_INVALID_STATE, AYNI_REASON_OWNER_STATE,
             object_ref(AYNI_OBJECT_AGENT_INSTANCE, create.owner_instance_id, owner->revision),
@@ -323,7 +324,8 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
 } // namespace
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
-                           IntentOutcome &outcome, IntentFailure &failure) {
+                           IntentOutcome &outcome, IntentFailure &failure,
+                           ayni_status_t storage_status) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
@@ -348,12 +350,21 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
             break;
         }
     }
+    if (storage_status != AYNI_OK) {
+        return refuse(AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE, ayni_object_ref_v1{},
+                      failure);
+    }
     if (!has_room) {
         return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
     }
+    if (intent.command_id != 0U && !model.commands.has_row(session->principal_id)) {
+        return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
+                      object_ref(AYNI_OBJECT_PRINCIPAL, session->principal_id), failure);
+    }
     const ayni_status_t status = apply_rules(model, intent, *session, now_us, outcome, failure);
     // The mapping joins the transition, so the log stores both or neither.
-    // The registry holds one principal and the table a row for it.
+    // A row retained for an unregistered principal can occupy the table;
+    // admission above reserves a row before any domain transition changes.
     if (status == AYNI_OK && intent.command_id != 0U) {
         model.commands.insert({session->principal_id, intent.command_id, digest, outcome.commit_seq,
                                intent.kind, outcome.object});

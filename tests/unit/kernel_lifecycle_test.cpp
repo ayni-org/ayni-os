@@ -130,12 +130,59 @@ struct HoldingPort {
     std::vector<Held> held;
 };
 
+// Drive only recovery requests; storage deadlines are part of the owner contract.
+void recovery_tick(Node &node, bool complete = true) {
+    const auto report = node.step(1);
+    if (complete) {
+        node.sim().complete_storage();
+    }
+    if (report.more_ready == 0U && node.sim().pending_storage() == 0U &&
+        report.next_deadline_us != UINT64_MAX && report.next_deadline_us > node.sim().now_us()) {
+        node.sim().advance_us(report.next_deadline_us - node.sim().now_us());
+    }
+}
+
+void persist_first_fence(Node &node) {
+    for (int round = 0; round < 1000 && node.sim().log().empty(); ++round) {
+        recovery_tick(node);
+    }
+    ASSERT_EQ(node.sim().log().size(), 1U);
+}
+
+void wait_for_boot_append(Node &node) {
+    persist_first_fence(node);
+    for (int round = 0; round < 1000 && node.sim().pending_storage() == 0U; ++round) {
+        recovery_tick(node, false);
+    }
+    ASSERT_EQ(node.sim().pending_storage(), 1U);
+}
+
 TEST(KernelLifecycle, start_without_storage_is_unsupported_and_stays_configuring) {
     Node node(test_storage_buffer_bytes, false);
     node.create();
     EXPECT_EQ(ayni_start(node.kernel()), AYNI_UNSUPPORTED);
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_CONFIGURING);
     EXPECT_EQ(node.destroy(), AYNI_OK);
+}
+
+// C-HOST-015: an older short Host table is valid for creation but cannot
+// promise the storage semantics required by the current recovery protocol.
+TEST(KernelLifecycle, short_host_with_only_legacy_storage_cannot_start) {
+    Node fixture;
+    auto host = fixture.sim().table();
+    host.struct_size = offsetof(ayni_host_v1, storage_read_log);
+    std::size_t bytes = 0;
+    std::size_t alignment = 0;
+    ASSERT_EQ(ayni_kernel_memory_requirements(&fixture.config(), &bytes, &alignment), AYNI_OK);
+    std::vector<uint64_t> memory(bytes / sizeof(uint64_t) + 1U);
+    ayni_kernel_t *kernel = nullptr;
+    ASSERT_EQ(ayni_create(&fixture.config(), &host, memory.data(), bytes, &kernel), AYNI_OK);
+    EXPECT_EQ(ayni_start(kernel), AYNI_UNSUPPORTED);
+    ayni_lifecycle_t state = 0;
+    ASSERT_EQ(ayni_get_lifecycle(kernel, &state), AYNI_OK);
+    EXPECT_EQ(state, AYNI_LIFECYCLE_CONFIGURING);
+    EXPECT_EQ(fixture.sim().pending_storage(), 0U);
+    EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
 // C-ID-009: the first boot writes epoch 1 in a batch of its own, REQUIRED so
@@ -148,12 +195,12 @@ TEST(KernelLifecycle, first_boot_persists_epoch_1_before_running) {
     EXPECT_EQ(node.info().boot_epoch, 1U);
     EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_NONE);
 
-    ASSERT_EQ(node.sim().log().size(), 1U);
-    const AppendedEpoch appended = decode_boot_batch(node.sim().log()[0]);
-    EXPECT_EQ(node.sim().log()[0].commit_seq, 1U);
-    EXPECT_EQ(appended.batch.identity.commit_seq, 1U);
-    EXPECT_EQ(appended.batch.identity.writer_epoch, 1U);
-    EXPECT_EQ(appended.batch.identity.transition_id, 1U);
+    ASSERT_EQ(node.sim().log().size(), 2U);
+    const AppendedEpoch appended = decode_boot_batch(node.sim().log().back());
+    EXPECT_EQ(node.sim().log().back().commit_seq, 2U);
+    EXPECT_EQ(appended.batch.identity.commit_seq, 2U);
+    EXPECT_EQ(appended.batch.identity.writer_epoch, node.sim().writer_epoch());
+    EXPECT_EQ(appended.batch.identity.transition_id, 2U);
     EXPECT_EQ(appended.header.type, boot_epoch_record_type);
     EXPECT_EQ(appended.header.version, boot_epoch_record_version);
     EXPECT_EQ(appended.header.flags, required);
@@ -173,9 +220,9 @@ TEST(KernelLifecycle, largest_epoch_and_transition_id_still_boot) {
     node.recover();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.info().boot_epoch, ayni::foundation::max_boot_epoch);
-    ASSERT_EQ(node.sim().log().size(), 2U);
-    EXPECT_EQ(decode_boot_batch(node.sim().log()[1]).batch.identity.transition_id,
-              last_transition_id + 1U);
+    ASSERT_EQ(node.sim().log().size(), 3U);
+    EXPECT_EQ(decode_boot_batch(node.sim().log().back()).batch.identity.transition_id,
+              last_transition_id + 2U);
 }
 
 TEST(KernelLifecycle, each_reboot_persists_the_next_epoch) {
@@ -188,10 +235,10 @@ TEST(KernelLifecycle, each_reboot_persists_the_next_epoch) {
         EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
         EXPECT_EQ(node.info().boot_epoch, expected);
     }
-    ASSERT_EQ(node.sim().log().size(), 4U);
-    const AppendedEpoch last = decode_boot_batch(node.sim().log()[3]);
-    EXPECT_EQ(last.batch.identity.commit_seq, 4U);
-    EXPECT_EQ(last.batch.identity.transition_id, 4U);
+    ASSERT_EQ(node.sim().log().size(), 8U);
+    const AppendedEpoch last = decode_boot_batch(node.sim().log().back());
+    EXPECT_EQ(last.batch.identity.commit_seq, 8U);
+    EXPECT_EQ(last.batch.identity.transition_id, 8U);
     EXPECT_EQ(last.epoch, 4U);
 }
 
@@ -202,29 +249,16 @@ TEST(KernelLifecycle, recovery_lasts_until_the_epoch_append_completes) {
     node.create_and_start();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RECOVERING);
 
-    ayni_step_report_v1 report = node.step(); // issues the first read
-    EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
-    EXPECT_EQ(report.next_deadline_us, std::numeric_limits<uint64_t>::max());
-    ASSERT_EQ(node.sim().pending_storage(), 1U);
-    ASSERT_EQ(node.sim().complete_storage(), 1U); // empty log
-
-    const uint64_t wakes = node.sim().wake_count();
-    report = node.step(); // applies the read, issues the append
-    EXPECT_EQ(report.items_done, 2U);
-    EXPECT_EQ(node.sim().wake_count(), wakes);
-    EXPECT_EQ(node.sim().pending_storage(), 1U);
+    wait_for_boot_append(node);
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RECOVERING);
     EXPECT_EQ(node.info().boot_epoch, 0U);
-    EXPECT_EQ(node.kernel()->completions.in_flight(), 1U);
-
-    node.step(); // nothing posted yet
+    const uint64_t wakes = node.sim().wake_count();
+    node.step();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RECOVERING);
     ASSERT_EQ(node.sim().complete_storage(), 1U);
     EXPECT_GT(node.sim().wake_count(), wakes);
-    report = node.step();
+    const auto report = node.step(1);
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.more_ready, 0U);
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.info().boot_epoch, 1U);
 }
@@ -240,13 +274,12 @@ TEST(KernelLifecycle, durable_seq_follows_the_log_read_and_then_the_boot_batch) 
     uint64_t last_seen = 0;
     for (int round = 0; round < 100 && node.lifecycle() == AYNI_LIFECYCLE_RECOVERING; ++round) {
         last_seen = node.info().durable_seq;
-        EXPECT_LE(last_seen, 2U);
-        node.step();
-        node.sim().complete_storage();
+        EXPECT_LE(last_seen, 3U);
+        recovery_tick(node);
     }
     ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(last_seen, 2U); // the read was applied before the append completed
-    EXPECT_EQ(node.info().durable_seq, 3U);
+    EXPECT_EQ(last_seen, 3U); // fence is durable before the boot append
+    EXPECT_EQ(node.info().durable_seq, 4U);
 }
 
 TEST(KernelLifecycle, more_ready_while_recovery_has_a_request_due) {
@@ -284,8 +317,8 @@ TEST(KernelLifecycle, log_longer_than_the_buffer_is_read_in_chunks) {
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.info().boot_epoch, batches * 3U + 1U);
     const AppendedEpoch appended = decode_boot_batch(node.sim().log().back());
-    EXPECT_EQ(appended.batch.identity.commit_seq, batches + 1U);
-    EXPECT_EQ(appended.batch.identity.transition_id, batches + 1U);
+    EXPECT_EQ(appended.batch.identity.commit_seq, batches + 2U);
+    EXPECT_EQ(appended.batch.identity.transition_id, batches + 2U);
 }
 
 // Optional records the kernel does not know are skipped (C-STORE-004); the
@@ -299,9 +332,9 @@ TEST(KernelLifecycle, unknown_optional_records_are_skipped) {
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.info().boot_epoch, 6U);
     const AppendedEpoch appended = decode_boot_batch(node.sim().log().back());
-    EXPECT_EQ(appended.batch.identity.commit_seq, 3U);
-    EXPECT_EQ(appended.batch.identity.writer_epoch, 2U);
-    EXPECT_EQ(appended.batch.identity.transition_id, 8U);
+    EXPECT_EQ(appended.batch.identity.commit_seq, 4U);
+    EXPECT_EQ(appended.batch.identity.writer_epoch, 3U);
+    EXPECT_EQ(appended.batch.identity.transition_id, 9U);
 }
 
 struct LogCase {
@@ -361,7 +394,7 @@ std::vector<LogCase> bad_logs() {
                      AYNI_RESTRICTION_LOG_UNSUPPORTED});
     {
         StoredBatch newer = boot_epoch_batch(1, 1);
-        ayni::foundation::store_le16(newer.bytes.data() + 4, 1); // storage_schema
+        ayni::foundation::store_le16(newer.bytes.data() + 4, 2); // unsupported storage_schema
         reseal_header(newer);
         cases.push_back({"other storage_schema", {newer}, AYNI_RESTRICTION_LOG_UNSUPPORTED});
     }
@@ -418,7 +451,12 @@ TEST(KernelLifecycle, storage_faults_restrict_with_their_reason) {
     for (const FaultCase &fault : cases) {
         SCOPED_TRACE(fault.name);
         Node node;
-        node.sim().inject_fault(fault.port, fault.fault);
+        for (int attempt = 0; attempt < (fault.port == StoragePort::append ? 3 : 1); ++attempt) {
+            node.sim().inject_fault(fault.port,
+                                    attempt > 0 && fault.fault == StorageFault::unknown_persisted
+                                        ? StorageFault::unknown_lost
+                                        : fault.fault);
+        }
         node.create_and_start();
         node.recover();
         EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
@@ -433,7 +471,7 @@ TEST(KernelLifecycle, storage_faults_restrict_with_their_reason) {
 }
 
 // The buffer bounds the largest batch: the Host cannot deliver a bigger one.
-TEST(KernelLifecycle, batch_larger_than_the_buffer_restricts_as_read_failed) {
+TEST(KernelLifecycle, batch_larger_than_the_buffer_reports_capacity) {
     Node node;
     const uint32_t buffer = smallest_storage_buffer(node.config());
     node.config().storage_buffer_bytes = buffer;
@@ -441,20 +479,21 @@ TEST(KernelLifecycle, batch_larger_than_the_buffer_restricts_as_read_failed) {
         encode({1, 1, 1}, {{{999, 1, 0, buffer}, std::vector<uint8_t>(buffer)}}));
     node.create_and_start();
     node.recover();
-    EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_STORAGE_READ_FAILED);
+    EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
 }
 
 // Holds one read and lets the test answer it.
 struct HeldRead {
-    static ayni_submit_result_t call(void * /*ctx*/, uint64_t /*from_commit_seq*/,
-                                     uint8_t * /*buffer*/, uint32_t buffer_size,
-                                     ayni_attempt_ref_v1 attempt, ayni_completion_t *completion) {
-        last = {attempt, completion, buffer_size};
+    static ayni_submit_result_t call(void * /*ctx*/, uint64_t /*from_commit_seq*/, uint8_t *buffer,
+                                     uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
+                                     ayni_completion_t *completion) {
+        last = {attempt, completion, buffer_size, buffer};
         return AYNI_SUBMIT_ACCEPTED;
     }
     ayni_attempt_ref_v1 attempt;
     ayni_completion_t *completion;
     uint32_t buffer_size;
+    uint8_t *buffer;
     static HeldRead last;
 };
 HeldRead HeldRead::last{};
@@ -464,13 +503,40 @@ TEST(KernelLifecycle, read_count_beyond_the_buffer_restricts_as_read_failed) {
     Node node;
     node.replace_read_port(&HeldRead::call);
     node.create_and_start();
-    node.step();
+    for (int round = 0; round < 10 && HeldRead::last.buffer_size == 0U; ++round) {
+        recovery_tick(node);
+    }
     ASSERT_EQ(HeldRead::last.buffer_size, test_storage_buffer_bytes);
     ayni_completion_result_v1 result{};
     result.struct_size = sizeof(result);
     result.outcome = AYNI_WRITE_OK;
     result.attempt = HeldRead::last.attempt;
     result.value = HeldRead::last.buffer_size + 1U;
+    ASSERT_EQ(ayni_completion_post(HeldRead::last.completion, &result), AYNI_OK);
+    node.step();
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_STORAGE_READ_FAILED);
+}
+
+// A physical cursor must advance when the Host returns a nonempty chunk;
+// accepting it otherwise would let recovery spin forever on the same bytes.
+TEST(KernelLifecycle, nonadvancing_physical_read_is_rejected) {
+    Node node;
+    HeldRead::last = {};
+    node.replace_read_port(&HeldRead::call);
+    node.create_and_start();
+    for (int round = 0; round < 10 && HeldRead::last.buffer_size == 0U; ++round) {
+        recovery_tick(node);
+    }
+    ASSERT_NE(HeldRead::last.buffer, nullptr);
+    const StoredBatch stored = boot_epoch_batch(1, 1);
+    std::memcpy(HeldRead::last.buffer, stored.bytes.data(), stored.bytes.size());
+    ayni_completion_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.outcome = AYNI_WRITE_OK;
+    result.attempt = HeldRead::last.attempt;
+    result.value = stored.bytes.size();
+    result.next_cursor = 0;
     ASSERT_EQ(ayni_completion_post(HeldRead::last.completion, &result), AYNI_OK);
     node.step();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
@@ -511,16 +577,20 @@ TEST(KernelLifecycle, recovery_requests_use_boot_epoch_0) {
 // it and moves past that epoch, so no two boots share one.
 TEST(KernelLifecycle, reboot_after_an_unknown_append_skips_its_epoch) {
     Node node;
-    node.sim().inject_fault(StoragePort::append, StorageFault::unknown_persisted);
     node.create_and_start();
+    persist_first_fence(node);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        node.sim().inject_fault(StoragePort::append, attempt == 0 ? StorageFault::unknown_persisted
+                                                                  : StorageFault::unknown_lost);
+    }
     node.recover();
     ASSERT_EQ(node.info().restriction, AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
     node.reboot();
     node.recover();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.info().boot_epoch, 2U);
-    ASSERT_EQ(node.sim().log().size(), 2U);
-    EXPECT_EQ(decode_boot_batch(node.sim().log()[1]).batch.identity.commit_seq, 2U);
+    ASSERT_EQ(node.sim().log().size(), 4U);
+    EXPECT_EQ(decode_boot_batch(node.sim().log().back()).batch.identity.commit_seq, 4U);
 }
 
 // With every slot taken, recovery waits without asking to be called again;
@@ -592,15 +662,13 @@ TEST(KernelLifecycle, shutdown_during_recovery_waits_for_the_request_in_flight) 
 TEST(KernelLifecycle, append_completing_while_draining_is_still_applied) {
     Node node;
     node.create_and_start();
-    node.step();
-    node.sim().complete_storage();
-    node.step(); // append in flight
+    wait_for_boot_append(node);
     ASSERT_EQ(ayni_begin_shutdown(node.kernel()), AYNI_OK);
     ASSERT_EQ(node.sim().complete_storage(), 1U);
     node.step();
     EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_STOPPED);
     EXPECT_EQ(node.info().boot_epoch, 1U);
-    EXPECT_EQ(node.sim().log().size(), 1U);
+    EXPECT_EQ(node.sim().log().size(), 2U);
 }
 
 TEST(KernelLifecycle, shutdown_from_running_and_restricted_stops_in_one_step) {
@@ -608,7 +676,9 @@ TEST(KernelLifecycle, shutdown_from_running_and_restricted_stops_in_one_step) {
         SCOPED_TRACE(restricted ? "RESTRICTED" : "RUNNING");
         Node node;
         if (restricted) {
-            node.sim().inject_fault(StoragePort::append, StorageFault::fail);
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                node.sim().inject_fault(StoragePort::append, StorageFault::fail);
+            }
         }
         node.create_and_start();
         node.recover();
@@ -791,7 +861,7 @@ TEST(KernelLifecycle, step_reports_durable_seq_when_the_report_covers_it) {
     EXPECT_EQ(report.durable_seq, 0xA5A5A5A5A5A5A5A5U);
     report.struct_size = sizeof(report);
     ASSERT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_OK);
-    EXPECT_EQ(report.durable_seq, 1U); // the boot batch
+    EXPECT_EQ(report.durable_seq, 2U); // the boot batch
     EXPECT_EQ(report.durable_seq, node.info().durable_seq);
 }
 

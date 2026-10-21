@@ -3,6 +3,7 @@
 #include "file_log.h"
 
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <utility>
 
@@ -20,7 +21,7 @@ uint64_t monotonic_now_us(void * /*ctx*/) {
 // One accepted storage call, as the I/O thread needs it once the port has
 // returned. data and buffer are the kernel's until the post.
 struct Request {
-    enum class Port { append, read_prefix };
+    enum class Port { append, read_prefix, read_log, fence, write_snapshot, read_snapshot, trim };
     Port port;
     ayni_attempt_ref_v1 attempt;
     ayni_completion_t *completion;
@@ -28,7 +29,24 @@ struct Request {
     const uint8_t *data; // append: the encoded batch
     uint8_t *buffer;     // read: the kernel's buffer
     uint32_t size;       // encoded size, or buffer size
+    uint32_t writer_epoch = 0;
+    uint64_t transition_id = 0;
+    uint32_t slot = 0;
 };
+
+uint64_t request_reservation(const Request &request) {
+    return request.port == Request::Port::append           ? request.size + uint64_t{24}
+           : request.port == Request::Port::write_snapshot ? request.size
+                                                           : 0U;
+}
+
+uint64_t load_le(const uint8_t *data, uint32_t size) {
+    uint64_t value = 0;
+    for (uint32_t index = 0; index < size; ++index) {
+        value |= static_cast<uint64_t>(data[index]) << (index * 8U);
+    }
+    return value;
+}
 
 } // namespace
 
@@ -47,6 +65,12 @@ class Host::Storage {
     // Lets the thread finish every queued request, joins it and closes the
     // log; later submits are rejected.
     void stop();
+    ayni_status_t free_bytes(uint64_t *out) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        *out = free_bytes_valid_ && free_bytes_ >= reserved_bytes_ ? free_bytes_ - reserved_bytes_
+                                                                   : 0U;
+        return free_bytes_valid_ ? AYNI_OK : AYNI_STORAGE_FAILED;
+    }
 
   private:
     static void *run(void *context);
@@ -63,6 +87,10 @@ class Host::Storage {
     std::mutex mutex_;
     std::condition_variable signal_;
     pthread_t thread_{};
+    // The queue lock publishes one consistent availability/reservation view.
+    uint64_t free_bytes_ = 0;
+    uint64_t reserved_bytes_ = 0;
+    bool free_bytes_valid_ = false;
 };
 
 StorageOpen Host::Storage::open(const char *directory, uint32_t capacity) {
@@ -82,6 +110,7 @@ StorageOpen Host::Storage::open(const char *directory, uint32_t capacity) {
     case FileLog::OpenStatus::file_error:
         return {StorageStatus::file_error, opened.error};
     }
+    free_bytes_valid_ = log_.free_bytes(free_bytes_);
     // pthread rather than std::thread, whose failure is an exception.
     const int error = ::pthread_create(&thread_, nullptr, &Storage::run, this);
     if (error != 0) {
@@ -100,6 +129,7 @@ ayni_submit_result_t Host::Storage::submit(const Request &request) {
         }
         queue_[(head_ + count_) % capacity_] = request;
         ++count_;
+        reserved_bytes_ += request_reservation(request);
     }
     signal_.notify_one();
     return AYNI_SUBMIT_ACCEPTED;
@@ -137,6 +167,14 @@ void Host::Storage::serve_queue() {
             --count_;
         }
         const ayni_completion_result_v1 result = serve(request);
+        uint64_t available = 0;
+        const bool valid = log_.free_bytes(available);
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            free_bytes_ = available;
+            free_bytes_valid_ = valid;
+            reserved_bytes_ -= request_reservation(request);
+        }
         // A refused post means the slot was not waiting for this attempt; the
         // kernel counts that, and the Host has nothing else to tell it.
         static_cast<void>(ayni_completion_post(request.completion, &result));
@@ -144,15 +182,47 @@ void Host::Storage::serve_queue() {
 }
 
 ayni_completion_result_v1 Host::Storage::serve(const Request &request) {
-    const FileLog::Result done =
-        request.port == Request::Port::append
-            ? log_.append(request.commit_seq, request.data, request.size)
-            : log_.read_prefix(request.commit_seq, request.buffer, request.size);
+    FileLog::Result done{AYNI_WRITE_FAILED, 0};
+    const bool mutation = request.port == Request::Port::append ||
+                          request.port == Request::Port::write_snapshot ||
+                          request.port == Request::Port::trim;
+    if (!mutation || request.writer_epoch >= log_.writer_epoch()) {
+        if (mutation) {
+            log_.observe_writer(request.writer_epoch);
+        }
+        switch (request.port) {
+        case Request::Port::append:
+            done = log_.append(request.commit_seq, request.data, request.size);
+            break;
+        case Request::Port::read_prefix:
+            done = log_.read_prefix(request.commit_seq, request.buffer, request.size);
+            break;
+        case Request::Port::read_log:
+            done = log_.read_log(request.commit_seq, request.buffer, request.size);
+            break;
+        case Request::Port::fence:
+            done = log_.fence(request.writer_epoch);
+            break;
+        case Request::Port::write_snapshot:
+            done = log_.write_snapshot(request.slot, request.writer_epoch, request.commit_seq,
+                                       request.data, request.size);
+            break;
+        case Request::Port::read_snapshot:
+            done =
+                log_.read_snapshot(request.slot, request.commit_seq, request.buffer, request.size);
+            break;
+        case Request::Port::trim:
+            done =
+                log_.trim_prefix(request.writer_epoch, request.commit_seq, request.transition_id);
+            break;
+        }
+    }
     ayni_completion_result_v1 result{};
     result.struct_size = sizeof(result);
     result.outcome = done.outcome;
     result.attempt = request.attempt;
     result.value = done.value;
+    result.next_cursor = done.cursor;
     return result;
 }
 
@@ -171,6 +241,12 @@ ayni_host_v1 Host::table() {
     if (storage_ != nullptr) {
         host.storage_append = &Host::storage_append;
         host.storage_read_prefix = &Host::storage_read_prefix;
+        host.storage_read_log = &Host::storage_read_log;
+        host.storage_fence_writers = &Host::storage_fence_writers;
+        host.storage_write_snapshot = &Host::storage_write_snapshot;
+        host.storage_read_snapshot = &Host::storage_read_snapshot;
+        host.storage_trim_prefix = &Host::storage_trim_prefix;
+        host.storage_free_bytes = &Host::storage_free_bytes;
     }
     return host;
 }
@@ -228,11 +304,18 @@ ayni_submit_result_t Host::storage_append(void *ctx, const ayni_storage_batch_v1
                                           ayni_completion_t *completion) {
     Storage *storage = static_cast<Host *>(ctx)->storage_.get();
     if (storage == nullptr || batch == nullptr || completion == nullptr ||
-        batch->encoded.data == nullptr || batch->encoded.size == 0U) {
+        batch->encoded.data == nullptr || batch->encoded.size == 0U || batch->writer_epoch == 0U) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    if (batch->encoded.size >= 32U && std::memcmp(batch->encoded.data, "AYJB", 4) == 0 &&
+        (load_le(batch->encoded.data + 8, 4) != batch->writer_epoch ||
+         load_le(batch->encoded.data + 16, 8) != batch->commit_seq ||
+         load_le(batch->encoded.data + 24, 8) != batch->transition_id)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     return storage->submit({Request::Port::append, attempt, completion, batch->commit_seq,
-                            batch->encoded.data, nullptr, batch->encoded.size});
+                            batch->encoded.data, nullptr, batch->encoded.size, batch->writer_epoch,
+                            batch->transition_id});
 }
 
 ayni_submit_result_t Host::storage_read_prefix(void *ctx, uint64_t from_commit_seq, uint8_t *buffer,
@@ -244,6 +327,77 @@ ayni_submit_result_t Host::storage_read_prefix(void *ctx, uint64_t from_commit_s
     }
     return storage->submit({Request::Port::read_prefix, attempt, completion, from_commit_seq,
                             nullptr, buffer, buffer_size});
+}
+
+ayni_submit_result_t Host::storage_read_log(void *ctx, uint64_t cursor, uint8_t *buffer,
+                                            uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
+                                            ayni_completion_t *completion) {
+    Storage *storage = static_cast<Host *>(ctx)->storage_.get();
+    if (storage == nullptr || completion == nullptr || (buffer == nullptr && buffer_size != 0U)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return storage->submit(
+        {Request::Port::read_log, attempt, completion, cursor, nullptr, buffer, buffer_size});
+}
+
+ayni_submit_result_t Host::storage_fence_writers(void *ctx, uint32_t minimum_epoch,
+                                                 ayni_attempt_ref_v1 attempt,
+                                                 ayni_completion_t *completion) {
+    Storage *storage = static_cast<Host *>(ctx)->storage_.get();
+    if (storage == nullptr || completion == nullptr || minimum_epoch == 0U) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return storage->submit(
+        {Request::Port::fence, attempt, completion, 0, nullptr, nullptr, 0, minimum_epoch});
+}
+
+ayni_submit_result_t Host::storage_write_snapshot(void *ctx, uint32_t writer_epoch, uint32_t slot,
+                                                  uint64_t offset, ayni_bytes_v1 bytes,
+                                                  ayni_attempt_ref_v1 attempt,
+                                                  ayni_completion_t *completion) {
+    Storage *storage = static_cast<Host *>(ctx)->storage_.get();
+    if (storage == nullptr || completion == nullptr || writer_epoch == 0U || slot > 1U ||
+        (bytes.data == nullptr && bytes.size != 0U)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return storage->submit({Request::Port::write_snapshot, attempt, completion, offset, bytes.data,
+                            nullptr, bytes.size, writer_epoch, 0, slot});
+}
+
+ayni_submit_result_t Host::storage_read_snapshot(void *ctx, uint32_t slot, uint64_t offset,
+                                                 uint8_t *buffer, uint32_t buffer_size,
+                                                 ayni_attempt_ref_v1 attempt,
+                                                 ayni_completion_t *completion) {
+    Storage *storage = static_cast<Host *>(ctx)->storage_.get();
+    if (storage == nullptr || completion == nullptr || slot > 1U ||
+        (buffer == nullptr && buffer_size != 0U)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return storage->submit({Request::Port::read_snapshot, attempt, completion, offset, nullptr,
+                            buffer, buffer_size, 0, 0, slot});
+}
+
+ayni_submit_result_t Host::storage_trim_prefix(void *ctx, uint32_t writer_epoch,
+                                               uint64_t transition_id, uint64_t commit_seq,
+                                               ayni_attempt_ref_v1 attempt,
+                                               ayni_completion_t *completion) {
+    Storage *storage = static_cast<Host *>(ctx)->storage_.get();
+    if (storage == nullptr || completion == nullptr || writer_epoch == 0U) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return storage->submit({Request::Port::trim, attempt, completion, commit_seq, nullptr, nullptr,
+                            0, writer_epoch, transition_id});
+}
+
+ayni_status_t Host::storage_free_bytes(void *ctx, uint64_t *out_free_bytes) {
+    Storage *storage = static_cast<Host *>(ctx)->storage_.get();
+    if (out_free_bytes == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (storage == nullptr) {
+        return AYNI_STORAGE_FAILED;
+    }
+    return storage->free_bytes(out_free_bytes);
 }
 
 } // namespace ayni::hosts::native

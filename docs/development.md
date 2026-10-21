@@ -1,22 +1,26 @@
 # 开发环境与命令
 
-本文记录 M0 实际执行过的环境与命令（`MA-002`）。M0 起开发机以 Linux 为准；macOS 未经验证，不在此列出步骤。
+本文记录 M0（`MA-002`）及 M1 实际使用的环境与开发命令。每个 PR 的完整验证、独立审查和合并流程以 [`workflow.md`](workflow.md) 第 2、4、7 节为准；实际执行结果记在对应 ADR。开发环境以 Linux 为准；macOS 未经验证，不在此列出步骤。
 
 ## 已验证的版本
 
 | 工具 | 版本 | 用途 |
 |---|---|---|
 | Ubuntu | 24.04.5 LTS，x86_64 | 本地与 CI（`ubuntu-24.04`） |
-| CMake | 3.28.3（最低要求 3.22） | Native 构建 |
+| CMake | M0：3.28.3；M1 容器：3.31.6（最低要求 3.22） | Native 构建 |
 | Ninja | 1.11.1 | CMake 预设使用的生成器 |
 | GCC | 13.3.0 | Native 构建，含 ASan/UBSan 与 TSan |
 | Clang | 18.1.3 | Native 构建 |
 | clang-format / clang-tidy | 18.1.3 | 格式检查（阻断）与静态分析（仅报告） |
-| Python | 3.9 及以上（本地 3.13.16） | `tools/check_deps.py`、`tools/check_contracts.py` 与其测试 |
+| Python | 最低 3.9；M0 本地：3.13.16；M1 容器：3.12.3 | `tools/check_deps.py`、`tools/check_contracts.py` 与其测试 |
 | GoogleTest | 1.17.0，按 SHA-256 锁定 | Native 单元测试（ADR-0012） |
 | ESP-IDF | v6.0.3，工具链 `esp-15.2.0_20251204` | ESP32-S3 固件；CI 使用镜像 `espressif/idf:v6.0.3` |
 
-本地 Clang 缺少 ASan 运行库（`libclang-rt-18-dev`），所以 Clang 只验证了普通 Debug 构建，ASan/UBSan 由 GCC 构建覆盖。
+M0 本地 Clang 缺少 ASan 运行库（`libclang-rt-18-dev`），当时只验证普通 Debug 构建；workflow 仍规定 GCC 的四个预设及 Clang Debug 分别验证。M1 本轮使用本机已有的 `ayni-m0-tools:latest` 容器，源码挂载到 `/workspace`，`CC=gcc-13`、`CXX=g++-13`；容器内实际版本为上表所列 CMake 3.31.6、GCC 13.3.0、Clang/clang-format 18.1.3、Ninja 1.11.1、Python 3.12.3。仓库没有该镜像的构建配方，复现以表中工具版本、预设和逐 PR 验证记录为准。
+
+## 本轮验证的资源限制
+
+`MA-010` E+F 后续本地验证统一串行执行：`CMAKE_BUILD_PARALLEL_LEVEL=1`，同一时间只运行一个构建或测试任务；不并行跑配置、植入缺陷或 Host 测试。验证容器设 1 CPU、2 GiB 内存硬上限、0 额外 swap；编译与测试进程使用较低的 CPU/I/O 优先级。开始前检查宿主可用内存；资源不足先停止任务，不用无界 `-j` 重试。逐项保存原始结果到仓库外的持久目录，避免机器重启后丢失缺陷恢复信息。
 
 ## Linux 准备
 
@@ -36,7 +40,7 @@ sudo apt-get install -y build-essential clang cmake ninja-build python3 \
 | `native-asan` | `build/native-asan` | Debug，启用 AddressSanitizer 与 UndefinedBehaviorSanitizer |
 | `native-tsan` | `build/native-tsan` | Debug，启用 ThreadSanitizer，覆盖入口队列与完成槽的多线程测试（ADR-0015） |
 
-GCC 13 自带的 ThreadSanitizer 在 mmap 随机化为 32 位（`/proc/sys/vm/mmap_rnd_bits`）的内核上可能报 `unexpected memory mapping` 而无法启动，这时先执行 `sudo sysctl vm.mmap_rnd_bits=28`；CI 的 TSan 任务固定这样设置。本地开发机该值为 28。
+GCC 13 自带的 ThreadSanitizer 在 mmap 随机化为 32 位（`/proc/sys/vm/mmap_rnd_bits`）的内核上可能报 `unexpected memory mapping` 而无法启动，这时先执行 `sudo sysctl vm.mmap_rnd_bits=28`；CI 的 TSan 任务固定这样设置。M1 本轮先读到宿主值为 32，已按 workflow 在运行 TSan 前设置为 28；容器共享宿主内核，镜像本身不会改变这个参数。
 
 ```sh
 cmake --preset native-debug
@@ -53,7 +57,7 @@ cmake --build build/native -j
 ctest --test-dir build/native --output-on-failure
 ```
 
-换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 仍不接受参数，`--experiment E1` 等入口随 M1 的实验夹具加入；它每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除日志文件，所以运行它们需要可写、支持 `fdatasync` 的临时目录。
+换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 仍不接受参数，`--experiment E1` 等入口随 M1 的实验夹具加入；它每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。读取 schema 0 的迁移会在该目录发布 schema 1 快照，只有激活持久后才回收来源；不要仅恢复旧日志或旧快照作为已迁移状态的回滚办法（ADR-0027）。
 
 ### 离线配置 GoogleTest
 
@@ -108,7 +112,7 @@ Hello 固件启动后打印芯片型号与版本、ESP-IDF 版本、复位原因
 
 ## 结果分级
 
-按 AGENTS.md 与计划 §6 区分：
+以下保留 M0 的验证分类；各 M1 PR 必须分别记录当次实际执行的配置、命令与结果，不能沿用这些历史结果作为新变更已通过的证明。按 AGENTS.md 与计划 §6 区分：
 
 - **编译通过**：Native（GCC、Clang、ASan/UBSan、TSan）在本地与 CI 编译；ESP32-S3 固件由 CI 的 ESP-IDF 任务编译，本地未安装 ESP-IDF 时不编译。
 - **模拟器运行**：`ayni-sim` 与全部 `ctest` 用例在 Linux 运行通过。

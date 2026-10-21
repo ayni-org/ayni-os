@@ -130,8 +130,16 @@ TaskTable::ChangeCheck TaskTable::check(uint32_t index, TaskChange change,
 void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
     // A held task takes no change but an end (allows()).
-    if (is_held(task)) {
+    if (still_held(task)) {
         --held_count_;
+    }
+    // An explicit terminal change preserves the visible diagnostic, as it
+    // did before compatibility holds became a separate boot overlay.
+    if (task.recovery_hold_status != AYNI_OK) {
+        task.hold_status = task.recovery_hold_status;
+        task.hold_reason = task.recovery_hold_reason;
+        task.recovery_hold_status = AYNI_OK;
+        task.recovery_hold_reason = AYNI_REASON_NONE;
     }
     switch (change) {
     case TaskChange::pause:
@@ -269,16 +277,17 @@ catalog::CatalogId *TaskTable::steps_of(uint32_t index) const {
 // nothing its strategy sees has changed but the revision and the time, so
 // releasing it would mostly bring the same refusal again.
 bool TaskTable::allows(const Task &task, TaskChange change) {
+    const ayni_task_lifecycle_t lifecycle = effective_lifecycle(task);
     switch (change) {
     case TaskChange::pause:
     case TaskChange::complete:
     case TaskChange::fail:
-        return task.lifecycle == AYNI_TASK_READY;
+        return lifecycle == AYNI_TASK_READY;
     case TaskChange::resume:
-        return task.lifecycle == AYNI_TASK_PAUSED && !is_held(task);
+        return lifecycle == AYNI_TASK_PAUSED && !is_held(task);
     case TaskChange::cancel:
     case TaskChange::expire:
-        return task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_PAUSED;
+        return lifecycle == AYNI_TASK_READY || lifecycle == AYNI_TASK_PAUSED;
     }
     return false;
 }
@@ -291,7 +300,7 @@ bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index) const {
     uint32_t next = no_index;
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
         const Task &task = tasks_[index];
-        if (task.lifecycle != AYNI_TASK_READY || task.commit_seq >= ready_before ||
+        if (effective_lifecycle(task) != AYNI_TASK_READY || task.commit_seq >= ready_before ||
             at_largest_revision(task)) {
             continue;
         }
@@ -307,7 +316,8 @@ bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index) const {
 
 bool TaskTable::has_ready() const {
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
-        if (tasks_[index].lifecycle == AYNI_TASK_READY && !at_largest_revision(tasks_[index])) {
+        if (effective_lifecycle(tasks_[index]) == AYNI_TASK_READY &&
+            !at_largest_revision(tasks_[index])) {
             return true;
         }
     }
@@ -388,6 +398,28 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
     return Restore::restored;
 }
 
+TaskTable::Restore TaskTable::restore_snapshot(const NewTask &task, uint64_t task_id,
+                                               uint64_t replaced_task_id,
+                                               foundation::TransitionStamp stamp,
+                                               uint64_t steps_seq, uint64_t checkpoint_seq,
+                                               uint32_t steps_before) {
+    uint32_t existing = 0;
+    if (task_id == 0U || task.occurrence == 0U || task.occurrence_count == 0U ||
+        task.occurrence_count > task.occurrence || find(task_id, existing) ||
+        steps_seq > stamp.commit_seq || checkpoint_seq > stamp.commit_seq) {
+        return Restore::corrupt;
+    }
+    if (tasks_.full()) {
+        return Restore::no_room;
+    }
+    place(task, task_id, replaced_task_id, free_slot(), stamp);
+    Task &restored = tasks_[tasks_.size() - 1U];
+    restored.steps_seq = steps_seq;
+    restored.checkpoint_seq = checkpoint_seq;
+    restored.steps_before = steps_before;
+    return Restore::restored;
+}
+
 TaskTable::Restore TaskTable::restore_step(uint32_t index, uint32_t step, ayni_string_v1 key,
                                            foundation::TransitionStamp stamp) {
     const Task &task = tasks_[index];
@@ -419,9 +451,8 @@ void TaskTable::hold_restored(uint32_t index, ayni_status_t status, ayni_reason_
     if (!is_live(task.lifecycle) || still_held(task)) {
         return;
     }
-    task.lifecycle = AYNI_TASK_PAUSED;
-    task.hold_status = status;
-    task.hold_reason = reason;
+    task.recovery_hold_status = status;
+    task.recovery_hold_reason = reason;
     ++held_count_;
 }
 

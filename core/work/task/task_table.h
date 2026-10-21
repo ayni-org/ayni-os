@@ -76,6 +76,10 @@ struct Task {
     uint32_t checkpoint_writer_version;
     catalog::CatalogId checkpoint_writer_id;
     uint32_t slot; // the table's own: which blocks hold them
+    // This boot cannot serve an otherwise recoverable task. Kept apart
+    // from the durable state so compaction cannot make the hold permanent.
+    ayni_status_t recovery_hold_status;
+    ayni_reason_t recovery_hold_reason;
 };
 
 // What a TASK_STATE record (ADR-0026) holds.
@@ -188,9 +192,19 @@ class TaskTable {
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
     // Whether a decision ever held it; still_held() while it has not ended.
-    static bool is_held(const Task &task) { return task.hold_status != AYNI_OK; }
+    static ayni_status_t effective_hold_status(const Task &task) {
+        return task.hold_status != AYNI_OK ? task.hold_status : task.recovery_hold_status;
+    }
+    static ayni_reason_t effective_hold_reason(const Task &task) {
+        return task.hold_status != AYNI_OK ? task.hold_reason : task.recovery_hold_reason;
+    }
+    static ayni_task_lifecycle_t effective_lifecycle(const Task &task) {
+        return is_live(task.lifecycle) && task.recovery_hold_status != AYNI_OK ? AYNI_TASK_PAUSED
+                                                                               : task.lifecycle;
+    }
+    static bool is_held(const Task &task) { return effective_hold_status(task) != AYNI_OK; }
     static bool still_held(const Task &task) {
-        return task.lifecycle == AYNI_TASK_PAUSED && is_held(task);
+        return effective_lifecycle(task) == AYNI_TASK_PAUSED && is_held(task);
     }
 
     // The task that has been READY longest among those READY since before
@@ -214,6 +228,11 @@ class TaskTable {
     // or in a free place when that is 0. due_us is set by reanchor().
     Restore restore(const NewTask &task, uint64_t task_id, uint64_t replaced_task_id,
                     foundation::TransitionStamp stamp);
+    // Imports a retained task, whose replaced predecessor need no longer
+    // exist. Steps, checkpoint and state follow in snapshot order.
+    Restore restore_snapshot(const NewTask &task, uint64_t task_id, uint64_t replaced_task_id,
+                             foundation::TransitionStamp stamp, uint64_t steps_seq,
+                             uint64_t checkpoint_seq, uint32_t steps_before);
     // Replays a TASK_STATE record of task index, after the steps of the same
     // transition: state.step_count is the task's.
     Restore restore_state(uint32_t index, const TaskState &state,

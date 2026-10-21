@@ -15,6 +15,7 @@ ayni_add_core_module(durability
         durability/batch/batch_codec.cpp
         durability/batch/prefix_scan.cpp
         durability/journal/journal_ring.cpp
+        durability/snapshot/snapshot_codec.cpp
     DEPENDS foundation)
 
 ayni_add_core_module(catalog
@@ -57,9 +58,11 @@ ayni_add_core_module(kernel
         kernel/kernel_api.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
+        kernel/storage_maintenance.cpp
         kernel/work_api.cpp
         kernel/work_journal.cpp
         kernel/work_replay.cpp
+        kernel/work_snapshot.cpp
     DEPENDS work authority catalog durability foundation)
 
 # What consumers link: the top module pulls in every module below it.

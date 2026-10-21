@@ -38,7 +38,9 @@ AYNI_LAYOUT(config_task_step_capacity, offsetof(ayni_config_v1, task_step_capaci
 AYNI_LAYOUT(config_task_checkpoint_max_bytes,
             offsetof(ayni_config_v1, task_checkpoint_max_bytes) == 72);
 AYNI_LAYOUT(config_command_capacity, offsetof(ayni_config_v1, command_capacity) == 76);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 80);
+AYNI_LAYOUT(config_write_interval, offsetof(ayni_config_v1, storage_write_interval_us) == 80);
+AYNI_LAYOUT(config_log_limit, offsetof(ayni_config_v1, storage_log_max_bytes) == 84);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 88);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);
@@ -48,7 +50,13 @@ AYNI_LAYOUT(host_ingress_lock, offsetof(ayni_host_v1, ingress_lock) == 4 * AYNI_
 AYNI_LAYOUT(host_ingress_unlock, offsetof(ayni_host_v1, ingress_unlock) == 5 * AYNI_PTR);
 AYNI_LAYOUT(host_storage_append, offsetof(ayni_host_v1, storage_append) == 6 * AYNI_PTR);
 AYNI_LAYOUT(host_storage_read_prefix, offsetof(ayni_host_v1, storage_read_prefix) == 7 * AYNI_PTR);
-AYNI_LAYOUT(host_size, sizeof(ayni_host_v1) == 8 * AYNI_PTR);
+AYNI_LAYOUT(host_read_log, offsetof(ayni_host_v1, storage_read_log) == 8 * AYNI_PTR);
+AYNI_LAYOUT(host_fence, offsetof(ayni_host_v1, storage_fence_writers) == 9 * AYNI_PTR);
+AYNI_LAYOUT(host_write_snapshot, offsetof(ayni_host_v1, storage_write_snapshot) == 10 * AYNI_PTR);
+AYNI_LAYOUT(host_read_snapshot, offsetof(ayni_host_v1, storage_read_snapshot) == 11 * AYNI_PTR);
+AYNI_LAYOUT(host_trim, offsetof(ayni_host_v1, storage_trim_prefix) == 12 * AYNI_PTR);
+AYNI_LAYOUT(host_free, offsetof(ayni_host_v1, storage_free_bytes) == 13 * AYNI_PTR);
+AYNI_LAYOUT(host_size, sizeof(ayni_host_v1) == 14 * AYNI_PTR);
 
 AYNI_LAYOUT(attempt_boot_epoch, offsetof(ayni_attempt_ref_v1, boot_epoch) == 0);
 AYNI_LAYOUT(attempt_request_id, offsetof(ayni_attempt_ref_v1, request_id) == 8);
@@ -58,7 +66,8 @@ AYNI_LAYOUT(result_struct_size, offsetof(ayni_completion_result_v1, struct_size)
 AYNI_LAYOUT(result_outcome, offsetof(ayni_completion_result_v1, outcome) == 4);
 AYNI_LAYOUT(result_attempt, offsetof(ayni_completion_result_v1, attempt) == 8);
 AYNI_LAYOUT(result_value, offsetof(ayni_completion_result_v1, value) == 24);
-AYNI_LAYOUT(result_size, sizeof(ayni_completion_result_v1) == 32);
+AYNI_LAYOUT(result_cursor, offsetof(ayni_completion_result_v1, next_cursor) == 32);
+AYNI_LAYOUT(result_size, sizeof(ayni_completion_result_v1) == 40);
 
 AYNI_LAYOUT(bytes_data, offsetof(ayni_bytes_v1, data) == 0);
 AYNI_LAYOUT(bytes_size, offsetof(ayni_bytes_v1, size) == AYNI_PTR);

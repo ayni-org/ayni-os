@@ -188,20 +188,16 @@ RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size
                                                   record.state, stamp));
 }
 
-// A principal is registered anew each boot; the mappings of one this boot
-// did not register stay in the log, where none of its sessions can reach
-// them. The table has a row for each principal the registry can hold.
+// An absent principal's retry window is still durable state. Keeping it
+// prevents compaction from turning an old accepted command into a new one.
 RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq) {
     CommandMapping mapping{};
     uint64_t floor = 0;
     if (!read_command_record(body, size, mapping, floor)) {
         return RecordUse::corrupt;
     }
-    if (model_.principals.find(mapping.principal_id) == nullptr) {
-        return RecordUse::applied;
-    }
     mapping.commit_seq = commit_seq;
-    return model_.commands.restore(mapping, floor) ? RecordUse::applied : RecordUse::corrupt;
+    return use_of(model_.commands.restore_checked(mapping, floor));
 }
 
 // Ending a goal ends its descendants and every task it reaches, and
@@ -311,6 +307,16 @@ void WorkReplay::discard() {
     batch_seq_ = 0;
     pending_goal_id_ = 0;
     pending_task_id_ = 0;
+}
+
+void WorkReplay::discard_for_reload() {
+    discard();
+    model_.sessions.clear();
+    model_.due_work_changed = false;
+    model_.next_due_work_us = work::no_time;
+    model_.searched_with_id = true;
+    model_.ids = foundation::IdAllocator{};
+    model_.transitions = TransitionClock{};
 }
 
 } // namespace ayni::kernel

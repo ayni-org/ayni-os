@@ -423,7 +423,7 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     EXPECT_EQ(created.next_due_us, no_time);
     EXPECT_EQ(created.wait_reason, AYNI_REASON_NONE);
     EXPECT_EQ(created.hold_reason, AYNI_REASON_NONE);
-    EXPECT_EQ(work.node().step().next_deadline_us, no_time);
+    EXPECT_EQ(work.node().step().next_deadline_us, work.node().with_storage_deadline(no_time));
 
     advance(work, 500);
     const uint64_t pressed_at = now(work);
@@ -431,7 +431,7 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(report.more_ready, 1U); // the occurrence is due
-    EXPECT_EQ(report.next_deadline_us, pressed_at);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(pressed_at));
     const ayni_goal_info_v1 recorded = work.goal(goal_id);
     EXPECT_EQ(recorded.next_due_us, pressed_at);
     EXPECT_EQ(recorded.occurrences, 0U);
@@ -443,7 +443,7 @@ TEST(WorkInput, goal_takes_inputs_from_its_source) {
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(report.more_ready, 1U); // the task awaits its decision
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
     const ayni_goal_info_v1 derived = work.goal(goal_id);
     EXPECT_EQ(derived.occurrences, 1U);
     EXPECT_EQ(derived.next_due_us, no_time);
@@ -645,7 +645,7 @@ TEST(WorkInput, inputs_waiting_too_long_are_skipped) {
     ASSERT_EQ(post(work), AYNI_OK);
     ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.next_deadline_us, first_at + 2U * second);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(first_at + 2U * second));
     const ayni_goal_info_v1 waiting = work.goal(goal_id);
     EXPECT_EQ(waiting.next_due_us, first_at);
     EXPECT_EQ(waiting.wait_reason, AYNI_REASON_TASK_CAPACITY);
@@ -654,12 +654,12 @@ TEST(WorkInput, inputs_waiting_too_long_are_skipped) {
     ASSERT_EQ(post(work), AYNI_OK);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.next_deadline_us, first_at + 2U * second);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(first_at + 2U * second));
 
     advance(work, second);
     report = work.node().step();
     EXPECT_EQ(report.items_done, 1U);
-    EXPECT_EQ(report.next_deadline_us, no_time);
+    EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(no_time));
     const ayni_goal_info_v1 skipped = work.goal(goal_id);
     EXPECT_EQ(skipped.occurrences, 2U);
     EXPECT_EQ(skipped.occurrences_skipped, 2U);

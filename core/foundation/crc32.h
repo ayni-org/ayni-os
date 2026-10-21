@@ -11,7 +11,7 @@
 namespace ayni::foundation {
 
 // data may be null only when size is 0.
-uint32_t crc32(const uint8_t *data, std::size_t size);
+uint32_t crc32(const uint8_t *data, std::size_t size, uint32_t previous = 0);
 
 } // namespace ayni::foundation
 
