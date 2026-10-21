@@ -7,9 +7,13 @@
 //
 // A transition needs room for the largest batch any transition writes
 // before it starts, so encoding never fails halfway: with room, the kernel
-// applies it; without, it waits until stored batches leave the ring. A
-// failed or unknown append ends the writer, because a batch after a gap
-// could never be read in order: the kernel becomes RESTRICTED.
+// applies it; without, it waits until stored batches leave the ring.
+//
+// A failed or unknown append is retried with the same identity and bytes
+// (AppendRetry, C-COMMIT-008), and no new transition starts until it is
+// stored. When the attempts run out the writer ends, because a batch after a
+// gap could never be read in order: the kernel then fences the writer and
+// reloads (ADR-0027 decision 5). Appends share the kernel's WriteSchedule.
 
 #ifndef AYNI_CORE_KERNEL_COMMIT_COMMIT_LOG_H
 #define AYNI_CORE_KERNEL_COMMIT_COMMIT_LOG_H
@@ -35,15 +39,17 @@ class CommitLog {
     CommitLog(const CommitLog &) = delete;
     CommitLog &operator=(const CommitLog &) = delete;
 
-    // Entering RUNNING, once recovery no longer uses the buffer: the next
-    // batch is next_batch, the batches before it are durable, and no batch
+    // Entering RUNNING, once recovery no longer uses the buffer, and again
+    // after each snapshot activation, which used it: the next batch is
+    // next_batch, the batches before it are durable, and no batch
     // is larger than batch_max, which fits the buffer with
     // JournalRing::entry_overhead. Requests carry boot_epoch.
     void start(uint64_t boot_epoch, const durability::BatchIdentity &next_batch,
                uint32_t batch_max);
 
-    // Whether the next transition may start: the writer has not failed and
-    // the ring holds a batch of batch_max bytes in one piece.
+    // Whether the next transition may start: the writer has not failed, no
+    // append waits for a retry, and the ring holds a batch of batch_max
+    // bytes in one piece.
     bool has_room() const;
     // Begins the batch of the next transition, which takes the next
     // identity; only when has_room().
@@ -54,13 +60,21 @@ class CommitLog {
     // Owner thread. Appends the oldest queued batch when none is in flight
     // and returns whether it called the Host.
     bool advance(uint64_t now_us);
-    // A batch is queued, none is in flight and the writer has not failed.
+    // A batch is queued, none is in flight, the writer has not failed, and
+    // the write interval and any retry backoff have passed at now_us.
     bool wants_advance(uint64_t now_us) const;
+    // When the append that waits for the interval or a backoff may start;
+    // the maximum when none waits, 0 or a past time when one may start now.
     uint64_t next_deadline() const;
+    // An append failed and waits for its retry; no transition starts.
     bool paused() const { return retry_.retrying(); }
     // Nothing queued and nothing in flight.
     bool idle() const { return !in_flight_ && ring_.empty(); }
 
+    // What start() was given: requests carry boot_epoch, and batches
+    // writer_epoch.
+    uint64_t boot_epoch() const { return boot_epoch_; }
+    uint32_t writer_epoch() const { return writer_epoch_; }
     uint64_t durable_seq() const { return durable_seq_; }
     // Why the writer stopped; AYNI_RESTRICTION_NONE while it works.
     ayni_restriction_t failure() const { return failure_; }

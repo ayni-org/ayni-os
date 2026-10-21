@@ -38,6 +38,7 @@ bool CommitLog::advance(uint64_t now_us) {
     if (!wants_advance(now_us)) {
         return false;
     }
+    // A batch waiting for a completion slot has not made an attempt.
     if (!completions_.has_free_slot()) {
         return false;
     }

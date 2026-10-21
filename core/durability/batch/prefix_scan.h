@@ -33,8 +33,16 @@ class PrefixScan {
     // The first batch scanned must carry first_commit_seq.
     explicit PrefixScan(uint64_t first_commit_seq) : next_commit_seq_(first_commit_seq) {}
 
+    // Starts over at first_commit_seq. A scan that resumes after a snapshot
+    // takes the largest transition_id and a writer_epoch from where it
+    // resumes, the slot header or the activation batch a trimmed log starts
+    // with, as if it had scanned the batches before (C-STORE-007). It counts
+    // that writer_epoch as fenced: an older writer was isolated before that
+    // one wrote, so its batches from there on are skipped.
     void reset(uint64_t first_commit_seq, uint64_t max_transition_id = 0,
                uint32_t writer_epoch = 0);
+    // A batch of storage_schema 0 was scanned: the log predates schema 1 and
+    // recovery migrates it (ADR-0027 decision 11).
     bool saw_legacy() const { return saw_legacy_; }
 
     // Checks every batch in bytes, which holds whole batches only, and passes
@@ -43,6 +51,12 @@ class PrefixScan {
     // flag bits, and unknown records marked REQUIRED, are unsupported; other
     // unknown records are skipped. Returns at the first problem, after which
     // the scan is not continued.
+    //
+    // A WRITER_FENCE batch takes the place of the next commit_seq and raises
+    // the fence: a later batch of an older writer_epoch is one a fenced
+    // writer stored after all, and is skipped without moving the prefix
+    // (C-STORE-005). The scan handles WRITER_FENCE itself; handler never
+    // sees it.
     //
     // Records reach handler as they are read, so a batch that fails later
     // has already shown its earlier records. Every failure ends recovery in
@@ -62,6 +76,8 @@ class PrefixScan {
     uint64_t next_commit_seq_;
     uint64_t max_transition_id_ = 0;
     uint32_t max_writer_epoch_ = 0;
+    // Batches of older writers are skipped; 0 while no fence was scanned
+    // and reset() named none.
     uint32_t fenced_epoch_ = 0;
     bool saw_legacy_ = false;
 };

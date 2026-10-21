@@ -13,15 +13,29 @@
 
 namespace ayni::durability {
 
-// Schema 0 remains readable for the transactional migration to schema 1.
+// Schema 0 remains readable for the transactional migration to schema 1
+// (ADR-0027 decision 11); every batch this library writes is schema 1,
+// except the activation that ends a migration.
 constexpr uint16_t storage_schema = 1;
+// WRITER_FENCE: alone in its batch, the body is the new writer_epoch as a
+// little-endian uint32 equal to the batch header's (C-STORE-005).
 constexpr uint16_t writer_fence_record_type = 10;
+constexpr uint16_t writer_fence_record_version = 1;
+constexpr uint32_t writer_fence_record_length = 4;
+// SNAPSHOT_COMMIT: alone in its batch; durability/snapshot has its body.
 constexpr uint16_t snapshot_commit_record_type = 11;
 constexpr std::size_t batch_header_size = 44;
 constexpr std::size_t record_header_size = 12;
 constexpr std::size_t commit_marker_size = 12;
 // record_flags bit 0: a reader that does not know the record must not go on.
 constexpr uint32_t record_required = 0x1U;
+
+// Every transition takes the next id, so no writer reaches 2^63: at a
+// million transitions a second that takes 290,000 years. A larger id in a
+// log or a snapshot means it is damaged or foreign, and the bound leaves a
+// boot more ids than it can use, so the transition clock never wraps
+// (ADR-0017).
+constexpr uint64_t transition_id_max = (uint64_t{1} << 63U) - 1U;
 
 constexpr std::size_t batch_size(std::size_t record_body_bytes, std::size_t record_count) {
     return batch_header_size + record_count * record_header_size + record_body_bytes +
@@ -40,6 +54,11 @@ struct RecordHeader {
     uint32_t flags;
     uint32_t length;
 };
+
+// The record envelope, record_header_size bytes, shared by batches and
+// snapshot payloads (contracts/storage/records.md). Neither checks length.
+void write_record_header(const RecordHeader &header, uint8_t *out);
+RecordHeader read_record_header(const uint8_t *bytes);
 
 // Encodes one batch into caller memory: add the records, then finish().
 class BatchWriter {

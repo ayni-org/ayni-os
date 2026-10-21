@@ -419,9 +419,11 @@ typedef struct ayni_kernel_info_v1 {
      * power loss (C-COMMIT-004). During recovery it is the end of the log
      * read so far; from RUNNING on, the batch that stored the boot epoch,
      * and since 0.14 the last batch of a transition the host has stored
-     * (ADR-0026). Compare a commit_seq with it only within the boot that
-     * assigned that commit_seq: a later boot assigns the positions above
-     * durable_seq again (C-COMMIT-016).
+     * (ADR-0026). Since 0.15, while the reload after FENCED reads the log
+     * again, it stays at least at its value when FENCED began. Compare a
+     * commit_seq with it only within the boot that assigned that
+     * commit_seq: a later boot assigns the positions above durable_seq
+     * again (C-COMMIT-016).
      */
     uint64_t durable_seq;
     /* Since 0.9 (ADR-0021). Events ayni_step took in RUNNING that no goal's

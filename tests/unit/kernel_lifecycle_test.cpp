@@ -10,6 +10,7 @@
 #include "kernel/boot/boot_sequence.h"
 #include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "work/agent/agent_records.h"
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>
@@ -337,6 +338,18 @@ TEST(KernelLifecycle, unknown_optional_records_are_skipped) {
     EXPECT_EQ(appended.batch.identity.transition_id, 9U);
 }
 
+// A later version of a type this reader knows is unknown to it too:
+// without REQUIRED it is skipped, not read as the version it knows.
+TEST(KernelLifecycle, an_optional_record_of_a_newer_version_is_skipped) {
+    Node node;
+    node.sim().log().push_back(encode(
+        {1, 1, 7}, {{{ayni::work::instance_record_type, 2, 0, 2}, {1, 2}}, boot_epoch_record(5)}));
+    node.create_and_start();
+    node.recover();
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.info().boot_epoch, 6U);
+}
+
 struct LogCase {
     const char *name;
     std::vector<StoredBatch> log;
@@ -501,6 +514,7 @@ HeldRead HeldRead::last{};
 // A completion claiming more bytes than the buffer holds is not trusted.
 TEST(KernelLifecycle, read_count_beyond_the_buffer_restricts_as_read_failed) {
     Node node;
+    HeldRead::last = {};
     node.replace_read_port(&HeldRead::call);
     node.create_and_start();
     for (int round = 0; round < 10 && HeldRead::last.buffer_size == 0U; ++round) {

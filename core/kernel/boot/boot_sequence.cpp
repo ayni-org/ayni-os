@@ -1,5 +1,6 @@
 #include "kernel/boot/boot_sequence.h"
 
+#include "durability/batch/batch_codec.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 
@@ -9,34 +10,17 @@
 
 namespace ayni::kernel {
 namespace {
-constexpr uint64_t max_logged_transition_id = (uint64_t{1} << 63U) - 1U;
+
+constexpr uint64_t recovery_boot_epoch = 0;
 constexpr uint64_t no_deadline = std::numeric_limits<uint64_t>::max();
+// The larger body of the two batches recovery appends.
+constexpr uint32_t append_body_max = boot_epoch_record_length;
+static_assert(durability::writer_fence_record_length <= append_body_max,
+              "the WRITER_FENCE body fits the append body");
+static_assert(durability::batch_size(append_body_max, 1) <= AYNI_STORAGE_BUFFER_BYTES_MIN,
+              "recovery's batches must fit the smallest storage buffer");
+
 } // namespace
-
-bool read_activation(const uint8_t *body, uint32_t size, SnapshotActivation &out) {
-    if (size != activation_record_length) {
-        return false;
-    }
-    out = {foundation::load_le32(body), foundation::load_le32(body + 4),
-           foundation::load_le64(body + 8), foundation::load_le64(body + 16),
-           foundation::load_le64(body + 24)};
-    return out.slot < 2U && out.generation != 0U &&
-           out.max_transition_id <= max_logged_transition_id &&
-           out.covers_commit_seq <= out.max_transition_id;
-}
-
-void write_activation(const SnapshotActivation &a, uint8_t *body) {
-    foundation::store_le32(body, a.slot);
-    foundation::store_le32(body + 4, a.payload_crc);
-    foundation::store_le64(body + 8, a.generation);
-    foundation::store_le64(body + 16, a.covers_commit_seq);
-    foundation::store_le64(body + 24, a.max_transition_id);
-}
-
-bool activation_matches(const SnapshotActivation &a, const durability::SnapshotMetadata &m) {
-    return a.generation == m.generation && a.covers_commit_seq == m.covers_commit_seq &&
-           a.max_transition_id == m.max_transition_id && a.payload_crc == m.payload_crc;
-}
 
 BootSequence::BootSequence(const ayni_host_v1 &host, CompletionPool &completions, uint8_t *buffer,
                            uint32_t buffer_size, WorkModel &model, WorkReplay &replay,
@@ -70,20 +54,22 @@ void BootSequence::isolate(uint32_t minimum_epoch) {
     phase_ = Phase::pre_fence;
 }
 
+bool BootSequence::stopped() const {
+    return phase_ == Phase::done || phase_ == Phase::restricted || phase_ == Phase::migration ||
+           phase_ == Phase::isolated;
+}
+
 bool BootSequence::mutates() const {
     return phase_ == Phase::fence || phase_ == Phase::pre_fence || phase_ == Phase::writer_record ||
            phase_ == Phase::boot_record;
 }
 
 bool BootSequence::wants_advance(uint64_t now) const {
-    return !in_flight_ && phase_ != Phase::done && phase_ != Phase::restricted &&
-           phase_ != Phase::migration && phase_ != Phase::isolated &&
-           (!mutates() || (writes_.ready(now) && retry_.ready(now)));
+    return !in_flight_ && !stopped() && (!mutates() || (writes_.ready(now) && retry_.ready(now)));
 }
 
 uint64_t BootSequence::next_deadline() const {
-    if (in_flight_ || phase_ == Phase::done || phase_ == Phase::restricted ||
-        phase_ == Phase::migration || phase_ == Phase::isolated) {
+    if (in_flight_ || stopped()) {
         return no_deadline;
     }
     return mutates() ? storage_max(writes_.deadline(), retry_.deadline()) : 0U;
@@ -97,11 +83,13 @@ bool BootSequence::advance(uint64_t now) {
         writes_.started(now);
         retry_.started();
     }
-    switch (completions_.issue(0, &BootSequence::on_complete, this, &BootSequence::call, this)) {
+    switch (completions_.issue(recovery_boot_epoch, &BootSequence::on_complete, this,
+                               &BootSequence::call, this)) {
     case IssueResult::in_flight:
         in_flight_ = true;
         break;
     case IssueResult::rejected:
+        // Only an append is retried.
         if (!mutates() || (phase_ == Phase::fence || phase_ == Phase::pre_fence) ||
             !retry_.failed(now)) {
             fail(AYNI_RESTRICTION_STORAGE_REJECTED);
@@ -146,6 +134,7 @@ ayni_submit_result_t BootSequence::port(ayni_attempt_ref_v1 attempt,
             host_.ctx, activation_.slot,
             durability::snapshot_header_size + selected_.payload_length, buffer_,
             durability::snapshot_marker_size, attempt, completion);
+    // A page goes after the part of a record the last one cut.
     case Phase::payload:
         return host_.storage_read_snapshot(
             host_.ctx, activation_.slot, durability::snapshot_header_size + payload_read_,
@@ -160,8 +149,7 @@ ayni_submit_result_t BootSequence::port(ayni_attempt_ref_v1 attempt,
                                            completion);
     case Phase::writer_record:
     case Phase::boot_record: {
-        const durability::BatchIdentity id{isolated_epoch_, scan_.next_commit_seq(),
-                                           scan_.max_transition_id() + 1U};
+        const durability::BatchIdentity id = next_batch();
         ayni_storage_batch_v1 batch{};
         batch.struct_size = sizeof(batch);
         batch.writer_epoch = id.writer_epoch;
@@ -181,56 +169,81 @@ void BootSequence::on_complete(void *context, const ayni_completion_result_v1 &r
 
 void BootSequence::complete(const ayni_completion_result_v1 &result) {
     in_flight_ = false;
-    if (phase_ == Phase::fence || phase_ == Phase::pre_fence) {
-        if ((result.outcome != AYNI_FENCE_DRAINED &&
-             result.outcome != AYNI_FENCE_EPOCH_INSTALLED) ||
-            result.value <= scan_.max_writer_epoch() || result.value > UINT32_MAX ||
-            (phase_ == Phase::pre_fence && result.value < fence_minimum_)) {
-            fail(AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
-            return;
-        }
-        isolated_epoch_ = static_cast<uint32_t>(result.value);
-        retry_.reset();
-        if (phase_ == Phase::pre_fence) {
-            phase_ = Phase::isolated;
-            return;
-        }
-        if (legacy_ && !activation_seen_) {
-            phase_ = Phase::migration;
-        } else {
-            phase_ = Phase::writer_record;
-            prepare_append();
+    switch (phase_) {
+    case Phase::fence:
+    case Phase::pre_fence:
+        fenced(result);
+        break;
+    case Phase::writer_record:
+    case Phase::boot_record:
+        appended(result);
+        break;
+    default:
+        read(result);
+        break;
+    }
+}
+
+// The epoch installed must be above every writer the log holds, and fit a
+// batch's writer_epoch; an isolate() fence must also reach its minimum.
+// Anything else leaves the old writer possibly able to store.
+void BootSequence::fenced(const ayni_completion_result_v1 &result) {
+    if ((result.outcome != AYNI_FENCE_DRAINED && result.outcome != AYNI_FENCE_EPOCH_INSTALLED) ||
+        result.value <= scan_.max_writer_epoch() || result.value > UINT32_MAX ||
+        (phase_ == Phase::pre_fence && result.value < fence_minimum_)) {
+        fail(AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
+        return;
+    }
+    isolated_epoch_ = static_cast<uint32_t>(result.value);
+    retry_.reset();
+    if (phase_ == Phase::pre_fence) {
+        phase_ = Phase::isolated;
+        return;
+    }
+    // A schema 0 log gets no control record before its migration
+    // (ADR-0027 decision 11).
+    if (legacy_ && !activation_seen_) {
+        phase_ = Phase::migration;
+    } else {
+        phase_ = Phase::writer_record;
+        prepare_append();
+    }
+}
+
+// A stored batch goes through the scan like one read, so the scan and the
+// BOOT_EPOCH it holds move on to it.
+void BootSequence::appended(const ayni_completion_result_v1 &result) {
+    if (result.outcome != AYNI_WRITE_OK) {
+        if (!retry_.failed(host_.monotonic_now_us(host_.ctx))) {
+            fail(result.outcome == AYNI_WRITE_FAILED ? AYNI_RESTRICTION_STORAGE_WRITE_FAILED
+                                                     : AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
         }
         return;
     }
-    if (phase_ == Phase::writer_record || phase_ == Phase::boot_record) {
-        if (result.outcome != AYNI_WRITE_OK) {
-            if (!retry_.failed(host_.monotonic_now_us(host_.ctx))) {
-                fail(result.outcome == AYNI_WRITE_FAILED ? AYNI_RESTRICTION_STORAGE_WRITE_FAILED
-                                                         : AYNI_RESTRICTION_STORAGE_WRITE_UNKNOWN);
-            }
-            return;
-        }
-        const bool is_boot = phase_ == Phase::boot_record;
-        const durability::BatchIdentity stored{isolated_epoch_, scan_.next_commit_seq(),
-                                               scan_.max_transition_id() + 1U};
-        check(scan_.scan(buffer_, append_size_, &BootSequence::on_record, this));
-        if (phase_ == Phase::restricted) {
-            return;
-        }
-        known_durable_seq_ = scan_.next_commit_seq() - 1U;
-        log_bytes_ += append_size_;
-        retry_.reset();
-        if (is_boot) {
-            boot_batch_ = stored;
-            boot_epoch_ = last_boot_epoch_;
-            phase_ = Phase::done;
-        } else {
-            phase_ = Phase::boot_record;
-            prepare_append();
-        }
+    const bool is_boot = phase_ == Phase::boot_record;
+    const durability::BatchIdentity stored = next_batch();
+    check(scan_.scan(buffer_, append_size_, &BootSequence::on_record, this));
+    if (phase_ == Phase::restricted) {
         return;
     }
+    known_durable_seq_ = scan_.next_commit_seq() - 1U;
+    log_bytes_ += append_size_;
+    retry_.reset();
+    if (is_boot) {
+        boot_batch_ = stored;
+        boot_epoch_ = last_boot_epoch_;
+        phase_ = Phase::done;
+    } else {
+        phase_ = Phase::boot_record;
+        prepare_append();
+    }
+}
+
+// Only a log read may report the size of a batch too large for the buffer,
+// and only that size means the state exceeds this boot's capacity; a count
+// beyond the buffer means the Host wrote past it or misreports (ADR-0027
+// decision 6).
+void BootSequence::read(const ayni_completion_result_v1 &result) {
     if (result.outcome == AYNI_READ_BUFFER_TOO_SMALL) {
         const bool valid_requirement = (phase_ == Phase::discover || phase_ == Phase::replay) &&
                                        result.value > buffer_size_ && result.value <= UINT32_MAX;
@@ -251,7 +264,7 @@ void BootSequence::complete(const ayni_completion_result_v1 &result) {
         check(durability::read_snapshot_header(buffer_, static_cast<uint32_t>(result.value),
                                                selected_));
         if (phase_ != Phase::restricted) {
-            if (!activation_matches(activation_, selected_)) {
+            if (!durability::activation_matches(activation_, selected_)) {
                 fail(AYNI_RESTRICTION_LOG_CORRUPT);
             } else {
                 begin_replay();
@@ -260,7 +273,7 @@ void BootSequence::complete(const ayni_completion_result_v1 &result) {
         break;
     case Phase::discover:
     case Phase::replay:
-        static_cast<void>(read_log(result));
+        read_log(result);
         break;
     case Phase::marker:
         check(durability::read_snapshot_marker(buffer_, static_cast<uint32_t>(result.value),
@@ -277,56 +290,60 @@ void BootSequence::complete(const ayni_completion_result_v1 &result) {
             }
         }
         break;
-    case Phase::payload: {
+    case Phase::payload:
         if (result.value == 0U || result.value > buffer_size_ - carry_ ||
             result.value > selected_.payload_length - payload_read_) {
             fail(AYNI_RESTRICTION_LOG_CORRUPT);
             break;
         }
-        payload_crc_ = durability::snapshot_crc32(
-            buffer_ + carry_, static_cast<uint32_t>(result.value), payload_crc_);
-        payload_read_ += result.value;
-        const uint32_t size = carry_ + static_cast<uint32_t>(result.value);
-        uint32_t at = 0;
-        while (size - at >= durability::record_header_size) {
-            const uint8_t *p = buffer_ + at;
-            const uint32_t length = foundation::load_le32(p + 8);
-            if (length > buffer_size_ - durability::record_header_size) {
-                fail(AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
-                return;
-            }
-            if (length > size - at - durability::record_header_size) {
-                break;
-            }
-            const durability::RecordHeader header{foundation::load_le16(p),
-                                                  foundation::load_le16(p + 2),
-                                                  foundation::load_le32(p + 4), length};
-            check(reader_.apply(header, p + durability::record_header_size));
-            if (phase_ == Phase::restricted) {
-                return;
-            }
-            at += static_cast<uint32_t>(durability::record_header_size) + length;
-        }
-        carry_ = size - at;
-        std::memmove(buffer_, buffer_ + at, carry_);
-        if (payload_read_ == selected_.payload_length) {
-            if (carry_ != 0U || payload_crc_ != selected_.payload_crc) {
-                fail(AYNI_RESTRICTION_LOG_CORRUPT);
-            } else {
-                check(reader_.complete());
-                if (phase_ != Phase::restricted) {
-                    phase_ = Phase::replay;
-                }
-            }
-        }
+        read_payload(static_cast<uint32_t>(result.value));
         break;
-    }
     default:
         break;
     }
 }
 
-bool BootSequence::read_log(const ayni_completion_result_v1 &result) {
+// Applies every whole record in the buffer and keeps the cut one for the
+// next page. The payload ends on a record, with the CRC the header names.
+void BootSequence::read_payload(uint32_t size) {
+    payload_crc_ = durability::snapshot_crc32(buffer_ + carry_, size, payload_crc_);
+    payload_read_ += size;
+    const uint32_t end = carry_ + size;
+    uint32_t at = 0;
+    while (end - at >= durability::record_header_size) {
+        const uint8_t *record = buffer_ + at;
+        const durability::RecordHeader header = durability::read_record_header(record);
+        // A record larger than the buffer can never be read whole.
+        if (header.length > buffer_size_ - durability::record_header_size) {
+            fail(AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
+            return;
+        }
+        if (header.length > end - at - durability::record_header_size) {
+            break;
+        }
+        check(reader_.apply(header, record + durability::record_header_size));
+        if (phase_ == Phase::restricted) {
+            return;
+        }
+        at += static_cast<uint32_t>(durability::record_header_size) + header.length;
+    }
+    carry_ = end - at;
+    std::memmove(buffer_, buffer_ + at, carry_);
+    if (payload_read_ == selected_.payload_length) {
+        if (carry_ != 0U || payload_crc_ != selected_.payload_crc) {
+            fail(AYNI_RESTRICTION_LOG_CORRUPT);
+        } else {
+            check(reader_.complete());
+            if (phase_ != Phase::restricted) {
+                phase_ = Phase::replay;
+            }
+        }
+    }
+}
+
+// A read of 0 bytes is the end of the log. Discovery then goes to the
+// activated slot, or straight to the replay when there is none.
+void BootSequence::read_log(const ayni_completion_result_v1 &result) {
     if (result.value == 0U) {
         if (phase_ == Phase::discover) {
             legacy_ = scan_.saw_legacy();
@@ -338,20 +355,22 @@ bool BootSequence::read_log(const ayni_completion_result_v1 &result) {
         } else {
             after_replay();
         }
-        return true;
+        return;
     }
     if (result.next_cursor <= cursor_) {
         fail(AYNI_RESTRICTION_STORAGE_READ_FAILED);
-        return false;
+        return;
     }
     if (phase_ == Phase::discover) {
         log_bytes_ += result.value;
     }
     cursor_ = result.next_cursor;
-    return scan_bytes(static_cast<uint32_t>(result.value));
+    scan_bytes(static_cast<uint32_t>(result.value));
 }
 
-bool BootSequence::scan_bytes(uint32_t size) {
+// The replay skips the batches the snapshot covers; discovery has already
+// checked them.
+void BootSequence::scan_bytes(uint32_t size) {
     uint32_t at = 0;
     while (at < size) {
         durability::BatchView batch{};
@@ -359,42 +378,48 @@ bool BootSequence::scan_bytes(uint32_t size) {
             durability::read_batch(buffer_ + at, size - at, batch);
         if (parsed != durability::BatchCheck::ok) {
             check(parsed);
-            return false;
+            return;
         }
         if (phase_ == Phase::discover && first_physical_) {
             first_physical_ = false;
-            if (batch.identity.commit_seq != 1U) {
-                durability::RecordReader records(batch);
-                durability::RecordHeader header{};
-                const uint8_t *body = nullptr;
-                SnapshotActivation initial{};
-                if (records.next(header, body) != durability::RecordReader::Next::record ||
-                    batch.record_count != 1U ||
-                    header.type != durability::snapshot_commit_record_type ||
-                    !read_activation(body, header.length, initial) ||
-                    batch.identity.commit_seq != initial.covers_commit_seq + 1U) {
-                    fail(AYNI_RESTRICTION_LOG_CORRUPT);
-                    return false;
-                }
-                // A retained older activation may name a slot already reused
-                // by a later candidate. Only the latest activation selects a
-                // slot; this first record supplies the logical scan boundary.
-                scan_.reset(initial.covers_commit_seq + 1U, initial.max_transition_id,
-                            batch.identity.writer_epoch);
+            if (batch.identity.commit_seq != 1U && !start_after_trim(batch)) {
+                return;
             }
         }
         if (phase_ != Phase::replay || batch.identity.commit_seq > selected_.covers_commit_seq) {
             check(scan_.scan(buffer_ + at, batch.encoded_size, &BootSequence::on_record, this));
             if (phase_ == Phase::restricted) {
-                return false;
+                return;
             }
             known_durable_seq_ = storage_max(known_durable_seq_, scan_.next_commit_seq() - 1U);
         }
         at += static_cast<uint32_t>(batch.encoded_size);
     }
+}
+
+// A log that does not start at commit_seq 1 was trimmed after an
+// activation, so its first batch is that SNAPSHOT_COMMIT alone, and the scan
+// continues from its boundary. A retained older activation may name a slot
+// a later candidate already reused: only the latest one selects a slot.
+bool BootSequence::start_after_trim(const durability::BatchView &batch) {
+    durability::RecordReader records(batch);
+    durability::RecordHeader header{};
+    const uint8_t *body = nullptr;
+    durability::SnapshotActivation initial{};
+    if (records.next(header, body) != durability::RecordReader::Next::record ||
+        batch.record_count != 1U || header.type != durability::snapshot_commit_record_type ||
+        !durability::read_snapshot_activation(body, header.length, initial) ||
+        batch.identity.commit_seq != initial.covers_commit_seq + 1U) {
+        fail(AYNI_RESTRICTION_LOG_CORRUPT);
+        return false;
+    }
+    scan_.reset(initial.covers_commit_seq + 1U, initial.max_transition_id,
+                batch.identity.writer_epoch);
     return true;
 }
 
+// The replay reads the log from its start again; with a snapshot, the scan
+// resumes after it and the slot's marker comes first.
 void BootSequence::begin_replay() {
     cursor_ = 0;
     last_boot_epoch_ = 0;
@@ -409,12 +434,14 @@ void BootSequence::begin_replay() {
     }
 }
 
+// This boot needs a boot epoch, a transition_id and a writer epoch above
+// what the log holds. A reload fenced already, with an epoch above the log.
 void BootSequence::after_replay() {
     if (!replay_.complete() || !replay_.consistent()) {
         fail(AYNI_RESTRICTION_LOG_CORRUPT);
     } else if (last_boot_epoch_ >= foundation::max_boot_epoch) {
         fail(AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED);
-    } else if (scan_.max_transition_id() > max_logged_transition_id) {
+    } else if (scan_.max_transition_id() > durability::transition_id_max) {
         fail(AYNI_RESTRICTION_LOG_CORRUPT);
     } else if (scan_.max_writer_epoch() == UINT32_MAX) {
         fail(AYNI_RESTRICTION_WRITER_EPOCH_EXHAUSTED);
@@ -430,20 +457,28 @@ void BootSequence::after_replay() {
     }
 }
 
+// This boot's writer, right after what the log holds. The scan moves only
+// once the batch is stored, so every attempt carries the same identity.
+durability::BatchIdentity BootSequence::next_batch() const {
+    return {isolated_epoch_, scan_.next_commit_seq(), scan_.max_transition_id() + 1U};
+}
+
+// WRITER_FENCE carries the writer epoch installed; BOOT_EPOCH one more than
+// the largest boot epoch so far, so epochs only grow along the log.
 void BootSequence::prepare_append() {
-    std::array<uint8_t, 8> body{};
-    const bool is_boot = phase_ == Phase::boot_record;
-    if (is_boot) {
+    std::array<uint8_t, append_body_max> body{};
+    durability::RecordHeader header{};
+    if (phase_ == Phase::boot_record) {
+        header = {boot_epoch_record_type, boot_epoch_record_version, durability::record_required,
+                  boot_epoch_record_length};
         foundation::store_le64(body.data(), last_boot_epoch_ + 1U);
     } else {
+        header = {durability::writer_fence_record_type, durability::writer_fence_record_version,
+                  durability::record_required, durability::writer_fence_record_length};
         foundation::store_le32(body.data(), isolated_epoch_);
     }
-    durability::BatchWriter writer(
-        buffer_, buffer_size_,
-        {isolated_epoch_, scan_.next_commit_seq(), scan_.max_transition_id() + 1U});
-    const uint16_t type = is_boot ? boot_epoch_record_type : durability::writer_fence_record_type;
-    const uint32_t length = is_boot ? 8U : 4U;
-    if (!writer.add_record({type, 1, durability::record_required, length}, body.data())) {
+    durability::BatchWriter writer(buffer_, buffer_size_, next_batch());
+    if (!writer.add_record(header, body.data())) {
         fail(AYNI_RESTRICTION_INTERNAL);
         return;
     }
@@ -456,25 +491,31 @@ durability::RecordUse BootSequence::on_record(void *context, const durability::B
     return static_cast<BootSequence *>(context)->record(batch, header, body);
 }
 
+// BOOT_EPOCH and SNAPSHOT_COMMIT are the sequence's own records; the scan
+// checks WRITER_FENCE itself. Discovery only checks that a work record is
+// one WorkReplay knows; the replay applies it.
 durability::RecordUse BootSequence::record(const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body) {
     if (header.type == boot_epoch_record_type) {
-        if (header.version != 1U) {
+        if (header.version != boot_epoch_record_version) {
             return durability::RecordUse::unknown;
         }
-        if (header.length != 8U || foundation::load_le64(body) <= last_boot_epoch_) {
+        if (header.length != boot_epoch_record_length ||
+            foundation::load_le64(body) <= last_boot_epoch_) {
             return durability::RecordUse::corrupt;
         }
         last_boot_epoch_ = foundation::load_le64(body);
         return durability::RecordUse::applied;
     }
+    // An activation sits in the batch right after its snapshot, and each
+    // one in the log has a larger generation than the one before.
     if (header.type == durability::snapshot_commit_record_type) {
-        SnapshotActivation candidate{};
-        if (header.version != 1U) {
+        if (header.version != durability::snapshot_commit_record_version) {
             return durability::RecordUse::unknown;
         }
-        if (!read_activation(body, header.length, candidate) ||
+        durability::SnapshotActivation candidate{};
+        if (!durability::read_snapshot_activation(body, header.length, candidate) ||
             batch.commit_seq != candidate.covers_commit_seq + 1U ||
             batch.transition_id != candidate.max_transition_id + 1U) {
             return durability::RecordUse::corrupt;
@@ -489,9 +530,8 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
         return durability::RecordUse::applied;
     }
     if (phase_ == Phase::discover) {
-        return header.type >= 2U && header.type <= 9U && header.version == 1U
-                   ? durability::RecordUse::applied
-                   : durability::RecordUse::unknown;
+        return WorkReplay::knows(header) ? durability::RecordUse::applied
+                                         : durability::RecordUse::unknown;
     }
     return WorkReplay::on_record(&replay_, batch, header, body);
 }
@@ -516,4 +556,5 @@ void BootSequence::check(durability::BatchCheck result) {
         break;
     }
 }
+
 } // namespace ayni::kernel

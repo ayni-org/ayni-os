@@ -30,6 +30,7 @@ add_executable(ayni_unit_tests
     prefix_scan_test.cpp
     principal_registry_test.cpp
     sim_host_test.cpp
+    storage_budget_test.cpp
     strategy_registry_test.cpp
     task_table_test.cpp
     trigger_schedule_test.cpp

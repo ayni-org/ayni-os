@@ -11,11 +11,41 @@
 namespace ayni::kernel {
 namespace {
 
-constexpr uint32_t instance_size = work::instance_record_size + 16U;
-constexpr uint32_t goal_extra = work::goal_state_record_size + 16U;
-constexpr uint32_t task_size = work::task_record_size + 36U;
-constexpr uint32_t command_size = command_record_size + 8U;
+// Every record a snapshot holds is at version 1 (records.md).
+constexpr uint16_t snapshot_record_version = 1;
 constexpr uint32_t record_prefix = static_cast<uint32_t>(durability::record_header_size);
+constexpr uint32_t id_max = catalog::CatalogId::max_size;
+
+// The tails after the log body (records.md). A stamp is a transition_id,
+// then a commit_seq.
+constexpr uint32_t stamp_commit_seq_at = 8;
+constexpr uint32_t stamp_size = 16;
+// INSTANCE: the stamp it last changed at.
+constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
+// GOAL: the GOAL_STATE body, then its created_transition_id and the
+// commit_seq it last changed at.
+constexpr uint32_t goal_extra = work::goal_state_record_size + stamp_size;
+// TASK: created_transition_id, the commit_seq it last changed at, steps_seq
+// and checkpoint_seq, then steps_before.
+constexpr uint32_t task_tail_size = 4U * 8U + 4U;
+constexpr uint32_t task_size = work::task_record_size + task_tail_size;
+// COMMAND_MAPPING: the commit_seq of the batch that accepted it.
+constexpr uint32_t command_tail_size = 8;
+constexpr uint32_t command_size = command_record_size + command_tail_size;
+
+// TASK_STEPS holds one key, so one string field.
+uint32_t step_record_size(uint32_t key_size) {
+    return work::task_steps_record_fixed_size + durability::string_field_size(key_size);
+}
+
+void write_stamp(uint8_t *at, uint64_t transition_id, uint64_t commit_seq) {
+    foundation::store_le64(at, transition_id);
+    foundation::store_le64(at + stamp_commit_seq_at, commit_seq);
+}
+
+foundation::TransitionStamp read_stamp(const uint8_t *at) {
+    return {foundation::load_le64(at), foundation::load_le64(at + stamp_commit_seq_at)};
+}
 
 uint32_t maximum(uint32_t a, uint32_t b) {
     return a > b ? a : b;
@@ -33,6 +63,7 @@ template <typename Restore> durability::BatchCheck check_of(Restore value) {
     return durability::BatchCheck::corrupt;
 }
 
+// Set, and not after the snapshot's boundary.
 bool valid_stamp(foundation::TransitionStamp stamp, const durability::SnapshotMetadata &metadata) {
     return stamp.transition_id != 0U && stamp.transition_id <= metadata.max_transition_id &&
            stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
@@ -46,26 +77,24 @@ void count(SnapshotLayout &layout, uint32_t body) {
 } // namespace
 
 uint32_t snapshot_record_max(const KernelCapacities &capacities) {
-    constexpr uint32_t id_max = catalog::CatalogId::max_size;
     uint32_t size = maximum(instance_size, task_size);
     size = maximum(size, work::goal_record_fixed_size + 2U * id_max +
                              capacities.goal_parameter_max_bytes + goal_extra);
-    size = maximum(size, work::task_steps_record_fixed_size + 4U + id_max);
+    size = maximum(size, step_record_size(id_max));
     size = maximum(size, work::task_checkpoint_record_fixed_size + id_max +
                              capacities.task_checkpoint_max_bytes);
     return record_prefix + maximum(size, command_size);
 }
 
+// Every table full, each record at its largest.
 uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
-    constexpr uint32_t id_max = catalog::CatalogId::max_size;
     uint64_t size = uint64_t{capacities.agent_capacity} * (record_prefix + instance_size);
     size += uint64_t{capacities.goal_capacity} *
             (record_prefix + work::goal_record_fixed_size + 2U * id_max +
              capacities.goal_parameter_max_bytes + goal_extra);
     size += uint64_t{capacities.task_capacity} *
             (record_prefix + task_size + record_prefix + work::task_state_record_size +
-             uint64_t{capacities.task_step_capacity} *
-                 (record_prefix + work::task_steps_record_fixed_size + 4U + id_max) +
+             uint64_t{capacities.task_step_capacity} * (record_prefix + step_record_size(id_max)) +
              record_prefix + work::task_checkpoint_record_fixed_size + id_max +
              capacities.task_checkpoint_max_bytes);
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
@@ -87,8 +116,7 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         const work::Task &task = model.tasks.at(index);
         count(layout, task_size);
         for (uint32_t step = 0; step < task.step_count; ++step) {
-            count(layout, work::task_steps_record_fixed_size +
-                              durability::string_field_size(model.tasks.step(index, step).size()));
+            count(layout, step_record_size(model.tasks.step(index, step).size()));
         }
         if (task.checkpoint_writer_version != 0U) {
             count(layout, work::task_checkpoint_record_size(task));
@@ -105,12 +133,14 @@ void WorkSnapshotWriter::reset() {
     section_ = Section::instances;
     index_ = 0;
     depth_ = 0;
-    task_part_ = 0;
+    task_part_ = TaskPart::task;
     step_ = 0;
     command_after_seq_ = 0;
     command_index_ = 0;
 }
 
+// The type and size of the next record, without moving past it; false once
+// every record is written.
 bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
     for (;;) {
         switch (section_) {
@@ -150,31 +180,32 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
                 section_ = Section::commands;
                 break;
             }
-            if (task_part_ == 0U) {
+            if (task_part_ == TaskPart::task) {
                 type = work::task_record_type;
                 size = task_size;
                 return true;
             }
-            if (task_part_ == 1U) {
+            if (task_part_ == TaskPart::steps) {
                 if (step_ < model_.tasks.at(index_).step_count) {
                     type = work::task_steps_record_type;
-                    size = work::task_steps_record_fixed_size +
-                           durability::string_field_size(model_.tasks.step(index_, step_).size());
+                    size = step_record_size(model_.tasks.step(index_, step_).size());
                     return true;
                 }
-                task_part_ = 2;
+                task_part_ = TaskPart::checkpoint;
             }
-            if (task_part_ == 2U) {
+            // A task no strategy wrote a checkpoint for has none.
+            if (task_part_ == TaskPart::checkpoint) {
                 if (model_.tasks.at(index_).checkpoint_writer_version != 0U) {
                     type = work::task_checkpoint_record_type;
                     size = work::task_checkpoint_record_size(model_.tasks.at(index_));
                     return true;
                 }
-                task_part_ = 3;
+                task_part_ = TaskPart::state;
             }
             type = work::task_state_record_type;
             size = work::task_state_record_size;
             return true;
+        // The command with the next commit_seq; the table keeps no order.
         case Section::commands: {
             bool found = false;
             uint64_t first = UINT64_MAX;
@@ -205,8 +236,8 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
     case work::instance_record_type: {
         const work::AgentInstance &instance = model_.agents.at(index_);
         work::write_instance_record(instance, body);
-        foundation::store_le64(body + work::instance_record_size, instance.stamp.transition_id);
-        foundation::store_le64(body + work::instance_record_size + 8U, instance.stamp.commit_seq);
+        write_stamp(body + work::instance_record_size, instance.stamp.transition_id,
+                    instance.stamp.commit_seq);
         break;
     }
     case work::goal_record_type: {
@@ -214,16 +245,14 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         const uint32_t base_size = work::goal_record_size(goal);
         work::write_goal_record(goal, model_.goals.parameters(index_), body);
         work::write_goal_state_record(goal, body + base_size);
-        foundation::store_le64(body + base_size + work::goal_state_record_size,
-                               goal.created_transition_id);
-        foundation::store_le64(body + base_size + work::goal_state_record_size + 8U,
-                               goal.commit_seq);
+        write_stamp(body + base_size + work::goal_state_record_size, goal.created_transition_id,
+                    goal.commit_seq);
         break;
     }
     case work::task_record_type: {
         const work::Task &task = model_.tasks.at(index_);
         work::write_task_record(task, body);
-        durability::BodyWriter writer(body + work::task_record_size, 36);
+        durability::BodyWriter writer(body + work::task_record_size, task_tail_size);
         writer.u64(task.created_transition_id);
         writer.u64(task.commit_seq);
         writer.u64(task.steps_seq);
@@ -235,8 +264,8 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         const catalog::CatalogId &key = model_.tasks.step(index_, step_);
         durability::BodyWriter writer(body, size);
         writer.u64(model_.tasks.at(index_).task_id);
-        writer.u32(step_);
-        writer.u32(1);
+        writer.u32(step_); // steps_before: the key's position
+        writer.u32(1);     // count
         writer.bytes(key.data(), key.size());
         break;
     }
@@ -265,17 +294,17 @@ void WorkSnapshotWriter::advance_record(uint16_t type) {
         ++index_;
         break;
     case work::task_record_type:
-        task_part_ = 1;
+        task_part_ = TaskPart::steps;
         break;
     case work::task_steps_record_type:
         ++step_;
         break;
     case work::task_checkpoint_record_type:
-        task_part_ = 3;
+        task_part_ = TaskPart::state;
         break;
     case work::task_state_record_type:
         ++index_;
-        task_part_ = 0;
+        task_part_ = TaskPart::task;
         step_ = 0;
         break;
     case command_record_type:
@@ -296,10 +325,8 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             return out_size == 0U ? Page::no_room : Page::page;
         }
         uint8_t *at = buffer + out_size;
-        foundation::store_le16(at, type);
-        foundation::store_le16(at + 2, 1);
-        foundation::store_le32(at + 4, durability::record_required);
-        foundation::store_le32(at + 8, size);
+        durability::write_record_header(
+            {type, snapshot_record_version, durability::record_required, size}, at);
         write_record(type, at + record_prefix, size);
         out_size += record_prefix + size;
         advance_record(type);
@@ -310,7 +337,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
 void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
     metadata_ = metadata;
     records_ = 0;
-    section_ = 0;
+    section_ = Section::instances;
     task_index_ = work::TaskTable::no_index;
     checkpoint_seen_ = false;
     last_command_seq_ = 0;
@@ -326,24 +353,37 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     if ((header.flags & ~durability::record_required) != 0U) {
         return BatchCheck::unsupported;
     }
-    const bool known =
-        header.version == 1U &&
-        (header.type == work::instance_record_type || header.type == work::goal_record_type ||
-         (header.type >= work::task_record_type && header.type <= command_record_type));
-    if (!known) {
-        return (header.flags & durability::record_required) == 0U ? BatchCheck::ok
-                                                                  : BatchCheck::unsupported;
+    // A record this reader does not know is skipped unless REQUIRED.
+    // GOAL_STATE travels inside GOAL, so a snapshot has none of its own.
+    const BatchCheck unknown = (header.flags & durability::record_required) == 0U
+                                   ? BatchCheck::ok
+                                   : BatchCheck::unsupported;
+    if (header.version != snapshot_record_version) {
+        return unknown;
     }
-    uint32_t section = 0;
-    if (header.type == work::goal_record_type) {
-        section = 1;
-    } else if (header.type >= work::task_record_type &&
-               header.type <= work::task_checkpoint_record_type) {
-        section = 2;
-    } else if (header.type == command_record_type) {
-        section = 3;
+    Section section = Section::instances;
+    switch (header.type) {
+    case work::instance_record_type:
+        section = Section::instances;
+        break;
+    case work::goal_record_type:
+        section = Section::goals;
+        break;
+    case work::task_record_type:
+    case work::task_state_record_type:
+    case work::task_steps_record_type:
+    case work::task_checkpoint_record_type:
+        section = Section::tasks;
+        break;
+    case command_record_type:
+        section = Section::commands;
+        break;
+    default:
+        return unknown;
     }
-    if (section < section_ || (task_index_ != work::TaskTable::no_index && section != 2U)) {
+    // Sections come in order, and a task's records together.
+    if (section < section_ ||
+        (task_index_ != work::TaskTable::no_index && section != Section::tasks)) {
         return BatchCheck::corrupt;
     }
     section_ = section;
@@ -373,9 +413,7 @@ durability::BatchCheck WorkSnapshotReader::instance(const uint8_t *body, uint32_
         !work::read_instance_record(body, work::instance_record_size, record)) {
         return durability::BatchCheck::corrupt;
     }
-    const foundation::TransitionStamp stamp{
-        foundation::load_le64(body + work::instance_record_size),
-        foundation::load_le64(body + work::instance_record_size + 8U)};
+    const foundation::TransitionStamp stamp = read_stamp(body + work::instance_record_size);
     if (!valid_stamp(stamp, metadata_) ||
         model_.agents.find_instance(record.instance_id) != nullptr) {
         return durability::BatchCheck::corrupt;
@@ -397,9 +435,8 @@ durability::BatchCheck WorkSnapshotReader::goal(const uint8_t *body, uint32_t si
         model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return durability::BatchCheck::corrupt;
     }
-    const foundation::TransitionStamp stamp{
-        foundation::load_le64(body + base_size + work::goal_state_record_size),
-        foundation::load_le64(body + base_size + work::goal_state_record_size + 8U)};
+    const foundation::TransitionStamp stamp =
+        read_stamp(body + base_size + work::goal_state_record_size);
     if (!valid_stamp(stamp, metadata_)) {
         return durability::BatchCheck::corrupt;
     }
@@ -421,7 +458,7 @@ durability::BatchCheck WorkSnapshotReader::task(const uint8_t *body, uint32_t si
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return durability::BatchCheck::corrupt;
     }
-    durability::BodyReader reader(body + work::task_record_size, 36);
+    durability::BodyReader reader(body + work::task_record_size, task_tail_size);
     const foundation::TransitionStamp stamp{reader.u64(), reader.u64()};
     const uint64_t steps_seq = reader.u64();
     const uint64_t checkpoint_seq = reader.u64();

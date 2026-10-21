@@ -128,6 +128,11 @@ class Node {
         table_.monotonic_now_us = port;
     }
 
+    // Before create(): fences go to port, whose ctx is the sim Host.
+    void replace_fence_port(decltype(ayni_host_v1::storage_fence_writers) port) {
+        table_.storage_fence_writers = port;
+    }
+
     // Called on each new kernel right after ayni_create, so that a reboot
     // registers the same catalog again.
     void on_create(std::function<void(ayni_kernel_t *)> registration) {

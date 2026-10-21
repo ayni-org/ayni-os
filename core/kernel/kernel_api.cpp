@@ -9,6 +9,7 @@
 #include "kernel/abi_checks.h"
 #include "kernel/kernel_layout.h"
 #include "kernel/kernel_state.h"
+#include "kernel/storage/storage_budget.h"
 #include "kernel/work_journal.h"
 
 #include <ayni/ayni.h>
@@ -227,13 +228,13 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
             read_capacity(config, offsetof(ayni_config_v1, storage_log_max_bytes),
                           {AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT, 0U, AYNI_STORAGE_LOG_MAX_BYTES_MAX},
                           &limits.storage_log_max_bytes);
+        // A smaller limit would leave no room to compact the log
+        // (StorageBudget).
         if (limits.storage_log_max_bytes == 0U) {
-            const uint32_t scaled = 8U * capacities.storage_buffer_bytes;
-            limits.storage_log_max_bytes = scaled > 1048576U ? scaled : 1048576U;
+            limits.storage_log_max_bytes =
+                ayni::kernel::StorageBudget::log_max_default(capacities.storage_buffer_bytes);
         } else if (limits.storage_log_max_bytes <
-                   capacities.storage_buffer_bytes +
-                       3U * ayni::kernel::transition_batch_max(capacities) + 1024U +
-                       ayni::durability::batch_size(ayni::kernel::activation_record_length, 1)) {
+                   ayni::kernel::StorageBudget::log_max_min(capacities)) {
             status = AYNI_INVALID_ARGUMENT;
         }
     }

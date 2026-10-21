@@ -3,9 +3,15 @@
 #include "durability/snapshot/snapshot_codec.h"
 #include "foundation/crc32.h"
 #include "foundation/little_endian.h"
+#include "kernel/storage/storage_budget.h"
 #include "work_node.h"
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <string>
+#include <vector>
 
 namespace {
 using namespace ayni::test;
@@ -566,8 +572,8 @@ TEST(SnapshotFaults, optional_or_mixed_activation_cannot_authorize_a_storage_swi
 }
 
 TEST(SnapshotFaults, a_wrapped_activation_baseline_is_rejected_before_any_metadata_write) {
-    std::array<uint8_t, ayni::kernel::activation_record_length> body{};
-    ayni::kernel::write_activation({0, 0, 1, UINT64_MAX, 0}, body.data());
+    std::array<uint8_t, ayni::durability::snapshot_commit_record_length> body{};
+    ayni::durability::write_snapshot_activation({0, 0, 1, UINT64_MAX, 0}, body.data());
     std::vector<uint8_t> bytes(256);
     ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), {1, 0, 1});
     ASSERT_TRUE(writer.add_record({ayni::durability::snapshot_commit_record_type, 1,
@@ -582,5 +588,169 @@ TEST(SnapshotFaults, a_wrapped_activation_baseline_is_rejected_before_any_metada
     EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
     ASSERT_EQ(node.sim().log().size(), 1U);
     EXPECT_EQ(node.sim().log().front().bytes, bytes);
+}
+} // namespace
+
+namespace {
+// Runs create and cancel until a compaction has stored its activation and
+// trimmed the log.
+bool compact(WorkNode &work) {
+    for (int index = 0; index < 1000; ++index) {
+        const auto created =
+            work.create(WorkNode::create_body(work.instance(agent_a), 0, "folder"));
+        if (created.status != AYNI_OK) {
+            ADD_FAILURE() << "goal rejected: " << created.status;
+            return false;
+        }
+        const uint64_t id = created.result.object.id;
+        drain(work);
+        if (work.kernel()->maintenance.done()) {
+            return true;
+        }
+        if (work.change(AYNI_INTENT_GOAL_CANCEL, id, work.goal(id).revision).status != AYNI_OK) {
+            ADD_FAILURE() << "cancellation rejected";
+            return false;
+        }
+        drain(work);
+        if (work.kernel()->maintenance.done()) {
+            return true;
+        }
+    }
+    ADD_FAILURE() << "the log never compacts";
+    return false;
+}
+
+// The log holds the SNAPSHOT_COMMIT batch right after covers.
+bool holds_activation_after(const std::vector<ayni::hosts::sim::StoredBatch> &log,
+                            uint64_t covers) {
+    for (const auto &stored : log) {
+        ayni::durability::BatchView view{};
+        if (ayni::durability::read_batch(stored.bytes.data(), stored.bytes.size(), view) !=
+                ayni::durability::BatchCheck::ok ||
+            view.identity.commit_seq != covers + 1U) {
+            continue;
+        }
+        ayni::durability::RecordReader reader(view);
+        ayni::durability::RecordHeader header{};
+        const uint8_t *body = nullptr;
+        return reader.next(header, body) == ayni::durability::RecordReader::Next::record &&
+               header.type == ayni::durability::snapshot_commit_record_type;
+    }
+    return false;
+}
+
+void start_over(WorkNode &work, const StorageImage &image) {
+    configure(work);
+    work.node().sim().durable_storage() = image;
+    work.node().create_and_start();
+    work.node().recover();
+}
+
+// C-STORE-006: the snapshot after a recovered one numbers on from it and
+// takes the other slot, so the slot recovery uses stays until the next
+// activation names the new one.
+TEST(SnapshotFaults, the_snapshot_after_a_recovered_one_takes_the_next_generation_and_slot) {
+    const Image active = activated_image();
+    WorkNode work;
+    recover(work, active);
+    // White-box: what recovery found, and what maintenance numbers from.
+    const uint64_t generation = work.kernel()->boot.generation();
+    ASSERT_GE(generation, 2U);
+    ASSERT_EQ(work.kernel()->boot.active_slot(), active.active_slot);
+    EXPECT_EQ(work.kernel()->maintenance.generation(), generation);
+    ASSERT_TRUE(compact(work));
+    EXPECT_EQ(work.kernel()->maintenance.metadata().generation, generation + 1U);
+    EXPECT_EQ(work.kernel()->maintenance.slot(), 1U - active.active_slot);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(work.kernel()->boot.generation(), generation + 1U);
+    EXPECT_EQ(work.kernel()->boot.active_slot(), 1U - active.active_slot);
+}
+
+// C-STORE-009: a payload byte changed so that every record still reads is
+// caught by the payload CRC the header names.
+TEST(SnapshotFaults, payload_damage_the_records_survive_is_still_corrupt) {
+    const Image active = activated_image();
+    auto image = active.storage;
+    auto &slot = image.snapshots[active.active_slot];
+    const std::string type = "folder";
+    const auto found = std::search(slot.begin() + ayni::durability::snapshot_header_size,
+                                   slot.end(), type.begin(), type.end());
+    ASSERT_NE(found, slot.end());
+    // An unregistered goal type holds the goal; it does not fail recovery.
+    *found = 'g';
+    WorkNode work;
+    start_over(work, image);
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+// C-STORE-004: recovery reads the batches the snapshot covers only while it
+// looks for the activation, and an unknown REQUIRED record there still
+// stops it, though the replay skips that batch.
+TEST(SnapshotFaults, an_unknown_required_record_in_a_covered_batch_still_stops_recovery) {
+    const Image source = maintenance_source();
+    WorkNode work;
+    recover(work, source);
+    ASSERT_TRUE(wait_for_request(work, 7)); // activation durable, trim pending
+    const uint64_t covers = work.kernel()->maintenance.metadata().covers_commit_seq;
+    work.node().power_cut_and_start(CutAppend::lost);
+    auto &log = work.node().sim().log();
+    // The activation is stored, so recovery starts from the snapshot.
+    ASSERT_TRUE(holds_activation_after(log, covers));
+    ASSERT_GT(log.size(), 3U);
+    auto &covered = log[2];
+    ayni::durability::BatchView view{};
+    ASSERT_EQ(ayni::durability::read_batch(covered.bytes.data(), covered.bytes.size(), view),
+              ayni::durability::BatchCheck::ok);
+    ASSERT_LE(view.identity.commit_seq, covers);
+    const std::array<uint8_t, 4> body{1, 2, 3, 4};
+    std::vector<uint8_t> bytes(256);
+    ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), view.identity);
+    ASSERT_TRUE(
+        writer.add_record({99, 1, ayni::durability::record_required, body.size()}, body.data()));
+    bytes.resize(writer.finish());
+    covered.bytes = std::move(bytes);
+    work.node().recover();
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_LOG_UNSUPPORTED);
+}
+
+ayni_status_t any_parameters(void *, ayni_bytes_v1) {
+    return AYNI_OK;
+}
+
+// ADR-0027 decision 7: the payload is read a page of whole records at a
+// time, so a snapshot record larger than this boot's storage buffer can
+// never be read, and the state exceeds this boot's capacity.
+TEST(SnapshotFaults, a_snapshot_record_beyond_the_buffer_exceeds_capacity) {
+    WorkNode large;
+    large.folder_validate = &any_parameters;
+    auto &config = large.node().config();
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MAX;
+    config.storage_buffer_bytes = smallest_storage_buffer(config);
+    // White-box: the smallest limit, so that a compaction comes soon.
+    config.storage_log_max_bytes =
+        static_cast<uint32_t>(ayni::kernel::StorageBudget::log_max_min(capacities_of(config)));
+    large.run();
+    const uint32_t parameter_size = 4000;
+    const std::vector<uint8_t> parameters(parameter_size, 7);
+    const auto created = large.create(WorkNode::create_body(large.instance(agent_a), 0, "folder", 1,
+                                                            {parameters.data(), parameter_size}));
+    ASSERT_EQ(created.status, AYNI_OK);
+    drain(large);
+    ASSERT_TRUE(compact(large));
+    ASSERT_GE(large.kernel()->maintenance.metadata().covers_commit_seq, created.result.commit_seq);
+    const StorageImage image = large.node().sim().durable_storage();
+
+    WorkNode small;
+    small.node().config().storage_buffer_bytes = smallest_storage_buffer(small.node().config());
+    ASSERT_LT(small.node().config().storage_buffer_bytes, parameter_size);
+    small.node().sim().durable_storage() = image;
+    small.node().create_and_start();
+    small.node().recover();
+    EXPECT_EQ(small.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(small.node().info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
 }
 } // namespace
