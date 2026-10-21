@@ -3,7 +3,7 @@
 // how much free medium a new transition needs.
 //
 // There are two reserves. The log reserve is the journal buffer, one more
-// of the largest batches and a margin: a compaction is asked for before the
+// of the largest batches and a margin: a compaction is asked for once the
 // log comes that close to its limit. The snapshot reserve is the largest
 // slot (header, payload and marker), its activation batch and two more of
 // the largest batches: a compaction starts only with that much free. A

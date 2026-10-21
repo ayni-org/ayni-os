@@ -6,9 +6,9 @@
 // bodies have a syntax of their own (records.md): INSTANCE, GOAL, TASK and
 // COMMAND_MAPPING add the stamps or commit_seq the log had, so READY order,
 // reclamation order and command results come back as they were; GOAL also
-// carries its GOAL_STATE, and TASK_STEPS holds one key a record. What only
-// this boot's registration changed, such as a fault or hold for something
-// it lacks, is not written.
+// carries its GOAL_STATE, TASK its steps_before, and TASK_STEPS holds one
+// key a record. What only this boot's registration changed, such as a fault
+// or hold for something it lacks, is not written.
 
 #ifndef AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
 #define AYNI_CORE_KERNEL_WORK_SNAPSHOT_H

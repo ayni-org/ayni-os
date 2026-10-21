@@ -1,5 +1,5 @@
 // White-box: the log limit and the free-space reserves a RUNNING kernel
-// works within (C-STORE-011, ADR-0027 decisions 9 and 13). The expected
+// works within (C-STORE-011, ADR-0027 decision 9). The expected
 // figures are written out here from what storage_budget.h states, not taken
 // from StorageBudget, so a changed formula fails.
 

@@ -620,6 +620,25 @@ bool compact(WorkNode &work) {
     return false;
 }
 
+// The log holds the SNAPSHOT_COMMIT batch right after covers.
+bool holds_activation_after(const std::vector<ayni::hosts::sim::StoredBatch> &log,
+                            uint64_t covers) {
+    for (const auto &stored : log) {
+        ayni::durability::BatchView view{};
+        if (ayni::durability::read_batch(stored.bytes.data(), stored.bytes.size(), view) !=
+                ayni::durability::BatchCheck::ok ||
+            view.identity.commit_seq != covers + 1U) {
+            continue;
+        }
+        ayni::durability::RecordReader reader(view);
+        ayni::durability::RecordHeader header{};
+        const uint8_t *body = nullptr;
+        return reader.next(header, body) == ayni::durability::RecordReader::Next::record &&
+               header.type == ayni::durability::snapshot_commit_record_type;
+    }
+    return false;
+}
+
 void start_over(WorkNode &work, const StorageImage &image) {
     configure(work);
     work.node().sim().durable_storage() = image;
@@ -678,6 +697,8 @@ TEST(SnapshotFaults, an_unknown_required_record_in_a_covered_batch_still_stops_r
     const uint64_t covers = work.kernel()->maintenance.metadata().covers_commit_seq;
     work.node().power_cut_and_start(CutAppend::lost);
     auto &log = work.node().sim().log();
+    // The activation is stored, so recovery starts from the snapshot.
+    ASSERT_TRUE(holds_activation_after(log, covers));
     ASSERT_GT(log.size(), 3U);
     auto &covered = log[2];
     ayni::durability::BatchView view{};
@@ -696,13 +717,13 @@ TEST(SnapshotFaults, an_unknown_required_record_in_a_covered_batch_still_stops_r
     EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_LOG_UNSUPPORTED);
 }
 
-// ADR-0027 decision 6: a snapshot record larger than this boot's storage
-// buffer can never be read whole, so the state exceeds this boot's
-// capacity.
 ayni_status_t any_parameters(void *, ayni_bytes_v1) {
     return AYNI_OK;
 }
 
+// ADR-0027 decision 7: the payload is read a page of whole records at a
+// time, so a snapshot record larger than this boot's storage buffer can
+// never be read, and the state exceeds this boot's capacity.
 TEST(SnapshotFaults, a_snapshot_record_beyond_the_buffer_exceeds_capacity) {
     WorkNode large;
     large.folder_validate = &any_parameters;

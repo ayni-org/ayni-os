@@ -514,6 +514,7 @@ HeldRead HeldRead::last{};
 // A completion claiming more bytes than the buffer holds is not trusted.
 TEST(KernelLifecycle, read_count_beyond_the_buffer_restricts_as_read_failed) {
     Node node;
+    HeldRead::last = {};
     node.replace_read_port(&HeldRead::call);
     node.create_and_start();
     for (int round = 0; round < 10 && HeldRead::last.buffer_size == 0U; ++round) {
