@@ -42,7 +42,7 @@ BootSequence::BootSequence(const ayni_host_v1 &host, CompletionPool &completions
                            uint32_t buffer_size, WorkModel &model, WorkReplay &replay,
                            WriteSchedule &writes)
     : host_(host), completions_(completions), buffer_(buffer), buffer_size_(buffer_size),
-      replay_(replay), writes_(writes), reader_(model, selected_) {}
+      replay_(replay), writes_(writes), reader_(model, {}) {}
 
 void BootSequence::reset(uint32_t isolated_epoch) {
     phase_ = Phase::discover;

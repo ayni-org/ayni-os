@@ -71,6 +71,8 @@ C99 小程序实际调用 `ayni_kernel_memory_requirements`：默认配置只覆
 
 TSan 前按开发说明把 `vm.mmap_rnd_bits` 从 32 临时设为 28，结束后恢复 32。Native Debug 独立完整单元基线为 571/571，Native 专项为 24/24；CTest 另含 ABI、头文件、无堆引用及架构/契约工具检查。`ayni-sim` 实际报告 ABI 0.15，从 CONFIGURING 恢复到 RUNNING、boot epoch 1，再进入 STOPPED 并销毁。依赖、契约、clang-format 18 与 `git diff --check origin/main` 检查全部通过，traceability 已重新生成。
 
+首轮 CI 的七项检查通过，ESP-IDF v6.0.3 的 Xtensa GCC 15.2.0 在固件编译中发现 `BootSequence` 构造快照读取器时复制了声明顺序靠后的未初始化元数据。已改为显式空元数据构造；真实元数据仍在校验后设置，成员布局和内存需求不变。独立审查确认修复并检查相邻构造依赖，未发现同类问题；修复后重新执行上述全部五配置与其余 workflow 检查，CI 结果以 #21 最终提交为准。固件构建仅证明编译，不代表已实现 ESP-IDF 存储或通过实机验收。
+
 关键场景包括：同身份失败/未知重试与命令结果优先、精确 10/50 ms 退避及恢复准入、耗尽后隔离重载并关闭旧会话、不可隔离时保留诊断、全部重放关系校验先于任何写入、物理游标与旧 epoch 隔离、缓冲过小和非法回包的准确分类；正常快照七个发布请求各 lost/stored/torn 共 21 个断电组合、完整但未激活候选忽略、已激活槽损坏或不支持时不回退、旧 activation 的槽已复用、失败保留有效源；schema 0→1 启动路径每个实际请求的断电枚举和模拟旧 reader 拒绝。静态分页测试覆盖原始 stamp、READY/回收顺序、检查点、命令 floor/缩容次序以及兼容性 overlay 不落盘。真实文件的 Native I/O hook 回归验证 EIO 后完整重写、短写重试、未知 rename、重开后的首次变更与文件/目录共同确认。
 
 ### 植入缺陷
