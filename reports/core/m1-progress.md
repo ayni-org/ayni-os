@@ -39,6 +39,7 @@
 | #19 | 2026-10-21 | 流程文档 | 开发流程（`docs/workflow.md`）与本文 | — |
 | #20 | 2026-10-21 | `MA-010` B+C+D | 每个 transition 一个日志批次、整批暂存的重放与校验、重启后重新计时、目录缺失时保留并停下、Native 文件存储、命令幂等，ABI 0.14 | ADR-0026 |
 | #21 | 2026-10-21 | `MA-010` E+F | 同身份重试、写入栅栏与重载、物理游标及准确容量错误、分页双槽快照、日志轮转与写频、schema 0→1 迁移及模拟旧 reader 拒绝，ABI 0.15 | ADR-0027 |
+| #23 | 2026-10-21 | `MA-010` E+F 整理 | 只改结构与注释，行为不变：存储预算与维护状态收进 `kernel/storage/`，命名常数，合并重复的预留与编解码，补注释 | — |
 
 ## 工作包日期
 
@@ -57,7 +58,7 @@
 - **实际验证：** 571/571 完整单元基线、Native 专项 24/24；40/40 可编译植入缺陷由命名断言发现（32 项跑完整套件，8 项断言后 SIGSEGV，原文均精确恢复）；GCC Debug/Release/ASan+UBSan/TSan、Clang Debug 各 584/584 CTest；模拟器、依赖、契约、格式、diff 检查通过。独立完整审查八项发现全部修复并回看。首轮 ESP32 编译发现的构造初始化顺序问题已修复、独立复核并重跑全部 workflow 检查。详细结果见 ADR-0027，本机原始记录在仓库外 `../ayni-ma010-evidence/`。
 - **资源约束：** 用户报告并行构建导致电脑崩溃。已恢复残留植入缺陷、逐文件核对正常 Core，所有最终验证重跑为单任务、`CMAKE_BUILD_PARALLEL_LEVEL=1`；唯一运行容器限 1 CPU、2 GiB 内存、无额外 swap，使用较低 CPU/I/O 优先级。峰值约 797 MiB、零 OOM，swap 为 0。用户随后明确先看资源再决定并行度：后续按 `AGENTS.md` 检查宿主可用内存、swap、CPU 和其他任务，按合计预算设置并行度与容器上限，留出余量并持续监测，不固定要求串行或 2 GiB。脚本与原始结果用持久目录，不能只放 `/tmp`。
 - **边界：** 没有动作、Grant、预算、记忆、对外输出屏障或完整 E1–E4/实机验收；已接受但不完成的 I/O 没有合成超时，安全关闭可能继续等待。Native 重开后的首次变更会重写并同步继承前缀及目录。未注册 principal 的命令窗口仍保留，所有权迁移与清理随 `MA-006`。
-- **编号与入口：** 下一个 ADR 是 ADR-0028；后续 ABI/计划变更按 workflow 递增。先读 `core/kernel/boot/`、`commit/`、`storage_maintenance.*`、`work_snapshot.*`、`core/durability/snapshot/`，以及 `kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 和共享 `host_storage_contract_test.cpp`。
+- **编号与入口：** 下一个 ADR 是 ADR-0028；后续 ABI/计划变更按 workflow 递增。先读 `core/kernel/boot/`、`commit/`、`storage/`、`work_snapshot.*`、`core/durability/snapshot/`，以及 `kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 和共享 `host_storage_contract_test.cpp`。
 
 ## 剩余工作
 

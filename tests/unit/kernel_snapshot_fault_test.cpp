@@ -566,8 +566,8 @@ TEST(SnapshotFaults, optional_or_mixed_activation_cannot_authorize_a_storage_swi
 }
 
 TEST(SnapshotFaults, a_wrapped_activation_baseline_is_rejected_before_any_metadata_write) {
-    std::array<uint8_t, ayni::kernel::activation_record_length> body{};
-    ayni::kernel::write_activation({0, 0, 1, UINT64_MAX, 0}, body.data());
+    std::array<uint8_t, ayni::durability::snapshot_commit_record_length> body{};
+    ayni::durability::write_snapshot_activation({0, 0, 1, UINT64_MAX, 0}, body.data());
     std::vector<uint8_t> bytes(256);
     ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), {1, 0, 1});
     ASSERT_TRUE(writer.add_record({ayni::durability::snapshot_commit_record_type, 1,

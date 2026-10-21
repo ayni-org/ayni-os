@@ -30,7 +30,7 @@ BatchCheck PrefixScan::scan(const uint8_t *bytes, std::size_t size, RecordHandle
             return check;
         }
         // A stale physical append cannot move the logical prefix past a
-        // fence. Physical cursors still move past it in the Host.
+        // fence. The Host's physical cursor still moves past it.
         if (fenced_epoch_ != 0U && batch.identity.writer_epoch < fenced_epoch_) {
             offset += batch.encoded_size;
             continue;
@@ -46,11 +46,15 @@ BatchCheck PrefixScan::scan(const uint8_t *bytes, std::size_t size, RecordHandle
         const bool fence = records.next(first, body) == RecordReader::Next::record &&
                            first.type == writer_fence_record_type;
         if (fence) {
-            if (first.version != 1U || first.flags != record_required) {
+            if (first.version != writer_fence_record_version || first.flags != record_required) {
                 return BatchCheck::unsupported;
             }
-            if (batch.record_count != 1U || batch.payload_length != record_header_size + 4U ||
-                first.length != 4U || foundation::load_le32(body) != batch.identity.writer_epoch ||
+            // A fence must raise the writer: an equal epoch would let the
+            // writer it isolates pass as the new one.
+            if (batch.record_count != 1U ||
+                batch.payload_length != record_header_size + writer_fence_record_length ||
+                first.length != writer_fence_record_length ||
+                foundation::load_le32(body) != batch.identity.writer_epoch ||
                 batch.identity.writer_epoch <= max_writer_epoch_) {
                 return BatchCheck::corrupt;
             }
@@ -88,6 +92,8 @@ BatchCheck PrefixScan::scan_records(const BatchView &batch, RecordHandler handle
         if ((header.flags & ~record_required) != 0U) {
             return BatchCheck::unsupported;
         }
+        // Both control records stand alone in their batch: scan() takes a
+        // fence that opens one, and an activation must be its only record.
         if (header.type == writer_fence_record_type ||
             (header.type == snapshot_commit_record_type &&
              (batch.record_count != 1U || header.flags != record_required))) {

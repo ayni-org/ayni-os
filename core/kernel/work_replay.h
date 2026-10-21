@@ -35,6 +35,9 @@ class WorkReplay {
     static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body);
+    // Whether on_record() takes records of this type and version; any other
+    // record is unknown to it.
+    static bool knows(const durability::RecordHeader &header);
 
     // After the last batch: whether every goal and task a batch created came
     // with its state in the same batch.

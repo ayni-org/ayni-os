@@ -35,6 +35,17 @@ uint32_t low_32(uint64_t value) {
 
 } // namespace
 
+void write_record_header(const RecordHeader &header, uint8_t *out) {
+    store_le16(out, header.type);
+    store_le16(out + 2, header.version);
+    store_le32(out + 4, header.flags);
+    store_le32(out + 8, header.length);
+}
+
+RecordHeader read_record_header(const uint8_t *bytes) {
+    return {load_le16(bytes), load_le16(bytes + 2), load_le32(bytes + 4), load_le32(bytes + 8)};
+}
+
 BatchWriter::BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity,
                          uint16_t schema)
     : buffer_(buffer), capacity_(capacity), identity_(identity), schema_(schema) {}
@@ -58,10 +69,7 @@ uint8_t *BatchWriter::add_record_body(const RecordHeader &header) {
         return nullptr;
     }
     uint8_t *out = buffer_ + end_;
-    store_le16(out, header.type);
-    store_le16(out + 2, header.version);
-    store_le32(out + 4, header.flags);
-    store_le32(out + 8, header.length);
+    write_record_header(header, out);
     end_ += record_header_size + header.length;
     ++record_count_;
     return out + record_header_size;
@@ -143,10 +151,7 @@ RecordReader::Next RecordReader::next(RecordHeader &header, const uint8_t *&body
         return Next::corrupt;
     }
     const uint8_t *in = payload_ + offset_;
-    header.type = load_le16(in);
-    header.version = load_le16(in + 2);
-    header.flags = load_le32(in + 4);
-    header.length = load_le32(in + 8);
+    header = read_record_header(in);
     if (left - record_header_size < header.length) {
         return Next::corrupt;
     }

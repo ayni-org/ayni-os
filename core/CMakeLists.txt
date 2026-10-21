@@ -58,7 +58,8 @@ ayni_add_core_module(kernel
         kernel/kernel_api.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
-        kernel/storage_maintenance.cpp
+        kernel/storage/storage_budget.cpp
+        kernel/storage/storage_maintenance.cpp
         kernel/work_api.cpp
         kernel/work_journal.cpp
         kernel/work_replay.cpp

@@ -29,6 +29,25 @@ RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &
     return static_cast<WorkReplay *>(context)->apply(batch, header, body);
 }
 
+bool WorkReplay::knows(const durability::RecordHeader &header) {
+    if (header.version != 1U) {
+        return false;
+    }
+    switch (header.type) {
+    case work::instance_record_type:
+    case work::goal_record_type:
+    case work::goal_state_record_type:
+    case work::task_record_type:
+    case work::task_state_record_type:
+    case work::task_steps_record_type:
+    case work::task_checkpoint_record_type:
+    case command_record_type:
+        return true;
+    default:
+        return false;
+    }
+}
+
 RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
                             const durability::RecordHeader &header, const uint8_t *body) {
     // A batch that created a goal or a task without its state ended before

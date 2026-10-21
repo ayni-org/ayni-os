@@ -4,6 +4,8 @@
 #ifndef AYNI_CORE_KERNEL_KERNEL_CONFIG_H
 #define AYNI_CORE_KERNEL_KERNEL_CONFIG_H
 
+#include <ayni/ayni.h>
+
 #include <cstdint>
 
 namespace ayni::kernel {
@@ -31,7 +33,9 @@ struct KernelCapacities {
 struct KernelLimits {
     uint32_t goal_depth_max;
     uint32_t goal_children_max;
-    uint32_t storage_write_interval_us = 10000;
+    // Neither is 0 once validated: 0 selects the default (ayni.h,
+    // StorageBudget::log_max_default()).
+    uint32_t storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
     uint32_t storage_log_max_bytes = 0;
 };
 

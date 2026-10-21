@@ -4,6 +4,13 @@
 // goals' due work (ADR-0018, ADR-0020) and have the strategies decide READY
 // tasks (ADR-0022), and shutdown completes in a step once no completion slot
 // is in flight (C-HOST-018).
+//
+// Storage upkeep (ADR-0027) runs in the same steps. A RUNNING kernel whose
+// log nears its limit compacts it into a snapshot, and a recovery that read
+// a schema 0 log migrates it; either way StorageMaintenance holds the
+// storage buffer and no transition starts until it is done. A writer whose
+// retries run out is fenced: FENCED isolates the old writer, then recovery
+// runs again on what is durable and RUNNING resumes under a new boot epoch.
 
 #include "catalog/catalog_id.h"
 #include "kernel/intent/decision.h"
@@ -40,8 +47,9 @@ ayni_status_t ayni_kernel::start() {
 }
 
 // Each applied completion is one item and the clock is read after each; the
-// boot sequence then issues at most one storage request, also one item. The
-// request is never awaited: its result arrives in a later step. In RUNNING
+// boot sequence, or else a maintenance run, then takes at most one step of
+// its own, also one item. A storage request is never awaited: its result
+// arrives in a later step. In RUNNING
 // each piece of the goals' due work is then one item, then each decision,
 // and after them each event queued when the step comes to the events, again
 // with the clock read after each; each of them is one transition, which
@@ -64,14 +72,15 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     settle_log();
     settle_maintenance();
     refresh_storage();
+    // A migration interrupts recovery, which resumes once it is done.
     if ((lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_FENCED) &&
-        items < max_items && !out_of_time && maintenance_mode_ == MaintenanceMode::none &&
+        items < max_items && !out_of_time && !maintaining() &&
         boot.advance(host.monotonic_now_us(host.ctx))) {
         ++items;
         settle_recovery();
     }
     if ((lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_RUNNING) &&
-        maintenance_mode_ != MaintenanceMode::none && items < max_items && !out_of_time &&
+        maintaining() && items < max_items && !out_of_time &&
         maintenance.advance(host.monotonic_now_us(host.ctx))) {
         ++items;
         settle_maintenance();
@@ -133,8 +142,7 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // wakes the owner.
     const bool boot_due =
         (lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_FENCED) &&
-        maintenance_mode_ == MaintenanceMode::none && boot.wants_advance(started_us) &&
-        completions.has_free_slot();
+        !maintaining() && boot.wants_advance(started_us) && completions.has_free_slot();
     const bool log_due = appends() && log.wants_advance(started_us) && completions.has_free_slot();
     // DRAINING and RESTRICTED do no due work and decide nothing (ADR-0018).
     // Runs after the time budget is spent too: more_ready must not drop due
@@ -146,21 +154,13 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     const bool work_due = lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
                           (ayni::kernel::refresh_due_work(work, started_us, next_deadline_us) ||
                            ayni::kernel::awaits_decision(work));
-    const bool maintenance_due = maintenance_mode_ != MaintenanceMode::none &&
-                                 maintenance.wants_advance(started_us) &&
-                                 completions.has_free_slot();
-    uint64_t storage_deadline = ayni::work::no_time;
-    if (lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_FENCED) {
-        storage_deadline = maintenance_mode_ == MaintenanceMode::none ? boot.next_deadline()
-                                                                      : maintenance.next_deadline();
-    } else if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
-        storage_deadline = maintenance_mode_ == MaintenanceMode::none ? log.next_deadline()
-                                                                      : maintenance.next_deadline();
-    } else if (lifecycle == AYNI_LIFECYCLE_DRAINING && appends()) {
-        storage_deadline = log.next_deadline();
-    }
-    if (storage_deadline > started_us && storage_deadline < next_deadline_us) {
-        next_deadline_us = storage_deadline;
+    const bool maintenance_due =
+        maintaining() && maintenance.wants_advance(started_us) && completions.has_free_slot();
+    // A request held back by the write interval or a retry backoff is due
+    // later; one due already is in more_ready instead.
+    const uint64_t storage_due_us = storage_deadline();
+    if (storage_due_us > started_us && storage_due_us < next_deadline_us) {
+        next_deadline_us = storage_due_us;
     }
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
@@ -196,9 +196,39 @@ ayni_restriction_t ayni_kernel::restriction() const {
                : AYNI_RESTRICTION_NONE;
 }
 
+// A reload starts recovery over, which counts again from the snapshot or
+// the start of the log. durable_seq() must not fall meanwhile, so the value
+// at the fence stays the floor.
 uint64_t ayni_kernel::durable_seq() const {
     const uint64_t known = log_started_ ? log.durable_seq() : boot.durable_seq();
     return known > durable_floor_ ? known : durable_floor_;
+}
+
+bool ayni_kernel::maintaining() const {
+    return maintenance.mode() != ayni::kernel::StorageMaintenance::Mode::none;
+}
+
+// Whichever owner issues the next storage request in this state.
+uint64_t ayni_kernel::storage_deadline() const {
+    switch (lifecycle) {
+    case AYNI_LIFECYCLE_RECOVERING:
+    case AYNI_LIFECYCLE_FENCED:
+        return maintaining() ? maintenance.next_deadline() : boot.next_deadline();
+    case AYNI_LIFECYCLE_RUNNING:
+        return maintaining() ? maintenance.next_deadline() : log.next_deadline();
+    case AYNI_LIFECYCLE_DRAINING:
+        return appends() ? log.next_deadline() : ayni::work::no_time;
+    default:
+        return ayni::work::no_time;
+    }
+}
+
+bool ayni_kernel::storage_has_room() const {
+    return budget.admits() && !maintaining() && log.has_room();
+}
+
+ayni_status_t ayni_kernel::storage_admission_status() const {
+    return budget.admission(host);
 }
 
 void ayni_kernel::journal(uint64_t first_seq) {
@@ -220,7 +250,7 @@ void ayni_kernel::journal(uint64_t first_seq) {
         return;
     }
     log.queue(size);
-    log_bytes_ += size;
+    budget.appended(size);
     refresh_storage();
 }
 
@@ -243,7 +273,8 @@ void ayni_kernel::settle_log() {
 }
 
 // RECOVERING keeps events for RUNNING, when the goals they trigger exist.
-// DRAINING and RESTRICTED make no new work (ADR-0018), so they discard them.
+// DRAINING, RESTRICTED and FENCED make no new work (ADR-0018), so they
+// discard them.
 bool ayni_kernel::takes_events() const {
     return lifecycle == AYNI_LIFECYCLE_RUNNING || lifecycle == AYNI_LIFECYCLE_DRAINING ||
            lifecycle == AYNI_LIFECYCLE_RESTRICTED || lifecycle == AYNI_LIFECYCLE_FENCED;
@@ -266,6 +297,7 @@ void ayni_kernel::handle_local_input(const ayni::catalog::CatalogId &source, uin
     journal(first_seq);
 }
 
+// FENCED recovers too: its boot sequence first isolates the old writer.
 void ayni_kernel::settle_recovery() {
     if (lifecycle != AYNI_LIFECYCLE_RECOVERING && lifecycle != AYNI_LIFECYCLE_FENCED) {
         return;
@@ -276,12 +308,18 @@ void ayni_kernel::settle_recovery() {
         break;
     case ayni::kernel::BootSequence::Outcome::restricted:
         // No part of a log recovery could not replay is visible (ADR-0026).
+        // A fence that could not isolate the old writer replayed nothing,
+        // and the model it keeps stays readable for diagnosis.
         if (lifecycle == AYNI_LIFECYCLE_RECOVERING) {
             replay.discard();
         }
         enter_restricted(boot.restriction());
         break;
     case ayni::kernel::BootSequence::Outcome::writers_isolated:
+        // The old writer can no longer store anything. The model is dropped
+        // only once every request is complete, since a Host may still read
+        // the buffers they borrowed (ADR-0027 decision 14); recovery then
+        // reads what is durable, under the epoch the fence installed.
         if (completions.in_flight() == 0U) {
             const uint32_t epoch = boot.writer_epoch();
             replay.discard_for_reload();
@@ -291,7 +329,7 @@ void ayni_kernel::settle_recovery() {
         }
         break;
     case ayni::kernel::BootSequence::Outcome::migration_ready:
-        if (maintenance_mode_ == MaintenanceMode::none) {
+        if (!maintaining()) {
             begin_maintenance(true);
         }
         break;
@@ -312,13 +350,8 @@ void ayni_kernel::enter_running() {
     const ayni::durability::BatchIdentity boot_batch = boot.boot_batch();
     const ayni::foundation::TransitionStamp first{boot_batch.transition_id + 1U,
                                                   boot_batch.commit_seq + 1U};
-    writer_epoch_ = boot.boot_batch().writer_epoch;
-    boot_epoch_current_ = boot.boot_epoch();
-    generation_ = boot.generation();
-    active_slot_ = boot.active_slot();
-    log_bytes_ = boot.log_bytes();
-    maintenance_requested_ = false;
-    reloading_ = false;
+    maintenance.adopt(boot.generation(), boot.active_slot());
+    budget.restart(boot.log_bytes());
     restriction_ = AYNI_RESTRICTION_NONE;
     log.start(boot.boot_epoch(), {boot_batch.writer_epoch, first.commit_seq, first.transition_id},
               batch_max);
@@ -329,75 +362,76 @@ void ayni_kernel::enter_running() {
     }
 }
 
+// Only a RUNNING kernel is fenced, so its writer is the log's. The fence
+// installs an epoch above it, and a writer that has none left restricts.
+// Isolation and recovery failing again restrict too (settle_recovery()):
+// one fence never leads to another before RUNNING (ADR-0027 decision 5).
 void ayni_kernel::enter_fenced(ayni_restriction_t reason) {
-    if (reloading_ || writer_epoch_ == UINT32_MAX) {
-        enter_restricted(writer_epoch_ == UINT32_MAX ? AYNI_RESTRICTION_WRITER_EPOCH_EXHAUSTED
-                                                     : reason);
+    if (log.writer_epoch() == UINT32_MAX) {
+        enter_restricted(AYNI_RESTRICTION_WRITER_EPOCH_EXHAUSTED);
         return;
     }
     durable_floor_ = durable_seq();
     lifecycle = AYNI_LIFECYCLE_FENCED;
     restriction_ = reason;
-    reloading_ = true;
-    maintenance_mode_ = MaintenanceMode::none;
-    maintenance_requested_ = false;
-    boot.isolate(writer_epoch_ + 1U);
+    maintenance.end();
+    budget.cancel_compaction();
+    boot.isolate(log.writer_epoch() + 1U);
 }
 
+// After each transition and each step in RUNNING: a compaction starts once
+// the log asks for one and the journal has stored everything, so the
+// snapshot covers every transition applied.
 void ayni_kernel::refresh_storage() {
-    if (lifecycle != AYNI_LIFECYCLE_RUNNING || maintenance_mode_ != MaintenanceMode::none) {
+    if (lifecycle != AYNI_LIFECYCLE_RUNNING || maintaining()) {
         return;
     }
-    storage_space_blocked_ = storage_admission_status() != AYNI_OK;
-    const uint64_t reserve = log_max_bytes_ > 0U ? journal_buffer_bytes_ + batch_max + 1024U : 0U;
-    if (log_bytes_ >= log_max_bytes_ * 3U / 4U || log_bytes_ + reserve >= log_max_bytes_) {
-        maintenance_requested_ = true;
-    }
-    if (maintenance_requested_ && log.idle()) {
+    budget.refresh(host);
+    if (budget.compaction_due() && log.idle()) {
         begin_maintenance(false);
     }
 }
 
+// A runtime snapshot covers everything the log stored; a migration's covers
+// what recovery read, as the writer that stored it left it.
 void ayni_kernel::begin_maintenance(bool migration) {
-    if (generation_ == UINT64_MAX) {
+    if (maintenance.generation_exhausted()) {
         enter_restricted(AYNI_RESTRICTION_GENERATION_EXHAUSTED);
         return;
     }
-    uint64_t available = 0;
-    const uint64_t reserve =
-        snapshot_max_bytes_ +
-        ayni::durability::batch_size(ayni::kernel::activation_record_length, 1) + 2U * batch_max;
-    if (host.storage_free_bytes(host.ctx, &available) != AYNI_OK || available < reserve) {
-        storage_space_blocked_ = true;
+    // Without room for the snapshot the log stays; a migration cannot
+    // leave its schema 0 log behind, so it cannot go on.
+    if (!budget.snapshot_fits(host)) {
         if (migration) {
             enter_restricted(AYNI_RESTRICTION_STORAGE_FULL);
         }
         return;
     }
-    const ayni::kernel::SnapshotLayout layout = ayni::kernel::measure_snapshot(work);
-    ayni::durability::SnapshotMetadata metadata{};
-    metadata.generation = migration ? 1U : generation_ + 1U;
-    metadata.covers_commit_seq = migration ? boot.durable_seq() : log.durable_seq();
-    metadata.max_transition_id =
-        migration ? boot.max_transition_id() : work.transitions.latest().transition_id;
-    metadata.boot_epoch = migration ? boot.last_boot_epoch() : boot_epoch_current_;
-    metadata.writer_epoch = migration ? boot.recovered_writer_epoch() : writer_epoch_;
-    metadata.payload_length = layout.payload_length;
-    metadata.record_count = layout.record_count;
-    const uint32_t slot = migration || generation_ == 0U ? 0U : 1U - active_slot_;
-    maintenance.start(metadata, slot, migration ? boot.writer_epoch() : writer_epoch_, migration);
-    maintenance_mode_ = migration ? MaintenanceMode::migration : MaintenanceMode::runtime;
+    if (migration) {
+        maintenance.start({boot.durable_seq(), boot.max_transition_id(), boot.last_boot_epoch(),
+                           boot.recovered_writer_epoch()},
+                          boot.writer_epoch(), true);
+    } else {
+        maintenance.start({log.durable_seq(), work.transitions.latest().transition_id,
+                           log.boot_epoch(), log.writer_epoch()},
+                          log.writer_epoch(), false);
+    }
 }
 
+// A runtime run that fails fences the writer, as a failed append does. A
+// migration that fails restricts: it ran during recovery, whose model it
+// discards. A migration that succeeds recovers again, now from the snapshot
+// it activated; a runtime one hands the buffer back to the log, which goes
+// on after the activation batch.
 void ayni_kernel::settle_maintenance() {
-    if (maintenance_mode_ == MaintenanceMode::none || lifecycle == AYNI_LIFECYCLE_DRAINING ||
+    if (!maintaining() || lifecycle == AYNI_LIFECYCLE_DRAINING ||
         lifecycle == AYNI_LIFECYCLE_STOPPED) {
         return;
     }
-    const bool migration = maintenance_mode_ == MaintenanceMode::migration;
+    const bool migration = maintenance.mode() == ayni::kernel::StorageMaintenance::Mode::migration;
     if (maintenance.failure() != AYNI_RESTRICTION_NONE) {
         const ayni_restriction_t reason = maintenance.failure();
-        maintenance_mode_ = MaintenanceMode::none;
+        maintenance.end();
         if (migration) {
             replay.discard();
             enter_restricted(reason);
@@ -409,12 +443,14 @@ void ayni_kernel::settle_maintenance() {
     if (!maintenance.done()) {
         return;
     }
-    maintenance_mode_ = MaintenanceMode::none;
+    maintenance.end();
     if (migration) {
         replay.discard_for_reload();
         boot.reset();
         return;
     }
+    // The activation took the next identity, so no transition ran during
+    // the run; anything else is a defect.
     const ayni::durability::BatchIdentity activated = maintenance.activation_batch();
     const ayni::foundation::TransitionStamp stamp = work.transitions.next();
     if (stamp.commit_seq != activated.commit_seq ||
@@ -422,25 +458,9 @@ void ayni_kernel::settle_maintenance() {
         enter_restricted(AYNI_RESTRICTION_INTERNAL);
         return;
     }
-    generation_ = maintenance.metadata().generation;
-    active_slot_ = maintenance.slot();
-    log_bytes_ = maintenance.retained_log_bytes();
-    maintenance_requested_ = false;
-    log.start(boot_epoch_current_,
-              {writer_epoch_, activated.commit_seq + 1U, activated.transition_id + 1U}, batch_max);
-}
-
-ayni_status_t ayni_kernel::storage_admission_status() const {
-    uint64_t available = 0;
-    const uint64_t snapshot_reserve =
-        snapshot_max_bytes_ +
-        ayni::durability::batch_size(ayni::kernel::activation_record_length, 1) + 2U * batch_max;
-    const uint64_t journal_reserve = journal_buffer_bytes_ + batch_max + 1024U;
-    const uint64_t required =
-        snapshot_reserve > journal_reserve ? snapshot_reserve : journal_reserve;
-    if (host.storage_free_bytes == nullptr ||
-        host.storage_free_bytes(host.ctx, &available) != AYNI_OK || available < required) {
-        return AYNI_STORAGE_FAILED;
-    }
-    return AYNI_OK;
+    maintenance.adopt(maintenance.metadata().generation, maintenance.slot());
+    budget.compacted(maintenance.retained_log_bytes());
+    log.start(log.boot_epoch(),
+              {log.writer_epoch(), activated.commit_seq + 1U, activated.transition_id + 1U},
+              batch_max);
 }

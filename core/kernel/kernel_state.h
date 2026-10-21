@@ -11,7 +11,8 @@
 #include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_config.h"
-#include "kernel/storage_maintenance.h"
+#include "kernel/storage/storage_budget.h"
+#include "kernel/storage/storage_maintenance.h"
 #include "kernel/work_journal.h"
 #include "kernel/work_replay.h"
 
@@ -37,12 +38,7 @@ struct ayni_kernel {
           decisions(storage.decisions,
                     {capacities.policy_intent_capacity, capacities.task_step_capacity,
                      capacities.task_checkpoint_max_bytes}),
-          batch_max(ayni::kernel::transition_batch_max(capacities)),
-          log_max_bytes_(limits.storage_log_max_bytes),
-          snapshot_max_bytes_(ayni::kernel::snapshot_payload_max(capacities) +
-                              ayni::durability::snapshot_header_size +
-                              ayni::durability::snapshot_marker_size),
-          journal_buffer_bytes_(capacities.storage_buffer_bytes) {}
+          budget(capacities, limits), batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
@@ -78,18 +74,23 @@ struct ayni_kernel {
     ayni::kernel::WorkReplay replay;
     ayni::kernel::BootSequence boot;
     ayni::kernel::CommitLog log;
+    // Compacts the log into a snapshot, or migrates a schema 0 log; while
+    // it runs it holds the storage buffer (ADR-0027).
     ayni::kernel::StorageMaintenance maintenance;
     // What the strategies read beyond the tasks and write the decisions
     // ayni_step applies into (ADR-0022, ADR-0024).
     ayni::kernel::DecisionBuffer decisions;
+    // The log's size against its limit and the free medium (C-STORE-011).
+    ayni::kernel::StorageBudget budget;
 
     // The largest batch one transition writes (work_journal.h).
     uint32_t batch_max;
+    // Whether a transition may start now: the medium has room, no
+    // compaction is pending or running, and the log has room for its batch.
+    bool storage_has_room() const;
+    // AYNI_OK, or AYNI_STORAGE_FAILED when the medium is short of space
+    // (StorageBudget::admission()).
     ayni_status_t storage_admission_status() const;
-    bool storage_has_room() const {
-        return !storage_space_blocked_ && !maintenance_requested_ &&
-               maintenance_mode_ == MaintenanceMode::none && log.has_room();
-    }
 
   private:
     void settle_recovery();
@@ -100,9 +101,16 @@ struct ayni_kernel {
     // Enters FENCED after the RUNNING writer exhausts its retries.
     void settle_log();
     void enter_fenced(ayni_restriction_t reason);
+    // Takes the outcome of a maintenance run that ended.
     void settle_maintenance();
+    // Starts a compaction, or a migration during recovery.
     void begin_maintenance(bool migration);
+    // Rereads the free medium and starts a compaction that is due.
     void refresh_storage();
+    // A maintenance run holds the storage buffer.
+    bool maintaining() const;
+    // When the next paced storage request may start (ayni_step_report_v1).
+    uint64_t storage_deadline() const;
     // Whether ayni_step appends the batches waiting.
     bool appends() const;
     // Whether ayni_step takes events in the current state (ADR-0021).
@@ -110,20 +118,8 @@ struct ayni_kernel {
     bool takes_event_now() const;
     void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us);
 
-    enum class MaintenanceMode { none, runtime, migration };
-    MaintenanceMode maintenance_mode_ = MaintenanceMode::none;
-    bool maintenance_requested_ = false;
-    bool storage_space_blocked_ = false;
-    bool reloading_ = false;
-    uint32_t writer_epoch_ = 0;
-    uint64_t boot_epoch_current_ = 0;
-    uint64_t generation_ = 0;
-    uint32_t active_slot_ = 0;
-    uint64_t log_bytes_ = 0;
+    // durable_seq() as of the last fence, which a reload must not go below.
     uint64_t durable_floor_ = 0;
-    uint64_t log_max_bytes_;
-    uint64_t snapshot_max_bytes_;
-    uint64_t journal_buffer_bytes_;
     ayni_restriction_t restriction_ = AYNI_RESTRICTION_NONE;
     bool log_started_ = false; // the log has the storage buffer
 };
