@@ -34,10 +34,11 @@ class PrefixScan {
     explicit PrefixScan(uint64_t first_commit_seq) : next_commit_seq_(first_commit_seq) {}
 
     // Starts over at first_commit_seq. A scan that resumes after a snapshot
-    // takes the snapshot's largest transition_id and writer_epoch as if it
-    // had scanned the batches the snapshot covers (C-STORE-007), and counts
-    // that writer_epoch as fenced: an older writer was isolated before it
-    // started, so its batches after the snapshot are skipped.
+    // takes the largest transition_id and a writer_epoch from where it
+    // resumes, the slot header or the activation batch a trimmed log starts
+    // with, as if it had scanned the batches before (C-STORE-007). It counts
+    // that writer_epoch as fenced: an older writer was isolated before that
+    // one wrote, so its batches from there on are skipped.
     void reset(uint64_t first_commit_seq, uint64_t max_transition_id = 0,
                uint32_t writer_epoch = 0);
     // A batch of storage_schema 0 was scanned: the log predates schema 1 and

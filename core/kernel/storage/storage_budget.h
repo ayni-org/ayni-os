@@ -1,14 +1,15 @@
 // The storage space a RUNNING kernel works within (C-STORE-011, ADR-0027
-// decisions 9 and 13): how far the log may grow before a snapshot compacts
-// it, and how much free medium a new transition needs.
+// decision 9): how far the log may grow before a snapshot compacts it, and
+// how much free medium a new transition needs.
 //
-// Two reserves stay free on the medium. The log reserve keeps the log below
-// its limit with room for everything the journal can still hold. The
-// snapshot reserve is what one compaction writes before it can trim: the
-// largest snapshot, its activation batch and two of the largest batches. A
-// transition needs both, so the medium never fills up so far that the log
-// can neither grow nor be compacted. The free space is the Host's cached,
-// nonblocking figure (storage_free_bytes), read on the owner thread.
+// There are two reserves. The log reserve is the journal buffer, one more
+// of the largest batches and a margin: a compaction is asked for before the
+// log comes that close to its limit. The snapshot reserve is the largest
+// slot (header, payload and marker), its activation batch and two more of
+// the largest batches: a compaction starts only with that much free. A
+// transition is admitted while the free medium holds the larger of the two.
+// The free space is the Host's cached, nonblocking figure
+// (storage_free_bytes), read on the owner thread.
 
 #ifndef AYNI_CORE_KERNEL_STORAGE_STORAGE_BUDGET_H
 #define AYNI_CORE_KERNEL_STORAGE_STORAGE_BUDGET_H
@@ -51,14 +52,15 @@ class StorageBudget {
     // RUNNING with no maintenance active: reads whether the medium still
     // admits a transition, and asks for a compaction once the log reaches
     // three quarters of its limit or the log reserve would cross it. The
-    // request stays until compacted() or restart().
+    // request stays until compacted(), cancel_compaction() or restart().
     void refresh(const ayni_host_v1 &host);
     bool compaction_due() const { return compaction_due_; }
     // Before a compaction: whether the snapshot reserve is free. When not,
-    // transitions stop too, until a refresh() finds the space.
-    bool snapshot_fits(const ayni_host_v1 &host);
+    // it also holds transitions, as a shortage refresh() finds does, until
+    // a refresh() finds the space.
+    bool refresh_for_snapshot(const ayni_host_v1 &host);
 
-    // AYNI_OK when the free medium holds both reserves; else
+    // AYNI_OK when the free medium holds the larger reserve; else
     // AYNI_STORAGE_FAILED (AYNI_REASON_STORAGE_SPACE), also when the Host
     // cannot say.
     ayni_status_t admission(const ayni_host_v1 &host) const;
@@ -69,6 +71,9 @@ class StorageBudget {
     // The bytes the log keeps below its limit: the journal buffer, a batch
     // and the margin.
     static uint64_t log_reserve(uint32_t storage_buffer_bytes, uint32_t batch_max);
+    // Where the log asks for a compaction whatever the reserve: three
+    // quarters of the limit (ADR-0027 decision 9).
+    static uint64_t compaction_threshold(uint64_t log_max_bytes) { return log_max_bytes * 3U / 4U; }
 
     uint64_t log_max_bytes_;
     uint64_t log_reserve_;

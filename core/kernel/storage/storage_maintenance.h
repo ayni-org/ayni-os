@@ -75,8 +75,9 @@ class StorageMaintenance {
     bool advance(uint64_t now);
     // advance() would take a step at now, given a free completion slot.
     bool wants_advance(uint64_t now) const;
-    // When the next writing request may start; the maximum while a request
-    // is in flight or no run is active, 0 when a step may be taken now.
+    // When the next step may be taken: 0 or a past time when it may be
+    // taken now, the maximum while a request is in flight or no run is
+    // active.
     uint64_t next_deadline() const;
     // A run has steps left.
     bool active() const;
@@ -91,9 +92,7 @@ class StorageMaintenance {
     uint32_t slot() const { return slot_; }
     durability::BatchIdentity activation_batch() const { return activation_batch_; }
     // What the log holds once trimmed: the activation batch alone.
-    uint64_t retained_log_bytes() const {
-        return durability::batch_size(durability::snapshot_commit_record_length, 1);
-    }
+    uint64_t retained_log_bytes() const { return durability::snapshot_commit_batch_size; }
 
   private:
     // The steps of a run in the order taken; done and failed end it.
@@ -127,14 +126,13 @@ class StorageMaintenance {
     CompletionPool &completions_;
     uint8_t *buffer_;
     uint32_t capacity_;
-    const WorkModel &model_;
+    Mode mode_ = Mode::none;
     WriteSchedule &writes_;
     WorkSnapshotWriter writer_;
-    Mode mode_ = Mode::none;
     uint64_t generation_ = 0; // in use; 0 for none
-    uint32_t active_slot_ = 0;
     durability::SnapshotMetadata metadata_{};
     durability::BatchIdentity activation_batch_{};
+    uint32_t active_slot_ = 0;
     uint32_t slot_ = 0; // the run's
     uint32_t writer_epoch_ = 0;
     bool migration_ = false;

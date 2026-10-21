@@ -49,6 +49,9 @@ uint32_t snapshot_crc32(const uint8_t *bytes, uint32_t size, uint32_t previous =
 // covers_commit_seq + 1 and transition_id max_transition_id + 1.
 constexpr uint16_t snapshot_commit_record_version = 1;
 constexpr uint32_t snapshot_commit_record_length = 32;
+// The batch that holds it alone: all a trimmed log keeps before new batches.
+constexpr uint32_t snapshot_commit_batch_size =
+    static_cast<uint32_t>(batch_size(snapshot_commit_record_length, 1));
 
 struct SnapshotActivation {
     uint32_t slot = 0;

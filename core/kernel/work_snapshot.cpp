@@ -18,6 +18,7 @@ constexpr uint32_t id_max = catalog::CatalogId::max_size;
 
 // The tails after the log body (records.md). A stamp is a transition_id,
 // then a commit_seq.
+constexpr uint32_t stamp_commit_seq_at = 8;
 constexpr uint32_t stamp_size = 16;
 // INSTANCE: the stamp it last changed at.
 constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
@@ -29,7 +30,8 @@ constexpr uint32_t goal_extra = work::goal_state_record_size + stamp_size;
 constexpr uint32_t task_tail_size = 4U * 8U + 4U;
 constexpr uint32_t task_size = work::task_record_size + task_tail_size;
 // COMMAND_MAPPING: the commit_seq of the batch that accepted it.
-constexpr uint32_t command_size = command_record_size + 8U;
+constexpr uint32_t command_tail_size = 8;
+constexpr uint32_t command_size = command_record_size + command_tail_size;
 
 // TASK_STEPS holds one key, so one string field.
 uint32_t step_record_size(uint32_t key_size) {
@@ -38,11 +40,11 @@ uint32_t step_record_size(uint32_t key_size) {
 
 void write_stamp(uint8_t *at, uint64_t transition_id, uint64_t commit_seq) {
     foundation::store_le64(at, transition_id);
-    foundation::store_le64(at + 8U, commit_seq);
+    foundation::store_le64(at + stamp_commit_seq_at, commit_seq);
 }
 
 foundation::TransitionStamp read_stamp(const uint8_t *at) {
-    return {foundation::load_le64(at), foundation::load_le64(at + 8U)};
+    return {foundation::load_le64(at), foundation::load_le64(at + stamp_commit_seq_at)};
 }
 
 uint32_t maximum(uint32_t a, uint32_t b) {

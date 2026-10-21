@@ -41,6 +41,13 @@ constexpr uint32_t marker_payload_crc_at = 12;
 constexpr uint32_t marker_header_crc_at = 16;
 constexpr uint32_t marker_crc_at = 20;
 
+// SNAPSHOT_COMMIT body offsets.
+constexpr uint32_t activation_slot_at = 0;
+constexpr uint32_t activation_payload_crc_at = 4;
+constexpr uint32_t activation_generation_at = 8;
+constexpr uint32_t activation_covers_commit_seq_at = 16;
+constexpr uint32_t activation_max_transition_id_at = 24;
+
 } // namespace
 
 uint32_t snapshot_crc32(const uint8_t *bytes, uint32_t size, uint32_t previous) {
@@ -85,13 +92,13 @@ BatchCheck read_snapshot_header(const uint8_t *bytes, uint32_t size, SnapshotMet
     metadata.payload_length = load_le64(bytes + payload_length_at);
     metadata.record_count = load_le32(bytes + record_count_at);
     metadata.payload_crc = load_le32(bytes + payload_crc_at);
-    // Only an empty snapshot, which no batch precedes, covers commit 0.
     if (metadata.generation == 0U || metadata.writer_epoch == 0U ||
         metadata.boot_epoch > foundation::max_boot_epoch ||
         metadata.max_transition_id > transition_id_max ||
         metadata.covers_commit_seq > metadata.max_transition_id ||
         (metadata.record_count == 0U) != (metadata.payload_length == 0U) ||
         metadata.payload_length < uint64_t{metadata.record_count} * record_header_size ||
+        // Only an empty snapshot, which no batch precedes, covers commit 0.
         (metadata.covers_commit_seq == 0U &&
          (metadata.max_transition_id != 0U || metadata.boot_epoch != 0U ||
           metadata.record_count != 0U))) {
@@ -122,19 +129,22 @@ BatchCheck read_snapshot_marker(const uint8_t *bytes, uint32_t size,
 }
 
 void write_snapshot_activation(const SnapshotActivation &activation, uint8_t *body) {
-    store_le32(body, activation.slot);
-    store_le32(body + 4, activation.payload_crc);
-    store_le64(body + 8, activation.generation);
-    store_le64(body + 16, activation.covers_commit_seq);
-    store_le64(body + 24, activation.max_transition_id);
+    store_le32(body + activation_slot_at, activation.slot);
+    store_le32(body + activation_payload_crc_at, activation.payload_crc);
+    store_le64(body + activation_generation_at, activation.generation);
+    store_le64(body + activation_covers_commit_seq_at, activation.covers_commit_seq);
+    store_le64(body + activation_max_transition_id_at, activation.max_transition_id);
 }
 
 bool read_snapshot_activation(const uint8_t *body, uint32_t size, SnapshotActivation &out) {
     if (size != snapshot_commit_record_length) {
         return false;
     }
-    out = {load_le32(body), load_le32(body + 4), load_le64(body + 8), load_le64(body + 16),
-           load_le64(body + 24)};
+    out.slot = load_le32(body + activation_slot_at);
+    out.payload_crc = load_le32(body + activation_payload_crc_at);
+    out.generation = load_le64(body + activation_generation_at);
+    out.covers_commit_seq = load_le64(body + activation_covers_commit_seq_at);
+    out.max_transition_id = load_le64(body + activation_max_transition_id_at);
     return out.slot < 2U && out.generation != 0U && out.max_transition_id <= transition_id_max &&
            out.covers_commit_seq <= out.max_transition_id;
 }

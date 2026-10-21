@@ -2,11 +2,13 @@
 // records.md, ADR-0027 decision 7). The writer pages the one durable model
 // out into the storage buffer, whole records only, and the reader restores
 // it record by record as recovery reads the payload back; neither keeps a
-// second copy. A snapshot record is the log record of its type with a tail
-// that keeps the stamps the log had, so READY order, reclamation order and
-// command results come back as they were. What only this boot's
-// registration changed, such as a fault or hold for something it lacks, is
-// not written.
+// second copy. The records keep the log's envelope and types, but their
+// bodies have a syntax of their own (records.md): INSTANCE, GOAL, TASK and
+// COMMAND_MAPPING add the stamps or commit_seq the log had, so READY order,
+// reclamation order and command results come back as they were; GOAL also
+// carries its GOAL_STATE, and TASK_STEPS holds one key a record. What only
+// this boot's registration changed, such as a fault or hold for something
+// it lacks, is not written.
 
 #ifndef AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
 #define AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
@@ -35,6 +37,8 @@ class WorkSnapshotWriter {
   public:
     enum class Page { page, done, no_room };
     explicit WorkSnapshotWriter(const WorkModel &model) : model_(model) {}
+    // The payload next() writes for the model now.
+    SnapshotLayout measure() const { return measure_snapshot(model_); }
     // Writes the next records into buffer, complete records only, and their
     // size into out_size: done when none is left, no_room when the next one
     // alone does not fit. The model stays quiescent until done; the caller

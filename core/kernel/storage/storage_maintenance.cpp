@@ -9,8 +9,8 @@ namespace ayni::kernel {
 StorageMaintenance::StorageMaintenance(const ayni_host_v1 &host, CompletionPool &completions,
                                        uint8_t *buffer, uint32_t capacity, WorkModel &model,
                                        WriteSchedule &writes)
-    : host_(host), completions_(completions), buffer_(buffer), capacity_(capacity), model_(model),
-      writes_(writes), writer_(model) {}
+    : host_(host), completions_(completions), buffer_(buffer), capacity_(capacity), writes_(writes),
+      writer_(model) {}
 
 void StorageMaintenance::adopt(uint64_t generation, uint32_t slot) {
     generation_ = generation;
@@ -26,7 +26,7 @@ bool StorageMaintenance::generation_exhausted() const {
 // slot not in use, which recovery ignores until the activation names it.
 void StorageMaintenance::start(const SnapshotBoundary &boundary, uint32_t writer_epoch,
                                bool migration) {
-    const SnapshotLayout layout = measure_snapshot(model_);
+    const SnapshotLayout layout = writer_.measure();
     metadata_ = durability::SnapshotMetadata{};
     metadata_.generation = migration ? 1U : generation_ + 1U;
     metadata_.covers_commit_seq = boundary.covers_commit_seq;

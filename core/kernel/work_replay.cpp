@@ -29,6 +29,7 @@ RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &
     return static_cast<WorkReplay *>(context)->apply(batch, header, body);
 }
 
+// The types apply() restores, so the two lists change together.
 bool WorkReplay::knows(const durability::RecordHeader &header) {
     if (header.version != 1U) {
         return false;
@@ -60,7 +61,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     }
     const foundation::TransitionStamp stamp{batch.transition_id, batch.commit_seq};
     const uint32_t size = header.length;
-    if (header.version != 1U) {
+    if (!knows(header)) {
         return RecordUse::unknown;
     }
     switch (header.type) {

@@ -118,7 +118,7 @@ class BootSequence {
         header,        // read the activated slot's header
         marker,        // read its marker
         payload,       // read its payload, a page per request
-        replay,        // read the log again, replaying what follows the snapshot
+        replay,        // read the log again, replaying past the snapshot
         fence,         // fence the writers before this boot
         writer_record, // append WRITER_FENCE
         boot_record,   // append BOOT_EPOCH

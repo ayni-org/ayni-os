@@ -49,13 +49,13 @@ ayni_status_t ayni_kernel::start() {
 // Each applied completion is one item and the clock is read after each; the
 // boot sequence, or else a maintenance run, then takes at most one step of
 // its own, also one item. A storage request is never awaited: its result
-// arrives in a later step. In RUNNING
-// each piece of the goals' due work is then one item, then each decision,
-// and after them each event queued when the step comes to the events, again
-// with the clock read after each; each of them is one transition, which
-// needs room for its batch first (ADR-0026). Last, the log issues the append
-// of the oldest batch waiting, whatever is left of the budget: it is one
-// call that does not wait, and holding it back would only delay durability.
+// arrives in a later step. In RUNNING each piece of the goals' due work is
+// then one item, then each decision, and after them each event queued when
+// the step comes to the events, again with the clock read after each; each
+// of them is one transition, which needs room for its batch first
+// (ADR-0026). Last, the log issues the append of the oldest batch waiting,
+// whatever is left of the budget: it is one call that does not wait, and
+// holding it back would only delay durability.
 ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                                 ayni_step_report_v1 &report) {
     if (lifecycle == AYNI_LIFECYCLE_CONFIGURING || lifecycle == AYNI_LIFECYCLE_STOPPED) {
@@ -401,20 +401,25 @@ void ayni_kernel::begin_maintenance(bool migration) {
     }
     // Without room for the snapshot the log stays; a migration cannot
     // leave its schema 0 log behind, so it cannot go on.
-    if (!budget.snapshot_fits(host)) {
+    if (!budget.refresh_for_snapshot(host)) {
         if (migration) {
             enter_restricted(AYNI_RESTRICTION_STORAGE_FULL);
         }
         return;
     }
+    ayni::kernel::SnapshotBoundary boundary{};
     if (migration) {
-        maintenance.start({boot.durable_seq(), boot.max_transition_id(), boot.last_boot_epoch(),
-                           boot.recovered_writer_epoch()},
-                          boot.writer_epoch(), true);
+        boundary.covers_commit_seq = boot.durable_seq();
+        boundary.max_transition_id = boot.max_transition_id();
+        boundary.boot_epoch = boot.last_boot_epoch();
+        boundary.writer_epoch = boot.recovered_writer_epoch();
+        maintenance.start(boundary, boot.writer_epoch(), true);
     } else {
-        maintenance.start({log.durable_seq(), work.transitions.latest().transition_id,
-                           log.boot_epoch(), log.writer_epoch()},
-                          log.writer_epoch(), false);
+        boundary.covers_commit_seq = log.durable_seq();
+        boundary.max_transition_id = work.transitions.latest().transition_id;
+        boundary.boot_epoch = log.boot_epoch();
+        boundary.writer_epoch = log.writer_epoch();
+        maintenance.start(boundary, log.writer_epoch(), false);
     }
 }
 
