@@ -50,4 +50,4 @@ A–D 的复查发现职责、重复规则、隐式状态和注释问题。现�
 | 重复公式 | Core 规则未变；机械规则统一在检查器，测试从输入/输出验证边界 | 未引入平行业务机制；词法问题按上表修复 |
 | 裸数字 | Core/公开接口无新增数字；80/150/5 在检查器具名并对应复查 §6 | 阈值出处清楚，公开头文件 ID 检查缺口已关闭 |
 
-R1 没有 Core 逻辑变更，不执行 Core 变异、不重测 caller arena 或覆盖率；未做 ESP32 本地构建、烧录或硬件验证。最终 PR/CI 提供仓库外原始日志之外的可查证据。
+R1 没有 Core 逻辑变更，不执行 Core 变异、不重测 caller arena 或覆盖率；未做 ESP32 本地构建、烧录或硬件验证。[PR #30](https://github.com/RobotSe7en/ayni/pull/30) 与其 [CI checks](https://github.com/RobotSe7en/ayni/pull/30/checks) 提供仓库外原始日志之外的可查证据；实际合并状态以 PR 为准。
