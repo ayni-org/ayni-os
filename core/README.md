@@ -15,7 +15,7 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 
 ## 当前状态
 
-`MA-010` E+F、`MA-006` A/B/C 的实现与验证范围见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md)、[ADR-0028](../docs/adr/0028-trusted-owner-binding-and-sessions.md)、[ADR-0029](../docs/adr/0029-capability-domains-and-scope-algebra.md)、[ADR-0030](../docs/adr/0030-grants-delegation-and-exact-command-identity.md) 与 [契约追踪](../contracts/traceability.md)。A 已合并 #25，B 已由 #26 合并（`00a4126`），最终文档提交 `8fcc` 的 CI run 39726008701 八项全过；C 已实现 Grant/受限委派及确切命令/持久恢复，前轮五配置各 779/779 与默认/最小内存量测通过，补测后最终验证及独立变异收尾中、未 PR。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
+`MA-010` E+F、`MA-006` A/B/C 的实现与验证范围见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md)、[ADR-0028](../docs/adr/0028-trusted-owner-binding-and-sessions.md)、[ADR-0029](../docs/adr/0029-capability-domains-and-scope-algebra.md)、[ADR-0030](../docs/adr/0030-grants-delegation-and-exact-command-identity.md) 与 [契约追踪](../contracts/traceability.md)。A 已合并 #25，B 已由 #26 合并（`00a4126`），最终文档提交 `8fcc` 的 CI run 39726008701 八项全过；C 已实现 Grant/受限委派及确切命令/持久恢复，最终五配置各 784/784、49 项变异检出/1 等价、Core 分支覆盖 90.66%及 C 组件 96.19%、默认/最小内存量测通过；draft #27 代码八项 CI 已过，待最终文档 CI/合并。本次仅完成 C/D 后收尾停止，E/F 不开始。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
