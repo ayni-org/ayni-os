@@ -27,8 +27,11 @@ using ayni::kernel::WorkSnapshotReader;
 using ayni::kernel::WorkSnapshotWriter;
 
 constexpr std::size_t record_prefix = ayni::durability::record_header_size;
+// Snapshot records append the original transition/commit pair (records.md).
+constexpr uint32_t snapshot_stamp_size = 16;
+constexpr uint32_t snapshot_commit_offset = 8;
 constexpr std::size_t binding_bytes =
-    record_prefix + ayni::authority::owner_binding_record_size + 16U;
+    record_prefix + ayni::authority::owner_binding_record_size + snapshot_stamp_size;
 
 struct Snapshot {
     ayni::durability::SnapshotMetadata metadata{};
@@ -134,7 +137,7 @@ TEST(OwnerBindingSnapshot, paged_round_trip_keeps_the_original_binding_stamp_and
     EXPECT_EQ(first.type, ayni::authority::owner_binding_record_type);
     EXPECT_EQ(first.version, ayni::authority::owner_binding_record_version);
     EXPECT_EQ(first.flags, ayni::durability::record_required);
-    EXPECT_EQ(first.length, ayni::authority::owner_binding_record_size + 16U);
+    EXPECT_EQ(first.length, ayni::authority::owner_binding_record_size + snapshot_stamp_size);
     ASSERT_LT(binding.stamp.commit_seq, snapshot.metadata.covers_commit_seq);
 
     node.kernel()->replay.discard_for_reload();
@@ -209,8 +212,8 @@ TEST(OwnerBindingSnapshot, binding_stamp_must_be_nonzero_and_within_the_snapshot
             SCOPED_TRACE(transition ? "transition" : "commit");
             SCOPED_TRACE(zero ? "zero" : "beyond boundary");
             Snapshot changed = original;
-            const std::size_t offset =
-                record_prefix + ayni::authority::owner_binding_record_size + (transition ? 0U : 8U);
+            const std::size_t offset = record_prefix + ayni::authority::owner_binding_record_size +
+                                       (transition ? 0U : snapshot_commit_offset);
             const uint64_t boundary = transition ? original.metadata.max_transition_id
                                                  : original.metadata.covers_commit_seq;
             ayni::foundation::store_le64(changed.bytes.data() + offset, zero ? 0 : boundary + 1U);

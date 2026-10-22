@@ -303,11 +303,10 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
     // may submit every intent.
     switch (intent.kind) {
     case AYNI_INTENT_GOAL_CREATE: {
-        // Principals are never removed, so the session's principal is
-        // registered.
-        const authority::Principal &principal = *model.principals.find(session.principal_id);
-        const work::GoalOrigin origin{AYNI_ORIGIN_USER, session.channel, principal.principal_id,
-                                      principal.binding_revision};
+        // The Host authenticated this exact binding when opening the
+        // session; a goal keeps that origin independently of its lifetime.
+        const work::GoalOrigin origin{AYNI_ORIGIN_USER, session.channel, session.principal_id,
+                                      session.binding_revision};
         return create_goal(model, intent, origin, now_us, outcome, failure);
     }
     case AYNI_INTENT_TASK_CANCEL:

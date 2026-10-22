@@ -379,6 +379,28 @@ TEST(OwnerBindingApi, legacy_matching_owner_is_adopted_once_with_old_work_still_
     EXPECT_TRUE(later.strategy().seen.empty());
 }
 
+TEST(OwnerBindingApi, legacy_command_without_any_goal_still_requires_its_host_owner) {
+    WorkNode source;
+    source.run();
+    const auto instance = source.agent(agent_a);
+    ayni_instance_target_v1 target{};
+    target.struct_size = sizeof(target);
+    target.instance_id = instance.instance_id;
+    auto intent = source.intent(AYNI_INTENT_INSTANCE_PAUSE, &target, instance.revision);
+    intent.command_id = 17;
+    const auto paused = source.submit(intent);
+    ASSERT_EQ(paused.status, AYNI_OK);
+    store_through(source.node(), paused.result.commit_seq);
+    const auto legacy = without_binding(source.node());
+    Node later;
+    later.sim().log() = legacy;
+    later.create_and_start();
+    later.recover();
+    ASSERT_EQ(later.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(later.info().restriction, AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
+    expect_same_log(later, legacy);
+}
+
 TEST(OwnerBindingApi, legacy_goal_and_task_stay_paused_without_advancing_occurrences_or_strategy) {
     WorkNode work;
     work.run();
