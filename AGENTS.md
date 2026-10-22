@@ -4,7 +4,7 @@ Apply these guidelines to design, implementation, review, refactoring, and deliv
 
 ## Project Structure & Module Organization
 
-This checkout is in M1: `core/` implements the Kernel lifecycle, event ingress, work model, journal/replay, bounded storage retries, writer fencing and reload, double-slot snapshots, log rotation, and schema 0→1 migration behind the experimental C ABI 0.15 in `include/ayni/ayni.h`. Native and simulated Hosts provide the storage ports; ESP-IDF storage and the full E1–E4 experiments remain outstanding. Implementation, validation, and merge status are recorded in ADR-0027 and `reports/core/m1-progress.md`; contracts are in `contracts/` (`contracts/traceability.md` lists the tests behind each clause), and headers not yet implemented remain drafts in `include/ayni/draft/`. Read `docs/ayni_v1.0.md`, the Ayni AgentOS plan, before contributing; APIs, implementation directories, and platform support remain proposed unless backed by implementation and validation evidence. Preserve its filename when updating the internal document version.
+This checkout is in M1. `core/` implements the Kernel lifecycle, event ingress, work model, journal/replay, storage recovery and maintenance, and the delivered MA-006 authority mechanisms behind the experimental C ABI in `include/ayni/ayni.h`. Current ABI, implementation, validation, and merge status are recorded in `reports/core/m1-progress.md` and its linked ADRs. Native and simulated Hosts provide the storage ports; ESP-IDF storage and the full E1–E4 experiments remain outstanding. Contracts are in `contracts/` (`contracts/traceability.md` lists the tests behind each clause), and headers not yet implemented remain drafts in `include/ayni/draft/`. Read `docs/ayni_v1.0.md`, the Ayni AgentOS plan, before contributing; APIs, implementation directories, and platform support remain proposed unless backed by implementation and validation evidence. Preserve its filename when updating the internal document version.
 
 Keep implementations within the planned layout:
 
@@ -97,3 +97,66 @@ Keep credentials and private media out of commits and logs; configure secrets at
 - After a nontrivial code change, proactively perform a design self-review before delivery without waiting for a separate review request. Check module placement and invariant ownership, abstraction levels and call chains, dependency direction, duplicate mechanisms, and unnecessary generalization or layering.
 - Correct issues introduced by the change within the authorized scope. Surface important problems requiring broader product, compatibility, or architecture changes with evidence and options rather than expanding the task silently.
 - Verify changed contracts, failure/concurrency/lifecycle paths, portability boundaries, and the relevant checks. Summarize material tradeoffs, remaining issues, and actual validation; do not present a prose self-review as executed tests. Keep the effort proportionate and avoid unrelated repository-wide audits or boilerplate checklists.
+
+## Readability Requirements
+
+These rules apply to `core/` and `include/ayni/`. They are concrete because the
+general rules above did not prevent hard-to-read code (#21; #25–#28, see
+`reports/core/ma006-a-d-review.md`). A PR that cannot meet one names the
+exception and the reason in its How section.
+
+- **Comments.** Every class, struct and public member in a header states what
+  it owns or decides. A field states its unit, its "none" value, and the
+  invariant that ties it to other fields. A function longer than about 20 lines
+  starts with a comment on what it decides and why. A branch that is not
+  obvious from the code (a fallback, a status treated as success, a reuse or
+  eviction choice, an ordering rule, a check skipped because an earlier one
+  holds) says why and cites the contract item or ADR decision. A module (header
+  plus source) under `core/` keeps comment lines at or above 5% of its lines
+  and close to its neighbours (the median in `core/` is about 12%).
+- **Deleted comments.** A deleted comment that is still true is restored where
+  the code now is; otherwise the PR says why it no longer holds.
+- **One rule, one place.** A validation, computation, encoding or tree walk is
+  written once and called. Struct input and byte input share one validator; a
+  record or wire layout has one reader and one writer; a call does not
+  re-validate what it already validated. Before adding a check, search for an
+  existing one (`rg`) and reuse or move it.
+- **Named values.** No bare literal other than 0 or 1 used as a count or index.
+  Lifecycle and revision values, record and field offsets and sizes, bit shifts
+  and masks, limits and thresholds are named constants; record layouts cite
+  `contracts/storage/records.md`. The parts of a Kernel ID are read only
+  through `core/foundation/kernel_id.h`.
+- **Explicit state.** Fields that are set and cleared together become one
+  struct or optional value with a comment on its valid combinations, or an
+  enum. Do not use 0 or an empty size as an unstated "none" flag. Do not copy a
+  value another module owns unless the PR states why and what keeps the copies
+  equal. A boolean parameter does not select between two algorithms; write two
+  functions. Do not re-run a check and discard its status.
+- **Function size.** Split functions over 80 lines into named steps (SLAP,
+  above). A dispatcher such as `ayni_kernel::step()` delegates rather than
+  grows.
+- **Public codes.** Every new status or reason code in `include/ayni/` has a
+  one-line meaning and a "Since 0.N" note.
+- **Tests.** Test comments name the contract item or ADR decision they verify.
+
+## Review and Status Evidence
+
+- A readability review states a result for each item in
+  `docs/workflow.md` section 2 step 10, with file:line evidence, or with what
+  was searched when nothing was found. One sentence covering every item is not
+  a result. The author's self-check (step 8) reports the same items separately.
+- Another agent or session writes the planted-defect list. The PR names who
+  wrote it and gives the list (file, change, and the test that caught it) with
+  the first-run result before any added test; results after added tests are
+  reported separately.
+- When one part's production changes (`core/`, `include/`) exceed about 1,500
+  changed lines, split it into PRs that each build and pass, for example
+  records and codec, then the table, then the API.
+- Status documents stay short. The 交接状态 section of
+  `reports/core/m1-progress.md` and the 当前状态 paragraph of
+  `docs/ayni_v1.0.md` say what is done, what is next and what waits on the
+  user. CI run IDs, SHAs, coverage percentages and test counts belong in the
+  ADR's 验证 section and the PR body. Merge-conditional wording ("待合并",
+  "随 #N 合并生效", "合并前须全绿") is removed once the PR merges.
+- A claim marked verified must be checkable from the repository, the PR or CI.
+  Evidence kept outside the repository is labelled as such.

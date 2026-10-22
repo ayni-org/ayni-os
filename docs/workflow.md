@@ -38,9 +38,9 @@
    - **计划** `docs/ayni_v1.0.md`：文件名不变；版本号加一；更新开头的“当前状态”段；§9.1 的完成定义有变时修改；§14.1 加该版本的修订说明。保留原有中文与标题结构。
    - **进度**：更新 `reports/core/m1-progress.md` 中的 PR、日期与状态。
    - **开发文档**：命令、工具或目录有变时更新 `docs/development.md`。
-8. **交付前自查。** 按 `AGENTS.md` 的 “Pre-delivery Design Self-Review”：模块归属与不变量的属主、抽象层次、依赖方向、重复机制、不必要的泛化。第 10 步的四项先自己查一遍。
+8. **交付前自查。** 按 `AGENTS.md` 的 “Pre-delivery Design Self-Review”：模块归属与不变量的属主、抽象层次、依赖方向、重复机制、不必要的泛化。并遵守 “Readability Requirements” 与 “Review and Status Evidence”。第 10 步四项先自己逐项查，分别写结论与 file:line；无发现时写搜索范围，不用一句总评代替四项证据。
 9. **验证。** 运行第 4 节的全部命令。只报告实际运行过的检查及其结果；没运行的写明没运行。
-10. **独立审查（只对核心逻辑）。** 由另一个代理或新会话审查本 PR 的完整 diff，按 `AGENTS.md` 的 “Architecture-Aware Review” 自上而下检查，发现要带文件与行号或执行轨迹。逐条修复，或写明不修的理由；修复后重新运行第 4 节的检查。审查的结论与处理写进 PR 正文的 Review 小节。
+10. **独立审查（通常只对核心逻辑）。** 由另一个代理或新会话审查本 PR 的完整 diff，按 `AGENTS.md` 的 “Architecture-Aware Review” 自上而下检查，发现要带文件与行号或执行轨迹。逐条修复，或写明不修的理由；修复后重新运行第 4 节的检查。审查按 `AGENTS.md` 的 “Readability Requirements” 与 “Review and Status Evidence” 给出可核查证据，结论与处理写进 PR 正文的 Review 小节。复查整理 R1～R4 的独立审查范围按 `docs/ma006-implementation.md`，其中的文档/工具也独立审查；只有 Core 逻辑执行第 6 步的变异测试。
    - 除了对错，审查还逐项检查以下四项并写出结论（用户 2026-10-22 决定）：
      - **删掉的注释**：每段被删的说明，要么恢复到新位置，要么写明为什么不再成立；
      - **内核新增的字段**：PR 是否写明每个字段归谁、为什么不放进已有的类（第 4 步）；是否复制了别的模块已有的值，或用几个布尔量拼出一个状态；
@@ -77,13 +77,14 @@ cmake --build build/native-clang && ctest --test-dir build/native-clang --output
 ./build/native/targets/simulator/ayni-sim
 python3 tools/check_deps.py
 python3 tools/check_contracts.py
+python3 tools/check_readability.py
 git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
 git diff --check origin/main
 ```
 
 - TSan 无法启动时先执行 `sudo sysctl vm.mmap_rnd_bits=28`（见 `docs/development.md`）。
 - 仓库内有代理的 worktree（例如 `.claude/worktrees/`）时，`tools/check_deps.py` 会把其中的源文件也算进来而报错；这不是真正的失败，删掉 worktree 后再运行。
-- CI（`.github/workflows/ci.yml`）的 8 项：依赖、契约与格式检查；GCC 的 native-debug、native-release、native-asan、native-tsan；Clang 的 native-debug；clang-tidy（仅报告，不阻断）；ESP32-S3 Hello 固件构建。
+- CI（`.github/workflows/ci.yml`）的 8 项：依赖、契约、可读性与格式检查；GCC 的 native-debug、native-release、native-asan、native-tsan；Clang 的 native-debug；clang-tidy（仅报告，不阻断）；ESP32-S3 Hello 固件构建。
 
 ## 5. 与用户沟通
 
