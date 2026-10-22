@@ -45,13 +45,19 @@ class WorkReplay {
     // Discovery uses the same classification before skipping covered data;
     // applied does not validate the body.
     static durability::RecordUse classify_header(const durability::RecordHeader &header);
+    // Immutable evidence shared by journal pairing and retained snapshot facts.
+    static bool matches_grant_creation(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                       const authority::Grant &grant, ayni_bytes_v1 domain,
+                                       ayni_bytes_v1 scope);
 
     // After the last batch: whether every goal and task a batch created came
     // with its state in the same batch.
-    bool complete() const { return pending_goal_id_ == 0U && pending_task_id_ == 0U; }
+    bool complete() const {
+        return pending_goal_id_ == 0U && pending_task_id_ == 0U && pending_grant_id_ == 0U;
+    }
     // After the last batch: whether the tables hold a state a transition
     // leaves, beyond what each record's own checks cover.
-    bool consistent() const;
+    bool consistent(uint64_t boot_epoch_limit = UINT64_MAX) const;
     // Only once complete() and consistent(): holds and faults what this boot
     // lacks, then puts every wait on the clock at now_us.
     void finish(uint64_t now_us);
@@ -80,7 +86,12 @@ class WorkReplay {
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_checkpoint(const uint8_t *body, uint32_t size,
                                                   foundation::TransitionStamp stamp);
-    durability::RecordUse restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq);
+    durability::RecordUse restore_grant(const uint8_t *body, uint32_t size,
+                                        foundation::TransitionStamp stamp);
+    durability::RecordUse restore_grant_state(const uint8_t *body, uint32_t size,
+                                              foundation::TransitionStamp stamp);
+    durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
+                                          uint64_t commit_seq);
     void hold_tasks();
     void hold_unconfirmed_work();
 
@@ -89,6 +100,7 @@ class WorkReplay {
     // The goal and the task the batch created whose state has not come yet.
     uint64_t pending_goal_id_ = 0;
     uint64_t pending_task_id_ = 0;
+    uint64_t pending_grant_id_ = 0;
 };
 
 } // namespace ayni::kernel

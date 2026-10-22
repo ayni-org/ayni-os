@@ -38,11 +38,10 @@
 | [0024](0024-steps-and-private-checkpoints.md) | 工作模型第三部分（二）：步骤与私有检查点 | 已接受 | §2.4、§2.5、§3.2、§4.2、§5.3 |
 | [0025](0025-persistence-split-and-terminal-goals-give-way.md) | 持久化与恢复（一）：拆分与终态 Goal 让位 | 已接受 | §2.8、§4.2、§9.1 |
 | [0026](0026-work-journal-replay-native-file-log-and-commands.md) | 持久化与恢复（二）：工作日志、重放、Native 文件存储与命令幂等 | 已接受 | §2.8、§4.2、§4.3、§9.1 |
-
 | [0027](0027-retries-writer-fences-snapshots-and-migration.md) | 持久化与恢复（三）：重试、写入栅栏、快照与迁移 | 已接受 | §2.8、§4.2、§4.3、§4.4、§9.1 |
 | [0028](0028-trusted-owner-binding-and-sessions.md) | 权限与审批（一）：可信所有者绑定与会话入口 | 已接受（A 已合并 #25，本地验证与 CI 通过） | §2.2、§2.4、§2.5、§3.2、§4.3、§5.3、§9.1、§14.1 |
-
-| [0029](0029-capability-domains-and-scope-algebra.md) | 权限与审批（二）：Capability 目录与有限范围代数 | 已实现并完成 Native 验证与独立审查（待 PR/CI/合并） | §2.2、§2.3、§3.2、§4.2、§9.1、§14.1 |
+| [0029](0029-capability-domains-and-scope-algebra.md) | 权限与审批（二）：Capability 目录与有限范围代数 | 已接受（B 已合并 #26，Native 验证、独立审查与最终八项 CI 通过） | §2.2、§2.3、§3.2、§4.2、§9.1、§14.1 |
+| [0030](0030-grants-delegation-and-exact-command-identity.md) | 权限与审批（三）：Grant、受限委派与确切命令身份 | 已实现（C 前轮五配置通过，补测后最终验证与独立变异收尾中，未 PR） | §2.2、§2.3、§2.5、§2.8、§3.2、§4.2～4.4、§9.1、§14.1 |
 
 ## 模板
 

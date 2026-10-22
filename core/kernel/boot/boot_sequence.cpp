@@ -1,5 +1,6 @@
 #include "kernel/boot/boot_sequence.h"
 
+#include "authority/grant/grant_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
@@ -437,7 +438,7 @@ void BootSequence::begin_replay() {
 // This boot needs a boot epoch, a transition_id and a writer epoch above
 // what the log holds. A reload fenced already, with an epoch above the log.
 void BootSequence::after_replay() {
-    if (!replay_.complete() || !replay_.consistent()) {
+    if (!replay_.complete() || !replay_.consistent(last_boot_epoch_)) {
         fail(AYNI_RESTRICTION_LOG_CORRUPT);
     } else if (!replay_.binding_matches()) {
         fail(AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
@@ -533,6 +534,14 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
     }
     if (phase_ == Phase::discover) {
         return WorkReplay::classify_header(header);
+    }
+    // A create can only use an ID allocated in the durable epoch preceding
+    // this record. A later BOOT_EPOCH must not legitimize a future ID.
+    if (header.type == authority::grant_record_type &&
+        header.version == authority::grant_record_version &&
+        (header.length < sizeof(uint64_t) ||
+         (foundation::load_le64(body) >> 32U) != last_boot_epoch_)) {
+        return durability::RecordUse::corrupt;
     }
     return WorkReplay::on_record(&replay_, batch, header, body);
 }

@@ -4,6 +4,7 @@
 #include "catalog/goal_type/goal_type_registry.h"
 #include "foundation/digest.h"
 #include "kernel/abi_checks.h"
+#include "kernel/command/command_canonical.h"
 
 namespace ayni::kernel {
 namespace {
@@ -15,7 +16,7 @@ template <typename Body> ayni_status_t read_body(const void *body, const Body *&
     return check_struct_size(out_body->struct_size, sizeof(Body), sizeof(Body));
 }
 
-// The body of every kind but GOAL_CREATE names one object by id.
+// A target intent names the goal, task or instance it changes.
 template <typename Body>
 ayni_status_t read_target(const void *body, uint64_t Body::*id, uint64_t &out_id) {
     const Body *target = nullptr;
@@ -51,6 +52,14 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
                              body->trigger_source};
         return AYNI_OK;
     }
+    case AYNI_INTENT_GRANT_CREATE: {
+        const ayni_grant_create_v1 *body = nullptr;
+        const ayni_status_t status = read_body(raw.body, body);
+        if (status == AYNI_OK) {
+            out_intent.grant_create = *body;
+        }
+        return status;
+    }
     case AYNI_INTENT_TASK_CANCEL:
         return read_target(raw.body, &ayni_task_target_v1::task_id, out_intent.target_id);
     case AYNI_INTENT_INSTANCE_PAUSE:
@@ -73,10 +82,17 @@ bool trigger_source_fits(const GoalCreate &create) {
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_INSTANCE_STOP;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GRANT_CREATE;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (intent.kind == AYNI_INTENT_GRANT_CREATE) {
+        if (intent.command_id == 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        uint32_t size = 0;
+        return measure_authority_command({intent.expected_revision, &intent.grant_create}, size);
+    }
     if (intent.kind != AYNI_INTENT_GOAL_CREATE) {
         return AYNI_OK;
     }
@@ -118,7 +134,7 @@ ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, Inten
     return status;
 }
 
-uint64_t command_digest(const Intent &intent) {
+uint64_t ordinary_command_digest(const Intent &intent) {
     foundation::Digest digest;
     digest.add_u32(intent.kind);
     digest.add_u32(intent.expected_revision);

@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 17u
+#define AYNI_ABI_MINOR 18u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -147,9 +147,19 @@ typedef struct ayni_config_v1 {
      * take the documented defaults. Registration does not enable calls. */
     uint32_t capability_capacity;
     uint32_t authority_scope_max_bytes;
+    /* Since 0.18. Grants retain a source domain and scope each; depth
+     * counts delegation edges, with root depth 0. Explicit zero is invalid. */
+    uint32_t grant_capacity;
+    uint32_t grant_delegation_depth_max;
 } ayni_config_v1;
 
 /* Since 0.17. Limits apply to complete registered domains and scopes. */
+/* Since 0.18. Caller-owned Grant storage and bounded parent traversal. */
+#define AYNI_GRANT_CAPACITY_DEFAULT 32u
+#define AYNI_GRANT_CAPACITY_MAX 1024u
+#define AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT 4u
+#define AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN 1u
+#define AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX 16u
 #define AYNI_CAPABILITY_CAPACITY_DEFAULT 16u
 #define AYNI_CAPABILITY_CAPACITY_MAX 256u
 #define AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT 256u
@@ -812,6 +822,38 @@ typedef uint32_t ayni_reason_t;
 /* Since 0.16. DENIED: restored work has no confirmed authorization metadata. */
 #define AYNI_REASON_LEGACY_UNCONFIRMED ((ayni_reason_t)40)
 
+/* Since 0.18. Classified Grant failures; reasons retain one owning status. */
+/* NOT_FOUND: no capability has this catalog ID. */
+#define AYNI_REASON_CAPABILITY_UNKNOWN ((ayni_reason_t)41)
+/* UNSUPPORTED_VERSION: the capability ID is known, its version is not. */
+#define AYNI_REASON_CAPABILITY_VERSION ((ayni_reason_t)42)
+/* NOT_FOUND: no retained Grant has this ID. */
+#define AYNI_REASON_GRANT_UNKNOWN ((ayni_reason_t)43)
+/* REVISION_CONFLICT: the parent Grant revision differs. */
+#define AYNI_REASON_GRANT_REVISION ((ayni_reason_t)44)
+/* INVALID_ARGUMENT: malformed scope, lifetime or root revision. */
+#define AYNI_REASON_GRANT_INPUT ((ayni_reason_t)45)
+/* DENIED: delegated scope exceeds its parent. */
+#define AYNI_REASON_GRANT_SCOPE ((ayni_reason_t)46)
+/* DENIED: the parent chain cannot delegate this authority. */
+#define AYNI_REASON_GRANT_PARENT ((ayni_reason_t)47)
+/* CAPACITY_EXCEEDED: delegation exceeds the configured depth. */
+#define AYNI_REASON_GRANT_DEPTH ((ayni_reason_t)48)
+/* CAPACITY_EXCEEDED: no free or safely reclaimable Grant slot. */
+#define AYNI_REASON_GRANT_CAPACITY ((ayni_reason_t)49)
+/* BUSY: an authorization fact has not reached durable acceptance. */
+#define AYNI_REASON_GRANT_NOT_DURABLE ((ayni_reason_t)50)
+/* DENIED: the Grant is expired or belongs to an older limited boot. */
+#define AYNI_REASON_GRANT_EXPIRED ((ayni_reason_t)51)
+/* UNSUPPORTED_VERSION: the exact capability domain has changed. */
+#define AYNI_REASON_GRANT_CATALOG_CHANGED ((ayni_reason_t)52)
+/* DENIED: the receiving instance is unavailable. */
+#define AYNI_REASON_GRANT_SUBJECT ((ayni_reason_t)53)
+/* DENIED: authorization requires a trusted management Session. */
+#define AYNI_REASON_GRANT_CHANNEL ((ayni_reason_t)54)
+/* UNSUPPORTED: Scene or quota authorization is not implemented. */
+#define AYNI_REASON_GRANT_UNSUPPORTED ((ayni_reason_t)55)
+
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
 typedef struct ayni_error_v1 {
@@ -1121,6 +1163,8 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_INSTANCE_PAUSE ((ayni_intent_kind_t)6)  /* body: ayni_instance_target_v1 */
 #define AYNI_INTENT_INSTANCE_RESUME ((ayni_intent_kind_t)7) /* body: ayni_instance_target_v1 */
 #define AYNI_INTENT_INSTANCE_STOP ((ayni_intent_kind_t)8)   /* body: ayni_instance_target_v1 */
+#define AYNI_INTENT_GRANT_CREATE                                                                   \
+    ((ayni_intent_kind_t)9) /* body: ayni_grant_create_v1, authority.h */
 
 /*
  * One envelope for every intent kind. The principal and channel are the

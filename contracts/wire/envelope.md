@@ -1,6 +1,6 @@
 # 消息信封
 
-- **关联**：计划 §3.1、§3.4、§3.5、§3.6；ADR-0004、ADR-0009、ADR-0026；`MA-004`、`MA-007`、`MA-016`、`MA-038`；E2 F9、F13，E3 步骤 2
+- **关联**：计划 §3.1、§3.4、§3.5、§3.6；ADR-0004、ADR-0009、ADR-0030、ADR-0026；`MA-004`、`MA-007`、`MA-016`、`MA-038`；E2 F9、F13，E3 步骤 2
 - **属主**：`kernel`（受管入口：解码 → 校验 → 分派，命令幂等映射）；协议适配层（编解码与传输）
 - **状态**：语义在 M0 定义；M1 以多节点确定性仿真与 FakeTransport 验证（`MA-038`）；M2 实现局域网管理 API（`MA-007`）；M5 实现真实认证与设备间调用（`MA-016`）
 
@@ -47,7 +47,7 @@
 | C-WIRE-001 | 每条消息携带上表的必需字段；缺少必需字段、`kind` 未知或必需功能未知时拒绝，返回结构化错误 | 缺少 `target_device_id` 的消息被路由到默认设备执行 | `MA-007` 解析测试；C-VER-010 |
 | C-WIRE-002 | 局域网管理传输的每个请求都经认证；停止入口同时连接独立的本地停止路径；管理入口不对公网开放 | 未认证的局域网请求可以查询记忆 | `MA-007`；第 10.6 节「安全接入」 |
 | C-WIRE-003 | 每条消息只携带一种幂等键：管理端持久变更命令携带 `command_id`，`capability.invoke` 携带 `operation_id`；两者同时出现或应有而缺失时以 `AYNI_INVALID_ARGUMENT` 拒绝 | 一条 `capability.invoke` 同时带 `command_id` 与 `operation_id`，两个去重表给出不同结论 | `MA-007`、`MA-016` 解析测试；C-ID-008 |
-| C-WIRE-004 | `command_id` 的幂等作用域是 `(已认证 principal_id, target_device_id, command_id)`，绑定命令类型与规范化参数摘要；相同命令重试返回原对象或原结果；同 ID 不同摘要返回 `AYNI_IDEMPOTENCY_CONFLICT`；映射与业务接受结果同批提交（批次 B1） | 创建提醒的响应丢失，客户端重试后设备上出现两个提醒 | M1 部分实现（Kernel 侧：作用域为会话的 principal 与 `command_id`，`target_device_id` 随管理端协议；摘要覆盖意图种类、`expected_revision` 与正文；重试返回原结果，跨会话与重启；同 ID 不同摘要返回 `IDEMPOTENCY_CONFLICT`；映射与接受结果同批提交，ADR-0026）：`WorkCommands.retried_command_returns_its_first_result`、`WorkCommands.refused_command_is_not_kept`、`WorkCommands.mappings_survive_a_restart_with_their_transitions`；E2 F9；C-COMMIT-005 |
+| C-WIRE-004 | `command_id` 的幂等作用域是 `(已认证 principal_id, target_device_id, command_id)`，绑定命令类型与规范化请求身份；旧ordinary命令按原摘要契约兼容，授权命令保存完整canonical并确切比较；相同命令重试返回原对象或原结果；同ID不同身份返回 `AYNI_IDEMPOTENCY_CONFLICT`；映射与业务接受结果同批提交（批次 B1） | 创建提醒的响应丢失，客户端重试后设备上出现两个提醒 | M1 部分实现（Kernel 侧：作用域为会话的 principal 与 `command_id`，`target_device_id` 随管理端协议；摘要覆盖意图种类、`expected_revision` 与正文；重试返回原结果，跨会话与重启；同 ID 不同摘要返回 `IDEMPOTENCY_CONFLICT`；映射与接受结果同批提交，ADR-0026）：`WorkCommands.retried_command_returns_its_first_result`、`WorkCommands.refused_command_is_not_kept`、`WorkCommands.mappings_survive_a_restart_with_their_transitions`；E2 F9；C-COMMIT-005 |
 | C-WIRE-005 | 命令映射的保留期不短于该命令允许的重试期限；以主体命令代际/窗口与有界拒绝标记防止过期旧命令被当作新命令；不得仅凭参数相同合并用户确实想创建的两个目标 | 去重记录回收后，一周前滞留的创建命令又创建了一个提醒 | M1 部分实现（Kernel 侧：每个 principal 保留最近 `command_capacity` 个映射，让位时把下限提高到让位的 `command_id`，不大于下限的未映射命令以 `EXPIRED` 拒绝；下限随映射记录持久；参数相同而 `command_id` 不同的命令各自应用，ADR-0026）：`WorkCommands.full_table_drops_the_smallest_id_and_raises_the_floor`、`WorkCommands.floor_survives_a_restart_with_more_room`；重试期限与命令代际随管理端协议（`MA-038`）；E2 F9（过期命令） |
 | C-WIRE-006 | `operation_id` 的作用域是 `(已认证调用主体, 控制域 authority-owner, operation_id)`，绑定能力 ID/版本与规范化参数摘要；同 ID 不同摘要拒绝；调用方在屏障前、接收方在持久接受时保存映射 | 接收方只按 `operation_id` 去重，不同主体的同号请求被当作重复返回了别人的结果 | `MA-038`；`MA-016`；C-ID-005 |
 | C-WIRE-007 | 接收结果按上表区分；客户端没有收到响应不能推定未执行，应以同一幂等键查询或重试；协议不宣称通用的“恰好执行一次” | 客户端超时后以新 `operation_id` 重发转向 | E2 F6；`MA-016` |
@@ -55,8 +55,16 @@
 | C-WIRE-009 | `ttl_ms` 是首次接收后的执行预算，重试不续期，也不证明传输前的新鲜度；副作用请求首次执行须携带接收方在该会话中最近下发的 `receiver_tick`，超出新鲜窗口返回 `AYNI_STALE`，调用方以同一 `operation_id` 携带新 tick 重试；无法验证时拒绝 | 在网络中滞留 10 分钟的转向请求，以“收到后 1.5 秒内执行”为由被执行 | `MA-038`（首次到达长延迟）；`MA-016` |
 | C-WIRE-010 | ObjectRef 至少包含 `origin_device_id`、`kind`、`id`、`revision`；接收方按认证来源解析并检查读取、传输、用途权限与有效性；引用本身不携带权限 | 持有一个观察引用就能读取对应的原始图片 | `MA-016`；E1 步骤 1 |
 | C-WIRE-011 | 普通控制 JSON 不内嵌 base64 大文件；媒体经独立受控数据通道传输，引用绑定主体、用途、有效期、大小与内容类型，过期、取消与重启时回收；不接受任意 URL 或文件路径 | 控制消息中的 `"image": "file:///etc/..."` 被设备读取并上传 | `MA-015`；C-PRIM-005 |
-| C-WIRE-012 | 参数摘要按每种命令或能力的契约列出的领域字段计算：字段顺序无关、缺省值先补齐、单位先换算到声明单位、未列入的字段不参与；不对任何序列化字节取哈希 | 同一命令的 JSON 字段顺序不同，被判为 `IDEMPOTENCY_CONFLICT` | ADR-0009 选型后的摘要测试；C-VER-032 |
+| C-WIRE-012 | 请求身份按每种命令/能力的契约所列领域字段规范化；字段顺序无关，仅按该契约补缺省或换单位，未列入字段不参与，不对任意序列化字节取哈希。Grant创建保留原始scope省略、类型/单位严格匹配，其身份不依赖当前catalog；授权展开范围另存 | 同一命令的 JSON 字段顺序不同，被判为 `IDEMPOTENCY_CONFLICT` | ADR-0009 选型后的摘要测试；C-VER-032 |
 | C-WIRE-013 | 事件订阅带游标；重连按游标补有限历史；超出保留范围时明确返回 gap 并要求状态查询，不静默跳过 | 网页离线一天后重连，中间的事件被跳过且界面不提示 | `MA-007`；E1 步骤 10 |
 | C-WIRE-014 | 每类领域意图只有一个领域类型与一个语义校验器；本地类型化 API 与网络解码器构造同一类型并共用校验器 | 管理 API 与 C API 各自校验提醒时间，规则不一致 | `MA-004`（C ABI 解码为 `core/kernel/intent/intent.h` 的领域类型 `Intent`，格式校验 `check_form` 与语义校验留给网络解码器共用；网络解码器随 `MA-038`）；`MA-005`、`MA-007` 往返测试；C-VER-012 |
 | C-WIRE-015 | MCP、A2A 等外部协议适配列出状态、错误、取消、重试与对象引用的映射；外部工具注解不直接变成可信能力属性；远端不保证的去重或查询不由适配层伪造；无法保留必要语义时返回 `AYNI_UNSUPPORTED` | 适配层把 MCP 工具的 `idempotentHint` 当作服务端去重保证 | `MA-030` |
 | C-WIRE-016 | 会话重连不改变 `command_id` 的幂等作用域：作用域只含已认证主体、目标设备与 `command_id`，不含会话或连接标识 | 重连后同一 `command_id` 被当作新命令，创建了第二个提醒 | E2 F9（响应丢失后重连重试） |
+
+## 授权命令的确切身份（MA-006 C，已实现并完成 Native 验证）
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-WIRE-017 | Grant命令的完整有界canonical请求与对象/结果同批保存；FNV仅索引，最后比较length+bytes。原始scope只做独立形状校验和字段/集合排序去重，保留省略，不查当前catalog/subject/parent；已映射命令先返回原结果或冲突，不因当前依赖失效而重新应用 | 相同hash异正文扩大权限；升级后目录缺失令旧命令重新创建；省略scope随新目录补全成不同身份 | M1 已实现（创建命令完整身份与同批结果）：`CommandCanonical.sorting_and_deduplication_keep_omission_distinct_from_explicit_constraints`、`CommandTable.a_digest_collision_does_not_replace_exact_byte_equality`、`GrantReplay.a_valid_but_expanded_create_scope_cannot_disagree_with_its_exact_command`；ADR-0030；C-COMMIT-005 |
+
+原始身份含kind、expected_revision、capability ID/version、subject、parent、flags、lifetime、duration和原始scope；Session/当前时间/计算deadline/新Grant ID不参与。省略与显式全域不同，token顺序与重复等价。CommandTable拥有每槽canonical字节及有界scratch；旧ordinary v1映射按原契约兼容，auth不得回退成只有digest。窗口floor和原结果仍有界保留，对象安全回收不授权命令重建。

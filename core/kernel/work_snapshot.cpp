@@ -1,5 +1,6 @@
 #include "kernel/work_snapshot.h"
 
+#include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
@@ -12,7 +13,7 @@
 namespace ayni::kernel {
 namespace {
 
-// Every record a snapshot holds is at version 1 (records.md).
+// Ordinary snapshot records remain v1; exact auth commands use v2 (records.md).
 constexpr uint16_t snapshot_record_version = 1;
 constexpr uint32_t record_prefix = static_cast<uint32_t>(durability::record_header_size);
 constexpr uint32_t id_max = catalog::CatalogId::max_size;
@@ -34,7 +35,13 @@ constexpr uint32_t task_tail_size = 4U * 8U + 4U;
 constexpr uint32_t task_size = work::task_record_size + task_tail_size;
 // COMMAND_MAPPING: the commit_seq of the batch that accepted it.
 constexpr uint32_t command_tail_size = 8;
-constexpr uint32_t command_size = command_record_size + command_tail_size;
+uint32_t command_size(const CommandMapping &mapping) {
+    return command_record_size_for(mapping) + command_tail_size;
+}
+uint32_t command_max(const KernelCapacities &capacities) {
+    return command_record_max(authority_command_max_bytes(capacities.authority_scope_max_bytes)) +
+           command_tail_size;
+}
 
 // TASK_STEPS holds one key, so one string field.
 uint32_t step_record_size(uint32_t key_size) {
@@ -86,13 +93,18 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     size = maximum(size, step_record_size(id_max));
     size = maximum(size, work::task_checkpoint_record_fixed_size + id_max +
                              capacities.task_checkpoint_max_bytes);
-    return record_prefix + maximum(size, command_size);
+    size =
+        maximum(size, authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
+    return record_prefix + maximum(size, command_max(capacities));
 }
 
 // Every table full, each record at its largest.
 uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
     uint64_t size = record_prefix + owner_binding_size;
     size += uint64_t{capacities.agent_capacity} * (record_prefix + instance_size);
+    size += uint64_t{capacities.grant_capacity} *
+            (record_prefix +
+             authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
     size += uint64_t{capacities.goal_capacity} *
             (record_prefix + work::goal_record_fixed_size + 2U * id_max +
              capacities.goal_parameter_max_bytes + goal_extra);
@@ -102,7 +114,7 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
              record_prefix + work::task_checkpoint_record_fixed_size + id_max +
              capacities.task_checkpoint_max_bytes);
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
-            (record_prefix + command_size);
+            (record_prefix + command_max(capacities));
     return size;
 }
 
@@ -115,6 +127,9 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         if (model.agents.at(index).instance_id != 0U) {
             count(layout, instance_size);
         }
+    }
+    for (uint32_t index = 0; index < model.grants.size(); ++index) {
+        count(layout, authority::grant_snapshot_record_size(model.grants.at(index)));
     }
     for (uint32_t index = 0; index < model.goals.size(); ++index) {
         count(layout, work::goal_record_size(model.goals.at(index)) + goal_extra);
@@ -131,7 +146,7 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         count(layout, work::task_state_record_size);
     }
     for (uint32_t index = 0; index < model.commands.size(); ++index) {
-        count(layout, command_size);
+        count(layout, command_size(model.commands.at(index)));
     }
     return layout;
 }
@@ -168,8 +183,27 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
                 size = instance_size;
                 return true;
             }
+            section_ = Section::grants;
+            index_ = 0;
+            depth_ = 0;
+            break;
+        case Section::grants:
+            while (index_ < model_.grants.size() && model_.grants.at(index_).depth != depth_) {
+                ++index_;
+            }
+            if (index_ < model_.grants.size()) {
+                type = authority::grant_record_type;
+                size = authority::grant_snapshot_record_size(model_.grants.at(index_));
+                return true;
+            }
+            if (depth_ < AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX) {
+                ++depth_;
+                index_ = 0;
+                break;
+            }
             section_ = Section::goals;
             index_ = 0;
+            depth_ = 0;
             break;
         case Section::goals:
             // Parents precede children even after table slots have been
@@ -234,7 +268,7 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             }
             if (found) {
                 type = command_record_type;
-                size = command_size;
+                size = command_size(model_.commands.at(command_index_));
                 return true;
             }
             section_ = Section::done;
@@ -260,6 +294,12 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         work::write_instance_record(instance, body);
         write_stamp(body + work::instance_record_size, instance.stamp.transition_id,
                     instance.stamp.commit_seq);
+        break;
+    }
+    case authority::grant_record_type: {
+        authority::write_grant_snapshot_record(model_.grants.at(index_),
+                                               model_.grants.source_domain(index_),
+                                               model_.grants.scope(index_), body);
         break;
     }
     case work::goal_record_type: {
@@ -300,8 +340,11 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         break;
     case command_record_type: {
         const CommandMapping &mapping = model_.commands.at(command_index_);
-        write_command_record(mapping, model_.commands.floor(mapping.principal_id), body);
-        foundation::store_le64(body + command_record_size, mapping.commit_seq);
+        const uint32_t base_size = command_record_size_for(mapping);
+        static_cast<void>(write_command_record(mapping, model_.commands.floor(mapping.principal_id),
+                                               model_.commands.canonical(mapping), body,
+                                               base_size));
+        foundation::store_le64(body + base_size, mapping.commit_seq);
         break;
     }
     default:
@@ -315,6 +358,7 @@ void WorkSnapshotWriter::advance_record(uint16_t type) {
         section_ = Section::instances;
         break;
     case work::instance_record_type:
+    case authority::grant_record_type:
     case work::goal_record_type:
         ++index_;
         break;
@@ -350,8 +394,11 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             return out_size == 0U ? Page::no_room : Page::page;
         }
         uint8_t *at = buffer + out_size;
-        durability::write_record_header(
-            {type, snapshot_record_version, durability::record_required, size}, at);
+        const uint16_t version =
+            type == command_record_type
+                ? command_record_version_for(model_.commands.at(command_index_))
+                : snapshot_record_version;
+        durability::write_record_header({type, version, durability::record_required, size}, at);
         write_record(type, at + record_prefix, size);
         out_size += record_prefix + size;
         advance_record(type);
@@ -386,7 +433,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     const BatchCheck unknown = (header.flags & durability::record_required) == 0U
                                    ? BatchCheck::ok
                                    : BatchCheck::unsupported;
-    if (header.version != snapshot_record_version) {
+    if (header.version != snapshot_record_version &&
+        !(header.type == command_record_type && header.version == exact_command_record_version)) {
         return unknown;
     }
     Section section = Section::instances;
@@ -396,6 +444,9 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
         break;
     case work::instance_record_type:
         section = Section::instances;
+        break;
+    case authority::grant_record_type:
+        section = Section::grants;
         break;
     case work::goal_record_type:
         section = Section::goals;
@@ -423,6 +474,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
         return owner_binding(body, header.length);
     case work::instance_record_type:
         return instance(body, header.length);
+    case authority::grant_record_type:
+        return grant(body, header.length);
     case work::goal_record_type:
         return goal(body, header.length);
     case work::task_record_type:
@@ -434,7 +487,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     case work::task_state_record_type:
         return task_state(body, header.length);
     case command_record_type:
-        return command(body, header.length);
+        return command(header.version, body, header.length);
     default:
         return BatchCheck::unsupported;
     }
@@ -466,6 +519,21 @@ durability::BatchCheck WorkSnapshotReader::instance(const uint8_t *body, uint32_
     }
     return check_of(model_.agents.restore(record.agent_id, record.instance_id, record.revision,
                                           record.lifecycle, stamp));
+}
+
+durability::BatchCheck WorkSnapshotReader::grant(const uint8_t *body, uint32_t size) {
+    authority::GrantSnapshotRecord record{};
+    const auto *binding = model_.principals.binding();
+    if (!authority::read_grant_snapshot_record(body, size, record) ||
+        !valid_stamp(record.created_stamp, metadata_) || !valid_stamp(record.stamp, metadata_) ||
+        binding == nullptr || binding->principal_id != record.create.grant.owner_principal_id ||
+        binding->binding_revision != record.create.grant.owner_binding_revision ||
+        binding->stamp.commit_seq >= record.created_stamp.commit_seq ||
+        binding->stamp.transition_id >= record.created_stamp.transition_id ||
+        model_.agents.find_instance(record.create.grant.subject_instance_id) == nullptr) {
+        return durability::BatchCheck::corrupt;
+    }
+    return check_of(model_.grants.restore_snapshot(record));
 }
 
 durability::BatchCheck WorkSnapshotReader::goal(const uint8_t *body, uint32_t size) {
@@ -583,24 +651,43 @@ durability::BatchCheck WorkSnapshotReader::task_state(const uint8_t *body, uint3
     return check_of(restore);
 }
 
-durability::BatchCheck WorkSnapshotReader::command(const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8_t *body,
+                                                   uint32_t size) {
     CommandMapping mapping{};
     uint64_t floor = 0;
-    if (size != command_size || !read_command_record(body, command_record_size, mapping, floor)) {
+    ayni_bytes_v1 canonical{};
+    if (size < command_tail_size ||
+        !read_command_record(version, body, size - command_tail_size, mapping, floor, canonical)) {
         return durability::BatchCheck::corrupt;
     }
-    mapping.commit_seq = foundation::load_le64(body + command_record_size);
+    mapping.commit_seq = foundation::load_le64(body + size - command_tail_size);
     if (mapping.commit_seq <= last_command_seq_ ||
         mapping.commit_seq > metadata_.covers_commit_seq) {
         return durability::BatchCheck::corrupt;
     }
+    if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
+        const auto *binding = model_.principals.binding();
+        const uint64_t result_boot = mapping.object.id >> 32U;
+        if (binding == nullptr || mapping.principal_id != binding->principal_id ||
+            mapping.commit_seq <= binding->stamp.commit_seq || result_boot == 0U ||
+            result_boot > metadata_.boot_epoch || static_cast<uint32_t>(mapping.object.id) == 0U) {
+            return durability::BatchCheck::corrupt;
+        }
+        uint32_t index = 0;
+        if (model_.grants.find(mapping.object.id, index) &&
+            !WorkReplay::matches_grant_creation(mapping, canonical, model_.grants.at(index),
+                                                model_.grants.source_domain(index),
+                                                model_.grants.scope(index))) {
+            return durability::BatchCheck::corrupt;
+        }
+    }
     last_command_seq_ = mapping.commit_seq;
-    return check_of(model_.commands.restore_checked(mapping, floor));
+    return check_of(model_.commands.restore_checked(mapping, floor, canonical));
 }
 
 durability::BatchCheck WorkSnapshotReader::complete() const {
     return records_ == metadata_.record_count && task_index_ == work::TaskTable::no_index &&
-                   WorkReplay(model_).consistent()
+                   WorkReplay(model_).consistent(metadata_.boot_epoch)
                ? durability::BatchCheck::ok
                : durability::BatchCheck::corrupt;
 }

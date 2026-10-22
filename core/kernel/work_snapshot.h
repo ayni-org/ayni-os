@@ -49,7 +49,7 @@ class WorkSnapshotWriter {
 
   private:
     // The payload's order (records.md).
-    enum class Section { owner_binding, instances, goals, tasks, commands, done };
+    enum class Section { owner_binding, instances, grants, goals, tasks, commands, done };
     // A task's records, in order.
     enum class TaskPart { task, steps, checkpoint, state };
     bool next_record(uint16_t &type, uint32_t &size);
@@ -83,15 +83,16 @@ class WorkSnapshotReader {
 
   private:
     // The payload's order (records.md).
-    enum class Section { owner_binding, instances, goals, tasks, commands };
+    enum class Section { owner_binding, instances, grants, goals, tasks, commands };
     durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
     durability::BatchCheck instance(const uint8_t *body, uint32_t size);
+    durability::BatchCheck grant(const uint8_t *body, uint32_t size);
     durability::BatchCheck goal(const uint8_t *body, uint32_t size);
     durability::BatchCheck task(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_state(const uint8_t *body, uint32_t size);
-    durability::BatchCheck command(const uint8_t *body, uint32_t size);
+    durability::BatchCheck command(uint16_t version, const uint8_t *body, uint32_t size);
 
     WorkModel &model_;
     durability::SnapshotMetadata metadata_;

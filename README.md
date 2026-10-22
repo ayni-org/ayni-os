@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1。Core 已实现事件入口、Kernel 生命周期、Agent/Goal/Task 工作模型、触发与策略步骤/检查点，以及逐 transition 日志、恢复和命令幂等；Native Host 提供文件存储。`MA-010` E+F 补入有界重试、写入方栅栏与重载、双槽快照、日志轮转及 schema 0→1 迁移，当前验证与交付状态见 [ADR-0027](docs/adr/0027-retries-writer-fences-snapshots-and-migration.md) 和 [M1 进度](reports/core/m1-progress.md)，逐条证据见 [契约追踪](contracts/traceability.md)。这些实现面向 Native 与模拟 Host；ESP-IDF 存储、完整 E1–E4、SDK 和实机结果仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，M0 复核见 [reports/core/m0-review.md](reports/core/m0-review.md)。
+> 当前仓库处于 M1。Core 已实现事件入口、Kernel 生命周期、Agent/Goal/Task 工作模型、触发与策略步骤/检查点，以及逐 transition 日志、恢复和命令幂等；Native Host 提供文件存储。`MA-010` E+F 补入有界重试、写入方栅栏与重载、双槽快照、日志轮转及 schema 0→1 迁移，`MA-006` A/B 已合并（可信 owner 绑定/会话、Capability 目录与有限范围），C 已实现 Grant/受限委派及确切命令持久恢复，最终验证进行中；撤销、审批与工作准入分别随 D～F。当前验证与交付状态见 [ADR-0027](docs/adr/0027-retries-writer-fences-snapshots-and-migration.md) 和 [M1 进度](reports/core/m1-progress.md)，逐条证据见 [契约追踪](contracts/traceability.md)。这些实现面向 Native 与模拟 Host；ESP-IDF 存储、完整 E1–E4、SDK 和实机结果仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，M0 复核见 [reports/core/m0-review.md](reports/core/m0-review.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
@@ -93,7 +93,7 @@ E1 验证多个 Agent 共用系统服务；E2 验证动作关键阶段重启；E
 
 R1 是独立的可选一致性套件，E1–E4 仍为四个必需实验。R1.a 验证 Profile 的 Mock 契约，R1.b 在 M2 Core Beta 通过后验证 Linux Bridge/模拟接入，R1.c 以 MHS 的规格、访问、许可及夹具为前提。可选路线不阻断 v0.1；声明 Profile、ROS Bridge 或 MHS 支持分别须通过相关 R1.a、R1.a/b 或 R1.a/c，门槛不得豁免。
 
-构建、模拟、实机功能和长稳结果分别报告。目前只有 M0 骨架在 Linux 的编译与单元/契约测试结果（[M0 复核](reports/core/m0-review.md)）；实验、实机与长稳结果尚无，计划中未注明已实现的命令、目录和 API 均为待实现入口。
+构建、模拟、实机功能和长稳结果分别报告。当前已有 Linux Native 的 M0/M1 编译、单元/契约与模拟恢复验证，实际配置和结果见 [M1 进度](reports/core/m1-progress.md)（M0 基线见 [M0 复核](reports/core/m0-review.md)）；完整实验、实机与长稳结果尚无，计划中未注明已实现的命令、目录和 API 均为待实现入口。
 
 ## 参与与上游致谢
 

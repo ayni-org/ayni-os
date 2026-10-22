@@ -70,12 +70,18 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
                                                    capacities.task_checkpoint_max_bytes}));
     layout.commands_offset =
         placer.place(CommandTable::storage_alignment,
-                     CommandTable::storage_size(authority::PrincipalRegistry::capacity,
-                                                capacities.command_capacity));
+                     CommandTable::storage_size(
+                         authority::PrincipalRegistry::capacity, capacities.command_capacity,
+                         authority_command_max_bytes(capacities.authority_scope_max_bytes)));
     layout.capabilities_offset =
         placer.place(catalog::CapabilityRegistry::storage_alignment,
                      catalog::CapabilityRegistry::storage_size(
                          capacities.capability_capacity, capacities.authority_scope_max_bytes));
+    layout.grants_offset =
+        placer.place(authority::GrantTable::storage_alignment,
+                     authority::GrantTable::storage_size({capacities.grant_capacity,
+                                                          capacities.authority_scope_max_bytes,
+                                                          capacities.grant_delegation_depth_max}));
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

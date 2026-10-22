@@ -89,6 +89,90 @@ typedef struct ayni_scope_v1 {
 ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
                                        const ayni_capability_desc_v1 *capability);
 
+/* Since ABI 0.18. A finite Grant expires at its creation boot's deadline;
+ * restarting never renews it. PERMANENT is an explicit management choice. */
+typedef uint32_t ayni_grant_lifetime_t;
+#define AYNI_GRANT_PERMANENT ((ayni_grant_lifetime_t)1)
+#define AYNI_GRANT_CURRENT_BOOT ((ayni_grant_lifetime_t)2)
+#define AYNI_GRANT_ALLOW_DELEGATION 0x1u
+#define AYNI_GRANT_REQUIRES_SCENE 0x2u /* recognized, currently UNSUPPORTED */
+#define AYNI_GRANT_REQUIRES_QUOTA 0x4u /* recognized, currently UNSUPPORTED */
+
+typedef struct ayni_grant_create_v1 {
+    uint32_t struct_size;
+    uint32_t capability_version;
+    ayni_string_v1 capability_id;
+    uint64_t subject_instance_id;
+    uint64_t parent_grant_id; /* 0: root, whose expected_revision must be 0 */
+    ayni_grant_lifetime_t lifetime;
+    uint32_t flags;
+    uint64_t duration_us; /* PERMANENT: 0; CURRENT_BOOT: positive */
+    ayni_scope_v1 scope;
+} ayni_grant_create_v1;
+
+typedef uint32_t ayni_grant_lifecycle_t;
+#define AYNI_GRANT_ACTIVE ((ayni_grant_lifecycle_t)1)
+#define AYNI_GRANT_EXPIRED ((ayni_grant_lifecycle_t)2)
+
+typedef struct ayni_grant_info_v1 {
+    uint32_t struct_size;
+    ayni_grant_lifecycle_t
+        lifecycle; /* persistent fact; may await durability, not an expiry overlay */
+    uint64_t grant_id;
+    uint64_t subject_instance_id;
+    uint64_t parent_grant_id;
+    uint64_t owner_principal_id;
+    uint32_t owner_binding_revision;
+    uint32_t capability_version;
+    char capability_id[AYNI_CATALOG_ID_MAX_BYTES];
+    uint32_t capability_id_size;
+    uint32_t field_count;
+    uint32_t allow_delegation;
+    uint32_t depth; /* edges from the root, whose depth is 0 */
+    ayni_grant_lifetime_t lifetime;
+    uint32_t revision;
+    uint64_t duration_us;
+    uint64_t deadline_us; /* 0 for PERMANENT or an unusable restored deadline */
+    uint64_t created_transition_id;
+    uint64_t created_commit_seq;
+    uint64_t transition_id;
+    uint64_t commit_seq;
+    ayni_reason_t effective_reason; /* includes ancestor/hold/expiry/durability checks */
+    uint32_t reserved;              /* 0 */
+} ayni_grant_info_v1;
+
+typedef struct ayni_grant_tokens_info_v1 {
+    char members[AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX][AYNI_CATALOG_ID_MAX_BYTES];
+    uint32_t member_sizes[AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX];
+    uint32_t member_count;
+    uint32_t reserved; /* 0 */
+} ayni_grant_tokens_info_v1;
+
+typedef union ayni_grant_field_values_v1 {
+    ayni_authority_i64_range_v1 integer;
+    ayni_grant_tokens_info_v1 tokens;
+} ayni_grant_field_values_v1;
+
+typedef struct ayni_grant_field_info_v1 {
+    uint32_t struct_size;
+    uint32_t field_id;
+    ayni_authority_value_kind_t kind;
+    ayni_authority_field_usage_t usage;
+    char unit[AYNI_CATALOG_ID_MAX_BYTES];
+    uint32_t unit_size;
+    uint32_t reserved;                 /* 0 */
+    ayni_grant_field_values_v1 values; /* only the arm selected by kind is meaningful */
+} ayni_grant_field_info_v1;
+
+/* Owner-thread diagnostic queries, RECOVERING through DRAINING. Output is
+ * caller-owned and copied as a whole only on success. Unknown Grant/field
+ * index returns NOT_FOUND; a reclaimed old reference remains NOT_FOUND.
+ * Strings have explicit byte lengths, without an added terminator. */
+ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
+                             ayni_grant_info_v1 *out_info);
+ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_id,
+                                   uint32_t field_index, ayni_grant_field_info_v1 *out_field);
+
 #ifdef __cplusplus
 }
 #endif

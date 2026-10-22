@@ -222,28 +222,42 @@ Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child)
     return {AYNI_OK, covered};
 }
 
-Coverage contains_request(ayni_bytes_v1 domain, ayni_bytes_v1 allowed,
-                          const ayni_scope_v1 &actual) {
+namespace {
+
+Coverage compare_encoded_typed(ayni_bytes_v1 domain, ayni_bytes_v1 allowed,
+                               const ayni_scope_v1 &child, bool actual) {
     auto status = inspect_encoded(domain, allowed);
     uint32_t ignored = 0;
     if (status == AYNI_OK) {
-        status = inspect(domain, actual, true, ignored);
+        status = inspect(domain, child, actual, ignored);
     }
     if (status != AYNI_OK) {
         return {status, false};
     }
     DomainReader reader(allowed);
+    DomainReader schema(domain);
     DomainField field{};
+    DomainField domain_field{};
     bool covered = true;
     while (reader.next(field)) {
         FieldValues values{};
-        // The schema membership was checked above; field metadata are the
-        // same in every canonical scope of this exact capability version.
-        const auto *input = find_field(actual, field.id);
-        static_cast<void>(catalog::read_field_values(input->allowed, values));
+        bool provided = false;
+        static_cast<void>(schema.next(domain_field));
+        static_cast<void>(selected_values(domain_field, child, actual, values, provided));
         covered = value_covers(field.values, values) && covered;
     }
     return {AYNI_OK, covered};
+}
+
+} // namespace
+
+Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, const ayni_scope_v1 &child) {
+    return compare_encoded_typed(domain, parent, child, false);
+}
+
+Coverage contains_request(ayni_bytes_v1 domain, ayni_bytes_v1 allowed,
+                          const ayni_scope_v1 &actual) {
+    return compare_encoded_typed(domain, allowed, actual, true);
 }
 
 } // namespace ayni::authority

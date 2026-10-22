@@ -1,5 +1,6 @@
 #include "kernel/work_replay.h"
 
+#include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
@@ -54,15 +55,23 @@ bool WorkReplay::binding_matches() const {
 // Discovery must enforce ownership's header rule even when a snapshot
 // covers the record and its body will not be replayed.
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header) {
-    if (header.type == authority::owner_binding_record_type &&
+    if ((header.type == authority::owner_binding_record_type ||
+         header.type == authority::grant_record_type ||
+         header.type == authority::grant_state_record_type ||
+         (header.type == command_record_type && header.version >= exact_command_record_version)) &&
         (header.flags & durability::record_required) == 0U) {
         return RecordUse::corrupt;
+    }
+    if (header.type == command_record_type && header.version == exact_command_record_version) {
+        return RecordUse::applied;
     }
     if (header.version != 1U) {
         return RecordUse::unknown;
     }
     switch (header.type) {
     case authority::owner_binding_record_type:
+    case authority::grant_record_type:
+    case authority::grant_state_record_type:
     case work::instance_record_type:
     case work::goal_record_type:
     case work::goal_state_record_type:
@@ -96,6 +105,10 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     switch (header.type) {
     case authority::owner_binding_record_type:
         return restore_owner_binding(body, size, stamp);
+    case authority::grant_record_type:
+        return restore_grant(body, size, stamp);
+    case authority::grant_state_record_type:
+        return restore_grant_state(body, size, stamp);
     case work::instance_record_type:
         return restore_instance(body, size, stamp);
     case work::goal_record_type:
@@ -111,7 +124,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     case work::task_checkpoint_record_type:
         return restore_task_checkpoint(body, size, stamp);
     case command_record_type:
-        return restore_command(body, size, batch.commit_seq);
+        return restore_command(header.version, body, size, batch.commit_seq);
     default:
         return RecordUse::unknown;
     }
@@ -121,8 +134,10 @@ static_assert(authority::owner_binding_record_version == 1U &&
                   work::instance_record_version == 1U && work::goal_record_version == 1U &&
                   work::goal_state_record_version == 1U && work::task_record_version == 1U &&
                   work::task_state_record_version == 1U && work::task_steps_record_version == 1U &&
-                  work::task_checkpoint_record_version == 1U && command_record_version == 1U,
-              "apply() knows version 1 of each record");
+                  work::task_checkpoint_record_version == 1U && command_record_version == 1U &&
+                  authority::grant_record_version == 1U &&
+                  authority::grant_state_record_version == 1U && exact_command_record_version == 2U,
+              "classify_header/apply know work v1 and exact command v2");
 
 RecordUse WorkReplay::restore_owner_binding(const uint8_t *body, uint32_t size,
                                             foundation::TransitionStamp stamp) {
@@ -250,16 +265,81 @@ RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size
                                                   record.state, stamp));
 }
 
+RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
+                                    foundation::TransitionStamp stamp) {
+    authority::GrantRecord record{};
+    const auto *binding = model_.principals.binding();
+    if (pending_grant_id_ != 0U || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
+        !authority::read_grant_record(body, size, record) || binding == nullptr ||
+        binding->principal_id != record.grant.owner_principal_id ||
+        binding->binding_revision != record.grant.owner_binding_revision ||
+        binding->stamp.commit_seq >= stamp.commit_seq ||
+        binding->stamp.transition_id >= stamp.transition_id ||
+        model_.agents.find_instance(record.grant.subject_instance_id) == nullptr) {
+        return RecordUse::corrupt;
+    }
+    const auto restored = model_.grants.restore_create(record, stamp);
+    if (restored == authority::GrantTable::Restore::restored) {
+        pending_grant_id_ = record.grant_id;
+    }
+    return use_of(restored);
+}
+
+RecordUse WorkReplay::restore_grant_state(const uint8_t *body, uint32_t size,
+                                          foundation::TransitionStamp stamp) {
+    authority::GrantStateRecord record{};
+    if (!authority::read_grant_state_record(body, size, record)) {
+        return RecordUse::corrupt;
+    }
+    return use_of(model_.grants.restore_state(record, stamp));
+}
+
 // An absent principal's retry window is still durable state. Keeping it
 // prevents compaction from turning an old accepted command into a new one.
-RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq) {
+RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uint32_t size,
+                                      uint64_t commit_seq) {
     CommandMapping mapping{};
     uint64_t floor = 0;
-    if (!read_command_record(body, size, mapping, floor)) {
+    ayni_bytes_v1 canonical{};
+    if (model_.commands.mapped_in(commit_seq) != nullptr ||
+        !read_command_record(version, body, size, mapping, floor, canonical)) {
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
-    return use_of(model_.commands.restore_checked(mapping, floor));
+    if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
+        uint32_t index = 0;
+        if (pending_grant_id_ == 0U || mapping.object.id != pending_grant_id_ ||
+            !model_.grants.find(pending_grant_id_, index)) {
+            return RecordUse::corrupt;
+        }
+        const auto &grant = model_.grants.at(index);
+        if (!matches_grant_creation(mapping, canonical, grant, model_.grants.source_domain(index),
+                                    model_.grants.scope(index))) {
+            return RecordUse::corrupt;
+        }
+        pending_grant_id_ = 0;
+    }
+    return use_of(model_.commands.restore_checked(mapping, floor, canonical));
+}
+
+bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                        const authority::Grant &grant, ayni_bytes_v1 domain,
+                                        ayni_bytes_v1 scope) {
+    AuthorityCommandRecord request{};
+    // C parents have creation revision 1 while ACTIVE; later terminal
+    // revisions must not rewrite the original command's expected revision.
+    return read_authority_command(canonical, request) &&
+           grant.created_stamp.commit_seq == mapping.commit_seq &&
+           mapping.principal_id == grant.owner_principal_id &&
+           mapping.object.id == grant.grant_id &&
+           grant.capability_id.equals(request.capability_id) &&
+           grant.capability_version == request.capability_version &&
+           grant.subject_instance_id == request.subject_instance_id &&
+           grant.parent_grant_id == request.parent_grant_id && grant.lifetime == request.lifetime &&
+           grant.duration_us == request.duration_us &&
+           grant.allow_delegation == ((request.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U) &&
+           request.expected_revision == (grant.parent_grant_id == 0U ? 0U : 1U) &&
+           authority_command_scope_matches(request, domain, scope);
 }
 
 // Ending a goal ends its descendants and every task it reaches, and
@@ -267,7 +347,21 @@ RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64
 // (ADR-0018, ADR-0025 decision 5); so no stored transition leaves a live
 // goal under a terminal parent or a stopped owner, or a live task under a
 // terminal goal.
-bool WorkReplay::consistent() const {
+bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
+    if (!model_.grants.consistent()) {
+        return false;
+    }
+    const auto *binding = model_.principals.binding();
+    for (uint32_t index = 0; index < model_.grants.size(); ++index) {
+        const auto &grant = model_.grants.at(index);
+        if (binding == nullptr || binding->principal_id != grant.owner_principal_id ||
+            binding->binding_revision != grant.owner_binding_revision ||
+            model_.agents.find_instance(grant.subject_instance_id) == nullptr ||
+            (grant.grant_id >> 32U) > boot_epoch_limit ||
+            (grant.subject_instance_id >> 32U) > boot_epoch_limit) {
+            return false;
+        }
+    }
     for (uint32_t index = 0; index < model_.goals.size(); ++index) {
         const work::Goal &goal = model_.goals.at(index);
         if (!work::GoalTable::is_live(goal.lifecycle)) {
@@ -313,6 +407,16 @@ void WorkReplay::finish(uint64_t now_us) {
         }
         return AYNI_REASON_GOAL_TYPE_UNKNOWN;
     });
+    model_.grants.resolve_catalog(model_.capabilities);
+    for (uint32_t index = 0; index < model_.grants.size(); ++index) {
+        const auto *subject =
+            model_.agents.find_instance(model_.grants.at(index).subject_instance_id);
+        if (subject == nullptr ||
+            work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_STOPPED ||
+            work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_FAULTED) {
+            model_.grants.hold_restored(index, AYNI_REASON_GRANT_SUBJECT);
+        }
+    }
     hold_tasks();
     hold_unconfirmed_work();
     model_.goals.reanchor(now_us);
@@ -381,9 +485,11 @@ void WorkReplay::discard() {
     model_.goals.clear();
     model_.tasks.clear();
     model_.commands.clear();
+    model_.grants.clear();
     batch_seq_ = 0;
     pending_goal_id_ = 0;
     pending_task_id_ = 0;
+    pending_grant_id_ = 0;
 }
 
 void WorkReplay::discard_for_reload() {

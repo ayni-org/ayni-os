@@ -9,7 +9,7 @@
 
 #include "work/goal/trigger_schedule.h"
 
-#include <ayni/ayni.h>
+#include <ayni/authority.h>
 
 #include <cstdint>
 
@@ -31,8 +31,9 @@ struct Intent {
     uint64_t command_id;     // 0: not a command (command_table.h)
     uint64_t session_id;
     uint32_t expected_revision;
-    GoalCreate create;  // GOAL_CREATE
-    uint64_t target_id; // every other kind: the goal, task or instance it names
+    ayni_grant_create_v1 grant_create; // GRANT_CREATE, borrowed nested views
+    GoalCreate create;                 // GOAL_CREATE
+    uint64_t target_id;                // target intents: the goal, task or instance they name
 };
 
 // The detail of a refused intent, beside its status.
@@ -60,19 +61,23 @@ bool is_implemented(ayni_intent_kind_t kind);
 // expected_revision 0, a goal type id that is a catalog id, parameter data
 // unless their size is 0, a trigger kind this library defines with times
 // that fit it, and a trigger source that is a catalog id for LOCAL_INPUT and
-// empty otherwise. AYNI_OK or AYNI_INVALID_ARGUMENT.
+// empty otherwise. GRANT_CREATE requires a nonzero command ID and the raw
+// canonical request shape (independent of catalog and subjects). Returns
+// INVALID_ARGUMENT for malformed input or UNSUPPORTED_VERSION for newer
+// nested structs; changes no state.
 ayni_status_t check_form(const Intent &intent);
 
 // Decodes and checks an intent from the C ABI in the order of ayni.h,
 // steps 1 and 2: struct sizes, reserved fields and the body, then
-// check_form(), then unsupported kinds. On a failure, failure says why;
+// unsupported kinds before body interpretation, then check_form(). On a
+// failure, failure says why;
 // out_intent is complete only on AYNI_OK.
 ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, IntentFailure &failure);
 
-// The digest of a command's content (C-WIRE-004): the kind, the expected
+// The digest of an ordinary work command (kinds 1..8, C-WIRE-004): kind, expected
 // revision and the body, not the session, so that a retry over another
 // session, also after a restart, is the same command.
-uint64_t command_digest(const Intent &intent);
+uint64_t ordinary_command_digest(const Intent &intent);
 
 } // namespace ayni::kernel
 

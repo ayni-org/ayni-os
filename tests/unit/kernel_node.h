@@ -47,7 +47,9 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
             config.task_checkpoint_max_bytes,
             config.command_capacity,
             config.capability_capacity,
-            config.authority_scope_max_bytes};
+            config.authority_scope_max_bytes,
+            config.grant_capacity,
+            config.grant_delegation_depth_max};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's
@@ -83,6 +85,8 @@ class Node {
         config_.command_capacity = 4;
         config_.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
         config_.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
+        config_.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
+        config_.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
         table_ = sim_.table();
         if (!with_storage) {
             table_.storage_append = nullptr;

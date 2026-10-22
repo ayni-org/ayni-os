@@ -28,6 +28,8 @@ class IdAllocator {
     // Whether allocate() would succeed: started, and the sequence not used up.
     bool available() const { return prefix_ != 0U && next_ != 0U; }
 
+    uint64_t boot_epoch() const { return prefix_ >> 32U; }
+
     // Assigns the next id, which is never 0. Returns false, assigning
     // nothing, when no id is available.
     bool allocate(uint64_t &out_id) {

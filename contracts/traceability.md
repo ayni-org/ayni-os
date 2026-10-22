@@ -6,7 +6,7 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 23 | 1 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 28 | 5 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 19 | 8 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -21,10 +21,10 @@
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 7 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
-| [storage/records.md](storage/records.md) | 14 | 11 |
-| [wire/envelope.md](wire/envelope.md) | 16 | 0 |
+| [storage/records.md](storage/records.md) | 15 | 12 |
+| [wire/envelope.md](wire/envelope.md) | 17 | 1 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 306 | 78 |
+| 合计 | 313 | 84 |
 
 ## 计划章节 → 契约文档
 
@@ -84,6 +84,8 @@
 | ADR-0024 | host/policy_interface.md |
 | ADR-0026 | domain/calls_and_bindings.md、domain/commit_and_output.md、domain/ids_and_time.md、domain/lifecycles.md、domain/limits.md、domain/product_semantics.md、domain/status_codes.md、domain/versions.md、host/host_ports.md、host/policy_interface.md、storage/records.md、wire/envelope.md |
 | ADR-0027 | domain/lifecycles.md、domain/status_codes.md、host/host_ports.md、storage/records.md |
+| ADR-0028 | domain/authority_and_trust.md |
+| ADR-0030 | domain/ids_and_time.md、domain/status_codes.md、storage/records.md、wire/envelope.md |
 
 ## 工作包 → 条款
 
@@ -163,6 +165,10 @@
 | 条款 | 验证 |
 |---|---|
 | C-AUTH-010 | M1 已实现（范围：意图只带 `session_id`，主体、渠道与来源取自会话；ABI 0.16 将主体注册及会话建立声明移至 Host 受管头文件，核对已持久所有者与认证绑定版本，首次绑定持久前拒绝开会话；这是可信原生代码的 API 边界，不是进程内隔离，ADR-0028）：`WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`、`SessionTable.closed_session_is_gone_and_frees_its_place`、`OwnerBindingApi.first_binding_and_instances_share_a_transition_and_sessions_wait_for_durability`、`OwnerBindingApi.bad_session_binding_revision_does_not_write_the_output_or_consume_an_id`、`OwnerBindingApi.changed_principal_or_binding_revision_restricts_without_writing_or_losing_goals`；渠道信任级别对授权的影响随 `MA-006`；E1 步骤 7 |
+| C-AUTH-019 | M1 已实现（Grant 创建、管理会话与持久父门控）：`GrantApi.new_commands_require_management_nonzero_command_and_explicit_supported_features`、`GrantApi.delegation_requires_a_durable_parent_revision_and_one_covering_scope`；ADR-0030 |
+| C-AUTH-020 | M1 已实现（完整原始域与易失兼容性覆盖）：`GrantTable.absent_or_changed_catalog_only_holds_persistent_facts_and_can_be_resolved_again`、`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`；ADR-0030 |
+| C-AUTH-021 | M1 已实现（当前 boot 期限、即时失效与恢复不重锚）：`GrantApi.arrival_at_deadline_denies_immediately_before_step_records_the_terminal_state`、`GrantApi.restart_keeps_permanent_grants_and_expires_finite_grants_without_reanchoring`；C-STORE-014；ADR-0030 |
+| C-AUTH-022 | M1 已实现（完整委派链与单父收窄）：`GrantTable.every_ancestor_hold_and_the_edge_depth_limit_apply_to_descendants`、`GrantTable.finite_delegation_matches_an_independent_discrete_time_coverage_oracle`、`GrantApi.stopping_an_ancestor_subject_invalidates_a_child_owned_by_another_live_subject`；ADR-0030 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
 | C-SUB-004 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |
@@ -178,7 +184,7 @@
 | C-ID-009 | M1 已实现（启动）：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.each_reboot_persists_the_next_epoch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.reboot_after_an_unknown_append_skips_its_epoch`；受限栅栏重载随 `MA-010`；E2 F12 |
 | C-ID-010 | M1 已实现：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.used_up_ids_refuse_goals_and_sessions`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`、`KernelLifecycle.largest_epoch_and_transition_id_still_boot`、`WorkTask.once_goal_derives_one_task_in_the_next_step`、`WorkTask.used_up_ids_leave_the_occurrence_waiting`；实例跨重启保持同一 `instance_id`（ADR-0026）：`WorkRecovery.instance_of_an_agent_no_longer_registered_is_faulted` |
 | C-TIME-001 | M1 已实现（step 时间预算、触发时间、Goal 失效与 occurrence 的等待上限）：`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`WorkTrigger.delay_goal_derives_once_its_time_comes`、`WorkTrigger.interval_goal_derives_each_occurrence_on_its_schedule`、`WorkTrigger.step_takes_occurrences_as_of_its_start`、`WorkExpiry.goal_expires_at_its_time`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`；TTL、租期与 Task 执行中的等待上限随各自工作包 |
-| C-TIME-003 | M1 已实现（工作模型：Goal 的失效与触发只保存时长，Task 不保存 `due_us`，恢复时一律“从恢复时刻重新计时”，ADR-0026 决策 6）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkRecovery.input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed`、`WorkRecords.records_hold_no_time_of_the_boot_that_wrote_them`、`GoalRestore.reanchor_restarts_every_wait_in_full_at_recovery`、`TaskRestore.reanchor_makes_every_task_due_at_recovery`；Observation、租期等其余期限随各自工作包；E2 F1 |
+| C-TIME-003 | M1 已实现（工作模型：Goal 的失效与触发只保存时长，Task 不保存 `due_us`，恢复时一律“从恢复时刻重新计时”，ADR-0026 决策 6）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkRecovery.input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed`、`WorkRecords.records_hold_no_time_of_the_boot_that_wrote_them`、`GoalRestore.reanchor_restarts_every_wait_in_full_at_recovery`、`TaskRestore.reanchor_makes_every_task_due_at_recovery`；Grant的CURRENT_BOOT恢复策略为失效、仅持久duration，不重锚：`GrantApi.restart_keeps_permanent_grants_and_expires_finite_grants_without_reanchoring`（ADR-0030）；Observation、租期等其余期限随各自工作包；E2 F1 |
 | C-TIME-008 | M0 已实现：`NativeHost.monotonic_clock_never_decreases`（Native）；ESP32 使用 `esp_timer_get_time`，M2 补测 |
 | C-LIFE-001 | M0 已实现：`KernelApi.create_in_caller_memory_starts_configuring` |
 | C-LIFE-002 | M1 已实现：`KernelApi.kernel_memory_is_reusable_after_destroy`、`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`；`MA-005` |
@@ -239,4 +245,6 @@
 | C-STORE-009 | M1 已实现（恢复读取）：`PrefixScan.damaged_batch_stops_the_scan`、`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotFaults.payload_damage_the_records_survive_is_still_corrupt`；M1 已实现（工作记录违反表规则或日志末尾不一致时为 `LOG_CORRUPT`，已重放的内容全部丢弃，ADR-0026 决策 5）：`WorkRecovery.log_that_leaves_a_live_task_under_an_ended_goal_is_corrupt`、`WorkReplay.goal_created_without_its_state_is_corrupt`、`WorkReplay.live_task_under_an_ended_goal_is_inconsistent`、`WorkReplay.live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsistent`、`GoalRestore.restore_state_refuses_a_change_to_a_terminal_goal_or_an_impossible_cursor`、`TaskRestore.restore_state_refuses_a_change_to_an_ended_or_held_task`、`AgentRestore.record_no_transition_writes_is_corrupt`；E2 F7（已提交区域损坏） |
 | C-STORE-010 | M1 已实现（schema 0→1 迁移、切换前保留源和模拟旧 reader 拒绝切换）：`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`、`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`、`SnapshotCodec.every_header_and_marker_byte_is_checked`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6；C-VER-021 |
 | C-STORE-013 | M1 已实现（工作模型：实例、Goal、Task、步骤、私有检查点与命令映射只写入日志，每个 transition 一个批次，ADR-0026）：`WorkRecovery.power_loss_takes_the_batches_never_appended`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；预算等其余状态随各自的包 |
-| C-STORE-014 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；评审 |
+| C-STORE-014 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；Grant 不含 deadline/易失 hold：`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`（ADR-0030）；评审 |
+| C-STORE-015 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |
+| C-WIRE-017 | M1 已实现（创建命令完整身份与同批结果）：`CommandCanonical.sorting_and_deduplication_keep_omission_distinct_from_explicit_constraints`、`CommandTable.a_digest_collision_does_not_replace_exact_byte_equality`、`GrantReplay.a_valid_but_expanded_create_scope_cannot_disagree_with_its_exact_command`；ADR-0030；C-COMMIT-005 |

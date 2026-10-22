@@ -211,6 +211,18 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
                           &capacities.authority_scope_max_bytes);
     }
     if (status == AYNI_OK) {
+        status = read_capacity(config, offsetof(ayni_config_v1, grant_capacity),
+                               {AYNI_GRANT_CAPACITY_DEFAULT, 1U, AYNI_GRANT_CAPACITY_MAX},
+                               &capacities.grant_capacity);
+    }
+    if (status == AYNI_OK) {
+        status = read_capacity(config, offsetof(ayni_config_v1, grant_delegation_depth_max),
+                               {AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT,
+                                AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN,
+                                AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX},
+                               &capacities.grant_delegation_depth_max);
+    }
+    if (status == AYNI_OK) {
         status = resolve_storage_buffer(capacities);
     }
     KernelLimits limits{};
@@ -413,7 +425,8 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
         base + layout.goal_types_offset,     base + layout.goals_offset,
         base + layout.sessions_offset,       base + layout.tasks_offset,
         base + layout.strategies_offset,     base + layout.decisions_offset,
-        base + layout.commands_offset,       base + layout.capabilities_offset};
+        base + layout.commands_offset,       base + layout.capabilities_offset,
+        base + layout.grants_offset};
     *out_kernel = new (memory) ayni_kernel(copy_host(host), capacities, limits, storage);
     return AYNI_OK;
 }

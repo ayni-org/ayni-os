@@ -70,6 +70,8 @@ ayni_status_t NativeNode::assemble(const char *state_directory) {
     config.command_capacity = AYNI_COMMAND_CAPACITY_DEFAULT;
     config.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
     config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
+    config.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
 
     std::size_t size = 0;
     std::size_t align = 0;

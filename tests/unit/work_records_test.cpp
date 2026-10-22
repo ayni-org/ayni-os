@@ -717,7 +717,16 @@ TEST(WorkRecords, command_record_round_trips_a_mapping_and_its_floor) {
 }
 
 TEST(WorkRecords, command_record_of_another_size_is_refused) {
-    expect_size_only(ayni::kernel::command_record_size, [](const uint8_t *body, uint32_t size) {
+    const Body valid = Body()
+                           .u64(1)
+                           .u64(2)
+                           .u64(3)
+                           .u64(0)
+                           .u32(AYNI_INTENT_GOAL_CANCEL)
+                           .u32(AYNI_OBJECT_GOAL)
+                           .u64(4)
+                           .u32(1);
+    expect_whole_body_only(valid, [](const uint8_t *body, uint32_t size) {
         CommandMapping mapping{};
         uint64_t floor = 0;
         return ayni::kernel::read_command_record(body, size, mapping, floor);

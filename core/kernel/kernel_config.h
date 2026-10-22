@@ -29,6 +29,8 @@ struct KernelCapacities {
     uint32_t command_capacity; // per principal
     uint32_t capability_capacity;
     uint32_t authority_scope_max_bytes;
+    uint32_t grant_capacity;
+    uint32_t grant_delegation_depth_max;
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -55,6 +57,7 @@ struct KernelStorage {
     void *decisions;
     void *commands;
     void *capabilities;
+    void *grants;
 };
 
 } // namespace ayni::kernel

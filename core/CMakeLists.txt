@@ -29,6 +29,8 @@ ayni_add_core_module(catalog
 
 ayni_add_core_module(authority
     SOURCES
+        authority/grant/grant_records.cpp
+        authority/grant/grant_table.cpp
         authority/principal/owner_binding_records.cpp
         authority/principal/principal_registry.cpp
         authority/scope/scope.cpp
@@ -49,12 +51,14 @@ ayni_add_core_module(work
 ayni_add_core_module(kernel
     SOURCES
         kernel/boot/boot_sequence.cpp
+        kernel/command/command_canonical.cpp
         kernel/command/command_records.cpp
         kernel/command/command_table.cpp
         kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
+        kernel/intent/authority_intent.cpp
         kernel/intent/decision.cpp
         kernel/intent/intent.cpp
         kernel/intent/intent_rules.cpp

@@ -5,6 +5,7 @@
 // work tables check the object an intent names; work/propagation checks and
 // applies what the change does to the tasks it reaches.
 
+#include "kernel/intent/authority_intent.h"
 #include "kernel/intent/work_model.h"
 
 namespace ayni::kernel {
@@ -299,8 +300,8 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
 // command id.
 ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authority::Session &session,
                           uint64_t now_us, IntentOutcome &outcome, IntentFailure &failure) {
-    // Until grants exist (MA-006), every session belongs to the owner, who
-    // may submit every intent.
+    // Ordinary work keeps MA-004 admission until E/F adds immutable Goal
+    // authority metadata. Grant management is checked in create_grant.
     switch (intent.kind) {
     case AYNI_INTENT_GOAL_CREATE: {
         // The Host authenticated this exact binding when opening the
@@ -324,17 +325,32 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
                            IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status) {
+                           ayni_status_t storage_status, uint64_t durable_seq) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    const uint64_t digest = intent.command_id != 0U ? command_digest(intent) : 0U;
+    const bool exact = intent.kind == AYNI_INTENT_GRANT_CREATE;
+    const uint64_t digest =
+        intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
     if (intent.command_id != 0U) {
         const CommandMapping *mapping = nullptr;
-        switch (model.commands.find(session->principal_id, intent.command_id, digest, mapping)) {
+        CommandTable::Lookup lookup;
+        if (exact) {
+            const auto match =
+                model.commands.find_exact(session->principal_id, intent.command_id,
+                                          {intent.expected_revision, &intent.grant_create});
+            if (match.status != AYNI_OK) {
+                return match.status;
+            }
+            lookup = match.lookup;
+            mapping = match.mapping;
+        } else {
+            lookup = model.commands.find(session->principal_id, intent.command_id, digest, mapping);
+        }
+        switch (lookup) {
         case CommandTable::Lookup::retried:
             outcome.object = mapping->object;
             outcome.commit_seq = mapping->commit_seq;
@@ -360,13 +376,22 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
                       object_ref(AYNI_OBJECT_PRINCIPAL, session->principal_id), failure);
     }
-    const ayni_status_t status = apply_rules(model, intent, *session, now_us, outcome, failure);
+    const ayni_status_t status =
+        exact ? create_grant(model, intent, *session, now_us, durable_seq, outcome, failure)
+              : apply_rules(model, intent, *session, now_us, outcome, failure);
     // The mapping joins the transition, so the log stores both or neither.
     // A row retained for an unregistered principal can occupy the table;
     // admission above reserves a row before any domain transition changes.
     if (status == AYNI_OK && intent.command_id != 0U) {
-        model.commands.insert({session->principal_id, intent.command_id, digest, outcome.commit_seq,
-                               intent.kind, outcome.object});
+        const CommandMapping mapping{session->principal_id, intent.command_id, digest,
+                                     outcome.commit_seq,    intent.kind,       outcome.object};
+        if (exact) {
+            if (!model.commands.insert_exact(mapping)) {
+                return AYNI_INTERNAL;
+            }
+        } else {
+            model.commands.insert(mapping);
+        }
     }
     return status;
 }

@@ -1,6 +1,6 @@
 # 授权与信任
 
-- **关联**：计划 §2.2、§2.5、§3.4、§3.5、§5.4；ADR-0003、ADR-0004、ADR-0017；`MA-004`、`MA-006`、`MA-016`；E1 步骤 1、6、7，E2 F1、F10
+- **关联**：计划 §2.2、§2.5、§3.4、§3.5、§5.4；ADR-0003、ADR-0004、ADR-0017、ADR-0028～0030；`MA-004`、`MA-006`、`MA-016`；E1 步骤 1、6、7，E2 F1、F10
 - **属主**：`authority/principal`、`authority/scope`、`authority/grant`、`authority/scene`
 
 ## 信任的两条轴
@@ -32,8 +32,13 @@
 | C-AUTH-014 | Grant 由接收方本机保存，不作为持有者令牌随消息传递 | 把 Grant 序列化进消息，接收方据消息内容授权 | 评审；ADR-0004 |
 | C-AUTH-015 | 查询与取消限原调用主体、所有者或该控制域的 authority-owner；订阅需相应的读取授权 | 任意已认证节点可以取消别人的动作 | `MA-016` |
 | C-AUTH-016 | 静态准入检查“请求包络 ⊆ Grant 与 Scene 允许的包络 ⊆ 设备限值”，且前置观察新鲜；执行端只能收紧，不能扩大 | 设备限值是 30°，场景允许 45°，请求 40° 被准入 | `MA-018`；C-PERMIT-003 |
-| C-AUTH-017 | Capability 版本化授权字段只有 I64 闭区间、ENUM 与 IDENTIFIER 的有限集合；字段取合取，类型/单位/用途精确匹配，未知/重复/空/超域输入拒绝；Scope 省略约束仅表示已注册全域，规范表达排序去重并补齐全域 | 省略 angle 便获得所有 int64；错误单位或未知字段被忽略 | `MA-006` B（实施中，验证待补）；ADR-0029 |
-| C-AUTH-018 | 实际请求恰好提供每个已声明授权字段的一个值；执行目标和外发目的地按精确 IDENTIFIER 集合检查，必须与真实 Binding 提取的目标/目的地一致；范围包含成立不等于主体/期限/撤销/预算通过 | 空实际请求因 allowed Scope 省略字段而通过；允许 cloud-a 却向 cloud-b 外发 | `MA-006` B（机制实施中，验证待补）；Grant/工作接入随 C/E/F，真实 Binding 消费随 `MA-018`、`MA-008`；ADR-0029 |
+| C-AUTH-017 | Capability 版本化授权字段只有 I64 闭区间、ENUM 与 IDENTIFIER 的有限集合；字段取合取，类型/单位/用途精确匹配，未知/重复/空/超域输入拒绝；Scope 省略约束仅表示已注册全域，规范表达排序去重并补齐全域 | 省略 angle 便获得所有 int64；错误单位或未知字段被忽略 | `MA-006` B 已完成本地五配置及独立变异，待合并；ADR-0029 |
+| C-AUTH-018 | 实际请求恰好提供每个已声明授权字段的一个值；执行目标和外发目的地按精确 IDENTIFIER 集合检查，必须与真实 Binding 提取的目标/目的地一致；范围包含成立不等于主体/期限/撤销/预算通过 | 空实际请求因 allowed Scope 省略字段而通过；允许 cloud-a 却向 cloud-b 外发 | `MA-006` B 的范围/请求机制已完成本地验证，待合并；Grant/工作接入随 C/E/F，真实 Binding 消费随 `MA-018`、`MA-008`；ADR-0029 |
+| C-AUTH-019 | 根/子 Grant 创建均要求已绑定所有者的 MANAGEMENT Session、非零 command_id；根 expected_revision 为0，child 校验 parent 当前 revision；新权限持久前不能使用或委派，未持久父返回 BUSY/GRANT_NOT_DURABLE | 语音文本创建 Grant；尚未落盘的 parent 已产生有效 child | M1 已实现（Grant 创建、管理会话与持久父门控）：`GrantApi.new_commands_require_management_nonzero_command_and_explicit_supported_features`、`GrantApi.delegation_requires_a_durable_parent_revision_and_one_covering_scope`；ADR-0030 |
+| C-AUTH-020 | Grant 保存创建时 exact Capability ID/version 的完整 source_domain 与展开 scope；恢复当前完整域缺失/不一致时只施加易失 hold，不按新声明解释旧权限，不能仅因此回收ACTIVE Grant，不把该hold写入snapshot | 注册域由0..10变成0..20，旧scope仍是1..2便继续授权；换回旧声明后仍被永久写下的hold挡住 | M1 已实现（完整原始域与易失兼容性覆盖）：`GrantTable.absent_or_changed_catalog_only_holds_persistent_facts_and_can_be_resolved_again`、`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`；ADR-0030 |
+| C-AUTH-021 | Grant 期限显式分永久或当前boot限时；限时自接受开始，持久仅保存duration且创建boot由ID得到，deadline只在当前boot内存；恢复的限时Grant失效，不能从恢复时刻重算 | 等待落盘或重启为限时Grant延长有效期；journal保存monotonic deadline | M1 已实现（当前 boot 期限、即时失效与恢复不重锚）：`GrantApi.arrival_at_deadline_denies_immediately_before_step_records_the_terminal_state`、`GrantApi.restart_keeps_permanent_grants_and_expires_finite_grants_without_reanchoring`；C-STORE-014；ADR-0030 |
+| C-AUTH-022 | 委派检查完整父链，同cap ID/version/source_domain，一条parent完整覆盖child；scope、期限与再委派权限只能收窄；depth按边数根0；任一祖先无效则后代不可用 | 只看叶节点；有限parent生永久child；借另一条Grant拼齐越界字段 | M1 已实现（完整委派链与单父收窄）：`GrantTable.every_ancestor_hold_and_the_edge_depth_limit_apply_to_descendants`、`GrantTable.finite_delegation_matches_an_independent_discrete_time_coverage_oracle`、`GrantApi.stopping_an_ancestor_subject_invalidates_a_child_owned_by_another_live_subject`；ADR-0030 |
+| C-AUTH-023 | Grant表满仅回收终态已持久、永久失效且无保留child/活工作/Gate引用的叶节点，按终态提交再按ID选最早，日志固定被替代ID；无安全候选明确拒绝 | 拿创建次序冒充终态次序；到期尚未持久或catalog hold便回收；重放重新选对象 | M1 部分实现（Grant 终态持久、保留 child、精确让位）：`GrantTable.replacement_uses_terminal_order_then_id_instead_of_creation_order`、`GrantTable.retained_children_prevent_parent_replacement_until_the_leaf_has_been_replaced`、`GrantApi.only_a_durable_expired_leaf_can_make_room_and_retry_keeps_its_removed_reference`；Gate/活工作依赖随 D/E/F；ADR-0030 |
 | C-TRUST-001 | 模型、VLA、外部消息与发现到的描述都只作为意图或候选描述，经 Kernel 校验后才影响状态；模型输出不能作为授权 | 模型回复“用户已同意”，系统据此执行 | E1 步骤 7；§10.6 权限行 |
 | C-TRUST-002 | 发现到的设备或外部端点只产生候选描述，经所有者确认的可信注册后进入目录，不自动生成 Grant | 局域网上扫描到的设备自动获得调用授权 | `MA-034`；§3.7 |
 | C-TRUST-003 | 适配器进程以独立系统账户运行，不能访问执行器设备节点与凭据库，只经带自身主体身份的本地 IPC 连接 Kernel | ROS 适配器以 root 运行并直接写 `/dev/ttyUSB0` | §10.6 权限行；R1 B5 |
@@ -49,3 +54,9 @@ ENUM 与 IDENTIFIER 都是有界 CatalogId 文本集合，但类型不互换。�
 规范正文格式版本为 1：4 B 头部为 `u16 format`、`u8 field_count`、`u8 reserved=0`；每字段先写 `u32 field_id`、四个 u8 的 `kind/usage/unit_length/member_count`、unit 正文，随后为两个小端 i64 端点，或逐项 `u8 length + token bytes`。字段按 ID、token 按字节序严格递增；I64 的 member_count 为 0，符号集合为 1–8。省略字段补完整注册域；拒绝非规范、缺失或多余尾字节，不依赖 C++ 布局。该正文不是公开 wire 协议或独立日志记录；后续 Grant 持久化须带 Capability 身份/版本并引用此格式。
 
 完整注册域与任一规范 Scope 都受 `authority_scope_max_bytes` 约束。默认 256 B，范围 64–4096 B，字段数/成员数/字符长度/字节数上限同时有效；超限明确拒绝，不能先接受无法表示的省略全域。Scene、次数/费用额度不属于本字段表达，不因字段缺省而成为无限权限；依赖 Scene 的授权不支持，额度随 `MA-018`。
+
+## Grant 管理与恢复（MA-006 C，已实现并完成 Native 验证）
+
+`GRANT_CREATE` 沿统一意图入口创建根 Grant 或携带 parent 的受限委派；C 的管理端为唯一owner，不把subject_instance_id视作调用者认证。known Scene/Quota flags返回 `UNSUPPORTED/GRANT_UNSUPPORTED`，unknown flags为形状错误。查询使用固定typed `ayni_get_grant` 与按index复制字段的 `ayni_get_grant_field`，所有输出由caller拥有，不返回内部指针。lifecycle表示持久领域模型的状态，可能尚待落盘，不能当作持久确认；用对象commit_seq与Kernel durable_seq核对，effective_reason给出即时有效性。
+
+每Grant拥有metadata与source_domain/scope两个配置字节stride；恢复先独立读取合法事实，再按当前exact目录完整bytes证明语义一致。未持久、过期、subject缺失、catalog变更等有效性原因不能被单纯scope包含替代；完整父链继承拒绝。到期即时拒绝与终态持久回收分开，易失deadline/hold不导出快照。撤销、Goal专属Grant/批准与完整work检查分别随D/E/F，C不声称已完成这些消费者。

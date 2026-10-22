@@ -1,8 +1,8 @@
 # 持久记录格式
 
-- **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027；`MA-010`；E2 F0–F8、F11、F12，E4 步骤 6
+- **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前写 `storage_schema=1`，明确读取 0、1；0 为迁移来源。布局以本文件和编解码测试为准，迁移切换见 ADR-0027；Native/模拟证据不代表 ESP32 或真实 OTA 验证
+- **状态**：M1 当前写 `storage_schema=1`，明确读取 0、1；0 为迁移来源。布局以本文件和编解码测试为准，迁移切换见 ADR-0027；Native/模拟证据不代表 ESP32 或真实 OTA 验证；以下 C 的 Grant/完整命令扩展已有 Native 验证，交付状态见 ADR-0030
 
 ## 编码约定
 
@@ -53,13 +53,15 @@
 | `GOAL`（类型 3）、`GOAL_STATE`（类型 4） | `work/goal` | `GOAL` 在创建它的批次（B1）；`GOAL_STATE` 在每个改变该 Goal 的批次，含 occurrence 游标（B2），所以不另设 `OCCURRENCE_CURSOR` |
 | `TASK`（类型 5）、`TASK_STATE`（类型 6） | `work/task` | `TASK` 在派生它的批次（B2）；`TASK_STATE` 在每个改变该 Task 的批次，含 `TASK_PROGRESS` 的内容 |
 | `TASK_STEPS`（类型 7）、`TASK_CHECKPOINT`（类型 8） | `work/task` | 提交步骤或私有检查点的决策批次（B3），即 `STEP_CHECKPOINT` |
-| `COMMAND_MAPPING`（类型 9） | `kernel` | 接受该命令的 transition 批次（B1） |
+| `COMMAND_MAPPING`（类型 9，ordinary v1、auth v2，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2含完整canonical请求（ADR-0030） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | `budget` | B2、B4 |
 | `CALL_IDENTITY` | `work/call` | B3 |
 | `ACTION_STATE` | `work/action` | 准备、屏障与终态各自的批次；终态在 B4 |
 | `CALL_RESULT` | `work/call` | B4 |
 | `MEMORY_RECORD`、`MEMORY_TOMBSTONE`、`LINEAGE` | `knowledge` | B4、B5 |
-| `GRANT`、`GRANT_REVOCATION` | `authority/grant` | 授权变更批次、B5 |
+| `GRANT_CREATE`（类型13，版本1，REQUIRED） | `authority/grant` | Grant创建，与v2命令身份/结果同批（ADR-0030） |
+| `GRANT_STATE`（类型14，版本1，REQUIRED） | `authority/grant` | C的到期终态；撤销状态与拒绝Gate待D |
+| `GRANT_REVOCATION` | `authority/grant` | 后续撤销变更与清理批次B5，随D明确格式 |
 | `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
 
@@ -69,7 +71,7 @@
 
 ## 工作记录
 
-类型 2 至 9 由 ADR-0026 定义，均为版本 1 且置 `REQUIRED`。记录写对象在该 transition 之后的状态，不写操作，所以重放不重新执行规则、不调用策略、不读时钟。字节串为 `uint32` 长度加内容；目录 ID 至多 32 字节。
+类型 2 至 9 的 ordinary v1由 ADR-0026 定义，均置 `REQUIRED`；C 为授权命令新增类型9/version2，见下节。记录写对象在该 transition 之后的状态，不写操作，所以重放不重新执行规则、不调用策略、不读时钟。字节串为 `uint32` 长度加内容；目录 ID 至多 32 字节。
 
 | 类型 | 记录 | 正文 | 长度 |
 |---:|---|---|---:|
@@ -82,10 +84,28 @@
 | 8 | `TASK_CHECKPOINT` | `task_id` u64、写入方 `version` u32、写入方策略 ID 字节串、私有检查点字节串 | 20 + 字节串 |
 | 9 | `COMMAND_MAPPING` | `principal_id`、`command_id`、内容摘要、该 principal 当时的下限（各 u64）；结果的意图 `kind`、对象 `kind`（各 u32）、对象 `id` u64、对象 `revision` u32。应用命令的 `commit_seq` 取自所在批次 | 52 |
 
-- 记录不含单调时间（C-STORE-014）：Goal 写时长，不写到期时刻；Task 的 `due_us` 不写入。恢复时各计时从恢复结束时刻起按完整时长重新计算（ADR-0026 决策 6）。
-- 一个批次内的次序：可选的首次 `OWNER_BINDING`，`INSTANCE`，新建 Goal 的 `GOAL`，各 `GOAL_STATE`，新建 Task 的 `TASK`，各 `TASK_STEPS`、`TASK_CHECKPOINT`，各 `TASK_STATE`，最后 `COMMAND_MAPPING`。新建的 Goal 或 Task 须在同一批次带有状态记录，否则为损坏。
+- 记录不含单调时间（C-STORE-014）：Goal 写时长，不写到期时刻；Task 的 `due_us` 不写入。现有Goal/Task计时从恢复结束时刻起按完整时长重新计算（ADR-0026 决策6）；Grant限时恢复直接失效，绝不重锚（ADR-0030）。
+- 一个批次内的次序：可选的首次 `OWNER_BINDING`，`INSTANCE`，C的`GRANT_CREATE/GRANT_STATE`，新建 Goal 的 `GOAL`，各 `GOAL_STATE`，新建 Task 的 `TASK`，各 `TASK_STEPS`、`TASK_CHECKPOINT`，各 `TASK_STATE`，最后 `COMMAND_MAPPING`。新建的 Goal 或 Task 须在同一批次带有状态记录，否则为损坏。
 - 状态记录引用的对象须已在表中，Goal 与 Task 的 `revision` 不减，`TASK_STEPS` 的 `steps_before` 须等于 Task 已有的步骤数，取代的对象须已终结；Goal 的 owner 须是此前记录启动的实例，终态的 Goal 与 Task 不再改变，带 `hold_status` 停下的 Task 只能结束，实例的 `revision` 不减、停止后不再改变；日志末尾不得有未终结的 Task 留在终态 Goal 之下，也不得有未终结的 Goal 留在终态的父目标之下或属于已停止的实例（结束 Goal 的 transition 同时结束它的后代与 Task，停止实例的 transition 同时结束它的 Goal）。违反者为损坏（C-STORE-009）。新建对象取代的对象记在 `GOAL`、`TASK` 中，重放按记录取代，不重新选择。本次启动的容量或限值放不下的记录使恢复以 `STATE_EXCEEDS_CAPACITY` 受限，损坏或容量失败受限时丢弃已重放的内容；所有者绑定失配保留已校验的诊断模型，不写入新批次（ADR-0028）。
 - 不改变持久状态的 transition 写一个空批次，`commit_seq` 仍然连续。
+
+## Grant 与完整授权命令记录（MA-006 C，已实现并完成 Native 验证）
+
+领域codec为`authority/grant/grant_records.*`和`kernel/command/command_records.*`。source_domain与scope均采用B的finite domain format 1，但前者保存原完整域，后者保存全部展开字段，必须在source_domain内；不依赖当前catalog即可验证持久事实。当前exact目录缺失/完整bytes不同在恢复结束后施加易失hold，不属于损坏，也不写入snapshot。
+
+| 类型/版本 | 正文顺序 | 长度 |
+|---|---|---:|
+| 13/v1 `GRANT_CREATE` | grant_id、replaced_grant_id、subject_instance_id、parent_grant_id、owner_principal_id（u64）；owner_binding_revision、capability_version（u32）；capability_id字节串；lifetime、allow_delegation（u32）；duration_us（u64）；depth（u32）；source_domain字节串、expanded_scope字节串 | 80 + cap ID正文 + source_domain + scope；最大112+2×scope_max_bytes |
+| 14/v1 `GRANT_STATE` | grant_id u64、revision u32、lifecycle u32 | 16 |
+| 9/v2 `COMMAND_MAPPING` | v1的52 B正文，后接canonical_format u32、canonical_size u32、canonical正文 | 60 + canonical正文；C最大144+scope_max_bytes |
+
+Grant创建初态ACTIVE/revision1，创建stamp取batch；到期state只能ACTIVE→EXPIRED/revision2，last stamp取batch。duration必须与PERMANENT=0/CURRENT_BOOT>0一致；不写monotonic deadline，创建boot从ID高32位得出。运行时deadline只在创建boot内存中比较；replay校验必要duration/boot/父关系，恢复的限时Grant一律失效，不从duration重新计时。普通step及首个启动领域transition显式结算到期；未持久终态不能成为回收候选。
+
+replaced_grant_id精确记录安全终态叶节点的让位，不在replay重新选择。父必须存在，cap identity/source_domain与父一致，scope/再委派权限/期限只能收窄，depth按边数根0；恢复检查完整链及最终跨对象一致性。C journal的Grant创建与其v2 mapping必须同批匹配，核对owner/capability/subject/parent/期限/标志/expected_revision及GRANT revision1结果；raw scope在保存source_domain下展开须恰等保存scope，不能仅验证二者各自合法。缺少任一半或配对不一致为损坏，不能用可查询的孤立权限继续运行。
+
+v2 canonical_format当前为1，必须有非空完整授权命令正文和GRANT/revision1结果，不接受Scene/Quota flags作为已受理内容，重算digest并以length+bytes确切比较；v1只兼容既有ordinary kinds，不可承载auth。原始命令身份不依赖当前catalog，具体见C-WIRE-017。原始canonical Grant命令最大固定部84 B：kind、expected_revision、capability_version（u32），cap ID字节串，subject/parent（u64），lifetime/flags（u32），duration（u64），原始scope字节串。raw scope头为u16format/u8provided_count/u8reserved0，每字段为u32id/u8kind/u8unit_length/u8member_count/u8reserved0，再接unit和I64端点或length+token；其上下文不同于B展开domain，保留省略，禁止混用reader。
+
+新增auth record缺REQUIRED、未知版本、正文非法或跨批不完整均不能被跳过；replay、Boot discovery（含已被快照覆盖的历史）、snapshot共享分类。持久状态超过本次scope/Grant/canonical配置界时报告容量受限，不截断或降成digest。
 
 ## 控制记录与读取
 
@@ -133,7 +153,7 @@
 
 ### 静态领域记录
 
-正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。以下均为记录版本 1；不直接写入 C++ 内存布局。
+正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。除COMMAND_MAPPING可保留v1/v2外，下表均为记录版本1；不直接写入C++内存布局。C记录实施/验证状态见ADR-0030。
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
@@ -144,11 +164,12 @@
 | 7 `TASK_STEPS` | 日志的步骤正文，每条只含一个 key，`steps_before` 为该 key 的位置、`count=1` | 20 + key 字节数 |
 | 8 `TASK_CHECKPOINT` | 与日志正文相同，包含写入方策略 ID、版本及原检查点；没有写入方时不写该记录 | 日志正文长度 |
 | 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
-| 9 `COMMAND_MAPPING` | 日志正文中的 principal、命令、摘要、最终下限与接受结果，再接原接受批次的 `commit_seq` u64 | 60 |
+| 13 `GRANT_CREATE` | 日志创建正文，后接created_stamp的transition/commit（u64×2）、last_stamp的transition/commit（u64×2）、revision/lifecycle（u32×2）；无deadline/hold | 日志创建长度+40；最大152+2×scope_max_bytes |
+| 9 `COMMAND_MAPPING` | 保留该条v1/v2日志正文及完整canonical（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8 |
 
-顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按深度从小到大的 Goal、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id` 前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
+顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的Goal、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
 
-所有对象与命令的提交不超过 `S`，创建 transition 不超过快照基线；本次注册内容的缺失导致的 Agent fault、Goal hold、Task recovery hold 不写入快照。没有注册的 principal 仍占有原有的一行命令窗口及下限；第二个 principal 的持久命令放不下时明确报容量不足，不丢弃原行。命令窗口缩小时按原接受次序让位并提高下限。单调时刻不写入：Goal 只保留时长及是否待发生，Task 不写 `due_us`，最终恢复后重新计时。
+所有对象与命令的提交不超过 `S`，创建 transition 不超过快照基线；本次注册内容的缺失导致的 Agent fault、Goal hold、Task recovery hold 不写入快照。没有注册的 principal 仍占有原有的一行命令窗口及下限；第二个 principal 的持久命令放不下时明确报容量不足，不丢弃原行。命令窗口缩小时按原接受次序让位并提高下限。单调时刻不写入：Goal 只保留时长及是否待发生，Task不写`due_us`，这些工作计时最终恢复后重锚；Grant只写duration，恢复限时Grant失效，不能重锚。Grant保留created/last stamp及终态顺序；正常命令窗口可已淘汰创建mapping，snapshot不要求每个保留Grant仍有原mapping。
 
 导出、回读与恢复按页复用同一存储缓冲，单条记录上限由配置容量计算，整份快照可以大于缓冲；Core 不分配另一份 WorkModel 或完整快照内存。任何损坏、不支持或容量不足均丢弃本次导入的全部状态。绑定不匹配时，已完整校验的模型仅保留用于只读诊断。
 
@@ -177,4 +198,5 @@
 | C-STORE-011 | 日志轮转、双槽快照、临时输出、历史大小与写频率均有上限；维护与限频暂时冻结新 transition 并报告背压，动作屏障不能为节省写入而跳过；实际空间不足时新副作用返回 `AYNI_STORAGE_FAILED`，已映射命令仍返回首次结果。保留当前可查询对象、步骤/检查点和既有幂等窗口，不额外归档已覆盖历史 | 为减少磨损跳过屏障，或轮转删除尚未激活快照覆盖的日志，或存储满使已接受命令失去原结果 | M1 部分实现（当前工作模型的轮转、保留、空间准入和写频；动作屏障尚未实现）：`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`、`StorageRecovery.retry_wait_is_readable_and_preserves_command_lookup_before_busy`、`WorkSnapshot.commands_keep_their_floor_and_original_acceptance_order`；真实空间不足的准入 `StorageAdmission.full_medium_refuses_new_state_but_keeps_the_original_command_result`、`StorageAdmission.an_unmapped_noncommand_also_requires_space_before_applying`；日志上限与两项预留 `StorageBudget.default_log_limit_is_eight_buffers_or_one_mib`、`StorageBudget.smallest_log_limit_holds_the_reserve_two_batches_and_an_activation`、`StorageBudget.admission_needs_the_larger_reserve_free`、`StorageBudget.a_space_shortage_holds_transitions_until_a_refresh_finds_room`、`StorageBudget.a_snapshot_needs_its_reserve_and_a_shortage_holds_transitions`、`StorageBudget.compaction_is_due_at_three_quarters_of_the_limit`、`StorageBudget.compaction_is_due_before_the_log_reserve_would_cross_the_limit`、`StorageAdmission.a_log_limit_without_room_to_compact_is_refused`、`StorageAdmission.a_pending_compaction_holds_new_work_until_the_journal_drains`；持续限频 `SnapshotFaults.every_mutating_phase_shares_the_interval_and_waits_without_spinning`、`SnapshotFaults.a_slow_strategy_cannot_spend_the_next_storage_interval_before_submit`；动作屏障随 MA-008/MA-018/MA-022；E2 末段；C-COMMIT-015 |
 | C-STORE-012 | 日志扇区擦除在没有活动执行器会话时预先完成；会话期间只做页编程，以免擦除挂起停止监督（C-STOP-005） | 会话中日志写满一个扇区，触发擦除，L2 心跳超时误停 | `MA-026` 故障矩阵 |
 | C-STORE-013 | 参与 transition 的状态只写入日志；NVS 只保存不参与 transition 的小型配置。必须跨介质原子更新时，以日志中的协调记录实现（C-COMMIT-014） | 预算写在 NVS、Task 写在日志，掉电后只更新了一边 | M1 已实现（工作模型：实例、Goal、Task、步骤、私有检查点与命令映射只写入日志，每个 transition 一个批次，ADR-0026）：`WorkRecovery.power_loss_takes_the_batches_never_appended`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；预算等其余状态随各自的包 |
-| C-STORE-014 | 持久记录及快照不包含单调时间值、句柄、指针、资源占用或原始媒体（C-PRIM-001、C-TIME-003）；快照只保存持久领域视图，不把本次目录缺失造成的恢复 fault/hold 永久化 | 快照保存重启前单调时刻，或换回兼容策略后 Task 因上次恢复的临时 hold 仍不能继续 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；评审 |
+| C-STORE-014 | 持久记录及快照不包含单调时间值、句柄、指针、资源占用或原始媒体（C-PRIM-001、C-TIME-003）；快照只保存持久领域视图，不把本次目录缺失造成的恢复 fault/hold 永久化 | 快照保存重启前单调时刻，或换回兼容策略后 Task 因上次恢复的临时 hold 仍不能继续 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；Grant 不含 deadline/易失 hold：`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`（ADR-0030）；评审 |
+| C-STORE-015 | Grant创建与完整授权命令mapping/结果同批；保留source_domain、展开scope、父链、原始stamp和精确replacement，journal/snapshot均不写deadline/易失hold；unknown/missing REQUIRED的授权记录含covered历史均受限 | 孤立Grant被恢复为权限；快照遗漏原始域或把当前hold永久化；旧reader跳过授权新记录 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |
