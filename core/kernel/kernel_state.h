@@ -53,6 +53,10 @@ struct ayni_kernel {
     void journal(uint64_t first_seq);
     // The last commit_seq known durable (ayni_kernel_info_v1).
     uint64_t durable_seq() const;
+    // Receipts use the current writer's acknowledged prefix, never the
+    // public monotonic floor retained while a reload is incomplete.
+    ayni_status_t intent_receipt(uint64_t principal_id, uint64_t command_id,
+                                 ayni_intent_receipt_v1 &out) const;
 
     // Caller code runs inside the kernel: functions that change the kernel
     // return AYNI_INVALID_STATE (ayni.h).
@@ -100,6 +104,8 @@ struct ayni_kernel {
     bool has_room() const { return storage_has_room(); }
     // Enters FENCED after the RUNNING writer exhausts its retries.
     void settle_log();
+    bool settle_revocations(bool recovered);
+    bool revocation_ready() const;
     void enter_fenced(ayni_restriction_t reason);
     // Takes the outcome of a maintenance run that ended.
     void settle_maintenance();

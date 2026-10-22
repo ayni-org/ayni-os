@@ -13,7 +13,8 @@
 namespace ayni::kernel {
 namespace {
 
-// Ordinary snapshot records remain v1; exact auth commands use v2 (records.md).
+// Ordinary snapshots remain v1; Grant snapshots use v2, while command
+// mappings retain their own v1/v2/v3 syntax (contracts/storage/records.md).
 constexpr uint16_t snapshot_record_version = 1;
 constexpr uint32_t record_prefix = static_cast<uint32_t>(durability::record_header_size);
 constexpr uint32_t id_max = catalog::CatalogId::max_size;
@@ -79,6 +80,24 @@ bool valid_stamp(foundation::TransitionStamp stamp, const durability::SnapshotMe
            stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
 }
 
+bool matches_retained_revocation(const CommandMapping &mapping, const authority::Grant &grant) {
+    if (mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE ||
+        grant.created_stamp.commit_seq >= mapping.commit_seq ||
+        grant.stamp.commit_seq > mapping.commit_seq || grant.revision != mapping.object.revision) {
+        return false;
+    }
+    if (mapping.effect == AYNI_INTENT_EFFECT_CHANGED) {
+        // Cleanup changes its own stamp only. A retained explicit revoke
+        // result therefore still identifies this target's terminal fact.
+        return grant.lifecycle == AYNI_GRANT_REVOKED &&
+               grant.revoked_by_root_id == grant.grant_id &&
+               grant.stamp.commit_seq == mapping.commit_seq;
+    }
+    return mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE &&
+           grant.stamp.commit_seq < mapping.commit_seq &&
+           (grant.lifecycle == AYNI_GRANT_EXPIRED || grant.lifecycle == AYNI_GRANT_REVOKED);
+}
+
 void count(SnapshotLayout &layout, uint32_t body) {
     layout.payload_length += record_prefix + body;
     ++layout.record_count;
@@ -129,7 +148,8 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         }
     }
     for (uint32_t index = 0; index < model.grants.size(); ++index) {
-        count(layout, authority::grant_snapshot_record_size(model.grants.at(index)));
+        count(layout, authority::grant_snapshot_record_size(
+                          model.grants.at(index), authority::grant_snapshot_record_version));
     }
     for (uint32_t index = 0; index < model.goals.size(); ++index) {
         count(layout, work::goal_record_size(model.goals.at(index)) + goal_extra);
@@ -193,7 +213,8 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             }
             if (index_ < model_.grants.size()) {
                 type = authority::grant_record_type;
-                size = authority::grant_snapshot_record_size(model_.grants.at(index_));
+                size = authority::grant_snapshot_record_size(
+                    model_.grants.at(index_), authority::grant_snapshot_record_version);
                 return true;
             }
             if (depth_ < AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX) {
@@ -297,9 +318,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         break;
     }
     case authority::grant_record_type: {
-        authority::write_grant_snapshot_record(model_.grants.at(index_),
-                                               model_.grants.source_domain(index_),
-                                               model_.grants.scope(index_), body);
+        authority::write_grant_snapshot_record(
+            model_.grants.at(index_), model_.grants.source_domain(index_),
+            model_.grants.scope(index_), body, authority::grant_snapshot_record_version);
         break;
     }
     case work::goal_record_type: {
@@ -397,7 +418,8 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
         const uint16_t version =
             type == command_record_type
                 ? command_record_version_for(model_.commands.at(command_index_))
-                : snapshot_record_version;
+            : type == authority::grant_record_type ? authority::grant_snapshot_record_version
+                                                   : snapshot_record_version;
         durability::write_record_header({type, version, durability::record_required, size}, at);
         write_record(type, at + record_prefix, size);
         out_size += record_prefix + size;
@@ -425,7 +447,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     if ((header.flags & ~durability::record_required) != 0U) {
         return BatchCheck::unsupported;
     }
-    if (WorkReplay::classify_header(header) == durability::RecordUse::corrupt) {
+    const auto use = WorkReplay::classify_header(header, WorkRecordContext::snapshot);
+    if (use == durability::RecordUse::corrupt) {
         return BatchCheck::corrupt;
     }
     // A record this reader does not know is skipped unless REQUIRED.
@@ -433,8 +456,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     const BatchCheck unknown = (header.flags & durability::record_required) == 0U
                                    ? BatchCheck::ok
                                    : BatchCheck::unsupported;
-    if (header.version != snapshot_record_version &&
-        !(header.type == command_record_type && header.version == exact_command_record_version)) {
+    if (use != durability::RecordUse::applied) {
         return unknown;
     }
     Section section = Section::instances;
@@ -475,7 +497,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     case work::instance_record_type:
         return instance(body, header.length);
     case authority::grant_record_type:
-        return grant(body, header.length);
+        return grant(header.version, body, header.length);
     case work::goal_record_type:
         return goal(body, header.length);
     case work::task_record_type:
@@ -521,11 +543,14 @@ durability::BatchCheck WorkSnapshotReader::instance(const uint8_t *body, uint32_
                                           record.lifecycle, stamp));
 }
 
-durability::BatchCheck WorkSnapshotReader::grant(const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::grant(uint16_t version, const uint8_t *body,
+                                                 uint32_t size) {
     authority::GrantSnapshotRecord record{};
     const auto *binding = model_.principals.binding();
-    if (!authority::read_grant_snapshot_record(body, size, record) ||
+    if (!authority::read_grant_snapshot_record(body, size, record, version) ||
         !valid_stamp(record.created_stamp, metadata_) || !valid_stamp(record.stamp, metadata_) ||
+        ((record.cleanup_stamp.transition_id != 0U || record.cleanup_stamp.commit_seq != 0U) &&
+         !valid_stamp(record.cleanup_stamp, metadata_)) ||
         binding == nullptr || binding->principal_id != record.create.grant.owner_principal_id ||
         binding->binding_revision != record.create.grant.owner_binding_revision ||
         binding->stamp.commit_seq >= record.created_stamp.commit_seq ||
@@ -665,7 +690,7 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
         mapping.commit_seq > metadata_.covers_commit_seq) {
         return durability::BatchCheck::corrupt;
     }
-    if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
+    if (mapping.kind == AYNI_INTENT_GRANT_CREATE || mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
         const auto *binding = model_.principals.binding();
         const uint64_t result_boot = mapping.object.id >> 32U;
         if (binding == nullptr || mapping.principal_id != binding->principal_id ||
@@ -674,11 +699,17 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
             return durability::BatchCheck::corrupt;
         }
         uint32_t index = 0;
-        if (model_.grants.find(mapping.object.id, index) &&
-            !WorkReplay::matches_grant_creation(mapping, canonical, model_.grants.at(index),
-                                                model_.grants.source_domain(index),
-                                                model_.grants.scope(index))) {
-            return durability::BatchCheck::corrupt;
+        if (model_.grants.find(mapping.object.id, index)) {
+            const auto &retained = model_.grants.at(index);
+            const bool matches =
+                mapping.kind == AYNI_INTENT_GRANT_CREATE
+                    ? WorkReplay::matches_grant_creation(mapping, canonical, retained,
+                                                         model_.grants.source_domain(index),
+                                                         model_.grants.scope(index))
+                    : matches_retained_revocation(mapping, retained);
+            if (!matches) {
+                return durability::BatchCheck::corrupt;
+            }
         }
     }
     last_command_seq_ = mapping.commit_seq;

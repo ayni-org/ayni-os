@@ -79,7 +79,7 @@
 | 41 | `AYNI_REASON_CAPABILITY_UNKNOWN` | `NOT_FOUND` | 没有这个 Capability ID |
 | 42 | `AYNI_REASON_CAPABILITY_VERSION` | `UNSUPPORTED_VERSION` | Capability ID 已知，版本未注册 |
 | 43 | `AYNI_REASON_GRANT_UNKNOWN` | `NOT_FOUND` | 没有保留这个 Grant ID |
-| 44 | `AYNI_REASON_GRANT_REVISION` | `REVISION_CONFLICT` | parent 的当前 revision 与请求不符 |
+| 44 | `AYNI_REASON_GRANT_REVISION` | `REVISION_CONFLICT` | parent 或首次新撤销目标的当前 revision 与请求不符 |
 | 45 | `AYNI_REASON_GRANT_INPUT` | `INVALID_ARGUMENT` | Grant scope、期限或root revision等输入不合法 |
 | 46 | `AYNI_REASON_GRANT_SCOPE` | `DENIED` | 委派范围超出parent |
 | 47 | `AYNI_REASON_GRANT_PARENT` | `DENIED` | 完整父链不能委派该权限 |
@@ -91,8 +91,12 @@
 | 53 | `AYNI_REASON_GRANT_SUBJECT` | `DENIED` | 接收实例不可用 |
 | 54 | `AYNI_REASON_GRANT_CHANNEL` | `DENIED` | 需要可信管理端Session |
 | 55 | `AYNI_REASON_GRANT_UNSUPPORTED` | `UNSUPPORTED` | Scene或额度授权尚未实现 |
+| 56 | `AYNI_REASON_GRANT_REVOKED` | `DENIED` | 目标或任一祖先有 Gate/已撤销 |
+| 57 | `AYNI_REASON_REVOCATION_PENDING` | `BUSY` | 同 target 已有另一条待决撤销，不占新命令身份 |
+| 58 | `AYNI_REASON_COMMAND_PINNED` | `BUSY` | 该 principal 的结果窗口全部被已接受撤销 pin 住 |
+| 59 | `AYNI_REASON_REVOCATION_CAPACITY` | `CAPACITY_EXCEEDED` | 有界 Gate/pending 容量不足，原子拒绝 |
 
-以上41–55自ABI0.18发布，C实施/验证状态见ADR-0030；表格记录状态归属，不表示全部调用路径已经验证。
+以上41–55自ABI0.18发布，56–59自ABI0.19发布；C/D实施与验证状态分别见ADR-0030/0031。表格记录状态归属，不表示全部调用路径已经验证。
 
 ## 规则
 

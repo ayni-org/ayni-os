@@ -42,6 +42,15 @@ ayni_status_t ayni_register_principal(ayni_kernel_t *kernel,
 ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v1 *session,
                                 uint64_t *out_session_id);
 
+/* Since 0.19. Owner-thread lookup after Host authentication of the
+ * principal. Never trust a network-supplied identity. Accepted revocations
+ * remain queryable after automatic reload closes the old Session. Pending
+ * identity precedes the ordinary command window/floor. NOT_FOUND/EXPIRED
+ * leave output untouched; CONFIGURING/STOPPED return INVALID_STATE. */
+ayni_status_t ayni_get_intent_receipt(const ayni_kernel_t *kernel,
+                                      uint64_t authenticated_principal_id, uint64_t command_id,
+                                      ayni_intent_receipt_v1 *out_receipt);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,14 +16,19 @@ constexpr uint16_t command_record_version = 1;
 constexpr uint32_t command_record_size = 52; // ordinary v1
 constexpr uint16_t exact_command_record_version = 2;
 constexpr uint32_t exact_command_record_fixed_size = command_record_size + 8U;
+constexpr uint16_t revoke_command_record_version = 3;
+constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 12U;
 constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {
-    return canonical_max_bytes == 0U ? command_record_size
-                                     : exact_command_record_fixed_size + canonical_max_bytes;
+    const uint32_t create_max = canonical_max_bytes == 0U
+                                    ? command_record_size
+                                    : exact_command_record_fixed_size + canonical_max_bytes;
+    constexpr uint32_t revoke_max = revoke_command_record_fixed_size + revoke_command_size;
+    return canonical_max_bytes == 0U || create_max >= revoke_max ? create_max : revoke_max;
 }
 uint16_t command_record_version_for(const CommandMapping &mapping);
 uint32_t command_record_size_for(const CommandMapping &mapping);
 
-// v2 requires a valid complete exact authority identity and matching digest;
+// v2 create/v3 revoke require complete exact identity, matching digest and effect;
 // failure changes no output. size is exactly command_record_size_for().
 bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_bytes_v1 canonical,
                           uint8_t *body, uint32_t size);

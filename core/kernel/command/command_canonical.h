@@ -15,6 +15,20 @@ constexpr uint32_t authority_command_max_bytes(uint32_t scope_max_bytes) {
     return authority_command_fixed_max + scope_max_bytes;
 }
 
+// Revoke identity is a separate fixed codec; create format 1 is unchanged.
+constexpr uint32_t revoke_command_size = 16;
+struct CanonicalRevokeView {
+    uint32_t expected_revision;
+    const ayni_grant_revoke_v1 *revoke;
+};
+struct RevokeCommandRecord {
+    uint32_t expected_revision;
+    uint64_t target_grant_id;
+};
+ayni_status_t encode_revoke_command(const CanonicalRevokeView &input, uint8_t *out,
+                                    uint32_t capacity, uint32_t &out_size);
+bool read_revoke_command(ayni_bytes_v1 bytes, RevokeCommandRecord &out);
+
 struct CanonicalCommandView {
     uint32_t expected_revision;
     const ayni_grant_create_v1 *grant;

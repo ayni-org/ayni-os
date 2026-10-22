@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 18u
+#define AYNI_ABI_MINOR 19u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -853,6 +853,10 @@ typedef uint32_t ayni_reason_t;
 #define AYNI_REASON_GRANT_CHANNEL ((ayni_reason_t)54)
 /* UNSUPPORTED: Scene or quota authorization is not implemented. */
 #define AYNI_REASON_GRANT_UNSUPPORTED ((ayni_reason_t)55)
+#define AYNI_REASON_GRANT_REVOKED ((ayni_reason_t)56)
+#define AYNI_REASON_REVOCATION_PENDING ((ayni_reason_t)57)
+#define AYNI_REASON_COMMAND_PINNED ((ayni_reason_t)58)
+#define AYNI_REASON_REVOCATION_CAPACITY ((ayni_reason_t)59)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -1165,6 +1169,7 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_INSTANCE_STOP ((ayni_intent_kind_t)8)   /* body: ayni_instance_target_v1 */
 #define AYNI_INTENT_GRANT_CREATE                                                                   \
     ((ayni_intent_kind_t)9) /* body: ayni_grant_create_v1, authority.h */
+#define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)10) /* body: ayni_grant_revoke_v1 */
 
 /*
  * One envelope for every intent kind. The principal and channel are the
@@ -1230,10 +1235,23 @@ typedef struct ayni_instance_target_v1 {
     uint64_t instance_id;
 } ayni_instance_target_v1;
 
+/* Since 0.19. PENDING has no transition, APPLIED is queued in this boot,
+ * DURABLE is confirmed persistent. None acknowledges physical stopping. */
+typedef uint32_t ayni_intent_phase_t;
+#define AYNI_INTENT_PENDING ((ayni_intent_phase_t)1)
+#define AYNI_INTENT_APPLIED ((ayni_intent_phase_t)2)
+#define AYNI_INTENT_DURABLE ((ayni_intent_phase_t)3)
+
+typedef uint32_t ayni_intent_effect_t;
+#define AYNI_INTENT_EFFECT_NONE ((ayni_intent_effect_t)0) /* PENDING: no applied effect yet */
+#define AYNI_INTENT_EFFECT_CHANGED ((ayni_intent_effect_t)1)
+#define AYNI_INTENT_EFFECT_NO_CHANGE ((ayni_intent_effect_t)2)
+#define AYNI_INTENT_EFFECT_TARGET_GONE ((ayni_intent_effect_t)3)
+
 typedef struct ayni_intent_result_v1 {
     uint32_t struct_size;
     uint32_t reserved; /* written as 0 */
-    /* The goal, task or instance the intent names, or the goal it created,
+    /* The Goal, Task, instance or Grant named or created by the intent,
      * with its revision after the intent. Other objects it changed, such as
      * the goal a TASK_CANCEL ends (since 0.11), are read with their query
      * functions. */
@@ -1241,7 +1259,25 @@ typedef struct ayni_intent_result_v1 {
     /* Of the transition the intent applied; for a retried command, of the
      * transition that first applied it, in whichever boot did. */
     uint64_t commit_seq;
+    /* Since 0.19. PENDING: commit_seq=0 and applied_boot_epoch=0.
+     * DURABLE: original stable commit_seq and applied_boot_epoch=0. */
+    ayni_intent_phase_t phase;
+    ayni_intent_effect_t effect;
+    uint64_t applied_boot_epoch;
 } ayni_intent_result_v1;
+
+/* Since 0.19. Fixed caller-owned diagnostic output. */
+typedef struct ayni_intent_receipt_v1 {
+    uint32_t struct_size;
+    ayni_intent_phase_t phase;
+    ayni_intent_effect_t effect;
+    uint32_t reserved; /* written as 0 */
+    uint64_t principal_id;
+    uint64_t command_id;
+    ayni_object_ref_v1 object;
+    uint64_t commit_seq;
+    uint64_t applied_boot_epoch;
+} ayni_intent_receipt_v1;
 
 /*
  * Registers an agent. The kernel creates its instance when it first enters

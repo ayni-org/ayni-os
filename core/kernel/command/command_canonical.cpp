@@ -15,6 +15,8 @@ namespace {
 
 // contracts/storage/records.md, raw command scope format 1. It has no
 // catalog usage byte: raw requests cannot depend on current registration.
+constexpr uint32_t revoke_revision_at = 4;
+constexpr uint32_t revoke_target_at = 8;
 constexpr uint16_t raw_scope_format = 1;
 constexpr uint32_t raw_scope_header_size = 4;
 constexpr uint32_t raw_scope_count_at = 2;
@@ -302,6 +304,44 @@ bool same_values(const RawField &left, const catalog::FieldValues &right) {
 }
 
 } // namespace
+
+ayni_status_t encode_revoke_command(const CanonicalRevokeView &input, uint8_t *out,
+                                    uint32_t capacity, uint32_t &out_size) {
+    if (input.revoke == nullptr || (out == nullptr && capacity != 0U)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto &revoke = *input.revoke;
+    const auto status = check_size(revoke.struct_size, sizeof(revoke));
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (input.expected_revision == 0U || revoke.grant_id == 0U || revoke.reserved != 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (capacity < revoke_command_size) {
+        out_size = revoke_command_size;
+        return AYNI_BUFFER_TOO_SMALL;
+    }
+    foundation::store_le32(out, AYNI_INTENT_GRANT_REVOKE);
+    foundation::store_le32(out + revoke_revision_at, input.expected_revision);
+    foundation::store_le64(out + revoke_target_at, revoke.grant_id);
+    out_size = revoke_command_size;
+    return AYNI_OK;
+}
+
+bool read_revoke_command(ayni_bytes_v1 bytes, RevokeCommandRecord &out) {
+    if (bytes.data == nullptr || bytes.size != revoke_command_size ||
+        foundation::load_le32(bytes.data) != AYNI_INTENT_GRANT_REVOKE) {
+        return false;
+    }
+    const RevokeCommandRecord record{foundation::load_le32(bytes.data + revoke_revision_at),
+                                     foundation::load_le64(bytes.data + revoke_target_at)};
+    if (record.expected_revision == 0U || record.target_grant_id == 0U) {
+        return false;
+    }
+    out = record;
+    return true;
+}
 
 ayni_status_t measure_authority_command(const CanonicalCommandView &input, uint32_t &out_size) {
     FieldOrder order{};

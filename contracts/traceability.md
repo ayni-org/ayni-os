@@ -6,9 +6,9 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 28 | 5 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 32 | 9 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
-| [domain/commit_and_output.md](domain/commit_and_output.md) | 19 | 8 |
+| [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 17 | 11 |
 | [domain/limits.md](domain/limits.md) | 12 | 6 |
@@ -21,10 +21,10 @@
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 7 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
-| [storage/records.md](storage/records.md) | 15 | 12 |
-| [wire/envelope.md](wire/envelope.md) | 17 | 1 |
+| [storage/records.md](storage/records.md) | 17 | 14 |
+| [wire/envelope.md](wire/envelope.md) | 19 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 313 | 84 |
+| 合计 | 322 | 93 |
 
 ## 计划章节 → 契约文档
 
@@ -86,6 +86,7 @@
 | ADR-0027 | domain/lifecycles.md、domain/status_codes.md、host/host_ports.md、storage/records.md |
 | ADR-0028 | domain/authority_and_trust.md |
 | ADR-0030 | domain/ids_and_time.md、domain/status_codes.md、storage/records.md、wire/envelope.md |
+| ADR-0031 | domain/commit_and_output.md、domain/limits.md、storage/records.md、wire/envelope.md |
 
 ## 工作包 → 条款
 
@@ -97,16 +98,16 @@
 | `MA-005` | C-LIFE-002、C-LIFE-005、C-LIFE-006、C-LIFE-007、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-018、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
 | `MA-006` | C-AUTH-001、C-AUTH-003、C-AUTH-004、C-AUTH-005、C-AUTH-008、C-AUTH-010、C-AUTH-017、C-AUTH-018、C-POLICY-003 |
 | `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-HOST-020、C-HOST-021、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
-| `MA-008` | C-AUTH-005、C-AUTH-018、C-CALL-001、C-CALL-003、C-CALL-004、C-BIND-002、C-BIND-003、C-COMMIT-012、C-LIFE-003、C-LIFE-021、C-LIFE-022、C-BUDGET-005、C-VER-030、C-HOST-013、C-POLICY-008、C-POLICY-009、C-PROV-002、C-PROV-003、C-PROV-010、C-STORE-011 |
+| `MA-008` | C-AUTH-005、C-AUTH-006、C-AUTH-018、C-CALL-001、C-CALL-003、C-CALL-004、C-BIND-002、C-BIND-003、C-COMMIT-012、C-LIFE-003、C-LIFE-021、C-LIFE-022、C-BUDGET-005、C-VER-030、C-HOST-013、C-POLICY-008、C-POLICY-009、C-PROV-002、C-PROV-003、C-PROV-010、C-STORE-011 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-008、C-POLICY-011 |
 | `MA-010` | C-COMMIT-003、C-COMMIT-014、C-ID-009、C-STORE-001 |
 | `MA-011` | C-ID-001、C-TIME-004、C-TIME-005、C-TIME-006、C-TIME-007、C-LIMIT-012、C-PROD-018、C-PROD-032、C-PROD-034、C-PROD-042、C-POLICY-009、C-JSON-010 |
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
 | `MA-016` | C-AUTH-002、C-AUTH-012、C-AUTH-015、C-LIFE-020、C-PRIM-007、C-VER-010、C-WIRE-003、C-WIRE-006、C-WIRE-007、C-WIRE-009、C-WIRE-010 |
-| `MA-018` | C-AUTH-005、C-AUTH-016、C-AUTH-018、C-SUB-004、C-COMMIT-009、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-003、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-005、C-RES-006、C-RES-012、C-RES-013、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
+| `MA-018` | C-AUTH-005、C-AUTH-006、C-AUTH-016、C-AUTH-018、C-SUB-004、C-COMMIT-009、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-003、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-005、C-RES-006、C-RES-012、C-RES-013、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
 | `MA-019` | C-LIFE-023、C-LIMIT-007、C-PROD-012、C-PROD-015、C-PROD-018、C-PROD-050 |
-| `MA-022` | C-COMMIT-008、C-COMMIT-009、C-COMMIT-011、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
+| `MA-022` | C-AUTH-006、C-COMMIT-008、C-COMMIT-009、C-COMMIT-011、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
 | `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-PERMIT-016、C-PERMIT-017、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
 | `MA-027` | C-PROD-033、C-BUDGET-010、C-PROV-011 |
 | `MA-028` | C-PROD-001、C-PROD-003、C-PROD-004、C-PROD-051 |
@@ -141,9 +142,9 @@
 | E2 F7 | C-CALL-002、C-CALL-011、C-COMMIT-002、C-ID-006、C-HOST-003、C-STORE-001、C-STORE-002、C-STORE-009 |
 | E2 F8 | C-COMMIT-002、C-COMMIT-005、C-LIMIT-007、C-BUDGET-002、C-STORE-002 |
 | E2 F9 | C-COMMIT-004、C-ID-007、C-WIRE-004、C-WIRE-005、C-WIRE-016 |
-| E2 F10 | C-AUTH-005、C-AUTH-006、C-COMMIT-007、C-OUT-003、C-LIFE-013、C-PERMIT-002、C-PRIM-006、C-HOST-004 |
+| E2 F10 | C-AUTH-005、C-AUTH-006、C-AUTH-024、C-COMMIT-007、C-COMMIT-017、C-OUT-003、C-LIFE-013、C-PERMIT-002、C-PRIM-006、C-HOST-004 |
 | E2 F11 | C-CALL-012、C-COMMIT-005、C-BUDGET-002、C-STORE-007 |
-| E2 F12 | C-COMMIT-009、C-COMMIT-010、C-COMMIT-011、C-ID-009、C-PERMIT-009、C-STORE-005 |
+| E2 F12 | C-AUTH-024、C-COMMIT-009、C-COMMIT-010、C-COMMIT-011、C-COMMIT-017、C-ID-009、C-PERMIT-009、C-STORE-005 |
 | E2 F13 | C-LIFE-004 |
 | E2 F14 | C-TRUST-004、C-PERMIT-004、C-PERMIT-005、C-PERMIT-006、C-PERMIT-007、C-PERMIT-008、C-PERMIT-012、C-PERMIT-013 |
 | E3 步骤 1 | C-POLICY-006、C-PROV-012 |
@@ -169,6 +170,10 @@
 | C-AUTH-020 | M1 已实现（完整原始域与易失兼容性覆盖）：`GrantTable.absent_or_changed_catalog_only_holds_persistent_facts_and_can_be_resolved_again`、`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`；ADR-0030 |
 | C-AUTH-021 | M1 已实现（当前 boot 期限、即时失效与恢复不重锚）：`GrantApi.arrival_at_deadline_denies_immediately_before_step_records_the_terminal_state`、`GrantApi.restart_keeps_permanent_grants_and_expires_finite_grants_without_reanchoring`；C-STORE-014；ADR-0030 |
 | C-AUTH-022 | M1 已实现（完整委派链与单父收窄）：`GrantTable.every_ancestor_hold_and_the_edge_depth_limit_apply_to_descendants`、`GrantTable.finite_delegation_matches_an_independent_discrete_time_coverage_oracle`、`GrantApi.stopping_an_ancestor_subject_invalidates_a_child_owned_by_another_live_subject`；ADR-0030 |
+| C-AUTH-024 | M1 已实现并通过 Native 场景：`RevokeApi.pending_without_storage_space_immediately_denies_every_ancestor_link`、`RevokeApi.paged_snapshot_keeps_its_frozen_model_while_accepting_a_volatile_deny`、`RevokeApi.a_reload_read_failure_keeps_the_accepted_control_after_restored_facts_are_discarded`、`RevokeApi.binding_mismatch_on_reload_keeps_the_gate_and_host_authenticated_pending_diagnostic`、`RevokeApi.process_restart_does_not_claim_to_preserve_an_unpersisted_pending_control`；最终交付见 ADR-0031；E2 F10、F12 |
+| C-AUTH-025 | M1 已实现并通过 Native 场景：`RevokeApi.applied_and_durable_receipts_keep_original_result_across_a_new_session`、`RevokeApi.ordinary_commands_use_the_same_applied_and_durable_receipt_phases`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`；最终交付见 ADR-0031；C-COMMIT-017 |
+| C-AUTH-026 | M1 已实现并通过 Native 场景：`RevokeApi.cleanup_is_bounded_and_never_rewrites_the_roots_terminal_commit_order`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`、`GrantRevoke.snapshot_frontier_covers_active_and_terminal_descendants_atomically`、`GrantRevokeReplay.snapshot_root_frontier_cannot_exclude_a_retained_descendant`；最终交付见 ADR-0031；C-STORE-016 |
+| C-AUTH-027 | M1 已实现并通过 Native 场景：`RevokeApi.revision_two_accepted_after_uncommitted_cleanup_can_change_restored_active_child`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`、`CommandRevoke.impossible_accepted_revision_is_rejected_atomically_for_every_effect`；最终交付见 ADR-0031 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
 | C-SUB-004 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |
@@ -179,6 +184,7 @@
 | C-COMMIT-011 | M1 已实现（隔离不可确认则只读、不生成新 boot）：`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`；含动作与执行许可的停止验收随 `MA-022`；E2 F12 |
 | C-COMMIT-012 | M1 已实现（Goal、Task 与实例意图：创建取 0，其余取所指对象的当前版本；派生 Task 与跳过 occurrence 不提升 Goal 的版本，跳过使 Goal 失败时除外，ADR-0023；上限检查覆盖一个意图连带改变的全部 Goal、Task 与实例，ADR-0018；Kernel 自身的失效会使版本越过最大值时放弃该失效，Goal 保持原状，ADR-0020；策略的结束意图取快照中 Task 的版本，版本不符或结束会使 Task、Goal 或后代的版本越过最大值时 Task 停下并记原因，ADR-0022；结束 Goal 的 `TASK_CANCEL` 的上限检查覆盖 Goal 的结束，结束会使版本越过最大值的跳过只跳过，ADR-0023）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing`、`WorkTask.task_cancel_checks_the_task_then_its_revision_then_its_state`、`WorkTask.instance_intents_check_the_instance_then_its_revision_then_its_state`、`WorkTask.change_that_would_exhaust_a_task_revision_is_refused`、`WorkTask.resume_that_would_exhaust_a_task_revision_is_refused`、`WorkTask.stop_that_would_exhaust_a_goal_revision_is_refused`、`WorkTask.deriving_keeps_the_goal_revision_the_caller_holds`、`TaskTable.revision_is_checked_before_the_state_and_never_wraps`、`AgentTable.revision_is_checked_before_the_state_and_never_wraps`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkExpiry.expiry_that_would_exhaust_a_revision_is_dropped`、`GoalTable.skips_and_dropped_expiries_keep_the_revision`、`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkDecision.end_that_would_exhaust_a_revision_holds_the_task`、`WorkTask.task_cancel_that_would_exhaust_a_revision_its_goals_end_raises_is_refused`、`WorkWait.skip_whose_end_would_exhaust_a_revision_leaves_the_goal_active`；策略意图的依赖版本随步骤与调用（`MA-008`）；E1 步骤 9；E4 步骤 4 |
 | C-COMMIT-016 | M1 已实现：`WorkModel.commit_seq_of_unstored_work_is_reused_by_later_boots`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`（断电时尚未存储的 transition 之后的位置由下一次启动重新使用，ADR-0026）；对外输出的 `requires_seq` 门控随产生对外输出的包 |
+| C-COMMIT-017 | M1 已实现并通过 Native 场景：`RevokeApi.unknown_persisted_result_reconciles_original_canonical_and_original_sequence`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`、`RevokeApi.failed_writer_isolation_preserves_the_gate_and_reports_no_durable_result`、`PendingRevoke.discard_retains_control_but_never_compares_an_old_queued_seq_in_a_new_boot`；最终交付见 ADR-0031；C-COMMIT-016；E2 F10、F12 |
 | C-ID-001 | M1 已实现（Kernel 分配的 ID 不复用，断电时尚未存储的对象的 ID 也不再分配；让位的 Goal 与 Task 按旧 ID 返回 `NOT_FOUND`）：`KernelId.ids_carry_the_boot_epoch_and_a_sequence_from_1`、`KernelId.allocator_runs_out_instead_of_wrapping`、`WorkModel.a_reboot_assigns_new_ids_and_forgets_unstored_work`、`WorkTask.goal_that_ended_first_gives_way_with_its_tasks`；记忆删除的 tombstone 随 `MA-011`；E1 步骤 9 |
 | C-ID-006 | M1 已实现（完成槽）：`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`；恢复请求以 `boot_epoch` 0 命名且 `request_id` 依次递增：`KernelLifecycle.recovery_requests_use_boot_epoch_0`；Host 不投递旧实例的结果（ADR-0026）：`HostStorage.new_host_instance_never_posts_an_earlier_request`；E2 F7；E3 步骤 2 |
 | C-ID-009 | M1 已实现（启动）：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.each_reboot_persists_the_next_epoch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.reboot_after_an_unknown_append_skips_its_epoch`；受限栅栏重载随 `MA-010`；E2 F12 |
@@ -247,4 +253,8 @@
 | C-STORE-013 | M1 已实现（工作模型：实例、Goal、Task、步骤、私有检查点与命令映射只写入日志，每个 transition 一个批次，ADR-0026）：`WorkRecovery.power_loss_takes_the_batches_never_appended`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；预算等其余状态随各自的包 |
 | C-STORE-014 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；Grant 不含 deadline/易失 hold：`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`（ADR-0030）；评审 |
 | C-STORE-015 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |
+| C-STORE-016 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.root_record_and_exact_mapping_require_each_other_in_one_batch`、`GrantRevokeReplay.descendant_state_and_progress_are_an_atomic_pair`、`GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`、`GrantRevokeReplay.descendant_and_progress_must_name_the_same_root_and_cursor`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`；最终交付见 ADR-0031；C-COMMIT-005 |
+| C-STORE-017 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
 | C-WIRE-017 | M1 已实现（创建命令完整身份与同批结果）：`CommandCanonical.sorting_and_deduplication_keep_omission_distinct_from_explicit_constraints`、`CommandTable.a_digest_collision_does_not_replace_exact_byte_equality`、`GrantReplay.a_valid_but_expanded_create_scope_cannot_disagree_with_its_exact_command`；ADR-0030；C-COMMIT-005 |
+| C-WIRE-018 | M1 已实现并通过 Native 场景：`CommandRevoke.canonical_has_a_fixed_independent_little_endian_oracle`、`RevokeApi.pending_identity_precedes_every_implemented_kind_and_later_window_floor`、`PendingRevoke.full_revoke_identity_still_wins_when_the_window_digest_collides`；最终交付见 ADR-0031 |
+| C-WIRE-019 | M1 已实现并通过 Native 场景：`RevokeApi.applied_and_durable_receipts_keep_original_result_across_a_new_session`、`RevokeApi.receipt_query_errors_leave_caller_owned_output_unchanged`、`RevokeApi.ordinary_receipt_floor_and_bad_query_shapes_preserve_the_output`、`RevokeApi.receipt_window_is_not_exposed_before_initial_recovery_finishes`；最终交付见 ADR-0031；C-AUTH-025 |

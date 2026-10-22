@@ -86,4 +86,90 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     outcome.due_work = true;
     return AYNI_OK;
 }
+void pending_revoke_outcome(const PendingRevoke &pending, const CommandMapping *mapping,
+                            IntentOutcome &outcome) {
+    if (pending.queued_commit_seq == 0U) {
+        outcome.object = {0, pending.accepted.target_grant_id, 0, AYNI_OBJECT_GRANT};
+        outcome.phase = AYNI_INTENT_PENDING;
+        outcome.effect = AYNI_INTENT_EFFECT_NONE;
+        outcome.commit_seq = 0;
+        outcome.applied_boot_epoch = 0;
+        return;
+    }
+    if (mapping != nullptr) {
+        outcome.object = mapping->object;
+        outcome.commit_seq = mapping->commit_seq;
+        outcome.effect = mapping->effect;
+        outcome.phase = AYNI_INTENT_APPLIED;
+        outcome.applied_boot_epoch = pending.queued_boot_epoch;
+    }
+}
+
+ayni_status_t accept_revoke(WorkModel &model, const Intent &intent,
+                            const authority::Session &session, uint64_t durable_seq,
+                            IntentOutcome &outcome, IntentFailure &failure) {
+    const auto *binding = model.principals.binding();
+    if (session.channel != AYNI_CHANNEL_MANAGEMENT || binding == nullptr ||
+        binding->principal_id != session.principal_id ||
+        binding->binding_revision != session.binding_revision ||
+        binding->stamp.commit_seq > durable_seq) {
+        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
+    }
+    const auto check = model.grants.check_revoke(intent.target_id, intent.expected_revision);
+    if (check.status != AYNI_OK) {
+        return refuse(check.status, check.reason, failure);
+    }
+    const AcceptedRevoke accepted{session.principal_id, intent.command_id, session.binding_revision,
+                                  intent.expected_revision, intent.target_id};
+    const auto capacity = model.commands.can_accept_revoke(accepted);
+    if (capacity != AYNI_OK) {
+        return refuse(capacity,
+                      capacity == AYNI_BUSY ? AYNI_REASON_REVOCATION_PENDING
+                                            : AYNI_REASON_REVOCATION_CAPACITY,
+                      failure);
+    }
+    if (!model.grants.can_gate(intent.target_id)) {
+        return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVOCATION_CAPACITY, failure);
+    }
+    // No callbacks or other owner work intervene between these reservations.
+    const PendingRevoke *pending = nullptr;
+    if (!model.grants.install_gate(intent.target_id) ||
+        model.commands.accept_revoke(accepted, pending) != AYNI_OK || pending == nullptr) {
+        return AYNI_INTERNAL;
+    }
+    pending_revoke_outcome(*pending, nullptr, outcome);
+    outcome.due_work = true;
+    return AYNI_OK;
+}
+
+bool apply_pending_revoke(WorkModel &model) {
+    const auto *pending = model.commands.next_pending_revoke();
+    if (pending == nullptr || !model.commands.can_publish_accepted(*pending)) {
+        return false;
+    }
+    const auto plan = model.grants.plan_accepted_revoke(pending->accepted.target_grant_id);
+    const auto stamp = model.transitions.next();
+    const CommandMapping mapping{pending->accepted.principal_id,
+                                 pending->accepted.command_id,
+                                 0,
+                                 stamp.commit_seq,
+                                 AYNI_INTENT_GRANT_REVOKE,
+                                 {0, plan.grant_id, plan.revision, AYNI_OBJECT_GRANT},
+                                 0,
+                                 plan.effect};
+    if (!model.grants.apply_revoke(plan, stamp) ||
+        !model.commands.publish_accepted_revoke(*pending, mapping, model.ids.boot_epoch())) {
+        return false;
+    }
+    model.due_work_changed = true;
+    return true;
+}
+
+bool apply_revocation_cleanup(WorkModel &model) {
+    authority::GrantTable::CleanupPlan plan{};
+    if (!model.grants.next_revocation_cleanup(plan)) {
+        return false;
+    }
+    return model.grants.apply_cleanup(plan, model.transitions.next());
+}
 } // namespace ayni::kernel

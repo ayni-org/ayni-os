@@ -8,6 +8,7 @@
 
 #include "catalog/capability/field_domain.h"
 #include "kernel/abi_checks.h"
+#include "kernel/intent/authority_intent.h"
 #include "kernel/intent/intent.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
@@ -80,6 +81,11 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
                                         outcome, failure, kernel->storage_admission_status(),
                                         kernel->durable_seq());
+    if (status == AYNI_OK && decoded.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
+        kernel->storage_has_room() && kernel->storage_admission_status() == AYNI_OK &&
+        kernel->work.transitions.next_commit_seq() == first_seq) {
+        static_cast<void>(ayni::kernel::apply_pending_revoke(kernel->work));
+    }
     // Also AYNI_INTERNAL, which used up a commit_seq (ayni.h).
     const bool committed = kernel->work.transitions.next_commit_seq() != first_seq;
     if (committed) {
@@ -90,6 +96,28 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         result.struct_size = sizeof(result);
         result.object = outcome.object;
         result.commit_seq = outcome.commit_seq;
+        result.phase = outcome.phase;
+        result.effect = outcome.effect;
+        result.applied_boot_epoch = outcome.applied_boot_epoch;
+        if (decoded.command_id != 0U) {
+            const auto *session = kernel->work.sessions.find(decoded.session_id);
+            ayni_intent_receipt_v1 receipt{};
+            if (session == nullptr ||
+                kernel->intent_receipt(session->principal_id, decoded.command_id, receipt) !=
+                    AYNI_OK) {
+                return AYNI_INTERNAL;
+            }
+            result.object = receipt.object;
+            result.commit_seq = receipt.commit_seq;
+            result.phase = receipt.phase;
+            result.effect = receipt.effect;
+            result.applied_boot_epoch = receipt.applied_boot_epoch;
+        } else {
+            // Without a command identity this is a fresh transition. Submit
+            // only queues its batch; the writer appends in a later step.
+            result.phase = AYNI_INTENT_APPLIED;
+            result.applied_boot_epoch = kernel->log.boot_epoch();
+        }
         *out_result = result;
     }
     // The owner appends the batch, and learns the next deadline, in its next
@@ -354,6 +382,21 @@ ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *in
     return status;
 }
 
+ayni_status_t ayni_get_intent_receipt(const ayni_kernel_t *kernel, uint64_t principal_id,
+                                      uint64_t command_id, ayni_intent_receipt_v1 *out_receipt) {
+    if (kernel == nullptr || out_receipt == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = check_size(*out_receipt);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    return kernel->intent_receipt(principal_id, command_id, *out_receipt);
+}
+
 ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
                              ayni_agent_info_v1 *out_info) {
     if (kernel == nullptr || out_info == nullptr) {
@@ -461,6 +504,11 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
     info.created_commit_seq = grant.created_stamp.commit_seq;
     info.transition_id = grant.stamp.transition_id;
     info.commit_seq = grant.stamp.commit_seq;
+    info.revoked_by_root_id = grant.revoked_by_root_id;
+    info.cleanup_after_grant_id = grant.cleanup_after_grant_id;
+    info.cleanup_through_grant_id = grant.cleanup_through_grant_id;
+    info.cleanup_transition_id = grant.cleanup_stamp.transition_id;
+    info.cleanup_commit_seq = grant.cleanup_stamp.commit_seq;
     info.effective_reason = kernel->work
                                 .check_grant(index, kernel->host.monotonic_now_us(kernel->host.ctx),
                                              kernel->durable_seq())

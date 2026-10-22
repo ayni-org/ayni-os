@@ -86,7 +86,7 @@ class WorkSnapshotReader {
     enum class Section { owner_binding, instances, grants, goals, tasks, commands };
     durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
     durability::BatchCheck instance(const uint8_t *body, uint32_t size);
-    durability::BatchCheck grant(const uint8_t *body, uint32_t size);
+    durability::BatchCheck grant(uint16_t version, const uint8_t *body, uint32_t size);
     durability::BatchCheck goal(const uint8_t *body, uint32_t size);
     durability::BatchCheck task(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);

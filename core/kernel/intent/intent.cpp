@@ -16,7 +16,7 @@ template <typename Body> ayni_status_t read_body(const void *body, const Body *&
     return check_struct_size(out_body->struct_size, sizeof(Body), sizeof(Body));
 }
 
-// A target intent names the goal, task or instance it changes.
+// A target intent names the goal, task, instance or Grant it changes.
 template <typename Body>
 ayni_status_t read_target(const void *body, uint64_t Body::*id, uint64_t &out_id) {
     const Body *target = nullptr;
@@ -60,6 +60,8 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
         }
         return status;
     }
+    case AYNI_INTENT_GRANT_REVOKE:
+        return read_target(raw.body, &ayni_grant_revoke_v1::grant_id, out_intent.target_id);
     case AYNI_INTENT_TASK_CANCEL:
         return read_target(raw.body, &ayni_task_target_v1::task_id, out_intent.target_id);
     case AYNI_INTENT_INSTANCE_PAUSE:
@@ -82,10 +84,15 @@ bool trigger_source_fits(const GoalCreate &create) {
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GRANT_CREATE;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GRANT_REVOKE;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (intent.kind == AYNI_INTENT_GRANT_REVOKE) {
+        return intent.command_id != 0U && intent.expected_revision != 0U && intent.target_id != 0U
+                   ? AYNI_OK
+                   : AYNI_INVALID_ARGUMENT;
+    }
     if (intent.kind == AYNI_INTENT_GRANT_CREATE) {
         if (intent.command_id == 0U) {
             return AYNI_INVALID_ARGUMENT;

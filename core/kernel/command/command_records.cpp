@@ -36,12 +36,20 @@ CommandMapping read_fixed(durability::BodyReader &reader, uint64_t &floor) {
 } // namespace
 
 uint16_t command_record_version_for(const CommandMapping &mapping) {
+    if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+        return revoke_command_record_version;
+    }
     return mapping.canonical_size == 0U ? command_record_version : exact_command_record_version;
 }
 
 uint32_t command_record_size_for(const CommandMapping &mapping) {
     if (mapping.canonical_size > authority_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX)) {
         return 0;
+    }
+    if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+        return mapping.canonical_size == revoke_command_size
+                   ? revoke_command_record_fixed_size + revoke_command_size
+                   : 0U;
     }
     return mapping.canonical_size == 0U ? command_record_size
                                         : exact_command_record_fixed_size + mapping.canonical_size;
@@ -57,6 +65,9 @@ bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_by
     durability::BodyWriter writer(body, size);
     write_fixed(mapping, floor, writer);
     if (mapping.canonical_size != 0U) {
+        if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+            writer.u32(mapping.effect);
+        }
         writer.u32(authority_command_format);
         writer.bytes(canonical.data, canonical.size);
     }
@@ -71,21 +82,29 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
                          CommandMapping &out_mapping, uint64_t &out_floor,
                          ayni_bytes_v1 &out_canonical) {
     if (body == nullptr ||
-        (version != command_record_version && version != exact_command_record_version)) {
+        (version != command_record_version && version != exact_command_record_version &&
+         version != revoke_command_record_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
     uint64_t floor = 0;
     CommandMapping mapping = read_fixed(reader, floor);
     ayni_bytes_v1 canonical{};
-    if (version == exact_command_record_version) {
+    if (version == exact_command_record_version || version == revoke_command_record_version) {
+        if (version == revoke_command_record_version) {
+            mapping.effect = reader.u32();
+        }
         const uint32_t format = reader.u32();
         uint32_t canonical_size = 0;
         const uint8_t *bytes = reader.bytes(
             authority_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX), canonical_size);
         canonical = {bytes, canonical_size};
         mapping.canonical_size = canonical_size;
-        if (format != authority_command_format || !valid_authority_mapping(mapping, canonical)) {
+        const auto expected_kind = version == revoke_command_record_version
+                                       ? AYNI_INTENT_GRANT_REVOKE
+                                       : AYNI_INTENT_GRANT_CREATE;
+        if (format != authority_command_format || mapping.kind != expected_kind ||
+            !valid_authority_mapping(mapping, canonical)) {
             return false;
         }
     } else if (!ordinary_kind(mapping.kind)) {

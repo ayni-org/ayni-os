@@ -332,28 +332,42 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    const bool exact = intent.kind == AYNI_INTENT_GRANT_CREATE;
+    const bool exact =
+        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GRANT_REVOKE;
     const uint64_t digest =
         intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
     if (intent.command_id != 0U) {
         const CommandMapping *mapping = nullptr;
+        const PendingRevoke *pending = nullptr;
         CommandTable::Lookup lookup;
         if (exact) {
+            const ayni_grant_revoke_v1 revoke{sizeof(ayni_grant_revoke_v1), 0, intent.target_id};
             const auto match =
-                model.commands.find_exact(session->principal_id, intent.command_id,
-                                          {intent.expected_revision, &intent.grant_create});
+                intent.kind == AYNI_INTENT_GRANT_CREATE
+                    ? model.commands.find_exact(
+                          session->principal_id, intent.command_id,
+                          CanonicalCommandView{intent.expected_revision, &intent.grant_create})
+                    : model.commands.find_exact(
+                          session->principal_id, intent.command_id,
+                          CanonicalRevokeView{intent.expected_revision, &revoke});
             if (match.status != AYNI_OK) {
                 return match.status;
             }
             lookup = match.lookup;
             mapping = match.mapping;
+            pending = match.pending;
         } else {
             lookup = model.commands.find(session->principal_id, intent.command_id, digest, mapping);
         }
         switch (lookup) {
         case CommandTable::Lookup::retried:
-            outcome.object = mapping->object;
-            outcome.commit_seq = mapping->commit_seq;
+            if (pending != nullptr) {
+                pending_revoke_outcome(*pending, mapping, outcome);
+            } else {
+                outcome.object = mapping->object;
+                outcome.commit_seq = mapping->commit_seq;
+                outcome.effect = mapping->effect;
+            }
             outcome.retried = true;
             return AYNI_OK;
         case CommandTable::Lookup::conflict:
@@ -365,6 +379,9 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
             break;
         }
     }
+    if (intent.kind == AYNI_INTENT_GRANT_REVOKE) {
+        return accept_revoke(model, intent, *session, durable_seq, outcome, failure);
+    }
     if (storage_status != AYNI_OK) {
         return refuse(AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE, ayni_object_ref_v1{},
                       failure);
@@ -375,6 +392,9 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     if (intent.command_id != 0U && !model.commands.has_row(session->principal_id)) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
                       object_ref(AYNI_OBJECT_PRINCIPAL, session->principal_id), failure);
+    }
+    if (intent.command_id != 0U && !model.commands.can_insert(session->principal_id)) {
+        return refuse(AYNI_BUSY, AYNI_REASON_COMMAND_PINNED, ayni_object_ref_v1{}, failure);
     }
     const ayni_status_t status =
         exact ? create_grant(model, intent, *session, now_us, durable_seq, outcome, failure)
@@ -390,7 +410,9 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
                 return AYNI_INTERNAL;
             }
         } else {
-            model.commands.insert(mapping);
+            if (!model.commands.insert(mapping)) {
+                return AYNI_INTERNAL;
+            }
         }
     }
     return status;

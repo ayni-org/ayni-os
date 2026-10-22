@@ -1,6 +1,6 @@
 # 容量与限额
 
-- **关联**：计划 §2.7、§3.2「容量」、§3.4「消息限额」、§4.2、§5.3；ADR-0014、ADR-0015、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022、ADR-0026；`MA-003`、`MA-004`、`MA-005`、`MA-010`、`MA-018`；E1 步骤 10，第 10.6 节「事件与容量」
+- **关联**：计划 §2.7、§3.2「容量」、§3.4「消息限额」、§4.2、§5.3；ADR-0014、ADR-0015、ADR-0016、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022、ADR-0026、ADR-0031；`MA-003`、`MA-004`、`MA-005`、`MA-010`、`MA-018`；E1 步骤 10，第 10.6 节「事件与容量」
 - **属主**：`kernel`（配置校验与分发）；各限额由其对象的属主模块执行（如 Task 数由 `work/task`，预留完成槽由 `kernel`）
 
 ## 初始值
@@ -25,8 +25,8 @@
 | 普通事件入口（`ingress_capacity`，1–4096） | 128 项 | §4.2 | 可丢弃事件覆盖同一订阅、同一非零合并键的最新一条，否则逐出最旧的可丢弃事件；其他返回 `BUSY`（ADR-0015） |
 | 单个事件正文（`event_body_max_bytes`，1–4096） | 128 字节 | ADR-0015 | 超出返回 `INVALID_ARGUMENT` |
 | 预留控制容量（完成槽，`completion_slot_count`，1–1024） | 16，且不小于在途请求上限 | §4.2 | 不调用端口，返回 `BUSY`（C-HOST-006） |
-| 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W为当前记录与容量的保守批次上界，计入Grant/完整命令，不要求各类记录同时发生） | 0：3×max(W+4,256)，与query/create共用具名容量公式 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
-| 每个 principal 保留的命令映射（`command_capacity`，1–1024） | 32 | ADR-0026 | `command_id` 最小的映射让位并把下限提高到它；未映射且不大于下限的命令返回 `EXPIRED`（`COMMAND_EXPIRED`） |
+| 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W为当前记录与容量的保守批次上界，计入Grant/撤销根及progress/完整命令，不要求各类记录同时发生） | 0：3×max(W+4,256)，与query/create共用具名容量公式 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
+| 每个 principal 保留的命令映射（`command_capacity`，1–1024） | 32 | ADR-0026 | 未pin且`command_id`最小的映射让位并提高下限；全pin普通新命令BUSY/COMMAND_PINNED；已接受撤销仍先查pending；未映射且不大于下限的命令返回 `EXPIRED`（`COMMAND_EXPIRED`） |
 | 活跃外部推理槽 | 1 | §4.2 | 排队（C-RES-004） |
 | 每个 Task 的模型决策次数 | 8 | §4.2 | Task 暂停并报告原因 |
 | 单轮能力请求数 | 8 | §2.7、§4.2 | 整轮拒绝 |
@@ -34,9 +34,10 @@
 | Capability（`capability_capacity`，1–256，按 ID+版本计数） | 16 | ADR-0028、ADR-0029 | 注册返回 `CAPACITY_EXCEEDED`；B 本地验证及交付状态见 ADR-0029/进度报告 |
 | 单个授权 Scope 与完整注册域（`authority_scope_max_bytes`，64–4096 B） | 256 B | ADR-0029 | 完整规范表达超过字节容量拒绝，不截断；默认不保证容纳所有最大字段/成员组合 |
 | 每能力授权字段 / 每字段集合原始输入成员（不可配置） | 8 / 8 | ADR-0028、ADR-0029 | 超限拒绝；先检查原始 count 再排序去重，不用重复项绕过输入工作量上限 |
-| Grant（`grant_capacity`，1–1024） | 32 | ADR-0030 | 仅最早且终态持久的安全叶节点可让位，无候选返回 `CAPACITY_EXCEEDED/GRANT_CAPACITY`；M1 已实现：`GrantApi.only_a_durable_expired_leaf_can_make_room_and_retry_keeps_its_removed_reference` |
+| Grant（`grant_capacity`，1–1024） | 32 | ADR-0030 | 仅最早且终态持久的安全叶节点可让位，无候选返回 `CAPACITY_EXCEEDED/GRANT_CAPACITY`；C 已实现并完成 Native 验证，D Gate/cleanup 安全条件见 ADR-0031 |
 | 委派深度（`grant_delegation_depth_max`，1–16，按边数根0） | 4 | ADR-0030 | `CAPACITY_EXCEEDED/GRANT_DEPTH`；该配置限制遍历/合法链，不新增每节点子数组 |
-| 每条auth命令完整规范请求 | 84 B固定头上界+`authority_scope_max_bytes` | ADR-0030 | CommandTable逐槽字节stride及有界scratch，超限明确拒绝；FNV仅索引，不降成摘要比较 |
+| 每条auth命令完整规范请求 | 创建84 B固定头上界+`authority_scope_max_bytes`；撤销固定16 B | ADR-0030、0031 | CommandTable逐槽字节stride及有界scratch，超限明确拒绝；FNV仅索引，不降成摘要比较 |
+| 撤销 Gate / 专用 pending（随 grant_capacity，无新配置） | 各32项；最多每target一项 | ADR-0031 | 各owner从caller arena有界分配，超限 `CAPACITY_EXCEEDED/REVOCATION_CAPACITY`；拒绝不装半Gate、不占命令ID；Native caller arena 已两轮严格C99量测，见下文；ESP32资源不据此推定 |
 | Resource、订阅、排队长度 | 可配置 | §4.2 | `CAPACITY_EXCEEDED`，各有耗尽测试 |
 | 控制帧 | 8 KiB，嵌套深度 8 | §3.4 | 拒绝（C-JSON-001、C-JSON-002） |
 | 媒体缓冲、上下文 | 独立缓冲池与字节上限 | §4.2 | 拒绝新采集或缩小上下文 |
@@ -73,3 +74,5 @@
 | C-LIMIT-010 | 分配失败、存储满、TLS 失败都返回明确状态；拒绝新负载，同时保留停止与诊断能力 | 存储满时 Kernel 崩溃重启，停止按键失效 | 第 10.6 节「存储与恢复」；`MA-012` |
 | C-LIMIT-011 | 一次 `ayni_step` 最多处理 `max_items` 个工作项，并在 `max_time_us` 用尽后返回；`step` 内不等待网络、存储、模型或设备 | 一次 `step` 内同步等待 Flash 写完 | M1 已实现：`KernelLifecycle.step_applies_at_most_max_items`、`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`（请求在之后的 step 中完成）、`KernelLifecycle.recovery_waits_for_a_free_slot_without_spinning`（等待空闲槽时不报告 `more_ready`）；策略的决定每个算一个 item，只取本次 step 之前已是 `READY` 的 Task（ADR-0022）：`WorkDecision.step_stops_deciding_once_its_time_budget_is_spent`、`WorkDecision.task_is_decided_in_the_step_after_it_became_ready`；`MA-003`；第 10.6 节「事件与容量」 |
 | C-LIMIT-012 | 派生摘要的 lineage 条目数有上限，上限随配置给出；达到上限时按 C-PROD-032 处理 | lineage 数组写满后静默丢弃最早的依赖 | `MA-011` |
+
+D 的 Grant metadata 新增 revoker/cursor/独立 cleanup_stamp，snapshot Grant 尾为80 B，v3撤销mapping为80 B。Gate 在 GrantTable，pending metadata 与canonical/window scratch在CommandTable，按其 storage_size 统一分配；不在Kernel增加状态数组，也不另建普通结果窗口。清理每工作项至多处理一个候选，有限表/祖先扫描受配置界限约束；Native caller arena已两轮严格C99量测：默认110,792 B、最小31,616 B、对齐8 B，较C增加4,272/544 B。Gate/pending耗尽、全pin、背压与持久安全叶回收已有Native场景证据；容量失败组合未逐项穷尽，见ADR-0031。硬件RAM、栈与最坏step时长仍待量测，结构上界或Native arena数字不替代硬件证据。
