@@ -3,16 +3,15 @@
 namespace ayni::kernel {
 namespace {
 ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, IntentFailure &failure,
-                      ayni_object_ref_v1 object = {}) {
+                     ayni_object_ref_v1 object = {}) {
     failure = {reason, object};
     return status;
 }
 } // namespace
 
 ayni_status_t create_grant(WorkModel &model, const Intent &intent,
-                           const authority::Session &session, uint64_t now_us,
-                           uint64_t durable_seq, IntentOutcome &outcome,
-                           IntentFailure &failure) {
+                           const authority::Session &session, uint64_t now_us, uint64_t durable_seq,
+                           IntentOutcome &outcome, IntentFailure &failure) {
     if (session.channel != AYNI_CHANNEL_MANAGEMENT) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
     }
@@ -39,25 +38,37 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     const ayni_object_ref_v1 subject_ref{0, body.subject_instance_id,
                                          subject == nullptr ? 0U : subject->revision,
                                          AYNI_OBJECT_AGENT_INSTANCE};
-    if (subject == nullptr || work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_STOPPED ||
+    if (subject == nullptr ||
+        work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_STOPPED ||
         work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_FAULTED) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT, failure, subject_ref);
     }
-    const authority::NewGrant grant{body.subject_instance_id, body.parent_grant_id,
-        session.principal_id, session.binding_revision, model.capabilities.at(capability.index).id,
-        body.capability_version, model.capabilities.domain_view(capability.index), &body.scope,
-        body.lifetime, body.duration_us, body.flags};
+    const authority::NewGrant grant{body.subject_instance_id,
+                                    body.parent_grant_id,
+                                    session.principal_id,
+                                    session.binding_revision,
+                                    model.capabilities.at(capability.index).id,
+                                    body.capability_version,
+                                    model.capabilities.domain_view(capability.index),
+                                    &body.scope,
+                                    body.lifetime,
+                                    body.duration_us,
+                                    body.flags};
     authority::GrantTable::Admission admission{};
-    const auto check = model.grants.check_create(grant, intent.expected_revision,
-        {model.ids.boot_epoch(), now_us, durable_seq}, admission);
+    const auto check = model.grants.check_create(
+        grant, intent.expected_revision, {model.ids.boot_epoch(), now_us, durable_seq}, admission);
     if (check.status != AYNI_OK) {
         return refuse(check.status, check.reason, failure);
     }
     if (body.parent_grant_id != 0U) {
         uint32_t parent = 0;
-        if (!model.grants.find(body.parent_grant_id, parent)) { return AYNI_INTERNAL; }
+        if (!model.grants.find(body.parent_grant_id, parent)) {
+            return AYNI_INTERNAL;
+        }
         const auto chain = model.check_grant(parent, now_us, durable_seq);
-        if (chain.status != AYNI_OK) { return refuse(chain.status, chain.reason, failure); }
+        if (chain.status != AYNI_OK) {
+            return refuse(chain.status, chain.reason, failure);
+        }
     }
     if (!model.ids.available()) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_ID_EXHAUSTED, failure);
