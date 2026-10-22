@@ -15,17 +15,17 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 
 ## 当前状态
 
-`MA-010` E+F 的实现与验证范围见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md) 与 [契约追踪](../contracts/traceability.md)。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
+`MA-010` E+F、`MA-006` A/B 的实现与验证范围见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md)、[ADR-0028](../docs/adr/0028-trusted-owner-binding-and-sessions.md)、[ADR-0029](../docs/adr/0029-capability-domains-and-scope-algebra.md) 与 [契约追踪](../contracts/traceability.md)。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
 | `kernel` | `kernel_api`、`work_api`：C ABI 参数检查、注册、会话、意图与查询；`kernel_lifecycle`：所有者线程的启动、工作、栅栏重载、维护与关闭编排；`kernel_layout`、`kernel_config`：有界内存与配置；`ingress/`、`completion/`：事件队列与完成槽；`boot/`：物理日志发现、快照与尾部恢复、writer 握手及启动记录；`commit/`、`command/`：日志提交与按 principal 有界的命令窗口；`storage/`：共享写频与重试调度、日志上限与介质空间预算（`storage_budget`）、快照发布与轮转状态机（`storage_maintenance`）；`intent/`：工作模型、意图解码/规则、触发和策略决定；`work_journal`、`work_replay`、`work_snapshot`：按领域属主编排持久导出与恢复（ADR-0015～0027） | M0 |
 | `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效与记录；`task/`：Task 生命周期、容量回收、步骤与私有检查点；各表提供静态快照导入并保留原始 stamp，恢复的临时兼容覆盖与持久状态分开；`propagation`：跨表放行、派生选择与传播。调用与动作仍随后续包（ADR-0017～0027） | M1（`MA-004`） |
-| `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec；失配恢复只读受限，缺授权元数据的恢复工作保留并禁行（ADR-0017、0028）；Grant 与审批随后续 `MA-006` 部分，Scene 授权随 `MA-026` | M1（`MA-004`） |
+| `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec；失配恢复只读受限，缺授权元数据的恢复工作保留并禁行（ADR-0017、0028）；`scope/`：有限字段规范化、typed/encoded 覆盖与实际请求完整性（ADR-0029）；Grant 与审批随后续 `MA-006` 部分，Scene 授权随 `MA-026` | M1（`MA-004`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |
 | `knowledge` | 无代码 | M1（`MA-011`） |
-| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本、触发种类及参数校验；`strategy/`：策略版本、决定和检查点上限注册。设备、能力与绑定随 `MA-008` | M1（`MA-004`） |
+| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本、触发种类及参数校验；`strategy/`：策略版本、决定和检查点上限注册。`capability/`：有界能力 ID/版本目录及授权字段类型、单位、用途、取值域和规范 codec（ADR-0029）；设备、调用属性与绑定随 `MA-008` | M1（`MA-004`） |
 | `durability` | `batch/`：schema 0/1 批次、记录 flags、提交连续性及 writer fence 扫描；`journal/`：有界日志环；`snapshot/`：静态快照头部/尾标记及 CRC。只提供持久机制，不理解工作领域，不选择 Host，也不编排领域恢复次序（ADR-0016、0026、0027） | M1（`MA-005`） |
 | `foundation` | `crc32`：可跨页累计的 CRC-32/ISO-HDLC；`little_endian.h`：定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器；`transition_stamp.h`；`bounded_array.h`：调用方内存上的有界数组。状态码仍只在公开头文件 `include/ayni/ayni.h` 定义 | M1（`MA-005`） |
 
@@ -49,3 +49,5 @@ ABI 0.15 在本次 64 位环境中经 `ayni_kernel_memory_requirements` 实测�
 这里是调用方内存需求，不包括 Host 的线程、文件缓存或运行时自身的分配；复现配置及完整验证结果见 ADR-0027。
 
 ABI 0.16（ADR-0028，MA-006 A）在相同环境实测默认配置 62,712 B、最小工作容量 28,920 B，均比上表 0.15 增加 112 B，对齐仍为 8 B。新增绑定保存在现有 authority 聚合内；日志批次使用包含首次绑定记录的保守预算，不据此宣称该组合可在一次运行中同时发生或 ESP32 RAM 门槛已验收。
+
+ABI 0.17（ADR-0029，MA-006 B）在相同环境实测默认配置 **67,544 B**、最小工作容量 **29,060 B**，比 A 的 0.16 分别增加 **4,832 B / 140 B**，对齐仍为 8 B。Capability 目录由 WorkModel 持有，metadata 与固定字节 stride 通过同一 `CapabilityRegistry::storage_size` 接入 arena；默认新增 16 条、每条 256 B 域正文，最小配置取 1 条、64 B。配置、查询程序与原始记录见 ADR-0029；Native 的增量不能替代 ESP32 RAM 验收。

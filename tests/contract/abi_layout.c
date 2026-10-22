@@ -4,6 +4,7 @@
  * the build. Pointer-sized fields are measured in sizeof(void *) so that the
  * same checks fit 32-bit targets; only the native build compiles them so far.
  */
+#include <ayni/authority.h>
 #include <ayni/ayni.h>
 
 #include <stddef.h>
@@ -40,7 +41,9 @@ AYNI_LAYOUT(config_task_checkpoint_max_bytes,
 AYNI_LAYOUT(config_command_capacity, offsetof(ayni_config_v1, command_capacity) == 76);
 AYNI_LAYOUT(config_write_interval, offsetof(ayni_config_v1, storage_write_interval_us) == 80);
 AYNI_LAYOUT(config_log_limit, offsetof(ayni_config_v1, storage_log_max_bytes) == 84);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 88);
+AYNI_LAYOUT(config_capability_capacity, offsetof(ayni_config_v1, capability_capacity) == 88);
+AYNI_LAYOUT(config_scope_max_bytes, offsetof(ayni_config_v1, authority_scope_max_bytes) == 92);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 96);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);
@@ -326,3 +329,23 @@ AYNI_LAYOUT(event_struct_size, offsetof(ayni_event_v1, struct_size) == 0);
 AYNI_LAYOUT(event_kind, offsetof(ayni_event_v1, kind) == 4);
 AYNI_LAYOUT(event_source, offsetof(ayni_event_v1, source) == 8);
 AYNI_LAYOUT(event_size, sizeof(ayni_event_v1) == 8 + 2 * AYNI_PTR);
+
+/* Since 0.17: typed authorization inputs retain C99 pointer-size layouts. */
+AYNI_LAYOUT(authority_integer_size, sizeof(ayni_authority_i64_range_v1) == 16);
+AYNI_LAYOUT(authority_tokens_count,
+            offsetof(ayni_authority_token_set_v1, member_count) == AYNI_PTR);
+AYNI_LAYOUT(authority_tokens_size, sizeof(ayni_authority_token_set_v1) == AYNI_PTR + 8);
+AYNI_LAYOUT(authority_values_size, sizeof(ayni_authority_values_v1) == 16);
+AYNI_LAYOUT(authority_value_unit, offsetof(ayni_authority_value_set_v1, unit) == 8);
+AYNI_LAYOUT(authority_value_values,
+            offsetof(ayni_authority_value_set_v1, values) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(authority_value_size, sizeof(ayni_authority_value_set_v1) == 24 + 2 * AYNI_PTR);
+AYNI_LAYOUT(authority_field_domain, offsetof(ayni_authority_field_desc_v1, domain) == 16);
+AYNI_LAYOUT(authority_field_size, sizeof(ayni_authority_field_desc_v1) == 40 + 2 * AYNI_PTR);
+AYNI_LAYOUT(capability_id, offsetof(ayni_capability_desc_v1, capability_id) == 8);
+AYNI_LAYOUT(capability_fields, offsetof(ayni_capability_desc_v1, fields) == 16 + 2 * AYNI_PTR);
+AYNI_LAYOUT(capability_size, sizeof(ayni_capability_desc_v1) == 16 + 3 * AYNI_PTR);
+AYNI_LAYOUT(scope_field_allowed, offsetof(ayni_scope_field_v1, allowed) == 8);
+AYNI_LAYOUT(scope_field_size, sizeof(ayni_scope_field_v1) == 32 + 2 * AYNI_PTR);
+AYNI_LAYOUT(scope_fields, offsetof(ayni_scope_v1, fields) == 8);
+AYNI_LAYOUT(scope_size, sizeof(ayni_scope_v1) == 8 + AYNI_PTR);

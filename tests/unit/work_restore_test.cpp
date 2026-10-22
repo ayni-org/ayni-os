@@ -1196,6 +1196,8 @@ KernelCapacities small_capacities() {
     capacities.task_step_capacity = 2;
     capacities.task_checkpoint_max_bytes = 8;
     capacities.command_capacity = 2;
+    capacities.capability_capacity = 1;
+    capacities.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
     return capacities;
 }
 
@@ -1215,6 +1217,8 @@ class Model {
           strategies_(ayni::catalog::StrategyRegistry::storage_size(capacities.strategy_capacity)),
           commands_(ayni::kernel::CommandTable::storage_size(
               ayni::authority::PrincipalRegistry::capacity, capacities.command_capacity)),
+          capabilities_(ayni::catalog::CapabilityRegistry::storage_size(
+              capacities.capability_capacity, capacities.authority_scope_max_bytes)),
           work_(capacities, {2, 4}, storage()) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
@@ -1238,7 +1242,8 @@ class Model {
                 tasks_.data(),
                 strategies_.data(),
                 nullptr,
-                commands_.data()};
+                commands_.data(),
+                capabilities_.data()};
     }
 
     Block agents_;
@@ -1248,6 +1253,7 @@ class Model {
     Block tasks_;
     Block strategies_;
     Block commands_;
+    Block capabilities_;
     WorkModel work_;
 };
 

@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 16u
+#define AYNI_ABI_MINOR 17u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -142,8 +142,19 @@ typedef struct ayni_config_v1 {
     /* Since 0.15. Encoded log byte limit. 0 selects the larger of 1 MiB
      * and eight storage buffers. Maintenance reserves space before admit. */
     uint32_t storage_log_max_bytes;
+    /* Since 0.17. Capability authorization schemas and their canonical
+     * domain/scope byte limit. Explicit zero is invalid; omitted fields
+     * take the documented defaults. Registration does not enable calls. */
+    uint32_t capability_capacity;
+    uint32_t authority_scope_max_bytes;
 } ayni_config_v1;
 
+/* Since 0.17. Limits apply to complete registered domains and scopes. */
+#define AYNI_CAPABILITY_CAPACITY_DEFAULT 16u
+#define AYNI_CAPABILITY_CAPACITY_MAX 256u
+#define AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT 256u
+#define AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN 64u
+#define AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX 4096u
 #define AYNI_INGRESS_CAPACITY_DEFAULT 128u
 #define AYNI_INGRESS_CAPACITY_MAX 4096u
 #define AYNI_EVENT_BODY_MAX_BYTES_DEFAULT 128u

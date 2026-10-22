@@ -69,6 +69,8 @@ ayni_status_t run_hello() {
     config.task_step_capacity = AYNI_TASK_STEP_CAPACITY_DEFAULT;
     config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT;
     config.command_capacity = AYNI_COMMAND_CAPACITY_DEFAULT;
+    config.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
     std::size_t size = 0;
     std::size_t align = 0;
     status = ayni_kernel_memory_requirements(&config, &size, &align);

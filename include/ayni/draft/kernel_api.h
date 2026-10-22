@@ -24,6 +24,7 @@
 #ifndef AYNI_DRAFT_KERNEL_API_H
 #define AYNI_DRAFT_KERNEL_API_H
 
+#include <ayni/authority.h>
 #include <ayni/ayni.h>
 
 #include <stdint.h>
@@ -90,7 +91,10 @@ typedef uint32_t ayni_cancel_mode_t;
 #define AYNI_CANCEL_REQUEST ((ayni_cancel_mode_t)2)
 #define AYNI_CANCEL_CONFIRMED ((ayni_cancel_mode_t)3)
 
-typedef struct ayni_capability_desc_v1 {
+/* Future call properties extend the same capability registry (MA-008).
+ * No registration symbol accepts this draft; authorization schema
+ * registration is published in ayni/authority.h since 0.17. */
+typedef struct ayni_capability_call_properties_draft_v1 {
     uint32_t struct_size;
     ayni_call_form_t call_form;
     ayni_string_v1 capability_id; /* e.g. "notify.present" */
@@ -106,7 +110,7 @@ typedef struct ayni_capability_desc_v1 {
     ayni_string_v1 input_schema;              /* JSON Schema subset, C-JSON-012 */
     ayni_string_v1 result_schema;
     ayni_string_v1 compensation_capability_id; /* empty: none */
-} ayni_capability_desc_v1;
+} ayni_capability_call_properties_draft_v1;
 
 typedef struct ayni_binding_v1 {
     uint32_t struct_size;
@@ -123,8 +127,6 @@ typedef struct ayni_binding_v1 {
 
 ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc_v1 *device);
 ayni_status_t ayni_register_resource(ayni_kernel_t *kernel, const ayni_resource_desc_v1 *resource);
-ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
-                                       const ayni_capability_desc_v1 *capability);
 ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding);
 
 /*
