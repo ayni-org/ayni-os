@@ -1,0 +1,54 @@
+// ADR-0030/C-WIRE-017: raw authorization request identity, independent of
+// current catalog, subject or parent availability. Omission stays omitted.
+#ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H
+#define AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H
+
+#include <ayni/authority.h>
+
+#include <cstdint>
+
+namespace ayni::kernel {
+
+constexpr uint32_t authority_command_format = 1;
+constexpr uint32_t authority_command_fixed_max = 84;
+constexpr uint32_t authority_command_max_bytes(uint32_t scope_max_bytes) {
+    return authority_command_fixed_max + scope_max_bytes;
+}
+
+struct CanonicalCommandView {
+    uint32_t expected_revision;
+    const ayni_grant_create_v1 *grant;
+};
+
+// Decoded views borrow the complete input bytes. No current registration is
+// needed to validate this identity; scope remains the raw provided fields.
+struct AuthorityCommandRecord {
+    uint32_t expected_revision;
+    uint32_t capability_version;
+    ayni_string_v1 capability_id;
+    uint64_t subject_instance_id;
+    uint64_t parent_grant_id;
+    ayni_grant_lifetime_t lifetime;
+    uint32_t flags;
+    uint64_t duration_us;
+    ayni_bytes_v1 raw_scope;
+};
+
+// Validates complete bounded shape, not current authorization. Known Scene
+// and quota flags remain representable; their semantic rejection follows
+// command lookup. out_size changes only on success/BUFFER_TOO_SMALL.
+ayni_status_t measure_authority_command(const CanonicalCommandView &input, uint32_t &out_size);
+// Output must not overlap input views. No bytes change on failure.
+ayni_status_t encode_authority_command(const CanonicalCommandView &input, uint8_t *out,
+                                       uint32_t capacity, uint32_t &out_size);
+// Strict format-1 parsing: sorted distinct fields/tokens and no trailing
+// bytes. Publishes out only on success. Does not check catalog or existence.
+bool read_authority_command(ayni_bytes_v1 bytes, AuthorityCommandRecord &out);
+// Proves that the raw request, expanded against this source domain, is
+// exactly the stored canonical scope. Streaming bounded views, no byte scratch.
+bool authority_command_scope_matches(const AuthorityCommandRecord &command,
+                                     ayni_bytes_v1 source_domain, ayni_bytes_v1 expanded_scope);
+uint64_t authority_command_digest(ayni_bytes_v1 bytes);
+
+} // namespace ayni::kernel
+#endif // AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H

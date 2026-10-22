@@ -1,6 +1,6 @@
 # ADR-0029：权限与审批（二）：Capability 目录与有限范围代数
 
-- **状态**：已实现并完成 Native 本地验证、独立审查与 #26 八项 CI；待合并
+- **状态**：已接受、实现并验证；PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 已合并（`00a4126ccdac0e52b903a05bb44d28f60a3c30ca`），最终文档提交 `8fcc` 的 [CI run 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项全部通过
 - **日期**：2026-10-22
 - **关联**：计划 §2.2、§2.3、§3.2、§4.2、§9.1、§14.1；`MA-006` B；ADR-0008、ADR-0014、ADR-0028；C-AUTH-001、003～005、008、016；C-LIMIT-001～004；C-CALL-001
 
@@ -73,10 +73,9 @@ Scene、次数和费用额度不在此有限 Scope 的字段中；不能把“�
 - **工具链与资源。** `ayni-m0-tools:latest`，GCC 13.3.0、Clang/clang-format 18.1.3、CMake 3.31.6、Ninja 1.11.1、Python 3.12.3。开始时宿主约 18 GiB 可用、swap 635 MiB，监测无持续换入换出。B 验证与独立变异各自顺序占用 2 CPU/3 GiB，memory-swap 同为 3 GiB，`CMAKE_BUILD_PARALLEL_LEVEL=2`、CTest 并行 2；与 C 容器合计 4 CPU/6 GiB，留出宿主余量。TSan 运行时 `vm.mmap_rnd_bits=28`，沿既有开发环境约束，不更改测试。
 - **最终五配置。** 显式 GCC 13 配置 `native-debug`、`native-release`、`native-asan`、`native-tsan`，Clang 18 配置 `build/native-clang`；都用 `/gtest` 的固定 GoogleTest 1.17.0 离线源并启用 warnings-as-errors。逐配置 build 后运行完整 CTest，均 **678/678** 通过（665 个单元及 13 个既有 ABI/头文件/依赖/契约等检查）；ASan+UBSan、TSan 没有报告。原命令与工具版本在 `final-validation/run.py`、`results.json`、逐步日志；模拟器退出 0。文档更新后的格式、依赖、契约/追踪与 diff 检查另附同目录。
 - **范围行为。** 独立固定小端字节预期、全部截断位置、严格字段/成员次序、保留位/尾字节/版本/usage、I64 的 MIN/0/MAX 等值与闭边界均有测试；数值关系用小有限域逐点 oracle，token 用独立 bitset 子集 oracle。typed 与 encoded 消费者均拒绝非规范、越域、类型/单位/用途改变；实际请求必须含全部授权字段且值为单点。target/egress 均为 IDENTIFIER、同值互换仍拒绝，避免由类型错误掩盖用途核对。规范化先完整验证，再写输出，错误不发布半份结果。
-- **目录与 API。** 输入返回前复制；同 ID 多版本、重复身份、注册冻结、回调重入、嵌套错误优先、空域/上限、返回容量错误后旧条目完整、填满 1/2/4 条目录后逐项复验元数据/域/查找都有场景。Core 无新增堆引用，公开 C99/头文件自包含及按指针宽度表达的布局断言在本地 64 位构建通过；这不是 32 位硬件运行证据。
+- **目录与 API。** 输入返回前复制；同 ID 多版本、重复身份、注册冻结、回调重入、嵌套错误优先、空域/上限、返回容量错误后旧条目完整、填满 1/2/4 条目录后逐项复验元数据/域/查找都有场景。Core 无新增堆引用，公开 C99/头文件自包含与 Native ABI 布局断言通过；断言按指针宽度表达 32/64 位关系，这不是单独的 32 位编译或硬件运行证据。
 - **内存。** 同一 GCC 13.3.0/x86-64 C99 查询程序，默认 `struct_size=12` 为 **67,544 B**，较 A 的 62,712 B **+4,832 B**；最小工作容量（新 Capability 容量 1、Scope 64 B，其余按 workflow）为 **29,060 B**，较 A 的 28,920 B **+140 B**，对齐均 8 B（`memory.c`、`memory.log`）。metadata/域字节 stride 通过同一 registry 容量公式进入 layout，未向 `ayni_kernel` 添加散字段。
 - **独立变异。** 另一会话先按源码/契约设计 **35 项**，原清单、仅格式空白适配及每项原始输出均保留。初轮 **30 项检出、5 项未检出**；为下列真实行为缺口补五个回归后，对各项独立重跑，最终 **35 项全部检出，0 编译失败、0 等价或未解释存活**：B13 非递增字段 ID；B14 非递增/重复 token 的每个消费者；B16 encoded 单点整数域；B19 填满 registry 后复验全部先前域/查找；B34 同为 IDENTIFIER 的 target/egress 用途互换。没有因测试结果改写缺陷含义。初轮完整 660/664 项的原未检出证据与补测 664/665 项结果分开；finally 恢复后 **665/665** 通过，六个生产 target SHA 与正常 B 完全一致（`mutation-run/summary.json`、`mutation-rerun/`、`mutation-rerun-b34/`）。
 - **覆盖率及偏差。** GCC 13 `--coverage` 完整 **678/678** 通过，收集全部 117 个 coverage 对象的 gcov JSON，按同 Core 路径/行/分支槽最大执行次数合并，排除 throw 分支（`coverage/summary.json`）。Core 含头文件行 **5,415/5,575 = 97.13%**、分支 **3,401/3,793 = 89.67%**；本 B 新增 scope/Capability 三个 `.cpp` 行 **398/410 = 97.07%**、分支 **334/366 = 91.26%**。本 B 含头文件行 **405/417 = 97.12%**、分支 **339/372 = 91.13%**；scope、field_domain、registry 三个 `.cpp` 分支分别 91.18%、90.82%、94.12%，均超过 90%。各文件数字与未命中位置保留；整体恢复/快照低于 90% 的既有偏差仍按 ADR-0028 随 MA-022 补齐，不能用变异检出率代替覆盖率。
 - **独立审查。** `review.md` 从公开 ABI、布局、arena、codec、typed/encoded 调用链与已有消费者复核，无未处理阻断发现。初版嵌套参数错误被生命周期遮蔽的问题已修，回归保证 RUNNING 状态的畸形 nested 输入仍先返回 INVALID_ARGUMENT。删除注释、Kernel 字段属主、公式复用、裸数字四项无待解问题；没有新 Kernel scratch、授权旗标或平行 allocator。新增配置字段的半字段 struct_size 边界复用现有 read_capacity 机制，尚无两个字段各自的专门组合测试，作为明确验证限制。
-- **CI。** PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 的实现提交 `b8518b5` 在 [CI run 39724951376](https://github.com/RobotSe7en/ayni/actions/runs/39724951376) 八项全部通过，包括 ESP-IDF v6.0.3 的 ESP32-S3 Hello 编译和 advisory clang-tidy；合并状态以 PR 为准。
-- **未执行/边界。** 未烧录、未测硬件 RAM/Flash/耐久或物理停止。B 不产生 Grant、审批、撤销、Provider/Scene/额度或持久授权记录；目录每次配置重建，后续 C 的持久消费不能跳过版本/完整 schema 核对。本地回归和模拟器不能代替完整 E1–E4、真实输出屏障或执行器证据。
+- **CI 与未执行边界。** PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 已合并（`00a4126`）；最终文档提交 `8fcc` 的 [CI run 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项全部通过，包括 ESP32-S3 固件编译，先前 run 39724951376 的证据仍保留。未烧录、未测硬件 RAM/Flash/耐久或物理停止。B 不产生 Grant、审批、撤销、Provider/Scene/额度或持久授权记录；目录每次配置重建，后续 C 的持久消费不能跳过版本/完整 schema 核对。本地回归和模拟器不能代替完整 E1–E4、真实输出屏障或执行器证据。

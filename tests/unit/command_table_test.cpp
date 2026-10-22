@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -295,4 +296,266 @@ TEST(CommandTable, clear_empties_every_row) {
     EXPECT_FALSE(commands->has_row(owner));
 }
 
+} // namespace
+
+namespace {
+
+ayni_grant_create_v1 exact_request(uint64_t subject = 1) {
+    ayni_grant_create_v1 value{};
+    value.struct_size = sizeof(value);
+    value.capability_version = 1;
+    value.capability_id = {"a", 1};
+    value.subject_instance_id = subject;
+    value.lifetime = AYNI_GRANT_PERMANENT;
+    value.scope.struct_size = sizeof(value.scope);
+    return value;
+}
+CommandMapping exact_mapping(uint64_t command, uint64_t seq) {
+    return {
+        owner, command, 0, seq, AYNI_INTENT_GRANT_CREATE, {0, command + 500, 1, AYNI_OBJECT_GRANT}};
+}
+
+class ExactCommands {
+  public:
+    ExactCommands(uint32_t capacity = 3, uint32_t bytes = 340, uint32_t rows = 1)
+        : memory_(CommandTable::storage_size(rows, capacity, bytes) / sizeof(uint64_t) + 1),
+          table_(memory_.data(), rows, capacity, bytes) {}
+    CommandTable *operator->() { return &table_; }
+    CommandTable::ExactLookup find(uint64_t command, const ayni_grant_create_v1 &request) {
+        return table_.find_exact(owner, command, {0, &request});
+    }
+    void accept(uint64_t command, const ayni_grant_create_v1 &request, uint64_t seq) {
+        const auto result = find(command, request);
+        ASSERT_EQ(result.status, AYNI_OK);
+        ASSERT_EQ(result.lookup, Lookup::unmapped);
+        ASSERT_TRUE(table_.insert_exact(exact_mapping(command, seq)));
+    }
+
+  private:
+    std::vector<uint64_t> memory_;
+    CommandTable table_;
+};
+
+// C-WIRE-017: accepted bytes are copied, independent of borrowed views and
+// whether the created object remains in another module's bounded table.
+TEST(CommandTable, exact_retry_returns_the_original_result_and_owns_all_request_bytes) {
+    ExactCommands commands;
+    auto request = exact_request();
+    char id[] = "a";
+    request.capability_id = {id, 1};
+    commands.accept(5, request, 9);
+    id[0] = 'b';
+    request = exact_request();
+    auto result = commands.find(5, request);
+    ASSERT_EQ(result.status, AYNI_OK);
+    ASSERT_EQ(result.lookup, Lookup::retried);
+    ASSERT_NE(result.mapping, nullptr);
+    EXPECT_EQ(result.mapping->object.id, 505U);
+    EXPECT_EQ(result.mapping->commit_seq, 9U);
+    const auto bytes = commands->canonical(*result.mapping);
+    EXPECT_NE(bytes.data, nullptr);
+    EXPECT_EQ(bytes.size, result.mapping->canonical_size);
+    const auto before = std::vector<uint8_t>(bytes.data, bytes.data + bytes.size);
+    request.subject_instance_id = 2;
+    EXPECT_EQ(commands.find(5, request).lookup, Lookup::conflict);
+    EXPECT_EQ((std::vector<uint8_t>{bytes.data, bytes.data + bytes.size}), before);
+    EXPECT_EQ(commands->size(), 1U);
+    EXPECT_EQ(commands->floor(owner), 0U);
+}
+
+// White-box: force an index collision. Correctness must compare bytes even
+// when stored and incoming digest are identical; no fake hash-only equality.
+TEST(CommandTable, a_digest_collision_does_not_replace_exact_byte_equality) {
+    ExactCommands commands;
+    auto first = exact_request(1);
+    commands.accept(5, first, 9);
+    auto second = exact_request(2);
+    std::vector<uint8_t> bytes(128);
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::kernel::encode_authority_command({0, &second}, bytes.data(),
+                                                     static_cast<uint32_t>(bytes.size()), size),
+              AYNI_OK);
+    auto *mapping = const_cast<CommandMapping *>(commands->mapped_in(9));
+    ASSERT_NE(mapping, nullptr);
+    mapping->digest = ayni::kernel::authority_command_digest({bytes.data(), size});
+    const auto result = commands.find(5, second);
+    EXPECT_EQ(result.status, AYNI_OK);
+    EXPECT_EQ(result.lookup, Lookup::conflict);
+    EXPECT_EQ(result.mapping, nullptr);
+    EXPECT_EQ(mapping->object.id, 505U);
+}
+
+TEST(CommandTable, exact_payload_moves_with_metadata_and_shares_the_ordinary_window_and_floor) {
+    ExactCommands commands;
+    commands.accept(5, exact_request(5), 1);
+    commands.accept(9, exact_request(9), 2);
+    commands.accept(7, exact_request(7), 3);
+    commands.accept(8, exact_request(8), 4); // moves last (7) into oldest (5)
+    EXPECT_EQ(commands->floor(owner), 5U);
+    EXPECT_EQ(commands.find(5, exact_request(5)).lookup, Lookup::expired);
+    for (uint64_t id : {7U, 8U, 9U}) {
+        const auto result = commands.find(id, exact_request(id));
+        ASSERT_EQ(result.lookup, Lookup::retried) << id;
+        EXPECT_EQ(result.mapping->object.id, id + 500U);
+    }
+    commands->insert(mapping(owner, 10, 5)); // same row and floor, not a second window
+    EXPECT_EQ(commands->floor(owner), 7U);
+    EXPECT_EQ(commands.find(7, exact_request(7)).lookup, Lookup::expired);
+    EXPECT_EQ(commands.find(8, exact_request(8)).lookup, Lookup::retried);
+    EXPECT_EQ(commands.find(9, exact_request(9)).lookup, Lookup::retried);
+    EXPECT_EQ(commands->size(), 3U);
+}
+
+TEST(CommandTable,
+     ordinary_insert_never_consumes_staged_exact_scratch_and_cross_kind_ids_conflict) {
+    ExactCommands commands;
+    auto request = exact_request();
+    ASSERT_EQ(commands.find(50, request).lookup, Lookup::unmapped);
+    commands->insert(mapping(owner, 2, 3));
+    EXPECT_FALSE(commands->insert_exact(exact_mapping(50, 4)));
+    const auto *ordinary = commands->mapped_in(3);
+    ASSERT_NE(ordinary, nullptr);
+    EXPECT_EQ(ordinary->canonical_size, 0U);
+    EXPECT_EQ(commands->canonical(*ordinary).size, 0U);
+    EXPECT_EQ(commands.find(2, request).lookup, Lookup::conflict);
+    commands.accept(50, request, 4);
+    const CommandMapping *found = nullptr;
+    const auto *exact = commands->mapped_in(4);
+    ASSERT_NE(exact, nullptr);
+    EXPECT_EQ(commands->find(owner, 50, exact->digest, found), Lookup::conflict);
+    EXPECT_EQ(found, nullptr);
+}
+
+TEST(CommandTable,
+     malformed_or_oversized_unmapped_requests_change_no_state_and_floor_wins_capacity) {
+    ExactCommands commands(1, 57); // exactly the one-character empty request
+    auto small = exact_request();
+    commands.accept(5, small, 1);
+    commands.accept(10, small, 2);
+    auto large = small;
+    large.capability_id = {"larger", 6};
+    EXPECT_EQ(commands.find(5, large).lookup, Lookup::expired);   // before scratch budget
+    EXPECT_EQ(commands.find(10, large).lookup, Lookup::conflict); // size before encode
+    const auto refused = commands.find(11, large);
+    EXPECT_EQ(refused.status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(commands->size(), 1U);
+    EXPECT_EQ(commands->floor(owner), 5U);
+    auto malformed = small;
+    malformed.scope.field_count = 1;
+    EXPECT_EQ(commands.find(11, malformed).status, AYNI_INVALID_ARGUMENT);
+    EXPECT_FALSE(commands->insert_exact(exact_mapping(11, 3)));
+    EXPECT_EQ(commands.find(10, small).lookup, Lookup::retried);
+    EXPECT_EQ(commands->mapped_in(3), nullptr);
+}
+
+TEST(CommandTable, exact_restore_checks_digest_complete_body_and_current_byte_capacity_atomically) {
+    ExactCommands source;
+    const auto request = exact_request();
+    source.accept(5, request, 9);
+    const auto original = *source->mapped_in(9);
+    const auto borrowed = source->canonical(*source->mapped_in(9));
+    std::vector<uint8_t> bytes(borrowed.data, borrowed.data + borrowed.size);
+    const ayni_bytes_v1 body{bytes.data(), static_cast<uint32_t>(bytes.size())};
+    ExactCommands too_small(1, body.size - 1);
+    EXPECT_EQ(too_small->restore_checked(original, 4, body), CommandTable::Restore::no_room);
+    EXPECT_EQ(too_small->size(), 0U);
+    EXPECT_EQ(too_small->floor(owner), 0U);
+    ExactCommands restored(1);
+    auto corrupt = original;
+    ++corrupt.digest;
+    EXPECT_EQ(restored->restore_checked(corrupt, 4, body), CommandTable::Restore::corrupt);
+    EXPECT_EQ(restored->restore_checked(original, 4, {}), CommandTable::Restore::corrupt);
+    EXPECT_EQ(restored->size(), 0U);
+    EXPECT_EQ(restored->floor(owner), 0U);
+    ASSERT_EQ(restored->restore_checked(original, 4, body), CommandTable::Restore::restored);
+    bytes[0] = 0; // caller's replay buffer can now be reused
+    EXPECT_EQ(restored.find(5, request).lookup, Lookup::retried);
+    EXPECT_EQ(restored->floor(owner), 4U);
+    EXPECT_EQ(restored->restore_checked(original, 8, body), CommandTable::Restore::corrupt);
+    EXPECT_EQ(restored->floor(owner), 4U);
+    EXPECT_EQ(restored->size(), 1U);
+}
+
+TEST(CommandTable, clear_for_reload_drops_exact_rows_floor_and_staged_candidate) {
+    ExactCommands commands(1);
+    auto request = exact_request();
+    commands.accept(5, request, 1);
+    commands.accept(6, request, 2);
+    ASSERT_EQ(commands.find(7, request).lookup, Lookup::unmapped);
+    commands->clear();
+    EXPECT_EQ(commands->floor(owner), 0U);
+    EXPECT_EQ(commands->size(), 0U);
+    EXPECT_EQ(commands->mapped_in(2), nullptr);
+    EXPECT_FALSE(commands->insert_exact(exact_mapping(7, 3)));
+    EXPECT_EQ(commands.find(5, request).lookup, Lookup::unmapped);
+    EXPECT_EQ(CommandTable::storage_size(2, 3, 340) - CommandTable::storage_size(2, 3), 7U * 340U);
+}
+
+TEST(CommandTable, exact_invalid_principal_or_command_cannot_stage_or_change_an_existing_result) {
+    ExactCommands commands;
+    const auto request = exact_request();
+    commands.accept(5, request, 9);
+    for (const auto &ids : {std::pair<uint64_t, uint64_t>{0, 6}, {owner, 0}}) {
+        const auto result = commands->find_exact(ids.first, ids.second, {0, &request});
+        EXPECT_EQ(result.status, AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(result.lookup, Lookup::unmapped);
+        EXPECT_EQ(result.mapping, nullptr);
+        EXPECT_FALSE(commands->insert_exact(exact_mapping(6, 10)));
+        EXPECT_EQ(commands->size(), 1U);
+        EXPECT_EQ(commands->floor(owner), 0U);
+        ASSERT_NE(commands->mapped_in(9), nullptr);
+        EXPECT_EQ(commands->mapped_in(9)->object.id, 505U);
+    }
+}
+
+TEST(CommandTable, staged_identity_cannot_be_consumed_by_another_principal_id_kind_or_bad_result) {
+    ExactCommands commands;
+    const auto request = exact_request();
+    const auto refuses = [&](CommandMapping candidate) {
+        ASSERT_EQ(commands.find(5, request).lookup, Lookup::unmapped);
+        EXPECT_FALSE(commands->insert_exact(candidate));
+        EXPECT_EQ(commands->size(), 0U);
+        EXPECT_EQ(commands->floor(owner), 0U);
+        EXPECT_EQ(commands->mapped_in(9), nullptr);
+    };
+    auto candidate = exact_mapping(5, 9);
+    candidate.principal_id = other;
+    refuses(candidate);
+    candidate = exact_mapping(6, 9);
+    refuses(candidate);
+    candidate = exact_mapping(5, 9);
+    candidate.kind = AYNI_INTENT_GOAL_CREATE;
+    refuses(candidate);
+    candidate = exact_mapping(5, 9);
+    candidate.object.revision = 2;
+    refuses(candidate);
+    commands.accept(5, request, 9);
+    ASSERT_EQ(commands->find_exact(other, 6, {0, &request}).lookup, Lookup::unmapped);
+    candidate = exact_mapping(6, 10);
+    candidate.principal_id = other;
+    EXPECT_FALSE(commands->insert_exact(candidate)); // The only principal row is retained.
+    EXPECT_EQ(commands->size(), 1U);
+    EXPECT_EQ(commands.find(5, request).lookup, Lookup::retried);
+}
+
+TEST(CommandTable,
+     duplicate_exact_restore_keeps_original_payload_and_floor_and_legacy_auth_is_corrupt) {
+    ExactCommands source;
+    const auto request = exact_request();
+    source.accept(5, request, 9);
+    const auto mapping = *source->mapped_in(9);
+    const auto canonical = source->canonical(*source->mapped_in(9));
+    ExactCommands restored;
+    ASSERT_EQ(restored->restore_checked(mapping, 4, canonical), CommandTable::Restore::restored);
+    EXPECT_EQ(restored->restore_checked(mapping, 8, canonical), CommandTable::Restore::corrupt);
+    EXPECT_EQ(restored->floor(owner), 4U);
+    EXPECT_EQ(restored->size(), 1U);
+    EXPECT_EQ(restored.find(5, request).lookup, Lookup::retried);
+    auto legacy = mapping;
+    legacy.canonical_size = 0;
+    legacy.command_id = 6;
+    EXPECT_EQ(restored->restore_checked(legacy, 8), CommandTable::Restore::corrupt);
+    EXPECT_EQ(restored->floor(owner), 4U);
+    EXPECT_EQ(restored->size(), 1U);
+}
 } // namespace

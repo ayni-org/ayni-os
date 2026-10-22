@@ -143,7 +143,6 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
  * Until a kind is implemented, ayni_submit_intent returns AYNI_UNSUPPORTED
  * for it. Their body types are fixed together with each kind (C-WIRE-014).
  */
-#define AYNI_INTENT_GRANT_CREATE ((ayni_intent_kind_t)9)
 #define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)10)
 #define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)11)
 #define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)12)

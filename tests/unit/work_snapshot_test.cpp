@@ -49,6 +49,8 @@ ayni::kernel::KernelCapacities capacities() {
     result.command_capacity = 2;
     result.capability_capacity = 1;
     result.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
+    result.grant_capacity = 4;
+    result.grant_delegation_depth_max = 4;
     return result;
 }
 
@@ -65,9 +67,14 @@ class Model {
                                                 config.task_checkpoint_max_bytes}))),
           strategies_(
               store(ayni::catalog::StrategyRegistry::storage_size(config.strategy_capacity))),
-          commands_(store(ayni::kernel::CommandTable::storage_size(1, config.command_capacity))),
+          commands_(store(ayni::kernel::CommandTable::storage_size(
+              1, config.command_capacity,
+              ayni::kernel::authority_command_max_bytes(config.authority_scope_max_bytes)))),
           capabilities_(store(ayni::catalog::CapabilityRegistry::storage_size(
               config.capability_capacity, config.authority_scope_max_bytes))),
+          grants_(store(ayni::authority::GrantTable::storage_size(
+              {config.grant_capacity, config.authority_scope_max_bytes,
+               config.grant_delegation_depth_max}))),
           storage_(storage()), model_(capacities_, {3, 4}, storage_) {}
 
     WorkModel &get() { return model_; }
@@ -83,12 +90,13 @@ class Model {
         result.strategies = strategies_.data();
         result.commands = commands_.data();
         result.capabilities = capabilities_.data();
+        result.grants = grants_.data();
         return result;
     }
 
     ayni::kernel::KernelCapacities capacities_;
     std::vector<uint64_t> agents_, types_, goals_, sessions_, tasks_, strategies_, commands_,
-        capabilities_;
+        capabilities_, grants_;
     ayni::kernel::KernelStorage storage_;
     WorkModel model_;
 };

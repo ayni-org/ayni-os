@@ -30,6 +30,7 @@ Coverage contains_request(ayni_bytes_v1 domain, const ayni_scope_v1 &allowed,
 // Canonical records are the durable form consumed by the next Grant package.
 // Both shapes and containment in the current exact-version domain are checked.
 Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child);
+Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, const ayni_scope_v1 &child);
 Coverage contains_request(ayni_bytes_v1 domain, ayni_bytes_v1 allowed, const ayni_scope_v1 &actual);
 
 } // namespace ayni::authority

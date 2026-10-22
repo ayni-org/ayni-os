@@ -43,7 +43,9 @@ AYNI_LAYOUT(config_write_interval, offsetof(ayni_config_v1, storage_write_interv
 AYNI_LAYOUT(config_log_limit, offsetof(ayni_config_v1, storage_log_max_bytes) == 84);
 AYNI_LAYOUT(config_capability_capacity, offsetof(ayni_config_v1, capability_capacity) == 88);
 AYNI_LAYOUT(config_scope_max_bytes, offsetof(ayni_config_v1, authority_scope_max_bytes) == 92);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 96);
+AYNI_LAYOUT(config_grant_capacity, offsetof(ayni_config_v1, grant_capacity) == 96);
+AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_max) == 100);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 104);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);
@@ -349,3 +351,61 @@ AYNI_LAYOUT(scope_field_allowed, offsetof(ayni_scope_field_v1, allowed) == 8);
 AYNI_LAYOUT(scope_field_size, sizeof(ayni_scope_field_v1) == 32 + 2 * AYNI_PTR);
 AYNI_LAYOUT(scope_fields, offsetof(ayni_scope_v1, fields) == 8);
 AYNI_LAYOUT(scope_size, sizeof(ayni_scope_v1) == 8 + AYNI_PTR);
+
+/* Since 0.18: management inputs borrow views; diagnostic outputs own bytes. */
+AYNI_LAYOUT(grant_create_struct_size, offsetof(ayni_grant_create_v1, struct_size) == 0);
+AYNI_LAYOUT(grant_create_capability_version,
+            offsetof(ayni_grant_create_v1, capability_version) == 4);
+AYNI_LAYOUT(grant_create_capability_id, offsetof(ayni_grant_create_v1, capability_id) == 8);
+AYNI_LAYOUT(grant_create_subject,
+            offsetof(ayni_grant_create_v1, subject_instance_id) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(grant_create_parent,
+            offsetof(ayni_grant_create_v1, parent_grant_id) == 16 + 2 * AYNI_PTR);
+AYNI_LAYOUT(grant_create_lifetime, offsetof(ayni_grant_create_v1, lifetime) == 24 + 2 * AYNI_PTR);
+AYNI_LAYOUT(grant_create_flags, offsetof(ayni_grant_create_v1, flags) == 28 + 2 * AYNI_PTR);
+AYNI_LAYOUT(grant_create_duration,
+            offsetof(ayni_grant_create_v1, duration_us) == 32 + 2 * AYNI_PTR);
+AYNI_LAYOUT(grant_create_scope, offsetof(ayni_grant_create_v1, scope) == 40 + 2 * AYNI_PTR);
+AYNI_LAYOUT(grant_create_size, sizeof(ayni_grant_create_v1) == AYNI_ROUND8(48 + 3 * AYNI_PTR));
+
+AYNI_LAYOUT(grant_info_struct_size, offsetof(ayni_grant_info_v1, struct_size) == 0);
+AYNI_LAYOUT(grant_info_lifecycle, offsetof(ayni_grant_info_v1, lifecycle) == 4);
+AYNI_LAYOUT(grant_info_id, offsetof(ayni_grant_info_v1, grant_id) == 8);
+AYNI_LAYOUT(grant_info_subject, offsetof(ayni_grant_info_v1, subject_instance_id) == 16);
+AYNI_LAYOUT(grant_info_parent, offsetof(ayni_grant_info_v1, parent_grant_id) == 24);
+AYNI_LAYOUT(grant_info_owner, offsetof(ayni_grant_info_v1, owner_principal_id) == 32);
+AYNI_LAYOUT(grant_info_owner_revision, offsetof(ayni_grant_info_v1, owner_binding_revision) == 40);
+AYNI_LAYOUT(grant_info_capability_version, offsetof(ayni_grant_info_v1, capability_version) == 44);
+AYNI_LAYOUT(grant_info_capability_id, offsetof(ayni_grant_info_v1, capability_id) == 48);
+AYNI_LAYOUT(grant_info_capability_id_size, offsetof(ayni_grant_info_v1, capability_id_size) == 80);
+AYNI_LAYOUT(grant_info_field_count, offsetof(ayni_grant_info_v1, field_count) == 84);
+AYNI_LAYOUT(grant_info_allow_delegation, offsetof(ayni_grant_info_v1, allow_delegation) == 88);
+AYNI_LAYOUT(grant_info_depth, offsetof(ayni_grant_info_v1, depth) == 92);
+AYNI_LAYOUT(grant_info_lifetime, offsetof(ayni_grant_info_v1, lifetime) == 96);
+AYNI_LAYOUT(grant_info_revision, offsetof(ayni_grant_info_v1, revision) == 100);
+AYNI_LAYOUT(grant_info_duration, offsetof(ayni_grant_info_v1, duration_us) == 104);
+AYNI_LAYOUT(grant_info_deadline, offsetof(ayni_grant_info_v1, deadline_us) == 112);
+AYNI_LAYOUT(grant_info_created_transition,
+            offsetof(ayni_grant_info_v1, created_transition_id) == 120);
+AYNI_LAYOUT(grant_info_created_seq, offsetof(ayni_grant_info_v1, created_commit_seq) == 128);
+AYNI_LAYOUT(grant_info_transition, offsetof(ayni_grant_info_v1, transition_id) == 136);
+AYNI_LAYOUT(grant_info_seq, offsetof(ayni_grant_info_v1, commit_seq) == 144);
+AYNI_LAYOUT(grant_info_effective_reason, offsetof(ayni_grant_info_v1, effective_reason) == 152);
+AYNI_LAYOUT(grant_info_reserved, offsetof(ayni_grant_info_v1, reserved) == 156);
+AYNI_LAYOUT(grant_info_size, sizeof(ayni_grant_info_v1) == 160);
+
+AYNI_LAYOUT(grant_tokens_members, offsetof(ayni_grant_tokens_info_v1, members) == 0);
+AYNI_LAYOUT(grant_tokens_sizes, offsetof(ayni_grant_tokens_info_v1, member_sizes) == 256);
+AYNI_LAYOUT(grant_tokens_count, offsetof(ayni_grant_tokens_info_v1, member_count) == 288);
+AYNI_LAYOUT(grant_tokens_reserved, offsetof(ayni_grant_tokens_info_v1, reserved) == 292);
+AYNI_LAYOUT(grant_tokens_size, sizeof(ayni_grant_tokens_info_v1) == 296);
+AYNI_LAYOUT(grant_field_values_size, sizeof(ayni_grant_field_values_v1) == 296);
+AYNI_LAYOUT(grant_field_struct_size, offsetof(ayni_grant_field_info_v1, struct_size) == 0);
+AYNI_LAYOUT(grant_field_id, offsetof(ayni_grant_field_info_v1, field_id) == 4);
+AYNI_LAYOUT(grant_field_kind, offsetof(ayni_grant_field_info_v1, kind) == 8);
+AYNI_LAYOUT(grant_field_usage, offsetof(ayni_grant_field_info_v1, usage) == 12);
+AYNI_LAYOUT(grant_field_unit, offsetof(ayni_grant_field_info_v1, unit) == 16);
+AYNI_LAYOUT(grant_field_unit_size, offsetof(ayni_grant_field_info_v1, unit_size) == 48);
+AYNI_LAYOUT(grant_field_reserved, offsetof(ayni_grant_field_info_v1, reserved) == 52);
+AYNI_LAYOUT(grant_field_values, offsetof(ayni_grant_field_info_v1, values) == 56);
+AYNI_LAYOUT(grant_field_info_size, sizeof(ayni_grant_field_info_v1) == 352);

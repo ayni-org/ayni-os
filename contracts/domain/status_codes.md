@@ -1,6 +1,6 @@
 # 状态码
 
-- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022、ADR-0026、ADR-0027；`MA-004`、`MA-005`、`MA-010`
+- **关联**：计划 §3.2「错误」、§3.4；ADR-0006、ADR-0017、ADR-0018、ADR-0020、ADR-0022、ADR-0026、ADR-0027、ADR-0030；`MA-004`、`MA-005`、`MA-010`
 - **定义位置**：`include/ayni/ayni.h`（唯一来源；Core 内部不复制一份）
 
 ## 取值
@@ -25,7 +25,7 @@
 | -13 | `AYNI_BUDGET_EXHAUSTED` | 预算余额不足 | 等待周期重置或调整预算 |
 | -14 | `AYNI_STORAGE_FAILED` | 持久化失败；相关输出未释放 | 查看诊断；Kernel 可能已进入受限栅栏 |
 | -15 | `AYNI_REVISION_CONFLICT` | `expected_revision` 或依赖版本已过时 | 读取新版本，重新评估后再提交 |
-| -16 | `AYNI_IDEMPOTENCY_CONFLICT` | 同一幂等键对应了不同的规范化参数摘要 | 换新的幂等键表示新意图 |
+| -16 | `AYNI_IDEMPOTENCY_CONFLICT` | 同一幂等键对应了不同的规范化请求身份（旧普通命令兼容摘要） | 换新的幂等键表示新意图 |
 | -17 | `AYNI_RESULT_UNKNOWN` | 已越过可能派发边界，结果无法确定 | 查询或人工处理；不得自动重试（C-STATUS-004） |
 | -18 | `AYNI_INTERNAL` | Core 检测到自身不变量被破坏 | 报告缺陷；Kernel 可能进入 `RESTRICTED` |
 
@@ -75,8 +75,24 @@
 | 37 | `AYNI_REASON_COMMAND_CONFLICT` | `IDEMPOTENCY_CONFLICT` | 该 principal 以同一 `command_id` 接受过内容不同的命令（C-WIRE-004，ADR-0026） |
 | 38 | `AYNI_REASON_STORAGE_BACKLOG` | `BUSY` | 缓冲不足、异常重试或快照维护暂停新 transition；已映射命令仍先返回首次结果（ADR-0027） |
 | 39 | `AYNI_REASON_STORAGE_SPACE` | `STORAGE_FAILED` | 可用介质空间不足以接纳新的 transition 及维护预留，拒绝发生在状态改变前（ADR-0027） |
-
 | 40 | `AYNI_REASON_LEGACY_UNCONFIRMED` | `DENIED` | 恢复的活工作缺少已确认授权元数据，保留进度并禁行；明确审批随 MA-006 E/F（ADR-0028） |
+| 41 | `AYNI_REASON_CAPABILITY_UNKNOWN` | `NOT_FOUND` | 没有这个 Capability ID |
+| 42 | `AYNI_REASON_CAPABILITY_VERSION` | `UNSUPPORTED_VERSION` | Capability ID 已知，版本未注册 |
+| 43 | `AYNI_REASON_GRANT_UNKNOWN` | `NOT_FOUND` | 没有保留这个 Grant ID |
+| 44 | `AYNI_REASON_GRANT_REVISION` | `REVISION_CONFLICT` | parent 的当前 revision 与请求不符 |
+| 45 | `AYNI_REASON_GRANT_INPUT` | `INVALID_ARGUMENT` | Grant scope、期限或root revision等输入不合法 |
+| 46 | `AYNI_REASON_GRANT_SCOPE` | `DENIED` | 委派范围超出parent |
+| 47 | `AYNI_REASON_GRANT_PARENT` | `DENIED` | 完整父链不能委派该权限 |
+| 48 | `AYNI_REASON_GRANT_DEPTH` | `CAPACITY_EXCEEDED` | 超过配置的委派边数 |
+| 49 | `AYNI_REASON_GRANT_CAPACITY` | `CAPACITY_EXCEEDED` | 无空闲或安全可回收Grant槽 |
+| 50 | `AYNI_REASON_GRANT_NOT_DURABLE` | `BUSY` | 授权事实尚未持久，不能使用或委派 |
+| 51 | `AYNI_REASON_GRANT_EXPIRED` | `DENIED` | Grant已到期或为旧boot限时授权 |
+| 52 | `AYNI_REASON_GRANT_CATALOG_CHANGED` | `UNSUPPORTED_VERSION` | exact Capability完整注册域改变，旧Grant暂时禁用 |
+| 53 | `AYNI_REASON_GRANT_SUBJECT` | `DENIED` | 接收实例不可用 |
+| 54 | `AYNI_REASON_GRANT_CHANNEL` | `DENIED` | 需要可信管理端Session |
+| 55 | `AYNI_REASON_GRANT_UNSUPPORTED` | `UNSUPPORTED` | Scene或额度授权尚未实现 |
+
+以上41–55自ABI0.18发布，C实施/验证状态见ADR-0030；表格记录状态归属，不表示全部调用路径已经验证。
 
 ## 规则
 

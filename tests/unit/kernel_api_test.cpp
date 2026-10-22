@@ -64,6 +64,8 @@ ayni_config_v1 valid_config() {
     config.command_capacity = 4;
     config.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
     config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
+    config.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
     return config;
 }
 
@@ -87,7 +89,7 @@ std::size_t required_size(const ayni_config_v1 &config) {
 // Caller-provided kernel memory, over-sized and over-aligned so tests can
 // also hand out misaligned or short views of it.
 struct KernelMemory {
-    alignas(64) std::array<unsigned char, 16384> bytes{};
+    alignas(64) std::array<unsigned char, 65536> bytes{};
     std::size_t size = 0;
     std::size_t align = 0;
 };
@@ -315,6 +317,9 @@ TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
          AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX},
         {&ayni_config_v1::command_capacity, 1U, AYNI_COMMAND_CAPACITY_MAX},
         {&ayni_config_v1::capability_capacity, 1U, AYNI_CAPABILITY_CAPACITY_MAX},
+        {&ayni_config_v1::grant_capacity, 1U, AYNI_GRANT_CAPACITY_MAX},
+        {&ayni_config_v1::grant_delegation_depth_max, AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN,
+         AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX},
         {&ayni_config_v1::authority_scope_max_bytes, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN,
          AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX},
     };
@@ -389,7 +394,7 @@ TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
           &ayni_config_v1::strategy_capacity, &ayni_config_v1::policy_intent_capacity,
           &ayni_config_v1::task_step_capacity, &ayni_config_v1::task_checkpoint_max_bytes,
           &ayni_config_v1::command_capacity, &ayni_config_v1::capability_capacity,
-          &ayni_config_v1::authority_scope_max_bytes}) {
+          &ayni_config_v1::authority_scope_max_bytes, &ayni_config_v1::grant_capacity}) {
         config = valid_config();
         config.*field += 1;
         EXPECT_GT(required_size(config), base);
@@ -412,6 +417,8 @@ ayni_config_v1 with_command_default(ayni_config_v1 config) {
     config.command_capacity = AYNI_COMMAND_CAPACITY_DEFAULT;
     config.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
     config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
+    config.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
     return config;
 }
 

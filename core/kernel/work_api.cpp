@@ -6,6 +6,7 @@
 // sessions and intents live in kernel/intent/. Every struct here is new in
 // 0.5 or later or changed since, so its only layout is its sizeof.
 
+#include "catalog/capability/field_domain.h"
 #include "kernel/abi_checks.h"
 #include "kernel/intent/intent.h"
 #include "kernel/intent/work_model.h"
@@ -77,7 +78,8 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     const uint64_t first_seq = kernel->work.transitions.next_commit_seq();
     const bool log_was_idle = kernel->log.idle();
     status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
-                                        outcome, failure, kernel->storage_admission_status());
+                                        outcome, failure, kernel->storage_admission_status(),
+                                        kernel->durable_seq());
     // Also AYNI_INTERNAL, which used up a commit_seq (ayni.h).
     const bool committed = kernel->work.transitions.next_commit_seq() != first_seq;
     if (committed) {
@@ -417,6 +419,102 @@ ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
         return AYNI_NOT_FOUND;
     }
     write_task_info(kernel->work.tasks.at(index), *out_info);
+    return AYNI_OK;
+}
+
+ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
+                             ayni_grant_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = check_size(*out_info);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.grants.find(grant_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto &grant = kernel->work.grants.at(index);
+    ayni_grant_info_v1 info{};
+    info.struct_size = sizeof(info);
+    info.lifecycle = grant.lifecycle;
+    info.grant_id = grant.grant_id;
+    info.subject_instance_id = grant.subject_instance_id;
+    info.parent_grant_id = grant.parent_grant_id;
+    info.owner_principal_id = grant.owner_principal_id;
+    info.owner_binding_revision = grant.owner_binding_revision;
+    info.capability_version = grant.capability_version;
+    info.capability_id_size = grant.capability_id.size();
+    std::memcpy(info.capability_id, grant.capability_id.data(), info.capability_id_size);
+    info.field_count = ayni::catalog::DomainReader(kernel->work.grants.scope(index)).field_count();
+    info.allow_delegation = grant.allow_delegation ? 1U : 0U;
+    info.depth = grant.depth;
+    info.lifetime = grant.lifetime;
+    info.revision = grant.revision;
+    info.duration_us = grant.duration_us;
+    info.deadline_us = grant.deadline_us;
+    info.created_transition_id = grant.created_stamp.transition_id;
+    info.created_commit_seq = grant.created_stamp.commit_seq;
+    info.transition_id = grant.stamp.transition_id;
+    info.commit_seq = grant.stamp.commit_seq;
+    info.effective_reason = kernel->work
+                                .check_grant(index, kernel->host.monotonic_now_us(kernel->host.ctx),
+                                             kernel->durable_seq())
+                                .reason;
+    *out_info = info;
+    return AYNI_OK;
+}
+
+ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_id,
+                                   uint32_t field_index, ayni_grant_field_info_v1 *out_field) {
+    if (kernel == nullptr || out_field == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = check_size(*out_field);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.grants.find(grant_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    ayni::catalog::DomainReader reader(kernel->work.grants.scope(index));
+    ayni::catalog::DomainField field{};
+    if (field_index >= reader.field_count()) {
+        return AYNI_NOT_FOUND;
+    }
+    for (uint32_t at = 0; at <= field_index; ++at) {
+        if (!reader.next(field)) {
+            return AYNI_INTERNAL;
+        }
+    }
+    ayni_grant_field_info_v1 info{};
+    info.struct_size = sizeof(info);
+    info.field_id = field.id;
+    info.kind = field.values.kind;
+    info.usage = field.usage;
+    info.unit_size = field.values.unit.size;
+    if (info.unit_size != 0U) {
+        std::memcpy(info.unit, field.values.unit.data, info.unit_size);
+    }
+    if (info.kind == AYNI_AUTHORITY_I64) {
+        info.values.integer = {field.values.minimum, field.values.maximum};
+    } else {
+        auto &tokens = info.values.tokens;
+        tokens.member_count = field.values.token_count;
+        for (uint32_t at = 0; at < tokens.member_count; ++at) {
+            tokens.member_sizes[at] = field.values.tokens[at].size;
+            std::memcpy(tokens.members[at], field.values.tokens[at].data, tokens.member_sizes[at]);
+        }
+    }
+    *out_field = info;
     return AYNI_OK;
 }
 

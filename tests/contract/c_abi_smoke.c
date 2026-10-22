@@ -73,6 +73,8 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_agent_info_v1 agent_info = {0};
     ayni_goal_info_v1 goal_info = {0};
     ayni_task_info_v1 task_info = {0};
+    ayni_grant_info_v1 grant_info = {0};
+    ayni_grant_field_info_v1 grant_field = {0};
     uint64_t session_id = 0;
     int failures = 0;
 
@@ -139,6 +141,12 @@ static int check_work_model(ayni_kernel_t *kernel) {
                        "goal query in CONFIGURING");
     failures += expect(ayni_get_task(kernel, 1u, &task_info) == AYNI_INVALID_STATE,
                        "task query in CONFIGURING");
+    grant_info.struct_size = (uint32_t)sizeof grant_info;
+    grant_field.struct_size = (uint32_t)sizeof grant_field;
+    failures += expect(ayni_get_grant(kernel, 1u, &grant_info) == AYNI_INVALID_STATE,
+                       "grant query links from C99 in CONFIGURING");
+    failures += expect(ayni_get_grant_field(kernel, 1u, 0u, &grant_field) == AYNI_INVALID_STATE,
+                       "grant field query links from C99 in CONFIGURING");
     return failures;
 }
 
@@ -176,6 +184,8 @@ int main(void) {
     config.command_capacity = 1u;
     config.capability_capacity = 1u;
     config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
+    config.grant_capacity = 1u;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
     config.storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
     config.storage_log_max_bytes = AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT;
     host.struct_size = (uint32_t)sizeof host;

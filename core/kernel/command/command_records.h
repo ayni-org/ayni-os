@@ -13,7 +13,25 @@ namespace ayni::kernel {
 
 constexpr uint16_t command_record_type = 9;
 constexpr uint16_t command_record_version = 1;
-constexpr uint32_t command_record_size = 52;
+constexpr uint32_t command_record_size = 52; // ordinary v1
+constexpr uint16_t exact_command_record_version = 2;
+constexpr uint32_t exact_command_record_fixed_size = command_record_size + 8U;
+constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {
+    return canonical_max_bytes == 0U ? command_record_size
+                                     : exact_command_record_fixed_size + canonical_max_bytes;
+}
+uint16_t command_record_version_for(const CommandMapping &mapping);
+uint32_t command_record_size_for(const CommandMapping &mapping);
+
+// v2 requires a valid complete exact authority identity and matching digest;
+// failure changes no output. size is exactly command_record_size_for().
+bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_bytes_v1 canonical,
+                          uint8_t *body, uint32_t size);
+// Record version determines syntax. Views borrow body. Failure changes no
+// outputs; restored commit_seq remains 0 until the envelope supplies it.
+bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
+                         CommandMapping &out_mapping, uint64_t &out_floor,
+                         ayni_bytes_v1 &out_canonical);
 
 // body has command_record_size bytes.
 void write_command_record(const CommandMapping &mapping, uint64_t floor, uint8_t *body);

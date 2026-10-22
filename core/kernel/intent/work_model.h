@@ -9,12 +9,14 @@
 #ifndef AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
 #define AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
 
+#include "authority/grant/grant_table.h"
 #include "authority/principal/principal_registry.h"
 #include "catalog/capability/capability_registry.h"
 #include "catalog/goal_type/goal_type_registry.h"
 #include "catalog/strategy/strategy_registry.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
+#include "kernel/command/command_canonical.h"
 #include "kernel/command/command_table.h"
 #include "kernel/intent/intent.h"
 #include "kernel/kernel_config.h"
@@ -42,9 +44,12 @@ struct WorkModel {
                                 capacities.task_checkpoint_max_bytes}),
           strategies(storage.strategies, capacities.strategy_capacity),
           commands(storage.commands, authority::PrincipalRegistry::capacity,
-                   capacities.command_capacity),
+                   capacities.command_capacity,
+                   authority_command_max_bytes(capacities.authority_scope_max_bytes)),
           capabilities(storage.capabilities, capacities.capability_capacity,
-                       capacities.authority_scope_max_bytes) {}
+                       capacities.authority_scope_max_bytes),
+          grants(storage.grants, {capacities.grant_capacity, capacities.authority_scope_max_bytes,
+                                  capacities.grant_delegation_depth_max}) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -58,6 +63,7 @@ struct WorkModel {
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
     work::WorkTables tables() { return {goals, tasks, agents}; }
+    authority::GrantCheck check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
 
     // Registration fills principals, goal types, agents and strategies in
     // CONFIGURING; the rest changes only in RUNNING.
@@ -72,6 +78,7 @@ struct WorkModel {
     CommandTable commands;
     // Trusted, immutable authorization schemas; registration enables no I/O.
     catalog::CapabilityRegistry capabilities;
+    authority::GrantTable grants;
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal
@@ -104,7 +111,8 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
 // new goal's schedule starts. failure is reset, then says why on a refusal.
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
                            IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status = AYNI_OK);
+                           ayni_status_t storage_status = AYNI_OK,
+                           uint64_t durable_seq = UINT64_MAX);
 
 // Records a local input from source as an occurrence, due at now_us, of
 // every goal whose trigger takes it, all in one transition (ADR-0021).

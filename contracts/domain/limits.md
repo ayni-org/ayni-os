@@ -25,16 +25,19 @@
 | 普通事件入口（`ingress_capacity`，1–4096） | 128 项 | §4.2 | 可丢弃事件覆盖同一订阅、同一非零合并键的最新一条，否则逐出最旧的可丢弃事件；其他返回 `BUSY`（ADR-0015） |
 | 单个事件正文（`event_body_max_bytes`，1–4096） | 128 字节 | ADR-0015 | 超出返回 `INVALID_ARGUMENT` |
 | 预留控制容量（完成槽，`completion_slot_count`，1–1024） | 16，且不小于在途请求上限 | §4.2 | 不调用端口，返回 `BUSY`（C-HOST-006） |
-| 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W 为任一 transition 的最大批次，由其他容量算出，默认配置为 3,696 字节） | 0：3 × max(W + 4, 256)，默认配置为 11,100 字节 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
+| 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W为当前记录与容量的保守批次上界，计入Grant/完整命令，不要求各类记录同时发生） | 0：3×max(W+4,256)，与query/create共用具名容量公式 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
 | 每个 principal 保留的命令映射（`command_capacity`，1–1024） | 32 | ADR-0026 | `command_id` 最小的映射让位并把下限提高到它；未映射且不大于下限的命令返回 `EXPIRED`（`COMMAND_EXPIRED`） |
 | 活跃外部推理槽 | 1 | §4.2 | 排队（C-RES-004） |
 | 每个 Task 的模型决策次数 | 8 | §4.2 | Task 暂停并报告原因 |
 | 单轮能力请求数 | 8 | §2.7、§4.2 | 整轮拒绝 |
 | 模型请求超时 | 30 s | §4.2 | 调用超时，按能力属性处理 |
-| Capability（`capability_capacity`，1–256，按 ID+版本计数） | 16 | ADR-0028、ADR-0029 | 注册返回 `CAPACITY_EXCEEDED`；B 实施中，尚未完成验证 |
+| Capability（`capability_capacity`，1–256，按 ID+版本计数） | 16 | ADR-0028、ADR-0029 | 注册返回 `CAPACITY_EXCEEDED`；B 本地验证及交付状态见 ADR-0029/进度报告 |
 | 单个授权 Scope 与完整注册域（`authority_scope_max_bytes`，64–4096 B） | 256 B | ADR-0029 | 完整规范表达超过字节容量拒绝，不截断；默认不保证容纳所有最大字段/成员组合 |
 | 每能力授权字段 / 每字段集合原始输入成员（不可配置） | 8 / 8 | ADR-0028、ADR-0029 | 超限拒绝；先检查原始 count 再排序去重，不用重复项绕过输入工作量上限 |
-| Resource、Grant、订阅、排队长度 | 可配置 | §4.2 | `CAPACITY_EXCEEDED`，各有耗尽测试 |
+| Grant（`grant_capacity`，1–1024） | 32 | ADR-0030 | 仅最早且终态持久的安全叶节点可让位，无候选返回 `CAPACITY_EXCEEDED/GRANT_CAPACITY`；M1 已实现：`GrantApi.only_a_durable_expired_leaf_can_make_room_and_retry_keeps_its_removed_reference` |
+| 委派深度（`grant_delegation_depth_max`，1–16，按边数根0） | 4 | ADR-0030 | `CAPACITY_EXCEEDED/GRANT_DEPTH`；该配置限制遍历/合法链，不新增每节点子数组 |
+| 每条auth命令完整规范请求 | 84 B固定头上界+`authority_scope_max_bytes` | ADR-0030 | CommandTable逐槽字节stride及有界scratch，超限明确拒绝；FNV仅索引，不降成摘要比较 |
+| Resource、订阅、排队长度 | 可配置 | §4.2 | `CAPACITY_EXCEEDED`，各有耗尽测试 |
 | 控制帧 | 8 KiB，嵌套深度 8 | §3.4 | 拒绝（C-JSON-001、C-JSON-002） |
 | 媒体缓冲、上下文 | 独立缓冲池与字节上限 | §4.2 | 拒绝新采集或缩小上下文 |
 | 日志与快照 | 每槽最大快照按工作容量计算；日志默认 `max(1 MiB,8×buffer)`，75% 或侵入维护预留时轮转；无额外历史档案 | ADR-0027、§4.2 | 空间不足 `STORAGE_FAILED/STORAGE_SPACE`，不丢当前有效来源（C-COMMIT-015） |

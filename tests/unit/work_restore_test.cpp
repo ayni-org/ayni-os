@@ -1198,6 +1198,8 @@ KernelCapacities small_capacities() {
     capacities.command_capacity = 2;
     capacities.capability_capacity = 1;
     capacities.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
+    capacities.grant_capacity = 4;
+    capacities.grant_delegation_depth_max = 4;
     return capacities;
 }
 
@@ -1216,9 +1218,13 @@ class Model {
                                           capacities.task_checkpoint_max_bytes})),
           strategies_(ayni::catalog::StrategyRegistry::storage_size(capacities.strategy_capacity)),
           commands_(ayni::kernel::CommandTable::storage_size(
-              ayni::authority::PrincipalRegistry::capacity, capacities.command_capacity)),
+              ayni::authority::PrincipalRegistry::capacity, capacities.command_capacity,
+              ayni::kernel::authority_command_max_bytes(capacities.authority_scope_max_bytes))),
           capabilities_(ayni::catalog::CapabilityRegistry::storage_size(
               capacities.capability_capacity, capacities.authority_scope_max_bytes)),
+          grants_(ayni::authority::GrantTable::storage_size(
+              {capacities.grant_capacity, capacities.authority_scope_max_bytes,
+               capacities.grant_delegation_depth_max})),
           work_(capacities, {2, 4}, storage()) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
@@ -1243,7 +1249,8 @@ class Model {
                 strategies_.data(),
                 nullptr,
                 commands_.data(),
-                capabilities_.data()};
+                capabilities_.data(),
+                grants_.data()};
     }
 
     Block agents_;
@@ -1254,6 +1261,7 @@ class Model {
     Block strategies_;
     Block commands_;
     Block capabilities_;
+    Block grants_;
     WorkModel work_;
 };
 
@@ -1667,19 +1675,22 @@ TEST(WorkJournal, transition_writes_only_what_it_changed) {
     EXPECT_EQ(unchanged.batch.record_count, 0U);
 }
 
-// The bound a storage buffer is sized by: the transition that changes the
-// most under the capacities fills transition_batch_max() exactly, and one
-// byte less does not fit, which encode_transition() reports as 0. A decision
-// adds at most policy_intent_capacity steps.
-TEST(WorkJournal, largest_transition_fills_transition_batch_max_exactly) {
+// The storage bound also reserves Grant creation, expiry and exact command
+// records. This work-only stress transition must fit that conservative
+// bound; one byte less than its actual encoded size must still fail. A
+// decision adds at most policy_intent_capacity steps.
+TEST(WorkJournal, largest_work_transition_fits_the_conservative_authority_batch_bound) {
     const KernelCapacities capacities = small_capacities();
     Model model(capacities);
     change_everything(*model);
     ASSERT_TRUE(model->principals.bind(everything));
     ASSERT_FALSE(testing::Test::HasFatalFailure());
     const uint32_t batch_max = ayni::kernel::transition_batch_max(capacities);
-    EXPECT_EQ(encode(*model, everything, batch_max).size(), batch_max);
-    EXPECT_TRUE(encode(*model, everything, batch_max - 1U).empty());
+    const auto encoded = encode(*model, everything, batch_max);
+    ASSERT_FALSE(encoded.empty());
+    EXPECT_LE(encoded.size(), batch_max);
+    EXPECT_EQ(encode(*model, everything, encoded.size()).size(), encoded.size());
+    EXPECT_TRUE(encode(*model, everything, encoded.size() - 1U).empty());
 
     const uint32_t buffer_min = ayni::kernel::storage_buffer_min(capacities);
     EXPECT_EQ(buffer_min, batch_max + ayni::durability::JournalRing::entry_overhead);
