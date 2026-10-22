@@ -40,6 +40,7 @@
 | [0026](0026-work-journal-replay-native-file-log-and-commands.md) | 持久化与恢复（二）：工作日志、重放、Native 文件存储与命令幂等 | 已接受 | §2.8、§4.2、§4.3、§9.1 |
 
 | [0027](0027-retries-writer-fences-snapshots-and-migration.md) | 持久化与恢复（三）：重试、写入栅栏、快照与迁移 | 已接受 | §2.8、§4.2、§4.3、§4.4、§9.1 |
+| [0028](0028-trusted-owner-binding-and-sessions.md) | 权限与审批（一）：可信所有者绑定与会话入口 | 已接受（A 实施中，验证待补） | §2.2、§2.4、§2.5、§3.2、§4.3、§5.3、§9.1、§14.1 |
 
 ## 模板
 

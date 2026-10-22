@@ -1,5 +1,6 @@
 // C-COMMIT-008/010/011: retries keep batch identity and isolate physical
 // writers before replacing the one mutable work model.
+#include "authority/principal/owner_binding_records.h"
 #include "foundation/little_endian.h"
 #include "work_node.h"
 
@@ -285,7 +286,10 @@ LegacyImage legacy_image() {
         bool fence = false;
         while (records.next(header, body) == ayni::durability::RecordReader::Next::record) {
             fence = fence || header.type == ayni::durability::writer_fence_record_type;
-            kept.push_back({header, std::vector<uint8_t>(body, body + header.length)});
+            // A schema 0 fixture predates the ownership record (ADR-0028).
+            if (header.type != ayni::authority::owner_binding_record_type) {
+                kept.push_back({header, std::vector<uint8_t>(body, body + header.length)});
+            }
         }
         if (fence) {
             continue;

@@ -314,7 +314,7 @@ TEST(WorkSnapshot, reload_discard_clears_sessions_and_due_work_but_keeps_registr
     Model model;
     ASSERT_EQ(model.get().agents.add(100), ayni::work::AgentTable::AddResult::added);
     populate(model.get());
-    ASSERT_TRUE(model.get().sessions.open({7, 8, 0}));
+    ASSERT_TRUE(model.get().sessions.open({7, 8, 0, 0}));
     model.get().next_due_work_us = 123;
     model.get().due_work_changed = true;
     ayni::kernel::WorkReplay(model.get()).discard_for_reload();

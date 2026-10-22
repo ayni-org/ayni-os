@@ -1669,6 +1669,7 @@ TEST(WorkJournal, largest_transition_fills_transition_batch_max_exactly) {
     const KernelCapacities capacities = small_capacities();
     Model model(capacities);
     change_everything(*model);
+    ASSERT_TRUE(model->principals.bind(everything));
     ASSERT_FALSE(testing::Test::HasFatalFailure());
     const uint32_t batch_max = ayni::kernel::transition_batch_max(capacities);
     EXPECT_EQ(encode(*model, everything, batch_max).size(), batch_max);

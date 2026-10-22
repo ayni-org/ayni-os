@@ -48,6 +48,7 @@
 |---|---|---|
 | `BOOT_EPOCH`（类型 1，版本 1，置 `REQUIRED`；正文为 8 字节小端 `boot_epoch`） | `kernel` | 单独批次，开放输出前提交（C-ID-009、ADR-0016） |
 | `WRITER_FENCE`（类型 10，版本 1，REQUIRED；正文 4 字节小端新 writer epoch，须与头部相等） | `durability` | 单独批次（C-STORE-005） |
+| `OWNER_BINDING`（类型 12，版本 1，REQUIRED） | `authority/principal` | 首次所有者绑定，与启动领域 transition 同批；已绑定后不重复写入（ADR-0028） |
 | `INSTANCE`（类型 2） | `work/agent` | 启动或改变实例的 transition 批次（ADR-0026） |
 | `GOAL`（类型 3）、`GOAL_STATE`（类型 4） | `work/goal` | `GOAL` 在创建它的批次（B1）；`GOAL_STATE` 在每个改变该 Goal 的批次，含 occurrence 游标（B2），所以不另设 `OCCURRENCE_CURSOR` |
 | `TASK`（类型 5）、`TASK_STATE`（类型 6） | `work/task` | `TASK` 在派生它的批次（B2）；`TASK_STATE` 在每个改变该 Task 的批次，含 `TASK_PROGRESS` 的内容 |
@@ -61,6 +62,10 @@
 | `GRANT`、`GRANT_REVOCATION` | `authority/grant` | 授权变更批次、B5 |
 | `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
+
+## 所有者绑定记录
+
+`OWNER_BINDING` 正文为 16 字节：`principal_id` u64、`binding_revision` u32、保留位 u32（必须为 0），身份和绑定版本均非零。绑定只建立一次；重复、非法记录或缺失 REQUIRED 标志按损坏处理，即使快照已覆盖该历史记录。Host 提供的身份或绑定版本不匹配不属于日志损坏：在任何新恢复写入前，以 `OWNER_BINDING_MISMATCH` 进入只读诊断，保留校验后的旧对象。无绑定的旧存储须核对现存 USER Goal 来源的 principal/revision 及命令映射 principal；任一与 Host 冲突也受限，不隐式转移所有权。首次绑定持久前不开放认证会话（ADR-0028）。
 
 ## 工作记录
 
@@ -78,8 +83,8 @@
 | 9 | `COMMAND_MAPPING` | `principal_id`、`command_id`、内容摘要、该 principal 当时的下限（各 u64）；结果的意图 `kind`、对象 `kind`（各 u32）、对象 `id` u64、对象 `revision` u32。应用命令的 `commit_seq` 取自所在批次 | 52 |
 
 - 记录不含单调时间（C-STORE-014）：Goal 写时长，不写到期时刻；Task 的 `due_us` 不写入。恢复时各计时从恢复结束时刻起按完整时长重新计算（ADR-0026 决策 6）。
-- 一个批次内的次序：`INSTANCE`，新建 Goal 的 `GOAL`，各 `GOAL_STATE`，新建 Task 的 `TASK`，各 `TASK_STEPS`、`TASK_CHECKPOINT`，各 `TASK_STATE`，最后 `COMMAND_MAPPING`。新建的 Goal 或 Task 须在同一批次带有状态记录，否则为损坏。
-- 状态记录引用的对象须已在表中，Goal 与 Task 的 `revision` 不减，`TASK_STEPS` 的 `steps_before` 须等于 Task 已有的步骤数，取代的对象须已终结；Goal 的 owner 须是此前记录启动的实例，终态的 Goal 与 Task 不再改变，带 `hold_status` 停下的 Task 只能结束，实例的 `revision` 不减、停止后不再改变；日志末尾不得有未终结的 Task 留在终态 Goal 之下，也不得有未终结的 Goal 留在终态的父目标之下或属于已停止的实例（结束 Goal 的 transition 同时结束它的后代与 Task，停止实例的 transition 同时结束它的 Goal）。违反者为损坏（C-STORE-009）。新建对象取代的对象记在 `GOAL`、`TASK` 中，重放按记录取代，不重新选择。本次启动的容量或限值放不下的记录使恢复以 `STATE_EXCEEDS_CAPACITY` 受限，任何受限都丢弃已重放的内容。
+- 一个批次内的次序：可选的首次 `OWNER_BINDING`，`INSTANCE`，新建 Goal 的 `GOAL`，各 `GOAL_STATE`，新建 Task 的 `TASK`，各 `TASK_STEPS`、`TASK_CHECKPOINT`，各 `TASK_STATE`，最后 `COMMAND_MAPPING`。新建的 Goal 或 Task 须在同一批次带有状态记录，否则为损坏。
+- 状态记录引用的对象须已在表中，Goal 与 Task 的 `revision` 不减，`TASK_STEPS` 的 `steps_before` 须等于 Task 已有的步骤数，取代的对象须已终结；Goal 的 owner 须是此前记录启动的实例，终态的 Goal 与 Task 不再改变，带 `hold_status` 停下的 Task 只能结束，实例的 `revision` 不减、停止后不再改变；日志末尾不得有未终结的 Task 留在终态 Goal 之下，也不得有未终结的 Goal 留在终态的父目标之下或属于已停止的实例（结束 Goal 的 transition 同时结束它的后代与 Task，停止实例的 transition 同时结束它的 Goal）。违反者为损坏（C-STORE-009）。新建对象取代的对象记在 `GOAL`、`TASK` 中，重放按记录取代，不重新选择。本次启动的容量或限值放不下的记录使恢复以 `STATE_EXCEEDS_CAPACITY` 受限，损坏或容量失败受限时丢弃已重放的内容；所有者绑定失配保留已校验的诊断模型，不写入新批次（ADR-0028）。
 - 不改变持久状态的 transition 写一个空批次，`commit_seq` 仍然连续。
 
 ## 控制记录与读取
@@ -132,6 +137,7 @@
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
+| 12 `OWNER_BINDING` | 日志正文，随后为建立绑定的原始 `transition_id` u64 与 `commit_seq` u64 | 32 |
 | 2 `INSTANCE` | 日志的 `INSTANCE` 正文，随后为该实例最后改变的 `transition_id` u64 与 `commit_seq` u64 | 40 |
 | 3 `GOAL` | 日志的 `GOAL` 正文，随后为完整 `GOAL_STATE` 正文，再接原始 `created_transition_id` u64、最后改变的 `commit_seq` u64 | 日志 `GOAL` 长度 + 64 |
 | 5 `TASK` | 日志的 `TASK` 正文，随后为原始 `created_transition_id`、最后改变的 `commit_seq`、`steps_seq`、`checkpoint_seq`（各 u64），以及 `steps_before` u32 | 76 |
@@ -140,11 +146,11 @@
 | 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
 | 9 `COMMAND_MAPPING` | 日志正文中的 principal、命令、摘要、最终下限与接受结果，再接原接受批次的 `commit_seq` u64 | 60 |
 
-顺序为全部持久实例（不含 `instance_id=0` 的本次注册项）、按深度从小到大的 Goal、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id` 前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
+顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按深度从小到大的 Goal、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id` 前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
 
 所有对象与命令的提交不超过 `S`，创建 transition 不超过快照基线；本次注册内容的缺失导致的 Agent fault、Goal hold、Task recovery hold 不写入快照。没有注册的 principal 仍占有原有的一行命令窗口及下限；第二个 principal 的持久命令放不下时明确报容量不足，不丢弃原行。命令窗口缩小时按原接受次序让位并提高下限。单调时刻不写入：Goal 只保留时长及是否待发生，Task 不写 `due_us`，最终恢复后重新计时。
 
-导出、回读与恢复按页复用同一存储缓冲，单条记录上限由配置容量计算，整份快照可以大于缓冲；Core 不分配另一份 WorkModel 或完整快照内存。任何损坏、不支持或容量不足均丢弃本次导入的全部状态。
+导出、回读与恢复按页复用同一存储缓冲，单条记录上限由配置容量计算，整份快照可以大于缓冲；Core 不分配另一份 WorkModel 或完整快照内存。任何损坏、不支持或容量不足均丢弃本次导入的全部状态。绑定不匹配时，已完整校验的模型仅保留用于只读诊断。
 
 ### 激活、轮转与恢复
 

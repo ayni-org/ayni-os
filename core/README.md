@@ -21,7 +21,7 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 |---|---|---|
 | `kernel` | `kernel_api`、`work_api`：C ABI 参数检查、注册、会话、意图与查询；`kernel_lifecycle`：所有者线程的启动、工作、栅栏重载、维护与关闭编排；`kernel_layout`、`kernel_config`：有界内存与配置；`ingress/`、`completion/`：事件队列与完成槽；`boot/`：物理日志发现、快照与尾部恢复、writer 握手及启动记录；`commit/`、`command/`：日志提交与按 principal 有界的命令窗口；`storage/`：共享写频与重试调度、日志上限与介质空间预算（`storage_budget`）、快照发布与轮转状态机（`storage_maintenance`）；`intent/`：工作模型、意图解码/规则、触发和策略决定；`work_journal`、`work_replay`、`work_snapshot`：按领域属主编排持久导出与恢复（ADR-0015～0027） | M0 |
 | `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效与记录；`task/`：Task 生命周期、容量回收、步骤与私有检查点；各表提供静态快照导入并保留原始 stamp，恢复的临时兼容覆盖与持久状态分开；`propagation`：跨表放行、派生选择与传播。调用与动作仍随后续包（ADR-0017～0027） | M1（`MA-004`） |
-| `authority` | `principal/`：所有者主体与会话表（ADR-0017）；Grant 与 Scene 随 `MA-006` | M1（`MA-004`） |
+| `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec；失配恢复只读受限，缺授权元数据的恢复工作保留并禁行（ADR-0017、0028）；Grant 与审批随后续 `MA-006` 部分，Scene 授权随 `MA-026` | M1（`MA-004`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |
 | `knowledge` | 无代码 | M1（`MA-011`） |
@@ -47,3 +47,5 @@ ABI 0.15 在本次 64 位环境中经 `ayni_kernel_memory_requirements` 实测�
 #23 整理代码时把维护与预算状态收进 `StorageMaintenance`、`StorageBudget` 并重排字段，少了 8 字节对齐填充，两组数字都比 #21 的实测（ADR-0027）少 8 字节。
 
 这里是调用方内存需求，不包括 Host 的线程、文件缓存或运行时自身的分配；复现配置及完整验证结果见 ADR-0027。
+
+ABI 0.16（ADR-0028，MA-006 A）在相同环境实测默认配置 62,712 B、最小工作容量 28,920 B，均比上表 0.15 增加 112 B，对齐仍为 8 B。新增绑定保存在现有 authority 聚合内；日志批次使用包含首次绑定记录的保守预算，不据此宣称该组合可在一次运行中同时发生或 ESP32 RAM 门槛已验收。

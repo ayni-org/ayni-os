@@ -1,5 +1,6 @@
 #include "kernel/work_replay.h"
 
+#include "authority/principal/owner_binding_records.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_records.h"
@@ -29,12 +30,39 @@ RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &
     return static_cast<WorkReplay *>(context)->apply(batch, header, body);
 }
 
-// The types apply() restores, so the two lists change together.
-bool WorkReplay::knows(const durability::RecordHeader &header) {
+bool WorkReplay::binding_matches() const {
+    if (model_.principals.binding_known()) {
+        return model_.principals.binding_matches();
+    }
+    const authority::Principal *owner = model_.principals.owner();
+    for (uint32_t index = 0; index < model_.goals.size(); ++index) {
+        const work::GoalOrigin &origin = model_.goals.at(index).origin;
+        if (origin.kind == AYNI_ORIGIN_USER &&
+            (owner == nullptr || origin.principal_id != owner->principal_id ||
+             origin.binding_revision != owner->binding_revision)) {
+            return false;
+        }
+    }
+    for (uint32_t index = 0; index < model_.commands.size(); ++index) {
+        if (owner == nullptr || model_.commands.at(index).principal_id != owner->principal_id) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Discovery must enforce ownership's header rule even when a snapshot
+// covers the record and its body will not be replayed.
+RecordUse WorkReplay::classify_header(const durability::RecordHeader &header) {
+    if (header.type == authority::owner_binding_record_type &&
+        (header.flags & durability::record_required) == 0U) {
+        return RecordUse::corrupt;
+    }
     if (header.version != 1U) {
-        return false;
+        return RecordUse::unknown;
     }
     switch (header.type) {
+    case authority::owner_binding_record_type:
     case work::instance_record_type:
     case work::goal_record_type:
     case work::goal_state_record_type:
@@ -43,9 +71,9 @@ bool WorkReplay::knows(const durability::RecordHeader &header) {
     case work::task_steps_record_type:
     case work::task_checkpoint_record_type:
     case command_record_type:
-        return true;
+        return RecordUse::applied;
     default:
-        return false;
+        return RecordUse::unknown;
     }
 }
 
@@ -61,10 +89,13 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     }
     const foundation::TransitionStamp stamp{batch.transition_id, batch.commit_seq};
     const uint32_t size = header.length;
-    if (!knows(header)) {
-        return RecordUse::unknown;
+    const RecordUse use = classify_header(header);
+    if (use != RecordUse::applied) {
+        return use;
     }
     switch (header.type) {
+    case authority::owner_binding_record_type:
+        return restore_owner_binding(body, size, stamp);
     case work::instance_record_type:
         return restore_instance(body, size, stamp);
     case work::goal_record_type:
@@ -86,11 +117,22 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     }
 }
 
-static_assert(work::instance_record_version == 1U && work::goal_record_version == 1U &&
+static_assert(authority::owner_binding_record_version == 1U &&
+                  work::instance_record_version == 1U && work::goal_record_version == 1U &&
                   work::goal_state_record_version == 1U && work::task_record_version == 1U &&
                   work::task_state_record_version == 1U && work::task_steps_record_version == 1U &&
                   work::task_checkpoint_record_version == 1U && command_record_version == 1U,
               "apply() knows version 1 of each record");
+
+RecordUse WorkReplay::restore_owner_binding(const uint8_t *body, uint32_t size,
+                                            foundation::TransitionStamp stamp) {
+    authority::OwnerBindingRecord record{};
+    if (!authority::read_owner_binding_record(body, size, record) ||
+        !model_.principals.restore_binding(record, stamp)) {
+        return RecordUse::corrupt;
+    }
+    return RecordUse::applied;
+}
 
 RecordUse WorkReplay::restore_instance(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp) {
@@ -272,6 +314,7 @@ void WorkReplay::finish(uint64_t now_us) {
         return AYNI_REASON_GOAL_TYPE_UNKNOWN;
     });
     hold_tasks();
+    hold_unconfirmed_work();
     model_.goals.reanchor(now_us);
     model_.tasks.reanchor(now_us);
     model_.due_work_changed = true;
@@ -319,7 +362,21 @@ void WorkReplay::hold_tasks() {
     }
 }
 
+// Compatibility failures remain the primary reason for a hold. Otherwise
+// legacy work has no durable authorization evidence and must not advance.
+void WorkReplay::hold_unconfirmed_work() {
+    for (uint32_t index = 0; index < model_.goals.size(); ++index) {
+        model_.goals.hold_restored(index, AYNI_REASON_LEGACY_UNCONFIRMED);
+    }
+    for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
+        if (!work::TaskTable::is_held(model_.tasks.at(index))) {
+            model_.tasks.hold_restored(index, AYNI_DENIED, AYNI_REASON_LEGACY_UNCONFIRMED);
+        }
+    }
+}
+
 void WorkReplay::discard() {
+    model_.principals.drop_restored_binding();
     model_.agents.drop_restored();
     model_.goals.clear();
     model_.tasks.clear();

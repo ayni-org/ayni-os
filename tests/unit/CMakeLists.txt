@@ -17,6 +17,7 @@ add_executable(ayni_unit_tests
     kernel_fence_test.cpp
     kernel_id_test.cpp
     kernel_lifecycle_test.cpp
+    kernel_owner_binding_test.cpp
     kernel_recovery_test.cpp
     kernel_storage_recovery_test.cpp
     kernel_snapshot_fault_test.cpp
@@ -27,6 +28,8 @@ add_executable(ayni_unit_tests
     kernel_work_test.cpp
     native_host_test.cpp
     native_node_test.cpp
+    owner_binding_records_test.cpp
+    owner_binding_snapshot_test.cpp
     prefix_scan_test.cpp
     principal_registry_test.cpp
     sim_host_test.cpp

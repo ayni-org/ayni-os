@@ -439,6 +439,8 @@ void BootSequence::begin_replay() {
 void BootSequence::after_replay() {
     if (!replay_.complete() || !replay_.consistent()) {
         fail(AYNI_RESTRICTION_LOG_CORRUPT);
+    } else if (!replay_.binding_matches()) {
+        fail(AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
     } else if (last_boot_epoch_ >= foundation::max_boot_epoch) {
         fail(AYNI_RESTRICTION_BOOT_EPOCH_EXHAUSTED);
     } else if (scan_.max_transition_id() > durability::transition_id_max) {
@@ -492,8 +494,8 @@ durability::RecordUse BootSequence::on_record(void *context, const durability::B
 }
 
 // BOOT_EPOCH and SNAPSHOT_COMMIT are the sequence's own records; the scan
-// checks WRITER_FENCE itself. Discovery only checks that a work record is
-// one WorkReplay knows; the replay applies it.
+// checks WRITER_FENCE itself. Discovery classifies work headers even when
+// the snapshot covers their bodies; replay applies uncovered records.
 durability::RecordUse BootSequence::record(const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body) {
@@ -530,8 +532,7 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
         return durability::RecordUse::applied;
     }
     if (phase_ == Phase::discover) {
-        return WorkReplay::knows(header) ? durability::RecordUse::applied
-                                         : durability::RecordUse::unknown;
+        return WorkReplay::classify_header(header);
     }
     return WorkReplay::on_record(&replay_, batch, header, body);
 }

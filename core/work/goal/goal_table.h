@@ -90,8 +90,8 @@ struct Goal {
     uint32_t occurrences_skipped;
     ayni_reason_t skip_reason; // of the latest skip; AYNI_REASON_NONE before any
     // Why this boot holds the goal that is not terminal (ADR-0026):
-    // AYNI_REASON_GOAL_TYPE_UNKNOWN or AYNI_REASON_GOAL_TYPE_VERSION; NONE
-    // while it is not held. In memory only.
+    // A missing/incompatible type, or LEGACY_UNCONFIRMED when recovery has
+    // no durable authorization evidence; NONE while not held. In memory only.
     ayni_reason_t hold_reason;
     ayni_goal_lifecycle_t lifecycle;
 };
@@ -270,6 +270,14 @@ class GoalTable {
     // undetermined, on this boot's clock at now_us, the time recovery ended
     // (ADR-0026): each wait starts again in full.
     void reanchor(uint64_t now_us);
+    // A recovery restriction never rewrites the stored lifecycle or stamps,
+    // and never hides a more specific compatibility failure.
+    void hold_restored(uint32_t index, ayni_reason_t reason) {
+        Goal &goal = goals_[index];
+        if (is_live(goal.lifecycle) && goal.hold_reason == AYNI_REASON_NONE) {
+            goal.hold_reason = reason;
+        }
+    }
     // Empties the table, as a recovery that failed leaves it.
     void clear() { goals_.clear(); }
 

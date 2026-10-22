@@ -3,12 +3,12 @@
 // out into the storage buffer, whole records only, and the reader restores
 // it record by record as recovery reads the payload back; neither keeps a
 // second copy. The records keep the log's envelope and types, but their
-// bodies have a syntax of their own (records.md): INSTANCE, GOAL, TASK and
-// COMMAND_MAPPING add the stamps or commit_seq the log had, so READY order,
-// reclamation order and command results come back as they were; GOAL also
-// carries its GOAL_STATE, TASK its steps_before, and TASK_STEPS holds one
-// key a record. What only this boot's registration changed, such as a fault
-// or hold for something it lacks, is not written.
+// bodies have a syntax of their own (records.md): OWNER_BINDING, INSTANCE,
+// GOAL, TASK and COMMAND_MAPPING add the stamps or commit_seq the log had,
+// so ownership, READY order, reclamation order and command results come back
+// as they were. GOAL carries its GOAL_STATE, TASK its steps_before, and
+// TASK_STEPS holds one key a record. What only this boot's registration
+// changed, such as a fault or hold for something it lacks, is not written.
 
 #ifndef AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
 #define AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
@@ -49,7 +49,7 @@ class WorkSnapshotWriter {
 
   private:
     // The payload's order (records.md).
-    enum class Section { instances, goals, tasks, commands, done };
+    enum class Section { owner_binding, instances, goals, tasks, commands, done };
     // A task's records, in order.
     enum class TaskPart { task, steps, checkpoint, state };
     bool next_record(uint16_t &type, uint32_t &size);
@@ -57,7 +57,7 @@ class WorkSnapshotWriter {
     void advance_record(uint16_t type);
 
     const WorkModel &model_;
-    Section section_ = Section::instances;
+    Section section_ = Section::owner_binding;
     uint32_t index_ = 0; // of the instance, goal or task in its table
     uint32_t depth_ = 0; // goals go by depth, so parents come first
     TaskPart task_part_ = TaskPart::task;
@@ -83,7 +83,8 @@ class WorkSnapshotReader {
 
   private:
     // The payload's order (records.md).
-    enum class Section { instances, goals, tasks, commands };
+    enum class Section { owner_binding, instances, goals, tasks, commands };
+    durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
     durability::BatchCheck instance(const uint8_t *body, uint32_t size);
     durability::BatchCheck goal(const uint8_t *body, uint32_t size);
     durability::BatchCheck task(const uint8_t *body, uint32_t size);
@@ -95,7 +96,7 @@ class WorkSnapshotReader {
     WorkModel &model_;
     durability::SnapshotMetadata metadata_;
     uint32_t records_ = 0;
-    Section section_ = Section::instances;
+    Section section_ = Section::owner_binding;
     // The task whose records come, from TASK up to its TASK_STATE, and
     // whether its checkpoint came.
     uint32_t task_index_ = work::TaskTable::no_index;

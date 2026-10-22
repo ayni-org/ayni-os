@@ -310,8 +310,13 @@ void ayni_kernel::settle_recovery() {
         // No part of a log recovery could not replay is visible (ADR-0026).
         // A fence that could not isolate the old writer replayed nothing,
         // and the model it keeps stays readable for diagnosis.
-        if (lifecycle == AYNI_LIFECYCLE_RECOVERING) {
+        if (lifecycle == AYNI_LIFECYCLE_RECOVERING &&
+            boot.restriction() != AYNI_RESTRICTION_OWNER_BINDING_MISMATCH) {
             replay.discard();
+        } else if (boot.restriction() == AYNI_RESTRICTION_OWNER_BINDING_MISMATCH) {
+            // The prefix was validated completely. A Host binding mismatch
+            // cannot authorize it, but does not erase its diagnostic state.
+            replay.finish(host.monotonic_now_us(host.ctx));
         }
         enter_restricted(boot.restriction());
         break;

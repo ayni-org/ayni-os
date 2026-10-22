@@ -1,5 +1,6 @@
 #include "kernel/work_journal.h"
 
+#include "authority/principal/owner_binding_records.h"
 #include "catalog/catalog_id.h"
 #include "durability/batch/record_body.h"
 #include "durability/journal/journal_ring.h"
@@ -28,16 +29,30 @@ class Encoder {
             durability::BatchWriter &writer)
         : model_(model), stamp_(stamp), writer_(writer) {}
 
-    // Records in replay order: instances, then the goal created, before the
-    // states of the goals, then the task created, the steps and checkpoint
-    // of the task decided, before the states of the tasks, then the command.
-    bool encode() { return instances() && goals() && tasks() && command(); }
+    // The first binding precedes the instances it starts. Work records
+    // follow replay order, with the command mapping last.
+    bool encode() { return owner_binding() && instances() && goals() && tasks() && command(); }
 
   private:
     uint8_t *body(uint16_t type, uint16_t version, uint32_t length) {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
         return at;
+    }
+
+    bool owner_binding() {
+        const authority::OwnerBinding *binding = model_.principals.binding();
+        if (binding == nullptr || binding->stamp.commit_seq != stamp_.commit_seq ||
+            binding->stamp.transition_id != stamp_.transition_id) {
+            return ok_;
+        }
+        uint8_t *at =
+            body(authority::owner_binding_record_type, authority::owner_binding_record_version,
+                 authority::owner_binding_record_size);
+        if (at != nullptr) {
+            authority::write_owner_binding_record(*binding, at);
+        }
+        return ok_;
     }
 
     bool instances() {
@@ -154,6 +169,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
                                : capacities.policy_intent_capacity;
     uint32_t size =
         static_cast<uint32_t>(durability::batch_header_size + durability::commit_marker_size);
+    size += record_bytes(authority::owner_binding_record_size);
     size += capacities.agent_capacity * record_bytes(work::instance_record_size);
     size += record_bytes(work::goal_record_fixed_size + 2U * id_max +
                          capacities.goal_parameter_max_bytes);

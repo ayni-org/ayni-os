@@ -8,6 +8,7 @@
 #define AYNI_CORE_AUTHORITY_PRINCIPAL_PRINCIPAL_REGISTRY_H
 
 #include "foundation/bounded_array.h"
+#include "foundation/transition_stamp.h"
 
 #include <ayni/ayni.h>
 
@@ -22,25 +23,56 @@ struct Principal {
     ayni_principal_kind_t kind;
 };
 
+struct OwnerBinding {
+    uint64_t principal_id;
+    uint32_t binding_revision;
+    foundation::TransitionStamp stamp;
+};
+
+struct OwnerBindingRecord;
+
 // v0.1 has exactly one principal, the owner (C-PROD-001).
 class PrincipalRegistry {
   public:
     static constexpr uint32_t capacity = 1; // the owner
-    // principal is an owner with a nonzero id and binding revision. Returns
-    // false, changing nothing, when an owner is already registered.
+    // Returns false, changing nothing, for an invalid owner or when one is
+    // already registered. Only OWNER with a nonzero id and revision is valid.
     bool add_owner(const Principal &principal);
 
     const Principal *find(uint64_t principal_id) const;
+    // The binding the Host expects this boot, independent of the binding
+    // recovered from storage. Null when the Host registered no owner.
+    const Principal *owner() const { return has_owner_ ? &owner_ : nullptr; }
+
+    bool binding_known() const { return has_binding_; }
+    const OwnerBinding *binding() const { return has_binding_ ? &binding_ : nullptr; }
+    // An unbound store accepts its first owner. A known binding requires
+    // that the Host registered exactly that principal and binding revision.
+    bool binding_matches() const;
+    bool needs_binding() const { return has_owner_ && !has_binding_; }
+    // Establishes the Host's expected binding in a new transition. Returns
+    // false without a change when already bound, no owner is registered or
+    // either part of the stamp is zero.
+    bool bind(foundation::TransitionStamp stamp);
+    // A binding record occurs once. The record must have a nonzero principal
+    // and binding revision, and stamp must be nonzero. A Host mismatch does
+    // not make the record corrupt; binding_matches() reports it separately.
+    bool restore_binding(const OwnerBindingRecord &record, foundation::TransitionStamp stamp);
+    // Reload clears recovered facts, retaining the Host's expected owner.
+    void drop_restored_binding();
 
   private:
     Principal owner_{};
+    OwnerBinding binding_{};
     bool has_owner_ = false;
+    bool has_binding_ = false;
 };
 
 struct Session {
     uint64_t session_id;
     uint64_t principal_id;
     ayni_channel_t channel;
+    uint32_t binding_revision;
 };
 
 class SessionTable {

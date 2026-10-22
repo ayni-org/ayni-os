@@ -9,6 +9,7 @@
 #include "kernel_node.h"
 
 #include <ayni/ayni.h>
+#include <ayni/host_authority.h>
 
 #include <gtest/gtest.h>
 
@@ -220,6 +221,7 @@ inline ayni_session_desc_v1 session_desc(ayni_channel_t channel = AYNI_CHANNEL_M
     desc.struct_size = sizeof(desc);
     desc.channel = channel;
     desc.principal_id = principal_id;
+    desc.binding_revision = owner_binding;
     return desc;
 }
 

@@ -6,11 +6,15 @@ bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_sta
     ids.start(boot_epoch);
     transitions.start(first_stamp);
     const bool starts = agents.has_registered();
+    const bool binds = principals.needs_binding();
     work::WorkTables work = tables();
-    if (!starts && !work::settles_restored(work)) {
+    if (!starts && !binds && !work::settles_restored(work)) {
         return false;
     }
     const foundation::TransitionStamp stamp = transitions.next();
+    if (binds) {
+        static_cast<void>(principals.bind(stamp));
+    }
     if (starts) {
         agents.start_all(ids, stamp);
     }
@@ -28,7 +32,8 @@ ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel
         return AYNI_CAPACITY_EXCEEDED;
     }
     // Cannot fail: the table has room.
-    static_cast<void>(model.sessions.open({session_id, principal_id, channel}));
+    static_cast<void>(model.sessions.open({session_id, principal_id, channel,
+                                           model.principals.find(principal_id)->binding_revision}));
     out_session_id = session_id;
     return AYNI_OK;
 }
