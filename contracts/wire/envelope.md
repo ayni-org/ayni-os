@@ -69,11 +69,11 @@
 
 原始身份含kind、expected_revision、capability ID/version、subject、parent、flags、lifetime、duration和原始scope；Session/当前时间/计算deadline/新Grant ID不参与。省略与显式全域不同，token顺序与重复等价。CommandTable拥有每槽canonical字节及有界scratch；旧ordinary v1映射按原契约兼容，auth不得回退成只有digest。窗口floor和原结果仍有界保留，对象安全回收不授权命令重建。
 
-## 撤销身份与本机回执（MA-006 D，验证待完成）
+## 撤销身份与本机回执（MA-006 D，已实现并完成 Native 场景验证）
 
 以下是本机 C ABI 的语义，管理网络协议仍待 `MA-007`/`MA-038`。ABI 0.19 的 result/receipt 统一使用 PENDING/APPLIED/DURABLE；PENDING effect=NONE、结果引用只带目标 Grant ID且revision0、seq/boot0；APPLIED 带本次应用 boot/seq及明确 effect；DURABLE 保留原结果/seq，applied_boot_epoch=0。NO_CHANGE/TARGET_GONE 是持久 no-op，不能据此推断 Provider 或物理动作已停止。
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-WIRE-018 | kind10 canonical 独立固定16 B：小端u32 kind、u32原expected_revision、u64 target；kind9格式1不变；所有kind先查pending再查同一窗口/floor，授权命令最终length+bytes匹配、ordinary保留旧摘要契约，pending身份低于新floor仍有效，拒绝不占命令ID | ordinary同ID绕过pending；hash碰撞被当原命令；撤销因floor提升永远不能发布 | `MA-006` D（实施中，验证待完成）；ADR-0031 |
-| C-WIRE-019 | 可信Host以已认证principal/command查询receipt，不依赖旧Session；pending优先可在恢复/受限诊断，普通结果只在完整恢复后暴露；先映射再floor，未映射低于floor为EXPIRED否则NOT_FOUND；查询失败不改caller输出 | 新Session无法确认旧撤销；部分重放窗口误报完整结果；跨owner查询结果 | `MA-006` D（实施中，验证待完成）；ADR-0031；C-AUTH-025 |
+| C-WIRE-018 | kind10 canonical 独立固定16 B：小端u32 kind、u32原expected_revision、u64 target；kind9格式1不变；所有kind先查pending再查同一窗口/floor，授权命令最终length+bytes匹配、ordinary保留旧摘要契约，pending身份低于新floor仍有效，拒绝不占命令ID | ordinary同ID绕过pending；hash碰撞被当原命令；撤销因floor提升永远不能发布 | M1 已实现并通过 Native 场景：`CommandRevoke.canonical_has_a_fixed_independent_little_endian_oracle`、`RevokeApi.pending_identity_precedes_every_implemented_kind_and_later_window_floor`、`PendingRevoke.full_revoke_identity_still_wins_when_the_window_digest_collides`；最终交付见 ADR-0031 |
+| C-WIRE-019 | 可信Host以已认证principal/command查询receipt，不依赖旧Session；pending优先可在恢复/受限诊断，普通结果只在完整恢复后暴露；先映射再floor，未映射低于floor为EXPIRED否则NOT_FOUND；查询失败不改caller输出 | 新Session无法确认旧撤销；部分重放窗口误报完整结果；跨owner查询结果 | M1 已实现并通过 Native 场景：`RevokeApi.applied_and_durable_receipts_keep_original_result_across_a_new_session`、`RevokeApi.receipt_query_errors_leave_caller_owned_output_unchanged`、`RevokeApi.ordinary_receipt_floor_and_bad_query_shapes_preserve_the_output`、`RevokeApi.receipt_window_is_not_exposed_before_initial_recovery_finishes`；最终交付见 ADR-0031；C-AUTH-025 |

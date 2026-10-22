@@ -1,6 +1,6 @@
 # ADR-0031：权限与审批（四）：即时撤销、拒绝栅栏与阶段回执
 
-- **状态**：已接受；D 独立工作树实施中，完整构建、验证、内存量测、独立审查、PR 与合并均待完成
+- **状态**：已接受并完成本地验证；五配置各892/892、最终fresh覆盖率/内存与独立审查通过，35项有效变异全部检出（34项原878套件、D30补测后879套件）；D完成/已合并状态随 PR [#28](https://github.com/RobotSe7en/ayni/pull/28) 合并生效。生产 `e4a017a2d4e2d52be10135888de7520fc97590c8` 的 [CI39735323115](https://github.com/RobotSe7en/ayni/actions/runs/39735323115) 八项通过；最终测试/文档head的CI见 [#28 checks](https://github.com/RobotSe7en/ayni/pull/28/checks)，合并前须全绿
 - **日期**：2026-10-22
 - **关联**：`MA-006` D；ADR-0014、0027～0030；计划 §2.2、§2.4、§2.8、§3.2、§4.2～4.4、§9.1、§14.1；C-AUTH-006、023～027；C-WIRE-018、019；C-STORE-016、017；C-COMMIT-017
 
@@ -88,14 +88,14 @@ journal 与 snapshot 共用有上下文的 REQUIRED 分类，不能把 snapshot 
 
 snapshot 对创建、终态和 cleanup stamp 分别检查快照界限。所有保留后代（含 ACTIVE、EXPIRED 与独立撤销根）的 ID 都不得超过其任一已撤销祖先根的 through；否则拒绝快照，不能让缩短的扫描上限提前结束清理。retained CHANGED target 须为自身根的 REVOKED，终态 seq 等于 mapping seq；retained NO_CHANGE target 须已终态且终态 seq 严格小于 mapping seq；TARGET_GONE target 必须缺席。合法回收的 CHANGED/NO_CHANGE target 可以缺席。非 self revoker 的保留后代 ID 须不大于 root.after，终态 stamp 不大于 root.cleanup_stamp；revoker/after/through 同样检查 snapshot boot 上界。所有 auth mapping 均核对 binding owner、接受序号、合法 Kernel ID/boot；创建 mapping 继续核对完整不可变创建事实与 Scope。窗口/floor 和原接受序号保留，不保存易失控制。
 
-容量上界分别由 records、snapshot、journal 与 arena owner 的具名函数提供；D revoke mapping 最大80 B不超过C创建上界，snapshot 尾与 metadata/Gate/pending 会增加 RAM，必须实测。
+容量上界分别由 records、snapshot、journal 与 arena owner 的具名函数提供；D revoke mapping 最大80 B不超过C创建上界，snapshot 尾与 metadata/Gate/pending 增加的 Native arena 已实测；ESP32 RAM/栈与最坏 step 时长仍待实测。
 
 ## 后果
 
 - 立即拒绝和持久事实各有明确 owner/lifecycle；自动重载不能把已接受控制变成新请求。
 - pin 可能暂时阻止普通命令；专门控制容量有上界，确认持久后释放，不增加无界队列。
 - ABI 0.19 需要调用方重编；storage schema 不变，记录版本独立演进。Scene、额度、完整工作准入与物理停止仍有明确未实现边界。
-- RAM、最大 step 扫描成本和 ESP32 资源仍待实测，不用结构公式代替验证结果。
+- Native caller arena 已量测并独立复核；最大 step 扫描成本、栈和 ESP32 资源仍待实测，不用结构公式代替这些验证结果。
 
 ## 备选方案
 
@@ -107,9 +107,16 @@ snapshot 对创建、终态和 cleanup stamp 分别检查快照界限。所有�
 
 ## 验证
 
-D 完整验证均待执行/收尾；测试源码已写不表示通过。C 的五配置、变异或覆盖率不能充作 D 证据。
+原始日志、源码清单、审查与量测在仓库外 `../ayni-ma006-evidence/d/`。本节记录 D 自身的已执行事实，不以 C 的五配置、变异或覆盖率替代 D；交付完成/已合并状态随#28合并生效，最终head须先通过自身CI。
 
-- **API 与模拟消费：待执行。** `RevokeApi` 场景覆盖三个阶段、根/祖先链拒绝、空间/journal背压、分页快照冻结、跨 kind/floor、管理端与CAS、新Session、显式 no-op、DRAINING与进程断电边界。
-- **控制/持久：待执行。** `PendingRevoke`、`CommandRevoke`、Grant owner及重放场景覆盖 pin/搬移/容量、原canonical、旧queued seq复用、UNKNOWN/FAILED自动重载、隔离/读取/绑定失败、半批/CRC有效损坏与新旧版本。
-- **清理与快照：待执行。** 有界 cleanup、终态与清理 stamp 分离、durable安全叶回收、expected2重提CHANGED、v1/v2 Grant与v1/v2/v3 mapping、REQUIRED及covered history、各 stamp 边界和 effect/retained target 一致性。
-- **交付门槛：待执行。** 默认/最小内存与C增量、五配置CTests、模拟器、ABI/头文件/无堆/依赖/契约/格式/diff、独立变异和完整只读审查（workflow四项结构检查）、覆盖率与CI/ESP32编译。构建先核对宿主合计资源并明确并行/容器预算，记录实际版本、命令和仓库外日志。
+- **最终五配置与正常基线。** 新增D30唯一回归后，GCC13.3.0 Debug、Release、ASan+UBSan、TSan和Clang18.1.3 Debug各 build/CTest **892/892**（879单元与13项检查）通过；模拟器退出0，报告 ABI0.19、CONFIGURING→RUNNING→STOPPED。日志及汇总在 `final-validation-round2/{results,summary}.json`，全部工具版本元数据命令亦退出0，mmap由28恢复原32并核对。前轮五配置891项及元数据命令失败记录独立保留于 `final-validation/`，不拿旧891结果替代新增测试后的版本。此前 **126/126** 项定向回归及D30补测正常 **43/43** 定向通过；最新 fresh coverage另完整执行 **892/892**。测试覆盖 API 三阶段、真实 journal/介质空间背压、管理端/CAS、跨 kind/floor 与 pin、冻结快照、UNKNOWN/FAILED、隔离/读取/绑定失败、重载后原映射确认或重提、DRAINING 及进程断电边界；Grant owner 覆盖祖先拒绝、有界 cleanup、终态与清理 stamp 分离及持久安全叶回收。Native 模拟消费者通过不表示真实许可续租或 Provider 取消已接入。
+- **持久和兼容回归已通过。** CRC 合法坏输入覆盖根撤销+完整 v3 mapping、后代 state+progress 的同批配对与互斥；错 root/cursor/effect、孤立/重复/截断、REQUIRED、covered history、journal/snapshot 上下文、未来 boot、各 stamp 边界、retained target 历史一致性、原 expected2 重提 CHANGED 及不可能的 accepted999。snapshot 显式写 Grant13/v2，兼容 v1；mapping 保留 v1/v2/v3。部分可达坏输入的短路组合仍未逐项穷尽，见下文覆盖率限制。
+- **内存严格 C99 复核。** Native/x86-64 的默认 caller arena **110,792 B**、最小工作配置 **31,616 B**，对齐均 **8 B**；较 C 的106,520/31,072 B 分别 **+4,272/+544 B**。相同 `memory.c` 分别链接首轮、前轮891及补测后最终892 coverage Core静态库，用 `gcc-13 -std=c99 -pedantic-errors -Wall -Wextra -Werror` 编译，结果一致；独立 `GCOV_PREFIX` 在采集后运行，不污染覆盖率。配置、真实命令和结果见 `coverage/round1/`、`coverage/final2/memory.log`。这些数字不证明 ESP32 RAM/栈、最坏 step 时长或硬件验收。
+- **最终 fresh 覆盖率已完成。** 清除全部106个旧 gcda 后，GCC/gcov13.3.0 完整执行892项（CTest **48.40 s**），采集 **133 个全部 TU**，包含 Core 头文件消费者，无遗漏 Core cpp；前后 **182 个 core/include/tests 文件 SHA 一致**，变化清单为空。相同路径/行/分支槽按最大计数去重，仅排除 gcov 标记的 throw 分支，不删除防御分支；D 改动以 C 最终格式提交 `d14bf8a9565370e5c370b99919626d1c3d626859` 为固定基线。Core 含头文件行 **7,666/7,862=97.51%**、分支 **5,608/6,192=90.57%**；D owners 含头文件分支 **1,736/1,846=94.04%**；D 实际改动可执行行分支 **1,210/1,342=90.16%**，其中 owner 改动 **858/930=92.26%**。原分子/分母、未命中 slot、全 TU 原始 JSON 和资源见 `coverage/final2/`，首轮857项、旧final891项及定向诊断保留且未混入最终计数。
+- **局部覆盖率限制。** 整体 D 改动达到90%目标，不表示每个文件或函数达标：Kernel 接线改动 **352/412=85.44%**，authority_intent 改动 **30/44=68.18%**。Host 开 Session 时核对持久 binding、重载清 Session 后的防御复核，以及单 owner 无回调的 plan→apply→publish 和 Gate/pending 移交等防御路径保留在分母；没有破坏内部配对刷 INTERNAL。另有明确可达、尚未逐项覆盖的坏输入，例如 Boot type15短于8B/零boot target、replay非法同批排列的部分短路组合、snapshot retained target的个别时序/lifecycle组合、无owner运行中 receipt 查询；不能把它们统称不可达。具体源码行、前置条件、区别与剩余 slot 见 `coverage/final2/limits.md`、`d-uncovered.md`、`uncovered-d.json`。这是记录的验证偏差，不是已证明的生产缺陷，也不由整体比例掩盖。
+- **审查与修复。** 独立生产审查、Kernel/command 交叉审查及 root 设计自审已留证（`review.md`、`review-final.md`、`kernel-cross-review.md`、`command-cross-review.md`、`root-design-review.md`）。已处理并回看：DURABLE 重试驱动另一 pending 并逐出原结果、watermark 指向未来 boot、无有效 writer 的 DRAINING 误应用、accepted revision999、fresh Host 空间缓存与立即应用资格。root 进一步发现 through 缩小会漏掉保留后代，Grant owner 在 restore/consistent 共享 metadata 校验中限制全部后代及所有已撤销祖先，ACTIVE/EXPIRED/独立撤销根和完整 CRC 快照对照已随正常基线通过，过程见 `root-frontier-followup.md`。删除 Kernel 重复 durable 选择条件后由 CommandTable 单一选择；旧 target/step 注释已同步；command0只排队、只能APPLIED，移除不可达的立即DURABLE分支。上述静态审查不代替各项执行证据。
+- **独立变异与真实漏测。** 原36项清单和两阶段来源保留，D24因审查重构移除重复条件而被取代，不计检出、存活或等价；有效35项首轮各跑完整878单元，结果 **34检出、D30存活**。D30删除WorkReplay对同批child state与root progress的root/child绑定，属于真实测试缺口，不是等价。生产维持 `e4a017a` 不变，只新增124行单个回归 `GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`：合法对照中child X/by A与A进度同批，坏历史改配B进度，后一批再推进A，使两种历史最后cursor均对齐。坏历史仍须LOG_CORRUPT，不能依赖最终consistent才拒绝；否则后批会掩盖错误历史。正常879单元已通过，独立按原D30选点完整879单元重跑仅该新场景失败，D30已补测检出；最后恢复原生产、重新编译后正常 **879/879** 通过，16个production target在独立snapshot、外部D树及实际root三方SHA一致，283文件冻结snapshot manifest全匹配，全部184个代码文件三方一致；仅core/README文档随最终事实更新。其余34点保留原878检出记录，不宣称35点全在879套件跑。through修复前10点/844的历史另档，D30原存活/分析/补测/重跑均分别保存，见 `D30-gap-analysis.md`、`mutation-run/summary.json`、`mutation-rerun-1/`；没有编译、信号或超时方式的假检出，独立最终审查没有未解决阻断。
+- **前轮工具链记录的独立纠正。** 前轮五配置和模拟器均退出0；runner 最后汇总工具信息时，仅无特权读取 `/proc/sys/vm/mmap_rnd_bits` 被拒绝使该元数据命令退出1。原 `toolchains.log`/`results.json` 保留，独立重采版本命令退出0，记录 GCC13.3.0、Clang18.1.3、CMake3.31.6、Ninja1.11.1、Python3.12.3。TSan结束后以 sudo读取当时值28，并恢复原32、再核对成功；过程在 `final-validation/toolchain-metadata-correction.json`、`toolchains-corrected.log`。不把元数据失败改写为测试失败，也不抹掉该失败日志。
+- **PR、CI及未执行边界。** 生产提交 `e4a017a2d4e2d52be10135888de7520fc97590c8`、追加回归及最终文档由 [#28](https://github.com/RobotSe7en/ayni/pull/28) 交付（D完成/已合并状态随该PR合并生效），生产提交的 [CI run39735323115](https://github.com/RobotSe7en/ayni/actions/runs/39735323115) 八项全部通过，含 ESP-IDF6.0.3 的 ESP32-S3 编译和 advisory clang-tidy；编译通过不表示静态分析没有建议项。新增D30回归与最终文档仍须其head自己的CI，不以e4a017的代码CI替代；最终head检查见#28 checks，合并前必须全绿，D完成/已合并状态随#28合并生效。覆盖率任务限2CPU/3GiB、jobs2/CTest2，GTest1.17.0；版本/命令/资源实录在 evidence，不拿并行预算当峰值量测。ESP-IDF 存储/烧录、硬件 RAM/栈/耐久、真实派发/物理停止及完整 E1–E4 尚未验收。
+
+本次执行边界为 C/D 及代码文档收尾，#28合并后本轮停止并等待用户新指示；E/F、`MA-018`、`MA-008` 不自动开始，D 不表示完整 `MA-006` 已完成。

@@ -1674,4 +1674,128 @@ TEST(GrantRevokeReplay, journal_root_and_progress_encoders_refuse_short_buffers_
     check_small_transition_buffers(source.node.kernel()->work);
 }
 
+TEST(GrantRevokeReplay,
+     a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress) {
+    ReplayNode source;
+    source.node.config().grant_capacity = 3;
+    source.run();
+    const auto root_a = source.create(1, 10, 20, 0, 0, AYNI_GRANT_ALLOW_DELEGATION);
+    ASSERT_EQ(root_a.status, AYNI_OK);
+    source.store(root_a.result.commit_seq);
+    const auto root_b = source.create(2);
+    ASSERT_EQ(root_b.status, AYNI_OK);
+    source.store(root_b.result.commit_seq);
+    const auto child = source.create(3, 11, 19, root_a.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    source.store(child.result.commit_seq);
+    const uint64_t a = root_a.result.object.id;
+    const uint64_t b = root_b.result.object.id;
+    const uint64_t x = child.result.object.id;
+    ASSERT_LT(a, b);
+    ASSERT_LT(b, x);
+
+    const auto required = [](uint16_t type, uint16_t version, uint32_t size) {
+        return Record{{type, version, record_required, size}, std::vector<uint8_t>(size)};
+    };
+    const auto revoke_pair = [&](uint64_t target, uint64_t command) {
+        const ayni::authority::GrantTable::RevokePlan plan{target, 2, AYNI_INTENT_EFFECT_CHANGED, 0,
+                                                           x};
+        auto revoked = required(ayni::authority::grant_revocation_record_type,
+                                ayni::authority::grant_revocation_record_version,
+                                ayni::authority::grant_revocation_record_size);
+        ayni::authority::write_grant_revocation_record(plan, revoked.body.data());
+        const ayni_grant_revoke_v1 request{sizeof(request), 0, target};
+        std::array<uint8_t, ayni::kernel::revoke_command_size> canonical{};
+        uint32_t encoded_size = 0;
+        EXPECT_EQ(ayni::kernel::encode_revoke_command({1, &request}, canonical.data(),
+                                                      ayni::kernel::revoke_command_size,
+                                                      encoded_size),
+                  AYNI_OK);
+        EXPECT_EQ(encoded_size, ayni::kernel::revoke_command_size);
+        const ayni_bytes_v1 identity{canonical.data(), ayni::kernel::revoke_command_size};
+        const CommandMapping mapping{owner_id,
+                                     command,
+                                     ayni::kernel::authority_command_digest(identity),
+                                     0,
+                                     AYNI_INTENT_GRANT_REVOKE,
+                                     {0, target, 2, AYNI_OBJECT_GRANT},
+                                     ayni::kernel::revoke_command_size,
+                                     AYNI_INTENT_EFFECT_CHANGED};
+        auto mapped = required(
+            ayni::kernel::command_record_type, ayni::kernel::revoke_command_record_version,
+            ayni::kernel::revoke_command_record_fixed_size + ayni::kernel::revoke_command_size);
+        EXPECT_TRUE(ayni::kernel::write_command_record(mapping, 0, identity, mapped.body.data(),
+                                                       mapped.header.length));
+        return std::vector<Record>{revoked, mapped};
+    };
+    const auto progress = [&](uint64_t root, uint64_t after) {
+        const ayni::authority::GrantTable::CleanupPlan plan{root, after, x, 0};
+        auto record = required(ayni::authority::grant_revocation_progress_record_type,
+                               ayni::authority::grant_revocation_progress_record_version,
+                               ayni::authority::grant_revocation_progress_record_size);
+        ayni::authority::write_grant_revocation_progress_record(plan, record.body.data());
+        return record;
+    };
+    const auto append = [](std::vector<StoredBatch> &log, const std::vector<Record> &records) {
+        const auto previous = decode(log.back());
+        Batch next{previous.identity, previous.schema, records};
+        ++next.identity.commit_seq;
+        ++next.identity.transition_id;
+        log.push_back(encode(next)); // Every synthetic history retains a valid batch CRC.
+    };
+    auto prefix = source.node.sim().log();
+    append(prefix, revoke_pair(a, 4));
+    append(prefix, revoke_pair(b, 5));
+    for (const auto root : {a, b}) {
+        append(prefix, {progress(root, a)});
+        append(prefix, {progress(root, b)});
+    }
+    // White-box fixture: copy immutable facts for the synthetic state codec;
+    // the live Grant table is not modified.
+    uint32_t child_index = 0;
+    ASSERT_TRUE(source.node.kernel()->work.grants.find(x, child_index));
+    auto child_fact = source.node.kernel()->work.grants.at(child_index);
+    child_fact.lifecycle = AYNI_GRANT_REVOKED;
+    child_fact.revision = 2;
+    child_fact.revoked_by_root_id = a;
+    auto child_state = required(ayni::authority::grant_state_record_type,
+                                ayni::authority::grant_revoked_state_record_version,
+                                ayni::authority::grant_revoked_state_record_size);
+    ayni::authority::write_grant_state_record(child_fact, child_state.body.data());
+
+    // Both histories finish with A/B cursors at X. In the bad history S
+    // pairs child X/by A with B's progress; T later advances A without a
+    // state record, so final cross-table consistency alone cannot detect S.
+    auto normal = prefix;
+    append(normal, {child_state, progress(a, x)});
+    append(normal, {progress(b, x)});
+    ReplayNode valid;
+    valid.node.config().grant_capacity = 3;
+    valid.node.sim().log() = normal;
+    valid.node.create_and_start();
+    valid.node.recover();
+    ASSERT_EQ(valid.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(valid.grant(a).cleanup_after_grant_id, x);
+    EXPECT_EQ(valid.grant(b).cleanup_after_grant_id, x);
+    EXPECT_EQ(valid.grant(x).revoked_by_root_id, a);
+
+    auto damaged = prefix;
+    append(damaged, {child_state, progress(b, x)});
+    append(damaged, {progress(a, x)});
+    ReplayNode restored;
+    restored.node.config().grant_capacity = 3;
+    restored.node.sim().log() = damaged;
+    const auto before = restored.node.sim().log();
+    restored.node.create_and_start();
+    restored.node.recover();
+    EXPECT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(restored.node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    // White-box: failed recovery must discard its partially restored facts.
+    EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
+    ASSERT_EQ(restored.node.sim().log().size(), before.size());
+    for (std::size_t index = 0; index < before.size(); ++index) {
+        EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
+    }
+}
+
 } // namespace
