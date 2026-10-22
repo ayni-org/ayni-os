@@ -11,6 +11,7 @@
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 
+#include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
 
@@ -203,6 +204,23 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
         return AYNI_INVALID_STATE;
     }
     return add_status(kernel->work.agents.add(agent->agent_id));
+}
+
+ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
+                                       const ayni_capability_desc_v1 *capability) {
+    if (kernel == nullptr || capability == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    uint32_t domain_size = 0;
+    const ayni_status_t status =
+        ayni::catalog::CapabilityRegistry::validate(*capability, domain_size);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
+        return AYNI_INVALID_STATE;
+    }
+    return kernel->work.capabilities.add(*capability);
 }
 
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type) {

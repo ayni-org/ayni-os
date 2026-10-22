@@ -31,14 +31,23 @@ constexpr uint32_t test_storage_buffer_bytes = 65536;
 // White-box: the capacities ayni_create reads from config, which covers
 // every field.
 inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config) {
-    return {config.ingress_capacity,      config.event_body_max_bytes,
-            config.completion_slot_count, config.storage_buffer_bytes,
-            config.agent_capacity,        config.goal_type_capacity,
-            config.goal_capacity,         config.goal_parameter_max_bytes,
-            config.session_capacity,      config.task_capacity,
-            config.strategy_capacity,     config.policy_intent_capacity,
-            config.task_step_capacity,    config.task_checkpoint_max_bytes,
-            config.command_capacity};
+    return {config.ingress_capacity,
+            config.event_body_max_bytes,
+            config.completion_slot_count,
+            config.storage_buffer_bytes,
+            config.agent_capacity,
+            config.goal_type_capacity,
+            config.goal_capacity,
+            config.goal_parameter_max_bytes,
+            config.session_capacity,
+            config.task_capacity,
+            config.strategy_capacity,
+            config.policy_intent_capacity,
+            config.task_step_capacity,
+            config.task_checkpoint_max_bytes,
+            config.command_capacity,
+            config.capability_capacity,
+            config.authority_scope_max_bytes};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's
@@ -72,6 +81,8 @@ class Node {
         config_.task_step_capacity = 4;
         config_.task_checkpoint_max_bytes = 8;
         config_.command_capacity = 4;
+        config_.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
+        config_.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
         table_ = sim_.table();
         if (!with_storage) {
             table_.storage_append = nullptr;

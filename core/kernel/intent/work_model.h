@@ -10,6 +10,7 @@
 #define AYNI_CORE_KERNEL_INTENT_WORK_MODEL_H
 
 #include "authority/principal/principal_registry.h"
+#include "catalog/capability/capability_registry.h"
 #include "catalog/goal_type/goal_type_registry.h"
 #include "catalog/strategy/strategy_registry.h"
 #include "foundation/kernel_id.h"
@@ -41,7 +42,9 @@ struct WorkModel {
                                 capacities.task_checkpoint_max_bytes}),
           strategies(storage.strategies, capacities.strategy_capacity),
           commands(storage.commands, authority::PrincipalRegistry::capacity,
-                   capacities.command_capacity) {}
+                   capacities.command_capacity),
+          capabilities(storage.capabilities, capacities.capability_capacity,
+                       capacities.authority_scope_max_bytes) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -67,6 +70,8 @@ struct WorkModel {
     catalog::StrategyRegistry strategies;
     // The commands accepted, which the log keeps with their transitions.
     CommandTable commands;
+    // Trusted, immutable authorization schemas; registration enables no I/O.
+    catalog::CapabilityRegistry capabilities;
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal

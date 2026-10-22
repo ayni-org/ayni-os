@@ -614,6 +614,8 @@ class KernelRun {
         config_.task_step_capacity = 1;
         config_.task_checkpoint_max_bytes = 0;
         config_.command_capacity = 1;
+        config_.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
+        config_.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
     }
 
     KernelRun(const KernelRun &) = delete;

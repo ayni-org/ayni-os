@@ -21,6 +21,8 @@ ayni_add_core_module(durability
 ayni_add_core_module(catalog
     SOURCES
         catalog/catalog_id.cpp
+        catalog/capability/capability_registry.cpp
+        catalog/capability/field_domain.cpp
         catalog/goal_type/goal_type_registry.cpp
         catalog/strategy/strategy_registry.cpp
     DEPENDS foundation)
@@ -29,7 +31,8 @@ ayni_add_core_module(authority
     SOURCES
         authority/principal/owner_binding_records.cpp
         authority/principal/principal_registry.cpp
-    DEPENDS durability foundation)
+        authority/scope/scope.cpp
+    DEPENDS catalog durability foundation)
 
 ayni_add_core_module(work
     SOURCES

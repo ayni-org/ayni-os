@@ -32,6 +32,9 @@ add_executable(ayni_unit_tests
     owner_binding_snapshot_test.cpp
     prefix_scan_test.cpp
     principal_registry_test.cpp
+    capability_registry_test.cpp
+    scope_test.cpp
+    kernel_capability_test.cpp
     sim_host_test.cpp
     storage_budget_test.cpp
     strategy_registry_test.cpp

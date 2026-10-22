@@ -23,6 +23,7 @@ struct KernelLayout {
     std::size_t strategies_offset;
     std::size_t decisions_offset;
     std::size_t commands_offset;
+    std::size_t capabilities_offset;
     std::size_t size;
     std::size_t alignment; // a power of two
 };

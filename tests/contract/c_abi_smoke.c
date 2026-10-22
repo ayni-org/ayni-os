@@ -1,5 +1,6 @@
 /* Uses the implemented ABI from strict C99 with caller-provided memory. */
 
+#include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
 
@@ -173,6 +174,8 @@ int main(void) {
     config.task_step_capacity = 1u;
     config.task_checkpoint_max_bytes = 0u;
     config.command_capacity = 1u;
+    config.capability_capacity = 1u;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
     config.storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
     config.storage_log_max_bytes = AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT;
     host.struct_size = (uint32_t)sizeof host;
@@ -214,6 +217,15 @@ int main(void) {
     report.struct_size = (uint32_t)sizeof report;
     failures +=
         expect(ayni_step(kernel, 1u, 1u, &report) == AYNI_INVALID_STATE, "step in CONFIGURING");
+    {
+        ayni_capability_desc_v1 capability = {0};
+        capability.struct_size = (uint32_t)sizeof capability;
+        capability.version = 1u;
+        capability.capability_id.data = "notify.present";
+        capability.capability_id.size = 14u;
+        failures += expect(ayni_register_capability(kernel, &capability) == AYNI_OK,
+                           "capability schema registration links from C99");
+    }
     failures += check_work_model(kernel);
     failures +=
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");
