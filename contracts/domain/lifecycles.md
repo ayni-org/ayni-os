@@ -33,6 +33,8 @@
 
 冷启动先校验、恢复持久状态，再握手取得新 writer epoch；运行中重载先隔离，之后才重读。schema 0 迁移在 activation 切换前保留旧格式源，切换后重新恢复并提交新启动记录；从 inactive 候选或未验证内容不开放准入。恢复结果未知时不靠回滚单个 transition 继续运行。验证：`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`、`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`、`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`。
 
+ABI 0.16 起，已完整验证的存储所有者与 Host 认证绑定不匹配时，以 `OWNER_BINDING_MISMATCH` 进入 `RESTRICTED`，不写新栅栏或启动记录，保留旧工作供只读诊断。恢复的活 Goal/Task 无授权元数据时以 `LEGACY_UNCONFIRMED` 禁行，不因重新注册目录或普通 resume 自动放行；明确审批随 MA-006 E/F。
+
 各状态下公开函数的返回值（已实现的函数在前，其余为计划；参数错误先于状态检查）：
 
 | 函数 | CONFIGURING | RECOVERING | RUNNING | FENCED | RESTRICTED | DRAINING | STOPPED |
@@ -44,7 +46,7 @@
 | `ayni_step` | INVALID_STATE | OK | OK | OK | OK | OK | INVALID_STATE |
 | `ayni_begin_shutdown` | INVALID_STATE | OK | OK | OK | OK | OK（幂等） | OK（幂等） |
 | `ayni_register_principal`、`ayni_register_agent`、`ayni_register_goal_type`、`ayni_register_strategy` | OK、参数错误或 CAPACITY_EXCEEDED | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE | INVALID_STATE |
-| `ayni_open_session` | NOT_READY | NOT_READY | OK、NOT_FOUND 或 CAPACITY_EXCEEDED | NOT_READY | NOT_READY | NOT_READY | NOT_READY |
+| `ayni_open_session`（Host 受管入口） | NOT_READY | NOT_READY | OK、NOT_FOUND、DENIED、NOT_READY（绑定未持久）或 CAPACITY_EXCEEDED | NOT_READY | NOT_READY | NOT_READY | NOT_READY |
 | `ayni_close_session` | INVALID_STATE | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | OK 或 NOT_FOUND | INVALID_STATE |
 | `ayni_submit_intent` | NOT_READY | NOT_READY | 按意图、幂等映射与存储准入校验 | NOT_READY | NOT_READY | NOT_READY | NOT_READY |
 | `ayni_get_agent`、`ayni_get_goal`、`ayni_get_task` | INVALID_STATE | OK 或 NOT_FOUND（标注 `durable_seq`） | OK 或 NOT_FOUND | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND（只读诊断） | OK 或 NOT_FOUND | INVALID_STATE |

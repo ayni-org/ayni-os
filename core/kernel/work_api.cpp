@@ -12,6 +12,7 @@
 #include "kernel/kernel_state.h"
 
 #include <ayni/ayni.h>
+#include <ayni/host_authority.h>
 
 #include <cstring>
 
@@ -102,6 +103,10 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = goal.lifecycle;
+    if (goal.hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED &&
+        ayni::work::GoalTable::is_live(goal.lifecycle)) {
+        info.lifecycle = AYNI_GOAL_PAUSED;
+    }
     info.goal_id = goal.goal_id;
     info.parent_goal_id = goal.parent_goal_id;
     info.owner_instance_id = goal.owner_instance_id;
@@ -273,13 +278,25 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
     if (status != AYNI_OK) {
         return status;
     }
-    if (!is_channel(session->channel)) {
+    if (!is_channel(session->channel) || session->binding_revision == 0U ||
+        session->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (kernel->in_callback()) {
         return AYNI_INVALID_STATE;
     }
     if (kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
+        return AYNI_NOT_READY;
+    }
+    const auto *principal = kernel->work.principals.find(session->principal_id);
+    if (principal == nullptr) {
+        return AYNI_NOT_FOUND;
+    }
+    if (principal->binding_revision != session->binding_revision) {
+        return AYNI_DENIED;
+    }
+    const auto *binding = kernel->work.principals.binding();
+    if (binding == nullptr || binding->stamp.commit_seq > kernel->durable_seq()) {
         return AYNI_NOT_READY;
     }
     return ayni::kernel::open_session(kernel->work, session->principal_id, session->channel,

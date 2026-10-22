@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 15u
+#define AYNI_ABI_MINOR 16u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -406,6 +406,8 @@ typedef uint32_t ayni_restriction_t;
 #define AYNI_RESTRICTION_WRITER_EPOCH_EXHAUSTED ((ayni_restriction_t)10)
 #define AYNI_RESTRICTION_STORAGE_FULL ((ayni_restriction_t)11)
 #define AYNI_RESTRICTION_GENERATION_EXHAUSTED ((ayni_restriction_t)12)
+/* Since 0.16. The authenticated Host binding differs from stored ownership. */
+#define AYNI_RESTRICTION_OWNER_BINDING_MISMATCH ((ayni_restriction_t)13)
 
 /* Since 0.4. Kernel-wide state for diagnostics. */
 typedef struct ayni_kernel_info_v1 {
@@ -564,9 +566,12 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * transition left them, while sessions do not. Every wait on the host clock starts again in full
  * from the end of recovery. A log that holds more than this kernel's capacities and limits makes it
  * RESTRICTED with AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY, and a log recovery cannot replay leaves
- * nothing of it in memory. Entering RUNNING is one transition when it starts the instance of an
- * agent registered for the first time, or settles a restored task against its goal and owner as
- * ayni_submit_intent does.
+ * nothing of it in memory. Since 0.16 a stored owner binding must match
+ * the Host configuration before any new recovery write; a mismatch enters
+ * RESTRICTED and preserves the validated model for diagnosis. Unconfirmed
+ * restored work stays held, including descendants of a held goal.
+ * Entering RUNNING is one transition when it first binds an owner, starts
+ * an instance, or settles restored work against its goal and owner.
  *
  * Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT if kernel is NULL or max_items or max_time_us is 0;
@@ -793,6 +798,8 @@ typedef uint32_t ayni_reason_t;
 /* Since 0.15. STORAGE_FAILED: not enough usable space for a new transition
  * and its maintenance reserve; previously accepted commands remain readable. */
 #define AYNI_REASON_STORAGE_SPACE ((ayni_reason_t)39)
+/* Since 0.16. DENIED: restored work has no confirmed authorization metadata. */
+#define AYNI_REASON_LEGACY_UNCONFIRMED ((ayni_reason_t)40)
 
 /* Classified failure detail. Carries a reason and the object it concerns,
  * never credentials, private memory text, media or personal data. */
@@ -827,6 +834,9 @@ typedef struct ayni_session_desc_v1 {
     uint32_t struct_size;
     ayni_channel_t channel;
     uint64_t principal_id; /* a registered principal */
+    /* Since 0.16. The binding the Host authenticated; both fields required. */
+    uint32_t binding_revision;
+    uint32_t reserved; /* 0 */
 } ayni_session_desc_v1;
 
 /* An agent: a logical identity with one resident instance on this kernel. */
@@ -1179,18 +1189,6 @@ typedef struct ayni_intent_result_v1 {
 } ayni_intent_result_v1;
 
 /*
- * Registers the owner principal, whom the host has bound and authenticated.
- * Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL pointer, a kind other
- * than AYNI_PRINCIPAL_OWNER, a zero principal_id or binding_revision, or a
- * nonzero reserved field; AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION
- * for struct_size; AYNI_INVALID_STATE outside CONFIGURING;
- * AYNI_CAPACITY_EXCEEDED once an owner is registered, since a device has
- * exactly one (C-PROD-001).
- */
-ayni_status_t ayni_register_principal(ayni_kernel_t *kernel,
-                                      const ayni_principal_desc_v1 *principal);
-
-/*
  * Registers an agent. The kernel creates its instance when it first enters
  * RUNNING (ADR-0017). Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL
  * pointer, a zero agent_id, a nonzero reserved field or an agent_id already
@@ -1389,20 +1387,6 @@ typedef struct ayni_strategy_v1 {
 ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_v1 *strategy);
 
 /*
- * Opens a session for a principal on a channel the host has authenticated
- * (C-AUTH-010). Sessions are not stored: a reboot closes them all. On
- * AYNI_OK, *out_session_id receives a new id, never 0. Returns AYNI_OK;
- * AYNI_INVALID_ARGUMENT for a NULL pointer or an unknown channel;
- * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size;
- * AYNI_INVALID_STATE when called from a callback; AYNI_NOT_READY outside
- * RUNNING; AYNI_NOT_FOUND for an unregistered principal;
- * AYNI_CAPACITY_EXCEEDED once session_capacity sessions are open or no id is
- * left this boot (C-ID-010).
- */
-ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v1 *session,
-                                uint64_t *out_session_id);
-
-/*
  * Closes an open session; intents can no longer name it. Returns AYNI_OK;
  * AYNI_INVALID_ARGUMENT if kernel is NULL; AYNI_INVALID_STATE in CONFIGURING
  * and STOPPED, and when called from a callback; AYNI_NOT_FOUND
@@ -1436,7 +1420,10 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * 3. AYNI_INVALID_STATE when called from a callback; then
  *    AYNI_NOT_READY outside RUNNING, without queueing (C-LIFE-004).
  * 4. AYNI_DENIED: session_id names no open session. Until grants exist, a
- *    session of the owner may submit every intent (ADR-0017).
+ *    session of the owner may submit every implemented intent (ADR-0017).
+ *    Since 0.16, Host-authenticated sessions require the exact durable
+ *    owner binding (ayni/host_authority.h); a session does not release
+ *    LEGACY_UNCONFIRMED recovery holds.
  *    Since 0.14, a nonzero command_id is then looked up among the commands
  *    of the session's principal (C-WIRE-003, C-WIRE-004, ADR-0026): one
  *    accepted before with the same kind, expected_revision and body, over
@@ -1472,6 +1459,7 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * goal table is full, in the place of the terminal goal that ended first,
  * which leaves with its tasks (ADR-0025). GOAL_PAUSE takes an ACTIVE goal
  * to PAUSED and GOAL_RESUME takes it back; neither changes its children.
+ * Since 0.16 GOAL_RESUME cannot clear a LEGACY_UNCONFIRMED hold.
  * GOAL_CANCEL takes a goal that is not yet terminal, and every descendant
  * that is not yet terminal, to CANCELLED in one transition (C-LIFE-022).
  * TASK_CANCEL takes a READY or PAUSED task to CANCELLED;

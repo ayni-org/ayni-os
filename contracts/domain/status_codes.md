@@ -76,6 +76,8 @@
 | 38 | `AYNI_REASON_STORAGE_BACKLOG` | `BUSY` | 缓冲不足、异常重试或快照维护暂停新 transition；已映射命令仍先返回首次结果（ADR-0027） |
 | 39 | `AYNI_REASON_STORAGE_SPACE` | `STORAGE_FAILED` | 可用介质空间不足以接纳新的 transition 及维护预留，拒绝发生在状态改变前（ADR-0027） |
 
+| 40 | `AYNI_REASON_LEGACY_UNCONFIRMED` | `DENIED` | 恢复的活工作缺少已确认授权元数据，保留进度并禁行；明确审批随 MA-006 E/F（ADR-0028） |
+
 ## 规则
 
 | ID | 规则 | 反例 | 验证 |

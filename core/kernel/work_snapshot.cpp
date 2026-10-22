@@ -1,5 +1,6 @@
 #include "kernel/work_snapshot.h"
 
+#include "authority/principal/owner_binding_records.h"
 #include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
 #include "kernel/command/command_records.h"
@@ -20,6 +21,8 @@ constexpr uint32_t id_max = catalog::CatalogId::max_size;
 // then a commit_seq.
 constexpr uint32_t stamp_commit_seq_at = 8;
 constexpr uint32_t stamp_size = 16;
+// OWNER_BINDING: the stamp that first established this owner.
+constexpr uint32_t owner_binding_size = authority::owner_binding_record_size + stamp_size;
 // INSTANCE: the stamp it last changed at.
 constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
 // GOAL: the GOAL_STATE body, then its created_transition_id and the
@@ -77,7 +80,7 @@ void count(SnapshotLayout &layout, uint32_t body) {
 } // namespace
 
 uint32_t snapshot_record_max(const KernelCapacities &capacities) {
-    uint32_t size = maximum(instance_size, task_size);
+    uint32_t size = maximum(owner_binding_size, maximum(instance_size, task_size));
     size = maximum(size, work::goal_record_fixed_size + 2U * id_max +
                              capacities.goal_parameter_max_bytes + goal_extra);
     size = maximum(size, step_record_size(id_max));
@@ -88,7 +91,8 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
 
 // Every table full, each record at its largest.
 uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
-    uint64_t size = uint64_t{capacities.agent_capacity} * (record_prefix + instance_size);
+    uint64_t size = record_prefix + owner_binding_size;
+    size += uint64_t{capacities.agent_capacity} * (record_prefix + instance_size);
     size += uint64_t{capacities.goal_capacity} *
             (record_prefix + work::goal_record_fixed_size + 2U * id_max +
              capacities.goal_parameter_max_bytes + goal_extra);
@@ -104,6 +108,9 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
 
 SnapshotLayout measure_snapshot(const WorkModel &model) {
     SnapshotLayout layout{};
+    if (model.principals.binding_known()) {
+        count(layout, owner_binding_size);
+    }
     for (uint32_t index = 0; index < model.agents.size(); ++index) {
         if (model.agents.at(index).instance_id != 0U) {
             count(layout, instance_size);
@@ -130,7 +137,7 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
 }
 
 void WorkSnapshotWriter::reset() {
-    section_ = Section::instances;
+    section_ = Section::owner_binding;
     index_ = 0;
     depth_ = 0;
     task_part_ = TaskPart::task;
@@ -144,6 +151,14 @@ void WorkSnapshotWriter::reset() {
 bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
     for (;;) {
         switch (section_) {
+        case Section::owner_binding:
+            if (model_.principals.binding_known()) {
+                type = authority::owner_binding_record_type;
+                size = owner_binding_size;
+                return true;
+            }
+            section_ = Section::instances;
+            break;
         case Section::instances:
             while (index_ < model_.agents.size() && model_.agents.at(index_).instance_id == 0U) {
                 ++index_;
@@ -233,6 +248,13 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
 
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t size) {
     switch (type) {
+    case authority::owner_binding_record_type: {
+        const authority::OwnerBinding &binding = *model_.principals.binding();
+        authority::write_owner_binding_record(binding, body);
+        write_stamp(body + authority::owner_binding_record_size, binding.stamp.transition_id,
+                    binding.stamp.commit_seq);
+        break;
+    }
     case work::instance_record_type: {
         const work::AgentInstance &instance = model_.agents.at(index_);
         work::write_instance_record(instance, body);
@@ -289,6 +311,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
 
 void WorkSnapshotWriter::advance_record(uint16_t type) {
     switch (type) {
+    case authority::owner_binding_record_type:
+        section_ = Section::instances;
+        break;
     case work::instance_record_type:
     case work::goal_record_type:
         ++index_;
@@ -337,7 +362,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
 void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
     metadata_ = metadata;
     records_ = 0;
-    section_ = Section::instances;
+    section_ = Section::owner_binding;
     task_index_ = work::TaskTable::no_index;
     checkpoint_seen_ = false;
     last_command_seq_ = 0;
@@ -353,6 +378,9 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     if ((header.flags & ~durability::record_required) != 0U) {
         return BatchCheck::unsupported;
     }
+    if (WorkReplay::classify_header(header) == durability::RecordUse::corrupt) {
+        return BatchCheck::corrupt;
+    }
     // A record this reader does not know is skipped unless REQUIRED.
     // GOAL_STATE travels inside GOAL, so a snapshot has none of its own.
     const BatchCheck unknown = (header.flags & durability::record_required) == 0U
@@ -363,6 +391,9 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     }
     Section section = Section::instances;
     switch (header.type) {
+    case authority::owner_binding_record_type:
+        section = Section::owner_binding;
+        break;
     case work::instance_record_type:
         section = Section::instances;
         break;
@@ -388,6 +419,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     }
     section_ = section;
     switch (header.type) {
+    case authority::owner_binding_record_type:
+        return owner_binding(body, header.length);
     case work::instance_record_type:
         return instance(body, header.length);
     case work::goal_record_type:
@@ -405,6 +438,19 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     default:
         return BatchCheck::unsupported;
     }
+}
+
+durability::BatchCheck WorkSnapshotReader::owner_binding(const uint8_t *body, uint32_t size) {
+    authority::OwnerBindingRecord record{};
+    if (size != owner_binding_size ||
+        !authority::read_owner_binding_record(body, authority::owner_binding_record_size, record)) {
+        return durability::BatchCheck::corrupt;
+    }
+    const foundation::TransitionStamp stamp =
+        read_stamp(body + authority::owner_binding_record_size);
+    return valid_stamp(stamp, metadata_) && model_.principals.restore_binding(record, stamp)
+               ? durability::BatchCheck::ok
+               : durability::BatchCheck::corrupt;
 }
 
 durability::BatchCheck WorkSnapshotReader::instance(const uint8_t *body, uint32_t size) {

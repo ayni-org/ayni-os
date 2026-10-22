@@ -133,9 +133,10 @@ void prepare(WorkNode &work) {
     work.max_checkpoint_bytes = 4;
 }
 
-// What the queries show of every agent, goal and task, by id, with white-box
-// what replay restores that no query shows; the times each boot sets afresh
-// (decision 6) are left out.
+// White-box persistent view for prefix atomicity: raw lifecycle, stored hold,
+// original stamps and contents. Recovery compatibility/authorization overlays
+// and derived wait reasons are deliberately excluded; the API gate is checked
+// separately. Times that each boot anchors afresh (decision 6) are left out.
 std::string describe(WorkNode &work) {
     const ayni::kernel::WorkModel &model = work.kernel()->work;
     std::ostringstream out;
@@ -159,7 +160,8 @@ std::string describe(WorkNode &work) {
         const ayni_goal_info_v1 goal = work.goal(id);
         uint32_t index = 0;
         EXPECT_TRUE(model.goals.find(id, index));
-        out << "goal " << id << " lifecycle " << goal.lifecycle << " parent " << goal.parent_goal_id
+        const ayni::work::Goal &kept = model.goals.at(index);
+        out << "goal " << id << " lifecycle " << kept.lifecycle << " parent " << goal.parent_goal_id
             << " owner " << goal.owner_instance_id << " origin " << goal.origin_principal_id << '/'
             << goal.origin << '/' << goal.origin_channel << '/' << goal.origin_binding_revision
             << " transition " << goal.transition_id << " seq " << goal.commit_seq << " revision "
@@ -169,9 +171,9 @@ std::string describe(WorkNode &work) {
             << '/' << goal.trigger_period_us << '/'
             << std::string(goal.trigger_source, goal.trigger_source_size) << " occurrences "
             << goal.occurrences << '/' << goal.occurrences_skipped << '/' << goal.skip_reason
-            << " last task " << goal.last_task_id << " wait " << goal.wait_reason << " hold "
-            << goal.hold_reason << " expires " << (goal.expires_us == no_time ? "never" : "set")
-            << " replaced " << model.goals.at(index).replaced_goal_id << " parameters";
+            << " last task " << goal.last_task_id << " expires "
+            << (goal.expires_us == no_time ? "never" : "set") << " replaced "
+            << model.goals.at(index).replaced_goal_id << " parameters";
         for (const uint8_t byte : bytes_of(model.goals.parameters(index))) {
             out << ' ' << static_cast<int>(byte);
         }
@@ -187,11 +189,11 @@ std::string describe(WorkNode &work) {
         uint32_t index = 0;
         EXPECT_TRUE(model.tasks.find(id, index));
         const ayni::work::Task &kept = model.tasks.at(index);
-        out << "task " << id << " lifecycle " << task.lifecycle << " goal " << task.goal_id
+        out << "task " << id << " lifecycle " << kept.lifecycle << " goal " << task.goal_id
             << " owner " << task.owner_instance_id << " transition " << task.transition_id
             << " seq " << task.commit_seq << " revision " << task.revision << '/'
             << task.cancel_revision << " occurrence " << task.occurrence << '/'
-            << task.occurrence_count << " hold " << task.hold_status << '/' << task.hold_reason
+            << task.occurrence_count << " hold " << kept.hold_status << '/' << kept.hold_reason
             << " replaced " << kept.replaced_task_id << " steps";
         for (uint32_t step = 0; step < task.step_count; ++step) {
             const ayni::catalog::CatalogId &key = model.tasks.step(index, step);
@@ -206,6 +208,27 @@ std::string describe(WorkNode &work) {
         out << '\n';
     }
     return out.str();
+}
+
+void expect_legacy_gate(WorkNode &work) {
+    const auto &model = work.kernel()->work;
+    for (uint32_t index = 0; index < model.goals.size(); ++index) {
+        const auto &stored = model.goals.at(index);
+        if (ayni::work::GoalTable::is_live(stored.lifecycle)) {
+            const auto visible = work.goal(stored.goal_id);
+            EXPECT_EQ(visible.lifecycle, AYNI_GOAL_PAUSED);
+            EXPECT_EQ(visible.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        }
+    }
+    for (uint32_t index = 0; index < model.tasks.size(); ++index) {
+        const auto &stored = model.tasks.at(index);
+        if (ayni::work::TaskTable::is_live(stored.lifecycle) && stored.hold_status == AYNI_OK) {
+            const auto visible = work.task(stored.task_id);
+            EXPECT_EQ(visible.lifecycle, AYNI_TASK_PAUSED);
+            EXPECT_EQ(visible.hold_status, AYNI_DENIED);
+            EXPECT_EQ(visible.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        }
+    }
 }
 
 // Records describe() after each transition, by its commit_seq. Each call
@@ -325,6 +348,7 @@ TEST(WorkRecovery, every_stored_prefix_recovers_the_state_after_its_last_batch) 
         later.run();
         EXPECT_EQ(later.node().info().durable_seq, kept + 2U); // its writer fence and boot batch
         EXPECT_EQ(describe(later), views.at(kept));
+        expect_legacy_gate(later);
     }
 }
 
@@ -365,12 +389,14 @@ TEST(WorkRecovery, append_cut_by_power_loss_counts_only_when_whole) {
         work.node().recover();
         ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
         EXPECT_EQ(describe(work), cut == CutAppend::stored ? cut_view : stored);
-        EXPECT_EQ(work.goal(kept).lifecycle, AYNI_GOAL_ACTIVE);
+        EXPECT_EQ(work.goal(kept).lifecycle, AYNI_GOAL_PAUSED);
+        EXPECT_EQ(work.goal(kept).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
         ayni_goal_info_v1 info{};
         info.struct_size = sizeof(info);
         EXPECT_EQ(ayni_get_goal(work.kernel(), cut_goal, &info),
                   cut == CutAppend::stored ? AYNI_OK : AYNI_NOT_FOUND);
-        // The goal after the boot batch is the fourth transition either way.
+        // The old stored prefix is followed only by the new writer fence
+        // and boot batch; authorization overlays add no transition.
         EXPECT_EQ(work.node().info().durable_seq, cut == CutAppend::stored ? 7U : 6U);
     }
 }
@@ -431,25 +457,29 @@ TEST(WorkRecovery, timers_restart_from_the_recovery_clock_with_their_full_length
     EXPECT_EQ(work.goal(delayed).next_due_us, recovered_us + 7U * period_us);
     EXPECT_EQ(work.goal(expiring).expires_us, recovered_us + 9U * period_us);
     EXPECT_EQ(work.task(task_id).due_us, recovered_us);
-    // The live task holds the first interval's next occurrence, so the
-    // first due work is the other interval's.
-    EXPECT_EQ(work.node().step().next_deadline_us, recovered_us + 5U * period_us);
+    // Recovery preserves the original timer lengths while unconfirmed work
+    // contributes no executable deadline.
+    expect_legacy_gate(work);
+    EXPECT_EQ(work.node().step().next_deadline_us, no_time);
 }
 
-// ADR-0026 decision 6: an input goal's occurrences are counted from the
-// recovery clock, so an input waits its full occurrence_wait_max_us from when
-// it arrives.
-TEST(WorkRecovery, input_goal_takes_inputs_after_a_restart) {
+// Input ingress remains available after restart, but an unconfirmed legacy
+// goal cannot turn new input into another occurrence or task (ADR-0028).
+TEST(WorkRecovery, input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed) {
     WorkNode work;
     work.run();
     const uint64_t goal_id = create(work, goal_body(work, AYNI_TRIGGER_LOCAL_INPUT));
     work.node().reboot();
     work.node().recover();
+    const auto before = work.goal(goal_id);
+    EXPECT_EQ(before.lifecycle, AYNI_GOAL_PAUSED);
+    EXPECT_EQ(before.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
     EXPECT_EQ(work.goal(goal_id).next_due_us, no_time);
     ASSERT_EQ(post_input(work), AYNI_OK);
-    work.node().step(); // takes the input
-    work.node().step(); // derives its task
-    EXPECT_NE(task_of(work, goal_id), 0U);
+    work.node().step(); // consumes the input without advancing the held goal
+    work.node().step();
+    EXPECT_EQ(task_of(work, goal_id), 0U);
+    EXPECT_EQ(work.goal(goal_id).occurrences, before.occurrences);
 }
 
 // --- What this boot cannot serve (decision 7) --------------------------------
@@ -551,7 +581,8 @@ uint64_t restart_with(WorkNode &work, const Catalog &catalog) {
 
 // ADR-0026 decision 7: a goal whose type this boot does not register, or not
 // at its version, is kept and held, and so are its live tasks; the holds
-// change no revision, so a later boot with the type back serves them again.
+// change no revision. Restoring the type removes the compatibility reason,
+// while MA-006 still requires explicit authorization of the legacy work.
 TEST(WorkRecovery, goal_type_this_boot_lacks_holds_its_goals_and_tasks) {
     const struct {
         const char *name;
@@ -583,18 +614,22 @@ TEST(WorkRecovery, goal_type_this_boot_lacks_holds_its_goals_and_tasks) {
         EXPECT_EQ(task.commit_seq, task_before.commit_seq);
         EXPECT_EQ(task.hold_status, c.task_status);
         EXPECT_EQ(task.hold_reason, c.goal_reason);
-        // The other type's goal and task are served as before.
-        EXPECT_EQ(work.goal(held.timer).hold_reason, AYNI_REASON_NONE);
-        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_READY);
-        // A held task is never decided.
+        // The other type is compatible but has no recovered authority.
+        EXPECT_EQ(work.goal(held.timer).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(work.task(held.timer_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        // Neither a compatibility hold nor an authorization hold is decided.
         const std::size_t decided = work.strategy().seen.size();
         run_until_idle(work);
-        EXPECT_EQ(work.strategy().seen.size(), decided + 1U); // the timer's task only
+        EXPECT_EQ(work.strategy().seen.size(), decided);
 
         restart_with(work, Catalog{});
-        EXPECT_EQ(work.goal(held.reminder).hold_reason, AYNI_REASON_NONE);
-        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_READY);
-        EXPECT_EQ(work.task(held.reminder_task).hold_status, AYNI_OK);
+        EXPECT_EQ(work.goal(held.reminder).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(work.task(held.reminder_task).hold_status, AYNI_DENIED);
+        EXPECT_EQ(work.task(held.reminder_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        EXPECT_EQ(work.task(held.reminder_task).revision, task_before.revision);
+        EXPECT_EQ(work.task(held.reminder_task).commit_seq, task_before.commit_seq);
     }
 }
 
@@ -603,7 +638,8 @@ TEST(WorkRecovery, goal_type_this_boot_lacks_holds_its_goals_and_tasks) {
 // type has no strategy now cannot be decided, and a checkpoint larger than
 // its strategy now keeps cannot be handed to it. Each task is held, PAUSED
 // in memory only, with its steps, checkpoint and revision as stored, so a
-// later boot with the strategy back decides it from where it stopped.
+// later boot with the strategy back retains the checkpoint but still waits
+// for confirmation of the recovered work's authority.
 TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
     {
         SCOPED_TRACE("other strategy version");
@@ -619,23 +655,32 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
         EXPECT_EQ(task.step_count, before.step_count);
         EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED);
-        // The timer's task has no checkpoint, so any version may decide it.
-        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_READY);
+        // The timer has no checkpoint compatibility problem; its separate
+        // authorization hold still prevents deciding it.
+        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(work.task(held.timer_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
 
         restart_with(work, Catalog{});
-        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_READY);
-        EXPECT_EQ(work.task(held.reminder_task).hold_status, AYNI_OK);
+        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(work.task(held.reminder_task).hold_status, AYNI_DENIED);
+        EXPECT_EQ(work.task(held.reminder_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
         work.strategy().seen.clear();
         work.node().step();
-        // The decision starts from the steps and the checkpoint written
-        // before the version changed: {7, step_count when written}.
-        const auto seen =
-            std::find_if(work.strategy().seen.begin(), work.strategy().seen.end(),
-                         [](const Seen &decided) { return decided.goal_type_id == "reminder"; });
-        ASSERT_NE(seen, work.strategy().seen.end());
-        EXPECT_EQ(seen->steps.size(), before.step_count);
+        EXPECT_TRUE(work.strategy().seen.empty());
+        // White-box persistent checkpoint inspection, without removing the
+        // authorization gate to invoke a strategy. The old steps and bytes
+        // remain available for a future explicitly authorized continuation.
+        uint32_t index = 0;
+        ASSERT_TRUE(work.kernel()->work.tasks.find(held.reminder_task, index));
+        const auto &tasks = work.kernel()->work.tasks;
+        EXPECT_EQ(tasks.at(index).step_count, before.step_count);
+        EXPECT_EQ(tasks.at(index).checkpoint_writer_version, 1U);
         const std::vector<uint8_t> resumed = {7, static_cast<uint8_t>(before.step_count - 1U)};
-        EXPECT_EQ(seen->checkpoint, resumed);
+        EXPECT_EQ(bytes_of(tasks.checkpoint(index)), resumed);
+        for (uint32_t step = 0; step < before.step_count; ++step) {
+            const auto &key = tasks.step(index, step);
+            EXPECT_EQ(std::string(key.data(), key.size()), "turn" + std::to_string(step));
+        }
     }
     {
         SCOPED_TRACE("checkpoint larger than the strategy keeps");
@@ -647,7 +692,8 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
         EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
         EXPECT_EQ(task.hold_status, AYNI_CAPACITY_EXCEEDED);
         EXPECT_EQ(task.hold_reason, AYNI_REASON_POLICY_OUTPUT_LIMIT);
-        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_READY);
+        EXPECT_EQ(work.task(held.timer_task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(work.task(held.timer_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
     }
     {
         SCOPED_TRACE("type without a strategy");
@@ -660,7 +706,8 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
         EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
         EXPECT_EQ(task.hold_status, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(task.hold_reason, AYNI_REASON_STRATEGY_CHANGED);
-        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_READY);
+        EXPECT_EQ(work.task(held.reminder_task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(work.task(held.reminder_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
     }
 }
 
@@ -702,10 +749,12 @@ TEST(WorkRecovery, held_goal_has_no_due_work) {
         EXPECT_EQ(work.node().step().next_deadline_us, no_time);
 
         restart_with(work, Catalog{});
-        EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_NONE);
+        EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_PAUSED);
         work.node().sim().advance_us(7U * period_us);
         run_until_idle(work);
-        EXPECT_NE(task_of(work, goal_id), 0U);
+        EXPECT_EQ(task_of(work, goal_id), 0U);
+        EXPECT_EQ(work.node().step().next_deadline_us, no_time);
     }
     {
         SCOPED_TRACE("cancelled");
@@ -727,9 +776,9 @@ TEST(WorkRecovery, held_goal_has_no_due_work) {
 // ADR-0026 decision 7, C-LIFE-020: the instance of an agent this boot does
 // not register keeps its goals and tasks, which no other instance takes; it
 // is FAULTED with AGENT_UNREGISTERED in memory, without a revision, and its
-// live tasks settle to PAUSED in the transition that starts the work model;
-// the other agent's are untouched. A later boot that registers the agent
-// again has its instance back and settles its tasks again.
+// live tasks keep their stored state behind the legacy authorization hold.
+// A later boot that registers the agent again removes its fault without
+// automatically reauthorizing its old work.
 TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
     WorkNode work;
     prepare(work);
@@ -745,11 +794,12 @@ TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
     const uint64_t their_task = task_of(work, theirs);
     const uint64_t my_task = task_of(work, mine);
     ASSERT_EQ(work.task(their_task).lifecycle, AYNI_TASK_READY);
+    const auto task_before = work.task(their_task);
     const ayni_agent_info_v1 before = work.agent(agent_b);
 
     Catalog catalog;
     catalog.agent_b = false;
-    EXPECT_EQ(restart_with(work, catalog), 3U); // the boot batch and the settling
+    EXPECT_EQ(restart_with(work, catalog), 2U); // writer fence and boot; no work changes
     const ayni_agent_info_v1 agent = work.agent(agent_b);
     EXPECT_EQ(agent.lifecycle, AYNI_AGENT_FAULTED);
     EXPECT_EQ(agent.fault_reason, AYNI_REASON_AGENT_UNREGISTERED);
@@ -758,18 +808,23 @@ TEST(WorkRecovery, instance_of_an_agent_no_longer_registered_is_faulted) {
     EXPECT_EQ(agent.commit_seq, before.commit_seq);
     const ayni_task_info_v1 task = work.task(their_task);
     EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(task.commit_seq, next_commit_seq(work) - 1U);
-    EXPECT_EQ(work.task(my_task).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(task.commit_seq, task_before.commit_seq);
+    EXPECT_EQ(task.revision, task_before.revision);
+    EXPECT_EQ(task.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    EXPECT_EQ(work.task(my_task).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.task(my_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
     EXPECT_EQ(work.agent(agent_a).fault_reason, AYNI_REASON_NONE);
     // A FAULTED instance takes no new goal.
     expect_refused(work.create(goal_body(work, AYNI_TRIGGER_NONE, "folder", agent_b)),
                    AYNI_INVALID_STATE, AYNI_REASON_OWNER_STATE, AYNI_OBJECT_AGENT_INSTANCE,
                    agent.instance_id);
 
-    EXPECT_EQ(restart_with(work, Catalog{}), 3U);
+    EXPECT_EQ(restart_with(work, Catalog{}), 2U);
     EXPECT_EQ(work.agent(agent_b).lifecycle, AYNI_AGENT_RUNNING);
     EXPECT_EQ(work.agent(agent_b).fault_reason, AYNI_REASON_NONE);
-    EXPECT_EQ(work.task(their_task).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(work.task(their_task).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.task(their_task).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    EXPECT_EQ(work.task(their_task).commit_seq, task_before.commit_seq);
 }
 
 // ADR-0026 decision 8, C-LIFE-025: an instance keeps its id and revision
@@ -1157,7 +1212,8 @@ TEST(WorkJournal, draining_stores_every_batch_before_it_stops) {
     work.node().reboot();
     work.node().recover();
     for (const uint64_t goal_id : goals) {
-        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+        EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_PAUSED);
+        EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
     }
 }
 

@@ -125,7 +125,9 @@ AYNI_LAYOUT(principal_size, sizeof(ayni_principal_desc_v1) == 24);
 AYNI_LAYOUT(session_struct_size, offsetof(ayni_session_desc_v1, struct_size) == 0);
 AYNI_LAYOUT(session_channel, offsetof(ayni_session_desc_v1, channel) == 4);
 AYNI_LAYOUT(session_principal_id, offsetof(ayni_session_desc_v1, principal_id) == 8);
-AYNI_LAYOUT(session_size, sizeof(ayni_session_desc_v1) == 16);
+AYNI_LAYOUT(session_binding_revision, offsetof(ayni_session_desc_v1, binding_revision) == 16);
+AYNI_LAYOUT(session_reserved, offsetof(ayni_session_desc_v1, reserved) == 20);
+AYNI_LAYOUT(session_size, sizeof(ayni_session_desc_v1) == 24);
 
 AYNI_LAYOUT(agent_struct_size, offsetof(ayni_agent_desc_v1, struct_size) == 0);
 AYNI_LAYOUT(agent_reserved, offsetof(ayni_agent_desc_v1, reserved) == 4);

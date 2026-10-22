@@ -10,8 +10,9 @@
 // anew each boot, so a goal whose type is gone, a task whose checkpoint its
 // strategy cannot read and an instance whose agent is gone are held or
 // FAULTED in memory only, and the log keeps them as they were for a boot
-// that registers them again. Times are on one boot's clock, so each wait
-// starts again in full when recovery ends.
+// that registers them again. Work without the authorization records that
+// MA-006 will add is held for explicit confirmation. Times are on one boot's
+// clock, so each wait starts again in full when recovery ends.
 
 #ifndef AYNI_CORE_KERNEL_WORK_REPLAY_H
 #define AYNI_CORE_KERNEL_WORK_REPLAY_H
@@ -25,6 +26,10 @@ namespace ayni::kernel {
 
 class WorkReplay {
   public:
+    // A durable binding is authoritative. Before the first binding, every
+    // retained authenticated owner fact must agree with the Host; recovery
+    // must not turn a legacy store into an implicit ownership transfer.
+    bool binding_matches() const;
     // model outlives the replay.
     explicit WorkReplay(WorkModel &model) : model_(model) {}
 
@@ -35,9 +40,11 @@ class WorkReplay {
     static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body);
-    // Whether on_record() takes records of this type and version; any other
-    // record is unknown to it.
-    static bool knows(const durability::RecordHeader &header);
+    // applied: a known type/version whose header is accepted; corrupt:
+    // OWNER_BINDING lacks REQUIRED; unknown: an unsupported type/version.
+    // Discovery uses the same classification before skipping covered data;
+    // applied does not validate the body.
+    static durability::RecordUse classify_header(const durability::RecordHeader &header);
 
     // After the last batch: whether every goal and task a batch created came
     // with its state in the same batch.
@@ -57,6 +64,8 @@ class WorkReplay {
   private:
     durability::RecordUse apply(const durability::BatchIdentity &batch,
                                 const durability::RecordHeader &header, const uint8_t *body);
+    durability::RecordUse restore_owner_binding(const uint8_t *body, uint32_t size,
+                                                foundation::TransitionStamp stamp);
     durability::RecordUse restore_instance(const uint8_t *body, uint32_t size,
                                            foundation::TransitionStamp stamp);
     durability::RecordUse restore_goal(const uint8_t *body, uint32_t size,
@@ -73,6 +82,7 @@ class WorkReplay {
                                                   foundation::TransitionStamp stamp);
     durability::RecordUse restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq);
     void hold_tasks();
+    void hold_unconfirmed_work();
 
     WorkModel &model_;
     uint64_t batch_seq_ = 0; // of the batch the last record came in

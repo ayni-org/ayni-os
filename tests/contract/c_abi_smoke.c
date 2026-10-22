@@ -1,6 +1,7 @@
 /* Uses the implemented ABI from strict C99 with caller-provided memory. */
 
 #include <ayni/ayni.h>
+#include <ayni/host_authority.h>
 
 #include <stdio.h>
 
@@ -106,6 +107,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     session.struct_size = (uint32_t)sizeof session;
     session.channel = AYNI_CHANNEL_MANAGEMENT;
     session.principal_id = owner.principal_id;
+    session.binding_revision = owner.binding_revision;
     failures += expect(ayni_open_session(kernel, &session, &session_id) == AYNI_NOT_READY,
                        "open session in CONFIGURING");
     failures += expect(ayni_close_session(kernel, 1u) == AYNI_INVALID_STATE,

@@ -29,7 +29,7 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
          index = tables.goals.at(index).parent_index) {
         const ayni_goal_lifecycle_t lifecycle =
             index == after.goal_index ? after.goal_lifecycle : tables.goals.at(index).lifecycle;
-        if (lifecycle != AYNI_GOAL_ACTIVE) {
+        if (lifecycle != AYNI_GOAL_ACTIVE || GoalTable::is_held(tables.goals.at(index))) {
             return false;
         }
     }

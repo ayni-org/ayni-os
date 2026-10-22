@@ -27,8 +27,9 @@ ayni_add_core_module(catalog
 
 ayni_add_core_module(authority
     SOURCES
+        authority/principal/owner_binding_records.cpp
         authority/principal/principal_registry.cpp
-    DEPENDS foundation)
+    DEPENDS durability foundation)
 
 ayni_add_core_module(work
     SOURCES
