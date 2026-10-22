@@ -69,6 +69,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_goal_create_v1 create = {0};
     ayni_intent_v1 intent = {0};
     ayni_intent_result_v1 result = {0};
+    ayni_intent_receipt_v1 receipt = {0};
     ayni_error_v1 error = {0};
     ayni_agent_info_v1 agent_info = {0};
     ayni_goal_info_v1 goal_info = {0};
@@ -147,6 +148,10 @@ static int check_work_model(ayni_kernel_t *kernel) {
                        "grant query links from C99 in CONFIGURING");
     failures += expect(ayni_get_grant_field(kernel, 1u, 0u, &grant_field) == AYNI_INVALID_STATE,
                        "grant field query links from C99 in CONFIGURING");
+    receipt.struct_size = (uint32_t)sizeof receipt;
+    failures += expect(ayni_get_intent_receipt(kernel, owner.principal_id, 1u, &receipt) ==
+                           AYNI_INVALID_STATE,
+                       "intent receipt query links from C99 in CONFIGURING");
     return failures;
 }
 

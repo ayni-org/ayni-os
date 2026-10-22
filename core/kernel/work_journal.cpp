@@ -33,7 +33,8 @@ class Encoder {
     // The first binding precedes the instances it starts. Work records
     // follow replay order, with the command mapping last.
     bool encode() {
-        return owner_binding() && instances() && grants() && goals() && tasks() && command();
+        return owner_binding() && instances() && revocation() && grants() &&
+               revocation_progress() && goals() && tasks() && command();
     }
 
   private:
@@ -73,19 +74,74 @@ class Encoder {
         return ok_;
     }
 
+    bool revocation() {
+        const auto *mapping = model_.commands.mapped_in(stamp_.commit_seq);
+        if (mapping == nullptr || mapping->kind != AYNI_INTENT_GRANT_REVOKE) {
+            return ok_;
+        }
+        authority::GrantTable::RevokePlan plan{mapping->object.id, mapping->object.revision,
+                                               mapping->effect, 0, 0};
+        if (mapping->effect == AYNI_INTENT_EFFECT_CHANGED) {
+            uint32_t index = 0;
+            if (!model_.grants.find(mapping->object.id, index)) {
+                return false;
+            }
+            const auto &grant = model_.grants.at(index);
+            if (grant.revoked_by_root_id != grant.grant_id ||
+                grant.stamp.commit_seq != stamp_.commit_seq) {
+                return false;
+            }
+            plan.cleanup_after_grant_id = grant.cleanup_after_grant_id;
+            plan.cleanup_through_grant_id = grant.cleanup_through_grant_id;
+        }
+        auto *at = body(authority::grant_revocation_record_type,
+                        authority::grant_revocation_record_version,
+                        authority::grant_revocation_record_size);
+        if (at != nullptr) {
+            authority::write_grant_revocation_record(plan, at);
+        }
+        return ok_;
+    }
+
+    bool revocation_progress() {
+        for (uint32_t index = 0; index < model_.grants.size(); ++index) {
+            const auto &grant = model_.grants.at(index);
+            if (grant.cleanup_stamp.commit_seq != stamp_.commit_seq ||
+                grant.stamp.commit_seq == stamp_.commit_seq) {
+                continue;
+            }
+            auto *at = body(authority::grant_revocation_progress_record_type,
+                            authority::grant_revocation_progress_record_version,
+                            authority::grant_revocation_progress_record_size);
+            if (at != nullptr) {
+                authority::write_grant_revocation_progress_record(
+                    {grant.grant_id, grant.cleanup_after_grant_id, grant.cleanup_through_grant_id,
+                     0},
+                    at);
+            }
+        }
+        return ok_;
+    }
+
     bool grants() {
         for (uint32_t index = 0; index < model_.grants.size(); ++index) {
             const auto &grant = model_.grants.at(index);
             if (grant.stamp.commit_seq != stamp_.commit_seq) {
                 continue;
             }
+            // Explicit root revocation is encoded by its paired type 15.
+            if (grant.lifecycle == AYNI_GRANT_REVOKED &&
+                grant.revoked_by_root_id == grant.grant_id) {
+                continue;
+            }
             const bool created = grant.created_stamp.commit_seq == stamp_.commit_seq;
-            const uint32_t size =
-                created ? authority::grant_record_size(grant) : authority::grant_state_record_size;
-            uint8_t *at = body(
-                created ? authority::grant_record_type : authority::grant_state_record_type,
-                created ? authority::grant_record_version : authority::grant_state_record_version,
-                size);
+            const uint32_t size = created ? authority::grant_record_size(grant)
+                                          : authority::grant_state_record_size_for(grant);
+            uint8_t *at =
+                body(created ? authority::grant_record_type : authority::grant_state_record_type,
+                     created ? authority::grant_record_version
+                             : authority::grant_state_record_version_for(grant),
+                     size);
             if (at == nullptr) {
                 continue;
             }
@@ -216,6 +272,9 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     // startup expiry sweep. This avoids a second admission budget per kind.
     size += record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes));
     size += capacities.grant_capacity * record_bytes(authority::grant_state_record_size);
+    size += record_bytes(authority::grant_revocation_record_size);
+    size += record_bytes(authority::grant_revoked_state_record_size);
+    size += record_bytes(authority::grant_revocation_progress_record_size);
     size += record_bytes(
         command_record_max(authority_command_max_bytes(capacities.authority_scope_max_bytes)));
     return size;

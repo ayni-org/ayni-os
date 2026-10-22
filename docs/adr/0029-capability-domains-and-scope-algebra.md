@@ -1,6 +1,6 @@
 # ADR-0029：权限与审批（二）：Capability 目录与有限范围代数
 
-- **状态**：已接受、实现并验证；PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 已合并（`00a4126ccdac0e52b903a05bb44d28f60a3c30ca`），最终文档提交 `8fcc` 的 [CI run 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项全部通过
+- **状态**：已实现并验证；PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 已合并（`00a4126`），最终提交 `8fcc096` 的 CI run 39726008701 八项通过
 - **日期**：2026-10-22
 - **关联**：计划 §2.2、§2.3、§3.2、§4.2、§9.1、§14.1；`MA-006` B；ADR-0008、ADR-0014、ADR-0028；C-AUTH-001、003～005、008、016；C-LIMIT-001～004；C-CALL-001
 
@@ -78,4 +78,4 @@ Scene、次数和费用额度不在此有限 Scope 的字段中；不能把“�
 - **独立变异。** 另一会话先按源码/契约设计 **35 项**，原清单、仅格式空白适配及每项原始输出均保留。初轮 **30 项检出、5 项未检出**；为下列真实行为缺口补五个回归后，对各项独立重跑，最终 **35 项全部检出，0 编译失败、0 等价或未解释存活**：B13 非递增字段 ID；B14 非递增/重复 token 的每个消费者；B16 encoded 单点整数域；B19 填满 registry 后复验全部先前域/查找；B34 同为 IDENTIFIER 的 target/egress 用途互换。没有因测试结果改写缺陷含义。初轮完整 660/664 项的原未检出证据与补测 664/665 项结果分开；finally 恢复后 **665/665** 通过，六个生产 target SHA 与正常 B 完全一致（`mutation-run/summary.json`、`mutation-rerun/`、`mutation-rerun-b34/`）。
 - **覆盖率及偏差。** GCC 13 `--coverage` 完整 **678/678** 通过，收集全部 117 个 coverage 对象的 gcov JSON，按同 Core 路径/行/分支槽最大执行次数合并，排除 throw 分支（`coverage/summary.json`）。Core 含头文件行 **5,415/5,575 = 97.13%**、分支 **3,401/3,793 = 89.67%**；本 B 新增 scope/Capability 三个 `.cpp` 行 **398/410 = 97.07%**、分支 **334/366 = 91.26%**。本 B 含头文件行 **405/417 = 97.12%**、分支 **339/372 = 91.13%**；scope、field_domain、registry 三个 `.cpp` 分支分别 91.18%、90.82%、94.12%，均超过 90%。各文件数字与未命中位置保留；整体恢复/快照低于 90% 的既有偏差仍按 ADR-0028 随 MA-022 补齐，不能用变异检出率代替覆盖率。
 - **独立审查。** `review.md` 从公开 ABI、布局、arena、codec、typed/encoded 调用链与已有消费者复核，无未处理阻断发现。初版嵌套参数错误被生命周期遮蔽的问题已修，回归保证 RUNNING 状态的畸形 nested 输入仍先返回 INVALID_ARGUMENT。删除注释、Kernel 字段属主、公式复用、裸数字四项无待解问题；没有新 Kernel scratch、授权旗标或平行 allocator。新增配置字段的半字段 struct_size 边界复用现有 read_capacity 机制，尚无两个字段各自的专门组合测试，作为明确验证限制。
-- **CI 与未执行边界。** PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 已合并（`00a4126`）；最终文档提交 `8fcc` 的 [CI run 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项全部通过，包括 ESP32-S3 固件编译，先前 run 39724951376 的证据仍保留。未烧录、未测硬件 RAM/Flash/耐久或物理停止。B 不产生 Grant、审批、撤销、Provider/Scene/额度或持久授权记录；目录每次配置重建，后续 C 的持久消费不能跳过版本/完整 schema 核对。本地回归和模拟器不能代替完整 E1–E4、真实输出屏障或执行器证据。
+- **CI 与未执行边界。** PR [#26](https://github.com/RobotSe7en/ayni/pull/26) 最终提交 `8fcc096` 的 [CI run 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项通过，包括 ESP32-S3 固件编译；B 已合并（`00a4126`）。此前 run 39724951376 的八项通过保留为前一轮证据。未烧录、未测硬件 RAM/Flash/耐久或物理停止。B 不产生 Grant、审批、撤销、Provider/Scene/额度或持久授权记录；目录每次配置重建，后续 C 的持久消费不能跳过版本/完整 schema 核对。本地回归和模拟器不能代替完整 E1–E4、真实输出屏障或执行器证据。

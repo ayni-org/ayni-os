@@ -33,7 +33,7 @@ struct Intent {
     uint32_t expected_revision;
     ayni_grant_create_v1 grant_create; // GRANT_CREATE, borrowed nested views
     GoalCreate create;                 // GOAL_CREATE
-    uint64_t target_id;                // target intents: the goal, task or instance they name
+    uint64_t target_id; // target intents: the goal, task, instance or Grant they name
 };
 
 // The detail of a refused intent, beside its status.
@@ -46,6 +46,9 @@ struct IntentFailure {
 struct IntentOutcome {
     ayni_object_ref_v1 object;
     uint64_t commit_seq;
+    ayni_intent_phase_t phase = AYNI_INTENT_APPLIED;
+    ayni_intent_effect_t effect = AYNI_INTENT_EFFECT_CHANGED;
+    uint64_t applied_boot_epoch = 0;
     // The goals' due work may have come or come sooner: ayni_submit_intent
     // wakes the owner (ADR-0018, ADR-0020).
     bool due_work;

@@ -110,9 +110,19 @@ typedef struct ayni_grant_create_v1 {
     ayni_scope_v1 scope;
 } ayni_grant_create_v1;
 
+/* Since 0.19. First acceptance requires a nonzero command ID and current
+ * expected_revision. Immediate denial precedes storage admission. Pending
+ * control remains accepted through this Kernel's automatic reloads. */
+typedef struct ayni_grant_revoke_v1 {
+    uint32_t struct_size;
+    uint32_t reserved; /* 0 */
+    uint64_t grant_id;
+} ayni_grant_revoke_v1;
+
 typedef uint32_t ayni_grant_lifecycle_t;
 #define AYNI_GRANT_ACTIVE ((ayni_grant_lifecycle_t)1)
 #define AYNI_GRANT_EXPIRED ((ayni_grant_lifecycle_t)2)
+#define AYNI_GRANT_REVOKED ((ayni_grant_lifecycle_t)3) /* Since 0.19, irreversible */
 
 typedef struct ayni_grant_info_v1 {
     uint32_t struct_size;
@@ -139,6 +149,13 @@ typedef struct ayni_grant_info_v1 {
     uint64_t commit_seq;
     ayni_reason_t effective_reason; /* includes ancestor/hold/expiry/durability checks */
     uint32_t reserved;              /* 0 */
+    /* Since 0.19. Root cleanup uses a fixed watermark. The terminal
+     * commit_seq retains the original reclamation order. */
+    uint64_t revoked_by_root_id;
+    uint64_t cleanup_after_grant_id;
+    uint64_t cleanup_through_grant_id;
+    uint64_t cleanup_transition_id;
+    uint64_t cleanup_commit_seq;
 } ayni_grant_info_v1;
 
 typedef struct ayni_grant_tokens_info_v1 {

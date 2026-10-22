@@ -13,6 +13,7 @@
 // runs again on what is durable and RUNNING resumes under a new boot epoch.
 
 #include "catalog/catalog_id.h"
+#include "kernel/intent/authority_intent.h"
 #include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
@@ -49,8 +50,11 @@ ayni_status_t ayni_kernel::start() {
 // Each applied completion is one item and the clock is read after each; the
 // boot sequence, or else a maintenance run, then takes at most one step of
 // its own, also one item. A storage request is never awaited: its result
-// arrives in a later step. In RUNNING each piece of the goals' due work is
-// then one item, then each decision, and after them each event queued when
+// arrives in a later step. With a writable journal, accepted revocations
+// take one item each before ordinary work, also while DRAINING. In RUNNING,
+// each revocation cleanup candidate then takes one item before goals' due
+// work, decisions and events. Each piece of due work takes one item, then
+// each decision, and after them each event queued when
 // the step comes to the events, again with the clock read after each; each
 // of them is one transition, which needs room for its batch first
 // (ADR-0026). Last, the log issues the append of the oldest batch waiting,
@@ -84,6 +88,30 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
         maintenance.advance(host.monotonic_now_us(host.ctx))) {
         ++items;
         settle_maintenance();
+    }
+    if (appends()) {
+        if (!settle_revocations(false)) {
+            enter_restricted(AYNI_RESTRICTION_INTERNAL);
+        }
+        while ((lifecycle == AYNI_LIFECYCLE_RUNNING || lifecycle == AYNI_LIFECYCLE_DRAINING) &&
+               appends() && items < max_items && !out_of_time && has_room()) {
+            const uint64_t first_seq = work.transitions.next_commit_seq();
+            bool applied = ayni::kernel::apply_pending_revoke(work);
+            if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
+                applied = ayni::kernel::apply_revocation_cleanup(work);
+            }
+            if (work.transitions.next_commit_seq() != first_seq) {
+                if (!applied) {
+                    enter_restricted(AYNI_RESTRICTION_INTERNAL);
+                    break;
+                }
+                journal(first_seq);
+                ++items;
+                out_of_time = time_is_up(host, started_us, max_time_us);
+            } else {
+                break;
+            }
+        }
     }
     // Due work is taken as of the start of the step, so one step sees one
     // schedule. It comes before events: a Host can keep the queue full, but
@@ -131,9 +159,13 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     }
     if (appends() && log.advance(host.monotonic_now_us(host.ctx))) {
         settle_log();
+        if (!settle_revocations(false)) {
+            enter_restricted(AYNI_RESTRICTION_INTERNAL);
+        }
     }
     if (lifecycle == AYNI_LIFECYCLE_DRAINING && completions.in_flight() == 0U &&
-        (!appends() || log.idle() || log.failure() != AYNI_RESTRICTION_NONE)) {
+        (!appends() || log.idle() || log.failure() != AYNI_RESTRICTION_NONE) &&
+        !revocation_ready()) {
         events_discarded += ingress.close();
         lifecycle = AYNI_LIFECYCLE_STOPPED;
     }
@@ -167,7 +199,7 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     report.items_done = items;
     const bool events_due = takes_events() && takes_event_now() && ingress.queued() > 0U;
     report.more_ready = completions.posted_count() > 0U || boot_due || log_due || maintenance_due ||
-                                events_due || work_due
+                                events_due || work_due || revocation_ready()
                             ? 1U
                             : 0U;
     report.next_deadline_us = next_deadline_us;
@@ -233,7 +265,8 @@ ayni_status_t ayni_kernel::storage_admission_status() const {
 
 void ayni_kernel::journal(uint64_t first_seq) {
     const uint64_t next_seq = work.transitions.next_commit_seq();
-    if (next_seq == first_seq || lifecycle != AYNI_LIFECYCLE_RUNNING) {
+    if (next_seq == first_seq ||
+        (lifecycle != AYNI_LIFECYCLE_RUNNING && lifecycle != AYNI_LIFECYCLE_DRAINING)) {
         return;
     }
     // One call applies one transition, and only with room for its batch; a
@@ -362,6 +395,10 @@ void ayni_kernel::enter_running() {
               batch_max);
     log_started_ = true;
     lifecycle = AYNI_LIFECYCLE_RUNNING;
+    if (!settle_revocations(true)) {
+        enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
+        return;
+    }
     if (work.start(boot.boot_epoch(), first)) {
         journal(first.commit_seq);
     }
@@ -473,4 +510,48 @@ void ayni_kernel::settle_maintenance() {
     log.start(log.boot_epoch(),
               {log.writer_epoch(), activated.commit_seq + 1U, activated.transition_id + 1U},
               batch_max);
+}
+
+// Release each volatile deny only after its exact mapping is acknowledged
+// by this writer or was validated as part of the complete recovered prefix.
+bool ayni_kernel::settle_revocations(bool recovered) {
+    const auto handoff = [this](const ayni::kernel::PendingRevoke &pending) {
+        const ayni::kernel::CommandMapping *matched = nullptr;
+        return work.commands.recovered_revoke(pending, matched) ==
+                   ayni::kernel::CommandTable::Lookup::retried &&
+               matched != nullptr && work.grants.release_gate(pending.accepted.target_grant_id) &&
+               work.commands.retire_pending(pending.accepted.principal_id,
+                                            pending.accepted.command_id);
+    };
+    if (!recovered) {
+        while (const auto *pending =
+                   work.commands.next_durable_pending(log.boot_epoch(), log.durable_seq())) {
+            if (!handoff(*pending)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    // The complete recovered prefix is durable regardless of the abandoned
+    // writer's queued stamp. Only the retained full canonical proves identity.
+    for (uint32_t index = 0; index < work.commands.size(); ++index) {
+        const auto &mapping = work.commands.at(index);
+        const auto *pending = work.commands.pending(mapping.principal_id, mapping.command_id);
+        if (pending != nullptr && !handoff(*pending)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ayni_kernel::revocation_ready() const {
+    if (!appends() || !has_room()) {
+        return false;
+    }
+    const auto *pending = work.commands.next_pending_revoke();
+    if (pending != nullptr && work.commands.can_publish_accepted(*pending)) {
+        return true;
+    }
+    ayni::authority::GrantTable::CleanupPlan plan{};
+    return lifecycle == AYNI_LIFECYCLE_RUNNING && work.grants.next_revocation_cleanup(plan);
 }

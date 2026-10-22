@@ -69,7 +69,8 @@ class Model {
               store(ayni::catalog::StrategyRegistry::storage_size(config.strategy_capacity))),
           commands_(store(ayni::kernel::CommandTable::storage_size(
               1, config.command_capacity,
-              ayni::kernel::authority_command_max_bytes(config.authority_scope_max_bytes)))),
+              ayni::kernel::authority_command_max_bytes(config.authority_scope_max_bytes),
+              config.grant_capacity))),
           capabilities_(store(ayni::catalog::CapabilityRegistry::storage_size(
               config.capability_capacity, config.authority_scope_max_bytes))),
           grants_(store(ayni::authority::GrantTable::storage_size(

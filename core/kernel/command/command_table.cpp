@@ -6,40 +6,82 @@
 namespace ayni::kernel {
 
 bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
-    AuthorityCommandRecord command{};
-    return mapping.principal_id != 0U && mapping.command_id != 0U &&
-           mapping.kind == AYNI_INTENT_GRANT_CREATE && mapping.object.kind == AYNI_OBJECT_GRANT &&
-           mapping.object.id != 0U && mapping.object.revision == 1U && bytes.size != 0U &&
-           mapping.canonical_size == bytes.size && read_authority_command(bytes, command) &&
-           (command.flags & ~AYNI_GRANT_ALLOW_DELEGATION) == 0U &&
-           mapping.digest == authority_command_digest(bytes);
+    if (mapping.principal_id == 0U || mapping.command_id == 0U ||
+        mapping.object.kind != AYNI_OBJECT_GRANT || mapping.object.id == 0U ||
+        mapping.canonical_size != bytes.size || bytes.size == 0U) {
+        return false;
+    }
+    if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
+        AuthorityCommandRecord command{};
+        if (mapping.object.revision != 1U || mapping.effect != AYNI_INTENT_EFFECT_CHANGED ||
+            !read_authority_command(bytes, command) ||
+            (command.flags & ~AYNI_GRANT_ALLOW_DELEGATION) != 0U) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+        RevokeCommandRecord command{};
+        if (!read_revoke_command(bytes, command) || mapping.object.origin_device_id != 0U ||
+            mapping.object.id != command.target_grant_id ||
+            (command.expected_revision != 1U && command.expected_revision != 2U)) {
+            return false;
+        }
+        // First acceptance can only see ACTIVE/revision1 or terminal/revision2.
+        // The raw request codec still accepts any nonzero CAS for API conflicts.
+        // The original CAS was checked when accepting the control. Reload
+        // may restore an earlier ACTIVE fact after an uncommitted cleanup,
+        // so a later CHANGED result need not follow that original revision.
+        const bool changed =
+            mapping.effect == AYNI_INTENT_EFFECT_CHANGED && mapping.object.revision == 2U;
+        const bool no_change =
+            mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE && mapping.object.revision == 2U;
+        const bool gone =
+            mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE && mapping.object.revision == 0U;
+        if (!changed && !no_change && !gone) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    return mapping.digest == authority_command_digest(bytes);
 }
 
 std::size_t CommandTable::storage_size(uint32_t rows, uint32_t capacity,
-                                       uint32_t canonical_max_bytes) {
+                                       uint32_t canonical_max_bytes, uint32_t pending_capacity) {
     static_assert(alignof(CommandMapping) <= storage_alignment, "mappings follow the rows");
     static_assert(sizeof(Row) % alignof(CommandMapping) == 0, "the mappings are aligned");
     const auto slots = static_cast<std::size_t>(rows) * capacity;
+    static_assert(alignof(PendingRevoke) <= storage_alignment, "pending controls follow mappings");
+    static_assert(sizeof(CommandMapping) % alignof(PendingRevoke) == 0,
+                  "the pending metadata is aligned before byte strides");
     return static_cast<std::size_t>(rows) * sizeof(Row) + slots * sizeof(CommandMapping) +
+           static_cast<std::size_t>(pending_capacity) * sizeof(PendingRevoke) +
            (slots + 1U) * canonical_max_bytes;
 }
 
 CommandTable::CommandTable(void *storage, uint32_t rows, uint32_t capacity,
-                           uint32_t canonical_max_bytes)
+                           uint32_t canonical_max_bytes, uint32_t pending_capacity)
     : rows_(static_cast<Row *>(storage)),
       mappings_(reinterpret_cast<CommandMapping *>(static_cast<uint8_t *>(storage) +
                                                    static_cast<std::size_t>(rows) * sizeof(Row))),
-      canonical_(
-          reinterpret_cast<uint8_t *>(mappings_ + static_cast<std::size_t>(rows) * capacity)),
+      pending_(
+          reinterpret_cast<PendingRevoke *>(mappings_ + static_cast<std::size_t>(rows) * capacity)),
+      canonical_(reinterpret_cast<uint8_t *>(pending_ + pending_capacity)),
       scratch_(canonical_ + static_cast<std::size_t>(rows) * capacity * canonical_max_bytes),
-      row_count_(rows), capacity_(capacity), canonical_max_bytes_(canonical_max_bytes) {
+      row_count_(rows), capacity_(capacity), canonical_max_bytes_(canonical_max_bytes),
+      pending_capacity_(pending_capacity) {
     for (uint32_t row = 0; row < rows; ++row) {
         new (rows_ + row) Row{};
+    }
+    for (uint32_t index = 0; index < pending_capacity_; ++index) {
+        new (pending_ + index) PendingRevoke{};
     }
 }
 
 CommandTable::Lookup CommandTable::find(uint64_t principal_id, uint64_t command_id, uint64_t digest,
                                         const CommandMapping *&out_mapping) const {
+    if (pending(principal_id, command_id) != nullptr) {
+        return Lookup::conflict; // This lookup is ordinary, pending identities are exact revokes.
+    }
     const Row *row = row_of(principal_id);
     if (row == nullptr) {
         return Lookup::unmapped;
@@ -66,6 +108,9 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
     auto status = measure_authority_command(input, needed);
     if (status != AYNI_OK || principal_id == 0U || command_id == 0U) {
         return {status == AYNI_OK ? AYNI_INVALID_ARGUMENT : status, Lookup::unmapped, nullptr};
+    }
+    if (pending(principal_id, command_id) != nullptr) {
+        return {AYNI_OK, Lookup::conflict, nullptr};
     }
     const Row *row = row_of(principal_id);
     const CommandMapping *existing = nullptr;
@@ -104,17 +149,19 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
     staged_principal_ = principal_id;
     staged_command_ = command_id;
     staged_digest_ = digest;
+    staged_kind_ = AYNI_INTENT_GRANT_CREATE;
     return {AYNI_OK, Lookup::unmapped, nullptr};
 }
 
 bool CommandTable::insert_exact(CommandMapping mapping) {
     if (staged_size_ == 0U || mapping.principal_id != staged_principal_ ||
         mapping.command_id != staged_command_ || mapping.kind != AYNI_INTENT_GRANT_CREATE ||
-        !has_row(mapping.principal_id)) {
+        staged_kind_ != AYNI_INTENT_GRANT_CREATE || !can_insert(mapping.principal_id)) {
         return false;
     }
     mapping.digest = staged_digest_;
     mapping.canonical_size = staged_size_;
+    mapping.retention = CommandRetention::normal;
     if (!valid_authority_mapping(mapping, {scratch_, staged_size_})) {
         return false;
     }
@@ -122,7 +169,9 @@ bool CommandTable::insert_exact(CommandMapping mapping) {
     if (row == nullptr) {
         row = new_row(mapping.principal_id);
     }
-    add(*row, mapping, {scratch_, staged_size_});
+    if (!add(*row, mapping, {scratch_, staged_size_})) {
+        return false;
+    }
     staged_size_ = 0;
     return true;
 }
@@ -143,8 +192,13 @@ bool CommandTable::has_row(uint64_t principal_id) const {
     return false;
 }
 
-void CommandTable::insert(const CommandMapping &mapping) {
+bool CommandTable::insert(const CommandMapping &mapping) {
     staged_size_ = 0;
+    if (!can_insert(mapping.principal_id) || mapping.kind < AYNI_INTENT_GOAL_CREATE ||
+        mapping.kind > AYNI_INTENT_INSTANCE_STOP ||
+        pending(mapping.principal_id, mapping.command_id) != nullptr) {
+        return false;
+    }
     Row *row = row_of(mapping.principal_id);
     if (row == nullptr) {
         row = new_row(mapping.principal_id);
@@ -152,7 +206,9 @@ void CommandTable::insert(const CommandMapping &mapping) {
     // Ordinary insert never consumes an earlier exact candidate's scratch.
     CommandMapping ordinary = mapping;
     ordinary.canonical_size = 0;
-    add(*row, ordinary, {});
+    ordinary.effect = AYNI_INTENT_EFFECT_CHANGED;
+    ordinary.retention = CommandRetention::normal;
+    return add(*row, ordinary, {});
 }
 
 const CommandMapping *CommandTable::mapped_in(uint64_t commit_seq) const {
@@ -192,10 +248,11 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         if (bytes.size > canonical_max_bytes_) {
             return Restore::no_room;
         }
-    } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
+    } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE ||
+               mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
         return Restore::corrupt;
     }
-    if (!has_row(mapping.principal_id)) {
+    if (!can_insert(mapping.principal_id)) {
         return Restore::no_room;
     }
     const Row *existing_row = row_of(mapping.principal_id);
@@ -213,7 +270,11 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
     }
     // A smaller window may already have raised its floor above this command.
     // Keep the replayed mapping, and never reduce either source of the floor.
-    add(*row, mapping, bytes);
+    CommandMapping restored = mapping;
+    restored.retention = CommandRetention::normal;
+    if (!add(*row, restored, bytes)) {
+        return Restore::no_room;
+    }
     if (floor > row->floor) {
         row->floor = floor;
     }
@@ -239,7 +300,8 @@ const CommandMapping &CommandTable::at(uint32_t index) const {
     return mappings_[0];
 }
 
-void CommandTable::clear() {
+void CommandTable::clear_restored() {
+    abandon_queued_for_reload();
     for (uint32_t row = 0; row < row_count_; ++row) {
         rows_[row] = Row{};
     }
@@ -247,6 +309,13 @@ void CommandTable::clear() {
     last_added_seq_ = 0;
     last_added_principal_ = 0;
     last_added_command_ = 0;
+}
+
+void CommandTable::clear() {
+    clear_restored();
+    for (uint32_t index = 0; index < pending_capacity_; ++index) {
+        pending_[index] = PendingRevoke{};
+    }
 }
 
 CommandTable::Row *CommandTable::row_of(uint64_t principal_id) const {
@@ -276,14 +345,19 @@ uint8_t *CommandTable::canonical_of(const CommandMapping &mapping) const {
     return canonical_ + static_cast<std::size_t>(&mapping - mappings_) * canonical_max_bytes_;
 }
 
-void CommandTable::add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 bytes) {
+bool CommandTable::add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 bytes) {
     CommandMapping *mappings = mappings_of(row);
     if (row.count == capacity_) {
-        uint32_t smallest = 0;
-        for (uint32_t index = 1; index < row.count; ++index) {
-            if (mappings[index].command_id < mappings[smallest].command_id) {
+        uint32_t smallest = row.count;
+        for (uint32_t index = 0; index < row.count; ++index) {
+            if (mappings[index].retention == CommandRetention::normal &&
+                (smallest == row.count ||
+                 mappings[index].command_id < mappings[smallest].command_id)) {
                 smallest = index;
             }
+        }
+        if (smallest == row.count) {
+            return false; // All accepted revokes still need a durable result.
         }
         if (mappings[smallest].command_id > row.floor) {
             row.floor = mappings[smallest].command_id;
@@ -307,6 +381,7 @@ void CommandTable::add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 by
     last_added_seq_ = mapping.commit_seq;
     last_added_principal_ = mapping.principal_id;
     last_added_command_ = mapping.command_id;
+    return true;
 }
 
 } // namespace ayni::kernel

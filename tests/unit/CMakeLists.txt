@@ -3,6 +3,10 @@ include(GoogleTest)
 add_executable(ayni_unit_tests
     agent_table_test.cpp
     batch_codec_test.cpp
+    command_revoke_test.cpp
+    pending_revoke_test.cpp
+    kernel_revoke_test.cpp
+    grant_revoke_test.cpp
     command_canonical_test.cpp
     command_records_test.cpp
     grant_replay_test.cpp

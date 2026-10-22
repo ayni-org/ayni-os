@@ -1219,7 +1219,8 @@ class Model {
           strategies_(ayni::catalog::StrategyRegistry::storage_size(capacities.strategy_capacity)),
           commands_(ayni::kernel::CommandTable::storage_size(
               ayni::authority::PrincipalRegistry::capacity, capacities.command_capacity,
-              ayni::kernel::authority_command_max_bytes(capacities.authority_scope_max_bytes))),
+              ayni::kernel::authority_command_max_bytes(capacities.authority_scope_max_bytes),
+              capacities.grant_capacity)),
           capabilities_(ayni::catalog::CapabilityRegistry::storage_size(
               capacities.capability_capacity, capacities.authority_scope_max_bytes)),
           grants_(ayni::authority::GrantTable::storage_size(

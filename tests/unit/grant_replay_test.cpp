@@ -133,6 +133,16 @@ class ReplayNode {
         result.status = ayni_submit_intent(node.kernel(), &intent, &result.result, &result.error);
         return result;
     }
+    Submitted revoke(uint64_t command, uint64_t target, uint32_t revision = 1) {
+        const ayni_grant_revoke_v1 body{sizeof(body), 0, target};
+        const ayni_intent_v1 intent{
+            sizeof(intent), AYNI_INTENT_GRANT_REVOKE, command, session_, revision, 0, &body};
+        Submitted result{};
+        result.result.struct_size = sizeof(result.result);
+        result.error.struct_size = sizeof(result.error);
+        result.status = ayni_submit_intent(node.kernel(), &intent, &result.result, &result.error);
+        return result;
+    }
     Submitted change_instance(ayni_intent_kind_t kind, uint64_t command, uint32_t revision) {
         ayni_agent_info_v1 agent{};
         agent.struct_size = sizeof(agent);
@@ -248,46 +258,6 @@ TEST(GrantReplay, a_valid_but_expanded_create_scope_cannot_disagree_with_its_exa
     });
     ASSERT_TRUE(changed);
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
-}
-
-TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_in_the_journal) {
-    const auto original = complete_log();
-    {
-        ReplayNode normal;
-        normal.node.sim().log() = original;
-        normal.node.create_and_start();
-        normal.node.recover();
-        ASSERT_EQ(normal.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-        ASSERT_EQ(normal.node.kernel()->work.grants.size(), 1U);
-        EXPECT_EQ(normal.node.kernel()->work.grants.at(0).owner_principal_id, owner_id);
-    }
-    bool changed = false;
-    const auto damaged = edited_log(original, [&](Batch &batch) {
-        for (auto &record : batch.records) {
-            if (record.header.type == ayni::kernel::command_record_type &&
-                record.header.version == ayni::kernel::exact_command_record_version) {
-                ASSERT_EQ(ayni::foundation::load_le64(record.body.data()), owner_id);
-                // principal is outside the canonical request/digest. All
-                // Grant, binding, result and request bytes remain original;
-                // edited_log recomputes the complete batch framing and CRC.
-                ayni::foundation::store_le64(record.body.data(), owner_id + 1U);
-                changed = true;
-            }
-        }
-    });
-    ASSERT_TRUE(changed);
-    ReplayNode restored;
-    restored.node.sim().log() = damaged;
-    const auto before = restored.node.sim().log();
-    restored.node.create_and_start();
-    restored.node.recover();
-    EXPECT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-    EXPECT_EQ(restored.node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-    EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
-    ASSERT_EQ(restored.node.sim().log().size(), before.size());
-    for (std::size_t index = 0; index < before.size(); ++index) {
-        EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
-    }
 }
 
 TEST(GrantReplay, child_parent_revision_must_match_the_persisted_exact_request) {
@@ -444,8 +414,7 @@ TEST(GrantReplay, new_authority_records_require_the_flag_even_for_unknown_future
                     for (auto &record : batch.records) {
                         if (record.header.type == type) {
                             record.header.flags = required ? record_required : 0;
-                            record.header.version =
-                                static_cast<uint16_t>(record.header.version + (future ? 1U : 0U));
+                            record.header.version = future ? uint16_t{99} : record.header.version;
                             changed = true;
                         }
                     }
@@ -457,8 +426,8 @@ TEST(GrantReplay, new_authority_records_require_the_flag_even_for_unknown_future
                 }
                 const RecordHeader header{
                     type,
-                    static_cast<uint16_t>((type == ayni::kernel::command_record_type ? 2U : 1U) +
-                                          (future ? 1U : 0U)),
+                    static_cast<uint16_t>(
+                        future ? 99U : (type == ayni::kernel::command_record_type ? 2U : 1U)),
                     required ? record_required : 0U, 0};
                 EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(header),
                           !required ? RecordUse::corrupt
@@ -839,7 +808,7 @@ TEST(GrantReplay, snapshot_requires_the_owner_and_bounds_both_stamps_and_grant_b
             if (record.header.type != ayni::authority::grant_record_type) {
                 continue;
             }
-            const auto tail = record.body.size() - 40U;
+            const auto tail = record.body.size() - (record.header.version == 1U ? 40U : 80U);
             if (fault == 0U) {
                 const uint64_t id = ayni::foundation::load_le64(record.body.data());
                 ayni::foundation::store_le64(record.body.data(), id + (UINT64_C(1) << 32U));
@@ -854,6 +823,403 @@ TEST(GrantReplay, snapshot_requires_the_owner_and_bounds_both_stamps_and_grant_b
             }
         }
         EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << fault;
+    }
+}
+
+std::vector<StoredBatch> revoked_log(bool cleanup) {
+    ReplayNode source;
+    source.run();
+    const auto root = source.create(1, 10, 20, 0, 0, AYNI_GRANT_ALLOW_DELEGATION);
+    EXPECT_EQ(root.status, AYNI_OK);
+    source.store(root.result.commit_seq);
+    const auto child = source.create(2, 11, 19, root.result.object.id);
+    EXPECT_EQ(child.status, AYNI_OK);
+    source.store(child.result.commit_seq);
+    const auto revoked = source.revoke(3, root.result.object.id);
+    EXPECT_EQ(revoked.status, AYNI_OK);
+    EXPECT_EQ(revoked.result.phase, AYNI_INTENT_APPLIED);
+    source.store(revoked.result.commit_seq);
+    if (cleanup) {
+        for (unsigned round = 0; round < 100; ++round) {
+            const auto info = source.grant(root.result.object.id);
+            if (info.cleanup_after_grant_id == info.cleanup_through_grant_id) {
+                source.store(info.cleanup_commit_seq);
+                break;
+            }
+            source.node.step(1);
+            source.node.sim().complete_storage();
+            source.node.sim().advance_us(1000000);
+        }
+        EXPECT_EQ(source.grant(child.result.object.id).lifecycle, AYNI_GRANT_REVOKED);
+        const auto info = source.grant(root.result.object.id);
+        EXPECT_EQ(info.cleanup_after_grant_id, info.cleanup_through_grant_id);
+    }
+    return source.node.sim().log();
+}
+
+TEST(GrantRevokeReplay, root_record_and_exact_mapping_require_each_other_in_one_batch) {
+    const auto original = revoked_log(false);
+    for (const uint16_t removed :
+         {ayni::authority::grant_revocation_record_type, ayni::kernel::command_record_type}) {
+        bool edited = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            const bool revoke =
+                std::any_of(batch.records.begin(), batch.records.end(), [](const Record &record) {
+                    return record.header.type == ayni::authority::grant_revocation_record_type;
+                });
+            if (!revoke) {
+                return;
+            }
+            batch.records.erase(std::remove_if(batch.records.begin(), batch.records.end(),
+                                               [removed](const Record &record) {
+                                                   return record.header.type == removed;
+                                               }),
+                                batch.records.end());
+            edited = true;
+        });
+        ASSERT_TRUE(edited);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, duplicate_root_record_and_mismatched_effect_are_corrupt) {
+    const auto original = revoked_log(false);
+    for (unsigned fault = 0; fault < 2; ++fault) {
+        bool edited = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            for (auto &record : batch.records) {
+                if (record.header.type != ayni::authority::grant_revocation_record_type) {
+                    continue;
+                }
+                if (fault == 0U) {
+                    batch.records.push_back(record);
+                } else {
+                    // Syntactically valid NO_CHANGE cannot describe an ACTIVE target.
+                    ayni::foundation::store_le32(record.body.data() + 12,
+                                                 AYNI_INTENT_EFFECT_NO_CHANGE);
+                    ayni::foundation::store_le64(record.body.data() + 24, 0);
+                }
+                edited = true;
+                break;
+            }
+        });
+        ASSERT_TRUE(edited);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, mapping_owner_and_object_must_match_the_accepted_root_record) {
+    const auto original = revoked_log(false);
+    for (unsigned fault = 0; fault < 2; ++fault) {
+        bool edited = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            for (auto &record : batch.records) {
+                if (record.header.type != ayni::kernel::command_record_type ||
+                    record.header.version != ayni::kernel::revoke_command_record_version) {
+                    continue;
+                }
+                CommandMapping mapping{};
+                uint64_t floor = 0;
+                ayni_bytes_v1 canonical{};
+                ASSERT_TRUE(ayni::kernel::read_command_record(
+                    record.header.version, record.body.data(), record.header.length, mapping, floor,
+                    canonical));
+                std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
+                if (fault == 0U) {
+                    ++mapping.principal_id;
+                } else {
+                    ++mapping.object.id;
+                    ayni::foundation::store_le64(bytes.data() + 8, mapping.object.id);
+                    mapping.digest = ayni::kernel::authority_command_digest(
+                        {bytes.data(), static_cast<uint32_t>(bytes.size())});
+                }
+                ASSERT_TRUE(ayni::kernel::write_command_record(
+                    mapping, floor, {bytes.data(), static_cast<uint32_t>(bytes.size())},
+                    record.body.data(), record.header.length));
+                edited = true;
+            }
+        });
+        ASSERT_TRUE(edited);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, descendant_state_and_progress_are_an_atomic_pair) {
+    const auto original = revoked_log(true);
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        bool edited = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            const bool child_state =
+                std::any_of(batch.records.begin(), batch.records.end(), [](const Record &record) {
+                    return record.header.type == ayni::authority::grant_state_record_type &&
+                           record.header.version ==
+                               ayni::authority::grant_revoked_state_record_version;
+                });
+            if (!child_state) {
+                return;
+            }
+            if (fault == 2U) {
+                std::reverse(batch.records.begin(), batch.records.end());
+            } else {
+                const uint16_t removed =
+                    fault == 0U ? ayni::authority::grant_state_record_type
+                                : ayni::authority::grant_revocation_progress_record_type;
+                batch.records.erase(std::remove_if(batch.records.begin(), batch.records.end(),
+                                                   [removed](const Record &record) {
+                                                       return record.header.type == removed;
+                                                   }),
+                                    batch.records.end());
+            }
+            edited = true;
+        });
+        ASSERT_TRUE(edited);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, progress_cannot_skip_an_active_descendant_or_change_its_watermark) {
+    const auto original = revoked_log(true);
+    for (const unsigned offset : {8U, 16U}) {
+        bool edited = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            for (auto &record : batch.records) {
+                if (record.header.type != ayni::authority::grant_revocation_progress_record_type) {
+                    continue;
+                }
+                const auto value = ayni::foundation::load_le64(record.body.data() + offset);
+                ayni::foundation::store_le64(record.body.data() + offset, value + 1U);
+                edited = true;
+                break;
+            }
+        });
+        ASSERT_TRUE(edited);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, revoke_and_cleanup_headers_require_required_even_for_future_versions) {
+    const auto original = revoked_log(true);
+    for (const uint16_t type :
+         {ayni::authority::grant_revocation_record_type,
+          ayni::authority::grant_revocation_progress_record_type,
+          ayni::authority::grant_state_record_type, ayni::kernel::command_record_type}) {
+        for (const bool future : {false, true}) {
+            bool edited = false;
+            const auto log = edited_log(original, [&](Batch &batch) {
+                for (auto &record : batch.records) {
+                    if (record.header.type != type ||
+                        (type == ayni::kernel::command_record_type &&
+                         record.header.version != 3U) ||
+                        (type == ayni::authority::grant_state_record_type &&
+                         record.header.version != 2U)) {
+                        continue;
+                    }
+                    record.header.flags = 0;
+                    if (future) {
+                        record.header.version = 99;
+                    }
+                    edited = true;
+                }
+            });
+            ASSERT_TRUE(edited);
+            expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+        }
+    }
+}
+
+TEST(GrantRevokeReplay, snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations) {
+    ReplayNode source;
+    source.run();
+    const auto grant = source.create(1);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    auto snapshot = snapshot_of(source);
+    bool converted = false;
+    for (auto &record : snapshot.records) {
+        if (record.header.type != ayni::authority::grant_record_type) {
+            continue;
+        }
+        ASSERT_EQ(record.header.version, 2U);
+        ASSERT_GE(record.body.size(), 80U);
+        record.body.resize(record.body.size() - 40U);
+        record.header.length = static_cast<uint32_t>(record.body.size());
+        record.header.version = 1;
+        converted = true;
+    }
+    ASSERT_TRUE(converted);
+    EXPECT_EQ(import_snapshot(snapshot,
+                              [&](ayni::kernel::WorkModel &model) {
+                                  ASSERT_EQ(model.grants.size(), 1U);
+                                  EXPECT_EQ(model.grants.at(0).lifecycle, AYNI_GRANT_ACTIVE);
+                                  EXPECT_EQ(model.grants.at(0).revoked_by_root_id, 0U);
+                                  EXPECT_EQ(model.grants.at(0).cleanup_stamp.commit_seq, 0U);
+                              }),
+              BatchCheck::ok);
+}
+
+TEST(GrantRevokeReplay, snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds) {
+    ReplayNode source;
+    source.run();
+    const auto grant = source.create(1);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    const auto revoked = source.revoke(2, grant.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    source.store(revoked.result.commit_seq);
+    const auto original = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(original), BatchCheck::ok);
+    for (unsigned fault = 0; fault < 2; ++fault) {
+        auto snapshot = original;
+        bool edited = false;
+        for (auto &record : snapshot.records) {
+            if (record.header.type != ayni::authority::grant_record_type) {
+                continue;
+            }
+            const auto base = record.body.size() - 80U;
+            ayni::foundation::store_le64(record.body.data() + base + (fault == 0U ? 64U : 72U),
+                                         fault == 0U ? snapshot.metadata.max_transition_id + 1U
+                                                     : snapshot.metadata.covers_commit_seq + 1U);
+            edited = true;
+        }
+        ASSERT_TRUE(edited);
+        EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << fault;
+    }
+}
+
+TEST(GrantRevokeReplay, snapshot_revoke_effect_must_agree_with_the_retained_target_history) {
+    ReplayNode source;
+    source.run();
+    const auto grant = source.create(1);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    const auto revoked = source.revoke(2, grant.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    source.store(revoked.result.commit_seq);
+    const auto original = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(original), BatchCheck::ok);
+    for (const auto effect : {AYNI_INTENT_EFFECT_NO_CHANGE, AYNI_INTENT_EFFECT_TARGET_GONE}) {
+        auto snapshot = original;
+        bool edited = false;
+        for (auto &record : snapshot.records) {
+            if (record.header.type != ayni::kernel::command_record_type ||
+                record.header.version != 3U) {
+                continue;
+            }
+            CommandMapping mapping{};
+            uint64_t floor = 0;
+            ayni_bytes_v1 canonical{};
+            const auto base = record.header.length - 8U;
+            ASSERT_TRUE(ayni::kernel::read_command_record(3, record.body.data(), base, mapping,
+                                                          floor, canonical));
+            mapping.effect = effect;
+            mapping.object.revision = effect == AYNI_INTENT_EFFECT_TARGET_GONE ? 0U : 2U;
+            std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
+            ASSERT_TRUE(ayni::kernel::write_command_record(
+                mapping, floor, {bytes.data(), static_cast<uint32_t>(bytes.size())},
+                record.body.data(), base));
+            edited = true;
+        }
+        ASSERT_TRUE(edited);
+        EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << effect;
+        // Missing targets are legitimate retained receipts after safe reclaim
+        // or accepted volatile creation lost during reload.
+        snapshot.records.erase(std::remove_if(snapshot.records.begin(), snapshot.records.end(),
+                                              [](const Record &record) {
+                                                  return record.header.type ==
+                                                         ayni::authority::grant_record_type;
+                                              }),
+                               snapshot.records.end());
+        EXPECT_EQ(import_snapshot(snapshot), BatchCheck::ok) << effect;
+    }
+    const auto no_change = source.revoke(3, grant.result.object.id, 2);
+    ASSERT_EQ(no_change.status, AYNI_OK);
+    ASSERT_EQ(no_change.result.effect, AYNI_INTENT_EFFECT_NO_CHANGE);
+    source.store(no_change.result.commit_seq);
+    EXPECT_EQ(import_snapshot(snapshot_of(source)), BatchCheck::ok);
+}
+
+TEST(GrantRevokeReplay, snapshot_revoke_mapping_validates_binding_sequence_and_kernel_id) {
+    ReplayNode source;
+    source.run();
+    const auto grant = source.create(1);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    const auto revoked = source.revoke(2, grant.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    source.store(revoked.result.commit_seq);
+    const auto original = snapshot_of(source);
+    for (unsigned fault = 0; fault < 4; ++fault) {
+        auto snapshot = original;
+        for (auto &record : snapshot.records) {
+            if (record.header.type != ayni::kernel::command_record_type ||
+                record.header.version != 3U) {
+                continue;
+            }
+            CommandMapping mapping{};
+            uint64_t floor = 0;
+            ayni_bytes_v1 canonical{};
+            const auto base = record.header.length - 8U;
+            ASSERT_TRUE(ayni::kernel::read_command_record(3, record.body.data(), base, mapping,
+                                                          floor, canonical));
+            std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
+            if (fault == 0U) {
+                ++mapping.principal_id;
+            }
+            if (fault >= 2U) {
+                mapping.object.id =
+                    fault == 2U ? 17U : ((snapshot.metadata.boot_epoch + 1U) << 32U) | 1U;
+                ayni::foundation::store_le64(bytes.data() + 8, mapping.object.id);
+                mapping.digest = ayni::kernel::authority_command_digest(
+                    {bytes.data(), static_cast<uint32_t>(bytes.size())});
+            }
+            ASSERT_TRUE(ayni::kernel::write_command_record(
+                mapping, floor, {bytes.data(), static_cast<uint32_t>(bytes.size())},
+                record.body.data(), base));
+            if (fault == 1U) {
+                ayni::foundation::store_le64(record.body.data() + base, 1);
+            }
+        }
+        EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << fault;
+    }
+}
+
+TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_in_the_journal) {
+    const auto original = complete_log();
+    {
+        ReplayNode normal;
+        normal.node.sim().log() = original;
+        normal.node.create_and_start();
+        normal.node.recover();
+        ASSERT_EQ(normal.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        ASSERT_EQ(normal.node.kernel()->work.grants.size(), 1U);
+        EXPECT_EQ(normal.node.kernel()->work.grants.at(0).owner_principal_id, owner_id);
+    }
+    bool changed = false;
+    const auto damaged = edited_log(original, [&](Batch &batch) {
+        for (auto &record : batch.records) {
+            if (record.header.type == ayni::kernel::command_record_type &&
+                record.header.version == ayni::kernel::exact_command_record_version) {
+                ASSERT_EQ(ayni::foundation::load_le64(record.body.data()), owner_id);
+                // principal is outside the canonical request/digest. All
+                // Grant, binding, result and request bytes remain original;
+                // edited_log recomputes the complete batch framing and CRC.
+                ayni::foundation::store_le64(record.body.data(), owner_id + 1U);
+                changed = true;
+            }
+        }
+    });
+    ASSERT_TRUE(changed);
+    ReplayNode restored;
+    restored.node.sim().log() = damaged;
+    const auto before = restored.node.sim().log();
+    restored.node.create_and_start();
+    restored.node.recover();
+    EXPECT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(restored.node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
+    ASSERT_EQ(restored.node.sim().log().size(), before.size());
+    for (std::size_t index = 0; index < before.size(); ++index) {
+        EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
     }
 }
 
@@ -881,15 +1247,18 @@ TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independ
                 continue;
             }
             ayni::authority::GrantSnapshotRecord decoded{};
-            ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(record.body.data(),
-                                                                    record.header.length, decoded));
+            ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(
+                record.body.data(), record.header.length, decoded, record.header.version));
             ASSERT_EQ(decoded.lifecycle, AYNI_GRANT_EXPIRED);
             ASSERT_EQ(decoded.revision, 2U);
             ASSERT_GT(decoded.stamp.transition_id, decoded.created_stamp.transition_id);
             ASSERT_GT(decoded.stamp.commit_seq, decoded.created_stamp.commit_seq);
             ASSERT_LE(decoded.stamp.transition_id, snapshot.metadata.max_transition_id);
             ASSERT_LE(decoded.stamp.commit_seq, snapshot.metadata.covers_commit_seq);
-            const auto tail = record.body.size() - ayni::authority::grant_snapshot_tail_size;
+            const auto tail =
+                record.body.size() - (record.header.version == 1U
+                                          ? ayni::authority::grant_snapshot_tail_size
+                                          : ayni::authority::grant_revocation_snapshot_tail_size);
             const uint32_t offset =
                 corrupt_commit ? terminal_commit_offset : terminal_transition_offset;
             const uint64_t invalid = corrupt_commit ? snapshot.metadata.covers_commit_seq + 1U
@@ -900,6 +1269,409 @@ TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independ
         ASSERT_TRUE(changed);
         EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << corrupt_commit;
     }
+}
+
+TEST(GrantRevokeReplay, snapshot_cleanup_watermarks_cannot_name_a_future_boot) {
+    ReplayNode source;
+    source.run();
+    const auto grant = source.create(1);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    const auto revoked = source.revoke(2, grant.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    source.store(revoked.result.commit_seq);
+    const auto original = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(original), BatchCheck::ok);
+    for (bool complete : {false, true}) {
+        auto snapshot = original;
+        for (auto &record : snapshot.records) {
+            if (record.header.type != ayni::authority::grant_record_type) {
+                continue;
+            }
+            const auto tail = record.body.size() - 80U;
+            const uint64_t future = ((snapshot.metadata.boot_epoch + 1U) << 32U) | 1U;
+            ayni::foundation::store_le64(record.body.data() + tail + 56U, future);
+            if (complete) {
+                ayni::foundation::store_le64(record.body.data() + tail + 48U, future);
+            }
+        }
+        EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << complete;
+    }
+}
+
+TEST(GrantRevokeReplay, accepted_mapping_cannot_claim_an_unreachable_original_revision) {
+    const auto original = revoked_log(false);
+    bool edited = false;
+    const auto log = edited_log(original, [&](Batch &batch) {
+        for (auto &record : batch.records) {
+            if (record.header.type != ayni::kernel::command_record_type ||
+                record.header.version != ayni::kernel::revoke_command_record_version) {
+                continue;
+            }
+            // Independent v3 framing oracle: common mapping prefix digest at
+            // byte16, canonical body after the64-byte prefix, expected at+4.
+            ASSERT_EQ(record.body.size(), 80U);
+            ayni::foundation::store_le32(record.body.data() + 68U, 999);
+            const ayni_bytes_v1 request{record.body.data() + 64U, 16};
+            ayni::kernel::RevokeCommandRecord raw{};
+            ASSERT_TRUE(ayni::kernel::read_revoke_command(request, raw));
+            EXPECT_EQ(raw.expected_revision, 999U); // request syntax remains valid
+            ayni::foundation::store_le64(record.body.data() + 16U,
+                                         ayni::kernel::authority_command_digest(request));
+            edited = true;
+        }
+    });
+    ASSERT_TRUE(edited);
+    expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+TEST(GrantRevokeReplay, snapshot_root_frontier_cannot_exclude_a_retained_descendant) {
+    for (const bool expired_child : {false, true}) {
+        ReplayNode source;
+        source.run();
+        const auto root = source.create(1, 10, 20, 0, 0, AYNI_GRANT_ALLOW_DELEGATION);
+        ASSERT_EQ(root.status, AYNI_OK);
+        source.store(root.result.commit_seq);
+        const auto child =
+            source.create(2, 11, 19, root.result.object.id, expired_child ? 10000000U : 0U);
+        ASSERT_EQ(child.status, AYNI_OK);
+        source.store(child.result.commit_seq);
+        if (expired_child) {
+            source.expire(child.result.object.id);
+        }
+        const auto revoked = source.revoke(3, root.result.object.id);
+        ASSERT_EQ(revoked.status, AYNI_OK);
+        source.store(revoked.result.commit_seq);
+        auto snapshot = snapshot_of(source);
+        ASSERT_EQ(import_snapshot(snapshot), BatchCheck::ok);
+        bool changed = false;
+        for (auto &record : snapshot.records) {
+            if (record.header.type == ayni::authority::grant_record_type &&
+                ayni::foundation::load_le64(record.body.data()) == root.result.object.id) {
+                const auto tail = record.body.size() - 80U;
+                // Preserve creation, terminal and progress stamps, the exact
+                // command, and the descendant. Only shrink the fixed frontier.
+                ayni::foundation::store_le64(record.body.data() + tail + 56U,
+                                             root.result.object.id);
+                changed = true;
+            }
+        }
+        ASSERT_TRUE(changed);
+        EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt) << expired_child;
+    }
+}
+
+TEST(GrantRevokeReplay, record_versions_are_specific_to_journal_and_snapshot_contexts) {
+    using ayni::kernel::WorkRecordContext;
+    using ayni::kernel::WorkReplay;
+    for (const uint16_t type :
+         {ayni::authority::grant_state_record_type, ayni::authority::grant_revocation_record_type,
+          ayni::authority::grant_revocation_progress_record_type}) {
+        const RecordHeader known{type, 1, record_required, 0};
+        EXPECT_EQ(WorkReplay::classify_header(known), RecordUse::applied);
+        EXPECT_EQ(WorkReplay::classify_header(known, WorkRecordContext::snapshot),
+                  RecordUse::unknown);
+        const RecordHeader future{type, 99, record_required, 0};
+        EXPECT_EQ(WorkReplay::classify_header(future), RecordUse::unknown);
+        EXPECT_EQ(WorkReplay::classify_header({type, 99, 0, 0}), RecordUse::corrupt);
+    }
+    const RecordHeader snapshot_grant{ayni::authority::grant_record_type, 2, record_required, 0};
+    EXPECT_EQ(WorkReplay::classify_header(snapshot_grant), RecordUse::unknown);
+    EXPECT_EQ(WorkReplay::classify_header(snapshot_grant, WorkRecordContext::snapshot),
+              RecordUse::applied);
+    EXPECT_EQ(
+        WorkReplay::classify_header({ayni::authority::grant_record_type, 99, record_required, 0},
+                                    WorkRecordContext::snapshot),
+        RecordUse::unknown);
+}
+
+TEST(GrantRevokeReplay, root_and_descendant_records_reject_truncated_bodies_inside_valid_batches) {
+    const auto original = revoked_log(true);
+    for (const uint16_t type : {ayni::authority::grant_revocation_record_type,
+                                ayni::authority::grant_revocation_progress_record_type,
+                                ayni::authority::grant_state_record_type}) {
+        bool changed = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            for (auto &record : batch.records) {
+                if (record.header.type != type) {
+                    continue;
+                }
+                record.body.pop_back();
+                record.header.length = static_cast<uint32_t>(record.body.size());
+                changed = true;
+            }
+        });
+        ASSERT_TRUE(changed);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, duplicate_pending_root_or_child_cannot_claim_one_transition) {
+    const auto original = revoked_log(true);
+    for (const uint16_t type :
+         {ayni::authority::grant_revocation_record_type, ayni::authority::grant_state_record_type,
+          ayni::authority::grant_revocation_progress_record_type}) {
+        bool changed = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            const auto found =
+                std::find_if(batch.records.begin(), batch.records.end(),
+                             [type](const Record &record) { return record.header.type == type; });
+            if (found == batch.records.end()) {
+                return;
+            }
+            const auto index = static_cast<std::size_t>(found - batch.records.begin());
+            const Record duplicate = *found;
+            batch.records.insert(batch.records.begin() + static_cast<std::ptrdiff_t>(index),
+                                 duplicate);
+            changed = true;
+        });
+        ASSERT_TRUE(changed);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, descendant_and_progress_must_name_the_same_root_and_cursor) {
+    const auto original = revoked_log(true);
+    for (const unsigned offset : {0U, 8U}) {
+        bool changed = false;
+        const auto log = edited_log(original, [&](Batch &batch) {
+            const auto child =
+                std::find_if(batch.records.begin(), batch.records.end(), [](const Record &record) {
+                    return record.header.type == ayni::authority::grant_state_record_type;
+                });
+            if (child == batch.records.end()) {
+                return;
+            }
+            for (auto &record : batch.records) {
+                if (record.header.type != ayni::authority::grant_revocation_progress_record_type) {
+                    continue;
+                }
+                const uint64_t other = offset == 0U
+                                           ? ayni::foundation::load_le64(child->body.data())
+                                           : ayni::foundation::load_le64(child->body.data() + 16U);
+                ayni::foundation::store_le64(record.body.data() + offset, other);
+                changed = true;
+            }
+        });
+        ASSERT_TRUE(changed);
+        expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+}
+
+TEST(GrantRevokeReplay, matching_syntax_still_requires_the_root_and_mapping_effects_to_agree) {
+    const auto original = revoked_log(false);
+    bool changed = false;
+    const auto log = edited_log(original, [&](Batch &batch) {
+        for (auto &record : batch.records) {
+            if (record.header.type != ayni::kernel::command_record_type ||
+                record.header.version != 3U) {
+                continue;
+            }
+            CommandMapping mapping{};
+            uint64_t floor = 0;
+            ayni_bytes_v1 canonical{};
+            ASSERT_TRUE(ayni::kernel::read_command_record(
+                3, record.body.data(), record.header.length, mapping, floor, canonical));
+            mapping.effect = AYNI_INTENT_EFFECT_NO_CHANGE;
+            std::vector<uint8_t> request(canonical.data, canonical.data + canonical.size);
+            ASSERT_TRUE(ayni::kernel::write_command_record(
+                mapping, floor, {request.data(), static_cast<uint32_t>(request.size())},
+                record.body.data(), record.header.length));
+            changed = true;
+        }
+    });
+    ASSERT_TRUE(changed);
+    expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+TEST(GrantRevokeReplay, a_later_boot_record_cannot_legitimize_an_earlier_future_target_gone) {
+    const auto original = revoked_log(false);
+    bool changed = false;
+    auto log = edited_log(original, [&](Batch &batch) {
+        for (auto &record : batch.records) {
+            if (record.header.type == ayni::authority::grant_revocation_record_type) {
+                const auto old = ayni::foundation::load_le64(record.body.data());
+                const uint64_t target = old + (UINT64_C(1) << 32U);
+                ayni::foundation::store_le64(record.body.data(), target);
+                ayni::foundation::store_le32(record.body.data() + 8U, 0);
+                ayni::foundation::store_le32(record.body.data() + 12U,
+                                             AYNI_INTENT_EFFECT_TARGET_GONE);
+                ayni::foundation::store_le64(record.body.data() + 24U, 0);
+                changed = true;
+            } else if (record.header.type == ayni::kernel::command_record_type &&
+                       record.header.version == 3U) {
+                CommandMapping mapping{};
+                uint64_t floor = 0;
+                ayni_bytes_v1 canonical{};
+                ASSERT_TRUE(ayni::kernel::read_command_record(
+                    3, record.body.data(), record.header.length, mapping, floor, canonical));
+                mapping.object.id += UINT64_C(1) << 32U;
+                mapping.object.revision = 0;
+                mapping.effect = AYNI_INTENT_EFFECT_TARGET_GONE;
+                std::vector<uint8_t> request(canonical.data, canonical.data + canonical.size);
+                ayni::foundation::store_le64(request.data() + 8U, mapping.object.id);
+                const ayni_bytes_v1 bytes{request.data(), static_cast<uint32_t>(request.size())};
+                mapping.digest = ayni::kernel::authority_command_digest(bytes);
+                ASSERT_TRUE(ayni::kernel::write_command_record(
+                    mapping, floor, bytes, record.body.data(), record.header.length));
+            }
+        }
+    });
+    ASSERT_TRUE(changed);
+    const auto last = decode(log.back());
+    Batch later{{last.identity.writer_epoch, last.identity.commit_seq + 1U,
+                 last.identity.transition_id + 1U},
+                last.schema,
+                {}};
+    Record boot{{ayni::kernel::boot_epoch_record_type, 1, record_required, 8},
+                std::vector<uint8_t>(8)};
+    ayni::foundation::store_le64(boot.body.data(), 2);
+    later.records.push_back(boot);
+    log.push_back(encode(later));
+    expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+TEST(GrantRevokeReplay, snapshot_changed_mapping_cannot_move_after_its_terminal_transition) {
+    ReplayNode source;
+    source.node.config().command_capacity = 2;
+    source.run();
+    const auto grant = source.create(1);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    const auto revoked = source.revoke(2, grant.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    source.store(revoked.result.commit_seq);
+    const auto paused = source.change_instance(AYNI_INTENT_INSTANCE_PAUSE, 3, 1);
+    ASSERT_EQ(paused.status, AYNI_OK);
+    source.store(paused.result.commit_seq);
+    auto snapshot = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(snapshot), BatchCheck::ok);
+    ASSERT_GT(paused.result.commit_seq, revoked.result.commit_seq + 1U);
+    for (auto &record : snapshot.records) {
+        if (record.header.type == ayni::kernel::command_record_type &&
+            record.header.version == 3U) {
+            ayni::foundation::store_le64(record.body.data() + record.body.size() - 8U,
+                                         revoked.result.commit_seq + 1U);
+        }
+    }
+    EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt);
+}
+
+TEST(GrantRevokeReplay, snapshot_no_change_cannot_precede_the_retained_targets_terminal_stamp) {
+    ReplayNode source;
+    source.node.config().command_capacity = 1;
+    source.run();
+    const auto grant = source.create(1, 10, 20, 0, 10000000);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.store(grant.result.commit_seq);
+    const auto paused = source.change_instance(AYNI_INTENT_INSTANCE_PAUSE, 2, 1);
+    ASSERT_EQ(paused.status, AYNI_OK);
+    source.store(paused.result.commit_seq);
+    source.expire(grant.result.object.id);
+    const auto revoked = source.revoke(3, grant.result.object.id, 2);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    ASSERT_EQ(revoked.result.effect, AYNI_INTENT_EFFECT_NO_CHANGE);
+    source.store(revoked.result.commit_seq);
+    auto snapshot = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(snapshot), BatchCheck::ok);
+    for (auto &record : snapshot.records) {
+        if (record.header.type == ayni::kernel::command_record_type &&
+            record.header.version == 3U) {
+            ayni::foundation::store_le64(record.body.data() + record.body.size() - 8U,
+                                         paused.result.commit_seq);
+        }
+    }
+    EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt);
+}
+
+TEST(GrantRevokeReplay,
+     snapshot_changed_receipt_cannot_claim_a_descendant_cleaned_by_another_root) {
+    ReplayNode source;
+    source.run();
+    const auto root = source.create(1, 10, 20, 0, 0, AYNI_GRANT_ALLOW_DELEGATION);
+    ASSERT_EQ(root.status, AYNI_OK);
+    source.store(root.result.commit_seq);
+    const auto child = source.create(2, 11, 19, root.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    source.store(child.result.commit_seq);
+    const auto revoked = source.revoke(3, root.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    source.store(revoked.result.commit_seq);
+    for (unsigned round = 0;
+         round < 20 && source.grant(child.result.object.id).lifecycle != AYNI_GRANT_REVOKED;
+         ++round) {
+        source.node.step(1);
+        source.node.sim().complete_storage();
+        source.node.sim().advance_us(1000000);
+    }
+    const auto cleaned = source.grant(child.result.object.id);
+    ASSERT_EQ(cleaned.lifecycle, AYNI_GRANT_REVOKED);
+    ASSERT_EQ(cleaned.revoked_by_root_id, root.result.object.id);
+    source.store(cleaned.commit_seq);
+    auto snapshot = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(snapshot), BatchCheck::ok);
+    for (auto &record : snapshot.records) {
+        if (record.header.type != ayni::kernel::command_record_type ||
+            record.header.version != 3U) {
+            continue;
+        }
+        CommandMapping mapping{};
+        uint64_t floor = 0;
+        ayni_bytes_v1 canonical{};
+        const auto base = record.header.length - 8U;
+        ASSERT_TRUE(ayni::kernel::read_command_record(3, record.body.data(), base, mapping, floor,
+                                                      canonical));
+        mapping.object.id = child.result.object.id;
+        std::vector<uint8_t> request(canonical.data, canonical.data + canonical.size);
+        ayni::foundation::store_le64(request.data() + 8U, mapping.object.id);
+        const ayni_bytes_v1 bytes{request.data(), static_cast<uint32_t>(request.size())};
+        mapping.digest = ayni::kernel::authority_command_digest(bytes);
+        ASSERT_TRUE(
+            ayni::kernel::write_command_record(mapping, floor, bytes, record.body.data(), base));
+        ayni::foundation::store_le64(record.body.data() + base, cleaned.commit_seq);
+    }
+    EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt);
+}
+
+void check_small_transition_buffers(const ayni::kernel::WorkModel &model) {
+    const auto stamp = model.transitions.latest();
+    const BatchIdentity identity{1, stamp.commit_seq, stamp.transition_id};
+    std::array<uint8_t, 4096> full{};
+    BatchWriter normal(full.data(), full.size(), identity);
+    const auto required = ayni::kernel::encode_transition(model, stamp, normal);
+    ASSERT_GT(required, batch_header_size + commit_marker_size);
+    for (const auto capacity :
+         {batch_header_size + commit_marker_size, batch_header_size + commit_marker_size + 16U,
+          batch_header_size + commit_marker_size + 48U, required - 1U}) {
+        std::vector<uint8_t> bytes(capacity + 8U, 0xA5);
+        BatchWriter small(bytes.data(), capacity, identity);
+        EXPECT_EQ(ayni::kernel::encode_transition(model, stamp, small), 0U);
+        EXPECT_TRUE(std::all_of(bytes.begin() + static_cast<std::ptrdiff_t>(capacity), bytes.end(),
+                                [](uint8_t value) { return value == 0xA5; }));
+    }
+}
+
+TEST(GrantRevokeReplay, journal_root_and_progress_encoders_refuse_short_buffers_without_overrun) {
+    ReplayNode source;
+    source.run();
+    const auto root = source.create(1, 10, 20, 0, 0, AYNI_GRANT_ALLOW_DELEGATION);
+    ASSERT_EQ(root.status, AYNI_OK);
+    source.store(root.result.commit_seq);
+    const auto child = source.create(2, 11, 19, root.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    source.store(child.result.commit_seq);
+    const auto revoked = source.revoke(3, root.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    check_small_transition_buffers(source.node.kernel()->work);
+    for (unsigned round = 0;
+         round < 20 && source.grant(child.result.object.id).lifecycle != AYNI_GRANT_REVOKED;
+         ++round) {
+        source.node.step(1);
+        source.node.sim().complete_storage();
+        source.node.sim().advance_us(1000000);
+    }
+    ASSERT_EQ(source.grant(child.result.object.id).lifecycle, AYNI_GRANT_REVOKED);
+    check_small_transition_buffers(source.node.kernel()->work);
 }
 
 } // namespace

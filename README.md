@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1。Core 已实现事件入口、Kernel 生命周期、Agent/Goal/Task 工作模型、触发与策略步骤/检查点，以及逐 transition 日志、恢复和命令幂等；Native Host 提供文件存储。`MA-010` E+F 补入有界重试、写入方栅栏与重载、双槽快照、日志轮转及 schema 0→1 迁移，`MA-006` A/B 已合并（可信 owner 绑定/会话、Capability 目录与有限范围），C 已实现 Grant/受限委派及确切命令持久恢复并完成 Native 验证，draft #27 代码八项 CI 通过，待最终文档 CI/合并；D 撤销继续实施，本次完成 C/D 后收尾停止，E/F 审批与完整工作准入不开始。当前验证与交付状态见 [ADR-0027](docs/adr/0027-retries-writer-fences-snapshots-and-migration.md) 和 [M1 进度](reports/core/m1-progress.md)，逐条证据见 [契约追踪](contracts/traceability.md)。这些实现面向 Native 与模拟 Host；ESP-IDF 存储、完整 E1–E4、SDK 和实机结果仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，M0 复核见 [reports/core/m0-review.md](reports/core/m0-review.md)。
+> 当前仓库处于 M1。Core 已实现事件入口、Kernel 生命周期、Agent/Goal/Task 工作模型、触发与策略步骤/检查点，以及逐 transition 日志、恢复和命令幂等；Native Host 提供文件存储。`MA-010` E+F 补入有界重试、写入方栅栏与重载、双槽快照、日志轮转及 schema 0→1 迁移，`MA-006` A/B 已合并（可信 owner 绑定/会话、Capability 目录与有限范围），C 已实现 Grant/受限委派及确切命令持久恢复并完成 Native 验证，已由 #27 合并（`b133032`），代码与最终文档 CI 各八项全过；D 撤销继续实施，本次完成 C/D 后收尾停止，E/F 审批与完整工作准入不开始。当前验证与交付状态见 [ADR-0027](docs/adr/0027-retries-writer-fences-snapshots-and-migration.md) 和 [M1 进度](reports/core/m1-progress.md)，逐条证据见 [契约追踪](contracts/traceability.md)。这些实现面向 Native 与模拟 Host；ESP-IDF 存储、完整 E1–E4、SDK 和实机结果仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，M0 复核见 [reports/core/m0-review.md](reports/core/m0-review.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
@@ -59,7 +59,7 @@ v0.1 计划提供局域网管理、按键语音、持续视觉采集与受限分
 | 管理与设备协议 | 协议主/次版本、能力版本与功能协商；领域语义统一，认证与本机授权逐次校验 |
 | 持久化格式 | Schema、记录与迁移版本；迁移、损坏恢复和固件回滚共同验证 |
 
-三类版本独立演进，以领域契约和一致性用例保持对应；已实现的 C ABI 当前为实验性 0.15，尚未实现的接口保留在草案头文件中。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
+三类版本独立演进，以领域契约和一致性用例保持对应；已合并的 C ABI 基线为实验性 0.18，本分支 D 推进到 0.19、最终验证状态见 ADR-0031；尚未实现的接口保留在草案头文件中。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
 
 ## 可选具身 Profile 与协议适配
 

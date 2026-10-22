@@ -325,7 +325,7 @@ AYNI_LAYOUT(intent_result_struct_size, offsetof(ayni_intent_result_v1, struct_si
 AYNI_LAYOUT(intent_result_reserved, offsetof(ayni_intent_result_v1, reserved) == 4);
 AYNI_LAYOUT(intent_result_object, offsetof(ayni_intent_result_v1, object) == 8);
 AYNI_LAYOUT(intent_result_commit_seq, offsetof(ayni_intent_result_v1, commit_seq) == 32);
-AYNI_LAYOUT(intent_result_size, sizeof(ayni_intent_result_v1) == 40);
+AYNI_LAYOUT(intent_result_size, sizeof(ayni_intent_result_v1) == 56);
 
 AYNI_LAYOUT(event_struct_size, offsetof(ayni_event_v1, struct_size) == 0);
 AYNI_LAYOUT(event_kind, offsetof(ayni_event_v1, kind) == 4);
@@ -392,7 +392,7 @@ AYNI_LAYOUT(grant_info_transition, offsetof(ayni_grant_info_v1, transition_id) =
 AYNI_LAYOUT(grant_info_seq, offsetof(ayni_grant_info_v1, commit_seq) == 144);
 AYNI_LAYOUT(grant_info_effective_reason, offsetof(ayni_grant_info_v1, effective_reason) == 152);
 AYNI_LAYOUT(grant_info_reserved, offsetof(ayni_grant_info_v1, reserved) == 156);
-AYNI_LAYOUT(grant_info_size, sizeof(ayni_grant_info_v1) == 160);
+AYNI_LAYOUT(grant_info_size, sizeof(ayni_grant_info_v1) == 200);
 
 AYNI_LAYOUT(grant_tokens_members, offsetof(ayni_grant_tokens_info_v1, members) == 0);
 AYNI_LAYOUT(grant_tokens_sizes, offsetof(ayni_grant_tokens_info_v1, member_sizes) == 256);
@@ -409,3 +409,25 @@ AYNI_LAYOUT(grant_field_unit_size, offsetof(ayni_grant_field_info_v1, unit_size)
 AYNI_LAYOUT(grant_field_reserved, offsetof(ayni_grant_field_info_v1, reserved) == 52);
 AYNI_LAYOUT(grant_field_values, offsetof(ayni_grant_field_info_v1, values) == 56);
 AYNI_LAYOUT(grant_field_info_size, sizeof(ayni_grant_field_info_v1) == 352);
+
+AYNI_LAYOUT(intent_result_phase, offsetof(ayni_intent_result_v1, phase) == 40);
+AYNI_LAYOUT(intent_result_effect, offsetof(ayni_intent_result_v1, effect) == 44);
+AYNI_LAYOUT(intent_result_boot, offsetof(ayni_intent_result_v1, applied_boot_epoch) == 48);
+AYNI_LAYOUT(receipt_size, sizeof(ayni_intent_receipt_v1) == 72);
+AYNI_LAYOUT(receipt_phase, offsetof(ayni_intent_receipt_v1, phase) == 4);
+AYNI_LAYOUT(receipt_effect, offsetof(ayni_intent_receipt_v1, effect) == 8);
+AYNI_LAYOUT(receipt_reserved, offsetof(ayni_intent_receipt_v1, reserved) == 12);
+AYNI_LAYOUT(receipt_principal, offsetof(ayni_intent_receipt_v1, principal_id) == 16);
+AYNI_LAYOUT(receipt_command, offsetof(ayni_intent_receipt_v1, command_id) == 24);
+AYNI_LAYOUT(receipt_object, offsetof(ayni_intent_receipt_v1, object) == 32);
+AYNI_LAYOUT(receipt_seq, offsetof(ayni_intent_receipt_v1, commit_seq) == 56);
+AYNI_LAYOUT(receipt_boot, offsetof(ayni_intent_receipt_v1, applied_boot_epoch) == 64);
+AYNI_LAYOUT(revoke_size, sizeof(ayni_grant_revoke_v1) == 16);
+AYNI_LAYOUT(revoke_target, offsetof(ayni_grant_revoke_v1, grant_id) == 8);
+AYNI_LAYOUT(grant_info_revoke_root, offsetof(ayni_grant_info_v1, revoked_by_root_id) == 160);
+AYNI_LAYOUT(grant_info_cleanup_after, offsetof(ayni_grant_info_v1, cleanup_after_grant_id) == 168);
+AYNI_LAYOUT(grant_info_cleanup_through,
+            offsetof(ayni_grant_info_v1, cleanup_through_grant_id) == 176);
+AYNI_LAYOUT(grant_info_cleanup_transition,
+            offsetof(ayni_grant_info_v1, cleanup_transition_id) == 184);
+AYNI_LAYOUT(grant_info_cleanup_seq, offsetof(ayni_grant_info_v1, cleanup_commit_seq) == 192);
