@@ -1,6 +1,6 @@
 # ADR-0028：权限与审批（一）：可信所有者绑定与会话入口
 
-- **状态**：已接受；`MA-006` 六部分的设计基线，A 实施中，尚未完成验证或合并
+- **状态**：已接受；`MA-006` 六部分的设计基线，A 已实现并验证，PR #25 待合并
 - **日期**：2026-10-22
 - **关联**：计划 §2.2、§2.4、§2.5、§3.2、§4.3、§5.3、§9.1、§14.1；`MA-006` A；ADR-0003、ADR-0008、ADR-0017、ADR-0025～0027；C-AUTH-010；E2、E4
 
@@ -124,14 +124,14 @@ ABI 升为 0.16，0.15 调用方须重新编译。受影响的 C99 契约、C++ 
 
 ## 验证
 
-验证进行中；以下分别记录已执行和待执行项目，不把待执行项视为通过。原始日志保存在仓库外 `../ayni-ma006-evidence/a/`。
+原始脚本、清单、日志和独立审查在仓库外 `../ayni-ma006-evidence/a/`；以下区分本地测试、CI 编译与未验收边界。
 
-- **环境与资源：已记录。** `ayni-m0-tools:latest`，GCC 13.3.0、Clang/clang-format 18.1.3、CMake 3.31.6、Ninja 1.11.1、Python 3.12.3。验证前宿主约 17–18 GiB 可用、swap 640 MiB 且无持续换入换出；验证与独立变异容器各限 2 CPU/3 GiB、无额外 swap，均设 `CMAKE_BUILD_PARALLEL_LEVEL=2`，CTest 并行 2，持续监测。
-- **内存：已量测。** 同一 GCC 13.3.0/x86-64 环境中用 C99 程序调用内存查询，默认配置（`struct_size=12`）由 ABI 0.15 的 62,600 B 增至 62,712 B；最小工作容量（各工作容量取 1 或 `_MIN`、`command_capacity=1`，其余默认）由 28,808 B 增至 28,920 B，两者均 +112 B、对齐 8 B。源码及结果为 `memory.c`、`memory.log`，旧版取 `origin/main` 的 `c723566`。未据此声称 ESP32 RAM 门槛已经通过。
-- **Debug：已执行。** `cmake --preset native-debug && cmake --build --preset native-debug && ctest --preset native-debug --parallel 2`，640/640 通过（`debug-final.log`）。
-- **A 关键场景：Debug 已执行，其余配置待完成。** Host 绑定版本/保留字段/渠道输入；首次绑定未持久会话拒绝；空实例表绑定；相同绑定恢复；principal/revision 失配及缺 Host 所有者的恢复前受限；旧日志无绑定且现存 USER origin/命令主体一致时建立绑定、冲突时无新写地受限、完全无证据时才采用可信 Host；旧工作仍禁行；Session 重载关闭；OwnerBinding 日志/快照往返、损坏/重复/容量错误及旧 reader 安全拒绝。
-- **已有场景源码，执行待补。** `OwnerBindingApi.first_binding_and_instances_share_a_transition_and_sessions_wait_for_durability`、`OwnerBindingApi.changed_principal_or_binding_revision_restricts_without_writing_or_losing_goals`、`OwnerBindingApi.legacy_goal_and_task_stay_paused_without_advancing_occurrences_or_strategy`、`OwnerBindingApi.new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or_decide_work`；恢复输入场景现名 `WorkRecovery.input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed`。这些引用只确认场景已加入源码，不表示已运行通过。
-- **工作模型回归：Debug 已执行，其余配置待完成。** `LEGACY_UNCONFIRMED` 不覆盖其他暂停原因；恢复、事件、到期、派生和策略决策不能使旧工作继续；查询/取消仍遵循生命周期；快照不把临时覆盖写成批准或修改原状态。
-- **缺陷注入与独立审查：待执行。** 由另一会话按 diff/契约出题，逐项编译运行，精确恢复原文；审查附具体证据，并检查删掉的注释、内核字段、重复公式与裸数字。记录每项未发现缺陷的处理，不以设计自查充当测试。
-- **完整检查：待执行。** workflow 的 GCC Debug/Release/ASan+UBSan/TSan、Clang Debug、模拟器、C99 ABI、无堆引用、依赖/契约/格式/diff 和 ESP32 固件编译；固件编译不算硬件授权验收。测量覆盖率，目标不足记录证据与偏差。
-- **后续证据：未执行。** B～F 的范围/Grant/审批/撤销/回收/兼容测试，以及 `MA-018`/`MA-008`/`MA-022` 的真实消费链、完整 E2/E4 和硬件验证，不属于 A 已通过范围。
+- **环境与资源。** `ayni-m0-tools:latest`：GCC 13.3.0、Clang/clang-format 18.1.3、CMake 3.31.6、Ninja 1.11.1、Python 3.12.3。开始时宿主约 17–18 GiB 可用、swap 640 MiB，监测期间无持续换入换出；构建/变异各限 2 CPU、3 GiB、无额外 swap，均设 `CMAKE_BUILD_PARALLEL_LEVEL=2`，CTest 并行 2。TSan 按开发文档临时设 `vm.mmap_rnd_bits=28`，全部相关验证结束后恢复原值 32。
+- **本地完整检查。** 最终源码 `78122da` 的 GCC Debug/Release/ASan+UBSan/TSan、Clang Debug 各 **641/641** CTest 通过（`validation-final.json`）；涵盖 C99 调用、所有公开/草案头自包含、ABI 布局、无堆引用、层次检查。模拟器、依赖、契约/追踪、clang-format 18 全文件与 diff 检查通过。Clang 的旧缓存记录了不存在的 `/usr/local/bin/clang`；使用镜像内 `/usr/bin/clang-18` 重新配置并更新嵌套 CMake 探针缓存后，完整套件通过，未改或跳过测试。
+- **CI 与固件编译。** `78122da` 的 [CI run 39720223030](https://github.com/RobotSe7en/ayni/actions/runs/39720223030) 八项均通过，包括 ESP-IDF v6.0.3 的 ESP32-S3 Hello 编译和 advisory clang-tidy；没有烧录、硬件授权或物理停止验收。
+- **内存。** 同一 GCC 13.3.0/x86-64 中由 C99 程序查询，默认配置（`struct_size=12`）由 ABI 0.15 的 **62,600 B → 62,712 B**；最小工作容量（各工作容量取 1 或 `_MIN`、`command_capacity=1`，其余默认）由 **28,808 B → 28,920 B**。均 **+112 B**、对齐 8 B（`memory.c`、`memory.log`），旧版为 `c723566`。批次为包含首次绑定的保守编码预算，不声称所有预留记录在公开路径中同时发生；没有据 Native 数字宣称 ESP32 RAM 门槛已通过。
+- **关键行为。** 绑定与首个领域 transition 同批，未持久前拒绝 Session；无 Agent 首次绑定、相同绑定恢复、身份/revision/缺 Host 失配均有 C ABI 场景。旧日志逐批重编码保留合法 CRC，分别验证 USER 来源、仅命令来源、无 Host 和同 owner 采用；冲突无新写且保留诊断。旧 Goal/Task 保持原始持久进度、步骤和检查点，独立 hold 阻止事件、派生、策略与普通 resume；恢复父 Goal 下新建子 Goal 也不能前进。OwnerBinding 日志/分页快照检查重复、顺序、原始 stamp、损坏、容量及 REQUIRED 标志；有效激活快照覆盖的历史日志仍单独检查 REQUIRED。
+- **独立变异。** 另一会话按源码/契约、未读测试选点，**33 个均可编译，32 个检出，1 个等价**（`mutation-run/summary.json`）。唯一未检出的 **A15** 将初始精确长度检查放宽为下限；末尾 `BodyReader::ok()` 仍要求恰好消费 16 B，因此尾字节仍拒绝、输出不变，已有尾字节测试通过。未新增只检查实现分支的镜像断言。A08/A10/A17/A19/A22 在命名断言失败后 SIGSEGV，记录实际启动 297 项与原始日志，未计作完整套件执行。最终恢复后单元 **628/628** 通过，10 个目标文件 SHA 与正常源码完全一致；A29 仅由无 Goal 的命令独有证据测试检出，A31/32/33 分别约束 covered discovery、snapshot、direct replay。
+- **独立审查与自查。** 审查发现祖先传播只看 lifecycle、忽略 legacy hold；已修并由 C ABI 回归及 A24 检出。两项 P3（Session 版本只写未读、测试 stamp 裸数字）已修并只读回看。模块归属保持 authority 拥有绑定、work 拥有 hold、kernel 编排同批；没有新增 `ayni_kernel` 字段或平行日志/事务系统。删除注释、字段属主、公式复用与裸数字四项检查无待解阻断发现（`review.md`）。
+- **覆盖率及偏差。** GCC 13 `--coverage` 完整 641/641 通过；收集全部 109 个对象的 gcov JSON，仅统计 Core 文件，同一路径/行/分支槽取最大计数并排除 throw 分支。Core 含头文件行覆盖 **4,991/5,139 = 97.12%**、分支 **3,041/3,405 = 89.31%**；authority 两个 `.cpp` 行 **52/52**、分支 **55/56 = 98.21%**，principal 头文件行/分支均 100%（`coverage/summary.json`）。新增权限属主达到安全关键分支 90% 目标；**整个恢复/快照链尚未达到该目标**：WorkReplay 80.81%、WorkSnapshot 74.50%，不将整体 89.31% 报为已达 90%。该已有范围的偏差随 MA-022 故障矩阵补齐，不在 A 扩成全仓库覆盖率改造。
+- **未执行/限制。** 多 USER 来源混合排列尚无专门组合测试，源码逐项检查与单来源冲突已验证；B～F、真实资源/Provider 消费链、完整 E1–E4、ESP-IDF 存储、硬件与耐久验收仍归后续工作。A 没有批准接口，不能确认或恢复旧工作的授权。

@@ -13,7 +13,7 @@
 |---|---|---|---|
 | 1 | `MA-003`、`MA-005` | 事件入口、完成槽、Kernel 生命周期与启动恢复、模拟 Host | 完成 |
 | 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004`、`MA-010` 完成 |
-| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖依次做 `006`、`018`、`008` | `MA-006` A 实施中，验证/PR 待完成；其余未开始 |
+| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖依次做 `006`、`018`、`008` | `MA-006` A 验证通过，PR #25 待合并；B 在独立目录实施，其余未开始 |
 | 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | 未开始 |
 | 5 | `MA-019`、`MA-020` | 助理协调器、SDK 与接入示例 | 未开始 |
 | 6 | `MA-021`、`MA-022`、`MA-023`、`MA-033` | E1、E2、E3、E4 实验，然后写 Core Alpha 报告（`reports/core/`） | 未开始 |
@@ -54,9 +54,9 @@
 
 ## 交接状态（2026-10-22）
 
-- **当前进行：`MA-006` A。** 用户已批准六个顺序 PR 的实施计划，ADR-0028 记录 13 项产品语义及全包拆分；本轮只实现可信 Host 会话入口、持久所有者绑定、绑定失配受限与旧恢复工作授权禁行。ABI 0.16，计划 v1.18；A 尚未完成验证、内存量测、提交或 PR，不属于下表已合并结果，B～F 未实现。
+- **当前进行：`MA-006` A。** 用户已批准六个顺序 PR 的实施计划，ADR-0028 记录 13 项产品语义及全包拆分；本轮只实现可信 Host 会话入口、持久所有者绑定、绑定失配受限与旧恢复工作授权禁行。ABI 0.16，计划 v1.18；A 已通过本地五配置各 641/641、33 项独立变异（32 检出、1 等价）及八项 CI；内存默认/最小 +112 B，PR [#25](https://github.com/RobotSe7en/ayni/pull/25) 待合并，不属于已合并结果。B 在独立目录实施与验证，C～F 未实现。
 - **`MA-010` 已完成。** main 包含 #21 的 E+F 和之前的全部工作；没有继续中的 E+F 代码。开发分支 `codex/ma010-recovery-snapshots` 在合并后按 workflow 重置到 main。本文的完成状态随 #21 合并生效，CI 与实际合并记录见 [#21](https://github.com/RobotSe7en/ayni/pull/21)。
-- **下一步：完成 `MA-006` A 的验证与审查，按 workflow 单独交付。** A 合并后依次 B～F；之后按第 3 步完成 `MA-018`、`MA-008`。不要直接跳到完整 E2/E4 或硬件；本包派发链证据与边界见下文及 ADR-0028。
+- **下一步：完成 `MA-006` A 的独立 PR 合并，再交付 B。** A 合并后依次 B～F；之后按第 3 步完成 `MA-018`、`MA-008`。不要直接跳到完整 E2/E4 或硬件；本包派发链证据与边界见下文及 ADR-0028。
 - **已实现：** 同身份三次重试、10/50 ms 退避、`FENCED=7` 与隔离后重载、物理 cursor、读取缓冲不足的准确容量错误、分页双槽快照及唯一激活、轮转、共享 10 ms 写频、schema 0→1 迁移与模拟旧 reader 拒绝。当前可查询对象与命令窗口采用保留 A；默认缓冲三倍。已合并基线为 ABI 0.15、计划 v1.17、ADR-0027；本轮 ABI 0.16 的变更与验证单独记录。
 - **实际验证：** 571/571 完整单元基线、Native 专项 24/24；40/40 可编译植入缺陷由命名断言发现（32 项跑完整套件，8 项断言后 SIGSEGV，原文均精确恢复）；GCC Debug/Release/ASan+UBSan/TSan、Clang Debug 各 584/584 CTest；模拟器、依赖、契约、格式、diff 检查通过。独立完整审查八项发现全部修复并回看。首轮 ESP32 编译发现的构造初始化顺序问题已修复、独立复核并重跑全部 workflow 检查。详细结果见 ADR-0027，本机原始记录在仓库外 `../ayni-ma010-evidence/`。
 - **#23 整理（2026-10-21）：** 只改结构、注释与测试。日志上限与空间预留在 `core/kernel/storage/storage_budget.*`，快照维护及其 generation、槽位在 `storage/storage_maintenance.*`，`SNAPSHOT_COMMIT` 编解码在 `core/durability/snapshot/`。按变异测试补 18 个测试：38 个植入缺陷中原有测试发现 13 个、新测试发现 21 个，其余 4 个与原实现等价，理由见 [#23](https://github.com/RobotSe7en/ayni/pull/23) 正文（本次整理没有 ADR）。各预设 602/602 CTest；内核内存需求两组各减 8 字节，见 `core/README.md`。
@@ -73,7 +73,7 @@
 
 | 部分 | ADR / ABI | 内容 | 状态 |
 |---|---|---|---|
-| A | 0028 / 0.16 | Host 受管主体/会话入口、owner/revision 持久绑定、失配受限、旧恢复工作 `LEGACY_UNCONFIRMED` 禁行 | 实施中；验证/内存/审查/PR 待完成 |
+| A | 0028 / 0.16 | Host 受管主体/会话入口、owner/revision 持久绑定、失配受限、旧恢复工作 `LEGACY_UNCONFIRMED` 禁行 | 验证与独立审查通过；PR #25 待合并 |
 | B | 0029 / 0.17 | Capability 有界注册、类型/单位/取值域与范围规范化、覆盖/收窄 | 未开始 |
 | C | 0030 / 0.18 | Grant 创建/查询/期限/委派/安全回收，规范请求去重与持久恢复 | 未开始 |
 | D | 0031 / 0.19 | 即时拒绝、待决撤销、阶段回执、背压与自动重载保护 | 未开始 |
@@ -83,8 +83,8 @@
 - **当前 A 的边界：** `ayni_register_principal`/`ayni_open_session` 声明移至 Host 受管头文件；Core 不认证密码/TLS。持久 OwnerBinding 与本次 Host 配置不匹配则在恢复写入前只读受限，不转移所有权、不丢命令窗口。首次绑定持久前不开放敏感会话。旧日志无绑定时先核对全部保留 USER Goal origin 的 principal/revision 及 CommandMapping principal，任一冲突即无新写地受限；证据全一致或完全无所有者证据才允许可信 Host 首次绑定，已有绑定以其为权威。这不实现转移，旧工作仍禁行，A 无批准接口。
 - **13 项产品语义：** 缺授权合法目标保存 `PROPOSED`；批准只覆盖原目标参数/重复规则；待批不积累 occurrence、批准后开始延时/周期；撤销保留进度并须显式恢复；长期或当前 boot 限时授权；有限声明式约束；旧工作保留并待确认；撤销写失败保持拒绝并沿用隔离重载；统一 `PENDING`/`APPLIED`/`DURABLE` 回执；所有权完整转移随 `MA-028`；额度随 `MA-018`；Scene `UNSUPPORTED`；Grant 满时仅回收最早安全终态，无候选则拒绝。完整边界与失败语义见 ADR-0028。
 - **验收归属：** 本包只验证授权机制及模拟消费者，F 合并后才可标机制完成；真实屏障后复核/停止续租随 `MA-018`，在途取消/外发随 `MA-008`，完整撤销故障矩阵随 `MA-022`。物理停止仍需执行端与硬件证据。
-- **场景源码：** 已加入 `OwnerBindingApi` 的首次绑定持久门控、绑定变更受限、legacy 工作禁行与 `new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or_decide_work`；恢复输入场景更名为 `WorkRecovery.input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed`。这里只列当前源码名称，执行结果待补。
-- **未完成证据：** A 的实际构建/测试/变异/独立审查、默认与最小内存、定量覆盖率待补；不能沿用 #21/#23 数字宣称本次通过。各部分的日志/快照/断电/旧 reader 验收随实现同步加入。
+- **场景源码：** 已加入 `OwnerBindingApi` 的首次绑定持久门控、绑定变更受限、legacy 工作禁行与 `new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or_decide_work`；恢复输入场景更名为 `WorkRecovery.input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed`。这些场景均已随最终五配置回归通过。
+- **未完成证据：** A 的证据见 ADR-0028：五配置各 641/641、32/33 检出且 A15 等价、全部源码恢复；默认/最小内存 62,712/28,920 B；Core 行覆盖 97.12%，新增 authority 分支 98.21%，整体恢复/快照关键分支仍有低于 90% 的已记录偏差；八项 CI 均通过。B～F 的完整证据待补。各部分的日志/快照/断电/旧 reader 验收随实现同步加入。
 
 ### `MA-010` 之后的恢复验收边界
 
