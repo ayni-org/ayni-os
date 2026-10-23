@@ -1005,3 +1005,25 @@ TEST(RevokeApi, a_mapping_already_restored_during_recovery_is_not_a_public_recei
 }
 
 } // namespace
+
+namespace {
+// C-AUTH-026/027 / ADR-0035 decision 11: an accepted revocation consumes
+// the available item before another Grant's ordinary expiry transition.
+TEST(RevokeApi, a_pending_revoke_precedes_an_unrelated_due_expiry) {
+    RevokeNode work;
+    work.run();
+    const uint64_t target = work.durable_grant(1);
+    constexpr uint64_t lifetime_us = 1000000;
+    const uint64_t expiring = work.durable_grant(2, 0, lifetime_us);
+    work.node.sim().set_storage_capacity(0);
+    const auto accepted = work.revoke(target, 3);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    ASSERT_EQ(accepted.result.phase, AYNI_INTENT_PENDING);
+    work.node.sim().advance_us(lifetime_us);
+    work.node.sim().set_storage_capacity(UINT64_MAX);
+    EXPECT_EQ(work.node.step(1).items_done, 1U);
+    EXPECT_EQ(work.grant(target).lifecycle, AYNI_GRANT_REVOKED);
+    EXPECT_EQ(work.receipt(3).phase, AYNI_INTENT_APPLIED);
+    EXPECT_EQ(work.grant(expiring).lifecycle, AYNI_GRANT_ACTIVE);
+}
+} // namespace

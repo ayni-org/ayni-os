@@ -20,9 +20,10 @@
 
 namespace ayni::kernel {
 
+// Exact size of the current retained model, including each record envelope.
 struct SnapshotLayout {
-    uint64_t payload_length;
-    uint32_t record_count;
+    uint64_t payload_length; // Total payload bytes; zero iff there are no records.
+    uint32_t record_count;   // Complete records represented by payload_length; zero for empty.
 };
 
 // The payload the writer would write for the model now.
@@ -33,9 +34,12 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities);
 // The largest payload these capacities allow.
 uint64_t snapshot_payload_max(const KernelCapacities &capacities);
 
+// Owns the cursor that pages one frozen model into complete snapshot records.
 class WorkSnapshotWriter {
   public:
+    // A nonempty page, end of payload, or a next record larger than the whole buffer.
     enum class Page { page, done, no_room };
+    // Borrows the model; the caller keeps it frozen from reset through done.
     explicit WorkSnapshotWriter(const WorkModel &model) : model_(model) {}
     // The payload next() writes for the model now.
     SnapshotLayout measure() const { return measure_snapshot(model_); }
@@ -52,8 +56,15 @@ class WorkSnapshotWriter {
     enum class Section { owner_binding, instances, grants, goals, tasks, commands, done };
     // A task's records, in order.
     enum class TaskPart { task, steps, checkpoint, state };
+    // Locate, but do not consume, the next complete record across all sections.
     bool next_record(uint16_t &type, uint32_t &size);
+    // Select the current Task's next step/checkpoint/state; false after the Task table.
+    bool next_task_record(uint16_t &type, uint32_t &size);
+    // Select the least acceptance sequence after the last written command.
+    bool next_command_record(uint16_t &type, uint32_t &size);
+    // Encode the selected record into the already sized body buffer.
     void write_record(uint16_t type, uint8_t *body, uint32_t size);
+    // Consume a record only after its complete bytes were written.
     void advance_record(uint16_t type);
 
     const WorkModel &model_;
@@ -68,8 +79,10 @@ class WorkSnapshotWriter {
     uint32_t command_index_ = 0;
 };
 
+// Owns snapshot ordering and pairing checks while restoring into WorkModel.
 class WorkSnapshotReader {
   public:
+    // Borrows the recovery model and copies the immutable snapshot boundary.
     WorkSnapshotReader(WorkModel &model, const durability::SnapshotMetadata &metadata)
         : model_(model), metadata_(metadata) {}
     // Starts the payload of the slot metadata describes.

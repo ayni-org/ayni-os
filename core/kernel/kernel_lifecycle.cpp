@@ -18,14 +18,27 @@
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 
-namespace {
+// One step's local budget and scheduling instant; never retained by Kernel.
+// Item application observes elapsed time, while boot/maintenance keep their
+// existing one-shot accounting without an additional clock sample (ADR-0035).
+struct ayni_kernel::StepBudget {
+    const uint64_t started_us;  // This boot's monotonic start, shared by all due-work decisions.
+    const uint32_t max_items;   // Maximum items requested for this call; positive at the ABI.
+    const uint32_t max_time_us; // Elapsed-time budget in microseconds; positive at the ABI.
+    uint32_t items = 0;         // Completed items in this call, never above max_items.
+    bool out_of_time = false;   // True after an item observes the elapsed budget exhausted.
 
-bool time_is_up(const ayni_host_v1 &host, uint64_t started_us, uint32_t max_time_us) {
-    return host.monotonic_now_us(host.ctx) - started_us >= max_time_us;
-}
+    // Storage has its own admission checks; this answers only the call budget.
+    bool available() const { return items < max_items && !out_of_time; }
+    // Count one applied item and stop subsequent bounded loops if time is up.
+    void applied(const ayni_host_v1 &host) {
+        ++items;
+        out_of_time = host.monotonic_now_us(host.ctx) - started_us >= max_time_us;
+    }
+};
 
-} // namespace
-
+// Close registration only after all storage ports and strategy links are ready;
+// recovery publishes RUNNING only after the boot epoch becomes durable.
 ayni_status_t ayni_kernel::start() {
     if (lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
@@ -65,36 +78,61 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     if (lifecycle == AYNI_LIFECYCLE_CONFIGURING || lifecycle == AYNI_LIFECYCLE_STOPPED) {
         return AYNI_INVALID_STATE;
     }
-    const uint64_t started_us = host.monotonic_now_us(host.ctx);
-    uint32_t items = 0;
-    bool out_of_time = false;
-    while (items < max_items && !out_of_time && completions.apply_posted(1) == 1U) {
-        ++items;
-        out_of_time = time_is_up(host, started_us, max_time_us);
+    StepBudget progress{host.monotonic_now_us(host.ctx), max_items, max_time_us};
+    while (progress.available() && completions.apply_posted(1) == 1U) {
+        progress.applied(host);
     }
     settle_recovery();
     settle_log();
     settle_maintenance();
     refresh_storage();
+    advance_recovery_and_maintenance(progress);
+    apply_revocations(progress);
+    apply_ready_work(progress);
+    take_queued_inputs(progress);
+    if (appends() && log.advance(host.monotonic_now_us(host.ctx))) {
+        settle_log();
+        if (!retire_durable_revocations()) {
+            enter_restricted(AYNI_RESTRICTION_INTERNAL);
+        }
+    }
+    if (lifecycle == AYNI_LIFECYCLE_DRAINING && completions.in_flight() == 0U &&
+        (!appends() || log.idle() || log.failure() != AYNI_RESTRICTION_NONE) &&
+        !revocation_ready()) {
+        events_discarded += ingress.close();
+        lifecycle = AYNI_LIFECYCLE_STOPPED;
+    }
+
+    report_step(progress, report);
+    return AYNI_OK;
+}
+
+// Recovery and maintenance share the storage buffer and each advance at most
+// once per call. A completed migration can hand control back to recovery.
+void ayni_kernel::advance_recovery_and_maintenance(StepBudget &progress) {
     // A migration interrupts recovery, which resumes once it is done.
     if ((lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_FENCED) &&
-        items < max_items && !out_of_time && !maintaining() &&
-        boot.advance(host.monotonic_now_us(host.ctx))) {
-        ++items;
+        progress.available() && !maintaining() && boot.advance(host.monotonic_now_us(host.ctx))) {
+        ++progress.items;
         settle_recovery();
     }
     if ((lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_RUNNING) &&
-        maintaining() && items < max_items && !out_of_time &&
+        maintaining() && progress.available() &&
         maintenance.advance(host.monotonic_now_us(host.ctx))) {
-        ++items;
+        ++progress.items;
         settle_maintenance();
     }
+}
+
+// C-AUTH-026/027: accepted revocations precede new work, also while draining;
+// descendant cleanup only advances while RUNNING. Journal each accepted change.
+void ayni_kernel::apply_revocations(StepBudget &progress) {
     if (appends()) {
-        if (!settle_revocations(false)) {
+        if (!retire_durable_revocations()) {
             enter_restricted(AYNI_RESTRICTION_INTERNAL);
         }
         while ((lifecycle == AYNI_LIFECYCLE_RUNNING || lifecycle == AYNI_LIFECYCLE_DRAINING) &&
-               appends() && items < max_items && !out_of_time && has_room()) {
+               appends() && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
             bool applied = ayni::kernel::apply_pending_revoke(work);
             if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
@@ -106,13 +144,17 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                     break;
                 }
                 journal(first_seq);
-                ++items;
-                out_of_time = time_is_up(host, started_us, max_time_us);
+                progress.applied(host);
             } else {
                 break;
             }
         }
     }
+}
+
+// Preserve one schedule/READY frontier for this call so newly derived tasks
+// wait until the next decision pass, independent of a strategy's answers.
+void ayni_kernel::apply_ready_work(StepBudget &progress) {
     // Due work is taken as of the start of the step, so one step sees one
     // schedule. It comes before events: a Host can keep the queue full, but
     // the due work at one time is finite, so neither starves the other.
@@ -122,60 +164,52 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // journal() restricts on ends both loops: nothing after it is stored.
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
-        while (lifecycle == AYNI_LIFECYCLE_RUNNING && items < max_items && !out_of_time &&
-               has_room()) {
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
-            if (!ayni::kernel::do_due_work(work, started_us)) {
+            if (!ayni::kernel::do_due_work(work, progress.started_us)) {
                 break;
             }
             journal(first_seq);
-            ++items;
-            out_of_time = time_is_up(host, started_us, max_time_us);
+            progress.applied(host);
         }
-        while (lifecycle == AYNI_LIFECYCLE_RUNNING && items < max_items && !out_of_time &&
-               has_room()) {
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
-            if (!ayni::kernel::decide_next(work, decisions, ready_before, started_us)) {
+            if (!ayni::kernel::decide_next(work, decisions, ready_before, progress.started_us)) {
                 break;
             }
             journal(first_seq);
-            ++items;
-            out_of_time = time_is_up(host, started_us, max_time_us);
+            progress.applied(host);
         }
     }
+}
+
+// Consume a bounded snapshot of the queue, preserving work-before-input order.
+void ayni_kernel::take_queued_inputs(StepBudget &progress) {
     // Only the events already queued are taken; later ones wait for the next
     // step. An event's occurrences fall due at the step's start, and the
     // step reports the work they make due as ready.
     if (takes_events()) {
         uint32_t waiting = ingress.queued();
         ayni::catalog::CatalogId source;
-        while (waiting > 0U && items < max_items && !out_of_time && takes_event_now() &&
+        while (waiting > 0U && progress.available() && takes_event_now() &&
                ingress.take_local_input(source)) {
             --waiting;
-            ++items;
-            handle_local_input(source, started_us);
-            out_of_time = time_is_up(host, started_us, max_time_us);
+            handle_local_input(source, progress.started_us);
+            progress.applied(host);
         }
     }
-    if (appends() && log.advance(host.monotonic_now_us(host.ctx))) {
-        settle_log();
-        if (!settle_revocations(false)) {
-            enter_restricted(AYNI_RESTRICTION_INTERNAL);
-        }
-    }
-    if (lifecycle == AYNI_LIFECYCLE_DRAINING && completions.in_flight() == 0U &&
-        (!appends() || log.idle() || log.failure() != AYNI_RESTRICTION_NONE) &&
-        !revocation_ready()) {
-        events_discarded += ingress.close();
-        lifecycle = AYNI_LIFECYCLE_STOPPED;
-    }
+}
 
+// Report all readiness even when this call spent its budget: a false idle
+// would lose the owner's next wakeup. Slot and storage backpressure still apply.
+void ayni_kernel::report_step(const StepBudget &progress, ayni_step_report_v1 &report) {
     // A request waiting for a slot is not ready: the post that frees one
     // wakes the owner.
     const bool boot_due =
         (lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_FENCED) &&
-        !maintaining() && boot.wants_advance(started_us) && completions.has_free_slot();
-    const bool log_due = appends() && log.wants_advance(started_us) && completions.has_free_slot();
+        !maintaining() && boot.wants_advance(progress.started_us) && completions.has_free_slot();
+    const bool log_due =
+        appends() && log.wants_advance(progress.started_us) && completions.has_free_slot();
     // DRAINING and RESTRICTED do no due work and decide nothing (ADR-0018).
     // Runs after the time budget is spent too: more_ready must not drop due
     // work. A task still READY waits for a decision, also one that a
@@ -183,20 +217,21 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     // Without room, all of it waits for an append's post, which wakes the
     // owner.
     uint64_t next_deadline_us = ayni::work::no_time;
-    const bool work_due = lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
-                          (ayni::kernel::refresh_due_work(work, started_us, next_deadline_us) ||
-                           ayni::kernel::awaits_decision(work));
-    const bool maintenance_due =
-        maintaining() && maintenance.wants_advance(started_us) && completions.has_free_slot();
+    const bool work_due =
+        lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
+        (ayni::kernel::refresh_due_work(work, progress.started_us, next_deadline_us) ||
+         ayni::kernel::awaits_decision(work));
+    const bool maintenance_due = maintaining() && maintenance.wants_advance(progress.started_us) &&
+                                 completions.has_free_slot();
     // A request held back by the write interval or a retry backoff is due
     // later; one due already is in more_ready instead.
     const uint64_t storage_due_us = storage_deadline();
-    if (storage_due_us > started_us && storage_due_us < next_deadline_us) {
+    if (storage_due_us > progress.started_us && storage_due_us < next_deadline_us) {
         next_deadline_us = storage_due_us;
     }
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
-    report.items_done = items;
+    report.items_done = progress.items;
     const bool events_due = takes_events() && takes_event_now() && ingress.queued() > 0U;
     report.more_ready = completions.posted_count() > 0U || boot_due || log_due || maintenance_due ||
                                 events_due || work_due || revocation_ready()
@@ -204,7 +239,6 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
                             : 0U;
     report.next_deadline_us = next_deadline_us;
     report.durable_seq = durable_seq();
-    return AYNI_OK;
 }
 
 ayni_status_t ayni_kernel::begin_shutdown() {
@@ -343,13 +377,12 @@ void ayni_kernel::settle_recovery() {
         // No part of a log recovery could not replay is visible (ADR-0026).
         // A fence that could not isolate the old writer replayed nothing,
         // and the model it keeps stays readable for diagnosis.
-        if (lifecycle == AYNI_LIFECYCLE_RECOVERING &&
-            boot.restriction() != AYNI_RESTRICTION_OWNER_BINDING_MISMATCH) {
-            replay.discard();
-        } else if (boot.restriction() == AYNI_RESTRICTION_OWNER_BINDING_MISMATCH) {
+        if (boot.restriction() == AYNI_RESTRICTION_OWNER_BINDING_MISMATCH) {
             // The prefix was validated completely. A Host binding mismatch
             // cannot authorize it, but does not erase its diagnostic state.
             replay.finish(host.monotonic_now_us(host.ctx));
+        } else if (lifecycle == AYNI_LIFECYCLE_RECOVERING) {
+            replay.discard();
         }
         enter_restricted(boot.restriction());
         break;
@@ -395,7 +428,7 @@ void ayni_kernel::enter_running() {
               batch_max);
     log_started_ = true;
     lifecycle = AYNI_LIFECYCLE_RUNNING;
-    if (!settle_revocations(true)) {
+    if (!reconcile_recovered_revocations()) {
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         return;
     }
@@ -512,38 +545,42 @@ void ayni_kernel::settle_maintenance() {
               batch_max);
 }
 
-// Release each volatile deny only after its exact mapping is acknowledged
-// by this writer or was validated as part of the complete recovered prefix.
-bool ayni_kernel::settle_revocations(bool recovered) {
-    const auto handoff = [this](const ayni::kernel::PendingRevoke &pending) {
-        const ayni::kernel::CommandMapping *matched = nullptr;
-        return work.commands.recovered_revoke(pending, matched) ==
-                   ayni::kernel::CommandTable::Lookup::retried &&
-               matched != nullptr && work.grants.release_gate(pending.accepted.target_grant_id) &&
-               work.commands.retire_pending(pending.accepted.principal_id,
-                                            pending.accepted.command_id);
-    };
-    if (!recovered) {
-        while (const auto *pending =
-                   work.commands.next_durable_pending(log.boot_epoch(), log.durable_seq())) {
-            if (!handoff(*pending)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    // The complete recovered prefix is durable regardless of the abandoned
-    // writer's queued stamp. Only the retained full canonical proves identity.
-    for (uint32_t index = 0; index < work.commands.size(); ++index) {
-        const auto &mapping = work.commands.at(index);
-        const auto *pending = work.commands.pending(mapping.principal_id, mapping.command_id);
-        if (pending != nullptr && !handoff(*pending)) {
+// C-AUTH-027: release the deny before retiring its pinned command, but only
+// after the full accepted identity matches a retained durable result.
+bool ayni_kernel::handoff_revocation(const ayni::kernel::PendingRevoke &pending) {
+    const ayni::kernel::CommandMapping *matched = nullptr;
+    return work.commands.recovered_revoke(pending, matched) ==
+               ayni::kernel::CommandTable::Lookup::retried &&
+           matched != nullptr && work.grants.release_gate(pending.accepted.target_grant_id) &&
+           work.commands.retire_pending(pending.accepted.principal_id, pending.accepted.command_id);
+}
+
+// The active writer acknowledges only controls queued in that same boot.
+bool ayni_kernel::retire_durable_revocations() {
+    while (const auto *pending =
+               work.commands.next_durable_pending(log.boot_epoch(), log.durable_seq())) {
+        if (!handoff_revocation(*pending)) {
             return false;
         }
     }
     return true;
 }
 
+// The complete recovered prefix is durable regardless of the abandoned
+// writer's queued stamp. Only the retained full canonical proves identity.
+bool ayni_kernel::reconcile_recovered_revocations() {
+    for (uint32_t index = 0; index < work.commands.size(); ++index) {
+        const auto &mapping = work.commands.at(index);
+        const auto *pending = work.commands.pending(mapping.principal_id, mapping.command_id);
+        if (pending != nullptr && !handoff_revocation(*pending)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// A pending control or cleanup can make progress only with writable space;
+// draining accepts controls already promised, but creates no cleanup work.
 bool ayni_kernel::revocation_ready() const {
     if (!appends() || !has_room()) {
         return false;

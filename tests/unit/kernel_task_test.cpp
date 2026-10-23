@@ -89,6 +89,19 @@ void exhaust_goal(WorkNode &work, uint64_t goal_id) {
     const_cast<ayni::work::Goal &>(goals.at(index)).revision = max_revision;
 }
 
+// ADR-0035 decision 11: issuing the oldest pending append
+// remains possible after the final item was spent deriving a Task.
+TEST(WorkTask, the_last_item_can_derive_work_without_delaying_its_pending_append) {
+    WorkNode work;
+    work.run();
+    const uint64_t goal_id = once_goal(work);
+    work.node().sim().advance_us(10000);
+    ASSERT_EQ(work.node().sim().pending_storage(), 0U);
+    EXPECT_EQ(work.node().step(1).items_done, 1U);
+    EXPECT_EQ(work.goal(goal_id).occurrences, 1U);
+    EXPECT_EQ(work.node().sim().pending_storage(), 1U);
+}
+
 // --- Derivation -----------------------------------------------------------
 
 // ADR-0018 decisions 4 and 8: the intent creates the goal and wakes the

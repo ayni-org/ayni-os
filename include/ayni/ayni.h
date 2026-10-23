@@ -853,9 +853,13 @@ typedef uint32_t ayni_reason_t;
 #define AYNI_REASON_GRANT_CHANNEL ((ayni_reason_t)54)
 /* UNSUPPORTED: Scene or quota authorization is not implemented. */
 #define AYNI_REASON_GRANT_UNSUPPORTED ((ayni_reason_t)55)
+/* The target or an ancestor is revoked or protected by its deny gate. Since 0.19. */
 #define AYNI_REASON_GRANT_REVOKED ((ayni_reason_t)56)
+/* Another accepted revocation already targets this Grant. Since 0.19. */
 #define AYNI_REASON_REVOCATION_PENDING ((ayni_reason_t)57)
+/* Accepted revocations pin every result slot for this principal. Since 0.19. */
 #define AYNI_REASON_COMMAND_PINNED ((ayni_reason_t)58)
+/* The bounded deny-gate or pending-control storage is full. Since 0.19. */
 #define AYNI_REASON_REVOCATION_CAPACITY ((ayni_reason_t)59)
 
 /* Classified failure detail. Carries a reason and the object it concerns,

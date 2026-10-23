@@ -99,6 +99,26 @@ bool matches_retained_revocation(const CommandMapping &mapping, const authority:
            (grant.lifecycle == AYNI_GRANT_EXPIRED || grant.lifecycle == AYNI_GRANT_REVOKED);
 }
 
+// C-STORE-015/017: parents precede children even when a terminal slot was
+// reused. Both retained tables expose immutable depth; the writer owns the
+// bounded scan cursor and never changes either table during a snapshot.
+template <typename Table>
+bool next_at_depth(const Table &table, uint32_t max_depth, uint32_t &depth, uint32_t &index) {
+    for (;;) {
+        while (index < table.size() && table.at(index).depth != depth) {
+            ++index;
+        }
+        if (index < table.size()) {
+            return true;
+        }
+        if (depth == max_depth) {
+            return false;
+        }
+        ++depth;
+        index = 0;
+    }
+}
+
 void count(SnapshotLayout &layout, uint32_t body) {
     layout.payload_length += record_prefix + body;
     ++layout.record_count;
@@ -209,97 +229,95 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             depth_ = 0;
             break;
         case Section::grants:
-            while (index_ < model_.grants.size() && model_.grants.at(index_).depth != depth_) {
-                ++index_;
-            }
-            if (index_ < model_.grants.size()) {
+            if (next_at_depth(model_.grants, AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX, depth_, index_)) {
                 type = authority::grant_record_type;
                 size = authority::grant_snapshot_record_size(
                     model_.grants.at(index_), authority::grant_snapshot_record_version);
                 return true;
-            }
-            if (depth_ < AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX) {
-                ++depth_;
-                index_ = 0;
-                break;
             }
             section_ = Section::goals;
             index_ = 0;
             depth_ = 0;
             break;
         case Section::goals:
-            // Parents precede children even after table slots have been
-            // reused. Depth has a fixed, small upper bound.
-            while (index_ < model_.goals.size() && model_.goals.at(index_).depth != depth_) {
-                ++index_;
-            }
-            if (index_ < model_.goals.size()) {
+            if (next_at_depth(model_.goals, AYNI_GOAL_DEPTH_MAX_MAX, depth_, index_)) {
                 type = work::goal_record_type;
                 size = work::goal_record_size(model_.goals.at(index_)) + goal_extra;
                 return true;
-            }
-            if (depth_ < AYNI_GOAL_DEPTH_MAX_MAX) {
-                ++depth_;
-                index_ = 0;
-                break;
             }
             section_ = Section::tasks;
             index_ = 0;
             break;
         case Section::tasks:
-            if (index_ >= model_.tasks.size()) {
-                section_ = Section::commands;
-                break;
-            }
-            if (task_part_ == TaskPart::task) {
-                type = work::task_record_type;
-                size = task_size;
+            if (next_task_record(type, size)) {
                 return true;
             }
-            if (task_part_ == TaskPart::steps) {
-                if (step_ < model_.tasks.at(index_).step_count) {
-                    type = work::task_steps_record_type;
-                    size = step_record_size(model_.tasks.step(index_, step_).size());
-                    return true;
-                }
-                task_part_ = TaskPart::checkpoint;
-            }
-            // A task no strategy wrote a checkpoint for has none.
-            if (task_part_ == TaskPart::checkpoint) {
-                if (model_.tasks.at(index_).checkpoint_writer_version != 0U) {
-                    type = work::task_checkpoint_record_type;
-                    size = work::task_checkpoint_record_size(model_.tasks.at(index_));
-                    return true;
-                }
-                task_part_ = TaskPart::state;
-            }
-            type = work::task_state_record_type;
-            size = work::task_state_record_size;
-            return true;
-        // The command with the next commit_seq; the table keeps no order.
-        case Section::commands: {
-            bool found = false;
-            uint64_t first = UINT64_MAX;
-            for (uint32_t index = 0; index < model_.commands.size(); ++index) {
-                const CommandMapping &mapping = model_.commands.at(index);
-                if (mapping.commit_seq > command_after_seq_ && mapping.commit_seq < first) {
-                    first = mapping.commit_seq;
-                    command_index_ = index;
-                    found = true;
-                }
-            }
-            if (found) {
-                type = command_record_type;
-                size = command_size(model_.commands.at(command_index_));
+            section_ = Section::commands;
+            break;
+        case Section::commands:
+            if (next_command_record(type, size)) {
                 return true;
             }
             section_ = Section::done;
             break;
-        }
         case Section::done:
             return false;
         }
     }
+}
+
+// A Task's checkpoint is optional, but its final state must follow all steps;
+// selection does not consume the record until its complete bytes fit the page.
+bool WorkSnapshotWriter::next_task_record(uint16_t &type, uint32_t &size) {
+    if (index_ >= model_.tasks.size()) {
+        return false;
+    }
+    if (task_part_ == TaskPart::task) {
+        type = work::task_record_type;
+        size = task_size;
+        return true;
+    }
+    if (task_part_ == TaskPart::steps) {
+        if (step_ < model_.tasks.at(index_).step_count) {
+            type = work::task_steps_record_type;
+            size = step_record_size(model_.tasks.step(index_, step_).size());
+            return true;
+        }
+        task_part_ = TaskPart::checkpoint;
+    }
+    // A task no strategy wrote a checkpoint for has none.
+    if (task_part_ == TaskPart::checkpoint) {
+        if (model_.tasks.at(index_).checkpoint_writer_version != 0U) {
+            type = work::task_checkpoint_record_type;
+            size = work::task_checkpoint_record_size(model_.tasks.at(index_));
+            return true;
+        }
+        task_part_ = TaskPart::state;
+    }
+    type = work::task_state_record_type;
+    size = work::task_state_record_size;
+    return true;
+}
+
+// The table keeps no order; select the next original acceptance sequence so
+// replay restores the same retry window and eviction floor (ADR-0027).
+bool WorkSnapshotWriter::next_command_record(uint16_t &type, uint32_t &size) {
+    bool found = false;
+    uint64_t first = UINT64_MAX;
+    for (uint32_t index = 0; index < model_.commands.size(); ++index) {
+        const CommandMapping &mapping = model_.commands.at(index);
+        if (mapping.commit_seq > command_after_seq_ && mapping.commit_seq < first) {
+            first = mapping.commit_seq;
+            command_index_ = index;
+            found = true;
+        }
+    }
+    if (found) {
+        type = command_record_type;
+        size = command_size(model_.commands.at(command_index_));
+        return true;
+    }
+    return false;
 }
 
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t size) {

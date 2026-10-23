@@ -24,6 +24,10 @@ Grant 的结构体、记录与命令分别重复标志和期限规则。创建�
 9. **回执与版本说明（R2b2）。** 查询复用 pending outcome；唯一持久升级依据当前 writer 的已确认 sequence。reload 先清 queued stamp、再恢复窗口、最后发布完成状态，因此不以跨 boot 的公开 floor 推断持久。带命令 submit 从保留回执填充，commandless 从本次 transition 填充。恢复分类注释及静态版本断言覆盖 D 已有记录；补充逐测试契约引用。
 10. **内部 optional 的取舍（R2b2）。** C++17 `std::optional` 只存放有界、平凡值，不分配堆；仅使用受前置条件保护的解引用及 reset，不用可抛异常的 `value()`。它不进入 C ABI、wire 或持久记录。架构标准头白名单新增 `optional`，无堆符号和 no-exceptions 构建检查继续执行。相较为每种值另造带布尔标志的容器，标准值类型清楚表达存在性，维护成本更低。
 
+11. **有界 step 编排（R2b3）。** `step()` 保留阶段顺序：completion、恢复/维护、撤销、到期工作/策略、输入、日志推进与报告。各阶段为完整具名步骤；单次 `StepBudget` 值组合开始时刻、数量和耗时状态，不是 Kernel 字段。保持原有时钟读取点：应用普通 item 后读取时间，boot/maintenance 各一次的推进只计数量，日志 append 在预算用尽后仍可发起。报告始终重新计算就绪与期限，不能因本次预算耗尽丢唤醒。
+12. **撤销交接分路（R2b3）。** 当前 writer 通过 exact boot/sequence 选择已持久 pending；完成恢复后通过保留的完整 canonical 逐项对账。两者使用不同具名方法，共享最终 gate 释放与 pin 退休，不再用布尔参数切换算法。 保留一项重复验证例外：释放 gate 前先核对完整身份，CommandTable 的 retire_pending 再保护自己的入口；省略前者会改变失败时的拒绝保护，省略后者则削弱属主边界，本次不新增绕过检查的内部接口。绑定失配的诊断保留先判断一次，其余 RECOVERING 错误清除部分模型，保持 FENCED 失败的旧诊断状态。
+13. **快照选择归属（R2b3）。** writer 的跨 section 调度、Task 的 step/checkpoint/state 顺序及命令原接受顺序分别表达为具名步骤。Grant/Goal 的父先子后扫描复用只读深度遍历，仍使用各自的既定深度上界；扫描 cursor 归 writer，冻结模型只经公开事实访问。记录放不下一页时不消费，仍可用更大缓冲重试。没有新记录、arena 字段或 ABI 数值变化；补齐已有四项撤销原因码的含义及 Since 0.19。
+
 ## 后果
 
 - 更改主体状态准入只需改 AgentTable 规则；更改 Grant 标志只改 authority 规则及其入口错误顺序测试；更换 Host 不改变这些 portable Core 规则。
@@ -54,3 +58,7 @@ GCC Debug、Release、ASan/UBSan、TSan 和 Clang Debug 全部通过；模拟器
 GCC Debug、Release、ASan/UBSan、TSan 和 Clang Debug 全部通过；模拟器、工具/依赖/契约/可读性/格式检查及 ESP-IDF v6.0.3 固件编译通过。默认/最小工作容量的 arena 需求各增加 8 B，为 110,800/31,624 B，对齐仍为 8 B；这是私有候选/配对状态的布局变化，ABI 与记录版本未变。
 
 独立会话提出 20 项植入缺陷，首轮检出 13 项；补七项行为测试后，其余七项全部检出。撤销 scratch 删除前的行为证明通过；独立审查的测试契约注释意见已全部处理，无未关闭的生产问题。命令、逐项结果及四项可读性审查见 [#38](https://github.com/RobotSe7en/ayni/pull/38)；R2b 覆盖率仍在 R2b3 合并后统一测量。
+
+### R2b3
+
+实施中；本份构建、独立变异、审查及内存检查完成后补记。整个 R2b 合并后再量覆盖率。
