@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前写 `storage_schema=1`，明确读取 0、1；0 为迁移来源。布局以本文件和编解码测试为准，迁移切换见 ADR-0027；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，D完成/已合并状态随#28合并生效
+- **状态**：M1 当前写 `storage_schema=1`，明确读取 0、1；0 为迁移来源。布局以本文件和编解码测试为准，迁移切换见 ADR-0027；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -112,7 +112,7 @@ v2 canonical_format当前为1，必须有非空完整授权命令正文和GRANT/
 
 新增auth record缺REQUIRED、未知版本、正文非法或跨批不完整均不能被跳过；replay、Boot discovery（含已被快照覆盖的历史）、snapshot共享分类。持久状态超过本次scope/Grant/canonical配置界时报告容量受限，不截断或降成digest。
 
-### 撤销与恢复（ADR-0031，D Native 场景已验证，D完成/已合并状态随#28合并生效）
+### 撤销与恢复（ADR-0031，D Native 场景已验证，#28 已合并）
 
 kind10 的 canonical 独立为16 B小端 `kind u32 / original_expected_revision u32 / target u64`，均要求对应非零合法值；v3仅承载revoke，effect为CHANGED/NO_CHANGE/TARGET_GONE，结果revision分别为2/2/0，重算digest并校验target。原始请求codec只要求expected非零，保留新请求expected999的CAS冲突语义；已接受v3 mapping的共享写/读/restore校验则要求原expected为1或2，对三个effect一律拒绝不可能的999。它不改变kind9 raw格式1。首次CAS接受后不再重检，不能强制CHANGED的原expected为1：未持久child清理接受expected2，reload为ACTIVE1后仍可合法应用CHANGED2。
 

@@ -18,7 +18,7 @@ A–D 的状态归属做对了：`struct ayni_kernel` 没有新字段，状态�
 3. **PR 3 行为修复**：第 4 节的 A1，先写失败的测试再改。
 4. **PR 4 文档**：第 3.5 节的 DOC1、DOC2，重写交接状态与计划的“当前状态”，删掉过期的条件句，补契约验证列。
 
-做完后停下，等用户决定何时开始 `MA-006` E。
+上述停止点已由用户于 2026-10-23 撤销；完成整理后继续 E/F，按当前实施计划和 workflow 交付。
 
 ## 2. 每一项怎么处理
 
@@ -175,4 +175,39 @@ exception and the reason in its How section.
 - 整理 PR 只改结构、注释与测试：现有测试不改（必须改的写明原因），`ayni_kernel_memory_requirements` 两组数字不变或写明变化的原因。
 - 每个 PR 的 Review 小节对四项各有结论；植入缺陷按第 5 节的写法报告。
 - `tools/check_readability.py` 在 main 上通过，基线比 643f586 时少。
-- 做完后在 `reports/core/m1-progress.md` 的交接状态里写一句结论，停下等用户决定何时开始 E。
+- 做完后在 `reports/core/m1-progress.md` 的交接状态里写一句结论，停下等用户决定何时开始 E。（用户 2026-10-23 已授权继续 E/F，旧停点撤销。）
+
+## 8. 整理关闭索引（2026-10-23）
+
+本节对照原始复查编号记录处理归属；上文的问题、基线和原始行号保留为历史记录。R1 的机器检查只覆盖可确定规则，不能代替语义可读性或架构审查。逐项变异、作者与独立审查结论见各 PR，ADR 记录决定和验证结论；本机原始构建/变异日志未提交，不把它们当作仓库内证据。
+
+| 复查项 | 处理与当前属主 | 交付依据 |
+|---|---|---|
+| A1 | `work/goal/goal_table.cpp` 的 `allows` 统一拒绝未确认授权的普通暂停/恢复；C ABI 先失败后修复，保留真实 Task 进度和检查点 | ADR-0036、[#40](https://github.com/RobotSe7en/ayni/pull/40) |
+| A2/A2b/A2c | `kernel/work_replay.*` 保留分类/应用清单联动注释，补 authority REQUIRED 说明及已有版本断言 | ADR-0035、[#38](https://github.com/RobotSe7en/ayni/pull/38) |
+| A3 | `kernel::open_session` 接受已查到的 Principal；Session revision 明确为打开时捕获值 | ADR-0035、[#37](https://github.com/RobotSe7en/ayni/pull/37) |
+| A4 | `kernel_lifecycle.cpp` 恢复结算先判 owner mismatch，再区分 RECOVERING 丢弃 | ADR-0035、[#39](https://github.com/RobotSe7en/ayni/pull/39) |
+| A5 | owner/Grant 记录头引用统一持久布局 | ADR-0033、[#31](https://github.com/RobotSe7en/ayni/pull/31) |
+| B1/B2 | `catalog/capability` 共享结构/字节语义校验，结构前缀规则归低层所有调用者可用的属主 | ADR-0034、[#35](https://github.com/RobotSe7en/ayni/pull/35) |
+| B3 | 解析结果携带长度，注册应用不重跑验证；已验证编码步骤显式保留前置条件与结果 | ADR-0034、#35 |
+| B4/B5 | 域/值模块注释说明规范化、容量探测与用途；Scope 使用具名模式，字段规则与 stride 归属明确 | ADR-0034、#35 |
+| B6 | C-AUTH-017/018 及 Capability/Scope/成员限额引用已有测试；真实 Binding 消费仍标为后续 | 本次 R4；`contracts/domain/authority_and_trust.md`、`limits.md` |
+| C1 | `field_values` 统一规范值读取、写入、长度和集合比较；Scope/Grant 命令编码复用 | ADR-0034、#35 |
+| C2 | AgentTable 拥有主体准入；Grant 规则、管理会话与有界祖先检查各由现有模块维护 | ADR-0035、#37 |
+| C3 | ID 解析只经 `foundation/kernel_id.h`；Grant revision/记录长度具名；boot 从记录模块提取 Grant ID | ADR-0033、[#31](https://github.com/RobotSe7en/ayni/pull/31) |
+| C4 | Grant 生命周期/revision 与恢复期限不变量具名；CommandTable 以 optional 拥有完整暂存候选 | ADR-0035、#37/#38 |
+| C5 | Grant 表/记录/意图的类型、公开成员、回收和恢复分路说明补齐；保持不变量属主 | ADR-0033～0035、[#31](https://github.com/RobotSe7en/ayni/pull/31)/#37 |
+| C6 | Grant 准入/恢复拆成具名步骤；快照 writer 分离记录类别选择 | ADR-0035、#37/#39 |
+| C7 | Grant、重放、撤销、pending 和命令测试逐项补契约依据；补测覆盖首轮发现的真实空缺 | ADR-0035、#37/#38/#39 |
+| D1 | `WorkReplay::BatchPairing` 明确各类配对和合法组合，统一 discard | ADR-0035、#38 |
+| D2 | receipt 复用 pending outcome，仅使用当前 writer 确认升级；部分恢复不暴露普通窗口 | ADR-0035、#38 |
+| D3 | Grant 根判断、后继选择、终态更新和有界祖先遍历分别复用同一规则 | ADR-0035、#37 |
+| D4 | 终态 revision 和命令记录附加布局均具名并引用 records.md | ADR-0033、[#31](https://github.com/RobotSe7en/ayni/pull/31) |
+| D5 | 已有撤销原因码补含义/Since 0.19；恢复及撤销编排方法补语义说明 | ADR-0035、#38/#39 |
+| D6 | 删除前测试证明 revoke scratch 无消费者；step 委派有界阶段，实时退休与恢复对账分为具名操作 | ADR-0035、#38/#39 |
+| DOC1/DOC2 | 清理已合并状态的条件句；交接和当前状态只保留完成、后续与限制 | 本次 R4 |
+| DOC3、第 5/6 节 | AGENTS 使用当前进度入口；新增可读性规则、机器检查与诚实基线；四项人工检查在每份 PR 分别给结果 | ADR-0032、[#30](https://github.com/RobotSe7en/ayni/pull/30)；#36 更新分档工作流 |
+
+保留的取舍：Grant revision 作为持久公开事实保留，不改为推导字段；Kernel 的 Gate 移交检查与 CommandTable 的退休入口各自防御同一规范身份，ADR-0035 决策 12 明确这一重复检查例外。工具基线中的剩余历史项不属于上述 A–D 复查整改范围，不表示整个仓库可读性已无欠项。
+
+恢复边界：R3 只修普通控制，当前重启仍会以 `LEGACY_UNCONFIRMED` 停止全部恢复的活 Goal/Task。永久授权且元数据完整的新工作正常恢复、显式恢复及旧数据确认，是 E/F 的完成条件；不是本节已经验证的能力。

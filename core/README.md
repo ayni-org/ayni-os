@@ -15,13 +15,13 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 
 ## 当前状态
 
-`MA-010` E+F、`MA-006` A/B/C/D 的实现与验证范围见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md)、[ADR-0028](../docs/adr/0028-trusted-owner-binding-and-sessions.md)、[ADR-0029](../docs/adr/0029-capability-domains-and-scope-algebra.md)、[ADR-0030](../docs/adr/0030-grants-delegation-and-exact-command-identity.md)、[ADR-0031](../docs/adr/0031-revocation-gates-and-intent-receipts.md) 与 [契约追踪](../contracts/traceability.md)。A 已合并 #25，B 已由 #26 合并（`00a4126`），最终文档提交 `8fcc` 的 CI run 39726008701 八项全过；C 已实现 Grant/受限委派及确切命令/持久恢复，最终五配置各 784/784、49 项变异检出/1 等价、Core 分支覆盖 90.66%及 C 组件 96.19%、默认/最小内存量测通过；已由 #27 合并（`b133032`），代码与最终文档 CI 各八项全过。D 已接入 Gate、pending/pin、阶段回执与有界清理；正常基线及 fresh coverage 各892/892、126项定向通过，Core分支90.57%/D改动90.16%，内存多轮复核通过；五配置各892项及生产代码CI39735323115八项已过；35项有效变异为34原878检出、D30补测879检出，恢复normal879/SHA通过。D完成/已合并状态随#28合并生效，最终head的PR checks合并前须全绿。本次仅完成 C/D 后收尾停止，E/F 不开始。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
+`MA-010` 与 `MA-006` A–D 已合并，机制、限制与验证见 [ADR-0027](../docs/adr/0027-retries-writer-fences-snapshots-and-migration.md)、[ADR-0028](../docs/adr/0028-trusted-owner-binding-and-sessions.md)～[ADR-0031](../docs/adr/0031-revocation-gates-and-intent-receipts.md) 和 [契约追踪](../contracts/traceability.md)。整理及 E/F 的实际进度只记在 [M1 交接状态](../reports/core/m1-progress.md)。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过。
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
 | `kernel` | `kernel_api`、`work_api`：C ABI 参数检查、注册、会话、意图与查询；`kernel_lifecycle`：所有者线程的启动、工作、栅栏重载、维护与关闭编排；`kernel_layout`、`kernel_config`：有界内存与配置；`ingress/`、`completion/`：事件队列与完成槽；`boot/`：物理日志发现、快照与尾部恢复、writer 握手及启动记录；`commit/`、`command/`：日志提交与按 principal 有界的命令窗口；授权命令另保存原始 typed 规范请求，窗口与 scratch 均由 command 模块拥有，按完整字节比较；专用`pending_revoke`保存易失撤销身份/queued stamp，窗口统一pin防遗忘；`intent_receipt`编排三个阶段查询；`storage/`：共享写频与重试调度、日志上限与介质空间预算（`storage_budget`）、快照发布与轮转状态机（`storage_maintenance`）；`intent/`：工作模型、意图解码/规则、触发和策略决定；`work_journal`、`work_replay`、`work_snapshot`：按领域属主编排持久导出与恢复（ADR-0015～0027） | M0 |
 | `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效与记录；`task/`：Task 生命周期、容量回收、步骤与私有检查点；各表提供静态快照导入并保留原始 stamp，恢复的临时兼容覆盖与持久状态分开；`propagation`：跨表放行、派生选择与传播。调用与动作仍随后续包（ADR-0017～0027） | M1（`MA-004`） |
-| `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec；失配恢复只读受限，缺授权元数据的恢复工作保留并禁行（ADR-0017、0028）；`scope/`：有限字段规范化、typed/encoded 覆盖与实际请求完整性（ADR-0029）；`grant/`：Grant 创建/受限委派、typed 查询、当前 boot 期限、持久终态叶节点回收与记录 codec，保存完整源域和展开 Scope（ADR-0030）；D新增独立易失Gate、全祖先拒绝、持久根撤销/有界清理cursor与独立cleanup_stamp（ADR-0031，已验证，交付状态随#28合并生效）；审批/完整工作准入随 E/F，Scene 授权仍不支持 | M1（`MA-004`） |
+| `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec；失配恢复只读受限，缺授权元数据的恢复工作保留并禁行（ADR-0017、0028）；`scope/`：有限字段规范化、typed/encoded 覆盖与实际请求完整性（ADR-0029）；`grant/`：Grant 创建/受限委派、typed 查询、当前 boot 期限、持久终态叶节点回收与记录 codec，保存完整源域和展开 Scope（ADR-0030）；D新增独立易失Gate、全祖先拒绝、持久根撤销/有界清理cursor与独立cleanup_stamp（ADR-0031，#28 已合并）；审批/完整工作准入随 E/F，Scene 授权仍不支持 | M1（`MA-004`） |
 | `resources` | 无代码 | M1（`MA-018`） |
 | `budget` | 无代码 | M1（`MA-018`） |
 | `knowledge` | 无代码 | M1（`MA-011`） |

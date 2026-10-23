@@ -6,7 +6,7 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 32 | 9 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 32 | 10 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -24,7 +24,7 @@
 | [storage/records.md](storage/records.md) | 17 | 14 |
 | [wire/envelope.md](wire/envelope.md) | 19 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 322 | 93 |
+| 合计 | 322 | 94 |
 
 ## 计划章节 → 契约文档
 
@@ -96,7 +96,7 @@
 | `MA-003` | C-LIMIT-001、C-LIMIT-008、C-LIMIT-011、C-STOP-001、C-HOST-002、C-HOST-003、C-HOST-006、C-HOST-018 |
 | `MA-004` | C-AUTH-004、C-WIRE-014 |
 | `MA-005` | C-LIFE-002、C-LIFE-005、C-LIFE-006、C-LIFE-007、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-018、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
-| `MA-006` | C-AUTH-001、C-AUTH-003、C-AUTH-004、C-AUTH-005、C-AUTH-008、C-AUTH-010、C-AUTH-017、C-AUTH-018、C-POLICY-003 |
+| `MA-006` | C-AUTH-001、C-AUTH-003、C-AUTH-004、C-AUTH-005、C-AUTH-008、C-AUTH-010、C-POLICY-003 |
 | `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-HOST-020、C-HOST-021、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
 | `MA-008` | C-AUTH-005、C-AUTH-006、C-AUTH-018、C-CALL-001、C-CALL-003、C-CALL-004、C-BIND-002、C-BIND-003、C-COMMIT-012、C-LIFE-003、C-LIFE-021、C-LIFE-022、C-BUDGET-005、C-VER-030、C-HOST-013、C-POLICY-008、C-POLICY-009、C-PROV-002、C-PROV-003、C-PROV-010、C-STORE-011 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-008、C-POLICY-011 |
@@ -166,6 +166,7 @@
 | 条款 | 验证 |
 |---|---|
 | C-AUTH-010 | M1 已实现（范围：意图只带 `session_id`，主体、渠道与来源取自会话；ABI 0.16 将主体注册及会话建立声明移至 Host 受管头文件，核对已持久所有者与认证绑定版本，首次绑定持久前拒绝开会话；这是可信原生代码的 API 边界，不是进程内隔离，ADR-0028）：`WorkModel.sessions_open_for_a_registered_principal_up_to_capacity`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`、`SessionTable.closed_session_is_gone_and_frees_its_place`、`OwnerBindingApi.first_binding_and_instances_share_a_transition_and_sessions_wait_for_durability`、`OwnerBindingApi.bad_session_binding_revision_does_not_write_the_output_or_consume_an_id`、`OwnerBindingApi.changed_principal_or_binding_revision_restricts_without_writing_or_losing_goals`；渠道信任级别对授权的影响随 `MA-006`；E1 步骤 7 |
+| C-AUTH-017 | M1 已实现（Capability/Scope 机制）：`CapabilityRegistry.fields_and_token_members_are_sorted_and_duplicate_members_are_removed`、`CapabilityRegistry.malformed_field_identity_usage_type_or_unit_is_rejected`、`Scope.omitted_fields_and_explicit_whole_domain_have_identical_canonical_bytes`、`Scope.enum_and_identifier_types_cannot_be_substituted_or_given_unknown_members`；ADR-0029/0034 |
 | C-AUTH-019 | M1 已实现（Grant 创建、管理会话与持久父门控）：`GrantApi.new_commands_require_management_nonzero_command_and_explicit_supported_features`、`GrantApi.delegation_requires_a_durable_parent_revision_and_one_covering_scope`；ADR-0030 |
 | C-AUTH-020 | M1 已实现（完整原始域与易失兼容性覆盖）：`GrantTable.absent_or_changed_catalog_only_holds_persistent_facts_and_can_be_resolved_again`、`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`；ADR-0030 |
 | C-AUTH-021 | M1 已实现（当前 boot 期限、即时失效与恢复不重锚）：`GrantApi.arrival_at_deadline_denies_immediately_before_step_records_the_terminal_state`、`GrantApi.restart_keeps_permanent_grants_and_expires_finite_grants_without_reanchoring`；C-STORE-014；ADR-0030 |
