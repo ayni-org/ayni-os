@@ -48,6 +48,8 @@
 | [0034](0034-field-values-and-scope-admission.md) | 字段值编解码与 Scope 准入结果复用 | 已接受（R2a2；验证见正文） | §9.1、§14.1 |
 | [0035](0035-grant-rules-and-bounded-chain-admission.md) | Grant、命令与 Kernel 编排的状态归属 | 已接受（R2b；验证见正文） | §9.1、§14.1 |
 
+| [0036](0036-unconfirmed-goal-control-guard.md) | 未确认授权的 Goal 普通控制守卫 | 实施中 | §9.1、§14.1 |
+
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。

@@ -437,6 +437,59 @@ TEST(OwnerBindingApi, legacy_goal_and_task_stay_paused_without_advancing_occurre
     EXPECT_EQ(work.goal(goal_id).last_task_id, before.last_task_id);
 }
 
+// ADR-0028 decision 4 / C-LIFE-021: ordinary control cannot confirm
+// recovered authority, regardless of the underlying user-pause state.
+static void expect_unconfirmed_goal_controls(ayni_goal_lifecycle_t stored_lifecycle) {
+    for (const auto kind : {AYNI_INTENT_GOAL_PAUSE, AYNI_INTENT_GOAL_RESUME}) {
+        SCOPED_TRACE(kind);
+        WorkNode work;
+        work.run();
+        const auto created =
+            work.create(WorkNode::create_body(work.instance(agent_a), 0, "folder"));
+        ASSERT_EQ(created.status, AYNI_OK);
+        const auto id = created.result.object.id;
+        if (stored_lifecycle == AYNI_GOAL_PAUSED) {
+            ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, id).status, AYNI_OK);
+        }
+        const auto stored = work.goal(id);
+        store_through(work.node(), stored.commit_seq);
+        work.node().reboot();
+        work.node().recover();
+        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        work.reopen_session();
+        const auto before = work.goal(id);
+        ASSERT_EQ(before.lifecycle, AYNI_GOAL_PAUSED);
+        ASSERT_EQ(before.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+        const auto durable_before = work.node().info().durable_seq;
+
+        expect_refused(work.change(kind, id, before.revision), AYNI_INVALID_STATE,
+                       AYNI_REASON_GOAL_STATE, AYNI_OBJECT_GOAL, id);
+        const auto after = work.goal(id);
+        EXPECT_EQ(after.lifecycle, before.lifecycle);
+        EXPECT_EQ(after.hold_reason, before.hold_reason);
+        EXPECT_EQ(after.revision, before.revision);
+        EXPECT_EQ(after.commit_seq, before.commit_seq);
+        EXPECT_EQ(after.occurrences, before.occurrences);
+        EXPECT_EQ(after.last_task_id, before.last_task_id);
+        EXPECT_EQ(work.node().info().durable_seq, durable_before);
+        // Revision conflict still precedes the hold; cancel remains permitted.
+        expect_refused(work.change(kind, id, before.revision + 1U), AYNI_REVISION_CONFLICT,
+                       AYNI_REASON_GOAL_REVISION, AYNI_OBJECT_GOAL, id);
+        ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, id, before.revision).status, AYNI_OK);
+        EXPECT_EQ(work.goal(id).lifecycle, AYNI_GOAL_CANCELLED);
+    }
+}
+
+// ADR-0028 decision 4: effective PAUSED must not permit an underlying ACTIVE pause.
+TEST(OwnerBindingApi, recovered_active_goal_refuses_ordinary_pause_and_resume) {
+    expect_unconfirmed_goal_controls(AYNI_GOAL_ACTIVE);
+}
+
+// ADR-0028 decision 4: ordinary resume cannot remove a recovered user's separate hold.
+TEST(OwnerBindingApi, recovered_user_paused_goal_refuses_ordinary_pause_and_resume) {
+    expect_unconfirmed_goal_controls(AYNI_GOAL_PAUSED);
+}
+
 TEST(OwnerBindingApi, legacy_hold_does_not_replace_a_missing_goal_type_diagnostic) {
     WorkNode work;
     work.run();
