@@ -6,7 +6,7 @@
 
 | 工具 | 版本 | 用途 |
 |---|---|---|
-| Ubuntu | 24.04.5 LTS，x86_64 | 本地与 CI（`ubuntu-24.04`） |
+| Ubuntu | 24.04.5 LTS，x86_64 | 本地；CI 用 `ubuntu:24.04` 容器（见“CI 机器”） |
 | CMake | M0：3.28.3；M1 容器：3.31.6（最低要求 3.22） | Native 构建 |
 | Ninja | 1.11.1 | CMake 预设使用的生成器 |
 | GCC | 13.3.0 | Native 构建，含 ASan/UBSan 与 TSan |
@@ -40,7 +40,7 @@ sudo apt-get install -y build-essential clang cmake ninja-build python3 \
 | `native-asan` | `build/native-asan` | Debug，启用 AddressSanitizer 与 UndefinedBehaviorSanitizer |
 | `native-tsan` | `build/native-tsan` | Debug，启用 ThreadSanitizer，覆盖入口队列与完成槽的多线程测试（ADR-0015） |
 
-GCC 13 自带的 ThreadSanitizer 在 mmap 随机化为 32 位（`/proc/sys/vm/mmap_rnd_bits`）的内核上可能报 `unexpected memory mapping` 而无法启动，这时先执行 `sudo sysctl vm.mmap_rnd_bits=28`；CI 的 TSan 任务固定这样设置。M1 本轮先读到宿主值为 32，已按 workflow 在运行 TSan 前设置为 28；容器共享宿主内核，镜像本身不会改变这个参数。
+GCC 13 自带的 ThreadSanitizer 在 mmap 随机化为 32 位（`/proc/sys/vm/mmap_rnd_bits`）的内核上可能报 `unexpected memory mapping` 而无法启动，这时先执行 `sudo sysctl vm.mmap_rnd_bits=28`；CI 机器把它固定为 28，TSan 任务开始前检查（见“CI 机器”）。M1 本轮先读到宿主值为 32，已按 workflow 在运行 TSan 前设置为 28；容器共享宿主内核，镜像本身不会改变这个参数。
 
 ```sh
 cmake --preset native-debug
@@ -67,7 +67,17 @@ ctest --test-dir build/native --output-on-failure
 
 装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。因为有预编译头，还要设置 `CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime`，否则 ccache 不缓存单元测试。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
 
-CI 的 native 任务设置 `CTEST_PARALLEL_LEVEL=2`（私有仓库的 runner 为 2 vCPU），并用 ccache 加 `actions/cache` 按编译器与预设保存编译缓存，GoogleTest 发布包也存在同一份缓存里。ESP-IDF 任务同样用 ccache 和 `actions/cache` 保存固件的编译缓存。main 上的缓存来自每周一的全量运行，PR 从那里开始。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
+### CI 机器
+
+CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门跑 CI 的 Ubuntu Server 26.10 机器，runner 用一个没有 sudo 的用户运行，开机自启。每个 job 都在容器里跑：检查、native 与 clang-tidy 用 `ubuntu:24.04` 镜像，开头用 apt 装工具（GCC 13.3.0、Clang 与 clang-format 18.1.3、CMake 3.28.3、ccache 4.9.1），版本与宿主系统无关；固件用 `espressif/idf:v6.0.3`。编译缓存与 GoogleTest 发布包放在 runner 上的 Docker 卷里（`ayni-ccache`、`ayni-ccache-esp-idf`、`ayni-downloads`），跨运行保留。构建与测试并行度都是 4，按实测峰值定：四个任务时 ASan 构建约 1 GiB，固件约 0.7 GiB。容器里以 root 运行，所以每个 job 最后把工作目录的属主改回 runner 的用户，否则下一次运行删不掉这些文件。
+
+机器的一次性准备要 sudo，之后运行 CI 不需要：
+
+- 安装 Docker 与 Git；把 runner 的用户加进 docker 组（`sudo usermod -aG docker <用户>`），然后重启 runner 服务；
+- 在 `/etc/sysctl.d/99-ayni-tsan.conf` 写入 `vm.mmap_rnd_bits=28` 并执行 `sudo sysctl --system`：容器不能改宿主内核参数，TSan 任务开始前检查这个值；
+- 磁盘至少留 40 GB，ESP-IDF 镜像约 16 GB。
+
+清空缓存用 `docker volume rm ayni-ccache ayni-ccache-esp-idf ayni-downloads`。checks 任务的 “Runner resources” 一步打印 CPU、内存、磁盘与 mmap 随机化位数，换机器或调并行度时先看这里。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
 
 ### 离线配置 GoogleTest
 
