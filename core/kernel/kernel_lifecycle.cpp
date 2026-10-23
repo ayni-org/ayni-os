@@ -31,9 +31,9 @@ struct ayni_kernel::StepBudget {
     // Storage has its own admission checks; this answers only the call budget.
     bool available() const { return items < max_items && !out_of_time; }
     // Count one applied item and stop subsequent bounded loops if time is up.
-    void applied(const ayni_host_v1 &host) {
+    void applied(const ayni_host_v1 &ports) {
         ++items;
-        out_of_time = host.monotonic_now_us(host.ctx) - started_us >= max_time_us;
+        out_of_time = ports.monotonic_now_us(ports.ctx) - started_us >= max_time_us;
     }
 };
 
