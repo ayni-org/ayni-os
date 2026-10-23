@@ -144,8 +144,10 @@ exception and the reason in its How section.
 - A readability review states a result for each item in
   `docs/workflow.md` section 2 step 10, with file:line evidence, or with what
   was searched when nothing was found. One sentence covering every item is not
-  a result. The author's self-check (step 8) reports the same items separately.
-- Another agent or session writes the planted-defect list. The PR names who
+  a result. The author's self-check (step 8) reports the same items separately
+  in the PR's Review section.
+- Another agent or session writes the planted-defect list, by default the one
+  that does the independent review. The PR names who
   wrote it and gives the list (file, change, and the test that caught it) with
   the first-run result before any added test; results after added tests are
   reported separately.
@@ -155,8 +157,11 @@ exception and the reason in its How section.
 - Status documents stay short. The 交接状态 section of
   `reports/core/m1-progress.md` and the 当前状态 paragraph of
   `docs/ayni_v1.0.md` say what is done, what is next and what waits on the
-  user. CI run IDs, SHAs, coverage percentages and test counts belong in the
-  ADR's 验证 section and the PR body. Merge-conditional wording ("待合并",
-  "随 #N 合并生效", "合并前须全绿") is removed once the PR merges.
+  user. Commands and results, the planted-defect list, CI run IDs and test
+  counts belong in the PR body; the ADR's 验证 section states the outcome and
+  links the PR. Coverage is measured once each part has merged, not in every
+  PR (`docs/workflow.md` section 2 step 9). Merge-conditional wording
+  ("待合并", "随 #N 合并生效", "合并前须全绿") is removed once the PR merges.
 - A claim marked verified must be checkable from the repository, the PR or CI.
-  Evidence kept outside the repository is labelled as such.
+  Evidence kept outside the repository is labelled as such. Do not add hash
+  manifests or container memory peaks to the PR or ADR.
