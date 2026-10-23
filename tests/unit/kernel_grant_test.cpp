@@ -169,6 +169,7 @@ class GrantNode {
     uint64_t session = 0;
 };
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantApi, creation_copies_finite_scope_and_typed_queries_expand_omitted_fields) {
     GrantNode work;
     work.run();
@@ -218,6 +219,7 @@ TEST(GrantApi, creation_copies_finite_scope_and_typed_queries_expand_omitted_fie
     EXPECT_EQ(info.commit_seq, created.result.commit_seq);
 }
 
+// ADR-0030 decision 2: typed query outputs publish only a complete successful result.
 TEST(GrantApi, malformed_queries_never_publish_a_partial_output) {
     GrantNode work;
     work.run();
@@ -247,6 +249,7 @@ TEST(GrantApi, malformed_queries_never_publish_a_partial_output) {
     EXPECT_EQ(std::memcmp(&field, &original_field, sizeof(field)), 0);
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantApi, new_commands_require_management_nonzero_command_and_explicit_supported_features) {
     GrantNode work;
     work.run();
@@ -272,6 +275,7 @@ TEST(GrantApi, new_commands_require_management_nonzero_command_and_explicit_supp
     EXPECT_EQ(retried.result.commit_seq, accepted.result.commit_seq);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantApi, delegation_requires_a_durable_parent_revision_and_one_covering_scope) {
     GrantNode work;
     work.run();
@@ -295,6 +299,7 @@ TEST(GrantApi, delegation_requires_a_durable_parent_revision_and_one_covering_sc
     EXPECT_EQ(work.grant(accepted.result.object.id).parent_grant_id, created.result.object.id);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantApi, stopping_an_ancestor_subject_invalidates_a_child_owned_by_another_live_subject) {
     GrantNode work;
     work.run();
@@ -331,6 +336,7 @@ TEST(GrantApi, stopping_an_ancestor_subject_invalidates_a_child_owned_by_another
     EXPECT_EQ(work.submit(descendant, 4).status, AYNI_OK);
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantApi, arrival_at_deadline_denies_immediately_before_step_records_the_terminal_state) {
     GrantNode work;
     work.run();
@@ -358,6 +364,7 @@ TEST(GrantApi, arrival_at_deadline_denies_immediately_before_step_records_the_te
     EXPECT_EQ(retry.result.commit_seq, created.result.commit_seq);
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantApi, restart_keeps_permanent_grants_and_expires_finite_grants_without_reanchoring) {
     GrantNode work;
     work.run();
@@ -384,6 +391,7 @@ TEST(GrantApi, restart_keeps_permanent_grants_and_expires_finite_grants_without_
     EXPECT_GT(expired.commit_seq, limited.result.commit_seq);
 }
 
+// C-AUTH-020/022: exact saved catalog semantics bound one-parent delegation.
 TEST(GrantApi,
      missing_version_or_changed_catalog_holds_facts_but_exact_retry_precedes_current_semantics) {
     GrantNode work;
@@ -416,6 +424,7 @@ TEST(GrantApi,
     }
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantApi, only_a_durable_expired_leaf_can_make_room_and_retry_keeps_its_removed_reference) {
     GrantNode work;
     work.node.config().grant_capacity = 1;
@@ -445,6 +454,7 @@ TEST(GrantApi, only_a_durable_expired_leaf_can_make_room_and_retry_keeps_its_rem
     EXPECT_EQ(retry.result.commit_seq, created.result.commit_seq);
 }
 
+// ADR-0030 decision 8: recovery validates complete related facts before publication.
 TEST(GrantApi, interrupted_append_recovers_both_create_and_exact_mapping_or_neither) {
     for (const auto cut :
          {ayni::hosts::sim::CutAppend::lost, ayni::hosts::sim::CutAppend::stored}) {
@@ -482,6 +492,7 @@ TEST(GrantApi, interrupted_append_recovers_both_create_and_exact_mapping_or_neit
     }
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantApi, unknown_exact_capability_and_subject_are_refused_before_committing_or_mapping) {
     GrantNode work;
     work.run();
@@ -508,6 +519,7 @@ TEST(GrantApi, unknown_exact_capability_and_subject_are_refused_before_committin
     EXPECT_EQ(work.submit(valid, 1).status, AYNI_OK);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantApi, a_stopped_or_unregistered_subject_cannot_receive_a_new_grant) {
     for (const bool stopped : {false, true}) {
         GrantNode work;
@@ -536,6 +548,7 @@ TEST(GrantApi, a_stopped_or_unregistered_subject_cannot_receive_a_new_grant) {
     }
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence) {
     GrantNode work;
     work.run();
@@ -580,6 +593,7 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
     EXPECT_EQ(unbound.kernel()->work.grants.size(), 0U);
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantApi, id_exhaustion_refuses_a_new_grant_and_does_not_accept_its_command) {
     GrantNode work;
     work.run();
@@ -602,6 +616,7 @@ TEST(GrantApi, id_exhaustion_refuses_a_new_grant_and_does_not_accept_its_command
     EXPECT_EQ(accepted.result.object.id, (boot << 32U) | 100U);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantApi, restored_faulted_ancestor_subject_is_refused_by_the_shared_kernel_chain_check) {
     GrantNode work;
     work.run();
@@ -627,6 +642,7 @@ TEST(GrantApi, restored_faulted_ancestor_subject_is_refused_by_the_shared_kernel
     EXPECT_EQ(denied.error.reason, AYNI_REASON_GRANT_SUBJECT);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantApi, shared_kernel_check_denies_missing_or_newly_faulted_subject_facts) {
     GrantNode work;
     work.run();

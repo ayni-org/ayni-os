@@ -68,10 +68,13 @@ class PrincipalRegistry {
     bool has_binding_ = false;
 };
 
+// Ephemeral authenticated identity; all four fields are fixed until close/boot.
 struct Session {
-    uint64_t session_id;
-    uint64_t principal_id;
-    ayni_channel_t channel;
+    uint64_t session_id;    // Nonzero Kernel ID; no empty row in SessionTable.
+    uint64_t principal_id;  // Nonzero registered principal captured at open.
+    ayni_channel_t channel; // Authenticated ingress channel, never caller intent data.
+    // Snapshot of Principal.binding_revision when opened, not a live mirror.
+    // Matching this against the durable binding prevents stale sessions acting.
     uint32_t binding_revision;
 };
 

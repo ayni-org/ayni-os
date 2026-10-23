@@ -509,9 +509,7 @@ void WorkReplay::finish(uint64_t now_us) {
     for (uint32_t index = 0; index < model_.grants.size(); ++index) {
         const auto *subject =
             model_.agents.find_instance(model_.grants.at(index).subject_instance_id);
-        if (subject == nullptr ||
-            work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_STOPPED ||
-            work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_FAULTED) {
+        if (!work::AgentTable::usable(subject)) {
             model_.grants.hold_restored(index, AYNI_REASON_GRANT_SUBJECT);
         }
     }

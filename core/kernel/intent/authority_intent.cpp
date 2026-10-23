@@ -2,6 +2,17 @@
 
 namespace ayni::kernel {
 namespace {
+// C-AUTH-019/024: both authority commands require the current durable owner
+// binding and an authenticated management channel, independent of the payload.
+bool bound_management_session(const WorkModel &model, const authority::Session &session,
+                              uint64_t durable_seq) {
+    const auto *binding = model.principals.binding();
+    return session.channel == AYNI_CHANNEL_MANAGEMENT && binding != nullptr &&
+           binding->principal_id == session.principal_id &&
+           binding->binding_revision == session.binding_revision &&
+           binding->stamp.commit_seq <= durable_seq;
+}
+
 ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, IntentFailure &failure,
                      ayni_object_ref_v1 object = {}) {
     failure = {reason, object};
@@ -9,20 +20,16 @@ ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, IntentFailure &
 }
 } // namespace
 
+// Admit management identity, catalog and work subject before any allocation.
+// GrantTable owns attenuation/placement; Kernel consumes its checked subject path.
 ayni_status_t create_grant(WorkModel &model, const Intent &intent,
                            const authority::Session &session, uint64_t now_us, uint64_t durable_seq,
                            IntentOutcome &outcome, IntentFailure &failure) {
-    if (session.channel != AYNI_CHANNEL_MANAGEMENT) {
-        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
-    }
-    const authority::OwnerBinding *binding = model.principals.binding();
-    if (binding == nullptr || binding->principal_id != session.principal_id ||
-        binding->binding_revision != session.binding_revision ||
-        binding->stamp.commit_seq > durable_seq) {
+    if (!bound_management_session(model, session, durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
     }
     const ayni_grant_create_v1 &body = intent.grant_create;
-    if ((body.flags & (AYNI_GRANT_REQUIRES_SCENE | AYNI_GRANT_REQUIRES_QUOTA)) != 0U) {
+    if (authority::needs_deferred_grant_feature(body.flags)) {
         return refuse(AYNI_UNSUPPORTED, AYNI_REASON_GRANT_UNSUPPORTED, failure);
     }
     const auto capability = model.capabilities.find(body.capability_id, body.capability_version);
@@ -38,9 +45,7 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     const ayni_object_ref_v1 subject_ref{0, body.subject_instance_id,
                                          subject == nullptr ? 0U : subject->revision,
                                          AYNI_OBJECT_AGENT_INSTANCE};
-    if (subject == nullptr ||
-        work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_STOPPED ||
-        work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_FAULTED) {
+    if (!work::AgentTable::usable(subject)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT, failure, subject_ref);
     }
     const authority::NewGrant grant{body.subject_instance_id,
@@ -60,15 +65,9 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     if (check.status != AYNI_OK) {
         return refuse(check.status, check.reason, failure);
     }
-    if (body.parent_grant_id != 0U) {
-        uint32_t parent = 0;
-        if (!model.grants.find(body.parent_grant_id, parent)) {
-            return AYNI_INTERNAL;
-        }
-        const auto chain = model.check_grant(parent, now_us, durable_seq);
-        if (chain.status != AYNI_OK) {
-            return refuse(chain.status, chain.reason, failure);
-        }
+    const auto subjects = model.check_grant_subjects(admission.parent_chain);
+    if (subjects.status != AYNI_OK) {
+        return refuse(subjects.status, subjects.reason, failure);
     }
     if (!model.ids.available()) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_ID_EXHAUSTED, failure);
@@ -105,14 +104,12 @@ void pending_revoke_outcome(const PendingRevoke &pending, const CommandMapping *
     }
 }
 
+// C-AUTH-024 reserves both exact command identity and its volatile deny Gate
+// before publishing PENDING, independent of storage availability.
 ayni_status_t accept_revoke(WorkModel &model, const Intent &intent,
                             const authority::Session &session, uint64_t durable_seq,
                             IntentOutcome &outcome, IntentFailure &failure) {
-    const auto *binding = model.principals.binding();
-    if (session.channel != AYNI_CHANNEL_MANAGEMENT || binding == nullptr ||
-        binding->principal_id != session.principal_id ||
-        binding->binding_revision != session.binding_revision ||
-        binding->stamp.commit_seq > durable_seq) {
+    if (!bound_management_session(model, session, durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
     }
     const auto check = model.grants.check_revoke(intent.target_id, intent.expected_revision);
@@ -142,6 +139,8 @@ ayni_status_t accept_revoke(WorkModel &model, const Intent &intent,
     return AYNI_OK;
 }
 
+// C-AUTH-027 applies already accepted control against current facts after
+// reload; no old Session or expected revision is checked a second time.
 bool apply_pending_revoke(WorkModel &model) {
     const auto *pending = model.commands.next_pending_revoke();
     if (pending == nullptr || !model.commands.can_publish_accepted(*pending)) {

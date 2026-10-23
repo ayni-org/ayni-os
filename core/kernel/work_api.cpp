@@ -346,8 +346,7 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
     if (binding == nullptr || binding->stamp.commit_seq > kernel->durable_seq()) {
         return AYNI_NOT_READY;
     }
-    return ayni::kernel::open_session(kernel->work, session->principal_id, session->channel,
-                                      *out_session_id);
+    return ayni::kernel::open_session(kernel->work, *principal, session->channel, *out_session_id);
 }
 
 ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id) {

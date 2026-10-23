@@ -87,7 +87,7 @@ class Encoder {
                 return false;
             }
             const auto &grant = model_.grants.at(index);
-            if (grant.revoked_by_root_id != grant.grant_id ||
+            if (!authority::is_revocation_root(grant.grant_id, grant.revoked_by_root_id) ||
                 grant.stamp.commit_seq != stamp_.commit_seq) {
                 return false;
             }
@@ -131,7 +131,7 @@ class Encoder {
             }
             // Explicit root revocation is encoded by its paired type 15.
             if (grant.lifecycle == AYNI_GRANT_REVOKED &&
-                grant.revoked_by_root_id == grant.grant_id) {
+                authority::is_revocation_root(grant.grant_id, grant.revoked_by_root_id)) {
                 continue;
             }
             const bool created = grant.created_stamp.commit_seq == stamp_.commit_seq;
