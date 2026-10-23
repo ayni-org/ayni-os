@@ -661,3 +661,50 @@ TEST(WorkCheckpoint, progress_to_the_largest_revision_leaves_the_task_undecided)
 }
 
 } // namespace
+
+namespace {
+// C-LIFE-021 / ADR-0036 decision 2: refused ordinary controls on recovered
+// work preserve a real Task's progress and checkpoint, as well as the Goal.
+TEST(WorkCheckpoint, unconfirmed_goal_controls_leave_recovered_progress_and_checkpoint_intact) {
+    WorkNode work;
+    work.max_checkpoint_bytes = 2;
+    work.run();
+    work.strategy().answer = [](Snapshot snapshot, Output output) {
+        set_checkpoint(output, {10, 20});
+        return decide_with(output, {progress_intent("saved", snapshot.revision)});
+    };
+    const uint64_t goal_id = once_goal(work);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    const uint64_t task_id = task_of(work, goal_id);
+    ASSERT_EQ(step_items(work, 1), 1U);
+    ASSERT_EQ(work.task(task_id).step_count, 1U);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal_id).status, AYNI_OK);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    const auto goal = work.goal(goal_id);
+    const auto task = work.task(task_id);
+    ASSERT_EQ(goal.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    ASSERT_EQ(kept_checkpoint(work, task_id), (std::vector<uint8_t>{10, 20}));
+    const auto durable_seq = work.node().info().durable_seq;
+    const auto decisions = work.strategy().seen.size();
+    for (const auto kind : {AYNI_INTENT_GOAL_PAUSE, AYNI_INTENT_GOAL_RESUME}) {
+        const auto refused = work.change(kind, goal_id, goal.revision);
+        EXPECT_EQ(refused.status, AYNI_INVALID_STATE);
+        EXPECT_EQ(refused.error.reason, AYNI_REASON_GOAL_STATE);
+        const auto current = work.task(task_id);
+        EXPECT_EQ(current.lifecycle, task.lifecycle);
+        EXPECT_EQ(current.revision, task.revision);
+        EXPECT_EQ(current.commit_seq, task.commit_seq);
+        EXPECT_EQ(current.step_count, task.step_count);
+        EXPECT_EQ(current.hold_reason, task.hold_reason);
+        EXPECT_EQ(kept_checkpoint(work, task_id), (std::vector<uint8_t>{10, 20}));
+        EXPECT_EQ(work.goal(goal_id).revision, goal.revision);
+        EXPECT_EQ(work.goal(goal_id).commit_seq, goal.commit_seq);
+        EXPECT_EQ(work.node().info().durable_seq, durable_seq);
+    }
+    EXPECT_EQ(step_items(work), 0U);
+    EXPECT_EQ(work.strategy().seen.size(), decisions);
+}
+} // namespace

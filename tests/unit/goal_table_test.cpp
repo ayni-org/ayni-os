@@ -729,3 +729,50 @@ TEST(GoalTable, terminal_and_exhausted_goals_take_no_input) {
 }
 
 } // namespace
+
+namespace {
+// ADR-0036 decision 2: the authorization guard is specific to unconfirmed
+// work; an ordinary user pause/resume keeps a separate compatibility hold.
+TEST(GoalTable, ordinary_controls_preserve_a_goal_type_compatibility_hold) {
+    Goals goals(small);
+    const uint64_t id = goals.create();
+    const uint32_t index = goals.index_of(id);
+    goals->hold_restored(index, AYNI_REASON_GOAL_TYPE_UNKNOWN);
+    ASSERT_EQ(goals.change(id, GoalChange::pause), ChangeCheck::allowed);
+    EXPECT_EQ(goals.goal(id).hold_reason, AYNI_REASON_GOAL_TYPE_UNKNOWN);
+    ASSERT_EQ(goals.change(id, GoalChange::resume), ChangeCheck::allowed);
+    EXPECT_EQ(goals.goal(id).hold_reason, AYNI_REASON_GOAL_TYPE_UNKNOWN);
+    EXPECT_EQ(goals.goal(id).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_TRUE(GoalTable::is_held(goals.goal(id)));
+}
+
+// ADR-0036 decision 2: the table still permits terminal changes for live
+// held Goals. Runtime due-work admission independently blocks held execution.
+TEST(GoalTable, unconfirmed_authority_does_not_change_terminal_transition_rules) {
+    for (const auto change : {GoalChange::expire, GoalChange::satisfy, GoalChange::fail}) {
+        SCOPED_TRACE(static_cast<unsigned>(change));
+        Goals goals(small);
+        const uint64_t id = goals.create();
+        const uint32_t index = goals.index_of(id);
+        goals->hold_restored(index, AYNI_REASON_LEGACY_UNCONFIRMED);
+        EXPECT_EQ(goals->check(index, change, goals.goal(id).revision), ChangeCheck::allowed);
+    }
+}
+
+// C-COMMIT-012 / ADR-0036 decision 2: expected revision, control state and
+// revision capacity keep their order, also at the largest stored revision.
+TEST(GoalTable, an_unconfirmed_goal_at_maximum_revision_reports_the_control_state_first) {
+    Goals goals(small);
+    const uint64_t id = goals.create();
+    const uint32_t index = goals.index_of(id);
+    ayni::work::GoalState state{};
+    state.lifecycle = AYNI_GOAL_ACTIVE;
+    state.revision = std::numeric_limits<uint32_t>::max();
+    ASSERT_EQ(goals->restore_state(index, state, goals.next_stamp()), GoalTable::Restore::restored);
+    goals->hold_restored(index, AYNI_REASON_LEGACY_UNCONFIRMED);
+    for (const auto change : {GoalChange::pause, GoalChange::resume}) {
+        EXPECT_EQ(goals->check(index, change, state.revision), ChangeCheck::invalid_state);
+        EXPECT_EQ(goals->check(index, change, state.revision - 1U), ChangeCheck::revision_conflict);
+    }
+}
+} // namespace
