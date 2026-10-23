@@ -20,6 +20,10 @@ Grant 的结构体、记录与命令分别重复标志和期限规则。创建�
 6. **恢复分为检查、放置与发布。** `RestoredState` 将输入的生命周期/revision/两个 stamp 组合；共享事实校验和最终复制。日志创建要求祖先仍活跃并消费记录指定的精确替代对象；快照允许创建后才终止的祖先，要求 predecessor 已不存在，并按父先子后追加。两路分别调用具名步骤，不再传布尔模式。所有可失败检查在发布前完成；损坏与容量不足的分类顺序保持。
 7. **会话与兼容。** 公共入口把已查到的 Principal 传给 `open_session()`；Session.binding_revision 明确是打开时捕获的身份快照，后续不能随主体变更自动升级。没有新增 Kernel 字段、持久缓存、堆分配、I/O 或外部回调。ABI 保持 0.19，记录及 arena 布局不变；CheckedChain 是最多 17 个索引加数量的局部值，其实际大小与两组 arena 需求在验证中实测。既有测试断言保持，逐测试补契约引用；机器检查仅移除已消除的四项历史基线。
 
+8. **命令候选与批次配对（R2b2）。** CommandTable 以私有 `optional<StagedCreate>` 组合 scratch 的完整身份及长度；空值明确表示无候选，普通插入、恢复、清空及下一次 exact lookup 统一清除。撤销在已接受 PendingRevoke 中拥有自己的 canonical；先用测试证明查找产生的 scratch 不可发布且无消费者，再删除该副本。重放的 Goal/Task 待配对使用 optional；Grant create、root revoke 与 child cleanup 由互斥 kind 选择，同批检查与 discard 归于 WorkReplay 的 `BatchPairing`。这些只是在原属主内整理短期状态，不改变记录或新增 Kernel 字段。
+9. **回执与版本说明（R2b2）。** 查询复用 pending outcome；唯一持久升级依据当前 writer 的已确认 sequence。reload 先清 queued stamp、再恢复窗口、最后发布完成状态，因此不以跨 boot 的公开 floor 推断持久。带命令 submit 从保留回执填充，commandless 从本次 transition 填充。恢复分类注释及静态版本断言覆盖 D 已有记录；补充逐测试契约引用。
+10. **内部 optional 的取舍（R2b2）。** C++17 `std::optional` 只存放有界、平凡值，不分配堆；仅使用受前置条件保护的解引用及 reset，不用可抛异常的 `value()`。它不进入 C ABI、wire 或持久记录。架构标准头白名单新增 `optional`，无堆符号和 no-exceptions 构建检查继续执行。相较为每种值另造带布尔标志的容器，标准值类型清楚表达存在性，维护成本更低。
+
 ## 后果
 
 - 更改主体状态准入只需改 AgentTable 规则；更改 Grant 标志只改 authority 规则及其入口错误顺序测试；更换 Host 不改变这些 portable Core 规则。
@@ -44,3 +48,7 @@ GCC Debug、Release、ASan/UBSan、TSan 和 Clang Debug 全部通过；模拟器
 独立会话按生产 diff 与契约提出 25 项植入缺陷，首轮检出 19 项；补六项行为测试后，其余六项全部检出。独立审查的两项注释/规则复用问题均已修复；没有未处理的生产问题。命令、逐项结果和四项可读性审查见 [#37](https://github.com/RobotSe7en/ayni/pull/37)。
 
 本轮依用户授权只运行本地 CI；未进行硬件、ESP-IDF 存储 Host 或 E/F 验收。整个 R2b 的覆盖率在 R2b3 合并后记录。
+
+### R2b2
+
+撤销 scratch 删除前的行为证明和首版 GCC Debug 通过。独立审查未发现生产问题；一项测试契约注释归属问题已修正。五配置、独立变异、内存实测及固件编译待完成后补记。
