@@ -208,6 +208,26 @@ TEST(WorkModel, sessions_open_for_a_registered_principal_up_to_capacity) {
     EXPECT_NE(work.open_session(), voice);
 }
 
+// C-AUTH-010 / ADR-0017: capacity refusal preserves the ID allocation state.
+// Two identical public-API runs differ only by the refused admission attempt.
+TEST(WorkModel, a_full_session_table_refusal_does_not_consume_the_next_identity) {
+    WorkNode attempted;
+    WorkNode control;
+    attempted.node().run();
+    control.node().run();
+    const auto first = attempted.open_session();
+    const auto reference = control.open_session();
+    ASSERT_EQ(first, reference);
+    ASSERT_EQ(attempted.open_session(AYNI_CHANNEL_VOICE), control.open_session(AYNI_CHANNEL_VOICE));
+    const auto desc = session_desc();
+    uint64_t output = 77;
+    EXPECT_EQ(ayni_open_session(attempted.kernel(), &desc, &output), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(output, 77U);
+    ASSERT_EQ(ayni_close_session(attempted.kernel(), first), AYNI_OK);
+    ASSERT_EQ(ayni_close_session(control.kernel(), reference), AYNI_OK);
+    EXPECT_EQ(attempted.open_session(), control.open_session());
+}
+
 // A closed session no longer authorizes anything.
 TEST(WorkModel, intent_through_a_closed_or_unknown_session_is_denied) {
     WorkNode work;

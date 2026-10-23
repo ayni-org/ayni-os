@@ -91,7 +91,7 @@ bool matches_retained_revocation(const CommandMapping &mapping, const authority:
         // Cleanup changes its own stamp only. A retained explicit revoke
         // result therefore still identifies this target's terminal fact.
         return grant.lifecycle == AYNI_GRANT_REVOKED &&
-               grant.revoked_by_root_id == grant.grant_id &&
+               authority::is_revocation_root(grant.grant_id, grant.revoked_by_root_id) &&
                grant.stamp.commit_seq == mapping.commit_seq;
     }
     return mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE &&

@@ -81,6 +81,7 @@ TEST(GrantRecords, id_prefix_failure_preserves_output_for_null_and_every_truncat
     EXPECT_EQ(id, 91U);
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, create_encoding_matches_independent_literal_and_borrows_only_record_bytes) {
     const auto grant = root();
     ASSERT_EQ(grant_record_size(grant), root_body.size());
@@ -103,6 +104,7 @@ TEST(GrantRecords, create_encoding_matches_independent_literal_and_borrows_only_
     EXPECT_TRUE(valid_grant_record(record));
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, every_truncation_and_trailing_byte_is_rejected_without_publishing_output) {
     for (uint32_t size = 0; size < root_body.size(); ++size) {
         GrantRecord record{};
@@ -117,6 +119,7 @@ TEST(GrantRecords, every_truncation_and_trailing_byte_is_rejected_without_publis
     EXPECT_FALSE(read_grant_record(nullptr, static_cast<uint32_t>(root_body.size()), record));
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, malformed_id_flags_lifetime_depth_and_canonical_domains_are_rejected) {
     for (const uint32_t offset :
          {0U, 4U, 16U, 32U, 40U, 44U, 48U, 52U, 53U, 57U, 61U, 69U, 73U, 77U, 80U, 81U, 85U, 88U}) {
@@ -133,6 +136,7 @@ TEST(GrantRecords, malformed_id_flags_lifetime_depth_and_canonical_domains_are_r
     }
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not) {
     auto grant = root();
     grant.lifetime = AYNI_GRANT_CURRENT_BOOT;
@@ -160,6 +164,7 @@ TEST(GrantRecords, duration_is_persistent_while_deadline_hold_and_transition_sta
     EXPECT_EQ(decoded.grant.duration_us, UINT64_C(0x0102030405060708));
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, state_has_one_legal_terminal_shape_and_exact_little_endian_bytes) {
     auto grant = root();
     grant.lifecycle = AYNI_GRANT_EXPIRED;
@@ -186,6 +191,7 @@ TEST(GrantRecords, state_has_one_legal_terminal_shape_and_exact_little_endian_by
     EXPECT_FALSE(read_grant_state_record(nullptr, 16, state));
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, snapshot_adds_original_stamps_revision_and_state_without_a_deadline) {
     auto grant = root();
     ASSERT_EQ(grant_snapshot_record_size(grant), root_body.size() + 40U);
@@ -218,6 +224,7 @@ TEST(GrantRecords, snapshot_adds_original_stamps_revision_and_state_without_a_de
         read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), record));
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, fixed_budget_includes_all_three_length_prefixes_and_snapshot_tail) {
     EXPECT_EQ(grant_record_type, 13U);
     EXPECT_EQ(grant_state_record_type, 14U);
@@ -229,6 +236,7 @@ TEST(GrantRecords, fixed_budget_includes_all_three_length_prefixes_and_snapshot_
     EXPECT_EQ(grant_snapshot_record_max(4096), 8384U);
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, restored_facts_validate_identity_lifetime_depth_and_both_canonical_budgets) {
     for (uint32_t fault = 0; fault < 16; ++fault) {
         GrantRecord record{};
@@ -293,6 +301,7 @@ TEST(GrantRecords, restored_facts_validate_identity_lifetime_depth_and_both_cano
     EXPECT_EQ(snapshot.revision, 91U);
 }
 
+// ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, syntactically_valid_expanded_scope_outside_registered_domain_is_rejected) {
     // Independent format1 bytes: one count-valued I64 field with domain [0,10].
     constexpr std::array<uint8_t, 33> full{1, 0,   1,   0,   1,   0,   0, 0, 1, 1, 5,

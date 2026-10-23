@@ -14,8 +14,27 @@ using foundation::is_kernel_id;
 
 namespace {
 
-constexpr uint32_t known_flags =
-    AYNI_GRANT_ALLOW_DELEGATION | AYNI_GRANT_REQUIRES_SCENE | AYNI_GRANT_REQUIRES_QUOTA;
+// Reject malformed scalars before unsupported features and all scope/table
+// work. Finite deadline addition is bounded before creating an Admission.
+GrantCheck creation_input(const NewGrant &grant, uint32_t expected_parent_revision,
+                          GrantContext context) {
+    const bool limited = grant.lifetime == AYNI_GRANT_CURRENT_BOOT;
+    if (grant.subject_instance_id == 0U || grant.owner_principal_id == 0U ||
+        grant.owner_binding_revision == 0U || grant.capability_id.size() == 0U ||
+        grant.capability_version == 0U || grant.scope == nullptr ||
+        !valid_grant_flags(grant.flags) ||
+        !valid_grant_lifetime(grant.lifetime, grant.duration_us) || context.boot_epoch == 0U ||
+        context.boot_epoch > foundation::max_boot_epoch ||
+        (limited && grant.duration_us > std::numeric_limits<uint64_t>::max() - context.now_us) ||
+        (grant.parent_grant_id == 0U ? expected_parent_revision != 0U
+                                     : expected_parent_revision == 0U)) {
+        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
+    }
+    if (needs_deferred_grant_feature(grant.flags)) {
+        return {AYNI_UNSUPPORTED, AYNI_REASON_GRANT_UNSUPPORTED};
+    }
+    return {AYNI_OK, AYNI_REASON_NONE};
+}
 
 bool same_bytes(ayni_bytes_v1 left, ayni_bytes_v1 right) {
     return left.size == right.size &&
@@ -36,7 +55,8 @@ bool same_stamp(foundation::TransitionStamp left, foundation::TransitionStamp ri
 
 bool old_boot(const Grant &grant, uint64_t boot_epoch) {
     return grant.lifetime == AYNI_GRANT_CURRENT_BOOT &&
-           (id_boot_epoch(grant.grant_id) != boot_epoch || grant.deadline_us == 0U);
+           (id_boot_epoch(grant.grant_id) != boot_epoch ||
+            grant.deadline_us == no_grant_deadline_us);
 }
 
 bool catalog_hold(ayni_reason_t reason) {
@@ -72,8 +92,17 @@ bool terminal(const Grant &grant) {
     return grant.lifecycle == AYNI_GRANT_EXPIRED || grant.lifecycle == AYNI_GRANT_REVOKED;
 }
 
+// Callers already admitted the transition/stamp. Root cleanup metadata is
+// independent; changing a descendant never changes the root's terminal order.
+void revoke_by(Grant &grant, uint64_t root_id, foundation::TransitionStamp stamp) {
+    grant.lifecycle = AYNI_GRANT_REVOKED;
+    grant.revision = grant_terminal_revision;
+    grant.stamp = stamp;
+    grant.revoked_by_root_id = root_id;
+}
+
 bool cleanup_finished(const Grant &grant) {
-    return grant.revoked_by_root_id != grant.grant_id ||
+    return !is_revocation_root(grant.grant_id, grant.revoked_by_root_id) ||
            grant.cleanup_after_grant_id == grant.cleanup_through_grant_id;
 }
 
@@ -102,8 +131,8 @@ GrantTable::GrantTable(void *storage, Limits limits)
                        foundation::BoundedArray<uint64_t>::storage_size(limits.capacity)),
       limits_(limits) {}
 
-uint8_t *GrantTable::domain_storage(uint32_t index) {
-    return bytes_ + static_cast<std::size_t>(index) * limits_.scope_max_bytes * 2U;
+uint8_t *GrantTable::domain_storage(uint32_t index) const {
+    return bytes_ + static_cast<std::size_t>(index) * limits_.scope_max_bytes * grant_value_regions;
 }
 
 uint8_t *GrantTable::scope_storage(uint32_t index) {
@@ -111,8 +140,7 @@ uint8_t *GrantTable::scope_storage(uint32_t index) {
 }
 
 ayni_bytes_v1 GrantTable::source_domain(uint32_t index) const {
-    return {bytes_ + static_cast<std::size_t>(index) * limits_.scope_max_bytes * 2U,
-            at(index).source_domain_size};
+    return {domain_storage(index), at(index).source_domain_size};
 }
 
 ayni_bytes_v1 GrantTable::scope(uint32_t index) const {
@@ -141,17 +169,30 @@ bool GrantTable::has_child(uint64_t grant_id) const {
     return false;
 }
 
-bool GrantTable::descendant_of(uint32_t index, uint64_t root_id) const {
-    for (uint32_t hops = 0; hops < limits_.delegation_depth_max; ++hops) {
-        const uint64_t parent = at(index).parent_grant_id;
-        if (parent == root_id) {
-            return true;
-        }
-        if (parent == 0U || !find(parent, index)) {
-            return false;
+// C-AUTH-026 orders cleanup by ID, never physical slot. The inclusive frozen
+// frontier also supplies the final watermark when no retained candidate remains.
+bool GrantTable::next_id_after(uint64_t after_id, uint64_t through_id, uint32_t &out_index) const {
+    uint32_t selected = size();
+    for (uint32_t index = 0; index < size(); ++index) {
+        const uint64_t id = at(index).grant_id;
+        if (id > after_id && id <= through_id &&
+            (selected == size() || id < at(selected).grant_id)) {
+            selected = index;
         }
     }
-    return false;
+    if (selected == size()) {
+        return false;
+    }
+    out_index = selected;
+    return true;
+}
+
+bool GrantTable::descendant_of(uint32_t index, uint64_t root_id) const {
+    // A child-to-root relationship uses at most max depth edges. Check the
+    // parent ID before lookup, preserving replay's existing frontier semantics.
+    return visit_ancestors(index, limits_.delegation_depth_max, [&](uint32_t ancestor) {
+               return at(ancestor).parent_grant_id != root_id;
+           }) == Walk::stopped;
 }
 
 bool GrantTable::reclaimable(uint32_t index, uint64_t durable_seq) const {
@@ -161,22 +202,26 @@ bool GrantTable::reclaimable(uint32_t index, uint64_t durable_seq) const {
            !gated(grant.grant_id) && !has_child(grant.grant_id);
 }
 
-bool GrantTable::ancestors_allow_creation(uint32_t index, foundation::TransitionStamp created,
-                                          bool snapshot) const {
-    for (uint32_t hops = 0; hops <= limits_.delegation_depth_max; ++hops) {
-        const Grant &ancestor = at(index);
-        if (!after(created, ancestor.created_stamp) ||
-            (terminal(ancestor) && (!snapshot || !after(ancestor.stamp, created)))) {
-            return false;
-        }
-        if (ancestor.parent_grant_id == 0U) {
+// Classify the same history once: snapshots may show later terminal facts;
+// replayed creates must precede every ancestor's terminal transition (ADR-0030).
+GrantTable::AncestorHistory
+GrantTable::history_at_creation(uint32_t index, foundation::TransitionStamp created) const {
+    auto history = AncestorHistory::active;
+    const auto walked =
+        visit_ancestors(index, limits_.delegation_depth_max + 1U, [&](uint32_t ancestor_index) {
+            const Grant &ancestor = at(ancestor_index);
+            if (!after(created, ancestor.created_stamp)) {
+                return false;
+            }
+            if (terminal(ancestor)) {
+                if (!after(ancestor.stamp, created)) {
+                    return false;
+                }
+                history = AncestorHistory::later_terminal;
+            }
             return true;
-        }
-        if (!find(ancestor.parent_grant_id, index)) {
-            return false;
-        }
-    }
-    return false;
+        });
+    return walked == Walk::root ? history : AncestorHistory::invalid;
 }
 
 bool GrantTable::gated(uint64_t grant_id) const {
@@ -237,6 +282,8 @@ GrantTable::RevokePlan GrantTable::plan_accepted_revoke(uint64_t grant_id) const
     return {grant_id, grant_terminal_revision, AYNI_INTENT_EFFECT_CHANGED, 0, through};
 }
 
+// C-AUTH-027 reuses this validator for a generated live plan and a decoded
+// replay plan. A vanished accepted target succeeds without fabricating a row.
 bool GrantTable::apply_revoke(const RevokePlan &plan, foundation::TransitionStamp stamp) {
     const RevokePlan expected = plan_accepted_revoke(plan.grant_id);
     if (!is_kernel_id(plan.grant_id) || !stamped(stamp) || plan.revision != expected.revision ||
@@ -247,7 +294,7 @@ bool GrantTable::apply_revoke(const RevokePlan &plan, foundation::TransitionStam
     }
     uint32_t index = 0;
     if (!find(plan.grant_id, index)) {
-        return true; // accepted before reload, but its uncommitted target disappeared
+        return true; // C-AUTH-027: accepted target disappeared during reload
     }
     Grant &grant = grants_[index];
     if (!after(stamp, grant.stamp) ||
@@ -255,10 +302,7 @@ bool GrantTable::apply_revoke(const RevokePlan &plan, foundation::TransitionStam
         return false;
     }
     if (plan.effect == AYNI_INTENT_EFFECT_CHANGED) {
-        grant.lifecycle = AYNI_GRANT_REVOKED;
-        grant.revision = plan.revision;
-        grant.stamp = stamp;
-        grant.revoked_by_root_id = grant.grant_id;
+        revoke_by(grant, grant.grant_id, stamp);
         grant.cleanup_after_grant_id = plan.cleanup_after_grant_id;
         grant.cleanup_through_grant_id = plan.cleanup_through_grant_id;
         grant.cleanup_stamp = stamp;
@@ -266,11 +310,14 @@ bool GrantTable::apply_revoke(const RevokePlan &plan, foundation::TransitionStam
     return true;
 }
 
+// C-AUTH-026 selects the oldest unfinished root, then at most one retained
+// ID through its frozen frontier; skipped unrelated rows still advance progress.
 bool GrantTable::next_revocation_cleanup(CleanupPlan &out) const {
     uint32_t selected = size();
     for (uint32_t index = 0; index < size(); ++index) {
         const Grant &grant = at(index);
-        if (grant.lifecycle == AYNI_GRANT_REVOKED && grant.revoked_by_root_id == grant.grant_id &&
+        if (grant.lifecycle == AYNI_GRANT_REVOKED &&
+            is_revocation_root(grant.grant_id, grant.revoked_by_root_id) &&
             !cleanup_finished(grant) &&
             (selected == size() || grant.stamp.commit_seq < at(selected).stamp.commit_seq ||
              (grant.stamp.commit_seq == at(selected).stamp.commit_seq &&
@@ -283,14 +330,9 @@ bool GrantTable::next_revocation_cleanup(CleanupPlan &out) const {
     }
     const Grant &root = at(selected);
     uint32_t candidate = size();
-    for (uint32_t index = 0; index < size(); ++index) {
-        const uint64_t id = at(index).grant_id;
-        if (id > root.cleanup_after_grant_id && id <= root.cleanup_through_grant_id &&
-            (candidate == size() || id < at(candidate).grant_id)) {
-            candidate = index;
-        }
-    }
-    const bool revoke = candidate != size() && at(candidate).lifecycle == AYNI_GRANT_ACTIVE &&
+    const bool found =
+        next_id_after(root.cleanup_after_grant_id, root.cleanup_through_grant_id, candidate);
+    const bool revoke = found && at(candidate).lifecycle == AYNI_GRANT_ACTIVE &&
                         descendant_of(candidate, root.grant_id);
     out = {root.grant_id,
            candidate == size() ? root.cleanup_through_grant_id : at(candidate).grant_id,
@@ -298,6 +340,8 @@ bool GrantTable::next_revocation_cleanup(CleanupPlan &out) const {
     return true;
 }
 
+// Publish a descendant terminal fact and its root cursor together, only
+// after the complete plan/stamp matches. Root terminal ordering stays immutable.
 bool GrantTable::apply_cleanup(const CleanupPlan &plan, foundation::TransitionStamp stamp) {
     CleanupPlan expected{};
     if (!next_revocation_cleanup(expected) || plan.root_grant_id != expected.root_grant_id ||
@@ -319,25 +363,31 @@ bool GrantTable::apply_cleanup(const CleanupPlan &plan, foundation::TransitionSt
             return false;
         }
         Grant &child = grants_[child_index];
-        child.lifecycle = AYNI_GRANT_REVOKED;
-        child.revision = grant_terminal_revision;
-        child.stamp = stamp;
-        child.revoked_by_root_id = root.grant_id;
+        revoke_by(child, root.grant_id, stamp);
     }
     root.cleanup_after_grant_id = plan.after_grant_id;
     root.cleanup_stamp = stamp;
     return true;
 }
 
-bool GrantTable::same_contract(uint32_t left, const NewGrant &right) const {
-    const Grant &parent = at(left);
-    return parent.owner_principal_id == right.owner_principal_id &&
-           parent.owner_binding_revision == right.owner_binding_revision &&
-           parent.capability_version == right.capability_version &&
-           parent.capability_id.equals({right.capability_id.data(), right.capability_id.size()}) &&
-           same_bytes(source_domain(left), right.source_domain);
+// C-AUTH-022: all paths agree on owner, exact catalog/domain, delegation
+// permission and lifetime kind. Live deadlines and stored chronology differ
+// in available evidence and stay in their respective admission operations.
+GrantCheck GrantTable::check_parent_contract(uint32_t parent_index, const NewGrant &child) const {
+    const Grant &parent = at(parent_index);
+    const bool compatible =
+        parent.allow_delegation && parent.owner_principal_id == child.owner_principal_id &&
+        parent.owner_binding_revision == child.owner_binding_revision &&
+        parent.capability_version == child.capability_version &&
+        parent.capability_id.equals({child.capability_id.data(), child.capability_id.size()}) &&
+        same_bytes(source_domain(parent_index), child.source_domain) &&
+        (parent.lifetime != AYNI_GRANT_CURRENT_BOOT || child.lifetime == AYNI_GRANT_CURRENT_BOOT);
+    return compatible ? GrantCheck{AYNI_OK, AYNI_REASON_NONE}
+                      : GrantCheck{AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
 }
 
+// Validate a retained parent edge using stored duration/boot evidence and,
+// when available, live deadlines. Recovery deliberately has no live deadlines.
 bool GrantTable::valid_link(uint32_t child_index, uint32_t parent_index) const {
     const Grant &child = at(child_index);
     const Grant &parent = at(parent_index);
@@ -352,8 +402,8 @@ bool GrantTable::valid_link(uint32_t child_index, uint32_t parent_index) const {
                         child.lifetime,
                         child.duration_us,
                         child.allow_delegation ? AYNI_GRANT_ALLOW_DELEGATION : 0U};
-    if (!parent.allow_delegation || child.depth != parent.depth + 1U ||
-        child.depth > limits_.delegation_depth_max || !same_contract(parent_index, fact)) {
+    if (check_parent_contract(parent_index, fact).status != AYNI_OK ||
+        child.depth != parent.depth + 1U || child.depth > limits_.delegation_depth_max) {
         return false;
     }
     const auto covered =
@@ -362,65 +412,75 @@ bool GrantTable::valid_link(uint32_t child_index, uint32_t parent_index) const {
         return false;
     }
     if (parent.lifetime == AYNI_GRANT_CURRENT_BOOT) {
-        return child.lifetime == AYNI_GRANT_CURRENT_BOOT &&
-               id_boot_epoch(child.grant_id) == id_boot_epoch(parent.grant_id) &&
+        return id_boot_epoch(child.grant_id) == id_boot_epoch(parent.grant_id) &&
                child.duration_us <= parent.duration_us &&
-               (child.deadline_us == 0U || parent.deadline_us == 0U ||
+               (child.deadline_us == no_grant_deadline_us ||
+                parent.deadline_us == no_grant_deadline_us ||
                 child.deadline_us <= parent.deadline_us);
     }
     return true;
 }
 
 GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context) const {
+    CheckedChain chain{};
+    return check_chain(index, context, chain);
+}
+
+// Authority failures precede subject failures. Publish the validated indices
+// so Kernel can check subjects after this entire walk, preserving that order.
+GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context, CheckedChain &out) const {
     if (index >= size()) {
         return {AYNI_NOT_FOUND, AYNI_REASON_GRANT_UNKNOWN};
     }
-    for (uint32_t hops = 0; hops <= limits_.delegation_depth_max; ++hops) {
-        const Grant &grant = at(index);
-        if (gated(grant.grant_id) || grant.lifecycle == AYNI_GRANT_REVOKED) {
-            return {AYNI_DENIED, AYNI_REASON_GRANT_REVOKED};
-        }
-        if (grant.hold_reason != AYNI_REASON_NONE) {
-            return held(grant.hold_reason);
-        }
-        if (grant.lifecycle == AYNI_GRANT_EXPIRED || old_boot(grant, context.boot_epoch) ||
-            (grant.lifetime == AYNI_GRANT_CURRENT_BOOT && context.now_us >= grant.deadline_us)) {
-            return {AYNI_DENIED, AYNI_REASON_GRANT_EXPIRED};
-        }
-        if (grant.stamp.commit_seq > context.durable_seq) {
-            return {AYNI_BUSY, AYNI_REASON_GRANT_NOT_DURABLE};
-        }
-        if (grant.parent_grant_id == 0U) {
-            return grant.depth == 0U ? GrantCheck{AYNI_OK, AYNI_REASON_NONE}
-                                     : GrantCheck{AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
-        }
-        uint32_t parent = 0;
-        if (!find(grant.parent_grant_id, parent) || !valid_link(index, parent)) {
-            return {AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
-        }
-        index = parent;
+    CheckedChain chain{};
+    GrantCheck failure{AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
+    const auto walked =
+        visit_ancestors(index, limits_.delegation_depth_max + 1U, [&](uint32_t at_index) {
+            // Validate each edge before the parent's state, as in C-AUTH-022.
+            if (chain.count != 0U && !valid_link(chain.indices[chain.count - 1U], at_index)) {
+                return false;
+            }
+            const Grant &grant = at(at_index);
+            if (gated(grant.grant_id) || grant.lifecycle == AYNI_GRANT_REVOKED) {
+                failure = {AYNI_DENIED, AYNI_REASON_GRANT_REVOKED};
+                return false;
+            }
+            if (grant.hold_reason != AYNI_REASON_NONE) {
+                failure = held(grant.hold_reason);
+                return false;
+            }
+            if (grant.lifecycle == AYNI_GRANT_EXPIRED || old_boot(grant, context.boot_epoch) ||
+                (grant.lifetime == AYNI_GRANT_CURRENT_BOOT &&
+                 context.now_us >= grant.deadline_us)) {
+                failure = {AYNI_DENIED, AYNI_REASON_GRANT_EXPIRED};
+                return false;
+            }
+            if (grant.stamp.commit_seq > context.durable_seq) {
+                failure = {AYNI_BUSY, AYNI_REASON_GRANT_NOT_DURABLE};
+                return false;
+            }
+            if (grant.parent_grant_id == 0U && grant.depth != 0U) {
+                return false;
+            }
+            chain.indices[chain.count++] = at_index;
+            return true;
+        });
+    if (walked != Walk::root) {
+        return failure;
     }
-    return {AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
+    out = chain;
+    return {AYNI_OK, AYNI_REASON_NONE};
 }
 
+// C-AUTH-019/022/023: finish shape, scope and parent admission before choosing
+// a safe replacement. The completed plan is local and failure leaves out intact.
 GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_parent_revision,
                                     GrantContext context, Admission &out) const {
-    const bool permanent = grant.lifetime == AYNI_GRANT_PERMANENT;
+    const auto input = creation_input(grant, expected_parent_revision, context);
+    if (input.status != AYNI_OK) {
+        return input;
+    }
     const bool limited = grant.lifetime == AYNI_GRANT_CURRENT_BOOT;
-    if (grant.subject_instance_id == 0U || grant.owner_principal_id == 0U ||
-        grant.owner_binding_revision == 0U || grant.capability_id.size() == 0U ||
-        grant.capability_version == 0U || grant.scope == nullptr ||
-        (grant.flags & ~known_flags) != 0U || (!permanent && !limited) ||
-        (permanent ? grant.duration_us != 0U : grant.duration_us == 0U) ||
-        context.boot_epoch == 0U || context.boot_epoch > foundation::max_boot_epoch ||
-        (limited && grant.duration_us > std::numeric_limits<uint64_t>::max() - context.now_us) ||
-        (grant.parent_grant_id == 0U ? expected_parent_revision != 0U
-                                     : expected_parent_revision == 0U)) {
-        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
-    }
-    if ((grant.flags & (AYNI_GRANT_REQUIRES_SCENE | AYNI_GRANT_REQUIRES_QUOTA)) != 0U) {
-        return {AYNI_UNSUPPORTED, AYNI_REASON_GRANT_UNSUPPORTED};
-    }
     uint32_t scope_size = 0;
     const auto normalized =
         normalize_scope(grant.source_domain, *grant.scope, nullptr, 0, scope_size);
@@ -431,7 +491,7 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
                         0,
                         scope_size,
                         0,
-                        limited ? context.now_us + grant.duration_us : 0U,
+                        limited ? context.now_us + grant.duration_us : no_grant_deadline_us,
                         context.boot_epoch};
     if (grant.parent_grant_id != 0U) {
         uint32_t parent_index = 0;
@@ -442,13 +502,16 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
         if (expected_parent_revision != parent.revision) {
             return {AYNI_REVISION_CONFLICT, AYNI_REASON_GRANT_REVISION};
         }
-        const auto chain = check_chain(parent_index, context);
+        const auto chain = check_chain(parent_index, context, admission.parent_chain);
         if (chain.status != AYNI_OK) {
             return chain;
         }
-        if (!parent.allow_delegation || !same_contract(parent_index, grant) ||
-            (parent.lifetime == AYNI_GRANT_CURRENT_BOOT &&
-             (!limited || admission.deadline_us > parent.deadline_us))) {
+        const auto contract = check_parent_contract(parent_index, grant);
+        if (contract.status != AYNI_OK) {
+            return contract;
+        }
+        if (parent.lifetime == AYNI_GRANT_CURRENT_BOOT &&
+            admission.deadline_us > parent.deadline_us) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
         }
         admission.depth = parent.depth + 1U;
@@ -464,6 +527,8 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
         grant.source_domain.size > limits_.scope_max_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
     }
+    // ADR-0030 decision 7: reclaim only safe leaves, ordered by terminal
+    // commit then ID. Creation order must not influence historical retention.
     if (grants_.full()) {
         uint32_t earliest = size();
         for (uint32_t index = 0; index < size(); ++index) {
@@ -487,6 +552,8 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
     return {AYNI_OK, AYNI_REASON_NONE};
 }
 
+// Consume an unchanged admission plan with a fresh ID/stamp; prepare both
+// byte regions before publishing the retained row (ADR-0030 decision 7).
 bool GrantTable::insert(const NewGrant &grant, const Admission &admission, uint64_t new_grant_id,
                         foundation::TransitionStamp stamp, uint32_t &out_index) {
     uint32_t ignored = 0;
@@ -532,6 +599,8 @@ bool GrantTable::insert(const NewGrant &grant, const Admission &admission, uint6
     return true;
 }
 
+// Schedule finite facts only. An old-boot or recovered deadline is already
+// due; otherwise select the earliest deadline and break ties deterministically.
 bool GrantTable::next_expiry(GrantContext context, uint32_t &out_index,
                              uint64_t &out_deadline) const {
     bool found = false;
@@ -577,6 +646,8 @@ bool GrantTable::has_old_boot_expiry(uint64_t boot_epoch) const {
     return false;
 }
 
+// Startup settles all old finite authority in one transition. Preflight
+// every changed row so an invalid stamp cannot partially expire the table.
 void GrantTable::expire_old_boot(uint64_t boot_epoch, foundation::TransitionStamp stamp) {
     if (!stamped(stamp)) {
         return;
@@ -600,6 +671,8 @@ void GrantTable::hold_restored(uint32_t index, ayni_reason_t reason) {
     }
 }
 
+// C-AUTH-020 re-evaluates only this boot compatibility: never rewrite a saved
+// domain or evict an ACTIVE fact just because registration changed temporarily.
 void GrantTable::resolve_catalog(const catalog::CapabilityRegistry &catalog) {
     for (uint32_t index = 0; index < size(); ++index) {
         Grant &grant = grants_[index];
@@ -619,57 +692,70 @@ void GrantTable::resolve_catalog(const catalog::CapabilityRegistry &catalog) {
     }
 }
 
-GrantTable::Restore GrantTable::restore(const GrantRecord &record,
-                                        foundation::TransitionStamp created,
-                                        foundation::TransitionStamp stamp, uint32_t revision,
-                                        ayni_grant_lifecycle_t lifecycle, bool snapshot) {
+// The record owns byte shape; this owner validates lifecycle and parent
+// relationships before any capacity choice. out_parent is used only for a child.
+bool GrantTable::valid_restored_fact(const GrantRecord &record, const RestoredState &state,
+                                     uint32_t &out_parent) const {
     if (!valid_grant_record(record) ||
-        !lifecycle_state(record, created, stamp, revision, lifecycle)) {
-        return Restore::corrupt;
+        !lifecycle_state(record, state.created, state.stamp, state.revision, state.lifecycle)) {
+        return false;
     }
     uint32_t existing = 0;
     if (find(record.grant_id, existing)) {
-        return Restore::corrupt;
+        return false;
     }
     const NewGrant &grant = record.grant;
-    if (grant.parent_grant_id != 0U) {
-        uint32_t parent_index = 0;
-        if (!find(grant.parent_grant_id, parent_index)) {
-            return Restore::corrupt;
-        }
-        const Grant &parent = at(parent_index);
-        const auto covered = covers(grant.source_domain, scope(parent_index), record.scope);
-        if (!parent.allow_delegation || !same_contract(parent_index, grant) ||
-            record.depth != parent.depth + 1U || covered.status != AYNI_OK || !covered.covered ||
-            !ancestors_allow_creation(parent_index, created, snapshot) ||
-            (parent.lifetime == AYNI_GRANT_CURRENT_BOOT &&
-             (grant.lifetime != AYNI_GRANT_CURRENT_BOOT || grant.duration_us > parent.duration_us ||
-              id_boot_epoch(record.grant_id) != id_boot_epoch(parent.grant_id)))) {
-            return Restore::corrupt;
-        }
+    if (grant.parent_grant_id == 0U) {
+        return true;
     }
-    if (record.depth > limits_.delegation_depth_max ||
-        grant.source_domain.size > limits_.scope_max_bytes ||
-        record.scope.size > limits_.scope_max_bytes) {
-        return Restore::no_room;
+    uint32_t parent_index = 0;
+    if (!find(grant.parent_grant_id, parent_index)) {
+        return false;
     }
+    const Grant &parent = at(parent_index);
+    const auto covered = covers(grant.source_domain, scope(parent_index), record.scope);
+    if (check_parent_contract(parent_index, grant).status != AYNI_OK ||
+        record.depth != parent.depth + 1U || covered.status != AYNI_OK || !covered.covered ||
+        (parent.lifetime == AYNI_GRANT_CURRENT_BOOT &&
+         (grant.duration_us > parent.duration_us ||
+          id_boot_epoch(record.grant_id) != id_boot_epoch(parent.grant_id)))) {
+        return false;
+    }
+    out_parent = parent_index;
+    return true;
+}
+
+bool GrantTable::fits_restored_fact(const GrantRecord &record) const {
+    return record.depth <= limits_.delegation_depth_max &&
+           record.grant.source_domain.size <= limits_.scope_max_bytes &&
+           record.scope.size <= limits_.scope_max_bytes;
+}
+
+// Journal records name the exact predecessor chosen originally. Replaying
+// never reruns eviction order or replaces an unfinished/non-leaf fact (C-AUTH-023).
+GrantTable::Restore GrantTable::replay_placement(const GrantRecord &record,
+                                                 foundation::TransitionStamp created,
+                                                 uint32_t &out_index) const {
     uint32_t index = size();
-    if (!snapshot && record.replaced_grant_id != 0U) {
+    if (record.replaced_grant_id != 0U) {
         if (!find(record.replaced_grant_id, index) || !terminal(at(index)) ||
             !cleanup_finished(at(index)) || has_child(record.replaced_grant_id) ||
             !after(created, at(index).stamp) ||
             (stamped(at(index).cleanup_stamp) && !after(created, at(index).cleanup_stamp))) {
             return Restore::corrupt;
         }
-    } else {
-        if (snapshot && record.replaced_grant_id != 0U &&
-            find(record.replaced_grant_id, existing)) {
-            return Restore::corrupt;
-        }
-        if (grants_.full()) {
-            return Restore::no_room;
-        }
+    } else if (grants_.full()) {
+        return Restore::no_room;
     }
+    out_index = index;
+    return Restore::restored;
+}
+
+// Called only after complete admission. Recovered finite facts deliberately
+// have no live deadline: neither journal nor snapshot reanchors old authority.
+void GrantTable::install_restored(const GrantRecord &record, const RestoredState &state,
+                                  uint32_t index) {
+    const NewGrant &grant = record.grant;
     std::memcpy(domain_storage(index), grant.source_domain.data, grant.source_domain.size);
     std::memcpy(scope_storage(index), record.scope.data, record.scope.size);
     const Grant value{record.grant_id,
@@ -684,27 +770,46 @@ GrantTable::Restore GrantTable::restore(const GrantRecord &record,
                       grant.duration_us,
                       (grant.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U,
                       record.depth,
-                      created,
-                      stamp,
-                      revision,
-                      lifecycle,
+                      state.created,
+                      state.stamp,
+                      state.revision,
+                      state.lifecycle,
                       grant.source_domain.size,
                       record.scope.size,
-                      0,
+                      no_grant_deadline_us,
                       AYNI_REASON_NONE};
     if (index == size()) {
         static_cast<void>(grants_.push_back(value));
     } else {
         grants_[index] = value;
     }
+}
+
+// A journal create observes active ancestors, then consumes its recorded slot.
+// All rejection paths precede byte/row publication; classifications stay ordered.
+GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
+                                               foundation::TransitionStamp stamp) {
+    const RestoredState state{stamp, stamp, grant_active_revision, AYNI_GRANT_ACTIVE};
+    uint32_t parent = 0;
+    if (!valid_restored_fact(record, state, parent) ||
+        (record.grant.parent_grant_id != 0U &&
+         history_at_creation(parent, stamp) != AncestorHistory::active)) {
+        return Restore::corrupt;
+    }
+    if (!fits_restored_fact(record)) {
+        return Restore::no_room;
+    }
+    uint32_t index = 0;
+    const Restore placement = replay_placement(record, stamp, index);
+    if (placement != Restore::restored) {
+        return placement;
+    }
+    install_restored(record, state, index);
     return Restore::restored;
 }
 
-GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
-                                               foundation::TransitionStamp stamp) {
-    return restore(record, stamp, stamp, grant_active_revision, AYNI_GRANT_ACTIVE, false);
-}
-
+// Replay only a first terminal transition. A revoked descendant must follow
+// the next cleanup ID and pair with same-batch root progress (C-AUTH-026).
 GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
                                               foundation::TransitionStamp stamp) {
     uint32_t index = 0;
@@ -722,7 +827,7 @@ GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
         uint32_t root_index = 0;
         if (!find(record.revoked_by_root_id, root_index) || root_index == index ||
             at(root_index).lifecycle != AYNI_GRANT_REVOKED ||
-            at(root_index).revoked_by_root_id != record.revoked_by_root_id ||
+            !is_revocation_root(at(root_index).grant_id, at(root_index).revoked_by_root_id) ||
             cleanup_finished(at(root_index)) || !descendant_of(index, record.revoked_by_root_id) ||
             !after(stamp, at(root_index).cleanup_stamp)) {
             return Restore::corrupt;
@@ -734,17 +839,13 @@ GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
         }
         // A state and its progress are atomic in the enclosing batch. A state
         // cannot jump over an unscanned ID, even when that ID is unrelated.
-        for (uint32_t row = 0; row < size(); ++row) {
-            const uint64_t id = at(row).grant_id;
-            if (id > root.cleanup_after_grant_id && id < record.grant_id) {
-                return Restore::corrupt;
-            }
+        uint32_t next = 0;
+        if (!next_id_after(root.cleanup_after_grant_id, root.cleanup_through_grant_id, next) ||
+            at(next).grant_id != record.grant_id) {
+            return Restore::corrupt;
         }
         Grant &grant = grants_[index];
-        grant.lifecycle = AYNI_GRANT_REVOKED;
-        grant.revision = grant_terminal_revision;
-        grant.stamp = stamp;
-        grant.revoked_by_root_id = record.revoked_by_root_id;
+        revoke_by(grant, record.revoked_by_root_id, stamp);
     } else {
         return Restore::corrupt;
     }
@@ -759,22 +860,17 @@ bool GrantTable::valid_revocation_metadata(uint64_t grant_id, uint64_t parent_gr
                                            foundation::TransitionStamp cleanup_stamp) const {
     // A root freezes the retained ID frontier when it is revoked. Every
     // descendant predates that transition, including already terminal ones.
-    uint64_t ancestor_id = parent_grant_id;
-    for (uint32_t hops = 0; ancestor_id != 0U && hops < limits_.delegation_depth_max; ++hops) {
-        uint32_t ancestor_index = 0;
-        if (!find(ancestor_id, ancestor_index)) {
+    if (parent_grant_id != 0U) {
+        uint32_t parent = 0;
+        if (!find(parent_grant_id, parent) ||
+            visit_ancestors(parent, limits_.delegation_depth_max, [&](uint32_t index) {
+                const Grant &ancestor = at(index);
+                return ancestor.lifecycle != AYNI_GRANT_REVOKED ||
+                       !is_revocation_root(ancestor.grant_id, ancestor.revoked_by_root_id) ||
+                       grant_id <= ancestor.cleanup_through_grant_id;
+            }) != Walk::root) {
             return false;
         }
-        const Grant &ancestor = at(ancestor_index);
-        if (ancestor.lifecycle == AYNI_GRANT_REVOKED &&
-            ancestor.revoked_by_root_id == ancestor_id &&
-            grant_id > ancestor.cleanup_through_grant_id) {
-            return false;
-        }
-        ancestor_id = ancestor.parent_grant_id;
-    }
-    if (ancestor_id != 0U) {
-        return false;
     }
     if (lifecycle != AYNI_GRANT_REVOKED) {
         return revoked_by_root_id == 0U && cleanup_after == 0U && cleanup_through == 0U &&
@@ -783,7 +879,7 @@ bool GrantTable::valid_revocation_metadata(uint64_t grant_id, uint64_t parent_gr
     if (!is_kernel_id(revoked_by_root_id)) {
         return false;
     }
-    if (revoked_by_root_id == grant_id) {
+    if (is_revocation_root(grant_id, revoked_by_root_id)) {
         return is_kernel_id(cleanup_through) && cleanup_through >= grant_id &&
                (cleanup_after == 0U || is_kernel_id(cleanup_after)) &&
                cleanup_after <= cleanup_through && at_or_after(cleanup_stamp, stamp);
@@ -793,13 +889,15 @@ bool GrantTable::valid_revocation_metadata(uint64_t grant_id, uint64_t parent_gr
     return cleanup_after == 0U && cleanup_through == 0U && cleanup_stamp.transition_id == 0U &&
            cleanup_stamp.commit_seq == 0U && find(revoked_by_root_id, root) &&
            at(root).lifecycle == AYNI_GRANT_REVOKED &&
-           at(root).revoked_by_root_id == revoked_by_root_id &&
+           is_revocation_root(at(root).grant_id, at(root).revoked_by_root_id) &&
            grant_id <= at(root).cleanup_after_grant_id &&
            at_or_after(at(root).cleanup_stamp, stamp) && at_or_after(stamp, at(root).stamp) &&
            (parent_grant_id == revoked_by_root_id ||
             (find(parent_grant_id, parent) && descendant_of(parent, revoked_by_root_id)));
 }
 
+// Retained snapshots have different placement/history rules from journal
+// creates: parent-first append, absent predecessors and possibly later terminal ancestors.
 GrantTable::Restore GrantTable::restore_snapshot(const GrantSnapshotRecord &record) {
     if (!valid_revocation_metadata(record.create.grant_id, record.create.grant.parent_grant_id,
                                    record.lifecycle, record.stamp, record.revoked_by_root_id,
@@ -807,11 +905,28 @@ GrantTable::Restore GrantTable::restore_snapshot(const GrantSnapshotRecord &reco
                                    record.cleanup_stamp)) {
         return Restore::corrupt;
     }
-    const Restore result = restore(record.create, record.created_stamp, record.stamp,
-                                   record.revision, record.lifecycle, true);
-    if (result != Restore::restored) {
-        return result;
+    const RestoredState state{record.created_stamp, record.stamp, record.revision,
+                              record.lifecycle};
+    uint32_t parent = 0;
+    if (!valid_restored_fact(record.create, state, parent) ||
+        (record.create.grant.parent_grant_id != 0U &&
+         history_at_creation(parent, state.created) == AncestorHistory::invalid)) {
+        return Restore::corrupt;
     }
+    if (!fits_restored_fact(record.create)) {
+        return Restore::no_room;
+    }
+    uint32_t predecessor = 0;
+    if (record.create.replaced_grant_id != 0U &&
+        find(record.create.replaced_grant_id, predecessor)) {
+        return Restore::corrupt;
+    }
+    if (grants_.full()) {
+        return Restore::no_room;
+    }
+    // Snapshots contain only retained facts: predecessors are absent and rows
+    // append parent before child. Unlike journal replay, no slot is evicted.
+    install_restored(record.create, state, size());
     Grant &grant = grants_[size() - 1U]; // snapshot records append parent before child
     grant.revoked_by_root_id = record.revoked_by_root_id;
     grant.cleanup_after_grant_id = record.cleanup_after_grant_id;
@@ -827,6 +942,8 @@ GrantTable::Restore GrantTable::restore_revocation(const GrantRevocationRecord &
     return apply_revoke(plan, stamp) ? Restore::restored : Restore::corrupt;
 }
 
+// A progress record must name the next retained ID/final watermark. An active
+// descendant cannot be skipped; its same-batch state must already be restored.
 GrantTable::Restore GrantTable::restore_progress(const GrantRevocationProgressRecord &record,
                                                  foundation::TransitionStamp stamp) {
     uint32_t root_index = 0;
@@ -834,25 +951,22 @@ GrantTable::Restore GrantTable::restore_progress(const GrantRevocationProgressRe
         return Restore::corrupt;
     }
     Grant &root = grants_[root_index];
-    if (root.lifecycle != AYNI_GRANT_REVOKED || root.revoked_by_root_id != root.grant_id ||
-        cleanup_finished(root) || record.through_grant_id != root.cleanup_through_grant_id ||
+    if (root.lifecycle != AYNI_GRANT_REVOKED ||
+        !is_revocation_root(root.grant_id, root.revoked_by_root_id) || cleanup_finished(root) ||
+        record.through_grant_id != root.cleanup_through_grant_id ||
         record.after_grant_id <= root.cleanup_after_grant_id ||
         record.after_grant_id > record.through_grant_id || !stamped(stamp) ||
         !after(stamp, root.cleanup_stamp)) {
         return Restore::corrupt;
     }
-    uint64_t next = record.through_grant_id;
-    for (uint32_t index = 0; index < size(); ++index) {
-        const Grant &candidate = at(index);
-        if (candidate.grant_id > root.cleanup_after_grant_id && candidate.grant_id < next) {
-            next = candidate.grant_id;
-        }
-    }
+    uint32_t candidate = 0;
+    const bool found =
+        next_id_after(root.cleanup_after_grant_id, record.through_grant_id, candidate);
+    const uint64_t next = found ? at(candidate).grant_id : record.through_grant_id;
     if (record.after_grant_id != next) {
         return Restore::corrupt;
     }
-    uint32_t candidate = 0;
-    if (find(next, candidate) && at(candidate).lifecycle == AYNI_GRANT_ACTIVE &&
+    if (found && at(candidate).lifecycle == AYNI_GRANT_ACTIVE &&
         descendant_of(candidate, root.grant_id)) {
         return Restore::corrupt; // an ACTIVE descendant needs a same-batch state first
     }
@@ -861,6 +975,8 @@ GrantTable::Restore GrantTable::restore_progress(const GrantRevocationProgressRe
     return Restore::restored;
 }
 
+// Before recovery publishes work, prove all retained relationships, including
+// roots whose completed cursor may not skip an active descendant (C-AUTH-026).
 bool GrantTable::consistent() const {
     for (uint32_t index = 0; index < size(); ++index) {
         const Grant &grant = at(index);
@@ -877,7 +993,7 @@ bool GrantTable::consistent() const {
         if (grant.lifecycle == AYNI_GRANT_ACTIVE) {
             for (uint32_t root = 0; root < size(); ++root) {
                 const Grant &candidate = at(root);
-                if (candidate.revoked_by_root_id == candidate.grant_id &&
+                if (is_revocation_root(candidate.grant_id, candidate.revoked_by_root_id) &&
                     grant.grant_id <= candidate.cleanup_after_grant_id &&
                     descendant_of(index, candidate.grant_id)) {
                     return false;

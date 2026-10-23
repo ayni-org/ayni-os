@@ -1,5 +1,6 @@
 #include "kernel/command/command_canonical.h"
 
+#include "authority/grant/grant_rules.h"
 #include "authority/scope/scope.h"
 #include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
@@ -23,8 +24,6 @@ constexpr uint32_t raw_field_kind_at = 4;
 constexpr uint32_t raw_field_unit_size_at = 5;
 constexpr uint32_t raw_field_member_count_at = 6;
 constexpr uint32_t raw_field_reserved_at = 7;
-constexpr uint32_t known_flags =
-    AYNI_GRANT_ALLOW_DELEGATION | AYNI_GRANT_REQUIRES_SCENE | AYNI_GRANT_REQUIRES_QUOTA;
 constexpr uint32_t fixed_without_id = authority_command_fixed_max - AYNI_CATALOG_ID_MAX_BYTES;
 using catalog::FieldOrder;
 
@@ -33,9 +32,8 @@ bool valid_scalars(const AuthorityCommandRecord &input) {
            input.subject_instance_id != 0U &&
            (input.parent_grant_id == 0U ? input.expected_revision == 0U
                                         : input.expected_revision != 0U) &&
-           (input.flags & ~known_flags) == 0U &&
-           ((input.lifetime == AYNI_GRANT_PERMANENT && input.duration_us == 0U) ||
-            (input.lifetime == AYNI_GRANT_CURRENT_BOOT && input.duration_us != 0U));
+           authority::valid_grant_flags(input.flags) &&
+           authority::valid_grant_lifetime(input.lifetime, input.duration_us);
 }
 
 // Validate the original request before consulting current authority state.

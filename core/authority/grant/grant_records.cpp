@@ -43,15 +43,15 @@ bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id) 
     return true;
 }
 
+// Byte and struct readers share the accepted-fact rules. Deferred request
+// flags cannot appear in storage, and the saved domain must cover the full scope.
 bool valid_grant_record(const GrantRecord &record) {
     const NewGrant &grant = record.grant;
-    const bool permanent = grant.lifetime == AYNI_GRANT_PERMANENT;
-    const bool limited = grant.lifetime == AYNI_GRANT_CURRENT_BOOT;
     if (!foundation::is_kernel_id(record.grant_id) || grant.subject_instance_id == 0U ||
         grant.owner_principal_id == 0U || grant.owner_binding_revision == 0U ||
         grant.capability_id.size() == 0U || grant.capability_version == 0U ||
-        (grant.flags & ~AYNI_GRANT_ALLOW_DELEGATION) != 0U || (!permanent && !limited) ||
-        (permanent ? grant.duration_us != 0U : grant.duration_us == 0U) ||
+        !valid_persisted_grant_flags(grant.flags) ||
+        !valid_grant_lifetime(grant.lifetime, grant.duration_us) ||
         record.depth > AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX ||
         (grant.parent_grant_id == 0U
              ? record.depth != 0U
@@ -90,6 +90,8 @@ void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 
     writer.bytes(scope.data, scope.size);
 }
 
+// records.md type 13/v1: decode into a borrowed temporary, validate the exact
+// body and accepted Grant semantics, then publish out without a partial result.
 bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
     if (body == nullptr || size < grant_record_fixed_size) {
         return false;
@@ -146,6 +148,8 @@ uint32_t grant_state_record_size_for(const Grant &grant) {
                                                  : grant_state_record_size;
 }
 
+// records.md type 14: v1 carries expiry; v2 also identifies the revocation
+// root. Version/size/lifecycle combinations are validated before publishing.
 bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecord &out,
                              uint16_t version) {
     const bool revoked = version == grant_revoked_state_record_version;
@@ -162,7 +166,7 @@ bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecor
         record.revision != grant_terminal_revision ||
         (revoked ? record.lifecycle != AYNI_GRANT_REVOKED ||
                        !foundation::is_kernel_id(record.revoked_by_root_id) ||
-                       record.revoked_by_root_id == record.grant_id
+                       is_revocation_root(record.grant_id, record.revoked_by_root_id)
                  : record.lifecycle != AYNI_GRANT_EXPIRED)) {
         return false;
     }
@@ -197,6 +201,8 @@ void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_
     }
 }
 
+// Snapshot type 13 adds a version-specific state tail to the same creation
+// layout. Reject mismatched tails; relationship validation belongs to GrantTable.
 bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapshotRecord &out,
                                 uint16_t version) {
     const uint32_t tail_size = snapshot_tail_size(version);
@@ -234,6 +240,8 @@ void write_grant_revocation_record(const GrantTable::RevokePlan &plan, uint8_t *
     writer.u64(plan.cleanup_through_grant_id);
 }
 
+// C-AUTH-027 stores only a result possible for accepted root control. Decode
+// fixed offsets here; live/replay relationship checks remain with GrantTable.
 bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevocationRecord &out) {
     if (body == nullptr || size != grant_revocation_record_size) {
         return false;
@@ -268,6 +276,8 @@ void write_grant_revocation_progress_record(const GrantTable::CleanupPlan &plan,
     writer.u64(plan.through_grant_id);
 }
 
+// C-AUTH-026 progress carries IDs and stamps, never a physical slot cursor.
+// Shape checks precede GrantTable ordering and same-batch relationship checks.
 bool read_grant_revocation_progress_record(const uint8_t *body, uint32_t size,
                                            GrantRevocationProgressRecord &out) {
     if (body == nullptr || size != grant_revocation_progress_record_size) {

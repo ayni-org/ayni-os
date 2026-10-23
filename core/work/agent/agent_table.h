@@ -87,6 +87,12 @@ class AgentTable {
         return instance.fault_reason == AYNI_REASON_AGENT_UNREGISTERED ? AYNI_AGENT_FAULTED
                                                                        : instance.lifecycle;
     }
+    // ADR-0030: a present PAUSED instance remains a usable authority subject;
+    // STOPPED/FAULTED instances cannot acquire or consume Grants or new Goals.
+    static bool usable(const AgentInstance *instance) {
+        return instance != nullptr && effective_lifecycle(*instance) != AYNI_AGENT_STOPPED &&
+               effective_lifecycle(*instance) != AYNI_AGENT_FAULTED;
+    }
     // Drops everything restore() did, as when recovery fails.
     void drop_restored();
 

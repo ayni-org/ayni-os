@@ -101,6 +101,7 @@ class Grants {
     GrantTable table;
 };
 
+// C-AUTH-024: accepted volatile control denies before persistence and survives reload.
 TEST(GrantRevoke, gate_denies_every_ancestor_before_other_facts_and_survives_restored_clear) {
     Grants grants;
     ASSERT_TRUE(grants.add(1));
@@ -131,6 +132,7 @@ TEST(GrantRevoke, gate_denies_every_ancestor_before_other_facts_and_survives_res
     EXPECT_EQ(grants.table.gate_count(), 0U);
 }
 
+// C-AUTH-024: accepted volatile control denies before persistence and survives reload.
 TEST(GrantRevoke, gate_capacity_is_independent_of_target_presence_and_duplicates_are_idempotent) {
     Grants zero(0);
     EXPECT_FALSE(zero.table.can_gate(id(1)));
@@ -150,6 +152,7 @@ TEST(GrantRevoke, gate_capacity_is_independent_of_target_presence_and_duplicates
     EXPECT_TRUE(grants.table.install_gate(id(30)));
 }
 
+// C-AUTH-027: accepted control applies against current facts without repeating its CAS.
 TEST(GrantRevoke, first_acceptance_checks_revision_without_requiring_durable_or_usable_target) {
     Grants grants;
     ASSERT_TRUE(grants.add(1, 0, 10, 10));
@@ -167,6 +170,7 @@ TEST(GrantRevoke, first_acceptance_checks_revision_without_requiring_durable_or_
     EXPECT_EQ(grants.table.check_revoke(id(1), 2).status, AYNI_OK);
 }
 
+// C-AUTH-027: accepted control applies against current facts without repeating its CAS.
 TEST(GrantRevoke, accepted_revoke_plans_changed_no_change_and_target_gone_without_mutation) {
     Grants grants;
     ASSERT_TRUE(grants.add(1));
@@ -202,6 +206,7 @@ TEST(GrantRevoke, accepted_revoke_plans_changed_no_change_and_target_gone_withou
     EXPECT_FALSE(grants.table.apply_revoke(grants.table.plan_accepted_revoke(1), {13, 13}));
 }
 
+// C-AUTH-027: accepted control applies against current facts without repeating its CAS.
 TEST(GrantRevoke, expiry_between_acceptance_and_apply_is_no_change_and_preserves_terminal_order) {
     Grants grants;
     ASSERT_TRUE(grants.add(1, 0, 10));
@@ -221,6 +226,7 @@ TEST(GrantRevoke, expiry_between_acceptance_and_apply_is_no_change_and_preserves
     EXPECT_EQ(grants.table.check_chain(0, ready).reason, AYNI_REASON_GRANT_EXPIRED);
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, cleanup_scans_ids_instead_of_slots_skips_unrelated_and_keeps_terminal_stamp) {
     Grants grants;
     ASSERT_TRUE(grants.add(4, 0, 0, 1));
@@ -248,6 +254,7 @@ TEST(GrantRevoke, cleanup_scans_ids_instead_of_slots_skips_unrelated_and_keeps_t
     EXPECT_TRUE(grants.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, nested_roots_have_independent_cursors_and_already_terminal_nodes_keep_stamps) {
     Grants grants;
     ASSERT_TRUE(grants.add(1));
@@ -270,6 +277,7 @@ TEST(GrantRevoke, nested_roots_have_independent_cursors_and_already_terminal_nod
     EXPECT_TRUE(grants.table.consistent());
 }
 
+// C-AUTH-023/026: terminal ordering, durable cleanup and Gates govern safe replacement.
 TEST(GrantRevoke, incomplete_cursor_gate_and_unconfirmed_progress_each_block_leaf_reclaim) {
     Grants grants(1);
     ASSERT_TRUE(grants.add(1));
@@ -298,6 +306,7 @@ TEST(GrantRevoke, incomplete_cursor_gate_and_unconfirmed_progress_each_block_lea
     EXPECT_TRUE(grants.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, cleanup_plan_mismatches_and_stale_revoke_preserve_published_facts) {
     Grants grants;
     ASSERT_TRUE(grants.add(1));
@@ -329,6 +338,7 @@ TEST(GrantRevoke, cleanup_plan_mismatches_and_stale_revoke_preserve_published_fa
     EXPECT_FALSE(grants.table.apply_cleanup(next, {12, 12}));
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, cleanup_finishes_at_frozen_frontier_when_a_retained_unrelated_leaf_was_replaced) {
     Grants grants(3);
     ASSERT_TRUE(grants.add(1));
@@ -358,6 +368,7 @@ TEST(GrantRevoke, cleanup_finishes_at_frozen_frontier_when_a_retained_unrelated_
     EXPECT_TRUE(grants.table.consistent());
 }
 
+// C-AUTH-024: accepted volatile control denies before persistence and survives reload.
 TEST(GrantRevoke, gate_release_searches_past_other_live_targets) {
     Grants grants;
     ASSERT_TRUE(grants.table.install_gate(id(1)));
@@ -368,6 +379,7 @@ TEST(GrantRevoke, gate_release_searches_past_other_live_targets) {
     EXPECT_EQ(grants.table.gate_count(), 1U);
 }
 
+// C-AUTH-023/026: terminal ordering, durable cleanup and Gates govern safe replacement.
 TEST(GrantRevoke,
      durable_revoked_child_is_reclaimed_before_root_and_progress_does_not_reorder_root) {
     Grants grants(2);
@@ -387,6 +399,7 @@ TEST(GrantRevoke,
     EXPECT_TRUE(grants.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, journal_replays_root_then_atomic_descendant_state_and_progress) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -416,6 +429,7 @@ TEST(GrantRevoke, journal_replays_root_then_atomic_descendant_state_and_progress
     EXPECT_TRUE(restored.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, replay_rejects_forged_effect_watermark_revision_and_progress_without_mutation) {
     Grants grants;
     ASSERT_TRUE(grants.add(1));
@@ -456,6 +470,7 @@ TEST(GrantRevoke, replay_rejects_forged_effect_watermark_revision_and_progress_w
               GrantTable::Restore::corrupt);
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, snapshot_keeps_terminal_and_cleanup_stamps_and_can_resume_after_partial_scan) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -483,6 +498,7 @@ TEST(GrantRevoke, snapshot_keeps_terminal_and_cleanup_stamps_and_can_resume_afte
     EXPECT_TRUE(restored.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, snapshot_rejects_non_ancestor_revoker_and_malformed_cursor_or_stamp_atomically) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -535,6 +551,7 @@ TEST(GrantRevoke, snapshot_rejects_non_ancestor_revoker_and_malformed_cursor_or_
     EXPECT_TRUE(restored.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, snapshot_child_cannot_claim_cleanup_beyond_its_roots_cursor_or_stamp) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -561,6 +578,7 @@ TEST(GrantRevoke, snapshot_child_cannot_claim_cleanup_beyond_its_roots_cursor_or
     EXPECT_EQ(none.table.size(), 0U);
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, snapshot_frontier_covers_active_and_terminal_descendants_atomically) {
     for (uint32_t state = 0; state < 3; ++state) {
         Grants source;
@@ -592,6 +610,7 @@ TEST(GrantRevoke, snapshot_frontier_covers_active_and_terminal_descendants_atomi
     }
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, non_revoked_snapshots_reject_each_revocation_metadata_field_atomically) {
     for (const bool expired : {false, true}) {
         Grants source;
@@ -626,6 +645,7 @@ TEST(GrantRevoke, non_revoked_snapshots_reject_each_revocation_metadata_field_at
     }
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, descendant_snapshots_reject_private_cursor_fields_and_out_of_order_stamps) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -668,6 +688,7 @@ TEST(GrantRevoke, descendant_snapshots_reject_private_cursor_fields_and_out_of_o
     }
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, restored_child_state_requires_its_unfinished_self_root_and_ordered_progress) {
     Grants grants;
     ASSERT_TRUE(grants.add(1));
@@ -704,6 +725,7 @@ TEST(GrantRevoke, restored_child_state_requires_its_unfinished_self_root_and_ord
     EXPECT_EQ(grants.table.at(1).stamp.commit_seq, 13U);
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, snapshot_frontier_covers_indirect_descendants_of_each_revoked_root) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -732,6 +754,7 @@ TEST(GrantRevoke, snapshot_frontier_covers_indirect_descendants_of_each_revoked_
     EXPECT_TRUE(valid.table.consistent());
 }
 
+// C-AUTH-023/026: terminal ordering, durable cleanup and Gates govern safe replacement.
 TEST(GrantRevoke, replay_replacement_requires_completed_durable_order_but_does_not_drop_live_gate) {
     Grants source(1);
     ASSERT_TRUE(source.add(1));
@@ -759,6 +782,7 @@ TEST(GrantRevoke, replay_replacement_requires_completed_durable_order_but_does_n
     EXPECT_TRUE(restored.table.consistent());
 }
 
+// C-AUTH-026: bounded ID-ordered cleanup and atomic recovery retain the original root fact.
 TEST(GrantRevoke, restored_creation_cannot_cross_a_revoked_grandparent_with_an_active_parent) {
     Grants source;
     ASSERT_TRUE(source.add(1));
@@ -779,6 +803,7 @@ TEST(GrantRevoke, restored_creation_cannot_cross_a_revoked_grandparent_with_an_a
     EXPECT_TRUE(restored.table.consistent());
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, root_state_and_progress_match_independent_little_endian_literals) {
     constexpr std::array<uint8_t, 32> root{1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0,
                                            0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0};
@@ -816,6 +841,7 @@ TEST(GrantRevokeRecords, root_state_and_progress_match_independent_little_endian
     EXPECT_EQ(cursor.through_grant_id, id(3));
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, malformed_versions_shapes_and_all_truncations_preserve_outputs) {
     std::array<uint8_t, 33> bytes{};
     write_grant_revocation_record({id(1), 2, AYNI_INTENT_EFFECT_CHANGED, 0, id(3)}, bytes.data());
@@ -858,6 +884,7 @@ TEST(GrantRevokeRecords, malformed_versions_shapes_and_all_truncations_preserve_
     EXPECT_FALSE(read_grant_revocation_progress_record(bytes.data(), 24, cursor));
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, snapshot_v2_has_independent_eighty_byte_tail_and_v1_remains_explicit) {
     Grants source;
     ASSERT_TRUE(source.add(1, 0, 0, 10));
@@ -910,6 +937,7 @@ TEST(GrantRevokeRecords, snapshot_v2_has_independent_eighty_byte_tail_and_v1_rem
     EXPECT_EQ(decoded.cleanup_stamp.commit_seq, 0U);
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, revoked_state_rejects_each_identity_revision_and_lifecycle_boundary) {
     Grant grant{};
     grant.grant_id = id(2);
@@ -957,6 +985,7 @@ TEST(GrantRevokeRecords, revoked_state_rejects_each_identity_revision_and_lifecy
     }
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, root_outcomes_validate_revision_frontier_and_known_effect_atomically) {
     const std::array<GrantTable::RevokePlan, 9> malformed{{
         {id(0), 2, AYNI_INTENT_EFFECT_CHANGED, 0, id(3)},
@@ -982,6 +1011,7 @@ TEST(GrantRevokeRecords, root_outcomes_validate_revision_frontier_and_known_effe
     }
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, progress_rejects_invalid_ids_and_both_ordering_boundaries_atomically) {
     const std::array<GrantTable::CleanupPlan, 8> malformed{{
         {id(0), id(2), id(3), 0},
@@ -1004,6 +1034,7 @@ TEST(GrantRevokeRecords, progress_rejects_invalid_ids_and_both_ordering_boundari
     }
 }
 
+// ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
 TEST(GrantRevokeRecords, legacy_snapshot_cannot_encode_revoked_lifecycle_in_its_old_tail) {
     Grants source;
     ASSERT_TRUE(source.add(1));

@@ -28,40 +28,33 @@ bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_sta
 // that complete the usable chain, including ancestors with other subjects.
 authority::GrantCheck WorkModel::check_grant(uint32_t index, uint64_t now_us,
                                              uint64_t durable_seq) const {
-    const auto check = grants.check_chain(index, {ids.boot_epoch(), now_us, durable_seq});
-    if (check.status != AYNI_OK) {
-        return check;
-    }
-    for (uint32_t depth = 0; depth <= AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX; ++depth) {
-        const auto &grant = grants.at(index);
-        const auto *subject = agents.find_instance(grant.subject_instance_id);
-        if (subject == nullptr ||
-            work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_STOPPED ||
-            work::AgentTable::effective_lifecycle(*subject) == AYNI_AGENT_FAULTED) {
-            return {AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT};
-        }
-        if (grant.parent_grant_id == 0U) {
-            return {AYNI_OK, AYNI_REASON_NONE};
-        }
-        if (!grants.find(grant.parent_grant_id, index)) {
-            break;
-        }
-    }
-    return {AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
+    authority::GrantTable::CheckedChain chain{};
+    const auto check = grants.check_chain(index, {ids.boot_epoch(), now_us, durable_seq}, chain);
+    return check.status == AYNI_OK ? check_grant_subjects(chain) : check;
 }
 
-ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel_t channel,
-                           uint64_t &out_session_id) {
-    if (model.principals.find(principal_id) == nullptr) {
-        return AYNI_NOT_FOUND;
+// The Grant owner already proved every link/time/catalog condition. Checking
+// only work subjects preserves owner direction and the original error order.
+authority::GrantCheck
+WorkModel::check_grant_subjects(const authority::GrantTable::CheckedChain &chain) const {
+    for (uint32_t index = 0; index < chain.count; ++index) {
+        const auto &grant = grants.at(chain.indices[index]);
+        if (!work::AgentTable::usable(agents.find_instance(grant.subject_instance_id))) {
+            return {AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT};
+        }
     }
+    return {AYNI_OK, AYNI_REASON_NONE};
+}
+
+ayni_status_t open_session(WorkModel &model, const authority::Principal &principal,
+                           ayni_channel_t channel, uint64_t &out_session_id) {
     uint64_t session_id = 0;
     if (model.sessions.full() || !model.ids.allocate(session_id)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     // Cannot fail: the table has room.
-    static_cast<void>(model.sessions.open({session_id, principal_id, channel,
-                                           model.principals.find(principal_id)->binding_revision}));
+    static_cast<void>(model.sessions.open(
+        {session_id, principal.principal_id, channel, principal.binding_revision}));
     out_session_id = session_id;
     return AYNI_OK;
 }

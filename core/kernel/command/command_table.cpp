@@ -18,7 +18,7 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes)
         if (mapping.object.revision != authority::grant_active_revision ||
             mapping.effect != AYNI_INTENT_EFFECT_CHANGED ||
             !read_authority_command(bytes, command) ||
-            (command.flags & ~AYNI_GRANT_ALLOW_DELEGATION) != 0U) {
+            !authority::valid_persisted_grant_flags(command.flags)) {
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {

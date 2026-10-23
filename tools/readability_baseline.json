@@ -4,13 +4,6 @@
   "violations": [
     {
       "rule": "function-lines",
-      "path": "core/authority/grant/grant_table.cpp",
-      "subject": "namespace ayni :: authority / GrantCheck GrantTable :: check_create ( const NewGrant & grant , uint32_t expected_parent_revision , GrantContext context , Admission & out ) const",
-      "maximum": 83,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "function-lines",
       "path": "core/kernel/intent/intent_rules.cpp",
       "subject": "namespace ayni :: kernel / ayni_status_t apply_intent ( WorkModel & model , const Intent & intent , uint64_t now_us , bool has_room , IntentOutcome & outcome , IntentFailure & failure , ayni_status_t storage_status , uint64_t durable_seq )",
       "maximum": 94,
@@ -46,30 +39,9 @@
     },
     {
       "rule": "module-comments",
-      "path": "core/authority/grant/grant_records",
-      "subject": "header + source",
-      "maximum": 9739,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "module-comments",
-      "path": "core/authority/grant/grant_table",
-      "subject": "header + source",
-      "maximum": 9771,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "module-comments",
       "path": "core/kernel/command/pending_revoke",
       "subject": "header + source",
       "maximum": 9602,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "module-comments",
-      "path": "core/kernel/intent/authority_intent",
-      "subject": "header + source",
-      "maximum": 9553,
       "reason": "Existing debt; resolve and remove with the owning change."
     },
     {

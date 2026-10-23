@@ -95,6 +95,7 @@ GrantRecord record_of(GrantTable &table, uint32_t index) {
     return {grant.grant_id, grant.replaced_grant_id, grant.depth, fact, table.scope(index)};
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantTable, checked_admission_is_read_only_and_insert_owns_both_canonical_bodies) {
     Input input(-2, 2);
     Grants table;
@@ -118,6 +119,7 @@ TEST(GrantTable, checked_admission_is_read_only_and_insert_owns_both_canonical_b
     EXPECT_TRUE(table->consistent());
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantTable, malformed_flags_lifetimes_revisions_and_overflow_never_publish_a_plan) {
     Input input;
     Grants table;
@@ -161,6 +163,7 @@ TEST(GrantTable, malformed_flags_lifetimes_revisions_and_overflow_never_publish_
     EXPECT_EQ(plan.deadline_us, UINT64_MAX);
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantTable, known_scene_and_quota_requirements_are_explicitly_unsupported) {
     Input input;
     Grants table;
@@ -173,6 +176,7 @@ TEST(GrantTable, known_scene_and_quota_requirements_are_explicitly_unsupported) 
     }
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantTable, parent_must_exist_match_revision_be_durable_and_allow_delegation) {
     Input input;
     Grants table;
@@ -190,6 +194,7 @@ TEST(GrantTable, parent_must_exist_match_revision_be_durable_and_allow_delegatio
     EXPECT_EQ(table->check_create(child, 1, ready, plan).reason, AYNI_REASON_GRANT_PARENT);
 }
 
+// C-AUTH-020/022: exact saved catalog semantics bound one-parent delegation.
 TEST(GrantTable, delegation_checks_one_complete_parent_scope_and_exact_capability_domain) {
     Input parent(-5, 5);
     Input child(-4, 4);
@@ -217,6 +222,7 @@ TEST(GrantTable, delegation_checks_one_complete_parent_scope_and_exact_capabilit
               AYNI_REASON_GRANT_PARENT);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantTable, every_ancestor_hold_and_the_edge_depth_limit_apply_to_descendants) {
     Input input;
     Grants table(8, 2);
@@ -235,6 +241,7 @@ TEST(GrantTable, every_ancestor_hold_and_the_edge_depth_limit_apply_to_descendan
     EXPECT_TRUE(table->consistent());
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, finite_child_deadline_cannot_outlive_its_parent_remaining_time) {
     Input input;
     Grants table;
@@ -252,6 +259,7 @@ TEST(GrantTable, finite_child_deadline_cannot_outlive_its_parent_remaining_time)
     EXPECT_EQ(table->check_chain(0, {2, 0, 1000}).reason, AYNI_REASON_GRANT_EXPIRED);
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, finite_delegation_matches_an_independent_discrete_time_coverage_oracle) {
     Input input;
     Grants table;
@@ -274,6 +282,7 @@ TEST(GrantTable, finite_delegation_matches_an_independent_discrete_time_coverage
     EXPECT_EQ(table->size(), 1U);
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantTable, expiry_is_immediate_but_only_a_durable_terminal_can_be_reclaimed) {
     Input input;
     Grants table(1);
@@ -289,6 +298,7 @@ TEST(GrantTable, expiry_is_immediate_but_only_a_durable_terminal_can_be_reclaime
     EXPECT_EQ(plan.replaced_grant_id, id(1));
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantTable, replacement_uses_terminal_order_then_id_instead_of_creation_order) {
     Input input;
     Grants table(2);
@@ -307,6 +317,7 @@ TEST(GrantTable, replacement_uses_terminal_order_then_id_instead_of_creation_ord
     EXPECT_EQ(plan.replaced_grant_id, id(1));
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantTable, retained_children_prevent_parent_replacement_until_the_leaf_has_been_replaced) {
     Input input;
     Grants table(2);
@@ -323,6 +334,7 @@ TEST(GrantTable, retained_children_prevent_parent_replacement_until_the_leaf_has
 
 // C-ID-010 / ADR-0030: CURRENT_BOOT authority belongs to exactly one boot,
 // even when a caller presents a context older than the retained Grant.
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, finite_grants_authorize_only_their_own_boot) {
     Input input;
     Grants grants;
@@ -337,6 +349,7 @@ TEST(GrantTable, finite_grants_authorize_only_their_own_boot) {
     EXPECT_EQ(grants->check_chain(grants.last(), created_in).status, AYNI_OK);
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, next_expiry_is_ordered_and_restored_finite_grants_never_reanchor) {
     Input input;
     Grants original;
@@ -362,6 +375,7 @@ TEST(GrantTable, next_expiry_is_ordered_and_restored_finite_grants_never_reancho
     EXPECT_FALSE(restored->next_expiry(ready, index, deadline));
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, restore_rejects_orphan_expansion_cycles_and_wrong_expiry_states) {
     Input input;
     Grants source;
@@ -381,6 +395,7 @@ TEST(GrantTable, restore_rejects_orphan_expansion_cycles_and_wrong_expiry_states
     EXPECT_TRUE(restored->consistent());
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantTable, exact_replacement_replays_without_reselecting_another_safe_candidate) {
     Input input;
     Grants source(2);
@@ -407,6 +422,7 @@ TEST(GrantTable, exact_replacement_replays_without_reselecting_another_safe_cand
     EXPECT_TRUE(replay->find(id(3), index));
 }
 
+// ADR-0030 decision 8: recovery validates complete related facts before publication.
 TEST(GrantTable, snapshot_keeps_original_stamps_and_allows_an_already_removed_predecessor) {
     Input input;
     Grants source(1);
@@ -426,6 +442,7 @@ TEST(GrantTable, snapshot_keeps_original_stamps_and_allows_an_already_removed_pr
     EXPECT_EQ(other->restore_snapshot(invalid), GrantTable::Restore::corrupt);
 }
 
+// ADR-0030 decision 8: recovery validates complete related facts before publication.
 TEST(GrantTable,
      restore_distinguishes_configured_capacity_from_corrupt_facts_without_partial_insert) {
     Input input;
@@ -450,6 +467,7 @@ TEST(GrantTable,
     EXPECT_EQ(empty->size(), 0U);
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantTable, snapshot_cannot_reintroduce_a_replaced_predecessor_in_either_record_order) {
     Input input;
     Grants source;
@@ -469,6 +487,7 @@ TEST(GrantTable, snapshot_cannot_reintroduce_a_replaced_predecessor_in_either_re
     EXPECT_FALSE(replacement_first->consistent());
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, expiry_rejects_zero_or_stale_stamps_and_permanent_grants_do_not_expire) {
     Input input;
     Grants table;
@@ -491,6 +510,7 @@ TEST(GrantTable, expiry_rejects_zero_or_stale_stamps_and_permanent_grants_do_not
     EXPECT_EQ(table->at(1).revision, 1U);
 }
 
+// C-AUTH-020/022: exact saved catalog semantics bound one-parent delegation.
 TEST(GrantTable, absent_or_changed_catalog_only_holds_persistent_facts_and_can_be_resolved_again) {
     Input input(-2, 2);
     Grants table(1);
@@ -522,6 +542,7 @@ TEST(GrantTable, absent_or_changed_catalog_only_holds_persistent_facts_and_can_b
     EXPECT_EQ(table->check_chain(0, ready).status, AYNI_OK);
 }
 
+// C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
 TEST(GrantTable, invalid_identity_context_and_nested_scopes_leave_admission_unpublished) {
     Input input;
     Grants table;
@@ -572,6 +593,7 @@ TEST(GrantTable, invalid_identity_context_and_nested_scopes_leave_admission_unpu
     }
 }
 
+// C-AUTH-020/022: exact saved catalog semantics bound one-parent delegation.
 TEST(GrantTable, complete_source_domain_must_fit_even_when_a_narrowed_token_scope_would_fit) {
     Input input;
     const ayni_string_v1 members[] = {{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 32},
@@ -599,6 +621,7 @@ TEST(GrantTable, complete_source_domain_must_fit_even_when_a_narrowed_token_scop
               AYNI_REASON_GRANT_CAPACITY);
 }
 
+// ADR-0030 decision 8: recovery validates complete related facts before publication.
 TEST(GrantTable,
      checked_placement_rejects_invalid_ids_stamps_and_stale_placements_without_inserting) {
     Input input;
@@ -662,6 +685,7 @@ TEST(GrantTable,
     EXPECT_EQ(full->at(0).grant_id, id(1));
 }
 
+// ADR-0030 decision 8: recovery validates complete related facts before publication.
 TEST(GrantTable, snapshot_lifecycle_and_both_original_stamps_are_checked_independently) {
     Input input;
     Grants source;
@@ -720,6 +744,7 @@ TEST(GrantTable, snapshot_lifecycle_and_both_original_stamps_are_checked_indepen
     EXPECT_EQ(restored->at(0).deadline_us, 0U);
 }
 
+// ADR-0030 decision 8: recovery validates complete related facts before publication.
 TEST(GrantTable, restore_rejects_expansion_or_issuer_schema_depth_and_lifetime_disagreements) {
     Input parent(-5, 5), child(-4, 4), wide(-6, 6);
     Grants source;
@@ -795,6 +820,7 @@ TEST(GrantTable, restore_rejects_expansion_or_issuer_schema_depth_and_lifetime_d
     EXPECT_EQ(expired_parent->restore_snapshot(late_child), GrantTable::Restore::restored);
 }
 
+// C-AUTH-022 / ADR-0030 decision 8: creation chronology holds even in terminal snapshots.
 TEST(GrantTable, expired_child_creation_must_follow_parent_creation_even_when_terminal_is_later) {
     Input parent(-5, 5), child(-4, 4);
     Grants source;
@@ -818,6 +844,7 @@ TEST(GrantTable, expired_child_creation_must_follow_parent_creation_even_when_te
     EXPECT_TRUE(restored->consistent());
 }
 
+// C-AUTH-023 / ADR-0030 decision 7: only durable terminal leaves may make room.
 TEST(GrantTable, restore_state_and_replacement_validate_exact_old_facts_without_partial_mutation) {
     Input input;
     Grants source;
@@ -875,6 +902,7 @@ TEST(GrantTable, restore_state_and_replacement_validate_exact_old_facts_without_
     EXPECT_EQ(restored->check_chain(0, ready).reason, AYNI_REASON_GRANT_UNKNOWN);
 }
 
+// C-AUTH-021/022: finite authority cannot outlive its boot or parent.
 TEST(GrantTable, all_old_boot_expiry_is_atomic_and_equal_deadlines_use_id_order) {
     Input input;
     Grants source;
@@ -904,6 +932,7 @@ TEST(GrantTable, all_old_boot_expiry_is_atomic_and_equal_deadlines_use_id_order)
     EXPECT_EQ(deadline, 92U);
 }
 
+// C-AUTH-019/022: authority and usable subjects must hold over the complete chain.
 TEST(GrantTable, chain_checks_fail_closed_when_retained_facts_or_ancestor_links_are_corrupt) {
     Input parent(-5, 5), child(-4, 4);
     for (uint32_t fault = 0; fault < 17; ++fault) {
@@ -981,6 +1010,7 @@ TEST(GrantTable, chain_checks_fail_closed_when_retained_facts_or_ancestor_links_
     }
 }
 
+// C-AUTH-020/022: exact saved catalog semantics bound one-parent delegation.
 TEST(GrantTable, a_new_catalog_version_is_an_ephemeral_hold_and_existing_hold_has_priority) {
     Input input;
     Grants table;
@@ -998,6 +1028,113 @@ TEST(GrantTable, a_new_catalog_version_is_an_ephemeral_hold_and_existing_hold_ha
     table->hold_restored(0, AYNI_REASON_GRANT_SUBJECT);
     EXPECT_EQ(table->at(0).hold_reason, AYNI_REASON_CAPABILITY_VERSION);
     EXPECT_EQ(table->at(0).stamp.commit_seq, 1U);
+}
+
+// ADR-0030 decision 1: malformed scalars precede recognized unsupported features.
+TEST(GrantTable, malformed_scalars_precede_deferred_features_without_publishing_admission) {
+    Input input;
+    Grants table;
+    for (const uint32_t feature : {AYNI_GRANT_REQUIRES_SCENE, AYNI_GRANT_REQUIRES_QUOTA}) {
+        for (uint32_t fault = 0; fault < 3; ++fault) {
+            auto grant = input.request(0, feature);
+            if (fault == 0U) {
+                grant.subject_instance_id = 0;
+            } else if (fault == 1U) {
+                grant.duration_us = 1;
+            } else {
+                grant.flags |= 8U;
+            }
+            GrantTable::Admission plan{91, 92, 93, 94, 95, 96};
+            const auto check = table->check_create(grant, 0, ready, plan);
+            EXPECT_EQ(check.status, AYNI_INVALID_ARGUMENT) << feature << ':' << fault;
+            EXPECT_EQ(check.reason, AYNI_REASON_GRANT_INPUT);
+            EXPECT_EQ(plan.index, 91U);
+            EXPECT_EQ(plan.deadline_us, 95U);
+            EXPECT_EQ(table->size(), 0U);
+        }
+    }
+}
+
+// C-AUTH-024 / ADR-0031: accepted denial precedes an ancestor's compatibility hold.
+TEST(GrantTable, ancestor_gate_and_terminal_revocation_precede_its_existing_hold) {
+    Input input;
+    for (const auto hold : {AYNI_REASON_CAPABILITY_UNKNOWN, AYNI_REASON_GRANT_CATALOG_CHANGED,
+                            AYNI_REASON_GRANT_SUBJECT}) {
+        Grants table;
+        ASSERT_EQ(table.add(input.request(0, AYNI_GRANT_ALLOW_DELEGATION), 1, 10).status, AYNI_OK);
+        ASSERT_EQ(table.add(input.request(id(1)), 2, 11, ready, 1).status, AYNI_OK);
+        table->hold_restored(0, hold);
+        ASSERT_EQ(table->check_chain(1, ready).reason, hold);
+        ASSERT_TRUE(table->install_gate(id(1)));
+        EXPECT_EQ(table->check_chain(1, ready).status, AYNI_DENIED);
+        EXPECT_EQ(table->check_chain(1, ready).reason, AYNI_REASON_GRANT_REVOKED);
+        const auto plan = table->plan_accepted_revoke(id(1));
+        ASSERT_TRUE(table->apply_revoke(plan, {12, 12}));
+        ASSERT_TRUE(table->release_gate(id(1)));
+        EXPECT_EQ(table->check_chain(1, ready).reason, AYNI_REASON_GRANT_REVOKED);
+        EXPECT_EQ(table->at(0).hold_reason, hold);
+    }
+}
+
+// C-STORE-015 / ADR-0030 decision 8: a child cannot share its parent's creation stamp.
+TEST(GrantTable, equal_parent_creation_stamp_is_rejected_by_journal_and_snapshot) {
+    Input input;
+    Grants source;
+    ASSERT_EQ(source.add(input.request(0, AYNI_GRANT_ALLOW_DELEGATION), 1, 10).status, AYNI_OK);
+    ASSERT_EQ(source.add(input.request(id(1)), 2, 11, ready, 1).status, AYNI_OK);
+    const auto parent = record_of(*source.operator->(), 0);
+    const auto child = record_of(*source.operator->(), 1);
+    Grants restored;
+    ASSERT_EQ(restored->restore_create(parent, {10, 10}), GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(child, {10, 10}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->size(), 1U);
+    const GrantSnapshotRecord snapshot{child, {10, 10}, {10, 10}, 1, AYNI_GRANT_ACTIVE};
+    EXPECT_EQ(restored->restore_snapshot(snapshot), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->size(), 1U);
+    EXPECT_EQ(restored->at(0).grant_id, parent.grant_id);
+    EXPECT_EQ(restored->restore_create(child, {11, 11}), GrantTable::Restore::restored);
+}
+
+// ADR-0030 decision 8: a later terminal ancestor is valid retained history only in snapshots.
+TEST(GrantTable, only_snapshot_accepts_child_history_beneath_a_later_terminal_parent) {
+    Input input;
+    Grants source;
+    ASSERT_EQ(source.add(input.request(0, AYNI_GRANT_ALLOW_DELEGATION, 100), 1, 10).status,
+              AYNI_OK);
+    ASSERT_EQ(source.add(input.request(id(1), 0, 50), 2, 11, ready, 1).status, AYNI_OK);
+    const auto parent = record_of(*source.operator->(), 0);
+    const auto child = record_of(*source.operator->(), 1);
+    Grants restored;
+    const GrantSnapshotRecord expired{parent, {10, 10}, {12, 12}, 2, AYNI_GRANT_EXPIRED};
+    ASSERT_EQ(restored->restore_snapshot(expired), GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(child, {11, 11}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->size(), 1U);
+    const GrantSnapshotRecord retained{child, {11, 11}, {11, 11}, 1, AYNI_GRANT_ACTIVE};
+    EXPECT_EQ(restored->restore_snapshot(retained), GrantTable::Restore::restored);
+    EXPECT_EQ(restored->size(), 2U);
+    EXPECT_EQ(restored->at(0).lifecycle, AYNI_GRANT_EXPIRED);
+}
+
+// C-AUTH-023 / ADR-0030 decision 7: a recorded replacement still requires a retained leaf.
+TEST(GrantTable, replay_cannot_replace_a_terminal_parent_with_active_or_terminal_retained_child) {
+    Input input;
+    Grants table;
+    ASSERT_EQ(table.add(input.request(0, AYNI_GRANT_ALLOW_DELEGATION, 100), 1, 10).status, AYNI_OK);
+    ASSERT_EQ(table.add(input.request(id(1), 0, 50), 2, 11, ready, 1).status, AYNI_OK);
+    auto replacement = record_of(*table.operator->(), 0);
+    replacement.grant_id = id(3);
+    replacement.replaced_grant_id = id(1);
+    table->expire(0, {12, 12});
+    EXPECT_EQ(table->restore_create(replacement, {13, 13}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(table->size(), 2U);
+    EXPECT_EQ(table->at(0).grant_id, id(1));
+    EXPECT_EQ(table->at(1).parent_grant_id, id(1));
+    table->expire(1, {14, 14});
+    EXPECT_EQ(table->restore_create(replacement, {15, 15}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(table->size(), 2U);
+    EXPECT_EQ(table->at(0).grant_id, id(1));
+    EXPECT_EQ(table->at(1).lifecycle, AYNI_GRANT_EXPIRED);
+    EXPECT_TRUE(table->consistent());
 }
 
 } // namespace

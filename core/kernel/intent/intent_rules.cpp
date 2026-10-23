@@ -128,8 +128,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
                       object_ref(AYNI_OBJECT_AGENT_INSTANCE, create.owner_instance_id), failure);
     }
     // A PAUSED owner still takes goals; their tasks wait until it resumes.
-    const ayni_agent_lifecycle_t owner_lifecycle = work::AgentTable::effective_lifecycle(*owner);
-    if (owner_lifecycle == AYNI_AGENT_STOPPED || owner_lifecycle == AYNI_AGENT_FAULTED) {
+    if (!work::AgentTable::usable(owner)) {
         return refuse(
             AYNI_INVALID_STATE, AYNI_REASON_OWNER_STATE,
             object_ref(AYNI_OBJECT_AGENT_INSTANCE, create.owner_instance_id, owner->revision),

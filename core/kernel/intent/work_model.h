@@ -64,7 +64,12 @@ struct WorkModel {
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
     work::WorkTables tables() { return {goals, tasks, agents}; }
+    // Validates authority once, then the work-owned subjects of that same path.
     authority::GrantCheck check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
+    // Consumes an unchanged successful GrantTable path; root admission's empty
+    // parent path succeeds. No second parent lookup or authority revalidation.
+    authority::GrantCheck
+    check_grant_subjects(const authority::GrantTable::CheckedChain &chain) const;
 
     // Registration fills principals, goal types, agents and strategies in
     // CONFIGURING; the rest changes only in RUNNING.
@@ -99,11 +104,11 @@ struct WorkModel {
     bool searched_with_id = true;
 };
 
-// Opens a session for a registered principal: AYNI_OK with a new id,
-// AYNI_NOT_FOUND for an unknown principal, AYNI_CAPACITY_EXCEEDED when the
-// session table is full or this boot has no id left.
-ayni_status_t open_session(WorkModel &model, uint64_t principal_id, ayni_channel_t channel,
-                           uint64_t &out_session_id);
+// Opens for the unchanged registered Principal already checked by the ABI
+// entry. AYNI_OK with a new id, or AYNI_CAPACITY_EXCEEDED when the session table
+// is full or this boot has no id left; failure preserves out_session_id.
+ayni_status_t open_session(WorkModel &model, const authority::Principal &principal,
+                           ayni_channel_t channel, uint64_t &out_session_id);
 
 // Steps 4 and 5 of ayni_submit_intent: the session, the command id, then
 // room for a transition (has_room) and the rules of the intent's kind;
