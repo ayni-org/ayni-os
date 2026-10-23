@@ -449,7 +449,13 @@ bool GoalTable::gives_way_before(const Goal &goal, const Goal &other) {
     return goal.goal_id < other.goal_id;
 }
 
+// ADR-0028 decision 4: ordinary user pause/resume cannot change a retained
+// lifecycle under unconfirmed authority. Cancellation and expiry still work.
 bool GoalTable::allows(const Goal &goal, GoalChange change) {
+    if (goal.hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED &&
+        (change == GoalChange::pause || change == GoalChange::resume)) {
+        return false;
+    }
     switch (change) {
     case GoalChange::pause:
         return goal.lifecycle == AYNI_GOAL_ACTIVE;
