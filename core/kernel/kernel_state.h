@@ -104,7 +104,25 @@ struct ayni_kernel {
     bool has_room() const { return storage_has_room(); }
     // Enters FENCED after the RUNNING writer exhausts its retries.
     void settle_log();
-    bool settle_revocations(bool recovered);
+    // Call-local accounting; its definition lives with the step implementation.
+    struct StepBudget;
+    // Each storage owner may advance once, sharing the call's item budget.
+    void advance_recovery_and_maintenance(StepBudget &progress);
+    // Prioritize accepted controls, then bounded descendant cleanup.
+    void apply_revocations(StepBudget &progress);
+    // Apply due work then decisions against this call's fixed frontiers.
+    void apply_ready_work(StepBudget &progress);
+    // Drain only inputs queued before this phase, counting each against the budget.
+    void take_queued_inputs(StepBudget &progress);
+    // Report pending work and deadlines even after the budget is exhausted.
+    void report_step(const StepBudget &progress, ayni_step_report_v1 &report);
+    // Transfer a matched durable result from its volatile deny/pin to Grant facts.
+    bool handoff_revocation(const ayni::kernel::PendingRevoke &pending);
+    // Retire controls acknowledged by the current writer's exact boot and sequence.
+    bool retire_durable_revocations();
+    // Reconcile full command identities after the entire recovered prefix validates.
+    bool reconcile_recovered_revocations();
+    // Whether a control or RUNNING cleanup can progress with available journal space.
     bool revocation_ready() const;
     void enter_fenced(ayni_restriction_t reason);
     // Takes the outcome of a maintenance run that ended.

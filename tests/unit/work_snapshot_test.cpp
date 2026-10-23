@@ -56,7 +56,8 @@ ayni::kernel::KernelCapacities capacities() {
 
 class Model {
   public:
-    explicit Model(ayni::kernel::KernelCapacities config = capacities())
+    explicit Model(ayni::kernel::KernelCapacities config = capacities(),
+                   ayni::kernel::KernelLimits limits = {3, 4})
         : capacities_(config),
           agents_(store(ayni::work::AgentTable::storage_size(config.agent_capacity))),
           types_(store(ayni::catalog::GoalTypeRegistry::storage_size(config.goal_type_capacity))),
@@ -76,7 +77,7 @@ class Model {
           grants_(store(ayni::authority::GrantTable::storage_size(
               {config.grant_capacity, config.authority_scope_max_bytes,
                config.grant_delegation_depth_max}))),
-          storage_(storage()), model_(capacities_, {3, 4}, storage_) {}
+          storage_(storage()), model_(capacities_, limits, storage_) {}
 
     WorkModel &get() { return model_; }
 
@@ -217,6 +218,73 @@ TEST(WorkSnapshot, paged_round_trip_keeps_the_original_stamps_and_checkpoint) {
     EXPECT_EQ(restored.get().goals.at(0).created_transition_id, 3U);
     EXPECT_EQ(restored.get().goals.at(0).commit_seq, 4U);
     EXPECT_EQ(restored.get().agents.at(0).stamp.commit_seq, 2U);
+}
+
+// C-STORE-007 / C-LIMIT-007: the deepest legal Goal is part of the durable
+// tree, even when the traversal has reached its final permitted depth.
+TEST(WorkSnapshot, the_deepest_supported_goal_survives_a_paged_round_trip) {
+    auto config = capacities();
+    config.goal_capacity = AYNI_GOAL_DEPTH_MAX_MAX + 1U;
+    const ayni::kernel::KernelLimits limits{AYNI_GOAL_DEPTH_MAX_MAX, 1};
+    Model original(config, limits);
+    ASSERT_EQ(original.get().agents.restore(100, instance_id, 1, AYNI_AGENT_RUNNING, {2, 2}),
+              ayni::work::AgentTable::Restore::restored);
+    uint64_t parent = 0;
+    for (uint32_t depth = 0; depth <= AYNI_GOAL_DEPTH_MAX_MAX; ++depth) {
+        uint32_t index = 0;
+        const uint64_t id = goal_id + depth;
+        ASSERT_EQ(
+            original.get().goals.restore(goal(parent), id, 0, {3U + depth, 3U + depth}, index),
+            GoalTable::Restore::restored);
+        ASSERT_EQ(original.get().goals.at(index).depth, depth);
+        parent = id;
+    }
+    Model restored(config, limits);
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    EXPECT_EQ(restored.get().goals.size(), config.goal_capacity);
+    uint32_t last = 0;
+    ASSERT_TRUE(restored.get().goals.find(parent, last));
+    EXPECT_EQ(restored.get().goals.at(last).depth, AYNI_GOAL_DEPTH_MAX_MAX);
+}
+
+// C-STORE-007/014: an empty checkpoint still retains its writer, version
+// and commit identity; an empty payload is not an absent checkpoint.
+TEST(WorkSnapshot, an_empty_checkpoint_keeps_its_writer_and_commit_identity) {
+    Model original;
+    populate(original.get());
+    ayni::catalog::CatalogId writer;
+    ASSERT_TRUE(writer.assign({"strategy", 8}));
+    original.get().tasks.set_checkpoint(0, writer, 2, {nullptr, 0}, {8, 8});
+    original.get().tasks.progress(0, {8, 8});
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), export_model(original.get())),
+              BatchCheck::ok);
+    const auto &task = restored.get().tasks.at(0);
+    EXPECT_EQ(task.checkpoint_writer_version, 2U);
+    EXPECT_TRUE(task.checkpoint_writer_id.equals({"strategy", 8}));
+    EXPECT_EQ(task.checkpoint_seq, 8U);
+    EXPECT_EQ(restored.get().tasks.checkpoint(0).size, 0U);
+}
+
+// C-STORE-007/011 / ADR-0035 decision 13: a too-small page cannot consume the
+// selected command mapping; retrying with room must preserve all history.
+TEST(WorkSnapshot, a_command_that_does_not_fit_is_written_on_the_next_page) {
+    Model original;
+    const ayni_object_ref_v1 object{0, goal_id, 1, AYNI_OBJECT_GOAL};
+    original.get().commands.insert({7, 100, 1, 3, AYNI_INTENT_GOAL_CREATE, object});
+    original.get().commands.insert({7, 200, 2, 4, AYNI_INTENT_GOAL_CREATE, object});
+    const auto expected = export_model(original.get());
+    WorkSnapshotWriter writer(original.get());
+    uint8_t short_page[1]{};
+    uint32_t size = 0;
+    EXPECT_EQ(writer.next(short_page, sizeof(short_page), size), WorkSnapshotWriter::Page::no_room);
+    EXPECT_EQ(size, 0U);
+    std::vector<uint8_t> page(expected.size());
+    ASSERT_EQ(writer.next(page.data(), static_cast<uint32_t>(page.size()), size),
+              WorkSnapshotWriter::Page::page);
+    page.resize(size);
+    EXPECT_EQ(page, expected);
 }
 
 // ADR-0026 decision 7: a temporary inability to serve an object must not

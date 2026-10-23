@@ -24,20 +24,6 @@
       "reason": "Existing debt; resolve and remove with the owning change."
     },
     {
-      "rule": "function-lines",
-      "path": "core/kernel/kernel_lifecycle.cpp",
-      "subject": "ayni_status_t ayni_kernel :: step ( uint32_t max_items , uint32_t max_time_us , ayni_step_report_v1 & report )",
-      "maximum": 146,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "function-lines",
-      "path": "core/kernel/work_snapshot.cpp",
-      "subject": "namespace ayni :: kernel / bool WorkSnapshotWriter :: next_record ( uint16_t & type , uint32_t & size )",
-      "maximum": 117,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
       "rule": "public-code-comment",
       "path": "include/ayni/ayni.h",
       "subject": "AYNI_BUDGET_EXHAUSTED",
@@ -125,34 +111,6 @@
       "rule": "public-code-comment",
       "path": "include/ayni/ayni.h",
       "subject": "AYNI_OK",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "public-code-comment",
-      "path": "include/ayni/ayni.h",
-      "subject": "AYNI_REASON_COMMAND_PINNED",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "public-code-comment",
-      "path": "include/ayni/ayni.h",
-      "subject": "AYNI_REASON_GRANT_REVOKED",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "public-code-comment",
-      "path": "include/ayni/ayni.h",
-      "subject": "AYNI_REASON_REVOCATION_CAPACITY",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "public-code-comment",
-      "path": "include/ayni/ayni.h",
-      "subject": "AYNI_REASON_REVOCATION_PENDING",
       "maximum": 1,
       "reason": "Existing debt; resolve and remove with the owning change."
     },

@@ -707,3 +707,26 @@ TEST(WorkInput, goal_type_must_accept_local_input) {
 }
 
 } // namespace
+
+namespace {
+// ADR-0035 decision 11 / C-SUB-004: boot submission is one bounded item;
+// synchronous refusal still lets RESTRICTED drain the queued input in this call.
+TEST(KernelEvents, a_rejected_boot_read_still_discards_input_in_the_same_step) {
+    Node node;
+    node.replace_read_port(
+        [](void *context, uint64_t, uint8_t *, uint32_t, ayni_attempt_ref_v1, ayni_completion_t *) {
+            static_cast<ayni::hosts::sim::Host *>(context)->advance_us(100);
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        });
+    node.create_and_start();
+    ASSERT_EQ(post(node.kernel()), AYNI_OK);
+    const auto report = node.step(2, 100);
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(report.items_done, 2U);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(node.info().events_discarded, 1U);
+    EXPECT_EQ(post(node.kernel()), AYNI_OK);
+    EXPECT_EQ(post(node.kernel()), AYNI_OK);
+    EXPECT_EQ(post(node.kernel()), AYNI_BUSY);
+}
+} // namespace
