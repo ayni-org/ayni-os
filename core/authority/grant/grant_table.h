@@ -57,10 +57,10 @@ struct NewGrant {
     catalog::CatalogId capability_id; // Exact registered ID, never an empty accepted fact.
     uint32_t capability_version;      // Exact nonzero schema version paired with source_domain.
     ayni_bytes_v1 source_domain;      // Borrowed complete canonical domain, at least its header.
-    const ayni_scope_v1 *scope;       // Typed creation constraint; null only in decoded records.
-    ayni_grant_lifetime_t lifetime;   // PERMANENT or CURRENT_BOOT; determines duration semantics.
-    uint64_t duration_us;             // Microseconds; 0 iff PERMANENT, positive for CURRENT_BOOT.
-    uint32_t flags;                   // Known request bits; accepted facts use supported bits only.
+    const ayni_scope_v1 *scope; // Typed constraint; null for canonical admission/decoded records.
+    ayni_grant_lifetime_t lifetime; // PERMANENT or CURRENT_BOOT; determines duration semantics.
+    uint64_t duration_us;           // Microseconds; 0 iff PERMANENT, positive for CURRENT_BOOT.
+    uint32_t flags;                 // Known request bits; accepted facts use supported bits only.
     uint64_t bound_goal_id = 0; // 0 for generic authority; otherwise exact nondelegable root owner.
 };
 
@@ -163,10 +163,12 @@ class GrantTable {
         uint32_t count = 0; // Number of valid indices; no persistent/cache state.
     };
 
-    // A plan from check_create, consumed without an intervening mutation or
-    // callback. Inputs remain stable and do not alias the replacement slot.
+    // A plan from typed or canonical admission. Batch tail indices are based
+    // on the original size and may exceed it until earlier plans install.
+    // Consume in order without unrelated mutation/callbacks; views remain
+    // stable and do not alias any selected Grant row.
     struct Admission {
-        uint32_t index;      // Selected row: size() appends, otherwise replaces below size().
+        uint32_t index;      // Reserved tail row or exact replacement; install in plan order.
         uint32_t depth;      // Parent edges of the new Grant, bounded by limits.
         uint32_t scope_size; // Complete normalized scope bytes, before writing any region.
         uint64_t replaced_grant_id; // 0 iff append; exact retained ID at index otherwise.

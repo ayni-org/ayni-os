@@ -41,7 +41,8 @@ class IdAllocator {
         next_ = first_sequence;
     }
 
-    // Whether allocate() would succeed: started, and the sequence not used up.
+    // Whether count consecutive allocations fit without mutation or wrap.
+    // Count 0 succeeds once started, including after sequence exhaustion.
     bool available(uint32_t count = 1) const {
         return prefix_ != 0U &&
                (count == 0U || (next_ != 0U && count - 1U <= max_id_sequence - next_));

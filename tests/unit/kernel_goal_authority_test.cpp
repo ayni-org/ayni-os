@@ -588,4 +588,26 @@ TEST(GoalGrants, a_reclaimed_goal_identity_cannot_authorize_the_new_slot_owner) 
     EXPECT_EQ(info.effective_reason, AYNI_REASON_GRANT_GOAL);
 }
 
+// C-AUTH-031: exact Goal identity does not substitute for its work-owned subject.
+TEST(GoalGrants, a_bound_fact_with_another_subject_is_not_usable) {
+    AuthorityWork node;
+    node.run();
+    const auto owner_grant = node.grant();
+    ASSERT_EQ(owner_grant.status, AYNI_OK);
+    ASSERT_EQ(node.grant(0, 100, 0, node.work.instance(agent_b)).status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal =
+        node.work.create(WorkNode::create_body(node.work.instance(agent_b), 0, "authorized"));
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().recover();
+    // White-box fault: bind the other subject's fact to this Goal. Grant owns
+    // shape checks; WorkModel must complete the separate subject invariant.
+    const auto bound = node.bind(goal.result.object.id, owner_grant.result.object.id);
+    ayni_grant_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_OK);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GRANT_GOAL);
+    EXPECT_EQ(node.authority(goal.result.object.id).effective_reason, AYNI_REASON_GRANT_GOAL);
+}
+
 } // namespace

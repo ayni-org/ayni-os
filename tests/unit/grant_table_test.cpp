@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -23,12 +24,13 @@ struct Input {
     uint32_t domain_size = 0;
     ayni_scope_field_v1 field{};
     ayni_scope_v1 scope{};
-    Input(int64_t minimum = -10, int64_t maximum = 10) {
+    Input(int64_t minimum = -10, int64_t maximum = 10, int64_t domain_min = -10,
+          int64_t domain_max = 10) {
         ayni_authority_value_set_v1 values{};
         values.struct_size = sizeof(values);
         values.kind = AYNI_AUTHORITY_I64;
         values.unit = {"count", 5};
-        values.values.integer = {-10, 10};
+        values.values.integer = {domain_min, domain_max};
         const ayni_authority_field_desc_v1 declaration{sizeof(declaration), 1,
                                                        AYNI_AUTHORITY_PARAMETER, 0, values};
         EXPECT_EQ(ayni::catalog::encode_domain(&declaration, 1, domain.data(),
@@ -1246,6 +1248,54 @@ TEST(GoalGrantTable, bound_admission_rejects_delegation_and_preserves_failed_pla
     auto child = input.request(id(2));
     EXPECT_EQ(grants->check_create(child, 1, {1, 100, 1000, id(1)}, plan).reason,
               AYNI_REASON_GRANT_PARENT);
+}
+
+// C-AUTH-017/031: canonical bytes still need to fit the original domain;
+// a refusal preserves both the caller's reservation and the live table.
+TEST(GoalGrantTable, canonical_admission_checks_the_requested_range_and_complete_domain_budget) {
+    Input input;
+    Input wider(-20, 20, -20, 20);
+    Grants grants(1, 1, 128);
+    auto request = input.request();
+    request.scope = nullptr;
+    request.bound_goal_id = id(1);
+    GrantTable::BatchPlacement placement{};
+    GrantTable::Admission plan{};
+    EXPECT_EQ(
+        grants->check_goal_create(request, wider.request().source_domain, ready, placement, plan)
+            .status,
+        AYNI_INVALID_ARGUMENT);
+    std::array<std::string, 8> names;
+    std::array<ayni_string_v1, 8> tokens{};
+    for (uint32_t at = 0; at < names.size(); ++at) {
+        names[at] = std::string(31, 'x') + std::to_string(at);
+        tokens[at] = {names[at].data(), static_cast<uint32_t>(names[at].size())};
+    }
+    ayni_authority_value_set_v1 values{};
+    values.struct_size = sizeof(values);
+    values.kind = AYNI_AUTHORITY_IDENTIFIER;
+    values.values.tokens = {tokens.data(), 8, 0};
+    const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0, values};
+    std::array<uint8_t, 512> bytes{};
+    uint32_t domain_size = 0;
+    ASSERT_EQ(ayni::catalog::encode_domain(&field, 1, bytes.data(), bytes.size(), domain_size),
+              AYNI_OK);
+    request.source_domain = {bytes.data(), domain_size};
+    values.values.tokens.member_count = 1;
+    const ayni_scope_field_v1 chosen{sizeof(chosen), 1, values};
+    const ayni_scope_v1 narrow{sizeof(narrow), 1, &chosen};
+    std::array<uint8_t, 128> scope{};
+    uint32_t scope_size = 0;
+    ASSERT_EQ(
+        normalize_scope(request.source_domain, narrow, scope.data(), scope.size(), scope_size),
+        AYNI_OK);
+    ASSERT_GT(domain_size, 128U);
+    ASSERT_LE(scope_size, 128U);
+    EXPECT_EQ(grants->check_goal_create(request, {scope.data(), scope_size}, ready, placement, plan)
+                  .reason,
+              AYNI_REASON_GRANT_CAPACITY);
+    EXPECT_EQ(placement.appended, 0U);
+    EXPECT_EQ(grants->size(), 0U);
 }
 
 } // namespace

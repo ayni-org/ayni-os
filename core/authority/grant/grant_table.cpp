@@ -37,6 +37,13 @@ GrantCheck creation_input(const NewGrant &grant, uint32_t expected_parent_revisi
     return {AYNI_OK, AYNI_REASON_NONE};
 }
 
+// creation_input already checked overflow; both typed and canonical admissions
+// start finite lifetime at acceptance, without waiting for durable publication.
+uint64_t creation_deadline(const NewGrant &grant, uint64_t now_us) {
+    return grant.lifetime == AYNI_GRANT_CURRENT_BOOT ? now_us + grant.duration_us
+                                                     : no_grant_deadline_us;
+}
+
 bool same_bytes(ayni_bytes_v1 left, ayni_bytes_v1 right) {
     return left.size == right.size &&
            (left.size == 0U || std::memcmp(left.data, right.data, left.size) == 0);
@@ -510,19 +517,14 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
     if (input.status != AYNI_OK) {
         return input;
     }
-    const bool limited = grant.lifetime == AYNI_GRANT_CURRENT_BOOT;
     uint32_t scope_size = 0;
     const auto normalized =
         normalize_scope(grant.source_domain, *grant.scope, nullptr, 0, scope_size);
     if (normalized != AYNI_BUFFER_TOO_SMALL) {
         return {normalized, AYNI_REASON_GRANT_INPUT};
     }
-    Admission admission{size(),
-                        0,
-                        scope_size,
-                        0,
-                        limited ? context.now_us + grant.duration_us : no_grant_deadline_us,
-                        context.boot_epoch};
+    Admission admission{
+        size(), 0, scope_size, 0, creation_deadline(grant, context.now_us), context.boot_epoch};
     if (grant.parent_grant_id != 0U) {
         uint32_t parent_index = 0;
         if (!find(grant.parent_grant_id, parent_index)) {
@@ -617,14 +619,8 @@ GrantCheck GrantTable::check_goal_create(const NewGrant &grant, ayni_bytes_v1 re
         grant.source_domain.size > limits_.scope_max_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
     }
-    Admission admitted{size(),
-                       0,
-                       requested.size,
-                       0,
-                       grant.lifetime == AYNI_GRANT_CURRENT_BOOT
-                           ? context.now_us + grant.duration_us
-                           : no_grant_deadline_us,
-                       context.boot_epoch};
+    Admission admitted{
+        size(), 0, requested.size, 0, creation_deadline(grant, context.now_us), context.boot_epoch};
     const auto reserved = reserve_placement(context.durable_seq, plan, admitted);
     if (reserved.status == AYNI_OK) {
         out = admitted;

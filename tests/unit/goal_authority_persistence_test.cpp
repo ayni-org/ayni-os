@@ -4,6 +4,7 @@
 #include "authority/grant/grant_records.h"
 #include "authority/scope/scope.h"
 #include "durability/batch/batch_codec.h"
+#include "kernel/command/command_records.h"
 #include "kernel/work_replay.h"
 #include "kernel/work_snapshot.h"
 #include "work/goal/goal_authority_records.h"
@@ -875,4 +876,68 @@ TEST(GoalAuthorityPersistence,
         }
     }
 }
+// White-box snapshot fault helper: keep the exact Grant body and stamps,
+// add only a Goal binding and its required version, updating framing lengths.
+void bind_snapshot_grant(Fixture &source, Snapshot &image, uint64_t goal_id) {
+    auto grant = source.work.kernel()->work.grants.at(0);
+    grant.bound_goal_id = goal_id;
+    const auto found = std::find_if(image.records.begin(), image.records.end(), [](const auto &r) {
+        return r.header.type == ayni::authority::grant_record_type;
+    });
+    ASSERT_NE(found, image.records.end());
+    const auto old_size = found->header.length;
+    found->header.version = ayni::authority::goal_grant_snapshot_record_version;
+    found->header.length =
+        ayni::authority::grant_snapshot_record_size(grant, found->header.version);
+    found->body.resize(found->header.length);
+    ayni::authority::write_grant_snapshot_record(
+        grant, source.work.kernel()->work.grants.source_domain(0),
+        source.work.kernel()->work.grants.scope(0), found->body.data(), found->header.version);
+    image.metadata.payload_length += found->header.length - old_size;
+}
+
+// C-STORE-019: an ordinary command's complete identity did not approve a Goal binding.
+TEST(GoalAuthorityPersistence, ordinary_create_mapping_cannot_prove_a_bound_grant) {
+    Fixture source;
+    source.run();
+    const auto goal = source.goal();
+    ASSERT_EQ(source.create_grant().status, AYNI_OK);
+    source.work.node().recover();
+    auto image = snapshot(source);
+    bind_snapshot_grant(source, image, goal);
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// C-STORE-018/019: matching subject, schema and Scope still cannot transfer a binding.
+TEST(GoalAuthorityPersistence, snapshot_dependency_cannot_borrow_another_goals_bound_grant) {
+    Fixture source;
+    source.run();
+    const auto owner = source.goal();
+    const auto grant = source.create_grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    const auto other = source.goal();
+    source.attach(other, grant.result.object.id);
+    auto image = snapshot(source);
+    bind_snapshot_grant(source, image, owner);
+    // A legitimate compacted snapshot may no longer retain creation mappings.
+    // Remove them to isolate the dependency check from command proof validation.
+    image.records.erase(std::remove_if(image.records.begin(), image.records.end(),
+                                       [&](const auto &r) {
+                                           if (r.header.type != ayni::kernel::command_record_type) {
+                                               return false;
+                                           }
+                                           image.metadata.payload_length -=
+                                               record_header_size + r.header.length;
+                                           --image.metadata.record_count;
+                                           return true;
+                                       }),
+                        image.records.end());
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
 } // namespace

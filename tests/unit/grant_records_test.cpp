@@ -357,6 +357,10 @@ TEST(GoalGrantRecords, binding_round_trips_only_under_its_exact_record_versions)
     ASSERT_TRUE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
                                   goal_grant_record_version));
     EXPECT_EQ(decoded.grant.bound_goal_id, grant.bound_goal_id);
+    auto unbound = bytes;
+    std::fill(unbound.end() - 8, unbound.end(), uint8_t{0});
+    EXPECT_FALSE(read_grant_record(unbound.data(), static_cast<uint32_t>(unbound.size()), decoded,
+                                   goal_grant_record_version));
     EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 8, decoded,
                                    goal_grant_record_version));
@@ -387,7 +391,7 @@ TEST(GoalGrantRecords, invalid_bound_facts_never_publish_partial_decoded_outputs
             invalid.allow_delegation = true;
         }
         if (fault == 1) {
-            invalid.parent_grant_id = grant_id - 1;
+            invalid.parent_grant_id = grant_id;
             invalid.depth = 1;
         }
         if (fault == 2) {
@@ -403,6 +407,43 @@ TEST(GoalGrantRecords, invalid_bound_facts_never_publish_partial_decoded_outputs
         EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out,
                                        goal_grant_record_version));
         EXPECT_EQ(out.grant_id, 91U);
+    }
+}
+
+// C-STORE-019 / ADR-0037 decision 18: restore keeps binding and root cleanup;
+// later boots must not turn permanent Goal-specific authority into a generic Grant.
+TEST(GoalGrantRecords, restored_snapshot_preserves_binding_and_revocation_cleanup) {
+    auto grant = root();
+    grant.bound_goal_id = grant_id;
+    grant.grant_id = grant_id + 1;
+    grant.allow_delegation = false;
+    for (const bool revoked : {false, true}) {
+        if (revoked) {
+            grant.lifecycle = AYNI_GRANT_REVOKED;
+            grant.revision = 2;
+            grant.stamp = {20, 21};
+            grant.revoked_by_root_id = grant.grant_id;
+            grant.cleanup_after_grant_id = grant.grant_id;
+            grant.cleanup_through_grant_id = grant.grant_id;
+            grant.cleanup_stamp = {22, 23};
+        }
+        std::vector<uint8_t> bytes(
+            grant_snapshot_record_size(grant, goal_grant_snapshot_record_version));
+        write_grant_snapshot_record(grant, domain(), domain(), bytes.data(),
+                                    goal_grant_snapshot_record_version);
+        GrantSnapshotRecord decoded{};
+        ASSERT_TRUE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()),
+                                               decoded, goal_grant_snapshot_record_version));
+        EXPECT_EQ(decoded.revoked_by_root_id, grant.revoked_by_root_id);
+        EXPECT_EQ(decoded.cleanup_after_grant_id, grant.cleanup_after_grant_id);
+        EXPECT_EQ(decoded.cleanup_through_grant_id, grant.cleanup_through_grant_id);
+        EXPECT_EQ(decoded.cleanup_stamp.commit_seq, grant.cleanup_stamp.commit_seq);
+        const GrantTable::Limits limits{1, 64, 1};
+        std::vector<uint64_t> arena(GrantTable::storage_size(limits) / sizeof(uint64_t) + 1);
+        GrantTable restored(arena.data(), limits);
+        ASSERT_EQ(restored.restore_snapshot(decoded), GrantTable::Restore::restored);
+        EXPECT_EQ(restored.at(0).bound_goal_id, grant.bound_goal_id);
+        EXPECT_EQ(restored.check_chain(0, {2, 100, 100}).reason, AYNI_REASON_GRANT_GOAL);
     }
 }
 
