@@ -198,8 +198,28 @@ bool GrantTable::descendant_of(uint32_t index, uint64_t root_id) const {
 bool GrantTable::reclaimable(uint32_t index, uint64_t durable_seq) const {
     const Grant &grant = at(index);
     return terminal(grant) && grant.stamp.commit_seq <= durable_seq &&
-           grant.cleanup_stamp.commit_seq <= durable_seq && cleanup_finished(grant) &&
+           grant.cleanup_stamp.commit_seq <= durable_seq &&
+           grant.reference_release_seq <= durable_seq && cleanup_finished(grant) &&
            !gated(grant.grant_id) && !has_child(grant.grant_id);
+}
+
+void GrantTable::release_reference(uint64_t grant_id, uint64_t commit_seq) {
+    uint32_t index = 0;
+    if (find(grant_id, index) && grants_[index].reference_release_seq < commit_seq) {
+        grants_[index].reference_release_seq = commit_seq;
+    }
+}
+
+bool GrantTable::covers_saved_scope(uint32_t index, const catalog::CatalogId &capability,
+                                    uint32_t version, ayni_bytes_v1 original_domain,
+                                    ayni_bytes_v1 requested_scope) const {
+    const auto &grant = at(index);
+    if (!grant.capability_id.equals({capability.data(), capability.size()}) ||
+        grant.capability_version != version || !same_bytes(source_domain(index), original_domain)) {
+        return false;
+    }
+    const auto covered = covers(original_domain, scope(index), requested_scope);
+    return covered.status == AYNI_OK && covered.covered;
 }
 
 // Classify the same history once: snapshots may show later terminal facts;
@@ -475,7 +495,8 @@ GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context, Checked
 // C-AUTH-019/022/023: finish shape, scope and parent admission before choosing
 // a safe replacement. The completed plan is local and failure leaves out intact.
 GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_parent_revision,
-                                    GrantContext context, Admission &out) const {
+                                    GrantContext context, Admission &out,
+                                    const GrantReclaimExclusions &excluded) const {
     const auto input = creation_input(grant, expected_parent_revision, context);
     if (input.status != AYNI_OK) {
         return input;
@@ -533,7 +554,7 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
         uint32_t earliest = size();
         for (uint32_t index = 0; index < size(); ++index) {
             const Grant &candidate = at(index);
-            if (!reclaimable(index, context.durable_seq)) {
+            if (excluded.contains(index) || !reclaimable(index, context.durable_seq)) {
                 continue;
             }
             if (earliest == size() || candidate.stamp.commit_seq < at(earliest).stamp.commit_seq ||
@@ -735,11 +756,13 @@ bool GrantTable::fits_restored_fact(const GrantRecord &record) const {
 // never reruns eviction order or replaces an unfinished/non-leaf fact (C-AUTH-023).
 GrantTable::Restore GrantTable::replay_placement(const GrantRecord &record,
                                                  foundation::TransitionStamp created,
+                                                 const GrantReclaimExclusions &excluded,
                                                  uint32_t &out_index) const {
     uint32_t index = size();
     if (record.replaced_grant_id != 0U) {
         if (!find(record.replaced_grant_id, index) || !terminal(at(index)) ||
             !cleanup_finished(at(index)) || has_child(record.replaced_grant_id) ||
+            excluded.contains(index) || created.commit_seq <= at(index).reference_release_seq ||
             !after(created, at(index).stamp) ||
             (stamped(at(index).cleanup_stamp) && !after(created, at(index).cleanup_stamp))) {
             return Restore::corrupt;
@@ -788,7 +811,8 @@ void GrantTable::install_restored(const GrantRecord &record, const RestoredState
 // A journal create observes active ancestors, then consumes its recorded slot.
 // All rejection paths precede byte/row publication; classifications stay ordered.
 GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
-                                               foundation::TransitionStamp stamp) {
+                                               foundation::TransitionStamp stamp,
+                                               const GrantReclaimExclusions &excluded) {
     const RestoredState state{stamp, stamp, grant_active_revision, AYNI_GRANT_ACTIVE};
     uint32_t parent = 0;
     if (!valid_restored_fact(record, state, parent) ||
@@ -800,7 +824,7 @@ GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
         return Restore::no_room;
     }
     uint32_t index = 0;
-    const Restore placement = replay_placement(record, stamp, index);
+    const Restore placement = replay_placement(record, stamp, excluded, index);
     if (placement != Restore::restored) {
         return placement;
     }

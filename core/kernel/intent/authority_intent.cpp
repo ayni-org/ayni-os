@@ -61,7 +61,8 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
                                     body.flags};
     authority::GrantTable::Admission admission{};
     const auto check = model.grants.check_create(
-        grant, intent.expected_revision, {model.ids.boot_epoch(), now_us, durable_seq}, admission);
+        grant, intent.expected_revision, {model.ids.boot_epoch(), now_us, durable_seq}, admission,
+        model.grant_reclaim_exclusions(durable_seq));
     if (check.status != AYNI_OK) {
         return refuse(check.status, check.reason, failure);
     }

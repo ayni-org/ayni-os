@@ -84,7 +84,7 @@ class WorkReplay {
                                              foundation::TransitionStamp stamp);
     // Goal v2 must receive complete metadata in the same journal batch.
     durability::RecordUse restore_goal_authority(const uint8_t *body, uint32_t size,
-                                                  foundation::TransitionStamp stamp);
+                                                 foundation::TransitionStamp stamp);
     durability::RecordUse restore_task(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_state(const uint8_t *body, uint32_t size,
@@ -103,6 +103,8 @@ class WorkReplay {
                                                       foundation::TransitionStamp stamp);
     durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
                                           uint64_t commit_seq);
+    // Cross-table facts are checked without consulting the new boot catalog.
+    bool goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const;
     void hold_tasks();
     void hold_unconfirmed_work();
 
@@ -132,8 +134,9 @@ class WorkReplay {
         std::optional<uint64_t> goal; // Nonzero created Goal awaiting its state; empty otherwise.
         std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.
         std::optional<uint64_t> goal_authority; // Goal v2 awaiting its explicit ceiling.
-        AuthorityPair authority;      // Exactly one authority alternative or none.
-        uint64_t progress_seq = 0;    // Last progress commit sequence; 0 before any progress.
+        uint64_t goal_authority_seq = 0; // Last type 17 batch; one Goal authority change per batch.
+        AuthorityPair authority;         // Exactly one authority alternative or none.
+        uint64_t progress_seq = 0;       // Last progress commit sequence; 0 before any progress.
         // Every accepted pair in the batch has received its required partner.
         bool complete() const { return !goal && !task && !goal_authority && !authority.pending(); }
     };

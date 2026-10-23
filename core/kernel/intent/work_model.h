@@ -22,8 +22,8 @@
 #include "kernel/kernel_config.h"
 #include "kernel/transition_clock.h"
 #include "work/agent/agent_table.h"
-#include "work/goal/goal_table.h"
 #include "work/goal/goal_authority.h"
+#include "work/goal/goal_table.h"
 #include "work/propagation.h"
 #include "work/task/task_table.h"
 
@@ -52,9 +52,9 @@ struct WorkModel {
                        capacities.authority_scope_max_bytes),
           grants(storage.grants, {capacities.grant_capacity, capacities.authority_scope_max_bytes,
                                   capacities.grant_delegation_depth_max}),
-          goal_authority(storage.goal_authority, {capacities.goal_capacity,
-                                                  capacities.goal_requirement_capacity,
-                                                  capacities.authority_scope_max_bytes}) {}
+          goal_authority(storage.goal_authority,
+                         {capacities.goal_capacity, capacities.goal_requirement_capacity,
+                          capacities.authority_scope_max_bytes}) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -74,6 +74,18 @@ struct WorkModel {
     // parent path succeeds. No second parent lookup or authority revalidation.
     authority::GrantCheck
     check_grant_subjects(const authority::GrantTable::CheckedChain &chain) const;
+
+    // Build a local mask from current work references. Terminal work stops
+    // protecting its rows only after the current writer confirms its last stamp.
+    authority::GrantReclaimExclusions grant_reclaim_exclusions(uint64_t durable_seq) const;
+    // Hand off removed references after all fallible checks. Repeated releases
+    // retain the latest fence; no Goal/Grant reference count is duplicated.
+    void release_goal_references(const work::GoalAuthorityRecord &record, uint64_t commit_seq);
+    // A replaced Goal slot discards exactly its former identity's metadata.
+    void clear_goal_authority(uint32_t index, uint64_t previous_id, uint64_t commit_seq);
+    // Own the cross-table replacement: work propagation, then reference handoff.
+    bool insert_goal(const work::NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
+                     uint32_t &out_index);
 
     // Registration fills principals, goal types, agents and strategies in
     // CONFIGURING; the rest changes only in RUNNING.

@@ -8,8 +8,8 @@
 #include "kernel/command/command_records.h"
 #include "kernel/work_replay.h"
 #include "work/agent/agent_records.h"
-#include "work/goal/goal_records.h"
 #include "work/goal/goal_authority_records.h"
+#include "work/goal/goal_records.h"
 #include "work/task/task_records.h"
 
 namespace ayni::kernel {
@@ -131,8 +131,8 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     uint32_t size = maximum(owner_binding_size, maximum(instance_size, task_size));
     size = maximum(size, work::goal_record_fixed_size + 2U * id_max +
                              capacities.goal_parameter_max_bytes + goal_extra);
-    size = maximum(size, work::goal_authority_record_max(
-                             capacities.goal_requirement_capacity, capacities.authority_scope_max_bytes));
+    size = maximum(size, work::goal_authority_record_max(capacities.goal_requirement_capacity,
+                                                         capacities.authority_scope_max_bytes));
     size = maximum(size, step_record_size(id_max));
     size = maximum(size, work::task_checkpoint_record_fixed_size + id_max +
                              capacities.task_checkpoint_max_bytes);
@@ -152,8 +152,8 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
             (record_prefix + work::goal_record_fixed_size + 2U * id_max +
              capacities.goal_parameter_max_bytes + goal_extra);
     size += uint64_t{capacities.goal_capacity} *
-            (record_prefix + work::goal_authority_record_max(
-                                 capacities.goal_requirement_capacity, capacities.authority_scope_max_bytes));
+            (record_prefix + work::goal_authority_record_max(capacities.goal_requirement_capacity,
+                                                             capacities.authority_scope_max_bytes));
     size += uint64_t{capacities.task_capacity} *
             (record_prefix + task_size + record_prefix + work::task_state_record_size +
              uint64_t{capacities.task_step_capacity} * (record_prefix + step_record_size(id_max)) +
@@ -475,7 +475,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             type == command_record_type
                 ? command_record_version_for(model_.commands.at(command_index_))
             : type == work::goal_record_type &&
-                      model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
+                    model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
                 ? work::goal_with_authority_record_version
             : type == authority::grant_record_type ? authority::grant_snapshot_record_version
                                                    : snapshot_record_version;
@@ -633,7 +633,8 @@ durability::BatchCheck WorkSnapshotReader::grant(uint16_t version, const uint8_t
     return check_of(model_.grants.restore_snapshot(record));
 }
 
-durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t *body,
+                                                uint32_t size) {
     if (size < work::goal_record_fixed_size + goal_extra) {
         return durability::BatchCheck::corrupt;
     }
@@ -653,8 +654,9 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     }
     record.goal.goal_type_index = work::GoalTable::no_index;
     uint32_t index = 0;
-    const auto result = check_of(model_.goals.restore_snapshot(
-        record.goal, record.goal_id, record.replaced_goal_id, record.depth, state.state, stamp, index));
+    const auto result =
+        check_of(model_.goals.restore_snapshot(record.goal, record.goal_id, record.replaced_goal_id,
+                                               record.depth, state.state, stamp, index));
     if (result == durability::BatchCheck::ok && record.authority_required) {
         goal_authority_pending_ = record.goal_id;
     }
@@ -667,8 +669,8 @@ durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, u
     work::GoalAuthorityRecord record{};
     uint32_t index = 0;
     if (!goal_authority_pending_ || !work::read_goal_authority_record(body, size, record) ||
-        record.goal_id != *goal_authority_pending_ ||
-        !model_.goals.find(record.goal_id, index) || !valid_stamp(record.stamp, metadata_) ||
+        record.goal_id != *goal_authority_pending_ || !model_.goals.find(record.goal_id, index) ||
+        !valid_stamp(record.stamp, metadata_) ||
         record.stamp.commit_seq > model_.goals.at(index).commit_seq ||
         record.stamp.transition_id < model_.goals.at(index).created_transition_id) {
         return durability::BatchCheck::corrupt;
@@ -676,7 +678,7 @@ durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, u
     const auto status = model_.goal_authority.restore_validated(index, record);
     if (status != AYNI_OK) {
         return status == AYNI_CAPACITY_EXCEEDED ? durability::BatchCheck::no_room
-                                               : durability::BatchCheck::corrupt;
+                                                : durability::BatchCheck::corrupt;
     }
     goal_authority_pending_.reset();
     return durability::BatchCheck::ok;

@@ -83,7 +83,7 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     const bool log_was_idle = kernel->log.idle();
     status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
                                         outcome, failure, kernel->storage_admission_status(),
-                                        kernel->durable_seq());
+                                        kernel->log.durable_seq());
     if (status == AYNI_OK && decoded.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
         kernel->storage_has_room() && kernel->storage_admission_status() == AYNI_OK &&
         kernel->work.transitions.next_commit_seq() == first_seq) {

@@ -7,8 +7,8 @@
 #include "durability/journal/journal_ring.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
-#include "work/goal/goal_records.h"
 #include "work/goal/goal_authority_records.h"
+#include "work/goal/goal_records.h"
 #include "work/task/task_records.h"
 
 namespace ayni::kernel {
@@ -188,13 +188,15 @@ class Encoder {
     // Metadata follows the Goal state and shares exactly the authority change's
     // stamp. No live catalog is consulted while serializing durable facts.
     bool goal_authority() {
+        uint32_t written = 0;
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {
             work::GoalAuthorityRecord record{};
             if (!model_.goal_authority.read(index, model_.goals.at(index).goal_id, record) ||
                 record.stamp.commit_seq != stamp_.commit_seq) {
                 continue;
             }
-            if (record.stamp.transition_id != stamp_.transition_id) {
+            if (++written > work::goal_authority_records_per_transition ||
+                record.stamp.transition_id != stamp_.transition_id) {
                 return false;
             }
             auto *at = body(work::goal_authority_record_type, work::goal_authority_record_version,
@@ -286,8 +288,9 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += record_bytes(work::goal_record_fixed_size + 2U * id_max +
                          capacities.goal_parameter_max_bytes);
     size += capacities.goal_capacity * record_bytes(work::goal_state_record_size);
-    size += capacities.goal_capacity * record_bytes(work::goal_authority_record_max(
-        capacities.goal_requirement_capacity, capacities.authority_scope_max_bytes));
+    size += work::goal_authority_records_per_transition *
+            record_bytes(work::goal_authority_record_max(capacities.goal_requirement_capacity,
+                                                         capacities.authority_scope_max_bytes));
     size += record_bytes(work::task_record_size);
     size += record_bytes(work::task_steps_record_fixed_size +
                          steps * durability::string_field_size(id_max));

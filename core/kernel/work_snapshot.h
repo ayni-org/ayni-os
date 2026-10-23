@@ -17,6 +17,7 @@
 #include "kernel/intent/work_model.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace ayni::kernel {
 
@@ -77,7 +78,7 @@ class WorkSnapshotWriter {
     uint32_t depth_ = 0; // goals go by depth, so parents come first
     TaskPart task_part_ = TaskPart::task;
     GoalPart goal_part_ = GoalPart::goal; // Reset when the complete pair is written.
-    uint32_t step_ = 0; // the task's next step key
+    uint32_t step_ = 0;                   // the task's next step key
     // Commands go by the commit_seq that accepted them: the last one
     // written, and the one the next record is of.
     uint64_t command_after_seq_ = 0;

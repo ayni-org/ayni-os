@@ -618,6 +618,7 @@ class KernelRun {
         config_.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
         config_.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
         config_.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
+        config_.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
     }
 
     KernelRun(const KernelRun &) = delete;

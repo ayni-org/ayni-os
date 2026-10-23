@@ -222,10 +222,10 @@ journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal
 
 ## Goal 授权元数据（MA-006 E，内部 codec）
 
-E1 仅实现 type 17/v1 的内部事实与 codec，尚未接入 Kernel 日志/快照写入或重放。启用时必须为 REQUIRED，进入原批次配对与容量校验；以下是 codec 的布局约定，不表示批准入口已实现。
+type 17/v1 已接入 Kernel arena、journal、snapshot 和恢复分类，必须为 REQUIRED；公开需求/批准入口仍待后续 E。GOAL type 3/v2 复用 v1 正文并必须标 REQUIRED，声明该 Goal 有明确授权元数据：journal 同批在 GOAL_STATE 后写 type 17，snapshot 在 GOAL 后紧接 type 17（可跨页）；缺失、孤立、重复或跨批伙伴损坏。type 3/v1 缺元数据仍合法且继续 LEGACY_UNCONFIRMED。每 transition 至多一条 type 17，显式零需求仍写该记录。
 
 全部整数为小端。固定头 32 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32）。每项固定开销 28 B，不包括三段数据；总长必须恰好匹配。
 
 Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与原域必须有效，Scope 完整且被原域包含。Grant 引用或是 `{0,0}`（缺项），或是有效 Kernel ID 与非零 revision。proposed 至少缺一项；authorized/paused 全部引用完整。显式 count=0 可授权或暂停，缺少整条记录仍是未知元数据，不能当零需求。表的配置容量可以小于记录绝对上限，放入时不足则不改变已有事实。
 
-journal/snapshot 使用同一 codec；Goal 与 Grant 存在性、stamp 与批次一致性、当前域兼容性属于随后接入时的重放验证。记录不保存单调时间、指针、进程句柄或输入队列状态。
+journal/snapshot 使用同一 codec。journal 正文 stamp 等于 batch，Goal 状态必须在同批更新；已有元数据的原需求不可改变，stamp 严格前进，授权/暂停不能退回 proposed。snapshot stamp 在覆盖边界内且不晚于 Goal 的最后提交。Grant 选择保存 ACTIVE revision，与后来终态 revision 不同不构成损坏；所选主体、原 schema/domain 与覆盖关系仍须一致。活 Goal 所引用 Grant 缺失损坏，持久终态 Goal 可保留已回收历史引用。新 boot 的目录兼容与可消费性单独检查，不改写原需求。记录不保存单调时间、指针、进程句柄、输入队列状态或 Grant 的易失引用释放 fence。

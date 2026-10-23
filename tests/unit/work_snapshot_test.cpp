@@ -79,7 +79,8 @@ class Model {
               {config.grant_capacity, config.authority_scope_max_bytes,
                config.grant_delegation_depth_max}))),
           goal_authority_(store(ayni::work::GoalAuthorityTable::storage_size(
-              {config.goal_capacity, config.goal_requirement_capacity, config.authority_scope_max_bytes}))),
+              {config.goal_capacity, config.goal_requirement_capacity,
+               config.authority_scope_max_bytes}))),
           storage_(storage()), model_(capacities_, limits, storage_) {}
 
     WorkModel &get() { return model_; }
