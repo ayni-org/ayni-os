@@ -45,6 +45,7 @@
 | [0031](0031-revocation-gates-and-intent-receipts.md) | 权限与审批（四）：即时撤销、拒绝栅栏与阶段回执 | 已实现并验证（五配置各892/892、覆盖率/内存/审查、35项有效变异：34原878+1补测879；完成/已合并状态随#28合并生效） | §2.2、§2.4、§2.8、§3.2、§4.2～4.4、§9.1、§14.1 |
 | [0032](0032-readability-checks-and-review-evidence.md) | 可读性机械检查与复查交付证据 | 已接受（R1 本地验证与独立审查通过） | §9.1、§14.1 |
 | [0033](0033-kernel-id-and-grant-record-ownership.md) | Kernel ID 与 Grant 记录基础规则归属 | 已接受（R2a1；验证见正文） | §9.1、§14.1 |
+| [0034](0034-field-values-and-scope-admission.md) | 字段值编解码与 Scope 准入结果复用 | 实施中（R2a2；验证见正文） | §9.1、§14.1 |
 
 ## 模板
 

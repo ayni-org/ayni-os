@@ -1,12 +1,14 @@
 #include "kernel/intent/intent.h"
 
+#include "catalog/abi_checks.h"
 #include "catalog/catalog_id.h"
 #include "catalog/goal_type/goal_type_registry.h"
 #include "foundation/digest.h"
-#include "kernel/abi_checks.h"
 #include "kernel/command/command_canonical.h"
 
 namespace ayni::kernel {
+
+using catalog::check_struct_size;
 namespace {
 
 // Each body struct is new in 0.5 or later or changed since, so each has one

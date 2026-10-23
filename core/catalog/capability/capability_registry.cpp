@@ -1,5 +1,6 @@
 #include "catalog/capability/capability_registry.h"
 
+#include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
 
 #include <limits>
@@ -19,44 +20,38 @@ CapabilityRegistry::CapabilityRegistry(void *storage, uint32_t capacity, uint32_
       scope_max_bytes_(scope_max_bytes) {}
 
 ayni_status_t CapabilityRegistry::validate(const ayni_capability_desc_v1 &input,
-                                           uint32_t &out_domain_size) {
-    if (input.struct_size != sizeof(input)) {
-        return input.struct_size < sizeof(input) ? AYNI_INVALID_ARGUMENT : AYNI_UNSUPPORTED_VERSION;
+                                           DomainEncoding &out) {
+    const auto size_status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
+    if (size_status != AYNI_OK) {
+        return size_status;
     }
     if (input.version == 0U || input.reserved != 0U || !CatalogId::is_valid(input.capability_id)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    uint32_t needed = 0;
-    const auto checked = encode_domain(input.fields, input.field_count, nullptr, 0, needed);
-    if (checked != AYNI_BUFFER_TOO_SMALL) {
-        return checked;
-    }
-    out_domain_size = needed;
-    return AYNI_OK;
+    return inspect_domain(input.fields, input.field_count, out);
 }
 
 ayni_status_t CapabilityRegistry::add(const ayni_capability_desc_v1 &input) {
-    uint32_t needed = 0;
-    const auto checked = validate(input, needed);
-    if (checked != AYNI_OK) {
-        return checked;
-    }
+    DomainEncoding encoding{};
+    const auto checked = validate(input, encoding);
+    return checked == AYNI_OK ? add_validated(input, encoding) : checked;
+}
+
+// The caller admitted the unchanged descriptor before lifecycle/capacity checks.
+// Only this method consumes a slot, after duplicate and complete-byte admission.
+ayni_status_t CapabilityRegistry::add_validated(const ayni_capability_desc_v1 &input,
+                                                const DomainEncoding &encoding) {
     if (find(input.capability_id, input.version).kind == Lookup::Kind::found) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (capabilities_.full() || needed > scope_max_bytes_) {
+    if (capabilities_.full() || encoding.size > scope_max_bytes_) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     Capability capability{};
     static_cast<void>(capability.id.assign(input.capability_id));
     capability.version = input.version;
-    uint8_t *domain = domains_ + static_cast<std::size_t>(size()) * scope_max_bytes_;
-    const auto encoded =
-        encode_domain(input.fields, input.field_count, domain, scope_max_bytes_, needed);
-    if (encoded != AYNI_OK) {
-        return encoded;
-    }
-    capability.domain_size = needed;
+    write_domain(input.fields, encoding, domain_at(size()));
+    capability.domain_size = encoding.size;
     static_cast<void>(capabilities_.push_back(capability));
     return AYNI_OK;
 }
@@ -76,8 +71,12 @@ CapabilityRegistry::Lookup CapabilityRegistry::find(ayni_string_v1 id, uint32_t 
     return found;
 }
 
+uint8_t *CapabilityRegistry::domain_at(uint32_t index) const {
+    return domains_ + static_cast<std::size_t>(index) * scope_max_bytes_;
+}
+
 ayni_bytes_v1 CapabilityRegistry::domain_view(uint32_t index) const {
-    return {domains_ + static_cast<std::size_t>(index) * scope_max_bytes_, at(index).domain_size};
+    return {domain_at(index), at(index).domain_size};
 }
 
 } // namespace ayni::catalog
