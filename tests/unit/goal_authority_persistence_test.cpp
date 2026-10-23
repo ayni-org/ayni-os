@@ -1,5 +1,5 @@
-// ADR-0037 decisions 7–10: E2a has no public metadata producer yet. Fixtures
-// attach validated facts explicitly (White-box), then exercise the real journal,
+// ADR-0037 decisions 7–10: persistence fault fixtures attach validated facts
+// explicitly (White-box), then exercise the real journal,
 // snapshot, boot and ordinary Grant/Goal APIs. No fixture bypasses the reader.
 #include "authority/grant/grant_records.h"
 #include "authority/scope/scope.h"
@@ -68,6 +68,7 @@ class Fixture {
     Fixture() {
         work.node().config().grant_capacity = 1;
         work.node().config().command_capacity = 8;
+        work.node().config().goal_type_capacity = 4;
     }
     void run() {
         ayni_authority_value_set_v1 domain{};
@@ -103,6 +104,14 @@ class Fixture {
         const ayni_capability_desc_v1 capability{
             sizeof(capability), 1, text("device.move"), count, 0, fields};
         ASSERT_EQ(ayni_register_capability(work.kernel(), &capability), AYNI_OK);
+        auto proposal = goal_type_desc("proposal", 1);
+        proposal.export_requirements = [](void *, ayni_bytes_v1,
+                                          const ayni_goal_requirement_sink_v1 *sink) {
+            const ayni_scope_v1 full{sizeof(full), 0, nullptr};
+            const ayni_goal_requirement_v1 need{sizeof(need), 1, text("device.move"), full};
+            return sink->emit(sink->ctx, &need);
+        };
+        ASSERT_EQ(ayni_register_goal_type(work.kernel(), &proposal), AYNI_OK);
         ASSERT_EQ(ayni_start(work.kernel()), AYNI_OK);
         work.node().recover();
         if (work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING) {
@@ -159,8 +168,8 @@ class Fixture {
         ASSERT_TRUE(valid_goal_authority_record(record));
         ASSERT_EQ(work.kernel()->work.goal_authority.install_validated(goal_index(goal_id), record),
                   AYNI_OK);
-        // White-box: replace the durable legacy creation with the same transition
-        // encoded by E2a's real producer, modeling the future public exporter.
+        // White-box: replace the durable creation with the same transition
+        // encoded by the real producer, retaining the exact injected facts.
         std::vector<uint8_t> bytes(
             ayni::kernel::transition_batch_max(capacities_of(work.node().config())));
         BatchWriter writer(bytes.data(), bytes.size(),
@@ -340,7 +349,8 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
 
 // ADR-0037 decision 8: discovery uses this same classifier for covered history.
 TEST(GoalAuthorityPersistence, authority_headers_cannot_be_optional_even_for_future_versions) {
-    for (const uint16_t type : {goal_record_type, goal_authority_record_type}) {
+    for (const uint16_t type :
+         {goal_record_type, goal_state_record_type, goal_authority_record_type}) {
         for (const uint16_t version : {uint16_t{2}, uint16_t{3}}) {
             EXPECT_EQ(WorkReplay::classify_header({type, version, 0, 0}), RecordUse::corrupt);
         }
@@ -350,6 +360,34 @@ TEST(GoalAuthorityPersistence, authority_headers_cannot_be_optional_even_for_fut
     EXPECT_EQ(WorkReplay::classify_header(
                   {goal_authority_record_type, goal_authority_record_version, 0, 0}),
               RecordUse::corrupt);
+}
+
+// C-STORE-018 / ADR-0037 decision 13: a proposal requires the new Goal
+// envelope; downgrading only that envelope must not reinterpret its state.
+TEST(GoalAuthorityPersistence, proposed_snapshots_require_the_new_state_envelope) {
+    Fixture source;
+    source.run();
+    const auto created =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    ASSERT_EQ(source.work.goal(created.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+    source.work.node().recover();
+    const auto original = snapshot(source);
+    for (const uint16_t version : {goal_record_version, goal_with_authority_record_version,
+                                   goal_authority_state_record_version}) {
+        auto changed = original;
+        auto goal =
+            std::find_if(changed.records.begin(), changed.records.end(),
+                         [](const auto &record) { return record.header.type == goal_record_type; });
+        ASSERT_NE(goal, changed.records.end());
+        EXPECT_EQ(goal->header.version, goal_authority_state_record_version);
+        goal->header.version = version;
+        Fixture restored;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed), version == goal_authority_state_record_version
+                                                          ? BatchCheck::ok
+                                                          : BatchCheck::corrupt);
+    }
 }
 
 // ADR-0037 decision 8: the Goal/metadata promise survives a page boundary.

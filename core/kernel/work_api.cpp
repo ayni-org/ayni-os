@@ -176,7 +176,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     }
     info.trigger_source_size = goal.trigger_source.size();
     std::memcpy(info.trigger_source, goal.trigger_source.data(), goal.trigger_source.size());
-    // Read from the tables rather than kept, so a query needs no clock.
+    // The capacity wait reason is derived from tables without a clock read.
     if (goal.cursor.has_next()) {
         info.wait_reason =
             ayni::work::derivation_blocker(kernel.work.tasks, index, kernel.work.ids.available());

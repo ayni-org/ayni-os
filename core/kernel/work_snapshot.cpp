@@ -15,8 +15,8 @@
 namespace ayni::kernel {
 namespace {
 
-// Legacy Goal snapshots remain v1; Goals with authority and Grant snapshots
-// use v2. Commands retain v1/v2/v3 syntax (contracts/storage/records.md).
+// Legacy Goal snapshots remain v1; Goals with authority use v3 and Grants v2.
+// Commands retain v1/v2/v3 syntax (contracts/storage/records.md).
 constexpr uint16_t snapshot_record_version = 1;
 constexpr uint32_t record_prefix = static_cast<uint32_t>(durability::record_header_size);
 constexpr uint32_t id_max = catalog::CatalogId::max_size;
@@ -665,7 +665,7 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     return result;
 }
 
-// Snapshot Goal v2 and metadata form one adjacent pair; the metadata keeps its
+// Snapshot Goal v2/v3 and metadata form one adjacent pair; the metadata keeps its
 // own last-change stamp, which can precede the Goal's latest ordinary progress.
 durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, uint32_t size) {
     work::GoalAuthorityRecord record{};

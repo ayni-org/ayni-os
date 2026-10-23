@@ -433,6 +433,8 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     if (!has_room) {
         return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
     }
+    // Retained rows for principals no longer registered can fill the table;
+    // admission must reserve this principal's command window before mutation.
     if (intent.command_id != 0U && !model.commands.has_row(session->principal_id)) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
                       object_ref(AYNI_OBJECT_PRINCIPAL, session->principal_id), failure);

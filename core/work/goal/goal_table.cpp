@@ -358,8 +358,7 @@ void GoalTable::skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
 bool GoalTable::takes_input(const catalog::CatalogId &source,
                             const GoalAuthorityTable *authority) const {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
-        if (takes(goals_[index], source) &&
-            (authority == nullptr || authority->authorized(index, goals_[index].goal_id))) {
+        if (takes(index, source, authority)) {
             return true;
         }
     }
@@ -371,8 +370,7 @@ void GoalTable::record_input(const catalog::CatalogId &source, uint64_t now_us,
                              const GoalAuthorityTable *authority) {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
         Goal &goal = goals_[index];
-        if (takes(goal, source) &&
-            (authority == nullptr || authority->authorized(index, goal.goal_id))) {
+        if (takes(index, source, authority)) {
             work::record(now_us, goal.cursor);
             goal.commit_seq = stamp.commit_seq;
         }
@@ -508,10 +506,13 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
     }
 }
 
-bool GoalTable::takes(const Goal &goal, const catalog::CatalogId &source) {
+bool GoalTable::takes(uint32_t index, const catalog::CatalogId &source,
+                      const GoalAuthorityTable *authority) const {
+    const Goal &goal = goals_[index];
     return goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && is_live(goal.lifecycle) &&
            goal.lifecycle != AYNI_GOAL_PROPOSED && !is_held(goal) &&
-           goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor);
+           goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor) &&
+           (authority == nullptr || authority->authorized(index, goal.goal_id));
 }
 
 } // namespace ayni::work

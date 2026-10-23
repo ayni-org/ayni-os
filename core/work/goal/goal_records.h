@@ -39,7 +39,7 @@ struct GoalRecord {
     uint64_t replaced_goal_id;
     uint32_t depth;
     NewGoal goal;
-    bool authority_required = false; // v2 envelope requires a paired ceiling; no Goal field copy.
+    bool authority_required = false; // v2/v3 require a paired ceiling; no Goal field copy.
 };
 
 struct GoalStateRecord {

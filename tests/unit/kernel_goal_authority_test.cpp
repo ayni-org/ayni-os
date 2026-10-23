@@ -225,6 +225,77 @@ TEST(GoalRequirements, child_cannot_expand_parent_ceiling_or_use_a_proposed_pare
     EXPECT_EQ(rejected.error.reason, AYNI_REASON_GOAL_AUTHORITY_PARENT);
     node.high[0] = 5;
     EXPECT_EQ(node.create(AYNI_TRIGGER_NONE, parent.result.object.id).status, AYNI_OK);
+    const auto zero = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+    ASSERT_EQ(zero.status, AYNI_OK);
+    const auto expanded = node.create(AYNI_TRIGGER_NONE, zero.result.object.id);
+    EXPECT_EQ(expanded.status, AYNI_DENIED);
+    EXPECT_EQ(expanded.error.reason, AYNI_REASON_GOAL_AUTHORITY_PARENT);
+}
+
+// C-AUTH-028: exporting another Goal cannot overwrite a retained ceiling,
+// including when a callback fails after a successful emission.
+TEST(GoalRequirements, failed_export_keeps_other_goals_original_scope) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.create();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.custom = [](const auto *sink) {
+        Range range(0, 90);
+        const ayni_goal_requirement_v1 input{sizeof(input), 1, text("device.move"), range.scope};
+        EXPECT_EQ(sink->emit(sink->ctx, &input), AYNI_OK);
+        return AYNI_INVALID_ARGUMENT;
+    };
+    EXPECT_EQ(node.create().status, AYNI_INVALID_ARGUMENT);
+    ayni_goal_requirement_field_info_v1 field{};
+    field.struct_size = sizeof(field);
+    ASSERT_EQ(ayni_get_goal_requirement_field(node.work.kernel(), original.result.object.id, 0, 0,
+                                              &field),
+              AYNI_OK);
+    EXPECT_EQ(field.scope.values.integer.max_inclusive, 10);
+    EXPECT_EQ(node.authority(original.result.object.id).phase, AYNI_GOAL_AUTHORITY_PROPOSED);
+}
+
+// C-AUTH-029: a child's independent Grant does not bypass the parent's gate.
+TEST(GoalRequirements, a_live_child_grant_cannot_bypass_a_revoked_parent_dependency) {
+    AuthorityWork node;
+    node.run();
+    const auto narrow = node.grant(0, 5);
+    const auto wide = node.grant(0, 100);
+    ASSERT_EQ(narrow.status, AYNI_OK);
+    ASSERT_EQ(wide.status, AYNI_OK);
+    node.work.node().recover();
+    node.high[0] = 100;
+    const auto parent = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    node.high[0] = 5;
+    const auto child = node.create(AYNI_TRIGGER_ONCE, parent.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    EXPECT_EQ(node.requirement(child.result.object.id, 0).grant_id, narrow.result.object.id);
+    node.revoke(wide.result.object.id);
+    node.advance_work();
+    EXPECT_EQ(node.work.goal(child.result.object.id).last_task_id, 0U);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// ADR-0037 decision 13: restoring authority availability does not clear an
+// authorization pause or change the user's optimistic concurrency revision.
+TEST(GoalRequirements, authorization_pause_is_sticky_and_preserves_user_revision) {
+    AuthorityWork node;
+    node.run();
+    const auto created = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto id = created.result.object.id;
+    const auto before = node.work.goal(id);
+    // White-box setup: E2b has no reauthorization entry point yet. Invoke the
+    // real pause transition while the saved explicit-zero ceiling stays valid.
+    uint32_t index = 0;
+    ASSERT_TRUE(node.work.kernel()->work.goals.find(id, index));
+    node.work.kernel()->work.pause_goal_authority(index);
+    const auto info = node.authority(id);
+    EXPECT_EQ(info.phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GOAL_AUTHORITY_PAUSED);
+    EXPECT_EQ(node.work.goal(id).lifecycle, AYNI_GOAL_PAUSED);
+    EXPECT_EQ(node.work.goal(id).revision, before.revision);
 }
 
 // ADR-0037: all exporter failures leave live work, IDs and output unchanged.
@@ -387,12 +458,10 @@ TEST(GoalRequirements, proposed_work_round_trips_and_expires_without_running) {
     EXPECT_EQ(node.authority(created.result.object.id).phase, AYNI_GOAL_AUTHORITY_PROPOSED);
     EXPECT_EQ(node.work.goal(created.result.object.id).occurrences, 0U);
     EXPECT_EQ(node.work.goal(created.result.object.id).last_task_id, 0U);
-    // Existing recovery hold remains until F; test live proposal expiry separately.
-    const auto expiring = node.create(AYNI_TRIGGER_ONCE, 0, "authorized", 1000);
-    ASSERT_EQ(expiring.status, AYNI_OK);
-    node.work.node().sim().advance_us(1001);
+    EXPECT_EQ(node.work.goal(created.result.object.id).hold_reason, AYNI_REASON_NONE);
+    node.work.node().sim().advance_us(1000001);
     node.advance_work();
-    EXPECT_EQ(node.work.goal(expiring.result.object.id).lifecycle, AYNI_GOAL_EXPIRED);
+    EXPECT_EQ(node.work.goal(created.result.object.id).lifecycle, AYNI_GOAL_EXPIRED);
     EXPECT_TRUE(node.work.strategy().seen.empty());
 }
 // ADR-0037 decision 12: selection uses the clock after the exporter returns.

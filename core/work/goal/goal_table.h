@@ -320,7 +320,8 @@ class GoalTable {
     // Whether the change makes the goal terminal and so reaches its
     // descendants.
     static bool ends(GoalChange change);
-    static bool takes(const Goal &goal, const catalog::CatalogId &source);
+    bool takes(uint32_t index, const catalog::CatalogId &source,
+               const GoalAuthorityTable *authority) const;
     void set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
                        foundation::TransitionStamp stamp);
     // The goal insert() and restore() create.
