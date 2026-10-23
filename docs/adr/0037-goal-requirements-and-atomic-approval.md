@@ -29,6 +29,10 @@ Grant 已有有界目录、Scope、持久身份与撤销机制，Goal 尚未保�
 
 15. **批准默认期限。** 用户 2026-10-23 确认缺项专属 Grant 默认长期有效，重启后仍可用；管理端可明确选择更短期限或撤销。Goal 终态立即使其不可消费，物理回收仍受持久和引用保护约束。此批准行为随 E3 交付。
 
+16. **E3a 专属绑定与分层。** ABI 0.22 的 Grant 查询追加 bound_goal_id（0 为通用）；新原因 GRANT_GOAL 属 DENIED。Grant 保存不可变绑定，非零时必须是不可委派根。authority 只检查 exact 消费 Goal ID；WorkModel 补齐该 Goal 存在、主体一致且未终态，不让 authority 读取 work。普通创建不接受专属输入，新 Goal 选择不能借用别的 Goal 的专属 Grant；原依赖及摘要查询传入确切 Goal ID，恢复跨表一致性同样拒绝串用。Goal 终态立即不可消费，后续持久清理仍由 F 完成。
+17. **有界批量预检。** GrantTable 的局部 BatchPlacement 只记录已预留尾行数量及替代排除集，普通单条创建与缺项批量创建共用 append-first、最早终态 commit/ID 的放置规则；失败不改变表或输出。调用者按顺序保存 Admission 并整批预检后安装，输入在此期间不变。规范需求直接走 canonical 准入，避免展开 typed 数组再归一化。ID 分配器新增 N 个 ID 的只读可用性判断，不能以连续 N 次单项判断代替。此 PR 尚无公开批准入口。
+18. **绑定记录与兼容。** 普通 Grant journal type 13/v1、snapshot type 13/v2 字节保持不变；专属 journal type 13/v2 在旧创建正文后追加 bound_goal_id u64，专属 snapshot type 13/v3 使用该创建正文加原 v2 清理尾部，均 REQUIRED。版本不得省略或丢弃绑定；普通 GRANT_CREATE 的 canonical mapping 不可能证明专属创建。E3a 实现内部 codec、快照及消费限制，专属 journal 与原子批准的整批对应关系随 E3b 开放。回退旧 reader 只能安全受限，不删除尾字段降级。范围上界只增加命名绑定长度，默认配置内存差值在验证后记录。
+
 ## 后果
 
 - work 新增对 authority 的向下构建依赖，仅复用 Scope 关系；authority 不依赖 work。E1 不增加 Kernel 字段或 arena 占用；E2a 的内存增长来自明确容量的表、Grant fence 与原日志预算。
@@ -56,3 +60,5 @@ E1（[#42](https://github.com/RobotSe7en/ayni/pull/42)）：GCC Debug/Release、
 E2a（[#43](https://github.com/RobotSe7en/ayni/pull/43)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 25 项，首轮检出 15 项，10 项补测后全部检出；独立审查无未关闭发现。默认/最小工作配置内存需求为 193,136/32,640 B，分别增加 82,336/1,016 B，对齐仍为 8 B。新增场景验证日志/分页快照配对、原引用与释放 fence，以及 FAILED/UNKNOWN 后实际重载的丢失和已写入分支。未执行远端 CI、硬件或 ESP32 时限测量；公开需求创建、PROPOSED 状态恢复及批准仍由后续 E PR 交付，覆盖率在 E 完成后测量。
 
 E2b（[#44](https://github.com/RobotSe7en/ayni/pull/44)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 25 项，首轮检出 16 项，9 项补测后全部检出；独立审查无未关闭发现。默认/最小工作配置内存需求为 195,248/32,776 B，分别增加 2,112/136 B，对齐仍为 8 B，增长来自暂存字节行与 GoalType 回调。验证覆盖失败导出隔离、原依赖/父链、策略回调跨期丢弃结果、独立授权暂停、恢复待批的原对象到期和旧记录版本拒绝。未执行远端 CI、硬件或 ESP32 时限测量；原子批准及完整工作恢复仍由 E3/F 交付，覆盖率在 E 完成后测量。
+
+E3a（[#45](https://github.com/RobotSe7en/ayni/pull/45)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 25 项，首轮检出 16 项，9 项补测后全部检出；独立审查无未关闭发现。默认/最小工作配置内存需求为 195,528/32,808 B，分别增加 280/32 B，对齐仍为 8 B，增长来自 Grant 绑定字段与记录预算。验证覆盖独占绑定、不可委派、Goal 终态和槽位复用、完整原域预算、批量无重复预留、ID 尾界、版本及跨表恢复约束。未执行远端 CI、硬件或 ESP32 时限测量；公开原子批准由 E3b 交付，E 全部 PR 合并后统一测量覆盖率。

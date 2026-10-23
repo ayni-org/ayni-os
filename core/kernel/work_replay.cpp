@@ -83,8 +83,11 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                    : RecordUse::unknown;
     case authority::grant_record_type:
         return header.version == authority::grant_record_version ||
+                       (context == WorkRecordContext::journal &&
+                        header.version == authority::goal_grant_record_version) ||
                        (context == WorkRecordContext::snapshot &&
-                        header.version == authority::grant_snapshot_record_version)
+                        (header.version == authority::grant_snapshot_record_version ||
+                         header.version == authority::goal_grant_snapshot_record_version))
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_state_record_type:
@@ -149,7 +152,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     case authority::owner_binding_record_type:
         return restore_owner_binding(body, size, stamp);
     case authority::grant_record_type:
-        return restore_grant(body, size, stamp);
+        return restore_grant(header.version, body, size, stamp);
     case authority::grant_state_record_type:
         return restore_grant_state(header.version, body, size, stamp);
     case authority::grant_revocation_record_type:
@@ -365,12 +368,12 @@ RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size
 
 // C-STORE-015: create and its exact command share this batch. Validate the
 // already durable issuer/subject before publishing a fact awaiting that command.
-RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_grant(uint16_t version, const uint8_t *body, uint32_t size,
                                     foundation::TransitionStamp stamp) {
     authority::GrantRecord record{};
     const auto *binding = model_.principals.binding();
     if (pairing_.authority.pending() || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
-        !authority::read_grant_record(body, size, record) || binding == nullptr ||
+        !authority::read_grant_record(body, size, record, version) || binding == nullptr ||
         binding->principal_id != record.grant.owner_principal_id ||
         binding->binding_revision != record.grant.owner_binding_revision ||
         binding->stamp.commit_seq >= stamp.commit_seq ||
@@ -497,7 +500,7 @@ bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_byte
     AuthorityCommandRecord request{};
     // C parents have creation revision 1 while ACTIVE; later terminal
     // revisions must not rewrite the original command's expected revision.
-    return read_authority_command(canonical, request) &&
+    return grant.bound_goal_id == 0U && read_authority_command(canonical, request) &&
            grant.created_stamp.commit_seq == mapping.commit_seq &&
            mapping.principal_id == grant.owner_principal_id &&
            mapping.object.id == grant.grant_id &&
@@ -546,6 +549,7 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
         }
         const auto &grant = model_.grants.at(grant_index);
         if (grant.subject_instance_id != goal.owner_instance_id ||
+            (grant.bound_goal_id != 0U && grant.bound_goal_id != goal.goal_id) ||
             grant.created_stamp.commit_seq > record.stamp.commit_seq ||
             grant.created_stamp.transition_id > record.stamp.transition_id ||
             !model_.grants.covers_saved_scope(grant_index, requirement.capability_id,
@@ -574,6 +578,7 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
             model_.agents.find_instance(grant.subject_instance_id) == nullptr ||
             foundation::id_boot_epoch(grant.grant_id) > boot_epoch_limit ||
             foundation::id_boot_epoch(grant.subject_instance_id) > boot_epoch_limit ||
+            foundation::id_boot_epoch(grant.bound_goal_id) > boot_epoch_limit ||
             foundation::id_boot_epoch(grant.revoked_by_root_id) > boot_epoch_limit ||
             foundation::id_boot_epoch(grant.cleanup_after_grant_id) > boot_epoch_limit ||
             foundation::id_boot_epoch(grant.cleanup_through_grant_id) > boot_epoch_limit) {

@@ -140,7 +140,7 @@ class Encoder {
                                           : authority::grant_state_record_size_for(grant);
             uint8_t *at =
                 body(created ? authority::grant_record_type : authority::grant_state_record_type,
-                     created ? authority::grant_record_version
+                     created ? authority::grant_record_version_for(grant)
                              : authority::grant_state_record_version_for(grant),
                      size);
             if (at == nullptr) {

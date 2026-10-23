@@ -82,14 +82,16 @@ struct WorkModel {
                                                  work::GoalAuthorityRecord &out, OwnerClock clock);
     // Check selected identities without selecting a replacement; caller owns time.
     authority::GrantCheck check_requirement(const work::GoalRequirement &requirement,
-                                            uint64_t now_us, uint64_t durable_seq) const;
+                                            uint64_t now_us, uint64_t durable_seq,
+                                            uint64_t goal_id) const;
     // Includes the owning Goal and its bounded ancestor chain.
     authority::GrantCheck check_goal_authority(uint32_t index, uint64_t now_us,
                                                uint64_t durable_seq) const;
     // Persist authorization pause independently of user pause; settle reached Tasks.
     void pause_goal_authority(uint32_t index);
     // Validates authority once, then the work-owned subjects of that same path.
-    authority::GrantCheck check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
+    authority::GrantCheck check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                                      uint64_t goal_id = 0) const;
     // Consumes an unchanged successful GrantTable path; root admission's empty
     // parent path succeeds. No second parent lookup or authority revalidation.
     authority::GrantCheck

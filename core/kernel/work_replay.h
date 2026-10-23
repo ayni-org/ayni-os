@@ -93,7 +93,7 @@ class WorkReplay {
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_checkpoint(const uint8_t *body, uint32_t size,
                                                   foundation::TransitionStamp stamp);
-    durability::RecordUse restore_grant(const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_grant(uint16_t version, const uint8_t *body, uint32_t size,
                                         foundation::TransitionStamp stamp);
     durability::RecordUse restore_grant_state(uint16_t version, const uint8_t *body, uint32_t size,
                                               foundation::TransitionStamp stamp);

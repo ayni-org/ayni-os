@@ -131,6 +131,49 @@ class AuthorityWork {
         intent.command_id = command++;
         EXPECT_EQ(work.submit(intent).status, AYNI_OK);
     }
+    uint64_t bind(uint64_t goal_id, uint64_t generic_id) {
+        auto &model = work.kernel()->work;
+        uint32_t goal_index = 0;
+        uint32_t generic_index = 0;
+        EXPECT_TRUE(model.goals.find(goal_id, goal_index));
+        EXPECT_TRUE(model.grants.find(generic_id, generic_index));
+        auto record = model.goal_authority.at(goal_index);
+        EXPECT_EQ(record.count, 1U);
+        const auto &generic = model.grants.at(generic_index);
+        const auto &need = record.requirements[0];
+        ayni::authority::NewGrant request{generic.subject_instance_id,
+                                          0,
+                                          generic.owner_principal_id,
+                                          generic.owner_binding_revision,
+                                          need.capability_id,
+                                          need.capability_version,
+                                          need.source_domain,
+                                          nullptr,
+                                          AYNI_GRANT_PERMANENT,
+                                          0,
+                                          0,
+                                          goal_id};
+        ayni::authority::GrantTable::BatchPlacement placement{};
+        ayni::authority::GrantTable::Admission plan{};
+        const ayni::authority::GrantContext context{model.ids.boot_epoch(),
+                                                    work.node().sim().now_us(),
+                                                    work.kernel()->log.durable_seq(), goal_id};
+        EXPECT_EQ(
+            model.grants.check_goal_create(request, need.scope, context, placement, plan).status,
+            AYNI_OK);
+        uint64_t grant_id = 0;
+        EXPECT_TRUE(model.ids.allocate(grant_id));
+        uint32_t grant_index = 0;
+        EXPECT_TRUE(model.grants.insert_goal(request, need.scope, plan, grant_id, record.stamp,
+                                             grant_index));
+        // White-box setup for E3a's internal producer. Borrow disjoint Grant
+        // bytes when replacing the same immutable ceiling; no journal claim.
+        record.requirements[0].source_domain = model.grants.source_domain(grant_index);
+        record.requirements[0].scope = model.grants.scope(grant_index);
+        record.requirements[0].dependency = {grant_id, 1};
+        EXPECT_EQ(model.goal_authority.install_validated(goal_index, record), AYNI_OK);
+        return grant_id;
+    }
     WorkNode work;
     uint32_t count = 1;
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> low{};
@@ -487,6 +530,84 @@ TEST(GoalRequirements, a_matching_grant_for_another_subject_is_not_selected) {
     ASSERT_EQ(created.status, AYNI_OK);
     EXPECT_EQ(node.authority(created.result.object.id).missing_count, 1U);
     EXPECT_EQ(node.requirement(created.result.object.id, 0).grant_id, 0U);
+}
+
+// ADR-0037 decision 16: after internal setup, public consumption/selection
+// and management queries must keep exact Goal ownership and terminal denial.
+TEST(GoalGrants, a_bound_grant_cannot_authorize_other_or_child_goals_and_ends_with_its_goal) {
+    AuthorityWork node;
+    node.run();
+    const auto generic = node.grant();
+    ASSERT_EQ(generic.status, AYNI_OK);
+    node.work.node().recover();
+    const auto owner = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(owner.status, AYNI_OK);
+    node.work.node().recover();
+    const auto bound_id = node.bind(owner.result.object.id, generic.result.object.id);
+    node.revoke(generic.result.object.id);
+    EXPECT_EQ(node.authority(owner.result.object.id).effective_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(node.requirement(owner.result.object.id, 0).grant_id, bound_id);
+    for (const auto parent : {uint64_t{0}, owner.result.object.id}) {
+        const auto other = node.create(AYNI_TRIGGER_NONE, parent);
+        ASSERT_EQ(other.status, AYNI_OK);
+        EXPECT_EQ(node.authority(other.result.object.id).phase, AYNI_GOAL_AUTHORITY_PROPOSED);
+        EXPECT_EQ(node.requirement(other.result.object.id, 0).grant_id, 0U);
+    }
+    ayni_grant_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound_id, &info), AYNI_OK);
+    EXPECT_EQ(info.bound_goal_id, owner.result.object.id);
+    EXPECT_EQ(info.allow_delegation, 0U);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_NONE);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, owner.result.object.id).status, AYNI_OK);
+    ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound_id, &info), AYNI_OK);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GRANT_GOAL);
+    EXPECT_EQ(info.lifecycle, AYNI_GRANT_ACTIVE); // persistent cleanup is a later transition
+}
+
+// ADR-0037 decision 16: reusing a terminal Goal slot never transfers its bound authority.
+TEST(GoalGrants, a_reclaimed_goal_identity_cannot_authorize_the_new_slot_owner) {
+    AuthorityWork node;
+    node.work.node().config().goal_capacity = 1;
+    node.run();
+    const auto generic = node.grant();
+    ASSERT_EQ(generic.status, AYNI_OK);
+    node.work.node().recover();
+    const auto owner = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(owner.status, AYNI_OK);
+    node.work.node().recover();
+    const auto bound = node.bind(owner.result.object.id, generic.result.object.id);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, owner.result.object.id).status, AYNI_OK);
+    node.work.node().recover();
+    const auto next = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+    ASSERT_EQ(next.status, AYNI_OK);
+    EXPECT_NE(next.result.object.id, owner.result.object.id);
+    ayni_grant_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_OK);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GRANT_GOAL);
+}
+
+// C-AUTH-031: exact Goal identity does not substitute for its work-owned subject.
+TEST(GoalGrants, a_bound_fact_with_another_subject_is_not_usable) {
+    AuthorityWork node;
+    node.run();
+    const auto owner_grant = node.grant();
+    ASSERT_EQ(owner_grant.status, AYNI_OK);
+    ASSERT_EQ(node.grant(0, 100, 0, node.work.instance(agent_b)).status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal =
+        node.work.create(WorkNode::create_body(node.work.instance(agent_b), 0, "authorized"));
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().recover();
+    // White-box fault: bind the other subject's fact to this Goal. Grant owns
+    // shape checks; WorkModel must complete the separate subject invariant.
+    const auto bound = node.bind(goal.result.object.id, owner_grant.result.object.id);
+    ayni_grant_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_OK);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GRANT_GOAL);
+    EXPECT_EQ(node.authority(goal.result.object.id).effective_reason, AYNI_REASON_GRANT_GOAL);
 }
 
 } // namespace

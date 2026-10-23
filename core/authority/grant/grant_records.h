@@ -12,6 +12,7 @@ namespace ayni::authority {
 
 constexpr uint16_t grant_record_type = 13;
 constexpr uint16_t grant_record_version = 1;
+constexpr uint16_t goal_grant_record_version = 2; // REQUIRED bound Goal tail; records.md type 13.
 constexpr uint16_t grant_state_record_type = 14;
 constexpr uint16_t grant_state_record_version = 1;
 constexpr uint16_t grant_revoked_state_record_version = 2;
@@ -20,9 +21,11 @@ constexpr uint16_t grant_revocation_record_version = 1;
 constexpr uint16_t grant_revocation_progress_record_type = 16;
 constexpr uint16_t grant_revocation_progress_record_version = 1;
 constexpr uint16_t grant_snapshot_record_version = 2;
+constexpr uint16_t goal_grant_snapshot_record_version = 3; // Bound create plus v2 cleanup tail.
 constexpr uint16_t grant_snapshot_legacy_record_version = 1;
 // Fixed overhead excluding variable Capability/domain/scope data, type 13/v1.
 constexpr uint32_t grant_record_fixed_size = 80;
+constexpr uint32_t goal_grant_binding_size = sizeof(uint64_t); // Exact Goal ID after the old body.
 // Type 14/v1 stores id/revision/lifecycle; v2 appends the revocation root.
 constexpr uint32_t grant_state_record_size = 16;
 constexpr uint32_t grant_revoked_state_record_size = 24;
@@ -83,15 +86,20 @@ bool valid_grant_record(const GrantRecord &record);
 bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id);
 
 constexpr uint32_t grant_record_max(uint32_t scope_max_bytes) {
-    return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES + 2U * scope_max_bytes;
+    return grant_record_fixed_size + goal_grant_binding_size + AYNI_CATALOG_ID_MAX_BYTES +
+           2U * scope_max_bytes;
 }
 constexpr uint32_t grant_snapshot_record_max(uint32_t scope_max_bytes) {
     return grant_record_max(scope_max_bytes) + grant_revocation_snapshot_tail_size;
 }
 uint32_t grant_record_size(const Grant &grant);
+// Generic facts preserve their old envelopes; bound facts require new readers.
+uint16_t grant_record_version_for(const Grant &grant);
+uint16_t grant_snapshot_record_version_for(const Grant &grant);
 void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
                         uint8_t *body);
-bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out);
+bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out,
+                       uint16_t version = grant_record_version);
 void write_grant_state_record(const Grant &grant, uint8_t *body);
 uint16_t grant_state_record_version_for(const Grant &grant);
 uint32_t grant_state_record_size_for(const Grant &grant);

@@ -118,4 +118,22 @@ TEST(BoundedArray, zero_capacity_is_always_full) {
     EXPECT_FALSE(array.push_back(1));
 }
 
+// C-ID-001 / ADR-0037 decision 17: batch preflight is read-only and exact at exhaustion.
+TEST(KernelId, batch_availability_does_not_consume_or_wrap_the_remaining_ids) {
+    IdAllocator ids;
+    EXPECT_FALSE(ids.available(2));
+    ids.start(3, 0xfffffffeU);
+    EXPECT_TRUE(ids.available(0));
+    EXPECT_TRUE(ids.available(2));
+    EXPECT_FALSE(ids.available(3));
+    uint64_t first = 0;
+    ASSERT_TRUE(ids.allocate(first));
+    EXPECT_EQ(first, UINT64_C(0x3fffffffe));
+    EXPECT_TRUE(ids.available(1));
+    EXPECT_FALSE(ids.available(2));
+    ASSERT_TRUE(ids.allocate(first));
+    EXPECT_FALSE(ids.available(1));
+    EXPECT_TRUE(ids.available(0));
+}
+
 } // namespace

@@ -121,7 +121,7 @@ kind10 的 canonical 独立为16 B小端 `kind u32 / original_expected_revision 
 
 Gate、pending、pin、queued boot/seq、monotonic deadline均不写日志或快照。自动reload先在各owner保留易失控制、清除可恢复事实，完整恢复后才以exact原mapping确认或重新应用；不能把公开durable floor当作原请求确认。全进程重启仅从持久事实恢复，不承诺保留PENDING。
 
-journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal中不能当13/v1读。新增15/16、14/v2、9/v3以及covered历史都受REQUIRED/版本检查；旧reader必须受限，不能跳过新授权事实。
+journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于snapshot；E3a 的专属 journal 13/v2 另有绑定尾部，不得互换，journal中不能当13/v1读。新增15/16、14/v2、9/v3以及covered历史都受REQUIRED/版本检查；旧reader必须受限，不能跳过新授权事实。
 
 ## 控制记录与读取
 
@@ -169,7 +169,7 @@ journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal
 
 ### 静态领域记录
 
-正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。Grant writer显式写13/v2且兼容读13/v1；COMMAND_MAPPING按kind保留v1/v2/v3；GOAL 有授权元数据时写 v3，兼容读取 v1/v2，其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
+正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3；GOAL 有授权元数据时写 v3，兼容读取 v1/v2，其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
@@ -181,7 +181,7 @@ journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal
 | 7 `TASK_STEPS` | 日志的步骤正文，每条只含一个 key，`steps_before` 为该 key 的位置、`count=1` | 20 + key 字节数 |
 | 8 `TASK_CHECKPOINT` | 与日志正文相同，包含写入方策略 ID、版本及原检查点；没有写入方时不写该记录 | 日志正文长度 |
 | 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
-| 13 `GRANT_CREATE` | v1为创建正文+created/last stamp（各u64×2）+revision/lifecycle（u32×2）；v2再接revoked_by_root_id/cleanup_after/cleanup_through（u64×3）、cleanup stamp（u64×2）；均无deadline/hold/Gate | v1正文+40；v2正文+80，最大192+2×scope_max_bytes |
+| 13 `GRANT_CREATE` | v1为创建正文+created/last stamp（各u64×2）+revision/lifecycle（u32×2）；v2再接revoked_by_root_id/cleanup_after/cleanup_through（u64×3）、cleanup stamp（u64×2）；v3使用专属创建正文并保留相同清理尾部；均无deadline/hold/Gate | v1正文+40；通用v2正文+80，最大192+2×scope_max_bytes；专属v3为绑定创建正文+80，最大200+2×scope_max_bytes |
 | 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3日志正文、effect及完整canonical（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88 |
 
 顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的 Goal（v2 后紧接 type 17，可跨页）、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
@@ -191,6 +191,12 @@ journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal
 所有auth mapping核对OwnerBinding principal及接受seq、合法Kernel ID/boot，create继续校验完整不可变创建事实与scope。retained revoke CHANGED target必须为self-root REVOKED、终态seq等于mappingseq；NO_CHANGE target必须已终态且终态seq严格小于mappingseq；TARGET_GONE target必须缺席。已合法回收的CHANGED/NO_CHANGE target允许缺席。被根清理的保留后代ID不得超过根after，terminal stamp不得超过根cleanup stamp；revoker/after/through同样核对合法Kernel ID及snapshot boot界限；不改写为snapshot边界冒充原事实。
 
 导出、回读与恢复按页复用同一存储缓冲，单条记录上限由配置容量计算，整份快照可以大于缓冲；Core 不分配另一份 WorkModel 或完整快照内存。任何损坏、不支持或容量不足均丢弃本次导入的全部可恢复状态，自动reload已接受的易失Gate/pending仍由各owner保留。绑定不匹配时，已完整校验的模型仅保留用于只读诊断。
+
+### Goal 专属 Grant 的版本扩展
+
+自 E3a（ADR-0037）起，通用 Grant 的旧字节保持不变。专属创建使用 REQUIRED type 13/v2：完整旧 type 13/v1 正文后接非零 bound_goal_id（u64，小端），该绑定必须为早于此 Grant ID 的合法 Kernel ID，且 parent_grant_id、flags 均为 0。绑定只允许该 Goal 消费，不能委派；不能用普通 GRANT_CREATE 的完整 canonical 命令证明此绑定。
+
+专属快照使用 REQUIRED type 13/v3：上述创建正文加原 v2 的 80 B 状态/清理尾部；最大为 200 + 2×scope_max_bytes。通用快照仍写 v2 并可读历史 v1；journal v2 和 snapshot v2 含义不同，由上下文分类。新版本零绑定、旧版本多出绑定字节、版本与正文尾部不匹配都拒绝，不丢字段回退。E3a 暂无公开专属创建；整批批准的 journal 配对随 E3b 闭合。
 
 ### 激活、轮转与恢复
 
@@ -220,8 +226,9 @@ journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal
 | C-STORE-014 | 持久记录及快照不包含单调时间值、句柄、指针、资源占用或原始媒体（C-PRIM-001、C-TIME-003）；快照只保存持久领域视图，不把本次目录缺失造成的恢复 fault/hold 永久化 | 快照保存重启前单调时刻，或换回兼容策略后 Task 因上次恢复的临时 hold 仍不能继续 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；Grant 不含 deadline/易失 hold：`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`（ADR-0030）；评审 |
 | C-STORE-015 | Grant创建与完整授权命令mapping/结果同批；保留source_domain、展开scope、父链、原始stamp和精确replacement，journal/snapshot均不写deadline/易失hold；unknown/missing REQUIRED的授权记录含covered历史均受限 | 孤立Grant被恢复为权限；快照遗漏原始域或把当前hold永久化；旧reader跳过授权新记录 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |
 | C-STORE-016 | 显式根撤销与完整v3命令结果同批；有界后代状态与根进度同批，fixed through/单调after/真实父链及独立cleanup_stamp均可重放检查，精确replacement须为持久安全叶节点 | 根已撤销但丢命令结果；后代已改而cursor未改；cursor改变终态回收序 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.root_record_and_exact_mapping_require_each_other_in_one_batch`、`GrantRevokeReplay.descendant_state_and_progress_are_an_atomic_pair`、`GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`、`GrantRevokeReplay.descendant_and_progress_must_name_the_same_root_and_cursor`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`；最终交付见 ADR-0031；C-COMMIT-005 |
-| C-STORE-017 | snapshot显式写Grant13/v2并兼容v1，mapping1/2/3各按版本读；共享classifier区分journal/snapshot及covered历史，分别检查created/last/cleanup界和effect/retained target一致性，不保存Gate/pending/pin/deadline | snapshot13/v2被journal按v1解释；NO_CHANGE与同seq CHANGED互换；cleanup超过边界仍导入 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
+| C-STORE-017 | snapshot显式写通用Grant13/v2并兼容v1，专属Grant写13/v3（ADR-0037），mapping1/2/3各按版本读；共享classifier区分journal/snapshot及covered历史，分别检查created/last/cleanup界和effect/retained target一致性，不保存Gate/pending/pin/deadline | snapshot13/v2被journal按v1解释；NO_CHANGE与同seq CHANGED互换；cleanup超过边界仍导入 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
 | C-STORE-018 | 有授权元数据的 GOAL v2/v3 与 type 17 必须配对，journal 同批且 stamp 相同、snapshot 相邻且在 Goal/快照边界内；原需求不可改写；活引用必须匹配已有 Grant 的主体、原域与范围 | 缺元数据的新 Goal 被当成旧零需求；跨 Goal 借记录；按当前目录重释旧范围 | M1 部分实现（内部事实、公开创建及 journal/snapshot/boot 集成，批准随 E3）：`GoalAuthorityPersistence.journal_round_trip_preserves_explicit_zero_and_legacy_absence`、`GoalAuthorityPersistence.missing_duplicate_or_wrong_batch_metadata_restricts_boot`、`GoalAuthorityPersistence.paged_snapshot_keeps_adjacent_metadata_and_original_stamps`、`GoalAuthorityPersistence.restored_updates_keep_the_original_ceiling_and_never_return_to_proposed`、`GoalAuthorityPersistence.a_grant_for_another_agent_cannot_authorize_the_restored_goal`、`GoalAuthorityPersistence.a_narrow_grant_does_not_cover_a_wider_saved_requirement`、`GoalAuthorityPersistence.proposed_snapshots_require_the_new_state_envelope`；ADR-0037 |
+| C-STORE-019 | Goal 专属 Grant journal v2/snapshot v3 显式保存非零绑定；通用 Grant 旧字节不变；版本、根/不可委派及身份规则在 struct/bytes 共用校验 | 旧 reader 丢绑定；新 envelope 接受零绑定；普通命令替代批准证明 | M1 部分实现（内部记录与版本边界；整批批准随 E3b）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`；ADR-0037 |
 
 ## Goal 授权元数据（MA-006 E，内部 codec）
 

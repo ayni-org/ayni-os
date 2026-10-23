@@ -17,6 +17,8 @@ namespace ayni::foundation {
 constexpr uint32_t kernel_id_epoch_shift = 32;
 // The largest boot epoch whose IDs fit in the fixed-width representation.
 constexpr uint64_t max_boot_epoch = 0xFFFFFFFFU;
+// Largest per-boot sequence; batch admission must not wrap this word.
+constexpr uint32_t max_id_sequence = 0xFFFFFFFFU;
 
 // Decode the durable epoch without requiring a valid per-boot sequence.
 constexpr uint64_t id_boot_epoch(uint64_t id) {
@@ -39,8 +41,12 @@ class IdAllocator {
         next_ = first_sequence;
     }
 
-    // Whether allocate() would succeed: started, and the sequence not used up.
-    bool available() const { return prefix_ != 0U && next_ != 0U; }
+    // Whether count consecutive allocations fit without mutation or wrap.
+    // Count 0 succeeds once started, including after sequence exhaustion.
+    bool available(uint32_t count = 1) const {
+        return prefix_ != 0U &&
+               (count == 0U || (next_ != 0U && count - 1U <= max_id_sequence - next_));
+    }
 
     // Zero before start(); otherwise the epoch, including after exhaustion.
     uint64_t boot_epoch() const { return id_boot_epoch(prefix_); }

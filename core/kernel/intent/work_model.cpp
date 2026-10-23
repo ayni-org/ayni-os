@@ -26,10 +26,19 @@ bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_sta
 
 // The Grant owner checks attenuation and time; Kernel owns the subjects
 // that complete the usable chain, including ancestors with other subjects.
-authority::GrantCheck WorkModel::check_grant(uint32_t index, uint64_t now_us,
-                                             uint64_t durable_seq) const {
+authority::GrantCheck WorkModel::check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                                             uint64_t goal_id) const {
     authority::GrantTable::CheckedChain chain{};
-    const auto check = grants.check_chain(index, {ids.boot_epoch(), now_us, durable_seq}, chain);
+    const auto check =
+        grants.check_chain(index, {ids.boot_epoch(), now_us, durable_seq, goal_id}, chain);
+    if (check.status == AYNI_OK && grants.at(index).bound_goal_id != 0U) {
+        uint32_t goal_index = 0;
+        if (!goals.find(goal_id, goal_index) ||
+            !work::GoalTable::is_live(goals.at(goal_index).lifecycle) ||
+            goals.at(goal_index).owner_instance_id != grants.at(index).subject_instance_id) {
+            return {AYNI_DENIED, AYNI_REASON_GRANT_GOAL};
+        }
+    }
     return check.status == AYNI_OK ? check_grant_subjects(chain) : check;
 }
 

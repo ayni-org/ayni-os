@@ -578,9 +578,10 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
     info.cleanup_through_grant_id = grant.cleanup_through_grant_id;
     info.cleanup_transition_id = grant.cleanup_stamp.transition_id;
     info.cleanup_commit_seq = grant.cleanup_stamp.commit_seq;
+    info.bound_goal_id = grant.bound_goal_id;
     info.effective_reason = kernel->work
                                 .check_grant(index, kernel->host.monotonic_now_us(kernel->host.ctx),
-                                             kernel->durable_seq())
+                                             kernel->durable_seq(), grant.bound_goal_id)
                                 .reason;
     *out_info = info;
     return AYNI_OK;
@@ -637,7 +638,8 @@ ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal
         info.requirement_count = record.count;
         for (uint32_t at = 0; at < record.count; ++at) {
             if (kernel->work
-                    .check_requirement(record.requirements[at], now, kernel->log.durable_seq())
+                    .check_requirement(record.requirements[at], now, kernel->log.durable_seq(),
+                                       goal_id)
                     .status != AYNI_OK) {
                 ++info.missing_count;
             }
@@ -674,7 +676,7 @@ ayni_status_t ayni_get_goal_requirement(const ayni_kernel_t *kernel, uint64_t go
     info.effective_reason =
         kernel->work
             .check_requirement(requirement, kernel->host.monotonic_now_us(kernel->host.ctx),
-                               kernel->log.durable_seq())
+                               kernel->log.durable_seq(), goal_id)
             .reason;
     *out_info = info;
     return AYNI_OK;

@@ -158,6 +158,7 @@ static int check_work_model(ayni_kernel_t *kernel) {
     failures += expect(ayni_get_task(kernel, 1u, &task_info) == AYNI_INVALID_STATE,
                        "task query in CONFIGURING");
     grant_info.struct_size = (uint32_t)sizeof grant_info;
+    failures += expect(grant_info.bound_goal_id == 0u, "generic Grant has no Goal binding");
     grant_field.struct_size = (uint32_t)sizeof grant_field;
     failures += expect(ayni_get_grant(kernel, 1u, &grant_info) == AYNI_INVALID_STATE,
                        "grant query links from C99 in CONFIGURING");
