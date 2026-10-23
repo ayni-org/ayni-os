@@ -47,6 +47,7 @@
 | #28 | 见该 PR 合并记录 | `MA-006` D | 即时Grant撤销、独立Gate/pending/pin、阶段回执、有界持久清理与兼容恢复，ABI0.19；五配置各892/892，35项有效变异34原878+1补测879检出；本行完成/已合并状态随#28合并生效，最终head须CI全绿 | ADR-0031 |
 | #29 | 2026-10-22 | 复查记录 | `MA-006` A–D 的复查结果与整理任务、要写进 `AGENTS.md` 的可读性约束与机器检查（`reports/core/ma006-a-d-review.md`） | — |
 | #30 | 2026-10-23 | `MA-006` R1 | 可读性约束、机械检查与遗留基线、整改及 E/F 实施计划；已合并 | ADR-0032 |
+| [#31](https://github.com/RobotSe7en/ayni/pull/31) | — | `MA-006` R2a1 | Kernel ID、Grant revision 与记录布局归属整理；本地验证与独立审查通过，已提交 | ADR-0033 |
 
 ## 工作包日期
 
@@ -60,7 +61,7 @@
 
 ## 交接状态（2026-10-23）
 
-- **当前工作（2026-10-23）：** R1 已由 [#30](https://github.com/RobotSe7en/ayni/pull/30) 合并。按 [详细实施计划](../../docs/ma006-implementation.md) 交付 R2a1：Kernel ID、Grant revision 与记录布局已收拢，本地验证与独立审查通过，证据见 ADR-0033；后续为 R2a2 字段校验、R2b 状态编排、R3 A1 修复与 R4 文档收尾。第一轮结束停下，等用户决定何时开始 E；三项 E/F 产品选择保持。当前任何重启都会停止全部恢复的活工作，包括 A 之后新建的工作。以下历史状态待 R4 重写。
+- **当前工作（2026-10-23）：** R1 已由 [#30](https://github.com/RobotSe7en/ayni/pull/30) 合并。按 [详细实施计划](../../docs/ma006-implementation.md) 交付 [R2a1 #31](https://github.com/RobotSe7en/ayni/pull/31)：Kernel ID、Grant revision 与记录布局已收拢，本地验证与独立审查通过，证据见 ADR-0033；后续为 R2a2 字段校验、R2b 状态编排、R3 A1 修复与 R4 文档收尾。第一轮结束停下，等用户决定何时开始 E；三项 E/F 产品选择保持。当前任何重启都会停止全部恢复的活工作，包括 A 之后新建的工作。以下历史状态待 R4 重写。
 - **本轮状态：`MA-006` C/D 完成后停止（D 完成状态随 #28 合并生效）。** A/B 已由 [#25](https://github.com/RobotSe7en/ayni/pull/25)（`f297941`）/[#26](https://github.com/RobotSe7en/ayni/pull/26)（`00a4126`）合并；B 最终文档 [CI 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项通过。C 的 ADR-0030/ABI 0.18/计划 v1.20 已实现并完成五配置各 784/784、独立变异 49 检出/1 等价、Core 分支90.66%/C组件96.19%、默认/最小 arena106,520/31,072 B及独立审查。代码提交 `50c1eb3`、纯格式修正 `d14bf8a` 的 [CI 39731553579](https://github.com/RobotSe7en/ayni/actions/runs/39731553579) 八项全过，含 ESP-IDF 6.0.3 编译；最终文档提交 `84eb7fc1566db4f5895653b8576b1a67a6afeec5` 的 [CI 39732417119](https://github.com/RobotSe7en/ayni/actions/runs/39732417119) 八项全过，已由 [#27](https://github.com/RobotSe7en/ayni/pull/27) 合并（`b1330325012c5087424843f67ae2278cd4ca686f`）。D 已接入 Gate、pending/pin、阶段回执与有界清理，ADR-0031/ABI 0.19/计划 v1.21；生产代码 `e4a017a2d4e2d52be10135888de7520fc97590c8`、唯一D30追加回归与最终文档由 [#28](https://github.com/RobotSe7en/ayni/pull/28) 交付；五配置各892/892、fresh coverage892/892、此前126项定向及D30正常43项均通过。覆盖率/内存、独立审查与35项有效变异闭环已留证（34原878检出+D30补测879检出，恢复normal879/SHA一致）。生产e4a017的CI39735323115八项通过，最终head仍须自己的checks全绿；本节D完成/已合并状态随#28合并生效，不表示完整MA-006完成。
 - **`MA-010` 已完成。** main 包含 #21 的 E+F 和之前的全部工作；没有继续中的 E+F 代码。开发分支 `codex/ma010-recovery-snapshots` 在合并后按 workflow 重置到 main。本文的完成状态随 #21 合并生效，CI 与实际合并记录见 [#21](https://github.com/RobotSe7en/ayni/pull/21)。
 - **完成状态生效条件：** 本节D的完成/已合并状态随 [#28](https://github.com/RobotSe7en/ayni/pull/28) 合并生效；最终测试/文档head的CI见 [#28 checks](https://github.com/RobotSe7en/ayni/pull/28/checks)，合并前必须全绿。

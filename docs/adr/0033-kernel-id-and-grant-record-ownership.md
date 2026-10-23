@@ -89,3 +89,5 @@
 | 20 | `kernel/command/command_records.h`：v3 固定字段从 3 个减少为 2 个 | 检出 | `CommandRevoke.accepted_revision_two_can_change_a_restored_active_target_after_reload` |
 
 本轮未做本地 ESP32 编译、烧录、硬件 RAM/栈或耐久验证；CI 的固件编译与实际合并状态以交付链接为准。R2a2/R2b/R3/R4 及 E/F 尚未实现，A1 行为缺陷仍留在独立的 R3。
+
+交付：[PR #31](https://github.com/RobotSe7en/ayni/pull/31) 与其 [CI checks](https://github.com/RobotSe7en/ayni/pull/31/checks)。本地验证对应生产代码提交 `4d809e053dd1f852ed4e6d26575755385c51296d`；之后仅补交付链接。最终 CI 必须对应最新文档提交，实际结果与合并状态以这些链接为准。
