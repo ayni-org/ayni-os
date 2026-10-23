@@ -39,12 +39,12 @@ struct Input {
         }
         uint32_t domain_size = 0;
         EXPECT_EQ(ayni::catalog::encode_domain(descriptions.data(), fields, domain.data(),
-                                               domain.size(), domain_size),
+                                               bytes_capacity, domain_size),
                   AYNI_OK);
         const ayni_scope_v1 whole{sizeof(whole), 0, nullptr};
         uint32_t scope_size = 0;
         EXPECT_EQ(ayni::authority::normalize_scope({domain.data(), domain_size}, whole,
-                                                   scope.data(), scope.size(), scope_size),
+                                                   scope.data(), bytes_capacity, scope_size),
                   AYNI_OK);
         record.goal_id = goal_id;
         record.stamp = {7, 9};
@@ -164,7 +164,8 @@ TEST(GoalAuthority, the_last_requirement_at_the_absolute_limit_is_validated) {
     ASSERT_TRUE(valid_goal_authority_record(input.record));
     const auto bytes = input.encode();
     GoalAuthorityRecord decoded{};
-    ASSERT_TRUE(read_goal_authority_record(bytes.data(), bytes.size(), decoded));
+    ASSERT_TRUE(
+        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.count, goal_requirement_capacity_max);
     input.record.requirements.back().capability_version = 0;
     EXPECT_FALSE(valid_goal_authority_record(input.record));
@@ -182,7 +183,8 @@ TEST(GoalAuthorityRecord, original_domain_scope_and_selected_identities_round_tr
     ASSERT_TRUE(valid_goal_authority_record(input.record));
     const auto bytes = input.encode();
     GoalAuthorityRecord decoded{};
-    ASSERT_TRUE(read_goal_authority_record(bytes.data(), bytes.size(), decoded));
+    ASSERT_TRUE(
+        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.goal_id, goal_id);
     EXPECT_EQ(decoded.phase, GoalAuthorityPhase::proposed);
     EXPECT_EQ(decoded.stamp.transition_id, 7U);
@@ -206,14 +208,16 @@ TEST(GoalAuthorityRecord, every_truncation_trailing_byte_and_bad_count_preserves
         EXPECT_FALSE(read_goal_authority_record(bytes.data(), size, out));
         EXPECT_EQ(out.goal_id, another_goal_id);
     }
-    EXPECT_FALSE(read_goal_authority_record(nullptr, bytes.size(), out));
+    EXPECT_FALSE(read_goal_authority_record(nullptr, static_cast<uint32_t>(bytes.size()), out));
     bytes.push_back(0);
-    EXPECT_FALSE(read_goal_authority_record(bytes.data(), bytes.size(), out));
+    EXPECT_FALSE(
+        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
     bytes.pop_back();
     // White-box: final u32 of the fixed header is the declared count.
     ayni::foundation::store_le32(bytes.data() + goal_authority_record_fixed_size - sizeof(uint32_t),
                                  goal_requirement_capacity_max + 1U);
-    EXPECT_FALSE(read_goal_authority_record(bytes.data(), bytes.size(), out));
+    EXPECT_FALSE(
+        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
     EXPECT_EQ(out.goal_id, another_goal_id);
 }
 
@@ -268,6 +272,129 @@ TEST(GoalAuthority, configured_requirement_and_byte_limits_refuse_without_overwr
     table.table.clear_all();
     EXPECT_FALSE(table.table.read(0, goal_id, saved));
     EXPECT_FALSE(table.table.read(1, goal_id, saved));
+}
+
+// ADR-0037 decision 4: a proposal's missing reference is the whole zero pair,
+// not a zero ID carrying a stale revision from an earlier selection.
+TEST(GoalAuthority, a_proposal_rejects_half_of_a_missing_grant_identity) {
+    Input input;
+    input.record.phase = GoalAuthorityPhase::proposed;
+    input.record.requirements[0].dependency = {0, 1};
+    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    input.record.requirements[0].dependency.revision = 0;
+    EXPECT_TRUE(valid_goal_authority_record(input.record));
+}
+
+// Builds a large original IDENTIFIER domain with one narrow allowed target.
+// ADR-0037 decision 2: independently bounded regions can differ in length.
+void use_narrow_target(Input &input) {
+    const std::array<ayni_string_v1, 4> targets{{{"destination-000", 15},
+                                                 {"destination-001", 15},
+                                                 {"destination-002", 15},
+                                                 {"destination-003", 15}}};
+    ayni_authority_value_set_v1 values{};
+    values.struct_size = sizeof(values);
+    values.kind = AYNI_AUTHORITY_IDENTIFIER;
+    values.values.tokens = {targets.data(), static_cast<uint32_t>(targets.size()), 0};
+    const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_EXECUTION_TARGET, 0,
+                                             values};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::catalog::encode_domain(&field, 1, input.domain.data(), bytes_capacity, size),
+              AYNI_OK);
+    input.record.requirements[0].source_domain = {input.domain.data(), size};
+    values.values.tokens.member_count = 1;
+    const ayni_scope_field_v1 allowed{sizeof(allowed), 1, values};
+    const ayni_scope_v1 scope{sizeof(scope), 1, &allowed};
+    ASSERT_EQ(ayni::authority::normalize_scope(input.record.requirements[0].source_domain, scope,
+                                               input.scope.data(), bytes_capacity, size),
+              AYNI_OK);
+    input.record.requirements[0].scope = {input.scope.data(), size};
+    ASSERT_TRUE(valid_goal_authority_record(input.record));
+}
+
+// ADR-0037 decision 3: each region has its own limit, not a combined limit.
+TEST(GoalAuthority, an_oversized_domain_is_refused_even_when_its_scope_fits) {
+    Table table(1, 64);
+    Input input;
+    use_narrow_target(input);
+    ASSERT_GT(input.record.requirements[0].source_domain.size, 64U);
+    ASSERT_LE(input.record.requirements[0].scope.size, 64U);
+    EXPECT_EQ(table.table.install_validated(0, input.record), AYNI_CAPACITY_EXCEEDED);
+    GoalAuthorityRecord out{};
+    EXPECT_FALSE(table.table.read(0, goal_id, out));
+}
+
+// ADR-0037 decision 3: rejected replacement must preserve identity and metadata
+// as well as the old byte prefix, including a failure in a later requirement.
+TEST(GoalAuthority, late_capacity_refusal_keeps_the_original_identity_phase_and_stamp) {
+    Table table(2, 64);
+    Input original;
+    ASSERT_EQ(table.table.install_validated(0, original.record), AYNI_OK);
+    Input replacement;
+    Input large;
+    use_narrow_target(large);
+    replacement.record.goal_id = another_goal_id;
+    replacement.record.stamp = {17, 19};
+    replacement.record.phase = GoalAuthorityPhase::paused;
+    replacement.record.count = 2;
+    replacement.record.requirements[1] = large.record.requirements[0];
+    ASSERT_TRUE(valid_goal_authority_record(replacement.record));
+    EXPECT_EQ(table.table.install_validated(0, replacement.record), AYNI_CAPACITY_EXCEEDED);
+    GoalAuthorityRecord saved{};
+    ASSERT_TRUE(table.table.read(0, goal_id, saved));
+    EXPECT_EQ(saved.phase, GoalAuthorityPhase::authorized);
+    EXPECT_EQ(saved.stamp.transition_id, 7U);
+    EXPECT_EQ(saved.stamp.commit_seq, 9U);
+    EXPECT_EQ(saved.count, 1U);
+    EXPECT_FALSE(table.table.read(0, another_goal_id, saved));
+    std::vector<uint8_t> actual(goal_authority_record_size(saved));
+    write_goal_authority_record(saved, actual.data());
+    EXPECT_EQ(actual, original.encode());
+}
+
+// ADR-0037 decision 2: the last requirement of one Goal is independent of the
+// first requirement of the next, even when both slots are full.
+TEST(GoalAuthority, neighboring_full_goal_slots_keep_their_own_requirements) {
+    Table table;
+    Input first;
+    first.record.count = 2;
+    first.record.requirements[1] = first.record.requirements[0];
+    first.record.requirements[1].dependency.grant_id = grant_id + 1U;
+    Input second;
+    second.record.goal_id = another_goal_id;
+    second.record.count = 2;
+    second.record.requirements[1] = second.record.requirements[0];
+    second.record.requirements[0].dependency.grant_id = grant_id + 2U;
+    second.record.requirements[1].dependency.grant_id = grant_id + 3U;
+    ASSERT_TRUE(valid_goal_authority_record(first.record));
+    ASSERT_TRUE(valid_goal_authority_record(second.record));
+    ASSERT_EQ(table.table.install_validated(0, first.record), AYNI_OK);
+    ASSERT_EQ(table.table.install_validated(1, second.record), AYNI_OK);
+    for (uint32_t index = 0; index < slots; ++index) {
+        const auto &input = index == 0U ? first : second;
+        GoalAuthorityRecord saved{};
+        ASSERT_TRUE(table.table.read(index, input.record.goal_id, saved));
+        std::vector<uint8_t> actual(goal_authority_record_size(saved));
+        write_goal_authority_record(saved, actual.data());
+        EXPECT_EQ(actual, input.encode());
+    }
+}
+
+// ADR-0037 decision 2: retain the complete original domain separately from the
+// narrower Scope so later catalog drift cannot reinterpret approved authority.
+TEST(GoalAuthority, storing_a_narrow_scope_preserves_the_original_broader_domain) {
+    Table table;
+    Input input;
+    use_narrow_target(input);
+    const auto expected = input.encode();
+    ASSERT_EQ(table.table.install_validated(0, input.record), AYNI_OK);
+    GoalAuthorityRecord saved{};
+    ASSERT_TRUE(table.table.read(0, goal_id, saved));
+    EXPECT_TRUE(valid_goal_authority_record(saved));
+    ASSERT_NE(saved.requirements[0].source_domain.data, saved.requirements[0].scope.data);
+    std::vector<uint8_t> actual(goal_authority_record_size(saved));
+    write_goal_authority_record(saved, actual.data());
+    EXPECT_EQ(actual, expected);
 }
 
 } // namespace
