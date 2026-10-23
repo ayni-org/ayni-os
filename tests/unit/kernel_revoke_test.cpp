@@ -975,4 +975,33 @@ TEST(RevokeApi, a_commandless_submit_reports_a_fresh_applied_stamp_without_a_rec
     EXPECT_NE(second.result.object.id, first.result.object.id);
 }
 
+// C-WIRE-019 / ADR-0031: a restored mapping is private until the complete
+// recovered prefix and its new writer have finished, even if lookup can find it.
+TEST(RevokeApi, a_mapping_already_restored_during_recovery_is_not_a_public_receipt) {
+    RevokeNode work;
+    work.run();
+    const uint64_t target = work.durable_grant();
+    work.node.reboot();
+    for (unsigned round = 0; round < 1000; ++round) {
+        // White-box: observe real replay progress; do not fabricate a mapping or lifecycle.
+        if (work.node.kernel()->work.commands.size() != 0U) {
+            ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_RECOVERING);
+            ayni_intent_receipt_v1 out{};
+            out.struct_size = sizeof(out);
+            out.phase = 999;
+            const auto before = out;
+            EXPECT_EQ(ayni_get_intent_receipt(work.node.kernel(), owner_id, 1, &out),
+                      AYNI_NOT_READY);
+            EXPECT_EQ(std::memcmp(&before, &out, sizeof(out)), 0);
+            work.node.recover();
+            ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+            EXPECT_EQ(work.receipt(1).object.id, target);
+            EXPECT_EQ(work.receipt(1).phase, AYNI_INTENT_DURABLE);
+            return;
+        }
+        work.tick();
+    }
+    FAIL() << "fixture did not reach a partially restored command window";
+}
+
 } // namespace

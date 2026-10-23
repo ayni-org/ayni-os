@@ -558,4 +558,41 @@ TEST(CommandTable,
     EXPECT_EQ(restored->floor(owner), 4U);
     EXPECT_EQ(restored->size(), 1U);
 }
+// C-WIRE-017 / ADR-0035 decision 8: a failed next lookup ends the old candidate's lifetime.
+TEST(CommandTable, failed_exact_lookup_invalidates_the_previous_publishable_candidate) {
+    for (const auto invalid_identity : {false, true}) {
+        ExactCommands commands;
+        auto request = exact_request();
+        ASSERT_EQ(commands.find(5, request).lookup, Lookup::unmapped);
+        if (invalid_identity) {
+            EXPECT_EQ(commands->find_exact(0, 6, {0, &request}).status, AYNI_INVALID_ARGUMENT);
+        } else {
+            request.lifetime = AYNI_GRANT_CURRENT_BOOT; // Missing required duration.
+            EXPECT_EQ(commands.find(6, request).status, AYNI_INVALID_ARGUMENT);
+        }
+        EXPECT_FALSE(commands->insert_exact(exact_mapping(5, 9)));
+        EXPECT_EQ(commands->size(), 0U);
+        EXPECT_EQ(commands->floor(owner), 0U);
+    }
+}
+
+// C-WIRE-004/017: consuming a candidate once cannot publish a second result or evict history.
+TEST(CommandTable, a_successfully_consumed_candidate_cannot_publish_again) {
+    for (const uint32_t capacity : {1U, 3U}) {
+        ExactCommands commands(capacity);
+        const auto request = exact_request();
+        commands.accept(5, request, 9);
+        auto changed = exact_mapping(5, 10);
+        ++changed.object.id;
+        EXPECT_FALSE(commands->insert_exact(changed));
+        EXPECT_EQ(commands->size(), 1U);
+        EXPECT_EQ(commands->floor(owner), 0U);
+        EXPECT_EQ(commands->mapped_in(10), nullptr);
+        const auto retry = commands.find(5, request);
+        ASSERT_EQ(retry.lookup, Lookup::retried);
+        EXPECT_EQ(retry.mapping->commit_seq, 9U);
+        EXPECT_EQ(retry.mapping->object.id, 505U);
+    }
+}
+
 } // namespace

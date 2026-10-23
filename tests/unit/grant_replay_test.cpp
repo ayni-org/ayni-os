@@ -1123,7 +1123,7 @@ TEST(GrantRevokeReplay, revoke_and_cleanup_headers_require_required_even_for_fut
     }
 }
 
-// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations) {
     ReplayNode source;
     source.run();
@@ -1912,6 +1912,155 @@ TEST(GrantRevokeReplay,
     for (std::size_t index = 0; index < before.size(); ++index) {
         EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
     }
+}
+
+// White-box fixture: feed real stored domain records through WorkReplay's public
+// record interface, pausing at a semantic boundary before the whole boot finishes.
+struct DomainRecord {
+    BatchIdentity batch;
+    Record record;
+};
+
+std::vector<DomainRecord> domain_records(const std::vector<StoredBatch> &log) {
+    std::vector<DomainRecord> result;
+    for (const auto &stored : log) {
+        const auto batch = decode(stored);
+        for (const auto &record : batch.records) {
+            if (ayni::kernel::WorkReplay::classify_header(record.header) == RecordUse::applied) {
+                result.push_back({batch.identity, record});
+            }
+        }
+    }
+    return result;
+}
+
+// C-STORE-016: an accepted descendant state remains incomplete until its progress arrives.
+TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_progress) {
+    const auto records = domain_records(revoked_log(true));
+    ReplayNode restored;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    bool saw_child = false;
+    for (const auto &item : records) {
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+        if (item.record.header.type == ayni::authority::grant_state_record_type &&
+            item.record.header.version == ayni::authority::grant_revoked_state_record_version) {
+            saw_child = true;
+            EXPECT_FALSE(replay.complete());
+        }
+    }
+    ASSERT_TRUE(saw_child);
+    EXPECT_TRUE(replay.complete());
+    EXPECT_TRUE(replay.consistent());
+}
+
+// C-STORE-015: one missing command cannot be hidden by another Grant's create record.
+TEST(GrantReplay, a_second_create_cannot_replace_an_unmatched_create_in_the_same_batch) {
+    ReplayNode source;
+    source.run();
+    for (const uint64_t command : {1U, 2U}) {
+        const auto created = source.create(command);
+        ASSERT_EQ(created.status, AYNI_OK);
+        source.store(created.result.commit_seq);
+    }
+    const auto records = domain_records(source.node.sim().log());
+    ReplayNode restored;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    BatchIdentity first_batch{};
+    bool waiting = false;
+    for (const auto &item : records) {
+        if (waiting) {
+            if (item.record.header.type == ayni::authority::grant_record_type) {
+                EXPECT_EQ(ayni::kernel::WorkReplay::on_record(
+                              &replay, first_batch, item.record.header, item.record.body.data()),
+                          RecordUse::corrupt);
+                return;
+            }
+            continue; // Withhold the first command to exercise the unmatched boundary.
+        }
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+        if (item.record.header.type == ayni::authority::grant_record_type) {
+            first_batch = item.batch;
+            waiting = true;
+            ASSERT_FALSE(replay.complete());
+        }
+    }
+    FAIL() << "fixture did not contain two distinct root creations";
+}
+
+// C-STORE-015/016: cleanup progress cannot consume an unrelated create's missing command.
+TEST(GrantRevokeReplay, valid_progress_cannot_interrupt_a_create_waiting_for_its_command) {
+    const auto records = domain_records(revoked_log(true));
+    ReplayNode restored;
+    restored.node.config().grant_capacity = 3;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    uint64_t fresh_id = 0;
+    for (const auto &item : records) {
+        if (item.record.header.type == ayni::authority::grant_record_type) {
+            fresh_id = std::max(fresh_id, ayni::foundation::load_le64(item.record.body.data()));
+        }
+    }
+    ++fresh_id;
+    Record another_create{};
+    for (const auto &item : records) {
+        if (item.record.header.type == ayni::authority::grant_record_type &&
+            another_create.body.empty()) {
+            another_create = item.record;
+            // C-STORE-015: the create body's first u64 is its Grant identity.
+            // The new root is beyond the original cleanup's frozen frontier.
+            ayni::foundation::store_le64(another_create.body.data(), fresh_id);
+        }
+        if (item.record.header.type == ayni::authority::grant_revocation_progress_record_type) {
+            ASSERT_FALSE(another_create.body.empty());
+            ASSERT_EQ(ayni::kernel::WorkReplay::on_record(
+                          &replay, item.batch, another_create.header, another_create.body.data()),
+                      RecordUse::applied);
+            ASSERT_FALSE(replay.complete());
+            EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                          item.record.body.data()),
+                      RecordUse::corrupt);
+            return;
+        }
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+    }
+    FAIL() << "fixture did not contain a valid standalone cleanup progress";
+}
+
+// ADR-0026/0035: discarding an incomplete prefix also forgets every waiting partner.
+TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_start) {
+    const auto records = domain_records(complete_log());
+    ReplayNode restored;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    bool waiting = false;
+    for (const auto &item : records) {
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+        if (item.record.header.type == ayni::authority::grant_record_type) {
+            waiting = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(waiting);
+    ASSERT_FALSE(replay.complete());
+    replay.discard();
+    EXPECT_TRUE(replay.complete());
+    for (const auto &item : records) {
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+    }
+    EXPECT_TRUE(replay.complete());
+    EXPECT_TRUE(replay.consistent());
 }
 
 } // namespace
