@@ -96,6 +96,12 @@
 | 58 | `AYNI_REASON_COMMAND_PINNED` | `BUSY` | 该 principal 的结果窗口全部被已接受撤销 pin 住 |
 | 59 | `AYNI_REASON_REVOCATION_CAPACITY` | `CAPACITY_EXCEEDED` | 有界 Gate/pending 容量不足，原子拒绝 |
 
+| 60 | `AYNI_REASON_GOAL_REQUIREMENT_INPUT` | `INVALID_ARGUMENT` | 需求描述或 Scope 非法；Since 0.21 |
+| 61 | `AYNI_REASON_GOAL_REQUIREMENT_CAPACITY` | `CAPACITY_EXCEEDED` | 需求数或字节区超出配置；Since 0.21 |
+| 62 | `AYNI_REASON_GOAL_AUTHORITY_MISSING` | `DENIED` | 没有完整已选授权证据；Since 0.21 |
+| 63 | `AYNI_REASON_GOAL_AUTHORITY_PAUSED` | `DENIED` | 需显式重新授权，普通恢复不解除；Since 0.21 |
+| 64 | `AYNI_REASON_GOAL_AUTHORITY_PARENT` | `DENIED` | 子 Goal 超出原父需求上限；Since 0.21 |
+
 以上41–55自ABI0.18发布，56–59自ABI0.19发布；C/D实施与验证状态分别见ADR-0030/0031。表格记录状态归属，不表示全部调用路径已经验证。
 
 ## 规则

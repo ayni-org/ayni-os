@@ -3,20 +3,6 @@
   "reference": "32169b8 (MA-006 A-D after #29; R1 changes no Core or public C code)",
   "violations": [
     {
-      "rule": "function-lines",
-      "path": "core/kernel/intent/intent_rules.cpp",
-      "subject": "namespace ayni :: kernel / ayni_status_t apply_intent ( WorkModel & model , const Intent & intent , uint64_t now_us , bool has_room , IntentOutcome & outcome , IntentFailure & failure , ayni_status_t storage_status , uint64_t durable_seq )",
-      "maximum": 94,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "function-lines",
-      "path": "core/kernel/intent/intent_rules.cpp",
-      "subject": "namespace ayni :: kernel / namespace / ayni_status_t create_goal ( WorkModel & model , const Intent & intent , const work :: GoalOrigin & origin , uint64_t now_us , IntentOutcome & outcome , IntentFailure & failure )",
-      "maximum": 91,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
       "rule": "public-code-comment",
       "path": "include/ayni/ayni.h",
       "subject": "AYNI_BUDGET_EXHAUSTED",

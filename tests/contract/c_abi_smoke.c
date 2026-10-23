@@ -32,7 +32,7 @@ typedef union {
 } max_aligned_t;
 
 /* The bounded Goal metadata and its record reserve are included since 0.20. */
-static max_aligned_t kernel_memory[1024];
+static max_aligned_t kernel_memory[2048];
 
 static int expect(int condition, const char *what) {
     if (!condition) {
@@ -65,6 +65,9 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_principal_desc_v1 owner = {0};
     ayni_agent_desc_v1 agent = {0};
     ayni_goal_type_v1 goal_type = {0};
+    ayni_goal_authority_info_v1 authority = {0};
+    ayni_goal_requirement_info_v1 requirement = {0};
+    ayni_goal_requirement_field_info_v1 requirement_field = {0};
     ayni_strategy_v1 strategy = {0};
     ayni_session_desc_v1 session = {0};
     ayni_goal_create_v1 create = {0};
@@ -88,6 +91,17 @@ static int check_work_model(ayni_kernel_t *kernel) {
     agent.struct_size = (uint32_t)sizeof agent;
     agent.agent_id = 100u;
     failures += expect(ayni_register_agent(kernel, &agent) == AYNI_OK, "register agent");
+    authority.struct_size = sizeof authority;
+    requirement.struct_size = sizeof requirement;
+    requirement_field.struct_size = sizeof requirement_field;
+    failures += expect(ayni_get_goal_authority(kernel, 1u, &authority) == AYNI_INVALID_STATE,
+                       "authority before start");
+    failures +=
+        expect(ayni_get_goal_requirement(kernel, 1u, 0u, &requirement) == AYNI_INVALID_STATE,
+               "requirement before start");
+    failures += expect(ayni_get_goal_requirement_field(kernel, 1u, 0u, 0u, &requirement_field) ==
+                           AYNI_INVALID_STATE,
+                       "requirement field before start");
     goal_type.struct_size = (uint32_t)sizeof goal_type;
     goal_type.version = 1u;
     goal_type.goal_type_id.data = "reminder";

@@ -37,6 +37,8 @@ struct GoalType {
     // In the strategy registry, once link_strategies() succeeded; no_strategy
     // for an empty strategy_id.
     uint32_t strategy_index = no_strategy;
+    // Trusted declaration callback; null means explicitly no new-Goal needs.
+    ayni_goal_requirements_fn export_requirements = nullptr;
 };
 
 class GoalTypeRegistry {

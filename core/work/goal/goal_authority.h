@@ -7,7 +7,7 @@
 #include "catalog/catalog_id.h"
 #include "foundation/transition_stamp.h"
 
-#include <ayni/ayni.h>
+#include <ayni/authority.h>
 
 #include <array>
 #include <cstddef>
@@ -74,9 +74,21 @@ class GoalAuthorityTable {
     GoalAuthorityTable(const GoalAuthorityTable &) = delete;
     GoalAuthorityTable &operator=(const GoalAuthorityTable &) = delete;
 
+    // Append one registered requirement into dedicated staging byte regions.
+    // out starts empty; sources stay stable through this call. Refusal preserves
+    // count and all prior entries. Staging views expire at the next export.
+    ayni_status_t stage(GoalAuthorityRecord &out, const catalog::CatalogId &capability,
+                        uint32_t version, ayni_bytes_v1 domain, const ayni_scope_v1 &scope);
+    // Change only the authorization phase and stamp of a present complete row.
+    // User pause and compatibility holds belong to their existing work owners.
+    void pause(uint32_t goal_index, foundation::TransitionStamp stamp);
+    // Missing metadata is blocked; callers distinguish legacy holds separately.
+    bool authorized(uint32_t goal_index, uint64_t goal_id) const;
+
     // Requires facts accepted by valid_goal_authority_record or the record reader,
     // unchanged since admission. Checks configured capacity before copying;
-    // sources must not alias this table. Refusal preserves every slot and byte.
+    // sources must not alias live slots; dedicated staging regions are allowed.
+    // Refusal preserves every live slot and byte.
     ayni_status_t install_validated(uint32_t goal_index, const GoalAuthorityRecord &record);
     // Replay a validated record. Existing ceilings are immutable and both stamp
     // components must advance; capacity and refusal guarantees match install.

@@ -33,6 +33,13 @@
 
 namespace ayni::kernel {
 
+// Narrow borrowed clock for admission and post-callback consumption. Production
+// callers supply the Host clock; standalone model tests may use fixed now_us.
+struct OwnerClock {
+    void *ctx = nullptr;                     // Borrowed for this synchronous call only.
+    uint64_t (*now_us)(void *ctx) = nullptr; // Monotonic microseconds; null uses call's sample.
+};
+
 struct WorkModel {
     WorkModel(const KernelCapacities &capacities, const KernelLimits &limits,
               const KernelStorage &storage)
@@ -67,7 +74,20 @@ struct WorkModel {
     // was that transition.
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
-    work::WorkTables tables() { return {goals, tasks, agents}; }
+    work::WorkTables tables() { return {goals, tasks, agents, &goal_authority}; }
+    // Export a staged immutable ceiling and select existing durable Grants.
+    authority::GrantCheck prepare_goal_authority(const catalog::GoalType &type,
+                                                 const GoalCreate &create, uint64_t now_us,
+                                                 uint64_t durable_seq,
+                                                 work::GoalAuthorityRecord &out, OwnerClock clock);
+    // Check selected identities without selecting a replacement; caller owns time.
+    authority::GrantCheck check_requirement(const work::GoalRequirement &requirement,
+                                            uint64_t now_us, uint64_t durable_seq) const;
+    // Includes the owning Goal and its bounded ancestor chain.
+    authority::GrantCheck check_goal_authority(uint32_t index, uint64_t now_us,
+                                               uint64_t durable_seq) const;
+    // Persist authorization pause independently of user pause; settle reached Tasks.
+    void pause_goal_authority(uint32_t index);
     // Validates authority once, then the work-owned subjects of that same path.
     authority::GrantCheck check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
     // Consumes an unchanged successful GrantTable path; root admission's empty
@@ -136,7 +156,7 @@ ayni_status_t open_session(WorkModel &model, const authority::Principal &princip
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
                            IntentOutcome &outcome, IntentFailure &failure,
                            ayni_status_t storage_status = AYNI_OK,
-                           uint64_t durable_seq = UINT64_MAX);
+                           uint64_t durable_seq = UINT64_MAX, OwnerClock clock = {});
 
 // Records a local input from source as an occurrence, due at now_us, of
 // every goal whose trigger takes it, all in one transition (ADR-0021).
@@ -147,7 +167,8 @@ bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint6
 // goal, derives a task or skips occurrences, each as one transition.
 // Returns false, changing nothing, when none is due. An expiry that would
 // exhaust a revision drops the goal's expiry instead (C-COMMIT-012).
-bool do_due_work(WorkModel &model, uint64_t now_us);
+bool do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
+                 uint64_t durable_seq);
 // Whether do_due_work(now_us) would do something; out_next_us is then now_us.
 // When it would not, clears due_work_changed and sets out_next_us to when the
 // next due work comes (work::no_time: none will without a change). Scans the

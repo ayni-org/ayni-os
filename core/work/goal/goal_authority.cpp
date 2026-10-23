@@ -60,7 +60,7 @@ bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
 std::size_t GoalAuthorityTable::storage_size(Limits limits) {
     const std::size_t count = requirement_count(limits);
     return sizeof(Slot) * limits.goals + sizeof(Requirement) * count +
-           count * requirement_bytes(limits.scope_bytes);
+           (count + limits.requirements) * requirement_bytes(limits.scope_bytes);
 }
 
 // Both metadata structs contain uint64_t-aligned members; their array sizes
@@ -191,6 +191,37 @@ ayni_status_t GoalAuthorityTable::restore_validated(uint32_t goal_index,
         return AYNI_INVALID_ARGUMENT;
     }
     return install_validated(goal_index, record);
+}
+
+// Normalize once while the exporter still owns its temporary typed views.
+// The extra byte row is disjoint from every live slot (ADR-0037).
+ayni_status_t GoalAuthorityTable::stage(GoalAuthorityRecord &out,
+                                        const catalog::CatalogId &capability, uint32_t version,
+                                        ayni_bytes_v1 domain, const ayni_scope_v1 &scope) {
+    if (out.count >= limits_.requirements || domain.size > limits_.scope_bytes) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const uint32_t index = requirement_count(limits_) + out.count;
+    uint32_t size = 0;
+    const auto status =
+        authority::normalize_scope(domain, scope, scope_at(index), limits_.scope_bytes, size);
+    if (status != AYNI_OK) {
+        return status == AYNI_BUFFER_TOO_SMALL ? AYNI_CAPACITY_EXCEEDED : status;
+    }
+    std::memcpy(domain_at(index), domain.data, domain.size);
+    out.requirements[out.count++] = {
+        capability, version, {domain_at(index), domain.size}, {scope_at(index), size}, {}};
+    return AYNI_OK;
+}
+
+void GoalAuthorityTable::pause(uint32_t goal_index, foundation::TransitionStamp stamp) {
+    slots_[goal_index].phase = GoalAuthorityPhase::paused;
+    slots_[goal_index].stamp = stamp;
+}
+
+bool GoalAuthorityTable::authorized(uint32_t goal_index, uint64_t goal_id) const {
+    return contains(goal_index, goal_id) &&
+           slots_[goal_index].phase == GoalAuthorityPhase::authorized;
 }
 
 void GoalAuthorityTable::clear(uint32_t goal_index) {

@@ -1,4 +1,5 @@
 #include "work/goal/goal_table.h"
+#include "work/goal/goal_authority.h"
 
 #include "catalog/goal_type/goal_type_registry.h"
 
@@ -175,12 +176,16 @@ GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &sta
                                             foundation::TransitionStamp stamp) {
     Goal &goal = goals_[index];
     const bool live = is_live(state.lifecycle);
-    // A goal is created ACTIVE; PROPOSED needs goals that wait for approval.
-    const bool reached = state.lifecycle >= AYNI_GOAL_ACTIVE && state.lifecycle <= AYNI_GOAL_FAILED;
+    // PROPOSED is accepted only with its paired metadata by the replay owner.
+    const bool reached =
+        state.lifecycle >= AYNI_GOAL_PROPOSED && state.lifecycle <= AYNI_GOAL_FAILED;
     const bool local = goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT;
     // A terminal goal never changes again, and a goal without a trigger has
     // no occurrence.
     if (!is_live(goal.lifecycle) || !reached || state.revision < goal.revision ||
+        (state.lifecycle == AYNI_GOAL_PROPOSED &&
+         (state.taken != 0U || state.waiting != 0U || state.next_scheduled ||
+          state.last_task_id != 0U)) ||
         state.taken < goal.cursor.taken ||
         (goal.trigger.kind == AYNI_TRIGGER_NONE && state.next_scheduled) ||
         (local && state.waiting > std::numeric_limits<uint32_t>::max() - state.taken) ||
@@ -264,6 +269,15 @@ void GoalTable::reanchor(uint64_t now_us) {
     }
 }
 
+void GoalTable::propose(uint32_t index) {
+    goals_[index].lifecycle = AYNI_GOAL_PROPOSED;
+    goals_[index].cursor = {0, no_time};
+}
+
+void GoalTable::authority_changed(uint32_t index, foundation::TransitionStamp stamp) {
+    goals_[index].commit_seq = stamp.commit_seq;
+}
+
 GoalTable::ChangeCheck GoalTable::check(uint32_t index, GoalChange change,
                                         uint32_t expected_revision) const {
     const Goal &goal = goals_[index];
@@ -341,9 +355,10 @@ void GoalTable::skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
     goal.commit_seq = stamp.commit_seq;
 }
 
-bool GoalTable::takes_input(const catalog::CatalogId &source) const {
+bool GoalTable::takes_input(const catalog::CatalogId &source,
+                            const GoalAuthorityTable *authority) const {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
-        if (takes(goals_[index], source)) {
+        if (takes(index, source, authority)) {
             return true;
         }
     }
@@ -351,10 +366,11 @@ bool GoalTable::takes_input(const catalog::CatalogId &source) const {
 }
 
 void GoalTable::record_input(const catalog::CatalogId &source, uint64_t now_us,
-                             foundation::TransitionStamp stamp) {
+                             foundation::TransitionStamp stamp,
+                             const GoalAuthorityTable *authority) {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
         Goal &goal = goals_[index];
-        if (takes(goal, source)) {
+        if (takes(index, source, authority)) {
             work::record(now_us, goal.cursor);
             goal.commit_seq = stamp.commit_seq;
         }
@@ -490,10 +506,13 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
     }
 }
 
-bool GoalTable::takes(const Goal &goal, const catalog::CatalogId &source) {
+bool GoalTable::takes(uint32_t index, const catalog::CatalogId &source,
+                      const GoalAuthorityTable *authority) const {
+    const Goal &goal = goals_[index];
     return goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && is_live(goal.lifecycle) &&
-           !is_held(goal) && goal.trigger_source.equals({source.data(), source.size()}) &&
-           can_record(goal.cursor);
+           goal.lifecycle != AYNI_GOAL_PROPOSED && !is_held(goal) &&
+           goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor) &&
+           (authority == nullptr || authority->authorized(index, goal.goal_id));
 }
 
 } // namespace ayni::work

@@ -63,6 +63,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
         header.type == work::goal_authority_record_type ||
         (header.type == work::goal_record_type &&
          header.version >= work::goal_with_authority_record_version) ||
+        (header.type == work::goal_state_record_type &&
+         header.version >= work::goal_state_with_authority_record_version) ||
         header.type == authority::owner_binding_record_type ||
         header.type == authority::grant_record_type ||
         header.type == authority::grant_state_record_type ||
@@ -103,7 +105,13 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                    : RecordUse::unknown;
     case work::goal_record_type:
         return header.version == work::goal_record_version ||
-                       header.version == work::goal_with_authority_record_version
+                       header.version == work::goal_with_authority_record_version ||
+                       header.version == work::goal_authority_state_record_version
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
+    case work::goal_state_record_type:
+        return header.version == work::goal_state_record_version ||
+                       header.version == work::goal_state_with_authority_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::goal_authority_record_type:
@@ -111,7 +119,6 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                                                      : RecordUse::unknown;
     case authority::owner_binding_record_type:
     case work::instance_record_type:
-    case work::goal_state_record_type:
     case work::task_record_type:
     case work::task_state_record_type:
     case work::task_steps_record_type:
@@ -156,7 +163,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     case work::goal_authority_record_type:
         return restore_goal_authority(body, size, stamp);
     case work::goal_state_record_type:
-        return restore_goal_state(body, size, stamp);
+        return restore_goal_state(header.version, body, size, stamp);
     case work::task_record_type:
         return restore_task(body, size, stamp);
     case work::task_state_record_type:
@@ -240,12 +247,17 @@ RecordUse WorkReplay::restore_goal(uint16_t version, const uint8_t *body, uint32
     return RecordUse::applied;
 }
 
-RecordUse WorkReplay::restore_goal_state(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp) {
     work::GoalStateRecord record{};
     uint32_t index = 0;
     if (!work::read_goal_state_record(body, size, record) ||
-        !model_.goals.find(record.goal_id, index)) {
+        !model_.goals.find(record.goal_id, index) ||
+        (version == work::goal_state_with_authority_record_version &&
+         pairing_.goal_authority != record.goal_id &&
+         !model_.goal_authority.contains(index, record.goal_id)) ||
+        (version == work::goal_state_record_version &&
+         record.state.lifecycle == AYNI_GOAL_PROPOSED)) {
         return RecordUse::corrupt;
     }
     if (record.goal_id == pairing_.goal) {
@@ -506,15 +518,13 @@ bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_byte
 bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const {
     const auto &goal = model_.goals.at(goal_index);
     if (!model_.goal_authority.contains(goal_index, goal.goal_id)) {
-        return true; // Legacy absence remains held at finish; it never declares zero needs.
+        return goal.lifecycle != AYNI_GOAL_PROPOSED; // Legacy absence never creates a proposal.
     }
     const auto record = model_.goal_authority.at(goal_index);
     const bool live = work::GoalTable::is_live(goal.lifecycle);
     if (foundation::id_boot_epoch(record.goal_id) > boot_epoch_limit ||
         (live && ((record.phase == work::GoalAuthorityPhase::proposed) !=
-                      (goal.lifecycle == AYNI_GOAL_PROPOSED) ||
-                  (record.phase == work::GoalAuthorityPhase::paused &&
-                   goal.lifecycle != AYNI_GOAL_PAUSED)))) {
+                  (goal.lifecycle == AYNI_GOAL_PROPOSED)))) {
         return false;
     }
     for (uint32_t index = 0; index < record.count; ++index) {
@@ -572,7 +582,9 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     }
     for (uint32_t index = 0; index < model_.goals.size(); ++index) {
         const work::Goal &goal = model_.goals.at(index);
-        if (!goal_authority_consistent(index, boot_epoch_limit)) {
+        if (!goal_authority_consistent(index, boot_epoch_limit) ||
+            (goal.parent_index != work::GoalTable::no_parent &&
+             model_.goals.at(goal.parent_index).lifecycle == AYNI_GOAL_PROPOSED)) {
             return false;
         }
         if (!work::GoalTable::is_live(goal.lifecycle)) {
@@ -587,8 +599,9 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     }
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         const work::Task &task = model_.tasks.at(index);
-        if (work::TaskTable::is_live(task.lifecycle) &&
-            !work::GoalTable::is_live(model_.goals.at(task.goal_index).lifecycle)) {
+        if (model_.goals.at(task.goal_index).lifecycle == AYNI_GOAL_PROPOSED ||
+            (work::TaskTable::is_live(task.lifecycle) &&
+             !work::GoalTable::is_live(model_.goals.at(task.goal_index).lifecycle))) {
             return false;
         }
     }
@@ -679,7 +692,13 @@ void WorkReplay::hold_tasks() {
 // legacy work has no durable authorization evidence and must not advance.
 void WorkReplay::hold_unconfirmed_work() {
     for (uint32_t index = 0; index < model_.goals.size(); ++index) {
-        model_.goals.hold_restored(index, AYNI_REASON_LEGACY_UNCONFIRMED);
+        const auto &goal = model_.goals.at(index);
+        // A validated proposal has no executable work to reauthorize; retain
+        // its expiry and pending state. Active-work recovery is completed in F.
+        if (goal.lifecycle != AYNI_GOAL_PROPOSED ||
+            !model_.goal_authority.contains(index, goal.goal_id)) {
+            model_.goals.hold_restored(index, AYNI_REASON_LEGACY_UNCONFIRMED);
+        }
     }
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         if (!work::TaskTable::is_held(model_.tasks.at(index))) {

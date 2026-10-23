@@ -166,7 +166,8 @@ void ayni_kernel::apply_ready_work(StepBudget &progress) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
-            if (!ayni::kernel::do_due_work(work, progress.started_us)) {
+            if (!ayni::kernel::do_due_work(work, progress.started_us,
+                                           host.monotonic_now_us(host.ctx), log.durable_seq())) {
                 break;
             }
             journal(first_seq);
@@ -174,7 +175,8 @@ void ayni_kernel::apply_ready_work(StepBudget &progress) {
         }
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
-            if (!ayni::kernel::decide_next(work, decisions, ready_before, progress.started_us)) {
+            if (!ayni::kernel::decide_next(work, decisions, ready_before, progress.started_us,
+                                           log.durable_seq(), {host.ctx, host.monotonic_now_us})) {
                 break;
             }
             journal(first_seq);

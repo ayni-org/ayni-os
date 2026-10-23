@@ -80,7 +80,7 @@ class WorkReplay {
                                            foundation::TransitionStamp stamp);
     durability::RecordUse restore_goal(uint16_t version, const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
-    durability::RecordUse restore_goal_state(const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_goal_state(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     // Goal v2 must receive complete metadata in the same journal batch.
     durability::RecordUse restore_goal_authority(const uint8_t *body, uint32_t size,

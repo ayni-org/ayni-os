@@ -75,7 +75,7 @@ class DecisionBuffer {
 // is left. Every goal type with tasks names a strategy that ayni_start
 // resolved.
 bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
-                 uint64_t now_us);
+                 uint64_t now_us, uint64_t durable_seq, OwnerClock clock);
 
 // Whether a task waits for a decision; the step reports it as more_ready.
 bool awaits_decision(const WorkModel &model);

@@ -50,12 +50,13 @@ void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body
 }
 
 bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint16_t version) {
-    if (version != goal_record_version && version != goal_with_authority_record_version) {
+    if (version != goal_record_version && version != goal_with_authority_record_version &&
+        version != goal_authority_state_record_version) {
         return false;
     }
     durability::BodyReader reader(body, size);
     out = GoalRecord{};
-    out.authority_required = version == goal_with_authority_record_version;
+    out.authority_required = version >= goal_with_authority_record_version;
     out.goal_id = reader.u64();
     out.goal.parent_goal_id = reader.u64();
     out.goal.owner_instance_id = reader.u64();

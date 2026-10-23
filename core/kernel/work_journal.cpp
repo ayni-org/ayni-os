@@ -164,7 +164,7 @@ class Encoder {
                 continue;
             }
             const uint16_t version = model_.goal_authority.contains(index, goal.goal_id)
-                                         ? work::goal_with_authority_record_version
+                                         ? work::goal_authority_state_record_version
                                          : work::goal_record_version;
             uint8_t *at = body(work::goal_record_type, version, work::goal_record_size(goal));
             if (at != nullptr) {
@@ -176,8 +176,10 @@ class Encoder {
             if (goal.commit_seq != stamp_.commit_seq) {
                 continue;
             }
-            uint8_t *at = body(work::goal_state_record_type, work::goal_state_record_version,
-                               work::goal_state_record_size);
+            const uint16_t version = model_.goal_authority.contains(index, goal.goal_id)
+                                         ? work::goal_state_with_authority_record_version
+                                         : work::goal_state_record_version;
+            uint8_t *at = body(work::goal_state_record_type, version, work::goal_state_record_size);
             if (at != nullptr) {
                 work::write_goal_state_record(goal, at);
             }

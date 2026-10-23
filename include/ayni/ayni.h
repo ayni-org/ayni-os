@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 20u
+#define AYNI_ABI_MINOR 21u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -879,6 +879,17 @@ typedef struct ayni_error_v1 {
     ayni_object_ref_v1 object; /* all 0 when no object is concerned */
 } ayni_error_v1;
 
+/* Since 0.21. INVALID_ARGUMENT: malformed requirement or exporter failure. */
+#define AYNI_REASON_GOAL_REQUIREMENT_INPUT ((ayni_reason_t)60)
+/* Since 0.21. CAPACITY_EXCEEDED: declared requirements exceed configured storage. */
+#define AYNI_REASON_GOAL_REQUIREMENT_CAPACITY ((ayni_reason_t)61)
+/* Since 0.21. DENIED: no selected Grant covers this exact requirement. */
+#define AYNI_REASON_GOAL_AUTHORITY_MISSING ((ayni_reason_t)62)
+/* Since 0.21. DENIED: an explicit authorization resume is required. */
+#define AYNI_REASON_GOAL_AUTHORITY_PAUSED ((ayni_reason_t)63)
+/* Since 0.21. DENIED: child requirements exceed their parent's saved ceiling. */
+#define AYNI_REASON_GOAL_AUTHORITY_PARENT ((ayni_reason_t)64)
+
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
 
@@ -1004,6 +1015,15 @@ typedef uint32_t ayni_trigger_kind_t;
  * skipped: they wait until a task can be derived. */
 #define AYNI_OCCURRENCE_WAIT_UNBOUNDED UINT64_MAX
 
+/* Since 0.21. Emit each requirement through the borrowed sink in authority.h.
+ * Called on the owner thread after parameter validation, without reentry.
+ * Emitted inputs are copied before emit returns; neither sink nor ctx may be
+ * retained. Any callback or emit failure refuses the whole Goal atomically.
+ * An export with no emits explicitly declares zero requirements. */
+struct ayni_goal_requirement_sink_v1;
+typedef ayni_status_t (*ayni_goal_requirements_fn)(
+    void *ctx, ayni_bytes_v1 parameters, const struct ayni_goal_requirement_sink_v1 *sink);
+
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
     uint32_t version;               /* nonzero */
@@ -1022,6 +1042,9 @@ typedef struct ayni_goal_type_v1 {
      * (ayni_register_strategy), resolved by ayni_start. Empty exactly when
      * trigger_kinds holds NONE alone, since such goals have no tasks. */
     ayni_string_v1 strategy_id;
+    /* Since 0.21. NULL explicitly declares zero needs for newly created Goals;
+     * it does not reinterpret absent authorization metadata in older records. */
+    ayni_goal_requirements_fn export_requirements;
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;

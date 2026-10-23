@@ -207,12 +207,21 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 }
 
 bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
-                 uint64_t now_us) {
+                 uint64_t now_us, uint64_t durable_seq, OwnerClock clock) {
     uint32_t index = 0;
     if (!model.tasks.next_ready(ready_before, index)) {
         return false;
     }
     const work::Task &task = model.tasks.at(index);
+    const auto authority =
+        model.check_goal_authority(task.goal_index, clock.now_us(clock.ctx), durable_seq);
+    if (authority.status != AYNI_OK) {
+        if (authority.reason == AYNI_REASON_GRANT_NOT_DURABLE) {
+            return false;
+        }
+        model.pause_goal_authority(task.goal_index);
+        return true;
+    }
     const uint32_t strategy_index =
         model.goal_types.at(model.goals.at(task.goal_index).goal_type_index).strategy_index;
     const catalog::Strategy &strategy = model.strategies.at(strategy_index);
@@ -234,6 +243,13 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
     const ayni_status_t status = strategy.decide(strategy.ctx, &snapshot, &output);
     model.calling_out = false;
 
+    // A non-reentrant callback can still run past a Grant deadline. Discard all
+    // returned progress/checkpoint output before committing if authority expired.
+    if (model.check_goal_authority(task.goal_index, clock.now_us(clock.ctx), durable_seq).status !=
+        AYNI_OK) {
+        model.pause_goal_authority(task.goal_index);
+        return true;
+    }
     Verdict verdict = judge_output(status, output.intent_count, output.checkpoint_size, strategy);
     if (verdict.kind != Verdict::Kind::hold) {
         verdict = judge_intents(decisions, output.intent_count, model.tasks, index);

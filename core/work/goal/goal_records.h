@@ -20,8 +20,14 @@ constexpr uint16_t goal_record_type = 3;
 constexpr uint16_t goal_record_version = 1;
 // Type 3/v2 keeps v1's body but requires paired type 17 authority metadata.
 constexpr uint16_t goal_with_authority_record_version = 2;
+// Type 3/v3 additionally admits PROPOSED and independent authorization pause.
+// Layouts remain those in contracts/storage/records.md; old readers refuse.
+constexpr uint16_t goal_authority_state_record_version = 3;
 constexpr uint16_t goal_state_record_type = 4;
 constexpr uint16_t goal_state_record_version = 1;
+// Type 4/v2 carries state for an explicitly authorized Goal, including updates
+// to an older v2 Goal; this protects old readers without rewriting creation.
+constexpr uint16_t goal_state_with_authority_record_version = 2;
 // A GOAL record without its goal type id, trigger source and parameters.
 constexpr uint32_t goal_record_fixed_size = 108;
 constexpr uint32_t goal_state_record_size = 48;
@@ -33,7 +39,7 @@ struct GoalRecord {
     uint64_t replaced_goal_id;
     uint32_t depth;
     NewGoal goal;
-    bool authority_required = false; // v2 envelope requires a paired ceiling; no Goal field copy.
+    bool authority_required = false; // v2/v3 require a paired ceiling; no Goal field copy.
 };
 
 struct GoalStateRecord {
