@@ -15,9 +15,11 @@ constexpr uint16_t command_record_type = 9;
 constexpr uint16_t command_record_version = 1;
 constexpr uint32_t command_record_size = 52; // ordinary v1
 constexpr uint16_t exact_command_record_version = 2;
-constexpr uint32_t exact_command_record_fixed_size = command_record_size + 8U;
+// records.md type 9/v2 adds canonical format and byte length (u32 each).
+constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
 constexpr uint16_t revoke_command_record_version = 3;
-constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 12U;
+// Type 9/v3 adds effect before those two canonical fields (u32 each).
+constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 3U * sizeof(uint32_t);
 constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {
     const uint32_t create_max = canonical_max_bytes == 0U
                                     ? command_record_size

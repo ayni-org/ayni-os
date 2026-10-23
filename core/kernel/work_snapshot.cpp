@@ -3,6 +3,7 @@
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/record_body.h"
+#include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/command/command_records.h"
 #include "kernel/work_replay.h"
@@ -692,10 +693,10 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
     }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE || mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
         const auto *binding = model_.principals.binding();
-        const uint64_t result_boot = mapping.object.id >> 32U;
         if (binding == nullptr || mapping.principal_id != binding->principal_id ||
-            mapping.commit_seq <= binding->stamp.commit_seq || result_boot == 0U ||
-            result_boot > metadata_.boot_epoch || static_cast<uint32_t>(mapping.object.id) == 0U) {
+            mapping.commit_seq <= binding->stamp.commit_seq ||
+            !foundation::is_kernel_id(mapping.object.id) ||
+            foundation::id_boot_epoch(mapping.object.id) > metadata_.boot_epoch) {
             return durability::BatchCheck::corrupt;
         }
         uint32_t index = 0;

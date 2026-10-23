@@ -15,6 +15,11 @@
 
 namespace ayni::authority {
 
+// contracts/storage/records.md, Grant lifecycle: one transition from ACTIVE
+// to EXPIRED or REVOKED. Cleanup advances its own stamp, never the revision.
+constexpr uint32_t grant_active_revision = 1;
+constexpr uint32_t grant_terminal_revision = 2;
+
 struct NewGrant {
     uint64_t subject_instance_id;
     uint64_t parent_grant_id;
@@ -55,6 +60,8 @@ struct Grant {
     uint32_t depth;
     foundation::TransitionStamp created_stamp;
     foundation::TransitionStamp stamp;
+    // Retained facts use grant_active_revision iff ACTIVE; all terminal
+    // facts use grant_terminal_revision, even while cleanup is incomplete.
     uint32_t revision;
     ayni_grant_lifecycle_t lifecycle;
     uint32_t source_domain_size;

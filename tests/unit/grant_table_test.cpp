@@ -321,6 +321,22 @@ TEST(GrantTable, retained_children_prevent_parent_replacement_until_the_leaf_has
     EXPECT_TRUE(table->consistent());
 }
 
+// C-ID-010 / ADR-0030: CURRENT_BOOT authority belongs to exactly one boot,
+// even when a caller presents a context older than the retained Grant.
+TEST(GrantTable, finite_grants_authorize_only_their_own_boot) {
+    Input input;
+    Grants grants;
+    const GrantContext created_in{2, 100, 1000};
+    ASSERT_EQ(grants.add(input.request(0, 0, 100), 1, 10, created_in).status, AYNI_OK);
+    ASSERT_EQ(grants->check_chain(grants.last(), created_in).status, AYNI_OK);
+    for (const uint64_t boot : {1U, 3U}) {
+        const auto check = grants->check_chain(grants.last(), {boot, 100, 1000});
+        EXPECT_EQ(check.status, AYNI_DENIED) << boot;
+        EXPECT_EQ(check.reason, AYNI_REASON_GRANT_EXPIRED) << boot;
+    }
+    EXPECT_EQ(grants->check_chain(grants.last(), created_in).status, AYNI_OK);
+}
+
 TEST(GrantTable, next_expiry_is_ordered_and_restored_finite_grants_never_reanchor) {
     Input input;
     Grants original;

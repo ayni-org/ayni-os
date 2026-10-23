@@ -1,5 +1,6 @@
 // The single OWNER_BINDING record: which authenticated owner first bound
 // this store. A Host's current expectation never overwrites this fact.
+// Layout: contracts/storage/records.md, type 12/v1 (ADR-0028).
 
 #ifndef AYNI_CORE_AUTHORITY_PRINCIPAL_OWNER_BINDING_RECORDS_H
 #define AYNI_CORE_AUTHORITY_PRINCIPAL_OWNER_BINDING_RECORDS_H

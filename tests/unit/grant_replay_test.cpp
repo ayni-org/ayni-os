@@ -463,6 +463,78 @@ TEST(GrantReplay, a_future_boot_grant_id_is_corrupt_even_when_mapping_and_create
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-ID-010 / records.md type 13/v1: a create uses the immediately durable
+// boot, not an older ID that happens to remain below the final boot bound.
+TEST(GrantReplay, an_earlier_boot_create_is_corrupt_even_when_mapping_and_create_agree) {
+    ReplayNode first;
+    first.run();
+    ReplayNode second;
+    second.node.sim().log() = first.node.sim().log();
+    second.run();
+    ASSERT_EQ(second.node.info().boot_epoch, 2U);
+    const auto created = second.create(1);
+    ASSERT_EQ(created.status, AYNI_OK);
+    second.store(created.result.commit_seq);
+    const auto original = second.node.sim().log();
+    ReplayNode valid;
+    valid.node.sim().log() = original;
+    valid.run();
+    ASSERT_EQ(valid.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    uint32_t edited_ids = 0;
+    const auto log = edited_log(original, [&](Batch &batch) {
+        for (auto &record : batch.records) {
+            if (record.header.type == ayni::authority::grant_record_type) {
+                const auto id = ayni::foundation::load_le64(record.body.data());
+                ayni::foundation::store_le64(record.body.data(), id - (UINT64_C(1) << 32U));
+                ++edited_ids;
+            } else if (record.header.type == ayni::kernel::command_record_type) {
+                CommandMapping mapping{};
+                uint64_t floor = 0;
+                ayni_bytes_v1 canonical{};
+                ASSERT_TRUE(ayni::kernel::read_command_record(
+                    record.header.version, record.body.data(), record.header.length, mapping, floor,
+                    canonical));
+                mapping.object.id -= UINT64_C(1) << 32U;
+                std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
+                ASSERT_TRUE(ayni::kernel::write_command_record(
+                    mapping, floor, {bytes.data(), static_cast<uint32_t>(bytes.size())},
+                    record.body.data(), record.header.length));
+                ++edited_ids;
+            }
+        }
+    });
+    ASSERT_EQ(edited_ids, 2U);
+    expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+// ADR-0031 / records.md type 15/v1: revocation may target a permanent Grant
+// from an earlier boot, and its original accepted result survives replay.
+TEST(GrantRevokeReplay, revocation_of_a_prior_boot_grant_replays_with_its_original_result) {
+    ReplayNode first;
+    first.run();
+    const auto created = first.create(1);
+    ASSERT_EQ(created.status, AYNI_OK);
+    first.store(created.result.commit_seq);
+    ReplayNode second;
+    second.node.sim().log() = first.node.sim().log();
+    second.run();
+    ASSERT_EQ(second.node.info().boot_epoch, 2U);
+    const auto revoked = second.revoke(2, created.result.object.id);
+    ASSERT_EQ(revoked.status, AYNI_OK);
+    second.store(revoked.result.commit_seq);
+    ReplayNode restored;
+    restored.node.sim().log() = second.node.sim().log();
+    restored.run();
+    ASSERT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto grant = restored.grant(created.result.object.id);
+    EXPECT_EQ(grant.lifecycle, AYNI_GRANT_REVOKED);
+    EXPECT_EQ(grant.revision, 2U);
+    const auto retried = restored.revoke(2, created.result.object.id);
+    ASSERT_EQ(retried.status, AYNI_OK);
+    EXPECT_EQ(retried.result.object.id, created.result.object.id);
+    EXPECT_EQ(retried.result.object.revision, 2U);
+}
+
 struct Snapshot {
     SnapshotMetadata metadata;
     std::vector<Record> records;

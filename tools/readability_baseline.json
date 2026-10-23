@@ -45,111 +45,6 @@
       "reason": "Existing debt; resolve and remove with the owning change."
     },
     {
-      "rule": "id-bits",
-      "path": "core/authority/grant/grant_records.cpp",
-      "subject": "return ( id > > 32U ) ! = 0U & & static_cast < uint32_t > ( id ) ! = 0U ;",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/authority/grant/grant_table.cpp",
-      "subject": "( ( grant . grant_id > > 32U ) ! = boot_epoch | | grant . deadline_us = = 0U ) ;",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/authority/grant/grant_table.cpp",
-      "subject": "( child . grant_id > > 32U ) = = ( parent . grant_id > > 32U ) & &",
-      "maximum": 2,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/authority/grant/grant_table.cpp",
-      "subject": "( record . grant_id > > 32U ) ! = ( parent . grant_id > > 32U ) ) ) ) {",
-      "maximum": 2,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/authority/grant/grant_table.cpp",
-      "subject": "if ( ! known_id ( new_grant_id ) | | ( new_grant_id > > 32U ) ! = admission . boot_epoch | |",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/authority/grant/grant_table.cpp",
-      "subject": "return ( id > > 32U ) ! = 0U & & static_cast < uint32_t > ( id ) ! = 0U ;",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/boot/boot_sequence.cpp",
-      "subject": "( foundation :: load_le64 ( body ) > > 32U ) ! = last_boot_epoch_ ) ) {",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/boot/boot_sequence.cpp",
-      "subject": "( foundation :: load_le64 ( body ) > > 32U ) > last_boot_epoch_ ) ) {",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/boot/boot_sequence.cpp",
-      "subject": "( header . length < sizeof ( uint64_t ) | | ( foundation :: load_le64 ( body ) > > 32U ) = = 0U | |",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/work_replay.cpp",
-      "subject": "( grant . cleanup_after_grant_id > > 32U ) > boot_epoch_limit | |",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/work_replay.cpp",
-      "subject": "( grant . cleanup_through_grant_id > > 32U ) > boot_epoch_limit ) {",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/work_replay.cpp",
-      "subject": "( grant . grant_id > > 32U ) > boot_epoch_limit | |",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/work_replay.cpp",
-      "subject": "( grant . revoked_by_root_id > > 32U ) > boot_epoch_limit | |",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/work_replay.cpp",
-      "subject": "( grant . subject_instance_id > > 32U ) > boot_epoch_limit | |",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "id-bits",
-      "path": "core/kernel/work_snapshot.cpp",
-      "subject": "const uint64_t result_boot = mapping . object . id > > 32U ;",
-      "maximum": 1,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
       "rule": "module-comments",
       "path": "core/authority/grant/grant_records",
       "subject": "header + source",
@@ -168,13 +63,6 @@
       "path": "core/catalog/capability/field_domain",
       "subject": "header + source",
       "maximum": 9582,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "module-comments",
-      "path": "core/kernel/command/command_canonical",
-      "subject": "header + source",
-      "maximum": 9522,
       "reason": "Existing debt; resolve and remove with the owning change."
     },
     {

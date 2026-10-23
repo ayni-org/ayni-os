@@ -1,5 +1,7 @@
 #include "kernel/command/command_table.h"
 
+#include "authority/grant/grant_table.h"
+
 #include <cstring>
 #include <new>
 
@@ -13,7 +15,8 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes)
     }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
         AuthorityCommandRecord command{};
-        if (mapping.object.revision != 1U || mapping.effect != AYNI_INTENT_EFFECT_CHANGED ||
+        if (mapping.object.revision != authority::grant_active_revision ||
+            mapping.effect != AYNI_INTENT_EFFECT_CHANGED ||
             !read_authority_command(bytes, command) ||
             (command.flags & ~AYNI_GRANT_ALLOW_DELEGATION) != 0U) {
             return false;
@@ -22,7 +25,8 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes)
         RevokeCommandRecord command{};
         if (!read_revoke_command(bytes, command) || mapping.object.origin_device_id != 0U ||
             mapping.object.id != command.target_grant_id ||
-            (command.expected_revision != 1U && command.expected_revision != 2U)) {
+            (command.expected_revision != authority::grant_active_revision &&
+             command.expected_revision != authority::grant_terminal_revision)) {
             return false;
         }
         // First acceptance can only see ACTIVE/revision1 or terminal/revision2.
@@ -30,10 +34,10 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes)
         // The original CAS was checked when accepting the control. Reload
         // may restore an earlier ACTIVE fact after an uncommitted cleanup,
         // so a later CHANGED result need not follow that original revision.
-        const bool changed =
-            mapping.effect == AYNI_INTENT_EFFECT_CHANGED && mapping.object.revision == 2U;
-        const bool no_change =
-            mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE && mapping.object.revision == 2U;
+        const bool changed = mapping.effect == AYNI_INTENT_EFFECT_CHANGED &&
+                             mapping.object.revision == authority::grant_terminal_revision;
+        const bool no_change = mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE &&
+                               mapping.object.revision == authority::grant_terminal_revision;
         const bool gone =
             mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE && mapping.object.revision == 0U;
         if (!changed && !no_change && !gone) {
