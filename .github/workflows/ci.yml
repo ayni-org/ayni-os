@@ -1,23 +1,63 @@
 name: ci
 
+# Every job is billed in whole minutes, so CI runs the full matrix only where
+# it can find something new:
+# - ready pull requests that change more than Markdown files (a draft runs
+#   nothing until it is marked ready);
+# - every Monday 02:00 Beijing time on main, which also refreshes the compiler
+#   caches that pull requests start from;
+# - on demand (workflow_dispatch).
+# A push to main runs the checks job only: the pull request already built and
+# tested the same merge result.
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# The event is part of the group so that a push to main does not cancel the
+# weekly full run.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   checks:
     name: dependency, contract, readability and format checks
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.scope.outputs.build }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The pull request merge commit and its first parent, the base.
+          fetch-depth: 2
+      # First, so that the builds still run when a later check fails.
+      - name: Decide whether to build
+        id: scope
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              # Not piped into grep -q: under pipefail, git dying of SIGPIPE
+              # after an early match would read as "no code changed".
+              changed=$(git diff --name-only HEAD^1 HEAD)
+              if [ -n "$changed" ] && grep -qv '\.md$' <<< "$changed"; then
+                build=true
+              else
+                build=false
+              fi ;;
+            push) build=false ;;
+            *) build=true ;;
+          esac
+          echo "build=$build" | tee -a "$GITHUB_OUTPUT"
       - name: Install clang-format 18
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format-18
       - name: Dependency rules
@@ -42,7 +82,10 @@ jobs:
 
   native:
     name: native ${{ matrix.compiler }} ${{ matrix.preset }}
+    needs: checks
+    if: ${{ !cancelled() && needs.checks.outputs.build == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -70,7 +113,8 @@ jobs:
       - name: Install Ninja and ccache
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build ccache
       # Every run saves a new entry and starts from the newest one for its
-      # compiler and preset. Pull requests also restore entries saved on main.
+      # compiler and preset. Pull requests also restore the entries that the
+      # weekly run saves on main.
       - name: Restore compiler cache
         uses: actions/cache@v4
         with:
@@ -99,7 +143,9 @@ jobs:
 
   clang-tidy:
     name: clang-tidy (advisory)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +160,10 @@ jobs:
 
   esp-idf:
     name: ESP32-S3 hello firmware (ESP-IDF v6.0.3)
+    needs: checks
+    if: ${{ !cancelled() && needs.checks.outputs.build == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     container: espressif/idf:v6.0.3
     steps:
       - uses: actions/checkout@v4

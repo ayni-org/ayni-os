@@ -65,7 +65,7 @@ ctest --test-dir build/native --output-on-failure
 
 装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
 
-CI 的 native 任务设置 `CTEST_PARALLEL_LEVEL=2`（私有仓库的 runner 为 2 vCPU），并用 ccache 加 `actions/cache` 按编译器与预设保存编译缓存。
+CI 的 native 任务设置 `CTEST_PARALLEL_LEVEL=2`（私有仓库的 runner 为 2 vCPU），并用 ccache 加 `actions/cache` 按编译器与预设保存编译缓存；main 上的缓存来自每周一的全量运行，PR 从那里开始。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
 
 ### 离线配置 GoogleTest
 
@@ -86,7 +86,7 @@ run-clang-tidy-18 -p build/native -quiet 'core/|hosts/|runtime/|targets/'
 git diff --check
 ```
 
-`ctest` 也会运行依赖、契约、可读性机械规则检查及其测试，并检查每个 Core 静态库不引用堆分配函数（ADR-0014）。修改 `contracts/` 中的条款后运行 `python3 tools/check_contracts.py --write` 重新生成 `contracts/traceability.md`，否则检查失败。clang-tidy 在 M0 只报告，不阻断 CI。
+`ctest` 也会运行依赖、契约、可读性机械规则检查及其测试，并检查每个 Core 静态库不引用堆分配函数（ADR-0014）。修改 `contracts/` 中的条款后运行 `python3 tools/check_contracts.py --write` 重新生成 `contracts/traceability.md`，否则检查失败。clang-tidy 只报告，不阻断 CI，只在每周一的定时运行和手动触发时运行。
 
 ### 可读性检查的边界
 
