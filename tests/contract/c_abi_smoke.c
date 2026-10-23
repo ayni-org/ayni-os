@@ -31,7 +31,8 @@ typedef union {
     void (*fn)(void);
 } max_aligned_t;
 
-static max_aligned_t kernel_memory[512];
+/* The bounded Goal metadata and its record reserve are included since 0.20. */
+static max_aligned_t kernel_memory[1024];
 
 static int expect(int condition, const char *what) {
     if (!condition) {

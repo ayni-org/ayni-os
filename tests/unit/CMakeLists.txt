@@ -19,6 +19,7 @@ add_executable(ayni_unit_tests
     field_values_test.cpp
     goal_table_test.cpp
     goal_authority_test.cpp
+    goal_authority_persistence_test.cpp
     goal_type_registry_test.cpp
     host_storage_contract_test.cpp
     journal_ring_test.cpp

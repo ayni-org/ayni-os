@@ -21,8 +21,12 @@ using ayni::hosts::sim::StorageImage;
 using ayni::hosts::sim::StoragePort;
 
 void configure(WorkNode &work) {
-    work.node().config().storage_buffer_bytes = 0;
-    work.node().config().storage_log_max_bytes = 32768;
+    // ADR-0037: new metadata changes the minimum batch budget; keep this
+    // compaction fixture at three batches and a valid minimum log, not a stale total.
+    auto &config = work.node().config();
+    config.storage_buffer_bytes = 3U * smallest_storage_buffer(config);
+    config.storage_log_max_bytes =
+        static_cast<uint32_t>(ayni::kernel::StorageBudget::log_max_min(capacities_of(config)));
 }
 
 ayni_step_report_v1 step(WorkNode &work, bool complete = true) {
@@ -745,6 +749,8 @@ TEST(SnapshotFaults, a_snapshot_record_beyond_the_buffer_exceeds_capacity) {
     const StorageImage image = large.node().sim().durable_storage();
 
     WorkNode small;
+    small.node().config().goal_requirement_capacity = 1;
+    small.node().config().authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
     small.node().config().storage_buffer_bytes = smallest_storage_buffer(small.node().config());
     ASSERT_LT(small.node().config().storage_buffer_bytes, parameter_size);
     small.node().sim().durable_storage() = image;

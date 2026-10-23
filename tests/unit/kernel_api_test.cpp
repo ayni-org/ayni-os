@@ -395,7 +395,8 @@ TEST_F(KernelApi, memory_requirements_grow_with_each_capacity) {
           &ayni_config_v1::strategy_capacity, &ayni_config_v1::policy_intent_capacity,
           &ayni_config_v1::task_step_capacity, &ayni_config_v1::task_checkpoint_max_bytes,
           &ayni_config_v1::command_capacity, &ayni_config_v1::capability_capacity,
-          &ayni_config_v1::authority_scope_max_bytes, &ayni_config_v1::grant_capacity}) {
+          &ayni_config_v1::authority_scope_max_bytes, &ayni_config_v1::grant_capacity,
+          &ayni_config_v1::goal_requirement_capacity}) {
         config = valid_config();
         config.*field += 1;
         EXPECT_GT(required_size(config), base);
@@ -615,3 +616,20 @@ TEST_F(KernelApi, get_lifecycle_rejects_null_output) {
 }
 
 } // namespace
+
+// ADR-0037 decision 7 / C-VER-003: only an omitted trailing field defaults.
+TEST_F(KernelApi, goal_requirement_capacity_defaults_only_when_the_field_is_absent) {
+    auto config = valid_config();
+    const auto expected = required_size(config);
+    config.goal_requirement_capacity = 0;
+    config.struct_size = offsetof(ayni_config_v1, goal_requirement_capacity);
+    EXPECT_EQ(required_size(config), expected);
+    config.struct_size = sizeof(config);
+    std::size_t bytes = 17;
+    std::size_t alignment = 19;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_INVALID_ARGUMENT);
+    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 1U;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_INVALID_ARGUMENT);
+    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_OK);
+}
