@@ -57,9 +57,9 @@
 | `MA-010` | 2026-10-20 | 2026-10-21 |
 | `MA-006` | 2026-10-22 | —（A/B/C 已合并；C #27：`b133032`；D完成/已合并状态随#28合并生效；本轮到此停止，E/F不启动） |
 
-## 交接状态（2026-10-22）
+## 交接状态（2026-10-23）
 
-- **下一步（2026-10-22 用户决定）：** 先按 [`reports/core/ma006-a-d-review.md`](ma006-a-d-review.md) 整理 `MA-006` A–D 并修改 `AGENTS.md`，分四个 PR：约束与机器检查、代码整理（行为不变）、A1 行为修复、文档重写。做完后停下，等用户决定何时开始 E。本节以下内容待该文 PR 4 重写。
+- **当前工作（2026-10-23）：** 用户已确认并要求开始 [MA-006 整理与 E/F 实施计划](../../docs/ma006-implementation.md)。本轮按 R1、R2a、R2b、R3、R4 交付；R1（约束、机器检查与计划落盘）已提交 [#30](https://github.com/RobotSe7en/ayni/pull/30)，本地验证与独立审查通过，证据见 ADR-0032；其余未开始。第一轮结束停下，等用户决定何时开始 E。E/F 三项产品选择已记入计划；当前任何重启都会停止全部恢复的活工作，包括 A 之后新建的工作。以下历史状态待 R4 重写。
 - **本轮状态：`MA-006` C/D 完成后停止（D 完成状态随 #28 合并生效）。** A/B 已由 [#25](https://github.com/RobotSe7en/ayni/pull/25)（`f297941`）/[#26](https://github.com/RobotSe7en/ayni/pull/26)（`00a4126`）合并；B 最终文档 [CI 39726008701](https://github.com/RobotSe7en/ayni/actions/runs/39726008701) 八项通过。C 的 ADR-0030/ABI 0.18/计划 v1.20 已实现并完成五配置各 784/784、独立变异 49 检出/1 等价、Core 分支90.66%/C组件96.19%、默认/最小 arena106,520/31,072 B及独立审查。代码提交 `50c1eb3`、纯格式修正 `d14bf8a` 的 [CI 39731553579](https://github.com/RobotSe7en/ayni/actions/runs/39731553579) 八项全过，含 ESP-IDF 6.0.3 编译；最终文档提交 `84eb7fc1566db4f5895653b8576b1a67a6afeec5` 的 [CI 39732417119](https://github.com/RobotSe7en/ayni/actions/runs/39732417119) 八项全过，已由 [#27](https://github.com/RobotSe7en/ayni/pull/27) 合并（`b1330325012c5087424843f67ae2278cd4ca686f`）。D 已接入 Gate、pending/pin、阶段回执与有界清理，ADR-0031/ABI 0.19/计划 v1.21；生产代码 `e4a017a2d4e2d52be10135888de7520fc97590c8`、唯一D30追加回归与最终文档由 [#28](https://github.com/RobotSe7en/ayni/pull/28) 交付；五配置各892/892、fresh coverage892/892、此前126项定向及D30正常43项均通过。覆盖率/内存、独立审查与35项有效变异闭环已留证（34原878检出+D30补测879检出，恢复normal879/SHA一致）。生产e4a017的CI39735323115八项通过，最终head仍须自己的checks全绿；本节D完成/已合并状态随#28合并生效，不表示完整MA-006完成。
 - **`MA-010` 已完成。** main 包含 #21 的 E+F 和之前的全部工作；没有继续中的 E+F 代码。开发分支 `codex/ma010-recovery-snapshots` 在合并后按 workflow 重置到 main。本文的完成状态随 #21 合并生效，CI 与实际合并记录见 [#21](https://github.com/RobotSe7en/ayni/pull/21)。
 - **完成状态生效条件：** 本节D的完成/已合并状态随 [#28](https://github.com/RobotSe7en/ayni/pull/28) 合并生效；最终测试/文档head的CI见 [#28 checks](https://github.com/RobotSe7en/ayni/pull/28/checks)，合并前必须全绿。
@@ -70,7 +70,7 @@
 - **流程变更（2026-10-22，#24）：** 用户看过 #23 后决定，以后每个部分一个 PR，不再合并；内核每新增一个字段，PR 写明归谁、为什么不放进已有的类；植入缺陷由另一个会话出题；独立审查除对错外还查删掉的注释、内核新增字段、重复公式与裸数字。细则见 `docs/workflow.md` 第 2 节第 2、4、6、10 步。
 - **资源约束：** 用户报告并行构建导致电脑崩溃。已恢复残留植入缺陷、逐文件核对正常 Core，所有最终验证重跑为单任务、`CMAKE_BUILD_PARALLEL_LEVEL=1`；唯一运行容器限 1 CPU、2 GiB 内存、无额外 swap，使用较低 CPU/I/O 优先级。峰值约 797 MiB、零 OOM，swap 为 0。用户随后明确先看资源再决定并行度：后续按 `AGENTS.md` 检查宿主可用内存、swap、CPU 和其他任务，按合计预算设置并行度与容器上限，留出余量并持续监测，不固定要求串行或 2 GiB。脚本与原始结果用持久目录，不能只放 `/tmp`。
 - **边界：** 没有动作、预算、记忆、对外输出屏障或完整 E1–E4/实机验收；C 的 Grant 持久闭环已完成 Native 验证及代码 CI；已接受但不完成的 I/O 没有合成超时，安全关闭可能继续等待。Native 重开后的首次变更会重写并同步继承前缀及目录。未注册 principal 的命令窗口仍保留；`MA-006` 只做持久绑定隔离，完整所有权转移/解绑及旧窗口清理随 `MA-028`（ADR-0028）。
-- **编号与入口：** ADR-0028 对应已合并 A，ADR-0029 对应已合并 B；ADR-0030 对应 C，ADR-0031 对应 D；E/F预留ADR-0032/0033与ABI0.20/0.21，每部分各自递增并按 workflow 交付。存储相关入口先读 `core/kernel/boot/`、`commit/`、`storage/`、`work_snapshot.*`、`core/durability/snapshot/`，以及 `kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 和共享 `host_storage_contract_test.cpp`。
+- **编号与入口：** ADR-0028～0031 对应 A～D；ADR-0032 记录本轮检查与证据规则；E/F 的 ADR 在实施时顺次编号，ABI 仍预留 0.20/0.21，每部分按 workflow 交付。存储相关入口先读 `core/kernel/boot/`、`commit/`、`storage/`、`work_snapshot.*`、`core/durability/snapshot/`，以及 `kernel_fence_test.cpp`、`kernel_snapshot_fault_test.cpp`、`kernel_storage_recovery_test.cpp`、`work_snapshot_test.cpp` 和共享 `host_storage_contract_test.cpp`。
 
 ## 剩余工作
 
@@ -84,8 +84,8 @@
 | B | 0029 / 0.17 | Capability 有界注册、类型/单位/取值域与范围规范化、覆盖/收窄 | 已由 #26 合并（`00a4126`）；Native 五配置、独立审查、35 项变异及最终八项 CI 通过 |
 | C | 0030 / 0.18 | Grant 创建/查询/期限/委派/安全回收，规范请求去重与持久恢复 | 最终五配置各784/784、49检出+1等价、覆盖率/内存/审查及代码八项CI通过；#27 已合并（`b133032`），最终文档 CI39732417119 八项全过 |
 | D | 0031 / 0.19 | 即时拒绝、待决撤销、阶段回执、背压与自动重载保护 | 五配置各892/892、覆盖率/内存/审查及35项有效变异闭环通过（34原878+1补测879）；完成/已合并状态随#28合并生效，最终head需CI全绿 |
-| E | 0032 / 0.20 | GoalType 需求、`PROPOSED` 与原子批准、激活后计时 | 未开始；用户明确本次不启动 |
-| F | 0033 / 0.21 | Task/子目标准入、决策复核、显式恢复、撤销清理、旧数据确认 | 未开始；用户明确本次不启动 |
+| E | 实施时编号 / 0.20 | GoalType 需求、`PROPOSED` 与原子批准、激活后计时 | 未开始；用户明确本次不启动 |
+| F | 实施时编号 / 0.21 | Task/子目标准入、决策复核、显式恢复、撤销清理、旧数据确认 | 未开始；用户明确本次不启动 |
 
 - **当前 A 的边界：** `ayni_register_principal`/`ayni_open_session` 声明移至 Host 受管头文件；Core 不认证密码/TLS。持久 OwnerBinding 与本次 Host 配置不匹配则在恢复写入前只读受限，不转移所有权、不丢命令窗口。首次绑定持久前不开放敏感会话。旧日志无绑定时先核对全部保留 USER Goal origin 的 principal/revision 及 CommandMapping principal，任一冲突即无新写地受限；证据全一致或完全无所有者证据才允许可信 Host 首次绑定，已有绑定以其为权威。这不实现转移，旧工作仍禁行，A 无批准接口。
 - **B 的实施边界：** 新类型与注册入口在 `authority.h`；`catalog/capability` 保存 ID/版本、字段类型/用途/单位及有限域，`authority/scope` 提供规范化、覆盖/收窄与实际请求完整性。字段最多 8、集合原始输入最多 8；完整注册域也必须适配 64–4096 B 的配置上限。新增配置默认 Capability 16、Scope 256 B；目录采用 metadata 加字节 stride，默认/最小工作内存本地量测为 67,544/29,060 B。B 不开放 Grant/审批/Provider，不新增持久记录，不把 Scope 包含成立当作授权通过；详见 ADR-0029。

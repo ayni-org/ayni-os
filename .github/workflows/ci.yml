@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   checks:
-    name: dependency, contract and format checks
+    name: dependency, contract, readability and format checks
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +29,11 @@ jobs:
         run: python3 tools/check_contracts.py
       - name: Contract checker tests
         run: python3 -m unittest -v test_check_contracts
+        working-directory: tests/tools
+      - name: Readability rules and baseline
+        run: python3 tools/check_readability.py
+      - name: Readability checker tests
+        run: python3 -m unittest -v test_check_readability
         working-directory: tests/tools
       - name: Formatting
         run: git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror

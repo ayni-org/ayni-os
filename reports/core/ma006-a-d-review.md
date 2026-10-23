@@ -5,6 +5,8 @@
 - **来源**：2026-10-22 用户请 Claude 检查 Codex 的 #25–#28。四个 PR 各由一个只读审查会话对照 `docs/workflow.md`（#24 版）检查，再由两个会话在 `643f586` 上逐条核对。没有构建或运行测试。
 - **用户要求（2026-10-22）**：由 Codex 先解决本文列出的问题，并修改 `AGENTS.md`，避免再犯，尤其是代码难读的问题。
 
+经用户确认的执行拆分与 E/F 详细计划见 [`docs/ma006-implementation.md`](../../docs/ma006-implementation.md)。原始问题与编号保留，下述处理须在对应 PR 中逐项留证。
+
 ## 1. 结论与交付顺序
 
 A–D 的状态归属做对了：`struct ayni_kernel` 没有新字段，状态都在 `PrincipalRegistry`、`CapabilityRegistry`、`GrantTable`、`CommandTable` 里。问题集中在可读性：新模块注释极少（`grant_table.cpp` 901 行只有 7 行注释），同一条规则在多处各写一遍，revision 与 ID 位运算写成裸数字，几组字段拼成没写出来的状态，`step()` 越来越长；另有一个行为问题（A1），状态文档堆满了 CI 编号与过期的条件句。四个 PR 的 Review 小节都只用一句话带过 workflow 第 10 步的四项。

@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "reference": "32169b8 (MA-006 A-D after #29; R1 changes no Core or public C code)",
+  "violations": [
+    {
+      "rule": "function-lines",
+      "path": "core/authority/grant/grant_table.cpp",
+      "subject": "namespace ayni :: authority / GrantCheck GrantTable :: check_create ( const NewGrant & grant , uint32_t expected_parent_revision , GrantContext context , Admission & out ) const",
+      "maximum": 83,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "function-lines",
+      "path": "core/kernel/intent/intent_rules.cpp",
+      "subject": "namespace ayni :: kernel / ayni_status_t apply_intent ( WorkModel & model , const Intent & intent , uint64_t now_us , bool has_room , IntentOutcome & outcome , IntentFailure & failure , ayni_status_t storage_status , uint64_t durable_seq )",
+      "maximum": 94,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "function-lines",
+      "path": "core/kernel/intent/intent_rules.cpp",
+      "subject": "namespace ayni :: kernel / namespace / ayni_status_t create_goal ( WorkModel & model , const Intent & intent , const work :: GoalOrigin & origin , uint64_t now_us , IntentOutcome & outcome , IntentFailure & failure )",
+      "maximum": 91,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "function-lines",
+      "path": "core/kernel/kernel_api.cpp",
+      "subject": "namespace / ayni_status_t validate_config ( const ayni_config_v1 * config , KernelCapacities * out_capacities , KernelLimits * out_limits )",
+      "maximum": 170,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "function-lines",
+      "path": "core/kernel/kernel_lifecycle.cpp",
+      "subject": "ayni_status_t ayni_kernel :: step ( uint32_t max_items , uint32_t max_time_us , ayni_step_report_v1 & report )",
+      "maximum": 146,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "function-lines",
+      "path": "core/kernel/work_snapshot.cpp",
+      "subject": "namespace ayni :: kernel / bool WorkSnapshotWriter :: next_record ( uint16_t & type , uint32_t & size )",
+      "maximum": 117,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/authority/grant/grant_records.cpp",
+      "subject": "return ( id > > 32U ) ! = 0U & & static_cast < uint32_t > ( id ) ! = 0U ;",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/authority/grant/grant_table.cpp",
+      "subject": "( ( grant . grant_id > > 32U ) ! = boot_epoch | | grant . deadline_us = = 0U ) ;",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/authority/grant/grant_table.cpp",
+      "subject": "( child . grant_id > > 32U ) = = ( parent . grant_id > > 32U ) & &",
+      "maximum": 2,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/authority/grant/grant_table.cpp",
+      "subject": "( record . grant_id > > 32U ) ! = ( parent . grant_id > > 32U ) ) ) ) {",
+      "maximum": 2,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/authority/grant/grant_table.cpp",
+      "subject": "if ( ! known_id ( new_grant_id ) | | ( new_grant_id > > 32U ) ! = admission . boot_epoch | |",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/authority/grant/grant_table.cpp",
+      "subject": "return ( id > > 32U ) ! = 0U & & static_cast < uint32_t > ( id ) ! = 0U ;",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/boot/boot_sequence.cpp",
+      "subject": "( foundation :: load_le64 ( body ) > > 32U ) ! = last_boot_epoch_ ) ) {",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/boot/boot_sequence.cpp",
+      "subject": "( foundation :: load_le64 ( body ) > > 32U ) > last_boot_epoch_ ) ) {",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/boot/boot_sequence.cpp",
+      "subject": "( header . length < sizeof ( uint64_t ) | | ( foundation :: load_le64 ( body ) > > 32U ) = = 0U | |",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/work_replay.cpp",
+      "subject": "( grant . cleanup_after_grant_id > > 32U ) > boot_epoch_limit | |",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/work_replay.cpp",
+      "subject": "( grant . cleanup_through_grant_id > > 32U ) > boot_epoch_limit ) {",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/work_replay.cpp",
+      "subject": "( grant . grant_id > > 32U ) > boot_epoch_limit | |",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/work_replay.cpp",
+      "subject": "( grant . revoked_by_root_id > > 32U ) > boot_epoch_limit | |",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/work_replay.cpp",
+      "subject": "( grant . subject_instance_id > > 32U ) > boot_epoch_limit | |",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "id-bits",
+      "path": "core/kernel/work_snapshot.cpp",
+      "subject": "const uint64_t result_boot = mapping . object . id > > 32U ;",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/authority/grant/grant_records",
+      "subject": "header + source",
+      "maximum": 9739,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/authority/grant/grant_table",
+      "subject": "header + source",
+      "maximum": 9771,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/catalog/capability/field_domain",
+      "subject": "header + source",
+      "maximum": 9582,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/kernel/command/command_canonical",
+      "subject": "header + source",
+      "maximum": 9522,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/kernel/command/pending_revoke",
+      "subject": "header + source",
+      "maximum": 9602,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/kernel/intent/authority_intent",
+      "subject": "header + source",
+      "maximum": 9553,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "module-comments",
+      "path": "core/kernel/work_api",
+      "subject": "header + source",
+      "maximum": 9596,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_BUDGET_EXHAUSTED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_BUFFER_TOO_SMALL",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_BUSY",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_CAPACITY_EXCEEDED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_DENIED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_EXPIRED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_IDEMPOTENCY_CONFLICT",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_INTERNAL",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_INVALID_ARGUMENT",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_INVALID_STATE",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_NOT_FOUND",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_NOT_READY",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_OK",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_REASON_COMMAND_PINNED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_REASON_GRANT_REVOKED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_REASON_REVOCATION_CAPACITY",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_REASON_REVOCATION_PENDING",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_RESULT_UNKNOWN",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_REVISION_CONFLICT",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_STALE",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_STORAGE_FAILED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_UNSUPPORTED",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    },
+    {
+      "rule": "public-code-comment",
+      "path": "include/ayni/ayni.h",
+      "subject": "AYNI_UNSUPPORTED_VERSION",
+      "maximum": 1,
+      "reason": "Existing debt; resolve and remove with the owning change."
+    }
+  ],
+  "exceptions": [
+    {
+      "rule": "id-bits",
+      "path": "core/durability/batch/batch_codec.cpp",
+      "subject": "return static_cast < uint32_t > ( value & 0xFFFFFFFFU ) ;",
+      "maximum": 1,
+      "reason": "low_32 writes/checks the commit marker's low word of commit_seq (contracts/storage/records.md); it does not interpret a Kernel ID. Kept as an exact, counted lexical exception."
+    }
+  ]
+}

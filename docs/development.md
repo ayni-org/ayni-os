@@ -53,7 +53,7 @@ ctest --preset native-debug
 
 ```sh
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
-cmake --build build/native -j
+cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ```
 
@@ -72,12 +72,21 @@ cmake --preset native-debug -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/google
 ```sh
 python3 tools/check_deps.py                                   # 依赖规则（ADR-0011）
 python3 tools/check_contracts.py                              # 契约条款与追踪矩阵（ADR-0013）
+python3 tools/check_readability.py                            # 可读性的机械规则与遗留基线
 git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
 run-clang-tidy-18 -p build/native -quiet 'core/|hosts/|runtime/|targets/'
 git diff --check
 ```
 
-`ctest` 也会运行依赖检查、契约检查及其测试，并检查每个 Core 静态库不引用堆分配函数（ADR-0014）。修改 `contracts/` 中的条款后运行 `python3 tools/check_contracts.py --write` 重新生成 `contracts/traceability.md`，否则检查失败。clang-tidy 在 M0 只报告，不阻断 CI。
+`ctest` 也会运行依赖、契约、可读性机械规则检查及其测试，并检查每个 Core 静态库不引用堆分配函数（ADR-0014）。修改 `contracts/` 中的条款后运行 `python3 tools/check_contracts.py --write` 重新生成 `contracts/traceability.md`，否则检查失败。clang-tidy 在 M0 只报告，不阻断 CI。
+
+### 可读性检查的边界
+
+`check_readability.py` 只做四项机械检查：Core 中超过 80 行的具名函数、同目录同文件名的头源文件合计超过 150 行且注释行不足 5%、ID 辅助头外的两类原始位运算模式，以及没有相邻注释的公开状态/原因码。行数包括空行；注释按物理行计数，行尾注释也算。函数从声明首行计到函数体末行，包含内部 lambda；独立 lambda、宏生成的函数和语义判断不在识别范围。脚本按词法读取所有条件编译分支，不替代编译器；不平衡语法会明确报错，需审查后完善识别规则。模板默认实参中的比较/移位表达式应加括号，避免词法扫描把 `<` 误作模板层级；无法配平时检查失败，不静默略过函数。
+
+通过表示没有新增或加重已识别的机械违例，不代表可读性审查通过。职责是否清楚、命名是否准确、抽象是否必要、是否重复表达业务规则，以及注释是否解释了不变量，仍须按 workflow 独立审查。注释比例只是发现缺少说明的线索，不能通过增加无用注释来满足要求；公开码的含义与 `Since 0.N` 内容也由审查核对。
+
+`python3 tools/check_readability.py --list` 列出现存问题。`tools/readability_baseline.json` 按规则、路径、声明或表达式记录历史债务，不依赖行号；问题消除后须同时删除对应项。非 Kernel ID 的位运算只能用带理由、精确表达式和次数上限的例外排除。CI 不生成基线；`--write-baseline` 仅供显式记录现状，并须逐项审查 diff，不能用来绕过新违例。
 
 ## ESP32-S3 固件
 
