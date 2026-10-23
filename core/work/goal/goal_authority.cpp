@@ -68,8 +68,7 @@ std::size_t GoalAuthorityTable::storage_size(Limits limits) {
 GoalAuthorityTable::GoalAuthorityTable(void *storage, Limits limits)
     : slots_(static_cast<Slot *>(storage)),
       requirements_(reinterpret_cast<Requirement *>(slots_ + limits.goals)),
-      bytes_(reinterpret_cast<uint8_t *>(requirements_ + static_cast<std::size_t>(limits.goals) *
-                                                             limits.requirements)),
+      bytes_(reinterpret_cast<uint8_t *>(requirements_ + requirement_count(limits))),
       limits_(limits) {
     for (uint32_t index = 0; index < limits.goals; ++index) {
         new (slots_ + index) Slot{};
