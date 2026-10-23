@@ -9,6 +9,16 @@
 namespace ayni::work {
 namespace {
 
+// Arena construction and placement share these validated dimensions; neither
+// a byte offset nor the constructor's element loop may invent another stride.
+uint32_t requirement_count(GoalAuthorityTable::Limits limits) {
+    return limits.goals * limits.requirements;
+}
+
+std::size_t requirement_bytes(uint32_t scope_bytes) {
+    return static_cast<std::size_t>(goal_requirement_regions) * scope_bytes;
+}
+
 bool valid_requirement(const GoalRequirement &requirement) {
     const auto &reference = requirement.dependency;
     if (requirement.capability_id.size() == 0U || requirement.capability_version == 0U ||
@@ -48,9 +58,9 @@ bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
 }
 
 std::size_t GoalAuthorityTable::storage_size(Limits limits) {
-    const std::size_t count = static_cast<std::size_t>(limits.goals) * limits.requirements;
+    const std::size_t count = requirement_count(limits);
     return sizeof(Slot) * limits.goals + sizeof(Requirement) * count +
-           count * goal_requirement_regions * limits.scope_bytes;
+           count * requirement_bytes(limits.scope_bytes);
 }
 
 // Both metadata structs contain uint64_t-aligned members; their array sizes
@@ -64,7 +74,7 @@ GoalAuthorityTable::GoalAuthorityTable(void *storage, Limits limits)
     for (uint32_t index = 0; index < limits.goals; ++index) {
         new (slots_ + index) Slot{};
     }
-    const uint32_t count = limits.goals * limits.requirements;
+    const uint32_t count = requirement_count(limits);
     for (uint32_t index = 0; index < count; ++index) {
         new (requirements_ + index) Requirement{};
     }
@@ -75,8 +85,7 @@ uint32_t GoalAuthorityTable::requirement_index(uint32_t goal_index, uint32_t req
 }
 
 uint8_t *GoalAuthorityTable::domain_at(uint32_t index) const {
-    return bytes_ +
-           static_cast<std::size_t>(index) * goal_requirement_regions * limits_.scope_bytes;
+    return bytes_ + static_cast<std::size_t>(index) * requirement_bytes(limits_.scope_bytes);
 }
 
 uint8_t *GoalAuthorityTable::scope_at(uint32_t index) const {
