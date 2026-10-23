@@ -112,10 +112,15 @@ git clone --branch v6.0.3 --depth 1 --recursive --shallow-submodules \
 
 ```sh
 . ~/esp/esp-idf/export.sh
+export IDF_PY_BUILD_JOBS="$CMAKE_BUILD_PARALLEL_LEVEL"
 cd targets/esp32_assistant
 idf.py build
 idf.py size
 ```
+
+构建前仍须按本节资源预算设置正整数 `CMAKE_BUILD_PARALLEL_LEVEL`。
+ESP-IDF v6.0.3 的 `idf.py` 通过 `IDF_PY_BUILD_JOBS` 将该预算传给 Ninja；
+只设置 CMake 的并行变量不足以限制 `idf.py` 直接启动的 Ninja。
 
 `sdkconfig.defaults` 已指定 `esp32s3` 与 8 MB Octal PSRAM，因此首次构建无需 `idf.py set-target`。Flash 暂按 2 MB 配置：镜像头声明的容量大于芯片实际容量时固件在启动时停下，来不及打印基线日志；2 MB 是所有 ESP32-S3 模组的最小容量，Hello 固件会打印实测容量，到板实测后再改为实际容量并确定分区。生成的 `sdkconfig` 与 `build/` 不进入版本库。
 

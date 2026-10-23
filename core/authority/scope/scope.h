@@ -9,10 +9,16 @@
 
 namespace ayni::authority {
 
+// Separates malformed operands from valid scopes that do not contain each other.
 struct Coverage {
-    ayni_status_t status;
-    bool covered; // meaningful only when status == AYNI_OK
+    ayni_status_t status; // AYNI_OK only when both complete operands are valid.
+    bool covered;         // meaningful only when status == AYNI_OK
 };
+
+// Shared ABI framing checks. These do not validate values or duplicate IDs:
+// callers keep their established error order before those separate checks.
+ayni_status_t check_scope_header(const ayni_scope_v1 &scope);
+ayni_status_t check_scope_field_header(const ayni_scope_field_v1 &field);
 
 // domain is a registry's domain_view. Output does not overlap the domain or
 // typed inputs. Missing scope fields expand to the declared whole domain.

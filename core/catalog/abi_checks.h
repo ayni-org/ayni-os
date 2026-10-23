@@ -1,17 +1,18 @@
-// struct_size rules shared by the C ABI entry points (C-VER-003): a field is
-// read only when struct_size covers it, and a struct_size outside the known
-// layouts is refused.
+// C-VER-003 struct_size rules shared by catalog, authority and Kernel.
+// A field is read only when struct_size covers it; layouts outside the known
+// bounds are refused.
 
-#ifndef AYNI_CORE_KERNEL_ABI_CHECKS_H
-#define AYNI_CORE_KERNEL_ABI_CHECKS_H
+#ifndef AYNI_CORE_CATALOG_ABI_CHECKS_H
+#define AYNI_CORE_CATALOG_ABI_CHECKS_H
 
 #include <ayni/ayni.h>
 
 #include <cstddef>
 #include <cstdint>
 
-namespace ayni::kernel {
+namespace ayni::catalog {
 
+// Whether the published ABI prefix contains the complete field.
 inline bool covers(uint32_t struct_size, std::size_t field_offset, std::size_t field_size) {
     return struct_size >= field_offset + field_size;
 }
@@ -30,6 +31,6 @@ inline ayni_status_t check_struct_size(uint32_t struct_size, std::size_t min_siz
     return AYNI_OK;
 }
 
-} // namespace ayni::kernel
+} // namespace ayni::catalog
 
-#endif // AYNI_CORE_KERNEL_ABI_CHECKS_H
+#endif // AYNI_CORE_CATALOG_ABI_CHECKS_H

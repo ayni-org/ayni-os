@@ -31,8 +31,8 @@ typedef struct ayni_authority_i64_range_v1 {
 
 typedef struct ayni_authority_token_set_v1 {
     const ayni_string_v1 *members;
-    uint32_t member_count;
-    uint32_t reserved; /* 0; the input count, before deduplication, is 1..8 */
+    uint32_t member_count; /* Input count before deduplication: 1..8. */
+    uint32_t reserved;     /* 0 */
 } ayni_authority_token_set_v1;
 
 typedef union ayni_authority_values_v1 {

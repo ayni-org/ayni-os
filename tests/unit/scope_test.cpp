@@ -503,4 +503,52 @@ TEST(Scope, encoded_identifier_scopes_cannot_exchange_target_and_egress_usages) 
               AYNI_INVALID_ARGUMENT);
 }
 
+// C-AUTH-018: stored constraints still require every concrete request field
+// to be present and single-valued. Legal noncoverage remains OK/false.
+TEST(Scope, stored_allowed_scope_requires_a_complete_single_value_request) {
+    const ayni_string_v1 choices[] = {token("east"), token("west")};
+    Domain domain{declaration(1, integer(0, 10)),
+                  declaration(2, tokens(AYNI_AUTHORITY_ENUM, choices, 2))};
+    const Input allowed{constraint(1, integer(2, 4))};
+    const auto stored = normalized(domain, allowed);
+    const auto east = tokens(AYNI_AUTHORITY_ENUM, choices, 1);
+    const Input missing{constraint(1, integer(2, 2))};
+    const Input interval{constraint(1, integer(2, 3)), constraint(2, east)};
+    const Input set{constraint(1, integer(2, 2)),
+                    constraint(2, tokens(AYNI_AUTHORITY_ENUM, choices, 2))};
+    for (const Input *input : {&missing, &interval, &set}) {
+        const auto result = contains_request(domain.view(), view(stored), input->view());
+        EXPECT_EQ(result.status, AYNI_INVALID_ARGUMENT);
+        EXPECT_FALSE(result.covered);
+    }
+    const Input complete{constraint(2, east), constraint(1, integer(2, 2))};
+    const auto accepted = contains_request(domain.view(), view(stored), complete.view());
+    EXPECT_EQ(accepted.status, AYNI_OK);
+    EXPECT_TRUE(accepted.covered);
+    const Input outside{constraint(2, east), constraint(1, integer(5, 5))};
+    const auto denied = contains_request(domain.view(), view(stored), outside.view());
+    EXPECT_EQ(denied.status, AYNI_OK);
+    EXPECT_FALSE(denied.covered);
+}
+
+// ADR-0034 decision 4 / C-VER-003: validate the full parent before the child,
+// including when nested values and the opposite top-level header both fail.
+TEST(Scope, simultaneous_operand_errors_preserve_parent_before_child_classification) {
+    Domain domain{declaration(1, integer(0, 10))};
+    Input parent{constraint(1, integer(2, 4))};
+    Input child{constraint(1, integer(3, 3))};
+    parent.fields[0].allowed.values.integer = {4, 2};
+    auto newer_child = child.view();
+    ++newer_child.struct_size;
+    EXPECT_EQ(covers(domain.view(), parent.view(), newer_child).status, AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(contains_request(domain.view(), parent.view(), newer_child).status,
+              AYNI_INVALID_ARGUMENT);
+    parent.fields[0].allowed = integer(2, 4);
+    ++parent.fields[0].allowed.struct_size;
+    child.fields[0].field_id = 0;
+    EXPECT_EQ(covers(domain.view(), parent.view(), child.view()).status, AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(contains_request(domain.view(), parent.view(), child.view()).status,
+              AYNI_UNSUPPORTED_VERSION);
+}
+
 } // namespace

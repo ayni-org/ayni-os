@@ -60,13 +60,6 @@
     },
     {
       "rule": "module-comments",
-      "path": "core/catalog/capability/field_domain",
-      "subject": "header + source",
-      "maximum": 9582,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "module-comments",
       "path": "core/kernel/command/pending_revoke",
       "subject": "header + source",
       "maximum": 9602,

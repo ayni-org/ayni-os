@@ -6,8 +6,8 @@
 // sessions and intents live in kernel/intent/. Every struct here is new in
 // 0.5 or later or changed since, so its only layout is its sizeof.
 
+#include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
-#include "kernel/abi_checks.h"
 #include "kernel/intent/authority_intent.h"
 #include "kernel/intent/intent.h"
 #include "kernel/intent/work_model.h"
@@ -21,7 +21,7 @@
 
 namespace {
 
-using ayni::kernel::check_struct_size;
+using ayni::catalog::check_struct_size;
 
 template <typename Struct> ayni_status_t check_size(const Struct &value) {
     return check_struct_size(value.struct_size, sizeof(Struct), sizeof(Struct));
@@ -241,16 +241,15 @@ ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
     if (kernel == nullptr || capability == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    uint32_t domain_size = 0;
-    const ayni_status_t status =
-        ayni::catalog::CapabilityRegistry::validate(*capability, domain_size);
+    ayni::catalog::DomainEncoding encoding{};
+    const ayni_status_t status = ayni::catalog::CapabilityRegistry::validate(*capability, encoding);
     if (status != AYNI_OK) {
         return status;
     }
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->work.capabilities.add(*capability);
+    return kernel->work.capabilities.add_validated(*capability, encoding);
 }
 
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type) {

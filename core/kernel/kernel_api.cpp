@@ -5,8 +5,8 @@
 // model's entry points are in work_api.cpp. Everything else in the planned
 // API (include/ayni/draft/) has no symbol yet.
 
+#include "catalog/abi_checks.h"
 #include "catalog/catalog_id.h"
-#include "kernel/abi_checks.h"
 #include "kernel/kernel_layout.h"
 #include "kernel/kernel_state.h"
 #include "kernel/storage/storage_budget.h"
@@ -50,8 +50,8 @@ constexpr std::size_t step_report_v1_min_size =
 constexpr std::size_t step_report_v1_durable_end =
     offsetof(ayni_step_report_v1, durable_seq) + sizeof(ayni_step_report_v1::durable_seq);
 
-using ayni::kernel::check_struct_size;
-using ayni::kernel::covers;
+using ayni::catalog::check_struct_size;
+using ayni::catalog::covers;
 using ayni::kernel::KernelCapacities;
 using ayni::kernel::KernelLayout;
 using ayni::kernel::KernelLimits;

@@ -184,16 +184,17 @@ TEST(CapabilityRegistry,
      pure_validation_reports_needed_bytes_without_taking_a_slot_or_publishing_failures) {
     auto item = field(1, integer(0, 3));
     const auto desc = description(&item, 1);
-    uint32_t needed = 91;
+    ayni::catalog::DomainEncoding needed{};
+    needed.size = 91;
     ASSERT_EQ(CapabilityRegistry::validate(desc, needed), AYNI_OK);
-    EXPECT_EQ(needed, 33U);
+    EXPECT_EQ(needed.size, 33U);
     --item.domain.struct_size;
-    needed = 91;
+    needed.size = 91;
     EXPECT_EQ(CapabilityRegistry::validate(desc, needed), AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(needed, 91U);
+    EXPECT_EQ(needed.size, 91U);
     item.domain.struct_size = sizeof(item.domain) + 1U;
     EXPECT_EQ(CapabilityRegistry::validate(desc, needed), AYNI_UNSUPPORTED_VERSION);
-    EXPECT_EQ(needed, 91U);
+    EXPECT_EQ(needed.size, 91U);
 }
 
 TEST(CapabilityRegistry, malformed_field_identity_usage_type_or_unit_is_rejected) {
@@ -365,6 +366,65 @@ TEST(CapabilityRegistry, filling_the_registry_preserves_every_prior_domain_and_l
             }
         }
     }
+}
+
+// C-AUTH-017: a duplicate consumes no set slot, but later members still matter.
+TEST(CapabilityRegistry, a_repeated_member_does_not_hide_later_distinct_members) {
+    const ayni_string_v1 members[] = {token("west"), token("west"), token("east")};
+    const auto item = field(1, tokens(AYNI_AUTHORITY_ENUM, members, 3));
+    Registry registry;
+    ASSERT_EQ(registry->add(description(&item, 1)), AYNI_OK);
+    const std::vector<uint8_t> expected{1, 0, 1,   0,   1,   0,   0, 0,   2,   1,   0,
+                                        2, 4, 'e', 'a', 's', 't', 4, 'w', 'e', 's', 't'};
+    EXPECT_EQ(copied(registry->domain_view(0)), expected);
+}
+
+// ADR-0034 decision 3: the standalone encoder accepts an exact-size buffer;
+// only a capacity failure publishes the required size before writing bytes.
+TEST(CapabilityRegistry, standalone_domain_encoder_probes_and_fills_exact_capacity) {
+    const auto item = field(1, integer(1, 2));
+    std::array<uint8_t, 34> output{};
+    output.fill(0xa5);
+    const auto sentinel = output;
+    uint32_t size = 91;
+    EXPECT_EQ(ayni::catalog::encode_domain(&item, 1, nullptr, 0, size), AYNI_BUFFER_TOO_SMALL);
+    ASSERT_EQ(size, 33U);
+    EXPECT_EQ(ayni::catalog::encode_domain(&item, 1, output.data(), 32, size),
+              AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(size, 33U);
+    EXPECT_EQ(output, sentinel);
+    ASSERT_EQ(ayni::catalog::encode_domain(&item, 1, output.data(), 33, size), AYNI_OK);
+    const std::vector<uint8_t> expected{1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 5, 0, 'c', 'o', 'u', 'n', 't',
+                                        1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0,   0,   0,   0};
+    EXPECT_EQ((std::vector<uint8_t>{output.begin(), output.begin() + size}), expected);
+    EXPECT_EQ(size, 33U);
+    EXPECT_EQ(output.back(), 0xa5);
+
+    ASSERT_EQ(ayni::catalog::encode_domain(nullptr, 0, output.data(), 4, size), AYNI_OK);
+    EXPECT_EQ(size, 4U);
+    EXPECT_EQ((std::vector<uint8_t>{output.begin(), output.begin() + size}),
+              (std::vector<uint8_t>{1, 0, 0, 0}));
+}
+
+// ADR-0034 decisions 3/6: even an invalid later field must preserve both
+// caller outputs; a newer ABI structure retains its classified error.
+TEST(CapabilityRegistry, standalone_domain_encoder_preserves_outputs_for_invalid_later_fields) {
+    std::array<ayni_authority_field_desc_v1, 2> fields{field(1, integer(1, 2)),
+                                                       field(2, integer(3, 4))};
+    std::array<uint8_t, 128> output{};
+    output.fill(0xa5);
+    const auto sentinel = output;
+    uint32_t size = 91;
+    fields[1].domain.values.integer = {4, 3};
+    EXPECT_EQ(ayni::catalog::encode_domain(fields.data(), 2, output.data(), output.size(), size),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(output, sentinel);
+    EXPECT_EQ(size, 91U);
+    ++fields[1].struct_size;
+    EXPECT_EQ(ayni::catalog::encode_domain(fields.data(), 2, output.data(), output.size(), size),
+              AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(output, sentinel);
+    EXPECT_EQ(size, 91U);
 }
 
 } // namespace

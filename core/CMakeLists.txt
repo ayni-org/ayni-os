@@ -23,6 +23,7 @@ ayni_add_core_module(catalog
         catalog/catalog_id.cpp
         catalog/capability/capability_registry.cpp
         catalog/capability/field_domain.cpp
+        catalog/capability/field_values.cpp
         catalog/goal_type/goal_type_registry.cpp
         catalog/strategy/strategy_registry.cpp
     DEPENDS foundation)
