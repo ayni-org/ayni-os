@@ -34,6 +34,11 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Steps in a container default to sh, and the steps are written for bash.
+defaults:
+  run:
+    shell: bash
+
 env:
   DEBIAN_FRONTEND: noninteractive
   # Peaks measured with four jobs: about 1 GiB to build native-asan, 0.7 GiB
