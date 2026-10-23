@@ -41,6 +41,12 @@ defaults:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  # The work directory belongs to the runner's user and the steps run as root,
+  # so Git would treat the checkout as unsafe and not find the repository.
+  # Checkout trusts it only for its own commands.
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
   # Peaks measured with four jobs: about 1 GiB to build native-asan, 0.7 GiB
   # to build the firmware and 0.2 GiB to run the sanitizer tests.
   CMAKE_BUILD_PARALLEL_LEVEL: 4
