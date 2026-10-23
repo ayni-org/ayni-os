@@ -23,20 +23,24 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace ayni::kernel {
 
+// Volatile eviction rule; accepted control pins its exact result until handoff.
 enum class CommandRetention : uint32_t { normal, accepted_revoke };
 
+// Immutable first result of one accepted command; table owns its canonical bytes.
 struct CommandMapping {
-    uint64_t principal_id;
-    uint64_t command_id; // nonzero
-    uint64_t digest;     // ordinary digest, or exact canonical bytes' fast index
-    uint64_t commit_seq; // of the transition that applied it
-    ayni_intent_kind_t kind;
+    uint64_t principal_id;       // Nonzero authenticated owner of command_id.
+    uint64_t command_id;         // Nonzero ID in that principal's retained window
+    uint64_t digest;             // ordinary digest, or exact canonical bytes' fast index
+    uint64_t commit_seq;         // of the transition that applied it
+    ayni_intent_kind_t kind;     // Accepted operation kind; selects canonical/result rules.
     ayni_object_ref_v1 object;   // the result's
     uint32_t canonical_size = 0; // 0 only for legacy ordinary commands
-    ayni_intent_effect_t effect = AYNI_INTENT_EFFECT_CHANGED;
+    ayni_intent_effect_t effect =
+        AYNI_INTENT_EFFECT_CHANGED; // First result, even after target changes.
     CommandRetention retention = CommandRetention::normal; // volatile; never persisted
 };
 
@@ -44,6 +48,8 @@ struct CommandMapping {
 // boundary by this one owner; no catalog or subject lookup is involved.
 bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical);
 
+// Owns bounded principal windows, canonical storage, pending controls and one
+// ephemeral create candidate. Kernel supplies transitions and durable handoff.
 class CommandTable {
   public:
     // What find() made of a command.
@@ -53,14 +59,17 @@ class CommandTable {
         conflict, // accepted before with another digest
         expired,  // not mapped, at or below the principal's floor
     };
+    // Corrupt record versus insufficient configured capacity; neither partially publishes.
     enum class Restore { restored, corrupt, no_room };
+    // Borrowed lookup result; pointers live until the next table mutation.
     struct ExactLookup {
-        ayni_status_t status;
-        Lookup lookup;
-        const CommandMapping *mapping;
-        const PendingRevoke *pending = nullptr;
+        ayni_status_t status; // Request shape/capacity result; lookup meaningful only when OK.
+        Lookup lookup;        // Identity outcome; unmapped does not itself accept the command.
+        const CommandMapping *mapping;          // Retained first result, or null without one.
+        const PendingRevoke *pending = nullptr; // Accepted volatile revoke, or none.
     };
 
+    // Required byte alignment for all table-owned arena regions.
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
     // rows principals with capacity mappings each.
     static std::size_t storage_size(uint32_t rows, uint32_t capacity,
@@ -72,9 +81,11 @@ class CommandTable {
     CommandTable(void *storage, uint32_t rows, uint32_t capacity, uint32_t canonical_max_bytes = 0,
                  uint32_t pending_capacity = 0);
 
+    // Mutable arena ownership cannot be copied.
     CommandTable(const CommandTable &) = delete;
     CommandTable &operator=(const CommandTable &) = delete;
 
+    // Ordinary digest identity; only retried publishes out_mapping.
     Lookup find(uint64_t principal_id, uint64_t command_id, uint64_t digest,
                 const CommandMapping *&out_mapping) const;
     // Measures the independent raw request before looking up identity. An
@@ -82,8 +93,11 @@ class CommandTable {
     // insert_exact consumes them without an intervening table mutation.
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const CanonicalCommandView &input);
+    // Revoke lookup clears any create candidate but does not stage one;
+    // acceptance copies the request into a separate pending control (ADR-0031).
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const CanonicalRevokeView &input);
+    // Consume the current create candidate after result validation; false keeps the window.
     bool insert_exact(CommandMapping mapping);
     // Checks capacity including pinned mappings, without changing any floor.
     bool can_insert(uint64_t principal_id) const;
@@ -91,30 +105,37 @@ class CommandTable {
     // pending revoke, independently of any ordinary hash/floor.
     Lookup find_pending(uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind,
                         ayni_bytes_v1 canonical, const PendingRevoke *&out_pending) const;
+    // Borrowed control by exact identity; null when absent, unaffected by the window floor.
     const PendingRevoke *pending(uint64_t principal_id, uint64_t command_id) const;
+    // Borrowed mapped result by identity; null when absent.
     const CommandMapping *mapped(uint64_t principal_id, uint64_t command_id) const;
     // Checks identity/target/capacity without mutation. No Session, Grant
     // lifecycle or storage admission belongs to the command owner.
     ayni_status_t can_accept_revoke(const AcceptedRevoke &accepted) const;
+    // Copy a fully admitted identity into one dedicated control; failure preserves out_pending.
     ayni_status_t accept_revoke(const AcceptedRevoke &accepted, const PendingRevoke *&out_pending);
+    // Smallest target ID among unapplied controls, or null when none remain.
     const PendingRevoke *next_pending_revoke() const;
+    // This owned pending control has room in the one result window.
     bool can_publish_accepted(const PendingRevoke &pending) const;
     // Bypasses floor only for an already accepted control. Copies to the
     // one result window, pins it, and changes the control to APPLIED.
     bool publish_accepted_revoke(const PendingRevoke &pending, CommandMapping mapping,
                                  uint64_t boot_epoch);
+    // Earliest queued sequence confirmed by this exact boot, then target ID; null if none.
     const PendingRevoke *next_durable_pending(uint64_t boot_epoch, uint64_t durable_seq) const;
     // During completed recovery compare restored exact bytes, never an old
     // queued seq against the new durable floor. Does not consult pending/floor.
     Lookup recovered_revoke(const PendingRevoke &pending, const CommandMapping *&out_mapping) const;
     // Kernel first hands the deny gate to durable authority, then retires.
     bool retire_pending(uint64_t principal_id, uint64_t command_id);
-    uint32_t pending_size() const;
+    uint32_t pending_size() const; // Number of accepted controls, including APPLIED pins.
     // All-kind readonly receipt lookup. For incomplete recovery the Kernel
     // may read pending() alone and withhold the partial restored window.
     Lookup lookup_receipt(uint64_t principal_id, uint64_t command_id,
                           const PendingRevoke *&out_pending,
                           const CommandMapping *&out_mapping) const;
+    // Keep accepted identities but invalidate every old boot/sequence confirmation.
     void abandon_queued_for_reload();
     void clear_restored(); // resets window/scratch and queued stamps, retains accepted controls
     // mapping must be a reference obtained from this table, not a copy.
@@ -133,18 +154,20 @@ class CommandTable {
     // insert() does, and the floor it left. Returns false, changing
     // nothing, for a mapping the table already has or with no row left.
     bool restore(const CommandMapping &mapping, uint64_t floor);
+    // Classified restore, with exact authority bytes when the record requires them.
     Restore restore_checked(const CommandMapping &mapping, uint64_t floor,
                             ayni_bytes_v1 canonical = {});
-    uint32_t size() const;
-    const CommandMapping &at(uint32_t index) const;
+    uint32_t size() const; // Total retained mappings across principals, not pending controls.
+    const CommandMapping &at(uint32_t index) const; // Flattened retained index, below size().
     // Full reset including accepted controls. Recovery discard uses clear_restored().
     void clear();
 
   private:
+    // Owns one principal window and its monotone evicted-command floor.
     struct Row {
-        uint64_t principal_id; // 0: unused
-        uint64_t floor;
-        uint32_t count;
+        uint64_t principal_id; // 0: unused; otherwise the mappings' shared owner.
+        uint64_t floor;        // Inclusive expired command ID; 0 before any eviction.
+        uint32_t count;        // Retained mappings in this row, at most capacity_.
     };
 
     Row *row_of(uint64_t principal_id) const;
@@ -165,13 +188,17 @@ class CommandTable {
     uint32_t capacity_;
     uint32_t canonical_max_bytes_;
     uint32_t pending_capacity_;
-    // Only an unmapped exact lookup can stage a candidate. Ordinary insert,
-    // restore, clear and another exact lookup invalidate it.
-    uint32_t staged_size_ = 0;
-    uint64_t staged_principal_ = 0;
-    uint64_t staged_command_ = 0;
-    uint64_t staged_digest_ = 0;
-    ayni_intent_kind_t staged_kind_ = 0;
+    // One admitted create identity for the current scratch bytes. Revocation
+    // owns its canonical bytes in PendingRevoke and never stages a create.
+    struct StagedCreate {
+        uint64_t principal_id; // Nonzero authenticated command owner.
+        uint64_t command_id;   // Nonzero identity, paired with principal_id.
+        uint64_t digest;       // Fast index of scratch; equality still compares bytes.
+        uint32_t size;         // Positive canonical byte count, <= canonical_max_bytes_.
+    };
+    // Disengaged means no candidate. Ordinary insert, restore, clear and every
+    // exact lookup invalidate the entire value, never a length-only flag.
+    std::optional<StagedCreate> staged_;
     // The latest mapping added and the commit_seq it was added with.
     uint64_t last_added_seq_ = 0;
     uint64_t last_added_principal_ = 0;

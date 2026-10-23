@@ -206,6 +206,7 @@ class RevokeNode {
     uint64_t session = 0;
 };
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, pending_without_storage_space_immediately_denies_every_ancestor_link) {
     RevokeNode work;
     work.run();
@@ -233,6 +234,7 @@ TEST(RevokeApi, pending_without_storage_space_immediately_denies_every_ancestor_
     EXPECT_EQ(work.receipt(4).phase, AYNI_INTENT_DURABLE);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, actual_journal_backlog_still_accepts_a_pending_deny) {
     RevokeNode work;
     work.node.config().storage_buffer_bytes = smallest_storage_buffer(work.node.config());
@@ -263,6 +265,7 @@ TEST(RevokeApi, actual_journal_backlog_still_accepts_a_pending_deny) {
     EXPECT_EQ(work.receipt(command - 1U).phase, AYNI_INTENT_DURABLE);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, applied_and_durable_receipts_keep_original_result_across_a_new_session) {
     RevokeNode work;
     work.run();
@@ -293,6 +296,7 @@ TEST(RevokeApi, applied_and_durable_receipts_keep_original_result_across_a_new_s
     EXPECT_EQ(after.result.commit_seq, original);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, ordinary_commands_use_the_same_applied_and_durable_receipt_phases) {
     RevokeNode work;
     work.run();
@@ -308,6 +312,7 @@ TEST(RevokeApi, ordinary_commands_use_the_same_applied_and_durable_receipt_phase
     EXPECT_EQ(durable.applied_boot_epoch, 0U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, pending_identity_precedes_every_implemented_kind_and_later_window_floor) {
     RevokeNode work;
     work.node.config().command_capacity = 1;
@@ -349,6 +354,7 @@ TEST(RevokeApi, pending_identity_precedes_every_implemented_kind_and_later_windo
     work.settle();
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, a_second_command_for_one_pending_target_is_busy_and_does_not_bind_its_id) {
     RevokeNode work;
     work.run();
@@ -366,6 +372,7 @@ TEST(RevokeApi, a_second_command_for_one_pending_target_is_busy_and_does_not_bin
     work.settle();
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, new_revocation_validates_shape_channel_and_current_revision_before_acceptance) {
     RevokeNode work;
     work.run();
@@ -387,6 +394,7 @@ TEST(RevokeApi, new_revocation_validates_shape_channel_and_current_revision_befo
     ASSERT_EQ(work.revoke(target, 2).status, AYNI_OK);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, receipt_query_errors_leave_caller_owned_output_unchanged) {
     RevokeNode work;
     work.run();
@@ -411,6 +419,7 @@ TEST(RevokeApi, receipt_query_errors_leave_caller_owned_output_unchanged) {
     work.settle();
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, an_expired_target_gets_a_durable_no_change_without_rewriting_terminal_order) {
     RevokeNode work;
     work.run();
@@ -434,6 +443,7 @@ TEST(RevokeApi, an_expired_target_gets_a_durable_no_change_without_rewriting_ter
     EXPECT_EQ(work.grant(target).commit_seq, expired.commit_seq);
 }
 
+// C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
 TEST(RevokeApi, a_new_command_for_a_durably_revoked_target_preserves_cleanup_and_terminal_stamps) {
     RevokeNode work;
     work.run();
@@ -460,6 +470,7 @@ TEST(RevokeApi, a_new_command_for_a_durably_revoked_target_preserves_cleanup_and
     EXPECT_EQ(after.cleanup_commit_seq, before.cleanup_commit_seq);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, process_restart_does_not_claim_to_preserve_an_unpersisted_pending_control) {
     RevokeNode work;
     work.run();
@@ -479,6 +490,7 @@ TEST(RevokeApi, process_restart_does_not_claim_to_preserve_an_unpersisted_pendin
     EXPECT_EQ(ayni_get_intent_receipt(work.node.kernel(), owner_id, 2, &missing), AYNI_NOT_FOUND);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, all_pinned_results_block_ordinary_work_but_keep_the_next_revoke_pending) {
     RevokeNode work;
     work.node.config().command_capacity = 1;
@@ -502,6 +514,7 @@ TEST(RevokeApi, all_pinned_results_block_ordinary_work_but_keep_the_next_revoke_
     EXPECT_EQ(work.create_goal(5).status, AYNI_OK);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, durable_retry_does_not_publish_another_pending_revoke_or_evict_its_own_result) {
     RevokeNode work;
     work.node.config().command_capacity = 1;
@@ -544,6 +557,7 @@ TEST(RevokeApi, durable_retry_does_not_publish_another_pending_revoke_or_evict_i
     EXPECT_EQ(work.grant(second).lifecycle, AYNI_GRANT_REVOKED);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, unknown_persisted_result_reconciles_original_canonical_and_original_sequence) {
     RevokeNode work;
     work.run();
@@ -571,6 +585,7 @@ TEST(RevokeApi, unknown_persisted_result_reconciles_original_canonical_and_origi
     EXPECT_EQ(retry.result.commit_seq, original);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability) {
     RevokeNode work;
     work.run();
@@ -616,6 +631,7 @@ TEST(RevokeApi, lost_unpersisted_creation_gets_target_gone_without_reusing_old_q
     EXPECT_EQ(repeated.result.phase, AYNI_INTENT_DURABLE);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, failed_writer_isolation_preserves_the_gate_and_reports_no_durable_result) {
     RevokeNode work;
     work.run();
@@ -633,6 +649,7 @@ TEST(RevokeApi, failed_writer_isolation_preserves_the_gate_and_reports_no_durabl
     EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi,
      a_reload_read_failure_keeps_the_accepted_control_after_restored_facts_are_discarded) {
     RevokeNode work;
@@ -654,6 +671,7 @@ TEST(RevokeApi,
     EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, shutdown_after_reload_read_failure_keeps_unapplied_controls_without_a_writer) {
     RevokeNode work;
     work.node.config().storage_buffer_bytes = smallest_storage_buffer(work.node.config());
@@ -698,6 +716,7 @@ TEST(RevokeApi, shutdown_after_reload_read_failure_keeps_unapplied_controls_with
     EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi,
      binding_mismatch_on_reload_keeps_the_gate_and_host_authenticated_pending_diagnostic) {
     RevokeNode work;
@@ -722,6 +741,7 @@ TEST(RevokeApi,
     EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
 }
 
+// C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
 TEST(RevokeApi, cleanup_is_bounded_and_never_rewrites_the_roots_terminal_commit_order) {
     RevokeNode work;
     work.run();
@@ -765,6 +785,7 @@ TEST(RevokeApi, cleanup_is_bounded_and_never_rewrites_the_roots_terminal_commit_
     }
 }
 
+// C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
 TEST(RevokeApi, only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup) {
     RevokeNode work;
     work.node.config().grant_capacity = 2;
@@ -791,6 +812,7 @@ TEST(RevokeApi, only_a_durable_terminal_leaf_can_make_room_after_revocation_clea
               AYNI_GRANT_REVOKED); // Retained child blocked parent first.
 }
 
+// C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
 TEST(RevokeApi, revision_two_accepted_after_uncommitted_cleanup_can_change_restored_active_child) {
     RevokeNode work;
     work.run();
@@ -827,6 +849,7 @@ TEST(RevokeApi, revision_two_accepted_after_uncommitted_cleanup_can_change_resto
     EXPECT_EQ(retry.result.commit_seq, receipt.commit_seq);
 }
 
+// C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
 TEST(RevokeApi, paged_snapshot_keeps_its_frozen_model_while_accepting_a_volatile_deny) {
     RevokeNode work;
     work.node.config().grant_capacity = 16;
@@ -873,6 +896,7 @@ TEST(RevokeApi, paged_snapshot_keeps_its_frozen_model_while_accepting_a_volatile
     EXPECT_EQ(work.grant(target).effective_reason, AYNI_REASON_NONE);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(RevokeApi, shutdown_drains_an_already_accepted_control_without_accepting_new_revocations) {
     RevokeNode work;
     work.run();
@@ -892,6 +916,7 @@ TEST(RevokeApi, shutdown_drains_an_already_accepted_control_without_accepting_ne
     EXPECT_EQ(work.grant(target).lifecycle, AYNI_GRANT_REVOKED);
     EXPECT_EQ(work.receipt(2).phase, AYNI_INTENT_DURABLE);
 }
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, ordinary_receipt_floor_and_bad_query_shapes_preserve_the_output) {
     RevokeNode work;
     work.node.config().command_capacity = 1;
@@ -919,6 +944,7 @@ TEST(RevokeApi, ordinary_receipt_floor_and_bad_query_shapes_preserve_the_output)
     EXPECT_EQ(std::memcmp(&before, &out, sizeof(out)), 0);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, receipt_window_is_not_exposed_before_initial_recovery_finishes) {
     RevokeNode work;
     work.node.create_and_start();
@@ -931,6 +957,7 @@ TEST(RevokeApi, receipt_window_is_not_exposed_before_initial_recovery_finishes) 
     EXPECT_EQ(std::memcmp(&before, &out, sizeof(out)), 0);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(RevokeApi, a_commandless_submit_reports_a_fresh_applied_stamp_without_a_receipt_mapping) {
     RevokeNode work;
     work.run();
@@ -946,6 +973,35 @@ TEST(RevokeApi, a_commandless_submit_reports_a_fresh_applied_stamp_without_a_rec
     EXPECT_EQ(second.result.phase, AYNI_INTENT_APPLIED);
     EXPECT_GT(second.result.commit_seq, first.result.commit_seq);
     EXPECT_NE(second.result.object.id, first.result.object.id);
+}
+
+// C-WIRE-019 / ADR-0031: a restored mapping is private until the complete
+// recovered prefix and its new writer have finished, even if lookup can find it.
+TEST(RevokeApi, a_mapping_already_restored_during_recovery_is_not_a_public_receipt) {
+    RevokeNode work;
+    work.run();
+    const uint64_t target = work.durable_grant();
+    work.node.reboot();
+    for (unsigned round = 0; round < 1000; ++round) {
+        // White-box: observe real replay progress; do not fabricate a mapping or lifecycle.
+        if (work.node.kernel()->work.commands.size() != 0U) {
+            ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_RECOVERING);
+            ayni_intent_receipt_v1 out{};
+            out.struct_size = sizeof(out);
+            out.phase = 999;
+            const auto before = out;
+            EXPECT_EQ(ayni_get_intent_receipt(work.node.kernel(), owner_id, 1, &out),
+                      AYNI_NOT_READY);
+            EXPECT_EQ(std::memcmp(&before, &out, sizeof(out)), 0);
+            work.node.recover();
+            ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+            EXPECT_EQ(work.receipt(1).object.id, target);
+            EXPECT_EQ(work.receipt(1).phase, AYNI_INTENT_DURABLE);
+            return;
+        }
+        work.tick();
+    }
+    FAIL() << "fixture did not reach a partially restored command window";
 }
 
 } // namespace

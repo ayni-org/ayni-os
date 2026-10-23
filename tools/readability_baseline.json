@@ -38,20 +38,6 @@
       "reason": "Existing debt; resolve and remove with the owning change."
     },
     {
-      "rule": "module-comments",
-      "path": "core/kernel/command/pending_revoke",
-      "subject": "header + source",
-      "maximum": 9602,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
-      "rule": "module-comments",
-      "path": "core/kernel/work_api",
-      "subject": "header + source",
-      "maximum": 9596,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
       "rule": "public-code-comment",
       "path": "include/ayni/ayni.h",
       "subject": "AYNI_BUDGET_EXHAUSTED",

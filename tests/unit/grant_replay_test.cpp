@@ -235,6 +235,7 @@ void expect_restricted(const std::vector<StoredBatch> &log, ayni_restriction_t r
     EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, a_valid_but_expanded_create_scope_cannot_disagree_with_its_exact_command) {
     const auto original = complete_log();
     bool changed = false;
@@ -260,6 +261,7 @@ TEST(GrantReplay, a_valid_but_expanded_create_scope_cannot_disagree_with_its_exa
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, child_parent_revision_must_match_the_persisted_exact_request) {
     const auto original = complete_log(true);
     bool changed = false;
@@ -292,6 +294,7 @@ TEST(GrantReplay, child_parent_revision_must_match_the_persisted_exact_request) 
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner) {
     const auto original = complete_log();
     for (const uint16_t removed :
@@ -307,6 +310,7 @@ TEST(GrantReplay, neither_a_create_nor_an_exact_mapping_may_replay_without_its_p
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, pairing_cannot_cross_a_committed_batch_boundary) {
     auto log = complete_log();
     auto source = decode(log.back());
@@ -331,6 +335,7 @@ TEST(GrantReplay, pairing_cannot_cross_a_committed_batch_boundary) {
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, one_committed_batch_cannot_contain_two_complete_root_create_mapping_pairs) {
     ReplayNode source;
     source.run();
@@ -354,6 +359,7 @@ TEST(GrantReplay, one_committed_batch_cannot_contain_two_complete_root_create_ma
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, an_ordinary_mapping_before_an_auth_pair_cannot_share_its_transition) {
     ReplayNode source;
     source.run();
@@ -377,6 +383,7 @@ TEST(GrantReplay, an_ordinary_mapping_before_an_auth_pair_cannot_share_its_trans
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, two_ordinary_mappings_cannot_claim_one_transition_either) {
     ReplayNode source;
     source.run();
@@ -402,6 +409,7 @@ TEST(GrantReplay, two_ordinary_mappings_cannot_claim_one_transition_either) {
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, new_authority_records_require_the_flag_even_for_unknown_future_versions) {
     const auto original = complete_log(false, true);
     for (const uint16_t type :
@@ -438,6 +446,7 @@ TEST(GrantReplay, new_authority_records_require_the_flag_even_for_unknown_future
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, a_future_boot_grant_id_is_corrupt_even_when_mapping_and_create_agree) {
     const auto original = complete_log();
     const auto log = edited_log(original, [](Batch &batch) {
@@ -465,6 +474,7 @@ TEST(GrantReplay, a_future_boot_grant_id_is_corrupt_even_when_mapping_and_create
 
 // C-ID-010 / records.md type 13/v1: a create uses the immediately durable
 // boot, not an older ID that happens to remain below the final boot bound.
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, an_earlier_boot_create_is_corrupt_even_when_mapping_and_create_agree) {
     ReplayNode first;
     first.run();
@@ -616,6 +626,7 @@ void rewrite_auth_request(Record &record, const std::function<void(std::vector<u
     ASSERT_TRUE(ayni::kernel::write_command_record(mapping, floor, view, record.body.data(), base));
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_auth_mapping_requires_binding_identity_and_strictly_later_acceptance) {
     ReplayNode source;
     source.run();
@@ -656,6 +667,7 @@ TEST(GrantReplay, snapshot_auth_mapping_requires_binding_identity_and_strictly_l
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_ordinary_v1_foreign_principal_remains_a_readable_retry_window) {
     ReplayNode source;
     source.run();
@@ -675,6 +687,7 @@ TEST(GrantReplay, snapshot_ordinary_v1_foreign_principal_remains_a_readable_retr
     EXPECT_EQ(import_snapshot(snapshot), BatchCheck::ok);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_auth_result_requires_nonzero_epoch_counter_and_no_future_boot) {
     ReplayNode source;
     source.run();
@@ -695,6 +708,7 @@ TEST(GrantReplay, snapshot_auth_result_requires_nonzero_epoch_counter_and_no_fut
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_retained_grant_must_match_immutable_request_and_created_sequence) {
     ReplayNode source;
     source.run();
@@ -763,6 +777,7 @@ TEST(GrantReplay, snapshot_retained_grant_must_match_immutable_request_and_creat
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_preserves_child_mapping_when_parent_later_expires_and_changes_revision) {
     ReplayNode source;
     source.run();
@@ -783,6 +798,7 @@ TEST(GrantReplay, snapshot_preserves_child_mapping_when_parent_later_expires_and
     EXPECT_EQ(source.grant(child.result.object.id).lifecycle, AYNI_GRANT_EXPIRED);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_reclaimed_result_restores_without_recreating_the_grant) {
     ReplayNode source;
     source.node.config().grant_capacity = 1;
@@ -826,6 +842,7 @@ TEST(GrantReplay, snapshot_reclaimed_result_restores_without_recreating_the_gran
               BatchCheck::ok);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse) {
     ReplayNode source;
     source.run();
@@ -858,6 +875,7 @@ TEST(GrantReplay, snapshot_orders_a_reused_child_slot_after_its_parent_and_rejec
     EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt);
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, snapshot_requires_the_owner_and_bounds_both_stamps_and_grant_boot_epochs) {
     ReplayNode source;
     source.run();
@@ -929,6 +947,7 @@ std::vector<StoredBatch> revoked_log(bool cleanup) {
     return source.node.sim().log();
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, root_record_and_exact_mapping_require_each_other_in_one_batch) {
     const auto original = revoked_log(false);
     for (const uint16_t removed :
@@ -954,6 +973,7 @@ TEST(GrantRevokeReplay, root_record_and_exact_mapping_require_each_other_in_one_
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, duplicate_root_record_and_mismatched_effect_are_corrupt) {
     const auto original = revoked_log(false);
     for (unsigned fault = 0; fault < 2; ++fault) {
@@ -980,6 +1000,7 @@ TEST(GrantRevokeReplay, duplicate_root_record_and_mismatched_effect_are_corrupt)
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, mapping_owner_and_object_must_match_the_accepted_root_record) {
     const auto original = revoked_log(false);
     for (unsigned fault = 0; fault < 2; ++fault) {
@@ -1016,6 +1037,7 @@ TEST(GrantRevokeReplay, mapping_owner_and_object_must_match_the_accepted_root_re
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, descendant_state_and_progress_are_an_atomic_pair) {
     const auto original = revoked_log(true);
     for (unsigned fault = 0; fault < 3; ++fault) {
@@ -1049,6 +1071,7 @@ TEST(GrantRevokeReplay, descendant_state_and_progress_are_an_atomic_pair) {
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, progress_cannot_skip_an_active_descendant_or_change_its_watermark) {
     const auto original = revoked_log(true);
     for (const unsigned offset : {8U, 16U}) {
@@ -1069,6 +1092,7 @@ TEST(GrantRevokeReplay, progress_cannot_skip_an_active_descendant_or_change_its_
     }
 }
 
+// C-STORE-015/016 / ADR-0031 decision 7: every authority record must be REQUIRED.
 TEST(GrantRevokeReplay, revoke_and_cleanup_headers_require_required_even_for_future_versions) {
     const auto original = revoked_log(true);
     for (const uint16_t type :
@@ -1099,6 +1123,7 @@ TEST(GrantRevokeReplay, revoke_and_cleanup_headers_require_required_even_for_fut
     }
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations) {
     ReplayNode source;
     source.run();
@@ -1129,6 +1154,7 @@ TEST(GrantRevokeReplay, snapshots_write_grant_v2_and_read_legacy_v1_without_inve
               BatchCheck::ok);
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds) {
     ReplayNode source;
     source.run();
@@ -1158,6 +1184,7 @@ TEST(GrantRevokeReplay, snapshot_cleanup_stamp_has_independent_transition_and_co
     }
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_revoke_effect_must_agree_with_the_retained_target_history) {
     ReplayNode source;
     source.run();
@@ -1210,6 +1237,7 @@ TEST(GrantRevokeReplay, snapshot_revoke_effect_must_agree_with_the_retained_targ
     EXPECT_EQ(import_snapshot(snapshot_of(source)), BatchCheck::ok);
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_revoke_mapping_validates_binding_sequence_and_kernel_id) {
     ReplayNode source;
     source.run();
@@ -1255,6 +1283,7 @@ TEST(GrantRevokeReplay, snapshot_revoke_mapping_validates_binding_sequence_and_k
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_in_the_journal) {
     const auto original = complete_log();
     {
@@ -1295,6 +1324,7 @@ TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_
     }
 }
 
+// C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independently) {
     ReplayNode source;
     source.run();
@@ -1343,6 +1373,7 @@ TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independ
     }
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_cleanup_watermarks_cannot_name_a_future_boot) {
     ReplayNode source;
     source.run();
@@ -1371,6 +1402,7 @@ TEST(GrantRevokeReplay, snapshot_cleanup_watermarks_cannot_name_a_future_boot) {
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, accepted_mapping_cannot_claim_an_unreachable_original_revision) {
     const auto original = revoked_log(false);
     bool edited = false;
@@ -1397,6 +1429,7 @@ TEST(GrantRevokeReplay, accepted_mapping_cannot_claim_an_unreachable_original_re
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_root_frontier_cannot_exclude_a_retained_descendant) {
     for (const bool expired_child : {false, true}) {
         ReplayNode source;
@@ -1433,6 +1466,7 @@ TEST(GrantRevokeReplay, snapshot_root_frontier_cannot_exclude_a_retained_descend
     }
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, record_versions_are_specific_to_journal_and_snapshot_contexts) {
     using ayni::kernel::WorkRecordContext;
     using ayni::kernel::WorkReplay;
@@ -1457,6 +1491,7 @@ TEST(GrantRevokeReplay, record_versions_are_specific_to_journal_and_snapshot_con
         RecordUse::unknown);
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, root_and_descendant_records_reject_truncated_bodies_inside_valid_batches) {
     const auto original = revoked_log(true);
     for (const uint16_t type : {ayni::authority::grant_revocation_record_type,
@@ -1478,6 +1513,7 @@ TEST(GrantRevokeReplay, root_and_descendant_records_reject_truncated_bodies_insi
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, duplicate_pending_root_or_child_cannot_claim_one_transition) {
     const auto original = revoked_log(true);
     for (const uint16_t type :
@@ -1502,6 +1538,7 @@ TEST(GrantRevokeReplay, duplicate_pending_root_or_child_cannot_claim_one_transit
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, descendant_and_progress_must_name_the_same_root_and_cursor) {
     const auto original = revoked_log(true);
     for (const unsigned offset : {0U, 8U}) {
@@ -1530,6 +1567,7 @@ TEST(GrantRevokeReplay, descendant_and_progress_must_name_the_same_root_and_curs
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, matching_syntax_still_requires_the_root_and_mapping_effects_to_agree) {
     const auto original = revoked_log(false);
     bool changed = false;
@@ -1556,6 +1594,7 @@ TEST(GrantRevokeReplay, matching_syntax_still_requires_the_root_and_mapping_effe
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, a_later_boot_record_cannot_legitimize_an_earlier_future_target_gone) {
     const auto original = revoked_log(false);
     bool changed = false;
@@ -1603,6 +1642,7 @@ TEST(GrantRevokeReplay, a_later_boot_record_cannot_legitimize_an_earlier_future_
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_changed_mapping_cannot_move_after_its_terminal_transition) {
     ReplayNode source;
     source.node.config().command_capacity = 2;
@@ -1629,6 +1669,7 @@ TEST(GrantRevokeReplay, snapshot_changed_mapping_cannot_move_after_its_terminal_
     EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt);
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay, snapshot_no_change_cannot_precede_the_retained_targets_terminal_stamp) {
     ReplayNode source;
     source.node.config().command_capacity = 1;
@@ -1656,6 +1697,7 @@ TEST(GrantRevokeReplay, snapshot_no_change_cannot_precede_the_retained_targets_t
     EXPECT_EQ(import_snapshot(snapshot), BatchCheck::corrupt);
 }
 
+// C-STORE-017 / ADR-0031 decision 7: snapshots preserve revocation history and versions.
 TEST(GrantRevokeReplay,
      snapshot_changed_receipt_cannot_claim_a_descendant_cleaned_by_another_root) {
     ReplayNode source;
@@ -1723,6 +1765,7 @@ void check_small_transition_buffers(const ayni::kernel::WorkModel &model) {
     }
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay, journal_root_and_progress_encoders_refuse_short_buffers_without_overrun) {
     ReplayNode source;
     source.run();
@@ -1746,6 +1789,7 @@ TEST(GrantRevokeReplay, journal_root_and_progress_encoders_refuse_short_buffers_
     check_small_transition_buffers(source.node.kernel()->work);
 }
 
+// C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
 TEST(GrantRevokeReplay,
      a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress) {
     ReplayNode source;
@@ -1868,6 +1912,155 @@ TEST(GrantRevokeReplay,
     for (std::size_t index = 0; index < before.size(); ++index) {
         EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
     }
+}
+
+// White-box fixture: feed real stored domain records through WorkReplay's public
+// record interface, pausing at a semantic boundary before the whole boot finishes.
+struct DomainRecord {
+    BatchIdentity batch;
+    Record record;
+};
+
+std::vector<DomainRecord> domain_records(const std::vector<StoredBatch> &log) {
+    std::vector<DomainRecord> result;
+    for (const auto &stored : log) {
+        const auto batch = decode(stored);
+        for (const auto &record : batch.records) {
+            if (ayni::kernel::WorkReplay::classify_header(record.header) == RecordUse::applied) {
+                result.push_back({batch.identity, record});
+            }
+        }
+    }
+    return result;
+}
+
+// C-STORE-016: an accepted descendant state remains incomplete until its progress arrives.
+TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_progress) {
+    const auto records = domain_records(revoked_log(true));
+    ReplayNode restored;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    bool saw_child = false;
+    for (const auto &item : records) {
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+        if (item.record.header.type == ayni::authority::grant_state_record_type &&
+            item.record.header.version == ayni::authority::grant_revoked_state_record_version) {
+            saw_child = true;
+            EXPECT_FALSE(replay.complete());
+        }
+    }
+    ASSERT_TRUE(saw_child);
+    EXPECT_TRUE(replay.complete());
+    EXPECT_TRUE(replay.consistent());
+}
+
+// C-STORE-015: one missing command cannot be hidden by another Grant's create record.
+TEST(GrantReplay, a_second_create_cannot_replace_an_unmatched_create_in_the_same_batch) {
+    ReplayNode source;
+    source.run();
+    for (const uint64_t command : {1U, 2U}) {
+        const auto created = source.create(command);
+        ASSERT_EQ(created.status, AYNI_OK);
+        source.store(created.result.commit_seq);
+    }
+    const auto records = domain_records(source.node.sim().log());
+    ReplayNode restored;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    BatchIdentity first_batch{};
+    bool waiting = false;
+    for (const auto &item : records) {
+        if (waiting) {
+            if (item.record.header.type == ayni::authority::grant_record_type) {
+                EXPECT_EQ(ayni::kernel::WorkReplay::on_record(
+                              &replay, first_batch, item.record.header, item.record.body.data()),
+                          RecordUse::corrupt);
+                return;
+            }
+            continue; // Withhold the first command to exercise the unmatched boundary.
+        }
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+        if (item.record.header.type == ayni::authority::grant_record_type) {
+            first_batch = item.batch;
+            waiting = true;
+            ASSERT_FALSE(replay.complete());
+        }
+    }
+    FAIL() << "fixture did not contain two distinct root creations";
+}
+
+// C-STORE-015/016: cleanup progress cannot consume an unrelated create's missing command.
+TEST(GrantRevokeReplay, valid_progress_cannot_interrupt_a_create_waiting_for_its_command) {
+    const auto records = domain_records(revoked_log(true));
+    ReplayNode restored;
+    restored.node.config().grant_capacity = 3;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    uint64_t fresh_id = 0;
+    for (const auto &item : records) {
+        if (item.record.header.type == ayni::authority::grant_record_type) {
+            fresh_id = std::max(fresh_id, ayni::foundation::load_le64(item.record.body.data()));
+        }
+    }
+    ++fresh_id;
+    Record another_create{};
+    for (const auto &item : records) {
+        if (item.record.header.type == ayni::authority::grant_record_type &&
+            another_create.body.empty()) {
+            another_create = item.record;
+            // C-STORE-015: the create body's first u64 is its Grant identity.
+            // The new root is beyond the original cleanup's frozen frontier.
+            ayni::foundation::store_le64(another_create.body.data(), fresh_id);
+        }
+        if (item.record.header.type == ayni::authority::grant_revocation_progress_record_type) {
+            ASSERT_FALSE(another_create.body.empty());
+            ASSERT_EQ(ayni::kernel::WorkReplay::on_record(
+                          &replay, item.batch, another_create.header, another_create.body.data()),
+                      RecordUse::applied);
+            ASSERT_FALSE(replay.complete());
+            EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                          item.record.body.data()),
+                      RecordUse::corrupt);
+            return;
+        }
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+    }
+    FAIL() << "fixture did not contain a valid standalone cleanup progress";
+}
+
+// ADR-0026/0035: discarding an incomplete prefix also forgets every waiting partner.
+TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_start) {
+    const auto records = domain_records(complete_log());
+    ReplayNode restored;
+    restored.node.create();
+    auto &replay = restored.node.kernel()->replay;
+    bool waiting = false;
+    for (const auto &item : records) {
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+        if (item.record.header.type == ayni::authority::grant_record_type) {
+            waiting = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(waiting);
+    ASSERT_FALSE(replay.complete());
+    replay.discard();
+    EXPECT_TRUE(replay.complete());
+    for (const auto &item : records) {
+        ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
+                                                      item.record.body.data()),
+                  RecordUse::applied);
+    }
+    EXPECT_TRUE(replay.complete());
+    EXPECT_TRUE(replay.consistent());
 }
 
 } // namespace

@@ -9,7 +9,7 @@ namespace ayni::kernel {
 
 CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
                                                    const CanonicalRevokeView &input) {
-    staged_size_ = 0;
+    staged_.reset();
     std::array<uint8_t, revoke_command_size> bytes{};
     uint32_t size = 0;
     const auto status = encode_revoke_command(input, bytes.data(), revoke_command_size, size);
@@ -19,6 +19,8 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
     return find_revoke_bytes(principal_id, command_id, {bytes.data(), size});
 }
 
+// C-WIRE-017/ADR-0031: pending exact identity precedes mapped identity and
+// floor/capacity. Lookup may refuse but cannot accept or stage a revoke.
 CommandTable::ExactLookup
 CommandTable::find_revoke_bytes(uint64_t principal_id, uint64_t command_id, ayni_bytes_v1 bytes) {
     if (principal_id == 0U || command_id == 0U) {
@@ -47,12 +49,8 @@ CommandTable::find_revoke_bytes(uint64_t principal_id, uint64_t command_id, ayni
     if (bytes.size > canonical_max_bytes_) {
         return {AYNI_CAPACITY_EXCEEDED, Lookup::unmapped, nullptr};
     }
-    std::memcpy(scratch_, bytes.data, bytes.size);
-    staged_size_ = bytes.size;
-    staged_principal_ = principal_id;
-    staged_command_ = command_id;
-    staged_digest_ = digest;
-    staged_kind_ = AYNI_INTENT_GRANT_REVOKE;
+    // ADR-0031: lookup alone accepts nothing. Only accept_revoke owns the
+    // durable-intent copy; insert_exact can consume create candidates only.
     return {AYNI_OK, Lookup::unmapped, nullptr};
 }
 
@@ -120,6 +118,8 @@ const CommandMapping *CommandTable::mapped(uint64_t principal_id, uint64_t comma
     return nullptr;
 }
 
+// Check identity, one-control-per-target and dedicated capacity before
+// copying anything; accepted controls do not consume the ordinary result window.
 ayni_status_t CommandTable::can_accept_revoke(const AcceptedRevoke &accepted) const {
     if (accepted.principal_id == 0U || accepted.command_id == 0U ||
         accepted.binding_revision == 0U || accepted.expected_revision == 0U ||
@@ -152,6 +152,8 @@ ayni_status_t CommandTable::can_accept_revoke(const AcceptedRevoke &accepted) co
     return free ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 
+// C-AUTH-024: acceptance owns its exact bytes independently of scratch or
+// storage. Duplicate accepted identity returns the original control unchanged.
 ayni_status_t CommandTable::accept_revoke(const AcceptedRevoke &accepted,
                                           const PendingRevoke *&out_pending) {
     const auto status = can_accept_revoke(accepted);
@@ -176,7 +178,7 @@ ayni_status_t CommandTable::accept_revoke(const AcceptedRevoke &accepted,
             return AYNI_INVALID_ARGUMENT;
         }
         pending_[index] = control;
-        staged_size_ = 0;
+        staged_.reset();
         out_pending = pending_ + index;
         return AYNI_OK;
     }
@@ -212,6 +214,8 @@ bool CommandTable::can_publish_accepted(const PendingRevoke &control) const {
            mapped(control.accepted.principal_id, control.accepted.command_id) == nullptr;
 }
 
+// C-AUTH-027: publication consumes an already accepted identity despite a
+// newer floor, pins its sole result and records this writer's boot/sequence.
 bool CommandTable::publish_accepted_revoke(const PendingRevoke &control, CommandMapping mapping,
                                            uint64_t boot_epoch) {
     if (!can_publish_accepted(control) || boot_epoch == 0U || mapping.commit_seq == 0U ||
@@ -237,10 +241,12 @@ bool CommandTable::publish_accepted_revoke(const PendingRevoke &control, Command
     auto *published = pending_slot(mapping.principal_id, mapping.command_id);
     published->queued_boot_epoch = boot_epoch;
     published->queued_commit_seq = mapping.commit_seq;
-    staged_size_ = 0;
+    staged_.reset();
     return true;
 }
 
+// C-AUTH-027: only this writer can acknowledge its queued sequence. Ordering
+// by sequence then target makes retirement deterministic without table-slot bias.
 const PendingRevoke *CommandTable::next_durable_pending(uint64_t boot_epoch,
                                                         uint64_t durable_seq) const {
     if (boot_epoch == 0U) {
@@ -260,6 +266,8 @@ const PendingRevoke *CommandTable::next_durable_pending(uint64_t boot_epoch,
     return first;
 }
 
+// Recovery proves identity from complete retained bytes, never by comparing
+// an abandoned boot's queued sequence with a new boot's public durable floor.
 CommandTable::Lookup CommandTable::recovered_revoke(const PendingRevoke &control,
                                                     const CommandMapping *&out_mapping) const {
     if (!owns_pending(control)) {

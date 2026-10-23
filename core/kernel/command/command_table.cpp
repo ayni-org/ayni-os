@@ -107,7 +107,7 @@ CommandTable::Lookup CommandTable::find(uint64_t principal_id, uint64_t command_
 
 CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
                                                    const CanonicalCommandView &input) {
-    staged_size_ = 0;
+    staged_.reset();
     uint32_t needed = 0;
     auto status = measure_authority_command(input, needed);
     if (status != AYNI_OK || principal_id == 0U || command_id == 0U) {
@@ -149,34 +149,30 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
         }
         return {AYNI_OK, Lookup::retried, existing};
     }
-    staged_size_ = needed;
-    staged_principal_ = principal_id;
-    staged_command_ = command_id;
-    staged_digest_ = digest;
-    staged_kind_ = AYNI_INTENT_GRANT_CREATE;
+    staged_ = StagedCreate{principal_id, command_id, digest, needed};
     return {AYNI_OK, Lookup::unmapped, nullptr};
 }
 
 bool CommandTable::insert_exact(CommandMapping mapping) {
-    if (staged_size_ == 0U || mapping.principal_id != staged_principal_ ||
-        mapping.command_id != staged_command_ || mapping.kind != AYNI_INTENT_GRANT_CREATE ||
-        staged_kind_ != AYNI_INTENT_GRANT_CREATE || !can_insert(mapping.principal_id)) {
+    if (!staged_ || mapping.principal_id != staged_->principal_id ||
+        mapping.command_id != staged_->command_id || mapping.kind != AYNI_INTENT_GRANT_CREATE ||
+        !can_insert(mapping.principal_id)) {
         return false;
     }
-    mapping.digest = staged_digest_;
-    mapping.canonical_size = staged_size_;
+    mapping.digest = staged_->digest;
+    mapping.canonical_size = staged_->size;
     mapping.retention = CommandRetention::normal;
-    if (!valid_authority_mapping(mapping, {scratch_, staged_size_})) {
+    if (!valid_authority_mapping(mapping, {scratch_, staged_->size})) {
         return false;
     }
     Row *row = row_of(mapping.principal_id);
     if (row == nullptr) {
         row = new_row(mapping.principal_id);
     }
-    if (!add(*row, mapping, {scratch_, staged_size_})) {
+    if (!add(*row, mapping, {scratch_, staged_->size})) {
         return false;
     }
-    staged_size_ = 0;
+    staged_.reset();
     return true;
 }
 
@@ -197,7 +193,7 @@ bool CommandTable::has_row(uint64_t principal_id) const {
 }
 
 bool CommandTable::insert(const CommandMapping &mapping) {
-    staged_size_ = 0;
+    staged_.reset();
     if (!can_insert(mapping.principal_id) || mapping.kind < AYNI_INTENT_GOAL_CREATE ||
         mapping.kind > AYNI_INTENT_INSTANCE_STOP ||
         pending(mapping.principal_id, mapping.command_id) != nullptr) {
@@ -240,7 +236,7 @@ bool CommandTable::restore(const CommandMapping &mapping, uint64_t floor) {
 
 CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mapping, uint64_t floor,
                                                     ayni_bytes_v1 bytes) {
-    staged_size_ = 0;
+    staged_.reset();
     if (mapping.principal_id == 0U || mapping.command_id == 0U ||
         mapping.canonical_size != bytes.size) {
         return Restore::corrupt;
@@ -309,7 +305,7 @@ void CommandTable::clear_restored() {
     for (uint32_t row = 0; row < row_count_; ++row) {
         rows_[row] = Row{};
     }
-    staged_size_ = 0;
+    staged_.reset();
     last_added_seq_ = 0;
     last_added_principal_ = 0;
     last_added_command_ = 0;

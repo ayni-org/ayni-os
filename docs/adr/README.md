@@ -46,8 +46,8 @@
 | [0032](0032-readability-checks-and-review-evidence.md) | 可读性机械检查与复查交付证据 | 已接受（R1 本地验证与独立审查通过） | §9.1、§14.1 |
 | [0033](0033-kernel-id-and-grant-record-ownership.md) | Kernel ID 与 Grant 记录基础规则归属 | 已接受（R2a1；验证见正文） | §9.1、§14.1 |
 | [0034](0034-field-values-and-scope-admission.md) | 字段值编解码与 Scope 准入结果复用 | 已接受（R2a2；验证见正文） | §9.1、§14.1 |
+| [0035](0035-grant-rules-and-bounded-chain-admission.md) | Grant、命令与 Kernel 编排的状态归属 | 实施中（R2b；验证见正文） | §9.1、§14.1 |
 
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。
-| [0035](0035-grant-rules-and-bounded-chain-admission.md) | Grant、命令与 Kernel 编排的状态归属 | 实施中（R2b1；验证见正文） | §9.1、§14.1 |
