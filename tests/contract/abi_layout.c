@@ -45,7 +45,8 @@ AYNI_LAYOUT(config_capability_capacity, offsetof(ayni_config_v1, capability_capa
 AYNI_LAYOUT(config_scope_max_bytes, offsetof(ayni_config_v1, authority_scope_max_bytes) == 92);
 AYNI_LAYOUT(config_grant_capacity, offsetof(ayni_config_v1, grant_capacity) == 96);
 AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_max) == 100);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 104);
+AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 108);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);

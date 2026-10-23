@@ -17,6 +17,7 @@
 #include "kernel/intent/work_model.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace ayni::kernel {
 
@@ -56,10 +57,14 @@ class WorkSnapshotWriter {
     enum class Section { owner_binding, instances, grants, goals, tasks, commands, done };
     // A task's records, in order.
     enum class TaskPart { task, steps, checkpoint, state };
+    // A Goal v2 and its required authority record remain adjacent across pages.
+    enum class GoalPart { goal, authority };
     // Locate, but do not consume, the next complete record across all sections.
     bool next_record(uint16_t &type, uint32_t &size);
     // Select the current Task's next step/checkpoint/state; false after the Task table.
     bool next_task_record(uint16_t &type, uint32_t &size);
+    // Select a Goal or its paired metadata without consuming a page cursor.
+    bool next_goal_record(uint16_t &type, uint32_t &size);
     // Select the least acceptance sequence after the last written command.
     bool next_command_record(uint16_t &type, uint32_t &size);
     // Encode the selected record into the already sized body buffer.
@@ -72,7 +77,8 @@ class WorkSnapshotWriter {
     uint32_t index_ = 0; // of the instance, goal or task in its table
     uint32_t depth_ = 0; // goals go by depth, so parents come first
     TaskPart task_part_ = TaskPart::task;
-    uint32_t step_ = 0; // the task's next step key
+    GoalPart goal_part_ = GoalPart::goal; // Reset when the complete pair is written.
+    uint32_t step_ = 0;                   // the task's next step key
     // Commands go by the commit_seq that accepted them: the last one
     // written, and the one the next record is of.
     uint64_t command_after_seq_ = 0;
@@ -100,7 +106,10 @@ class WorkSnapshotReader {
     durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
     durability::BatchCheck instance(const uint8_t *body, uint32_t size);
     durability::BatchCheck grant(uint16_t version, const uint8_t *body, uint32_t size);
-    durability::BatchCheck goal(const uint8_t *body, uint32_t size);
+    durability::BatchCheck goal(uint16_t version, const uint8_t *body, uint32_t size);
+    durability::BatchCheck goal_authority(const uint8_t *body, uint32_t size);
+    // Maps supported payload record kinds to their monotone section.
+    static bool record_section(uint16_t type, Section &out);
     durability::BatchCheck task(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
@@ -116,6 +125,8 @@ class WorkSnapshotReader {
     uint32_t task_index_ = work::TaskTable::no_index;
     bool checkpoint_seen_ = false;
     uint64_t last_command_seq_ = 0;
+    // Goal v2 must be followed immediately by matching metadata, even across pages.
+    std::optional<uint64_t> goal_authority_pending_;
 };
 
 } // namespace ayni::kernel

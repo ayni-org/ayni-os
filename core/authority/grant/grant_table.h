@@ -30,6 +30,23 @@ inline bool is_revocation_root(uint64_t grant_id, uint64_t revoked_by_root_id) {
     return grant_id == revoked_by_root_id;
 }
 
+// Caller-owned exclusions for one unchanged admission. Work derives current
+// references; a batch planner may also exclude slots it has already selected.
+// Indices belong to this GrantTable, never to persisted IDs (ADR-0037).
+class GrantReclaimExclusions {
+  public:
+    // Only valid Grant indices enter; all bits initially permit reclamation.
+    void add(uint32_t index) { words_[index / word_bits] |= uint64_t{1} << (index % word_bits); }
+    bool contains(uint32_t index) const {
+        return (words_[index / word_bits] & (uint64_t{1} << (index % word_bits))) != 0U;
+    }
+
+  private:
+    static constexpr uint32_t word_bits = 64; // Bits in each uint64_t word, not an ID layout.
+    static constexpr uint32_t word_count = (AYNI_GRANT_CAPACITY_MAX + word_bits - 1U) / word_bits;
+    std::array<uint64_t, word_count> words_{}; // Fixed 128-byte mask; no allocation or live cache.
+};
+
 // Borrowed creation facts. The caller owns all views until admission/install
 // finishes; record decoding supplies canonical scope separately from this view.
 struct NewGrant {
@@ -91,6 +108,10 @@ struct Grant {
     uint64_t cleanup_after_grant_id = 0; // Root's inclusive ID cursor; 0 before scanning anything.
     uint64_t cleanup_through_grant_id = 0; // Root's frozen inclusive frontier; 0 for non-roots.
     foundation::TransitionStamp cleanup_stamp{}; // Root progress pair; zero for non-roots.
+    // Volatile lower bound on reclamation after a work reference was removed.
+    // 0 means none. Reload drops/rebuilds rows; only the current writer frontier
+    // may discharge it. It is not part of Grant records (ADR-0037).
+    uint64_t reference_release_seq = 0;
 };
 
 struct GrantRecord;
@@ -153,7 +174,8 @@ class GrantTable {
     // Validate shape, parent/chain, limits and replacement without changing the table;
     // publish out only on success. Caller checks subject facts using parent_chain.
     GrantCheck check_create(const NewGrant &grant, uint32_t expected_parent_revision,
-                            GrantContext context, Admission &out) const;
+                            GrantContext context, Admission &out,
+                            const GrantReclaimExclusions &excluded = {}) const;
     // Consume that unchanged plan/input with a fresh ID/stamp; copy the byte views.
     bool insert(const NewGrant &grant, const Admission &admission, uint64_t new_grant_id,
                 foundation::TransitionStamp stamp, uint32_t &out_index);
@@ -162,6 +184,14 @@ class GrantTable {
     // Same admission, publishing the checked path only on success. Does not
     // consult work subjects; Kernel consumes these indices without walking again.
     GrantCheck check_chain(uint32_t index, GrantContext context, CheckedChain &out) const;
+
+    // Preserve an old reference until its unlink is durable. Caller completed
+    // all update checks; missing retained history needs no fence. seq is nonzero.
+    void release_reference(uint64_t grant_id, uint64_t commit_seq);
+    // Immutable schema/Scope relation only; caller separately checks subject,
+    // chosen revision and current chain usability. No catalog reinterpretation.
+    bool covers_saved_scope(uint32_t index, const catalog::CatalogId &capability, uint32_t version,
+                            ayni_bytes_v1 original_domain, ayni_bytes_v1 requested_scope) const;
 
     // Gates are accepted control state, independent of restored Grant slots.
     // Publishing pending+gate and their durable handoff is Kernel-owned.
@@ -213,7 +243,8 @@ class GrantTable {
     // Record restore outcome; rejected records never partially publish a row.
     enum class Restore { restored, corrupt, no_room };
     // Replay a creation into its recorded append/replacement slot.
-    Restore restore_create(const GrantRecord &record, foundation::TransitionStamp stamp);
+    Restore restore_create(const GrantRecord &record, foundation::TransitionStamp stamp,
+                           const GrantReclaimExclusions &excluded = {});
     // Replay the one terminal transition, checking parent/root ordering.
     Restore restore_state(const GrantStateRecord &record, foundation::TransitionStamp stamp);
     // Append one retained fact after its parent, accepting later terminal ancestors.
@@ -282,7 +313,7 @@ class GrantTable {
                              uint32_t &out_parent) const;
     bool fits_restored_fact(const GrantRecord &record) const;
     Restore replay_placement(const GrantRecord &record, foundation::TransitionStamp created,
-                             uint32_t &out_index) const;
+                             const GrantReclaimExclusions &excluded, uint32_t &out_index) const;
     void install_restored(const GrantRecord &record, const RestoredState &state, uint32_t index);
     uint8_t *domain_storage(uint32_t index) const;
     uint8_t *scope_storage(uint32_t index);

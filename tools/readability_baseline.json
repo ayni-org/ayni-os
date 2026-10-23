@@ -17,13 +17,6 @@
       "reason": "Existing debt; resolve and remove with the owning change."
     },
     {
-      "rule": "function-lines",
-      "path": "core/kernel/kernel_api.cpp",
-      "subject": "namespace / ayni_status_t validate_config ( const ayni_config_v1 * config , KernelCapacities * out_capacities , KernelLimits * out_limits )",
-      "maximum": 170,
-      "reason": "Existing debt; resolve and remove with the owning change."
-    },
-    {
       "rule": "public-code-comment",
       "path": "include/ayni/ayni.h",
       "subject": "AYNI_BUDGET_EXHAUSTED",

@@ -1,5 +1,6 @@
 // ADR-0027: public behavior across retries, bounded maintenance and migration.
 #include "durability/batch/batch_codec.h"
+#include "kernel/storage/storage_budget.h"
 #include "kernel_node.h"
 #include "work_node.h"
 
@@ -114,8 +115,12 @@ TEST(StorageRecovery, retry_wait_is_readable_and_preserves_command_lookup_before
 // and keeps accepted command identity across a new Kernel instance.
 TEST(StorageRecovery, automatic_snapshot_rotates_log_and_keeps_current_command_window) {
     WorkNode work;
-    work.node().config().storage_buffer_bytes = 0;
-    work.node().config().storage_log_max_bytes = 32768;
+    // ADR-0037: new metadata changes the minimum batch budget; keep this
+    // compaction fixture at three batches and a valid minimum log, not a stale total.
+    auto &config = work.node().config();
+    config.storage_buffer_bytes = 3U * smallest_storage_buffer(config);
+    config.storage_log_max_bytes =
+        static_cast<uint32_t>(ayni::kernel::StorageBudget::log_max_min(capacities_of(config)));
     work.run();
     uint64_t last_goal = 0;
     uint64_t last_command = 0;

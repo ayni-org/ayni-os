@@ -177,8 +177,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     static_cast<void>(model.ids.allocate(goal_id)); // available() above
     const foundation::TransitionStamp stamp = model.transitions.next();
     uint32_t index = 0;
-    work::WorkTables tables = model.tables();
-    if (!work::insert_goal(tables, goal, goal_id, stamp, index)) {
+    if (!model.insert_goal(goal, goal_id, stamp, index)) {
         // admit() found room and nothing could run since. The id and stamp
         // stay used up, as ayni.h says for this defect.
         return AYNI_INTERNAL;

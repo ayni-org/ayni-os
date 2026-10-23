@@ -65,7 +65,7 @@ bool read_goal_authority_record(const uint8_t *body, uint32_t size, GoalAuthorit
     record.stamp = {reader.u64(), reader.u64()};
     record.phase = static_cast<GoalAuthorityPhase>(reader.u32());
     record.count = reader.u32();
-    if (record.count > goal_requirement_capacity_max) {
+    if (record.count > AYNI_GOAL_REQUIREMENT_CAPACITY_MAX) {
         return false;
     }
     for (uint32_t index = 0; index < record.count; ++index) {

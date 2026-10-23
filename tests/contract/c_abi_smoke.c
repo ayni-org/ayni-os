@@ -31,7 +31,8 @@ typedef union {
     void (*fn)(void);
 } max_aligned_t;
 
-static max_aligned_t kernel_memory[512];
+/* The bounded Goal metadata and its record reserve are included since 0.20. */
+static max_aligned_t kernel_memory[1024];
 
 static int expect(int condition, const char *what) {
     if (!condition) {
@@ -191,6 +192,7 @@ int main(void) {
     config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
     config.grant_capacity = 1u;
     config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
+    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
     config.storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
     config.storage_log_max_bytes = AYNI_STORAGE_LOG_MAX_BYTES_DEFAULT;
     host.struct_size = (uint32_t)sizeof host;

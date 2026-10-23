@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 19u
+#define AYNI_ABI_MINOR 20u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -151,6 +151,9 @@ typedef struct ayni_config_v1 {
      * counts delegation edges, with root depth 0. Explicit zero is invalid. */
     uint32_t grant_capacity;
     uint32_t grant_delegation_depth_max;
+    /* Since 0.20. Requirements per Goal: 1..16; an omitted trailing field uses 4.
+     * Each original domain and Scope separately uses authority_scope_max_bytes. */
+    uint32_t goal_requirement_capacity;
 } ayni_config_v1;
 
 /* Since 0.17. Limits apply to complete registered domains and scopes. */
@@ -160,6 +163,10 @@ typedef struct ayni_config_v1 {
 #define AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT 4u
 #define AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN 1u
 #define AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX 16u
+
+/* Since 0.20. Bounded Goal authority metadata; counts of requirements. */
+#define AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT 4u
+#define AYNI_GOAL_REQUIREMENT_CAPACITY_MAX 16u
 #define AYNI_CAPABILITY_CAPACITY_DEFAULT 16u
 #define AYNI_CAPABILITY_CAPACITY_MAX 256u
 #define AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT 256u

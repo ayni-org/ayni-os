@@ -157,7 +157,7 @@ TEST(GoalAuthority, malformed_identity_stamp_capability_or_reference_is_refused)
 // ADR-0037 decision 2: the maximum is inclusive and every requirement is checked.
 TEST(GoalAuthority, the_last_requirement_at_the_absolute_limit_is_validated) {
     Input input;
-    input.record.count = goal_requirement_capacity_max;
+    input.record.count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
     for (auto &requirement : input.record.requirements) {
         requirement = input.record.requirements[0];
     }
@@ -166,10 +166,10 @@ TEST(GoalAuthority, the_last_requirement_at_the_absolute_limit_is_validated) {
     GoalAuthorityRecord decoded{};
     ASSERT_TRUE(
         read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
-    EXPECT_EQ(decoded.count, goal_requirement_capacity_max);
+    EXPECT_EQ(decoded.count, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
     input.record.requirements.back().capability_version = 0;
     EXPECT_FALSE(valid_goal_authority_record(input.record));
-    input.record.count = goal_requirement_capacity_max + 1U;
+    input.record.count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 1U;
     EXPECT_FALSE(valid_goal_authority_record(input.record));
 }
 
@@ -215,7 +215,7 @@ TEST(GoalAuthorityRecord, every_truncation_trailing_byte_and_bad_count_preserves
     bytes.pop_back();
     // White-box: final u32 of the fixed header is the declared count.
     ayni::foundation::store_le32(bytes.data() + goal_authority_record_fixed_size - sizeof(uint32_t),
-                                 goal_requirement_capacity_max + 1U);
+                                 AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 1U);
     EXPECT_FALSE(
         read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
     EXPECT_EQ(out.goal_id, another_goal_id);

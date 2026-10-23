@@ -49,7 +49,11 @@ struct Record {
 };
 
 StoredBatch encode(const BatchIdentity &identity, const std::vector<Record> &records) {
-    std::vector<uint8_t> bytes(4096);
+    std::size_t body_bytes = 0;
+    for (const auto &record : records) {
+        body_bytes += record.body.size();
+    }
+    std::vector<uint8_t> bytes(ayni::durability::batch_size(body_bytes, records.size()));
     BatchWriter writer(bytes.data(), bytes.size(), identity);
     for (const Record &record : records) {
         EXPECT_TRUE(writer.add_record(record.header, record.body.data()));

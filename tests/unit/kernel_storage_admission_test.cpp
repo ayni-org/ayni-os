@@ -141,8 +141,12 @@ bool holds_while_compaction_waits(WorkNode &work) {
 
 TEST(StorageAdmission, a_pending_compaction_holds_new_work_until_the_journal_drains) {
     WorkNode work;
-    work.node().config().storage_buffer_bytes = 0;
-    work.node().config().storage_log_max_bytes = 32768;
+    // ADR-0037: new metadata changes the minimum batch budget; keep this
+    // compaction fixture at three batches and a valid minimum log, not a stale total.
+    auto &config = work.node().config();
+    config.storage_buffer_bytes = 3U * smallest_storage_buffer(config);
+    config.storage_log_max_bytes =
+        static_cast<uint32_t>(ayni::kernel::StorageBudget::log_max_min(capacities_of(config)));
     work.run();
     for (int index = 0; index < 1000; ++index) {
         const auto created = create(work, folder(work), 0);

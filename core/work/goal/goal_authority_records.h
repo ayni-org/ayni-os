@@ -10,6 +10,9 @@
 
 namespace ayni::work {
 
+// E updates one Goal ceiling/reference set per transition; F propagation uses
+// separate bounded transitions. records.md type 17/v1 has no multi-Goal batch.
+constexpr uint32_t goal_authority_records_per_transition = 1;
 constexpr uint16_t goal_authority_record_type = 17;
 constexpr uint16_t goal_authority_record_version = 1;
 // ID, transition, commit, phase and count; each requirement adds version,

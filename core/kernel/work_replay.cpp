@@ -5,6 +5,7 @@
 #include "foundation/kernel_id.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
+#include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_records.h"
 
@@ -59,6 +60,9 @@ bool WorkReplay::binding_matches() const {
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                       WorkRecordContext context) {
     const bool authority_record =
+        header.type == work::goal_authority_record_type ||
+        (header.type == work::goal_record_type &&
+         header.version >= work::goal_with_authority_record_version) ||
         header.type == authority::owner_binding_record_type ||
         header.type == authority::grant_record_type ||
         header.type == authority::grant_state_record_type ||
@@ -97,9 +101,16 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                        header.version == authority::grant_revocation_progress_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
+    case work::goal_record_type:
+        return header.version == work::goal_record_version ||
+                       header.version == work::goal_with_authority_record_version
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
+    case work::goal_authority_record_type:
+        return header.version == work::goal_authority_record_version ? RecordUse::applied
+                                                                     : RecordUse::unknown;
     case authority::owner_binding_record_type:
     case work::instance_record_type:
-    case work::goal_record_type:
     case work::goal_state_record_type:
     case work::task_record_type:
     case work::task_state_record_type:
@@ -141,7 +152,9 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     case work::instance_record_type:
         return restore_instance(body, size, stamp);
     case work::goal_record_type:
-        return restore_goal(body, size, stamp);
+        return restore_goal(header.version, body, size, stamp);
+    case work::goal_authority_record_type:
+        return restore_goal_authority(body, size, stamp);
     case work::goal_state_record_type:
         return restore_goal_state(body, size, stamp);
     case work::task_record_type:
@@ -162,6 +175,8 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
 static_assert(authority::owner_binding_record_version == 1U &&
                   work::instance_record_version == 1U && work::goal_record_version == 1U &&
                   work::goal_state_record_version == 1U && work::task_record_version == 1U &&
+                  work::goal_with_authority_record_version == 2U &&
+                  work::goal_authority_record_version == 1U &&
                   work::task_state_record_version == 1U && work::task_steps_record_version == 1U &&
                   work::task_checkpoint_record_version == 1U && command_record_version == 1U &&
                   authority::grant_record_version == 1U &&
@@ -193,11 +208,12 @@ RecordUse WorkReplay::restore_instance(const uint8_t *body, uint32_t size,
                                         record.lifecycle, stamp));
 }
 
-RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal(uint16_t version, const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::GoalRecord record{};
     // A goal is created for an instance that has started.
-    if (pairing_.goal.has_value() || !work::read_goal_record(body, size, record) ||
+    if (pairing_.goal.has_value() || pairing_.goal_authority.has_value() ||
+        !work::read_goal_record(body, size, record, version) ||
         model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return RecordUse::corrupt;
     }
@@ -216,7 +232,11 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     if (model_.goals.at(index).depth != record.depth) {
         return RecordUse::corrupt;
     }
+    model_.clear_goal_authority(index, record.replaced_goal_id, stamp.commit_seq);
     pairing_.goal = record.goal_id;
+    if (record.authority_required) {
+        pairing_.goal_authority = record.goal_id;
+    }
     return RecordUse::applied;
 }
 
@@ -232,6 +252,38 @@ RecordUse WorkReplay::restore_goal_state(const uint8_t *body, uint32_t size,
         pairing_.goal.reset();
     }
     return use_of(model_.goals.restore_state(index, record.state, stamp));
+}
+
+// A create cannot lose its explicit ceiling or borrow another Goal's metadata.
+// Existing metadata may advance without changing its immutable ceiling; legacy
+// confirmation remains closed until its own command/pairing is implemented.
+RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
+                                             foundation::TransitionStamp stamp) {
+    work::GoalAuthorityRecord record{};
+    uint32_t index = 0;
+    if (pairing_.goal_authority_seq == stamp.commit_seq ||
+        !work::read_goal_authority_record(body, size, record) ||
+        !model_.goals.find(record.goal_id, index) || record.stamp.commit_seq != stamp.commit_seq ||
+        record.stamp.transition_id != stamp.transition_id ||
+        model_.goals.at(index).commit_seq != stamp.commit_seq || pairing_.goal.has_value()) {
+        return RecordUse::corrupt;
+    }
+    if (pairing_.goal_authority ? *pairing_.goal_authority != record.goal_id
+                                : !model_.goal_authority.contains(index, record.goal_id)) {
+        return RecordUse::corrupt;
+    }
+    work::GoalAuthorityRecord previous{};
+    const bool replacing = model_.goal_authority.read(index, record.goal_id, previous);
+    const auto status = model_.goal_authority.restore_validated(index, record);
+    if (status != AYNI_OK) {
+        return status == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
+    }
+    if (replacing) {
+        model_.release_goal_references(previous, stamp.commit_seq);
+    }
+    pairing_.goal_authority.reset();
+    pairing_.goal_authority_seq = stamp.commit_seq;
+    return RecordUse::applied;
 }
 
 RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
@@ -314,7 +366,8 @@ RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
         model_.agents.find_instance(record.grant.subject_instance_id) == nullptr) {
         return RecordUse::corrupt;
     }
-    const auto restored = model_.grants.restore_create(record, stamp);
+    const auto restored = model_.grants.restore_create(
+        record, stamp, model_.grant_reclaim_exclusions(stamp.commit_seq - 1U));
     if (restored == authority::GrantTable::Restore::restored) {
         pairing_.authority = {AuthorityPairKind::create, record.grant_id};
     }
@@ -447,6 +500,53 @@ bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_byte
            authority_command_scope_matches(request, domain, scope);
 }
 
+// Selected revisions describe past admission. A later terminal Grant revision
+// is legal; current consumption is a separate check. Only durably terminal work
+// may keep history whose Grant row has already been reclaimed (ADR-0037).
+bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const {
+    const auto &goal = model_.goals.at(goal_index);
+    if (!model_.goal_authority.contains(goal_index, goal.goal_id)) {
+        return true; // Legacy absence remains held at finish; it never declares zero needs.
+    }
+    const auto record = model_.goal_authority.at(goal_index);
+    const bool live = work::GoalTable::is_live(goal.lifecycle);
+    if (foundation::id_boot_epoch(record.goal_id) > boot_epoch_limit ||
+        (live && ((record.phase == work::GoalAuthorityPhase::proposed) !=
+                      (goal.lifecycle == AYNI_GOAL_PROPOSED) ||
+                  (record.phase == work::GoalAuthorityPhase::paused &&
+                   goal.lifecycle != AYNI_GOAL_PAUSED)))) {
+        return false;
+    }
+    for (uint32_t index = 0; index < record.count; ++index) {
+        const auto &requirement = record.requirements[index];
+        const auto &reference = requirement.dependency;
+        if (reference.grant_id == 0U) {
+            continue; // The shared validator permits missing identities only in PROPOSED.
+        }
+        if (foundation::id_boot_epoch(reference.grant_id) > boot_epoch_limit ||
+            reference.revision != authority::grant_active_revision) {
+            return false;
+        }
+        uint32_t grant_index = 0;
+        if (!model_.grants.find(reference.grant_id, grant_index)) {
+            if (live) {
+                return false;
+            }
+            continue;
+        }
+        const auto &grant = model_.grants.at(grant_index);
+        if (grant.subject_instance_id != goal.owner_instance_id ||
+            grant.created_stamp.commit_seq > record.stamp.commit_seq ||
+            grant.created_stamp.transition_id > record.stamp.transition_id ||
+            !model_.grants.covers_saved_scope(grant_index, requirement.capability_id,
+                                              requirement.capability_version,
+                                              requirement.source_domain, requirement.scope)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Ending a goal ends its descendants and every task it reaches, and
 // stopping an instance ends every goal it owns, in the same transition
 // (ADR-0018, ADR-0025 decision 5); so no stored transition leaves a live
@@ -472,6 +572,9 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     }
     for (uint32_t index = 0; index < model_.goals.size(); ++index) {
         const work::Goal &goal = model_.goals.at(index);
+        if (!goal_authority_consistent(index, boot_epoch_limit)) {
+            return false;
+        }
         if (!work::GoalTable::is_live(goal.lifecycle)) {
             continue;
         }
@@ -589,6 +692,7 @@ void WorkReplay::discard() {
     model_.principals.drop_restored_binding();
     model_.agents.drop_restored();
     model_.goals.clear();
+    model_.goal_authority.clear_all();
     model_.tasks.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();

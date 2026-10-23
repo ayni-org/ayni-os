@@ -20,8 +20,8 @@ namespace ayni::kernel {
 // The largest batch a transition writes under these capacities: every
 // instance, goal and task changed, one goal and one task created with the
 // largest parameters and ids, the most steps one decision adds, the largest
-// checkpoint and one command. The capacities are within the ayni.h maxima,
-// so it stays below AYNI_STORAGE_BUFFER_BYTES_MAX.
+// checkpoint, one Goal authority record and one command. The capacities are within the ayni.h
+// maxima, so it stays below AYNI_STORAGE_BUFFER_BYTES_MAX.
 uint32_t transition_batch_max(const KernelCapacities &capacities);
 // The smallest storage buffer that holds such a batch in the journal ring.
 uint32_t storage_buffer_min(const KernelCapacities &capacities);
