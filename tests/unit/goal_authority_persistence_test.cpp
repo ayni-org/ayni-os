@@ -2,6 +2,7 @@
 // attach validated facts explicitly (White-box), then exercise the real journal,
 // snapshot, boot and ordinary Grant/Goal APIs. No fixture bypasses the reader.
 #include "authority/grant/grant_records.h"
+#include "authority/scope/scope.h"
 #include "durability/batch/batch_codec.h"
 #include "kernel/work_replay.h"
 #include "kernel/work_snapshot.h"
@@ -14,7 +15,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace {
@@ -67,8 +70,6 @@ class Fixture {
         work.node().config().command_capacity = 8;
     }
     void run() {
-        work.node().create();
-        ASSERT_NE(work.kernel(), nullptr);
         ayni_authority_value_set_v1 domain{};
         domain.struct_size = sizeof(domain);
         domain.kind = AYNI_AUTHORITY_I64;
@@ -76,8 +77,31 @@ class Fixture {
         domain.values.integer = {0, 100};
         const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
                                                  domain};
+        start_with_fields(&field, 1);
+    }
+    void run_with_named_targets() {
+        std::array<std::string, AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX> names;
+        std::array<ayni_string_v1, AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX> members{};
+        for (uint32_t index = 0; index < members.size(); ++index) {
+            names[index] = std::string(AYNI_CATALOG_ID_MAX_BYTES - 1U, 'x') + std::to_string(index);
+            members[index] = text(names[index].c_str());
+        }
+        ayni_authority_value_set_v1 domain{};
+        domain.struct_size = sizeof(domain);
+        domain.kind = AYNI_AUTHORITY_IDENTIFIER;
+        domain.values.tokens.member_count = static_cast<uint32_t>(members.size());
+        domain.values.tokens.members = members.data();
+        const ayni_authority_field_desc_v1 fields[] = {
+            {sizeof(ayni_authority_field_desc_v1), 1, AYNI_AUTHORITY_PARAMETER, 0, domain},
+            {sizeof(ayni_authority_field_desc_v1), 2, AYNI_AUTHORITY_PARAMETER, 0, domain},
+        };
+        start_with_fields(fields, 2);
+    }
+    void start_with_fields(const ayni_authority_field_desc_v1 *fields, uint32_t count) {
+        work.node().create();
+        ASSERT_NE(work.kernel(), nullptr);
         const ayni_capability_desc_v1 capability{
-            sizeof(capability), 1, text("device.move"), 1, 0, &field};
+            sizeof(capability), 1, text("device.move"), count, 0, fields};
         ASSERT_EQ(ayni_register_capability(work.kernel(), &capability), AYNI_OK);
         ASSERT_EQ(ayni_start(work.kernel()), AYNI_OK);
         work.node().recover();
@@ -86,15 +110,13 @@ class Fixture {
         }
     }
     Submitted create_grant() {
-        const ayni_grant_create_v1 body{sizeof(body),
-                                        1,
-                                        text("device.move"),
-                                        work.instance(agent_a),
-                                        0,
-                                        AYNI_GRANT_CURRENT_BOOT,
-                                        0,
-                                        duration_us,
-                                        {sizeof(ayni_scope_v1), 0, nullptr}};
+        const ayni_scope_v1 full{sizeof(ayni_scope_v1), 0, nullptr};
+        return create_grant_for(work.instance(agent_a), full);
+    }
+    Submitted create_grant_for(uint64_t subject, const ayni_scope_v1 &scope) {
+        const ayni_grant_create_v1 body{
+            sizeof(body), 1,    text("device.move"), subject, 0, AYNI_GRANT_CURRENT_BOOT, 0,
+            duration_us,  scope};
         auto intent = work.intent(AYNI_INTENT_GRANT_CREATE, &body);
         intent.command_id = next_command_++;
         return work.submit(intent);
@@ -263,7 +285,7 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
     const auto goal = source.goal();
     source.attach(goal);
     const auto image = source.work.node().sim().durable_storage();
-    for (unsigned fault = 0; fault < 3; ++fault) {
+    for (unsigned fault = 0; fault < 5; ++fault) {
         SCOPED_TRACE(fault);
         Fixture restored;
         auto changed = image;
@@ -279,11 +301,21 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
         } else if (fault == 1U) {
             const auto duplicate = record;
             batch.records.push_back(duplicate);
+        } else if (fault == 3U) {
+            for (auto &entry : batch.records) {
+                if (entry.header.type == goal_record_type) {
+                    entry.header.version = goal_record_version;
+                }
+            }
         } else {
             GoalAuthorityRecord decoded{};
             ASSERT_TRUE(
                 read_goal_authority_record(record.body.data(), record.header.length, decoded));
-            ++decoded.stamp.commit_seq;
+            if (fault == 4U) {
+                ++decoded.stamp.transition_id;
+            } else {
+                ++decoded.stamp.commit_seq;
+            }
             write_goal_authority_record(decoded, record.body.data());
         }
         changed.log.back() = encode(batch);
@@ -517,5 +549,279 @@ TEST(GoalAuthorityPersistence,
     EXPECT_EQ(model.grants.restore_create(
                   record, {model.transitions.latest().transition_id + 1U, seq + 1U}),
               ayni::authority::GrantTable::Restore::corrupt);
+}
+
+// ADR-0037 decision 8: a legal maximum requirement count with large canonical
+// domains must fit the admitted buffer, even when no other batch records use
+// their conservative reserves. This exercises the real writer, not a formula.
+TEST(GoalAuthorityPersistence, largest_requirement_count_and_large_regions_fit_the_reserved_batch) {
+    Fixture source;
+    source.work.node().config().authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX;
+    source.work.node().config().goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    source.work.node().config().storage_buffer_bytes = 0;
+    source.run_with_named_targets();
+    const auto grant = source.create_grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    const auto goal = source.goal();
+    source.attach(goal, grant.result.object.id, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
+    ASSERT_FALSE(::testing::Test::HasFailure());
+    const auto batch = decode(source.work.node().sim().log().back());
+    EXPECT_EQ(batch.records.back().header.type, goal_authority_record_type);
+}
+
+// ADR-0037 decision 8: one transition changes only one existing Goal authority
+// set. Two independently valid records still cannot consume one record's budget.
+TEST(GoalAuthorityPersistence,
+     a_second_existing_goal_authority_update_in_the_same_batch_is_corrupt) {
+    Fixture source;
+    source.run();
+    const auto first = source.goal();
+    source.attach(first);
+    const auto second = source.goal();
+    source.attach(second);
+    auto &model = source.work.kernel()->work;
+    const auto stamp = model.transitions.next();
+    const BatchIdentity batch{1, stamp.commit_seq, stamp.transition_id};
+    WorkReplay replay(model);
+    for (const auto id : {first, second}) {
+        // White-box: a valid same-batch ordinary pause precedes each new metadata set.
+        auto goal = model.goals.at(source.goal_index(id));
+        goal.lifecycle = AYNI_GOAL_PAUSED;
+        ++goal.revision;
+        std::array<uint8_t, goal_state_record_size> body{};
+        write_goal_state_record(goal, body.data());
+        ASSERT_EQ(WorkReplay::on_record(&replay, batch,
+                                        {goal_state_record_type, goal_state_record_version,
+                                         record_required, body.size()},
+                                        body.data()),
+                  RecordUse::applied);
+    }
+    for (const auto id : {first, second}) {
+        auto record = source.metadata(id);
+        record.stamp = stamp;
+        std::vector<uint8_t> bytes(goal_authority_record_size(record));
+        write_goal_authority_record(record, bytes.data());
+        EXPECT_EQ(WorkReplay::on_record(&replay, batch,
+                                        {goal_authority_record_type, goal_authority_record_version,
+                                         record_required, static_cast<uint32_t>(bytes.size())},
+                                        bytes.data()),
+                  id == first ? RecordUse::applied : RecordUse::corrupt);
+    }
+    source.work.kernel()->replay.discard_for_reload();
+}
+
+// ADR-0037 decisions 3/8: a restored update can change selected references,
+// never the original ceiling or the one-way completion of a proposal.
+TEST(GoalAuthorityPersistence,
+     restored_updates_keep_the_original_ceiling_and_never_return_to_proposed) {
+    Fixture source;
+    source.run();
+    const auto grant = source.create_grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    const auto goal = source.goal();
+    source.attach(goal, grant.result.object.id);
+    const auto original = source.metadata(goal, grant.result.object.id);
+    auto &table = source.work.kernel()->work.goal_authority;
+    for (unsigned change = 0; change < 4; ++change) {
+        SCOPED_TRACE(change);
+        auto next = original;
+        ++next.stamp.commit_seq;
+        ++next.stamp.transition_id;
+        if (change == 0U) {
+            ++next.requirements[0].capability_version;
+        } else if (change == 1U) {
+            next.phase = GoalAuthorityPhase::proposed;
+            next.requirements[0].dependency = {};
+        } else if (change == 2U) {
+            next.stamp.commit_seq = original.stamp.commit_seq;
+        } else {
+            next.stamp.transition_id = original.stamp.transition_id;
+        }
+        ASSERT_TRUE(valid_goal_authority_record(next));
+        EXPECT_EQ(table.restore_validated(source.goal_index(goal), next), AYNI_INVALID_ARGUMENT);
+        const auto kept = source.saved(goal);
+        EXPECT_EQ(kept.stamp.commit_seq, original.stamp.commit_seq);
+        EXPECT_EQ(kept.phase, original.phase);
+        EXPECT_EQ(kept.requirements[0].capability_version,
+                  original.requirements[0].capability_version);
+    }
+}
+
+// ADR-0037 decision 8: snapshot boundary validity cannot substitute for the
+// owning Goal's narrower stamp boundary or the adjacent partner's identity.
+TEST(GoalAuthorityPersistence,
+     snapshot_metadata_cannot_borrow_a_sibling_or_outlive_its_goal_stamp) {
+    Fixture source;
+    source.run();
+    const auto first = source.goal();
+    source.attach(first);
+    const auto second = source.goal();
+    source.attach(second);
+    const auto image = snapshot(source);
+    for (unsigned fault = 0; fault < 2; ++fault) {
+        auto changed = image;
+        std::vector<Record *> metadata;
+        for (auto &record : changed.records) {
+            if (record.header.type == goal_authority_record_type) {
+                metadata.push_back(&record);
+            }
+        }
+        ASSERT_EQ(metadata.size(), 2U);
+        if (fault == 0U) {
+            auto decoded = source.saved(first);
+            decoded.stamp.commit_seq = source.saved(second).stamp.commit_seq;
+            write_goal_authority_record(decoded, metadata[0]->body.data());
+        } else {
+            // Make the earlier Goal legacy, so the wrong sibling has no existing
+            // table entry whose monotone stamp check could hide the pairing bug.
+            for (auto &record : changed.records) {
+                if (record.header.type == goal_record_type) {
+                    record.header.version = goal_record_version;
+                    break;
+                }
+            }
+            auto decoded = source.saved(first);
+            write_goal_authority_record(decoded, metadata[1]->body.data());
+            changed.records.erase(std::find_if(
+                changed.records.begin(), changed.records.end(), [](const auto &record) {
+                    return record.header.type == goal_authority_record_type;
+                }));
+            --changed.metadata.record_count;
+        }
+        Fixture target;
+        target.run();
+        EXPECT_EQ(import_snapshot(target, changed), BatchCheck::corrupt);
+        target.work.kernel()->replay.discard_for_reload();
+    }
+}
+
+// C-AUTH-023 / ADR-0037 decision 8: a well-formed saved reference cannot transfer
+// a Grant from the other Agent instance, even with the same schema and Scope.
+TEST(GoalAuthorityPersistence, a_grant_for_another_agent_cannot_authorize_the_restored_goal) {
+    Fixture source;
+    source.run();
+    const ayni_scope_v1 scope{sizeof(ayni_scope_v1), 0, nullptr};
+    const auto grant = source.create_grant_for(source.work.instance(agent_b), scope);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    source.attach(source.goal(), grant.result.object.id);
+    Fixture target;
+    target.run();
+    EXPECT_EQ(import_snapshot(target, snapshot(source)), BatchCheck::corrupt);
+    target.work.kernel()->replay.discard_for_reload();
+}
+
+// ADR-0037 decision 8: syntactically valid wider needs are still not covered by
+// a narrower Grant; checking only Scope parse success would silently expand it.
+TEST(GoalAuthorityPersistence, a_narrow_grant_does_not_cover_a_wider_saved_requirement) {
+    Fixture source;
+    source.run();
+    ayni_authority_value_set_v1 value{};
+    value.struct_size = sizeof(value);
+    value.kind = AYNI_AUTHORITY_I64;
+    value.unit = text("count");
+    value.values.integer = {10, 20};
+    const ayni_scope_field_v1 field{sizeof(field), 1, value};
+    const ayni_scope_v1 narrow{sizeof(ayni_scope_v1), 1, &field};
+    const auto grant = source.create_grant_for(source.work.instance(agent_a), narrow);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    source.attach(source.goal(), grant.result.object.id);
+    auto image = snapshot(source);
+    auto &record = authority_record(image.records);
+    GoalAuthorityRecord decoded{};
+    ASSERT_TRUE(read_goal_authority_record(record.body.data(), record.header.length, decoded));
+    const ayni_scope_v1 full{sizeof(ayni_scope_v1), 0, nullptr};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::authority::normalize_scope(decoded.requirements[0].source_domain, full, nullptr,
+                                               0, size),
+              AYNI_BUFFER_TOO_SMALL);
+    std::vector<uint8_t> bytes(size);
+    ASSERT_EQ(ayni::authority::normalize_scope(decoded.requirements[0].source_domain, full,
+                                               bytes.data(), size, size),
+              AYNI_OK);
+    decoded.requirements[0].scope = {bytes.data(), size};
+    ASSERT_TRUE(valid_goal_authority_record(decoded));
+    ASSERT_EQ(goal_authority_record_size(decoded), record.body.size());
+    write_goal_authority_record(decoded, record.body.data());
+    Fixture target;
+    target.run();
+    EXPECT_EQ(import_snapshot(target, image), BatchCheck::corrupt);
+    target.work.kernel()->replay.discard_for_reload();
+}
+
+// ADR-0037 decisions 9/10: FAILED and both UNKNOWN outcomes choose durable
+// history. Discard clears a later in-memory unlink; a reused commit sequence
+// cannot release the old live Goal's reconstructed dependency.
+TEST(GoalAuthorityPersistence,
+     failed_or_unknown_unlinks_reload_the_durable_references_before_reclaim) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    for (const auto fault :
+         {StorageFault::fail, StorageFault::unknown_lost, StorageFault::unknown_persisted}) {
+        SCOPED_TRACE(static_cast<int>(fault));
+        Fixture source;
+        source.work.node().config().goal_capacity = 1;
+        source.run();
+        const auto grant = source.create_grant();
+        ASSERT_EQ(grant.status, AYNI_OK);
+        source.work.node().recover();
+        const auto goal = source.goal();
+        source.attach(goal, grant.result.object.id);
+        source.expire();
+        const auto old_boot = source.work.node().info().boot_epoch;
+        source.work.node().sim().inject_fault(StoragePort::append, fault);
+        source.work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+        source.work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+        ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
+        const auto replacement =
+            source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "folder"));
+        ASSERT_EQ(replacement.status, AYNI_OK);
+        // White-box precondition: the old row disappeared before its release
+        // was confirmed, and the Grant owns that unconfirmed release fence.
+        ASSERT_FALSE(source.work.kernel()->work.goal_authority.contains(0, goal));
+        ASSERT_EQ(source.work.kernel()->work.grants.at(0).reference_release_seq,
+                  replacement.result.commit_seq);
+        for (unsigned round = 0; round < 5000; ++round) {
+            const auto report = source.work.node().step(1);
+            source.work.node().sim().complete_storage();
+            if (source.work.node().info().boot_epoch > old_boot &&
+                source.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                source.work.kernel()->log.idle()) {
+                break;
+            }
+            if (report.more_ready == 0U && source.work.node().sim().pending_storage() == 0U &&
+                report.next_deadline_us != UINT64_MAX &&
+                report.next_deadline_us > source.work.node().sim().now_us()) {
+                source.work.node().sim().advance_us(report.next_deadline_us -
+                                                    source.work.node().sim().now_us());
+            }
+        }
+        ASSERT_GT(source.work.node().info().boot_epoch, old_boot);
+        ASSERT_EQ(source.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        source.work.reopen_session();
+        if (fault != StorageFault::unknown_persisted) {
+            const auto independent = source.work.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_b);
+            ASSERT_EQ(independent.status, AYNI_OK);
+            // The recovered startup branch already reused the abandoned seq;
+            // advancing the current writer beyond it still cannot release a live ref.
+            EXPECT_GT(independent.result.commit_seq, replacement.result.commit_seq);
+            const auto &log = source.work.node().sim().log();
+            EXPECT_NE(std::find_if(log.begin(), log.end(),
+                                   [&](const auto &batch) {
+                                       return batch.commit_seq == replacement.result.commit_seq;
+                                   }),
+                      log.end());
+            source.work.node().recover();
+            EXPECT_EQ(source.saved(goal).requirements[0].dependency.grant_id,
+                      grant.result.object.id);
+            EXPECT_EQ(source.create_grant().status, AYNI_CAPACITY_EXCEEDED);
+        } else {
+            EXPECT_EQ(source.work.goal(goal).lifecycle, AYNI_GOAL_CANCELLED);
+            EXPECT_EQ(source.create_grant().status, AYNI_OK);
+        }
+    }
 }
 } // namespace

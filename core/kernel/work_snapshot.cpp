@@ -15,8 +15,8 @@
 namespace ayni::kernel {
 namespace {
 
-// Ordinary snapshots remain v1; Grant snapshots use v2, while command
-// mappings retain their own v1/v2/v3 syntax (contracts/storage/records.md).
+// Legacy Goal snapshots remain v1; Goals with authority and Grant snapshots
+// use v2. Commands retain v1/v2/v3 syntax (contracts/storage/records.md).
 constexpr uint16_t snapshot_record_version = 1;
 constexpr uint32_t record_prefix = static_cast<uint32_t>(durability::record_header_size);
 constexpr uint32_t id_max = catalog::CatalogId::max_size;
