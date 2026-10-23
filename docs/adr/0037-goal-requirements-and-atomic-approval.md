@@ -32,4 +32,4 @@ Grant 已有有界目录、Scope、持久身份与撤销机制，Goal 尚未保�
 
 ## 验证
 
-E1 本地验证、独立变异与审查完成后补记；E 全部 PR 合并后统一测量覆盖率。
+E1（[#42](https://github.com/RobotSe7en/ayni/pull/42)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 20 项，首轮检出 15 项，5 项补测后全部检出；独立审查无未关闭发现。默认/最小工作配置内存需求未变，仍为 110,800/31,624 B，对齐 8 B。未执行远端 CI、硬件或持久集成验证；E 全部 PR 合并后统一测量覆盖率。
