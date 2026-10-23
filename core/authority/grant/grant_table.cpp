@@ -8,6 +8,10 @@
 #include <limits>
 
 namespace ayni::authority {
+
+using foundation::id_boot_epoch;
+using foundation::is_kernel_id;
+
 namespace {
 
 constexpr uint32_t known_flags =
@@ -30,13 +34,9 @@ bool same_stamp(foundation::TransitionStamp left, foundation::TransitionStamp ri
     return left.transition_id == right.transition_id && left.commit_seq == right.commit_seq;
 }
 
-bool known_id(uint64_t id) {
-    return (id >> 32U) != 0U && static_cast<uint32_t>(id) != 0U;
-}
-
 bool old_boot(const Grant &grant, uint64_t boot_epoch) {
     return grant.lifetime == AYNI_GRANT_CURRENT_BOOT &&
-           ((grant.grant_id >> 32U) != boot_epoch || grant.deadline_us == 0U);
+           (id_boot_epoch(grant.grant_id) != boot_epoch || grant.deadline_us == 0U);
 }
 
 bool catalog_hold(ayni_reason_t reason) {
@@ -61,8 +61,8 @@ bool lifecycle_state(const GrantRecord &record, foundation::TransitionStamp crea
         return false;
     }
     return lifecycle == AYNI_GRANT_ACTIVE
-               ? revision == 1U && same_stamp(created, stamp)
-               : revision == 2U && after(stamp, created) &&
+               ? revision == grant_active_revision && same_stamp(created, stamp)
+               : revision == grant_terminal_revision && after(stamp, created) &&
                      (lifecycle == AYNI_GRANT_REVOKED ||
                       (lifecycle == AYNI_GRANT_EXPIRED &&
                        record.grant.lifetime == AYNI_GRANT_CURRENT_BOOT));
@@ -189,7 +189,7 @@ bool GrantTable::gated(uint64_t grant_id) const {
 }
 
 bool GrantTable::can_gate(uint64_t grant_id) const {
-    return known_id(grant_id) && (gated(grant_id) || !gates_.full());
+    return is_kernel_id(grant_id) && (gated(grant_id) || !gates_.full());
 }
 
 bool GrantTable::install_gate(uint64_t grant_id) {
@@ -234,12 +234,12 @@ GrantTable::RevokePlan GrantTable::plan_accepted_revoke(uint64_t grant_id) const
             through = at(row).grant_id;
         }
     }
-    return {grant_id, 2, AYNI_INTENT_EFFECT_CHANGED, 0, through};
+    return {grant_id, grant_terminal_revision, AYNI_INTENT_EFFECT_CHANGED, 0, through};
 }
 
 bool GrantTable::apply_revoke(const RevokePlan &plan, foundation::TransitionStamp stamp) {
     const RevokePlan expected = plan_accepted_revoke(plan.grant_id);
-    if (!known_id(plan.grant_id) || !stamped(stamp) || plan.revision != expected.revision ||
+    if (!is_kernel_id(plan.grant_id) || !stamped(stamp) || plan.revision != expected.revision ||
         plan.effect != expected.effect ||
         plan.cleanup_after_grant_id != expected.cleanup_after_grant_id ||
         plan.cleanup_through_grant_id != expected.cleanup_through_grant_id) {
@@ -320,7 +320,7 @@ bool GrantTable::apply_cleanup(const CleanupPlan &plan, foundation::TransitionSt
         }
         Grant &child = grants_[child_index];
         child.lifecycle = AYNI_GRANT_REVOKED;
-        child.revision = 2;
+        child.revision = grant_terminal_revision;
         child.stamp = stamp;
         child.revoked_by_root_id = root.grant_id;
     }
@@ -363,7 +363,7 @@ bool GrantTable::valid_link(uint32_t child_index, uint32_t parent_index) const {
     }
     if (parent.lifetime == AYNI_GRANT_CURRENT_BOOT) {
         return child.lifetime == AYNI_GRANT_CURRENT_BOOT &&
-               (child.grant_id >> 32U) == (parent.grant_id >> 32U) &&
+               id_boot_epoch(child.grant_id) == id_boot_epoch(parent.grant_id) &&
                child.duration_us <= parent.duration_us &&
                (child.deadline_us == 0U || parent.deadline_us == 0U ||
                 child.deadline_us <= parent.deadline_us);
@@ -490,7 +490,7 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
 bool GrantTable::insert(const NewGrant &grant, const Admission &admission, uint64_t new_grant_id,
                         foundation::TransitionStamp stamp, uint32_t &out_index) {
     uint32_t ignored = 0;
-    if (!known_id(new_grant_id) || (new_grant_id >> 32U) != admission.boot_epoch ||
+    if (!is_kernel_id(new_grant_id) || id_boot_epoch(new_grant_id) != admission.boot_epoch ||
         find(new_grant_id, ignored) || !stamped(stamp) || admission.index > size() ||
         (admission.index == size() ? grants_.full() || admission.replaced_grant_id != 0U
                                    : at(admission.index).grant_id != admission.replaced_grant_id)) {
@@ -517,7 +517,7 @@ bool GrantTable::insert(const NewGrant &grant, const Admission &admission, uint6
                       admission.depth,
                       stamp,
                       stamp,
-                      1,
+                      grant_active_revision,
                       AYNI_GRANT_ACTIVE,
                       grant.source_domain.size,
                       scope_size,
@@ -564,7 +564,7 @@ void GrantTable::expire(uint32_t index, foundation::TransitionStamp stamp) {
         return;
     }
     grant.lifecycle = AYNI_GRANT_EXPIRED;
-    grant.revision = 2;
+    grant.revision = grant_terminal_revision;
     grant.stamp = stamp;
 }
 
@@ -644,7 +644,7 @@ GrantTable::Restore GrantTable::restore(const GrantRecord &record,
             !ancestors_allow_creation(parent_index, created, snapshot) ||
             (parent.lifetime == AYNI_GRANT_CURRENT_BOOT &&
              (grant.lifetime != AYNI_GRANT_CURRENT_BOOT || grant.duration_us > parent.duration_us ||
-              (record.grant_id >> 32U) != (parent.grant_id >> 32U)))) {
+              id_boot_epoch(record.grant_id) != id_boot_epoch(parent.grant_id)))) {
             return Restore::corrupt;
         }
     }
@@ -702,15 +702,15 @@ GrantTable::Restore GrantTable::restore(const GrantRecord &record,
 
 GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
                                                foundation::TransitionStamp stamp) {
-    return restore(record, stamp, stamp, 1, AYNI_GRANT_ACTIVE, false);
+    return restore(record, stamp, stamp, grant_active_revision, AYNI_GRANT_ACTIVE, false);
 }
 
 GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
                                               foundation::TransitionStamp stamp) {
     uint32_t index = 0;
     if (!find(record.grant_id, index) || at(index).lifecycle != AYNI_GRANT_ACTIVE ||
-        at(index).revision != 1U || record.revision != 2U || !stamped(stamp) ||
-        !after(stamp, at(index).stamp)) {
+        at(index).revision != grant_active_revision || record.revision != grant_terminal_revision ||
+        !stamped(stamp) || !after(stamp, at(index).stamp)) {
         return Restore::corrupt;
     }
     if (record.lifecycle == AYNI_GRANT_EXPIRED) {
@@ -742,7 +742,7 @@ GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
         }
         Grant &grant = grants_[index];
         grant.lifecycle = AYNI_GRANT_REVOKED;
-        grant.revision = 2;
+        grant.revision = grant_terminal_revision;
         grant.stamp = stamp;
         grant.revoked_by_root_id = record.revoked_by_root_id;
     } else {
@@ -780,12 +780,12 @@ bool GrantTable::valid_revocation_metadata(uint64_t grant_id, uint64_t parent_gr
         return revoked_by_root_id == 0U && cleanup_after == 0U && cleanup_through == 0U &&
                cleanup_stamp.transition_id == 0U && cleanup_stamp.commit_seq == 0U;
     }
-    if (!known_id(revoked_by_root_id)) {
+    if (!is_kernel_id(revoked_by_root_id)) {
         return false;
     }
     if (revoked_by_root_id == grant_id) {
-        return known_id(cleanup_through) && cleanup_through >= grant_id &&
-               (cleanup_after == 0U || known_id(cleanup_after)) &&
+        return is_kernel_id(cleanup_through) && cleanup_through >= grant_id &&
+               (cleanup_after == 0U || is_kernel_id(cleanup_after)) &&
                cleanup_after <= cleanup_through && at_or_after(cleanup_stamp, stamp);
     }
     uint32_t root = 0;

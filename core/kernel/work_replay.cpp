@@ -2,6 +2,7 @@
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
+#include "foundation/kernel_id.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_records.h"
@@ -431,7 +432,8 @@ bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_byte
            grant.parent_grant_id == request.parent_grant_id && grant.lifetime == request.lifetime &&
            grant.duration_us == request.duration_us &&
            grant.allow_delegation == ((request.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U) &&
-           request.expected_revision == (grant.parent_grant_id == 0U ? 0U : 1U) &&
+           request.expected_revision ==
+               (grant.parent_grant_id == 0U ? 0U : authority::grant_active_revision) &&
            authority_command_scope_matches(request, domain, scope);
 }
 
@@ -450,11 +452,11 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
         if (binding == nullptr || binding->principal_id != grant.owner_principal_id ||
             binding->binding_revision != grant.owner_binding_revision ||
             model_.agents.find_instance(grant.subject_instance_id) == nullptr ||
-            (grant.grant_id >> 32U) > boot_epoch_limit ||
-            (grant.subject_instance_id >> 32U) > boot_epoch_limit ||
-            (grant.revoked_by_root_id >> 32U) > boot_epoch_limit ||
-            (grant.cleanup_after_grant_id >> 32U) > boot_epoch_limit ||
-            (grant.cleanup_through_grant_id >> 32U) > boot_epoch_limit) {
+            foundation::id_boot_epoch(grant.grant_id) > boot_epoch_limit ||
+            foundation::id_boot_epoch(grant.subject_instance_id) > boot_epoch_limit ||
+            foundation::id_boot_epoch(grant.revoked_by_root_id) > boot_epoch_limit ||
+            foundation::id_boot_epoch(grant.cleanup_after_grant_id) > boot_epoch_limit ||
+            foundation::id_boot_epoch(grant.cleanup_through_grant_id) > boot_epoch_limit) {
             return false;
         }
     }

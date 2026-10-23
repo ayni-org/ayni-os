@@ -15,10 +15,31 @@ using ayni::foundation::BoundedArray;
 using ayni::foundation::IdAllocator;
 using ayni::foundation::max_boot_epoch;
 
+// C-ID-010: decoding preserves all epoch bits and ignores the sequence.
+TEST(KernelId, epoch_decode_accepts_allocated_ids_and_allocator_prefixes) {
+    EXPECT_EQ(ayni::foundation::id_boot_epoch(0), 0U);
+    EXPECT_EQ(ayni::foundation::id_boot_epoch(UINT64_C(0x1234567800000000)), 0x12345678U);
+    EXPECT_EQ(ayni::foundation::id_boot_epoch(UINT64_C(0x12345678ffffffff)), 0x12345678U);
+    EXPECT_EQ(ayni::foundation::id_boot_epoch(UINT64_MAX), 0xffffffffU);
+}
+
+// C-ID-010: the shape check requires a nonzero epoch and a nonzero sequence;
+// it does not prove that a particular Kernel has allocated the ID.
+TEST(KernelId, shape_rejects_either_zero_component_and_accepts_both_word_boundaries) {
+    EXPECT_FALSE(ayni::foundation::is_kernel_id(0));
+    EXPECT_FALSE(ayni::foundation::is_kernel_id(UINT64_C(0x00000000ffffffff)));
+    EXPECT_FALSE(ayni::foundation::is_kernel_id(UINT64_C(0xffffffff00000000)));
+    EXPECT_TRUE(ayni::foundation::is_kernel_id(UINT64_C(0x0000000100000001)));
+    EXPECT_TRUE(ayni::foundation::is_kernel_id(UINT64_C(0x00000001ffffffff)));
+    EXPECT_TRUE(ayni::foundation::is_kernel_id(UINT64_C(0xffffffff00000001)));
+    EXPECT_TRUE(ayni::foundation::is_kernel_id(UINT64_MAX));
+}
+
 TEST(KernelId, allocator_refuses_ids_before_it_starts) {
     IdAllocator ids;
     uint64_t id = 7;
     EXPECT_FALSE(ids.available());
+    EXPECT_EQ(ids.boot_epoch(), 0U);
     EXPECT_FALSE(ids.allocate(id));
     EXPECT_EQ(id, 7U);
 }
@@ -57,6 +78,7 @@ TEST(KernelId, allocator_runs_out_instead_of_wrapping) {
     ASSERT_TRUE(ids.allocate(id));
     EXPECT_EQ(id, (uint64_t{1} << 32U) | 0xFFFFFFFFU);
     EXPECT_FALSE(ids.available());
+    EXPECT_EQ(ids.boot_epoch(), 1U);
     EXPECT_FALSE(ids.allocate(id));
     EXPECT_EQ(id, (uint64_t{1} << 32U) | 0xFFFFFFFFU);
 }

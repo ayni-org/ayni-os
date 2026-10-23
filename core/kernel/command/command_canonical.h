@@ -1,5 +1,6 @@
 // ADR-0030/C-WIRE-017: raw authorization request identity, independent of
 // current catalog, subject or parent availability. Omission stays omitted.
+// Byte budgets: contracts/storage/records.md, raw create/revoke identity.
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H
 
@@ -15,7 +16,8 @@ constexpr uint32_t authority_command_max_bytes(uint32_t scope_max_bytes) {
     return authority_command_fixed_max + scope_max_bytes;
 }
 
-// Revoke identity is a separate fixed codec; create format 1 is unchanged.
+// Revoke identity is kind/expected_revision (u32 each) plus target_id (u64),
+// a separate fixed codec; create format 1 is unchanged.
 constexpr uint32_t revoke_command_size = 16;
 struct CanonicalRevokeView {
     uint32_t expected_revision;

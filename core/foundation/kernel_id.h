@@ -12,23 +12,38 @@
 
 namespace ayni::foundation {
 
-// The largest boot epoch whose ids fit the high 32 bits.
+// C-ID-010: both components occupy one 32-bit word. Zero in either word
+// cannot be an allocated ID; id_boot_epoch() also accepts an allocator prefix.
+constexpr uint32_t kernel_id_epoch_shift = 32;
+// The largest boot epoch whose IDs fit in the fixed-width representation.
 constexpr uint64_t max_boot_epoch = 0xFFFFFFFFU;
 
+// Decode the durable epoch without requiring a valid per-boot sequence.
+constexpr uint64_t id_boot_epoch(uint64_t id) {
+    return id >> kernel_id_epoch_shift;
+}
+
+// Shape only: existence, owner and the permitted boot bound are caller rules.
+constexpr bool is_kernel_id(uint64_t id) {
+    return id_boot_epoch(id) != 0U && static_cast<uint32_t>(id) != 0U;
+}
+
+// Owns this boot's sequence; the caller supplies the already durable epoch.
 class IdAllocator {
   public:
     // Starts the sequence of a durable boot epoch in [1, max_boot_epoch].
     // The kernel always starts at sequence 1; a test may start near the end
     // to reach exhaustion without allocating 2^32 ids.
     void start(uint64_t boot_epoch, uint32_t first_sequence = 1) {
-        prefix_ = boot_epoch << 32U;
+        prefix_ = boot_epoch << kernel_id_epoch_shift;
         next_ = first_sequence;
     }
 
     // Whether allocate() would succeed: started, and the sequence not used up.
     bool available() const { return prefix_ != 0U && next_ != 0U; }
 
-    uint64_t boot_epoch() const { return prefix_ >> 32U; }
+    // Zero before start(); otherwise the epoch, including after exhaustion.
+    uint64_t boot_epoch() const { return id_boot_epoch(prefix_); }
 
     // Assigns the next id, which is never 0. Returns false, assigning
     // nothing, when no id is available.
@@ -42,8 +57,8 @@ class IdAllocator {
     }
 
   private:
-    uint64_t prefix_ = 0;
-    uint32_t next_ = 0;
+    uint64_t prefix_ = 0; // high-word epoch; zero means not started
+    uint32_t next_ = 0;   // next per-boot sequence; zero means unavailable
 };
 
 } // namespace ayni::foundation

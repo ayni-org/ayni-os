@@ -1,4 +1,6 @@
 // ADR-0030/0031: Grant facts contain durations, never a boot clock or gates.
+// Layouts and fixed byte counts: contracts/storage/records.md,
+// "Grant 与完整授权命令记录" and the snapshot work-record table.
 #ifndef AYNI_CORE_AUTHORITY_GRANT_GRANT_RECORDS_H
 #define AYNI_CORE_AUTHORITY_GRANT_GRANT_RECORDS_H
 
@@ -19,11 +21,15 @@ constexpr uint16_t grant_revocation_progress_record_type = 16;
 constexpr uint16_t grant_revocation_progress_record_version = 1;
 constexpr uint16_t grant_snapshot_record_version = 2;
 constexpr uint16_t grant_snapshot_legacy_record_version = 1;
+// Fixed overhead excluding variable Capability/domain/scope data, type 13/v1.
 constexpr uint32_t grant_record_fixed_size = 80;
+// Type 14/v1 stores id/revision/lifecycle; v2 appends the revocation root.
 constexpr uint32_t grant_state_record_size = 16;
 constexpr uint32_t grant_revoked_state_record_size = 24;
+// Type 15/v1 stores the root outcome and cursor; type 16/v1 stores progress.
 constexpr uint32_t grant_revocation_record_size = 32;
 constexpr uint32_t grant_revocation_progress_record_size = 24;
+// Snapshot type 13 appends stamps and state; v2 also appends cleanup facts.
 constexpr uint32_t grant_snapshot_tail_size = 40;
 constexpr uint32_t grant_revocation_snapshot_tail_size = 80;
 
@@ -70,6 +76,11 @@ struct GrantRevocationProgressRecord {
 
 // Representation-independent record facts; current catalog is not consulted.
 bool valid_grant_record(const GrantRecord &record);
+
+// Read only the leading ID of an already classified create/revocation body.
+// Boot ordering needs this before replay. The full reader still validates
+// the remaining body; a short/null prefix leaves out_id unchanged.
+bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id);
 
 constexpr uint32_t grant_record_max(uint32_t scope_max_bytes) {
     return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES + 2U * scope_max_bytes;

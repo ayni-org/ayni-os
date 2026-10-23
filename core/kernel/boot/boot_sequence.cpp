@@ -537,16 +537,18 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
     }
     // A create can only use an ID allocated in the durable epoch preceding
     // this record. A later BOOT_EPOCH must not legitimize a future ID.
+    uint64_t grant_id = 0;
     if (header.type == authority::grant_record_type &&
         header.version == authority::grant_record_version &&
-        (header.length < sizeof(uint64_t) ||
-         (foundation::load_le64(body) >> 32U) != last_boot_epoch_)) {
+        (!authority::read_grant_record_id(body, header.length, grant_id) ||
+         foundation::id_boot_epoch(grant_id) != last_boot_epoch_)) {
         return durability::RecordUse::corrupt;
     }
     if (header.type == authority::grant_revocation_record_type &&
         header.version == authority::grant_revocation_record_version &&
-        (header.length < sizeof(uint64_t) || (foundation::load_le64(body) >> 32U) == 0U ||
-         (foundation::load_le64(body) >> 32U) > last_boot_epoch_)) {
+        (!authority::read_grant_record_id(body, header.length, grant_id) ||
+         foundation::id_boot_epoch(grant_id) == 0U ||
+         foundation::id_boot_epoch(grant_id) > last_boot_epoch_)) {
         return durability::RecordUse::corrupt;
     }
     return WorkReplay::on_record(&replay_, batch, header, body);

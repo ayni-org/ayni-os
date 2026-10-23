@@ -52,6 +52,35 @@ ayni_bytes_v1 domain() {
     return {empty_domain.data(), static_cast<uint32_t>(empty_domain.size())};
 }
 
+// ADR-0030/0031, records.md types 13/15: boot ordering reads just the leading
+// little-endian ID. The full reader owns shape, size and remaining fields.
+TEST(GrantRecords, id_prefix_decode_is_unaligned_and_does_not_validate_the_remaining_body) {
+    constexpr std::array<uint8_t, 10> bytes{0xff, 0x88, 0x77, 0x66, 0x55,
+                                            0x44, 0x33, 0x22, 0x11, 0xaa};
+    uint64_t id = 0;
+    ASSERT_TRUE(read_grant_record_id(bytes.data() + 1, 8, id));
+    EXPECT_EQ(id, UINT64_C(0x1122334455667788));
+    ASSERT_TRUE(read_grant_record_id(bytes.data() + 1, 9, id));
+    EXPECT_EQ(id, UINT64_C(0x1122334455667788));
+    constexpr std::array<uint8_t, 8> zero{};
+    ASSERT_TRUE(read_grant_record_id(zero.data(), 8, id));
+    EXPECT_EQ(id, 0U);
+}
+
+// ADR-0030/0031: a truncated or missing prefix must not publish a partial ID.
+TEST(GrantRecords, id_prefix_failure_preserves_output_for_null_and_every_truncation) {
+    for (uint32_t size = 0; size < 8; ++size) {
+        uint64_t id = 91;
+        EXPECT_FALSE(read_grant_record_id(root_body.data(), size, id)) << size;
+        EXPECT_EQ(id, 91U) << size;
+    }
+    uint64_t id = 91;
+    EXPECT_FALSE(read_grant_record_id(nullptr, 0, id));
+    EXPECT_EQ(id, 91U);
+    EXPECT_FALSE(read_grant_record_id(nullptr, 8, id));
+    EXPECT_EQ(id, 91U);
+}
+
 TEST(GrantRecords, create_encoding_matches_independent_literal_and_borrows_only_record_bytes) {
     const auto grant = root();
     ASSERT_EQ(grant_record_size(grant), root_body.size());

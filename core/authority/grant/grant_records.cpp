@@ -2,6 +2,7 @@
 
 #include "authority/scope/scope.h"
 #include "durability/batch/record_body.h"
+#include "foundation/kernel_id.h"
 
 namespace ayni::authority {
 namespace {
@@ -23,10 +24,6 @@ uint32_t snapshot_tail_size(uint16_t version) {
                                                            : 0U;
 }
 
-bool kernel_id(uint64_t id) {
-    return (id >> 32U) != 0U && static_cast<uint32_t>(id) != 0U;
-}
-
 void write_stamp(foundation::TransitionStamp stamp, uint8_t *body) {
     foundation::store_le64(body, stamp.transition_id);
     foundation::store_le64(body + sizeof(uint64_t), stamp.commit_seq);
@@ -38,20 +35,29 @@ foundation::TransitionStamp read_stamp(const uint8_t *body) {
 
 } // namespace
 
+bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id) {
+    if (body == nullptr || size < sizeof(uint64_t)) {
+        return false;
+    }
+    out_id = foundation::load_le64(body);
+    return true;
+}
+
 bool valid_grant_record(const GrantRecord &record) {
     const NewGrant &grant = record.grant;
     const bool permanent = grant.lifetime == AYNI_GRANT_PERMANENT;
     const bool limited = grant.lifetime == AYNI_GRANT_CURRENT_BOOT;
-    if (!kernel_id(record.grant_id) || grant.subject_instance_id == 0U ||
+    if (!foundation::is_kernel_id(record.grant_id) || grant.subject_instance_id == 0U ||
         grant.owner_principal_id == 0U || grant.owner_binding_revision == 0U ||
         grant.capability_id.size() == 0U || grant.capability_version == 0U ||
         (grant.flags & ~AYNI_GRANT_ALLOW_DELEGATION) != 0U || (!permanent && !limited) ||
         (permanent ? grant.duration_us != 0U : grant.duration_us == 0U) ||
         record.depth > AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX ||
-        (grant.parent_grant_id == 0U ? record.depth != 0U
-                                     : !kernel_id(grant.parent_grant_id) || record.depth == 0U) ||
-        (record.replaced_grant_id != 0U &&
-         (!kernel_id(record.replaced_grant_id) || record.replaced_grant_id == record.grant_id)) ||
+        (grant.parent_grant_id == 0U
+             ? record.depth != 0U
+             : !foundation::is_kernel_id(grant.parent_grant_id) || record.depth == 0U) ||
+        (record.replaced_grant_id != 0U && (!foundation::is_kernel_id(record.replaced_grant_id) ||
+                                            record.replaced_grant_id == record.grant_id)) ||
         grant.source_domain.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
         record.scope.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX) {
         return false;
@@ -152,11 +158,12 @@ bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecor
     if (revoked) {
         record.revoked_by_root_id = reader.u64();
     }
-    if (!reader.ok() || !kernel_id(record.grant_id) || record.revision != 2U ||
-        (revoked
-             ? record.lifecycle != AYNI_GRANT_REVOKED || !kernel_id(record.revoked_by_root_id) ||
-                   record.revoked_by_root_id == record.grant_id
-             : record.lifecycle != AYNI_GRANT_EXPIRED)) {
+    if (!reader.ok() || !foundation::is_kernel_id(record.grant_id) ||
+        record.revision != grant_terminal_revision ||
+        (revoked ? record.lifecycle != AYNI_GRANT_REVOKED ||
+                       !foundation::is_kernel_id(record.revoked_by_root_id) ||
+                       record.revoked_by_root_id == record.grant_id
+                 : record.lifecycle != AYNI_GRANT_EXPIRED)) {
         return false;
     }
     out = record;
@@ -234,17 +241,19 @@ bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevoc
     durability::BodyReader reader(body, size);
     const GrantRevocationRecord record{reader.u64(), reader.u32(), reader.u32(), reader.u64(),
                                        reader.u64()};
-    if (!reader.ok() || !kernel_id(record.grant_id) || record.cleanup_after_grant_id != 0U) {
+    if (!reader.ok() || !foundation::is_kernel_id(record.grant_id) ||
+        record.cleanup_after_grant_id != 0U) {
         return false;
     }
     if (record.effect == AYNI_INTENT_EFFECT_CHANGED) {
-        if (record.revision != 2U || !kernel_id(record.cleanup_through_grant_id) ||
+        if (record.revision != grant_terminal_revision ||
+            !foundation::is_kernel_id(record.cleanup_through_grant_id) ||
             record.cleanup_through_grant_id < record.grant_id) {
             return false;
         }
     } else if (record.cleanup_through_grant_id != 0U ||
                (record.effect == AYNI_INTENT_EFFECT_NO_CHANGE
-                    ? record.revision != 2U
+                    ? record.revision != grant_terminal_revision
                     : record.effect != AYNI_INTENT_EFFECT_TARGET_GONE || record.revision != 0U)) {
         return false;
     }
@@ -266,8 +275,10 @@ bool read_grant_revocation_progress_record(const uint8_t *body, uint32_t size,
     }
     durability::BodyReader reader(body, size);
     const GrantRevocationProgressRecord record{reader.u64(), reader.u64(), reader.u64()};
-    if (!reader.ok() || !kernel_id(record.root_grant_id) || !kernel_id(record.after_grant_id) ||
-        !kernel_id(record.through_grant_id) || record.after_grant_id > record.through_grant_id ||
+    if (!reader.ok() || !foundation::is_kernel_id(record.root_grant_id) ||
+        !foundation::is_kernel_id(record.after_grant_id) ||
+        !foundation::is_kernel_id(record.through_grant_id) ||
+        record.after_grant_id > record.through_grant_id ||
         record.through_grant_id < record.root_grant_id) {
         return false;
     }
