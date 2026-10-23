@@ -83,7 +83,8 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     const bool log_was_idle = kernel->log.idle();
     status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
                                         outcome, failure, kernel->storage_admission_status(),
-                                        kernel->log.durable_seq());
+                                        kernel->log.durable_seq(),
+                                        {kernel->host.ctx, kernel->host.monotonic_now_us});
     if (status == AYNI_OK && decoded.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
         kernel->storage_has_room() && kernel->storage_admission_status() == AYNI_OK &&
         kernel->work.transitions.next_commit_seq() == first_seq) {
@@ -164,6 +165,15 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.occurrences_skipped = goal.occurrences_skipped;
     info.skip_reason = goal.skip_reason;
     info.hold_reason = goal.hold_reason;
+    if (ayni::work::GoalTable::is_live(goal.lifecycle) && goal.lifecycle != AYNI_GOAL_PROPOSED &&
+        info.hold_reason == AYNI_REASON_NONE) {
+        const auto authority = kernel.work.check_goal_authority(
+            index, kernel.host.monotonic_now_us(kernel.host.ctx), kernel.log.durable_seq());
+        if (authority.status != AYNI_OK) {
+            info.lifecycle = AYNI_GOAL_PAUSED;
+            info.hold_reason = authority.reason;
+        }
+    }
     info.trigger_source_size = goal.trigger_source.size();
     std::memcpy(info.trigger_source, goal.trigger_source.data(), goal.trigger_source.size());
     // Read from the tables rather than kept, so a query needs no clock.
@@ -192,6 +202,59 @@ void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     info.hold_reason = ayni::work::TaskTable::effective_hold_reason(task);
     info.step_count = task.step_count;
     out = info;
+}
+
+// Copy one canonical field for Grant and Goal queries. Both persisted region
+// kinds share DomainReader; failures publish no partial output.
+ayni_status_t copy_authority_field(ayni_bytes_v1 bytes, uint32_t field_index,
+                                   ayni_grant_field_info_v1 &out_field) {
+    ayni::catalog::DomainReader reader(bytes);
+    ayni::catalog::DomainField field{};
+    if (field_index >= reader.field_count()) {
+        return AYNI_NOT_FOUND;
+    }
+    for (uint32_t at = 0; at <= field_index; ++at) {
+        if (!reader.next(field)) {
+            return AYNI_INTERNAL;
+        }
+    }
+    ayni_grant_field_info_v1 info{};
+    info.struct_size = sizeof(info);
+    info.field_id = field.id;
+    info.kind = field.values.kind;
+    info.usage = field.usage;
+    info.unit_size = field.values.unit.size;
+    if (info.unit_size != 0U) {
+        std::memcpy(info.unit, field.values.unit.data, info.unit_size);
+    }
+    if (info.kind == AYNI_AUTHORITY_I64) {
+        info.values.integer = {field.values.minimum, field.values.maximum};
+    } else {
+        auto &tokens = info.values.tokens;
+        tokens.member_count = field.values.token_count;
+        for (uint32_t at = 0; at < tokens.member_count; ++at) {
+            tokens.member_sizes[at] = field.values.tokens[at].size;
+            std::memcpy(tokens.members[at], field.values.tokens[at].data, tokens.member_sizes[at]);
+        }
+    }
+    out_field = info;
+    return AYNI_OK;
+}
+
+// Query framing before borrowing a requirement; all callers preserve outputs.
+ayni_status_t find_requirement(const ayni_kernel *kernel, uint64_t goal_id, uint32_t at,
+                               ayni::work::GoalRequirement &out) {
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    ayni::work::GoalAuthorityRecord record{};
+    if (!kernel->work.goals.find(goal_id, index) ||
+        !kernel->work.goal_authority.read(index, goal_id, record) || at >= record.count) {
+        return AYNI_NOT_FOUND;
+    }
+    out = record.requirements[at];
+    return AYNI_OK;
 }
 
 } // namespace
@@ -279,6 +342,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     type.version = goal_type->version;
     type.ctx = goal_type->ctx;
     type.validate = goal_type->validate;
+    type.export_requirements = goal_type->export_requirements;
     type.trigger_kinds = goal_type->trigger_kinds;
     type.occurrence_wait_max_us = goal_type->occurrence_wait_max_us;
     return add_status(kernel->work.goal_types.add(type));
@@ -538,36 +602,112 @@ ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_i
     if (!kernel->work.grants.find(grant_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    ayni::catalog::DomainReader reader(kernel->work.grants.scope(index));
-    ayni::catalog::DomainField field{};
-    if (field_index >= reader.field_count()) {
+    return copy_authority_field(kernel->work.grants.scope(index), field_index, *out_field);
+}
+
+// Summary and per-entry queries expose saved evidence separately from current
+// usability. A query cannot select new Grants or clear an authorization pause.
+ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                      ayni_goal_authority_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = check_size(*out_info);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.goals.find(goal_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    for (uint32_t at = 0; at <= field_index; ++at) {
-        if (!reader.next(field)) {
-            return AYNI_INTERNAL;
-        }
-    }
-    ayni_grant_field_info_v1 info{};
+    ayni_goal_authority_info_v1 info{};
     info.struct_size = sizeof(info);
-    info.field_id = field.id;
-    info.kind = field.values.kind;
-    info.usage = field.usage;
-    info.unit_size = field.values.unit.size;
-    if (info.unit_size != 0U) {
-        std::memcpy(info.unit, field.values.unit.data, info.unit_size);
-    }
-    if (info.kind == AYNI_AUTHORITY_I64) {
-        info.values.integer = {field.values.minimum, field.values.maximum};
-    } else {
-        auto &tokens = info.values.tokens;
-        tokens.member_count = field.values.token_count;
-        for (uint32_t at = 0; at < tokens.member_count; ++at) {
-            tokens.member_sizes[at] = field.values.tokens[at].size;
-            std::memcpy(tokens.members[at], field.values.tokens[at].data, tokens.member_sizes[at]);
+    info.goal_id = goal_id;
+    const uint64_t now = kernel->host.monotonic_now_us(kernel->host.ctx);
+    info.effective_reason =
+        kernel->work.check_goal_authority(index, now, kernel->log.durable_seq()).reason;
+    ayni::work::GoalAuthorityRecord record{};
+    if (kernel->work.goal_authority.read(index, goal_id, record)) {
+        info.phase = static_cast<ayni_goal_authority_phase_t>(record.phase);
+        info.transition_id = record.stamp.transition_id;
+        info.commit_seq = record.stamp.commit_seq;
+        info.requirement_count = record.count;
+        for (uint32_t at = 0; at < record.count; ++at) {
+            if (kernel->work
+                    .check_requirement(record.requirements[at], now, kernel->log.durable_seq())
+                    .status != AYNI_OK) {
+                ++info.missing_count;
+            }
         }
     }
-    *out_field = info;
+    *out_info = info;
+    return AYNI_OK;
+}
+
+// Return the immutable ceiling identity and its original selected Grant.
+// Current availability is computed separately; this query never reselects.
+ayni_status_t ayni_get_goal_requirement(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                        uint32_t index, ayni_goal_requirement_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = check_size(*out_info);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    ayni::work::GoalRequirement requirement{};
+    const auto found = find_requirement(kernel, goal_id, index, requirement);
+    if (found != AYNI_OK) {
+        return found;
+    }
+    ayni_goal_requirement_info_v1 info{};
+    info.struct_size = sizeof(info);
+    info.capability_version = requirement.capability_version;
+    info.grant_id = requirement.dependency.grant_id;
+    info.grant_revision = requirement.dependency.revision;
+    info.capability_id_size = requirement.capability_id.size();
+    std::memcpy(info.capability_id, requirement.capability_id.data(), info.capability_id_size);
+    info.field_count = ayni::catalog::DomainReader(requirement.scope).field_count();
+    info.effective_reason =
+        kernel->work
+            .check_requirement(requirement, kernel->host.monotonic_now_us(kernel->host.ctx),
+                               kernel->log.durable_seq())
+            .reason;
+    *out_info = info;
+    return AYNI_OK;
+}
+
+// Copy original domain and normalized Scope together. Keeping both on a local
+// output preserves the caller's complete buffer on either field-reader failure.
+ayni_status_t ayni_get_goal_requirement_field(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                              uint32_t requirement_index, uint32_t field_index,
+                                              ayni_goal_requirement_field_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = check_size(*out_info);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    ayni::work::GoalRequirement requirement{};
+    const auto found = find_requirement(kernel, goal_id, requirement_index, requirement);
+    if (found != AYNI_OK) {
+        return found;
+    }
+    ayni_goal_requirement_field_info_v1 info{};
+    info.struct_size = sizeof(info);
+    const auto domain = copy_authority_field(requirement.source_domain, field_index, info.domain);
+    if (domain != AYNI_OK) {
+        return domain;
+    }
+    const auto scope = copy_authority_field(requirement.scope, field_index, info.scope);
+    if (scope != AYNI_OK) {
+        return scope;
+    }
+    *out_info = info;
     return AYNI_OK;
 }
 

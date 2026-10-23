@@ -160,7 +160,9 @@ AYNI_LAYOUT(goal_type_reserved, offsetof(ayni_goal_type_v1, reserved) == 12 + 4 
 AYNI_LAYOUT(goal_type_occurrence_wait_max_us,
             offsetof(ayni_goal_type_v1, occurrence_wait_max_us) == 16 + 4 * AYNI_PTR);
 AYNI_LAYOUT(goal_type_strategy_id, offsetof(ayni_goal_type_v1, strategy_id) == 24 + 4 * AYNI_PTR);
-AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 24 + 6 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_export_requirements,
+            offsetof(ayni_goal_type_v1, export_requirements) == 24 + 6 * AYNI_PTR);
+AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 24 + 7 * AYNI_PTR);
 
 AYNI_LAYOUT(goal_info_struct_size, offsetof(ayni_goal_info_v1, struct_size) == 0);
 AYNI_LAYOUT(goal_info_lifecycle, offsetof(ayni_goal_info_v1, lifecycle) == 4);
@@ -432,3 +434,10 @@ AYNI_LAYOUT(grant_info_cleanup_through,
 AYNI_LAYOUT(grant_info_cleanup_transition,
             offsetof(ayni_grant_info_v1, cleanup_transition_id) == 184);
 AYNI_LAYOUT(grant_info_cleanup_seq, offsetof(ayni_grant_info_v1, cleanup_commit_seq) == 192);
+
+/* ADR-0037: requirement callbacks and copied query outputs, ABI 0.21. */
+AYNI_LAYOUT(requirement_input_size, sizeof(ayni_goal_requirement_v1) == 16 + 3 * AYNI_PTR);
+AYNI_LAYOUT(requirement_sink_ctx, offsetof(ayni_goal_requirement_sink_v1, ctx) == AYNI_PTR);
+AYNI_LAYOUT(requirement_sink_emit, offsetof(ayni_goal_requirement_sink_v1, emit) == 2 * AYNI_PTR);
+AYNI_LAYOUT(goal_authority_info_size, sizeof(ayni_goal_authority_info_v1) == 48);
+AYNI_LAYOUT(goal_requirement_info_size, sizeof(ayni_goal_requirement_info_v1) == 64);

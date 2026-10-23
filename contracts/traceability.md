@@ -6,7 +6,7 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 32 | 10 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 35 | 11 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -24,7 +24,7 @@
 | [storage/records.md](storage/records.md) | 18 | 14 |
 | [wire/envelope.md](wire/envelope.md) | 19 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 323 | 94 |
+| 合计 | 326 | 95 |
 
 ## 计划章节 → 契约文档
 
@@ -175,6 +175,7 @@
 | C-AUTH-025 | M1 已实现并通过 Native 场景：`RevokeApi.applied_and_durable_receipts_keep_original_result_across_a_new_session`、`RevokeApi.ordinary_commands_use_the_same_applied_and_durable_receipt_phases`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`；最终交付见 ADR-0031；C-COMMIT-017 |
 | C-AUTH-026 | M1 已实现并通过 Native 场景：`RevokeApi.cleanup_is_bounded_and_never_rewrites_the_roots_terminal_commit_order`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`、`GrantRevoke.snapshot_frontier_covers_active_and_terminal_descendants_atomically`、`GrantRevokeReplay.snapshot_root_frontier_cannot_exclude_a_retained_descendant`；最终交付见 ADR-0031；C-STORE-016 |
 | C-AUTH-027 | M1 已实现并通过 Native 场景：`RevokeApi.revision_two_accepted_after_uncommitted_cleanup_can_change_restored_active_child`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`、`CommandRevoke.impossible_accepted_revision_is_rejected_atomically_for_every_effect`；最终交付见 ADR-0031 |
+| C-AUTH-028 | M1 已实现（需求导出与查询）：`GoalRequirements.missing_grant_creates_proposal_without_tasks_and_copies_scope`、`GoalRequirements.exporter_failure_is_sticky_and_refusal_allocates_nothing`、`GoalRequirements.invalid_exports_and_reentry_preserve_the_original_status`、`GoalRequirements.query_failures_publish_no_partial_fields`；ADR-0037 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
 | C-SUB-004 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |

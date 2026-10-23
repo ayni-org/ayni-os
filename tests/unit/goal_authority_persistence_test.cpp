@@ -265,6 +265,18 @@ TEST(GoalAuthorityPersistence, journal_round_trip_preserves_explicit_zero_and_le
     Fixture source;
     source.run();
     const auto legacy = source.goal();
+    // White-box historical image: strip metadata and downgrade both envelopes.
+    auto old = decode(source.work.node().sim().durable_storage().log.back());
+    old.records.erase(std::remove_if(old.records.begin(), old.records.end(),
+                                     [](auto &entry) {
+                                         if (entry.header.type == goal_record_type ||
+                                             entry.header.type == goal_state_record_type) {
+                                             entry.header.version = goal_record_version;
+                                         }
+                                         return entry.header.type == goal_authority_record_type;
+                                     }),
+                      old.records.end());
+    source.work.node().sim().durable_storage().log.back() = encode(old);
     const auto explicit_zero = source.goal();
     source.attach(explicit_zero);
     Fixture restored;
@@ -459,7 +471,8 @@ TEST(GoalAuthorityPersistence, goal_slot_reuse_hands_old_references_to_the_relea
         source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "folder"));
     ASSERT_EQ(created.status, AYNI_OK);
     EXPECT_FALSE(source.work.kernel()->work.goal_authority.contains(0, goal));
-    EXPECT_FALSE(source.work.kernel()->work.goal_authority.contains(0, created.result.object.id));
+    EXPECT_TRUE(source.work.kernel()->work.goal_authority.contains(0, created.result.object.id));
+    EXPECT_EQ(source.work.kernel()->work.goal_authority.at(0).count, 0U);
     EXPECT_EQ(source.create_grant().status, AYNI_CAPACITY_EXCEEDED);
     source.work.node().recover();
     EXPECT_EQ(source.create_grant().status, AYNI_OK);

@@ -29,7 +29,9 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
          index = tables.goals.at(index).parent_index) {
         const ayni_goal_lifecycle_t lifecycle =
             index == after.goal_index ? after.goal_lifecycle : tables.goals.at(index).lifecycle;
-        if (lifecycle != AYNI_GOAL_ACTIVE || GoalTable::is_held(tables.goals.at(index))) {
+        if (lifecycle != AYNI_GOAL_ACTIVE || GoalTable::is_held(tables.goals.at(index)) ||
+            (tables.authority != nullptr &&
+             !tables.authority->authorized(index, tables.goals.at(index).goal_id))) {
             return false;
         }
     }
@@ -317,6 +319,16 @@ ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bo
 
 // So an unbounded wait, added to when an occurrence fell due, never ends.
 static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
+
+void settle_goal_authority(WorkTables &tables, uint32_t index, foundation::TransitionStamp stamp) {
+    settle(
+        tables, After{},
+        [&](const Task &task) {
+            return !TaskTable::at_largest_revision(task) &&
+                   tables.goals.in_subtree(task.goal_index, index);
+        },
+        stamp);
+}
 
 bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
                    uint64_t &out_next_us) {

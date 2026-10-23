@@ -103,8 +103,11 @@ ayni_status_t refuse_admission(GoalTable::Admission admission, const Intent &int
     return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_CAPACITY, ayni_object_ref_v1{}, failure);
 }
 
-ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::GoalOrigin &origin,
-                          uint64_t now_us, IntentOutcome &outcome, IntentFailure &failure) {
+// Resolve immutable catalog/work identities and validate parameters before
+// the exporter runs. None of these checks publishes work or consumes IDs.
+ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
+                                  const work::GoalOrigin &origin, uint64_t now_us,
+                                  work::NewGoal &goal, IntentFailure &failure) {
     const GoalCreate &create = intent.create;
     const catalog::GoalTypeRegistry::Lookup type =
         model.goal_types.find(create.goal_type_id, create.goal_type_version);
@@ -139,18 +142,18 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         static_cast<void>(trigger_source.assign(create.trigger_source)); // check_form()
     }
     const catalog::GoalType &goal_type = model.goal_types.at(type.index);
-    const work::NewGoal goal{create.owner_instance_id,
-                             create.parent_goal_id,
-                             type.index,
-                             origin,
-                             create.parameters,
-                             create.trigger,
-                             trigger_source,
-                             now_us,
-                             create.expiry_us,
-                             goal_type.occurrence_wait_max_us,
-                             goal_type.id,
-                             goal_type.version};
+    goal = work::NewGoal{create.owner_instance_id,
+                         create.parent_goal_id,
+                         type.index,
+                         origin,
+                         create.parameters,
+                         create.trigger,
+                         trigger_source,
+                         now_us,
+                         create.expiry_us,
+                         goal_type.occurrence_wait_max_us,
+                         goal_type.id,
+                         goal_type.version};
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);
@@ -163,8 +166,8 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
-    // The goal type's validator runs last, once nothing else can refuse the
-    // goal, and cannot change the kernel while it runs (calling_out).
+    // Validate parameters before exporting their requirements. Both callbacks
+    // are read-only under calling_out; all admission finishes before IDs.
     model.calling_out = true;
     const bool accepted = model.goal_types.accepts(type.index, create.parameters);
     model.calling_out = false;
@@ -173,6 +176,28 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
 
+    return AYNI_OK;
+}
+
+// Resolve work and callback inputs before allocating an identity or publishing
+// a slot. The remaining steps consume that unchanged, fully checked plan.
+ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::GoalOrigin &origin,
+                          uint64_t now_us, uint64_t durable_seq, IntentOutcome &outcome,
+                          IntentFailure &failure, OwnerClock clock) {
+    work::NewGoal goal{};
+    const auto status = check_goal_creation(model, intent, origin, now_us, goal, failure);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    const auto &goal_type = model.goal_types.at(goal.goal_type_index);
+    const auto &create = intent.create;
+    work::GoalAuthorityRecord authority{};
+    const auto requirements =
+        model.prepare_goal_authority(goal_type, create, now_us, durable_seq, authority, clock);
+    if (requirements.status != AYNI_OK) {
+        return refuse(requirements.status, requirements.reason,
+                      object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
+    }
     uint64_t goal_id = 0;
     static_cast<void>(model.ids.allocate(goal_id)); // available() above
     const foundation::TransitionStamp stamp = model.transitions.next();
@@ -181,6 +206,15 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         // admit() found room and nothing could run since. The id and stamp
         // stay used up, as ayni.h says for this defect.
         return AYNI_INTERNAL;
+    }
+    authority.goal_id = goal_id;
+    authority.stamp = stamp;
+    // stage() already checked configured capacity and normalized each operand.
+    if (model.goal_authority.install_validated(index, authority) != AYNI_OK) {
+        return AYNI_INTERNAL;
+    }
+    if (authority.phase == work::GoalAuthorityPhase::proposed) {
+        model.goals.propose(index);
     }
     // Also when the occurrence or expiry is still to come: the host learns
     // its time from the next step's next_deadline_us.
@@ -297,16 +331,16 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
 // Steps 4 and 5 once the session is known: the intent as such, without its
 // command id.
 ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authority::Session &session,
-                          uint64_t now_us, IntentOutcome &outcome, IntentFailure &failure) {
-    // Ordinary work keeps MA-004 admission until E/F adds immutable Goal
-    // authority metadata. Grant management is checked in create_grant.
+                          uint64_t now_us, uint64_t durable_seq, IntentOutcome &outcome,
+                          IntentFailure &failure, OwnerClock clock) {
+    // Work and Grant management retain their separate invariant owners.
     switch (intent.kind) {
     case AYNI_INTENT_GOAL_CREATE: {
         // The Host authenticated this exact binding when opening the
         // session; a goal keeps that origin independently of its lifetime.
         const work::GoalOrigin origin{AYNI_ORIGIN_USER, session.channel, session.principal_id,
                                       session.binding_revision};
-        return create_goal(model, intent, origin, now_us, outcome, failure);
+        return create_goal(model, intent, origin, now_us, durable_seq, outcome, failure, clock);
     }
     case AYNI_INTENT_TASK_CANCEL:
         return cancel_task(model, intent, outcome, failure);
@@ -319,11 +353,23 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
     }
 }
 
+// The mapping joins the already-applied transition. Admission reserved its row
+// and canonical bytes before domain changes, so a refusal here is a defect.
+ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t principal_id,
+                               uint64_t digest, const IntentOutcome &outcome) {
+    const CommandMapping mapping{principal_id,       intent.command_id, digest,
+                                 outcome.commit_seq, intent.kind,       outcome.object};
+    const bool stored = intent.kind == AYNI_INTENT_GRANT_CREATE
+                            ? model.commands.insert_exact(mapping)
+                            : model.commands.insert(mapping);
+    return stored ? AYNI_OK : AYNI_INTERNAL;
+}
+
 } // namespace
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
                            IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status, uint64_t durable_seq) {
+                           ayni_status_t storage_status, uint64_t durable_seq, OwnerClock clock) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
@@ -396,24 +442,10 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     }
     const ayni_status_t status =
         exact ? create_grant(model, intent, *session, now_us, durable_seq, outcome, failure)
-              : apply_rules(model, intent, *session, now_us, outcome, failure);
-    // The mapping joins the transition, so the log stores both or neither.
-    // A row retained for an unregistered principal can occupy the table;
-    // admission above reserves a row before any domain transition changes.
-    if (status == AYNI_OK && intent.command_id != 0U) {
-        const CommandMapping mapping{session->principal_id, intent.command_id, digest,
-                                     outcome.commit_seq,    intent.kind,       outcome.object};
-        if (exact) {
-            if (!model.commands.insert_exact(mapping)) {
-                return AYNI_INTERNAL;
-            }
-        } else {
-            if (!model.commands.insert(mapping)) {
-                return AYNI_INTERNAL;
-            }
-        }
-    }
-    return status;
+              : apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock);
+    return status == AYNI_OK && intent.command_id != 0U
+               ? remember_command(model, intent, session->principal_id, digest, outcome)
+               : status;
 }
 
 } // namespace ayni::kernel

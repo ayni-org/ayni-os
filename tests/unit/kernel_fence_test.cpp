@@ -2,6 +2,8 @@
 // writers before replacing the one mutable work model.
 #include "authority/principal/owner_binding_records.h"
 #include "foundation/little_endian.h"
+#include "work/goal/goal_authority_records.h"
+#include "work/goal/goal_records.h"
 #include "work_node.h"
 
 #include <ayni/hosts/sim.h>
@@ -286,8 +288,13 @@ LegacyImage legacy_image() {
         bool fence = false;
         while (records.next(header, body) == ayni::durability::RecordReader::Next::record) {
             fence = fence || header.type == ayni::durability::writer_fence_record_type;
-            // A schema 0 fixture predates the ownership record (ADR-0028).
-            if (header.type != ayni::authority::owner_binding_record_type) {
+            // Schema 0 predates ownership and Goal authority metadata (ADR-0037).
+            if (header.type == ayni::work::goal_record_type ||
+                header.type == ayni::work::goal_state_record_type) {
+                header.version = ayni::work::goal_record_version;
+            }
+            if (header.type != ayni::authority::owner_binding_record_type &&
+                header.type != ayni::work::goal_authority_record_type) {
                 kept.push_back({header, std::vector<uint8_t>(body, body + header.length)});
             }
         }

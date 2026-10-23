@@ -80,6 +80,24 @@ typedef struct ayni_scope_v1 {
     const ayni_scope_field_v1 *fields;
 } ayni_scope_v1;
 
+/* Since 0.21. One requirement emitted in declared order. Scope omission
+ * expands to this exact capability version's domain; views live through emit. */
+typedef struct ayni_goal_requirement_v1 {
+    uint32_t struct_size;         /* sizeof this descriptor */
+    uint32_t capability_version;  /* nonzero exact registered version */
+    ayni_string_v1 capability_id; /* nonempty exact registered identity */
+    ayni_scope_v1 scope;          /* requested ceiling, never a concrete action */
+} ayni_goal_requirement_v1;
+
+/* Since 0.21. Kernel-owned sink valid only inside export_requirements. Each
+ * emit copies input immediately. First failure is sticky even if ignored by
+ * the callback; emit is the only allowed operation on this borrowed ctx. */
+typedef struct ayni_goal_requirement_sink_v1 {
+    uint32_t struct_size; /* sizeof this sink; immutable */
+    void *ctx;            /* borrowed Kernel staging context, never retained */
+    ayni_status_t (*emit)(void *ctx, const ayni_goal_requirement_v1 *requirement);
+} ayni_goal_requirement_sink_v1;
+
 /* Owner thread, outside callbacks, CONFIGURING only. Copies all inputs on
  * success. Requires valid nested struct_size, CatalogIds, finite domains,
  * unique field IDs and at most one IDENTIFIER execution target and egress
@@ -189,6 +207,61 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
                              ayni_grant_info_v1 *out_info);
 ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_id,
                                    uint32_t field_index, ayni_grant_field_info_v1 *out_field);
+
+/* Since 0.21. Persisted authority evidence; current usability is separate. */
+typedef uint32_t ayni_goal_authority_phase_t;
+/* Since 0.21. No saved requirement evidence; never equivalent to zero needs. */
+#define AYNI_GOAL_AUTHORITY_UNKNOWN ((ayni_goal_authority_phase_t)0)
+/* Since 0.21. At least one requirement has no selected Grant. */
+#define AYNI_GOAL_AUTHORITY_PROPOSED ((ayni_goal_authority_phase_t)1)
+/* Since 0.21. Complete selected references; consumption rechecks usability. */
+#define AYNI_GOAL_AUTHORITY_AUTHORIZED ((ayni_goal_authority_phase_t)2)
+/* Since 0.21. Explicit authorization resume is required; user pause is separate. */
+#define AYNI_GOAL_AUTHORITY_PAUSED ((ayni_goal_authority_phase_t)3)
+
+/* Since 0.21. Caller-owned summary, including explicit zero versus absence. */
+typedef struct ayni_goal_authority_info_v1 {
+    uint32_t struct_size;              /* sizeof this output */
+    ayni_goal_authority_phase_t phase; /* UNKNOWN iff metadata is absent */
+    uint64_t goal_id;                  /* exact owning Goal ID, nonzero */
+    uint64_t transition_id;            /* metadata's last update, 0 iff absent */
+    uint64_t commit_seq;               /* same update, 0 iff absent */
+    uint32_t requirement_count;        /* saved entries, 0 may be explicit */
+    uint32_t missing_count;            /* entries without a currently usable reference */
+    ayni_reason_t effective_reason;    /* NONE only when currently authorized */
+    uint32_t reserved;                 /* 0 */
+} ayni_goal_authority_info_v1;
+
+/* Since 0.21. Copy of one immutable requirement and its selected dependency. */
+typedef struct ayni_goal_requirement_info_v1 {
+    uint32_t struct_size;                          /* sizeof this output */
+    uint32_t capability_version;                   /* saved exact nonzero schema version */
+    uint64_t grant_id;                             /* selected identity, 0 iff revision is 0 */
+    uint32_t grant_revision;                       /* selection revision, not a live-state mirror */
+    uint32_t capability_id_size;                   /* used bytes in capability_id, no terminator */
+    char capability_id[AYNI_CATALOG_ID_MAX_BYTES]; /* immutable saved identity */
+    uint32_t field_count;           /* fields queryable in original domain and Scope */
+    ayni_reason_t effective_reason; /* NONE iff selected dependency is usable now */
+} ayni_goal_requirement_info_v1;
+
+/* Since 0.21. Both value sets are copied; no borrowed pointers escape. */
+typedef struct ayni_goal_requirement_field_info_v1 {
+    uint32_t struct_size;            /* sizeof this output */
+    ayni_grant_field_info_v1 domain; /* original complete Capability field */
+    ayni_grant_field_info_v1 scope;  /* immutable requested subset of domain */
+} ayni_goal_requirement_field_info_v1;
+
+/* Since 0.21. Owner-thread queries in the same lifecycle states as get_goal.
+ * Indexes use the original export order and canonical field order. Every
+ * failure leaves all output bytes unchanged; missing Goal/index is NOT_FOUND.
+ * A present Goal with absent metadata returns UNKNOWN and no requirements. */
+ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                      ayni_goal_authority_info_v1 *out_info);
+ayni_status_t ayni_get_goal_requirement(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                        uint32_t index, ayni_goal_requirement_info_v1 *out_info);
+ayni_status_t ayni_get_goal_requirement_field(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                              uint32_t requirement_index, uint32_t field_index,
+                                              ayni_goal_requirement_field_info_v1 *out_info);
 
 #ifdef __cplusplus
 }

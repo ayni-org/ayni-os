@@ -132,10 +132,10 @@ bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work) {
 } // namespace
 
 bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us) {
-    if (!model.goals.takes_input(source)) {
+    if (!model.goals.takes_input(source, &model.goal_authority)) {
         return false;
     }
-    model.goals.record_input(source, now_us, model.transitions.next());
+    model.goals.record_input(source, now_us, model.transitions.next(), &model.goal_authority);
     model.due_work_changed = true;
     return true;
 }
@@ -158,7 +158,8 @@ bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us) 
     return due;
 }
 
-bool do_due_work(WorkModel &model, uint64_t now_us) {
+bool do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
+                 uint64_t durable_seq) {
     uint32_t grant_index = 0;
     uint64_t deadline = work::no_time;
     if (model.grants.next_expiry({model.ids.boot_epoch(), now_us, 0}, grant_index, deadline) &&
@@ -171,6 +172,18 @@ bool do_due_work(WorkModel &model, uint64_t now_us) {
         return false;
     }
     work::WorkTables tables = model.tables();
+    if (work.kind != work::DueWork::Kind::expire) {
+        const auto check =
+            model.check_goal_authority(work.goal_index, authority_now_us, durable_seq);
+        if (check.status != AYNI_OK) {
+            // Confirmation may still arrive; it must not become a sticky pause.
+            if (check.reason == AYNI_REASON_GRANT_NOT_DURABLE) {
+                return false;
+            }
+            model.pause_goal_authority(work.goal_index);
+            return true;
+        }
+    }
     switch (work.kind) {
     case work::DueWork::Kind::expire:
         if (work::goal_end_exhausts(tables, work.goal_index, work::GoalChange::expire)) {

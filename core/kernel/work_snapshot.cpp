@@ -476,7 +476,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
                 ? command_record_version_for(model_.commands.at(command_index_))
             : type == work::goal_record_type &&
                     model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
-                ? work::goal_with_authority_record_version
+                ? work::goal_authority_state_record_version
             : type == authority::grant_record_type ? authority::grant_snapshot_record_version
                                                    : snapshot_record_version;
         durability::write_record_header({type, version, durability::record_required, size}, at);
@@ -644,6 +644,8 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     if (!work::read_goal_record(body, base_size, record, version) ||
         !work::read_goal_state_record(body + base_size, work::goal_state_record_size, state) ||
         record.goal_id != state.goal_id ||
+        (version < work::goal_authority_state_record_version &&
+         state.state.lifecycle == AYNI_GOAL_PROPOSED) ||
         model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return durability::BatchCheck::corrupt;
     }

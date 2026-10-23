@@ -34,6 +34,8 @@
 
 namespace ayni::work {
 
+class GoalAuthorityTable; // Owns the independent authorization phase.
+
 struct GoalOrigin {
     ayni_origin_t kind;
     ayni_channel_t channel;
@@ -191,6 +193,12 @@ class GoalTable {
     Placement insert(const NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
                      uint32_t &out_index);
 
+    // Newly inserted, same transition: withhold all triggers until approval.
+    void propose(uint32_t index);
+    // Authorization changed autonomously; preserve user lifecycle and revision,
+    // like trigger progress, but journal this Goal state with the metadata.
+    void authority_changed(uint32_t index, foundation::TransitionStamp stamp);
+
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every
     // descendant that is not terminal, to CANCELLED; expire likewise to
@@ -217,12 +225,14 @@ class GoalTable {
     // Whether some goal takes a local input from source: its trigger is
     // LOCAL_INPUT from that source, it is not terminal, paused or not, and
     // one more occurrence has a number (ADR-0021).
-    bool takes_input(const catalog::CatalogId &source) const;
+    bool takes_input(const catalog::CatalogId &source,
+                     const GoalAuthorityTable *authority = nullptr) const;
     // Records the input as one occurrence, due at now_us, of every goal that
     // takes it, and gives each of them stamp.commit_seq; the revision stays,
     // as for take_due. Only after takes_input(source) returned true.
     void record_input(const catalog::CatalogId &source, uint64_t now_us,
-                      foundation::TransitionStamp stamp);
+                      foundation::TransitionStamp stamp,
+                      const GoalAuthorityTable *authority = nullptr);
     // Drops the expiry of goal index, which then never expires, and gives it
     // stamp.commit_seq; the revision stays. Only when expiring it would raise
     // a revision past the largest, its own or one of the goals or tasks the
