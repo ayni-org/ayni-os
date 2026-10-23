@@ -90,7 +90,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-debug}
+          # No GCC native-debug: native-asan is the same GCC Debug build and
+          # runs the same tests with sanitizers on top.
           - {compiler: gcc, cc: gcc, cxx: g++, preset: native-release}
           - {compiler: gcc, cc: gcc, cxx: g++, preset: native-asan}
           - {compiler: gcc, cc: gcc, cxx: g++, preset: native-tsan}
@@ -105,6 +106,9 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 200M
+      # Without these ccache does not cache the unit tests, which are built
+      # with a precompiled header.
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
       # Runners for private repositories have two vCPUs. On two CPUs, two test
       # processes halved the sanitizer test time and four were no faster.
       CTEST_PARALLEL_LEVEL: 2
@@ -114,11 +118,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build ccache
       # Every run saves a new entry and starts from the newest one for its
       # compiler and preset. Pull requests also restore the entries that the
-      # weekly run saves on main.
-      - name: Restore compiler cache
+      # weekly run saves on main. The GoogleTest archive rides along.
+      - name: Restore compiler cache and downloads
         uses: actions/cache@v4
         with:
-          path: .ccache
+          path: |
+            .ccache
+            .downloads
           key: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}
           restore-keys: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-
       # GCC 13's ThreadSanitizer may fail to start with 32 bits of mmap
@@ -129,7 +135,7 @@ jobs:
       - name: Tool versions
         run: cmake --version && ninja --version && ccache --version && "$CC" --version && "$CXX" --version
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset ${{ matrix.preset }} -DAYNI_DOWNLOAD_DIR="$GITHUB_WORKSPACE/.downloads"
       - name: Build
         run: |
           ccache --zero-stats
@@ -151,8 +157,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build clang-tidy-18
+      # Without the precompiled header, so that this weekly build also checks
+      # that each test file includes what it uses.
       - name: Configure
-        run: cmake --preset native-debug
+        run: cmake --preset native-debug -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
       - name: Build generated sources
         run: cmake --build --preset native-debug
       - name: clang-tidy
@@ -167,10 +175,24 @@ jobs:
     container: espressif/idf:v6.0.3
     steps:
       - uses: actions/checkout@v4
+      # Kept the same way as the native compiler caches.
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-esp-idf-v6.0.3-${{ github.sha }}
+          restore-keys: ccache-esp-idf-v6.0.3-
       - name: Build
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
+          # In a container job the github.workspace expression names the path
+          # on the host, so the cache directory comes from the shell variable.
+          # Every compile passes a specs file that each build writes anew, and
+          # ccache hashes its modification time unless told to hash content.
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache" CCACHE_MAXSIZE=200M CCACHE_COMPILERCHECK=content
+          ccache --zero-stats
           cd targets/esp32_assistant
-          idf.py build
+          idf.py --ccache build
+          ccache --show-stats
           idf.py size

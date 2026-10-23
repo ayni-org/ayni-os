@@ -84,7 +84,7 @@ git diff --check origin/main
 
 - TSan 无法启动时先执行 `sudo sysctl vm.mmap_rnd_bits=28`（见 `docs/development.md`）。
 - 仓库内有代理的 worktree（例如 `.claude/worktrees/`）时，`tools/check_deps.py` 会把其中的源文件也算进来而报错；这不是真正的失败，删掉 worktree 后再运行。
-- CI（`.github/workflows/ci.yml`）共 8 项：依赖、契约、可读性与格式检查；GCC 的 native-debug、native-release、native-asan、native-tsan；Clang 的 native-debug；ESP32-S3 Hello 固件构建；clang-tidy（仅报告，不阻断）。Actions 按 job 向上取整到分钟计费，所以：草稿 PR 不跑；ready 的 PR 跑前 7 项，只改 `.md` 文件时只跑第一项，其余显示为 skipped；合并后 main 只跑第一项；每周一 02:00（北京时间）在 main 上及手动触发（workflow_dispatch）时跑全部 8 项。
+- CI（`.github/workflows/ci.yml`）共 7 项：依赖、契约、可读性与格式检查；GCC 的 native-release、native-asan、native-tsan；Clang 的 native-debug；ESP32-S3 Hello 固件构建；clang-tidy（仅报告，不阻断）。GCC 的 native-debug 不在 CI 里跑，因为 native-asan 就是 GCC 的 Debug 构建，跑同样的测试（用户 2026-10-23 决定）；上面的本地验证仍跑五个配置。Actions 按 job 向上取整到分钟计费，所以：草稿 PR 不跑；ready 的 PR 跑前 6 项，只改 `.md` 文件时只跑第一项，其余显示为 skipped；合并后 main 只跑第一项；每周一 02:00（北京时间）在 main 上及手动触发（workflow_dispatch）时跑全部 7 项。
 
 ## 5. 与用户沟通
 
