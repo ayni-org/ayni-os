@@ -174,6 +174,9 @@ typedef struct ayni_grant_info_v1 {
     uint64_t cleanup_through_grant_id;
     uint64_t cleanup_transition_id;
     uint64_t cleanup_commit_seq;
+    /* Since 0.22: 0 for generic authority; otherwise only this live Goal may
+     * consume the Grant. A bound Grant is a root and cannot be delegated. */
+    uint64_t bound_goal_id;
 } ayni_grant_info_v1;
 
 typedef struct ayni_grant_tokens_info_v1 {

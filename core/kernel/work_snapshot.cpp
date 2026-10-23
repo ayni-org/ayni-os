@@ -176,7 +176,8 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
     }
     for (uint32_t index = 0; index < model.grants.size(); ++index) {
         count(layout, authority::grant_snapshot_record_size(
-                          model.grants.at(index), authority::grant_snapshot_record_version));
+                          model.grants.at(index),
+                          authority::grant_snapshot_record_version_for(model.grants.at(index))));
     }
     for (uint32_t index = 0; index < model.goals.size(); ++index) {
         count(layout, work::goal_record_size(model.goals.at(index)) + goal_extra);
@@ -242,7 +243,8 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             if (next_at_depth(model_.grants, AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX, depth_, index_)) {
                 type = authority::grant_record_type;
                 size = authority::grant_snapshot_record_size(
-                    model_.grants.at(index_), authority::grant_snapshot_record_version);
+                    model_.grants.at(index_),
+                    authority::grant_snapshot_record_version_for(model_.grants.at(index_)));
                 return true;
             }
             section_ = Section::goals;
@@ -363,7 +365,8 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
     case authority::grant_record_type: {
         authority::write_grant_snapshot_record(
             model_.grants.at(index_), model_.grants.source_domain(index_),
-            model_.grants.scope(index_), body, authority::grant_snapshot_record_version);
+            model_.grants.scope(index_), body,
+            authority::grant_snapshot_record_version_for(model_.grants.at(index_)));
         break;
     }
     case work::goal_record_type: {
@@ -477,8 +480,9 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             : type == work::goal_record_type &&
                     model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
                 ? work::goal_authority_state_record_version
-            : type == authority::grant_record_type ? authority::grant_snapshot_record_version
-                                                   : snapshot_record_version;
+            : type == authority::grant_record_type
+                ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
+                : snapshot_record_version;
         durability::write_record_header({type, version, durability::record_required, size}, at);
         write_record(type, at + record_prefix, size);
         out_size += record_prefix + size;

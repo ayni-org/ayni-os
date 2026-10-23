@@ -12,7 +12,7 @@ constexpr uint32_t created_stamp_at = 0;
 constexpr uint32_t last_stamp_at = created_stamp_at + stamp_size;
 constexpr uint32_t revision_at = last_stamp_at + stamp_size;
 constexpr uint32_t lifecycle_at = revision_at + sizeof(uint32_t);
-// ADR-0031 extends only snapshot type13/v2; journal creates remain type13/v1.
+// records.md: snapshot v2/v3 share the cleanup tail after their creation body.
 constexpr uint32_t revoker_at = lifecycle_at + sizeof(uint32_t);
 constexpr uint32_t cleanup_after_at = revoker_at + sizeof(uint64_t);
 constexpr uint32_t cleanup_through_at = cleanup_after_at + sizeof(uint64_t);
@@ -20,8 +20,10 @@ constexpr uint32_t cleanup_stamp_at = cleanup_through_at + sizeof(uint64_t);
 
 uint32_t snapshot_tail_size(uint16_t version) {
     return version == grant_snapshot_legacy_record_version ? grant_snapshot_tail_size
-           : version == grant_snapshot_record_version      ? grant_revocation_snapshot_tail_size
-                                                           : 0U;
+           : version == grant_snapshot_record_version ||
+                   version == goal_grant_snapshot_record_version
+               ? grant_revocation_snapshot_tail_size
+               : 0U;
 }
 
 void write_stamp(foundation::TransitionStamp stamp, uint8_t *body) {
@@ -51,6 +53,8 @@ bool valid_grant_record(const GrantRecord &record) {
         grant.owner_principal_id == 0U || grant.owner_binding_revision == 0U ||
         grant.capability_id.size() == 0U || grant.capability_version == 0U ||
         !valid_persisted_grant_flags(grant.flags) ||
+        !valid_goal_binding(grant.bound_goal_id, grant.parent_grant_id, grant.flags) ||
+        (grant.bound_goal_id != 0U && grant.bound_goal_id >= record.grant_id) ||
         !valid_grant_lifetime(grant.lifetime, grant.duration_us) ||
         record.depth > AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX ||
         (grant.parent_grant_id == 0U
@@ -68,7 +72,16 @@ bool valid_grant_record(const GrantRecord &record) {
 
 uint32_t grant_record_size(const Grant &grant) {
     return grant_record_fixed_size + grant.capability_id.size() + grant.source_domain_size +
-           grant.scope_size;
+           grant.scope_size + (grant.bound_goal_id == 0U ? 0U : goal_grant_binding_size);
+}
+
+uint16_t grant_record_version_for(const Grant &grant) {
+    return grant.bound_goal_id == 0U ? grant_record_version : goal_grant_record_version;
+}
+
+uint16_t grant_snapshot_record_version_for(const Grant &grant) {
+    return grant.bound_goal_id == 0U ? grant_snapshot_record_version
+                                     : goal_grant_snapshot_record_version;
 }
 
 void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
@@ -88,12 +101,17 @@ void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 
     writer.u32(grant.depth);
     writer.bytes(domain.data, domain.size);
     writer.bytes(scope.data, scope.size);
+    if (grant.bound_goal_id != 0U) {
+        writer.u64(grant.bound_goal_id);
+    }
 }
 
-// records.md type 13/v1: decode into a borrowed temporary, validate the exact
+// records.md type 13/v1/v2: decode into a borrowed temporary, validate the exact
 // body and accepted Grant semantics, then publish out without a partial result.
-bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
-    if (body == nullptr || size < grant_record_fixed_size) {
+bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out, uint16_t version) {
+    const bool bound = version == goal_grant_record_version;
+    if ((version != grant_record_version && !bound) || body == nullptr ||
+        size < grant_record_fixed_size + (bound ? goal_grant_binding_size : 0U)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -121,6 +139,12 @@ bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
     uint32_t scope_size = 0;
     const uint8_t *scope = reader.bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX, scope_size);
     record.scope = {scope, scope_size};
+    if (bound) {
+        record.grant.bound_goal_id = reader.u64();
+        if (record.grant.bound_goal_id == 0U) {
+            return false; // A new envelope cannot erase its promised binding.
+        }
+    }
     if (!reader.ok() || delegation > 1U || !valid_grant_record(record)) {
         return false;
     }
@@ -176,8 +200,11 @@ bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecor
 
 uint32_t grant_snapshot_record_size(const Grant &grant, uint16_t version) {
     const uint32_t tail = snapshot_tail_size(version);
-    return tail == 0U || (version == grant_snapshot_legacy_record_version &&
-                          grant.lifecycle == AYNI_GRANT_REVOKED)
+    return tail == 0U ||
+                   ((version == goal_grant_snapshot_record_version) !=
+                    (grant.bound_goal_id != 0U)) ||
+                   (version == grant_snapshot_legacy_record_version &&
+                    grant.lifecycle == AYNI_GRANT_REVOKED)
                ? 0U
                : grant_record_size(grant) + tail;
 }
@@ -193,7 +220,7 @@ void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_
     write_stamp(grant.stamp, tail + last_stamp_at);
     foundation::store_le32(tail + revision_at, grant.revision);
     foundation::store_le32(tail + lifecycle_at, grant.lifecycle);
-    if (version == grant_snapshot_record_version) {
+    if (version != grant_snapshot_legacy_record_version) {
         foundation::store_le64(tail + revoker_at, grant.revoked_by_root_id);
         foundation::store_le64(tail + cleanup_after_at, grant.cleanup_after_grant_id);
         foundation::store_le64(tail + cleanup_through_at, grant.cleanup_through_grant_id);
@@ -211,7 +238,9 @@ bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapsho
     }
     const uint32_t create_size = size - tail_size;
     GrantSnapshotRecord record{};
-    if (!read_grant_record(body, create_size, record.create)) {
+    if (!read_grant_record(body, create_size, record.create,
+                           version == goal_grant_snapshot_record_version ? goal_grant_record_version
+                                                                         : grant_record_version)) {
         return false;
     }
     const uint8_t *tail = body + create_size;
@@ -219,7 +248,7 @@ bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapsho
     record.stamp = read_stamp(tail + last_stamp_at);
     record.revision = foundation::load_le32(tail + revision_at);
     record.lifecycle = foundation::load_le32(tail + lifecycle_at);
-    if (version == grant_snapshot_record_version) {
+    if (version != grant_snapshot_legacy_record_version) {
         record.revoked_by_root_id = foundation::load_le64(tail + revoker_at);
         record.cleanup_after_grant_id = foundation::load_le64(tail + cleanup_after_at);
         record.cleanup_through_grant_id = foundation::load_le64(tail + cleanup_through_at);

@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 21u
+#define AYNI_ABI_MINOR 22u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -889,6 +889,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_GOAL_AUTHORITY_PAUSED ((ayni_reason_t)63)
 /* Since 0.21. DENIED: child requirements exceed their parent's saved ceiling. */
 #define AYNI_REASON_GOAL_AUTHORITY_PARENT ((ayni_reason_t)64)
+/* Since 0.22: Grant is bound to another, ended or missing Goal. */
+#define AYNI_REASON_GRANT_GOAL ((ayni_reason_t)65)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;

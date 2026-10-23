@@ -61,6 +61,7 @@ struct NewGrant {
     ayni_grant_lifetime_t lifetime;   // PERMANENT or CURRENT_BOOT; determines duration semantics.
     uint64_t duration_us;             // Microseconds; 0 iff PERMANENT, positive for CURRENT_BOOT.
     uint32_t flags;                   // Known request bits; accepted facts use supported bits only.
+    uint64_t bound_goal_id = 0; // 0 for generic authority; otherwise exact nondelegable root owner.
 };
 
 // Current owner-thread observations; none is serialized as a new Grant field.
@@ -68,6 +69,7 @@ struct GrantContext {
     uint64_t boot_epoch;  // Current nonzero durable boot epoch embedded in Kernel IDs.
     uint64_t now_us;      // Current boot's monotonic microseconds, never a cross-boot timestamp.
     uint64_t durable_seq; // Confirmed commit frontier; 0 means no confirmed Grant facts.
+    uint64_t goal_id = 0; // Exact consuming Goal; 0 admits generic Grants only.
 };
 
 // Classified authority admission result, with no mutation on a refusal.
@@ -112,6 +114,7 @@ struct Grant {
     // 0 means none. Reload drops/rebuilds rows; only the current writer frontier
     // may discharge it. It is not part of Grant records (ADR-0037).
     uint64_t reference_release_seq = 0;
+    uint64_t bound_goal_id = 0; // Immutable Goal ID; 0 is generic, nonzero forbids delegation.
 };
 
 struct GrantRecord;
@@ -171,6 +174,12 @@ class GrantTable {
         uint64_t boot_epoch;  // Nonzero epoch required in the newly allocated Grant ID.
         CheckedChain parent_chain{}; // Already checked ancestors, for caller-owned subject rules.
     };
+    // Local reservations for an unchanged table. Callers discard this entire
+    // plan on refusal; selected slots are not live allocations (ADR-0037).
+    struct BatchPlacement {
+        GrantReclaimExclusions excluded; // Work references plus already reserved replacements.
+        uint32_t appended = 0;           // Reserved tail rows, starting at the unchanged size().
+    };
     // Validate shape, parent/chain, limits and replacement without changing the table;
     // publish out only on success. Caller checks subject facts using parent_chain.
     GrantCheck check_create(const NewGrant &grant, uint32_t expected_parent_revision,
@@ -179,6 +188,14 @@ class GrantTable {
     // Consume that unchanged plan/input with a fresh ID/stamp; copy the byte views.
     bool insert(const NewGrant &grant, const Admission &admission, uint64_t new_grant_id,
                 foundation::TransitionStamp stamp, uint32_t &out_index);
+    // Admit a Goal-bound root using the work owner's immutable canonical
+    // ceiling. No exporter or typed expansion; failed calls preserve plan/out.
+    GrantCheck check_goal_create(const NewGrant &grant, ayni_bytes_v1 scope, GrantContext context,
+                                 BatchPlacement &plan, Admission &out) const;
+    // Consume one planned slot in admission order; borrowed bytes cannot alias
+    // any selected Grant row and remain valid until the batch finishes.
+    bool insert_goal(const NewGrant &grant, ayni_bytes_v1 scope, const Admission &admission,
+                     uint64_t new_grant_id, foundation::TransitionStamp stamp, uint32_t &out_index);
     // Query-only chain admission when the caller needs no subject-path output.
     GrantCheck check_chain(uint32_t index, GrantContext context) const;
     // Same admission, publishing the checked path only on success. Does not
@@ -289,6 +306,12 @@ class GrantTable {
     bool next_id_after(uint64_t after_id, uint64_t through_id, uint32_t &out_index) const;
     bool descendant_of(uint32_t index, uint64_t root_id) const;
     bool reclaimable(uint32_t index, uint64_t durable_seq) const;
+    GrantCheck reserve_placement(uint64_t durable_seq, BatchPlacement &plan,
+                                 Admission &admission) const;
+    bool valid_install(const Admission &admission, uint64_t id,
+                       foundation::TransitionStamp stamp) const;
+    void publish(const NewGrant &grant, const Admission &admission, uint64_t id,
+                 foundation::TransitionStamp stamp, uint32_t &out_index);
     // Snapshot may retain ancestors terminated after this creation; append
     // replay requires every ancestor still active at that point in the log.
     enum class AncestorHistory { active, later_terminal, invalid };

@@ -395,7 +395,8 @@ AYNI_LAYOUT(grant_info_transition, offsetof(ayni_grant_info_v1, transition_id) =
 AYNI_LAYOUT(grant_info_seq, offsetof(ayni_grant_info_v1, commit_seq) == 144);
 AYNI_LAYOUT(grant_info_effective_reason, offsetof(ayni_grant_info_v1, effective_reason) == 152);
 AYNI_LAYOUT(grant_info_reserved, offsetof(ayni_grant_info_v1, reserved) == 156);
-AYNI_LAYOUT(grant_info_size, sizeof(ayni_grant_info_v1) == 200);
+AYNI_LAYOUT(grant_info_goal, offsetof(ayni_grant_info_v1, bound_goal_id) == 200);
+AYNI_LAYOUT(grant_info_size, sizeof(ayni_grant_info_v1) == 208);
 
 AYNI_LAYOUT(grant_tokens_members, offsetof(ayni_grant_tokens_info_v1, members) == 0);
 AYNI_LAYOUT(grant_tokens_sizes, offsetof(ayni_grant_tokens_info_v1, member_sizes) == 256);

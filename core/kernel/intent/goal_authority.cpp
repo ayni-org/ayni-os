@@ -136,12 +136,13 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
 // Check the originally selected dependency. Never substitute another Grant
 // after revocation, expiry or catalog drift (ADR-0037 decision 6).
 authority::GrantCheck WorkModel::check_requirement(const work::GoalRequirement &requirement,
-                                                   uint64_t now_us, uint64_t durable_seq) const {
+                                                   uint64_t now_us, uint64_t durable_seq,
+                                                   uint64_t goal_id) const {
     uint32_t index = 0;
     if (!grants.find(requirement.dependency.grant_id, index)) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
     }
-    const auto check = check_grant(index, now_us, durable_seq);
+    const auto check = check_grant(index, now_us, durable_seq, goal_id);
     if (check.status != AYNI_OK) {
         return check;
     }
@@ -167,7 +168,8 @@ authority::GrantCheck WorkModel::check_goal_authority(uint32_t goal_index, uint6
                                      : AYNI_REASON_GOAL_AUTHORITY_MISSING};
         }
         for (uint32_t index = 0; index < record.count; ++index) {
-            const auto check = check_requirement(record.requirements[index], now_us, durable_seq);
+            const auto check =
+                check_requirement(record.requirements[index], now_us, durable_seq, record.goal_id);
             if (check.status != AYNI_OK) {
                 return check;
             }

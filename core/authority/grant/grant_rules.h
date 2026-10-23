@@ -5,6 +5,8 @@
 
 #include <ayni/authority.h>
 
+#include "foundation/kernel_id.h"
+
 #include <cstdint>
 
 namespace ayni::authority {
@@ -33,6 +35,11 @@ inline bool valid_persisted_grant_flags(uint32_t flags) {
 inline bool valid_grant_lifetime(ayni_grant_lifetime_t lifetime, uint64_t duration_us) {
     return (lifetime == AYNI_GRANT_PERMANENT && duration_us == 0U) ||
            (lifetime == AYNI_GRANT_CURRENT_BOOT && duration_us != 0U);
+}
+
+// ADR-0037: Goal-specific authority is a nondelegable root; 0 is generic.
+inline bool valid_goal_binding(uint64_t goal_id, uint64_t parent_id, uint32_t flags) {
+    return goal_id == 0U || (foundation::is_kernel_id(goal_id) && parent_id == 0U && flags == 0U);
 }
 
 } // namespace ayni::authority

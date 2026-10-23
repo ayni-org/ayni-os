@@ -21,7 +21,8 @@ GrantCheck creation_input(const NewGrant &grant, uint32_t expected_parent_revisi
     const bool limited = grant.lifetime == AYNI_GRANT_CURRENT_BOOT;
     if (grant.subject_instance_id == 0U || grant.owner_principal_id == 0U ||
         grant.owner_binding_revision == 0U || grant.capability_id.size() == 0U ||
-        grant.capability_version == 0U || grant.scope == nullptr ||
+        grant.capability_version == 0U ||
+        !valid_goal_binding(grant.bound_goal_id, grant.parent_grant_id, grant.flags) ||
         !valid_grant_flags(grant.flags) ||
         !valid_grant_lifetime(grant.lifetime, grant.duration_us) || context.boot_epoch == 0U ||
         context.boot_epoch > foundation::max_boot_epoch ||
@@ -396,7 +397,8 @@ bool GrantTable::apply_cleanup(const CleanupPlan &plan, foundation::TransitionSt
 GrantCheck GrantTable::check_parent_contract(uint32_t parent_index, const NewGrant &child) const {
     const Grant &parent = at(parent_index);
     const bool compatible =
-        parent.allow_delegation && parent.owner_principal_id == child.owner_principal_id &&
+        parent.bound_goal_id == 0U && parent.allow_delegation &&
+        parent.owner_principal_id == child.owner_principal_id &&
         parent.owner_binding_revision == child.owner_binding_revision &&
         parent.capability_version == child.capability_version &&
         parent.capability_id.equals({child.capability_id.data(), child.capability_id.size()}) &&
@@ -461,6 +463,10 @@ GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context, Checked
                 return false;
             }
             const Grant &grant = at(at_index);
+            if (grant.bound_goal_id != 0U && grant.bound_goal_id != context.goal_id) {
+                failure = {AYNI_DENIED, AYNI_REASON_GRANT_GOAL};
+                return false;
+            }
             if (gated(grant.grant_id) || grant.lifecycle == AYNI_GRANT_REVOKED) {
                 failure = {AYNI_DENIED, AYNI_REASON_GRANT_REVOKED};
                 return false;
@@ -497,6 +503,9 @@ GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context, Checked
 GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_parent_revision,
                                     GrantContext context, Admission &out,
                                     const GrantReclaimExclusions &excluded) const {
+    if (grant.scope == nullptr || grant.bound_goal_id != 0U) {
+        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
+    }
     const auto input = creation_input(grant, expected_parent_revision, context);
     if (input.status != AYNI_OK) {
         return input;
@@ -548,40 +557,96 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
         grant.source_domain.size > limits_.scope_max_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
     }
-    // ADR-0030 decision 7: reclaim only safe leaves, ordered by terminal
-    // commit then ID. Creation order must not influence historical retention.
-    if (grants_.full()) {
-        uint32_t earliest = size();
-        for (uint32_t index = 0; index < size(); ++index) {
-            const Grant &candidate = at(index);
-            if (excluded.contains(index) || !reclaimable(index, context.durable_seq)) {
-                continue;
-            }
-            if (earliest == size() || candidate.stamp.commit_seq < at(earliest).stamp.commit_seq ||
-                (candidate.stamp.commit_seq == at(earliest).stamp.commit_seq &&
-                 candidate.grant_id < at(earliest).grant_id)) {
-                earliest = index;
-            }
-        }
-        if (earliest == size()) {
-            return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
-        }
-        admission.index = earliest;
-        admission.replaced_grant_id = at(earliest).grant_id;
+    BatchPlacement placement{excluded, 0};
+    const auto reserved = reserve_placement(context.durable_seq, placement, admission);
+    if (reserved.status != AYNI_OK) {
+        return reserved;
     }
     out = admission;
     return {AYNI_OK, AYNI_REASON_NONE};
+}
+
+// Ordinary creation and a whole Goal approval share append-first placement.
+// Safe terminal leaves are ordered by commit then ID (ADR-0030 decision 7).
+GrantCheck GrantTable::reserve_placement(uint64_t durable_seq, BatchPlacement &plan,
+                                         Admission &admission) const {
+    if (plan.appended < limits_.capacity - size()) {
+        admission.index = size() + plan.appended;
+        admission.replaced_grant_id = 0;
+        ++plan.appended;
+        return {AYNI_OK, AYNI_REASON_NONE};
+    }
+    uint32_t earliest = size();
+    for (uint32_t index = 0; index < size(); ++index) {
+        const Grant &candidate = at(index);
+        if (plan.excluded.contains(index) || !reclaimable(index, durable_seq)) {
+            continue;
+        }
+        if (earliest == size() || candidate.stamp.commit_seq < at(earliest).stamp.commit_seq ||
+            (candidate.stamp.commit_seq == at(earliest).stamp.commit_seq &&
+             candidate.grant_id < at(earliest).grant_id)) {
+            earliest = index;
+        }
+    }
+    if (earliest == size()) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
+    }
+    admission.index = earliest;
+    admission.replaced_grant_id = at(earliest).grant_id;
+    plan.excluded.add(earliest);
+    return {AYNI_OK, AYNI_REASON_NONE};
+}
+
+// Saved work ceilings are already canonical. Validate that representation at
+// this boundary without expanding it back into caller-owned typed arrays.
+GrantCheck GrantTable::check_goal_create(const NewGrant &grant, ayni_bytes_v1 requested,
+                                         GrantContext context, BatchPlacement &plan,
+                                         Admission &out) const {
+    if (grant.bound_goal_id == 0U || grant.scope != nullptr) {
+        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
+    }
+    const auto input = creation_input(grant, 0, context);
+    if (input.status != AYNI_OK) {
+        return input;
+    }
+    const auto covered = covers(grant.source_domain, grant.source_domain, requested);
+    if (covered.status != AYNI_OK || !covered.covered) {
+        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
+    }
+    if (requested.size > limits_.scope_max_bytes ||
+        grant.source_domain.size > limits_.scope_max_bytes) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
+    }
+    Admission admitted{size(),
+                       0,
+                       requested.size,
+                       0,
+                       grant.lifetime == AYNI_GRANT_CURRENT_BOOT
+                           ? context.now_us + grant.duration_us
+                           : no_grant_deadline_us,
+                       context.boot_epoch};
+    const auto reserved = reserve_placement(context.durable_seq, plan, admitted);
+    if (reserved.status == AYNI_OK) {
+        out = admitted;
+    }
+    return reserved;
+}
+
+bool GrantTable::valid_install(const Admission &admission, uint64_t id,
+                               foundation::TransitionStamp stamp) const {
+    uint32_t ignored = 0;
+    return is_kernel_id(id) && id_boot_epoch(id) == admission.boot_epoch && !find(id, ignored) &&
+           stamped(stamp) && admission.index <= size() &&
+           (admission.index == size()
+                ? !grants_.full() && admission.replaced_grant_id == 0U
+                : at(admission.index).grant_id == admission.replaced_grant_id);
 }
 
 // Consume an unchanged admission plan with a fresh ID/stamp; prepare both
 // byte regions before publishing the retained row (ADR-0030 decision 7).
 bool GrantTable::insert(const NewGrant &grant, const Admission &admission, uint64_t new_grant_id,
                         foundation::TransitionStamp stamp, uint32_t &out_index) {
-    uint32_t ignored = 0;
-    if (!is_kernel_id(new_grant_id) || id_boot_epoch(new_grant_id) != admission.boot_epoch ||
-        find(new_grant_id, ignored) || !stamped(stamp) || admission.index > size() ||
-        (admission.index == size() ? grants_.full() || admission.replaced_grant_id != 0U
-                                   : at(admission.index).grant_id != admission.replaced_grant_id)) {
+    if (!valid_install(admission, new_grant_id, stamp)) {
         return false;
     }
     uint32_t scope_size = 0;
@@ -589,35 +654,54 @@ bool GrantTable::insert(const NewGrant &grant, const Admission &admission, uint6
                         limits_.scope_max_bytes, scope_size) != AYNI_OK) {
         return false;
     }
+    publish(grant, admission, new_grant_id, stamp, out_index);
+    return true;
+}
+
+bool GrantTable::insert_goal(const NewGrant &grant, ayni_bytes_v1 requested,
+                             const Admission &admission, uint64_t new_grant_id,
+                             foundation::TransitionStamp stamp, uint32_t &out_index) {
+    if (!valid_install(admission, new_grant_id, stamp)) {
+        return false;
+    }
+    std::memcpy(scope_storage(admission.index), requested.data, requested.size);
+    publish(grant, admission, new_grant_id, stamp, out_index);
+    return true;
+}
+
+// Both admission paths publish the same immutable fact after preparing Scope.
+// The row is visible only after its complete domain and authority are copied.
+void GrantTable::publish(const NewGrant &grant, const Admission &admission, uint64_t new_grant_id,
+                         foundation::TransitionStamp stamp, uint32_t &out_index) {
     std::memcpy(domain_storage(admission.index), grant.source_domain.data,
                 grant.source_domain.size);
-    const Grant value{new_grant_id,
-                      grant.subject_instance_id,
-                      grant.parent_grant_id,
-                      admission.replaced_grant_id,
-                      grant.owner_principal_id,
-                      grant.owner_binding_revision,
-                      grant.capability_id,
-                      grant.capability_version,
-                      grant.lifetime,
-                      grant.duration_us,
-                      (grant.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U,
-                      admission.depth,
-                      stamp,
-                      stamp,
-                      grant_active_revision,
-                      AYNI_GRANT_ACTIVE,
-                      grant.source_domain.size,
-                      scope_size,
-                      admission.deadline_us,
-                      AYNI_REASON_NONE};
+    Grant value{new_grant_id,
+                grant.subject_instance_id,
+                grant.parent_grant_id,
+                admission.replaced_grant_id,
+                grant.owner_principal_id,
+                grant.owner_binding_revision,
+                grant.capability_id,
+                grant.capability_version,
+                grant.lifetime,
+                grant.duration_us,
+                (grant.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U,
+                admission.depth,
+                stamp,
+                stamp,
+                grant_active_revision,
+                AYNI_GRANT_ACTIVE,
+                grant.source_domain.size,
+                admission.scope_size,
+                admission.deadline_us,
+                AYNI_REASON_NONE};
+    value.bound_goal_id = grant.bound_goal_id;
     if (admission.index == size()) {
         static_cast<void>(grants_.push_back(value));
     } else {
         grants_[admission.index] = value;
     }
     out_index = admission.index;
-    return true;
 }
 
 // Schedule finite facts only. An old-boot or recovered deadline is already
@@ -781,26 +865,27 @@ void GrantTable::install_restored(const GrantRecord &record, const RestoredState
     const NewGrant &grant = record.grant;
     std::memcpy(domain_storage(index), grant.source_domain.data, grant.source_domain.size);
     std::memcpy(scope_storage(index), record.scope.data, record.scope.size);
-    const Grant value{record.grant_id,
-                      grant.subject_instance_id,
-                      grant.parent_grant_id,
-                      record.replaced_grant_id,
-                      grant.owner_principal_id,
-                      grant.owner_binding_revision,
-                      grant.capability_id,
-                      grant.capability_version,
-                      grant.lifetime,
-                      grant.duration_us,
-                      (grant.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U,
-                      record.depth,
-                      state.created,
-                      state.stamp,
-                      state.revision,
-                      state.lifecycle,
-                      grant.source_domain.size,
-                      record.scope.size,
-                      no_grant_deadline_us,
-                      AYNI_REASON_NONE};
+    Grant value{record.grant_id,
+                grant.subject_instance_id,
+                grant.parent_grant_id,
+                record.replaced_grant_id,
+                grant.owner_principal_id,
+                grant.owner_binding_revision,
+                grant.capability_id,
+                grant.capability_version,
+                grant.lifetime,
+                grant.duration_us,
+                (grant.flags & AYNI_GRANT_ALLOW_DELEGATION) != 0U,
+                record.depth,
+                state.created,
+                state.stamp,
+                state.revision,
+                state.lifecycle,
+                grant.source_domain.size,
+                record.scope.size,
+                no_grant_deadline_us,
+                AYNI_REASON_NONE};
+    value.bound_goal_id = grant.bound_goal_id;
     if (index == size()) {
         static_cast<void>(grants_.push_back(value));
     } else {

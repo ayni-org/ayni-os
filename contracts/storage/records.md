@@ -192,6 +192,12 @@ journal与snapshot共享显式上下文分类；13/v2只允许snapshot，journal
 
 导出、回读与恢复按页复用同一存储缓冲，单条记录上限由配置容量计算，整份快照可以大于缓冲；Core 不分配另一份 WorkModel 或完整快照内存。任何损坏、不支持或容量不足均丢弃本次导入的全部可恢复状态，自动reload已接受的易失Gate/pending仍由各owner保留。绑定不匹配时，已完整校验的模型仅保留用于只读诊断。
 
+### Goal 专属 Grant 的版本扩展
+
+自 E3a（ADR-0037）起，通用 Grant 的旧字节保持不变。专属创建使用 REQUIRED type 13/v2：完整旧 type 13/v1 正文后接非零 bound_goal_id（u64，小端），该绑定必须为早于此 Grant ID 的合法 Kernel ID，且 parent_grant_id、flags 均为 0。绑定只允许该 Goal 消费，不能委派；不能用普通 GRANT_CREATE 的完整 canonical 命令证明此绑定。
+
+专属快照使用 REQUIRED type 13/v3：上述创建正文加原 v2 的 80 B 状态/清理尾部；最大为 200 + 2×scope_max_bytes。通用快照仍写 v2 并可读历史 v1；journal v2 和 snapshot v2 含义不同，由上下文分类。新版本零绑定、旧版本多出绑定字节、版本与正文尾部不匹配都拒绝，不丢字段回退。E3a 暂无公开专属创建；整批批准的 journal 配对随 E3b 闭合。
+
 ### 激活、轮转与恢复
 
 `SNAPSHOT_COMMIT` 绑定槽、generation、覆盖提交、最大 transition 与正文 CRC；它的批次使用 `commit_seq=S+1`、`transition_id=max_transition_id+1`。schema 0→1 迁移的这个激活批次仍用 schema 0 并置 `REQUIRED`，切换前保留原日志；旧 reader 不能忽略激活记录回到过时状态继续执行。空存储直接建立 schema 1 的栅栏和启动记录，不制造空快照或迁移激活。

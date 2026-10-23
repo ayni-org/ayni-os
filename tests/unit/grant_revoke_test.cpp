@@ -902,8 +902,8 @@ TEST(GrantRevokeRecords, snapshot_v2_has_independent_eighty_byte_tail_and_v1_rem
         0,  0, 4, 0, 0, 0, 1, 0, 0,  0, 30, 0, 0, 0, 0, 0, 0,  0, 30, 0, 0, 0, 0, 0, 0,  0};
     const Grant &root = source.table.at(0);
     EXPECT_EQ(grant_snapshot_record_size(root, 2), grant_record_size(root) + 80U);
-    EXPECT_EQ(grant_snapshot_record_max(64), 320U);
-    EXPECT_EQ(grant_snapshot_record_max(4096), 8384U);
+    EXPECT_EQ(grant_snapshot_record_max(64), 328U);
+    EXPECT_EQ(grant_snapshot_record_max(4096), 8392U);
     std::vector<uint8_t> bytes(grant_snapshot_record_size(root, 2));
     write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
                                 bytes.data(), 2);

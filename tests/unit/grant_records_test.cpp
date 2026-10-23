@@ -230,10 +230,10 @@ TEST(GrantRecords, fixed_budget_includes_all_three_length_prefixes_and_snapshot_
     EXPECT_EQ(grant_state_record_type, 14U);
     EXPECT_EQ(grant_record_version, 1U);
     EXPECT_EQ(grant_state_record_version, 1U);
-    EXPECT_EQ(grant_record_max(64), 240U);
-    EXPECT_EQ(grant_record_max(4096), 8304U);
-    EXPECT_EQ(grant_snapshot_record_max(64), 320U);
-    EXPECT_EQ(grant_snapshot_record_max(4096), 8384U);
+    EXPECT_EQ(grant_record_max(64), 248U);
+    EXPECT_EQ(grant_record_max(4096), 8312U);
+    EXPECT_EQ(grant_snapshot_record_max(64), 328U);
+    EXPECT_EQ(grant_snapshot_record_max(4096), 8392U);
 }
 
 // ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
