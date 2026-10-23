@@ -63,13 +63,15 @@ ctest --test-dir build/native --output-on-failure
 
 `ctest` 默认一次只跑一个用例，而 `gtest_discover_tests` 把每个 GoogleTest 用例注册成一个独立进程（现约 900 个），串行时进程启动占了大部分时间，sanitizer 预设下尤其明显。按上文的资源预算设置 `CTEST_PARALLEL_LEVEL` 即可并行。用例的存储文件各在 `mkdtemp` 新建的临时目录里，彼此不共享文件。2026-10-23 限制在 2 个 CPU 上实测：`native-asan` 由 77 s 降到 40 s，`native-tsan` 由 39 s 降到 19 s，并行数 4 不比 2 更快。预设不写死并行数，因为合适的值取决于当时的资源预算。
 
-装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
+单元测试目标 `ayni_unit_tests` 用预编译头：每个测试文件都 include 的 `gtest.h` 解析一次约 0.9 s，现在连同几个常用标准库头每次构建只解析一次。测试文件仍应 include 自己用到的头；每周的 clang-tidy 运行关掉预编译头构建，以发现漏掉的 include，本地也可以在配置时加 `-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON` 检查。Release 下测试代码按 `-O1` 编译，Core 仍是 `-O3`：测试只负责驱动 Core，按 `-O3` 优化测试代码只增加构建时间。
 
-CI 的 native 任务设置 `CTEST_PARALLEL_LEVEL=2`（私有仓库的 runner 为 2 vCPU），并用 ccache 加 `actions/cache` 按编译器与预设保存编译缓存；main 上的缓存来自每周一的全量运行，PR 从那里开始。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
+装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。因为有预编译头，还要设置 `CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime`，否则 ccache 不缓存单元测试。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
+
+CI 的 native 任务设置 `CTEST_PARALLEL_LEVEL=2`（私有仓库的 runner 为 2 vCPU），并用 ccache 加 `actions/cache` 按编译器与预设保存编译缓存，GoogleTest 发布包也存在同一份缓存里。ESP-IDF 任务同样用 ccache 和 `actions/cache` 保存固件的编译缓存。main 上的缓存来自每周一的全量运行，PR 从那里开始。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
 
 ### 离线配置 GoogleTest
 
-首次配置测试会下载 GoogleTest 发布包。没有网络时，先把 `googletest-1.17.0.tar.gz` 解压到本地，再在配置时指定：
+首次配置测试会下载 GoogleTest 发布包，每个构建目录各下载一次。要让多个构建目录共用一份，在配置时用 `-DAYNI_DOWNLOAD_DIR=<目录>` 指定同一个目录：其中已有、哈希匹配的包不再下载。没有网络时，先把 `googletest-1.17.0.tar.gz` 解压到本地，再在配置时指定：
 
 ```sh
 cmake --preset native-debug -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest-1.17.0

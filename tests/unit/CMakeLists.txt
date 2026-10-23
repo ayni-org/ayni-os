@@ -57,4 +57,16 @@ add_executable(ayni_unit_tests
 target_link_libraries(ayni_unit_tests PRIVATE
     ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node
     ayni_warnings GTest::gtest_main)
+# Every test file includes gtest.h, which takes about a second to parse, so the
+# headers most test files share are parsed once per build. Test files still
+# include what they use; the weekly clang-tidy run builds without this.
+target_precompile_headers(ayni_unit_tests PRIVATE
+    <gtest/gtest.h> <array> <cstddef> <cstdint> <cstring> <limits> <string> <vector>)
+# Clang otherwise stamps the precompiled header with its build time, and
+# ccache then misses every test file in a fresh build directory.
+target_compile_options(ayni_unit_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:Clang,AppleClang>:SHELL:-Xclang -fno-pch-timestamp>")
+# Release still builds Core at -O3. Building the test code that drives it at
+# -O3 made the Release build about 40% slower and checked nothing more.
+target_compile_options(ayni_unit_tests PRIVATE $<$<CONFIG:Release>:-O1>)
 gtest_discover_tests(ayni_unit_tests)
