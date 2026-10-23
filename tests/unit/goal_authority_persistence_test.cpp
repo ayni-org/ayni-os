@@ -697,7 +697,7 @@ TEST(GoalAuthorityPersistence,
     }
 }
 
-// C-AUTH-023 / ADR-0037 decision 8: a well-formed saved reference cannot transfer
+// C-STORE-018 / ADR-0037 decision 8: a well-formed saved reference cannot transfer
 // a Grant from the other Agent instance, even with the same schema and Scope.
 TEST(GoalAuthorityPersistence, a_grant_for_another_agent_cannot_authorize_the_restored_goal) {
     Fixture source;
