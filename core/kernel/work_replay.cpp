@@ -53,6 +53,7 @@ bool WorkReplay::binding_matches() const {
     return true;
 }
 
+// The types apply() restores, so the two lists change together.
 // Discovery must enforce ownership's header rule even when a snapshot
 // covers the record and its body will not be replayed.
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
@@ -112,8 +113,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
 
 RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
                             const durability::RecordHeader &header, const uint8_t *body) {
-    // A batch that created a goal or a task without its state ended before
-    // this record.
+    // C-STORE-015/ADR-0031: no unmatched work state, authority command or
+    // cleanup progress may cross the batch boundary before this record.
     if (batch.commit_seq != batch_seq_) {
         if (!complete()) {
             return RecordUse::corrupt;
@@ -164,8 +165,13 @@ static_assert(authority::owner_binding_record_version == 1U &&
                   work::task_state_record_version == 1U && work::task_steps_record_version == 1U &&
                   work::task_checkpoint_record_version == 1U && command_record_version == 1U &&
                   authority::grant_record_version == 1U &&
-                  authority::grant_state_record_version == 1U && exact_command_record_version == 2U,
-              "classify_header/apply know work v1 and exact command v2");
+                  authority::grant_state_record_version == 1U &&
+                  exact_command_record_version == 2U && revoke_command_record_version == 3U &&
+                  authority::grant_revoked_state_record_version == 2U &&
+                  authority::grant_snapshot_record_version == 2U &&
+                  authority::grant_revocation_record_version == 1U &&
+                  authority::grant_revocation_progress_record_version == 1U,
+              "classify_header/apply/snapshot know every current work and authority version");
 
 RecordUse WorkReplay::restore_owner_binding(const uint8_t *body, uint32_t size,
                                             foundation::TransitionStamp stamp) {
@@ -191,7 +197,7 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::GoalRecord record{};
     // A goal is created for an instance that has started.
-    if (pending_goal_id_ != 0U || !work::read_goal_record(body, size, record) ||
+    if (pairing_.goal.has_value() || !work::read_goal_record(body, size, record) ||
         model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return RecordUse::corrupt;
     }
@@ -210,7 +216,7 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     if (model_.goals.at(index).depth != record.depth) {
         return RecordUse::corrupt;
     }
-    pending_goal_id_ = record.goal_id;
+    pairing_.goal = record.goal_id;
     return RecordUse::applied;
 }
 
@@ -222,8 +228,8 @@ RecordUse WorkReplay::restore_goal_state(const uint8_t *body, uint32_t size,
         !model_.goals.find(record.goal_id, index)) {
         return RecordUse::corrupt;
     }
-    if (record.goal_id == pending_goal_id_) {
-        pending_goal_id_ = 0;
+    if (record.goal_id == pairing_.goal) {
+        pairing_.goal.reset();
     }
     return use_of(model_.goals.restore_state(index, record.state, stamp));
 }
@@ -232,7 +238,7 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::TaskRecord record{};
     uint32_t goal_index = 0;
-    if (pending_task_id_ != 0U || !work::read_task_record(body, size, record) ||
+    if (pairing_.task.has_value() || !work::read_task_record(body, size, record) ||
         !model_.goals.find(record.task.goal_id, goal_index) ||
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return RecordUse::corrupt;
@@ -241,7 +247,7 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
     const work::TaskTable::Restore restore =
         model_.tasks.restore(record.task, record.task_id, record.replaced_task_id, stamp);
     if (restore == work::TaskTable::Restore::restored) {
-        pending_task_id_ = record.task_id;
+        pairing_.task = record.task_id;
     }
     return use_of(restore);
 }
@@ -254,8 +260,8 @@ RecordUse WorkReplay::restore_task_state(const uint8_t *body, uint32_t size,
         !model_.tasks.find(record.task_id, index)) {
         return RecordUse::corrupt;
     }
-    if (record.task_id == pending_task_id_) {
-        pending_task_id_ = 0;
+    if (record.task_id == pairing_.task) {
+        pairing_.task.reset();
     }
     return use_of(model_.tasks.restore_state(index, record.state, stamp));
 }
@@ -293,12 +299,13 @@ RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size
                                                   record.state, stamp));
 }
 
+// C-STORE-015: create and its exact command share this batch. Validate the
+// already durable issuer/subject before publishing a fact awaiting that command.
 RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
                                     foundation::TransitionStamp stamp) {
     authority::GrantRecord record{};
     const auto *binding = model_.principals.binding();
-    if (pending_grant_id_ != 0U || pending_revocation_id_ != 0U ||
-        pending_cleanup_child_id_ != 0U || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
+    if (pairing_.authority.pending() || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
         !authority::read_grant_record(body, size, record) || binding == nullptr ||
         binding->principal_id != record.grant.owner_principal_id ||
         binding->binding_revision != record.grant.owner_binding_revision ||
@@ -309,11 +316,13 @@ RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
     }
     const auto restored = model_.grants.restore_create(record, stamp);
     if (restored == authority::GrantTable::Restore::restored) {
-        pending_grant_id_ = record.grant_id;
+        pairing_.authority = {AuthorityPairKind::create, record.grant_id};
     }
     return use_of(restored);
 }
 
+// Expiry is standalone; descendant revocation must be the only unmatched
+// authority fact and precede its same-batch progress record (ADR-0031).
 RecordUse WorkReplay::restore_grant_state(uint16_t version, const uint8_t *body, uint32_t size,
                                           foundation::TransitionStamp stamp) {
     authority::GrantStateRecord record{};
@@ -321,26 +330,26 @@ RecordUse WorkReplay::restore_grant_state(uint16_t version, const uint8_t *body,
         return RecordUse::corrupt;
     }
     if (record.lifecycle == AYNI_GRANT_REVOKED &&
-        (pending_cleanup_child_id_ != 0U || pending_grant_id_ != 0U ||
-         pending_revocation_id_ != 0U || progress_seq_ == stamp.commit_seq ||
+        (pairing_.authority.pending() || pairing_.progress_seq == stamp.commit_seq ||
          model_.commands.mapped_in(stamp.commit_seq) != nullptr)) {
         return RecordUse::corrupt;
     }
     const auto restored = model_.grants.restore_state(record, stamp);
     if (restored == authority::GrantTable::Restore::restored &&
         record.lifecycle == AYNI_GRANT_REVOKED) {
-        pending_cleanup_child_id_ = record.grant_id;
-        pending_cleanup_root_id_ = record.revoked_by_root_id;
+        pairing_.authority = {AuthorityPairKind::cleanup_child, record.grant_id,
+                              record.revoked_by_root_id};
     }
     return use_of(restored);
 }
 
+// C-AUTH-027: replay accepted root control under the saved issuer binding;
+// its effect/revision must be matched by the following exact command record.
 RecordUse WorkReplay::restore_revocation(const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp) {
     authority::GrantRevocationRecord record{};
     const auto *binding = model_.principals.binding();
-    if (pending_revocation_id_ != 0U || pending_grant_id_ != 0U ||
-        pending_cleanup_child_id_ != 0U || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
+    if (pairing_.authority.pending() || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
         binding == nullptr || binding->stamp.commit_seq >= stamp.commit_seq ||
         binding->stamp.transition_id >= stamp.transition_id ||
         !authority::read_grant_revocation_record(body, size, record)) {
@@ -348,28 +357,29 @@ RecordUse WorkReplay::restore_revocation(const uint8_t *body, uint32_t size,
     }
     const auto restored = model_.grants.restore_revocation(record, stamp);
     if (restored == authority::GrantTable::Restore::restored) {
-        pending_revocation_id_ = record.grant_id;
-        pending_revocation_revision_ = record.revision;
-        pending_revocation_effect_ = record.effect;
+        pairing_.authority = {AuthorityPairKind::revocation, record.grant_id, 0, record.revision,
+                              record.effect};
     }
     return use_of(restored);
 }
 
+// C-AUTH-026: at most one progress per batch, paired with any revoked child.
+// Skipping an unrelated candidate needs no child state; GrantTable checks its ID.
 RecordUse WorkReplay::restore_revocation_progress(const uint8_t *body, uint32_t size,
                                                   foundation::TransitionStamp stamp) {
     authority::GrantRevocationProgressRecord record{};
-    if (progress_seq_ == stamp.commit_seq || pending_grant_id_ != 0U ||
-        pending_revocation_id_ != 0U || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
+    if (pairing_.progress_seq == stamp.commit_seq || pairing_.authority.awaiting_command() ||
+        model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
         !authority::read_grant_revocation_progress_record(body, size, record) ||
-        (pending_cleanup_child_id_ != 0U && (pending_cleanup_root_id_ != record.root_grant_id ||
-                                             pending_cleanup_child_id_ != record.after_grant_id))) {
+        (pairing_.authority.kind == AuthorityPairKind::cleanup_child &&
+         (pairing_.authority.root_id != record.root_grant_id ||
+          pairing_.authority.grant_id != record.after_grant_id))) {
         return RecordUse::corrupt;
     }
     const auto restored = model_.grants.restore_progress(record, stamp);
     if (restored == authority::GrantTable::Restore::restored) {
-        progress_seq_ = stamp.commit_seq;
-        pending_cleanup_child_id_ = 0;
-        pending_cleanup_root_id_ = 0;
+        pairing_.progress_seq = stamp.commit_seq;
+        pairing_.authority = {};
     }
     return use_of(restored);
 }
@@ -388,8 +398,9 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
     mapping.commit_seq = commit_seq;
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
         uint32_t index = 0;
-        if (pending_grant_id_ == 0U || mapping.object.id != pending_grant_id_ ||
-            !model_.grants.find(pending_grant_id_, index)) {
+        if (pairing_.authority.kind != AuthorityPairKind::create ||
+            mapping.object.id != pairing_.authority.grant_id ||
+            !model_.grants.find(pairing_.authority.grant_id, index)) {
             return RecordUse::corrupt;
         }
         const auto &grant = model_.grants.at(index);
@@ -397,21 +408,20 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
                                     model_.grants.scope(index))) {
             return RecordUse::corrupt;
         }
-        pending_grant_id_ = 0;
+        pairing_.authority = {};
     } else if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
         RevokeCommandRecord request{};
         const auto *binding = model_.principals.binding();
-        if (pending_revocation_id_ == 0U || mapping.object.id != pending_revocation_id_ ||
-            mapping.object.revision != pending_revocation_revision_ ||
-            mapping.effect != pending_revocation_effect_ || binding == nullptr ||
+        if (pairing_.authority.kind != AuthorityPairKind::revocation ||
+            mapping.object.id != pairing_.authority.grant_id ||
+            mapping.object.revision != pairing_.authority.revision ||
+            mapping.effect != pairing_.authority.effect || binding == nullptr ||
             mapping.principal_id != binding->principal_id ||
             binding->stamp.commit_seq >= commit_seq || !read_revoke_command(canonical, request) ||
             request.target_grant_id != mapping.object.id) {
             return RecordUse::corrupt;
         }
-        pending_revocation_id_ = 0;
-        pending_revocation_revision_ = 0;
-        pending_revocation_effect_ = AYNI_INTENT_EFFECT_NONE;
+        pairing_.authority = {};
     }
     return use_of(model_.commands.restore_checked(mapping, floor, canonical));
 }
@@ -583,15 +593,7 @@ void WorkReplay::discard() {
     model_.commands.clear_restored();
     model_.grants.clear_restored();
     batch_seq_ = 0;
-    pending_goal_id_ = 0;
-    pending_task_id_ = 0;
-    pending_grant_id_ = 0;
-    pending_revocation_id_ = 0;
-    pending_revocation_revision_ = 0;
-    pending_revocation_effect_ = AYNI_INTENT_EFFECT_NONE;
-    pending_cleanup_child_id_ = 0;
-    pending_cleanup_root_id_ = 0;
-    progress_seq_ = 0;
+    pairing_ = {};
 }
 
 void WorkReplay::discard_for_reload() {

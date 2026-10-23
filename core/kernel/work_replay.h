@@ -21,6 +21,7 @@
 #include "kernel/intent/work_model.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace ayni::kernel {
 
@@ -43,7 +44,8 @@ class WorkReplay {
                                            const durability::RecordHeader &header,
                                            const uint8_t *body);
     // applied: a known type/version whose header is accepted; corrupt:
-    // OWNER_BINDING lacks REQUIRED; unknown: an unsupported type/version.
+    // an authority record lacks REQUIRED (owner binding, Grant create/state,
+    // revocation/progress, or command v2+); unknown: unsupported type/version.
     // Discovery uses the same classification before skipping covered data;
     // applied does not validate the body.
     static durability::RecordUse
@@ -54,12 +56,9 @@ class WorkReplay {
                                        const authority::Grant &grant, ayni_bytes_v1 domain,
                                        ayni_bytes_v1 scope);
 
-    // After the last batch: whether every goal and task a batch created came
-    // with its state in the same batch.
-    bool complete() const {
-        return pending_goal_id_ == 0U && pending_task_id_ == 0U && pending_grant_id_ == 0U &&
-               pending_revocation_id_ == 0U && pending_cleanup_child_id_ == 0U;
-    }
+    // Every created Goal/Task needs its state; Grant creation/root revocation
+    // needs its exact command, and revoked children need same-batch progress.
+    bool complete() const { return pairing_.complete(); }
     // After the last batch: whether the tables hold a state a transition
     // leaves, beyond what each record's own checks cover.
     bool consistent(uint64_t boot_epoch_limit = UINT64_MAX) const;
@@ -106,16 +105,35 @@ class WorkReplay {
 
     WorkModel &model_;
     uint64_t batch_seq_ = 0; // of the batch the last record came in
-    // The goal and the task the batch created whose state has not come yet.
-    uint64_t pending_goal_id_ = 0;
-    uint64_t pending_task_id_ = 0;
-    uint64_t pending_grant_id_ = 0;
-    uint64_t pending_revocation_id_ = 0;
-    uint32_t pending_revocation_revision_ = 0;
-    ayni_intent_effect_t pending_revocation_effect_ = AYNI_INTENT_EFFECT_NONE;
-    uint64_t pending_cleanup_child_id_ = 0;
-    uint64_t pending_cleanup_root_id_ = 0;
-    uint64_t progress_seq_ = 0;
+    // One unmatched authority record. These alternatives cannot coexist in a
+    // batch: a create/root revoke awaits its command; a child awaits progress.
+    enum class AuthorityPairKind { none, create, revocation, cleanup_child };
+    // Payload fields are valid only for the selected alternative; all other fields are zero.
+    struct AuthorityPair {
+        AuthorityPairKind kind = AuthorityPairKind::none; // Selects the valid fields below.
+        uint64_t grant_id = 0; // Nonzero target/child iff kind is not none.
+        uint64_t root_id = 0;  // Nonzero only for cleanup_child, the child's original revoker.
+        uint32_t revision = 0; // Root result revision; TARGET_GONE legitimately uses 0.
+        ayni_intent_effect_t effect = AYNI_INTENT_EFFECT_NONE; // Result only for revocation.
+        // Whether this batch still lacks an authority partner record.
+        bool pending() const { return kind != AuthorityPairKind::none; }
+        // Cleanup pairs with progress, whereas create/root revoke pair with a command.
+        bool awaiting_command() const {
+            return kind == AuthorityPairKind::create || kind == AuthorityPairKind::revocation;
+        }
+    };
+    // Batch pairing is replay-owned transient state, never serialized. Goal
+    // and Task pairs may coexist with authority; disengaged means no missing
+    // state. progress_seq remembers the last progress batch to reject duplicates.
+    struct BatchPairing {
+        std::optional<uint64_t> goal; // Nonzero created Goal awaiting its state; empty otherwise.
+        std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.
+        AuthorityPair authority;      // Exactly one authority alternative or none.
+        uint64_t progress_seq = 0;    // Last progress commit sequence; 0 before any progress.
+        // Every accepted pair in the batch has received its required partner.
+        bool complete() const { return !goal && !task && !authority.pending(); }
+    };
+    BatchPairing pairing_; // Clear the entire state on discard; never reuse across a reload.
 };
 
 } // namespace ayni::kernel

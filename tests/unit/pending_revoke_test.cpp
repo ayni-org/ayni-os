@@ -66,6 +66,42 @@ class Commands {
     CommandTable table;
 };
 
+// ADR-0031 / C-WIRE-017: a revoke lookup is not authority acceptance and
+// cannot supply a create candidate; accepted control owns its own exact bytes.
+TEST(PendingRevoke, revoke_lookup_invalidates_create_scratch_without_staging_a_publishable_result) {
+    Commands commands;
+    const auto create = create_request();
+    ASSERT_EQ(commands.table.find_exact(owner, 5, CanonicalCommandView{0, &create}).lookup,
+              Lookup::unmapped);
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, 99};
+    const auto found = commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &revoke});
+    ASSERT_EQ(found.status, AYNI_OK);
+    ASSERT_EQ(found.lookup, Lookup::unmapped);
+    EXPECT_EQ(found.mapping, nullptr);
+    EXPECT_EQ(found.pending, nullptr);
+    CommandMapping mapping{owner, 5, 0, 9, AYNI_INTENT_GRANT_CREATE, {0, 99, 1, AYNI_OBJECT_GRANT}};
+    EXPECT_FALSE(commands.table.insert_exact(mapping));
+    mapping.kind = AYNI_INTENT_GRANT_REVOKE;
+    mapping.object.revision = 2;
+    EXPECT_FALSE(commands.table.insert_exact(mapping));
+    EXPECT_EQ(commands.table.size(), 0U);
+    EXPECT_EQ(commands.table.pending_size(), 0U);
+    EXPECT_EQ(commands.table.floor(owner), 0U);
+
+    const auto *control = commands.accept();
+    ASSERT_NE(control, nullptr);
+    const auto canonical = control->canonical;
+    ASSERT_EQ(commands.table.find_exact(owner, 6, CanonicalCommandView{0, &create}).lookup,
+              Lookup::unmapped);
+    ASSERT_TRUE(commands.table.publish_accepted_revoke(*control, result(*control, 9), 3));
+    const auto *published = commands.table.mapped(owner, 5);
+    ASSERT_NE(published, nullptr);
+    const auto bytes = commands.table.canonical(*published);
+    ASSERT_EQ(bytes.size, canonical.size());
+    EXPECT_EQ(std::memcmp(bytes.data, canonical.data(), bytes.size), 0);
+}
+
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(PendingRevoke, acceptance_copies_identity_without_publishing_a_window_or_queued_stamp) {
     Commands commands;
     const auto *control = commands.accept();
@@ -91,6 +127,7 @@ TEST(PendingRevoke, acceptance_copies_identity_without_publishing_a_window_or_qu
     EXPECT_EQ(control->canonical, canonical);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, control_capacity_and_same_target_refusals_are_atomic) {
     Commands commands(1, 1);
     const auto *control = commands.accept();
@@ -117,6 +154,7 @@ TEST(PendingRevoke, control_capacity_and_same_target_refusals_are_atomic) {
     EXPECT_EQ(output, control);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, pending_identity_precedes_all_kinds_window_and_a_later_floor) {
     Commands commands(1, 1);
     const auto *control = commands.accept();
@@ -145,6 +183,7 @@ TEST(PendingRevoke, pending_identity_precedes_all_kinds_window_and_a_later_floor
     EXPECT_EQ(commands.table.size(), 1U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, applied_result_is_pinned_until_exact_boot_durability_handoff) {
     Commands commands(1, 2);
     const auto *first = commands.accept(5, 99);
@@ -177,6 +216,7 @@ TEST(PendingRevoke, applied_result_is_pinned_until_exact_boot_durability_handoff
     EXPECT_EQ(commands.table.mapped(owner, 6)->retention, CommandRetention::accepted_revoke);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, eviction_moves_pinned_metadata_and_canonical_together) {
     Commands commands(2, 1);
     ASSERT_TRUE(commands.table.insert(ordinary(1, 1)));
@@ -196,6 +236,7 @@ TEST(PendingRevoke, eviction_moves_pinned_metadata_and_canonical_together) {
     EXPECT_EQ(mapping->object.id, 99U);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(PendingRevoke, discard_retains_control_but_never_compares_an_old_queued_seq_in_a_new_boot) {
     Commands commands;
     const auto *control = commands.accept();
@@ -223,6 +264,7 @@ TEST(PendingRevoke, discard_retains_control_but_never_compares_an_old_queued_seq
     EXPECT_EQ(commands.table.size(), 0U);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(PendingRevoke, recovered_complete_canonical_is_the_only_cross_reload_confirmation) {
     Commands commands;
     const auto *control = commands.accept();
@@ -248,6 +290,7 @@ TEST(PendingRevoke, recovered_complete_canonical_is_the_only_cross_reload_confir
     EXPECT_EQ(restored->effect, AYNI_INTENT_EFFECT_CHANGED);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, failed_publication_or_foreign_control_changes_no_window_or_floor) {
     Commands commands;
     const auto *control = commands.accept();
@@ -272,6 +315,7 @@ TEST(PendingRevoke, failed_publication_or_foreign_control_changes_no_window_or_f
     EXPECT_TRUE(odd_stride.table.publish_accepted_revoke(*odd, result(*odd, 1), 2));
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, conflicting_restored_identity_cannot_release_an_accepted_control) {
     Commands commands;
     const auto *control = commands.accept();
@@ -286,6 +330,7 @@ TEST(PendingRevoke, conflicting_restored_identity_cannot_release_an_accepted_con
     EXPECT_EQ(control->queued_commit_seq, 0U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, full_revoke_identity_still_wins_when_the_window_digest_collides) {
     Commands commands;
     const auto *control = commands.accept();
@@ -306,6 +351,7 @@ TEST(PendingRevoke, full_revoke_identity_still_wins_when_the_window_digest_colli
     EXPECT_EQ(mapping->object.id, 99U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, malformed_requests_and_zero_identity_leave_the_accepted_control_untouched) {
     Commands commands;
     const auto *control = commands.accept();
@@ -330,6 +376,7 @@ TEST(PendingRevoke, malformed_requests_and_zero_identity_leave_the_accepted_cont
     EXPECT_EQ(commands.table.floor(owner), 0U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, every_missing_accepted_identity_component_refuses_without_consuming_capacity) {
     Commands commands(2, 1);
     const PendingRevoke sentinel{};
@@ -354,6 +401,7 @@ TEST(PendingRevoke, every_missing_accepted_identity_component_refuses_without_co
     EXPECT_EQ(out->accepted.command_id, 5U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, mapped_and_expired_commands_cannot_be_accepted_as_new_controls) {
     Commands commands(1, 1);
     ASSERT_TRUE(commands.table.insert(ordinary(5, 1)));
@@ -384,6 +432,7 @@ TEST(PendingRevoke, mapped_and_expired_commands_cannot_be_accepted_as_new_contro
     EXPECT_EQ(mapping, nullptr);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, ordinary_only_windows_explicitly_refuse_exact_revoke_storage) {
     Commands legacy(1, 0, 0);
     ASSERT_TRUE(legacy.table.insert(ordinary(5, 1)));
@@ -397,6 +446,7 @@ TEST(PendingRevoke, ordinary_only_windows_explicitly_refuse_exact_revoke_storage
     EXPECT_EQ(legacy.table.floor(owner), 0U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, incomplete_pending_queries_never_replace_the_callers_match) {
     Commands commands;
     const auto *control = commands.accept();
@@ -420,6 +470,7 @@ TEST(PendingRevoke, incomplete_pending_queries_never_replace_the_callers_match) 
     EXPECT_EQ(control->queued_commit_seq, 0U);
 }
 
+// C-AUTH-024 / C-WIRE-017: accepted denial retains one exact pending identity.
 TEST(PendingRevoke, publication_is_bound_to_the_accepted_principal_command_and_kind) {
     Commands commands;
     const auto *control = commands.accept();
@@ -448,6 +499,7 @@ TEST(PendingRevoke, publication_is_bound_to_the_accepted_principal_command_and_k
     EXPECT_EQ(commands.table.floor(owner), 0U);
 }
 
+// C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
 TEST(PendingRevoke, multiple_controls_follow_target_order_then_current_boot_durable_sequence) {
     Commands commands(3, 3);
     const auto *higher = commands.accept(5, 100);

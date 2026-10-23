@@ -52,6 +52,9 @@ template <typename AddResult> ayni_status_t add_status(AddResult result) {
 
 // Runs steps 1 to 5 of ayni_submit_intent once out_error is known to be
 // writable or absent; failure receives the detail of a refusal.
+// C-WIRE-004/C-AUTH-027: decode and apply before publishing a result; an exact
+// command always reports its retained receipt, including retries and pending
+// revokes. Commandless work reports only its fresh queued transition.
 ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
                      ayni_intent_result_v1 *out_result, ayni::kernel::IntentFailure &failure) {
     if (kernel == nullptr || intent == nullptr) {
@@ -94,11 +97,6 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     if (status == AYNI_OK && out_result != nullptr) {
         ayni_intent_result_v1 result{};
         result.struct_size = sizeof(result);
-        result.object = outcome.object;
-        result.commit_seq = outcome.commit_seq;
-        result.phase = outcome.phase;
-        result.effect = outcome.effect;
-        result.applied_boot_epoch = outcome.applied_boot_epoch;
         if (decoded.command_id != 0U) {
             const auto *session = kernel->work.sessions.find(decoded.session_id);
             ayni_intent_receipt_v1 receipt{};
@@ -115,6 +113,9 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         } else {
             // Without a command identity this is a fresh transition. Submit
             // only queues its batch; the writer appends in a later step.
+            result.object = outcome.object;
+            result.commit_seq = outcome.commit_seq;
+            result.effect = outcome.effect;
             result.phase = AYNI_INTENT_APPLIED;
             result.applied_boot_epoch = kernel->log.boot_epoch();
         }
@@ -316,6 +317,8 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     return add_status(kernel->work.strategies.add(entry));
 }
 
+// C-AUTH-010/016: resolve the registered principal once, then require the
+// current durable binding before allocating a fresh session identity.
 ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v1 *session,
                                 uint64_t *out_session_id) {
     if (kernel == nullptr || session == nullptr || out_session_id == nullptr) {
@@ -380,6 +383,8 @@ ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *in
     return status;
 }
 
+// The output prefix is checked before lookup. A failed or unavailable receipt
+// leaves the caller's complete object unchanged (C-AUTH-027).
 ayni_status_t ayni_get_intent_receipt(const ayni_kernel_t *kernel, uint64_t principal_id,
                                       uint64_t command_id, ayni_intent_receipt_v1 *out_receipt) {
     if (kernel == nullptr || out_receipt == nullptr) {
@@ -463,6 +468,8 @@ ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
     return AYNI_OK;
 }
 
+// Retained facts and their effective usable-chain status are distinct views.
+// C-AUTH-020/024: query reports both without reviving or changing the Grant.
 ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
                              ayni_grant_info_v1 *out_info) {
     if (kernel == nullptr || out_info == nullptr) {

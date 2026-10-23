@@ -19,6 +19,8 @@ ayni_status_t accept_revoke(WorkModel &model, const Intent &intent,
                             IntentOutcome &outcome, IntentFailure &failure);
 bool apply_pending_revoke(WorkModel &model);
 bool apply_revocation_cleanup(WorkModel &model);
+// Copy PENDING/APPLIED from accepted control, leaving orchestration flags
+// untouched. An APPLIED control requires its pinned mapping; receipt adds DURABLE.
 void pending_revoke_outcome(const PendingRevoke &pending, const CommandMapping *mapping,
                             IntentOutcome &outcome);
 

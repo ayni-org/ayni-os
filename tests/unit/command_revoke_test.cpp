@@ -34,6 +34,7 @@ CommandMapping revoke_mapping(const std::array<uint8_t, 16> &bytes,
             effect};
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, canonical_has_a_fixed_independent_little_endian_oracle) {
     const auto bytes = revoke_bytes(0x0807060504030201ULL, 0x01020304U);
     const std::array<uint8_t, 16> expected{10, 0, 0, 0, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6, 7, 8};
@@ -46,6 +47,7 @@ TEST(CommandRevoke, canonical_has_a_fixed_independent_little_endian_oracle) {
     EXPECT_NE(revoke_bytes(99, 1), revoke_bytes(100, 1));
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, malformed_typed_input_and_output_capacity_are_atomic) {
     ayni_grant_revoke_v1 body{sizeof(body), 0, 99};
     std::array<uint8_t, 20> bytes{};
@@ -82,6 +84,7 @@ TEST(CommandRevoke, malformed_typed_input_and_output_capacity_are_atomic) {
     }
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, complete_reader_rejects_truncation_tail_wrong_kind_and_zero_identity) {
     const auto original = revoke_bytes();
     RevokeCommandRecord out{123, 456};
@@ -103,6 +106,7 @@ TEST(CommandRevoke, complete_reader_rejects_truncation_tail_wrong_kind_and_zero_
     EXPECT_EQ(out.target_grant_id, 456U);
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, v3_stores_explicit_effect_and_original_identity_without_retention) {
     const auto canonical = revoke_bytes();
     for (const auto effect : {AYNI_INTENT_EFFECT_CHANGED, AYNI_INTENT_EFFECT_NO_CHANGE,
@@ -137,6 +141,7 @@ TEST(CommandRevoke, v3_stores_explicit_effect_and_original_identity_without_rete
     EXPECT_EQ(command_record_max(340), 400U);
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, v3_damage_or_cross_version_interpretation_cannot_publish_partial_outputs) {
     const auto canonical = revoke_bytes();
     const auto mapping = revoke_mapping(canonical);
@@ -175,6 +180,7 @@ TEST(CommandRevoke, v3_damage_or_cross_version_interpretation_cannot_publish_par
     refuses(old_v2.data(), static_cast<uint32_t>(old_v2.size()), 2);
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, result_effect_and_target_are_validated_before_writing) {
     const auto canonical = revoke_bytes();
     std::array<uint8_t, 80> bytes{};
@@ -203,6 +209,7 @@ TEST(CommandRevoke, result_effect_and_target_are_validated_before_writing) {
     refuses(mapping);
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, accepted_revision_two_can_change_a_restored_active_target_after_reload) {
     // First acceptance saw a child at volatile REVOKED/revision2. An
     // uncommitted ancestor cleanup can disappear on reload, restoring
@@ -230,6 +237,7 @@ TEST(CommandRevoke, accepted_revision_two_can_change_a_restored_active_target_af
     EXPECT_EQ(table.at(0).effect, AYNI_INTENT_EFFECT_CHANGED);
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_every_effect) {
     // Shape-valid raw requests must reach fresh API CAS validation. Only
     // accepted mappings narrow the original revision to the published 1/2 states.
@@ -301,6 +309,7 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
     }
 }
 
+// C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, a_revoke_result_cannot_publish_a_nonfixed_canonical_size) {
     const auto canonical = revoke_bytes();
     auto mapping = revoke_mapping(canonical);
