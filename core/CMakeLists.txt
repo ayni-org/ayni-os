@@ -41,13 +41,15 @@ ayni_add_core_module(work
     SOURCES
         work/agent/agent_records.cpp
         work/agent/agent_table.cpp
+        work/goal/goal_authority.cpp
+        work/goal/goal_authority_records.cpp
         work/goal/goal_records.cpp
         work/goal/goal_table.cpp
         work/goal/trigger_schedule.cpp
         work/propagation.cpp
         work/task/task_records.cpp
         work/task/task_table.cpp
-    DEPENDS catalog durability foundation)
+    DEPENDS authority catalog durability foundation)
 
 ayni_add_core_module(kernel
     SOURCES

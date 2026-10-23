@@ -48,6 +48,7 @@
 | [0034](0034-field-values-and-scope-admission.md) | 字段值编解码与 Scope 准入结果复用 | 已接受（R2a2；验证见正文） | §9.1、§14.1 |
 | [0035](0035-grant-rules-and-bounded-chain-admission.md) | Grant、命令与 Kernel 编排的状态归属 | 已接受（R2b；验证见正文） | §9.1、§14.1 |
 | [0036](0036-unconfirmed-goal-control-guard.md) | 未确认授权的 Goal 普通控制守卫 | 已接受（R3；验证见正文） | §9.1、§14.1 |
+| [0037](0037-goal-requirements-and-atomic-approval.md) | Goal 需求、待批与原子批准 | 实施中（E；验证见正文） | §9.1、§14.1 |
 
 ## 模板
 
