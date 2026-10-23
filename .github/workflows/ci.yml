@@ -55,21 +55,43 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
+      # ccache keeps compiler output between runs. -g output records the build
+      # directory, and the workspace path is the same on every runner, so
+      # debug builds hit as well.
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 200M
+      # Runners for private repositories have two vCPUs. On two CPUs, two test
+      # processes halved the sanitizer test time and four were no faster.
+      CTEST_PARALLEL_LEVEL: 2
     steps:
       - uses: actions/checkout@v4
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+      - name: Install Ninja and ccache
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build ccache
+      # Every run saves a new entry and starts from the newest one for its
+      # compiler and preset. Pull requests also restore entries saved on main.
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-
       # GCC 13's ThreadSanitizer may fail to start with 32 bits of mmap
       # randomization, which some runner kernels default to.
       - name: Limit ASLR for ThreadSanitizer
         if: matrix.preset == 'native-tsan'
         run: sudo sysctl vm.mmap_rnd_bits=28
       - name: Tool versions
-        run: cmake --version && ninja --version && "$CC" --version && "$CXX" --version
+        run: cmake --version && ninja --version && ccache --version && "$CC" --version && "$CXX" --version
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        run: |
+          ccache --zero-stats
+          cmake --build --preset ${{ matrix.preset }}
+      - name: Compiler cache statistics
+        run: ccache --show-stats
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
       - name: Simulator

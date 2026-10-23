@@ -65,7 +65,7 @@
 
 ## 4. 验证命令
 
-本地依次运行，与 CI 一致：
+本地依次运行，与 CI 一致（先按资源预算设置 `CMAKE_BUILD_PARALLEL_LEVEL` 与 `CTEST_PARALLEL_LEVEL`，见 `docs/development.md`）：
 
 ```sh
 for preset in native-debug native-release native-asan native-tsan; do
