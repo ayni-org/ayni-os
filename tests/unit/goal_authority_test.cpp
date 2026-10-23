@@ -337,6 +337,7 @@ TEST(GoalAuthority, late_capacity_refusal_keeps_the_original_identity_phase_and_
     replacement.record.stamp = {17, 19};
     replacement.record.phase = GoalAuthorityPhase::paused;
     replacement.record.count = 2;
+    replacement.record.requirements[0].dependency.grant_id = grant_id + 1U;
     replacement.record.requirements[1] = large.record.requirements[0];
     ASSERT_TRUE(valid_goal_authority_record(replacement.record));
     EXPECT_EQ(table.table.install_validated(0, replacement.record), AYNI_CAPACITY_EXCEEDED);
