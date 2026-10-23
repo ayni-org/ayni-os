@@ -62,7 +62,7 @@
 
 ## 交接状态（2026-10-23）
 
-- **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–D 和 R1～R4 整理。R2b 的 [#37](https://github.com/RobotSe7en/ayni/pull/37)～[#39](https://github.com/RobotSe7en/ayni/pull/39)、R3 的 [#40](https://github.com/RobotSe7en/ayni/pull/40) 已合并；复查逐项处理见[关闭索引](ma006-a-d-review.md#8-整理关闭索引2026-10-23)。E 的内部需求事实表与 codec 由 [#42](https://github.com/RobotSe7en/ayni/pull/42) 交付，尚未接入 Kernel。下一步接入持久化与 Grant 引用保护，再做创建、查询、批准及 F。
+- **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–D 和 R1～R4 整理。R2b 的 [#37](https://github.com/RobotSe7en/ayni/pull/37)～[#39](https://github.com/RobotSe7en/ayni/pull/39)、R3 的 [#40](https://github.com/RobotSe7en/ayni/pull/40) 已合并；复查逐项处理见[关闭索引](ma006-a-d-review.md#8-整理关闭索引2026-10-23)。E 的内部需求事实表与 codec 由 [#42](https://github.com/RobotSe7en/ayni/pull/42) 交付；[#43](https://github.com/RobotSe7en/ayni/pull/43) 接入 arena、日志/快照/恢复及 Grant 引用保护。下一步做需求导出、创建/查询与最低消费门控，再做原子批准及 F。
 - **当前限制：** 当前重启仍以授权未确认停止全部恢复的活 Goal/Task，包括 A 之后新建的工作；保留进度，普通恢复不构成授权。E/F 必须验证元数据完整且永久授权有效的新工作重启后正常继续。ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收尚未完成。
 - **授权与用户事项：** 用户授权仅本地 CI 验证后提 PR 并以 merge commit 合并，旧 C/D 停点已撤销。三项 E/F 已选语义保持；用户已确认显式恢复时也丢弃该 Goal 暂停前已入队未消费的旧输入，不影响其他 Goal。当前无需用户操作，详细顺序见[实施计划](../../docs/ma006-implementation.md)。
 
