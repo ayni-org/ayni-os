@@ -41,7 +41,7 @@ Target C++17 Core and a C99-compatible public API; disable exceptions/RTTI in Co
 
 Use types, construction rules, and boundary validation to express identities, units, ranges, and legal states. Keep invariant checks with their owner; avoid implicit state machines built from unrelated boolean flags or scattered duplicate validation.
 
-`.clang-format` defines C/C++ formatting (four-space indentation), and CI checks it with clang-format 18. Use `snake_case` functions/files and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. CI builds with warnings as errors (`AYNI_WARNINGS_AS_ERRORS`) on GCC and Clang and runs the `native-asan` preset (ASan/UBSan); clang-tidy runs as an advisory job and does not fail the build. Add configurations before claiming further enforcement.
+`.clang-format` defines C/C++ formatting (four-space indentation), and CI checks it with clang-format 18. Use `snake_case` functions/files and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. CI builds with warnings as errors (`AYNI_WARNINGS_AS_ERRORS`) on GCC and Clang and runs the `native-asan` preset (ASan/UBSan); clang-tidy runs weekly and on manual dispatch as an advisory job and does not fail the build. Add configurations before claiming further enforcement.
 
 Comments should explain invariants, ownership, design reasons, and non-obvious tradeoffs. Do not introduce unused dependencies or fields, commented-out implementations, or comments that merely narrate the code. Remove obsolete code and comments caused by the current change without expanding into unrelated cleanup.
 
@@ -53,7 +53,7 @@ Target Core coverage ≥75% and safety-critical branch coverage ≥90%; record d
 
 ## Commit & Pull Request Guidelines
 
-Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and traces for recovery changes. Update contracts, migrations, ADRs, and relevant tests when semantics change; keep affected project documentation consistent.
+Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. Open PRs as drafts and mark them ready only after local validation and review (`docs/workflow.md` steps 9–10): CI skips drafts, because Actions minutes are limited. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and traces for recovery changes. Update contracts, migrations, ADRs, and relevant tests when semantics change; keep affected project documentation consistent.
 
 ## Architecture & Security Constraints
 

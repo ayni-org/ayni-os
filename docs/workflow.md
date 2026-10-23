@@ -46,8 +46,8 @@
      - **内核新增的字段**：PR 是否写明每个字段归谁、为什么不放进已有的类（第 4 步）；是否复制了别的模块已有的值，或用几个布尔量拼出一个状态；
      - **重复的公式**：同一个计算或判断是否在多处各写一遍；
      - **裸数字**：记录长度、字段偏移、版本与阈值是否有名字，并注明出处（如 `contracts/storage/records.md`）。
-11. **PR。** 标题 `area: imperative summary (MA-xxx)`，英文；正文英文，依次为 Before、After、How、Validation、Review、Limitations 六个小节。Validation 写出实际运行的命令与结果，Limitations 写出未做与未验证的部分。
-12. **CI 与合并。** CI 的 8 项中，除仅报告的 clang-tidy 外都必须通过（见第 4 节）；CI 失败时找到根因再修，不重跑碰运气，不跳过或禁用测试。M1 的 PR 在 CI 全绿且独立审查的发现处理完之后合并，方式为 merge commit（不 squash、不 rebase）。Claude 的项目讨论中由 Claude 自行合并（用户已授权）；其他代理按用户的指示合并或请用户合并。
+11. **PR。** 以草稿（draft）开 PR，第 9、10 步完成后再标记 ready；草稿上 CI 不跑，以节省 Actions 分钟数（用户 2026-10-23 决定）。标题 `area: imperative summary (MA-xxx)`，英文；正文英文，依次为 Before、After、How、Validation、Review、Limitations 六个小节。Validation 写出实际运行的命令与结果，Limitations 写出未做与未验证的部分。
+12. **CI 与合并。** ready 的 PR 上 CI 跑的各项都必须通过（见第 4 节）；CI 失败时找到根因再修，不重跑碰运气，不跳过或禁用测试。M1 的 PR 在 CI 全绿且独立审查的发现处理完之后合并，方式为 merge commit（不 squash、不 rebase）。Claude 的项目讨论中由 Claude 自行合并（用户已授权）；其他代理按用户的指示合并或请用户合并。
 13. **合并之后。** 用中文向用户汇报：改了什么、验证与审查结果、需要用户做什么（没有就写没有）、下一步。开发分支重置到最新 main：`git fetch origin main && git checkout -B <分支> origin/main`，再 `git push --force-with-lease`。删掉审查用的临时 worktree。
 
 ## 3. 代码规则摘要
@@ -84,7 +84,7 @@ git diff --check origin/main
 
 - TSan 无法启动时先执行 `sudo sysctl vm.mmap_rnd_bits=28`（见 `docs/development.md`）。
 - 仓库内有代理的 worktree（例如 `.claude/worktrees/`）时，`tools/check_deps.py` 会把其中的源文件也算进来而报错；这不是真正的失败，删掉 worktree 后再运行。
-- CI（`.github/workflows/ci.yml`）的 8 项：依赖、契约、可读性与格式检查；GCC 的 native-debug、native-release、native-asan、native-tsan；Clang 的 native-debug；clang-tidy（仅报告，不阻断）；ESP32-S3 Hello 固件构建。
+- CI（`.github/workflows/ci.yml`）共 8 项：依赖、契约、可读性与格式检查；GCC 的 native-debug、native-release、native-asan、native-tsan；Clang 的 native-debug；ESP32-S3 Hello 固件构建；clang-tidy（仅报告，不阻断）。Actions 按 job 向上取整到分钟计费，所以：草稿 PR 不跑；ready 的 PR 跑前 7 项，只改 `.md` 文件时只跑第一项，其余显示为 skipped；合并后 main 只跑第一项；每周一 02:00（北京时间）在 main 上及手动触发（workflow_dispatch）时跑全部 8 项。
 
 ## 5. 与用户沟通
 
