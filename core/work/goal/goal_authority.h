@@ -17,8 +17,6 @@ namespace ayni::work {
 
 // MA-006 implementation plan 6.1: requirements per Goal, independent of
 // each region's existing authority_scope_max_bytes limit.
-constexpr uint32_t goal_requirement_capacity_default = 4;
-constexpr uint32_t goal_requirement_capacity_max = 16;
 constexpr uint32_t goal_requirement_regions = 2; // Original domain and normalized scope.
 
 // Persisted state of an explicit ceiling. Missing metadata is represented
@@ -48,8 +46,8 @@ struct GoalAuthorityRecord {
     uint64_t goal_id = 0;                // Nonzero Kernel ID of the owning Goal.
     foundation::TransitionStamp stamp{}; // Nonzero pair of the last authority change.
     GoalAuthorityPhase phase = GoalAuthorityPhase::authorized; // Decides dependency completeness.
-    uint32_t count = 0; // Requirements, at most goal_requirement_capacity_max.
-    std::array<GoalRequirement, goal_requirement_capacity_max> requirements{};
+    uint32_t count = 0; // Requirements, at most AYNI_GOAL_REQUIREMENT_CAPACITY_MAX.
+    std::array<GoalRequirement, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> requirements{};
 };
 
 // One semantic validator for borrowed struct facts and decoded bytes. Does
@@ -80,6 +78,14 @@ class GoalAuthorityTable {
     // unchanged since admission. Checks configured capacity before copying;
     // sources must not alias this table. Refusal preserves every slot and byte.
     ayni_status_t install_validated(uint32_t goal_index, const GoalAuthorityRecord &record);
+    // Replay a validated record. Existing ceilings are immutable and both stamp
+    // components must advance; capacity and refusal guarantees match install.
+    ayni_status_t restore_validated(uint32_t goal_index, const GoalAuthorityRecord &record);
+    // Presence for this exact Goal, including its explicit zero-requirement row.
+    bool contains(uint32_t goal_index, uint64_t goal_id) const;
+    // Borrowed complete view at a known present slot. Caller keeps the table
+    // unchanged, as during snapshot freeze; no repeated identity admission.
+    GoalAuthorityRecord at(uint32_t goal_index) const;
     // Publishes borrowed views only for the exact owning Goal; failure preserves
     // out. Views are invalidated by install/clear at the same index or clear_all.
     bool read(uint32_t goal_index, uint64_t goal_id, GoalAuthorityRecord &out) const;
@@ -109,6 +115,8 @@ class GoalAuthorityTable {
     uint32_t requirement_index(uint32_t goal_index, uint32_t requirement) const;
     uint8_t *domain_at(uint32_t index) const;
     uint8_t *scope_at(uint32_t index) const;
+    // Compares an existing slot's immutable ceiling, excluding refs/phase/stamp.
+    bool same_ceiling(uint32_t goal_index, const GoalAuthorityRecord &record) const;
     Slot *slots_;               // Caller arena; limits.goals constructed Slot objects.
     Requirement *requirements_; // Caller arena; goals * requirements constructed objects.
     uint8_t *bytes_;            // Paired byte regions after the metadata arrays.

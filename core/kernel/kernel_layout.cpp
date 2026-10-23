@@ -83,6 +83,11 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
                      authority::GrantTable::storage_size({capacities.grant_capacity,
                                                           capacities.authority_scope_max_bytes,
                                                           capacities.grant_delegation_depth_max}));
+    layout.goal_authority_offset = placer.place(
+        work::GoalAuthorityTable::storage_alignment,
+        work::GoalAuthorityTable::storage_size({capacities.goal_capacity,
+                                               capacities.goal_requirement_capacity,
+                                               capacities.authority_scope_max_bytes}));
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

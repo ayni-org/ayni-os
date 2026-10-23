@@ -31,6 +31,7 @@ struct KernelCapacities {
     uint32_t authority_scope_max_bytes;
     uint32_t grant_capacity;
     uint32_t grant_delegation_depth_max;
+    uint32_t goal_requirement_capacity; // Positive requirements per Goal; fixes metadata stride.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -58,6 +59,7 @@ struct KernelStorage {
     void *commands;
     void *capabilities;
     void *grants;
+    void *goal_authority; // Goal-owned ceilings/references, one slot per Goal index.
 };
 
 } // namespace ayni::kernel

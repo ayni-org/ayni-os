@@ -23,6 +23,7 @@
 #include "kernel/transition_clock.h"
 #include "work/agent/agent_table.h"
 #include "work/goal/goal_table.h"
+#include "work/goal/goal_authority.h"
 #include "work/propagation.h"
 #include "work/task/task_table.h"
 
@@ -50,7 +51,10 @@ struct WorkModel {
           capabilities(storage.capabilities, capacities.capability_capacity,
                        capacities.authority_scope_max_bytes),
           grants(storage.grants, {capacities.grant_capacity, capacities.authority_scope_max_bytes,
-                                  capacities.grant_delegation_depth_max}) {}
+                                  capacities.grant_delegation_depth_max}),
+          goal_authority(storage.goal_authority, {capacities.goal_capacity,
+                                                  capacities.goal_requirement_capacity,
+                                                  capacities.authority_scope_max_bytes}) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -85,6 +89,8 @@ struct WorkModel {
     // Trusted, immutable authorization schemas; registration enables no I/O.
     catalog::CapabilityRegistry capabilities;
     authority::GrantTable grants;
+    // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
+    work::GoalAuthorityTable goal_authority;
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal

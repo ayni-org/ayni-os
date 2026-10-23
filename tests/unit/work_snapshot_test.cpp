@@ -39,6 +39,7 @@ ayni::kernel::KernelCapacities capacities() {
     result.agent_capacity = 2;
     result.goal_type_capacity = 2;
     result.goal_capacity = 8;
+    result.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
     result.goal_parameter_max_bytes = 32;
     result.session_capacity = 2;
     result.task_capacity = 4;
@@ -77,6 +78,8 @@ class Model {
           grants_(store(ayni::authority::GrantTable::storage_size(
               {config.grant_capacity, config.authority_scope_max_bytes,
                config.grant_delegation_depth_max}))),
+          goal_authority_(store(ayni::work::GoalAuthorityTable::storage_size(
+              {config.goal_capacity, config.goal_requirement_capacity, config.authority_scope_max_bytes}))),
           storage_(storage()), model_(capacities_, limits, storage_) {}
 
     WorkModel &get() { return model_; }
@@ -93,12 +96,13 @@ class Model {
         result.commands = commands_.data();
         result.capabilities = capabilities_.data();
         result.grants = grants_.data();
+        result.goal_authority = goal_authority_.data();
         return result;
     }
 
     ayni::kernel::KernelCapacities capacities_;
     std::vector<uint64_t> agents_, types_, goals_, sessions_, tasks_, strategies_, commands_,
-        capabilities_, grants_;
+        capabilities_, grants_, goal_authority_;
     ayni::kernel::KernelStorage storage_;
     WorkModel model_;
 };

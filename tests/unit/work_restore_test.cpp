@@ -1188,6 +1188,7 @@ KernelCapacities small_capacities() {
     capacities.agent_capacity = 3;
     capacities.goal_type_capacity = 1;
     capacities.goal_capacity = 4;
+    capacities.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
     capacities.goal_parameter_max_bytes = 16;
     capacities.session_capacity = 1;
     capacities.task_capacity = 3;
@@ -1226,6 +1227,9 @@ class Model {
           grants_(ayni::authority::GrantTable::storage_size(
               {capacities.grant_capacity, capacities.authority_scope_max_bytes,
                capacities.grant_delegation_depth_max})),
+          goal_authority_(ayni::work::GoalAuthorityTable::storage_size(
+              {capacities.goal_capacity, capacities.goal_requirement_capacity,
+               capacities.authority_scope_max_bytes})),
           work_(capacities, {2, 4}, storage()) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
@@ -1251,7 +1255,8 @@ class Model {
                 nullptr,
                 commands_.data(),
                 capabilities_.data(),
-                grants_.data()};
+                grants_.data(),
+                goal_authority_.data()};
     }
 
     Block agents_;
@@ -1263,6 +1268,7 @@ class Model {
     Block commands_;
     Block capabilities_;
     Block grants_;
+    Block goal_authority_;
     WorkModel work_;
 };
 

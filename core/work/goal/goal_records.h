@@ -18,6 +18,8 @@ namespace ayni::work {
 
 constexpr uint16_t goal_record_type = 3;
 constexpr uint16_t goal_record_version = 1;
+// Type 3/v2 keeps v1's body but requires paired type 17 authority metadata.
+constexpr uint16_t goal_with_authority_record_version = 2;
 constexpr uint16_t goal_state_record_type = 4;
 constexpr uint16_t goal_state_record_version = 1;
 // A GOAL record without its goal type id, trigger source and parameters.
@@ -31,6 +33,7 @@ struct GoalRecord {
     uint64_t replaced_goal_id;
     uint32_t depth;
     NewGoal goal;
+    bool authority_required = false; // v2 envelope requires a paired ceiling; no Goal field copy.
 };
 
 struct GoalStateRecord {
@@ -43,7 +46,8 @@ uint32_t goal_record_size(const Goal &goal);
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body);
 // Returns false for a body that does not hold a GOAL record: a size that
 // does not match, an invalid goal type id or trigger source.
-bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out);
+bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out,
+                      uint16_t version = goal_record_version);
 
 // body has goal_state_record_size bytes.
 void write_goal_state_record(const Goal &goal, uint8_t *body);

@@ -98,6 +98,71 @@ ayni_status_t resolve_storage_buffer(KernelCapacities &capacities) {
                : AYNI_OK;
 }
 
+// Closed ABI field mapping. The order preserves the established first-error
+// precedence; each trailing field is read only when struct_size covers it.
+struct CapacityField {
+    std::size_t offset; // Byte offset in ayni_config_v1; never a positional array index.
+    CapacityRange range; // Default and inclusive bounds in the public field's units.
+    uint32_t KernelCapacities::*member; // Matching validated output field, never null.
+};
+
+constexpr CapacityField capacity_fields[] = {
+    {offsetof(ayni_config_v1, ingress_capacity),
+     {AYNI_INGRESS_CAPACITY_DEFAULT, 1U, AYNI_INGRESS_CAPACITY_MAX}, &KernelCapacities::ingress_capacity},
+    {offsetof(ayni_config_v1, event_body_max_bytes),
+     {AYNI_EVENT_BODY_MAX_BYTES_DEFAULT, 1U, AYNI_EVENT_BODY_MAX_BYTES_MAX}, &KernelCapacities::event_body_max_bytes},
+    {offsetof(ayni_config_v1, completion_slot_count),
+     {AYNI_COMPLETION_SLOT_COUNT_DEFAULT, 1U, AYNI_COMPLETION_SLOT_COUNT_MAX}, &KernelCapacities::completion_slot_count},
+    // Zero stays unresolved until every capacity has been read (C-VER-003).
+    {offsetof(ayni_config_v1, storage_buffer_bytes),
+     {AYNI_STORAGE_BUFFER_BYTES_DEFAULT, 0U, AYNI_STORAGE_BUFFER_BYTES_MAX}, &KernelCapacities::storage_buffer_bytes},
+    {offsetof(ayni_config_v1, agent_capacity),
+     {AYNI_AGENT_CAPACITY_DEFAULT, 1U, AYNI_AGENT_CAPACITY_MAX}, &KernelCapacities::agent_capacity},
+    {offsetof(ayni_config_v1, goal_type_capacity),
+     {AYNI_GOAL_TYPE_CAPACITY_DEFAULT, 1U, AYNI_GOAL_TYPE_CAPACITY_MAX}, &KernelCapacities::goal_type_capacity},
+    {offsetof(ayni_config_v1, goal_capacity),
+     {AYNI_GOAL_CAPACITY_DEFAULT, 1U, AYNI_GOAL_CAPACITY_MAX}, &KernelCapacities::goal_capacity},
+    {offsetof(ayni_config_v1, goal_parameter_max_bytes),
+     {AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT, AYNI_GOAL_PARAMETER_MAX_BYTES_MIN, AYNI_GOAL_PARAMETER_MAX_BYTES_MAX}, &KernelCapacities::goal_parameter_max_bytes},
+    {offsetof(ayni_config_v1, session_capacity),
+     {AYNI_SESSION_CAPACITY_DEFAULT, 1U, AYNI_SESSION_CAPACITY_MAX}, &KernelCapacities::session_capacity},
+    {offsetof(ayni_config_v1, task_capacity),
+     {AYNI_TASK_CAPACITY_DEFAULT, 1U, AYNI_TASK_CAPACITY_MAX}, &KernelCapacities::task_capacity},
+    {offsetof(ayni_config_v1, strategy_capacity),
+     {AYNI_STRATEGY_CAPACITY_DEFAULT, 1U, AYNI_STRATEGY_CAPACITY_MAX}, &KernelCapacities::strategy_capacity},
+    {offsetof(ayni_config_v1, policy_intent_capacity),
+     {AYNI_POLICY_INTENT_CAPACITY_DEFAULT, 1U, AYNI_POLICY_INTENT_CAPACITY_MAX}, &KernelCapacities::policy_intent_capacity},
+    {offsetof(ayni_config_v1, task_step_capacity),
+     {AYNI_TASK_STEP_CAPACITY_DEFAULT, 1U, AYNI_TASK_STEP_CAPACITY_MAX}, &KernelCapacities::task_step_capacity},
+    {offsetof(ayni_config_v1, task_checkpoint_max_bytes),
+     {AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT, AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN, AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX}, &KernelCapacities::task_checkpoint_max_bytes},
+    {offsetof(ayni_config_v1, command_capacity),
+     {AYNI_COMMAND_CAPACITY_DEFAULT, 1U, AYNI_COMMAND_CAPACITY_MAX}, &KernelCapacities::command_capacity},
+    {offsetof(ayni_config_v1, capability_capacity),
+     {AYNI_CAPABILITY_CAPACITY_DEFAULT, 1U, AYNI_CAPABILITY_CAPACITY_MAX}, &KernelCapacities::capability_capacity},
+    {offsetof(ayni_config_v1, authority_scope_max_bytes),
+     {AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX}, &KernelCapacities::authority_scope_max_bytes},
+    {offsetof(ayni_config_v1, grant_capacity),
+     {AYNI_GRANT_CAPACITY_DEFAULT, 1U, AYNI_GRANT_CAPACITY_MAX}, &KernelCapacities::grant_capacity},
+    {offsetof(ayni_config_v1, grant_delegation_depth_max),
+     {AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT, AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN, AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX}, &KernelCapacities::grant_delegation_depth_max},
+    {offsetof(ayni_config_v1, goal_requirement_capacity),
+     {AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT, 1U, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX}, &KernelCapacities::goal_requirement_capacity},
+};
+
+// Read each bounded capacity once, then let validate_config resolve storage
+// against the complete set. This list contains no cross-field policy.
+ayni_status_t read_capacities(const ayni_config_v1 *config, KernelCapacities &capacities) {
+    for (const auto &field : capacity_fields) {
+        const auto status = read_capacity(config, field.offset, field.range,
+                                           &(capacities.*field.member));
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    return AYNI_OK;
+}
+
 ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *out_capacities,
                               KernelLimits *out_limits) {
     if (config == nullptr) {
@@ -116,112 +181,7 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
         return AYNI_UNSUPPORTED_VERSION;
     }
     KernelCapacities capacities{};
-    status = read_capacity(config, offsetof(ayni_config_v1, ingress_capacity),
-                           {AYNI_INGRESS_CAPACITY_DEFAULT, 1U, AYNI_INGRESS_CAPACITY_MAX},
-                           &capacities.ingress_capacity);
-    if (status == AYNI_OK) {
-        status =
-            read_capacity(config, offsetof(ayni_config_v1, event_body_max_bytes),
-                          {AYNI_EVENT_BODY_MAX_BYTES_DEFAULT, 1U, AYNI_EVENT_BODY_MAX_BYTES_MAX},
-                          &capacities.event_body_max_bytes);
-    }
-    if (status == AYNI_OK) {
-        status =
-            read_capacity(config, offsetof(ayni_config_v1, completion_slot_count),
-                          {AYNI_COMPLETION_SLOT_COUNT_DEFAULT, 1U, AYNI_COMPLETION_SLOT_COUNT_MAX},
-                          &capacities.completion_slot_count);
-    }
-    if (status == AYNI_OK) {
-        // 0, the default, is resolved once the other capacities are known.
-        status =
-            read_capacity(config, offsetof(ayni_config_v1, storage_buffer_bytes),
-                          {AYNI_STORAGE_BUFFER_BYTES_DEFAULT, 0U, AYNI_STORAGE_BUFFER_BYTES_MAX},
-                          &capacities.storage_buffer_bytes);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, agent_capacity),
-                               {AYNI_AGENT_CAPACITY_DEFAULT, 1U, AYNI_AGENT_CAPACITY_MAX},
-                               &capacities.agent_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, goal_type_capacity),
-                               {AYNI_GOAL_TYPE_CAPACITY_DEFAULT, 1U, AYNI_GOAL_TYPE_CAPACITY_MAX},
-                               &capacities.goal_type_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, goal_capacity),
-                               {AYNI_GOAL_CAPACITY_DEFAULT, 1U, AYNI_GOAL_CAPACITY_MAX},
-                               &capacities.goal_capacity);
-    }
-    if (status == AYNI_OK) {
-        status =
-            read_capacity(config, offsetof(ayni_config_v1, goal_parameter_max_bytes),
-                          {AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT, AYNI_GOAL_PARAMETER_MAX_BYTES_MIN,
-                           AYNI_GOAL_PARAMETER_MAX_BYTES_MAX},
-                          &capacities.goal_parameter_max_bytes);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, session_capacity),
-                               {AYNI_SESSION_CAPACITY_DEFAULT, 1U, AYNI_SESSION_CAPACITY_MAX},
-                               &capacities.session_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, task_capacity),
-                               {AYNI_TASK_CAPACITY_DEFAULT, 1U, AYNI_TASK_CAPACITY_MAX},
-                               &capacities.task_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, strategy_capacity),
-                               {AYNI_STRATEGY_CAPACITY_DEFAULT, 1U, AYNI_STRATEGY_CAPACITY_MAX},
-                               &capacities.strategy_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(
-            config, offsetof(ayni_config_v1, policy_intent_capacity),
-            {AYNI_POLICY_INTENT_CAPACITY_DEFAULT, 1U, AYNI_POLICY_INTENT_CAPACITY_MAX},
-            &capacities.policy_intent_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, task_step_capacity),
-                               {AYNI_TASK_STEP_CAPACITY_DEFAULT, 1U, AYNI_TASK_STEP_CAPACITY_MAX},
-                               &capacities.task_step_capacity);
-    }
-    if (status == AYNI_OK) {
-        status =
-            read_capacity(config, offsetof(ayni_config_v1, task_checkpoint_max_bytes),
-                          {AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT,
-                           AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN, AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX},
-                          &capacities.task_checkpoint_max_bytes);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, command_capacity),
-                               {AYNI_COMMAND_CAPACITY_DEFAULT, 1U, AYNI_COMMAND_CAPACITY_MAX},
-                               &capacities.command_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, capability_capacity),
-                               {AYNI_CAPABILITY_CAPACITY_DEFAULT, 1U, AYNI_CAPABILITY_CAPACITY_MAX},
-                               &capacities.capability_capacity);
-    }
-    if (status == AYNI_OK) {
-        status =
-            read_capacity(config, offsetof(ayni_config_v1, authority_scope_max_bytes),
-                          {AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT,
-                           AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX},
-                          &capacities.authority_scope_max_bytes);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, grant_capacity),
-                               {AYNI_GRANT_CAPACITY_DEFAULT, 1U, AYNI_GRANT_CAPACITY_MAX},
-                               &capacities.grant_capacity);
-    }
-    if (status == AYNI_OK) {
-        status = read_capacity(config, offsetof(ayni_config_v1, grant_delegation_depth_max),
-                               {AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT,
-                                AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN,
-                                AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX},
-                               &capacities.grant_delegation_depth_max);
-    }
+    status = read_capacities(config, capacities);
     if (status == AYNI_OK) {
         status = resolve_storage_buffer(capacities);
     }
@@ -426,7 +386,7 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
         base + layout.sessions_offset,       base + layout.tasks_offset,
         base + layout.strategies_offset,     base + layout.decisions_offset,
         base + layout.commands_offset,       base + layout.capabilities_offset,
-        base + layout.grants_offset};
+        base + layout.grants_offset, base + layout.goal_authority_offset};
     *out_kernel = new (memory) ayni_kernel(copy_host(host), capacities, limits, storage);
     return AYNI_OK;
 }

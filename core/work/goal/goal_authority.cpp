@@ -41,7 +41,7 @@ bool valid_requirement(const GoalRequirement &requirement) {
 // complete selections, even after revocation makes those selections unusable.
 bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
     if (!foundation::is_kernel_id(record.goal_id) || record.stamp.transition_id == 0U ||
-        record.stamp.commit_seq == 0U || record.count > goal_requirement_capacity_max ||
+        record.stamp.commit_seq == 0U || record.count > AYNI_GOAL_REQUIREMENT_CAPACITY_MAX ||
         (record.phase != GoalAuthorityPhase::proposed &&
          record.phase != GoalAuthorityPhase::authorized &&
          record.phase != GoalAuthorityPhase::paused)) {
@@ -122,10 +122,15 @@ ayni_status_t GoalAuthorityTable::install_validated(uint32_t goal_index,
 // can accidentally publish part of another Goal's saved authority.
 bool GoalAuthorityTable::read(uint32_t goal_index, uint64_t goal_id,
                               GoalAuthorityRecord &out) const {
-    if (goal_index >= limits_.goals || !slots_[goal_index].present ||
-        slots_[goal_index].goal_id != goal_id) {
+    if (!contains(goal_index, goal_id)) {
         return false;
     }
+    out = at(goal_index);
+    return true;
+}
+
+// All metadata belongs to this slot; no current Grant/catalog interpretation.
+GoalAuthorityRecord GoalAuthorityTable::at(uint32_t goal_index) const {
     const Slot &slot = slots_[goal_index];
     GoalAuthorityRecord record{};
     record.goal_id = slot.goal_id;
@@ -141,8 +146,51 @@ bool GoalAuthorityTable::read(uint32_t goal_index, uint64_t goal_id,
                                       {scope_at(at), saved.scope_size},
                                       saved.dependency};
     }
-    out = record;
+    return record;
+}
+
+bool GoalAuthorityTable::contains(uint32_t goal_index, uint64_t goal_id) const {
+    return goal_index < limits_.goals && slots_[goal_index].present &&
+           slots_[goal_index].goal_id == goal_id;
+}
+
+// Restore changes references and phase, never the original Goal ceiling.
+// Compare sizes before bytes; all views were validated by the record reader.
+bool GoalAuthorityTable::same_ceiling(uint32_t goal_index,
+                                      const GoalAuthorityRecord &record) const {
+    if (slots_[goal_index].count != record.count) {
+        return false;
+    }
+    for (uint32_t index = 0; index < record.count; ++index) {
+        const uint32_t at = requirement_index(goal_index, index);
+        const auto &saved = requirements_[at];
+        const auto &next = record.requirements[index];
+        if (!saved.capability_id.equals({next.capability_id.data(), next.capability_id.size()}) ||
+            saved.capability_version != next.capability_version ||
+            saved.domain_size != next.source_domain.size || saved.scope_size != next.scope.size ||
+            std::memcmp(domain_at(at), next.source_domain.data, saved.domain_size) != 0 ||
+            std::memcmp(scope_at(at), next.scope.data, saved.scope_size) != 0) {
+            return false;
+        }
+    }
     return true;
+}
+
+ayni_status_t GoalAuthorityTable::restore_validated(uint32_t goal_index,
+                                                    const GoalAuthorityRecord &record) {
+    if (goal_index >= limits_.goals) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const Slot &previous = slots_[goal_index];
+    if (previous.present &&
+        (previous.goal_id != record.goal_id || !same_ceiling(goal_index, record) ||
+         record.stamp.commit_seq <= previous.stamp.commit_seq ||
+         record.stamp.transition_id <= previous.stamp.transition_id ||
+         (previous.phase != GoalAuthorityPhase::proposed &&
+          record.phase == GoalAuthorityPhase::proposed))) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return install_validated(goal_index, record);
 }
 
 void GoalAuthorityTable::clear(uint32_t goal_index) {

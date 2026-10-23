@@ -6,6 +6,7 @@
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_records.h"
+#include "work/goal/goal_authority_records.h"
 #include "work/task/task_records.h"
 
 namespace ayni::kernel {
@@ -59,6 +60,9 @@ bool WorkReplay::binding_matches() const {
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                       WorkRecordContext context) {
     const bool authority_record =
+        header.type == work::goal_authority_record_type ||
+        (header.type == work::goal_record_type &&
+         header.version == work::goal_with_authority_record_version) ||
         header.type == authority::owner_binding_record_type ||
         header.type == authority::grant_record_type ||
         header.type == authority::grant_state_record_type ||
@@ -97,9 +101,15 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                        header.version == authority::grant_revocation_progress_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
+    case work::goal_record_type:
+        return header.version == work::goal_record_version ||
+                       header.version == work::goal_with_authority_record_version
+                   ? RecordUse::applied : RecordUse::unknown;
+    case work::goal_authority_record_type:
+        return header.version == work::goal_authority_record_version
+                   ? RecordUse::applied : RecordUse::unknown;
     case authority::owner_binding_record_type:
     case work::instance_record_type:
-    case work::goal_record_type:
     case work::goal_state_record_type:
     case work::task_record_type:
     case work::task_state_record_type:
@@ -141,7 +151,9 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     case work::instance_record_type:
         return restore_instance(body, size, stamp);
     case work::goal_record_type:
-        return restore_goal(body, size, stamp);
+        return restore_goal(header.version, body, size, stamp);
+    case work::goal_authority_record_type:
+        return restore_goal_authority(body, size, stamp);
     case work::goal_state_record_type:
         return restore_goal_state(body, size, stamp);
     case work::task_record_type:
@@ -193,11 +205,12 @@ RecordUse WorkReplay::restore_instance(const uint8_t *body, uint32_t size,
                                         record.lifecycle, stamp));
 }
 
-RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal(uint16_t version, const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::GoalRecord record{};
     // A goal is created for an instance that has started.
-    if (pairing_.goal.has_value() || !work::read_goal_record(body, size, record) ||
+    if (pairing_.goal.has_value() || pairing_.goal_authority.has_value() ||
+        !work::read_goal_record(body, size, record, version) ||
         model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return RecordUse::corrupt;
     }
@@ -216,7 +229,11 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     if (model_.goals.at(index).depth != record.depth) {
         return RecordUse::corrupt;
     }
+    model_.goal_authority.clear(index);
     pairing_.goal = record.goal_id;
+    if (record.authority_required) {
+        pairing_.goal_authority = record.goal_id;
+    }
     return RecordUse::applied;
 }
 
@@ -232,6 +249,33 @@ RecordUse WorkReplay::restore_goal_state(const uint8_t *body, uint32_t size,
         pairing_.goal.reset();
     }
     return use_of(model_.goals.restore_state(index, record.state, stamp));
+}
+
+// A create cannot lose its explicit ceiling or borrow another Goal's metadata.
+// Existing metadata may advance without changing its immutable ceiling; legacy
+// confirmation remains closed until its own command/pairing is implemented.
+RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
+                                            foundation::TransitionStamp stamp) {
+    work::GoalAuthorityRecord record{};
+    uint32_t index = 0;
+    if (!work::read_goal_authority_record(body, size, record) ||
+        !model_.goals.find(record.goal_id, index) ||
+        record.stamp.commit_seq != stamp.commit_seq ||
+        record.stamp.transition_id != stamp.transition_id ||
+        model_.goals.at(index).commit_seq != stamp.commit_seq ||
+        pairing_.goal.has_value()) {
+        return RecordUse::corrupt;
+    }
+    if (pairing_.goal_authority ? *pairing_.goal_authority != record.goal_id
+                                : !model_.goal_authority.contains(index, record.goal_id)) {
+        return RecordUse::corrupt;
+    }
+    const auto status = model_.goal_authority.restore_validated(index, record);
+    if (status != AYNI_OK) {
+        return status == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
+    }
+    pairing_.goal_authority.reset();
+    return RecordUse::applied;
 }
 
 RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
@@ -589,6 +633,7 @@ void WorkReplay::discard() {
     model_.principals.drop_restored_binding();
     model_.agents.drop_restored();
     model_.goals.clear();
+    model_.goal_authority.clear_all();
     model_.tasks.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();
