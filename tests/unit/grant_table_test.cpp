@@ -1137,4 +1137,115 @@ TEST(GrantTable, replay_cannot_replace_a_terminal_parent_with_active_or_terminal
     EXPECT_TRUE(table->consistent());
 }
 
+// ADR-0037 decision 17: reserve every slot before changing any live row.
+TEST(GoalGrantTable, whole_batch_reservations_are_distinct_and_refusal_changes_no_fact) {
+    Input input(-2, 2);
+    Grants grants(2);
+    auto request = input.request();
+    request.bound_goal_id = id(1);
+    request.scope = nullptr;
+    std::array<uint8_t, 256> bytes{};
+    uint32_t size = 0;
+    ASSERT_EQ(normalize_scope(request.source_domain, input.scope, bytes.data(), bytes.size(), size),
+              AYNI_OK);
+    const ayni_bytes_v1 scope{bytes.data(), size};
+    GrantTable::BatchPlacement batch{};
+    std::array<GrantTable::Admission, 2> plans{};
+    for (uint32_t at = 0; at < plans.size(); ++at) {
+        ASSERT_EQ(grants->check_goal_create(request, scope, ready, batch, plans[at]).status,
+                  AYNI_OK);
+        EXPECT_EQ(plans[at].index, at);
+        EXPECT_EQ(grants->size(), 0U);
+    }
+    auto unchanged = plans[0];
+    unchanged.index = 91;
+    EXPECT_EQ(grants->check_goal_create(request, scope, ready, batch, unchanged).reason,
+              AYNI_REASON_GRANT_CAPACITY);
+    EXPECT_EQ(unchanged.index, 91U);
+    EXPECT_EQ(batch.appended, 2U);
+    EXPECT_EQ(grants->size(), 0U);
+    for (uint32_t at = 0; at < plans.size(); ++at) {
+        uint32_t installed = 91;
+        ASSERT_TRUE(
+            grants->insert_goal(request, scope, plans[at], id(at + 2), {10, 10}, installed));
+        EXPECT_EQ(installed, at);
+        EXPECT_EQ(grants->at(at).bound_goal_id, id(1));
+    }
+    input.field.allowed.values.integer = {-9, 9};
+    EXPECT_EQ(grants->check_chain(0, {1, 100, 1000, id(1)}).status, AYNI_OK);
+    EXPECT_EQ(grants->check_chain(0, ready).reason, AYNI_REASON_GRANT_GOAL);
+    EXPECT_EQ(grants->check_chain(0, {1, 100, 1000, id(9)}).reason, AYNI_REASON_GRANT_GOAL);
+}
+
+// C-AUTH-023 / ADR-0037 decision 17: append first, then unique safe leaves;
+// work exclusions and durability still constrain the whole batch.
+TEST(GoalGrantTable, a_batch_combines_tail_slots_with_distinct_safe_replacements) {
+    Input input;
+    Grants grants(4);
+    ASSERT_EQ(grants.add(input.request(0, 0, 1), 1, 1).status, AYNI_OK);
+    ASSERT_EQ(grants.add(input.request(0, 0, 1), 2, 2).status, AYNI_OK);
+    ASSERT_EQ(grants.add(input.request(0, 0, 1), 3, 3).status, AYNI_OK);
+    grants->expire(0, {30, 30});
+    grants->expire(1, {20, 20});
+    grants->expire(2, {10, 10});
+    auto request = input.request();
+    request.bound_goal_id = id(4);
+    request.scope = nullptr;
+    const auto canonical = grants->scope(0);
+    GrantTable::BatchPlacement batch{};
+    batch.excluded.add(2);
+    const std::array<uint32_t, 3> expected{3, 1, 0};
+    for (const auto index : expected) {
+        GrantTable::Admission plan{};
+        ASSERT_EQ(grants->check_goal_create(request, canonical, ready, batch, plan).status,
+                  AYNI_OK);
+        EXPECT_EQ(plan.index, index);
+    }
+    GrantTable::Admission refused{};
+    EXPECT_EQ(grants->check_goal_create(request, canonical, ready, batch, refused).reason,
+              AYNI_REASON_GRANT_CAPACITY);
+    EXPECT_EQ(grants->size(), 3U);
+    EXPECT_EQ(grants->at(0).grant_id, id(1));
+}
+
+// ADR-0037 decisions 16/17: bound roots cannot be generic creations, delegated,
+// malformed or wider than the original canonical domain.
+TEST(GoalGrantTable, bound_admission_rejects_delegation_and_preserves_failed_plan) {
+    Input input;
+    Grants grants;
+    auto request = input.request();
+    request.bound_goal_id = id(1);
+    GrantTable::Admission plan{};
+    EXPECT_EQ(grants->check_create(request, 0, ready, plan).status, AYNI_INVALID_ARGUMENT);
+    request.scope = nullptr;
+    const auto canonical = request.source_domain;
+    GrantTable::BatchPlacement batch{};
+    for (unsigned fault = 0; fault < 4; ++fault) {
+        auto invalid = request;
+        if (fault == 0) {
+            invalid.bound_goal_id = 0;
+        }
+        if (fault == 1) {
+            invalid.parent_grant_id = id(5);
+        }
+        if (fault == 2) {
+            invalid.flags = AYNI_GRANT_ALLOW_DELEGATION;
+        }
+        if (fault == 3) {
+            invalid.lifetime = AYNI_GRANT_CURRENT_BOOT;
+        }
+        plan.index = 91;
+        EXPECT_EQ(grants->check_goal_create(invalid, canonical, ready, batch, plan).status,
+                  AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(plan.index, 91U);
+        EXPECT_EQ(batch.appended, 0U);
+    }
+    ASSERT_EQ(grants->check_goal_create(request, canonical, ready, batch, plan).status, AYNI_OK);
+    uint32_t installed = 0;
+    ASSERT_TRUE(grants->insert_goal(request, canonical, plan, id(2), {10, 10}, installed));
+    auto child = input.request(id(2));
+    EXPECT_EQ(grants->check_create(child, 1, {1, 100, 1000, id(1)}, plan).reason,
+              AYNI_REASON_GRANT_PARENT);
+}
+
 } // namespace

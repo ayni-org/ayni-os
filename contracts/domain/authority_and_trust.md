@@ -46,11 +46,13 @@
 | C-AUTH-028 | GoalType 在参数校验后通过 owner 线程 sink 导出有界需求；每项立即复制规范化，首次失败不可被回调忽略；整个导出失败不创建 Goal 或分配 ID；空回调显式零需求，旧记录缺席不是零需求 | 借用回调局部 Scope；失败留下部分 Goal；丢掉 emit 错误 | M1 已实现（需求导出与查询）：`GoalRequirements.missing_grant_creates_proposal_without_tasks_and_copies_scope`、`GoalRequirements.exporter_failure_is_sticky_and_refusal_allocates_nothing`、`GoalRequirements.invalid_exports_and_reentry_preserve_the_original_status`、`GoalRequirements.query_failures_publish_no_partial_fields`；ADR-0037 |
 | C-AUTH-029 | 每项选一条同主体、完整覆盖且持久有效的 Grant，同级按 ID；缺项创建 PROPOSED，已有引用不被替换；子需求不能超过一条原父需求；待批不生成 Task、不积累触发且不能有子 Goal，可取消/失效 | 拼接窄 Grant；等待时自动扩大批准缺项；子目标借零需求父扩权 | M1 部分实现（创建待批、选择、父上限及恢复）：`GoalRequirements.zero_needs_run_and_only_durable_grants_are_selected`、`GoalRequirements.partial_coverage_keeps_lowest_matching_grant_and_never_unions_ranges`、`GoalRequirements.child_cannot_expand_parent_ceiling_or_use_a_proposed_parent`、`GoalRequirements.proposed_work_round_trips_and_expires_without_running`；Goal 专属优先及批准随 E3；ADR-0037 |
 | C-AUTH-030 | 派生前、策略调用前及结果提交前检查选定引用与祖先；回调后用最新时钟，失效不接受步骤/检查点；独立授权暂停不能被普通用户恢复解除 | 慢策略越过期限后提交；换一条 Grant 静默续权 | M1 部分实现（最低工作消费门控）：`GoalRequirements.revoke_blocks_derivation_and_user_resume_does_not_reauthorize`、`GoalRequirements.revoke_before_decision_preserves_ready_task_progress`、`GoalRequirements.deadline_crossed_inside_strategy_discards_all_returned_progress`；独立 Task 引用、全量传播/清理及显式重新授权随 F；ADR-0037 |
+| C-AUTH-031 | Goal 专属 Grant 保存 exact Goal ID，是不可委派根；只供该未结束且主体一致的 Goal 使用，不授予兄弟或子 Goal，不因槽位复用转移；整批先预留不同槽位与足够 ID，失败不分配部分权限 | 原 Goal 结束后另一 Goal 继续使用；多次单条预检选中同一槽；ID 只够 N−1 仍发布前缀 | M1 部分实现（内部绑定、批量预检和现有消费门控；公开批准随 E3b）：`GoalGrantTable.whole_batch_reservations_are_distinct_and_refusal_changes_no_fact`、`GoalGrantTable.a_batch_combines_tail_slots_with_distinct_safe_replacements`、`GoalGrantTable.bound_admission_rejects_delegation_and_preserves_failed_plan`、`GoalGrants.a_bound_grant_cannot_authorize_other_or_child_goals_and_ends_with_its_goal`、`GoalGrants.a_reclaimed_goal_identity_cannot_authorize_the_new_slot_owner`、`KernelId.batch_availability_does_not_consume_or_wrap_the_remaining_ids`；ADR-0037 |
 | C-TRUST-001 | 模型、VLA、外部消息与发现到的描述都只作为意图或候选描述，经 Kernel 校验后才影响状态；模型输出不能作为授权 | 模型回复“用户已同意”，系统据此执行 | E1 步骤 7；§10.6 权限行 |
 | C-TRUST-002 | 发现到的设备或外部端点只产生候选描述，经所有者确认的可信注册后进入目录，不自动生成 Grant | 局域网上扫描到的设备自动获得调用授权 | `MA-034`；§3.7 |
 | C-TRUST-003 | 适配器进程以独立系统账户运行，不能访问执行器设备节点与凭据库，只经带自身主体身份的本地 IPC 连接 Kernel | ROS 适配器以 root 运行并直接写 `/dev/ttyUSB0` | §10.6 权限行；R1 B5 |
 | C-TRUST-004 | 执行端拒绝缺少有效许可的指令，无论指令来源；这是无法旁路受管入口的最后防线 | 绕过 Kernel 直接发往控制器的指令被执行 | R1 B5；E2 F14；C-PERMIT-007 |
 | C-TRUST-005 | 第三方原生代码与 MHS 代码文件不进入固件；只有可转换为有界 Procedure 数据的子集可经校验接入 | 把外部下载的 C 代码编进固件以支持新设备 | 评审；`MA-037` |
+
 
 ## 有限字段与规范范围（ADR-0029）
 

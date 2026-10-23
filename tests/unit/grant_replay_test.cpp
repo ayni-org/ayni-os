@@ -1485,7 +1485,8 @@ TEST(GrantRevokeReplay, record_versions_are_specific_to_journal_and_snapshot_con
     // ADR-0037: journal v2 is now a different, Goal-bound creation body.
     // Header classification cannot infer snapshot semantics without context.
     EXPECT_EQ(WorkReplay::classify_header(snapshot_grant), RecordUse::applied);
-    const RecordHeader bound_snapshot{grant_record_type, goal_grant_snapshot_record_version,
+    const RecordHeader bound_snapshot{ayni::authority::grant_record_type,
+                                      ayni::authority::goal_grant_snapshot_record_version,
                                       record_required, 0};
     EXPECT_EQ(WorkReplay::classify_header(bound_snapshot), RecordUse::unknown);
     EXPECT_EQ(WorkReplay::classify_header(bound_snapshot, WorkRecordContext::snapshot),
