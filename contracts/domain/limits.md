@@ -31,9 +31,9 @@
 | 每个 Task 的模型决策次数 | 8 | §4.2 | Task 暂停并报告原因 |
 | 单轮能力请求数 | 8 | §2.7、§4.2 | 整轮拒绝 |
 | 模型请求超时 | 30 s | §4.2 | 调用超时，按能力属性处理 |
-| Capability（`capability_capacity`，1–256，按 ID+版本计数） | 16 | ADR-0028、ADR-0029 | 注册返回 `CAPACITY_EXCEEDED`；B 本地验证及交付状态见 ADR-0029/进度报告 |
-| 单个授权 Scope 与完整注册域（`authority_scope_max_bytes`，64–4096 B） | 256 B | ADR-0029 | 完整规范表达超过字节容量拒绝，不截断；默认不保证容纳所有最大字段/成员组合 |
-| 每能力授权字段 / 每字段集合原始输入成员（不可配置） | 8 / 8 | ADR-0028、ADR-0029 | 超限拒绝；先检查原始 count 再排序去重，不用重复项绕过输入工作量上限 |
+| Capability（`capability_capacity`，1–256，按 ID+版本计数） | 16 | ADR-0028、ADR-0029 | 注册返回 `CAPACITY_EXCEEDED`；`CapabilityApi.registration_is_bounded_copies_identity_and_never_commits_or_wakes`、`CapabilityRegistry.filling_the_registry_preserves_every_prior_domain_and_lookup` |
+| 单个授权 Scope 与完整注册域（`authority_scope_max_bytes`，64–4096 B） | 256 B | ADR-0029 | 完整规范表达超过字节容量拒绝，不截断；默认不保证容纳所有最大字段/成员组合。`CapabilityRegistry.complete_domain_fits_exactly_or_rejects_one_byte_more_without_partial_registration`、`CapabilityRegistry.largest_field_and_member_counts_fit_the_explicit_maximum_byte_configuration` |
+| 每能力授权字段 / 每字段集合原始输入成员（不可配置） | 8 / 8 | ADR-0028、ADR-0029 | 超限拒绝；先检查原始 count 再排序去重，不用重复项绕过输入工作量上限。`CapabilityRegistry.token_count_is_bounded_before_deduplication_or_member_access`、`CapabilityRegistry.invalid_top_level_descriptors_never_take_a_slot` |
 | Grant（`grant_capacity`，1–1024） | 32 | ADR-0030 | 仅最早且终态持久的安全叶节点可让位，无候选返回 `CAPACITY_EXCEEDED/GRANT_CAPACITY`；C 已实现并完成 Native 验证，D Gate/cleanup 安全条件见 ADR-0031 |
 | 委派深度（`grant_delegation_depth_max`，1–16，按边数根0） | 4 | ADR-0030 | `CAPACITY_EXCEEDED/GRANT_DEPTH`；该配置限制遍历/合法链，不新增每节点子数组 |
 | 每条auth命令完整规范请求 | 创建84 B固定头上界+`authority_scope_max_bytes`；撤销固定16 B | ADR-0030、0031 | CommandTable逐槽字节stride及有界scratch，超限明确拒绝；FNV仅索引，不降成摘要比较 |
