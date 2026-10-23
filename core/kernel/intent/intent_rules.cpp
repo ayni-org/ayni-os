@@ -365,6 +365,20 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
     return stored ? AYNI_OK : AYNI_INTERNAL;
 }
 
+// Reserve the retained command window before applying any domain transition.
+ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
+                                 IntentFailure &failure) {
+    // Retained rows for principals no longer registered can fill the table.
+    if (!model.commands.has_row(principal_id)) {
+        return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
+                      object_ref(AYNI_OBJECT_PRINCIPAL, principal_id), failure);
+    }
+    if (!model.commands.can_insert(principal_id)) {
+        return refuse(AYNI_BUSY, AYNI_REASON_COMMAND_PINNED, ayni_object_ref_v1{}, failure);
+    }
+    return AYNI_OK;
+}
+
 } // namespace
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
@@ -433,14 +447,11 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     if (!has_room) {
         return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
     }
-    // Retained rows for principals no longer registered can fill the table;
-    // admission must reserve this principal's command window before mutation.
-    if (intent.command_id != 0U && !model.commands.has_row(session->principal_id)) {
-        return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
-                      object_ref(AYNI_OBJECT_PRINCIPAL, session->principal_id), failure);
-    }
-    if (intent.command_id != 0U && !model.commands.can_insert(session->principal_id)) {
-        return refuse(AYNI_BUSY, AYNI_REASON_COMMAND_PINNED, ayni_object_ref_v1{}, failure);
+    if (intent.command_id != 0U) {
+        const auto room = check_command_room(model, session->principal_id, failure);
+        if (room != AYNI_OK) {
+            return room;
+        }
     }
     const ayni_status_t status =
         exact ? create_grant(model, intent, *session, now_us, durable_seq, outcome, failure)
