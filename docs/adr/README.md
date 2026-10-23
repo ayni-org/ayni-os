@@ -47,7 +47,7 @@
 | [0033](0033-kernel-id-and-grant-record-ownership.md) | Kernel ID 与 Grant 记录基础规则归属 | 已接受（R2a1；验证见正文） | §9.1、§14.1 |
 | [0034](0034-field-values-and-scope-admission.md) | 字段值编解码与 Scope 准入结果复用 | 已接受（R2a2；验证见正文） | §9.1、§14.1 |
 | [0035](0035-grant-rules-and-bounded-chain-admission.md) | Grant、命令与 Kernel 编排的状态归属 | 已接受（R2b；验证见正文） | §9.1、§14.1 |
-| [0036](0036-unconfirmed-goal-control-guard.md) | 未确认授权的 Goal 普通控制守卫 | 实施中 | §9.1、§14.1 |
+| [0036](0036-unconfirmed-goal-control-guard.md) | 未确认授权的 Goal 普通控制守卫 | 已接受（R3；验证见正文） | §9.1、§14.1 |
 
 ## 模板
 
