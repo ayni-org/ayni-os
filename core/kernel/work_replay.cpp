@@ -783,11 +783,13 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
           record.binding.input.incarnation != 0U))) {
         return false;
     }
-    if (record.binding.parent.goal_id != 0U) {
+    if (goal.parent_index != work::GoalTable::no_parent) {
         const auto parent = model_.goal_authority.at(goal.parent_index);
-        if (record.binding.parent.commit_seq > parent.binding.established_seq ||
-            record.binding.parent.commit_seq <
-                model_.goals.at(goal.parent_index).created.commit_seq) {
+        if (!work::goal_ceiling_covers(parent, record) ||
+            (record.phase != work::GoalAuthorityPhase::proposed &&
+             (record.binding.parent.commit_seq > parent.binding.established_seq ||
+              record.binding.parent.commit_seq <
+                  model_.goals.at(goal.parent_index).created.commit_seq))) {
             return false;
         }
     }

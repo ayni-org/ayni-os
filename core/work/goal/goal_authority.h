@@ -53,6 +53,11 @@ struct GoalAuthorityRecord {
 // not consult today's catalog or claim that any selected Grant is usable.
 bool valid_goal_authority_record(const GoalAuthorityRecord &record);
 
+// Compare normalized immutable requirement views, independent of phase,
+// current catalog or selected Grants. Each child item needs one complete
+// parent item; no union. Views/counts were validated by staging or the codec.
+bool goal_ceiling_covers(const GoalAuthorityRecord &parent, const GoalAuthorityRecord &child);
+
 // Original absent references, independent of the current validity of selected Grants.
 uint32_t missing_requirement_mask(const GoalAuthorityRecord &record);
 

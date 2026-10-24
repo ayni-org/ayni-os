@@ -2799,4 +2799,68 @@ TEST(GoalApprovalPersistence, retained_result_cannot_substitute_another_covering
     EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
 }
 
+// C-AUTH-029 / ADR-0038: the parent's selected Grant can be wider than its
+// immutable requirement. Recovery must enforce the Goal ceiling itself and
+// still accept valid history while the parent's authorization is paused.
+TEST(GoalAuthorityPersistence, snapshot_child_cannot_borrow_a_wider_parent_grant_scope) {
+    Fixture source;
+    source.narrow_first = true;
+    source.run();
+    const auto grant = source.create_grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    const auto parent =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(parent.status, AYNI_OK);
+    const auto child = source.work.create(
+        WorkNode::create_body(source.work.instance(agent_a), parent.result.object.id, "proposal"));
+    ASSERT_EQ(child.status, AYNI_OK);
+    source.work.node().recover();
+    auto image = snapshot(source);
+    Fixture control;
+    control.run();
+    ASSERT_EQ(import_snapshot(control, image), BatchCheck::ok);
+    bool altered = false;
+    for (auto &row : image.records) {
+        if (row.header.type != goal_authority_record_type) {
+            continue;
+        }
+        GoalAuthorityRecord record{};
+        ASSERT_TRUE(read_goal_authority_record(row.body.data(), row.header.length, record));
+        if (record.goal_id != child.result.object.id) {
+            continue;
+        }
+        uint32_t grant_index = 0;
+        ASSERT_TRUE(source.work.kernel()->work.grants.find(grant.result.object.id, grant_index));
+        record.requirements[0].scope = source.work.kernel()->work.grants.scope(grant_index);
+        ASSERT_TRUE(valid_goal_authority_record(record));
+        std::vector<uint8_t> output(goal_authority_record_size(record));
+        ASSERT_EQ(output.size(), row.body.size());
+        write_goal_authority_record(record, output.data());
+        row.body = std::move(output);
+        altered = true;
+        break;
+    }
+    ASSERT_TRUE(altered);
+    Fixture refused;
+    refused.run();
+    EXPECT_EQ(import_snapshot(refused, image), BatchCheck::corrupt);
+
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, grant.result.object.id};
+    auto revoke = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    revoke.command_id = 2;
+    ASSERT_EQ(source.work.submit(revoke).status, AYNI_OK);
+    for (unsigned round = 0;
+         round < 20 && source.saved(parent.result.object.id).phase != GoalAuthorityPhase::paused;
+         ++round) {
+        source.work.node().step(1);
+        source.work.node().recover();
+    }
+    ASSERT_EQ(source.saved(parent.result.object.id).phase, GoalAuthorityPhase::paused);
+    ASSERT_EQ(source.saved(child.result.object.id).phase, GoalAuthorityPhase::authorized);
+    Fixture paused;
+    paused.run();
+    EXPECT_EQ(import_snapshot(paused, snapshot(source)), BatchCheck::ok);
+}
+
 } // namespace

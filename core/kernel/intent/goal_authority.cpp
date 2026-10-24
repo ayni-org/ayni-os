@@ -1,6 +1,5 @@
 #include "kernel/intent/work_model.h"
 
-#include "authority/scope/scope.h"
 #include "catalog/abi_checks.h"
 
 namespace ayni::kernel {
@@ -53,7 +52,8 @@ ayni_status_t emit_requirement(void *ctx, const ayni_goal_requirement_v1 *input)
 
 } // namespace
 
-// A child may attenuate each complete parent requirement, never union them.
+// Runtime admission additionally requires an authorized retained parent;
+// immutable Scope coverage remains with the work owner (ADR-0038).
 bool WorkModel::parent_covers_authority(uint64_t parent_id,
                                         const work::GoalAuthorityRecord &record) const {
     if (parent_id == 0U) {
@@ -64,25 +64,7 @@ bool WorkModel::parent_covers_authority(uint64_t parent_id,
         !goal_authority.authorized(parent_index, parent_id)) {
         return false;
     }
-    const auto parent = goal_authority.at(parent_index);
-    for (uint32_t index = 0; index < record.count; ++index) {
-        const auto &child = record.requirements[index];
-        bool covered = false;
-        for (uint32_t at = 0; at < parent.count && !covered; ++at) {
-            const auto &ceiling = parent.requirements[at];
-            if (ceiling.capability_id.equals(
-                    {child.capability_id.data(), child.capability_id.size()}) &&
-                ceiling.capability_version == child.capability_version) {
-                const auto relation =
-                    authority::covers(child.source_domain, ceiling.scope, child.scope);
-                covered = relation.status == AYNI_OK && relation.covered;
-            }
-        }
-        if (!covered) {
-            return false;
-        }
-    }
-    return true;
+    return work::goal_ceiling_covers(goal_authority.at(parent_index), record);
 }
 
 authority::GrantCheck WorkModel::check_parent_authority(uint32_t parent_index, uint64_t now_us,

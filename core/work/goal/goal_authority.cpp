@@ -60,6 +60,34 @@ bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
                                           record.binding.parent.goal_id, record.stamp);
 }
 
+// A child may attenuate each complete original parent requirement, never
+// union partial items or inherit the wider Scope of its parent's Grant.
+// Recovery uses this same rule even while that parent is paused (C-AUTH-029).
+bool goal_ceiling_covers(const GoalAuthorityRecord &parent, const GoalAuthorityRecord &child) {
+    for (uint32_t index = 0; index < child.count; ++index) {
+        const auto &need = child.requirements[index];
+        bool covered = false;
+        for (uint32_t at = 0; at < parent.count && !covered; ++at) {
+            const auto &ceiling = parent.requirements[at];
+            if (!ceiling.capability_id.equals(
+                    {need.capability_id.data(), need.capability_id.size()}) ||
+                ceiling.capability_version != need.capability_version ||
+                ceiling.source_domain.size != need.source_domain.size ||
+                (need.source_domain.size != 0U &&
+                 std::memcmp(ceiling.source_domain.data, need.source_domain.data,
+                             need.source_domain.size) != 0)) {
+                continue;
+            }
+            const auto relation = authority::covers(need.source_domain, ceiling.scope, need.scope);
+            covered = relation.status == AYNI_OK && relation.covered;
+        }
+        if (!covered) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::size_t GoalAuthorityTable::storage_size(Limits limits) {
     const std::size_t count = requirement_count(limits);
     return sizeof(Slot) * limits.goals + sizeof(Requirement) * count +
