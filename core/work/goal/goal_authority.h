@@ -6,6 +6,7 @@
 
 #include "catalog/catalog_id.h"
 #include "foundation/transition_stamp.h"
+#include "work/authority/authority_facts.h"
 
 #include <ayni/authority.h>
 
@@ -25,10 +26,7 @@ enum class GoalAuthorityPhase : uint32_t { proposed = 1, authorized = 2, paused 
 
 // A selected immutable authority identity; a missing dependency is {0, 0}.
 // Revision is the selected Grant revision, not a mirror of its current state.
-struct GoalGrantReference {
-    uint64_t grant_id = 0; // Kernel ID, or 0 iff revision is 0.
-    uint32_t revision = 0; // Nonzero iff grant_id is present; checked at consumption.
-};
+using GoalGrantReference = AuthorityReference;
 
 // Borrowed complete requirement. Byte views survive only while their source
 // remains unchanged. Each requirement is covered by one Grant, never a union.

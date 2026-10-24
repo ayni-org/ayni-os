@@ -240,7 +240,7 @@ E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APP
 
 ## Goal 授权元数据（MA-006 E，内部 codec）
 
-type 17/v1 已接入 Kernel arena、journal、snapshot 和恢复分类，必须为 REQUIRED；公开需求创建已接入，批准仍待 E3。GOAL type 3/v2、v3 复用 v1 正文并必须标 REQUIRED，声明该 Goal 有明确授权元数据：journal 同批在 GOAL_STATE 后写 type 17，snapshot 在 GOAL 后紧接 type 17（可跨页）；缺失、孤立、重复或跨批伙伴损坏。type 3/v1 缺元数据仍合法且继续 LEGACY_UNCONFIRMED。每 transition 至多一条 type 17，显式零需求仍写该记录。
+type 17/v1 已接入 Kernel arena、journal、snapshot 和恢复分类，必须为 REQUIRED；公开需求创建与原子批准均已由 E 交付。GOAL type 3/v2、v3 复用 v1 正文并必须标 REQUIRED，声明该 Goal 有明确授权元数据：journal 同批在 GOAL_STATE 后写 type 17，snapshot 在 GOAL 后紧接 type 17（可跨页）；缺失、孤立、重复或跨批伙伴损坏。type 3/v1 缺元数据仍合法且继续 LEGACY_UNCONFIRMED。每 transition 至多一条 type 17，显式零需求仍写该记录。
 
 全部整数为小端。固定头 32 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32）。每项固定开销 28 B，不包括三段数据；总长必须恰好匹配。
 
@@ -249,3 +249,16 @@ Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与
 journal/snapshot 使用同一 codec。journal 正文 stamp 等于 batch，Goal 状态必须在同批更新；已有元数据的原需求不可改变，stamp 严格前进，授权/暂停不能退回 proposed。snapshot stamp 在覆盖边界内且不晚于 Goal 的最后提交。Grant 选择保存 ACTIVE revision，与后来终态 revision 不同不构成损坏；所选主体、原 schema/domain 与覆盖关系仍须一致。活 Goal 所引用 Grant 缺失损坏，持久终态 Goal 可保留已回收历史引用。新 boot 的目录兼容与可消费性单独检查，不改写原需求。记录不保存单调时间、指针、进程句柄、输入队列状态或 Grant 的易失引用释放 fence。
 
 自 E2b（ADR-0037）起，writer 对有元数据 Goal 写 type 3/v3（创建/快照），其 GOAL_STATE 写 type 4/v2（所有 journal 更新），均 REQUIRED。正文仍分别使用原布局；type 3/v3 允许 PROPOSED 和普通生命周期/授权暂停的独立组合，type 4/v2 同时保护已有 v2 Goal 的后续更新。旧 v1/v2 Goal 仍可读，不改变原 PAUSED 含义；type 4/v1 和旧版本快照不接受 PROPOSED。新格式 PROPOSED 必须有至少一项缺少引用的元数据，taken/waiting/next_scheduled/last_task_id 都为空，不能有子 Goal 或 Task。授权阶段 paused 可与普通 ACTIVE/PAUSED 同时存在；有效 PAUSED 由查询/消费派生，不另存一份。
+
+
+## Task 授权元数据（MA-006 F1，内部 codec）
+
+ADR-0038 决策 2～5：type 18/v1 的 reader/writer 和有界 Task 表已实现；F1 尚未接入 journal/snapshot/发现，当前 writer 与 storage_schema 仍保持原值。F2 启用时为 REQUIRED，并与对应 Task/状态及 Goal 上限配对，旧格式拒绝边界随 F2 交付。
+
+全部小端，固定头 48 B：offset 0 task_id u64、8 goal_id u64、16 goal_binding_seq u64、24 transition_id u64、32 commit_seq u64、40 phase u32（1=authorized、2=paused）、44 count u32。随后 count 项，每项 Grant ID u64/revision u32，共 12 B，顺序对应原 Goal 需求。count=0 是明确零需求，不是缺少事实。
+
+Task/Goal 为不同的有效 Kernel ID；binding sequence 正且不晚于记录 commit_seq，transition_id 正；count≤16，每个引用为有效非零 ID/revision。reader 与 struct 共用语义验证；截断、尾字节、非法字段不改输出。表按稳定 Task.slot 和确切 task_id 放置，配置不足不改任何行。相同绑定只能保留同一引用，不能 paused→authorized；新绑定须单调，Task/Goal/需求数不变，stamp 两项严格推进。跨表存在性、Scope 覆盖及重新授权配对留给集成属主。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-STORE-020 | Task 保存独立完整准入引用，按稳定 slot/exact Task ID，显式零需求与缺席不同；struct/bytes 共用校验，错误不发布部分事实 | Task 位置移动或复用后借用另一 Task 权限；截断发布前缀 | M1 部分实现（F1 内部事实/codec）：`TaskAuthority.explicit_empty_admission_and_slot_reuse_preserve_identity`、`TaskAuthority.copied_references_and_capacity_failures_preserve_the_arena`、`TaskAuthority.same_binding_can_pause_but_cannot_resume_or_change_references`、`TaskAuthorityCodec.empty_and_maximum_admissions_round_trip_without_scope_copies`、`TaskAuthorityCodec.every_truncation_trailing_bytes_and_malformed_fact_preserve_output`；Kernel 接入随 F2；ADR-0038 |

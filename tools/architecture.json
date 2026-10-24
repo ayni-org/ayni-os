@@ -9,7 +9,7 @@
     ["foundation"]
   ],
   "_core_subdir_deps": "Per module: which sibling entity subdirectories each subdirectory may include, e.g. {\"work\": {\"task\": [\"call\"]}}. Undeclared pairs are forbidden; files at a module's root may include any of its subdirectories.",
-  "core_subdir_deps": {"authority": {"grant": ["scope"]}, "catalog": {"goal_type": ["strategy"]}, "kernel": {"boot": ["completion", "storage"], "commit": ["completion", "storage"], "intent": ["command"], "storage": ["completion"]}, "durability": {"snapshot": ["batch"]}},
+  "core_subdir_deps": {"work": {"goal": ["authority"], "task": ["authority"]}, "authority": {"grant": ["scope"]}, "catalog": {"goal_type": ["strategy"]}, "kernel": {"boot": ["completion", "storage"], "commit": ["completion", "storage"], "intent": ["command"], "storage": ["completion"]}, "durability": {"snapshot": ["batch"]}},
   "core_std_headers": ["array", "cstddef", "cstdint", "cstring", "limits", "new", "optional", "type_traits", "utility"],
   "public_c_headers": ["stddef.h", "stdint.h"],
   "header_kinds": {

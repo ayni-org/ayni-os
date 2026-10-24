@@ -39,6 +39,7 @@ ayni_add_core_module(authority
 
 ayni_add_core_module(work
     SOURCES
+        work/authority/authority_facts.cpp
         work/agent/agent_records.cpp
         work/agent/agent_table.cpp
         work/goal/goal_authority.cpp
@@ -49,6 +50,8 @@ ayni_add_core_module(work
         work/goal/trigger_schedule.cpp
         work/propagation.cpp
         work/task/task_records.cpp
+        work/task/task_authority.cpp
+        work/task/task_authority_records.cpp
         work/task/task_table.cpp
     DEPENDS authority catalog durability foundation)
 
