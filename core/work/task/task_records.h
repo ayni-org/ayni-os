@@ -26,6 +26,11 @@ constexpr uint16_t task_state_record_version = 1;
 constexpr uint16_t task_state_authority_record_version = 2;
 // Same body; direct live reauthorization preserves state and advances revision once.
 constexpr uint16_t task_state_reauthorization_record_version = 3;
+// Runtime extension keeps each original pairing meaning (records.md type6).
+constexpr uint16_t task_state_runtime_record_version = 4;
+constexpr uint16_t task_state_runtime_authority_record_version = 5;
+constexpr uint16_t task_state_runtime_reauthorization_record_version = 6;
+constexpr uint16_t task_state_raise_limit_record_version = 7;
 constexpr uint16_t task_steps_record_type = 7;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = 8;
@@ -36,6 +41,15 @@ constexpr uint32_t task_record_size = 40;
 constexpr uint32_t task_snapshot_tail_size = 36;
 constexpr uint32_t task_snapshot_record_size = task_record_size + task_snapshot_tail_size;
 constexpr uint32_t task_state_record_size = 32;
+constexpr uint32_t task_state_runtime_field_count = 3; // used/limit/blocked, records.md type6/v4+.
+constexpr uint32_t task_state_runtime_record_size =
+    task_state_record_size + task_state_runtime_field_count * sizeof(uint32_t);
+// Legacy defaults need no extension. All other runtime facts require type6/v4+.
+uint16_t task_state_version_for(const Task &task, uint16_t base = task_state_record_version);
+// Fixed body bytes for the selected known version; excludes the record envelope.
+uint32_t task_state_size_for(uint16_t version);
+// Pairing meaning of v4/v5/v6, respectively v1/v2/v3; v7 remains explicit raise.
+uint16_t task_state_base_version(uint16_t version);
 // Without its keys.
 constexpr uint32_t task_steps_record_fixed_size = 16;
 // Without the writer's id and the state.
@@ -90,9 +104,11 @@ void write_task_snapshot_record(const Task &task, uint8_t *body);
 // Reads exactly that snapshot body; no snapshot-global or cross-table checks.
 bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out);
 
-// body has task_state_record_size bytes.
-void write_task_state_record(const Task &task, uint8_t *body);
-bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out);
+// body has task_state_size_for(version) bytes; caller selects matching version.
+void write_task_state_record(const Task &task, uint8_t *body,
+                             uint16_t version = task_state_record_version);
+bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out,
+                            uint16_t version = task_state_record_version);
 
 // Caller provides a valid range in task index; size includes each key length.
 uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range);

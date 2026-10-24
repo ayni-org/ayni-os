@@ -53,8 +53,8 @@
 | [0039](0039-native-idle-space-refresh.md) | Native 空闲空间刷新 | 已接受 | §9.1 |
 | [0040](0040-shared-storage-batch-identity.md) | 批次身份解析归属 | 实施中 | §9.1 |
 | [0041](0041-task-record-encoding-owner.md) | Task 记录编码归属 | 实施中 | §9.1 |
-
 | [0042](0042-runtime-limits-and-direct-model-access.md) | 运行限制、直连模型及 M1 剩余交付边界 | 已接受；实施中 | §2.3、§5.1、§9.1、§14.1 |
+| [0043](0043-task-runtime-limit-state.md) | Task 运行限制状态与所有者提高上限 | 已接受 | §9.1、§14.1 |
 
 ## 模板
 

@@ -50,7 +50,7 @@ AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
 AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
 AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 116);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 120);
 
 AYNI_LAYOUT(resource_desc_id, offsetof(ayni_resource_desc_v1, resource_id) == 8);
 AYNI_LAYOUT(resource_desc_header, offsetof(ayni_resource_desc_v1, struct_size) == 0);
@@ -267,7 +267,7 @@ AYNI_LAYOUT(task_info_hold_status, offsetof(ayni_task_info_v1, hold_status) == 7
 AYNI_LAYOUT(task_info_hold_reason, offsetof(ayni_task_info_v1, hold_reason) == 76);
 AYNI_LAYOUT(task_info_step_count, offsetof(ayni_task_info_v1, step_count) == 80);
 AYNI_LAYOUT(task_info_reserved, offsetof(ayni_task_info_v1, reserved) == 84);
-AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 88);
+AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 104);
 
 AYNI_LAYOUT(private_checkpoint_strategy_id, offsetof(ayni_private_checkpoint_v1, strategy_id) == 0);
 AYNI_LAYOUT(private_checkpoint_strategy_version,
@@ -497,3 +497,13 @@ AYNI_LAYOUT(storage_identity_sequence, offsetof(ayni_storage_batch_identity_v1, 
 AYNI_LAYOUT(storage_identity_transition,
             offsetof(ayni_storage_batch_identity_v1, transition_id) == 16);
 AYNI_LAYOUT(storage_identity_size, sizeof(ayni_storage_batch_identity_v1) == 24);
+
+AYNI_LAYOUT(config_model_hard_limit, offsetof(ayni_config_v1, task_model_call_hard_limit) == 116);
+AYNI_LAYOUT(task_model_used, offsetof(ayni_task_info_v1, model_calls_used) == 88);
+AYNI_LAYOUT(task_model_limit, offsetof(ayni_task_info_v1, model_call_limit) == 92);
+AYNI_LAYOUT(task_model_hard_limit, offsetof(ayni_task_info_v1, model_call_hard_limit) == 96);
+AYNI_LAYOUT(task_model_blocked, offsetof(ayni_task_info_v1, model_call_limit_reached) == 100);
+AYNI_LAYOUT(task_raise_size, sizeof(ayni_task_raise_model_limit_v1) == 16);
+AYNI_LAYOUT(task_raise_header, offsetof(ayni_task_raise_model_limit_v1, struct_size) == 0);
+AYNI_LAYOUT(task_raise_limit, offsetof(ayni_task_raise_model_limit_v1, model_call_limit) == 4);
+AYNI_LAYOUT(task_raise_id, offsetof(ayni_task_raise_model_limit_v1, task_id) == 8);

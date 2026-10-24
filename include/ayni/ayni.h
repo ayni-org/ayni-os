@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 29u
+#define AYNI_ABI_MINOR 30u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -159,7 +159,16 @@ typedef struct ayni_config_v1 {
      * explicit profile enables them; no implicit hardware/resource discovery. */
     uint32_t resource_capacity;
     uint32_t resource_request_capacity;
+    /* Since 0.30. Per-Task model call hard ceiling, 1..64; 0 or omitted
+     * selects 64. Initial soft limit is min(8, ceiling). Fixed for this boot;
+     * independent of concurrent Provider slots and committed step capacity. */
+    uint32_t task_model_call_hard_limit;
 } ayni_config_v1;
+
+/* Since 0.30. Model request counts, not token or monetary allowances. */
+#define AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT 8u
+#define AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT 64u
+#define AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX 64u
 
 /* Since 0.29. Counts of immutable resources and pending/held request groups. */
 #define AYNI_RESOURCE_CAPACITY_DEFAULT 0u
@@ -915,6 +924,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_GOAL_AUTHORITY_REVISION ((ayni_reason_t)68)
 /* Since 0.26. BUSY: the replacement authorization binding is not durable yet. */
 #define AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE ((ayni_reason_t)69)
+/* Since 0.30. CAPACITY_EXCEEDED: Task model calls exhausted; owner may raise its limit. */
+#define AYNI_REASON_TASK_MODEL_CALL_LIMIT ((ayni_reason_t)70)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1212,6 +1223,15 @@ typedef struct ayni_task_info_v1 {
      * the strategy sees them in ayni_task_snapshot_v1. */
     uint32_t step_count;
     uint32_t reserved; /* written as 0 */
+    /* Since 0.30. Accepted model request count; never reset by resume/raise. */
+    uint32_t model_calls_used;
+    /* Since 0.30. Durable positive soft ceiling; owner can only increase it. */
+    uint32_t model_call_limit;
+    /* Since 0.30. Positive startup ceiling; cannot be changed by an intent. */
+    uint32_t model_call_hard_limit;
+    /* Since 0.30. 1 if a new model request hit the ceiling, else 0. Raising
+     * clears only this hold; other holds and progress remain unchanged. */
+    uint32_t model_call_limit_reached;
 } ayni_task_info_v1;
 
 /*
@@ -1237,6 +1257,18 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_GOAL_APPROVE ((ayni_intent_kind_t)11) /* body: ayni_goal_approve_v1 */
 /* Since 0.26: explicitly bind existing durable Grants for a Goal and its live Tasks. */
 #define AYNI_INTENT_GOAL_REAUTHORIZE ((ayni_intent_kind_t)12) /* body: ayni_goal_reauthorize_v1 */
+
+/* Since 0.30. Owner management command, exact idempotency and revision CAS.
+ * Raises the soft model call ceiling of a live Task, preserving all progress.
+ * Requires a nonzero command_id and bound MANAGEMENT session. */
+#define AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ((ayni_intent_kind_t)13)
+
+/* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
+typedef struct ayni_task_raise_model_limit_v1 {
+    uint32_t struct_size;      /* sizeof this struct */
+    uint32_t model_call_limit; /* strictly above current soft limit, <= startup hard limit */
+    uint64_t task_id;          /* nonzero retained live Task */
+} ayni_task_raise_model_limit_v1;
 
 /*
  * One envelope for every intent kind. The principal and channel are the
@@ -1584,6 +1616,12 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    authorization deny. Since 0.26, GOAL_REAUTHORIZE
  *    requires the current durable owner's MANAGEMENT Session, including
  *    an exact retry; its complete request contract is in ayni/authority.h.
+ *    Since 0.30, TASK_RAISE_MODEL_LIMIT has the same MANAGEMENT requirement
+ *    even on retry, requires nonzero command_id/task_id/expected_revision,
+ *    and compares complete canonical bytes. Unknown Task: NOT_FOUND;
+ *    stale revision: REVISION_CONFLICT; terminal Task: INVALID_STATE;
+ *    exhausted revision: CAPACITY_EXCEEDED; a limit that does not strictly
+ *    increase or exceeds the startup ceiling: INVALID_ARGUMENT.
  *    Since 0.14, a nonzero command_id is then looked up among the commands
  *    of the session's principal (C-WIRE-003, C-WIRE-004, ADR-0026): one
  *    accepted before with the same kind, expected_revision and body, over

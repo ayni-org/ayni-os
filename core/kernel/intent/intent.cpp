@@ -52,6 +52,15 @@ ayni_status_t read_goal_create(const ayni_goal_create_v1 &body, GoalCreate &out)
 
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
+    case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT: {
+        const ayni_task_raise_model_limit_v1 *body = nullptr;
+        const auto status = read_body(raw.body, body);
+        if (status == AYNI_OK) {
+            out_intent.target_id = body->task_id;
+            out_intent.model_call_limit = body->model_call_limit;
+        }
+        return status;
+    }
     case AYNI_INTENT_GOAL_CREATE:
         return read_goal_create(*static_cast<const ayni_goal_create_v1 *>(raw.body),
                                 out_intent.create);
@@ -109,10 +118,18 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GOAL_REAUTHORIZE;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_TASK_RAISE_MODEL_LIMIT;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
+        if (intent.command_id == 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        uint32_t size = 0;
+        return measure_task_limit_command(
+            {intent.expected_revision, intent.target_id, intent.model_call_limit}, size);
+    }
     if (intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
         if (intent.command_id == 0U) {
             return AYNI_INVALID_ARGUMENT;

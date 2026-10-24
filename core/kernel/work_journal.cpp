@@ -278,14 +278,20 @@ class Encoder {
                 return false; // Schema 2 never infers authorization from absent metadata.
             }
             const bool changed = admission.stamp.commit_seq == stamp_.commit_seq;
-            const auto version = changed && reauthorizes(task.goal_id)
-                                     ? work::task_state_reauthorization_record_version
-                                 : changed && task.created_transition_id != stamp_.transition_id
-                                     ? work::task_state_authority_record_version
-                                     : work::task_state_record_version;
-            uint8_t *at = body(work::task_state_record_type, version, work::task_state_record_size);
+            const auto base = changed && reauthorizes(task.goal_id)
+                                  ? work::task_state_reauthorization_record_version
+                              : changed && task.created_transition_id != stamp_.transition_id
+                                  ? work::task_state_authority_record_version
+                                  : work::task_state_record_version;
+            const auto *command = model_.commands.mapped_in(stamp_.commit_seq);
+            const auto version = work::task_state_version_for(
+                task, command != nullptr && command->kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
+                          ? work::task_state_raise_limit_record_version
+                          : base);
+            uint8_t *at =
+                body(work::task_state_record_type, version, work::task_state_size_for(version));
             if (at != nullptr) {
-                work::write_task_state_record(task, at);
+                work::write_task_state_record(task, at, version);
             }
             if (changed && !task_authority(admission)) {
                 return false;
@@ -360,7 +366,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += record_bytes(work::task_record_size);
     size += record_bytes(work::task_steps_record_max(steps));
     size += record_bytes(work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
-    size += capacities.task_capacity * record_bytes(work::task_state_record_size);
+    size += capacities.task_capacity * record_bytes(work::task_state_runtime_record_size);
     size += capacities.task_capacity *
             record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));
     size += record_bytes(work::authority_cleanup_record_size);

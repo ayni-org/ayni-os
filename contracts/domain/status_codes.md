@@ -107,6 +107,8 @@
 | 68 | `AYNI_REASON_GOAL_AUTHORITY_REVISION` | `REVISION_CONFLICT` | 预期的授权事实提交序号已改变；Since 0.26 |
 | 69 | `AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE` | `BUSY` | 新绑定尚未持久，暂不开放派生或策略消费；Since 0.26 |
 
+| 70 | `AYNI_REASON_TASK_MODEL_CALL_LIMIT` | `CAPACITY_EXCEEDED` | Task 下一次模型调用超过当前上限，等待所有者提高；Since 0.30 |
+
 以上41–55自ABI0.18发布，56–59自ABI0.19发布；C/D实施与验证状态分别见ADR-0030/0031。表格记录状态归属，不表示全部调用路径已经验证。
 
 ## 规则

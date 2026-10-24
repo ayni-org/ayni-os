@@ -300,6 +300,34 @@ ayni_status_t cancel_task(WorkModel &model, const Intent &intent, IntentOutcome 
     return AYNI_OK;
 }
 
+// The Task owner validates its revision/ceiling; Kernel joins the exact owner
+// command to that one transition. Raising removes only the runtime overlay.
+ayni_status_t raise_task_limit(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
+                               IntentFailure &failure) {
+    uint32_t index = 0;
+    if (!model.tasks.find(intent.target_id, index)) {
+        return refuse(AYNI_NOT_FOUND, AYNI_REASON_TASK_UNKNOWN,
+                      object_ref(AYNI_OBJECT_TASK, intent.target_id), failure);
+    }
+    const auto current =
+        object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
+    const auto status = model.tasks.check_model_limit_raise(index, intent.expected_revision,
+                                                            intent.model_call_limit);
+    if (status != AYNI_OK) {
+        const auto reason = status == AYNI_REVISION_CONFLICT   ? AYNI_REASON_TASK_REVISION
+                            : status == AYNI_INVALID_STATE     ? AYNI_REASON_TASK_STATE
+                            : status == AYNI_CAPACITY_EXCEEDED ? AYNI_REASON_REVISION_EXHAUSTED
+                                                               : AYNI_REASON_NONE;
+        return refuse(status, reason, current, failure);
+    }
+    const auto stamp = model.transitions.next();
+    model.tasks.raise_model_limit(index, intent.model_call_limit, stamp);
+    outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
+    outcome.commit_seq = stamp.commit_seq;
+    mark_due_work(model, outcome);
+    return AYNI_OK;
+}
+
 ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
                               IntentFailure &failure) {
     uint32_t index = 0;
@@ -356,6 +384,8 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
         return approve_goal(model, intent, session, now_us, durable_seq, outcome, failure);
     case AYNI_INTENT_GOAL_REAUTHORIZE:
         return reauthorize_goal(model, intent, now_us, durable_seq, input, outcome, failure);
+    case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT:
+        return raise_task_limit(model, intent, outcome, failure);
     case AYNI_INTENT_TASK_CANCEL:
         return cancel_task(model, intent, outcome, failure);
     case AYNI_INTENT_INSTANCE_PAUSE:
@@ -385,9 +415,10 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                    ? AYNI_OK
                    : AYNI_INTERNAL;
     }
-    const bool stored = intent.kind == AYNI_INTENT_GRANT_CREATE
-                            ? model.commands.insert_exact(mapping)
-                            : model.commands.insert(mapping);
+    const bool stored =
+        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
+            ? model.commands.insert_exact(mapping)
+            : model.commands.insert(mapping);
     return stored ? AYNI_OK : AYNI_INTERNAL;
 }
 
@@ -410,6 +441,10 @@ ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
 CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
                                        uint64_t principal_id, uint64_t digest) {
     switch (intent.kind) {
+    case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT:
+        return model.commands.find_exact(
+            principal_id, intent.command_id,
+            TaskLimitCommand{intent.expected_revision, intent.target_id, intent.model_call_limit});
     case AYNI_INTENT_GRANT_CREATE:
         return model.commands.find_exact(
             principal_id, intent.command_id,
@@ -447,11 +482,13 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    if (intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
+    if ((intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE ||
+         intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) &&
         !bound_management_session(model, *session, durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
-    const bool exact = intent.kind == AYNI_INTENT_GRANT_CREATE ||
+    const bool exact = intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
+                       intent.kind == AYNI_INTENT_GRANT_CREATE ||
                        intent.kind == AYNI_INTENT_GRANT_REVOKE ||
                        is_work_authority_command(intent.kind);
     const uint64_t digest =

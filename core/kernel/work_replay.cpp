@@ -67,6 +67,19 @@ template <typename Restore> RecordUse use_of(Restore restore) {
     return RecordUse::corrupt;
 }
 
+// Ordinary snapshots retain only state; journal-only versions prove their
+// authority/reauthorization or owner-command partners (ADR-0043).
+bool knows_task_state(uint16_t version, WorkRecordContext context) {
+    return version == work::task_state_record_version ||
+           version == work::task_state_runtime_record_version ||
+           (context == WorkRecordContext::journal &&
+            (version == work::task_state_authority_record_version ||
+             version == work::task_state_reauthorization_record_version ||
+             version == work::task_state_runtime_authority_record_version ||
+             version == work::task_state_runtime_reauthorization_record_version ||
+             version == work::task_state_raise_limit_record_version));
+}
+
 } // namespace
 
 RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &batch,
@@ -103,7 +116,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
         return header.version == command_record_version ||
                        header.version == exact_command_record_version ||
                        header.version == revoke_command_record_version ||
-                       header.version == work_authority_command_record_version
+                       header.version == work_authority_command_record_version ||
+                       header.version == task_limit_command_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_record_type:
@@ -158,12 +172,7 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::task_checkpoint_record_type:
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
     case work::task_state_record_type:
-        return header.version == work::task_state_record_version ||
-                       (context == WorkRecordContext::journal &&
-                        (header.version == work::task_state_authority_record_version ||
-                         header.version == work::task_state_reauthorization_record_version))
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
+        return knows_task_state(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     default:
         return RecordUse::unknown;
     }
@@ -179,12 +188,15 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
             return RecordUse::corrupt;
         }
         pairing_.approval.reset();
+        pairing_.limit_raise.reset();
         pairing_.reauthorization.reset();
         pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if (pairing_.work_cleanup.stage == BatchPairing::WorkCleanupPair::Stage::complete ||
+    if ((pairing_.limit_raise &&
+         pairing_.limit_raise->stage == BatchPairing::TaskLimitPair::Stage::command) ||
+        pairing_.work_cleanup.stage == BatchPairing::WorkCleanupPair::Stage::complete ||
         (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete)) {
         return RecordUse::corrupt;
     }
@@ -196,6 +208,9 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
 RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
                                    const durability::RecordHeader &header, const uint8_t *body,
                                    uint64_t boot_epoch_limit) {
+    if (pairing_.limit_raise && header.type != command_record_type) {
+        return RecordUse::corrupt;
+    }
     // A pending approval admits only its own Grants/state/metadata/command.
     // Unrelated work cannot smuggle an additional transition into the batch.
     if (pairing_.approval && header.type != authority::grant_record_type &&
@@ -493,13 +508,23 @@ RecordUse WorkReplay::restore_task_state(uint16_t version, const uint8_t *body, 
                                          foundation::TransitionStamp stamp) {
     work::TaskStateRecord record{};
     uint32_t index = 0;
-    if (!work::read_task_state_record(body, size, record) ||
+    if (!work::read_task_state_record(body, size, record, version) ||
         !model_.tasks.find(record.task_id, index)) {
         return RecordUse::corrupt;
     }
     if (record.task_id == pairing_.task) {
         pairing_.task.reset();
     }
+    if (version == work::task_state_raise_limit_record_version) {
+        // A raise is a standalone owner command, sealed by its exact identity.
+        if (batch_seq_ == stamp.commit_seq || !pairing_.complete()) {
+            return RecordUse::corrupt;
+        }
+        pairing_.limit_raise = BatchPairing::TaskLimitPair{
+            {model_.tasks.at(index).revision, record.task_id, record.state.model_calls.limit}};
+        return use_of(model_.tasks.restore_model_limit_raise(index, record.state, stamp));
+    }
+    version = work::task_state_base_version(version);
     if (version == work::task_state_reauthorization_record_version) {
         work::TaskAuthorityRecord admission{};
         if (!pairing_.reauthorization ||
@@ -686,6 +711,19 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
+    if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
+        TaskLimitCommand command{};
+        const auto *binding = model_.principals.binding();
+        if (!pairing_.limit_raise || !read_task_limit_command(canonical, command) ||
+            !(command == pairing_.limit_raise->request) || binding == nullptr ||
+            mapping.principal_id != binding->principal_id ||
+            binding->stamp.commit_seq >= commit_seq) {
+            return RecordUse::corrupt;
+        }
+        pairing_.limit_raise->stage = BatchPairing::TaskLimitPair::Stage::command;
+    } else if (pairing_.limit_raise) {
+        return RecordUse::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
         if (!pair_approval_command(mapping, canonical, result_bytes)) {
             return RecordUse::corrupt;

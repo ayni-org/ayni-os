@@ -24,11 +24,13 @@ bool matches_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v
 }
 } // namespace
 
-bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
-                             ayni_bytes_v1 result_bytes) {
+bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
+                         ayni_bytes_v1 result_bytes) {
     if (mapping.principal_id == 0U || mapping.command_id == 0U ||
-        mapping.object.kind !=
-            (is_work_authority_command(mapping.kind) ? AYNI_OBJECT_GOAL : AYNI_OBJECT_GRANT) ||
+        mapping.object.kind != (is_work_authority_command(mapping.kind) ? AYNI_OBJECT_GOAL
+                                : mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
+                                    ? AYNI_OBJECT_TASK
+                                    : AYNI_OBJECT_GRANT) ||
         mapping.object.id == 0U || mapping.canonical_size != bytes.size || bytes.size == 0U ||
         mapping.result_size != result_bytes.size ||
         (is_work_authority_command(mapping.kind) && result_bytes.size == 0U)) {
@@ -80,6 +82,14 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
             (result_bytes.size != 0U &&
              (result.binding.parent.goal_id != command.approval.original.parent_goal_id ||
               result.binding.input.incarnation != 0U)) ||
+            mapping.effect != AYNI_INTENT_EFFECT_CHANGED) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
+        TaskLimitCommand command{};
+        if (!read_task_limit_command(bytes, command) || command.expected_revision == UINT32_MAX ||
+            mapping.object.origin_device_id != 0U || mapping.object.id != command.task_id ||
+            mapping.object.revision != command.expected_revision + 1U ||
             mapping.effect != AYNI_INTENT_EFFECT_CHANGED) {
             return false;
         }
@@ -219,6 +229,12 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
                           measure_reauthorization_command, encode_reauthorization_command);
 }
 
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const TaskLimitCommand &input) {
+    return find_candidate(principal_id, command_id, AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, input,
+                          measure_task_limit_command, encode_task_limit_command);
+}
+
 bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {
     if (!staged_ || mapping.principal_id != staged_->principal_id ||
         mapping.command_id != staged_->command_id || mapping.kind != staged_->kind ||
@@ -230,7 +246,7 @@ bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {
     mapping.result_size = result.size;
     mapping.retention = CommandRetention::normal;
     if (result.size > canonical_max_bytes_ - staged_->size ||
-        !valid_authority_mapping(mapping, {scratch_, staged_->size}, result)) {
+        !valid_exact_mapping(mapping, {scratch_, staged_->size}, result)) {
         return false;
     }
     Row *row = row_of(mapping.principal_id);
@@ -317,7 +333,7 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         return Restore::corrupt;
     }
     if (mapping.canonical_size != 0U) {
-        if (!valid_authority_mapping(mapping, bytes, result)) {
+        if (!valid_exact_mapping(mapping, bytes, result)) {
             return Restore::corrupt;
         }
         if (bytes.size > canonical_max_bytes_ || result.size > canonical_max_bytes_ - bytes.size) {
@@ -325,6 +341,7 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         }
     } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE ||
                mapping.kind == AYNI_INTENT_GRANT_REVOKE ||
+               mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
                is_work_authority_command(mapping.kind)) {
         return Restore::corrupt;
     }

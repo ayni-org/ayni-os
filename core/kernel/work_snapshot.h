@@ -117,8 +117,10 @@ class WorkSnapshotReader {
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
-    durability::BatchCheck task_state(const uint8_t *body, uint32_t size);
+    durability::BatchCheck task_state(const uint8_t *body, uint32_t size, uint16_t version);
     durability::BatchCheck authority_cleanup(const uint8_t *body, uint32_t size);
+    // Snapshot must retain owner/time and monotone Task facts for a historical raise.
+    bool matches_task_limit_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
     durability::BatchCheck command(uint16_t version, const uint8_t *body, uint32_t size);
 
     WorkModel &model_;

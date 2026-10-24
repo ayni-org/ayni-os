@@ -18,6 +18,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 
 #include "kernel/command/command_reauthorization.h"
+#include "kernel/command/command_task_limit.h"
 #include "kernel/command/pending_revoke.h"
 #include "kernel/command/work_authority_result.h"
 
@@ -49,8 +50,8 @@ struct CommandMapping {
 
 // Exact mapping syntax, effect/result, accepted flags and digest are checked at each trust
 // boundary by this one owner; no catalog or subject lookup is involved.
-bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical,
-                             ayni_bytes_v1 result = {});
+bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                         ayni_bytes_v1 result = {});
 
 // Owns bounded principal windows, canonical storage, pending controls and one
 // ephemeral exact-command candidate. Kernel supplies transitions and durable handoff.
@@ -103,6 +104,9 @@ class CommandTable {
     // Same window, exact identity and scratch owner for explicit reauthorization.
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const ReauthorizationCommand &input);
+    // Owner runtime-limit changes use the same exact window and staging rules.
+    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
+                           const TaskLimitCommand &input);
     // Revoke lookup clears any create candidate but does not stage one;
     // acceptance copies the request into a separate pending control (ADR-0031).
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
