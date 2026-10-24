@@ -94,7 +94,7 @@ CI 的选择由 `tools/ci/select_checks.py` 和 `.github/workflows/ci.yml` 实�
 | draft PR | 不运行 |
 | 普通代码 ready PR | 一个 `checks and ASan` job；轻量检查、现有完整 ASan/UBSan 测试与模拟器在同一容器执行 |
 | 纯 `.md` PR / 合并后的 main push | 只运行轻量检查，不编译 Native/固件 |
-| 入口队列、完成槽、Native Host/runtime 及已有对应并发测试 | 追加 TSan |
+| 入口队列、完成槽、Native/Sim Host、Native runtime 及已有对应并发测试（含 kernel-event） | 追加 TSan |
 | `include/ayni/` 公共头文件 | 追加 Clang Debug、ESP-IDF 编译 |
 | ESP Host/runtime/target、ESP32 drivers | 追加 ESP-IDF 编译 |
 | CMake、工具链、CI workflow 或 `tools/ci/` | 追加 Release、Clang Debug、TSan、ESP-IDF |

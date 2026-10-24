@@ -30,9 +30,10 @@ def select_checks(event, paths, full=False):
                             "targets/esp32_assistant/", "drivers/esp32/")):
             checks["esp_idf"] = True
         if (path.startswith(("core/kernel/ingress/", "core/kernel/completion/",
-                             "hosts/native/", "runtime/native_node/"))
+                             "hosts/native/", "hosts/sim/", "runtime/native_node/"))
                 or path in {"core/kernel/ingress_lock.h",
                             "tests/unit/event_queue_test.cpp",
+                            "tests/unit/kernel_event_test.cpp",
                             "tests/unit/completion_pool_test.cpp",
                             "tests/unit/ingress_test_peer.h",
                             "tests/unit/native_host_test.cpp"}):

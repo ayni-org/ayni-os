@@ -35,6 +35,12 @@ class CiSelectionTest(unittest.TestCase):
         self.assertEqual(self.enabled(["include/ayni/ayni.h"]),
                          {"asan", "clang", "esp_idf"})
 
+    def test_kernel_events_and_sim_host_changes_select_tsan(self):
+        for path in ["tests/unit/kernel_event_test.cpp", "hosts/sim/sim_host.cpp",
+                     "hosts/sim/include/ayni/hosts/sim.h"]:
+            with self.subTest(path=path):
+                self.assertEqual(self.enabled([path]), {"asan", "tsan"})
+
     def test_build_changes_and_explicit_full_runs_cover_all_configurations(self):
         all_checks = {"asan", "release", "clang", "tsan", "esp_idf"}
         for path in ["CMakePresets.json", "core/CMakeLists.txt", "cmake/AyniWarnings.cmake",
