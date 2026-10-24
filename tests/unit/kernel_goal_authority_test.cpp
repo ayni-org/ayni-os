@@ -2162,6 +2162,10 @@ TEST(GoalReauthorization, dedicated_grant_wins_for_every_completely_covered_requ
     node.work.node().recover();
     const auto goal = node.create(AYNI_TRIGGER_NONE);
     ASSERT_EQ(goal.status, AYNI_OK);
+    // A valid generic candidate precedes the dedicated root. Approval still
+    // fills only the originally missing item; selection must prefer the later root.
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
     ApprovalRequest approval(node.work.kernel(), goal.result.object.id);
     ASSERT_EQ(approval.body.missing_mask, 2U);
     auto approve =
@@ -2171,8 +2175,6 @@ TEST(GoalReauthorization, dedicated_grant_wins_for_every_completely_covered_requ
     node.work.node().recover();
     const auto dedicated = node.requirement(goal.result.object.id, 1).grant_id;
     ASSERT_NE(dedicated, 0U);
-    ASSERT_EQ(node.grant().status, AYNI_OK);
-    node.work.node().recover();
     node.revoke(generic.result.object.id);
     node.advance_work();
     node.count = 0; // Exporter drift must never shrink the saved requirements.
@@ -2317,6 +2319,8 @@ TEST(GoalReauthorizationCodec, exact_identity_round_trip_and_all_truncations_are
     const auto goal = node.create(AYNI_TRIGGER_NONE);
     ASSERT_EQ(goal.status, AYNI_OK);
     ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    constexpr uint64_t high_sequence = (uint64_t{1} << 40U) + 19U;
+    request.body.expected_authority_commit_seq = high_sequence;
     auto raw =
         node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
     raw.command_id = node.command++;
@@ -2411,6 +2415,44 @@ TEST(GoalReauthorization, own_goal_expiry_refuses_before_autonomous_cleanup) {
     EXPECT_EQ(node.authority(goal.result.object.id).commit_seq,
               request.body.expected_authority_commit_seq);
     EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// C-AUTH-034: ordinary resume may restore user lifecycle while independent
+// authorization still denies consumption. Explicit reauthorization then runs
+// the same Task instead of retaining a pause invented by propagation.
+TEST(GoalReauthorization,
+     ordinary_resume_before_reauthorization_preserves_independent_pause_causes) {
+    AuthorityWork node;
+    node.run();
+    const auto old = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    node.work.node().recover();
+    const auto created = node.create();
+    ASSERT_EQ(created.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto goal_id = created.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_PAUSE, goal_id).status, AYNI_OK);
+    node.revoke(old.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.authority(goal_id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_RESUME, goal_id).status, AYNI_OK);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED); // Independent deny remains.
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
 }
 
 } // namespace

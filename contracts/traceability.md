@@ -6,7 +6,7 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 13 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 14 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -24,7 +24,7 @@
 | [storage/records.md](storage/records.md) | 22 | 14 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 335 | 96 |
+| 合计 | 335 | 97 |
 
 ## 计划章节 → 契约文档
 
@@ -176,6 +176,7 @@
 | C-AUTH-026 | M1 已实现并通过 Native 场景：`RevokeApi.cleanup_is_bounded_and_never_rewrites_the_roots_terminal_commit_order`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`、`GrantRevoke.snapshot_frontier_covers_active_and_terminal_descendants_atomically`、`GrantRevokeReplay.snapshot_root_frontier_cannot_exclude_a_retained_descendant`；最终交付见 ADR-0031；C-STORE-016 |
 | C-AUTH-027 | M1 已实现并通过 Native 场景：`RevokeApi.revision_two_accepted_after_uncommitted_cleanup_can_change_restored_active_child`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`、`CommandRevoke.impossible_accepted_revision_is_rejected_atomically_for_every_effect`；最终交付见 ADR-0031 |
 | C-AUTH-028 | M1 已实现（需求导出与查询）：`GoalRequirements.missing_grant_creates_proposal_without_tasks_and_copies_scope`、`GoalRequirements.exporter_failure_is_sticky_and_refusal_allocates_nothing`、`GoalRequirements.invalid_exports_and_reentry_preserve_the_original_status`、`GoalRequirements.query_failures_publish_no_partial_fields`；ADR-0037 |
+| C-AUTH-029 | M1 已实现（创建待批、选择、父上限及恢复）：`GoalRequirements.zero_needs_run_and_only_durable_grants_are_selected`、`GoalRequirements.partial_coverage_keeps_lowest_matching_grant_and_never_unions_ranges`、`GoalRequirements.child_cannot_expand_parent_ceiling_or_use_a_proposed_parent`、`GoalRequirements.proposed_work_round_trips_and_expires_without_running`、`GoalReauthorization.dedicated_grant_wins_for_every_completely_covered_requirement`、`GoalAuthorityPersistence.snapshot_child_cannot_borrow_a_wider_parent_grant_scope`；ADR-0037、0038 |
 | C-AUTH-031 | M1 已实现（绑定、批量预检、公开原子批准和现有消费门控）：`GoalGrantTable.whole_batch_reservations_are_distinct_and_refusal_changes_no_fact`、`GoalGrantTable.a_batch_combines_tail_slots_with_distinct_safe_replacements`、`GoalGrantTable.bound_admission_rejects_delegation_and_preserves_failed_plan`、`GoalGrants.a_bound_grant_cannot_authorize_other_or_child_goals_and_ends_with_its_goal`、`GoalGrants.a_reclaimed_goal_identity_cannot_authorize_the_new_slot_owner`、`KernelId.batch_availability_does_not_consume_or_wrap_the_remaining_ids`；ADR-0037 |
 | C-AUTH-032 | M1 已实现（公开批准、拒绝原子性、复制查询与最低消费门控）：`GoalApproval.fills_only_original_missing_items_and_retries_without_new_grants`、`GoalApproval.insufficient_batch_capacity_and_invalid_approval_leave_the_proposal_intact`、`GoalApproval.a_lost_original_dependency_refuses_approval_without_reselection`、`GoalApproval.changed_echo_is_refused_and_exact_retry_survives_terminal_target_reclamation`、`GoalApproval.activation_starts_delay_but_storage_wait_never_extends_grant_lifetime`、`GoalApproval.durable_approval_executes_and_voice_or_expired_proposals_are_refused`、`GoalApproval.parameter_query_preserves_small_buffer_and_reports_original_duration`、`GoalApproval.multiple_missing_items_publish_distinct_grants_in_one_transition`、`GoalApprovalCodec.canonical_round_trip_and_every_truncation_preserve_identity`、`GoalApproval.real_snapshot_freeze_preserves_proposal_until_atomic_approval_can_resume`、`GoalApproval.insufficient_ids_leave_all_missing_items_and_last_id_untouched`、`GoalApproval.expired_parent_authority_refuses_child_before_autonomous_pause`、`GoalApproval.interrupted_append_recovers_all_missing_items_and_mapping_or_neither`、`GoalApproval.failed_and_unknown_appends_reload_before_retrying_the_complete_batch`；ADR-0037 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |

@@ -14,9 +14,11 @@ struct After {
     TaskChange ending = TaskChange::cancel; // ...by this change
 };
 
-// Walks up at most goal_depth_max parents.
-bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_instance_id,
-                 const After &after) {
+// User/instance and compatibility state settles Task lifecycle independently
+// of authorization. An authority deny must not become a new user pause on
+// restart: explicit reauthorization preserves that lifecycle (C-AUTH-034).
+bool lifecycle_allows(const WorkTables &tables, uint32_t goal_index, uint64_t owner_instance_id,
+                      const After &after) {
     ayni_agent_lifecycle_t owner = after.instance_lifecycle;
     if (owner_instance_id != after.instance_id) {
         const AgentInstance *instance = tables.agents.find_instance(owner_instance_id);
@@ -28,16 +30,24 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
     return tables.goals.visit_lineage(goal_index, [&](uint32_t index) {
         const ayni_goal_lifecycle_t lifecycle =
             index == after.goal_index ? after.goal_lifecycle : tables.goals.at(index).lifecycle;
-        if (lifecycle != AYNI_GOAL_ACTIVE || GoalTable::is_held(tables.goals.at(index)) ||
-            (tables.authority != nullptr &&
-             (!tables.authority->authorized(index, tables.goals.at(index).goal_id) ||
-              replacement_binding_pending(tables.authority->at(index).binding,
-                                          tables.goals.at(index).created.commit_seq,
-                                          tables.durable_seq)))) {
-            return false;
-        }
-        return true;
+        return lifecycle == AYNI_GOAL_ACTIVE && !GoalTable::is_held(tables.goals.at(index));
     });
+}
+
+// Derivation additionally requires each ancestor's complete durable binding.
+// Both walks are bounded by goal_depth_max; neither repeats Grant validation.
+bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_instance_id,
+                 const After &after) {
+    if (!lifecycle_allows(tables, goal_index, owner_instance_id, after)) {
+        return false;
+    }
+    return tables.authority == nullptr ||
+           tables.goals.visit_lineage(goal_index, [&](uint32_t index) {
+               const auto &goal = tables.goals.at(index);
+               return tables.authority->authorized(index, goal.goal_id) &&
+                      !replacement_binding_pending(tables.authority->at(index).binding,
+                                                   goal.created.commit_seq, tables.durable_seq);
+           });
 }
 
 // The change a task the change reaches undergoes, if any.
@@ -47,7 +57,7 @@ bool settles(const WorkTables &tables, const Task &task, const After &after,
         out_change = after.ending;
         return TaskTable::allows(task, out_change);
     }
-    out_change = may_advance(tables, task.goal_index, task.owner_instance_id, after)
+    out_change = lifecycle_allows(tables, task.goal_index, task.owner_instance_id, after)
                      ? TaskChange::resume
                      : TaskChange::pause;
     return TaskTable::allows(task, out_change);
