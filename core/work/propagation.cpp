@@ -25,8 +25,7 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
     if (owner != AYNI_AGENT_RUNNING) {
         return false;
     }
-    for (uint32_t index = goal_index; index != GoalTable::no_parent;
-         index = tables.goals.at(index).parent_index) {
+    return tables.goals.visit_lineage(goal_index, [&](uint32_t index) {
         const ayni_goal_lifecycle_t lifecycle =
             index == after.goal_index ? after.goal_lifecycle : tables.goals.at(index).lifecycle;
         if (lifecycle != AYNI_GOAL_ACTIVE || GoalTable::is_held(tables.goals.at(index)) ||
@@ -34,8 +33,8 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
              !tables.authority->authorized(index, tables.goals.at(index).goal_id))) {
             return false;
         }
-    }
-    return true;
+        return true;
+    });
 }
 
 // The change a task the change reaches undergoes, if any.

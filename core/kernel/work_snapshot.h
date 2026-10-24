@@ -56,7 +56,7 @@ class WorkSnapshotWriter {
     // The payload's order (records.md).
     enum class Section { owner_binding, instances, grants, goals, tasks, commands, done };
     // A task's records, in order.
-    enum class TaskPart { task, steps, checkpoint, state };
+    enum class TaskPart { task, steps, checkpoint, state, authority };
     // A Goal v2 and its required authority record remain adjacent across pages.
     enum class GoalPart { goal, authority };
     // Locate, but do not consume, the next complete record across all sections.
@@ -69,6 +69,8 @@ class WorkSnapshotWriter {
     bool next_command_record(uint16_t &type, uint32_t &size);
     // Encode the selected record into the already sized body buffer.
     void write_record(uint16_t type, uint8_t *body, uint32_t size);
+    // Serialize the already selected frozen Task admission, without another identity check.
+    void write_task_authority(uint8_t *body);
     // Consume a record only after its complete bytes were written.
     void advance_record(uint16_t type);
 
@@ -113,6 +115,7 @@ class WorkSnapshotReader {
     durability::BatchCheck task(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
+    durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_state(const uint8_t *body, uint32_t size);
     durability::BatchCheck command(uint16_t version, const uint8_t *body, uint32_t size);
 
@@ -120,10 +123,13 @@ class WorkSnapshotReader {
     durability::SnapshotMetadata metadata_;
     uint32_t records_ = 0;
     Section section_ = Section::owner_binding;
-    // The task whose records come, from TASK up to its TASK_STATE, and
+    // The Task whose records come, from TASK through TASK_AUTHORITY, and
     // whether its checkpoint came.
     uint32_t task_index_ = work::TaskTable::no_index;
     bool checkpoint_seen_ = false;
+    // Contents precede state, then exactly one admission closes the current Task.
+    enum class TaskReadStage { contents, authority };
+    TaskReadStage task_stage_ = TaskReadStage::contents;
     uint64_t last_command_seq_ = 0;
     // Goal v2 must be followed immediately by matching metadata, even across pages.
     std::optional<uint64_t> goal_authority_pending_;

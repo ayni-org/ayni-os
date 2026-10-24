@@ -410,7 +410,8 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
         base + layout.sessions_offset,       base + layout.tasks_offset,
         base + layout.strategies_offset,     base + layout.decisions_offset,
         base + layout.commands_offset,       base + layout.capabilities_offset,
-        base + layout.grants_offset,         base + layout.goal_authority_offset};
+        base + layout.grants_offset,         base + layout.goal_authority_offset,
+        base + layout.task_authority_offset};
     *out_kernel = new (memory) ayni_kernel(copy_host(host), capacities, limits, storage);
     return AYNI_OK;
 }

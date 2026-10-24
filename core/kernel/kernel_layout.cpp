@@ -89,6 +89,10 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
                      work::GoalAuthorityTable::storage_size(
                          {capacities.goal_capacity, capacities.goal_requirement_capacity,
                           capacities.authority_scope_max_bytes}));
+    layout.task_authority_offset =
+        placer.place(work::TaskAuthorityTable::storage_alignment,
+                     work::TaskAuthorityTable::storage_size(
+                         {capacities.task_capacity, capacities.goal_requirement_capacity}));
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

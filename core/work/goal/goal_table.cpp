@@ -456,12 +456,12 @@ uint32_t GoalTable::live_children(uint32_t parent_index) const {
 
 // Walks up at most depth_max parents.
 bool GoalTable::in_subtree(uint32_t index, uint32_t root) const {
-    const uint32_t root_depth = goals_[root].depth;
-    uint32_t current = index;
-    while (goals_[current].depth > root_depth) {
-        current = goals_[current].parent_index;
-    }
-    return current == root;
+    bool found = false;
+    visit_lineage(index, [&](uint32_t at) {
+        found = at == root;
+        return !found && goals_[at].depth > goals_[root].depth;
+    });
+    return found;
 }
 
 bool GoalTable::at_largest_revision(const Goal &goal) {

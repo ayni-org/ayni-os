@@ -17,7 +17,6 @@ void PrefixScan::reset(uint64_t first_commit_seq, uint64_t max_transition_id,
     max_transition_id_ = max_transition_id;
     max_writer_epoch_ = writer_epoch;
     fenced_epoch_ = writer_epoch;
-    saw_legacy_ = false;
 }
 
 BatchCheck PrefixScan::scan(const uint8_t *bytes, std::size_t size, RecordHandler handler,
@@ -35,7 +34,6 @@ BatchCheck PrefixScan::scan(const uint8_t *bytes, std::size_t size, RecordHandle
             offset += batch.encoded_size;
             continue;
         }
-        saw_legacy_ = saw_legacy_ || batch.schema == 0U;
         if (batch.identity.commit_seq != next_commit_seq_ ||
             batch.identity.writer_epoch < max_writer_epoch_) {
             return BatchCheck::corrupt;

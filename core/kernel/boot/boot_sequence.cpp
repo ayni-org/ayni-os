@@ -37,7 +37,6 @@ void BootSequence::reset(uint32_t isolated_epoch) {
     activation_ = {};
     activation_seen_ = false;
     first_physical_ = true;
-    legacy_ = false;
     cursor_ = log_bytes_ = payload_read_ = 0;
     known_durable_seq_ = 0;
     carry_ = payload_crc_ = 0;
@@ -56,8 +55,7 @@ void BootSequence::isolate(uint32_t minimum_epoch) {
 }
 
 bool BootSequence::stopped() const {
-    return phase_ == Phase::done || phase_ == Phase::restricted || phase_ == Phase::migration ||
-           phase_ == Phase::isolated;
+    return phase_ == Phase::done || phase_ == Phase::restricted || phase_ == Phase::isolated;
 }
 
 bool BootSequence::mutates() const {
@@ -105,9 +103,6 @@ bool BootSequence::advance(uint64_t now) {
 BootSequence::Outcome BootSequence::outcome() const {
     if (phase_ == Phase::done) {
         return Outcome::epoch_durable;
-    }
-    if (phase_ == Phase::migration) {
-        return Outcome::migration_ready;
     }
     if (phase_ == Phase::isolated) {
         return Outcome::writers_isolated;
@@ -201,14 +196,8 @@ void BootSequence::fenced(const ayni_completion_result_v1 &result) {
         phase_ = Phase::isolated;
         return;
     }
-    // A schema 0 log gets no control record before its migration
-    // (ADR-0027 decision 11).
-    if (legacy_ && !activation_seen_) {
-        phase_ = Phase::migration;
-    } else {
-        phase_ = Phase::writer_record;
-        prepare_append();
-    }
+    phase_ = Phase::writer_record;
+    prepare_append();
 }
 
 // A stored batch goes through the scan like one read, so the scan and the
@@ -347,7 +336,6 @@ void BootSequence::read_payload(uint32_t size) {
 void BootSequence::read_log(const ayni_completion_result_v1 &result) {
     if (result.value == 0U) {
         if (phase_ == Phase::discover) {
-            legacy_ = scan_.saw_legacy();
             if (activation_seen_) {
                 phase_ = Phase::header;
             } else {

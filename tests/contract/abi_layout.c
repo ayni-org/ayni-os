@@ -441,7 +441,7 @@ AYNI_LAYOUT(grant_info_cleanup_seq, offsetof(ayni_grant_info_v1, cleanup_commit_
 AYNI_LAYOUT(requirement_input_size, sizeof(ayni_goal_requirement_v1) == 16 + 3 * AYNI_PTR);
 AYNI_LAYOUT(requirement_sink_ctx, offsetof(ayni_goal_requirement_sink_v1, ctx) == AYNI_PTR);
 AYNI_LAYOUT(requirement_sink_emit, offsetof(ayni_goal_requirement_sink_v1, emit) == 2 * AYNI_PTR);
-AYNI_LAYOUT(goal_authority_info_size, sizeof(ayni_goal_authority_info_v1) == 48);
+AYNI_LAYOUT(goal_authority_info_size, sizeof(ayni_goal_authority_info_v1) == 64);
 AYNI_LAYOUT(goal_requirement_info_size, sizeof(ayni_goal_requirement_info_v1) == 64);
 
 /* ADR-0037: explicit complete approval request, ABI 0.23. */
@@ -453,3 +453,10 @@ AYNI_LAYOUT(goal_approve_reserved, offsetof(ayni_goal_approve_v1, reserved) == 2
 AYNI_LAYOUT(goal_approve_duration, offsetof(ayni_goal_approve_v1, duration_us) == 24);
 AYNI_LAYOUT(goal_approve_original, offsetof(ayni_goal_approve_v1, original) == 32);
 AYNI_LAYOUT(goal_approve_size, sizeof(ayni_goal_approve_v1) == 32 + sizeof(ayni_goal_create_v1));
+
+/* ADR-0038: copied Task admission facts and binding sequences, ABI 0.24. */
+AYNI_LAYOUT(task_authority_info_size, sizeof(ayni_task_authority_info_v1) == 56);
+AYNI_LAYOUT(task_authority_ref_size, sizeof(ayni_task_authority_reference_v1) == 24);
+AYNI_LAYOUT(goal_binding_seq, offsetof(ayni_goal_authority_info_v1, binding_commit_seq) == 48);
+AYNI_LAYOUT(goal_parent_binding_seq,
+            offsetof(ayni_goal_authority_info_v1, parent_binding_commit_seq) == 56);

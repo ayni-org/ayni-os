@@ -41,10 +41,6 @@ class PrefixScan {
     // one wrote, so its batches from there on are skipped.
     void reset(uint64_t first_commit_seq, uint64_t max_transition_id = 0,
                uint32_t writer_epoch = 0);
-    // A batch of storage_schema 0 was scanned: the log predates schema 1 and
-    // recovery migrates it (ADR-0027 decision 11).
-    bool saw_legacy() const { return saw_legacy_; }
-
     // Checks every batch in bytes, which holds whole batches only, and passes
     // each record to handler in order. A batch must carry next_commit_seq()
     // and no smaller writer_epoch than the batches before it. Unknown record
@@ -79,7 +75,6 @@ class PrefixScan {
     // Batches of older writers are skipped; 0 while no fence was scanned
     // and reset() named none.
     uint32_t fenced_epoch_ = 0;
-    bool saw_legacy_ = false;
 };
 
 } // namespace ayni::durability

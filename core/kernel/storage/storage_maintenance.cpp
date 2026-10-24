@@ -21,23 +21,20 @@ bool StorageMaintenance::generation_exhausted() const {
     return generation_ == std::numeric_limits<uint64_t>::max();
 }
 
-// A migration's snapshot is the first of schema 1, so it is generation 1 in
-// slot 0 whatever the schema 0 log held. Otherwise the candidate takes the
-// slot not in use, which recovery ignores until the activation names it.
-void StorageMaintenance::start(const SnapshotBoundary &boundary, uint32_t writer_epoch,
-                               bool migration) {
+// The candidate uses the inactive slot; recovery ignores it until activation.
+// Unsupported schemas are rejected before maintenance can acquire the buffer.
+void StorageMaintenance::start(const SnapshotBoundary &boundary, uint32_t writer_epoch) {
     const SnapshotLayout layout = writer_.measure();
     metadata_ = durability::SnapshotMetadata{};
-    metadata_.generation = migration ? 1U : generation_ + 1U;
+    metadata_.generation = generation_ + 1U;
     metadata_.covers_commit_seq = boundary.covers_commit_seq;
     metadata_.max_transition_id = boundary.max_transition_id;
     metadata_.boot_epoch = boundary.boot_epoch;
     metadata_.writer_epoch = boundary.writer_epoch;
     metadata_.payload_length = layout.payload_length;
     metadata_.record_count = layout.record_count;
-    slot_ = migration || generation_ == 0U ? 0U : 1U - active_slot_;
+    slot_ = generation_ == 0U ? 0U : 1U - active_slot_;
     writer_epoch_ = writer_epoch;
-    migration_ = migration;
     // The activation is the batch right after the boundary (records.md).
     activation_batch_ = {writer_epoch, boundary.covers_commit_seq + 1U,
                          boundary.max_transition_id + 1U};
@@ -49,7 +46,7 @@ void StorageMaintenance::start(const SnapshotBoundary &boundary, uint32_t writer
     crc_ = 0;
     failure_ = AYNI_RESTRICTION_NONE;
     phase_ = Phase::checksum;
-    mode_ = migration ? Mode::migration : Mode::runtime;
+    mode_ = Mode::runtime;
 }
 
 bool StorageMaintenance::active() const {
@@ -115,11 +112,9 @@ bool StorageMaintenance::advance(uint64_t now) {
         writes_.started(now);
         retry_.started();
     }
-    // A migration writes before this boot's epoch is durable, so its
-    // requests carry boot_epoch 0, as the boot sequence's do (C-ID-006).
-    switch (completions_.issue(migration_ ? 0U : metadata_.boot_epoch,
-                               &StorageMaintenance::on_complete, this, &StorageMaintenance::call,
-                               this)) {
+    // Maintenance starts only after the boot epoch is durable (C-ID-006).
+    switch (completions_.issue(metadata_.boot_epoch, &StorageMaintenance::on_complete, this,
+                               &StorageMaintenance::call, this)) {
     case IssueResult::in_flight:
         in_flight_ = true;
         break;
@@ -283,17 +278,15 @@ void StorageMaintenance::prepare_marker() {
     page_size_ = durability::snapshot_marker_size;
 }
 
-// A migration's activation keeps the schema 0 batch header that a reader of
-// the old schema can parse: it then meets a REQUIRED record it does not
-// know and stops, instead of running on the stale log (ADR-0027 decision 11).
+// Activate only the current schema; old-format sources are rejected read-only
+// during discovery instead of being rewritten (ADR-0038).
 void StorageMaintenance::prepare_activation() {
     std::array<uint8_t, durability::snapshot_commit_record_length> body{};
     durability::write_snapshot_activation({slot_, metadata_.payload_crc, metadata_.generation,
                                            metadata_.covers_commit_seq,
                                            metadata_.max_transition_id},
                                           body.data());
-    durability::BatchWriter writer(buffer_, capacity_, activation_batch_,
-                                   migration_ ? 0U : durability::storage_schema);
+    durability::BatchWriter writer(buffer_, capacity_, activation_batch_);
     if (!writer.add_record({durability::snapshot_commit_record_type,
                             durability::snapshot_commit_record_version, durability::record_required,
                             durability::snapshot_commit_record_length},

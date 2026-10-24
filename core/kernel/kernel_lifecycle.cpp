@@ -6,8 +6,7 @@
 // is in flight (C-HOST-018).
 //
 // Storage upkeep (ADR-0027) runs in the same steps. A RUNNING kernel whose
-// log nears its limit compacts it into a snapshot, and a recovery that read
-// a schema 0 log migrates it; either way StorageMaintenance holds the
+// log nears its limit compacts it into a snapshot. StorageMaintenance holds the
 // storage buffer and no transition starts until it is done. A writer whose
 // retries run out is fenced: FENCED isolates the old writer, then recovery
 // runs again on what is durable and RUNNING resumes under a new boot epoch.
@@ -108,16 +107,14 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
 }
 
 // Recovery and maintenance share the storage buffer and each advance at most
-// once per call. A completed migration can hand control back to recovery.
+// once per call; maintenance starts only after recovery enters RUNNING.
 void ayni_kernel::advance_recovery_and_maintenance(StepBudget &progress) {
-    // A migration interrupts recovery, which resumes once it is done.
     if ((lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_FENCED) &&
         progress.available() && !maintaining() && boot.advance(host.monotonic_now_us(host.ctx))) {
         ++progress.items;
         settle_recovery();
     }
-    if ((lifecycle == AYNI_LIFECYCLE_RECOVERING || lifecycle == AYNI_LIFECYCLE_RUNNING) &&
-        maintaining() && progress.available() &&
+    if (lifecycle == AYNI_LIFECYCLE_RUNNING && maintaining() && progress.available() &&
         maintenance.advance(host.monotonic_now_us(host.ctx))) {
         ++progress.items;
         settle_maintenance();
@@ -166,8 +163,13 @@ void ayni_kernel::apply_ready_work(StepBudget &progress) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
-            if (!ayni::kernel::do_due_work(work, progress.started_us,
-                                           host.monotonic_now_us(host.ctx), log.durable_seq())) {
+            const auto result = ayni::kernel::do_due_work(
+                work, progress.started_us, host.monotonic_now_us(host.ctx), log.durable_seq());
+            if (result == ayni::kernel::DueWorkResult::none) {
+                break;
+            }
+            if (result == ayni::kernel::DueWorkResult::internal) {
+                enter_restricted(AYNI_RESTRICTION_INTERNAL);
                 break;
             }
             journal(first_seq);
@@ -401,11 +403,6 @@ void ayni_kernel::settle_recovery() {
             lifecycle = AYNI_LIFECYCLE_RECOVERING;
         }
         break;
-    case ayni::kernel::BootSequence::Outcome::migration_ready:
-        if (!maintaining()) {
-            begin_maintenance(true);
-        }
-        break;
     case ayni::kernel::BootSequence::Outcome::pending:
         break;
     }
@@ -465,72 +462,43 @@ void ayni_kernel::refresh_storage() {
     }
     budget.refresh(host);
     if (budget.compaction_due() && log.idle()) {
-        begin_maintenance(false);
+        begin_maintenance();
     }
 }
 
-// A runtime snapshot covers everything the log stored; a migration's covers
-// what recovery read, as the writer that stored it left it.
-void ayni_kernel::begin_maintenance(bool migration) {
+// Compaction covers the current writer's complete durable work boundary.
+void ayni_kernel::begin_maintenance() {
     if (maintenance.generation_exhausted()) {
         enter_restricted(AYNI_RESTRICTION_GENERATION_EXHAUSTED);
         return;
     }
-    // Without room for the snapshot the log stays; a migration cannot
-    // leave its schema 0 log behind, so it cannot go on.
+    // Without room for a candidate the current durable log remains authoritative.
     if (!budget.refresh_for_snapshot(host)) {
-        if (migration) {
-            enter_restricted(AYNI_RESTRICTION_STORAGE_FULL);
-        }
         return;
     }
-    ayni::kernel::SnapshotBoundary boundary{};
-    if (migration) {
-        boundary.covers_commit_seq = boot.durable_seq();
-        boundary.max_transition_id = boot.max_transition_id();
-        boundary.boot_epoch = boot.last_boot_epoch();
-        boundary.writer_epoch = boot.recovered_writer_epoch();
-        maintenance.start(boundary, boot.writer_epoch(), true);
-    } else {
-        boundary.covers_commit_seq = log.durable_seq();
-        boundary.max_transition_id = work.transitions.latest().transition_id;
-        boundary.boot_epoch = log.boot_epoch();
-        boundary.writer_epoch = log.writer_epoch();
-        maintenance.start(boundary, log.writer_epoch(), false);
-    }
+    const ayni::kernel::SnapshotBoundary boundary{log.durable_seq(),
+                                                  work.transitions.latest().transition_id,
+                                                  log.boot_epoch(), log.writer_epoch()};
+    maintenance.start(boundary, log.writer_epoch());
 }
 
-// A runtime run that fails fences the writer, as a failed append does. A
-// migration that fails restricts: it ran during recovery, whose model it
-// discards. A migration that succeeds recovers again, now from the snapshot
-// it activated; a runtime one hands the buffer back to the log, which goes
-// on after the activation batch.
+// Failed compaction fences the writer as append failure does. Success returns
+// the buffer to the log, which continues after its durable activation batch.
 void ayni_kernel::settle_maintenance() {
     if (!maintaining() || lifecycle == AYNI_LIFECYCLE_DRAINING ||
         lifecycle == AYNI_LIFECYCLE_STOPPED) {
         return;
     }
-    const bool migration = maintenance.mode() == ayni::kernel::StorageMaintenance::Mode::migration;
     if (maintenance.failure() != AYNI_RESTRICTION_NONE) {
         const ayni_restriction_t reason = maintenance.failure();
         maintenance.end();
-        if (migration) {
-            replay.discard();
-            enter_restricted(reason);
-        } else {
-            enter_fenced(reason);
-        }
+        enter_fenced(reason);
         return;
     }
     if (!maintenance.done()) {
         return;
     }
     maintenance.end();
-    if (migration) {
-        replay.discard_for_reload();
-        boot.reset();
-        return;
-    }
     // The activation took the next identity, so no transition ran during
     // the run; anything else is a defect.
     const ayni::durability::BatchIdentity activated = maintenance.activation_batch();

@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前写 `storage_schema=1`，明确读取 0、1；0 为迁移来源。布局以本文件和编解码测试为准，迁移切换见 ADR-0027；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=2`；旧 schema 0/1 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -51,8 +51,9 @@
 | `OWNER_BINDING`（类型 12，版本 1，REQUIRED） | `authority/principal` | 首次所有者绑定，与启动领域 transition 同批；已绑定后不重复写入（ADR-0028） |
 | `INSTANCE`（类型 2） | `work/agent` | 启动或改变实例的 transition 批次（ADR-0026） |
 | `GOAL`（类型 3）、`GOAL_STATE`（类型 4） | `work/goal` | `GOAL` 在创建它的批次（B1）；`GOAL_STATE` 在每个改变该 Goal 的批次，含 occurrence 游标（B2），所以不另设 `OCCURRENCE_CURSOR` |
-| `GOAL_AUTHORITY`（类型 17，版本 1，REQUIRED） | `work/goal` | 与 type 3/v2 或 v3 的创建/授权状态更新同批，每批最多一个 Goal；完整布局见本文末尾（ADR-0037） |
+| `GOAL_AUTHORITY`（类型 17，版本 2，REQUIRED） | `work/goal` | 与 type 3/v2 或 v3 的创建/授权状态更新同批，每批最多一个 Goal；完整布局见本文末尾（ADR-0037、0038） |
 | `TASK`（类型 5）、`TASK_STATE`（类型 6） | `work/task` | `TASK` 在派生它的批次（B2）；`TASK_STATE` 在每个改变该 Task 的批次，含 `TASK_PROGRESS` 的内容 |
+| `TASK_AUTHORITY`（类型 18，版本 1，REQUIRED） | `work/task` | 派生 Task 时与确切 `TASK`/`TASK_STATE` 同批，状态后紧接准入事实（ADR-0038） |
 | `TASK_STEPS`（类型 7）、`TASK_CHECKPOINT`（类型 8） | `work/task` | 提交步骤或私有检查点的决策批次（B3），即 `STEP_CHECKPOINT` |
 | `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3含完整canonical请求，v3另存effect（ADR-0030、0031） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | `budget` | B2、B4 |
@@ -126,7 +127,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 ## 控制记录与读取
 
 - `WRITER_FENCE` 单独成批，新 epoch 必须严格大于前缀现有有效 epoch。其后的完整旧 epoch 帧被忽略，不推进有效 commit、transition 或 boot 基线；其他有效批次仍须连续。
-- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。迁移激活以 schema 0 外壳写入，之后正常写 schema 1，旧 reader 因 REQUIRED 类型未知而受限。
+- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 2；不再执行 schema 0→1 迁移。
 - 恢复使用 Host 物理 cursor，不能用最大已见 commit_seq 翻页；旧 epoch 的高序号帧可能位于合法新批次之前。cursor 在同一日志实例中严格递增，轮转后从 0 重读。
 - 首个完整批次放不下时，Host 以读专用 `READ_BUFFER_TOO_SMALL` 报精确所需长度，映射 `STATE_EXCEEDS_CAPACITY`。真正 I/O 故障、非法大小或 `OK` 越界仍是 `STORAGE_READ_FAILED`。
 
@@ -134,14 +135,14 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 快照采用两个槽。维护先冻结新 transition 并排空 journal，得到边界 `S`，再写非当前槽的内容，回读校验版本、长度与 CRC 后独立写槽尾标记。槽尾标记只证明槽内容完整；日志中的 `SNAPSHOT_COMMIT` 是激活新状态的唯一切换提交，持久化后才轮转旧日志。尚未激活的新槽不参与恢复。
 
-### 槽头与槽尾（schema 1）
+### 槽头与槽尾（schema 2）
 
 头部固定为 72 字节：
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | ASCII `AYSN` |
-| 4 | 2 | `storage_schema` | 1 |
+| 4 | 2 | `storage_schema` | 2 |
 | 6 | 2 | `header_length` | 72 |
 | 8 | 8 | `generation` | 从 1 起，每次激活递增 |
 | 16 | 8 | `covers_commit_seq` | 快照包含的最后一个提交 `S`；初始空快照为 0 |
@@ -176,15 +177,16 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 | 12 `OWNER_BINDING` | 日志正文，随后为建立绑定的原始 `transition_id` u64 与 `commit_seq` u64 | 32 |
 | 2 `INSTANCE` | 日志的 `INSTANCE` 正文，随后为该实例最后改变的 `transition_id` u64 与 `commit_seq` u64 | 40 |
 | 3 `GOAL` | 日志的 `GOAL` 正文，随后为完整 `GOAL_STATE` 正文，再接原始 `created_transition_id` u64、最后改变的 `commit_seq` u64 | 日志 `GOAL` 长度 + 64 |
-| 17 `GOAL_AUTHORITY` | 与日志正文相同；保留自身最后 authority stamp，不追加另一组尾部 | 32 + 每需求 28 + ID/域/Scope 字节 |
+| 17/v2 `GOAL_AUTHORITY` | 与日志正文相同；保留自身最后 authority stamp，不追加另一组尾部 | 72 + 每需求 28 + ID/域/Scope 字节 |
 | 5 `TASK` | 日志的 `TASK` 正文，随后为原始 `created_transition_id`、最后改变的 `commit_seq`、`steps_seq`、`checkpoint_seq`（各 u64），以及 `steps_before` u32 | 76 |
 | 7 `TASK_STEPS` | 日志的步骤正文，每条只含一个 key，`steps_before` 为该 key 的位置、`count=1` | 20 + key 字节数 |
 | 8 `TASK_CHECKPOINT` | 与日志正文相同，包含写入方策略 ID、版本及原检查点；没有写入方时不写该记录 | 日志正文长度 |
 | 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
+| 18/v1 `TASK_AUTHORITY` | 与日志正文相同，紧接该 Task 的状态；保留原始准入 stamp | 48 + 每引用 12 |
 | 13 `GRANT_CREATE` | v1为创建正文+created/last stamp（各u64×2）+revision/lifecycle（u32×2）；v2再接revoked_by_root_id/cleanup_after/cleanup_through（u64×3）、cleanup stamp（u64×2）；v3使用专属创建正文并保留相同清理尾部；均无deadline/hold/Gate | v1正文+40；通用v2正文+80，最大192+2×scope_max_bytes；专属v3为绑定创建正文+80，最大200+2×scope_max_bytes |
 | 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3/v4日志正文、effect及完整canonical（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88；v4为日志正文长度+8 |
 
-顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的 Goal（v2 后紧接 type 17，可跨页）、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
+顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的 Goal（v2 后紧接 type 17，可跨页）、每个 Task 的元数据/逐条步骤/检查点/状态/准入（type18，紧接状态且允许跨页），最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
 
 所有对象与命令的提交不超过 `S`，创建 transition 不超过快照基线；本次注册内容的缺失导致的 Agent fault、Goal hold、Task recovery hold 不写入快照。没有注册的 principal 仍占有原有的一行命令窗口及下限；第二个 principal 的持久命令放不下时明确报容量不足，不丢弃原行。命令窗口缩小时按原接受次序让位并提高下限。单调时刻不写入：Goal 只保留时长及是否待发生，Task不写`due_us`，这些工作计时最终恢复后重锚；Grant只写duration，恢复限时Grant失效，不能重锚。Grant保留created/last/cleanup stamp及终态顺序；三个stamp分别检查commit不超过S、transition不超过max_transition_id，非零cleanup独立检查，EXPIRED的last不能靠created界限替代。正常命令窗口可已淘汰创建mapping，snapshot不要求每个保留Grant仍有原mapping。
 
@@ -202,13 +204,13 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APPROVE=11，result 为目标 Goal、expected_revision+1、CHANGED。canonical_format 仍为 1；正文按小端顺序为 kind/expected_revision（u32）、Goal ID（u64）、原缺项 mask/lifetime（u32）、duration（u64）、owner/parent（u64）、GoalType version（u32）、GoalType ID 字节串、原参数字节串、trigger kind（u32）、delay/period/原 expiry（u64）、trigger source 字节串。固定字段及三个 u32 长度合计 92 B，最大 156 + goal_parameter_max_bytes。旧 type 9/v1/v2/v3 不能承载 kind11。
 
-批准批次必须包含恰好对应原缺项的 N 条 type13/v2、type4/v2 的 PROPOSED→ACTIVE、type17/v1 的 proposed→authorized、最后 type9/v4。新 Grant 必须为同 Goal、同主体、完整原 domain/Scope 的不可委派根；类型/域/Scope/期限与命令及缺项逐一匹配，旧引用不替换。Grant 可以按槽位顺序排列，但新 ID 与缺项引用必须是一一映射。缺少任一项、重复/额外 Grant、顺序错误或同批其他工作均拒绝；启动对新 Grant 创建 boot 先后关系的检查也适用 v2。
+批准批次必须包含恰好对应原缺项的 N 条 type13/v2、type4/v2 的 PROPOSED→ACTIVE、type17/v2 的 proposed→authorized、最后 type9/v4。新 Grant 必须为同 Goal、同主体、完整原 domain/Scope 的不可委派根；类型/域/Scope/期限与命令及缺项逐一匹配，旧引用不替换。Grant 可以按槽位顺序排列，但新 ID 与缺项引用必须是一一映射。缺少任一项、重复/额外 Grant、顺序错误或同批其他工作均拒绝；启动对新 Grant 创建 boot 先后关系的检查也适用 v2。
 
 快照保留 v4 原始 canonical 与 seq；存在的目标和专属 Grant 必须与命令相符，已合法回收的历史允许缺席。当前 E 不支持引用替换；F 引入该行为时须增加相应历史验证规则。批次容量预算包含 min(goal_requirement_capacity, grant_capacity) 条最大 Grant 创建记录；命令 stride 取 Grant 与批准两种上限的较大值。旧 reader 遇 REQUIRED v4 安全受限。
 
 ### 激活、轮转与恢复
 
-`SNAPSHOT_COMMIT` 绑定槽、generation、覆盖提交、最大 transition 与正文 CRC；它的批次使用 `commit_seq=S+1`、`transition_id=max_transition_id+1`。schema 0→1 迁移的这个激活批次仍用 schema 0 并置 `REQUIRED`，切换前保留原日志；旧 reader 不能忽略激活记录回到过时状态继续执行。空存储直接建立 schema 1 的栅栏和启动记录，不制造空快照或迁移激活。
+`SNAPSHOT_COMMIT` 绑定槽、generation、覆盖提交、最大 transition 与正文 CRC；它的批次使用 `commit_seq=S+1`、`transition_id=max_transition_id+1`。激活批次与空存储的栅栏/启动记录均使用 schema 2，不制造空快照或迁移激活；旧 schema 明确拒绝，禁止忽略新格式回到过时状态继续执行。
 
 恢复先按物理日志次序发现有效 writer fence 与最新激活，再校验并导入它所指的确切槽，最后从 `S+1` 的激活批次起重放尾部。旧激活引用的槽可能已被复用，不逐条读取旧槽；最新激活的槽损坏或不支持时不得回退旧槽。被 fence 排除的旧 epoch 批次不改变激活、提交、transition 或 boot 基线。
 
@@ -227,7 +229,7 @@ E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APP
 | C-STORE-007 | 恢复从最新激活绑定的快照开始，重放 `commit_seq > covers_commit_seq` 的已提交批次；同一 transition 不重复应用（C-COMMIT-002），对象原始 stamp、READY 顺序、回收顺序、命令结果与下限不被快照覆盖提交改写 | 快照已包含的批次再次应用，或全部对象改用同一覆盖提交，改变任务公平性与回收选择 | M1 已实现（现有工作模型的静态分页快照与尾部重放）：`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`、`WorkSnapshot.ready_and_reclamation_choices_match_the_uncompacted_model`、`WorkSnapshot.terminal_parent_and_child_keep_their_reclamation_order`、`WorkSnapshot.a_retained_object_can_name_a_predecessor_already_reclaimed`、`WorkSnapshot.commands_keep_their_floor_and_original_acceptance_order`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`、`WorkSnapshot.smaller_object_and_checkpoint_capacities_report_no_room`、`WorkSnapshot.smaller_goal_parameter_limit_is_capacity_failure`、`SnapshotFaults.a_snapshot_record_beyond_the_buffer_exceeds_capacity`、`WorkSnapshot.object_stamp_beyond_the_snapshot_boundary_is_corrupt`；其余领域随各自工作包；E2 F11 |
 | C-STORE-008 | CRC 只用于发现损坏，不作为授权或防篡改依据 | 以 CRC 正确为由信任一条从外部导入的 Grant 记录 | 评审 |
 | C-STORE-009 | 已提交区域（不是末尾的不完整批次）出现损坏时进入 `RESTRICTED`，不跳过损坏批次继续应用后续批次 | 中间批次 CRC 错误，恢复跳过它，导致后续撤销记录引用不存在的 Grant | M1 已实现（恢复读取）：`PrefixScan.damaged_batch_stops_the_scan`、`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotFaults.payload_damage_the_records_survive_is_still_corrupt`；M1 已实现（工作记录违反表规则或日志末尾不一致时为 `LOG_CORRUPT`，已重放的内容全部丢弃，ADR-0026 决策 5）：`WorkRecovery.log_that_leaves_a_live_task_under_an_ended_goal_is_corrupt`、`WorkReplay.goal_created_without_its_state_is_corrupt`、`WorkReplay.live_task_under_an_ended_goal_is_inconsistent`、`WorkReplay.live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsistent`、`GoalRestore.restore_state_refuses_a_change_to_a_terminal_goal_or_an_impossible_cursor`、`TaskRestore.restore_state_refuses_a_change_to_an_ended_or_held_task`、`AgentRestore.record_no_transition_writes_is_corrupt`；E2 F7（已提交区域损坏） |
-| C-STORE-010 | 迁移在切换提交前保留旧格式；新 schema 快照经校验和槽尾确认后，以旧 schema 的 REQUIRED 激活批次切换，之后才允许新 schema 写入；中断前未激活的新槽可以重建，激活后不能恢复过时来源执行 | 原地改写旧日志导致新旧都不完整，或旧固件忽略新状态回到旧快照 | M1 已实现（schema 0→1 迁移、切换前保留源和模拟旧 reader 拒绝切换）：`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`、`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`、`SnapshotCodec.every_header_and_marker_byte_is_checked`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6；C-VER-021 |
+| C-STORE-010 | 迁移在切换提交前保留旧格式；新 schema 快照经校验和槽尾确认后，以旧 schema 的 REQUIRED 激活批次切换，之后才允许新 schema 写入；中断前未激活的新槽可以重建，激活后不能恢复过时来源执行 | 原地改写旧日志导致新旧都不完整，或旧固件忽略新状态回到旧快照 | M1 部分实现（ADR-0038 开发版不提供迁移，旧格式无新写地受限并保留）：`StorageSchemaBoundary.unsupported_schema_never_installs_a_writer_or_mutates_source`、`StorageSchemaBoundary.unsupported_schema_is_still_rejected_after_a_process_restart`、`SnapshotCodec.every_header_and_marker_byte_is_checked`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6；C-VER-021 |
 | C-STORE-011 | 日志轮转、双槽快照、临时输出、历史大小与写频率均有上限；维护与限频暂时冻结新 transition 并报告背压，动作屏障不能为节省写入而跳过；实际空间不足时新副作用返回 `AYNI_STORAGE_FAILED`，已映射命令仍返回首次结果。保留当前可查询对象、步骤/检查点和既有幂等窗口，不额外归档已覆盖历史 | 为减少磨损跳过屏障，或轮转删除尚未激活快照覆盖的日志，或存储满使已接受命令失去原结果 | M1 部分实现（当前工作模型的轮转、保留、空间准入和写频；动作屏障尚未实现）：`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`、`StorageRecovery.retry_wait_is_readable_and_preserves_command_lookup_before_busy`、`WorkSnapshot.commands_keep_their_floor_and_original_acceptance_order`；真实空间不足的准入 `StorageAdmission.full_medium_refuses_new_state_but_keeps_the_original_command_result`、`StorageAdmission.an_unmapped_noncommand_also_requires_space_before_applying`；日志上限与两项预留 `StorageBudget.default_log_limit_is_eight_buffers_or_one_mib`、`StorageBudget.smallest_log_limit_holds_the_reserve_two_batches_and_an_activation`、`StorageBudget.admission_needs_the_larger_reserve_free`、`StorageBudget.a_space_shortage_holds_transitions_until_a_refresh_finds_room`、`StorageBudget.a_snapshot_needs_its_reserve_and_a_shortage_holds_transitions`、`StorageBudget.compaction_is_due_at_three_quarters_of_the_limit`、`StorageBudget.compaction_is_due_before_the_log_reserve_would_cross_the_limit`、`StorageAdmission.a_log_limit_without_room_to_compact_is_refused`、`StorageAdmission.a_pending_compaction_holds_new_work_until_the_journal_drains`；持续限频 `SnapshotFaults.every_mutating_phase_shares_the_interval_and_waits_without_spinning`、`SnapshotFaults.a_slow_strategy_cannot_spend_the_next_storage_interval_before_submit`；动作屏障随 MA-008/MA-018/MA-022；E2 末段；C-COMMIT-015 |
 | C-STORE-012 | 日志扇区擦除在没有活动执行器会话时预先完成；会话期间只做页编程，以免擦除挂起停止监督（C-STOP-005） | 会话中日志写满一个扇区，触发擦除，L2 心跳超时误停 | `MA-026` 故障矩阵 |
 | C-STORE-013 | 参与 transition 的状态只写入日志；NVS 只保存不参与 transition 的小型配置。必须跨介质原子更新时，以日志中的协调记录实现（C-COMMIT-014） | 预算写在 NVS、Task 写在日志，掉电后只更新了一边 | M1 已实现（工作模型：实例、Goal、Task、步骤、私有检查点与命令映射只写入日志，每个 transition 一个批次，ADR-0026）：`WorkRecovery.power_loss_takes_the_batches_never_appended`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；预算等其余状态随各自的包 |
@@ -235,30 +237,30 @@ E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APP
 | C-STORE-015 | Grant创建与完整授权命令mapping/结果同批；保留source_domain、展开scope、父链、原始stamp和精确replacement，journal/snapshot均不写deadline/易失hold；unknown/missing REQUIRED的授权记录含covered历史均受限 | 孤立Grant被恢复为权限；快照遗漏原始域或把当前hold永久化；旧reader跳过授权新记录 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |
 | C-STORE-016 | 显式根撤销与完整v3命令结果同批；有界后代状态与根进度同批，fixed through/单调after/真实父链及独立cleanup_stamp均可重放检查，精确replacement须为持久安全叶节点 | 根已撤销但丢命令结果；后代已改而cursor未改；cursor改变终态回收序 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.root_record_and_exact_mapping_require_each_other_in_one_batch`、`GrantRevokeReplay.descendant_state_and_progress_are_an_atomic_pair`、`GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`、`GrantRevokeReplay.descendant_and_progress_must_name_the_same_root_and_cursor`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`；最终交付见 ADR-0031；C-COMMIT-005 |
 | C-STORE-017 | snapshot显式写通用Grant13/v2并兼容v1，专属Grant写13/v3（ADR-0037），mapping1/2/3各按版本读；共享classifier区分journal/snapshot及covered历史，分别检查created/last/cleanup界和effect/retained target一致性，不保存Gate/pending/pin/deadline | snapshot13/v2被journal按v1解释；NO_CHANGE与同seq CHANGED互换；cleanup超过边界仍导入 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
-| C-STORE-018 | 有授权元数据的 GOAL v2/v3 与 type 17 必须配对，journal 同批且 stamp 相同、snapshot 相邻且在 Goal/快照边界内；原需求不可改写；活引用必须匹配已有 Grant 的主体、原域与范围 | 缺元数据的新 Goal 被当成旧零需求；跨 Goal 借记录；按当前目录重释旧范围 | M1 部分实现（内部事实、公开创建及 journal/snapshot/boot 集成，批准随 E3）：`GoalAuthorityPersistence.journal_round_trip_preserves_explicit_zero_and_legacy_absence`、`GoalAuthorityPersistence.missing_duplicate_or_wrong_batch_metadata_restricts_boot`、`GoalAuthorityPersistence.paged_snapshot_keeps_adjacent_metadata_and_original_stamps`、`GoalAuthorityPersistence.restored_updates_keep_the_original_ceiling_and_never_return_to_proposed`、`GoalAuthorityPersistence.a_grant_for_another_agent_cannot_authorize_the_restored_goal`、`GoalAuthorityPersistence.a_narrow_grant_does_not_cover_a_wider_saved_requirement`、`GoalAuthorityPersistence.proposed_snapshots_require_the_new_state_envelope`；ADR-0037 |
+| C-STORE-018 | 有授权元数据的 GOAL v2/v3 与 type 17 必须配对，journal 同批且 stamp 相同、snapshot 相邻且在 Goal/快照边界内；原需求不可改写；活引用必须匹配已有 Grant 的主体、原域与范围 | 缺元数据的新 Goal 被当成旧零需求；跨 Goal 借记录；按当前目录重释旧范围 | M1 部分实现（内部事实、公开创建及 journal/snapshot/boot 集成，批准随 E3）：`GoalAuthorityPersistence.journal_round_trip_preserves_zero_and_rejects_missing_evidence`、`GoalAuthorityPersistence.missing_duplicate_or_wrong_batch_metadata_restricts_boot`、`GoalAuthorityPersistence.paged_snapshot_keeps_adjacent_metadata_and_original_stamps`、`GoalAuthorityPersistence.restored_updates_keep_the_original_ceiling_and_never_return_to_proposed`、`GoalAuthorityPersistence.a_grant_for_another_agent_cannot_authorize_the_restored_goal`、`GoalAuthorityPersistence.a_narrow_grant_does_not_cover_a_wider_saved_requirement`、`GoalAuthorityPersistence.proposed_snapshots_require_the_new_state_envelope`；ADR-0037 |
 | C-STORE-019 | Goal 专属 Grant journal v2/snapshot v3 显式保存非零绑定；通用 Grant 旧字节不变；版本、根/不可委派及身份规则在 struct/bytes 共用校验 | 旧 reader 丢绑定；新 envelope 接受零绑定；普通命令替代批准证明 | M1 已实现（专属记录、版本边界和整批批准恢复）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GoalApprovalPersistence.public_approval_survives_journal_and_snapshot_with_exact_retry`、`GoalApprovalPersistence.missing_partner_or_mismatched_exact_command_restricts_recovery`、`GoalApprovalPersistence.snapshot_command_echo_cannot_disagree_with_retained_creation`、`GoalApprovalPersistence.unrelated_work_before_during_or_after_approval_restricts_boot`、`GoalApprovalPersistence.old_dependency_must_have_been_active_at_approval`、`GoalApprovalPersistence.one_new_grant_cannot_fill_two_equal_original_missing_items`、`GoalApprovalPersistence.maximum_missing_count_with_large_domains_fits_batch_reservation`；ADR-0037 |
 
-## Goal 授权元数据（MA-006 E，内部 codec）
+## Goal 授权元数据（MA-006 E/F）
 
-type 17/v1 已接入 Kernel arena、journal、snapshot 和恢复分类，必须为 REQUIRED；公开需求创建与原子批准均已由 E 交付。GOAL type 3/v2、v3 复用 v1 正文并必须标 REQUIRED，声明该 Goal 有明确授权元数据：journal 同批在 GOAL_STATE 后写 type 17，snapshot 在 GOAL 后紧接 type 17（可跨页）；缺失、孤立、重复或跨批伙伴损坏。type 3/v1 缺元数据仍合法且继续 LEGACY_UNCONFIRMED。每 transition 至多一条 type 17，显式零需求仍写该记录。
+type 17/v2 已接入 Kernel arena、journal、snapshot 和恢复分类，必须为 REQUIRED；公开需求创建与原子批准均已由 E 交付。GOAL type 3/v2、v3 复用 v1 正文并必须标 REQUIRED，声明该 Goal 有明确授权元数据：journal 同批在 GOAL_STATE 后写 type 17，snapshot 在 GOAL 后紧接 type 17（可跨页）；缺失、孤立、重复或跨批伙伴损坏。schema 2 不接受缺少元数据的 Goal；不从缺席推断零需求。每 transition 至多一条 type 17，显式零需求仍写该记录。
 
-全部整数为小端。固定头 32 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32）。每项固定开销 28 B，不包括三段数据；总长必须恰好匹配。
+全部整数为小端。固定头 72 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16），再接五个 u64：binding_commit_seq（offset 32）、parent_goal_id（40）、parent_binding_commit_seq（48）、input_incarnation（56）、input_through（64）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32）。每项固定开销 28 B，不包括三段数据；总长必须恰好匹配。
 
-Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与原域必须有效，Scope 完整且被原域包含。Grant 引用或是 `{0,0}`（缺项），或是有效 Kernel ID 与非零 revision。proposed 至少缺一项；authorized/paused 全部引用完整。显式 count=0 可授权或暂停，缺少整条记录仍是未知元数据，不能当零需求。表的配置容量可以小于记录绝对上限，放入时不足则不改变已有事实。
+Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与原域必须有效，Scope 完整且被原域包含。Grant 引用或是 `{0,0}`（缺项），或是有效 Kernel ID 与非零 revision。proposed 至少缺一项且 binding 全零；authorized/paused 全部引用完整，binding_commit_seq 非零且不晚于 authority commit_seq。父 Goal ID/绑定序号同零或同非零；根为零，子项须与准入时父绑定相等。输入 incarnation=0 时 through 必须为 0；非零 incarnation 可配零水位（无输入），不得超过 boot ID 范围。F2 的 journal/snapshot 均拒绝非零恢复边界，F4 随完整恢复事务证明另行开放。显式 count=0 可授权或暂停，缺少整条记录仍是未知元数据，不能当零需求。表的配置容量可以小于记录绝对上限，放入时不足则不改变已有事实。
 
 journal/snapshot 使用同一 codec。journal 正文 stamp 等于 batch，Goal 状态必须在同批更新；已有元数据的原需求不可改变，stamp 严格前进，授权/暂停不能退回 proposed。snapshot stamp 在覆盖边界内且不晚于 Goal 的最后提交。Grant 选择保存 ACTIVE revision，与后来终态 revision 不同不构成损坏；所选主体、原 schema/domain 与覆盖关系仍须一致。活 Goal 所引用 Grant 缺失损坏，持久终态 Goal 可保留已回收历史引用。新 boot 的目录兼容与可消费性单独检查，不改写原需求。记录不保存单调时间、指针、进程句柄、输入队列状态或 Grant 的易失引用释放 fence。
 
-自 E2b（ADR-0037）起，writer 对有元数据 Goal 写 type 3/v3（创建/快照），其 GOAL_STATE 写 type 4/v2（所有 journal 更新），均 REQUIRED。正文仍分别使用原布局；type 3/v3 允许 PROPOSED 和普通生命周期/授权暂停的独立组合，type 4/v2 同时保护已有 v2 Goal 的后续更新。旧 v1/v2 Goal 仍可读，不改变原 PAUSED 含义；type 4/v1 和旧版本快照不接受 PROPOSED。新格式 PROPOSED 必须有至少一项缺少引用的元数据，taken/waiting/next_scheduled/last_task_id 都为空，不能有子 Goal 或 Task。授权阶段 paused 可与普通 ACTIVE/PAUSED 同时存在；有效 PAUSED 由查询/消费派生，不另存一份。
+自 E2b（ADR-0037）起，writer 对有元数据 Goal 写 type 3/v3（创建/快照），其 GOAL_STATE 写 type 4/v2（所有 journal 更新），均 REQUIRED。正文仍分别使用原布局；type 3/v3 允许 PROPOSED 和普通生命周期/授权暂停的独立组合，type 4/v2 同时保护已有 v2 Goal 的后续更新。旧记录 envelope 不代替 schema 2 必需的完整授权事实，不改变原 PAUSED 含义；type 4/v1 和旧版本快照不接受 PROPOSED。新格式 PROPOSED 必须有至少一项缺少引用的元数据，taken/waiting/next_scheduled/last_task_id 都为空，不能有子 Goal 或 Task。授权阶段 paused 可与普通 ACTIVE/PAUSED 同时存在；有效 PAUSED 由查询/消费派生，不另存一份。
 
 
-## Task 授权元数据（MA-006 F1，内部 codec）
+## Task 授权元数据（MA-006 F）
 
-ADR-0038 决策 2～5：type 18/v1 的 reader/writer 和有界 Task 表已实现；F1 尚未接入 journal/snapshot/发现，当前 writer 与 storage_schema 仍保持原值。F2 启用时为 REQUIRED，并与对应 Task/状态及 Goal 上限配对，旧格式拒绝边界随 F2 交付。
+ADR-0038 决策 2～6：type 18/v1 已接入 arena、journal、snapshot、发现及容量预算，必须 REQUIRED。journal 每批至多派生一个新 Task，按 TASK→TASK_STATE→TASK_AUTHORITY 配对，状态后必须紧接该 Task 的准入，批次结束不能留未配对身份；snapshot 在该 Task 的步骤/检查点/状态后紧接同一准入，可跨页。整批或整份快照拒绝缺项、重复、错 Task/Goal/绑定/引用/stamp、未来 boot 身份及夹带记录。旧 schema 在新写入前拒绝。
 
 全部小端，固定头 48 B：offset 0 task_id u64、8 goal_id u64、16 goal_binding_seq u64、24 transition_id u64、32 commit_seq u64、40 phase u32（1=authorized、2=paused）、44 count u32。随后 count 项，每项 Grant ID u64/revision u32，共 12 B，顺序对应原 Goal 需求。count=0 是明确零需求，不是缺少事实。
 
-Task/Goal 为不同的有效 Kernel ID；binding sequence 正且不晚于记录 commit_seq，transition_id 正；count≤16，每个引用为有效非零 ID/revision。reader 与 struct 共用语义验证；截断、尾字节、非法字段不改输出。表按稳定 Task.slot 和确切 task_id 放置，配置不足不改任何行。相同绑定只能保留同一引用，不能 paused→authorized；新绑定须单调，Task/Goal/需求数不变，stamp 两项严格推进。跨表存在性、Scope 覆盖及重新授权配对留给集成属主。
+Task/Goal 为不同的有效 Kernel ID；binding sequence 正且不晚于记录 commit_seq，transition_id 正；count≤16，每个引用为有效非零 ID/revision。reader 与 struct 共用语义验证；截断、尾字节、非法字段不改输出。表按稳定 Task.slot 和确切 task_id 放置，配置不足不改任何行。相同绑定只能保留同一引用，不能 paused→authorized；新绑定须单调，Task/Goal/需求数不变，stamp 两项严格推进。F2 在消费和重放复用同一 Task/Goal 精确匹配，活及终态 Task 都须保存相同 Goal 绑定、需求数及引用；Scope/父链检查沿用 Goal/Grant 属主。重新授权配对随 F4。
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-STORE-020 | Task 保存独立完整准入引用，按稳定 slot/exact Task ID，显式零需求与缺席不同；struct/bytes 共用校验，错误不发布部分事实 | Task 位置移动或复用后借用另一 Task 权限；截断发布前缀 | M1 部分实现（F1 内部事实/codec）：`TaskAuthority.explicit_empty_admission_and_slot_reuse_preserve_identity`、`TaskAuthority.copied_references_and_capacity_failures_preserve_the_arena`、`TaskAuthority.same_binding_can_pause_but_cannot_resume_or_change_references`、`TaskAuthorityCodec.empty_and_maximum_admissions_round_trip_without_scope_copies`、`TaskAuthorityCodec.every_truncation_trailing_bytes_and_malformed_fact_preserve_output`；Kernel 接入随 F2；ADR-0038 |
+| C-STORE-020 | Task 保存独立完整准入引用，按稳定 slot/exact Task ID，显式零需求与缺席不同；struct/bytes 共用校验，错误不发布部分事实 | Task 位置移动或复用后借用另一 Task 权限；截断发布前缀 | M1 部分实现（F2 准入事实、持久配对与查询）：`TaskAuthority.explicit_empty_admission_and_slot_reuse_preserve_identity`、`TaskAuthority.copied_references_and_capacity_failures_preserve_the_arena`、`TaskAuthority.same_binding_can_pause_but_cannot_resume_or_change_references`、`TaskAuthorityCodec.empty_and_maximum_admissions_round_trip_without_scope_copies`、`TaskAuthorityCodec.every_truncation_trailing_bytes_and_malformed_fact_preserve_output`、`TaskAuthorityPersistence.terminal_snapshot_rejects_missing_or_substituted_admission`、`WorkReplay.task_replacement_cannot_hide_a_pending_admission`；显式重新授权随 F4；ADR-0038 |

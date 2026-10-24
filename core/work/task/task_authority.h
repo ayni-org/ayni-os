@@ -51,6 +51,8 @@ class TaskAuthorityTable {
     bool read(uint32_t slot, uint64_t task_id, TaskAuthorityRecord &out) const;
     // Presence is independent of count: an admitted zero-needs Task has a row.
     bool contains(uint32_t slot, uint64_t task_id) const;
+    // Complete copied view at a known present stable slot; caller preserves the table.
+    TaskAuthorityRecord at(uint32_t slot) const;
     // Clears this slot; out-of-range slots change nothing.
     void clear(uint32_t slot);
     // Recovery reset; caller has already stopped consumption.

@@ -73,6 +73,20 @@ authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t d
             }
         }
     }
+    for (uint32_t index = 0; index < tasks.size(); ++index) {
+        const auto &task = tasks.at(index);
+        work::TaskAuthorityRecord record{};
+        if ((!work::TaskTable::is_live(task.lifecycle) && task.commit_seq <= durable_seq) ||
+            !task_authority.read(task.slot, task.task_id, record)) {
+            continue;
+        }
+        for (uint32_t at = 0; at < record.count; ++at) {
+            uint32_t grant_index = 0;
+            if (grants.find(record.references[at].grant_id, grant_index)) {
+                excluded.add(grant_index);
+            }
+        }
+    }
     return excluded;
 }
 
@@ -93,6 +107,11 @@ void WorkModel::clear_goal_authority(uint32_t index, uint64_t previous_id, uint6
 
 bool WorkModel::insert_goal(const work::NewGoal &goal, uint64_t goal_id,
                             foundation::TransitionStamp stamp, uint32_t &out_index) {
+    const auto replacing = goals.giving_way();
+    if (replacing != work::GoalTable::no_index) {
+        // All creation admission has passed; terminal Tasks leave with this exact Goal.
+        clear_goal_task_authority(replacing, stamp.commit_seq);
+    }
     auto work = tables();
     if (!work::insert_goal(work, goal, goal_id, stamp, out_index)) {
         return false;
@@ -167,18 +186,18 @@ bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us) 
     return due;
 }
 
-bool do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
-                 uint64_t durable_seq) {
+DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
+                          uint64_t durable_seq) {
     uint32_t grant_index = 0;
     uint64_t deadline = work::no_time;
     if (model.grants.next_expiry({model.ids.boot_epoch(), now_us, 0}, grant_index, deadline) &&
         deadline <= now_us) {
         model.grants.expire(grant_index, model.transitions.next());
-        return true;
+        return DueWorkResult::applied;
     }
     work::DueWork work{};
     if (!next_due_work(model, now_us, work)) {
-        return false;
+        return DueWorkResult::none;
     }
     work::WorkTables tables = model.tables();
     if (work.kind != work::DueWork::Kind::expire) {
@@ -187,10 +206,10 @@ bool do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
         if (check.status != AYNI_OK) {
             // Confirmation may still arrive; it must not become a sticky pause.
             if (check.reason == AYNI_REASON_GRANT_NOT_DURABLE) {
-                return false;
+                return DueWorkResult::none;
             }
             model.pause_goal_authority(work.goal_index);
-            return true;
+            return DueWorkResult::applied;
         }
     }
     switch (work.kind) {
@@ -201,18 +220,22 @@ bool do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
             work::apply_goal_change(tables, work.goal_index, work::GoalChange::expire,
                                     model.transitions.next());
         }
-        return true;
+        return DueWorkResult::applied;
     case work::DueWork::Kind::derive: {
         uint64_t task_id = 0;
         static_cast<void>(model.ids.allocate(task_id)); // find_due_work saw one left
-        work::derive(tables, work.goal_index, now_us, task_id, model.transitions.next());
-        return true;
+        const auto stamp = model.transitions.next();
+        work::derive(tables, work.goal_index, now_us, task_id, stamp);
+        if (!model.inherit_task_authority(task_id, stamp)) {
+            return DueWorkResult::internal;
+        }
+        return DueWorkResult::applied;
     }
     case work::DueWork::Kind::skip:
         work::skip(tables, work.goal_index, now_us, work.skip_reason, model.transitions.next());
-        return true;
+        return DueWorkResult::applied;
     }
-    return false;
+    return DueWorkResult::none;
 }
 
 } // namespace ayni::kernel

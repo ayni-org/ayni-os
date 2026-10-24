@@ -263,145 +263,64 @@ TEST(WriterFenceScan, fence_must_advance_the_writer_and_match_its_header) {
 } // namespace
 
 namespace {
-struct LegacyImage {
-    ayni::hosts::sim::StorageImage image;
-    uint64_t goal_id = 0;
-};
-
-LegacyImage legacy_image() {
+// ADR-0038 decision 6: old envelopes are an explicit development boundary.
+// Construct CRC-correct unsupported batches; their bodies must never be adopted.
+ayni::hosts::sim::StorageImage image_with_schema(uint16_t schema) {
     WorkNode source;
     source.run();
-    const auto accepted = source.create(folder(source));
-    EXPECT_EQ(accepted.status, AYNI_OK);
+    EXPECT_EQ(source.create(folder(source)).status, AYNI_OK);
     settle(source);
-    LegacyImage out{};
-    out.goal_id = accepted.result.object.id;
-    uint64_t seq = 0;
-    for (const auto &stored : source.node().sim().log()) {
+    auto image = source.node().sim().durable_storage();
+    for (auto &stored : image.log) {
         ayni::durability::BatchView batch{};
         EXPECT_EQ(ayni::durability::read_batch(stored.bytes.data(), stored.bytes.size(), batch),
                   ayni::durability::BatchCheck::ok);
+        std::vector<uint8_t> bytes(stored.bytes.size());
+        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity, schema);
         ayni::durability::RecordReader records(batch);
         ayni::durability::RecordHeader header{};
         const uint8_t *body = nullptr;
-        std::vector<std::pair<ayni::durability::RecordHeader, std::vector<uint8_t>>> kept;
-        bool fence = false;
         while (records.next(header, body) == ayni::durability::RecordReader::Next::record) {
-            fence = fence || header.type == ayni::durability::writer_fence_record_type;
-            // Schema 0 predates ownership and Goal authority metadata (ADR-0037).
-            if (header.type == ayni::work::goal_record_type ||
-                header.type == ayni::work::goal_state_record_type) {
-                header.version = ayni::work::goal_record_version;
-            }
-            if (header.type != ayni::authority::owner_binding_record_type &&
-                header.type != ayni::work::goal_authority_record_type) {
-                kept.push_back({header, std::vector<uint8_t>(body, body + header.length)});
-            }
-        }
-        if (fence) {
-            continue;
-        }
-        ++seq;
-        std::vector<uint8_t> bytes(65536);
-        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(),
-                                             {batch.identity.writer_epoch, seq, seq}, 0);
-        for (const auto &record : kept) {
-            EXPECT_TRUE(writer.add_record(record.first, record.second.data()));
+            EXPECT_TRUE(writer.add_record(header, body));
         }
         bytes.resize(writer.finish());
-        out.image.log.push_back({seq, std::move(bytes)});
+        stored.bytes = std::move(bytes);
     }
-    return out;
+    return image;
 }
 
-// A schema-0 reader knows only the implemented record types 1..9. This is
-// a rollback-reader simulation, not an execution of an old firmware image.
-bool legacy_reader_accepts(const std::vector<ayni::hosts::sim::StoredBatch> &log) {
-    for (const auto &stored : log) {
-        ayni::durability::BatchView batch{};
-        if (ayni::durability::read_batch(stored.bytes.data(), stored.bytes.size(), batch) !=
-                ayni::durability::BatchCheck::ok ||
-            batch.schema != 0U) {
-            return false;
+// C-STORE-004/010, ADR-0038: unsupported data is preserved, never reset or migrated.
+TEST(StorageSchemaBoundary, unsupported_schema_never_installs_a_writer_or_mutates_source) {
+    for (const uint16_t schema :
+         {uint16_t{0}, uint16_t{1}, uint16_t{ayni::durability::storage_schema + 1U}}) {
+        SCOPED_TRACE(schema);
+        const auto image = image_with_schema(schema);
+        WorkNode work;
+        work.node().sim().durable_storage() = image;
+        work.node().create_and_start();
+        work.node().recover();
+        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_LOG_UNSUPPORTED);
+        const auto &after = work.node().sim().durable_storage();
+        ASSERT_EQ(after.log.size(), image.log.size());
+        for (std::size_t index = 0; index < image.log.size(); ++index) {
+            EXPECT_EQ(after.log[index].bytes, image.log[index].bytes);
         }
-        ayni::durability::RecordReader records(batch);
-        ayni::durability::RecordHeader header{};
-        const uint8_t *body = nullptr;
-        while (records.next(header, body) == ayni::durability::RecordReader::Next::record) {
-            if (header.type > 9U && (header.flags & ayni::durability::record_required) != 0U) {
-                return false;
-            }
-        }
+        EXPECT_EQ(after.snapshots, image.snapshots);
     }
-    return true;
 }
 
-TEST(StorageMigration, schema_zero_work_migrates_and_the_old_reader_rejects_the_switch) {
-    const auto legacy = legacy_image();
-    ASSERT_TRUE(legacy_reader_accepts(legacy.image.log));
+// C-STORE-004/010: restarting the reader cannot silently adopt an older store.
+TEST(StorageSchemaBoundary, unsupported_schema_is_still_rejected_after_a_process_restart) {
     WorkNode work;
-    work.node().sim().durable_storage() = legacy.image;
+    work.node().sim().durable_storage() = image_with_schema(1);
     work.node().create_and_start();
     work.node().recover();
-    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(work.goal(legacy.goal_id).revision, 1U);
-    EXPECT_EQ(work.node().info().boot_epoch, 2U);
-    EXPECT_FALSE(legacy_reader_accepts(work.node().sim().log()));
-    ASSERT_FALSE(work.node().sim().durable_storage().snapshots[0].empty());
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     work.node().reboot();
     work.node().recover();
-    EXPECT_EQ(work.goal(legacy.goal_id).revision, 1U);
-}
-
-TEST(StorageMigration, every_early_request_can_lose_power_without_losing_the_legacy_state) {
-    const auto legacy = legacy_image();
-    WorkNode baseline;
-    baseline.node().sim().durable_storage() = legacy.image;
-    baseline.node().create_and_start();
-    for (int round = 0; round < 1000 && baseline.node().lifecycle() == AYNI_LIFECYCLE_RECOVERING;
-         ++round) {
-        tick(baseline);
-    }
-    ASSERT_EQ(baseline.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    const std::size_t request_count = baseline.node().sim().storage_attempts().size();
-    ASSERT_GT(request_count, 10U);
-    // Includes discovery/replay, isolation, candidate writes/readback/marker,
-    // activation and trim, then the selected snapshot and new boot path.
-    for (std::size_t cut = 1; cut <= request_count; ++cut) {
-        SCOPED_TRACE(cut);
-        WorkNode work;
-        work.node().sim().durable_storage() = legacy.image;
-        work.node().create_and_start();
-        bool reached = false;
-        for (int round = 0; round < 1000; ++round) {
-            const auto report = work.node().step(1);
-            if (work.node().sim().storage_attempts().size() >= cut &&
-                work.node().sim().pending_storage() != 0U) {
-                reached = true;
-                break;
-            }
-            work.node().sim().complete_storage();
-            if (report.more_ready == 0U && work.node().sim().pending_storage() == 0U &&
-                report.next_deadline_us != UINT64_MAX &&
-                report.next_deadline_us > work.node().sim().now_us()) {
-                work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
-            }
-            if (work.node().lifecycle() != AYNI_LIFECYCLE_RECOVERING) {
-                break;
-            }
-        }
-        ASSERT_TRUE(reached);
-        if (legacy_reader_accepts(work.node().sim().log())) {
-            ASSERT_EQ(work.node().sim().log().size(), legacy.image.log.size());
-            for (std::size_t index = 0; index < legacy.image.log.size(); ++index) {
-                EXPECT_EQ(work.node().sim().log()[index].bytes, legacy.image.log[index].bytes);
-            }
-        }
-        work.node().power_cut_and_start(ayni::hosts::sim::CutAppend::lost);
-        work.node().recover();
-        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-        EXPECT_EQ(work.goal(legacy.goal_id).revision, 1U);
-    }
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_LOG_UNSUPPORTED);
 }
 } // namespace
 

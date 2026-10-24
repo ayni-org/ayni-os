@@ -48,6 +48,7 @@ struct Input {
                   AYNI_OK);
         record.goal_id = goal_id;
         record.stamp = {7, 9};
+        record.binding.established_seq = record.stamp.commit_seq;
         record.count = 1;
         auto &requirement = record.requirements[0];
         EXPECT_TRUE(requirement.capability_id.assign({"test.cap", 8}));
@@ -98,6 +99,7 @@ TEST(GoalAuthority, an_explicit_empty_ceiling_is_distinct_from_absent_metadata) 
 TEST(GoalAuthority, proposals_need_a_missing_dependency_and_other_phases_keep_complete_selections) {
     Input input;
     input.record.phase = GoalAuthorityPhase::proposed;
+    input.record.binding = {};
     EXPECT_FALSE(valid_goal_authority_record(input.record));
     input.record.requirements[0].dependency = {};
     EXPECT_TRUE(valid_goal_authority_record(input.record));
@@ -106,10 +108,12 @@ TEST(GoalAuthority, proposals_need_a_missing_dependency_and_other_phases_keep_co
     input.record.phase = GoalAuthorityPhase::paused;
     EXPECT_FALSE(valid_goal_authority_record(input.record));
     input.record.requirements[0].dependency = {grant_id, 1};
+    input.record.binding.established_seq = input.record.stamp.commit_seq;
     EXPECT_TRUE(valid_goal_authority_record(input.record));
     input.record.count = 0;
     EXPECT_TRUE(valid_goal_authority_record(input.record));
     input.record.phase = GoalAuthorityPhase::proposed;
+    input.record.binding = {};
     EXPECT_FALSE(valid_goal_authority_record(input.record));
 }
 
@@ -180,6 +184,7 @@ TEST(GoalAuthorityRecord, original_domain_scope_and_selected_identities_round_tr
     input.record.requirements[1] = input.record.requirements[0];
     input.record.requirements[1].dependency = {};
     input.record.phase = GoalAuthorityPhase::proposed;
+    input.record.binding = {};
     ASSERT_TRUE(valid_goal_authority_record(input.record));
     const auto bytes = input.encode();
     GoalAuthorityRecord decoded{};
@@ -279,6 +284,7 @@ TEST(GoalAuthority, configured_requirement_and_byte_limits_refuse_without_overwr
 TEST(GoalAuthority, a_proposal_rejects_half_of_a_missing_grant_identity) {
     Input input;
     input.record.phase = GoalAuthorityPhase::proposed;
+    input.record.binding = {};
     input.record.requirements[0].dependency = {0, 1};
     EXPECT_FALSE(valid_goal_authority_record(input.record));
     input.record.requirements[0].dependency.revision = 0;

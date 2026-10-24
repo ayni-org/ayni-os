@@ -13,10 +13,9 @@
 
 namespace ayni::durability {
 
-// Schema 0 remains readable for the transactional migration to schema 1
-// (ADR-0027 decision 11); every batch this library writes is schema 1,
-// except the activation that ends a migration.
-constexpr uint16_t storage_schema = 1;
+// Schema 2 is the development boundary (ADR-0038 decision 6). Other schemas
+// are rejected before recovery can write; no old data is implicitly adopted.
+constexpr uint16_t storage_schema = 2;
 // WRITER_FENCE: alone in its batch, the body is the new writer_epoch as a
 // little-endian uint32 equal to the batch header's (C-STORE-005).
 constexpr uint16_t writer_fence_record_type = 10;

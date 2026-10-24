@@ -81,6 +81,8 @@ class Model {
           goal_authority_(store(ayni::work::GoalAuthorityTable::storage_size(
               {config.goal_capacity, config.goal_requirement_capacity,
                config.authority_scope_max_bytes}))),
+          task_authority_(store(ayni::work::TaskAuthorityTable::storage_size(
+              {config.task_capacity, config.goal_requirement_capacity}))),
           storage_(storage()), model_(capacities_, limits, storage_) {}
 
     WorkModel &get() { return model_; }
@@ -98,12 +100,13 @@ class Model {
         result.capabilities = capabilities_.data();
         result.grants = grants_.data();
         result.goal_authority = goal_authority_.data();
+        result.task_authority = task_authority_.data();
         return result;
     }
 
     ayni::kernel::KernelCapacities capacities_;
     std::vector<uint64_t> agents_, types_, goals_, sessions_, tasks_, strategies_, commands_,
-        capabilities_, grants_, goal_authority_;
+        capabilities_, grants_, goal_authority_, task_authority_;
     ayni::kernel::KernelStorage storage_;
     WorkModel model_;
 };
@@ -117,6 +120,35 @@ ayni::work::NewGoal goal(uint64_t parent = 0) {
     result.trigger.kind = AYNI_TRIGGER_ONCE;
     result.occurrence_wait_max_us = ayni::work::no_time;
     return result;
+}
+
+// ADR-0038: these fresh snapshot fixtures explicitly declare zero needs;
+// production recovery never manufactures evidence for an old stored object.
+void admit_fixture_work(WorkModel &model) {
+    for (uint32_t index = 0; index < model.goals.size(); ++index) {
+        const auto &goal = model.goals.at(index);
+        if (model.goal_authority.contains(index, goal.goal_id)) {
+            continue;
+        }
+        ayni::work::GoalAuthorityRecord record{};
+        record.goal_id = goal.goal_id;
+        record.stamp = {goal.created_transition_id, goal.created_transition_id};
+        record.binding.established_seq = record.stamp.commit_seq;
+        if (goal.parent_index != GoalTable::no_parent) {
+            const auto &parent = model.goals.at(goal.parent_index);
+            record.binding.parent = {
+                parent.goal_id, model.goal_authority.at(goal.parent_index).binding.established_seq};
+        }
+        ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+        ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
+    }
+    for (uint32_t index = 0; index < model.tasks.size(); ++index) {
+        const auto &task = model.tasks.at(index);
+        if (!model.task_authority.contains(task.slot, task.task_id)) {
+            ASSERT_TRUE(model.inherit_task_authority(
+                task.task_id, {task.created_transition_id, task.created_transition_id}));
+        }
+    }
 }
 
 void populate(WorkModel &model) {
@@ -140,9 +172,11 @@ void populate(WorkModel &model) {
     const uint8_t checkpoint[] = {9, 8, 7};
     model.tasks.set_checkpoint(0, writer, 1, {checkpoint, sizeof(checkpoint)}, {7, 7});
     model.tasks.progress(0, {7, 7});
+    admit_fixture_work(model);
 }
 
-SnapshotMetadata metadata(const WorkModel &model) {
+SnapshotMetadata metadata(WorkModel &model) {
+    admit_fixture_work(model);
     SnapshotMetadata result{};
     result.generation = 4;
     result.covers_commit_seq = 100;
@@ -155,7 +189,8 @@ SnapshotMetadata metadata(const WorkModel &model) {
     return result;
 }
 
-std::vector<uint8_t> export_model(const WorkModel &model, uint32_t page_size = 256) {
+std::vector<uint8_t> export_model(WorkModel &model, uint32_t page_size = 256) {
+    admit_fixture_work(model);
     WorkSnapshotWriter writer(model);
     std::vector<uint8_t> page(page_size);
     std::vector<uint8_t> result;
@@ -590,7 +625,7 @@ TEST(SnapshotCodec, newer_schema_is_unsupported_and_crc_continues_between_pages)
     SnapshotMetadata meta{};
     meta.generation = 1;
     meta.writer_epoch = 1;
-    meta.schema = 2;
+    meta.schema = ayni::durability::snapshot_schema + 1U;
     std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
     ayni::durability::write_snapshot_header(meta, header.data());
     SnapshotMetadata read{};

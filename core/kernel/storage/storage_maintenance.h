@@ -14,7 +14,7 @@
 // the model it pages out does not change. One request is in flight at a
 // time. Writing requests share the kernel's WriteSchedule and each has
 // AppendRetry's bounded retries; a read that fails ends the run. A failed
-// runtime run fences the writer, a failed migration restricts the kernel.
+// run fences the writer before reloading durable state.
 //
 // The class also keeps which slot and generation are in use, so it numbers
 // each new snapshot: generation + 1, in the other slot.
@@ -44,9 +44,8 @@ struct SnapshotBoundary {
 
 class StorageMaintenance {
   public:
-    // A runtime run compacts a RUNNING kernel's log; a migration rewrites a
-    // schema 0 log as a schema 1 snapshot during recovery.
-    enum class Mode { none, runtime, migration };
+    // none releases the shared buffer; runtime owns it until end().
+    enum class Mode { none, runtime };
 
     // host has every storage port, and it, completions, buffer, model and
     // writes outlive the maintenance. buffer is the kernel's storage buffer.
@@ -60,10 +59,9 @@ class StorageMaintenance {
     bool generation_exhausted() const;
 
     // Starts a run of the model as of boundary. Requests that write carry
-    // writer_epoch, the writer this boot holds: a migration's is the one
-    // recovery just isolated, not the one that stored the boundary. Only
+    // writer_epoch, the writer this boot holds. Only
     // with mode() none and the storage buffer free.
-    void start(const SnapshotBoundary &boundary, uint32_t writer_epoch, bool migration);
+    void start(const SnapshotBoundary &boundary, uint32_t writer_epoch);
     // none from end() until the next start(), while done() and failure()
     // still report the last run.
     Mode mode() const { return mode_; }
@@ -135,7 +133,6 @@ class StorageMaintenance {
     uint32_t active_slot_ = 0;
     uint32_t slot_ = 0; // the run's
     uint32_t writer_epoch_ = 0;
-    bool migration_ = false;
     bool in_flight_ = false;
     Phase phase_ = Phase::idle;
     AppendRetry retry_;

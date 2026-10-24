@@ -213,8 +213,7 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
         return false;
     }
     const work::Task &task = model.tasks.at(index);
-    const auto authority =
-        model.check_goal_authority(task.goal_index, clock.now_us(clock.ctx), durable_seq);
+    const auto authority = model.check_task_authority(index, clock.now_us(clock.ctx), durable_seq);
     if (authority.status != AYNI_OK) {
         if (authority.reason == AYNI_REASON_GRANT_NOT_DURABLE) {
             return false;
@@ -245,8 +244,7 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
 
     // A non-reentrant callback can still run past a Grant deadline. Discard all
     // returned progress/checkpoint output before committing if authority expired.
-    if (model.check_goal_authority(task.goal_index, clock.now_us(clock.ctx), durable_seq).status !=
-        AYNI_OK) {
+    if (model.check_task_authority(index, clock.now_us(clock.ctx), durable_seq).status != AYNI_OK) {
         model.pause_goal_authority(task.goal_index);
         return true;
     }

@@ -51,7 +51,13 @@ bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
         }
         missing = missing || record.requirements[index].dependency.grant_id == 0U;
     }
-    return record.phase == GoalAuthorityPhase::proposed ? missing : !missing;
+    if (record.phase == GoalAuthorityPhase::proposed) {
+        return missing && record.binding.established_seq == 0U &&
+               record.binding.parent.goal_id == 0U && record.binding.parent.commit_seq == 0U &&
+               record.binding.input.incarnation == 0U && record.binding.input.through == 0U;
+    }
+    return !missing && valid_goal_binding(record.binding, record.goal_id,
+                                          record.binding.parent.goal_id, record.stamp);
 }
 
 std::size_t GoalAuthorityTable::storage_size(Limits limits) {
@@ -111,7 +117,8 @@ ayni_status_t GoalAuthorityTable::install_validated(uint32_t goal_index,
         std::memcpy(domain_at(at), input.source_domain.data, input.source_domain.size);
         std::memcpy(scope_at(at), input.scope.data, input.scope.size);
     }
-    slots_[goal_index] = {record.goal_id, record.stamp, record.phase, record.count, true};
+    slots_[goal_index] = {record.goal_id, record.stamp,   record.phase,
+                          record.count,   record.binding, true};
     return AYNI_OK;
 }
 
@@ -134,6 +141,7 @@ GoalAuthorityRecord GoalAuthorityTable::at(uint32_t goal_index) const {
     record.stamp = slot.stamp;
     record.phase = slot.phase;
     record.count = slot.count;
+    record.binding = slot.binding;
     for (uint32_t index = 0; index < slot.count; ++index) {
         const uint32_t at = requirement_index(goal_index, index);
         const Requirement &saved = requirements_[at];
@@ -224,12 +232,13 @@ uint32_t missing_requirement_mask(const GoalAuthorityRecord &record) {
 void GoalAuthorityTable::approve(
     uint32_t goal_index,
     const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
-    foundation::TransitionStamp stamp) {
+    foundation::TransitionStamp stamp, BindingReference parent) {
     auto &slot = slots_[goal_index];
     for (uint32_t index = 0; index < slot.count; ++index) {
         requirements_[requirement_index(goal_index, index)].dependency = references[index];
     }
     slot.phase = GoalAuthorityPhase::authorized;
+    slot.binding = {stamp.commit_seq, parent, {}};
     slot.stamp = stamp;
 }
 

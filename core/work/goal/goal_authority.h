@@ -21,7 +21,7 @@ namespace ayni::work {
 constexpr uint32_t goal_requirement_regions = 2; // Original domain and normalized scope.
 
 // Persisted state of an explicit ceiling. Missing metadata is represented
-// by no table entry, never by one of these states (records.md type 17/v1).
+// by no table entry, never by one of these states (records.md type 17/v2).
 enum class GoalAuthorityPhase : uint32_t { proposed = 1, authorized = 2, paused = 3 };
 
 // A selected immutable authority identity; a missing dependency is {0, 0}.
@@ -44,7 +44,8 @@ struct GoalAuthorityRecord {
     uint64_t goal_id = 0;                // Nonzero Kernel ID of the owning Goal.
     foundation::TransitionStamp stamp{}; // Nonzero pair of the last authority change.
     GoalAuthorityPhase phase = GoalAuthorityPhase::authorized; // Decides dependency completeness.
-    uint32_t count = 0; // Requirements, at most AYNI_GOAL_REQUIREMENT_CAPACITY_MAX.
+    uint32_t count = 0;  // Requirements, at most AYNI_GOAL_REQUIREMENT_CAPACITY_MAX.
+    GoalBinding binding; // None only for proposals; immutable between explicit admissions.
     std::array<GoalRequirement, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> requirements{};
 };
 
@@ -88,7 +89,7 @@ class GoalAuthorityTable {
     void
     approve(uint32_t goal_index,
             const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
-            foundation::TransitionStamp stamp);
+            foundation::TransitionStamp stamp, BindingReference parent = {});
     // Missing metadata is blocked; callers distinguish legacy holds separately.
     bool authorized(uint32_t goal_index, uint64_t goal_id) const;
 
@@ -120,6 +121,7 @@ class GoalAuthorityTable {
         foundation::TransitionStamp stamp{}; // Last update, zero only when absent.
         GoalAuthorityPhase phase = GoalAuthorityPhase::authorized;
         uint32_t count = 0;   // Valid prefix in this slot's Requirement array.
+        GoalBinding binding;  // Selected generation/parent/input frontier; no Grant state cache.
         bool present = false; // True even for an explicitly empty authorized ceiling.
     };
     // Owned metadata; its bytes live in the corresponding two fixed regions.

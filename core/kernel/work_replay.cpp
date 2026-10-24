@@ -7,6 +7,7 @@
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
 
 namespace ayni::kernel {
@@ -60,6 +61,7 @@ bool WorkReplay::binding_matches() const {
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                       WorkRecordContext context) {
     const bool authority_record =
+        header.type == work::task_authority_record_type ||
         header.type == work::goal_authority_record_type ||
         (header.type == work::goal_record_type &&
          header.version >= work::goal_with_authority_record_version) ||
@@ -118,6 +120,9 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                        header.version == work::goal_state_with_authority_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
+    case work::task_authority_record_type:
+        return header.version == work::task_authority_record_version ? RecordUse::applied
+                                                                     : RecordUse::unknown;
     case work::goal_authority_record_type:
         return header.version == work::goal_authority_record_version ? RecordUse::applied
                                                                      : RecordUse::unknown;
@@ -162,6 +167,12 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         header.type != work::goal_authority_record_type && header.type != command_record_type) {
         return RecordUse::corrupt;
     }
+    // The new Task's state closes directly with its admission (C-STORE-020).
+    // A different record cannot overwrite or hide this pending evidence.
+    if (pairing_.task_authority && !pairing_.task &&
+        header.type != work::task_authority_record_type) {
+        return RecordUse::corrupt;
+    }
     const foundation::TransitionStamp stamp{batch.transition_id, batch.commit_seq};
     const uint32_t size = header.length;
     const RecordUse use = classify_header(header);
@@ -187,6 +198,8 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         return restore_goal_authority(body, size, stamp);
     case work::goal_state_record_type:
         return restore_goal_state(header.version, body, size, stamp);
+    case work::task_authority_record_type:
+        return restore_task_authority(body, size, {batch.transition_id, batch.commit_seq});
     case work::task_record_type:
         return restore_task(body, size, stamp);
     case work::task_state_record_type:
@@ -206,7 +219,7 @@ static_assert(authority::owner_binding_record_version == 1U &&
                   work::instance_record_version == 1U && work::goal_record_version == 1U &&
                   work::goal_state_record_version == 1U && work::task_record_version == 1U &&
                   work::goal_with_authority_record_version == 2U &&
-                  work::goal_authority_record_version == 1U &&
+                  work::goal_authority_record_version == 2U &&
                   work::task_state_record_version == 1U && work::task_steps_record_version == 1U &&
                   work::task_checkpoint_record_version == 1U && command_record_version == 1U &&
                   authority::grant_record_version == 1U &&
@@ -257,6 +270,7 @@ RecordUse WorkReplay::restore_goal(uint16_t version, const uint8_t *body, uint32
     // The goal that gave way took its tasks, which name the place, with it
     // (work::insert_goal).
     if (record.replaced_goal_id != 0U) {
+        model_.clear_goal_task_authority(index, stamp.commit_seq);
         model_.tasks.remove_goal(index);
     }
     if (model_.goals.at(index).depth != record.depth) {
@@ -293,8 +307,8 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
 }
 
 // A create cannot lose its explicit ceiling or borrow another Goal's metadata.
-// Existing metadata may advance without changing its immutable ceiling; legacy
-// confirmation remains closed until its own command/pairing is implemented.
+// Existing metadata may advance without changing its immutable ceiling;
+// F4 adds a separate paired proof for explicit reauthorization.
 RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp) {
     work::GoalAuthorityRecord record{};
@@ -310,7 +324,10 @@ RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
                                 : !model_.goal_authority.contains(index, record.goal_id)) {
         return RecordUse::corrupt;
     }
-    if (!pair_approval_metadata(index, record)) {
+    if ((!model_.goal_authority.contains(index, record.goal_id) &&
+         record.phase != work::GoalAuthorityPhase::proposed &&
+         !matches_goal_binding(index, record, stamp.commit_seq)) ||
+        !pair_approval_metadata(index, record)) {
         return RecordUse::corrupt;
     }
     work::GoalAuthorityRecord previous{};
@@ -331,7 +348,8 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::TaskRecord record{};
     uint32_t goal_index = 0;
-    if (pairing_.task.has_value() || !work::read_task_record(body, size, record) ||
+    if (pairing_.task_created_seq == stamp.commit_seq || pairing_.task.has_value() ||
+        !work::read_task_record(body, size, record) ||
         !model_.goals.find(record.task.goal_id, goal_index) ||
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return RecordUse::corrupt;
@@ -340,9 +358,38 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
     const work::TaskTable::Restore restore =
         model_.tasks.restore(record.task, record.task_id, record.replaced_task_id, stamp);
     if (restore == work::TaskTable::Restore::restored) {
+        pairing_.task_created_seq = stamp.commit_seq;
         pairing_.task = record.task_id;
+        pairing_.task_authority = record.task_id;
     }
     return use_of(restore);
+}
+
+// A derived Task inherits the exact admitted Goal choices in the same batch.
+// F4 adds a separate transaction proof for reference replacement.
+RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
+                                             foundation::TransitionStamp stamp) {
+    work::TaskAuthorityRecord record{};
+    uint32_t index = 0;
+    if (!work::read_task_authority_record(body, size, record) ||
+        pairing_.task_authority != record.task_id || pairing_.task ||
+        !model_.tasks.find(record.task_id, index) || record.stamp.commit_seq != stamp.commit_seq ||
+        record.stamp.transition_id != stamp.transition_id ||
+        record.phase != work::TaskAuthorityPhase::authorized ||
+        !model_.matches_task_ceiling(record, model_.tasks.at(index).goal_index)) {
+        return RecordUse::corrupt;
+    }
+    const auto &task = model_.tasks.at(index);
+    work::TaskAuthorityRecord previous{};
+    if (model_.task_authority.read(task.slot, task.replaced_task_id, previous)) {
+        model_.release_task_references(previous, stamp.commit_seq);
+    }
+    const auto result = model_.task_authority.install_validated(task.slot, record);
+    if (result != AYNI_OK) {
+        return result == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
+    }
+    pairing_.task_authority.reset();
+    return RecordUse::applied;
 }
 
 RecordUse WorkReplay::restore_task_state(const uint8_t *body, uint32_t size,
@@ -561,9 +608,20 @@ bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_byte
 bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const {
     const auto &goal = model_.goals.at(goal_index);
     if (!model_.goal_authority.contains(goal_index, goal.goal_id)) {
-        return goal.lifecycle != AYNI_GOAL_PROPOSED; // Legacy absence never creates a proposal.
+        return false; // Schema 2 never infers authorization from absent evidence.
     }
     const auto record = model_.goal_authority.at(goal_index);
+    if (record.phase != work::GoalAuthorityPhase::proposed &&
+        (record.binding.parent.goal_id != goal.parent_goal_id ||
+         record.binding.input.incarnation != 0U || record.binding.input.through != 0U)) {
+        return false;
+    }
+    if (record.binding.parent.goal_id != 0U) {
+        const auto parent = model_.goal_authority.at(goal.parent_index);
+        if (record.binding.parent.commit_seq > parent.binding.established_seq) {
+            return false;
+        }
+    }
     const bool live = work::GoalTable::is_live(goal.lifecycle);
     if (foundation::id_boot_epoch(record.goal_id) > boot_epoch_limit ||
         (live && ((record.phase == work::GoalAuthorityPhase::proposed) !=
@@ -588,6 +646,16 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
             continue;
         }
         const auto &grant = model_.grants.at(grant_index);
+        // Approval may issue this Goal's dedicated root in the binding batch;
+        // that path has its own complete approval proof (C-STORE-019). Every
+        // older selection must have had an active complete chain at admission.
+        const bool issued_at_binding =
+            grant.bound_goal_id == goal.goal_id &&
+            grant.created_stamp.commit_seq == record.binding.established_seq;
+        if (record.binding.established_seq != 0U && !issued_at_binding &&
+            !model_.grants.active_at(grant_index, record.binding.established_seq)) {
+            return false;
+        }
         if (grant.subject_instance_id != goal.owner_instance_id ||
             (grant.bound_goal_id != 0U && grant.bound_goal_id != goal.goal_id) ||
             grant.created_stamp.commit_seq > record.stamp.commit_seq ||
@@ -644,6 +712,15 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     }
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         const work::Task &task = model_.tasks.at(index);
+        work::TaskAuthorityRecord admission{};
+        if (!model_.task_authority.read(task.slot, task.task_id, admission) ||
+            admission.stamp.commit_seq > task.commit_seq ||
+            foundation::id_boot_epoch(task.task_id) > boot_epoch_limit ||
+            !model_.matches_task_ceiling(admission, task.goal_index)) {
+            // F2 has no rebinding operation. Retained terminal Tasks must also
+            // preserve exact selections; F4 adds explicit historical evidence.
+            return false;
+        }
         if (model_.goals.at(task.goal_index).lifecycle == AYNI_GOAL_PROPOSED ||
             (work::TaskTable::is_live(task.lifecycle) &&
              !work::GoalTable::is_live(model_.goals.at(task.goal_index).lifecycle))) {
@@ -733,8 +810,9 @@ void WorkReplay::hold_tasks() {
     }
 }
 
-// Compatibility failures remain the primary reason for a hold. Otherwise
-// legacy work has no durable authorization evidence and must not advance.
+// Compatibility failures remain the primary reason for a hold. F2 retains
+// the restart restriction even with complete schema 2 authority; F5 validates
+// normal restart before replacing this temporary hold.
 void WorkReplay::hold_unconfirmed_work() {
     for (uint32_t index = 0; index < model_.goals.size(); ++index) {
         const auto &goal = model_.goals.at(index);
@@ -757,6 +835,7 @@ void WorkReplay::discard() {
     model_.agents.drop_restored();
     model_.goals.clear();
     model_.goal_authority.clear_all();
+    model_.task_authority.clear_all();
     model_.tasks.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();

@@ -12,6 +12,7 @@
 #include <array>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 namespace {
 using namespace ayni::test;
@@ -458,11 +459,145 @@ TEST(GoalRequirements, revoke_before_decision_preserves_ready_task_progress) {
     node.work.node().step();
     const auto task = node.work.goal(created.result.object.id).last_task_id;
     ASSERT_NE(task, 0U);
+    ayni_task_authority_reference_v1 selected{};
+    selected.struct_size = sizeof(selected);
+    ASSERT_EQ(ayni_get_task_authority_reference(node.work.kernel(), task, 0, &selected), AYNI_OK);
+    const auto alternative = node.grant();
+    ASSERT_EQ(alternative.status, AYNI_OK);
+    node.work.node().recover();
+    ASSERT_EQ(node.work.task(task).lifecycle, AYNI_TASK_READY);
     node.revoke(grant.result.object.id);
+    // ADR-0038: public queries must reflect the immediate Gate before cleanup,
+    // while retaining the selected dependency even with another usable Grant.
+    EXPECT_EQ(node.work.task(task).lifecycle, AYNI_TASK_PAUSED);
+    ayni_task_authority_info_v1 admission{};
+    admission.struct_size = sizeof(admission);
+    ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), task, &admission), AYNI_OK);
+    EXPECT_EQ(admission.phase, AYNI_TASK_AUTHORITY_AUTHORIZED);
+    EXPECT_NE(admission.effective_reason, AYNI_REASON_NONE);
+    ayni_task_authority_reference_v1 retained{};
+    retained.struct_size = sizeof(retained);
+    ASSERT_EQ(ayni_get_task_authority_reference(node.work.kernel(), task, 0, &retained), AYNI_OK);
+    EXPECT_EQ(retained.grant_id, selected.grant_id);
+    EXPECT_EQ(retained.grant_revision, selected.grant_revision);
     node.advance_work();
     EXPECT_TRUE(node.work.strategy().seen.empty());
     EXPECT_EQ(node.work.task(task).lifecycle, AYNI_TASK_PAUSED);
     EXPECT_EQ(node.work.task(task).step_count, 0U);
+}
+
+// ADR-0038 decision 3: changing a parent's generation immediately invalidates
+// its child's saved admission, independently of an eventual cleanup scan.
+TEST(GoalRequirements, parent_generation_change_immediately_denies_child_consumption) {
+    AuthorityWork node;
+    node.count = 0;
+    node.run();
+    const auto parent = node.create();
+    ASSERT_EQ(parent.status, AYNI_OK);
+    const auto child = node.create(AYNI_TRIGGER_ONCE, parent.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    auto &model = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.goals.find(parent.result.object.id, index));
+    auto record = model.goal_authority.at(index);
+    // White-box generation change: F4 will own the complete public transaction.
+    record.stamp = model.transitions.next();
+    record.binding.established_seq = record.stamp.commit_seq;
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
+    EXPECT_EQ(node.authority(child.result.object.id).effective_reason,
+              AYNI_REASON_GOAL_AUTHORITY_PARENT);
+    node.work.node().step();
+    EXPECT_EQ(node.work.goal(child.result.object.id).last_task_id, 0U);
+}
+
+// C-STORE-020: the selected revision belongs to Task admission as well as Goal
+// admission. White-box alteration must be visible through consumption/query.
+TEST(TaskAuthorityApi, a_task_cannot_substitute_its_selected_grant_revision) {
+    AuthorityWork node;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto id = node.work.goal(goal.result.object.id).last_task_id;
+    auto &model = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.tasks.find(id, index));
+    auto record = model.task_authority.at(model.tasks.at(index).slot);
+    ++record.references[0].revision;
+    ASSERT_EQ(model.task_authority.install_validated(model.tasks.at(index).slot, record), AYNI_OK);
+    ayni_task_authority_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), id, &info), AYNI_OK);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GOAL_AUTHORITY_MISSING);
+    node.work.node().step();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// C-STORE-020: two disjoint requirements inherit their own selections in order.
+TEST(TaskAuthorityApi, multiple_requirements_keep_distinct_selected_grants) {
+    AuthorityWork node;
+    node.count = 2;
+    node.low[1] = 50;
+    node.run();
+    const auto first = node.grant(0, 20);
+    ASSERT_EQ(first.status, AYNI_OK);
+    node.work.node().recover();
+    const auto second = node.grant(40, 100);
+    ASSERT_EQ(second.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto task = node.work.goal(goal.result.object.id).last_task_id;
+    uint32_t at = 0;
+    for (const auto id : {first.result.object.id, second.result.object.id}) {
+        ayni_task_authority_reference_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_task_authority_reference(node.work.kernel(), task, at++, &info),
+                  AYNI_OK);
+        EXPECT_EQ(info.grant_id, id);
+        EXPECT_EQ(info.grant_revision, 1U);
+    }
+}
+
+// C-AUTH-023: Task references independently prevent reclamation until terminal
+// state is durable. White-box removal isolates them from the Goal's same refs.
+TEST(TaskAuthorityApi, live_task_references_and_unconfirmed_terminal_state_prevent_reclaim) {
+    AuthorityWork node;
+    node.work.node().config().grant_capacity = 1;
+    node.run();
+    constexpr uint64_t duration_us = 1000000;
+    const auto grant = node.grant(0, 100, duration_us);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    ASSERT_NE(node.work.goal(goal.result.object.id).last_task_id, 0U);
+    node.work.node().sim().advance_us(duration_us);
+    node.work.node().step(1);
+    node.work.node().recover();
+    auto &model = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.goals.find(goal.result.object.id, index));
+    auto saved = model.goal_authority.at(index);
+    const auto &need = saved.requirements[0];
+    const std::vector<uint8_t> domain(need.source_domain.data,
+                                      need.source_domain.data + need.source_domain.size);
+    const std::vector<uint8_t> scope(need.scope.data, need.scope.data + need.scope.size);
+    saved.requirements[0].source_domain = {domain.data(), static_cast<uint32_t>(domain.size())};
+    saved.requirements[0].scope = {scope.data(), static_cast<uint32_t>(scope.size())};
+    model.goal_authority.clear(index);
+    EXPECT_TRUE(model.grant_reclaim_exclusions(node.work.kernel()->log.durable_seq()).contains(0));
+    EXPECT_EQ(node.grant().status, AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(model.goal_authority.install_validated(index, saved), AYNI_OK);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, goal.result.object.id).status, AYNI_OK);
+    EXPECT_EQ(node.grant().status, AYNI_CAPACITY_EXCEEDED);
+    node.work.node().recover();
+    EXPECT_EQ(node.grant().status, AYNI_OK);
 }
 
 // ADR-0037 minimum gate: callback elapsed time cannot commit steps/checkpoints after expiry.
@@ -559,6 +694,10 @@ TEST(GoalGrants, a_bound_grant_cannot_authorize_other_or_child_goals_and_ends_wi
         const auto other = node.create(AYNI_TRIGGER_NONE, parent);
         ASSERT_EQ(other.status, AYNI_OK);
         EXPECT_EQ(node.authority(other.result.object.id).phase, AYNI_GOAL_AUTHORITY_PROPOSED);
+        // ADR-0038: proposals have selected no parent binding yet, so a valid
+        // parent must not turn missing child authority into a stale-binding error.
+        EXPECT_EQ(node.authority(other.result.object.id).effective_reason,
+                  AYNI_REASON_GOAL_AUTHORITY_MISSING);
         EXPECT_EQ(node.requirement(other.result.object.id, 0).grant_id, 0U);
     }
     ayni_grant_info_v1 info{};
@@ -1214,6 +1353,53 @@ TEST(GoalApproval, real_snapshot_freeze_preserves_proposal_until_atomic_approval
     EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id,
               node.work.kernel()->work.grants.at(0).grant_id);
+}
+
+// ADR-0038: absent admission never means the same thing as explicit zero needs.
+TEST(TaskAuthorityApi, zero_requirements_are_admitted_and_missing_evidence_is_reported) {
+    AuthorityWork node;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_ONCE, 0, "zero");
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step();
+    const auto task_id = node.work.goal(goal.result.object.id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    ayni_task_authority_info_v1 admitted{};
+    admitted.struct_size = sizeof(admitted);
+    ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), task_id, &admitted), AYNI_OK);
+    EXPECT_EQ(admitted.phase, AYNI_TASK_AUTHORITY_AUTHORIZED);
+    EXPECT_EQ(admitted.requirement_count, 0U);
+    EXPECT_EQ(admitted.effective_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(admitted.binding_commit_seq,
+              node.authority(goal.result.object.id).binding_commit_seq);
+    EXPECT_NE(admitted.commit_seq, 0U);
+
+    ayni_task_authority_reference_v1 unavailable{};
+    std::memset(&unavailable, 0xA5, sizeof(unavailable));
+    unavailable.struct_size = sizeof(unavailable);
+    const auto unchanged = unavailable;
+    EXPECT_EQ(ayni_get_task_authority_reference(node.work.kernel(), task_id, 0, &unavailable),
+              AYNI_NOT_FOUND);
+    EXPECT_EQ(std::memcmp(&unchanged, &unavailable, sizeof(unavailable)), 0);
+
+    // White-box: emulate unavailable admission during restore, without
+    // persisting the deliberately inconsistent intermediate fixture.
+    auto &work = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(work.tasks.find(task_id, index));
+    const auto slot = work.tasks.at(index).slot;
+    ayni::work::TaskAuthorityRecord saved{};
+    ASSERT_TRUE(work.task_authority.read(slot, task_id, saved));
+    work.task_authority.clear(slot);
+    ayni_task_authority_info_v1 missing{};
+    missing.struct_size = sizeof(missing);
+    ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), task_id, &missing), AYNI_OK);
+    EXPECT_EQ(missing.phase, AYNI_TASK_AUTHORITY_UNKNOWN);
+    EXPECT_EQ(missing.requirement_count, 0U);
+    EXPECT_EQ(missing.binding_commit_seq, 0U);
+    EXPECT_EQ(missing.effective_reason, AYNI_REASON_GOAL_AUTHORITY_MISSING);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.task_authority.install_validated(slot, saved), AYNI_OK);
 }
 
 } // namespace

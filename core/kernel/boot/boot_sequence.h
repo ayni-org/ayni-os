@@ -13,11 +13,9 @@
 // boot and installs its writer epoch, and two batches of that writer follow:
 // WRITER_FENCE, then BOOT_EPOCH.
 //
-// A schema 0 log is read the same way, but once its writers are fenced the
-// sequence stops at migration_ready: the kernel writes the model as a schema
-// 1 snapshot and starts recovery over from it (ADR-0027 decision 11). To
-// fence a RUNNING writer the kernel calls isolate() instead, which only
-// fences; the reload after it resets the sequence with the epoch installed.
+// Schema 0/1 are unsupported in this development format (ADR-0038). To
+// fence a RUNNING writer the kernel calls isolate(), which only fences;
+// reload resets the sequence with the installed epoch and preserves source data.
 //
 // One storage request is in flight at a time, so the kernel's storage buffer
 // serves every read and append. Requests use boot_epoch 0: this boot's epoch
@@ -52,7 +50,6 @@ class BootSequence {
     enum class Outcome {
         pending,
         epoch_durable,    // RUNNING may start; boot_epoch() is set
-        migration_ready,  // a schema 0 log is read and its writers fenced
         writers_isolated, // isolate() installed writer_epoch()
         restricted        // restriction() says why
     };
@@ -96,14 +93,10 @@ class BootSequence {
     // The last commit_seq known durable: the end of the log read so far,
     // then each batch this boot stored.
     uint64_t durable_seq() const { return known_durable_seq_; }
-    // The largest transition_id and writer_epoch of the batches read and
-    // stored so far.
+    // The largest transition_id of the batches read and stored so far.
     uint64_t max_transition_id() const { return scan_.max_transition_id(); }
-    uint32_t recovered_writer_epoch() const { return scan_.max_writer_epoch(); }
     // The writer epoch the fence installed, which this boot's batches carry.
     uint32_t writer_epoch() const { return isolated_epoch_; }
-    // The largest BOOT_EPOCH read or stored so far.
-    uint64_t last_boot_epoch() const { return last_boot_epoch_; }
     // The snapshot recovery started from: generation 0 for none.
     uint64_t generation() const { return selected_.generation; }
     uint32_t active_slot() const { return activation_.slot; }
@@ -125,7 +118,6 @@ class BootSequence {
         done,
         pre_fence, // isolate()'s fence
         isolated,
-        migration, // the kernel migrates a schema 0 log
         restricted
     };
 
@@ -152,7 +144,7 @@ class BootSequence {
     durability::BatchIdentity next_batch() const;
     void prepare_append();
     // No request follows until the kernel acts: the sequence is done or
-    // failed, or waits for a migration or a reload.
+    // failed, or waits for a reload.
     bool stopped() const;
     // The phase's request may write the medium.
     bool mutates() const;
@@ -174,7 +166,6 @@ class BootSequence {
     durability::SnapshotActivation activation_{};
     bool activation_seen_ = false;
     bool first_physical_ = true; // no batch has been read yet
-    bool legacy_ = false;        // the log has a schema 0 batch
     uint64_t cursor_ = 0;        // where the next log read starts
     uint64_t log_bytes_ = 0;
     uint64_t known_durable_seq_ = 0;

@@ -10,6 +10,7 @@
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
 
 namespace ayni::kernel {
@@ -134,6 +135,7 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
                              capacities.goal_parameter_max_bytes + goal_extra);
     size = maximum(size, work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
+    size = maximum(size, work::task_authority_record_max(capacities.goal_requirement_capacity));
     size = maximum(size, step_record_size(id_max));
     size = maximum(size, work::task_checkpoint_record_fixed_size + id_max +
                              capacities.task_checkpoint_max_bytes);
@@ -160,6 +162,8 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
              uint64_t{capacities.task_step_capacity} * (record_prefix + step_record_size(id_max)) +
              record_prefix + work::task_checkpoint_record_fixed_size + id_max +
              capacities.task_checkpoint_max_bytes);
+    size += uint64_t{capacities.task_capacity} *
+            (record_prefix + work::task_authority_record_max(capacities.goal_requirement_capacity));
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
             (record_prefix + command_max(capacities));
     return size;
@@ -189,6 +193,10 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const work::Task &task = model.tasks.at(index);
         count(layout, task_size);
+        work::TaskAuthorityRecord authority{};
+        if (model.task_authority.read(task.slot, task.task_id, authority)) {
+            count(layout, work::task_authority_record_max(authority.count));
+        }
         for (uint32_t step = 0; step < task.step_count; ++step) {
             count(layout, step_record_size(model.tasks.step(index, step).size()));
         }
@@ -299,6 +307,12 @@ bool WorkSnapshotWriter::next_task_record(uint16_t &type, uint32_t &size) {
     if (index_ >= model_.tasks.size()) {
         return false;
     }
+    if (task_part_ == TaskPart::authority) {
+        const auto record = model_.task_authority.at(model_.tasks.at(index_).slot);
+        type = work::task_authority_record_type;
+        size = work::task_authority_record_max(record.count);
+        return true;
+    }
     if (task_part_ == TaskPart::task) {
         type = work::task_record_type;
         size = task_size;
@@ -345,6 +359,11 @@ bool WorkSnapshotWriter::next_command_record(uint16_t &type, uint32_t &size) {
         return true;
     }
     return false;
+}
+
+void WorkSnapshotWriter::write_task_authority(uint8_t *body) {
+    const auto record = model_.task_authority.at(model_.tasks.at(index_).slot);
+    work::write_task_authority_record(record, body);
 }
 
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t size) {
@@ -406,6 +425,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         work::write_task_checkpoint_record(model_.tasks.at(index_), model_.tasks.checkpoint(index_),
                                            body);
         break;
+    case work::task_authority_record_type:
+        write_task_authority(body);
+        break;
     case work::task_state_record_type:
         work::write_task_state_record(model_.tasks.at(index_), body);
         break;
@@ -453,6 +475,9 @@ void WorkSnapshotWriter::advance_record(uint16_t type) {
         task_part_ = TaskPart::state;
         break;
     case work::task_state_record_type:
+        task_part_ = TaskPart::authority;
+        break;
+    case work::task_authority_record_type:
         ++index_;
         task_part_ = TaskPart::task;
         step_ = 0;
@@ -481,6 +506,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             : type == work::goal_record_type &&
                     model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
                 ? work::goal_authority_state_record_version
+            : type == work::goal_authority_record_type ? work::goal_authority_record_version
             : type == authority::grant_record_type
                 ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
                 : snapshot_record_version;
@@ -498,6 +524,7 @@ void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
     section_ = Section::owner_binding;
     task_index_ = work::TaskTable::no_index;
     checkpoint_seen_ = false;
+    task_stage_ = TaskReadStage::contents;
     last_command_seq_ = 0;
     goal_authority_pending_.reset();
 }
@@ -518,6 +545,7 @@ bool WorkSnapshotReader::record_section(uint16_t type, Section &out) {
     case work::goal_authority_record_type:
         out = Section::goals;
         break;
+    case work::task_authority_record_type:
     case work::task_record_type:
     case work::task_state_record_type:
     case work::task_steps_record_type:
@@ -536,7 +564,9 @@ bool WorkSnapshotReader::record_section(uint16_t type, Section &out) {
 durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader &header,
                                                  const uint8_t *body) {
     using durability::BatchCheck;
-    if (records_ == metadata_.record_count ||
+    if ((task_stage_ == TaskReadStage::authority &&
+         header.type != work::task_authority_record_type) ||
+        records_ == metadata_.record_count ||
         (goal_authority_pending_ && header.type != work::goal_authority_record_type)) {
         return BatchCheck::corrupt;
     }
@@ -583,6 +613,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
         return task_steps(body, header.length);
     case work::task_checkpoint_record_type:
         return task_checkpoint(body, header.length);
+    case work::task_authority_record_type:
+        return task_authority(body, header.length);
     case work::task_state_record_type:
         return task_state(body, header.length);
     case command_record_type:
@@ -777,8 +809,33 @@ durability::BatchCheck WorkSnapshotReader::task_state(const uint8_t *body, uint3
     }
     const auto restore = model_.tasks.restore_state(task_index_, record.state,
                                                     {task.created_transition_id, task.commit_seq});
-    task_index_ = work::TaskTable::no_index;
+    task_stage_ = TaskReadStage::authority;
     return check_of(restore);
+}
+
+// Snapshot keeps each Task's independent selections, including terminal
+// Tasks; final consistency still requires the exact retained Goal binding.
+durability::BatchCheck WorkSnapshotReader::task_authority(const uint8_t *body, uint32_t size) {
+    work::TaskAuthorityRecord record{};
+    if (task_index_ == work::TaskTable::no_index || task_stage_ != TaskReadStage::authority ||
+        !work::read_task_authority_record(body, size, record) ||
+        !valid_stamp(record.stamp, metadata_)) {
+        return durability::BatchCheck::corrupt;
+    }
+    const auto &task = model_.tasks.at(task_index_);
+    if (record.task_id != task.task_id || record.ceiling.goal_id != task.goal_id ||
+        record.stamp.commit_seq > task.commit_seq ||
+        record.stamp.transition_id < task.created_transition_id) {
+        return durability::BatchCheck::corrupt;
+    }
+    const auto status = model_.task_authority.install_validated(task.slot, record);
+    if (status != AYNI_OK) {
+        return status == AYNI_CAPACITY_EXCEEDED ? durability::BatchCheck::no_room
+                                                : durability::BatchCheck::corrupt;
+    }
+    task_index_ = work::TaskTable::no_index;
+    task_stage_ = TaskReadStage::contents;
+    return durability::BatchCheck::ok;
 }
 
 durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8_t *body,

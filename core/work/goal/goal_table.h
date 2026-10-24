@@ -303,6 +303,17 @@ class GoalTable {
 
     // Returns false when no goal has the id.
     bool find(uint64_t goal_id, uint32_t &out_index) const;
+    // Visits start and its ancestors, nearest first. start is a valid index
+    // or no_parent (an empty lineage). False stops the walk and is returned;
+    // true means all were visited. The visitor must not mutate tree topology.
+    template <typename Visit> bool visit_lineage(uint32_t start, Visit visit) const {
+        for (auto index = start; index != no_parent; index = goals_[index].parent_index) {
+            if (!visit(index)) {
+                return false;
+            }
+        }
+        return true;
+    }
     // Whether goal index is root or one of its descendants.
     bool in_subtree(uint32_t index, uint32_t root) const;
     static bool at_largest_revision(const Goal &goal);

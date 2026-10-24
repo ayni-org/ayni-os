@@ -111,6 +111,16 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
     if (!parent_covers(*this, create.parent_goal_id, out)) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
     }
+    if (create.parent_goal_id != 0U) {
+        uint32_t parent = 0;
+        if (!goals.find(create.parent_goal_id, parent)) {
+            return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
+        }
+        const auto check = check_goal_authority(parent, now_us, durable_seq);
+        if (check.status != AYNI_OK) {
+            return check;
+        }
+    }
     for (uint32_t index = 0; index < out.count; ++index) {
         auto &requirement = out.requirements[index];
         for (uint32_t at = 0; at < grants.size(); ++at) {
@@ -156,26 +166,41 @@ authority::GrantCheck WorkModel::check_requirement(const work::GoalRequirement &
 // consumption. Ancestor authority is checked at the same boundary.
 authority::GrantCheck WorkModel::check_goal_authority(uint32_t goal_index, uint64_t now_us,
                                                       uint64_t durable_seq) const {
-    for (uint32_t at = goal_index; at != work::GoalTable::no_parent;
-         at = goals.at(at).parent_index) {
+    authority::GrantCheck result{AYNI_OK, AYNI_REASON_NONE};
+    goals.visit_lineage(goal_index, [&](uint32_t at) {
         work::GoalAuthorityRecord record{};
         if (!goal_authority.read(at, goals.at(at).goal_id, record)) {
-            return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+            result = {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+            return false;
         }
         if (record.phase != work::GoalAuthorityPhase::authorized) {
-            return {AYNI_DENIED, record.phase == work::GoalAuthorityPhase::paused
-                                     ? AYNI_REASON_GOAL_AUTHORITY_PAUSED
-                                     : AYNI_REASON_GOAL_AUTHORITY_MISSING};
+            result = {AYNI_DENIED, record.phase == work::GoalAuthorityPhase::paused
+                                       ? AYNI_REASON_GOAL_AUTHORITY_PAUSED
+                                       : AYNI_REASON_GOAL_AUTHORITY_MISSING};
+            return false;
+        }
+        if (goals.at(at).parent_index != work::GoalTable::no_parent) {
+            const auto parent = goals.at(at).parent_index;
+            const auto parent_id = goals.at(parent).goal_id;
+            work::GoalAuthorityRecord parent_record{};
+            if (!goal_authority.read(parent, parent_id, parent_record) ||
+                record.binding.parent.goal_id != parent_id ||
+                record.binding.parent.commit_seq != parent_record.binding.established_seq) {
+                result = {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
+                return false;
+            }
         }
         for (uint32_t index = 0; index < record.count; ++index) {
             const auto check =
                 check_requirement(record.requirements[index], now_us, durable_seq, record.goal_id);
             if (check.status != AYNI_OK) {
-                return check;
+                result = check;
+                return false;
             }
         }
-    }
-    return {AYNI_OK, AYNI_REASON_NONE};
+        return true;
+    });
+    return result;
 }
 
 void WorkModel::pause_goal_authority(uint32_t index) {

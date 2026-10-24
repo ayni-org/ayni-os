@@ -23,6 +23,11 @@ void write_goal_authority_record(const GoalAuthorityRecord &record, uint8_t *bod
     writer.u64(record.stamp.commit_seq);
     writer.u32(static_cast<uint32_t>(record.phase));
     writer.u32(record.count);
+    writer.u64(record.binding.established_seq);
+    writer.u64(record.binding.parent.goal_id);
+    writer.u64(record.binding.parent.commit_seq);
+    writer.u64(record.binding.input.incarnation);
+    writer.u64(record.binding.input.through);
     for (uint32_t index = 0; index < record.count; ++index) {
         const auto &requirement = record.requirements[index];
         writer.u32(requirement.capability_version);
@@ -65,6 +70,9 @@ bool read_goal_authority_record(const uint8_t *body, uint32_t size, GoalAuthorit
     record.stamp = {reader.u64(), reader.u64()};
     record.phase = static_cast<GoalAuthorityPhase>(reader.u32());
     record.count = reader.u32();
+    record.binding.established_seq = reader.u64();
+    record.binding.parent = {reader.u64(), reader.u64()};
+    record.binding.input = {reader.u64(), reader.u64()};
     if (record.count > AYNI_GOAL_REQUIREMENT_CAPACITY_MAX) {
         return false;
     }

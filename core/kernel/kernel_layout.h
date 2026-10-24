@@ -26,6 +26,7 @@ struct KernelLayout {
     std::size_t capabilities_offset;
     std::size_t grants_offset;
     std::size_t goal_authority_offset; // Byte offset of Goal-owned authority storage.
+    std::size_t task_authority_offset; // Byte offset of Task-owned admission references.
     std::size_t size;
     std::size_t alignment; // a power of two
 };

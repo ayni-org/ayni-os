@@ -10,8 +10,8 @@
 // anew each boot, so a goal whose type is gone, a task whose checkpoint its
 // strategy cannot read and an instance whose agent is gone are held or
 // FAULTED in memory only, and the log keeps them as they were for a boot
-// that registers them again. Work without the authorization records that
-// MA-006 will add is held for explicit confirmation. Times are on one boot's
+// that registers them again. Schema 2 requires complete Goal/Task admission facts;
+// F2 still holds restored active work until F5 validates normal restart. Times are on one boot's
 // clock, so each wait starts again in full when recovery ends.
 
 #ifndef AYNI_CORE_KERNEL_WORK_REPLAY_H
@@ -94,6 +94,8 @@ class WorkReplay {
                                                  foundation::TransitionStamp stamp);
     durability::RecordUse restore_task(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
+    durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
+                                                 foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_state(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_steps(const uint8_t *body, uint32_t size,
@@ -111,6 +113,9 @@ class WorkReplay {
     durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
                                           uint64_t commit_seq);
     // One approval's ordered relation, independent of record body decoding.
+    // Prove the admitted generation and original parent chain at a known sequence.
+    bool matches_goal_binding(uint32_t index, const work::GoalAuthorityRecord &record,
+                              uint64_t admission_seq) const;
     bool pair_approval_grant(const authority::GrantRecord &record,
                              foundation::TransitionStamp stamp);
     bool pair_approval_state(uint32_t index, const work::GoalState &state);
@@ -156,7 +161,11 @@ class WorkReplay {
     // and Task pairs may coexist with authority; disengaged means no missing
     // state. progress_seq remembers the last progress batch to reject duplicates.
     struct BatchPairing {
+        // A journal transition derives at most one Task, even after that
+        // Task's complete state/admission pair has closed. 0 before any.
+        uint64_t task_created_seq = 0;
         std::optional<uint64_t> goal; // Nonzero created Goal awaiting its state; empty otherwise.
+        std::optional<uint64_t> task_authority; // Exact new Task awaiting its admission record.
         std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.
         std::optional<uint64_t> goal_authority; // Goal v2 awaiting its explicit ceiling.
         uint64_t goal_authority_seq = 0; // Last type 17 batch; one Goal authority change per batch.
@@ -165,7 +174,7 @@ class WorkReplay {
         uint64_t progress_seq = 0; // Last progress commit sequence; 0 before any progress.
         // Every accepted pair in the batch has received its required partner.
         bool complete() const {
-            return !goal && !task && !goal_authority && !authority.pending() &&
+            return !goal && !task && !task_authority && !goal_authority && !authority.pending() &&
                    (!approval || approval->stage == ApprovalPair::Stage::complete);
         }
     };
