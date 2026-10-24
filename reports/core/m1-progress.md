@@ -67,7 +67,7 @@
 ## 交接状态（2026-10-24）
 
 - **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–E 和 R1～R4 整理。E 由 [#42](https://github.com/RobotSe7en/ayni/pull/42)～[#45](https://github.com/RobotSe7en/ayni/pull/45)、[#47](https://github.com/RobotSe7en/ayni/pull/47) 交付需求事实、待批创建/查询、专属 Grant、原子批准及最低消费门控；验证和覆盖率见 [ADR-0037](../../docs/adr/0037-goal-requirements-and-atomic-approval.md)。
-- **正在实施：** F1～F3 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)、[#52](https://github.com/RobotSe7en/ayni/pull/52)；F4 按完整 diff 门槛分为 [#53](https://github.com/RobotSe7en/ayni/pull/53) 内部证明及 [#54](https://github.com/RobotSe7en/ayni/pull/54) 完整公开事务。F5 以 ABI 0.27 依完整 schema 2 事实正常恢复工作，永久授权继续，原暂停和进度保留，旧 boot 限时权限失效；旧存储或缺失 owner 事实的工作明确拒绝并保留，不迁移或补授权。下一步统一五配置、覆盖率及资源边界量测，再作文档收尾；当前无需用户操作。
+- **正在实施：** F1～F3 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)、[#52](https://github.com/RobotSe7en/ayni/pull/52)；F4 按完整 diff 门槛分为 [#53](https://github.com/RobotSe7en/ayni/pull/53) 内部证明及 [#54](https://github.com/RobotSe7en/ayni/pull/54) 完整公开事务。F5 [#55](https://github.com/RobotSe7en/ayni/pull/55) 以 ABI 0.27 依完整 schema 2 事实正常恢复工作，永久授权继续，原暂停和进度保留，旧 boot 限时权限失效；旧存储或缺失 owner 事实的工作明确拒绝并保留，不迁移或补授权。下一步统一五配置、覆盖率及资源边界量测，再作文档收尾；当前无需用户操作。
 - **仍有限制：** F 统一覆盖率/资源验收尚未收尾；安全分支目标不继承 E 的旧偏差豁免。ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收仍随后续工作包。Native 运行、固件编译与实机验收分别记录。
 
 ## 剩余工作
