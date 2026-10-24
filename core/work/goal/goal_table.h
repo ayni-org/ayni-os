@@ -204,6 +204,9 @@ class GoalTable {
     // Authorization changed autonomously; preserve user lifecycle and revision,
     // like trigger progress, but journal this Goal state with the metadata.
     void authority_changed(uint32_t index, foundation::TransitionStamp stamp);
+    // Existing live Goal, exact user/trigger state; only its authority stamp advances.
+    Restore restore_authority_state(uint32_t index, const GoalState &state,
+                                    foundation::TransitionStamp stamp);
 
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every

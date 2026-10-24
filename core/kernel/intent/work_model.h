@@ -22,6 +22,7 @@
 #include "kernel/kernel_config.h"
 #include "kernel/transition_clock.h"
 #include "work/agent/agent_table.h"
+#include "work/authority/authority_cleanup.h"
 #include "work/goal/goal_authority.h"
 #include "work/goal/goal_table.h"
 #include "work/propagation.h"
@@ -39,6 +40,13 @@ namespace ayni::kernel {
 struct OwnerClock {
     void *ctx = nullptr;                     // Borrowed for this synchronous call only.
     uint64_t (*now_us)(void *ctx) = nullptr; // Monotonic microseconds; null uses call's sample.
+};
+
+// One stable scan identity; an orphaned dedicated Grant may retain a Goal ID
+// whose table slot has been reused. That case has index == no_index.
+struct AuthorityCleanupGoal {
+    uint64_t goal_id = 0;                       // Exact nonzero selected ID; 0 before selection.
+    uint32_t index = work::GoalTable::no_index; // Retained Goal index, or none for an orphan.
 };
 
 struct WorkModel {
@@ -102,7 +110,8 @@ struct WorkModel {
     void release_task_references(const work::TaskAuthorityRecord &record, uint64_t commit_seq);
     // Release and clear exact Task metadata before its terminal Goal gives way.
     void clear_goal_task_authority(uint32_t goal_index, uint64_t commit_seq);
-    // Persist authorization pause independently of user pause; settle reached Tasks.
+    // Persist authorization pause for this Goal and its direct live Task admissions;
+    // preserve their user/strategy state and saturated revisions.
     void pause_goal_authority(uint32_t index);
     // Validates authority once, then the work-owned subjects of that same path.
     authority::GrantCheck check_grant(uint32_t index, uint64_t now_us, uint64_t durable_seq,
@@ -120,6 +129,15 @@ struct WorkModel {
     void release_goal_references(const work::GoalAuthorityRecord &record, uint64_t commit_seq);
     // A replaced Goal slot discards exactly its former identity's metadata.
     void clear_goal_authority(uint32_t index, uint64_t previous_id, uint64_t commit_seq);
+    // Request a persisted stable-ID pass after dependency/terminal changes.
+    void request_authority_cleanup(foundation::TransitionStamp stamp);
+    // Whether changed Goal/Grant facts in this transition request another pass.
+    bool authority_cleanup_change_in(foundation::TransitionStamp stamp) const;
+    // Least retained Goal/dedicated-Grant identity in the fixed active range.
+    // False preserves out; no policy or model mutation occurs here.
+    bool next_authority_cleanup_goal(AuthorityCleanupGoal &out) const;
+    // One Goal and its direct live Tasks, or an empty-range cursor closure.
+    bool advance_authority_cleanup(uint64_t now_us, uint64_t durable_seq);
     // Own the cross-table replacement: work propagation, then reference handoff.
     bool insert_goal(const work::NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
                      uint32_t &out_index);
@@ -140,7 +158,8 @@ struct WorkModel {
     authority::GrantTable grants;
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;
-    work::TaskAuthorityTable task_authority; // Independent historical selections; no Scope copy.
+    work::TaskAuthorityTable task_authority;  // Independent historical selections; no Scope copy.
+    work::AuthorityCleanup authority_cleanup; // Work-owned active/pending scan, no arena needed.
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal

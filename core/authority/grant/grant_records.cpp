@@ -163,8 +163,11 @@ void write_grant_state_record(const Grant &grant, uint8_t *body) {
 }
 
 uint16_t grant_state_record_version_for(const Grant &grant) {
-    return grant.lifecycle == AYNI_GRANT_REVOKED ? grant_revoked_state_record_version
-                                                 : grant_state_record_version;
+    if (grant.lifecycle == AYNI_GRANT_REVOKED) {
+        return grant_revoked_state_record_version;
+    }
+    return grant.lifecycle == AYNI_GRANT_GOAL_ENDED ? grant_goal_ended_state_record_version
+                                                    : grant_expired_with_work_record_version;
 }
 
 uint32_t grant_state_record_size_for(const Grant &grant) {
@@ -172,12 +175,15 @@ uint32_t grant_state_record_size_for(const Grant &grant) {
                                                  : grant_state_record_size;
 }
 
-// records.md type 14: v1 carries expiry; v2 also identifies the revocation
-// root. Version/size/lifecycle combinations are validated before publishing.
+// records.md type 14: v1/v4 carry expiry, v2 identifies the revocation root,
+// and v3 records a dedicated Goal's end. v3/v4 require work cleanup pairing.
 bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecord &out,
                              uint16_t version) {
     const bool revoked = version == grant_revoked_state_record_version;
-    if (body == nullptr || (version != grant_state_record_version && !revoked) ||
+    const bool goal_ended = version == grant_goal_ended_state_record_version;
+    if (body == nullptr ||
+        (version != grant_state_record_version && !revoked && !goal_ended &&
+         version != grant_expired_with_work_record_version) ||
         size != (revoked ? grant_revoked_state_record_size : grant_state_record_size)) {
         return false;
     }
@@ -191,7 +197,7 @@ bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecor
         (revoked ? record.lifecycle != AYNI_GRANT_REVOKED ||
                        !foundation::is_kernel_id(record.revoked_by_root_id) ||
                        is_revocation_root(record.grant_id, record.revoked_by_root_id)
-                 : record.lifecycle != AYNI_GRANT_EXPIRED)) {
+                 : record.lifecycle != (goal_ended ? AYNI_GRANT_GOAL_ENDED : AYNI_GRANT_EXPIRED))) {
         return false;
     }
     out = record;

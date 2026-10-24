@@ -172,6 +172,22 @@ GoalTable::Restore GoalTable::restore(const NewGoal &goal, uint64_t goal_id,
     return Restore::restored;
 }
 
+GoalTable::Restore GoalTable::restore_authority_state(uint32_t index, const GoalState &state,
+                                                      foundation::TransitionStamp stamp) {
+    const auto &goal = goals_[index];
+    if (!is_live(goal.lifecycle) || state.last_task_id != goal.last_task_id ||
+        state.lifecycle != goal.lifecycle || state.revision != goal.revision ||
+        state.cancel_revision != goal.cancel_revision ||
+        state.occurrences_skipped != goal.occurrences_skipped ||
+        state.skip_reason != goal.skip_reason || state.taken != goal.cursor.taken ||
+        state.waiting != goal.cursor.waiting || state.next_scheduled != goal.cursor.has_next() ||
+        state.expiry_pending != (goal.expires_us != no_time)) {
+        return Restore::corrupt;
+    }
+    authority_changed(index, stamp);
+    return Restore::restored;
+}
+
 GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &state,
                                             foundation::TransitionStamp stamp) {
     Goal &goal = goals_[index];

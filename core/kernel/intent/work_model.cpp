@@ -21,6 +21,8 @@ bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_sta
     }
     work::settle_restored(work, stamp);
     grants.expire_old_boot(boot_epoch, stamp);
+    // Restored scan progress remains intact. Changed authority/terminal facts
+    // request another pass when this startup transition is journaled.
     return true;
 }
 

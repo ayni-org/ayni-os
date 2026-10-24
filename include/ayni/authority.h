@@ -166,6 +166,8 @@ typedef uint32_t ayni_grant_lifecycle_t;
 #define AYNI_GRANT_ACTIVE ((ayni_grant_lifecycle_t)1)
 #define AYNI_GRANT_EXPIRED ((ayni_grant_lifecycle_t)2)
 #define AYNI_GRANT_REVOKED ((ayni_grant_lifecycle_t)3) /* Since 0.19, irreversible */
+/* Since 0.25. Goal-specific authority ended with its bound Goal; irreversible. */
+#define AYNI_GRANT_GOAL_ENDED ((ayni_grant_lifecycle_t)4)
 
 typedef struct ayni_grant_info_v1 {
     uint32_t struct_size;

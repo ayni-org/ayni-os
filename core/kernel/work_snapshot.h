@@ -54,7 +54,7 @@ class WorkSnapshotWriter {
 
   private:
     // The payload's order (records.md).
-    enum class Section { owner_binding, instances, grants, goals, tasks, commands, done };
+    enum class Section { owner_binding, instances, grants, goals, tasks, cleanup, commands, done };
     // A task's records, in order.
     enum class TaskPart { task, steps, checkpoint, state, authority };
     // A Goal v2 and its required authority record remain adjacent across pages.
@@ -69,6 +69,8 @@ class WorkSnapshotWriter {
     bool next_command_record(uint16_t &type, uint32_t &size);
     // Encode the selected record into the already sized body buffer.
     void write_record(uint16_t type, uint8_t *body, uint32_t size);
+    // Selected frozen Task identity plus original update/step/checkpoint stamps.
+    void write_task_metadata(uint8_t *body);
     // Serialize the already selected frozen Task admission, without another identity check.
     void write_task_authority(uint8_t *body);
     // Consume a record only after its complete bytes were written.
@@ -104,7 +106,7 @@ class WorkSnapshotReader {
 
   private:
     // The payload's order (records.md).
-    enum class Section { owner_binding, instances, grants, goals, tasks, commands };
+    enum class Section { owner_binding, instances, grants, goals, tasks, cleanup, commands };
     durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
     durability::BatchCheck instance(const uint8_t *body, uint32_t size);
     durability::BatchCheck grant(uint16_t version, const uint8_t *body, uint32_t size);
@@ -117,6 +119,7 @@ class WorkSnapshotReader {
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_state(const uint8_t *body, uint32_t size);
+    durability::BatchCheck authority_cleanup(const uint8_t *body, uint32_t size);
     durability::BatchCheck command(uint16_t version, const uint8_t *body, uint32_t size);
 
     WorkModel &model_;
@@ -131,6 +134,8 @@ class WorkSnapshotReader {
     enum class TaskReadStage { contents, authority };
     TaskReadStage task_stage_ = TaskReadStage::contents;
     uint64_t last_command_seq_ = 0;
+    // Exactly one REQUIRED scan fact, including an explicit initial idle fact.
+    bool cleanup_seen_ = false;
     // Goal v2 must be followed immediately by matching metadata, even across pages.
     std::optional<uint64_t> goal_authority_pending_;
 };

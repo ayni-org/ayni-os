@@ -217,7 +217,8 @@ TEST(GoalTable, authority_resume_skips_backlog_without_restarting_once_or_delay)
     constexpr uint64_t period = AYNI_TRIGGER_PERIOD_MIN_US;
     constexpr uint64_t elapsed = started + 10U * period;
     Goals goals(small);
-    const auto interval = goals.create(0, owner, {}, {AYNI_TRIGGER_INTERVAL, period, period}, started);
+    const auto interval =
+        goals.create(0, owner, {}, {AYNI_TRIGGER_INTERVAL, period, period}, started);
     const auto delayed = goals.create(0, owner, {}, {AYNI_TRIGGER_DELAY, 10, 0}, started);
     const auto once = goals.create(0, owner, {}, {AYNI_TRIGGER_ONCE, 0, 0}, started);
     const auto input = goals.create_input("button");
@@ -241,8 +242,8 @@ TEST(GoalTable, authority_resume_preserves_a_future_interval_occurrence) {
     constexpr uint64_t started = 100;
     constexpr uint64_t delay = 100;
     Goals goals(small);
-    const auto id = goals.create(0, owner, {},
-                                 {AYNI_TRIGGER_INTERVAL, delay, AYNI_TRIGGER_PERIOD_MIN_US}, started);
+    const auto id = goals.create(
+        0, owner, {}, {AYNI_TRIGGER_INTERVAL, delay, AYNI_TRIGGER_PERIOD_MIN_US}, started);
     ASSERT_NE(id, 0U);
     goals->skip_authority_backlog(goals.index_of(id), started + delay - 1U, goals.next_stamp());
     EXPECT_EQ(goals.goal(id).cursor.next_due_us, started + delay);

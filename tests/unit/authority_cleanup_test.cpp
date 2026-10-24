@@ -16,7 +16,8 @@ TEST(WorkAuthorityCleanup, fixed_frontier_retains_requests_for_a_second_pass) {
     AuthorityCleanup cleanup;
     EXPECT_FALSE(cleanup.ready());
     cleanup.request(0, {1, 1});
-    EXPECT_EQ(cleanup.record().stamp.commit_seq, 0U);
+    EXPECT_EQ(cleanup.record().stamp.commit_seq, 1U);
+    EXPECT_FALSE(cleanup.ready());
     cleanup.request(last, {1, 1});
     cleanup.visited(first, {2, 2});
     cleanup.request(last, {3, 3});

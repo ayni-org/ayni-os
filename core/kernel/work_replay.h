@@ -90,13 +90,16 @@ class WorkReplay {
     durability::RecordUse restore_goal_state(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     // Goal v2 must receive complete metadata in the same journal batch.
-    durability::RecordUse restore_goal_authority(const uint8_t *body, uint32_t size,
-                                                 foundation::TransitionStamp stamp);
+    durability::RecordUse restore_goal_authority(uint16_t version, const uint8_t *body,
+                                                 uint32_t size, foundation::TransitionStamp stamp);
+    // Complete work scan footer: exact progress/request plus any pause cohort.
+    durability::RecordUse restore_authority_cleanup(const uint8_t *body, uint32_t size,
+                                                    foundation::TransitionStamp stamp);
     durability::RecordUse restore_task(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
                                                  foundation::TransitionStamp stamp);
-    durability::RecordUse restore_task_state(const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_task_state(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_steps(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
@@ -106,7 +109,7 @@ class WorkReplay {
                                         foundation::TransitionStamp stamp);
     durability::RecordUse restore_grant_state(uint16_t version, const uint8_t *body, uint32_t size,
                                               foundation::TransitionStamp stamp);
-    durability::RecordUse restore_revocation(const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_revocation(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_revocation_progress(const uint8_t *body, uint32_t size,
                                                       foundation::TransitionStamp stamp);
@@ -161,6 +164,17 @@ class WorkReplay {
     // and Task pairs may coexist with authority; disengaged means no missing
     // state. progress_seq remembers the last progress batch to reject duplicates.
     struct BatchPairing {
+        // One optional work cleanup proof. A paused Goal additionally requires
+        // every direct live Task's independent deny fact before the footer.
+        struct WorkCleanupPair {
+            enum class Stage { none, required, complete };
+            Stage stage = Stage::none;   // Required awaits type19; complete seals this batch.
+            uint64_t paused_goal_id = 0; // Exact cohort Goal, or 0 when no cohort is required.
+            uint64_t ended_goal_id = 0; // Exact scanned dedicated-Grant owner, or 0 before any end.
+            uint64_t state_goal_id = 0; // Goal with immutable user state awaiting pause metadata.
+            void require() { stage = Stage::required; }
+            bool pending() const { return stage == Stage::required; }
+        } work_cleanup;
         // A journal transition derives at most one Task, even after that
         // Task's complete state/admission pair has closed. 0 before any.
         uint64_t task_created_seq = 0;
@@ -172,11 +186,13 @@ class WorkReplay {
         std::optional<ApprovalPair> approval; // Retains a closed proof until the next batch.
         AuthorityPair authority;              // Exactly one authority alternative or none.
         uint64_t progress_seq = 0; // Last progress commit sequence; 0 before any progress.
-        // Every accepted pair in the batch has received its required partner.
-        bool complete() const {
+        // Existing work/command partners, independently of the new scan footer.
+        bool partners_complete() const {
             return !goal && !task && !task_authority && !goal_authority && !authority.pending() &&
                    (!approval || approval->stage == ApprovalPair::Stage::complete);
         }
+        // Every accepted pair in the batch has received its required partner.
+        bool complete() const { return partners_complete() && !work_cleanup.pending(); }
     };
     BatchPairing pairing_; // Clear the entire state on discard; never reuse across a reload.
 };

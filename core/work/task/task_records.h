@@ -22,6 +22,8 @@ constexpr uint16_t task_record_type = 5;
 constexpr uint16_t task_record_version = 1;
 constexpr uint16_t task_state_record_type = 6;
 constexpr uint16_t task_state_record_version = 1;
+// Same state body, but REQUIRED adjacent Task authority must follow (ADR-0038).
+constexpr uint16_t task_state_authority_record_version = 2;
 constexpr uint16_t task_steps_record_type = 7;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = 8;

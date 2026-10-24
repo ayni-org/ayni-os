@@ -23,13 +23,17 @@ struct AuthorityCleanupRecord {
 
 // Shape validation only; recovery additionally proves the complete transition.
 bool valid_authority_cleanup_record(const AuthorityCleanupRecord &record);
+// Exact complete progress fact, including its witness stamp; no live-model lookup.
+bool same_authority_cleanup_record(const AuthorityCleanupRecord &a,
+                                   const AuthorityCleanupRecord &b);
 
 // Owns fixed-through/monotone-after progress and requests arriving mid-scan.
 // All calls run on the work owner thread; this class neither walks nor changes Goals.
 class AuthorityCleanup {
   public:
     // A domain change requests all retained Goals through this stable ID.
-    // Zero means no retained Goals. An active frontier is never extended.
+    // Zero acknowledges an empty range without starting a scan. An active
+    // frontier is never extended or discarded by such an acknowledgement.
     // Nonzero frontier is a valid Goal ID; stamp is positive and does not
     // precede the retained stamp. One transition may coalesce requests.
     void request(uint64_t through_goal_id, foundation::TransitionStamp stamp);

@@ -28,6 +28,10 @@ constexpr uint16_t goal_state_record_version = 1;
 // Type 4/v2 carries state for an explicitly authorized Goal, including updates
 // to an older v2 Goal; this protects old readers without rewriting creation.
 constexpr uint16_t goal_state_with_authority_record_version = 2;
+// Same terminal state body, with a required work cleanup request (ADR-0038).
+constexpr uint16_t goal_state_with_cleanup_record_version = 3;
+// Same body, preserving all user/trigger state while updating authority only.
+constexpr uint16_t goal_state_authority_record_version = 4;
 // A GOAL record without its goal type id, trigger source and parameters.
 constexpr uint32_t goal_record_fixed_size = 108;
 constexpr uint32_t goal_state_record_size = 48;

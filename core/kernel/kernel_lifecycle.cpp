@@ -135,6 +135,10 @@ void ayni_kernel::apply_revocations(StepBudget &progress) {
             if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
                 applied = ayni::kernel::apply_revocation_cleanup(work);
             }
+            if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
+                applied = work.advance_authority_cleanup(host.monotonic_now_us(host.ctx),
+                                                         log.durable_seq());
+            }
             if (work.transitions.next_commit_seq() != first_seq) {
                 if (!applied) {
                     enter_restricted(AYNI_RESTRICTION_INTERNAL);
@@ -239,7 +243,9 @@ void ayni_kernel::report_step(const StepBudget &progress, ayni_step_report_v1 &r
     report.items_done = progress.items;
     const bool events_due = takes_events() && takes_event_now() && ingress.queued() > 0U;
     report.more_ready = completions.posted_count() > 0U || boot_due || log_due || maintenance_due ||
-                                events_due || work_due || revocation_ready()
+                                events_due || work_due || revocation_ready() ||
+                                (lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
+                                 work.authority_cleanup.ready())
                             ? 1U
                             : 0U;
     report.next_deadline_us = next_deadline_us;
@@ -315,6 +321,7 @@ void ayni_kernel::journal(uint64_t first_seq) {
         enter_restricted(AYNI_RESTRICTION_INTERNAL);
         return;
     }
+    work.request_authority_cleanup(stamp);
     ayni::durability::BatchWriter writer = log.begin();
     const std::size_t size = ayni::kernel::encode_transition(work, stamp, writer);
     if (size == 0U) {

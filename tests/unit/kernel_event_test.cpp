@@ -5,8 +5,8 @@
 // source. Runs on the simulation Host, whose clock moves only when a test
 // moves it.
 
-#include "kernel_node.h"
 #include "ingress_test_peer.h"
+#include "kernel_node.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>

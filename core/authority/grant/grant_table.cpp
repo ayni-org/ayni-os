@@ -92,12 +92,15 @@ bool lifecycle_state(const GrantRecord &record, foundation::TransitionStamp crea
                ? revision == grant_active_revision && same_stamp(created, stamp)
                : revision == grant_terminal_revision && after(stamp, created) &&
                      (lifecycle == AYNI_GRANT_REVOKED ||
+                      (lifecycle == AYNI_GRANT_GOAL_ENDED && record.grant.bound_goal_id != 0U) ||
                       (lifecycle == AYNI_GRANT_EXPIRED &&
                        record.grant.lifetime == AYNI_GRANT_CURRENT_BOOT));
 }
 
-bool terminal(const Grant &grant) {
-    return grant.lifecycle == AYNI_GRANT_EXPIRED || grant.lifecycle == AYNI_GRANT_REVOKED;
+void end_by_goal(Grant &grant, foundation::TransitionStamp stamp) {
+    grant.lifecycle = AYNI_GRANT_GOAL_ENDED;
+    grant.revision = grant_terminal_revision;
+    grant.stamp = stamp;
 }
 
 // Callers already admitted the transition/stamp. Root cleanup metadata is
@@ -119,6 +122,40 @@ bool at_or_after(foundation::TransitionStamp newer, foundation::TransitionStamp 
 }
 
 } // namespace
+
+bool terminal(const Grant &grant) {
+    return grant.lifecycle == AYNI_GRANT_EXPIRED || grant.lifecycle == AYNI_GRANT_REVOKED ||
+           grant.lifecycle == AYNI_GRANT_GOAL_ENDED;
+}
+
+uint64_t GrantTable::next_bound_goal_after(uint64_t after, uint64_t through) const {
+    uint64_t selected = 0;
+    for (uint32_t index = 0; index < size(); ++index) {
+        const auto id = at(index).bound_goal_id;
+        if (id > after && id <= through && (selected == 0U || id < selected)) {
+            selected = id;
+        }
+    }
+    return selected;
+}
+
+bool GrantTable::has_active_goal_grants(uint64_t goal_id) const {
+    for (uint32_t index = 0; index < size(); ++index) {
+        if (at(index).bound_goal_id == goal_id && at(index).lifecycle == AYNI_GRANT_ACTIVE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GrantTable::end_goal_grants(uint64_t goal_id, foundation::TransitionStamp stamp) {
+    for (uint32_t index = 0; index < size(); ++index) {
+        auto &grant = grants_[index];
+        if (grant.bound_goal_id == goal_id && grant.lifecycle == AYNI_GRANT_ACTIVE) {
+            end_by_goal(grant, stamp);
+        }
+    }
+}
 
 static_assert(GrantTable::storage_size({AYNI_GRANT_CAPACITY_MAX, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX,
                                         AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX}) <=
@@ -482,6 +519,10 @@ GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context, Checked
             }
             if (gated(grant.grant_id) || grant.lifecycle == AYNI_GRANT_REVOKED) {
                 failure = {AYNI_DENIED, AYNI_REASON_GRANT_REVOKED};
+                return false;
+            }
+            if (grant.lifecycle == AYNI_GRANT_GOAL_ENDED) {
+                failure = {AYNI_DENIED, AYNI_REASON_GRANT_GOAL};
                 return false;
             }
             if (grant.hold_reason != AYNI_REASON_NONE) {
@@ -957,6 +998,9 @@ GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
         }
         Grant &grant = grants_[index];
         revoke_by(grant, record.revoked_by_root_id, stamp);
+    } else if (record.lifecycle == AYNI_GRANT_GOAL_ENDED && at(index).bound_goal_id != 0U &&
+               record.revoked_by_root_id == 0U) {
+        end_by_goal(grants_[index], stamp);
     } else {
         return Restore::corrupt;
     }

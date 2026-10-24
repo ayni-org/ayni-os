@@ -319,16 +319,6 @@ ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bo
 // So an unbounded wait, added to when an occurrence fell due, never ends.
 static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
 
-void settle_goal_authority(WorkTables &tables, uint32_t index, foundation::TransitionStamp stamp) {
-    settle(
-        tables, After{},
-        [&](const Task &task) {
-            return !TaskTable::at_largest_revision(task) &&
-                   tables.goals.in_subtree(task.goal_index, index);
-        },
-        stamp);
-}
-
 bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
                    uint64_t &out_next_us) {
     const ayni_reason_t table = table_blocker(tables.tasks, id_left);

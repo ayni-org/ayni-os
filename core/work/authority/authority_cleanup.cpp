@@ -21,6 +21,9 @@ bool valid_authority_cleanup_record(const AuthorityCleanupRecord &record) {
 
 void AuthorityCleanup::request(uint64_t through_goal_id, foundation::TransitionStamp stamp) {
     if (through_goal_id == 0U) {
+        // An empty request is still witnessed by its enclosing transition;
+        // it creates no scan and never discards an already active frontier.
+        state_.stamp = stamp;
         return;
     }
     if (!ready()) {
@@ -31,6 +34,14 @@ void AuthorityCleanup::request(uint64_t through_goal_id, foundation::TransitionS
         state_.requested_through = through_goal_id;
     }
     state_.stamp = stamp;
+}
+
+bool same_authority_cleanup_record(const AuthorityCleanupRecord &a,
+                                   const AuthorityCleanupRecord &b) {
+    return a.stamp.transition_id == b.stamp.transition_id &&
+           a.stamp.commit_seq == b.stamp.commit_seq && a.phase == b.phase &&
+           a.after_goal_id == b.after_goal_id && a.through_goal_id == b.through_goal_id &&
+           a.requested_through == b.requested_through;
 }
 
 void AuthorityCleanup::visited(uint64_t goal_id, foundation::TransitionStamp stamp) {

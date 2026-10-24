@@ -207,8 +207,13 @@ void WorkModel::pause_goal_authority(uint32_t index) {
     const auto stamp = transitions.next();
     goal_authority.pause(index, stamp);
     goals.authority_changed(index, stamp);
-    auto work = tables();
-    work::settle_goal_authority(work, index, stamp);
+    for (uint32_t at = 0; at < tasks.size(); ++at) {
+        const auto &task = tasks.at(at);
+        if (task.goal_index == index && work::TaskTable::is_live(task.lifecycle) &&
+            task_authority.pause(task.slot, stamp)) {
+            tasks.authority_changed(at, stamp);
+        }
+    }
     due_work_changed = true;
 }
 
