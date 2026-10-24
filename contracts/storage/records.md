@@ -246,7 +246,7 @@ type 17/v2 已接入 Kernel arena、journal、snapshot 和恢复分类，必须�
 
 全部整数为小端。固定头 72 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16），再接五个 u64：binding_commit_seq（offset 32）、parent_goal_id（40）、parent_binding_commit_seq（48）、input_incarnation（56）、input_through（64）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32）。每项固定开销 28 B，不包括三段数据；总长必须恰好匹配。
 
-Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与原域必须有效，Scope 完整且被原域包含。Grant 引用或是 `{0,0}`（缺项），或是有效 Kernel ID 与非零 revision。proposed 至少缺一项且 binding 全零；authorized/paused 全部引用完整，binding_commit_seq 非零且不晚于 authority commit_seq。父 Goal ID/绑定序号同零或同非零；根为零，子项须与准入时父绑定相等。输入 incarnation=0 时 through 必须为 0；非零 incarnation 可配零水位（无输入），不得超过 boot ID 范围。F2 准入只允许初始零水位。显式 count=0 可授权或暂停，缺少整条记录仍是未知元数据，不能当零需求。表的配置容量可以小于记录绝对上限，放入时不足则不改变已有事实。
+Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与原域必须有效，Scope 完整且被原域包含。Grant 引用或是 `{0,0}`（缺项），或是有效 Kernel ID 与非零 revision。proposed 至少缺一项且 binding 全零；authorized/paused 全部引用完整，binding_commit_seq 非零且不晚于 authority commit_seq。父 Goal ID/绑定序号同零或同非零；根为零，子项须与准入时父绑定相等。输入 incarnation=0 时 through 必须为 0；非零 incarnation 可配零水位（无输入），不得超过 boot ID 范围。F2 的 journal/snapshot 均拒绝非零恢复边界，F4 随完整恢复事务证明另行开放。显式 count=0 可授权或暂停，缺少整条记录仍是未知元数据，不能当零需求。表的配置容量可以小于记录绝对上限，放入时不足则不改变已有事实。
 
 journal/snapshot 使用同一 codec。journal 正文 stamp 等于 batch，Goal 状态必须在同批更新；已有元数据的原需求不可改变，stamp 严格前进，授权/暂停不能退回 proposed。snapshot stamp 在覆盖边界内且不晚于 Goal 的最后提交。Grant 选择保存 ACTIVE revision，与后来终态 revision 不同不构成损坏；所选主体、原 schema/domain 与覆盖关系仍须一致。活 Goal 所引用 Grant 缺失损坏，持久终态 Goal 可保留已回收历史引用。新 boot 的目录兼容与可消费性单独检查，不改写原需求。记录不保存单调时间、指针、进程句柄、输入队列状态或 Grant 的易失引用释放 fence。
 
@@ -255,7 +255,7 @@ journal/snapshot 使用同一 codec。journal 正文 stamp 等于 batch，Goal �
 
 ## Task 授权元数据（MA-006 F）
 
-ADR-0038 决策 2～6：type 18/v1 已接入 arena、journal、snapshot、发现及容量预算，必须 REQUIRED。journal 新 Task 按 TASK→TASK_STATE→TASK_AUTHORITY 配对，状态后必须紧接该 Task 的准入，批次结束不能留未配对身份；snapshot 在该 Task 的步骤/检查点/状态后紧接同一准入，可跨页。整批或整份快照拒绝缺项、重复、错 Task/Goal/绑定/引用/stamp、未来 boot 身份及夹带记录。旧 schema 在新写入前拒绝。
+ADR-0038 决策 2～6：type 18/v1 已接入 arena、journal、snapshot、发现及容量预算，必须 REQUIRED。journal 每批至多派生一个新 Task，按 TASK→TASK_STATE→TASK_AUTHORITY 配对，状态后必须紧接该 Task 的准入，批次结束不能留未配对身份；snapshot 在该 Task 的步骤/检查点/状态后紧接同一准入，可跨页。整批或整份快照拒绝缺项、重复、错 Task/Goal/绑定/引用/stamp、未来 boot 身份及夹带记录。旧 schema 在新写入前拒绝。
 
 全部小端，固定头 48 B：offset 0 task_id u64、8 goal_id u64、16 goal_binding_seq u64、24 transition_id u64、32 commit_seq u64、40 phase u32（1=authorized、2=paused）、44 count u32。随后 count 项，每项 Grant ID u64/revision u32，共 12 B，顺序对应原 Goal 需求。count=0 是明确零需求，不是缺少事实。
 

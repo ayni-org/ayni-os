@@ -161,6 +161,9 @@ class WorkReplay {
     // and Task pairs may coexist with authority; disengaged means no missing
     // state. progress_seq remembers the last progress batch to reject duplicates.
     struct BatchPairing {
+        // A journal transition derives at most one Task, even after that
+        // Task's complete state/admission pair has closed. 0 before any.
+        uint64_t task_created_seq = 0;
         std::optional<uint64_t> goal; // Nonzero created Goal awaiting its state; empty otherwise.
         std::optional<uint64_t> task_authority; // Exact new Task awaiting its admission record.
         std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.

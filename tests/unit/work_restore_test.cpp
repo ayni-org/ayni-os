@@ -1514,6 +1514,115 @@ TEST(WorkReplay, task_replacement_cannot_hide_a_pending_admission) {
     EXPECT_FALSE(replay.complete());
 }
 
+// C-STORE-020: an admission record cannot fabricate a paused derivation or
+// name a transition other than the enclosing batch, even with valid shape.
+TEST(WorkReplay, new_task_admission_rejects_wrong_transition_and_paused_phase) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t task_id = UINT64_C(0x100000008);
+    for (const bool paused : {false, true}) {
+        Model model(small_capacities(), true);
+        WorkReplay replay(*model);
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
+                  RecordUse::applied);
+        ASSERT_EQ(
+            feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+            RecordUse::applied);
+        admit_zero_goal_fixture(*model, replay_goal_id, 1);
+        ASSERT_EQ(
+            feed(replay, 2, ayni::work::task_record_type, task_record(task_id, replay_goal_id)),
+            RecordUse::applied);
+        ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id)),
+                  RecordUse::applied);
+        ayni::work::TaskAuthorityRecord record{};
+        record.task_id = task_id;
+        record.ceiling = {replay_goal_id, 1};
+        record.stamp = {paused ? 102U : 103U, 2};
+        record.phase = paused ? ayni::work::TaskAuthorityPhase::paused
+                              : ayni::work::TaskAuthorityPhase::authorized;
+        ASSERT_TRUE(ayni::work::valid_task_authority_record(record));
+        std::vector<uint8_t> body(ayni::work::task_authority_record_max(0));
+        ayni::work::write_task_authority_record(record, body.data());
+        EXPECT_EQ(feed(replay, 2, ayni::work::task_authority_record_type, body),
+                  RecordUse::corrupt);
+    }
+}
+
+// C-STORE-020: an existing Task STATE cannot admit an unrelated metadata write.
+// F4 will introduce its own complete proof for replacing authority references.
+TEST(WorkReplay, ordinary_task_state_cannot_admit_an_orphan_authority_update) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t task_id = UINT64_C(0x100000008);
+    Model model(small_capacities(), true);
+    WorkReplay replay(*model);
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(
+        feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+        RecordUse::applied);
+    admit_zero_goal_fixture(*model, replay_goal_id, 1);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(task_id, replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id)),
+              RecordUse::applied);
+    admit_zero_task_fixture(replay, *model, task_id, 2);
+    ASSERT_TRUE(replay.complete());
+    ASSERT_EQ(feed(replay, 3, ayni::work::task_state_record_type, task_state_record(task_id, 2)),
+              RecordUse::applied);
+    auto record = model->task_authority.at(model->tasks.at(0).slot);
+    record.stamp = {103, 3};
+    std::vector<uint8_t> body(ayni::work::task_authority_record_max(0));
+    ayni::work::write_task_authority_record(record, body.data());
+    EXPECT_EQ(feed(replay, 3, ayni::work::task_authority_record_type, body), RecordUse::corrupt);
+}
+
+// C-ID-010/C-STORE-020: shape-valid Task IDs must still belong to an observed boot.
+TEST(WorkReplay, a_task_from_a_future_boot_is_inconsistent) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t task_id = UINT64_C(0x200000008);
+    Model model(small_capacities(), true);
+    WorkReplay replay(*model);
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(
+        feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+        RecordUse::applied);
+    admit_zero_goal_fixture(*model, replay_goal_id, 1);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(task_id, replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id)),
+              RecordUse::applied);
+    admit_zero_task_fixture(replay, *model, task_id, 2);
+    ASSERT_TRUE(replay.complete());
+    EXPECT_FALSE(replay.consistent(1));
+}
+
+// C-STORE-020: one journal transition derives one Task. Even a fully paired
+// terminal first Task cannot make room for a second creation in that batch.
+TEST(WorkReplay, a_completed_admission_does_not_allow_a_second_task_in_the_batch) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t first = UINT64_C(0x100000008);
+    constexpr uint64_t second = UINT64_C(0x100000009);
+    Model model(small_capacities(), true);
+    WorkReplay replay(*model);
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(
+        feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+        RecordUse::applied);
+    admit_zero_goal_fixture(*model, replay_goal_id, 1);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(first, replay_goal_id)),
+              RecordUse::applied);
+    auto ended = created_task(first, replay_goal_id);
+    ended.lifecycle = AYNI_TASK_COMPLETED;
+    std::vector<uint8_t> state(ayni::work::task_state_record_size);
+    ayni::work::write_task_state_record(ended, state.data());
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, state), RecordUse::applied);
+    admit_zero_task_fixture(replay, *model, first, 2);
+    ASSERT_TRUE(replay.complete());
+    EXPECT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(second, replay_goal_id)),
+              RecordUse::corrupt);
+}
+
 // A goal is created for an instance an earlier record started (C-LIFE-020).
 TEST(WorkReplay, goal_of_an_instance_no_record_started_is_corrupt) {
     Model model(small_capacities());

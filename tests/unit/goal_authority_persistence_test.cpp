@@ -12,6 +12,7 @@
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
+#include "work/task/task_records.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>
@@ -1449,6 +1450,72 @@ TEST(GoalAuthorityPersistence, initial_binding_rejects_an_already_expired_select
     replayed.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
     replayed.run();
     EXPECT_EQ(replayed.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+// ADR-0038 decision 12: first admission establishes the batch's own sequence,
+// not another earlier, individually well-formed binding generation.
+TEST(GoalAuthorityPersistence, fresh_creation_rejects_a_forged_earlier_binding) {
+    Fixture source;
+    source.run();
+    source.goal();
+    auto storage = source.work.node().sim().durable_storage();
+    auto batch = decode(storage.log.back());
+    auto &row = authority_record(batch.records);
+    GoalAuthorityRecord record{};
+    ASSERT_TRUE(read_goal_authority_record(row.body.data(), row.header.length, record));
+    ASSERT_GT(record.binding.established_seq, 1U);
+    record.binding.established_seq = 1;
+    ASSERT_TRUE(valid_goal_authority_record(record));
+    write_goal_authority_record(record, row.body.data());
+    storage.log.back() = encode(batch);
+    Fixture replayed;
+    replayed.work.node().sim().durable_storage() = storage;
+    replayed.run();
+    EXPECT_EQ(replayed.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+// ADR-0038 decision 12: F2 has no reauthorization transaction. Even a zero-needs
+// Goal cannot acquire a forged input resume boundary in a static snapshot.
+TEST(GoalAuthorityPersistence, snapshot_rejects_resume_boundaries_before_the_resume_protocol) {
+    Fixture source;
+    source.run();
+    source.goal();
+    for (const uint64_t through : {0U, 1U}) {
+        auto image = snapshot(source);
+        auto &row = authority_record(image.records);
+        GoalAuthorityRecord record{};
+        ASSERT_TRUE(read_goal_authority_record(row.body.data(), row.header.length, record));
+        record.binding.input = {image.metadata.boot_epoch, through};
+        ASSERT_TRUE(valid_goal_authority_record(record));
+        write_goal_authority_record(record, row.body.data());
+        Fixture restored;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+    }
+}
+
+// C-STORE-020: TASK_AUTHORITY cannot close a snapshot Task before its STATE.
+// Individually valid admission bytes cannot substitute the table's default state.
+TEST(TaskAuthorityPersistence, snapshot_cannot_skip_state_before_its_admission) {
+    Fixture source;
+    source.run();
+    const auto goal = source.work.create(WorkNode::create_body(
+        source.work.instance(agent_a), 0, "reminder", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(goal.status, AYNI_OK);
+    source.work.node().step(1);
+    source.work.node().recover();
+    ASSERT_NE(source.work.goal(goal.result.object.id).last_task_id, 0U);
+    auto image = snapshot(source);
+    const auto state =
+        std::find_if(image.records.begin(), image.records.end(),
+                     [](const auto &row) { return row.header.type == task_state_record_type; });
+    ASSERT_NE(state, image.records.end());
+    --image.metadata.record_count;
+    image.metadata.payload_length -= record_header_size + state->header.length;
+    image.records.erase(state);
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
 }
 
 // ADR-0038: terminal progress does not waive its inherited admission proof.

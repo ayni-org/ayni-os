@@ -348,7 +348,8 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::TaskRecord record{};
     uint32_t goal_index = 0;
-    if (pairing_.task.has_value() || !work::read_task_record(body, size, record) ||
+    if (pairing_.task_created_seq == stamp.commit_seq || pairing_.task.has_value() ||
+        !work::read_task_record(body, size, record) ||
         !model_.goals.find(record.task.goal_id, goal_index) ||
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return RecordUse::corrupt;
@@ -357,6 +358,7 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
     const work::TaskTable::Restore restore =
         model_.tasks.restore(record.task, record.task_id, record.replaced_task_id, stamp);
     if (restore == work::TaskTable::Restore::restored) {
+        pairing_.task_created_seq = stamp.commit_seq;
         pairing_.task = record.task_id;
         pairing_.task_authority = record.task_id;
     }
@@ -611,7 +613,7 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
     const auto record = model_.goal_authority.at(goal_index);
     if (record.phase != work::GoalAuthorityPhase::proposed &&
         (record.binding.parent.goal_id != goal.parent_goal_id ||
-         record.binding.input.incarnation > boot_epoch_limit)) {
+         record.binding.input.incarnation != 0U || record.binding.input.through != 0U)) {
         return false;
     }
     if (record.binding.parent.goal_id != 0U) {
@@ -808,8 +810,9 @@ void WorkReplay::hold_tasks() {
     }
 }
 
-// Compatibility failures remain the primary reason for a hold. Otherwise
-// legacy work has no durable authorization evidence and must not advance.
+// Compatibility failures remain the primary reason for a hold. F2 retains
+// the restart restriction even with complete schema 2 authority; F5 validates
+// normal restart before replacing this temporary hold.
 void WorkReplay::hold_unconfirmed_work() {
     for (uint32_t index = 0; index < model_.goals.size(); ++index) {
         const auto &goal = model_.goals.at(index);

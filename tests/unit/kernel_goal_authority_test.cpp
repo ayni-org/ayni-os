@@ -485,6 +485,83 @@ TEST(GoalRequirements, revoke_before_decision_preserves_ready_task_progress) {
     EXPECT_EQ(node.work.task(task).step_count, 0U);
 }
 
+// ADR-0038 decision 3: changing a parent's generation immediately invalidates
+// its child's saved admission, independently of an eventual cleanup scan.
+TEST(GoalRequirements, parent_generation_change_immediately_denies_child_consumption) {
+    AuthorityWork node;
+    node.count = 0;
+    node.run();
+    const auto parent = node.create();
+    ASSERT_EQ(parent.status, AYNI_OK);
+    const auto child = node.create(AYNI_TRIGGER_ONCE, parent.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    auto &model = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.goals.find(parent.result.object.id, index));
+    auto record = model.goal_authority.at(index);
+    // White-box generation change: F4 will own the complete public transaction.
+    record.stamp = model.transitions.next();
+    record.binding.established_seq = record.stamp.commit_seq;
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
+    EXPECT_EQ(node.authority(child.result.object.id).effective_reason,
+              AYNI_REASON_GOAL_AUTHORITY_PARENT);
+    node.work.node().step();
+    EXPECT_EQ(node.work.goal(child.result.object.id).last_task_id, 0U);
+}
+
+// C-STORE-020: the selected revision belongs to Task admission as well as Goal
+// admission. White-box alteration must be visible through consumption/query.
+TEST(TaskAuthorityApi, a_task_cannot_substitute_its_selected_grant_revision) {
+    AuthorityWork node;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto id = node.work.goal(goal.result.object.id).last_task_id;
+    auto &model = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.tasks.find(id, index));
+    auto record = model.task_authority.at(model.tasks.at(index).slot);
+    ++record.references[0].revision;
+    ASSERT_EQ(model.task_authority.install_validated(model.tasks.at(index).slot, record), AYNI_OK);
+    ayni_task_authority_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), id, &info), AYNI_OK);
+    EXPECT_EQ(info.effective_reason, AYNI_REASON_GOAL_AUTHORITY_MISSING);
+    node.work.node().step();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// C-STORE-020: two disjoint requirements inherit their own selections in order.
+TEST(TaskAuthorityApi, multiple_requirements_keep_distinct_selected_grants) {
+    AuthorityWork node;
+    node.count = 2;
+    node.low[1] = 50;
+    node.run();
+    const auto first = node.grant(0, 20);
+    ASSERT_EQ(first.status, AYNI_OK);
+    node.work.node().recover();
+    const auto second = node.grant(40, 100);
+    ASSERT_EQ(second.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto task = node.work.goal(goal.result.object.id).last_task_id;
+    uint32_t at = 0;
+    for (const auto id : {first.result.object.id, second.result.object.id}) {
+        ayni_task_authority_reference_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_task_authority_reference(node.work.kernel(), task, at++, &info),
+                  AYNI_OK);
+        EXPECT_EQ(info.grant_id, id);
+        EXPECT_EQ(info.grant_revision, 1U);
+    }
+}
+
 // ADR-0037 minimum gate: callback elapsed time cannot commit steps/checkpoints after expiry.
 TEST(GoalRequirements, deadline_crossed_inside_strategy_discards_all_returned_progress) {
     AuthorityWork node;
