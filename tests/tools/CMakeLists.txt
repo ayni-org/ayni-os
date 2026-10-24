@@ -1,5 +1,5 @@
 add_test(NAME ci_tools_rules
-    COMMAND "${Python3_EXECUTABLE}" -m unittest -v test_ci_tools
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s . -p test_ci_*.py -v
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_test(NAME check_deps_rules

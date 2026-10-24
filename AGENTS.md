@@ -20,11 +20,13 @@ Keep implementations within the planned layout:
 
 ## Build, Test, and Development Commands
 
-`docs/workflow.md` records the per-package workflow used since M1 (decisions, tests, documents, validation, review, and merge), and `reports/core/m1-progress.md` records the M1 order, PR split, decisions made, and current status; follow both when taking over work. Start from the current "交接状态" section of `reports/core/m1-progress.md`; section 7 of `docs/workflow.md` retains the original handoff procedure after `MA-010` B+C+D (#20). `docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan.
+`docs/workflow.md` records the per-package workflow used since M1 (decisions, tests, documents, validation, review, and merge), and `reports/core/m1-progress.md` records the M1 order, PR split, decisions made, and current status; follow both when taking over work. Start from the current "交接状态" section of `reports/core/m1-progress.md`; section 7 of `docs/workflow.md` records the current handoff procedure. `docs/development.md` records the pinned toolchains, CMake presets, and checks. For documentation changes, run `git diff --check`, `python3 tools/check_contracts.py`, and check consistency with the plan.
 
-Before builds, test suites, or mutation runs, inspect available host memory, swap pressure, CPU capacity, and other active jobs. Choose explicit build and test parallelism from their combined peak resource budget, including other agents and containers, and leave headroom for the desktop and other applications. Set `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL` to the chosen positive job counts (`ctest` runs one test at a time otherwise); when using containers, set CPU and memory limits from that budget. Monitor resource use during execution and reduce concurrency or pause work if pressure rises. Parallel execution is allowed when resources permit; serial execution and a fixed 2 GiB limit are not universal requirements. Do not use unbounded `-j` or choose concurrency from CPU count alone.
+Before builds or test suites, inspect available host memory, swap pressure, CPU capacity, and other active jobs. Choose explicit build and test parallelism from their combined peak resource budget, including other agents and containers, and leave headroom for the desktop and other applications. Set `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL` to the chosen positive job counts (`ctest` runs one test at a time otherwise); when using containers, set CPU and memory limits from that budget. Monitor resource use during execution and reduce concurrency or pause work if pressure rises. Parallel execution is allowed when resources permit; serial execution and a fixed 2 GiB limit are not universal requirements. Do not use unbounded `-j` or choose concurrency from CPU count alone.
 
-Native commands (after setting `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL`):
+Local validation is selected by the changed behavior and dependencies; no local full suite or five-configuration matrix is mandatory before a PR. Ordinary code PRs run the full existing ASan/UBSan suite in CI; additional configurations follow affected paths, explicit full validation, and weekly runs (see `docs/workflow.md`). Report which local checks actually ran.
+
+Optional Native commands (after setting `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL`):
 
 ```sh
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
@@ -41,19 +43,19 @@ Target C++17 Core and a C99-compatible public API; disable exceptions/RTTI in Co
 
 Use types, construction rules, and boundary validation to express identities, units, ranges, and legal states. Keep invariant checks with their owner; avoid implicit state machines built from unrelated boolean flags or scattered duplicate validation.
 
-`.clang-format` defines C/C++ formatting (four-space indentation), and CI checks it with clang-format 18. Use `snake_case` functions/files and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. CI builds with warnings as errors (`AYNI_WARNINGS_AS_ERRORS`) on GCC and Clang and runs the `native-asan` preset (ASan/UBSan); clang-tidy runs weekly and on manual dispatch as an advisory job and does not fail the build. Add configurations before claiming further enforcement.
+`.clang-format` defines C/C++ formatting (four-space indentation), and CI checks it with clang-format 18. Use `snake_case` functions/files and the planned `ayni_` public-symbol prefix. Preserve the Chinese prose and heading structure in the implementation plan. CI uses warnings as errors (`AYNI_WARNINGS_AS_ERRORS`); ordinary code PRs run GCC `native-asan` (ASan/UBSan), while Release, Clang and TSan run when affected or during full periodic validation; clang-tidy runs weekly and on manual dispatch as an advisory job and does not fail the build. Add configurations before claiming further enforcement.
 
 Comments should explain invariants, ownership, design reasons, and non-obvious tradeoffs. Do not introduce unused dependencies or fields, commented-out implementations, or comments that merely narrate the code. Remove obsolete code and comments caused by the current change without expanding into unrelated cleanup.
 
 ## Testing Guidelines
 
-Native tests use GoogleTest 1.17.0, fetched and pinned by `cmake/AyniGoogleTest.cmake` (ADR-0012); ESP32 tests will use ESP-IDF's Unity from M2. Verify public behavior, contracts, invariants, boundaries, and failure paths with tests proportionate to the change and risk. Use descriptive scenario names such as `recovery_after_dispatch_barrier`. Plan deterministic fixtures for multi-Agent resource sharing, crash recovery, and model/strategy replacement; follow the plan's E1–E4 gates before full hardware integration.
+Native tests use GoogleTest 1.17.0, fetched and pinned by `cmake/AyniGoogleTest.cmake` (ADR-0012); ESP32 tests will use ESP-IDF's Unity from M2. Per the user's 2026-10-24 workflow decision, add relevant normal-behavior tests for current development. Suspend mandatory planted-defect/mutation tests and new fault-injection or recovery-specific tests; do not move them into an automatic package-end requirement. Preserve existing tests and keep them in the CI full suite. Deferred fault/recovery evidence remains explicitly unverified; the plan's E1–E4 and hardware/release acceptance claims still require their own evidence when resumed. Use descriptive scenario names.
 
 Target Core coverage ≥75% and safety-critical branch coverage ≥90%; record deviations with evidence and an ADR. Distinguish compilation, simulation, hardware, and endurance results. Record versions, configuration, fault points, and traces needed to reproduce results; report unexecuted checks and limitations explicitly.
 
 ## Commit & Pull Request Guidelines
 
-Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. Open PRs as drafts and mark them ready only after local validation and review (`docs/workflow.md` steps 9–10): CI skips drafts, because Actions minutes are limited. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and traces for recovery changes. Update contracts, migrations, ADRs, and relevant tests when semantics change; keep affected project documentation consistent.
+Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. Open PRs as drafts and mark them ready after relevant local checks and the applicable review (`docs/workflow.md` steps 9–10); CI skips drafts to avoid consuming the single runner during development. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and any recovery traces actually collected; do not create a new recovery test campaign merely for PR evidence while that work is paused. Update contracts, migrations, ADRs, and relevant tests when semantics change; keep affected project documentation consistent.
 
 ## Architecture & Security Constraints
 
@@ -96,7 +98,7 @@ Keep credentials and private media out of commits and logs; configure secrets at
 
 - After a nontrivial code change, proactively perform a design self-review before delivery without waiting for a separate review request. Check module placement and invariant ownership, abstraction levels and call chains, dependency direction, duplicate mechanisms, and unnecessary generalization or layering.
 - Correct issues introduced by the change within the authorized scope. Surface important problems requiring broader product, compatibility, or architecture changes with evidence and options rather than expanding the task silently.
-- Verify changed contracts, failure/concurrency/lifecycle paths, portability boundaries, and the relevant checks. Summarize material tradeoffs, remaining issues, and actual validation; do not present a prose self-review as executed tests. Keep the effort proportionate and avoid unrelated repository-wide audits or boilerplate checklists.
+- Inspect changed contracts, failure/concurrency/lifecycle paths and portability boundaries, and run relevant checks under the current testing policy; do not treat inspection as execution of deferred fault/recovery tests. Summarize material tradeoffs, remaining issues, and actual validation; do not present a prose self-review as executed tests. Keep the effort proportionate and avoid unrelated repository-wide audits or boilerplate checklists.
 
 ## Readability Requirements
 
@@ -146,18 +148,17 @@ exception and the reason in its How section.
   was searched when nothing was found. One sentence covering every item is not
   a result. The author's self-check (step 8) reports the same items separately
   in the PR's Review section.
-- Another agent or session writes the planted-defect list, by default the one
-  that does the independent review. The PR names who
-  wrote it and gives the list (file, change, and the test that caught it) with
-  the first-run result before any added test; results after added tests are
-  reported separately.
-- When one part's production changes (`core/`, `include/`) exceed about 1,500
-  changed lines, split it into PRs that each build and pass, for example
-  records and codec, then the table, then the API.
+- Planted-defect/mutation campaigns and their evidence tables are suspended
+  under the current testing policy. Historical results remain historical evidence.
+- Default to one PR per complete feature, with focused commits for prerequisite
+  cleanup, records, implementation, API and tests. Split only at independently
+  deliverable boundaries or when complexity makes a complete review impractical.
+  About 1,500 changed production lines is a review prompt, not an automatic split
+  threshold; explain a materially large scope and its review structure in the PR.
 - Status documents stay short. The 交接状态 section of
   `reports/core/m1-progress.md` and the 当前状态 paragraph of
   `docs/ayni_v1.0.md` say what is done, what is next and what waits on the
-  user. Commands and results, the planted-defect list, CI run IDs and test
+  user. Commands and results, CI run IDs and test
   counts belong in the PR body; the ADR's 验证 section states the outcome and
   links the PR. Coverage is measured once each part has merged, not in every
   PR (`docs/workflow.md` section 2 step 9). Merge-conditional wording

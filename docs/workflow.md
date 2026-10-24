@@ -1,7 +1,8 @@
 # 开发流程
 
 - **关联**：`AGENTS.md`；`docs/development.md`；计划 §9、§9.1、§14；`reports/core/m1-progress.md`
-- **适用**：接手本仓库工作的任何代理（Claude、Codex 等）与开发者。本文记录 M1 以来实际使用的流程，目的是换人接手时流程与实现保持一致。执行顺序、PR 拆分与当前进度见 `reports/core/m1-progress.md`。
+- **适用**：接手本仓库工作的任何代理与开发者。本文记录当前交付流程；历史 PR 的验证结果不因流程调整而改写。
+- **当前决定（用户 2026-10-24）**：按完整功能组织 PR；暂停强制植入缺陷/变异及新增故障注入、恢复专项测试，当前先补相关正常功能测试；本地按需验证，普通代码 PR 由 CI 完成现有 ASan/UBSan 全套，其他配置按改动或定期运行。
 
 ## 1. 依据与优先级
 
@@ -11,130 +12,121 @@
 4. `contracts/`：逐条契约，每条带验证列；`docs/adr/`：已接受的决定。
 5. 本文与 `reports/core/m1-progress.md`。
 
-以上相互冲突、或工作要越出用户的要求时，先问用户，不自行扩大范围。
+按用户最新明确指示处理历史规则的差异；没有授权的产品语义变化仍须提出决策，不自行扩大范围。
 
 ## 2. 一个工作包的流程
 
-按 PR 改了什么决定走哪几步（用户 2026-10-23 决定）。第 3 节与 `AGENTS.md` 的代码规则、可读性要求和第 8 步的自查不分档，每个 PR 都照做；分档只决定植入缺陷、独立审查、验证范围和 ADR：
+代码规则、可读性要求与作者自查保持；验证按实际改动选择，不再把所有代码 PR 都送入完整五配置。
 
-| PR 类型 | 植入缺陷（第 6 步） | 独立审查（第 10 步） | 验证（第 9 步） | ADR（第 7 步） |
+| PR 类型 | 新增测试 | 独立审查（第 10 步） | 验证（第 9 步） | ADR（第 7 步） |
 |---|---|---|---|---|
-| Core 逻辑：`core/`、`include/` 的改动，包括行为不变的整理 | 做 | 做 | 第 4 节全部；F 本轮分层规则见下文 | 每个部分一份 |
-| 其他代码与构建：Host、runtime、targets、测试、工具脚本、CMake、CI | 不做 | 作者自查；涉及授权、隐私或停止链时另开 | 第 4 节全部 | 有新的决定时写 |
-| 纯文档（不改契约语义） | 不做 | 作者自查 | 契约检查与 diff 检查 | 不写 |
+| Core 逻辑：`core/`、`include/`，包括行为不变的整理 | 相关正常功能测试；专项暂停见第 6 步 | 完整功能一次；修复后复查改动及影响 | 本地按需；CI 检查及 ASan，附加配置见第 4 节 | 有新的架构、接口或兼容决定时写 |
+| 其他代码与构建：Host、runtime、targets、测试、工具脚本、CMake、CI | 相关正常功能测试 | 作者自查；涉及授权、隐私或停止链时另开 | 本地按需；CI 检查及 ASan，附加配置见第 4 节 | 有新的决定时写 |
+| 纯文档（不改契约语义） | 不要求 | 作者自查 | 契约与 diff 检查、计划一致性；CI 不编译 | 不机械新增 |
 
-省下的时间用在代码本身：审查自上而下看依赖方向、模块边界与状态归属，不核对取证材料（第 9 步）。
-
-1. **读。** 计划 §9.1 中该包的行与依赖；相关契约条目（`contracts/README.md` 的前缀表指向各文件）；前一个相关 ADR；`reports/core/m1-progress.md` 中该包的拆分与已定决定。代码从相邻模块的现有写法学起，沿用同样的命名、注释密度与测试结构。
-2. **拆分。** 按依赖把包拆成若干 PR，每个 PR 可以单独审查、单独合并、CI 单独通过。大的包按部分拆（例如 `MA-004` 分三部分共八个 PR，`MA-010` 分 A 至 F 六部分）。用户 2026-10-20 要求提速之后，相互依赖的部分曾合为一个 PR（`MA-010` 的 B+C+D、E+F）。E+F 的 #21 一个 PR 改了 88 个文件、增加 6,724 行，状态分散与难读的问题没在审查中暴露，到 #23 才整理；用户 2026-10-22 决定改回每个部分一个 PR，相互依赖的部分按依赖顺序先后提交。拆分写进该包第一个 ADR 的决策（例如 ADR-0025 决策 1）和 `reports/core/m1-progress.md`。
+1. **读。** 读计划 §9.1 中该包的行与依赖、相关契约、前一个相关 ADR，以及进度文档的交接状态。沿相关调用链了解已有机制与不变量属主。
+2. **拆分。** 普通工作包默认按一个完整功能交付一个 PR；前置整理、记录编码、表结构、API 与测试用清楚的 commit 组织，不机械拆成多个 PR。只有存在独立交付边界、不同兼容/回退需求，或复杂度确实超出一次完整审查能力时才拆。约 1,500 行生产 diff 是评估提醒，不是强制拆分线。大的工作包按完整能力拆成少量 PR，写明边界和依赖；不把无关功能拼成大 PR。
 3. **区分决策。**
    - **产品语义**（用户看得到的行为、默认值、数据的保留与删除、版本兼容、预算、隐私与安全边界）须请用户决定。提问格式：一个问题；2–4 个选项，每个一句话说明选后会怎样；标出推荐项与理由；问题与选项都用用户的中文。
    - **不等回复。** 提问后按推荐项继续做，并在回复与 ADR 中写明“按推荐项实现，改选再改”；用户改选时修改实现与 ADR。例外：生产环境变更、批量删除、对外发送、超预算采购、开放真实运动等不可撤销或越过计划 §14.2 末段边界的操作，须等用户明确答复。
-   - **实施细则**由实现者决定，写进 ADR 的“决策”与“备选方案”，不单独请用户决定。
-   - 用户的决定记在 ADR 中，注明“（产品语义，用户选定推荐项）”及日期；影响计划的同时写进计划 §14.1。
-4. **实现。** 遵守第 3 节的代码规则。只做该 PR 的范围；发现范围外的问题，写进 ADR 的“后果”或交给后续包，不顺手扩大。
-   - **新状态先定归属。** 新状态放进拥有它的模块或类，不顺手加在内核对象上（`core/kernel/kernel_state.h` 的 `struct ayni_kernel`）。内核每新增一个字段，PR 正文的 How 小节都要写明它归谁、为什么不放进已有的类（用户 2026-10-22 决定）。
-5. **测试。**
-   - 以经 C ABI 的场景测试为主（`tests/unit/kernel_*_test.cpp`，用 `tests/unit/kernel_node.h` 的 `Node` 与 `tests/unit/work_node.h` 的 `WorkNode`），每个模块另有自己的单元测试；直接读取内部状态的断言在注释中标明 “White-box”。
-   - 测试名描述场景（如 `retried_command_returns_its_first_result`），注释写明它验证的契约条目或 ADR 决策（如 “C-WIRE-004”“ADR-0026 decision 9”），不使用只在讨论里出现过的临时编号。
-   - 每条改为已实现的契约，验证列都要引用至少一个已存在的测试（`Suite.test` 形式，`tools/check_contracts.py` 会检查测试是否存在）。
-6. **植入缺陷测试（只对核心逻辑）。** Core 中的状态机、准入规则、恢复与提交路径要做；文档、测试、Host 外围与小改动不做。做法：逐个植入 15–25 个小缺陷（反转或放宽比较、删掉一项检查、差一、换掉选择规则），覆盖 diff 中的主要判断即可，不追求数量；每个重新编译并运行单元测试，记录被至少一个测试发现的个数；没被发现的，要么补测试，要么说明它与原实现行为相同（等价缺陷）并写出理由。
-   - **缺陷由另一个会话出题。** 缺陷清单由另一个代理或新会话写，默认就是做第 10 步独立审查的那个会话，一次交接同时完成出题与审查；按 diff 与契约选位置，不按已有测试选；实现者运行清单并补测试。写测试的人自己出题，容易只在测过的地方埋缺陷：#21 自己出的 40 个全被发现，#23 在同一份代码里另出 38 个，原有测试只发现 13 个（用户 2026-10-22 决定）。
-   - 结果只写在 PR 正文的 Validation：总数与首轮发现数，一张缺陷表（文件、改动、首轮结果、发现它的测试），没被发现的缺陷逐条写处理（补的测试或等价的理由）。ADR 的“验证”只写总数与发现数。
+   - **实施细则**由实现者决定；有新的重要决定时写进 ADR，不单独请用户决定。
+   - 用户的决定记在相关 ADR 中，注明“（产品语义，用户选定推荐项）”及日期；影响计划的同时写进计划 §14.1。
+4. **实现。** 只做该 PR 的范围；范围外问题留给后续任务。新状态先定归属，不顺手加进 `core/kernel/kernel_state.h` 的 `ayni_kernel`；每个 Kernel 新字段在 PR 的 How 说明属主及不能放入已有模块的原因。
+5. **测试。** 当前新增测试聚焦相关正常功能与公开行为；以经 C ABI 的场景测试及模块测试为主。直接读取内部状态的断言标明 `White-box`。测试名描述场景，注释写契约条目或 ADR 决策。契约标为已实现时只引用已有且实际验证相应行为的测试，不以正常场景通过推定故障或恢复保证成立。
+6. **专项测试暂停。** 按用户 2026-10-24 决定，当前不要求植入缺陷/变异、独立出题、变异结果表，也不强制新增故障注入或恢复专项测试；不在工作包收尾自动补做这些专项。现有测试不删除、不跳过，仍随 CI 完整套件运行。未验证的故障与恢复路径如实列为限制；E1–E4、硬件及发布验收没有因此变成已完成，恢复专项工作另按后续安排进行。
 7. **文档，与代码在同一 PR。**
-   - **ADR**：Core 逻辑每个部分一份新 ADR，该部分的几个 PR 共用（例如 `MA-006` R2b 的三个 PR 共用一份）：第一个 PR 新建，状态写“实施中”；之后的 PR 各追加自己的决策与验证；最后一个 PR 合并时改为“已接受”。中文，小节为状态、日期、关联、背景、决策、后果、备选方案、验证；`docs/adr/README.md` 加一行。格式照最近的 ADR（如 ADR-0025、ADR-0026）。其他 PR 按本节开头的表。
-   - **ADR 的“验证”写结论，细节写在 PR。** 写跑了哪些配置及结果、缺陷总数与发现数、内存数字是否变化，并链接 PR；命令输出、缺陷表、测试数与运行编号写在 PR 正文，不在两处各写一遍。
-   - **已接受的 ADR 不改写。** 被新 ADR 改变的句子，在句末加括注“（自 ADR-NNNN 起，……）”；被流程调整改变的，括注写日期与本文的位置。
-   - **契约**：语义变化同步修改 `contracts/` 中的条款与验证列。验证列以 “M1 已实现（范围）：” 开头并列出测试；只完成一部分时写 “M1 部分实现（范围）：”；尚未完成的部分写 “随 `MA-xxx`”。新增状态码、原因码或限额时同步更新 `contracts/domain/status_codes.md`、`contracts/domain/limits.md`。修改后运行 `python3 tools/check_contracts.py --write` 重新生成 `contracts/traceability.md`。
-   - **计划** `docs/ayni_v1.0.md`：只在内容变化时改，即 §9.1 的完成定义变化、用户作出新决定或一个部分完成；行为不变的整理 PR 不改计划。改时文件名不变；版本号加一；§14.1 加该版本的修订说明；一个部分完成时更新开头的“当前状态”段。保留原有中文与标题结构。
-   - **进度只写一处**：每个 PR 只更新 `reports/core/m1-progress.md` 的“交接状态”，几句话写做完了什么、下一步、等用户什么。工作包的详细计划（如 `docs/ma006-implementation.md`）只在计划变化时改，不随 PR 改状态；README 在一个工作包完成时更新。
-   - **开发文档**：命令、工具或目录有变时更新 `docs/development.md`。
-8. **交付前自查。** 按 `AGENTS.md` 的 “Pre-delivery Design Self-Review”：模块归属与不变量的属主、抽象层次、依赖方向、重复机制、不必要的泛化。并遵守 “Readability Requirements” 与 “Review and Status Evidence”。第 10 步四项先自己逐项查，分别写结论与 file:line；无发现时写搜索范围，不用一句总评代替四项证据。自查结论写在 PR 正文的 Review 小节，每项一两行，不写进 ADR。
-9. **验证。** 按本节开头的表：改代码或构建的 PR 运行第 4 节的全部命令；纯文档 PR 运行 `python3 tools/check_contracts.py` 与 `git diff --check origin/main`，并核对与计划一致。只报告实际运行过的检查及其结果；没运行的写明没运行。
-   - **覆盖率按部分量。** 一个部分的 PR 全部合并后量一次，M1 收尾时再量一次，对照 `AGENTS.md` 的目标（Core ≥75%、安全关键分支 ≥90%），结果写进该部分 ADR 的“验证”；单个 PR 不量。
-   - **内存数字**照第 7 节第 5 条量；没变时写一句“未变”。
-   - **不为证明而额外取证。** 不记录缺陷清单、源文件或镜像的哈希，不把容器内存峰值写进 ADR 或 PR，ADR 与 PR 不引用仓库外的日志目录。按 `AGENTS.md` 检查和监测资源照做；植入缺陷脚本保存的原文照旧放在仓库外，用于机器重启后恢复源码。
-10. **独立审查。** 是否另开审查按本节开头的表。由另一个代理或新会话审查本 PR 的完整 diff，同一个会话也写第 6 步的缺陷清单。按 `AGENTS.md` 的 “Architecture-Aware Review” 自上而下检查，先看依赖方向、模块边界与状态归属，再看函数与调用链，发现要带文件与行号或执行轨迹。逐条修复，或写明不修的理由；修复后重新运行第 4 节的检查。审查按 `AGENTS.md` 的 “Readability Requirements” 与 “Review and Status Evidence” 给出可核查证据，结论与处理写进 PR 正文的 Review 小节。
-   - 除了对错，审查还逐项检查以下四项并写出结论（用户 2026-10-22 决定）：
-     - **删掉的注释**：每段被删的说明，要么恢复到新位置，要么写明为什么不再成立；
-     - **内核新增的字段**：PR 是否写明每个字段归谁、为什么不放进已有的类（第 4 步）；是否复制了别的模块已有的值，或用几个布尔量拼出一个状态；
-     - **重复的公式**：同一个计算或判断是否在多处各写一遍；
-     - **裸数字**：记录长度、字段偏移、版本与阈值是否有名字，并注明出处（如 `contracts/storage/records.md`）。
-11. **PR。** 以草稿（draft）开 PR，第 9、10 步完成后再标记 ready；草稿上 CI 不跑，以节省 Actions 分钟数（用户 2026-10-23 决定）。标题 `area: imperative summary (MA-xxx)`，英文；正文英文，依次为 Before、After、How、Validation、Review、Limitations 六个小节。Validation 写出实际运行的命令与结果，Limitations 写出未做与未验证的部分。
-12. **CI 与合并。** ready 的 PR 上 CI 跑的各项都必须通过（见第 4 节）；CI 失败时找到根因再修，不重跑碰运气，不跳过或禁用测试。M1 的 PR 在 CI 全绿且独立审查的发现处理完之后合并，方式为 merge commit（不 squash、不 rebase）。Claude 的项目讨论中由 Claude 自行合并（用户已授权）；其他代理按用户的指示合并或请用户合并。
-   - **本轮本地验证例外（用户 2026-10-23 明确授权）：** GitHub CI 额度耗尽，剩余 MA-006 整理与 E/F 按第 4 节本地五配置/工具检查及 ESP-IDF 固件编译验证；核心逻辑仍完成独立变异与审查。通过后由实施代理提 PR 并以 merge commit 合并，不等待远端 checks。本轮提交及合并提交使用 `[skip ci]`，不永久修改 CI；PR 明确本地证据和未执行的远端检查。自 2026-10-24 用户要求接入自托管 runner 后，此例外结束；后续恢复第 9～12 步的本地验证、ready PR CI 全绿和 merge commit 流程，新提交及合并不再使用 `[skip ci]`。
-13. **合并之后。** 用中文向用户汇报：改了什么、验证与审查结果、需要用户做什么（没有就写没有）、下一步。开发分支重置到最新 main：`git fetch origin main && git checkout -B <分支> origin/main`，再 `git push --force-with-lease`。删掉审查用的临时 worktree。
-
-### MA-006 F 本轮提速规则（用户 2026-10-24 批准）
-
-F 每个代码 PR 本地完整运行 GCC Debug、ASan/UBSan、模拟器以及第 4 节工具检查；同一最终提交的 ready PR CI 补齐 GCC Release/TSan、Clang Debug、ESP-IDF 固件及其他适用检查。F 全部代码合并后本地再跑完整五配置，覆盖率仍按部分量测一次。本条仅调整本地矩阵，不减少独立审查、15～25 项独立出题变异或 CI 门槛。
-
-本地验证与独立只读审查可重叠；变异使用固定隔离工作目录/构建目录，逐项增量编译并运行完整单元测试二进制，首轮全部完成后补测试。资源预算允许可有两个隔离 worker，每个目录仍逐项执行。发现修复后验证最终提交；不因文档修正重做无关 Core 变异。等待当前 PR CI 可准备下一份本地分支，仍按依赖顺序提交合并。
+   - **ADR**：只在新增架构、接口、兼容或其他重要决定时写；同一决定跨 PR 共用一份。沿用状态、日期、关联、背景、决策、后果、备选方案、验证的中文结构，并更新 ADR 索引。普通修复可引用现有 ADR。
+   - **验证证据**集中在 PR：实际命令、结果、适用 CI 与限制；ADR 只写结论和 PR 链接，不复制命令、测试表与运行编号。
+   - **已接受的 ADR 不改写历史**。规则被新决定替代时可追加括注指向新决定；旧验证结果不当作当前代码的验证。
+   - **契约**随语义变化同步；验证列区分已实现、部分实现和未验证。新增状态/原因/限额同步对应契约；修改后运行 `python3 tools/check_contracts.py --write` 更新追踪矩阵。
+   - **计划**只在完成定义、用户决定或阶段状态变化时改，保留 `docs/ayni_v1.0.md` 文件名、中文及标题结构；版本号加一并在 §14.1 记修订。
+   - **进度**只在 `reports/core/m1-progress.md` 的交接状态简述完成、下一步和待决事项；详细实施计划仅在计划变化时改，README 在工作包完成时更新。
+   - **开发文档**仅在命令、工具或目录变化时更新。
+8. **交付前自查。** 按 `AGENTS.md` 检查模块归属、不变量、抽象层次、依赖方向、重复机制及不必要的泛化；第 10 步四项各写简短结论和 file:line，无发现时写搜索范围。结论集中在 PR Review，不重复写入 ADR。
+9. **验证。** 本地只跑与改动有关、能帮助定位问题的检查；按需选目标、用例和配置，不强制本地完整 Debug、ASan 或五配置。普通代码 PR 的现有完整测试由 CI ASan/UBSan 承担。纯文档运行契约/diff 检查并核对计划。只报告实际执行结果，未执行的明确写出。
+   - **覆盖率按部分量。** 一个部分交付后量一次，M1 收尾再量一次；不每 PR 量。目标仍为 Core ≥75%、安全关键分支 ≥90%；专项暂停期间不为追数自动展开故障/恢复补测，差距与未验证范围如实记录。
+   - **内存数字**在 ABI 或容量变化时按第 7 节量；没有变化不反复测。
+   - **阶段收尾**补齐适用的 Native 配置与 ESP-IDF 编译，可用完整手动 CI；同一最终代码和工具配置已通过的结果直接引用，不再强制本地重跑五配置。周期检查发现问题后及时处理，不能把失败当作已通过。
+   - 不新增哈希清单或重复取证文档，不把容器内存峰值写入 PR/ADR；资源检查和监测照做。
+10. **独立审查。** 按表决定是否另开。Core 的完整功能由另一个代理或会话只读审查一次，自上而下看依赖方向、模块边界、状态归属、接口及调用链；发现带 file:line 或轨迹。修复后复查变更及其影响，不重复整轮无关审查；本地复验同样按影响选择，最终适用 CI 仍须通过。四项分别给简短可核查结论：
+    - **删掉的注释**：仍成立的说明保留或移到新位置；不再成立的说明理由。
+    - **Kernel 新字段**：属主是否明确，是否复制其他模块的值或用多个布尔量拼状态。
+    - **重复公式**：相同计算或判断是否已有属主实现可复用。
+    - **裸数字**：记录长度、偏移、版本和阈值是否有名称及出处。
+11. **PR。** 草稿开发，相关本地检查与适用审查完成后 ready；草稿不占 runner。标题用英文 `area: imperative summary (MA-xxx)`；正文保留 Before、After、How、Validation、Review、Limitations，内容按改动规模写，不为每节凑长文。同步契约与必要文档后再 ready，减少无意义的重复 CI。
+12. **CI 与合并。** 最终提交触发的所有适用检查通过、审查发现处理完后合并；附加任务按第 4 节选择。找出失败根因，不靠重跑碰运气或跳过现有测试。保持 merge commit；实施代理按用户已有授权操作，不能由本文推定有额外合并权限。
+13. **合并之后。** 中文报告变化、实际验证、限制及下一步。同步 main 后为下一完整功能开分支；按需清理临时 worktree，不要求每次重置并强推长期开发分支，不改写其他代理的分支。
 
 ## 3. 代码规则摘要
 
 完整规则见 `AGENTS.md`，以下是 M1 中反复用到的部分。
 
-- **Core**：C++17，不用异常、RTTI 与堆分配（ctest `core_does_not_reference_heap_allocator` 检查，ADR-0014）；全部存储来自调用方提供的内存，容量由 `ayni_config_v1` 给出并有上限；`ayni_step` 有界，从不等待 I/O。
-- **分层**：`kernel` > `work`、`authority` 等 > `catalog` > `durability` > `foundation`；`tools/architecture.json` 定义，`tools/check_deps.py` 检查。Core 不依赖 Host 或 runtime。
-- **公共 ABI**：C99，`include/ayni/ayni.h`。任何 ABI 变化（新字段、常量、结构大小或语义）都要把 `AYNI_ABI_MINOR` 加一，在相关注释中写 “Since 0.N”，同步 `tests/contract/abi_layout.c` 与 `tests/contract/c_abi_smoke.c`；按 C-VER-006，0.x 的次版本须完全匹配，旧调用方须重新编译。ADR 中写明内存需求的变化（默认配置与最小工作容量的字节数）。
-- **状态码与原因码**：每个原因码只属于一个状态码（`contracts/domain/status_codes.md`）。
-- **持久记录**：定长小端编码，不含单调时间、指针、句柄与资源占用（C-STORE-014）；布局记在 `contracts/storage/records.md`。
-- **格式**：clang-format 18（`.clang-format`，列宽 100）；注释约 78 列，解释不变量、所有权与设计理由，不复述代码。
-- **提交**：`area: imperative summary`（如 `core: journal each transition and replay the log at recovery`），正文说明原因；一个提交只做一件事。提交、PR 与代码中不写模型名。
-- **不进入版本库**：`.claude/`、构建目录、凭据、私人媒体（包括开发板照片）。
+- **Core**：C++17，无异常、RTTI 与堆分配；存储来自调用方的有界内存；`ayni_step` 有界且不等待 I/O。
+- **分层**：`kernel` > `work`、`authority` 等 > `catalog` > `durability` > `foundation`；`tools/architecture.json` 与 `tools/check_deps.py` 检查。Core 不依赖 Host/runtime。
+- **公共 ABI**：C99；ABI 变化增加 `AYNI_ABI_MINOR`，注释注明 `Since 0.N`，同步 ABI 契约测试。0.x 次版本须完全匹配，旧调用方重新编译；ABI 与容量变化记录内存需求。
+- **状态码与原因码**：每个原因码只属于一个状态码，见 `contracts/domain/status_codes.md`。
+- **持久记录**：定长小端编码，不含单调时间、指针、句柄与资源占用；布局记在 `contracts/storage/records.md`。
+- **格式**：clang-format 18；注释解释不变量、所有权与理由。
+- **提交**：`area: imperative summary`；一个提交表达一项清楚的改动，提交/PR/代码不写模型名。
+- **不入库**：`.claude/`、构建目录、凭据、私人媒体。
 
-## 4. 验证命令
+## 4. 验证命令与 CI 分工
 
-本地依次运行，与 CI 一致（先按资源预算设置 `CMAKE_BUILD_PARALLEL_LEVEL` 与 `CTEST_PARALLEL_LEVEL`，见 `docs/development.md`）：
+本地没有固定必跑矩阵。需要时先按资源预算设置正整数 `CMAKE_BUILD_PARALLEL_LEVEL` 与 `CTEST_PARALLEL_LEVEL`，再选择相关目标与用例，例如：
 
 ```sh
-for preset in native-debug native-release native-asan native-tsan; do
-  cmake --preset "$preset" && cmake --build --preset "$preset" && ctest --preset "$preset" || break
-done
-CC=clang CXX=clang++ cmake -S . -B build/native-clang -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug -DAYNI_BUILD_TESTS=ON -DAYNI_HOST=native
-cmake --build build/native-clang && ctest --test-dir build/native-clang --output-on-failure
-./build/native/targets/simulator/ayni-sim
-python3 tools/check_deps.py
+cmake --preset native-debug
+cmake --build --preset native-debug --target ayni_unit_tests
+# 将表达式替换为本次改动相关的 Suite / 场景；需要全套时去掉 -R。
+ctest --preset native-debug -R '<相关测试表达式>'
 python3 tools/check_contracts.py
+python3 tools/check_deps.py
 python3 tools/check_readability.py
-git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
-git diff --check origin/main
+git diff --check
 ```
 
-- TSan 无法启动时先执行 `sudo sysctl vm.mmap_rnd_bits=28`（见 `docs/development.md`）。
-- 仓库内有代理的 worktree（例如 `.claude/worktrees/`）时，`tools/check_deps.py` 会把其中的源文件也算进来而报错；这不是真正的失败，删掉 worktree 后再运行。
-- CI（`.github/workflows/ci.yml`）共 7 项：依赖、契约、可读性与格式检查；GCC 的 native-release、native-asan、native-tsan；Clang 的 native-debug；ESP32-S3 Hello 固件构建；clang-tidy（仅报告，不阻断）。GCC 的 native-debug 不在 CI 里跑，因为 native-asan 就是 GCC 的 Debug 构建，跑同样的测试（用户 2026-10-23 决定）；上面的本地验证仍跑五个配置。CI 在自托管 runner 上的容器里跑（`docs/development.md` 的“CI 机器”），不耗 Actions 分钟，但只有一台机器、一次跑一个 job，所以：草稿 PR 不跑；ready 的 PR 跑前 6 项，只改 `.md` 文件时只跑第一项，其余显示为 skipped；合并后 main 只跑第一项；每周一 02:00（北京时间）在 main 上及手动触发（workflow_dispatch）时跑全部 7 项。
+工具脚本变更按需运行对应 Python 单元测试；格式检查按改动文件选择。本地可完整跑某个预设，但没有“必须先全绿五配置才开 PR”的门槛。
+
+CI 的选择由 `tools/ci/select_checks.py` 和 `.github/workflows/ci.yml` 实现：
+
+| 触发/改动 | CI 行为 |
+|---|---|
+| draft PR | 不运行 |
+| 普通代码 ready PR | 一个 `checks and ASan` job；轻量检查、现有完整 ASan/UBSan 测试与模拟器在同一容器执行 |
+| 纯 `.md` PR / 合并后的 main push | 只运行轻量检查，不编译 Native/固件 |
+| 入口队列、完成槽、Native Host/runtime 及已有对应并发测试 | 追加 TSan |
+| `include/ayni/` 公共头文件 | 追加 Clang Debug、ESP-IDF 编译 |
+| ESP Host/runtime/target、ESP32 drivers | 追加 ESP-IDF 编译 |
+| CMake、工具链、CI workflow 或 `tools/ci/` | 追加 Release、Clang Debug、TSan、ESP-IDF |
+| PR 加 `ci:full` 标签 | 完整四项 Native 配置与 ESP-IDF；用于路径规则无法识别的新并发模块、优化相关改动等 |
+| 每周一 02:00（北京时间）/ `workflow_dispatch` | 完整四项 Native 配置、ESP-IDF 与 advisory clang-tidy |
+
+附加 Native 配置在一个 job/容器中依次运行。ASan 已是 GCC Debug 加 sanitizer，CI 不另建一份 GCC Debug。新并发边界应同步更新路径规则；不能只凭文件名推定一切并发改动均已识别，审查时按需使用 `ci:full`。工作包收尾可对最终分支手动触发完整 CI；clang-tidy 仍不阻断，其他适用失败须处理。
+
+CI 使用一个自托管 runner，job 串行、任务内按预算并行。Native 工具镜像按安装配方缓存，常规运行不重装；复用 ccache、GoogleTest 下载和固定容器路径，见 `docs/development.md`。保持草稿跳过、旧运行取消与 main 不重跑构建。分支保护如配置必需检查，须与实际 job 名称和条件保持一致，不继续要求已删除的固定矩阵名称。
+
+TSan 启动受宿主 `vm.mmap_rnd_bits` 约束；处理方法见开发文档。审查 worktree 放在仓库外，避免依赖检查重复扫描。
+
+历史说明：2026-10-23 的 CI 额度例外在自托管 runner 接入时结束；MA-006 F 的本地两配置/收尾五配置及 15–25 项变异规则已由本次用户决定替代，不再作为后续任务的门槛。
 
 ## 5. 与用户沟通
 
-- 用中文，先说结论；每条回复只写比上一条新的内容，说明需要用户做什么，没有就说没有。
-- 结论附证据（测试、文件与行号、CI 结果）；推断要写明是推断。
-- 不报告没有运行的检查；不把模拟器结果写成硬件结果。
-- 需要用户决定时用第 2 节第 3 步的格式提问，一次只问必要的问题。
+- 中文先说结果，说明实际变化、验证、限制与下一步。
+- 结论附可核查证据；推断与未执行检查明确标注。
+- 不把正常测试、代码审查、模拟器或固件编译写成故障恢复、硬件或耐久验证。
+- 产品语义决策按第 2 节提出；已有授权不重复请求。
 
 ## 6. 安全与硬件约束
 
-- 不执行任何 burn 类命令，不烧写 eFuse；查看 eFuse 只用只读的 summary 命令（`docs/development.md`）。
-- 开发板相关的实机操作（烧录 Hello、确认 Flash 与 PSRAM、读取 eFuse 摘要）须在用户的 Linux 电脑上、经用户允许后进行。
-- 不关闭 TLS 校验；凭据只在运行时配置，不写入提交或日志。
+- 不执行 burn 类命令，不烧写 eFuse；只读查询按 `docs/development.md`。
+- 烧录与板级实机操作须在用户电脑上、已有明确授权下进行。
+- 不关闭 TLS 校验；凭据运行时配置，不写入提交或日志。
 
 ## 7. 接手
 
-用户 2026-10-21 要求 Claude 做完 `MA-010` B+C+D（#20）后停止，M1 的其余工作交给其他大模型。接手方按第 2 至 6 节的流程继续，并注意以下几点。
-
-1. **读的顺序。** `AGENTS.md`；本文；`reports/core/m1-progress.md` 的“交接状态”“剩余工作”“已作的决定”“需要用户的事项”；计划 §9.1 中下一个包的行与依赖，以及 §14；该包涉及的 ADR 与契约（`MA-010` E+F 先读 ADR-0025、ADR-0026 与 `contracts/storage/records.md`）；最后读相邻的代码与测试。
-2. **分支。** 从最新 main 开自己的分支（`git fetch origin main && git checkout -b <分支> origin/main`），PR 合并后按第 2 节第 13 步重置。不推送到其他代理的分支（如 `claude/project-thread-6xckzw`），不改写别人分支的历史。合并按第 2 节第 12 步。
-3. **独立审查。** 在新会话或另一个代理中做，只读，发现带文件与行号或执行轨迹；除对错外按第 2 节第 10 步的四项检查。审查用的 worktree 放在仓库目录之外（如 `git worktree add ../ayni-review <分支>`）；放在仓库内会让 `tools/check_deps.py` 报错（第 4 节）。审查结束后用 `git worktree remove` 删掉。
-4. **植入缺陷测试的做法。** 缺陷清单由另一个会话写（第 2 节第 6 步）。用一个脚本逐项处理清单，每项为文件、原文片段与缺陷片段：
-   - 原文片段在文件中必须恰好出现一次，否则跳过并记下；
-   - 替换后只编译单元测试目标：`cmake --build --preset native-debug --target ayni_unit_tests`；编译失败的不计入总数；
-   - 运行 `./build/native/tests/unit/ayni_unit_tests --gtest_brief=1`，非零退出即为“被发现”，记下失败的测试名；
-   - 无论结果如何，都用脚本保存的原文写回文件（不用 `git checkout`，以免丢掉未提交的改动）；全部做完后重新编译一次。
-
-   脚本与原始结果放在仓库之外，不提交。缺陷表与每个未被发现的缺陷的理由写进 PR 正文的 Validation；ADR 的“验证”只写总数与发现数（第 2 节第 6 步）。
-5. **内存数字。** ABI 或容量变化后，用一个小 C 程序调用 `ayni_kernel_memory_requirements` 量两组数字，与上一版比较后写进 ADR 与 PR 正文：
-   - 默认配置：`ayni_config_v1` 只填 `abi_major` 与 `abi_minor`，`struct_size` 设为 12，只覆盖这三个字段，其余取默认值；
-   - 最小工作容量：`struct_size` 为整个结构，各工作容量取其 `_MIN` 或 1，`command_capacity` 取 1（结构覆盖该字段时 0 无效），其余取默认值。
-6. **提问。** 产品语义问题仍按第 2 节第 3 步提问，并按推荐项继续。没有决策卡时，在回复或 PR 正文中用同样的格式提问，ADR 中写明“按推荐项实现，改选再改”。
+1. **读的顺序。** `AGENTS.md`、本文、`reports/core/m1-progress.md` 的交接状态、计划对应工作包/§14、相关 ADR/契约，再读相邻实现。历史工作包的验证安排不覆盖本次用户决定。
+2. **分支。** 从最新 main 为完整功能开分支；在用户已有工作分支中修改时保留其内容，不擅自重置或强推。
+3. **独立审查。** 按第 2 节适用范围在另一会话/代理中只读进行；需要 worktree 时建在仓库外，完成后按需清理。
+4. **验证接手。** 先确定改动范围，选择本地相关检查与 CI 附加配置；不恢复变异、故障注入或恢复专项的固定任务清单。已有正常与专项测试继续由完整 CI 运行。
+5. **内存数字。** ABI/容量变化时用 C 程序调用 `ayni_kernel_memory_requirements`：默认配置只覆盖 ABI 三字段、`struct_size=12`；最小工作配置覆盖完整结构，各工作容量取 `_MIN` 或 1，`command_capacity=1`，其余默认。记录默认/最小字节数与对齐，区分 Native 和硬件结果。
+6. **进度。** 写清实施完成与验证未完成的边界，不能因暂缓专项测试把相应契约改成全部验证通过。

@@ -1,26 +1,13 @@
 name: ci
 
-# Every job runs on the self-hosted runner, a machine kept for CI. Builds
-# and checks use containers: native tools come from Ubuntu 24.04 (GCC 13,
-# Clang 18, the versions docs/development.md pins) whatever the host runs,
-# and the firmware uses the ESP-IDF image. The machine is not billed, but it
-# runs one job at a time, so CI runs the full matrix only where it can find
-# something new:
-# - ready pull requests that change more than Markdown files (a draft runs
-#   nothing until it is marked ready);
-# - every Monday 02:00 Beijing time on main;
-# - on demand (workflow_dispatch).
-# A push to main runs the checks job only: the pull request already built and
-# tested the same merge result.
-#
-# Native steps reuse a runner-local tool image via tools/ci/run_tools.sh.
-# Only a cold/missing recipe installs packages; ESP-IDF keeps its own image.
-# Native tools run as the runner user; ESP-IDF returns its root-owned files.
+# Ordinary code PRs run checks and ASan/UBSan in one cached container.
+# Extra native configurations and ESP-IDF follow affected paths or ci:full.
+# Weekly/manual runs cover every configuration; main pushes run checks only.
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   schedule:
     - cron: '0 18 * * 0'
   workflow_dispatch:
@@ -55,38 +42,20 @@ env:
 
 jobs:
   checks:
-    name: dependency, contract, readability and format checks
+    name: checks and ASan
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: [self-hosted, linux]
-    # A cold recipe installs the combined compiler/checker toolchain once.
-    timeout-minutes: 20
+    timeout-minutes: 30
     outputs:
-      build: ${{ steps.scope.outputs.build }}
-      tools-ready: ${{ steps.tools.outcome }}
+      release: ${{ steps.scope.outputs.release }}
+      clang: ${{ steps.scope.outputs.clang }}
+      tsan: ${{ steps.scope.outputs.tsan }}
+      esp_idf: ${{ steps.scope.outputs.esp_idf }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # The pull request merge commit and its first parent, the base.
+          # Compare the complete PR merge result with its base, not its last commit.
           fetch-depth: 2
-      # First after checkout, so that the builds still run when a later check
-      # fails.
-      - name: Decide whether to build
-        id: scope
-        run: |
-          case "$GITHUB_EVENT_NAME" in
-            pull_request)
-              # Not piped into grep -q: under pipefail, git dying of SIGPIPE
-              # after an early match would read as "no code changed".
-              changed=$(git diff --name-only HEAD^1 HEAD)
-              if [ -n "$changed" ] && grep -qv '\.md$' <<< "$changed"; then
-                build=true
-              else
-                build=false
-              fi ;;
-            push) build=false ;;
-            *) build=true ;;
-          esac
-          echo "build=$build" | tee -a "$GITHUB_OUTPUT"
       - name: Runner resources
         run: |
           echo "CPUs: $(nproc)"
@@ -95,85 +64,48 @@ jobs:
           cat /proc/pressure/memory
           docker ps --format '{{.Names}} {{.Status}}'
       - name: Prepare cached native tools
-        id: tools
         run: tools/ci/run_tools.sh prepare
-      - name: CI tool runner tests
-        run: tools/ci/run_tools.sh run python3 -m unittest discover -s tests/tools -p test_ci_tools.py -v
-      - name: Dependency rules
-        run: tools/ci/run_tools.sh run python3 tools/check_deps.py
-      - name: Dependency checker tests
-        run: ../../tools/ci/run_tools.sh run python3 -m unittest -v test_check_deps
-        working-directory: tests/tools
-      - name: Contract clauses and traceability
-        run: tools/ci/run_tools.sh run python3 tools/check_contracts.py
-      - name: Contract checker tests
-        run: ../../tools/ci/run_tools.sh run python3 -m unittest -v test_check_contracts
-        working-directory: tests/tools
-      - name: Readability rules and baseline
-        run: tools/ci/run_tools.sh run python3 tools/check_readability.py
-      - name: Readability checker tests
-        run: ../../tools/ci/run_tools.sh run python3 -m unittest -v test_check_readability
-        working-directory: tests/tools
-      - name: Formatting
-        run: tools/ci/run_tools.sh run bash -euo pipefail -c "git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror"
-      - name: Whitespace
-        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+      - name: Select affected configurations
+        id: scope
+        env:
+          CI_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+        run: |
+          args=("$GITHUB_EVENT_NAME")
+          if [ "$CI_FULL" = true ]; then args+=(--full); fi
+          selection=$(tools/ci/run_tools.sh run python3 tools/ci/select_checks.py "${args[@]}")
+          printf '%s\n' "$selection" | tee -a "$GITHUB_OUTPUT"
+      - name: Checks and complete ASan suite
+        env:
+          RUN_ASAN: ${{ steps.scope.outputs.asan }}
+        run: tools/ci/run_tools.sh run bash tools/ci/checks.sh "$RUN_ASAN"
 
   native:
-    name: native ${{ matrix.compiler }} ${{ matrix.preset }}
+    name: affected native configurations
     needs: checks
-    if: ${{ !cancelled() && needs.checks.outputs.build == 'true' && needs.checks.outputs.tools-ready == 'success' }}
+    if: needs.checks.outputs.release == 'true' || needs.checks.outputs.clang == 'true' || needs.checks.outputs.tsan == 'true'
     runs-on: [self-hosted, linux]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # No GCC native-debug: native-asan is the same GCC Debug build and
-          # runs the same tests with sanitizers on top.
-          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-release}
-          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-asan}
-          - {compiler: gcc, cc: gcc, cxx: g++, preset: native-tsan}
-          - {compiler: clang, cc: clang, cxx: clang++, preset: native-debug}
-    env:
-      CC: ${{ matrix.cc }}
-      CXX: ${{ matrix.cxx }}
-      # -g output records the build directory, and the workspace path is the
-      # same in every container, so debug builds hit the cache as well.
-      CMAKE_C_COMPILER_LAUNCHER: ccache
-      CMAKE_CXX_COMPILER_LAUNCHER: ccache
-      CCACHE_DIR: /ccache
-      CCACHE_MAXSIZE: 1G
-      # Without these ccache does not cache the unit tests, which are built
-      # with a precompiled header.
-      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      # GCC 13's ThreadSanitizer may fail to start with 32 bits of mmap
-      # randomization. A container shares the host's kernel and cannot change
-      # it, so the runner machine sets 28 once (docs/development.md).
       - name: Check ASLR for ThreadSanitizer
-        if: matrix.preset == 'native-tsan'
+        if: needs.checks.outputs.tsan == 'true'
         run: |
           bits=$(tools/ci/run_tools.sh mmap-bits)
           if [ "$bits" -gt 28 ]; then
-            echo "::error::vm.mmap_rnd_bits is $bits on the runner machine; ThreadSanitizer needs 28 (docs/development.md)"
+            echo "::error::vm.mmap_rnd_bits is $bits; ThreadSanitizer needs 28"
             exit 1
           fi
-      - name: Tool versions
-        run: tools/ci/run_tools.sh run bash -eu -c 'cmake --version && ninja --version && ccache --version && "$CC" --version && "$CXX" --version'
-      - name: Configure
-        run: tools/ci/run_tools.sh run cmake --preset ${{ matrix.preset }} -DAYNI_DOWNLOAD_DIR=/downloads
-      - name: Build
+      - name: Selected native suites in one container
+        env:
+          RUN_RELEASE: ${{ needs.checks.outputs.release }}
+          RUN_CLANG: ${{ needs.checks.outputs.clang }}
+          RUN_TSAN: ${{ needs.checks.outputs.tsan }}
         run: |
-          tools/ci/run_tools.sh run ccache --zero-stats
-          tools/ci/run_tools.sh run cmake --build --preset ${{ matrix.preset }}
-      - name: Compiler cache statistics
-        run: tools/ci/run_tools.sh run ccache --show-stats
-      - name: Test
-        run: tools/ci/run_tools.sh run ctest --preset ${{ matrix.preset }}
-      - name: Simulator
-        run: tools/ci/run_tools.sh run ./build/${{ matrix.preset == 'native-debug' && 'native' || matrix.preset }}/targets/simulator/ayni-sim
+          tools/ci/run_tools.sh run bash -euo pipefail -c '
+            if [ "$1" = true ]; then bash tools/ci/native.sh native-release; fi
+            if [ "$2" = true ]; then bash tools/ci/native.sh native-debug; fi
+            if [ "$3" = true ]; then bash tools/ci/native.sh native-tsan; fi
+          ' bash "$RUN_RELEASE" "$RUN_CLANG" "$RUN_TSAN"
 
   clang-tidy:
     name: clang-tidy (advisory)
@@ -197,7 +129,7 @@ jobs:
   esp-idf:
     name: ESP32-S3 hello firmware (ESP-IDF v6.0.3)
     needs: checks
-    if: ${{ !cancelled() && needs.checks.outputs.build == 'true' }}
+    if: needs.checks.outputs.esp_idf == 'true'
     runs-on: [self-hosted, linux]
     # The first run on a machine also pulls the 5.5 GB image.
     timeout-minutes: 40
