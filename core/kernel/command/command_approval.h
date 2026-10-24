@@ -3,8 +3,7 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_APPROVAL_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_APPROVAL_H
 
-#include "work/goal/goal_request.h"
-#include "work/goal/goal_table.h"
+#include "kernel/command/command_goal_identity.h"
 
 #include <ayni/authority.h>
 
@@ -23,12 +22,11 @@ struct GoalApproval {
 };
 
 // records.md: scalars plus three u32 byte lengths, excluding their payloads.
-constexpr uint32_t approval_command_fixed_size = 92;
-// records.md: goal_type_id and trigger_source are the two bounded IDs.
-constexpr uint32_t approval_catalog_id_count = 2;
+constexpr uint32_t approval_command_prefix_size = 32;
+constexpr uint32_t approval_command_fixed_size =
+    approval_command_prefix_size + goal_identity_fixed_size;
 constexpr uint32_t approval_command_max_bytes(uint32_t parameter_bytes) {
-    return approval_command_fixed_size + approval_catalog_id_count * AYNI_CATALOG_ID_MAX_BYTES +
-           parameter_bytes;
+    return approval_command_prefix_size + goal_identity_max_bytes(parameter_bytes);
 }
 // Borrowed input/output view; reading borrows the canonical body's byte strings.
 struct ApprovalCommand {
@@ -42,9 +40,6 @@ ayni_status_t encode_approval_command(const ApprovalCommand &input, uint8_t *buf
                                       uint32_t capacity, uint32_t &out_size);
 // Strict kind/layout/shape with no trailing bytes; atomic borrowed output.
 bool read_approval_command(ayni_bytes_v1 bytes, ApprovalCommand &out);
-// Compare the immutable creation identity once for both live and restored proof.
-bool matches_goal_creation(const GoalCreate &create, const work::Goal &goal,
-                           ayni_bytes_v1 parameters);
 
 } // namespace ayni::kernel
 #endif // AYNI_CORE_KERNEL_COMMAND_COMMAND_APPROVAL_H

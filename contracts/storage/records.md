@@ -56,7 +56,7 @@
 | `TASK_AUTHORITY`（类型 18，版本 1，REQUIRED） | `work/task` | 派生 Task 时与确切 `TASK`/`TASK_STATE` 同批，状态后紧接准入事实（ADR-0038） |
 | `WORK_AUTHORITY_CLEANUP`（类型 19，版本 1，REQUIRED） | `work/authority` | 工作清理请求/一步的批次末尾；快照固定一项，含明确 idle（ADR-0038） |
 | `TASK_STEPS`（类型 7）、`TASK_CHECKPOINT`（类型 8） | `work/task` | 提交步骤或私有检查点的决策批次（B3），即 `STEP_CHECKPOINT` |
-| `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3含完整canonical请求，v3另存effect（ADR-0030、0031） |
+| `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3、approve v5，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3/v5含完整canonical请求，v3另存effect，v5保存原授权结果（ADR-0030、0031、0038） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | `budget` | B2、B4 |
 | `CALL_IDENTITY` | `work/call` | B3 |
 | `ACTION_STATE` | `work/action` | 准备、屏障与终态各自的批次；终态在 B4 |
@@ -173,13 +173,13 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 ### 静态领域记录
 
-正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3；GOAL 有授权元数据时写 v3，兼容读取 v1/v2，其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
+正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5；GOAL 快照写 v4，只接受此创建 stamp 完整格式，其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
 | 12 `OWNER_BINDING` | 日志正文，随后为建立绑定的原始 `transition_id` u64 与 `commit_seq` u64 | 32 |
 | 2 `INSTANCE` | 日志的 `INSTANCE` 正文，随后为该实例最后改变的 `transition_id` u64 与 `commit_seq` u64 | 40 |
-| 3 `GOAL` | 日志的 `GOAL` 正文，随后为完整 `GOAL_STATE` 正文，再接原始 `created_transition_id` u64、最后改变的 `commit_seq` u64 | 日志 `GOAL` 长度 + 64 |
+| 3/v4 `GOAL` | 日志的 `GOAL` 正文，随后为完整 `GOAL_STATE` 正文，再接原始创建 `transition_id`、创建 `commit_seq`、最后改变的 `commit_seq`（各 u64） | 日志 `GOAL` 长度 + 72 |
 | 17/v2 `GOAL_AUTHORITY` | 与日志正文相同；保留自身最后 authority stamp，不追加另一组尾部 | 72 + 每需求 28 + ID/域/Scope 字节 |
 | 5 `TASK` | 日志的 `TASK` 正文，随后为原始 `created_transition_id`、最后改变的 `commit_seq`、`steps_seq`、`checkpoint_seq`（各 u64），以及 `steps_before` u32 | 76 |
 | 7 `TASK_STEPS` | 日志的步骤正文，每条只含一个 key，`steps_before` 为该 key 的位置、`count=1` | 20 + key 字节数 |
@@ -187,7 +187,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 | 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
 | 18/v1 `TASK_AUTHORITY` | 与日志正文相同，紧接该 Task 的状态；保留原始准入 stamp | 48 + 每引用 12 |
 | 13 `GRANT_CREATE` | v1为创建正文+created/last stamp（各u64×2）+revision/lifecycle（u32×2）；v2再接revoked_by_root_id/cleanup_after/cleanup_through（u64×3）、cleanup stamp（u64×2）；v3使用专属创建正文并保留相同清理尾部；均无deadline/hold/Gate | v1正文+40；通用v2正文+80，最大192+2×scope_max_bytes；专属v3为绑定创建正文+80，最大200+2×scope_max_bytes |
-| 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3/v4日志正文、effect及完整canonical（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88；v4为日志正文长度+8 |
+| 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3/v5日志正文、effect及完整canonical/授权结果（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88；v5为日志正文长度+8 |
 
 顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的 Goal（v2 后紧接 type 17，可跨页）、每个 Task 的元数据/逐条步骤/检查点/状态/准入（type18，紧接状态且允许跨页），最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
 
@@ -205,19 +205,15 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 ### Goal 原子批准命令
 
-E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APPROVE=11，result 为目标 Goal、expected_revision+1、CHANGED。canonical_format 仍为 1；正文按小端顺序为 kind/expected_revision（u32）、Goal ID（u64）、原缺项 mask/lifetime（u32）、duration（u64）、owner/parent（u64）、GoalType version（u32）、GoalType ID 字节串、原参数字节串、trigger kind（u32）、delay/period/原 expiry（u64）、trigger source 字节串。固定字段及三个 u32 长度合计 92 B，最大 156 + goal_parameter_max_bytes。旧 type 9/v1/v2/v3 不能承载 kind11。
+E3b 原使用 REQUIRED type 9/v4；F4 前置格式改为 REQUIRED type 9/v5，在 v2 的 60 B 外壳后保留授权结果长度及正文，kind 必须 GOAL_APPROVE=11，result 为目标 Goal、expected_revision+1、CHANGED。canonical_format 仍为 1；正文按小端顺序为 kind/expected_revision（u32）、Goal ID（u64）、原缺项 mask/lifetime（u32）、duration（u64）、owner/parent（u64）、GoalType version（u32）、GoalType ID 字节串、原参数字节串、trigger kind（u32）、delay/period/原 expiry（u64）、trigger source 字节串。固定字段及三个 u32 长度合计 92 B，最大 156 + goal_parameter_max_bytes。旧 type 9/v1/v2/v3 不能承载 kind11，v4 不再是本轮活动存储支持版本。
 
-批准批次必须包含恰好对应原缺项的 N 条 type13/v2、type4/v2 的 PROPOSED→ACTIVE、type17/v2 的 proposed→authorized、最后 type9/v4。新 Grant 必须为同 Goal、同主体、完整原 domain/Scope 的不可委派根；类型/域/Scope/期限与命令及缺项逐一匹配，旧引用不替换。Grant 可以按槽位顺序排列，但新 ID 与缺项引用必须是一一映射。缺少任一项、重复/额外 Grant、顺序错误或同批其他工作均拒绝；启动对新 Grant 创建 boot 先后关系的检查也适用 v2。
+批准批次必须包含恰好对应原缺项的 N 条 type13/v2、type4/v2 的 PROPOSED→ACTIVE、type17/v2 的 proposed→authorized、最后 type9/v5。新 Grant 必须为同 Goal、同主体、完整原 domain/Scope 的不可委派根；类型/域/Scope/期限与命令及缺项逐一匹配，旧引用不替换。Grant 可以按槽位顺序排列，但新 ID 与缺项引用必须是一一映射。缺少任一项、重复/额外 Grant、顺序错误或同批其他工作均拒绝；启动对新 Grant 创建 boot 先后关系的检查也适用 v2。
 
-快照保留 v4 原始 canonical 与 seq；存在的目标和专属 Grant 必须与命令相符，已合法回收的历史允许缺席。当前 E 不支持引用替换；F 引入该行为时须增加相应历史验证规则。批次容量预算包含 min(goal_requirement_capacity, grant_capacity) 条最大 Grant 创建记录；命令 stride 取 Grant 与批准两种上限的较大值。旧 reader 遇 REQUIRED v4 安全受限。
+type9/v5 正文顺序为 v1 固定 52 B、canonical_format u32、canonical_size u32、canonical 正文、result_size u32、result 正文，总长 64 + canonical_size + result_size。批准请求 canonical 不变。result 固定 52 B：建立绑定的 transition_id、binding_commit_seq、parent_goal_id、parent_binding_commit_seq、input_incarnation、input_through（各 u64），再接 requirement_count u32；随后每项按原需求顺序保存 grant_id u64、revision u32（必须 ACTIVE revision1），共 52 + 12×count B，明确零需求也必须有完整结果。批准 input 两项为零；不从当前 Goal 引用重建历史结果。
 
-### 激活、轮转与恢复
+快照保留 v5 完整原请求、结果及接受 seq。结果必须受快照 transition/boot 上界约束；当前 Goal 未换代时，引用和绑定须与当时结果一致，建立 stamp 尚未被后续暂停替换时须精确一致。每阶段授权事实 stamp 不早于不可变 Goal 创建 pair。普通 Goal 状态/元数据不能解除既有授权暂停；完整显式恢复另由 F4 公开事务交付。Goal 快照 v4 保存完整创建 pair，旧 Goal 快照和 v4 批准映射在新写前明确拒绝并保留，不推算创建序号或补结果。
 
-`SNAPSHOT_COMMIT` 绑定槽、generation、覆盖提交、最大 transition 与正文 CRC；它的批次使用 `commit_seq=S+1`、`transition_id=max_transition_id+1`。激活批次与空存储的栅栏/启动记录均使用 schema 2，不制造空快照或迁移激活；旧 schema 明确拒绝，禁止忽略新格式回到过时状态继续执行。
-
-恢复先按物理日志次序发现有效 writer fence 与最新激活，再校验并导入它所指的确切槽，最后从 `S+1` 的激活批次起重放尾部。旧激活引用的槽可能已被复用，不逐条读取旧槽；最新激活的槽损坏或不支持时不得回退旧槽。被 fence 排除的旧 epoch 批次不改变激活、提交、transition 或 boot 基线。
-
-激活持久后，轮转保留该激活及之后的物理日志帧；A 保留策略不额外归档已经覆盖的历史。双槽、当前日志与轮转临时输出均有上限；达到维护阈值时冻结新 transition，查询及已映射命令重试仍可读取。轮转中断不撤销已激活的新状态。
+批次容量预算包含 min(goal_requirement_capacity, grant_capacity) 条最大 Grant 创建记录。命令槽与 scratch 共用 stride，为 max(84+scope_max_bytes, 156+goal_parameter_max_bytes+52+12×goal_requirement_capacity)，Grant 命令无结果时不额外叠加授权结果预算。记录格式和 ABI 分别演进；本前置不新增公开 C 接口。
 
 ## 规则
 
@@ -241,7 +237,7 @@ E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APP
 | C-STORE-016 | 显式根撤销与完整v3命令结果同批；有界后代状态与根进度同批，fixed through/单调after/真实父链及独立cleanup_stamp均可重放检查，精确replacement须为持久安全叶节点 | 根已撤销但丢命令结果；后代已改而cursor未改；cursor改变终态回收序 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.root_record_and_exact_mapping_require_each_other_in_one_batch`、`GrantRevokeReplay.descendant_state_and_progress_are_an_atomic_pair`、`GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`、`GrantRevokeReplay.descendant_and_progress_must_name_the_same_root_and_cursor`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`；最终交付见 ADR-0031；C-COMMIT-005 |
 | C-STORE-017 | snapshot显式写通用Grant13/v2并兼容v1，专属Grant写13/v3（ADR-0037），mapping1/2/3各按版本读；共享classifier区分journal/snapshot及covered历史，分别检查created/last/cleanup界和effect/retained target一致性，不保存Gate/pending/pin/deadline | snapshot13/v2被journal按v1解释；NO_CHANGE与同seq CHANGED互换；cleanup超过边界仍导入 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
 | C-STORE-018 | 有授权元数据的 GOAL v2/v3 与 type 17 必须配对，journal 同批且 stamp 相同、snapshot 相邻且在 Goal/快照边界内；原需求不可改写；活引用必须匹配已有 Grant 的主体、原域与范围 | 缺元数据的新 Goal 被当成旧零需求；跨 Goal 借记录；按当前目录重释旧范围 | M1 部分实现（内部事实、公开创建及 journal/snapshot/boot 集成，批准随 E3）：`GoalAuthorityPersistence.journal_round_trip_preserves_zero_and_rejects_missing_evidence`、`GoalAuthorityPersistence.missing_duplicate_or_wrong_batch_metadata_restricts_boot`、`GoalAuthorityPersistence.paged_snapshot_keeps_adjacent_metadata_and_original_stamps`、`GoalAuthorityPersistence.restored_updates_keep_the_original_ceiling_and_never_return_to_proposed`、`GoalAuthorityPersistence.a_grant_for_another_agent_cannot_authorize_the_restored_goal`、`GoalAuthorityPersistence.a_narrow_grant_does_not_cover_a_wider_saved_requirement`、`GoalAuthorityPersistence.proposed_snapshots_require_the_new_state_envelope`；ADR-0037 |
-| C-STORE-019 | Goal 专属 Grant journal v2/snapshot v3 显式保存非零绑定；通用 Grant 旧字节不变；版本、根/不可委派及身份规则在 struct/bytes 共用校验 | 旧 reader 丢绑定；新 envelope 接受零绑定；普通命令替代批准证明 | M1 已实现（专属记录、版本边界和整批批准恢复）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GoalApprovalPersistence.public_approval_survives_journal_and_snapshot_with_exact_retry`、`GoalApprovalPersistence.missing_partner_or_mismatched_exact_command_restricts_recovery`、`GoalApprovalPersistence.snapshot_command_echo_cannot_disagree_with_retained_creation`、`GoalApprovalPersistence.unrelated_work_before_during_or_after_approval_restricts_boot`、`GoalApprovalPersistence.old_dependency_must_have_been_active_at_approval`、`GoalApprovalPersistence.one_new_grant_cannot_fill_two_equal_original_missing_items`、`GoalApprovalPersistence.maximum_missing_count_with_large_domains_fits_batch_reservation`；ADR-0037 |
+| C-STORE-019 | Goal 专属 Grant journal v2/snapshot v3 显式保存非零绑定；通用 Grant 旧字节不变；版本、根/不可委派及身份规则在 struct/bytes 共用校验 | 旧 reader 丢绑定；新 envelope 接受零绑定；普通命令替代批准证明 | M1 已实现（专属记录、版本边界和整批批准恢复）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GoalApprovalPersistence.public_approval_survives_journal_and_snapshot_with_exact_retry`、`GoalApprovalPersistence.missing_partner_or_mismatched_exact_command_restricts_recovery`、`GoalApprovalPersistence.snapshot_command_echo_cannot_disagree_with_retained_creation`、`GoalApprovalPersistence.unrelated_work_before_during_or_after_approval_restricts_boot`、`GoalApprovalPersistence.old_dependency_must_have_been_active_at_approval`、`GoalApprovalPersistence.one_new_grant_cannot_fill_two_equal_original_missing_items`、`GoalApprovalPersistence.maximum_missing_count_with_large_domains_fits_batch_reservation`、`WorkAuthorityResult.command_record_round_trip_and_all_truncations_are_atomic`、`WorkAuthorityResult.current_generation_result_keeps_its_establishment_stamp`、`GoalAuthorityPersistence.ordinary_metadata_cannot_clear_a_persisted_deny`、`GoalAuthorityPersistence.proposed_authority_cannot_precede_immutable_creation`；ADR-0037 |
 
 ## Goal 授权元数据（MA-006 E/F）
 

@@ -171,7 +171,7 @@ class Fixture {
         const auto &goal = model.goals.at(goal_index(goal_id));
         GoalAuthorityRecord record{};
         record.goal_id = goal_id;
-        record.stamp = {goal.created_transition_id, goal.commit_seq};
+        record.stamp = {goal.created.transition_id, goal.commit_seq};
         record.binding = model.goal_authority.at(goal_index(goal_id)).binding;
         if (grant_id != 0U) {
             uint32_t index = 0;
@@ -411,20 +411,21 @@ TEST(GoalAuthorityPersistence, proposed_snapshots_require_the_new_state_envelope
     ASSERT_EQ(source.work.goal(created.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
     source.work.node().recover();
     const auto original = snapshot(source);
-    for (const uint16_t version : {goal_record_version, goal_with_authority_record_version,
-                                   goal_authority_state_record_version}) {
+    for (const uint16_t version :
+         {goal_record_version, goal_with_authority_record_version,
+          goal_authority_state_record_version, goal_creation_stamp_snapshot_version}) {
         auto changed = original;
         auto goal =
             std::find_if(changed.records.begin(), changed.records.end(),
                          [](const auto &record) { return record.header.type == goal_record_type; });
         ASSERT_NE(goal, changed.records.end());
-        EXPECT_EQ(goal->header.version, goal_authority_state_record_version);
+        EXPECT_EQ(goal->header.version, goal_creation_stamp_snapshot_version);
         goal->header.version = version;
         Fixture restored;
         restored.run();
-        EXPECT_EQ(import_snapshot(restored, changed), version == goal_authority_state_record_version
-                                                          ? BatchCheck::ok
-                                                          : BatchCheck::corrupt);
+        EXPECT_EQ(import_snapshot(restored, changed),
+                  version == goal_creation_stamp_snapshot_version ? BatchCheck::ok
+                                                                  : BatchCheck::unsupported);
     }
 }
 
@@ -439,7 +440,7 @@ TEST(GoalAuthorityPersistence, paged_snapshot_keeps_adjacent_metadata_and_origin
     const uint32_t page_size =
         static_cast<uint32_t>(record_header_size) +
         goal_record_size(source.work.kernel()->work.goals.at(source.goal_index(goal))) +
-        goal_state_record_size + 16U;
+        goal_state_record_size + 24U;
     const auto image = snapshot(source, page_size);
     ASSERT_TRUE(image.paired_across_page);
     Fixture restored;
@@ -764,14 +765,8 @@ TEST(GoalAuthorityPersistence,
             decoded.stamp.commit_seq = source.saved(second).stamp.commit_seq;
             write_goal_authority_record(decoded, metadata[0]->body.data());
         } else {
-            // Make the earlier Goal legacy, so the wrong sibling has no existing
-            // table entry whose monotone stamp check could hide the pairing bug.
-            for (auto &record : changed.records) {
-                if (record.header.type == goal_record_type) {
-                    record.header.version = goal_record_version;
-                    break;
-                }
-            }
+            // Preserve modern envelopes: neither missing metadata nor a
+            // sibling's exact-ID facts may close the pending Goal pair.
             auto decoded = source.saved(first);
             write_goal_authority_record(decoded, metadata[1]->body.data());
             changed.records.erase(std::find_if(
@@ -1000,7 +995,8 @@ TEST(GoalApprovalPersistence, public_approval_survives_journal_and_snapshot_with
     const auto batch = decode(source.work.node().sim().durable_storage().log.back());
     ASSERT_EQ(batch.records.size(), 4U);
     EXPECT_EQ(batch.records.front().header.type, ayni::authority::grant_record_type);
-    EXPECT_EQ(batch.records.back().header.version, ayni::kernel::approval_command_record_version);
+    EXPECT_EQ(batch.records.back().header.version,
+              ayni::kernel::work_authority_command_record_version);
     Fixture booted;
     booted.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
     booted.run();
@@ -1084,16 +1080,17 @@ TEST(GoalApprovalPersistence, snapshot_command_echo_cannot_disagree_with_retaine
     auto image = snapshot(source);
     for (auto &record : image.records) {
         if (record.header.type != ayni::kernel::command_record_type ||
-            record.header.version != ayni::kernel::approval_command_record_version) {
+            record.header.version != ayni::kernel::work_authority_command_record_version) {
             continue;
         }
         ayni::kernel::CommandMapping mapping{};
         uint64_t floor = 0;
         ayni_bytes_v1 canonical{};
+        ayni_bytes_v1 result_bytes{};
         constexpr uint32_t snapshot_tail = sizeof(uint64_t);
         ASSERT_TRUE(ayni::kernel::read_command_record(record.header.version, record.body.data(),
                                                       record.header.length - snapshot_tail, mapping,
-                                                      floor, canonical));
+                                                      floor, canonical, &result_bytes));
         ayni::kernel::ApprovalCommand echo{};
         ASSERT_TRUE(ayni::kernel::read_approval_command(canonical, echo));
         ++echo.approval.original.expiry_us;
@@ -1102,9 +1099,9 @@ TEST(GoalApprovalPersistence, snapshot_command_echo_cannot_disagree_with_retaine
         ASSERT_EQ(ayni::kernel::encode_approval_command(echo, changed.data(), canonical.size, size),
                   AYNI_OK);
         mapping.digest = ayni::kernel::authority_command_digest({changed.data(), size});
-        ASSERT_TRUE(ayni::kernel::write_command_record(mapping, floor, {changed.data(), size},
-                                                       record.body.data(),
-                                                       record.header.length - snapshot_tail));
+        ASSERT_TRUE(ayni::kernel::write_command_record(
+            mapping, floor, {changed.data(), size}, record.body.data(),
+            record.header.length - snapshot_tail, result_bytes));
     }
     Fixture restored;
     restored.run();
@@ -1207,7 +1204,7 @@ TEST(GoalApprovalPersistence, approval_kind_is_rejected_in_legacy_command_envelo
     const auto batch = decode(source.work.node().sim().log().back());
     const auto &record = batch.records.back();
     for (uint16_t version = ayni::kernel::command_record_version;
-         version < ayni::kernel::approval_command_record_version; ++version) {
+         version < ayni::kernel::work_authority_command_record_version; ++version) {
         ayni::kernel::CommandMapping out{};
         uint64_t floor = 17;
         ayni_bytes_v1 canonical{};
@@ -2202,6 +2199,166 @@ TEST(WorkAuthorityPersistence, cursor_only_step_rejects_repeated_or_backward_tra
         restored.run();
         EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
     }
+}
+
+// ADR-0038: ordinary state/metadata records cannot clear an authority deny,
+// even without live Tasks whose phase equality could expose the forgery.
+TEST(GoalAuthorityPersistence, ordinary_metadata_cannot_clear_a_persisted_deny) {
+    for (const bool terminal_task : {false, true}) {
+        SCOPED_TRACE(terminal_task);
+        Fixture source;
+        source.run();
+        const auto grant = source.create_grant();
+        ASSERT_EQ(grant.status, AYNI_OK);
+        source.work.node().recover();
+        auto body = WorkNode::create_body(
+            source.work.instance(agent_a), 0, terminal_task ? "timer" : "folder", 1, {},
+            terminal_task ? AYNI_TRIGGER_INTERVAL : AYNI_TRIGGER_NONE);
+        if (terminal_task) {
+            body.trigger_period_us = AYNI_TRIGGER_PERIOD_MIN_US;
+        }
+        const auto created = source.work.create(body);
+        ASSERT_EQ(created.status, AYNI_OK);
+        const auto id = created.result.object.id;
+        source.work.node().recover();
+        source.attach(id, grant.result.object.id);
+        if (terminal_task) {
+            source.work.node().step(1);
+            source.work.node().recover();
+            source.work.node().step(1);
+            source.work.node().recover();
+            ASSERT_EQ(source.work.task(source.work.goal(id).last_task_id).lifecycle,
+                      AYNI_TASK_COMPLETED);
+        }
+        source.expire();
+        for (unsigned round = 0; round < 12; ++round) {
+            source.work.node().step(1);
+            source.work.node().recover();
+        }
+        ASSERT_EQ(source.saved(id).phase, GoalAuthorityPhase::paused);
+        const auto image = source.work.node().sim().durable_storage();
+        const auto stamp = source.work.kernel()->work.transitions.next();
+        Batch forged{
+            {source.work.kernel()->log.writer_epoch(), stamp.commit_seq, stamp.transition_id}, {}};
+        Record state{{goal_state_record_type, goal_state_with_authority_record_version,
+                      record_required, goal_state_record_size},
+                     std::vector<uint8_t>(goal_state_record_size)};
+        write_goal_state_record(source.work.kernel()->work.goals.at(source.goal_index(id)),
+                                state.body.data());
+        auto metadata = source.saved(id);
+        metadata.phase = GoalAuthorityPhase::authorized;
+        metadata.stamp = stamp;
+        Record fact{{goal_authority_record_type, goal_authority_record_version, record_required,
+                     goal_authority_record_size(metadata)},
+                    std::vector<uint8_t>(goal_authority_record_size(metadata))};
+        write_goal_authority_record(metadata, fact.body.data());
+        forged.records = {std::move(state), std::move(fact)};
+        Fixture restored;
+        restored.work.node().sim().durable_storage() = image;
+        restored.work.node().sim().durable_storage().log.push_back(encode(forged));
+        restored.run();
+        EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    }
+}
+
+// ADR-0038: every authorization phase's fact stamp is bounded below by the
+// immutable creation pair; a PROPOSED record cannot predate its Goal.
+TEST(GoalAuthorityPersistence, proposed_authority_cannot_precede_immutable_creation) {
+    Fixture source;
+    source.run();
+    const auto created =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    source.work.node().recover();
+    auto image = snapshot(source);
+    auto &row = authority_record(image.records);
+    GoalAuthorityRecord record{};
+    ASSERT_TRUE(read_goal_authority_record(row.body.data(), row.header.length, record));
+    ASSERT_GT(record.stamp.commit_seq, 1U);
+    --record.stamp.commit_seq;
+    write_goal_authority_record(record, row.body.data());
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// ADR-0038: approval acts on an earlier proposal; the new immutable creation
+// pair cannot be forged to the approval pair while leaving all other facts valid.
+TEST(GoalApprovalPersistence, immutable_creation_must_strictly_precede_approval) {
+    Fixture source;
+    source.run();
+    const auto id = approve_proposal(source);
+    ASSERT_NE(id, 0U);
+    auto image = snapshot(source);
+    const auto admission = source.saved(id).stamp;
+    bool altered = false;
+    for (auto &row : image.records) {
+        if (row.header.type != goal_record_type) {
+            continue;
+        }
+        // records.md 3/v4: created transition/seq and current seq are the last three u64s.
+        constexpr uint32_t creation_tail = 3U * sizeof(uint64_t);
+        auto *creation = row.body.data() + row.header.length - creation_tail;
+        ayni::foundation::store_le64(creation, admission.transition_id);
+        ayni::foundation::store_le64(creation + sizeof(uint64_t), admission.commit_seq);
+        altered = true;
+        break;
+    }
+    ASSERT_TRUE(altered);
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// ADR-0038: a later pause does not erase the dedicated root's precise creation
+// stamp, which remains an independent witness for its original approval result.
+TEST(GoalApprovalPersistence, retained_issued_root_proves_original_result_transition) {
+    Fixture source;
+    source.run();
+    const auto id = approve_proposal(source);
+    ASSERT_NE(id, 0U);
+    const auto admission = source.saved(id).stamp;
+    // An intervening ordinary transition makes an in-bounds forged ID possible.
+    source.goal();
+    const auto selected = source.saved(id).requirements[0].dependency.grant_id;
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, selected};
+    auto revoke = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    revoke.command_id = 101;
+    ASSERT_EQ(source.work.submit(revoke).status, AYNI_OK);
+    for (unsigned round = 0; round < 12; ++round) {
+        source.work.node().step(1);
+        source.work.node().recover();
+    }
+    ASSERT_EQ(source.saved(id).phase, GoalAuthorityPhase::paused);
+    ASSERT_LT(admission.transition_id + 1U, source.saved(id).stamp.transition_id);
+    auto image = snapshot(source);
+    bool altered = false;
+    for (auto &row : image.records) {
+        if (row.header.type != ayni::kernel::command_record_type ||
+            row.header.version != ayni::kernel::work_authority_command_record_version) {
+            continue;
+        }
+        ayni::kernel::CommandMapping mapping{};
+        uint64_t floor = 0;
+        ayni_bytes_v1 canonical{};
+        ayni_bytes_v1 result_bytes{};
+        constexpr uint32_t tail = sizeof(uint64_t);
+        ASSERT_TRUE(ayni::kernel::read_command_record(row.header.version, row.body.data(),
+                                                      row.header.length - tail, mapping, floor,
+                                                      canonical, &result_bytes));
+        ayni::kernel::WorkAuthorityResult result{};
+        ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
+        ++result.transition_id;
+        std::vector<uint8_t> bytes(result_bytes.size);
+        ayni::kernel::write_work_authority_result(result, bytes.data());
+        std::copy(bytes.begin(), bytes.end(), const_cast<uint8_t *>(result_bytes.data));
+        altered = true;
+        break;
+    }
+    ASSERT_TRUE(altered);
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
 }
 
 } // namespace

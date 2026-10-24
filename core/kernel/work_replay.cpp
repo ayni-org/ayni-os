@@ -100,7 +100,7 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
         return header.version == command_record_version ||
                        header.version == exact_command_record_version ||
                        header.version == revoke_command_record_version ||
-                       header.version == approval_command_record_version
+                       header.version == work_authority_command_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_record_type:
@@ -127,7 +127,9 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::goal_record_type:
         return header.version == work::goal_record_version ||
                        header.version == work::goal_with_authority_record_version ||
-                       header.version == work::goal_authority_state_record_version
+                       header.version == work::goal_authority_state_record_version ||
+                       (context == WorkRecordContext::snapshot &&
+                        header.version == work::goal_creation_stamp_snapshot_version)
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::goal_state_record_type:
@@ -644,13 +646,14 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
     CommandMapping mapping{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
+    ayni_bytes_v1 result_bytes{};
     if (model_.commands.mapped_in(commit_seq) != nullptr ||
-        !read_command_record(version, body, size, mapping, floor, canonical)) {
+        !read_command_record(version, body, size, mapping, floor, canonical, &result_bytes)) {
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
     if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
-        if (!pair_approval_command(mapping, canonical)) {
+        if (!pair_approval_command(mapping, canonical, result_bytes)) {
             return RecordUse::corrupt;
         }
     } else if (pairing_.approval) {
@@ -683,7 +686,7 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         }
         pairing_.authority = {};
     }
-    return use_of(model_.commands.restore_checked(mapping, floor, canonical));
+    return use_of(model_.commands.restore_checked(mapping, floor, canonical, result_bytes));
 }
 
 bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_bytes_v1 canonical,
@@ -716,14 +719,21 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
         return false; // Schema 2 never infers authorization from absent evidence.
     }
     const auto record = model_.goal_authority.at(goal_index);
+    if (record.stamp.commit_seq < goal.created.commit_seq ||
+        record.stamp.transition_id < goal.created.transition_id) {
+        return false;
+    }
     if (record.phase != work::GoalAuthorityPhase::proposed &&
         (record.binding.parent.goal_id != goal.parent_goal_id ||
+         record.binding.established_seq < goal.created.commit_seq ||
          record.binding.input.incarnation != 0U || record.binding.input.through != 0U)) {
         return false;
     }
     if (record.binding.parent.goal_id != 0U) {
         const auto parent = model_.goal_authority.at(goal.parent_index);
-        if (record.binding.parent.commit_seq > parent.binding.established_seq) {
+        if (record.binding.parent.commit_seq > parent.binding.established_seq ||
+            record.binding.parent.commit_seq <
+                model_.goals.at(goal.parent_index).created.commit_seq) {
             return false;
         }
     }
@@ -751,23 +761,13 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
             continue;
         }
         const auto &grant = model_.grants.at(grant_index);
-        // Approval may issue this Goal's dedicated root in the binding batch;
-        // that path has its own complete approval proof (C-STORE-019). Every
-        // older selection must have had an active complete chain at admission.
-        const bool issued_at_binding =
-            grant.bound_goal_id == goal.goal_id &&
-            grant.created_stamp.commit_seq == record.binding.established_seq;
-        if (record.binding.established_seq != 0U && !issued_at_binding &&
-            !model_.grants.active_at(grant_index, record.binding.established_seq)) {
-            return false;
-        }
-        if (grant.subject_instance_id != goal.owner_instance_id ||
-            (grant.bound_goal_id != 0U && grant.bound_goal_id != goal.goal_id) ||
-            grant.created_stamp.commit_seq > record.stamp.commit_seq ||
-            grant.created_stamp.transition_id > record.stamp.transition_id ||
-            !model_.grants.covers_saved_scope(grant_index, requirement.capability_id,
-                                              requirement.capability_version,
-                                              requirement.source_domain, requirement.scope)) {
+        if (grant.created_stamp.transition_id > record.stamp.transition_id ||
+            !matches_goal_selection(
+                goal_index, requirement, grant_index,
+                record.binding.established_seq == 0U ? record.stamp.commit_seq
+                                                     : record.binding.established_seq,
+                record.binding.input.incarnation == 0U ? SelectionOrigin::approval
+                                                       : SelectionOrigin::existing_grant)) {
             return false;
         }
     }

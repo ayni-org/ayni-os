@@ -69,10 +69,10 @@ struct Goal {
     uint64_t goal_id;
     uint64_t parent_goal_id;
     uint64_t owner_instance_id;
-    uint64_t replaced_goal_id; // the terminal goal whose place it took; 0: none
-    uint64_t created_transition_id;
-    uint64_t commit_seq;   // of the last change
-    uint64_t last_task_id; // 0 before the first task
+    uint64_t replaced_goal_id;           // the terminal goal whose place it took; 0: none
+    foundation::TransitionStamp created; // Immutable positive creation pair; zero before insert.
+    uint64_t commit_seq;                 // of the last change
+    uint64_t last_task_id;               // 0 before the first task
     Trigger trigger;
     TriggerCursor cursor; // no next occurrence, none waiting, once the goal is terminal
     catalog::CatalogId trigger_source;
@@ -276,7 +276,8 @@ class GoalTable {
     // replaced predecessors have already gone. Parents precede children.
     Restore restore_snapshot(const NewGoal &goal, uint64_t goal_id, uint64_t replaced_goal_id,
                              uint32_t depth, const GoalState &state,
-                             foundation::TransitionStamp stamp, uint32_t &out_index);
+                             foundation::TransitionStamp created_stamp, uint64_t commit_seq,
+                             uint32_t &out_index);
     // Sets each goal's goal_type_index from its type's id and version
     // (ADR-0026): resolve(id, version, trigger_kind, out_index) says whether
     // this boot has that type, and can serve a goal of that trigger kind,

@@ -67,7 +67,7 @@
 ## 交接状态（2026-10-24）
 
 - **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–E 和 R1～R4 整理。E 由 [#42](https://github.com/RobotSe7en/ayni/pull/42)～[#45](https://github.com/RobotSe7en/ayni/pull/45)、[#47](https://github.com/RobotSe7en/ayni/pull/47) 交付需求事实、待批创建/查询、专属 Grant、原子批准及最低消费门控；验证和覆盖率见 [ADR-0037](../../docs/adr/0037-goal-requirements-and-atomic-approval.md)。
-- **正在实施：** 用户 2026-10-24 批准 F 五 PR 计划。F1/F2 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)；F3 的有界持久清理、独立授权暂停、专属 Grant 终态/回收及输入/触发边界见 [#52](https://github.com/RobotSe7en/ayni/pull/52)，ABI 0.25，保持一份 PR。下一步 F4 公开原子重新授权，再做 F5 正常重启与统一收尾。开发期旧格式及缺独立 deny 的旧暂停事实在新写前拒绝并保留，不迁移或补授权。当前无需用户操作。
+- **正在实施：** 用户 2026-10-24 批准 F 五 PR 计划。F1/F2 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)；F3 的有界持久清理、独立授权暂停、专属 Grant 终态/回收及输入/触发边界见 [#52](https://github.com/RobotSe7en/ayni/pull/52)，ABI 0.25，保持一份 PR。F4 完整生产 diff 超过原约 1,500 行门槛，按计划先交付内部结果事实/持久证明，再交付完整公开事务；随后做 F5 正常重启与统一收尾。开发期旧格式及缺独立 deny 的旧暂停事实在新写前拒绝并保留，不迁移或补授权。当前无需用户操作。
 - **仍有限制：** 重启仍会停止恢复的已激活 Goal/Task；有效 PROPOSED 保持待批并继续原失效计时。安全相关分支覆盖仍低于目标，偏差见 ADR-0037；ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收尚未完成。自托管 CI 已启用，后续按 workflow 完成本地验证、独立审查和适用 CI 后合并。
 
 ## 剩余工作

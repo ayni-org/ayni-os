@@ -371,10 +371,21 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                                uint64_t digest, const IntentOutcome &outcome) {
     const CommandMapping mapping{principal_id,       intent.command_id, digest,
                                  outcome.commit_seq, intent.kind,       outcome.object};
-    const bool stored =
-        (intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GOAL_APPROVE)
-            ? model.commands.insert_exact(mapping)
-            : model.commands.insert(mapping);
+    if (is_work_authority_command(intent.kind)) {
+        if (!outcome.authorization) {
+            return AYNI_INTERNAL;
+        }
+        const auto &result = *outcome.authorization;
+        std::array<uint8_t, work_authority_result_size(AYNI_GOAL_REQUIREMENT_CAPACITY_MAX)> bytes{};
+        write_work_authority_result(result, bytes.data());
+        return model.commands.insert_exact(mapping,
+                                           {bytes.data(), work_authority_result_size(result.count)})
+                   ? AYNI_OK
+                   : AYNI_INTERNAL;
+    }
+    const bool stored = intent.kind == AYNI_INTENT_GRANT_CREATE
+                            ? model.commands.insert_exact(mapping)
+                            : model.commands.insert(mapping);
     return stored ? AYNI_OK : AYNI_INTERNAL;
 }
 

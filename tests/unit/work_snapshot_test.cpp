@@ -132,7 +132,7 @@ void admit_fixture_work(WorkModel &model) {
         }
         ayni::work::GoalAuthorityRecord record{};
         record.goal_id = goal.goal_id;
-        record.stamp = {goal.created_transition_id, goal.created_transition_id};
+        record.stamp = goal.created;
         record.binding.established_seq = record.stamp.commit_seq;
         if (goal.parent_index != GoalTable::no_parent) {
             const auto &parent = model.goals.at(goal.parent_index);
@@ -255,7 +255,7 @@ TEST(WorkSnapshot, paged_round_trip_keeps_the_original_stamps_and_checkpoint) {
     EXPECT_EQ(std::memcmp(restored.get().tasks.checkpoint(0).data,
                           original.get().tasks.checkpoint(0).data, 3),
               0);
-    EXPECT_EQ(restored.get().goals.at(0).created_transition_id, 3U);
+    EXPECT_EQ(restored.get().goals.at(0).created.transition_id, 3U);
     EXPECT_EQ(restored.get().goals.at(0).commit_seq, 4U);
     EXPECT_EQ(restored.get().agents.at(0).stamp.commit_seq, 2U);
 }
@@ -510,7 +510,7 @@ TEST(WorkSnapshot, a_retained_object_can_name_a_predecessor_already_reclaimed) {
               BatchCheck::ok);
     EXPECT_EQ(restored.get().goals.size(), 1U);
     EXPECT_EQ(restored.get().goals.at(0).replaced_goal_id, goal_id);
-    EXPECT_EQ(restored.get().goals.at(0).created_transition_id, 11U);
+    EXPECT_EQ(restored.get().goals.at(0).created.transition_id, 11U);
 }
 
 // C-LIMIT-007: valid state written under larger limits is capacity failure,

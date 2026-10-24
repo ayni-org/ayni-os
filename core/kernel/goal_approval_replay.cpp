@@ -142,6 +142,11 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
     const bool approving = existed && original.phase == work::GoalAuthorityPhase::proposed &&
                            record.phase == work::GoalAuthorityPhase::authorized;
     if (!pairing_.approval) {
+        // Only the paired explicit replacement may clear an existing deny.
+        if (existed && original.phase == work::GoalAuthorityPhase::paused &&
+            record.phase != original.phase) {
+            return false;
+        }
         if (approving || (existed && original.phase == work::GoalAuthorityPhase::proposed &&
                           record.phase != original.phase)) {
             return false;
@@ -206,7 +211,8 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
 
 // Close the batch only when the canonical identity proves the original mask,
 // revision and every issued Grant. Keep the closed proof to reject trailing work.
-bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) {
+bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                       ayni_bytes_v1 result_bytes) {
     ApprovalCommand request{};
     if (!pairing_.approval || !read_approval_command(canonical, request)) {
         return false;
@@ -215,7 +221,8 @@ bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes
     if (pair.stage != ApprovalPair::Stage::metadata || mapping.object.id != pair.goal_id ||
         request.expected_revision != pair.revision ||
         request.approval.missing_mask != pair.missing_mask ||
-        !matches_goal_approval(mapping, canonical)) {
+        !work_authority_result_matches(model_.goal_authority.at(pair.goal_index), result_bytes) ||
+        !matches_goal_approval(mapping, canonical, result_bytes)) {
         return false;
     }
     pairing_.approval->stage = ApprovalPair::Stage::complete;
@@ -224,12 +231,16 @@ bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes
 
 // Historical command retention can outlive the target or terminal Grants.
 // Every retained fact must still agree; missing reclaimed history is not recreated.
-bool WorkReplay::matches_goal_approval(const CommandMapping &mapping,
-                                       ayni_bytes_v1 canonical) const {
+bool WorkReplay::matches_goal_approval(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                       ayni_bytes_v1 result_bytes, uint64_t transition_limit,
+                                       uint64_t boot_epoch_limit) const {
     ApprovalCommand request{};
+    WorkAuthorityResult result{};
     const auto *binding = model_.principals.binding();
-    if (!read_approval_command(canonical, request) || binding == nullptr ||
-        mapping.principal_id != binding->principal_id ||
+    if (!read_approval_command(canonical, request) ||
+        !read_work_authority_result(result_bytes, mapping.object.id, result) ||
+        !work_authority_result_within(result, transition_limit, boot_epoch_limit) ||
+        binding == nullptr || mapping.principal_id != binding->principal_id ||
         binding->stamp.commit_seq >= mapping.commit_seq ||
         model_.agents.find_instance(request.approval.original.owner_instance_id) == nullptr) {
         return false;
@@ -240,13 +251,27 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping,
     }
     const auto &goal = model_.goals.at(index);
     work::GoalAuthorityRecord record{};
-    if (goal.revision < mapping.object.revision || goal.commit_seq < mapping.commit_seq ||
+    if (goal.created.commit_seq >= mapping.commit_seq ||
+        goal.created.transition_id >= result.transition_id ||
+        goal.revision < mapping.object.revision || goal.commit_seq < mapping.commit_seq ||
         !matches_goal_creation(request.approval.original, goal, model_.goals.parameters(index)) ||
         !model_.goal_authority.read(index, goal.goal_id, record) ||
-        record.phase == work::GoalAuthorityPhase::proposed ||
-        !matches_goal_binding(index, record, mapping.commit_seq) ||
+        record.phase == work::GoalAuthorityPhase::proposed || record.count != result.count ||
         record.stamp.commit_seq < mapping.commit_seq ||
+        !retains_work_authority_result(record, result) ||
         (request.approval.missing_mask >> record.count) != 0U) {
+        return false;
+    }
+    // Historical command evidence describes the binding it actually published,
+    // independently of a later replacement in this immutable Goal ceiling.
+    record.binding = result.binding;
+    record.stamp = {result.transition_id, result.binding.established_seq};
+    record.phase = work::GoalAuthorityPhase::authorized;
+    for (uint32_t at = 0; at < record.count; ++at) {
+        record.requirements[at].dependency = result.references[at];
+    }
+    if (!matches_goal_binding(index, record, mapping.commit_seq) ||
+        !saved_references_consistent(index, record, result.references, mapping.commit_seq)) {
         return false;
     }
     for (uint32_t item = 0; item < record.count; ++item) {
@@ -264,6 +289,7 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping,
             continue;
         }
         if (grant.created_stamp.commit_seq != mapping.commit_seq ||
+            grant.created_stamp.transition_id != result.transition_id ||
             grant.bound_goal_id != goal.goal_id ||
             grant.owner_principal_id != mapping.principal_id ||
             grant.subject_instance_id != goal.owner_instance_id ||
@@ -271,6 +297,42 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping,
             grant.duration_us != request.approval.duration_us ||
             !matches_requirement(grant, model_.grants.source_domain(at), model_.grants.scope(at),
                                  record.requirements[item])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Grant owns chain history and Scope coverage. Approval's newly issued exact
+// dedicated root is the sole same-sequence selection (C-STORE-019).
+bool WorkReplay::matches_goal_selection(uint32_t goal_index, const work::GoalRequirement &need,
+                                        uint32_t grant_index, uint64_t admission_seq,
+                                        SelectionOrigin origin) const {
+    const auto &goal = model_.goals.at(goal_index);
+    const auto &grant = model_.grants.at(grant_index);
+    const bool issued_here = origin == SelectionOrigin::approval &&
+                             grant.bound_goal_id == goal.goal_id &&
+                             grant.created_stamp.commit_seq == admission_seq;
+    return grant.subject_instance_id == goal.owner_instance_id &&
+           (grant.bound_goal_id == 0U || grant.bound_goal_id == goal.goal_id) &&
+           (issued_here || model_.grants.active_at(grant_index, admission_seq)) &&
+           model_.grants.covers_saved_scope(grant_index, need.capability_id,
+                                            need.capability_version, need.source_domain,
+                                            need.scope);
+}
+
+bool WorkReplay::saved_references_consistent(
+    uint32_t goal_index, const work::GoalAuthorityRecord &ceiling,
+    const std::array<work::AuthorityReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
+    uint64_t admission_seq) const {
+    for (uint32_t at = 0; at < ceiling.count; ++at) {
+        uint32_t grant_index = 0;
+        if (references[at].revision != authority::grant_active_revision ||
+            (model_.grants.find(references[at].grant_id, grant_index) &&
+             !matches_goal_selection(
+                 goal_index, ceiling.requirements[at], grant_index, admission_seq,
+                 ceiling.binding.input.incarnation == 0U ? SelectionOrigin::approval
+                                                         : SelectionOrigin::existing_grant))) {
             return false;
         }
     }

@@ -376,7 +376,7 @@ TEST(GoalRestore, restore_creates_the_goal_as_insert_did_in_its_stamp) {
     EXPECT_EQ(goal.revision, 1U);
     EXPECT_EQ(goal.cancel_revision, 0U);
     EXPECT_EQ(goal.commit_seq, 7U);
-    EXPECT_EQ(goal.created_transition_id, 107U);
+    EXPECT_EQ(goal.created.transition_id, 107U);
     EXPECT_EQ(goal.replaced_goal_id, 0U);
     EXPECT_EQ(goal.owner_instance_id, owner);
     EXPECT_EQ(goal.origin.principal_id, principal);

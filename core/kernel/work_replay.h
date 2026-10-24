@@ -58,7 +58,9 @@ class WorkReplay {
 
     // Snapshot proof allows legitimately reclaimed history; journal pairing
     // separately requires every new Grant, dependency and activation record.
-    bool matches_goal_approval(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
+    bool matches_goal_approval(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                               ayni_bytes_v1 result_bytes, uint64_t transition_limit = UINT64_MAX,
+                               uint64_t boot_epoch_limit = UINT64_MAX) const;
 
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
@@ -123,9 +125,23 @@ class WorkReplay {
                              foundation::TransitionStamp stamp);
     bool pair_approval_state(uint32_t index, const work::GoalState &state);
     bool pair_approval_metadata(uint32_t index, const work::GoalAuthorityRecord &record);
-    bool pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
+    bool pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                               ayni_bytes_v1 result_bytes);
     // Cross-table facts are checked without consulting the new boot catalog.
     bool goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const;
+    // Grant owns historical chain/Scope checks; missing rows are allowed only
+    // for terminal work or independently retained command history.
+    enum class SelectionOrigin {
+        existing_grant,
+        approval
+    }; // Only approval may issue same-batch roots.
+    bool matches_goal_selection(uint32_t goal_index, const work::GoalRequirement &need,
+                                uint32_t grant_index, uint64_t admission_seq,
+                                SelectionOrigin origin) const;
+    bool saved_references_consistent(
+        uint32_t goal_index, const work::GoalAuthorityRecord &ceiling,
+        const std::array<work::AuthorityReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
+        uint64_t admission_seq) const;
     void hold_tasks();
     void hold_unconfirmed_work();
 

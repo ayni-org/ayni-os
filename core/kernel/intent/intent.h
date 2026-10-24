@@ -8,10 +8,12 @@
 #define AYNI_CORE_KERNEL_INTENT_INTENT_H
 
 #include "kernel/command/command_approval.h"
+#include "kernel/command/work_authority_result.h"
 
 #include <ayni/authority.h>
 
 #include <cstdint>
+#include <optional>
 
 namespace ayni::kernel {
 
@@ -45,6 +47,8 @@ struct IntentOutcome {
     // A command accepted before: the result is its first, and nothing was
     // applied now.
     bool retried;
+    // Newly accepted approval result; copied into its command before journaling.
+    std::optional<WorkAuthorityResult> authorization;
 };
 
 // Whether the kind is one this library implements.

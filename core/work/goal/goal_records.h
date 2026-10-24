@@ -23,6 +23,8 @@ constexpr uint16_t goal_with_authority_record_version = 2;
 // Type 3/v3 additionally admits PROPOSED and independent authorization pause.
 // Layouts remain those in contracts/storage/records.md; old readers refuse.
 constexpr uint16_t goal_authority_state_record_version = 3;
+// Snapshot only: authority Goal plus its full creation stamp and current sequence.
+constexpr uint16_t goal_creation_stamp_snapshot_version = 4;
 constexpr uint16_t goal_state_record_type = 4;
 constexpr uint16_t goal_state_record_version = 1;
 // Type 4/v2 carries state for an explicitly authorized Goal, including updates

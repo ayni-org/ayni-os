@@ -62,6 +62,8 @@ ayni_add_core_module(kernel
         kernel/boot/boot_sequence.cpp
         kernel/command/command_canonical.cpp
         kernel/command/command_approval.cpp
+        kernel/command/command_goal_identity.cpp
+        kernel/command/work_authority_result.cpp
         kernel/command/command_records.cpp
         kernel/command/command_table.cpp
         kernel/command/pending_revoke.cpp
