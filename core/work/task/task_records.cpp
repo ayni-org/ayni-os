@@ -24,6 +24,31 @@ bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
     return reader.ok();
 }
 
+// Snapshot TASK extends the journal creation body with durable history;
+// byte layout belongs here, while restoration policy remains with its owner.
+void write_task_snapshot_record(const Task &task, uint8_t *body) {
+    write_task_record(task, body);
+    durability::BodyWriter writer(body + task_record_size, task_snapshot_tail_size);
+    writer.u64(task.created_transition_id);
+    writer.u64(task.commit_seq);
+    writer.u64(task.steps_seq);
+    writer.u64(task.checkpoint_seq);
+    writer.u32(task.steps_before);
+}
+
+bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out) {
+    if (size != task_snapshot_record_size ||
+        !read_task_record(body, task_record_size, out.creation)) {
+        return false;
+    }
+    durability::BodyReader reader(body + task_record_size, task_snapshot_tail_size);
+    out.stamp = {reader.u64(), reader.u64()};
+    out.steps_seq = reader.u64();
+    out.checkpoint_seq = reader.u64();
+    out.steps_before = reader.u32();
+    return reader.ok();
+}
+
 void write_task_state_record(const Task &task, uint8_t *body) {
     durability::BodyWriter writer(body, task_state_record_size);
     writer.u64(task.task_id);
@@ -47,22 +72,22 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     return reader.ok();
 }
 
-uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index) {
-    const Task &task = tasks.at(index);
+uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range) {
     uint32_t size = task_steps_record_fixed_size;
-    for (uint32_t step = task.steps_before; step < task.step_count; ++step) {
+    for (uint32_t step = range.first; step < range.first + range.count; ++step) {
         size += durability::string_field_size(tasks.step(index, step).size());
     }
     return size;
 }
 
-void write_task_steps_record(const TaskTable &tasks, uint32_t index, uint8_t *body) {
+void write_task_steps_record(const TaskTable &tasks, uint32_t index, TaskStepRange range,
+                             uint8_t *body) {
     const Task &task = tasks.at(index);
-    durability::BodyWriter writer(body, task_steps_record_size(tasks, index));
+    durability::BodyWriter writer(body, task_steps_record_size(tasks, index, range));
     writer.u64(task.task_id);
-    writer.u32(task.steps_before);
-    writer.u32(task.step_count - task.steps_before);
-    for (uint32_t step = task.steps_before; step < task.step_count; ++step) {
+    writer.u32(range.first);
+    writer.u32(range.count);
+    for (uint32_t step = range.first; step < range.first + range.count; ++step) {
         const catalog::CatalogId &key = tasks.step(index, step);
         writer.bytes(key.data(), key.size());
     }

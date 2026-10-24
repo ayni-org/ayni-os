@@ -55,6 +55,51 @@ void reseal(std::vector<uint8_t> &bytes) {
     store_le32(marker + 8, crc32(bytes.data() + header_length, payload_length));
 }
 
+// ADR-0040: a literal prefix pins endian/field offsets without consulting the
+// writer. Schema/flags/CRC and semantic identity validation belong to Core.
+TEST(BatchCodec, storage_identity_reads_only_the_unvalidated_prefix) {
+    const std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> prefix{
+        'A',  'Y',  'J',  'B',  0xff, 0xff, 0,    0,    0x12, 0x34, 0x56,
+        0x78, 0xff, 0xff, 0xff, 0xff, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
+    BatchIdentity found{};
+    ASSERT_EQ(ayni_storage_read_batch_identity(prefix.data(), prefix.size(), &found), 1);
+    EXPECT_EQ(found.writer_epoch, 0x78563412U);
+    EXPECT_EQ(found.commit_seq, 0xefcdab8967452301ULL);
+    EXPECT_EQ(found.transition_id, 0x1032547698badcfeULL);
+    BatchView batch{};
+    EXPECT_EQ(read_batch(prefix.data(), prefix.size(), batch), BatchCheck::corrupt);
+    const auto encoded = sample_batch();
+    ASSERT_EQ(ayni_storage_read_batch_identity(encoded.data(), encoded.size(), &found), 1);
+    EXPECT_EQ(found.writer_epoch, identity.writer_epoch);
+    EXPECT_EQ(found.commit_seq, identity.commit_seq);
+    EXPECT_EQ(found.transition_id, identity.transition_id);
+}
+
+// ADR-0040: non-prefix data remains opaque to the Host, and unsuccessful
+// inspection cannot publish partially decoded identity fields.
+TEST(BatchCodec, storage_identity_rejects_invalid_spans_without_changing_output) {
+    auto bytes = sample_batch();
+    BatchIdentity found = identity;
+    EXPECT_EQ(ayni_storage_read_batch_identity(nullptr, bytes.size(), &found), 0);
+    EXPECT_EQ(ayni_storage_read_batch_identity(bytes.data(), bytes.size(), nullptr), 0);
+    for (std::size_t size = 0; size < AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES; ++size) {
+        EXPECT_EQ(ayni_storage_read_batch_identity(bytes.data(), size, &found), 0);
+        EXPECT_EQ(found.writer_epoch, identity.writer_epoch);
+        EXPECT_EQ(found.commit_seq, identity.commit_seq);
+        EXPECT_EQ(found.transition_id, identity.transition_id);
+    }
+    constexpr std::size_t magic_size = 4;
+    for (std::size_t at = 0; at < magic_size; ++at) {
+        bytes[at] ^= 1;
+        EXPECT_EQ(ayni_storage_read_batch_identity(bytes.data(), bytes.size(), &found), 0);
+        EXPECT_EQ(found.writer_epoch, identity.writer_epoch);
+        EXPECT_EQ(found.commit_seq, identity.commit_seq);
+        EXPECT_EQ(found.transition_id, identity.transition_id);
+        bytes[at] ^= 1;
+    }
+}
+
 TEST(Crc32, matches_the_iso_hdlc_check_value) {
     const char *check = "123456789";
     EXPECT_EQ(crc32(reinterpret_cast<const uint8_t *>(check), 9), 0xCBF43926U);

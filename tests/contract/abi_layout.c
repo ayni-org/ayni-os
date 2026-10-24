@@ -6,6 +6,7 @@
  */
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
+#include <ayni/storage_format.h>
 
 #include <stddef.h>
 
@@ -470,3 +471,10 @@ AYNI_LAYOUT(goal_reauthorize_authority_cas,
 AYNI_LAYOUT(goal_reauthorize_original, offsetof(ayni_goal_reauthorize_v1, original) == 24);
 AYNI_LAYOUT(goal_reauthorize_size,
             sizeof(ayni_goal_reauthorize_v1) == 24 + sizeof(ayni_goal_create_v1));
+
+/* ADR-0040: fixed identity value, independent of the on-disk byte layout. */
+AYNI_LAYOUT(storage_identity_epoch, offsetof(ayni_storage_batch_identity_v1, writer_epoch) == 0);
+AYNI_LAYOUT(storage_identity_sequence, offsetof(ayni_storage_batch_identity_v1, commit_seq) == 8);
+AYNI_LAYOUT(storage_identity_transition,
+            offsetof(ayni_storage_batch_identity_v1, transition_id) == 16);
+AYNI_LAYOUT(storage_identity_size, sizeof(ayni_storage_batch_identity_v1) == 24);

@@ -251,10 +251,12 @@ class Encoder {
         for (uint32_t index = 0; index < tasks.size(); ++index) {
             const work::Task &task = tasks.at(index);
             if (task.steps_seq == stamp_.commit_seq) {
+                const work::TaskStepRange range{task.steps_before,
+                                                task.step_count - task.steps_before};
                 uint8_t *at = body(work::task_steps_record_type, work::task_steps_record_version,
-                                   work::task_steps_record_size(tasks, index));
+                                   work::task_steps_record_size(tasks, index, range));
                 if (at != nullptr) {
-                    work::write_task_steps_record(tasks, index, at);
+                    work::write_task_steps_record(tasks, index, range, at);
                 }
             }
             if (task.checkpoint_seq == stamp_.commit_seq) {
@@ -356,10 +358,8 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
             record_bytes(work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
     size += record_bytes(work::task_record_size);
-    size += record_bytes(work::task_steps_record_fixed_size +
-                         steps * durability::string_field_size(id_max));
-    size += record_bytes(work::task_checkpoint_record_fixed_size + id_max +
-                         capacities.task_checkpoint_max_bytes);
+    size += record_bytes(work::task_steps_record_max(steps));
+    size += record_bytes(work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size += capacities.task_capacity * record_bytes(work::task_state_record_size);
     size += capacities.task_capacity *
             record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));

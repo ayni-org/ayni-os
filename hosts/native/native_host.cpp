@@ -1,3 +1,5 @@
+#include <ayni/storage_format.h>
+
 #include <ayni/hosts/native.h>
 
 #include "file_log.h"
@@ -42,14 +44,6 @@ uint64_t request_reservation(const Request &request) {
     return request.port == Request::Port::append           ? request.size + uint64_t{24}
            : request.port == Request::Port::write_snapshot ? request.size
                                                            : 0U;
-}
-
-uint64_t load_le(const uint8_t *data, uint32_t size) {
-    uint64_t value = 0;
-    for (uint32_t index = 0; index < size; ++index) {
-        value |= static_cast<uint64_t>(data[index]) << (index * 8U);
-    }
-    return value;
 }
 
 } // namespace
@@ -345,10 +339,10 @@ ayni_submit_result_t Host::storage_append(void *ctx, const ayni_storage_batch_v1
         batch->encoded.data == nullptr || batch->encoded.size == 0U || batch->writer_epoch == 0U) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
-    if (batch->encoded.size >= 32U && std::memcmp(batch->encoded.data, "AYJB", 4) == 0 &&
-        (load_le(batch->encoded.data + 8, 4) != batch->writer_epoch ||
-         load_le(batch->encoded.data + 16, 8) != batch->commit_seq ||
-         load_le(batch->encoded.data + 24, 8) != batch->transition_id)) {
+    ayni_storage_batch_identity_v1 identity{};
+    if (ayni_storage_read_batch_identity(batch->encoded.data, batch->encoded.size, &identity) &&
+        (identity.writer_epoch != batch->writer_epoch || identity.commit_seq != batch->commit_seq ||
+         identity.transition_id != batch->transition_id)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     return storage->submit({Request::Port::append, attempt, completion, batch->commit_seq,
