@@ -30,6 +30,10 @@
 | — | 4 | `commit_seq_low` | `commit_seq` 的低 32 位，把提交标记绑定到本批次 |
 | — | 4 | `payload_crc` | 覆盖记录区 |
 
+Host 通过 `include/ayni/storage_format.h` 的 `ayni_storage_read_batch_identity`
+提取前 32 字节的身份（ABI 0.28，ADR-0040）；该纯函数不校验 schema、CRC、
+marker 或身份语义，不能替代 Core 的完整批次校验。失败不修改输出。
+
 每条记录：
 
 | 长度 | 字段 | 说明 |

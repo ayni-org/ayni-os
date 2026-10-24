@@ -3,6 +3,7 @@
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
+#include <ayni/storage_format.h>
 
 #include <stdio.h>
 
@@ -205,6 +206,17 @@ int main(void) {
     size_t size = 0;
     size_t align = 0;
     int failures = 0;
+
+    /* ADR-0040: prefix inspection links through the strict C99 public API. */
+    {
+        const uint8_t prefix[AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES] = {'A', 'Y', 'J', 'B'};
+        ayni_storage_batch_identity_v1 identity = {1u, 1u, 1u};
+        failures +=
+            expect(ayni_storage_read_batch_identity(prefix, sizeof prefix, &identity) == 1 &&
+                       identity.writer_epoch == 0 && identity.commit_seq == 0 &&
+                       identity.transition_id == 0,
+                   "storage identity prefix links from C99 without semantic validation");
+    }
 
     config.struct_size = (uint32_t)sizeof config;
     config.abi_major = AYNI_ABI_MAJOR;

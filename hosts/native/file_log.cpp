@@ -1,5 +1,7 @@
 #include "file_log.h"
 
+#include <ayni/storage_format.h>
+
 #include <ayni/ayni.h>
 
 #include <algorithm>
@@ -261,14 +263,15 @@ FileLog::Opened FileLog::scan() {
         int error = 0;
         const FrameCheck check = check_frame(at, frame, error);
         if (check == FrameCheck::whole) {
-            if (frame.payload_size >= 32U) {
-                std::array<uint8_t, 32> header{};
+            if (frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES) {
+                std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> header{};
                 error = read_exact(fd_, frame.payload_at, header.data(), header.size());
                 if (error != 0) {
                     return {OpenStatus::file_error, error};
                 }
-                if (std::memcmp(header.data(), "AYJB", 4) == 0) {
-                    writer_epoch_ = std::max(writer_epoch_, load_le32(header.data() + 8));
+                ayni_storage_batch_identity_v1 identity{};
+                if (ayni_storage_read_batch_identity(header.data(), header.size(), &identity)) {
+                    writer_epoch_ = std::max(writer_epoch_, identity.writer_epoch);
                 }
             }
             at = frame.end;
@@ -400,14 +403,18 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
         }
         if (frame.commit_seq == commit_seq) {
             bool same_identity = true;
-            if (size >= 32U && frame.payload_size >= 32U && std::memcmp(data, "AYJB", 4) == 0) {
-                std::array<uint8_t, 32> found{};
+            ayni_storage_batch_identity_v1 requested{};
+            if (frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES &&
+                ayni_storage_read_batch_identity(data, size, &requested)) {
+                std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> found{};
                 if (read_exact(fd_, frame.payload_at, found.data(), found.size()) != 0) {
                     return {AYNI_WRITE_FAILED, 0};
                 }
-                same_identity = std::memcmp(found.data(), "AYJB", 4) == 0 &&
-                                load_le32(found.data() + 8) == load_le32(data + 8) &&
-                                load_le64(found.data() + 24) == load_le64(data + 24);
+                ayni_storage_batch_identity_v1 stored{};
+                same_identity =
+                    ayni_storage_read_batch_identity(found.data(), found.size(), &stored) &&
+                    stored.writer_epoch == requested.writer_epoch &&
+                    stored.transition_id == requested.transition_id;
             }
             if (same_identity) {
                 if (!same_payload(frame, data, size, error)) {
@@ -685,14 +692,15 @@ FileLog::Result FileLog::trim_prefix(uint32_t writer_epoch, uint64_t commit_seq,
         if (!read_header(at, frame, error) || frame.end > end_) {
             return {AYNI_WRITE_FAILED, 0};
         }
-        if (frame.commit_seq == commit_seq && frame.payload_size >= 32U) {
-            std::array<uint8_t, 32> header{};
+        if (frame.commit_seq == commit_seq &&
+            frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES) {
+            std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> header{};
             if (read_exact(fd_, frame.payload_at, header.data(), header.size()) != 0) {
                 return {AYNI_WRITE_FAILED, 0};
             }
-            if (std::memcmp(header.data(), "AYJB", 4) == 0 &&
-                load_le32(header.data() + 8) == writer_epoch &&
-                load_le64(header.data() + 24) == transition_id &&
+            ayni_storage_batch_identity_v1 identity{};
+            if (ayni_storage_read_batch_identity(header.data(), header.size(), &identity) &&
+                identity.writer_epoch == writer_epoch && identity.transition_id == transition_id &&
                 check_payload(frame, nullptr, error)) {
                 retained = at;
                 break;

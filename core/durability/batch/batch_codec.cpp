@@ -19,7 +19,7 @@ using foundation::store_le64;
 constexpr uint8_t batch_magic[4] = {'A', 'Y', 'J', 'B'};
 constexpr uint8_t commit_magic[4] = {'A', 'Y', 'J', 'C'};
 
-// Header field offsets.
+// Header field offsets (contracts/storage/records.md, log batch layout).
 constexpr std::size_t schema_at = 4;
 constexpr std::size_t header_length_at = 6;
 constexpr std::size_t writer_epoch_at = 8;
@@ -99,7 +99,8 @@ std::size_t BatchWriter::finish() {
 }
 
 BatchCheck read_batch(const uint8_t *bytes, std::size_t size, BatchView &out) {
-    if (size < header_length_at + 2U || std::memcmp(bytes, batch_magic, sizeof(batch_magic)) != 0) {
+    BatchIdentity identity{};
+    if (!ayni_storage_read_batch_identity(bytes, size, &identity)) {
         return BatchCheck::corrupt;
     }
     const std::size_t header_length = load_le16(bytes + header_length_at);
@@ -121,16 +122,14 @@ BatchCheck read_batch(const uint8_t *bytes, std::size_t size, BatchView &out) {
     }
     const uint8_t *payload = bytes + header_length;
     const uint8_t *marker = payload + payload_length;
-    const uint64_t commit_seq = load_le64(bytes + commit_seq_at);
+    const uint64_t commit_seq = identity.commit_seq;
     if (std::memcmp(marker, commit_magic, sizeof(commit_magic)) != 0 ||
         load_le32(marker + 4) != low_32(commit_seq) ||
         load_le32(marker + 8) != crc32(payload, payload_length)) {
         return BatchCheck::corrupt;
     }
     out.schema = load_le16(bytes + schema_at);
-    out.identity.writer_epoch = load_le32(bytes + writer_epoch_at);
-    out.identity.commit_seq = commit_seq;
-    out.identity.transition_id = load_le64(bytes + transition_id_at);
+    out.identity = identity;
     out.record_count = load_le32(bytes + record_count_at);
     out.payload = payload;
     out.payload_length = payload_length;
@@ -162,3 +161,15 @@ RecordReader::Next RecordReader::next(RecordHeader &header, const uint8_t *&body
 }
 
 } // namespace ayni::durability
+
+extern "C" int ayni_storage_read_batch_identity(const uint8_t *bytes, size_t size,
+                                                ayni_storage_batch_identity_v1 *out) {
+    using namespace ayni::durability;
+    if (bytes == nullptr || out == nullptr || size < AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES ||
+        std::memcmp(bytes, batch_magic, sizeof(batch_magic)) != 0) {
+        return 0;
+    }
+    *out = {load_le32(bytes + writer_epoch_at), load_le64(bytes + commit_seq_at),
+            load_le64(bytes + transition_id_at)};
+    return 1;
+}

@@ -1,3 +1,5 @@
+#include <ayni/storage_format.h>
+
 #include <ayni/hosts/sim.h>
 
 #include <algorithm>
@@ -10,20 +12,12 @@
 namespace ayni::hosts::sim {
 namespace {
 
-uint64_t load_le(const uint8_t *data, uint32_t size) {
-    uint64_t value = 0;
-    for (uint32_t index = 0; index < size; ++index) {
-        value |= static_cast<uint64_t>(data[index]) << (index * 8U);
-    }
-    return value;
-}
-
 bool has_identity(const StoredBatch &batch, uint32_t writer_epoch, uint64_t transition_id,
                   uint64_t commit_seq) {
-    return batch.commit_seq == commit_seq && batch.bytes.size() >= 32U &&
-           std::memcmp(batch.bytes.data(), "AYJB", 4) == 0 &&
-           load_le(batch.bytes.data() + 8, 4) == writer_epoch &&
-           load_le(batch.bytes.data() + 24, 8) == transition_id;
+    ayni_storage_batch_identity_v1 identity{};
+    return batch.commit_seq == commit_seq &&
+           ayni_storage_read_batch_identity(batch.bytes.data(), batch.bytes.size(), &identity) &&
+           identity.writer_epoch == writer_epoch && identity.transition_id == transition_id;
 }
 
 } // namespace
@@ -133,10 +127,10 @@ ayni_submit_result_t Host::storage_append(void *ctx, const ayni_storage_batch_v1
         batch->encoded.data == nullptr || batch->encoded.size == 0U) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
-    if (batch->encoded.size >= 32U && std::memcmp(batch->encoded.data, "AYJB", 4) == 0 &&
-        (load_le(batch->encoded.data + 8, 4) != batch->writer_epoch ||
-         load_le(batch->encoded.data + 16, 8) != batch->commit_seq ||
-         load_le(batch->encoded.data + 24, 8) != batch->transition_id)) {
+    ayni_storage_batch_identity_v1 identity{};
+    if (ayni_storage_read_batch_identity(batch->encoded.data, batch->encoded.size, &identity) &&
+        (identity.writer_epoch != batch->writer_epoch || identity.commit_seq != batch->commit_seq ||
+         identity.transition_id != batch->transition_id)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     const Pending request{StoragePort::append,
@@ -310,7 +304,9 @@ ayni_completion_result_v1 Host::run(const Pending &request) {
             if (batch.commit_seq != request.commit_seq) {
                 continue;
             }
-            const bool encoded = request.size >= 32U && std::memcmp(request.data, "AYJB", 4) == 0;
+            ayni_storage_batch_identity_v1 identity{};
+            const bool encoded =
+                ayni_storage_read_batch_identity(request.data, request.size, &identity) != 0;
             if (!encoded || has_identity(batch, request.writer_epoch, request.transition_id,
                                          request.commit_seq)) {
                 result.outcome =

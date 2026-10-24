@@ -8,6 +8,8 @@
 #ifndef AYNI_CORE_DURABILITY_BATCH_BATCH_CODEC_H
 #define AYNI_CORE_DURABILITY_BATCH_BATCH_CODEC_H
 
+#include <ayni/storage_format.h>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -41,11 +43,8 @@ constexpr std::size_t batch_size(std::size_t record_body_bytes, std::size_t reco
            commit_marker_size;
 }
 
-struct BatchIdentity {
-    uint32_t writer_epoch;
-    uint64_t commit_seq;
-    uint64_t transition_id;
-};
+// The public value type shares the format owner with Host prefix inspection.
+using BatchIdentity = ayni_storage_batch_identity_v1;
 
 struct RecordHeader {
     uint16_t type;
