@@ -22,7 +22,7 @@
 | -10 | `AYNI_DENIED` | 授权、主体或场景检查拒绝 | 取得授权；不应换个参数绕过 |
 | -11 | `AYNI_EXPIRED` | 期限、租期、许可或去重低水位已过 | 重新准入或以新身份发起（遵守 C-CALL-008） |
 | -12 | `AYNI_STALE` | 新鲜度证明（`receiver_tick`、观察有效期、依赖版本）不足 | 取得新证明后以同一幂等键重试 |
-| -13 | `AYNI_BUDGET_EXHAUSTED` | 预算余额不足 | 等待周期重置或调整预算 |
+| -13 | `AYNI_BUDGET_EXHAUSTED` | 历史费用预算码，保留数值不复用；ADR-0042 取消该产品能力 | 无当前生产路径返回；不得据此承诺周期额度重置 |
 | -14 | `AYNI_STORAGE_FAILED` | 持久化失败；相关输出未释放 | 查看诊断；Kernel 可能已进入受限栅栏 |
 | -15 | `AYNI_REVISION_CONFLICT` | `expected_revision` 或依赖版本已过时 | 读取新版本，重新评估后再提交 |
 | -16 | `AYNI_IDEMPOTENCY_CONFLICT` | 同一幂等键对应了不同的规范化请求身份（旧普通命令兼容摘要） | 换新的幂等键表示新意图 |
@@ -90,7 +90,7 @@
 | 52 | `AYNI_REASON_GRANT_CATALOG_CHANGED` | `UNSUPPORTED_VERSION` | exact Capability完整注册域改变，旧Grant暂时禁用 |
 | 53 | `AYNI_REASON_GRANT_SUBJECT` | `DENIED` | 接收实例不可用 |
 | 54 | `AYNI_REASON_GRANT_CHANNEL` | `DENIED` | 需要可信管理端Session |
-| 55 | `AYNI_REASON_GRANT_UNSUPPORTED` | `UNSUPPORTED` | Scene或额度授权尚未实现 |
+| 55 | `AYNI_REASON_GRANT_UNSUPPORTED` | `UNSUPPORTED` | Scene 尚待实现；历史额度字段已取消，仍明确拒绝（ADR-0042） |
 | 56 | `AYNI_REASON_GRANT_REVOKED` | `DENIED` | 目标或任一祖先有 Gate/已撤销 |
 | 57 | `AYNI_REASON_REVOCATION_PENDING` | `BUSY` | 同 target 已有另一条待决撤销，不占新命令身份 |
 | 58 | `AYNI_REASON_COMMAND_PINNED` | `BUSY` | 该 principal 的结果窗口全部被已接受撤销 pin 住 |

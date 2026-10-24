@@ -30,6 +30,8 @@
 | 预留控制容量（完成槽，`completion_slot_count`，1–1024） | 16，且不小于在途请求上限 | §4.2 | 不调用端口，返回 `BUSY`（C-HOST-006） |
 | 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W为当前记录与容量的保守批次上界，计入min(需求容量,Grant容量)条Grant创建/撤销根及progress/完整命令，不要求各类记录同时发生） | 0：3×max(W+4,256)，与query/create共用具名容量公式 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
 | 每个 principal 保留的命令映射（`command_capacity`，1–1024） | 32 | ADR-0026 | 未pin且`command_id`最小的映射让位并提高下限；全pin普通新命令BUSY/COMMAND_PINNED；已接受撤销仍先查pending；未映射且不大于下限的命令返回 `EXPIRED`（`COMMAND_EXPIRED`） |
+| 资源目录（`resource_capacity`，0–64；Since 0.29） | 0，显式 profile 启用 | ADR-0042 | 注册满时 `CAPACITY_EXCEEDED`，不自动发现或替换 |
+| 排队/持有资源组（`resource_request_capacity`，0–256；Since 0.29） | 0，显式 profile 启用；每组至多 8 个不同资源 | ADR-0042 | 明确拒绝，不淘汰已有请求；生产调用消费尚未实现 |
 | 活跃外部推理槽 | 1 | §4.2 | 排队（C-RES-004） |
 | 每个 Task 的模型决策次数 | 8 | §4.2 | Task 暂停并报告原因 |
 | 单轮能力请求数 | 8 | §2.7、§4.2 | 整轮拒绝 |

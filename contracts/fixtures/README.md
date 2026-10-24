@@ -32,7 +32,7 @@ contracts/fixtures/
 | `description` | 字符串 | 是 | 一句话说明场景与预期 |
 | `seed` | 十进制字符串 | 是 | 全部伪随机选择的种子 |
 | `config` | 对象 | 是 | Kernel 配置与容量限额（C-LIMIT-*）、FakeClock 起点、时区规则版本；未写的项取 `limits.md` 的默认值 |
-| `world` | 对象 | 是 | 初始世界：设备、资源、能力、Binding、Mock Provider 行为、实例、Grant、预算、记忆记录。对象用夹具内的名字引用（如 `"@A"`、`"@model_slot"`），运行器按出现顺序确定性地分配真实 ID |
+| `world` | 对象 | 是 | 初始世界：设备、资源、能力、Binding、Mock Provider 行为、实例、Grant、Task 运行限制、记忆记录。对象用夹具内的名字引用（如 `"@A"`、`"@model_slot"`），运行器按出现顺序确定性地分配真实 ID |
 | `script` | 数组 | 是 | 有序动作，见下文“动作” |
 | `invariants` | 数组 | 否 | 每次 `step` 之后都必须成立的断言（例如模型槽活跃数 ≤ 1） |
 | `expect` | 数组 | 是 | 脚本结束后的断言，见下文“断言” |
@@ -50,7 +50,7 @@ contracts/fixtures/
 | 可控事件顺序 | `submit_intent` | 以指定主体、渠道信任级别与 `command_id` 提交意图 |
 | | `post_event` | 投递观察、遥测、本地输入或时钟可信事件 |
 | | `step` | 调用 `ayni_step`，可写 `repeat` 次数或 `until_idle` 加上限；超过上限即失败 |
-| 双 Mock Provider | `provider_respond` | 让某个挂起的请求以指定结果（完成、失败、取消、进度、无法取消、取消未知）和费用事实返回 |
+| 双 Mock Provider | `provider_respond` | 让某个挂起的请求以指定结果（完成、失败、取消、进度、无法取消、取消未知）和可选 usage 诊断事实返回 |
 | | `provider_query_answer` | 设定权威查询的回答：`FOUND`、`NOT_ACCEPTED`（权威未执行）或 `UNKNOWN`（仅未找到记录） |
 | 可重启存储 | `restart` | 丢弃全部易失状态，用同一份存储重建 Kernel；Host 侧计数器保留 |
 | 批次中断/短写/丢失/损坏注入 | `storage_fault` | 对指定批次注入断电（在某条记录之后）、短写、丢失或 CRC 损坏 |
@@ -71,7 +71,7 @@ contracts/fixtures/
 | `side_effect_count` | 某能力或某 operation 的 Host 侧真实执行次数等于给定值 |
 | `object_state` | 某对象（Goal、Task、ActionRecord、Grant、订阅、记忆记录）的状态或字段等于给定值 |
 | `resource_holders` | 某资源当前或历史最大占用者数量满足给定上限 |
-| `budget` | 某层预算的已花费、已预留与余额 |
+| `task_runtime` | Task 模型调用上限、已接受次数与限制暂停（ADR-0042）；无钱包/费用预留 |
 | `trace_order` | 轨迹中若干事件按给定顺序出现 |
 | `trace_absent` | 轨迹中不出现某类事件（例如撤销栅栏之后的新派发） |
 | `executor_stopped_by` | 模拟执行端记录的停止时刻不晚于给定表达式（如 `revoke_at + L`） |
@@ -82,7 +82,7 @@ contracts/fixtures/
 计划 §10.1 要求每次运行保存可复现所需的全部信息。运行器为每个用例写两份文件，编码同样使用受限 JSON 子集：
 
 - `run.json`：用例 ID、`fixture_schema`、代码提交、工具链、ABI/协议/存储版本、配置、种子、宿主（native 或 esp32）、通过与否、第一个失败的断言。
-- `trace.jsonl`：每行一条记录，字段为序号、`step` 序号、FakeClock 时间、类别（transition、commit、output、side_effect、permit、resource、budget、subscription、fault）、相关 ID（command、transition、`commit_seq`、operation、`(boot_epoch, request_id)`、`logical_call_id`、订阅代际）与内容摘要。私有记忆正文、凭据与媒体内容只写摘要，不写原文。
+- `trace.jsonl`：每行一条记录，字段为序号、`step` 序号、FakeClock 时间、类别（transition、commit、output、side_effect、permit、resource、task_runtime、subscription、fault）、相关 ID（command、transition、`commit_seq`、operation、`(boot_epoch, request_id)`、`logical_call_id`、订阅代际）与内容摘要。私有记忆正文、凭据与媒体内容只写摘要，不写原文。
 
 CTest 运行时写入构建目录；作为验收证据归档时复制到 `reports/`，与代码版本一起提交。
 
