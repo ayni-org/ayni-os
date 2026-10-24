@@ -733,7 +733,7 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     return result;
 }
 
-// Snapshot Goal v2/v3 and metadata form one adjacent pair; the metadata keeps its
+// Snapshot Goal v4 and metadata form one adjacent pair; the metadata keeps its
 // own last-change stamp, which can precede the Goal's latest ordinary progress.
 durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, uint32_t size) {
     work::GoalAuthorityRecord record{};

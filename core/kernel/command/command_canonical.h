@@ -21,6 +21,8 @@ constexpr uint32_t authority_command_max_bytes(uint32_t scope_max_bytes) {
 
 // Every exact command window uses one arena stride; the larger real payload
 // owns its budget. Do not allocate approval parameters at the absolute ABI cap.
+// requirements == 0 selects the input-only parser bound; configured windows
+// supply their positive requirement capacity and include complete result bytes.
 constexpr uint32_t exact_command_max_bytes(uint32_t scope_bytes, uint32_t parameter_bytes,
                                            uint32_t requirements = 0) {
     const auto approval = approval_command_max_bytes(parameter_bytes) +
