@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -29,6 +30,20 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+namespace ayni::hosts::native {
+
+// ADR-0039: inject only the OS space observation; exercise the real worker,
+// cache, wake and close paths without changing the shared storage contract.
+class HostTestPeer {
+  public:
+    static StorageOpen open(Host &host, const char *directory, void *context,
+                            bool (*read)(void *, uint64_t &)) {
+        return host.open_storage(directory, 1, {context, read});
+    }
+};
+
+} // namespace ayni::hosts::native
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -43,6 +58,73 @@ using ayni::test::StorageRequest;
 using ayni::test::StorageRequests;
 using ayni::test::TempDirectory;
 using ayni::test::test_batch;
+
+// A failed observation is distinct from a valid zero-byte observation.
+struct SpaceProbe {
+    std::atomic<uint64_t> available{0};
+    std::atomic<unsigned> samples{0};
+
+    static bool read(void *context, uint64_t &out) {
+        auto &probe = *static_cast<SpaceProbe *>(context);
+        out = probe.available.load();
+        ++probe.samples;
+        return out != UINT64_MAX;
+    }
+};
+
+// C-HOST-013 / ADR-0039: no queued I/O is needed to recover admission or
+// notify the owner; free_bytes continues to read the worker's cached result.
+TEST(NativeHost, idle_space_recovery_wakes_the_owner_without_a_storage_request) {
+    const TempDirectory directory;
+    SpaceProbe probe;
+    Host host; // Destroy the worker before its borrowed probe.
+    ASSERT_EQ(ayni::hosts::native::HostTestPeer::open(host, directory.path().c_str(), &probe,
+                                                      &SpaceProbe::read)
+                  .status,
+              StorageStatus::ok);
+    const auto ports = host.table();
+    uint64_t available = UINT64_MAX;
+    ASSERT_EQ(ports.storage_free_bytes(ports.ctx, &available), AYNI_OK);
+    ASSERT_EQ(available, 0U);
+    probe.available = 4096;
+    ASSERT_TRUE(host.wait_for_wake(5s)); // Watchdog, not a filesystem latency promise.
+    ASSERT_EQ(ports.storage_free_bytes(ports.ctx, &available), AYNI_OK);
+    EXPECT_EQ(available, 4096U);
+    const auto before = probe.samples.load();
+    EXPECT_FALSE(host.wait_for_wake(1500ms));
+    host.close_storage(); // Joins the idle worker and prevents further samples.
+    EXPECT_GT(probe.samples.load(), before);
+    EXPECT_FALSE(host.wait_for_wake(0us));
+}
+
+// C-HOST-013 / ADR-0039: both loss of observability and recovery are published;
+// an unsuccessful sample never disables future idle observations.
+TEST(NativeHost, idle_space_probe_retries_failures_and_reports_each_status_change) {
+    const TempDirectory directory;
+    SpaceProbe probe;
+    probe.available = UINT64_MAX;
+    Host host;
+    ASSERT_EQ(ayni::hosts::native::HostTestPeer::open(host, directory.path().c_str(), &probe,
+                                                      &SpaceProbe::read)
+                  .status,
+              StorageStatus::ok);
+    const auto ports = host.table();
+    uint64_t available = 1;
+    EXPECT_EQ(ports.storage_free_bytes(ports.ctx, &available), AYNI_STORAGE_FAILED);
+    EXPECT_EQ(available, 0U);
+    probe.available = 8192;
+    ASSERT_TRUE(host.wait_for_wake(5s));
+    EXPECT_EQ(ports.storage_free_bytes(ports.ctx, &available), AYNI_OK);
+    EXPECT_EQ(available, 8192U);
+    probe.available = UINT64_MAX;
+    ASSERT_TRUE(host.wait_for_wake(5s));
+    EXPECT_EQ(ports.storage_free_bytes(ports.ctx, &available), AYNI_STORAGE_FAILED);
+    EXPECT_EQ(available, 0U);
+    probe.available = 0;
+    ASSERT_TRUE(host.wait_for_wake(5s));
+    EXPECT_EQ(ports.storage_free_bytes(ports.ctx, &available), AYNI_OK);
+    EXPECT_EQ(available, 0U);
+}
 
 void write_file(const std::string &path, const Bytes &bytes) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
