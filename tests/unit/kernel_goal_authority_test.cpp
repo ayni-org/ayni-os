@@ -12,6 +12,7 @@
 #include <array>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 namespace {
 using namespace ayni::test;
@@ -560,6 +561,43 @@ TEST(TaskAuthorityApi, multiple_requirements_keep_distinct_selected_grants) {
         EXPECT_EQ(info.grant_id, id);
         EXPECT_EQ(info.grant_revision, 1U);
     }
+}
+
+// C-AUTH-023: Task references independently prevent reclamation until terminal
+// state is durable. White-box removal isolates them from the Goal's same refs.
+TEST(TaskAuthorityApi, live_task_references_and_unconfirmed_terminal_state_prevent_reclaim) {
+    AuthorityWork node;
+    node.work.node().config().grant_capacity = 1;
+    node.run();
+    constexpr uint64_t duration_us = 1000000;
+    const auto grant = node.grant(0, 100, duration_us);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    ASSERT_NE(node.work.goal(goal.result.object.id).last_task_id, 0U);
+    node.work.node().sim().advance_us(duration_us);
+    node.work.node().step(1);
+    node.work.node().recover();
+    auto &model = node.work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.goals.find(goal.result.object.id, index));
+    auto saved = model.goal_authority.at(index);
+    const auto &need = saved.requirements[0];
+    const std::vector<uint8_t> domain(need.source_domain.data,
+                                      need.source_domain.data + need.source_domain.size);
+    const std::vector<uint8_t> scope(need.scope.data, need.scope.data + need.scope.size);
+    saved.requirements[0].source_domain = {domain.data(), static_cast<uint32_t>(domain.size())};
+    saved.requirements[0].scope = {scope.data(), static_cast<uint32_t>(scope.size())};
+    model.goal_authority.clear(index);
+    EXPECT_TRUE(model.grant_reclaim_exclusions(node.work.kernel()->log.durable_seq()).contains(0));
+    EXPECT_EQ(node.grant().status, AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(model.goal_authority.install_validated(index, saved), AYNI_OK);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, goal.result.object.id).status, AYNI_OK);
+    EXPECT_EQ(node.grant().status, AYNI_CAPACITY_EXCEEDED);
+    node.work.node().recover();
+    EXPECT_EQ(node.grant().status, AYNI_OK);
 }
 
 // ADR-0037 minimum gate: callback elapsed time cannot commit steps/checkpoints after expiry.
