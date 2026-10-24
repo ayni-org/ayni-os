@@ -30,12 +30,16 @@ class AuthorityCleanup {
   public:
     // A domain change requests all retained Goals through this stable ID.
     // Zero means no retained Goals. An active frontier is never extended.
+    // Nonzero frontier is a valid Goal ID; stamp is positive and does not
+    // precede the retained stamp. One transition may coalesce requests.
     void request(uint64_t through_goal_id, foundation::TransitionStamp stamp);
     // One inspected Goal; caller selected the least retained ID after the
     // cursor, at most through. The last item also completes the pass.
+    // Requires scanning, a valid selected ID, and a positive current stamp.
     void visited(uint64_t goal_id, foundation::TransitionStamp stamp);
     // No retained Goal remains in the active range. Starts a pending pass
     // even when its frontier equals the completed pass (no lost requests).
+    // Requires scanning and a positive current stamp that does not go backward.
     void finish(foundation::TransitionStamp stamp);
     // Immutable view, including an explicit initial idle fact.
     const AuthorityCleanupRecord &record() const { return state_; }
