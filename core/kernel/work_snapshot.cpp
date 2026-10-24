@@ -31,9 +31,10 @@ constexpr uint32_t stamp_size = 16;
 constexpr uint32_t owner_binding_size = authority::owner_binding_record_size + stamp_size;
 // INSTANCE: the stamp it last changed at.
 constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
-// GOAL: the GOAL_STATE body, then its created_transition_id and the
-// commit_seq it last changed at.
-constexpr uint32_t goal_extra = work::goal_state_record_size + stamp_size;
+// GOAL v4: GOAL_STATE, immutable creation stamp, then the current sequence.
+// Keeping both proves later authorization bindings require a durable handoff.
+constexpr uint32_t goal_current_seq_at = work::goal_state_record_size + stamp_size;
+constexpr uint32_t goal_extra = goal_current_seq_at + sizeof(uint64_t);
 // TASK: created_transition_id, the commit_seq it last changed at, steps_seq
 // and checkpoint_seq, then steps_before.
 constexpr uint32_t task_tail_size = 4U * 8U + 4U;
@@ -45,7 +46,8 @@ uint32_t command_size(const CommandMapping &mapping) {
 }
 uint32_t command_max(const KernelCapacities &capacities) {
     return command_record_max(exact_command_max_bytes(capacities.authority_scope_max_bytes,
-                                                      capacities.goal_parameter_max_bytes)) +
+                                                      capacities.goal_parameter_max_bytes,
+                                                      capacities.goal_requirement_capacity)) +
            command_tail_size;
 }
 
@@ -414,8 +416,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         const uint32_t base_size = work::goal_record_size(goal);
         work::write_goal_record(goal, model_.goals.parameters(index_), body);
         work::write_goal_state_record(goal, body + base_size);
-        write_stamp(body + base_size + work::goal_state_record_size, goal.created_transition_id,
-                    goal.commit_seq);
+        write_stamp(body + base_size + work::goal_state_record_size, goal.created.transition_id,
+                    goal.created.commit_seq);
+        foundation::store_le64(body + base_size + goal_current_seq_at, goal.commit_seq);
         break;
     }
     case work::goal_authority_record_type:
@@ -450,8 +453,8 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         const CommandMapping &mapping = model_.commands.at(command_index_);
         const uint32_t base_size = command_record_size_for(mapping);
         static_cast<void>(write_command_record(mapping, model_.commands.floor(mapping.principal_id),
-                                               model_.commands.canonical(mapping), body,
-                                               base_size));
+                                               model_.commands.canonical(mapping), body, base_size,
+                                               model_.commands.authorization_result(mapping)));
         foundation::store_le64(body + base_size, mapping.commit_seq);
         break;
     }
@@ -523,7 +526,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
                 ? command_record_version_for(model_.commands.at(command_index_))
             : type == work::goal_record_type &&
                     model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
-                ? work::goal_authority_state_record_version
+                ? work::goal_creation_stamp_snapshot_version
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
             : type == authority::grant_record_type
                 ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
@@ -696,6 +699,10 @@ durability::BatchCheck WorkSnapshotReader::grant(uint16_t version, const uint8_t
 
 durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t *body,
                                                 uint32_t size) {
+    if (version != work::goal_creation_stamp_snapshot_version) {
+        return durability::BatchCheck::unsupported; // No inferred creation sequence for old
+                                                    // snapshots.
+    }
     if (size < work::goal_record_fixed_size + goal_extra) {
         return durability::BatchCheck::corrupt;
     }
@@ -705,28 +712,28 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     if (!work::read_goal_record(body, base_size, record, version) ||
         !work::read_goal_state_record(body + base_size, work::goal_state_record_size, state) ||
         record.goal_id != state.goal_id ||
-        (version < work::goal_authority_state_record_version &&
-         state.state.lifecycle == AYNI_GOAL_PROPOSED) ||
         model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return durability::BatchCheck::corrupt;
     }
     const foundation::TransitionStamp stamp =
         read_stamp(body + base_size + work::goal_state_record_size);
-    if (!valid_stamp(stamp, metadata_)) {
+    const auto commit_seq = foundation::load_le64(body + base_size + goal_current_seq_at);
+    if (!valid_stamp(stamp, metadata_) || commit_seq < stamp.commit_seq ||
+        commit_seq > metadata_.covers_commit_seq) {
         return durability::BatchCheck::corrupt;
     }
     record.goal.goal_type_index = work::GoalTable::no_index;
     uint32_t index = 0;
-    const auto result =
-        check_of(model_.goals.restore_snapshot(record.goal, record.goal_id, record.replaced_goal_id,
-                                               record.depth, state.state, stamp, index));
+    const auto result = check_of(
+        model_.goals.restore_snapshot(record.goal, record.goal_id, record.replaced_goal_id,
+                                      record.depth, state.state, stamp, commit_seq, index));
     if (result == durability::BatchCheck::ok && record.authority_required) {
         goal_authority_pending_ = record.goal_id;
     }
     return result;
 }
 
-// Snapshot Goal v2/v3 and metadata form one adjacent pair; the metadata keeps its
+// Snapshot Goal v4 and metadata form one adjacent pair; the metadata keeps its
 // own last-change stamp, which can precede the Goal's latest ordinary progress.
 durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, uint32_t size) {
     work::GoalAuthorityRecord record{};
@@ -735,7 +742,7 @@ durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, u
         record.goal_id != *goal_authority_pending_ || !model_.goals.find(record.goal_id, index) ||
         !valid_stamp(record.stamp, metadata_) ||
         record.stamp.commit_seq > model_.goals.at(index).commit_seq ||
-        record.stamp.transition_id < model_.goals.at(index).created_transition_id) {
+        record.stamp.transition_id < model_.goals.at(index).created.transition_id) {
         return durability::BatchCheck::corrupt;
     }
     const auto status = model_.goal_authority.restore_validated(index, record);
@@ -867,8 +874,10 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
     CommandMapping mapping{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
+    ayni_bytes_v1 result_bytes{};
     if (size < command_tail_size ||
-        !read_command_record(version, body, size - command_tail_size, mapping, floor, canonical)) {
+        !read_command_record(version, body, size - command_tail_size, mapping, floor, canonical,
+                             &result_bytes)) {
         return durability::BatchCheck::corrupt;
     }
     mapping.commit_seq = foundation::load_le64(body + size - command_tail_size);
@@ -900,11 +909,13 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
     }
     if (mapping.kind == AYNI_INTENT_GOAL_APPROVE &&
         (foundation::id_boot_epoch(mapping.object.id) > metadata_.boot_epoch ||
-         !WorkReplay(model_).matches_goal_approval(mapping, canonical))) {
+         !WorkReplay(model_).matches_goal_approval(mapping, canonical, result_bytes,
+                                                   metadata_.max_transition_id,
+                                                   metadata_.boot_epoch))) {
         return durability::BatchCheck::corrupt;
     }
     last_command_seq_ = mapping.commit_seq;
-    return check_of(model_.commands.restore_checked(mapping, floor, canonical));
+    return check_of(model_.commands.restore_checked(mapping, floor, canonical, result_bytes));
 }
 
 durability::BatchCheck WorkSnapshotReader::authority_cleanup(const uint8_t *body, uint32_t size) {

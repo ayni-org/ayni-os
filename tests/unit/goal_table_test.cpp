@@ -154,7 +154,7 @@ TEST(GoalTable, new_goal_is_active_at_revision_1_with_its_own_copy_of_the_parame
     EXPECT_EQ(goal.depth, 0U);
     EXPECT_EQ(goal.parent_index, GoalTable::no_parent);
     EXPECT_EQ(goal.owner_instance_id, owner);
-    EXPECT_EQ(goal.created_transition_id, 11U);
+    EXPECT_EQ(goal.created.transition_id, 11U);
     EXPECT_EQ(goal.commit_seq, 1U);
     EXPECT_EQ(goal.origin.principal_id, 7U);
     EXPECT_EQ(goal.trigger.kind, AYNI_TRIGGER_NONE);

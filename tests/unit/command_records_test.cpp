@@ -65,7 +65,7 @@ TEST(CommandRecords, auth_version_two_round_trips_full_request_and_borrows_only_
                                      static_cast<uint32_t>(bytes.size())));
     EXPECT_EQ(bytes.size(), 60U + canonical.size());
     EXPECT_EQ(command_record_version_for(mapping), 2U);
-    EXPECT_EQ(command_record_max(340), 400U);
+    EXPECT_EQ(command_record_max(340), 404U);
     CommandMapping restored{};
     uint64_t floor = 0;
     ayni_bytes_v1 restored_bytes{};

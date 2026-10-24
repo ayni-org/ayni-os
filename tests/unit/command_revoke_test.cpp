@@ -138,7 +138,7 @@ TEST(CommandRevoke, v3_stores_explicit_effect_and_original_identity_without_rete
     }
     EXPECT_EQ(command_record_max(0), 52U);
     EXPECT_EQ(command_record_max(16), 80U);
-    EXPECT_EQ(command_record_max(340), 400U);
+    EXPECT_EQ(command_record_max(340), 404U);
 }
 
 // C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.

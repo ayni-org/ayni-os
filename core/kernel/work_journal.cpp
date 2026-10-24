@@ -163,7 +163,7 @@ class Encoder {
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {
             const work::Goal &goal = model_.goals.at(index);
             if (goal.commit_seq != stamp_.commit_seq ||
-                goal.created_transition_id != stamp_.transition_id) {
+                goal.created.transition_id != stamp_.transition_id) {
                 continue;
             }
             const uint16_t version = model_.goal_authority.contains(index, goal.goal_id)
@@ -314,7 +314,8 @@ class Encoder {
         uint8_t *at = body(command_record_type, command_record_version_for(*mapping), size);
         if (at != nullptr) {
             ok_ = write_command_record(*mapping, model_.commands.floor(mapping->principal_id),
-                                       model_.commands.canonical(*mapping), at, size) &&
+                                       model_.commands.canonical(*mapping), at, size,
+                                       model_.commands.authorization_result(*mapping)) &&
                   ok_;
         }
         return ok_;
@@ -363,7 +364,8 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += record_bytes(authority::grant_revoked_state_record_size);
     size += record_bytes(authority::grant_revocation_progress_record_size);
     size += record_bytes(command_record_max(exact_command_max_bytes(
-        capacities.authority_scope_max_bytes, capacities.goal_parameter_max_bytes)));
+        capacities.authority_scope_max_bytes, capacities.goal_parameter_max_bytes,
+        capacities.goal_requirement_capacity)));
     return size;
 }
 

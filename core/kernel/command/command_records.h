@@ -20,12 +20,16 @@ constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * 
 constexpr uint16_t revoke_command_record_version = 3;
 // REQUIRED type 9/v4 keeps the v2 envelope but carries full Goal approval identity.
 constexpr uint16_t approval_command_record_version = 4;
+// Type9/v5 retains exact approval/reauthorization input plus its immutable result.
+constexpr uint16_t work_authority_command_record_version = 5;
+constexpr uint32_t work_authority_command_record_fixed_size =
+    exact_command_record_fixed_size + sizeof(uint32_t);
 // Type 9/v3 adds effect before those two canonical fields (u32 each).
 constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 3U * sizeof(uint32_t);
 constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {
-    const uint32_t create_max = canonical_max_bytes == 0U
-                                    ? command_record_size
-                                    : exact_command_record_fixed_size + canonical_max_bytes;
+    const uint32_t create_max =
+        canonical_max_bytes == 0U ? command_record_size
+                                  : work_authority_command_record_fixed_size + canonical_max_bytes;
     constexpr uint32_t revoke_max = revoke_command_record_fixed_size + revoke_command_size;
     return canonical_max_bytes == 0U || create_max >= revoke_max ? create_max : revoke_max;
 }
@@ -35,12 +39,12 @@ uint32_t command_record_size_for(const CommandMapping &mapping);
 // v2 create/v3 revoke require complete exact identity, matching digest and effect;
 // failure changes no output. size is exactly command_record_size_for().
 bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_bytes_v1 canonical,
-                          uint8_t *body, uint32_t size);
+                          uint8_t *body, uint32_t size, ayni_bytes_v1 result = {});
 // Record version determines syntax. Views borrow body. Failure changes no
 // outputs; restored commit_seq remains 0 until the envelope supplies it.
 bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
                          CommandMapping &out_mapping, uint64_t &out_floor,
-                         ayni_bytes_v1 &out_canonical);
+                         ayni_bytes_v1 &out_canonical, ayni_bytes_v1 *out_result = nullptr);
 
 // body has command_record_size bytes.
 void write_command_record(const CommandMapping &mapping, uint64_t floor, uint8_t *body);

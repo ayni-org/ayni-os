@@ -71,7 +71,7 @@ Goal GoalTable::created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t rep
     created.parent_goal_id = goal.parent_goal_id;
     created.owner_instance_id = goal.owner_instance_id;
     created.replaced_goal_id = replaced_goal_id;
-    created.created_transition_id = stamp.transition_id;
+    created.created = stamp;
     created.commit_seq = stamp.commit_seq;
     created.origin = goal.origin;
     created.goal_type_id = goal.goal_type_id;
@@ -232,10 +232,12 @@ GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &sta
 GoalTable::Restore GoalTable::restore_snapshot(const NewGoal &goal, uint64_t goal_id,
                                                uint64_t replaced_goal_id, uint32_t depth,
                                                const GoalState &state,
-                                               foundation::TransitionStamp stamp,
-                                               uint32_t &out_index) {
+                                               foundation::TransitionStamp created_stamp,
+                                               uint64_t commit_seq, uint32_t &out_index) {
     uint32_t existing = 0;
     if (goal_id == 0U || goal.goal_type_version == 0U || find(goal_id, existing) ||
+        created_stamp.transition_id == 0U || created_stamp.commit_seq == 0U ||
+        commit_seq < created_stamp.commit_seq ||
         !catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) || !goal.trigger.fits()) {
         return Restore::corrupt;
     }
@@ -256,8 +258,8 @@ GoalTable::Restore GoalTable::restore_snapshot(const NewGoal &goal, uint64_t goa
         return Restore::corrupt;
     }
     out_index = goals_.size();
-    place(created_goal(goal, goal_id, replaced_goal_id, stamp), out_index, goal.parameters);
-    return restore_state(out_index, state, stamp);
+    place(created_goal(goal, goal_id, replaced_goal_id, created_stamp), out_index, goal.parameters);
+    return restore_state(out_index, state, {created_stamp.transition_id, commit_seq});
 }
 
 void GoalTable::reanchor(uint64_t now_us) {

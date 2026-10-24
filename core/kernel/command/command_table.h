@@ -18,6 +18,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 
 #include "kernel/command/pending_revoke.h"
+#include "kernel/command/work_authority_result.h"
 
 #include <ayni/ayni.h>
 
@@ -42,11 +43,13 @@ struct CommandMapping {
     ayni_intent_effect_t effect =
         AYNI_INTENT_EFFECT_CHANGED; // First result, even after target changes.
     CommandRetention retention = CommandRetention::normal; // volatile; never persisted
+    uint32_t result_size = 0; // Historical work authorization bytes; 0 for other command kinds.
 };
 
 // Exact mapping syntax, effect/result, accepted flags and digest are checked at each trust
 // boundary by this one owner; no catalog or subject lookup is involved.
-bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical);
+bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                             ayni_bytes_v1 result = {});
 
 // Owns bounded principal windows, canonical storage, pending controls and one
 // ephemeral exact-command candidate. Kernel supplies transitions and durable handoff.
@@ -100,8 +103,9 @@ class CommandTable {
     // acceptance copies the request into a separate pending control (ADR-0031).
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const CanonicalRevokeView &input);
-    // Consume the current create candidate after result validation; false keeps the window.
-    bool insert_exact(CommandMapping mapping);
+    // Consume the exact candidate and copy optional historical result bytes in
+    // the same configured byte stride. Refusal preserves the window/floor.
+    bool insert_exact(CommandMapping mapping, ayni_bytes_v1 result = {});
     // Checks capacity including pinned mappings, without changing any floor.
     bool can_insert(uint64_t principal_id) const;
     // Identity is always pending-first. A non-revoke kind conflicts with a
@@ -143,6 +147,8 @@ class CommandTable {
     void clear_restored(); // resets window/scratch and queued stamps, retains accepted controls
     // mapping must be a reference obtained from this table, not a copy.
     ayni_bytes_v1 canonical(const CommandMapping &mapping) const;
+    // Same borrowed lifetime as canonical(); empty only when result_size is 0.
+    ayni_bytes_v1 authorization_result(const CommandMapping &mapping) const;
     // Whether insert() has a row for the principal.
     bool has_row(uint64_t principal_id) const;
     // Maps a command that find() returned unmapped for, giving way as above.
@@ -159,7 +165,7 @@ class CommandTable {
     bool restore(const CommandMapping &mapping, uint64_t floor);
     // Classified restore, with exact authority bytes when the record requires them.
     Restore restore_checked(const CommandMapping &mapping, uint64_t floor,
-                            ayni_bytes_v1 canonical = {});
+                            ayni_bytes_v1 canonical = {}, ayni_bytes_v1 result = {});
     uint32_t size() const; // Total retained mappings across principals, not pending controls.
     const CommandMapping &at(uint32_t index) const; // Flattened retained index, below size().
     // Full reset including accepted controls. Recovery discard uses clear_restored().
@@ -182,7 +188,8 @@ class CommandTable {
     Row *row_of(uint64_t principal_id) const;
     Row *new_row(uint64_t principal_id);
     CommandMapping *mappings_of(const Row &row) const;
-    bool add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 canonical);
+    bool add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 canonical,
+             ayni_bytes_v1 result = {});
     PendingRevoke *pending_slot(uint64_t principal_id, uint64_t command_id) const;
     ExactLookup find_revoke_bytes(uint64_t principal_id, uint64_t command_id, ayni_bytes_v1 bytes);
     bool owns_pending(const PendingRevoke &pending) const;
@@ -195,7 +202,7 @@ class CommandTable {
     uint8_t *scratch_;
     uint32_t row_count_;
     uint32_t capacity_;
-    uint32_t canonical_max_bytes_;
+    uint32_t canonical_max_bytes_; // Per-slot input plus result byte bound; also scratch capacity.
     uint32_t pending_capacity_;
     // One admitted exact request for the current scratch bytes. Revocation
     // owns its canonical bytes in PendingRevoke and never stages a create.

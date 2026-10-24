@@ -161,6 +161,7 @@ bool publish_batch(WorkModel &model, const Intent &intent, const authority::Sess
     const auto &goal = model.goals.at(plan.goal_index);
     outcome.object = {0, goal.goal_id, goal.revision, AYNI_OBJECT_GOAL};
     outcome.commit_seq = stamp.commit_seq;
+    outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
     outcome.due_work = true;
     model.due_work_changed = true;
     return true;

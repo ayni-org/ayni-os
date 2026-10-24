@@ -144,7 +144,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.parent_goal_id = goal.parent_goal_id;
     info.owner_instance_id = goal.owner_instance_id;
     info.origin_principal_id = goal.origin.principal_id;
-    info.transition_id = goal.created_transition_id;
+    info.transition_id = goal.created.transition_id;
     info.commit_seq = goal.commit_seq;
     info.revision = goal.revision;
     info.cancel_revision = goal.cancel_revision;
