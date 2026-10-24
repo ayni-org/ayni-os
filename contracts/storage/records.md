@@ -61,7 +61,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `WORK_AUTHORITY_CLEANUP`（类型 19，版本 1，REQUIRED） | `work/authority` | 工作清理请求/一步的批次末尾；快照固定一项，含明确 idle（ADR-0038） |
 | `TASK_STEPS`（类型 7）、`TASK_CHECKPOINT`（类型 8） | `work/task` | 提交步骤或私有检查点的决策批次（B3），即 `STEP_CHECKPOINT` |
 | `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3、approve v5、Task limit v6，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3/v5含完整canonical请求，v3另存effect，v5保存原授权结果（ADR-0030、0031、0038） |
-| `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | `budget` | B2、B4 |
+| `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | 已废止（ADR-0042），未分配类型 | 不实现费用账本 |
 | `CALL_IDENTITY` | `work/call` | B3 |
 | `ACTION_STATE` | `work/action` | 准备、屏障与终态各自的批次；终态在 B4 |
 | `CALL_RESULT` | `work/call` | B4 |
@@ -72,6 +72,12 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `GRANT_REVOCATION_PROGRESS`（类型16，版本1，REQUIRED） | `authority/grant` | 根cursor与本步后代状态（如有）同批B5（ADR-0031） |
 | `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
+
+## 调用输入正文（实施中，尚未接入日志）
+
+`work/call` 的内部 input format 1 使用有界 typed 授权参数及 UTF-8 文本。外层调用记录须携带独立 input format 版本；当前没有已发布记录类型或写入入口。正文布局：参数规范字节数 u32、文本字节数 u32、完整参数、文本。固定头为 8 B；没有指针、NUL 终止要求或 JSON。参数使用现有 domain format 1，但每个已注册字段必须为单值且全部提供；授权与 Provider 消费须使用这同一份参数。文本最大实现界限 65536 B，具体调用上限仍由后续目录/配置决定，超限明确拒绝。U+0000 可作为长度限定的普通字符；拒绝无效 UTF-8、过长编码、代理区及超出 U+10FFFF 的码点。
+
+此 codec 只证明结构与原域相符，不证明 Grant、使用同意、当前 Binding 或业务持久化。正文保留与删除按 ADR-0042 补充决定执行，密钥、原始媒体和诊断日志不使用该存储路径。相关局部正常测试见 `CallInputTest`；重启继续与删除尚未验证。
 
 ## 所有者绑定记录
 
