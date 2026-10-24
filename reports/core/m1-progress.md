@@ -13,7 +13,7 @@
 |---|---|---|---|
 | 1 | `MA-003`、`MA-005` | 事件入口、完成槽、Kernel 生命周期与启动恢复、模拟 Host | 完成 |
 | 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004`、`MA-010` 完成 |
-| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖做 `006`，再交错做 `018A → 008A → 018B → 008B/C`（ADR-0042） | `MA-006` A–F 机制及 R1～R4 整理已交付；018A 资源机制实施中；008 未开始 |
+| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖做 `006`，再交错做 `018A → 008A → 018B → 008B/C`（ADR-0042） | `MA-006` A–F 机制及 R1～R4 整理已交付；018A 资源与 Task 限制机制已交付；008A 结果交接实施中 |
 | 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | 未开始 |
 | 5 | `MA-019`、`MA-020` | 助理协调器、SDK 与接入示例 | 未开始 |
 | 6 | `MA-021`、`MA-022`、`MA-023`、`MA-033` | E1、E2、E3、E4 实验，然后写 Core Alpha 报告（`reports/core/`） | 未开始 |
@@ -56,8 +56,9 @@
 | [#53](https://github.com/RobotSe7en/ayni/pull/53)、[#54](https://github.com/RobotSe7en/ayni/pull/54) | 2026-10-24 | `MA-006` F4 | 内部授权结果/持久证明及完整原子重新授权，ABI 0.26 | ADR-0038 |
 | [#55](https://github.com/RobotSe7en/ayni/pull/55) | 2026-10-24 | `MA-006` F5 | 完整事实正常重启、兼容 hold 与资源边界，ABI 0.27 | ADR-0038 |
 | [#56](https://github.com/RobotSe7en/ayni/pull/56) | 2026-10-24 | `MA-006` F 收尾 | 统一 Native 验证、覆盖率补测、资源量测及状态/契约收尾 | ADR-0038 |
-
 | [#60](https://github.com/RobotSe7en/ayni/pull/60) | 2026-10-25 | `MA-018A` 资源机制 | 资源目录、健康查询、公平全组准入及停止代际隔离，ABI 0.29 | ADR-0042 |
+
+| [#61](https://github.com/RobotSe7en/ayni/pull/61) | 2026-10-25 | `MA-018A` Task 限制 | 持久计数/上限/独立暂停、所有者提高上限与精确命令，ABI 0.30 | ADR-0043 |
 
 ## 工作包日期
 
@@ -71,11 +72,11 @@
 
 ## 交接状态（2026-10-25）
 
-合并基线为 #60（ABI 0.29 / schema 2）。用户已批准 M1 剩余实施计划，见 [ADR-0042](../../docs/adr/0042-runtime-limits-and-direct-model-access.md) 与 [实施顺序](m1-remaining-implementation.md)：取消累计费用预算和自建网关，使用运行限制及外部 API 直连；故障/恢复专项继续暂停。
+合并基线为 #61（ABI 0.30 / schema 2）。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)，并确认保存当前 Task 所需的有界对话正文（[ADR-0042](../../docs/adr/0042-runtime-limits-and-direct-model-access.md) 补充决定）；新故障/恢复专项继续暂停。
 
-- **已完成：** MA-003/004/005/010、MA-006 A–F 与 R1～R4。[PR #60](https://github.com/RobotSe7en/ayni/pull/60) 新增资源目录、健康查询和有界全组准入机制（ABI 0.29，已合并）；相关正常测试、C ABI/无堆/依赖检查、独立审查及 CI 通过，尚无 Provider 消费链。
-- **下一步：** [PR #61](https://github.com/RobotSe7en/ayni/pull/61) 实现 Task 持久运行限制与所有者提高上限（ADR-0043），相关本地检查与独立审查通过；待 CI 后推进 MA-008A 调用账本/持久屏障/完成槽；后续依赖见实施顺序。无待决产品问题。
-- **仍有限制：** 整个 MA-018A 尚未完成。真实调用、许可、ESP-IDF 存储、Web/语音/屏幕、完整 E1–E4、Core Alpha 及硬件验收均未交付；不以模块单测代替相应证据。
+- **已完成：** MA-003/004/005/010、MA-006 A–F 与 R1～R4；#60 的资源目录/健康/公平全组准入和 #61 的 Task 持久限制/所有者提高上限均已合并，相关检查、独立审查及 CI 通过。
+- **下一步：** MA-008A 的有界 Provider 结果交接已完成内部正常测试和审查（ADR-0044）；继续统一调用、Action Ledger 与持久屏障，接入现有资源和 Task 计数。当前没有待决产品问题。
+- **仍有限制：** 结果交接尚未装入 Kernel，无生产 Provider 消费链；整个 MA-018A 尚未完成。正文持久化/删除、真实调用、许可、ESP-IDF 存储、Web/语音/屏幕、完整 E1–E4、Core Alpha 及硬件验收均未交付。
 
 ## 剩余工作
 

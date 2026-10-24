@@ -20,6 +20,7 @@ add_executable(ayni_unit_tests
     command_table_test.cpp
     work_authority_result_test.cpp
     completion_pool_test.cpp
+    provider_mailbox_test.cpp
     event_queue_test.cpp
     field_values_test.cpp
     goal_table_test.cpp

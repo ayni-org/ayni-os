@@ -1,4 +1,5 @@
 #include "kernel/completion/completion_pool.h"
+#include "kernel/completion/attempt_identity.h"
 
 #include "kernel/ingress_lock.h"
 
@@ -6,10 +7,6 @@
 
 namespace ayni::kernel {
 namespace {
-
-bool same_attempt(const ayni_attempt_ref_v1 &a, const ayni_attempt_ref_v1 &b) {
-    return a.boot_epoch == b.boot_epoch && a.request_id == b.request_id;
-}
 
 bool defined_submit_result(ayni_submit_result_t result) {
     return result == AYNI_SUBMIT_REJECTED_NOT_RETAINED || result == AYNI_SUBMIT_ACCEPTED ||
