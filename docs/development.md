@@ -67,6 +67,8 @@ ctest --test-dir build/native --output-on-failure
 
 装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。因为有预编译头，还要设置 `CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime`，否则 ccache 不缓存单元测试。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
 
+F 本轮按用户 2026-10-24 选择采用本地 Debug/ASan+UBSan 与完整适用 CI，F 收尾再执行本地五配置；命令和独立审查/变异门槛见 workflow 的 F 本轮规则。复用固定构建目录、ccache 与 PCH，验证与只读审查可重叠。
+
 ### CI 机器
 
 CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门跑 CI 的 Ubuntu Server 26.10 机器，runner 用一个没有 sudo 的用户运行，开机自启。每个 job 都在容器里跑：检查、native 与 clang-tidy 用 `ubuntu:24.04` 镜像，开头用 apt 装工具（GCC 13.3.0、Clang 与 clang-format 18.1.3、CMake 3.28.3、ccache 4.9.1），版本与宿主系统无关；固件用 `espressif/idf:v6.0.3`。编译缓存与 GoogleTest 发布包放在 runner 上的 Docker 卷里（`ayni-ccache`、`ayni-ccache-esp-idf`、`ayni-downloads`），跨运行保留。构建与测试并行度都是 4，按实测峰值定：四个任务时 ASan 构建约 1 GiB，固件约 0.7 GiB。容器里以 root 运行，所以每个 job 最后把工作目录的属主改回 runner 的用户，否则下一次运行删不掉这些文件。

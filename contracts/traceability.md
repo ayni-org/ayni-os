@@ -21,10 +21,10 @@
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 7 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
-| [storage/records.md](storage/records.md) | 19 | 15 |
+| [storage/records.md](storage/records.md) | 20 | 15 |
 | [wire/envelope.md](wire/envelope.md) | 19 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 329 | 98 |
+| 合计 | 330 | 98 |
 
 ## 计划章节 → 契约文档
 

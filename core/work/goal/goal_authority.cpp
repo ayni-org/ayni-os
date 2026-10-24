@@ -20,13 +20,10 @@ std::size_t requirement_bytes(uint32_t scope_bytes) {
 }
 
 bool valid_requirement(const GoalRequirement &requirement) {
-    const auto &reference = requirement.dependency;
     if (requirement.capability_id.size() == 0U || requirement.capability_version == 0U ||
         requirement.source_domain.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
         requirement.scope.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
-        (reference.grant_id == 0U
-             ? reference.revision != 0U
-             : !foundation::is_kernel_id(reference.grant_id) || reference.revision == 0U)) {
+        !valid_authority_reference(requirement.dependency)) {
         return false;
     }
     const auto coverage =
