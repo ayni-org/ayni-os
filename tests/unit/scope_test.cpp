@@ -551,4 +551,71 @@ TEST(Scope, simultaneous_operand_errors_preserve_parent_before_child_classificat
               AYNI_UNSUPPORTED_VERSION);
 }
 
+// C-AUTH-017/C-CALL-001: dispatch keeps the same complete singleton arguments
+// that admission normalized, rather than a separate claimed permission scope.
+TEST(Scope, concrete_request_encoding_preserves_values_and_can_be_rechecked_as_bytes) {
+    const ayni_string_v1 destinations[] = {token("local"), token("cloud")};
+    const ayni_string_v1 cloud[] = {token("cloud")};
+    Domain domain{declaration(1, integer(0, 10)),
+                  declaration(2, tokens(AYNI_AUTHORITY_IDENTIFIER, destinations, 2),
+                              AYNI_AUTHORITY_EGRESS_DESTINATION)};
+    Input actual{constraint(2, tokens(AYNI_AUTHORITY_IDENTIFIER, cloud, 1)),
+                 constraint(1, integer(4, 4))};
+    std::array<uint8_t, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX> bytes{};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::authority::normalize_request(domain.view(), actual.view(), bytes.data(),
+                                                 bytes.size(), size),
+              AYNI_OK);
+    const auto expected = normalized(domain, actual);
+    ASSERT_EQ(size, expected.size());
+    EXPECT_EQ(std::memcmp(bytes.data(), expected.data(), size), 0);
+    const auto allowed = normalized(domain, Input{constraint(1, integer(2, 6))});
+    auto result = contains_request(domain.view(), view(allowed), {bytes.data(), size});
+    EXPECT_EQ(result.status, AYNI_OK);
+    EXPECT_TRUE(result.covered);
+    const auto narrower = normalized(domain, Input{constraint(1, integer(5, 6))});
+    result = contains_request(domain.view(), view(narrower), {bytes.data(), size});
+    EXPECT_EQ(result.status, AYNI_OK);
+    EXPECT_FALSE(result.covered);
+}
+
+TEST(Scope, concrete_request_rejects_omission_or_multiple_values_without_publishing_a_prefix) {
+    Domain domain{declaration(1, integer(0, 10))};
+    std::array<uint8_t, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX> bytes{};
+    bytes.fill(0xA5);
+    uint32_t size = 99;
+    EXPECT_EQ(ayni::authority::normalize_request(domain.view(), Input{}.view(), bytes.data(),
+                                                 bytes.size(), size),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(size, 99U);
+    EXPECT_EQ(bytes[0], 0xA5U);
+    const Input range{constraint(1, integer(2, 5))};
+    EXPECT_EQ(ayni::authority::normalize_request(domain.view(), range.view(), bytes.data(),
+                                                 bytes.size(), size),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(size, 99U);
+    EXPECT_EQ(bytes[0], 0xA5U);
+    const auto encoded_range = normalized(domain, range);
+    const auto result = contains_request(domain.view(), domain.view(), view(encoded_range));
+    EXPECT_EQ(result.status, AYNI_INVALID_ARGUMENT);
+    EXPECT_FALSE(result.covered);
+}
+
+TEST(Scope, concrete_request_probe_and_small_buffer_preserve_output) {
+    Domain domain{declaration(1, integer(0, 10))};
+    const Input actual{constraint(1, integer(3, 3))};
+    uint32_t required = 0;
+    ASSERT_EQ(
+        ayni::authority::normalize_request(domain.view(), actual.view(), nullptr, 0, required),
+        AYNI_BUFFER_TOO_SMALL);
+    const auto expected = normalized(domain, actual);
+    EXPECT_EQ(required, expected.size());
+    std::array<uint8_t, 1> buffer{{0xA5}};
+    ASSERT_EQ(ayni::authority::normalize_request(domain.view(), actual.view(), buffer.data(),
+                                                 buffer.size(), required),
+              AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(required, expected.size());
+    EXPECT_EQ(buffer[0], 0xA5U);
+}
+
 } // namespace

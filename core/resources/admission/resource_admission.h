@@ -17,7 +17,7 @@ enum class WaitAction : uint32_t { pause, skip, wait };
 // Pending diagnostics; available is neither an acquisition nor authorization.
 enum class WaitReason { available, fifo, occupied, offline, faulted, quarantined };
 
-constexpr uint32_t resource_group_max = 8;
+using catalog::resource_group_max;
 constexpr uint64_t no_deadline = UINT64_MAX;
 
 // One resolved immutable catalog entry, in strictly increasing index order.
