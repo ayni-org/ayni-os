@@ -14,6 +14,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace ayni::authority {
 
@@ -207,6 +208,9 @@ class GrantTable {
     // Preserve an old reference until its unlink is durable. Caller completed
     // all update checks; missing retained history needs no fence. seq is nonzero.
     void release_reference(uint64_t grant_id, uint64_t commit_seq);
+    // Durable historical facts only: the retained chain was created before
+    // commit_seq and any terminal transition came later. No current-clock test.
+    bool active_at(uint32_t index, uint64_t commit_seq) const;
     // Immutable schema/Scope relation only; caller separately checks subject,
     // chosen revision and current chain usability. No catalog reinterpretation.
     bool covers_saved_scope(uint32_t index, const catalog::CatalogId &capability, uint32_t version,
@@ -317,8 +321,10 @@ class GrantTable {
     // Snapshot may retain ancestors terminated after this creation; append
     // replay requires every ancestor still active at that point in the log.
     enum class AncestorHistory { active, later_terminal, invalid };
-    AncestorHistory history_at_creation(uint32_t parent_index,
-                                        foundation::TransitionStamp created) const;
+    // Snapshots of commands retain commit sequence only. Creation callers also
+    // supply a transition ID, preserving their stricter two-axis ordering.
+    AncestorHistory history_at(uint32_t parent_index, uint64_t commit_seq,
+                               std::optional<uint64_t> transition_id = std::nullopt) const;
     bool valid_revocation_metadata(uint64_t grant_id, uint64_t parent_grant_id,
                                    ayni_grant_lifecycle_t lifecycle,
                                    foundation::TransitionStamp stamp, uint64_t revoked_by_root_id,

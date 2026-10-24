@@ -103,6 +103,8 @@ authority::GrantCheck check_context(const WorkModel &model, const ApprovalPlan &
     return {AYNI_OK, AYNI_REASON_NONE};
 }
 
+// Reserve all slots and IDs against the same unchanged model. A refusal
+// discards this local plan before any dependency or Grant can be published.
 authority::GrantCheck reserve_batch(WorkModel &model, const Intent &intent,
                                     const authority::Session &session, uint64_t now_us,
                                     uint64_t durable_seq, ApprovalPlan &plan) {

@@ -1,5 +1,8 @@
 // ADR-0037: public requirement export, proposals and fixed dependency consumption.
+// White-box table/count/stamp assertions below supplement public observations to
+// prove refusal leaves no hidden allocation or partial transition behind.
 #include "goal_approval_request.h"
+#include "kernel/storage/storage_budget.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
 
@@ -1003,6 +1006,214 @@ TEST(GoalApproval, failed_and_unknown_appends_reload_before_retrying_the_complet
             EXPECT_GT(retry.result.commit_seq, accepted.result.commit_seq);
         }
     }
+}
+
+// C-AUTH-032: changed current catalog metadata must not reinterpret the saved
+// original domain. White-box drift models a registry inconsistent with creation.
+TEST(GoalApproval, changed_same_version_domain_refuses_original_proposal) {
+    AuthorityWork node;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto &model = node.work.kernel()->work;
+    const auto domain = model.capabilities.domain_view(0);
+    Range wider(0, 200);
+    const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
+                                             wider.field.allowed};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::catalog::encode_domain(&field, 1, const_cast<uint8_t *>(domain.data),
+                                           domain.size, size),
+              AYNI_OK);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto refused = node.work.submit(intent);
+    EXPECT_EQ(refused.status, AYNI_DENIED);
+    EXPECT_EQ(refused.error.reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+    EXPECT_EQ(model.grants.size(), 0U);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+}
+
+// C-AUTH-030/032: a bound parent Grant cannot authorize its child; once expired,
+// it also prevents approval of that child's independently missing authority.
+TEST(GoalApproval, expired_parent_authority_refuses_child_before_autonomous_pause) {
+    AuthorityWork node;
+    node.run();
+    const auto parent = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    ApprovalRequest parent_request(node.work.kernel(), parent.result.object.id);
+    parent_request.body.lifetime = AYNI_GRANT_CURRENT_BOOT;
+    parent_request.body.duration_us = 1000000;
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &parent_request.body,
+                                   parent_request.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    const auto child = node.create(AYNI_TRIGGER_NONE, parent.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    EXPECT_EQ(node.work.goal(child.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+    ApprovalRequest request(node.work.kernel(), child.result.object.id);
+    node.work.node().sim().advance_us(parent_request.body.duration_us);
+    intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+    EXPECT_EQ(node.work.goal(child.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+}
+
+// C-AUTH-031: one remaining ID cannot fund two Grants. White-box allocator
+// boundary is reached without billions of allocations; no prefix is accepted.
+TEST(GoalApproval, insufficient_ids_leave_all_missing_items_and_last_id_untouched) {
+    AuthorityWork node;
+    node.count = 2;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto &model = node.work.kernel()->work;
+    model.ids.start(model.ids.boot_epoch(), ayni::foundation::max_id_sequence);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto before = model.transitions.latest();
+    const auto refused = node.work.submit(intent);
+    EXPECT_EQ(refused.status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(refused.error.reason, AYNI_REASON_ID_EXHAUSTED);
+    EXPECT_EQ(model.grants.size(), 0U);
+    EXPECT_TRUE(model.ids.available());
+    EXPECT_EQ(model.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+}
+
+// C-COMMIT-012/C-AUTH-032: a stale lower CAS is as invalid as a future CAS.
+// White-box revision setup isolates this admission before any mutation.
+TEST(GoalApproval, stale_lower_revision_and_exhausted_revision_have_no_effect) {
+    for (const uint32_t revision : {2U, UINT32_MAX}) {
+        AuthorityWork node;
+        node.run();
+        const auto goal = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+        auto &model = node.work.kernel()->work;
+        uint32_t index = 0;
+        ASSERT_TRUE(model.goals.find(goal.result.object.id, index));
+        const_cast<ayni::work::Goal &>(model.goals.at(index)).revision = revision;
+        auto intent =
+            node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+        intent.command_id = node.command++;
+        EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
+        if (revision == UINT32_MAX) {
+            intent.expected_revision = revision;
+            EXPECT_EQ(node.work.submit(intent).status, AYNI_CAPACITY_EXCEEDED);
+        }
+        EXPECT_EQ(model.grants.size(), 0U);
+        EXPECT_EQ(model.goals.at(index).revision, revision);
+        EXPECT_EQ(model.goals.at(index).lifecycle, AYNI_GOAL_PROPOSED);
+    }
+}
+
+// C-AUTH-032/limits.md: exact approval storage must fit the configured parameter
+// limit even when this exceeds the separate maximum Grant canonical identity.
+TEST(GoalApproval, maximum_parameters_fit_exact_command_storage_and_retry) {
+    AuthorityWork node;
+    node.allow_parameters = true;
+    node.work.node().config().goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MAX;
+    node.work.node().config().storage_buffer_bytes = 0;
+    node.run();
+    std::vector<uint8_t> bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX, 17);
+    const auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1,
+                                            {bytes.data(), static_cast<uint32_t>(bytes.size())});
+    const auto goal = node.work.create(body);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    node.work.node().recover();
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+}
+
+// C-COMMIT-003/005 and ADR-0037: snapshot freeze refuses the whole approval
+// without consuming its command. It becomes one durable batch after thaw.
+TEST(GoalApproval, real_snapshot_freeze_preserves_proposal_until_atomic_approval_can_resume) {
+    AuthorityWork node;
+    auto &config = node.work.node().config();
+    config.goal_capacity = 2;
+    config.storage_buffer_bytes = 3U * smallest_storage_buffer(config);
+    config.storage_log_max_bytes =
+        static_cast<uint32_t>(ayni::kernel::StorageBudget::log_max_min(capacities_of(config)));
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().recover();
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    // Real capacity failure must also leave the same command reusable.
+    node.work.node().sim().set_storage_capacity(0);
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_STORAGE_FAILED);
+    node.work.node().sim().set_storage_capacity(UINT64_MAX);
+    auto &kernel = *node.work.kernel();
+    auto tick = [&] {
+        const auto report = node.work.node().step(1);
+        node.work.node().sim().complete_storage();
+        if (report.more_ready == 0U && report.next_deadline_us != UINT64_MAX &&
+            report.next_deadline_us > node.work.node().sim().now_us()) {
+            node.work.node().sim().advance_us(report.next_deadline_us -
+                                              node.work.node().sim().now_us());
+        }
+    };
+    bool frozen = false;
+    for (unsigned round = 0; round < 1000 && !frozen; ++round) {
+        const auto temporary = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+        ASSERT_EQ(temporary.status, AYNI_OK);
+        for (unsigned step = 0; step < 10000; ++step) {
+            tick();
+            if (kernel.maintenance.active()) {
+                frozen = true;
+                break;
+            }
+            if (kernel.log.idle() && kernel.completions.in_flight() == 0U) {
+                break;
+            }
+        }
+        if (frozen) {
+            break;
+        }
+        ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, temporary.result.object.id).status,
+                  AYNI_OK);
+        for (unsigned step = 0; step < 10000; ++step) {
+            tick();
+            if (kernel.maintenance.active()) {
+                frozen = true;
+                break;
+            }
+            if (kernel.log.idle() && kernel.completions.in_flight() == 0U) {
+                break;
+            }
+        }
+    }
+    ASSERT_TRUE(frozen);
+    const auto before = kernel.work.transitions.latest();
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_BUSY);
+    EXPECT_EQ(kernel.work.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(kernel.work.grants.size(), 0U);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+    for (unsigned step = 0; step < 10000 && !kernel.maintenance.done(); ++step) {
+        tick();
+    }
+    ASSERT_TRUE(kernel.maintenance.done());
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    node.work.node().recover();
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+    EXPECT_EQ(kernel.work.grants.size(), 1U);
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id,
+              node.work.kernel()->work.grants.at(0).grant_id);
 }
 
 } // namespace

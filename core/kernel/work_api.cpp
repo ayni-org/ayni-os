@@ -607,8 +607,6 @@ ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_i
     return copy_authority_field(kernel->work.grants.scope(index), field_index, *out_field);
 }
 
-// Summary and per-entry queries expose saved evidence separately from current
-// usability. A query cannot select new Grants or clear an authorization pause.
 // Copy immutable input bytes; sizing cannot expose a partially copied result.
 ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goal_id,
                                        uint8_t *buffer, uint32_t capacity, uint32_t *out_size) {
@@ -634,6 +632,8 @@ ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goa
     return AYNI_OK;
 }
 
+// Summary and per-entry queries expose saved evidence separately from current
+// usability. A query cannot select new Grants or clear an authorization pause.
 ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal_id,
                                       ayni_goal_authority_info_v1 *out_info) {
     if (kernel == nullptr || out_info == nullptr) {

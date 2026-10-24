@@ -29,7 +29,7 @@ bool WorkReplay::pair_approval_grant(const authority::GrantRecord &record,
     if (!pairing_.approval) {
         uint32_t index = 0;
         work::GoalAuthorityRecord original{};
-        if (pairing_.goal || pairing_.goal_authority ||
+        if (batch_seq_ == stamp.commit_seq || pairing_.goal || pairing_.goal_authority ||
             pairing_.goal_authority_seq == stamp.commit_seq ||
             !model_.goals.find(record.grant.bound_goal_id, index) ||
             model_.goals.at(index).lifecycle != AYNI_GOAL_PROPOSED ||
@@ -152,7 +152,7 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
 }
 
 // Close the batch only when the canonical identity proves the original mask,
-// revision and every issued Grant. An incomplete optional fails complete().
+// revision and every issued Grant. Keep the closed proof to reject trailing work.
 bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) {
     ApprovalCommand request{};
     if (!pairing_.approval || !read_approval_command(canonical, request)) {
@@ -165,7 +165,7 @@ bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes
         !matches_goal_approval(mapping, canonical)) {
         return false;
     }
-    pairing_.approval.reset();
+    pairing_.approval->stage = ApprovalPair::Stage::complete;
     return true;
 }
 
@@ -204,7 +204,7 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping,
         if ((request.approval.missing_mask & (uint32_t{1} << item)) == 0U) {
             // Removing a mask bit cannot disguise a retained new Grant as
             // an original reference: those necessarily precede approval.
-            if (grant.created_stamp.commit_seq >= mapping.commit_seq) {
+            if (!model_.grants.active_at(at, mapping.commit_seq)) {
                 return false;
             }
             continue;

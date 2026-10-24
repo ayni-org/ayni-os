@@ -24,8 +24,11 @@ struct GoalApproval {
 
 // records.md: scalars plus three u32 byte lengths, excluding their payloads.
 constexpr uint32_t approval_command_fixed_size = 92;
+// records.md: goal_type_id and trigger_source are the two bounded IDs.
+constexpr uint32_t approval_catalog_id_count = 2;
 constexpr uint32_t approval_command_max_bytes(uint32_t parameter_bytes) {
-    return approval_command_fixed_size + 2U * AYNI_CATALOG_ID_MAX_BYTES + parameter_bytes;
+    return approval_command_fixed_size + approval_catalog_id_count * AYNI_CATALOG_ID_MAX_BYTES +
+           parameter_bytes;
 }
 // Borrowed input/output view; reading borrows the canonical body's byte strings.
 struct ApprovalCommand {

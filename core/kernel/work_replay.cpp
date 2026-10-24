@@ -141,8 +141,20 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         if (!complete()) {
             return RecordUse::corrupt;
         }
-        batch_seq_ = batch.commit_seq;
+        pairing_.approval.reset();
     }
+    // A completed approval seals this batch (C-STORE-019); preserve its proof
+    // until the next batch so unrelated trailing records cannot be accepted.
+    if (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete) {
+        return RecordUse::corrupt;
+    }
+    const auto use = apply_record(batch, header, body);
+    batch_seq_ = batch.commit_seq;
+    return use;
+}
+
+RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
+                                   const durability::RecordHeader &header, const uint8_t *body) {
     // A pending approval admits only its own Grants/state/metadata/command.
     // Unrelated work cannot smuggle an additional transition into the batch.
     if (pairing_.approval && header.type != authority::grant_record_type &&
