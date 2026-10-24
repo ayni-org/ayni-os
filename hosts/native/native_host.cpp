@@ -12,6 +12,10 @@
 namespace ayni::hosts::native {
 namespace {
 
+// ADR-0039: idle storage must discover reclaimed space without a new write.
+// This is a sampling interval, not a bound on filesystem or scheduler latency.
+constexpr auto space_refresh_interval = std::chrono::seconds{1};
+
 uint64_t monotonic_now_us(void * /*ctx*/) {
     const auto since_origin = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<uint64_t>(
@@ -55,7 +59,7 @@ uint64_t load_le(const uint8_t *data, uint32_t size) {
 // moment it starts until stop() joins it.
 class Host::Storage {
   public:
-    Storage() = default;
+    Storage(Host &owner, SpaceQuery query) : owner_(owner), space_query_(query) {}
     ~Storage() { stop(); }
     Storage(const Storage &) = delete;
     Storage &operator=(const Storage &) = delete;
@@ -76,7 +80,13 @@ class Host::Storage {
     static void *run(void *context);
     void serve_queue();
     ayni_completion_result_v1 serve(const Request &request);
+    bool read_space(uint64_t &available) const;
+    // Release only the completed request's reservation and publish one sample.
+    // Returns whether the observable cache changed; no Host call under mutex_.
+    bool refresh_space(uint64_t completed_reservation);
 
+    Host &owner_;            // Outlives this worker, including its final wake and join.
+    SpaceQuery space_query_; // Immutable borrowed file-space probe; default reads FileLog.
     FileLog log_;
     std::unique_ptr<Request[]> queue_; // a ring of capacity_ requests
     uint32_t capacity_ = 0;
@@ -110,7 +120,7 @@ StorageOpen Host::Storage::open(const char *directory, uint32_t capacity) {
     case FileLog::OpenStatus::file_error:
         return {StorageStatus::file_error, opened.error};
     }
-    free_bytes_valid_ = log_.free_bytes(free_bytes_);
+    free_bytes_valid_ = read_space(free_bytes_);
     // pthread rather than std::thread, whose failure is an exception.
     const int error = ::pthread_create(&thread_, nullptr, &Storage::run, this);
     if (error != 0) {
@@ -156,29 +166,53 @@ void *Host::Storage::run(void *context) {
 void Host::Storage::serve_queue() {
     for (;;) {
         Request request{};
+        bool has_request = false;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            signal_.wait(lock, [this] { return count_ > 0U || stopping_; });
-            if (count_ == 0U) {
+            signal_.wait_for(lock, space_refresh_interval,
+                             [this] { return count_ > 0U || stopping_; });
+            if (count_ == 0U && stopping_) {
                 return; // stopping, and every accepted request is answered
             }
-            request = queue_[head_];
-            head_ = (head_ + 1U) % capacity_;
-            --count_;
+            has_request = count_ != 0U;
+            if (has_request) {
+                request = queue_[head_];
+                head_ = (head_ + 1U) % capacity_;
+                --count_;
+            }
+        }
+        if (!has_request) {
+            // No completion slot belongs to an idle refresh. An ordinary wake
+            // lets Core reconsider admission even after all requests drained.
+            if (refresh_space(0)) {
+                Host::wake(&owner_);
+            }
+            continue;
         }
         const ayni_completion_result_v1 result = serve(request);
-        uint64_t available = 0;
-        const bool valid = log_.free_bytes(available);
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            free_bytes_ = available;
-            free_bytes_valid_ = valid;
-            reserved_bytes_ -= request_reservation(request);
-        }
+        static_cast<void>(refresh_space(request_reservation(request)));
         // A refused post means the slot was not waiting for this attempt; the
         // kernel counts that, and the Host has nothing else to tell it.
         static_cast<void>(ayni_completion_post(request.completion, &result));
     }
+}
+
+bool Host::Storage::read_space(uint64_t &available) const {
+    return space_query_.read != nullptr ? space_query_.read(space_query_.context, available)
+                                        : log_.free_bytes(available);
+}
+
+bool Host::Storage::refresh_space(uint64_t completed_reservation) {
+    uint64_t available = 0;
+    const bool valid = read_space(available);
+    // File queries may block. Producers and cached queries retain access to
+    // the queue while sampling, including reservations accepted in the meantime.
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const bool changed = valid != free_bytes_valid_ || (valid && available != free_bytes_);
+    free_bytes_ = available;
+    free_bytes_valid_ = valid;
+    reserved_bytes_ -= completed_reservation;
+    return changed;
 }
 
 ayni_completion_result_v1 Host::Storage::serve(const Request &request) {
@@ -259,13 +293,17 @@ bool Host::wait_for_wake(std::chrono::microseconds timeout) {
 }
 
 StorageOpen Host::open_storage(const char *directory, uint32_t request_capacity) {
+    return open_storage(directory, request_capacity, {});
+}
+
+StorageOpen Host::open_storage(const char *directory, uint32_t request_capacity, SpaceQuery query) {
     if (directory == nullptr || request_capacity == 0U) {
         return {StorageStatus::invalid_argument, 0};
     }
     if (storage_ != nullptr) {
         return {StorageStatus::already_open, 0};
     }
-    std::unique_ptr<Storage> storage(new (std::nothrow) Storage());
+    std::unique_ptr<Storage> storage(new (std::nothrow) Storage(*this, query));
     if (storage == nullptr) {
         return {StorageStatus::no_memory, 0};
     }

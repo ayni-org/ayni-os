@@ -9,6 +9,10 @@
 // neither the buffer nor the completion (C-HOST-019). An append is OK only
 // once the file is synced to the device (C-HOST-010). The file's framing
 // and what a power cut leaves are described in hosts/native/file_log.h.
+// The same worker refreshes cached free space after requests and after one
+// idle second (ADR-0039); changed idle observations wake the owner. Filesystem
+// and scheduling delays are not bounded by this sampling interval. The cached
+// port never performs filesystem I/O, including after an observation fails.
 
 #ifndef AYNI_HOSTS_NATIVE_H
 #define AYNI_HOSTS_NATIVE_H
@@ -82,6 +86,14 @@ class Host {
     void close_storage();
 
   private:
+    // Internal file-space boundary, overridden by the test peer for deterministic
+    // low-space/error recovery. Borrowed until close_storage; null uses FileLog.
+    struct SpaceQuery {
+        void *context = nullptr;
+        bool (*read)(void *, uint64_t &) = nullptr;
+    };
+    friend class HostTestPeer;
+    StorageOpen open_storage(const char *directory, uint32_t request_capacity, SpaceQuery query);
     class Storage;
 
     static void wake(void *ctx);

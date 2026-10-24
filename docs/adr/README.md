@@ -51,6 +51,8 @@
 | [0037](0037-goal-requirements-and-atomic-approval.md) | Goal 需求、待批与原子批准 | 已接受（E；覆盖率偏差见正文） | §9.1、§14.1 |
 | [0038](0038-work-authority-and-explicit-reauthorization.md) | 工作授权、显式重新授权与正常重启 | 已接受 | §9.1、§14.1 |
 
+| [0039](0039-native-idle-space-refresh.md) | Native 空闲空间刷新 | 实施中 | §9.1 |
+
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。
