@@ -709,6 +709,62 @@ TEST(WorkInput, goal_type_must_accept_local_input) {
 } // namespace
 
 namespace {
+// ADR-0038 decision 3: queue acceptance and resume sampling share one lock;
+// failed posts consume no sequence, and a reload retains the queue's identity.
+TEST(KernelEvents, accepted_input_order_and_resume_frontier_share_the_ingress_lock) {
+    Node node;
+    node.run();
+    auto &ingress = node.kernel()->ingress; // White-box queue-owner evidence.
+    const auto empty = ingress.resume_boundary();
+    EXPECT_EQ(empty.incarnation, node.info().boot_epoch);
+    EXPECT_EQ(empty.through, 0U);
+    ASSERT_EQ(post(node.kernel()), AYNI_OK);
+    const auto boundary = ingress.resume_boundary();
+    ASSERT_EQ(post(node.kernel(), "knob"), AYNI_OK);
+    EXPECT_EQ(post(node.kernel()), AYNI_BUSY);
+    EXPECT_EQ(ingress.resume_boundary().through, boundary.through + 1U);
+    ayni::catalog::CatalogId source;
+    ayni::work::InputResumeBoundary accepted{};
+    ASSERT_TRUE(ingress.take_local_input(source, &accepted));
+    EXPECT_TRUE(source.equals(text("button")));
+    EXPECT_TRUE(ayni::work::input_precedes_resume(accepted, boundary));
+    ASSERT_TRUE(ingress.take_local_input(source, &accepted));
+    EXPECT_TRUE(source.equals(text("knob")));
+    EXPECT_FALSE(ayni::work::input_precedes_resume(accepted, boundary));
+    ingress.establish_incarnation(empty.incarnation + 1U);
+    EXPECT_EQ(ingress.resume_boundary().incarnation, empty.incarnation);
+    const auto before = accepted;
+    EXPECT_FALSE(ingress.take_local_input(source, &accepted));
+    EXPECT_EQ(accepted.through, before.through);
+}
+
+// ADR-0038 decision 11: one Goal's resume waterline never drops input for
+// another Goal on the same source. Boundary installation is White-box until F4.
+TEST(WorkInput, resume_boundary_skips_old_input_only_for_its_own_goal) {
+    WorkNode work;
+    work.run();
+    const auto resumed = input_goal(work, "button");
+    const auto other = input_goal(work, "button");
+    ASSERT_EQ(post(work), AYNI_OK);
+    auto &model = work.kernel()->work;
+    uint32_t index = 0;
+    ASSERT_TRUE(model.goals.find(resumed, index));
+    auto record = model.goal_authority.at(index);
+    record.binding.input = work.kernel()->ingress.resume_boundary();
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
+    ASSERT_EQ(post(work), AYNI_OK);
+    work.node().step();
+    uint32_t other_index = 0;
+    ASSERT_TRUE(model.goals.find(other, other_index));
+    EXPECT_EQ(model.goals.at(index).cursor.waiting, 1U);
+    EXPECT_EQ(model.goals.at(other_index).cursor.waiting, 2U);
+    EXPECT_EQ(work.node().info().events_unmatched, 0U);
+    // A new queue incarnation cannot interpret the old sequence as its own.
+    EXPECT_FALSE(ayni::work::input_precedes_resume({record.binding.input.incarnation + 1U, 1},
+                                                   record.binding.input));
+}
+
 // ADR-0035 decision 11 / C-SUB-004: boot submission is one bounded item;
 // synchronous refusal still lets RESTRICTED drain the queued input in this call.
 TEST(KernelEvents, a_rejected_boot_read_still_discards_input_in_the_same_step) {

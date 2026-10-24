@@ -25,6 +25,7 @@
 #include "catalog/catalog_id.h"
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
+#include "work/authority/authority_facts.h"
 #include "work/goal/trigger_schedule.h"
 
 #include <ayni/ayni.h>
@@ -227,17 +228,23 @@ class GoalTable {
     // the revision stays, as for take_due. Same precondition as take_due.
     void skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
                   foundation::TransitionStamp stamp);
+    // Explicit authorization resume skips all unmaterialized interval/input
+    // backlog. Once/delay retain their original due time (ADR-0038 decision 11).
+    // Caller has already rejected an expired Goal; user pause is unchanged.
+    void skip_authority_backlog(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp);
     // Whether some goal takes a local input from source: its trigger is
     // LOCAL_INPUT from that source, it is not terminal, paused or not, and
     // one more occurrence has a number (ADR-0021).
     bool takes_input(const catalog::CatalogId &source,
-                     const GoalAuthorityTable *authority = nullptr) const;
+                     const GoalAuthorityTable *authority = nullptr,
+                     InputResumeBoundary input = {}) const;
     // Records the input as one occurrence, due at now_us, of every goal that
     // takes it, and gives each of them stamp.commit_seq; the revision stays,
     // as for take_due. Only after takes_input(source) returned true.
     void record_input(const catalog::CatalogId &source, uint64_t now_us,
                       foundation::TransitionStamp stamp,
-                      const GoalAuthorityTable *authority = nullptr);
+                      const GoalAuthorityTable *authority = nullptr,
+                      InputResumeBoundary input = {});
     // Drops the expiry of goal index, which then never expires, and gives it
     // stamp.commit_seq; the revision stays. Only when expiring it would raise
     // a revision past the largest, its own or one of the goals or tasks the
@@ -303,6 +310,10 @@ class GoalTable {
 
     // Returns false when no goal has the id.
     bool find(uint64_t goal_id, uint32_t &out_index) const;
+    // Largest retained stable ID, or 0 for an empty table; a scan frontier.
+    uint64_t latest_id() const;
+    // Least retained ID in (after, through]; false preserves out_index.
+    bool next_in_range(uint64_t after, uint64_t through, uint32_t &out_index) const;
     // Visits start and its ancestors, nearest first. start is a valid index
     // or no_parent (an empty lineage). False stops the walk and is returned;
     // true means all were visited. The visitor must not mutate tree topology.
@@ -337,7 +348,7 @@ class GoalTable {
     // descendants.
     static bool ends(GoalChange change);
     bool takes(uint32_t index, const catalog::CatalogId &source,
-               const GoalAuthorityTable *authority) const;
+               const GoalAuthorityTable *authority, InputResumeBoundary input) const;
     void set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
                        foundation::TransitionStamp stamp);
     // The goal insert() and restore() create.

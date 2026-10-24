@@ -264,3 +264,14 @@ Task/Goal 为不同的有效 Kernel ID；binding sequence 正且不晚于记录 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-STORE-020 | Task 保存独立完整准入引用，按稳定 slot/exact Task ID，显式零需求与缺席不同；struct/bytes 共用校验，错误不发布部分事实 | Task 位置移动或复用后借用另一 Task 权限；截断发布前缀 | M1 部分实现（F2 准入事实、持久配对与查询）：`TaskAuthority.explicit_empty_admission_and_slot_reuse_preserve_identity`、`TaskAuthority.copied_references_and_capacity_failures_preserve_the_arena`、`TaskAuthority.same_binding_can_pause_but_cannot_resume_or_change_references`、`TaskAuthorityCodec.empty_and_maximum_admissions_round_trip_without_scope_copies`、`TaskAuthorityCodec.every_truncation_trailing_bytes_and_malformed_fact_preserve_output`、`TaskAuthorityPersistence.terminal_snapshot_rejects_missing_or_substituted_admission`、`WorkReplay.task_replacement_cannot_hide_a_pending_admission`；显式重新授权随 F4；ADR-0038 |
+
+
+## 工作授权清理事实（MA-006 F3a，内部 codec）
+
+ADR-0038 决策 8：预留 type 19/v1，固定 44 B，全部小端：transition_id u64（offset 0）、commit_seq u64（8）、phase u32（16，0=idle、1=scanning）、after_goal_id u64（20）、through_goal_id u64（28）、requested_through u64（36）。F3a 只交付 work 内部状态与共享 reader/writer，尚未启用 Kernel journal/snapshot/发现；F3b 接入时为 REQUIRED，不从缺席推断清理完成。
+
+idle 的三个游标全部为零；初始 stamp 两项均零，使用后两项均正。scanning 的 stamp 为正，through 是固定有效 Goal ID，after 是零或小于 through 的有效已访 ID。requested_through 为零或下一轮的有效 Goal ID，即使等于当前 through 也须保留，不能因本轮结束丢失。每项更新完整状态；最后一个 ID 或范围内无保留 Goal 时关闭本轮，启动已排队的下一轮。稳定范围查询按 Goal ID 而非移动/复用后的槽位选择。输入/字节共用一份形状验证，截断、尾字节和非法组合不发布半份输出；完整持久事务证明与 step 预算接入随 F3b。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-STORE-021 | 工作授权清理固定 through、单调 after，扫描中新请求保留给下一轮；记录与所属状态同批且有界推进，不丢清理请求 | 新请求扩大当前扫描导致不收敛；结束时丢掉同 frontier 的请求；槽位复用混入新 Goal | M1 部分实现（F3a 内部扫描事实/codec 和稳定范围查询）：`WorkAuthorityCleanup.fixed_frontier_retains_requests_for_a_second_pass`、`WorkAuthorityCleanup.retained_id_gaps_and_later_requests_survive_codec_round_trip`、`WorkAuthorityCleanup.codec_rejects_truncation_and_invalid_state_without_output`、`GoalTable.stable_id_range_skips_reused_slots_and_preserves_output_on_empty_range`；Kernel 持久/step 接入随 F3b；ADR-0038 |

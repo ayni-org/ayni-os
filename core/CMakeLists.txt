@@ -39,6 +39,8 @@ ayni_add_core_module(authority
 
 ayni_add_core_module(work
     SOURCES
+        work/authority/authority_cleanup.cpp
+        work/authority/authority_cleanup_records.cpp
         work/authority/authority_facts.cpp
         work/agent/agent_records.cpp
         work/agent/agent_table.cpp

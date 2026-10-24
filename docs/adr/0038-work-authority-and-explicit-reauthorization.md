@@ -29,6 +29,8 @@ E 已交付 Goal 需求、待批与原子批准；Task 尚无独立授权事实�
 
 15. **F2 持久接入。** Goal type17/v2 固定头扩为72 B，保存绑定/父绑定/输入边界；Task type18/v1 REQUIRED 随派生同批保存，snapshot 紧接每Task状态。struct/bytes 共用原codec，恢复精确匹配Goal绑定及有序引用，所有存量Task（包括终态）保留事实；新准入须证明完整Grant链在绑定时有效，批准同批专属Grant由原批准证明处理。父链拓扑归GoalTable::visit_lineage，消费/批准/历史校验及工作传播复用。schema2移除不可达旧格式迁移编排，仍保留writer隔离与双槽切换。ABI0.24增加Task摘要/逐项引用查询及Goal绑定摘要，输出均复制到caller；查询即时反映Gate，F2不解除恢复hold。
 
+16. **F3 按内部机制/持久运行时继续拆分。** 为保持每份约 1,500 行生产改动的审查边界，F3a 先交付固定扫描状态/codec、稳定 ID 范围查询、ingress 锁内入队序号与水位、Goal 级输入过滤及触发跳过机制；F3b 再接入完整持久扫描、独立 Task 授权暂停和专属 Grant 终态/回收。不拆公开重新授权与其拒绝路径。F3a 预留 type19/v1 但不启用持久记录，ABI0.25 明确输入 u64 序号耗尽的容量错误；公开恢复仍须等 F4 完整事务。
+
 ## 后果
 
 - work 的 goal/task 向 work/authority 共享事实模块单向依赖；它隔离共同身份/绑定不变量，不新增 authority→work 依赖。共享引用的历史字段注释移至唯一属主，Goal 保留有说明的别名。

@@ -32,7 +32,27 @@ ayni_status_t EventIngress::post_local_input(const catalog::CatalogId &source) {
     if (!open_) {
         return AYNI_INVALID_STATE;
     }
-    return queue_.push(header, reinterpret_cast<const uint8_t *>(source.data()));
+    if (accepted_.through == UINT64_MAX) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    header.sequence = accepted_.through + 1U;
+    const auto status = queue_.push(header, reinterpret_cast<const uint8_t *>(source.data()));
+    if (status == AYNI_OK) {
+        accepted_.through = header.sequence;
+    }
+    return status;
+}
+
+void EventIngress::establish_incarnation(uint64_t boot_epoch) {
+    const IngressGuard guard(host_);
+    if (accepted_.incarnation == 0U) {
+        accepted_.incarnation = boot_epoch;
+    }
+}
+
+work::InputResumeBoundary EventIngress::resume_boundary() const {
+    const IngressGuard guard(host_);
+    return accepted_;
 }
 
 void EventIngress::open() {
@@ -51,7 +71,8 @@ uint32_t EventIngress::queued() const {
     return queue_.size();
 }
 
-bool EventIngress::take_local_input(catalog::CatalogId &out_source) {
+bool EventIngress::take_local_input(catalog::CatalogId &out_source,
+                                    work::InputResumeBoundary *out_position) {
     EventHeader header{};
     // post_local_input() is the only push, so every entry holds a source,
     // which fits here.
@@ -60,6 +81,9 @@ bool EventIngress::take_local_input(catalog::CatalogId &out_source) {
         const IngressGuard guard(host_);
         if (!queue_.pop(header, body.data())) {
             return false;
+        }
+        if (out_position != nullptr) {
+            *out_position = {accepted_.incarnation, header.sequence};
         }
     }
     // post_local_input() queued the bytes of a catalog id.

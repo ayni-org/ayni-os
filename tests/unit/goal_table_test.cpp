@@ -210,6 +210,54 @@ TEST(GoalTable, lineage_includes_start_and_stops_at_the_first_refusal) {
     EXPECT_FALSE(goals->in_subtree(goals.index_of(leaf), goals.index_of(other_root)));
 }
 
+// ADR-0038 decision 11: explicit authorization resume skips unmaterialized
+// periodic/input backlog, preserves once/delay deadlines and ordinary pause.
+TEST(GoalTable, authority_resume_skips_backlog_without_restarting_once_or_delay) {
+    constexpr uint64_t started = 100;
+    constexpr uint64_t elapsed = 300;
+    Goals goals(small);
+    const auto interval = goals.create(0, owner, {}, {AYNI_TRIGGER_INTERVAL, 10, 20}, started);
+    const auto delayed = goals.create(0, owner, {}, {AYNI_TRIGGER_DELAY, 10, 0}, started);
+    const auto once = goals.create(0, owner, {}, {AYNI_TRIGGER_ONCE, 0, 0}, started);
+    const auto input = goals.create_input("button");
+    goals->record_input(catalog_id("button"), started, goals.next_stamp());
+    ASSERT_EQ(goals.change(interval, GoalChange::pause), ChangeCheck::allowed);
+    for (const auto id : {interval, delayed, once, input}) {
+        goals->skip_authority_backlog(goals.index_of(id), elapsed, goals.next_stamp());
+    }
+    EXPECT_EQ(goals.goal(interval).lifecycle, AYNI_GOAL_PAUSED);
+    EXPECT_EQ(goals.goal(interval).cursor.next_due_us, 310U);
+    EXPECT_EQ(goals.goal(interval).occurrences_skipped, 10U);
+    EXPECT_EQ(goals.goal(delayed).cursor.next_due_us, 110U);
+    EXPECT_EQ(goals.goal(once).cursor.next_due_us, started);
+    EXPECT_EQ(goals.goal(input).cursor.waiting, 0U);
+    EXPECT_EQ(goals.goal(input).occurrences_skipped, 1U);
+}
+
+// ADR-0038 decision 8: scans order stable IDs rather than storage slots;
+// replacement during a fixed scan cannot move a new Goal into its old range.
+TEST(GoalTable, stable_id_range_skips_reused_slots_and_preserves_output_on_empty_range) {
+    Goals goals({3, 4, 2, 2});
+    const auto root = goals.create();
+    const auto child = goals.create(root);
+    const auto other = goals.create();
+    const auto through = goals->latest_id();
+    ASSERT_EQ(goals.change(root, GoalChange::cancel), ChangeCheck::allowed);
+    const auto replacement = goals.create();
+    ASSERT_NE(replacement, 0U);
+    ASSERT_GT(replacement, through);
+    uint32_t index = GoalTable::no_index;
+    EXPECT_FALSE(goals->find(child, index));
+    ASSERT_TRUE(goals->next_in_range(0, through, index));
+    EXPECT_EQ(goals->at(index).goal_id, root);
+    ASSERT_TRUE(goals->next_in_range(root, through, index));
+    EXPECT_EQ(goals->at(index).goal_id, other);
+    const auto before = index;
+    EXPECT_FALSE(goals->next_in_range(through, through, index));
+    EXPECT_EQ(index, before);
+    EXPECT_EQ(goals->latest_id(), replacement);
+}
+
 // C-LIFE-020: a child cannot move work to another owner.
 TEST(GoalTable, child_must_have_its_parents_owner) {
     Goals goals(small);

@@ -195,10 +195,11 @@ void ayni_kernel::take_queued_inputs(StepBudget &progress) {
     if (takes_events()) {
         uint32_t waiting = ingress.queued();
         ayni::catalog::CatalogId source;
+        ayni::work::InputResumeBoundary input{};
         while (waiting > 0U && progress.available() && takes_event_now() &&
-               ingress.take_local_input(source)) {
+               ingress.take_local_input(source, &input)) {
             --waiting;
-            handle_local_input(source, progress.started_us);
+            handle_local_input(source, progress.started_us, input);
             progress.applied(host);
         }
     }
@@ -356,13 +357,14 @@ bool ayni_kernel::takes_event_now() const {
     return lifecycle != AYNI_LIFECYCLE_RUNNING || has_room();
 }
 
-void ayni_kernel::handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us) {
+void ayni_kernel::handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us,
+                                     ayni::work::InputResumeBoundary input) {
     if (lifecycle != AYNI_LIFECYCLE_RUNNING) {
         ++events_discarded;
         return;
     }
     const uint64_t first_seq = work.transitions.next_commit_seq();
-    if (!ayni::kernel::apply_local_input(work, source, now_us)) {
+    if (!ayni::kernel::apply_local_input(work, source, now_us, input)) {
         ++events_unmatched;
     }
     journal(first_seq);
@@ -426,6 +428,7 @@ void ayni_kernel::enter_running() {
     log.start(boot.boot_epoch(), {boot_batch.writer_epoch, first.commit_seq, first.transition_id},
               batch_max);
     log_started_ = true;
+    ingress.establish_incarnation(boot.boot_epoch());
     lifecycle = AYNI_LIFECYCLE_RUNNING;
     if (!reconcile_recovered_revocations()) {
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);

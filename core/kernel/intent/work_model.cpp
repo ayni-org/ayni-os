@@ -159,11 +159,13 @@ bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work) {
 
 } // namespace
 
-bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us) {
-    if (!model.goals.takes_input(source, &model.goal_authority)) {
+bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us,
+                       work::InputResumeBoundary input) {
+    if (!model.goals.takes_input(source, &model.goal_authority, input)) {
         return false;
     }
-    model.goals.record_input(source, now_us, model.transitions.next(), &model.goal_authority);
+    model.goals.record_input(source, now_us, model.transitions.next(), &model.goal_authority,
+                             input);
     model.due_work_changed = true;
     return true;
 }

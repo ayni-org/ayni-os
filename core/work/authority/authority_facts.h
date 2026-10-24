@@ -41,6 +41,9 @@ bool valid_selected_authority_reference(const AuthorityReference &reference);
 bool valid_binding_reference(const BindingReference &reference);
 // Incarnation is an epoch, not a Kernel ID; through may be zero when present.
 bool valid_input_resume_boundary(const InputResumeBoundary &boundary);
+// Only the same ingress instance's accepted sequence can precede a resume.
+// A zero incarnation means no boundary, never a comparison across boots.
+bool input_precedes_resume(const InputResumeBoundary &input, const InputResumeBoundary &resume);
 // Bound Goals name their actual parent; parent admission precedes child admission.
 bool valid_goal_binding(const GoalBinding &binding, uint64_t goal_id, uint64_t parent_goal_id,
                         foundation::TransitionStamp stamp);

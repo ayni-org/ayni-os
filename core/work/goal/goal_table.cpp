@@ -376,10 +376,20 @@ void GoalTable::skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
     goal.commit_seq = stamp.commit_seq;
 }
 
-bool GoalTable::takes_input(const catalog::CatalogId &source,
-                            const GoalAuthorityTable *authority) const {
+void GoalTable::skip_authority_backlog(uint32_t index, uint64_t now_us,
+                                       foundation::TransitionStamp stamp) {
+    const auto &goal = goals_[index];
+    if ((goal.trigger.kind == AYNI_TRIGGER_INTERVAL ||
+         goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) &&
+        goal.cursor.due_by(now_us)) {
+        skip_due(index, now_us, AYNI_REASON_GOAL_AUTHORITY_PAUSED, stamp);
+    }
+}
+
+bool GoalTable::takes_input(const catalog::CatalogId &source, const GoalAuthorityTable *authority,
+                            InputResumeBoundary input) const {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
-        if (takes(index, source, authority)) {
+        if (takes(index, source, authority, input)) {
             return true;
         }
     }
@@ -387,11 +397,11 @@ bool GoalTable::takes_input(const catalog::CatalogId &source,
 }
 
 void GoalTable::record_input(const catalog::CatalogId &source, uint64_t now_us,
-                             foundation::TransitionStamp stamp,
-                             const GoalAuthorityTable *authority) {
+                             foundation::TransitionStamp stamp, const GoalAuthorityTable *authority,
+                             InputResumeBoundary input) {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
         Goal &goal = goals_[index];
-        if (takes(index, source, authority)) {
+        if (takes(index, source, authority, input)) {
             work::record(now_us, goal.cursor);
             goal.commit_seq = stamp.commit_seq;
         }
@@ -437,6 +447,32 @@ bool GoalTable::find(uint64_t goal_id, uint32_t &out_index) const {
 ayni_bytes_v1 GoalTable::parameters(uint32_t index) const {
     return {parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_,
             goals_[index].parameter_size};
+}
+
+uint64_t GoalTable::latest_id() const {
+    uint64_t latest = 0;
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        if (goals_[index].goal_id > latest) {
+            latest = goals_[index].goal_id;
+        }
+    }
+    return latest;
+}
+
+bool GoalTable::next_in_range(uint64_t after, uint64_t through, uint32_t &out_index) const {
+    uint32_t selected = no_index;
+    for (uint32_t index = 0; index < goals_.size(); ++index) {
+        const auto id = goals_[index].goal_id;
+        if (id > after && id <= through &&
+            (selected == no_index || id < goals_[selected].goal_id)) {
+            selected = index;
+        }
+    }
+    if (selected == no_index) {
+        return false;
+    }
+    out_index = selected;
+    return true;
 }
 
 bool GoalTable::is_live(ayni_goal_lifecycle_t lifecycle) {
@@ -528,12 +564,14 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
 }
 
 bool GoalTable::takes(uint32_t index, const catalog::CatalogId &source,
-                      const GoalAuthorityTable *authority) const {
+                      const GoalAuthorityTable *authority, InputResumeBoundary input) const {
     const Goal &goal = goals_[index];
     return goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && is_live(goal.lifecycle) &&
            goal.lifecycle != AYNI_GOAL_PROPOSED && !is_held(goal) &&
            goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor) &&
-           (authority == nullptr || authority->authorized(index, goal.goal_id));
+           (authority == nullptr ||
+            (authority->authorized(index, goal.goal_id) &&
+             !input_precedes_resume(input, authority->at(index).binding.input)));
 }
 
 } // namespace ayni::work

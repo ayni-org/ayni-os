@@ -2,6 +2,7 @@ include(GoogleTest)
 
 add_executable(ayni_unit_tests
     agent_table_test.cpp
+    authority_cleanup_test.cpp
     batch_codec_test.cpp
     command_revoke_test.cpp
     pending_revoke_test.cpp
