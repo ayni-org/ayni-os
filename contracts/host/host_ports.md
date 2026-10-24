@@ -21,7 +21,7 @@ Host 为 Kernel 维护自身不变量提供平台服务（ADR-0006）：时钟�
 | `storage_trim_prefix` | Kernel → Host | Kernel 所有者线程 | 否 | 保留指定 activation 身份及其后全部物理批次；幂等 | M1 已实现（模拟与 Native） |
 | `storage_free_bytes` | Kernel → Host | Kernel 所有者线程 | 否 | 同步读取已扣除 Host 配额、在途预留的可用字节缓存；无法建立空间时 STORAGE_FAILED | M1 已实现（模拟与 Native） |
 | `log` | Kernel → Host | Kernel 所有者线程 | 否（可丢弃并计数） | 无 | 草案 |
-| `ayni_post_event` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 返回 `OK`（已入队，解锁后 `wake`）/ `BUSY`（队列满）/ `INVALID_STATE`（`CONFIGURING`、`STOPPED`） | M1 已实现（本地输入，ADR-0021；其他事件种类为草案） |
+| `ayni_post_event` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 返回 `OK`（已入队，解锁后 `wake`）/ `BUSY`（队列满）/ `CAPACITY_EXCEEDED`（ABI 0.25 起，同一 ingress 实例累计接受的输入序号达到 UINT64_MAX）/ `INVALID_STATE`（`CONFIGURING`、`STOPPED`） | M1 已实现（本地输入，ADR-0021；其他事件种类为草案） |
 | `ayni_completion_post` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 写入预留的完成槽，然后 `wake` | M1 已实现 |
 
 端口名与 `ayni_host_v1`（已实现部分）和 `include/ayni/draft/host_v1.h`（计划部分）的成员名一致。

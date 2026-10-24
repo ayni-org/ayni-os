@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 24u
+#define AYNI_ABI_MINOR 25u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1672,6 +1672,9 @@ typedef struct ayni_event_v1 {
  * - AYNI_UNSUPPORTED for a kind this library does not implement;
  * - AYNI_INVALID_ARGUMENT for a source that is not a catalog id;
  * - AYNI_INVALID_STATE in CONFIGURING and STOPPED;
+ * - Since 0.25, AYNI_CAPACITY_EXCEEDED when this ingress instance has
+ *   accepted UINT64_MAX inputs. Restart the process to create a new instance;
+ *   an automatic storage reload retains its order and cannot reset the limit;
  * - AYNI_BUSY when ingress_capacity events are queued: nothing is queued,
  *   and the host posts it again after the owner has stepped.
  * Returns AYNI_OK otherwise, in RECOVERING, RUNNING, DRAINING and

@@ -7,6 +7,7 @@
 #include "durability/journal/journal_ring.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
+#include "work/authority/authority_cleanup_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -36,8 +37,8 @@ class Encoder {
     // follow replay order, with the command mapping last.
     bool encode() {
         return owner_binding() && instances() && revocation() && grants() &&
-               revocation_progress() && goals() && goal_authority() && tasks() &&
-               task_authority() && command();
+               revocation_progress() && goals() && goal_authority() && tasks() && command() &&
+               authority_cleanup();
     }
 
   private:
@@ -98,7 +99,7 @@ class Encoder {
             plan.cleanup_through_grant_id = grant.cleanup_through_grant_id;
         }
         auto *at = body(authority::grant_revocation_record_type,
-                        authority::grant_revocation_record_version,
+                        authority::grant_revocation_with_work_record_version,
                         authority::grant_revocation_record_size);
         if (at != nullptr) {
             authority::write_grant_revocation_record(plan, at);
@@ -178,7 +179,15 @@ class Encoder {
             if (goal.commit_seq != stamp_.commit_seq) {
                 continue;
             }
-            const uint16_t version = model_.goal_authority.contains(index, goal.goal_id)
+            const bool authority_pause =
+                model_.goal_authority.contains(index, goal.goal_id) &&
+                model_.goal_authority.at(index).stamp.commit_seq == stamp_.commit_seq &&
+                model_.goal_authority.at(index).phase == work::GoalAuthorityPhase::paused;
+            const uint16_t version = authority_pause ? work::goal_state_authority_record_version
+                                     : !work::GoalTable::is_live(goal.lifecycle) &&
+                                             model_.grants.has_active_goal_grants(goal.goal_id)
+                                         ? work::goal_state_with_cleanup_record_version
+                                     : model_.goal_authority.contains(index, goal.goal_id)
                                          ? work::goal_state_with_authority_record_version
                                          : work::goal_state_record_version;
             uint8_t *at = body(work::goal_state_record_type, version, work::goal_state_record_size);
@@ -203,7 +212,10 @@ class Encoder {
                 record.stamp.transition_id != stamp_.transition_id) {
                 return false;
             }
-            auto *at = body(work::goal_authority_record_type, work::goal_authority_record_version,
+            const auto version = record.phase == work::GoalAuthorityPhase::paused
+                                     ? work::goal_authority_pause_record_version
+                                     : work::goal_authority_record_version;
+            auto *at = body(work::goal_authority_record_type, version,
                             work::goal_authority_record_size(record));
             if (at != nullptr) {
                 work::write_goal_authority_record(record, at);
@@ -249,33 +261,46 @@ class Encoder {
             if (task.commit_seq != stamp_.commit_seq) {
                 continue;
             }
-            uint8_t *at = body(work::task_state_record_type, work::task_state_record_version,
-                               work::task_state_record_size);
+            work::TaskAuthorityRecord admission{};
+            if (!model_.task_authority.read(task.slot, task.task_id, admission)) {
+                return false; // Schema 2 never infers authorization from absent metadata.
+            }
+            const bool changed = admission.stamp.commit_seq == stamp_.commit_seq;
+            const auto version = changed && task.created_transition_id != stamp_.transition_id
+                                     ? work::task_state_authority_record_version
+                                     : work::task_state_record_version;
+            uint8_t *at = body(work::task_state_record_type, version, work::task_state_record_size);
             if (at != nullptr) {
                 work::write_task_state_record(task, at);
+            }
+            if (changed && !task_authority(admission)) {
+                return false;
             }
         }
         return ok_;
     }
 
-    bool task_authority() {
-        for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
-            const auto &task = model_.tasks.at(index);
-            work::TaskAuthorityRecord record{};
-            if (!model_.task_authority.read(task.slot, task.task_id, record)) {
-                return false; // Every retained Task in schema 2 has explicit admission.
-            }
-            if (record.stamp.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            if (record.stamp.transition_id != stamp_.transition_id) {
-                return false;
-            }
-            auto *at = body(work::task_authority_record_type, work::task_authority_record_version,
-                            work::task_authority_record_max(record.count));
-            if (at != nullptr) {
-                work::write_task_authority_record(record, at);
-            }
+    bool task_authority(const work::TaskAuthorityRecord &record) {
+        if (record.stamp.transition_id != stamp_.transition_id) {
+            return false;
+        }
+        auto *at = body(work::task_authority_record_type, work::task_authority_record_version,
+                        work::task_authority_record_max(record.count));
+        if (at != nullptr) {
+            work::write_task_authority_record(record, at);
+        }
+        return ok_;
+    }
+
+    bool authority_cleanup() {
+        const auto &record = model_.authority_cleanup.record();
+        if (record.stamp.commit_seq != stamp_.commit_seq) {
+            return ok_;
+        }
+        auto *at = body(work::authority_cleanup_record_type, work::authority_cleanup_record_version,
+                        work::authority_cleanup_record_size);
+        if (at != nullptr) {
+            work::write_authority_cleanup_record(record, at);
         }
         return ok_;
     }
@@ -325,6 +350,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += capacities.task_capacity * record_bytes(work::task_state_record_size);
     size += capacities.task_capacity *
             record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));
+    size += record_bytes(work::authority_cleanup_record_size);
     // Reserve all authority records conservatively, including the bounded
     // startup expiry sweep. This avoids a second admission budget per kind.
     const uint32_t batch_grants = capacities.goal_requirement_capacity < capacities.grant_capacity

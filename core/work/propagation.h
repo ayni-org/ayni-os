@@ -42,10 +42,6 @@ bool goal_change_exhausts_tasks(const WorkTables &tables, uint32_t goal_index, G
 void apply_goal_change(WorkTables &tables, uint32_t goal_index, GoalChange change,
                        foundation::TransitionStamp stamp);
 
-// Settle Tasks reached by an independently changed Goal authorization phase.
-// Saturated Task revisions cannot run and are left unchanged.
-void settle_goal_authority(WorkTables &tables, uint32_t index, foundation::TransitionStamp stamp);
-
 // Creates the goal (GoalTable::insert). The goal that gives way to it, if
 // any, takes its tasks out of the task table with it: they have all ended,
 // since a goal's end takes the tasks it reaches with it and no task is

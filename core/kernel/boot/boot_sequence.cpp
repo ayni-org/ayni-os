@@ -534,7 +534,8 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
         return durability::RecordUse::corrupt;
     }
     if (header.type == authority::grant_revocation_record_type &&
-        header.version == authority::grant_revocation_record_version &&
+        (header.version == authority::grant_revocation_record_version ||
+         header.version == authority::grant_revocation_with_work_record_version) &&
         (!authority::read_grant_record_id(body, header.length, grant_id) ||
          foundation::id_boot_epoch(grant_id) == 0U ||
          foundation::id_boot_epoch(grant_id) > last_boot_epoch_)) {

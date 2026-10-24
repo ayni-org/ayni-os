@@ -117,3 +117,5 @@
 | C-STATUS-005 | `AYNI_NOT_FOUND` 只说明本机查不到记录；只有满足 C-CALL-010 的权威未执行结论才能推断未执行 | 远端查询返回 `NOT_FOUND`，调用方据此重新派发运动 | E2 查询夹具（“仅未找到记录”响应） |
 | C-STATUS-006 | 可选的 `ayni_error_v1` 输出原因码与对象引用，保留分类原因；不包含凭据、私有记忆正文、媒体或个人数据 | 错误详情里带出 API Key 或用户语音转写文本 | M1 已实现（`ayni_submit_intent`：每次返回都写状态、原因码与对象引用，只含 ID 与版本）：`WorkModel.output_struct_sizes_are_checked_and_a_bad_error_struct_is_not_written`、`WorkModel.intent_through_a_closed_or_unknown_session_is_denied`、`WorkModel.unknown_goal_type_or_version_is_refused`、`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`；日志与诊断输出的测试随其实现（M1）；`MA-005` |
 | C-STATUS-007 | 状态码与原因码是 ABI 的一部分：新增状态码只能取尚未使用的负数，新增原因码只能取尚未使用的正数，已发布值不重新编号 | 新版本把 `-6` 从 `BUSY` 改为 `DENIED` | 评审；C-VER-002 |
+
+ABI 0.25 起，`ayni_post_event` 在同一 ingress 实例的 u64 输入顺序耗尽时返回 `AYNI_CAPACITY_EXCEEDED`，不入队、不 wake。该上限由新进程的新 ingress 实例重建，自动存储重载不重置；队列暂满继续返回 `AYNI_BUSY`。这不增加状态码或 reason，见 `limits.md` 与 ADR-0038。

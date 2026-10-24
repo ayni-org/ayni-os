@@ -573,4 +573,27 @@ TEST(TaskTable, live_lifecycles_are_the_ones_not_ended) {
     }
 }
 
+// ADR-0038: an authorization update preserves the entire user/policy state
+// of a live Task and can never rewrite terminal history.
+TEST(TaskTable, authority_state_preserves_live_holds_and_refuses_terminal_history) {
+    for (const auto change : {TaskChange::pause, TaskChange::complete, TaskChange::cancel,
+                              TaskChange::fail, TaskChange::expire}) {
+        Tasks tasks(1);
+        const auto id = tasks.create();
+        ASSERT_NE(id, 0U);
+        ASSERT_EQ(tasks.change(id, change), ChangeCheck::allowed);
+        const auto task = tasks.task(id);
+        const ayni::work::TaskState state{task.lifecycle,   task.revision,    task.cancel_revision,
+                                          task.hold_status, task.hold_reason, task.step_count};
+        const auto restored =
+            tasks->restore_authority_state(tasks.index_of(id), state, {100, task.commit_seq + 1U});
+        EXPECT_EQ(restored, change == TaskChange::pause ? TaskTable::Restore::restored
+                                                        : TaskTable::Restore::corrupt);
+        EXPECT_EQ(tasks.task(id).revision, task.revision);
+        EXPECT_EQ(tasks.task(id).lifecycle, task.lifecycle);
+        EXPECT_EQ(tasks.task(id).commit_seq,
+                  change == TaskChange::pause ? task.commit_seq + 1U : task.commit_seq);
+    }
+}
+
 } // namespace

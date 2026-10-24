@@ -51,9 +51,10 @@
 | `OWNER_BINDING`（类型 12，版本 1，REQUIRED） | `authority/principal` | 首次所有者绑定，与启动领域 transition 同批；已绑定后不重复写入（ADR-0028） |
 | `INSTANCE`（类型 2） | `work/agent` | 启动或改变实例的 transition 批次（ADR-0026） |
 | `GOAL`（类型 3）、`GOAL_STATE`（类型 4） | `work/goal` | `GOAL` 在创建它的批次（B1）；`GOAL_STATE` 在每个改变该 Goal 的批次，含 occurrence 游标（B2），所以不另设 `OCCURRENCE_CURSOR` |
-| `GOAL_AUTHORITY`（类型 17，版本 2，REQUIRED） | `work/goal` | 与 type 3/v2 或 v3 的创建/授权状态更新同批，每批最多一个 Goal；完整布局见本文末尾（ADR-0037、0038） |
+| `GOAL_AUTHORITY`（类型 17，版本 2/3，REQUIRED） | `work/goal` | v2 创建/批准；v3 授权暂停，与 4/v4 及直属活 Task 的暂停事实和清理进度同批；每批最多一个 Goal（ADR-0037、0038） |
 | `TASK`（类型 5）、`TASK_STATE`（类型 6） | `work/task` | `TASK` 在派生它的批次（B2）；`TASK_STATE` 在每个改变该 Task 的批次，含 `TASK_PROGRESS` 的内容 |
 | `TASK_AUTHORITY`（类型 18，版本 1，REQUIRED） | `work/task` | 派生 Task 时与确切 `TASK`/`TASK_STATE` 同批，状态后紧接准入事实（ADR-0038） |
+| `WORK_AUTHORITY_CLEANUP`（类型 19，版本 1，REQUIRED） | `work/authority` | 工作清理请求/一步的批次末尾；快照固定一项，含明确 idle（ADR-0038） |
 | `TASK_STEPS`（类型 7）、`TASK_CHECKPOINT`（类型 8） | `work/task` | 提交步骤或私有检查点的决策批次（B3），即 `STEP_CHECKPOINT` |
 | `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3含完整canonical请求，v3另存effect（ADR-0030、0031） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | `budget` | B2、B4 |
@@ -62,8 +63,8 @@
 | `CALL_RESULT` | `work/call` | B4 |
 | `MEMORY_RECORD`、`MEMORY_TOMBSTONE`、`LINEAGE` | `knowledge` | B4、B5 |
 | `GRANT_CREATE`（类型13，版本1，REQUIRED） | `authority/grant` | Grant创建，与v2命令身份/结果同批（ADR-0030） |
-| `GRANT_STATE`（类型14，版本1/2，REQUIRED） | `authority/grant` | v1到期，v2后代撤销；不持久Gate |
-| `GRANT_REVOCATION`（类型15，版本1，REQUIRED） | `authority/grant` | 显式根撤销或明确no-op，与v3命令结果同批B5（ADR-0031） |
+| `GRANT_STATE`（类型14，版本1/2/3/4，REQUIRED） | `authority/grant` | v1 旧到期，v2 后代撤销，v3 专属 Goal 结束，v4 到期并要求工作清理；不持久 Gate |
+| `GRANT_REVOCATION`（类型15，版本1/2，REQUIRED） | `authority/grant` | 显式根撤销或明确 no-op，与 v3 命令结果同批；v2 另要求工作清理 footer（ADR-0031、0038） |
 | `GRANT_REVOCATION_PROGRESS`（类型16，版本1，REQUIRED） | `authority/grant` | 根cursor与本步后代状态（如有）同批B5（ADR-0031） |
 | `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
@@ -102,6 +103,8 @@
 | 14/v1 `GRANT_STATE` | grant_id u64、revision u32、lifecycle u32 | 16 |
 | 9/v2 `COMMAND_MAPPING` | v1的52 B正文，后接canonical_format u32、canonical_size u32、canonical正文 | 60 + canonical正文；C最大144+scope_max_bytes |
 | 14/v2 `GRANT_STATE` | v1的16 B状态，后接revoked_by_root_id u64；必须REVOKED/revision2 | 24 |
+| 14/v3、v4 `GRANT_STATE` | 原 16 B 状态；v3 必须 GOAL_ENDED/revision2，v4 必须 EXPIRED/revision2；同批 REQUIRED type19 | 16 |
+| 15/v2 `GRANT_REVOCATION` | 原 v1 正文；同批 REQUIRED type19 | 32 |
 | 15/v1 `GRANT_REVOCATION` | grant_id u64、revision u32、effect u32、initial_after_grant_id u64、through_grant_id u64 | 32 |
 | 16/v1 `GRANT_REVOCATION_PROGRESS` | root_grant_id、after_grant_id、through_grant_id（u64×3） | 24 |
 | 9/v3 `COMMAND_MAPPING` | v1的52 B正文，后接effect/canonical_format/canonical_size（u32×3）、kind10 canonical16 | 80 |
@@ -264,3 +267,18 @@ Task/Goal 为不同的有效 Kernel ID；binding sequence 正且不晚于记录 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-STORE-020 | Task 保存独立完整准入引用，按稳定 slot/exact Task ID，显式零需求与缺席不同；struct/bytes 共用校验，错误不发布部分事实 | Task 位置移动或复用后借用另一 Task 权限；截断发布前缀 | M1 部分实现（F2 准入事实、持久配对与查询）：`TaskAuthority.explicit_empty_admission_and_slot_reuse_preserve_identity`、`TaskAuthority.copied_references_and_capacity_failures_preserve_the_arena`、`TaskAuthority.same_binding_can_pause_but_cannot_resume_or_change_references`、`TaskAuthorityCodec.empty_and_maximum_admissions_round_trip_without_scope_copies`、`TaskAuthorityCodec.every_truncation_trailing_bytes_and_malformed_fact_preserve_output`、`TaskAuthorityPersistence.terminal_snapshot_rejects_missing_or_substituted_admission`、`WorkReplay.task_replacement_cannot_hide_a_pending_admission`；显式重新授权随 F4；ADR-0038 |
+
+
+## 工作授权清理事实（MA-006 F3）
+
+ADR-0038 决策 8：type 19/v1 固定 44 B，全部小端：transition_id u64（offset 0）、commit_seq u64（8）、phase u32（16，0=idle、1=scanning）、after_goal_id u64（20）、through_goal_id u64（28）、requested_through u64（36）。work 拥有状态和共享 reader/writer；Kernel journal、snapshot、发现及容量预算均接入 REQUIRED 记录，不从缺席推断清理完成。快照在 Task 区后、命令区前必须恰好保存一项，包括空表的明确 idle；开发期不为缺项旧快照补事实。
+
+idle 的三个游标全部为零；初始 stamp 两项均零，使用后两项均正。scanning 的 stamp 为正，through 是固定有效 Goal ID，after 是零或小于 through 的有效已访 ID。requested_through 为零或下一轮的有效 Goal ID，即使等于当前 through 也须保留，不能因本轮结束丢失。空范围请求仅更新见证 stamp。稳定查询合并保留 Goal 和专属 Grant 的 Goal ID，包含 Goal 槽位已复用的旧身份；每步恰访最小未访 ID，或证明范围为空后结束，并保留下一轮请求。进度消耗 step item/time 预算，背压/快照冻结时暂停推进，即时消费检查继续拒绝失效权限。
+
+授权暂停使用 GOAL_STATE 4/v4（原 48 B 正文）紧接 GOAL_AUTHORITY 17/v3（原 72 B 固定头），只允许既有活 Goal 从 authorized 进入 paused；用户 lifecycle/revision、失效标记和触发游标逐字段保持。直属活 Task 使用 TASK_STATE 6/v2（原 32 B 正文）紧接 TASK_AUTHORITY 18/v1，原用户/策略状态、revision、步骤和检查点保持，终态 Task 不得被更新。整批末尾的 type19 证明全部直属活 Task 已暂停，不能跨批补齐、覆盖待配对身份或在 footer 后夹带记录。目录兼容和主体不可用仍是独立 hold，不因后台扫描变成持久授权暂停。 journal 最终一致性与 snapshot 共用校验：每个直属活 Task 的授权 phase 必须与其自身 Goal 同为暂停或同未暂停；不把祖先尚待扫描的 phase 套给子 Goal，也不改写终态 Task 历史。旧暂停 journal 缺少独立 Task deny 时在新写入前拒绝并保留，不以用户 PAUSED 字段推断或补授权事实。
+
+有 ACTIVE 专属 Grant 的 Goal 进入终态时使用 GOAL_STATE 4/v3（原正文），同批请求清理。扫描写 GRANT_STATE 14/v3（原 16 B 正文），lifecycle 为 GOAL_ENDED（4），只结束本步选中 Goal 的全部 ACTIVE 专属根，不改写既有终态顺序或伪造管理撤销；该 Goal 必须已于更早 transition 终结或已让出槽位。删除一项/全部结束记录、替换成另一 Goal 或仅推进游标均不构成完整一步。新到期记录 14/v4 和根撤销 15/v2 复用原正文，并要求同批 type19 请求；旧记录版本继续按其原配对规则读取。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-STORE-021 | 工作授权清理固定 through、单调 after，扫描中新请求保留给下一轮；记录与所属状态同批且有界推进，不丢清理请求 | 新请求扩大当前扫描导致不收敛；结束时丢掉同 frontier 的请求；槽位复用混入新 Goal | `WorkAuthorityCleanup.fixed_frontier_retains_requests_for_a_second_pass`、`WorkAuthorityCleanup.interrupted_scan_keeps_its_frontier_and_later_request`、`WorkAuthorityCleanup.dedicated_grant_ends_and_reclaims_after_goal_slot_reuse`、`WorkAuthorityPersistence.ended_grant_cohort_and_footer_are_one_complete_scan_step`、`WorkAuthorityPersistence.pause_keeps_user_state_and_requires_all_direct_task_facts`；ADR-0038 |

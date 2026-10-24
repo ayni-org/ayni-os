@@ -16,6 +16,7 @@
 
 #include "catalog/catalog_id.h"
 #include "kernel/ingress/event_queue.h"
+#include "work/authority/authority_facts.h"
 
 #include <ayni/ayni.h>
 
@@ -39,8 +40,10 @@ class EventIngress {
     EventIngress &operator=(const EventIngress &) = delete;
 
     // Any thread except an ISR. AYNI_OK when queued, AYNI_INVALID_STATE
-    // while the gate is closed, AYNI_BUSY when the queue is full. Calls no
-    // Host function but the lock; the caller wakes the owner after AYNI_OK.
+    // while the gate is closed, AYNI_BUSY when the queue is full, and
+    // AYNI_CAPACITY_EXCEEDED when the instance's u64 input order is exhausted.
+    // Requires a valid source. Calls no Host function but the lock; the caller
+    // wakes the owner after AYNI_OK.
     ayni_status_t post_local_input(const catalog::CatalogId &source);
 
     // Owner thread.
@@ -50,11 +53,23 @@ class EventIngress {
     uint32_t close();
     uint32_t queued() const;
     // Moves the oldest event out; false when none is queued.
-    bool take_local_input(catalog::CatalogId &out_source);
+    bool take_local_input(catalog::CatalogId &out_source,
+                          work::InputResumeBoundary *out_position = nullptr);
+    // Owner supplies the first durable boot epoch once; automatic reloads
+    // retain this queue's instance. Producers never read Kernel boot state.
+    void establish_incarnation(uint64_t boot_epoch);
+    // Samples accepted input order under the producer lock. Exact command
+    // retries retain the original sample rather than calling this again.
+    work::InputResumeBoundary resume_boundary() const;
 
   private:
+    // Test-only peer sets the otherwise non-enumerable u64 resource boundary.
+    // It adds no runtime path, state or test-library dependency to Core.
+    friend class EventIngressTestPeer;
     const ayni_host_v1 &host_;
     EventQueue queue_;
+    // Lock-owned queue identity/order; zero incarnation before first RUNNING.
+    work::InputResumeBoundary accepted_{};
     bool open_ = false;
 };
 

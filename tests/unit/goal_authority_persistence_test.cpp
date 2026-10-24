@@ -9,6 +9,7 @@
 #include "kernel/work_replay.h"
 #include "kernel/work_snapshot.h"
 #include "work/agent/agent_records.h"
+#include "work/authority/authority_cleanup_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -210,8 +211,14 @@ class Fixture {
     }
     void expire() {
         work.node().sim().advance_us(duration_us);
-        work.node().step(1);
-        work.node().recover();
+        // ADR-0038: a pending bounded work scan consumes items before expiry.
+        for (unsigned round = 0;
+             round < 128U && work.kernel()->work.grants.at(0).lifecycle == AYNI_GRANT_ACTIVE;
+             ++round) {
+            work.node().step(1);
+            work.node().sim().complete_storage();
+            work.node().recover();
+        }
         ASSERT_EQ(work.kernel()->work.grants.at(0).lifecycle, AYNI_GRANT_EXPIRED);
     }
     GoalAuthorityRecord saved(uint64_t id) {
@@ -377,10 +384,13 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
 
 // ADR-0037 decision 8: discovery uses this same classifier for covered history.
 TEST(GoalAuthorityPersistence, authority_headers_cannot_be_optional_even_for_future_versions) {
-    for (const uint16_t type :
-         {goal_record_type, goal_state_record_type, goal_authority_record_type}) {
-        for (const uint16_t version : {uint16_t{2}, uint16_t{3}}) {
+    for (const uint16_t type : {goal_record_type, goal_state_record_type,
+                                goal_authority_record_type, task_state_record_type}) {
+        for (const uint16_t version : {uint16_t{2}, uint16_t{3}, uint16_t{99}}) {
             EXPECT_EQ(WorkReplay::classify_header({type, version, 0, 0}), RecordUse::corrupt);
+            EXPECT_EQ(WorkReplay::classify_header({type, version, 0, 0},
+                                                  ayni::kernel::WorkRecordContext::snapshot),
+                      RecordUse::corrupt);
         }
     }
     EXPECT_EQ(WorkReplay::classify_header({goal_record_type, goal_record_version, 0, 0}),
@@ -1142,9 +1152,10 @@ TEST(GoalApprovalPersistence, unpaired_metadata_cannot_change_original_dependenc
 
 // Public-path setup shared by fault cases; only the later stored-byte edits
 // are White-box. A new command always follows completed durable creation.
-uint64_t approve_proposal(Fixture &source, uint64_t duration = 0) {
-    const auto created =
-        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+uint64_t approve_proposal(Fixture &source, uint64_t duration = 0,
+                          ayni_trigger_kind_t trigger = AYNI_TRIGGER_NONE) {
+    const auto created = source.work.create(
+        WorkNode::create_body(source.work.instance(agent_a), 0, "proposal", 1, {}, trigger));
     EXPECT_EQ(created.status, AYNI_OK);
     if (created.status != AYNI_OK) {
         return 0;
@@ -1649,7 +1660,7 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
 TEST(GoalApprovalPersistence, terminal_parent_history_survives_reclaimed_ancestor_grant) {
     Fixture source;
     source.work.node().config().grant_capacity = 3;
-    source.work.node().config().command_capacity = 8;
+    source.work.node().config().command_capacity = 16;
     source.proposal_count = 2;
     source.narrow_first = true;
     source.run();
@@ -1697,27 +1708,500 @@ TEST(GoalApprovalPersistence, terminal_parent_history_survives_reclaimed_ancesto
                                     0,
                                     Fixture::duration_us,
                                     full};
-    auto grant = source.work.intent(AYNI_INTENT_GRANT_CREATE, &body);
-    grant.command_id = 102;
-    ASSERT_EQ(source.work.submit(grant).status, AYNI_OK);
-    source.work.node().recover();
+    // F3 ends dedicated roots before the generic Grant expires. Reclaim all
+    // three terminal rows in their actual durable terminal order.
+    for (uint64_t command = 102; command < 105U; ++command) {
+        auto grant = source.work.intent(AYNI_INTENT_GRANT_CREATE, &body);
+        grant.command_id = command;
+        ASSERT_EQ(source.work.submit(grant).status, AYNI_OK);
+        source.work.node().recover();
+    }
     uint32_t index = 0;
     ASSERT_FALSE(source.work.kernel()->work.grants.find(generic.result.object.id, index));
     const auto compacted = snapshot(source);
     Fixture restored;
     restored.work.node().config().grant_capacity = 3;
-    restored.work.node().config().command_capacity = 8;
+    restored.work.node().config().command_capacity = 16;
     restored.run();
     ASSERT_EQ(import_snapshot(restored, compacted), BatchCheck::ok);
     EXPECT_EQ(restored.saved(child).binding.parent.commit_seq, binding.parent.commit_seq);
 
     Fixture rebooted;
     rebooted.work.node().config().grant_capacity = 3;
-    rebooted.work.node().config().command_capacity = 8;
+    rebooted.work.node().config().command_capacity = 16;
     rebooted.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
     rebooted.run();
     ASSERT_EQ(rebooted.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(rebooted.saved(child).binding.parent.commit_seq, binding.parent.commit_seq);
+}
+
+// ADR-0038: exercise bounded cleanup through the actual step/storage boundary.
+void finish_authority_work(Fixture &source) {
+    for (unsigned round = 0; round < 8U; ++round) {
+        source.work.node().step();
+        source.work.node().sim().complete_storage();
+        source.work.node().recover();
+    }
+}
+
+// White-box reconstruction from complete prior batches, using the work owner
+// for request/step math rather than manufacturing a cursor independently.
+AuthorityCleanup cleanup_before(const std::vector<ayni::hosts::sim::StoredBatch> &log,
+                                std::size_t before) {
+    AuthorityCleanup state;
+    for (std::size_t at = 0; at < before; ++at) {
+        for (const auto &record : decode(log[at]).records) {
+            if (record.header.type == authority_cleanup_record_type) {
+                AuthorityCleanupRecord fact{};
+                EXPECT_TRUE(
+                    read_authority_cleanup_record(record.body.data(), record.header.length, fact));
+                state.restore_validated(fact);
+            }
+        }
+    }
+    return state;
+}
+
+// C-STORE-021: a correct CRC cannot replace one/all dedicated terminal facts
+// with a cursor alone, nor hide a missing footer or records after its seal.
+TEST(WorkAuthorityPersistence, ended_grant_cohort_and_footer_are_one_complete_scan_step) {
+    Fixture source;
+    source.work.node().config().grant_capacity = 2;
+    source.proposal_count = 2;
+    source.run();
+    const auto other = source.goal(); // The first scan identity owns no dedicated root.
+    const auto goal = approve_proposal(source);
+    ASSERT_NE(goal, 0U);
+    ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
+    finish_authority_work(source);
+    const auto image = source.work.node().sim().durable_storage();
+    std::size_t selected = image.log.size();
+    for (std::size_t at = 0; at < image.log.size(); ++at) {
+        const auto batch = decode(image.log[at]);
+        if (std::any_of(batch.records.begin(), batch.records.end(), [](const auto &record) {
+                return record.header.type == ayni::authority::grant_state_record_type &&
+                       record.header.version ==
+                           ayni::authority::grant_goal_ended_state_record_version;
+            })) {
+            selected = at;
+            break;
+        }
+    }
+    ASSERT_LT(selected, image.log.size());
+    const auto original = decode(image.log[selected]);
+    ASSERT_EQ(std::count_if(original.records.begin(), original.records.end(),
+                            [](const auto &r) {
+                                return r.header.type == ayni::authority::grant_state_record_type;
+                            }),
+              2);
+    for (unsigned fault = 0; fault < 7U; ++fault) {
+        SCOPED_TRACE(fault);
+        auto changed = image;
+        auto batch = original;
+        const auto is_end = [](const auto &r) {
+            return r.header.type == ayni::authority::grant_state_record_type;
+        };
+        const auto first = std::find_if(batch.records.begin(), batch.records.end(), is_end);
+        ASSERT_NE(first, batch.records.end());
+        const Record ended = *first;
+        if (fault == 0U) {
+            batch.records.erase(first);
+        } else if (fault == 1U) {
+            batch.records.erase(std::remove_if(batch.records.begin(), batch.records.end(), is_end),
+                                batch.records.end());
+        } else if (fault == 2U) {
+            batch.records.pop_back(); // Mandatory type19 footer.
+        } else if (fault == 3U) {
+            batch.records.insert(batch.records.begin(), ended);
+        } else if (fault == 4U) {
+            batch.records.push_back(ended); // A completed footer seals the batch.
+        } else if (fault == 5U) {
+            batch.records.push_back(batch.records.back());
+        } else {
+            std::size_t earlier = 0;
+            for (; earlier < selected; ++earlier) {
+                const auto candidate = decode(image.log[earlier]);
+                if (candidate.records.size() == 1U &&
+                    candidate.records[0].header.type == authority_cleanup_record_type) {
+                    break;
+                }
+            }
+            ASSERT_LT(earlier, selected);
+            const auto cursor_batch = decode(image.log[earlier]);
+            batch.identity = cursor_batch.identity;
+            batch.records.erase(std::remove_if(batch.records.begin(), batch.records.end(),
+                                               [](const auto &r) {
+                                                   return r.header.type !=
+                                                          ayni::authority::grant_state_record_type;
+                                               }),
+                                batch.records.end());
+            // Wrong Goal's ends cannot accompany an otherwise exact scan step.
+            auto progress = cleanup_before(image.log, earlier);
+            const ayni::foundation::TransitionStamp stamp{batch.identity.transition_id,
+                                                          batch.identity.commit_seq};
+            progress.visited(other, stamp);
+            progress.request(source.work.kernel()->work.goals.latest_id(), stamp);
+            Record footer{{authority_cleanup_record_type, authority_cleanup_record_version,
+                           record_required, authority_cleanup_record_size},
+                          std::vector<uint8_t>(authority_cleanup_record_size)};
+            write_authority_cleanup_record(progress.record(), footer.body.data());
+            batch.records.push_back(std::move(footer));
+            changed.log.resize(earlier + 1U); // No later batch can mask the forged prefix.
+            changed.log[earlier] = encode(batch);
+        }
+        if (fault != 6U) {
+            changed.log[selected] = encode(batch); // Valid framing and CRC for every fault.
+        }
+        Fixture restored;
+        restored.work.node().config().grant_capacity = 2;
+        restored.proposal_count = 2;
+        restored.work.node().sim().durable_storage() = changed;
+        restored.run();
+        EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+    Fixture valid;
+    valid.work.node().config().grant_capacity = 2;
+    valid.proposal_count = 2;
+    valid.work.node().sim().durable_storage() = image;
+    valid.run();
+    ASSERT_EQ(valid.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    for (uint32_t at = 0; at < valid.work.kernel()->work.grants.size(); ++at) {
+        EXPECT_EQ(valid.work.kernel()->work.grants.at(at).lifecycle, AYNI_GRANT_GOAL_ENDED);
+    }
+    const auto compacted = snapshot(source);
+    Fixture compacted_reader;
+    compacted_reader.work.node().config().grant_capacity = 2;
+    compacted_reader.proposal_count = 2;
+    compacted_reader.run();
+    EXPECT_EQ(import_snapshot(compacted_reader, compacted), BatchCheck::ok);
+}
+
+// C-STORE-020/021: user state is immutable during an authorization pause and
+// every direct live Task carries its own denial before a sealed footer.
+TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_task_facts) {
+    Fixture source;
+    source.run();
+    const auto goal = approve_proposal(source, 0, AYNI_TRIGGER_ONCE);
+    ASSERT_NE(goal, 0U);
+    source.work.node().step(1); // Derive the Task, preserving READY for the pause.
+    ASSERT_NE(source.work.goal(goal).last_task_id, 0U);
+    ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_PAUSE, goal).status, AYNI_OK);
+    const auto other = source.goal(); // Another existing Goal cannot replace a pending partner.
+    const auto selected_grant = source.saved(goal).requirements[0].dependency.grant_id;
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, selected_grant};
+    auto intent = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    intent.command_id = 101;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    finish_authority_work(source);
+    const auto image = source.work.node().sim().durable_storage();
+    std::size_t selected = image.log.size();
+    for (std::size_t at = 0; at < image.log.size(); ++at) {
+        const auto batch = decode(image.log[at]);
+        if (std::any_of(batch.records.begin(), batch.records.end(), [](const auto &r) {
+                return r.header.type == goal_authority_record_type &&
+                       r.header.version == goal_authority_pause_record_version;
+            })) {
+            selected = at;
+            break;
+        }
+    }
+    ASSERT_LT(selected, image.log.size());
+    const auto original = decode(image.log[selected]);
+    for (unsigned fault = 0; fault < 12U; ++fault) {
+        SCOPED_TRACE(fault);
+        auto changed = image;
+        auto batch = original;
+        if (fault < 2U) {
+            batch.records.erase(
+                std::remove_if(batch.records.begin(), batch.records.end(),
+                               [&](const auto &r) {
+                                   return r.header.type == task_authority_record_type ||
+                                          (fault == 1U && r.header.type == task_state_record_type);
+                               }),
+                batch.records.end());
+        } else if (fault < 7U) {
+            auto state =
+                std::find_if(batch.records.begin(), batch.records.end(),
+                             [](const auto &r) { return r.header.type == goal_state_record_type; });
+            ASSERT_NE(state, batch.records.end());
+            GoalStateRecord record{};
+            ASSERT_TRUE(read_goal_state_record(state->body.data(), state->header.length, record));
+            if (fault == 2U) {
+                record.state.lifecycle = AYNI_GOAL_ACTIVE;
+            } else if (fault == 3U) {
+                ++record.state.revision;
+            } else if (fault == 4U) {
+                ++record.state.taken;
+            } else if (fault == 5U) {
+                record.state.expiry_pending = !record.state.expiry_pending;
+            } else {
+                state->header.version = goal_state_with_authority_record_version;
+            }
+            // White-box byte edits use the production writer with a copied Goal.
+            auto goal_state = source.work.kernel()->work.goals.at(source.goal_index(goal));
+            goal_state.lifecycle = record.state.lifecycle;
+            goal_state.revision = record.state.revision;
+            goal_state.cursor.taken = record.state.taken;
+            goal_state.expires_us = record.state.expiry_pending ? 0U : no_time;
+            write_goal_state_record(goal_state, state->body.data());
+        } else if (fault == 7U) {
+            batch.records.pop_back();
+        } else if (fault == 8U) {
+            batch.records.push_back(batch.records.front());
+        } else if (fault == 9U) {
+            const auto metadata =
+                std::find_if(batch.records.begin(), batch.records.end(), [](const auto &r) {
+                    return r.header.type == goal_authority_record_type;
+                });
+            ASSERT_NE(metadata, batch.records.end());
+            const Record duplicate = *metadata;
+            batch.records.insert(metadata, duplicate);
+        } else if (fault == 10U) {
+            Record partner{{goal_state_record_type, goal_state_authority_record_version,
+                            record_required, goal_state_record_size},
+                           std::vector<uint8_t>(goal_state_record_size)};
+            write_goal_state_record(source.work.kernel()->work.goals.at(source.goal_index(other)),
+                                    partner.body.data());
+            batch.records.insert(batch.records.begin() + 1, partner);
+        } else {
+            ASSERT_EQ(batch.records.front().header.type, goal_state_record_type);
+            const Record first = batch.records.front();
+            batch.records.clear();
+            batch.records.push_back(first);
+            Record partner{{goal_state_record_type, goal_state_authority_record_version,
+                            record_required, goal_state_record_size},
+                           std::vector<uint8_t>(goal_state_record_size)};
+            write_goal_state_record(source.work.kernel()->work.goals.at(source.goal_index(other)),
+                                    partner.body.data());
+            batch.records.push_back(std::move(partner));
+            auto metadata = source.saved(other);
+            metadata.phase = GoalAuthorityPhase::paused;
+            metadata.stamp = {batch.identity.transition_id, batch.identity.commit_seq};
+            ASSERT_TRUE(valid_goal_authority_record(metadata));
+            const auto size = goal_authority_record_size(metadata);
+            Record pause{{goal_authority_record_type, goal_authority_pause_record_version,
+                          record_required, size},
+                         std::vector<uint8_t>(size)};
+            write_goal_authority_record(metadata, pause.body.data());
+            batch.records.push_back(std::move(pause));
+            // Completing Goal B cannot erase Goal A's still-unpaired state,
+            // even if the footer is a valid new request rather than a step.
+            auto progress = cleanup_before(image.log, selected);
+            progress.request(source.work.kernel()->work.goals.latest_id(), metadata.stamp);
+            Record footer{{authority_cleanup_record_type, authority_cleanup_record_version,
+                           record_required, authority_cleanup_record_size},
+                          std::vector<uint8_t>(authority_cleanup_record_size)};
+            write_authority_cleanup_record(progress.record(), footer.body.data());
+            batch.records.push_back(std::move(footer));
+            changed.log.resize(selected + 1U);
+        }
+        changed.log[selected] = encode(batch);
+        Fixture restored;
+        restored.work.node().sim().durable_storage() = changed;
+        restored.run();
+        EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
+    Fixture valid;
+    valid.work.node().sim().durable_storage() = image;
+    valid.run();
+    ASSERT_EQ(valid.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(valid.saved(goal).phase, GoalAuthorityPhase::paused);
+    EXPECT_EQ(valid.work.kernel()->work.goals.at(valid.goal_index(goal)).lifecycle,
+              AYNI_GOAL_PAUSED);
+}
+
+// C-STORE-021/C-STORE-014: snapshots need one complete, bounded cleanup fact,
+// including pending scans; record count/length remain valid in these faults.
+TEST(WorkAuthorityPersistence, snapshots_require_one_bounded_cleanup_fact_in_section_order) {
+    Fixture source;
+    source.run();
+    const auto goal = approve_proposal(source);
+    ASSERT_NE(goal, 0U);
+    ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
+    source.work.node().recover();
+    ASSERT_TRUE(source.work.kernel()->work.authority_cleanup.ready());
+    const auto original = snapshot(source, 512);
+    for (unsigned fault = 0; fault < 6U; ++fault) {
+        SCOPED_TRACE(fault);
+        auto changed = original;
+        auto found =
+            std::find_if(changed.records.begin(), changed.records.end(), [](const auto &r) {
+                return r.header.type == authority_cleanup_record_type;
+            });
+        ASSERT_NE(found, changed.records.end());
+        if (fault == 0U) {
+            changed.records.erase(found);
+        } else if (fault == 1U) {
+            const Record duplicate = *found;
+            changed.records.insert(found, duplicate);
+        } else if (fault == 2U || fault == 3U) {
+            AuthorityCleanupRecord record{};
+            ASSERT_TRUE(
+                read_authority_cleanup_record(found->body.data(), found->header.length, record));
+            if (fault == 2U) {
+                record.stamp.commit_seq = changed.metadata.covers_commit_seq + 1U;
+            } else {
+                record.through_goal_id += UINT64_C(1) << 32U;
+            }
+            ASSERT_TRUE(valid_authority_cleanup_record(record));
+            write_authority_cleanup_record(record, found->body.data());
+        } else if (fault == 4U) {
+            found->header.flags = 0;
+        } else {
+            const Record moved = *found;
+            changed.records.erase(found);
+            changed.records.insert(changed.records.begin(), moved);
+        }
+        changed.metadata.record_count = static_cast<uint32_t>(changed.records.size());
+        changed.metadata.payload_length = 0;
+        for (const auto &record : changed.records) {
+            changed.metadata.payload_length += record_header_size + record.header.length;
+        }
+        Fixture restored;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+    }
+    Fixture valid;
+    valid.run();
+    ASSERT_EQ(import_snapshot(valid, original), BatchCheck::ok);
+    EXPECT_TRUE(valid.work.kernel()->work.authority_cleanup.ready());
+}
+
+// C-STORE-020/021: own-Goal and direct live Task phases are one durable fact.
+// Neither direction can be separated by a valid snapshot; old incomplete
+// journal combinations are refused before any new writer or boot record.
+TEST(WorkAuthorityPersistence, live_task_and_own_goal_pause_cannot_be_separated) {
+    Fixture source;
+    source.run();
+    const auto goal = approve_proposal(source, 0, AYNI_TRIGGER_ONCE);
+    ASSERT_NE(goal, 0U);
+    source.work.node().step(1);
+    const auto task_id = source.work.goal(goal).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    const auto selected_grant = source.saved(goal).requirements[0].dependency.grant_id;
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, selected_grant};
+    auto intent = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    intent.command_id = 101;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    finish_authority_work(source);
+    const auto original = snapshot(source);
+    for (const bool withdraw_goal_pause : {false, true}) {
+        auto changed = original;
+        bool edited = false;
+        for (auto &record : changed.records) {
+            if (withdraw_goal_pause && record.header.type == goal_authority_record_type) {
+                GoalAuthorityRecord goal_record{};
+                ASSERT_TRUE(read_goal_authority_record(record.body.data(), record.header.length,
+                                                       goal_record));
+                goal_record.phase = GoalAuthorityPhase::authorized;
+                ASSERT_TRUE(valid_goal_authority_record(goal_record));
+                write_goal_authority_record(goal_record, record.body.data());
+                edited = true;
+            } else if (!withdraw_goal_pause && record.header.type == task_authority_record_type) {
+                TaskAuthorityRecord task{};
+                ASSERT_TRUE(
+                    read_task_authority_record(record.body.data(), record.header.length, task));
+                task.phase = TaskAuthorityPhase::authorized;
+                ASSERT_TRUE(valid_task_authority_record(task));
+                write_task_authority_record(task, record.body.data());
+                edited = true;
+            }
+        }
+        ASSERT_TRUE(edited);
+        Fixture restored;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+    }
+    auto legacy = source.work.node().sim().durable_storage();
+    bool edited = false;
+    for (auto &stored : legacy.log) {
+        auto batch = decode(stored);
+        if (!std::any_of(batch.records.begin(), batch.records.end(), [](const auto &r) {
+                return r.header.type == goal_authority_record_type &&
+                       r.header.version == goal_authority_pause_record_version;
+            })) {
+            continue;
+        }
+        for (auto &record : batch.records) {
+            if (record.header.type == goal_state_record_type) {
+                record.header.version = goal_state_with_authority_record_version;
+            } else if (record.header.type == goal_authority_record_type) {
+                record.header.version = goal_authority_record_version;
+            } else if (record.header.type == task_state_record_type) {
+                record.header.version = task_state_record_version;
+                uint32_t at = 0;
+                ASSERT_TRUE(source.work.kernel()->work.tasks.find(task_id, at));
+                auto task = source.work.kernel()->work.tasks.at(at);
+                task.lifecycle = AYNI_TASK_PAUSED; // F2 used canonical user pause for this deny.
+                write_task_state_record(task, record.body.data());
+            }
+        }
+        batch.records.erase(std::remove_if(batch.records.begin(), batch.records.end(),
+                                           [](const auto &r) {
+                                               return r.header.type == task_authority_record_type ||
+                                                      r.header.type ==
+                                                          authority_cleanup_record_type;
+                                           }),
+                            batch.records.end());
+        stored = encode(batch);
+        edited = true;
+    }
+    ASSERT_TRUE(edited);
+    Fixture refused;
+    refused.work.node().sim().durable_storage() = legacy;
+    refused.run();
+    EXPECT_EQ(refused.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    EXPECT_EQ(refused.work.node().sim().durable_storage().log.size(), legacy.log.size());
+    for (std::size_t at = 0; at < legacy.log.size(); ++at) {
+        EXPECT_EQ(refused.work.node().sim().durable_storage().log[at].bytes, legacy.log[at].bytes);
+    }
+    Fixture valid;
+    valid.run();
+    EXPECT_EQ(import_snapshot(valid, original), BatchCheck::ok);
+}
+
+// C-STORE-021: even a cursor-only transition must advance both stamp domains;
+// there is no Goal/Grant state in this batch to detect a repeated transition.
+TEST(WorkAuthorityPersistence, cursor_only_step_rejects_repeated_or_backward_transition) {
+    Fixture source;
+    source.run();
+    const auto goal = approve_proposal(source);
+    ASSERT_NE(goal, 0U);
+    ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
+    finish_authority_work(source);
+    const auto image = source.work.node().sim().durable_storage();
+    uint64_t previous = 0;
+    std::size_t selected = image.log.size();
+    for (std::size_t at = 0; at < image.log.size(); ++at) {
+        const auto batch = decode(image.log[at]);
+        if (previous != 0U && batch.records.size() == 1U &&
+            batch.records[0].header.type == authority_cleanup_record_type) {
+            selected = at;
+            break;
+        }
+        for (const auto &record : batch.records) {
+            if (record.header.type == authority_cleanup_record_type) {
+                previous = batch.identity.transition_id;
+            }
+        }
+    }
+    ASSERT_LT(selected, image.log.size());
+    ASSERT_GT(previous, 1U);
+    for (const auto transition : {previous, previous - 1U}) {
+        auto changed = image;
+        auto batch = decode(changed.log[selected]);
+        batch.identity.transition_id = transition;
+        AuthorityCleanupRecord record{};
+        ASSERT_TRUE(read_authority_cleanup_record(batch.records[0].body.data(),
+                                                  batch.records[0].header.length, record));
+        record.stamp.transition_id = transition;
+        write_authority_cleanup_record(record, batch.records[0].body.data());
+        changed.log[selected] = encode(batch);
+        Fixture restored;
+        restored.work.node().sim().durable_storage() = changed;
+        restored.run();
+        EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    }
 }
 
 } // namespace

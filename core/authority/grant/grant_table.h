@@ -19,7 +19,7 @@
 namespace ayni::authority {
 
 // contracts/storage/records.md, Grant lifecycle: one transition from ACTIVE
-// to EXPIRED or REVOKED. Cleanup advances its own stamp, never the revision.
+// to EXPIRED, REVOKED or GOAL_ENDED. Cleanup advances its own stamp, never the revision.
 constexpr uint32_t grant_active_revision = 1;
 constexpr uint32_t grant_terminal_revision = 2;
 // Each retained Grant owns one full source domain and one expanded scope.
@@ -117,6 +117,9 @@ struct Grant {
     uint64_t reference_release_seq = 0;
     uint64_t bound_goal_id = 0; // Immutable Goal ID; 0 is generic, nonzero forbids delegation.
 };
+
+// Persistent terminal classification, independent of current time or catalog hold.
+bool terminal(const Grant &grant);
 
 struct GrantRecord;
 struct GrantStateRecord;
@@ -248,6 +251,14 @@ class GrantTable {
     bool next_revocation_cleanup(CleanupPlan &out) const; // Oldest root first; false preserves out.
     bool apply_cleanup(const CleanupPlan &plan,
                        foundation::TransitionStamp stamp); // Atomic row/cursor change.
+    // Least retained bound Goal ID in (after, through], or 0; includes orphaned
+    // terminal Goal identities whose table slot has since been replaced.
+    uint64_t next_bound_goal_after(uint64_t after, uint64_t through) const;
+    // True only when this exact Goal still owns an ACTIVE dedicated root.
+    bool has_active_goal_grants(uint64_t goal_id) const;
+    // Caller proved this Goal terminal/absent. End its active dedicated roots
+    // without a fabricated management revoke; retain original terminal order.
+    void end_goal_grants(uint64_t goal_id, foundation::TransitionStamp stamp);
 
     // True when an ACTIVE finite Grant has a scheduled expiry, including a
     // due/old-boot expiry. The selected earliest deadline may still be future.

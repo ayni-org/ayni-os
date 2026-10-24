@@ -50,11 +50,13 @@ class AuthorityWork {
             ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
             const auto zero = goal_type_desc("zero", 1);
             ASSERT_EQ(ayni_register_goal_type(kernel, &zero), AYNI_OK);
-            Range range(0, 100);
+            Range range(0, domain_max);
             const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
                                                      range.field.allowed};
             const ayni_capability_desc_v1 cap{sizeof(cap), 1, text("device.move"), 1, 0, &field};
-            ASSERT_EQ(ayni_register_capability(kernel, &cap), AYNI_OK);
+            if (capability_available) {
+                ASSERT_EQ(ayni_register_capability(kernel, &cap), AYNI_OK);
+            }
         });
     }
     void run() {
@@ -183,6 +185,8 @@ class AuthorityWork {
         return grant_id;
     }
     WorkNode work;
+    int64_t domain_max = 100;
+    bool capability_available = true;
     bool allow_parameters = false;
     uint32_t count = 1;
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> low{};
@@ -484,6 +488,245 @@ TEST(GoalRequirements, revoke_before_decision_preserves_ready_task_progress) {
     EXPECT_TRUE(node.work.strategy().seen.empty());
     EXPECT_EQ(node.work.task(task).lifecycle, AYNI_TASK_PAUSED);
     EXPECT_EQ(node.work.task(task).step_count, 0U);
+}
+
+// ADR-0038: a persisted deny is quiescent, while unrelated admitted work runs.
+TEST(WorkAuthorityCleanup, revoked_ready_work_stops_writing_and_other_goals_run) {
+    AuthorityWork node;
+    node.run();
+    const auto grant = node.grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto denied = node.create(AYNI_TRIGGER_INTERVAL);
+    const auto usable = node.create(AYNI_TRIGGER_INTERVAL, 0, "zero");
+    ASSERT_EQ(denied.status, AYNI_OK);
+    ASSERT_EQ(usable.status, AYNI_OK);
+    node.work.node().step(2); // Both Tasks are READY before the revoke.
+    const auto task = node.work.goal(denied.result.object.id).last_task_id;
+    ASSERT_NE(task, 0U);
+    node.revoke(grant.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen[0].snapshot.goal_id, usable.result.object.id);
+    ayni_task_authority_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), task, &info), AYNI_OK);
+    EXPECT_EQ(info.phase, AYNI_TASK_AUTHORITY_PAUSED);
+    const auto before = node.work.kernel()->work.transitions.latest().commit_seq;
+    for (unsigned round = 0; round < 8U; ++round) {
+        const auto report = node.work.node().step(1);
+        EXPECT_EQ(report.items_done, 0U);
+        EXPECT_EQ(report.more_ready, 0U);
+    }
+    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, before);
+}
+
+// C-AUTH-026/030 and ADR-0038: storage backpressure delays durable cleanup,
+// while the accepted Gate immediately denies Task consumption and queries.
+TEST(WorkAuthorityCleanup, a_storage_shortage_cannot_open_a_revoked_ready_task) {
+    AuthorityWork node;
+    node.run();
+    const auto grant = node.grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    node.work.node().recover();
+    const auto task = node.work.goal(goal.result.object.id).last_task_id;
+    ASSERT_NE(task, 0U);
+    node.work.node().sim().set_storage_capacity(0);
+    node.revoke(grant.result.object.id);
+    for (unsigned round = 0; round < 8U; ++round) {
+        node.work.node().step(1);
+        EXPECT_EQ(node.work.task(task).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_TRUE(node.work.strategy().seen.empty());
+    }
+    node.work.node().sim().set_storage_capacity(UINT64_MAX);
+    node.advance_work();
+    EXPECT_EQ(node.authority(goal.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// ADR-0038: authorization adds a separate deny, preserving user/policy state,
+// steps and private checkpoint through the real journal and boot reader.
+TEST(WorkAuthorityCleanup, policy_and_user_holds_survive_authority_pause_and_restart) {
+    AuthorityWork node;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto policy = node.create(AYNI_TRIGGER_INTERVAL);
+    const auto user = node.create(AYNI_TRIGGER_INTERVAL);
+    ASSERT_EQ(policy.status, AYNI_OK);
+    ASSERT_EQ(user.status, AYNI_OK);
+    node.work.node().step(2);
+    node.work.strategy().answer = [](const auto &snapshot, auto &out) {
+        out.intents[0] = progress_intent("saved", snapshot.revision);
+        out.intent_count = 1;
+        out.checkpoint[0] = 41;
+        out.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    node.work.node().step();
+    node.work.strategy().answer = cannot_decide;
+    node.work.node().step();
+    const auto task = node.work.goal(policy.result.object.id).last_task_id;
+    const auto before = node.work.task(task);
+    ASSERT_EQ(before.step_count, 1U);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_PAUSE, user.result.object.id).status, AYNI_OK);
+    node.revoke(node.requirement(policy.result.object.id, 0).grant_id);
+    node.advance_work();
+    EXPECT_EQ(node.work.task(task).revision, before.revision);
+    EXPECT_EQ(node.work.task(task).hold_reason, before.hold_reason);
+    EXPECT_EQ(node.authority(user.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    auto &model = node.work.kernel()->work;
+    uint32_t goal_index = 0;
+    ASSERT_TRUE(model.goals.find(user.result.object.id, goal_index));
+    EXPECT_EQ(model.goals.at(goal_index).lifecycle, AYNI_GOAL_PAUSED);
+    const auto image = node.work.node().sim().durable_storage();
+    AuthorityWork restored;
+    restored.work.node().sim().durable_storage() = image;
+    restored.run();
+    ASSERT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    // White-box: checkpoint bytes are deliberately private to the strategy.
+    uint32_t task_index = 0;
+    ASSERT_TRUE(restored.work.kernel()->work.tasks.find(task, task_index));
+    const auto &tasks = restored.work.kernel()->work.tasks;
+    EXPECT_EQ(tasks.at(task_index).hold_reason, before.hold_reason);
+    EXPECT_EQ(tasks.at(task_index).step_count, 1U);
+    ASSERT_EQ(tasks.checkpoint(task_index).size, 1U);
+    EXPECT_EQ(tasks.checkpoint(task_index).data[0], 41U);
+    EXPECT_EQ(restored.authority(policy.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+}
+
+// ADR-0038: fixed through/monotone after and a next-pass request are durable;
+// later Goals cannot extend the current scan or be lost at a process restart.
+TEST(WorkAuthorityCleanup, interrupted_scan_keeps_its_frontier_and_later_request) {
+    AuthorityWork node;
+    node.run();
+    const auto grant = node.grant();
+    const auto unused = node.grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    ASSERT_EQ(unused.status, AYNI_OK);
+    node.work.node().recover();
+    std::array<uint64_t, 3> goals{};
+    for (auto &id : goals) {
+        const auto created = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(created.status, AYNI_OK);
+        id = created.result.object.id;
+    }
+    node.work.node().recover();
+    node.revoke(grant.result.object.id);
+    node.work.node().recover();
+    auto &scan = node.work.kernel()->work.authority_cleanup;
+    // D's Grant-descendant cleanup has its own budget before the work scan.
+    for (unsigned round = 0; round < 16U && scan.record().after_goal_id == 0U; ++round) {
+        node.work.node().step(1);
+        node.work.node().sim().complete_storage();
+        node.work.node().recover();
+    }
+    ASSERT_TRUE(scan.ready());
+    const auto frontier = scan.record();
+    EXPECT_EQ(frontier.after_goal_id, goals[0]);
+    const auto later = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+    ASSERT_EQ(later.status, AYNI_OK);
+    node.revoke(unused.result.object.id);
+    EXPECT_EQ(scan.record().through_goal_id, frontier.through_goal_id);
+    EXPECT_EQ(scan.record().after_goal_id, frontier.after_goal_id);
+    EXPECT_EQ(scan.record().requested_through, later.result.object.id);
+    node.work.node().recover(); // Flush committed batches without advancing the scan.
+    const auto persisted = scan.record();
+    node.work.node().power_cut_and_start(ayni::hosts::sim::CutAppend::lost);
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto recovered = node.work.kernel()->work.authority_cleanup.record();
+    EXPECT_EQ(recovered.after_goal_id, persisted.after_goal_id);
+    EXPECT_EQ(recovered.through_goal_id, persisted.through_goal_id);
+    EXPECT_EQ(recovered.requested_through, persisted.requested_through);
+    node.advance_work();
+    node.advance_work();
+    for (const auto id : goals) {
+        EXPECT_EQ(node.authority(id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    }
+    EXPECT_FALSE(node.work.kernel()->work.authority_cleanup.ready());
+    EXPECT_EQ(node.authority(later.result.object.id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+}
+
+// C-AUTH-020/C-STORE-014: an unrelated old-boot expiry may request a scan,
+// but a temporary missing/changed catalog cannot persist an authority denial.
+TEST(WorkAuthorityCleanup, a_recovery_scan_keeps_catalog_holds_volatile) {
+    for (const bool missing : {false, true}) {
+        SCOPED_TRACE(missing);
+        AuthorityWork source;
+        source.run();
+        ASSERT_EQ(source.grant().status, AYNI_OK);
+        ASSERT_EQ(source.grant(0, 100, 10000000).status, AYNI_OK);
+        source.work.node().recover();
+        const auto created = source.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(created.status, AYNI_OK);
+        source.work.node().recover();
+        AuthorityWork incompatible;
+        incompatible.capability_available = !missing;
+        incompatible.domain_max = 200;
+        incompatible.work.node().sim().durable_storage() =
+            source.work.node().sim().durable_storage();
+        incompatible.run();
+        ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        ASSERT_TRUE(incompatible.work.kernel()->work.authority_cleanup.ready());
+        incompatible.advance_work();
+        EXPECT_EQ(incompatible.authority(created.result.object.id).phase,
+                  AYNI_GOAL_AUTHORITY_AUTHORIZED);
+        AuthorityWork compatible;
+        compatible.work.node().sim().durable_storage() =
+            incompatible.work.node().sim().durable_storage();
+        compatible.run();
+        ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        EXPECT_EQ(compatible.authority(created.result.object.id).phase,
+                  AYNI_GOAL_AUTHORITY_AUTHORIZED);
+        EXPECT_EQ(compatible.authority(created.result.object.id).effective_reason,
+                  AYNI_REASON_NONE);
+    }
+}
+
+// ADR-0038: an ended Goal's dedicated root gets its own terminal reason and
+// becomes reclaimable, including after its Goal storage slot has been reused.
+TEST(WorkAuthorityCleanup, dedicated_grant_ends_and_reclaims_after_goal_slot_reuse) {
+    for (const bool reuse : {false, true}) {
+        SCOPED_TRACE(reuse);
+        AuthorityWork node;
+        node.work.node().config().grant_capacity = 1;
+        node.work.node().config().goal_capacity = 1;
+        node.run();
+        const auto goal = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        node.work.node().recover();
+        ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+        auto intent =
+            node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+        intent.command_id = 100;
+        ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+        node.work.node().recover();
+        const auto bound = node.requirement(goal.result.object.id, 0).grant_id;
+        ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, goal.result.object.id).status, AYNI_OK);
+        node.work.node().recover();
+        uint64_t replacement = 0;
+        if (reuse) {
+            const auto created = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+            ASSERT_EQ(created.status, AYNI_OK);
+            replacement = created.result.object.id;
+        }
+        node.advance_work();
+        ayni_grant_info_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_OK);
+        EXPECT_EQ(info.lifecycle, AYNI_GRANT_GOAL_ENDED);
+        EXPECT_EQ(info.bound_goal_id, goal.result.object.id);
+        if (reuse) {
+            EXPECT_EQ(node.authority(replacement).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+        }
+        ASSERT_EQ(node.grant().status, AYNI_OK);
+        EXPECT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_NOT_FOUND);
+    }
 }
 
 // ADR-0038 decision 3: changing a parent's generation immediately invalidates

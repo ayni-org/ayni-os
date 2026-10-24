@@ -168,6 +168,10 @@ void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionS
     }
 }
 
+void TaskTable::authority_changed(uint32_t index, foundation::TransitionStamp stamp) {
+    tasks_[index].commit_seq = stamp.commit_seq;
+}
+
 void TaskTable::hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
                      foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
@@ -296,12 +300,13 @@ bool TaskTable::at_largest_revision(const Task &task) {
     return task.revision == max_revision;
 }
 
-bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index) const {
+bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter) const {
     uint32_t next = no_index;
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
         const Task &task = tasks_[index];
         if (effective_lifecycle(task) != AYNI_TASK_READY || task.commit_seq >= ready_before ||
-            at_largest_revision(task)) {
+            at_largest_revision(task) ||
+            (filter.accepts != nullptr && !filter.accepts(filter.context, task))) {
             continue;
         }
         // One transition can make several tasks READY, so ids break ties.
@@ -314,14 +319,9 @@ bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index) const {
     return next != no_index;
 }
 
-bool TaskTable::has_ready() const {
-    for (uint32_t index = 0; index < tasks_.size(); ++index) {
-        if (effective_lifecycle(tasks_[index]) == AYNI_TASK_READY &&
-            !at_largest_revision(tasks_[index])) {
-            return true;
-        }
-    }
-    return false;
+bool TaskTable::has_ready(ReadyFilter filter) const {
+    uint32_t index = no_index;
+    return next_ready(std::numeric_limits<uint64_t>::max(), index, filter);
 }
 
 bool TaskTable::live_task_besides(uint32_t goal_index, uint32_t task_index) const {
@@ -395,6 +395,19 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
     if (still_held(task)) {
         ++held_count_;
     }
+    return Restore::restored;
+}
+
+TaskTable::Restore TaskTable::restore_authority_state(uint32_t index, const TaskState &state,
+                                                      foundation::TransitionStamp stamp) {
+    const auto &task = tasks_[index];
+    if (!is_live(task.lifecycle) || state.lifecycle != task.lifecycle ||
+        state.revision != task.revision || state.cancel_revision != task.cancel_revision ||
+        state.hold_status != task.hold_status || state.hold_reason != task.hold_reason ||
+        state.step_count != task.step_count) {
+        return Restore::corrupt;
+    }
+    authority_changed(index, stamp);
     return Restore::restored;
 }
 

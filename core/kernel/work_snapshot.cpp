@@ -8,6 +8,7 @@
 #include "kernel/command/command_records.h"
 #include "kernel/work_replay.h"
 #include "work/agent/agent_records.h"
+#include "work/authority/authority_cleanup_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -98,8 +99,7 @@ bool matches_retained_revocation(const CommandMapping &mapping, const authority:
                grant.stamp.commit_seq == mapping.commit_seq;
     }
     return mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE &&
-           grant.stamp.commit_seq < mapping.commit_seq &&
-           (grant.lifecycle == AYNI_GRANT_EXPIRED || grant.lifecycle == AYNI_GRANT_REVOKED);
+           grant.stamp.commit_seq < mapping.commit_seq && authority::terminal(grant);
 }
 
 // C-STORE-015/017: parents precede children even when a terminal slot was
@@ -136,6 +136,7 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     size = maximum(size, work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
     size = maximum(size, work::task_authority_record_max(capacities.goal_requirement_capacity));
+    size = maximum(size, work::authority_cleanup_record_size);
     size = maximum(size, step_record_size(id_max));
     size = maximum(size, work::task_checkpoint_record_fixed_size + id_max +
                              capacities.task_checkpoint_max_bytes);
@@ -147,6 +148,7 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
 // Every table full, each record at its largest.
 uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
     uint64_t size = record_prefix + owner_binding_size;
+    size += record_prefix + work::authority_cleanup_record_size;
     size += uint64_t{capacities.agent_capacity} * (record_prefix + instance_size);
     size += uint64_t{capacities.grant_capacity} *
             (record_prefix +
@@ -171,6 +173,7 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
 
 SnapshotLayout measure_snapshot(const WorkModel &model) {
     SnapshotLayout layout{};
+    count(layout, work::authority_cleanup_record_size);
     if (model.principals.binding_known()) {
         count(layout, owner_binding_size);
     }
@@ -271,8 +274,12 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             if (next_task_record(type, size)) {
                 return true;
             }
-            section_ = Section::commands;
+            section_ = Section::cleanup;
             break;
+        case Section::cleanup:
+            type = work::authority_cleanup_record_type;
+            size = work::authority_cleanup_record_size;
+            return true;
         case Section::commands:
             if (next_command_record(type, size)) {
                 return true;
@@ -366,6 +373,19 @@ void WorkSnapshotWriter::write_task_authority(uint8_t *body) {
     work::write_task_authority_record(record, body);
 }
 
+// Preserve the exact Task identity and original commit/step/checkpoint stamps;
+// its following snapshot parts use the same selected, frozen Task row.
+void WorkSnapshotWriter::write_task_metadata(uint8_t *body) {
+    const work::Task &task = model_.tasks.at(index_);
+    work::write_task_record(task, body);
+    durability::BodyWriter writer(body + work::task_record_size, task_tail_size);
+    writer.u64(task.created_transition_id);
+    writer.u64(task.commit_seq);
+    writer.u64(task.steps_seq);
+    writer.u64(task.checkpoint_seq);
+    writer.u32(task.steps_before);
+}
+
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t size) {
     switch (type) {
     case authority::owner_binding_record_type: {
@@ -401,17 +421,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
     case work::goal_authority_record_type:
         work::write_goal_authority_record(model_.goal_authority.at(index_), body);
         break;
-    case work::task_record_type: {
-        const work::Task &task = model_.tasks.at(index_);
-        work::write_task_record(task, body);
-        durability::BodyWriter writer(body + work::task_record_size, task_tail_size);
-        writer.u64(task.created_transition_id);
-        writer.u64(task.commit_seq);
-        writer.u64(task.steps_seq);
-        writer.u64(task.checkpoint_seq);
-        writer.u32(task.steps_before);
+    case work::task_record_type:
+        write_task_metadata(body);
         break;
-    }
     case work::task_steps_record_type: {
         const catalog::CatalogId &key = model_.tasks.step(index_, step_);
         durability::BodyWriter writer(body, size);
@@ -431,6 +443,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
     case work::task_state_record_type:
         work::write_task_state_record(model_.tasks.at(index_), body);
         break;
+    case work::authority_cleanup_record_type:
+        work::write_authority_cleanup_record(model_.authority_cleanup.record(), body);
+        break;
     case command_record_type: {
         const CommandMapping &mapping = model_.commands.at(command_index_);
         const uint32_t base_size = command_record_size_for(mapping);
@@ -447,6 +462,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
 
 void WorkSnapshotWriter::advance_record(uint16_t type) {
     switch (type) {
+    case work::authority_cleanup_record_type:
+        section_ = Section::commands;
+        break;
     case authority::owner_binding_record_type:
         section_ = Section::instances;
         break;
@@ -526,6 +544,7 @@ void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
     checkpoint_seen_ = false;
     task_stage_ = TaskReadStage::contents;
     last_command_seq_ = 0;
+    cleanup_seen_ = false;
     goal_authority_pending_.reset();
 }
 
@@ -554,6 +573,9 @@ bool WorkSnapshotReader::record_section(uint16_t type, Section &out) {
         break;
     case command_record_type:
         out = Section::commands;
+        break;
+    case work::authority_cleanup_record_type:
+        out = Section::cleanup;
         break;
     default:
         return false;
@@ -617,6 +639,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
         return task_authority(body, header.length);
     case work::task_state_record_type:
         return task_state(body, header.length);
+    case work::authority_cleanup_record_type:
+        return authority_cleanup(body, header.length);
     case command_record_type:
         return command(header.version, body, header.length);
     default:
@@ -883,8 +907,22 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
     return check_of(model_.commands.restore_checked(mapping, floor, canonical));
 }
 
+durability::BatchCheck WorkSnapshotReader::authority_cleanup(const uint8_t *body, uint32_t size) {
+    work::AuthorityCleanupRecord record{};
+    if (cleanup_seen_ || !work::read_authority_cleanup_record(body, size, record) ||
+        (record.stamp.commit_seq != 0U && !valid_stamp(record.stamp, metadata_)) ||
+        foundation::id_boot_epoch(record.after_goal_id) > metadata_.boot_epoch ||
+        foundation::id_boot_epoch(record.through_goal_id) > metadata_.boot_epoch ||
+        foundation::id_boot_epoch(record.requested_through) > metadata_.boot_epoch) {
+        return durability::BatchCheck::corrupt;
+    }
+    model_.authority_cleanup.restore_validated(record);
+    cleanup_seen_ = true;
+    return durability::BatchCheck::ok;
+}
+
 durability::BatchCheck WorkSnapshotReader::complete() const {
-    return records_ == metadata_.record_count && !goal_authority_pending_ &&
+    return records_ == metadata_.record_count && cleanup_seen_ && !goal_authority_pending_ &&
                    task_index_ == work::TaskTable::no_index &&
                    WorkReplay(model_).consistent(metadata_.boot_epoch)
                ? durability::BatchCheck::ok

@@ -24,6 +24,11 @@ bool valid_input_resume_boundary(const InputResumeBoundary &boundary) {
                                       : boundary.incarnation <= foundation::max_boot_epoch;
 }
 
+bool input_precedes_resume(const InputResumeBoundary &input, const InputResumeBoundary &resume) {
+    return resume.incarnation != 0U && input.incarnation == resume.incarnation &&
+           input.through <= resume.through;
+}
+
 bool valid_goal_binding(const GoalBinding &binding, uint64_t goal_id, uint64_t parent_goal_id,
                         foundation::TransitionStamp stamp) {
     return foundation::is_kernel_id(goal_id) && stamp.transition_id != 0U &&

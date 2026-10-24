@@ -5,6 +5,7 @@
 #include "foundation/kernel_id.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
+#include "work/authority/authority_cleanup_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -14,6 +15,37 @@ namespace ayni::kernel {
 namespace {
 
 using durability::RecordUse;
+
+// Known authority families require a refusal marker even for unknown versions;
+// discovery must not skip their ownership semantics as optional metadata.
+bool requires_authority_header(const durability::RecordHeader &header) {
+    return header.type == work::authority_cleanup_record_type ||
+           (header.type == work::task_state_record_type &&
+            header.version >= work::task_state_authority_record_version) ||
+           header.type == work::task_authority_record_type ||
+           header.type == work::goal_authority_record_type ||
+           (header.type == work::goal_record_type &&
+            header.version >= work::goal_with_authority_record_version) ||
+           (header.type == work::goal_state_record_type &&
+            header.version >= work::goal_state_with_authority_record_version) ||
+           header.type == authority::owner_binding_record_type ||
+           header.type == authority::grant_record_type ||
+           header.type == authority::grant_state_record_type ||
+           header.type == authority::grant_revocation_record_type ||
+           header.type == authority::grant_revocation_progress_record_type ||
+           (header.type == command_record_type && header.version >= exact_command_record_version);
+}
+
+// Type13/v2 has different journal/snapshot bodies. Keep that context decision
+// separate from the common REQUIRED check and all other record families.
+bool knows_grant_body(uint16_t version, WorkRecordContext context) {
+    return version == authority::grant_record_version ||
+           (context == WorkRecordContext::journal &&
+            version == authority::goal_grant_record_version) ||
+           (context == WorkRecordContext::snapshot &&
+            (version == authority::grant_snapshot_record_version ||
+             version == authority::goal_grant_snapshot_record_version));
+}
 
 template <typename Restore> RecordUse use_of(Restore restore) {
     switch (restore) {
@@ -60,20 +92,7 @@ bool WorkReplay::binding_matches() const {
 // covers the record and its body will not be replayed.
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                       WorkRecordContext context) {
-    const bool authority_record =
-        header.type == work::task_authority_record_type ||
-        header.type == work::goal_authority_record_type ||
-        (header.type == work::goal_record_type &&
-         header.version >= work::goal_with_authority_record_version) ||
-        (header.type == work::goal_state_record_type &&
-         header.version >= work::goal_state_with_authority_record_version) ||
-        header.type == authority::owner_binding_record_type ||
-        header.type == authority::grant_record_type ||
-        header.type == authority::grant_state_record_type ||
-        header.type == authority::grant_revocation_record_type ||
-        header.type == authority::grant_revocation_progress_record_type ||
-        (header.type == command_record_type && header.version >= exact_command_record_version);
-    if (authority_record && (header.flags & durability::record_required) == 0U) {
+    if (requires_authority_header(header) && (header.flags & durability::record_required) == 0U) {
         return RecordUse::corrupt;
     }
     switch (header.type) {
@@ -85,23 +104,19 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_record_type:
-        return header.version == authority::grant_record_version ||
-                       (context == WorkRecordContext::journal &&
-                        header.version == authority::goal_grant_record_version) ||
-                       (context == WorkRecordContext::snapshot &&
-                        (header.version == authority::grant_snapshot_record_version ||
-                         header.version == authority::goal_grant_snapshot_record_version))
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
+        return knows_grant_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     case authority::grant_state_record_type:
         return context == WorkRecordContext::journal &&
                        (header.version == authority::grant_state_record_version ||
-                        header.version == authority::grant_revoked_state_record_version)
+                        header.version == authority::grant_revoked_state_record_version ||
+                        header.version == authority::grant_goal_ended_state_record_version ||
+                        header.version == authority::grant_expired_with_work_record_version)
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_revocation_record_type:
         return context == WorkRecordContext::journal &&
-                       header.version == authority::grant_revocation_record_version
+                       (header.version == authority::grant_revocation_record_version ||
+                        header.version == authority::grant_revocation_with_work_record_version)
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_revocation_progress_record_type:
@@ -117,22 +132,36 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                    : RecordUse::unknown;
     case work::goal_state_record_type:
         return header.version == work::goal_state_record_version ||
-                       header.version == work::goal_state_with_authority_record_version
+                       header.version == work::goal_state_with_authority_record_version ||
+                       header.version == work::goal_state_with_cleanup_record_version ||
+                       (context == WorkRecordContext::journal &&
+                        header.version == work::goal_state_authority_record_version)
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::task_authority_record_type:
         return header.version == work::task_authority_record_version ? RecordUse::applied
                                                                      : RecordUse::unknown;
     case work::goal_authority_record_type:
-        return header.version == work::goal_authority_record_version ? RecordUse::applied
-                                                                     : RecordUse::unknown;
+        return header.version == work::goal_authority_record_version ||
+                       (context == WorkRecordContext::journal &&
+                        header.version == work::goal_authority_pause_record_version)
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
+    case work::authority_cleanup_record_type:
+        return header.version == work::authority_cleanup_record_version ? RecordUse::applied
+                                                                        : RecordUse::unknown;
     case authority::owner_binding_record_type:
     case work::instance_record_type:
     case work::task_record_type:
-    case work::task_state_record_type:
     case work::task_steps_record_type:
     case work::task_checkpoint_record_type:
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
+    case work::task_state_record_type:
+        return header.version == work::task_state_record_version ||
+                       (context == WorkRecordContext::journal &&
+                        header.version == work::task_state_authority_record_version)
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
     default:
         return RecordUse::unknown;
     }
@@ -147,10 +176,12 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
             return RecordUse::corrupt;
         }
         pairing_.approval.reset();
+        pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete) {
+    if (pairing_.work_cleanup.stage == BatchPairing::WorkCleanupPair::Stage::complete ||
+        (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete)) {
         return RecordUse::corrupt;
     }
     const auto use = apply_record(batch, header, body);
@@ -173,6 +204,12 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         header.type != work::task_authority_record_type) {
         return RecordUse::corrupt;
     }
+    // A metadata-only Goal state also closes immediately; another state
+    // cannot overwrite its exact pending authority partner (C-STORE-021).
+    if (pairing_.work_cleanup.state_goal_id != 0U && pairing_.goal_authority &&
+        header.type != work::goal_authority_record_type) {
+        return RecordUse::corrupt;
+    }
     const foundation::TransitionStamp stamp{batch.transition_id, batch.commit_seq};
     const uint32_t size = header.length;
     const RecordUse use = classify_header(header);
@@ -187,7 +224,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case authority::grant_state_record_type:
         return restore_grant_state(header.version, body, size, stamp);
     case authority::grant_revocation_record_type:
-        return restore_revocation(body, size, stamp);
+        return restore_revocation(header.version, body, size, stamp);
     case authority::grant_revocation_progress_record_type:
         return restore_revocation_progress(body, size, stamp);
     case work::instance_record_type:
@@ -195,7 +232,9 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::goal_record_type:
         return restore_goal(header.version, body, size, stamp);
     case work::goal_authority_record_type:
-        return restore_goal_authority(body, size, stamp);
+        return restore_goal_authority(header.version, body, size, stamp);
+    case work::authority_cleanup_record_type:
+        return restore_authority_cleanup(body, size, stamp);
     case work::goal_state_record_type:
         return restore_goal_state(header.version, body, size, stamp);
     case work::task_authority_record_type:
@@ -203,7 +242,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::task_record_type:
         return restore_task(body, size, stamp);
     case work::task_state_record_type:
-        return restore_task_state(body, size, stamp);
+        return restore_task_state(header.version, body, size, stamp);
     case work::task_steps_record_type:
         return restore_task_steps(body, size, stamp);
     case work::task_checkpoint_record_type:
@@ -290,7 +329,7 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
     uint32_t index = 0;
     if (!work::read_goal_state_record(body, size, record) ||
         !model_.goals.find(record.goal_id, index) ||
-        (version == work::goal_state_with_authority_record_version &&
+        (version >= work::goal_state_with_authority_record_version &&
          pairing_.goal_authority != record.goal_id &&
          !model_.goal_authority.contains(index, record.goal_id)) ||
         (version == work::goal_state_record_version &&
@@ -300,8 +339,20 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
     if (!pair_approval_state(index, record.state)) {
         return RecordUse::corrupt;
     }
+    if (version == work::goal_state_authority_record_version) {
+        pairing_.work_cleanup.state_goal_id = record.goal_id;
+        pairing_.work_cleanup.require();
+        pairing_.goal_authority = record.goal_id;
+        return use_of(model_.goals.restore_authority_state(index, record.state, stamp));
+    }
     if (record.goal_id == pairing_.goal) {
         pairing_.goal.reset();
+    }
+    if (version == work::goal_state_with_cleanup_record_version) {
+        if (work::GoalTable::is_live(record.state.lifecycle)) {
+            return RecordUse::corrupt;
+        }
+        pairing_.work_cleanup.require();
     }
     return use_of(model_.goals.restore_state(index, record.state, stamp));
 }
@@ -309,7 +360,7 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
 // A create cannot lose its explicit ceiling or borrow another Goal's metadata.
 // Existing metadata may advance without changing its immutable ceiling;
 // F4 adds a separate paired proof for explicit reauthorization.
-RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal_authority(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp) {
     work::GoalAuthorityRecord record{};
     uint32_t index = 0;
@@ -318,6 +369,12 @@ RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
         !model_.goals.find(record.goal_id, index) || record.stamp.commit_seq != stamp.commit_seq ||
         record.stamp.transition_id != stamp.transition_id ||
         model_.goals.at(index).commit_seq != stamp.commit_seq || pairing_.goal.has_value()) {
+        return RecordUse::corrupt;
+    }
+    if ((version == work::goal_authority_pause_record_version) !=
+            (pairing_.work_cleanup.state_goal_id == record.goal_id) ||
+        (version == work::goal_authority_pause_record_version &&
+         record.phase != work::GoalAuthorityPhase::paused)) {
         return RecordUse::corrupt;
     }
     if (pairing_.goal_authority ? *pairing_.goal_authority != record.goal_id
@@ -332,6 +389,10 @@ RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
     }
     work::GoalAuthorityRecord previous{};
     const bool replacing = model_.goal_authority.read(index, record.goal_id, previous);
+    if (version == work::goal_authority_pause_record_version &&
+        (!replacing || previous.phase != work::GoalAuthorityPhase::authorized)) {
+        return RecordUse::corrupt;
+    }
     const auto status = model_.goal_authority.restore_validated(index, record);
     if (status != AYNI_OK) {
         return status == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
@@ -341,6 +402,10 @@ RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
     }
     pairing_.goal_authority.reset();
     pairing_.goal_authority_seq = stamp.commit_seq;
+    if (version == work::goal_authority_pause_record_version) {
+        pairing_.work_cleanup.require();
+        pairing_.work_cleanup.paused_goal_id = record.goal_id;
+    }
     return RecordUse::applied;
 }
 
@@ -375,16 +440,24 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
         pairing_.task_authority != record.task_id || pairing_.task ||
         !model_.tasks.find(record.task_id, index) || record.stamp.commit_seq != stamp.commit_seq ||
         record.stamp.transition_id != stamp.transition_id ||
-        record.phase != work::TaskAuthorityPhase::authorized ||
         !model_.matches_task_ceiling(record, model_.tasks.at(index).goal_index)) {
         return RecordUse::corrupt;
     }
     const auto &task = model_.tasks.at(index);
+    const bool created = task.created_transition_id == stamp.transition_id;
+    const auto ceiling = model_.goal_authority.at(task.goal_index);
+    if (created ? record.phase != work::TaskAuthorityPhase::authorized
+                : record.phase != work::TaskAuthorityPhase::paused ||
+                      ceiling.phase != work::GoalAuthorityPhase::paused ||
+                      ceiling.stamp.commit_seq != stamp.commit_seq) {
+        return RecordUse::corrupt;
+    }
     work::TaskAuthorityRecord previous{};
     if (model_.task_authority.read(task.slot, task.replaced_task_id, previous)) {
         model_.release_task_references(previous, stamp.commit_seq);
     }
-    const auto result = model_.task_authority.install_validated(task.slot, record);
+    const auto result = created ? model_.task_authority.install_validated(task.slot, record)
+                                : model_.task_authority.restore_validated(task.slot, record);
     if (result != AYNI_OK) {
         return result == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
     }
@@ -392,7 +465,7 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
     return RecordUse::applied;
 }
 
-RecordUse WorkReplay::restore_task_state(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_task_state(uint16_t version, const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp) {
     work::TaskStateRecord record{};
     uint32_t index = 0;
@@ -402,6 +475,14 @@ RecordUse WorkReplay::restore_task_state(const uint8_t *body, uint32_t size,
     }
     if (record.task_id == pairing_.task) {
         pairing_.task.reset();
+    }
+    if (version == work::task_state_authority_record_version) {
+        if (model_.tasks.at(index).created_transition_id == stamp.transition_id) {
+            return RecordUse::corrupt;
+        }
+        pairing_.work_cleanup.require();
+        pairing_.task_authority = record.task_id;
+        return use_of(model_.tasks.restore_authority_state(index, record.state, stamp));
     }
     return use_of(model_.tasks.restore_state(index, record.state, stamp));
 }
@@ -482,18 +563,39 @@ RecordUse WorkReplay::restore_grant_state(uint16_t version, const uint8_t *body,
          model_.commands.mapped_in(stamp.commit_seq) != nullptr)) {
         return RecordUse::corrupt;
     }
+    if (record.lifecycle == AYNI_GRANT_GOAL_ENDED) {
+        uint32_t grant = 0;
+        uint32_t goal = 0;
+        if (!model_.grants.find(record.grant_id, grant) ||
+            (model_.goals.find(model_.grants.at(grant).bound_goal_id, goal) &&
+             (work::GoalTable::is_live(model_.goals.at(goal).lifecycle) ||
+              model_.goals.at(goal).commit_seq >= stamp.commit_seq))) {
+            return RecordUse::corrupt;
+        }
+        const auto bound = model_.grants.at(grant).bound_goal_id;
+        if (pairing_.work_cleanup.ended_goal_id != 0U &&
+            pairing_.work_cleanup.ended_goal_id != bound) {
+            return RecordUse::corrupt;
+        }
+        pairing_.work_cleanup.ended_goal_id = bound;
+    }
     const auto restored = model_.grants.restore_state(record, stamp);
     if (restored == authority::GrantTable::Restore::restored &&
         record.lifecycle == AYNI_GRANT_REVOKED) {
         pairing_.authority = {AuthorityPairKind::cleanup_child, record.grant_id,
                               record.revoked_by_root_id};
     }
+    if (restored == authority::GrantTable::Restore::restored &&
+        (version == authority::grant_goal_ended_state_record_version ||
+         version == authority::grant_expired_with_work_record_version)) {
+        pairing_.work_cleanup.require();
+    }
     return use_of(restored);
 }
 
 // C-AUTH-027: replay accepted root control under the saved issuer binding;
 // its effect/revision must be matched by the following exact command record.
-RecordUse WorkReplay::restore_revocation(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_revocation(uint16_t version, const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp) {
     authority::GrantRevocationRecord record{};
     const auto *binding = model_.principals.binding();
@@ -507,6 +609,9 @@ RecordUse WorkReplay::restore_revocation(const uint8_t *body, uint32_t size,
     if (restored == authority::GrantTable::Restore::restored) {
         pairing_.authority = {AuthorityPairKind::revocation, record.grant_id, 0, record.revision,
                               record.effect};
+        if (version == authority::grant_revocation_with_work_record_version) {
+            pairing_.work_cleanup.require();
+        }
     }
     return use_of(restored);
 }
@@ -678,9 +783,23 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     if (!model_.grants.consistent()) {
         return false;
     }
+    const auto &cleanup = model_.authority_cleanup.record();
+    if (foundation::id_boot_epoch(cleanup.after_goal_id) > boot_epoch_limit ||
+        foundation::id_boot_epoch(cleanup.through_goal_id) > boot_epoch_limit ||
+        foundation::id_boot_epoch(cleanup.requested_through) > boot_epoch_limit) {
+        return false;
+    }
     const auto *binding = model_.principals.binding();
     for (uint32_t index = 0; index < model_.grants.size(); ++index) {
         const auto &grant = model_.grants.at(index);
+        if (grant.lifecycle == AYNI_GRANT_GOAL_ENDED) {
+            uint32_t goal_index = 0;
+            if (model_.goals.find(grant.bound_goal_id, goal_index) &&
+                (work::GoalTable::is_live(model_.goals.at(goal_index).lifecycle) ||
+                 model_.goals.at(goal_index).commit_seq >= grant.stamp.commit_seq)) {
+                return false;
+            }
+        }
         if (binding == nullptr || binding->principal_id != grant.owner_principal_id ||
             binding->binding_revision != grant.owner_binding_revision ||
             model_.agents.find_instance(grant.subject_instance_id) == nullptr ||
@@ -719,6 +838,14 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
             !model_.matches_task_ceiling(admission, task.goal_index)) {
             // F2 has no rebinding operation. Retained terminal Tasks must also
             // preserve exact selections; F4 adds explicit historical evidence.
+            return false;
+        }
+        // A Goal pause atomically denies its entire direct live cohort. This
+        // equality excludes terminal history and separately scanned child Goals.
+        if (work::TaskTable::is_live(task.lifecycle) &&
+            ((admission.phase == work::TaskAuthorityPhase::paused) !=
+             (model_.goal_authority.at(task.goal_index).phase ==
+              work::GoalAuthorityPhase::paused))) {
             return false;
         }
         if (model_.goals.at(task.goal_index).lifecycle == AYNI_GOAL_PROPOSED ||
@@ -836,6 +963,7 @@ void WorkReplay::discard() {
     model_.goals.clear();
     model_.goal_authority.clear_all();
     model_.task_authority.clear_all();
+    model_.authority_cleanup.clear();
     model_.tasks.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();

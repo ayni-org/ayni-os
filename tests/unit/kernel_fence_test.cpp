@@ -2,6 +2,7 @@
 // writers before replacing the one mutable work model.
 #include "authority/principal/owner_binding_records.h"
 #include "foundation/little_endian.h"
+#include "ingress_test_peer.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
@@ -89,6 +90,9 @@ TEST(KernelFence, exhausted_retries_reload_once_and_close_old_sessions) {
     WorkNode work;
     work.run();
     const uint64_t old_epoch = work.node().info().boot_epoch;
+    // ADR-0038: the same queue instance survives storage reload, even at its
+    // u64 order boundary; only a new process may establish a new incarnation.
+    ayni::kernel::EventIngressTestPeer::exhaust_input_order(work.kernel()->ingress);
     const auto body = folder(work);
     const auto accepted = work.create(body);
     ASSERT_EQ(accepted.status, AYNI_OK);
@@ -98,6 +102,10 @@ TEST(KernelFence, exhausted_retries_reload_once_and_close_old_sessions) {
     settle(work);
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(work.node().info().boot_epoch, old_epoch + 1U);
+    EXPECT_EQ(work.kernel()->ingress.resume_boundary().incarnation, old_epoch);
+    EXPECT_EQ(work.kernel()->ingress.resume_boundary().through, UINT64_MAX);
+    const ayni_event_v1 event{sizeof(event), AYNI_EVENT_LOCAL_INPUT, text("button")};
+    EXPECT_EQ(ayni_post_event(work.kernel(), &event), AYNI_CAPACITY_EXCEEDED);
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     EXPECT_EQ(ayni_get_goal(work.kernel(), accepted.result.object.id, &info), AYNI_NOT_FOUND);

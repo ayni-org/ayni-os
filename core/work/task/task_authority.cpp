@@ -90,6 +90,15 @@ ayni_status_t TaskAuthorityTable::restore_validated(uint32_t slot,
     return install_validated(slot, record);
 }
 
+bool TaskAuthorityTable::pause(uint32_t slot, foundation::TransitionStamp stamp) {
+    if (slots_[slot].phase == TaskAuthorityPhase::authorized) {
+        slots_[slot].phase = TaskAuthorityPhase::paused;
+        slots_[slot].stamp = stamp;
+        return true;
+    }
+    return false;
+}
+
 bool TaskAuthorityTable::contains(uint32_t slot, uint64_t task_id) const {
     return slot < limits_.tasks && task_id != 0U && slots_[slot].task_id == task_id;
 }

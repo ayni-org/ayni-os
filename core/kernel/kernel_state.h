@@ -140,7 +140,8 @@ struct ayni_kernel {
     // Whether ayni_step takes events in the current state (ADR-0021).
     bool takes_events() const;
     bool takes_event_now() const;
-    void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us);
+    void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us,
+                            ayni::work::InputResumeBoundary input);
 
     // durable_seq() as of the last fence, which a reload must not go below.
     uint64_t durable_floor_ = 0;

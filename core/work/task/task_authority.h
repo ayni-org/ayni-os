@@ -47,6 +47,10 @@ class TaskAuthorityTable {
     // Same identity/count, monotone stamp/binding; replacement requires clear().
     // Rebinding is proved by the enclosing replay transaction, not this table.
     ayni_status_t restore_validated(uint32_t slot, const TaskAuthorityRecord &record);
+    // Known present slot in an unchanged Task table: deny without changing
+    // selections or a user hold. True only for an authorized-to-paused change.
+    // The enclosing transition updates the Task stamp only when changed.
+    bool pause(uint32_t slot, foundation::TransitionStamp stamp);
     // Copies complete facts for the exact Task only; failure preserves out.
     bool read(uint32_t slot, uint64_t task_id, TaskAuthorityRecord &out) const;
     // Presence is independent of count: an admitted zero-needs Task has a row.

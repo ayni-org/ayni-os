@@ -39,6 +39,8 @@ ayni_add_core_module(authority
 
 ayni_add_core_module(work
     SOURCES
+        work/authority/authority_cleanup.cpp
+        work/authority/authority_cleanup_records.cpp
         work/authority/authority_facts.cpp
         work/agent/agent_records.cpp
         work/agent/agent_table.cpp
@@ -76,6 +78,7 @@ ayni_add_core_module(kernel
         kernel/intent/goal_authority.cpp
         kernel/intent/task_authority.cpp
         kernel/intent/work_model.cpp
+        kernel/intent/work_authority_cleanup.cpp
         kernel/kernel_api.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
@@ -84,6 +87,7 @@ ayni_add_core_module(kernel
         kernel/work_api.cpp
         kernel/work_journal.cpp
         kernel/work_replay.cpp
+        kernel/work_cleanup_replay.cpp
         kernel/goal_approval_replay.cpp
         kernel/work_snapshot.cpp
     DEPENDS work authority catalog durability foundation)

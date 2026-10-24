@@ -8,6 +8,14 @@
 namespace ayni::kernel {
 namespace {
 
+// Explicitly paused admissions are no longer READY work. Missing or stale
+// evidence still reaches the consumption check, which records its refusal.
+bool admission_not_paused(const void *context, const work::Task &task) {
+    const auto &authority = *static_cast<const work::TaskAuthorityTable *>(context);
+    return !authority.contains(task.slot, task.task_id) ||
+           authority.at(task.slot).phase != work::TaskAuthorityPhase::paused;
+}
+
 static_assert(alignof(ayni_policy_intent_v1) <= alignof(ayni_task_step_v1),
               "the intents after the step views are aligned");
 
@@ -209,7 +217,8 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                  uint64_t now_us, uint64_t durable_seq, OwnerClock clock) {
     uint32_t index = 0;
-    if (!model.tasks.next_ready(ready_before, index)) {
+    if (!model.tasks.next_ready(ready_before, index,
+                                {&model.task_authority, admission_not_paused})) {
         return false;
     }
     const work::Task &task = model.tasks.at(index);
@@ -280,7 +289,7 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
 }
 
 bool awaits_decision(const WorkModel &model) {
-    return model.tasks.has_ready();
+    return model.tasks.has_ready({&model.task_authority, admission_not_paused});
 }
 
 } // namespace ayni::kernel

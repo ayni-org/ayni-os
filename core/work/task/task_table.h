@@ -155,6 +155,9 @@ class TaskTable {
     // Only when allows(at(index), change) and the revision is below the
     // largest. The task gets the next revision and stamp.commit_seq.
     void apply(uint32_t index, TaskChange change, foundation::TransitionStamp stamp);
+    // Autonomous authorization metadata changes share the Task's log stamp,
+    // while user lifecycle, revision, strategy hold and progress stay intact.
+    void authority_changed(uint32_t index, foundation::TransitionStamp stamp);
 
     // Its strategy's decision holds the READY task index, below the largest
     // revision: it becomes PAUSED and no change but an end takes it out.
@@ -211,9 +214,15 @@ class TaskTable {
     // commit_seq ready_before, by commit_seq and then task id; a task at
     // the largest revision can take no decision and is left out. Returns
     // false when there is none.
-    bool next_ready(uint64_t ready_before, uint32_t &out_index) const;
+    // Optional owner-provided admission filter; null accepts every candidate.
+    // Both context and callback are borrowed for this non-reentrant query.
+    struct ReadyFilter {
+        const void *context; // Borrowed owner state; null is valid for stateless filters.
+        bool (*accepts)(const void *, const Task &); // Pure selection; null accepts all candidates.
+    };
+    bool next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter = {}) const;
     // Whether some task below the largest revision is READY.
-    bool has_ready() const;
+    bool has_ready(ReadyFilter filter = {}) const;
     // Whether a task of goal goal_index other than task_index has not ended;
     // with no_index, whether any of its tasks has not ended.
     bool live_task_besides(uint32_t goal_index, uint32_t task_index) const;
@@ -237,6 +246,10 @@ class TaskTable {
     // transition: state.step_count is the task's.
     Restore restore_state(uint32_t index, const TaskState &state,
                           foundation::TransitionStamp stamp);
+    // Metadata-only authorization updates preserve every user/policy field,
+    // including a held Task. The paired authority fact proves the deny change.
+    Restore restore_authority_state(uint32_t index, const TaskState &state,
+                                    foundation::TransitionStamp stamp);
     // Replays one key of a TASK_STEPS record of task index, the step at
     // position step.
     Restore restore_step(uint32_t index, uint32_t step, ayni_string_v1 key,
