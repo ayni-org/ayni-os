@@ -38,8 +38,8 @@ bool ActionRecord::valid(const ActionFact &fact) {
     const auto &id = fact.identity;
     if (!foundation::is_kernel_id(id.operation_id) ||
         !foundation::is_kernel_id(id.logical_call_id) || id.operation_id == id.logical_call_id ||
-        !catalog::CatalogId::is_valid({id.binding_id.data(), id.binding_id.size()}) ||
-        id.binding_version == 0U || !valid_stamp(fact.prepared) || !valid_stamp(fact.latest) ||
+        id.binding_id.size() == 0U || id.binding_version == 0U || !valid_stamp(fact.prepared) ||
+        !valid_stamp(fact.latest) ||
         foundation::id_boot_epoch(id.operation_id) != fact.prepared.boot_epoch ||
         foundation::id_boot_epoch(id.logical_call_id) > fact.prepared.boot_epoch ||
         !known_effect(fact.effect)) {

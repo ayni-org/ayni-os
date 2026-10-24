@@ -1,8 +1,11 @@
 // White-box normal lifecycle tests for the ActionRecord owner, C-COMMIT-006/007,
 // C-CALL-008/009/010 and C-LIFE-010. No dispatch, journal or recovery is exercised.
 #include "foundation/kernel_id.h"
+#include "foundation/little_endian.h"
 #include "work/action/action_record.h"
+#include "work/action/action_records.h"
 
+#include <array>
 #include <gtest/gtest.h>
 #include <type_traits>
 
@@ -193,5 +196,74 @@ TEST_F(ActionRecordTest, preparation_cannot_overwrite_a_live_dispatch_claim) {
     EXPECT_EQ(record->fact().latest.transition.commit_seq, 2U);
     EXPECT_FALSE(record->claim_dispatch(epoch, 3));
     ASSERT_EQ(record->complete(stamp(3)), AYNI_OK);
+}
+// Normal codec round trips, not journal/replay or restart tests.
+TEST_F(ActionRecordTest, record_codec_keeps_stable_identity_phase_and_evidence) {
+    const auto prepared = record->fact();
+    dispatch();
+    const auto dispatching = record->fact();
+    ASSERT_EQ(record->progress(stamp(3)), AYNI_OK);
+    const auto progress = record->fact();
+    ASSERT_EQ(record->abandon(stamp(4)), AYNI_OK);
+    const auto unknown = record->fact();
+    ASSERT_EQ(record->reconcile(ActionRecord::QueryConclusion::not_accepted, ActionEffect::none,
+                                ActionRecord::OldAttempt::drained, stamp(5)),
+              AYNI_OK);
+    const ActionFact states[] = {prepared, dispatching, progress, unknown, record->fact()};
+    for (const auto &fact : states) {
+        std::array<uint8_t, action_state_record_max_size> bytes{};
+        const auto size = action_state_record_size(fact);
+        write_action_state_record(fact, bytes.data());
+        ActionFact decoded{};
+        ASSERT_TRUE(read_action_state_record(bytes.data(), size, decoded));
+        EXPECT_EQ(decoded.identity.operation_id, fact.identity.operation_id);
+        EXPECT_EQ(decoded.identity.logical_call_id, fact.identity.logical_call_id);
+        EXPECT_EQ(decoded.identity.binding_version, fact.identity.binding_version);
+        EXPECT_TRUE(decoded.identity.binding_id.equals(
+            {fact.identity.binding_id.data(), fact.identity.binding_id.size()}));
+        EXPECT_EQ(decoded.phase, fact.phase);
+        EXPECT_EQ(decoded.effect, fact.effect);
+        EXPECT_EQ(decoded.evidence, fact.evidence);
+        EXPECT_EQ(decoded.prepared.boot_epoch, fact.prepared.boot_epoch);
+        EXPECT_EQ(decoded.prepared.transition.transition_id,
+                  fact.prepared.transition.transition_id);
+        EXPECT_EQ(decoded.prepared.transition.commit_seq, fact.prepared.transition.commit_seq);
+        EXPECT_EQ(decoded.latest.boot_epoch, fact.latest.boot_epoch);
+        EXPECT_EQ(decoded.latest.transition.transition_id, fact.latest.transition.transition_id);
+        EXPECT_EQ(decoded.latest.transition.commit_seq, fact.latest.transition.commit_seq);
+    }
+}
+
+TEST_F(ActionRecordTest, record_codec_uses_the_documented_layout_and_exact_length) {
+    std::array<uint8_t, action_state_record_max_size> bytes{};
+    const auto size = action_state_record_size(record->fact());
+    write_action_state_record(record->fact(), bytes.data());
+    EXPECT_EQ(size, action_state_record_fixed_size + record->fact().identity.binding_id.size());
+    EXPECT_EQ(ayni::foundation::load_le64(bytes.data()), record->fact().identity.operation_id);
+    constexpr uint32_t binding_length_at = 80;
+    EXPECT_EQ(ayni::foundation::load_le32(bytes.data() + binding_length_at), 6U);
+    ActionFact output = record->fact();
+    EXPECT_FALSE(read_action_state_record(bytes.data(), size - 1U, output));
+    EXPECT_FALSE(read_action_state_record(bytes.data(), size + 1U, output));
+    EXPECT_EQ(output.identity.operation_id, record->fact().identity.operation_id);
+    EXPECT_EQ(output.phase, ActionPhase::prepared);
+}
+
+TEST_F(ActionRecordTest, record_codec_and_live_admission_share_evidence_validation) {
+    auto fact = record->fact();
+    fact.latest = stamp(2);
+    fact.phase = ActionPhase::failed;
+    fact.effect = ActionEffect::partial;
+    fact.evidence = ActionEvidence::authoritative_not_accepted;
+    EXPECT_FALSE(ActionRecord::valid(fact));
+    std::array<uint8_t, action_state_record_max_size> bytes{};
+    write_action_state_record(record->fact(), bytes.data());
+    // The documented evidence slot cannot claim a conclusion while PREPARED.
+    constexpr uint32_t evidence_at = 28;
+    ayni::foundation::store_le32(bytes.data() + evidence_at,
+                                 static_cast<uint32_t>(ActionEvidence::provider_result));
+    ActionFact output = record->fact();
+    EXPECT_FALSE(read_action_state_record(bytes.data(), action_state_record_size(output), output));
+    EXPECT_EQ(output.evidence, ActionEvidence::none);
 }
 } // namespace

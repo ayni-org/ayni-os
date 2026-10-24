@@ -22,6 +22,7 @@ ayni_add_core_module(catalog
     SOURCES
         catalog/catalog_id.cpp
         catalog/capability/capability_registry.cpp
+        catalog/capability/call_contract.cpp
         catalog/capability/field_domain.cpp
         catalog/capability/field_values.cpp
         catalog/goal_type/goal_type_registry.cpp
@@ -45,6 +46,7 @@ ayni_add_core_module(resources
 ayni_add_core_module(work
     SOURCES
         work/action/action_record.cpp
+        work/action/action_records.cpp
         work/call/call_input.cpp
         work/authority/authority_cleanup.cpp
         work/authority/authority_cleanup_records.cpp

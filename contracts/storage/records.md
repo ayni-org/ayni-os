@@ -63,7 +63,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3、approve v5、Task limit v6，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3/v5含完整canonical请求，v3另存effect，v5保存原授权结果（ADR-0030、0031、0038） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | 已废止（ADR-0042），未分配类型 | 不实现费用账本 |
 | `CALL_IDENTITY` | `work/call` | B3 |
-| `ACTION_STATE` | `work/action` | 准备、屏障与终态各自的批次；终态在 B4 |
+| `ACTION_STATE`（类型 20/v1 预留，codec 已实现，尚未接入 journal/replay） | `work/action` | 计划置 REQUIRED；准备、屏障与终态各自的批次，终态在 B4 |
 | `CALL_RESULT` | `work/call` | B4 |
 | `MEMORY_RECORD`、`MEMORY_TOMBSTONE`、`LINEAGE` | `knowledge` | B4、B5 |
 | `GRANT_CREATE`（类型13，版本1，REQUIRED） | `authority/grant` | Grant创建，与v2命令身份/结果同批（ADR-0030） |
@@ -72,6 +72,12 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `GRANT_REVOCATION_PROGRESS`（类型16，版本1，REQUIRED） | `authority/grant` | 根cursor与本步后代状态（如有）同批B5（ADR-0031） |
 | `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
+
+## 动作事实正文（实施中，尚未接入日志）
+
+`ACTION_STATE` 20/v1 的字段顺序固定，均为小端；固定大小 84 B 加 Binding ID。0/8 为 operation ID / logical call ID（u64）；16/20/24/28 为 Binding version / phase / effect / evidence（u32）；32/40/48 为 prepared 的 boot / transition / commit seq（u64）；56/64/72 为 latest 的对应三项；80 为 Binding ID 字节数（u32），84 起为 ID 内容（1..32 B）。没有 submit claim、指针、时钟或物理占用。
+
+phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed、cancelled、result_unknown；0 仅表示内存原位构造，禁止持久。effect 1..4 为 none、partial、complete、unknown；evidence 0..4 为 none、local_non_delivery、provider_result、authoritative_result、authoritative_not_accepted。合法组合由 `ActionRecord::valid` 唯一校验，codec 复用；权威未受理只能配 FAILED/NONE。准备和最新 stamp 形状、顺序以及 operation 创建代际须一致。跨表调用/Binding/原参数、查询与尝试关联以及 REQUIRED 批次配对在后续调用重放接入时验证；当前 codec 不构成这些证明。
 
 ## 调用输入正文（实施中，尚未接入日志）
 
