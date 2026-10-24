@@ -7,6 +7,9 @@
 
 namespace ayni::catalog {
 
+// Maximum members in one atomic resource requirement group, not registry size.
+constexpr uint32_t resource_group_max = 8;
+
 // Trusted immutable description; no health, ownership or device handles here.
 struct Resource {
     CatalogId id;              // Copied nonempty unique name.

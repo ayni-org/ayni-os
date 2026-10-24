@@ -4,6 +4,7 @@
 #ifndef AYNI_CORE_WORK_CALL_CALL_INPUT_H
 #define AYNI_CORE_WORK_CALL_CALL_INPUT_H
 
+#include "catalog/capability/call_contract.h"
 #include <ayni/authority.h>
 #include <cstdint>
 
@@ -22,11 +23,9 @@ struct CallInputView {
 };
 
 // Format 1, contracts/storage/records.md: two u32 lengths, arguments, text.
-constexpr uint32_t call_input_format = 1;
 constexpr uint32_t call_input_header_size = 8;
-constexpr uint32_t call_text_max_bytes = 65536;
 
-// Text limit is 0..call_text_max_bytes; zero permits only empty text. Output
+// Text limit is 0..catalog::call_text_limit_max; zero permits only empty text. Output
 // does not overlap domain or any input view. BUFFER_TOO_SMALL only sets size;
 // any other failure leaves all outputs unchanged. This is a business payload,
 // never an error/log message; persistence and deletion are owned by work/call.

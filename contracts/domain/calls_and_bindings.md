@@ -3,6 +3,8 @@
 - **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021、ADR-0026；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
 - **属主**：`work/call`、`work/action`、`work/subscription`（调用实例）；`catalog/capability`、`catalog/binding`（描述与选择约束）
 
+当前实施边界（ADR-0045）：内部 CallContract 已实现静态声明规范化及精确匹配，CallInput 已实现完整有限 typed 参数及有界文本，ActionRecord 已实现局部状态规则与事实 codec。公开 Provider/Binding 注册、journal/replay 和真实消费尚未接入；这些内部测试不代表下面全部规则已验证。
+
 ## 调用形态
 
 | 形态 | 最小生命周期与确认 | 取消与恢复边界 |

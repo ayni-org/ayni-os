@@ -168,7 +168,7 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | C-LIFE-005 | 生命周期变化经事件与 `ayni_get_lifecycle` 同时可见；事件在状态已应用之后发出 | 事件报告 `RUNNING` 时查询仍返回 `RECOVERING` | `MA-005` |
 | C-LIFE-006 | 首版不提供运行时注销；运行时发现的目录变化另行定义为经提交协调的 transition | 运行中删除 Capability，在途 ActionRecord 失去语义 | `MA-005` |
 | C-LIFE-007 | 已实现的函数在每个状态下按上表返回；表中的 `INVALID_STATE` 不改变状态；进入 `RESTRICTED` 时记录原因，`ayni_get_kernel_info` 只在 `RESTRICTED` 中报告它（ADR-0016） | 恢复失败后状态停在 `RECOVERING`，调用方无法区分“仍在恢复”与“已经失败” | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |
-| C-LIFE-010 | ActionRecord 只按上表转换；`RESULT_UNKNOWN` 只能经权威查询离开 | `RESULT_UNKNOWN` 超时后自动改为 `FAILED` 并重试 | E2 F3–F5；状态转换表测试 |
+| C-LIFE-010 | ActionRecord 只按上表转换；`RESULT_UNKNOWN` 只能经权威查询离开 | `RESULT_UNKNOWN` 超时后自动改为 `FAILED` 并重试 | 内部状态规则部分已验证：`ActionRecordTest.abandonment_never_becomes_an_ordinary_failure_or_a_new_dispatch`、`ActionRecordTest.authoritative_completion_reconciles_a_drained_unknown_operation`；权威性/尝试关联及 journal/replay 待调用消费接入（ADR-0045）；E2 F3–F5 未验证 |
 | C-LIFE-011 | 运行终态与副作用结果分开：`CANCELLED`/`FAILED` 的记录列出已完成、未执行与未知的步骤，不推导“没有影响” | 取消后报告“无影响”，但第一步转向已执行 | E4 步骤 3 |
 | C-LIFE-012 | 取消请求已受理、停止指令已送达、物理输出已停止是三种事实，分别表达 | 把“已发送停止”显示为“已停止” | E1 步骤 4；C-STOP-006 |
 | C-LIFE-013 | 撤销响应区分 `ACCEPTED`、`DURABLY_EFFECTIVE`、`CANCELLING`、`STOP_CONFIRMED`；只有最后一项证明本地物理停止 | 授权版本生效即报告设备已停止 | E1 步骤 6；E2 F10 |

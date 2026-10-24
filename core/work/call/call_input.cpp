@@ -73,7 +73,7 @@ bool utf8(ayni_string_v1 text) {
 }
 
 ayni_status_t check_text(ayni_string_v1 text, uint32_t limit) {
-    if (limit > call_text_max_bytes || (text.size != 0U && text.data == nullptr)) {
+    if (limit > catalog::call_text_limit_max || (text.size != 0U && text.data == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (text.size > limit) {
