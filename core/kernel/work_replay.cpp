@@ -47,6 +47,14 @@ bool knows_grant_body(uint16_t version, WorkRecordContext context) {
              version == authority::goal_grant_snapshot_record_version));
 }
 
+bool knows_goal_body(uint16_t version, WorkRecordContext context) {
+    return version == work::goal_record_version ||
+           version == work::goal_with_authority_record_version ||
+           version == work::goal_authority_state_record_version ||
+           (context == WorkRecordContext::snapshot &&
+            version == work::goal_creation_stamp_snapshot_version);
+}
+
 template <typename Restore> RecordUse use_of(Restore restore) {
     switch (restore) {
     case Restore::restored:
@@ -63,7 +71,13 @@ template <typename Restore> RecordUse use_of(Restore restore) {
 
 RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &batch,
                                 const durability::RecordHeader &header, const uint8_t *body) {
-    return static_cast<WorkReplay *>(context)->apply(batch, header, body);
+    return on_record(context, batch, header, body, UINT64_MAX);
+}
+
+RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &batch,
+                                const durability::RecordHeader &header, const uint8_t *body,
+                                uint64_t boot_epoch_limit) {
+    return static_cast<WorkReplay *>(context)->apply(batch, header, body, boot_epoch_limit);
 }
 
 bool WorkReplay::binding_matches() const {
@@ -125,19 +139,14 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::goal_record_type:
-        return header.version == work::goal_record_version ||
-                       header.version == work::goal_with_authority_record_version ||
-                       header.version == work::goal_authority_state_record_version ||
-                       (context == WorkRecordContext::snapshot &&
-                        header.version == work::goal_creation_stamp_snapshot_version)
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
+        return knows_goal_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     case work::goal_state_record_type:
         return header.version == work::goal_state_record_version ||
                        header.version == work::goal_state_with_authority_record_version ||
                        header.version == work::goal_state_with_cleanup_record_version ||
                        (context == WorkRecordContext::journal &&
-                        header.version == work::goal_state_authority_record_version)
+                        (header.version == work::goal_state_authority_record_version ||
+                         header.version == work::goal_state_reauthorization_record_version))
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::task_authority_record_type:
@@ -146,7 +155,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::goal_authority_record_type:
         return header.version == work::goal_authority_record_version ||
                        (context == WorkRecordContext::journal &&
-                        header.version == work::goal_authority_pause_record_version)
+                        (header.version == work::goal_authority_pause_record_version ||
+                         header.version == work::goal_authority_reauthorization_record_version))
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::authority_cleanup_record_type:
@@ -161,7 +171,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::task_state_record_type:
         return header.version == work::task_state_record_version ||
                        (context == WorkRecordContext::journal &&
-                        header.version == work::task_state_authority_record_version)
+                        (header.version == work::task_state_authority_record_version ||
+                         header.version == work::task_state_reauthorization_record_version))
                    ? RecordUse::applied
                    : RecordUse::unknown;
     default:
@@ -170,7 +181,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
 }
 
 RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
-                            const durability::RecordHeader &header, const uint8_t *body) {
+                            const durability::RecordHeader &header, const uint8_t *body,
+                            uint64_t boot_epoch_limit) {
     // C-STORE-015/ADR-0031: no unmatched work state, authority command or
     // cleanup progress may cross the batch boundary before this record.
     if (batch.commit_seq != batch_seq_) {
@@ -178,6 +190,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
             return RecordUse::corrupt;
         }
         pairing_.approval.reset();
+        pairing_.reauthorization.reset();
         pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
@@ -186,18 +199,22 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete)) {
         return RecordUse::corrupt;
     }
-    const auto use = apply_record(batch, header, body);
+    const auto use = apply_record(batch, header, body, boot_epoch_limit);
     batch_seq_ = batch.commit_seq;
     return use;
 }
 
 RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
-                                   const durability::RecordHeader &header, const uint8_t *body) {
+                                   const durability::RecordHeader &header, const uint8_t *body,
+                                   uint64_t boot_epoch_limit) {
     // A pending approval admits only its own Grants/state/metadata/command.
     // Unrelated work cannot smuggle an additional transition into the batch.
     if (pairing_.approval && header.type != authority::grant_record_type &&
         header.type != work::goal_state_record_type &&
         header.type != work::goal_authority_record_type && header.type != command_record_type) {
+        return RecordUse::corrupt;
+    }
+    if (!allows_reauthorization_record(header)) {
         return RecordUse::corrupt;
     }
     // The new Task's state closes directly with its admission (C-STORE-020).
@@ -234,7 +251,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::goal_record_type:
         return restore_goal(header.version, body, size, stamp);
     case work::goal_authority_record_type:
-        return restore_goal_authority(header.version, body, size, stamp);
+        return restore_goal_authority(header.version, body, size, stamp, boot_epoch_limit);
     case work::authority_cleanup_record_type:
         return restore_authority_cleanup(body, size, stamp);
     case work::goal_state_record_type:
@@ -338,6 +355,11 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
          record.state.lifecycle == AYNI_GOAL_PROPOSED)) {
         return RecordUse::corrupt;
     }
+    if (version == work::goal_state_reauthorization_record_version) {
+        return begin_reauthorization(index, stamp)
+                   ? use_of(model_.goals.restore_reauthorization_state(index, record.state, stamp))
+                   : RecordUse::corrupt;
+    }
     if (!pair_approval_state(index, record.state)) {
         return RecordUse::corrupt;
     }
@@ -363,12 +385,15 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
 // Existing metadata may advance without changing its immutable ceiling;
 // F4 adds a separate paired proof for explicit reauthorization.
 RecordUse WorkReplay::restore_goal_authority(uint16_t version, const uint8_t *body, uint32_t size,
-                                             foundation::TransitionStamp stamp) {
+                                             foundation::TransitionStamp stamp,
+                                             uint64_t boot_epoch_limit) {
     work::GoalAuthorityRecord record{};
     uint32_t index = 0;
     if (pairing_.goal_authority_seq == stamp.commit_seq ||
         !work::read_goal_authority_record(body, size, record) ||
-        !model_.goals.find(record.goal_id, index) || record.stamp.commit_seq != stamp.commit_seq ||
+        !model_.goals.find(record.goal_id, index) ||
+        record.binding.input.incarnation > boot_epoch_limit ||
+        record.stamp.commit_seq != stamp.commit_seq ||
         record.stamp.transition_id != stamp.transition_id ||
         model_.goals.at(index).commit_seq != stamp.commit_seq || pairing_.goal.has_value()) {
         return RecordUse::corrupt;
@@ -386,7 +411,9 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t version, const uint8_t *bo
     if ((!model_.goal_authority.contains(index, record.goal_id) &&
          record.phase != work::GoalAuthorityPhase::proposed &&
          !matches_goal_binding(index, record, stamp.commit_seq)) ||
-        !pair_approval_metadata(index, record)) {
+        !(version == work::goal_authority_reauthorization_record_version
+              ? pair_reauthorization_metadata(index, record, stamp)
+              : pair_approval_metadata(index, record))) {
         return RecordUse::corrupt;
     }
     work::GoalAuthorityRecord previous{};
@@ -398,6 +425,10 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t version, const uint8_t *bo
     const auto status = model_.goal_authority.restore_validated(index, record);
     if (status != AYNI_OK) {
         return status == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
+    }
+    if (version == work::goal_authority_reauthorization_record_version &&
+        !goal_authority_consistent(index, boot_epoch_limit)) {
+        return RecordUse::corrupt;
     }
     if (replacing) {
         model_.release_goal_references(previous, stamp.commit_seq);
@@ -448,14 +479,16 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
     const auto &task = model_.tasks.at(index);
     const bool created = task.created_transition_id == stamp.transition_id;
     const auto ceiling = model_.goal_authority.at(task.goal_index);
-    if (created ? record.phase != work::TaskAuthorityPhase::authorized
-                : record.phase != work::TaskAuthorityPhase::paused ||
-                      ceiling.phase != work::GoalAuthorityPhase::paused ||
-                      ceiling.stamp.commit_seq != stamp.commit_seq) {
+    const bool reauthorizing = pairing_.reauthorization.has_value();
+    if ((created || reauthorizing) ? record.phase != work::TaskAuthorityPhase::authorized
+                                   : record.phase != work::TaskAuthorityPhase::paused ||
+                                         ceiling.phase != work::GoalAuthorityPhase::paused ||
+                                         ceiling.stamp.commit_seq != stamp.commit_seq) {
         return RecordUse::corrupt;
     }
     work::TaskAuthorityRecord previous{};
-    if (model_.task_authority.read(task.slot, task.replaced_task_id, previous)) {
+    if (model_.task_authority.read(task.slot, created ? task.replaced_task_id : task.task_id,
+                                   previous)) {
         model_.release_task_references(previous, stamp.commit_seq);
     }
     const auto result = created ? model_.task_authority.install_validated(task.slot, record)
@@ -477,6 +510,18 @@ RecordUse WorkReplay::restore_task_state(uint16_t version, const uint8_t *body, 
     }
     if (record.task_id == pairing_.task) {
         pairing_.task.reset();
+    }
+    if (version == work::task_state_reauthorization_record_version) {
+        work::TaskAuthorityRecord admission{};
+        if (!pairing_.reauthorization ||
+            pairing_.reauthorization->stage != BatchPairing::ReauthorizationPair::Stage::metadata ||
+            model_.tasks.at(index).goal_id != pairing_.reauthorization->goal_id ||
+            !model_.task_authority.read(model_.tasks.at(index).slot, record.task_id, admission) ||
+            admission.ceiling.commit_seq != pairing_.reauthorization->binding_seq) {
+            return RecordUse::corrupt;
+        }
+        pairing_.task_authority = record.task_id;
+        return use_of(model_.tasks.restore_reauthorization_state(index, record.state, stamp));
     }
     if (version == work::task_state_authority_record_version) {
         if (model_.tasks.at(index).created_transition_id == stamp.transition_id) {
@@ -659,6 +704,13 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
     } else if (pairing_.approval) {
         return RecordUse::corrupt;
     }
+    if (mapping.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
+        if (!pair_reauthorization_command(mapping, canonical, result_bytes)) {
+            return RecordUse::corrupt;
+        }
+    } else if (pairing_.reauthorization) {
+        return RecordUse::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
         uint32_t index = 0;
         if (pairing_.authority.kind != AuthorityPairKind::create ||
@@ -726,14 +778,18 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
     if (record.phase != work::GoalAuthorityPhase::proposed &&
         (record.binding.parent.goal_id != goal.parent_goal_id ||
          record.binding.established_seq < goal.created.commit_seq ||
-         record.binding.input.incarnation != 0U || record.binding.input.through != 0U)) {
+         record.binding.input.incarnation > boot_epoch_limit ||
+         (record.binding.established_seq == goal.created.commit_seq &&
+          record.binding.input.incarnation != 0U))) {
         return false;
     }
-    if (record.binding.parent.goal_id != 0U) {
+    if (goal.parent_index != work::GoalTable::no_parent) {
         const auto parent = model_.goal_authority.at(goal.parent_index);
-        if (record.binding.parent.commit_seq > parent.binding.established_seq ||
-            record.binding.parent.commit_seq <
-                model_.goals.at(goal.parent_index).created.commit_seq) {
+        if (!work::goal_ceiling_covers(parent, record) ||
+            (record.phase != work::GoalAuthorityPhase::proposed &&
+             (record.binding.parent.commit_seq > parent.binding.established_seq ||
+              record.binding.parent.commit_seq <
+                  model_.goals.at(goal.parent_index).created.commit_seq))) {
             return false;
         }
     }
@@ -831,21 +887,7 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     }
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         const work::Task &task = model_.tasks.at(index);
-        work::TaskAuthorityRecord admission{};
-        if (!model_.task_authority.read(task.slot, task.task_id, admission) ||
-            admission.stamp.commit_seq > task.commit_seq ||
-            foundation::id_boot_epoch(task.task_id) > boot_epoch_limit ||
-            !model_.matches_task_ceiling(admission, task.goal_index)) {
-            // F2 has no rebinding operation. Retained terminal Tasks must also
-            // preserve exact selections; F4 adds explicit historical evidence.
-            return false;
-        }
-        // A Goal pause atomically denies its entire direct live cohort. This
-        // equality excludes terminal history and separately scanned child Goals.
-        if (work::TaskTable::is_live(task.lifecycle) &&
-            ((admission.phase == work::TaskAuthorityPhase::paused) !=
-             (model_.goal_authority.at(task.goal_index).phase ==
-              work::GoalAuthorityPhase::paused))) {
+        if (!task_authority_consistent(index, boot_epoch_limit)) {
             return false;
         }
         if (model_.goals.at(task.goal_index).lifecycle == AYNI_GOAL_PROPOSED ||
@@ -977,6 +1019,7 @@ void WorkReplay::discard_for_reload() {
     model_.due_work_changed = false;
     model_.next_due_work_us = work::no_time;
     model_.searched_with_id = true;
+    model_.searched_durable_seq = 0;
     model_.ids = foundation::IdAllocator{};
     model_.transitions = TransitionClock{};
 }

@@ -340,7 +340,7 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
 // command id.
 ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authority::Session &session,
                           uint64_t now_us, uint64_t durable_seq, IntentOutcome &outcome,
-                          IntentFailure &failure, OwnerClock clock) {
+                          IntentFailure &failure, OwnerClock clock, InputResumeSampler input) {
     // Work and Grant management retain their separate invariant owners.
     switch (intent.kind) {
     case AYNI_INTENT_GOAL_CREATE: {
@@ -354,6 +354,8 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
         return create_grant(model, intent, session, now_us, durable_seq, outcome, failure);
     case AYNI_INTENT_GOAL_APPROVE:
         return approve_goal(model, intent, session, now_us, durable_seq, outcome, failure);
+    case AYNI_INTENT_GOAL_REAUTHORIZE:
+        return reauthorize_goal(model, intent, now_us, durable_seq, input, outcome, failure);
     case AYNI_INTENT_TASK_CANCEL:
         return cancel_task(model, intent, outcome, failure);
     case AYNI_INTENT_INSTANCE_PAUSE:
@@ -421,6 +423,10 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
         return model.commands.find_exact(
             principal_id, intent.command_id,
             ApprovalCommand{intent.expected_revision, intent.approval});
+    case AYNI_INTENT_GOAL_REAUTHORIZE:
+        return model.commands.find_exact(
+            principal_id, intent.command_id,
+            ReauthorizationCommand{intent.expected_revision, intent.reauthorization});
     default: {
         const CommandMapping *mapping = nullptr;
         const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
@@ -433,16 +439,21 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
                            IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status, uint64_t durable_seq, OwnerClock clock) {
+                           ayni_status_t storage_status, uint64_t durable_seq, OwnerClock clock,
+                           InputResumeSampler input) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
+    if (intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
+        !bound_management_session(model, *session, durable_seq)) {
+        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
+    }
     const bool exact = intent.kind == AYNI_INTENT_GRANT_CREATE ||
                        intent.kind == AYNI_INTENT_GRANT_REVOKE ||
-                       intent.kind == AYNI_INTENT_GOAL_APPROVE;
+                       is_work_authority_command(intent.kind);
     const uint64_t digest =
         intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
     if (intent.command_id != 0U) {
@@ -489,7 +500,7 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         }
     }
     const ayni_status_t status =
-        apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock);
+        apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock, input);
     return status == AYNI_OK && intent.command_id != 0U
                ? remember_command(model, intent, session->principal_id, digest, outcome)
                : status;

@@ -8,6 +8,7 @@
 #define AYNI_CORE_KERNEL_INTENT_INTENT_H
 
 #include "kernel/command/command_approval.h"
+#include "kernel/command/command_reauthorization.h"
 #include "kernel/command/work_authority_result.h"
 
 #include <ayni/authority.h>
@@ -22,9 +23,10 @@ struct Intent {
     uint64_t command_id;     // 0: not a command (command_table.h)
     uint64_t session_id;
     uint32_t expected_revision;
-    ayni_grant_create_v1 grant_create; // GRANT_CREATE, borrowed nested views
-    GoalCreate create;                 // GOAL_CREATE
-    GoalApproval approval;             // GOAL_APPROVE, including borrowed original views.
+    ayni_grant_create_v1 grant_create;   // GRANT_CREATE, borrowed nested views
+    GoalCreate create;                   // GOAL_CREATE
+    GoalApproval approval;               // GOAL_APPROVE, including borrowed original views.
+    GoalReauthorization reauthorization; // GOAL_REAUTHORIZE, including exact authority CAS.
     uint64_t target_id; // target intents: the goal, task, instance or Grant they name
 };
 
@@ -47,7 +49,8 @@ struct IntentOutcome {
     // A command accepted before: the result is its first, and nothing was
     // applied now.
     bool retried;
-    // Newly accepted approval result; copied into its command before journaling.
+    // Present only for a newly accepted approval/reauthorization; copied into
+    // the same command window before this transition is journaled.
     std::optional<WorkAuthorityResult> authorization;
 };
 

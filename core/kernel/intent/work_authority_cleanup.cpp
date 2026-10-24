@@ -14,8 +14,11 @@ void WorkModel::request_authority_cleanup(foundation::TransitionStamp stamp) {
 
 bool WorkModel::authority_cleanup_change_in(foundation::TransitionStamp stamp) const {
     const auto *mapping = commands.mapped_in(stamp.commit_seq);
-    if (mapping != nullptr && mapping->kind == AYNI_INTENT_GRANT_REVOKE) {
-        return true; // Includes an accepted no-change/gone control outcome.
+    if (mapping != nullptr && (mapping->kind == AYNI_INTENT_GRANT_REVOKE ||
+                               mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE)) {
+        // Revoke includes no-change/gone results; a replacement invalidates
+        // descendants' parent generations even before their scan (ADR-0038).
+        return true;
     }
     for (uint32_t index = 0; index < goals.size(); ++index) {
         const auto &goal = goals.at(index);

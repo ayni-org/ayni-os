@@ -1,6 +1,5 @@
 #include "kernel/intent/work_model.h"
 
-#include "authority/scope/scope.h"
 #include "catalog/abi_checks.h"
 
 namespace ayni::kernel {
@@ -51,39 +50,36 @@ ayni_status_t emit_requirement(void *ctx, const ayni_goal_requirement_v1 *input)
     return result.status;
 }
 
-// A child may attenuate each complete parent requirement, never union them.
-bool parent_covers(const WorkModel &model, uint64_t parent_id,
-                   const work::GoalAuthorityRecord &record) {
+} // namespace
+
+// Runtime admission additionally requires an authorized retained parent;
+// immutable Scope coverage remains with the work owner (ADR-0038).
+bool WorkModel::parent_covers_authority(uint64_t parent_id,
+                                        const work::GoalAuthorityRecord &record) const {
     if (parent_id == 0U) {
         return true;
     }
     uint32_t parent_index = 0;
-    if (!model.goals.find(parent_id, parent_index) ||
-        !model.goal_authority.authorized(parent_index, parent_id)) {
+    if (!goals.find(parent_id, parent_index) ||
+        !goal_authority.authorized(parent_index, parent_id)) {
         return false;
     }
-    const auto parent = model.goal_authority.at(parent_index);
-    for (uint32_t index = 0; index < record.count; ++index) {
-        const auto &child = record.requirements[index];
-        bool covered = false;
-        for (uint32_t at = 0; at < parent.count && !covered; ++at) {
-            const auto &ceiling = parent.requirements[at];
-            if (ceiling.capability_id.equals(
-                    {child.capability_id.data(), child.capability_id.size()}) &&
-                ceiling.capability_version == child.capability_version) {
-                const auto relation =
-                    authority::covers(child.source_domain, ceiling.scope, child.scope);
-                covered = relation.status == AYNI_OK && relation.covered;
-            }
-        }
-        if (!covered) {
-            return false;
-        }
-    }
-    return true;
+    return work::goal_ceiling_covers(goal_authority.at(parent_index), record);
 }
 
-} // namespace
+authority::GrantCheck WorkModel::check_parent_authority(uint32_t parent_index, uint64_t now_us,
+                                                        uint64_t durable_seq) const {
+    if (parent_index == work::GoalTable::no_parent) {
+        return {AYNI_OK, AYNI_REASON_NONE};
+    }
+    const bool available = goals.visit_lineage(parent_index, [&](uint32_t at) {
+        const auto &parent = goals.at(at);
+        return work::GoalTable::is_live(parent.lifecycle) && !work::GoalTable::is_held(parent) &&
+               (parent.expires_us == work::no_time || parent.expires_us > now_us);
+    });
+    return available ? check_goal_authority(parent_index, now_us, durable_seq)
+                     : authority::GrantCheck{AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
+}
 
 // Export temporary caller views once, then select immutable, durable Grant
 // identities. A refusal changes neither IDs nor transitions nor live slots.
@@ -108,7 +104,7 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
     // Exporters can consume time without mutating Kernel state. Select against
     // the post-export clock, not the original trigger-schedule anchor.
     now_us = clock.now_us != nullptr ? clock.now_us(clock.ctx) : now_us;
-    if (!parent_covers(*this, create.parent_goal_id, out)) {
+    if (!parent_covers_authority(create.parent_goal_id, out)) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
     }
     if (create.parent_goal_id != 0U) {
@@ -178,6 +174,12 @@ authority::GrantCheck WorkModel::check_goal_authority(uint32_t goal_index, uint6
                                        ? AYNI_REASON_GOAL_AUTHORITY_PAUSED
                                        : AYNI_REASON_GOAL_AUTHORITY_MISSING};
             return false;
+        }
+        if (work::replacement_binding_pending(record.binding, goals.at(at).created.commit_seq,
+                                              durable_seq)) {
+            result = {AYNI_BUSY, AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE};
+            // Still prove the chain: a revoke/expiry is a denial even while
+            // the replacement fact itself is waiting for durability.
         }
         if (goals.at(at).parent_index != work::GoalTable::no_parent) {
             const auto parent = goals.at(at).parent_index;

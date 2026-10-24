@@ -188,6 +188,36 @@ GoalTable::Restore GoalTable::restore_authority_state(uint32_t index, const Goal
     return Restore::restored;
 }
 
+// Validate the management transition's counters without interpreting the old
+// boot's clock. Ordinary replay retains ownership of common cursor/flag shape.
+GoalTable::Restore GoalTable::restore_reauthorization_state(uint32_t index, const GoalState &state,
+                                                            foundation::TransitionStamp stamp) {
+    const auto &goal = goals_[index];
+    if (at_largest_revision(goal) || state.revision != goal.revision + 1U ||
+        state.lifecycle != goal.lifecycle || state.cancel_revision != goal.cancel_revision ||
+        state.last_task_id != goal.last_task_id ||
+        state.expiry_pending != (goal.expires_us != no_time) || state.taken < goal.cursor.taken ||
+        state.occurrences_skipped < goal.occurrences_skipped) {
+        return Restore::corrupt;
+    }
+    const auto skipped = state.occurrences_skipped - goal.occurrences_skipped;
+    if (state.taken - goal.cursor.taken != skipped ||
+        (skipped == 0U &&
+         (state.waiting != goal.cursor.waiting || state.next_scheduled != goal.cursor.has_next() ||
+          state.skip_reason != goal.skip_reason)) ||
+        (skipped != 0U && state.skip_reason != AYNI_REASON_GOAL_AUTHORITY_PAUSED)) {
+        return Restore::corrupt;
+    }
+    if (goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) {
+        if (skipped != goal.cursor.waiting || state.waiting != 0U || state.next_scheduled) {
+            return Restore::corrupt;
+        }
+    } else if (goal.trigger.kind != AYNI_TRIGGER_INTERVAL && skipped != 0U) {
+        return Restore::corrupt;
+    }
+    return restore_state(index, state, stamp);
+}
+
 GoalTable::Restore GoalTable::restore_state(uint32_t index, const GoalState &state,
                                             foundation::TransitionStamp stamp) {
     Goal &goal = goals_[index];
@@ -311,6 +341,29 @@ void GoalTable::approve(uint32_t index, uint64_t now_us, foundation::TransitionS
     ++goal.revision;
     goal.cursor = start_schedule(goal.trigger, now_us);
     goal.commit_seq = stamp.commit_seq;
+}
+
+GoalTable::ChangeCheck GoalTable::check_reauthorization(uint32_t index, uint32_t expected_revision,
+                                                        uint64_t now_us) const {
+    const auto &goal = goals_[index];
+    if (goal.revision != expected_revision) {
+        return ChangeCheck::revision_conflict;
+    }
+    if ((goal.lifecycle != AYNI_GOAL_ACTIVE && goal.lifecycle != AYNI_GOAL_PAUSED) ||
+        (goal.expires_us != no_time && goal.expires_us <= now_us)) {
+        return ChangeCheck::invalid_state;
+    }
+    return at_largest_revision(goal) ? ChangeCheck::revision_exhausted : ChangeCheck::allowed;
+}
+
+void GoalTable::reauthorize(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp) {
+    auto &goal = goals_[index];
+    ++goal.revision;
+    goal.commit_seq = stamp.commit_seq;
+    if (goal.hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED) {
+        goal.hold_reason = AYNI_REASON_NONE; // This explicit new binding confirms this Goal only.
+    }
+    skip_authority_backlog(index, now_us, stamp);
 }
 
 void GoalTable::authority_changed(uint32_t index, foundation::TransitionStamp stamp) {

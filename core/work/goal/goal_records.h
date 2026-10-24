@@ -34,6 +34,8 @@ constexpr uint16_t goal_state_with_authority_record_version = 2;
 constexpr uint16_t goal_state_with_cleanup_record_version = 3;
 // Same body, preserving all user/trigger state while updating authority only.
 constexpr uint16_t goal_state_authority_record_version = 4;
+// Reauthorization preserves user state, advances revision and may skip backlog.
+constexpr uint16_t goal_state_reauthorization_record_version = 5;
 // A GOAL record without its goal type id, trigger source and parameters.
 constexpr uint32_t goal_record_fixed_size = 108;
 constexpr uint32_t goal_state_record_size = 48;

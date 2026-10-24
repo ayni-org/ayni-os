@@ -7,7 +7,8 @@
 // task it reaches against that rule in the same transition, except a task
 // its strategy's decision holds, and a goal's end takes the tasks it reaches
 // with it. A goal that gives way to a new one takes its ended tasks out of
-// the task table (ADR-0025).
+// the task table (ADR-0025). Authorization denies consumption independently
+// and never rewrites user Task lifecycle during settlement (ADR-0038).
 //
 // The kernel calls these inside one transition on the owner thread: first
 // the exhausts check, then apply_* or end_task, which use the same reach
@@ -32,6 +33,8 @@ struct WorkTables {
     AgentTable &agents;
     // Optional for standalone work-table users; Kernel always supplies its owner.
     const GoalAuthorityTable *authority = nullptr;
+    // Borrowed durable-prefix sample; max means all supplied facts are durable.
+    uint64_t durable_seq = UINT64_MAX;
 };
 
 // Whether a task the change would reach is at the largest revision. The goal

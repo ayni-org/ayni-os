@@ -8,12 +8,26 @@
 namespace ayni::kernel {
 namespace {
 
-// Explicitly paused admissions are no longer READY work. Missing or stale
-// evidence still reaches the consumption check, which records its refusal.
-bool admission_not_paused(const void *context, const work::Task &task) {
-    const auto &authority = *static_cast<const work::TaskAuthorityTable *>(context);
-    return !authority.contains(task.slot, task.task_id) ||
-           authority.at(task.slot).phase != work::TaskAuthorityPhase::paused;
+// Borrowed admission context for one synchronous ordering/readiness query.
+struct DecisionAdmission {
+    const WorkModel &model; // Owner state, unchanged for the selection call.
+    uint64_t durable_seq;   // Durable-prefix sample; no cross-boot comparison.
+};
+
+// Paused or unconfirmed replacement bindings wait without spinning READY.
+// Missing evidence reaches the consumption check, which records its refusal.
+bool admission_ready(const void *context, const work::Task &task) {
+    const auto &query = *static_cast<const DecisionAdmission *>(context);
+    const auto &authority = query.model.task_authority;
+    if (authority.contains(task.slot, task.task_id) &&
+        authority.at(task.slot).phase == work::TaskAuthorityPhase::paused) {
+        return false;
+    }
+    const auto &goal = query.model.goals.at(task.goal_index);
+    return !query.model.goal_authority.contains(task.goal_index, goal.goal_id) ||
+           !work::replacement_binding_pending(
+               query.model.goal_authority.at(task.goal_index).binding, goal.created.commit_seq,
+               query.durable_seq);
 }
 
 static_assert(alignof(ayni_policy_intent_v1) <= alignof(ayni_task_step_v1),
@@ -217,14 +231,14 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                  uint64_t now_us, uint64_t durable_seq, OwnerClock clock) {
     uint32_t index = 0;
-    if (!model.tasks.next_ready(ready_before, index,
-                                {&model.task_authority, admission_not_paused})) {
+    const DecisionAdmission admission{model, durable_seq};
+    if (!model.tasks.next_ready(ready_before, index, {&admission, admission_ready})) {
         return false;
     }
     const work::Task &task = model.tasks.at(index);
     const auto authority = model.check_task_authority(index, clock.now_us(clock.ctx), durable_seq);
     if (authority.status != AYNI_OK) {
-        if (authority.reason == AYNI_REASON_GRANT_NOT_DURABLE) {
+        if (authority.status == AYNI_BUSY) {
             return false;
         }
         model.pause_goal_authority(task.goal_index);
@@ -288,8 +302,9 @@ bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_bef
     return true;
 }
 
-bool awaits_decision(const WorkModel &model) {
-    return model.tasks.has_ready({&model.task_authority, admission_not_paused});
+bool awaits_decision(const WorkModel &model, uint64_t durable_seq) {
+    const DecisionAdmission admission{model, durable_seq};
+    return model.tasks.has_ready({&admission, admission_ready});
 }
 
 } // namespace ayni::kernel

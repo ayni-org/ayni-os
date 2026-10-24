@@ -4,6 +4,30 @@
 
 namespace ayni::kernel {
 
+// The complete direct live cohort must still name this exact old binding.
+// Missing/partial old admissions are refused, never repaired as legacy data.
+authority::GrantCheck WorkModel::check_reauthorization_tasks(uint32_t goal_index) const {
+    const auto &goal = goals.at(goal_index);
+    const auto previous = goal_authority.at(goal_index);
+    for (uint32_t at = 0; at < tasks.size(); ++at) {
+        const auto &task = tasks.at(at);
+        if (task.goal_id != goal.goal_id || !work::TaskTable::is_live(task.lifecycle)) {
+            continue;
+        }
+        if (work::TaskTable::at_largest_revision(task)) {
+            return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
+        }
+        work::TaskAuthorityRecord record{};
+        if (!task_authority.read(task.slot, task.task_id, record) ||
+            !matches_task_ceiling(record, goal_index) ||
+            ((record.phase == work::TaskAuthorityPhase::paused) !=
+             (previous.phase == work::GoalAuthorityPhase::paused))) {
+            return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+        }
+    }
+    return {AYNI_OK, AYNI_REASON_NONE};
+}
+
 // Compare the retained generation and selections exactly; a covering Grant
 // cannot replace the admission this Task inherited.
 bool WorkModel::matches_task_ceiling(const work::TaskAuthorityRecord &record,

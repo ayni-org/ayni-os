@@ -71,19 +71,9 @@ authority::GrantCheck check_context(const WorkModel &model, const ApprovalPlan &
     if (!work::AgentTable::usable(model.agents.find_instance(goal.owner_instance_id))) {
         return {AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT};
     }
-    const bool parents_available = model.goals.visit_lineage(goal.parent_index, [&](uint32_t at) {
-        const auto &parent = model.goals.at(at);
-        return work::GoalTable::is_live(parent.lifecycle) && !work::GoalTable::is_held(parent) &&
-               (parent.expires_us == work::no_time || parent.expires_us > now_us);
-    });
-    if (!parents_available) {
-        return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
-    }
-    if (goal.parent_index != work::GoalTable::no_parent) {
-        const auto parent = model.check_goal_authority(goal.parent_index, now_us, durable_seq);
-        if (parent.status != AYNI_OK) {
-            return parent;
-        }
+    const auto parent = model.check_parent_authority(goal.parent_index, now_us, durable_seq);
+    if (parent.status != AYNI_OK) {
+        return parent;
     }
     for (uint32_t index = 0; index < plan.record.count; ++index) {
         const auto &need = plan.record.requirements[index];
@@ -156,13 +146,13 @@ bool publish_batch(WorkModel &model, const Intent &intent, const authority::Sess
         parent = {model.goals.at(parent_index).goal_id,
                   model.goal_authority.at(parent_index).binding.established_seq};
     }
-    model.goal_authority.approve(plan.goal_index, references, stamp, parent);
+    model.goal_authority.bind(plan.goal_index, references, stamp, parent);
     model.goals.approve(plan.goal_index, now_us, stamp);
     const auto &goal = model.goals.at(plan.goal_index);
     outcome.object = {0, goal.goal_id, goal.revision, AYNI_OBJECT_GOAL};
     outcome.commit_seq = stamp.commit_seq;
-    outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
     outcome.due_work = true;
+    outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
     model.due_work_changed = true;
     return true;
 }

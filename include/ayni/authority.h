@@ -154,6 +154,21 @@ typedef struct ayni_goal_approve_v1 {
     ayni_goal_create_v1 original;   /* complete original inputs, including original expiry */
 } ayni_goal_approve_v1;
 
+/* Since 0.26. Current durable owner's MANAGEMENT Session only, with a nonzero
+ * command ID and Goal expected_revision. Selects existing durable Grants;
+ * never creates authority or changes the original requirement ceiling.
+ * Rebinds this Goal and all direct live Tasks atomically; preserves user and
+ * policy holds and terminal history. Execution waits for the new binding to
+ * become durable. Children require separate reauthorization. All nested
+ * input views belong to the caller through ayni_submit_intent. */
+typedef struct ayni_goal_reauthorize_v1 {
+    uint32_t struct_size;                   /* sizeof this descriptor. */
+    uint32_t reserved;                      /* 0. */
+    uint64_t goal_id;                       /* Exact retained Goal identity. */
+    uint64_t expected_authority_commit_seq; /* Positive last authority fact sequence. */
+    ayni_goal_create_v1 original;           /* Full immutable creation echo, including expiry. */
+} ayni_goal_reauthorize_v1;
+
 /* Since 0.23. Copy original Goal parameters on the owner thread, outside
  * callbacks, RECOVERING through DRAINING. On BUFFER_TOO_SMALL only out_size
  * changes to the required byte count; other errors change no output. A null

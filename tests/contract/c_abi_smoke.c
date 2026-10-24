@@ -84,8 +84,14 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_task_authority_reference_v1 task_reference = {0};
     uint32_t parameter_size = 0;
     ayni_goal_approve_v1 approval = {0};
+    ayni_goal_reauthorize_v1 reauthorization = {0};
     uint64_t session_id = 0;
     int failures = 0;
+    reauthorization.struct_size = sizeof(reauthorization);
+    reauthorization.goal_id = 1;
+    reauthorization.expected_authority_commit_seq = 1;
+    reauthorization.original = create;
+    (void)reauthorization;
 
     approval.struct_size = sizeof approval;
     approval.lifetime = AYNI_GRANT_PERMANENT;

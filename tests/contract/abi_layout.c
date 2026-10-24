@@ -460,3 +460,13 @@ AYNI_LAYOUT(task_authority_ref_size, sizeof(ayni_task_authority_reference_v1) ==
 AYNI_LAYOUT(goal_binding_seq, offsetof(ayni_goal_authority_info_v1, binding_commit_seq) == 48);
 AYNI_LAYOUT(goal_parent_binding_seq,
             offsetof(ayni_goal_authority_info_v1, parent_binding_commit_seq) == 56);
+
+/* ADR-0038: full original echo and distinct authorization CAS, ABI 0.26. */
+AYNI_LAYOUT(goal_reauthorize_struct, offsetof(ayni_goal_reauthorize_v1, struct_size) == 0);
+AYNI_LAYOUT(goal_reauthorize_reserved, offsetof(ayni_goal_reauthorize_v1, reserved) == 4);
+AYNI_LAYOUT(goal_reauthorize_goal, offsetof(ayni_goal_reauthorize_v1, goal_id) == 8);
+AYNI_LAYOUT(goal_reauthorize_authority_cas,
+            offsetof(ayni_goal_reauthorize_v1, expected_authority_commit_seq) == 16);
+AYNI_LAYOUT(goal_reauthorize_original, offsetof(ayni_goal_reauthorize_v1, original) == 24);
+AYNI_LAYOUT(goal_reauthorize_size,
+            sizeof(ayni_goal_reauthorize_v1) == 24 + sizeof(ayni_goal_create_v1));

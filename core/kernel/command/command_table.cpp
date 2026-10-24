@@ -6,6 +6,23 @@
 #include <new>
 
 namespace ayni::kernel {
+namespace {
+
+// Reauthorization's exact request binds both CAS values to the saved result;
+// no current Goal, Session or catalog lookup belongs to command identity.
+bool matches_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v1 bytes,
+                                     const WorkAuthorityResult &result) {
+    ReauthorizationCommand command{};
+    return mapping.result_size != 0U && read_reauthorization_command(bytes, command) &&
+           command.expected_revision != UINT32_MAX && mapping.object.origin_device_id == 0U &&
+           mapping.object.id == command.reauthorization.goal_id &&
+           mapping.object.revision == command.expected_revision + 1U &&
+           result.binding.parent.goal_id == command.reauthorization.original.parent_goal_id &&
+           result.binding.input.incarnation != 0U &&
+           command.reauthorization.expected_authority_commit_seq < result.binding.established_seq &&
+           mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
+}
+} // namespace
 
 bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
                              ayni_bytes_v1 result_bytes) {
@@ -64,6 +81,10 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
              (result.binding.parent.goal_id != command.approval.original.parent_goal_id ||
               result.binding.input.incarnation != 0U)) ||
             mapping.effect != AYNI_INTENT_EFFECT_CHANGED) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
+        if (!matches_reauthorization_command(mapping, bytes, result)) {
             return false;
         }
     } else {
@@ -190,6 +211,12 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
                                                    const ApprovalCommand &input) {
     return find_candidate(principal_id, command_id, AYNI_INTENT_GOAL_APPROVE, input,
                           measure_approval_command, encode_approval_command);
+}
+
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const ReauthorizationCommand &input) {
+    return find_candidate(principal_id, command_id, AYNI_INTENT_GOAL_REAUTHORIZE, input,
+                          measure_reauthorization_command, encode_reauthorization_command);
 }
 
 bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {

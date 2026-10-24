@@ -55,6 +55,20 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     case AYNI_INTENT_GOAL_CREATE:
         return read_goal_create(*static_cast<const ayni_goal_create_v1 *>(raw.body),
                                 out_intent.create);
+    case AYNI_INTENT_GOAL_REAUTHORIZE: {
+        const ayni_goal_reauthorize_v1 *body = nullptr;
+        const auto status = read_body(raw.body, body);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        if (body->reserved != 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        auto &request = out_intent.reauthorization;
+        request.goal_id = body->goal_id;
+        request.expected_authority_commit_seq = body->expected_authority_commit_seq;
+        return read_goal_create(body->original, request.original);
+    }
     case AYNI_INTENT_GOAL_APPROVE: {
         const ayni_goal_approve_v1 *body = nullptr;
         const auto status = read_body(raw.body, body);
@@ -95,10 +109,18 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GOAL_APPROVE;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GOAL_REAUTHORIZE;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
+        if (intent.command_id == 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        uint32_t size = 0;
+        return measure_reauthorization_command({intent.expected_revision, intent.reauthorization},
+                                               size);
+    }
     if (intent.kind == AYNI_INTENT_GOAL_APPROVE) {
         if (intent.command_id == 0U) {
             return AYNI_INVALID_ARGUMENT;

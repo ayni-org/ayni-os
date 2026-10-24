@@ -142,15 +142,17 @@ namespace {
 // out. Keeps it set when work is found: doing it changes the tables. Ids are
 // compared rather than marked because whatever takes the last one (a goal, a
 // session) need not know about due work.
-bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work) {
+bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work,
+                   uint64_t durable_seq) {
     const bool id_left = model.ids.available();
     if (!model.due_work_changed && id_left == model.searched_with_id &&
-        now_us < model.next_due_work_us) {
+        durable_seq == model.searched_durable_seq && now_us < model.next_due_work_us) {
         return false;
     }
     model.searched_with_id = id_left;
+    model.searched_durable_seq = durable_seq;
     uint64_t next_us = work::no_time;
-    if (work::find_due_work(model.tables(), now_us, id_left, out_work, next_us)) {
+    if (work::find_due_work(model.tables(durable_seq), now_us, id_left, out_work, next_us)) {
         model.due_work_changed = true;
         return true;
     }
@@ -172,9 +174,10 @@ bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint6
     return true;
 }
 
-bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us) {
+bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
+                      uint64_t durable_seq) {
     work::DueWork work{};
-    const bool due = next_due_work(model, now_us, work);
+    const bool due = next_due_work(model, now_us, work, durable_seq);
     out_next_us = due ? now_us : model.next_due_work_us;
     uint32_t index = 0;
     uint64_t deadline = work::no_time;
@@ -200,7 +203,7 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
         return DueWorkResult::applied;
     }
     work::DueWork work{};
-    if (!next_due_work(model, now_us, work)) {
+    if (!next_due_work(model, now_us, work, durable_seq)) {
         return DueWorkResult::none;
     }
     work::WorkTables tables = model.tables();
@@ -209,7 +212,7 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
             model.check_goal_authority(work.goal_index, authority_now_us, durable_seq);
         if (check.status != AYNI_OK) {
             // Confirmation may still arrive; it must not become a sticky pause.
-            if (check.reason == AYNI_REASON_GRANT_NOT_DURABLE) {
+            if (check.status == AYNI_BUSY) {
                 return DueWorkResult::none;
             }
             model.pause_goal_authority(work.goal_index);

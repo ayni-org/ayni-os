@@ -17,6 +17,7 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 
+#include "kernel/command/command_reauthorization.h"
 #include "kernel/command/pending_revoke.h"
 #include "kernel/command/work_authority_result.h"
 
@@ -99,6 +100,9 @@ class CommandTable {
     // Approval uses the same exact identity window and staging invariant.
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const ApprovalCommand &input);
+    // Same window, exact identity and scratch owner for explicit reauthorization.
+    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
+                           const ReauthorizationCommand &input);
     // Revoke lookup clears any create candidate but does not stage one;
     // acceptance copies the request into a separate pending control (ADR-0031).
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
