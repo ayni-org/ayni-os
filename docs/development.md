@@ -71,7 +71,13 @@ F 本轮按用户 2026-10-24 选择采用本地 Debug/ASan+UBSan 与完整适用
 
 ### CI 机器
 
-CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门跑 CI 的 Ubuntu Server 26.10 机器，runner 用一个没有 sudo 的用户运行，开机自启。每个 job 都在容器里跑：检查、native 与 clang-tidy 用 `ubuntu:24.04` 镜像，开头用 apt 装工具（GCC 13.3.0、Clang 与 clang-format 18.1.3、CMake 3.28.3、ccache 4.9.1），版本与宿主系统无关；固件用 `espressif/idf:v6.0.3`。编译缓存与 GoogleTest 发布包放在 runner 上的 Docker 卷里（`ayni-ccache`、`ayni-ccache-esp-idf`、`ayni-downloads`），跨运行保留。构建与测试并行度都是 4，按实测峰值定：四个任务时 ASan 构建约 1 GiB，固件约 0.7 GiB。容器里以 root 运行，所以每个 job 最后把工作目录的属主改回 runner 的用户，否则下一次运行删不掉这些文件。
+CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门跑 CI 的 Ubuntu Server 26.10 虚拟机，4 核 8 线程、8 GiB 内存，一个 runner 实例，使用无 sudo 的用户并开机自启。一次只接一个 job；构建与测试并行度仍为 4。宿主提供 Git、Docker、Bash 与 `flock`，Native 工具来自 Ubuntu 24.04 包（GCC 13.3.0、Clang/clang-format 18.1.3、CMake 3.28.3、ccache 4.9.1），版本与宿主系统无关；固件用 `espressif/idf:v6.0.3`。
+
+检查、四项 Native 构建与 clang-tidy 共用本机 `ayni-ci-tools:<配方键>` 镜像。`tools/ci/run_tools.sh prepare` 以基础镜像名和 `tools/ci/install_tools.sh` 内容生成缓存键：首次或镜像缺失时，在受限容器里安装一次，只有安装成功才发布本地镜像；后续直接复用。更新工具包或安全补丁时修改安装配方的 revision，触发重新安装。镜像保留在 runner 的 Docker daemon 中，不上传注册表；新 runner 或清除镜像后会重建。基础镜像标签与 apt 仓库允许更新，此缓存用于避免重复安装，不声称锁定每个包的精确版本；Native job 会打印实际工具版本。
+
+Native 命令通过 `tools/ci/run_tools.sh run <命令> <参数…>` 执行，每个容器限制 4 CPU、3 GiB 内存并禁止额外 swap，按该机器单 job 的资源预算留出余量。镜像初始化也使用同样限制；失败会清理安装容器，不复用半成品。镜像初始化用本机用户级 `flock` 串行，当前只支持这些 job 共用一个 Docker daemon。源码继续挂载到 `/__w/ayni/ayni`，以保持 Debug 的 ccache 路径；命令以 runner UID/GID 运行，取消也不会留下 root 属主的源码文件；Docker init 转发取消信号并回收子进程。检查步骤的 checkout 和资源检查在宿主执行。
+
+编译缓存与 GoogleTest 发布包继续使用原 Docker 卷 `ayni-ccache`、`ayni-ccache-esp-idf`、`ayni-downloads`，跨运行保留；首次采用 Native 卷时只在属主不同的情况下修正一次。ESP-IDF job 仍用原 job container 和缓存，最后把 root 创建的文件归还 runner。
 
 机器的一次性准备要 sudo，之后运行 CI 不需要：
 
@@ -79,7 +85,7 @@ CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门
 - 在 `/etc/sysctl.d/99-ayni-tsan.conf` 写入 `vm.mmap_rnd_bits=28` 并执行 `sudo sysctl --system`：容器不能改宿主内核参数，TSan 任务开始前检查这个值；
 - 磁盘至少留 40 GB，ESP-IDF 镜像约 16 GB。
 
-清空缓存用 `docker volume rm ayni-ccache ayni-ccache-esp-idf ayni-downloads`。checks 任务的 “Runner resources” 一步打印 CPU、内存、磁盘与 mmap 随机化位数，换机器或调并行度时先看这里。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
+工具镜像可用 `docker image ls ayni-ci-tools` 查看，再用 `docker image rm <具体镜像标签>` 删除；下次运行会自动重新安装。清空编译与下载缓存用 `docker volume rm ayni-ccache ayni-ccache-esp-idf ayni-downloads`。checks 任务的 “Runner resources” 一步打印 CPU、内存、磁盘、内存压力与活动容器；TSan 步骤用 `tools/ci/run_tools.sh mmap-bits` 读取宿主 mmap 随机化位数（该文件可能只有 root 可读，因此只对这次无挂载的读取使用容器 root），换机器或调并行度时先看这里。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节。
 
 ### 离线配置 GoogleTest
 

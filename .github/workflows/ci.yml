@@ -1,7 +1,7 @@
 name: ci
 
-# Every job runs on the self-hosted runner, a machine kept for CI, inside a
-# container: the native tools come from Ubuntu 24.04 packages (GCC 13,
+# Every job runs on the self-hosted runner, a machine kept for CI. Builds
+# and checks use containers: native tools come from Ubuntu 24.04 (GCC 13,
 # Clang 18, the versions docs/development.md pins) whatever the host runs,
 # and the firmware uses the ESP-IDF image. The machine is not billed, but it
 # runs one job at a time, so CI runs the full matrix only where it can find
@@ -13,9 +13,9 @@ name: ci
 # A push to main runs the checks job only: the pull request already built and
 # tested the same merge result.
 #
-# Jobs run as root in their container, and the runner's own user cannot
-# delete what root leaves in the work directory, so every job ends by handing
-# those files back to that user.
+# Native steps reuse a runner-local tool image via tools/ci/run_tools.sh.
+# Only a cold/missing recipe installs packages; ESP-IDF keeps its own image.
+# Native tools run as the runner user; ESP-IDF returns its root-owned files.
 on:
   push:
     branches: [main]
@@ -34,14 +34,14 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Steps in a container default to sh, and the steps are written for bash.
+# The wrapper and commands are written for bash (also inside ESP-IDF).
 defaults:
   run:
     shell: bash
 
 env:
   DEBIAN_FRONTEND: noninteractive
-  # The work directory belongs to the runner's user and the steps run as root,
+  # ESP-IDF steps run as root; its work directory belongs to the runner user,
   # so Git would treat the checkout as unsafe and not find the repository.
   # Checkout trusts it only for its own commands.
   GIT_CONFIG_COUNT: 1
@@ -58,16 +58,12 @@ jobs:
     name: dependency, contract, readability and format checks
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: [self-hosted, linux]
-    timeout-minutes: 10
-    container: ubuntu:24.04
+    # A cold recipe installs the combined compiler/checker toolchain once.
+    timeout-minutes: 20
     outputs:
       build: ${{ steps.scope.outputs.build }}
+      tools-ready: ${{ steps.tools.outcome }}
     steps:
-      # Before checkout, which needs Git to fetch the history compared below.
-      - name: Install tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git python3 clang-format-18
       - uses: actions/checkout@v4
         with:
           # The pull request merge commit and its first parent, the base.
@@ -96,43 +92,39 @@ jobs:
           echo "CPUs: $(nproc)"
           grep -E 'MemTotal|MemAvailable|SwapTotal' /proc/meminfo
           df -h "$GITHUB_WORKSPACE"
-          echo "vm.mmap_rnd_bits: $(cat /proc/sys/vm/mmap_rnd_bits)"
+          cat /proc/pressure/memory
+          docker ps --format '{{.Names}} {{.Status}}'
+      - name: Prepare cached native tools
+        id: tools
+        run: tools/ci/run_tools.sh prepare
+      - name: CI tool runner tests
+        run: tools/ci/run_tools.sh run python3 -m unittest discover -s tests/tools -p test_ci_tools.py -v
       - name: Dependency rules
-        run: python3 tools/check_deps.py
+        run: tools/ci/run_tools.sh run python3 tools/check_deps.py
       - name: Dependency checker tests
-        run: python3 -m unittest -v test_check_deps
+        run: ../../tools/ci/run_tools.sh run python3 -m unittest -v test_check_deps
         working-directory: tests/tools
       - name: Contract clauses and traceability
-        run: python3 tools/check_contracts.py
+        run: tools/ci/run_tools.sh run python3 tools/check_contracts.py
       - name: Contract checker tests
-        run: python3 -m unittest -v test_check_contracts
+        run: ../../tools/ci/run_tools.sh run python3 -m unittest -v test_check_contracts
         working-directory: tests/tools
       - name: Readability rules and baseline
-        run: python3 tools/check_readability.py
+        run: tools/ci/run_tools.sh run python3 tools/check_readability.py
       - name: Readability checker tests
-        run: python3 -m unittest -v test_check_readability
+        run: ../../tools/ci/run_tools.sh run python3 -m unittest -v test_check_readability
         working-directory: tests/tools
       - name: Formatting
-        run: git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
+        run: tools/ci/run_tools.sh run bash -euo pipefail -c "git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror"
       - name: Whitespace
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
-      - name: Return files to the runner's user
-        if: always()
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
 
   native:
     name: native ${{ matrix.compiler }} ${{ matrix.preset }}
     needs: checks
-    if: ${{ !cancelled() && needs.checks.outputs.build == 'true' }}
+    if: ${{ !cancelled() && needs.checks.outputs.build == 'true' && needs.checks.outputs.tools-ready == 'success' }}
     runs-on: [self-hosted, linux]
     timeout-minutes: 20
-    # Docker volumes on the runner keep compiler output and the GoogleTest
-    # archive from one run to the next.
-    container:
-      image: ubuntu:24.04
-      volumes:
-        - ayni-ccache:/ccache
-        - ayni-downloads:/downloads
     strategy:
       fail-fast: false
       matrix:
@@ -156,11 +148,6 @@ jobs:
       # with a precompiled header.
       CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
     steps:
-      - name: Install build tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git cmake ninja-build ccache python3 g++ \
-            ${{ matrix.compiler == 'clang' && 'clang' || '' }}
       - uses: actions/checkout@v4
       # GCC 13's ThreadSanitizer may fail to start with 32 bits of mmap
       # randomization. A container shares the host's kernel and cannot change
@@ -168,28 +155,25 @@ jobs:
       - name: Check ASLR for ThreadSanitizer
         if: matrix.preset == 'native-tsan'
         run: |
-          bits=$(cat /proc/sys/vm/mmap_rnd_bits)
+          bits=$(tools/ci/run_tools.sh mmap-bits)
           if [ "$bits" -gt 28 ]; then
             echo "::error::vm.mmap_rnd_bits is $bits on the runner machine; ThreadSanitizer needs 28 (docs/development.md)"
             exit 1
           fi
       - name: Tool versions
-        run: cmake --version && ninja --version && ccache --version && "$CC" --version && "$CXX" --version
+        run: tools/ci/run_tools.sh run bash -eu -c 'cmake --version && ninja --version && ccache --version && "$CC" --version && "$CXX" --version'
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAYNI_DOWNLOAD_DIR=/downloads
+        run: tools/ci/run_tools.sh run cmake --preset ${{ matrix.preset }} -DAYNI_DOWNLOAD_DIR=/downloads
       - name: Build
         run: |
-          ccache --zero-stats
-          cmake --build --preset ${{ matrix.preset }}
+          tools/ci/run_tools.sh run ccache --zero-stats
+          tools/ci/run_tools.sh run cmake --build --preset ${{ matrix.preset }}
       - name: Compiler cache statistics
-        run: ccache --show-stats
+        run: tools/ci/run_tools.sh run ccache --show-stats
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: tools/ci/run_tools.sh run ctest --preset ${{ matrix.preset }}
       - name: Simulator
-        run: ./build/${{ matrix.preset == 'native-debug' && 'native' || matrix.preset }}/targets/simulator/ayni-sim
-      - name: Return files to the runner's user
-        if: always()
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
+        run: tools/ci/run_tools.sh run ./build/${{ matrix.preset == 'native-debug' && 'native' || matrix.preset }}/targets/simulator/ayni-sim
 
   clang-tidy:
     name: clang-tidy (advisory)
@@ -197,27 +181,18 @@ jobs:
     runs-on: [self-hosted, linux]
     timeout-minutes: 20
     continue-on-error: true
-    container:
-      image: ubuntu:24.04
-      volumes:
-        - ayni-downloads:/downloads
     steps:
-      - name: Install tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git cmake ninja-build python3 g++ clang-tidy-18
       - uses: actions/checkout@v4
+      - name: Prepare cached native tools
+        run: tools/ci/run_tools.sh prepare
       # Without the precompiled header, so that this weekly build also checks
       # that each test file includes what it uses.
       - name: Configure
-        run: cmake --preset native-debug -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DAYNI_DOWNLOAD_DIR=/downloads
+        run: tools/ci/run_tools.sh run cmake --preset native-debug -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DAYNI_DOWNLOAD_DIR=/downloads
       - name: Build generated sources
-        run: cmake --build --preset native-debug
+        run: tools/ci/run_tools.sh run cmake --build --preset native-debug
       - name: clang-tidy
-        run: run-clang-tidy-18 -p build/native -quiet 'core/|hosts/|runtime/|targets/'
-      - name: Return files to the runner's user
-        if: always()
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
+        run: tools/ci/run_tools.sh run run-clang-tidy-18 -j "$CMAKE_BUILD_PARALLEL_LEVEL" -p build/native -quiet 'core/|hosts/|runtime/|targets/'
 
   esp-idf:
     name: ESP32-S3 hello firmware (ESP-IDF v6.0.3)
