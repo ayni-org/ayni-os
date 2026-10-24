@@ -2,7 +2,7 @@
 
 - **关联**：`AGENTS.md`；`docs/development.md`；计划 §9、§9.1、§14；`reports/core/m1-progress.md`
 - **适用**：接手本仓库工作的任何代理与开发者。本文记录当前交付流程；历史 PR 的验证结果不因流程调整而改写。
-- **当前决定（用户 2026-10-24）**：按完整功能组织 PR；暂停强制植入缺陷/变异及新增故障注入、恢复专项测试，当前先补相关正常功能测试；本地按需验证，普通代码 PR 由 CI 完成现有 ASan/UBSan 全套，其他配置按改动或定期运行。
+- **当前决定（用户 2026-10-24）**：按完整功能组织 PR；暂停强制植入缺陷/变异及新增故障注入、恢复专项测试，当前先补相关正常功能测试；本地按需验证，普通代码 PR 由 CI 完成现有 ASan/UBSan 全套，其他配置仅定期或显式手动运行（用户 2026-10-25 进一步收窄）。
 
 ## 1. 依据与优先级
 
@@ -94,14 +94,11 @@ CI 的选择由 `tools/ci/select_checks.py` 和 `.github/workflows/ci.yml` 实�
 | draft PR | 不运行 |
 | 普通代码 ready PR | 一个 `checks and ASan` job；轻量检查、现有完整 ASan/UBSan 测试与模拟器在同一容器执行 |
 | 纯 `.md` PR / 合并后的 main push | 只运行轻量检查，不编译 Native/固件 |
-| 入口队列、完成槽、Native/Sim Host、Native runtime 及已有对应并发测试（含 kernel-event） | 追加 TSan |
-| `include/ayni/` 公共头文件 | 追加 Clang Debug、ESP-IDF 编译 |
-| ESP Host/runtime/target、ESP32 drivers | 追加 ESP-IDF 编译 |
-| CMake、工具链、CI workflow 或 `tools/ci/` | 追加 Release、Clang Debug、TSan、ESP-IDF |
-| PR 加 `ci:full` 标签 | 完整四项 Native 配置与 ESP-IDF；用于路径规则无法识别的新并发模块、优化相关改动等 |
+| 并发、公共头、ESP、CMake、工具链及 CI 脚本改动 | 与普通代码 PR 相同，不按路径追加配置 |
+| 显式给 PR 加 `ci:full` 标签 | 手动请求完整四项 Native 配置与 ESP-IDF |
 | 每周一 02:00（北京时间）/ `workflow_dispatch` | 完整四项 Native 配置、ESP-IDF 与 advisory clang-tidy |
 
-附加 Native 配置在一个 job/容器中依次运行。ASan 已是 GCC Debug 加 sanitizer，CI 不另建一份 GCC Debug。新并发边界应同步更新路径规则；不能只凭文件名推定一切并发改动均已识别，审查时按需使用 `ci:full`。工作包收尾可对最终分支手动触发完整 CI；clang-tidy 仍不阻断，其他适用失败须处理。
+日常 Native 验证只有 `native-asan`：GCC Debug 同时开启 ASan/UBSan，完整套件只跑一遍，不另外跑普通 Debug。Release、Clang Debug、TSan 和 ESP-IDF 仅在定期、`workflow_dispatch` 或显式 `ci:full` 时运行；不因并发、公共头、构建或 CI 路径自动追加。完整验证中的附加 Native 配置仍在一个 job/容器中依次运行。工作包收尾可对最终分支手动触发完整 CI；clang-tidy 仍不阻断，其他适用失败须处理。
 
 CI 使用一个自托管 runner，job 串行、任务内按预算并行。Native 工具镜像按安装配方缓存，常规运行不重装；复用 ccache、GoogleTest 下载和固定容器路径，见 `docs/development.md`。保持草稿跳过、旧运行取消与 main 不重跑构建。分支保护如配置必需检查，须与实际 job 名称和条件保持一致，不继续要求已删除的固定矩阵名称。
 
@@ -127,6 +124,6 @@ TSan 启动受宿主 `vm.mmap_rnd_bits` 约束；处理方法见开发文档。�
 1. **读的顺序。** `AGENTS.md`、本文、`reports/core/m1-progress.md` 的交接状态、计划对应工作包/§14、相关 ADR/契约，再读相邻实现。历史工作包的验证安排不覆盖本次用户决定。
 2. **分支。** 从最新 main 为完整功能开分支；在用户已有工作分支中修改时保留其内容，不擅自重置或强推。
 3. **独立审查。** 按第 2 节适用范围在另一会话/代理中只读进行；需要 worktree 时建在仓库外，完成后按需清理。
-4. **验证接手。** 先确定改动范围，选择本地相关检查与 CI 附加配置；不恢复变异、故障注入或恢复专项的固定任务清单。已有正常与专项测试继续由完整 CI 运行。
+4. **验证接手。** 先确定改动范围，选择本地相关检查；日常 CI 使用唯一的 ASan/UBSan 配置；不恢复变异、故障注入或恢复专项的固定任务清单。已有正常与专项测试继续由完整 CI 运行。
 5. **内存数字。** ABI/容量变化时用 C 程序调用 `ayni_kernel_memory_requirements`：默认配置只覆盖 ABI 三字段、`struct_size=12`；最小工作配置覆盖完整结构，各工作容量取 `_MIN` 或 1，`command_capacity=1`，其余默认。记录默认/最小字节数与对齐，区分 Native 和硬件结果。
 6. **进度。** 写清实施完成与验证未完成的边界，不能因暂缓专项测试把相应契约改成全部验证通过。

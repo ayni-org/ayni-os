@@ -1,7 +1,7 @@
 name: ci
 
 # Ordinary code PRs run checks and ASan/UBSan in one cached container.
-# Extra native configurations and ESP-IDF follow affected paths or ci:full.
+# Extra native configurations and ESP-IDF run only periodically or via ci:full/manual.
 # Weekly/manual runs cover every configuration; main pushes run checks only.
 on:
   push:
@@ -65,7 +65,7 @@ jobs:
           docker ps --format '{{.Names}} {{.Status}}'
       - name: Prepare cached native tools
         run: tools/ci/run_tools.sh prepare
-      - name: Select affected configurations
+      - name: Select daily or full validation
         id: scope
         env:
           CI_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
@@ -80,7 +80,7 @@ jobs:
         run: tools/ci/run_tools.sh run bash tools/ci/checks.sh "$RUN_ASAN"
 
   native:
-    name: affected native configurations
+    name: periodic or requested native configurations
     needs: checks
     if: needs.checks.outputs.release == 'true' || needs.checks.outputs.clang == 'true' || needs.checks.outputs.tsan == 'true'
     runs-on: [self-hosted, linux]

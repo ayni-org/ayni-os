@@ -67,7 +67,7 @@ ctest --test-dir build/native --output-on-failure
 
 装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。因为有预编译头，还要设置 `CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime`，否则 ccache 不缓存单元测试。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
 
-用户 2026-10-24 最新决定替代 F 的本地验证门槛：本地只跑相关检查，不强制完整套件或五配置；普通代码 PR 在 CI 跑 ASan/UBSan，附加配置按路径、`ci:full` 或周期触发。复用固定构建目录、ccache 与 PCH，相关验证与只读审查可重叠。阶段收尾引用适用的最终代码结果或补跑手动 CI，不重复要求本地五配置。
+用户 2026-10-24 最新决定替代 F 的本地验证门槛：本地只跑相关检查，不强制完整套件或五配置；普通代码 PR 在 CI 跑 ASan/UBSan，2026-10-25 进一步限定附加配置仅通过显式 `ci:full`、手动或周期触发。复用固定构建目录、ccache 与 PCH，相关验证与只读审查可重叠。阶段收尾引用适用的最终代码结果或补跑手动 CI，不重复要求本地五配置。
 
 ### CI 机器
 
@@ -85,7 +85,7 @@ Native 命令通过 `tools/ci/run_tools.sh run <命令> <参数…>` 执行，�
 - 在 `/etc/sysctl.d/99-ayni-tsan.conf` 写入 `vm.mmap_rnd_bits=28` 并执行 `sudo sysctl --system`：容器不能改宿主内核参数，TSan 任务开始前检查这个值；
 - 磁盘至少留 40 GB，ESP-IDF 镜像约 16 GB。
 
-工具镜像可用 `docker image ls ayni-ci-tools` 查看，再用 `docker image rm <具体镜像标签>` 删除；下次运行会自动重新安装。清空编译与下载缓存用 `docker volume rm ayni-ccache ayni-ccache-esp-idf ayni-downloads`。`checks and ASan` 任务的 “Runner resources” 一步打印 CPU、内存、磁盘、内存压力与活动容器；TSan 步骤用 `tools/ci/run_tools.sh mmap-bits` 读取宿主 mmap 随机化位数（该文件可能只有 root 可读，因此只对这次无挂载的读取使用容器 root），换机器或调并行度时先看这里。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节及 `tools/ci/select_checks.py`：普通 Core 实现只跑检查/ASan；已知并发边界追加 TSan；公共头追加 Clang/ESP-IDF；ESP 相关目录追加固件；构建/CI 变化、`ci:full` 标签与定期/手动运行覆盖完整矩阵。路径规则未覆盖的新并发或优化相关改动，主动更新规则或加 `ci:full`。
+工具镜像可用 `docker image ls ayni-ci-tools` 查看，再用 `docker image rm <具体镜像标签>` 删除；下次运行会自动重新安装。清空编译与下载缓存用 `docker volume rm ayni-ccache ayni-ccache-esp-idf ayni-downloads`。`checks and ASan` 任务的 “Runner resources” 一步打印 CPU、内存、磁盘、内存压力与活动容器；TSan 步骤用 `tools/ci/run_tools.sh mmap-bits` 读取宿主 mmap 随机化位数（该文件可能只有 root 可读，因此只对这次无挂载的读取使用容器 root），换机器或调并行度时先看这里。哪些事件跑哪些任务见 `docs/workflow.md` 第 4 节及 `tools/ci/select_checks.py`：日常所有代码 PR（包括并发、公共头、ESP、CMake 和 CI 修改）只跑检查及一套 GCC Debug + ASan/UBSan；不再按路径追加其他配置。Release、Clang、TSan 与 ESP-IDF 仅通过显式 `ci:full`、定期或手动运行。
 
 ### 离线配置 GoogleTest
 
@@ -118,7 +118,7 @@ git diff --check
 
 ## ESP32-S3 固件
 
-当前 Hello 编译仍带入共享 Core，可检查目标平台编译与链接。普通 Core 实现 PR 不必每次编译；ESP 相关代码、公共头、构建/CI 变化触发，其他时间随完整周期/阶段验证运行。镜像和 ccache 继续复用。
+当前 Hello 编译仍带入共享 Core，可检查目标平台编译与链接。日常 PR 不自动触发编译；按用户 2026-10-25 决定，仅随周期或显式完整验证运行。镜像和 ccache 继续复用。
 
 安装锁定版本的 ESP-IDF（只需一次）：
 

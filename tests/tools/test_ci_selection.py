@@ -25,36 +25,39 @@ class CiSelectionTest(unittest.TestCase):
         self.assertEqual(self.enabled(["AGENTS.md", "docs/workflow.md"]), set())
         self.assertEqual(self.enabled(["core/kernel/ingress_lock.h"], "push"), set())
 
-    def test_concurrency_and_esp_changes_select_their_configuration(self):
+    def test_concurrency_and_esp_changes_use_only_the_daily_suite(self):
         self.assertEqual(self.enabled(["core/kernel/completion/completion_pool.cpp"]),
-                         {"asan", "tsan"})
+                         {"asan"})
         self.assertEqual(self.enabled(["hosts/esp_idf/esp_idf_host.cpp"]),
-                         {"asan", "esp_idf"})
+                         {"asan"})
 
-    def test_public_header_checks_compiler_and_firmware_consumers(self):
+    def test_public_header_does_not_add_compiler_or_firmware_suites(self):
         self.assertEqual(self.enabled(["include/ayni/ayni.h"]),
-                         {"asan", "clang", "esp_idf"})
+                         {"asan"})
 
-    def test_kernel_events_and_sim_host_changes_select_tsan(self):
+    def test_kernel_events_and_sim_host_use_only_the_daily_suite(self):
         for path in ["tests/unit/kernel_event_test.cpp", "hosts/sim/sim_host.cpp",
                      "hosts/sim/include/ayni/hosts/sim.h"]:
             with self.subTest(path=path):
-                self.assertEqual(self.enabled([path]), {"asan", "tsan"})
+                self.assertEqual(self.enabled([path]), {"asan"})
 
-    def test_build_changes_and_explicit_full_runs_cover_all_configurations(self):
-        all_checks = {"asan", "release", "clang", "tsan", "esp_idf"}
+    def test_build_and_ci_changes_do_not_expand_the_daily_matrix(self):
         for path in ["CMakePresets.json", "core/CMakeLists.txt", "cmake/AyniWarnings.cmake",
-                     "tools/ci/run_tools.sh", ".github/workflows/ci.yml"]:
+                     "tools/ci/run_tools.sh", "tools/ci/select_checks.py",
+                     "tests/tools/CMakeLists.txt", ".github/workflows/ci.yml"]:
             with self.subTest(path=path):
-                self.assertEqual(self.enabled([path]), all_checks)
+                self.assertEqual(self.enabled([path]), {"asan"})
+
+    def test_periodic_and_explicit_full_runs_cover_all_configurations(self):
+        all_checks = {"asan", "release", "clang", "tsan", "esp_idf"}
         for event in ["schedule", "workflow_dispatch"]:
             self.assertEqual(self.enabled([], event), all_checks)
         self.assertEqual(self.enabled(["docs/workflow.md"], full=True), all_checks)
 
-    def test_mixed_changes_keep_all_affected_checks(self):
+    def test_mixed_changes_still_select_only_one_native_suite(self):
         self.assertEqual(self.enabled(["docs/workflow.md", "hosts/native/file_log.cpp",
                                        "include/ayni/ayni.h"]),
-                         {"asan", "tsan", "clang", "esp_idf"})
+                         {"asan"})
 
     def test_merge_diff_includes_earlier_commits_and_old_paths_of_moves(self):
         with tempfile.TemporaryDirectory() as root:
@@ -71,7 +74,7 @@ class CiSelectionTest(unittest.TestCase):
             git("add", ".")
             git("commit", "-qm", "baseline")
             git("checkout", "-qb", "feature")
-            git("mv", "core/kernel/ingress_lock.h", "core/renamed_lock.h")
+            git("mv", "core/kernel/ingress_lock.h", "core/retired_lock.md")
             git("commit", "-qm", "move lock")
             (Path(root) / "README.md").write_text("Documentation update\n")
             git("add", ".")
@@ -82,7 +85,7 @@ class CiSelectionTest(unittest.TestCase):
                                     cwd=root, check=True, capture_output=True, text=True)
             outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
             self.assertEqual(outputs["asan"], "true")
-            self.assertEqual(outputs["tsan"], "true")
+            self.assertEqual(outputs["tsan"], "false")
             self.assertEqual(outputs["esp_idf"], "false")
 
 
