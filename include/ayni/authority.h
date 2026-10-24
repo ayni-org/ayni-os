@@ -137,6 +137,31 @@ typedef struct ayni_grant_revoke_v1 {
     uint64_t grant_id;
 } ayni_grant_revoke_v1;
 
+/* Since 0.23. Management-only atomic approval of one PROPOSED Goal. Requires
+ * a nonzero command ID and expected revision. Echo the immutable creation
+ * inputs; the missing mask must name exactly the original unselected items.
+ * Existing references are retained and rechecked. New Grants are exclusive
+ * nondelegable roots. PERMANENT is the default management choice (duration 0);
+ * CURRENT_BOOT explicitly selects a positive, shorter duration in microseconds.
+ * Caller owns all nested views through ayni_submit_intent; nothing is retained. */
+typedef struct ayni_goal_approve_v1 {
+    uint32_t struct_size;           /* sizeof this descriptor */
+    uint32_t missing_mask;          /* bit i names requirement i; nonzero, no extra bits */
+    uint64_t goal_id;               /* exact retained proposal, never a slot index */
+    ayni_grant_lifetime_t lifetime; /* PERMANENT or CURRENT_BOOT */
+    uint32_t reserved;              /* 0 */
+    uint64_t duration_us;           /* 0 iff PERMANENT; counted from acceptance */
+    ayni_goal_create_v1 original;   /* complete original inputs, including original expiry */
+} ayni_goal_approve_v1;
+
+/* Since 0.23. Copy original Goal parameters on the owner thread, outside
+ * callbacks, RECOVERING through DRAINING. On BUFFER_TOO_SMALL only out_size
+ * changes to the required byte count; other errors change no output. A null
+ * buffer is valid only with capacity 0. Combine with ayni_get_goal's immutable
+ * fields to construct an exact approval request. No exporter is invoked. */
+ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                       uint8_t *buffer, uint32_t capacity, uint32_t *out_size);
+
 typedef uint32_t ayni_grant_lifecycle_t;
 #define AYNI_GRANT_ACTIVE ((ayni_grant_lifecycle_t)1)
 #define AYNI_GRANT_EXPIRED ((ayni_grant_lifecycle_t)2)

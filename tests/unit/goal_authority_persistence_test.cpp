@@ -4,9 +4,11 @@
 #include "authority/grant/grant_records.h"
 #include "authority/scope/scope.h"
 #include "durability/batch/batch_codec.h"
+#include "goal_approval_request.h"
 #include "kernel/command/command_records.h"
 #include "kernel/work_replay.h"
 #include "kernel/work_snapshot.h"
+#include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
@@ -66,6 +68,8 @@ ayni::hosts::sim::StoredBatch encode(const Batch &batch) {
 
 class Fixture {
   public:
+    uint32_t proposal_count = 1;
+    bool narrow_first = false;
     Fixture() {
         work.node().config().grant_capacity = 1;
         work.node().config().command_capacity = 8;
@@ -81,7 +85,7 @@ class Fixture {
                                                  domain};
         start_with_fields(&field, 1);
     }
-    void run_with_named_targets() {
+    void run_with_named_targets(uint32_t field_count = 2) {
         std::array<std::string, AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX> names;
         std::array<ayni_string_v1, AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX> members{};
         for (uint32_t index = 0; index < members.size(); ++index) {
@@ -93,11 +97,12 @@ class Fixture {
         domain.kind = AYNI_AUTHORITY_IDENTIFIER;
         domain.values.tokens.member_count = static_cast<uint32_t>(members.size());
         domain.values.tokens.members = members.data();
-        const ayni_authority_field_desc_v1 fields[] = {
-            {sizeof(ayni_authority_field_desc_v1), 1, AYNI_AUTHORITY_PARAMETER, 0, domain},
-            {sizeof(ayni_authority_field_desc_v1), 2, AYNI_AUTHORITY_PARAMETER, 0, domain},
-        };
-        start_with_fields(fields, 2);
+        std::array<ayni_authority_field_desc_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> fields{};
+        for (uint32_t index = 0; index < field_count; ++index) {
+            fields[index] = {sizeof(fields[index]), index + 1U, AYNI_AUTHORITY_PARAMETER, 0,
+                             domain};
+        }
+        start_with_fields(fields.data(), field_count);
     }
     void start_with_fields(const ayni_authority_field_desc_v1 *fields, uint32_t count) {
         work.node().create();
@@ -105,12 +110,27 @@ class Fixture {
         const ayni_capability_desc_v1 capability{
             sizeof(capability), 1, text("device.move"), count, 0, fields};
         ASSERT_EQ(ayni_register_capability(work.kernel(), &capability), AYNI_OK);
-        auto proposal = goal_type_desc("proposal", 1);
-        proposal.export_requirements = [](void *, ayni_bytes_v1,
+        auto proposal = goal_type_desc("proposal", 1, nullptr, this);
+        proposal.export_requirements = [](void *ctx, ayni_bytes_v1,
                                           const ayni_goal_requirement_sink_v1 *sink) {
             const ayni_scope_v1 full{sizeof(full), 0, nullptr};
-            const ayni_goal_requirement_v1 need{sizeof(need), 1, text("device.move"), full};
-            return sink->emit(sink->ctx, &need);
+            ayni_authority_value_set_v1 values{};
+            values.struct_size = sizeof(values);
+            values.kind = AYNI_AUTHORITY_I64;
+            values.unit = text("count");
+            values.values.integer = {0, 10};
+            const ayni_scope_field_v1 field{sizeof(field), 1, values};
+            const ayni_scope_v1 narrow{sizeof(narrow), 1, &field};
+            for (uint32_t index = 0; index < static_cast<Fixture *>(ctx)->proposal_count; ++index) {
+                const ayni_goal_requirement_v1 need{
+                    sizeof(need), 1, text("device.move"),
+                    index == 0U && static_cast<Fixture *>(ctx)->narrow_first ? narrow : full};
+                const auto status = sink->emit(sink->ctx, &need);
+                if (status != AYNI_OK) {
+                    return status;
+                }
+            }
+            return AYNI_OK;
         };
         ASSERT_EQ(ayni_register_goal_type(work.kernel(), &proposal), AYNI_OK);
         ASSERT_EQ(ayni_start(work.kernel()), AYNI_OK);
@@ -938,6 +958,471 @@ TEST(GoalAuthorityPersistence, snapshot_dependency_cannot_borrow_another_goals_b
     Fixture restored;
     restored.run();
     EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// C-AUTH-032/C-STORE-019: actual public approval produces one complete journal
+// transition; both boot and snapshot preserve exact binding and retry evidence.
+TEST(GoalApprovalPersistence, public_approval_survives_journal_and_snapshot_with_exact_retry) {
+    Fixture source;
+    source.run();
+    const auto created =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    source.work.node().recover();
+    ApprovalRequest request(source.work.kernel(), created.result.object.id);
+    auto intent =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = 100;
+    const auto approved = source.work.submit(intent);
+    ASSERT_EQ(approved.status, AYNI_OK);
+    source.work.node().recover();
+    const auto grant_id =
+        source.saved(created.result.object.id).requirements[0].dependency.grant_id;
+    ASSERT_NE(grant_id, 0U);
+    const auto batch = decode(source.work.node().sim().durable_storage().log.back());
+    ASSERT_EQ(batch.records.size(), 4U);
+    EXPECT_EQ(batch.records.front().header.type, ayni::authority::grant_record_type);
+    EXPECT_EQ(batch.records.back().header.version, ayni::kernel::approval_command_record_version);
+    Fixture booted;
+    booted.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    booted.run();
+    ASSERT_EQ(booted.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(booted.saved(created.result.object.id).requirements[0].dependency.grant_id, grant_id);
+    EXPECT_EQ(booted.work.kernel()->work.grants.at(0).bound_goal_id, created.result.object.id);
+    // E retains activated-work recovery hold; F alone removes it after rechecking.
+    EXPECT_EQ(booted.work.goal(created.result.object.id).hold_reason,
+              AYNI_REASON_LEGACY_UNCONFIRMED);
+    intent.session_id = booted.work.session();
+    const auto retry = booted.work.submit(intent);
+    ASSERT_EQ(retry.status, AYNI_OK);
+    EXPECT_EQ(retry.result.commit_seq, approved.result.commit_seq);
+    Fixture compacted;
+    compacted.run();
+    ASSERT_EQ(import_snapshot(compacted, snapshot(source)), BatchCheck::ok);
+    EXPECT_EQ(compacted.saved(created.result.object.id).requirements[0].dependency.grant_id,
+              grant_id);
+    EXPECT_EQ(compacted.work.kernel()->work.grants.at(0).bound_goal_id, created.result.object.id);
+}
+
+// C-STORE-019: removing any partner or changing approval identity/Grant lifetime
+// must restrict boot, never recover a partially usable approval.
+TEST(GoalApprovalPersistence, missing_partner_or_mismatched_exact_command_restricts_recovery) {
+    Fixture source;
+    source.run();
+    const auto created =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    source.work.node().recover();
+    ApprovalRequest request(source.work.kernel(), created.result.object.id);
+    auto intent =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = 100;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    source.work.node().recover();
+    const auto image = source.work.node().sim().durable_storage();
+    const auto original = decode(image.log.back());
+    ASSERT_EQ(original.records.size(), 4U);
+    for (uint32_t fault = 0; fault < 6; ++fault) {
+        SCOPED_TRACE(fault);
+        auto batch = original;
+        if (fault < 4U) {
+            batch.records.erase(batch.records.begin() + fault);
+        } else if (fault == 4U) {
+            auto &record = batch.records.front();
+            auto grant = source.work.kernel()->work.grants.at(0);
+            grant.lifetime = AYNI_GRANT_CURRENT_BOOT;
+            grant.duration_us = 10000;
+            // White-box: valid differing lifetime through the real writer.
+            ayni::authority::write_grant_record(
+                grant, source.work.kernel()->work.grants.source_domain(0),
+                source.work.kernel()->work.grants.scope(0), record.body.data());
+        } else {
+            batch.records.push_back(batch.records.front());
+        }
+        Fixture restored;
+        restored.work.node().sim().durable_storage() = image;
+        restored.work.node().sim().durable_storage().log.back() = encode(batch);
+        restored.run();
+        EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(restored.work.kernel()->work.grants.size(), 0U);
+    }
+}
+
+// C-STORE-019: command identity remains part of compacted evidence while facts
+// are retained; corruption cannot hide behind the absence of journal pairing.
+TEST(GoalApprovalPersistence, snapshot_command_echo_cannot_disagree_with_retained_creation) {
+    Fixture source;
+    source.run();
+    const auto created =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    source.work.node().recover();
+    ApprovalRequest request(source.work.kernel(), created.result.object.id);
+    auto intent =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = 100;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    source.work.node().recover();
+    auto image = snapshot(source);
+    for (auto &record : image.records) {
+        if (record.header.type != ayni::kernel::command_record_type ||
+            record.header.version != ayni::kernel::approval_command_record_version) {
+            continue;
+        }
+        ayni::kernel::CommandMapping mapping{};
+        uint64_t floor = 0;
+        ayni_bytes_v1 canonical{};
+        constexpr uint32_t snapshot_tail = sizeof(uint64_t);
+        ASSERT_TRUE(ayni::kernel::read_command_record(record.header.version, record.body.data(),
+                                                      record.header.length - snapshot_tail, mapping,
+                                                      floor, canonical));
+        ayni::kernel::ApprovalCommand echo{};
+        ASSERT_TRUE(ayni::kernel::read_approval_command(canonical, echo));
+        ++echo.approval.original.expiry_us;
+        std::vector<uint8_t> changed(canonical.size);
+        uint32_t size = 0;
+        ASSERT_EQ(ayni::kernel::encode_approval_command(echo, changed.data(), canonical.size, size),
+                  AYNI_OK);
+        mapping.digest = ayni::kernel::authority_command_digest({changed.data(), size});
+        ASSERT_TRUE(ayni::kernel::write_command_record(mapping, floor, {changed.data(), size},
+                                                       record.body.data(),
+                                                       record.header.length - snapshot_tail));
+    }
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// C-STORE-019: a same-phase metadata update cannot fill just one missing item
+// with an unrelated Grant outside the complete approval transition.
+TEST(GoalApprovalPersistence, unpaired_metadata_cannot_change_original_dependencies) {
+    Fixture source;
+    source.proposal_count = 2;
+    source.run();
+    const auto goal =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    ASSERT_EQ(goal.status, AYNI_OK);
+    source.work.node().recover();
+    const auto grant = source.create_grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    auto &model = source.work.kernel()->work;
+    auto record = source.saved(goal.result.object.id);
+    const auto stamp = model.transitions.next();
+    record.stamp = stamp;
+    record.requirements[0].dependency = {grant.result.object.id, 1};
+    ASSERT_TRUE(valid_goal_authority_record(record));
+    const auto index = source.goal_index(goal.result.object.id);
+    model.goals.authority_changed(index, stamp);
+    std::vector<uint8_t> state(goal_state_record_size);
+    write_goal_state_record(model.goals.at(index), state.data());
+    std::vector<uint8_t> bytes(goal_authority_record_size(record));
+    write_goal_authority_record(record, bytes.data());
+    const BatchIdentity identity{source.work.kernel()->log.writer_epoch(), stamp.commit_seq,
+                                 stamp.transition_id};
+    WorkReplay replay(model);
+    const RecordHeader state_header{goal_state_record_type,
+                                    goal_state_with_authority_record_version, record_required,
+                                    static_cast<uint32_t>(state.size())};
+    ASSERT_EQ(WorkReplay::on_record(&replay, identity, state_header, state.data()),
+              RecordUse::applied);
+    const RecordHeader authority_header{goal_authority_record_type, goal_authority_record_version,
+                                        record_required, static_cast<uint32_t>(bytes.size())};
+    EXPECT_EQ(WorkReplay::on_record(&replay, identity, authority_header, bytes.data()),
+              RecordUse::corrupt);
+}
+
+// Public-path setup shared by fault cases; only the later stored-byte edits
+// are White-box. A new command always follows completed durable creation.
+uint64_t approve_proposal(Fixture &source, uint64_t duration = 0) {
+    const auto created =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "proposal"));
+    EXPECT_EQ(created.status, AYNI_OK);
+    if (created.status != AYNI_OK) {
+        return 0;
+    }
+    source.work.node().recover();
+    ApprovalRequest request(source.work.kernel(), created.result.object.id);
+    request.body.lifetime = duration ? AYNI_GRANT_CURRENT_BOOT : AYNI_GRANT_PERMANENT;
+    request.body.duration_us = duration;
+    auto intent =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = 100;
+    const auto result = source.work.submit(intent);
+    EXPECT_EQ(result.status, AYNI_OK);
+    source.work.node().recover();
+    return result.status == AYNI_OK ? created.result.object.id : 0;
+}
+
+// C-STORE-019: the complete transition admits no unrelated records before,
+// between, or after its own facts, even if the extra record is individually legal.
+TEST(GoalApprovalPersistence, unrelated_work_before_during_or_after_approval_restricts_boot) {
+    Fixture source;
+    source.run();
+    ASSERT_NE(approve_proposal(source), 0U);
+    const auto image = source.work.node().sim().durable_storage();
+    const auto original = decode(image.log.back());
+    auto instance = *source.work.kernel()->work.agents.find_instance(source.work.instance(agent_b));
+    instance.lifecycle = AYNI_AGENT_PAUSED;
+    ++instance.revision;
+    Record extra{{instance_record_type, instance_record_version, 0, instance_record_size},
+                 std::vector<uint8_t>(instance_record_size)};
+    write_instance_record(instance, extra.body.data());
+    for (const size_t at : {size_t{0}, size_t{1}, original.records.size()}) {
+        auto changed = original;
+        changed.records.insert(changed.records.begin() + static_cast<std::ptrdiff_t>(at), extra);
+        Fixture restored;
+        restored.work.node().sim().durable_storage() = image;
+        restored.work.node().sim().durable_storage().log.back() = encode(changed);
+        restored.run();
+        EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED) << at;
+        EXPECT_EQ(restored.work.kernel()->work.grants.size(), 0U);
+    }
+}
+
+// records.md type 9: a valid v4 body cannot be reinterpreted as any old version.
+TEST(GoalApprovalPersistence, approval_kind_is_rejected_in_legacy_command_envelopes) {
+    Fixture source;
+    source.run();
+    ASSERT_NE(approve_proposal(source), 0U);
+    const auto batch = decode(source.work.node().sim().log().back());
+    const auto &record = batch.records.back();
+    for (uint16_t version = ayni::kernel::command_record_version;
+         version < ayni::kernel::approval_command_record_version; ++version) {
+        ayni::kernel::CommandMapping out{};
+        uint64_t floor = 17;
+        ayni_bytes_v1 canonical{};
+        EXPECT_FALSE(ayni::kernel::read_command_record(
+            version, record.body.data(), record.header.length, out, floor, canonical));
+        EXPECT_EQ(floor, 17U);
+    }
+}
+
+// C-STORE-019: a wider valid Grant can cover a need but cannot be the exact
+// narrower permission management approved. Exercise journal and snapshot proof.
+TEST(GoalApprovalPersistence, wider_same_length_bound_scope_is_not_the_approved_scope) {
+    Fixture source;
+    source.narrow_first = true;
+    source.run();
+    ASSERT_NE(approve_proposal(source), 0U);
+    const auto storage = source.work.node().sim().durable_storage();
+    auto batch = decode(storage.log.back());
+    auto image = snapshot(source);
+    auto &model = source.work.kernel()->work;
+    ayni_authority_value_set_v1 values{};
+    values.struct_size = sizeof(values);
+    values.kind = AYNI_AUTHORITY_I64;
+    values.unit = text("count");
+    values.values.integer = {0, 20};
+    const ayni_scope_field_v1 field{sizeof(field), 1, values};
+    const ayni_scope_v1 scope{sizeof(scope), 1, &field};
+    std::vector<uint8_t> bytes(model.grants.scope(0).size);
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::authority::normalize_scope(model.grants.source_domain(0), scope, bytes.data(),
+                                               static_cast<uint32_t>(bytes.size()), size),
+              AYNI_OK);
+    const ayni_bytes_v1 changed{bytes.data(), size};
+    ayni::authority::write_grant_record(model.grants.at(0), model.grants.source_domain(0), changed,
+                                        batch.records.front().body.data());
+    for (auto &record : image.records) {
+        if (record.header.type == ayni::authority::grant_record_type) {
+            ayni::authority::write_grant_snapshot_record(model.grants.at(0),
+                                                         model.grants.source_domain(0), changed,
+                                                         record.body.data(), record.header.version);
+        }
+    }
+    Fixture restored;
+    restored.work.node().sim().durable_storage() = storage;
+    restored.work.node().sim().durable_storage().log.back() = encode(batch);
+    restored.run();
+    EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    Fixture compacted;
+    compacted.run();
+    EXPECT_EQ(import_snapshot(compacted, image), BatchCheck::corrupt);
+}
+
+// C-STORE-019: compacted Grant duration must equal the saved approval command,
+// even when both durations independently satisfy the lifetime shape contract.
+TEST(GoalApprovalPersistence, snapshot_bound_duration_must_match_original_approval) {
+    Fixture source;
+    source.run();
+    ASSERT_NE(approve_proposal(source, 1000000), 0U);
+    auto image = snapshot(source);
+    auto grant = source.work.kernel()->work.grants.at(0);
+    ++grant.duration_us;
+    for (auto &record : image.records) {
+        if (record.header.type == ayni::authority::grant_record_type) {
+            ayni::authority::write_grant_snapshot_record(
+                grant, source.work.kernel()->work.grants.source_domain(0),
+                source.work.kernel()->work.grants.scope(0), record.body.data(),
+                record.header.version);
+        }
+    }
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// C-STORE-019: two equal missing needs still require two distinct issued facts.
+// Deleting one and reusing the other cannot disguise an incomplete batch.
+TEST(GoalApprovalPersistence, one_new_grant_cannot_fill_two_equal_original_missing_items) {
+    Fixture source;
+    source.proposal_count = 2;
+    source.work.node().config().grant_capacity = 2;
+    source.run();
+    ASSERT_NE(approve_proposal(source), 0U);
+    const auto image = source.work.node().sim().durable_storage();
+    auto batch = decode(image.log.back());
+    auto &record = authority_record(batch.records);
+    GoalAuthorityRecord metadata{};
+    ASSERT_TRUE(read_goal_authority_record(record.body.data(), record.header.length, metadata));
+    metadata.requirements[1].dependency = metadata.requirements[0].dependency;
+    write_goal_authority_record(metadata, record.body.data());
+    batch.records.erase(batch.records.begin() + 1);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 2;
+    restored.work.node().sim().durable_storage() = image;
+    restored.work.node().sim().durable_storage().log.back() = encode(batch);
+    restored.run();
+    EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+}
+
+// C-COMMIT-003/005: actual maximum-count approval and its large domain/scope
+// copies fit the reserved buffer. Verify the real writer, not a copied formula.
+TEST(GoalApprovalPersistence, maximum_missing_count_with_large_domains_fits_batch_reservation) {
+    Fixture source;
+    source.proposal_count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    source.work.node().config().grant_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    source.work.node().config().goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    source.work.node().config().authority_scope_max_bytes = 2560;
+    source.work.node().config().storage_buffer_bytes = 0;
+    source.run_with_named_targets(AYNI_AUTHORITY_FIELD_COUNT_MAX);
+    ASSERT_NE(approve_proposal(source), 0U);
+    EXPECT_EQ(source.work.kernel()->work.grants.size(), AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
+    const auto batch = decode(source.work.node().sim().log().back());
+    EXPECT_EQ(batch.records.size(), AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 3U);
+}
+
+// C-AUTH-032/C-STORE-019: approval may not replace an original reference with a
+// different older Grant, even when both equally cover the original requirement.
+TEST(GoalApprovalPersistence, approval_metadata_cannot_replace_an_original_selected_grant) {
+    Fixture source;
+    source.narrow_first = true;
+    source.proposal_count = 2;
+    source.work.node().config().grant_capacity = 3;
+    source.run();
+    ayni_authority_value_set_v1 values{};
+    values.struct_size = sizeof(values);
+    values.kind = AYNI_AUTHORITY_I64;
+    values.unit = text("count");
+    values.values.integer = {0, 20};
+    const ayni_scope_field_v1 field{sizeof(field), 1, values};
+    const ayni_scope_v1 scope{sizeof(scope), 1, &field};
+    const auto first = source.create_grant_for(source.work.instance(agent_a), scope);
+    ASSERT_EQ(first.status, AYNI_OK);
+    source.work.node().recover();
+    const auto alternative = source.create_grant_for(source.work.instance(agent_a), scope);
+    ASSERT_EQ(alternative.status, AYNI_OK);
+    source.work.node().recover();
+    const auto goal = approve_proposal(source);
+    ASSERT_NE(goal, 0U);
+    const auto image = source.work.node().sim().durable_storage();
+    auto batch = decode(image.log.back());
+    auto &record = authority_record(batch.records);
+    GoalAuthorityRecord metadata{};
+    ASSERT_TRUE(read_goal_authority_record(record.body.data(), record.header.length, metadata));
+    const auto selected = metadata.requirements[0].dependency.grant_id;
+    metadata.requirements[0].dependency.grant_id =
+        selected == first.result.object.id ? alternative.result.object.id : first.result.object.id;
+    write_goal_authority_record(metadata, record.body.data());
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.work.node().sim().durable_storage() = image;
+    restored.work.node().sim().durable_storage().log.back() = encode(batch);
+    restored.run();
+    EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+}
+
+// C-STORE-019: historical proof permits a dependency to end after approval,
+// but refuses an individually valid terminal fact that predates approval.
+// White-box faults use real writers and a genuine earlier spare transition.
+TEST(GoalApprovalPersistence, old_dependency_must_have_been_active_at_approval) {
+    Fixture source;
+    source.narrow_first = true;
+    source.proposal_count = 2;
+    source.work.node().config().grant_capacity = 2;
+    source.run();
+    ayni_authority_value_set_v1 values{};
+    values.struct_size = sizeof(values);
+    values.kind = AYNI_AUTHORITY_I64;
+    values.unit = text("count");
+    values.values.integer = {0, 20};
+    const ayni_scope_field_v1 field{sizeof(field), 1, values};
+    const ayni_scope_v1 scope{sizeof(scope), 1, &field};
+    const auto generic = source.create_grant_for(source.work.instance(agent_a), scope);
+    ASSERT_EQ(generic.status, AYNI_OK);
+    source.work.node().recover();
+    const auto spare = source.goal();
+    const auto spare_stamp = source.work.kernel()->work.transitions.latest();
+    ASSERT_NE(spare, 0U);
+    ASSERT_NE(approve_proposal(source), 0U);
+    const auto original = source.work.node().sim().durable_storage();
+    auto invalid_snapshot = snapshot(source);
+    auto terminal = source.work.kernel()->work.grants.at(0);
+    terminal.lifecycle = AYNI_GRANT_EXPIRED;
+    terminal.revision = ayni::authority::grant_terminal_revision;
+    terminal.stamp = spare_stamp;
+    for (auto &record : invalid_snapshot.records) {
+        if (record.header.type != ayni::authority::grant_record_type) {
+            continue;
+        }
+        uint64_t id = 0;
+        ASSERT_TRUE(
+            ayni::authority::read_grant_record_id(record.body.data(), record.header.length, id));
+        if (id == generic.result.object.id) {
+            ayni::authority::write_grant_snapshot_record(
+                terminal, source.work.kernel()->work.grants.source_domain(0),
+                source.work.kernel()->work.grants.scope(0), record.body.data(),
+                record.header.version);
+        }
+    }
+    Fixture compacted;
+    compacted.work.node().config().grant_capacity = 2;
+    compacted.run();
+    EXPECT_EQ(import_snapshot(compacted, invalid_snapshot), BatchCheck::corrupt);
+    auto corrupted = original;
+    auto earlier = std::find_if(corrupted.log.begin(), corrupted.log.end(), [&](const auto &item) {
+        return item.commit_seq == spare_stamp.commit_seq;
+    });
+    ASSERT_NE(earlier, corrupted.log.end());
+    auto changed = decode(*earlier);
+    Record state{{ayni::authority::grant_state_record_type,
+                  ayni::authority::grant_state_record_version, record_required,
+                  ayni::authority::grant_state_record_size},
+                 std::vector<uint8_t>(ayni::authority::grant_state_record_size)};
+    ayni::authority::write_grant_state_record(terminal, state.body.data());
+    changed.records = {state};
+    *earlier = encode(changed);
+    Fixture replayed;
+    replayed.work.node().config().grant_capacity = 2;
+    replayed.work.node().sim().durable_storage() = corrupted;
+    replayed.run();
+    EXPECT_EQ(replayed.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    // A later real revocation is valid history; its authority remains unusable.
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, generic.result.object.id};
+    auto intent = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    intent.command_id = 101;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    source.work.node().recover();
+    Fixture valid_snapshot;
+    valid_snapshot.work.node().config().grant_capacity = 2;
+    valid_snapshot.run();
+    EXPECT_EQ(import_snapshot(valid_snapshot, snapshot(source)), BatchCheck::ok);
+    Fixture valid_journal;
+    valid_journal.work.node().config().grant_capacity = 2;
+    valid_journal.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    valid_journal.run();
+    EXPECT_EQ(valid_journal.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
 }
 
 } // namespace

@@ -539,7 +539,8 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
     // this record. A later BOOT_EPOCH must not legitimize a future ID.
     uint64_t grant_id = 0;
     if (header.type == authority::grant_record_type &&
-        header.version == authority::grant_record_version &&
+        (header.version == authority::grant_record_version ||
+         header.version == authority::goal_grant_record_version) &&
         (!authority::read_grant_record_id(body, header.length, grant_id) ||
          foundation::id_boot_epoch(grant_id) != last_boot_epoch_)) {
         return durability::RecordUse::corrupt;

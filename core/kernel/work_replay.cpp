@@ -78,7 +78,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case command_record_type:
         return header.version == command_record_version ||
                        header.version == exact_command_record_version ||
-                       header.version == revoke_command_record_version
+                       header.version == revoke_command_record_version ||
+                       header.version == approval_command_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_record_type:
@@ -140,7 +141,26 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         if (!complete()) {
             return RecordUse::corrupt;
         }
-        batch_seq_ = batch.commit_seq;
+        pairing_.approval.reset();
+    }
+    // A completed approval seals this batch (C-STORE-019); preserve its proof
+    // until the next batch so unrelated trailing records cannot be accepted.
+    if (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete) {
+        return RecordUse::corrupt;
+    }
+    const auto use = apply_record(batch, header, body);
+    batch_seq_ = batch.commit_seq;
+    return use;
+}
+
+RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
+                                   const durability::RecordHeader &header, const uint8_t *body) {
+    // A pending approval admits only its own Grants/state/metadata/command.
+    // Unrelated work cannot smuggle an additional transition into the batch.
+    if (pairing_.approval && header.type != authority::grant_record_type &&
+        header.type != work::goal_state_record_type &&
+        header.type != work::goal_authority_record_type && header.type != command_record_type) {
+        return RecordUse::corrupt;
     }
     const foundation::TransitionStamp stamp{batch.transition_id, batch.commit_seq};
     const uint32_t size = header.length;
@@ -263,6 +283,9 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
          record.state.lifecycle == AYNI_GOAL_PROPOSED)) {
         return RecordUse::corrupt;
     }
+    if (!pair_approval_state(index, record.state)) {
+        return RecordUse::corrupt;
+    }
     if (record.goal_id == pairing_.goal) {
         pairing_.goal.reset();
     }
@@ -285,6 +308,9 @@ RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
     }
     if (pairing_.goal_authority ? *pairing_.goal_authority != record.goal_id
                                 : !model_.goal_authority.contains(index, record.goal_id)) {
+        return RecordUse::corrupt;
+    }
+    if (!pair_approval_metadata(index, record)) {
         return RecordUse::corrupt;
     }
     work::GoalAuthorityRecord previous{};
@@ -381,9 +407,16 @@ RecordUse WorkReplay::restore_grant(uint16_t version, const uint8_t *body, uint3
         model_.agents.find_instance(record.grant.subject_instance_id) == nullptr) {
         return RecordUse::corrupt;
     }
+    if (record.grant.bound_goal_id != 0U) {
+        if (!pair_approval_grant(record, stamp)) {
+            return RecordUse::corrupt;
+        }
+    } else if (pairing_.approval) {
+        return RecordUse::corrupt;
+    }
     const auto restored = model_.grants.restore_create(
         record, stamp, model_.grant_reclaim_exclusions(stamp.commit_seq - 1U));
-    if (restored == authority::GrantTable::Restore::restored) {
+    if (restored == authority::GrantTable::Restore::restored && record.grant.bound_goal_id == 0U) {
         pairing_.authority = {AuthorityPairKind::create, record.grant_id};
     }
     return use_of(restored);
@@ -464,6 +497,13 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
+    if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
+        if (!pair_approval_command(mapping, canonical)) {
+            return RecordUse::corrupt;
+        }
+    } else if (pairing_.approval) {
+        return RecordUse::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
         uint32_t index = 0;
         if (pairing_.authority.kind != AuthorityPairKind::create ||

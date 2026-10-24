@@ -1,6 +1,6 @@
 # ADR-0037：Goal 需求、待批与原子批准
 
-- **状态**：实施中；E 按独立可合并 PR 交付，已交付需求事实、持久闭环、公开创建/查询与最低门控，继续接入专属 Grant 和原子批准。
+- **状态**：实施中；E 按独立可合并 PR 交付，需求事实、持久闭环、公开创建/查询、最低门控、专属 Grant 与原子批准已接入，整体覆盖率收尾后关闭。
 - **日期**：2026-10-23
 - **关联**：MA-006 E；[实施计划](../ma006-implementation.md) §6；ADR-0028～0031；计划 §9.1、§14.1。
 
@@ -33,6 +33,13 @@ Grant 已有有界目录、Scope、持久身份与撤销机制，Goal 尚未保�
 17. **有界批量预检。** GrantTable 的局部 BatchPlacement 只记录已预留尾行数量及替代排除集，普通单条创建与缺项批量创建共用 append-first、最早终态 commit/ID 的放置规则；失败不改变表或输出。调用者按顺序保存 Admission 并整批预检后安装，输入在此期间不变。规范需求直接走 canonical 准入，避免展开 typed 数组再归一化。ID 分配器新增 N 个 ID 的只读可用性判断，不能以连续 N 次单项判断代替。此 PR 尚无公开批准入口。
 18. **绑定记录与兼容。** 普通 Grant journal type 13/v1、snapshot type 13/v2 字节保持不变；专属 journal type 13/v2 在旧创建正文后追加 bound_goal_id u64，专属 snapshot type 13/v3 使用该创建正文加原 v2 清理尾部，均 REQUIRED。版本不得省略或丢弃绑定；普通 GRANT_CREATE 的 canonical mapping 不可能证明专属创建。E3a 实现内部 codec、快照及消费限制，专属 journal 与原子批准的整批对应关系随 E3b 开放。回退旧 reader 只能安全受限，不删除尾字段降级。范围上界只增加命名绑定长度，默认配置内存差值在验证后记录。
 
+19. **E3b 公开批准与完整身份。** ABI 0.23 增加 GOAL_APPROVE、完整原始创建回显、原缺项 mask 及明确期限；Goal 查询增加原 expiry 时长，参数复制查询不输出半份数据。管理端默认选择 PERMANENT/0，也可明确选择 CURRENT_BOOT/正时长。非零命令与 expected revision 必需；语音不能批准。命令查找先于当前对象/目录/存储判断，完整规范字节比较让终态、回收或重启后的精确重试返回原结果，不重新发 Grant 或计时。请求形状归 work/goal 的共享输入模块，command 不反向依赖 intent。
+20. **原子应用及准入顺序。** 当前持久 owner 管理会话、Goal revision/PROPOSED/hold/原期限、完整创建回显、原缺项 mask、当前主体/祖先/完整目录和旧依赖逐项检查；不重跑需求导出，不替换已有依赖。若旧依赖已失效，整批拒绝，管理端通过需求查询取得当前缺项，不自动扩大这次批准。预检全部 Grant 槽位与 ID、完整命令窗口及日志/快照容量成功后，一次 transition 发布缺项专属 Grant、引用、ACTIVE 与完整命令结果；每项独立根且不可委派。触发从接受时启动，原 Goal expiry 不改，限时 Grant 也从接受时计时；未持久新权限不可消费。
+21. **批准记录配对。** COMMAND_MAPPING type 9/v4 REQUIRED 使用 v2 外壳，canonical 保存 kind/CAS/Goal ID/原缺项 mask/期限/完整创建。journal 顺序为 N 条专属 Grant、Goal state、type 17、命令。WorkReplay 的可选 ApprovalPair 属重放瞬态，不是领域状态或 Kernel 缓存；记录原 revision/mask 和无序新 ID 集（槽位复用可改变 writer 顺序），逐阶段证明每个缺项恰好使用一个新 Grant、原引用不变、原 scope 完全相同和接受身份/期限一致。首条专属 Grant 必须是本批第一条工作记录，命令闭合后保留 complete 阶段至下一批，拒绝前后夹带无关工作；缺失、重复、错配或夹入其他记录均损坏；不允许仅靠状态和元数据把待批变成已授权。启动同样检查 v2 Grant 的创建 boot 已先持久。
+22. **快照与历史保留。** 快照保存 v4 命令原 seq，检查 retained Goal 的完整创建/revision、授权阶段及仍保留的新 Grant 的绑定、主体、scope 和期限；旧引用与祖先的创建必须早于批准、终态必须晚于批准；复用 GrantTable 的有界历史检查，命令快照按 commit seq 比较，已有 Grant 创建路径继续同时检查 transition ID。合法回收的终态对象/Grant 可以缺席，命令重试不要求重建。当前 E 不提供引用替换；F 新增显式重新授权时须同步扩展历史命令与新引用的证明规则。旧 reader 不识别 REQUIRED v4，安全受限，不删除新记录降级。
+23. **资源界限。** 命令字节 stride 是原 Grant canonical 上限与 156 + 配置参数字节上限的较大值；156 包括固定 92 B 和两个最大目录 ID。每批创建 Grant 上限为 min(需求容量, Grant 容量)，与原有同批状态预算一起在接受前预留。ApprovalPlan 为调用栈上的有界准入信息和借用视图，不分配堆，不复制最大 Scope 字节数组；持久事实仍由 Grant/Goal/GoalAuthority/Command 各自持有。
+24. **E 停点和 F 边界。** 用户 2026-10-23 要求完成 E 后停止；本部分完成本地五配置、固件编译、独立变异/审查、PR 合并和统一覆盖率收尾，不开始 F。2026-10-24 用户要求接入 #46 自托管 runner，恢复 ready PR CI 全绿后合并，不再使用 `[skip ci]`。E 已即时拒绝结束 Goal 的专属 Grant，但其持久终态清理及已激活工作正常重启仍由 F 完成；当前恢复继续保留 LEGACY_UNCONFIRMED，不把权限事实持久化误报为恢复执行已经交付。
+
 ## 后果
 
 - work 新增对 authority 的向下构建依赖，仅复用 Scope 关系；authority 不依赖 work。E1 不增加 Kernel 字段或 arena 占用；E2a 的内存增长来自明确容量的表、Grant fence 与原日志预算。
@@ -62,3 +69,5 @@ E2a（[#43](https://github.com/RobotSe7en/ayni/pull/43)）：GCC Debug/Release�
 E2b（[#44](https://github.com/RobotSe7en/ayni/pull/44)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 25 项，首轮检出 16 项，9 项补测后全部检出；独立审查无未关闭发现。默认/最小工作配置内存需求为 195,248/32,776 B，分别增加 2,112/136 B，对齐仍为 8 B，增长来自暂存字节行与 GoalType 回调。验证覆盖失败导出隔离、原依赖/父链、策略回调跨期丢弃结果、独立授权暂停、恢复待批的原对象到期和旧记录版本拒绝。未执行远端 CI、硬件或 ESP32 时限测量；原子批准及完整工作恢复仍由 E3/F 交付，覆盖率在 E 完成后测量。
 
 E3a（[#45](https://github.com/RobotSe7en/ayni/pull/45)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 25 项，首轮检出 16 项，9 项补测后全部检出；独立审查无未关闭发现。默认/最小工作配置内存需求为 195,528/32,808 B，分别增加 280/32 B，对齐仍为 8 B，增长来自 Grant 绑定字段与记录预算。验证覆盖独占绑定、不可委派、Goal 终态和槽位复用、完整原域预算、批量无重复预留、ID 尾界、版本及跨表恢复约束。未执行远端 CI、硬件或 ESP32 时限测量；公开原子批准由 E3b 交付，E 全部 PR 合并后统一测量覆盖率。
+
+E3b（[#47](https://github.com/RobotSe7en/ayni/pull/47)）：GCC Debug/Release、ASan+UBSan、TSan 与 Clang Debug，以及模拟器、工具检查和 ESP-IDF 6.0.3 固件编译均通过。独立变异 25 项，首轮检出 13 项、12 项存活；第一轮补测检出 11 项，扩大真实批次域边界后最后 1 项也检出。独立审查发现的批次首尾夹带和批准前旧引用已终态两项恢复证明问题已修复并复核关闭。默认/最小工作配置内存需求为 201,496/33,016 B，分别增加 5,968/208 B，对齐仍为 8 B，来自完整命令与整批日志预算。验证覆盖部分授权保留、完整回显/CAS、整批槽位和 ID 尾界、最大参数、多个大域缺项、触发与期限、真实快照冻结、断电与 FAILED/UNKNOWN 重载及历史先后关系。自托管 CI 结果见 PR；未做硬件、耐久或 ESP32 时限测量，E 整体覆盖率在实现 PR 合并后量测。

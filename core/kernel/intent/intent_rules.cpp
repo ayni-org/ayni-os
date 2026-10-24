@@ -342,6 +342,10 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
                                       session.binding_revision};
         return create_goal(model, intent, origin, now_us, durable_seq, outcome, failure, clock);
     }
+    case AYNI_INTENT_GRANT_CREATE:
+        return create_grant(model, intent, session, now_us, durable_seq, outcome, failure);
+    case AYNI_INTENT_GOAL_APPROVE:
+        return approve_goal(model, intent, session, now_us, durable_seq, outcome, failure);
     case AYNI_INTENT_TASK_CANCEL:
         return cancel_task(model, intent, outcome, failure);
     case AYNI_INTENT_INSTANCE_PAUSE:
@@ -359,9 +363,10 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                                uint64_t digest, const IntentOutcome &outcome) {
     const CommandMapping mapping{principal_id,       intent.command_id, digest,
                                  outcome.commit_seq, intent.kind,       outcome.object};
-    const bool stored = intent.kind == AYNI_INTENT_GRANT_CREATE
-                            ? model.commands.insert_exact(mapping)
-                            : model.commands.insert(mapping);
+    const bool stored =
+        (intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GOAL_APPROVE)
+            ? model.commands.insert_exact(mapping)
+            : model.commands.insert(mapping);
     return stored ? AYNI_OK : AYNI_INTERNAL;
 }
 
@@ -379,6 +384,32 @@ ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
     return AYNI_OK;
 }
 
+// Exact requests retain bytes independent of current catalog/target state.
+// The common result also carries ordinary mappings and pending revoke receipts.
+CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
+                                       uint64_t principal_id, uint64_t digest) {
+    switch (intent.kind) {
+    case AYNI_INTENT_GRANT_CREATE:
+        return model.commands.find_exact(
+            principal_id, intent.command_id,
+            CanonicalCommandView{intent.expected_revision, &intent.grant_create});
+    case AYNI_INTENT_GRANT_REVOKE: {
+        const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, intent.target_id};
+        return model.commands.find_exact(principal_id, intent.command_id,
+                                         CanonicalRevokeView{intent.expected_revision, &revoke});
+    }
+    case AYNI_INTENT_GOAL_APPROVE:
+        return model.commands.find_exact(
+            principal_id, intent.command_id,
+            ApprovalCommand{intent.expected_revision, intent.approval});
+    default: {
+        const CommandMapping *mapping = nullptr;
+        const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
+        return {AYNI_OK, lookup, mapping};
+    }
+    }
+}
+
 } // namespace
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
@@ -390,34 +421,19 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    const bool exact =
-        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GRANT_REVOKE;
+    const bool exact = intent.kind == AYNI_INTENT_GRANT_CREATE ||
+                       intent.kind == AYNI_INTENT_GRANT_REVOKE ||
+                       intent.kind == AYNI_INTENT_GOAL_APPROVE;
     const uint64_t digest =
         intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
     if (intent.command_id != 0U) {
-        const CommandMapping *mapping = nullptr;
-        const PendingRevoke *pending = nullptr;
-        CommandTable::Lookup lookup;
-        if (exact) {
-            const ayni_grant_revoke_v1 revoke{sizeof(ayni_grant_revoke_v1), 0, intent.target_id};
-            const auto match =
-                intent.kind == AYNI_INTENT_GRANT_CREATE
-                    ? model.commands.find_exact(
-                          session->principal_id, intent.command_id,
-                          CanonicalCommandView{intent.expected_revision, &intent.grant_create})
-                    : model.commands.find_exact(
-                          session->principal_id, intent.command_id,
-                          CanonicalRevokeView{intent.expected_revision, &revoke});
-            if (match.status != AYNI_OK) {
-                return match.status;
-            }
-            lookup = match.lookup;
-            mapping = match.mapping;
-            pending = match.pending;
-        } else {
-            lookup = model.commands.find(session->principal_id, intent.command_id, digest, mapping);
+        const auto match = find_command(model, intent, session->principal_id, digest);
+        if (match.status != AYNI_OK) {
+            return match.status;
         }
-        switch (lookup) {
+        const auto *mapping = match.mapping;
+        const auto *pending = match.pending;
+        switch (match.lookup) {
         case CommandTable::Lookup::retried:
             if (pending != nullptr) {
                 pending_revoke_outcome(*pending, mapping, outcome);
@@ -454,8 +470,7 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         }
     }
     const ayni_status_t status =
-        exact ? create_grant(model, intent, *session, now_us, durable_seq, outcome, failure)
-              : apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock);
+        apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock);
     return status == AYNI_OK && intent.command_id != 0U
                ? remember_command(model, intent, session->principal_id, digest, outcome)
                : status;

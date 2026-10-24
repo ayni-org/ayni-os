@@ -4,6 +4,7 @@
 #include "catalog/catalog_id.h"
 #include "catalog/goal_type/goal_type_registry.h"
 #include "foundation/digest.h"
+#include "kernel/command/command_approval.h"
 #include "kernel/command/command_canonical.h"
 
 namespace ayni::kernel {
@@ -33,26 +34,42 @@ ayni_status_t read_target(const void *body, uint64_t Body::*id, uint64_t &out_id
     return AYNI_OK;
 }
 
+// Both public requests use exactly one decoder for immutable Goal creation.
+ayni_status_t read_goal_create(const ayni_goal_create_v1 &body, GoalCreate &out) {
+    const auto status = check_struct_size(body.struct_size, sizeof(body), sizeof(body));
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (body.reserved != 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    out = {body.goal_type_id,      body.goal_type_version,
+           body.owner_instance_id, body.parent_goal_id,
+           body.parameters,        {body.trigger, body.trigger_delay_us, body.trigger_period_us},
+           body.expiry_us,         body.trigger_source};
+    return AYNI_OK;
+}
+
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
-    case AYNI_INTENT_GOAL_CREATE: {
-        const ayni_goal_create_v1 *body = nullptr;
-        const ayni_status_t status = read_body(raw.body, body);
+    case AYNI_INTENT_GOAL_CREATE:
+        return read_goal_create(*static_cast<const ayni_goal_create_v1 *>(raw.body),
+                                out_intent.create);
+    case AYNI_INTENT_GOAL_APPROVE: {
+        const ayni_goal_approve_v1 *body = nullptr;
+        const auto status = read_body(raw.body, body);
         if (status != AYNI_OK) {
             return status;
         }
         if (body->reserved != 0U) {
             return AYNI_INVALID_ARGUMENT;
         }
-        out_intent.create = {body->goal_type_id,
-                             body->goal_type_version,
-                             body->owner_instance_id,
-                             body->parent_goal_id,
-                             body->parameters,
-                             {body->trigger, body->trigger_delay_us, body->trigger_period_us},
-                             body->expiry_us,
-                             body->trigger_source};
-        return AYNI_OK;
+        auto &approval = out_intent.approval;
+        approval.goal_id = body->goal_id;
+        approval.missing_mask = body->missing_mask;
+        approval.lifetime = body->lifetime;
+        approval.duration_us = body->duration_us;
+        return read_goal_create(body->original, approval.original);
     }
     case AYNI_INTENT_GRANT_CREATE: {
         const ayni_grant_create_v1 *body = nullptr;
@@ -75,21 +92,20 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     }
 }
 
-// A local input trigger names its input by a catalog id; other kinds take
-// none.
-bool trigger_source_fits(const GoalCreate &create) {
-    return create.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT
-               ? catalog::CatalogId::is_valid(create.trigger_source)
-               : create.trigger_source.size == 0U;
-}
-
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GRANT_REVOKE;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_GOAL_APPROVE;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (intent.kind == AYNI_INTENT_GOAL_APPROVE) {
+        if (intent.command_id == 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        uint32_t size = 0;
+        return measure_approval_command({intent.expected_revision, intent.approval}, size);
+    }
     if (intent.kind == AYNI_INTENT_GRANT_REVOKE) {
         return intent.command_id != 0U && intent.expected_revision != 0U && intent.target_id != 0U
                    ? AYNI_OK
@@ -105,14 +121,7 @@ ayni_status_t check_form(const Intent &intent) {
     if (intent.kind != AYNI_INTENT_GOAL_CREATE) {
         return AYNI_OK;
     }
-    const GoalCreate &create = intent.create;
-    if (intent.expected_revision != 0U || !catalog::CatalogId::is_valid(create.goal_type_id) ||
-        (create.parameters.data == nullptr && create.parameters.size != 0U) ||
-        !catalog::GoalTypeRegistry::defines_trigger(create.trigger.kind) ||
-        !create.trigger.fits() || !trigger_source_fits(create)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    return AYNI_OK;
+    return intent.expected_revision == 0U ? check_goal_form(intent.create) : AYNI_INVALID_ARGUMENT;
 }
 
 ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, IntentFailure &failure) {

@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 22u
+#define AYNI_ABI_MINOR 23u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -891,6 +891,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_GOAL_AUTHORITY_PARENT ((ayni_reason_t)64)
 /* Since 0.22: Grant is bound to another, ended or missing Goal. */
 #define AYNI_REASON_GRANT_GOAL ((ayni_reason_t)65)
+/* Since 0.23: the saved Goal identity or original missing-item set changed. */
+#define AYNI_REASON_GOAL_APPROVAL_CHANGED ((ayni_reason_t)66)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1126,6 +1128,9 @@ typedef struct ayni_goal_info_v1 {
     ayni_reason_t hold_reason;
     uint32_t trigger_source_size; /* since 0.9; 0 unless the trigger is LOCAL_INPUT */
     char trigger_source[AYNI_CATALOG_ID_MAX_BYTES]; /* since 0.9; as created, not terminated */
+    /* Since 0.23: original relative expiry in microseconds; 0 means never.
+     * This immutable value is independent of the current boot's expires_us. */
+    uint64_t original_expiry_us;
 } ayni_goal_info_v1;
 
 /*
@@ -1206,6 +1211,8 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_GRANT_CREATE                                                                   \
     ((ayni_intent_kind_t)9) /* body: ayni_grant_create_v1, authority.h */
 #define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)10) /* body: ayni_grant_revoke_v1 */
+/* Since 0.23: atomically approve every originally missing Goal requirement. */
+#define AYNI_INTENT_GOAL_APPROVE ((ayni_intent_kind_t)11) /* body: ayni_goal_approve_v1 */
 
 /*
  * One envelope for every intent kind. The principal and channel are the

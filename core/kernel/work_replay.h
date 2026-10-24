@@ -56,6 +56,10 @@ class WorkReplay {
                                        const authority::Grant &grant, ayni_bytes_v1 domain,
                                        ayni_bytes_v1 scope);
 
+    // Snapshot proof allows legitimately reclaimed history; journal pairing
+    // separately requires every new Grant, dependency and activation record.
+    bool matches_goal_approval(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
+
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
     bool complete() const { return pairing_.complete(); }
@@ -74,6 +78,9 @@ class WorkReplay {
   private:
     durability::RecordUse apply(const durability::BatchIdentity &batch,
                                 const durability::RecordHeader &header, const uint8_t *body);
+    // Dispatch while batch_seq_ still names the previously consumed record.
+    durability::RecordUse apply_record(const durability::BatchIdentity &batch,
+                                       const durability::RecordHeader &header, const uint8_t *body);
     durability::RecordUse restore_owner_binding(const uint8_t *body, uint32_t size,
                                                 foundation::TransitionStamp stamp);
     durability::RecordUse restore_instance(const uint8_t *body, uint32_t size,
@@ -103,6 +110,12 @@ class WorkReplay {
                                                       foundation::TransitionStamp stamp);
     durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
                                           uint64_t commit_seq);
+    // One approval's ordered relation, independent of record body decoding.
+    bool pair_approval_grant(const authority::GrantRecord &record,
+                             foundation::TransitionStamp stamp);
+    bool pair_approval_state(uint32_t index, const work::GoalState &state);
+    bool pair_approval_metadata(uint32_t index, const work::GoalAuthorityRecord &record);
+    bool pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
     // Cross-table facts are checked without consulting the new boot catalog.
     bool goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const;
     void hold_tasks();
@@ -127,6 +140,18 @@ class WorkReplay {
             return kind == AuthorityPairKind::create || kind == AuthorityPairKind::revocation;
         }
     };
+    // Transient batch proof. Grant IDs are unordered because journal slot order
+    // can differ from requirement order after safe historical-slot reuse.
+    struct ApprovalPair {
+        enum class Stage { grants, state, metadata, complete };
+        Stage stage = Stage::grants; // metadata awaits command; complete seals the batch.
+        uint64_t goal_id = 0;    // Exact proposal identity, nonzero while the optional is engaged.
+        uint32_t goal_index = 0; // Original occupied slot, never replaced inside this batch.
+        uint32_t revision = 0;   // Original proposal revision before activation.
+        uint32_t missing_mask = 0; // Original absent dependencies; never expanded on replay.
+        uint32_t count = 0;        // Prefix of new grant_ids, at most the original missing count.
+        std::array<uint64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> grant_ids{};
+    };
     // Batch pairing is replay-owned transient state, never serialized. Goal
     // and Task pairs may coexist with authority; disengaged means no missing
     // state. progress_seq remembers the last progress batch to reject duplicates.
@@ -135,10 +160,14 @@ class WorkReplay {
         std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.
         std::optional<uint64_t> goal_authority; // Goal v2 awaiting its explicit ceiling.
         uint64_t goal_authority_seq = 0; // Last type 17 batch; one Goal authority change per batch.
-        AuthorityPair authority;         // Exactly one authority alternative or none.
-        uint64_t progress_seq = 0;       // Last progress commit sequence; 0 before any progress.
+        std::optional<ApprovalPair> approval; // Retains a closed proof until the next batch.
+        AuthorityPair authority;              // Exactly one authority alternative or none.
+        uint64_t progress_seq = 0; // Last progress commit sequence; 0 before any progress.
         // Every accepted pair in the batch has received its required partner.
-        bool complete() const { return !goal && !task && !goal_authority && !authority.pending(); }
+        bool complete() const {
+            return !goal && !task && !goal_authority && !authority.pending() &&
+                   (!approval || approval->stage == ApprovalPair::Stage::complete);
+        }
     };
     BatchPairing pairing_; // Clear the entire state on discard; never reuse across a reload.
 };

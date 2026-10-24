@@ -232,17 +232,19 @@ bool GrantTable::covers_saved_scope(uint32_t index, const catalog::CatalogId &ca
 
 // Classify the same history once: snapshots may show later terminal facts;
 // replayed creates must precede every ancestor's terminal transition (ADR-0030).
-GrantTable::AncestorHistory
-GrantTable::history_at_creation(uint32_t index, foundation::TransitionStamp created) const {
+GrantTable::AncestorHistory GrantTable::history_at(uint32_t index, uint64_t commit_seq,
+                                                   std::optional<uint64_t> transition_id) const {
     auto history = AncestorHistory::active;
     const auto walked =
         visit_ancestors(index, limits_.delegation_depth_max + 1U, [&](uint32_t ancestor_index) {
             const Grant &ancestor = at(ancestor_index);
-            if (!after(created, ancestor.created_stamp)) {
+            if (commit_seq <= ancestor.created_stamp.commit_seq ||
+                (transition_id && *transition_id <= ancestor.created_stamp.transition_id)) {
                 return false;
             }
             if (terminal(ancestor)) {
-                if (!after(ancestor.stamp, created)) {
+                if (ancestor.stamp.commit_seq <= commit_seq ||
+                    (transition_id && ancestor.stamp.transition_id <= *transition_id)) {
                     return false;
                 }
                 history = AncestorHistory::later_terminal;
@@ -250,6 +252,10 @@ GrantTable::history_at_creation(uint32_t index, foundation::TransitionStamp crea
             return true;
         });
     return walked == Walk::root ? history : AncestorHistory::invalid;
+}
+
+bool GrantTable::active_at(uint32_t index, uint64_t commit_seq) const {
+    return history_at(index, commit_seq) != AncestorHistory::invalid;
 }
 
 bool GrantTable::gated(uint64_t grant_id) const {
@@ -787,7 +793,7 @@ void GrantTable::resolve_catalog(const catalog::CapabilityRegistry &catalog) {
                           lookup.kind == catalog::CapabilityRegistry::Lookup::Kind::unknown_id
                               ? AYNI_REASON_CAPABILITY_UNKNOWN
                               : AYNI_REASON_CAPABILITY_VERSION);
-        } else if (!same_bytes(source_domain(index), catalog.domain_view(lookup.index))) {
+        } else if (!catalog.matches_domain(lookup.index, source_domain(index))) {
             hold_restored(index, AYNI_REASON_GRANT_CATALOG_CHANGED);
         }
     }
@@ -898,7 +904,7 @@ GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
     uint32_t parent = 0;
     if (!valid_restored_fact(record, state, parent) ||
         (record.grant.parent_grant_id != 0U &&
-         history_at_creation(parent, stamp) != AncestorHistory::active)) {
+         history_at(parent, stamp.commit_seq, stamp.transition_id) != AncestorHistory::active)) {
         return Restore::corrupt;
     }
     if (!fits_restored_fact(record)) {
@@ -1015,7 +1021,8 @@ GrantTable::Restore GrantTable::restore_snapshot(const GrantSnapshotRecord &reco
     uint32_t parent = 0;
     if (!valid_restored_fact(record.create, state, parent) ||
         (record.create.grant.parent_grant_id != 0U &&
-         history_at_creation(parent, state.created) == AncestorHistory::invalid)) {
+         history_at(parent, state.created.commit_seq, state.created.transition_id) ==
+             AncestorHistory::invalid)) {
         return Restore::corrupt;
     }
     if (!fits_restored_fact(record.create)) {

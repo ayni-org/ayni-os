@@ -18,6 +18,8 @@ constexpr uint16_t exact_command_record_version = 2;
 // records.md type 9/v2 adds canonical format and byte length (u32 each).
 constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
 constexpr uint16_t revoke_command_record_version = 3;
+// REQUIRED type 9/v4 keeps the v2 envelope but carries full Goal approval identity.
+constexpr uint16_t approval_command_record_version = 4;
 // Type 9/v3 adds effect before those two canonical fields (u32 each).
 constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 3U * sizeof(uint32_t);
 constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {

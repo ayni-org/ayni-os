@@ -7,24 +7,13 @@
 #ifndef AYNI_CORE_KERNEL_INTENT_INTENT_H
 #define AYNI_CORE_KERNEL_INTENT_INTENT_H
 
-#include "work/goal/trigger_schedule.h"
+#include "kernel/command/command_approval.h"
 
 #include <ayni/authority.h>
 
 #include <cstdint>
 
 namespace ayni::kernel {
-
-struct GoalCreate {
-    ayni_string_v1 goal_type_id;
-    uint32_t goal_type_version;
-    uint64_t owner_instance_id;
-    uint64_t parent_goal_id; // 0: a top-level goal
-    ayni_bytes_v1 parameters;
-    work::Trigger trigger;
-    uint64_t expiry_us;            // from creation; 0: never
-    ayni_string_v1 trigger_source; // LOCAL_INPUT: the input it takes; empty otherwise
-};
 
 struct Intent {
     ayni_intent_kind_t kind; // one of the kinds implemented
@@ -33,6 +22,7 @@ struct Intent {
     uint32_t expected_revision;
     ayni_grant_create_v1 grant_create; // GRANT_CREATE, borrowed nested views
     GoalCreate create;                 // GOAL_CREATE
+    GoalApproval approval;             // GOAL_APPROVE, including borrowed original views.
     uint64_t target_id; // target intents: the goal, task, instance or Grant they name
 };
 

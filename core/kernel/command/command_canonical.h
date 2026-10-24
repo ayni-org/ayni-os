@@ -6,6 +6,8 @@
 
 #include <ayni/authority.h>
 
+#include "kernel/command/command_approval.h"
+
 #include <cstdint>
 
 namespace ayni::kernel {
@@ -14,6 +16,14 @@ constexpr uint32_t authority_command_format = 1;
 constexpr uint32_t authority_command_fixed_max = 84;
 constexpr uint32_t authority_command_max_bytes(uint32_t scope_max_bytes) {
     return authority_command_fixed_max + scope_max_bytes;
+}
+
+// Every exact command window uses one arena stride; the larger real payload
+// owns its budget. Do not allocate approval parameters at the absolute ABI cap.
+constexpr uint32_t exact_command_max_bytes(uint32_t scope_bytes, uint32_t parameter_bytes) {
+    return authority_command_max_bytes(scope_bytes) > approval_command_max_bytes(parameter_bytes)
+               ? authority_command_max_bytes(scope_bytes)
+               : approval_command_max_bytes(parameter_bytes);
 }
 
 // Revoke identity is kind/expected_revision (u32 each) plus target_id (u64),

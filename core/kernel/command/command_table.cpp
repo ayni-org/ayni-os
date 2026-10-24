@@ -9,8 +9,9 @@ namespace ayni::kernel {
 
 bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
     if (mapping.principal_id == 0U || mapping.command_id == 0U ||
-        mapping.object.kind != AYNI_OBJECT_GRANT || mapping.object.id == 0U ||
-        mapping.canonical_size != bytes.size || bytes.size == 0U) {
+        mapping.object.kind !=
+            (mapping.kind == AYNI_INTENT_GOAL_APPROVE ? AYNI_OBJECT_GOAL : AYNI_OBJECT_GRANT) ||
+        mapping.object.id == 0U || mapping.canonical_size != bytes.size || bytes.size == 0U) {
         return false;
     }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
@@ -41,6 +42,15 @@ bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes)
         const bool gone =
             mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE && mapping.object.revision == 0U;
         if (!changed && !no_change && !gone) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
+        ApprovalCommand command{};
+        if (!read_approval_command(bytes, command) || mapping.object.origin_device_id != 0U ||
+            command.expected_revision == UINT32_MAX ||
+            mapping.object.id != command.approval.goal_id ||
+            mapping.object.revision != command.expected_revision + 1U ||
+            mapping.effect != AYNI_INTENT_EFFECT_CHANGED) {
             return false;
         }
     } else {
@@ -105,11 +115,16 @@ CommandTable::Lookup CommandTable::find(uint64_t principal_id, uint64_t command_
     return command_id <= row->floor ? Lookup::expired : Lookup::unmapped;
 }
 
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const CanonicalCommandView &input) {
+// Shape is independent of retention. Lookup/floor precedes configured byte
+// capacity, so a stale or conflicting command keeps its original classification.
+template <typename Input>
+CommandTable::ExactLookup CommandTable::find_candidate(
+    uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind, const Input &input,
+    ayni_status_t (*measure)(const Input &, uint32_t &),
+    ayni_status_t (*encode)(const Input &, uint8_t *, uint32_t, uint32_t &)) {
     staged_.reset();
     uint32_t needed = 0;
-    auto status = measure_authority_command(input, needed);
+    auto status = measure(input, needed);
     if (status != AYNI_OK || principal_id == 0U || command_id == 0U) {
         return {status == AYNI_OK ? AYNI_INVALID_ARGUMENT : status, Lookup::unmapped, nullptr};
     }
@@ -130,14 +145,13 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
             return {AYNI_OK, Lookup::expired, nullptr};
         }
     }
-    if (existing != nullptr &&
-        (existing->kind != AYNI_INTENT_GRANT_CREATE || existing->canonical_size != needed)) {
+    if (existing != nullptr && (existing->kind != kind || existing->canonical_size != needed)) {
         return {AYNI_OK, Lookup::conflict, nullptr};
     }
     if (needed > canonical_max_bytes_) {
         return {AYNI_CAPACITY_EXCEEDED, Lookup::unmapped, nullptr};
     }
-    status = encode_authority_command(input, scratch_, canonical_max_bytes_, needed);
+    status = encode(input, scratch_, canonical_max_bytes_, needed);
     if (status != AYNI_OK) {
         return {status, Lookup::unmapped, nullptr};
     }
@@ -149,13 +163,25 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
         }
         return {AYNI_OK, Lookup::retried, existing};
     }
-    staged_ = StagedCreate{principal_id, command_id, digest, needed};
+    staged_ = StagedCommand{principal_id, command_id, digest, needed, kind};
     return {AYNI_OK, Lookup::unmapped, nullptr};
+}
+
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const CanonicalCommandView &input) {
+    return find_candidate(principal_id, command_id, AYNI_INTENT_GRANT_CREATE, input,
+                          measure_authority_command, encode_authority_command);
+}
+
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const ApprovalCommand &input) {
+    return find_candidate(principal_id, command_id, AYNI_INTENT_GOAL_APPROVE, input,
+                          measure_approval_command, encode_approval_command);
 }
 
 bool CommandTable::insert_exact(CommandMapping mapping) {
     if (!staged_ || mapping.principal_id != staged_->principal_id ||
-        mapping.command_id != staged_->command_id || mapping.kind != AYNI_INTENT_GRANT_CREATE ||
+        mapping.command_id != staged_->command_id || mapping.kind != staged_->kind ||
         !can_insert(mapping.principal_id)) {
         return false;
     }
@@ -249,7 +275,8 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
             return Restore::no_room;
         }
     } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE ||
-               mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+               mapping.kind == AYNI_INTENT_GRANT_REVOKE ||
+               mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
         return Restore::corrupt;
     }
     if (!can_insert(mapping.principal_id)) {

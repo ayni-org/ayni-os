@@ -195,7 +195,8 @@ AYNI_LAYOUT(goal_info_wait_reason, offsetof(ayni_goal_info_v1, wait_reason) == 1
 AYNI_LAYOUT(goal_info_hold_reason, offsetof(ayni_goal_info_v1, hold_reason) == 180);
 AYNI_LAYOUT(goal_info_trigger_source_size, offsetof(ayni_goal_info_v1, trigger_source_size) == 184);
 AYNI_LAYOUT(goal_info_trigger_source, offsetof(ayni_goal_info_v1, trigger_source) == 188);
-AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 224);
+AYNI_LAYOUT(goal_info_original_expiry, offsetof(ayni_goal_info_v1, original_expiry_us) == 224);
+AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 232);
 
 AYNI_LAYOUT(intent_struct_size, offsetof(ayni_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(intent_kind, offsetof(ayni_intent_v1, kind) == 4);
@@ -442,3 +443,13 @@ AYNI_LAYOUT(requirement_sink_ctx, offsetof(ayni_goal_requirement_sink_v1, ctx) =
 AYNI_LAYOUT(requirement_sink_emit, offsetof(ayni_goal_requirement_sink_v1, emit) == 2 * AYNI_PTR);
 AYNI_LAYOUT(goal_authority_info_size, sizeof(ayni_goal_authority_info_v1) == 48);
 AYNI_LAYOUT(goal_requirement_info_size, sizeof(ayni_goal_requirement_info_v1) == 64);
+
+/* ADR-0037: explicit complete approval request, ABI 0.23. */
+AYNI_LAYOUT(goal_approve_struct, offsetof(ayni_goal_approve_v1, struct_size) == 0);
+AYNI_LAYOUT(goal_approve_mask, offsetof(ayni_goal_approve_v1, missing_mask) == 4);
+AYNI_LAYOUT(goal_approve_goal, offsetof(ayni_goal_approve_v1, goal_id) == 8);
+AYNI_LAYOUT(goal_approve_lifetime, offsetof(ayni_goal_approve_v1, lifetime) == 16);
+AYNI_LAYOUT(goal_approve_reserved, offsetof(ayni_goal_approve_v1, reserved) == 20);
+AYNI_LAYOUT(goal_approve_duration, offsetof(ayni_goal_approve_v1, duration_us) == 24);
+AYNI_LAYOUT(goal_approve_original, offsetof(ayni_goal_approve_v1, original) == 32);
+AYNI_LAYOUT(goal_approve_size, sizeof(ayni_goal_approve_v1) == 32 + sizeof(ayni_goal_create_v1));

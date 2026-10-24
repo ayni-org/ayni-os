@@ -1,4 +1,8 @@
 // ADR-0037: public requirement export, proposals and fixed dependency consumption.
+// White-box table/count/stamp assertions below supplement public observations to
+// prove refusal leaves no hidden allocation or partial transition behind.
+#include "goal_approval_request.h"
+#include "kernel/storage/storage_budget.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
 
@@ -39,6 +43,9 @@ class AuthorityWork {
             ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
             auto type = goal_type_desc("authorized", 1, nullptr, this);
             type.export_requirements = emit;
+            if (allow_parameters) {
+                type.validate = [](void *, ayni_bytes_v1) { return AYNI_OK; };
+            }
             ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
             const auto zero = goal_type_desc("zero", 1);
             ASSERT_EQ(ayni_register_goal_type(kernel, &zero), AYNI_OK);
@@ -175,6 +182,7 @@ class AuthorityWork {
         return grant_id;
     }
     WorkNode work;
+    bool allow_parameters = false;
     uint32_t count = 1;
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> low{};
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> high{10, 80};
@@ -608,6 +616,604 @@ TEST(GoalGrants, a_bound_fact_with_another_subject_is_not_usable) {
     ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_OK);
     EXPECT_EQ(info.effective_reason, AYNI_REASON_GRANT_GOAL);
     EXPECT_EQ(node.authority(goal.result.object.id).effective_reason, AYNI_REASON_GRANT_GOAL);
+}
+
+// C-AUTH-032/ADR-0037: only original missing items receive bound Grants; old
+// authority remains independently revocable, and retries never issue twice.
+TEST(GoalApproval, fills_only_original_missing_items_and_retries_without_new_grants) {
+    AuthorityWork node;
+    node.count = 2;
+    node.run();
+    const auto generic = node.grant(0, 20);
+    ASSERT_EQ(generic.status, AYNI_OK);
+    node.work.node().recover();
+    const auto proposed = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(proposed.status, AYNI_OK);
+    const auto id = proposed.result.object.id;
+    ApprovalRequest request(node.work.kernel(), id);
+    ASSERT_EQ(request.body.missing_mask, 2U);
+    const auto calls = node.calls;
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto approved = node.work.submit(intent);
+    ASSERT_EQ(approved.status, AYNI_OK);
+    EXPECT_EQ(approved.result.object.revision, proposed.result.object.revision + 1U);
+    EXPECT_EQ(node.calls, calls);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+    EXPECT_EQ(node.requirement(id, 0).grant_id, generic.result.object.id);
+    const auto bound = node.requirement(id, 1).grant_id;
+    ASSERT_NE(bound, 0U);
+    ayni_grant_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_grant(node.work.kernel(), bound, &info), AYNI_OK);
+    EXPECT_EQ(info.bound_goal_id, id);
+    EXPECT_EQ(info.lifetime, AYNI_GRANT_PERMANENT);
+    EXPECT_EQ(info.allow_delegation, 0U);
+    EXPECT_EQ(node.authority(id).effective_reason, AYNI_REASON_GRANT_NOT_DURABLE);
+    const auto retry = node.work.submit(intent);
+    ASSERT_EQ(retry.status, AYNI_OK);
+    EXPECT_EQ(retry.result.commit_seq, approved.result.commit_seq);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+    node.work.node().recover();
+    EXPECT_EQ(node.authority(id).missing_count, 0U);
+    node.revoke(generic.result.object.id);
+    EXPECT_NE(node.authority(id).missing_count, 0U);
+}
+
+// C-AUTH-032: capacity, CAS and channel failures publish no prefix or ID.
+TEST(GoalApproval, insufficient_batch_capacity_and_invalid_approval_leave_the_proposal_intact) {
+    AuthorityWork node;
+    node.count = 2;
+    node.work.node().config().grant_capacity = 1;
+    node.run();
+    const auto proposed = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(proposed.status, AYNI_OK);
+    const auto id = proposed.result.object.id;
+    ApprovalRequest request(node.work.kernel(), id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto stamp = node.work.kernel()->work.transitions.latest();
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 0U);
+    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, stamp.commit_seq);
+    EXPECT_EQ(node.work.goal(id).lifecycle, AYNI_GOAL_PROPOSED);
+    EXPECT_EQ(node.requirement(id, 0).grant_id, 0U);
+    EXPECT_EQ(node.requirement(id, 1).grant_id, 0U);
+    request.body.missing_mask = 1;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    request.body.missing_mask = 3;
+    ++intent.expected_revision;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
+    intent.expected_revision = request.info.revision;
+    intent.command_id = 0;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_INVALID_ARGUMENT);
+}
+
+// ADR-0037 decision 6: a newly revoked old choice is not silently covered by
+// either a newly available generic Grant or the requested missing-item approval.
+TEST(GoalApproval, a_lost_original_dependency_refuses_approval_without_reselection) {
+    AuthorityWork node;
+    node.count = 2;
+    node.run();
+    const auto first = node.grant(0, 20);
+    ASSERT_EQ(first.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    node.revoke(first.result.object.id);
+    const auto alternative = node.grant();
+    ASSERT_EQ(alternative.status, AYNI_OK);
+    node.work.node().recover();
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto before = node.work.kernel()->work.grants.size();
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), before);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, first.result.object.id);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 1).grant_id, 0U);
+}
+
+// C-AUTH-032: each immutable creation field participates in first acceptance
+// and exact retry identity; expiry is the original duration, not time remaining.
+TEST(GoalApproval, changed_echo_is_refused_and_exact_retry_survives_terminal_target_reclamation) {
+    AuthorityWork node;
+    node.work.node().config().goal_capacity = 1;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE, 0, "authorized", 10000000);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    ++request.body.original.expiry_us;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    --request.body.original.expiry_us;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    node.work.node().recover();
+    ++request.body.original.expiry_us;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_IDEMPOTENCY_CONFLICT);
+    --request.body.original.expiry_us;
+    const ayni_goal_target_v1 target{sizeof(target), 0, goal.result.object.id};
+    ASSERT_EQ(node.work
+                  .submit(node.work.intent(AYNI_INTENT_GOAL_CANCEL, &target,
+                                           accepted.result.object.revision))
+                  .status,
+              AYNI_OK);
+    node.work.node().recover();
+    ASSERT_EQ(node.create(AYNI_TRIGGER_NONE, 0, "zero").status, AYNI_OK);
+    const auto retry = node.work.submit(intent);
+    ASSERT_EQ(retry.status, AYNI_OK);
+    EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
+    EXPECT_EQ(retry.result.object.id, accepted.result.object.id);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+}
+
+// ADR-0037: activation anchors the trigger, never the original expiry or a
+// short Grant's deadline; authority remains non-consumable until durable.
+TEST(GoalApproval, activation_starts_delay_but_storage_wait_never_extends_grant_lifetime) {
+    AuthorityWork node;
+    node.run();
+    auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1, {},
+                                      AYNI_TRIGGER_DELAY);
+    body.trigger_delay_us = 1000;
+    body.expiry_us = 10000000;
+    const auto goal = node.work.create(body);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    const auto original_expiry = node.work.goal(goal.result.object.id).expires_us;
+    node.work.node().recover();
+    node.work.node().sim().advance_us(5000);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    request.body.lifetime = AYNI_GRANT_CURRENT_BOOT;
+    request.body.duration_us = 10000;
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted_at = node.work.node().sim().now_us();
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).next_due_us, accepted_at + 1000);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).expires_us, original_expiry);
+    node.work.node().sim().advance_us(2000);
+    node.work.node().step(1);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).last_task_id, 0U);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    node.work.node().sim().advance_us(10000);
+    node.work.node().recover();
+    EXPECT_EQ(node.authority(goal.result.object.id).effective_reason, AYNI_REASON_GRANT_EXPIRED);
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// C-AUTH-032: successful durable approval reaches the existing strategy gate.
+TEST(GoalApproval, durable_approval_executes_and_voice_or_expired_proposals_are_refused) {
+    AuthorityWork node;
+    node.run();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    uint64_t voice = 0;
+    const auto desc = session_desc(AYNI_CHANNEL_VOICE);
+    ASSERT_EQ(ayni_open_session(node.work.kernel(), &desc, &voice), AYNI_OK);
+    intent.session_id = voice;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    intent.session_id = node.work.session();
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    EXPECT_FALSE(node.work.strategy().seen.empty());
+    const auto expiring = node.create(AYNI_TRIGGER_NONE, 0, "authorized", 1000);
+    ASSERT_EQ(expiring.status, AYNI_OK);
+    ApprovalRequest expired(node.work.kernel(), expiring.result.object.id);
+    node.work.node().sim().advance_us(1000);
+    intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &expired.body, expired.info.revision);
+    intent.command_id = node.command++;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_INVALID_STATE);
+}
+
+// C-AUTH-032: the copying query never exposes a partial parameter payload.
+TEST(GoalApproval, parameter_query_preserves_small_buffer_and_reports_original_duration) {
+    AuthorityWork node;
+    node.allow_parameters = true;
+    node.run();
+    const uint8_t parameters[] = {3, 1, 4};
+    auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1,
+                                      {parameters, sizeof(parameters)}, AYNI_TRIGGER_NONE);
+    body.expiry_us = 1234;
+    const auto goal = node.work.create(body);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    uint8_t buffer[] = {99, 99, 99};
+    uint32_t size = 99;
+    EXPECT_EQ(ayni_get_goal_parameters(node.work.kernel(), goal.result.object.id, buffer, 2, &size),
+              AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(size, sizeof(parameters));
+    EXPECT_EQ(buffer[0], 99);
+    EXPECT_EQ(ayni_get_goal_parameters(node.work.kernel(), goal.result.object.id, buffer, 3, &size),
+              AYNI_OK);
+    EXPECT_EQ(std::memcmp(buffer, parameters, sizeof(parameters)), 0);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).original_expiry_us, 1234U);
+    size = 99;
+    EXPECT_EQ(ayni_get_goal_parameters(node.work.kernel(), 0, buffer, 3, &size), AYNI_NOT_FOUND);
+    EXPECT_EQ(size, 99U);
+}
+
+// records.md type 9/v4: strict complete canonical identity, independent of live
+// catalog/Goal state, rejects truncation and preserves output on failure.
+TEST(GoalApprovalCodec, canonical_round_trip_and_every_truncation_preserve_identity) {
+    AuthorityWork node;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = 100;
+    ayni::kernel::Intent parsed{};
+    ayni::kernel::IntentFailure failure{};
+    ASSERT_EQ(ayni::kernel::decode_intent(intent, parsed, failure), AYNI_OK);
+    const ayni::kernel::ApprovalCommand input{parsed.expected_revision, parsed.approval};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::kernel::measure_approval_command(input, size), AYNI_OK);
+    std::vector<uint8_t> bytes(size);
+    ASSERT_EQ(ayni::kernel::encode_approval_command(input, bytes.data(), size, size), AYNI_OK);
+    ayni::kernel::ApprovalCommand decoded{};
+    ASSERT_TRUE(ayni::kernel::read_approval_command({bytes.data(), size}, decoded));
+    EXPECT_EQ(decoded.approval.goal_id, goal.result.object.id);
+    EXPECT_EQ(decoded.approval.missing_mask, 1U);
+    EXPECT_EQ(decoded.approval.lifetime, AYNI_GRANT_PERMANENT);
+    for (uint32_t cut = 0; cut < size; ++cut) {
+        decoded.expected_revision = 99;
+        EXPECT_FALSE(ayni::kernel::read_approval_command({bytes.data(), cut}, decoded));
+        EXPECT_EQ(decoded.expected_revision, 99U);
+    }
+    bytes.push_back(0);
+    EXPECT_FALSE(ayni::kernel::read_approval_command({bytes.data(), size + 1U}, decoded));
+    bytes.assign(size, 99);
+    EXPECT_EQ(ayni::kernel::encode_approval_command(input, bytes.data(), size - 1U, size),
+              AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(bytes.front(), 99);
+}
+
+// C-AUTH-032: two missing items are distinct nondelegable roots, even if their
+// requested scopes are equal; the preflight reserves the entire set.
+TEST(GoalApproval, multiple_missing_items_publish_distinct_grants_in_one_transition) {
+    AuthorityWork node;
+    node.count = 2;
+    node.high[1] = node.high[0];
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    const auto first = node.requirement(goal.result.object.id, 0).grant_id;
+    const auto second = node.requirement(goal.result.object.id, 1).grant_id;
+    ASSERT_NE(first, second);
+    for (const auto id : {first, second}) {
+        ayni_grant_info_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_grant(node.work.kernel(), id, &info), AYNI_OK);
+        EXPECT_EQ(info.created_commit_seq, accepted.result.commit_seq);
+    }
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, first);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 1).grant_id, second);
+}
+
+// C-STORE-019: losing power at an in-flight approval recovers the complete
+// missing-item batch plus mapping, or the original proposal with no new Grants.
+TEST(GoalApproval, interrupted_append_recovers_all_missing_items_and_mapping_or_neither) {
+    using ayni::hosts::sim::CutAppend;
+    for (const auto cut : {CutAppend::lost, CutAppend::stored}) {
+        SCOPED_TRACE(static_cast<int>(cut));
+        AuthorityWork node;
+        node.count = 2;
+        node.run();
+        const auto goal = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        node.work.node().recover();
+        ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+        auto intent =
+            node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+        intent.command_id = node.command++;
+        const auto accepted = node.work.submit(intent);
+        ASSERT_EQ(accepted.status, AYNI_OK);
+        for (unsigned round = 0; round < 1000 && node.work.node().sim().pending_storage() == 0U;
+             ++round) {
+            const auto report = node.work.node().step(1);
+            if (report.more_ready == 0U && report.next_deadline_us != UINT64_MAX &&
+                report.next_deadline_us > node.work.node().sim().now_us()) {
+                node.work.node().sim().advance_us(report.next_deadline_us -
+                                                  node.work.node().sim().now_us());
+            }
+        }
+        ASSERT_NE(node.work.node().sim().pending_storage(), 0U);
+        node.work.node().power_cut_and_start(cut);
+        node.work.node().recover();
+        ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        node.work.reopen_session();
+        EXPECT_EQ(node.work.kernel()->work.grants.size(), cut == CutAppend::stored ? 2U : 0U);
+        EXPECT_EQ(node.authority(goal.result.object.id).phase, cut == CutAppend::stored
+                                                                   ? AYNI_GOAL_AUTHORITY_AUTHORIZED
+                                                                   : AYNI_GOAL_AUTHORITY_PROPOSED);
+        intent.session_id = node.work.session();
+        const auto retry = node.work.submit(intent);
+        ASSERT_EQ(retry.status, AYNI_OK);
+        EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+        if (cut == CutAppend::stored) {
+            EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
+        } else {
+            EXPECT_GT(retry.result.commit_seq, accepted.result.commit_seq);
+        }
+    }
+}
+
+// C-STORE-019/ADR-0037: FAILED and both UNKNOWN outcomes drive actual fencing
+// and reload, then the original command either proves success or applies once.
+TEST(GoalApproval, failed_and_unknown_appends_reload_before_retrying_the_complete_batch) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    for (const auto fault :
+         {StorageFault::fail, StorageFault::unknown_lost, StorageFault::unknown_persisted}) {
+        SCOPED_TRACE(static_cast<int>(fault));
+        AuthorityWork node;
+        node.count = 2;
+        node.run();
+        const auto goal = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        node.work.node().recover();
+        ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+        auto intent =
+            node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+        intent.command_id = node.command++;
+        const auto old_boot = node.work.node().info().boot_epoch;
+        node.work.node().sim().inject_fault(StoragePort::append, fault);
+        node.work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+        node.work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+        const auto accepted = node.work.submit(intent);
+        ASSERT_EQ(accepted.status, AYNI_OK);
+        for (unsigned round = 0; round < 5000; ++round) {
+            const auto report = node.work.node().step(1);
+            node.work.node().sim().complete_storage();
+            if (node.work.node().info().boot_epoch > old_boot &&
+                node.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                node.work.kernel()->log.idle()) {
+                break;
+            }
+            if (report.more_ready == 0U && node.work.node().sim().pending_storage() == 0U &&
+                report.next_deadline_us != UINT64_MAX &&
+                report.next_deadline_us > node.work.node().sim().now_us()) {
+                node.work.node().sim().advance_us(report.next_deadline_us -
+                                                  node.work.node().sim().now_us());
+            }
+        }
+        ASSERT_GT(node.work.node().info().boot_epoch, old_boot);
+        ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        node.work.reopen_session();
+        EXPECT_EQ(node.work.kernel()->work.grants.size(),
+                  fault == StorageFault::unknown_persisted ? 2U : 0U);
+        intent.session_id = node.work.session();
+        const auto retry = node.work.submit(intent);
+        ASSERT_EQ(retry.status, AYNI_OK);
+        EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+        if (fault == StorageFault::unknown_persisted) {
+            EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
+        } else {
+            EXPECT_GT(retry.result.commit_seq, accepted.result.commit_seq);
+        }
+    }
+}
+
+// C-AUTH-032: changed current catalog metadata must not reinterpret the saved
+// original domain. White-box drift models a registry inconsistent with creation.
+TEST(GoalApproval, changed_same_version_domain_refuses_original_proposal) {
+    AuthorityWork node;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto &model = node.work.kernel()->work;
+    const auto domain = model.capabilities.domain_view(0);
+    Range wider(0, 200);
+    const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
+                                             wider.field.allowed};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::catalog::encode_domain(&field, 1, const_cast<uint8_t *>(domain.data),
+                                           domain.size, size),
+              AYNI_OK);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto refused = node.work.submit(intent);
+    EXPECT_EQ(refused.status, AYNI_DENIED);
+    EXPECT_EQ(refused.error.reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+    EXPECT_EQ(model.grants.size(), 0U);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+}
+
+// C-AUTH-030/032: a bound parent Grant cannot authorize its child; once expired,
+// it also prevents approval of that child's independently missing authority.
+TEST(GoalApproval, expired_parent_authority_refuses_child_before_autonomous_pause) {
+    AuthorityWork node;
+    node.run();
+    const auto parent = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    ApprovalRequest parent_request(node.work.kernel(), parent.result.object.id);
+    parent_request.body.lifetime = AYNI_GRANT_CURRENT_BOOT;
+    parent_request.body.duration_us = 1000000;
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &parent_request.body,
+                                   parent_request.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    const auto child = node.create(AYNI_TRIGGER_NONE, parent.result.object.id);
+    ASSERT_EQ(child.status, AYNI_OK);
+    EXPECT_EQ(node.work.goal(child.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+    ApprovalRequest request(node.work.kernel(), child.result.object.id);
+    node.work.node().sim().advance_us(parent_request.body.duration_us);
+    intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+    EXPECT_EQ(node.work.goal(child.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+}
+
+// C-AUTH-031: one remaining ID cannot fund two Grants. White-box allocator
+// boundary is reached without billions of allocations; no prefix is accepted.
+TEST(GoalApproval, insufficient_ids_leave_all_missing_items_and_last_id_untouched) {
+    AuthorityWork node;
+    node.count = 2;
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto &model = node.work.kernel()->work;
+    model.ids.start(model.ids.boot_epoch(), ayni::foundation::max_id_sequence);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto before = model.transitions.latest();
+    const auto refused = node.work.submit(intent);
+    EXPECT_EQ(refused.status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(refused.error.reason, AYNI_REASON_ID_EXHAUSTED);
+    EXPECT_EQ(model.grants.size(), 0U);
+    EXPECT_TRUE(model.ids.available());
+    EXPECT_EQ(model.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+}
+
+// C-COMMIT-012/C-AUTH-032: a stale lower CAS is as invalid as a future CAS.
+// White-box revision setup isolates this admission before any mutation.
+TEST(GoalApproval, stale_lower_revision_and_exhausted_revision_have_no_effect) {
+    for (const uint32_t revision : {2U, UINT32_MAX}) {
+        AuthorityWork node;
+        node.run();
+        const auto goal = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+        auto &model = node.work.kernel()->work;
+        uint32_t index = 0;
+        ASSERT_TRUE(model.goals.find(goal.result.object.id, index));
+        const_cast<ayni::work::Goal &>(model.goals.at(index)).revision = revision;
+        auto intent =
+            node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+        intent.command_id = node.command++;
+        EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
+        if (revision == UINT32_MAX) {
+            intent.expected_revision = revision;
+            EXPECT_EQ(node.work.submit(intent).status, AYNI_CAPACITY_EXCEEDED);
+        }
+        EXPECT_EQ(model.grants.size(), 0U);
+        EXPECT_EQ(model.goals.at(index).revision, revision);
+        EXPECT_EQ(model.goals.at(index).lifecycle, AYNI_GOAL_PROPOSED);
+    }
+}
+
+// C-AUTH-032/limits.md: exact approval storage must fit the configured parameter
+// limit even when this exceeds the separate maximum Grant canonical identity.
+TEST(GoalApproval, maximum_parameters_fit_exact_command_storage_and_retry) {
+    AuthorityWork node;
+    node.allow_parameters = true;
+    node.work.node().config().goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MAX;
+    node.work.node().config().storage_buffer_bytes = 0;
+    node.run();
+    std::vector<uint8_t> bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX, 17);
+    const auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1,
+                                            {bytes.data(), static_cast<uint32_t>(bytes.size())});
+    const auto goal = node.work.create(body);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    node.work.node().recover();
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+}
+
+// C-COMMIT-003/005 and ADR-0037: snapshot freeze refuses the whole approval
+// without consuming its command. It becomes one durable batch after thaw.
+TEST(GoalApproval, real_snapshot_freeze_preserves_proposal_until_atomic_approval_can_resume) {
+    AuthorityWork node;
+    auto &config = node.work.node().config();
+    config.goal_capacity = 2;
+    config.storage_buffer_bytes = 3U * smallest_storage_buffer(config);
+    config.storage_log_max_bytes =
+        static_cast<uint32_t>(ayni::kernel::StorageBudget::log_max_min(capacities_of(config)));
+    node.run();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().recover();
+    ApprovalRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = node.command++;
+    // Real capacity failure must also leave the same command reusable.
+    node.work.node().sim().set_storage_capacity(0);
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_STORAGE_FAILED);
+    node.work.node().sim().set_storage_capacity(UINT64_MAX);
+    auto &kernel = *node.work.kernel();
+    auto tick = [&] {
+        const auto report = node.work.node().step(1);
+        node.work.node().sim().complete_storage();
+        if (report.more_ready == 0U && report.next_deadline_us != UINT64_MAX &&
+            report.next_deadline_us > node.work.node().sim().now_us()) {
+            node.work.node().sim().advance_us(report.next_deadline_us -
+                                              node.work.node().sim().now_us());
+        }
+    };
+    bool frozen = false;
+    for (unsigned round = 0; round < 1000 && !frozen; ++round) {
+        const auto temporary = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+        ASSERT_EQ(temporary.status, AYNI_OK);
+        for (unsigned step = 0; step < 10000; ++step) {
+            tick();
+            if (kernel.maintenance.active()) {
+                frozen = true;
+                break;
+            }
+            if (kernel.log.idle() && kernel.completions.in_flight() == 0U) {
+                break;
+            }
+        }
+        if (frozen) {
+            break;
+        }
+        ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, temporary.result.object.id).status,
+                  AYNI_OK);
+        for (unsigned step = 0; step < 10000; ++step) {
+            tick();
+            if (kernel.maintenance.active()) {
+                frozen = true;
+                break;
+            }
+            if (kernel.log.idle() && kernel.completions.in_flight() == 0U) {
+                break;
+            }
+        }
+    }
+    ASSERT_TRUE(frozen);
+    const auto before = kernel.work.transitions.latest();
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_BUSY);
+    EXPECT_EQ(kernel.work.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(kernel.work.grants.size(), 0U);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
+    for (unsigned step = 0; step < 10000 && !kernel.maintenance.done(); ++step) {
+        tick();
+    }
+    ASSERT_TRUE(kernel.maintenance.done());
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    node.work.node().recover();
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+    EXPECT_EQ(kernel.work.grants.size(), 1U);
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id,
+              node.work.kernel()->work.grants.at(0).grant_id);
 }
 
 } // namespace
