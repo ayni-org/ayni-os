@@ -487,6 +487,7 @@ struct Catalog {
     bool timer_decided = true;     // false: the timer type has no strategy
     bool agent_b = true;
     uint32_t strategy_version = 1;
+    const char *strategy_name = strategy_id;
 };
 
 // Registers catalog instead of the work node's own on each kernel created
@@ -510,12 +511,15 @@ void use_catalog(WorkNode &work, const Catalog &catalog) {
             catalog.timer_decided ? any_trigger : AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)));
         types.push_back(
             goal_type_desc("folder", 1, nullptr, nullptr, AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)));
-        for (const ayni_goal_type_v1 &type : types) {
+        for (auto type : types) {
+            if (type.strategy_id.size != 0U) {
+                type.strategy_id = text(catalog.strategy_name);
+            }
             ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
         }
-        const ayni_strategy_v1 strategy =
-            strategy_desc(strategy_id, catalog.strategy_version, &ScriptedStrategy::decide,
-                          &work.strategy(), work.max_intents_per_call, work.max_checkpoint_bytes);
+        const ayni_strategy_v1 strategy = strategy_desc(
+            catalog.strategy_name, catalog.strategy_version, &ScriptedStrategy::decide,
+            &work.strategy(), work.max_intents_per_call, work.max_checkpoint_bytes);
         ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
     });
 }
@@ -1244,6 +1248,39 @@ TEST(WorkRecovery, incompatible_parent_type_holds_a_compatible_child_without_rew
     work.node().step(1);
     ASSERT_EQ(work.strategy().seen.size(), 1U);
     EXPECT_EQ(work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
+// C-POLICY-010 / ADR-0038: equal versions do not make different strategy
+// identities compatible with a private checkpoint. Returning the original
+// writer continues exactly the saved Task, steps and bytes.
+TEST(WorkRecovery, another_strategy_at_the_same_version_cannot_read_the_saved_checkpoint) {
+    WorkNode work;
+    const auto kept = live_tasks(work);
+    const auto before = work.task(kept.reminder_task);
+    Catalog changed;
+    changed.strategy_name = "other-strategy";
+    restart_with(work, changed);
+    const auto held = work.task(kept.reminder_task);
+    EXPECT_EQ(held.lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(held.hold_status, AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(held.hold_reason, AYNI_REASON_STRATEGY_CHANGED);
+    EXPECT_EQ(held.revision, before.revision);
+    EXPECT_EQ(held.commit_seq, before.commit_seq);
+    work.strategy().seen.clear();
+    EXPECT_EQ(work.node().step(1).items_done, 1U); // Compatible timer may fail its own policy.
+    for (const auto &seen : work.strategy().seen) {
+        EXPECT_NE(seen.snapshot.task_id, kept.reminder_task);
+    }
+    restart_with(work, Catalog{});
+    EXPECT_EQ(work.task(kept.reminder_task).lifecycle, AYNI_TASK_READY);
+    work.strategy().seen.clear();
+    work.strategy().answer = {};
+    work.node().step(1);
+    ASSERT_EQ(work.strategy().seen.size(), 1U);
+    EXPECT_EQ(work.strategy().seen.front().snapshot.task_id, kept.reminder_task);
+    EXPECT_EQ(work.strategy().seen.front().checkpoint_strategy_id, strategy_id);
+    EXPECT_EQ(work.strategy().seen.front().checkpoint, (std::vector<uint8_t>{7, 1}));
+    EXPECT_EQ(work.strategy().seen.front().steps, (std::vector<std::string>{"turn0", "turn1"}));
 }
 
 } // namespace

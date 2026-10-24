@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <set>
 #include <vector>
 
 namespace {
@@ -2970,6 +2971,100 @@ TEST(WorkAuthorityRestart, maximum_goal_count_keeps_the_last_goals_task_cohort_r
     node.work.node().step(1);
     ASSERT_EQ(node.work.strategy().seen.size(), 2U);
     EXPECT_EQ(node.work.strategy().seen.back().snapshot.task_id, second);
+}
+
+// C-AUTH-020 / ADR-0038: a zero-needs child still depends on its parent's
+// retained Grant compatibility. The child's empty own references cannot hide
+// an ancestor hold or turn that temporary hold into persistent authorization.
+TEST(WorkAuthorityRestart, zero_requirement_child_preserves_ancestor_catalog_compatibility) {
+    AuthorityWork source;
+    source.run();
+    ASSERT_EQ(source.grant().status, AYNI_OK);
+    source.work.node().recover();
+    const auto parent = source.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    const auto child = source.create(AYNI_TRIGGER_ONCE, parent.result.object.id, "zero");
+    ASSERT_EQ(child.status, AYNI_OK);
+    source.work.node().step(1);
+    source.work.node().recover();
+    const auto child_id = child.result.object.id;
+    const auto task_id = source.work.goal(child_id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    AuthorityWork incompatible;
+    incompatible.domain_max = 200;
+    incompatible.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    incompatible.run();
+    ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    incompatible.advance_work();
+    EXPECT_TRUE(incompatible.work.strategy().seen.empty());
+    EXPECT_EQ(incompatible.authority(child_id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+    EXPECT_EQ(incompatible.work.task(task_id).hold_reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+    EXPECT_EQ(incompatible.work.node().step(1).more_ready, 0U);
+    AuthorityWork compatible;
+    compatible.work.node().sim().durable_storage() =
+        incompatible.work.node().sim().durable_storage();
+    compatible.run();
+    ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    compatible.advance_work();
+    ASSERT_EQ(compatible.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(compatible.work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
+// C-AUTH-020 / ADR-0038: multiple Tasks of adjacent Goals keep independent
+// static-compatibility results. A table with exactly one held Grant also has
+// a held final row; no consumer may convert that hold into a persistent deny.
+TEST(WorkAuthorityRestart, shared_tasks_and_adjacent_goals_keep_independent_catalog_holds) {
+    AuthorityWork source;
+    source.run();
+    ASSERT_EQ(source.grant().status, AYNI_OK);
+    source.work.node().recover();
+    const auto first = source.create(AYNI_TRIGGER_INTERVAL);
+    const auto second = source.create(AYNI_TRIGGER_INTERVAL);
+    ASSERT_EQ(first.status, AYNI_OK);
+    ASSERT_EQ(second.status, AYNI_OK);
+    std::vector<uint64_t> tasks;
+    for (unsigned period = 0; period < 2; ++period) {
+        if (period != 0U) {
+            source.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+        }
+        source.work.node().step(1); // Derive the first Goal, before policy work.
+        tasks.push_back(source.work.goal(first.result.object.id).last_task_id);
+        source.work.node().recover();
+        source.work.node().step(1);
+        tasks.push_back(source.work.goal(second.result.object.id).last_task_id);
+        source.work.node().recover();
+    }
+    ASSERT_TRUE(source.work.strategy().seen.empty());
+    ASSERT_EQ(std::set<uint64_t>(tasks.begin(), tasks.end()).size(), tasks.size());
+    for (const auto id : tasks) {
+        ASSERT_NE(id, 0U);
+    }
+    AuthorityWork incompatible;
+    incompatible.domain_max = 200;
+    incompatible.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    incompatible.run();
+    ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    incompatible.advance_work();
+    EXPECT_TRUE(incompatible.work.strategy().seen.empty());
+    for (const auto goal : {first.result.object.id, second.result.object.id}) {
+        EXPECT_EQ(incompatible.authority(goal).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+    }
+    for (const auto id : tasks) {
+        EXPECT_EQ(incompatible.work.task(id).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(incompatible.work.task(id).hold_reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+    }
+    EXPECT_EQ(incompatible.work.node().step(1).more_ready, 0U);
+    AuthorityWork compatible;
+    compatible.work.node().sim().durable_storage() =
+        incompatible.work.node().sim().durable_storage();
+    compatible.run();
+    ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    compatible.advance_work();
+    std::set<uint64_t> continued;
+    for (const auto &seen : compatible.work.strategy().seen) {
+        continued.insert(seen.snapshot.task_id);
+    }
+    EXPECT_EQ(continued, (std::set<uint64_t>(tasks.begin(), tasks.end())));
 }
 
 } // namespace
