@@ -69,7 +69,7 @@
 
 ## 交接状态（2026-10-24）
 
-架构审查修复：Native 空闲空间恢复见 [#57](https://github.com/RobotSe7en/ayni/pull/57) / ADR-0039；批次身份解析与 Task 记录编码在 [#58](https://github.com/RobotSe7en/ayni/pull/58) 一起收归属主模块（ABI 0.28，ADR-0040/0041）。无新增用户决策。
+架构审查修复：Native 空闲空间恢复已合并，见 [#57](https://github.com/RobotSe7en/ayni/pull/57) / ADR-0039；批次身份解析与 Task 记录编码在 [#58](https://github.com/RobotSe7en/ayni/pull/58) 一起收归属主模块（ABI 0.28，ADR-0040/0041）。无新增用户决策。
 
 - **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–F 和 R1～R4 整理。F1～F5 见下方 PR 表；ABI 0.27 / schema 2 交付独立工作授权、有界清理、原子重新授权及有效工作正常重启，保留步骤/检查点和其他暂停。统一验证、覆盖率及资源边界见 [ADR-0038](../../docs/adr/0038-work-authority-and-explicit-reauthorization.md)。旧存储明确拒绝并保留，不迁移、不补权限。
 - **下一步：** `MA-018` 资源及执行许可，随后 `MA-008` Provider；均未开始。本轮 F 收尾不扩展到这些工作包，当前无需用户操作。
