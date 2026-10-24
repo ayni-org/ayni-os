@@ -63,22 +63,24 @@ TEST(WorkAuthorityResult, zero_and_maximum_results_own_their_original_binding_an
 }
 
 TEST(WorkAuthorityResult, every_truncation_and_trailing_byte_preserves_all_output) {
-    const auto original = result(AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
-    const auto size = work_authority_result_size(original.count);
-    std::vector<uint8_t> bytes(size + 1U);
-    write_work_authority_result(original, bytes.data());
-    const auto sentinel = result(3);
-    for (uint32_t length = 0; length <= bytes.size(); ++length) {
-        if (length == size) {
-            continue;
+    for (const auto count : {0U, 1U, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX}) {
+        const auto original = result(count);
+        const auto size = work_authority_result_size(original.count);
+        std::vector<uint8_t> bytes(size + 1U);
+        write_work_authority_result(original, bytes.data());
+        const auto sentinel = result(3);
+        for (uint32_t length = 0; length <= bytes.size(); ++length) {
+            if (length == size) {
+                continue;
+            }
+            auto out = sentinel;
+            EXPECT_FALSE(read_work_authority_result({bytes.data(), length}, id(1), out));
+            expect_same(out, sentinel);
         }
         auto out = sentinel;
-        EXPECT_FALSE(read_work_authority_result({bytes.data(), length}, id(1), out));
+        EXPECT_FALSE(read_work_authority_result({nullptr, size}, id(1), out));
         expect_same(out, sentinel);
     }
-    auto out = sentinel;
-    EXPECT_FALSE(read_work_authority_result({nullptr, size}, id(1), out));
-    expect_same(out, sentinel);
 }
 
 TEST(WorkAuthorityResult, illegal_binding_or_incomplete_selected_reference_is_never_evidence) {
@@ -340,6 +342,60 @@ TEST(WorkAuthorityResult, missing_required_result_refuses_insert_and_restore) {
               CommandTable::Restore::corrupt);
     EXPECT_EQ(commands.size(), 0U);
     EXPECT_EQ(commands.floor(77), 0U);
+}
+
+// ADR-0038: the envelope identifies the result's establishing commit, even
+// when no current Goal exists to supply another check of that relationship.
+TEST(WorkAuthorityResult, enclosing_mapping_sequence_must_match_the_saved_binding) {
+    const auto request = approval(id(1));
+    uint32_t size = 0;
+    ASSERT_EQ(measure_approval_command(request, size), AYNI_OK);
+    std::vector<uint8_t> canonical(size);
+    ASSERT_EQ(encode_approval_command(request, canonical.data(), size, size), AYNI_OK);
+    auto fact = result(1);
+    fact.binding.input = {};
+    std::vector<uint8_t> evidence(work_authority_result_size(fact.count));
+    write_work_authority_result(fact, evidence.data());
+    auto accepted = mapping(1, id(1), fact.binding.established_seq + 1U);
+    accepted.canonical_size = size;
+    accepted.result_size = static_cast<uint32_t>(evidence.size());
+    accepted.digest = authority_command_digest({canonical.data(), size});
+    constexpr uint32_t stride = 512;
+    std::vector<uint64_t> arena(CommandTable::storage_size(1, 1, stride) / sizeof(uint64_t) + 1U);
+    CommandTable commands(arena.data(), 1, 1, stride);
+    EXPECT_EQ(commands.restore_checked(accepted, 0, {canonical.data(), size},
+                                       {evidence.data(), accepted.result_size}),
+              CommandTable::Restore::corrupt);
+    EXPECT_EQ(commands.size(), 0U);
+    EXPECT_EQ(commands.floor(77), 0U);
+    accepted.commit_seq = fact.binding.established_seq;
+    EXPECT_EQ(commands.restore_checked(accepted, 0, {canonical.data(), size},
+                                       {evidence.data(), accepted.result_size}),
+              CommandTable::Restore::restored);
+}
+
+// ADR-0038: the shared creation echo preserves delay and interval timing as
+// distinct original inputs, independent of current catalog or live objects.
+TEST(WorkAuthorityResult, shared_creation_echo_keeps_distinct_nonzero_delay_and_period) {
+    for (const auto kind : {AYNI_TRIGGER_DELAY, AYNI_TRIGGER_INTERVAL}) {
+        auto request = approval(id(1));
+        auto &original = request.approval.original;
+        original.trigger.kind = kind;
+        original.trigger.delay_us = 17;
+        original.trigger.period_us =
+            kind == AYNI_TRIGGER_INTERVAL ? AYNI_TRIGGER_PERIOD_MIN_US : 0U;
+        original.expiry_us = 99;
+        uint32_t size = 0;
+        ASSERT_EQ(measure_approval_command(request, size), AYNI_OK);
+        std::vector<uint8_t> canonical(size);
+        ASSERT_EQ(encode_approval_command(request, canonical.data(), size, size), AYNI_OK);
+        ApprovalCommand decoded{};
+        ASSERT_TRUE(read_approval_command({canonical.data(), size}, decoded));
+        EXPECT_EQ(decoded.approval.original.trigger.kind, kind);
+        EXPECT_EQ(decoded.approval.original.trigger.delay_us, 17U);
+        EXPECT_EQ(decoded.approval.original.trigger.period_us, original.trigger.period_us);
+        EXPECT_EQ(decoded.approval.original.expiry_us, 99U);
+    }
 }
 
 } // namespace

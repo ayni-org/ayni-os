@@ -2361,4 +2361,85 @@ TEST(GoalApprovalPersistence, retained_issued_root_proves_original_result_transi
     EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
 }
 
+// ADR-0038: retaining a correct immutable creation pair does not allow the
+// Goal's latest progress sequence to exceed this snapshot's coverage.
+TEST(GoalAuthorityPersistence, current_goal_sequence_cannot_exceed_snapshot_coverage) {
+    Fixture source;
+    source.run();
+    source.goal();
+    auto image = snapshot(source);
+    bool altered = false;
+    for (auto &row : image.records) {
+        if (row.header.type == goal_record_type) {
+            // records.md 3/v4: the last u64 is the current progress sequence.
+            ayni::foundation::store_le64(row.body.data() + row.header.length - sizeof(uint64_t),
+                                         image.metadata.covers_commit_seq + 1U);
+            altered = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(altered);
+    Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// ADR-0038: a retained current-generation result cannot substitute another
+// older, same-revision Grant that also covers the original requirement.
+TEST(GoalApprovalPersistence, retained_result_cannot_substitute_another_covering_old_grant) {
+    Fixture source;
+    source.narrow_first = true;
+    source.proposal_count = 2;
+    source.work.node().config().grant_capacity = 3;
+    source.run();
+    ayni_authority_value_set_v1 range{};
+    range.struct_size = sizeof(range);
+    range.kind = AYNI_AUTHORITY_I64;
+    range.unit = text("count");
+    range.values.integer = {0, 10};
+    const ayni_scope_field_v1 field{sizeof(field), 1, range};
+    const ayni_scope_v1 narrow{sizeof(narrow), 1, &field};
+    const auto first = source.create_grant_for(source.work.instance(agent_a), narrow);
+    const auto other = source.create_grant_for(source.work.instance(agent_a), narrow);
+    ASSERT_EQ(first.status, AYNI_OK);
+    ASSERT_EQ(other.status, AYNI_OK);
+    source.work.node().recover();
+    const auto id = approve_proposal(source);
+    ASSERT_NE(id, 0U);
+    ASSERT_EQ(source.saved(id).requirements[0].dependency.grant_id, first.result.object.id);
+    auto image = snapshot(source);
+    Fixture control;
+    control.work.node().config().grant_capacity = 3;
+    control.run();
+    ASSERT_EQ(import_snapshot(control, image), BatchCheck::ok);
+    bool altered = false;
+    for (auto &row : image.records) {
+        if (row.header.type != ayni::kernel::command_record_type ||
+            row.header.version != ayni::kernel::work_authority_command_record_version) {
+            continue;
+        }
+        ayni::kernel::CommandMapping mapping{};
+        uint64_t floor = 0;
+        ayni_bytes_v1 canonical{};
+        ayni_bytes_v1 result_bytes{};
+        constexpr uint32_t tail = sizeof(uint64_t);
+        ASSERT_TRUE(ayni::kernel::read_command_record(row.header.version, row.body.data(),
+                                                      row.header.length - tail, mapping, floor,
+                                                      canonical, &result_bytes));
+        ayni::kernel::WorkAuthorityResult result{};
+        ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
+        result.references[0].grant_id = other.result.object.id;
+        std::vector<uint8_t> bytes(result_bytes.size);
+        ayni::kernel::write_work_authority_result(result, bytes.data());
+        std::copy(bytes.begin(), bytes.end(), const_cast<uint8_t *>(result_bytes.data));
+        altered = true;
+        break;
+    }
+    ASSERT_TRUE(altered);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
 } // namespace
