@@ -56,6 +56,7 @@
 | [0042](0042-runtime-limits-and-direct-model-access.md) | 运行限制、直连模型及 M1 剩余交付边界 | 已接受；实施中 | §2.3、§5.1、§9.1、§14.1 |
 | [0043](0043-task-runtime-limit-state.md) | Task 运行限制状态与所有者提高上限 | 已接受 | §9.1、§14.1 |
 | [0044](0044-provider-result-mailbox.md) | Provider 有界结果交接与可靠消费确认 | 已接受 | §2.7、§9.1、§14.1 |
+| [0045](0045-unified-call-state.md) | 统一调用身份、动作事实与派发消费 | 实施中 | §2.7、§2.8、§4.3、§9.1 |
 
 ## 模板
 

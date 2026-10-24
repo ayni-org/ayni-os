@@ -153,7 +153,7 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | `DISPATCHING` | `IN_PROGRESS` | Host 报告执行中 |
 | `DISPATCHING` | `CANCELLED` | 屏障后复核拒绝且可证明未交给 Host，`effect=NONE` 已提交（C-COMMIT-007） |
 | `DISPATCHING`、`IN_PROGRESS` | `COMPLETED` | 完成结果持久化 |
-| `IN_PROGRESS` | `FAILED` | 确定失败结果持久化 |
+| `DISPATCHING`、`IN_PROGRESS` | `FAILED` | 确定失败结果持久化；unary 无需先报告进度（ADR-0045） |
 | `DISPATCHING`、`IN_PROGRESS` | `RESULT_UNKNOWN` | 重启或无法确认结果 |
 | `RESULT_UNKNOWN` | `COMPLETED` / `FAILED` | 权威查询确认（C-CALL-010） |
 

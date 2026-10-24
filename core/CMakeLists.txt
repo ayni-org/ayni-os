@@ -44,6 +44,7 @@ ayni_add_core_module(resources
 
 ayni_add_core_module(work
     SOURCES
+        work/action/action_record.cpp
         work/authority/authority_cleanup.cpp
         work/authority/authority_cleanup_records.cpp
         work/authority/authority_facts.cpp
