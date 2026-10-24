@@ -183,17 +183,15 @@ Coverage compare_typed(ayni_bytes_v1 domain, const ayni_scope_v1 &parent,
     return {AYNI_OK, covered};
 }
 
-} // namespace
-
-// C-AUTH-017: validate the entire scope before output; a capacity probe is
-// successful admission and reports needed bytes without publishing a prefix.
-ayni_status_t normalize_scope(ayni_bytes_v1 domain, const ayni_scope_v1 &scope, uint8_t *out,
-                              uint32_t capacity, uint32_t &out_size) {
+// C-AUTH-017: validate the entire input before output; both concrete arguments
+// and constraints share this writer, with their existing completeness rules.
+ayni_status_t normalize(ayni_bytes_v1 domain, const ayni_scope_v1 &scope, Values mode, uint8_t *out,
+                        uint32_t capacity, uint32_t &out_size) {
     if (out == nullptr && capacity != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     uint32_t needed = 0;
-    const auto status = inspect(domain, scope, Values::constraint, needed);
+    const auto status = inspect(domain, scope, mode, needed);
     if (status != AYNI_OK) {
         return status;
     }
@@ -214,6 +212,18 @@ ayni_status_t normalize_scope(ayni_bytes_v1 domain, const ayni_scope_v1 &scope, 
     return AYNI_OK;
 }
 
+} // namespace
+
+ayni_status_t normalize_scope(ayni_bytes_v1 domain, const ayni_scope_v1 &scope, uint8_t *out,
+                              uint32_t capacity, uint32_t &out_size) {
+    return normalize(domain, scope, Values::constraint, out, capacity, out_size);
+}
+
+ayni_status_t normalize_request(ayni_bytes_v1 domain, const ayni_scope_v1 &actual, uint8_t *out,
+                                uint32_t capacity, uint32_t &out_size) {
+    return normalize(domain, actual, Values::actual, out, capacity, out_size);
+}
+
 Coverage covers(ayni_bytes_v1 domain, const ayni_scope_v1 &parent, const ayni_scope_v1 &child) {
     return compare_typed(domain, parent, child, Values::constraint);
 }
@@ -223,9 +233,12 @@ Coverage contains_request(ayni_bytes_v1 domain, const ayni_scope_v1 &allowed,
     return compare_typed(domain, allowed, actual, Values::actual);
 }
 
+namespace {
+
 // All three bodies are already encoded, so validate their shapes and domain
 // relationships in the same bounded traversal that compares the scopes.
-Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child) {
+Coverage compare_encoded(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child,
+                         Values mode) {
     DomainReader schema(domain);
     DomainReader parent_reader(parent);
     DomainReader child_reader(child);
@@ -238,7 +251,8 @@ Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child)
             registered.id != parent_field.id || registered.usage != parent_field.usage ||
             registered.id != child_field.id || registered.usage != child_field.usage ||
             !value_covers(registered.values, parent_field.values) ||
-            !value_covers(registered.values, child_field.values)) {
+            !value_covers(registered.values, child_field.values) ||
+            (mode == Values::actual && !singleton(child_field.values))) {
             return {AYNI_INVALID_ARGUMENT, false};
         }
         covered = value_covers(parent_field.values, child_field.values) && covered;
@@ -247,8 +261,6 @@ Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child)
                ? Coverage{AYNI_OK, covered}
                : Coverage{AYNI_INVALID_ARGUMENT, false};
 }
-
-namespace {
 
 // The stored parent is validated before the typed child, preserving error
 // precedence. Omitted child fields still expand to the original domain.
@@ -278,6 +290,14 @@ Coverage compare_encoded_typed(ayni_bytes_v1 domain, ayni_bytes_v1 allowed,
 }
 
 } // namespace
+
+Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, ayni_bytes_v1 child) {
+    return compare_encoded(domain, parent, child, Values::constraint);
+}
+
+Coverage contains_request(ayni_bytes_v1 domain, ayni_bytes_v1 allowed, ayni_bytes_v1 actual) {
+    return compare_encoded(domain, allowed, actual, Values::actual);
+}
 
 Coverage covers(ayni_bytes_v1 domain, ayni_bytes_v1 parent, const ayni_scope_v1 &child) {
     return compare_encoded_typed(domain, parent, child, Values::constraint);
