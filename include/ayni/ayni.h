@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 26u
+#define AYNI_ABI_MINOR 27u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -596,8 +596,12 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * RESTRICTED with AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY, and a log recovery cannot replay leaves
  * nothing of it in memory. Since 0.16 a stored owner binding must match
  * the Host configuration before any new recovery write; a mismatch enters
- * RESTRICTED and preserves the validated model for diagnosis. Unconfirmed
- * restored work stays held, including descendants of a held goal.
+ * RESTRICTED and preserves the validated model for diagnosis. Since 0.27,
+ * compatible schema 2 work with complete valid authority continues normally;
+ * user/policy/compatibility holds and independent authorization denies remain.
+ * Old-boot timed Grants expire without reanchoring. Existing owner-controlled
+ * work or commands without a saved binding are refused before new writes;
+ * an ownerless store with only Agent instances may still bind its first owner.
  * Entering RUNNING is one transition when it first binds an owner, starts
  * an instance, or settles restored work against its goal and owner.
  *
@@ -826,7 +830,8 @@ typedef uint32_t ayni_reason_t;
 /* Since 0.15. STORAGE_FAILED: not enough usable space for a new transition
  * and its maintenance reserve; previously accepted commands remain readable. */
 #define AYNI_REASON_STORAGE_SPACE ((ayni_reason_t)39)
-/* Since 0.16. DENIED: restored work has no confirmed authorization metadata. */
+/* Since 0.16. DENIED: historical unconfirmed-work diagnostic. Reserved since
+ * 0.27: schema 2 requires complete facts and does not install this boot hold. */
 #define AYNI_REASON_LEGACY_UNCONFIRMED ((ayni_reason_t)40)
 
 /* Since 0.18. Classified Grant failures; reasons retain one owning status. */
@@ -1564,8 +1569,8 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * 4. AYNI_DENIED: session_id names no open session. Until grants exist, a
  *    session of the owner may submit every implemented intent (ADR-0017).
  *    Since 0.16, Host-authenticated sessions require the exact durable
- *    owner binding (ayni/host_authority.h); a session does not release
- *    LEGACY_UNCONFIRMED recovery holds. Since 0.26, GOAL_REAUTHORIZE
+ *    owner binding (ayni/host_authority.h); a session never removes an
+ *    authorization deny. Since 0.26, GOAL_REAUTHORIZE
  *    requires the current durable owner's MANAGEMENT Session, including
  *    an exact retry; its complete request contract is in ayni/authority.h.
  *    Since 0.14, a nonzero command_id is then looked up among the commands
@@ -1603,7 +1608,8 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  * goal table is full, in the place of the terminal goal that ended first,
  * which leaves with its tasks (ADR-0025). GOAL_PAUSE takes an ACTIVE goal
  * to PAUSED and GOAL_RESUME takes it back; neither changes its children.
- * Since 0.16 GOAL_RESUME cannot clear a LEGACY_UNCONFIRMED hold.
+ * Since 0.27 recovered user lifecycle follows the same controls; GOAL_RESUME
+ * does not clear independent authorization or compatibility holds.
  * GOAL_CANCEL takes a goal that is not yet terminal, and every descendant
  * that is not yet terminal, to CANCELLED in one transition (C-LIFE-022).
  * TASK_CANCEL takes a READY or PAUSED task to CANCELLED;

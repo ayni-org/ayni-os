@@ -1786,6 +1786,14 @@ TEST(GoalReauthorization, parent_does_not_resume_child_and_child_can_then_bind_n
     EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
     node.work.node().recover();
     EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    // ADR-0038 F5: normal restart cannot turn the retained old parent
+    // generation into a newly authorized child, even before cleanup scans it.
+    node.work.node().reboot();
+    node.work.node().recover();
+    node.work.reopen_session();
+    EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(node.work.task(child_task).hold_reason, AYNI_REASON_GOAL_AUTHORITY_PARENT);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
     ReauthorizationRequest child_request(node.work.kernel(), child.result.object.id);
     auto child_intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &child_request.body,
                                          child_request.echo.info.revision);
@@ -2455,7 +2463,6 @@ TEST(GoalReauthorization,
     EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
 }
 
-
 // C-AUTH-030 / ADR-0038: permanent complete admissions continue the same
 // READY Task after a normal restart, including private progress and checkpoint.
 TEST(WorkAuthorityRestart, permanent_admission_continues_the_same_task_checkpoint_and_steps) {
@@ -2657,6 +2664,107 @@ TEST(WorkAuthorityRestart, revoked_ready_task_resumes_after_restart_and_explicit
     ASSERT_EQ(node.work.strategy().seen.size(), 1U);
     EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
     EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// ADR-0038: the minimum-work arena profile admits an explicit zero-needs
+// Goal/Task and normally restores it. Each configured work table has one slot.
+TEST(WorkAuthorityRestart, minimum_work_capacities_restore_explicit_zero_admission) {
+    WorkNode work;
+    auto &config = work.node().config();
+    config.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
+    config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
+    config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
+    config.agent_capacity = 1;
+    config.goal_type_capacity = 1;
+    config.goal_capacity = 1;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MIN;
+    config.session_capacity = 1;
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_MIN;
+    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_MIN;
+    config.task_capacity = 1;
+    config.strategy_capacity = 1;
+    config.policy_intent_capacity = 1;
+    config.task_step_capacity = 1;
+    config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN;
+    config.command_capacity = 1;
+    config.capability_capacity = 1;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
+    config.grant_capacity = 1;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN;
+    config.goal_requirement_capacity = 1;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    work.node().on_create([&](ayni_kernel_t *kernel) {
+        const auto owner = owner_desc();
+        ASSERT_EQ(ayni_register_principal(kernel, &owner), AYNI_OK);
+        const auto agent = agent_desc(agent_a);
+        ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
+        const auto strategy =
+            strategy_desc(strategy_id, 1, ScriptedStrategy::decide, &work.strategy(), 1, 0);
+        ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
+        const auto type = goal_type_desc("zero", 1);
+        ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
+    });
+    work.run();
+    const auto created = work.create(
+        WorkNode::create_body(work.instance(agent_a), 0, "zero", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(created.status, AYNI_OK);
+    work.node().step(1);
+    const auto task_id = work.goal(created.result.object.id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    work.node().recover();
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+    work.node().step(1);
+    ASSERT_EQ(work.strategy().seen.size(), 1U);
+    EXPECT_EQ(work.strategy().seen.front().snapshot.task_id, task_id);
+    EXPECT_EQ(work.goal(created.result.object.id).lifecycle, AYNI_GOAL_SATISFIED);
+}
+
+// C-AUTH-030 / ADR-0038: catalog absence or exact-domain drift holds the
+// actual READY consumer without rewriting its immutable evidence or exporting
+// new needs. A compatible later boot continues that same Task.
+TEST(WorkAuthorityRestart, catalog_incompatibility_keeps_ready_progress_until_a_compatible_boot) {
+    for (const bool missing : {false, true}) {
+        SCOPED_TRACE(missing);
+        AuthorityWork source;
+        source.run();
+        ASSERT_EQ(source.grant().status, AYNI_OK);
+        ASSERT_EQ(source.grant(0, 100, 10000000).status, AYNI_OK);
+        source.work.node().recover();
+        const auto goal = source.create();
+        ASSERT_EQ(goal.status, AYNI_OK);
+        source.work.node().step(1);
+        source.work.node().recover();
+        const auto goal_id = goal.result.object.id;
+        const auto task_id = source.work.goal(goal_id).last_task_id;
+        const auto task_before = source.work.task(task_id);
+        AuthorityWork incompatible;
+        incompatible.capability_available = !missing;
+        incompatible.domain_max = 200;
+        incompatible.work.node().sim().durable_storage() =
+            source.work.node().sim().durable_storage();
+        incompatible.run();
+        ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        EXPECT_EQ(incompatible.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(incompatible.work.task(task_id).hold_reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+        incompatible.advance_work();
+        EXPECT_TRUE(incompatible.work.strategy().seen.empty());
+        EXPECT_EQ(incompatible.calls, 0U);
+        EXPECT_EQ(incompatible.authority(goal_id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+        EXPECT_EQ(incompatible.work.task(task_id).revision, task_before.revision);
+        AuthorityWork compatible;
+        compatible.work.node().sim().durable_storage() =
+            incompatible.work.node().sim().durable_storage();
+        compatible.run();
+        ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        EXPECT_EQ(compatible.work.task(task_id).lifecycle, AYNI_TASK_READY);
+        compatible.advance_work();
+        ASSERT_EQ(compatible.work.strategy().seen.size(), 1U);
+        EXPECT_EQ(compatible.work.strategy().seen.front().snapshot.task_id, task_id);
+        EXPECT_EQ(compatible.calls, 0U);
+    }
 }
 
 } // namespace

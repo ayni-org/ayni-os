@@ -141,10 +141,6 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = goal.lifecycle;
-    if (goal.hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED &&
-        ayni::work::GoalTable::is_live(goal.lifecycle)) {
-        info.lifecycle = AYNI_GOAL_PAUSED;
-    }
     info.goal_id = goal.goal_id;
     info.parent_goal_id = goal.parent_goal_id;
     info.owner_instance_id = goal.owner_instance_id;

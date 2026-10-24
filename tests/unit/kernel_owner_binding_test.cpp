@@ -385,13 +385,20 @@ TEST(OwnerBindingApi, legacy_command_without_any_goal_still_requires_its_host_ow
     ASSERT_EQ(paused.status, AYNI_OK);
     store_through(source.node(), paused.result.commit_seq);
     const auto legacy = without_binding(source.node());
-    Node later;
-    later.sim().log() = legacy;
-    later.create_and_start();
-    later.recover();
-    ASSERT_EQ(later.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-    EXPECT_EQ(later.info().restriction, AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
-    expect_same_log(later, legacy);
+    for (const bool matching_host : {false, true}) {
+        SCOPED_TRACE(matching_host);
+        Node later;
+        if (matching_host) {
+            later.on_create(
+                [](ayni_kernel_t *kernel) { register_folder_node(kernel, owner_desc()); });
+        }
+        later.sim().log() = legacy;
+        later.create_and_start();
+        later.recover();
+        ASSERT_EQ(later.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(later.info().restriction, AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
+        expect_same_log(later, legacy);
+    }
 }
 
 TEST(OwnerBindingApi, bound_goal_and_ready_task_resume_without_new_authority) {
@@ -544,6 +551,31 @@ TEST(OwnerBindingApi, power_loss_keeps_the_first_binding_and_instances_as_one_ba
         work.reopen_session();
         EXPECT_NE(work.session(), 0U);
     }
+}
+
+// ADR-0038: an ownerless store containing only Agent identities has never
+// admitted owner-controlled work and may still bind its first owner.
+TEST(OwnerBindingApi, an_unbound_agent_only_store_can_bind_its_first_owner) {
+    Node source;
+    source.on_create([](ayni_kernel_t *kernel) {
+        const auto agent = agent_desc(agent_a);
+        ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
+    });
+    source.run();
+    ASSERT_TRUE(stored_bindings(source).empty());
+    ayni_agent_info_v1 instance{};
+    instance.struct_size = sizeof(instance);
+    ASSERT_EQ(ayni_get_agent(source.kernel(), agent_a, &instance), AYNI_OK);
+    const auto original_id = instance.instance_id;
+    WorkNode later;
+    later.node().sim().durable_storage() = source.sim().durable_storage();
+    later.run();
+    ASSERT_EQ(later.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(later.instance(agent_a), original_id);
+    const auto bindings = stored_bindings(later.node());
+    ASSERT_EQ(bindings.size(), 1U);
+    EXPECT_EQ(bindings.front().owner.principal_id, owner_id);
+    EXPECT_EQ(bindings.front().owner.binding_revision, owner_binding);
 }
 
 } // namespace

@@ -360,9 +360,6 @@ void GoalTable::reauthorize(uint32_t index, uint64_t now_us, foundation::Transit
     auto &goal = goals_[index];
     ++goal.revision;
     goal.commit_seq = stamp.commit_seq;
-    if (goal.hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED) {
-        goal.hold_reason = AYNI_REASON_NONE; // This explicit new binding confirms this Goal only.
-    }
     skip_authority_backlog(index, now_us, stamp);
 }
 
@@ -593,13 +590,9 @@ bool GoalTable::gives_way_before(const Goal &goal, const Goal &other) {
     return goal.goal_id < other.goal_id;
 }
 
-// ADR-0028 decision 4: ordinary user pause/resume cannot change a retained
-// lifecycle under unconfirmed authority. Cancellation and expiry still work.
+// User lifecycle controls stay independent of compatibility and authorization
+// holds. Neither a pause nor a resume removes either hold (ADR-0038).
 bool GoalTable::allows(const Goal &goal, GoalChange change) {
-    if (goal.hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED &&
-        (change == GoalChange::pause || change == GoalChange::resume)) {
-        return false;
-    }
     switch (change) {
     case GoalChange::pause:
         return goal.lifecycle == AYNI_GOAL_ACTIVE;

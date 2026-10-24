@@ -94,8 +94,8 @@ struct Goal {
     uint32_t occurrences_skipped;
     ayni_reason_t skip_reason; // of the latest skip; AYNI_REASON_NONE before any
     // Why this boot holds the goal that is not terminal (ADR-0026):
-    // A missing/incompatible type, or LEGACY_UNCONFIRMED when recovery has
-    // no durable authorization evidence; NONE while not held. In memory only.
+    // A missing/incompatible type; NONE while compatible. In memory only.
+    // Independent authorization phase and binding belong to GoalAuthorityTable.
     ayni_reason_t hold_reason;
     ayni_goal_lifecycle_t lifecycle;
 };
