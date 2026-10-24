@@ -840,6 +840,14 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
             // preserve exact selections; F4 adds explicit historical evidence.
             return false;
         }
+        // A Goal pause atomically denies its entire direct live cohort. This
+        // equality excludes terminal history and separately scanned child Goals.
+        if (work::TaskTable::is_live(task.lifecycle) &&
+            ((admission.phase == work::TaskAuthorityPhase::paused) !=
+             (model_.goal_authority.at(task.goal_index).phase ==
+              work::GoalAuthorityPhase::paused))) {
+            return false;
+        }
         if (model_.goals.at(task.goal_index).lifecycle == AYNI_GOAL_PROPOSED ||
             (work::TaskTable::is_live(task.lifecycle) &&
              !work::GoalTable::is_live(model_.goals.at(task.goal_index).lifecycle))) {

@@ -275,7 +275,7 @@ ADR-0038 决策 8：type 19/v1 固定 44 B，全部小端：transition_id u64（
 
 idle 的三个游标全部为零；初始 stamp 两项均零，使用后两项均正。scanning 的 stamp 为正，through 是固定有效 Goal ID，after 是零或小于 through 的有效已访 ID。requested_through 为零或下一轮的有效 Goal ID，即使等于当前 through 也须保留，不能因本轮结束丢失。空范围请求仅更新见证 stamp。稳定查询合并保留 Goal 和专属 Grant 的 Goal ID，包含 Goal 槽位已复用的旧身份；每步恰访最小未访 ID，或证明范围为空后结束，并保留下一轮请求。进度消耗 step item/time 预算，背压/快照冻结时暂停推进，即时消费检查继续拒绝失效权限。
 
-授权暂停使用 GOAL_STATE 4/v4（原 48 B 正文）紧接 GOAL_AUTHORITY 17/v3（原 72 B 固定头），只允许既有活 Goal 从 authorized 进入 paused；用户 lifecycle/revision、失效标记和触发游标逐字段保持。直属活 Task 使用 TASK_STATE 6/v2（原 32 B 正文）紧接 TASK_AUTHORITY 18/v1，原用户/策略状态、revision、步骤和检查点保持，终态 Task 不得被更新。整批末尾的 type19 证明全部直属活 Task 已暂停，不能跨批补齐、覆盖待配对身份或在 footer 后夹带记录。目录兼容和主体不可用仍是独立 hold，不因后台扫描变成持久授权暂停。
+授权暂停使用 GOAL_STATE 4/v4（原 48 B 正文）紧接 GOAL_AUTHORITY 17/v3（原 72 B 固定头），只允许既有活 Goal 从 authorized 进入 paused；用户 lifecycle/revision、失效标记和触发游标逐字段保持。直属活 Task 使用 TASK_STATE 6/v2（原 32 B 正文）紧接 TASK_AUTHORITY 18/v1，原用户/策略状态、revision、步骤和检查点保持，终态 Task 不得被更新。整批末尾的 type19 证明全部直属活 Task 已暂停，不能跨批补齐、覆盖待配对身份或在 footer 后夹带记录。目录兼容和主体不可用仍是独立 hold，不因后台扫描变成持久授权暂停。 journal 最终一致性与 snapshot 共用校验：每个直属活 Task 的授权 phase 必须与其自身 Goal 同为暂停或同未暂停；不把祖先尚待扫描的 phase 套给子 Goal，也不改写终态 Task 历史。旧暂停 journal 缺少独立 Task deny 时在新写入前拒绝并保留，不以用户 PAUSED 字段推断或补授权事实。
 
 有 ACTIVE 专属 Grant 的 Goal 进入终态时使用 GOAL_STATE 4/v3（原正文），同批请求清理。扫描写 GRANT_STATE 14/v3（原 16 B 正文），lifecycle 为 GOAL_ENDED（4），只结束本步选中 Goal 的全部 ACTIVE 专属根，不改写既有终态顺序或伪造管理撤销；该 Goal 必须已于更早 transition 终结或已让出槽位。删除一项/全部结束记录、替换成另一 Goal 或仅推进游标均不构成完整一步。新到期记录 14/v4 和根撤销 15/v2 复用原正文，并要求同批 type19 请求；旧记录版本继续按其原配对规则读取。
 

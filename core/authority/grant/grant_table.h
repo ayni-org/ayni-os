@@ -19,7 +19,7 @@
 namespace ayni::authority {
 
 // contracts/storage/records.md, Grant lifecycle: one transition from ACTIVE
-// to EXPIRED or REVOKED. Cleanup advances its own stamp, never the revision.
+// to EXPIRED, REVOKED or GOAL_ENDED. Cleanup advances its own stamp, never the revision.
 constexpr uint32_t grant_active_revision = 1;
 constexpr uint32_t grant_terminal_revision = 2;
 // Each retained Grant owns one full source domain and one expanded scope.
