@@ -228,7 +228,7 @@ bool CommandTable::publish_accepted_revoke(const PendingRevoke &control, Command
     mapping.digest = authority_command_digest(bytes);
     mapping.canonical_size = revoke_command_size;
     mapping.retention = CommandRetention::accepted_revoke;
-    if (!valid_authority_mapping(mapping, bytes)) {
+    if (!valid_exact_mapping(mapping, bytes)) {
         return false;
     }
     Row *row = row_of(mapping.principal_id);
@@ -280,7 +280,7 @@ CommandTable::Lookup CommandTable::recovered_revoke(const PendingRevoke &control
     const auto bytes = canonical(*mapping);
     if (mapping->kind != AYNI_INTENT_GRANT_REVOKE || bytes.size != revoke_command_size ||
         std::memcmp(bytes.data, control.canonical.data(), revoke_command_size) != 0 ||
-        !valid_authority_mapping(*mapping, bytes)) {
+        !valid_exact_mapping(*mapping, bytes)) {
         return Lookup::conflict;
     }
     out_mapping = mapping;

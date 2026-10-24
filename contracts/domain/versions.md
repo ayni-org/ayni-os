@@ -47,3 +47,5 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | C-VER-030 | ActionRecord、步骤检查点与 Binding 保存所用的能力、Scene、GoalType 版本；恢复时只有明确兼容的实现或迁移可以继续处理，缺失时保留记录并暂停 | 能力升级后旧 ActionRecord 被新语义重新执行 | M1 部分实现（Goal 保存 GoalType ID 与版本，私有检查点保存写入它的策略 ID 与版本；恢复时本次没有该 GoalType 版本或兼容策略的，保留记录并停下，ADR-0026 决策 7）：`WorkRecovery.goal_type_this_boot_lacks_holds_its_goals_and_tasks`、`WorkRecovery.task_its_strategy_cannot_serve_is_held`、`WorkRecovery.held_goal_has_no_due_work`、`GoalRestore.resolve_types_holds_live_goals_whose_type_this_boot_lacks`；ActionRecord、调用步骤与 Binding 的版本随 `MA-008`、`MA-018`；E4 步骤 5；E3 步骤 5 |
 | C-VER-031 | 升级清单给出 firmware、`storage_schema`、能力/Scene/GoalType/检查点的读、写、执行兼容矩阵；矩阵与实际行为不一致视为缺陷 | 清单声称兼容，实测旧检查点被拒绝 | E4 步骤 6；M4 |
 | C-VER-032 | 幂等参数摘要按契约列出的领域字段规范化计算，不对任何序列化字节取哈希 | 两个语义相同的请求因字段顺序不同得到不同摘要，被判为 `IDEMPOTENCY_CONFLICT` | ADR-0009 选型后的摘要测试；`wire/envelope.md` C-WIRE-012 |
+
+ABI 0.30（ADR-0043）追加 Task 模型计数查询、启动硬上限、kind13 管理命令及 reason70；0.x 调用方重新编译。schema 2 保留：旧 Task 默认事实（0/8/未限制暂停）仍可读；非默认事实使用 REQUIRED type6/v4-v7，管理命令 type9/v6，旧 reader 遇到必需新版本拒绝并保留目录。降配无法容纳原软上限时返回 STATE_EXCEEDS_CAPACITY，不截断或重置。存储兼容规则并非新增恢复验证结果。

@@ -223,8 +223,8 @@ TEST(WorkAuthorityResult, result_capacity_and_parent_binding_refusals_preserve_t
     accepted.canonical_size = input_size;
     accepted.result_size = static_cast<uint32_t>(bytes.size());
     accepted.digest = authority_command_digest({canonical.data(), input_size});
-    EXPECT_FALSE(valid_authority_mapping(accepted, {canonical.data(), input_size},
-                                         {bytes.data(), accepted.result_size}));
+    EXPECT_FALSE(valid_exact_mapping(accepted, {canonical.data(), input_size},
+                                     {bytes.data(), accepted.result_size}));
 }
 
 // ADR-0038: type9/v5 retains both exact request and original result. Every

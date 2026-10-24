@@ -206,6 +206,10 @@ void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v
     info.hold_status = ayni::work::TaskTable::effective_hold_status(task);
     info.hold_reason = ayni::work::TaskTable::effective_hold_reason(task);
     info.step_count = task.step_count;
+    info.model_calls_used = task.model_calls.used;
+    info.model_call_limit = task.model_calls.limit;
+    info.model_call_hard_limit = kernel.work.tasks.model_call_hard_limit();
+    info.model_call_limit_reached = task.model_calls.blocked ? 1U : 0U;
     if (ayni::work::TaskTable::is_live(task.lifecycle) && info.hold_status == AYNI_OK) {
         const auto authority = kernel.work.check_task_authority(
             index, kernel.host.monotonic_now_us(kernel.host.ctx), kernel.log.durable_seq());

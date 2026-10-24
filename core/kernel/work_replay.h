@@ -242,9 +242,17 @@ class WorkReplay {
         std::optional<ApprovalPair> approval; // Retains a closed proof until the next batch.
         AuthorityPair authority;              // Exactly one authority alternative or none.
         uint64_t progress_seq = 0; // Last progress commit sequence; 0 before any progress.
+        // A standalone Task ceiling change closes only with its exact owner command.
+        struct TaskLimitPair {
+            enum class Stage { state, command };
+            TaskLimitCommand request;   // Before-CAS and new ceiling from the paired state.
+            Stage stage = Stage::state; // command seals this batch until the next identity.
+        };
+        std::optional<TaskLimitPair> limit_raise; // Empty outside runtime-limit management.
         // Existing work/command partners, independently of the new scan footer.
         bool partners_complete() const {
-            return !goal && !task && !task_authority && !goal_authority && !authority.pending() &&
+            return (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
+                   !task && !task_authority && !goal_authority && !authority.pending() &&
                    (!approval || approval->stage == ApprovalPair::Stage::complete) &&
                    (!reauthorization ||
                     reauthorization->stage == ReauthorizationPair::Stage::command);

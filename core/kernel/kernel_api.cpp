@@ -223,6 +223,15 @@ ayni_status_t validate_config(const ayni_config_v1 *config, KernelCapacities *ou
             &limits.goal_depth_max);
     }
     if (status == AYNI_OK) {
+        status = read_capacity(
+            config, offsetof(ayni_config_v1, task_model_call_hard_limit),
+            {AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT, 0U, AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX},
+            &limits.task_model_call_hard_limit);
+        if (limits.task_model_call_hard_limit == 0U) {
+            limits.task_model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT;
+        }
+    }
+    if (status == AYNI_OK) {
         status = read_capacity(config, offsetof(ayni_config_v1, goal_children_max),
                                {AYNI_GOAL_CHILDREN_MAX_DEFAULT, AYNI_GOAL_CHILDREN_MAX_MIN,
                                 AYNI_GOAL_CHILDREN_MAX_MAX},

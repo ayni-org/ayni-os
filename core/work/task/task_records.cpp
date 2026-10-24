@@ -49,8 +49,40 @@ bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotR
     return reader.ok();
 }
 
-void write_task_state_record(const Task &task, uint8_t *body) {
-    durability::BodyWriter writer(body, task_state_record_size);
+uint16_t task_state_version_for(const Task &task, uint16_t base) {
+    if (base == task_state_raise_limit_record_version || task.model_calls == TaskModelCalls{}) {
+        return base;
+    }
+    switch (base) {
+    case task_state_record_version:
+        return task_state_runtime_record_version;
+    case task_state_authority_record_version:
+        return task_state_runtime_authority_record_version;
+    default:
+        return task_state_runtime_reauthorization_record_version;
+    }
+}
+
+uint32_t task_state_size_for(uint16_t version) {
+    return version >= task_state_runtime_record_version ? task_state_runtime_record_size
+                                                        : task_state_record_size;
+}
+
+uint16_t task_state_base_version(uint16_t version) {
+    switch (version) {
+    case task_state_runtime_record_version:
+        return task_state_record_version;
+    case task_state_runtime_authority_record_version:
+        return task_state_authority_record_version;
+    case task_state_runtime_reauthorization_record_version:
+        return task_state_reauthorization_record_version;
+    default:
+        return version;
+    }
+}
+
+void write_task_state_record(const Task &task, uint8_t *body, uint16_t version) {
+    durability::BodyWriter writer(body, task_state_size_for(version));
     writer.u64(task.task_id);
     writer.u32(task.lifecycle);
     writer.u32(task.revision);
@@ -58,9 +90,20 @@ void write_task_state_record(const Task &task, uint8_t *body) {
     writer.u32(static_cast<uint32_t>(task.hold_status));
     writer.u32(task.hold_reason);
     writer.u32(task.step_count);
+    if (version >= task_state_runtime_record_version) {
+        writer.u32(task.model_calls.used);
+        writer.u32(task.model_calls.limit);
+        writer.u32(task.model_calls.blocked ? 1U : 0U);
+    }
 }
 
-bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out) {
+bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out,
+                            uint16_t version) {
+    if (version < task_state_record_version || version > task_state_raise_limit_record_version ||
+        size != task_state_size_for(version)) {
+        return false;
+    }
+    out = {};
     durability::BodyReader reader(body, size);
     out.task_id = reader.u64();
     out.state.lifecycle = reader.u32();
@@ -69,7 +112,16 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     out.state.hold_status = static_cast<ayni_status_t>(reader.u32());
     out.state.hold_reason = reader.u32();
     out.state.step_count = reader.u32();
-    return reader.ok();
+    if (version >= task_state_runtime_record_version) {
+        out.state.model_calls.used = reader.u32();
+        out.state.model_calls.limit = reader.u32();
+        const auto blocked = reader.u32();
+        if (blocked > 1U) {
+            return false;
+        }
+        out.state.model_calls.blocked = blocked != 0U;
+    }
+    return reader.ok() && out.state.model_calls.valid();
 }
 
 uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range) {

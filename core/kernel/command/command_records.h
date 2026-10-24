@@ -15,6 +15,8 @@ constexpr uint16_t command_record_type = 9;
 constexpr uint16_t command_record_version = 1;
 constexpr uint32_t command_record_size = 52; // ordinary v1
 constexpr uint16_t exact_command_record_version = 2;
+// REQUIRED type9/v6 uses the v2 envelope for an exact Task model-limit raise.
+constexpr uint16_t task_limit_command_record_version = 6;
 // records.md type 9/v2 adds canonical format and byte length (u32 each).
 constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
 constexpr uint16_t revoke_command_record_version = 3;

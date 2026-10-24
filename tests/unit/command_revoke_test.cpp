@@ -252,7 +252,7 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
                               AYNI_INTENT_EFFECT_TARGET_GONE}) {
         SCOPED_TRACE(effect);
         const auto invalid = revoke_mapping(invalid_canonical, effect);
-        EXPECT_FALSE(valid_authority_mapping(invalid, view(invalid_canonical)));
+        EXPECT_FALSE(valid_exact_mapping(invalid, view(invalid_canonical)));
         std::array<uint8_t, record_size> output{};
         output.fill(0xA5);
         const auto before_output = output;

@@ -156,7 +156,7 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
     size +=
         uint64_t{capacities.task_capacity} *
         (record_prefix + work::task_snapshot_record_size + record_prefix +
-         work::task_state_record_size +
+         work::task_state_runtime_record_size +
          uint64_t{capacities.task_step_capacity} *
              (record_prefix + work::task_steps_record_max(1)) +
          record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
@@ -202,7 +202,8 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         if (task.checkpoint_writer_version != 0U) {
             count(layout, work::task_checkpoint_record_size(task));
         }
-        count(layout, work::task_state_record_size);
+        count(layout,
+              work::task_state_size_for(work::task_state_version_for(model.tasks.at(index))));
     }
     for (uint32_t index = 0; index < model.commands.size(); ++index) {
         count(layout, command_size(model.commands.at(index)));
@@ -339,7 +340,7 @@ bool WorkSnapshotWriter::next_task_record(uint16_t &type, uint32_t &size) {
         task_part_ = TaskPart::state;
     }
     type = work::task_state_record_type;
-    size = work::task_state_record_size;
+    size = work::task_state_size_for(work::task_state_version_for(model_.tasks.at(index_)));
     return true;
 }
 
@@ -420,7 +421,8 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
         write_task_authority(body);
         break;
     case work::task_state_record_type:
-        work::write_task_state_record(model_.tasks.at(index_), body);
+        work::write_task_state_record(model_.tasks.at(index_), body,
+                                      work::task_state_version_for(model_.tasks.at(index_)));
         break;
     case work::authority_cleanup_record_type:
         work::write_authority_cleanup_record(model_.authority_cleanup.record(), body);
@@ -506,6 +508,8 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
             : type == authority::grant_record_type
                 ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
+            : type == work::task_state_record_type
+                ? work::task_state_version_for(model_.tasks.at(index_))
                 : snapshot_record_version;
         durability::write_record_header({type, version, durability::record_required, size}, at);
         write_record(type, at + record_prefix);
@@ -617,7 +621,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     case work::task_authority_record_type:
         return task_authority(body, header.length);
     case work::task_state_record_type:
-        return task_state(body, header.length);
+        return task_state(body, header.length, header.version);
     case work::authority_cleanup_record_type:
         return authority_cleanup(body, header.length);
     case command_record_type:
@@ -798,10 +802,11 @@ durability::BatchCheck WorkSnapshotReader::task_checkpoint(const uint8_t *body, 
     return check_of(restore);
 }
 
-durability::BatchCheck WorkSnapshotReader::task_state(const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::task_state(const uint8_t *body, uint32_t size,
+                                                      uint16_t version) {
     work::TaskStateRecord record{};
     if (task_index_ == work::TaskTable::no_index ||
-        !work::read_task_state_record(body, size, record)) {
+        !work::read_task_state_record(body, size, record, version)) {
         return durability::BatchCheck::corrupt;
     }
     const work::Task &task = model_.tasks.at(task_index_);
@@ -839,6 +844,35 @@ durability::BatchCheck WorkSnapshotReader::task_authority(const uint8_t *body, u
     task_index_ = work::TaskTable::no_index;
     task_stage_ = TaskReadStage::contents;
     return durability::BatchCheck::ok;
+}
+
+// Snapshot compaction removes the original state/command adjacency. Recheck
+// its durable owner and every fact still provable from a retained Task (ADR-0043).
+bool WorkSnapshotReader::matches_task_limit_command(const CommandMapping &mapping,
+                                                    ayni_bytes_v1 canonical) const {
+    TaskLimitCommand command{};
+    const auto *binding = model_.principals.binding();
+    if (!read_task_limit_command(canonical, command) || binding == nullptr ||
+        mapping.principal_id != binding->principal_id ||
+        mapping.commit_seq <= binding->stamp.commit_seq ||
+        !foundation::is_kernel_id(mapping.object.id) ||
+        foundation::id_boot_epoch(mapping.object.id) > metadata_.boot_epoch) {
+        return false;
+    }
+    uint32_t index = 0;
+    if (!model_.tasks.find(mapping.object.id, index)) {
+        // A terminal Task may have given way; its exact retry window still survives.
+        return true;
+    }
+    const auto &task = model_.tasks.at(index);
+    if (task.commit_seq < mapping.commit_seq || task.revision < mapping.object.revision ||
+        task.model_calls.limit < command.limit) {
+        return false;
+    }
+    return task.commit_seq != mapping.commit_seq ||
+           (task.revision == mapping.object.revision && task.model_calls.limit == command.limit &&
+            work::TaskTable::is_live(task.lifecycle) && task.model_calls.used < command.limit &&
+            !task.model_calls.blocked);
 }
 
 durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8_t *body,
@@ -888,6 +922,10 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
                : WorkReplay(model_).matches_goal_reauthorization(mapping, canonical, result_bytes,
                                                                  metadata_.max_transition_id,
                                                                  metadata_.boot_epoch)))) {
+        return durability::BatchCheck::corrupt;
+    }
+    if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT &&
+        !matches_task_limit_command(mapping, canonical)) {
         return durability::BatchCheck::corrupt;
     }
     last_command_seq_ = mapping.commit_seq;

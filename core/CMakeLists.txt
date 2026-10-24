@@ -69,6 +69,7 @@ ayni_add_core_module(kernel
         kernel/command/command_approval.cpp
         kernel/command/command_goal_identity.cpp
         kernel/command/command_reauthorization.cpp
+        kernel/command/command_task_limit.cpp
         kernel/command/command_records.cpp
         kernel/command/command_table.cpp
         kernel/command/work_authority_result.cpp

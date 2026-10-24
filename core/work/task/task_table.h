@@ -43,6 +43,25 @@ struct NewTask {
     uint32_t occurrence_count;  // how many it stands for, at least 1
 };
 
+// Durable per-Task model admission facts (C-RUN-002/003). Request acceptance
+// owns the increment; a failed next admission owns the hold. No cost balance.
+struct TaskModelCalls {
+    uint32_t used = 0; // Accepted requests, <= limit; never decremented.
+    uint32_t limit = AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT; // Positive soft ceiling.
+    bool blocked = false; // True only when used == limit and a next request was refused.
+    // Complete equality for immutable authorization transitions and codecs.
+    bool operator==(const TaskModelCalls &other) const {
+        return used == other.used && limit == other.limit && blocked == other.blocked;
+    }
+    // Opposite of complete equality; no independent comparison formula.
+    bool operator!=(const TaskModelCalls &other) const { return !(*this == other); }
+    // One validator for struct/record inputs, independent of this boot's ceiling.
+    bool valid() const {
+        return limit > 0U && limit <= AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX && used <= limit &&
+               (!blocked || used == limit);
+    }
+};
+
 struct Task {
     uint64_t task_id;
     uint64_t goal_id;
@@ -75,7 +94,8 @@ struct Task {
     uint32_t checkpoint_size;
     uint32_t checkpoint_writer_version;
     catalog::CatalogId checkpoint_writer_id;
-    uint32_t slot; // the table's own: which blocks hold them
+    TaskModelCalls model_calls{}; // This Task owns its consumption and independent durable hold.
+    uint32_t slot;                // the table's own: which blocks hold them
     // This boot cannot serve an otherwise recoverable task. Kept apart
     // from the durable state so compaction cannot make the hold permanent.
     ayni_status_t recovery_hold_status;
@@ -90,6 +110,7 @@ struct TaskState {
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
     uint32_t step_count;
+    TaskModelCalls model_calls{}; // Preserved across lifecycle/authorization changes.
 };
 
 // Pause takes READY to PAUSED and resume takes it back, unless a decision
@@ -109,6 +130,7 @@ class TaskTable {
         uint32_t capacity;             // at most AYNI_TASK_CAPACITY_MAX
         uint32_t step_capacity;        // per task, at most AYNI_TASK_STEP_CAPACITY_MAX
         uint32_t checkpoint_max_bytes; // per task, at most AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX
+        uint32_t model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT; // 1..64 calls.
     };
 
     // Why a change is refused, in the order check() checks.
@@ -163,6 +185,22 @@ class TaskTable {
     // the separate TaskAuthorityTable owns the replacement authorization.
     void reauthorize(uint32_t index, foundation::TransitionStamp stamp);
 
+    // Owner management preflights CAS, live state and a strictly higher soft
+    // limit within this boot's hard ceiling; refusal changes no Task state.
+    ayni_status_t check_model_limit_raise(uint32_t index, uint32_t expected_revision,
+                                          uint32_t limit) const;
+    // Only after check_model_limit_raise succeeds, in the command transition.
+    // Preserves count/progress and all other holds, advancing revision once.
+    void raise_model_limit(uint32_t index, uint32_t limit, foundation::TransitionStamp stamp);
+    // Positive startup count ceiling; not a concurrent-slot allocation.
+    uint32_t model_call_hard_limit() const { return model_call_hard_limit_; }
+    // Internal MA-008 admission boundary: caller atomically commits the same
+    // accepted call identity; only with READY, spare count and revision capacity.
+    void accept_model_call(uint32_t index, foundation::TransitionStamp stamp);
+    // Internal admission refusal with used == limit; prevents further decisions
+    // until an owner raises it. Does not overwrite user/policy/recovery state.
+    void hold_model_calls(uint32_t index, foundation::TransitionStamp stamp);
+
     // Its strategy's decision holds the READY task index, below the largest
     // revision: it becomes PAUSED and no change but an end takes it out.
     // It gets the next revision and stamp.commit_seq. status is a failure.
@@ -198,16 +236,25 @@ class TaskTable {
 
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
-    // Whether a decision ever held it; still_held() while it has not ended.
+    // Diagnostic precedence: policy, compatibility, then model-limit hold.
+    // still_held() only counts live tasks; terminal diagnostics remain visible.
     static ayni_status_t effective_hold_status(const Task &task) {
-        return task.hold_status != AYNI_OK ? task.hold_status : task.recovery_hold_status;
+        return task.hold_status != AYNI_OK            ? task.hold_status
+               : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_status
+               : task.model_calls.blocked             ? AYNI_CAPACITY_EXCEEDED
+                                                      : AYNI_OK;
     }
     static ayni_reason_t effective_hold_reason(const Task &task) {
-        return task.hold_status != AYNI_OK ? task.hold_reason : task.recovery_hold_reason;
+        return task.hold_status != AYNI_OK            ? task.hold_reason
+               : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_reason
+               : task.model_calls.blocked             ? AYNI_REASON_TASK_MODEL_CALL_LIMIT
+                                                      : AYNI_REASON_NONE;
     }
     static ayni_task_lifecycle_t effective_lifecycle(const Task &task) {
-        return is_live(task.lifecycle) && task.recovery_hold_status != AYNI_OK ? AYNI_TASK_PAUSED
-                                                                               : task.lifecycle;
+        return is_live(task.lifecycle) &&
+                       (task.recovery_hold_status != AYNI_OK || task.model_calls.blocked)
+                   ? AYNI_TASK_PAUSED
+                   : task.lifecycle;
     }
     static bool is_held(const Task &task) { return effective_hold_status(task) != AYNI_OK; }
     static bool still_held(const Task &task) {
@@ -258,6 +305,10 @@ class TaskTable {
     // revision exactly once for the new binding; terminal history is immutable.
     Restore restore_reauthorization_state(uint32_t index, const TaskState &state,
                                           foundation::TransitionStamp stamp);
+    // A required runtime state paired with the owner's exact raise command;
+    // no progress, lifecycle or other hold may change with it.
+    Restore restore_model_limit_raise(uint32_t index, const TaskState &state,
+                                      foundation::TransitionStamp stamp);
     // Replays one key of a TASK_STEPS record of task index, the step at
     // position step.
     Restore restore_step(uint32_t index, uint32_t step, ayni_string_v1 key,
@@ -300,7 +351,8 @@ class TaskTable {
     uint8_t *checkpoints_;
     uint32_t step_capacity_;
     uint32_t checkpoint_max_bytes_;
-    uint32_t held_count_ = 0; // still_held() tasks
+    uint32_t model_call_hard_limit_; // Fixed this boot; independent of steps and concurrency.
+    uint32_t held_count_ = 0;        // still_held() tasks
 };
 
 } // namespace ayni::work

@@ -60,7 +60,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `TASK_AUTHORITY`（类型 18，版本 1，REQUIRED） | `work/task` | 派生 Task 时与确切 `TASK`/`TASK_STATE` 同批，状态后紧接准入事实（ADR-0038） |
 | `WORK_AUTHORITY_CLEANUP`（类型 19，版本 1，REQUIRED） | `work/authority` | 工作清理请求/一步的批次末尾；快照固定一项，含明确 idle（ADR-0038） |
 | `TASK_STEPS`（类型 7）、`TASK_CHECKPOINT`（类型 8） | `work/task` | 提交步骤或私有检查点的决策批次（B3），即 `STEP_CHECKPOINT` |
-| `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3、approve v5，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3/v5含完整canonical请求，v3另存effect，v5保存原授权结果（ADR-0030、0031、0038） |
+| `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3、approve v5、Task limit v6，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3/v5含完整canonical请求，v3另存effect，v5保存原授权结果（ADR-0030、0031、0038） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | `budget` | B2、B4 |
 | `CALL_IDENTITY` | `work/call` | B3 |
 | `ACTION_STATE` | `work/action` | 准备、屏障与终态各自的批次；终态在 B4 |
@@ -177,7 +177,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 ### 静态领域记录
 
-正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5；GOAL 快照写 v4，只接受此创建 stamp 完整格式，其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
+正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5/v6；GOAL 快照写 v4，只接受此创建 stamp 完整格式，Task state 按运行限制使用 v1/v4（见末节）；其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
@@ -188,10 +188,10 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 | 5 `TASK` | 日志的 `TASK` 正文，随后为原始 `created_transition_id`、最后改变的 `commit_seq`、`steps_seq`、`checkpoint_seq`（各 u64），以及 `steps_before` u32 | 76 |
 | 7 `TASK_STEPS` | 日志的步骤正文，每条只含一个 key，`steps_before` 为该 key 的位置、`count=1` | 20 + key 字节数 |
 | 8 `TASK_CHECKPOINT` | 与日志正文相同，包含写入方策略 ID、版本及原检查点；没有写入方时不写该记录 | 日志正文长度 |
-| 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
+| 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后；v1 默认或 v4 运行限制 | 32 / 44 |
 | 18/v1 `TASK_AUTHORITY` | 与日志正文相同，紧接该 Task 的状态；保留原始准入 stamp | 48 + 每引用 12 |
 | 13 `GRANT_CREATE` | v1为创建正文+created/last stamp（各u64×2）+revision/lifecycle（u32×2）；v2再接revoked_by_root_id/cleanup_after/cleanup_through（u64×3）、cleanup stamp（u64×2）；v3使用专属创建正文并保留相同清理尾部；均无deadline/hold/Gate | v1正文+40；通用v2正文+80，最大192+2×scope_max_bytes；专属v3为绑定创建正文+80，最大200+2×scope_max_bytes |
-| 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3/v5日志正文、effect及完整canonical/授权结果（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88；v5为日志正文长度+8 |
+| 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3/v5/v6日志正文、effect及完整canonical/授权结果（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88；v5为日志正文长度+8；v6为88 |
 
 顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的 Goal（v2 后紧接 type 17，可跨页）、每个 Task 的元数据/逐条步骤/检查点/状态/准入（type18，紧接状态且允许跨页），最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
 
@@ -295,3 +295,19 @@ journal 使用 REQUIRED `GOAL_STATE` 4/v5、`GOAL_AUTHORITY` 17/v4、每个直�
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-STORE-022 | 重新授权的 Goal、全直属活 Task、原始双 CAS/回显、不可变结果与请求 footer 构成一个封闭批次；各前缀/重复/错配均拒绝，每条历史恢复边界受当时 boot 限制，快照保留新旧结果而不重建历史 | 合法 CRC 删一项 Task 或命令仍恢复；把清理步夹进请求；后续正常 R2 掩盖 R1 未来输入实例；同批新发 Grant 冒充已有授权 | M1 已实现（本地 C ABI 与持久场景）：`GoalReauthorizationPersistence.crc_valid_partner_faults_reject_the_whole_batch`、`GoalReauthorizationPersistence.every_complete_record_prefix_requires_all_partners`、`GoalReauthorizationPersistence.paged_snapshot_keeps_old_approval_and_new_binding`、`GoalReauthorizationPersistence.historical_result_stamp_boot_and_revision_are_bounded`、`GoalReauthorizationPersistence.later_binding_cannot_hide_a_future_journal_input_incarnation`、`GoalReauthorizationPersistence.replacement_cannot_issue_a_same_batch_dedicated_root`、`GoalReauthorization.interrupted_append_recovers_all_or_old_admissions`、`GoalReauthorization.failed_or_unknown_append_preserves_atomic_recovery_and_retry`、`GoalReauthorizationPersistence.later_task_cancellation_cannot_hide_an_omitted_live_cohort`、`GoalReauthorizationPersistence.replacement_cannot_resume_a_user_paused_goal_in_its_state`、`GoalReauthorizationPersistence.ordinary_task_state_cannot_follow_the_exact_command`、`GoalReauthorizationPersistence.management_footer_cannot_also_consume_a_cleanup_step`；ADR-0038；补充验证：`WorkCommandCodec.reauthorization_checks_each_shape_and_atomic_output_boundary`、`WorkAuthorityHistory.every_original_echo_field_is_checked_for_both_command_kinds` |
+
+## Task 运行限制扩展（ADR-0043）
+
+schema 2 不变。Task 保存 used/limit/blocked（模型调用次数、总软上限、独立限制暂停）。只在新请求超限时 blocked=1；used<=limit，1<=limit<=64，blocked 为 0/1 且为 1 时 used==limit。旧 type6/v1-v3 的默认事实为 0/8/0；只有这些默认值继续写旧版本，非默认值必须写 REQUIRED 新版本。
+
+| 类型/版本 | 正文及配对 | 字节数 |
+|---|---|---:|
+| 6/v4 | v1 的 32 B 后接 used/limit/blocked（u32 各一个）；普通状态。快照用 v1 或 v4，仍紧接 Task authority | 44 |
+| 6/v5 | 同 v4 正文；保持原 v2 的授权清理相邻配对，运行事实逐字段不变 | 44 |
+| 6/v6 | 同 v4 正文；保持原 v3 的重新授权配对，运行事实逐字段不变 | 44 |
+| 6/v7 | 同 v4 正文；只提高上限、清除该项暂停、revision+1，其他 Task 字段不变；必须为独立批次第一条并紧接精确所有者命令，批次不得夹带其他记录 | 44 |
+| 9/v6 | v2 的 60 B 外壳（canonical_format=1）加 kind13 canonical；无授权 result。canonical 依次 kind u32、expected_revision u32、task_id u64、new_limit u32 | 80 |
+
+快照保留 type9/v6 完整命令及原接受 commit_seq（共 88 B），Task 当前上限不必等于历史重试结果。journal 的 v7/v6 命令必须匹配同一 Task、原 CAS、新上限和绑定所有者，type6 v7 状态不能单独成立。普通状态不能降低 used、改变已有软上限或清除 blocked；用户 pause/resume 与授权变化保留该事实。新计数同调用身份的证明由 MA-008A 继续接入，不能用本轮 codec 测试宣称调用账本已实现。
+
+低于原软上限的启动硬上限产生容量受限，不重置计数；旧 reader 对 REQUIRED 新版本拒绝，保留旧目录。所有 runtime codec、重放分发、快照大小与写入路径使用 `work/task/task_records` 的版本/布局实现；不存在逐平台私有编码。

@@ -45,6 +45,8 @@ struct KernelLimits {
     // StorageBudget::log_max_default()).
     uint32_t storage_write_interval_us = AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
     uint32_t storage_log_max_bytes = 0;
+    // Positive model request ceiling per Task; no arena region is proportional to it.
+    uint32_t task_model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT;
 };
 
 // The bounded stores that follow the kernel in the caller's memory block.

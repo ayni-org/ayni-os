@@ -9,6 +9,7 @@
 
 #include "kernel/command/command_approval.h"
 #include "kernel/command/command_reauthorization.h"
+#include "kernel/command/command_task_limit.h"
 #include "kernel/command/work_authority_result.h"
 
 #include <ayni/authority.h>
@@ -27,6 +28,7 @@ struct Intent {
     GoalCreate create;                   // GOAL_CREATE
     GoalApproval approval;               // GOAL_APPROVE, including borrowed original views.
     GoalReauthorization reauthorization; // GOAL_REAUTHORIZE, including exact authority CAS.
+    uint32_t model_call_limit;           // TASK_RAISE_MODEL_LIMIT: new positive total ceiling.
     uint64_t target_id; // target intents: the goal, task, instance or Grant they name
 };
 

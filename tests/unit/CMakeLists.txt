@@ -57,6 +57,7 @@ add_executable(ayni_unit_tests
     storage_budget_test.cpp
     strategy_registry_test.cpp
     task_table_test.cpp
+    task_runtime_limits_test.cpp
     task_authority_test.cpp
     trigger_schedule_test.cpp
     work_records_test.cpp
