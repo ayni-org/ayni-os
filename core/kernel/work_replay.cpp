@@ -307,8 +307,8 @@ RecordUse WorkReplay::restore_goal_state(uint16_t version, const uint8_t *body, 
 }
 
 // A create cannot lose its explicit ceiling or borrow another Goal's metadata.
-// Existing metadata may advance without changing its immutable ceiling; legacy
-// confirmation remains closed until its own command/pairing is implemented.
+// Existing metadata may advance without changing its immutable ceiling;
+// F4 adds a separate paired proof for explicit reauthorization.
 RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp) {
     work::GoalAuthorityRecord record{};
