@@ -111,7 +111,7 @@ BatchCheck read_batch(const uint8_t *bytes, std::size_t size, BatchView &out) {
     if (load_le32(bytes + header_length - 4U) != crc32(bytes, header_length - 4U)) {
         return BatchCheck::corrupt;
     }
-    if (load_le16(bytes + schema_at) > storage_schema || load_le32(bytes + flags_at) != 0U) {
+    if (load_le16(bytes + schema_at) != storage_schema || load_le32(bytes + flags_at) != 0U) {
         return BatchCheck::unsupported;
     }
     const uint32_t payload_length = load_le32(bytes + payload_length_at);

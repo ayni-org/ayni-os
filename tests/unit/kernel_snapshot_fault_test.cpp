@@ -203,7 +203,8 @@ TEST(SnapshotFaults, corrupt_or_unsupported_active_slot_never_falls_back_to_an_o
         ASSERT_FALSE(image.snapshots[1U - active.active_slot].empty());
         auto &selected = image.snapshots[active.active_slot];
         if (unsupported) {
-            ayni::foundation::store_le16(selected.data() + 4, 2);
+            ayni::foundation::store_le16(selected.data() + 4,
+                                         ayni::durability::snapshot_schema + 1U);
             ayni::foundation::store_le32(selected.data() + 68,
                                          ayni::foundation::crc32(selected.data(), 68));
         } else {
@@ -557,7 +558,7 @@ TEST(SnapshotFaults, optional_or_mixed_activation_cannot_authorize_a_storage_swi
         ASSERT_EQ(reader.next(header, body), ayni::durability::RecordReader::Next::record);
         ASSERT_EQ(header.type, ayni::durability::snapshot_commit_record_type);
         std::vector<uint8_t> bytes(256);
-        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity, 0);
+        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity);
         header.flags = mixed ? ayni::durability::record_required : 0U;
         ASSERT_TRUE(writer.add_record(header, body));
         if (mixed) {

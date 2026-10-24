@@ -80,6 +80,8 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_task_info_v1 task_info = {0};
     ayni_grant_info_v1 grant_info = {0};
     ayni_grant_field_info_v1 grant_field = {0};
+    ayni_task_authority_info_v1 task_authority = {0};
+    ayni_task_authority_reference_v1 task_reference = {0};
     uint32_t parameter_size = 0;
     ayni_goal_approve_v1 approval = {0};
     uint64_t session_id = 0;
@@ -110,6 +112,13 @@ static int check_work_model(ayni_kernel_t *kernel) {
     failures += expect(ayni_get_goal_requirement_field(kernel, 1u, 0u, 0u, &requirement_field) ==
                            AYNI_INVALID_STATE,
                        "requirement field before start");
+    task_authority.struct_size = sizeof task_authority;
+    task_reference.struct_size = sizeof task_reference;
+    failures += expect(ayni_get_task_authority(kernel, 1u, &task_authority) == AYNI_INVALID_STATE,
+                       "Task authority before start");
+    failures += expect(ayni_get_task_authority_reference(kernel, 1u, 0u, &task_reference) ==
+                           AYNI_INVALID_STATE,
+                       "Task authority reference before start");
     goal_type.struct_size = (uint32_t)sizeof goal_type;
     goal_type.version = 1u;
     goal_type.goal_type_id.data = "reminder";

@@ -17,14 +17,14 @@
 | [domain/product_semantics.md](domain/product_semantics.md) | 28 | 0 |
 | [domain/resources_and_budget.md](domain/resources_and_budget.md) | 23 | 1 |
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 3 |
-| [domain/versions.md](domain/versions.md) | 17 | 7 |
+| [domain/versions.md](domain/versions.md) | 17 | 6 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 7 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
-| [storage/records.md](storage/records.md) | 20 | 15 |
+| [storage/records.md](storage/records.md) | 20 | 14 |
 | [wire/envelope.md](wire/envelope.md) | 19 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 330 | 98 |
+| 合计 | 330 | 96 |
 
 ## 计划章节 → 契约文档
 
@@ -222,7 +222,6 @@
 | C-VER-003 | M0 已实现：`KernelApi.create_copies_host_table_before_return`；`KernelApi.config_from_abi_0_1_is_unsupported_version`（`struct_size` 不含 `abi_minor` 时按 0.1 处理）；M1 起另有 `KernelApi.host_table_without_0_3_ports_is_invalid_argument`、`KernelApi.host_table_without_storage_ports_is_accepted`、`KernelApi.uncovered_capacities_take_their_defaults`、`KernelLifecycle.kernel_info_checks_its_output`；0.5 起新增或改变的结构体只有一个布局，只接受自身的 `sizeof`：`WorkModel.registration_checks_its_arguments`（含 0.7 与 0.9 的 `ayni_goal_type_v1` 布局）、`WorkStrategy.registration_checks_its_arguments`、`WorkModel.intent_arguments_are_refused_before_anything_else`（含 0.6、0.7 与 0.8 的 `ayni_goal_create_v1` 布局）、`WorkModel.queries_check_their_arguments`（含 0.7 与 0.8 的 `ayni_goal_info_v1` 布局）、`KernelEvents.post_checks_arguments_kind_and_source_before_the_state`、`WorkModel.output_struct_sizes_are_checked_and_a_bad_error_struct_is_not_written`、`WorkTask.task_and_instance_bodies_are_checked_before_anything_else`、`WorkTask.task_query_checks_its_arguments`（含 0.9 的 `ayni_task_info_v1` 布局） |
 | C-VER-004 | M0 已实现：`KernelApi.struct_size_below_first_layout_is_invalid_argument`、`KernelApi.struct_size_from_newer_minor_is_unsupported_version` |
 | C-VER-020 | M1 已实现（日志、快照版本拒绝）：`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6 |
-| C-VER-021 | M1 已实现（schema 0→1 迁移中断）：`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`；E4 步骤 6 |
 | C-VER-023 | M1 已实现（定长小端编解码与分页）：`BatchCodec.round_trip_keeps_identity_and_records`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`；GCC/Clang 共用固定格式测试；评审 |
 | C-HOST-001 | M0 已实现：`KernelApi.create_copies_host_table_before_return` |
 | C-HOST-004 | M1 已实现（Kernel 侧）：`CompletionPoolTest.rejected_request_frees_the_slot_and_runs_no_handler`、`CompletionPoolTest.accept_unknown_waits_for_the_post`、`CompletionPoolTest.undefined_submit_result_counts_as_in_flight`、`CompletionPoolTest.post_before_a_rejection_is_still_applied`；E2 F10；C-OUT-003 |
@@ -253,7 +252,6 @@
 | C-STORE-006 | M1 已实现（槽格式、激活/轮转和发布阶段断电）：`SnapshotCodec.every_header_and_marker_byte_is_checked`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`、`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`；`SnapshotFaults.power_loss_at_each_publication_request_keeps_the_durable_work`、`SnapshotFaults.corrupt_or_unsupported_active_slot_never_falls_back_to_an_older_slot`、`SnapshotFaults.a_candidate_can_replace_a_superseded_slot_before_an_older_trim_finishes`、`SnapshotFaults.the_snapshot_after_a_recovered_one_takes_the_next_generation_and_slot`、`SnapshotCodec.an_activation_reads_back_only_what_a_writer_can_store`、`SnapshotCodec.boot_epoch_beyond_the_id_epoch_is_corrupt`；C-HOST-011 |
 | C-STORE-007 | M1 已实现（现有工作模型的静态分页快照与尾部重放）：`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`、`WorkSnapshot.ready_and_reclamation_choices_match_the_uncompacted_model`、`WorkSnapshot.terminal_parent_and_child_keep_their_reclamation_order`、`WorkSnapshot.a_retained_object_can_name_a_predecessor_already_reclaimed`、`WorkSnapshot.commands_keep_their_floor_and_original_acceptance_order`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`、`WorkSnapshot.smaller_object_and_checkpoint_capacities_report_no_room`、`WorkSnapshot.smaller_goal_parameter_limit_is_capacity_failure`、`SnapshotFaults.a_snapshot_record_beyond_the_buffer_exceeds_capacity`、`WorkSnapshot.object_stamp_beyond_the_snapshot_boundary_is_corrupt`；其余领域随各自工作包；E2 F11 |
 | C-STORE-009 | M1 已实现（恢复读取）：`PrefixScan.damaged_batch_stops_the_scan`、`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotFaults.payload_damage_the_records_survive_is_still_corrupt`；M1 已实现（工作记录违反表规则或日志末尾不一致时为 `LOG_CORRUPT`，已重放的内容全部丢弃，ADR-0026 决策 5）：`WorkRecovery.log_that_leaves_a_live_task_under_an_ended_goal_is_corrupt`、`WorkReplay.goal_created_without_its_state_is_corrupt`、`WorkReplay.live_task_under_an_ended_goal_is_inconsistent`、`WorkReplay.live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsistent`、`GoalRestore.restore_state_refuses_a_change_to_a_terminal_goal_or_an_impossible_cursor`、`TaskRestore.restore_state_refuses_a_change_to_an_ended_or_held_task`、`AgentRestore.record_no_transition_writes_is_corrupt`；E2 F7（已提交区域损坏） |
-| C-STORE-010 | M1 已实现（schema 0→1 迁移、切换前保留源和模拟旧 reader 拒绝切换）：`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`、`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`、`SnapshotCodec.every_header_and_marker_byte_is_checked`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6；C-VER-021 |
 | C-STORE-013 | M1 已实现（工作模型：实例、Goal、Task、步骤、私有检查点与命令映射只写入日志，每个 transition 一个批次，ADR-0026）：`WorkRecovery.power_loss_takes_the_batches_never_appended`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；预算等其余状态随各自的包 |
 | C-STORE-014 | M1 已实现（现有工作记录和快照：Goal 只写时长，Task 不写 `due_us`，恢复后重新计时）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`WorkSnapshot.bytes_are_independent_of_this_boots_monotonic_clock`、`WorkSnapshot.compatibility_faults_and_holds_are_not_written`；Grant 不含 deadline/易失 hold：`GrantRecords.duration_is_persistent_while_deadline_hold_and_transition_stamps_are_not`（ADR-0030）；评审 |
 | C-STORE-015 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |

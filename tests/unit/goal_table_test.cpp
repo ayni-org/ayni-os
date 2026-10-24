@@ -180,6 +180,36 @@ TEST(GoalTable, children_sit_one_level_below_their_parent) {
     EXPECT_EQ(goals.goal(grandchild).parent_index, goals.index_of(child));
 }
 
+// ADR-0038 decision 3: every authority check uses the same nearest-first
+// ancestry, including the starting Goal; a failed ancestor stops the walk.
+TEST(GoalTable, lineage_includes_start_and_stops_at_the_first_refusal) {
+    Goals goals(small);
+    const auto root = goals.create();
+    const auto child = goals.create(root);
+    const auto leaf = goals.create(child);
+    const auto other_root = goals.create();
+    ASSERT_NE(leaf, 0U);
+    std::vector<uint64_t> visited;
+    auto visit = [&](uint32_t at) {
+        visited.push_back(goals->at(at).goal_id);
+        return true;
+    };
+    EXPECT_TRUE(goals->visit_lineage(goals.index_of(leaf), visit));
+    EXPECT_EQ(visited, (std::vector<uint64_t>{leaf, child, root}));
+    visited.clear();
+    EXPECT_FALSE(goals->visit_lineage(goals.index_of(leaf), [&](uint32_t at) {
+        visit(at);
+        return goals->at(at).goal_id != child;
+    }));
+    EXPECT_EQ(visited, (std::vector<uint64_t>{leaf, child}));
+    visited.clear();
+    EXPECT_TRUE(goals->visit_lineage(GoalTable::no_parent, visit));
+    EXPECT_TRUE(visited.empty());
+    EXPECT_TRUE(goals->in_subtree(goals.index_of(leaf), goals.index_of(root)));
+    EXPECT_TRUE(goals->in_subtree(goals.index_of(root), goals.index_of(root)));
+    EXPECT_FALSE(goals->in_subtree(goals.index_of(leaf), goals.index_of(other_root)));
+}
+
 // C-LIFE-020: a child cannot move work to another owner.
 TEST(GoalTable, child_must_have_its_parents_owner) {
     Goals goals(small);

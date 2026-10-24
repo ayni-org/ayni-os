@@ -74,6 +74,7 @@ ayni_add_core_module(kernel
         kernel/intent/intent.cpp
         kernel/intent/intent_rules.cpp
         kernel/intent/goal_authority.cpp
+        kernel/intent/task_authority.cpp
         kernel/intent/work_model.cpp
         kernel/kernel_api.cpp
         kernel/kernel_layout.cpp

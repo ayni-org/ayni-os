@@ -98,14 +98,18 @@ bool TaskAuthorityTable::read(uint32_t slot, uint64_t task_id, TaskAuthorityReco
     if (!contains(slot, task_id)) {
         return false;
     }
+    out = at(slot);
+    return true;
+}
+
+TaskAuthorityRecord TaskAuthorityTable::at(uint32_t slot) const {
     const auto &saved = slots_[slot];
     TaskAuthorityRecord record{saved.task_id, saved.ceiling, saved.stamp, saved.phase, saved.count};
     const auto *references = references_at(slot);
     for (uint32_t index = 0; index < saved.count; ++index) {
         record.references[index] = references[index];
     }
-    out = record;
-    return true;
+    return record;
 }
 
 void TaskAuthorityTable::clear(uint32_t slot) {

@@ -60,6 +60,7 @@ struct KernelStorage {
     void *capabilities;
     void *grants;
     void *goal_authority; // Goal-owned ceilings/references, one slot per Goal index.
+    void *task_authority; // Task-owned admission references, one slot per stable Task slot.
 };
 
 } // namespace ayni::kernel

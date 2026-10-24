@@ -258,6 +258,10 @@ typedef struct ayni_goal_authority_info_v1 {
     uint32_t missing_count;            /* entries without a currently usable reference */
     ayni_reason_t effective_reason;    /* NONE only when currently authorized */
     uint32_t reserved;                 /* 0 */
+    /* Since 0.24. Binding log sequence; 0 before admission or when absent. */
+    uint64_t binding_commit_seq;
+    /* Since 0.24. Admitted parent's binding sequence; 0 for roots/proposals. */
+    uint64_t parent_binding_commit_seq;
 } ayni_goal_authority_info_v1;
 
 /* Since 0.21. Copy of one immutable requirement and its selected dependency. */
@@ -290,6 +294,46 @@ ayni_status_t ayni_get_goal_requirement(const ayni_kernel_t *kernel, uint64_t go
 ayni_status_t ayni_get_goal_requirement_field(const ayni_kernel_t *kernel, uint64_t goal_id,
                                               uint32_t requirement_index, uint32_t field_index,
                                               ayni_goal_requirement_field_info_v1 *out_info);
+
+/* Since 0.24. Persisted Task authority phase, independent of policy holds. */
+typedef uint32_t ayni_task_authority_phase_t;
+/* Since 0.24. No admission has been restored yet; never means zero needs. */
+#define AYNI_TASK_AUTHORITY_UNKNOWN ((ayni_task_authority_phase_t)0)
+/* Since 0.24. Complete inherited selections; consumption rechecks validity. */
+#define AYNI_TASK_AUTHORITY_AUTHORIZED ((ayni_task_authority_phase_t)1)
+/* Since 0.24. Explicit authorization resume is required. */
+#define AYNI_TASK_AUTHORITY_PAUSED ((ayni_task_authority_phase_t)2)
+
+/* Since 0.24. Caller-owned Task admission and current refusal reason. */
+typedef struct ayni_task_authority_info_v1 {
+    uint32_t struct_size;              /* sizeof this output. */
+    ayni_task_authority_phase_t phase; /* UNKNOWN iff admission is absent. */
+    uint64_t task_id;                  /* Exact nonzero Task identity. */
+    uint64_t goal_id;               /* Owning Goal whose immutable ceiling this Task inherited. */
+    uint64_t binding_commit_seq;    /* Inherited Goal binding sequence; 0 iff absent. */
+    uint64_t transition_id;         /* Last admission update; 0 iff absent. */
+    uint64_t commit_seq;            /* Same update's log sequence; 0 iff absent. */
+    uint32_t requirement_count;     /* Copied references; 0 may be explicit admission. */
+    ayni_reason_t effective_reason; /* Current refusal, or NONE when authorized. */
+} ayni_task_authority_info_v1;
+
+/* Since 0.24. One copied historical selection, ordered by Goal requirement. */
+typedef struct ayni_task_authority_reference_v1 {
+    uint32_t struct_size;       /* sizeof this output. */
+    uint32_t grant_revision;    /* Nonzero selected revision, never live-state mirror. */
+    uint64_t grant_id;          /* Exact nonzero selected Grant identity. */
+    uint32_t requirement_index; /* Zero-based index in the owning Goal's immutable ceiling. */
+    uint32_t reserved;          /* Always 0. */
+} ayni_task_authority_reference_v1;
+
+/* Since 0.24. Owner-thread copying queries, same lifecycle states as get_task.
+ * Unknown Task/index is NOT_FOUND; every failure preserves the entire output.
+ * Scope/domain remain queryable from the owning Goal, without Task copies. */
+ayni_status_t ayni_get_task_authority(const ayni_kernel_t *kernel, uint64_t task_id,
+                                      ayni_task_authority_info_v1 *out_info);
+ayni_status_t ayni_get_task_authority_reference(const ayni_kernel_t *kernel, uint64_t task_id,
+                                                uint32_t index,
+                                                ayni_task_authority_reference_v1 *out_info);
 
 #ifdef __cplusplus
 }

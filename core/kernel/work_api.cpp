@@ -185,7 +185,10 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     out = info;
 }
 
-void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
+// Queries observe the immediate authority gate before bounded cleanup runs;
+// retained Task progress and existing non-authority holds remain unchanged.
+void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v1 &out) {
+    const auto &task = kernel.work.tasks.at(index);
     ayni_task_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = ayni::work::TaskTable::effective_lifecycle(task);
@@ -202,6 +205,15 @@ void write_task_info(const ayni::work::Task &task, ayni_task_info_v1 &out) {
     info.hold_status = ayni::work::TaskTable::effective_hold_status(task);
     info.hold_reason = ayni::work::TaskTable::effective_hold_reason(task);
     info.step_count = task.step_count;
+    if (ayni::work::TaskTable::is_live(task.lifecycle) && info.hold_status == AYNI_OK) {
+        const auto authority = kernel.work.check_task_authority(
+            index, kernel.host.monotonic_now_us(kernel.host.ctx), kernel.log.durable_seq());
+        if (authority.status != AYNI_OK) {
+            info.lifecycle = AYNI_TASK_PAUSED;
+            info.hold_status = authority.status;
+            info.hold_reason = authority.reason;
+        }
+    }
     out = info;
 }
 
@@ -529,7 +541,7 @@ ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
     if (!kernel->work.tasks.find(task_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    write_task_info(kernel->work.tasks.at(index), *out_info);
+    write_task_info(*kernel, index, *out_info);
     return AYNI_OK;
 }
 
@@ -662,6 +674,8 @@ ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal
         info.transition_id = record.stamp.transition_id;
         info.commit_seq = record.stamp.commit_seq;
         info.requirement_count = record.count;
+        info.binding_commit_seq = record.binding.established_seq;
+        info.parent_binding_commit_seq = record.binding.parent.commit_seq;
         for (uint32_t at = 0; at < record.count; ++at) {
             if (kernel->work
                     .check_requirement(record.requirements[at], now, kernel->log.durable_seq(),
@@ -735,6 +749,77 @@ ayni_status_t ayni_get_goal_requirement_field(const ayni_kernel_t *kernel, uint6
     if (scope != AYNI_OK) {
         return scope;
     }
+    *out_info = info;
+    return AYNI_OK;
+}
+
+// Task metadata is a separate admission snapshot; the immutable ceiling is
+// still owned by its Goal. Publish one complete caller-owned output on success.
+ayni_status_t ayni_get_task_authority(const ayni_kernel_t *kernel, uint64_t task_id,
+                                      ayni_task_authority_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto size = check_size(*out_info);
+    if (size != AYNI_OK) {
+        return size;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.tasks.find(task_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto &task = kernel->work.tasks.at(index);
+    ayni_task_authority_info_v1 info{};
+    info.struct_size = sizeof(info);
+    info.task_id = task_id;
+    info.goal_id = task.goal_id;
+    info.effective_reason =
+        kernel->work
+            .check_task_authority(index, kernel->host.monotonic_now_us(kernel->host.ctx),
+                                  kernel->log.durable_seq())
+            .reason;
+    ayni::work::TaskAuthorityRecord record{};
+    if (kernel->work.task_authority.read(task.slot, task_id, record)) {
+        info.phase = static_cast<ayni_task_authority_phase_t>(record.phase);
+        info.binding_commit_seq = record.ceiling.commit_seq;
+        info.transition_id = record.stamp.transition_id;
+        info.commit_seq = record.stamp.commit_seq;
+        info.requirement_count = record.count;
+    }
+    *out_info = info;
+    return AYNI_OK;
+}
+
+// Copy one retained selection after all fallible checks, preserving the
+// caller's entire output on failure and exposing no borrowed storage.
+ayni_status_t ayni_get_task_authority_reference(const ayni_kernel_t *kernel, uint64_t task_id,
+                                                uint32_t at,
+                                                ayni_task_authority_reference_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto size = check_size(*out_info);
+    if (size != AYNI_OK) {
+        return size;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.tasks.find(task_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto &task = kernel->work.tasks.at(index);
+    ayni::work::TaskAuthorityRecord record{};
+    if (!kernel->work.task_authority.read(task.slot, task_id, record) || at >= record.count) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto reference = record.references[at];
+    const ayni_task_authority_reference_v1 info{sizeof(info), reference.revision,
+                                                reference.grant_id, at, 0};
     *out_info = info;
     return AYNI_OK;
 }

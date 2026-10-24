@@ -15,7 +15,9 @@
 #include "kernel/work_journal.h"
 #include "kernel/work_replay.h"
 #include "work/agent/agent_records.h"
+#include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
 
 #include <gtest/gtest.h>
@@ -1230,6 +1232,8 @@ class Model {
           goal_authority_(ayni::work::GoalAuthorityTable::storage_size(
               {capacities.goal_capacity, capacities.goal_requirement_capacity,
                capacities.authority_scope_max_bytes})),
+          task_authority_(ayni::work::TaskAuthorityTable::storage_size(
+              {capacities.task_capacity, capacities.goal_requirement_capacity})),
           work_(capacities, {2, 4}, storage()) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
@@ -1256,7 +1260,8 @@ class Model {
                 commands_.data(),
                 capabilities_.data(),
                 grants_.data(),
-                goal_authority_.data()};
+                goal_authority_.data(),
+                task_authority_.data()};
     }
 
     Block agents_;
@@ -1269,6 +1274,7 @@ class Model {
     Block capabilities_;
     Block grants_;
     Block goal_authority_;
+    Block task_authority_;
     WorkModel work_;
 };
 
@@ -1335,6 +1341,39 @@ std::vector<uint8_t> task_state_record(uint64_t id, uint32_t revision = 1) {
     return body;
 }
 
+// ADR-0038: lifecycle/framing fixtures declare zero needs explicitly. These
+// are fresh in-memory fixtures, not production migration of missing evidence.
+void admit_zero_goal_fixture(WorkModel &model, uint64_t replay_goal_id, uint64_t seq) {
+    uint32_t index = 0;
+    ASSERT_TRUE(model.goals.find(replay_goal_id, index));
+    ayni::work::GoalAuthorityRecord record{};
+    record.goal_id = replay_goal_id;
+    record.stamp = {seq + 100U, seq};
+    record.binding.established_seq = seq;
+    const auto parent = model.goals.at(index).parent_index;
+    if (parent != GoalTable::no_parent) {
+        record.binding.parent = {model.goals.at(parent).goal_id,
+                                 model.goal_authority.at(parent).binding.established_seq};
+    }
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
+}
+
+void admit_zero_task_fixture(WorkReplay &replay, WorkModel &model, uint64_t task_id, uint64_t seq) {
+    uint32_t index = 0;
+    ASSERT_TRUE(model.tasks.find(task_id, index));
+    const auto &task = model.tasks.at(index);
+    ayni::work::TaskAuthorityRecord record{};
+    record.task_id = task_id;
+    record.ceiling = {task.goal_id,
+                      model.goal_authority.at(task.goal_index).binding.established_seq};
+    record.stamp = {seq + 100U, seq};
+    ASSERT_TRUE(ayni::work::valid_task_authority_record(record));
+    std::vector<uint8_t> body(ayni::work::task_authority_record_max(0));
+    ayni::work::write_task_authority_record(record, body.data());
+    ASSERT_EQ(feed(replay, seq, ayni::work::task_authority_record_type, body), RecordUse::applied);
+}
+
 // ADR-0026: a transition that creates a goal writes its GOAL_STATE in the
 // same batch. Without it the log is corrupt: at the next batch's first
 // record, and at the end of the log (complete(), which the kernel turns
@@ -1397,20 +1436,28 @@ TEST(WorkReplay, task_created_without_its_state_is_corrupt) {
 // The states in the same batch complete the creations, and later batches
 // replay on.
 TEST(WorkReplay, state_in_the_same_batch_completes_a_creation) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t task_id = UINT64_C(0x100000008);
     Model model(small_capacities(), true);
     WorkReplay replay(*model);
-    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)), RecordUse::applied);
-    ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
               RecordUse::applied);
-    ASSERT_EQ(feed(replay, 1, ayni::work::task_record_type, task_record(8, 4)), RecordUse::applied);
-    ASSERT_EQ(feed(replay, 1, ayni::work::task_state_record_type, task_state_record(8)),
+    ASSERT_EQ(
+        feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+        RecordUse::applied);
+    admit_zero_goal_fixture(*model, replay_goal_id, 1);
+    ASSERT_EQ(feed(replay, 1, ayni::work::task_record_type, task_record(task_id, replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(feed(replay, 1, ayni::work::task_state_record_type, task_state_record(task_id)),
+              RecordUse::applied);
+    EXPECT_FALSE(replay.complete()); // ADR-0038: state alone is no longer full Task evidence.
+    admit_zero_task_fixture(replay, *model, task_id, 1);
+    EXPECT_TRUE(replay.complete());
+    EXPECT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id, 2)),
               RecordUse::applied);
     EXPECT_TRUE(replay.complete());
-    EXPECT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(8, 2)),
-              RecordUse::applied);
-    EXPECT_TRUE(replay.complete());
-    EXPECT_EQ((*model).tasks.size(), 1U);
-    EXPECT_EQ((*model).tasks.at(0).revision, 2U);
+    EXPECT_EQ(model->tasks.size(), 1U);
+    EXPECT_EQ(model->tasks.at(0).revision, 2U);
 }
 
 // A transition creates at most one goal and one task, so a second creation
@@ -1438,6 +1485,35 @@ TEST(WorkReplay, second_creation_before_the_first_state_is_corrupt) {
     }
 }
 
+// C-STORE-020: a terminal Task still needs its admission before another Task
+// can replace its slot; otherwise the first missing fact could disappear.
+TEST(WorkReplay, task_replacement_cannot_hide_a_pending_admission) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t first_id = UINT64_C(0x100000008);
+    constexpr uint64_t replacement_id = UINT64_C(0x100000009);
+    Model model(small_capacities(), true);
+    WorkReplay replay(*model);
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
+              RecordUse::applied);
+    ASSERT_EQ(
+        feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+        RecordUse::applied);
+    admit_zero_goal_fixture(*model, replay_goal_id, 1);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(first_id, replay_goal_id)),
+              RecordUse::applied);
+    auto ended = created_task(first_id, replay_goal_id);
+    ended.lifecycle = AYNI_TASK_COMPLETED;
+    std::vector<uint8_t> state(ayni::work::task_state_record_size);
+    ayni::work::write_task_state_record(ended, state.data());
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, state), RecordUse::applied);
+    auto replacement = created_task(replacement_id, replay_goal_id);
+    replacement.replaced_task_id = first_id;
+    std::vector<uint8_t> body(ayni::work::task_record_size);
+    ayni::work::write_task_record(replacement, body.data());
+    EXPECT_EQ(feed(replay, 2, ayni::work::task_record_type, body), RecordUse::corrupt);
+    EXPECT_FALSE(replay.complete());
+}
+
 // A goal is created for an instance an earlier record started (C-LIFE-020).
 TEST(WorkReplay, goal_of_an_instance_no_record_started_is_corrupt) {
     Model model(small_capacities());
@@ -1449,17 +1525,23 @@ TEST(WorkReplay, goal_of_an_instance_no_record_started_is_corrupt) {
 // decision 5), so a log that ends a goal and leaves a task of it live is
 // inconsistent, which the kernel turns into LOG_CORRUPT.
 TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
+    constexpr uint64_t replay_goal_id = UINT64_C(0x100000004);
+    constexpr uint64_t task_id = UINT64_C(0x100000008);
     Model model(small_capacities(), true);
     WorkReplay replay(*model);
-    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)), RecordUse::applied);
-    ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+    ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(replay_goal_id)),
               RecordUse::applied);
-    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(8, 4)), RecordUse::applied);
-    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(8)),
+    ASSERT_EQ(
+        feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(replay_goal_id)),
+        RecordUse::applied);
+    admit_zero_goal_fixture(*model, replay_goal_id, 1);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_record_type, task_record(task_id, replay_goal_id)),
               RecordUse::applied);
+    ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id)),
+              RecordUse::applied);
+    admit_zero_task_fixture(replay, *model, task_id, 2);
     EXPECT_TRUE(replay.consistent());
-
-    Goal cancelled = created_goal(4);
+    Goal cancelled = created_goal(replay_goal_id);
     cancelled.lifecycle = AYNI_GOAL_CANCELLED;
     cancelled.revision = 2;
     cancelled.cancel_revision = 2;
@@ -1468,9 +1550,7 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
     EXPECT_TRUE(replay.complete());
     EXPECT_FALSE(replay.consistent());
-
-    // The same transition ending the task as well leaves it consistent.
-    Task cancelled_task = created_task(8, 0, 2);
+    Task cancelled_task = created_task(task_id, 0, 2);
     cancelled_task.lifecycle = AYNI_TASK_CANCELLED;
     cancelled_task.cancel_revision = 2;
     std::vector<uint8_t> task_body(ayni::work::task_state_record_size);
@@ -1486,20 +1566,25 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
     {
         Model model(small_capacities(), true);
         WorkReplay replay(*model);
-        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(UINT64_C(0x100000004))),
                   RecordUse::applied);
-        ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type,
+                       goal_state_record(UINT64_C(0x100000004))),
                   RecordUse::applied);
-        Goal child = created_goal(5);
-        child.parent_goal_id = 4;
+        admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
+        Goal child = created_goal(UINT64_C(0x100000005));
+        child.parent_goal_id = UINT64_C(0x100000004);
         child.depth = 1;
         std::vector<uint8_t> child_body(ayni::work::goal_record_size(child));
         ayni::work::write_goal_record(child, {nullptr, 0}, child_body.data());
         ASSERT_EQ(feed(replay, 2, ayni::work::goal_record_type, child_body), RecordUse::applied);
-        ASSERT_EQ(feed(replay, 2, ayni::work::goal_state_record_type, goal_state_record(5)),
+        ASSERT_EQ(feed(replay, 2, ayni::work::goal_state_record_type,
+                       goal_state_record(UINT64_C(0x100000005))),
                   RecordUse::applied);
+        admit_zero_goal_fixture(*model, UINT64_C(0x100000005), 2);
+        admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
         EXPECT_TRUE(replay.consistent());
-        Goal cancelled = created_goal(4);
+        Goal cancelled = created_goal(UINT64_C(0x100000004));
         cancelled.lifecycle = AYNI_GOAL_CANCELLED;
         cancelled.revision = 2;
         cancelled.cancel_revision = 2;
@@ -1511,15 +1596,31 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
     {
         Model model(small_capacities(), true);
         WorkReplay replay(*model);
-        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(4)),
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_record_type, goal_record(UINT64_C(0x100000004))),
                   RecordUse::applied);
-        ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type, goal_state_record(4)),
+        ASSERT_EQ(feed(replay, 1, ayni::work::goal_state_record_type,
+                       goal_state_record(UINT64_C(0x100000004))),
                   RecordUse::applied);
+        admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
         EXPECT_TRUE(replay.consistent());
         ASSERT_EQ((*model).agents.restore(owner_agent, owner, 2, AYNI_AGENT_STOPPED, {102, 2}),
                   AgentTable::Restore::restored);
         EXPECT_FALSE(replay.consistent());
     }
+}
+
+constexpr uint64_t journal_id_prefix = UINT64_C(0x100000100);
+uint64_t journal_id(uint64_t value) {
+    return journal_id_prefix + value;
+}
+
+void admit_journal_goal(WorkModel &work, uint32_t index, TransitionStamp stamp) {
+    ayni::work::GoalAuthorityRecord record{};
+    record.goal_id = work.goals.at(index).goal_id;
+    record.stamp = stamp;
+    record.binding.established_seq = stamp.commit_seq;
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_EQ(work.goal_authority.install_validated(index, record), AYNI_OK);
 }
 
 constexpr TransitionStamp everything{110, 9};
@@ -1537,15 +1638,19 @@ void change_everything(WorkModel &work) {
     work.ids.start(1);
     uint32_t index = 0;
     for (const uint64_t id : {1U, 2U, 3U}) {
-        ASSERT_NE(work.goals.insert(new_goal(), id, stamp(id), index),
+        ASSERT_NE(work.goals.insert(new_goal(), journal_id(id), stamp(id), index),
                   GoalTable::Placement::refused);
+        admit_journal_goal(work, index, stamp(id));
     }
-    ASSERT_TRUE(work.tasks.insert({1, owner, 0, 0, 1, 1}, 11, stamp(4)));
-    ASSERT_TRUE(work.tasks.insert({1, owner, 0, 0, 1, 1}, 12, stamp(5)));
+    ASSERT_TRUE(work.tasks.insert({journal_id(1), owner, 0, 0, 1, 1}, journal_id(11), stamp(4)));
+    ASSERT_TRUE(work.tasks.insert({journal_id(1), owner, 0, 0, 1, 1}, journal_id(12), stamp(5)));
+
+    ASSERT_TRUE(work.inherit_task_authority(journal_id(11), stamp(4)));
+    ASSERT_TRUE(work.inherit_task_authority(journal_id(12), stamp(5)));
 
     work.agents.start_all(work.ids, everything);
     for (const uint64_t id : {1U, 2U, 3U}) {
-        ASSERT_TRUE(work.goals.find(id, index));
+        ASSERT_TRUE(work.goals.find(journal_id(id), index));
         work.goals.apply(index, GoalChange::pause, everything);
     }
     const std::vector<uint8_t> parameters(16, 0x5A);
@@ -1553,18 +1658,22 @@ void change_everything(WorkModel &work) {
                                {parameters.data(), static_cast<uint32_t>(parameters.size())});
     largest.goal_type_id = catalog_id(long_id);
     largest.trigger_source = catalog_id(long_id);
-    ASSERT_EQ(work.goals.insert(largest, 4, everything, index), GoalTable::Placement::new_place);
+    ASSERT_EQ(work.goals.insert(largest, journal_id(4), everything, index),
+              GoalTable::Placement::new_place);
+    admit_journal_goal(work, index, everything);
 
-    ASSERT_TRUE(work.tasks.find(11, index));
+    ASSERT_TRUE(work.tasks.find(journal_id(11), index));
     work.tasks.apply(index, TaskChange::cancel, everything);
-    ASSERT_TRUE(work.tasks.find(12, index));
+    ASSERT_TRUE(work.tasks.find(journal_id(12), index));
     ASSERT_TRUE(work.tasks.add_step(index, key(long_id), everything));
     ASSERT_TRUE(work.tasks.add_step(index, key("zyxwvutsrqponmlkjihgfedcba.43210"), everything));
     const std::vector<uint8_t> state(8, 0xC3);
     work.tasks.set_checkpoint(index, catalog_id(long_id), 1,
                               {state.data(), static_cast<uint32_t>(state.size())}, everything);
     work.tasks.progress(index, everything);
-    ASSERT_TRUE(work.tasks.insert({4, owner, 0, 3, 1, 1}, 13, everything));
+    ASSERT_TRUE(work.tasks.insert({journal_id(4), owner, 0, 3, 1, 1}, journal_id(13), everything));
+
+    ASSERT_TRUE(work.inherit_task_authority(journal_id(13), everything));
 
     ASSERT_TRUE(work.commands.has_row(principal));
     work.commands.insert({principal,
@@ -1572,7 +1681,7 @@ void change_everything(WorkModel &work) {
                           0xD1,
                           everything.commit_seq,
                           AYNI_INTENT_GOAL_CREATE,
-                          {0, 4, 1, AYNI_OBJECT_GOAL}});
+                          {0, journal_id(4), 1, AYNI_OBJECT_GOAL}});
 }
 
 // The records of an encoded batch, in order.
@@ -1633,23 +1742,33 @@ TEST(WorkJournal, transition_writes_its_records_in_replay_order) {
         {ayni::work::instance_record_type, 100},
         {ayni::work::instance_record_type, 200},
         {ayni::work::instance_record_type, 300},
-        {ayni::work::goal_record_type, 4},
-        {ayni::work::goal_state_record_type, 1},
-        {ayni::work::goal_state_record_type, 2},
-        {ayni::work::goal_state_record_type, 3},
-        {ayni::work::goal_state_record_type, 4},
-        {ayni::work::task_record_type, 13},
-        {ayni::work::task_steps_record_type, 12},
-        {ayni::work::task_checkpoint_record_type, 12},
-        {ayni::work::task_state_record_type, 11},
-        {ayni::work::task_state_record_type, 12},
-        {ayni::work::task_state_record_type, 13},
+        {ayni::work::goal_record_type, journal_id(4)},
+        {ayni::work::goal_state_record_type, journal_id(1)},
+        {ayni::work::goal_state_record_type, journal_id(2)},
+        {ayni::work::goal_state_record_type, journal_id(3)},
+        {ayni::work::goal_state_record_type, journal_id(4)},
+        {ayni::work::goal_authority_record_type, journal_id(4)},
+        {ayni::work::task_record_type, journal_id(13)},
+        {ayni::work::task_steps_record_type, journal_id(12)},
+        {ayni::work::task_checkpoint_record_type, journal_id(12)},
+        {ayni::work::task_state_record_type, journal_id(11)},
+        {ayni::work::task_state_record_type, journal_id(12)},
+        {ayni::work::task_state_record_type, journal_id(13)},
+        {ayni::work::task_authority_record_type, journal_id(13)},
         {ayni::kernel::command_record_type, principal},
     };
     ASSERT_EQ(encoded.headers.size(), sizeof(expected) / sizeof(expected[0]));
     for (std::size_t record = 0; record < encoded.headers.size(); ++record) {
         EXPECT_EQ(encoded.headers[record].type, expected[record].type) << record;
-        EXPECT_EQ(encoded.headers[record].version, 1U) << record;
+        EXPECT_EQ(encoded.headers[record].version,
+                  expected[record].type == ayni::work::goal_record_type
+                      ? ayni::work::goal_authority_state_record_version
+                  : expected[record].type == ayni::work::goal_state_record_type
+                      ? ayni::work::goal_state_with_authority_record_version
+                  : expected[record].type == ayni::work::goal_authority_record_type
+                      ? ayni::work::goal_authority_record_version
+                      : 1U)
+            << record;
         EXPECT_EQ(encoded.headers[record].flags, record_required) << record;
         EXPECT_EQ(id_in(encoded.bodies[record]), expected[record].id) << record;
     }
@@ -1669,14 +1788,14 @@ TEST(WorkJournal, transition_writes_only_what_it_changed) {
     ASSERT_FALSE(testing::Test::HasFatalFailure());
     const TransitionStamp later{111, 10};
     uint32_t index = 0;
-    ASSERT_TRUE((*model).goals.find(4, index));
+    ASSERT_TRUE((*model).goals.find(journal_id(4), index));
     (*model).goals.apply(index, GoalChange::pause, later);
     const std::size_t capacity = ayni::kernel::transition_batch_max(small_capacities());
 
     const Encoded paused = decode(encode(*model, later, capacity));
     ASSERT_EQ(paused.headers.size(), 1U);
     EXPECT_EQ(paused.headers[0].type, ayni::work::goal_state_record_type);
-    EXPECT_EQ(id_in(paused.bodies[0]), 4U);
+    EXPECT_EQ(id_in(paused.bodies[0]), journal_id(4));
 
     const Encoded unchanged = decode(encode(*model, {112, 11}, capacity));
     EXPECT_EQ(unchanged.batch.record_count, 0U);

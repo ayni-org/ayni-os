@@ -9,6 +9,7 @@
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
 
 namespace ayni::kernel {
@@ -35,7 +36,8 @@ class Encoder {
     // follow replay order, with the command mapping last.
     bool encode() {
         return owner_binding() && instances() && revocation() && grants() &&
-               revocation_progress() && goals() && goal_authority() && tasks() && command();
+               revocation_progress() && goals() && goal_authority() && tasks() &&
+               task_authority() && command();
     }
 
   private:
@@ -256,6 +258,28 @@ class Encoder {
         return ok_;
     }
 
+    bool task_authority() {
+        for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
+            const auto &task = model_.tasks.at(index);
+            work::TaskAuthorityRecord record{};
+            if (!model_.task_authority.read(task.slot, task.task_id, record)) {
+                return false; // Every retained Task in schema 2 has explicit admission.
+            }
+            if (record.stamp.commit_seq != stamp_.commit_seq) {
+                continue;
+            }
+            if (record.stamp.transition_id != stamp_.transition_id) {
+                return false;
+            }
+            auto *at = body(work::task_authority_record_type, work::task_authority_record_version,
+                            work::task_authority_record_max(record.count));
+            if (at != nullptr) {
+                work::write_task_authority_record(record, at);
+            }
+        }
+        return ok_;
+    }
+
     bool command() {
         const CommandMapping *mapping = model_.commands.mapped_in(stamp_.commit_seq);
         if (mapping == nullptr) {
@@ -299,6 +323,8 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += record_bytes(work::task_checkpoint_record_fixed_size + id_max +
                          capacities.task_checkpoint_max_bytes);
     size += capacities.task_capacity * record_bytes(work::task_state_record_size);
+    size += capacities.task_capacity *
+            record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));
     // Reserve all authority records conservatively, including the bounded
     // startup expiry sweep. This avoids a second admission budget per kind.
     const uint32_t batch_grants = capacities.goal_requirement_capacity < capacities.grant_capacity

@@ -22,6 +22,51 @@ bool matches_requirement(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1
 
 } // namespace
 
+// Initial creation and approval establish one exact generation. Ancestor
+// facts may now be terminal, but must have admitted authority at that sequence.
+bool WorkReplay::matches_goal_binding(uint32_t index, const work::GoalAuthorityRecord &record,
+                                      uint64_t admission_seq) const {
+    if (record.binding.established_seq != admission_seq || record.binding.input.incarnation != 0U ||
+        record.binding.input.through != 0U) {
+        return false;
+    }
+    auto expected = record.binding.parent;
+    const bool matches =
+        model_.goals.visit_lineage(model_.goals.at(index).parent_index, [&](uint32_t at) {
+            const auto &parent = model_.goals.at(at);
+            work::GoalAuthorityRecord authority{};
+            if (!model_.goal_authority.read(at, parent.goal_id, authority) ||
+                expected.goal_id != parent.goal_id ||
+                expected.commit_seq != authority.binding.established_seq ||
+                authority.phase == work::GoalAuthorityPhase::proposed ||
+                (authority.phase == work::GoalAuthorityPhase::paused &&
+                 authority.stamp.commit_seq <= admission_seq) ||
+                (!work::GoalTable::is_live(parent.lifecycle) &&
+                 parent.commit_seq <= admission_seq)) {
+                return false;
+            }
+            for (uint32_t requirement = 0; requirement < authority.count; ++requirement) {
+                uint32_t grant = 0;
+                if (!model_.grants.find(authority.requirements[requirement].dependency.grant_id,
+                                        grant)) {
+                    // Terminal work releases historical Grant rows only after its
+                    // own terminal transition is durable. Such a later terminal
+                    // ancestor can retain a child's earlier approval (C-STORE-018).
+                    // Fresh journal admission cannot observe a future terminal row.
+                    if (work::GoalTable::is_live(parent.lifecycle) ||
+                        parent.commit_seq <= admission_seq) {
+                        return false;
+                    }
+                } else if (!model_.grants.active_at(grant, admission_seq)) {
+                    return false;
+                }
+            }
+            expected = authority.binding.parent;
+            return true;
+        });
+    return matches && expected.goal_id == 0U && expected.commit_seq == 0U;
+}
+
 // Capture the original proposal before any approval record changes it. New
 // Grant bodies must each match a missing item; metadata later proves a bijection.
 bool WorkReplay::pair_approval_grant(const authority::GrantRecord &record,
@@ -101,6 +146,13 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
                           record.phase != original.phase)) {
             return false;
         }
+        if (existed && (record.binding.established_seq != original.binding.established_seq ||
+                        record.binding.parent.goal_id != original.binding.parent.goal_id ||
+                        record.binding.parent.commit_seq != original.binding.parent.commit_seq ||
+                        record.binding.input.incarnation != original.binding.input.incarnation ||
+                        record.binding.input.through != original.binding.input.through)) {
+            return false;
+        }
         // E has no reference replacement command. Autonomous pauses preserve
         // every selected or absent identity; F must add its own paired proof.
         for (uint32_t at = 0; existed && at < original.count && at < record.count; ++at) {
@@ -113,7 +165,8 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
         return true;
     }
     auto &pair = *pairing_.approval;
-    if (!approving || index != pair.goal_index || pair.stage != ApprovalPair::Stage::state ||
+    if (!matches_goal_binding(index, record, record.stamp.commit_seq) || !approving ||
+        index != pair.goal_index || pair.stage != ApprovalPair::Stage::state ||
         record.count != original.count) {
         return false;
     }
@@ -191,6 +244,7 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping,
         !matches_goal_creation(request.approval.original, goal, model_.goals.parameters(index)) ||
         !model_.goal_authority.read(index, goal.goal_id, record) ||
         record.phase == work::GoalAuthorityPhase::proposed ||
+        !matches_goal_binding(index, record, mapping.commit_seq) ||
         record.stamp.commit_seq < mapping.commit_seq ||
         (request.approval.missing_mask >> record.count) != 0U) {
         return false;

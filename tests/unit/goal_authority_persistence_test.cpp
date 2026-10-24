@@ -11,6 +11,7 @@
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/task/task_authority_records.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>
@@ -169,6 +170,7 @@ class Fixture {
         GoalAuthorityRecord record{};
         record.goal_id = goal_id;
         record.stamp = {goal.created_transition_id, goal.commit_seq};
+        record.binding = model.goal_authority.at(goal_index(goal_id)).binding;
         if (grant_id != 0U) {
             uint32_t index = 0;
             EXPECT_TRUE(model.grants.find(grant_id, index));
@@ -289,24 +291,11 @@ Record &authority_record(std::vector<Record> &records) {
     return *found;
 }
 
-// ADR-0037 decisions 7/8: explicit empty metadata survives real boot and is
-// distinct from legacy absence; E2a intentionally retains the recovery hold.
-TEST(GoalAuthorityPersistence, journal_round_trip_preserves_explicit_zero_and_legacy_absence) {
+// ADR-0038 decision 13: schema 2 retains explicit empty evidence, while
+// missing evidence is corruption even if inner Goal envelopes look historical.
+TEST(GoalAuthorityPersistence, journal_round_trip_preserves_zero_and_rejects_missing_evidence) {
     Fixture source;
     source.run();
-    const auto legacy = source.goal();
-    // White-box historical image: strip metadata and downgrade both envelopes.
-    auto old = decode(source.work.node().sim().durable_storage().log.back());
-    old.records.erase(std::remove_if(old.records.begin(), old.records.end(),
-                                     [](auto &entry) {
-                                         if (entry.header.type == goal_record_type ||
-                                             entry.header.type == goal_state_record_type) {
-                                             entry.header.version = goal_record_version;
-                                         }
-                                         return entry.header.type == goal_authority_record_type;
-                                     }),
-                      old.records.end());
-    source.work.node().sim().durable_storage().log.back() = encode(old);
     const auto explicit_zero = source.goal();
     source.attach(explicit_zero);
     Fixture restored;
@@ -314,9 +303,26 @@ TEST(GoalAuthorityPersistence, journal_round_trip_preserves_explicit_zero_and_le
     restored.run();
     ASSERT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(restored.saved(explicit_zero).count, 0U);
-    EXPECT_FALSE(
-        restored.work.kernel()->work.goal_authority.contains(restored.goal_index(legacy), legacy));
     EXPECT_EQ(restored.work.goal(explicit_zero).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+
+    // White-box CRC-valid corruption: remove the evidence and downgrade the
+    // inner envelopes. This does not make a schema 2 batch a supported legacy image.
+    auto missing = decode(source.work.node().sim().durable_storage().log.back());
+    missing.records.erase(std::remove_if(missing.records.begin(), missing.records.end(),
+                                         [](auto &entry) {
+                                             if (entry.header.type == goal_record_type ||
+                                                 entry.header.type == goal_state_record_type) {
+                                                 entry.header.version = goal_record_version;
+                                             }
+                                             return entry.header.type == goal_authority_record_type;
+                                         }),
+                          missing.records.end());
+    source.work.node().sim().durable_storage().log.back() = encode(missing);
+    Fixture rejected;
+    rejected.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    rejected.run();
+    EXPECT_EQ(rejected.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    EXPECT_EQ(rejected.work.kernel()->work.goals.size(), 0U);
 }
 
 // C-STORE-015, ADR-0037 decision 8: a version promise is not satisfied by a
@@ -705,6 +711,7 @@ TEST(GoalAuthorityPersistence,
             ++next.requirements[0].capability_version;
         } else if (change == 1U) {
             next.phase = GoalAuthorityPhase::proposed;
+            next.binding = {};
             next.requirements[0].dependency = {};
         } else if (change == 2U) {
             next.stamp.commit_seq = original.stamp.commit_seq;
@@ -1423,6 +1430,227 @@ TEST(GoalApprovalPersistence, old_dependency_must_have_been_active_at_approval) 
     valid_journal.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
     valid_journal.run();
     EXPECT_EQ(valid_journal.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+}
+
+// ADR-0038 decision 12: a newly established binding cannot claim a Grant
+// whose chain had already ended. White-box corruption keeps valid framing.
+TEST(GoalAuthorityPersistence, initial_binding_rejects_an_already_expired_selection) {
+    Fixture source;
+    source.run();
+    const auto grant = source.create_grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    source.work.node().recover();
+    source.expire();
+    source.attach(source.goal(), grant.result.object.id);
+    Fixture compacted;
+    compacted.run();
+    EXPECT_EQ(import_snapshot(compacted, snapshot(source)), BatchCheck::corrupt);
+    Fixture replayed;
+    replayed.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    replayed.run();
+    EXPECT_EQ(replayed.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+}
+
+// ADR-0038: terminal progress does not waive its inherited admission proof.
+// Each fault retains valid record shape/framing and targets cross-table evidence.
+TEST(TaskAuthorityPersistence, terminal_snapshot_rejects_missing_or_substituted_admission) {
+    Fixture source;
+    source.work.node().config().grant_capacity = 4;
+    source.run();
+    const auto selected = source.create_grant();
+    ASSERT_EQ(selected.status, AYNI_OK);
+    source.work.node().recover();
+    const auto alternative = source.create_grant();
+    ASSERT_EQ(alternative.status, AYNI_OK);
+    source.work.node().recover();
+    const auto goal = source.work.create(WorkNode::create_body(
+        source.work.instance(agent_a), 0, "proposal", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(goal.status, AYNI_OK);
+    source.work.node().step();
+    source.work.node().recover();
+    const auto task = source.work.goal(goal.result.object.id).last_task_id;
+    ASSERT_NE(task, 0U);
+    source.work.node().step();
+    source.work.node().recover();
+    ASSERT_EQ(source.work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    const auto original = snapshot(source);
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        SCOPED_TRACE(fault);
+        auto changed = original;
+        const auto row =
+            std::find_if(changed.records.begin(), changed.records.end(), [](const auto &record) {
+                return record.header.type == task_authority_record_type;
+            });
+        ASSERT_NE(row, changed.records.end());
+        TaskAuthorityRecord record{};
+        ASSERT_TRUE(read_task_authority_record(row->body.data(), row->header.length, record));
+        ASSERT_EQ(record.count, 1U);
+        ASSERT_EQ(record.references[0].grant_id, selected.result.object.id);
+        if (fault == 0U) {
+            --changed.metadata.record_count;
+            changed.metadata.payload_length -= record_header_size + row->header.length;
+            changed.records.erase(row);
+        } else {
+            if (fault == 1U) {
+                record.references[0].grant_id = alternative.result.object.id;
+            } else {
+                --record.ceiling.commit_seq;
+            }
+            ASSERT_TRUE(valid_task_authority_record(record));
+            write_task_authority_record(record, row->body.data());
+        }
+        Fixture restored;
+        restored.work.node().config().grant_capacity = 4;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+    }
+}
+
+// ADR-0038: CRC-valid metadata must prove the actual admission generation,
+// exact parent generation and empty initial input frontier, including compaction.
+TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_snapshot) {
+    Fixture source;
+    source.work.node().config().grant_capacity = 4;
+    source.run();
+    const auto parent = approve_proposal(source);
+    ASSERT_NE(parent, 0U);
+    const auto created = source.work.create(
+        WorkNode::create_body(source.work.instance(agent_a), parent, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto child = created.result.object.id;
+    ASSERT_EQ(source.work.goal(child).lifecycle, AYNI_GOAL_PROPOSED);
+    source.work.node().recover();
+    ApprovalRequest request(source.work.kernel(), child);
+    auto intent =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    intent.command_id = 101;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    source.work.node().recover();
+    const auto journal = source.work.node().sim().durable_storage();
+    const auto compacted = snapshot(source);
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        SCOPED_TRACE(fault);
+        auto forge_binding = [fault, child](std::vector<Record> &records) {
+            for (auto &row : records) {
+                if (row.header.type != goal_authority_record_type) {
+                    continue;
+                }
+                GoalAuthorityRecord record{};
+                if (!read_goal_authority_record(row.body.data(), row.header.length, record)) {
+                    ADD_FAILURE() << "source authority must decode";
+                    return false;
+                }
+                if (record.goal_id != child) {
+                    continue;
+                }
+                if (fault == 0U) {
+                    --record.binding.established_seq;
+                } else if (fault == 1U) {
+                    --record.binding.parent.commit_seq;
+                } else {
+                    record.binding.input.incarnation = 1;
+                }
+                EXPECT_TRUE(valid_goal_authority_record(record));
+                std::vector<uint8_t> bytes(row.body.size());
+                write_goal_authority_record(record, bytes.data());
+                row.body = std::move(bytes);
+                return true;
+            }
+            return false;
+        };
+        auto changed_journal = journal;
+        auto batch = decode(changed_journal.log.back());
+        ASSERT_TRUE(forge_binding(batch.records));
+        changed_journal.log.back() = encode(batch);
+        Fixture replayed;
+        replayed.work.node().config().grant_capacity = 4;
+        replayed.work.node().sim().durable_storage() = changed_journal;
+        replayed.run();
+        EXPECT_EQ(replayed.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+
+        auto changed_snapshot = compacted;
+        ASSERT_TRUE(forge_binding(changed_snapshot.records));
+        Fixture restored;
+        restored.work.node().config().grant_capacity = 4;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed_snapshot), BatchCheck::corrupt);
+    }
+}
+
+// C-STORE-018 / ADR-0038: historical parent admission survives legitimate
+// terminal-reference release and Grant-slot reuse after the child was approved.
+TEST(GoalApprovalPersistence, terminal_parent_history_survives_reclaimed_ancestor_grant) {
+    Fixture source;
+    source.work.node().config().grant_capacity = 3;
+    source.work.node().config().command_capacity = 8;
+    source.proposal_count = 2;
+    source.narrow_first = true;
+    source.run();
+    ayni_authority_value_set_v1 range{};
+    range.struct_size = sizeof(range);
+    range.kind = AYNI_AUTHORITY_I64;
+    range.unit = text("count");
+    range.values.integer = {0, 10};
+    const ayni_scope_field_v1 field{sizeof(field), 1, range};
+    const ayni_scope_v1 narrow{sizeof(narrow), 1, &field};
+    const auto generic = source.create_grant_for(source.work.instance(agent_a), narrow);
+    ASSERT_EQ(generic.status, AYNI_OK);
+    source.work.node().recover();
+    const auto parent = approve_proposal(source);
+    ASSERT_NE(parent, 0U);
+    ASSERT_EQ(source.saved(parent).count, 2U);
+    source.proposal_count = 1;
+    source.narrow_first = false;
+    const auto created = source.work.create(
+        WorkNode::create_body(source.work.instance(agent_a), parent, "proposal"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto child = created.result.object.id;
+    ASSERT_EQ(source.work.goal(child).lifecycle, AYNI_GOAL_PROPOSED);
+    source.work.node().recover();
+    ApprovalRequest request(source.work.kernel(), child);
+    auto approval =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+    approval.command_id = 101;
+    ASSERT_EQ(source.work.submit(approval).status, AYNI_OK);
+    source.work.node().recover();
+    const auto binding = source.saved(child).binding;
+    ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, parent).status, AYNI_OK);
+    source.work.node().recover();
+    ASSERT_EQ(source.work.goal(parent).lifecycle, AYNI_GOAL_CANCELLED);
+    ASSERT_EQ(source.work.goal(child).lifecycle, AYNI_GOAL_CANCELLED);
+    source.expire();
+
+    const ayni_scope_v1 full{sizeof(full), 0, nullptr};
+    const ayni_grant_create_v1 body{sizeof(body),
+                                    1,
+                                    text("device.move"),
+                                    source.work.instance(agent_a),
+                                    0,
+                                    AYNI_GRANT_CURRENT_BOOT,
+                                    0,
+                                    Fixture::duration_us,
+                                    full};
+    auto grant = source.work.intent(AYNI_INTENT_GRANT_CREATE, &body);
+    grant.command_id = 102;
+    ASSERT_EQ(source.work.submit(grant).status, AYNI_OK);
+    source.work.node().recover();
+    uint32_t index = 0;
+    ASSERT_FALSE(source.work.kernel()->work.grants.find(generic.result.object.id, index));
+    const auto compacted = snapshot(source);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.work.node().config().command_capacity = 8;
+    restored.run();
+    ASSERT_EQ(import_snapshot(restored, compacted), BatchCheck::ok);
+    EXPECT_EQ(restored.saved(child).binding.parent.commit_seq, binding.parent.commit_seq);
+
+    Fixture rebooted;
+    rebooted.work.node().config().grant_capacity = 3;
+    rebooted.work.node().config().command_capacity = 8;
+    rebooted.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    rebooted.run();
+    ASSERT_EQ(rebooted.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(rebooted.saved(child).binding.parent.commit_seq, binding.parent.commit_seq);
 }
 
 } // namespace

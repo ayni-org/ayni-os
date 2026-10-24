@@ -78,7 +78,7 @@ struct ayni_kernel {
     ayni::kernel::WorkReplay replay;
     ayni::kernel::BootSequence boot;
     ayni::kernel::CommitLog log;
-    // Compacts the log into a snapshot, or migrates a schema 0 log; while
+    // Compacts the current-schema log into a snapshot; while
     // it runs it holds the storage buffer (ADR-0027).
     ayni::kernel::StorageMaintenance maintenance;
     // What the strategies read beyond the tasks and write the decisions
@@ -127,8 +127,8 @@ struct ayni_kernel {
     void enter_fenced(ayni_restriction_t reason);
     // Takes the outcome of a maintenance run that ended.
     void settle_maintenance();
-    // Starts a compaction, or a migration during recovery.
-    void begin_maintenance(bool migration);
+    // Starts compaction at the durable boundary while RUNNING.
+    void begin_maintenance();
     // Rereads the free medium and starts a compaction that is due.
     void refresh_storage();
     // A maintenance run holds the storage buffer.

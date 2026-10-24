@@ -411,7 +411,8 @@ std::vector<LogCase> bad_logs() {
                      AYNI_RESTRICTION_LOG_UNSUPPORTED});
     {
         StoredBatch newer = boot_epoch_batch(1, 1);
-        ayni::foundation::store_le16(newer.bytes.data() + 4, 2); // unsupported storage_schema
+        ayni::foundation::store_le16(newer.bytes.data() + 4,
+                                     ayni::durability::storage_schema + 1U); // unsupported schema
         reseal_header(newer);
         cases.push_back({"other storage_schema", {newer}, AYNI_RESTRICTION_LOG_UNSUPPORTED});
     }

@@ -31,9 +31,9 @@
 
 普通追加在途时仍可按日志环容量接受后续 transition。首次失败或 `UNKNOWN` 后暂停新 transition，总三次尝试沿用相同批次身份与字节，后两次分别至少等待 10 ms、50 ms；所有持久写入还共享限频（ADR-0027）。重试暂停与快照维护都保留 `RUNNING`：查询仍可用，已映射命令先返回首次结果，其余需要 transition 的意图返回 `BUSY/STORAGE_BACKLOG`；实际可用空间不足时新意图返回 `STORAGE_FAILED/STORAGE_SPACE`。due work、策略决定与本地输入的应用等待放行。维护先排空日志，再分页生成 inactive 快照、读回校验、提交 marker、追加 activation、清理旧日志；不新增生命周期。验证：`KernelFence.normal_append_in_flight_keeps_room_for_later_transitions`、`KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`、`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`。
 
-冷启动先校验、恢复持久状态，再握手取得新 writer epoch；运行中重载先隔离，之后才重读。schema 0 迁移在 activation 切换前保留旧格式源，切换后重新恢复并提交新启动记录；从 inactive 候选或未验证内容不开放准入。恢复结果未知时不靠回滚单个 transition 继续运行。验证：`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`、`StorageMigration.schema_zero_work_migrates_and_the_old_reader_rejects_the_switch`、`StorageMigration.every_early_request_can_lose_power_without_losing_the_legacy_state`。
+冷启动先校验、恢复持久状态，再握手取得新 writer epoch；运行中重载先隔离，之后才重读。当前开发版仅支持 schema 2，旧 0/1 在恢复写入前受限并保留、不迁移（ADR-0038）；从 inactive 候选或未验证内容不开放准入。恢复结果未知时不靠回滚单个 transition 继续运行。验证：`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`、`StorageSchemaBoundary.unsupported_schema_never_installs_a_writer_or_mutates_source`、`StorageSchemaBoundary.unsupported_schema_is_still_rejected_after_a_process_restart`。
 
-ABI 0.16 起，已完整验证的存储所有者与 Host 认证绑定不匹配时，以 `OWNER_BINDING_MISMATCH` 进入 `RESTRICTED`，不写新栅栏或启动记录，保留旧工作供只读诊断。恢复的活 Goal/Task 无授权元数据时以 `LEGACY_UNCONFIRMED` 禁行，不因重新注册目录或普通 resume 自动放行；明确审批随 MA-006 E/F。
+ABI 0.16 起，已完整验证的存储所有者与 Host 认证绑定不匹配时，以 `OWNER_BINDING_MISMATCH` 进入 `RESTRICTED`，不写新栅栏或启动记录，保留旧工作供只读诊断。F2 的 schema 2 要求完整 Goal/Task 授权元数据，缺失按损坏拒绝；当前恢复的已激活工作仍以 `LEGACY_UNCONFIRMED` 禁行，F5 才按完整事实开放正常恢复。重新注册目录或普通 resume 不解除该限制。
 
 各状态下公开函数的返回值（已实现的函数在前，其余为计划；参数错误先于状态检查）：
 

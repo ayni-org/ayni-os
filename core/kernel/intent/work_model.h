@@ -25,6 +25,7 @@
 #include "work/goal/goal_authority.h"
 #include "work/goal/goal_table.h"
 #include "work/propagation.h"
+#include "work/task/task_authority.h"
 #include "work/task/task_table.h"
 
 #include <ayni/ayni.h>
@@ -62,7 +63,9 @@ struct WorkModel {
                                   capacities.grant_delegation_depth_max}),
           goal_authority(storage.goal_authority,
                          {capacities.goal_capacity, capacities.goal_requirement_capacity,
-                          capacities.authority_scope_max_bytes}) {}
+                          capacities.authority_scope_max_bytes}),
+          task_authority(storage.task_authority,
+                         {capacities.task_capacity, capacities.goal_requirement_capacity}) {}
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -88,6 +91,17 @@ struct WorkModel {
     // Includes the owning Goal and its bounded ancestor chain.
     authority::GrantCheck check_goal_authority(uint32_t index, uint64_t now_us,
                                                uint64_t durable_seq) const;
+    // Cross-table identity relation, shared by consumption and recovery proofs.
+    bool matches_task_ceiling(const work::TaskAuthorityRecord &record, uint32_t goal_index) const;
+    // Check the Task's own admitted identities against its immutable Goal ceiling.
+    authority::GrantCheck check_task_authority(uint32_t task_index, uint64_t now_us,
+                                               uint64_t durable_seq) const;
+    // Publish inherited selections after derivation; hand off any replaced Task references.
+    bool inherit_task_authority(uint64_t task_id, foundation::TransitionStamp stamp);
+    // Release a Task's selected references at one accepted transition boundary.
+    void release_task_references(const work::TaskAuthorityRecord &record, uint64_t commit_seq);
+    // Release and clear exact Task metadata before its terminal Goal gives way.
+    void clear_goal_task_authority(uint32_t goal_index, uint64_t commit_seq);
     // Persist authorization pause independently of user pause; settle reached Tasks.
     void pause_goal_authority(uint32_t index);
     // Validates authority once, then the work-owned subjects of that same path.
@@ -126,6 +140,7 @@ struct WorkModel {
     authority::GrantTable grants;
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;
+    work::TaskAuthorityTable task_authority; // Independent historical selections; no Scope copy.
     foundation::IdAllocator ids;
     TransitionClock transitions;
     // True while caller code runs inside one of these functions (a goal
@@ -168,10 +183,12 @@ bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint6
 
 // Does the goals' next due work by now_us (work::find_due_work): expires a
 // goal, derives a task or skips occurrences, each as one transition.
-// Returns false, changing nothing, when none is due. An expiry that would
+// Returns none without mutation when nothing is due. An expiry that would
 // exhaust a revision drops the goal's expiry instead (C-COMMIT-012).
-bool do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
-                 uint64_t durable_seq);
+// Explicitly distinguish no work from a publication invariant failure.
+enum class DueWorkResult { none, applied, internal };
+DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
+                          uint64_t durable_seq);
 // Whether do_due_work(now_us) would do something; out_next_us is then now_us.
 // When it would not, clears due_work_changed and sets out_next_us to when the
 // next due work comes (work::no_time: none will without a change). Scans the

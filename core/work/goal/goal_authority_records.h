@@ -1,4 +1,4 @@
-// Goal authority record layout, contracts/storage/records.md type 17/v1.
+// Goal authority record layout, contracts/storage/records.md type 17/v2.
 // Journal and snapshot share this codec; the surrounding replay validates
 // owning Goal identity, batch pairing and references to retained Grants.
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_AUTHORITY_RECORDS_H
@@ -11,13 +11,14 @@
 namespace ayni::work {
 
 // E updates one Goal ceiling/reference set per transition; F propagation uses
-// separate bounded transitions. records.md type 17/v1 has no multi-Goal batch.
+// separate bounded transitions. records.md type 17/v2 has no multi-Goal batch.
 constexpr uint32_t goal_authority_records_per_transition = 1;
 constexpr uint16_t goal_authority_record_type = 17;
-constexpr uint16_t goal_authority_record_version = 1;
-// ID, transition, commit, phase and count; each requirement adds version,
-// three byte-string lengths, Grant ID and selected revision (records.md).
-constexpr uint32_t goal_authority_record_fixed_size = 32;
+constexpr uint16_t goal_authority_record_version = 2;
+// The original 32-byte identity/stamp/phase/count prefix is followed by five
+// u64 binding/frontier words. Each requirement adds version, three byte-string
+// lengths, Grant ID and selected revision (records.md type 17/v2).
+constexpr uint32_t goal_authority_record_fixed_size = 72;
 constexpr uint32_t goal_requirement_record_fixed_size = 28;
 
 // Complete record bounds, using configured requirements and per-region bytes.

@@ -209,6 +209,14 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     }
     authority.goal_id = goal_id;
     authority.stamp = stamp;
+    if (authority.phase != work::GoalAuthorityPhase::proposed) {
+        authority.binding.established_seq = stamp.commit_seq;
+        const auto parent = model.goals.at(index).parent_index;
+        if (parent != work::GoalTable::no_parent) {
+            authority.binding.parent = {model.goals.at(parent).goal_id,
+                                        model.goal_authority.at(parent).binding.established_seq};
+        }
+    }
     // stage() already checked configured capacity and normalized each operand.
     if (model.goal_authority.install_validated(index, authority) != AYNI_OK) {
         return AYNI_INTERNAL;
