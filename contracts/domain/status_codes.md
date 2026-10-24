@@ -103,6 +103,9 @@
 | 64 | `AYNI_REASON_GOAL_AUTHORITY_PARENT` | `DENIED` | 子 Goal 超出原父需求上限；Since 0.21 |
 | 65 | `AYNI_REASON_GRANT_GOAL` | `DENIED` | Grant 绑定了其他、已结束或不存在的 Goal；Since 0.22 |
 | 66 | `AYNI_REASON_GOAL_APPROVAL_CHANGED` | `DENIED` | 批准的完整创建回显或原缺项集合与待批 Goal 不同；Since 0.23 |
+| 67 | `AYNI_REASON_GOAL_REAUTHORIZATION_CHANGED` | `DENIED` | 重新授权的完整原创建回显与保留 Goal 不同；Since 0.26 |
+| 68 | `AYNI_REASON_GOAL_AUTHORITY_REVISION` | `REVISION_CONFLICT` | 预期的授权事实提交序号已改变；Since 0.26 |
+| 69 | `AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE` | `BUSY` | 新绑定尚未持久，暂不开放派生或策略消费；Since 0.26 |
 
 以上41–55自ABI0.18发布，56–59自ABI0.19发布；C/D实施与验证状态分别见ADR-0030/0031。表格记录状态归属，不表示全部调用路径已经验证。
 

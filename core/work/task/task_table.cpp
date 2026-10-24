@@ -398,6 +398,20 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
     return Restore::restored;
 }
 
+void TaskTable::reauthorize(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    const bool was_held = still_held(task);
+    ++task.revision;
+    task.commit_seq = stamp.commit_seq;
+    if (task.recovery_hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED) {
+        task.recovery_hold_status = AYNI_OK;
+        task.recovery_hold_reason = AYNI_REASON_NONE;
+    }
+    if (was_held && !still_held(task)) {
+        --held_count_;
+    }
+}
+
 TaskTable::Restore TaskTable::restore_authority_state(uint32_t index, const TaskState &state,
                                                       foundation::TransitionStamp stamp) {
     const auto &task = tasks_[index];
@@ -408,6 +422,20 @@ TaskTable::Restore TaskTable::restore_authority_state(uint32_t index, const Task
         return Restore::corrupt;
     }
     authority_changed(index, stamp);
+    return Restore::restored;
+}
+
+TaskTable::Restore TaskTable::restore_reauthorization_state(uint32_t index, const TaskState &state,
+                                                            foundation::TransitionStamp stamp) {
+    const auto &task = tasks_[index];
+    if (!is_live(task.lifecycle) || at_largest_revision(task) ||
+        stamp.commit_seq <= task.commit_seq || state.revision != task.revision + 1U ||
+        state.lifecycle != task.lifecycle || state.cancel_revision != task.cancel_revision ||
+        state.hold_status != task.hold_status || state.hold_reason != task.hold_reason ||
+        state.step_count != task.step_count) {
+        return Restore::corrupt;
+    }
+    reauthorize(index, stamp);
     return Restore::restored;
 }
 

@@ -35,6 +35,8 @@ E 已交付 Goal 需求、待批与原子批准；Task 尚无独立授权事实�
 
 18. **F4 按完整 diff 拆为两份。** 完整生产改动实际超过决策 1 的约 1,500 行门槛，依次交付内部结果事实/持久证明、完整公开重新授权事务。前置提取共享原创建 echo，CommandTable 同槽保留输入与授权结果，批准 journal/snapshot 改用 REQUIRED 9/v5；历史结果独立于当前 Goal 引用，仍受创建 stamp、覆盖边界及 ACTIVE revision1 约束。Goal 快照 3/v4 保存不可变完整创建 pair；旧快照/批准格式明确拒绝，不猜测历史事实。生产 arena 和批次预算共用配置上界，Grant 请求不叠加批准结果空间。前置不新增 ABI 或公开恢复入口；后续将入口与全部拒绝/重放证明同份交付，不再按局部函数分阶段。
 
+19. **完整公开重新授权及新绑定消费屏障。** ABI 0.26 的 GOAL_REAUTHORIZE=12 沿现有入口，以原创建完整回显、非零 command 和双 CAS 原子更新 Goal/直属活 Task 的绑定，保留其他 hold 与终态历史，子 Goal 仍需独立命令。已有有效持久 Grant 按专属优先及同类 ID 选择，不拼接或新发权限。窗口先查原命令；当前持久 owner 的 MANAGEMENT 在重试前也须核对。4/v5、17/v4、6/v3 加 18/v1、9/v5 及请求 footer 19/v1 形成封闭 journal 批次，snapshot 保留独立历史结果；新恢复绑定未持久时，派生和策略均等待而不制造重复工作。Goal.created pair 区分初次工作内部进度与后续批准/重新授权的新绑定屏障。重放逐记录借用 BootSequence 的前置 boot 上界，后来的合法事务不得掩盖未来输入实例；自动重载保留原 ingress 身份，比较采用不超过上界。唯一存储、共享 codec 和原提交协调不变，普通重启统一 hold 留给 F5 最终验收。
+
 ## 后果
 
 - work 的 goal/task 向 work/authority 共享事实模块单向依赖；它隔离共同身份/绑定不变量，不新增 authority→work 依赖。共享引用的历史字段注释移至唯一属主，Goal 保留有说明的别名。

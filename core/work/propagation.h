@@ -32,6 +32,8 @@ struct WorkTables {
     AgentTable &agents;
     // Optional for standalone work-table users; Kernel always supplies its owner.
     const GoalAuthorityTable *authority = nullptr;
+    // Borrowed durable-prefix sample; max means all supplied facts are durable.
+    uint64_t durable_seq = UINT64_MAX;
 };
 
 // Whether a task the change would reach is at the largest revision. The goal

@@ -30,7 +30,10 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
             index == after.goal_index ? after.goal_lifecycle : tables.goals.at(index).lifecycle;
         if (lifecycle != AYNI_GOAL_ACTIVE || GoalTable::is_held(tables.goals.at(index)) ||
             (tables.authority != nullptr &&
-             !tables.authority->authorized(index, tables.goals.at(index).goal_id))) {
+             (!tables.authority->authorized(index, tables.goals.at(index).goal_id) ||
+              replacement_binding_pending(tables.authority->at(index).binding,
+                                          tables.goals.at(index).created.commit_seq,
+                                          tables.durable_seq)))) {
             return false;
         }
         return true;

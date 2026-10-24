@@ -278,3 +278,16 @@ idle 的三个游标全部为零；初始 stamp 两项均零，使用后两项�
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-STORE-021 | 工作授权清理固定 through、单调 after，扫描中新请求保留给下一轮；记录与所属状态同批且有界推进，不丢清理请求 | 新请求扩大当前扫描导致不收敛；结束时丢掉同 frontier 的请求；槽位复用混入新 Goal | `WorkAuthorityCleanup.fixed_frontier_retains_requests_for_a_second_pass`、`WorkAuthorityCleanup.interrupted_scan_keeps_its_frontier_and_later_request`、`WorkAuthorityCleanup.dedicated_grant_ends_and_reclaims_after_goal_slot_reuse`、`WorkAuthorityPersistence.ended_grant_cohort_and_footer_are_one_complete_scan_step`、`WorkAuthorityPersistence.pause_keeps_user_state_and_requires_all_direct_task_facts`；ADR-0038 |
+
+
+## 原子重新授权事实（MA-006 F4）
+
+journal 使用 REQUIRED `GOAL_STATE` 4/v5、`GOAL_AUTHORITY` 17/v4、每个直属活 Task 的 `TASK_STATE` 6/v3 紧接 `TASK_AUTHORITY` 18/v1、`COMMAND_MAPPING` 9/v5，最后为请求清理的 19/v1。Goal 状态保留原用户/触发状态并严格增加一次 revision，只可按触发规则跳过积压；Task 状态保留 lifecycle、hold、步骤数和 checkpoint，严格增加一次 revision；元数据原 domain/Scope/count 不变，建立新代次并同时替换有序引用。一个 transition 只改指定 Goal 的完整直属活 cohort，其他记录不得前后夹带；command 完整回显、原双 CAS 与保存的结果必须精确配对。footer 只允许请求下一轮扫描，不能借此推进已有游标。
+
+重新授权 canonical 固定 84 B 加两个 CatalogId 正文和参数：kind/revision u32、Goal ID/授权事实 CAS u64，再接批准共用的 60 B 原创建 echo；最大 148+goal_parameter_max_bytes，不超过批准输入预算。9/v5 保存本次不可变结果，input incarnation 为正；新引用必须来自此前已持久的 Grant，禁止批准专属根的同批发放例外。Goal 结束后的专属 Grant、父绑定和旧结果各按其事实属主验证，不能用当前引用反推历史命令。4/v5、17/v4、6/v3 仅用于 journal；snapshot 仍写 3/v4、17/v2、6/v1、18/v1 的完整当前事实与独立历史命令结果。
+
+重放每条 Goal 授权事实时，从 BootSequence 借用该记录之前的已持久 boot 上界，要求 input incarnation 不超过该上界；自动重载可保留更早 ingress 实例，不要求等于当前 boot。后来的有效换绑、Goal 回收或 BOOT_EPOCH 不得追认历史中的未来输入实例。活 Task 必须精确匹配当前自身 Goal 的绑定/phase；终态 Task 可保留旧代的合法历史引用，已安全回收的 Grant 不补造记录。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-STORE-022 | 重新授权的 Goal、全直属活 Task、原始双 CAS/回显、不可变结果与请求 footer 构成一个封闭批次；各前缀/重复/错配均拒绝，每条历史恢复边界受当时 boot 限制，快照保留新旧结果而不重建历史 | 合法 CRC 删一项 Task 或命令仍恢复；把清理步夹进请求；后续正常 R2 掩盖 R1 未来输入实例；同批新发 Grant 冒充已有授权 | `GoalReauthorizationPersistence.crc_valid_partner_faults_reject_the_whole_batch`、`GoalReauthorizationPersistence.every_complete_record_prefix_requires_all_partners`、`GoalReauthorizationPersistence.paged_snapshot_keeps_old_approval_and_new_binding`、`GoalReauthorizationPersistence.historical_result_stamp_boot_and_revision_are_bounded`、`GoalReauthorizationPersistence.later_binding_cannot_hide_a_future_journal_input_incarnation`、`GoalReauthorizationPersistence.replacement_cannot_issue_a_same_batch_dedicated_root`、`GoalReauthorization.interrupted_append_recovers_all_or_old_admissions`、`GoalReauthorization.failed_or_unknown_append_preserves_atomic_recovery_and_retry`；ADR-0038 |

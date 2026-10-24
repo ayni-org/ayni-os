@@ -229,16 +229,16 @@ uint32_t missing_requirement_mask(const GoalAuthorityRecord &record) {
     return mask;
 }
 
-void GoalAuthorityTable::approve(
+void GoalAuthorityTable::bind(
     uint32_t goal_index,
     const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
-    foundation::TransitionStamp stamp, BindingReference parent) {
+    foundation::TransitionStamp stamp, BindingReference parent, InputResumeBoundary input) {
     auto &slot = slots_[goal_index];
     for (uint32_t index = 0; index < slot.count; ++index) {
         requirements_[requirement_index(goal_index, index)].dependency = references[index];
     }
     slot.phase = GoalAuthorityPhase::authorized;
-    slot.binding = {stamp.commit_seq, parent, {}};
+    slot.binding = {stamp.commit_seq, parent, input};
     slot.stamp = stamp;
 }
 

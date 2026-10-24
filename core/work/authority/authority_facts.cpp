@@ -29,6 +29,11 @@ bool input_precedes_resume(const InputResumeBoundary &input, const InputResumeBo
            input.through <= resume.through;
 }
 
+bool replacement_binding_pending(const GoalBinding &binding, uint64_t created_seq,
+                                 uint64_t durable_seq) {
+    return binding.established_seq > created_seq && binding.established_seq > durable_seq;
+}
+
 bool valid_goal_binding(const GoalBinding &binding, uint64_t goal_id, uint64_t parent_goal_id,
                         foundation::TransitionStamp stamp) {
     return foundation::is_kernel_id(goal_id) && stamp.transition_id != 0U &&

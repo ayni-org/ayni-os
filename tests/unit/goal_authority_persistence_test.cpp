@@ -5,6 +5,7 @@
 #include "authority/scope/scope.h"
 #include "durability/batch/batch_codec.h"
 #include "goal_approval_request.h"
+#include "goal_reauthorization_request.h"
 #include "kernel/command/command_records.h"
 #include "kernel/work_replay.h"
 #include "kernel/work_snapshot.h"
@@ -2201,6 +2202,222 @@ TEST(WorkAuthorityPersistence, cursor_only_step_rejects_repeated_or_backward_tra
     }
 }
 
+// ADR-0038: prepare a real approved Goal and READY Task, revoke its selected
+// root, then replace it through the public command. No synthetic admission facts.
+uint64_t prepare_reauthorization(Fixture &source) {
+    source.work.node().config().grant_capacity = 3;
+    source.run();
+    const auto created = source.work.create(WorkNode::create_body(
+        source.work.instance(agent_a), 0, "proposal", 1, {}, AYNI_TRIGGER_ONCE));
+    EXPECT_EQ(created.status, AYNI_OK);
+    const auto id = created.result.object.id;
+    source.work.node().recover();
+    ApprovalRequest approval(source.work.kernel(), id);
+    auto approve =
+        source.work.intent(AYNI_INTENT_GOAL_APPROVE, &approval.body, approval.info.revision);
+    approve.command_id = 100;
+    EXPECT_EQ(source.work.submit(approve).status, AYNI_OK);
+    source.work.node().recover();
+    source.work.node().step(1);
+    EXPECT_NE(source.work.goal(id).last_task_id, 0U);
+    source.work.node().recover();
+    const auto selected = source.saved(id).requirements[0].dependency.grant_id;
+    EXPECT_EQ(source.create_grant().status, AYNI_OK);
+    source.work.node().recover();
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, selected};
+    auto control = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    control.command_id = 101;
+    EXPECT_EQ(source.work.submit(control).status, AYNI_OK);
+    for (unsigned round = 0; round < 10; ++round) {
+        source.work.node().step(1);
+        source.work.node().recover();
+    }
+    EXPECT_EQ(source.saved(id).phase, GoalAuthorityPhase::paused);
+    return id;
+}
+
+Submitted reauthorize(Fixture &source, uint64_t id, uint64_t command) {
+    ReauthorizationRequest request(source.work.kernel(), id);
+    auto intent =
+        source.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = command;
+    return source.work.submit(intent);
+}
+
+// ADR-0038: valid CRC cannot hide missing, duplicate, reordered, prefixed or
+// trailing partners; every accepted replacement closes its entire Task cohort.
+TEST(GoalReauthorizationPersistence, crc_valid_partner_faults_reject_the_whole_batch) {
+    Fixture source;
+    const auto id = prepare_reauthorization(source);
+    ASSERT_EQ(reauthorize(source, id, 102).status, AYNI_OK);
+    source.work.node().recover();
+    const auto storage = source.work.node().sim().durable_storage();
+    const auto original = decode(storage.log.back());
+    ASSERT_EQ(original.records.size(), 6U);
+    ASSERT_EQ(original.records.front().header.version, goal_state_reauthorization_record_version);
+    ASSERT_EQ(original.records.back().header.type, authority_cleanup_record_type);
+    for (unsigned fault = 0; fault < original.records.size() + 5U; ++fault) {
+        SCOPED_TRACE(fault);
+        auto batch = original;
+        if (fault < original.records.size()) {
+            batch.records.erase(batch.records.begin() + fault);
+        } else if (fault == original.records.size()) {
+            batch.records.insert(batch.records.begin(), batch.records.front());
+        } else if (fault == original.records.size() + 1U) {
+            batch.records.push_back(batch.records.front());
+        } else if (fault == original.records.size() + 2U) {
+            std::swap(batch.records[2], batch.records[3]);
+        } else if (fault == original.records.size() + 3U) {
+            batch.records.insert(batch.records.begin() + 4, batch.records[2]);
+            batch.records.insert(batch.records.begin() + 5, batch.records[3]);
+        } else {
+            // Only a request belongs in this management footer, never a scan step.
+            AuthorityCleanupRecord cleanup{};
+            auto &footer = batch.records.back();
+            ASSERT_TRUE(
+                read_authority_cleanup_record(footer.body.data(), footer.header.length, cleanup));
+            cleanup.phase = AuthorityScanPhase::idle;
+            cleanup.after_goal_id = 0;
+            cleanup.through_goal_id = 0;
+            cleanup.requested_through = 0;
+            EXPECT_TRUE(valid_authority_cleanup_record(cleanup));
+            write_authority_cleanup_record(cleanup, footer.body.data());
+        }
+        Fixture restored;
+        restored.work.node().config().grant_capacity = 3;
+        restored.work.node().sim().durable_storage() = storage;
+        restored.work.node().sim().durable_storage().log.back() = encode(batch);
+        restored.run();
+        EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(restored.work.kernel()->work.goals.size(), 0U);
+        EXPECT_EQ(restored.work.kernel()->work.tasks.size(), 0U);
+    }
+}
+
+// ADR-0038: all nonempty strict prefixes are well-framed batches with valid
+// CRC; replay must require the omitted command, Task evidence and footer.
+TEST(GoalReauthorizationPersistence, every_complete_record_prefix_requires_all_partners) {
+    Fixture source;
+    const auto id = prepare_reauthorization(source);
+    ASSERT_EQ(reauthorize(source, id, 102).status, AYNI_OK);
+    source.work.node().recover();
+    const auto storage = source.work.node().sim().durable_storage();
+    const auto original = decode(storage.log.back());
+    for (std::size_t count = 1; count < original.records.size(); ++count) {
+        auto batch = original;
+        batch.records.resize(count);
+        Fixture restored;
+        restored.work.node().config().grant_capacity = 3;
+        restored.work.node().sim().durable_storage() = storage;
+        restored.work.node().sim().durable_storage().log.back() = encode(batch);
+        restored.run();
+        EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED) << count;
+    }
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.work.node().sim().durable_storage() = storage;
+    restored.run();
+    ASSERT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(restored.saved(id).binding.established_seq, source.saved(id).binding.established_seq);
+    EXPECT_EQ(restored.work.goal(id).last_task_id, source.work.goal(id).last_task_id);
+}
+
+// ADR-0038: an old approval's immutable result survives a later replacement;
+// paging keeps both the old command evidence and the new Task admission.
+TEST(GoalReauthorizationPersistence, paged_snapshot_keeps_old_approval_and_new_binding) {
+    Fixture source;
+    const auto id = prepare_reauthorization(source);
+    ASSERT_EQ(reauthorize(source, id, 102).status, AYNI_OK);
+    source.work.node().recover();
+    const auto image = snapshot(source, 512);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.run();
+    ASSERT_EQ(import_snapshot(restored, image), BatchCheck::ok);
+    EXPECT_EQ(restored.saved(id).binding.established_seq, source.saved(id).binding.established_seq);
+    EXPECT_EQ(restored.saved(id).requirements[0].dependency.grant_id,
+              source.saved(id).requirements[0].dependency.grant_id);
+    const auto *approval = restored.work.kernel()->work.commands.mapped_in(
+        source.work.kernel()
+            ->work.commands.mapped_in(source.saved(id).binding.established_seq)
+            ->commit_seq);
+    ASSERT_NE(approval, nullptr);
+    EXPECT_EQ(approval->kind, AYNI_INTENT_GOAL_REAUTHORIZE);
+}
+
+// ADR-0038: superseded command results still obey snapshot coverage. Current
+// generations additionally retain their exact establishment transition stamp.
+TEST(GoalReauthorizationPersistence, historical_result_stamp_boot_and_revision_are_bounded) {
+    Fixture source;
+    const auto id = prepare_reauthorization(source);
+    ASSERT_EQ(reauthorize(source, id, 102).status, AYNI_OK);
+    source.work.node().recover();
+    const auto image = snapshot(source);
+    for (unsigned fault = 0; fault < 5; ++fault) {
+        SCOPED_TRACE(fault);
+        auto changed = image;
+        bool altered = false;
+        for (auto &row : changed.records) {
+            if (row.header.type != ayni::kernel::command_record_type ||
+                row.header.version != ayni::kernel::work_authority_command_record_version) {
+                continue;
+            }
+            ayni::kernel::CommandMapping mapping{};
+            uint64_t floor = 0;
+            ayni_bytes_v1 canonical{};
+            ayni_bytes_v1 result_bytes{};
+            constexpr uint32_t tail = sizeof(uint64_t);
+            ASSERT_TRUE(ayni::kernel::read_command_record(row.header.version, row.body.data(),
+                                                          row.header.length - tail, mapping, floor,
+                                                          canonical, &result_bytes));
+            const bool old = mapping.kind == AYNI_INTENT_GOAL_APPROVE;
+            if (old != (fault < 3U)) {
+                continue;
+            }
+            ayni::kernel::WorkAuthorityResult result{};
+            ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
+            if (fault == 0U || fault == 3U) {
+                result.transition_id = image.metadata.max_transition_id + 1U;
+            } else if (fault == 1U) {
+                // Raw byte fault: invalid ACTIVE selection revision, with valid outer CRC.
+                constexpr uint32_t revision_at =
+                    ayni::kernel::work_authority_result_fixed_size + sizeof(uint64_t);
+                ayni::foundation::store_le32(const_cast<uint8_t *>(result_bytes.data) + revision_at,
+                                             123);
+                altered = true;
+                break;
+            } else if (fault == 2U) {
+                // Approval has no input boundary; even an absolute-valid one is impossible.
+                result.binding.input = {image.metadata.boot_epoch + 1U, 0};
+            } else {
+                --result.transition_id;
+            }
+            const std::vector<uint8_t> identity(canonical.data, canonical.data + canonical.size);
+            std::vector<uint8_t> saved(ayni::kernel::work_authority_result_size(result.count));
+            ayni::kernel::write_work_authority_result(result, saved.data());
+            // A malformed approval boundary fails the common shape reader;
+            // other faults remain well-shaped until snapshot/history checks.
+            if (fault == 2U) {
+                std::copy(saved.begin(), saved.end(), const_cast<uint8_t *>(result_bytes.data));
+            } else {
+                auto output = row.body;
+                ASSERT_TRUE(ayni::kernel::write_command_record(
+                    mapping, floor, {identity.data(), static_cast<uint32_t>(identity.size())},
+                    output.data(), row.header.length - tail,
+                    {saved.data(), static_cast<uint32_t>(saved.size())}));
+                row.body = std::move(output);
+            }
+            altered = true;
+            break;
+        }
+        ASSERT_TRUE(altered);
+        Fixture restored;
+        restored.work.node().config().grant_capacity = 3;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+    }
+}
+
 // ADR-0038: ordinary state/metadata records cannot clear an authority deny,
 // even without live Tasks whose phase equality could expose the forgery.
 TEST(GoalAuthorityPersistence, ordinary_metadata_cannot_clear_a_persisted_deny) {
@@ -2357,6 +2574,146 @@ TEST(GoalApprovalPersistence, retained_issued_root_proves_original_result_transi
     }
     ASSERT_TRUE(altered);
     Fixture restored;
+    restored.run();
+    EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
+}
+
+// ADR-0038: a later valid replacement cannot legitimize an earlier resume
+// boundary from a future boot. Both edited records retain a matching valid CRC.
+TEST(GoalReauthorizationPersistence, later_binding_cannot_hide_a_future_journal_input_incarnation) {
+    Fixture source;
+    const auto id = prepare_reauthorization(source);
+    const auto first = reauthorize(source, id, 102);
+    ASSERT_EQ(first.status, AYNI_OK);
+    source.work.node().recover();
+    const auto selected = source.saved(id).requirements[0].dependency.grant_id;
+    ASSERT_EQ(source.create_grant().status, AYNI_OK);
+    source.work.node().recover();
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, selected};
+    auto revoke = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    revoke.command_id = 103;
+    ASSERT_EQ(source.work.submit(revoke).status, AYNI_OK);
+    for (unsigned round = 0; round < 12; ++round) {
+        source.work.node().step(1);
+        source.work.node().recover();
+    }
+    ASSERT_EQ(reauthorize(source, id, 104).status, AYNI_OK);
+    source.work.node().recover();
+    auto image = source.work.node().sim().durable_storage();
+    Fixture control;
+    control.work.node().config().grant_capacity = 3;
+    control.work.node().sim().durable_storage() = image;
+    control.run();
+    ASSERT_EQ(control.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto future = source.work.node().info().boot_epoch + 1U;
+    bool altered = false;
+    for (auto &stored : image.log) {
+        if (stored.commit_seq != first.result.commit_seq) {
+            continue;
+        }
+        auto batch = decode(stored);
+        for (auto &row : batch.records) {
+            if (row.header.type == goal_authority_record_type) {
+                GoalAuthorityRecord record{};
+                ASSERT_TRUE(read_goal_authority_record(row.body.data(), row.header.length, record));
+                record.binding.input.incarnation = future;
+                std::vector<uint8_t> output(row.header.length);
+                write_goal_authority_record(record, output.data());
+                row.body = std::move(output);
+            } else if (row.header.type == ayni::kernel::command_record_type) {
+                ayni::kernel::CommandMapping mapping{};
+                uint64_t floor = 0;
+                ayni_bytes_v1 canonical{};
+                ayni_bytes_v1 result_bytes{};
+                ASSERT_TRUE(ayni::kernel::read_command_record(row.header.version, row.body.data(),
+                                                              row.header.length, mapping, floor,
+                                                              canonical, &result_bytes));
+                ayni::kernel::WorkAuthorityResult result{};
+                ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
+                result.binding.input.incarnation = future;
+                std::vector<uint8_t> output(result_bytes.size);
+                ayni::kernel::write_work_authority_result(result, output.data());
+                std::copy(output.begin(), output.end(), const_cast<uint8_t *>(result_bytes.data));
+            }
+        }
+        stored = encode(batch);
+        altered = true;
+        break;
+    }
+    ASSERT_TRUE(altered);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.work.node().sim().durable_storage() = image;
+    restored.run();
+    EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    EXPECT_EQ(restored.work.node().sim().durable_storage().log.size(), image.log.size());
+}
+
+// ADR-0038: even a retained dedicated root must precede reauthorization.
+// Once approval history leaves the window, current facts still forbid same-batch issuance.
+TEST(GoalReauthorizationPersistence, replacement_cannot_issue_a_same_batch_dedicated_root) {
+    Fixture source;
+    source.narrow_first = true;
+    source.proposal_count = 2;
+    source.work.node().config().grant_capacity = 3;
+    source.work.node().config().command_capacity = 1;
+    source.run();
+    ayni_authority_value_set_v1 range{};
+    range.struct_size = sizeof(range);
+    range.kind = AYNI_AUTHORITY_I64;
+    range.unit = text("count");
+    range.values.integer = {0, 10};
+    const ayni_scope_field_v1 field{sizeof(field), 1, range};
+    const ayni_scope_v1 narrow{sizeof(narrow), 1, &field};
+    const auto generic = source.create_grant_for(source.work.instance(agent_a), narrow);
+    ASSERT_EQ(generic.status, AYNI_OK);
+    source.work.node().recover();
+    const auto id = approve_proposal(source);
+    ASSERT_NE(id, 0U);
+    const auto dedicated = source.saved(id).requirements[1].dependency.grant_id;
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, generic.result.object.id};
+    auto revoke = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    revoke.command_id = 101;
+    ASSERT_EQ(source.work.submit(revoke).status, AYNI_OK);
+    for (unsigned round = 0; round < 12; ++round) {
+        source.work.node().step(1);
+        source.work.node().recover();
+    }
+    ASSERT_EQ(reauthorize(source, id, 102).status, AYNI_OK);
+    source.work.node().recover();
+    ASSERT_EQ(source.saved(id).requirements[0].dependency.grant_id, dedicated);
+    auto image = snapshot(source);
+    Fixture control;
+    control.work.node().config().grant_capacity = 3;
+    control.work.node().config().command_capacity = 1;
+    control.run();
+    ASSERT_EQ(import_snapshot(control, image), BatchCheck::ok);
+    bool altered = false;
+    for (auto &row : image.records) {
+        if (row.header.type != ayni::authority::grant_record_type) {
+            continue;
+        }
+        uint64_t grant_id = 0;
+        ASSERT_TRUE(
+            ayni::authority::read_grant_record_id(row.body.data(), row.header.length, grant_id));
+        if (grant_id != dedicated) {
+            continue;
+        }
+        auto &model = source.work.kernel()->work;
+        uint32_t index = 0;
+        ASSERT_TRUE(model.grants.find(dedicated, index));
+        auto grant = model.grants.at(index);
+        grant.created_stamp = grant.stamp = source.saved(id).stamp;
+        ayni::authority::write_grant_snapshot_record(grant, model.grants.source_domain(index),
+                                                     model.grants.scope(index), row.body.data(),
+                                                     row.header.version);
+        altered = true;
+        break;
+    }
+    ASSERT_TRUE(altered);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 3;
+    restored.work.node().config().command_capacity = 1;
     restored.run();
     EXPECT_EQ(import_snapshot(restored, image), BatchCheck::corrupt);
 }

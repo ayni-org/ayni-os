@@ -844,8 +844,8 @@ durability::BatchCheck WorkSnapshotReader::task_state(const uint8_t *body, uint3
     return check_of(restore);
 }
 
-// Snapshot keeps each Task's independent selections, including terminal
-// Tasks; final consistency still requires the exact retained Goal binding.
+// Live Tasks retain the exact current Goal binding; terminal Tasks can keep
+// an earlier proven generation after explicit replacement (ADR-0038).
 durability::BatchCheck WorkSnapshotReader::task_authority(const uint8_t *body, uint32_t size) {
     work::TaskAuthorityRecord record{};
     if (task_index_ == work::TaskTable::no_index || task_stage_ != TaskReadStage::authority ||
@@ -907,11 +907,15 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
             }
         }
     }
-    if (mapping.kind == AYNI_INTENT_GOAL_APPROVE &&
+    if (is_work_authority_command(mapping.kind) &&
         (foundation::id_boot_epoch(mapping.object.id) > metadata_.boot_epoch ||
-         !WorkReplay(model_).matches_goal_approval(mapping, canonical, result_bytes,
-                                                   metadata_.max_transition_id,
-                                                   metadata_.boot_epoch))) {
+         !(mapping.kind == AYNI_INTENT_GOAL_APPROVE
+               ? WorkReplay(model_).matches_goal_approval(mapping, canonical, result_bytes,
+                                                          metadata_.max_transition_id,
+                                                          metadata_.boot_epoch)
+               : WorkReplay(model_).matches_goal_reauthorization(mapping, canonical, result_bytes,
+                                                                 metadata_.max_transition_id,
+                                                                 metadata_.boot_epoch)))) {
         return durability::BatchCheck::corrupt;
     }
     last_command_seq_ = mapping.commit_seq;

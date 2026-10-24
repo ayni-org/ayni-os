@@ -63,9 +63,10 @@ ayni_add_core_module(kernel
         kernel/command/command_canonical.cpp
         kernel/command/command_approval.cpp
         kernel/command/command_goal_identity.cpp
-        kernel/command/work_authority_result.cpp
+        kernel/command/command_reauthorization.cpp
         kernel/command/command_records.cpp
         kernel/command/command_table.cpp
+        kernel/command/work_authority_result.cpp
         kernel/command/pending_revoke.cpp
         kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
@@ -73,6 +74,7 @@ ayni_add_core_module(kernel
         kernel/ingress/event_queue.cpp
         kernel/intent/authority_intent.cpp
     kernel/intent/goal_approval.cpp
+        kernel/intent/goal_reauthorization.cpp
         kernel/intent_receipt.cpp
         kernel/intent/decision.cpp
         kernel/intent/intent.cpp
@@ -91,6 +93,7 @@ ayni_add_core_module(kernel
         kernel/work_replay.cpp
         kernel/work_cleanup_replay.cpp
         kernel/goal_approval_replay.cpp
+        kernel/goal_reauthorization_replay.cpp
         kernel/work_snapshot.cpp
     DEPENDS work authority catalog durability foundation)
 

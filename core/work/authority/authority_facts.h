@@ -44,6 +44,10 @@ bool valid_input_resume_boundary(const InputResumeBoundary &boundary);
 // Only the same ingress instance's accepted sequence can precede a resume.
 // A zero incarnation means no boundary, never a comparison across boots.
 bool input_precedes_resume(const InputResumeBoundary &input, const InputResumeBoundary &resume);
+// Initial creation may make internal progress under existing durable Grants.
+// Replacement/approval bindings must themselves be durable before consumption.
+bool replacement_binding_pending(const GoalBinding &binding, uint64_t created_seq,
+                                 uint64_t durable_seq);
 // Bound Goals name their actual parent; parent admission precedes child admission.
 bool valid_goal_binding(const GoalBinding &binding, uint64_t goal_id, uint64_t parent_goal_id,
                         foundation::TransitionStamp stamp);

@@ -158,6 +158,9 @@ class TaskTable {
     // Autonomous authorization metadata changes share the Task's log stamp,
     // while user lifecycle, revision, strategy hold and progress stay intact.
     void authority_changed(uint32_t index, foundation::TransitionStamp stamp);
+    // Caller preflighted a direct live cohort with non-saturated revisions.
+    // Preserve user/policy state and private progress; confirm only authorization's boot hold.
+    void reauthorize(uint32_t index, foundation::TransitionStamp stamp);
 
     // Its strategy's decision holds the READY task index, below the largest
     // revision: it becomes PAUSED and no change but an end takes it out.
@@ -250,6 +253,10 @@ class TaskTable {
     // including a held Task. The paired authority fact proves the deny change.
     Restore restore_authority_state(uint32_t index, const TaskState &state,
                                     foundation::TransitionStamp stamp);
+    // A direct live Task keeps user/policy state and progress, advancing its
+    // revision exactly once for the new binding; terminal history is immutable.
+    Restore restore_reauthorization_state(uint32_t index, const TaskState &state,
+                                          foundation::TransitionStamp stamp);
     // Replays one key of a TASK_STEPS record of task index, the step at
     // position step.
     Restore restore_step(uint32_t index, uint32_t step, ayni_string_v1 key,

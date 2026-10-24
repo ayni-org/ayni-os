@@ -77,3 +77,11 @@
 |---|---|---|---|
 | C-WIRE-018 | kind10 canonical 独立固定16 B：小端u32 kind、u32原expected_revision、u64 target；kind9格式1不变；所有kind先查pending再查同一窗口/floor，授权命令最终length+bytes匹配、ordinary保留旧摘要契约，pending身份低于新floor仍有效，拒绝不占命令ID | ordinary同ID绕过pending；hash碰撞被当原命令；撤销因floor提升永远不能发布 | M1 已实现并通过 Native 场景：`CommandRevoke.canonical_has_a_fixed_independent_little_endian_oracle`、`RevokeApi.pending_identity_precedes_every_implemented_kind_and_later_window_floor`、`PendingRevoke.full_revoke_identity_still_wins_when_the_window_digest_collides`；最终交付见 ADR-0031 |
 | C-WIRE-019 | 可信Host以已认证principal/command查询receipt，不依赖旧Session；pending优先可在恢复/受限诊断，普通结果只在完整恢复后暴露；先映射再floor，未映射低于floor为EXPIRED否则NOT_FOUND；查询失败不改caller输出 | 新Session无法确认旧撤销；部分重放窗口误报完整结果；跨owner查询结果 | M1 已实现并通过 Native 场景：`RevokeApi.applied_and_durable_receipts_keep_original_result_across_a_new_session`、`RevokeApi.receipt_query_errors_leave_caller_owned_output_unchanged`、`RevokeApi.ordinary_receipt_floor_and_bad_query_shapes_preserve_the_output`、`RevokeApi.receipt_window_is_not_exposed_before_initial_recovery_finishes`；最终交付见 ADR-0031；C-AUTH-025 |
+
+## 显式重新授权命令身份（MA-006 F4）
+
+本条款约束 C ABI 管理入口及内部持久 canonical。`GOAL_REAUTHORIZE=12` 的请求为 `ayni_goal_reauthorize_v1`：完整原创建回显、Goal ID、预期授权事实提交序号；外层带非零 command ID 及 Goal expected revision。当前持久 owner 的 MANAGEMENT Session 先校验，随后先查完整命令身份，再查当前对象和目录。已终结或回收目标仍可精确重试，返回原 object/revision/commit_seq；变化的任一 CAS 或回显冲突，不重新换绑、跳过触发或采样水位。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-WIRE-020 | 重新授权原始身份含完整回显及双 CAS；内部 canonical 固定前缀为 kind/revision（u32）、Goal ID/授权 CAS（u64），再接共享原创建 echo；重试不依赖当前目标或目录，字节失败不发布部分解码 | 回收后同命令被新受理；变更旧 CAS 仍算精确重试；截断使输出保留半份新回显 | `GoalReauthorization.exact_retry_survives_goal_reclamation_and_changed_echo_conflicts`、`GoalReauthorizationCodec.exact_identity_round_trip_and_all_truncations_are_atomic`、`GoalReauthorization.requires_management_and_durable_existing_authority`；ADR-0038 |

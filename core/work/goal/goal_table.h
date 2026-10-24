@@ -69,10 +69,11 @@ struct Goal {
     uint64_t goal_id;
     uint64_t parent_goal_id;
     uint64_t owner_instance_id;
-    uint64_t replaced_goal_id;           // the terminal goal whose place it took; 0: none
-    foundation::TransitionStamp created; // Immutable positive creation pair; zero before insert.
-    uint64_t commit_seq;                 // of the last change
-    uint64_t last_task_id;               // 0 before the first task
+    uint64_t replaced_goal_id; // the terminal goal whose place it took; 0: none
+    foundation::TransitionStamp
+        created;           // Immutable creation pair; zero before insert, positive after.
+    uint64_t commit_seq;   // of the last change
+    uint64_t last_task_id; // 0 before the first task
     Trigger trigger;
     TriggerCursor cursor; // no next occurrence, none waiting, once the goal is terminal
     catalog::CatalogId trigger_source;
@@ -198,15 +199,26 @@ class GoalTable {
     void propose(uint32_t index);
     // Only PROPOSED, unheld, unexpired work can be approved at its exact revision.
     ChangeCheck check_approval(uint32_t index, uint32_t expected_revision, uint64_t now_us) const;
+    // Reauthorization requires a retained unexpired active/paused Goal and
+    // room for its revision; compatibility holds remain independent.
+    ChangeCheck check_reauthorization(uint32_t index, uint32_t expected_revision,
+                                      uint64_t now_us) const;
     // After successful whole-batch admission, start the original trigger now;
     // the original expiry remains unchanged. No callbacks may intervene.
     void approve(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp);
+    // Admitted reauthorization preserves user state and the same-boot schedule;
+    // only overdue recurring backlog is skipped, using the existing cursor owner.
+    void reauthorize(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp);
     // Authorization changed autonomously; preserve user lifecycle and revision,
     // like trigger progress, but journal this Goal state with the metadata.
     void authority_changed(uint32_t index, foundation::TransitionStamp stamp);
     // Existing live Goal, exact user/trigger state; only its authority stamp advances.
     Restore restore_authority_state(uint32_t index, const GoalState &state,
                                     foundation::TransitionStamp stamp);
+    // Exact user state and one revision advance; only recurring un-derived
+    // occurrences may become skipped. Replay reanchors times after the batch.
+    Restore restore_reauthorization_state(uint32_t index, const GoalState &state,
+                                          foundation::TransitionStamp stamp);
 
     // Pause takes ACTIVE to PAUSED and resume takes it back; neither touches
     // the children. Cancel takes a goal that is not terminal, and every

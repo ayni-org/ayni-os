@@ -27,14 +27,18 @@ bool paused_cohort_complete(const WorkModel &model, uint64_t goal_id) {
     return true;
 }
 
+bool matches_cleanup_request(const WorkModel &model, const work::AuthorityCleanupRecord &record) {
+    auto requested = model.authority_cleanup;
+    requested.request(model.goals.latest_id(), record.stamp);
+    return work::same_authority_cleanup_record(requested.record(), record);
+}
+
 // Reconstruct either a standalone request or exactly one stable scan item;
 // both use the work owner's transitions rather than duplicating cursor math.
 bool matches_cleanup_transition(const WorkModel &model, const work::AuthorityCleanupRecord &record,
                                 uint64_t paused_goal, uint64_t ended_goal) {
-    work::AuthorityCleanup requested = model.authority_cleanup;
-    requested.request(model.goals.latest_id(), record.stamp);
     const bool changed = model.authority_cleanup_change_in(record.stamp);
-    if (changed && work::same_authority_cleanup_record(requested.record(), record)) {
+    if (changed && matches_cleanup_request(model, record)) {
         return ended_goal == 0U;
     }
     if (!model.authority_cleanup.ready()) {
@@ -76,8 +80,10 @@ durability::RecordUse WorkReplay::restore_authority_cleanup(const uint8_t *body,
         record.stamp.commit_seq <= model_.authority_cleanup.record().stamp.commit_seq ||
         record.stamp.transition_id <= model_.authority_cleanup.record().stamp.transition_id ||
         !paused_cohort_complete(model_, pairing_.work_cleanup.paused_goal_id) ||
-        !matches_cleanup_transition(model_, record, pairing_.work_cleanup.paused_goal_id,
-                                    pairing_.work_cleanup.ended_goal_id)) {
+        !(pairing_.reauthorization
+              ? matches_cleanup_request(model_, record)
+              : matches_cleanup_transition(model_, record, pairing_.work_cleanup.paused_goal_id,
+                                           pairing_.work_cleanup.ended_goal_id))) {
         return durability::RecordUse::corrupt;
     }
     model_.authority_cleanup.restore_validated(record);

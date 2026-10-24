@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 25u
+#define AYNI_ABI_MINOR 26u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -893,6 +893,12 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_GRANT_GOAL ((ayni_reason_t)65)
 /* Since 0.23: the saved Goal identity or original missing-item set changed. */
 #define AYNI_REASON_GOAL_APPROVAL_CHANGED ((ayni_reason_t)66)
+/* Since 0.26. DENIED: reauthorization's immutable creation echo changed. */
+#define AYNI_REASON_GOAL_REAUTHORIZATION_CHANGED ((ayni_reason_t)67)
+/* Since 0.26. REVISION_CONFLICT: authorization facts changed after the caller read them. */
+#define AYNI_REASON_GOAL_AUTHORITY_REVISION ((ayni_reason_t)68)
+/* Since 0.26. BUSY: the replacement authorization binding is not durable yet. */
+#define AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE ((ayni_reason_t)69)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1213,6 +1219,8 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_GRANT_REVOKE ((ayni_intent_kind_t)10) /* body: ayni_grant_revoke_v1 */
 /* Since 0.23: atomically approve every originally missing Goal requirement. */
 #define AYNI_INTENT_GOAL_APPROVE ((ayni_intent_kind_t)11) /* body: ayni_goal_approve_v1 */
+/* Since 0.26: explicitly bind existing durable Grants for a Goal and its live Tasks. */
+#define AYNI_INTENT_GOAL_REAUTHORIZE ((ayni_intent_kind_t)12) /* body: ayni_goal_reauthorize_v1 */
 
 /*
  * One envelope for every intent kind. The principal and channel are the
@@ -1557,7 +1565,9 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *    session of the owner may submit every implemented intent (ADR-0017).
  *    Since 0.16, Host-authenticated sessions require the exact durable
  *    owner binding (ayni/host_authority.h); a session does not release
- *    LEGACY_UNCONFIRMED recovery holds.
+ *    LEGACY_UNCONFIRMED recovery holds. Since 0.26, GOAL_REAUTHORIZE
+ *    requires the current durable owner's MANAGEMENT Session, including
+ *    an exact retry; its complete request contract is in ayni/authority.h.
  *    Since 0.14, a nonzero command_id is then looked up among the commands
  *    of the session's principal (C-WIRE-003, C-WIRE-004, ADR-0026): one
  *    accepted before with the same kind, expected_revision and body, over

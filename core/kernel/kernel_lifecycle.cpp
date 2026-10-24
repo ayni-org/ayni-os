@@ -226,10 +226,10 @@ void ayni_kernel::report_step(const StepBudget &progress, ayni_step_report_v1 &r
     // Without room, all of it waits for an append's post, which wakes the
     // owner.
     uint64_t next_deadline_us = ayni::work::no_time;
-    const bool work_due =
-        lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
-        (ayni::kernel::refresh_due_work(work, progress.started_us, next_deadline_us) ||
-         ayni::kernel::awaits_decision(work));
+    const bool work_due = lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
+                          (ayni::kernel::refresh_due_work(work, progress.started_us,
+                                                          next_deadline_us, log.durable_seq()) ||
+                           ayni::kernel::awaits_decision(work, log.durable_seq()));
     const bool maintenance_due = maintaining() && maintenance.wants_advance(progress.started_us) &&
                                  completions.has_free_slot();
     // A request held back by the write interval or a retry backoff is due

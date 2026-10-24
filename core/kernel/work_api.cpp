@@ -37,6 +37,10 @@ bool is_channel(ayni_channel_t channel) {
     return channel == AYNI_CHANNEL_VOICE || channel == AYNI_CHANNEL_MANAGEMENT;
 }
 
+ayni::work::InputResumeBoundary sample_input_boundary(void *context) {
+    return static_cast<ayni::kernel::EventIngress *>(context)->resume_boundary();
+}
+
 // Registering an id twice is an argument error; the capacity comes last.
 template <typename AddResult> ayni_status_t add_status(AddResult result) {
     switch (result) {
@@ -84,7 +88,8 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
                                         outcome, failure, kernel->storage_admission_status(),
                                         kernel->log.durable_seq(),
-                                        {kernel->host.ctx, kernel->host.monotonic_now_us});
+                                        {kernel->host.ctx, kernel->host.monotonic_now_us},
+                                        {&kernel->ingress, sample_input_boundary});
     if (status == AYNI_OK && decoded.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
         kernel->storage_has_room() && kernel->storage_admission_status() == AYNI_OK &&
         kernel->work.transitions.next_commit_seq() == first_seq) {

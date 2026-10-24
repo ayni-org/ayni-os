@@ -541,7 +541,7 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
          foundation::id_boot_epoch(grant_id) > last_boot_epoch_)) {
         return durability::RecordUse::corrupt;
     }
-    return WorkReplay::on_record(&replay_, batch, header, body);
+    return WorkReplay::on_record(&replay_, batch, header, body, last_boot_epoch_);
 }
 
 void BootSequence::fail(ayni_restriction_t reason) {

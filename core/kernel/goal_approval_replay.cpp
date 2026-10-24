@@ -25,25 +25,35 @@ bool matches_requirement(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1
 // Initial creation and approval establish one exact generation. Ancestor
 // facts may now be terminal, but must have admitted authority at that sequence.
 bool WorkReplay::matches_goal_binding(uint32_t index, const work::GoalAuthorityRecord &record,
-                                      uint64_t admission_seq) const {
-    if (record.binding.established_seq != admission_seq || record.binding.input.incarnation != 0U ||
-        record.binding.input.through != 0U) {
+                                      uint64_t admission_seq, BindingEvidence evidence) const {
+    if (record.binding.established_seq != admission_seq ||
+        (admission_seq == model_.goals.at(index).created.commit_seq &&
+         record.binding.input.incarnation != 0U)) {
         return false;
     }
     auto expected = record.binding.parent;
+    bool superseded = false; // A later parent replacement no longer retains its earlier chain.
     const bool matches =
         model_.goals.visit_lineage(model_.goals.at(index).parent_index, [&](uint32_t at) {
             const auto &parent = model_.goals.at(at);
             work::GoalAuthorityRecord authority{};
+            if (superseded) {
+                return true; // Topology is still visited; no current references prove old choices.
+            }
             if (!model_.goal_authority.read(at, parent.goal_id, authority) ||
-                expected.goal_id != parent.goal_id ||
-                expected.commit_seq != authority.binding.established_seq ||
+                expected.goal_id != parent.goal_id || expected.commit_seq >= admission_seq ||
+                expected.commit_seq < parent.created.commit_seq ||
                 authority.phase == work::GoalAuthorityPhase::proposed ||
                 (authority.phase == work::GoalAuthorityPhase::paused &&
                  authority.stamp.commit_seq <= admission_seq) ||
                 (!work::GoalTable::is_live(parent.lifecycle) &&
                  parent.commit_seq <= admission_seq)) {
                 return false;
+            }
+            if (expected.commit_seq != authority.binding.established_seq) {
+                superseded = evidence == BindingEvidence::historical &&
+                             authority.binding.established_seq > admission_seq;
+                return superseded;
             }
             for (uint32_t requirement = 0; requirement < authority.count; ++requirement) {
                 uint32_t grant = 0;
@@ -64,7 +74,7 @@ bool WorkReplay::matches_goal_binding(uint32_t index, const work::GoalAuthorityR
             expected = authority.binding.parent;
             return true;
         });
-    return matches && expected.goal_id == 0U && expected.commit_seq == 0U;
+    return matches && (superseded || (expected.goal_id == 0U && expected.commit_seq == 0U));
 }
 
 // Capture the original proposal before any approval record changes it. New
@@ -158,8 +168,8 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
                         record.binding.input.through != original.binding.input.through)) {
             return false;
         }
-        // E has no reference replacement command. Autonomous pauses preserve
-        // every selected or absent identity; F must add its own paired proof.
+        // Ordinary metadata preserves every selected or absent identity;
+        // explicit replacement has its separate paired proof (ADR-0038).
         for (uint32_t at = 0; existed && at < original.count && at < record.count; ++at) {
             const auto &before = original.requirements[at].dependency;
             const auto &after = record.requirements[at].dependency;
@@ -270,7 +280,7 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping, ayni_bytes
     for (uint32_t at = 0; at < record.count; ++at) {
         record.requirements[at].dependency = result.references[at];
     }
-    if (!matches_goal_binding(index, record, mapping.commit_seq) ||
+    if (!matches_goal_binding(index, record, mapping.commit_seq, BindingEvidence::historical) ||
         !saved_references_consistent(index, record, result.references, mapping.commit_seq)) {
         return false;
     }

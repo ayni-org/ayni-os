@@ -1,7 +1,9 @@
 // ADR-0037: public requirement export, proposals and fixed dependency consumption.
 // White-box table/count/stamp assertions below supplement public observations to
 // prove refusal leaves no hidden allocation or partial transition behind.
+#include "foundation/little_endian.h"
 #include "goal_approval_request.h"
+#include "goal_reauthorization_request.h"
 #include "kernel/storage/storage_budget.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
@@ -1643,6 +1645,772 @@ TEST(TaskAuthorityApi, zero_requirements_are_admitted_and_missing_evidence_is_re
     EXPECT_EQ(missing.effective_reason, AYNI_REASON_GOAL_AUTHORITY_MISSING);
     EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
     EXPECT_EQ(work.task_authority.install_validated(slot, saved), AYNI_OK);
+}
+
+// ADR-0038: replacement is durable before consumption, keeps the existing
+// Task identity, and exact retries preserve the original generation and watermark.
+TEST(GoalReauthorization, replaces_goal_and_ready_task_then_retries_without_reapplication) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.grant();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step();
+    const auto id = goal.result.object.id;
+    const auto task = node.work.goal(id).last_task_id;
+    ASSERT_NE(task, 0U);
+    const auto replacement = node.grant();
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    node.revoke(original.result.object.id);
+    node.advance_work();
+    const auto old_task = node.work.task(task);
+    const auto old_authority = node.authority(id);
+    const auto calls = node.calls;
+    ReauthorizationRequest request(node.work.kernel(), id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    EXPECT_EQ(node.calls, calls);
+    EXPECT_EQ(node.authority(id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+    EXPECT_GT(node.authority(id).binding_commit_seq, old_authority.binding_commit_seq);
+    EXPECT_EQ(node.authority(id).effective_reason, AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE);
+    EXPECT_EQ(node.requirement(id, 0).grant_id, replacement.result.object.id);
+    EXPECT_EQ(node.work.task(task).revision, old_task.revision + 1U);
+    node.work.node().step(4);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    const auto retry = node.work.submit(intent);
+    ASSERT_EQ(retry.status, AYNI_OK);
+    EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
+    EXPECT_EQ(node.work.task(task).revision, old_task.revision + 1U);
+    node.work.node().recover();
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task);
+    EXPECT_EQ(node.work.goal(id).lifecycle, AYNI_GOAL_SATISFIED);
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+}
+
+// ADR-0038: revision, authority CAS, immutable echo and complete coverage are
+// checked before a single Goal or direct Task changes.
+TEST(GoalReauthorization, stale_cas_echo_and_missing_coverage_publish_nothing) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.grant();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.revoke(original.result.object.id);
+    node.advance_work();
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto before = node.work.kernel()->work.transitions.latest();
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    --request.body.expected_authority_commit_seq;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
+    ++request.body.expected_authority_commit_seq;
+    ++request.body.original.expiry_us;
+    const auto changed = node.work.submit(intent);
+    EXPECT_EQ(changed.status, AYNI_DENIED);
+    EXPECT_EQ(changed.error.reason, AYNI_REASON_GOAL_REAUTHORIZATION_CHANGED);
+    --request.body.original.expiry_us;
+    ++intent.expected_revision;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
+    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(node.authority(goal.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+}
+
+// ADR-0038: current durable management is required even for an exact retry;
+// a newly created replacement Grant cannot be selected before persistence.
+TEST(GoalReauthorization, requires_management_and_durable_existing_authority) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.grant();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.revoke(original.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    node.work.node().recover();
+    const auto management = intent.session_id;
+    const auto voice = node.work.open_session(AYNI_CHANNEL_VOICE);
+    intent.session_id = voice;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    intent.session_id = management;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    intent.session_id = voice;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    intent.session_id = management;
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+}
+
+// ADR-0038: parent replacement immediately invalidates the child's saved
+// generation, including before cleanup. Only the child's explicit command restores it.
+TEST(GoalReauthorization, parent_does_not_resume_child_and_child_can_then_bind_new_parent) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.grant();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.work.node().recover();
+    const auto parent = node.create(AYNI_TRIGGER_NONE);
+    const auto child = node.create(AYNI_TRIGGER_ONCE, parent.result.object.id);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    ASSERT_EQ(child.status, AYNI_OK);
+    node.work.node().step();
+    const auto child_task = node.work.goal(child.result.object.id).last_task_id;
+    ASSERT_NE(child_task, 0U);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    node.revoke(original.result.object.id);
+    // No cleanup step: both authorized-phase records still refer to a gated Grant.
+    ReauthorizationRequest parent_request(node.work.kernel(), parent.result.object.id);
+    auto parent_intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &parent_request.body,
+                                          parent_request.echo.info.revision);
+    parent_intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(parent_intent).status, AYNI_OK);
+    EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    node.work.node().recover();
+    EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    ReauthorizationRequest child_request(node.work.kernel(), child.result.object.id);
+    auto child_intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &child_request.body,
+                                         child_request.echo.info.revision);
+    child_intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(child_intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(node.authority(child.result.object.id).parent_binding_commit_seq,
+              node.authority(parent.result.object.id).binding_commit_seq);
+}
+
+// ADR-0038: user and policy holds are separate from authorization. The
+// existing private checkpoint and step history survive the complete replacement.
+TEST(GoalReauthorization, preserves_user_pause_policy_failure_steps_and_checkpoint) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.grant();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_INTERVAL);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step();
+    node.work.strategy().answer = [](const auto &snapshot, auto &out) {
+        out.intents[0] = progress_intent("saved", snapshot.revision);
+        out.intent_count = 1;
+        out.checkpoint[0] = 42;
+        out.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    node.work.node().step();
+    node.work.strategy().answer = cannot_decide;
+    node.work.node().step();
+    const auto task = node.work.goal(goal.result.object.id).last_task_id;
+    const auto before = node.work.task(task);
+    ASSERT_EQ(before.step_count, 1U);
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_PAUSE, goal.result.object.id).status, AYNI_OK);
+    node.revoke(original.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto after = node.work.task(task);
+    EXPECT_EQ(after.hold_reason, before.hold_reason);
+    EXPECT_EQ(after.step_count, before.step_count);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PAUSED);
+    uint32_t index = 0;
+    const auto &tasks = node.work.kernel()->work.tasks;
+    ASSERT_TRUE(tasks.find(task, index));
+    ASSERT_EQ(tasks.checkpoint(index).size, 1U);
+    EXPECT_EQ(tasks.checkpoint(index).data[0], 42U);
+}
+
+// ADR-0038: a saturated live Task revision rejects the entire replacement,
+// including earlier Task rows, Goal binding and the exact-command window.
+TEST(GoalReauthorization, exhausted_task_revision_refuses_whole_transaction) {
+    AuthorityWork node;
+    node.run();
+    const auto original = node.grant();
+    ASSERT_EQ(original.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step();
+    const auto task = node.work.goal(goal.result.object.id).last_task_id;
+    ASSERT_NE(task, 0U);
+    node.revoke(original.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    // White-box extreme revision setup; the ABI has no artificial revision setter.
+    uint32_t index = 0;
+    auto &model = node.work.kernel()->work;
+    ASSERT_TRUE(model.tasks.find(task, index));
+    const_cast<ayni::work::Task &>(model.tasks.at(index)).revision = UINT32_MAX;
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto before = model.transitions.latest();
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(model.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(node.authority(goal.result.object.id).commit_seq,
+              request.body.expected_authority_commit_seq);
+}
+
+// ADR-0038/C-STORE-019: power loss accepts the whole replacement plus result
+// or keeps the old paused Goal/Task selections. Retry works in either case.
+TEST(GoalReauthorization, interrupted_append_recovers_all_or_old_admissions) {
+    using ayni::hosts::sim::CutAppend;
+    for (const auto cut : {CutAppend::lost, CutAppend::stored}) {
+        SCOPED_TRACE(static_cast<int>(cut));
+        AuthorityWork node;
+        node.run();
+        const auto original = node.grant();
+        ASSERT_EQ(original.status, AYNI_OK);
+        node.work.node().recover();
+        const auto goal = node.create();
+        ASSERT_EQ(goal.status, AYNI_OK);
+        node.work.node().step();
+        const auto id = goal.result.object.id;
+        const auto task = node.work.goal(id).last_task_id;
+        ASSERT_NE(task, 0U);
+        node.revoke(original.result.object.id);
+        node.advance_work();
+        const auto replacement = node.grant();
+        ASSERT_EQ(replacement.status, AYNI_OK);
+        node.work.node().recover();
+        ReauthorizationRequest request(node.work.kernel(), id);
+        auto intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body,
+                                       request.echo.info.revision);
+        intent.command_id = node.command++;
+        const auto accepted = node.work.submit(intent);
+        ASSERT_EQ(accepted.status, AYNI_OK);
+        for (unsigned round = 0; round < 1000 && node.work.node().sim().pending_storage() == 0U;
+             ++round) {
+            const auto report = node.work.node().step(1);
+            if (report.more_ready == 0U && report.next_deadline_us != UINT64_MAX &&
+                report.next_deadline_us > node.work.node().sim().now_us()) {
+                node.work.node().sim().advance_us(report.next_deadline_us -
+                                                  node.work.node().sim().now_us());
+            }
+        }
+        ASSERT_NE(node.work.node().sim().pending_storage(), 0U);
+        node.work.node().power_cut_and_start(cut);
+        node.work.node().recover();
+        ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        node.work.reopen_session();
+        const auto selected = node.requirement(id, 0).grant_id;
+        EXPECT_EQ(selected, cut == CutAppend::stored ? replacement.result.object.id
+                                                     : original.result.object.id);
+        intent.session_id = node.work.session();
+        const auto retry = node.work.submit(intent);
+        ASSERT_EQ(retry.status, AYNI_OK);
+        EXPECT_EQ(node.work.goal(id).last_task_id, task);
+        if (cut == CutAppend::stored) {
+            EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
+        } else {
+            EXPECT_GT(retry.result.commit_seq, accepted.result.commit_seq);
+        }
+    }
+}
+
+// ADR-0038: retry returns the original resume boundary. Queued old input is
+// skipped only for the restored Goal; a shared source's other Goal keeps it.
+TEST(GoalReauthorization, input_frontier_is_goal_local_and_not_resampled_on_retry) {
+    AuthorityWork node;
+    node.run();
+    const auto old_grant = node.grant();
+    ASSERT_EQ(old_grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_LOCAL_INPUT);
+    const auto other = node.create(AYNI_TRIGGER_LOCAL_INPUT, 0, "zero");
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ASSERT_EQ(other.status, AYNI_OK);
+    node.revoke(old_grant.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const ayni_event_v1 event{sizeof(event), AYNI_EVENT_LOCAL_INPUT, text("button")};
+    ASSERT_EQ(ayni_post_event(node.work.kernel(), &event), AYNI_OK);
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    ASSERT_EQ(ayni_post_event(node.work.kernel(), &event), AYNI_OK);
+    ASSERT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+    node.work.node().recover();
+    node.advance_work();
+    EXPECT_EQ(node.work.goal(goal.result.object.id).occurrences, 1U);
+    EXPECT_EQ(node.work.goal(other.result.object.id).occurrences, 2U);
+}
+
+// ADR-0038: recurring resume skips even backlog predating the deny, then
+// rejoins the original rhythm rather than restarting a whole interval.
+TEST(GoalReauthorization, interval_resume_skips_all_undeveloped_due_occurrences) {
+    AuthorityWork node;
+    node.run();
+    const auto old_grant = node.grant();
+    ASSERT_EQ(old_grant.status, AYNI_OK);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_INTERVAL);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().sim().advance_us(5U * AYNI_TRIGGER_PERIOD_MIN_US);
+    node.revoke(old_grant.result.object.id);
+    // Before autonomous cleanup: backlog still lives in the original cursor.
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    const auto after = node.work.goal(goal.result.object.id);
+    EXPECT_EQ(after.occurrences_skipped, 6U); // Includes the occurrence due at creation.
+    EXPECT_EQ(after.last_task_id, 0U);
+    node.work.node().recover();
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    node.advance_work();
+    EXPECT_EQ(node.work.strategy().seen.size(), 1U);
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+}
+
+// ADR-0038: explicit zero requirements remain a real replacement fact. Its
+// parent nonce must be restored even though it has no Grant references.
+TEST(GoalReauthorization, zero_requirement_child_gets_explicit_new_admission) {
+    AuthorityWork node;
+    node.run();
+    const auto old_grant = node.grant();
+    ASSERT_EQ(old_grant.status, AYNI_OK);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto parent = node.create(AYNI_TRIGGER_NONE);
+    const auto child = node.create(AYNI_TRIGGER_NONE, parent.result.object.id, "zero");
+    ASSERT_EQ(parent.status, AYNI_OK);
+    ASSERT_EQ(child.status, AYNI_OK);
+    node.revoke(old_grant.result.object.id);
+    for (const auto id : {parent.result.object.id, child.result.object.id}) {
+        ReauthorizationRequest request(node.work.kernel(), id);
+        auto intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body,
+                                       request.echo.info.revision);
+        intent.command_id = node.command++;
+        ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+        node.work.node().recover();
+    }
+    EXPECT_EQ(node.authority(child.result.object.id).requirement_count, 0U);
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+}
+
+// ADR-0038: multiple direct live Tasks receive the same new generation in
+// one transition, while already terminal Task history keeps its old selection.
+TEST(GoalReauthorization, all_direct_live_tasks_bind_together_and_terminal_history_stays) {
+    AuthorityWork node;
+    node.run();
+    const auto old_grant = node.grant();
+    ASSERT_EQ(old_grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_INTERVAL);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    const auto id = goal.result.object.id;
+    std::vector<uint64_t> tasks;
+    for (unsigned round = 0; round < 3; ++round) {
+        if (round != 0U) {
+            node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+        }
+        // Due derivation precedes READY decisions in a one-item step (ADR-0025).
+        node.work.node().step(1);
+        node.work.node().recover();
+        const auto task = node.work.goal(id).last_task_id;
+        ASSERT_NE(task, 0U);
+        ASSERT_TRUE(tasks.empty() || tasks.back() != task);
+        tasks.push_back(task);
+    }
+    // Complete the first Task; the two later READY Tasks remain live.
+    node.work.node().step(1);
+    ASSERT_EQ(node.work.task(tasks.front()).lifecycle, AYNI_TASK_COMPLETED);
+    node.work.node().recover();
+    node.revoke(old_grant.result.object.id);
+    node.advance_work();
+    const auto replacement = node.grant();
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    for (const auto task : tasks) {
+        ayni_task_authority_info_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), task, &info), AYNI_OK);
+        ayni_task_authority_reference_v1 reference{};
+        reference.struct_size = sizeof(reference);
+        ASSERT_EQ(ayni_get_task_authority_reference(node.work.kernel(), task, 0, &reference),
+                  AYNI_OK);
+        EXPECT_EQ(reference.grant_id, task == tasks.front() ? old_grant.result.object.id
+                                                            : replacement.result.object.id);
+        if (task != tasks.front()) {
+            EXPECT_EQ(info.binding_commit_seq, accepted.result.commit_seq);
+            EXPECT_EQ(info.commit_seq, accepted.result.commit_seq);
+        }
+    }
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.work.task(tasks.front()).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// ADR-0038: FAILED/UNKNOWN writes fence and reload the existing coordinator;
+// persisted results retry exactly, lost ones reapply to the old complete facts.
+TEST(GoalReauthorization, failed_or_unknown_append_preserves_atomic_recovery_and_retry) {
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    for (const auto fault :
+         {StorageFault::fail, StorageFault::unknown_lost, StorageFault::unknown_persisted}) {
+        SCOPED_TRACE(static_cast<int>(fault));
+        AuthorityWork node;
+        node.run();
+        const auto old_grant = node.grant();
+        ASSERT_EQ(old_grant.status, AYNI_OK);
+        node.work.node().recover();
+        const auto goal = node.create(AYNI_TRIGGER_NONE);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        node.revoke(old_grant.result.object.id);
+        node.advance_work();
+        const auto replacement = node.grant();
+        ASSERT_EQ(replacement.status, AYNI_OK);
+        node.work.node().recover();
+        ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+        auto intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body,
+                                       request.echo.info.revision);
+        intent.command_id = node.command++;
+        const auto boot = node.work.node().info().boot_epoch;
+        node.work.node().sim().inject_fault(StoragePort::append, fault);
+        node.work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+        node.work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+        const auto accepted = node.work.submit(intent);
+        ASSERT_EQ(accepted.status, AYNI_OK);
+        for (unsigned round = 0; round < 5000; ++round) {
+            const auto report = node.work.node().step(1);
+            node.work.node().sim().complete_storage();
+            if (node.work.node().info().boot_epoch > boot &&
+                node.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                node.work.kernel()->log.idle()) {
+                break;
+            }
+            if (report.more_ready == 0U && node.work.node().sim().pending_storage() == 0U &&
+                report.next_deadline_us != UINT64_MAX &&
+                report.next_deadline_us > node.work.node().sim().now_us()) {
+                node.work.node().sim().advance_us(report.next_deadline_us -
+                                                  node.work.node().sim().now_us());
+            }
+        }
+        ASSERT_GT(node.work.node().info().boot_epoch, boot);
+        ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        node.work.reopen_session();
+        intent.session_id = node.work.session();
+        const auto retry = node.work.submit(intent);
+        ASSERT_EQ(retry.status, AYNI_OK);
+        EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id,
+                  replacement.result.object.id);
+        if (fault == StorageFault::unknown_persisted) {
+            EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
+        } else {
+            EXPECT_GT(retry.result.commit_seq, accepted.result.commit_seq);
+        }
+    }
+}
+
+// ADR-0038: dedicated complete coverage wins without re-exporting the ceiling.
+TEST(GoalReauthorization, dedicated_grant_wins_for_every_completely_covered_requirement) {
+    AuthorityWork node;
+    node.count = 2;
+    node.run();
+    const auto generic = node.grant(0, 20);
+    ASSERT_EQ(generic.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ApprovalRequest approval(node.work.kernel(), goal.result.object.id);
+    ASSERT_EQ(approval.body.missing_mask, 2U);
+    auto approve =
+        node.work.intent(AYNI_INTENT_GOAL_APPROVE, &approval.body, approval.info.revision);
+    approve.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(approve).status, AYNI_OK);
+    node.work.node().recover();
+    const auto dedicated = node.requirement(goal.result.object.id, 1).grant_id;
+    ASSERT_NE(dedicated, 0U);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    node.revoke(generic.result.object.id);
+    node.advance_work();
+    node.count = 0; // Exporter drift must never shrink the saved requirements.
+    const auto calls = node.calls;
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    EXPECT_EQ(node.calls, calls);
+    EXPECT_EQ(node.authority(goal.result.object.id).requirement_count, 2U);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, dedicated);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 1).grant_id, dedicated);
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+}
+
+// ADR-0038: partial ranges cannot be unioned, and absence of one complete
+// selection refuses the entire transaction. Same-category choices use the least ID.
+TEST(GoalReauthorization, never_unions_grants_and_selects_lowest_id_within_each_category) {
+    AuthorityWork node;
+    node.count = 2;
+    node.run();
+    const auto old = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.revoke(old.result.object.id);
+    node.advance_work();
+    const auto narrow = node.grant(0, 20);
+    ASSERT_EQ(narrow.status, AYNI_OK);
+    ASSERT_EQ(node.grant(21, 100).status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto before = node.authority(goal.result.object.id);
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
+    EXPECT_EQ(node.authority(goal.result.object.id).commit_seq, before.commit_seq);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, old.result.object.id);
+    const auto complete = node.grant();
+    ASSERT_EQ(complete.status, AYNI_OK);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, narrow.result.object.id);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 1).grant_id, complete.result.object.id);
+}
+
+// ADR-0038: exact retries precede object lookup after Goal reclamation. Altered
+// original CAS/echo conflicts, and the replacement slot owner's revision stays intact.
+TEST(GoalReauthorization, exact_retry_survives_goal_reclamation_and_changed_echo_conflicts) {
+    AuthorityWork node;
+    node.work.node().config().goal_capacity = 1;
+    node.run();
+    const auto old = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.revoke(old.result.object.id);
+    node.advance_work();
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    node.work.node().recover();
+    ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, goal.result.object.id).status, AYNI_OK);
+    node.work.node().recover();
+    const auto replacement = node.create(AYNI_TRIGGER_NONE, 0, "zero");
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    ayni_goal_info_v1 gone{};
+    gone.struct_size = sizeof(gone);
+    EXPECT_EQ(ayni_get_goal(node.work.kernel(), goal.result.object.id, &gone), AYNI_NOT_FOUND);
+    EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
+    ++request.body.expected_authority_commit_seq;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_IDEMPOTENCY_CONFLICT);
+    --request.body.expected_authority_commit_seq;
+    ++request.body.original.expiry_us;
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_IDEMPOTENCY_CONFLICT);
+    EXPECT_EQ(node.work.goal(replacement.result.object.id).revision, 1U);
+}
+
+// ADR-0038: same-boot resume keeps the original delay and an overdue ONCE
+// executes exactly once, provided its Goal has not itself expired.
+TEST(GoalReauthorization, delayed_and_once_goals_keep_their_original_same_boot_schedule) {
+    for (const auto trigger : {AYNI_TRIGGER_DELAY, AYNI_TRIGGER_ONCE}) {
+        SCOPED_TRACE(trigger);
+        AuthorityWork node;
+        node.run();
+        const auto old = node.grant();
+        ASSERT_EQ(old.status, AYNI_OK);
+        ASSERT_EQ(node.grant().status, AYNI_OK);
+        node.work.node().recover();
+        constexpr uint64_t delay = 10U * AYNI_TRIGGER_PERIOD_MIN_US;
+        auto body =
+            WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1, {}, trigger);
+        body.trigger_delay_us = trigger == AYNI_TRIGGER_DELAY ? delay : 0U;
+        body.expiry_us = 3U * delay;
+        const auto start = node.work.node().sim().now_us();
+        const auto goal = node.work.create(body);
+        ASSERT_EQ(goal.status, AYNI_OK);
+        node.revoke(old.result.object.id);
+        node.advance_work();
+        node.work.node().sim().advance_us(delay / 2U);
+        ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+        auto intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body,
+                                       request.echo.info.revision);
+        intent.command_id = node.command++;
+        ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+        node.work.node().recover();
+        if (trigger == AYNI_TRIGGER_DELAY) {
+            node.advance_work();
+            EXPECT_TRUE(node.work.strategy().seen.empty());
+            const auto due = start + delay;
+            ASSERT_LT(node.work.node().sim().now_us(), due);
+            node.work.node().sim().advance_us(due - node.work.node().sim().now_us());
+        }
+        node.advance_work();
+        ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+        EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_SATISFIED);
+        node.work.node().sim().advance_us(delay);
+        node.advance_work();
+        EXPECT_EQ(node.work.strategy().seen.size(), 1U);
+    }
+}
+
+// ADR-0038: canonical reauthorization retains both CAS values and the full
+// original echo. Malformed byte input never publishes a partially decoded identity.
+TEST(GoalReauthorizationCodec, exact_identity_round_trip_and_all_truncations_are_atomic) {
+    AuthorityWork node;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto raw =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    raw.command_id = node.command++;
+    ayni::kernel::Intent decoded{};
+    ayni::kernel::IntentFailure failure{};
+    ASSERT_EQ(ayni::kernel::decode_intent(raw, decoded, failure), AYNI_OK);
+    const ayni::kernel::ReauthorizationCommand original{decoded.expected_revision,
+                                                        decoded.reauthorization};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::kernel::measure_reauthorization_command(original, size), AYNI_OK);
+    std::vector<uint8_t> bytes(size + 1U);
+    ASSERT_EQ(ayni::kernel::encode_reauthorization_command(original, bytes.data(), size, size),
+              AYNI_OK);
+    ayni::kernel::ReauthorizationCommand restored{};
+    ASSERT_TRUE(ayni::kernel::read_reauthorization_command({bytes.data(), size}, restored));
+    EXPECT_EQ(restored.reauthorization.goal_id, goal.result.object.id);
+    EXPECT_EQ(restored.reauthorization.expected_authority_commit_seq,
+              request.body.expected_authority_commit_seq);
+    EXPECT_EQ(restored.expected_revision, request.echo.info.revision);
+    for (uint32_t cut = 0; cut <= bytes.size(); ++cut) {
+        if (cut == size) {
+            continue;
+        }
+        restored.expected_revision = 77;
+        restored.reauthorization.goal_id = 99;
+        restored.reauthorization.expected_authority_commit_seq = 999;
+        EXPECT_FALSE(ayni::kernel::read_reauthorization_command({bytes.data(), cut}, restored));
+        EXPECT_EQ(restored.expected_revision, 77U);
+        EXPECT_EQ(restored.reauthorization.goal_id, 99U);
+        EXPECT_EQ(restored.reauthorization.expected_authority_commit_seq, 999U);
+    }
+    constexpr uint32_t authority_cas_at =
+        ayni::kernel::reauthorization_command_prefix_size - sizeof(uint64_t);
+    ayni::foundation::store_le64(bytes.data() + authority_cas_at, 0);
+    EXPECT_FALSE(ayni::kernel::read_reauthorization_command({bytes.data(), size}, restored));
+}
+
+// ADR-0038: the shared command/storage coordinator refuses a complete
+// reauthorization without changing its Goal revision, ceiling or command identity.
+TEST(GoalReauthorization, pinned_window_and_storage_shortage_refuse_without_partial_binding) {
+    AuthorityWork node;
+    node.work.node().config().command_capacity = 1;
+    node.run();
+    const auto old = node.grant();
+    const auto replacement = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.revoke(old.result.object.id);
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto pinned = node.work.submit(intent);
+    EXPECT_EQ(pinned.status, AYNI_BUSY);
+    EXPECT_EQ(pinned.error.reason, AYNI_REASON_COMMAND_PINNED);
+    node.work.node().recover();
+    node.work.node().sim().set_storage_capacity(0);
+    const auto short_space = node.work.submit(intent);
+    EXPECT_EQ(short_space.status, AYNI_STORAGE_FAILED);
+    EXPECT_EQ(node.work.goal(goal.result.object.id).revision, request.echo.info.revision);
+    EXPECT_EQ(node.authority(goal.result.object.id).commit_seq,
+              request.body.expected_authority_commit_seq);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, old.result.object.id);
+    node.work.node().sim().set_storage_capacity(UINT64_MAX);
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, replacement.result.object.id);
+}
+
+// ADR-0038: an expired Goal cannot be revived, even before its autonomous
+// expiry transition has run and while replacement authority is available.
+TEST(GoalReauthorization, own_goal_expiry_refuses_before_autonomous_cleanup) {
+    AuthorityWork node;
+    node.run();
+    const auto old = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create(AYNI_TRIGGER_NONE, 0, "authorized", AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.revoke(old.result.object.id);
+    ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto before = node.work.kernel()->work.transitions.latest();
+    node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    EXPECT_EQ(node.work.submit(intent).status, AYNI_INVALID_STATE);
+    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(node.authority(goal.result.object.id).commit_seq,
+              request.body.expected_authority_commit_seq);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
 }
 
 } // namespace

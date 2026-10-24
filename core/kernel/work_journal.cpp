@@ -42,6 +42,12 @@ class Encoder {
     }
 
   private:
+    // One exact command owns every replacement state/admission in this batch.
+    bool reauthorizes(uint64_t goal_id) const {
+        const auto *mapping = model_.commands.mapped_in(stamp_.commit_seq);
+        return mapping != nullptr && mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
+               mapping->object.id == goal_id;
+    }
     uint8_t *body(uint16_t type, uint16_t version, uint32_t length) {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
@@ -183,7 +189,9 @@ class Encoder {
                 model_.goal_authority.contains(index, goal.goal_id) &&
                 model_.goal_authority.at(index).stamp.commit_seq == stamp_.commit_seq &&
                 model_.goal_authority.at(index).phase == work::GoalAuthorityPhase::paused;
-            const uint16_t version = authority_pause ? work::goal_state_authority_record_version
+            const uint16_t version = reauthorizes(goal.goal_id)
+                                         ? work::goal_state_reauthorization_record_version
+                                     : authority_pause ? work::goal_state_authority_record_version
                                      : !work::GoalTable::is_live(goal.lifecycle) &&
                                              model_.grants.has_active_goal_grants(goal.goal_id)
                                          ? work::goal_state_with_cleanup_record_version
@@ -212,7 +220,9 @@ class Encoder {
                 record.stamp.transition_id != stamp_.transition_id) {
                 return false;
             }
-            const auto version = record.phase == work::GoalAuthorityPhase::paused
+            const auto version = reauthorizes(record.goal_id)
+                                     ? work::goal_authority_reauthorization_record_version
+                                 : record.phase == work::GoalAuthorityPhase::paused
                                      ? work::goal_authority_pause_record_version
                                      : work::goal_authority_record_version;
             auto *at = body(work::goal_authority_record_type, version,
@@ -266,7 +276,9 @@ class Encoder {
                 return false; // Schema 2 never infers authorization from absent metadata.
             }
             const bool changed = admission.stamp.commit_seq == stamp_.commit_seq;
-            const auto version = changed && task.created_transition_id != stamp_.transition_id
+            const auto version = changed && reauthorizes(task.goal_id)
+                                     ? work::task_state_reauthorization_record_version
+                                 : changed && task.created_transition_id != stamp_.transition_id
                                      ? work::task_state_authority_record_version
                                      : work::task_state_record_version;
             uint8_t *at = body(work::task_state_record_type, version, work::task_state_record_size);

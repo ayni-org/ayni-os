@@ -6,7 +6,7 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 37 | 13 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 13 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -21,10 +21,10 @@
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 7 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
-| [storage/records.md](storage/records.md) | 21 | 14 |
-| [wire/envelope.md](wire/envelope.md) | 19 | 3 |
+| [storage/records.md](storage/records.md) | 22 | 14 |
+| [wire/envelope.md](wire/envelope.md) | 20 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 331 | 96 |
+| 合计 | 335 | 96 |
 
 ## 计划章节 → 契约文档
 

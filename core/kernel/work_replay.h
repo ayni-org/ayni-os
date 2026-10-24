@@ -43,6 +43,11 @@ class WorkReplay {
     static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body);
+    // Boot supplies the epoch preceding this record; a later epoch or binding
+    // replacement must not legitimize a future ingress incarnation in history.
+    static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
+                                           const durability::RecordHeader &header,
+                                           const uint8_t *body, uint64_t boot_epoch_limit);
     // applied: a known type/version whose header is accepted; corrupt:
     // an authority record lacks REQUIRED (owner binding, Grant create/state,
     // revocation/progress, or command v2+); unknown: unsupported type/version.
@@ -62,6 +67,12 @@ class WorkReplay {
                                ayni_bytes_v1 result_bytes, uint64_t transition_limit = UINT64_MAX,
                                uint64_t boot_epoch_limit = UINT64_MAX) const;
 
+    // Historical reauthorization result uses its saved choices, never current references.
+    bool matches_goal_reauthorization(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                      ayni_bytes_v1 result_bytes,
+                                      uint64_t transition_limit = UINT64_MAX,
+                                      uint64_t boot_epoch_limit = UINT64_MAX) const;
+
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
     bool complete() const { return pairing_.complete(); }
@@ -79,10 +90,12 @@ class WorkReplay {
 
   private:
     durability::RecordUse apply(const durability::BatchIdentity &batch,
-                                const durability::RecordHeader &header, const uint8_t *body);
+                                const durability::RecordHeader &header, const uint8_t *body,
+                                uint64_t boot_epoch_limit);
     // Dispatch while batch_seq_ still names the previously consumed record.
     durability::RecordUse apply_record(const durability::BatchIdentity &batch,
-                                       const durability::RecordHeader &header, const uint8_t *body);
+                                       const durability::RecordHeader &header, const uint8_t *body,
+                                       uint64_t boot_epoch_limit);
     durability::RecordUse restore_owner_binding(const uint8_t *body, uint32_t size,
                                                 foundation::TransitionStamp stamp);
     durability::RecordUse restore_instance(const uint8_t *body, uint32_t size,
@@ -93,7 +106,8 @@ class WorkReplay {
                                              foundation::TransitionStamp stamp);
     // Goal v2 must receive complete metadata in the same journal batch.
     durability::RecordUse restore_goal_authority(uint16_t version, const uint8_t *body,
-                                                 uint32_t size, foundation::TransitionStamp stamp);
+                                                 uint32_t size, foundation::TransitionStamp stamp,
+                                                 uint64_t boot_epoch_limit);
     // Complete work scan footer: exact progress/request plus any pause cohort.
     durability::RecordUse restore_authority_cleanup(const uint8_t *body, uint32_t size,
                                                     foundation::TransitionStamp stamp);
@@ -119,18 +133,31 @@ class WorkReplay {
                                           uint64_t commit_seq);
     // One approval's ordered relation, independent of record body decoding.
     // Prove the admitted generation and original parent chain at a known sequence.
+    enum class BindingEvidence {
+        current,
+        historical
+    }; // Historical ancestors may be replaced later.
     bool matches_goal_binding(uint32_t index, const work::GoalAuthorityRecord &record,
-                              uint64_t admission_seq) const;
+                              uint64_t admission_seq,
+                              BindingEvidence evidence = BindingEvidence::current) const;
     bool pair_approval_grant(const authority::GrantRecord &record,
                              foundation::TransitionStamp stamp);
     bool pair_approval_state(uint32_t index, const work::GoalState &state);
     bool pair_approval_metadata(uint32_t index, const work::GoalAuthorityRecord &record);
     bool pair_approval_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
                                ayni_bytes_v1 result_bytes);
+    bool allows_reauthorization_record(const durability::RecordHeader &header) const;
+    bool begin_reauthorization(uint32_t index, foundation::TransitionStamp stamp);
+    bool pair_reauthorization_metadata(uint32_t index, const work::GoalAuthorityRecord &record,
+                                       foundation::TransitionStamp stamp);
+    bool pair_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                      ayni_bytes_v1 result_bytes);
+    bool reauthorized_cohort_complete(uint32_t index, foundation::TransitionStamp stamp) const;
     // Cross-table facts are checked without consulting the new boot catalog.
     bool goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const;
-    // Grant owns historical chain/Scope checks; missing rows are allowed only
-    // for terminal work or independently retained command history.
+    bool task_authority_consistent(uint32_t task_index, uint64_t boot_epoch_limit) const;
+    // Retained selections share subject/Scope/history checks; reclaimed rows
+    // are allowed only by callers validating terminal or historical evidence.
     enum class SelectionOrigin {
         existing_grant,
         approval
@@ -180,6 +207,19 @@ class WorkReplay {
     // and Task pairs may coexist with authority; disengaged means no missing
     // state. progress_seq remembers the last progress batch to reject duplicates.
     struct BatchPairing {
+        // One replacement's before-image identifiers survive metadata publication.
+        // Task state protects its own ordinary fields; footer closes the whole cohort.
+        struct ReauthorizationPair {
+            enum class Stage { state, metadata, command };
+            Stage stage = Stage::state; // Exact Goal state -> metadata/tasks -> command/footer.
+            uint64_t goal_id = 0;       // Exact retained target, positive when optional is engaged.
+            uint32_t goal_index = 0; // Stable during this batch; identifies the one mutable Goal.
+            uint32_t revision = 0;   // Positive user revision before the replacement.
+            uint64_t authority_seq = 0; // Last authority fact's original positive CAS.
+            uint64_t binding_seq = 0;   // Original generation expected by every direct live Task.
+        };
+        std::optional<ReauthorizationPair>
+            reauthorization; // Disengaged outside a replacement batch.
         // One optional work cleanup proof. A paused Goal additionally requires
         // every direct live Task's independent deny fact before the footer.
         struct WorkCleanupPair {
@@ -205,7 +245,9 @@ class WorkReplay {
         // Existing work/command partners, independently of the new scan footer.
         bool partners_complete() const {
             return !goal && !task && !task_authority && !goal_authority && !authority.pending() &&
-                   (!approval || approval->stage == ApprovalPair::Stage::complete);
+                   (!approval || approval->stage == ApprovalPair::Stage::complete) &&
+                   (!reauthorization ||
+                    reauthorization->stage == ReauthorizationPair::Stage::command);
         }
         // Every accepted pair in the batch has received its required partner.
         bool complete() const { return partners_complete() && !work_cleanup.pending(); }

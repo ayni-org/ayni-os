@@ -84,12 +84,12 @@ class GoalAuthorityTable {
     // Change only the authorization phase and stamp of a present complete row.
     // User pause and compatibility holds belong to their existing work owners.
     void pause(uint32_t goal_index, foundation::TransitionStamp stamp);
-    // Publish admitted dependencies for one proposal; retained references stay
-    // unchanged. Caller has checked the complete batch and invokes no callbacks.
-    void
-    approve(uint32_t goal_index,
-            const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
-            foundation::TransitionStamp stamp, BindingReference parent = {});
+    // Publish one admitted activation/replacement binding, preserving its Scope
+    // ceiling. Caller preflighted the whole batch; no callbacks may intervene.
+    void bind(uint32_t goal_index,
+              const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
+              foundation::TransitionStamp stamp, BindingReference parent = {},
+              InputResumeBoundary input = {});
     // Missing metadata is blocked; callers distinguish legacy holds separately.
     bool authorized(uint32_t goal_index, uint64_t goal_id) const;
 

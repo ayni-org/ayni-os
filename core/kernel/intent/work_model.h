@@ -42,6 +42,13 @@ struct OwnerClock {
     uint64_t (*now_us)(void *ctx) = nullptr; // Monotonic microseconds; null uses call's sample.
 };
 
+// Kernel-owned ingress sampling capability, borrowed for synchronous admission.
+// Only publication of a new explicit reauthorization calls sample, never retry.
+struct InputResumeSampler {
+    void *ctx = nullptr; // Borrowed ingress owner; none only when no sampler is supplied.
+    work::InputResumeBoundary (*sample)(void *) = nullptr; // Locked frontier; null is unavailable.
+};
+
 // One stable scan identity; an orphaned dedicated Grant may retain a Goal ID
 // whose table slot has been reused. That case has index == no_index.
 struct AuthorityCleanupGoal {
@@ -87,7 +94,9 @@ struct WorkModel {
     // was that transition.
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
-    work::WorkTables tables() { return {goals, tasks, agents, &goal_authority}; }
+    work::WorkTables tables(uint64_t durable_seq = UINT64_MAX) {
+        return {goals, tasks, agents, &goal_authority, durable_seq};
+    }
     // Export a staged immutable ceiling and select existing durable Grants.
     authority::GrantCheck prepare_goal_authority(const catalog::GoalType &type,
                                                  const GoalCreate &create, uint64_t now_us,
@@ -100,8 +109,15 @@ struct WorkModel {
     // Includes the owning Goal and its bounded ancestor chain.
     authority::GrantCheck check_goal_authority(uint32_t index, uint64_t now_us,
                                                uint64_t durable_seq) const;
+    // Immutable parent ceiling coverage; no current permission substitution.
+    bool parent_covers_authority(uint64_t parent_id, const work::GoalAuthorityRecord &record) const;
+    // Parent work/expiry and authorization are checked under the same owner sample.
+    authority::GrantCheck check_parent_authority(uint32_t parent_index, uint64_t now_us,
+                                                 uint64_t durable_seq) const;
     // Cross-table identity relation, shared by consumption and recovery proofs.
     bool matches_task_ceiling(const work::TaskAuthorityRecord &record, uint32_t goal_index) const;
+    // One preflight for runtime and replay, before replacing the Goal ceiling's selections.
+    authority::GrantCheck check_reauthorization_tasks(uint32_t goal_index) const;
     // Check the Task's own admitted identities against its immutable Goal ceiling.
     authority::GrantCheck check_task_authority(uint32_t task_index, uint64_t now_us,
                                                uint64_t durable_seq) const;
@@ -178,6 +194,7 @@ struct WorkModel {
     bool due_work_changed = false;
     uint64_t next_due_work_us = work::no_time;
     bool searched_with_id = true;
+    uint64_t searched_durable_seq = 0; // Due-search key, not permission state; 0 before search.
 };
 
 // Opens for the unchanged registered Principal already checked by the ABI
@@ -194,7 +211,8 @@ ayni_status_t open_session(WorkModel &model, const authority::Principal &princip
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
                            IntentOutcome &outcome, IntentFailure &failure,
                            ayni_status_t storage_status = AYNI_OK,
-                           uint64_t durable_seq = UINT64_MAX, OwnerClock clock = {});
+                           uint64_t durable_seq = UINT64_MAX, OwnerClock clock = {},
+                           InputResumeSampler input = {});
 
 // Records a local input from source as an occurrence, due at now_us, of
 // every goal whose trigger takes it, all in one transition (ADR-0021).
@@ -216,7 +234,8 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
 // goal table, each goal along at most goal_depth_max ancestors, and the task
 // table, only while due_work_changed is set, that time has come or the ids
 // have just run out.
-bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us);
+bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
+                      uint64_t durable_seq = UINT64_MAX);
 
 } // namespace ayni::kernel
 

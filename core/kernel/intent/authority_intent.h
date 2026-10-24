@@ -12,6 +12,10 @@ bool bound_management_session(const WorkModel &model, const authority::Session &
 ayni_status_t approve_goal(WorkModel &model, const Intent &intent,
                            const authority::Session &session, uint64_t now_us, uint64_t durable_seq,
                            IntentOutcome &outcome, IntentFailure &failure);
+// Rebind existing durable authority for one Goal/direct live cohort; no implicit Grant creation.
+ayni_status_t reauthorize_goal(WorkModel &model, const Intent &intent, uint64_t now_us,
+                               uint64_t durable_seq, InputResumeSampler input,
+                               IntentOutcome &outcome, IntentFailure &failure);
 
 // Session/catalog/subject resolution and one atomic Grant transition. The
 // caller has reserved command space and staged the exact command identity.
