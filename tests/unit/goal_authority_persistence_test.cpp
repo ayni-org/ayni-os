@@ -2614,21 +2614,30 @@ TEST(GoalReauthorizationPersistence, later_binding_cannot_hide_a_future_journal_
     control.run();
     ASSERT_EQ(control.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     const auto future = earlier_boot + 1U;
-    bool altered = false;
+    uint32_t metadata_changes = 0;
+    uint32_t result_changes = 0;
     for (auto &stored : image.log) {
-        if (stored.commit_seq != first.result.commit_seq) {
-            continue;
-        }
         auto batch = decode(stored);
+        bool altered = false;
         for (auto &row : batch.records) {
             if (row.header.type == goal_authority_record_type) {
                 GoalAuthorityRecord record{};
                 ASSERT_TRUE(read_goal_authority_record(row.body.data(), row.header.length, record));
+                if (record.goal_id != id ||
+                    record.binding.established_seq != first.result.commit_seq) {
+                    continue;
+                }
+                // Preserve the forged binding through every subsequent ordinary
+                // pause metadata record. Otherwise same-generation immutability
+                // masks the missing per-record boot check under test.
                 record.binding.input.incarnation = future;
                 std::vector<uint8_t> output(row.header.length);
                 write_goal_authority_record(record, output.data());
                 row.body = std::move(output);
-            } else if (row.header.type == ayni::kernel::command_record_type) {
+                ++metadata_changes;
+                altered = true;
+            } else if (stored.commit_seq == first.result.commit_seq &&
+                       row.header.type == ayni::kernel::command_record_type) {
                 ayni::kernel::CommandMapping mapping{};
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{};
@@ -2642,13 +2651,16 @@ TEST(GoalReauthorizationPersistence, later_binding_cannot_hide_a_future_journal_
                 std::vector<uint8_t> output(result_bytes.size);
                 ayni::kernel::write_work_authority_result(result, output.data());
                 std::copy(output.begin(), output.end(), const_cast<uint8_t *>(result_bytes.data));
+                ++result_changes;
+                altered = true;
             }
         }
-        stored = encode(batch);
-        altered = true;
-        break;
+        if (altered) {
+            stored = encode(batch);
+        }
     }
-    ASSERT_TRUE(altered);
+    ASSERT_GE(metadata_changes, 2U);
+    ASSERT_EQ(result_changes, 1U);
     Fixture restored;
     restored.work.node().config().grant_capacity = 3;
     restored.work.node().sim().durable_storage() = image;

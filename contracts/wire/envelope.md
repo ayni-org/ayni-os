@@ -84,4 +84,4 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-WIRE-020 | 重新授权原始身份含完整回显及双 CAS；内部 canonical 固定前缀为 kind/revision（u32）、Goal ID/授权 CAS（u64），再接共享原创建 echo；重试不依赖当前目标或目录，字节失败不发布部分解码 | 回收后同命令被新受理；变更旧 CAS 仍算精确重试；截断使输出保留半份新回显 | `GoalReauthorization.exact_retry_survives_goal_reclamation_and_changed_echo_conflicts`、`GoalReauthorizationCodec.exact_identity_round_trip_and_all_truncations_are_atomic`、`GoalReauthorization.requires_management_and_durable_existing_authority`；ADR-0038 |
+| C-WIRE-020 | 重新授权原始身份含完整回显及双 CAS；内部 canonical 固定前缀为 kind/revision（u32）、Goal ID/授权 CAS（u64），再接共享原创建 echo；重试不依赖当前目标或目录，字节失败不发布部分解码 | 回收后同命令被新受理；变更旧 CAS 仍算精确重试；截断使输出保留半份新回显 | M1 已实现（完整管理身份与重试）：`GoalReauthorization.exact_retry_survives_goal_reclamation_and_changed_echo_conflicts`、`GoalReauthorizationCodec.exact_identity_round_trip_and_all_truncations_are_atomic`、`GoalReauthorization.requires_management_and_durable_existing_authority`；ADR-0038 |
