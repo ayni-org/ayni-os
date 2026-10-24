@@ -63,6 +63,9 @@ class EventIngress {
     work::InputResumeBoundary resume_boundary() const;
 
   private:
+    // Test-only peer sets the otherwise non-enumerable u64 resource boundary.
+    // It adds no runtime path, state or test-library dependency to Core.
+    friend class EventIngressTestPeer;
     const ayni_host_v1 &host_;
     EventQueue queue_;
     // Lock-owned queue identity/order; zero incarnation before first RUNNING.

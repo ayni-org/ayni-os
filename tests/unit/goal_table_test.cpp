@@ -214,9 +214,10 @@ TEST(GoalTable, lineage_includes_start_and_stops_at_the_first_refusal) {
 // periodic/input backlog, preserves once/delay deadlines and ordinary pause.
 TEST(GoalTable, authority_resume_skips_backlog_without_restarting_once_or_delay) {
     constexpr uint64_t started = 100;
-    constexpr uint64_t elapsed = 300;
+    constexpr uint64_t period = AYNI_TRIGGER_PERIOD_MIN_US;
+    constexpr uint64_t elapsed = started + 10U * period;
     Goals goals(small);
-    const auto interval = goals.create(0, owner, {}, {AYNI_TRIGGER_INTERVAL, 10, 20}, started);
+    const auto interval = goals.create(0, owner, {}, {AYNI_TRIGGER_INTERVAL, period, period}, started);
     const auto delayed = goals.create(0, owner, {}, {AYNI_TRIGGER_DELAY, 10, 0}, started);
     const auto once = goals.create(0, owner, {}, {AYNI_TRIGGER_ONCE, 0, 0}, started);
     const auto input = goals.create_input("button");
@@ -226,12 +227,27 @@ TEST(GoalTable, authority_resume_skips_backlog_without_restarting_once_or_delay)
         goals->skip_authority_backlog(goals.index_of(id), elapsed, goals.next_stamp());
     }
     EXPECT_EQ(goals.goal(interval).lifecycle, AYNI_GOAL_PAUSED);
-    EXPECT_EQ(goals.goal(interval).cursor.next_due_us, 310U);
+    EXPECT_EQ(goals.goal(interval).cursor.next_due_us, started + 11U * period);
     EXPECT_EQ(goals.goal(interval).occurrences_skipped, 10U);
     EXPECT_EQ(goals.goal(delayed).cursor.next_due_us, 110U);
     EXPECT_EQ(goals.goal(once).cursor.next_due_us, started);
     EXPECT_EQ(goals.goal(input).cursor.waiting, 0U);
     EXPECT_EQ(goals.goal(input).occurrences_skipped, 1U);
+}
+
+// ADR-0038 decision 11: a future interval occurrence remains on its original
+// cadence; an explicit resume cannot skip work that has not become due.
+TEST(GoalTable, authority_resume_preserves_a_future_interval_occurrence) {
+    constexpr uint64_t started = 100;
+    constexpr uint64_t delay = 100;
+    Goals goals(small);
+    const auto id = goals.create(0, owner, {},
+                                 {AYNI_TRIGGER_INTERVAL, delay, AYNI_TRIGGER_PERIOD_MIN_US}, started);
+    ASSERT_NE(id, 0U);
+    goals->skip_authority_backlog(goals.index_of(id), started + delay - 1U, goals.next_stamp());
+    EXPECT_EQ(goals.goal(id).cursor.next_due_us, started + delay);
+    EXPECT_EQ(goals.goal(id).cursor.taken, 0U);
+    EXPECT_EQ(goals.goal(id).occurrences_skipped, 0U);
 }
 
 // ADR-0038 decision 8: scans order stable IDs rather than storage slots;

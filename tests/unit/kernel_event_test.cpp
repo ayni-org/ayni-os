@@ -6,6 +6,7 @@
 // moves it.
 
 #include "kernel_node.h"
+#include "ingress_test_peer.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -736,6 +737,27 @@ TEST(KernelEvents, accepted_input_order_and_resume_frontier_share_the_ingress_lo
     const auto before = accepted;
     EXPECT_FALSE(ingress.take_local_input(source, &accepted));
     EXPECT_EQ(accepted.through, before.through);
+}
+
+// ABI 0.25: an exhausted accepted-input order is a permanent resource boundary
+// of this queue instance. White-box setup does not bypass the public refusal.
+TEST(KernelEvents, exhausted_input_order_refuses_without_queueing_and_process_restart_resets_it) {
+    Node node;
+    node.run();
+    const auto before = node.kernel()->ingress.resume_boundary();
+    ayni::kernel::EventIngressTestPeer::exhaust_input_order(node.kernel()->ingress);
+    const auto wakes = node.sim().wake_count();
+    EXPECT_EQ(post(node.kernel()), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(node.kernel()->ingress.queued(), 0U);
+    EXPECT_EQ(node.kernel()->ingress.resume_boundary().through, UINT64_MAX);
+    EXPECT_EQ(node.sim().wake_count(), wakes);
+    EXPECT_EQ(node.sim().calls_under_lock(), 0U);
+    node.reboot();
+    node.recover();
+    EXPECT_NE(node.kernel()->ingress.resume_boundary().incarnation, before.incarnation);
+    EXPECT_EQ(node.kernel()->ingress.resume_boundary().through, 0U);
+    EXPECT_EQ(post(node.kernel()), AYNI_OK);
+    EXPECT_EQ(node.kernel()->ingress.resume_boundary().through, 1U);
 }
 
 // ADR-0038 decision 11: one Goal's resume waterline never drops input for

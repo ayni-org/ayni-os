@@ -66,7 +66,7 @@ TEST(WorkAuthorityCleanup, codec_rejects_truncation_and_invalid_state_without_ou
     write_authority_cleanup_record(cleanup.record(), bytes.data());
     AuthorityCleanupRecord out{};
     out.stamp = {7, 7};
-    for (uint32_t size = 0; size < bytes.size(); ++size) {
+    for (uint32_t size = 0; size <= bytes.size(); ++size) {
         if (size == authority_cleanup_record_size) {
             continue;
         }
@@ -77,6 +77,7 @@ TEST(WorkAuthorityCleanup, codec_rejects_truncation_and_invalid_state_without_ou
     for (const auto &bad : {
              AuthorityCleanupRecord{{1, 0}},
              AuthorityCleanupRecord{{1, 1}, AuthorityScanPhase::idle, 0, last, 0},
+             AuthorityCleanupRecord{{1, 1}, AuthorityScanPhase::idle, 0, 0, last},
              AuthorityCleanupRecord{{}, AuthorityScanPhase::scanning, 0, last, 0},
              AuthorityCleanupRecord{{1, 1}, AuthorityScanPhase::scanning, last, last, 0},
              AuthorityCleanupRecord{{1, 1}, AuthorityScanPhase::scanning, 0, last, 1},
