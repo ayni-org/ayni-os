@@ -3067,4 +3067,75 @@ TEST(WorkAuthorityRestart, shared_tasks_and_adjacent_goals_keep_independent_cata
     EXPECT_EQ(continued, (std::set<uint64_t>(tasks.begin(), tasks.end())));
 }
 
+// C-VER-003/C-AUTH-029/033: every copied authority query refuses bad framing,
+// unavailable lifecycle and unknown identities without publishing a prefix.
+template <typename Info, typename Query>
+void query_refusals_preserve_output(ayni_kernel_t *configuring, ayni_kernel_t *running,
+                                    Query query) {
+    Info output;
+    std::memset(&output, 0xa5, sizeof(output));
+    output.struct_size = sizeof(output);
+    const auto expect_unchanged = [&](ayni_status_t expected, auto call) {
+        std::array<uint8_t, sizeof(Info)> before{};
+        std::memcpy(before.data(), &output, sizeof(output));
+        EXPECT_EQ(call(), expected);
+        EXPECT_EQ(std::memcmp(before.data(), &output, sizeof(output)), 0);
+    };
+    expect_unchanged(AYNI_INVALID_ARGUMENT,
+                     [&] { return query(static_cast<ayni_kernel_t *>(nullptr), &output); });
+    EXPECT_EQ(query(running, static_cast<Info *>(nullptr)), AYNI_INVALID_ARGUMENT);
+    output.struct_size = sizeof(output) - 1U;
+    expect_unchanged(AYNI_INVALID_ARGUMENT, [&] { return query(running, &output); });
+    output.struct_size = sizeof(output) + 1U;
+    expect_unchanged(AYNI_UNSUPPORTED_VERSION, [&] { return query(running, &output); });
+    output.struct_size = sizeof(output);
+    expect_unchanged(AYNI_INVALID_STATE, [&] { return query(configuring, &output); });
+    expect_unchanged(AYNI_NOT_FOUND, [&] { return query(running, &output); });
+}
+
+TEST(AuthorityQueries, all_copied_queries_preserve_output_on_each_framing_failure) {
+    AuthorityWork configuring;
+    configuring.work.node().create();
+    AuthorityWork running;
+    running.run();
+    auto *config = configuring.work.kernel();
+    auto *kernel = running.work.kernel();
+    query_refusals_preserve_output<ayni_grant_field_info_v1>(
+        config, kernel, [](auto *k, auto *out) { return ayni_get_grant_field(k, 0, 0, out); });
+    query_refusals_preserve_output<ayni_goal_authority_info_v1>(
+        config, kernel, [](auto *k, auto *out) { return ayni_get_goal_authority(k, 0, out); });
+    query_refusals_preserve_output<ayni_goal_requirement_info_v1>(
+        config, kernel, [](auto *k, auto *out) { return ayni_get_goal_requirement(k, 0, 0, out); });
+    query_refusals_preserve_output<ayni_goal_requirement_field_info_v1>(
+        config, kernel,
+        [](auto *k, auto *out) { return ayni_get_goal_requirement_field(k, 0, 0, 0, out); });
+    query_refusals_preserve_output<ayni_task_authority_info_v1>(
+        config, kernel, [](auto *k, auto *out) { return ayni_get_task_authority(k, 0, out); });
+    query_refusals_preserve_output<ayni_task_authority_reference_v1>(
+        config, kernel,
+        [](auto *k, auto *out) { return ayni_get_task_authority_reference(k, 0, 0, out); });
+}
+
+// C-AUTH-029: invalid output pointers cannot change immutable parameter bytes
+// or publish a size; this also covers a genuinely empty parameter payload.
+TEST(AuthorityQueries, parameter_query_refuses_null_outputs_and_accepts_empty_payload) {
+    AuthorityWork node;
+    node.run();
+    node.count = 0;
+    const auto goal = node.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(goal.status, AYNI_OK);
+    auto *kernel = node.work.kernel();
+    uint32_t size = 123;
+    EXPECT_EQ(ayni_get_goal_parameters(nullptr, goal.result.object.id, nullptr, 0, &size),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(size, 123U);
+    EXPECT_EQ(ayni_get_goal_parameters(kernel, goal.result.object.id, nullptr, 1, &size),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(size, 123U);
+    EXPECT_EQ(ayni_get_goal_parameters(kernel, goal.result.object.id, nullptr, 0, nullptr),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_get_goal_parameters(kernel, goal.result.object.id, nullptr, 0, &size), AYNI_OK);
+    EXPECT_EQ(size, 0U);
+}
+
 } // namespace
