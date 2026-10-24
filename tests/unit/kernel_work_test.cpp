@@ -745,7 +745,7 @@ TEST(WorkModel, unsupported_intents_come_before_readiness_and_the_session) {
     ayni_intent_v1 intent = work.intent(AYNI_INTENT_GOAL_CREATE, &body);
 
     for (const ayni_intent_kind_t kind :
-         {AYNI_INTENT_GOAL_REAUTHORIZE + 1U, 16U, 17U, 0xFFFFFFFFU}) {
+         {AYNI_INTENT_TASK_RAISE_MODEL_LIMIT + 1U, 16U, 17U, 0xFFFFFFFFU}) {
         intent.kind = kind;
         intent.body = nullptr; // not checked for a kind that is not implemented
         expect_refused(work.submit(intent), AYNI_UNSUPPORTED, AYNI_REASON_INTENT_UNSUPPORTED);
