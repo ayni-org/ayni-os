@@ -274,6 +274,27 @@ void GoalTable::propose(uint32_t index) {
     goals_[index].cursor = {0, no_time};
 }
 
+GoalTable::ChangeCheck GoalTable::check_approval(uint32_t index, uint32_t expected_revision,
+                                                 uint64_t now_us) const {
+    const auto &goal = goals_[index];
+    if (goal.revision != expected_revision) {
+        return ChangeCheck::revision_conflict;
+    }
+    if (goal.lifecycle != AYNI_GOAL_PROPOSED || is_held(goal) ||
+        (goal.expires_us != no_time && goal.expires_us <= now_us)) {
+        return ChangeCheck::invalid_state;
+    }
+    return at_largest_revision(goal) ? ChangeCheck::revision_exhausted : ChangeCheck::allowed;
+}
+
+void GoalTable::approve(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp) {
+    auto &goal = goals_[index];
+    goal.lifecycle = AYNI_GOAL_ACTIVE;
+    ++goal.revision;
+    goal.cursor = start_schedule(goal.trigger, now_us);
+    goal.commit_seq = stamp.commit_seq;
+}
+
 void GoalTable::authority_changed(uint32_t index, foundation::TransitionStamp stamp) {
     goals_[index].commit_seq = stamp.commit_seq;
 }

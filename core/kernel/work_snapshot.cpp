@@ -42,7 +42,8 @@ uint32_t command_size(const CommandMapping &mapping) {
     return command_record_size_for(mapping) + command_tail_size;
 }
 uint32_t command_max(const KernelCapacities &capacities) {
-    return command_record_max(authority_command_max_bytes(capacities.authority_scope_max_bytes)) +
+    return command_record_max(exact_command_max_bytes(capacities.authority_scope_max_bytes,
+                                                      capacities.goal_parameter_max_bytes)) +
            command_tail_size;
 }
 
@@ -815,6 +816,11 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
                 return durability::BatchCheck::corrupt;
             }
         }
+    }
+    if (mapping.kind == AYNI_INTENT_GOAL_APPROVE &&
+        (foundation::id_boot_epoch(mapping.object.id) > metadata_.boot_epoch ||
+         !WorkReplay(model_).matches_goal_approval(mapping, canonical))) {
+        return durability::BatchCheck::corrupt;
     }
     last_command_seq_ = mapping.commit_seq;
     return check_of(model_.commands.restore_checked(mapping, floor, canonical));

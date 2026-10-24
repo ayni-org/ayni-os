@@ -6,7 +6,7 @@
 
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
-| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 36 | 11 |
+| [domain/authority_and_trust.md](domain/authority_and_trust.md) | 37 | 13 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -21,10 +21,10 @@
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/policy_interface.md](host/policy_interface.md) | 11 | 7 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
-| [storage/records.md](storage/records.md) | 19 | 14 |
+| [storage/records.md](storage/records.md) | 19 | 15 |
 | [wire/envelope.md](wire/envelope.md) | 19 | 3 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 328 | 95 |
+| 合计 | 329 | 98 |
 
 ## 计划章节 → 契约文档
 
@@ -176,6 +176,8 @@
 | C-AUTH-026 | M1 已实现并通过 Native 场景：`RevokeApi.cleanup_is_bounded_and_never_rewrites_the_roots_terminal_commit_order`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`、`GrantRevoke.snapshot_frontier_covers_active_and_terminal_descendants_atomically`、`GrantRevokeReplay.snapshot_root_frontier_cannot_exclude_a_retained_descendant`；最终交付见 ADR-0031；C-STORE-016 |
 | C-AUTH-027 | M1 已实现并通过 Native 场景：`RevokeApi.revision_two_accepted_after_uncommitted_cleanup_can_change_restored_active_child`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`、`CommandRevoke.impossible_accepted_revision_is_rejected_atomically_for_every_effect`；最终交付见 ADR-0031 |
 | C-AUTH-028 | M1 已实现（需求导出与查询）：`GoalRequirements.missing_grant_creates_proposal_without_tasks_and_copies_scope`、`GoalRequirements.exporter_failure_is_sticky_and_refusal_allocates_nothing`、`GoalRequirements.invalid_exports_and_reentry_preserve_the_original_status`、`GoalRequirements.query_failures_publish_no_partial_fields`；ADR-0037 |
+| C-AUTH-031 | M1 已实现（绑定、批量预检、公开原子批准和现有消费门控）：`GoalGrantTable.whole_batch_reservations_are_distinct_and_refusal_changes_no_fact`、`GoalGrantTable.a_batch_combines_tail_slots_with_distinct_safe_replacements`、`GoalGrantTable.bound_admission_rejects_delegation_and_preserves_failed_plan`、`GoalGrants.a_bound_grant_cannot_authorize_other_or_child_goals_and_ends_with_its_goal`、`GoalGrants.a_reclaimed_goal_identity_cannot_authorize_the_new_slot_owner`、`KernelId.batch_availability_does_not_consume_or_wrap_the_remaining_ids`；ADR-0037 |
+| C-AUTH-032 | M1 已实现（公开批准、拒绝原子性、复制查询与最低消费门控）：`GoalApproval.fills_only_original_missing_items_and_retries_without_new_grants`、`GoalApproval.insufficient_batch_capacity_and_invalid_approval_leave_the_proposal_intact`、`GoalApproval.a_lost_original_dependency_refuses_approval_without_reselection`、`GoalApproval.changed_echo_is_refused_and_exact_retry_survives_terminal_target_reclamation`、`GoalApproval.activation_starts_delay_but_storage_wait_never_extends_grant_lifetime`、`GoalApproval.durable_approval_executes_and_voice_or_expired_proposals_are_refused`、`GoalApproval.parameter_query_preserves_small_buffer_and_reports_original_duration`、`GoalApproval.multiple_missing_items_publish_distinct_grants_in_one_transition`、`GoalApprovalCodec.canonical_round_trip_and_every_truncation_preserve_identity`；ADR-0037 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
 | C-SUB-004 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |
@@ -257,6 +259,7 @@
 | C-STORE-015 | M1 已实现（Grant 创建/期限及完整命令的 journal/snapshot）：`GrantApi.interrupted_append_recovers_both_create_and_exact_mapping_or_neither`、`GrantReplay.neither_a_create_nor_an_exact_mapping_may_replay_without_its_partner`、`GrantReplay.new_authority_records_require_the_flag_even_for_unknown_future_versions`、`GrantReplay.snapshot_orders_a_reused_child_slot_after_its_parent_and_rejects_the_reverse`；ADR-0030 |
 | C-STORE-016 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.root_record_and_exact_mapping_require_each_other_in_one_batch`、`GrantRevokeReplay.descendant_state_and_progress_are_an_atomic_pair`、`GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`、`GrantRevokeReplay.descendant_and_progress_must_name_the_same_root_and_cursor`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`；最终交付见 ADR-0031；C-COMMIT-005 |
 | C-STORE-017 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
+| C-STORE-019 | M1 已实现（专属记录、版本边界和整批批准恢复）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GoalApprovalPersistence.public_approval_survives_journal_and_snapshot_with_exact_retry`、`GoalApprovalPersistence.missing_partner_or_mismatched_exact_command_restricts_recovery`、`GoalApprovalPersistence.snapshot_command_echo_cannot_disagree_with_retained_creation`；ADR-0037 |
 | C-WIRE-017 | M1 已实现（创建命令完整身份与同批结果）：`CommandCanonical.sorting_and_deduplication_keep_omission_distinct_from_explicit_constraints`、`CommandTable.a_digest_collision_does_not_replace_exact_byte_equality`、`GrantReplay.a_valid_but_expanded_create_scope_cannot_disagree_with_its_exact_command`；ADR-0030；C-COMMIT-005 |
 | C-WIRE-018 | M1 已实现并通过 Native 场景：`CommandRevoke.canonical_has_a_fixed_independent_little_endian_oracle`、`RevokeApi.pending_identity_precedes_every_implemented_kind_and_later_window_floor`、`PendingRevoke.full_revoke_identity_still_wins_when_the_window_digest_collides`；最终交付见 ADR-0031 |
 | C-WIRE-019 | M1 已实现并通过 Native 场景：`RevokeApi.applied_and_durable_receipts_keep_original_result_across_a_new_session`、`RevokeApi.receipt_query_errors_leave_caller_owned_output_unchanged`、`RevokeApi.ordinary_receipt_floor_and_bad_query_shapes_preserve_the_output`、`RevokeApi.receipt_window_is_not_exposed_before_initial_recovery_finishes`；最终交付见 ADR-0031；C-AUTH-025 |

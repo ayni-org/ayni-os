@@ -787,7 +787,7 @@ void GrantTable::resolve_catalog(const catalog::CapabilityRegistry &catalog) {
                           lookup.kind == catalog::CapabilityRegistry::Lookup::Kind::unknown_id
                               ? AYNI_REASON_CAPABILITY_UNKNOWN
                               : AYNI_REASON_CAPABILITY_VERSION);
-        } else if (!same_bytes(source_domain(index), catalog.domain_view(lookup.index))) {
+        } else if (!catalog.matches_domain(lookup.index, source_domain(index))) {
             hold_restored(index, AYNI_REASON_GRANT_CATALOG_CHANGED);
         }
     }

@@ -26,7 +26,7 @@
 | 普通事件入口（`ingress_capacity`，1–4096） | 128 项 | §4.2 | 可丢弃事件覆盖同一订阅、同一非零合并键的最新一条，否则逐出最旧的可丢弃事件；其他返回 `BUSY`（ADR-0015） |
 | 单个事件正文（`event_body_max_bytes`，1–4096） | 128 字节 | ADR-0015 | 超出返回 `INVALID_ARGUMENT` |
 | 预留控制容量（完成槽，`completion_slot_count`，1–1024） | 16，且不小于在途请求上限 | §4.2 | 不调用端口，返回 `BUSY`（C-HOST-006） |
-| 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W为当前记录与容量的保守批次上界，计入Grant/撤销根及progress/完整命令，不要求各类记录同时发生） | 0：3×max(W+4,256)，与query/create共用具名容量公式 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
+| 存储缓冲（`storage_buffer_bytes`，0 或 256–1048576，且不小于 W + 4；W为当前记录与容量的保守批次上界，计入min(需求容量,Grant容量)条Grant创建/撤销根及progress/完整命令，不要求各类记录同时发生） | 0：3×max(W+4,256)，与query/create共用具名容量公式 | ADR-0016、ADR-0026 | 恢复时是读取缓冲，Host 报告完整批次所需长度后以 `STATE_EXCEEDS_CAPACITY` 进入 `RESTRICTED`；运行中容纳尚未存储的批次，没有放下 W 的空间时意图返回 `BUSY`（`STORAGE_BACKLOG`），到期工作、决策与事件等待追加完成 |
 | 每个 principal 保留的命令映射（`command_capacity`，1–1024） | 32 | ADR-0026 | 未pin且`command_id`最小的映射让位并提高下限；全pin普通新命令BUSY/COMMAND_PINNED；已接受撤销仍先查pending；未映射且不大于下限的命令返回 `EXPIRED`（`COMMAND_EXPIRED`） |
 | 活跃外部推理槽 | 1 | §4.2 | 排队（C-RES-004） |
 | 每个 Task 的模型决策次数 | 8 | §4.2 | Task 暂停并报告原因 |
@@ -37,7 +37,7 @@
 | 每能力授权字段 / 每字段集合原始输入成员（不可配置） | 8 / 8 | ADR-0028、ADR-0029 | 超限拒绝；先检查原始 count 再排序去重，不用重复项绕过输入工作量上限。`CapabilityRegistry.token_count_is_bounded_before_deduplication_or_member_access`、`CapabilityRegistry.invalid_top_level_descriptors_never_take_a_slot` |
 | Grant（`grant_capacity`，1–1024） | 32 | ADR-0030 | 仅最早且终态持久的安全叶节点可让位，无候选返回 `CAPACITY_EXCEEDED/GRANT_CAPACITY`；C 已实现并完成 Native 验证，D Gate/cleanup 安全条件见 ADR-0031 |
 | 委派深度（`grant_delegation_depth_max`，1–16，按边数根0） | 4 | ADR-0030 | `CAPACITY_EXCEEDED/GRANT_DEPTH`；该配置限制遍历/合法链，不新增每节点子数组 |
-| 每条auth命令完整规范请求 | 创建84 B固定头上界+`authority_scope_max_bytes`；撤销固定16 B | ADR-0030、0031 | CommandTable逐槽字节stride及有界scratch，超限明确拒绝；FNV仅索引，不降成摘要比较 |
+| 每条auth命令完整规范请求 | 创建84 B固定头上界+`authority_scope_max_bytes`；撤销固定16 B；批准156 B固定头/ID上界+`goal_parameter_max_bytes`，stride取创建与批准的较大值 | ADR-0030、0031 | CommandTable逐槽字节stride及有界scratch，超限明确拒绝；FNV仅索引，不降成摘要比较 |
 | 撤销 Gate / 专用 pending（随 grant_capacity，无新配置） | 各32项；最多每target一项 | ADR-0031 | 各owner从caller arena有界分配，超限 `CAPACITY_EXCEEDED/REVOCATION_CAPACITY`；拒绝不装半Gate、不占命令ID；Native caller arena 已两轮严格C99量测，见下文；ESP32资源不据此推定 |
 | Resource、订阅、排队长度 | 可配置 | §4.2 | `CAPACITY_EXCEEDED`，各有耗尽测试 |
 | 控制帧 | 8 KiB，嵌套深度 8 | §3.4 | 拒绝（C-JSON-001、C-JSON-002） |

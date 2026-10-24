@@ -214,6 +214,28 @@ ayni_status_t GoalAuthorityTable::stage(GoalAuthorityRecord &out,
     return AYNI_OK;
 }
 
+uint32_t missing_requirement_mask(const GoalAuthorityRecord &record) {
+    uint32_t mask = 0;
+    for (uint32_t index = 0; index < record.count; ++index) {
+        if (record.requirements[index].dependency.grant_id == 0U) {
+            mask |= uint32_t{1} << index;
+        }
+    }
+    return mask;
+}
+
+void GoalAuthorityTable::approve(
+    uint32_t goal_index,
+    const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
+    foundation::TransitionStamp stamp) {
+    auto &slot = slots_[goal_index];
+    for (uint32_t index = 0; index < slot.count; ++index) {
+        requirements_[requirement_index(goal_index, index)].dependency = references[index];
+    }
+    slot.phase = GoalAuthorityPhase::authorized;
+    slot.stamp = stamp;
+}
+
 void GoalAuthorityTable::pause(uint32_t goal_index, foundation::TransitionStamp stamp) {
     slots_[goal_index].phase = GoalAuthorityPhase::paused;
     slots_[goal_index].stamp = stamp;

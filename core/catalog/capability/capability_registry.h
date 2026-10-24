@@ -50,6 +50,8 @@ class CapabilityRegistry {
     Lookup find(ayni_string_v1 id, uint32_t version) const;
     // Borrows metadata at a valid slot index.
     const Capability &at(uint32_t index) const { return capabilities_[index]; }
+    // Complete canonical domain equality for a saved authorization ceiling.
+    bool matches_domain(uint32_t index, ayni_bytes_v1 original) const;
     // Number of occupied slots.
     uint32_t size() const { return capabilities_.size(); }
     // Borrows canonical bytes at a valid slot until registry destruction.

@@ -54,6 +54,9 @@ struct GoalAuthorityRecord {
 // not consult today's catalog or claim that any selected Grant is usable.
 bool valid_goal_authority_record(const GoalAuthorityRecord &record);
 
+// Original absent references, independent of the current validity of selected Grants.
+uint32_t missing_requirement_mask(const GoalAuthorityRecord &record);
+
 // Owns one independently bounded slot per GoalTable index. Replacement clears
 // the old Goal's metadata; consumers also match goal_id so slot reuse cannot
 // transfer authority. All methods run on the Kernel owner thread.
@@ -82,6 +85,12 @@ class GoalAuthorityTable {
     // Change only the authorization phase and stamp of a present complete row.
     // User pause and compatibility holds belong to their existing work owners.
     void pause(uint32_t goal_index, foundation::TransitionStamp stamp);
+    // Publish admitted dependencies for one proposal; retained references stay
+    // unchanged. Caller has checked the complete batch and invokes no callbacks.
+    void
+    approve(uint32_t goal_index,
+            const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
+            foundation::TransitionStamp stamp);
     // Missing metadata is blocked; callers distinguish legacy holds separately.
     bool authorized(uint32_t goal_index, uint64_t goal_id) const;
 

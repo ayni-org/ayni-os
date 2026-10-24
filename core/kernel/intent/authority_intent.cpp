@@ -1,8 +1,7 @@
 #include "kernel/intent/authority_intent.h"
 
 namespace ayni::kernel {
-namespace {
-// C-AUTH-019/024: both authority commands require the current durable owner
+// C-AUTH-019/024/032: both authority commands require the current durable owner
 // binding and an authenticated management channel, independent of the payload.
 bool bound_management_session(const WorkModel &model, const authority::Session &session,
                               uint64_t durable_seq) {
@@ -13,6 +12,7 @@ bool bound_management_session(const WorkModel &model, const authority::Session &
            binding->stamp.commit_seq <= durable_seq;
 }
 
+namespace {
 ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, IntentFailure &failure,
                      ayni_object_ref_v1 object = {}) {
     failure = {reason, object};

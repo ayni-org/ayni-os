@@ -80,9 +80,17 @@ static int check_work_model(ayni_kernel_t *kernel) {
     ayni_task_info_v1 task_info = {0};
     ayni_grant_info_v1 grant_info = {0};
     ayni_grant_field_info_v1 grant_field = {0};
+    uint32_t parameter_size = 0;
+    ayni_goal_approve_v1 approval = {0};
     uint64_t session_id = 0;
     int failures = 0;
 
+    approval.struct_size = sizeof approval;
+    approval.lifetime = AYNI_GRANT_PERMANENT;
+    failures += expect(approval.duration_us == 0u, "permanent approval duration");
+    failures += expect(ayni_get_goal_parameters(kernel, 1u, NULL, 0u, &parameter_size) ==
+                           AYNI_INVALID_STATE,
+                       "parameters before start");
     owner.struct_size = (uint32_t)sizeof owner;
     owner.kind = AYNI_PRINCIPAL_OWNER;
     owner.principal_id = 7u;

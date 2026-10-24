@@ -195,6 +195,11 @@ class GoalTable {
 
     // Newly inserted, same transition: withhold all triggers until approval.
     void propose(uint32_t index);
+    // Only PROPOSED, unheld, unexpired work can be approved at its exact revision.
+    ChangeCheck check_approval(uint32_t index, uint32_t expected_revision, uint64_t now_us) const;
+    // After successful whole-batch admission, start the original trigger now;
+    // the original expiry remains unchanged. No callbacks may intervene.
+    void approve(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp);
     // Authorization changed autonomously; preserve user lifecycle and revision,
     // like trigger progress, but journal this Goal state with the metadata.
     void authority_changed(uint32_t index, foundation::TransitionStamp stamp);

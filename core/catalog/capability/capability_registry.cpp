@@ -3,6 +3,7 @@
 #include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
 
+#include <cstring>
 #include <limits>
 
 namespace ayni::catalog {
@@ -77,6 +78,12 @@ uint8_t *CapabilityRegistry::domain_at(uint32_t index) const {
 
 ayni_bytes_v1 CapabilityRegistry::domain_view(uint32_t index) const {
     return {domain_at(index), at(index).domain_size};
+}
+
+bool CapabilityRegistry::matches_domain(uint32_t index, ayni_bytes_v1 original) const {
+    const auto current = domain_view(index);
+    return original.size == current.size && original.data != nullptr &&
+           std::memcmp(original.data, current.data, current.size) == 0;
 }
 
 } // namespace ayni::catalog

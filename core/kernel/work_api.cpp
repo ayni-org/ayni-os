@@ -162,6 +162,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.trigger_period_us = goal.trigger.period_us;
     info.next_due_us = goal.cursor.next_due_us;
     info.expires_us = goal.expires_us;
+    info.original_expiry_us = goal.expiry_after_us;
     info.occurrences_skipped = goal.occurrences_skipped;
     info.skip_reason = goal.skip_reason;
     info.hold_reason = goal.hold_reason;
@@ -608,6 +609,31 @@ ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_i
 
 // Summary and per-entry queries expose saved evidence separately from current
 // usability. A query cannot select new Grants or clear an authorization pause.
+// Copy immutable input bytes; sizing cannot expose a partially copied result.
+ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                       uint8_t *buffer, uint32_t capacity, uint32_t *out_size) {
+    if (kernel == nullptr || out_size == nullptr || (buffer == nullptr && capacity != 0U)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (!answers_queries(kernel->lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.goals.find(goal_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto parameters = kernel->work.goals.parameters(index);
+    if (capacity < parameters.size) {
+        *out_size = parameters.size;
+        return AYNI_BUFFER_TOO_SMALL;
+    }
+    if (parameters.size != 0U) {
+        std::memcpy(buffer, parameters.data, parameters.size);
+    }
+    *out_size = parameters.size;
+    return AYNI_OK;
+}
+
 ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal_id,
                                       ayni_goal_authority_info_v1 *out_info) {
     if (kernel == nullptr || out_info == nullptr) {

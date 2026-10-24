@@ -182,7 +182,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 | 8 `TASK_CHECKPOINT` | 与日志正文相同，包含写入方策略 ID、版本及原检查点；没有写入方时不写该记录 | 日志正文长度 |
 | 6 `TASK_STATE` | 与日志正文相同，在同一 Task 的全部步骤与检查点之后 | 32 |
 | 13 `GRANT_CREATE` | v1为创建正文+created/last stamp（各u64×2）+revision/lifecycle（u32×2）；v2再接revoked_by_root_id/cleanup_after/cleanup_through（u64×3）、cleanup stamp（u64×2）；v3使用专属创建正文并保留相同清理尾部；均无deadline/hold/Gate | v1正文+40；通用v2正文+80，最大192+2×scope_max_bytes；专属v3为绑定创建正文+80，最大200+2×scope_max_bytes |
-| 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3日志正文、effect及完整canonical（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88 |
+| 9 `COMMAND_MAPPING` | 保留该条v1/v2/v3/v4日志正文、effect及完整canonical（如有），再接原接受批次的`commit_seq` u64 | v1为60；v2为日志正文长度+8；v3为88；v4为日志正文长度+8 |
 
 顺序为可选的单例 `OWNER_BINDING`、全部持久实例（不含 `instance_id=0` 的本次注册项）、按父先子后深度排序的Grant、按深度从小到大的 Goal（v2 后紧接 type 17，可跨页）、每个 Task 的元数据/逐条步骤/检查点/状态，最后按原接受 `commit_seq` 递增的命令映射。静态导入允许终态父子与已经不存在的 `replaced_goal_id`、`replaced_task_id`、`replaced_grant_id`前驱，仍检查 ID 唯一、owner、父子深度、版本、游标、状态与最终跨表一致性。原始创建身份、最新提交、步骤提交及检查点提交均保留，不改写成 `S`，以保持 READY 顺序、终态回收顺序与命令重试结果。
 
@@ -196,7 +196,15 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 自 E3a（ADR-0037）起，通用 Grant 的旧字节保持不变。专属创建使用 REQUIRED type 13/v2：完整旧 type 13/v1 正文后接非零 bound_goal_id（u64，小端），该绑定必须为早于此 Grant ID 的合法 Kernel ID，且 parent_grant_id、flags 均为 0。绑定只允许该 Goal 消费，不能委派；不能用普通 GRANT_CREATE 的完整 canonical 命令证明此绑定。
 
-专属快照使用 REQUIRED type 13/v3：上述创建正文加原 v2 的 80 B 状态/清理尾部；最大为 200 + 2×scope_max_bytes。通用快照仍写 v2 并可读历史 v1；journal v2 和 snapshot v2 含义不同，由上下文分类。新版本零绑定、旧版本多出绑定字节、版本与正文尾部不匹配都拒绝，不丢字段回退。E3a 暂无公开专属创建；整批批准的 journal 配对随 E3b 闭合。
+专属快照使用 REQUIRED type 13/v3：上述创建正文加原 v2 的 80 B 状态/清理尾部；最大为 200 + 2×scope_max_bytes。通用快照仍写 v2 并可读历史 v1；journal v2 和 snapshot v2 含义不同，由上下文分类。新版本零绑定、旧版本多出绑定字节、版本与正文尾部不匹配都拒绝，不丢字段回退。E3b 通过下述完整批准配对开放公开专属创建。
+
+### Goal 原子批准命令
+
+E3b 新增 REQUIRED type 9/v4：使用 v2 的 60 B 外壳，kind 必须 GOAL_APPROVE=11，result 为目标 Goal、expected_revision+1、CHANGED。canonical_format 仍为 1；正文按小端顺序为 kind/expected_revision（u32）、Goal ID（u64）、原缺项 mask/lifetime（u32）、duration（u64）、owner/parent（u64）、GoalType version（u32）、GoalType ID 字节串、原参数字节串、trigger kind（u32）、delay/period/原 expiry（u64）、trigger source 字节串。固定字段及三个 u32 长度合计 92 B，最大 156 + goal_parameter_max_bytes。旧 type 9/v1/v2/v3 不能承载 kind11。
+
+批准批次必须包含恰好对应原缺项的 N 条 type13/v2、type4/v2 的 PROPOSED→ACTIVE、type17/v1 的 proposed→authorized、最后 type9/v4。新 Grant 必须为同 Goal、同主体、完整原 domain/Scope 的不可委派根；类型/域/Scope/期限与命令及缺项逐一匹配，旧引用不替换。Grant 可以按槽位顺序排列，但新 ID 与缺项引用必须是一一映射。缺少任一项、重复/额外 Grant、顺序错误或同批其他工作均拒绝；启动对新 Grant 创建 boot 先后关系的检查也适用 v2。
+
+快照保留 v4 原始 canonical 与 seq；存在的目标和专属 Grant 必须与命令相符，已合法回收的历史允许缺席。当前 E 不支持引用替换；F 引入该行为时须增加相应历史验证规则。批次容量预算包含 min(goal_requirement_capacity, grant_capacity) 条最大 Grant 创建记录；命令 stride 取 Grant 与批准两种上限的较大值。旧 reader 遇 REQUIRED v4 安全受限。
 
 ### 激活、轮转与恢复
 
@@ -228,7 +236,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 | C-STORE-016 | 显式根撤销与完整v3命令结果同批；有界后代状态与根进度同批，fixed through/单调after/真实父链及独立cleanup_stamp均可重放检查，精确replacement须为持久安全叶节点 | 根已撤销但丢命令结果；后代已改而cursor未改；cursor改变终态回收序 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.root_record_and_exact_mapping_require_each_other_in_one_batch`、`GrantRevokeReplay.descendant_state_and_progress_are_an_atomic_pair`、`GrantRevokeReplay.a_later_cursor_cannot_repair_a_child_state_paired_with_another_roots_progress`、`GrantRevokeReplay.descendant_and_progress_must_name_the_same_root_and_cursor`、`RevokeApi.only_a_durable_terminal_leaf_can_make_room_after_revocation_cleanup`；最终交付见 ADR-0031；C-COMMIT-005 |
 | C-STORE-017 | snapshot显式写通用Grant13/v2并兼容v1，专属Grant写13/v3（ADR-0037），mapping1/2/3各按版本读；共享classifier区分journal/snapshot及covered历史，分别检查created/last/cleanup界和effect/retained target一致性，不保存Gate/pending/pin/deadline | snapshot13/v2被journal按v1解释；NO_CHANGE与同seq CHANGED互换；cleanup超过边界仍导入 | M1 已实现并通过 Native 场景：`GrantRevokeReplay.snapshots_write_grant_v2_and_read_legacy_v1_without_inventing_revocations`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GrantRevokeReplay.snapshot_cleanup_stamp_has_independent_transition_and_commit_bounds`、`GrantRevokeReplay.snapshot_revoke_effect_must_agree_with_the_retained_target_history`、`GrantRevokeReplay.snapshot_cleanup_watermarks_cannot_name_a_future_boot`；最终交付见 ADR-0031；C-STORE-014 |
 | C-STORE-018 | 有授权元数据的 GOAL v2/v3 与 type 17 必须配对，journal 同批且 stamp 相同、snapshot 相邻且在 Goal/快照边界内；原需求不可改写；活引用必须匹配已有 Grant 的主体、原域与范围 | 缺元数据的新 Goal 被当成旧零需求；跨 Goal 借记录；按当前目录重释旧范围 | M1 部分实现（内部事实、公开创建及 journal/snapshot/boot 集成，批准随 E3）：`GoalAuthorityPersistence.journal_round_trip_preserves_explicit_zero_and_legacy_absence`、`GoalAuthorityPersistence.missing_duplicate_or_wrong_batch_metadata_restricts_boot`、`GoalAuthorityPersistence.paged_snapshot_keeps_adjacent_metadata_and_original_stamps`、`GoalAuthorityPersistence.restored_updates_keep_the_original_ceiling_and_never_return_to_proposed`、`GoalAuthorityPersistence.a_grant_for_another_agent_cannot_authorize_the_restored_goal`、`GoalAuthorityPersistence.a_narrow_grant_does_not_cover_a_wider_saved_requirement`、`GoalAuthorityPersistence.proposed_snapshots_require_the_new_state_envelope`；ADR-0037 |
-| C-STORE-019 | Goal 专属 Grant journal v2/snapshot v3 显式保存非零绑定；通用 Grant 旧字节不变；版本、根/不可委派及身份规则在 struct/bytes 共用校验 | 旧 reader 丢绑定；新 envelope 接受零绑定；普通命令替代批准证明 | M1 部分实现（内部记录与版本边界；整批批准随 E3b）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`；ADR-0037 |
+| C-STORE-019 | Goal 专属 Grant journal v2/snapshot v3 显式保存非零绑定；通用 Grant 旧字节不变；版本、根/不可委派及身份规则在 struct/bytes 共用校验 | 旧 reader 丢绑定；新 envelope 接受零绑定；普通命令替代批准证明 | M1 已实现（专属记录、版本边界和整批批准恢复）：`GoalGrantRecords.binding_round_trips_only_under_its_exact_record_versions`、`GoalGrantRecords.invalid_bound_facts_never_publish_partial_decoded_outputs`、`GrantRevokeReplay.record_versions_are_specific_to_journal_and_snapshot_contexts`、`GoalApprovalPersistence.public_approval_survives_journal_and_snapshot_with_exact_retry`、`GoalApprovalPersistence.missing_partner_or_mismatched_exact_command_restricts_recovery`、`GoalApprovalPersistence.snapshot_command_echo_cannot_disagree_with_retained_creation`；ADR-0037 |
 
 ## Goal 授权元数据（MA-006 E，内部 codec）
 

@@ -102,6 +102,7 @@
 | 63 | `AYNI_REASON_GOAL_AUTHORITY_PAUSED` | `DENIED` | 需显式重新授权，普通恢复不解除；Since 0.21 |
 | 64 | `AYNI_REASON_GOAL_AUTHORITY_PARENT` | `DENIED` | 子 Goal 超出原父需求上限；Since 0.21 |
 | 65 | `AYNI_REASON_GRANT_GOAL` | `DENIED` | Grant 绑定了其他、已结束或不存在的 Goal；Since 0.22 |
+| 66 | `AYNI_REASON_GOAL_APPROVAL_CHANGED` | `DENIED` | 批准的完整创建回显或原缺项集合与待批 Goal 不同；Since 0.23 |
 
 以上41–55自ABI0.18发布，56–59自ABI0.19发布；C/D实施与验证状态分别见ADR-0030/0031。表格记录状态归属，不表示全部调用路径已经验证。
 

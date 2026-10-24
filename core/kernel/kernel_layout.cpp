@@ -72,7 +72,8 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
         placer.place(CommandTable::storage_alignment,
                      CommandTable::storage_size(
                          authority::PrincipalRegistry::capacity, capacities.command_capacity,
-                         authority_command_max_bytes(capacities.authority_scope_max_bytes),
+                         exact_command_max_bytes(capacities.authority_scope_max_bytes,
+                                                 capacities.goal_parameter_max_bytes),
                          capacities.grant_capacity));
     layout.capabilities_offset =
         placer.place(catalog::CapabilityRegistry::storage_alignment,

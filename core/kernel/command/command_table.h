@@ -49,7 +49,7 @@ struct CommandMapping {
 bool valid_authority_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical);
 
 // Owns bounded principal windows, canonical storage, pending controls and one
-// ephemeral create candidate. Kernel supplies transitions and durable handoff.
+// ephemeral exact-command candidate. Kernel supplies transitions and durable handoff.
 class CommandTable {
   public:
     // What find() made of a command.
@@ -93,6 +93,9 @@ class CommandTable {
     // insert_exact consumes them without an intervening table mutation.
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const CanonicalCommandView &input);
+    // Approval uses the same exact identity window and staging invariant.
+    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
+                           const ApprovalCommand &input);
     // Revoke lookup clears any create candidate but does not stage one;
     // acceptance copies the request into a separate pending control (ADR-0031).
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
@@ -170,6 +173,12 @@ class CommandTable {
         uint32_t count;        // Retained mappings in this row, at most capacity_.
     };
 
+    // One lookup/stage algorithm for two real exact request codecs.
+    template <typename Input>
+    ExactLookup
+    find_candidate(uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind,
+                   const Input &input, ayni_status_t (*measure)(const Input &, uint32_t &),
+                   ayni_status_t (*encode)(const Input &, uint8_t *, uint32_t, uint32_t &));
     Row *row_of(uint64_t principal_id) const;
     Row *new_row(uint64_t principal_id);
     CommandMapping *mappings_of(const Row &row) const;
@@ -188,17 +197,18 @@ class CommandTable {
     uint32_t capacity_;
     uint32_t canonical_max_bytes_;
     uint32_t pending_capacity_;
-    // One admitted create identity for the current scratch bytes. Revocation
+    // One admitted exact request for the current scratch bytes. Revocation
     // owns its canonical bytes in PendingRevoke and never stages a create.
-    struct StagedCreate {
-        uint64_t principal_id; // Nonzero authenticated command owner.
-        uint64_t command_id;   // Nonzero identity, paired with principal_id.
-        uint64_t digest;       // Fast index of scratch; equality still compares bytes.
-        uint32_t size;         // Positive canonical byte count, <= canonical_max_bytes_.
+    struct StagedCommand {
+        uint64_t principal_id;   // Nonzero authenticated command owner.
+        uint64_t command_id;     // Nonzero identity, paired with principal_id.
+        uint64_t digest;         // Fast index of scratch; equality still compares bytes.
+        uint32_t size;           // Positive canonical byte count, <= canonical_max_bytes_.
+        ayni_intent_kind_t kind; // Grant creation or Goal approval; selects result proof.
     };
     // Disengaged means no candidate. Ordinary insert, restore, clear and every
     // exact lookup invalidate the entire value, never a length-only flag.
-    std::optional<StagedCreate> staged_;
+    std::optional<StagedCommand> staged_;
     // The latest mapping added and the commit_seq it was added with.
     uint64_t last_added_seq_ = 0;
     uint64_t last_added_principal_ = 0;

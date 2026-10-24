@@ -301,13 +301,17 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += capacities.task_capacity * record_bytes(work::task_state_record_size);
     // Reserve all authority records conservatively, including the bounded
     // startup expiry sweep. This avoids a second admission budget per kind.
-    size += record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes));
+    const uint32_t batch_grants = capacities.goal_requirement_capacity < capacities.grant_capacity
+                                      ? capacities.goal_requirement_capacity
+                                      : capacities.grant_capacity;
+    size += batch_grants *
+            record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes));
     size += capacities.grant_capacity * record_bytes(authority::grant_state_record_size);
     size += record_bytes(authority::grant_revocation_record_size);
     size += record_bytes(authority::grant_revoked_state_record_size);
     size += record_bytes(authority::grant_revocation_progress_record_size);
-    size += record_bytes(
-        command_record_max(authority_command_max_bytes(capacities.authority_scope_max_bytes)));
+    size += record_bytes(command_record_max(exact_command_max_bytes(
+        capacities.authority_scope_max_bytes, capacities.goal_parameter_max_bytes)));
     return size;
 }
 
