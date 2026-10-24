@@ -1,14 +1,21 @@
 name: ci
 
-# Every job is billed in whole minutes, so CI runs the full matrix only where
-# it can find something new:
+# Every job runs on the self-hosted runner, a machine kept for CI, inside a
+# container: the native tools come from Ubuntu 24.04 packages (GCC 13,
+# Clang 18, the versions docs/development.md pins) whatever the host runs,
+# and the firmware uses the ESP-IDF image. The machine is not billed, but it
+# runs one job at a time, so CI runs the full matrix only where it can find
+# something new:
 # - ready pull requests that change more than Markdown files (a draft runs
 #   nothing until it is marked ready);
-# - every Monday 02:00 Beijing time on main, which also refreshes the compiler
-#   caches that pull requests start from;
+# - every Monday 02:00 Beijing time on main;
 # - on demand (workflow_dispatch).
 # A push to main runs the checks job only: the pull request already built and
 # tested the same merge result.
+#
+# Jobs run as root in their container, and the runner's own user cannot
+# delete what root leaves in the work directory, so every job ends by handing
+# those files back to that user.
 on:
   push:
     branches: [main]
@@ -27,20 +34,46 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Steps in a container default to sh, and the steps are written for bash.
+defaults:
+  run:
+    shell: bash
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  # The work directory belongs to the runner's user and the steps run as root,
+  # so Git would treat the checkout as unsafe and not find the repository.
+  # Checkout trusts it only for its own commands.
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: '*'
+  # Peaks measured with four jobs: about 1 GiB to build native-asan, 0.7 GiB
+  # to build the firmware and 0.2 GiB to run the sanitizer tests.
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  CTEST_PARALLEL_LEVEL: 4
+  IDF_PY_BUILD_JOBS: 4
+
 jobs:
   checks:
     name: dependency, contract, readability and format checks
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     timeout-minutes: 10
+    container: ubuntu:24.04
     outputs:
       build: ${{ steps.scope.outputs.build }}
     steps:
+      # Before checkout, which needs Git to fetch the history compared below.
+      - name: Install tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git python3 clang-format-18
       - uses: actions/checkout@v4
         with:
           # The pull request merge commit and its first parent, the base.
           fetch-depth: 2
-      # First, so that the builds still run when a later check fails.
+      # First after checkout, so that the builds still run when a later check
+      # fails.
       - name: Decide whether to build
         id: scope
         run: |
@@ -58,8 +91,12 @@ jobs:
             *) build=true ;;
           esac
           echo "build=$build" | tee -a "$GITHUB_OUTPUT"
-      - name: Install clang-format 18
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format-18
+      - name: Runner resources
+        run: |
+          echo "CPUs: $(nproc)"
+          grep -E 'MemTotal|MemAvailable|SwapTotal' /proc/meminfo
+          df -h "$GITHUB_WORKSPACE"
+          echo "vm.mmap_rnd_bits: $(cat /proc/sys/vm/mmap_rnd_bits)"
       - name: Dependency rules
         run: python3 tools/check_deps.py
       - name: Dependency checker tests
@@ -79,13 +116,23 @@ jobs:
         run: git ls-files '*.c' '*.cpp' '*.h' | xargs clang-format-18 --dry-run --Werror
       - name: Whitespace
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+      - name: Return files to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
 
   native:
     name: native ${{ matrix.compiler }} ${{ matrix.preset }}
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.build == 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     timeout-minutes: 20
+    # Docker volumes on the runner keep compiler output and the GoogleTest
+    # archive from one run to the next.
+    container:
+      image: ubuntu:24.04
+      volumes:
+        - ayni-ccache:/ccache
+        - ayni-downloads:/downloads
     strategy:
       fail-fast: false
       matrix:
@@ -99,43 +146,37 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
-      # ccache keeps compiler output between runs. -g output records the build
-      # directory, and the workspace path is the same on every runner, so
-      # debug builds hit as well.
+      # -g output records the build directory, and the workspace path is the
+      # same in every container, so debug builds hit the cache as well.
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 200M
+      CCACHE_DIR: /ccache
+      CCACHE_MAXSIZE: 1G
       # Without these ccache does not cache the unit tests, which are built
       # with a precompiled header.
       CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
-      # Runners for private repositories have two vCPUs. On two CPUs, two test
-      # processes halved the sanitizer test time and four were no faster.
-      CTEST_PARALLEL_LEVEL: 2
     steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git cmake ninja-build ccache python3 g++ \
+            ${{ matrix.compiler == 'clang' && 'clang' || '' }}
       - uses: actions/checkout@v4
-      - name: Install Ninja and ccache
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build ccache
-      # Every run saves a new entry and starts from the newest one for its
-      # compiler and preset. Pull requests also restore the entries that the
-      # weekly run saves on main. The GoogleTest archive rides along.
-      - name: Restore compiler cache and downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            .ccache
-            .downloads
-          key: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}
-          restore-keys: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-
       # GCC 13's ThreadSanitizer may fail to start with 32 bits of mmap
-      # randomization, which some runner kernels default to.
-      - name: Limit ASLR for ThreadSanitizer
+      # randomization. A container shares the host's kernel and cannot change
+      # it, so the runner machine sets 28 once (docs/development.md).
+      - name: Check ASLR for ThreadSanitizer
         if: matrix.preset == 'native-tsan'
-        run: sudo sysctl vm.mmap_rnd_bits=28
+        run: |
+          bits=$(cat /proc/sys/vm/mmap_rnd_bits)
+          if [ "$bits" -gt 28 ]; then
+            echo "::error::vm.mmap_rnd_bits is $bits on the runner machine; ThreadSanitizer needs 28 (docs/development.md)"
+            exit 1
+          fi
       - name: Tool versions
         run: cmake --version && ninja --version && ccache --version && "$CC" --version && "$CXX" --version
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAYNI_DOWNLOAD_DIR="$GITHUB_WORKSPACE/.downloads"
+        run: cmake --preset ${{ matrix.preset }} -DAYNI_DOWNLOAD_DIR=/downloads
       - name: Build
         run: |
           ccache --zero-stats
@@ -146,53 +187,65 @@ jobs:
         run: ctest --preset ${{ matrix.preset }}
       - name: Simulator
         run: ./build/${{ matrix.preset == 'native-debug' && 'native' || matrix.preset }}/targets/simulator/ayni-sim
+      - name: Return files to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
 
   clang-tidy:
     name: clang-tidy (advisory)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     timeout-minutes: 20
     continue-on-error: true
+    container:
+      image: ubuntu:24.04
+      volumes:
+        - ayni-downloads:/downloads
     steps:
-      - uses: actions/checkout@v4
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build clang-tidy-18
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git cmake ninja-build python3 g++ clang-tidy-18
+      - uses: actions/checkout@v4
       # Without the precompiled header, so that this weekly build also checks
       # that each test file includes what it uses.
       - name: Configure
-        run: cmake --preset native-debug -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+        run: cmake --preset native-debug -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DAYNI_DOWNLOAD_DIR=/downloads
       - name: Build generated sources
         run: cmake --build --preset native-debug
       - name: clang-tidy
         run: run-clang-tidy-18 -p build/native -quiet 'core/|hosts/|runtime/|targets/'
+      - name: Return files to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
 
   esp-idf:
     name: ESP32-S3 hello firmware (ESP-IDF v6.0.3)
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.build == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    container: espressif/idf:v6.0.3
+    runs-on: [self-hosted, linux]
+    # The first run on a machine also pulls the 5.5 GB image.
+    timeout-minutes: 40
+    # Its own cache volume: the image's ccache is a different version from
+    # Ubuntu's, and the firmware needs a smaller limit.
+    container:
+      image: espressif/idf:v6.0.3
+      volumes:
+        - ayni-ccache-esp-idf:/ccache
     steps:
       - uses: actions/checkout@v4
-      # Kept the same way as the native compiler caches.
-      - name: Restore compiler cache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-esp-idf-v6.0.3-${{ github.sha }}
-          restore-keys: ccache-esp-idf-v6.0.3-
       - name: Build
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
-          # In a container job the github.workspace expression names the path
-          # on the host, so the cache directory comes from the shell variable.
           # Every compile passes a specs file that each build writes anew, and
           # ccache hashes its modification time unless told to hash content.
-          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache" CCACHE_MAXSIZE=200M CCACHE_COMPILERCHECK=content
+          export CCACHE_DIR=/ccache CCACHE_MAXSIZE=200M CCACHE_COMPILERCHECK=content
           ccache --zero-stats
           cd targets/esp32_assistant
           idf.py --ccache build
           ccache --show-stats
           idf.py size
+      - name: Return files to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"
