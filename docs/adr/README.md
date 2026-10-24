@@ -49,7 +49,7 @@
 | [0035](0035-grant-rules-and-bounded-chain-admission.md) | Grant、命令与 Kernel 编排的状态归属 | 已接受（R2b；验证见正文） | §9.1、§14.1 |
 | [0036](0036-unconfirmed-goal-control-guard.md) | 未确认授权的 Goal 普通控制守卫 | 已接受（R3；验证见正文） | §9.1、§14.1 |
 | [0037](0037-goal-requirements-and-atomic-approval.md) | Goal 需求、待批与原子批准 | 已接受（E；覆盖率偏差见正文） | §9.1、§14.1 |
-| [0038](0038-work-authority-and-explicit-reauthorization.md) | 工作授权、显式重新授权与正常重启 | 实施中（F） | §9.1、§14.1 |
+| [0038](0038-work-authority-and-explicit-reauthorization.md) | 工作授权、显式重新授权与正常重启 | 已接受 | §9.1、§14.1 |
 
 ## 模板
 

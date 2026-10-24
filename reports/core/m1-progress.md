@@ -13,7 +13,7 @@
 |---|---|---|---|
 | 1 | `MA-003`、`MA-005` | 事件入口、完成槽、Kernel 生命周期与启动恢复、模拟 Host | 完成 |
 | 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004`、`MA-010` 完成 |
-| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖依次做 `006`、`018`、`008` | `MA-006` A–E 与 R1～R4 整理已完成；F 已按批准计划开始；018/008 未开始 |
+| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖依次做 `006`、`018`、`008` | `MA-006` A–F 机制及 R1～R4 整理已交付；018/008 未开始 |
 | 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | 未开始 |
 | 5 | `MA-019`、`MA-020` | 助理协调器、SDK 与接入示例 | 未开始 |
 | 6 | `MA-021`、`MA-022`、`MA-023`、`MA-033` | E1、E2、E3、E4 实验，然后写 Core Alpha 报告（`reports/core/`） | 未开始 |
@@ -53,6 +53,9 @@
 | [#49](https://github.com/RobotSe7en/ayni/pull/49) | 2026-10-24 | `MA-006` F1 | 内部授权事实、Task 有界引用表与 codec；本地验证、独立变异/审查及适用 CI 通过 | ADR-0038 |
 | [#51](https://github.com/RobotSe7en/ayni/pull/51) | 2026-10-24 | `MA-006` F2 | Goal 绑定、独立 Task 准入、schema 2 持久配对及消费/查询，ABI 0.24 | ADR-0038 |
 | [#52](https://github.com/RobotSe7en/ayni/pull/52) | 2026-10-24 | `MA-006` F3 | 有界持久清理、独立授权暂停、专属 Grant 终态/回收与输入/触发边界，ABI 0.25 | ADR-0038 |
+| [#53](https://github.com/RobotSe7en/ayni/pull/53)、[#54](https://github.com/RobotSe7en/ayni/pull/54) | 2026-10-24 | `MA-006` F4 | 内部授权结果/持久证明及完整原子重新授权，ABI 0.26 | ADR-0038 |
+| [#55](https://github.com/RobotSe7en/ayni/pull/55) | 2026-10-24 | `MA-006` F5 | 完整事实正常重启、兼容 hold 与资源边界，ABI 0.27 | ADR-0038 |
+| [#56](https://github.com/RobotSe7en/ayni/pull/56) | 2026-10-24 | `MA-006` F 收尾 | 统一 Native 验证、覆盖率补测、资源量测及状态/契约收尾 | ADR-0038 |
 
 ## 工作包日期
 
@@ -62,13 +65,13 @@
 | `MA-005` | 2026-10-19 | 2026-10-19 |
 | `MA-004` | 2026-10-19 | 2026-10-20 |
 | `MA-010` | 2026-10-20 | 2026-10-21 |
-| `MA-006` | 2026-10-22 | —（A–E 已合并；F 实施中） |
+| `MA-006` | 2026-10-22 | 2026-10-24（授权机制及模拟消费者；真实消费链随后续包） |
 
 ## 交接状态（2026-10-24）
 
-- **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–E 和 R1～R4 整理。E 由 [#42](https://github.com/RobotSe7en/ayni/pull/42)～[#45](https://github.com/RobotSe7en/ayni/pull/45)、[#47](https://github.com/RobotSe7en/ayni/pull/47) 交付需求事实、待批创建/查询、专属 Grant、原子批准及最低消费门控；验证和覆盖率见 [ADR-0037](../../docs/adr/0037-goal-requirements-and-atomic-approval.md)。
-- **正在实施：** F1～F3 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)、[#52](https://github.com/RobotSe7en/ayni/pull/52)；F4 按完整 diff 门槛分为 [#53](https://github.com/RobotSe7en/ayni/pull/53) 内部证明及 [#54](https://github.com/RobotSe7en/ayni/pull/54) 完整公开事务。F5 [#55](https://github.com/RobotSe7en/ayni/pull/55) 以 ABI 0.27 依完整 schema 2 事实正常恢复工作，永久授权继续，原暂停和进度保留，旧 boot 限时权限失效；旧存储或缺失 owner 事实的工作明确拒绝并保留，不迁移或补授权。下一步统一五配置、覆盖率及资源边界量测，再作文档收尾；当前无需用户操作。
-- **仍有限制：** F 统一覆盖率/资源验收尚未收尾；安全分支目标不继承 E 的旧偏差豁免。ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收仍随后续工作包。Native 运行、固件编译与实机验收分别记录。
+- **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–F 和 R1～R4 整理。F1～F5 见下方 PR 表；ABI 0.27 / schema 2 交付独立工作授权、有界清理、原子重新授权及有效工作正常重启，保留步骤/检查点和其他暂停。统一验证、覆盖率及资源边界见 [ADR-0038](../../docs/adr/0038-work-authority-and-explicit-reauthorization.md)。旧存储明确拒绝并保留，不迁移、不补权限。
+- **下一步：** `MA-018` 资源及执行许可，随后 `MA-008` Provider；均未开始。本轮 F 收尾不扩展到这些工作包，当前无需用户操作。
+- **仍有限制：** 安全分支达到用户指定的本轮门槛，通用 90% 目标的差距仍明示保留。ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收随后续包。Native 运行、固件编译及实机验收分别记录。
 
 ## 剩余工作
 
@@ -83,15 +86,15 @@
 | C | 0030 / 0.18 | Grant 创建/查询/期限/委派/安全回收，规范请求去重与持久恢复 | 已合并 #27，验证见 ADR-0030 和 PR |
 | D | 0031 / 0.19 | 即时拒绝、待决撤销、阶段回执、背压与自动重载保护 | 已合并 #28，验证见 ADR-0031 和 PR |
 | E | 0037 / 0.20～0.23 | GoalType 需求、`PROPOSED`、专属 Grant 与原子批准、激活后计时及最低门控 | 已由 #42～#45、#47 合并；验证和覆盖率见 ADR-0037 |
-| F | 0038 / 按实际递增 | Task/子目标准入、决策复核、显式恢复、撤销清理、新格式正常重启 | F1～F3 已交付；下一步 F4；依赖计划见 docs/ma006-implementation.md §7 |
+| F | 0038 / 0.24～0.27 | Task/子目标准入、决策复核、显式恢复、撤销清理、新格式正常重启 | F1～F5 已由 #49、#51～#55 交付；统一验收及本轮覆盖率门槛见 ADR-0038 |
 
-- **当前 A 的边界：** `ayni_register_principal`/`ayni_open_session` 声明移至 Host 受管头文件；Core 不认证密码/TLS。持久 OwnerBinding 与本次 Host 配置不匹配则在恢复写入前只读受限，不转移所有权、不丢命令窗口。首次绑定持久前不开放敏感会话。旧日志无绑定时先核对全部保留 USER Goal origin 的 principal/revision 及 CommandMapping principal，任一冲突即无新写地受限；证据全一致或完全无所有者证据才允许可信 Host 首次绑定，已有绑定以其为权威。这不实现转移，旧工作仍禁行，A 无批准接口。
+- **A 的历史交付边界（旧格式恢复/首次收养规则自 ADR-0038 起由 schema 2 完整事实要求替代）：** `ayni_register_principal`/`ayni_open_session` 声明移至 Host 受管头文件；Core 不认证密码/TLS。持久 OwnerBinding 与本次 Host 配置不匹配则在恢复写入前只读受限，不转移所有权、不丢命令窗口。首次绑定持久前不开放敏感会话。旧日志无绑定时先核对全部保留 USER Goal origin 的 principal/revision 及 CommandMapping principal，任一冲突即无新写地受限；证据全一致或完全无所有者证据才允许可信 Host 首次绑定，已有绑定以其为权威。这不实现转移，旧工作仍禁行，A 无批准接口。
 - **B 的实施边界：** 新类型与注册入口在 `authority.h`；`catalog/capability` 保存 ID/版本、字段类型/用途/单位及有限域，`authority/scope` 提供规范化、覆盖/收窄与实际请求完整性。字段最多 8、集合原始输入最多 8；完整注册域也必须适配 64–4096 B 的配置上限。新增配置默认 Capability 16、Scope 256 B；目录采用 metadata 加字节 stride，默认/最小工作内存本地量测为 67,544/29,060 B。B 不开放 Grant/审批/Provider，不新增持久记录，不把 Scope 包含成立当作授权通过；详见 ADR-0029。
 - **C 的实施边界：** 管理端 Session+非零 command 创建/委派；固定 typed Grant/字段查询；child 校验 parent revision，depth 根 0 按边数；未持久 parent BUSY/GRANT_NOT_DURABLE。Grant 保存完整源域+展开 Scope，恢复 exact 域变化只 hold；命令保存原始规范请求并确切比较，旧目录/主体/父失效后先返回已映射结果。限时只存 duration，boot 从 ID 得到，deadline 仅内存且恢复不重锚；持久终态且无保留 child 的叶节点按终态提交/ID 让位。known Scene/Quota UNSUPPORTED，撤销/Goal 关联分别由 D/E 交付（C历史边界；D的Gate/回执/Grant清理现已实现并验证，见ADR-0031），C 最终五配置、本地独立验证及代码 CI 通过，已合并 #27（`b133032`）（ADR-0030）。
 - **D 的实施边界：** authority拥有独立Gate与根/后代持久清理；command拥有每Grant专用pending、原16 B canonical、同一窗口与易失pin；Kernel只编排。all-kind pending优先、跨floor发布、同target另命令BUSY；PENDING effectNONE/rev0/seq0/boot0，APPLIED带本boot/seq，DURABLE不能用跨reload公开floor推断。隔离/读取/绑定失败持续拒绝，完整恢复原canonical或重提，不二次CAS；full-process PENDING不承诺。独立cleanup_stamp保留终态顺序，回收需最新清理持久且无Gate/pending引用。snapshot13/v2兼容v1，commandv3与15/16/14v2按上下文恢复（ADR-0031）。E 已交付 Goal 审批与最低消费门控；完整工作传播与恢复仍由 F 完成。
 - **13 项产品语义：** 缺授权合法目标保存 `PROPOSED`；批准只覆盖原目标参数/重复规则；待批不积累 occurrence、批准后开始延时/周期；撤销保留进度并须显式恢复；长期或当前 boot 限时授权；有限声明式约束；旧工作保留并待确认（本轮 F2 起按 ADR-0038 开发期不兼容规则替代）；撤销写失败保持拒绝并沿用隔离重载；统一 `PENDING`/`APPLIED`/`DURABLE` 回执；所有权完整转移随 `MA-028`；额度随 `MA-018`；Scene `UNSUPPORTED`；Grant 满时仅回收最早安全终态，无候选则拒绝。完整边界与失败语义见 ADR-0028。
-- **验收归属：** 本包只验证授权机制及模拟消费者，F 合并后才可标机制完成；真实屏障后复核/停止续租随 `MA-018`，在途取消/外发随 `MA-008`，完整撤销故障矩阵随 `MA-022`。物理停止仍需执行端与硬件证据。
-- **场景源码：** 已加入 `OwnerBindingApi` 的首次绑定持久门控、绑定变更受限、legacy 工作禁行与 `new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or_decide_work`；恢复输入场景更名为 `WorkRecovery.input_goal_does_not_take_inputs_before_its_recovered_authority_is_confirmed`。这些场景均已随最终五配置回归通过。
+- **验收归属：** 本包只验证授权机制及模拟消费者，F 已交付机制与模拟消费者闭环；真实屏障后复核/停止续租随 `MA-018`，在途取消/外发随 `MA-008`，完整撤销故障矩阵随 `MA-022`。物理停止仍需执行端与硬件证据。
+- **当前恢复场景：** `WorkAuthorityRestart.permanent_admission_continues_the_same_task_checkpoint_and_steps`、`WorkAuthorityRestart.old_boot_timed_authority_requires_explicit_reauthorization` 及 owner 失配/缺失证据场景验证正常继续与安全拒绝；原 LEGACY_UNCONFIRMED 场景已由 F 的新格式规则替代，历史交付记录不作为当前兼容承诺。
 - **证据入口：** A–D 的仓库内测试与契约见 ADR-0028～0031、`contracts/traceability.md`；构建/变异结果见 #25～#28，R1/R2/R3 结果见各 PR。历史覆盖率及故障原始日志保存在本机，未作为仓库或 CI 附件交付，不能独立复核其原始记录；不以这些历史数字替代本轮验证。
 - **C 最终证据与限制：** GCC Debug/Release/ASan+UBSan/TSan、Clang Debug各 **784/784**，模拟器退出0，全部177个C/C++文件格式检查通过。50项独立变异 **49检出/1等价(C20)**，C18/C31/C43/C46补测后原选点重跑，C29测试helper失败即止后正常检出；275文件/11个production targets恢复核对。最终全TU覆盖Core含头行 **6684/6856=97.49%**、分支 **4570/5041=90.66%**；C组件分支 **985/1024=96.19%**，改动可执行行分支 **1208/1303=92.71%**，防御分支偏差见ADR-0030。默认/最小arena **106,520/31,072 B**，较B **+38,976/+2,012 B**、对齐8B，strictC99独立复核一致。两项P2已修复并独立回看。旧779与格式前784结果分别归档；最终源码含两文件纯格式修正，最终计数重新清gcda采集，前后175源码/测试文件SHA一致。原始记录 `../ayni-ma006-evidence/c/`；未据Native数字声称硬件RAM/栈、存储耐久或物理停止已验证。
 

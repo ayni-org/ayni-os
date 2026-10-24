@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1。Core 已交付工作模型、触发与策略、日志/快照恢复，以及 `MA-006` A–D 的可信绑定、Capability/Scope、Grant/委派与撤销回执；审批和完整工作授权仍待 E/F。当前边界与下一步见 [M1 进度](reports/core/m1-progress.md)，测试归属见 [契约追踪](contracts/traceability.md)。Native/模拟 Host 已有存储实现；ESP-IDF 存储、完整 E1–E4、SDK 和实机验收仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
+> 当前仓库处于 M1。Core 已交付工作模型、触发与策略、日志/快照恢复，以及 `MA-006` A–F 的可信绑定、Capability/Scope、Grant/委派、原子批准、独立 Goal/Task 授权、撤销清理、显式重新授权和新格式正常重启（ABI 0.27、storage schema 2）。当前边界与下一步见 [M1 进度](reports/core/m1-progress.md)，验证及本轮覆盖率门槛见 [ADR-0038](docs/adr/0038-work-authority-and-explicit-reauthorization.md)。Native/模拟 Host 已有存储实现；固件编译与实机验收分开，ESP-IDF 存储、真实许可/Provider、完整 E1–E4、SDK 和实机验收仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
