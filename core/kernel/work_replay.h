@@ -10,9 +10,10 @@
 // anew each boot, so a goal whose type is gone, a task whose checkpoint its
 // strategy cannot read and an instance whose agent is gone are held or
 // FAULTED in memory only, and the log keeps them as they were for a boot
-// that registers them again. Schema 2 requires complete Goal/Task admission facts;
-// F2 still holds restored active work until F5 validates normal restart. Times are on one boot's
-// clock, so each wait starts again in full when recovery ends.
+// that registers them again. Schema 2 requires complete Goal/Task admission
+// facts. Compatible work resumes through the ordinary authority checks; expiry,
+// revocation and ancestor binding changes still deny consumption. Times are on
+// one boot's clock, so each wait starts again in full when recovery ends.
 
 #ifndef AYNI_CORE_KERNEL_WORK_REPLAY_H
 #define AYNI_CORE_KERNEL_WORK_REPLAY_H
@@ -29,9 +30,9 @@ enum class WorkRecordContext { journal, snapshot };
 
 class WorkReplay {
   public:
-    // A durable binding is authoritative. Before the first binding, every
-    // retained authenticated owner fact must agree with the Host; recovery
-    // must not turn a legacy store into an implicit ownership transfer.
+    // A durable binding is authoritative. Without one, only an empty or
+    // agent-only store may acquire its first owner; existing owner-controlled
+    // work or commands cannot be adopted from the Host configuration.
     bool binding_matches() const;
     // model outlives the replay.
     explicit WorkReplay(WorkModel &model) : model_(model) {}
@@ -170,7 +171,6 @@ class WorkReplay {
         const std::array<work::AuthorityReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
         uint64_t admission_seq) const;
     void hold_tasks();
-    void hold_unconfirmed_work();
 
     WorkModel &model_;
     uint64_t batch_seq_ = 0; // of the batch the last record came in

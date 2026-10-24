@@ -84,21 +84,10 @@ bool WorkReplay::binding_matches() const {
     if (model_.principals.binding_known()) {
         return model_.principals.binding_matches();
     }
-    const authority::Principal *owner = model_.principals.owner();
-    for (uint32_t index = 0; index < model_.goals.size(); ++index) {
-        const work::GoalOrigin &origin = model_.goals.at(index).origin;
-        if (origin.kind == AYNI_ORIGIN_USER &&
-            (owner == nullptr || origin.principal_id != owner->principal_id ||
-             origin.binding_revision != owner->binding_revision)) {
-            return false;
-        }
-    }
-    for (uint32_t index = 0; index < model_.commands.size(); ++index) {
-        if (owner == nullptr || model_.commands.at(index).principal_id != owner->principal_id) {
-            return false;
-        }
-    }
-    return true;
+    // Schema 2 never adopts existing owner-controlled facts from an unbound
+    // store. Empty and agent-only stores can still bind their first owner;
+    // missing evidence is refused before the boot writes (ADR-0038).
+    return model_.goals.size() == 0U && model_.commands.size() == 0U && model_.grants.size() == 0U;
 }
 
 // The types apply() restores, so the two lists change together.
@@ -931,7 +920,6 @@ void WorkReplay::finish(uint64_t now_us) {
         }
     }
     hold_tasks();
-    hold_unconfirmed_work();
     model_.goals.reanchor(now_us);
     model_.tasks.reanchor(now_us);
     model_.due_work_changed = true;
@@ -975,26 +963,6 @@ void WorkReplay::hold_tasks() {
             tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
         } else if (task.checkpoint_size > strategy.max_checkpoint_bytes) {
             tasks.hold_restored(index, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT);
-        }
-    }
-}
-
-// Compatibility failures remain the primary reason for a hold. F2 retains
-// the restart restriction even with complete schema 2 authority; F5 validates
-// normal restart before replacing this temporary hold.
-void WorkReplay::hold_unconfirmed_work() {
-    for (uint32_t index = 0; index < model_.goals.size(); ++index) {
-        const auto &goal = model_.goals.at(index);
-        // A validated proposal has no executable work to reauthorize; retain
-        // its expiry and pending state. Active-work recovery is completed in F.
-        if (goal.lifecycle != AYNI_GOAL_PROPOSED ||
-            !model_.goal_authority.contains(index, goal.goal_id)) {
-            model_.goals.hold_restored(index, AYNI_REASON_LEGACY_UNCONFIRMED);
-        }
-    }
-    for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
-        if (!work::TaskTable::is_held(model_.tasks.at(index))) {
-            model_.tasks.hold_restored(index, AYNI_DENIED, AYNI_REASON_LEGACY_UNCONFIRMED);
         }
     }
 }

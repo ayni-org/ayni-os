@@ -247,7 +247,8 @@ TEST(OwnerBindingSnapshot, a_host_binding_mismatch_is_not_snapshot_corruption) {
     EXPECT_EQ(model.principals.owner()->binding_revision, owner_binding + 1U);
 }
 
-TEST(OwnerBindingSnapshot, an_unbound_legacy_snapshot_restores_work_but_requires_confirmation) {
+TEST(OwnerBindingSnapshot,
+     an_unbound_snapshot_preserves_diagnostics_but_cannot_acquire_a_new_owner) {
     WorkNode node;
     node.run();
     const auto body = WorkNode::create_body(node.instance(agent_a), 0, "timer", 1, {nullptr, 0},
@@ -278,11 +279,9 @@ TEST(OwnerBindingSnapshot, an_unbound_legacy_snapshot_restores_work_but_requires
     EXPECT_EQ(model.tasks.at(0).commit_seq, task.commit_seq);
     EXPECT_EQ(model.goals.at(0).hold_reason, AYNI_REASON_NONE);
     EXPECT_FALSE(ayni::work::TaskTable::is_held(model.tasks.at(0)));
-    node.kernel()->replay.finish(node.node().sim().now_us());
-    EXPECT_EQ(model.goals.at(0).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
-    EXPECT_EQ(ayni::work::TaskTable::effective_hold_status(model.tasks.at(0)), AYNI_DENIED);
-    EXPECT_EQ(ayni::work::TaskTable::effective_hold_reason(model.tasks.at(0)),
-              AYNI_REASON_LEGACY_UNCONFIRMED);
+    // White-box: raw import retains diagnostic facts; the boot must refuse
+    // this image before finish/startup can acquire any new owner (ADR-0038).
+    EXPECT_FALSE(node.kernel()->replay.binding_matches());
     EXPECT_EQ(model.goals.at(0).commit_seq, goal.commit_seq);
     EXPECT_EQ(model.tasks.at(0).commit_seq, task.commit_seq);
 }

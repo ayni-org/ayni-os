@@ -2455,4 +2455,208 @@ TEST(GoalReauthorization,
     EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
 }
 
+
+// C-AUTH-030 / ADR-0038: permanent complete admissions continue the same
+// READY Task after a normal restart, including private progress and checkpoint.
+TEST(WorkAuthorityRestart, permanent_admission_continues_the_same_task_checkpoint_and_steps) {
+    AuthorityWork node;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto created = node.create();
+    ASSERT_EQ(created.status, AYNI_OK);
+    node.work.node().step(1);
+    node.work.strategy().answer = [](const auto &task, auto &out) {
+        out.intents[0] = progress_intent("saved", task.revision);
+        out.intent_count = 1;
+        out.checkpoint[0] = 42;
+        out.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    node.work.node().step(1);
+    node.work.node().recover();
+    const auto goal_id = created.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    const auto before = node.work.task(task_id);
+    const auto binding = node.authority(goal_id).binding_commit_seq;
+    ASSERT_EQ(before.step_count, 1U);
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(node.work.task(task_id).revision, before.revision);
+    EXPECT_EQ(node.work.task(task_id).commit_seq, before.commit_seq);
+    EXPECT_EQ(node.authority(goal_id).binding_commit_seq, binding);
+    node.work.strategy().seen.clear();
+    node.work.strategy().answer = {};
+    node.work.node().step(1);
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    const auto &seen = node.work.strategy().seen.front();
+    EXPECT_EQ(seen.snapshot.task_id, task_id);
+    EXPECT_EQ(seen.checkpoint, (std::vector<uint8_t>{42}));
+    EXPECT_EQ(seen.steps, (std::vector<std::string>{"saved"}));
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// C-AUTH-007 / ADR-0038: a new boot cannot prove an old monotonic lease.
+// Existing READY work is denied before the bounded cleanup reaches it, and
+// making a permanent Grant available still requires explicit reauthorization.
+TEST(WorkAuthorityRestart, old_boot_timed_authority_requires_explicit_reauthorization) {
+    AuthorityWork node;
+    node.run();
+    const auto timed = node.grant(0, 100, 100ULL * AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(timed.status, AYNI_OK);
+    node.work.node().recover();
+    const auto created = node.create();
+    ASSERT_EQ(created.status, AYNI_OK);
+    node.work.node().step(1);
+    node.work.node().recover();
+    const auto goal_id = created.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    const auto before = node.work.task(task_id);
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_NE(node.work.task(task_id).hold_reason, AYNI_REASON_NONE);
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    EXPECT_EQ(node.work.task(task_id).revision, before.revision);
+    node.work.reopen_session();
+    const auto replacement = node.grant();
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
+// ADR-0038: maximum requirements and direct READY Task cohort must fit one
+// atomic replacement and survive restart without copying Scope into each Task.
+TEST(WorkAuthorityRestart, maximum_requirement_and_task_cohort_survives_replacement_and_restart) {
+    AuthorityWork node;
+    node.count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    node.allow_parameters = true;
+    auto &config = node.work.node().config();
+    config.task_capacity = AYNI_TASK_CAPACITY_MAX;
+    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MAX;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    node.run();
+    const auto old = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    node.work.node().recover();
+    const std::vector<uint8_t> parameters(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX, 42);
+    auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1,
+                                      {parameters.data(), static_cast<uint32_t>(parameters.size())},
+                                      AYNI_TRIGGER_INTERVAL);
+    body.trigger_period_us = AYNI_TRIGGER_PERIOD_MIN_US;
+    const auto created = node.work.create(body);
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto goal_id = created.result.object.id;
+    std::vector<uint64_t> tasks;
+    for (uint32_t at = 0; at < AYNI_TASK_CAPACITY_MAX; ++at) {
+        if (at != 0U) {
+            node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+        }
+        node.work.node().step(1);
+        const auto task_id = node.work.goal(goal_id).last_task_id;
+        ASSERT_NE(task_id, 0U);
+        ASSERT_TRUE(tasks.empty() || tasks.back() != task_id);
+        tasks.push_back(task_id);
+        node.work.node().recover();
+    }
+    ASSERT_TRUE(node.work.strategy().seen.empty());
+    node.revoke(old.result.object.id);
+    node.advance_work();
+    const auto replacement = node.grant();
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    for (const auto id : tasks) {
+        ayni_task_authority_info_v1 admission{};
+        admission.struct_size = sizeof(admission);
+        ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), id, &admission), AYNI_OK);
+        EXPECT_EQ(admission.requirement_count, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
+        EXPECT_EQ(admission.binding_commit_seq, accepted.result.commit_seq);
+    }
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    for (const auto id : tasks) {
+        EXPECT_EQ(node.work.task(id).lifecycle, AYNI_TASK_READY);
+        ayni_task_authority_reference_v1 reference{};
+        reference.struct_size = sizeof(reference);
+        ASSERT_EQ(ayni_get_task_authority_reference(
+                      node.work.kernel(), id, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX - 1U, &reference),
+                  AYNI_OK);
+        EXPECT_EQ(reference.grant_id, replacement.result.object.id);
+    }
+    node.work.strategy().answer = {};
+    for (unsigned round = 0; round < 32U && node.work.strategy().seen.empty(); ++round) {
+        node.work.node().step(1); // The persisted cleanup request precedes decisions.
+    }
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, tasks.front());
+    EXPECT_EQ(node.work.strategy().seen.front().parameters, parameters);
+}
+
+// C-AUTH-030 / C-AUTH-034: an independent authorization pause survives boot
+// without being rewritten into an ordinary Task pause that reauthorization
+// cannot clear. The original READY Task resumes after the new binding is durable.
+TEST(WorkAuthorityRestart, revoked_ready_task_resumes_after_restart_and_explicit_reauthorization) {
+    AuthorityWork node;
+    node.run();
+    const auto grant = node.grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto goal_id = goal.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    node.revoke(grant.result.object.id);
+    node.advance_work();
+    const auto before = node.work.task(task_id);
+    ASSERT_EQ(node.authority(goal_id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.task(task_id).revision, before.revision);
+    EXPECT_EQ(node.work.task(task_id).commit_seq, before.commit_seq);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    node.work.reopen_session();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
 } // namespace

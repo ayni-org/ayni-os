@@ -1,6 +1,6 @@
-// MA-006 A through the C ABI: the first owner binding shares the startup
-// transition, sessions require its durable fact, and recovery preserves
-// unconfirmed work without granting it permission to run.
+// MA-006 A/F through the C ABI: the first binding shares startup, sessions
+// require its durable fact, and schema 2 recovery requires that saved owner.
+// Compatible authorized work resumes without losing independent user pauses.
 
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
@@ -352,30 +352,23 @@ TEST(OwnerBindingApi, legacy_command_principal_conflict_rejects_even_when_goal_o
     EXPECT_EQ(later.goal(created.result.object.id).origin_binding_revision, owner_binding);
 }
 
-TEST(OwnerBindingApi, legacy_matching_owner_is_adopted_once_with_old_work_still_unconfirmed) {
+// ADR-0038: development format break forbids owner adoption for existing work.
+TEST(OwnerBindingApi, missing_binding_refuses_even_a_matching_host_without_new_writes) {
     WorkNode source;
     source.run();
     const auto created =
         source.create(WorkNode::create_body(source.instance(agent_a), 0, "folder"));
     ASSERT_EQ(created.status, AYNI_OK);
     store_through(source.node(), created.result.commit_seq);
-    const auto legacy = without_binding(source.node());
+    const auto unbound = without_binding(source.node());
     WorkNode later;
-    later.node().sim().log() = legacy;
-    ASSERT_TRUE(stored_bindings(later.node()).empty());
-    later.run();
-    ASSERT_EQ(later.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    const auto bindings = stored_bindings(later.node());
-    ASSERT_EQ(bindings.size(), 1U);
-    EXPECT_GT(bindings[0].commit_seq, legacy.back().commit_seq);
-    EXPECT_EQ(bindings[0].owner.principal_id, owner_id);
-    EXPECT_EQ(bindings[0].owner.binding_revision, owner_binding);
-    const auto goal = later.goal(created.result.object.id);
-    EXPECT_EQ(goal.lifecycle, AYNI_GOAL_PAUSED);
-    EXPECT_EQ(goal.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
-    EXPECT_EQ(goal.origin_principal_id, owner_id);
-    EXPECT_EQ(goal.origin_binding_revision, owner_binding);
-    later.node().step();
+    later.node().sim().log() = unbound;
+    later.node().create_and_start();
+    later.node().recover();
+    ASSERT_EQ(later.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(later.node().info().restriction, AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
+    EXPECT_TRUE(stored_bindings(later.node()).empty());
+    expect_same_log(later.node(), unbound);
     EXPECT_TRUE(later.strategy().seen.empty());
 }
 
@@ -401,7 +394,7 @@ TEST(OwnerBindingApi, legacy_command_without_any_goal_still_requires_its_host_ow
     expect_same_log(later, legacy);
 }
 
-TEST(OwnerBindingApi, legacy_goal_and_task_stay_paused_without_advancing_occurrences_or_strategy) {
+TEST(OwnerBindingApi, bound_goal_and_ready_task_resume_without_new_authority) {
     WorkNode work;
     work.run();
     auto body = WorkNode::create_body(work.instance(agent_a), 0, "timer", 1, {nullptr, 0},
@@ -421,76 +414,59 @@ TEST(OwnerBindingApi, legacy_goal_and_task_stay_paused_without_advancing_occurre
     work.node().reboot();
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_PAUSED);
-    EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(goal_id).hold_reason, AYNI_REASON_NONE);
     const auto task = work.task(before.last_task_id);
-    EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(task.hold_status, AYNI_DENIED);
-    EXPECT_EQ(task.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
-    work.node().sim().advance_us(3ULL * AYNI_TRIGGER_PERIOD_MIN_US);
-    for (unsigned round = 0; round < 10; ++round) {
-        work.node().step();
-        work.node().sim().complete_storage();
-    }
-    EXPECT_TRUE(work.strategy().seen.empty());
+    EXPECT_EQ(task.lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(task.hold_status, AYNI_OK);
+    EXPECT_EQ(task.hold_reason, AYNI_REASON_NONE);
+    work.node().step(1);
+    ASSERT_EQ(work.strategy().seen.size(), 1U);
+    EXPECT_EQ(work.strategy().seen.back().snapshot.task_id, before.last_task_id);
     EXPECT_EQ(work.goal(goal_id).occurrences, before.occurrences);
     EXPECT_EQ(work.goal(goal_id).last_task_id, before.last_task_id);
 }
 
-// ADR-0028 decision 4 / C-LIFE-021: ordinary control cannot confirm
-// recovered authority, regardless of the underlying user-pause state.
-static void expect_unconfirmed_goal_controls(ayni_goal_lifecycle_t stored_lifecycle) {
-    for (const auto kind : {AYNI_INTENT_GOAL_PAUSE, AYNI_INTENT_GOAL_RESUME}) {
-        SCOPED_TRACE(kind);
-        WorkNode work;
-        work.run();
-        const auto created =
-            work.create(WorkNode::create_body(work.instance(agent_a), 0, "folder"));
-        ASSERT_EQ(created.status, AYNI_OK);
-        const auto id = created.result.object.id;
-        if (stored_lifecycle == AYNI_GOAL_PAUSED) {
-            ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, id).status, AYNI_OK);
-        }
-        const auto stored = work.goal(id);
-        store_through(work.node(), stored.commit_seq);
-        work.node().reboot();
-        work.node().recover();
-        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-        work.reopen_session();
-        const auto before = work.goal(id);
-        ASSERT_EQ(before.lifecycle, AYNI_GOAL_PAUSED);
-        ASSERT_EQ(before.hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
-        const auto durable_before = work.node().info().durable_seq;
-
-        expect_refused(work.change(kind, id, before.revision), AYNI_INVALID_STATE,
-                       AYNI_REASON_GOAL_STATE, AYNI_OBJECT_GOAL, id);
-        const auto after = work.goal(id);
-        EXPECT_EQ(after.lifecycle, before.lifecycle);
-        EXPECT_EQ(after.hold_reason, before.hold_reason);
-        EXPECT_EQ(after.revision, before.revision);
-        EXPECT_EQ(after.commit_seq, before.commit_seq);
-        EXPECT_EQ(after.occurrences, before.occurrences);
-        EXPECT_EQ(after.last_task_id, before.last_task_id);
-        EXPECT_EQ(work.node().info().durable_seq, durable_before);
-        // Revision conflict still precedes the hold; cancel remains permitted.
-        expect_refused(work.change(kind, id, before.revision + 1U), AYNI_REVISION_CONFLICT,
-                       AYNI_REASON_GOAL_REVISION, AYNI_OBJECT_GOAL, id);
-        ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, id, before.revision).status, AYNI_OK);
-        EXPECT_EQ(work.goal(id).lifecycle, AYNI_GOAL_CANCELLED);
+// C-LIFE-021 / ADR-0038: recovery preserves user lifecycle and revision CAS.
+static void expect_recovered_goal_controls(ayni_goal_lifecycle_t stored_lifecycle) {
+    WorkNode work;
+    work.run();
+    const auto created = work.create(WorkNode::create_body(work.instance(agent_a), 0, "folder"));
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto id = created.result.object.id;
+    if (stored_lifecycle == AYNI_GOAL_PAUSED) {
+        ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, id).status, AYNI_OK);
     }
+    const auto stored = work.goal(id);
+    store_through(work.node(), stored.commit_seq);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    const auto before = work.goal(id);
+    ASSERT_EQ(before.lifecycle, stored_lifecycle);
+    ASSERT_EQ(before.hold_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(before.revision, stored.revision);
+    EXPECT_EQ(before.commit_seq, stored.commit_seq);
+    const auto kind =
+        stored_lifecycle == AYNI_GOAL_ACTIVE ? AYNI_INTENT_GOAL_PAUSE : AYNI_INTENT_GOAL_RESUME;
+    expect_refused(work.change(kind, id, before.revision + 1U), AYNI_REVISION_CONFLICT,
+                   AYNI_REASON_GOAL_REVISION, AYNI_OBJECT_GOAL, id);
+    ASSERT_EQ(work.change(kind, id, before.revision).status, AYNI_OK);
+    EXPECT_EQ(work.goal(id).lifecycle,
+              stored_lifecycle == AYNI_GOAL_ACTIVE ? AYNI_GOAL_PAUSED : AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(work.goal(id).revision, before.revision + 1U);
 }
 
-// ADR-0028 decision 4: effective PAUSED must not permit an underlying ACTIVE pause.
-TEST(OwnerBindingApi, recovered_active_goal_refuses_ordinary_pause_and_resume) {
-    expect_unconfirmed_goal_controls(AYNI_GOAL_ACTIVE);
+TEST(OwnerBindingApi, recovered_active_goal_accepts_ordinary_pause) {
+    expect_recovered_goal_controls(AYNI_GOAL_ACTIVE);
 }
 
-// ADR-0028 decision 4: ordinary resume cannot remove a recovered user's separate hold.
-TEST(OwnerBindingApi, recovered_user_paused_goal_refuses_ordinary_pause_and_resume) {
-    expect_unconfirmed_goal_controls(AYNI_GOAL_PAUSED);
+TEST(OwnerBindingApi, recovered_user_paused_goal_accepts_ordinary_resume) {
+    expect_recovered_goal_controls(AYNI_GOAL_PAUSED);
 }
 
-TEST(OwnerBindingApi, legacy_hold_does_not_replace_a_missing_goal_type_diagnostic) {
+TEST(OwnerBindingApi, recovery_retains_a_missing_goal_type_diagnostic) {
     WorkNode work;
     work.run();
     const auto created = work.create(WorkNode::create_body(work.instance(agent_a), 0, "timer"));
@@ -507,7 +483,7 @@ TEST(OwnerBindingApi, legacy_hold_does_not_replace_a_missing_goal_type_diagnosti
     EXPECT_TRUE(work.strategy().seen.empty());
 }
 
-TEST(OwnerBindingApi, new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or_decide_work) {
+TEST(OwnerBindingApi, new_child_of_a_recovered_authorized_goal_can_derive_and_decide_work) {
     WorkNode work;
     work.run();
     const auto parent = work.create(WorkNode::create_body(work.instance(agent_a), 0, "folder"));
@@ -516,7 +492,7 @@ TEST(OwnerBindingApi, new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or
     work.node().reboot();
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    ASSERT_EQ(work.goal(parent.result.object.id).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    ASSERT_EQ(work.goal(parent.result.object.id).hold_reason, AYNI_REASON_NONE);
     work.reopen_session();
 
     const auto child =
@@ -530,10 +506,10 @@ TEST(OwnerBindingApi, new_child_of_a_recovered_unconfirmed_goal_cannot_derive_or
         work.node().step();
         work.node().sim().complete_storage();
     }
-    EXPECT_EQ(work.goal(child.result.object.id).last_task_id, 0U);
-    EXPECT_EQ(work.goal(child.result.object.id).occurrences, 0U);
-    EXPECT_TRUE(work.strategy().seen.empty());
-    EXPECT_EQ(work.goal(parent.result.object.id).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    EXPECT_NE(work.goal(child.result.object.id).last_task_id, 0U);
+    EXPECT_EQ(work.goal(child.result.object.id).occurrences, 1U);
+    EXPECT_EQ(work.strategy().seen.size(), 1U);
+    EXPECT_EQ(work.goal(parent.result.object.id).hold_reason, AYNI_REASON_NONE);
 }
 
 TEST(OwnerBindingApi, power_loss_keeps_the_first_binding_and_instances_as_one_batch) {
