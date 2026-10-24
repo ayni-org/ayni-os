@@ -36,10 +36,6 @@ constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
 // Keeping both proves later authorization bindings require a durable handoff.
 constexpr uint32_t goal_current_seq_at = work::goal_state_record_size + stamp_size;
 constexpr uint32_t goal_extra = goal_current_seq_at + sizeof(uint64_t);
-// TASK: created_transition_id, the commit_seq it last changed at, steps_seq
-// and checkpoint_seq, then steps_before.
-constexpr uint32_t task_tail_size = 4U * 8U + 4U;
-constexpr uint32_t task_size = work::task_record_size + task_tail_size;
 // COMMAND_MAPPING: the commit_seq of the batch that accepted it.
 constexpr uint32_t command_tail_size = 8;
 uint32_t command_size(const CommandMapping &mapping) {
@@ -50,11 +46,6 @@ uint32_t command_max(const KernelCapacities &capacities) {
                                                       capacities.goal_parameter_max_bytes,
                                                       capacities.goal_requirement_capacity)) +
            command_tail_size;
-}
-
-// TASK_STEPS holds one key, so one string field.
-uint32_t step_record_size(uint32_t key_size) {
-    return work::task_steps_record_fixed_size + durability::string_field_size(key_size);
 }
 
 void write_stamp(uint8_t *at, uint64_t transition_id, uint64_t commit_seq) {
@@ -133,16 +124,16 @@ void count(SnapshotLayout &layout, uint32_t body) {
 } // namespace
 
 uint32_t snapshot_record_max(const KernelCapacities &capacities) {
-    uint32_t size = maximum(owner_binding_size, maximum(instance_size, task_size));
+    uint32_t size =
+        maximum(owner_binding_size, maximum(instance_size, work::task_snapshot_record_size));
     size = maximum(size, work::goal_record_fixed_size + 2U * id_max +
                              capacities.goal_parameter_max_bytes + goal_extra);
     size = maximum(size, work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
     size = maximum(size, work::task_authority_record_max(capacities.goal_requirement_capacity));
     size = maximum(size, work::authority_cleanup_record_size);
-    size = maximum(size, step_record_size(id_max));
-    size = maximum(size, work::task_checkpoint_record_fixed_size + id_max +
-                             capacities.task_checkpoint_max_bytes);
+    size = maximum(size, work::task_steps_record_max(1));
+    size = maximum(size, work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size =
         maximum(size, authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
     return record_prefix + maximum(size, command_max(capacities));
@@ -162,11 +153,13 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
     size += uint64_t{capacities.goal_capacity} *
             (record_prefix + work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                              capacities.authority_scope_max_bytes));
-    size += uint64_t{capacities.task_capacity} *
-            (record_prefix + task_size + record_prefix + work::task_state_record_size +
-             uint64_t{capacities.task_step_capacity} * (record_prefix + step_record_size(id_max)) +
-             record_prefix + work::task_checkpoint_record_fixed_size + id_max +
-             capacities.task_checkpoint_max_bytes);
+    size +=
+        uint64_t{capacities.task_capacity} *
+        (record_prefix + work::task_snapshot_record_size + record_prefix +
+         work::task_state_record_size +
+         uint64_t{capacities.task_step_capacity} *
+             (record_prefix + work::task_steps_record_max(1)) +
+         record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size += uint64_t{capacities.task_capacity} *
             (record_prefix + work::task_authority_record_max(capacities.goal_requirement_capacity));
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
@@ -198,13 +191,13 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
     }
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const work::Task &task = model.tasks.at(index);
-        count(layout, task_size);
+        count(layout, work::task_snapshot_record_size);
         work::TaskAuthorityRecord authority{};
         if (model.task_authority.read(task.slot, task.task_id, authority)) {
             count(layout, work::task_authority_record_max(authority.count));
         }
         for (uint32_t step = 0; step < task.step_count; ++step) {
-            count(layout, step_record_size(model.tasks.step(index, step).size()));
+            count(layout, work::task_steps_record_size(model.tasks, index, {step, 1}));
         }
         if (task.checkpoint_writer_version != 0U) {
             count(layout, work::task_checkpoint_record_size(task));
@@ -325,13 +318,13 @@ bool WorkSnapshotWriter::next_task_record(uint16_t &type, uint32_t &size) {
     }
     if (task_part_ == TaskPart::task) {
         type = work::task_record_type;
-        size = task_size;
+        size = work::task_snapshot_record_size;
         return true;
     }
     if (task_part_ == TaskPart::steps) {
         if (step_ < model_.tasks.at(index_).step_count) {
             type = work::task_steps_record_type;
-            size = step_record_size(model_.tasks.step(index_, step_).size());
+            size = work::task_steps_record_size(model_.tasks, index_, {step_, 1});
             return true;
         }
         task_part_ = TaskPart::checkpoint;
@@ -376,20 +369,7 @@ void WorkSnapshotWriter::write_task_authority(uint8_t *body) {
     work::write_task_authority_record(record, body);
 }
 
-// Preserve the exact Task identity and original commit/step/checkpoint stamps;
-// its following snapshot parts use the same selected, frozen Task row.
-void WorkSnapshotWriter::write_task_metadata(uint8_t *body) {
-    const work::Task &task = model_.tasks.at(index_);
-    work::write_task_record(task, body);
-    durability::BodyWriter writer(body + work::task_record_size, task_tail_size);
-    writer.u64(task.created_transition_id);
-    writer.u64(task.commit_seq);
-    writer.u64(task.steps_seq);
-    writer.u64(task.checkpoint_seq);
-    writer.u32(task.steps_before);
-}
-
-void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t size) {
+void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
     switch (type) {
     case authority::owner_binding_record_type: {
         const authority::OwnerBinding &binding = *model_.principals.binding();
@@ -426,17 +406,12 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body, uint32_t siz
         work::write_goal_authority_record(model_.goal_authority.at(index_), body);
         break;
     case work::task_record_type:
-        write_task_metadata(body);
+        work::write_task_snapshot_record(model_.tasks.at(index_), body);
         break;
-    case work::task_steps_record_type: {
-        const catalog::CatalogId &key = model_.tasks.step(index_, step_);
-        durability::BodyWriter writer(body, size);
-        writer.u64(model_.tasks.at(index_).task_id);
-        writer.u32(step_); // steps_before: the key's position
-        writer.u32(1);     // count
-        writer.bytes(key.data(), key.size());
+    case work::task_steps_record_type:
+        // A snapshot carries one key at its original position per record.
+        work::write_task_steps_record(model_.tasks, index_, {step_, 1}, body);
         break;
-    }
     case work::task_checkpoint_record_type:
         work::write_task_checkpoint_record(model_.tasks.at(index_), model_.tasks.checkpoint(index_),
                                            body);
@@ -533,7 +508,7 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
                 ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
                 : snapshot_record_version;
         durability::write_record_header({type, version, durability::record_required, size}, at);
-        write_record(type, at + record_prefix, size);
+        write_record(type, at + record_prefix);
         out_size += record_prefix + size;
         advance_record(type);
     }
@@ -756,28 +731,24 @@ durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, u
 }
 
 durability::BatchCheck WorkSnapshotReader::task(const uint8_t *body, uint32_t size) {
-    work::TaskRecord record{};
-    if (task_index_ != work::TaskTable::no_index || size != task_size ||
-        !work::read_task_record(body, work::task_record_size, record)) {
+    work::TaskSnapshotRecord snapshot{};
+    if (task_index_ != work::TaskTable::no_index ||
+        !work::read_task_snapshot_record(body, size, snapshot)) {
         return durability::BatchCheck::corrupt;
     }
+    auto &record = snapshot.creation;
     uint32_t goal_index = 0;
     if (!model_.goals.find(record.task.goal_id, goal_index) ||
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return durability::BatchCheck::corrupt;
     }
-    durability::BodyReader reader(body + work::task_record_size, task_tail_size);
-    const foundation::TransitionStamp stamp{reader.u64(), reader.u64()};
-    const uint64_t steps_seq = reader.u64();
-    const uint64_t checkpoint_seq = reader.u64();
-    const uint32_t steps_before = reader.u32();
-    if (!valid_stamp(stamp, metadata_) || !reader.ok()) {
+    if (!valid_stamp(snapshot.stamp, metadata_)) {
         return durability::BatchCheck::corrupt;
     }
     record.task.goal_index = goal_index;
-    const work::TaskTable::Restore restore =
-        model_.tasks.restore_snapshot(record.task, record.task_id, record.replaced_task_id, stamp,
-                                      steps_seq, checkpoint_seq, steps_before);
+    const work::TaskTable::Restore restore = model_.tasks.restore_snapshot(
+        record.task, record.task_id, record.replaced_task_id, snapshot.stamp, snapshot.steps_seq,
+        snapshot.checkpoint_seq, snapshot.steps_before);
     if (restore == work::TaskTable::Restore::restored) {
         static_cast<void>(model_.tasks.find(record.task_id, task_index_));
         checkpoint_seen_ = false;

@@ -559,6 +559,78 @@ TEST(WorkRecords, task_state_record_of_another_size_is_refused) {
     });
 }
 
+// ADR-0041 / C-VER-023: pin the pre-refactor snapshot TASK bytes, including
+// full-width history, independently of both codec directions.
+TEST(WorkRecords, task_snapshot_matches_the_existing_byte_layout) {
+    Task task{};
+    task.task_id = 1;
+    task.goal_id = 2;
+    task.owner_instance_id = 3;
+    task.replaced_task_id = 4;
+    task.occurrence = 5;
+    task.occurrence_count = 6;
+    task.created_transition_id = 0x1817161514131211ULL;
+    task.commit_seq = 0x2827262524232221ULL;
+    task.steps_seq = 0x3837363534333231ULL;
+    task.checkpoint_seq = 0x4847464544434241ULL;
+    task.steps_before = 0x54535251U;
+    const std::vector<uint8_t> expected{
+        1,    0,    0,    0,    0,    0,    0,    0,    2,    0,    0,    0,    0,
+        0,    0,    0,    3,    0,    0,    0,    0,    0,    0,    0,    4,    0,
+        0,    0,    0,    0,    0,    0,    5,    0,    0,    0,    6,    0,    0,
+        0,    0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24,
+        0x25, 0x26, 0x27, 0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x41,
+        0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x51, 0x52, 0x53, 0x54};
+    ASSERT_EQ(expected.size(), ayni::work::task_snapshot_record_size);
+    std::vector<uint8_t> body(expected.size());
+    ayni::work::write_task_snapshot_record(task, body.data());
+    EXPECT_EQ(body, expected);
+    ayni::work::TaskSnapshotRecord record{};
+    ASSERT_TRUE(ayni::work::read_task_snapshot_record(
+        expected.data(), static_cast<uint32_t>(expected.size()), record));
+    EXPECT_EQ(record.creation.task_id, task.task_id);
+    EXPECT_EQ(record.creation.task.goal_id, task.goal_id);
+    EXPECT_EQ(record.creation.task.owner_instance_id, task.owner_instance_id);
+    EXPECT_EQ(record.creation.replaced_task_id, task.replaced_task_id);
+    EXPECT_EQ(record.creation.task.occurrence, task.occurrence);
+    EXPECT_EQ(record.creation.task.occurrence_count, task.occurrence_count);
+    EXPECT_EQ(record.stamp.transition_id, task.created_transition_id);
+    EXPECT_EQ(record.stamp.commit_seq, task.commit_seq);
+    EXPECT_EQ(record.steps_seq, task.steps_seq);
+    EXPECT_EQ(record.checkpoint_seq, task.checkpoint_seq);
+    EXPECT_EQ(record.steps_before, task.steps_before);
+    expect_size_only(ayni::work::task_snapshot_record_size,
+                     [](const uint8_t *bytes, uint32_t size) {
+                         ayni::work::TaskSnapshotRecord found{};
+                         return ayni::work::read_task_snapshot_record(bytes, size, found);
+                     });
+}
+
+// ADR-0041: a snapshot key can precede the most recent journal delta. The
+// explicit range, rather than task.steps_before, determines its position.
+TEST(WorkRecords, task_steps_snapshot_slice_keeps_an_earlier_key_and_its_position) {
+    Tasks tasks(4);
+    TaskTable &table = tasks.table();
+    ASSERT_TRUE(table.insert({goal_id, owner, 0, 0, 1, 1}, task_id, {11, 1}));
+    ASSERT_TRUE(table.add_step(0, {"a", 1}, {12, 2}));
+    ASSERT_TRUE(table.add_step(0, {"bc", 2}, {12, 2}));
+    ASSERT_TRUE(table.add_step(0, {"later", 5}, {13, 3}));
+    const ayni::work::TaskStepRange slice{1, 1};
+    const std::vector<uint8_t> expected{9, 0, 0, 0, 1, 0, 0, 0, 1, 0,   0,
+                                        0, 1, 0, 0, 0, 2, 0, 0, 0, 'b', 'c'};
+    const auto size = ayni::work::task_steps_record_size(table, 0, slice);
+    ASSERT_EQ(size, expected.size());
+    std::vector<uint8_t> body(size);
+    ayni::work::write_task_steps_record(table, 0, slice, body.data());
+    EXPECT_EQ(body, expected);
+    uint64_t read_id = 0;
+    Steps steps;
+    ASSERT_TRUE(read_steps(expected.data(), size, read_id, steps));
+    EXPECT_EQ(read_id, task_id);
+    const Steps selected{{1, "bc"}};
+    EXPECT_EQ(steps, selected);
+}
+
 // TASK_STEPS (ADR-0024): the steps the transition added, from the position
 // of the first, each key after its length.
 TEST(WorkRecords, task_steps_record_holds_the_steps_its_transition_added) {
@@ -583,9 +655,12 @@ TEST(WorkRecords, task_steps_record_holds_the_steps_its_transition_added) {
         for (const auto &step : expected[round].steps) {
             size += 4U + static_cast<uint32_t>(step.second.size());
         }
-        ASSERT_EQ(ayni::work::task_steps_record_size(table, 0), size);
+        const Task &task = table.at(0);
+        const ayni::work::TaskStepRange range{task.steps_before,
+                                              task.step_count - task.steps_before};
+        ASSERT_EQ(ayni::work::task_steps_record_size(table, 0, range), size);
         std::vector<uint8_t> body = buffer_for(size);
-        ayni::work::write_task_steps_record(table, 0, body.data());
+        ayni::work::write_task_steps_record(table, 0, range, body.data());
         EXPECT_EQ(load_le32(body.data() + 8), expected[round].first);
         EXPECT_EQ(load_le32(body.data() + 12), 2U);
 

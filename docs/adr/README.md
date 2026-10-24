@@ -52,6 +52,7 @@
 | [0038](0038-work-authority-and-explicit-reauthorization.md) | 工作授权、显式重新授权与正常重启 | 已接受 | §9.1、§14.1 |
 | [0039](0039-native-idle-space-refresh.md) | Native 空闲空间刷新 | 实施中 | §9.1 |
 | [0040](0040-shared-storage-batch-identity.md) | 批次身份解析归属 | 实施中 | §9.1 |
+| [0041](0041-task-record-encoding-owner.md) | Task 记录编码归属 | 实施中 | §9.1 |
 
 ## 模板
 

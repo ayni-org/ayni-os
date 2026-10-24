@@ -30,7 +30,11 @@ constexpr uint16_t task_steps_record_type = 7;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = 8;
 constexpr uint16_t task_checkpoint_record_version = 1;
+// TASK and snapshot TASK layouts: contracts/storage/records.md.
 constexpr uint32_t task_record_size = 40;
+// created_transition_id, last commit_seq, steps_seq, checkpoint_seq, steps_before.
+constexpr uint32_t task_snapshot_tail_size = 36;
+constexpr uint32_t task_snapshot_record_size = task_record_size + task_snapshot_tail_size;
 constexpr uint32_t task_state_record_size = 32;
 // Without its keys.
 constexpr uint32_t task_steps_record_fixed_size = 16;
@@ -42,6 +46,24 @@ struct TaskRecord {
     uint64_t task_id;
     uint64_t replaced_task_id;
     NewTask task;
+};
+
+// A snapshot TASK's creation fields and durable history. Domain validity is
+// checked by TaskTable; snapshot bounds and Goal ownership belong to Kernel.
+struct TaskSnapshotRecord {
+    TaskRecord creation; // Identity and creation values; no borrowed storage.
+    // Original creation transition and last commit sequence; not one change's pair.
+    foundation::TransitionStamp stamp;
+    uint64_t steps_seq;      // Last step commit sequence; 0 means no steps yet.
+    uint64_t checkpoint_seq; // Last checkpoint commit sequence; 0 means none yet.
+    uint32_t steps_before;   // Steps before steps_seq; cannot exceed restored step_count.
+};
+
+// A contiguous slice of an existing Task's keys. The caller selects a journal
+// delta or a single snapshot key; 0 < count <= task.step_count - first.
+struct TaskStepRange {
+    uint32_t first; // Zero-based key index, strictly below task.step_count.
+    uint32_t count; // Number of keys, nonzero; first + count does not overflow.
 };
 
 struct TaskStateRecord {
@@ -62,14 +84,26 @@ void write_task_record(const Task &task, uint8_t *body);
 // Returns false for a body of another size.
 bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out);
 
+// body has task_snapshot_record_size bytes. Preserves the selected frozen
+// Task's original creation/commit/step/checkpoint stamps (ADR-0041).
+void write_task_snapshot_record(const Task &task, uint8_t *body);
+// Reads exactly that snapshot body; no snapshot-global or cross-table checks.
+bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out);
+
 // body has task_state_record_size bytes.
 void write_task_state_record(const Task &task, uint8_t *body);
 bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out);
 
-// The steps of task index added in the transition at.steps_seq.
-uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index);
-// body has task_steps_record_size(tasks, index) bytes.
-void write_task_steps_record(const TaskTable &tasks, uint32_t index, uint8_t *body);
+// Caller provides a valid range in task index; size includes each key length.
+uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range);
+// body has task_steps_record_size(tasks, index, range) bytes; same valid range.
+void write_task_steps_record(const TaskTable &tasks, uint32_t index, TaskStepRange range,
+                             uint8_t *body);
+// Largest record for count keys, with count bounded by TaskTable::Limits.
+constexpr uint32_t task_steps_record_max(uint32_t count) {
+    return task_steps_record_fixed_size +
+           count * durability::string_field_size(catalog::CatalogId::max_size);
+}
 // Passes each key to on_step(position, key), from position first, while it
 // returns true. Returns false when on_step does, or for a body that does
 // not hold a TASK_STEPS record; on_step may have seen keys by then.
@@ -77,6 +111,10 @@ template <typename OnStep>
 bool read_task_steps_record(const uint8_t *body, uint32_t size, uint64_t &out_task_id,
                             OnStep on_step);
 
+// Largest checkpoint record for the configured bounded state bytes.
+constexpr uint32_t task_checkpoint_record_max(uint32_t state_max_bytes) {
+    return task_checkpoint_record_fixed_size + catalog::CatalogId::max_size + state_max_bytes;
+}
 uint32_t task_checkpoint_record_size(const Task &task);
 // body has task_checkpoint_record_size(task) bytes; state is the task's.
 void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body);

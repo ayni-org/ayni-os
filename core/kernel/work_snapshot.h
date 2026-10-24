@@ -68,9 +68,8 @@ class WorkSnapshotWriter {
     // Select the least acceptance sequence after the last written command.
     bool next_command_record(uint16_t &type, uint32_t &size);
     // Encode the selected record into the already sized body buffer.
-    void write_record(uint16_t type, uint8_t *body, uint32_t size);
+    void write_record(uint16_t type, uint8_t *body);
     // Selected frozen Task identity plus original update/step/checkpoint stamps.
-    void write_task_metadata(uint8_t *body);
     // Serialize the already selected frozen Task admission, without another identity check.
     void write_task_authority(uint8_t *body);
     // Consume a record only after its complete bytes were written.
