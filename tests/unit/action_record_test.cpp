@@ -4,10 +4,16 @@
 #include "work/action/action_record.h"
 
 #include <gtest/gtest.h>
+#include <type_traits>
 
 namespace {
 using namespace ayni::work;
 constexpr uint64_t epoch = 5;
+static_assert(!std::is_copy_constructible<ActionRecord>::value &&
+                  !std::is_copy_assignable<ActionRecord>::value &&
+                  !std::is_move_constructible<ActionRecord>::value &&
+                  !std::is_move_assignable<ActionRecord>::value,
+              "a saved pre-claim object cannot recreate a second submit guard");
 
 ActionStamp stamp(uint64_t seq) {
     return {epoch, {seq, seq}};
@@ -88,11 +94,12 @@ TEST_F(ActionRecordTest, final_check_can_cancel_before_delivery_on_either_side_o
     ASSERT_EQ(record->cancel_before_delivery(stamp(2)), AYNI_OK);
     EXPECT_EQ(record->fact().effect, ActionEffect::none);
     EXPECT_EQ(record->fact().phase, ActionPhase::cancelled);
-    ASSERT_EQ(ActionRecord::prepare(identity(), stamp(1), record), AYNI_OK);
-    ASSERT_EQ(record->begin_dispatch(stamp(2), 1), AYNI_OK);
-    ASSERT_EQ(record->cancel_before_delivery(stamp(3)), AYNI_OK);
-    EXPECT_FALSE(record->claim_dispatch(epoch, 3));
-    EXPECT_TRUE(ActionRecord::valid(record->fact()));
+    std::optional<ActionRecord> other;
+    ASSERT_EQ(ActionRecord::prepare(identity(), stamp(1), other), AYNI_OK);
+    ASSERT_EQ(other->begin_dispatch(stamp(2), 1), AYNI_OK);
+    ASSERT_EQ(other->cancel_before_delivery(stamp(3)), AYNI_OK);
+    EXPECT_FALSE(other->claim_dispatch(epoch, 3));
+    EXPECT_TRUE(ActionRecord::valid(other->fact()));
 }
 
 TEST_F(ActionRecordTest, claimed_delivery_requires_submit_rejection_to_record_no_effect) {
@@ -177,5 +184,14 @@ TEST_F(ActionRecordTest, invalid_preparation_and_fact_shapes_are_refused) {
     fact.phase = ActionPhase::completed;
     fact.effect = ActionEffect::complete;
     EXPECT_FALSE(ActionRecord::valid(fact)); // A completion must follow preparation.
+}
+
+TEST_F(ActionRecordTest, preparation_cannot_overwrite_a_live_dispatch_claim) {
+    dispatch();
+    EXPECT_EQ(ActionRecord::prepare(identity(), stamp(3), record), AYNI_INVALID_STATE);
+    EXPECT_EQ(record->fact().phase, ActionPhase::dispatching);
+    EXPECT_EQ(record->fact().latest.transition.commit_seq, 2U);
+    EXPECT_FALSE(record->claim_dispatch(epoch, 3));
+    ASSERT_EQ(record->complete(stamp(3)), AYNI_OK);
 }
 } // namespace

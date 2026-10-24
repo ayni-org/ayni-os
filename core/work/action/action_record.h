@@ -14,6 +14,7 @@ namespace ayni::work {
 
 // Durable knowledge, independent of transport cancellation or Task lifecycle.
 enum class ActionPhase : uint32_t {
+    empty = 0, // Inert construction only; never a valid persisted fact.
     prepared = 1,
     dispatching,
     in_progress,
@@ -65,13 +66,21 @@ struct ActionFact {
 // the coordinator must journal each successful change in its own transition.
 class ActionRecord {
   public:
+    // Inert storage for in-place construction; only prepare installs a fact.
+    // Fixed table slots must not copy a pre-claim snapshot back over live state.
+    ActionRecord() = default;
+    ActionRecord(const ActionRecord &) = delete;
+    ActionRecord &operator=(const ActionRecord &) = delete;
+    ActionRecord(ActionRecord &&) = delete;
+    ActionRecord &operator=(ActionRecord &&) = delete;
     // Schema/authority/resource admission is a caller prerequisite. Failure
     // changes no output; IDs, binding and the initial stamp are checked here.
+    // out must be empty. The table/allocator owns global operation-ID uniqueness.
     static ayni_status_t prepare(const ActionIdentity &identity, ActionStamp stamp,
                                  std::optional<ActionRecord> &out);
     // One validator for live facts and the future persisted record reader.
     static bool valid(const ActionFact &fact);
-    // Immutable view until the next successful transition.
+    // Immutable view until the next successful transition; valid only after prepare.
     const ActionFact &fact() const { return fact_; }
 
     // Enters the possible-delivery boundary only after PREPARED is durable.
@@ -105,7 +114,6 @@ class ActionRecord {
                             ActionStamp stamp);
 
   private:
-    explicit ActionRecord(ActionFact fact) : fact_(fact) {}
     // An accepted local claim ends when a terminal result is applied. Cancel
     // control alone never changes it; work/call owns actual transport draining.
     enum class Delivery { unclaimed, claimed, finished };
@@ -113,7 +121,7 @@ class ActionRecord {
     bool receiving() const;
     ayni_status_t finish(ActionPhase phase, ActionEffect effect, ActionEvidence evidence,
                          ActionStamp stamp);
-    ActionFact fact_;                         // This module owns durable knowledge.
+    ActionFact fact_{};                       // Phase empty until prepare; then owned knowledge.
     Delivery delivery_ = Delivery::unclaimed; // This boot's one-shot submit guard, not persisted.
 };
 

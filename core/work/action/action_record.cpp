@@ -80,7 +80,11 @@ ayni_status_t ActionRecord::prepare(const ActionIdentity &identity, ActionStamp 
     if (!valid(fact)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    out = ActionRecord(fact);
+    if (out) {
+        return AYNI_INVALID_STATE;
+    }
+    out.emplace();
+    out->fact_ = fact;
     return AYNI_OK;
 }
 
