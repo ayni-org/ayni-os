@@ -37,7 +37,7 @@ class CheckDepsTest(unittest.TestCase):
         self.assertIn(fragment, found[0])
 
     def test_core_includes_lower_layer(self):
-        self.write("core/work/task/task.cpp", '#include "foundation/ids.h"\n#include "budget/budget.h"\n')
+        self.write("core/work/task/task.cpp", '#include "foundation/ids.h"\n#include "resources/resource.h"\n')
         self.assertEqual(self.violations(), [])
 
     def test_core_rejects_upward_include(self):
@@ -45,8 +45,8 @@ class CheckDepsTest(unittest.TestCase):
         self.assert_single_violation("core/foundation may not include core/kernel")
 
     def test_core_rejects_same_layer_include(self):
-        self.write("core/authority/grant/grant.cpp", '#include "budget/budget.h"\n')
-        self.assert_single_violation("core/authority may not include core/budget")
+        self.write("core/authority/grant/grant.cpp", '#include "resources/resource.h"\n')
+        self.assert_single_violation("core/authority may not include core/resources")
 
     def test_core_rejects_relative_path_to_higher_layer(self):
         self.write("core/kernel/kernel.h")

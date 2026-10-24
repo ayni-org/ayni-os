@@ -36,6 +36,6 @@ endfunction()
 
 ayni_layer_case(layers_accept_lower_layer_dependency work "authority,foundation" "")
 ayni_layer_case(layers_reject_upward_dependency foundation kernel "may not depend on core/kernel")
-ayni_layer_case(layers_reject_same_layer_dependency authority budget "may not depend on core/budget")
+ayni_layer_case(layers_reject_same_layer_dependency authority resources "may not depend on core/resources")
 ayni_layer_case(layers_reject_unknown_module scheduler "" "core/scheduler is not a module")
 ayni_layer_case(layers_reject_unknown_dependency work scheduler "depends on unknown module 'scheduler'")

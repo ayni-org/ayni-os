@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 28u
+#define AYNI_ABI_MINOR 29u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -154,7 +154,18 @@ typedef struct ayni_config_v1 {
     /* Since 0.20. Requirements per Goal: 1..16; an omitted trailing field uses 4.
      * Each original domain and Scope separately uses authority_scope_max_bytes. */
     uint32_t goal_requirement_capacity;
+    /* Since 0.29. Resource descriptors/live state and queued/held resource
+     * requests. Zero (also the omitted default) disables each table. An
+     * explicit profile enables them; no implicit hardware/resource discovery. */
+    uint32_t resource_capacity;
+    uint32_t resource_request_capacity;
 } ayni_config_v1;
+
+/* Since 0.29. Counts of immutable resources and pending/held request groups. */
+#define AYNI_RESOURCE_CAPACITY_DEFAULT 0u
+#define AYNI_RESOURCE_CAPACITY_MAX 64u
+#define AYNI_RESOURCE_REQUEST_CAPACITY_DEFAULT 0u
+#define AYNI_RESOURCE_REQUEST_CAPACITY_MAX 256u
 
 /* Since 0.17. Limits apply to complete registered domains and scopes. */
 /* Since 0.18. Caller-owned Grant storage and bounded parent traversal. */

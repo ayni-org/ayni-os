@@ -1,6 +1,6 @@
 # Portable Core. Self-contained so that both the native project and the
 # ESP-IDF runtime component can add it with add_subdirectory (ADR-0011).
-# Modules get a target only once they have code; core/README.md lists all nine.
+# Modules get a target only once they have code; core/README.md lists the current module owners.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -25,6 +25,7 @@ ayni_add_core_module(catalog
         catalog/capability/field_domain.cpp
         catalog/capability/field_values.cpp
         catalog/goal_type/goal_type_registry.cpp
+        catalog/resource/resource_registry.cpp
         catalog/strategy/strategy_registry.cpp
     DEPENDS foundation)
 
@@ -36,6 +37,10 @@ ayni_add_core_module(authority
         authority/principal/principal_registry.cpp
         authority/scope/scope.cpp
     DEPENDS catalog durability foundation)
+
+ayni_add_core_module(resources
+    SOURCES resources/admission/resource_admission.cpp
+    DEPENDS catalog foundation)
 
 ayni_add_core_module(work
     SOURCES
@@ -84,6 +89,7 @@ ayni_add_core_module(kernel
         kernel/intent/work_model.cpp
         kernel/intent/work_authority_cleanup.cpp
         kernel/kernel_api.cpp
+        kernel/resource_api.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
         kernel/storage/storage_budget.cpp
@@ -95,7 +101,7 @@ ayni_add_core_module(kernel
         kernel/goal_approval_replay.cpp
         kernel/goal_reauthorization_replay.cpp
         kernel/work_snapshot.cpp
-    DEPENDS work authority catalog durability foundation)
+    DEPENDS work authority resources catalog durability foundation)
 
 # What consumers link: the top module pulls in every module below it.
 add_library(ayni_core INTERFACE)

@@ -3,7 +3,7 @@
   "core_layers": [
     ["kernel"],
     ["work"],
-    ["authority", "resources", "budget", "knowledge"],
+    ["authority", "resources", "knowledge"],
     ["catalog"],
     ["durability"],
     ["foundation"]

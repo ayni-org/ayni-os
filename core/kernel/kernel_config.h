@@ -32,6 +32,9 @@ struct KernelCapacities {
     uint32_t grant_capacity;
     uint32_t grant_delegation_depth_max;
     uint32_t goal_requirement_capacity; // Positive requirements per Goal; fixes metadata stride.
+    uint32_t resource_capacity =
+        0; // Resource descriptions/live states; zero disables registration.
+    uint32_t resource_request_capacity = 0; // Queued/held groups; zero disables acquisition.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -61,6 +64,9 @@ struct KernelStorage {
     void *grants;
     void *goal_authority; // Goal-owned ceilings/references, one slot per Goal index.
     void *task_authority; // Task-owned admission references, one slot per stable Task slot.
+    void *resource_catalog = nullptr; // Catalog-owned descriptions; null iff disabled.
+    void *resource_states = nullptr;  // Resource-owned health/occupancy; null iff catalog disabled.
+    void *resource_requests = nullptr; // Resource-owned queue/claims; null iff queue disabled.
 };
 
 } // namespace ayni::kernel

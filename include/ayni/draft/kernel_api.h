@@ -4,7 +4,7 @@
  *
  * Planned kernel API beyond ayni.h: catalog registration, further intents and
  * events (plan section 3.2; contracts/domain/lifecycles.md). Implemented
- * functions and types stay in ayni.h and are not redeclared.
+ * functions and types stay in published headers and are not redeclared.
  *
  * Conventions for every draft struct and enumeration, as in ayni.h:
  * enumerations are uint32_t typedefs whose states and kinds start at 1, and 0
@@ -26,6 +26,7 @@
 
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
+#include <ayni/resources.h>
 
 #include <stdint.h>
 
@@ -43,23 +44,9 @@ typedef struct ayni_device_desc_v1 {
     ayni_string_v1 firmware_version;
 } ayni_device_desc_v1;
 
-typedef uint32_t ayni_sharing_t;
-
-#define AYNI_SHARING_SHARED ((ayni_sharing_t)1)
-#define AYNI_SHARING_EXCLUSIVE ((ayni_sharing_t)2)
-
-/* Resource flags. A control domain carries an authority_epoch (C-RES-012). */
-#define AYNI_RESOURCE_CONTROL_DOMAIN 0x1u
-
-typedef struct ayni_resource_desc_v1 {
-    uint32_t struct_size;
-    ayni_sharing_t sharing;
-    ayni_string_v1 resource_id;
-    ayni_string_v1 device_id;
-    ayni_string_v1 conflict_domain; /* empty: none */
-    uint32_t capacity;              /* concurrent holders; 1 for exclusive */
-    uint32_t flags;                 /* AYNI_RESOURCE_* */
-} ayni_resource_desc_v1;
+/* Resource registration lives in ayni/resources.h since 0.29. Control-domain
+ * authority epochs and device/binding associations remain MA-018B/MA-008;
+ * the current ACTUATOR flag promises quarantine, not execution permission. */
 
 typedef uint32_t ayni_call_form_t;
 
@@ -126,7 +113,6 @@ typedef struct ayni_binding_v1 {
 } ayni_binding_v1;
 
 ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc_v1 *device);
-ayni_status_t ayni_register_resource(ayni_kernel_t *kernel, const ayni_resource_desc_v1 *resource);
 ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding);
 
 /*
@@ -143,14 +129,18 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
  * Until a kind is implemented, ayni_submit_intent returns AYNI_UNSUPPORTED
  * for it. Their body types are fixed together with each kind (C-WIRE-014).
  */
-#define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)11)
-#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)12)
-#define AYNI_INTENT_SUBSCRIPTION_OPEN ((ayni_intent_kind_t)13)
-#define AYNI_INTENT_SUBSCRIPTION_CLOSE ((ayni_intent_kind_t)14)
-/* Whether the kernel or the assistant coordinator owns the pause set is
- * decided with MA-019 (ADR-0018). */
-#define AYNI_INTENT_ASSISTANT_PAUSE ((ayni_intent_kind_t)15)
-#define AYNI_INTENT_ASSISTANT_RESUME ((ayni_intent_kind_t)16)
+/* Draft-only values are deliberately outside the implemented range. The old
+ * draft 11/12 aliased published Goal approval/reauthorization; no draft body
+ * may be interpreted as an implemented command (ADR-0042). Assign final
+ * published values only when implementing each typed contract. */
+#define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)0x10001u)
+#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)0x10002u)
+#define AYNI_INTENT_SUBSCRIPTION_OPEN ((ayni_intent_kind_t)0x10003u)
+#define AYNI_INTENT_SUBSCRIPTION_CLOSE ((ayni_intent_kind_t)0x10004u)
+/* ADR-0042: Core owns a generic persistent control group; the trusted assistant
+ * classifies work. These application-oriented draft intents remain unsupported. */
+#define AYNI_INTENT_ASSISTANT_PAUSE ((ayni_intent_kind_t)0x10005u)
+#define AYNI_INTENT_ASSISTANT_RESUME ((ayni_intent_kind_t)0x10006u)
 
 /* ---- Events ---------------------------------------------------------- */
 

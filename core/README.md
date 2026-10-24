@@ -1,11 +1,11 @@
 # Core 模块
 
-Core 按不变量属主分为九个模块（ADR-0008）。每个模块的职责以计划 §2.3 为准，这里只记录实现层面的约定和当前状态，不重复 §2.3 的职责表。
+Core 按不变量属主分为八个模块（ADR-0008、ADR-0042；原预算模块已取消）。每个模块的职责以计划 §2.3 为准，这里只记录实现层面的约定和当前状态，不重复 §2.3 的职责表。
 
 ## 依赖方向
 
 ```text
-kernel → work → {authority, resources, budget, knowledge} → catalog → durability → foundation
+kernel → work → {authority, resources, knowledge} → catalog → durability → foundation
 ```
 
 - 层次与子目录规则只在 [`tools/architecture.json`](../tools/architecture.json) 声明一次。CMake 的 `ayni_add_core_module` 据此在配置时拒绝向上或同层的链接依赖；`tools/check_deps.py` 据此检查 `#include`（ADR-0011）。
@@ -22,10 +22,9 @@ kernel → work → {authority, resources, budget, knowledge} → catalog → du
 | `kernel` | `kernel_api`、`work_api`：C ABI 参数检查、注册、会话、意图与查询；`kernel_lifecycle`：所有者线程的启动、工作、栅栏重载、维护与关闭编排；`kernel_layout`、`kernel_config`：有界内存与配置；`ingress/`、`completion/`：事件队列与完成槽；`boot/`：物理日志发现、快照与尾部恢复、writer 握手及启动记录；`commit/`、`command/`：日志提交与按 principal 有界的命令窗口；授权命令另保存原始 typed 规范请求，窗口与 scratch 均由 command 模块拥有，按完整字节比较；专用`pending_revoke`保存易失撤销身份/queued stamp，窗口统一pin防遗忘；`intent_receipt`编排三个阶段查询；`storage/`：共享写频与重试调度、日志上限与介质空间预算（`storage_budget`）、快照发布与轮转状态机（`storage_maintenance`）；`intent/`：工作模型、意图解码/规则、触发和策略决定；`work_journal`、`work_replay`、`work_snapshot`：按领域属主编排持久导出与恢复（ADR-0015～0027） | M0 |
 | `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效与记录；`task/`：Task 生命周期、容量回收、步骤与私有检查点；各表提供静态快照导入并保留原始 stamp，恢复的临时兼容覆盖与持久状态分开；`propagation`：跨表放行、派生选择与传播。调用与动作仍随后续包（ADR-0017～0027） | M1（`MA-004`） |
 | `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec；失配恢复只读受限，缺授权元数据的恢复工作保留并禁行（ADR-0017、0028）；`scope/`：有限字段规范化、typed/encoded 覆盖与实际请求完整性（ADR-0029）；`grant/`：Grant 创建/受限委派、typed 查询、当前 boot 期限、持久终态叶节点回收与记录 codec，保存完整源域和展开 Scope（ADR-0030）；D新增独立易失Gate、全祖先拒绝、持久根撤销/有界清理cursor与独立cleanup_stamp（ADR-0031，#28 已合并）；审批/完整工作准入随 E/F，Scene 授权仍不支持 | M1（`MA-004`） |
-| `resources` | 无代码 | M1（`MA-018`） |
-| `budget` | 无代码 | M1（`MA-018`） |
+| `resources` | `admission/`：有界全组准入、Agent 轮转/实例 FIFO、等待期限/原因、健康/占用及带代际的执行器隔离；尚未接 Provider 消费链 | M1（`MA-018A`，当前分支） |
 | `knowledge` | 无代码 | M1（`MA-011`） |
-| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本、触发种类及参数校验；`strategy/`：策略版本、决定和检查点上限注册。`capability/`：有界能力 ID/版本目录及授权字段类型、单位、用途、取值域和规范 codec（ADR-0029）；设备、调用属性与绑定随 `MA-008` | M1（`MA-004`） |
+| `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本、触发种类及参数校验；`strategy/`：策略版本、决定和检查点上限注册。`capability/`：有界能力 ID/版本目录及授权字段类型、单位、用途、取值域和规范 codec（ADR-0029）；`resource/` 保存可信资源描述；设备、调用属性与绑定随 `MA-008` | M1（`MA-004`） |
 | `durability` | `batch/`：schema 0/1 批次、记录 flags、提交连续性及 writer fence 扫描；`journal/`：有界日志环；`snapshot/`：静态快照头部/尾标记及 CRC。只提供持久机制，不理解工作领域，不选择 Host，也不编排领域恢复次序（ADR-0016、0026、0027） | M1（`MA-005`） |
 | `foundation` | `crc32`：可跨页累计的 CRC-32/ISO-HDLC；`little_endian.h`：定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器；`transition_stamp.h`；`bounded_array.h`：调用方内存上的有界数组。状态码仍只在公开头文件 `include/ayni/ayni.h` 定义 | M1（`MA-005`） |
 
