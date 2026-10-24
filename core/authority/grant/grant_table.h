@@ -208,6 +208,14 @@ class GrantTable {
     // consult work subjects; Kernel consumes these indices without walking again.
     GrantCheck check_chain(uint32_t index, GrantContext context, CheckedChain &out) const;
 
+    // Whether any retained row has a static boot catalog/subject hold.
+    // A false sample skips per-reference walks only within the same owner query.
+    bool has_compatibility_holds() const;
+    // Whether this retained path has a boot catalog/subject compatibility hold.
+    // This is availability only, never authorization; missing rows/links still
+    // reach check_chain. No clock, Gate or lifecycle result is cached here.
+    bool has_compatibility_hold(uint32_t index) const;
+
     // Preserve an old reference until its unlink is durable. Caller completed
     // all update checks; missing retained history needs no fence. seq is nonzero.
     void release_reference(uint64_t grant_id, uint64_t commit_seq);

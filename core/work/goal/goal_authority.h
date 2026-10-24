@@ -14,6 +14,10 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace ayni::authority {
+class GrantTable;
+}
+
 namespace ayni::work {
 
 // MA-006 implementation plan 6.1: requirements per Goal, independent of
@@ -58,6 +62,11 @@ bool valid_goal_authority_record(const GoalAuthorityRecord &record);
 // parent item; no union. Views/counts were validated by staging or the codec.
 bool goal_ceiling_covers(const GoalAuthorityRecord &parent, const GoalAuthorityRecord &child);
 
+// Availability of the saved selections' static boot compatibility. Missing
+// references are left to consumption validation; this never authorizes work.
+bool goal_references_compatible(const GoalAuthorityRecord &record,
+                                const authority::GrantTable &grants);
+
 // Original absent references, independent of the current validity of selected Grants.
 uint32_t missing_requirement_mask(const GoalAuthorityRecord &record);
 
@@ -95,7 +104,7 @@ class GoalAuthorityTable {
               const std::array<GoalGrantReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> &references,
               foundation::TransitionStamp stamp, BindingReference parent = {},
               InputResumeBoundary input = {});
-    // Missing metadata is blocked; callers distinguish legacy holds separately.
+    // Missing metadata is blocked; user and compatibility holds remain separate.
     bool authorized(uint32_t goal_index, uint64_t goal_id) const;
 
     // Requires facts accepted by valid_goal_authority_record or the record reader,

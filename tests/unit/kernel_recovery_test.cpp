@@ -1209,4 +1209,41 @@ TEST(WorkJournal, draining_stops_when_an_append_fails) {
     EXPECT_EQ(work.node().info().durable_seq, 3U);
 }
 
+// C-LIFE-024 / ADR-0038: an incompatible ancestor's type is a volatile hold
+// for its descendant's Task, even when the child's own type is registered.
+// Compatibility recovery must preserve the stored Task revision and reason.
+TEST(WorkRecovery, incompatible_parent_type_holds_a_compatible_child_without_rewriting_its_state) {
+    WorkNode work;
+    work.run();
+    const auto parent = work.create(WorkNode::create_body(work.instance(agent_a), 0, "reminder"));
+    ASSERT_EQ(parent.status, AYNI_OK);
+    const auto child = work.create(WorkNode::create_body(
+        work.instance(agent_a), parent.result.object.id, "timer", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(child.status, AYNI_OK);
+    work.node().step(1);
+    work.node().recover();
+    const auto task_id = work.goal(child.result.object.id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    const auto before = work.task(task_id);
+    Catalog missing;
+    missing.reminder_version = 0;
+    restart_with(work, missing);
+    const auto held = work.task(task_id);
+    EXPECT_EQ(held.lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(held.hold_status, AYNI_NOT_FOUND);
+    EXPECT_EQ(held.hold_reason, AYNI_REASON_GOAL_TYPE_UNKNOWN);
+    EXPECT_EQ(held.revision, before.revision);
+    EXPECT_EQ(held.commit_seq, before.commit_seq);
+    EXPECT_EQ(work.node().step(1).more_ready, 0U);
+    EXPECT_TRUE(work.strategy().seen.empty());
+    restart_with(work, Catalog{});
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(work.task(task_id).revision, before.revision);
+    EXPECT_EQ(work.task(task_id).commit_seq, before.commit_seq);
+    work.strategy().answer = {};
+    work.node().step(1);
+    ASSERT_EQ(work.strategy().seen.size(), 1U);
+    EXPECT_EQ(work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
 } // namespace

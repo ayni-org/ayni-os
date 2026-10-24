@@ -35,6 +35,10 @@ struct WorkTables {
     const GoalAuthorityTable *authority = nullptr;
     // Borrowed durable-prefix sample; max means all supplied facts are durable.
     uint64_t durable_seq = UINT64_MAX;
+    // Borrowed Grant owner when static boot holds need inspection; null means
+    // no lookup is needed (none present, or standalone without Grant context).
+    // The sample lasts this owner call; full consumption still checks authority.
+    const authority::GrantTable *grants = nullptr;
 };
 
 // Whether a task the change would reach is at the largest revision. The goal

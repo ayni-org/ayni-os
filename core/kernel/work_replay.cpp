@@ -935,15 +935,23 @@ void WorkReplay::hold_tasks() {
         if (!work::TaskTable::is_live(task.lifecycle)) {
             continue;
         }
-        const work::Goal &goal = model_.goals.at(task.goal_index);
-        if (work::GoalTable::is_held(goal)) {
+        ayni_reason_t goal_hold = AYNI_REASON_NONE;
+        // A compatible child still depends on its ancestors' types. Keep this
+        // inherited reason volatile, so startup cannot rewrite the Task into a
+        // user pause or advance its revision just for compatibility (C-LIFE-024).
+        const bool compatible = model_.goals.visit_lineage(task.goal_index, [&](uint32_t at) {
+            goal_hold = model_.goals.at(at).hold_reason;
+            return goal_hold == AYNI_REASON_NONE;
+        });
+        if (!compatible) {
             tasks.hold_restored(index,
-                                goal.hold_reason == AYNI_REASON_GOAL_TYPE_UNKNOWN
+                                goal_hold == AYNI_REASON_GOAL_TYPE_UNKNOWN
                                     ? AYNI_NOT_FOUND
                                     : AYNI_UNSUPPORTED_VERSION,
-                                goal.hold_reason);
+                                goal_hold);
             continue;
         }
+        const work::Goal &goal = model_.goals.at(task.goal_index);
         const catalog::GoalType &type = model_.goal_types.at(goal.goal_type_index);
         if (type.strategy_index == catalog::GoalType::no_strategy) {
             // A goal without a trigger derives no task, and one with a
