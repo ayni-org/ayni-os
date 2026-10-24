@@ -76,6 +76,7 @@ ayni_add_core_module(kernel
         kernel/command/pending_revoke.cpp
         kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
+        kernel/completion/provider_mailbox.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
         kernel/intent/authority_intent.cpp
