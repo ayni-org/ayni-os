@@ -400,16 +400,8 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
 
 void TaskTable::reauthorize(uint32_t index, foundation::TransitionStamp stamp) {
     auto &task = tasks_[index];
-    const bool was_held = still_held(task);
     ++task.revision;
     task.commit_seq = stamp.commit_seq;
-    if (task.recovery_hold_reason == AYNI_REASON_LEGACY_UNCONFIRMED) {
-        task.recovery_hold_status = AYNI_OK;
-        task.recovery_hold_reason = AYNI_REASON_NONE;
-    }
-    if (was_held && !still_held(task)) {
-        --held_count_;
-    }
 }
 
 TaskTable::Restore TaskTable::restore_authority_state(uint32_t index, const TaskState &state,

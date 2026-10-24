@@ -312,7 +312,7 @@ TEST(GoalAuthorityPersistence, journal_round_trip_preserves_zero_and_rejects_mis
     restored.run();
     ASSERT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(restored.saved(explicit_zero).count, 0U);
-    EXPECT_EQ(restored.work.goal(explicit_zero).hold_reason, AYNI_REASON_LEGACY_UNCONFIRMED);
+    EXPECT_EQ(restored.work.goal(explicit_zero).hold_reason, AYNI_REASON_NONE);
 
     // White-box CRC-valid corruption: remove the evidence and downgrade the
     // inner envelopes. This does not make a schema 2 batch a supported legacy image.
@@ -1004,9 +1004,8 @@ TEST(GoalApprovalPersistence, public_approval_survives_journal_and_snapshot_with
     ASSERT_EQ(booted.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(booted.saved(created.result.object.id).requirements[0].dependency.grant_id, grant_id);
     EXPECT_EQ(booted.work.kernel()->work.grants.at(0).bound_goal_id, created.result.object.id);
-    // E retains activated-work recovery hold; F alone removes it after rechecking.
-    EXPECT_EQ(booted.work.goal(created.result.object.id).hold_reason,
-              AYNI_REASON_LEGACY_UNCONFIRMED);
+    // ADR-0038: complete permanent authority resumes without an extra confirmation.
+    EXPECT_EQ(booted.work.goal(created.result.object.id).hold_reason, AYNI_REASON_NONE);
     intent.session_id = booted.work.session();
     const auto retry = booted.work.submit(intent);
     ASSERT_EQ(retry.status, AYNI_OK);

@@ -159,7 +159,8 @@ class TaskTable {
     // while user lifecycle, revision, strategy hold and progress stay intact.
     void authority_changed(uint32_t index, foundation::TransitionStamp stamp);
     // Caller preflighted a direct live cohort with non-saturated revisions.
-    // Preserve user/policy state and private progress; confirm only authorization's boot hold.
+    // Preserve all user/policy/compatibility state and private progress;
+    // the separate TaskAuthorityTable owns the replacement authorization.
     void reauthorize(uint32_t index, foundation::TransitionStamp stamp);
 
     // Its strategy's decision holds the READY task index, below the largest

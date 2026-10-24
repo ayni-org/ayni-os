@@ -95,7 +95,8 @@ struct WorkModel {
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
     work::WorkTables tables(uint64_t durable_seq = UINT64_MAX) {
-        return {goals, tasks, agents, &goal_authority, durable_seq};
+        return {goals,           tasks,       agents,
+                &goal_authority, durable_seq, grants.has_compatibility_holds() ? &grants : nullptr};
     }
     // Export a staged immutable ceiling and select existing durable Grants.
     authority::GrantCheck prepare_goal_authority(const catalog::GoalType &type,

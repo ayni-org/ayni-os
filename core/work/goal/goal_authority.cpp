@@ -1,5 +1,6 @@
 #include "work/goal/goal_authority.h"
 
+#include "authority/grant/grant_table.h"
 #include "authority/scope/scope.h"
 #include "foundation/kernel_id.h"
 
@@ -82,6 +83,20 @@ bool goal_ceiling_covers(const GoalAuthorityRecord &parent, const GoalAuthorityR
             covered = relation.status == AYNI_OK && relation.covered;
         }
         if (!covered) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// A failed catalog/subject recovery hold must not be persisted as a new
+// authorization pause merely because a restored Task is READY (C-AUTH-020).
+bool goal_references_compatible(const GoalAuthorityRecord &record,
+                                const authority::GrantTable &grants) {
+    for (uint32_t at = 0; at < record.count; ++at) {
+        uint32_t index = 0;
+        if (grants.find(record.requirements[at].dependency.grant_id, index) &&
+            grants.has_compatibility_hold(index)) {
             return false;
         }
     }

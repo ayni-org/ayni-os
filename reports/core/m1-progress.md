@@ -67,8 +67,8 @@
 ## 交接状态（2026-10-24）
 
 - **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–E 和 R1～R4 整理。E 由 [#42](https://github.com/RobotSe7en/ayni/pull/42)～[#45](https://github.com/RobotSe7en/ayni/pull/45)、[#47](https://github.com/RobotSe7en/ayni/pull/47) 交付需求事实、待批创建/查询、专属 Grant、原子批准及最低消费门控；验证和覆盖率见 [ADR-0037](../../docs/adr/0037-goal-requirements-and-atomic-approval.md)。
-- **正在实施：** 用户 2026-10-24 批准 F。F1/F2 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)，F3 清理及触发边界见 [#52](https://github.com/RobotSe7en/ayni/pull/52)。F4 超过原完整 diff 门槛，按计划分为 [#53](https://github.com/RobotSe7en/ayni/pull/53) 内部结果/持久证明及 [#54](https://github.com/RobotSe7en/ayni/pull/54) 完整公开事务，后者提供 ABI 0.26 原子重新授权、独立历史结果和新绑定持久门槛。下一步 F5 正常重启，再统一覆盖率及文档收尾。开发期旧格式明确拒绝并保留，不迁移或补权限。当前无需用户操作。
-- **仍有限制：** 重启仍会停止恢复的已激活 Goal/Task；有效 PROPOSED 保持待批并继续原失效计时。安全相关分支覆盖仍低于目标，偏差见 ADR-0037；ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收尚未完成。自托管 CI 已启用，后续按 workflow 完成本地验证、独立审查和适用 CI 后合并。
+- **正在实施：** F1～F3 见 [#49](https://github.com/RobotSe7en/ayni/pull/49)、[#51](https://github.com/RobotSe7en/ayni/pull/51)、[#52](https://github.com/RobotSe7en/ayni/pull/52)；F4 按完整 diff 门槛分为 [#53](https://github.com/RobotSe7en/ayni/pull/53) 内部证明及 [#54](https://github.com/RobotSe7en/ayni/pull/54) 完整公开事务。F5 [#55](https://github.com/RobotSe7en/ayni/pull/55) 以 ABI 0.27 依完整 schema 2 事实正常恢复工作，永久授权继续，原暂停和进度保留，旧 boot 限时权限失效；旧存储或缺失 owner 事实的工作明确拒绝并保留，不迁移或补授权。下一步统一五配置、覆盖率及资源边界量测，再作文档收尾；当前无需用户操作。
+- **仍有限制：** F 统一覆盖率/资源验收尚未收尾；安全分支目标不继承 E 的旧偏差豁免。ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收仍随后续工作包。Native 运行、固件编译与实机验收分别记录。
 
 ## 剩余工作
 

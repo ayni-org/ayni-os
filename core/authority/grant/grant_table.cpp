@@ -72,6 +72,10 @@ bool catalog_hold(ayni_reason_t reason) {
            reason == AYNI_REASON_GRANT_CATALOG_CHANGED;
 }
 
+bool compatibility_hold(ayni_reason_t reason) {
+    return catalog_hold(reason) || reason == AYNI_REASON_GRANT_SUBJECT;
+}
+
 GrantCheck held(ayni_reason_t reason) {
     if (reason == AYNI_REASON_CAPABILITY_UNKNOWN) {
         return {AYNI_NOT_FOUND, reason};
@@ -491,6 +495,30 @@ bool GrantTable::valid_link(uint32_t child_index, uint32_t parent_index) const {
                 child.deadline_us <= parent.deadline_us);
     }
     return true;
+}
+
+// Common no-hold boots need no per-reference compatibility walk at all.
+// This is one borrowed-query sample, not a second persistent hold counter.
+bool GrantTable::has_compatibility_holds() const {
+    for (uint32_t index = 0; index < size(); ++index) {
+        if (compatibility_hold(at(index).hold_reason)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Static per-boot compatibility is separate from revocation/expiry. The same
+// bounded owner walk examines cached reasons; malformed links are left for
+// the full consumer check instead of silently suppressing their denial.
+bool GrantTable::has_compatibility_hold(uint32_t index) const {
+    if (index >= size()) {
+        return false;
+    }
+    return visit_ancestors(index, limits_.delegation_depth_max + 1U, [&](uint32_t at_index) {
+               const auto reason = at(at_index).hold_reason;
+               return !compatibility_hold(reason);
+           }) == Walk::stopped;
 }
 
 GrantCheck GrantTable::check_chain(uint32_t index, GrantContext context) const {

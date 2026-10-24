@@ -2,16 +2,58 @@
 
 #include "catalog/catalog_id.h"
 
+#include <array>
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace ayni::kernel {
 namespace {
 
-// Borrowed admission context for one synchronous ordering/readiness query.
+// Two bits per Goal slot encode unknown, available or held. All cells start
+// unknown; no result survives this synchronous immutable owner-thread query.
+// At 1024 Goal slots this costs 256 B of stack, never caller arena or heap.
+constexpr uint32_t compatibility_state_bits = 2;
+constexpr uint32_t compatibility_word_bits = std::numeric_limits<uint64_t>::digits;
+constexpr uint32_t compatibility_states_per_word =
+    compatibility_word_bits / compatibility_state_bits;
+constexpr uint32_t compatibility_word_count =
+    (AYNI_GOAL_CAPACITY_MAX + compatibility_states_per_word - 1U) / compatibility_states_per_word;
+constexpr uint64_t compatibility_state_mask = (uint64_t{1} << compatibility_state_bits) - 1U;
+enum class Compatibility : uint64_t { unknown = 0, available = 1, held = 2 };
+
+// Borrowed admission context and owned static-compatibility memo for one
+// readiness query. This never caches authority, expiry, Gate or consume results.
 struct DecisionAdmission {
     const WorkModel &model; // Owner state, unchanged for the selection call.
     uint64_t durable_seq;   // Durable-prefix sample; no cross-boot comparison.
+    // Query-local sample: false iff no retained Grant has a boot compatibility
+    // hold. The owner model cannot change during this synchronous query.
+    bool inspect_compatibility;
+    // Packed Compatibility cells by retained Goal index; zero means unknown.
+    mutable std::array<uint64_t, compatibility_word_count> compatibility{};
+
+    DecisionAdmission(const WorkModel &owner, uint64_t durable)
+        : model(owner), durable_seq(durable),
+          inspect_compatibility(owner.grants.has_compatibility_holds()) {}
+
+    // Share each Goal's static reference check across its READY Tasks. Slot
+    // identities cannot change during the query; a later query starts fresh.
+    bool references_compatible(uint32_t goal_index) const {
+        auto &word = compatibility[goal_index / compatibility_states_per_word];
+        const auto shift = (goal_index % compatibility_states_per_word) * compatibility_state_bits;
+        const auto state = static_cast<Compatibility>((word >> shift) & compatibility_state_mask);
+        if (state != Compatibility::unknown) {
+            return state == Compatibility::available;
+        }
+        const bool available =
+            !model.goal_authority.contains(goal_index, model.goals.at(goal_index).goal_id) ||
+            work::goal_references_compatible(model.goal_authority.at(goal_index), model.grants);
+        // Only unknown cells are written, so OR preserves all other Goal cells.
+        word |= static_cast<uint64_t>(available ? Compatibility::available : Compatibility::held)
+                << shift;
+        return available;
+    }
 };
 
 // Paused or unconfirmed replacement bindings wait without spinning READY.
@@ -24,10 +66,17 @@ bool admission_ready(const void *context, const work::Task &task) {
         return false;
     }
     const auto &goal = query.model.goals.at(task.goal_index);
-    return !query.model.goal_authority.contains(task.goal_index, goal.goal_id) ||
-           !work::replacement_binding_pending(
-               query.model.goal_authority.at(task.goal_index).binding, goal.created.commit_seq,
-               query.durable_seq);
+    if (query.model.goal_authority.contains(task.goal_index, goal.goal_id) &&
+        work::replacement_binding_pending(query.model.goal_authority.at(task.goal_index).binding,
+                                          goal.created.commit_seq, query.durable_seq)) {
+        return false;
+    }
+    // Catalog/subject recovery holds are static for this boot. Keep their
+    // availability out of persistent authorization and policy failures;
+    // registration cannot change during a strategy callback (C-LIFE-003/C-POLICY-001).
+    return !query.inspect_compatibility ||
+           query.model.goals.visit_lineage(
+               task.goal_index, [&](uint32_t at) { return query.references_compatible(at); });
 }
 
 static_assert(alignof(ayni_policy_intent_v1) <= alignof(ayni_task_step_v1),

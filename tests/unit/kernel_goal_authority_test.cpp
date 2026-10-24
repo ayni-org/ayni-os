@@ -4,6 +4,7 @@
 #include "foundation/little_endian.h"
 #include "goal_approval_request.h"
 #include "goal_reauthorization_request.h"
+#include "kernel/intent/decision.h"
 #include "kernel/storage/storage_budget.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
@@ -12,8 +13,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <functional>
+#include <set>
 #include <vector>
 
 namespace {
@@ -38,6 +41,9 @@ class AuthorityWork {
             const auto principal = owner_desc();
             ASSERT_EQ(ayni_register_principal(kernel, &principal), AYNI_OK);
             for (auto id : {agent_a, agent_b}) {
+                if (id == agent_b && !agent_b_available) {
+                    continue;
+                }
                 const auto agent = agent_desc(id);
                 ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
             }
@@ -189,6 +195,7 @@ class AuthorityWork {
     WorkNode work;
     int64_t domain_max = 100;
     bool capability_available = true;
+    bool agent_b_available = true;
     bool allow_parameters = false;
     uint32_t count = 1;
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> low{};
@@ -1786,6 +1793,14 @@ TEST(GoalReauthorization, parent_does_not_resume_child_and_child_can_then_bind_n
     EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
     node.work.node().recover();
     EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    // ADR-0038 F5: normal restart cannot turn the retained old parent
+    // generation into a newly authorized child, even before cleanup scans it.
+    node.work.node().reboot();
+    node.work.node().recover();
+    node.work.reopen_session();
+    EXPECT_EQ(node.work.task(child_task).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(node.work.task(child_task).hold_reason, AYNI_REASON_GOAL_AUTHORITY_PARENT);
+    EXPECT_TRUE(node.work.strategy().seen.empty());
     ReauthorizationRequest child_request(node.work.kernel(), child.result.object.id);
     auto child_intent = node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &child_request.body,
                                          child_request.echo.info.revision);
@@ -2453,6 +2468,603 @@ TEST(GoalReauthorization,
     ASSERT_EQ(node.work.strategy().seen.size(), 1U);
     EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
     EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// C-AUTH-030 / ADR-0038: permanent complete admissions continue the same
+// READY Task after a normal restart, including private progress and checkpoint.
+TEST(WorkAuthorityRestart, permanent_admission_continues_the_same_task_checkpoint_and_steps) {
+    AuthorityWork node;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    const auto created = node.create();
+    ASSERT_EQ(created.status, AYNI_OK);
+    node.work.node().step(1);
+    node.work.strategy().answer = [](const auto &task, auto &out) {
+        out.intents[0] = progress_intent("saved", task.revision);
+        out.intent_count = 1;
+        out.checkpoint[0] = 42;
+        out.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    node.work.node().step(1);
+    node.work.node().recover();
+    const auto goal_id = created.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    const auto before = node.work.task(task_id);
+    const auto binding = node.authority(goal_id).binding_commit_seq;
+    ASSERT_EQ(before.step_count, 1U);
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_READY);
+    EXPECT_EQ(node.work.task(task_id).revision, before.revision);
+    EXPECT_EQ(node.work.task(task_id).commit_seq, before.commit_seq);
+    EXPECT_EQ(node.authority(goal_id).binding_commit_seq, binding);
+    node.work.strategy().seen.clear();
+    node.work.strategy().answer = {};
+    node.work.node().step(1);
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    const auto &seen = node.work.strategy().seen.front();
+    EXPECT_EQ(seen.snapshot.task_id, task_id);
+    EXPECT_EQ(seen.checkpoint, (std::vector<uint8_t>{42}));
+    EXPECT_EQ(seen.steps, (std::vector<std::string>{"saved"}));
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// C-AUTH-007 / ADR-0038: a new boot cannot prove an old monotonic lease.
+// Existing READY work is denied before the bounded cleanup reaches it, and
+// making a permanent Grant available still requires explicit reauthorization.
+TEST(WorkAuthorityRestart, old_boot_timed_authority_requires_explicit_reauthorization) {
+    AuthorityWork node;
+    node.run();
+    const auto timed = node.grant(0, 100, 100ULL * AYNI_TRIGGER_PERIOD_MIN_US);
+    ASSERT_EQ(timed.status, AYNI_OK);
+    node.work.node().recover();
+    const auto created = node.create();
+    ASSERT_EQ(created.status, AYNI_OK);
+    node.work.node().step(1);
+    node.work.node().recover();
+    const auto goal_id = created.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    const auto before = node.work.task(task_id);
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_NE(node.work.task(task_id).hold_reason, AYNI_REASON_NONE);
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    EXPECT_EQ(node.work.task(task_id).revision, before.revision);
+    node.work.reopen_session();
+    const auto replacement = node.grant();
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
+// ADR-0038: maximum requirements and direct READY Task cohort must fit one
+// atomic replacement and survive restart without copying Scope into each Task.
+TEST(WorkAuthorityRestart, maximum_requirement_and_task_cohort_survives_replacement_and_restart) {
+    AuthorityWork node;
+    node.count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    node.allow_parameters = true;
+    auto &config = node.work.node().config();
+    config.task_capacity = AYNI_TASK_CAPACITY_MAX;
+    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MAX;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    node.run();
+    const auto old = node.grant();
+    ASSERT_EQ(old.status, AYNI_OK);
+    node.work.node().recover();
+    const std::vector<uint8_t> parameters(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX, 42);
+    auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1,
+                                      {parameters.data(), static_cast<uint32_t>(parameters.size())},
+                                      AYNI_TRIGGER_INTERVAL);
+    body.trigger_period_us = AYNI_TRIGGER_PERIOD_MIN_US;
+    const auto created = node.work.create(body);
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto goal_id = created.result.object.id;
+    std::vector<uint64_t> tasks;
+    for (uint32_t at = 0; at < AYNI_TASK_CAPACITY_MAX; ++at) {
+        if (at != 0U) {
+            node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+        }
+        node.work.node().step(1);
+        const auto task_id = node.work.goal(goal_id).last_task_id;
+        ASSERT_NE(task_id, 0U);
+        ASSERT_TRUE(tasks.empty() || tasks.back() != task_id);
+        tasks.push_back(task_id);
+        node.work.node().recover();
+    }
+    ASSERT_TRUE(node.work.strategy().seen.empty());
+    node.revoke(old.result.object.id);
+    node.advance_work();
+    const auto replacement = node.grant();
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    const auto accepted = node.work.submit(intent);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    for (const auto id : tasks) {
+        ayni_task_authority_info_v1 admission{};
+        admission.struct_size = sizeof(admission);
+        ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), id, &admission), AYNI_OK);
+        EXPECT_EQ(admission.requirement_count, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
+        EXPECT_EQ(admission.binding_commit_seq, accepted.result.commit_seq);
+    }
+    node.work.node().recover();
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    for (const auto id : tasks) {
+        EXPECT_EQ(node.work.task(id).lifecycle, AYNI_TASK_READY);
+        ayni_task_authority_reference_v1 reference{};
+        reference.struct_size = sizeof(reference);
+        ASSERT_EQ(ayni_get_task_authority_reference(
+                      node.work.kernel(), id, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX - 1U, &reference),
+                  AYNI_OK);
+        EXPECT_EQ(reference.grant_id, replacement.result.object.id);
+    }
+    node.work.strategy().answer = {};
+    for (unsigned round = 0; round < 32U && node.work.strategy().seen.empty(); ++round) {
+        node.work.node().step(1); // The persisted cleanup request precedes decisions.
+    }
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, tasks.front());
+    EXPECT_EQ(node.work.strategy().seen.front().parameters, parameters);
+}
+
+// C-AUTH-030 / C-AUTH-034: an independent authorization pause survives boot
+// without being rewritten into an ordinary Task pause that reauthorization
+// cannot clear. The original READY Task resumes after the new binding is durable.
+TEST(WorkAuthorityRestart, revoked_ready_task_resumes_after_restart_and_explicit_reauthorization) {
+    AuthorityWork node;
+    node.run();
+    const auto grant = node.grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    const auto goal = node.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    node.work.node().step(1);
+    const auto goal_id = goal.result.object.id;
+    const auto task_id = node.work.goal(goal_id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    node.revoke(grant.result.object.id);
+    node.advance_work();
+    const auto before = node.work.task(task_id);
+    ASSERT_EQ(node.authority(goal_id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
+    node.work.node().reboot();
+    node.work.node().recover();
+    EXPECT_EQ(node.work.task(task_id).revision, before.revision);
+    EXPECT_EQ(node.work.task(task_id).commit_seq, before.commit_seq);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+    node.advance_work();
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+    node.work.reopen_session();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), goal_id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.work.node().recover();
+    node.advance_work();
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, task_id);
+    EXPECT_EQ(node.work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// ADR-0038: the minimum-work arena profile admits an explicit zero-needs
+// Goal/Task and normally restores it. Each configured work table has one slot.
+TEST(WorkAuthorityRestart, minimum_work_capacities_restore_explicit_zero_admission) {
+    WorkNode work;
+    auto &config = work.node().config();
+    config.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
+    config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
+    config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
+    config.agent_capacity = 1;
+    config.goal_type_capacity = 1;
+    config.goal_capacity = 1;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MIN;
+    config.session_capacity = 1;
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_MIN;
+    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_MIN;
+    config.task_capacity = 1;
+    config.strategy_capacity = 1;
+    config.policy_intent_capacity = 1;
+    config.task_step_capacity = 1;
+    config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN;
+    config.command_capacity = 1;
+    config.capability_capacity = 1;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
+    config.grant_capacity = 1;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN;
+    config.goal_requirement_capacity = 1;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    work.node().on_create([&](ayni_kernel_t *kernel) {
+        const auto owner = owner_desc();
+        ASSERT_EQ(ayni_register_principal(kernel, &owner), AYNI_OK);
+        const auto agent = agent_desc(agent_a);
+        ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
+        const auto strategy =
+            strategy_desc(strategy_id, 1, ScriptedStrategy::decide, &work.strategy(), 1, 0);
+        ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
+        const auto type = goal_type_desc("zero", 1);
+        ASSERT_EQ(ayni_register_goal_type(kernel, &type), AYNI_OK);
+    });
+    work.run();
+    const auto created = work.create(
+        WorkNode::create_body(work.instance(agent_a), 0, "zero", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(created.status, AYNI_OK);
+    work.node().step(1);
+    const auto task_id = work.goal(created.result.object.id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    work.node().recover();
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_READY);
+    work.node().step(1);
+    ASSERT_EQ(work.strategy().seen.size(), 1U);
+    EXPECT_EQ(work.strategy().seen.front().snapshot.task_id, task_id);
+    EXPECT_EQ(work.goal(created.result.object.id).lifecycle, AYNI_GOAL_SATISFIED);
+}
+
+// C-AUTH-030 / ADR-0038: catalog absence or exact-domain drift holds the
+// actual READY consumer without rewriting its immutable evidence or exporting
+// new needs. A compatible later boot continues that same Task.
+TEST(WorkAuthorityRestart, catalog_incompatibility_keeps_ready_progress_until_a_compatible_boot) {
+    for (const bool missing : {false, true}) {
+        for (const bool derived : {false, true}) {
+            SCOPED_TRACE(missing);
+            SCOPED_TRACE(derived);
+            AuthorityWork source;
+            source.run();
+            ASSERT_EQ(source.grant().status, AYNI_OK);
+            ASSERT_EQ(source.grant(0, 100, 10000000).status, AYNI_OK);
+            source.work.node().recover();
+            const auto goal = source.create();
+            ASSERT_EQ(goal.status, AYNI_OK);
+            if (derived) {
+                source.work.node().step(1);
+            }
+            source.work.node().recover();
+            const auto goal_id = goal.result.object.id;
+            const auto task_id = source.work.goal(goal_id).last_task_id;
+            AuthorityWork incompatible;
+            incompatible.capability_available = !missing;
+            incompatible.domain_max = 200;
+            incompatible.work.node().sim().durable_storage() =
+                source.work.node().sim().durable_storage();
+            incompatible.run();
+            ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+            EXPECT_EQ(incompatible.work.goal(goal_id).hold_reason,
+                      missing ? AYNI_REASON_CAPABILITY_UNKNOWN : AYNI_REASON_GRANT_CATALOG_CHANGED);
+            if (derived) {
+                EXPECT_EQ(incompatible.work.task(task_id).lifecycle, AYNI_TASK_PAUSED);
+            }
+            incompatible.advance_work();
+            EXPECT_EQ(incompatible.work.goal(goal_id).last_task_id, task_id);
+            EXPECT_TRUE(incompatible.work.strategy().seen.empty());
+            EXPECT_EQ(incompatible.calls, 0U);
+            EXPECT_EQ(incompatible.authority(goal_id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+            EXPECT_EQ(incompatible.work.node().step(1).more_ready, 0U);
+            AuthorityWork compatible;
+            compatible.work.node().sim().durable_storage() =
+                incompatible.work.node().sim().durable_storage();
+            compatible.run();
+            ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+            if (derived) {
+                EXPECT_EQ(compatible.work.task(task_id).lifecycle, AYNI_TASK_READY);
+            }
+            compatible.advance_work();
+            ASSERT_EQ(compatible.work.strategy().seen.size(), 1U);
+            EXPECT_EQ(compatible.work.strategy().seen.front().snapshot.goal_id, goal_id);
+            if (derived) {
+                EXPECT_EQ(compatible.work.strategy().seen.front().snapshot.task_id, task_id);
+            }
+            EXPECT_EQ(compatible.calls, 0U);
+        }
+    }
+}
+
+// C-AUTH-020 / ADR-0038: the selected delegated Grant can be compatible while
+// its parent has an unavailable registered subject. The Grant owner checks the
+// whole path's cached compatibility; it never becomes a persistent work deny.
+TEST(WorkAuthorityRestart, ancestor_grant_subject_hold_does_not_become_a_persistent_work_pause) {
+    AuthorityWork source;
+    source.run();
+    Range range(0, 100);
+    const ayni_grant_create_v1 parent_body{sizeof(parent_body),           1, text("device.move"),
+                                           source.work.instance(agent_b), 0, AYNI_GRANT_PERMANENT,
+                                           AYNI_GRANT_ALLOW_DELEGATION,   0, range.scope};
+    auto parent_intent = source.work.intent(AYNI_INTENT_GRANT_CREATE, &parent_body);
+    parent_intent.command_id = source.command++;
+    const auto parent = source.work.submit(parent_intent);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    source.work.node().recover();
+    auto child_body = parent_body;
+    child_body.subject_instance_id = source.work.instance(agent_a);
+    child_body.parent_grant_id = parent.result.object.id;
+    child_body.flags = 0;
+    auto child_intent = source.work.intent(AYNI_INTENT_GRANT_CREATE, &child_body, 1);
+    child_intent.command_id = source.command++;
+    ASSERT_EQ(source.work.submit(child_intent).status, AYNI_OK);
+    source.work.node().recover();
+    const auto goal = source.create();
+    ASSERT_EQ(goal.status, AYNI_OK);
+    source.work.node().step(1);
+    source.work.node().recover();
+    const auto goal_id = goal.result.object.id;
+    const auto task_id = source.work.goal(goal_id).last_task_id;
+    AuthorityWork unavailable;
+    unavailable.agent_b_available = false;
+    unavailable.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    unavailable.run();
+    ASSERT_EQ(unavailable.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    unavailable.advance_work();
+    EXPECT_TRUE(unavailable.work.strategy().seen.empty());
+    EXPECT_EQ(unavailable.work.task(task_id).hold_reason, AYNI_REASON_GRANT_SUBJECT);
+    EXPECT_EQ(unavailable.authority(goal_id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+    EXPECT_EQ(unavailable.work.node().step(1).more_ready, 0U);
+    AuthorityWork restored;
+    restored.work.node().sim().durable_storage() = unavailable.work.node().sim().durable_storage();
+    restored.run();
+    ASSERT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    restored.advance_work();
+    ASSERT_EQ(restored.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(restored.work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
+// ADR-0038 resource gate (White-box timing only): maximal retained Grants,
+// delegation/Goal depth and requirements share one READY cohort. Measure real
+// Native readiness-query wall time, separate from the simulated Host clock;
+// no timing assertion.
+TEST(WorkAuthorityRestart, full_grant_table_and_deep_shared_cohort_have_bounded_readiness_work) {
+    AuthorityWork node;
+    node.count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    auto &config = node.work.node().config();
+    config.grant_capacity = AYNI_GRANT_CAPACITY_MAX;
+    config.command_capacity = AYNI_COMMAND_CAPACITY_MAX;
+    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX;
+    config.goal_capacity = AYNI_GOAL_DEPTH_MAX_MAX + 1U;
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_MAX;
+    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+    config.task_capacity = AYNI_TASK_CAPACITY_MAX;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    node.run();
+    Range range(0, 100);
+    ayni_grant_create_v1 body{sizeof(body),
+                              1,
+                              text("device.move"),
+                              node.work.instance(agent_b),
+                              0,
+                              AYNI_GRANT_PERMANENT,
+                              0,
+                              0,
+                              range.scope};
+    const uint32_t chain_nodes = AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX + 1U;
+    for (uint32_t at = 0; at < AYNI_GRANT_CAPACITY_MAX - chain_nodes; ++at) {
+        auto intent = node.work.intent(AYNI_INTENT_GRANT_CREATE, &body);
+        intent.command_id = node.command++;
+        ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+        node.work.node().recover();
+    }
+    uint64_t parent_grant = 0;
+    for (uint32_t depth = 0; depth < chain_nodes; ++depth) {
+        const bool leaf = depth + 1U == chain_nodes;
+        body.parent_grant_id = parent_grant;
+        body.subject_instance_id = node.work.instance(leaf ? agent_a : agent_b);
+        body.flags = leaf ? 0U : AYNI_GRANT_ALLOW_DELEGATION;
+        auto intent = node.work.intent(AYNI_INTENT_GRANT_CREATE, &body, depth == 0U ? 0U : 1U);
+        intent.command_id = node.command++;
+        const auto created = node.work.submit(intent);
+        ASSERT_EQ(created.status, AYNI_OK);
+        parent_grant = created.result.object.id;
+        node.work.node().recover();
+    }
+    uint64_t goal_id = 0;
+    for (uint32_t depth = 0; depth <= AYNI_GOAL_DEPTH_MAX_MAX; ++depth) {
+        const auto created = node.create(
+            depth == AYNI_GOAL_DEPTH_MAX_MAX ? AYNI_TRIGGER_INTERVAL : AYNI_TRIGGER_NONE, goal_id);
+        ASSERT_EQ(created.status, AYNI_OK);
+        goal_id = created.result.object.id;
+        node.work.node().recover();
+    }
+    auto &model = node.work.kernel()->work;
+    uint32_t goal_index = 0;
+    ASSERT_TRUE(model.goals.find(goal_id, goal_index));
+    ASSERT_EQ(model
+                  .check_goal_authority(goal_index, node.work.node().sim().now_us(),
+                                        node.work.node().info().durable_seq)
+                  .status,
+              AYNI_OK);
+    auto tables = model.tables();
+    // White-box resource fixture: the real C ABI admitted all immutable
+    // Goal/Grant facts. Construct the unchanged cohort through its owners
+    // without running the readiness query during every setup step; no claim
+    // about durability is made for these synthetic Task transitions.
+    for (uint32_t at = 0; at < AYNI_TASK_CAPACITY_MAX; ++at) {
+        if (at != 0U) {
+            node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+        }
+        uint64_t task_id = 0;
+        ASSERT_TRUE(model.ids.allocate(task_id));
+        const auto stamp = model.transitions.next();
+        ayni::work::derive(tables, goal_index, node.work.node().sim().now_us(), task_id, stamp);
+        ASSERT_TRUE(model.inherit_task_authority(task_id, stamp));
+    }
+    ASSERT_TRUE(node.work.strategy().seen.empty());
+    ASSERT_EQ(node.work.kernel()->work.tasks.size(), AYNI_TASK_CAPACITY_MAX);
+    ASSERT_EQ(node.work.kernel()->work.grants.size(), AYNI_GRANT_CAPACITY_MAX);
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_TRUE(ayni::kernel::awaits_decision(model, node.work.node().info().durable_seq));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    RecordProperty("native_full_boundary_readiness_us", std::to_string(elapsed));
+    EXPECT_TRUE(node.work.strategy().seen.empty());
+}
+
+// ADR-0038 resource gate: the last retained Goal slot can own multiple
+// runnable Tasks at the public Goal-count bound, with the minimal Scope budget.
+TEST(WorkAuthorityRestart, maximum_goal_count_keeps_the_last_goals_task_cohort_runnable) {
+    AuthorityWork node;
+    auto &config = node.work.node().config();
+    config.goal_capacity = AYNI_GOAL_CAPACITY_MAX;
+    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_MIN;
+    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_MIN;
+    config.goal_requirement_capacity = 1;
+    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
+    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_MIN;
+    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
+    node.run();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    ASSERT_EQ(node.grant(0, 100, 0, node.work.instance(agent_b)).status, AYNI_OK);
+    node.work.node().recover();
+    uint64_t goal_id = 0;
+    for (uint32_t at = 0; at < AYNI_GOAL_CAPACITY_MAX; ++at) {
+        const auto created = node.create(at + 1U == AYNI_GOAL_CAPACITY_MAX ? AYNI_TRIGGER_INTERVAL
+                                                                           : AYNI_TRIGGER_NONE);
+        ASSERT_EQ(created.status, AYNI_OK);
+        goal_id = created.result.object.id;
+        node.work.node().recover();
+    }
+    node.work.node().step(1);
+    const auto first = node.work.goal(goal_id).last_task_id;
+    ASSERT_NE(first, 0U);
+    node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+    node.work.node().step(1);
+    const auto second = node.work.goal(goal_id).last_task_id;
+    ASSERT_NE(second, first);
+    ASSERT_TRUE(node.work.strategy().seen.empty());
+    node.work.node().recover();
+    // An unrelated missing subject installs a genuine boot hold while all
+    // selected references remain valid. The final Goal slot stays executable.
+    node.agent_b_available = false;
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    node.work.node().step(1);
+    ASSERT_EQ(node.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(node.work.strategy().seen.front().snapshot.task_id, first);
+    node.work.node().recover();
+    node.work.node().step(1);
+    ASSERT_EQ(node.work.strategy().seen.size(), 2U);
+    EXPECT_EQ(node.work.strategy().seen.back().snapshot.task_id, second);
+}
+
+// C-AUTH-020 / ADR-0038: a zero-needs child still depends on its parent's
+// retained Grant compatibility. The child's empty own references cannot hide
+// an ancestor hold or turn that temporary hold into persistent authorization.
+TEST(WorkAuthorityRestart, zero_requirement_child_preserves_ancestor_catalog_compatibility) {
+    AuthorityWork source;
+    source.run();
+    ASSERT_EQ(source.grant().status, AYNI_OK);
+    source.work.node().recover();
+    const auto parent = source.create(AYNI_TRIGGER_NONE);
+    ASSERT_EQ(parent.status, AYNI_OK);
+    const auto child = source.create(AYNI_TRIGGER_ONCE, parent.result.object.id, "zero");
+    ASSERT_EQ(child.status, AYNI_OK);
+    source.work.node().step(1);
+    source.work.node().recover();
+    const auto child_id = child.result.object.id;
+    const auto task_id = source.work.goal(child_id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    AuthorityWork incompatible;
+    incompatible.domain_max = 200;
+    incompatible.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    incompatible.run();
+    ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    incompatible.advance_work();
+    EXPECT_TRUE(incompatible.work.strategy().seen.empty());
+    EXPECT_EQ(incompatible.authority(child_id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+    EXPECT_EQ(incompatible.work.task(task_id).hold_reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+    EXPECT_EQ(incompatible.work.node().step(1).more_ready, 0U);
+    AuthorityWork compatible;
+    compatible.work.node().sim().durable_storage() =
+        incompatible.work.node().sim().durable_storage();
+    compatible.run();
+    ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    compatible.advance_work();
+    ASSERT_EQ(compatible.work.strategy().seen.size(), 1U);
+    EXPECT_EQ(compatible.work.strategy().seen.front().snapshot.task_id, task_id);
+}
+
+// C-AUTH-020 / ADR-0038: multiple Tasks of adjacent Goals keep independent
+// static-compatibility results. A table with exactly one held Grant also has
+// a held final row; no consumer may convert that hold into a persistent deny.
+TEST(WorkAuthorityRestart, shared_tasks_and_adjacent_goals_keep_independent_catalog_holds) {
+    AuthorityWork source;
+    source.run();
+    ASSERT_EQ(source.grant().status, AYNI_OK);
+    source.work.node().recover();
+    const auto first = source.create(AYNI_TRIGGER_INTERVAL);
+    const auto second = source.create(AYNI_TRIGGER_INTERVAL);
+    ASSERT_EQ(first.status, AYNI_OK);
+    ASSERT_EQ(second.status, AYNI_OK);
+    std::vector<uint64_t> tasks;
+    for (unsigned period = 0; period < 2; ++period) {
+        if (period != 0U) {
+            source.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
+        }
+        source.work.node().step(1); // Derive the first Goal, before policy work.
+        tasks.push_back(source.work.goal(first.result.object.id).last_task_id);
+        source.work.node().recover();
+        source.work.node().step(1);
+        tasks.push_back(source.work.goal(second.result.object.id).last_task_id);
+        source.work.node().recover();
+    }
+    ASSERT_TRUE(source.work.strategy().seen.empty());
+    ASSERT_EQ(std::set<uint64_t>(tasks.begin(), tasks.end()).size(), tasks.size());
+    for (const auto id : tasks) {
+        ASSERT_NE(id, 0U);
+    }
+    AuthorityWork incompatible;
+    incompatible.domain_max = 200;
+    incompatible.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
+    incompatible.run();
+    ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    incompatible.advance_work();
+    EXPECT_TRUE(incompatible.work.strategy().seen.empty());
+    for (const auto goal : {first.result.object.id, second.result.object.id}) {
+        EXPECT_EQ(incompatible.authority(goal).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
+    }
+    for (const auto id : tasks) {
+        EXPECT_EQ(incompatible.work.task(id).lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(incompatible.work.task(id).hold_reason, AYNI_REASON_GRANT_CATALOG_CHANGED);
+    }
+    EXPECT_EQ(incompatible.work.node().step(1).more_ready, 0U);
+    AuthorityWork compatible;
+    compatible.work.node().sim().durable_storage() =
+        incompatible.work.node().sim().durable_storage();
+    compatible.run();
+    ASSERT_EQ(compatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    compatible.advance_work();
+    std::set<uint64_t> continued;
+    for (const auto &seen : compatible.work.strategy().seen) {
+        continued.insert(seen.snapshot.task_id);
+    }
+    EXPECT_EQ(continued, (std::set<uint64_t>(tasks.begin(), tasks.end())));
 }
 
 } // namespace

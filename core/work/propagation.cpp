@@ -46,7 +46,9 @@ bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_i
                const auto &goal = tables.goals.at(index);
                return tables.authority->authorized(index, goal.goal_id) &&
                       !replacement_binding_pending(tables.authority->at(index).binding,
-                                                   goal.created.commit_seq, tables.durable_seq);
+                                                   goal.created.commit_seq, tables.durable_seq) &&
+                      (tables.grants == nullptr ||
+                       goal_references_compatible(tables.authority->at(index), *tables.grants));
            });
 }
 
