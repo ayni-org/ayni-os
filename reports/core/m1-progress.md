@@ -64,7 +64,7 @@
 ## 交接状态（2026-10-24）
 
 - **已完成：** `MA-003`、`MA-004`、`MA-005`、`MA-010`，以及 `MA-006` A–E 和 R1～R4 整理。E 由 [#42](https://github.com/RobotSe7en/ayni/pull/42)～[#45](https://github.com/RobotSe7en/ayni/pull/45)、[#47](https://github.com/RobotSe7en/ayni/pull/47) 交付需求事实、待批创建/查询、专属 Grant、原子批准及最低消费门控；验证和覆盖率见 [ADR-0037](../../docs/adr/0037-goal-requirements-and-atomic-approval.md)。
-- **正在实施：** 用户 2026-10-24 批准 F 五 PR 计划。F1 已实现内部授权事实、Task 独立引用表及 codec，本地验证和独立审查通过，变异执行中；下一步接入持久化和运行时。开发期无需旧存储兼容；F2 明确新格式边界，不做旧数据确认。当前无需用户操作。
+- **正在实施：** 用户 2026-10-24 批准 F 五 PR 计划。F1 已实现内部授权事实、Task 独立引用表及 codec，本地验证、独立变异和审查通过，见 [#49](https://github.com/RobotSe7en/ayni/pull/49)；下一步 F2 接入持久化和运行时。开发期无需旧存储兼容；F2 明确新格式边界，不做旧数据确认。当前无需用户操作。
 - **仍有限制：** 重启仍会停止恢复的已激活 Goal/Task；有效 PROPOSED 保持待批并继续原失效计时。安全相关分支覆盖仍低于目标，偏差见 ADR-0037；ESP-IDF 存储、真实许可/Provider 消费、完整 E1–E4 与硬件验收尚未完成。自托管 CI 已启用，后续按 workflow 完成本地验证、独立审查和适用 CI 后合并。
 
 ## 剩余工作

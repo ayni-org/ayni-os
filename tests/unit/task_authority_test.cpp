@@ -183,6 +183,8 @@ TEST(TaskAuthority, copied_references_and_capacity_failures_preserve_the_arena) 
     EXPECT_EQ(out.references[1].grant_id, grant_id + 1U);
     const auto before = table.arena;
     record.count += 1U;
+    record.references[record.count - 1U] = {grant_id + record.count, 1};
+    ASSERT_TRUE(valid_task_authority_record(record));
     EXPECT_EQ(table.table.install_validated(0, record), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(table.table.restore_validated(1, record), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(table.arena, before);
@@ -262,6 +264,45 @@ TEST(TaskAuthority, restore_rejects_identity_count_stamp_and_binding_regressions
         EXPECT_EQ(table.table.restore_validated(0, bad), AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(table.arena, before);
     }
+}
+
+// ADR-0038 decisions 2/4: reauthorization can publish Goal and Task bindings
+// together; equality with the update sequence is a valid atomic admission.
+TEST(TaskAuthority, atomic_goal_and_task_rebinding_accepts_the_same_commit_sequence) {
+    Table table;
+    auto record = admitted();
+    ASSERT_EQ(table.table.install_validated(0, record), AYNI_OK);
+    record.stamp = {8, 10};
+    record.ceiling.commit_seq = record.stamp.commit_seq;
+    record.references[0].grant_id += requirements;
+    ASSERT_TRUE(valid_task_authority_record(record));
+    ASSERT_EQ(table.table.restore_validated(0, record), AYNI_OK);
+    TaskAuthorityRecord out{};
+    ASSERT_TRUE(table.table.read(0, task_id, out));
+    EXPECT_EQ(out.ceiling.commit_seq, out.stamp.commit_seq);
+    const auto bytes = encode(out);
+    ASSERT_TRUE(read_task_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
+    EXPECT_EQ(out.references[0].grant_id, record.references[0].grant_id);
+}
+
+// ADR-0038 decision 4: simultaneous Task admissions keep disjoint reference
+// regions, including the last configured requirement of each stable slot.
+TEST(TaskAuthority, two_live_slots_preserve_every_selection_without_region_aliasing) {
+    Table table;
+    const auto first = admitted();
+    auto second = admitted();
+    second.task_id += 1U;
+    second.references[0].grant_id += requirements;
+    second.references[1].grant_id += requirements;
+    ASSERT_EQ(table.table.install_validated(0, first), AYNI_OK);
+    ASSERT_EQ(table.table.install_validated(1, second), AYNI_OK);
+    TaskAuthorityRecord out{};
+    ASSERT_TRUE(table.table.read(0, first.task_id, out));
+    EXPECT_EQ(out.references[0].grant_id, first.references[0].grant_id);
+    EXPECT_EQ(out.references[1].grant_id, first.references[1].grant_id);
+    ASSERT_TRUE(table.table.read(1, second.task_id, out));
+    EXPECT_EQ(out.references[0].grant_id, second.references[0].grant_id);
+    EXPECT_EQ(out.references[1].grant_id, second.references[1].grant_id);
 }
 
 // ADR-0038 decision 5, records.md type18/v1: fixed little-endian layout at both limits.
