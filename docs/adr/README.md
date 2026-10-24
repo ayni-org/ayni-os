@@ -55,8 +55,8 @@
 | [0041](0041-task-record-encoding-owner.md) | Task 记录编码归属 | 实施中 | §9.1 |
 | [0042](0042-runtime-limits-and-direct-model-access.md) | 运行限制、直连模型及 M1 剩余交付边界 | 已接受；实施中 | §2.3、§5.1、§9.1、§14.1 |
 | [0043](0043-task-runtime-limit-state.md) | Task 运行限制状态与所有者提高上限 | 已接受 | §9.1、§14.1 |
+| [0044](0044-provider-result-mailbox.md) | Provider 有界结果交接与可靠消费确认 | 已接受 | §2.7、§9.1、§14.1 |
 
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。
-| [0044](0044-provider-result-mailbox.md) | Provider 有界结果交接与可靠消费确认 | 已接受 | §2.7、§9.1、§14.1 |
