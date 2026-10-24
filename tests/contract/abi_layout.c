@@ -6,6 +6,7 @@
  */
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
+#include <ayni/resources.h>
 #include <ayni/storage_format.h>
 
 #include <stddef.h>
@@ -47,7 +48,25 @@ AYNI_LAYOUT(config_scope_max_bytes, offsetof(ayni_config_v1, authority_scope_max
 AYNI_LAYOUT(config_grant_capacity, offsetof(ayni_config_v1, grant_capacity) == 96);
 AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_max) == 100);
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 108);
+AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
+AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 116);
+
+AYNI_LAYOUT(resource_desc_id, offsetof(ayni_resource_desc_v1, resource_id) == 8);
+AYNI_LAYOUT(resource_desc_header, offsetof(ayni_resource_desc_v1, struct_size) == 0);
+AYNI_LAYOUT(resource_desc_kind, offsetof(ayni_resource_desc_v1, kind) == 4);
+AYNI_LAYOUT(resource_desc_capacity, offsetof(ayni_resource_desc_v1, capacity) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(resource_desc_flags, offsetof(ayni_resource_desc_v1, flags) == 12 + 2 * AYNI_PTR);
+AYNI_LAYOUT(resource_desc_size, sizeof(ayni_resource_desc_v1) == 16 + 2 * AYNI_PTR);
+AYNI_LAYOUT(resource_info_header, offsetof(ayni_resource_info_v1, struct_size) == 0);
+AYNI_LAYOUT(resource_info_state, offsetof(ayni_resource_info_v1, state) == 4);
+AYNI_LAYOUT(resource_info_health, offsetof(ayni_resource_info_v1, health) == 8);
+AYNI_LAYOUT(resource_info_capacity, offsetof(ayni_resource_info_v1, capacity) == 12);
+AYNI_LAYOUT(resource_info_used, offsetof(ayni_resource_info_v1, used) == 16);
+AYNI_LAYOUT(resource_info_flags, offsetof(ayni_resource_info_v1, flags) == 20);
+AYNI_LAYOUT(resource_info_quarantine, offsetof(ayni_resource_info_v1, quarantine_id) == 24);
+AYNI_LAYOUT(resource_info_generation, offsetof(ayni_resource_info_v1, quarantine_generation) == 32);
+AYNI_LAYOUT(resource_info_size, sizeof(ayni_resource_info_v1) == 40);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);

@@ -94,6 +94,15 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
         placer.place(work::TaskAuthorityTable::storage_alignment,
                      work::TaskAuthorityTable::storage_size(
                          {capacities.task_capacity, capacities.goal_requirement_capacity}));
+    layout.resource_catalog_offset =
+        placer.place(catalog::ResourceRegistry::storage_alignment,
+                     catalog::ResourceRegistry::storage_size(capacities.resource_capacity));
+    layout.resource_states_offset = placer.place(
+        resources::ResourceAdmission::storage_alignment,
+        resources::ResourceAdmission::state_storage_size(capacities.resource_capacity));
+    layout.resource_requests_offset = placer.place(
+        resources::ResourceAdmission::storage_alignment,
+        resources::ResourceAdmission::request_storage_size(capacities.resource_request_capacity));
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

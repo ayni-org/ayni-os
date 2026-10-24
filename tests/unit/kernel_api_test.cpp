@@ -7,6 +7,7 @@
 #include "kernel_node.h"
 
 #include <ayni/ayni.h>
+#include <ayni/draft/kernel_api.h>
 
 #include <gtest/gtest.h>
 
@@ -18,6 +19,22 @@
 #include <vector>
 
 namespace {
+
+// C-VER-007 / ADR-0042: unimplemented draft kinds cannot alias implemented
+// authority commands and must reject before interpreting a draft body.
+TEST(DraftApi, intents_are_unsupported_before_their_bodies_are_read) {
+    ayni::test::Node node;
+    node.create();
+    for (const auto kind : {AYNI_INTENT_MEMORY_WRITE, AYNI_INTENT_MEMORY_DELETE,
+                            AYNI_INTENT_SUBSCRIPTION_OPEN, AYNI_INTENT_SUBSCRIPTION_CLOSE,
+                            AYNI_INTENT_ASSISTANT_PAUSE, AYNI_INTENT_ASSISTANT_RESUME}) {
+        ayni_intent_v1 intent{};
+        intent.struct_size = sizeof(intent);
+        intent.kind = kind;
+        // A null body is safe: no unpublished struct layout may be inspected.
+        EXPECT_EQ(ayni_submit_intent(node.kernel(), &intent, nullptr, nullptr), AYNI_UNSUPPORTED);
+    }
+}
 
 uint64_t fixed_clock(void * /*ctx*/) {
     return 42;

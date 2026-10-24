@@ -172,6 +172,12 @@ constexpr CapacityField capacity_fields[] = {
     {offsetof(ayni_config_v1, goal_requirement_capacity),
      {AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT, 1U, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX},
      &KernelCapacities::goal_requirement_capacity},
+    {offsetof(ayni_config_v1, resource_capacity),
+     {AYNI_RESOURCE_CAPACITY_DEFAULT, 0U, AYNI_RESOURCE_CAPACITY_MAX},
+     &KernelCapacities::resource_capacity},
+    {offsetof(ayni_config_v1, resource_request_capacity),
+     {AYNI_RESOURCE_REQUEST_CAPACITY_DEFAULT, 0U, AYNI_RESOURCE_REQUEST_CAPACITY_MAX},
+     &KernelCapacities::resource_request_capacity},
 };
 
 // Read each bounded capacity once, then let validate_config resolve storage
@@ -404,14 +410,15 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
 
     uint8_t *base = static_cast<uint8_t *>(memory);
     const ayni::kernel::KernelStorage storage{
-        base + layout.ingress_offset,        base + layout.completions_offset,
-        base + layout.storage_buffer_offset, base + layout.agents_offset,
-        base + layout.goal_types_offset,     base + layout.goals_offset,
-        base + layout.sessions_offset,       base + layout.tasks_offset,
-        base + layout.strategies_offset,     base + layout.decisions_offset,
-        base + layout.commands_offset,       base + layout.capabilities_offset,
-        base + layout.grants_offset,         base + layout.goal_authority_offset,
-        base + layout.task_authority_offset};
+        base + layout.ingress_offset,         base + layout.completions_offset,
+        base + layout.storage_buffer_offset,  base + layout.agents_offset,
+        base + layout.goal_types_offset,      base + layout.goals_offset,
+        base + layout.sessions_offset,        base + layout.tasks_offset,
+        base + layout.strategies_offset,      base + layout.decisions_offset,
+        base + layout.commands_offset,        base + layout.capabilities_offset,
+        base + layout.grants_offset,          base + layout.goal_authority_offset,
+        base + layout.task_authority_offset,  base + layout.resource_catalog_offset,
+        base + layout.resource_states_offset, base + layout.resource_requests_offset};
     *out_kernel = new (memory) ayni_kernel(copy_host(host), capacities, limits, storage);
     return AYNI_OK;
 }

@@ -1,6 +1,8 @@
 include(GoogleTest)
 
 add_executable(ayni_unit_tests
+    resource_admission_test.cpp
+    kernel_resource_test.cpp
     agent_table_test.cpp
     authority_cleanup_test.cpp
     batch_codec_test.cpp

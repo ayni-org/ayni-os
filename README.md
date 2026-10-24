@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1。Core 已交付工作模型、触发与策略、日志/快照恢复，以及 `MA-006` A–F 的可信绑定、Capability/Scope、Grant/委派、原子批准、独立 Goal/Task 授权、撤销清理、显式重新授权和新格式正常重启（ABI 0.27、storage schema 2）。当前边界与下一步见 [M1 进度](reports/core/m1-progress.md)，验证及本轮覆盖率门槛见 [ADR-0038](docs/adr/0038-work-authority-and-explicit-reauthorization.md)。Native/模拟 Host 已有存储实现；固件编译与实机验收分开，ESP-IDF 存储、真实许可/Provider、完整 E1–E4、SDK 和实机验收仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
+> 当前仓库处于 M1。Core 已交付工作模型、触发与策略、日志/快照恢复，以及 `MA-006` A–F 的可信绑定、Capability/Scope、Grant/委派、原子批准、独立 Goal/Task 授权、撤销清理、显式重新授权和新格式正常重启（已合并基线 ABI 0.28、storage schema 2）。当前边界与下一步见 [M1 进度](reports/core/m1-progress.md)，验证及本轮覆盖率门槛见 [ADR-0038](docs/adr/0038-work-authority-and-explicit-reauthorization.md)。当前分支 ABI 0.29 新增资源目录、健康查询及有界公平准入机制；Task 运行限制和 Provider 消费链仍未完成（ADR-0042）。Native/模拟 Host 已有存储实现；固件编译与实机验收分开，ESP-IDF 存储、真实许可/Provider、完整 E1–E4、SDK 和实机验收仍待后续工作。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
@@ -35,7 +35,7 @@ Kernel 持有 Agent 实例、Goal/Task、授权、动作记录、资源和记忆
 
 - 跨触发游标、任务、预算和动作记录定义一致的提交与恢复边界；持久接受回复、对外事件与副作用派发只在其提交进入持久前缀后释放。存储写失败时进入受限栅栏，停止新输出与许可续租，并复用重启恢复路径。
 - 副作用请求先持久化可能派发屏障；结果不确定进入 `RESULT_UNKNOWN`，通过查询或人工处理，恢复时不盲目重演。
-- 统一检查主体、Grant、参数、资源、预算、观察新鲜度与期限；模型输出只提供建议，执行权由本机 Kernel 管理。
+- 统一检查主体、Grant、参数、资源、运行限制、观察新鲜度与期限；模型输出只提供建议，执行权由本机 Kernel 管理。
 - 执行器只凭控制域 authority-owner 签发、需主动续租的短租约许可运行；撤销、Kernel 或执行端重启、校准失效、急停复位与网络分区都使旧许可失效，最坏停止上限分项实测。
 - 媒体、队列、上下文、任务和存储均有容量上限；资源占用、取消、超时与停止需要明确的释放或隔离状态。
 

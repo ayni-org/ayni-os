@@ -50,7 +50,9 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
             config.authority_scope_max_bytes,
             config.grant_capacity,
             config.grant_delegation_depth_max,
-            config.goal_requirement_capacity};
+            config.goal_requirement_capacity,
+            config.resource_capacity,
+            config.resource_request_capacity};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's

@@ -6,7 +6,7 @@
 
 | 目录 | 内容 | 版本域 |
 |---|---|---|
-| [`domain/`](domain/) | ID、时间、状态码、原语最小字段、生命周期、调用与绑定、提交与输出门控、授权与信任、资源与预算、执行许可与停止、五项产品语义、容量限额 | 领域语义（随能力/Scene/GoalType 版本） |
+| [`domain/`](domain/) | ID、时间、状态码、原语最小字段、生命周期、调用与绑定、提交与输出门控、授权与信任、资源与运行限制、执行许可与停止、五项产品语义、容量限额 | 领域语义（随能力/Scene/GoalType 版本） |
 | [`host/`](host/) | Host 端口、Provider 接口、策略与 GoalType 接口 | ABI（`abi_major/minor`） |
 | [`wire/`](wire/) | 消息信封、受限 JSON 子集 | 协议（`protocol_major/minor`） |
 | [`storage/`](storage/) | 日志批次、快照与记录版本 | 存储（`storage_schema`） |
@@ -45,7 +45,8 @@
 | `C-CALL`、`C-BIND`、`C-SUB` | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | `work`、`catalog` |
 | `C-COMMIT`、`C-OUT` | [domain/commit_and_output.md](domain/commit_and_output.md) | `durability`、`kernel` |
 | `C-AUTH`、`C-TRUST` | [domain/authority_and_trust.md](domain/authority_and_trust.md) | `authority` |
-| `C-RES`、`C-BUDGET` | [domain/resources_and_budget.md](domain/resources_and_budget.md) | `resources`、`budget` |
+| `C-RES`、`C-BUDGET` | [domain/resources_and_budget.md](domain/resources_and_budget.md) | `resources` |
+| `C-RUN` | [domain/runtime_limits.md](domain/runtime_limits.md) | `work/task`、`resources`、Provider |
 | `C-PERMIT`、`C-STOP` | [domain/permits_and_stop.md](domain/permits_and_stop.md) | `resources`（签发）、`control/`、`safety/`（执行） |
 | `C-PROD` | [domain/product_semantics.md](domain/product_semantics.md) | 应用层 + `work`、`knowledge` |
 | `C-LIMIT` | [domain/limits.md](domain/limits.md) | `kernel`（配置） |

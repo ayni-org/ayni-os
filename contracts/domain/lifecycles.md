@@ -147,7 +147,7 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 |---|---|---|
 | — | `PROPOSED` | 意图通过 Schema 校验 |
 | `PROPOSED` | `PREPARED` | 授权与参数通过，准备记录（意图、步骤身份、绑定）持久化 |
-| `PROPOSED` | `REJECTED` | 授权、参数或预算拒绝 |
+| `PROPOSED` | `REJECTED` | 授权、参数或运行限制拒绝 |
 | `PREPARED` | `DISPATCHING` | 再次校验通过，可能派发屏障持久化成功（C-COMMIT-006） |
 | `PREPARED` | `CANCELLED` | 取消或条件失效（确定未派发） |
 | `DISPATCHING` | `IN_PROGRESS` | Host 报告执行中 |

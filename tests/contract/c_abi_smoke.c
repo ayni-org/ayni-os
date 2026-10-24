@@ -3,6 +3,7 @@
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
+#include <ayni/resources.h>
 #include <ayni/storage_format.h>
 
 #include <stdio.h>
@@ -239,6 +240,7 @@ int main(void) {
     config.task_checkpoint_max_bytes = 0u;
     config.command_capacity = 1u;
     config.capability_capacity = 1u;
+    config.resource_capacity = 1u;
     config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
     config.grant_capacity = 1u;
     config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
@@ -294,6 +296,27 @@ int main(void) {
                            "capability schema registration links from C99");
     }
     failures += check_work_model(kernel);
+    /* C-RES-013: trusted resource registration, health and copied diagnostics
+     * are linkable from C99; no call or grant is implied. */
+    {
+        ayni_resource_desc_v1 resource = {0};
+        ayni_resource_info_v1 resource_info = {0};
+        resource.struct_size = sizeof resource;
+        resource.kind = AYNI_RESOURCE_SHARED;
+        resource.resource_id.data = "model";
+        resource.resource_id.size = 5u;
+        resource.capacity = 1u;
+        resource_info.struct_size = sizeof resource_info;
+        failures +=
+            expect(ayni_register_resource(kernel, &resource) == AYNI_OK, "register resource");
+        failures += expect(
+            ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE) == AYNI_OK,
+            "set resource health");
+        failures +=
+            expect(ayni_get_resource(kernel, resource.resource_id, &resource_info) == AYNI_OK &&
+                       resource_info.state == AYNI_RESOURCE_FREE,
+                   "query resource");
+    }
     failures +=
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");
     failures += expect(ayni_destroy(kernel) == AYNI_OK, "destroy");

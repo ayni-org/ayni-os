@@ -15,6 +15,7 @@
 #include "kernel/storage/storage_maintenance.h"
 #include "kernel/work_journal.h"
 #include "kernel/work_replay.h"
+#include "resources/admission/resource_admission.h"
 
 #include <ayni/ayni.h>
 
@@ -38,7 +39,11 @@ struct ayni_kernel {
           decisions(storage.decisions,
                     {capacities.policy_intent_capacity, capacities.task_step_capacity,
                      capacities.task_checkpoint_max_bytes}),
-          budget(capacities, limits), batch_max(ayni::kernel::transition_batch_max(capacities)) {}
+          budget(capacities, limits),
+          resource_catalog(storage.resource_catalog, capacities.resource_capacity),
+          resources(resource_catalog, storage.resource_states, capacities.resource_capacity,
+                    storage.resource_requests, capacities.resource_request_capacity),
+          batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
@@ -86,6 +91,10 @@ struct ayni_kernel {
     ayni::kernel::DecisionBuffer decisions;
     // The log's size against its limit and the free medium (C-STORE-011).
     ayni::kernel::StorageBudget budget;
+    // Static trusted directory; invariant/representation owned by catalog/resource.
+    ayni::catalog::ResourceRegistry resource_catalog;
+    // Runtime allocation and wait state owned by resources/admission; no Task/Grant copy.
+    ayni::resources::ResourceAdmission resources;
 
     // The largest batch one transition writes (work_journal.h).
     uint32_t batch_max;

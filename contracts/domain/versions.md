@@ -21,7 +21,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | C-VER-004 | `struct_size` 小于该主版本首个发布布局时返回 `AYNI_INVALID_ARGUMENT`；大于本库所知的布局时返回 `AYNI_UNSUPPORTED_VERSION`（调用方按更新的 minor 编译） | 更长的结构体被静默截断，调用方以为新字段已生效 | M0 已实现：`KernelApi.struct_size_below_first_layout_is_invalid_argument`、`KernelApi.struct_size_from_newer_minor_is_unsupported_version` |
 | C-VER-005 | ABI 不跨边界传递 STL 类型、C++ 异常、RTTI 依赖的类型、OS 句柄或第三方 SDK 类型 | 公开函数参数出现 `std::string`、`FILE *` 或 FreeRTOS 任务句柄 | `tests/contract` 头文件以严格 C99 编译；`check_deps` 限制公开头文件只包含 `stddef.h`、`stdint.h` |
 | C-VER-006 | 主版本 0 表示 experimental：允许不兼容变更，但每次变更须递增 `AYNI_ABI_MINOR` 并在 PR 中说明受影响的调用方；因此主版本 0 下不同 minor 互不接受（C-VER-001）。主版本 ≥ 1 时 minor 只追加，库接受同一主版本中不高于自身的 minor | 修改已发布函数的语义而版本号不变 | 评审；`AbiVersion.reports_header_version` 保证运行时报告与头文件一致 |
-| C-VER-007 | 草案头文件（`include/ayni/draft/`）中的声明不属于已发布 ABI，没有符号；转为实现时整体移入正式头文件，并按 C-VER-002 追加 | 在草案头文件中实现函数并让调用方依赖它 | `check_deps`：正式头文件与 Core 不能包含草案；链接失败即暴露误用 |
+| C-VER-007 | 草案头文件（`include/ayni/draft/`）中的声明不属于已发布 ABI，没有符号；转为实现时整体移入正式头文件，并按 C-VER-002 追加 | 在草案头文件中实现函数并让调用方依赖它 | `check_deps`：正式头文件与 Core 不能包含草案；链接失败即暴露误用 ；ABI 0.29 草案意图使用独立值域，不能别名到已实现的授权命令：`DraftApi.intents_are_unsupported_before_their_bodies_are_read`（ADR-0042） |
 
 ## 协议
 
@@ -37,7 +37,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 |---|---|---|---|
 | C-VER-020 | 每个持久记录带记录版本；每个快照与日志段带 `storage_schema`。读取到不支持的版本时进入 `RESTRICTED`（只读诊断），不得当作空数据重建 | 无法识别的快照被丢弃，Kernel 以空状态启动 | M1 已实现（日志、快照版本拒绝）：`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6 |
 | C-VER-021 | 迁移在切换提交前保留旧格式；迁移中断后可从旧格式重新开始 | 迁移写到一半掉电，新旧格式都不完整 | M1 部分实现（ADR-0038 开发版不提供迁移；旧格式拒绝并保留）：`StorageSchemaBoundary.unsupported_schema_is_still_rejected_after_a_process_restart`；E4 步骤 6 |
-| C-VER-022 | 回滚到旧固件时，若旧固件无法读取当前有效状态，只能进入安全诊断，不得回到过时快照继续执行 | 回滚后旧快照让已结算的预算或已删除的记忆复活 | M1 部分实现（当前 reader 遇不支持的 schema 安全受限；未执行旧固件二进制回滚）：`StorageSchemaBoundary.unsupported_schema_never_installs_a_writer_or_mutates_source`；完整 E4 步骤 6、M4 实机 OTA |
+| C-VER-022 | 回滚到旧固件时，若旧固件无法读取当前有效状态，只能进入安全诊断，不得回到过时快照继续执行 | 回滚后旧快照丢掉已接受的 Task 调用计数或让已删除的记忆复活 | M1 部分实现（当前 reader 遇不支持的 schema 安全受限；未执行旧固件二进制回滚）：`StorageSchemaBoundary.unsupported_schema_never_installs_a_writer_or_mutates_source`；完整 E4 步骤 6、M4 实机 OTA |
 | C-VER-023 | 不持久化 C++ 内存布局；持久格式由 `storage/records.md` 定义，与编译器和 ABI 无关 | 直接 `memcpy` 内存中的对象写入 Flash | M1 已实现（定长小端编解码与分页）：`BatchCodec.round_trip_keeps_identity_and_records`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`；GCC/Clang 共用固定格式测试；评审 |
 
 ## 领域语义

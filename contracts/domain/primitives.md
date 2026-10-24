@@ -28,7 +28,7 @@
 | `completion_rule`、`expiry` | 完成或持续条件、失效规则（恢复策略，不存单调值）；M1 的失效为创建时给出的时长，到时 Goal 与其后代及它们的 Task 失效（ADR-0020） | 是 |
 | `dedupe_key` | 去重键 | 是 |
 | `trigger`、`trigger_cursor` | 触发种类与时间，由 GoalType 的 `trigger_kinds` 限定，M1 为 `NONE`、`ONCE`、`DELAY`、`INTERVAL`（单调时钟上的延时与周期，ADR-0019）与 `LOCAL_INPUT`（本地输入，Goal 在创建时给出来源，ADR-0021）；触发游标，M1 为已取走（派生或跳过）的最新 occurrence 编号、下一次到期时间与最近一个 Task 的 ID，本地输入触发另记等待的个数与最新一次的到期时间，另记跳过的个数与最近一次跳过的原因；等待上限由 GoalType 声明（ADR-0020）。到期时间是本机单调值，持久化时保存恢复策略而不是该值（C-TIME-003，`MA-010`） | 是 |
-| `budget_ref` | 子预算引用（在 `budget`） | 是 |
+| `runtime_limits` | Task 调用上限、已接受调用计数与限制暂停（ADR-0042，待实现） | 是 |
 | `notify_plan` | 通知计划（主方式与获准备选，C-PROD-012） | 是 |
 | `lifecycle`、`revision`、`cancel_revision` | 生命周期、版本、取消版本 | 是 |
 | Task：`task_id`、`goal_id`、`occurrence` | 一次执行及其来源 occurrence（该 Goal 的第几次，从 1 开始，ADR-0018）；等待的多个 occurrence 合并为一个 Task 时为其中最新的一次，另记代表的个数与该次的到期时间（ADR-0019） | 是 |
@@ -67,8 +67,8 @@
 |---|---|---|
 | UserPrincipal | `principal_id`、`binding_revision`、认证渠道 | 是 |
 | Session | `session_id`、`principal_id`、输入渠道（`VOICE`、`MANAGEMENT`，由 Host 认证后打开会话时给出）、信任级别（由渠道决定，不单独保存） | 否（重启后全部关闭，由 Host 重新打开） |
-| Grant | `grant_id`、`subject`、`target`、`scope`（能力、参数约束、Scene）、`expiry`、`quota`、`revoke_revision`、`delegation`（父 Grant 与可否再委派） | 是 |
-| Scene | `scene_id`、`version`、`enabled`、授权主体与范围、参数约束、前置条件、观察新鲜度、次数/费用预算、停止条件 | 是 |
+| Grant | `grant_id`、`subject`、`target`、`scope`（能力、参数约束、Scene）、`expiry`、`revoke_revision`、`delegation`（父 Grant 与可否再委派） | 是 |
+| Scene | `scene_id`、`version`、`enabled`、授权主体与范围、参数约束、前置条件、观察新鲜度、次数/频率限制、停止条件 | 是 |
 
 ## ActionRecord 与 LogicalCall（属主 `work/action`、`work/call`）
 
@@ -83,15 +83,9 @@
 | `attempts` | `(boot_epoch, request_id)` 列表 | 是（有副作用时） |
 | `evidence_refs` | 结果、停止确认与物理验证证据 | 是 |
 
-## Budget（属主 `budget`）
+## Task 运行限制
 
-| 字段 | 含义 | 持久 |
-|---|---|---|
-| `budget_id`、`parent_budget_id` | 层级（设备 → 实例 → 目标 → 任务） | 是 |
-| `limits` | 每类计量（模型调用、token、字节、任务数、媒体分析、通知频率）的周期上限 | 是 |
-| `spent`、`reserved` | 本周期已结算与待结算预留 | 是 |
-| `period` | 周期规则 | 是 |
-| `system_reserve` | 停止、诊断与前台交互的保留额度（不可被普通工作占用） | 是 |
+ADR-0042 取消 Budget 原语。Task 运行限制的条款见 `runtime_limits.md`；调用计数、软上限与限制暂停必须持久，启动硬容量不被管理命令扩大。没有金额、充值、累计费用、预留或结算表。
 
 ## MemoryRecord（属主 `knowledge/memory`）
 
