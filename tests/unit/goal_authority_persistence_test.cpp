@@ -3016,4 +3016,419 @@ TEST(GoalReauthorizationPersistence, management_footer_cannot_also_consume_a_cle
     EXPECT_EQ(refused.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
+// C-STORE-019: approval starts with an untouched trigger cursor and cannot
+// smuggle progress, cancellation, expiry or a different lifecycle into activation.
+TEST(GoalApprovalPersistence, activation_rejects_each_noninitial_state_fact_with_a_valid_crc) {
+    Fixture source;
+    source.run();
+    const auto id = approve_proposal(source);
+    ASSERT_NE(id, 0U);
+    const auto image = source.work.node().sim().durable_storage();
+    const auto original = decode(image.log.back());
+    for (unsigned fault = 0; fault < 10U; ++fault) {
+        SCOPED_TRACE(fault);
+        auto batch = original;
+        auto row = std::find_if(batch.records.begin(), batch.records.end(), [](const auto &r) {
+            return r.header.type == goal_state_record_type;
+        });
+        ASSERT_NE(row, batch.records.end());
+        auto goal = source.work.kernel()->work.goals.at(source.goal_index(id));
+        switch (fault) {
+        case 0:
+            goal.lifecycle = AYNI_GOAL_PAUSED;
+            break;
+        case 1:
+            ++goal.revision;
+            break;
+        case 2:
+            goal.last_task_id = id;
+            break;
+        case 3:
+            goal.cursor.taken = 1;
+            break;
+        case 4:
+            goal.cursor.waiting = 1;
+            break;
+        case 5:
+            goal.occurrences_skipped = 1;
+            break;
+        case 6:
+            goal.skip_reason = AYNI_REASON_GRANT_EXPIRED;
+            break;
+        case 7:
+            goal.cancel_revision = 1;
+            break;
+        case 8:
+            goal.expires_us = 0;
+            break;
+        case 9:
+            goal.cursor.next_due_us = 0;
+            break;
+        }
+        write_goal_state_record(goal, row->body.data());
+        Fixture restored;
+        restored.work.node().sim().durable_storage() = image;
+        restored.work.node().sim().durable_storage().log.back() = encode(batch);
+        restored.run();
+        EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+        EXPECT_EQ(restored.work.kernel()->work.grants.size(), 0U);
+    }
+}
+
+// C-STORE-019/022: even a shape-valid canonical identity with a recomputed
+// digest cannot replace any immutable creation field in retained history.
+TEST(WorkAuthorityHistory, every_original_echo_field_is_checked_for_both_command_kinds) {
+    Fixture source;
+    const auto id = prepare_reauthorization(source);
+    ASSERT_EQ(reauthorize(source, id, 102).status, AYNI_OK);
+    source.work.node().recover();
+    const auto image = snapshot(source);
+    for (const auto kind : {AYNI_INTENT_GOAL_APPROVE, AYNI_INTENT_GOAL_REAUTHORIZE}) {
+        for (unsigned fault = 0; fault < 8U; ++fault) {
+            SCOPED_TRACE(kind);
+            SCOPED_TRACE(fault);
+            auto changed = image;
+            bool altered = false;
+            for (auto &row : changed.records) {
+                if (row.header.type != ayni::kernel::command_record_type ||
+                    row.header.version != ayni::kernel::work_authority_command_record_version) {
+                    continue;
+                }
+                ayni::kernel::CommandMapping mapping{};
+                uint64_t floor = 0;
+                ayni_bytes_v1 canonical{}, result_bytes{};
+                constexpr uint32_t tail = sizeof(uint64_t);
+                ASSERT_TRUE(ayni::kernel::read_command_record(row.header.version, row.body.data(),
+                                                              row.header.length - tail, mapping,
+                                                              floor, canonical, &result_bytes));
+                if (mapping.kind != kind) {
+                    continue;
+                }
+                ayni::kernel::ApprovalCommand approval{};
+                ayni::kernel::ReauthorizationCommand reauthorization{};
+                if (kind == AYNI_INTENT_GOAL_APPROVE) {
+                    ASSERT_TRUE(ayni::kernel::read_approval_command(canonical, approval));
+                } else {
+                    ASSERT_TRUE(
+                        ayni::kernel::read_reauthorization_command(canonical, reauthorization));
+                }
+                auto &original = kind == AYNI_INTENT_GOAL_APPROVE
+                                     ? approval.approval.original
+                                     : reauthorization.reauthorization.original;
+                const uint8_t extra_parameter = 7;
+                switch (fault) {
+                case 0:
+                    original.owner_instance_id = source.work.instance(agent_b);
+                    break;
+                case 1:
+                    original.parent_goal_id = source.work.instance(agent_b);
+                    break;
+                case 2:
+                    ++original.goal_type_version;
+                    break;
+                case 3:
+                    original.goal_type_id = text("folder");
+                    break;
+                case 4:
+                    original.parameters = {&extra_parameter, 1};
+                    break;
+                case 5:
+                    original.trigger.kind = AYNI_TRIGGER_NONE;
+                    break;
+                case 6:
+                    ++original.expiry_us;
+                    break;
+                case 7: {
+                    // History cannot infer every old CAS after later updates,
+                    // but a result revision beyond the retained Goal is impossible.
+                    const auto impossible = source.work.goal(id).revision + 1U;
+                    if (kind == AYNI_INTENT_GOAL_APPROVE) {
+                        approval.expected_revision = impossible;
+                    } else {
+                        reauthorization.expected_revision = impossible;
+                    }
+                    mapping.object.revision = impossible + 1U;
+                    break;
+                }
+                }
+                std::vector<uint8_t> bytes(
+                    ayni::kernel::approval_command_max_bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX));
+                uint32_t size = 0;
+                const auto encoded =
+                    kind == AYNI_INTENT_GOAL_APPROVE
+                        ? ayni::kernel::encode_approval_command(
+                              approval, bytes.data(), static_cast<uint32_t>(bytes.size()), size)
+                        : ayni::kernel::encode_reauthorization_command(
+                              reauthorization, bytes.data(), static_cast<uint32_t>(bytes.size()),
+                              size);
+                ASSERT_EQ(encoded, AYNI_OK);
+                bytes.resize(size);
+                ayni::kernel::WorkAuthorityResult result{};
+                ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
+                if (fault == 1U) {
+                    result.binding.parent = {original.parent_goal_id,
+                                             source.work.kernel()
+                                                 ->work.goals.at(source.goal_index(id))
+                                                 .created.commit_seq};
+                }
+                std::vector<uint8_t> saved(result_bytes.size);
+                ayni::kernel::write_work_authority_result(result, saved.data());
+                const std::vector<uint8_t> commit_tail(row.body.end() - tail, row.body.end());
+                mapping.canonical_size = size;
+                mapping.digest = ayni::kernel::authority_command_digest({bytes.data(), size});
+                const auto base = ayni::kernel::command_record_size_for(mapping);
+                changed.metadata.payload_length -= row.body.size();
+                row.body.resize(base + tail);
+                row.header.length = static_cast<uint32_t>(row.body.size());
+                changed.metadata.payload_length += row.body.size();
+                ASSERT_TRUE(ayni::kernel::write_command_record(
+                    mapping, floor, {bytes.data(), size}, row.body.data(), base,
+                    {saved.data(), static_cast<uint32_t>(saved.size())}));
+                std::copy(commit_tail.begin(), commit_tail.end(), row.body.end() - tail);
+                altered = true;
+                break;
+            }
+            ASSERT_TRUE(altered);
+            Fixture restored;
+            restored.work.node().config().grant_capacity = 3;
+            restored.run();
+            EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+        }
+    }
+}
+
+// C-STORE-015/019/020: record-level truncation remains corrupt even when the
+// snapshot envelope has the exact new byte count. Unknown REQUIRED formats
+// and flags refuse explicitly; no partial Task/authority partner is accepted.
+TEST(WorkAuthoritySnapshot, every_retained_record_refuses_truncation_unknown_flags_and_versions) {
+    Fixture source;
+    source.work.max_checkpoint_bytes = 2;
+    source.run();
+    ASSERT_NE(approve_proposal(source), 0U);
+    source.work.strategy().answer = [](const auto &s, auto &out) {
+        out.intents[0] = progress_intent("turn", s.revision);
+        out.intent_count = 1;
+        out.checkpoint[0] = 7;
+        out.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    const auto goal = source.work.create(WorkNode::create_body(
+        source.work.instance(agent_a), 0, "reminder", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(goal.status, AYNI_OK);
+    source.work.node().step(1);
+    source.work.node().recover();
+    source.work.node().step(1);
+    source.work.node().recover();
+    const auto task = source.work.goal(goal.result.object.id).last_task_id;
+    ASSERT_NE(task, 0U);
+    ASSERT_EQ(source.work.task(task).step_count, 1U);
+    const auto original = snapshot(source);
+    Fixture restored;
+    restored.work.max_checkpoint_bytes = 2;
+    restored.run();
+    ASSERT_EQ(import_snapshot(restored, original), BatchCheck::ok);
+    for (std::size_t at = 0; at < original.records.size(); ++at) {
+        SCOPED_TRACE(original.records[at].header.type);
+        for (uint32_t size = 0; size < original.records[at].body.size(); ++size) {
+            SCOPED_TRACE(size);
+            auto changed = original;
+            auto &record = changed.records[at];
+            changed.metadata.payload_length -= record.body.size() - size;
+            record.body.resize(size);
+            record.header.length = size;
+            EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+        }
+        for (const bool flags : {false, true}) {
+            auto changed = original;
+            if (flags) {
+                changed.records[at].header.flags |= 2U;
+            } else {
+                changed.records[at].header.flags |= record_required;
+                changed.records[at].header.version = UINT16_MAX;
+            }
+            EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::unsupported);
+        }
+    }
+}
+
+// C-STORE-020/022: each Task partner is individually well framed; its exact
+// Task/Goal identity, progress and stamp must still match the surrounding facts.
+TEST(WorkAuthoritySnapshot,
+     task_partners_refuse_individually_framed_identity_and_progress_mismatches) {
+    Fixture source;
+    source.work.max_checkpoint_bytes = 2;
+    source.run();
+    source.work.strategy().answer = [](const auto &s, auto &out) {
+        out.intents[0] = progress_intent("turn", s.revision);
+        out.intent_count = 1;
+        out.checkpoint[0] = 7;
+        out.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    const auto created = source.work.create(WorkNode::create_body(
+        source.work.instance(agent_a), 0, "reminder", 1, {}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(created.status, AYNI_OK);
+    source.work.node().step(1);
+    source.work.node().recover();
+    source.work.node().step(1);
+    source.work.node().recover();
+    const auto task_id = source.work.goal(created.result.object.id).last_task_id;
+    ASSERT_NE(task_id, 0U);
+    ASSERT_EQ(source.work.task(task_id).step_count, 1U);
+    source.goal(); // A later real transition gives stamp faults room below the boot upper bound.
+    const auto image = snapshot(source);
+    std::array<std::size_t, 5> positions{};
+    const std::array<uint16_t, 5> types{task_record_type, task_steps_record_type,
+                                        task_checkpoint_record_type, task_state_record_type,
+                                        task_authority_record_type};
+    for (std::size_t at = 0; at < types.size(); ++at) {
+        const auto found = std::find_if(image.records.begin(), image.records.end(),
+                                        [&](const auto &r) { return r.header.type == types[at]; });
+        ASSERT_NE(found, image.records.end());
+        positions[at] = static_cast<std::size_t>(found - image.records.begin());
+    }
+    uint32_t task_index = 0;
+    ASSERT_TRUE(source.work.kernel()->work.tasks.find(task_id, task_index));
+    const auto task = source.work.kernel()->work.tasks.at(task_index);
+    for (unsigned fault = 0; fault < 22U; ++fault) {
+        SCOPED_TRACE(fault);
+        auto changed = image;
+        auto &task_row = changed.records[positions[0]];
+        auto &step = changed.records[positions[1]];
+        auto &checkpoint = changed.records[positions[2]];
+        auto &state = changed.records[positions[3]];
+        auto &admission = changed.records[positions[4]];
+        // records.md snapshot TASK tail: creation pair, steps seq, checkpoint seq, steps-before.
+        constexpr uint32_t stamp_at = task_record_size;
+        constexpr uint32_t steps_seq_at = stamp_at + 2U * sizeof(uint64_t);
+        constexpr uint32_t checkpoint_seq_at = steps_seq_at + sizeof(uint64_t);
+        constexpr uint32_t steps_before_at = checkpoint_seq_at + sizeof(uint64_t);
+        if (fault < 2U) {
+            auto &row = fault == 0U ? step : checkpoint;
+            ayni::foundation::store_le64(row.body.data(), created.result.object.id);
+        } else if (fault < 4U) {
+            const auto duplicate = fault == 2U ? step : checkpoint;
+            const auto at = positions[fault == 2U ? 1U : 2U];
+            changed.records.insert(changed.records.begin() + static_cast<std::ptrdiff_t>(at),
+                                   duplicate);
+        } else if (fault == 4U) {
+            std::swap(step, checkpoint); // A step cannot follow the checkpoint of this Task.
+        } else if (fault == 5U) {
+            auto value = task;
+            value.task_id = created.result.object.id;
+            write_task_state_record(value, state.body.data());
+        } else if (fault < 8U) {
+            auto value = task;
+            value.step_count = fault == 6U ? 0U : task.step_count + 1U;
+            write_task_state_record(value, state.body.data());
+        } else if (fault == 8U) {
+            ayni::foundation::store_le32(task_row.body.data() + steps_before_at,
+                                         task.step_count + 1U);
+        } else if (fault < 11U) {
+            const auto offset = fault == 9U ? steps_seq_at : checkpoint_seq_at;
+            ayni::foundation::store_le64(task_row.body.data() + offset, 0);
+        } else if (fault == 11U) {
+            changed.records.erase(changed.records.begin() +
+                                  static_cast<std::ptrdiff_t>(positions[2]));
+        } else if (fault < 16U) {
+            TaskAuthorityRecord value{};
+            ASSERT_TRUE(
+                read_task_authority_record(admission.body.data(), admission.header.length, value));
+            if (fault == 12U) {
+                value.task_id = source.work.instance(agent_b);
+            } else if (fault == 13U) {
+                value.ceiling.goal_id = source.work.instance(agent_b);
+            } else if (fault == 14U) {
+                value.stamp.commit_seq = image.metadata.covers_commit_seq;
+            } else {
+                value.stamp.transition_id = task.created_transition_id - 1U;
+            }
+            ASSERT_TRUE(valid_task_authority_record(value));
+            write_task_authority_record(value, admission.body.data());
+        } else if (fault < 18U) {
+            auto value = task;
+            if (fault == 16U) {
+                value.goal_id = source.work.instance(agent_b);
+            } else {
+                value.owner_instance_id = source.work.instance(agent_b);
+            }
+            write_task_record(value, task_row.body.data());
+        } else if (fault == 18U) {
+            ayni::foundation::store_le64(task_row.body.data() + stamp_at,
+                                         image.metadata.max_transition_id + 1U);
+        } else {
+            const auto at = positions[fault - 18U]; // STEP, CHECKPOINT or STATE before TASK.
+            const auto orphan = changed.records[at];
+            changed.records.erase(changed.records.begin() + static_cast<std::ptrdiff_t>(at));
+            changed.records.insert(
+                changed.records.begin() + static_cast<std::ptrdiff_t>(positions[0]), orphan);
+        }
+        changed.metadata.record_count = static_cast<uint32_t>(changed.records.size());
+        changed.metadata.payload_length = 0;
+        for (const auto &row : changed.records) {
+            changed.metadata.payload_length += record_header_size + row.body.size();
+        }
+        Fixture restored;
+        restored.work.max_checkpoint_bytes = 2;
+        restored.run();
+        EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
+    }
+}
+
+// ADR-0038 historical proof: a later parent binding cannot rewrite a child's
+// retained approval choices. With a grandparent, ancestry traversal must keep
+// checking topology after the old binding has legitimately been superseded.
+TEST(WorkAuthorityHistory, three_level_approval_history_survives_parent_reauthorization) {
+    Fixture source;
+    source.work.node().config().grant_capacity = 4;
+    source.work.node().config().command_capacity = 16;
+    source.run();
+    uint64_t parent = 0;
+    std::array<uint64_t, 3> goals{};
+    for (std::size_t at = 0; at < goals.size(); ++at) {
+        const auto created = source.work.create(
+            WorkNode::create_body(source.work.instance(agent_a), parent, "proposal"));
+        ASSERT_EQ(created.status, AYNI_OK);
+        parent = created.result.object.id;
+        goals[at] = parent;
+        source.work.node().recover();
+        ApprovalRequest request(source.work.kernel(), parent);
+        auto intent =
+            source.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
+        intent.command_id = 100U + at;
+        ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+        source.work.node().recover();
+    }
+    const auto selected = source.saved(goals[1]).requirements[0].dependency.grant_id;
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, selected};
+    auto intent = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    intent.command_id = 103;
+    ASSERT_EQ(source.work.submit(intent).status, AYNI_OK);
+    finish_authority_work(source);
+    ASSERT_EQ(source.create_grant().status, AYNI_OK);
+    source.work.node().recover();
+    ASSERT_EQ(reauthorize(source, goals[1], 104).status, AYNI_OK);
+    source.work.node().recover();
+    const auto old_child = source.saved(goals[2]);
+    const auto image = snapshot(source);
+    Fixture restored;
+    restored.work.node().config().grant_capacity = 4;
+    restored.work.node().config().command_capacity = 16;
+    restored.run();
+    ASSERT_EQ(import_snapshot(restored, image), BatchCheck::ok);
+    const auto child = restored.saved(goals[2]);
+    EXPECT_EQ(child.binding.established_seq, old_child.binding.established_seq);
+    EXPECT_EQ(child.binding.parent.commit_seq, old_child.binding.parent.commit_seq);
+    EXPECT_EQ(child.requirements[0].dependency.grant_id,
+              old_child.requirements[0].dependency.grant_id);
+    EXPECT_EQ(child.phase, GoalAuthorityPhase::paused);
+    EXPECT_NE(restored.work.kernel()
+                  ->work
+                  .check_goal_authority(restored.goal_index(goals[2]),
+                                        restored.work.node().sim().now_us(), UINT64_MAX)
+                  .status,
+              AYNI_OK);
+}
+
 } // namespace

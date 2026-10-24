@@ -2,7 +2,9 @@
 #include "authority/scope/scope.h"
 #include "catalog/capability/field_domain.h"
 #include "foundation/little_endian.h"
+#include "kernel/command/command_approval.h"
 #include "kernel/command/command_canonical.h"
+#include "kernel/command/command_reauthorization.h"
 
 #include <gtest/gtest.h>
 
@@ -629,4 +631,152 @@ TEST(CommandCanonical, pairing_checks_explicit_tokens_units_and_omitted_full_dom
               AYNI_OK);
     EXPECT_FALSE(authority_command_scope_matches(omitted, numeric_source, {narrowed.data(), size}));
 }
+// C-STORE-019/022, ADR-0038: byte and struct command inputs share a shape
+// rule; malformed/truncated inputs preserve complete outputs and never publish
+// borrowed views to a partial original Goal echo.
+template <typename Command, typename Measure, typename Encode, typename Read>
+void verify_work_command_codec(const Command &valid, const std::vector<Command> &invalid,
+                               uint32_t maximum, Measure measure, Encode encode, Read read) {
+    uint32_t needed = 0;
+    ASSERT_EQ(measure(valid, needed), AYNI_OK);
+    std::vector<uint8_t> bytes(needed, 0xa5);
+    const auto untouched = bytes;
+    uint32_t size = 123;
+    EXPECT_EQ(encode(valid, bytes.data(), needed - 1U, size), AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(size, needed);
+    EXPECT_EQ(bytes, untouched);
+    size = 123;
+    EXPECT_EQ(encode(valid, nullptr, needed, size), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(size, 123U);
+    ASSERT_EQ(encode(valid, bytes.data(), needed, size), AYNI_OK);
+    Command decoded{};
+    ASSERT_TRUE(read({bytes.data(), needed}, decoded));
+    const auto unchanged_read = [&](ayni_bytes_v1 input) {
+        Command output = valid;
+        output.expected_revision = 123;
+        std::array<uint8_t, sizeof(Command)> before{};
+        std::memcpy(before.data(), &output, sizeof(output));
+        EXPECT_FALSE(read(input, output));
+        EXPECT_EQ(std::memcmp(before.data(), &output, sizeof(output)), 0);
+    };
+    unchanged_read({nullptr, needed});
+    for (uint32_t prefix = 0; prefix < needed; ++prefix) {
+        SCOPED_TRACE(prefix);
+        unchanged_read({bytes.data(), prefix});
+    }
+    auto oversized = bytes;
+    oversized.resize(maximum + 1U);
+    unchanged_read({oversized.data(), static_cast<uint32_t>(oversized.size())});
+    auto trailing = bytes;
+    trailing.push_back(0);
+    unchanged_read({trailing.data(), static_cast<uint32_t>(trailing.size())});
+    // records.md type 9 canonical prefix: kind/u32, CAS/u32, Goal ID/u64.
+    constexpr uint32_t kind_at = 0;
+    constexpr uint32_t revision_at = sizeof(uint32_t);
+    constexpr uint32_t goal_at = 2U * sizeof(uint32_t);
+    for (const auto offset : {kind_at, revision_at, goal_at}) {
+        auto changed = bytes;
+        if (offset == goal_at) {
+            ayni::foundation::store_le64(changed.data() + offset, 0);
+        } else {
+            ayni::foundation::store_le32(changed.data() + offset, 0);
+        }
+        unchanged_read({changed.data(), static_cast<uint32_t>(changed.size())});
+    }
+    for (const auto &input : invalid) {
+        uint32_t unchanged = 123;
+        EXPECT_EQ(measure(input, unchanged), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(unchanged, 123U);
+        auto buffer = untouched;
+        EXPECT_EQ(encode(input, buffer.data(), needed, unchanged), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(unchanged, 123U);
+        EXPECT_EQ(buffer, untouched);
+    }
+}
+
+std::vector<GoalCreate> invalid_work_creation_echoes(const GoalCreate &valid) {
+    std::vector<GoalCreate> result;
+    auto add = [&](auto alter) {
+        auto changed = valid;
+        alter(changed);
+        result.push_back(changed);
+    };
+    add([](auto &c) { c.owner_instance_id = 0; });
+    add([](auto &c) { c.goal_type_version = 0; });
+    add([](auto &c) { c.parent_goal_id = 1; });
+    add([](auto &c) { c.parameters.size = AYNI_GOAL_PARAMETER_MAX_BYTES_MAX + 1U; });
+    add([](auto &c) { c.parameters = {nullptr, 1}; });
+    add([](auto &c) { c.goal_type_id = {}; });
+    add([](auto &c) { c.trigger.kind = UINT32_MAX; });
+    add([](auto &c) { c.trigger.delay_us = 1; });
+    add([](auto &c) { c.trigger.kind = AYNI_TRIGGER_LOCAL_INPUT; });
+    return result;
+}
+
+TEST(WorkCommandCodec, approval_checks_each_shape_and_atomic_output_boundary) {
+    const uint64_t identity = UINT64_C(0x0000000100000001);
+    GoalCreate create{text("proposal"), 1, identity, 0, {}, {AYNI_TRIGGER_NONE, 0, 0}, 0, {}};
+    ApprovalCommand command{1, {identity, 1, AYNI_GRANT_PERMANENT, 0, create}};
+    std::vector<ApprovalCommand> invalid;
+    for (const auto &echo : invalid_work_creation_echoes(create)) {
+        auto changed = command;
+        changed.approval.original = echo;
+        invalid.push_back(changed);
+    }
+    for (unsigned fault = 0; fault < 6U; ++fault) {
+        auto changed = command;
+        switch (fault) {
+        case 0:
+            changed.expected_revision = 0;
+            break;
+        case 1:
+            changed.approval.goal_id = 0;
+            break;
+        case 2:
+            changed.approval.missing_mask = 0;
+            break;
+        case 3:
+            changed.approval.missing_mask = uint32_t{1} << AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
+            break;
+        case 4:
+            changed.approval.lifetime = AYNI_GRANT_CURRENT_BOOT;
+            break;
+        case 5:
+            changed.approval.duration_us = 1;
+            break;
+        }
+        invalid.push_back(changed);
+    }
+    verify_work_command_codec(
+        command, invalid, approval_command_max_bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX),
+        measure_approval_command, encode_approval_command, read_approval_command);
+}
+
+TEST(WorkCommandCodec, reauthorization_checks_each_shape_and_atomic_output_boundary) {
+    const uint64_t identity = UINT64_C(0x0000000100000001);
+    GoalCreate create{text("proposal"), 1, identity, 0, {}, {AYNI_TRIGGER_NONE, 0, 0}, 0, {}};
+    ReauthorizationCommand command{1, {identity, 1, create}};
+    std::vector<ReauthorizationCommand> invalid;
+    for (const auto &echo : invalid_work_creation_echoes(create)) {
+        auto changed = command;
+        changed.reauthorization.original = echo;
+        invalid.push_back(changed);
+    }
+    for (unsigned fault = 0; fault < 3U; ++fault) {
+        auto changed = command;
+        if (fault == 0U) {
+            changed.expected_revision = 0;
+        } else if (fault == 1U) {
+            changed.reauthorization.goal_id = 0;
+        } else {
+            changed.reauthorization.expected_authority_commit_seq = 0;
+        }
+        invalid.push_back(changed);
+    }
+    verify_work_command_codec(command, invalid,
+                              reauthorization_command_max_bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX),
+                              measure_reauthorization_command, encode_reauthorization_command,
+                              read_reauthorization_command);
+}
+
 } // namespace
