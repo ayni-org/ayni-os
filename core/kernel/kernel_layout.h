@@ -25,11 +25,17 @@ struct KernelLayout {
     std::size_t commands_offset;
     std::size_t capabilities_offset;
     std::size_t grants_offset;
-    std::size_t goal_authority_offset;    // Byte offset of Goal-owned authority storage.
-    std::size_t task_authority_offset;    // Byte offset of Task-owned admission references.
-    std::size_t resource_catalog_offset;  // Immutable descriptions, no live state.
-    std::size_t resource_states_offset;   // Live occupancy/health, never persistent.
-    std::size_t resource_requests_offset; // Bounded pending/held resource groups.
+    std::size_t goal_authority_offset;       // Byte offset of Goal-owned authority storage.
+    std::size_t task_authority_offset;       // Byte offset of Task-owned admission references.
+    std::size_t resource_catalog_offset;     // Immutable descriptions, no live state.
+    std::size_t resource_states_offset;      // Live occupancy/health, never persistent.
+    std::size_t resource_requests_offset;    // Bounded pending/held resource groups.
+    std::size_t call_capabilities_offset;    // Copied execution contracts.
+    std::size_t providers_offset;            // Trusted offers and callback descriptors.
+    std::size_t bindings_offset;             // Immutable exact implementation selections.
+    std::size_t calls_offset;                // Work-owned retained call rows and byte pools.
+    std::size_t provider_completions_offset; // Separate Provider delivery capacity.
+    std::size_t call_runtime_offset;         // Volatile I/O ownership and callback-copy buffers.
     std::size_t size;
     std::size_t alignment; // a power of two
 };

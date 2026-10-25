@@ -328,6 +328,57 @@ ayni_status_t raise_task_limit(WorkModel &model, const Intent &intent, IntentOut
     return AYNI_OK;
 }
 
+// Resume changes only Task's wait overlay; dispatch independently rechecks authority.
+ayni_status_t resume_task_wait(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
+                               IntentFailure &failure) {
+    uint32_t index = 0;
+    if (!model.tasks.find(intent.target_id, index)) {
+        return refuse(AYNI_NOT_FOUND, AYNI_REASON_TASK_UNKNOWN,
+                      object_ref(AYNI_OBJECT_TASK, intent.target_id), failure);
+    }
+    const auto current =
+        object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
+    const auto status = model.tasks.check_resume_wait(index, intent.expected_revision);
+    if (status != AYNI_OK) {
+        const auto reason = status == AYNI_REVISION_CONFLICT ? AYNI_REASON_TASK_REVISION
+                            : status == AYNI_INVALID_STATE   ? AYNI_REASON_TASK_STATE
+                                                             : AYNI_REASON_REVISION_EXHAUSTED;
+        return refuse(status, reason, current, failure);
+    }
+    const auto stamp = model.transitions.next();
+    model.tasks.resume_wait(index, stamp);
+    outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
+    outcome.commit_seq = stamp.commit_seq;
+    mark_due_work(model, outcome);
+    return AYNI_OK;
+}
+
+// Management authentication was checked once at the entry. Reconciliation
+// only observes the original operation, so revoked execution Grants do not gate it.
+ayni_status_t query_call(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
+                         IntentFailure &failure) {
+    uint32_t index = 0;
+    if (!model.calls.find(intent.target_id, index)) {
+        return refuse(AYNI_NOT_FOUND, AYNI_REASON_NONE,
+                      object_ref(AYNI_OBJECT_CALL, intent.target_id), failure);
+    }
+    const auto current =
+        object_ref(AYNI_OBJECT_CALL, intent.target_id, model.calls.query_revision(index));
+    const auto status = model.calls.check_query(index, intent.expected_revision);
+    if (status != AYNI_OK) {
+        return refuse(status, AYNI_REASON_NONE, current, failure);
+    }
+    const auto stamp = model.transitions.next();
+    if (model.calls.request_query(index, {model.ids.boot_epoch(), stamp}) != AYNI_OK) {
+        return AYNI_INTERNAL;
+    }
+    outcome.object =
+        object_ref(AYNI_OBJECT_CALL, intent.target_id, model.calls.query_revision(index));
+    outcome.commit_seq = stamp.commit_seq;
+    mark_due_work(model, outcome);
+    return AYNI_OK;
+}
+
 ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
                               IntentFailure &failure) {
     uint32_t index = 0;
@@ -384,6 +435,10 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
         return approve_goal(model, intent, session, now_us, durable_seq, outcome, failure);
     case AYNI_INTENT_GOAL_REAUTHORIZE:
         return reauthorize_goal(model, intent, now_us, durable_seq, input, outcome, failure);
+    case AYNI_INTENT_CALL_QUERY_RESULT:
+        return query_call(model, intent, outcome, failure);
+    case AYNI_INTENT_TASK_RESUME_WAIT:
+        return resume_task_wait(model, intent, outcome, failure);
     case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT:
         return raise_task_limit(model, intent, outcome, failure);
     case AYNI_INTENT_TASK_CANCEL:
@@ -415,10 +470,11 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                    ? AYNI_OK
                    : AYNI_INTERNAL;
     }
-    const bool stored =
-        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
-            ? model.commands.insert_exact(mapping)
-            : model.commands.insert(mapping);
+    const bool stored = intent.kind == AYNI_INTENT_GRANT_CREATE ||
+                                intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
+                                is_target_command(intent.kind)
+                            ? model.commands.insert_exact(mapping)
+                            : model.commands.insert(mapping);
     return stored ? AYNI_OK : AYNI_INTERNAL;
 }
 
@@ -441,6 +497,11 @@ ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
 CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
                                        uint64_t principal_id, uint64_t digest) {
     switch (intent.kind) {
+    case AYNI_INTENT_CALL_QUERY_RESULT:
+    case AYNI_INTENT_TASK_RESUME_WAIT:
+        return model.commands.find_exact(
+            principal_id, intent.command_id,
+            TargetCommand{intent.kind, intent.expected_revision, intent.target_id});
     case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT:
         return model.commands.find_exact(
             principal_id, intent.command_id,
@@ -483,14 +544,14 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
     if ((intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE ||
-         intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) &&
+         intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)) &&
         !bound_management_session(model, *session, durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
-    const bool exact = intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-                       intent.kind == AYNI_INTENT_GRANT_CREATE ||
-                       intent.kind == AYNI_INTENT_GRANT_REVOKE ||
-                       is_work_authority_command(intent.kind);
+    const bool exact =
+        is_target_command(intent.kind) || intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
+        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GRANT_REVOKE ||
+        is_work_authority_command(intent.kind);
     const uint64_t digest =
         intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
     if (intent.command_id != 0U) {

@@ -9,6 +9,7 @@
 #include "kernel/work_replay.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
+#include "work/call/call_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -136,6 +137,12 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     size = maximum(size, work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size =
         maximum(size, authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
+    if (capacities.call_capacity != 0U) {
+        size =
+            maximum(size, work::call_record_max(
+                              {capacities.call_capacity, capacities.authority_scope_max_bytes,
+                               capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+    }
     return record_prefix + maximum(size, command_max(capacities));
 }
 
@@ -156,12 +163,17 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
     size +=
         uint64_t{capacities.task_capacity} *
         (record_prefix + work::task_snapshot_record_size + record_prefix +
-         work::task_state_runtime_record_size +
+         work::task_state_call_record_size +
          uint64_t{capacities.task_step_capacity} *
              (record_prefix + work::task_steps_record_max(1)) +
          record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size += uint64_t{capacities.task_capacity} *
             (record_prefix + work::task_authority_record_max(capacities.goal_requirement_capacity));
+    size +=
+        uint64_t{capacities.call_capacity} *
+        (record_prefix + work::call_record_max(
+                             {capacities.call_capacity, capacities.authority_scope_max_bytes,
+                              capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
             (record_prefix + command_max(capacities));
     return size;
@@ -204,6 +216,11 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         }
         count(layout,
               work::task_state_size_for(work::task_state_version_for(model.tasks.at(index))));
+    }
+    for (uint32_t index = 0; index < model.calls.capacity(); ++index) {
+        if (model.calls.occupied(index)) {
+            count(layout, work::call_record_size(model.calls.record(index)));
+        }
     }
     for (uint32_t index = 0; index < model.commands.size(); ++index) {
         count(layout, command_size(model.commands.at(index)));
@@ -269,6 +286,18 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             break;
         case Section::tasks:
             if (next_task_record(type, size)) {
+                return true;
+            }
+            section_ = Section::calls;
+            index_ = 0;
+            break;
+        case Section::calls:
+            while (index_ < model_.calls.capacity() && !model_.calls.occupied(index_)) {
+                ++index_;
+            }
+            if (index_ < model_.calls.capacity()) {
+                type = work::call_record_type;
+                size = work::call_record_size(model_.calls.record(index_));
                 return true;
             }
             section_ = Section::cleanup;
@@ -372,6 +401,9 @@ void WorkSnapshotWriter::write_task_authority(uint8_t *body) {
 
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
     switch (type) {
+    case work::call_record_type:
+        work::write_call_record(model_.calls.record(index_), body);
+        break;
     case authority::owner_binding_record_type: {
         const authority::OwnerBinding &binding = *model_.principals.binding();
         authority::write_owner_binding_record(binding, body);
@@ -443,6 +475,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
 
 void WorkSnapshotWriter::advance_record(uint16_t type) {
     switch (type) {
+    case work::call_record_type:
+        ++index_;
+        break;
     case work::authority_cleanup_record_type:
         section_ = Section::commands;
         break;
@@ -534,6 +569,9 @@ void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
 // Keep record ordering separate from body decoding and restore dispatch.
 bool WorkSnapshotReader::record_section(uint16_t type, Section &out) {
     switch (type) {
+    case work::call_record_type:
+        out = Section::calls;
+        break;
     case authority::owner_binding_record_type:
         out = Section::owner_binding;
         break;
@@ -602,6 +640,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     }
     section_ = section;
     switch (header.type) {
+    case work::call_record_type:
+        return call(body, header.length);
     case authority::owner_binding_record_type:
         return owner_binding(body, header.length);
     case work::instance_record_type:
@@ -629,6 +669,23 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     default:
         return BatchCheck::unsupported;
     }
+}
+
+// Snapshot rows are independently bounded by the covered durable prefix.
+// Cross-row references are proved after every section is restored.
+durability::BatchCheck WorkSnapshotReader::call(const uint8_t *body, uint32_t size) {
+    work::CallRecord record{};
+    uint32_t duplicate = 0;
+    if (!work::read_call_record(body, size, record) ||
+        record.state.latest.boot_epoch > metadata_.boot_epoch ||
+        !valid_stamp(record.state.latest.transition, metadata_) ||
+        model_.calls.find(record.identity.call_id, duplicate)) {
+        return durability::BatchCheck::corrupt;
+    }
+    const auto status = model_.calls.restore_validated(record);
+    return status == AYNI_OK                  ? durability::BatchCheck::ok
+           : status == AYNI_CAPACITY_EXCEEDED ? durability::BatchCheck::no_room
+                                              : durability::BatchCheck::corrupt;
 }
 
 durability::BatchCheck WorkSnapshotReader::owner_binding(const uint8_t *body, uint32_t size) {
@@ -875,6 +932,42 @@ bool WorkSnapshotReader::matches_task_limit_command(const CommandMapping &mappin
             !task.model_calls.blocked);
 }
 
+// A retained retry result may precede current state; at the same commit it
+// must describe exactly that owner's transition, not merely a monotone bound.
+bool WorkSnapshotReader::matches_target_command(const CommandMapping &mapping) const {
+    const auto *binding = model_.principals.binding();
+    if (binding == nullptr || mapping.principal_id != binding->principal_id ||
+        mapping.commit_seq <= binding->stamp.commit_seq ||
+        !foundation::is_kernel_id(mapping.object.id) ||
+        foundation::id_boot_epoch(mapping.object.id) > metadata_.boot_epoch) {
+        return false;
+    }
+    uint32_t index = 0;
+    if (mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT) {
+        return !model_.calls.find(mapping.object.id, index) ||
+               (model_.calls.query_revision(index) >= mapping.object.revision &&
+                model_.calls.state(index).latest.transition.commit_seq >= mapping.commit_seq &&
+                model_.calls.state(index).created.transition.commit_seq < mapping.commit_seq);
+    }
+    if (!model_.tasks.find(mapping.object.id, index)) {
+        // Terminal Tasks may give way while their original command receipts remain.
+        return true;
+    }
+    const auto &task = model_.tasks.at(index);
+    if (task.commit_seq < mapping.commit_seq || task.revision < mapping.object.revision) {
+        return false;
+    }
+    // A live selected call was necessarily accepted before the owner could resume its wait.
+    if (task.commit_seq != mapping.commit_seq) {
+        return true;
+    }
+    uint32_t call_index = 0;
+    return task.revision == mapping.object.revision && work::TaskTable::is_live(task.lifecycle) &&
+           task.call.end == work::TaskCall::End::none && task.hold_status == AYNI_OK &&
+           task.hold_reason == AYNI_REASON_NONE && model_.calls.find(task.call.id, call_index) &&
+           model_.calls.state(call_index).created.transition.commit_seq < mapping.commit_seq;
+}
+
 durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8_t *body,
                                                    uint32_t size) {
     CommandMapping mapping{};
@@ -926,6 +1019,9 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
     }
     if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT &&
         !matches_task_limit_command(mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
+    }
+    if (is_target_command(mapping.kind) && !matches_target_command(mapping)) {
         return durability::BatchCheck::corrupt;
     }
     last_command_seq_ = mapping.commit_seq;

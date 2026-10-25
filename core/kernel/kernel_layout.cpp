@@ -31,6 +31,36 @@ class Placer {
     std::size_t alignment_ = alignof(ayni_kernel);
 };
 
+// Optional call directories allocate only their configured, fixed capacities.
+void place_call_catalogs(Placer &placer, const KernelCapacities &capacities, KernelLayout &layout) {
+    layout.call_capabilities_offset = placer.place(
+        catalog::CallCapabilityRegistry::storage_alignment,
+        catalog::CallCapabilityRegistry::storage_size(capacities.call_capability_capacity));
+    layout.providers_offset =
+        placer.place(catalog::ProviderRegistry::storage_alignment,
+                     catalog::ProviderRegistry::storage_size(capacities.provider_capacity));
+    layout.bindings_offset =
+        placer.place(catalog::BindingRegistry::storage_alignment,
+                     catalog::BindingRegistry::storage_size(capacities.binding_capacity));
+}
+
+// Optional call runtime storage never consumes Host completion capacity.
+void place_call_runtime(Placer &placer, const KernelCapacities &capacities, KernelLayout &layout) {
+    layout.calls_offset =
+        placer.place(work::CallTable::storage_alignment,
+                     work::CallTable::storage_size(
+                         {capacities.call_capacity, capacities.authority_scope_max_bytes,
+                          capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+    layout.call_runtime_offset = placer.place(
+        CallRuntime::storage_alignment,
+        CallRuntime::storage_size({capacities.call_capacity, capacities.call_input_max_bytes,
+                                   capacities.call_result_max_bytes}));
+    layout.provider_completions_offset =
+        placer.place(ProviderMailbox::storage_alignment,
+                     ProviderMailbox::storage_size(
+                         {capacities.call_capacity, capacities.call_result_max_bytes}));
+}
+
 } // namespace
 
 KernelLayout layout_for(const KernelCapacities &capacities) {
@@ -103,6 +133,8 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
     layout.resource_requests_offset = placer.place(
         resources::ResourceAdmission::storage_alignment,
         resources::ResourceAdmission::request_storage_size(capacities.resource_request_capacity));
+    place_call_catalogs(placer, capacities, layout);
+    place_call_runtime(placer, capacities, layout);
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

@@ -23,6 +23,8 @@
 
 namespace ayni::kernel {
 
+class CallRuntime; // Optional bounded call coordinator, assembled by Kernel.
+
 // The kernel memory of one decision at a time: the views of the task's
 // steps the snapshot shows, the intents the strategy writes and the private
 // checkpoint it returns (ayni_task_snapshot_v1, ayni_policy_output_v1).
@@ -74,8 +76,14 @@ class DecisionBuffer {
 // the start of the step. Returns false, calling nothing, when no such task
 // is left. Every goal type with tasks names a strategy that ayni_start
 // resolved.
-bool decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
-                 uint64_t now_us, uint64_t durable_seq, OwnerClock clock);
+enum class DecisionResult {
+    none,
+    applied,
+    internal
+}; // No work, one publication, or invariant failure.
+DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
+                           uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
+                           CallRuntime *calls = nullptr);
 
 // Whether a task waits for a decision; the step reports it as more_ready.
 bool awaits_decision(const WorkModel &model, uint64_t durable_seq = UINT64_MAX);

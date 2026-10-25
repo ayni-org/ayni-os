@@ -4,9 +4,12 @@
 #ifndef AYNI_CORE_KERNEL_KERNEL_STATE_H
 #define AYNI_CORE_KERNEL_KERNEL_STATE_H
 
+#include "catalog/binding/binding_registry.h"
 #include "kernel/boot/boot_sequence.h"
+#include "kernel/call_runtime.h"
 #include "kernel/commit/commit_log.h"
 #include "kernel/completion/completion_pool.h"
+#include "kernel/completion/provider_mailbox.h"
 #include "kernel/ingress/event_ingress.h"
 #include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
@@ -29,7 +32,7 @@ struct ayni_kernel {
                 const ayni::kernel::KernelStorage &storage)
         : host(host_table), ingress(storage.ingress, capacities.ingress_capacity,
                                     capacities.event_body_max_bytes, host),
-          completions(storage.completions, capacities.completion_slot_count, host),
+          completions(storage.completions, capacities.completion_slot_count, host, attempts),
           writes(limits.storage_write_interval_us), work(capacities, limits, storage), replay(work),
           boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes, work,
                replay, writes),
@@ -43,6 +46,16 @@ struct ayni_kernel {
           resource_catalog(storage.resource_catalog, capacities.resource_capacity),
           resources(resource_catalog, storage.resource_states, capacities.resource_capacity,
                     storage.resource_requests, capacities.resource_request_capacity),
+          call_capabilities(storage.call_capabilities, capacities.call_capability_capacity),
+          providers(storage.providers, capacities.provider_capacity),
+          bindings(storage.bindings, capacities.binding_capacity),
+          provider_completions(storage.provider_completions,
+                               {capacities.call_capacity, capacities.call_result_max_bytes}, host),
+          calls(storage.call_runtime,
+                {capacities.call_capacity, capacities.call_input_max_bytes,
+                 capacities.call_result_max_bytes},
+                work, {call_capabilities, providers, bindings, resource_catalog}, resources,
+                provider_completions, attempts, host),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
@@ -77,6 +90,9 @@ struct ayni_kernel {
     // discarded outside RUNNING or left queued on entering STOPPED.
     uint64_t events_unmatched = 0;
     uint64_t events_discarded = 0;
+    // One identity allocator shared by the distinct Host/Provider delivery pools;
+    // transport slots own no counter that could collide after reload or reuse.
+    ayni::kernel::AttemptSequence attempts;
     ayni::kernel::CompletionPool completions;
     ayni::kernel::WriteSchedule writes;
     ayni::kernel::WorkModel work;
@@ -95,6 +111,15 @@ struct ayni_kernel {
     ayni::catalog::ResourceRegistry resource_catalog;
     // Runtime allocation and wait state owned by resources/admission; no Task/Grant copy.
     ayni::resources::ResourceAdmission resources;
+    // Catalog owners retain immutable execution declarations and trusted selection;
+    // callback contexts belong to runtime, while no live call state lives here.
+    ayni::catalog::CallCapabilityRegistry call_capabilities;
+    ayni::catalog::ProviderRegistry providers;
+    ayni::catalog::BindingRegistry bindings;
+    // Provider workers post through this independent reliable pool; Host controls keep theirs.
+    ayni::kernel::ProviderMailbox provider_completions;
+    // Bounded cross-owner call coordination; workers only access provider_completions.
+    ayni::kernel::CallRuntime calls;
 
     // The largest batch one transition writes (work_journal.h).
     uint32_t batch_max;
@@ -121,6 +146,10 @@ struct ayni_kernel {
     void apply_revocations(StepBudget &progress);
     // Apply due work then decisions against this call's fixed frontiers.
     void apply_ready_work(StepBudget &progress);
+    // Reliable results and cancellation precede fresh strategy requests.
+    void apply_calls(StepBudget &progress);
+    // One mapping of Kernel/writer lifecycle to permitted call operations.
+    ayni::kernel::CallRuntime::Mode call_mode() const;
     // Drain only inputs queued before this phase, counting each against the budget.
     void take_queued_inputs(StepBudget &progress);
     // Report pending work and deadlines even after the budget is exhausted.

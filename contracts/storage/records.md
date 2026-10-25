@@ -63,7 +63,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `COMMAND_MAPPING`（类型 9，ordinary v1、create v2、revoke v3、approve v5、Task limit v6，REQUIRED） | `kernel/command` | 接受该命令的 transition 批次（B1）；v2/v3/v5含完整canonical请求，v3另存effect，v5保存原授权结果（ADR-0030、0031、0038） |
 | `BUDGET_RESERVATION`、`BUDGET_SETTLEMENT` | 已废止（ADR-0042），未分配类型 | 不实现费用账本 |
 | `CALL_IDENTITY` | `work/call` | B3 |
-| `ACTION_STATE`（类型 20/v1 预留，codec 已实现，尚未接入 journal/replay） | `work/action` | 计划置 REQUIRED；准备、屏障与终态各自的批次，终态在 B4 |
+| `ACTION_STATE`（20/v1 codec，嵌入 CALL_STATE，不单独写 journal） | `work/action` | 通过 REQUIRED CALL_STATE 保留；准备、屏障与终态各自的批次，终态在 B4 |
 | `CALL_RESULT` | `work/call` | B4 |
 | `MEMORY_RECORD`、`MEMORY_TOMBSTONE`、`LINEAGE` | `knowledge` | B4、B5 |
 | `GRANT_CREATE`（类型13，版本1，REQUIRED） | `authority/grant` | Grant创建，与v2命令身份/结果同批（ADR-0030） |
@@ -73,15 +73,15 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
 
-## 动作事实正文（实施中，尚未接入日志）
+## 动作事实正文（ABI 0.31 嵌入调用记录）
 
 `ACTION_STATE` 20/v1 的字段顺序固定，均为小端；固定大小 84 B 加 Binding ID。0/8 为 operation ID / logical call ID（u64）；16/20/24/28 为 Binding version / phase / effect / evidence（u32）；32/40/48 为 prepared 的 boot / transition / commit seq（u64）；56/64/72 为 latest 的对应三项；80 为 Binding ID 字节数（u32），84 起为 ID 内容（1..32 B）。没有 submit claim、指针、时钟或物理占用。
 
-phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed、cancelled、result_unknown；0 仅表示内存原位构造，禁止持久。effect 1..4 为 none、partial、complete、unknown；evidence 0..4 为 none、local_non_delivery、provider_result、authoritative_result、authoritative_not_accepted。合法组合由 `ActionRecord::valid` 唯一校验，codec 复用；权威未受理只能配 FAILED/NONE。准备和最新 stamp 形状、顺序以及 operation 创建代际须一致。跨表调用/Binding/原参数、查询与尝试关联以及 REQUIRED 批次配对在后续调用重放接入时验证；当前 codec 不构成这些证明。
+phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed、cancelled、result_unknown；0 仅表示内存原位构造，禁止持久。effect 1..4 为 none、partial、complete、unknown；evidence 0..4 为 none、local_non_delivery、provider_result、authoritative_result、authoritative_not_accepted。合法组合由 `ActionRecord::valid` 唯一校验，codec 复用；权威未受理只能配 FAILED/NONE。准备和最新 stamp 形状、顺序以及 operation 创建代际须一致。跨表调用/Binding/原参数、查询与尝试关联通过 CALL_STATE 及 Task/命令配对校验；codec 正常往返不等于完整恢复专项证据。
 
-## 调用输入正文（实施中，尚未接入日志）
+## 调用输入正文（ABI 0.31 嵌入调用记录）
 
-`work/call` 的内部 input format 1 使用有界 typed 授权参数及 UTF-8 文本。外层调用记录须携带独立 input format 版本；当前没有已发布记录类型或写入入口。正文布局：参数规范字节数 u32、文本字节数 u32、完整参数、文本。固定头为 8 B；没有指针、NUL 终止要求或 JSON。参数使用现有 domain format 1，但每个已注册字段必须为单值且全部提供；授权与 Provider 消费须使用这同一份参数。文本最大实现界限 65536 B，具体调用上限仍由后续目录/配置决定，超限明确拒绝。U+0000 可作为长度限定的普通字符；拒绝无效 UTF-8、过长编码、代理区及超出 U+10FFFF 的码点。
+`work/call` 的内部 input format 1 使用有界 typed 授权参数及 UTF-8 文本。外层 CALL_STATE 的原 CallContract 携带独立 input format 版本。正文布局：参数规范字节数 u32、文本字节数 u32、完整参数、文本。固定头为 8 B；没有指针、NUL 终止要求或 JSON。参数使用现有 domain format 1，但每个已注册字段必须为单值且全部提供；授权与 Provider 消费须使用这同一份参数。文本最大实现界限 65536 B，具体调用上限由调用目录/配置共同决定，超限明确拒绝。U+0000 可作为长度限定的普通字符；拒绝无效 UTF-8、过长编码、代理区及超出 U+10FFFF 的码点。
 
 此 codec 只证明结构与原域相符，不证明 Grant、使用同意、当前 Binding 或业务持久化。正文保留与删除按 ADR-0042 补充决定执行，密钥、原始媒体和诊断日志不使用该存储路径。相关局部正常测试见 `CallInputTest`；重启继续与删除尚未验证。
 
@@ -189,7 +189,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 ### 静态领域记录
 
-正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5/v6；GOAL 快照写 v4，只接受此创建 stamp 完整格式，Task state 按运行限制使用 v1/v4（见末节）；其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
+正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5/v6/v7/v8；GOAL 快照写 v4，只接受此创建 stamp 完整格式，Task state 按运行限制/调用引用使用 v1/v4/v8（见末节）；其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
@@ -323,3 +323,21 @@ schema 2 不变。Task 保存 used/limit/blocked（模型调用次数、总软�
 快照保留 type9/v6 完整命令及原接受 commit_seq（共 88 B），Task 当前上限不必等于历史重试结果。journal 的 v7/v6 命令必须匹配同一 Task、原 CAS、新上限和绑定所有者，type6 v7 状态不能单独成立。普通状态不能降低 used、改变已有软上限或清除 blocked；用户 pause/resume 与授权变化保留该事实。新计数同调用身份的证明由 MA-008A 继续接入，不能用本轮 codec 测试宣称调用账本已实现。
 
 低于原软上限的启动硬上限产生容量受限，不重置计数；旧 reader 对 REQUIRED 新版本拒绝，保留旧目录。所有 runtime codec、重放分发、快照大小与写入路径使用 `work/task/task_records` 的版本/布局实现；不存在逐平台私有编码。
+
+## 统一调用记录（ABI 0.31，ADR-0045）
+
+schema 2 保持；新 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 288 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
+
+1. call_id、operation_id、task_id、owner_instance_id（各 u64）；Binding/Capability/Provider version（各 u32）；step_key、Binding ID、Capability ID、Provider ID、endpoint、destination（六个长度串）。
+2. 原 CallContract：form/category/effects/idempotency/query/cancel/dedupe_window_ms/timeout_ms/input_format/result_format/input_text_limit/result_text_limit/resource_count（13 个 u32）；每个资源按规范 ID 顺序写 ID 长度串及 units u32。
+3. created 和 latest stamp（各 boot/transition/commit_seq 三个 u64）；原执行 attempt 两个 u64；progress_sequence u64；cancel_cause、cancel_result、outcome、status、reason（各 u32，status 为有符号值的原位编码）。
+4. 独立查询固定 60 B：generation/phase u32、requested stamp 三个 u64、查询 attempt 两个 u64、status/reason/conclusion u32。未请求查询时全部为零。phase 1/2/3 为 requested/dispatching/finished；generation 从 1 开始，管理 CAS 为 generation+1，无查询时 revision=1。原执行 attempt 不因查询改变。
+5. 原 authority domain、规范 CallInput、UTF-8 结果、ActionState（四个长度串）；ActionState 在资源准备前为空，准备后使用既有 20/v1 codec，不另写 type20 记录。
+
+Task 选定调用扩展使用 type6/v8/v9/v10/v11，分别保持 v1/v2/v3/v7 的配对含义；正文在 44 B 运行事实后附 logical_call_id u64 和 end u32，共 56 B。end 0/1/2 为 none/cancel/expire；无调用时 ID/end 同零。RUNNING/CANCELLING 必须有选定调用，后者还须 cancel/expire。终态 Call/Task 的同批更新由 replay 校验；取消后 retained UNKNOWN 可以没有 Task 选定引用。
+
+type9/v7 使用 60 B 精确命令外壳，加 kind14/revision u32 与 call_id u64（16 B），共 76 B；快照另附原 commit_seq u64。查询受理的 CALL_STATE/管理命令同批相邻配对，保存的请求 stamp 不因查询完成而改变。查询结果与仍等待的 Task 同批；已取消 Task 只补调用事实，不写新的 Task 生命周期。
+
+快照在 Tasks 后、authority cleanup/commands 前按稳定 call_id 保存全部调用。Body codec、journal 与 snapshot 共用表示和验证。每个 transition 最多改变一个 Call；容量预算含最大完整行及相应 Task/命令。新 reader 保留旧默认 Task 编码读取；旧 reader 遇 REQUIRED 新调用记录/状态版本显式拒绝，不修改旧目录。没有迁移工具。新的恢复、故障和中断清理专项仍未验证。
+
+资源等待超时保留选定调用和模型次数，以 EXPIRED/RESOURCE_WAIT 叠加在原 Task 用户生命周期之上。普通 pause/resume 保留此原因；显式恢复使用 type6/v12（56 B，与 v8 相同字段），只清除此原因、revision+1，其他状态不变；紧随 type9/v8 的所有者命令。命令沿用 60 B 外壳与 16 B 规范 target 编码：kind15 u32、原 Task revision u32、task_id u64，共 76 B；快照另附原 commit_seq。v12/v8 必须为独立原子批次，不能单独恢复或夹带其他更新。快照仍以 v8 表达当前 Task 事实。

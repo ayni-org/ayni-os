@@ -3,7 +3,7 @@
 - **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021、ADR-0026；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
 - **属主**：`work/call`、`work/action`、`work/subscription`（调用实例）；`catalog/capability`、`catalog/binding`（描述与选择约束）
 
-当前实施边界（ADR-0045）：内部 CallContract 已实现静态声明规范化及精确匹配，CallInput 已实现完整有限 typed 参数及有界文本，ActionRecord 已实现局部状态规则与事实 codec。公开 Provider/Binding 注册、journal/replay 和真实消费尚未接入；这些内部测试不代表下面全部规则已验证。
+当前实施边界（ABI 0.31 / ADR-0045）：公开 Provider/Binding 注册、有限 typed 参数与 UTF-8 正文、统一调用身份/资源/屏障、可靠完成、Task RUNNING/CANCELLING、所有者主动对账已接入 Kernel。journal/snapshot 共用完整调用记录，默认配置不启用调用容量。本轮验证限正常路径和公开边界；新故障/恢复专项、物理许可、订阅/观察、嵌套工具结果及长期记忆删除仍待后续包。
 
 ## 调用形态
 
@@ -42,7 +42,7 @@
 | C-CALL-009 | 取消请求携带目标操作及版本；Provider 报告“取消成功”“无法取消”或“结果未知”；资源在确认释放或隔离后才处理 | 取消请求发出即释放执行器资源 | E1 步骤 4；E4 步骤 3 |
 | C-CALL-010 | 只有执行方声明 `AUTHORITATIVE` 查询、保证记录完整，且旧尝试已终止或被隔离时，“未执行”才是权威结论；`NOT_FOUND` 或无记录不能推断未执行 | 查询返回“无记录”后重新派发 | E2 查询夹具（两种响应） |
 | C-CALL-011 | 同 boot 内迟到的结果可以用于对账、费用事实与停止确认，但不重新开放已取消的 Task；旧 boot 的结果须经权威查询入口对账，不直接修改新状态 | 重启前发出的模型请求结果复活了已取消的任务 | E2 F7；E3 步骤 2 |
-| C-CALL-012 | 重复的完成事件按 `(boot_epoch, request_id)` 只应用一次，不重复终结、释放或应用结果 | 重复回执使 Task 进度更新两次 | 内部交接部分已实现：`ProviderMailboxTest.reserves_complete_delivery_capacity_before_submit_and_reuses_only_after_ack`、`ProviderMailboxTest.progress_is_copied_and_old_ack_cannot_erase_newer_progress`、`ProviderMailboxTest.acknowledged_cancel_is_not_accepted_twice_and_withdraw_cannot_discard_results`；Task/ActionRecord 原子应用仍待 MA-008；E1 步骤 10；E2 F11 |
+| C-CALL-012 | 重复的完成事件按 `(boot_epoch, request_id)` 只应用一次，不重复终结、释放或应用结果 | 重复回执使 Task 进度更新两次 | 内部交接部分已实现：`ProviderMailboxTest.reserves_complete_delivery_capacity_before_submit_and_reuses_only_after_ack`、`ProviderMailboxTest.progress_is_copied_and_old_ack_cannot_erase_newer_progress`、`ProviderMailboxTest.acknowledged_cancel_is_not_accepted_twice_and_withdraw_cannot_discard_results`；公开异步与取消应用：`ManagedCall.async_worker_result_advances_the_same_task_and_preserves_copied_input`、`ManagedCall.cancellation_waits_for_terminal_and_late_success_does_not_reopen_task`、`ManagedCall.progress_is_monotonic_and_duplicate_terminal_is_rejected`；E1 步骤 10；E2 F11 |
 | C-BIND-001 | 注册时核对 Binding 与 Capability 的类型、Schema/语义版本、调用形态、模态、资源与取消/查询特性；不匹配的 Binding 在 `ayni_start` 时拒绝 | 视觉分析能力绑定到只支持文本的 Provider | E4 步骤 1 |
 | C-BIND-002 | 同名能力可以有多个 Binding；应用提供选择约束，Kernel 只在满足权限、外发与运行限制约束的候选中准入 | Kernel 选了未获外发授权的云端 Provider | `MA-008` |
 | C-BIND-003 | 准备记录保存具体 Binding 及版本；改变已批准服务或数据目的地的 fallback 必须重新授权 | 主 Provider 失败后自动改用更贵的服务 | `MA-008`；C-RUN-005 |
@@ -50,3 +50,19 @@
 | C-SUB-002 | 订阅事件按 `(subscription_id, generation, sequence)` 校验；旧代际或旧 `boot_epoch` 的事件只可用于必要的脱敏对账，不重新启用观察，也不进入新上下文 | 关闭观察后迟到的旧帧触发了一次分析 | E1 步骤 8；E4 步骤 4 |
 | C-SUB-003 | 订阅续租重新检查权限与运行限制；续租失败立即停止新采集与上传；Provider 未确认结束时资源按原规则释放或隔离 | 撤销授权后订阅凭旧租期继续上传 | E1 步骤 8 |
 | C-SUB-004 | 每类事件声明是否可合并、可丢弃及 gap 行为；遥测不承诺无限历史，控制事件不使用遥测的丢弃策略 | 队列满时丢弃存储确认事件 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
+
+## ABI 0.31 的调用消费
+
+策略在 `decide` 回调中使用 `output.request_call` 提交唯一 REQUEST_CALL/REQUEST_MODEL；sink 立即复制参数与文本，回调返回后失效。当前一个决定只接受一个调用，不能混入其他意图；Task 私有 checkpoint 与逻辑调用受理同批提交。`step_key` 在 Task 内唯一，失败/取消调用也占用有界步骤身份，不能借新失败步骤绕过 `task_step_capacity`。
+
+CallRecord 保存原始有限参数域、规范输入、确切 Capability/Provider/Binding 版本和 operation。资源一次取得后先持久 PREPARED，再持久 DISPATCHING；最后复核 Task、授权、撤销 Gate、参数、资源健康及期限。Provider 回调只借用输入至返回，工作线程只保留自有副本和完成目标。模型次数在受理时增加一次；查询对账不增加执行次数。
+
+终态结果、成功步骤及仍等待的 Task 进度在同一 B4 发布；正文须等结果批次持久后才可由 `ayni_copy_call_result` 对外复制。策略只能读取该 Task 的结果；管理查询为 owner 线程的本机受管 API。查询信息的 `requires_seq` 标出未持久事实，不是呈现许可。UNKNOWN 或未知影响会阻止 Task/Goal/调用记录回收。
+
+`CALL_QUERY_RESULT` 可用于 UNKNOWN 结果及 FAILED/CANCELLED 的未知影响，使用可信所有者 MANAGEMENT 会话、非零 command_id 和独立 query_revision。用户确认即使执行 Grant 已撤销，所有者仍可查询原 Provider 的原 operation。重交相同命令返回原受理结果，不追加 I/O；新查询使用独立 attempt/代际和持久屏障。只有 AUTHORITATIVE 的 FOUND/NOT_ACCEPTED 可以解除 UNKNOWN；BEST_EFFORT 的 FOUND/无记录均保持未知。已取消 Task 不因对账结果恢复。重载后旧 boot 回执只能排空 transport，不能直接发布新 writer 的已知结果；该恢复路径尚未进行新专项验收。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-CALL-013 | 所有者管理查询原 operation 不依赖原执行 Grant；精确命令/CAS 去重，查询失败或弱证据不重试执行、不切换 Provider、不恢复取消 Task | 撤权后无法确认原动作；重复管理命令产生重复查询或查询成功复活取消任务 | 正常公开场景：`ManagedCall.owner_reconciles_after_grant_revocation_without_repeating_execution`、`ManagedCall.reconciled_result_resumes_only_the_still_waiting_task`、`ManagedCall.a_cancelled_task_stays_cancelled_when_reconciliation_finds_success`、`ManagedCall.query_requires_management_channel_exact_identity_and_current_query_revision`、`BestEffortCall.missing_record_never_proves_nonexecution`、`BestEffortCall.nonauthoritative_found_result_keeps_execution_unknown`；查询记录正常 codec：`CallTableTest.reconciliation_record_codec_preserves_query_generation_and_execution_identity`；重启/故障专项未验证 |
+
+ABI 0.31 的普通资源等待超时只暂停原 Task，保留选定调用、输入和模型计数。所有者使用 `TASK_RESUME_WAIT`（非零 command_id、Task revision、MANAGEMENT 会话）显式重排队；普通 Goal/实例恢复不解除该暂停。解除等待不会解除用户暂停、授权或兼容限制；取消可以结束尚未派发的调用。正常验证：`ManagedCall.owner_resumes_the_same_resource_wait_without_another_model_charge`、`ManagedCall.wait_resume_preserves_user_pause_and_ordinary_resume_preserves_wait`、`ManagedCall.retained_resource_wait_can_be_cancelled_without_provider_dispatch`、`ManagedCall.wait_resume_never_bypasses_revoked_execution_authority`。新恢复/故障专项未执行。

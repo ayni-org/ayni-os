@@ -6,6 +6,7 @@
 #include "foundation/digest.h"
 #include "kernel/command/command_approval.h"
 #include "kernel/command/command_canonical.h"
+#include <ayni/calls.h>
 
 namespace ayni::kernel {
 
@@ -52,6 +53,9 @@ ayni_status_t read_goal_create(const ayni_goal_create_v1 &body, GoalCreate &out)
 
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
+    case AYNI_INTENT_CALL_QUERY_RESULT:
+        return read_target(raw.body, &ayni_call_query_result_v1::logical_call_id,
+                           out_intent.target_id);
     case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT: {
         const ayni_task_raise_model_limit_v1 *body = nullptr;
         const auto status = read_body(raw.body, body);
@@ -104,6 +108,7 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     }
     case AYNI_INTENT_GRANT_REVOKE:
         return read_target(raw.body, &ayni_grant_revoke_v1::grant_id, out_intent.target_id);
+    case AYNI_INTENT_TASK_RESUME_WAIT:
     case AYNI_INTENT_TASK_CANCEL:
         return read_target(raw.body, &ayni_task_target_v1::task_id, out_intent.target_id);
     case AYNI_INTENT_INSTANCE_PAUSE:
@@ -118,10 +123,17 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_TASK_RAISE_MODEL_LIMIT;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_TASK_RESUME_WAIT;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (is_target_command(intent.kind)) {
+        uint32_t size = 0;
+        return intent.command_id == 0U
+                   ? AYNI_INVALID_ARGUMENT
+                   : measure_target_command(
+                         {intent.kind, intent.expected_revision, intent.target_id}, size);
+    }
     if (intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
         if (intent.command_id == 0U) {
             return AYNI_INVALID_ARGUMENT;

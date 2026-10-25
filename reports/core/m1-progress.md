@@ -59,6 +59,7 @@
 | [#60](https://github.com/RobotSe7en/ayni/pull/60) | 2026-10-25 | `MA-018A` 资源机制 | 资源目录、健康查询、公平全组准入及停止代际隔离，ABI 0.29 | ADR-0042 |
 | [#61](https://github.com/RobotSe7en/ayni/pull/61) | 2026-10-25 | `MA-018A` Task 限制 | 持久计数/上限/独立暂停、所有者提高上限与精确命令，ABI 0.30 | ADR-0043 |
 | [#62](https://github.com/RobotSe7en/ayni/pull/62) | 2026-10-25 | `MA-008A` 结果交接 | 有界预留、独立取消/终态、非破坏读取与消费确认；内部机制 | ADR-0044 |
+| [#63](https://github.com/RobotSe7en/ayni/pull/63) | 2026-10-25 | `MA-008A` 调用前置 | 内部动作状态与编码、typed 输入及静态调用契约；尚未装配调用链 | ADR-0045 |
 
 ## 工作包日期
 
@@ -72,10 +73,10 @@
 
 ## 交接状态（2026-10-25）
 
-合并基线为 #62（ABI 0.30 / schema 2）。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)，并确认保存当前 Task 所需的有界对话正文（[ADR-0042](../../docs/adr/0042-runtime-limits-and-direct-model-access.md) 补充决定）；新故障/恢复专项继续暂停。
+合并基线为 #63（ABI 0.30 / schema 2）。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)，并确认保存当前 Task 所需的有界对话正文（[ADR-0042](../../docs/adr/0042-runtime-limits-and-direct-model-access.md) 补充决定）；新故障/恢复专项继续暂停。
 
-- **已完成：** MA-003/004/005/010、MA-006 A–F 与 R1～R4；#60 的资源目录/健康/公平全组准入和 #61 的 Task 持久限制/所有者提高上限均已合并，相关检查、独立审查及 CI 通过。#62 的内部 Provider 结果交接也已合并。
-- **下一步：** [PR #63](https://github.com/RobotSe7en/ayni/pull/63) 已实现并正常验证内部动作状态/编码、typed 输入与静态调用契约（ADR-0045）；继续调用目录、输入/结果、Action Ledger 持久化与真实派发接入，连接现有资源和 Task 计数。当前没有待决产品问题。
+- **已完成：** MA-003/004/005/010、MA-006 A–F 与 R1～R4；#60 的资源目录/健康/公平全组准入和 #61 的 Task 持久限制/所有者提高上限均已合并，相关检查、独立审查及 CI 通过。#62 的内部 Provider 结果交接及 #63 的内部动作状态/编码、typed 输入、静态调用契约均已合并。
+- **下一步：** 按用户完整 M1 计划接通 MA-008A 的公开调用、持久派发与异步结果，再交付许可、订阅、模型、工作流、记忆、提醒、统一助理和 Native CLI。内部前置机制通过检查不代表对应工作包完成；以双 Agent 的 Native 正常使用与集成为本轮完成标准。当前没有待决产品问题。
 - **仍有限制：** 结果交接尚未装入 Kernel，无生产 Provider 消费链；整个 MA-018A 尚未完成。正文持久化/删除、真实调用、许可、ESP-IDF 存储、Web/语音/屏幕、完整 E1–E4、Core Alpha 及硬件验收均未交付。
 
 ## 剩余工作

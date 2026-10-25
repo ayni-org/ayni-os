@@ -3,9 +3,12 @@ include(GoogleTest)
 add_executable(ayni_unit_tests
     action_record_test.cpp
     call_input_test.cpp
+    call_table_test.cpp
     call_contract_test.cpp
     resource_admission_test.cpp
     kernel_resource_test.cpp
+    kernel_provider_test.cpp
+    kernel_call_test.cpp
     agent_table_test.cpp
     authority_cleanup_test.cpp
     batch_codec_test.cpp
@@ -61,6 +64,7 @@ add_executable(ayni_unit_tests
     storage_budget_test.cpp
     strategy_registry_test.cpp
     task_table_test.cpp
+    task_call_test.cpp
     task_runtime_limits_test.cpp
     task_authority_test.cpp
     trigger_schedule_test.cpp

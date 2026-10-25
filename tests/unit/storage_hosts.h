@@ -277,9 +277,10 @@ class StorageRequests {
     // and start(); the requests of the earlier one are forgotten.
     void reset() {
         pool_.reset();
+        attempts_.emplace();
         requests_.clear();
         table_ = host_.table();
-        pool_.emplace(memory_.data(), storage_slot_count, table_);
+        pool_.emplace(memory_.data(), storage_slot_count, table_, *attempts_);
     }
 
     StorageRequest &append(uint64_t commit_seq, Bytes batch) {
@@ -466,6 +467,7 @@ class StorageRequests {
     StorageHost &host_;
     std::vector<uint64_t> memory_;
     ayni_host_v1 table_{};
+    std::optional<kernel::AttemptSequence> attempts_;
     std::optional<kernel::CompletionPool> pool_;
     // A deque, so that the requests in flight keep their addresses.
     std::deque<StorageRequest> requests_;

@@ -54,7 +54,17 @@ class WorkSnapshotWriter {
 
   private:
     // The payload's order (records.md).
-    enum class Section { owner_binding, instances, grants, goals, tasks, cleanup, commands, done };
+    enum class Section {
+        owner_binding,
+        instances,
+        grants,
+        goals,
+        tasks,
+        calls,
+        cleanup,
+        commands,
+        done
+    };
     // A task's records, in order.
     enum class TaskPart { task, steps, checkpoint, state, authority };
     // A Goal v2 and its required authority record remain adjacent across pages.
@@ -105,7 +115,7 @@ class WorkSnapshotReader {
 
   private:
     // The payload's order (records.md).
-    enum class Section { owner_binding, instances, grants, goals, tasks, cleanup, commands };
+    enum class Section { owner_binding, instances, grants, goals, tasks, calls, cleanup, commands };
     durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
     durability::BatchCheck instance(const uint8_t *body, uint32_t size);
     durability::BatchCheck grant(uint16_t version, const uint8_t *body, uint32_t size);
@@ -118,9 +128,13 @@ class WorkSnapshotReader {
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_state(const uint8_t *body, uint32_t size, uint16_t version);
+    // A full row is bounded by snapshot metadata and later checked against all Task references.
+    durability::BatchCheck call(const uint8_t *body, uint32_t size);
     durability::BatchCheck authority_cleanup(const uint8_t *body, uint32_t size);
     // Snapshot must retain owner/time and monotone Task facts for a historical raise.
     bool matches_task_limit_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
+    // Historical query/resume receipts preserve exact same-sequence target outcomes.
+    bool matches_target_command(const CommandMapping &mapping) const;
     durability::BatchCheck command(uint16_t version, const uint8_t *body, uint32_t size);
 
     WorkModel &model_;

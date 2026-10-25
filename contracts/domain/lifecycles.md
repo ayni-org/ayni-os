@@ -54,7 +54,7 @@ ABI 0.16 起，已完整验证的存储所有者与 Host 认证绑定不匹配�
 | 其余查询 | INVALID_STATE | OK（标注 `durable_seq`） | OK | OK（只读诊断） | OK（只读诊断） | OK | INVALID_STATE |
 | `ayni_post_event` | INVALID_STATE | OK（保留到进入 RUNNING） | OK（存储允许后应用） | OK（本地输入丢弃并计数） | OK（本地输入丢弃并计数） | OK（丢弃并计数） | INVALID_STATE |
 
-`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类）先于状态检查；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。重载清空旧会话；隔离尚未确认或隔离失败保留旧诊断时，已有会话仍可关闭，但不能开放新准入。`ayni_step` 只在 `RUNNING` 且存储允许新 transition 时做到期工作并调用策略。M1 尚无动作完成对账事件，FENCED 中的在途动作、许可与对账验收随 `MA-008`、`MA-018`、`MA-022`；本地输入不替代这些事件。
+`ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类）先于状态检查；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。重载清空旧会话；隔离尚未确认或隔离失败保留旧诊断时，已有会话仍可关闭，但不能开放新准入。`ayni_step` 只在 `RUNNING` 且存储允许新 transition 时做到期工作并调用策略。ABI 0.31 的 Provider 完成与对账使用独立可靠回送槽；FENCED 中只收敛传输借用，旧 boot 结果不直接解除未知事实。新增隔离/恢复专项及物理许可验收仍待后续安排；本地输入不替代这些回执。
 
 GoalType 校验与策略 `decide` 回调不得调用 Kernel（C-POLICY-001）；回调内调用接受非 const Kernel 的所有者线程函数，仍在参数检查后、生命周期检查前返回 `INVALID_STATE`。已受理存储请求不因重试期限或 shutdown 被合成完成；缓冲与完成槽等 Host 真正 post 后才归还。验证：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.short_host_with_only_legacy_storage_cannot_start`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`、`KernelFence.shutdown_during_retry_never_starts_recovery`。
 
@@ -113,7 +113,7 @@ M1 已实现的转换：
 
 ## Task
 
-`READY ↔ RUNNING → COMPLETED`；也可以进入 `PAUSED`、`CANCELLED`、`FAILED`、`EXPIRED`；异步取消尚未完成时为 `CANCELLING`。等待模型、资源、审批或动作是 `blocked_on` 视图，可以同时存在多项，不写入生命周期。
+ABI 0.31 已接通普通 unary/action 的 `RUNNING` 与 `CANCELLING`：接受调用后保留稳定选定引用；终态回执与步骤/Task 同批提交，取消请求先进入排空状态，借用归还后才能结束。未知结果保留调用事实且禁止自动重试。资源等待超时显示 `PAUSED`，保留未派发调用；所有者显式恢复只解除等待暂停。物理执行与独立停止确认仍待 MA-018B；新增故障/恢复专项未验证。
 
 | 状态 | 值 | 含义 |
 |---|---:|---|
@@ -139,7 +139,7 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | `READY`、`PAUSED` | `CANCELLED` | `TASK_CANCEL`；`GOAL_CANCEL` 作用于它的 Goal 或其祖先；`INSTANCE_STOP` 作用于它的 owner；同一 transition |
 | `READY`、`PAUSED` | `EXPIRED` | 它的 Goal 或其祖先失效；同一 transition（ADR-0020） |
 
-放行条件：Task 只在它的 Goal 与该 Goal 的全部祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时前进。暂停不级联：暂停的 Goal 或实例不改写子目标的状态，只让其下的 Task 停下，恢复后自动继续。Goal 或实例的每次改变在同一个 transition 中按放行条件重算它触及的 `READY`/`PAUSED` Task，状态改变的才提升版本；派生也只发生在放行的 Goal 上。每次转换使该 Task 的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。M1 到达 `READY`、`PAUSED`、`COMPLETED`、`CANCELLED`、`FAILED`、`EXPIRED`：决定在同一 step 中应用，`RUNNING` 留给等待在途请求结果的 Task，`CANCELLING` 随可取消的在途请求（`MA-008`，ADR-0022）。结束的 Task 在 Task 表满时让位给新 Task，此后查询返回 `NOT_FOUND`（ADR-0018）。
+放行条件：Task 只在它的 Goal 与该 Goal 的全部祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时前进。暂停不级联：暂停的 Goal 或实例不改写子目标的状态，只让其下的 Task 停下，恢复后自动继续。Goal 或实例的每次改变在同一个 transition 中按放行条件重算它触及的 `READY`/`PAUSED` Task，状态改变的才提升版本；派生也只发生在放行的 Goal 上。每次转换使该 Task 的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。ABI 0.31 接受调用进入 `RUNNING`，取消须先经 `CANCELLING` 收敛。结束的 Task 仅在没有在途、未知影响或必要调用引用时才可在表满时让位给新 Task，此后查询返回 `NOT_FOUND`（ADR-0018）。
 
 ## ActionRecord
 
@@ -155,7 +155,7 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | `DISPATCHING`、`IN_PROGRESS` | `COMPLETED` | 完成结果持久化 |
 | `DISPATCHING`、`IN_PROGRESS` | `FAILED` | 确定失败结果持久化；unary 无需先报告进度（ADR-0045） |
 | `DISPATCHING`、`IN_PROGRESS` | `RESULT_UNKNOWN` | 重启或无法确认结果 |
-| `RESULT_UNKNOWN` | `COMPLETED` / `FAILED` | 权威查询确认（C-CALL-010） |
+| `RESULT_UNKNOWN`，或 `FAILED`/`CANCELLED` 且 effect=UNKNOWN | `COMPLETED` / `FAILED` | 原 Provider 的权威查询确认；不复活已取消 Task（C-CALL-010、ADR-0045） |
 
 ## 规则
 
@@ -168,7 +168,7 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | C-LIFE-005 | 生命周期变化经事件与 `ayni_get_lifecycle` 同时可见；事件在状态已应用之后发出 | 事件报告 `RUNNING` 时查询仍返回 `RECOVERING` | `MA-005` |
 | C-LIFE-006 | 首版不提供运行时注销；运行时发现的目录变化另行定义为经提交协调的 transition | 运行中删除 Capability，在途 ActionRecord 失去语义 | `MA-005` |
 | C-LIFE-007 | 已实现的函数在每个状态下按上表返回；表中的 `INVALID_STATE` 不改变状态；进入 `RESTRICTED` 时记录原因，`ayni_get_kernel_info` 只在 `RESTRICTED` 中报告它（ADR-0016） | 恢复失败后状态停在 `RECOVERING`，调用方无法区分“仍在恢复”与“已经失败” | M1 已实现：`KernelLifecycle.return_values_follow_the_state_table`、`WorkModel.return_values_follow_the_state_table`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`KernelLifecycle.restriction_is_reported_only_while_restricted`；`MA-005` |
-| C-LIFE-010 | ActionRecord 只按上表转换；`RESULT_UNKNOWN` 只能经权威查询离开 | `RESULT_UNKNOWN` 超时后自动改为 `FAILED` 并重试 | 内部状态规则部分已验证：`ActionRecordTest.abandonment_never_becomes_an_ordinary_failure_or_a_new_dispatch`、`ActionRecordTest.authoritative_completion_reconciles_a_drained_unknown_operation`；权威性/尝试关联及 journal/replay 待调用消费接入（ADR-0045）；E2 F3–F5 未验证 |
+| C-LIFE-010 | ActionRecord 只按上表转换；`RESULT_UNKNOWN` 只能经权威查询离开 | `RESULT_UNKNOWN` 超时后自动改为 `FAILED` 并重试 | 内部状态规则部分已验证：`ActionRecordTest.abandonment_never_becomes_an_ordinary_failure_or_a_new_dispatch`、`ActionRecordTest.authoritative_completion_reconciles_a_drained_unknown_operation`；ABI 0.31 正常对账由 `ManagedCall.owner_reconciles_after_grant_revocation_without_repeating_execution`、`ManagedCall.owner_can_reconcile_unknown_effects_after_known_failure`、`ManagedCall.owner_can_reconcile_unknown_effects_after_provider_cancellation` 验证；新增恢复专项未验证（ADR-0045）；E2 F3–F5 未验证 |
 | C-LIFE-011 | 运行终态与副作用结果分开：`CANCELLED`/`FAILED` 的记录列出已完成、未执行与未知的步骤，不推导“没有影响” | 取消后报告“无影响”，但第一步转向已执行 | E4 步骤 3 |
 | C-LIFE-012 | 取消请求已受理、停止指令已送达、物理输出已停止是三种事实，分别表达 | 把“已发送停止”显示为“已停止” | E1 步骤 4；C-STOP-006 |
 | C-LIFE-013 | 撤销响应区分 `ACCEPTED`、`DURABLY_EFFECTIVE`、`CANCELLING`、`STOP_CONFIRMED`；只有最后一项证明本地物理停止 | 授权版本生效即报告设备已停止 | E1 步骤 6；E2 F10 |

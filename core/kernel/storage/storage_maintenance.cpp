@@ -125,6 +125,9 @@ bool StorageMaintenance::advance(uint64_t now) {
         break;
     case IssueResult::busy:
         return false;
+    case IssueResult::exhausted:
+        fail(AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED);
+        break;
     }
     return true;
 }
