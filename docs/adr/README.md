@@ -58,7 +58,7 @@
 | [0044](0044-provider-result-mailbox.md) | Provider 有界结果交接与可靠消费确认 | 已接受 | §2.7、§9.1、§14.1 |
 | [0045](0045-unified-call-state.md) | 统一调用身份、动作事实与派发消费 | 已接受 | §2.7、§2.8、§4.3、§9.1 |
 
-| [0046](0046-resource-topology-and-conflict-domains.md) | 可信资源拓扑与冲突域 | 实施中 | §2.2、§9.1 |
+| [0046](0046-resource-topology-and-conflict-domains.md) | 可信资源拓扑与冲突域 | 已接受 | §2.2、§9.1 |
 
 ## 模板
 
