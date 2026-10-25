@@ -40,6 +40,17 @@ class CheckDepsTest(unittest.TestCase):
         self.write("core/work/task/task.cpp", '#include "foundation/ids.h"\n#include "resources/resource.h"\n')
         self.assertEqual(self.violations(), [])
 
+    def test_provider_own_header_and_runtime_composition_are_allowed(self):
+        self.write("providers/mock/mock.cpp", "#include <ayni/providers/mock.h>\n#include <ayni/calls.h>\n")
+        self.write("runtime/native_node/node.cpp", "#include <ayni/providers/mock.h>\n")
+        self.assertEqual(self.violations(), [])
+
+    def test_provider_cannot_include_another_provider_or_core_internal(self):
+        self.write("providers/mock/mock.cpp", "#include <ayni/providers/network.h>\n")
+        self.assert_single_violation("providers/ may not include")
+        self.write("providers/mock/mock.cpp", '#include "kernel/kernel_state.h"\n')
+        self.assert_single_violation("Core-internal header")
+
     def test_core_rejects_upward_include(self):
         self.write("core/foundation/ids.cpp", '#include "kernel/kernel.h"\n')
         self.assert_single_violation("core/foundation may not include core/kernel")
@@ -161,8 +172,8 @@ class CheckDepsTest(unittest.TestCase):
         self.assert_single_violation("core/kernel/kernel.cpp: not UTF-8")
 
     def test_unknown_top_level_directory_needs_a_rule(self):
-        self.write("providers/model/mock.cpp")
-        self.assert_single_violation("no include rule for providers/")
+        self.write("unplanned/module.cpp")
+        self.assert_single_violation("no include rule for unplanned/")
 
     def test_duplicate_core_module_is_a_configuration_error(self):
         self.architecture["core_layers"].append(["kernel"])

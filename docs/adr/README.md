@@ -60,8 +60,9 @@
 
 | [0046](0046-resource-topology-and-conflict-domains.md) | 可信资源拓扑与冲突域 | 已接受 | §2.2、§9.1 |
 
+| [0047](0047-trusted-work-scheduling.md) | 可信工作分类与资源等待策略 | 已接受 | §9.1 |
+| [0048](0048-reusable-mock-providers.md) | 可复用确定性 Mock Provider | 已接受 | §9.1 |
+
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。
-
-| [0047](0047-trusted-work-scheduling.md) | 可信工作分类与资源等待策略 | 已实施，推荐值待确认 | §9.1 |

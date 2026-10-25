@@ -16,12 +16,14 @@
     "ayni/draft/": "draft",
     "ayni/hosts/": "hosts",
     "ayni/runtime/": "runtime",
+    "ayni/providers/": "providers",
     "ayni/": "api"
   },
   "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. core/, include/ and tests/ have fixed rules in check_deps.py.",
   "components": {
     "hosts": ["api", "own", "external"],
-    "runtime": ["api", "hosts", "own", "external"],
+    "runtime": ["api", "hosts", "providers", "own", "external"],
+    "providers": ["api", "own", "external"],
     "targets": ["api", "runtime", "external"],
     "control": ["api", "external"],
     "safety": ["api", "external"],

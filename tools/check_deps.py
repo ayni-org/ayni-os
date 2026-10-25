@@ -55,7 +55,7 @@ class Target:
     runtime, external, local, foreign."""
 
     kind: str
-    module: str | None = None  # core module, or instance for hosts/runtime
+    module: str | None = None  # core module, or instance for hosts/runtime/providers
     subdir: str | None = None  # core entity subdirectory
     owner: str | None = None  # top-level directory for kind == "foreign"
 
@@ -123,7 +123,7 @@ def classify(arch: Architecture, root: Path, source: PurePosixPath, include: Inc
     kind = arch.header_kind(include.path)
     if kind is None:
         return Target("external")
-    if kind in ("hosts", "runtime"):
+    if kind in ("hosts", "runtime", "providers"):
         name = parts[2] if len(parts) > 2 else None
         if name is not None and PurePosixPath(name).suffix in SOURCE_SUFFIXES:
             name = PurePosixPath(name).stem
@@ -143,7 +143,7 @@ def classify_resolved(arch: Architecture, source: PurePosixPath, target: PurePos
             return Target("core", target_parts[1], subdir)
         return Target("foreign", owner="core")
     same_instance = source_parts[0] == target_parts[0] and (
-        source_parts[0] not in ("hosts", "runtime") or instance_of(source_parts) == instance_of(target_parts)
+        source_parts[0] not in ("hosts", "runtime", "providers") or instance_of(source_parts) == instance_of(target_parts)
     )
     if same_instance:
         return Target("local")
