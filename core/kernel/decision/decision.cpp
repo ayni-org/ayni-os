@@ -367,9 +367,8 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     if (calls != nullptr) {
         calls->begin_decision(index, snapshot, output);
     }
-    model.calling_out = true;
-    const ayni_status_t status = strategy.decide(strategy.ctx, &snapshot, &output);
-    model.calling_out = false;
+    const ayni_status_t status =
+        model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
     if (calls != nullptr) {
         calls->end_decision();
     }

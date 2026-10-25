@@ -190,17 +190,29 @@ struct WorkModel {
     work::AuthorityCleanup authority_cleanup; // Work-owned active/pending scan, no arena needed.
     foundation::IdAllocator ids;
     TransitionClock transitions;
-    // True while caller code runs inside one of these functions (a goal
-    // type's validator or a strategy's decide function). Caller code must
-    // not call the kernel; as a fail-safe, owner-thread functions that
-    // change state then refuse to run (ayni.h, C-POLICY-001), so nothing
-    // changes between a check and the change it allows.
     // Union of local completed steps and accepted call keys; a failed call still
     // consumes its Task's bounded step capacity and cannot be disguised as local progress.
     uint32_t accepted_step_count(uint32_t task_index) const;
     bool step_taken(uint32_t task_index, ayni_string_v1 key) const;
 
-    bool calling_out = false;
+    // Runs call, which calls caller code (a goal type's validator or
+    // requirement export, a strategy's decide function, a Provider or an
+    // executor port), with calling_out() true and returns call's result.
+    // The value before the call is restored after it, so a nested callout
+    // leaves the enclosing one marked (ADR-0051).
+    template <typename Call> auto call_out(Call &&call) -> decltype(call()) {
+        const bool enclosing = calling_out_;
+        calling_out_ = true;
+        const auto result = call();
+        calling_out_ = enclosing;
+        return result;
+    }
+    // True while caller code runs inside call_out. Caller code must not call
+    // the kernel; as a fail-safe, owner-thread functions that change state
+    // then refuse to run (ayni.h, C-POLICY-001), so nothing changes between a
+    // check and the change it allows.
+    bool calling_out() const { return calling_out_; }
+
     // Set by a change to the goals' due work (which goals may advance or
     // expire, room in the task table, or a held task); cleared once a search
     // finds none due. That search also records when the next due work comes
@@ -213,6 +225,7 @@ struct WorkModel {
     uint64_t searched_durable_seq = 0; // Due-search key, not permission state; 0 before search.
 
   private:
+    bool calling_out_ = false;
     // Cross-table retention reads owner facts; no duplicated reference counters.
     static bool retains_task(const void *context, const work::Task &task);
     static bool retains_goal(const void *context, const work::Goal &goal);

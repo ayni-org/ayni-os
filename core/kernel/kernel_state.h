@@ -91,7 +91,7 @@ struct ayni_kernel {
 
     // Caller code runs inside the kernel: functions that change the kernel
     // return AYNI_INVALID_STATE (ayni.h).
-    bool in_callback() const { return work.calling_out; }
+    bool in_callback() const { return work.calling_out(); }
 
     // Copy of the caller's table, with fields an older caller lacks left
     // zeroed. ctx and the functions stay caller-owned (see ayni_host_v1).

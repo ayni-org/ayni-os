@@ -64,11 +64,11 @@ CallRuntime::Advance CallRuntime::dispatch_query(uint32_t index, uint64_t now_us
     delivery.deadline_us = foundation::deadline(
         now_us, uint64_t{work_.calls.contract(index).timeout_ms} * microseconds_per_millisecond);
     active.stage = Stage::submitted;
-    work_.calling_out = true;
-    const auto submitted = delivery.provider->query(delivery.provider->context, id.operation_id,
-                                                    delivery.reservation.attempt,
-                                                    mailbox_.completion(delivery.reservation));
-    work_.calling_out = false;
+    const auto submitted = work_.call_out([&] {
+        return delivery.provider->query(delivery.provider->context, id.operation_id,
+                                        delivery.reservation.attempt,
+                                        mailbox_.completion(delivery.reservation));
+    });
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && mailbox_.withdraw(delivery.reservation)) {
         const auto result = end_query(index, AYNI_NOT_READY, AYNI_REASON_NONE);
         release(index, now_us);

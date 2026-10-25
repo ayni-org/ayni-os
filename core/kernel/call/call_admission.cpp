@@ -54,8 +54,8 @@ ayni_status_t CallRuntime::stage_request(void *context, const ayni_call_request_
         return AYNI_INVALID_ARGUMENT;
     }
     auto &runtime = *static_cast<CallRuntime *>(context);
-    return runtime.decision_ && runtime.work_.calling_out ? runtime.stage(*request)
-                                                          : AYNI_INVALID_STATE;
+    return runtime.decision_ && runtime.work_.calling_out() ? runtime.stage(*request)
+                                                            : AYNI_INVALID_STATE;
 }
 
 // Copy while every nested argument view is still live. A proposal is not a
@@ -131,7 +131,7 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
         return AYNI_INVALID_ARGUMENT;
     }
     const auto &runtime = *static_cast<const CallRuntime *>(context);
-    if (!runtime.decision_ || !runtime.work_.calling_out) {
+    if (!runtime.decision_ || !runtime.work_.calling_out()) {
         return AYNI_INVALID_STATE;
     }
     const auto &task = runtime.work_.tasks.at(runtime.decision_->task_index);

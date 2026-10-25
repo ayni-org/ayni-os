@@ -68,10 +68,10 @@ CallRuntime::Advance CallRuntime::cancel_transport(Delivery &delivery) {
     }
     delivery.cancel = Delivery::Cancel::sent;
     if (delivery.provider->cancel != nullptr) {
-        work_.calling_out = true;
-        const auto result =
-            delivery.provider->cancel(delivery.provider->context, delivery.reservation.attempt);
-        work_.calling_out = false;
+        const auto result = work_.call_out([&] {
+            return delivery.provider->cancel(delivery.provider->context,
+                                             delivery.reservation.attempt);
+        });
         if (result != AYNI_SUBMIT_ACCEPTED && result != AYNI_SUBMIT_ACCEPT_UNKNOWN &&
             result != AYNI_SUBMIT_REJECTED_NOT_RETAINED) {
             return Advance::internal;

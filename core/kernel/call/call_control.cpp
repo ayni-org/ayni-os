@@ -74,9 +74,8 @@ CallRuntime::Advance CallRuntime::poll_executor(uint32_t index, uint64_t now_us,
     const auto &ports = work_.execution_catalog.executor(lease->executor_index).ports;
     if (lease->phase == resources::PermitLease::Phase::stopping &&
         lease->stop_delivery == resources::PermitLease::StopDelivery::pending) {
-        work_.calling_out = true;
-        const auto status = ports.stop(ports.ctx, lease->permit.permit_id);
-        work_.calling_out = false;
+        const auto status =
+            work_.call_out([&] { return ports.stop(ports.ctx, lease->permit.permit_id); });
         // A not-installed permit remains quarantined until terminal + authoritative absence.
         // Port failure leaves the gate to expire; no return status is physical stop evidence.
         lease->port_status = status;
@@ -90,9 +89,8 @@ CallRuntime::Advance CallRuntime::poll_executor(uint32_t index, uint64_t now_us,
     lease->poll_after_us = foundation::deadline(now_us, ports.poll_period_us);
     ayni_executor_status_v1 status{sizeof(status), AYNI_TARGET_UNVERIFIED, {}};
     status.control.struct_size = sizeof(status.control);
-    work_.calling_out = true;
-    const auto read = ports.status(ports.ctx, lease->permit.permit_id, &status);
-    work_.calling_out = false;
+    const auto read =
+        work_.call_out([&] { return ports.status(ports.ctx, lease->permit.permit_id, &status); });
     lease->port_status = read;
     if (read == AYNI_NOT_FOUND && lease->terminal_seen) {
         return permits_.not_started(lease->call_id) ? Advance::applied : Advance::internal;
@@ -166,17 +164,20 @@ bool CallRuntime::should_stop(const resources::PermitLease &lease, uint64_t now_
 // Renewal uses the original complete generations and a new executor-local nonce.
 CallRuntime::Advance CallRuntime::renew_permit(resources::PermitLease &lease) {
     const auto &ports = work_.execution_catalog.executor(lease.executor_index).ports;
-    ayni_executor_nonce_v1 nonce{};
-    work_.calling_out = true;
-    const auto challenged = ports.challenge(ports.ctx, &lease.permit.epochs, &nonce);
-    ayni_status_t renewed = challenged == AYNI_OK ? AYNI_INVALID_ARGUMENT : challenged;
-    if (challenged == AYNI_OK && nonce.control_domain_id == lease.permit.control_domain_id &&
-        nonce.nonce != 0) {
+    // Both port calls run under one callout: nothing between them reads the kernel.
+    const ayni_status_t renewed = work_.call_out([&]() -> ayni_status_t {
+        ayni_executor_nonce_v1 nonce{};
+        const auto challenged = ports.challenge(ports.ctx, &lease.permit.epochs, &nonce);
+        if (challenged != AYNI_OK) {
+            return challenged;
+        }
+        if (nonce.control_domain_id != lease.permit.control_domain_id || nonce.nonce == 0) {
+            return AYNI_INVALID_ARGUMENT;
+        }
         const ayni_permit_renewal_v1 renewal{sizeof(renewal), 0, lease.permit.permit_id,
                                              nonce.nonce, lease.permit.epochs};
-        renewed = ports.renew(ports.ctx, &renewal);
-    }
-    work_.calling_out = false;
+        return ports.renew(ports.ctx, &renewal);
+    });
     lease.port_status = renewed;
     if (renewed != AYNI_OK && !permits_.request_stop(lease.call_id)) {
         return Advance::internal;

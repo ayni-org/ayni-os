@@ -172,10 +172,9 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
     // Validate parameters before exporting their requirements. Both callbacks
-    // are read-only under calling_out; all admission finishes before IDs.
-    model.calling_out = true;
-    const bool accepted = model.goal_types.accepts(type.index, create.parameters);
-    model.calling_out = false;
+    // are read-only under call_out; all admission finishes before IDs.
+    const bool accepted =
+        model.call_out([&] { return model.goal_types.accepts(type.index, create.parameters); });
     if (!accepted) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);

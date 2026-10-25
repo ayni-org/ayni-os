@@ -180,10 +180,10 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
                                            lease == nullptr ? nullptr : &lease->permit};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
-    work_.calling_out = true;
-    const auto submitted =
-        provider.submit(provider.context, &request, mailbox_.completion(delivery.reservation));
-    work_.calling_out = false;
+    const auto submitted = work_.call_out([&] {
+        return provider.submit(provider.context, &request,
+                               mailbox_.completion(delivery.reservation));
+    });
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && lease != nullptr) {
         // Publish into the reserved reliable lane; absence still needs exact local gate evidence.
         const ProviderMessage rejected{

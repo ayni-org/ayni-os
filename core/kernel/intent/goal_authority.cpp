@@ -91,9 +91,8 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
     RequirementExport exporting{*this, out};
     if (type.export_requirements != nullptr) {
         const ayni_goal_requirement_sink_v1 sink{sizeof(sink), &exporting, emit_requirement};
-        calling_out = true;
-        const auto status = type.export_requirements(type.ctx, create.parameters, &sink);
-        calling_out = false;
+        const auto status =
+            call_out([&] { return type.export_requirements(type.ctx, create.parameters, &sink); });
         if (exporting.result.status != AYNI_OK) {
             return exporting.result;
         }

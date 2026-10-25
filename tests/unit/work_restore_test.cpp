@@ -1274,6 +1274,20 @@ class Model {
     WorkModel work_;
 };
 
+// White-box, C-POLICY-001 and ADR-0051: call_out marks caller code for its
+// duration and restores the mark it found, so a nested callout leaves the
+// enclosing one marked and the model unmarked afterwards.
+TEST(WorkModelCallout, nested_call_out_keeps_the_enclosing_mark) {
+    Model model(small_capacities());
+    EXPECT_FALSE(model->calling_out());
+    const bool marked = model->call_out([&] {
+        const bool nested = model->call_out([&] { return model->calling_out(); });
+        return nested && model->calling_out();
+    });
+    EXPECT_TRUE(marked);
+    EXPECT_FALSE(model->calling_out());
+}
+
 // Hands one record to the replay as the batch commit_seq would.
 RecordUse feed(WorkReplay &replay, uint64_t commit_seq, uint16_t type,
                const std::vector<uint8_t> &body) {

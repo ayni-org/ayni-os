@@ -143,9 +143,8 @@ ayni_status_t CallRuntime::issue_permit(uint32_t index, ayni_bytes_v1 arguments,
     }
     const auto &ports = work_.execution_catalog.executor(executor).ports;
     ayni_executor_nonce_v1 nonce{};
-    work_.calling_out = true;
-    const auto status = ports.challenge(ports.ctx, &fact.epochs, &nonce);
-    work_.calling_out = false;
+    const auto status =
+        work_.call_out([&] { return ports.challenge(ports.ctx, &fact.epochs, &nonce); });
     if (status != AYNI_OK) {
         return status;
     }
