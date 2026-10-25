@@ -30,10 +30,14 @@ uint32_t record_max(const KernelCapacities &capacities) {
 // A Scene command changes one state; replay pairs it with that command.
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
+    uint32_t written = 0;
     for (uint32_t index = 0; index < model.scenes.state_count(); ++index) {
         const auto &scene = model.scenes.state(index);
         if (scene.stamp.commit_seq != stamp.commit_seq) {
             continue;
+        }
+        if (++written > 1U) {
+            return false;
         }
         auto *at = writer.add_record_body(
             {authority::scene_record_type, authority::scene_record_version,
@@ -68,8 +72,7 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
     const auto *binding = model.principals.binding();
     uint32_t duplicate = 0;
     if (!authority::read_scene_record(body, size, record) || binding == nullptr ||
-        record.state.stamp.transition_id > metadata.max_transition_id ||
-        record.state.stamp.commit_seq > metadata.covers_commit_seq ||
+        !within_snapshot(record.state.stamp, metadata) ||
         record.state.stamp.transition_id <= binding->stamp.transition_id ||
         record.state.stamp.commit_seq <= binding->stamp.commit_seq ||
         foundation::id_boot_epoch(record.state.object_id) > metadata.boot_epoch ||

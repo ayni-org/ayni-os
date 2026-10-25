@@ -233,20 +233,24 @@ struct WorkModel {
     // transition. out_next_us is now_us when work is found.
     bool next_due_work(uint64_t now_us, uint64_t durable_seq, work::DueWork &out_work,
                        uint64_t &out_next_us);
-    // For a change to the tables outside a transition, which only recovery
-    // makes: WorkReplay's reanchoring and holds, and CallRuntime's hold of a
-    // restored call whose binding changed. Every transition forgets the
-    // search by itself.
+    // For a change outside a transition to what the search reads. Recovery
+    // changes the tables: WorkReplay's reanchoring and holds, and
+    // CallRuntime's hold of a restored call whose binding changed. The task
+    // table also reads whether the runtime still holds a call's slot or
+    // lease (CallRuntime::runtime_retains), which a stopped call gives up
+    // without a transition. Every transition forgets the search by itself.
     void forget_due_work() { due_search_kept_ = false; }
 
   private:
-    // The kept search and what it read besides the tables; the fields stay
-    // apart so they pack with calling_out_.
-    uint64_t due_search_commit_seq_ = 0; // transitions.next_commit_seq() at the search.
-    uint64_t due_search_durable_seq_ = 0;
-    uint64_t next_due_work_us_ = work::no_time;
-    bool due_search_kept_ = false;
-    bool due_search_with_id_ = true;
+    // The kept search and what it read besides the tables. The other four
+    // fields mean something only while due_search_kept_ is set; they stay
+    // apart rather than in one optional struct so they pack with
+    // calling_out_ (ADR-0051 decision 11).
+    uint64_t due_search_commit_seq_ = 0;        // transitions.next_commit_seq() at the search.
+    uint64_t due_search_durable_seq_ = 0;       // The durable_seq it was given.
+    uint64_t next_due_work_us_ = work::no_time; // The next due time it found, or no_time.
+    bool due_search_kept_ = false;              // Whether a search that found none is kept.
+    bool due_search_with_id_ = true;            // Whether an id was left at the search.
     bool calling_out_ = false;
     // Cross-table retention reads owner facts; no duplicated reference counters.
     static bool retains_task(const void *context, const work::Task &task);

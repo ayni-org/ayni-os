@@ -1,8 +1,11 @@
 // The rule each C ABI entry applies after checking its arguments (ayni.h,
 // contracts/domain/lifecycles.md, ADR-0051): whether caller code running
 // inside the kernel may call it (C-POLICY-001), and in which lifecycle
-// states it runs. Every entry names one gate here, so a rule is written once
-// and an entry's rule is read from its name.
+// states it runs. Every entry with such a rule names one gate here, so a
+// rule is written once and an entry's rule is read from its name. The
+// version and memory queries, ayni_create, ayni_get_lifecycle,
+// ayni_get_kernel_info, and ayni_post_event and ayni_completion_post, which
+// any thread may call, have none.
 
 #ifndef AYNI_CORE_KERNEL_API_API_GATE_H
 #define AYNI_CORE_KERNEL_API_API_GATE_H

@@ -23,7 +23,7 @@
 
 namespace ayni::kernel {
 
-class CallRuntime; // Optional bounded call coordinator, assembled by Kernel.
+class CallRuntime; // Bounded call coordinator, assembled by Kernel.
 
 // The kernel memory of one decision at a time: the views of the task's
 // steps the snapshot shows, the intents the strategy writes and the private

@@ -55,6 +55,8 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
         static_cast<void>(resources_.remove_waiter(active->call_id, now_us));
     }
     active.reset();
+    // The task table reads this slot (runtime_retains) without a transition.
+    work_.forget_due_work();
 }
 
 bool CallRuntime::idle() const {
@@ -314,18 +316,19 @@ bool CallRuntime::transport_holds(const void *context, uint64_t call_id, uint64_
     return true;
 }
 
+bool CallRuntime::retiring_index(uint64_t call_id, uint32_t &index) const {
+    return active_index(call_id, index) && slots_[index].active->stage == Stage::retiring;
+}
+
 bool CallRuntime::transport_retiring(const void *context, uint64_t call_id) {
-    const auto &runtime = *static_cast<const CallRuntime *>(context);
     uint32_t index = 0;
-    return runtime.active_index(call_id, index) &&
-           runtime.slots_[index].active->stage == Stage::retiring;
+    return static_cast<const CallRuntime *>(context)->retiring_index(call_id, index);
 }
 
 void CallRuntime::transport_retire(void *context, uint64_t call_id, uint64_t now_us) {
     auto &runtime = *static_cast<CallRuntime *>(context);
     uint32_t index = 0;
-    if (runtime.active_index(call_id, index) &&
-        runtime.slots_[index].active->stage == Stage::retiring) {
+    if (runtime.retiring_index(call_id, index)) {
         runtime.release(index, now_us);
     }
 }
@@ -333,15 +336,8 @@ void CallRuntime::transport_retire(void *context, uint64_t call_id, uint64_t now
 // The ledger cannot retire while either a transport borrow or a local lease survives.
 bool CallRuntime::runtime_retains(const void *context, uint64_t call_id) {
     const auto &runtime = *static_cast<const CallRuntime *>(context);
-    if (runtime.control_.holds_lease(call_id)) {
-        return true;
-    }
-    for (uint32_t at = 0; at < runtime.limits_.capacity; ++at) {
-        if (runtime.slots_[at].active && runtime.slots_[at].active->call_id == call_id) {
-            return true;
-        }
-    }
-    return false;
+    uint32_t index = 0;
+    return runtime.control_.holds_lease(call_id) || runtime.active_index(call_id, index);
 }
 
 ProviderMailbox::BlockedSlots CallRuntime::blocked_receipts() const {

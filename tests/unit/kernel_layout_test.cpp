@@ -119,7 +119,10 @@ TEST(KernelLayout, every_store_has_its_own_aligned_region_after_the_kernel) {
     }
 }
 
-TEST(KernelLayout, regions_are_sized_with_the_limits_the_stores_are_built_with) {
+// ADR-0051 decision 4: layout_for sizes each multi-field store from the one
+// limits function of config/store_limits.h or kernel_layout.h, the function
+// its constructor takes (kernel_state.h, work_model.h), and not otherwise.
+TEST(KernelLayout, each_region_is_sized_by_its_stores_limits_function) {
     using namespace ayni::kernel;
     for (const KernelCapacities &capacities : profiles()) {
         const KernelLayout layout = layout_for(capacities);

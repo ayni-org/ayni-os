@@ -1,5 +1,6 @@
 // ADR-0050 / C-PERMIT-002/005 / C-STOP-006: public normal execution and declared boundaries.
 // No power loss, injected transport failure or restart campaign.
+#include "kernel_test_probe.h"
 #include "work_node.h"
 #include <ayni/providers/mock_execution.h>
 #include <ayni/scenes.h>
@@ -342,6 +343,34 @@ TEST_F(ManagedExecution, cancelled_task_is_not_reopened_by_late_completion) {
     pump(30);
     EXPECT_EQ(work.task(original_task).lifecycle, AYNI_TASK_CANCELLED);
     EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0051 decision 11, white-box: the task table reads whether the runtime
+// still holds a call's lease or slot, and releasing them after the stop takes
+// no transition. With room for one task, the second agent's goal waits for
+// the cancelled task. One-item steps let an append's completion take a whole
+// step, so the lease goes in a later step that changes neither the commit
+// sequence nor the durable prefix; the kept due-work search still answers as
+// a new search would, and the goal derives.
+TEST_F(ManagedExecution, released_lease_lets_the_waiting_goal_derive) {
+    work.node().config().task_capacity = 1;
+    start(AYNI_FORM_SESSION, 60);
+    create();
+    wait_submission();
+    const auto original_task = task_id;
+    const auto waiting = create(agent_b);
+    ASSERT_EQ(work.cancel_task(original_task).status, AYNI_OK);
+    for (unsigned round = 0; round < 60; ++round) {
+        now += 10000;
+        work.node().sim().advance_us(10000);
+        work.node().sim().complete_storage();
+        ASSERT_EQ(executor.advance(), AYNI_OK);
+        work.node().step(1);
+        const auto [kept, fresh] =
+            ayni::kernel::kept_and_new_due_search(work.kernel(), work.node().sim().now_us());
+        ASSERT_TRUE(kept == fresh) << round;
+    }
+    EXPECT_EQ(resource().quarantine_id, 0U);
+    EXPECT_EQ(work.goal(waiting).occurrences, 1U);
 }
 TEST_F(ManagedExecution, closed_scene_rejects_admission_without_any_executor_output) {
     start();

@@ -12,6 +12,9 @@
 
 #include <ayni/ayni.h>
 
+#include <cstdint>
+#include <utility>
+
 namespace ayni::kernel {
 
 class KernelTestProbe {
@@ -28,6 +31,31 @@ class KernelTestProbe {
     static EventIngress &ingress(ayni_kernel_t *kernel) { return kernel->ingress; }
     static CompletionPool &completions(ayni_kernel_t *kernel) { return kernel->completions; }
 };
+
+// What refresh_due_work answers: whether due work is ready, else when it next
+// comes (work::no_time: not without a change).
+struct DueAnswer {
+    bool due = false;
+    uint64_t next_us = 0;
+    bool operator==(const DueAnswer &other) const {
+        return due == other.due && next_us == other.next_us;
+    }
+};
+
+// White-box, ADR-0051 decision 11: the answer of the due-work search the
+// kernel kept, then of a new search, both at now_us and the log's durable
+// prefix. The new search stays kept, as after a step's own search.
+inline std::pair<DueAnswer, DueAnswer> kept_and_new_due_search(ayni_kernel_t *kernel,
+                                                               uint64_t now_us) {
+    auto &model = KernelTestProbe::work(kernel);
+    const uint64_t durable_seq = KernelTestProbe::log(kernel).durable_seq();
+    DueAnswer kept{};
+    kept.due = refresh_due_work(model, now_us, kept.next_us, durable_seq);
+    model.forget_due_work();
+    DueAnswer fresh{};
+    fresh.due = refresh_due_work(model, now_us, fresh.next_us, durable_seq);
+    return {kept, fresh};
+}
 
 } // namespace ayni::kernel
 

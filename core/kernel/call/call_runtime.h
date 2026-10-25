@@ -156,6 +156,8 @@ class CallRuntime {
                       uint32_t &index) const; // Stable identity lookup survives work-table discard.
     bool delivery_expired(uint32_t index, uint64_t now_us)
         const; // One timeout predicate for scheduling and independent stop.
+    // The slot of a call whose stop fact must become durable before release.
+    bool retiring_index(uint64_t call_id, uint32_t &index) const;
     // ExecutionControl::Transport over the slots below; context is the runtime.
     static bool transport_holds(const void *context, uint64_t call_id, uint64_t now_us,
                                 bool &out_expired);

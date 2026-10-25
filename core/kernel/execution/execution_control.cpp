@@ -259,6 +259,9 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
             if (!permits_.release_stopped(call_id)) {
                 return Advance::internal;
             }
+            // The task table reads the lease (CallRuntime::runtime_retains)
+            // without a transition, also one restored without a call slot.
+            work_.forget_due_work();
             transport_.retire(transport_.context, call_id, now_us);
             return Advance::applied;
         }
@@ -381,7 +384,8 @@ RuntimeAdvance ExecutionControl::advance(uint64_t now_us, uint64_t durable_seq, 
 }
 
 // Match independent readiness without consulting Provider queues. Evaluating
-// authorization here is read-only; callbacks are confined to advance_control.
+// authorization here is read-only; port callbacks are confined to advance
+// and advance_urgent.
 bool ExecutionControl::ready(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) const {
     for (uint32_t at = 0; at < permits_.capacity(); ++at) {
         const auto *lease = permits_.at(at);

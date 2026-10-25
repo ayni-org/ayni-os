@@ -429,11 +429,12 @@ TEST(WorkTrigger, step_takes_occurrences_as_of_its_start) {
 
 // --- The kept due-work search ------------------------------------------------
 
-// ADR-0051: the search a step keeps, with its next due time, answers as a
-// new search would. Each change to the tables takes a transition, which
-// forgets it; recovery forgets it itself. A fixed pseudo-random run of
-// creates, goal and instance changes, cancels, steps, clock moves and
-// restarts compares the two after every operation.
+// ADR-0051 decision 11: the search a step keeps, with its next due time,
+// answers as a new search would. Each change to the tables takes a
+// transition, which forgets it; recovery forgets it itself, and so does a
+// call's release (ManagedExecution.released_lease_lets_the_waiting_goal_derive).
+// A fixed pseudo-random run of creates, goal and instance changes, cancels,
+// steps, clock moves and restarts compares the two after every operation.
 TEST(WorkTrigger, kept_due_work_search_answers_as_a_new_search_would) {
     WorkNode work;
     work.timer_wait_max_us = 2U * second;
@@ -510,20 +511,13 @@ TEST(WorkTrigger, kept_due_work_search_answers_as_a_new_search_would) {
             }
             break;
         }
-        auto &model = KernelTestProbe::work(work.kernel());
+        const auto &model = KernelTestProbe::work(work.kernel());
         const uint64_t durable_seq = KernelTestProbe::log(work.kernel()).durable_seq();
         const bool no_transition = model.transitions.next_commit_seq() == checked_seq &&
                                    durable_seq == checked_durable_seq;
-        uint64_t kept_next = 0;
-        const bool kept_due =
-            ayni::kernel::refresh_due_work(model, now(work), kept_next, durable_seq);
-        model.forget_due_work();
-        uint64_t new_next = 0;
-        const bool new_due =
-            ayni::kernel::refresh_due_work(model, now(work), new_next, durable_seq);
-        ASSERT_EQ(kept_due, new_due) << round;
-        ASSERT_EQ(kept_next, new_next) << round;
-        kept_answers += no_transition && !new_due && new_next != no_time ? 1U : 0U;
+        const auto [kept, fresh] = ayni::kernel::kept_and_new_due_search(work.kernel(), now(work));
+        ASSERT_TRUE(kept == fresh) << round;
+        kept_answers += no_transition && !fresh.due && fresh.next_us != no_time ? 1U : 0U;
         checked_seq = model.transitions.next_commit_seq();
         checked_durable_seq = durable_seq;
     }

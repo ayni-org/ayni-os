@@ -86,9 +86,10 @@ struct GrantRevocationProgressRecord {
 // Representation-independent record facts; current catalog is not consulted.
 bool valid_grant_record(const GrantRecord &record);
 
-// Read only the leading ID of an already classified create/revocation body.
-// Boot ordering needs this before replay. The full reader still validates
-// the remaining body; a short/null prefix leaves out_id unchanged.
+// Read only the leading ID of an already classified create/revocation body;
+// the full reader validates the rest. Replay checks the ID's boot epoch on
+// the full record (ADR-0051 decision 9), so only tests use this to find a
+// record by its ID. A short/null prefix leaves out_id unchanged.
 bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id);
 
 constexpr uint32_t grant_record_max(uint32_t scope_max_bytes) {

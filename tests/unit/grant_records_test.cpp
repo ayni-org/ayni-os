@@ -53,8 +53,8 @@ ayni_bytes_v1 domain() {
     return {empty_domain.data(), static_cast<uint32_t>(empty_domain.size())};
 }
 
-// ADR-0030/0031, records.md types 13/15: boot ordering reads just the leading
-// little-endian ID. The full reader owns shape, size and remaining fields.
+// ADR-0030/0031, records.md types 13/15: the prefix reader reads just the
+// leading little-endian ID. The full reader owns shape, size and remaining fields.
 TEST(GrantRecords, id_prefix_decode_is_unaligned_and_does_not_validate_the_remaining_body) {
     constexpr std::array<uint8_t, 10> bytes{0xff, 0x88, 0x77, 0x66, 0x55,
                                             0x44, 0x33, 0x22, 0x11, 0xaa};
