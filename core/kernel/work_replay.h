@@ -34,6 +34,8 @@ class WorkReplay {
     // agent-only store may acquire its first owner; existing owner-controlled
     // work or commands cannot be adopted from the Host configuration.
     bool binding_matches() const;
+    // Retained Scene command/state relation, shared with snapshots; no startup catalog lookup.
+    bool matches_scene_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
     // model outlives the replay.
     explicit WorkReplay(WorkModel &model) : model_(model) {}
 
@@ -97,6 +99,9 @@ class WorkReplay {
     durability::RecordUse apply_record(const durability::BatchIdentity &batch,
                                        const durability::RecordHeader &header, const uint8_t *body,
                                        uint64_t boot_epoch_limit);
+    durability::RecordUse restore_scene(const uint8_t *body, uint32_t size,
+                                        foundation::TransitionStamp stamp,
+                                        uint64_t boot_epoch_limit);
     durability::RecordUse restore_owner_binding(const uint8_t *body, uint32_t size,
                                                 foundation::TransitionStamp stamp);
     durability::RecordUse restore_instance(const uint8_t *body, uint32_t size,
@@ -123,6 +128,10 @@ class WorkReplay {
     bool calls_consistent(uint64_t boot_epoch_limit) const;
     // Closes the exact query acceptance with its durable owner's canonical command.
     bool pair_target_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
+    bool pair_task_limit_command(const CommandMapping &mapping,
+                                 ayni_bytes_v1 canonical); // Closes a ceiling raise.
+    bool pair_scene_command(const CommandMapping &mapping,
+                            ayni_bytes_v1 canonical); // Closes one preference change.
     durability::RecordUse restore_task_state(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_steps(const uint8_t *body, uint32_t size,
@@ -260,10 +269,17 @@ class WorkReplay {
             TargetCommand request;     // Exact before-CAS and Call/Task target identity.
             bool command_seen = false; // Acceptance cannot finish without its paired owner command.
         };
+        struct ScenePair {
+            uint64_t object_id; // Exact changed state awaiting its canonical owner command.
+            bool command_seen;  // True seals the standalone transition until the next batch.
+        };
+        std::optional<ScenePair>
+            scene; // Empty for non-Scene or no-change command-only transitions.
         std::optional<TargetCommandPair> target_command; // Only this batch's query or wait resume.
         // Existing work/command partners, independently of the new scan footer.
         bool partners_complete() const {
-            return (!target_command || target_command->command_seen) &&
+            return (!scene || scene->command_seen) &&
+                   (!target_command || target_command->command_seen) &&
                    (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
                    !task && !task_authority && !goal_authority && !authority.pending() &&
                    (!approval || approval->stage == ApprovalPair::Stage::complete) &&

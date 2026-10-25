@@ -2,6 +2,7 @@
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
+#include "authority/scene/scene_records.h"
 #include "catalog/catalog_id.h"
 #include "durability/batch/record_body.h"
 #include "durability/journal/journal_ring.h"
@@ -39,7 +40,7 @@ class Encoder {
     bool encode() {
         return owner_binding() && instances() && revocation() && grants() &&
                revocation_progress() && goals() && goal_authority() && tasks() && calls() &&
-               command() && authority_cleanup();
+               scenes() && command() && authority_cleanup();
     }
 
   private:
@@ -53,6 +54,21 @@ class Encoder {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
         return at;
+    }
+
+    bool scenes() {
+        for (uint32_t index = 0; index < model_.scenes.state_count(); ++index) {
+            const auto &scene = model_.scenes.state(index);
+            if (scene.stamp.commit_seq != stamp_.commit_seq) {
+                continue;
+            }
+            auto *at = body(authority::scene_record_type, authority::scene_record_version,
+                            authority::scene_record_size(scene));
+            if (at != nullptr) {
+                authority::write_scene_record(scene, model_.scenes.state_definition(index), at);
+            }
+        }
+        return ok_;
     }
 
     bool owner_binding() {
@@ -392,6 +408,9 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
         size += record_bytes(work::call_record_max(
             {capacities.call_capacity, capacities.authority_scope_max_bytes,
              capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+    }
+    if (capacities.scene_capacity != 0) {
+        size += record_bytes(authority::scene_record_max(capacities.authority_scope_max_bytes));
     }
     size += record_bytes(work::task_record_size);
     size += record_bytes(work::task_steps_record_max(steps));

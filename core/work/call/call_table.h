@@ -6,6 +6,7 @@
 #include "catalog/binding/binding_registry.h"
 #include "work/action/action_record.h"
 #include "work/call/call_input.h"
+#include "work/execution/execution_fact.h"
 
 namespace ayni::work {
 
@@ -57,6 +58,8 @@ struct CallState {
     ayni_call_outcome_t outcome = 0; // Zero while pending; one terminal delivery outcome otherwise.
     ayni_status_t status = AYNI_OK;  // Classified terminal status; never vendor error text.
     ayni_reason_t reason = AYNI_REASON_NONE; // Terminal cause; no string data.
+    std::optional<ExecutionFact>
+        execution; // Physical constraints and independent stop; absent for ordinary I/O.
     std::optional<CallQuery> query; // Absent before owner reconciliation; never an execution retry.
 };
 
@@ -68,6 +71,9 @@ struct CallResult {
     ActionEffect effect;         // Explicit Provider knowledge, checked against outcome.
     ayni_string_v1 text;         // Copied bounded UTF-8 body; empty for ABANDONED.
 };
+
+// Whether exact input evidence still permits a result to advance dependent work.
+enum class ResultDependencies { current, stale };
 
 // Complete durable row. Byte views borrow the table or decoded record buffer;
 // ActionFact is a value, never a copy of the volatile one-shot dispatch claim.
@@ -106,6 +112,14 @@ class CallTable {
     ayni_status_t insert(const CallIdentity &identity, const catalog::CallContract &contract,
                          ayni_bytes_v1 domain, ayni_bytes_v1 input, ActionStamp stamp,
                          uint32_t &index);
+    // Attach prevalidated execution constraints in the same initial acceptance transition.
+    void attach_execution(uint32_t index, const ExecutionFact &fact);
+    // Independent local stop measurement, never inferred from Provider cancellation.
+    ayni_status_t confirm_execution(uint32_t index, ayni_execution_phase_t phase,
+                                    ayni_control_stop_cause_t cause, ayni_execution_target_t target,
+                                    ActionStamp stamp);
+    // Volatile I/O owner keeps exact call rows while still holding local execution references.
+    void set_runtime_retention(const void *context, bool (*retains)(const void *, uint64_t));
     // Resource admission precedes action preparation; no Provider callback is possible here.
     ayni_status_t prepare(uint32_t index, ActionStamp stamp);
     // Persist the selected attempt and DISPATCHING barrier together, after preparation is durable.
@@ -126,7 +140,8 @@ class CallTable {
     // Applied progress sequence must increase; no progress body is persisted as a final result.
     ayni_status_t progress(uint32_t index, uint64_t sequence, ActionStamp stamp);
     // Validate all scalar/body semantics before mutating action, call or result bytes.
-    ayni_status_t finish(uint32_t index, const CallResult &result, ActionStamp stamp);
+    ayni_status_t finish(uint32_t index, const CallResult &result, ActionStamp stamp,
+                         ResultDependencies dependencies = ResultDependencies::current);
     // Owner management CAS, independent of the revoked execution Grant.
     ayni_status_t check_query(uint32_t index, uint32_t expected_revision) const;
     uint32_t
@@ -141,7 +156,8 @@ class CallTable {
                             ActionStamp stamp);
     // Exact operation evidence; best-effort absence cannot resolve an execution.
     ayni_status_t reconcile(uint32_t index, uint32_t conclusion, const CallResult &result,
-                            ActionStamp stamp);
+                            ActionStamp stamp,
+                            ResultDependencies dependencies = ResultDependencies::current);
     // Shared persisted query shape/history rules, including command generation changes.
     static bool valid_query(const CallRecord &record);
     static bool query_advances(const CallState &before, const CallState &after);
@@ -189,6 +205,11 @@ class CallTable {
     // Admission shape excludes schema/authority, already checked by their owners.
     static bool valid_identity(const CallIdentity &identity, ActionStamp stamp);
     static bool advances(const Entry &entry, ActionStamp stamp); // Strict stamp order in this boot.
+    ayni_status_t check_result(uint32_t index, const CallResult &result)
+        const; // Original shape and UTF-8 before any dependency filtering.
+    static CallResult
+    usable_result(const CallResult &validated,
+                  ResultDependencies dependencies); // Never normalizes invalid Provider evidence.
     static bool valid_result(const CallResult &result); // Shared execution/query result shape.
     static bool pending(const Entry &entry); // No terminal call result has been committed.
     uint8_t *bytes(uint32_t index) const; // One address formula for the complete slot byte region.
@@ -199,9 +220,12 @@ class CallTable {
     void copy_bodies(uint32_t index, ayni_bytes_v1 domain, ayni_bytes_v1 input,
                      ayni_string_v1 result);
 
-    Slot *slots_;       // Caller arena, stable objects for this table lifetime.
-    uint8_t *bodies_;   // Fixed domain/input/result regions, never heap allocation.
-    Limits limits_;     // Immutable byte/count capacities, no resizing.
+    Slot *slots_;     // Caller arena, stable objects for this table lifetime.
+    uint8_t *bodies_; // Fixed domain/input/result regions, never heap allocation.
+    Limits limits_;   // Immutable byte/count capacities, no resizing.
+    const void *retention_context_ =
+        nullptr; // Borrowed coordinator, absent in standalone table tests.
+    bool (*runtime_retains_)(const void *, uint64_t) = nullptr; // Pure owner-thread query, no I/O.
     uint32_t size_ = 0; // Number of occupied optional entries, bounded by capacity.
 };
 } // namespace ayni::work

@@ -90,6 +90,8 @@ class ResourceAdmission {
     // claim, including a newer acquisition of the same call. Only the trusted
     // execution consumer may call, not a health report.
     bool confirm_stopped(uint32_t resource_index, ResourceClaim claim);
+    // Same trusted proof applies to every actuator of this exact atomic group.
+    void confirm_all_stopped(ResourceClaim claim);
     // Why this queued request cannot acquire now; no_index when no resource
     // is responsible (FIFO/available). Returns false for absent/held calls.
     bool waiting(uint64_t call_id, uint64_t now_us, WaitReason &reason, uint32_t &resource_index,

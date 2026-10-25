@@ -26,6 +26,10 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
                 if (active && active->delivery &&
                     active->delivery->reservation.attempt.request_id ==
                         receipt.reservation.attempt.request_id) {
+                    if (auto *lease = permits_.find(active->call_id); lease != nullptr) {
+                        lease->terminal_seen =
+                            true; // Exact ended borrow also permits authoritative absence.
+                    }
                     release(at, host_.monotonic_now_us(host_.ctx));
                     break;
                 }
@@ -35,10 +39,10 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         auto &active = slots_[at].active;
-        if (!active) {
+        if (!active || active->stage == Stage::retiring) {
             continue;
         }
-        if (active->stage != Stage::submitted) {
+        if (!submitted(active->stage)) {
             if (active->delivery && !mailbox_.withdraw(active->delivery->reservation)) {
                 return Advance::internal;
             }
@@ -82,8 +86,8 @@ bool CallRuntime::transport_ready(Mode mode) const {
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
-        if (active && (active->stage != Stage::submitted ||
-                       active->delivery->cancel == Delivery::Cancel::none)) {
+        if (active && active->stage != Stage::retiring &&
+            (!submitted(active->stage) || active->delivery->cancel == Delivery::Cancel::none)) {
             return true;
         }
     }
@@ -99,7 +103,16 @@ bool CallRuntime::rebind_restored() {
         if (!active) {
             continue;
         }
-        if (active->stage != Stage::submitted) {
+        if (active->stage == Stage::retiring) {
+            uint32_t restored = 0;
+            if (!work_.calls.find(active->call_id, restored) ||
+                permits_.find(active->call_id) == nullptr) {
+                return false;
+            }
+            continue; // No transport borrow survives, but the exact local lease still pins this
+                      // work.
+        }
+        if (!submitted(active->stage)) {
             if (active->delivery && !mailbox_.withdraw(active->delivery->reservation)) {
                 return false;
             }

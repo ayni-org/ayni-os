@@ -23,6 +23,8 @@ class CatalogId {
     // Copies a valid id. Returns false, changing nothing, otherwise.
     bool assign(ayni_string_v1 text);
 
+    // Lexicographic byte order shared by canonical catalog descriptions.
+    int compare(const CatalogId &other) const;
     bool equals(ayni_string_v1 text) const;
     // Copied ABI snapshot, zero padded; an empty ID keeps size zero.
     ayni_catalog_name_v1 snapshot() const;

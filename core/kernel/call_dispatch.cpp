@@ -99,7 +99,7 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
 CallRuntime::Advance CallRuntime::stop(uint32_t index, uint32_t task_index, Mode mode,
                                        work::CallCancelCause cause) {
     auto &active = *slots_[index].active;
-    if (active.stage != Stage::submitted) {
+    if (!submitted(active.stage)) {
         return mode == Mode::fenced ? Advance::idle : cancel_local(index, task_index);
     }
     const auto &state = work_.calls.state(index);
@@ -135,12 +135,30 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     if (authority.status != AYNI_OK) {
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
-    if (!resources_.executable(slots_[index].active->claim)) {
+    if (!resources_.executable(slots_[index].active->claim) ||
+        !execution_allowed(index, now_us, durable_seq)) {
         return cancel_local(index, task_index);
     }
+    const auto issued = issue_permit(index, input.arguments, now_us);
+    if (issued != AYNI_OK) {
+        return issued == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
+    }
+    if (!work_.calls.claim_dispatch(index, work_.ids.boot_epoch(), durable_seq)) {
+        return Advance::internal;
+    }
+    return submit_provider(index, task_index, provider_index, input, now_us);
+}
+
+// Only this already-claimed original attempt reaches Provider code. Typed fields
+// and the permit borrow are valid during submit; the completion lease survives it.
+CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_index,
+                                                  uint32_t provider_index,
+                                                  const work::CallInputView &input,
+                                                  uint64_t now_us) {
+    const auto &id = work_.calls.identity(index);
+    const auto &contract = work_.calls.contract(index);
     ConcreteArguments arguments;
-    if (!arguments.read(input.arguments) ||
-        !work_.calls.claim_dispatch(index, work_.ids.boot_epoch(), durable_seq)) {
+    if (!arguments.read(input.arguments)) {
         return Advance::internal;
     }
     auto &active = *slots_[index].active;
@@ -148,6 +166,7 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     delivery.deadline_us =
         foundation::deadline(now_us, uint64_t{contract.timeout_ms} * microseconds_per_millisecond);
     active.stage = Stage::submitted;
+    const auto *lease = permits_.find(id.call_id);
     const ayni_provider_request_v1 request{sizeof(request),
                                            id.capability_version,
                                            delivery.reservation.attempt,
@@ -157,13 +176,23 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
                                            view(id.capability_id),
                                            view(id.endpoint),
                                            arguments.view(),
-                                           input.text};
+                                           input.text,
+                                           lease == nullptr ? nullptr : &lease->permit};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
     work_.calling_out = true;
     const auto submitted =
         provider.submit(provider.context, &request, mailbox_.completion(delivery.reservation));
     work_.calling_out = false;
+    if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && lease != nullptr) {
+        // Publish into the reserved reliable lane; absence still needs exact local gate evidence.
+        const ProviderMessage rejected{
+            ProviderMessageKind::failed, 0, AYNI_NOT_READY, AYNI_REASON_NONE, {},
+            AYNI_CALL_EFFECT_NONE,       0};
+        const auto posted = mailbox_.post(delivery.reservation, rejected);
+        return posted == AYNI_OK || posted == AYNI_INVALID_STATE ? Advance::applied
+                                                                 : Advance::internal;
+    }
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && mailbox_.withdraw(delivery.reservation)) {
         const auto stamp = work_.transitions.next();
         if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||

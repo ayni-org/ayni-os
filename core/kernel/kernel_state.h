@@ -18,6 +18,7 @@
 #include "kernel/storage/storage_maintenance.h"
 #include "kernel/work_journal.h"
 #include "kernel/work_replay.h"
+#include "knowledge/observation/observation_table.h"
 #include "resources/admission/resource_admission.h"
 
 #include <ayni/ayni.h>
@@ -53,16 +54,21 @@ struct ayni_kernel {
           bindings(storage.bindings, capacities.binding_capacity),
           provider_completions(storage.provider_completions,
                                {capacities.call_capacity, capacities.call_result_max_bytes}, host),
+          permits(storage.permits, capacities.executor_capacity, resources),
+          observations(work.observation_sources, storage.observations,
+                       capacities.observation_source_capacity),
           calls(storage.call_runtime,
                 {capacities.call_capacity, capacities.call_input_max_bytes,
                  capacities.call_result_max_bytes},
                 work, {call_capabilities, providers, bindings, resource_catalog}, resources,
-                provider_completions, attempts, host),
+                permits, observations, provider_completions, attempts, host),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
     ayni_status_t start();
+    ayni_status_t
+    validate_execution_catalog() const; // Startup cross-owner exact references, no callbacks.
     ayni_status_t step(uint32_t max_items, uint32_t max_time_us, ayni_step_report_v1 &report);
     ayni_status_t begin_shutdown();
     // Why the kernel is RESTRICTED or FENCED; NONE otherwise.
@@ -121,6 +127,9 @@ struct ayni_kernel {
     ayni::catalog::BindingRegistry bindings;
     // Provider workers post through this independent reliable pool; Host controls keep theirs.
     ayni::kernel::ProviderMailbox provider_completions;
+    ayni::resources::PermitTable permits; // Resource-owned live leases; zero-capacity by default.
+    // Live facts borrow static source descriptions from WorkModel's catalog owner.
+    ayni::knowledge::ObservationTable observations;
     // Bounded cross-owner call coordination; workers only access provider_completions.
     ayni::kernel::CallRuntime calls;
 

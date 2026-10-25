@@ -1,6 +1,9 @@
 include(GoogleTest)
 
 add_executable(ayni_unit_tests
+    observation_test.cpp
+    scene_test.cpp
+    managed_execution_test.cpp
     control_gate_test.cpp
     mock_provider_test.cpp
     action_record_test.cpp
@@ -75,7 +78,7 @@ add_executable(ayni_unit_tests
     work_restore_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE
-    ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_provider_mock ayni_control_gate
+    ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_control_gate
     ayni_warnings GTest::gtest_main)
 # Every test file includes gtest.h, which takes about a second to parse, so the
 # headers most test files share are parsed once per build. Test files still

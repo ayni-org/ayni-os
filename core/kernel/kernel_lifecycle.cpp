@@ -67,6 +67,10 @@ ayni_status_t ayni_kernel::start() {
     if (linked != AYNI_OK) {
         return linked;
     }
+    const auto execution = validate_execution_catalog();
+    if (execution != AYNI_OK) {
+        return execution;
+    }
     ingress.open();
     lifecycle = AYNI_LIFECYCLE_RECOVERING;
     return AYNI_OK;
@@ -186,11 +190,11 @@ void ayni_kernel::apply_calls(StepBudget &progress) {
         // journal() can fence/restrict this writer. Never carry RUNNING across
         // that transition into another call dispatch in the same bounded step.
         const auto mode = call_mode();
-        if (mode != Runtime::Mode::fenced && mode != Runtime::Mode::closing && !has_room()) {
-            break;
-        }
         const uint64_t first_seq = work.transitions.next_commit_seq();
-        const auto result = calls.advance(host.monotonic_now_us(host.ctx), log.durable_seq(), mode);
+        const auto admission =
+            has_room() ? Runtime::JournalAdmission::available : Runtime::JournalAdmission::blocked;
+        const auto result = calls.advance_managed(host.monotonic_now_us(host.ctx),
+                                                  log.durable_seq(), mode, admission);
         if (result == Runtime::Advance::idle) {
             break;
         }
@@ -297,9 +301,10 @@ void ayni_kernel::report_step(const StepBudget &progress, ayni_step_report_v1 &r
         next_deadline_us = storage_due_us;
     }
     const auto mode = call_mode();
-    const bool call_ready = (has_room() || mode == ayni::kernel::CallRuntime::Mode::fenced ||
-                             mode == ayni::kernel::CallRuntime::Mode::closing) &&
-                            calls.ready(progress.started_us, log.durable_seq(), mode);
+    const bool call_ready = calls.control_ready(progress.started_us, log.durable_seq(), mode) ||
+                            ((has_room() || mode == ayni::kernel::CallRuntime::Mode::fenced ||
+                              mode == ayni::kernel::CallRuntime::Mode::closing) &&
+                             calls.ready(progress.started_us, log.durable_seq(), mode));
     const auto call_deadline = calls.next_deadline_us();
     if (call_deadline > progress.started_us && call_deadline < next_deadline_us) {
         next_deadline_us = call_deadline;
@@ -511,6 +516,7 @@ void ayni_kernel::enter_running() {
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         return;
     }
+    observations.begin_boot(boot.boot_epoch());
     if (work.start(boot.boot_epoch(), first)) {
         journal(first.commit_seq);
     }

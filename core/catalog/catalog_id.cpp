@@ -11,6 +11,12 @@ bool is_id_char(char c) {
 
 } // namespace
 
+int CatalogId::compare(const CatalogId &other) const {
+    const auto count = size_ < other.size_ ? size_ : other.size_;
+    const auto order = std::memcmp(bytes_.data(), other.bytes_.data(), count);
+    return order != 0 ? order : size_ < other.size_ ? -1 : size_ == other.size_ ? 0 : 1;
+}
+
 bool CatalogId::is_valid(ayni_string_v1 text) {
     if (text.data == nullptr || text.size == 0U || text.size > max_size) {
         return false;

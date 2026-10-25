@@ -305,6 +305,34 @@ ayni_status_t cancel_task(WorkModel &model, const Intent &intent, IntentOutcome 
     return AYNI_OK;
 }
 
+// Explicit owner preference uses the shared command window. Closing changes the
+// in-memory gate immediately; enabling remains blocked until this stamp is durable.
+ayni_status_t set_scene(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
+                        IntentFailure &failure) {
+    authority::PreparedSceneChange prepared{};
+    const auto status = model.scenes.prepare(intent.scene, prepared);
+    if (status != AYNI_OK) {
+        return refuse(status, AYNI_REASON_NONE, {}, failure);
+    }
+    uint64_t id = 0;
+    if (prepared.state_index == authority::Scenes::no_index) {
+        if (!model.ids.available()) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        static_cast<void>(model.ids.allocate(id));
+    } else {
+        id = model.scenes.state(prepared.state_index).object_id;
+    }
+    const auto stamp = model.transitions.next();
+    model.scenes.apply(intent.scene, prepared, id, stamp);
+    outcome.object = object_ref(AYNI_OBJECT_SCENE, id, prepared.next_revision);
+    outcome.commit_seq = stamp.commit_seq;
+    outcome.effect =
+        prepared.changes_state ? AYNI_INTENT_EFFECT_CHANGED : AYNI_INTENT_EFFECT_NO_CHANGE;
+    mark_due_work(model, outcome);
+    return AYNI_OK;
+}
+
 // The Task owner validates its revision/ceiling; Kernel joins the exact owner
 // command to that one transition. Raising removes only the runtime overlay.
 ayni_status_t raise_task_limit(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
@@ -427,6 +455,8 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
                           IntentFailure &failure, OwnerClock clock, InputResumeSampler input) {
     // Work and Grant management retain their separate invariant owners.
     switch (intent.kind) {
+    case AYNI_INTENT_SCENE_SET_ENABLED:
+        return set_scene(model, intent, outcome, failure);
     case AYNI_INTENT_GOAL_CREATE: {
         // The Host authenticated this exact binding when opening the
         // session; a goal keeps that origin independently of its lifetime.
@@ -461,8 +491,9 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
 // and canonical bytes before domain changes, so a refusal here is a defect.
 ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t principal_id,
                                uint64_t digest, const IntentOutcome &outcome) {
-    const CommandMapping mapping{principal_id,       intent.command_id, digest,
-                                 outcome.commit_seq, intent.kind,       outcome.object};
+    CommandMapping mapping{principal_id,       intent.command_id, digest,
+                           outcome.commit_seq, intent.kind,       outcome.object};
+    mapping.effect = outcome.effect;
     if (is_work_authority_command(intent.kind)) {
         if (!outcome.authorization) {
             return AYNI_INTERNAL;
@@ -475,11 +506,11 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                    ? AYNI_OK
                    : AYNI_INTERNAL;
     }
-    const bool stored = intent.kind == AYNI_INTENT_GRANT_CREATE ||
-                                intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-                                is_target_command(intent.kind)
-                            ? model.commands.insert_exact(mapping)
-                            : model.commands.insert(mapping);
+    const bool stored =
+        intent.kind == AYNI_INTENT_SCENE_SET_ENABLED || intent.kind == AYNI_INTENT_GRANT_CREATE ||
+                intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)
+            ? model.commands.insert_exact(mapping)
+            : model.commands.insert(mapping);
     return stored ? AYNI_OK : AYNI_INTERNAL;
 }
 
@@ -502,6 +533,8 @@ ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
 CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
                                        uint64_t principal_id, uint64_t digest) {
     switch (intent.kind) {
+    case AYNI_INTENT_SCENE_SET_ENABLED:
+        return model.commands.find_exact(principal_id, intent.command_id, intent.scene);
     case AYNI_INTENT_CALL_QUERY_RESULT:
     case AYNI_INTENT_TASK_RESUME_WAIT:
         return model.commands.find_exact(
@@ -548,13 +581,15 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    if ((intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE ||
+    if ((intent.kind == AYNI_INTENT_SCENE_SET_ENABLED ||
+         intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE ||
          intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)) &&
         !bound_management_session(model, *session, durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
     const bool exact =
-        is_target_command(intent.kind) || intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
+        intent.kind == AYNI_INTENT_SCENE_SET_ENABLED || is_target_command(intent.kind) ||
+        intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
         intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GRANT_REVOKE ||
         is_work_authority_command(intent.kind);
     const uint64_t digest =

@@ -77,8 +77,8 @@ ayni_status_t CallTable::end_query(uint32_t index, ayni_status_t status, ayni_re
 // C-LIFE-010: only the original Provider's authoritative query can resolve an
 // execution. Weak FOUND and missing-record results both retain UNKNOWN; neither
 // grants authority to retry the original operation.
-ayni_status_t CallTable::reconcile(uint32_t index, uint32_t conclusion, const CallResult &result,
-                                   ActionStamp stamp) {
+ayni_status_t CallTable::reconcile(uint32_t index, uint32_t conclusion, const CallResult &input,
+                                   ActionStamp stamp, ResultDependencies dependencies) {
     auto &entry = *slots_[index].entry;
     const auto &query = entry.state.query;
     if (!query || query->phase != CallQuery::Phase::dispatching || !advances(entry, stamp) ||
@@ -89,18 +89,18 @@ ayni_status_t CallTable::reconcile(uint32_t index, uint32_t conclusion, const Ca
         entry.contract.query != catalog::QueryAuthority::authoritative) {
         return end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, stamp);
     }
-    if (!valid_result(result) ||
-        (result.outcome != AYNI_CALL_COMPLETED && result.outcome != AYNI_CALL_FAILED) ||
+    const auto checked = check_result(index, input);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    if ((input.outcome != AYNI_CALL_COMPLETED && input.outcome != AYNI_CALL_FAILED) ||
         (conclusion != AYNI_QUERY_RESULT_FOUND && conclusion != AYNI_QUERY_RESULT_NOT_ACCEPTED) ||
         (conclusion == AYNI_QUERY_RESULT_NOT_ACCEPTED &&
-         (result.outcome != AYNI_CALL_FAILED || result.effect != ActionEffect::none ||
-          result.text.size != 0U))) {
+         (input.outcome != AYNI_CALL_FAILED || input.effect != ActionEffect::none ||
+          input.text.size != 0U))) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto text_status = check_call_text(result.text, entry.contract.result_text_limit);
-    if (text_status != AYNI_OK) {
-        return text_status;
-    }
+    const auto result = usable_result(input, dependencies);
 
     const auto fact =
         conclusion == AYNI_QUERY_RESULT_NOT_ACCEPTED ? ActionRecord::QueryConclusion::not_accepted

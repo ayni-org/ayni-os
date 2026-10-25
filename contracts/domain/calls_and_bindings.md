@@ -3,7 +3,7 @@
 - **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021、ADR-0026；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
 - **属主**：`work/call`、`work/action`、`work/subscription`（调用实例）；`catalog/capability`、`catalog/binding`（描述与选择约束）
 
-当前实施边界（ABI 0.31 / ADR-0045）：公开 Provider/Binding 注册、有限 typed 参数与 UTF-8 正文、统一调用身份/资源/屏障、可靠完成、Task RUNNING/CANCELLING、所有者主动对账已接入 Kernel。journal/snapshot 共用完整调用记录，默认配置不启用调用容量。本轮验证限正常路径和公开边界；新故障/恢复专项、物理许可、订阅/观察、嵌套工具结果及长期记忆删除仍待后续包。
+当前实施边界（ABI 0.31 / ADR-0045）：公开 Provider/Binding 注册、有限 typed 参数与 UTF-8 正文、统一调用身份/资源/屏障、可靠完成、Task RUNNING/CANCELLING、所有者主动对账已接入 Kernel。journal/snapshot 共用完整调用记录，默认配置不启用调用容量。本轮验证限正常路径和公开边界；新故障/恢复专项、订阅、嵌套工具结果及长期记忆删除仍待后续包。ABI 0.35 的物理 Mock 许可及最小观察前提见 permits_and_stop.md；ProviderRequest 新增只在 submit 内借用的 execution_permit，非物理请求为 null，旧 0.x 消费者须重编译。
 
 ## 调用形态
 

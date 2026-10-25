@@ -124,7 +124,7 @@ uint32_t call_record_max(CallTable::Limits limits) {
            catalog::resource_group_max *
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
-           limits.result_bytes;
+           limits.result_bytes + execution_record_max();
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -136,7 +136,8 @@ uint32_t call_record_size(const CallRecord &record) {
     for (uint32_t at = 0; at < record.contract.resource_count; ++at) {
         size += call_record_resource_fixed_size + record.contract.resources[at].id.size();
     }
-    return size + (record.action ? action_state_record_size(*record.action) : 0U);
+    return size + (record.action ? action_state_record_size(*record.action) : 0U) +
+           (record.state.execution ? execution_record_size(*record.state.execution) : 0U);
 }
 
 // The enclosing call owns the original action association; the action body uses
@@ -168,9 +169,15 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
         write_action_state_record(*record.action, action.data());
     }
     writer.bytes(action.data(), action_size);
+    if (record.state.execution) {
+        write_execution(*record.state.execution, writer);
+    }
 }
 
 uint16_t call_record_version_for(const CallState &state) {
+    if (state.execution) {
+        return call_execution_record_version;
+    }
     return state.outcome == AYNI_CALL_SKIPPED ? call_skipped_record_version : call_record_version;
 }
 
@@ -178,7 +185,8 @@ uint16_t call_record_version_for(const CallState &state) {
 // only with its saved domain; replay separately proves Task and stamp relations.
 bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint16_t version) {
     if (body == nullptr || size < call_record_fixed_size ||
-        (version != call_record_version && version != call_skipped_record_version)) {
+        (version != call_record_version && version != call_skipped_record_version &&
+         version != call_execution_record_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -210,6 +218,13 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint1
             return false;
         }
         record.action = fact;
+    }
+    if (version == call_execution_record_version) {
+        ExecutionFact execution{};
+        if (!read_execution(reader, execution)) {
+            return false;
+        }
+        record.state.execution = execution;
     }
     if (!reader.ok() || version != call_record_version_for(record.state) ||
         !CallTable::valid_record(record)) {

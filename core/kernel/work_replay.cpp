@@ -2,6 +2,7 @@
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
+#include "authority/scene/scene_records.h"
 #include "foundation/kernel_id.h"
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
@@ -31,6 +32,7 @@ bool requires_authority_header(const durability::RecordHeader &header) {
            (header.type == work::goal_state_record_type &&
             header.version >= work::goal_state_with_authority_record_version) ||
            header.type == authority::owner_binding_record_type ||
+           header.type == authority::scene_record_type ||
            header.type == authority::grant_record_type ||
            header.type == authority::grant_state_record_type ||
            header.type == authority::grant_revocation_record_type ||
@@ -110,7 +112,8 @@ bool WorkReplay::binding_matches() const {
     // Schema 2 never adopts existing owner-controlled facts from an unbound
     // store. Empty and agent-only stores can still bind their first owner;
     // missing evidence is refused before the boot writes (ADR-0038).
-    return model_.goals.size() == 0U && model_.commands.size() == 0U && model_.grants.size() == 0U;
+    return model_.goals.size() == 0U && model_.commands.size() == 0U &&
+           model_.grants.size() == 0U && model_.scenes.state_count() == 0;
 }
 
 // The types apply() restores, so the two lists change together.
@@ -123,15 +126,10 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     }
     switch (header.type) {
     case command_record_type:
-        return header.version == command_record_version ||
-                       header.version == exact_command_record_version ||
-                       header.version == revoke_command_record_version ||
-                       header.version == work_authority_command_record_version ||
-                       header.version == task_limit_command_record_version ||
-                       header.version == call_query_command_record_version ||
-                       header.version == resume_wait_command_record_version
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
+        return knows_command_record(header.version) ? RecordUse::applied : RecordUse::unknown;
+    case authority::scene_record_type:
+        return header.version == authority::scene_record_version ? RecordUse::applied
+                                                                 : RecordUse::unknown;
     case authority::grant_record_type:
         return knows_grant_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     case authority::grant_state_record_type:
@@ -185,7 +183,8 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
     case work::call_record_type:
         return (header.version == work::call_record_version ||
-                header.version == work::call_skipped_record_version)
+                header.version == work::call_skipped_record_version ||
+                header.version == work::call_execution_record_version)
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::task_state_record_type:
@@ -207,12 +206,14 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         pairing_.approval.reset();
         pairing_.limit_raise.reset();
         pairing_.target_command.reset();
+        pairing_.scene.reset();
         pairing_.reauthorization.reset();
         pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if ((pairing_.target_command && pairing_.target_command->command_seen) ||
+    if ((pairing_.scene && pairing_.scene->command_seen) ||
+        (pairing_.target_command && pairing_.target_command->command_seen) ||
         (pairing_.limit_raise &&
          pairing_.limit_raise->stage == BatchPairing::TaskLimitPair::Stage::command) ||
         pairing_.work_cleanup.stage == BatchPairing::WorkCleanupPair::Stage::complete ||
@@ -227,7 +228,8 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
 RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
                                    const durability::RecordHeader &header, const uint8_t *body,
                                    uint64_t boot_epoch_limit) {
-    if ((pairing_.limit_raise || pairing_.target_command) && header.type != command_record_type) {
+    if ((pairing_.scene || pairing_.limit_raise || pairing_.target_command) &&
+        header.type != command_record_type) {
         return RecordUse::corrupt;
     }
     // A pending approval admits only its own Grants/state/metadata/command.
@@ -259,6 +261,8 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         return use;
     }
     switch (header.type) {
+    case authority::scene_record_type:
+        return restore_scene(body, size, stamp, boot_epoch_limit);
     case authority::owner_binding_record_type:
         return restore_owner_binding(body, size, stamp);
     case authority::grant_record_type:
@@ -729,6 +733,24 @@ RecordUse WorkReplay::restore_revocation_progress(const uint8_t *body, uint32_t 
     return use_of(restored);
 }
 
+// Close the saved Task ceiling change with its exact owner command.
+bool WorkReplay::pair_task_limit_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) {
+    if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
+        TaskLimitCommand command{};
+        const auto *binding = model_.principals.binding();
+        if (!pairing_.limit_raise || !read_task_limit_command(canonical, command) ||
+            !(command == pairing_.limit_raise->request) || binding == nullptr ||
+            mapping.principal_id != binding->principal_id ||
+            binding->stamp.commit_seq >= mapping.commit_seq) {
+            return false;
+        }
+        pairing_.limit_raise->stage = BatchPairing::TaskLimitPair::Stage::command;
+    } else if (pairing_.limit_raise) {
+        return false;
+    }
+    return true;
+}
+
 // An absent principal's retry window is still durable state. Keeping it
 // prevents compaction from turning an old accepted command into a new one.
 RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uint32_t size,
@@ -742,6 +764,13 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
+    if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        if (!pair_scene_command(mapping, canonical)) {
+            return RecordUse::corrupt;
+        }
+    } else if (pairing_.scene) {
+        return RecordUse::corrupt;
+    }
     if (is_target_command(mapping.kind)) {
         if (!pair_target_command(mapping, canonical)) {
             return RecordUse::corrupt;
@@ -749,17 +778,7 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
     } else if (pairing_.target_command) {
         return RecordUse::corrupt;
     }
-    if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
-        TaskLimitCommand command{};
-        const auto *binding = model_.principals.binding();
-        if (!pairing_.limit_raise || !read_task_limit_command(canonical, command) ||
-            !(command == pairing_.limit_raise->request) || binding == nullptr ||
-            mapping.principal_id != binding->principal_id ||
-            binding->stamp.commit_seq >= commit_seq) {
-            return RecordUse::corrupt;
-        }
-        pairing_.limit_raise->stage = BatchPairing::TaskLimitPair::Stage::command;
-    } else if (pairing_.limit_raise) {
+    if (!pair_task_limit_command(mapping, canonical)) {
         return RecordUse::corrupt;
     }
     if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
@@ -901,6 +920,15 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
 // goal under a terminal parent or a stopped owner, or a live task under a
 // terminal goal.
 bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
+    for (uint32_t at = 0; at < model_.scenes.state_count(); ++at) {
+        const auto id = model_.scenes.state(at).object_id;
+        uint32_t index = 0;
+        if (foundation::id_boot_epoch(id) > boot_epoch_limit || model_.goals.find(id, index) ||
+            model_.tasks.find(id, index) || model_.grants.find(id, index) ||
+            model_.calls.find(id, index) || model_.agents.find_instance(id) != nullptr) {
+            return false;
+        }
+    }
     if (!model_.grants.consistent() || !calls_consistent(boot_epoch_limit)) {
         return false;
     }
@@ -1066,6 +1094,7 @@ void WorkReplay::discard() {
     model_.calls.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();
+    model_.scenes.clear_states();
     batch_seq_ = 0;
     pairing_ = {};
 }

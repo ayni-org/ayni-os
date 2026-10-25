@@ -327,4 +327,37 @@ TEST_F(CallTableTest, saved_selection_rejects_changed_provider_capability_or_des
     EXPECT_FALSE(ayni::catalog::BindingRegistry::same_selection(original, replacement));
 }
 
+// ADR-0050: stale dependencies reject derived use without sanitizing invalid original evidence.
+TEST_F(CallTableTest, stale_query_preserves_effect_but_rejects_invalid_evidence_before_filtering) {
+    contract.query = ayni::catalog::QueryAuthority::authoritative;
+    dispatch();
+    ASSERT_EQ(
+        calls.finish(
+            index,
+            {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
+            stamp(4)),
+        AYNI_OK);
+    ASSERT_EQ(calls.request_query(index, stamp(5)), AYNI_OK);
+    ASSERT_EQ(calls.begin_query(index, {boot, 6}, stamp(6)), AYNI_OK);
+    CallResult result{
+        AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {"old", 3}};
+    EXPECT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND, result, stamp(7),
+                              ResultDependencies::stale),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_ABANDONED);
+    result.effect = ActionEffect::complete;
+    result.text = {"\xff", 1};
+    EXPECT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND, result, stamp(7),
+                              ResultDependencies::stale),
+              AYNI_INVALID_ARGUMENT);
+    result.text = {"old", 3};
+    ASSERT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND, result, stamp(7),
+                              ResultDependencies::stale),
+              AYNI_OK);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(calls.state(index).status, AYNI_STALE);
+    EXPECT_EQ(calls.action(index)->effect, ActionEffect::complete);
+    EXPECT_EQ(calls.result(index).size, 0U);
+    EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
+}
 } // namespace

@@ -21,6 +21,8 @@ ayni_add_core_module(durability
 ayni_add_core_module(catalog
     SOURCES
         catalog/catalog_id.cpp
+        catalog/observation/source_registry.cpp
+        catalog/execution/execution_registry.cpp
         catalog/capability/capability_registry.cpp
         catalog/capability/call_contract.cpp
         catalog/capability/field_domain.cpp
@@ -36,6 +38,9 @@ ayni_add_core_module(catalog
 
 ayni_add_core_module(authority
     SOURCES
+        authority/scene/scene_definition.cpp
+        authority/scene/scene_table.cpp
+        authority/scene/scene_records.cpp
         authority/grant/grant_records.cpp
         authority/grant/grant_table.cpp
         authority/principal/owner_binding_records.cpp
@@ -45,10 +50,16 @@ ayni_add_core_module(authority
 
 ayni_add_core_module(resources
     SOURCES resources/admission/resource_admission.cpp
+            resources/permit/permit_table.cpp
+    DEPENDS catalog foundation)
+
+ayni_add_core_module(knowledge
+    SOURCES knowledge/observation/observation_table.cpp
     DEPENDS catalog foundation)
 
 ayni_add_core_module(work
     SOURCES
+        work/execution/execution_fact.cpp
         work/action/action_record.cpp
         work/action/action_records.cpp
         work/call/call_input.cpp
@@ -78,6 +89,11 @@ ayni_add_core_module(work
 ayni_add_core_module(kernel
     SOURCES
         kernel/boot/boot_sequence.cpp
+        kernel/observation_api.cpp
+        kernel/command/command_scene.cpp
+        kernel/scene_api.cpp
+        kernel/execution_api.cpp
+        kernel/scene_replay.cpp
         kernel/command/command_canonical.cpp
         kernel/command/command_approval.cpp
         kernel/command/command_goal_identity.cpp
@@ -118,6 +134,8 @@ ayni_add_core_module(kernel
     kernel/call_replay.cpp
     kernel/call_admission.cpp
     kernel/call_runtime.cpp
+    kernel/call_execution.cpp
+    kernel/call_control.cpp
     kernel/call_dispatch.cpp
     kernel/call_completion.cpp
     kernel/call_query.cpp
@@ -127,7 +145,7 @@ ayni_add_core_module(kernel
         kernel/goal_approval_replay.cpp
         kernel/goal_reauthorization_replay.cpp
         kernel/work_snapshot.cpp
-    DEPENDS work authority resources catalog durability foundation)
+    DEPENDS work authority resources knowledge catalog durability foundation)
 
 # What consumers link: the top module pulls in every module below it.
 add_library(ayni_core INTERFACE)

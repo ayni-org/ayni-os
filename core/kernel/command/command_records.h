@@ -21,6 +21,8 @@ constexpr uint16_t task_limit_command_record_version = 6;
 constexpr uint16_t call_query_command_record_version = 7;
 // Exact Task resource-wait resume; same canonical target shape (records.md type9/v8).
 constexpr uint16_t resume_wait_command_record_version = 8;
+// Type9/v9 stores exact Scene commands and their changed/no-change effect.
+constexpr uint16_t scene_command_record_version = 9;
 // records.md type 9/v2 adds canonical format and byte length (u32 each).
 constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
 constexpr uint16_t revoke_command_record_version = 3;
@@ -39,6 +41,8 @@ constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {
     constexpr uint32_t revoke_max = revoke_command_record_fixed_size + revoke_command_size;
     return canonical_max_bytes == 0U || create_max >= revoke_max ? create_max : revoke_max;
 }
+bool knows_command_record(
+    uint16_t version); // Exact supported body versions; unknown required records refuse.
 uint16_t command_record_version_for(const CommandMapping &mapping);
 uint32_t command_record_size_for(const CommandMapping &mapping);
 

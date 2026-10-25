@@ -160,7 +160,8 @@ bool ProviderMailbox::owns(const ayni_provider_completion_t *target) const {
 // Reading owns a bounded copy, not a destructive dequeue. The caller may
 // wait for storage indefinitely without losing either reliable receipt.
 ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, uint32_t &required,
-                                         ProviderMessage &out, ProviderReceipt &receipt) {
+                                         ProviderMessage &out, ProviderReceipt &receipt,
+                                         const BlockedSlots *blocked) {
     if (payload == nullptr && capacity != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -169,7 +170,7 @@ ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, ui
         const uint32_t index = (cursor_ + visited) % capacity_;
         const auto &slot = slots_[index];
         const auto *result = slot.attempt ? pending(*slot.attempt) : nullptr;
-        if (result == nullptr) {
+        if (result == nullptr || (blocked != nullptr && (*blocked)[index])) {
             continue;
         }
         if (result->size > capacity) {
@@ -248,10 +249,11 @@ bool ProviderMailbox::withdraw(ProviderReservation reservation) {
     return true;
 }
 
-bool ProviderMailbox::has_pending() const {
+bool ProviderMailbox::has_pending(const BlockedSlots *blocked) const {
     const IngressGuard guard(host_);
     for (uint32_t index = 0; index < capacity_; ++index) {
-        if (slots_[index].attempt && pending(*slots_[index].attempt)) {
+        if ((blocked == nullptr || !(*blocked)[index]) && slots_[index].attempt &&
+            pending(*slots_[index].attempt)) {
             return true;
         }
     }

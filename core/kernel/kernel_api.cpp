@@ -199,6 +199,18 @@ constexpr CapacityField capacity_fields[] = {
     {offsetof(ayni_config_v1, component_capacity),
      {0U, 0U, AYNI_COMPONENT_CAPACITY_MAX},
      &KernelCapacities::component_capacity},
+    {offsetof(ayni_config_v1, executor_capacity),
+     {0U, 0U, AYNI_EXECUTOR_CAPACITY_MAX},
+     &KernelCapacities::executor_capacity},
+    {offsetof(ayni_config_v1, execution_binding_capacity),
+     {0U, 0U, AYNI_EXECUTION_BINDING_CAPACITY_MAX},
+     &KernelCapacities::execution_binding_capacity},
+    {offsetof(ayni_config_v1, scene_capacity),
+     {0U, 0U, AYNI_SCENE_CAPACITY_MAX},
+     &KernelCapacities::scene_capacity},
+    {offsetof(ayni_config_v1, observation_source_capacity),
+     {0U, 0U, AYNI_OBSERVATION_SOURCE_CAPACITY_MAX},
+     &KernelCapacities::observation_source_capacity},
     {offsetof(ayni_config_v1, call_result_max_bytes),
      {AYNI_CALL_RESULT_BYTES_DEFAULT, 0U, AYNI_CALL_RESULT_BYTES_MAX},
      &KernelCapacities::call_result_max_bytes},
@@ -473,7 +485,12 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
                                               base + layout.provider_completions_offset,
                                               base + layout.devices_offset,
                                               base + layout.components_offset,
-                                              base + layout.call_runtime_offset};
+                                              base + layout.call_runtime_offset,
+                                              base + layout.observation_sources_offset,
+                                              base + layout.scenes_offset,
+                                              base + layout.observations_offset,
+                                              base + layout.execution_catalog_offset,
+                                              base + layout.permits_offset};
     *out_kernel = new (memory) ayni_kernel(copy_host(host), capacities, limits, storage);
     return AYNI_OK;
 }

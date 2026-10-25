@@ -30,6 +30,24 @@ bool CallTable::valid_result(const CallResult &result) {
     }
 }
 
+ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) const {
+    return valid_result(result)
+               ? check_call_text(result.text, slots_[index].entry->contract.result_text_limit)
+               : AYNI_INVALID_ARGUMENT;
+}
+
+// Stale evidence cannot yield a usable completed step. Keep measured side effects,
+// but only after the original Provider shape/text have passed the shared validator.
+CallResult CallTable::usable_result(const CallResult &validated, ResultDependencies dependencies) {
+    return dependencies == ResultDependencies::stale && validated.outcome == AYNI_CALL_COMPLETED
+               ? CallResult{AYNI_CALL_FAILED,
+                            AYNI_STALE,
+                            AYNI_REASON_EXECUTION_OBSERVATION,
+                            validated.effect,
+                            {}}
+               : validated;
+}
+
 namespace {
 // The ledger validates effect enums and claimed-attempt transitions exactly
 // once. All later body/state writes are infallible after this succeeds.
@@ -145,6 +163,35 @@ ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContr
     return AYNI_INTERNAL;
 }
 
+void CallTable::attach_execution(uint32_t index, const ExecutionFact &fact) {
+    slots_[index].entry->state.execution = fact;
+}
+void CallTable::set_runtime_retention(const void *context,
+                                      bool (*retains)(const void *, uint64_t)) {
+    retention_context_ = context;
+    runtime_retains_ = retains;
+}
+ayni_status_t CallTable::confirm_execution(uint32_t index, ayni_execution_phase_t phase,
+                                           ayni_control_stop_cause_t cause,
+                                           ayni_execution_target_t target, ActionStamp stamp) {
+    auto &entry = *slots_[index].entry;
+    if (!entry.state.execution || execution_stopped(*entry.state.execution) ||
+        !advances(entry, stamp) ||
+        (phase != AYNI_EXECUTION_STOPPED && phase != AYNI_EXECUTION_NOT_STARTED) ||
+        (phase == AYNI_EXECUTION_STOPPED
+             ? cause == AYNI_CONTROL_STOP_NONE || cause > AYNI_CONTROL_STOP_CLOCK
+             : cause != AYNI_CONTROL_STOP_NONE || target != AYNI_TARGET_UNVERIFIED) ||
+        target > AYNI_TARGET_UNSATISFIED) {
+        return AYNI_INVALID_STATE;
+    }
+    auto &execution = *entry.state.execution;
+    execution.phase = phase;
+    execution.stop_cause = cause;
+    execution.target = target;
+    entry.state.latest = stamp;
+    return AYNI_OK;
+}
+
 ayni_status_t CallTable::prepare(uint32_t index, ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
     if (!pending(entry) || !advances(entry, stamp) || entry.action) {
@@ -171,6 +218,9 @@ ayni_status_t CallTable::begin_dispatch(uint32_t index, ayni_attempt_ref_v1 atte
     if (status == AYNI_OK) {
         entry.state.attempt = attempt;
         entry.state.latest = stamp;
+        if (entry.state.execution) {
+            entry.state.execution->phase = AYNI_EXECUTION_DISPATCHING;
+        }
     }
     return status;
 }
@@ -217,6 +267,9 @@ ayni_status_t CallTable::end_before_dispatch(uint32_t index, const CallResult &r
         }
     }
     set_terminal(entry, result, stamp);
+    if (entry.state.execution) {
+        entry.state.execution->phase = AYNI_EXECUTION_NOT_STARTED;
+    }
     return AYNI_OK;
 }
 
@@ -281,15 +334,14 @@ ayni_status_t CallTable::progress(uint32_t index, uint64_t sequence, ActionStamp
 
 // Text/shape validation precedes the ledger's only transition check. Once
 // that succeeds, copying the result and publishing call state cannot fail.
-ayni_status_t CallTable::finish(uint32_t index, const CallResult &result, ActionStamp stamp) {
+ayni_status_t CallTable::finish(uint32_t index, const CallResult &input, ActionStamp stamp,
+                                ResultDependencies dependencies) {
     auto &entry = *slots_[index].entry;
-    if (!valid_result(result)) {
-        return AYNI_INVALID_ARGUMENT;
+    const auto checked = check_result(index, input);
+    if (checked != AYNI_OK) {
+        return checked;
     }
-    const auto text_status = check_call_text(result.text, entry.contract.result_text_limit);
-    if (text_status != AYNI_OK) {
-        return text_status;
-    }
+    const auto result = usable_result(input, dependencies);
     if (!pending(entry) || !advances(entry, stamp) || !entry.action) {
         return AYNI_INVALID_STATE;
     }
@@ -310,6 +362,9 @@ bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
         const auto &entry = slots_[at].entry;
         if (entry && entry->identity.task_id == task_id &&
             (pending(*entry) || unresolved(at) ||
+             (entry->state.execution && !execution_stopped(*entry->state.execution)) ||
+             (runtime_retains_ != nullptr &&
+              runtime_retains_(retention_context_, entry->identity.call_id)) ||
              entry->state.latest.transition.commit_seq > durable_seq)) {
             return false;
         }
