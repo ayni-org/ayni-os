@@ -944,10 +944,19 @@ bool WorkSnapshotReader::matches_target_command(const CommandMapping &mapping) c
     }
     uint32_t index = 0;
     if (mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT) {
-        return !model_.calls.find(mapping.object.id, index) ||
-               (model_.calls.query_revision(index) >= mapping.object.revision &&
-                model_.calls.state(index).latest.transition.commit_seq >= mapping.commit_seq &&
-                model_.calls.state(index).created.transition.commit_seq < mapping.commit_seq);
+        if (!model_.calls.find(mapping.object.id, index)) {
+            return true; // A resolved call can give way while its command receipt remains.
+        }
+        const auto &state = model_.calls.state(index);
+        if (model_.calls.query_revision(index) < mapping.object.revision ||
+            state.latest.transition.commit_seq < mapping.commit_seq ||
+            state.created.transition.commit_seq >= mapping.commit_seq) {
+            return false;
+        }
+        return state.latest.transition.commit_seq != mapping.commit_seq ||
+               (model_.calls.query_revision(index) == mapping.object.revision && state.query &&
+                state.query->phase == work::CallQuery::Phase::requested &&
+                state.query->requested.transition.commit_seq == mapping.commit_seq);
     }
     if (!model_.tasks.find(mapping.object.id, index)) {
         // Terminal Tasks may give way while their original command receipts remain.
