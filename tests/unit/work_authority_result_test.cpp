@@ -5,7 +5,7 @@
 #include "kernel/command/command_records.h"
 #include "kernel/command/command_table.h"
 #include "kernel/command/work_authority_result.h"
-#include "kernel/work_replay.h"
+#include "kernel/persistence/work_replay.h"
 
 #include <gtest/gtest.h>
 

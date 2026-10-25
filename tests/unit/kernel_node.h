@@ -5,9 +5,9 @@
 #ifndef AYNI_TESTS_UNIT_KERNEL_NODE_H
 #define AYNI_TESTS_UNIT_KERNEL_NODE_H
 
-#include "kernel/kernel_config.h"
+#include "kernel/config/kernel_config.h"
 #include "kernel/kernel_state.h"
-#include "kernel/work_journal.h"
+#include "kernel/persistence/work_journal.h"
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>

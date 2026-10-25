@@ -12,8 +12,8 @@
 // runs again on what is durable and RUNNING resumes under a new boot epoch.
 
 #include "catalog/catalog_id.h"
+#include "kernel/decision/decision.h"
 #include "kernel/intent/authority_intent.h"
-#include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 

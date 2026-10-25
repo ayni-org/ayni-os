@@ -1,5 +1,5 @@
 #include "foundation/deadline.h"
-#include "kernel/call_runtime.h"
+#include "kernel/call/call_runtime.h"
 
 namespace ayni::kernel {
 // Urgent output inhibition precedes journal admission. Routine polling alternates

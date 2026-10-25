@@ -1,4 +1,4 @@
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_snapshot.h"
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
@@ -7,7 +7,7 @@
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/command/command_records.h"
-#include "kernel/work_replay.h"
+#include "kernel/persistence/work_replay.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
 #include "work/call/call_records.h"

@@ -10,8 +10,8 @@
 // TASK_STEPS holds one key a record. What only this boot's registration
 // changed, such as a fault or hold for something it lacks, is not written.
 
-#ifndef AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
-#define AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
+#ifndef AYNI_CORE_KERNEL_PERSISTENCE_WORK_SNAPSHOT_H
+#define AYNI_CORE_KERNEL_PERSISTENCE_WORK_SNAPSHOT_H
 
 #include "durability/snapshot/snapshot_codec.h"
 #include "kernel/intent/work_model.h"
@@ -172,4 +172,4 @@ class WorkSnapshotReader {
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_WORK_SNAPSHOT_H
+#endif // AYNI_CORE_KERNEL_PERSISTENCE_WORK_SNAPSHOT_H

@@ -1,6 +1,6 @@
 // Cross-table proof for one bounded work scan request/step (ADR-0038).
 // Codecs own representation; work owns scan transitions; Kernel owns pairing.
-#include "kernel/work_replay.h"
+#include "kernel/persistence/work_replay.h"
 
 #include "work/authority/authority_cleanup_records.h"
 

@@ -15,8 +15,8 @@
 // revocation and ancestor binding changes still deny consumption. Times are on
 // one boot's clock, so each wait starts again in full when recovery ends.
 
-#ifndef AYNI_CORE_KERNEL_WORK_REPLAY_H
-#define AYNI_CORE_KERNEL_WORK_REPLAY_H
+#ifndef AYNI_CORE_KERNEL_PERSISTENCE_WORK_REPLAY_H
+#define AYNI_CORE_KERNEL_PERSISTENCE_WORK_REPLAY_H
 
 #include "durability/batch/prefix_scan.h"
 #include "kernel/intent/work_model.h"
@@ -294,4 +294,4 @@ class WorkReplay {
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_WORK_REPLAY_H
+#endif // AYNI_CORE_KERNEL_PERSISTENCE_WORK_REPLAY_H

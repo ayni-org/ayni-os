@@ -1,6 +1,6 @@
 #include "kernel/ingress/event_ingress.h"
 
-#include "kernel/ingress_lock.h"
+#include "kernel/ingress/ingress_lock.h"
 
 #include <array>
 

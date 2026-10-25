@@ -4,7 +4,7 @@
 #define AYNI_TESTS_UNIT_INGRESS_TEST_PEER_H
 
 #include "kernel/ingress/event_ingress.h"
-#include "kernel/ingress_lock.h"
+#include "kernel/ingress/ingress_lock.h"
 
 namespace ayni::kernel {
 class EventIngressTestPeer {

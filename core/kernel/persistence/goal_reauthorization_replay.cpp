@@ -1,6 +1,6 @@
 // A replacement is one sealed Goal/direct-live-Task/command/footer batch.
 // Table owners validate their facts; this proof owns only cross-table pairing.
-#include "kernel/work_replay.h"
+#include "kernel/persistence/work_replay.h"
 
 #include "foundation/kernel_id.h"
 #include "kernel/command/command_records.h"

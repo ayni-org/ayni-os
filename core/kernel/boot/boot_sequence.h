@@ -29,9 +29,9 @@
 #include "durability/batch/prefix_scan.h"
 #include "durability/snapshot/snapshot_codec.h"
 #include "kernel/completion/completion_pool.h"
+#include "kernel/persistence/work_replay.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "kernel/storage/write_schedule.h"
-#include "kernel/work_replay.h"
-#include "kernel/work_snapshot.h"
 
 #include <ayni/ayni.h>
 

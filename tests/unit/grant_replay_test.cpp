@@ -5,7 +5,7 @@
 #include "durability/batch/batch_codec.h"
 #include "foundation/little_endian.h"
 #include "kernel/command/command_records.h"
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>

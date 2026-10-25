@@ -3,8 +3,8 @@
 // and the posted-completion list. Hold it only for bounded copies and slot
 // bookkeeping; call no other Host function while holding it.
 
-#ifndef AYNI_CORE_KERNEL_INGRESS_LOCK_H
-#define AYNI_CORE_KERNEL_INGRESS_LOCK_H
+#ifndef AYNI_CORE_KERNEL_INGRESS_INGRESS_LOCK_H
+#define AYNI_CORE_KERNEL_INGRESS_INGRESS_LOCK_H
 
 #include <ayni/ayni.h>
 
@@ -26,4 +26,4 @@ class IngressGuard {
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_INGRESS_LOCK_H
+#endif // AYNI_CORE_KERNEL_INGRESS_INGRESS_LOCK_H

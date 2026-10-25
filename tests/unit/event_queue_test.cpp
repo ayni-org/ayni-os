@@ -3,7 +3,7 @@
 // concurrent producers under the Host lock.
 
 #include "kernel/ingress/event_queue.h"
-#include "kernel/ingress_lock.h"
+#include "kernel/ingress/ingress_lock.h"
 
 #include <ayni/hosts/sim.h>
 

@@ -1,8 +1,8 @@
 // The validated configuration of a kernel: what ayni_create read from
 // ayni_config_v1 and where it placed the bounded stores.
 
-#ifndef AYNI_CORE_KERNEL_KERNEL_CONFIG_H
-#define AYNI_CORE_KERNEL_KERNEL_CONFIG_H
+#ifndef AYNI_CORE_KERNEL_CONFIG_KERNEL_CONFIG_H
+#define AYNI_CORE_KERNEL_CONFIG_KERNEL_CONFIG_H
 
 #include <ayni/ayni.h>
 
@@ -98,4 +98,4 @@ struct KernelStorage {
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_KERNEL_CONFIG_H
+#endif // AYNI_CORE_KERNEL_CONFIG_KERNEL_CONFIG_H

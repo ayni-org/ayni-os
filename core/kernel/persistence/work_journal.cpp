@@ -1,4 +1,4 @@
-#include "kernel/work_journal.h"
+#include "kernel/persistence/work_journal.h"
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"

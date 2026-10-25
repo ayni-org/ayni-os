@@ -1,7 +1,7 @@
 // Kernel's bounded coordinator between work facts, resource admission and
 // Provider delivery. No domain state is copied into this volatile I/O owner.
-#ifndef AYNI_CORE_KERNEL_CALL_RUNTIME_H
-#define AYNI_CORE_KERNEL_CALL_RUNTIME_H
+#ifndef AYNI_CORE_KERNEL_CALL_CALL_RUNTIME_H
+#define AYNI_CORE_KERNEL_CALL_CALL_RUNTIME_H
 
 #include "catalog/binding/binding_registry.h"
 #include "kernel/completion/attempt_sequence.h"

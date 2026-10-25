@@ -1,4 +1,4 @@
-#include "kernel/work_replay.h"
+#include "kernel/persistence/work_replay.h"
 
 #include "authority/grant/grant_records.h"
 

@@ -1,7 +1,7 @@
-#include "kernel/intent/decision.h"
+#include "kernel/decision/decision.h"
 
 #include "catalog/catalog_id.h"
-#include "kernel/call_runtime.h"
+#include "kernel/call/call_runtime.h"
 
 #include <array>
 #include <cstring>

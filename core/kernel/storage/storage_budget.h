@@ -14,7 +14,7 @@
 #ifndef AYNI_CORE_KERNEL_STORAGE_STORAGE_BUDGET_H
 #define AYNI_CORE_KERNEL_STORAGE_STORAGE_BUDGET_H
 
-#include "kernel/kernel_config.h"
+#include "kernel/config/kernel_config.h"
 
 #include <ayni/ayni.h>
 

@@ -4,8 +4,8 @@
 // durable_seq reaches its commit_seq; one above durable_seq may be lost, and
 // the next boot then assigns it again (C-COMMIT-016).
 
-#ifndef AYNI_CORE_KERNEL_TRANSITION_CLOCK_H
-#define AYNI_CORE_KERNEL_TRANSITION_CLOCK_H
+#ifndef AYNI_CORE_KERNEL_INTENT_TRANSITION_CLOCK_H
+#define AYNI_CORE_KERNEL_INTENT_TRANSITION_CLOCK_H
 
 #include "foundation/transition_stamp.h"
 
@@ -39,4 +39,4 @@ class TransitionClock {
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_TRANSITION_CLOCK_H
+#endif // AYNI_CORE_KERNEL_INTENT_TRANSITION_CLOCK_H

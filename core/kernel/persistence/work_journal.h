@@ -5,13 +5,13 @@
 // and decides at most one task, which bounds its batch by the capacities
 // alone.
 
-#ifndef AYNI_CORE_KERNEL_WORK_JOURNAL_H
-#define AYNI_CORE_KERNEL_WORK_JOURNAL_H
+#ifndef AYNI_CORE_KERNEL_PERSISTENCE_WORK_JOURNAL_H
+#define AYNI_CORE_KERNEL_PERSISTENCE_WORK_JOURNAL_H
 
 #include "durability/batch/batch_codec.h"
 #include "foundation/transition_stamp.h"
+#include "kernel/config/kernel_config.h"
 #include "kernel/intent/work_model.h"
-#include "kernel/kernel_config.h"
 
 #include <cstdint>
 
@@ -34,4 +34,4 @@ std::size_t encode_transition(const WorkModel &model, foundation::TransitionStam
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_WORK_JOURNAL_H
+#endif // AYNI_CORE_KERNEL_PERSISTENCE_WORK_JOURNAL_H

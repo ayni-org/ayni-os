@@ -5,8 +5,8 @@
 #include "foundation/crc32.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
-#include "kernel/work_replay.h"
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_replay.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "work/task/task_records.h"
 
 #include <gtest/gtest.h>

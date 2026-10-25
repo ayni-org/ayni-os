@@ -4,7 +4,7 @@
 #include "foundation/little_endian.h"
 #include "goal_approval_request.h"
 #include "goal_reauthorization_request.h"
-#include "kernel/intent/decision.h"
+#include "kernel/decision/decision.h"
 #include "kernel/storage/storage_budget.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"

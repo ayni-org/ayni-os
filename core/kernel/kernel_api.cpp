@@ -9,8 +9,8 @@
 #include "catalog/catalog_id.h"
 #include "kernel/kernel_layout.h"
 #include "kernel/kernel_state.h"
+#include "kernel/persistence/work_journal.h"
 #include "kernel/storage/storage_budget.h"
-#include "kernel/work_journal.h"
 
 #include <ayni/ayni.h>
 

@@ -11,8 +11,8 @@
 // its goal: asking again would mostly repeat the refusal and keep
 // more_ready set.
 
-#ifndef AYNI_CORE_KERNEL_INTENT_DECISION_H
-#define AYNI_CORE_KERNEL_INTENT_DECISION_H
+#ifndef AYNI_CORE_KERNEL_DECISION_DECISION_H
+#define AYNI_CORE_KERNEL_DECISION_DECISION_H
 
 #include "kernel/intent/work_model.h"
 
@@ -90,4 +90,4 @@ bool awaits_decision(const WorkModel &model, uint64_t durable_seq = UINT64_MAX);
 
 } // namespace ayni::kernel
 
-#endif // AYNI_CORE_KERNEL_INTENT_DECISION_H
+#endif // AYNI_CORE_KERNEL_DECISION_DECISION_H

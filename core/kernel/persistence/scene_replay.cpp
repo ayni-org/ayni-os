@@ -1,8 +1,8 @@
 // Scene journal pairing and snapshot bounds share authority's one original-fact codec.
 #include "authority/scene/scene_records.h"
 #include "foundation/kernel_id.h"
-#include "kernel/work_replay.h"
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_replay.h"
+#include "kernel/persistence/work_snapshot.h"
 #include <cstring>
 
 namespace ayni::kernel {
