@@ -189,7 +189,7 @@ journal与snapshot共享显式上下文分类；普通 Grant 的13/v2只用于sn
 
 ### 静态领域记录
 
-正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5/v6/v7/v8；GOAL 快照写 v4，只接受此创建 stamp 完整格式，Task state 按运行限制/调用引用使用 v1/v4/v8（见末节）；其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
+正文沿用日志的 12 字节记录信封、类型编号与 `REQUIRED` 位，但**快照上下文的正文语法独立于 transition 日志**。通用 Grant writer 显式写13/v2且兼容读13/v1，专属 Grant 写13/v3（ADR-0037）；COMMAND_MAPPING按kind保留v1/v2/v3/v5/v6/v7/v8/v9；GOAL 快照写 v4，只接受此创建 stamp 完整格式，Task state 按运行限制/调用引用使用 v1/v4/v8（见末节）；其余下表均为版本1。不直接写C++布局；C/D验证状态见ADR-0030/0031。
 
 | 类型 | 快照正文 | 长度 |
 |---:|---|---:|
@@ -347,3 +347,14 @@ type9/v7 使用 60 B 精确命令外壳，加 kind14/revision u32 与 call_id u6
 `GOAL` type3/v5（journal）、v6（snapshot）仅用于非默认 WorkProfile，均 REQUIRED。基础 body 保留 type3/v3 的字段顺序，在 parameters 字节串之后追加 u32 work_class、u64 background_period_min_us，共 12 B；固定长度由 108 B 增至 120 B。profile 的默认 ordinary/0 仍使用旧格式。v6 的创建 stamp、当前序号与 GoalState 尾沿 v4，追加 profile 位于基础 body 内，尾的位置跟随该 body 长度。类型和频率按同一 WorkProfile 校验；父/任务/授权配对规则保持，v5/v6 要求已有授权事实。
 
 `CALL_STATE` type21/v2 与 v1 字节布局相同，仅用于 Core 专用 SKIPPED：status=EXPIRED、reason=RESOURCE_WAIT、attempt=0、正文为空、明确未派发；Action 可缺失，或为尚未递交的本地取消证明。跨表检查要求原 Goal 保存 BACKGROUND profile，同批 Task 为 EXPIRED 并移除选中调用，保留调用身份、接受次数和步骤占用。正常调用继续 v1；旧 reader 遇到新 REQUIRED 版本明确拒绝，不把未知结果改为跳过。
+
+
+## ABI 0.35：Scene 与物理执行事实（ADR-0050）
+
+schema 2 保持。新 Scene `type22/v1` 为 REQUIRED，journal/snapshot 共用完整表示，固定部分 44 B：object_id u64、Scene ID 长度串、definition_version/revision/mode 三个 u32、transition_id/commit_seq 两个 u64、原始声明长度串。mode=1 disabled、2 enabled。声明格式随 Scene v1 固定：rule_count/condition_count 两个 u32；各规则为 Capability ID 长度串、version u32、原完整 domain 与 Scope 两个长度串；随后各条件保存 source ID/version、kind/origin/unit、原 TTL、max_age、minimum/maximum（有符号原位编码）。实际固定长度由 owner codec 计算；字节池按启动容量预留，不存指针或本地 deadline。
+
+Scene 的一次改变与精确 `type9/v9` 命令同批且无其他领域更新。命令沿用包含 effect 的 64 B 外壳；canonical 为 kind16/expected_revision/mode/definition_version 四个 u32 与 Scene ID 长度串（固定20 B）。快照命令另附原 commit_seq u64。第一次状态 revision=1 且使用当前 boot 新 Kernel ID；后续保持 object_id、revision+1。关闭保留原声明；NO_CHANGE 只写新命令、保留 Scene revision。快照在调用后、清理/命令前保存 Scene 行，恢复读取不依赖当前注册声明；消费时才检查完整配置一致性。
+
+物理 `CALL_STATE type21/v3` 在 v1 的 ActionState 长度串之后追加 ExecutionFact；非物理保留 v1，后台未派发跳过保留 v2。尾部固定112 B，加三个 ID 字符串的正文、各数值投影固定16 B+字段/单位正文、各观察引用固定32 B+来源ID正文。按顺序为：Binding ID/version、Executor ID/version、Scene ID/version、form/lease_us/max_command_age_us/field_count；各字段 name/unit 两个长度串与 minimum_field_id/maximum_field_id u32；scene_enable_seq/control_domain u64、control_mode u32、Kernel/authority/Executor/safety 四个 epoch u64、calibration_version u32、phase/target/stop_cause/dependency_count 四个 u32；各依赖 source ID 长度串、version u32、boot/generation/sequence 三个 u64。
+
+phase=1 PREPARED、2 DISPATCHING、3 STOPPED、4 NOT_STARTED；target=0 UNVERIFIED、1 SATISFIED、2 UNSATISFIED。已停止事实不能回到运行；原约束、代际和依赖不能改变。完整数值从原 canonical input 提取，不再复制另一份参数。nonce、deadline、轮询时间、在线端口诊断不持久；permit_id 取原执行 attempt.request_id，不另分配或恢复新 ID。执行停止可先独立提交，结果/Task 步骤仍同批，直到必要停止与借用清理完成才可回收。新增记录正常 codec 与功能证据不等于新恢复/中断专项已经验证。

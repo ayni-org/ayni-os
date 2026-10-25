@@ -8,6 +8,8 @@
 namespace ayni::work {
 constexpr uint16_t call_record_type = 21; // REQUIRED; older readers explicitly refuse calls.
 constexpr uint16_t call_record_version = 1;
+constexpr uint16_t call_execution_record_version =
+    3; // Full original execution constraints and local stop facts.
 constexpr uint16_t call_skipped_record_version = 2; // Same layout; adds Core-only SKIPPED outcome.
 // Normal rows preserve v1; old readers explicitly refuse a background skip.
 uint16_t call_record_version_for(const CallState &state);

@@ -63,7 +63,9 @@
 | [0047](0047-trusted-work-scheduling.md) | 可信工作分类与资源等待策略 | 已接受 | §9.1 |
 | [0048](0048-reusable-mock-providers.md) | 可复用确定性 Mock Provider | 已接受 | §9.1 |
 
-| [0049](0049-local-executor-permit-gate.md) | 独立执行端许可门 | 部分实施选项待确认 | §2.10、§9.1 |
+| [0049](0049-local-executor-permit-gate.md) | 独立执行端许可门 | 已接受 | §2.10、§9.1 |
+
+| [0050](0050-managed-execution-and-scenes.md) | 受管理执行、Scene 与停止闭环 | 已接受 | §2.10、§9.1 |
 
 ## 模板
 

@@ -125,6 +125,25 @@ bool CallTable::valid_record(const CallRecord &record) {
            state.cancel_result != AYNI_CALL_CANCEL_UNKNOWN)))) {
         return false;
     }
+    if (((record.contract.effects & catalog::call_effect_physical) != 0) !=
+        state.execution.has_value()) {
+        return false;
+    }
+    // Physical rows retain their original permit constraints; ordinary v1/v2 rows have no tail.
+    // Neither replay nor a new catalog may infer a fresh execution generation.
+    if (state.execution) {
+        const auto &execution = *state.execution;
+        if (!valid_execution(execution, input.arguments) ||
+            execution.epochs.kernel_boot_epoch != state.created.boot_epoch ||
+            execution.scene_seq >= state.created.transition.commit_seq ||
+            !execution.binding.binding.equals(
+                {record.identity.binding_id.data(), record.identity.binding_id.size()}) ||
+            execution.binding.binding_version != record.identity.binding_version ||
+            (execution.phase == AYNI_EXECUTION_PREPARED && state.attempt.request_id != 0) ||
+            (execution.phase == AYNI_EXECUTION_DISPATCHING && state.attempt.request_id == 0)) {
+            return false;
+        }
+    }
     return action_matches(record) && result_matches(record) && valid_query(record);
 }
 
@@ -173,6 +192,7 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
             !same_bytes(domain(index), record.domain) || !same_bytes(input(index), record.input) ||
             !same_stamp(before.created, after.created) || !advances(entry, after.latest) ||
             (before.outcome != 0U && !unresolved(index)) || !query_advances(before, after) ||
+            !execution_advances(before.execution, after.execution) ||
             after.progress_sequence < before.progress_sequence ||
             (before.attempt.request_id != 0U &&
              (before.attempt.request_id != after.attempt.request_id ||

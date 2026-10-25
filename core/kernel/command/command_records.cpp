@@ -35,7 +35,19 @@ CommandMapping read_fixed(durability::BodyReader &reader, uint64_t &floor) {
 
 } // namespace
 
+bool knows_command_record(uint16_t version) {
+    return version == command_record_version || version == exact_command_record_version ||
+           version == revoke_command_record_version ||
+           version == work_authority_command_record_version ||
+           version == task_limit_command_record_version ||
+           version == call_query_command_record_version ||
+           version == resume_wait_command_record_version || version == scene_command_record_version;
+}
+
 uint16_t command_record_version_for(const CommandMapping &mapping) {
+    if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        return scene_command_record_version;
+    }
     if (mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT) {
         return resume_wait_command_record_version;
     }
@@ -72,6 +84,9 @@ uint32_t command_record_size_for(const CommandMapping &mapping) {
     if (mapping.result_size != 0U) {
         return 0;
     }
+    if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        return revoke_command_record_fixed_size + mapping.canonical_size;
+    }
     if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
         return mapping.canonical_size == revoke_command_size
                    ? revoke_command_record_fixed_size + revoke_command_size
@@ -91,7 +106,8 @@ bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_by
     durability::BodyWriter writer(body, size);
     write_fixed(mapping, floor, writer);
     if (mapping.canonical_size != 0U) {
-        if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+        if (mapping.kind == AYNI_INTENT_GRANT_REVOKE ||
+            mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
             writer.u32(mapping.effect);
         }
         writer.u32(authority_command_format);
@@ -110,13 +126,7 @@ void write_command_record(const CommandMapping &mapping, uint64_t floor, uint8_t
 bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
                          CommandMapping &out_mapping, uint64_t &out_floor,
                          ayni_bytes_v1 &out_canonical, ayni_bytes_v1 *out_result) {
-    if (body == nullptr ||
-        (version != command_record_version && version != exact_command_record_version &&
-         version != revoke_command_record_version &&
-         version != work_authority_command_record_version &&
-         version != task_limit_command_record_version &&
-         version != call_query_command_record_version &&
-         version != resume_wait_command_record_version)) {
+    if (body == nullptr || !knows_command_record(version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -125,7 +135,7 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
     ayni_bytes_v1 canonical{};
     ayni_bytes_v1 result{};
     if (version != command_record_version) {
-        if (version == revoke_command_record_version) {
+        if (version == revoke_command_record_version || version == scene_command_record_version) {
             mapping.effect = reader.u32();
         }
         const uint32_t format = reader.u32();
@@ -146,7 +156,9 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
         const auto expected_kind = version == revoke_command_record_version
                                        ? AYNI_INTENT_GRANT_REVOKE
                                        : AYNI_INTENT_GRANT_CREATE;
-        const bool right_kind = version == resume_wait_command_record_version
+        const bool right_kind = version == scene_command_record_version
+                                    ? mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED
+                                : version == resume_wait_command_record_version
                                     ? mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT
                                 : version == call_query_command_record_version
                                     ? mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT

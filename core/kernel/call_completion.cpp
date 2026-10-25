@@ -30,8 +30,9 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
+    const auto blocked = blocked_receipts();
     const auto read =
-        mailbox_.read_next(receipt_, limits_.result_bytes, required, message, receipt);
+        mailbox_.read_next(receipt_, limits_.result_bytes, required, message, receipt, &blocked);
     if (read == AYNI_NOT_FOUND) {
         return Advance::idle;
     }
@@ -62,6 +63,19 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
         return mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale
                    ? Advance::internal
                    : Advance::applied;
+    }
+    const bool terminal_message = message.kind != ProviderMessageKind::progress &&
+                                  message.kind != ProviderMessageKind::cannot_cancel &&
+                                  message.kind != ProviderMessageKind::cancel_unknown;
+    const auto &execution = work_.calls.state(index).execution;
+    if (!query && terminal_message && execution && !work::execution_stopped(*execution)) {
+        auto *lease = permits_.find(work_.calls.identity(index).call_id);
+        if (lease == nullptr) {
+            return Advance::internal;
+        }
+        lease->terminal_seen = true;
+        slots_[index].active->stage = Stage::waiting_stop;
+        return permits_.request_stop(lease->call_id) ? Advance::applied : Advance::internal;
     }
     bool terminal = false;
     const auto applied =
@@ -114,14 +128,15 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
         applied = work_.calls.cancel_response(index, kind, action_stamp);
     } else {
         terminal = true;
-        const work::CallResult result{
+        work::CallResult result{
             kind,
             message.status,
             message.reason,
             static_cast<work::ActionEffect>(message.effect),
             {reinterpret_cast<const char *>(message.payload.data), message.payload.size}};
-        applied = message.query_result == 0U ? work_.calls.finish(index, result, action_stamp)
-                                             : AYNI_INVALID_ARGUMENT;
+        applied = message.query_result == 0U
+                      ? work_.calls.finish(index, result, action_stamp, result_dependencies(index))
+                      : AYNI_INVALID_ARGUMENT;
         if (applied == AYNI_INVALID_ARGUMENT || applied == AYNI_CAPACITY_EXCEEDED) {
             // A terminal has ended the local borrow but malformed evidence cannot
             // prove success/failure. Preserve UNKNOWN with an explicit diagnostic.
@@ -142,6 +157,9 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
 
 uint64_t CallRuntime::next_deadline_us() const {
     uint64_t deadline = resources_.next_deadline_us();
+    if (permits_.next_deadline_us() < deadline) {
+        deadline = permits_.next_deadline_us();
+    }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
         if (active && active->stage == Stage::submitted && active->delivery &&
@@ -159,7 +177,8 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
     if (mode == Mode::fenced || mode == Mode::closing) {
         return transport_ready(mode);
     }
-    if (mailbox_.has_pending()) {
+    const auto blocked = blocked_receipts();
+    if (mailbox_.has_pending(&blocked)) {
         return true;
     }
     resources::AdmissionChoice choice{};
@@ -170,6 +189,14 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
         }
         const auto &state = work_.calls.state(at);
         const auto &id = work_.calls.identity(at);
+        const auto *lease = permits_.find(id.call_id);
+        if (lease != nullptr && lease->stopped && state.execution &&
+            !work::execution_stopped(*state.execution)) {
+            return true;
+        }
+        if (slots_[at].active && slots_[at].active->stage == Stage::retiring) {
+            continue;
+        }
         uint32_t task_index = 0;
         if (!work_.tasks.find(id.task_id, task_index)) {
             return true; // advance reports the invariant failure, instead of hiding it.
@@ -202,11 +229,10 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
                               task.lifecycle == AYNI_TASK_PAUSED ||
                               state.cancel_cause != work::CallCancelCause::none ||
                               (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
-                              (active->delivery && now_us >= active->delivery->deadline_us);
+                              delivery_expired(at, now_us);
         if (stopping) {
-            if (active->stage == Stage::submitted
-                    ? active->delivery->cancel == Delivery::Cancel::none
-                    : mode != Mode::fenced) {
+            if (submitted(active->stage) ? active->delivery->cancel == Delivery::Cancel::none
+                                         : mode != Mode::fenced) {
                 return true;
             }
             continue;

@@ -38,6 +38,11 @@ struct KernelLayout {
     std::size_t call_runtime_offset;         // Volatile I/O ownership and callback-copy buffers.
     std::size_t devices_offset;              // Copied immutable device identities.
     std::size_t components_offset;           // Copied component-to-device relationships.
+    std::size_t observation_sources_offset;  // Copied source descriptions.
+    std::size_t execution_catalog_offset;    // Copied local execution descriptions.
+    std::size_t permits_offset;              // Boot-local resource lease/quarantine ownership.
+    std::size_t scenes_offset;       // Authority-owned finite declarations and saved preferences.
+    std::size_t observations_offset; // Current-boot latest sample per source.
     std::size_t size;
     std::size_t alignment; // a power of two
 };

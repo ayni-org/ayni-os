@@ -2,6 +2,7 @@
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
+#include "authority/scene/scene_records.h"
 #include "durability/batch/record_body.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
@@ -143,6 +144,9 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
                               {capacities.call_capacity, capacities.authority_scope_max_bytes,
                                capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
     }
+    if (capacities.scene_capacity != 0) {
+        size = maximum(size, authority::scene_record_max(capacities.authority_scope_max_bytes));
+    }
     return record_prefix + maximum(size, command_max(capacities));
 }
 
@@ -174,6 +178,8 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
         (record_prefix + work::call_record_max(
                              {capacities.call_capacity, capacities.authority_scope_max_bytes,
                               capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+    size += uint64_t{capacities.scene_capacity} *
+            (record_prefix + authority::scene_record_max(capacities.authority_scope_max_bytes));
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
             (record_prefix + command_max(capacities));
     return size;
@@ -189,6 +195,9 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         if (model.agents.at(index).instance_id != 0U) {
             count(layout, instance_size);
         }
+    }
+    for (uint32_t index = 0; index < model.scenes.state_count(); ++index) {
+        count(layout, authority::scene_record_size(model.scenes.state(index)));
     }
     for (uint32_t index = 0; index < model.grants.size(); ++index) {
         count(layout, authority::grant_snapshot_record_size(
@@ -241,6 +250,18 @@ void WorkSnapshotWriter::reset() {
 
 // The type and size of the next record, without moving past it; false once
 // every record is written.
+bool WorkSnapshotWriter::next_call_record(uint16_t &type, uint32_t &size) {
+    while (index_ < model_.calls.capacity() && !model_.calls.occupied(index_)) {
+        ++index_;
+    }
+    if (index_ < model_.calls.capacity()) {
+        type = work::call_record_type;
+        size = work::call_record_size(model_.calls.record(index_));
+        return true;
+    }
+    return false;
+}
+
 bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
     for (;;) {
         switch (section_) {
@@ -292,12 +313,16 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             index_ = 0;
             break;
         case Section::calls:
-            while (index_ < model_.calls.capacity() && !model_.calls.occupied(index_)) {
-                ++index_;
+            if (next_call_record(type, size)) {
+                return true;
             }
-            if (index_ < model_.calls.capacity()) {
-                type = work::call_record_type;
-                size = work::call_record_size(model_.calls.record(index_));
+            section_ = Section::scenes;
+            index_ = 0;
+            break;
+        case Section::scenes:
+            if (index_ < model_.scenes.state_count()) {
+                type = authority::scene_record_type;
+                size = authority::scene_record_size(model_.scenes.state(index_));
                 return true;
             }
             section_ = Section::cleanup;
@@ -401,6 +426,10 @@ void WorkSnapshotWriter::write_task_authority(uint8_t *body) {
 
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
     switch (type) {
+    case authority::scene_record_type:
+        authority::write_scene_record(model_.scenes.state(index_),
+                                      model_.scenes.state_definition(index_), body);
+        break;
     case work::call_record_type:
         work::write_call_record(model_.calls.record(index_), body);
         break;
@@ -475,6 +504,7 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
 
 void WorkSnapshotWriter::advance_record(uint16_t type) {
     switch (type) {
+    case authority::scene_record_type:
     case work::call_record_type:
         ++index_;
         break;
@@ -572,6 +602,9 @@ void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
 // Keep record ordering separate from body decoding and restore dispatch.
 bool WorkSnapshotReader::record_section(uint16_t type, Section &out) {
     switch (type) {
+    case authority::scene_record_type:
+        out = Section::scenes;
+        break;
     case work::call_record_type:
         out = Section::calls;
         break;
@@ -643,6 +676,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     }
     section_ = section;
     switch (header.type) {
+    case authority::scene_record_type:
+        return scene(body, header.length);
     case work::call_record_type:
         return call(header.version, body, header.length);
     case authority::owner_binding_record_type:
@@ -1033,6 +1068,10 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
     }
     if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT &&
         !matches_task_limit_command(mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
+    }
+    if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED &&
+        !WorkReplay(model_).matches_scene_command(mapping, canonical)) {
         return durability::BatchCheck::corrupt;
     }
     if (is_target_command(mapping.kind) && !matches_target_command(mapping)) {

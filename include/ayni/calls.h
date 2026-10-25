@@ -7,6 +7,7 @@
 #define AYNI_CALLS_H
 
 #include <ayni/authority.h>
+#include <ayni/control.h>
 #include <ayni/resources.h>
 
 #ifdef __cplusplus
@@ -221,6 +222,10 @@ typedef struct ayni_provider_request_v1 {
     ayni_string_v1 endpoint_id;   /* Trusted local endpoint token; never a URL. */
     ayni_scope_v1 arguments;      /* Complete concrete values actually authorized. */
     ayni_string_v1 text;          /* Bounded UTF-8 business body, never credentials. */
+    /* Since 0.35. Borrowed through submit only; null for nonphysical I/O. Physical
+     * Providers install this permit before returning acceptance; workers only issue
+     * samples under that gate. Copy before retention, never accept it later. */
+    const ayni_execution_permit_v1 *execution_permit;
 } ayni_provider_request_v1;
 
 /* All callbacks run on the owner thread, without reentry or blocking I/O.

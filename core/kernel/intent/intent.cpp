@@ -51,8 +51,25 @@ ayni_status_t read_goal_create(const ayni_goal_create_v1 &body, GoalCreate &out)
     return AYNI_OK;
 }
 
+ayni_status_t read_scene_change(const ayni_intent_v1 &raw, authority::SceneChange &out) {
+    const ayni_scene_set_enabled_v1 *body = nullptr;
+    const auto status = read_body(raw.body, body);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (body->reserved != 0 || body->enabled > 1 || !out.scene.assign(body->scene_id)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    out.definition_version = body->definition_version;
+    out.expected_revision = raw.expected_revision;
+    out.mode = body->enabled != 0 ? authority::SceneMode::enabled : authority::SceneMode::disabled;
+    return AYNI_OK;
+}
+
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
+    case AYNI_INTENT_SCENE_SET_ENABLED:
+        return read_scene_change(raw, out_intent.scene);
     case AYNI_INTENT_CALL_QUERY_RESULT:
         return read_target(raw.body, &ayni_call_query_result_v1::logical_call_id,
                            out_intent.target_id);
@@ -123,10 +140,15 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
 } // namespace
 
 bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_TASK_RESUME_WAIT;
+    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_SCENE_SET_ENABLED;
 }
 
 ayni_status_t check_form(const Intent &intent) {
+    if (intent.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        return intent.command_id == 0 || intent.scene.expected_revision != intent.expected_revision
+                   ? AYNI_INVALID_ARGUMENT
+                   : authority::validate_scene_change(intent.scene);
+    }
     if (is_target_command(intent.kind)) {
         uint32_t size = 0;
         return intent.command_id == 0U

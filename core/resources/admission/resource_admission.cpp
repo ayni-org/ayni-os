@@ -324,6 +324,13 @@ bool ResourceAdmission::confirm_stopped(uint32_t index, ResourceClaim claim) {
     return true;
 }
 
+void ResourceAdmission::confirm_all_stopped(ResourceClaim claim) {
+    for (uint32_t index = 0; index < registry_.size(); ++index) {
+        // Nonmatching resources are unchanged; the existing exact-claim validator owns the rule.
+        static_cast<void>(confirm_stopped(index, claim));
+    }
+}
+
 bool ResourceAdmission::waiting(uint64_t call_id, uint64_t now_us, WaitReason &reason,
                                 uint32_t &resource_index, uint64_t &waited_us) const {
     uint32_t index = 0;

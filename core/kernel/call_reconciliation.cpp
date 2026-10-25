@@ -135,14 +135,15 @@ bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const Provi
     const auto kind = message.kind == ProviderMessageKind::completed ? AYNI_CALL_COMPLETED
                       : message.kind == ProviderMessageKind::failed  ? AYNI_CALL_FAILED
                                                                      : AYNI_CALL_ABANDONED;
-    const work::CallResult result{
+    work::CallResult result{
         kind,
         message.status,
         message.reason,
         static_cast<work::ActionEffect>(message.effect),
         {reinterpret_cast<const char *>(message.payload.data), message.payload.size}};
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
-    auto status = work_.calls.reconcile(index, message.query_result, result, action_stamp);
+    auto status = work_.calls.reconcile(index, message.query_result, result, action_stamp,
+                                        result_dependencies(index));
     if (status == AYNI_INVALID_ARGUMENT || status == AYNI_CAPACITY_EXCEEDED) {
         status = work_.calls.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_PROVIDER_RESULT,
                                        action_stamp);

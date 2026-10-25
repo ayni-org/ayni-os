@@ -8,7 +8,9 @@
 #include <ayni/ayni.h>
 #include <ayni/calls.h>
 #include <ayni/control.h>
+#include <ayni/execution.h>
 #include <ayni/resources.h>
+#include <ayni/scenes.h>
 #include <ayni/storage_format.h>
 
 #include <stddef.h>
@@ -52,7 +54,7 @@ AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
 AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
 AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 152);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 168);
 
 AYNI_LAYOUT(config_device_capacity, offsetof(ayni_config_v1, device_capacity) == 144);
 AYNI_LAYOUT(config_component_capacity, offsetof(ayni_config_v1, component_capacity) == 148);
@@ -595,7 +597,7 @@ AYNI_LAYOUT(provider_request_arguments,
             offsetof(ayni_provider_request_v1, arguments) == 48 + 4 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_text, offsetof(ayni_provider_request_v1, text) == 56 + 5 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_size,
-            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(56 + 7 * AYNI_PTR));
+            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(56 + 8 * AYNI_PTR));
 AYNI_LAYOUT(provider_struct_size, offsetof(ayni_provider_v1, struct_size) == 0);
 AYNI_LAYOUT(provider_version, offsetof(ayni_provider_v1, version) == 4);
 AYNI_LAYOUT(provider_provider_id, offsetof(ayni_provider_v1, provider_id) == 8);
@@ -723,3 +725,44 @@ AYNI_LAYOUT(control_permit_size, sizeof(ayni_execution_permit_v1) == 808);
 AYNI_LAYOUT(control_permit_envelope, offsetof(ayni_execution_permit_v1, envelope) == 96);
 AYNI_LAYOUT(control_renewal_size, sizeof(ayni_permit_renewal_v1) == 64);
 AYNI_LAYOUT(control_info_size, sizeof(ayni_control_info_v1) == 56);
+
+AYNI_LAYOUT(config_observation_sources,
+            offsetof(ayni_config_v1, observation_source_capacity) == 152);
+
+/* ABI 0.35: optional execution capacities and copied typed constraints. */
+AYNI_LAYOUT(config_executor_capacity, offsetof(ayni_config_v1, executor_capacity) == 160);
+AYNI_LAYOUT(config_execution_binding_capacity,
+            offsetof(ayni_config_v1, execution_binding_capacity) == 164);
+AYNI_LAYOUT(provider_request_execution_permit,
+            offsetof(ayni_provider_request_v1, execution_permit) == 56 + 7 * AYNI_PTR);
+AYNI_LAYOUT(observation_source_size, sizeof(ayni_observation_source_v1) == 24 + 4 * AYNI_PTR);
+AYNI_LAYOUT(observation_source_validity,
+            offsetof(ayni_observation_source_v1, validity_max_us) == 16 + 4 * AYNI_PTR);
+AYNI_LAYOUT(observation_reference_size, sizeof(ayni_observation_ref_v1) == 64);
+AYNI_LAYOUT(observation_reference_boot, offsetof(ayni_observation_ref_v1, boot_epoch) == 40);
+AYNI_LAYOUT(observation_size, sizeof(ayni_observation_v1) == 56 + 2 * AYNI_PTR);
+AYNI_LAYOUT(observation_generation, offsetof(ayni_observation_v1, generation) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(observation_condition_size, sizeof(ayni_observation_condition_v1) == 32 + 2 * AYNI_PTR);
+AYNI_LAYOUT(observation_info_size, sizeof(ayni_observation_info_v1) == 152);
+AYNI_LAYOUT(observation_info_capture, offsetof(ayni_observation_info_v1, captured_at_us) == 128);
+AYNI_LAYOUT(scene_rule_size, sizeof(ayni_scene_rule_v1) == 16 + 3 * AYNI_PTR);
+AYNI_LAYOUT(scene_desc_size, sizeof(ayni_scene_desc_v1) == 16 + 4 * AYNI_PTR);
+AYNI_LAYOUT(scene_desc_rules, offsetof(ayni_scene_desc_v1, rules) == 16 + 2 * AYNI_PTR);
+AYNI_LAYOUT(scene_enabled_size, sizeof(ayni_scene_set_enabled_v1) == 16 + 2 * AYNI_PTR);
+AYNI_LAYOUT(scene_info_size, sizeof(ayni_scene_info_v1) == 48);
+AYNI_LAYOUT(scene_info_barrier, offsetof(ayni_scene_info_v1, requires_seq) == 32);
+AYNI_LAYOUT(executor_status_size, sizeof(ayni_executor_status_v1) == 64);
+AYNI_LAYOUT(executor_status_control, offsetof(ayni_executor_status_v1, control) == 8);
+AYNI_LAYOUT(executor_size, sizeof(ayni_executor_v1) == AYNI_ROUND8(56 + 7 * AYNI_PTR));
+AYNI_LAYOUT(executor_domain, offsetof(ayni_executor_v1, control_domain_id) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(executor_context, offsetof(ayni_executor_v1, ctx) == 56 + 2 * AYNI_PTR);
+AYNI_LAYOUT(executor_status_port, offsetof(ayni_executor_v1, status) == 56 + 6 * AYNI_PTR);
+AYNI_LAYOUT(execution_field_size, sizeof(ayni_execution_field_v1) == 8 + 4 * AYNI_PTR);
+AYNI_LAYOUT(execution_binding_size, sizeof(ayni_execution_binding_v1) == 32 + 7 * AYNI_PTR);
+AYNI_LAYOUT(execution_binding_scene,
+            offsetof(ayni_execution_binding_v1, scene_id) == 16 + 4 * AYNI_PTR);
+AYNI_LAYOUT(execution_binding_fields,
+            offsetof(ayni_execution_binding_v1, fields) == 32 + 6 * AYNI_PTR);
+AYNI_LAYOUT(execution_info_size, sizeof(ayni_execution_info_v1) == 56);
+AYNI_LAYOUT(execution_info_permit, offsetof(ayni_execution_info_v1, permit_id) == 24);
+AYNI_LAYOUT(execution_info_port_status, offsetof(ayni_execution_info_v1, executor_status) == 52);

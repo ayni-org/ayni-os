@@ -82,14 +82,19 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         return resolved;
     }
     const auto &contract = catalogs_.capabilities.at(proposal.links.call).contract;
-    if (contract.form == catalog::CallForm::subscription ||
-        (contract.effects & catalog::call_effect_physical) != 0U) {
-        return AYNI_UNSUPPORTED; // Permit/subscription admission has its own forthcoming contract.
+    if (contract.form == catalog::CallForm::subscription) {
+        return AYNI_UNSUPPORTED; // Subscription lifecycle is delivered separately (ADR-0050).
+    }
+    const bool physical = (contract.effects & catalog::call_effect_physical) != 0U;
+    uint32_t execution = 0;
+    if (physical && !work_.execution_catalog.find_binding(request.binding_id,
+                                                          request.binding_version, execution)) {
+        return AYNI_UNSUPPORTED;
     }
     for (uint32_t at = 0; at < contract.resource_count; ++at) {
-        if ((catalogs_.resources.at(proposal.links.resources[at]).flags & AYNI_RESOURCE_ACTUATOR) !=
-            0U) {
-            return AYNI_UNSUPPORTED; // Every actuator acquisition requires the permit/stop
+        if (!physical && (catalogs_.resources.at(proposal.links.resources[at]).flags &
+                          AYNI_RESOURCE_ACTUATOR) != 0U) {
+            return AYNI_UNSUPPORTED; // Every actuator acquisition uses the same permit/stop
                                      // consumer.
         }
     }
@@ -256,8 +261,11 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
                               input) != AYNI_OK) {
         return {AYNI_INTERNAL, AYNI_REASON_NONE};
     }
-    return check_input(task_index, catalogs_.bindings.at(proposal.binding_index), domain, input,
-                       now_us, durable_seq);
+    const auto authority = check_input(task_index, catalogs_.bindings.at(proposal.binding_index),
+                                       domain, input, now_us, durable_seq);
+    return authority.status == AYNI_OK
+               ? prepare_execution(*proposal_, input.arguments, now_us, durable_seq)
+               : authority;
 }
 
 // Exact capacity and identity preflights have succeeded. Any refusal here is an
@@ -291,6 +299,9 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
                                             work_.goals.at(task.goal_index).work_profile),
                            now_us) != AYNI_OK) {
         return false;
+    }
+    if (proposal.execution) {
+        work_.calls.attach_execution(index, *proposal.execution);
     }
     slots_[index].active = Active{identity.call_id, Stage::queued, {}, std::nullopt};
     work_.tasks.begin_call(task_index, identity.call_id,

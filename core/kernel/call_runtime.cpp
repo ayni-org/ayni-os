@@ -16,13 +16,16 @@ std::size_t CallRuntime::storage_size(Limits limits) {
 }
 
 CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, CallCatalogs catalogs,
-                         resources::ResourceAdmission &resources, ProviderMailbox &mailbox,
+                         resources::ResourceAdmission &resources, resources::PermitTable &permits,
+                         const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
                          AttemptSequence &attempts, const ayni_host_v1 &host)
-    : work_(work), catalogs_(catalogs), resources_(resources), mailbox_(mailbox),
-      attempts_(attempts), host_(host), limits_(limits), slots_(static_cast<Slot *>(storage)),
+    : work_(work), catalogs_(catalogs), resources_(resources), permits_(permits),
+      observations_(observations), mailbox_(mailbox), attempts_(attempts), host_(host),
+      limits_(limits), slots_(static_cast<Slot *>(storage)),
       staging_(limits.capacity == 0U ? nullptr
                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
       receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes) {
+    work_.calls.set_runtime_retention(this, runtime_retains);
     static_assert(alignof(Slot) <= storage_alignment, "arena aligns call runtime slots");
     for (uint32_t at = 0; at < limits.capacity; ++at) {
         new (slots_ + at) Slot{};
@@ -30,14 +33,23 @@ CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, CallCata
 }
 
 // Release only this acquisition/waiter. Non-actuator calls need no independent
-// physical stop proof; actuator support will use ResourceAdmission quarantine.
+// physical stop proof; issued actuator permits retain their exact quarantine.
 void CallRuntime::release(uint32_t index, uint64_t now_us) {
     auto &active = slots_[index].active;
     if (!active) {
         return;
     }
+    if (permits_.find(active->call_id) != nullptr) {
+        active->delivery.reset();
+        active->stage = Stage::retiring; // Stop fact must become durable before the exact
+                                         // quarantine is released.
+        return;
+    }
     if (active->claim.call_id != 0U) {
         static_cast<void>(resources_.release(active->claim));
+        // Without an issued lease no Provider received a permit. This exact local proof
+        // permits cleanup of a pre-dispatch actuator claim (ADR-0050).
+        resources_.confirm_all_stopped(active->claim);
     } else {
         static_cast<void>(resources_.remove_waiter(active->call_id, now_us));
     }
@@ -46,7 +58,7 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
 }
 
 bool CallRuntime::idle() const {
-    if (mailbox_.in_flight() != 0U) {
+    if (mailbox_.in_flight() != 0U || !permits_.empty()) {
         return false;
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
@@ -117,7 +129,8 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     if (mode == Mode::fenced || mode == Mode::closing) {
         return drain_transport(mode);
     }
-    if (mailbox_.has_pending()) {
+    const auto blocked = blocked_receipts();
+    if (mailbox_.has_pending(&blocked)) {
         return consume(now_us);
     }
     for (uint32_t scanned = 0; scanned < limits_.capacity; ++scanned) {
@@ -140,11 +153,24 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
                                                uint64_t durable_seq, Mode mode) {
     const auto &id = work_.calls.identity(index);
     const auto &state = work_.calls.state(index);
+    if (const auto *lease = permits_.find(id.call_id); lease != nullptr && lease->stopped &&
+                                                       state.execution &&
+                                                       !work::execution_stopped(*state.execution)) {
+        return commit_stop(index);
+    }
     uint32_t task_index = 0;
     if (!work_.tasks.find(id.task_id, task_index)) {
         return Advance::internal;
     }
     const auto &task = work_.tasks.at(task_index);
+    if (slots_[index].active && slots_[index].active->stage == Stage::retiring) {
+        // A storage reload may have retained the physical lease after its volatile
+        // Provider terminal was drained. First persist stop, then retain UNKNOWN.
+        return state.outcome == 0 && state.execution && work::execution_stopped(*state.execution)
+                   ? restore_wait(index, task_index, now_us, mode)
+                   : Advance::idle;
+    }
+
     if (state.outcome != 0U) {
         if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none &&
             mode != Mode::fenced) {
@@ -173,7 +199,7 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
     const bool user_stop =
         task.call.end != work::TaskCall::End::none || task.lifecycle == AYNI_TASK_PAUSED;
-    const bool expired = active.delivery && now_us >= active.delivery->deadline_us;
+    const bool expired = delivery_expired(index, now_us);
     const bool denied = authority.status != AYNI_OK && authority.status != AYNI_BUSY;
     if (mode != Mode::running || user_stop || expired || denied ||
         state.cancel_cause != work::CallCancelCause::none) {

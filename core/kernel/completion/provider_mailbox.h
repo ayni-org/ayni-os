@@ -5,6 +5,7 @@
 #ifndef AYNI_CORE_KERNEL_COMPLETION_PROVIDER_MAILBOX_H
 #define AYNI_CORE_KERNEL_COMPLETION_PROVIDER_MAILBOX_H
 
+#include <array>
 #include <ayni/calls.h>
 #include <cstddef>
 #include <cstdint>
@@ -94,13 +95,16 @@ class ProviderMailbox {
     // posts are rejected, while previously accepted cancel remains pending.
     // Older progress is acknowledged but ignored. All other errors preserve data.
     ayni_status_t post(ProviderReservation reservation, const ProviderMessage &message);
+    // Owner-created mask: deferred reliable terminals remain owned but do not spin or starve peers.
+    using BlockedSlots = std::array<bool, capacity_max>;
     // Owner: round-robin among ready attempts; within one, cancel precedes
     // terminal, then progress. Copies to caller buffer under lock and leaves
     // receipt pending. BUFFER_TOO_SMALL changes only required; other failures
     // change no output. payload may be null only when capacity is zero and must
     // not overlap the mailbox arena or the other outputs.
     ayni_status_t read_next(uint8_t *payload, uint32_t capacity, uint32_t &required,
-                            ProviderMessage &out, ProviderReceipt &receipt);
+                            ProviderMessage &out, ProviderReceipt &receipt,
+                            const BlockedSlots *blocked = nullptr);
     // A progress copy may be superseded while its owner applies it; newer
     // progress/terminal remains pending. Reliable receipts never get replaced.
     enum class Acknowledge { consumed, superseded, stale };
@@ -111,7 +115,7 @@ class ProviderMailbox {
     // Owner: every reserved attempt counts until terminal ack or legal withdraw.
     uint32_t in_flight() const { return in_flight_; }
     // Any thread: retained messages, independent of the owner's journal capacity.
-    bool has_pending() const;
+    bool has_pending(const BlockedSlots *blocked = nullptr) const;
 
   private:
     // Scalars shared by result lanes; semantic validation belongs above transport.

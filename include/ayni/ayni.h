@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 34u
+#define AYNI_ABI_MINOR 35u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -176,6 +176,14 @@ typedef struct ayni_config_v1 {
     /* Since 0.32. Trusted physical topology; zero disables each directory. */
     uint32_t device_capacity;
     uint32_t component_capacity;
+    /* Since 0.35. Copied source declarations and latest observations; zero disables. */
+    uint32_t observation_source_capacity;
+    /* Since 0.35. Copied Scene declarations and persistent preferences; zero disables. */
+    uint32_t scene_capacity;
+    /* Since 0.35. Local executor registrations and boot-local permit slots; zero disables. */
+    uint32_t executor_capacity;
+    /* Since 0.35. Exact physical Binding constraints; zero disables. */
+    uint32_t execution_binding_capacity;
 } ayni_config_v1;
 
 /* Since 0.31. Bounded retained call bodies; no implicit history eviction. */
@@ -964,6 +972,10 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_RESOURCE_WAIT ((ayni_reason_t)72)
 /* Since 0.33. INVALID_ARGUMENT: requested period is faster than the trusted background floor. */
 #define AYNI_REASON_BACKGROUND_FREQUENCY ((ayni_reason_t)73)
+/* Required Scene is disabled, changed or not yet durable. Since 0.35. */
+#define AYNI_REASON_EXECUTION_SCENE ((ayni_reason_t)74)
+/* Exact measured prerequisite is absent, changed or expired. Since 0.35. */
+#define AYNI_REASON_EXECUTION_OBSERVATION ((ayni_reason_t)75)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1336,6 +1348,8 @@ typedef uint32_t ayni_intent_kind_t;
 /* Resume only an expired resource wait, preserving call identity and other holds.
  * Since 0.31. Body: ayni_task_target_v1; owner management, nonzero command_id, Task revision. */
 #define AYNI_INTENT_TASK_RESUME_WAIT ((ayni_intent_kind_t)15)
+/* Owner enables/disables an exact Scene definition with persistent CAS. Since 0.35. */
+#define AYNI_INTENT_SCENE_SET_ENABLED ((ayni_intent_kind_t)16)
 
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {

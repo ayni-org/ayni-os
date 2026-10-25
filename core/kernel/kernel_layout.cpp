@@ -81,6 +81,28 @@ void place_resource_catalogs(Placer &placer, const KernelCapacities &capacities,
                      catalog::DeviceCatalog::component_storage_size(capacities.component_capacity));
 }
 
+// All optional physical execution stores are explicitly sized; zero capacities allocate no tables.
+void place_execution_context(Placer &placer, const KernelCapacities &capacities,
+                             KernelLayout &layout) {
+    layout.execution_catalog_offset =
+        placer.place(catalog::ExecutionRegistry::storage_alignment,
+                     catalog::ExecutionRegistry::storage_size(
+                         capacities.executor_capacity, capacities.execution_binding_capacity));
+    layout.permits_offset =
+        placer.place(resources::PermitTable::storage_alignment,
+                     resources::PermitTable::storage_size(capacities.executor_capacity));
+    layout.scenes_offset =
+        placer.place(authority::Scenes::storage_alignment,
+                     authority::Scenes::storage_size(
+                         {capacities.scene_capacity, capacities.authority_scope_max_bytes}));
+    layout.observation_sources_offset = placer.place(
+        catalog::ObservationSources::storage_alignment,
+        catalog::ObservationSources::storage_size(capacities.observation_source_capacity));
+    layout.observations_offset = placer.place(
+        knowledge::ObservationTable::storage_alignment,
+        knowledge::ObservationTable::storage_size(capacities.observation_source_capacity));
+}
+
 } // namespace
 
 KernelLayout layout_for(const KernelCapacities &capacities) {
@@ -147,6 +169,7 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
     place_resource_catalogs(placer, capacities, layout);
     place_call_catalogs(placer, capacities, layout);
     place_call_runtime(placer, capacities, layout);
+    place_execution_context(placer, capacities, layout);
     layout.size = placer.end();
     layout.alignment = placer.alignment();
     return layout;

@@ -61,6 +61,7 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
                          ayni_bytes_v1 result_bytes) {
     if (mapping.principal_id == 0U || mapping.command_id == 0U ||
         mapping.object.kind != (is_work_authority_command(mapping.kind)         ? AYNI_OBJECT_GOAL
+                                : mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED ? AYNI_OBJECT_SCENE
                                 : mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT ? AYNI_OBJECT_CALL
                                 : (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
                                    mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT)
@@ -98,6 +99,17 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
             (result_bytes.size != 0U &&
              (result.binding.parent.goal_id != command.approval.original.parent_goal_id ||
               result.binding.input.incarnation != 0U))) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        authority::SceneChange command{};
+        if (!read_scene_command(bytes, command) || mapping.object.origin_device_id != 0 ||
+            (mapping.effect == AYNI_INTENT_EFFECT_CHANGED
+                 ? command.expected_revision == UINT32_MAX ||
+                       mapping.object.revision != command.expected_revision + 1
+                 : mapping.effect != AYNI_INTENT_EFFECT_NO_CHANGE ||
+                       command.expected_revision == 0 ||
+                       mapping.object.revision != command.expected_revision)) {
             return false;
         }
     } else if (is_target_command(mapping.kind)) {
@@ -260,6 +272,12 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
                           encode_target_command);
 }
 
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const authority::SceneChange &input) {
+    return find_candidate(principal_id, command_id, AYNI_INTENT_SCENE_SET_ENABLED, input,
+                          measure_scene_command, encode_scene_command);
+}
+
 bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {
     if (!staged_ || mapping.principal_id != staged_->principal_id ||
         mapping.command_id != staged_->command_id || mapping.kind != staged_->kind ||
@@ -366,6 +384,7 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         }
     } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE ||
                mapping.kind == AYNI_INTENT_GRANT_REVOKE ||
+               mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED ||
                mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
                is_target_command(mapping.kind) || is_work_authority_command(mapping.kind)) {
         return Restore::corrupt;

@@ -11,6 +11,7 @@
 
 #include "authority/grant/grant_table.h"
 #include "authority/principal/principal_registry.h"
+#include "authority/scene/scene_table.h"
 #include "catalog/capability/capability_registry.h"
 #include "catalog/goal_type/goal_type_registry.h"
 #include "catalog/strategy/strategy_registry.h"
@@ -77,6 +78,11 @@ struct WorkModel {
                    capacities.grant_capacity),
           capabilities(storage.capabilities, capacities.capability_capacity,
                        capacities.authority_scope_max_bytes),
+          observation_sources(storage.observation_sources, capacities.observation_source_capacity),
+          scenes(storage.scenes, {capacities.scene_capacity, capacities.authority_scope_max_bytes},
+                 capabilities, observation_sources),
+          execution_catalog(storage.execution_catalog, capacities.executor_capacity,
+                            capacities.execution_binding_capacity),
           grants(storage.grants, {capacities.grant_capacity, capacities.authority_scope_max_bytes,
                                   capacities.grant_delegation_depth_max}),
           goal_authority(storage.goal_authority,
@@ -181,6 +187,11 @@ struct WorkModel {
     CommandTable commands;
     // Trusted, immutable authorization schemas; registration enables no I/O.
     catalog::CapabilityRegistry capabilities;
+    catalog::ObservationSources
+        observation_sources;  // Immutable types shared by Scenes and knowledge.
+    authority::Scenes scenes; // Finite restrictions and owner preference; no live observations.
+    catalog::ExecutionRegistry
+        execution_catalog; // Trusted ports/limits, independent of live permits.
     authority::GrantTable grants;
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;

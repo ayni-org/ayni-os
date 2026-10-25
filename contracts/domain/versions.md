@@ -57,3 +57,6 @@ ABI 0.32（ADR-0046）扩展 Resource 描述/查询并增加 Device/Component �
 ABI 0.33 增加 GoalType/GoalInfo 的 WorkProfile、后台频率原因及 Core-only SKIPPED。旧短配置仍有效，公共描述/查询按新 ABI 重编译。非默认 Goal 分类使用 REQUIRED type3/v5、snapshot v6；SKIPPED 调用使用 REQUIRED type21/v2，普通记录保持旧版。schema 2 不变，新版本详见 storage/records.md；不把格式规则视作新恢复实验已经执行。
 
 ABI 0.34 发布共享执行许可和本地 gate C 接口，独立库不依赖 Core（ADR-0049）。许可携带完整有界数值包络，草案控制头引用正式类型；未实现的停止账本/目标验证仍为草案。Core 配置和 arena、schema 2 不变，0.x 调用方重编译；本轮未决定设备 wire 格式。
+
+
+ABI 0.35 发布 observations/scenes/execution 头文件：有界 BOOL/I64 当前 boot 观察、Scene 精确持久启停、本地 Mock Executor/ExecutionBinding 及执行查询。config 追加四个零默认容量，旧短前缀不自动启用；ProviderRequest 追加许可指针，0.x Host/Provider/SDK 与 gate 消费者统一重编译。Scene 意图编号 16，执行原因 74/75，避免沿用 draft 冲突编号。schema 2 保持；新增 REQUIRED type22/v1 Scene、type9/v9 管理命令、type21/v3 物理调用尾部；旧 reader 明确拒绝并保留目录，本轮无迁移工具。设备 wire 格式仍未决定。

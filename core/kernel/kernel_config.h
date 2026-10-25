@@ -41,8 +41,12 @@ struct KernelCapacities {
     uint32_t call_capacity = 0; // Retained calls and Provider delivery slots; zero disables.
     uint32_t call_input_max_bytes = AYNI_CALL_INPUT_BYTES_DEFAULT;   // Complete canonical input.
     uint32_t call_result_max_bytes = AYNI_CALL_RESULT_BYTES_DEFAULT; // UTF-8 result stride.
-    uint32_t device_capacity = 0;    // Trusted device inventory, disabled by default.
-    uint32_t component_capacity = 0; // Trusted parent links, disabled by default.
+    uint32_t device_capacity = 0;            // Trusted device inventory, disabled by default.
+    uint32_t component_capacity = 0;         // Trusted parent links, disabled by default.
+    uint32_t executor_capacity = 0;          // Local catalogs and permit ownership slots.
+    uint32_t execution_binding_capacity = 0; // Static physical binding constraints.
+    uint32_t scene_capacity = 0; // Authority-owned declarations and durable owner preferences.
+    uint32_t observation_source_capacity = 0; // Static sources and current-boot samples.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -85,6 +89,11 @@ struct KernelStorage {
     void *devices = nullptr;              // DeviceCatalog identities; unused at zero capacity.
     void *components = nullptr;           // DeviceCatalog parent links; unused at zero capacity.
     void *call_runtime = nullptr; // Boot-local I/O ownership plus staging and receipt copies.
+    void *observation_sources = nullptr; // Catalog-owned types; unused at zero capacity.
+    void *scenes = nullptr;       // Authority-owned declarations/state and canonical byte pools.
+    void *observations = nullptr; // Knowledge-owned latest facts; unused at zero capacity.
+    void *execution_catalog = nullptr; // Copied executor ports and binding constraints.
+    void *permits = nullptr;           // Resource-owned volatile local leases and quarantine links.
 };
 
 } // namespace ayni::kernel
