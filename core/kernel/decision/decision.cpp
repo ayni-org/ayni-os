@@ -254,7 +254,7 @@ void record(work::TaskTable &tasks, uint32_t task_index, const DecisionBuffer &d
 DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
                                 const catalog::Strategy &strategy,
                                 const ayni_policy_output_v1 &output, Verdict verdict,
-                                CallRuntime *calls, OwnerClock clock) {
+                                CallRuntime &calls, OwnerClock clock) {
     work::WorkTables tables = model.tables();
     if (verdict.kind == Verdict::Kind::end && work::task_end_exhausts(tables, index, verdict.end)) {
         verdict = hold(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED);
@@ -274,7 +274,7 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
     case Verdict::Kind::call:
         record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
                stamp);
-        if (!calls->accept(index, stamp, clock.now_us(clock.ctx))) {
+        if (!calls.accept(index, stamp, clock.now_us())) {
             return DecisionResult::internal;
         }
         break;
@@ -328,14 +328,14 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime *calls) {
+                           CallRuntime &calls) {
     uint32_t index = 0;
     const DecisionAdmission admission{model, durable_seq};
     if (!model.tasks.next_ready(ready_before, index, {&admission, admission_ready})) {
         return DecisionResult::none;
     }
     const work::Task &task = model.tasks.at(index);
-    const auto authority = model.check_task_authority(index, clock.now_us(clock.ctx), durable_seq);
+    const auto authority = model.check_task_authority(index, clock.now_us(), durable_seq);
     if (authority.status != AYNI_OK) {
         if (authority.status == AYNI_BUSY) {
             return DecisionResult::none;
@@ -360,18 +360,14 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
         decisions.load_checkpoint(snapshot.checkpoint.state, strategy.max_checkpoint_bytes);
     // Nothing changes while the strategy runs (C-POLICY-001), so the task
     // it decides is still the one it saw.
-    if (calls != nullptr) {
-        calls->begin_decision(index, snapshot, output);
-    }
+    calls.begin_decision(index, snapshot, output);
     const ayni_status_t status =
         model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
-    if (calls != nullptr) {
-        calls->end_decision();
-    }
+    calls.end_decision();
 
     // A non-reentrant callback can still run past a Grant deadline. Discard all
     // returned progress/checkpoint output before committing if authority expired.
-    if (model.check_task_authority(index, clock.now_us(clock.ctx), durable_seq).status != AYNI_OK) {
+    if (model.check_task_authority(index, clock.now_us(), durable_seq).status != AYNI_OK) {
         model.pause_goal_authority(task.goal_index);
         return DecisionResult::applied;
     }
@@ -381,10 +377,7 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     }
     if (verdict.kind == Verdict::Kind::call) {
         const auto check =
-            calls == nullptr
-                ? authority::GrantCheck{AYNI_UNSUPPORTED, AYNI_REASON_INTENT_UNSUPPORTED}
-                : calls->check_proposal(index, decisions.at(0), clock.now_us(clock.ctx),
-                                        durable_seq);
+            calls.check_proposal(index, decisions.at(0), clock.now_us(), durable_seq);
         if (check.status != AYNI_OK) {
             verdict = hold(check.status, check.reason);
         }

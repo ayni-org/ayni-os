@@ -565,11 +565,20 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
     // White-box Kernel-module trust-boundary fault injection. Public sessions
     // never manufacture these facts; production must still refuse stale input
     // before the authority table, allocator or transition clock changes.
+    const ayni_host_v1 &host = KernelTestProbe::host(work.node.kernel());
     const auto apply = [&](ayni::kernel::WorkModel &target, const ayni::kernel::Intent &request,
                            uint64_t durable, ayni::kernel::IntentFailure &failure) {
         ayni::kernel::IntentOutcome outcome{};
-        return ayni::kernel::apply_intent(target, request, work.node.sim().now_us(), true, outcome,
-                                          failure, AYNI_OK, durable, {}, {});
+        const ayni::kernel::IntentContext context{
+            work.node.sim().now_us(),
+            durable,
+            true,
+            AYNI_OK,
+            {host.ctx, host.monotonic_now_us},
+            {&KernelTestProbe::ingress(work.node.kernel()), [](void *ingress) {
+                 return static_cast<ayni::kernel::EventIngress *>(ingress)->resume_boundary();
+             }}};
+        return ayni::kernel::apply_intent(target, request, context, outcome, failure);
     };
     for (uint32_t fault = 0; fault < 3; ++fault) {
         auto session = current;

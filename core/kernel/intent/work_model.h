@@ -38,18 +38,44 @@
 
 namespace ayni::kernel {
 
-// Narrow borrowed clock for admission and post-callback consumption. Production
-// callers supply the Host clock; standalone model tests may use fixed now_us.
-struct OwnerClock {
-    void *ctx = nullptr;                     // Borrowed for this synchronous call only.
-    uint64_t (*now_us)(void *ctx) = nullptr; // Monotonic microseconds; null uses call's sample.
+// The Host monotonic clock, borrowed for one synchronous owner call. A rule
+// takes the sample the kernel made at entry (now_us) for schedules and the
+// checks before any caller code runs, and samples this clock again for a
+// check after caller code returns (a goal type's export, a strategy's
+// decide), so a deadline that passed meanwhile counts (ADR-0051).
+class OwnerClock {
+  public:
+    OwnerClock(void *ctx, uint64_t (*read)(void *ctx)) : ctx_(ctx), now_us_(read) {}
+    uint64_t now_us() const { return now_us_(ctx_); }
+
+  private:
+    void *ctx_;
+    uint64_t (*now_us_)(void *ctx);
 };
 
-// Kernel-owned ingress sampling capability, borrowed for synchronous admission.
-// Only publication of a new explicit reauthorization calls sample, never retry.
-struct InputResumeSampler {
-    void *ctx = nullptr; // Borrowed ingress owner; none only when no sampler is supplied.
-    work::InputResumeBoundary (*sample)(void *) = nullptr; // Locked frontier; null is unavailable.
+// The ingress frontier, borrowed for one synchronous admission. Only the
+// publication of a new explicit reauthorization samples it, never a retry.
+class InputResumeSampler {
+  public:
+    InputResumeSampler(void *ctx, work::InputResumeBoundary (*read)(void *ctx))
+        : ctx_(ctx), sample_(read) {}
+    work::InputResumeBoundary sample() const { return sample_(ctx_); } // Taken under its lock.
+
+  private:
+    void *ctx_;
+    work::InputResumeBoundary (*sample_)(void *ctx);
+};
+
+// What ayni_submit_intent samples once for an intent; every rule reads
+// these. Nothing has a default: a durable_seq left out would read as "all
+// durable" and weaken the binding and Grant checks without a compile error.
+struct IntentContext {
+    uint64_t now_us;              // Host monotonic clock at entry; a new goal's schedule starts.
+    uint64_t durable_seq;         // The current writer's acknowledged prefix at entry.
+    bool has_room;                // ayni_kernel::storage_has_room(): a transition may start.
+    ayni_status_t storage_status; // StorageBudget::admission(): AYNI_OK or AYNI_STORAGE_FAILED.
+    OwnerClock clock;
+    InputResumeSampler input;
 };
 
 // One stable scan identity; an orphaned dedicated Grant may retain a Goal ID
@@ -98,9 +124,9 @@ struct WorkModel {
     // was that transition.
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
-    work::WorkTables tables(uint64_t durable_seq = UINT64_MAX) {
-        return {goals,           tasks,       agents,
-                &goal_authority, durable_seq, grants.has_compatibility_holds() ? &grants : nullptr};
+    work::WorkTables tables() {
+        return {goals, tasks, agents, goal_authority,
+                grants.has_compatibility_holds() ? &grants : nullptr};
     }
     // Export a staged immutable ceiling and select existing durable Grants.
     authority::GrantCheck prepare_goal_authority(const catalog::GoalType &type,
@@ -248,21 +274,18 @@ ayni_status_t open_session(WorkModel &model, const authority::Principal &princip
                            ayni_channel_t channel, uint64_t &out_session_id);
 
 // Steps 4 and 5 of ayni_submit_intent: the session, the command id, then
-// room for a transition (has_room) and the rules of the intent's kind;
-// applies the intent as one transition if they pass, and maps its command.
-// The kernel is RUNNING; now_us is the host monotonic clock, from which a
-// new goal's schedule starts. failure is reset, then says why on a refusal.
-ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
-                           IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status = AYNI_OK,
-                           uint64_t durable_seq = UINT64_MAX, OwnerClock clock = {},
-                           InputResumeSampler input = {});
+// room for a transition and the rules of the intent's kind; applies the
+// intent as one transition if they pass, and maps its command. The kernel
+// is RUNNING. failure is reset, then says why on a refusal.
+ayni_status_t apply_intent(WorkModel &model, const Intent &intent, const IntentContext &context,
+                           IntentOutcome &outcome, IntentFailure &failure);
 
 // Records a local input from source as an occurrence, due at now_us, of
-// every goal whose trigger takes it, all in one transition (ADR-0021).
-// Returns false, changing nothing, when no goal takes it.
+// every goal whose trigger takes it, all in one transition (ADR-0021);
+// input is the ingress frontier the input leaves. Returns false, changing
+// nothing, when no goal takes it.
 bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us,
-                       work::InputResumeBoundary input = {});
+                       work::InputResumeBoundary input);
 
 // Does the goals' next due work by now_us (work::find_due_work): expires a
 // goal, derives a task or skips occurrences, each as one transition.
@@ -278,7 +301,7 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
 // table, each goal along at most goal_depth_max ancestors, and the task
 // table only when WorkModel::next_due_work keeps no search.
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
-                      uint64_t durable_seq = UINT64_MAX);
+                      uint64_t durable_seq);
 
 } // namespace ayni::kernel
 

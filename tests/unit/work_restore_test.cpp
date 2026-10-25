@@ -1661,7 +1661,7 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id)),
               RecordUse::applied);
     admit_zero_task_fixture(replay, *model, task_id, 2);
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
     Goal cancelled = created_goal(replay_goal_id);
     cancelled.lifecycle = AYNI_GOAL_CANCELLED;
     cancelled.revision = 2;
@@ -1670,14 +1670,14 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     ayni::work::write_goal_state_record(cancelled, body.data());
     ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
     EXPECT_TRUE(replay.complete());
-    EXPECT_FALSE(replay.consistent());
+    EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     Task cancelled_task = created_task(task_id, 0, 2);
     cancelled_task.lifecycle = AYNI_TASK_CANCELLED;
     cancelled_task.cancel_revision = 2;
     std::vector<uint8_t> task_body(ayni::work::task_state_record_size);
     ayni::work::write_task_state_record(cancelled_task, task_body.data());
     ASSERT_EQ(feed(replay, 3, ayni::work::task_state_record_type, task_body), RecordUse::applied);
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
 }
 
 // Ending a goal ends its descendants, and stopping an instance ends its
@@ -1704,7 +1704,7 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
                   RecordUse::applied);
         admit_zero_goal_fixture(*model, UINT64_C(0x100000005), 2);
         admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
-        EXPECT_TRUE(replay.consistent());
+        EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
         Goal cancelled = created_goal(UINT64_C(0x100000004));
         cancelled.lifecycle = AYNI_GOAL_CANCELLED;
         cancelled.revision = 2;
@@ -1712,7 +1712,7 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
         std::vector<uint8_t> body(ayni::work::goal_state_record_size);
         ayni::work::write_goal_state_record(cancelled, body.data());
         ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
-        EXPECT_FALSE(replay.consistent());
+        EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     }
     {
         Model model(small_capacities(), true);
@@ -1723,10 +1723,10 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
                        goal_state_record(UINT64_C(0x100000004))),
                   RecordUse::applied);
         admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
-        EXPECT_TRUE(replay.consistent());
+        EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
         ASSERT_EQ((*model).agents.restore(owner_agent, owner, 2, AYNI_AGENT_STOPPED, {102, 2}),
                   AgentTable::Restore::restored);
-        EXPECT_FALSE(replay.consistent());
+        EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     }
 }
 

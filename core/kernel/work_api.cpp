@@ -85,11 +85,13 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     const uint64_t now_us = kernel->host.monotonic_now_us(kernel->host.ctx);
     const uint64_t first_seq = kernel->work.transitions.next_commit_seq();
     const bool log_was_idle = kernel->log.idle();
-    status = ayni::kernel::apply_intent(kernel->work, decoded, now_us, kernel->storage_has_room(),
-                                        outcome, failure, kernel->storage_admission_status(),
-                                        kernel->log.durable_seq(),
-                                        {kernel->host.ctx, kernel->host.monotonic_now_us},
-                                        {&kernel->ingress, sample_input_boundary});
+    const ayni::kernel::IntentContext context{now_us,
+                                              kernel->log.durable_seq(),
+                                              kernel->storage_has_room(),
+                                              kernel->storage_admission_status(),
+                                              {kernel->host.ctx, kernel->host.monotonic_now_us},
+                                              {&kernel->ingress, sample_input_boundary}};
+    status = ayni::kernel::apply_intent(kernel->work, decoded, context, outcome, failure);
     if (status == AYNI_OK && decoded.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
         kernel->storage_has_room() && kernel->storage_admission_status() == AYNI_OK &&
         kernel->work.transitions.next_commit_seq() == first_seq) {

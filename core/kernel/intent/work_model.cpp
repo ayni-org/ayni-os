@@ -171,7 +171,7 @@ bool WorkModel::next_due_work(uint64_t now_us, uint64_t durable_seq, work::DueWo
     }
     uint64_t next_us = work::no_time;
     due_search_kept_ =
-        !work::find_due_work(tables(durable_seq), now_us, id_left, out_work, next_us);
+        !work::find_due_work(tables(), now_us, durable_seq, id_left, out_work, next_us);
     if (!due_search_kept_) {
         out_next_us = now_us;
         return true;

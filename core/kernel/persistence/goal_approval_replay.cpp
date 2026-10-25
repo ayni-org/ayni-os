@@ -232,7 +232,7 @@ bool WorkReplay::pair_approval_command(const CommandMapping &mapping, ayni_bytes
         request.expected_revision != pair.revision ||
         request.approval.missing_mask != pair.missing_mask ||
         !work_authority_result_matches(model_.goal_authority.at(pair.goal_index), result_bytes) ||
-        !matches_goal_approval(mapping, canonical, result_bytes)) {
+        !matches_goal_approval(mapping, canonical, result_bytes, unbounded, unbounded)) {
         return false;
     }
     pairing_.approval->stage = ApprovalPair::Stage::complete;

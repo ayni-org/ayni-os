@@ -580,10 +580,8 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
 
 } // namespace
 
-ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
-                           IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status, uint64_t durable_seq, OwnerClock clock,
-                           InputResumeSampler input) {
+ayni_status_t apply_intent(WorkModel &model, const Intent &intent, const IntentContext &context,
+                           IntentOutcome &outcome, IntentFailure &failure) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
@@ -592,7 +590,7 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     }
     const IntentTraits &traits = intent_traits(intent.kind);
     if (traits.session == SessionRule::management_on_retry &&
-        !bound_management_session(model, *session, durable_seq)) {
+        !bound_management_session(model, *session, context.durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
     const uint64_t digest = intent.command_id != 0U && traits.identity == CommandIdentity::ordinary
@@ -628,8 +626,8 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     // A revocation reserves its pending control instead, independent of
     // storage (ADR-0031).
     if (traits.identity != CommandIdentity::revoke) {
-        const auto room =
-            check_room(model, intent, session->principal_id, has_room, storage_status, failure);
+        const auto room = check_room(model, intent, session->principal_id, context.has_room,
+                                     context.storage_status, failure);
         if (room != AYNI_OK) {
             return room;
         }
@@ -637,14 +635,15 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
     // The operation's own rules start here, so a retry returned above
     // without this check.
     if (traits.session == SessionRule::management &&
-        !bound_management_session(model, *session, durable_seq)) {
+        !bound_management_session(model, *session, context.durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
     if (traits.identity == CommandIdentity::revoke) {
         return accept_revoke(model, intent, *session, outcome, failure);
     }
     const ayni_status_t status =
-        apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock, input);
+        apply_rules(model, intent, *session, context.now_us, context.durable_seq, outcome, failure,
+                    context.clock, context.input);
     return status == AYNI_OK && intent.command_id != 0U
                ? remember_command(model, intent, session->principal_id, digest, outcome)
                : status;

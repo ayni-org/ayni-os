@@ -37,19 +37,18 @@ bool lifecycle_allows(const WorkTables &tables, uint32_t goal_index, uint64_t ow
 // Derivation additionally requires each ancestor's complete durable binding.
 // Both walks are bounded by goal_depth_max; neither repeats Grant validation.
 bool may_advance(const WorkTables &tables, uint32_t goal_index, uint64_t owner_instance_id,
-                 const After &after) {
+                 uint64_t durable_seq, const After &after) {
     if (!lifecycle_allows(tables, goal_index, owner_instance_id, after)) {
         return false;
     }
-    return tables.authority == nullptr ||
-           tables.goals.visit_lineage(goal_index, [&](uint32_t index) {
-               const auto &goal = tables.goals.at(index);
-               return tables.authority->authorized(index, goal.goal_id) &&
-                      !replacement_binding_pending(tables.authority->at(index).binding,
-                                                   goal.created.commit_seq, tables.durable_seq) &&
-                      (tables.grants == nullptr ||
-                       goal_references_compatible(tables.authority->at(index), *tables.grants));
-           });
+    return tables.goals.visit_lineage(goal_index, [&](uint32_t index) {
+        const auto &goal = tables.goals.at(index);
+        return tables.authority.authorized(index, goal.goal_id) &&
+               !replacement_binding_pending(tables.authority.at(index).binding,
+                                            goal.created.commit_seq, durable_seq) &&
+               (tables.grants == nullptr ||
+                goal_references_compatible(tables.authority.at(index), *tables.grants));
+    });
 }
 
 // The change a task the change reaches undergoes, if any.
@@ -335,8 +334,8 @@ ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bo
 // So an unbounded wait, added to when an occurrence fell due, never ends.
 static_assert(AYNI_OCCURRENCE_WAIT_UNBOUNDED == no_time, "unbounded waits saturate");
 
-bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
-                   uint64_t &out_next_us) {
+bool find_due_work(const WorkTables &tables, uint64_t now_us, uint64_t durable_seq, bool id_left,
+                   DueWork &out_work, uint64_t &out_next_us) {
     const ayni_reason_t table = table_blocker(tables.tasks, id_left);
     const HeldGoals held(tables.tasks);
     // A terminal goal has neither an expiry nor a next occurrence.
@@ -358,7 +357,7 @@ bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueW
         // A blocker only puts the due work later, so a goal whose next
         // occurrence does not come first cannot win.
         if (!comes_first(tables.goals, goal.cursor.next_due_us, index, advances_us, advancing) ||
-            !may_advance(tables, index, goal.owner_instance_id, After{})) {
+            !may_advance(tables, index, goal.owner_instance_id, durable_seq, After{})) {
             continue;
         }
         const ayni_reason_t goal_blocked = goal_blocker(held, index, table);

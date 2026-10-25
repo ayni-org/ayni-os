@@ -102,7 +102,7 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
     }
     // Exporters can consume time without mutating Kernel state. Select against
     // the post-export clock, not the original trigger-schedule anchor.
-    now_us = clock.now_us != nullptr ? clock.now_us(clock.ctx) : now_us;
+    now_us = clock.now_us();
     if (!parent_covers_authority(create.parent_goal_id, out)) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
     }

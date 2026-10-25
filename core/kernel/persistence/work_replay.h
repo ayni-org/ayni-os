@@ -37,6 +37,10 @@ class WorkReplay {
     bool matches_scene_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
     // model outlives the replay.
     explicit WorkReplay(WorkModel &model) : model_(model) {}
+    // No transition or boot epoch bound, said explicitly: a journal record
+    // already precedes its batch, and entering RUNNING rechecks the tables
+    // whose epochs BootSequence bounded. A snapshot passes its own bounds.
+    static constexpr uint64_t unbounded = UINT64_MAX;
 
     WorkReplay(const WorkReplay &) = delete;
     WorkReplay &operator=(const WorkReplay &) = delete;
@@ -64,21 +68,20 @@ class WorkReplay {
     // Snapshot proof allows legitimately reclaimed history; journal pairing
     // separately requires every new Grant, dependency and activation record.
     bool matches_goal_approval(const CommandMapping &mapping, ayni_bytes_v1 canonical,
-                               ayni_bytes_v1 result_bytes, uint64_t transition_limit = UINT64_MAX,
-                               uint64_t boot_epoch_limit = UINT64_MAX) const;
+                               ayni_bytes_v1 result_bytes, uint64_t transition_limit,
+                               uint64_t boot_epoch_limit) const;
 
     // Historical reauthorization result uses its saved choices, never current references.
     bool matches_goal_reauthorization(const CommandMapping &mapping, ayni_bytes_v1 canonical,
-                                      ayni_bytes_v1 result_bytes,
-                                      uint64_t transition_limit = UINT64_MAX,
-                                      uint64_t boot_epoch_limit = UINT64_MAX) const;
+                                      ayni_bytes_v1 result_bytes, uint64_t transition_limit,
+                                      uint64_t boot_epoch_limit) const;
 
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
-    bool complete() const { return pairing_.complete() && calls_consistent(UINT64_MAX); }
+    bool complete() const { return pairing_.complete() && calls_consistent(unbounded); }
     // After the last batch: whether the tables hold a state a transition
     // leaves, beyond what each record's own checks cover.
-    bool consistent(uint64_t boot_epoch_limit = UINT64_MAX) const;
+    bool consistent(uint64_t boot_epoch_limit) const;
     // Only once complete() and consistent(): holds and faults what this boot
     // lacks, then puts every wait on the clock at now_us.
     void finish(uint64_t now_us);

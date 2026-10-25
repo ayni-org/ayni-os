@@ -239,7 +239,7 @@ void ayni_kernel::apply_ready_work(StepBudget &progress) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
             const auto decided = ayni::kernel::decide_next(
                 work, decisions, ready_before, progress.started_us, log.durable_seq(),
-                {host.ctx, host.monotonic_now_us}, &calls);
+                {host.ctx, host.monotonic_now_us}, calls);
             if (decided == ayni::kernel::DecisionResult::none) {
                 break;
             }
@@ -491,7 +491,7 @@ void ayni_kernel::settle_recovery() {
 // Transitions follow the boot batch, and the work model starts before any
 // intent is accepted. The log takes the storage buffer over from recovery.
 void ayni_kernel::enter_running() {
-    if (!replay.complete() || !replay.consistent()) {
+    if (!replay.complete() || !replay.consistent(ayni::kernel::WorkReplay::unbounded)) {
         replay.discard();
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         return;

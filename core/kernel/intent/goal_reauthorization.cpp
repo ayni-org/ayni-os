@@ -112,10 +112,7 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
 // only now; publication contains no caller callback, allocation or new choice.
 bool publish(WorkModel &model, const ReauthorizationPlan &plan, uint64_t now_us,
              InputResumeSampler input, IntentOutcome &outcome) {
-    if (input.sample == nullptr) {
-        return false;
-    }
-    const auto boundary = input.sample(input.ctx);
+    const auto boundary = input.sample();
     if (boundary.incarnation == 0U || !work::valid_input_resume_boundary(boundary)) {
         return false;
     }

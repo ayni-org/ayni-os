@@ -73,7 +73,9 @@ class DecisionBuffer {
 
 // Has the strategy of the task READY longest among those READY since before
 // commit_seq ready_before decide it, as one item and transition; now_us is
-// the start of the step. Returns false, calling nothing, when no such task
+// the start of the step, and the task's authority is checked at clock's
+// reading before and after decide. calls stages, checks and accepts a call
+// the strategy proposes. Returns false, calling nothing, when no such task
 // is left. Every goal type with tasks names a strategy that ayni_start
 // resolved.
 enum class DecisionResult {
@@ -83,10 +85,10 @@ enum class DecisionResult {
 }; // No work, one publication, or invariant failure.
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime *calls = nullptr);
+                           CallRuntime &calls);
 
 // Whether a task waits for a decision; the step reports it as more_ready.
-bool awaits_decision(const WorkModel &model, uint64_t durable_seq = UINT64_MAX);
+bool awaits_decision(const WorkModel &model, uint64_t durable_seq);
 
 } // namespace ayni::kernel
 

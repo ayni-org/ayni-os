@@ -1974,7 +1974,7 @@ TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_pro
     }
     ASSERT_TRUE(saw_child);
     EXPECT_TRUE(replay.complete());
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
 // C-STORE-015: one missing command cannot be hidden by another Grant's create record.
@@ -2083,7 +2083,7 @@ TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_
                   RecordUse::applied);
     }
     EXPECT_TRUE(replay.complete());
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
 } // namespace

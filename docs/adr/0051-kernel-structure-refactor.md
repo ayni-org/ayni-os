@@ -2,7 +2,7 @@
 
 - **状态**：已接受（只改结构、不改运行行为；用户 2026-10-25 同意按架构审查第 6 节顺序整改，6 步合为一个 PR）
 - **日期**：2026-10-25
-- **关联**：ADR-0008、ADR-0011、ADR-0014；`AGENTS.md` 模块设计与可读性要求；架构静态审查（基线 `e089a22`）F02、F03、F04、F05、F06、F07、F08、F13、F17、F20；ADR-0052
+- **关联**：ADR-0008、ADR-0011、ADR-0014；`AGENTS.md` 模块设计与可读性要求；架构静态审查（基线 `e089a22`）F02、F03、F04、F05、F06、F07、F08、F13、F14、F17、F20；ADR-0052
 
 ## 背景
 
@@ -50,6 +50,8 @@
 
 11. **到期工作的搜索按事务失效。** `ayni_step` 每步问一次是否有到期工作；为了不每步扫描全表，上一次“没有到期工作”的结果被保留，原由 `due_work_changed` 标志失效，标志在 10 个文件的 16 处手工置位。漏掉一处，Goal 的派生或过期就会推迟到下一次无关的变化。现在 `WorkModel::next_due_work` 保留这一结果，同时记下搜索时的 `transitions.next_commit_seq()`、`durable_seq`、是否还有 ID 和下次到期时间；任何一项变了或到了那个时间，才重新搜索。工作表的修改都在事务中，事务本身就让结果失效，修改方无需知道到期搜索。事务之外修改工作表的只有恢复：`WorkReplay` 结束时的重新锚定与持有、重载前的丢弃，以及 `CallRuntime` 恢复调用时因绑定变化而持有 Task，这三处调用 `forget_due_work()`。观测发布与资源释放不改工作表，不再置位。意图仍经 `IntentOutcome::due_work` 唤醒拥有者。保留的字段改为私有，与外呼标志相邻放置，`WorkModel` 的尺寸不变。
 
+12. **生产接口不再有哨兵默认值与可空依赖。** `durable_seq = UINT64_MAX`（意为“全部已持久”）原是 `apply_intent`、`WorkModel::tables`、`refresh_due_work`、`awaits_decision` 与 `work::WorkTables` 的默认值，漏传会在编译无报错的情况下削弱绑定与 Grant 检查。现在 `WorkTables` 不再携带 `durable_seq`，只有读它的 `find_due_work` 以参数接收，Goal 授权表改为引用；其余函数都要求调用方给出。`ayni_submit_intent` 一次取样的内容收为 `IntentContext`（进入时的时钟读数、持久前缀、能否开始事务、存储准入状态、时钟、输入前沿采样），`apply_intent` 的参数由 10 个减为 5 个。`OwnerClock` 与 `InputResumeSampler` 改为构造时必须给出上下文与函数的类，删除为空时“改用调用方读数”和“无法采样”的分支；`decide_next` 以引用接收 `CallRuntime`，删除为空时把调用提议判为不支持的分支。`WorkReplay` 的事务与纪元上限不再默认无界，日志配对与进入 RUNNING 时的复查显式传入 `WorkReplay::unbounded`。时钟规则写在 `OwnerClock` 与 `CallRuntime` 的注释里：进入时的读数用于调度和外呼前的检查，外呼返回后的检查重新读时钟。生产调用方原本就传入完整参数，行为不变。work 层单表接口（`GoalTable` 的本地输入触发、`GoalAuthorityTable::bind`）保留可选参数，供不建授权表的单表测试使用；kernel 只经 `WorkModel` 调用它们，并总是给出。
+
 ## 后果
 
 - 依赖检查覆盖模块根目录；新增根目录与子目录之间的包含须先在 `architecture.json` 声明，引入环的声明会让检查直接失败。在未整改的 main 上运行新规则会报出 62 处未声明的包含。
@@ -72,6 +74,7 @@
 - **一次迁移全部存储**：Grant、Goal、Task 的日志记录随命令种类变换版本，快照与日志的记录体也不同，宜先有配对数据表；本次只迁移结构最独立的 call 与 Scene，验证契约的形状。
 - **Grant 纪元校验移进 `GrantTable`**：`GrantTable` 不知道启动纪元，需要新增参数；Scene、调用与 Goal 授权的纪元规则都在重放里，放在一起便于审阅。
 - **`ExecutionControl` 直接持有 `CallRuntime` 的引用**：控制需要读取传输槽，双向引用会让 `call` 与 `execution` 两个目录成环；改用函数指针加上下文的窄接口，与 `TaskTable`、`CallTable` 的保留回调相同。
+- **`ayni_step` 的各推进函数共用一个 `StepContext`**：决定需要时钟与调用运行时，到期工作需要授权时刻，存储推进两者都不要，合成一个结构只会让每个函数多出不用的字段；只对字段齐全、参数最多的意图入口这样做。
 - **所有管理会话都在命令查找之前检查**：会改变 Grant 创建、撤销与目标审批的重试结果与错误优先级（现在任一会话都能取回已接受命令的首次结果），超出只改结构的范围。表中显式区分两种规则，是否统一另行决定。
 
 ## 验证
@@ -83,5 +86,6 @@
 - `persistent_store_test`：列表中每个存储的记录类型都在登记表里且按日志顺序排列；契约存储的头部无论版本是否已知都必须带 REQUIRED，已知版本在日志和快照中都可分类；启用一个存储后，批次上限与快照载荷上限恰好增加它声明的份额，单记录上限不小于它的最大记录。去掉分类中对契约存储的 REQUIRED 检查会让该测试失败。现有日志、快照与恢复测试（含 call、Scene 的写读和逆序拒绝，以及 Grant 未来纪元 ID 的拒绝）不改期望值并通过。
 - 抽出 `ExecutionControl` 不改任何测试：`managed_execution_test` 与其余调用、执行测试不变并通过；覆盖率见 PR。
 - `WorkTrigger.kept_due_work_search_answers_as_a_new_search_would`：固定种子的 400 步随机操作（创建延时与周期 Goal、暂停、恢复、取消、实例暂停与恢复、推进时钟、step、重启）中，每步之后比较保留的搜索与强制重新搜索的结果与下次时间，并要求其中多于 20 次由保留的搜索给出时间。让保留的搜索忽略事务会使它失败。
+- 删除默认值与空分支后，编译器报出的调用点只在测试中（Grant 信任边界测试、重放一致性测试）；生产调用点原本就传入完整参数。
 - 迁移到 probe 后测试数量与结果不变；搜索 `tests/` 中 `kernel()->`、`kernel_->`、`kernel->` 后接 `ayni_kernel` 成员的写法，结果为 0。
 - 现有完整测试在 GCC ASan/UBSan 下通过；命令与结果见 PR。

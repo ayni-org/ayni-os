@@ -537,7 +537,8 @@ TEST(GoalAuthorityPersistence, a_terminal_goal_releases_its_grant_only_after_wri
     source.work.node().recover();
     EXPECT_EQ(source.create_grant().status, AYNI_OK);
     // Historical terminal metadata can now name its legally reclaimed Grant.
-    EXPECT_TRUE(KernelTestProbe::replay(source.work.kernel()).consistent());
+    EXPECT_TRUE(KernelTestProbe::replay(source.work.kernel())
+                    .consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
 // ADR-0037 decision 9: clearing a reused slot must not erase the old release fence.

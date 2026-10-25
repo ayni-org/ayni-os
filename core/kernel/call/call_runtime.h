@@ -25,6 +25,11 @@ struct CallCatalogs {
 // Owns only boot-local dispatch coordination, one staged decision and one copied
 // receipt. Work/CallTable remains the sole owner of logical identities/results;
 // physical execution is ExecutionControl's, asked at each gate.
+//
+// A now_us argument is the step's start, for scheduling, queue order and
+// delivery deadlines. The Grant check right before dispatch, a result's
+// observation dependencies and a release's queue time read host_'s clock
+// again, so time spent in the step's earlier callouts counts (ADR-0051).
 class CallRuntime {
   public:
     struct Limits {
