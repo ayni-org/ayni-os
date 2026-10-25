@@ -88,3 +88,7 @@ D 的 Grant metadata 新增 revoker/cursor/独立 cleanup_stamp，snapshot Grant
 `call_capability_capacity`、`provider_capacity`、`binding_capacity`、`call_capacity` 缺省或显式 0 均为关闭；原基础/Hello 配置不自动分配全部调用表。启用调用时，输入 canonical stride 默认 4096 B、最多 131072 B，结果默认 4096 B、最多 65536 B；每个契约的正文上限还须在对应 stride 内。CallTable、ProviderMailbox、CallRuntime staging/receipt 与原域字节由同一 caller arena 预算，创建后不扩容。Call 槽上限 256，保留 UNKNOWN 也占槽，不能自动淘汰。
 
 每个 Task 的步骤上限计算本地完成步骤和已接受调用 step_key 的并集。失败调用不释放该身份；模型次数另由 Task owner 保存。管理查询对账只占独立有界 Provider 完成槽，不重新占用原执行资源或模型调用次数。
+
+## ABI 0.33 工作频率
+
+后台 GoalType 只接受 INTERVAL，默认最短 300,000,000 μs，可信配置可设有限值且不得小于 AYNI_TRIGGER_PERIOD_MIN_US；非后台类型的频率字段须为 0。后台派生前 occurrence 等待必须有限且不超过 30,000,000 μs；提醒必须无界等待。Goal 请求小于该下限时返回 INVALID_ARGUMENT/BACKGROUND_FREQUENCY。优先级及等待上限由可信分类决定，不由模型提高；这是每个 Goal 的运行频率约束，不是 Agent 累积费用或调用额度。

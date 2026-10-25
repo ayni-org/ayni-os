@@ -53,3 +53,5 @@ ABI 0.30（ADR-0043）追加 Task 模型计数查询、启动硬上限、kind13 
 ABI 0.31 发布 `calls.h`、Provider/Binding、单次策略调用、所有者查询对账与等待超时的显式恢复，扩展 config/TaskInfo/strategy snapshot/output；0.x 调用方须重新编译并精确匹配次版本。草案 Provider 头只转包含正式头，不保留第二套同名结构。存储 schema 仍为 2，通过 REQUIRED type21/v1、type6/v8–12、type9/v7–8 显式拒绝旧 reader；ABI、schema 与记录版本分别管理。
 
 ABI 0.32（ADR-0046）扩展 Resource 描述/查询并增加 Device/Component 容量、注册和复制查询；配置尾追加字段，旧短配置对应新表关闭。0.x ABI 次版本精确匹配，旧二进制调用方必须重编译。草案 Device 重复定义移除，正式类型仅来自 `resources.h`。没有新增持久记录，storage schema 仍为 2；资源占用/健康不从旧 boot 恢复。
+
+ABI 0.33 增加 GoalType/GoalInfo 的 WorkProfile、后台频率原因及 Core-only SKIPPED。旧短配置仍有效，公共描述/查询按新 ABI 重编译。非默认 Goal 分类使用 REQUIRED type3/v5、snapshot v6；SKIPPED 调用使用 REQUIRED type21/v2，普通记录保持旧版。schema 2 不变，新版本详见 storage/records.md；不把格式规则视作新恢复实验已经执行。

@@ -132,3 +132,5 @@ ABI 0.25 起，`ayni_post_event` 在同一 ingress 实例的 u64 输入顺序耗
 - `AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED`（14）表示 Host/Provider 共用请求身份序列已耗尽，拒绝继续分配而不回绕。它是 Kernel restriction，不是原因码。
 
 ABI 0.32 增加调用等待诊断 `AYNI_CALL_WAIT_CONFLICT`（9）：其他同冲突域资源被占用，当前调用尚未准入。它是 wait 枚举，不是错误原因码；若对方处于停止隔离则仍报告 `AYNI_CALL_WAIT_QUARANTINED`。
+
+ABI 0.33 增加 `AYNI_REASON_BACKGROUND_FREQUENCY`（73），属于 `INVALID_ARGUMENT`：创建参数中的周期短于可信后台频率下限。`AYNI_CALL_SKIPPED`（8）是 Core 专用终态，不是 Provider 回执；表示资源等待到期且未派发，诊断为 `EXPIRED/RESOURCE_WAIT`，没有外部效果。

@@ -341,3 +341,9 @@ type9/v7 使用 60 B 精确命令外壳，加 kind14/revision u32 与 call_id u6
 快照在 Tasks 后、authority cleanup/commands 前按稳定 call_id 保存全部调用。Body codec、journal 与 snapshot 共用表示和验证。每个 transition 最多改变一个 Call；容量预算含最大完整行及相应 Task/命令。新 reader 保留旧默认 Task 编码读取；旧 reader 遇 REQUIRED 新调用记录/状态版本显式拒绝，不修改旧目录。没有迁移工具。新的恢复、故障和中断清理专项仍未验证。
 
 资源等待超时保留选定调用和模型次数，以 EXPIRED/RESOURCE_WAIT 叠加在原 Task 用户生命周期之上。普通 pause/resume 保留此原因；显式恢复使用 type6/v12（56 B，与 v8 相同字段），只清除此原因、revision+1，其他状态不变；紧随 type9/v8 的所有者命令。命令沿用 60 B 外壳与 16 B 规范 target 编码：kind15 u32、原 Task revision u32、task_id u64，共 76 B；快照另附原 commit_seq。v12/v8 必须为独立原子批次，不能单独恢复或夹带其他更新。快照仍以 v8 表达当前 Task 事实。
+
+## ABI 0.33：工作分类与后台跳过（ADR-0047）
+
+`GOAL` type3/v5（journal）、v6（snapshot）仅用于非默认 WorkProfile，均 REQUIRED。基础 body 保留 type3/v3 的字段顺序，在 parameters 字节串之后追加 u32 work_class、u64 background_period_min_us，共 12 B；固定长度由 108 B 增至 120 B。profile 的默认 ordinary/0 仍使用旧格式。v6 的创建 stamp、当前序号与 GoalState 尾沿 v4，追加 profile 位于基础 body 内，尾的位置跟随该 body 长度。类型和频率按同一 WorkProfile 校验；父/任务/授权配对规则保持，v5/v6 要求已有授权事实。
+
+`CALL_STATE` type21/v2 与 v1 字节布局相同，仅用于 Core 专用 SKIPPED：status=EXPIRED、reason=RESOURCE_WAIT、attempt=0、正文为空、明确未派发；Action 可缺失，或为尚未递交的本地取消证明。跨表检查要求原 Goal 保存 BACKGROUND profile，同批 Task 为 EXPIRED 并移除选中调用，保留调用身份、接受次数和步骤占用。正常调用继续 v1；旧 reader 遇到新 REQUIRED 版本明确拒绝，不把未知结果改为跳过。
