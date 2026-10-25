@@ -31,6 +31,7 @@ include(cmake/AyniCommon.cmake)
 add_subdirectory(core)
 add_subdirectory(hosts/native)
 add_subdirectory(hosts/sim)
+add_subdirectory(providers/mock)
 add_subdirectory(runtime/native_node)
 add_subdirectory(targets/simulator)
 
