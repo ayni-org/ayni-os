@@ -7,6 +7,7 @@
 #include "durability/batch/record_body.h"
 #include "durability/journal/journal_ring.h"
 #include "kernel/command/command_records.h"
+#include "kernel/config/store_limits.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
 #include "work/call/call_records.h"
@@ -405,9 +406,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
             record_bytes(work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
     if (capacities.call_capacity != 0U) {
-        size += record_bytes(work::call_record_max(
-            {capacities.call_capacity, capacities.authority_scope_max_bytes,
-             capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+        size += record_bytes(work::call_record_max(call_limits(capacities)));
     }
     if (capacities.scene_capacity != 0) {
         size += record_bytes(authority::scene_record_max(capacities.authority_scope_max_bytes));
@@ -430,9 +429,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += record_bytes(authority::grant_revocation_record_size);
     size += record_bytes(authority::grant_revoked_state_record_size);
     size += record_bytes(authority::grant_revocation_progress_record_size);
-    size += record_bytes(command_record_max(exact_command_max_bytes(
-        capacities.authority_scope_max_bytes, capacities.goal_parameter_max_bytes,
-        capacities.goal_requirement_capacity)));
+    size += record_bytes(command_record_max(command_limits(capacities).canonical_max_bytes));
     return size;
 }
 

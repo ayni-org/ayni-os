@@ -7,6 +7,7 @@
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/command/command_records.h"
+#include "kernel/config/store_limits.h"
 #include "kernel/persistence/work_replay.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
@@ -44,10 +45,7 @@ uint32_t command_size(const CommandMapping &mapping) {
     return command_record_size_for(mapping) + command_tail_size;
 }
 uint32_t command_max(const KernelCapacities &capacities) {
-    return command_record_max(exact_command_max_bytes(capacities.authority_scope_max_bytes,
-                                                      capacities.goal_parameter_max_bytes,
-                                                      capacities.goal_requirement_capacity)) +
-           command_tail_size;
+    return command_record_max(command_limits(capacities).canonical_max_bytes) + command_tail_size;
 }
 
 void write_stamp(uint8_t *at, uint64_t transition_id, uint64_t commit_seq) {
@@ -139,10 +137,7 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     size =
         maximum(size, authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
     if (capacities.call_capacity != 0U) {
-        size =
-            maximum(size, work::call_record_max(
-                              {capacities.call_capacity, capacities.authority_scope_max_bytes,
-                               capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+        size = maximum(size, work::call_record_max(call_limits(capacities)));
     }
     if (capacities.scene_capacity != 0) {
         size = maximum(size, authority::scene_record_max(capacities.authority_scope_max_bytes));
@@ -173,11 +168,8 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
          record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size += uint64_t{capacities.task_capacity} *
             (record_prefix + work::task_authority_record_max(capacities.goal_requirement_capacity));
-    size +=
-        uint64_t{capacities.call_capacity} *
-        (record_prefix + work::call_record_max(
-                             {capacities.call_capacity, capacities.authority_scope_max_bytes,
-                              capacities.call_input_max_bytes, capacities.call_result_max_bytes}));
+    size += uint64_t{capacities.call_capacity} *
+            (record_prefix + work::call_record_max(call_limits(capacities)));
     size += uint64_t{capacities.scene_capacity} *
             (record_prefix + authority::scene_record_max(capacities.authority_scope_max_bytes));
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *

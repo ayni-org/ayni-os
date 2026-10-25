@@ -6,6 +6,8 @@
 
 #include <ayni/ayni.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace ayni::kernel {
@@ -61,39 +63,63 @@ struct KernelLimits {
     uint32_t task_model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT;
 };
 
-// The bounded stores that follow the kernel in the caller's memory block.
-struct KernelStorage {
-    void *ingress;
-    void *completions;
-    uint8_t *storage_buffer;
-    void *agents;
-    void *goal_types;
-    void *goals;
-    void *sessions;
-    void *tasks;
-    void *strategies;
-    void *decisions;
-    void *commands;
-    void *capabilities;
-    void *grants;
-    void *goal_authority; // Goal-owned ceilings/references, one slot per Goal index.
-    void *task_authority; // Task-owned admission references, one slot per stable Task slot.
-    void *resource_catalog = nullptr; // Catalog-owned descriptions; null iff disabled.
-    void *resource_states = nullptr;  // Resource-owned health/occupancy; null iff catalog disabled.
-    void *resource_requests = nullptr; // Resource-owned queue/claims; null iff queue disabled.
-    void *call_capabilities = nullptr; // Catalog-owned call semantics; null iff disabled.
-    void *providers = nullptr;         // Catalog-owned offers/callbacks; null iff disabled.
-    void *bindings = nullptr;          // Catalog-owned exact selections; null iff disabled.
-    void *calls = nullptr; // Work-owned identities, state and bodies; null iff disabled.
-    void *provider_completions = nullptr; // Reliable delivery storage, separate from Host slots.
-    void *devices = nullptr;              // DeviceCatalog identities; unused at zero capacity.
-    void *components = nullptr;           // DeviceCatalog parent links; unused at zero capacity.
-    void *call_runtime = nullptr; // Boot-local I/O ownership plus staging and receipt copies.
-    void *observation_sources = nullptr; // Catalog-owned types; unused at zero capacity.
-    void *scenes = nullptr;       // Authority-owned declarations/state and canonical byte pools.
-    void *observations = nullptr; // Knowledge-owned latest facts; unused at zero capacity.
-    void *execution_catalog = nullptr; // Copied executor ports and binding constraints.
-    void *permits = nullptr;           // Resource-owned volatile local leases and quarantine links.
+// The bounded stores that follow the kernel in the caller's memory block, in
+// the order layout_for places them (ADR-0014). The comment names each
+// store's owner. Every store, including one whose capacity is zero, has an
+// entry here, so a new store is added once and layout_for, storage_at and the
+// arena test reach it by name (ADR-0051).
+enum class Store : uint32_t {
+    ingress,              // EventIngress: queued events and their bodies.
+    completions,          // CompletionPool: Host completion slots.
+    storage_buffer,       // Bytes of the storage I/O; needs no alignment.
+    agents,               // AgentTable.
+    goal_types,           // GoalTypeRegistry.
+    goals,                // GoalTable.
+    sessions,             // SessionTable.
+    tasks,                // TaskTable.
+    strategies,           // StrategyRegistry.
+    decisions,            // DecisionBuffer: one decision's views, intents and checkpoint.
+    commands,             // CommandTable: windows, exact requests and pending revocations.
+    capabilities,         // CapabilityRegistry.
+    grants,               // GrantTable, with its Gates and both byte regions.
+    goal_authority,       // Goal-owned ceilings/references, one slot per Goal index.
+    task_authority,       // Task-owned admission references, one slot per stable Task slot.
+    resource_catalog,     // ResourceRegistry: immutable descriptions, no live state.
+    resource_states,      // ResourceAdmission: live occupancy/health, never persistent.
+    resource_requests,    // ResourceAdmission: bounded pending/held resource groups.
+    devices,              // DeviceCatalog: copied immutable device identities.
+    components,           // DeviceCatalog: copied component-to-device relationships.
+    call_capabilities,    // CallCapabilityRegistry: copied execution contracts.
+    providers,            // ProviderRegistry: trusted offers and callback descriptors.
+    bindings,             // BindingRegistry: immutable exact implementation selections.
+    calls,                // CallTable: work-owned identities, state and bodies.
+    call_runtime,         // CallRuntime: boot-local I/O ownership, staging and receipt copies.
+    provider_completions, // ProviderMailbox: reliable delivery, separate from Host slots.
+    execution_catalog,    // ExecutionRegistry: copied executor ports and binding constraints.
+    permits,              // PermitTable: volatile local leases and quarantine links.
+    scenes,               // Scenes: declarations, saved preferences and canonical byte pools.
+    observation_sources,  // ObservationSources: copied source descriptions.
+    observations,         // ObservationTable: the current boot's latest sample per source.
+    count,                // Not a store: the number of stores.
+};
+
+constexpr std::size_t store_count = static_cast<std::size_t>(Store::count);
+
+// Where each store's memory starts. ayni_create fills every entry from the
+// layout (storage_at in kernel_layout.h); each entry then has the store's
+// storage_size() bytes at its storage_alignment and outlives the store.
+// Tests that build only the work model set the entries it reads and leave
+// the others null.
+class KernelStorage {
+  public:
+    void *operator[](Store store) const { return memory_[index(store)]; }
+    uint8_t *bytes(Store store) const { return static_cast<uint8_t *>(memory_[index(store)]); }
+    void set(Store store, void *memory) { memory_[index(store)] = memory; }
+
+  private:
+    static constexpr std::size_t index(Store store) { return static_cast<std::size_t>(store); }
+
+    std::array<void *, store_count> memory_{};
 };
 
 } // namespace ayni::kernel

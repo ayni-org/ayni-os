@@ -43,8 +43,8 @@ CommandMapping mapping(uint64_t principal_id, uint64_t command_id, uint64_t comm
 class Commands {
   public:
     Commands(uint32_t rows, uint32_t capacity)
-        : storage_(CommandTable::storage_size(rows, capacity) / sizeof(uint64_t) + 1U),
-          table_(storage_.data(), rows, capacity) {}
+        : storage_(CommandTable::storage_size({rows, capacity}) / sizeof(uint64_t) + 1U),
+          table_(storage_.data(), {rows, capacity}) {}
 
     CommandTable *operator->() { return &table_; }
 
@@ -318,8 +318,8 @@ CommandMapping exact_mapping(uint64_t command, uint64_t seq) {
 class ExactCommands {
   public:
     ExactCommands(uint32_t capacity = 3, uint32_t bytes = 340, uint32_t rows = 1)
-        : memory_(CommandTable::storage_size(rows, capacity, bytes) / sizeof(uint64_t) + 1),
-          table_(memory_.data(), rows, capacity, bytes) {}
+        : memory_(CommandTable::storage_size({rows, capacity, bytes}) / sizeof(uint64_t) + 1),
+          table_(memory_.data(), {rows, capacity, bytes}) {}
     CommandTable *operator->() { return &table_; }
     CommandTable::ExactLookup find(uint64_t command, const ayni_grant_create_v1 &request) {
         return table_.find_exact(owner, command, {0, &request});
@@ -488,7 +488,8 @@ TEST(CommandTable, clear_for_reload_drops_exact_rows_floor_and_staged_candidate)
     EXPECT_EQ(commands->mapped_in(2), nullptr);
     EXPECT_FALSE(commands->insert_exact(exact_mapping(7, 3)));
     EXPECT_EQ(commands.find(5, request).lookup, Lookup::unmapped);
-    EXPECT_EQ(CommandTable::storage_size(2, 3, 340) - CommandTable::storage_size(2, 3), 7U * 340U);
+    EXPECT_EQ(CommandTable::storage_size({2, 3, 340}) - CommandTable::storage_size({2, 3}),
+              7U * 340U);
 }
 
 TEST(CommandTable, exact_invalid_principal_or_command_cannot_stage_or_change_an_existing_result) {

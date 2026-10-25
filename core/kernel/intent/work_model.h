@@ -20,6 +20,7 @@
 #include "kernel/command/command_canonical.h"
 #include "kernel/command/command_table.h"
 #include "kernel/config/kernel_config.h"
+#include "kernel/config/store_limits.h"
 #include "kernel/intent/intent.h"
 #include "kernel/intent/transition_clock.h"
 #include "work/agent/agent_table.h"
@@ -61,38 +62,27 @@ struct AuthorityCleanupGoal {
 struct WorkModel {
     WorkModel(const KernelCapacities &capacities, const KernelLimits &limits,
               const KernelStorage &storage)
-        : sessions(storage.sessions, capacities.session_capacity),
-          goal_types(storage.goal_types, capacities.goal_type_capacity),
-          agents(storage.agents, capacities.agent_capacity),
-          goals(storage.goals, {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
-                                limits.goal_depth_max, limits.goal_children_max}),
-          tasks(storage.tasks,
-                {capacities.task_capacity, capacities.task_step_capacity,
-                 capacities.task_checkpoint_max_bytes, limits.task_model_call_hard_limit}),
-          strategies(storage.strategies, capacities.strategy_capacity),
-          commands(storage.commands, authority::PrincipalRegistry::capacity,
-                   capacities.command_capacity,
-                   exact_command_max_bytes(capacities.authority_scope_max_bytes,
-                                           capacities.goal_parameter_max_bytes,
-                                           capacities.goal_requirement_capacity),
-                   capacities.grant_capacity),
-          capabilities(storage.capabilities, capacities.capability_capacity,
+        : sessions(storage[Store::sessions], capacities.session_capacity),
+          goal_types(storage[Store::goal_types], capacities.goal_type_capacity),
+          agents(storage[Store::agents], capacities.agent_capacity),
+          goals(storage[Store::goals],
+                {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
+                 limits.goal_depth_max, limits.goal_children_max}),
+          tasks(storage[Store::tasks], task_limits(capacities), limits.task_model_call_hard_limit),
+          strategies(storage[Store::strategies], capacities.strategy_capacity),
+          commands(storage[Store::commands], command_limits(capacities)),
+          capabilities(storage[Store::capabilities], capacities.capability_capacity,
                        capacities.authority_scope_max_bytes),
-          observation_sources(storage.observation_sources, capacities.observation_source_capacity),
-          scenes(storage.scenes, {capacities.scene_capacity, capacities.authority_scope_max_bytes},
-                 capabilities, observation_sources),
-          execution_catalog(storage.execution_catalog, capacities.executor_capacity,
+          observation_sources(storage[Store::observation_sources],
+                              capacities.observation_source_capacity),
+          scenes(storage[Store::scenes], scene_limits(capacities), capabilities,
+                 observation_sources),
+          execution_catalog(storage[Store::execution_catalog], capacities.executor_capacity,
                             capacities.execution_binding_capacity),
-          grants(storage.grants, {capacities.grant_capacity, capacities.authority_scope_max_bytes,
-                                  capacities.grant_delegation_depth_max}),
-          goal_authority(storage.goal_authority,
-                         {capacities.goal_capacity, capacities.goal_requirement_capacity,
-                          capacities.authority_scope_max_bytes}),
-          task_authority(storage.task_authority,
-                         {capacities.task_capacity, capacities.goal_requirement_capacity}),
-          calls(storage.calls,
-                {capacities.call_capacity, capacities.authority_scope_max_bytes,
-                 capacities.call_input_max_bytes, capacities.call_result_max_bytes}) {
+          grants(storage[Store::grants], grant_limits(capacities)),
+          goal_authority(storage[Store::goal_authority], goal_authority_limits(capacities)),
+          task_authority(storage[Store::task_authority], task_authority_limits(capacities)),
+          calls(storage[Store::calls], call_limits(capacities)) {
         tasks.set_retention({this, retains_task});
         goals.set_retention({this, retains_goal});
     }

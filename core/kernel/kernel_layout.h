@@ -5,51 +5,61 @@
 #ifndef AYNI_CORE_KERNEL_KERNEL_LAYOUT_H
 #define AYNI_CORE_KERNEL_KERNEL_LAYOUT_H
 
-#include "kernel/kernel_state.h"
+#include "kernel/call/call_runtime.h"
+#include "kernel/completion/provider_mailbox.h"
+#include "kernel/config/kernel_config.h"
+#include "kernel/decision/decision.h"
 
+#include <array>
 #include <cstddef>
 
 namespace ayni::kernel {
 
+// One store's bytes in the caller's memory block: size bytes from offset,
+// which is a multiple of alignment, a power of two. A store at zero capacity
+// may have size 0.
+struct ArenaRegion {
+    std::size_t offset = 0;
+    std::size_t size = 0;
+    std::size_t alignment = 1;
+};
+
+// The kernel at offset 0, then one region per Store in Store order, none
+// overlapping another or the kernel.
 struct KernelLayout {
-    std::size_t ingress_offset;
-    std::size_t completions_offset;
-    std::size_t storage_buffer_offset;
-    std::size_t agents_offset;
-    std::size_t goal_types_offset;
-    std::size_t goals_offset;
-    std::size_t sessions_offset;
-    std::size_t tasks_offset;
-    std::size_t strategies_offset;
-    std::size_t decisions_offset;
-    std::size_t commands_offset;
-    std::size_t capabilities_offset;
-    std::size_t grants_offset;
-    std::size_t goal_authority_offset;       // Byte offset of Goal-owned authority storage.
-    std::size_t task_authority_offset;       // Byte offset of Task-owned admission references.
-    std::size_t resource_catalog_offset;     // Immutable descriptions, no live state.
-    std::size_t resource_states_offset;      // Live occupancy/health, never persistent.
-    std::size_t resource_requests_offset;    // Bounded pending/held resource groups.
-    std::size_t call_capabilities_offset;    // Copied execution contracts.
-    std::size_t providers_offset;            // Trusted offers and callback descriptors.
-    std::size_t bindings_offset;             // Immutable exact implementation selections.
-    std::size_t calls_offset;                // Work-owned retained call rows and byte pools.
-    std::size_t provider_completions_offset; // Separate Provider delivery capacity.
-    std::size_t call_runtime_offset;         // Volatile I/O ownership and callback-copy buffers.
-    std::size_t devices_offset;              // Copied immutable device identities.
-    std::size_t components_offset;           // Copied component-to-device relationships.
-    std::size_t observation_sources_offset;  // Copied source descriptions.
-    std::size_t execution_catalog_offset;    // Copied local execution descriptions.
-    std::size_t permits_offset;              // Boot-local resource lease/quarantine ownership.
-    std::size_t scenes_offset;       // Authority-owned finite declarations and saved preferences.
-    std::size_t observations_offset; // Current-boot latest sample per source.
-    std::size_t size;
-    std::size_t alignment; // a power of two
+    const ArenaRegion &operator[](Store store) const {
+        return regions[static_cast<std::size_t>(store)];
+    }
+
+    std::array<ArenaRegion, store_count> regions{};
+    std::size_t size = 0;      // From the block's start to the end of the last region.
+    std::size_t alignment = 0; // The largest alignment of the kernel and its stores.
 };
 
 // The capacities are within the ayni.h maxima, so no size overflows even
 // with a 32-bit size_t.
 KernelLayout layout_for(const KernelCapacities &capacities);
+
+// Where each store's memory starts in a block laid out by layout, memory
+// being the block's start.
+KernelStorage storage_at(void *memory, const KernelLayout &layout);
+
+// Sizing of the stores ayni_kernel builds itself, from the validated
+// capacities; layout_for and the kernel's constructor both read these, as
+// config/store_limits.h does for the work model's stores.
+inline DecisionBuffer::Limits decision_limits(const KernelCapacities &capacities) {
+    return {capacities.policy_intent_capacity, capacities.task_step_capacity,
+            capacities.task_checkpoint_max_bytes};
+}
+
+inline CallRuntime::Limits call_runtime_limits(const KernelCapacities &capacities) {
+    return {capacities.call_capacity, capacities.call_input_max_bytes,
+            capacities.call_result_max_bytes};
+}
+
+inline ProviderMailbox::Limits provider_mailbox_limits(const KernelCapacities &capacities) {
+    return {capacities.call_capacity, capacities.call_result_max_bytes};
+}
 
 } // namespace ayni::kernel
 

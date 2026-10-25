@@ -159,8 +159,8 @@ CommandMapping mapping(uint64_t command, uint64_t goal, uint64_t seq) {
 // owned together, including when eviction moves a retained mapping's slot.
 TEST(WorkAuthorityResult, command_window_owns_results_across_retry_eviction_and_slot_movement) {
     constexpr uint32_t stride = 512;
-    std::vector<uint64_t> arena(CommandTable::storage_size(1, 2, stride) / sizeof(uint64_t) + 1U);
-    CommandTable commands(arena.data(), 1, 2, stride);
+    std::vector<uint64_t> arena(CommandTable::storage_size({1, 2, stride}) / sizeof(uint64_t) + 1U);
+    CommandTable commands(arena.data(), {1, 2, stride});
     for (uint64_t command_id = 1; command_id <= 3U; ++command_id) {
         const auto goal = id(static_cast<uint32_t>(command_id + 20U));
         const auto input = approval(goal);
@@ -207,8 +207,8 @@ TEST(WorkAuthorityResult, result_capacity_and_parent_binding_refusals_preserve_t
     std::vector<uint8_t> bytes(work_authority_result_size(fact.count));
     write_work_authority_result(fact, bytes.data());
     const auto stride = input_size + static_cast<uint32_t>(bytes.size()) - 1U;
-    std::vector<uint64_t> arena(CommandTable::storage_size(1, 1, stride) / sizeof(uint64_t) + 1U);
-    CommandTable commands(arena.data(), 1, 1, stride);
+    std::vector<uint64_t> arena(CommandTable::storage_size({1, 1, stride}) / sizeof(uint64_t) + 1U);
+    CommandTable commands(arena.data(), {1, 1, stride});
     ASSERT_EQ(commands.find_exact(77, 1, input).lookup, CommandTable::Lookup::unmapped);
     EXPECT_FALSE(commands.insert_exact(mapping(1, id(1), fact.binding.established_seq),
                                        {bytes.data(), static_cast<uint32_t>(bytes.size())}));
@@ -324,8 +324,8 @@ TEST(WorkAuthorityResult, current_generation_result_keeps_its_establishment_stam
 // Missing results must not create a row, evict a command or advance its floor.
 TEST(WorkAuthorityResult, missing_required_result_refuses_insert_and_restore) {
     constexpr uint32_t stride = 512;
-    std::vector<uint64_t> arena(CommandTable::storage_size(1, 1, stride) / sizeof(uint64_t) + 1U);
-    CommandTable commands(arena.data(), 1, 1, stride);
+    std::vector<uint64_t> arena(CommandTable::storage_size({1, 1, stride}) / sizeof(uint64_t) + 1U);
+    CommandTable commands(arena.data(), {1, 1, stride});
     const auto request = approval(id(1));
     auto accepted = mapping(1, id(1), 42);
     ASSERT_EQ(commands.find_exact(77, 1, request).lookup, CommandTable::Lookup::unmapped);
@@ -361,8 +361,8 @@ TEST(WorkAuthorityResult, enclosing_mapping_sequence_must_match_the_saved_bindin
     accepted.result_size = static_cast<uint32_t>(evidence.size());
     accepted.digest = authority_command_digest({canonical.data(), size});
     constexpr uint32_t stride = 512;
-    std::vector<uint64_t> arena(CommandTable::storage_size(1, 1, stride) / sizeof(uint64_t) + 1U);
-    CommandTable commands(arena.data(), 1, 1, stride);
+    std::vector<uint64_t> arena(CommandTable::storage_size({1, 1, stride}) / sizeof(uint64_t) + 1U);
+    CommandTable commands(arena.data(), {1, 1, stride});
     EXPECT_EQ(commands.restore_checked(accepted, 0, {canonical.data(), size},
                                        {evidence.data(), accepted.result_size}),
               CommandTable::Restore::corrupt);

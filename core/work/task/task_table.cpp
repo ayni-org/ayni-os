@@ -53,14 +53,14 @@ std::size_t TaskTable::storage_size(const Limits &limits) {
            static_cast<std::size_t>(limits.capacity) * limits.checkpoint_max_bytes;
 }
 
-TaskTable::TaskTable(void *storage, const Limits &limits)
+TaskTable::TaskTable(void *storage, const Limits &limits, uint32_t model_call_hard_limit)
     : tasks_(storage, limits.capacity),
       steps_(reinterpret_cast<catalog::CatalogId *>(
           static_cast<uint8_t *>(storage) +
           foundation::BoundedArray<Task>::storage_size(limits.capacity))),
       checkpoints_(reinterpret_cast<uint8_t *>(steps_) + steps_size(limits)),
       step_capacity_(limits.step_capacity), checkpoint_max_bytes_(limits.checkpoint_max_bytes),
-      model_call_hard_limit_(limits.model_call_hard_limit) {
+      model_call_hard_limit_(model_call_hard_limit) {
     const uint32_t steps = limits.capacity * limits.step_capacity;
     for (uint32_t index = 0; index < steps; ++index) {
         new (steps_ + index) catalog::CatalogId();

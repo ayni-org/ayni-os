@@ -229,8 +229,8 @@ TEST(CommandRevoke, accepted_revision_two_can_change_a_restored_active_target_af
     EXPECT_EQ(restored.object.revision, 2U);
 
     std::vector<uint64_t> storage(
-        CommandTable::storage_size(1, 1, revoke_command_size) / sizeof(uint64_t) + 1U);
-    CommandTable table(storage.data(), 1, 1, revoke_command_size);
+        CommandTable::storage_size({1, 1, revoke_command_size}) / sizeof(uint64_t) + 1U);
+    CommandTable table(storage.data(), {1, 1, revoke_command_size});
     EXPECT_EQ(table.restore_checked(mapping, 0, view(canonical)), CommandTable::Restore::restored);
     ASSERT_EQ(table.size(), 1U);
     EXPECT_EQ(table.at(0).object.revision, 2U);
@@ -289,8 +289,8 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
         EXPECT_EQ(exact.size, 456U);
 
         std::vector<uint64_t> storage(
-            CommandTable::storage_size(1, 2, revoke_command_size) / sizeof(uint64_t) + 1U);
-        CommandTable table(storage.data(), 1, 2, revoke_command_size);
+            CommandTable::storage_size({1, 2, revoke_command_size}) / sizeof(uint64_t) + 1U);
+        CommandTable table(storage.data(), {1, 2, revoke_command_size});
         auto seed = valid;
         seed.command_id = 4;
         seed.commit_seq = 8;

@@ -5,6 +5,7 @@
 #include "foundation/crc32.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
+#include "kernel/config/store_limits.h"
 #include "kernel/persistence/work_replay.h"
 #include "kernel/persistence/work_snapshot.h"
 #include "work/task/task_records.h"
@@ -65,42 +66,39 @@ class Model {
           goals_(store(
               GoalTable::storage_size(config.goal_capacity, config.goal_parameter_max_bytes))),
           sessions_(store(ayni::authority::SessionTable::storage_size(config.session_capacity))),
-          tasks_(store(TaskTable::storage_size({config.task_capacity, config.task_step_capacity,
-                                                config.task_checkpoint_max_bytes}))),
+          tasks_(store(TaskTable::storage_size(ayni::kernel::task_limits(config)))),
           strategies_(
               store(ayni::catalog::StrategyRegistry::storage_size(config.strategy_capacity))),
-          commands_(store(ayni::kernel::CommandTable::storage_size(
-              1, config.command_capacity,
-              ayni::kernel::authority_command_max_bytes(config.authority_scope_max_bytes),
-              config.grant_capacity))),
+          commands_(store(
+              ayni::kernel::CommandTable::storage_size(ayni::kernel::command_limits(config)))),
           capabilities_(store(ayni::catalog::CapabilityRegistry::storage_size(
               config.capability_capacity, config.authority_scope_max_bytes))),
-          grants_(store(ayni::authority::GrantTable::storage_size(
-              {config.grant_capacity, config.authority_scope_max_bytes,
-               config.grant_delegation_depth_max}))),
+          grants_(
+              store(ayni::authority::GrantTable::storage_size(ayni::kernel::grant_limits(config)))),
           goal_authority_(store(ayni::work::GoalAuthorityTable::storage_size(
-              {config.goal_capacity, config.goal_requirement_capacity,
-               config.authority_scope_max_bytes}))),
+              ayni::kernel::goal_authority_limits(config)))),
           task_authority_(store(ayni::work::TaskAuthorityTable::storage_size(
-              {config.task_capacity, config.goal_requirement_capacity}))),
+              ayni::kernel::task_authority_limits(config)))),
           storage_(storage()), model_(capacities_, limits, storage_) {}
 
     WorkModel &get() { return model_; }
 
   private:
+    // The stores WorkModel reads; the kernel's own stays unset.
     ayni::kernel::KernelStorage storage() {
-        ayni::kernel::KernelStorage result{};
-        result.agents = agents_.data();
-        result.goal_types = types_.data();
-        result.goals = goals_.data();
-        result.sessions = sessions_.data();
-        result.tasks = tasks_.data();
-        result.strategies = strategies_.data();
-        result.commands = commands_.data();
-        result.capabilities = capabilities_.data();
-        result.grants = grants_.data();
-        result.goal_authority = goal_authority_.data();
-        result.task_authority = task_authority_.data();
+        using ayni::kernel::Store;
+        ayni::kernel::KernelStorage result;
+        result.set(Store::agents, agents_.data());
+        result.set(Store::goal_types, types_.data());
+        result.set(Store::goals, goals_.data());
+        result.set(Store::sessions, sessions_.data());
+        result.set(Store::tasks, tasks_.data());
+        result.set(Store::strategies, strategies_.data());
+        result.set(Store::commands, commands_.data());
+        result.set(Store::capabilities, capabilities_.data());
+        result.set(Store::grants, grants_.data());
+        result.set(Store::goal_authority, goal_authority_.data());
+        result.set(Store::task_authority, task_authority_.data());
         return result;
     }
 

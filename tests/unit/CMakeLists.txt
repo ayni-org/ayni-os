@@ -11,6 +11,7 @@ add_executable(ayni_unit_tests
     call_table_test.cpp
     call_contract_test.cpp
     resource_admission_test.cpp
+    kernel_layout_test.cpp
     kernel_resource_test.cpp
     kernel_provider_test.cpp
     kernel_call_test.cpp
