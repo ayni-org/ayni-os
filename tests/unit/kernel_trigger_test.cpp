@@ -516,7 +516,7 @@ TEST(WorkTrigger, kept_due_work_search_answers_as_a_new_search_would) {
         const bool no_transition = model.transitions.next_commit_seq() == checked_seq &&
                                    durable_seq == checked_durable_seq;
         const auto [kept, fresh] = ayni::kernel::kept_and_new_due_search(work.kernel(), now(work));
-        ASSERT_TRUE(kept == fresh) << round;
+        ASSERT_EQ(kept, fresh) << round;
         kept_answers += no_transition && !fresh.due && fresh.next_us != no_time ? 1U : 0U;
         checked_seq = model.transitions.next_commit_seq();
         checked_durable_seq = durable_seq;

@@ -367,7 +367,7 @@ TEST_F(ManagedExecution, released_lease_lets_the_waiting_goal_derive) {
         work.node().step(1);
         const auto [kept, fresh] =
             ayni::kernel::kept_and_new_due_search(work.kernel(), work.node().sim().now_us());
-        ASSERT_TRUE(kept == fresh) << round;
+        ASSERT_EQ(kept, fresh) << round;
     }
     EXPECT_EQ(resource().quarantine_id, 0U);
     EXPECT_EQ(work.goal(waiting).occurrences, 1U);

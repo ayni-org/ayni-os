@@ -13,6 +13,7 @@
 #include <ayni/ayni.h>
 
 #include <cstdint>
+#include <ostream>
 #include <utility>
 
 namespace ayni::kernel {
@@ -41,6 +42,11 @@ struct DueAnswer {
         return due == other.due && next_us == other.next_us;
     }
 };
+
+// So that a failed comparison shows both answers.
+inline void PrintTo(const DueAnswer &answer, std::ostream *out) {
+    *out << (answer.due ? "due" : "not due") << ", next " << answer.next_us;
+}
 
 // White-box, ADR-0051 decision 11: the answer of the due-work search the
 // kernel kept, then of a new search, both at now_us and the log's durable

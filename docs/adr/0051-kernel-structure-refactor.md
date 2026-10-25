@@ -91,7 +91,7 @@
 - `intent_policy_matrix_test` 逐行写出 16 个种类的期望属性并与表比对；经 C ABI 检查 VOICE 会话恰好被拒绝管理种类、MANAGEMENT 会话通过所有会话规则、精确种类缺 command_id 被拒绝；以 Grant 创建与 Scene 开关各代表一种管理规则检查重试；`CommandTable` 只为普通种类接受和恢复无规范字节的映射。Grant 的信任边界白盒测试改为经 `apply_intent` 注入过期会话事实。
 - `persistent_store_test`：列表中每个存储的记录类型都在登记表里且按日志顺序排列；契约存储的头部无论版本是否已知都必须带 REQUIRED，已知版本在日志和快照中都可分类；启用一个存储后，批次上限与快照载荷上限恰好增加它声明的份额，单记录上限不小于它的最大记录。去掉分类中对契约存储的 REQUIRED 检查会让该测试失败。现有日志、快照与恢复测试（含 call、Scene 的写读和逆序拒绝，以及 Grant 未来纪元 ID 的拒绝）不改期望值并通过。
 - 抽出 `ExecutionControl` 不改任何测试：`managed_execution_test` 与其余调用、执行测试不变并通过；覆盖率见 PR。
-- `WorkTrigger.kept_due_work_search_answers_as_a_new_search_would`：固定种子的 400 步随机操作（创建延时与周期 Goal、暂停、恢复、取消、实例暂停与恢复、推进时钟、step、重启）中，每步之后比较保留的搜索与强制重新搜索的结果与下次时间，并要求其中多于 20 次由保留的搜索给出时间。让保留的搜索忽略事务会使它失败。`ManagedExecution.released_lease_lets_the_waiting_goal_derive` 只给 Task 表留一个位置，取消正在执行的 Task 后用单项 step 推进，使许可在一个既无新事务也无新持久前缀的 step 中释放，每步之后同样比较两种搜索，并要求等待的 Goal 随后派生；去掉释放处的 `forget_due_work()` 会使它失败（独立审查发现，见 PR）。
+- `WorkTrigger.kept_due_work_search_answers_as_a_new_search_would`：固定种子的 400 步随机操作（创建延时与周期 Goal、暂停、恢复、取消、实例暂停与恢复、推进时钟、step、重启）中，每步之后比较保留的搜索与强制重新搜索的结果与下次时间，并要求其中多于 20 次由保留的搜索给出时间。让保留的搜索忽略事务会使它失败。`ManagedExecution.released_lease_lets_the_waiting_goal_derive` 只给 Task 表留一个位置，取消正在执行的 Task 后用单项 step 推进，使许可在一个既无新事务也无新持久前缀的 step 中释放，每步之后同样比较两种搜索，并要求等待的 Goal 随后派生；同时去掉两处释放的 `forget_due_work()` 会使它失败（测试路径上两处先后执行，只去掉一处仍通过）（独立审查发现，见 PR）。
 - 目录合并后注册与启动失败的测试（注册顺序、缺失策略、设备与资源拓扑、绑定、执行绑定与 Scene 的错误码）不改期望值并通过；单独构造工作模型的测试夹具同样先建 `Catalogs`。
 - 闸门与 `run_transition` 不改任何测试：各入口在回调中、错误生命周期中的返回码测试（注册冻结、查询、关闭会话、资源健康、销毁）与事务、限制相关测试不改期望值并通过；`check_deps_repository` 检查 `api` 的新规则。
 - 删除默认值与空分支后，编译器报出的调用点只在测试中（Grant 信任边界测试、重放一致性测试）；生产调用点原本就传入完整参数。
