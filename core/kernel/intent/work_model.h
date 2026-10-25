@@ -23,6 +23,7 @@
 #include "kernel/transition_clock.h"
 #include "work/agent/agent_table.h"
 #include "work/authority/authority_cleanup.h"
+#include "work/call/call_table.h"
 #include "work/goal/goal_authority.h"
 #include "work/goal/goal_table.h"
 #include "work/propagation.h"
@@ -82,7 +83,13 @@ struct WorkModel {
                          {capacities.goal_capacity, capacities.goal_requirement_capacity,
                           capacities.authority_scope_max_bytes}),
           task_authority(storage.task_authority,
-                         {capacities.task_capacity, capacities.goal_requirement_capacity}) {}
+                         {capacities.task_capacity, capacities.goal_requirement_capacity}),
+          calls(storage.calls,
+                {capacities.call_capacity, capacities.authority_scope_max_bytes,
+                 capacities.call_input_max_bytes, capacities.call_result_max_bytes}) {
+        tasks.set_retention({this, retains_task});
+        goals.set_retention({this, retains_goal});
+    }
 
     WorkModel(const WorkModel &) = delete;
     WorkModel &operator=(const WorkModel &) = delete;
@@ -177,7 +184,8 @@ struct WorkModel {
     authority::GrantTable grants;
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;
-    work::TaskAuthorityTable task_authority;  // Independent historical selections; no Scope copy.
+    work::TaskAuthorityTable task_authority; // Independent historical selections; no Scope copy.
+    work::CallTable calls; // Original call identities, canonical bodies and action facts.
     work::AuthorityCleanup authority_cleanup; // Work-owned active/pending scan, no arena needed.
     foundation::IdAllocator ids;
     TransitionClock transitions;
@@ -186,6 +194,11 @@ struct WorkModel {
     // not call the kernel; as a fail-safe, owner-thread functions that
     // change state then refuse to run (ayni.h, C-POLICY-001), so nothing
     // changes between a check and the change it allows.
+    // Union of local completed steps and accepted call keys; a failed call still
+    // consumes its Task's bounded step capacity and cannot be disguised as local progress.
+    uint32_t accepted_step_count(uint32_t task_index) const;
+    bool step_taken(uint32_t task_index, ayni_string_v1 key) const;
+
     bool calling_out = false;
     // Set by a change to the goals' due work (which goals may advance or
     // expire, room in the task table, or a held task); cleared once a search
@@ -197,6 +210,11 @@ struct WorkModel {
     uint64_t next_due_work_us = work::no_time;
     bool searched_with_id = true;
     uint64_t searched_durable_seq = 0; // Due-search key, not permission state; 0 before search.
+
+  private:
+    // Cross-table retention reads owner facts; no duplicated reference counters.
+    static bool retains_task(const void *context, const work::Task &task);
+    static bool retains_goal(const void *context, const work::Goal &goal);
 };
 
 // Opens for the unchanged registered Principal already checked by the ABI

@@ -3,18 +3,16 @@
 #include "durability/batch/record_body.h"
 
 namespace ayni::work {
-namespace {
 // Both preparation and latest transition use this one persistent stamp layout.
-void write_stamp(ActionStamp stamp, durability::BodyWriter &writer) {
+void write_action_stamp(ActionStamp stamp, durability::BodyWriter &writer) {
     writer.u64(stamp.boot_epoch);
     writer.u64(stamp.transition.transition_id);
     writer.u64(stamp.transition.commit_seq);
 }
 
-ActionStamp read_stamp(durability::BodyReader &reader) {
+ActionStamp read_action_stamp(durability::BodyReader &reader) {
     return {reader.u64(), {reader.u64(), reader.u64()}};
 }
-} // namespace
 
 uint32_t action_state_record_size(const ActionFact &fact) {
     return action_state_record_fixed_size + fact.identity.binding_id.size();
@@ -28,8 +26,8 @@ void write_action_state_record(const ActionFact &fact, uint8_t *body) {
     writer.u32(static_cast<uint32_t>(fact.phase));
     writer.u32(static_cast<uint32_t>(fact.effect));
     writer.u32(static_cast<uint32_t>(fact.evidence));
-    write_stamp(fact.prepared, writer);
-    write_stamp(fact.latest, writer);
+    write_action_stamp(fact.prepared, writer);
+    write_action_stamp(fact.latest, writer);
     writer.bytes(fact.identity.binding_id.data(), fact.identity.binding_id.size());
 }
 
@@ -48,8 +46,8 @@ bool read_action_state_record(const uint8_t *body, uint32_t size, ActionFact &ou
     fact.phase = static_cast<ActionPhase>(reader.u32());
     fact.effect = static_cast<ActionEffect>(reader.u32());
     fact.evidence = static_cast<ActionEvidence>(reader.u32());
-    fact.prepared = read_stamp(reader);
-    fact.latest = read_stamp(reader);
+    fact.prepared = read_action_stamp(reader);
+    fact.latest = read_action_stamp(reader);
     uint32_t id_size = 0;
     const auto *id = reader.bytes(catalog::CatalogId::max_size, id_size);
     if (!fact.identity.binding_id.assign({reinterpret_cast<const char *>(id), id_size}) ||

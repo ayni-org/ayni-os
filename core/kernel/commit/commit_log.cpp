@@ -56,6 +56,9 @@ bool CommitLog::advance(uint64_t now_us) {
         return true;
     case IssueResult::busy:
         break;
+    case IssueResult::exhausted:
+        failure_ = AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED;
+        return true;
     }
     return false;
 }

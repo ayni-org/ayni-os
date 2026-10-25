@@ -76,7 +76,7 @@ class WorkReplay {
 
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
-    bool complete() const { return pairing_.complete(); }
+    bool complete() const { return pairing_.complete() && calls_consistent(UINT64_MAX); }
     // After the last batch: whether the tables hold a state a transition
     // leaves, beyond what each record's own checks cover.
     bool consistent(uint64_t boot_epoch_limit = UINT64_MAX) const;
@@ -116,6 +116,12 @@ class WorkReplay {
                                        foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
                                                  foundation::TransitionStamp stamp);
+    // Full row must match this batch and its owning Task; never reissues I/O.
+    durability::RecordUse restore_call(const uint8_t *body, uint32_t size, work::ActionStamp stamp);
+    // Every retained selected call and terminal outcome agrees with its Task.
+    bool calls_consistent(uint64_t boot_epoch_limit) const;
+    // Closes the exact query acceptance with its durable owner's canonical command.
+    bool pair_target_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
     durability::RecordUse restore_task_state(uint16_t version, const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_steps(const uint8_t *body, uint32_t size,
@@ -249,9 +255,15 @@ class WorkReplay {
             Stage stage = Stage::state; // command seals this batch until the next identity.
         };
         std::optional<TaskLimitPair> limit_raise; // Empty outside runtime-limit management.
+        struct TargetCommandPair {
+            TargetCommand request;     // Exact before-CAS and Call/Task target identity.
+            bool command_seen = false; // Acceptance cannot finish without its paired owner command.
+        };
+        std::optional<TargetCommandPair> target_command; // Only this batch's query or wait resume.
         // Existing work/command partners, independently of the new scan footer.
         bool partners_complete() const {
-            return (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
+            return (!target_command || target_command->command_seen) &&
+                   (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
                    !task && !task_authority && !goal_authority && !authority.pending() &&
                    (!approval || approval->stage == ApprovalPair::Stage::complete) &&
                    (!reauthorization ||

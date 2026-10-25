@@ -57,6 +57,7 @@ uint32_t GoalTable::giving_way() const {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
         const Goal &ended = goals_[index];
         if (!is_live(ended.lifecycle) &&
+            (retention_.retains == nullptr || !retention_.retains(retention_.context, ended)) &&
             (oldest == no_index || gives_way_before(ended, goals_[oldest]))) {
             oldest = index;
         }
@@ -157,7 +158,9 @@ GoalTable::Restore GoalTable::restore(const NewGoal &goal, uint64_t goal_id,
     }
     uint32_t index = goals_.size();
     if (replaced_goal_id != 0U) {
-        if (!find(replaced_goal_id, index) || is_live(goals_[index].lifecycle)) {
+        if (!find(replaced_goal_id, index) || is_live(goals_[index].lifecycle) ||
+            (retention_.retains != nullptr &&
+             retention_.retains(retention_.context, goals_[index]))) {
             return Restore::corrupt;
         }
     } else if (goals_.full()) {

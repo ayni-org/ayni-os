@@ -72,7 +72,9 @@ bool utf8(ayni_string_v1 text) {
     return true;
 }
 
-ayni_status_t check_text(ayni_string_v1 text, uint32_t limit) {
+} // namespace
+
+ayni_status_t check_call_text(ayni_string_v1 text, uint32_t limit) {
     if (limit > catalog::call_text_limit_max || (text.size != 0U && text.data == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -81,7 +83,6 @@ ayni_status_t check_text(ayni_string_v1 text, uint32_t limit) {
     }
     return utf8(text) ? AYNI_OK : AYNI_INVALID_ARGUMENT;
 }
-} // namespace
 
 // Validate text before the only argument normalization pass. Reserve its entire
 // length up front so a successful argument write has no later fallible step.
@@ -90,7 +91,7 @@ ayni_status_t encode_call_input(ayni_bytes_v1 domain, const CallInput &input, ui
     if (out == nullptr && capacity != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto text_status = check_text(input.text, text_limit);
+    const auto text_status = check_call_text(input.text, text_limit);
     if (text_status != AYNI_OK) {
         return text_status;
     }
@@ -135,7 +136,7 @@ ayni_status_t read_call_input(ayni_bytes_v1 domain, ayni_bytes_v1 body, uint32_t
     const CallInputView value{
         {arguments, arguments_size},
         {reinterpret_cast<const char *>(arguments + arguments_size), text_size}};
-    const auto text_status = check_text(value.text, text_limit);
+    const auto text_status = check_call_text(value.text, text_limit);
     if (text_status != AYNI_OK) {
         return text_status;
     }

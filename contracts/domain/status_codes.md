@@ -124,3 +124,9 @@
 | C-STATUS-007 | 状态码与原因码是 ABI 的一部分：新增状态码只能取尚未使用的负数，新增原因码只能取尚未使用的正数，已发布值不重新编号 | 新版本把 `-6` 从 `BUSY` 改为 `DENIED` | 评审；C-VER-002 |
 
 ABI 0.25 起，`ayni_post_event` 在同一 ingress 实例的 u64 输入顺序耗尽时返回 `AYNI_CAPACITY_EXCEEDED`，不入队、不 wake。该上限由新进程的新 ingress 实例重建，自动存储重载不重置；队列暂满继续返回 `AYNI_BUSY`。这不增加状态码或 reason，见 `limits.md` 与 ADR-0038。
+
+## ABI 0.31 调用诊断
+
+- `AYNI_REASON_PROVIDER_RESULT`（71）属于 `RESULT_UNKNOWN`：Provider 终态不能构成符合契约的结果，结束本机借用但保留执行未知。
+- `AYNI_REASON_RESOURCE_WAIT`（72）属于 `EXPIRED`：普通调用资源等待上限到期，Task 暂停，已受理身份仍保留。
+- `AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED`（14）表示 Host/Provider 共用请求身份序列已耗尽，拒绝继续分配而不回绕。它是 Kernel restriction，不是原因码。

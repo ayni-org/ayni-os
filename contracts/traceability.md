@@ -7,7 +7,7 @@
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 18 |
-| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 19 | 2 |
+| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 20 | 2 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 17 | 11 |
@@ -25,7 +25,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 343 | 105 |
+| 合计 | 344 | 105 |
 
 ## 计划章节 → 契约文档
 
@@ -100,7 +100,7 @@
 | `MA-005` | C-LIFE-002、C-LIFE-005、C-LIFE-006、C-LIFE-007、C-LIMIT-002、C-STATUS-001、C-STATUS-003、C-STATUS-006、C-HOST-018、C-PROV-001、C-WIRE-014、C-JSON-009、C-JSON-012 |
 | `MA-006` | C-AUTH-001、C-AUTH-003、C-AUTH-004、C-AUTH-008、C-POLICY-003 |
 | `MA-007` | C-HOST-002、C-HOST-007、C-HOST-008、C-HOST-015、C-HOST-018、C-HOST-020、C-HOST-021、C-WIRE-001、C-WIRE-002、C-WIRE-003、C-WIRE-013、C-WIRE-014、C-JSON-001、C-JSON-002、C-JSON-003、C-JSON-004、C-JSON-009 |
-| `MA-008` | C-AUTH-005、C-AUTH-006、C-AUTH-018、C-CALL-001、C-CALL-003、C-CALL-004、C-CALL-012、C-BIND-002、C-BIND-003、C-COMMIT-012、C-LIFE-003、C-LIFE-021、C-LIFE-022、C-RES-002、C-RES-004、C-RUN-001、C-RUN-002、C-RUN-003、C-RUN-005、C-RUN-006、C-RUN-007、C-VER-030、C-HOST-013、C-POLICY-008、C-POLICY-009、C-PROV-002、C-PROV-003、C-PROV-006、C-PROV-007、C-PROV-010、C-STORE-011 |
+| `MA-008` | C-AUTH-005、C-AUTH-006、C-AUTH-018、C-CALL-001、C-CALL-003、C-CALL-004、C-BIND-002、C-BIND-003、C-COMMIT-012、C-LIFE-003、C-LIFE-021、C-LIFE-022、C-RES-002、C-RES-004、C-RUN-001、C-RUN-002、C-RUN-003、C-RUN-005、C-RUN-006、C-RUN-007、C-VER-030、C-HOST-013、C-POLICY-008、C-POLICY-009、C-PROV-002、C-PROV-003、C-PROV-007、C-PROV-010、C-STORE-011 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-008、C-POLICY-011 |
 | `MA-010` | C-COMMIT-003、C-COMMIT-014、C-ID-009、C-STORE-001 |
 | `MA-011` | C-ID-001、C-TIME-004、C-TIME-005、C-TIME-006、C-TIME-007、C-LIMIT-012、C-PROD-018、C-PROD-032、C-PROD-034、C-PROD-042、C-POLICY-009、C-JSON-010 |

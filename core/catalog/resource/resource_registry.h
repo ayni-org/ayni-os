@@ -8,7 +8,7 @@
 namespace ayni::catalog {
 
 // Maximum members in one atomic resource requirement group, not registry size.
-constexpr uint32_t resource_group_max = 8;
+constexpr uint32_t resource_group_max = AYNI_RESOURCE_GROUP_COUNT_MAX;
 
 // Trusted immutable description; no health, ownership or device handles here.
 struct Resource {

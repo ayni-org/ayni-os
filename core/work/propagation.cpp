@@ -71,7 +71,8 @@ bool settling_exhausts(const WorkTables &tables, const After &after, Reaches rea
         const Task &task = tables.tasks.at(index);
         TaskChange change = TaskChange::cancel;
         if (reaches(task) && settles(tables, task, after, change) &&
-            TaskTable::at_largest_revision(task)) {
+            tables.tasks.check(index, change, task.revision) ==
+                TaskTable::ChangeCheck::revision_exhausted) {
             return true;
         }
     }

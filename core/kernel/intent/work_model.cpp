@@ -2,6 +2,25 @@
 
 namespace ayni::kernel {
 
+bool WorkModel::retains_task(const void *context, const work::Task &task) {
+    const auto &model = *static_cast<const WorkModel *>(context);
+    // Known terminal facts are encoded before a later replacement transition.
+    // Unknown or pending calls retain the Task even after local cancellation.
+    return !model.calls.can_retire_task(task.task_id, UINT64_MAX);
+}
+
+bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
+    const auto &model = *static_cast<const WorkModel *>(context);
+    for (uint32_t index = 0; index < model.tasks.size(); ++index) {
+        const auto &task = model.tasks.at(index);
+        if (task.goal_id == goal.goal_id &&
+            (work::TaskTable::is_live(task.lifecycle) || retains_task(context, task))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp) {
     ids.start(boot_epoch);
     transitions.start(first_stamp);
@@ -78,7 +97,8 @@ authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t d
     for (uint32_t index = 0; index < tasks.size(); ++index) {
         const auto &task = tasks.at(index);
         work::TaskAuthorityRecord record{};
-        if ((!work::TaskTable::is_live(task.lifecycle) && task.commit_seq <= durable_seq) ||
+        if ((!work::TaskTable::is_live(task.lifecycle) && task.commit_seq <= durable_seq &&
+             calls.can_retire_task(task.task_id, durable_seq)) ||
             !task_authority.read(task.slot, task.task_id, record)) {
             continue;
         }
@@ -243,6 +263,27 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
         return DueWorkResult::applied;
     }
     return DueWorkResult::none;
+}
+
+uint32_t WorkModel::accepted_step_count(uint32_t task_index) const {
+    const auto &task = tasks.at(task_index);
+    uint32_t count = task.step_count;
+    for (uint32_t index = 0; index < calls.capacity(); ++index) {
+        if (!calls.occupied(index) || calls.identity(index).task_id != task.task_id) {
+            continue;
+        }
+        const auto &key = calls.identity(index).step_key;
+        if (!tasks.has_step(task_index, {key.data(), key.size()})) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool WorkModel::step_taken(uint32_t task_index, ayni_string_v1 key) const {
+    uint32_t call_index = 0;
+    return tasks.has_step(task_index, key) ||
+           calls.find_step(tasks.at(task_index).task_id, key, call_index);
 }
 
 } // namespace ayni::kernel

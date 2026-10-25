@@ -8,7 +8,7 @@
 #include "foundation/bounded_array.h"
 
 #include <array>
-#include <ayni/ayni.h>
+#include <ayni/calls.h>
 
 namespace ayni::catalog {
 
@@ -20,15 +20,15 @@ enum class CancelMode : uint32_t { none = 1, request, confirmed };
 
 // Independent effect flags; neither model classification nor idempotency can
 // erase a declared effect or imply permission to retry an unknown operation.
-constexpr uint32_t call_effect_egress = 0x1;
-constexpr uint32_t call_effect_billing = 0x2;
-constexpr uint32_t call_effect_notification = 0x4;
-constexpr uint32_t call_effect_physical = 0x8;
+constexpr uint32_t call_effect_egress = AYNI_CALL_EFFECT_EGRESS;
+constexpr uint32_t call_effect_billing = AYNI_CALL_EFFECT_BILLING;
+constexpr uint32_t call_effect_notification = AYNI_CALL_EFFECT_NOTIFICATION;
+constexpr uint32_t call_effect_physical = AYNI_CALL_EFFECT_PHYSICAL;
 constexpr uint32_t call_effect_mask =
     call_effect_egress | call_effect_billing | call_effect_notification | call_effect_physical;
-constexpr uint32_t call_text_limit_max = 65536;
-constexpr uint32_t call_fields_text_input_format = 1;
-constexpr uint32_t call_text_result_format = 1;
+constexpr uint32_t call_text_limit_max = AYNI_CALL_TEXT_BYTES_MAX;
+constexpr uint32_t call_fields_text_input_format = AYNI_CALL_INPUT_FIELDS_TEXT;
+constexpr uint32_t call_text_result_format = AYNI_CALL_RESULT_TEXT;
 
 // One static requirement; binding resolves the name only after registration.
 struct CallResource {
@@ -68,6 +68,9 @@ struct CallCapability {
 ayni_status_t normalize_call_contract(const CallContract &input, CallContract &out);
 // Compares already normalized contracts, including limits and every resource.
 bool same_call_contract(const CallContract &left, const CallContract &right);
+// ABI shape and values use the same normalizer as internal typed registration.
+// Copies all nested views; any failure preserves out.
+ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallCapability &out);
 
 // Bounded static directory. No registered pointer or concrete Provider escapes.
 class CallCapabilityRegistry {
@@ -80,6 +83,8 @@ class CallCapabilityRegistry {
     CallCapabilityRegistry(void *storage, uint32_t capacity) : entries_(storage, capacity) {}
     // Copies/canonicalizes on success, no mutation for invalid/duplicate/full input.
     ayni_status_t add(const CallCapability &capability);
+    // Input was normalized/decoded in this call; no duplicate semantic validation.
+    ayni_status_t add_validated(const CallCapability &capability);
     // Exact ID/version lookup. Failure leaves index untouched.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;
     // Immutable entry at index < size(), valid until registry destruction.

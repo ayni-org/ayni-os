@@ -84,6 +84,59 @@ TEST_F(ProviderMailboxTest, retains_cancel_and_terminal_until_the_owner_can_comm
     EXPECT_EQ(mailbox.in_flight(), 0U);
 }
 
+// C-PROV-003/006: public posting copies business text and independent evidence;
+// this transport test does not assert that the consumer has authorized that evidence.
+TEST_F(ProviderMailboxTest, public_post_copies_result_metadata_and_rejects_a_reused_attempt) {
+    const auto original = reserve(1);
+    auto *target = mailbox.completion(original);
+    ASSERT_NE(target, nullptr);
+    char text[] = "reply";
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.outcome = AYNI_CALL_FAILED;
+    result.attempt = original.attempt;
+    result.status = AYNI_RESULT_UNKNOWN;
+    result.effect = AYNI_CALL_EFFECT_PARTIAL;
+    result.query_result = AYNI_QUERY_RESULT_FOUND;
+    result.result = {text, 5};
+    ASSERT_EQ(ayni_provider_post(target, &result), AYNI_OK);
+    text[0] = 'x';
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_EQ(message.kind, Kind::failed);
+    EXPECT_EQ(message.status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(message.effect, AYNI_CALL_EFFECT_PARTIAL);
+    EXPECT_EQ(message.query_result, AYNI_QUERY_RESULT_FOUND);
+    EXPECT_EQ(std::memcmp(buffer.data(), "reply", 5), 0);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    const auto next = reserve(2);
+    EXPECT_EQ(mailbox.completion(original), nullptr);
+    EXPECT_EQ(mailbox.completion(next), target);
+    EXPECT_EQ(ayni_provider_post(target, &result), AYNI_INVALID_STATE);
+    EXPECT_TRUE(mailbox.withdraw(next));
+}
+
+// C-VER-003/C-PROV-006: malformed public posting never consumes the reservation.
+TEST_F(ProviderMailboxTest, public_post_reports_shape_limits_without_losing_the_terminal_slot) {
+    const auto reservation = reserve(1);
+    auto *target = mailbox.completion(reservation);
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result) + 1;
+    EXPECT_EQ(ayni_provider_post(target, &result), AYNI_UNSUPPORTED_VERSION);
+    result.struct_size = sizeof(result);
+    result.attempt = reservation.attempt;
+    EXPECT_EQ(ayni_provider_post(target, &result), AYNI_INVALID_ARGUMENT);
+    result.outcome = AYNI_CALL_COMPLETED;
+    result.effect = AYNI_CALL_EFFECT_COMPLETE;
+    result.result = {"body longer than configured lane", body_capacity + 1};
+    EXPECT_EQ(ayni_provider_post(target, &result), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(mailbox.in_flight(), 1U);
+    EXPECT_FALSE(mailbox.has_pending());
+    result.result = {nullptr, 0};
+    ASSERT_EQ(ayni_provider_post(target, &result), AYNI_OK);
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+}
+
 TEST_F(ProviderMailboxTest, progress_is_copied_and_old_ack_cannot_erase_newer_progress) {
     const auto reservation = reserve(1);
     std::array<uint8_t, 1> producer{{4}};

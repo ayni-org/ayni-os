@@ -35,6 +35,12 @@ struct KernelCapacities {
     uint32_t resource_capacity =
         0; // Resource descriptions/live states; zero disables registration.
     uint32_t resource_request_capacity = 0; // Queued/held groups; zero disables acquisition.
+    uint32_t call_capability_capacity = 0;  // Exact execution contracts; zero disables directory.
+    uint32_t provider_capacity = 0;         // Trusted callback/offer descriptors; zero disables.
+    uint32_t binding_capacity = 0;          // Exact implementation selections; zero disables.
+    uint32_t call_capacity = 0; // Retained calls and Provider delivery slots; zero disables.
+    uint32_t call_input_max_bytes = AYNI_CALL_INPUT_BYTES_DEFAULT;   // Complete canonical input.
+    uint32_t call_result_max_bytes = AYNI_CALL_RESULT_BYTES_DEFAULT; // UTF-8 result stride.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -69,6 +75,12 @@ struct KernelStorage {
     void *resource_catalog = nullptr; // Catalog-owned descriptions; null iff disabled.
     void *resource_states = nullptr;  // Resource-owned health/occupancy; null iff catalog disabled.
     void *resource_requests = nullptr; // Resource-owned queue/claims; null iff queue disabled.
+    void *call_capabilities = nullptr; // Catalog-owned call semantics; null iff disabled.
+    void *providers = nullptr;         // Catalog-owned offers/callbacks; null iff disabled.
+    void *bindings = nullptr;          // Catalog-owned exact selections; null iff disabled.
+    void *calls = nullptr; // Work-owned identities, state and bodies; null iff disabled.
+    void *provider_completions = nullptr; // Reliable delivery storage, separate from Host slots.
+    void *call_runtime = nullptr; // Boot-local I/O ownership plus staging and receipt copies.
 };
 
 } // namespace ayni::kernel

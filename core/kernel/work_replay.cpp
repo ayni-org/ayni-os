@@ -6,6 +6,7 @@
 #include "kernel/command/command_records.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
+#include "work/call/call_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -19,7 +20,8 @@ using durability::RecordUse;
 // Known authority families require a refusal marker even for unknown versions;
 // discovery must not skip their ownership semantics as optional metadata.
 bool requires_authority_header(const durability::RecordHeader &header) {
-    return header.type == work::authority_cleanup_record_type ||
+    return header.type == work::call_record_type ||
+           header.type == work::authority_cleanup_record_type ||
            (header.type == work::task_state_record_type &&
             header.version >= work::task_state_authority_record_version) ||
            header.type == work::task_authority_record_type ||
@@ -72,12 +74,17 @@ template <typename Restore> RecordUse use_of(Restore restore) {
 bool knows_task_state(uint16_t version, WorkRecordContext context) {
     return version == work::task_state_record_version ||
            version == work::task_state_runtime_record_version ||
+           version == work::task_state_call_record_version ||
            (context == WorkRecordContext::journal &&
             (version == work::task_state_authority_record_version ||
              version == work::task_state_reauthorization_record_version ||
              version == work::task_state_runtime_authority_record_version ||
              version == work::task_state_runtime_reauthorization_record_version ||
-             version == work::task_state_raise_limit_record_version));
+             version == work::task_state_raise_limit_record_version ||
+             version == work::task_state_call_authority_record_version ||
+             version == work::task_state_call_reauthorization_record_version ||
+             version == work::task_state_call_raise_limit_record_version ||
+             version == work::task_state_resume_wait_record_version));
 }
 
 } // namespace
@@ -117,7 +124,9 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                        header.version == exact_command_record_version ||
                        header.version == revoke_command_record_version ||
                        header.version == work_authority_command_record_version ||
-                       header.version == task_limit_command_record_version
+                       header.version == task_limit_command_record_version ||
+                       header.version == call_query_command_record_version ||
+                       header.version == resume_wait_command_record_version
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case authority::grant_record_type:
@@ -171,6 +180,9 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::task_steps_record_type:
     case work::task_checkpoint_record_type:
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
+    case work::call_record_type:
+        return header.version == work::call_record_version ? RecordUse::applied
+                                                           : RecordUse::unknown;
     case work::task_state_record_type:
         return knows_task_state(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     default:
@@ -189,12 +201,14 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         }
         pairing_.approval.reset();
         pairing_.limit_raise.reset();
+        pairing_.target_command.reset();
         pairing_.reauthorization.reset();
         pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if ((pairing_.limit_raise &&
+    if ((pairing_.target_command && pairing_.target_command->command_seen) ||
+        (pairing_.limit_raise &&
          pairing_.limit_raise->stage == BatchPairing::TaskLimitPair::Stage::command) ||
         pairing_.work_cleanup.stage == BatchPairing::WorkCleanupPair::Stage::complete ||
         (pairing_.approval && pairing_.approval->stage == ApprovalPair::Stage::complete)) {
@@ -208,7 +222,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
 RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
                                    const durability::RecordHeader &header, const uint8_t *body,
                                    uint64_t boot_epoch_limit) {
-    if (pairing_.limit_raise && header.type != command_record_type) {
+    if ((pairing_.limit_raise || pairing_.target_command) && header.type != command_record_type) {
         return RecordUse::corrupt;
     }
     // A pending approval admits only its own Grants/state/metadata/command.
@@ -264,6 +278,8 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         return restore_task_authority(body, size, {batch.transition_id, batch.commit_seq});
     case work::task_record_type:
         return restore_task(body, size, stamp);
+    case work::call_record_type:
+        return restore_call(body, size, {boot_epoch_limit, stamp});
     case work::task_state_record_type:
         return restore_task_state(header.version, body, size, stamp);
     case work::task_steps_record_type:
@@ -460,6 +476,7 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
     const work::TaskTable::Restore restore =
         model_.tasks.restore(record.task, record.task_id, record.replaced_task_id, stamp);
     if (restore == work::TaskTable::Restore::restored) {
+        model_.calls.retire_task(record.replaced_task_id);
         pairing_.task_created_seq = stamp.commit_seq;
         pairing_.task = record.task_id;
         pairing_.task_authority = record.task_id;
@@ -515,7 +532,16 @@ RecordUse WorkReplay::restore_task_state(uint16_t version, const uint8_t *body, 
     if (record.task_id == pairing_.task) {
         pairing_.task.reset();
     }
-    if (version == work::task_state_raise_limit_record_version) {
+    if (version == work::task_state_resume_wait_record_version) {
+        // Standalone wait resume preserves the original call and requires exact owner identity.
+        if (batch_seq_ == stamp.commit_seq || !pairing_.complete()) {
+            return RecordUse::corrupt;
+        }
+        pairing_.target_command = BatchPairing::TargetCommandPair{
+            {AYNI_INTENT_TASK_RESUME_WAIT, model_.tasks.at(index).revision, record.task_id}};
+        return use_of(model_.tasks.restore_wait_resume(index, record.state, stamp));
+    }
+    if (work::task_state_base_version(version) == work::task_state_raise_limit_record_version) {
         // A raise is a standalone owner command, sealed by its exact identity.
         if (batch_seq_ == stamp.commit_seq || !pairing_.complete()) {
             return RecordUse::corrupt;
@@ -711,6 +737,13 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
+    if (is_target_command(mapping.kind)) {
+        if (!pair_target_command(mapping, canonical)) {
+            return RecordUse::corrupt;
+        }
+    } else if (pairing_.target_command) {
+        return RecordUse::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
         TaskLimitCommand command{};
         const auto *binding = model_.principals.binding();
@@ -863,7 +896,7 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
 // goal under a terminal parent or a stopped owner, or a live task under a
 // terminal goal.
 bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
-    if (!model_.grants.consistent()) {
+    if (!model_.grants.consistent() || !calls_consistent(boot_epoch_limit)) {
         return false;
     }
     const auto &cleanup = model_.authority_cleanup.record();
@@ -918,7 +951,7 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
             return false;
         }
         if (model_.goals.at(task.goal_index).lifecycle == AYNI_GOAL_PROPOSED ||
-            (work::TaskTable::is_live(task.lifecycle) &&
+            (work::TaskTable::is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
              !work::GoalTable::is_live(model_.goals.at(task.goal_index).lifecycle))) {
             return false;
         }
@@ -1021,6 +1054,7 @@ void WorkReplay::discard() {
     model_.task_authority.clear_all();
     model_.authority_cleanup.clear();
     model_.tasks.clear();
+    model_.calls.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();
     batch_seq_ = 0;

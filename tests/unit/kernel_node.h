@@ -52,7 +52,15 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
             config.grant_delegation_depth_max,
             config.goal_requirement_capacity,
             config.resource_capacity,
-            config.resource_request_capacity};
+            config.resource_request_capacity,
+            config.call_capability_capacity,
+            config.provider_capacity,
+            config.binding_capacity,
+            config.call_capacity,
+            config.call_input_max_bytes == 0U ? AYNI_CALL_INPUT_BYTES_DEFAULT
+                                              : config.call_input_max_bytes,
+            config.call_result_max_bytes == 0U ? AYNI_CALL_RESULT_BYTES_DEFAULT
+                                               : config.call_result_max_bytes};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's

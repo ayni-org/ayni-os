@@ -81,3 +81,9 @@
 | C-LIMIT-012 | 派生摘要的 lineage 条目数有上限，上限随配置给出；达到上限时按 C-PROD-032 处理 | lineage 数组写满后静默丢弃最早的依赖 | `MA-011` |
 
 D 的 Grant metadata 新增 revoker/cursor/独立 cleanup_stamp，snapshot Grant 尾为80 B，v3撤销mapping为80 B。Gate 在 GrantTable，pending metadata 与canonical/window scratch在CommandTable，按其 storage_size 统一分配；不在Kernel增加状态数组，也不另建普通结果窗口。清理每工作项至多处理一个候选，有限表/祖先扫描受配置界限约束；Native caller arena已两轮严格C99量测：默认110,792 B、最小31,616 B、对齐8 B，较C增加4,272/544 B。Gate/pending耗尽、全pin、背压与持久安全叶回收已有Native场景证据；容量失败组合未逐项穷尽，见ADR-0031。硬件RAM、栈与最坏step时长仍待量测，结构上界或Native arena数字不替代硬件证据。
+
+## ABI 0.31 调用配置
+
+`call_capability_capacity`、`provider_capacity`、`binding_capacity`、`call_capacity` 缺省或显式 0 均为关闭；原基础/Hello 配置不自动分配全部调用表。启用调用时，输入 canonical stride 默认 4096 B、最多 131072 B，结果默认 4096 B、最多 65536 B；每个契约的正文上限还须在对应 stride 内。CallTable、ProviderMailbox、CallRuntime staging/receipt 与原域字节由同一 caller arena 预算，创建后不扩容。Call 槽上限 256，保留 UNKNOWN 也占槽，不能自动淘汰。
+
+每个 Task 的步骤上限计算本地完成步骤和已接受调用 step_key 的并集。失败调用不释放该身份；模型次数另由 Task owner 保存。管理查询对账只占独立有界 Provider 完成槽，不重新占用原执行资源或模型调用次数。

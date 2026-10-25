@@ -54,6 +54,11 @@ ayni_status_t ayni_kernel::start() {
     if (!work.goal_types.link_strategies(work.strategies)) {
         return AYNI_NOT_FOUND;
     }
+    const auto linked =
+        bindings.validate_all(work.capabilities, call_capabilities, providers, resource_catalog);
+    if (linked != AYNI_OK) {
+        return linked;
+    }
     ingress.open();
     lifecycle = AYNI_LIFECYCLE_RECOVERING;
     return AYNI_OK;
@@ -87,6 +92,7 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     refresh_storage();
     advance_recovery_and_maintenance(progress);
     apply_revocations(progress);
+    apply_calls(progress);
     apply_ready_work(progress);
     take_queued_inputs(progress);
     if (appends() && log.advance(host.monotonic_now_us(host.ctx))) {
@@ -95,7 +101,7 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
             enter_restricted(AYNI_RESTRICTION_INTERNAL);
         }
     }
-    if (lifecycle == AYNI_LIFECYCLE_DRAINING && completions.in_flight() == 0U &&
+    if (lifecycle == AYNI_LIFECYCLE_DRAINING && completions.in_flight() == 0U && calls.idle() &&
         (!appends() || log.idle() || log.failure() != AYNI_RESTRICTION_NONE) &&
         !revocation_ready()) {
         events_discarded += ingress.close();
@@ -153,6 +159,44 @@ void ayni_kernel::apply_revocations(StepBudget &progress) {
     }
 }
 
+ayni::kernel::CallRuntime::Mode ayni_kernel::call_mode() const {
+    using Mode = ayni::kernel::CallRuntime::Mode;
+    if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
+        return Mode::running;
+    }
+    if (lifecycle == AYNI_LIFECYCLE_DRAINING) {
+        return appends() && log.failure() == AYNI_RESTRICTION_NONE ? Mode::draining : Mode::closing;
+    }
+    return Mode::fenced;
+}
+
+// Run a bounded number of call transitions under the same journal admission as
+// decisions. In a fenced writer only nonpersistent Provider cancellation is allowed.
+void ayni_kernel::apply_calls(StepBudget &progress) {
+    using Runtime = ayni::kernel::CallRuntime;
+    while (progress.available()) {
+        // journal() can fence/restrict this writer. Never carry RUNNING across
+        // that transition into another call dispatch in the same bounded step.
+        const auto mode = call_mode();
+        if (mode != Runtime::Mode::fenced && mode != Runtime::Mode::closing && !has_room()) {
+            break;
+        }
+        const uint64_t first_seq = work.transitions.next_commit_seq();
+        const auto result = calls.advance(host.monotonic_now_us(host.ctx), log.durable_seq(), mode);
+        if (result == Runtime::Advance::idle) {
+            break;
+        }
+        if (result == Runtime::Advance::internal || result == Runtime::Advance::attempt_exhausted) {
+            enter_restricted(result == Runtime::Advance::attempt_exhausted
+                                 ? AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED
+                                 : AYNI_RESTRICTION_INTERNAL);
+            break;
+        }
+        journal(first_seq);
+        progress.applied(host);
+    }
+}
+
 // Preserve one schedule/READY frontier for this call so newly derived tasks
 // wait until the next decision pass, independent of a strategy's answers.
 void ayni_kernel::apply_ready_work(StepBudget &progress) {
@@ -181,8 +225,14 @@ void ayni_kernel::apply_ready_work(StepBudget &progress) {
         }
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
             const uint64_t first_seq = work.transitions.next_commit_seq();
-            if (!ayni::kernel::decide_next(work, decisions, ready_before, progress.started_us,
-                                           log.durable_seq(), {host.ctx, host.monotonic_now_us})) {
+            const auto decided = ayni::kernel::decide_next(
+                work, decisions, ready_before, progress.started_us, log.durable_seq(),
+                {host.ctx, host.monotonic_now_us}, &calls);
+            if (decided == ayni::kernel::DecisionResult::none) {
+                break;
+            }
+            if (decided == ayni::kernel::DecisionResult::internal) {
+                enter_restricted(AYNI_RESTRICTION_INTERNAL);
                 break;
             }
             journal(first_seq);
@@ -238,12 +288,20 @@ void ayni_kernel::report_step(const StepBudget &progress, ayni_step_report_v1 &r
     if (storage_due_us > progress.started_us && storage_due_us < next_deadline_us) {
         next_deadline_us = storage_due_us;
     }
+    const auto mode = call_mode();
+    const bool call_ready = (has_room() || mode == ayni::kernel::CallRuntime::Mode::fenced ||
+                             mode == ayni::kernel::CallRuntime::Mode::closing) &&
+                            calls.ready(progress.started_us, log.durable_seq(), mode);
+    const auto call_deadline = calls.next_deadline_us();
+    if (call_deadline > progress.started_us && call_deadline < next_deadline_us) {
+        next_deadline_us = call_deadline;
+    }
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
     report.items_done = progress.items;
     const bool events_due = takes_events() && takes_event_now() && ingress.queued() > 0U;
     report.more_ready = completions.posted_count() > 0U || boot_due || log_due || maintenance_due ||
-                                events_due || work_due || revocation_ready() ||
+                                events_due || work_due || call_ready || revocation_ready() ||
                                 (lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
                                  work.authority_cleanup.ready())
                             ? 1U
@@ -422,6 +480,10 @@ void ayni_kernel::settle_recovery() {
 void ayni_kernel::enter_running() {
     if (!replay.complete() || !replay.consistent()) {
         replay.discard();
+        enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
+        return;
+    }
+    if (!calls.rebind_restored()) {
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         return;
     }

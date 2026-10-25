@@ -1,14 +1,11 @@
 #include "resources/admission/resource_admission.h"
 
+#include "foundation/deadline.h"
+
 #include <new>
 
 namespace ayni::resources {
 namespace {
-// UINT64_MAX is reserved for an explicitly unbounded wait, not overflow.
-constexpr uint64_t last_finite_time = no_deadline - 1U;
-uint64_t deadline(uint64_t now_us, uint64_t wait_us) {
-    return wait_us > last_finite_time - now_us ? last_finite_time : now_us + wait_us;
-}
 uint64_t elapsed(uint64_t now_us, uint64_t start_us) {
     return now_us >= start_us ? now_us - start_us : 0U;
 }
@@ -96,12 +93,13 @@ ayni_status_t ResourceAdmission::enqueue(const ResourceRequest &request, uint64_
     if (find(request.call_id, existing)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (requests_.full() || last_ticket_ == UINT64_MAX) {
+    if (!has_room()) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     const Entry entry{request, last_ticket_ + 1U, now_us,
-                      request.on_wait == WaitAction::wait ? no_deadline
-                                                          : deadline(now_us, request.wait_us),
+                      request.on_wait == WaitAction::wait
+                          ? no_deadline
+                          : foundation::deadline(now_us, request.wait_us),
                       Phase::waiting};
     // Capacity was checked under the single owner; push cannot fail (C-RES-002).
     requests_.push_back(entry);
@@ -257,6 +255,22 @@ bool ResourceAdmission::remove_waiter(uint64_t call_id, uint64_t now_us) {
 
 // Return units of this exact acquisition; actuator reuse remains fenced until
 // the same claim's stop fact is consumed, irrespective of logical-call retries.
+bool ResourceAdmission::executable(ResourceClaim claim) const {
+    uint32_t index = 0;
+    if (!find(claim.call_id, index) || requests_[index].ticket != claim.generation ||
+        requests_[index].phase != Phase::held) {
+        return false;
+    }
+    const auto &request = requests_[index].request;
+    for (uint32_t at = 0; at < request.count; ++at) {
+        const auto &state = states_[request.resources[at].index];
+        if (state.health != AYNI_RESOURCE_ONLINE || state.quarantine.call_id != 0U) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ResourceAdmission::release(ResourceClaim claim) {
     uint32_t index = 0;
     if (!find(claim.call_id, index) || requests_[index].phase != Phase::held ||

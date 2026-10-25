@@ -85,6 +85,7 @@ bool WorkModel::inherit_task_authority(uint64_t task_id, foundation::TransitionS
         return false;
     }
     const auto &task = tasks.at(index);
+    calls.retire_task(task.replaced_task_id);
     const auto ceiling = goal_authority.at(task.goal_index);
     work::TaskAuthorityRecord record{};
     record.task_id = task.task_id;
@@ -118,6 +119,7 @@ void WorkModel::clear_goal_task_authority(uint32_t goal_index, uint64_t commit_s
             !task_authority.read(task.slot, task.task_id, record)) {
             continue;
         }
+        calls.retire_task(task.task_id);
         release_task_references(record, commit_seq);
         task_authority.clear(task.slot);
     }

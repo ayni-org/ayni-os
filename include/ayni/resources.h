@@ -13,6 +13,9 @@
 extern "C" {
 #endif
 
+/* Maximum members in one atomic acquisition group. Since 0.31. */
+#define AYNI_RESOURCE_GROUP_COUNT_MAX 8u
+
 typedef uint32_t ayni_resource_kind_t;
 /* Exactly one unit and one holder. Since 0.29. */
 #define AYNI_RESOURCE_EXCLUSIVE ((ayni_resource_kind_t)1)

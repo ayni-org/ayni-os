@@ -9,6 +9,7 @@
 
 #include "kernel/command/command_approval.h"
 #include "kernel/command/command_reauthorization.h"
+#include "kernel/command/command_target.h"
 #include "kernel/command/command_task_limit.h"
 #include "kernel/command/work_authority_result.h"
 

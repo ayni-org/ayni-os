@@ -72,7 +72,7 @@ class CompletionPoolTest : public ::testing::Test {
   protected:
     void make_pool(uint32_t slots) {
         storage_.assign(CompletionPool::storage_size(slots) / sizeof(uint64_t) + 1U, 0);
-        pool_.emplace(storage_.data(), slots, host_);
+        pool_.emplace(storage_.data(), slots, host_, attempts_);
     }
 
     IssueResult issue() {
@@ -83,6 +83,7 @@ class CompletionPoolTest : public ::testing::Test {
     ayni_host_v1 host_ = sim_.table();
     std::vector<uint64_t> storage_;
     std::optional<CompletionPool> pool_;
+    ayni::kernel::AttemptSequence attempts_;
     FakePort port_;
     Applied applied_;
 };
@@ -112,6 +113,40 @@ TEST_F(CompletionPoolTest, attempts_are_named_before_the_port_is_called) {
     EXPECT_EQ(port_.accepted[1].first.boot_epoch, boot_epoch);
     EXPECT_NE(port_.accepted[0].first.request_id, port_.accepted[1].first.request_id);
     EXPECT_NE(port_.accepted[0].second, port_.accepted[1].second);
+}
+
+// C-ID-006 / ADR-0045: Host and Provider share one owner, including boot changes.
+TEST_F(CompletionPoolTest, provider_allocations_and_host_attempts_share_a_unique_sequence) {
+    make_pool(2);
+    ASSERT_EQ(issue(), IssueResult::in_flight);
+    ayni_attempt_ref_v1 provider{};
+    ASSERT_TRUE(attempts_.next(boot_epoch + 1, provider));
+    ASSERT_EQ(issue(), IssueResult::in_flight);
+    EXPECT_LT(port_.accepted[0].first.request_id, provider.request_id);
+    EXPECT_LT(provider.request_id, port_.accepted[1].first.request_id);
+}
+
+// Normal public capacity boundary of the internal allocator, not fault injection.
+TEST(CompletionIdentity, exhausted_request_ids_do_not_wrap_or_borrow_a_slot) {
+    ayni::hosts::sim::Host sim;
+    const auto host = sim.table();
+    ayni::kernel::AttemptSequence attempts(UINT64_MAX - 1);
+    std::vector<uint64_t> storage(CompletionPool::storage_size(1) / sizeof(uint64_t) + 1);
+    CompletionPool pool(storage.data(), 1, host, attempts);
+    FakePort port;
+    port.answer = AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    Applied applied;
+    EXPECT_EQ(pool.issue(boot_epoch, &Applied::handle, &applied, &FakePort::call, &port),
+              IssueResult::rejected);
+    ASSERT_EQ(port.accepted.size(), 1U);
+    EXPECT_EQ(port.accepted.front().first.request_id, UINT64_MAX);
+    EXPECT_EQ(pool.issue(boot_epoch, &Applied::handle, &applied, &FakePort::call, &port),
+              IssueResult::exhausted);
+    EXPECT_EQ(port.calls, 1);
+    EXPECT_EQ(pool.in_flight(), 0U);
+    ayni_attempt_ref_v1 preserved{1, 1};
+    EXPECT_FALSE(attempts.next(boot_epoch + 1, preserved));
+    EXPECT_EQ(preserved.request_id, 1U);
 }
 
 TEST_F(CompletionPoolTest, result_is_applied_once) {
@@ -391,7 +426,8 @@ TEST(CompletionWake, result_is_applicable_when_the_owner_is_woken) {
     ApplyOnWakeHost probe;
     const ayni_host_v1 host = probe.table();
     std::vector<uint64_t> storage(CompletionPool::storage_size(2) / sizeof(uint64_t) + 1U);
-    CompletionPool pool(storage.data(), 2, host);
+    ayni::kernel::AttemptSequence attempts;
+    CompletionPool pool(storage.data(), 2, host, attempts);
     probe.pool = &pool;
     FakePort port;
     Applied applied;

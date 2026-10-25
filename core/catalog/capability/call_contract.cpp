@@ -1,5 +1,6 @@
 #include "catalog/capability/call_contract.h"
 
+#include "catalog/abi_checks.h"
 #include "catalog/capability/field_values.h"
 
 namespace ayni::catalog {
@@ -30,6 +31,41 @@ bool known_cancel(CancelMode cancel) {
            cancel == CancelMode::confirmed;
 }
 
+// Only boundary shape is handled here. normalize_call_contract remains the
+// single owner of enum, limit, resource uniqueness and canonical-order rules.
+ayni_status_t decode_contract(const ayni_call_contract_v1 &input, CallContract &out) {
+    const auto status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (input.resource_count > resource_group_max ||
+        (input.resource_count != 0U && input.resources == nullptr)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    CallContract value{};
+    value.form = static_cast<CallForm>(input.form);
+    value.category = static_cast<CallClass>(input.category);
+    value.effects = input.effects;
+    value.idempotency = static_cast<CallIdempotency>(input.idempotency);
+    value.query = static_cast<QueryAuthority>(input.query);
+    value.cancel = static_cast<CancelMode>(input.cancel);
+    value.dedupe_window_ms = input.dedupe_window_ms;
+    value.timeout_ms = input.timeout_ms;
+    value.input_format = input.input_format;
+    value.result_format = input.result_format;
+    value.input_text_limit = input.input_text_limit;
+    value.result_text_limit = input.result_text_limit;
+    value.resource_count = input.resource_count;
+    for (uint32_t at = 0; at < value.resource_count; ++at) {
+        const auto &resource = input.resources[at];
+        if (resource.reserved != 0U || !value.resources[at].id.assign(resource.resource_id)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        value.resources[at].units = resource.units;
+    }
+    return normalize_call_contract(value, out);
+}
+
 // Canonical sorted requirement groups have one meaning regardless of registration
 // array order. Duplicate resources are invalid, not silently summed or deduplicated.
 bool normalize_resources(CallContract &value) {
@@ -56,6 +92,23 @@ bool normalize_resources(CallContract &value) {
     return true;
 }
 } // namespace
+
+ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallCapability &out) {
+    const auto status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
+    if (status != AYNI_OK) {
+        return status;
+    }
+    CallCapability value{};
+    if (input.version == 0U || !value.id.assign(input.capability_id)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    value.version = input.version;
+    const auto contract_status = decode_contract(input.contract, value.contract);
+    if (contract_status == AYNI_OK) {
+        out = value;
+    }
+    return contract_status;
+}
 
 // Static compatibility is independent of runtime authority or resource health.
 // PHYSICAL/subscription are recognizable declarations; the M1 consumer must
@@ -112,6 +165,10 @@ ayni_status_t CallCapabilityRegistry::add(const CallCapability &capability) {
     if (status != AYNI_OK) {
         return status;
     }
+    return add_validated(value);
+}
+
+ayni_status_t CallCapabilityRegistry::add_validated(const CallCapability &value) {
     uint32_t index = 0;
     if (find(view(value.id), value.version, index)) {
         return AYNI_INVALID_ARGUMENT;

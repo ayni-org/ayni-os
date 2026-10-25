@@ -25,6 +25,8 @@ ayni_add_core_module(catalog
         catalog/capability/call_contract.cpp
         catalog/capability/field_domain.cpp
         catalog/capability/field_values.cpp
+        catalog/provider/provider_registry.cpp
+        catalog/binding/binding_registry.cpp
         catalog/goal_type/goal_type_registry.cpp
         catalog/resource/resource_registry.cpp
         catalog/strategy/strategy_registry.cpp
@@ -48,6 +50,11 @@ ayni_add_core_module(work
         work/action/action_record.cpp
         work/action/action_records.cpp
         work/call/call_input.cpp
+        work/call/call_table.cpp
+    work/call/call_reconciliation.cpp
+    work/call/call_query_validation.cpp
+    work/call/call_records.cpp
+    work/call/call_restore.cpp
         work/authority/authority_cleanup.cpp
         work/authority/authority_cleanup_records.cpp
         work/authority/authority_facts.cpp
@@ -74,6 +81,7 @@ ayni_add_core_module(kernel
         kernel/command/command_goal_identity.cpp
         kernel/command/command_reauthorization.cpp
         kernel/command/command_task_limit.cpp
+    kernel/command/command_target.cpp
         kernel/command/command_records.cpp
         kernel/command/command_table.cpp
         kernel/command/work_authority_result.cpp
@@ -96,6 +104,8 @@ ayni_add_core_module(kernel
         kernel/intent/work_authority_cleanup.cpp
         kernel/kernel_api.cpp
         kernel/resource_api.cpp
+        kernel/provider_api.cpp
+        kernel/provider_completion_api.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
         kernel/storage/storage_budget.cpp
@@ -103,6 +113,14 @@ ayni_add_core_module(kernel
         kernel/work_api.cpp
         kernel/work_journal.cpp
         kernel/work_replay.cpp
+    kernel/call_replay.cpp
+    kernel/call_admission.cpp
+    kernel/call_runtime.cpp
+    kernel/call_dispatch.cpp
+    kernel/call_completion.cpp
+    kernel/call_query.cpp
+    kernel/call_reconciliation.cpp
+    kernel/call_drain.cpp
         kernel/work_cleanup_replay.cpp
         kernel/goal_approval_replay.cpp
         kernel/goal_reauthorization_replay.cpp

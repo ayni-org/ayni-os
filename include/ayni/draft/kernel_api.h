@@ -26,6 +26,7 @@
 
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
+#include <ayni/calls.h>
 #include <ayni/resources.h>
 
 #include <stdint.h>
@@ -48,72 +49,9 @@ typedef struct ayni_device_desc_v1 {
  * authority epochs and device/binding associations remain MA-018B/MA-008;
  * the current ACTUATOR flag promises quarantine, not execution permission. */
 
-typedef uint32_t ayni_call_form_t;
-
-#define AYNI_CALL_UNARY ((ayni_call_form_t)1)
-#define AYNI_CALL_ACTION ((ayni_call_form_t)2)
-#define AYNI_CALL_SUBSCRIPTION ((ayni_call_form_t)3)
-
-/* Side-effect classes, a bit set; 0 means NONE (contracts/domain/
- * calls_and_bindings.md). Each property below is declared independently. */
-#define AYNI_EFFECT_DATA_EGRESS 0x1u
-#define AYNI_EFFECT_BILLING 0x2u
-#define AYNI_EFFECT_NOTIFICATION 0x4u
-#define AYNI_EFFECT_PHYSICAL 0x8u
-
-typedef uint32_t ayni_idempotency_t;
-
-#define AYNI_IDEMPOTENT ((ayni_idempotency_t)1)
-#define AYNI_NOT_IDEMPOTENT ((ayni_idempotency_t)2)
-
-typedef uint32_t ayni_query_authority_t;
-
-#define AYNI_QUERY_NONE ((ayni_query_authority_t)1)
-#define AYNI_QUERY_BEST_EFFORT ((ayni_query_authority_t)2)
-#define AYNI_QUERY_AUTHORITATIVE ((ayni_query_authority_t)3)
-
-typedef uint32_t ayni_cancel_mode_t;
-
-#define AYNI_CANCEL_NONE ((ayni_cancel_mode_t)1)
-#define AYNI_CANCEL_REQUEST ((ayni_cancel_mode_t)2)
-#define AYNI_CANCEL_CONFIRMED ((ayni_cancel_mode_t)3)
-
-/* Future call properties extend the same capability registry (MA-008).
- * No registration symbol accepts this draft; authorization schema
- * registration is published in ayni/authority.h since 0.17. */
-typedef struct ayni_capability_call_properties_draft_v1 {
-    uint32_t struct_size;
-    ayni_call_form_t call_form;
-    ayni_string_v1 capability_id; /* e.g. "notify.present" */
-    uint32_t version;
-    uint32_t effect_classes; /* AYNI_EFFECT_* */
-    ayni_idempotency_t idempotency;
-    ayni_query_authority_t query_authority;
-    ayni_cancel_mode_t cancel_mode;
-    uint32_t dedupe_window_ms; /* server-side window keyed by operation_id; 0: none */
-    uint32_t deadline_ms;      /* presentation or execution deadline */
-    uint32_t required_resource_count;
-    const ayni_string_v1 *required_resources; /* resource_id each */
-    ayni_string_v1 input_schema;              /* JSON Schema subset, C-JSON-012 */
-    ayni_string_v1 result_schema;
-    ayni_string_v1 compensation_capability_id; /* empty: none */
-} ayni_capability_call_properties_draft_v1;
-
-typedef struct ayni_binding_v1 {
-    uint32_t struct_size;
-    uint32_t capability_version;
-    ayni_string_v1 binding_id;
-    ayni_string_v1 capability_id;
-    ayni_string_v1 provider_id;
-    ayni_string_v1 egress_destination; /* empty: no egress */
-    ayni_string_v1 cost_class;         /* empty: free */
-    uint32_t resource_count;
-    uint32_t reserved; /* 0 */
-    const ayni_string_v1 *resources;
-} ayni_binding_v1;
-
+/* Call execution properties, Provider offers and Binding registration are
+ * published in ayni/calls.h since 0.31. Device registration remains a draft. */
 ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc_v1 *device);
-ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding);
 
 /*
  * ayni_start (ayni.h) will also freeze the catalog and validate every cross

@@ -24,6 +24,7 @@
 
 #include "catalog/catalog_id.h"
 #include "foundation/bounded_array.h"
+#include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
 
 #include <ayni/ayni.h>
@@ -62,6 +63,28 @@ struct TaskModelCalls {
     }
 };
 
+// The Task owns its selected call reference, while work/call owns call facts.
+// Cancellation is a requested end, never proof that the borrowed attempt stopped.
+struct TaskCall {
+    enum class End : uint32_t { none = 0, cancel, expire };
+    uint64_t id = 0;     // Zero iff no logical call blocks this Task's next decision.
+    End end = End::none; // Requested end after drainage; none while ordinary work waits.
+    // One shape rule used by live state and record readers.
+    bool valid(ayni_task_lifecycle_t lifecycle) const {
+        if (id == 0U) {
+            return end == End::none && lifecycle != AYNI_TASK_RUNNING &&
+                   lifecycle != AYNI_TASK_CANCELLING;
+        }
+        return foundation::is_kernel_id(id) &&
+               ((end == End::none &&
+                 (lifecycle == AYNI_TASK_RUNNING || lifecycle == AYNI_TASK_PAUSED)) ||
+                ((end == End::cancel || end == End::expire) && lifecycle == AYNI_TASK_CANCELLING));
+    }
+    // Complete relation equality for metadata-only authorization changes.
+    bool operator==(const TaskCall &other) const { return id == other.id && end == other.end; }
+    bool operator!=(const TaskCall &other) const { return !(*this == other); }
+};
+
 struct Task {
     uint64_t task_id;
     uint64_t goal_id;
@@ -80,9 +103,9 @@ struct Task {
     uint32_t revision;        // 1 at creation, raised by each change
     uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
     ayni_task_lifecycle_t lifecycle;
-    // Why its strategy's decision holds it PAUSED, hold_status being a
-    // failure; AYNI_OK and AYNI_REASON_NONE if it never did. Kept once the
-    // task ends.
+    // Policy failure or pending-call hold overlay; AYNI_OK/REASON_NONE means none.
+    // UNKNOWN and RESOURCE_WAIT preserve the independent user lifecycle; their
+    // owner transition clears them. Other diagnostics remain after termination.
     ayni_status_t hold_status;
     ayni_reason_t hold_reason;
     // What its strategy's decisions committed (ADR-0024): how many steps,
@@ -95,7 +118,8 @@ struct Task {
     uint32_t checkpoint_writer_version;
     catalog::CatalogId checkpoint_writer_id;
     TaskModelCalls model_calls{}; // This Task owns its consumption and independent durable hold.
-    uint32_t slot;                // the table's own: which blocks hold them
+    TaskCall call{}; // Persisted selected logical call and requested end, never a mailbox slot.
+    uint32_t slot;   // the table's own: which blocks hold them
     // This boot cannot serve an otherwise recoverable task. Kept apart
     // from the durable state so compaction cannot make the hold permanent.
     ayni_status_t recovery_hold_status;
@@ -111,6 +135,7 @@ struct TaskState {
     ayni_reason_t hold_reason;
     uint32_t step_count;
     TaskModelCalls model_calls{}; // Preserved across lifecycle/authorization changes.
+    TaskCall call{}; // Preserved across authorization; only the call coordinator may clear it.
 };
 
 // Pause takes READY to PAUSED and resume takes it back, unless a decision
@@ -118,8 +143,8 @@ struct TaskState {
 // which comes only with its goal's expiry (ADR-0020), to EXPIRED. Complete
 // and fail come from its strategy's decision and take a READY task to
 // COMPLETED and FAILED (ADR-0022); a decision may also hold the task
-// (hold()) or leave it READY (progress()). Tasks do not reach RUNNING or
-// CANCELLING yet.
+// (hold()) or leave it READY (progress()). A selected call makes it RUNNING;
+// cancellation/expiry keeps it CANCELLING until the call has a known outcome.
 enum class TaskChange { pause, resume, cancel, expire, complete, fail };
 
 class TaskTable {
@@ -158,6 +183,14 @@ class TaskTable {
 
     TaskTable(const TaskTable &) = delete;
     TaskTable &operator=(const TaskTable &) = delete;
+
+    // Borrowed immutable relation query, installed by the work coordinator.
+    // A terminal Task may still own unresolved calls or retained dependent data.
+    struct Retention {
+        const void *context = nullptr; // Coordinator outlives this table; null when disabled.
+        bool (*retains)(const void *, const Task &) = nullptr; // Pure owner-thread query, no I/O.
+    };
+    void set_retention(Retention retention) { retention_ = retention; } // Before live work starts.
 
     // Whether insert() would succeed: a free place, or an ended task to give
     // way.
@@ -201,6 +234,34 @@ class TaskTable {
     // until an owner raises it. Does not overwrite user/policy/recovery state.
     void hold_model_calls(uint32_t index, foundation::TransitionStamp stamp);
 
+    // Kind controls only whether acceptance consumes the independent model counter.
+    enum class CallKind { tool, model };
+    // Caller preflighted READY, spare step/count/revision and a valid new call ID;
+    // the same B2 transition owns its Call record, checkpoint and resource intent.
+    void begin_call(uint32_t index, uint64_t call_id, CallKind kind,
+                    foundation::TransitionStamp stamp);
+    // Exact selected call is drained and either known or the Task's end was
+    // requested. Preserve user pause; cancellation/expiry never reopens decisions.
+    // Unknown call records remain pinned independently by the retention query.
+    void finish_call(uint32_t index, foundation::TransitionStamp stamp);
+    // Resource wait expired before dispatch: retain the selected call and user
+    // lifecycle, adding only an explicit-resume overlay (ADR-0045).
+    void pause_resource_wait(uint32_t index, foundation::TransitionStamp stamp);
+    // Exact Task CAS and revision reserve; does not consume execution authorization.
+    ayni_status_t check_resume_wait(uint32_t index, uint32_t expected_revision) const;
+    // Prechecked owner command removes only the wait overlay, preserving user pause.
+    void resume_wait(uint32_t index, foundation::TransitionStamp stamp);
+    // Journal-only v12, paired with the exact owner management command.
+    Restore restore_wait_resume(uint32_t index, const TaskState &state,
+                                foundation::TransitionStamp stamp);
+    // This diagnostic pair denotes the durable wait overlay; no queue owns it.
+    static bool waiting_for_resource(const Task &task) {
+        return task.hold_status == AYNI_EXPIRED && task.hold_reason == AYNI_REASON_RESOURCE_WAIT;
+    }
+    // Unknown remote outcome blocks decisions without losing the original user
+    // pause state. Only reconciliation or explicit cancellation may change this hold.
+    void hold_unknown_call(uint32_t index, foundation::TransitionStamp stamp);
+
     // Its strategy's decision holds the READY task index, below the largest
     // revision: it becomes PAUSED and no change but an end takes it out.
     // It gets the next revision and stamp.commit_seq. status is a failure.
@@ -236,6 +297,9 @@ class TaskTable {
 
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
+    // Reserve acceptance, UNKNOWN hold, cancellation and final drain revisions.
+    // These bounds prevent user changes from consuming completion's last revision.
+    static bool can_begin_call(const Task &task);
     // Diagnostic precedence: policy, compatibility, then model-limit hold.
     // still_held() only counts live tasks; terminal diagnostics remain visible.
     static ayni_status_t effective_hold_status(const Task &task) {
@@ -251,8 +315,9 @@ class TaskTable {
                                                       : AYNI_REASON_NONE;
     }
     static ayni_task_lifecycle_t effective_lifecycle(const Task &task) {
-        return is_live(task.lifecycle) &&
-                       (task.recovery_hold_status != AYNI_OK || task.model_calls.blocked)
+        return is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
+                       (task.hold_status != AYNI_OK || task.recovery_hold_status != AYNI_OK ||
+                        task.model_calls.blocked)
                    ? AYNI_TASK_PAUSED
                    : task.lifecycle;
     }
@@ -353,6 +418,7 @@ class TaskTable {
     uint32_t checkpoint_max_bytes_;
     uint32_t model_call_hard_limit_; // Fixed this boot; independent of steps and concurrency.
     uint32_t held_count_ = 0;        // still_held() tasks
+    Retention retention_{};          // External references, not a cached call/knowledge count.
 };
 
 } // namespace ayni::work

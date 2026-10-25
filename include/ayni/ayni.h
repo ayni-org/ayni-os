@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 30u
+#define AYNI_ABI_MINOR 31u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -163,7 +163,24 @@ typedef struct ayni_config_v1 {
      * selects 64. Initial soft limit is min(8, ceiling). Fixed for this boot;
      * independent of concurrent Provider slots and committed step capacity. */
     uint32_t task_model_call_hard_limit;
+    /* Since 0.31. Omitted/zero disables the respective trusted directory.
+     * Counts include exact versions; none grows during execution. */
+    uint32_t call_capability_capacity;
+    uint32_t provider_capacity;
+    uint32_t binding_capacity;
+    /* Since 0.31. Retained calls and separate Provider delivery slots; zero
+     * disables calls. Bytes are fixed per call; zero selects the defaults. */
+    uint32_t call_capacity;
+    uint32_t call_input_max_bytes;
+    uint32_t call_result_max_bytes;
 } ayni_config_v1;
+
+/* Since 0.31. Bounded retained call bodies; no implicit history eviction. */
+#define AYNI_CALL_CAPACITY_MAX 256u
+#define AYNI_CALL_INPUT_BYTES_DEFAULT 4096u
+#define AYNI_CALL_INPUT_BYTES_MAX 131072u
+#define AYNI_CALL_RESULT_BYTES_DEFAULT 4096u
+#define AYNI_CALL_RESULT_BYTES_MAX 65536u
 
 /* Since 0.30. Model request counts, not token or monetary allowances. */
 #define AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT 8u
@@ -456,6 +473,8 @@ typedef uint32_t ayni_restriction_t;
 #define AYNI_RESTRICTION_GENERATION_EXHAUSTED ((ayni_restriction_t)12)
 /* Since 0.16. The authenticated Host binding differs from stored ownership. */
 #define AYNI_RESTRICTION_OWNER_BINDING_MISMATCH ((ayni_restriction_t)13)
+/* Request identity space exhausted; no further I/O may be issued. Since 0.31. */
+#define AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED ((ayni_restriction_t)14)
 
 /* Since 0.4. Kernel-wide state for diagnostics. */
 typedef struct ayni_kernel_info_v1 {
@@ -722,6 +741,8 @@ typedef uint32_t ayni_object_kind_t;
 #define AYNI_OBJECT_SUBSCRIPTION ((ayni_object_kind_t)16)
 #define AYNI_OBJECT_PRINCIPAL ((ayni_object_kind_t)17)
 #define AYNI_OBJECT_SESSION ((ayni_object_kind_t)18)
+/* Managed logical call, including retained unknown outcomes. Since 0.31. */
+#define AYNI_OBJECT_CALL ((ayni_object_kind_t)19)
 
 /*
  * Reference to a versioned object (plan section 3.6). A reference carries no
@@ -926,6 +947,11 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_GOAL_AUTHORITY_NOT_DURABLE ((ayni_reason_t)69)
 /* Since 0.30. CAPACITY_EXCEEDED: Task model calls exhausted; owner may raise its limit. */
 #define AYNI_REASON_TASK_MODEL_CALL_LIMIT ((ayni_reason_t)70)
+
+/* Since 0.31. RESULT_UNKNOWN: a terminal Provider receipt violated its declared result contract. */
+#define AYNI_REASON_PROVIDER_RESULT ((ayni_reason_t)71)
+/* Since 0.31. EXPIRED: ordinary resource waiting reached its configured deadline. */
+#define AYNI_REASON_RESOURCE_WAIT ((ayni_reason_t)72)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1232,6 +1258,9 @@ typedef struct ayni_task_info_v1 {
     /* Since 0.30. 1 if a new model request hit the ceiling, else 0. Raising
      * clears only this hold; other holds and progress remain unchanged. */
     uint32_t model_call_limit_reached;
+    /* Since 0.31. Selected logical call; zero when no call blocks the next
+     * strategy decision. It remains set while cancellation or outcome is unresolved. */
+    uint64_t logical_call_id;
 } ayni_task_info_v1;
 
 /*
@@ -1262,6 +1291,11 @@ typedef uint32_t ayni_intent_kind_t;
  * Raises the soft model call ceiling of a live Task, preserving all progress.
  * Requires a nonzero command_id and bound MANAGEMENT session. */
 #define AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ((ayni_intent_kind_t)13)
+/* Owner asks the original Provider to reconcile an unknown operation. Since 0.31. */
+#define AYNI_INTENT_CALL_QUERY_RESULT ((ayni_intent_kind_t)14)
+/* Resume only an expired resource wait, preserving call identity and other holds.
+ * Since 0.31. Body: ayni_task_target_v1; owner management, nonzero command_id, Task revision. */
+#define AYNI_INTENT_TASK_RESUME_WAIT ((ayni_intent_kind_t)15)
 
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {
@@ -1433,6 +1467,10 @@ typedef struct ayni_task_step_v1 {
     ayni_string_v1 step_key; /* a catalog id, unique in the task */
 } ayni_task_step_v1;
 
+/* Since 0.31. Defined in calls.h; borrowed only during a strategy callback. */
+struct ayni_call_request_v1;
+struct ayni_task_call_result_v1;
+
 /* What a strategy sees of a task. The views point into kernel memory and
  * are valid only during the decide call (C-POLICY-004). */
 typedef struct ayni_task_snapshot_v1 {
@@ -1458,12 +1496,21 @@ typedef struct ayni_task_snapshot_v1 {
     uint32_t step_count;
     uint32_t step_capacity;
     const ayni_task_step_v1 *steps;
+    /* Since 0.31. Read only this Task's retained result by stable step key.
+     * Returned text borrows Core memory until decide returns; null if disabled. */
+    const void *call_context;
+    ayni_status_t (*call_result)(const void *context, ayni_string_v1 step_key,
+                                 struct ayni_task_call_result_v1 *out);
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in
  * include/ayni/draft/policy_v1.h. REPORT_COMPLETION and REPORT_FAILURE end
  * the task; since 0.12, REPORT_PROGRESS commits a step of it. */
 typedef uint32_t ayni_policy_intent_kind_t;
+
+/* Since 0.31. One selected call per decision; REQUEST_MODEL requires MODEL class. */
+#define AYNI_POLICY_REQUEST_CALL ((ayni_policy_intent_kind_t)2)
+#define AYNI_POLICY_REQUEST_MODEL ((ayni_policy_intent_kind_t)3)
 
 #define AYNI_POLICY_REPORT_PROGRESS ((ayni_policy_intent_kind_t)4)   /* a step is done */
 #define AYNI_POLICY_REPORT_COMPLETION ((ayni_policy_intent_kind_t)5) /* the task is done */
@@ -1496,6 +1543,12 @@ typedef struct ayni_policy_output_v1 {
     uint32_t checkpoint_capacity; /* since 0.12 */
     uint32_t checkpoint_size;     /* since 0.12 */
     uint8_t *checkpoint;          /* since 0.12 */
+    /* Since 0.31. Stage one request by immediate bounded copy. On success the
+     * callback writes intents[0] and sets intent_count=1; do not mix requests
+     * with other intents. No call is accepted until the complete decision is
+     * validated. Context/callback may be used only within this decide call. */
+    void *call_context;
+    ayni_status_t (*request_call)(void *context, const struct ayni_call_request_v1 *request);
 } ayni_policy_output_v1;
 
 /*
