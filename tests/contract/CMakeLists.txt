@@ -74,3 +74,12 @@ add_test(NAME heap_check_detects_strdup
         -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_heap.cmake")
 set_tests_properties(heap_check_detects_strdup PROPERTIES
     PASS_REGULAR_EXPRESSION "Core references heap allocator symbols: (__)?strdup")
+
+# The executor gate must work without linking any Core implementation archive.
+add_executable(ayni_control_c_abi_smoke control_c_abi_smoke.c)
+target_link_libraries(ayni_control_c_abi_smoke PRIVATE ayni_control_gate ayni_warnings)
+target_compile_options(ayni_control_c_abi_smoke PRIVATE -pedantic-errors)
+add_test(NAME control_gate_from_c99_without_core COMMAND ayni_control_c_abi_smoke)
+add_test(NAME control_gate_does_not_reference_heap_allocator
+    COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "-DARCHIVES=$<TARGET_FILE:ayni_control_gate>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_heap.cmake")

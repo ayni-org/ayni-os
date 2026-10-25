@@ -7,6 +7,7 @@
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/calls.h>
+#include <ayni/control.h>
 #include <ayni/resources.h>
 #include <ayni/storage_format.h>
 
@@ -712,3 +713,13 @@ AYNI_LAYOUT(ayni_call_query_result_v1_struct_size,
 AYNI_LAYOUT(ayni_call_query_result_v1_reserved, offsetof(ayni_call_query_result_v1, reserved) == 4);
 AYNI_LAYOUT(ayni_call_query_result_v1_logical_call_id,
             offsetof(ayni_call_query_result_v1, logical_call_id) == 8);
+
+/* Local executor shared C values, Since 0.34; no pointers or wire layout promise. */
+AYNI_LAYOUT(control_epochs_size, sizeof(ayni_permit_epochs_v1) == 40);
+AYNI_LAYOUT(control_range_size, sizeof(ayni_control_range_v1) == 88);
+AYNI_LAYOUT(control_envelope_size, sizeof(ayni_control_envelope_v1) == 712);
+AYNI_LAYOUT(control_config_size, sizeof(ayni_control_config_v1) == 792);
+AYNI_LAYOUT(control_permit_size, sizeof(ayni_execution_permit_v1) == 808);
+AYNI_LAYOUT(control_permit_envelope, offsetof(ayni_execution_permit_v1, envelope) == 96);
+AYNI_LAYOUT(control_renewal_size, sizeof(ayni_permit_renewal_v1) == 64);
+AYNI_LAYOUT(control_info_size, sizeof(ayni_control_info_v1) == 56);
