@@ -51,3 +51,5 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 ABI 0.30（ADR-0043）追加 Task 模型计数查询、启动硬上限、kind13 管理命令及 reason70；0.x 调用方重新编译。schema 2 保留：旧 Task 默认事实（0/8/未限制暂停）仍可读；非默认事实使用 REQUIRED type6/v4-v7，管理命令 type9/v6，旧 reader 遇到必需新版本拒绝并保留目录。降配无法容纳原软上限时返回 STATE_EXCEEDS_CAPACITY，不截断或重置。存储兼容规则并非新增恢复验证结果。
 
 ABI 0.31 发布 `calls.h`、Provider/Binding、单次策略调用、所有者查询对账与等待超时的显式恢复，扩展 config/TaskInfo/strategy snapshot/output；0.x 调用方须重新编译并精确匹配次版本。草案 Provider 头只转包含正式头，不保留第二套同名结构。存储 schema 仍为 2，通过 REQUIRED type21/v1、type6/v8–12、type9/v7–8 显式拒绝旧 reader；ABI、schema 与记录版本分别管理。
+
+ABI 0.32（ADR-0046）扩展 Resource 描述/查询并增加 Device/Component 容量、注册和复制查询；配置尾追加字段，旧短配置对应新表关闭。0.x ABI 次版本精确匹配，旧二进制调用方必须重编译。草案 Device 重复定义移除，正式类型仅来自 `resources.h`。没有新增持久记录，storage schema 仍为 2；资源占用/健康不从旧 boot 恢复。

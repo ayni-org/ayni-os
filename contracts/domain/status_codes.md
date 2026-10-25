@@ -130,3 +130,5 @@ ABI 0.25 起，`ayni_post_event` 在同一 ingress 实例的 u64 输入顺序耗
 - `AYNI_REASON_PROVIDER_RESULT`（71）属于 `RESULT_UNKNOWN`：Provider 终态不能构成符合契约的结果，结束本机借用但保留执行未知。
 - `AYNI_REASON_RESOURCE_WAIT`（72）属于 `EXPIRED`：普通调用资源等待上限到期，Task 暂停，已受理身份仍保留。
 - `AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED`（14）表示 Host/Provider 共用请求身份序列已耗尽，拒绝继续分配而不回绕。它是 Kernel restriction，不是原因码。
+
+ABI 0.32 增加调用等待诊断 `AYNI_CALL_WAIT_CONFLICT`（9）：其他同冲突域资源被占用，当前调用尚未准入。它是 wait 枚举，不是错误原因码；若对方处于停止隔离则仍报告 `AYNI_CALL_WAIT_QUARANTINED`。

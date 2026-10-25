@@ -61,6 +61,8 @@
 | Capability | `capability_id`、`version`、输入/结果 Schema 引用、调用形态（C-CALL-001）、副作用属性（C-CALL-005）、所需资源、时限、恢复属性 | 是 |
 | Binding | `binding_id`、`capability_ref`、`provider_id` 或 Component、所需 Resource、外发目的地、费用类别 | 是 |
 
+上述表格仍是目标模型。ABI 0.32 的 Device/Component 先交付身份与父引用；host_profile、firmware_version、kind、calibration_ref 尚未成为正式接口。目录由可信启动配置重建，未实现描述自身的持久管理；Resource 冲突域已可用，authority_epoch 属于后续许可机制。关联不替代授权或硬件验证（ADR-0046）。
+
 ## Capability Grant 与主体（属主 `authority`）
 
 | 对象 | 最小字段 | 持久 |
@@ -112,4 +114,4 @@ ADR-0042 取消 Budget 原语。Task 运行限制的条款见 `runtime_limits.md
 | C-PRIM-005 | 媒体引用绑定主体、用途、有效期、大小与内容类型；引用过期、取消或重启时回收，不在重启后假装仍可访问 | 重启后仍按旧引用读取已回收的图片缓冲 | `MA-015`；E1 步骤 8 |
 | C-PRIM-006 | 过期观察不能支持新动作；准入时检查观察的有效期与质量 | 用 10 分钟前的场景变化触发“转向观察” | E2 F1、F10；C-AUTH-011 |
 | C-PRIM-007 | 同一逻辑身份在多个设备上的实例各自独立：不共享权限、可变状态，也不自动转移任务或合并记忆 | 设备 B 上的同名实例读取设备 A 实例的私有记忆 | E1 步骤 1；`MA-016` |
-| C-PRIM-008 | Component 与 Resource 不一一对应，经 Binding 关联；带 `authority_epoch` 的执行器 Resource 是控制域 | 把“左轮”“右轮”各自作为独立控制域，两个会话同时驱动底盘 | `MA-018`；ADR-0001 |
+| C-PRIM-008 | Component 与 Resource 不一一对应，由可信目录保存多对多结构关联，执行选择通过 Binding；带 `authority_epoch` 的执行器 Resource 是控制域 | 把“左轮”“右轮”各自作为独立控制域，两个会话同时驱动底盘 | M1 部分实现（ABI 0.32 结构关联与去重查询）：`ResourceApi.shared_component_associations_are_copied_and_device_counts_are_unique`；authority_epoch/控制许可仍待 `MA-018B`；ADR-0001、0046 |
