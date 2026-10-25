@@ -62,6 +62,7 @@ add_executable(ayni_unit_tests
     native_node_test.cpp
     owner_binding_records_test.cpp
     owner_binding_snapshot_test.cpp
+    persistent_store_test.cpp
     prefix_scan_test.cpp
     principal_registry_test.cpp
     capability_registry_test.cpp

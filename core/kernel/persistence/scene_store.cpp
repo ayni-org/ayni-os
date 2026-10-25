@@ -1,8 +1,10 @@
-// Scene journal pairing and snapshot bounds share authority's one original-fact codec.
+// The Scene store (persistent_store.h): journal, snapshot and replay share
+// authority's one original-fact codec, and journal pairing with the owner's
+// command stays in WorkReplay.
 #include "authority/scene/scene_records.h"
 #include "foundation/kernel_id.h"
+#include "kernel/persistence/persistent_store.h"
 #include "kernel/persistence/work_replay.h"
-#include "kernel/persistence/work_snapshot.h"
 #include <cstring>
 
 namespace ayni::kernel {
@@ -13,7 +15,85 @@ ayni_string_v1 view(const catalog::CatalogId &id) {
 bool same_bytes(ayni_bytes_v1 left, ayni_bytes_v1 right) {
     return left.size == right.size && std::memcmp(left.data, right.data, left.size) == 0;
 }
+
+// One body serves the log and the payload.
+bool knows(uint16_t version, WorkRecordContext) {
+    return version == authority::scene_record_version;
+}
+uint32_t capacity(const KernelCapacities &capacities) {
+    return capacities.scene_capacity;
+}
+uint32_t record_max(const KernelCapacities &capacities) {
+    return authority::scene_record_max(capacities.authority_scope_max_bytes);
+}
+
+// A Scene command changes one state; replay pairs it with that command.
+bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
+             durability::BatchWriter &writer) {
+    for (uint32_t index = 0; index < model.scenes.state_count(); ++index) {
+        const auto &scene = model.scenes.state(index);
+        if (scene.stamp.commit_seq != stamp.commit_seq) {
+            continue;
+        }
+        auto *at = writer.add_record_body(
+            {authority::scene_record_type, authority::scene_record_version,
+             durability::record_required, authority::scene_record_size(scene)});
+        if (at == nullptr) {
+            return false;
+        }
+        authority::write_scene_record(scene, model.scenes.state_definition(index), at);
+    }
+    return true;
+}
+
+// Every retained state is a row; the payload carries the journal body.
+bool snapshot_next(const WorkModel &model, uint32_t &index) {
+    return index < model.scenes.state_count();
+}
+StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+    return {authority::scene_record_version,
+            authority::scene_record_size(model.scenes.state(index))};
+}
+void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+    authority::write_scene_record(model.scenes.state(index), model.scenes.state_definition(index),
+                                  body);
+}
+
+// A preference follows the binding that owns it and lies within the
+// snapshot's boundary; its declaration is the one saved, not the catalog's.
+durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
+                                     uint16_t, const uint8_t *body, uint32_t size) {
+    using durability::BatchCheck;
+    authority::SceneRecord record{};
+    const auto *binding = model.principals.binding();
+    uint32_t duplicate = 0;
+    if (!authority::read_scene_record(body, size, record) || binding == nullptr ||
+        record.state.stamp.transition_id > metadata.max_transition_id ||
+        record.state.stamp.commit_seq > metadata.covers_commit_seq ||
+        record.state.stamp.transition_id <= binding->stamp.transition_id ||
+        record.state.stamp.commit_seq <= binding->stamp.commit_seq ||
+        foundation::id_boot_epoch(record.state.object_id) > metadata.boot_epoch ||
+        model.scenes.find_state(view(record.state.scene), duplicate)) {
+        return BatchCheck::corrupt;
+    }
+    const auto status = model.scenes.restore_validated(record.state, record.definition);
+    return status == AYNI_OK                  ? BatchCheck::ok
+           : status == AYNI_CAPACITY_EXCEEDED ? BatchCheck::no_room
+                                              : BatchCheck::corrupt;
+}
 } // namespace
+
+const PersistentStore scene_store{authority::scene_record_type,
+                                  knows,
+                                  capacity,
+                                  record_max,
+                                  1,
+                                  journal,
+                                  snapshot_next,
+                                  snapshot_record,
+                                  snapshot_write,
+                                  snapshot_read};
+
 // A changed row starts its own transition and must close with one exact owner
 // command. Disable preserves the saved declaration; only enable can replace it.
 durability::RecordUse WorkReplay::restore_scene(const uint8_t *body, uint32_t size,
@@ -93,24 +173,5 @@ bool WorkReplay::matches_scene_command(const CommandMapping &mapping,
            (mapping.effect == AYNI_INTENT_EFFECT_CHANGED
                 ? state.stamp.commit_seq == mapping.commit_seq
                 : state.stamp.commit_seq < mapping.commit_seq);
-}
-durability::BatchCheck WorkSnapshotReader::scene(const uint8_t *body, uint32_t size) {
-    using durability::BatchCheck;
-    authority::SceneRecord record{};
-    const auto *binding = model_.principals.binding();
-    uint32_t duplicate = 0;
-    if (!authority::read_scene_record(body, size, record) || binding == nullptr ||
-        record.state.stamp.transition_id > metadata_.max_transition_id ||
-        record.state.stamp.commit_seq > metadata_.covers_commit_seq ||
-        record.state.stamp.transition_id <= binding->stamp.transition_id ||
-        record.state.stamp.commit_seq <= binding->stamp.commit_seq ||
-        foundation::id_boot_epoch(record.state.object_id) > metadata_.boot_epoch ||
-        model_.scenes.find_state(view(record.state.scene), duplicate)) {
-        return BatchCheck::corrupt;
-    }
-    const auto status = model_.scenes.restore_validated(record.state, record.definition);
-    return status == AYNI_OK                  ? BatchCheck::ok
-           : status == AYNI_CAPACITY_EXCEEDED ? BatchCheck::no_room
-                                              : BatchCheck::corrupt;
 }
 } // namespace ayni::kernel

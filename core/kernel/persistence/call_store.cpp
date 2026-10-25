@@ -1,8 +1,89 @@
+// The call store (persistent_store.h). Journal pairing of a reconciliation
+// with its owner command stays in WorkReplay.
+#include "kernel/config/store_limits.h"
+#include "kernel/persistence/persistent_store.h"
 #include "kernel/persistence/work_replay.h"
 
 #include "work/call/call_records.h"
 
 namespace ayni::kernel {
+namespace {
+
+bool knows(uint16_t version, WorkRecordContext) {
+    return version == work::call_record_version || version == work::call_skipped_record_version ||
+           version == work::call_execution_record_version;
+}
+uint32_t capacity(const KernelCapacities &capacities) {
+    return capacities.call_capacity;
+}
+uint32_t record_max(const KernelCapacities &capacities) {
+    return work::call_record_max(call_limits(capacities));
+}
+
+// One call advances per item/transition. Its full row follows Task progress,
+// so a committed batch contains both B4 partners or neither.
+bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
+             durability::BatchWriter &writer) {
+    uint32_t written = 0;
+    for (uint32_t index = 0; index < model.calls.capacity(); ++index) {
+        if (!model.calls.occupied(index) ||
+            model.calls.state(index).latest.transition.commit_seq != stamp.commit_seq) {
+            continue;
+        }
+        const auto record = model.calls.record(index);
+        if (++written > 1U || record.state.latest.transition.transition_id != stamp.transition_id) {
+            return false;
+        }
+        auto *at = writer.add_record_body(
+            {work::call_record_type, work::call_record_version_for(record.state),
+             durability::record_required, work::call_record_size(record)});
+        if (at == nullptr) {
+            return false;
+        }
+        work::write_call_record(record, at);
+    }
+    return true;
+}
+
+// Skips empty retained slots; the payload carries the journal body.
+bool snapshot_next(const WorkModel &model, uint32_t &index) {
+    while (index < model.calls.capacity() && !model.calls.occupied(index)) {
+        ++index;
+    }
+    return index < model.calls.capacity();
+}
+StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+    return {work::call_record_version_for(model.calls.state(index)),
+            work::call_record_size(model.calls.record(index))};
+}
+void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+    work::write_call_record(model.calls.record(index), body);
+}
+
+// Snapshot rows are independently bounded by the covered durable prefix.
+// Cross-row references are proved after every section is restored.
+durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
+                                     uint16_t version, const uint8_t *body, uint32_t size) {
+    work::CallRecord record{};
+    uint32_t duplicate = 0;
+    if (!work::read_call_record(body, size, record, version) ||
+        record.state.latest.boot_epoch > metadata.boot_epoch ||
+        !within_snapshot(record.state.latest.transition, metadata) ||
+        model.calls.find(record.identity.call_id, duplicate)) {
+        return durability::BatchCheck::corrupt;
+    }
+    const auto status = model.calls.restore_validated(record);
+    return status == AYNI_OK                  ? durability::BatchCheck::ok
+           : status == AYNI_CAPACITY_EXCEEDED ? durability::BatchCheck::no_room
+                                              : durability::BatchCheck::corrupt;
+}
+
+} // namespace
+
+const PersistentStore call_store{
+    work::call_record_type, knows,           capacity,       record_max,   1, journal,
+    snapshot_next,          snapshot_record, snapshot_write, snapshot_read};
+
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.
 durability::RecordUse WorkReplay::restore_call(uint16_t version, const uint8_t *body, uint32_t size,

@@ -1288,12 +1288,14 @@ TEST(WorkModelCallout, nested_call_out_keeps_the_enclosing_mark) {
     EXPECT_FALSE(model->calling_out());
 }
 
-// Hands one record to the replay as the batch commit_seq would.
+// Hands one record to the replay as the batch commit_seq would, in the boot
+// epoch of the IDs the records below allocate.
 RecordUse feed(WorkReplay &replay, uint64_t commit_seq, uint16_t type,
                const std::vector<uint8_t> &body) {
+    constexpr uint64_t boot_epoch = 1;
     const ayni::durability::BatchIdentity batch{1, commit_seq, commit_seq + 100U};
     const RecordHeader header{type, 1, record_required, static_cast<uint32_t>(body.size())};
-    return WorkReplay::on_record(&replay, batch, header, body.data());
+    return WorkReplay::on_record(&replay, batch, header, body.data(), boot_epoch);
 }
 
 // A top-level goal as created: ACTIVE at revision 1, without a trigger.

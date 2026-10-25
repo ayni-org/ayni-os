@@ -60,8 +60,7 @@ class WorkSnapshotWriter {
         grants,
         goals,
         tasks,
-        calls,
-        scenes,
+        stores,
         cleanup,
         commands,
         done
@@ -74,8 +73,8 @@ class WorkSnapshotWriter {
     bool next_record(uint16_t &type, uint32_t &size);
     // Select the current Task's next step/checkpoint/state; false after the Task table.
     bool next_task_record(uint16_t &type, uint32_t &size);
-    bool next_call_record(uint16_t &type,
-                          uint32_t &size); // Skips empty retained slots without consuming a record.
+    // Select the current store's next row, then the next store's; false after the last.
+    bool next_store_record(uint16_t &type, uint32_t &size);
     // Select a Goal or its paired metadata without consuming a page cursor.
     bool next_goal_record(uint16_t &type, uint32_t &size);
     // Select the least acceptance sequence after the last written command.
@@ -90,7 +89,7 @@ class WorkSnapshotWriter {
 
     const WorkModel &model_;
     Section section_ = Section::owner_binding;
-    uint32_t index_ = 0; // of the instance, goal or task in its table
+    uint32_t index_ = 0; // of the instance, goal, task or store row in its table
     uint32_t depth_ = 0; // goals go by depth, so parents come first
     TaskPart task_part_ = TaskPart::task;
     GoalPart goal_part_ = GoalPart::goal; // Reset when the complete pair is written.
@@ -99,6 +98,7 @@ class WorkSnapshotWriter {
     // written, and the one the next record is of.
     uint64_t command_after_seq_ = 0;
     uint32_t command_index_ = 0;
+    uint32_t store_ = 0; // of persistent_stores, in the stores section
 };
 
 // Owns snapshot ordering and pairing checks while restoring into WorkModel.
@@ -124,8 +124,7 @@ class WorkSnapshotReader {
         grants,
         goals,
         tasks,
-        calls,
-        scenes,
+        stores,
         cleanup,
         commands
     };
@@ -136,15 +135,11 @@ class WorkSnapshotReader {
     durability::BatchCheck goal_authority(const uint8_t *body, uint32_t size);
     // Maps supported payload record kinds to their monotone section.
     static bool record_section(uint16_t type, Section &out);
-    durability::BatchCheck scene(const uint8_t *body,
-                                 uint32_t size); // Exact bounded owner preference.
     durability::BatchCheck task(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_state(const uint8_t *body, uint32_t size, uint16_t version);
-    // A full row is bounded by snapshot metadata and later checked against all Task references.
-    durability::BatchCheck call(uint16_t version, const uint8_t *body, uint32_t size);
     durability::BatchCheck authority_cleanup(const uint8_t *body, uint32_t size);
     // Snapshot must retain owner/time and monotone Task facts for a historical raise.
     bool matches_task_limit_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
@@ -156,6 +151,7 @@ class WorkSnapshotReader {
     durability::SnapshotMetadata metadata_;
     uint32_t records_ = 0;
     Section section_ = Section::owner_binding;
+    uint32_t store_ = 0; // of persistent_stores whose rows come, in order
     // The Task whose records come, from TASK through TASK_AUTHORITY, and
     // whether its checkpoint came.
     uint32_t task_index_ = work::TaskTable::no_index;

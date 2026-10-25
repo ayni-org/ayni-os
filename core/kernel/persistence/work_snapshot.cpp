@@ -2,7 +2,6 @@
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
-#include "authority/scene/scene_records.h"
 #include "durability/batch/record_body.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
@@ -11,7 +10,6 @@
 #include "kernel/persistence/work_replay.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
-#include "work/call/call_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -73,12 +71,6 @@ template <typename Restore> durability::BatchCheck check_of(Restore value) {
     return durability::BatchCheck::corrupt;
 }
 
-// Set, and not after the snapshot's boundary.
-bool valid_stamp(foundation::TransitionStamp stamp, const durability::SnapshotMetadata &metadata) {
-    return stamp.transition_id != 0U && stamp.transition_id <= metadata.max_transition_id &&
-           stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
-}
-
 bool matches_retained_revocation(const CommandMapping &mapping, const authority::Grant &grant) {
     if (mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE ||
         grant.created_stamp.commit_seq >= mapping.commit_seq ||
@@ -136,11 +128,10 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     size = maximum(size, work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size =
         maximum(size, authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
-    if (capacities.call_capacity != 0U) {
-        size = maximum(size, work::call_record_max(call_limits(capacities)));
-    }
-    if (capacities.scene_capacity != 0) {
-        size = maximum(size, authority::scene_record_max(capacities.authority_scope_max_bytes));
+    for (const PersistentStore *store : persistent_stores) {
+        if (store->capacity(capacities) != 0U) {
+            size = maximum(size, store->record_max(capacities));
+        }
     }
     return record_prefix + maximum(size, command_max(capacities));
 }
@@ -168,10 +159,10 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
          record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size += uint64_t{capacities.task_capacity} *
             (record_prefix + work::task_authority_record_max(capacities.goal_requirement_capacity));
-    size += uint64_t{capacities.call_capacity} *
-            (record_prefix + work::call_record_max(call_limits(capacities)));
-    size += uint64_t{capacities.scene_capacity} *
-            (record_prefix + authority::scene_record_max(capacities.authority_scope_max_bytes));
+    for (const PersistentStore *store : persistent_stores) {
+        size +=
+            uint64_t{store->capacity(capacities)} * (record_prefix + store->record_max(capacities));
+    }
     size += uint64_t{authority::PrincipalRegistry::capacity} * capacities.command_capacity *
             (record_prefix + command_max(capacities));
     return size;
@@ -187,9 +178,6 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         if (model.agents.at(index).instance_id != 0U) {
             count(layout, instance_size);
         }
-    }
-    for (uint32_t index = 0; index < model.scenes.state_count(); ++index) {
-        count(layout, authority::scene_record_size(model.scenes.state(index)));
     }
     for (uint32_t index = 0; index < model.grants.size(); ++index) {
         count(layout, authority::grant_snapshot_record_size(
@@ -218,9 +206,9 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         count(layout,
               work::task_state_size_for(work::task_state_version_for(model.tasks.at(index))));
     }
-    for (uint32_t index = 0; index < model.calls.capacity(); ++index) {
-        if (model.calls.occupied(index)) {
-            count(layout, work::call_record_size(model.calls.record(index)));
+    for (const PersistentStore *store : persistent_stores) {
+        for (uint32_t index = 0; store->snapshot_next(model, index); ++index) {
+            count(layout, store->snapshot_record(model, index).size);
         }
     }
     for (uint32_t index = 0; index < model.commands.size(); ++index) {
@@ -232,6 +220,7 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
 void WorkSnapshotWriter::reset() {
     section_ = Section::owner_binding;
     index_ = 0;
+    store_ = 0;
     depth_ = 0;
     task_part_ = TaskPart::task;
     goal_part_ = GoalPart::goal;
@@ -240,20 +229,20 @@ void WorkSnapshotWriter::reset() {
     command_index_ = 0;
 }
 
-// The type and size of the next record, without moving past it; false once
-// every record is written.
-bool WorkSnapshotWriter::next_call_record(uint16_t &type, uint32_t &size) {
-    while (index_ < model_.calls.capacity() && !model_.calls.occupied(index_)) {
-        ++index_;
-    }
-    if (index_ < model_.calls.capacity()) {
-        type = work::call_record_type;
-        size = work::call_record_size(model_.calls.record(index_));
-        return true;
+bool WorkSnapshotWriter::next_store_record(uint16_t &type, uint32_t &size) {
+    for (; store_ < persistent_store_count; ++store_, index_ = 0) {
+        const PersistentStore &store = *persistent_stores[store_];
+        if (store.snapshot_next(model_, index_)) {
+            type = store.record_type;
+            size = store.snapshot_record(model_, index_).size;
+            return true;
+        }
     }
     return false;
 }
 
+// The type and size of the next record, without moving past it; false once
+// every record is written.
 bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
     for (;;) {
         switch (section_) {
@@ -301,20 +290,12 @@ bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
             if (next_task_record(type, size)) {
                 return true;
             }
-            section_ = Section::calls;
+            section_ = Section::stores;
             index_ = 0;
+            store_ = 0;
             break;
-        case Section::calls:
-            if (next_call_record(type, size)) {
-                return true;
-            }
-            section_ = Section::scenes;
-            index_ = 0;
-            break;
-        case Section::scenes:
-            if (index_ < model_.scenes.state_count()) {
-                type = authority::scene_record_type;
-                size = authority::scene_record_size(model_.scenes.state(index_));
+        case Section::stores:
+            if (next_store_record(type, size)) {
                 return true;
             }
             section_ = Section::cleanup;
@@ -417,14 +398,11 @@ void WorkSnapshotWriter::write_task_authority(uint8_t *body) {
 }
 
 void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
+    if (section_ == Section::stores) {
+        persistent_stores[store_]->snapshot_write(model_, index_, body);
+        return;
+    }
     switch (type) {
-    case authority::scene_record_type:
-        authority::write_scene_record(model_.scenes.state(index_),
-                                      model_.scenes.state_definition(index_), body);
-        break;
-    case work::call_record_type:
-        work::write_call_record(model_.calls.record(index_), body);
-        break;
     case authority::owner_binding_record_type: {
         const authority::OwnerBinding &binding = *model_.principals.binding();
         authority::write_owner_binding_record(binding, body);
@@ -495,11 +473,11 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
 }
 
 void WorkSnapshotWriter::advance_record(uint16_t type) {
-    switch (type) {
-    case authority::scene_record_type:
-    case work::call_record_type:
+    if (section_ == Section::stores) {
         ++index_;
-        break;
+        return;
+    }
+    switch (type) {
     case work::authority_cleanup_record_type:
         section_ = Section::commands;
         break;
@@ -557,7 +535,9 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
         }
         uint8_t *at = buffer + out_size;
         const uint16_t version =
-            type == command_record_type
+            section_ == Section::stores
+                ? persistent_stores[store_]->snapshot_record(model_, index_).version
+            : type == command_record_type
                 ? command_record_version_for(model_.commands.at(command_index_))
             : type == work::goal_record_type
                 ? work::goal_snapshot_version_for(
@@ -566,8 +546,6 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
             : type == authority::grant_record_type
                 ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
-            : type == work::call_record_type
-                ? work::call_record_version_for(model_.calls.state(index_))
             : type == work::task_state_record_type
                 ? work::task_state_version_for(model_.tasks.at(index_))
                 : snapshot_record_version;
@@ -583,6 +561,7 @@ void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
     metadata_ = metadata;
     records_ = 0;
     section_ = Section::owner_binding;
+    store_ = 0;
     task_index_ = work::TaskTable::no_index;
     checkpoint_seen_ = false;
     task_stage_ = TaskReadStage::contents;
@@ -594,12 +573,6 @@ void WorkSnapshotReader::reset(const durability::SnapshotMetadata &metadata) {
 // Keep record ordering separate from body decoding and restore dispatch.
 bool WorkSnapshotReader::record_section(uint16_t type, Section &out) {
     switch (type) {
-    case authority::scene_record_type:
-        out = Section::scenes;
-        break;
-    case work::call_record_type:
-        out = Section::calls;
-        break;
     case authority::owner_binding_record_type:
         out = Section::owner_binding;
         break;
@@ -658,20 +631,25 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
         return unknown;
     }
     Section section = section_;
-    if (!record_section(header.type, section)) {
+    uint32_t store = 0;
+    if (find_persistent_store(header.type, store)) {
+        section = Section::stores;
+    } else if (!record_section(header.type, section)) {
         return unknown;
     }
-    // Sections come in order, and a task's records together.
+    // Sections come in order, stores in theirs, and a task's records together.
     if (section < section_ ||
+        (section == Section::stores && section_ == Section::stores && store < store_) ||
         (task_index_ != work::TaskTable::no_index && section != Section::tasks)) {
         return BatchCheck::corrupt;
     }
     section_ = section;
+    if (section == Section::stores) {
+        store_ = store;
+        return persistent_stores[store]->snapshot_read(model_, metadata_, header.version, body,
+                                                       header.length);
+    }
     switch (header.type) {
-    case authority::scene_record_type:
-        return scene(body, header.length);
-    case work::call_record_type:
-        return call(header.version, body, header.length);
     case authority::owner_binding_record_type:
         return owner_binding(body, header.length);
     case work::instance_record_type:
@@ -701,24 +679,6 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     }
 }
 
-// Snapshot rows are independently bounded by the covered durable prefix.
-// Cross-row references are proved after every section is restored.
-durability::BatchCheck WorkSnapshotReader::call(uint16_t version, const uint8_t *body,
-                                                uint32_t size) {
-    work::CallRecord record{};
-    uint32_t duplicate = 0;
-    if (!work::read_call_record(body, size, record, version) ||
-        record.state.latest.boot_epoch > metadata_.boot_epoch ||
-        !valid_stamp(record.state.latest.transition, metadata_) ||
-        model_.calls.find(record.identity.call_id, duplicate)) {
-        return durability::BatchCheck::corrupt;
-    }
-    const auto status = model_.calls.restore_validated(record);
-    return status == AYNI_OK                  ? durability::BatchCheck::ok
-           : status == AYNI_CAPACITY_EXCEEDED ? durability::BatchCheck::no_room
-                                              : durability::BatchCheck::corrupt;
-}
-
 durability::BatchCheck WorkSnapshotReader::owner_binding(const uint8_t *body, uint32_t size) {
     authority::OwnerBindingRecord record{};
     if (size != owner_binding_size ||
@@ -727,7 +687,7 @@ durability::BatchCheck WorkSnapshotReader::owner_binding(const uint8_t *body, ui
     }
     const foundation::TransitionStamp stamp =
         read_stamp(body + authority::owner_binding_record_size);
-    return valid_stamp(stamp, metadata_) && model_.principals.restore_binding(record, stamp)
+    return within_snapshot(stamp, metadata_) && model_.principals.restore_binding(record, stamp)
                ? durability::BatchCheck::ok
                : durability::BatchCheck::corrupt;
 }
@@ -739,7 +699,7 @@ durability::BatchCheck WorkSnapshotReader::instance(const uint8_t *body, uint32_
         return durability::BatchCheck::corrupt;
     }
     const foundation::TransitionStamp stamp = read_stamp(body + work::instance_record_size);
-    if (!valid_stamp(stamp, metadata_) ||
+    if (!within_snapshot(stamp, metadata_) ||
         model_.agents.find_instance(record.instance_id) != nullptr) {
         return durability::BatchCheck::corrupt;
     }
@@ -752,9 +712,10 @@ durability::BatchCheck WorkSnapshotReader::grant(uint16_t version, const uint8_t
     authority::GrantSnapshotRecord record{};
     const auto *binding = model_.principals.binding();
     if (!authority::read_grant_snapshot_record(body, size, record, version) ||
-        !valid_stamp(record.created_stamp, metadata_) || !valid_stamp(record.stamp, metadata_) ||
+        !within_snapshot(record.created_stamp, metadata_) ||
+        !within_snapshot(record.stamp, metadata_) ||
         ((record.cleanup_stamp.transition_id != 0U || record.cleanup_stamp.commit_seq != 0U) &&
-         !valid_stamp(record.cleanup_stamp, metadata_)) ||
+         !within_snapshot(record.cleanup_stamp, metadata_)) ||
         binding == nullptr || binding->principal_id != record.create.grant.owner_principal_id ||
         binding->binding_revision != record.create.grant.owner_binding_revision ||
         binding->stamp.commit_seq >= record.created_stamp.commit_seq ||
@@ -787,7 +748,7 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     const foundation::TransitionStamp stamp =
         read_stamp(body + base_size + work::goal_state_record_size);
     const auto commit_seq = foundation::load_le64(body + base_size + goal_current_seq_at);
-    if (!valid_stamp(stamp, metadata_) || commit_seq < stamp.commit_seq ||
+    if (!within_snapshot(stamp, metadata_) || commit_seq < stamp.commit_seq ||
         commit_seq > metadata_.covers_commit_seq) {
         return durability::BatchCheck::corrupt;
     }
@@ -809,7 +770,7 @@ durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, u
     uint32_t index = 0;
     if (!goal_authority_pending_ || !work::read_goal_authority_record(body, size, record) ||
         record.goal_id != *goal_authority_pending_ || !model_.goals.find(record.goal_id, index) ||
-        !valid_stamp(record.stamp, metadata_) ||
+        !within_snapshot(record.stamp, metadata_) ||
         record.stamp.commit_seq > model_.goals.at(index).commit_seq ||
         record.stamp.transition_id < model_.goals.at(index).created.transition_id) {
         return durability::BatchCheck::corrupt;
@@ -835,7 +796,7 @@ durability::BatchCheck WorkSnapshotReader::task(const uint8_t *body, uint32_t si
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return durability::BatchCheck::corrupt;
     }
-    if (!valid_stamp(snapshot.stamp, metadata_)) {
+    if (!within_snapshot(snapshot.stamp, metadata_)) {
         return durability::BatchCheck::corrupt;
     }
     record.task.goal_index = goal_index;
@@ -916,7 +877,7 @@ durability::BatchCheck WorkSnapshotReader::task_authority(const uint8_t *body, u
     work::TaskAuthorityRecord record{};
     if (task_index_ == work::TaskTable::no_index || task_stage_ != TaskReadStage::authority ||
         !work::read_task_authority_record(body, size, record) ||
-        !valid_stamp(record.stamp, metadata_)) {
+        !within_snapshot(record.stamp, metadata_)) {
         return durability::BatchCheck::corrupt;
     }
     const auto &task = model_.tasks.at(task_index_);
@@ -1076,7 +1037,7 @@ durability::BatchCheck WorkSnapshotReader::command(uint16_t version, const uint8
 durability::BatchCheck WorkSnapshotReader::authority_cleanup(const uint8_t *body, uint32_t size) {
     work::AuthorityCleanupRecord record{};
     if (cleanup_seen_ || !work::read_authority_cleanup_record(body, size, record) ||
-        (record.stamp.commit_seq != 0U && !valid_stamp(record.stamp, metadata_)) ||
+        (record.stamp.commit_seq != 0U && !within_snapshot(record.stamp, metadata_)) ||
         foundation::id_boot_epoch(record.after_goal_id) > metadata_.boot_epoch ||
         foundation::id_boot_epoch(record.through_goal_id) > metadata_.boot_epoch ||
         foundation::id_boot_epoch(record.requested_through) > metadata_.boot_epoch) {

@@ -8,6 +8,8 @@
 #ifndef AYNI_CORE_DURABILITY_BATCH_BATCH_CODEC_H
 #define AYNI_CORE_DURABILITY_BATCH_BATCH_CODEC_H
 
+#include "durability/batch/record_types.h"
+
 #include <ayni/storage_format.h>
 
 #include <cstddef>
@@ -20,11 +22,11 @@ namespace ayni::durability {
 constexpr uint16_t storage_schema = 2;
 // WRITER_FENCE: alone in its batch, the body is the new writer_epoch as a
 // little-endian uint32 equal to the batch header's (C-STORE-005).
-constexpr uint16_t writer_fence_record_type = 10;
+constexpr uint16_t writer_fence_record_type = record_type::writer_fence;
 constexpr uint16_t writer_fence_record_version = 1;
 constexpr uint32_t writer_fence_record_length = 4;
 // SNAPSHOT_COMMIT: alone in its batch; durability/snapshot has its body.
-constexpr uint16_t snapshot_commit_record_type = 11;
+constexpr uint16_t snapshot_commit_record_type = record_type::snapshot_commit;
 constexpr std::size_t batch_header_size = 44;
 constexpr std::size_t record_header_size = 12;
 constexpr std::size_t commit_marker_size = 12;

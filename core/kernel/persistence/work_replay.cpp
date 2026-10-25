@@ -21,8 +21,7 @@ using durability::RecordUse;
 // Known authority families require a refusal marker even for unknown versions;
 // discovery must not skip their ownership semantics as optional metadata.
 bool requires_authority_header(const durability::RecordHeader &header) {
-    return header.type == work::call_record_type ||
-           header.type == work::authority_cleanup_record_type ||
+    return header.type == work::authority_cleanup_record_type ||
            (header.type == work::task_state_record_type &&
             header.version >= work::task_state_authority_record_version) ||
            header.type == work::task_authority_record_type ||
@@ -32,7 +31,6 @@ bool requires_authority_header(const durability::RecordHeader &header) {
            (header.type == work::goal_state_record_type &&
             header.version >= work::goal_state_with_authority_record_version) ||
            header.type == authority::owner_binding_record_type ||
-           header.type == authority::scene_record_type ||
            header.type == authority::grant_record_type ||
            header.type == authority::grant_state_record_type ||
            header.type == authority::grant_revocation_record_type ||
@@ -95,11 +93,6 @@ bool knows_task_state(uint16_t version, WorkRecordContext context) {
 } // namespace
 
 RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &batch,
-                                const durability::RecordHeader &header, const uint8_t *body) {
-    return on_record(context, batch, header, body, UINT64_MAX);
-}
-
-RecordUse WorkReplay::on_record(void *context, const durability::BatchIdentity &batch,
                                 const durability::RecordHeader &header, const uint8_t *body,
                                 uint64_t boot_epoch_limit) {
     return static_cast<WorkReplay *>(context)->apply(batch, header, body, boot_epoch_limit);
@@ -116,20 +109,25 @@ bool WorkReplay::binding_matches() const {
            model_.grants.size() == 0U && model_.scenes.state_count() == 0;
 }
 
-// The types apply() restores, so the two lists change together.
+// The types apply() restores, so the two lists change together; a store of
+// persistent_store.h states its own versions.
 // Discovery must enforce ownership's header rule even when a snapshot
 // covers the record and its body will not be replayed.
 RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                       WorkRecordContext context) {
-    if (requires_authority_header(header) && (header.flags & durability::record_required) == 0U) {
+    uint32_t rank = 0;
+    const bool store = find_persistent_store(header.type, rank);
+    if ((store || requires_authority_header(header)) &&
+        (header.flags & durability::record_required) == 0U) {
         return RecordUse::corrupt;
+    }
+    if (store) {
+        return persistent_stores[rank]->knows(header.version, context) ? RecordUse::applied
+                                                                       : RecordUse::unknown;
     }
     switch (header.type) {
     case command_record_type:
         return knows_command_record(header.version) ? RecordUse::applied : RecordUse::unknown;
-    case authority::scene_record_type:
-        return header.version == authority::scene_record_version ? RecordUse::applied
-                                                                 : RecordUse::unknown;
     case authority::grant_record_type:
         return knows_grant_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     case authority::grant_state_record_type:
@@ -181,12 +179,6 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::task_steps_record_type:
     case work::task_checkpoint_record_type:
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
-    case work::call_record_type:
-        return (header.version == work::call_record_version ||
-                header.version == work::call_skipped_record_version ||
-                header.version == work::call_execution_record_version)
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
     case work::task_state_record_type:
         return knows_task_state(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     default:
@@ -266,11 +258,11 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case authority::owner_binding_record_type:
         return restore_owner_binding(body, size, stamp);
     case authority::grant_record_type:
-        return restore_grant(header.version, body, size, stamp);
+        return restore_grant(header.version, body, size, stamp, boot_epoch_limit);
     case authority::grant_state_record_type:
         return restore_grant_state(header.version, body, size, stamp);
     case authority::grant_revocation_record_type:
-        return restore_revocation(header.version, body, size, stamp);
+        return restore_revocation(header.version, body, size, stamp, boot_epoch_limit);
     case authority::grant_revocation_progress_record_type:
         return restore_revocation_progress(body, size, stamp);
     case work::instance_record_type:
@@ -619,12 +611,15 @@ RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size
 // C-STORE-015: create and its exact command share this batch. Validate the
 // already durable issuer/subject before publishing a fact awaiting that command.
 RecordUse WorkReplay::restore_grant(uint16_t version, const uint8_t *body, uint32_t size,
-                                    foundation::TransitionStamp stamp) {
+                                    foundation::TransitionStamp stamp, uint64_t boot_epoch_limit) {
     authority::GrantRecord record{};
     const auto *binding = model_.principals.binding();
+    if (!authority::read_grant_record(body, size, record, version) ||
+        foundation::id_boot_epoch(record.grant_id) != boot_epoch_limit) {
+        return RecordUse::corrupt;
+    }
     if (pairing_.authority.pending() || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
-        !authority::read_grant_record(body, size, record, version) || binding == nullptr ||
-        binding->principal_id != record.grant.owner_principal_id ||
+        binding == nullptr || binding->principal_id != record.grant.owner_principal_id ||
         binding->binding_revision != record.grant.owner_binding_revision ||
         binding->stamp.commit_seq >= stamp.commit_seq ||
         binding->stamp.transition_id >= stamp.transition_id ||
@@ -692,13 +687,16 @@ RecordUse WorkReplay::restore_grant_state(uint16_t version, const uint8_t *body,
 // C-AUTH-027: replay accepted root control under the saved issuer binding;
 // its effect/revision must be matched by the following exact command record.
 RecordUse WorkReplay::restore_revocation(uint16_t version, const uint8_t *body, uint32_t size,
-                                         foundation::TransitionStamp stamp) {
+                                         foundation::TransitionStamp stamp,
+                                         uint64_t boot_epoch_limit) {
     authority::GrantRevocationRecord record{};
     const auto *binding = model_.principals.binding();
     if (pairing_.authority.pending() || model_.commands.mapped_in(stamp.commit_seq) != nullptr ||
         binding == nullptr || binding->stamp.commit_seq >= stamp.commit_seq ||
         binding->stamp.transition_id >= stamp.transition_id ||
-        !authority::read_grant_revocation_record(body, size, record)) {
+        !authority::read_grant_revocation_record(body, size, record) ||
+        foundation::id_boot_epoch(record.grant_id) == 0U ||
+        foundation::id_boot_epoch(record.grant_id) > boot_epoch_limit) {
         return RecordUse::corrupt;
     }
     const auto restored = model_.grants.restore_revocation(record, stamp);

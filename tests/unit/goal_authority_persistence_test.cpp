@@ -683,6 +683,7 @@ TEST(GoalAuthorityPersistence,
     auto &model = KernelTestProbe::work(source.work.kernel());
     const auto stamp = model.transitions.next();
     const BatchIdentity batch{1, stamp.commit_seq, stamp.transition_id};
+    const uint64_t boot_epoch = KernelTestProbe::boot(source.work.kernel()).boot_epoch();
     WorkReplay replay(model);
     for (const auto id : {first, second}) {
         // White-box: a valid same-batch ordinary pause precedes each new metadata set.
@@ -694,7 +695,7 @@ TEST(GoalAuthorityPersistence,
         ASSERT_EQ(WorkReplay::on_record(&replay, batch,
                                         {goal_state_record_type, goal_state_record_version,
                                          record_required, body.size()},
-                                        body.data()),
+                                        body.data(), boot_epoch),
                   RecordUse::applied);
     }
     for (const auto id : {first, second}) {
@@ -705,7 +706,7 @@ TEST(GoalAuthorityPersistence,
         EXPECT_EQ(WorkReplay::on_record(&replay, batch,
                                         {goal_authority_record_type, goal_authority_record_version,
                                          record_required, static_cast<uint32_t>(bytes.size())},
-                                        bytes.data()),
+                                        bytes.data(), boot_epoch),
                   id == first ? RecordUse::applied : RecordUse::corrupt);
     }
     KernelTestProbe::replay(source.work.kernel()).discard_for_reload();
@@ -1147,15 +1148,16 @@ TEST(GoalApprovalPersistence, unpaired_metadata_cannot_change_original_dependenc
     write_goal_authority_record(record, bytes.data());
     const BatchIdentity identity{KernelTestProbe::log(source.work.kernel()).writer_epoch(),
                                  stamp.commit_seq, stamp.transition_id};
+    const uint64_t boot_epoch = KernelTestProbe::boot(source.work.kernel()).boot_epoch();
     WorkReplay replay(model);
     const RecordHeader state_header{goal_state_record_type,
                                     goal_state_with_authority_record_version, record_required,
                                     static_cast<uint32_t>(state.size())};
-    ASSERT_EQ(WorkReplay::on_record(&replay, identity, state_header, state.data()),
+    ASSERT_EQ(WorkReplay::on_record(&replay, identity, state_header, state.data(), boot_epoch),
               RecordUse::applied);
     const RecordHeader authority_header{goal_authority_record_type, goal_authority_record_version,
                                         record_required, static_cast<uint32_t>(bytes.size())};
-    EXPECT_EQ(WorkReplay::on_record(&replay, identity, authority_header, bytes.data()),
+    EXPECT_EQ(WorkReplay::on_record(&replay, identity, authority_header, bytes.data(), boot_epoch),
               RecordUse::corrupt);
 }
 

@@ -2,15 +2,14 @@
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
-#include "authority/scene/scene_records.h"
 #include "catalog/catalog_id.h"
 #include "durability/batch/record_body.h"
 #include "durability/journal/journal_ring.h"
 #include "kernel/command/command_records.h"
 #include "kernel/config/store_limits.h"
+#include "kernel/persistence/persistent_store.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
-#include "work/call/call_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
@@ -40,8 +39,8 @@ class Encoder {
     // follow replay order, with the command mapping last.
     bool encode() {
         return owner_binding() && instances() && revocation() && grants() &&
-               revocation_progress() && goals() && goal_authority() && tasks() && calls() &&
-               scenes() && command() && authority_cleanup();
+               revocation_progress() && goals() && goal_authority() && tasks() && stores() &&
+               command() && authority_cleanup();
     }
 
   private:
@@ -57,17 +56,9 @@ class Encoder {
         return at;
     }
 
-    bool scenes() {
-        for (uint32_t index = 0; index < model_.scenes.state_count(); ++index) {
-            const auto &scene = model_.scenes.state(index);
-            if (scene.stamp.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            auto *at = body(authority::scene_record_type, authority::scene_record_version,
-                            authority::scene_record_size(scene));
-            if (at != nullptr) {
-                authority::write_scene_record(scene, model_.scenes.state_definition(index), at);
-            }
+    bool stores() {
+        for (const PersistentStore *store : persistent_stores) {
+            ok_ = ok_ && store->journal(model_, stamp_, writer_);
         }
         return ok_;
     }
@@ -344,29 +335,6 @@ class Encoder {
         return ok_;
     }
 
-    // One call advances per item/transition. Its full row follows Task progress,
-    // so a committed batch contains both B4 partners or neither.
-    bool calls() {
-        uint32_t written = 0;
-        for (uint32_t index = 0; index < model_.calls.capacity(); ++index) {
-            if (!model_.calls.occupied(index) ||
-                model_.calls.state(index).latest.transition.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            const auto record = model_.calls.record(index);
-            if (++written > 1U ||
-                record.state.latest.transition.transition_id != stamp_.transition_id) {
-                return false;
-            }
-            auto *at = body(work::call_record_type, work::call_record_version_for(record.state),
-                            work::call_record_size(record));
-            if (at != nullptr) {
-                work::write_call_record(record, at);
-            }
-        }
-        return ok_;
-    }
-
     bool command() {
         const CommandMapping *mapping = model_.commands.mapped_in(stamp_.commit_seq);
         if (mapping == nullptr) {
@@ -405,11 +373,10 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += work::goal_authority_records_per_transition *
             record_bytes(work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
-    if (capacities.call_capacity != 0U) {
-        size += record_bytes(work::call_record_max(call_limits(capacities)));
-    }
-    if (capacities.scene_capacity != 0) {
-        size += record_bytes(authority::scene_record_max(capacities.authority_scope_max_bytes));
+    for (const PersistentStore *store : persistent_stores) {
+        if (store->capacity(capacities) != 0U) {
+            size += store->records_per_transition * record_bytes(store->record_max(capacities));
+        }
     }
     size += record_bytes(work::task_record_size);
     size += record_bytes(work::task_steps_record_max(steps));

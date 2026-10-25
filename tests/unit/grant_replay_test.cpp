@@ -4,6 +4,7 @@
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/little_endian.h"
+#include "kernel/boot/boot_sequence.h"
 #include "kernel/command/command_records.h"
 #include "kernel/persistence/work_snapshot.h"
 #include "work_node.h"
@@ -1930,18 +1931,24 @@ TEST(GrantRevokeReplay,
 
 // White-box fixture: feed real stored domain records through WorkReplay's public
 // record interface, pausing at a semantic boundary before the whole boot finishes.
+// boot_epoch is the one the log's BOOT_EPOCH records name before the record.
 struct DomainRecord {
     BatchIdentity batch;
     Record record;
+    uint64_t boot_epoch;
 };
 
 std::vector<DomainRecord> domain_records(const std::vector<StoredBatch> &log) {
     std::vector<DomainRecord> result;
+    uint64_t boot_epoch = 0;
     for (const auto &stored : log) {
         const auto batch = decode(stored);
         for (const auto &record : batch.records) {
+            if (record.header.type == ayni::kernel::boot_epoch_record_type) {
+                boot_epoch = ayni::foundation::load_le64(record.body.data());
+            }
             if (ayni::kernel::WorkReplay::classify_header(record.header) == RecordUse::applied) {
-                result.push_back({batch.identity, record});
+                result.push_back({batch.identity, record, boot_epoch});
             }
         }
     }
@@ -1957,7 +1964,7 @@ TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_pro
     bool saw_child = false;
     for (const auto &item : records) {
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_state_record_type &&
             item.record.header.version == ayni::authority::grant_revoked_state_record_version) {
@@ -1988,15 +1995,16 @@ TEST(GrantReplay, a_second_create_cannot_replace_an_unmatched_create_in_the_same
     for (const auto &item : records) {
         if (waiting) {
             if (item.record.header.type == ayni::authority::grant_record_type) {
-                EXPECT_EQ(ayni::kernel::WorkReplay::on_record(
-                              &replay, first_batch, item.record.header, item.record.body.data()),
-                          RecordUse::corrupt);
+                EXPECT_EQ(
+                    ayni::kernel::WorkReplay::on_record(&replay, first_batch, item.record.header,
+                                                        item.record.body.data(), item.boot_epoch),
+                    RecordUse::corrupt);
                 return;
             }
             continue; // Withhold the first command to exercise the unmatched boundary.
         }
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_record_type) {
             first_batch = item.batch;
@@ -2032,17 +2040,18 @@ TEST(GrantRevokeReplay, valid_progress_cannot_interrupt_a_create_waiting_for_its
         }
         if (item.record.header.type == ayni::authority::grant_revocation_progress_record_type) {
             ASSERT_FALSE(another_create.body.empty());
-            ASSERT_EQ(ayni::kernel::WorkReplay::on_record(
-                          &replay, item.batch, another_create.header, another_create.body.data()),
-                      RecordUse::applied);
+            ASSERT_EQ(
+                ayni::kernel::WorkReplay::on_record(&replay, item.batch, another_create.header,
+                                                    another_create.body.data(), item.boot_epoch),
+                RecordUse::applied);
             ASSERT_FALSE(replay.complete());
             EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                          item.record.body.data()),
+                                                          item.record.body.data(), item.boot_epoch),
                       RecordUse::corrupt);
             return;
         }
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
     }
     FAIL() << "fixture did not contain a valid standalone cleanup progress";
@@ -2057,7 +2066,7 @@ TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_
     bool waiting = false;
     for (const auto &item : records) {
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_record_type) {
             waiting = true;
@@ -2070,7 +2079,7 @@ TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_
     EXPECT_TRUE(replay.complete());
     for (const auto &item : records) {
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
     }
     EXPECT_TRUE(replay.complete());

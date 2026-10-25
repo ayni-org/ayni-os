@@ -20,13 +20,12 @@
 
 #include "durability/batch/prefix_scan.h"
 #include "kernel/intent/work_model.h"
+#include "kernel/persistence/persistent_store.h"
 
 #include <cstdint>
 #include <optional>
 
 namespace ayni::kernel {
-
-enum class WorkRecordContext { journal, snapshot };
 
 class WorkReplay {
   public:
@@ -42,18 +41,16 @@ class WorkReplay {
     WorkReplay(const WorkReplay &) = delete;
     WorkReplay &operator=(const WorkReplay &) = delete;
 
-    // A durability::RecordHandler; context is the replay.
-    static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
-                                           const durability::RecordHeader &header,
-                                           const uint8_t *body);
-    // Boot supplies the epoch preceding this record; a later epoch or binding
-    // replacement must not legitimize a future ingress incarnation in history.
+    // context is the replay. Boot supplies the epoch preceding this record;
+    // a later epoch or binding replacement must not legitimize a future ID or
+    // ingress incarnation in history.
     static durability::RecordUse on_record(void *context, const durability::BatchIdentity &batch,
                                            const durability::RecordHeader &header,
                                            const uint8_t *body, uint64_t boot_epoch_limit);
     // applied: a known type/version whose header is accepted; corrupt:
-    // an authority record lacks REQUIRED (owner binding, Grant create/state,
-    // revocation/progress, or command v2+); unknown: unsupported type/version.
+    // an authority or store record lacks REQUIRED (owner binding, Grant
+    // create/state, revocation/progress, command v2+ or any type of
+    // persistent_store.h); unknown: unsupported type/version.
     // Discovery uses the same classification before skipping covered data;
     // applied does not validate the body.
     static durability::RecordUse
@@ -138,12 +135,16 @@ class WorkReplay {
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_checkpoint(const uint8_t *body, uint32_t size,
                                                   foundation::TransitionStamp stamp);
+    // A create uses an ID of the epoch preceding it, a revocation one of an
+    // epoch no later: a later BOOT_EPOCH must not legitimize a future ID.
     durability::RecordUse restore_grant(uint16_t version, const uint8_t *body, uint32_t size,
-                                        foundation::TransitionStamp stamp);
+                                        foundation::TransitionStamp stamp,
+                                        uint64_t boot_epoch_limit);
     durability::RecordUse restore_grant_state(uint16_t version, const uint8_t *body, uint32_t size,
                                               foundation::TransitionStamp stamp);
     durability::RecordUse restore_revocation(uint16_t version, const uint8_t *body, uint32_t size,
-                                             foundation::TransitionStamp stamp);
+                                             foundation::TransitionStamp stamp,
+                                             uint64_t boot_epoch_limit);
     durability::RecordUse restore_revocation_progress(const uint8_t *body, uint32_t size,
                                                       foundation::TransitionStamp stamp);
     durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,

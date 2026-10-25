@@ -5,24 +5,26 @@
 #define AYNI_CORE_AUTHORITY_GRANT_GRANT_RECORDS_H
 
 #include "authority/grant/grant_table.h"
+#include "durability/batch/record_types.h"
 
 #include <cstdint>
 
 namespace ayni::authority {
 
-constexpr uint16_t grant_record_type = 13;
+constexpr uint16_t grant_record_type = durability::record_type::grant;
 constexpr uint16_t grant_record_version = 1;
 constexpr uint16_t goal_grant_record_version = 2; // REQUIRED bound Goal tail; records.md type 13.
-constexpr uint16_t grant_state_record_type = 14;
+constexpr uint16_t grant_state_record_type = durability::record_type::grant_state;
 constexpr uint16_t grant_state_record_version = 1;
 constexpr uint16_t grant_revoked_state_record_version = 2;
 // F3 terminal facts also require same-batch work scan evidence (records.md).
 constexpr uint16_t grant_goal_ended_state_record_version = 3;
 constexpr uint16_t grant_expired_with_work_record_version = 4;
-constexpr uint16_t grant_revocation_record_type = 15;
+constexpr uint16_t grant_revocation_record_type = durability::record_type::grant_revocation;
 constexpr uint16_t grant_revocation_record_version = 1;
 constexpr uint16_t grant_revocation_with_work_record_version = 2;
-constexpr uint16_t grant_revocation_progress_record_type = 16;
+constexpr uint16_t grant_revocation_progress_record_type =
+    durability::record_type::grant_revocation_progress;
 constexpr uint16_t grant_revocation_progress_record_version = 1;
 constexpr uint16_t grant_snapshot_record_version = 2;
 constexpr uint16_t goal_grant_snapshot_record_version = 3; // Bound create plus v2 cleanup tail.

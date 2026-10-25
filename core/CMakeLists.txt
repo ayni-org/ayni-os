@@ -130,10 +130,10 @@ ayni_add_core_module(kernel
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
         kernel/observation_api.cpp
-        kernel/persistence/call_replay.cpp
+        kernel/persistence/call_store.cpp
         kernel/persistence/goal_approval_replay.cpp
         kernel/persistence/goal_reauthorization_replay.cpp
-        kernel/persistence/scene_replay.cpp
+        kernel/persistence/scene_store.cpp
         kernel/persistence/work_cleanup_replay.cpp
         kernel/persistence/work_journal.cpp
         kernel/persistence/work_replay.cpp

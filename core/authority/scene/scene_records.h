@@ -3,8 +3,9 @@
 #ifndef AYNI_CORE_AUTHORITY_SCENE_RECORDS_H
 #define AYNI_CORE_AUTHORITY_SCENE_RECORDS_H
 #include "authority/scene/scene_table.h"
+#include "durability/batch/record_types.h"
 namespace ayni::authority {
-constexpr uint16_t scene_record_type = 22;
+constexpr uint16_t scene_record_type = durability::record_type::scene;
 constexpr uint16_t scene_record_version = 1;
 constexpr uint32_t scene_record_fixed_bytes = 44;
 // Read result borrows definition bytes from its containing record.

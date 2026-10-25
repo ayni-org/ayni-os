@@ -1,6 +1,5 @@
 #include "kernel/boot/boot_sequence.h"
 
-#include "authority/grant/grant_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
@@ -525,24 +524,6 @@ durability::RecordUse BootSequence::record(const durability::BatchIdentity &batc
     }
     if (phase_ == Phase::discover) {
         return WorkReplay::classify_header(header);
-    }
-    // A create can only use an ID allocated in the durable epoch preceding
-    // this record. A later BOOT_EPOCH must not legitimize a future ID.
-    uint64_t grant_id = 0;
-    if (header.type == authority::grant_record_type &&
-        (header.version == authority::grant_record_version ||
-         header.version == authority::goal_grant_record_version) &&
-        (!authority::read_grant_record_id(body, header.length, grant_id) ||
-         foundation::id_boot_epoch(grant_id) != last_boot_epoch_)) {
-        return durability::RecordUse::corrupt;
-    }
-    if (header.type == authority::grant_revocation_record_type &&
-        (header.version == authority::grant_revocation_record_version ||
-         header.version == authority::grant_revocation_with_work_record_version) &&
-        (!authority::read_grant_record_id(body, header.length, grant_id) ||
-         foundation::id_boot_epoch(grant_id) == 0U ||
-         foundation::id_boot_epoch(grant_id) > last_boot_epoch_)) {
-        return durability::RecordUse::corrupt;
     }
     return WorkReplay::on_record(&replay_, batch, header, body, last_boot_epoch_);
 }

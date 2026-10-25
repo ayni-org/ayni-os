@@ -10,6 +10,7 @@
 #define AYNI_CORE_WORK_TASK_TASK_RECORDS_H
 
 #include "durability/batch/record_body.h"
+#include "durability/batch/record_types.h"
 #include "work/task/task_table.h"
 
 #include <ayni/ayni.h>
@@ -18,9 +19,9 @@
 
 namespace ayni::work {
 
-constexpr uint16_t task_record_type = 5;
+constexpr uint16_t task_record_type = durability::record_type::task;
 constexpr uint16_t task_record_version = 1;
-constexpr uint16_t task_state_record_type = 6;
+constexpr uint16_t task_state_record_type = durability::record_type::task_state;
 constexpr uint16_t task_state_record_version = 1;
 // Same state body, but REQUIRED adjacent Task authority must follow (ADR-0038).
 constexpr uint16_t task_state_authority_record_version = 2;
@@ -38,9 +39,9 @@ constexpr uint16_t task_state_call_reauthorization_record_version = 10;
 constexpr uint16_t task_state_call_raise_limit_record_version = 11;
 // Explicit owner wait resume; same selected-call body, paired with type9/v8.
 constexpr uint16_t task_state_resume_wait_record_version = 12;
-constexpr uint16_t task_steps_record_type = 7;
+constexpr uint16_t task_steps_record_type = durability::record_type::task_steps;
 constexpr uint16_t task_steps_record_version = 1;
-constexpr uint16_t task_checkpoint_record_type = 8;
+constexpr uint16_t task_checkpoint_record_type = durability::record_type::task_checkpoint;
 constexpr uint16_t task_checkpoint_record_version = 1;
 // TASK and snapshot TASK layouts: contracts/storage/records.md.
 constexpr uint32_t task_record_size = 40;

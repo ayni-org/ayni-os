@@ -303,6 +303,7 @@ TEST(OwnerBindingReplay, the_binding_is_restored_once_without_replacing_the_expe
         ayni::durability::record_required, static_cast<uint32_t>(body.size())};
     const ayni::durability::BatchIdentity batch{1, binding.stamp.commit_seq,
                                                 binding.stamp.transition_id};
+    const uint64_t boot_epoch = KernelTestProbe::boot(node.kernel()).boot_epoch();
     auto &replay = KernelTestProbe::replay(node.kernel());
     auto &principals = KernelTestProbe::work(node.kernel()).principals;
     replay.discard_for_reload();
@@ -311,16 +312,17 @@ TEST(OwnerBindingReplay, the_binding_is_restored_once_without_replacing_the_expe
         optional.flags = 0;
         optional.version = version;
         EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(optional), RecordUse::corrupt);
-        EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, optional, body.data()),
-                  RecordUse::corrupt);
+        EXPECT_EQ(
+            ayni::kernel::WorkReplay::on_record(&replay, batch, optional, body.data(), boot_epoch),
+            RecordUse::corrupt);
         EXPECT_FALSE(principals.binding_known());
     }
     ASSERT_EQ(ayni::kernel::WorkReplay::classify_header(header), RecordUse::applied);
-    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data()),
+    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data(), boot_epoch),
               RecordUse::applied);
     ASSERT_NE(principals.binding(), nullptr);
     EXPECT_EQ(principals.binding()->stamp.commit_seq, binding.stamp.commit_seq);
-    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data()),
+    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data(), boot_epoch),
               RecordUse::corrupt);
     replay.discard();
     EXPECT_FALSE(principals.binding_known());

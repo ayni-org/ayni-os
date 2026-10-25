@@ -220,8 +220,8 @@ struct WorkModel {
     // such a change, once that time has come or once no id is left
     // (ADR-0019, ADR-0020, ADR-0022).
     bool due_work_changed = false;
-    uint64_t next_due_work_us = work::no_time;
     bool searched_with_id = true;
+    uint64_t next_due_work_us = work::no_time;
     uint64_t searched_durable_seq = 0; // Due-search key, not permission state; 0 before search.
 
   private:

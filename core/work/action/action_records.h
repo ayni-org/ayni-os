@@ -4,10 +4,11 @@
 #define AYNI_CORE_WORK_ACTION_ACTION_RECORDS_H
 
 #include "durability/batch/record_body.h"
+#include "durability/batch/record_types.h"
 #include "work/action/action_record.h"
 
 namespace ayni::work {
-constexpr uint16_t action_state_record_type = 20;
+constexpr uint16_t action_state_record_type = durability::record_type::action_state;
 constexpr uint16_t action_state_record_version = 1;
 // Two identity u64, four scalar u32, two three-u64 stamps, one string length.
 constexpr uint32_t action_state_record_fixed_size = 84;
