@@ -265,8 +265,6 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
         record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
                stamp);
         work::end_task(tables, index, verdict.end, stamp);
-        // An end frees a place in the task table and may end goals.
-        model.due_work_changed = true;
         break;
     case Verdict::Kind::progress:
         record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
@@ -286,8 +284,6 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
         } else {
             model.tasks.hold(index, verdict.hold_status, verdict.hold_reason, stamp);
         }
-        // A hold keeps the goal from deriving (work::derivation_blocker).
-        model.due_work_changed = true;
         break;
     }
     return DecisionResult::applied;

@@ -55,7 +55,6 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
         static_cast<void>(resources_.remove_waiter(active->call_id, now_us));
     }
     active.reset();
-    work_.due_work_changed = true;
 }
 
 bool CallRuntime::idle() const {
@@ -86,7 +85,6 @@ bool CallRuntime::finish_task(uint32_t call_index, uint32_t task_index,
         return false;
     }
     work_.tasks.finish_call(task_index, stamp);
-    work_.due_work_changed = true;
     return true;
 }
 
@@ -175,7 +173,6 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
         if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none &&
             mode != Mode::fenced) {
             work_.tasks.finish_call(task_index, work_.transitions.next());
-            work_.due_work_changed = true;
             return Advance::applied;
         }
         return work_.calls.query_pending(index) ? advance_query(index, now_us, durable_seq, mode)

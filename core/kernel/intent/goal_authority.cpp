@@ -215,7 +215,6 @@ void WorkModel::pause_goal_authority(uint32_t index) {
             tasks.authority_changed(at, stamp);
         }
     }
-    due_work_changed = true;
 }
 
 } // namespace ayni::kernel

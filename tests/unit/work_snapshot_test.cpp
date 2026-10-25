@@ -438,15 +438,17 @@ TEST(WorkSnapshot, reload_discard_clears_sessions_and_due_work_but_keeps_registr
     ASSERT_EQ(model.get().agents.add(100), ayni::work::AgentTable::AddResult::added);
     populate(model.get());
     ASSERT_TRUE(model.get().sessions.open({7, 8, 0, 0}));
-    model.get().next_due_work_us = 123;
-    model.get().due_work_changed = true;
+    ayni::work::DueWork work{};
+    uint64_t next_us = 0;
+    static_cast<void>(model.get().next_due_work(0, UINT64_MAX, work, next_us));
     ayni::kernel::WorkReplay(model.get()).discard_for_reload();
     EXPECT_EQ(model.get().agents.size(), 1U);
     EXPECT_EQ(model.get().agents.at(0).lifecycle, AYNI_AGENT_REGISTERED);
     EXPECT_EQ(model.get().goals.size(), 0U);
     EXPECT_EQ(model.get().tasks.size(), 0U);
     EXPECT_EQ(model.get().sessions.find(7), nullptr);
-    EXPECT_EQ(model.get().next_due_work_us, ayni::work::no_time);
+    EXPECT_FALSE(model.get().next_due_work(0, UINT64_MAX, work, next_us));
+    EXPECT_EQ(next_us, ayni::work::no_time);
     EXPECT_FALSE(model.get().ids.available());
 }
 

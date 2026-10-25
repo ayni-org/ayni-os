@@ -153,7 +153,6 @@ bool publish_batch(WorkModel &model, const Intent &intent, const authority::Sess
     outcome.commit_seq = stamp.commit_seq;
     outcome.due_work = true;
     outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
-    model.due_work_changed = true;
     return true;
 }
 

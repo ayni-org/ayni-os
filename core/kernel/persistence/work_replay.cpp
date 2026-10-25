@@ -1028,7 +1028,7 @@ void WorkReplay::finish(uint64_t now_us) {
     hold_tasks();
     model_.goals.reanchor(now_us);
     model_.tasks.reanchor(now_us);
-    model_.due_work_changed = true;
+    model_.forget_due_work(); // Reanchoring and the holds above take no transition.
 }
 
 // The strategy that decides a task is its goal type's, and only the
@@ -1100,10 +1100,7 @@ void WorkReplay::discard() {
 void WorkReplay::discard_for_reload() {
     discard();
     model_.sessions.clear();
-    model_.due_work_changed = false;
-    model_.next_due_work_us = work::no_time;
-    model_.searched_with_id = true;
-    model_.searched_durable_seq = 0;
+    model_.forget_due_work();
     model_.ids = foundation::IdAllocator{};
     model_.transitions = TransitionClock{};
 }

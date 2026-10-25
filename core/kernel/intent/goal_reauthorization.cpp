@@ -149,7 +149,6 @@ bool publish(WorkModel &model, const ReauthorizationPlan &plan, uint64_t now_us,
     outcome.commit_seq = stamp.commit_seq;
     outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
     outcome.due_work = true;
-    model.due_work_changed = true;
     return true;
 }
 } // namespace

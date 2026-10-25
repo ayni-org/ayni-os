@@ -155,33 +155,34 @@ ayni_status_t open_session(WorkModel &model, const authority::Principal &princip
     return AYNI_OK;
 }
 
-namespace {
-
-// Clears due_work_changed when nothing is due, so later calls skip the
-// search until a change sets it again, next_due_work_us comes or the ids run
-// out. Keeps it set when work is found: doing it changes the tables. Ids are
-// compared rather than marked because whatever takes the last one (a goal, a
+// Every change to the tables a search reads takes a transition, so the next
+// commit_seq keys the kept search; nothing that changes them has to mark it.
+// Ids are compared too, because whatever takes the last one (a goal, a
 // session) need not know about due work.
-bool next_due_work(WorkModel &model, uint64_t now_us, work::DueWork &out_work,
-                   uint64_t durable_seq) {
-    const bool id_left = model.ids.available();
-    if (!model.due_work_changed && id_left == model.searched_with_id &&
-        durable_seq == model.searched_durable_seq && now_us < model.next_due_work_us) {
+bool WorkModel::next_due_work(uint64_t now_us, uint64_t durable_seq, work::DueWork &out_work,
+                              uint64_t &out_next_us) {
+    const bool id_left = ids.available();
+    const uint64_t commit_seq = transitions.next_commit_seq();
+    if (due_search_kept_ && commit_seq == due_search_commit_seq_ &&
+        durable_seq == due_search_durable_seq_ && id_left == due_search_with_id_ &&
+        now_us < next_due_work_us_) {
+        out_next_us = next_due_work_us_;
         return false;
     }
-    model.searched_with_id = id_left;
-    model.searched_durable_seq = durable_seq;
     uint64_t next_us = work::no_time;
-    if (work::find_due_work(model.tables(durable_seq), now_us, id_left, out_work, next_us)) {
-        model.due_work_changed = true;
+    due_search_kept_ =
+        !work::find_due_work(tables(durable_seq), now_us, id_left, out_work, next_us);
+    if (!due_search_kept_) {
+        out_next_us = now_us;
         return true;
     }
-    model.due_work_changed = false;
-    model.next_due_work_us = next_us;
+    due_search_commit_seq_ = commit_seq;
+    due_search_durable_seq_ = durable_seq;
+    due_search_with_id_ = id_left;
+    next_due_work_us_ = next_us;
+    out_next_us = next_us;
     return false;
 }
-
-} // namespace
 
 bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us,
                        work::InputResumeBoundary input) {
@@ -190,15 +191,13 @@ bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint6
     }
     model.goals.record_input(source, now_us, model.transitions.next(), &model.goal_authority,
                              input);
-    model.due_work_changed = true;
     return true;
 }
 
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
                       uint64_t durable_seq) {
     work::DueWork work{};
-    const bool due = next_due_work(model, now_us, work, durable_seq);
-    out_next_us = due ? now_us : model.next_due_work_us;
+    const bool due = model.next_due_work(now_us, durable_seq, work, out_next_us);
     uint32_t index = 0;
     uint64_t deadline = work::no_time;
     if (model.grants.next_expiry({model.ids.boot_epoch(), now_us, 0}, index, deadline)) {
@@ -223,7 +222,8 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
         return DueWorkResult::applied;
     }
     work::DueWork work{};
-    if (!next_due_work(model, now_us, work, durable_seq)) {
+    uint64_t next_us = work::no_time;
+    if (!model.next_due_work(now_us, durable_seq, work, next_us)) {
         return DueWorkResult::none;
     }
     work::WorkTables tables = model.tables();

@@ -33,7 +33,6 @@ ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
     const auto status =
         kernel->observations.publish(*observation, kernel->host.monotonic_now_us(kernel->host.ctx));
     if (status == AYNI_OK) {
-        kernel->work.due_work_changed = true;
         kernel->host.wake(kernel->host.ctx);
     }
     return status;

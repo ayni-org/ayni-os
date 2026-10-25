@@ -26,17 +26,11 @@ ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, ayni_object_ref
 }
 
 // A change that may bring the goals' due work forward: ayni_submit_intent
-// wakes the owner so that it steps.
-void mark_due_work(WorkModel &model, IntentOutcome &outcome) {
-    model.due_work_changed = true;
+// wakes the owner so that it steps. Pause brings nothing forward, so it
+// wakes no one (ADR-0018); its transition alone makes the next step search
+// again and report the deadline without the goals it holds (ADR-0019).
+void wake_for_due_work(IntentOutcome &outcome) {
     outcome.due_work = true;
-}
-
-// Pause brings nothing forward, so it wakes no one (ADR-0018), but the goals
-// it holds may include the one due earliest: the next step searches again
-// and reports the deadline without them (ADR-0019).
-void mark_due_work_held(WorkModel &model) {
-    model.due_work_changed = true;
 }
 
 // One check result type per table, with the same four outcomes.
@@ -233,7 +227,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     // its time from the next step's next_deadline_us.
     const work::Goal &created = model.goals.at(index);
     if (created.cursor.has_next() || created.expires_us != work::no_time) {
-        mark_due_work(model, outcome);
+        wake_for_due_work(outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, goal_id, model.goals.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
@@ -265,10 +259,8 @@ ayni_status_t change_goal(WorkModel &model, const Intent &intent, IntentOutcome 
     work::apply_goal_change(tables, index, change, stamp);
     // Resume may let the goal's subtree advance; cancel ends tasks, whose
     // places other goals may be waiting for.
-    if (change == work::GoalChange::pause) {
-        mark_due_work_held(model);
-    } else {
-        mark_due_work(model, outcome);
+    if (change != work::GoalChange::pause) {
+        wake_for_due_work(outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, intent.target_id, model.goals.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
@@ -299,7 +291,7 @@ ayni_status_t cancel_task(WorkModel &model, const Intent &intent, IntentOutcome 
     const foundation::TransitionStamp stamp = model.transitions.next();
     work::end_task(tables, index, work::TaskChange::cancel, stamp);
     // The ended task's place may be what another goal is waiting for.
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
     return AYNI_OK;
@@ -329,7 +321,7 @@ ayni_status_t set_scene(WorkModel &model, const Intent &intent, IntentOutcome &o
     outcome.commit_seq = stamp.commit_seq;
     outcome.effect =
         prepared.changes_state ? AYNI_INTENT_EFFECT_CHANGED : AYNI_INTENT_EFFECT_NO_CHANGE;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -357,7 +349,7 @@ ayni_status_t raise_task_limit(WorkModel &model, const Intent &intent, IntentOut
     model.tasks.raise_model_limit(index, intent.model_call_limit, stamp);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -382,7 +374,7 @@ ayni_status_t resume_task_wait(WorkModel &model, const Intent &intent, IntentOut
     model.tasks.resume_wait(index, stamp);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -408,7 +400,7 @@ ayni_status_t query_call(WorkModel &model, const Intent &intent, IntentOutcome &
     outcome.object =
         object_ref(AYNI_OBJECT_CALL, intent.target_id, model.calls.query_revision(index));
     outcome.commit_seq = stamp.commit_seq;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -437,10 +429,8 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
     work::apply_instance_change(tables, index, change, stamp);
     // Resume may let the instance's goals advance; stop ends tasks, whose
     // places other instances' goals may be waiting for.
-    if (change == work::InstanceChange::pause) {
-        mark_due_work_held(model);
-    } else {
-        mark_due_work(model, outcome);
+    if (change != work::InstanceChange::pause) {
+        wake_for_due_work(outcome);
     }
     outcome.object =
         object_ref(AYNI_OBJECT_AGENT_INSTANCE, intent.target_id, model.agents.at(index).revision);

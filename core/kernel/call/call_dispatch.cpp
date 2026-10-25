@@ -79,6 +79,7 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
         slots_[index].active = Active{id.call_id, Stage::blocked, {}, std::nullopt};
         work_.tasks.hold_restored(task_index, AYNI_UNSUPPORTED_VERSION,
                                   AYNI_REASON_INTENT_UNSUPPORTED);
+        work_.forget_due_work(); // A recovery hold, outside any transition.
         return Advance::applied;
     }
     if (!resources_.has_room()) {

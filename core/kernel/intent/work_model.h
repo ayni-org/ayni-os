@@ -213,18 +213,28 @@ struct WorkModel {
     // check and the change it allows.
     bool calling_out() const { return calling_out_; }
 
-    // Set by a change to the goals' due work (which goals may advance or
-    // expire, room in the task table, or a held task); cleared once a search
-    // finds none due. That search also records when the next due work comes
-    // and whether an id was left, so ayni_step searches again only after
-    // such a change, once that time has come or once no id is left
-    // (ADR-0019, ADR-0020, ADR-0022).
-    bool due_work_changed = false;
-    bool searched_with_id = true;
-    uint64_t next_due_work_us = work::no_time;
-    uint64_t searched_durable_seq = 0; // Due-search key, not permission state; 0 before search.
+    // The goals' next due work by now_us (work::find_due_work over these
+    // tables). A search that finds none is kept, with when the next due work
+    // comes, and answers again until a transition, another durable_seq, the
+    // last id being taken, forget_due_work() or that time (ADR-0019,
+    // ADR-0020, ADR-0022, ADR-0051). Found work is not kept: doing it is a
+    // transition. out_next_us is now_us when work is found.
+    bool next_due_work(uint64_t now_us, uint64_t durable_seq, work::DueWork &out_work,
+                       uint64_t &out_next_us);
+    // For a change to the tables outside a transition, which only recovery
+    // makes: WorkReplay's reanchoring and holds, and CallRuntime's hold of a
+    // restored call whose binding changed. Every transition forgets the
+    // search by itself.
+    void forget_due_work() { due_search_kept_ = false; }
 
   private:
+    // The kept search and what it read besides the tables; the fields stay
+    // apart so they pack with calling_out_.
+    uint64_t due_search_commit_seq_ = 0; // transitions.next_commit_seq() at the search.
+    uint64_t due_search_durable_seq_ = 0;
+    uint64_t next_due_work_us_ = work::no_time;
+    bool due_search_kept_ = false;
+    bool due_search_with_id_ = true;
     bool calling_out_ = false;
     // Cross-table retention reads owner facts; no duplicated reference counters.
     static bool retains_task(const void *context, const work::Task &task);
@@ -263,11 +273,10 @@ enum class DueWorkResult { none, applied, internal };
 DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
                           uint64_t durable_seq);
 // Whether do_due_work(now_us) would do something; out_next_us is then now_us.
-// When it would not, clears due_work_changed and sets out_next_us to when the
-// next due work comes (work::no_time: none will without a change). Scans the
-// goal table, each goal along at most goal_depth_max ancestors, and the task
-// table, only while due_work_changed is set, that time has come or the ids
-// have just run out.
+// When it would not, sets out_next_us to when the next due work or Grant
+// expiry comes (work::no_time: none will without a change). Scans the goal
+// table, each goal along at most goal_depth_max ancestors, and the task
+// table only when WorkModel::next_due_work keeps no search.
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
                       uint64_t durable_seq = UINT64_MAX);
 

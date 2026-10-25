@@ -79,7 +79,6 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     }
     outcome.object = {0, id, model.grants.at(index).revision, AYNI_OBJECT_GRANT};
     outcome.commit_seq = stamp.commit_seq;
-    model.due_work_changed = true;
     outcome.due_work = true;
     return AYNI_OK;
 }
@@ -155,7 +154,6 @@ bool apply_pending_revoke(WorkModel &model) {
         !model.commands.publish_accepted_revoke(*pending, mapping, model.ids.boot_epoch())) {
         return false;
     }
-    model.due_work_changed = true;
     return true;
 }
 
