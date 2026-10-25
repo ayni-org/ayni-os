@@ -89,6 +89,12 @@ AYNI_LAYOUT(resource_info_flags, offsetof(ayni_resource_info_v1, flags) == 20);
 AYNI_LAYOUT(resource_info_quarantine, offsetof(ayni_resource_info_v1, quarantine_id) == 24);
 AYNI_LAYOUT(resource_info_generation, offsetof(ayni_resource_info_v1, quarantine_generation) == 32);
 AYNI_LAYOUT(resource_info_size, sizeof(ayni_resource_info_v1) == 368);
+AYNI_LAYOUT(resource_queue_size, sizeof(ayni_resource_queue_info_v1) == 24);
+AYNI_LAYOUT(resource_queue_header, offsetof(ayni_resource_queue_info_v1, struct_size) == 0);
+AYNI_LAYOUT(resource_queue_capacity, offsetof(ayni_resource_queue_info_v1, capacity) == 4);
+AYNI_LAYOUT(resource_queue_waiting, offsetof(ayni_resource_queue_info_v1, waiting) == 8);
+AYNI_LAYOUT(resource_queue_held, offsetof(ayni_resource_queue_info_v1, held) == 12);
+AYNI_LAYOUT(resource_queue_wait, offsetof(ayni_resource_queue_info_v1, longest_wait_us) == 16);
 
 AYNI_LAYOUT(host_struct_size, offsetof(ayni_host_v1, struct_size) == 0);
 AYNI_LAYOUT(host_ctx, offsetof(ayni_host_v1, ctx) == AYNI_PTR);
@@ -204,7 +210,13 @@ AYNI_LAYOUT(goal_type_occurrence_wait_max_us,
 AYNI_LAYOUT(goal_type_strategy_id, offsetof(ayni_goal_type_v1, strategy_id) == 24 + 4 * AYNI_PTR);
 AYNI_LAYOUT(goal_type_export_requirements,
             offsetof(ayni_goal_type_v1, export_requirements) == 24 + 6 * AYNI_PTR);
-AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == 24 + 7 * AYNI_PTR);
+AYNI_LAYOUT(work_profile_class, offsetof(ayni_work_profile_v1, work_class) == 0);
+AYNI_LAYOUT(work_profile_reserved, offsetof(ayni_work_profile_v1, reserved) == 4);
+AYNI_LAYOUT(work_profile_period, offsetof(ayni_work_profile_v1, background_period_min_us) == 8);
+AYNI_LAYOUT(work_profile_size, sizeof(ayni_work_profile_v1) == 16);
+AYNI_LAYOUT(goal_type_work_profile,
+            offsetof(ayni_goal_type_v1, work_profile) == AYNI_ROUND8(24 + 7 * AYNI_PTR));
+AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 16);
 
 AYNI_LAYOUT(goal_info_struct_size, offsetof(ayni_goal_info_v1, struct_size) == 0);
 AYNI_LAYOUT(goal_info_lifecycle, offsetof(ayni_goal_info_v1, lifecycle) == 4);
@@ -238,7 +250,8 @@ AYNI_LAYOUT(goal_info_hold_reason, offsetof(ayni_goal_info_v1, hold_reason) == 1
 AYNI_LAYOUT(goal_info_trigger_source_size, offsetof(ayni_goal_info_v1, trigger_source_size) == 184);
 AYNI_LAYOUT(goal_info_trigger_source, offsetof(ayni_goal_info_v1, trigger_source) == 188);
 AYNI_LAYOUT(goal_info_original_expiry, offsetof(ayni_goal_info_v1, original_expiry_us) == 224);
-AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 232);
+AYNI_LAYOUT(goal_info_work_profile, offsetof(ayni_goal_info_v1, work_profile) == 232);
+AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 248);
 
 AYNI_LAYOUT(intent_struct_size, offsetof(ayni_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(intent_kind, offsetof(ayni_intent_v1, kind) == 4);

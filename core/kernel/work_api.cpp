@@ -164,6 +164,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.next_due_us = goal.cursor.next_due_us;
     info.expires_us = goal.expires_us;
     info.original_expiry_us = goal.expiry_after_us;
+    info.work_profile = goal.work_profile.snapshot();
     info.occurrences_skipped = goal.occurrences_skipped;
     info.skip_reason = goal.skip_reason;
     info.hold_reason = goal.hold_reason;
@@ -352,6 +353,10 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
         goal_type->trigger_kinds == 0U ||
         (goal_type->trigger_kinds & ~GoalTypeRegistry::defined_trigger_kinds) != 0U ||
         goal_type->reserved != 0U ||
+        !ayni::catalog::WorkProfile::decode(goal_type->work_profile, type.work_profile) ||
+        !type.work_profile.accepts_occurrence_wait(goal_type->occurrence_wait_max_us) ||
+        (type.work_profile.kind == AYNI_WORK_BACKGROUND &&
+         goal_type->trigger_kinds != AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL)) ||
         (has_tasks ? !type.strategy_id.assign(goal_type->strategy_id)
                    : goal_type->strategy_id.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;

@@ -23,6 +23,7 @@
 #define AYNI_CORE_WORK_GOAL_GOAL_TABLE_H
 
 #include "catalog/catalog_id.h"
+#include "catalog/goal_type/work_profile.h"
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
 #include "work/authority/authority_facts.h"
@@ -63,6 +64,7 @@ struct NewGoal {
     // The goal type's id and version, which a later boot resolves again.
     catalog::CatalogId goal_type_id;
     uint32_t goal_type_version;
+    catalog::WorkProfile work_profile{}; // Copied trusted classification and background floor.
 };
 
 struct Goal {
@@ -98,6 +100,8 @@ struct Goal {
     // Independent authorization phase and binding belong to GoalAuthorityTable.
     ayni_reason_t hold_reason;
     ayni_goal_lifecycle_t lifecycle;
+    catalog::WorkProfile
+        work_profile{}; // Immutable creation semantics, never inferred from a name.
 };
 
 // What a GOAL_STATE record (ADR-0026) holds. The times are this boot's, so
@@ -298,7 +302,7 @@ class GoalTable {
                              foundation::TransitionStamp created_stamp, uint64_t commit_seq,
                              uint32_t &out_index);
     // Sets each goal's goal_type_index from its type's id and version
-    // (ADR-0026): resolve(id, version, trigger_kind, out_index) says whether
+    // (ADR-0026): resolve(id, version, trigger_kind, profile, out_index) says whether
     // this boot has that type, and can serve a goal of that trigger kind,
     // as AYNI_REASON_NONE, else why not; a goal that is not terminal and
     // lacks it is held for that reason.
@@ -306,8 +310,9 @@ class GoalTable {
         for (uint32_t index = 0; index < goals_.size(); ++index) {
             Goal &goal = goals_[index];
             goal.goal_type_index = no_index;
-            const ayni_reason_t lacks = resolve(goal.goal_type_id, goal.goal_type_version,
-                                                goal.trigger.kind, goal.goal_type_index);
+            const ayni_reason_t lacks =
+                resolve(goal.goal_type_id, goal.goal_type_version, goal.trigger.kind,
+                        goal.work_profile, goal.goal_type_index);
             goal.hold_reason = is_live(goal.lifecycle) ? lacks : AYNI_REASON_NONE;
         }
     }

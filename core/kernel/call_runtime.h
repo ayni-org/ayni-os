@@ -119,7 +119,8 @@ class CallRuntime {
                                       uint64_t now_us, uint64_t durable_seq) const;
     resources::ResourceRequest resource_request(uint64_t call_id, uint64_t owner,
                                                 const catalog::BindingLinks &links,
-                                                const catalog::CallContract &contract) const;
+                                                const catalog::CallContract &contract,
+                                                const catalog::WorkProfile &profile) const;
     // Fencing never drops pending receipts. Explicit unwritable shutdown may
     // discard volatile outcomes without reporting a committed business success.
     Advance drain_transport(Mode mode);
@@ -143,7 +144,8 @@ class CallRuntime {
                               uint64_t durable_seq);
     Advance stop(uint32_t index, uint32_t task_index, Mode mode, work::CallCancelCause cause);
     Advance dispatch(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq);
-    Advance expire_wait(uint32_t index, uint32_t task_index, uint64_t now_us);
+    Advance expire_wait(uint32_t index, uint32_t task_index, resources::WaitAction action,
+                        uint64_t now_us);
     Advance cancel_local(uint32_t index, uint32_t task_index);
     // Result, step and lifecycle share one B4 stamp; cancellation never reopens work.
     bool finish_task(uint32_t call_index, uint32_t task_index, foundation::TransitionStamp stamp);

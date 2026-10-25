@@ -170,10 +170,15 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     writer.bytes(action.data(), action_size);
 }
 
+uint16_t call_record_version_for(const CallState &state) {
+    return state.outcome == AYNI_CALL_SKIPPED ? call_skipped_record_version : call_record_version;
+}
+
 // This reader does not consult this boot's catalog. Old input is interpreted
 // only with its saved domain; replay separately proves Task and stamp relations.
-bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
-    if (body == nullptr || size < call_record_fixed_size) {
+bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint16_t version) {
+    if (body == nullptr || size < call_record_fixed_size ||
+        (version != call_record_version && version != call_skipped_record_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -206,7 +211,8 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
         }
         record.action = fact;
     }
-    if (!reader.ok() || !CallTable::valid_record(record)) {
+    if (!reader.ok() || version != call_record_version_for(record.state) ||
+        !CallTable::valid_record(record)) {
         return false;
     }
     out = record;

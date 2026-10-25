@@ -272,6 +272,13 @@ void TaskTable::finish_call(uint32_t index, foundation::TransitionStamp stamp) {
     }
 }
 
+void TaskTable::skip_queued_call(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    task.call = {};
+    task.lifecycle = AYNI_TASK_EXPIRED;
+    progress(index, stamp);
+}
+
 // Waiting is an overlay: user pause/resume remains an independent lifecycle.
 // Preserve the accepted call, checkpoint and counter until an explicit owner resume.
 void TaskTable::pause_resource_wait(uint32_t index, foundation::TransitionStamp stamp) {

@@ -78,9 +78,21 @@ bool CallRuntime::finish_task(uint32_t call_index, uint32_t task_index,
 }
 
 CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_index,
-                                              uint64_t now_us) {
+                                              resources::WaitAction action, uint64_t now_us) {
+    if (action == resources::WaitAction::wait) {
+        return Advance::internal; // An unbounded waiter cannot be an expired queue choice.
+    }
     const auto stamp = work_.transitions.next();
-    work_.tasks.pause_resource_wait(task_index, stamp);
+    if (action == resources::WaitAction::skip) {
+        if (work_.calls.skip_before_dispatch(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
+            return Advance::internal;
+        }
+        // The occurrence was already taken when this Task was derived. Its
+        // EXPIRED/SKIPPED facts close this run without advancing the next cursor.
+        work_.tasks.skip_queued_call(task_index, stamp);
+    } else {
+        work_.tasks.pause_resource_wait(task_index, stamp);
+    }
     release(index, now_us);
     return Advance::applied;
 }
@@ -190,7 +202,7 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
             return Advance::idle;
         }
         if (choice.expired) {
-            return expire_wait(index, task_index, now_us);
+            return expire_wait(index, task_index, choice.on_wait, now_us);
         }
         if (!resources_.acquire(active.call_id, now_us, active.claim)) {
             return Advance::internal;

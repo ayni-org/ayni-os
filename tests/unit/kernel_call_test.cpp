@@ -27,6 +27,7 @@ class ManagedCall : public ::testing::Test {
         config.call_capability_capacity = 1;
         config.provider_capacity = 1;
         config.binding_capacity = 1;
+        config.goal_type_capacity = 4;
         config.resource_capacity = 1;
         config.resource_request_capacity = 4;
         config.storage_buffer_bytes = 0;
@@ -111,6 +112,20 @@ class ManagedCall : public ::testing::Test {
             return sink->emit(sink->ctx, &requirement);
         };
         ASSERT_EQ(ayni_register_goal_type(kernel, &goal_type), AYNI_OK);
+        for (const auto profile :
+             {AYNI_WORK_FOREGROUND, AYNI_WORK_REMINDER, AYNI_WORK_BACKGROUND}) {
+            goal_type.goal_type_id = text(profile == AYNI_WORK_FOREGROUND ? "foreground"
+                                          : profile == AYNI_WORK_REMINDER ? "reminder"
+                                                                          : "background");
+            goal_type.work_profile = {profile, 0, 0};
+            goal_type.trigger_kinds = profile == AYNI_WORK_BACKGROUND
+                                          ? AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL)
+                                          : any_trigger;
+            goal_type.occurrence_wait_max_us = profile == AYNI_WORK_BACKGROUND
+                                                   ? AYNI_RESOURCE_WAIT_DEFAULT_US
+                                                   : AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+            ASSERT_EQ(ayni_register_goal_type(kernel, &goal_type), AYNI_OK);
+        }
         const ayni_capability_desc_v1 authority{sizeof(authority), 1, text("echo"), 0, 0, nullptr};
         ASSERT_EQ(ayni_register_capability(kernel, &authority), AYNI_OK);
         const ayni_resource_desc_v1 resource{
@@ -195,6 +210,15 @@ class ManagedCall : public ::testing::Test {
     uint64_t create(uint64_t agent = agent_a) {
         const auto created = work.create(
             WorkNode::create_body(work.instance(agent), 0, "chat", 1, {}, AYNI_TRIGGER_ONCE));
+        EXPECT_EQ(created.status, AYNI_OK);
+        return created.result.object.id;
+    }
+    uint64_t create_profile(const char *type, uint64_t agent = agent_a, uint64_t period_us = 0) {
+        auto body =
+            WorkNode::create_body(work.instance(agent), 0, type, 1, {},
+                                  period_us == 0 ? AYNI_TRIGGER_ONCE : AYNI_TRIGGER_INTERVAL);
+        body.trigger_period_us = period_us;
+        const auto created = work.create(body);
         EXPECT_EQ(created.status, AYNI_OK);
         return created.result.object.id;
     }
@@ -925,4 +949,158 @@ TEST_F(ManagedCall, owner_can_reconcile_unknown_effects_after_provider_cancellat
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_CANCELLED);
 }
 
+// C-RES-004/ADR-0047: trusted class controls the existing queue, without preemption.
+TEST_F(ManagedCall, foreground_and_reminders_run_before_ordinary_and_background_work) {
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_OFFLINE),
+              AYNI_OK);
+    const auto background =
+        create_profile("background", agent_a, AYNI_BACKGROUND_PERIOD_DEFAULT_US);
+    const auto ordinary = create(agent_b);
+    const auto foreground = create_profile("foreground");
+    const auto reminder = create_profile("reminder");
+    pump(24);
+    ASSERT_TRUE(pending.empty());
+    const std::array<uint64_t, 4> order{{foreground, reminder, ordinary, background}};
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    for (size_t at = 0; at < order.size(); ++at) {
+        pump(16);
+        ASSERT_EQ(pending.size(), at + 1);
+        EXPECT_EQ(call_info(pending[at].call).task_id, work.goal(order[at]).last_task_id);
+        post(at, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    }
+    pump(16);
+}
+
+// C-RES-005: a reminder survives ordinary resource timeouts and dispatches when available.
+TEST_F(ManagedCall, reminder_waits_beyond_thirty_seconds_without_owner_resume) {
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_OFFLINE),
+              AYNI_OK);
+    const auto goal = create_profile("reminder");
+    pump(10);
+    const auto task = work.goal(goal).last_task_id;
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    work.node().sim().advance_us(AYNI_RESOURCE_WAIT_DEFAULT_US * 2);
+    pump(6);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_RUNNING);
+    EXPECT_EQ(call_info(call).wait_reason, AYNI_CALL_WAIT_OFFLINE);
+    EXPECT_TRUE(pending.empty());
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending[0].call, call);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("presented"));
+    pump(16);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// ADR-0047: skipped work has no Provider attempt; the periodic cursor still schedules its next
+// Task.
+TEST_F(ManagedCall, background_wait_skips_one_task_and_next_period_can_execute) {
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_OFFLINE),
+              AYNI_OK);
+    const auto goal = create_profile("background", agent_a, AYNI_BACKGROUND_PERIOD_DEFAULT_US);
+    pump(10);
+    const auto task = work.goal(goal).last_task_id;
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    const auto next_due = work.goal(goal).next_due_us;
+    work.node().sim().advance_us(AYNI_RESOURCE_WAIT_DEFAULT_US);
+    pump(8);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_EXPIRED);
+    EXPECT_EQ(work.task(task).model_calls_used, 1U);
+    const auto skipped = call_info(call);
+    EXPECT_EQ(skipped.outcome, AYNI_CALL_SKIPPED);
+    EXPECT_EQ(skipped.status, AYNI_EXPIRED);
+    EXPECT_EQ(skipped.reason, AYNI_REASON_RESOURCE_WAIT);
+    EXPECT_EQ(skipped.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(skipped.attempt.request_id, 0U);
+    EXPECT_TRUE(pending.empty());
+    ayni_resource_queue_info_v1 queue{};
+    queue.struct_size = sizeof(queue);
+    ASSERT_EQ(ayni_get_resource_queue(work.kernel(), &queue), AYNI_OK);
+    EXPECT_EQ(queue.capacity, work.node().config().resource_request_capacity);
+    EXPECT_EQ(queue.waiting, 0U);
+    EXPECT_EQ(queue.held, 0U);
+    EXPECT_GE(queue.longest_wait_us, AYNI_RESOURCE_WAIT_DEFAULT_US);
+    EXPECT_EQ(work.goal(goal).next_due_us, next_due);
+    EXPECT_EQ(work.goal(goal).occurrences_skipped, 0U);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    work.node().sim().advance_us(AYNI_BACKGROUND_PERIOD_DEFAULT_US);
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_NE(work.goal(goal).last_task_id, task);
+    EXPECT_NE(pending[0].call, call);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    pump(16);
+}
+
+// ADR-0047: only Core can prove that a queued call was skipped before Provider delivery.
+TEST_F(ManagedCall, provider_cannot_report_the_core_only_skipped_outcome) {
+    create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto &call = pending[0];
+    const ayni_provider_result_v1 result{sizeof(result),
+                                         AYNI_CALL_SKIPPED,
+                                         call.attempt,
+                                         0,
+                                         AYNI_EXPIRED,
+                                         AYNI_REASON_RESOURCE_WAIT,
+                                         AYNI_CALL_EFFECT_NONE,
+                                         0,
+                                         {}};
+    EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(call_info(call.call).outcome, 0U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    pump(16);
+}
+
+// C-RES-009: diagnostics account for both a current wait and an acquired group.
+TEST_F(ManagedCall, resource_queue_snapshot_keeps_peak_wait_after_admission) {
+    create();
+    pump(16);
+    create(agent_b);
+    pump(10);
+    ASSERT_EQ(pending.size(), 1U);
+    ayni_resource_queue_info_v1 queue{};
+    queue.struct_size = sizeof(queue);
+    ASSERT_EQ(ayni_get_resource_queue(work.kernel(), &queue), AYNI_OK);
+    EXPECT_EQ(queue.waiting, 1U);
+    EXPECT_EQ(queue.held, 1U);
+    EXPECT_GT(queue.longest_wait_us, 0U);
+    const auto peak = queue.longest_wait_us;
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("first"));
+    pump(16);
+    ASSERT_EQ(pending.size(), 2U);
+    ASSERT_EQ(ayni_get_resource_queue(work.kernel(), &queue), AYNI_OK);
+    EXPECT_EQ(queue.waiting, 0U);
+    EXPECT_EQ(queue.held, 1U);
+    EXPECT_GE(queue.longest_wait_us, peak);
+    const auto saved = queue;
+    queue.struct_size -= 1;
+    EXPECT_EQ(ayni_get_resource_queue(work.kernel(), &queue), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(queue.longest_wait_us, saved.longest_wait_us);
+    post(1, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("second"));
+    pump(16);
+}
+
+// ADR-0047: callers cannot raise background frequency through Goal creation arguments.
+TEST_F(ManagedCall, background_period_floor_is_trusted_and_visible_in_goal_diagnostics) {
+    auto body = WorkNode::create_body(work.instance(agent_a), 0, "background", 1, {},
+                                      AYNI_TRIGGER_INTERVAL);
+    body.trigger_period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US - 1;
+    const auto refused = work.create(body);
+    EXPECT_EQ(refused.status, AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(refused.error.reason, AYNI_REASON_BACKGROUND_FREQUENCY);
+    body.trigger_period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
+    const auto created = work.create(body);
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto profile = work.goal(created.result.object.id).work_profile;
+    EXPECT_EQ(profile.work_class, AYNI_WORK_BACKGROUND);
+    EXPECT_EQ(profile.background_period_min_us, AYNI_BACKGROUND_PERIOD_DEFAULT_US);
+}
 } // namespace

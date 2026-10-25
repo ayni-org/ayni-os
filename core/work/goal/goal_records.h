@@ -25,6 +25,10 @@ constexpr uint16_t goal_with_authority_record_version = 2;
 constexpr uint16_t goal_authority_state_record_version = 3;
 // Snapshot only: authority Goal plus its full creation stamp and current sequence.
 constexpr uint16_t goal_creation_stamp_snapshot_version = 4;
+// Type 3/v5 journal, v6 snapshot: v3/v4 plus the immutable scheduling profile.
+constexpr uint16_t goal_work_profile_record_version = 5;
+constexpr uint16_t goal_work_profile_snapshot_version = 6;
+constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
 constexpr uint16_t goal_state_record_type = 4;
 constexpr uint16_t goal_state_record_version = 1;
 // Type 4/v2 carries state for an explicitly authorized Goal, including updates
@@ -38,6 +42,7 @@ constexpr uint16_t goal_state_authority_record_version = 4;
 constexpr uint16_t goal_state_reauthorization_record_version = 5;
 // A GOAL record without its goal type id, trigger source and parameters.
 constexpr uint32_t goal_record_fixed_size = 108;
+constexpr uint32_t goal_record_max_fixed_size = goal_record_fixed_size + goal_work_profile_size;
 constexpr uint32_t goal_state_record_size = 48;
 
 // What a GOAL record holds. goal.parameters points into the body, and
@@ -47,7 +52,7 @@ struct GoalRecord {
     uint64_t replaced_goal_id;
     uint32_t depth;
     NewGoal goal;
-    bool authority_required = false; // v2/v3 require a paired ceiling; no Goal field copy.
+    bool authority_required = false; // v2+ require a paired ceiling; no Goal field copy.
 };
 
 struct GoalStateRecord {
@@ -56,6 +61,9 @@ struct GoalStateRecord {
 };
 
 uint32_t goal_record_size(const Goal &goal);
+// Select the REQUIRED extension only when a non-default profile is present.
+uint16_t goal_record_version_for(const Goal &goal, bool authority_present);
+uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present);
 // body has goal_record_size(goal) bytes; parameters are the goal's.
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body);
 // Returns false for a body that does not hold a GOAL record: a size that

@@ -10,6 +10,7 @@
 #define AYNI_CORE_CATALOG_GOAL_TYPE_GOAL_TYPE_REGISTRY_H
 
 #include "catalog/catalog_id.h"
+#include "catalog/goal_type/work_profile.h"
 #include "catalog/strategy/strategy_registry.h"
 #include "foundation/bounded_array.h"
 
@@ -39,6 +40,7 @@ struct GoalType {
     uint32_t strategy_index = no_strategy;
     // Trusted declaration callback; null means explicitly no new-Goal needs.
     ayni_goal_requirements_fn export_requirements = nullptr;
+    WorkProfile work_profile{}; // Immutable trusted scheduling semantics, copied into Goals.
 };
 
 class GoalTypeRegistry {

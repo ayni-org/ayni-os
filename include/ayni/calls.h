@@ -153,6 +153,8 @@ typedef uint32_t ayni_call_outcome_t;
 #define AYNI_CALL_CANCEL_UNKNOWN ((ayni_call_outcome_t)6)
 /* Terminal: tracking ended without knowing remote outcome. Since 0.31. */
 #define AYNI_CALL_ABANDONED ((ayni_call_outcome_t)7)
+/* Core-only terminal: background resource wait expired before dispatch. Since 0.33. */
+#define AYNI_CALL_SKIPPED ((ayni_call_outcome_t)8)
 typedef uint32_t ayni_call_effect_t;
 /* Affirmative evidence of no external effect. Since 0.31. */
 #define AYNI_CALL_EFFECT_NONE ((ayni_call_effect_t)1)

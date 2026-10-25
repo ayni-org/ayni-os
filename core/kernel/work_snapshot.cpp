@@ -127,7 +127,7 @@ void count(SnapshotLayout &layout, uint32_t body) {
 uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     uint32_t size =
         maximum(owner_binding_size, maximum(instance_size, work::task_snapshot_record_size));
-    size = maximum(size, work::goal_record_fixed_size + 2U * id_max +
+    size = maximum(size, work::goal_record_max_fixed_size + 2U * id_max +
                              capacities.goal_parameter_max_bytes + goal_extra);
     size = maximum(size, work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
@@ -155,7 +155,7 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
             (record_prefix +
              authority::grant_snapshot_record_max(capacities.authority_scope_max_bytes));
     size += uint64_t{capacities.goal_capacity} *
-            (record_prefix + work::goal_record_fixed_size + 2U * id_max +
+            (record_prefix + work::goal_record_max_fixed_size + 2U * id_max +
              capacities.goal_parameter_max_bytes + goal_extra);
     size += uint64_t{capacities.goal_capacity} *
             (record_prefix + work::goal_authority_record_max(capacities.goal_requirement_capacity,
@@ -537,12 +537,15 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
         const uint16_t version =
             type == command_record_type
                 ? command_record_version_for(model_.commands.at(command_index_))
-            : type == work::goal_record_type &&
-                    model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id)
-                ? work::goal_creation_stamp_snapshot_version
+            : type == work::goal_record_type
+                ? work::goal_snapshot_version_for(
+                      model_.goals.at(index_),
+                      model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id))
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
             : type == authority::grant_record_type
                 ? authority::grant_snapshot_record_version_for(model_.grants.at(index_))
+            : type == work::call_record_type
+                ? work::call_record_version_for(model_.calls.state(index_))
             : type == work::task_state_record_type
                 ? work::task_state_version_for(model_.tasks.at(index_))
                 : snapshot_record_version;
@@ -641,7 +644,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     section_ = section;
     switch (header.type) {
     case work::call_record_type:
-        return call(body, header.length);
+        return call(header.version, body, header.length);
     case authority::owner_binding_record_type:
         return owner_binding(body, header.length);
     case work::instance_record_type:
@@ -673,10 +676,11 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
 
 // Snapshot rows are independently bounded by the covered durable prefix.
 // Cross-row references are proved after every section is restored.
-durability::BatchCheck WorkSnapshotReader::call(const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::call(uint16_t version, const uint8_t *body,
+                                                uint32_t size) {
     work::CallRecord record{};
     uint32_t duplicate = 0;
-    if (!work::read_call_record(body, size, record) ||
+    if (!work::read_call_record(body, size, record, version) ||
         record.state.latest.boot_epoch > metadata_.boot_epoch ||
         !valid_stamp(record.state.latest.transition, metadata_) ||
         model_.calls.find(record.identity.call_id, duplicate)) {
@@ -736,7 +740,8 @@ durability::BatchCheck WorkSnapshotReader::grant(uint16_t version, const uint8_t
 
 durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t *body,
                                                 uint32_t size) {
-    if (version != work::goal_creation_stamp_snapshot_version) {
+    if (version != work::goal_creation_stamp_snapshot_version &&
+        version != work::goal_work_profile_snapshot_version) {
         return durability::BatchCheck::unsupported; // No inferred creation sequence for old
                                                     // snapshots.
     }
@@ -770,7 +775,7 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     return result;
 }
 
-// Snapshot Goal v4 and metadata form one adjacent pair; the metadata keeps its
+// Snapshot Goal v4/v6 and metadata form one adjacent pair; the metadata keeps its
 // own last-change stamp, which can precede the Goal's latest ordinary progress.
 durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, uint32_t size) {
     work::GoalAuthorityRecord record{};

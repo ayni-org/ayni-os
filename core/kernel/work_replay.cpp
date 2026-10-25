@@ -53,8 +53,11 @@ bool knows_goal_body(uint16_t version, WorkRecordContext context) {
     return version == work::goal_record_version ||
            version == work::goal_with_authority_record_version ||
            version == work::goal_authority_state_record_version ||
+           (context == WorkRecordContext::journal &&
+            version == work::goal_work_profile_record_version) ||
            (context == WorkRecordContext::snapshot &&
-            version == work::goal_creation_stamp_snapshot_version);
+            (version == work::goal_creation_stamp_snapshot_version ||
+             version == work::goal_work_profile_snapshot_version));
 }
 
 template <typename Restore> RecordUse use_of(Restore restore) {
@@ -181,8 +184,10 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
     case work::task_checkpoint_record_type:
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
     case work::call_record_type:
-        return header.version == work::call_record_version ? RecordUse::applied
-                                                           : RecordUse::unknown;
+        return (header.version == work::call_record_version ||
+                header.version == work::call_skipped_record_version)
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
     case work::task_state_record_type:
         return knows_task_state(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     default:
@@ -279,7 +284,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::task_record_type:
         return restore_task(body, size, stamp);
     case work::call_record_type:
-        return restore_call(body, size, {boot_epoch_limit, stamp});
+        return restore_call(header.version, body, size, {boot_epoch_limit, stamp});
     case work::task_state_record_type:
         return restore_task_state(header.version, body, size, stamp);
     case work::task_steps_record_type:
@@ -962,11 +967,15 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
 void WorkReplay::finish(uint64_t now_us) {
     model_.agents.fault_unregistered();
     model_.goals.resolve_types([this](const catalog::CatalogId &id, uint32_t version,
-                                      ayni_trigger_kind_t trigger, uint32_t &out_index) {
+                                      ayni_trigger_kind_t trigger,
+                                      const catalog::WorkProfile &profile, uint32_t &out_index) {
         const catalog::GoalTypeRegistry::Lookup type =
             model_.goal_types.find({id.data(), id.size()}, version);
         switch (type.kind) {
         case catalog::GoalTypeRegistry::Lookup::Kind::found:
+            if (!(model_.goal_types.at(type.index).work_profile == profile)) {
+                return AYNI_REASON_GOAL_TYPE_VERSION;
+            }
             out_index = type.index;
             // A goal with a trigger derives tasks, and the type no longer
             // has a strategy to decide them.

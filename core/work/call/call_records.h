@@ -8,6 +8,9 @@
 namespace ayni::work {
 constexpr uint16_t call_record_type = 21; // REQUIRED; older readers explicitly refuse calls.
 constexpr uint16_t call_record_version = 1;
+constexpr uint16_t call_skipped_record_version = 2; // Same layout; adds Core-only SKIPPED outcome.
+// Normal rows preserve v1; old readers explicitly refuse a background skip.
+uint16_t call_record_version_for(const CallState &state);
 constexpr uint32_t call_record_fixed_size = 288; // Fixed fields and ten string/body lengths.
 constexpr uint32_t call_record_id_count =
     6; // Step, binding, capability, provider, endpoint, destination.
@@ -19,6 +22,7 @@ uint32_t call_record_size(const CallRecord &record);
 void write_call_record(const CallRecord &record, uint8_t *body);
 // Parses once, then applies CallTable's shared intrinsic validator. Failure
 // preserves out; success borrows domain, input and result from body.
-bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out);
+bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out,
+                      uint16_t version = call_record_version);
 } // namespace ayni::work
 #endif

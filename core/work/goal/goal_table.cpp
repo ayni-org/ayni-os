@@ -8,7 +8,13 @@
 
 namespace ayni::work {
 namespace {
-
+// Typed and decoded creation share the same intrinsic schedule/profile contract.
+bool valid_schedule(const NewGoal &goal) {
+    return catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) && goal.trigger.fits() &&
+           goal.work_profile.valid() &&
+           goal.work_profile.accepts(goal.trigger.kind, goal.trigger.period_us) &&
+           goal.work_profile.accepts_occurrence_wait(goal.occurrence_wait_max_us);
+}
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
 
 } // namespace
@@ -88,6 +94,7 @@ Goal GoalTable::created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t rep
     created.expires_us =
         goal.expiry_us == 0U ? no_time : time_after(goal.created_us, goal.expiry_us);
     created.occurrence_wait_max_us = goal.occurrence_wait_max_us;
+    created.work_profile = goal.work_profile;
     created.lifecycle = AYNI_GOAL_ACTIVE;
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {
         created.depth = goals_[created.parent_index].depth + 1U;
@@ -136,8 +143,7 @@ GoalTable::Restore GoalTable::restore(const NewGoal &goal, uint64_t goal_id,
                                       uint32_t &out_index) {
     uint32_t existing = 0;
     // fits() judges the times of a kind the catalog defines.
-    if (goal_id == 0U || goal.goal_type_version == 0U ||
-        !catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) || !goal.trigger.fits() ||
+    if (goal_id == 0U || goal.goal_type_version == 0U || !valid_schedule(goal) ||
         find(goal_id, existing)) {
         return Restore::corrupt;
     }
@@ -270,8 +276,7 @@ GoalTable::Restore GoalTable::restore_snapshot(const NewGoal &goal, uint64_t goa
     uint32_t existing = 0;
     if (goal_id == 0U || goal.goal_type_version == 0U || find(goal_id, existing) ||
         created_stamp.transition_id == 0U || created_stamp.commit_seq == 0U ||
-        commit_seq < created_stamp.commit_seq ||
-        !catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) || !goal.trigger.fits()) {
+        commit_seq < created_stamp.commit_seq || !valid_schedule(goal)) {
         return Restore::corrupt;
     }
     if (goals_.full() || !parameters_fit(goal.parameters.size) || depth > depth_max_) {

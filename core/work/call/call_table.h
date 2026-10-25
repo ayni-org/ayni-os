@@ -115,6 +115,8 @@ class CallTable {
     bool claim_dispatch(uint32_t index, uint64_t boot_epoch, uint64_t durable_seq);
     // Complete a call proven never handed to a Provider, including a queued call.
     ayni_status_t cancel_before_dispatch(uint32_t index, ActionStamp stamp);
+    // Background wait expiration proves non-delivery and records EXPIRED/RESOURCE_WAIT.
+    ayni_status_t skip_before_dispatch(uint32_t index, ActionStamp stamp);
     // Only the submit caller may assert NOT_RETAINED, after checking no receipt contradicted it.
     ayni_status_t rejected_not_retained(uint32_t index, ActionStamp stamp);
     // First request wins; caller rechecks Task/authority and submits cancellation separately.
@@ -191,6 +193,8 @@ class CallTable {
     static bool pending(const Entry &entry); // No terminal call result has been committed.
     uint8_t *bytes(uint32_t index) const; // One address formula for the complete slot byte region.
     void set_terminal(Entry &entry, const CallResult &result, ActionStamp stamp);
+    // Shared local non-delivery transition; callers supply a fixed validated Core outcome.
+    ayni_status_t end_before_dispatch(uint32_t index, const CallResult &result, ActionStamp stamp);
     // Both admission and replay copy canonical byte bodies through one layout writer.
     void copy_bodies(uint32_t index, ayni_bytes_v1 domain, ayni_bytes_v1 input,
                      ayni_string_v1 result);

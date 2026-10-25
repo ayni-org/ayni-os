@@ -173,9 +173,8 @@ class Encoder {
                 goal.created.transition_id != stamp_.transition_id) {
                 continue;
             }
-            const uint16_t version = model_.goal_authority.contains(index, goal.goal_id)
-                                         ? work::goal_authority_state_record_version
-                                         : work::goal_record_version;
+            const uint16_t version = work::goal_record_version_for(
+                goal, model_.goal_authority.contains(index, goal.goal_id));
             uint8_t *at = body(work::goal_record_type, version, work::goal_record_size(goal));
             if (at != nullptr) {
                 work::write_goal_record(goal, model_.goals.parameters(index), at);
@@ -342,7 +341,7 @@ class Encoder {
                 record.state.latest.transition.transition_id != stamp_.transition_id) {
                 return false;
             }
-            auto *at = body(work::call_record_type, work::call_record_version,
+            auto *at = body(work::call_record_type, work::call_record_version_for(record.state),
                             work::call_record_size(record));
             if (at != nullptr) {
                 work::write_call_record(record, at);
@@ -383,7 +382,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
         static_cast<uint32_t>(durability::batch_header_size + durability::commit_marker_size);
     size += record_bytes(authority::owner_binding_record_size);
     size += capacities.agent_capacity * record_bytes(work::instance_record_size);
-    size += record_bytes(work::goal_record_fixed_size + 2U * id_max +
+    size += record_bytes(work::goal_record_max_fixed_size + 2U * id_max +
                          capacities.goal_parameter_max_bytes);
     size += capacities.goal_capacity * record_bytes(work::goal_state_record_size);
     size += work::goal_authority_records_per_transition *

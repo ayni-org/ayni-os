@@ -142,6 +142,10 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
         static_cast<void>(trigger_source.assign(create.trigger_source)); // check_form()
     }
     const catalog::GoalType &goal_type = model.goal_types.at(type.index);
+    if (!goal_type.work_profile.accepts(create.trigger.kind, create.trigger.period_us)) {
+        return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_BACKGROUND_FREQUENCY,
+                      object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
+    }
     goal = work::NewGoal{create.owner_instance_id,
                          create.parent_goal_id,
                          type.index,
@@ -153,7 +157,8 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                          create.expiry_us,
                          goal_type.occurrence_wait_max_us,
                          goal_type.id,
-                         goal_type.version};
+                         goal_type.version,
+                         goal_type.work_profile};
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);

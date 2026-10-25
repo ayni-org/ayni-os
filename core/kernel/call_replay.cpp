@@ -5,13 +5,13 @@
 namespace ayni::kernel {
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.
-durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t size,
+durability::RecordUse WorkReplay::restore_call(uint16_t version, const uint8_t *body, uint32_t size,
                                                work::ActionStamp stamp) {
     using durability::RecordUse;
     work::CallRecord record{};
     uint32_t task_index = 0;
     uint32_t call_index = 0;
-    if (!work::read_call_record(body, size, record) ||
+    if (!work::read_call_record(body, size, record, version) ||
         record.state.latest.boot_epoch != stamp.boot_epoch ||
         record.state.latest.transition.commit_seq != stamp.transition.commit_seq ||
         record.state.latest.transition.transition_id != stamp.transition.transition_id ||
@@ -90,6 +90,13 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
             (state.outcome == 0U && task.call.id != id.call_id) ||
             (state.outcome != 0U && state.outcome != AYNI_CALL_ABANDONED &&
              task.call.id == id.call_id)) {
+            return false;
+        }
+        // Both journal and snapshot must retain the actual end of this run.
+        // SKIPPED never makes an ordinary/foreground Task ready to decide again.
+        if (state.outcome == AYNI_CALL_SKIPPED &&
+            (task.lifecycle != AYNI_TASK_EXPIRED || task.call.id != 0U ||
+             model_.goals.at(task.goal_index).work_profile.kind != AYNI_WORK_BACKGROUND)) {
             return false;
         }
     }

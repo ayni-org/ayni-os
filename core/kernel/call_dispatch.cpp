@@ -85,7 +85,8 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
         return Advance::idle;
     }
     if (resources_.enqueue(
-            resource_request(id.call_id, id.owner_instance_id, links, work_.calls.contract(index)),
+            resource_request(id.call_id, id.owner_instance_id, links, work_.calls.contract(index),
+                             work_.goals.at(work_.tasks.at(task_index).goal_index).work_profile),
             now_us) != AYNI_OK) {
         return Advance::internal;
     }
