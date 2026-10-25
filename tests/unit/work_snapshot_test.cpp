@@ -79,7 +79,8 @@ class Model {
               ayni::kernel::goal_authority_limits(config)))),
           task_authority_(store(ayni::work::TaskAuthorityTable::storage_size(
               ayni::kernel::task_authority_limits(config)))),
-          storage_(storage()), model_(capacities_, limits, storage_) {}
+          storage_(storage()), catalogs_(capacities_, storage_),
+          model_(catalogs_, capacities_, limits, storage_) {}
 
     WorkModel &get() { return model_; }
 
@@ -106,6 +107,7 @@ class Model {
     std::vector<uint64_t> agents_, types_, goals_, sessions_, tasks_, strategies_, commands_,
         capabilities_, grants_, goal_authority_, task_authority_;
     ayni::kernel::KernelStorage storage_;
+    ayni::kernel::Catalogs catalogs_;
     WorkModel model_;
 };
 

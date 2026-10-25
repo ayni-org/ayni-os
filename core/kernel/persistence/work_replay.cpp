@@ -996,17 +996,17 @@ void WorkReplay::finish(uint64_t now_us) {
                                       ayni_trigger_kind_t trigger,
                                       const catalog::WorkProfile &profile, uint32_t &out_index) {
         const catalog::GoalTypeRegistry::Lookup type =
-            model_.goal_types.find({id.data(), id.size()}, version);
+            model_.catalogs.goal_types.find({id.data(), id.size()}, version);
         switch (type.kind) {
         case catalog::GoalTypeRegistry::Lookup::Kind::found:
-            if (!(model_.goal_types.at(type.index).work_profile == profile)) {
+            if (!(model_.catalogs.goal_types.at(type.index).work_profile == profile)) {
                 return AYNI_REASON_GOAL_TYPE_VERSION;
             }
             out_index = type.index;
             // A goal with a trigger derives tasks, and the type no longer
             // has a strategy to decide them.
             return trigger != AYNI_TRIGGER_NONE &&
-                           model_.goal_types.at(type.index).strategy_index ==
+                           model_.catalogs.goal_types.at(type.index).strategy_index ==
                                catalog::GoalType::no_strategy
                        ? AYNI_REASON_STRATEGY_CHANGED
                        : AYNI_REASON_NONE;
@@ -1017,7 +1017,7 @@ void WorkReplay::finish(uint64_t now_us) {
         }
         return AYNI_REASON_GOAL_TYPE_UNKNOWN;
     });
-    model_.grants.resolve_catalog(model_.capabilities);
+    model_.grants.resolve_catalog(model_.catalogs.capabilities);
     for (uint32_t index = 0; index < model_.grants.size(); ++index) {
         const auto *subject =
             model_.agents.find_instance(model_.grants.at(index).subject_instance_id);
@@ -1058,7 +1058,7 @@ void WorkReplay::hold_tasks() {
             continue;
         }
         const work::Goal &goal = model_.goals.at(task.goal_index);
-        const catalog::GoalType &type = model_.goal_types.at(goal.goal_type_index);
+        const catalog::GoalType &type = model_.catalogs.goal_types.at(goal.goal_type_index);
         if (type.strategy_index == catalog::GoalType::no_strategy) {
             // A goal without a trigger derives no task, and one with a
             // trigger is held above, so only a log this library did not
@@ -1067,7 +1067,7 @@ void WorkReplay::hold_tasks() {
             tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
             continue;
         }
-        const catalog::Strategy &strategy = model_.strategies.at(type.strategy_index);
+        const catalog::Strategy &strategy = model_.catalogs.strategies.at(type.strategy_index);
         if (task.checkpoint_writer_version == 0U) {
             continue;
         }

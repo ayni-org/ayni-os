@@ -2,7 +2,7 @@
 
 - **状态**：已接受（只改结构、不改运行行为；用户 2026-10-25 同意按架构审查第 6 节顺序整改，6 步合为一个 PR）
 - **日期**：2026-10-25
-- **关联**：ADR-0008、ADR-0011、ADR-0014；`AGENTS.md` 模块设计与可读性要求；架构静态审查（基线 `e089a22`）F02、F03、F04、F05、F06、F07、F08、F13、F14、F17、F20；ADR-0052
+- **关联**：ADR-0008、ADR-0011、ADR-0014；`AGENTS.md` 模块设计与可读性要求；架构静态审查（基线 `e089a22`）F02、F03、F04、F05、F06、F07、F08、F09、F13、F14、F17、F20；ADR-0052
 
 ## 背景
 
@@ -52,13 +52,15 @@
 
 12. **生产接口不再有哨兵默认值与可空依赖。** `durable_seq = UINT64_MAX`（意为“全部已持久”）原是 `apply_intent`、`WorkModel::tables`、`refresh_due_work`、`awaits_decision` 与 `work::WorkTables` 的默认值，漏传会在编译无报错的情况下削弱绑定与 Grant 检查。现在 `WorkTables` 不再携带 `durable_seq`，只有读它的 `find_due_work` 以参数接收，Goal 授权表改为引用；其余函数都要求调用方给出。`ayni_submit_intent` 一次取样的内容收为 `IntentContext`（进入时的时钟读数、持久前缀、能否开始事务、存储准入状态、时钟、输入前沿采样），`apply_intent` 的参数由 10 个减为 5 个。`OwnerClock` 与 `InputResumeSampler` 改为构造时必须给出上下文与函数的类，删除为空时“改用调用方读数”和“无法采样”的分支；`decide_next` 以引用接收 `CallRuntime`，删除为空时把调用提议判为不支持的分支。`WorkReplay` 的事务与纪元上限不再默认无界，日志配对与进入 RUNNING 时的复查显式传入 `WorkReplay::unbounded`。时钟规则写在 `OwnerClock` 与 `CallRuntime` 的注释里：进入时的读数用于调度和外呼前的检查，外呼返回后的检查重新读时钟。生产调用方原本就传入完整参数，行为不变。work 层单表接口（`GoalTable` 的本地输入触发、`GoalAuthorityTable::bind`）保留可选参数，供不建授权表的单表测试使用；kernel 只经 `WorkModel` 调用它们，并总是给出。
 
+13. **目录注册表合为一个 `Catalogs`。** 10 个启动后不变的注册表原先分挂在 `WorkModel`（Goal 类型、策略、能力模式、观测来源、执行端）和 `ayni_kernel`（资源、设备、调用能力、Provider、绑定）上，没有可见的划分规则：`CallRuntime` 经 `CallCatalogs` 取其中 4 个，却经 `WorkModel` 读执行目录；启动校验横跨两边。现在 `kernel/config/Catalogs` 持有全部 10 个，由 `ayni_kernel` 拥有，CONFIGURING 期间经注册 ABI 写入；`Catalogs::close()` 在 `ayni_start` 中按原顺序连接策略，再检查设备清单、资源拓扑、绑定与执行绑定。`WorkModel`、`CallRuntime`、`ObservationTable` 与 `ResourceAdmission` 只持有常量引用，编译通过即说明它们不在启动后写目录。执行绑定所指的 Scene 属于 authority，仍由 kernel 在 `close()` 之后检查（`validate_execution_scenes`）。各注册表的内存区与放置顺序不变。
+
 ## 后果
 
 - 依赖检查覆盖模块根目录；新增根目录与子目录之间的包含须先在 `architecture.json` 声明，引入环的声明会让检查直接失败。在未整改的 main 上运行新规则会报出 62 处未声明的包含。
 - 23 个测试文件原有 345 处 `kernel->member` 访问，现全部经 probe；只有 `kernel_layout_test` 为取 `sizeof(ayni_kernel)` 直接包含 `kernel_state.h`。白盒测试按新路径包含 kernel 头文件；只建工作模型的测试夹具用同一组尺寸函数分配存储。夹具原先只按 Grant 命令上限分配命令窗口，小于 `WorkModel` 实际使用的精确命令步长，现已一致。
 - 新增一种意图先在 traits 表加一行；授权与幂等属性在一处审阅。策略矩阵测试逐行写出期望值，改表必须同时改测试。
 - 新增持久实体（订阅、记忆、提醒）时，持久化编排要改的位置由 17 处减为上述 4 处（以 call 计），其余存储按同一契约逐个迁移。日志与快照的记录字节、顺序、版本与 REQUIRED 规则不变；快照中 call 先于 Scene 由列表顺序保证，读端仍拒绝逆序。
-- 内存布局的放置顺序与各存储尺寸不变。决定 1～9 之后，`tools/measure_kernel_memory.c` 的 4 个配置与整改前得到相同的字节数与对齐；为此 `WorkModel` 把两个到期搜索标志相邻放置，抵消外呼标志改为私有后的对齐填充。决定 10 让 `ayni_kernel` 固定增加 56 字节（`ExecutionControl` 保存自己的协作者引用与传输接口），与容量无关，4 个配置各增加 56 字节。ABI、存储 schema 与持久记录均不变。
+- 内存布局的放置顺序与各存储尺寸不变。决定 1～9 之后，`tools/measure_kernel_memory.c` 的 4 个配置与整改前得到相同的字节数与对齐；为此 `WorkModel` 把两个到期搜索标志相邻放置，抵消外呼标志改为私有后的对齐填充。决定 10 让 `ayni_kernel` 固定增加 56 字节（`ExecutionControl` 保存自己的协作者引用与传输接口）；决定 13 把 `CallRuntime` 的 4 个目录引用和 `WorkModel` 中的 5 个注册表对象换成两个 `Catalogs` 引用，减少 16 字节；决定 11、12 不改变尺寸。整个整改之后，4 个配置各比整改前多 40 字节，与容量无关。ABI、存储 schema 与持久记录均不变。
 - 许可与停止链在一个约 400 行的文件里，可以单独审阅和度量覆盖率；修改 Provider 调度不再改动它。
 - 到期判断与下次到期时间总与重新搜索相同。代价是每个事务之后的下一步多做一次有界搜索（Goal 表、每个 Goal 至多 `goal_depth_max` 个祖先、Task 表），以前只在置位的事务之后搜索。原先不置位的持有（ABANDONED 调用持有 Task、恢复中因绑定变化持有 Task）之后，报告的下次时间可能早于实际，只多一次唤醒；现在与重新搜索一致。
 
@@ -86,6 +88,7 @@
 - `persistent_store_test`：列表中每个存储的记录类型都在登记表里且按日志顺序排列；契约存储的头部无论版本是否已知都必须带 REQUIRED，已知版本在日志和快照中都可分类；启用一个存储后，批次上限与快照载荷上限恰好增加它声明的份额，单记录上限不小于它的最大记录。去掉分类中对契约存储的 REQUIRED 检查会让该测试失败。现有日志、快照与恢复测试（含 call、Scene 的写读和逆序拒绝，以及 Grant 未来纪元 ID 的拒绝）不改期望值并通过。
 - 抽出 `ExecutionControl` 不改任何测试：`managed_execution_test` 与其余调用、执行测试不变并通过；覆盖率见 PR。
 - `WorkTrigger.kept_due_work_search_answers_as_a_new_search_would`：固定种子的 400 步随机操作（创建延时与周期 Goal、暂停、恢复、取消、实例暂停与恢复、推进时钟、step、重启）中，每步之后比较保留的搜索与强制重新搜索的结果与下次时间，并要求其中多于 20 次由保留的搜索给出时间。让保留的搜索忽略事务会使它失败。
+- 目录合并后注册与启动失败的测试（注册顺序、缺失策略、设备与资源拓扑、绑定、执行绑定与 Scene 的错误码）不改期望值并通过；单独构造工作模型的测试夹具同样先建 `Catalogs`。
 - 删除默认值与空分支后，编译器报出的调用点只在测试中（Grant 信任边界测试、重放一致性测试）；生产调用点原本就传入完整参数。
 - 迁移到 probe 后测试数量与结果不变；搜索 `tests/` 中 `kernel()->`、`kernel_->`、`kernel->` 后接 `ayni_kernel` 成员的写法，结果为 0。
 - 现有完整测试在 GCC ASan/UBSan 下通过；命令与结果见 PR。

@@ -77,10 +77,10 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
     const auto &goal = model.goals.at(plan.goal_index);
     for (uint32_t at = 0; at < plan.previous.count; ++at) {
         const auto &need = plan.previous.requirements[at];
-        const auto entry = model.capabilities.find(
+        const auto entry = model.catalogs.capabilities.find(
             {need.capability_id.data(), need.capability_id.size()}, need.capability_version);
         if (entry.kind != catalog::CapabilityRegistry::Lookup::Kind::found ||
-            !model.capabilities.matches_domain(entry.index, need.source_domain)) {
+            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain)) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_CATALOG_CHANGED};
         }
         std::optional<uint32_t> selected;

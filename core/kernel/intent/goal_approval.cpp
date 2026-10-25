@@ -77,10 +77,10 @@ authority::GrantCheck check_context(const WorkModel &model, const ApprovalPlan &
     }
     for (uint32_t index = 0; index < plan.record.count; ++index) {
         const auto &need = plan.record.requirements[index];
-        const auto entry = model.capabilities.find(
+        const auto entry = model.catalogs.capabilities.find(
             {need.capability_id.data(), need.capability_id.size()}, need.capability_version);
         if (entry.kind != catalog::CapabilityRegistry::Lookup::Kind::found ||
-            !model.capabilities.matches_domain(entry.index, need.source_domain)) {
+            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain)) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_CATALOG_CHANGED};
         }
         if (need.dependency.grant_id != 0U) {

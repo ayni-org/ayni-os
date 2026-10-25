@@ -105,7 +105,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                                   work::NewGoal &goal, IntentFailure &failure) {
     const GoalCreate &create = intent.create;
     const catalog::GoalTypeRegistry::Lookup type =
-        model.goal_types.find(create.goal_type_id, create.goal_type_version);
+        model.catalogs.goal_types.find(create.goal_type_id, create.goal_type_version);
     switch (type.kind) {
     case catalog::GoalTypeRegistry::Lookup::Kind::unknown_id:
         return refuse(AYNI_NOT_FOUND, AYNI_REASON_GOAL_TYPE_UNKNOWN,
@@ -116,7 +116,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
     case catalog::GoalTypeRegistry::Lookup::Kind::found:
         break;
     }
-    if (!model.goal_types.accepts_trigger(type.index, create.trigger.kind)) {
+    if (!model.catalogs.goal_types.accepts_trigger(type.index, create.trigger.kind)) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_TRIGGER_KIND,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
@@ -136,7 +136,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
     if (create.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) {
         static_cast<void>(trigger_source.assign(create.trigger_source)); // check_form()
     }
-    const catalog::GoalType &goal_type = model.goal_types.at(type.index);
+    const catalog::GoalType &goal_type = model.catalogs.goal_types.at(type.index);
     if (!goal_type.work_profile.accepts(create.trigger.kind, create.trigger.period_us)) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_BACKGROUND_FREQUENCY,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
@@ -168,8 +168,8 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
     }
     // Validate parameters before exporting their requirements. Both callbacks
     // are read-only under call_out; all admission finishes before IDs.
-    const bool accepted =
-        model.call_out([&] { return model.goal_types.accepts(type.index, create.parameters); });
+    const bool accepted = model.call_out(
+        [&] { return model.catalogs.goal_types.accepts(type.index, create.parameters); });
     if (!accepted) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
@@ -188,7 +188,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     if (status != AYNI_OK) {
         return status;
     }
-    const auto &goal_type = model.goal_types.at(goal.goal_type_index);
+    const auto &goal_type = model.catalogs.goal_types.at(goal.goal_type_index);
     const auto &create = intent.create;
     work::GoalAuthorityRecord authority{};
     const auto requirements =

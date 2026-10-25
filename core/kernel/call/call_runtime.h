@@ -3,9 +3,9 @@
 #ifndef AYNI_CORE_KERNEL_CALL_CALL_RUNTIME_H
 #define AYNI_CORE_KERNEL_CALL_CALL_RUNTIME_H
 
-#include "catalog/binding/binding_registry.h"
 #include "kernel/completion/attempt_sequence.h"
 #include "kernel/completion/provider_mailbox.h"
+#include "kernel/config/catalogs.h"
 #include "kernel/execution/execution_control.h"
 #include "kernel/intent/work_model.h"
 #include "knowledge/observation/observation_table.h"
@@ -13,14 +13,6 @@
 #include "resources/permit/permit_table.h"
 
 namespace ayni::kernel {
-
-// Borrowed immutable catalogs; all registration is closed before work starts.
-struct CallCatalogs {
-    const catalog::CallCapabilityRegistry &capabilities; // Execution semantics, not authority.
-    const catalog::ProviderRegistry &providers; // Runtime-owned callback/context descriptors.
-    const catalog::BindingRegistry &bindings;   // Exact selections, no automatic fallback.
-    const catalog::ResourceRegistry &resources; // Resource IDs and capacity declarations.
-};
 
 // Owns only boot-local dispatch coordination, one staged decision and one copied
 // receipt. Work/CallTable remains the sole owner of logical identities/results;
@@ -40,7 +32,7 @@ class CallRuntime {
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
     static std::size_t storage_size(Limits limits); // Metadata, staging input and receipt bytes.
     // All owners and the aligned arena outlive this coordinator and its producers.
-    CallRuntime(void *storage, Limits limits, WorkModel &work, CallCatalogs catalogs,
+    CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
                 resources::ResourceAdmission &resources, resources::PermitTable &permits,
                 const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
                 AttemptSequence &attempts, const ayni_host_v1 &host);
@@ -178,8 +170,8 @@ class CallRuntime {
         return stage == Stage::submitted || stage == Stage::waiting_stop;
     }
 
-    WorkModel &work_;       // Domain facts, never accessed by Provider worker threads.
-    CallCatalogs catalogs_; // Borrowed immutable selection contracts.
+    WorkModel &work_;          // Domain facts, never accessed by Provider worker threads.
+    const Catalogs &catalogs_; // Closed before work starts.
     resources::ResourceAdmission &resources_; // Sole owner of occupancy and queue fairness.
     ProviderMailbox &mailbox_;                // Sole owner of concurrent copied deliveries.
     AttemptSequence &attempts_;               // Shared Host/Provider attempt identity allocator.

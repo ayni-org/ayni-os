@@ -1230,7 +1230,8 @@ class Model {
               ayni::kernel::goal_authority_limits(capacities))),
           task_authority_(ayni::work::TaskAuthorityTable::storage_size(
               ayni::kernel::task_authority_limits(capacities))),
-          work_(capacities, {2, 4}, storage()) {
+          storage_(storage()), catalogs_(capacities, storage_),
+          work_(catalogs_, capacities, {2, 4}, storage_) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
             EXPECT_EQ(work_.agents.restore(owner_agent, owner, 1, AYNI_AGENT_RUNNING, {1, 1}),
@@ -1271,6 +1272,8 @@ class Model {
     Block grants_;
     Block goal_authority_;
     Block task_authority_;
+    KernelStorage storage_;
+    ayni::kernel::Catalogs catalogs_;
     WorkModel work_;
 };
 

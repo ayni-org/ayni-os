@@ -36,7 +36,7 @@ ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->devices.add_validated(decoded);
+    return kernel->catalogs.devices.add_validated(decoded);
 }
 
 ayni_status_t ayni_register_component(ayni_kernel_t *kernel,
@@ -52,7 +52,7 @@ ayni_status_t ayni_register_component(ayni_kernel_t *kernel,
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->devices.add_validated(decoded);
+    return kernel->catalogs.devices.add_validated(decoded);
 }
 
 // Inventory diagnostics are copied and include unavailable resources. Health is
@@ -71,11 +71,11 @@ ayni_status_t ayni_get_device(const ayni_kernel_t *kernel, ayni_string_v1 id,
         return AYNI_INVALID_STATE;
     }
     uint32_t index = 0;
-    if (!kernel->devices.find_device(id, index)) {
+    if (!kernel->catalogs.devices.find_device(id, index)) {
         return AYNI_NOT_FOUND;
     }
-    *out_info = {sizeof(*out_info), kernel->devices.device_component_count(id),
-                 kernel->resource_catalog.device_resources(kernel->devices, id), 0};
+    *out_info = {sizeof(*out_info), kernel->catalogs.devices.device_component_count(id),
+                 kernel->catalogs.resources.device_resources(kernel->catalogs.devices, id), 0};
     return AYNI_OK;
 }
 
@@ -94,11 +94,11 @@ ayni_status_t ayni_get_component(const ayni_kernel_t *kernel, ayni_string_v1 id,
         return AYNI_INVALID_STATE;
     }
     uint32_t index = 0;
-    if (!kernel->devices.find_component(id, index)) {
+    if (!kernel->catalogs.devices.find_component(id, index)) {
         return AYNI_NOT_FOUND;
     }
-    *out_info = {sizeof(*out_info), kernel->resource_catalog.component_resources(id),
-                 kernel->devices.component(index).device.snapshot()};
+    *out_info = {sizeof(*out_info), kernel->catalogs.resources.component_resources(id),
+                 kernel->catalogs.devices.component(index).device.snapshot()};
     return AYNI_OK;
 }
 
@@ -114,7 +114,7 @@ ayni_status_t ayni_register_resource(ayni_kernel_t *kernel, const ayni_resource_
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->resource_catalog.add_validated(decoded);
+    return kernel->catalogs.resources.add_validated(decoded);
 }
 
 // Health affects future admission, not an acquired claim's lifetime. A wake
@@ -129,7 +129,7 @@ ayni_status_t ayni_set_resource_health(ayni_kernel_t *kernel, ayni_string_v1 res
         return AYNI_INVALID_STATE;
     }
     uint32_t index = 0;
-    if (!kernel->resource_catalog.find(resource_id, index)) {
+    if (!kernel->catalogs.resources.find(resource_id, index)) {
         return AYNI_NOT_FOUND;
     }
     bool changed = false;
@@ -157,7 +157,7 @@ ayni_status_t ayni_get_resource(const ayni_kernel_t *kernel, ayni_string_v1 reso
         return AYNI_INVALID_STATE;
     }
     uint32_t index = 0;
-    if (!kernel->resource_catalog.find(resource_id, index)) {
+    if (!kernel->catalogs.resources.find(resource_id, index)) {
         return AYNI_NOT_FOUND;
     }
     *out_info = kernel->resources.info(index);

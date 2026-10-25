@@ -18,7 +18,7 @@ ayni_status_t ayni_register_call_capability(ayni_kernel_t *kernel,
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->call_capabilities.add_validated(decoded);
+    return kernel->catalogs.call_capabilities.add_validated(decoded);
 }
 
 ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_v1 *provider) {
@@ -33,7 +33,7 @@ ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->providers.add_validated(decoded);
+    return kernel->catalogs.providers.add_validated(decoded);
 }
 
 ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding) {
@@ -48,6 +48,6 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->bindings.add_validated(decoded);
+    return kernel->catalogs.bindings.add_validated(decoded);
 }
 } // extern "C"

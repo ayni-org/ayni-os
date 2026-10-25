@@ -336,7 +336,7 @@ ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->work.capabilities.add_validated(*capability, encoding);
+    return kernel->catalogs.capabilities.add_validated(*capability, encoding);
 }
 
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type) {
@@ -372,7 +372,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     type.export_requirements = goal_type->export_requirements;
     type.trigger_kinds = goal_type->trigger_kinds;
     type.occurrence_wait_max_us = goal_type->occurrence_wait_max_us;
-    return add_status(kernel->work.goal_types.add(type));
+    return add_status(kernel->catalogs.goal_types.add(type));
 }
 
 ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_v1 *strategy) {
@@ -405,7 +405,7 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     entry.decide = strategy->decide;
     entry.max_intents_per_call = strategy->max_intents_per_call;
     entry.max_checkpoint_bytes = strategy->max_checkpoint_bytes;
-    return add_status(kernel->work.strategies.add(entry));
+    return add_status(kernel->catalogs.strategies.add(entry));
 }
 
 // C-AUTH-010/016: resolve the registered principal once, then require the

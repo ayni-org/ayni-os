@@ -1415,7 +1415,7 @@ TEST(GoalApproval, changed_same_version_domain_refuses_original_proposal) {
     ASSERT_EQ(goal.status, AYNI_OK);
     ApprovalRequest request(node.work.kernel(), goal.result.object.id);
     auto &model = KernelTestProbe::work(node.work.kernel());
-    const auto domain = model.capabilities.domain_view(0);
+    const auto domain = model.catalogs.capabilities.domain_view(0);
     Range wider(0, 200);
     const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
                                              wider.field.allowed};

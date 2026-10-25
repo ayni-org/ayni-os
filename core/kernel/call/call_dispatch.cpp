@@ -69,12 +69,13 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
         catalogs_.bindings.find(view(id.binding_id), id.binding_version, binding_index) &&
         catalog::BindingRegistry::same_selection(id.binding(),
                                                  catalogs_.bindings.at(binding_index)) &&
-        catalog::BindingRegistry::resolve(catalogs_.bindings.at(binding_index), work_.capabilities,
-                                          catalogs_.capabilities, catalogs_.providers,
-                                          catalogs_.resources, links) == AYNI_OK &&
+        catalog::BindingRegistry::resolve(catalogs_.bindings.at(binding_index),
+                                          catalogs_.capabilities, catalogs_.call_capabilities,
+                                          catalogs_.providers, catalogs_.resources,
+                                          links) == AYNI_OK &&
         catalog::same_call_contract(work_.calls.contract(index),
-                                    catalogs_.capabilities.at(links.call).contract) &&
-        work_.capabilities.matches_domain(links.capability, work_.calls.domain(index));
+                                    catalogs_.call_capabilities.at(links.call).contract) &&
+        catalogs_.capabilities.matches_domain(links.capability, work_.calls.domain(index));
     if (!compatible) {
         slots_[index].active = Active{id.call_id, Stage::blocked, {}, std::nullopt};
         work_.tasks.hold_restored(task_index, AYNI_UNSUPPORTED_VERSION,

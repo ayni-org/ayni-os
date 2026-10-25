@@ -3,14 +3,9 @@
 #include <ayni/execution.h>
 
 // Catalog owns static type/limit checks; authority owns the exact Scene lookup.
-ayni_status_t ayni_kernel::validate_execution_catalog() const {
-    const auto status = work.execution_catalog.validate_all(bindings, work.capabilities,
-                                                            call_capabilities, resource_catalog);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    for (uint32_t at = 0; at < work.execution_catalog.binding_count(); ++at) {
-        const auto &binding = work.execution_catalog.binding(at);
+ayni_status_t ayni_kernel::validate_execution_scenes() const {
+    for (uint32_t at = 0; at < catalogs.execution.binding_count(); ++at) {
+        const auto &binding = catalogs.execution.binding(at);
         uint32_t scene = 0;
         if (!work.scenes.find_definition({binding.scene.data(), binding.scene.size()}, scene)) {
             return AYNI_NOT_FOUND;
@@ -29,7 +24,7 @@ ayni_status_t ayni_register_executor(ayni_kernel_t *kernel, const ayni_executor_
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->work.execution_catalog.add_executor(*executor);
+    return kernel->catalogs.execution.add_executor(*executor);
 }
 ayni_status_t ayni_register_execution_binding(ayni_kernel_t *kernel,
                                               const ayni_execution_binding_v1 *binding) {
@@ -39,7 +34,7 @@ ayni_status_t ayni_register_execution_binding(ayni_kernel_t *kernel,
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->work.execution_catalog.add_binding(*binding);
+    return kernel->catalogs.execution.add_binding(*binding);
 }
 ayni_status_t ayni_get_execution(const ayni_kernel_t *kernel, uint64_t logical_call_id,
                                  ayni_execution_info_v1 *out_info) {

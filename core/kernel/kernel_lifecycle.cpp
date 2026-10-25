@@ -49,27 +49,13 @@ ayni_status_t ayni_kernel::start() {
         host.storage_trim_prefix == nullptr || host.storage_free_bytes == nullptr) {
         return AYNI_UNSUPPORTED;
     }
-    // Registration is closed from here on, so each goal type's strategy is
-    // resolved once and its index stays valid (C-LIFE-003).
-    if (!work.goal_types.link_strategies(work.strategies)) {
-        return AYNI_NOT_FOUND;
+    const auto closed = catalogs.close();
+    if (closed != AYNI_OK) {
+        return closed;
     }
-    const auto inventory = devices.validate();
-    if (inventory != AYNI_OK) {
-        return inventory;
-    }
-    const auto topology = resource_catalog.validate(devices);
-    if (topology != AYNI_OK) {
-        return topology;
-    }
-    const auto linked =
-        bindings.validate_all(work.capabilities, call_capabilities, providers, resource_catalog);
-    if (linked != AYNI_OK) {
-        return linked;
-    }
-    const auto execution = validate_execution_catalog();
-    if (execution != AYNI_OK) {
-        return execution;
+    const auto scenes = validate_execution_scenes();
+    if (scenes != AYNI_OK) {
+        return scenes;
     }
     ingress.open();
     lifecycle = AYNI_LIFECYCLE_RECOVERING;

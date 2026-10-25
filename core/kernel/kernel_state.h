@@ -4,12 +4,12 @@
 #ifndef AYNI_CORE_KERNEL_KERNEL_STATE_H
 #define AYNI_CORE_KERNEL_KERNEL_STATE_H
 
-#include "catalog/binding/binding_registry.h"
 #include "kernel/boot/boot_sequence.h"
 #include "kernel/call/call_runtime.h"
 #include "kernel/commit/commit_log.h"
 #include "kernel/completion/completion_pool.h"
 #include "kernel/completion/provider_mailbox.h"
+#include "kernel/config/catalogs.h"
 #include "kernel/config/kernel_config.h"
 #include "kernel/decision/decision.h"
 #include "kernel/ingress/event_ingress.h"
@@ -37,7 +37,8 @@ struct ayni_kernel {
                   capacities.event_body_max_bytes, host),
           completions(storage[ayni::kernel::Store::completions], capacities.completion_slot_count,
                       host, attempts),
-          writes(limits.storage_write_interval_us), work(capacities, limits, storage), replay(work),
+          writes(limits.storage_write_interval_us), catalogs(capacities, storage),
+          work(catalogs, capacities, limits, storage), replay(work),
           boot(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
                capacities.storage_buffer_bytes, work, replay, writes),
           log(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
@@ -47,33 +48,25 @@ struct ayni_kernel {
           decisions(storage[ayni::kernel::Store::decisions],
                     ayni::kernel::decision_limits(capacities)),
           budget(capacities, limits),
-          resource_catalog(storage[ayni::kernel::Store::resource_catalog],
-                           capacities.resource_capacity),
-          resources(resource_catalog, storage[ayni::kernel::Store::resource_states],
+          resources(catalogs.resources, storage[ayni::kernel::Store::resource_states],
                     capacities.resource_capacity, storage[ayni::kernel::Store::resource_requests],
                     capacities.resource_request_capacity),
-          devices(storage[ayni::kernel::Store::devices], capacities.device_capacity,
-                  storage[ayni::kernel::Store::components], capacities.component_capacity),
-          call_capabilities(storage[ayni::kernel::Store::call_capabilities],
-                            capacities.call_capability_capacity),
-          providers(storage[ayni::kernel::Store::providers], capacities.provider_capacity),
-          bindings(storage[ayni::kernel::Store::bindings], capacities.binding_capacity),
           provider_completions(storage[ayni::kernel::Store::provider_completions],
                                ayni::kernel::provider_mailbox_limits(capacities), host),
           permits(storage[ayni::kernel::Store::permits], capacities.executor_capacity, resources),
-          observations(work.observation_sources, storage[ayni::kernel::Store::observations],
+          observations(catalogs.observation_sources, storage[ayni::kernel::Store::observations],
                        capacities.observation_source_capacity),
           calls(storage[ayni::kernel::Store::call_runtime],
-                ayni::kernel::call_runtime_limits(capacities), work,
-                {call_capabilities, providers, bindings, resource_catalog}, resources, permits,
+                ayni::kernel::call_runtime_limits(capacities), work, catalogs, resources, permits,
                 observations, provider_completions, attempts, host),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
     ayni_status_t start();
-    ayni_status_t
-    validate_execution_catalog() const; // Startup cross-owner exact references, no callbacks.
+    // Each execution binding names a declared Scene at its version; Scenes are
+    // authority's, so Catalogs::close cannot check this. No callbacks.
+    ayni_status_t validate_execution_scenes() const;
     ayni_status_t step(uint32_t max_items, uint32_t max_time_us, ayni_step_report_v1 &report);
     ayni_status_t begin_shutdown();
     // Why the kernel is RESTRICTED or FENCED; NONE otherwise.
@@ -108,6 +101,8 @@ struct ayni_kernel {
     ayni::kernel::AttemptSequence attempts;
     ayni::kernel::CompletionPool completions;
     ayni::kernel::WriteSchedule writes;
+    // Every registry the Host fills in CONFIGURING; read-only from ayni_start.
+    ayni::kernel::Catalogs catalogs;
     ayni::kernel::WorkModel work;
     ayni::kernel::WorkReplay replay;
     ayni::kernel::BootSequence boot;
@@ -120,20 +115,12 @@ struct ayni_kernel {
     ayni::kernel::DecisionBuffer decisions;
     // The log's size against its limit and the free medium (C-STORE-011).
     ayni::kernel::StorageBudget budget;
-    // Static trusted directory; invariant/representation owned by catalog/resource.
-    ayni::catalog::ResourceRegistry resource_catalog;
     // Runtime allocation and wait state owned by resources/admission; no Task/Grant copy.
     ayni::resources::ResourceAdmission resources;
-    // Catalog owners retain immutable execution declarations and trusted selection;
-    // callback contexts belong to runtime, while no live call state lives here.
-    ayni::catalog::DeviceCatalog devices; // Immutable inventory; no health or resource ownership.
-    ayni::catalog::CallCapabilityRegistry call_capabilities;
-    ayni::catalog::ProviderRegistry providers;
-    ayni::catalog::BindingRegistry bindings;
     // Provider workers post through this independent reliable pool; Host controls keep theirs.
     ayni::kernel::ProviderMailbox provider_completions;
     ayni::resources::PermitTable permits; // Resource-owned live leases; zero-capacity by default.
-    // Live facts borrow static source descriptions from WorkModel's catalog owner.
+    // Live facts borrow static source descriptions from the catalogs.
     ayni::knowledge::ObservationTable observations;
     // Bounded cross-owner call coordination; workers only access provider_completions.
     ayni::kernel::CallRuntime calls;

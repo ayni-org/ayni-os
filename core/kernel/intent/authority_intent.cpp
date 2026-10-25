@@ -29,7 +29,8 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     if (authority::needs_deferred_grant_feature(body.flags)) {
         return refuse(AYNI_UNSUPPORTED, AYNI_REASON_GRANT_UNSUPPORTED, failure);
     }
-    const auto capability = model.capabilities.find(body.capability_id, body.capability_version);
+    const auto capability =
+        model.catalogs.capabilities.find(body.capability_id, body.capability_version);
     switch (capability.kind) {
     case catalog::CapabilityRegistry::Lookup::Kind::unknown_id:
         return refuse(AYNI_NOT_FOUND, AYNI_REASON_CAPABILITY_UNKNOWN, failure);
@@ -49,9 +50,9 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
                                     body.parent_grant_id,
                                     session.principal_id,
                                     session.binding_revision,
-                                    model.capabilities.at(capability.index).id,
+                                    model.catalogs.capabilities.at(capability.index).id,
                                     body.capability_version,
-                                    model.capabilities.domain_view(capability.index),
+                                    model.catalogs.capabilities.domain_view(capability.index),
                                     &body.scope,
                                     body.lifetime,
                                     body.duration_us,

@@ -110,6 +110,7 @@ ayni_add_core_module(kernel
         kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
         kernel/completion/provider_mailbox.cpp
+        kernel/config/catalogs.cpp
         kernel/decision/decision.cpp
         kernel/execution/execution_control.cpp
         kernel/execution_api.cpp

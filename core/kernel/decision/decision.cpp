@@ -201,7 +201,7 @@ ayni_task_snapshot_v1 snapshot_of(const WorkModel &model, DecisionBuffer &decisi
                                   uint32_t task_index, uint64_t now_us) {
     const work::Task &task = model.tasks.at(task_index);
     const catalog::GoalType &type =
-        model.goal_types.at(model.goals.at(task.goal_index).goal_type_index);
+        model.catalogs.goal_types.at(model.goals.at(task.goal_index).goal_type_index);
     ayni_task_snapshot_v1 snapshot{};
     snapshot.struct_size = sizeof(snapshot);
     snapshot.revision = task.revision;
@@ -344,8 +344,9 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
         return DecisionResult::applied;
     }
     const uint32_t strategy_index =
-        model.goal_types.at(model.goals.at(task.goal_index).goal_type_index).strategy_index;
-    const catalog::Strategy &strategy = model.strategies.at(strategy_index);
+        model.catalogs.goal_types.at(model.goals.at(task.goal_index).goal_type_index)
+            .strategy_index;
+    const catalog::Strategy &strategy = model.catalogs.strategies.at(strategy_index);
 
     ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
     ayni_policy_output_v1 output{};

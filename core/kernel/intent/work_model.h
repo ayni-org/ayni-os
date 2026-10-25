@@ -12,13 +12,11 @@
 #include "authority/grant/grant_table.h"
 #include "authority/principal/principal_registry.h"
 #include "authority/scene/scene_table.h"
-#include "catalog/capability/capability_registry.h"
-#include "catalog/goal_type/goal_type_registry.h"
-#include "catalog/strategy/strategy_registry.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
 #include "kernel/command/command_canonical.h"
 #include "kernel/command/command_table.h"
+#include "kernel/config/catalogs.h"
 #include "kernel/config/kernel_config.h"
 #include "kernel/config/store_limits.h"
 #include "kernel/intent/intent.h"
@@ -86,25 +84,18 @@ struct AuthorityCleanupGoal {
 };
 
 struct WorkModel {
-    WorkModel(const KernelCapacities &capacities, const KernelLimits &limits,
-              const KernelStorage &storage)
-        : sessions(storage[Store::sessions], capacities.session_capacity),
-          goal_types(storage[Store::goal_types], capacities.goal_type_capacity),
+    // catalogs outlives the model.
+    WorkModel(const Catalogs &registered, const KernelCapacities &capacities,
+              const KernelLimits &limits, const KernelStorage &storage)
+        : catalogs(registered), sessions(storage[Store::sessions], capacities.session_capacity),
           agents(storage[Store::agents], capacities.agent_capacity),
           goals(storage[Store::goals],
                 {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
                  limits.goal_depth_max, limits.goal_children_max}),
           tasks(storage[Store::tasks], task_limits(capacities), limits.task_model_call_hard_limit),
-          strategies(storage[Store::strategies], capacities.strategy_capacity),
           commands(storage[Store::commands], command_limits(capacities)),
-          capabilities(storage[Store::capabilities], capacities.capability_capacity,
-                       capacities.authority_scope_max_bytes),
-          observation_sources(storage[Store::observation_sources],
-                              capacities.observation_source_capacity),
-          scenes(storage[Store::scenes], scene_limits(capacities), capabilities,
-                 observation_sources),
-          execution_catalog(storage[Store::execution_catalog], capacities.executor_capacity,
-                            capacities.execution_binding_capacity),
+          scenes(storage[Store::scenes], scene_limits(capacities), registered.capabilities,
+                 registered.observation_sources),
           grants(storage[Store::grants], grant_limits(capacities)),
           goal_authority(storage[Store::goal_authority], goal_authority_limits(capacities)),
           task_authority(storage[Store::task_authority], task_authority_limits(capacities)),
@@ -190,24 +181,19 @@ struct WorkModel {
     bool insert_goal(const work::NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
                      uint32_t &out_index);
 
-    // Registration fills principals, goal types, agents and strategies in
+    // Goal types, strategies, capability schemas, observation sources and
+    // executors the rules read; closed before the model starts.
+    const Catalogs &catalogs;
+    // Registration fills principals, agents and Scene declarations in
     // CONFIGURING; the rest changes only in RUNNING.
     authority::PrincipalRegistry principals;
     authority::SessionTable sessions;
-    catalog::GoalTypeRegistry goal_types;
     work::AgentTable agents;
     work::GoalTable goals;
     work::TaskTable tasks;
-    catalog::StrategyRegistry strategies;
     // The commands accepted, which the log keeps with their transitions.
     CommandTable commands;
-    // Trusted, immutable authorization schemas; registration enables no I/O.
-    catalog::CapabilityRegistry capabilities;
-    catalog::ObservationSources
-        observation_sources;  // Immutable types shared by Scenes and knowledge.
     authority::Scenes scenes; // Finite restrictions and owner preference; no live observations.
-    catalog::ExecutionRegistry
-        execution_catalog; // Trusted ports/limits, independent of live permits.
     authority::GrantTable grants;
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;

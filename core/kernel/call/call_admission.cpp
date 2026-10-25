@@ -75,20 +75,20 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto &binding = catalogs_.bindings.at(proposal.binding_index);
-    const auto resolved =
-        catalog::BindingRegistry::resolve(binding, work_.capabilities, catalogs_.capabilities,
-                                          catalogs_.providers, catalogs_.resources, proposal.links);
+    const auto resolved = catalog::BindingRegistry::resolve(
+        binding, catalogs_.capabilities, catalogs_.call_capabilities, catalogs_.providers,
+        catalogs_.resources, proposal.links);
     if (resolved != AYNI_OK) {
         return resolved;
     }
-    const auto &contract = catalogs_.capabilities.at(proposal.links.call).contract;
+    const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     if (contract.form == catalog::CallForm::subscription) {
         return AYNI_UNSUPPORTED; // Subscription lifecycle is delivered separately (ADR-0050).
     }
     const bool physical = (contract.effects & catalog::call_effect_physical) != 0U;
     uint32_t execution = 0;
-    if (physical && !work_.execution_catalog.find_binding(request.binding_id,
-                                                          request.binding_version, execution)) {
+    if (physical &&
+        !catalogs_.execution.find_binding(request.binding_id, request.binding_version, execution)) {
         return AYNI_UNSUPPORTED;
     }
     for (uint32_t at = 0; at < contract.resource_count; ++at) {
@@ -103,7 +103,7 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto status =
-        work::encode_call_input(work_.capabilities.domain_view(proposal.links.capability),
+        work::encode_call_input(catalogs_.capabilities.domain_view(proposal.links.capability),
                                 {request.arguments, request.text}, contract.input_text_limit,
                                 staging_, limits_.input_bytes, proposal.input_size);
     if (status != AYNI_OK) {
@@ -236,7 +236,7 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT};
     }
     const auto &proposal = *proposal_;
-    const auto &contract = catalogs_.capabilities.at(proposal.links.call).contract;
+    const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     if (task.call.id != 0U || work_.step_taken(task_index, view(proposal.step))) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_STEP_TAKEN};
     }
@@ -255,7 +255,7 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         contract.result_text_limit > limits_.result_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT};
     }
-    const auto domain = work_.capabilities.domain_view(proposal.links.capability);
+    const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     work::CallInputView input{};
     if (work::read_call_input(domain, {staging_, proposal.input_size}, contract.input_text_limit,
                               input) != AYNI_OK) {
@@ -274,7 +274,7 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
 bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us) {
     const auto &proposal = *proposal_;
     const auto &binding = catalogs_.bindings.at(proposal.binding_index);
-    const auto &contract = catalogs_.capabilities.at(proposal.links.call).contract;
+    const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     const auto &task = work_.tasks.at(task_index);
     work::CallIdentity identity{};
     if (!work_.ids.allocate(identity.call_id) || !work_.ids.allocate(identity.operation_id)) {
@@ -293,7 +293,7 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
     identity.destination = binding.destination;
     uint32_t index = 0;
     if (work_.calls.insert(
-            identity, contract, work_.capabilities.domain_view(proposal.links.capability),
+            identity, contract, catalogs_.capabilities.domain_view(proposal.links.capability),
             {staging_, proposal.input_size}, {work_.ids.boot_epoch(), stamp}, index) != AYNI_OK ||
         resources_.enqueue(resource_request(identity.call_id, task.owner_instance_id,
                                             proposal.links, contract,

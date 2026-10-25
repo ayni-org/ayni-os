@@ -15,7 +15,7 @@ std::size_t CallRuntime::storage_size(Limits limits) {
                : sizeof(Slot) * limits.capacity + limits.input_bytes + limits.result_bytes;
 }
 
-CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, CallCatalogs catalogs,
+CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
                          resources::ResourceAdmission &resources, resources::PermitTable &permits,
                          const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
                          AttemptSequence &attempts, const ayni_host_v1 &host)

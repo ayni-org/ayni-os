@@ -17,7 +17,7 @@ ayni_status_t ayni_register_observation_source(ayni_kernel_t *kernel,
     if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
         return AYNI_INVALID_STATE;
     }
-    return kernel->work.observation_sources.add_validated(decoded);
+    return kernel->catalogs.observation_sources.add_validated(decoded);
 }
 ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
                                        const ayni_observation_v1 *observation) {

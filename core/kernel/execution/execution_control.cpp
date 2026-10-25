@@ -20,10 +20,10 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
     }
     uint32_t mapping = 0;
     uint32_t executor = 0;
-    if (!work_.execution_catalog.find_binding(view(binding.id), binding.version, mapping)) {
+    if (!work_.catalogs.execution.find_binding(view(binding.id), binding.version, mapping)) {
         return {AYNI_UNSUPPORTED, AYNI_REASON_INTENT_UNSUPPORTED};
     }
-    const auto &spec = work_.execution_catalog.binding(mapping);
+    const auto &spec = work_.catalogs.execution.binding(mapping);
     uint32_t scene = 0;
     const auto authorized =
         work_.scenes.authorize(view(spec.scene), spec.scene_version, view(binding.capability),
@@ -33,12 +33,12 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
     }
     uint32_t state = 0;
     if (!work_.scenes.find_state(view(spec.scene), state) ||
-        !work_.execution_catalog.find_executor(view(spec.executor), spec.executor_version,
-                                               executor) ||
+        !work_.catalogs.execution.find_executor(view(spec.executor), spec.executor_version,
+                                                executor) ||
         work_.principals.binding() == nullptr) {
         return {AYNI_INTERNAL, AYNI_REASON_NONE};
     }
-    const auto &ports = work_.execution_catalog.executor(executor).ports;
+    const auto &ports = work_.catalogs.execution.executor(executor).ports;
     const auto &definition = work_.scenes.definition(scene);
     work::ExecutionFact fact{};
     fact.binding = spec;
@@ -137,14 +137,14 @@ ayni_status_t ExecutionControl::issue(uint32_t index, const resources::ResourceC
     }
     const auto &fact = *saved;
     uint32_t executor = 0;
-    if (!work_.execution_catalog.find_executor(view(fact.binding.executor),
-                                               fact.binding.executor_version, executor)) {
+    if (!work_.catalogs.execution.find_executor(view(fact.binding.executor),
+                                                fact.binding.executor_version, executor)) {
         return AYNI_NOT_FOUND;
     }
     if (!permits_.available(executor)) {
         return AYNI_BUSY;
     }
-    const auto &ports = work_.execution_catalog.executor(executor).ports;
+    const auto &ports = work_.catalogs.execution.executor(executor).ports;
     ayni_executor_nonce_v1 nonce{};
     const auto status =
         work_.call_out([&] { return ports.challenge(ports.ctx, &fact.epochs, &nonce); });
@@ -268,7 +268,7 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
     if (!allowed && !permits_.request_stop(lease->call_id)) {
         return Advance::internal;
     }
-    const auto &ports = work_.execution_catalog.executor(lease->executor_index).ports;
+    const auto &ports = work_.catalogs.execution.executor(lease->executor_index).ports;
     if (lease->phase == resources::PermitLease::Phase::stopping &&
         lease->stop_delivery == resources::PermitLease::StopDelivery::pending) {
         const auto status =
@@ -346,7 +346,7 @@ bool ExecutionControl::should_stop(const resources::PermitLease &lease, uint64_t
 
 // Renewal uses the original complete generations and a new executor-local nonce.
 ExecutionControl::Advance ExecutionControl::renew(resources::PermitLease &lease) {
-    const auto &ports = work_.execution_catalog.executor(lease.executor_index).ports;
+    const auto &ports = work_.catalogs.execution.executor(lease.executor_index).ports;
     // Both port calls run under one callout: nothing between them reads the kernel.
     const ayni_status_t renewed = work_.call_out([&]() -> ayni_status_t {
         ayni_executor_nonce_v1 nonce{};
