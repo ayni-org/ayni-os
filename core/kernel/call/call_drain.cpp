@@ -26,10 +26,8 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
                 if (active && active->delivery &&
                     active->delivery->reservation.attempt.request_id ==
                         receipt.reservation.attempt.request_id) {
-                    if (auto *lease = permits_.find(active->call_id); lease != nullptr) {
-                        lease->terminal_seen =
-                            true; // Exact ended borrow also permits authoritative absence.
-                    }
+                    // Exact ended borrow also permits authoritative absence.
+                    static_cast<void>(control_.delivery_ended(active->call_id));
                     release(at, host_.monotonic_now_us(host_.ctx));
                     break;
                 }
@@ -106,7 +104,7 @@ bool CallRuntime::rebind_restored() {
         if (active->stage == Stage::retiring) {
             uint32_t restored = 0;
             if (!work_.calls.find(active->call_id, restored) ||
-                permits_.find(active->call_id) == nullptr) {
+                !control_.holds_lease(active->call_id)) {
                 return false;
             }
             continue; // No transport borrow survives, but the exact local lease still pins this

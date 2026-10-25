@@ -69,13 +69,12 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
                                   message.kind != ProviderMessageKind::cancel_unknown;
     const auto &execution = work_.calls.state(index).execution;
     if (!query && terminal_message && execution && !work::execution_stopped(*execution)) {
-        auto *lease = permits_.find(work_.calls.identity(index).call_id);
-        if (lease == nullptr) {
+        const auto call_id = work_.calls.identity(index).call_id;
+        if (!control_.delivery_ended(call_id)) {
             return Advance::internal;
         }
-        lease->terminal_seen = true;
         slots_[index].active->stage = Stage::waiting_stop;
-        return permits_.request_stop(lease->call_id) ? Advance::applied : Advance::internal;
+        return control_.request_stop(call_id) ? Advance::applied : Advance::internal;
     }
     bool terminal = false;
     const auto applied =
@@ -135,7 +134,8 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
             static_cast<work::ActionEffect>(message.effect),
             {reinterpret_cast<const char *>(message.payload.data), message.payload.size}};
         applied = message.query_result == 0U
-                      ? work_.calls.finish(index, result, action_stamp, result_dependencies(index))
+                      ? work_.calls.finish(index, result, action_stamp,
+                                           control_.result_dependencies(index))
                       : AYNI_INVALID_ARGUMENT;
         if (applied == AYNI_INVALID_ARGUMENT || applied == AYNI_CAPACITY_EXCEEDED) {
             // A terminal has ended the local borrow but malformed evidence cannot
@@ -157,8 +157,8 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
 
 uint64_t CallRuntime::next_deadline_us() const {
     uint64_t deadline = resources_.next_deadline_us();
-    if (permits_.next_deadline_us() < deadline) {
-        deadline = permits_.next_deadline_us();
+    if (control_.next_deadline_us() < deadline) {
+        deadline = control_.next_deadline_us();
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
@@ -189,8 +189,7 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
         }
         const auto &state = work_.calls.state(at);
         const auto &id = work_.calls.identity(at);
-        const auto *lease = permits_.find(id.call_id);
-        if (lease != nullptr && lease->stopped && state.execution &&
+        if (control_.stop_measured(id.call_id) && state.execution &&
             !work::execution_stopped(*state.execution)) {
             return true;
         }

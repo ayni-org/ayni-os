@@ -136,10 +136,10 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
     if (!resources_.executable(slots_[index].active->claim) ||
-        !execution_allowed(index, now_us, durable_seq)) {
+        !control_.allowed(index, now_us, durable_seq)) {
         return cancel_local(index, task_index);
     }
-    const auto issued = issue_permit(index, input.arguments, now_us);
+    const auto issued = control_.issue(index, slots_[index].active->claim, input.arguments, now_us);
     if (issued != AYNI_OK) {
         return issued == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
@@ -166,7 +166,7 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
     delivery.deadline_us =
         foundation::deadline(now_us, uint64_t{contract.timeout_ms} * microseconds_per_millisecond);
     active.stage = Stage::submitted;
-    const auto *lease = permits_.find(id.call_id);
+    const auto *permit = control_.permit(id.call_id);
     const ayni_provider_request_v1 request{sizeof(request),
                                            id.capability_version,
                                            delivery.reservation.attempt,
@@ -177,14 +177,14 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
                                            view(id.endpoint),
                                            arguments.view(),
                                            input.text,
-                                           lease == nullptr ? nullptr : &lease->permit};
+                                           permit};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
     const auto submitted = work_.call_out([&] {
         return provider.submit(provider.context, &request,
                                mailbox_.completion(delivery.reservation));
     });
-    if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && lease != nullptr) {
+    if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && permit != nullptr) {
         // Publish into the reserved reliable lane; absence still needs exact local gate evidence.
         const ProviderMessage rejected{
             ProviderMessageKind::failed, 0, AYNI_NOT_READY, AYNI_REASON_NONE, {},

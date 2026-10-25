@@ -264,7 +264,8 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
     const auto authority = check_input(task_index, catalogs_.bindings.at(proposal.binding_index),
                                        domain, input, now_us, durable_seq);
     return authority.status == AYNI_OK
-               ? prepare_execution(*proposal_, input.arguments, now_us, durable_seq)
+               ? control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index),
+                                  input.arguments, now_us, durable_seq, proposal_->execution)
                : authority;
 }
 

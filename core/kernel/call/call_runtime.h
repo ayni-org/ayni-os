@@ -6,6 +6,7 @@
 #include "catalog/binding/binding_registry.h"
 #include "kernel/completion/attempt_sequence.h"
 #include "kernel/completion/provider_mailbox.h"
+#include "kernel/execution/execution_control.h"
 #include "kernel/intent/work_model.h"
 #include "knowledge/observation/observation_table.h"
 #include "resources/admission/resource_admission.h"
@@ -22,7 +23,8 @@ struct CallCatalogs {
 };
 
 // Owns only boot-local dispatch coordination, one staged decision and one copied
-// receipt. Work/CallTable remains the sole owner of logical identities/results.
+// receipt. Work/CallTable remains the sole owner of logical identities/results;
+// physical execution is ExecutionControl's, asked at each gate.
 class CallRuntime {
   public:
     struct Limits {
@@ -53,25 +55,16 @@ class CallRuntime {
     // canonical body, resource wait and Task state in this one transition.
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us);
 
-    enum class Mode {
-        running,
-        draining,
-        fenced,
-        closing
-    }; // Closing discards only unpublishable volatile receipts.
-    enum class Advance {
-        idle,
-        applied,
-        internal,
-        attempt_exhausted
-    }; // One bounded owner item, no waiting.
+    using Mode = RuntimeMode;
+    using Advance = RuntimeAdvance;
     Advance advance(uint64_t now_us, uint64_t durable_seq, Mode mode);
     // Independent local stop/lease ports run even when persistence cannot admit work.
     enum class JournalAdmission { available, blocked }; // Kernel's current commit capacity.
     Advance advance_managed(uint64_t now_us, uint64_t durable_seq, Mode mode,
                             JournalAdmission admission);
-    Advance advance_control(uint64_t now_us, uint64_t durable_seq, Mode mode);
-    bool control_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    bool control_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
+        return control_.ready(now_us, durable_seq, mode);
+    }
     // Ready/deadline projection does not invoke Providers or mutate domain state.
     bool ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
     // Pure projection of the selected call's pending dependency; never caches it in Task.
@@ -162,26 +155,15 @@ class CallRuntime {
     bool finish_task(uint32_t call_index, uint32_t task_index, foundation::TransitionStamp stamp);
     void release(uint32_t index, uint64_t now_us); // Exact claim/waiter; delivery already drained.
 
-    authority::GrantCheck prepare_execution(Proposal &proposal, ayni_bytes_v1 arguments,
-                                            uint64_t now_us, uint64_t durable_seq) const;
-    work::ResultDependencies result_dependencies(
-        uint32_t index) const; // Exact evidence state shared by original and query results.
-    bool execution_dependencies_current(
-        uint32_t index, uint64_t now_us) const; // Shared dispatch/result prerequisite check.
-    bool execution_allowed(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
-    ayni_status_t issue_permit(uint32_t index, ayni_bytes_v1 arguments, uint64_t now_us);
-    Advance advance_urgent_stop(uint64_t now_us, uint64_t durable_seq, Mode mode);
-    Advance poll_executor(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
-    Advance commit_stop(uint32_t index);
     bool active_index(uint64_t call_id,
                       uint32_t &index) const; // Stable identity lookup survives work-table discard.
     bool delivery_expired(uint32_t index, uint64_t now_us)
         const; // One timeout predicate for scheduling and independent stop.
-    bool should_stop(const resources::PermitLease &lease, uint64_t now_us, uint64_t durable_seq,
-                     Mode mode) const; // One shared readiness/renewal gate.
-    bool stopped_releasable(const resources::PermitLease &lease, uint64_t durable_seq, Mode mode)
-        const; // Durable proof, or explicit unwritable shutdown after drain.
-    Advance renew_permit(resources::PermitLease &lease);
+    // ExecutionControl::Transport over the slots below; context is the runtime.
+    static bool transport_holds(const void *context, uint64_t call_id, uint64_t now_us,
+                                bool &out_expired);
+    static bool transport_retiring(const void *context, uint64_t call_id);
+    static void transport_retire(void *context, uint64_t call_id, uint64_t now_us);
     Advance submit_provider(uint32_t index, uint32_t task_index, uint32_t provider_index,
                             const work::CallInputView &input, uint64_t now_us);
     ProviderMailbox::BlockedSlots
@@ -194,12 +176,8 @@ class CallRuntime {
     WorkModel &work_;       // Domain facts, never accessed by Provider worker threads.
     CallCatalogs catalogs_; // Borrowed immutable selection contracts.
     resources::ResourceAdmission &resources_; // Sole owner of occupancy and queue fairness.
-    resources::PermitTable
-        &permits_; // Resource-owned local leases, no domain facts copied into Kernel.
-    const knowledge::ObservationTable
-        &observations_;         // Exact dependency validity remains knowledge-owned.
-    ProviderMailbox &mailbox_;  // Sole owner of concurrent copied deliveries.
-    AttemptSequence &attempts_; // Shared Host/Provider attempt identity allocator.
+    ProviderMailbox &mailbox_;                // Sole owner of concurrent copied deliveries.
+    AttemptSequence &attempts_;               // Shared Host/Provider attempt identity allocator.
     const ayni_host_v1
         &host_;        // Bounded callback clock/lock/wake services, lifetime held by Kernel.
     Limits limits_;    // Immutable arena dimensions, shared bounds with CallTable/mailbox.
@@ -212,8 +190,8 @@ class CallRuntime {
         control,
         work
     } next_lane_ = NextLane::control; // Routine polling yields every other turn to business work.
-    uint32_t control_cursor_ = 0;     // Separate fair scan for independent executor ports.
     uint32_t cursor_ = 0;             // Fair bounded scan of active calls, zero when disabled.
+    ExecutionControl control_;        // Permits, leases and measured stops of physical calls.
 };
 } // namespace ayni::kernel
 #endif

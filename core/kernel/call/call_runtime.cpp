@@ -19,12 +19,13 @@ CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, CallCata
                          resources::ResourceAdmission &resources, resources::PermitTable &permits,
                          const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
                          AttemptSequence &attempts, const ayni_host_v1 &host)
-    : work_(work), catalogs_(catalogs), resources_(resources), permits_(permits),
-      observations_(observations), mailbox_(mailbox), attempts_(attempts), host_(host),
-      limits_(limits), slots_(static_cast<Slot *>(storage)),
+    : work_(work), catalogs_(catalogs), resources_(resources), mailbox_(mailbox),
+      attempts_(attempts), host_(host), limits_(limits), slots_(static_cast<Slot *>(storage)),
       staging_(limits.capacity == 0U ? nullptr
                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
-      receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes) {
+      receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes),
+      control_(work, resources, permits, observations, host,
+               {this, transport_holds, transport_retiring, transport_retire}) {
     work_.calls.set_runtime_retention(this, runtime_retains);
     static_assert(alignof(Slot) <= storage_alignment, "arena aligns call runtime slots");
     for (uint32_t at = 0; at < limits.capacity; ++at) {
@@ -39,7 +40,7 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
     if (!active) {
         return;
     }
-    if (permits_.find(active->call_id) != nullptr) {
+    if (control_.holds_lease(active->call_id)) {
         active->delivery.reset();
         active->stage = Stage::retiring; // Stop fact must become durable before the exact
                                          // quarantine is released.
@@ -58,7 +59,7 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
 }
 
 bool CallRuntime::idle() const {
-    if (mailbox_.in_flight() != 0U || !permits_.empty()) {
+    if (mailbox_.in_flight() != 0U || !control_.idle()) {
         return false;
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
@@ -153,10 +154,9 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
                                                uint64_t durable_seq, Mode mode) {
     const auto &id = work_.calls.identity(index);
     const auto &state = work_.calls.state(index);
-    if (const auto *lease = permits_.find(id.call_id); lease != nullptr && lease->stopped &&
-                                                       state.execution &&
-                                                       !work::execution_stopped(*state.execution)) {
-        return commit_stop(index);
+    if (control_.stop_measured(id.call_id) && state.execution &&
+        !work::execution_stopped(*state.execution)) {
+        return control_.commit_stop(index);
     }
     uint32_t task_index = 0;
     if (!work_.tasks.find(id.task_id, task_index)) {
@@ -267,5 +267,96 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
     return active.stage == Stage::barrier && state.latest.transition.commit_seq <= durable_seq
                ? dispatch(index, task_index, now_us, durable_seq)
                : Advance::idle;
+}
+// Urgent output inhibition precedes journal admission. Routine polling alternates
+// with business work; an idle work turn yields to the Kernel's other work owners,
+// including when max_items=1. No hidden second callback bypasses the step budget.
+CallRuntime::Advance CallRuntime::advance_managed(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                                  JournalAdmission admission) {
+    const auto urgent = control_.advance_urgent(now_us, durable_seq, mode);
+    if (urgent != Advance::idle) {
+        return urgent;
+    }
+    if (next_lane_ == NextLane::control) {
+        next_lane_ = NextLane::work;
+        const auto control = control_.advance(now_us, durable_seq, mode);
+        if (control != Advance::idle) {
+            return control;
+        }
+    } else {
+        next_lane_ = NextLane::control;
+    }
+    return admission == JournalAdmission::available || mode == Mode::fenced || mode == Mode::closing
+               ? advance(now_us, durable_seq, mode)
+               : Advance::idle;
+}
+
+bool CallRuntime::active_index(uint64_t call_id, uint32_t &index) const {
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (slots_[at].active && slots_[at].active->call_id == call_id) {
+            index = at;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CallRuntime::delivery_expired(uint32_t index, uint64_t now_us) const {
+    const auto &active = slots_[index].active;
+    return active && active->delivery && now_us >= active->delivery->deadline_us;
+}
+
+bool CallRuntime::transport_holds(const void *context, uint64_t call_id, uint64_t now_us,
+                                  bool &out_expired) {
+    const auto &runtime = *static_cast<const CallRuntime *>(context);
+    uint32_t index = 0;
+    if (!runtime.active_index(call_id, index)) {
+        return false;
+    }
+    out_expired = runtime.delivery_expired(index, now_us);
+    return true;
+}
+
+bool CallRuntime::transport_retiring(const void *context, uint64_t call_id) {
+    const auto &runtime = *static_cast<const CallRuntime *>(context);
+    uint32_t index = 0;
+    return runtime.active_index(call_id, index) &&
+           runtime.slots_[index].active->stage == Stage::retiring;
+}
+
+void CallRuntime::transport_retire(void *context, uint64_t call_id, uint64_t now_us) {
+    auto &runtime = *static_cast<CallRuntime *>(context);
+    uint32_t index = 0;
+    if (runtime.active_index(call_id, index) &&
+        runtime.slots_[index].active->stage == Stage::retiring) {
+        runtime.release(index, now_us);
+    }
+}
+
+// The ledger cannot retire while either a transport borrow or a local lease survives.
+bool CallRuntime::runtime_retains(const void *context, uint64_t call_id) {
+    const auto &runtime = *static_cast<const CallRuntime *>(context);
+    if (runtime.control_.holds_lease(call_id)) {
+        return true;
+    }
+    for (uint32_t at = 0; at < runtime.limits_.capacity; ++at) {
+        if (runtime.slots_[at].active && runtime.slots_[at].active->call_id == call_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ProviderMailbox::BlockedSlots CallRuntime::blocked_receipts() const {
+    ProviderMailbox::BlockedSlots blocked{};
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        const auto &active = slots_[at].active;
+        if (active && active->stage == Stage::waiting_stop && active->delivery &&
+            work_.calls.state(at).execution &&
+            !work::execution_stopped(*work_.calls.state(at).execution)) {
+            blocked[active->delivery->reservation.index] = true;
+        }
+    }
+    return blocked;
 }
 } // namespace ayni::kernel

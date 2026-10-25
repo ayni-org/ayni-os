@@ -143,7 +143,7 @@ bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const Provi
         {reinterpret_cast<const char *>(message.payload.data), message.payload.size}};
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
     auto status = work_.calls.reconcile(index, message.query_result, result, action_stamp,
-                                        result_dependencies(index));
+                                        control_.result_dependencies(index));
     if (status == AYNI_INVALID_ARGUMENT || status == AYNI_CAPACITY_EXCEEDED) {
         status = work_.calls.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_PROVIDER_RESULT,
                                        action_stamp);

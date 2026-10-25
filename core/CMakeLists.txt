@@ -91,10 +91,8 @@ ayni_add_core_module(kernel
         kernel/boot/boot_sequence.cpp
         kernel/call/call_admission.cpp
         kernel/call/call_completion.cpp
-        kernel/call/call_control.cpp
         kernel/call/call_dispatch.cpp
         kernel/call/call_drain.cpp
-        kernel/call/call_execution.cpp
         kernel/call/call_reconciliation.cpp
         kernel/call/call_runtime.cpp
         kernel/call_query.cpp
@@ -113,6 +111,7 @@ ayni_add_core_module(kernel
         kernel/completion/completion_pool.cpp
         kernel/completion/provider_mailbox.cpp
         kernel/decision/decision.cpp
+        kernel/execution/execution_control.cpp
         kernel/execution_api.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
