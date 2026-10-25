@@ -18,6 +18,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 
 #include "kernel/command/command_reauthorization.h"
+#include "kernel/command/command_target.h"
 #include "kernel/command/command_task_limit.h"
 #include "kernel/command/pending_revoke.h"
 #include "kernel/command/work_authority_result.h"
@@ -107,6 +108,8 @@ class CommandTable {
     // Owner runtime-limit changes use the same exact window and staging rules.
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
                            const TaskLimitCommand &input);
+    // Stages an exact query CAS/target for the same accepted command window.
+    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id, const TargetCommand &input);
     // Revoke lookup clears any create candidate but does not stage one;
     // acceptance copies the request into a separate pending control (ADR-0031).
     ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,

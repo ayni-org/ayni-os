@@ -8,6 +8,39 @@
 namespace ayni::kernel {
 namespace {
 
+// Exact target commands publish one CAS increment and never retarget the object.
+bool matches_target_revision(const CommandMapping &mapping, uint64_t id, uint32_t before) {
+    return before != UINT32_MAX && mapping.object.origin_device_id == 0U &&
+           mapping.object.id == id && mapping.object.revision == before + 1U &&
+           mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
+}
+
+// Revocation's changed/no-change/gone receipt is independent of target retention.
+bool matches_revoke_result(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
+    RevokeCommandRecord command{};
+    if (!read_revoke_command(bytes, command) || mapping.object.origin_device_id != 0U ||
+        mapping.object.id != command.target_grant_id ||
+        (command.expected_revision != authority::grant_active_revision &&
+         command.expected_revision != authority::grant_terminal_revision)) {
+        return false;
+    }
+    // First acceptance can only see ACTIVE/revision1 or terminal/revision2.
+    // The raw request codec still accepts any nonzero CAS for API conflicts.
+    // The original CAS was checked when accepting the control. Reload
+    // may restore an earlier ACTIVE fact after an uncommitted cleanup,
+    // so a later CHANGED result need not follow that original revision.
+    const bool changed = mapping.effect == AYNI_INTENT_EFFECT_CHANGED &&
+                         mapping.object.revision == authority::grant_terminal_revision;
+    const bool no_change = mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE &&
+                           mapping.object.revision == authority::grant_terminal_revision;
+    const bool gone =
+        mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE && mapping.object.revision == 0U;
+    if (!changed && !no_change && !gone) {
+        return false;
+    }
+    return true;
+}
+
 // Reauthorization's exact request binds both CAS values to the saved result;
 // no current Goal, Session or catalog lookup belongs to command identity.
 bool matches_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v1 bytes,
@@ -27,8 +60,10 @@ bool matches_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v
 bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
                          ayni_bytes_v1 result_bytes) {
     if (mapping.principal_id == 0U || mapping.command_id == 0U ||
-        mapping.object.kind != (is_work_authority_command(mapping.kind) ? AYNI_OBJECT_GOAL
-                                : mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
+        mapping.object.kind != (is_work_authority_command(mapping.kind)         ? AYNI_OBJECT_GOAL
+                                : mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT ? AYNI_OBJECT_CALL
+                                : (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
+                                   mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT)
                                     ? AYNI_OBJECT_TASK
                                     : AYNI_OBJECT_GRANT) ||
         mapping.object.id == 0U || mapping.canonical_size != bytes.size || bytes.size == 0U ||
@@ -52,45 +87,29 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
-        RevokeCommandRecord command{};
-        if (!read_revoke_command(bytes, command) || mapping.object.origin_device_id != 0U ||
-            mapping.object.id != command.target_grant_id ||
-            (command.expected_revision != authority::grant_active_revision &&
-             command.expected_revision != authority::grant_terminal_revision)) {
-            return false;
-        }
-        // First acceptance can only see ACTIVE/revision1 or terminal/revision2.
-        // The raw request codec still accepts any nonzero CAS for API conflicts.
-        // The original CAS was checked when accepting the control. Reload
-        // may restore an earlier ACTIVE fact after an uncommitted cleanup,
-        // so a later CHANGED result need not follow that original revision.
-        const bool changed = mapping.effect == AYNI_INTENT_EFFECT_CHANGED &&
-                             mapping.object.revision == authority::grant_terminal_revision;
-        const bool no_change = mapping.effect == AYNI_INTENT_EFFECT_NO_CHANGE &&
-                               mapping.object.revision == authority::grant_terminal_revision;
-        const bool gone =
-            mapping.effect == AYNI_INTENT_EFFECT_TARGET_GONE && mapping.object.revision == 0U;
-        if (!changed && !no_change && !gone) {
+        if (!matches_revoke_result(mapping, bytes)) {
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
         ApprovalCommand command{};
-        if (!read_approval_command(bytes, command) || mapping.object.origin_device_id != 0U ||
-            command.expected_revision == UINT32_MAX ||
-            mapping.object.id != command.approval.goal_id ||
-            mapping.object.revision != command.expected_revision + 1U ||
+        if (!read_approval_command(bytes, command) ||
+            !matches_target_revision(mapping, command.approval.goal_id,
+                                     command.expected_revision) ||
             (result_bytes.size != 0U &&
              (result.binding.parent.goal_id != command.approval.original.parent_goal_id ||
-              result.binding.input.incarnation != 0U)) ||
-            mapping.effect != AYNI_INTENT_EFFECT_CHANGED) {
+              result.binding.input.incarnation != 0U))) {
+            return false;
+        }
+    } else if (is_target_command(mapping.kind)) {
+        TargetCommand command{};
+        if (!read_target_command(bytes, command) || command.kind != mapping.kind ||
+            !matches_target_revision(mapping, command.target_id, command.expected_revision)) {
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
         TaskLimitCommand command{};
-        if (!read_task_limit_command(bytes, command) || command.expected_revision == UINT32_MAX ||
-            mapping.object.origin_device_id != 0U || mapping.object.id != command.task_id ||
-            mapping.object.revision != command.expected_revision + 1U ||
-            mapping.effect != AYNI_INTENT_EFFECT_CHANGED) {
+        if (!read_task_limit_command(bytes, command) ||
+            !matches_target_revision(mapping, command.task_id, command.expected_revision)) {
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
@@ -235,6 +254,12 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
                           measure_task_limit_command, encode_task_limit_command);
 }
 
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const TargetCommand &input) {
+    return find_candidate(principal_id, command_id, input.kind, input, measure_target_command,
+                          encode_target_command);
+}
+
 bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {
     if (!staged_ || mapping.principal_id != staged_->principal_id ||
         mapping.command_id != staged_->command_id || mapping.kind != staged_->kind ||
@@ -342,7 +367,7 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
     } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE ||
                mapping.kind == AYNI_INTENT_GRANT_REVOKE ||
                mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-               is_work_authority_command(mapping.kind)) {
+               is_target_command(mapping.kind) || is_work_authority_command(mapping.kind)) {
         return Restore::corrupt;
     }
     if (!can_insert(mapping.principal_id)) {

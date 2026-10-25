@@ -31,6 +31,13 @@ constexpr uint16_t task_state_runtime_record_version = 4;
 constexpr uint16_t task_state_runtime_authority_record_version = 5;
 constexpr uint16_t task_state_runtime_reauthorization_record_version = 6;
 constexpr uint16_t task_state_raise_limit_record_version = 7;
+// Selected-call extension preserves ordinary/authority/reauthorization/raise pairing.
+constexpr uint16_t task_state_call_record_version = 8;
+constexpr uint16_t task_state_call_authority_record_version = 9;
+constexpr uint16_t task_state_call_reauthorization_record_version = 10;
+constexpr uint16_t task_state_call_raise_limit_record_version = 11;
+// Explicit owner wait resume; same selected-call body, paired with type9/v8.
+constexpr uint16_t task_state_resume_wait_record_version = 12;
 constexpr uint16_t task_steps_record_type = 7;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = 8;
@@ -44,6 +51,9 @@ constexpr uint32_t task_state_record_size = 32;
 constexpr uint32_t task_state_runtime_field_count = 3; // used/limit/blocked, records.md type6/v4+.
 constexpr uint32_t task_state_runtime_record_size =
     task_state_record_size + task_state_runtime_field_count * sizeof(uint32_t);
+// Selected logical call u64 and requested drain end u32; records.md type6/v8+.
+constexpr uint32_t task_state_call_record_size =
+    task_state_runtime_record_size + sizeof(uint64_t) + sizeof(uint32_t);
 // Legacy defaults need no extension. All other runtime facts require type6/v4+.
 uint16_t task_state_version_for(const Task &task, uint16_t base = task_state_record_version);
 // Fixed body bytes for the selected known version; excludes the record envelope.

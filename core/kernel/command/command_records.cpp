@@ -36,6 +36,12 @@ CommandMapping read_fixed(durability::BodyReader &reader, uint64_t &floor) {
 } // namespace
 
 uint16_t command_record_version_for(const CommandMapping &mapping) {
+    if (mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT) {
+        return resume_wait_command_record_version;
+    }
+    if (mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT) {
+        return call_query_command_record_version;
+    }
     if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
         return task_limit_command_record_version;
     }
@@ -108,7 +114,9 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
         (version != command_record_version && version != exact_command_record_version &&
          version != revoke_command_record_version &&
          version != work_authority_command_record_version &&
-         version != task_limit_command_record_version)) {
+         version != task_limit_command_record_version &&
+         version != call_query_command_record_version &&
+         version != resume_wait_command_record_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -138,7 +146,11 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
         const auto expected_kind = version == revoke_command_record_version
                                        ? AYNI_INTENT_GRANT_REVOKE
                                        : AYNI_INTENT_GRANT_CREATE;
-        const bool right_kind = version == work_authority_command_record_version
+        const bool right_kind = version == resume_wait_command_record_version
+                                    ? mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT
+                                : version == call_query_command_record_version
+                                    ? mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT
+                                : version == work_authority_command_record_version
                                     ? is_work_authority_command(mapping.kind) && result.size != 0U
                                 : version == task_limit_command_record_version
                                     ? mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT

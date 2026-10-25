@@ -167,6 +167,14 @@ class GoalTable {
     GoalTable(const GoalTable &) = delete;
     GoalTable &operator=(const GoalTable &) = delete;
 
+    // Relation owner decides whether terminal work still depends on this Goal.
+    struct Retention {
+        const void *context = nullptr; // Borrowed coordinator, outlives this table.
+        bool (*retains)(const void *,
+                        const Goal &) = nullptr; // Pure owner-thread query; null disables.
+    };
+    void set_retention(Retention retention) { retention_ = retention; } // Before live work starts.
+
     bool parameters_fit(uint32_t size) const { return size <= parameter_max_bytes_; }
 
     Admission admit(const NewGoal &goal) const;
@@ -175,9 +183,8 @@ class GoalTable {
     // table is full, that of the terminal goal that ended first, by
     // commit_seq, then the deepest, then the first created (ADR-0025).
     // no_index when the table is not full or no goal is terminal. A goal
-    // gives way with its tasks, so it must have none that has not ended: no
-    // task outlives its goal's end yet, but one that does (RUNNING or
-    // CANCELLING, MA-008, MA-018) must keep its goal from giving way.
+    // gives way with its Tasks. The coordinator's retention query protects
+    // RUNNING/CANCELLING Tasks and terminal Tasks with unresolved call facts.
     uint32_t giving_way() const;
 
     // Where insert() put a new goal.
@@ -377,6 +384,7 @@ class GoalTable {
     foundation::BoundedArray<Goal> goals_;
     uint8_t *parameter_blocks_;
     uint32_t parameter_max_bytes_;
+    Retention retention_{}; // References stay with their owners; no cached dependency count.
     uint32_t depth_max_;
     uint32_t children_max_;
 };

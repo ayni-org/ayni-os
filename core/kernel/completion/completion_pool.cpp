@@ -1,5 +1,5 @@
 #include "kernel/completion/completion_pool.h"
-#include "kernel/completion/attempt_identity.h"
+#include "foundation/attempt_identity.h"
 
 #include "kernel/ingress_lock.h"
 
@@ -20,10 +20,11 @@ std::size_t CompletionPool::storage_size(uint32_t slot_count) {
     return sizeof(ayni_completion) * slot_count + 2U * sizeof(uint16_t) * slot_count;
 }
 
-CompletionPool::CompletionPool(void *storage, uint32_t slot_count, const ayni_host_v1 &host)
+CompletionPool::CompletionPool(void *storage, uint32_t slot_count, const ayni_host_v1 &host,
+                               AttemptSequence &attempts)
     : host_(host), slots_(static_cast<ayni_completion *>(storage)),
       free_(reinterpret_cast<uint16_t *>(slots_ + slot_count)), posted_(free_ + slot_count),
-      slot_count_(slot_count), free_count_(slot_count) {
+      slot_count_(slot_count), free_count_(slot_count), attempts_(attempts) {
     for (uint32_t index = 0; index < slot_count; ++index) {
         new (&slots_[index])
             ayni_completion{this, {}, {}, nullptr, nullptr, index, SlotState::free};
@@ -38,8 +39,11 @@ IssueResult CompletionPool::issue(uint64_t boot_epoch, CompletionHandler handler
         ++counters_.rejected_busy;
         return IssueResult::busy;
     }
+    ayni_attempt_ref_v1 attempt{};
+    if (!attempts_.next(boot_epoch, attempt)) {
+        return IssueResult::exhausted;
+    }
     ayni_completion &slot = slots_[free_[--free_count_]];
-    const ayni_attempt_ref_v1 attempt{boot_epoch, ++last_request_id_};
     {
         const IngressGuard guard(host_);
         slot.attempt = attempt;
@@ -96,7 +100,8 @@ uint32_t CompletionPool::apply_posted(uint32_t max_items) {
 ayni_status_t CompletionPool::post(ayni_completion &slot, const ayni_completion_result_v1 &result) {
     {
         const IngressGuard guard(host_);
-        if (slot.state != SlotState::reserved || !same_attempt(slot.attempt, result.attempt)) {
+        if (slot.state != SlotState::reserved ||
+            !foundation::same_attempt(slot.attempt, result.attempt)) {
             ++counters_.ignored_posts;
             return AYNI_INVALID_STATE;
         }

@@ -66,6 +66,9 @@ class ResourceAdmission {
     ayni_status_t set_health(uint32_t index, ayni_resource_health_t health, bool &changed);
     // Copied runtime info; index < registry size. No borrowed pointers.
     ayni_resource_info_v1 info(uint32_t index) const;
+    // Admission capacity only; no reservation or fairness change. Descriptor
+    // validation remains in enqueue, after Kernel has preflighted the other owners.
+    bool has_room() const { return !requests_.full() && last_ticket_ != UINT64_MAX; }
     // Validates the entire group before copying; failure has no side effects.
     ayni_status_t enqueue(const ResourceRequest &request, uint64_t now_us);
     // Expired requests first, then highest-priority eligible Agent in a ring
@@ -77,6 +80,9 @@ class ResourceAdmission {
     bool acquire(uint64_t call_id, uint64_t now_us, ResourceClaim &out);
     // Removes a queued request (cancel/expiry), never an acquired request.
     bool remove_waiter(uint64_t call_id, uint64_t now_us);
+    // Final dispatch check: this exact held generation still exists and every
+    // resource remains online and outside quarantine. Does not reacquire units.
+    bool executable(ResourceClaim claim) const;
     // Releases a claim. Actuators remain unavailable pending exact stop proof;
     // ordinary resources release even when remote completion is unknown.
     bool release(ResourceClaim claim);

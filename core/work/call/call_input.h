@@ -25,6 +25,10 @@ struct CallInputView {
 // Format 1, contracts/storage/records.md: two u32 lengths, arguments, text.
 constexpr uint32_t call_input_header_size = 8;
 
+// Shared input/result text validation; no truncation, normalization or log output.
+// Unicode scalar UTF-8 only, including U+0000; limit is bounded by the call catalog.
+ayni_status_t check_call_text(ayni_string_v1 text, uint32_t limit);
+
 // Text limit is 0..catalog::call_text_limit_max; zero permits only empty text. Output
 // does not overlap domain or any input view. BUFFER_TOO_SMALL only sets size;
 // any other failure leaves all outputs unchanged. This is a business payload,

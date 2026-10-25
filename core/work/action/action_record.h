@@ -80,6 +80,9 @@ class ActionRecord {
                                  std::optional<ActionRecord> &out);
     // One validator for live facts and the future persisted record reader.
     static bool valid(const ActionFact &fact);
+    // Installs an already validated replay fact; prior DISPATCHING is sealed
+    // against submission. Only a never-dispatched PREPARED fact may be admitted anew.
+    void restore_validated(const ActionFact &fact);
     // Immutable view until the next successful transition; valid only after prepare.
     const ActionFact &fact() const { return fact_; }
 
@@ -102,9 +105,14 @@ class ActionRecord {
     // A known failure can retain partial or unknown effects. NONE requires
     // affirmative evidence from the declared Provider contract, not HTTP status.
     ayni_status_t fail(ActionEffect effect, ActionStamp stamp);
+    // Provider confirms cancellation of the claimed attempt. Effects may be
+    // partial/unknown; this neither proves non-delivery nor actuator stop.
+    ayni_status_t cancelled(ActionEffect effect, ActionStamp stamp);
     // The attempt ended without a definite result. No retry path leaves UNKNOWN.
     ayni_status_t abandon(ActionStamp stamp);
 
+    // Terminal outcome or effect still needs authoritative reconciliation.
+    static bool unresolved(const ActionFact &fact);
     // Authoritative query evidence is usable only once old delivery is drained
     // or isolated. BEST_EFFORT/missing records cannot create these proofs; the
     // coordinator checks capability declarations and transport disposition.
@@ -116,7 +124,7 @@ class ActionRecord {
   private:
     // An accepted local claim ends when a terminal result is applied. Cancel
     // control alone never changes it; work/call owns actual transport draining.
-    enum class Delivery { unclaimed, claimed, finished };
+    enum class Delivery { unclaimed, claimed, finished, restored_prepared, restored };
     bool advances(ActionStamp stamp) const;
     bool receiving() const;
     ayni_status_t finish(ActionPhase phase, ActionEffect effect, ActionEvidence evidence,

@@ -5,10 +5,20 @@
 #ifndef AYNI_CORE_KERNEL_COMPLETION_PROVIDER_MAILBOX_H
 #define AYNI_CORE_KERNEL_COMPLETION_PROVIDER_MAILBOX_H
 
-#include <ayni/ayni.h>
+#include <ayni/calls.h>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+
+namespace ayni::kernel {
+class ProviderMailbox;
+}
+
+// Immutable target address; result.attempt, never this handle, names an incarnation.
+struct ayni_provider_completion {
+    ayni::kernel::ProviderMailbox *pool; // Borrowed arena owner until producer threads join.
+    uint32_t index;                      // Constant pool-local slot index; zero is valid.
+};
 
 namespace ayni::kernel {
 
@@ -25,11 +35,13 @@ enum class ProviderMessageKind {
 
 // Untrusted, bounded message view; input data is copied before post returns.
 struct ProviderMessage {
-    ProviderMessageKind kind; // Chooses progress, cancel control or terminal lane.
-    uint64_t sequence;        // Positive for progress, zero for all reliable receipts.
-    ayni_status_t status;     // Classified scalar, interpreted by the domain consumer.
-    ayni_reason_t reason;     // Classified scalar, never vendor text or credentials.
-    ayni_bytes_v1 payload;    // Schema-owned bytes; cancel control has no payload.
+    ProviderMessageKind kind;      // Chooses progress, cancel control or terminal lane.
+    uint64_t sequence;             // Positive for progress, zero for all reliable receipts.
+    ayni_status_t status;          // Classified scalar, interpreted by the domain consumer.
+    ayni_reason_t reason;          // Classified scalar, never vendor text or credentials.
+    ayni_bytes_v1 payload;         // Schema-owned bytes; cancel control has no payload.
+    ayni_call_effect_t effect = 0; // Untrusted assertion; zero is invalid at the consumer.
+    uint32_t query_result = 0;     // Zero for ordinary submit, explicit evidence for query.
 };
 
 // Identity of one reserved slot/attempt, scoped to this mailbox's lifetime.
@@ -55,7 +67,7 @@ struct ProviderReceipt {
 class ProviderMailbox {
   public:
     struct Limits {
-        uint32_t capacity;      // Positive reserved attempts, <= capacity_max; no dynamic growth.
+        uint32_t capacity;      // 0 disables delivery; otherwise <= capacity_max, no growth.
         uint32_t payload_bytes; // Positive bytes per progress/terminal lane, <= payload_bytes_max.
     };
     static constexpr uint32_t capacity_max = 256;
@@ -72,6 +84,11 @@ class ProviderMailbox {
     // all reservations, including boot changes, so an old token never aliases.
     // Capacity or malformed identity errors preserve out and consume no identity.
     ayni_status_t reserve(ayni_attempt_ref_v1 attempt, ProviderReservation &out);
+    // Owner: target for a live exact reservation; null when stale. Its address
+    // survives reuse, but callers must retain the original attempt identity.
+    ayni_provider_completion_t *completion(ProviderReservation reservation);
+    // Validates this pool's target address, not its current attempt identity.
+    bool owns(const ayni_provider_completion_t *completion) const;
     // Any producer: valid progress can replace only progress; a cancel control
     // is accepted once. Terminal publication ends producer delivery: later
     // posts are rejected, while previously accepted cancel remains pending.
@@ -99,10 +116,12 @@ class ProviderMailbox {
   private:
     // Scalars shared by result lanes; semantic validation belongs above transport.
     struct Result {
-        ProviderMessageKind kind; // Selected lane/outcome, never an empty marker.
-        ayni_status_t status;     // Copied classification; the domain validates its meaning.
-        ayni_reason_t reason;     // Copied reason, with NONE permitted by the domain.
-        uint32_t size;            // Payload bytes, <= payload_bytes_; zero is a valid payload.
+        ProviderMessageKind kind;  // Selected lane/outcome, never an empty marker.
+        ayni_status_t status;      // Copied classification; the domain validates its meaning.
+        ayni_reason_t reason;      // Copied reason, with NONE permitted by the domain.
+        uint32_t size;             // Payload bytes, <= payload_bytes_; zero is a valid payload.
+        ayni_call_effect_t effect; // Copied assertion; domain validates result/effect pairing.
+        uint32_t query_result;     // Copied query classification; zero for submit.
     };
     // Keep acknowledged cancellation identity until terminal so duplicate control
     // cannot be accepted again. Separate stages do not overload payload length.
@@ -119,7 +138,8 @@ class ProviderMailbox {
         std::optional<Result> terminal;      // Immutable once posted, released only by owner ack.
     };
     struct Slot {
-        std::optional<Attempt> attempt; // Empty is free; all message state resets together.
+        ayni_provider_completion target; // Immutable owner/address across slot incarnations.
+        std::optional<Attempt> attempt;  // Empty is free; all message state resets together.
     };
     // Helpers accessing slot state require the ingress lock. Message validation,
     // kind classification and address math read only immutable configuration.

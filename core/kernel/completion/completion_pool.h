@@ -12,6 +12,8 @@
 #ifndef AYNI_CORE_KERNEL_COMPLETION_COMPLETION_POOL_H
 #define AYNI_CORE_KERNEL_COMPLETION_COMPLETION_POOL_H
 
+#include "kernel/completion/attempt_sequence.h"
+
 #include <ayni/ayni.h>
 
 #include <cstddef>
@@ -33,6 +35,7 @@ enum class IssueResult {
     busy,      // no free slot; the port was not called (C-HOST-006)
     rejected,  // the Host proved it kept no work; the handler will not run
     in_flight, // the handler runs once the Host posts the result
+    exhausted, // request identity space ended; no port call or slot reservation
 };
 
 enum class SlotState : uint32_t { free, reserved, posted };
@@ -67,7 +70,8 @@ class CompletionPool {
     // storage holds storage_size(slot_count) bytes aligned to
     // storage_alignment; it and host outlive the pool. host must have wake and
     // both ingress lock functions. 1 <= slot_count <= 65535.
-    CompletionPool(void *storage, uint32_t slot_count, const ayni_host_v1 &host);
+    CompletionPool(void *storage, uint32_t slot_count, const ayni_host_v1 &host,
+                   AttemptSequence &attempts);
 
     CompletionPool(const CompletionPool &) = delete;
     CompletionPool &operator=(const CompletionPool &) = delete;
@@ -116,7 +120,7 @@ class CompletionPool {
     uint32_t free_count_;
     uint32_t posted_head_ = 0;
     uint32_t posted_count_ = 0;
-    uint64_t last_request_id_ = 0;
+    AttemptSequence &attempts_; // Borrowed Kernel identity owner, shared with Provider delivery.
     Counters counters_{};
 };
 

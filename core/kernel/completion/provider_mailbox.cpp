@@ -1,5 +1,5 @@
 #include "kernel/completion/provider_mailbox.h"
-#include "kernel/completion/attempt_identity.h"
+#include "foundation/attempt_identity.h"
 #include "kernel/ingress_lock.h"
 
 #include <cstring>
@@ -19,11 +19,12 @@ std::size_t ProviderMailbox::storage_size(Limits limits) {
 
 ProviderMailbox::ProviderMailbox(void *storage, Limits limits, const ayni_host_v1 &host)
     : host_(host), slots_(static_cast<Slot *>(storage)),
-      payloads_(reinterpret_cast<uint8_t *>(slots_ + limits.capacity)), capacity_(limits.capacity),
-      payload_bytes_(limits.payload_bytes) {
+      payloads_(limits.capacity == 0U ? nullptr
+                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
+      capacity_(limits.capacity), payload_bytes_(limits.payload_bytes) {
     static_assert(alignof(Slot) <= storage_alignment, "caller arena aligns slots");
     for (uint32_t index = 0; index < capacity_; ++index) {
-        new (&slots_[index]) Slot{};
+        new (&slots_[index]) Slot{{this, index}, {}};
     }
 }
 
@@ -60,7 +61,7 @@ ProviderMailbox::Attempt *ProviderMailbox::find(ProviderReservation reservation)
         return nullptr;
     }
     auto &slot = slots_[reservation.index];
-    return slot.attempt && same_attempt(slot.attempt->identity, reservation.attempt)
+    return slot.attempt && foundation::same_attempt(slot.attempt->identity, reservation.attempt)
                ? &*slot.attempt
                : nullptr;
 }
@@ -107,7 +108,8 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
         if (attempt == nullptr || attempt->terminal) {
             return AYNI_INVALID_STATE;
         }
-        const Result result{message.kind, message.status, message.reason, message.payload.size};
+        const Result result{message.kind,         message.status, message.reason,
+                            message.payload.size, message.effect, message.query_result};
         if (is_cancel(message.kind)) {
             if (attempt->cancel) {
                 return AYNI_INVALID_STATE;
@@ -145,6 +147,16 @@ const ProviderMailbox::Result *ProviderMailbox::pending(const Attempt &attempt) 
     return attempt.progress ? &*attempt.progress : nullptr;
 }
 
+ayni_provider_completion_t *ProviderMailbox::completion(ProviderReservation reservation) {
+    const IngressGuard guard(host_);
+    return find(reservation) == nullptr ? nullptr : &slots_[reservation.index].target;
+}
+
+bool ProviderMailbox::owns(const ayni_provider_completion_t *target) const {
+    return target != nullptr && target->pool == this && target->index < capacity_ &&
+           &slots_[target->index].target == target;
+}
+
 // Reading owns a bounded copy, not a destructive dequeue. The caller may
 // wait for storage indefinitely without losing either reliable receipt.
 ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, uint32_t &required,
@@ -170,7 +182,13 @@ ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, ui
         const auto sequence = result->kind == ProviderMessageKind::progress
                                   ? slot.attempt->last_progress_sequence
                                   : 0U;
-        out = {result->kind, sequence, result->status, result->reason, {payload, result->size}};
+        out = {result->kind,
+               sequence,
+               result->status,
+               result->reason,
+               {payload, result->size},
+               result->effect,
+               result->query_result};
         receipt = {{index, slot.attempt->identity}, result->kind, sequence};
         required = result->size;
         cursor_ = (index + 1U) % capacity_;

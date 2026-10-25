@@ -8,13 +8,27 @@ namespace ayni::work {
 namespace {
 
 constexpr uint32_t max_revision = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t call_acceptance_revisions = 4;
+constexpr uint32_t call_pending_revisions = 3;
+constexpr uint32_t call_unknown_revisions = 2;
+constexpr uint32_t cancel_and_drain_revisions = 2;
 
-// The lifecycles this library brings a task to: RUNNING and CANCELLING come
-// with requests tasks wait for (ADR-0022).
+// The selected-call state determines the remaining mandatory lifecycle writes.
+uint32_t reserved_call_revisions(const Task &task) {
+    return task.call.id == 0U                        ? 0U
+           : task.call.end != TaskCall::End::none    ? 1U
+           : task.hold_status == AYNI_RESULT_UNKNOWN ? call_unknown_revisions
+                                                     : call_pending_revisions;
+}
+
+// RUNNING/CANCELLING additionally require a retained logical call reference;
+// TaskCall validates that relation when restoring its paired call state.
 bool is_reached(ayni_task_lifecycle_t lifecycle) {
     switch (lifecycle) {
     case AYNI_TASK_READY:
+    case AYNI_TASK_RUNNING:
     case AYNI_TASK_PAUSED:
+    case AYNI_TASK_CANCELLING:
     case AYNI_TASK_COMPLETED:
     case AYNI_TASK_CANCELLED:
     case AYNI_TASK_FAILED:
@@ -54,15 +68,7 @@ TaskTable::TaskTable(void *storage, const Limits &limits)
 }
 
 bool TaskTable::has_room() const {
-    if (!tasks_.full()) {
-        return true;
-    }
-    for (uint32_t index = 0; index < tasks_.size(); ++index) {
-        if (!is_live(tasks_[index].lifecycle)) {
-            return true;
-        }
-    }
-    return false;
+    return !tasks_.full() || giving_way() != no_index;
 }
 
 bool TaskTable::insert(const NewTask &task, uint64_t task_id, foundation::TransitionStamp stamp) {
@@ -125,7 +131,10 @@ TaskTable::ChangeCheck TaskTable::check(uint32_t index, TaskChange change,
     if (!allows(task, change)) {
         return ChangeCheck::invalid_state;
     }
-    if (at_largest_revision(task)) {
+    const bool ends_call =
+        task.call.id != 0U && (change == TaskChange::cancel || change == TaskChange::expire);
+    if (ends_call ? max_revision - task.revision < cancel_and_drain_revisions
+                  : at_largest_revision(task)) {
         return ChangeCheck::revision_exhausted;
     }
     return ChangeCheck::allowed;
@@ -150,13 +159,15 @@ void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionS
         task.lifecycle = AYNI_TASK_PAUSED;
         break;
     case TaskChange::resume:
-        task.lifecycle = AYNI_TASK_READY;
+        task.lifecycle = task.call.id == 0U ? AYNI_TASK_READY : AYNI_TASK_RUNNING;
         break;
     case TaskChange::cancel:
-        task.lifecycle = AYNI_TASK_CANCELLED;
+        task.lifecycle = task.call.id == 0U ? AYNI_TASK_CANCELLED : AYNI_TASK_CANCELLING;
+        task.call.end = task.call.id == 0U ? TaskCall::End::none : TaskCall::End::cancel;
         break;
     case TaskChange::expire:
-        task.lifecycle = AYNI_TASK_EXPIRED;
+        task.lifecycle = task.call.id == 0U ? AYNI_TASK_EXPIRED : AYNI_TASK_CANCELLING;
+        task.call.end = task.call.id == 0U ? TaskCall::End::none : TaskCall::End::expire;
         break;
     case TaskChange::complete:
         task.lifecycle = AYNI_TASK_COMPLETED;
@@ -170,7 +181,7 @@ void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionS
     if (still_held(task)) {
         ++held_count_;
     }
-    if (task.lifecycle == AYNI_TASK_CANCELLED) {
+    if (change == TaskChange::cancel) {
         task.cancel_revision = task.revision;
     }
 }
@@ -225,6 +236,107 @@ void TaskTable::hold_model_calls(uint32_t index, foundation::TransitionStamp sta
     progress(index, stamp);
 }
 
+void TaskTable::begin_call(uint32_t index, uint64_t call_id, CallKind kind,
+                           foundation::TransitionStamp stamp) {
+    if (kind == CallKind::model) {
+        accept_model_call(index, stamp);
+    } else {
+        progress(index, stamp);
+    }
+    auto &task = tasks_[index];
+    task.call = {call_id, TaskCall::End::none};
+    task.lifecycle = AYNI_TASK_RUNNING;
+}
+
+// Known terminal knowledge releases the selected reference. Cancellation does
+// not become READY even if a late Provider success arrived (C-CALL-012).
+void TaskTable::finish_call(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    const bool was_held = still_held(task);
+    const auto end = task.call.end;
+    task.call = {};
+    if (task.hold_status == AYNI_RESULT_UNKNOWN || waiting_for_resource(task)) {
+        task.hold_status = AYNI_OK;
+        task.hold_reason = AYNI_REASON_NONE;
+    }
+    if (end == TaskCall::End::cancel) {
+        task.lifecycle = AYNI_TASK_CANCELLED;
+    } else if (end == TaskCall::End::expire) {
+        task.lifecycle = AYNI_TASK_EXPIRED;
+    } else if (task.lifecycle == AYNI_TASK_RUNNING) {
+        task.lifecycle = AYNI_TASK_READY;
+    }
+    progress(index, stamp);
+    if (was_held && !still_held(task)) {
+        --held_count_;
+    }
+}
+
+// Waiting is an overlay: user pause/resume remains an independent lifecycle.
+// Preserve the accepted call, checkpoint and counter until an explicit owner resume.
+void TaskTable::pause_resource_wait(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    const bool held = still_held(task);
+    task.hold_status = AYNI_EXPIRED;
+    task.hold_reason = AYNI_REASON_RESOURCE_WAIT;
+    progress(index, stamp);
+    if (!held) {
+        ++held_count_;
+    }
+}
+
+ayni_status_t TaskTable::check_resume_wait(uint32_t index, uint32_t expected_revision) const {
+    const auto &task = tasks_[index];
+    if (task.revision != expected_revision) {
+        return AYNI_REVISION_CONFLICT;
+    }
+    if (!waiting_for_resource(task) || task.call.id == 0U || task.call.end != TaskCall::End::none ||
+        !is_live(task.lifecycle)) {
+        return AYNI_INVALID_STATE;
+    }
+    // Resuming may wait again; keep the original acceptance's completion reserve.
+    return max_revision - task.revision >= call_acceptance_revisions ? AYNI_OK
+                                                                     : AYNI_CAPACITY_EXCEEDED;
+}
+
+void TaskTable::resume_wait(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    const bool held = still_held(task);
+    task.hold_status = AYNI_OK;
+    task.hold_reason = AYNI_REASON_NONE;
+    progress(index, stamp);
+    if (held && !still_held(task)) {
+        --held_count_;
+    }
+}
+
+// Only the wait overlay and revision change; Kernel pairs the exact owner command.
+TaskTable::Restore TaskTable::restore_wait_resume(uint32_t index, const TaskState &state,
+                                                  foundation::TransitionStamp stamp) {
+    const auto &task = tasks_[index];
+    if (check_resume_wait(index, task.revision) != AYNI_OK ||
+        state.revision != task.revision + 1U || state.lifecycle != task.lifecycle ||
+        state.cancel_revision != task.cancel_revision || state.hold_status != AYNI_OK ||
+        state.hold_reason != AYNI_REASON_NONE || state.step_count != task.step_count ||
+        !(state.model_calls == task.model_calls) || state.call != task.call ||
+        stamp.commit_seq <= task.commit_seq) {
+        return Restore::corrupt;
+    }
+    resume_wait(index, stamp);
+    return Restore::restored;
+}
+
+void TaskTable::hold_unknown_call(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    const bool was_held = still_held(task);
+    task.hold_status = AYNI_RESULT_UNKNOWN;
+    task.hold_reason = AYNI_REASON_NONE;
+    progress(index, stamp);
+    if (!was_held && still_held(task)) {
+        ++held_count_;
+    }
+}
+
 // Only the runtime ceiling/hold and revision may change; the exact command
 // pairing in Kernel proves that this was an owner-managed raise (ADR-0043).
 TaskTable::Restore TaskTable::restore_model_limit_raise(uint32_t index, const TaskState &state,
@@ -236,7 +348,7 @@ TaskTable::Restore TaskTable::restore_model_limit_raise(uint32_t index, const Ta
         state.cancel_revision != task.cancel_revision || state.hold_status != task.hold_status ||
         state.hold_reason != task.hold_reason || state.step_count != task.step_count ||
         !is_live(task.lifecycle) || stamp.commit_seq <= task.commit_seq ||
-        state.model_calls.limit <= task.model_calls.limit) {
+        state.model_calls.limit <= task.model_calls.limit || state.call != task.call) {
         return Restore::corrupt;
     }
     if (state.model_calls.limit > model_call_hard_limit_) {
@@ -337,7 +449,8 @@ uint32_t TaskTable::giving_way() const {
     uint32_t oldest = no_index;
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
         const Task &ended = tasks_[index];
-        if (is_live(ended.lifecycle)) {
+        if (is_live(ended.lifecycle) ||
+            (retention_.retains != nullptr && retention_.retains(retention_.context, ended))) {
             continue;
         }
         if (oldest == no_index || ended.commit_seq < tasks_[oldest].commit_seq ||
@@ -353,8 +466,8 @@ catalog::CatalogId *TaskTable::steps_of(uint32_t index) const {
     return steps_ + static_cast<std::size_t>(tasks_[index].slot) * step_capacity_;
 }
 
-// How RUNNING and CANCELLING tasks pause and cancel comes with the requests
-// tasks wait for (ADR-0022). Policy/compatibility holds await an end because
+// RUNNING owns a selected call; pause preserves it, and cancellation requests
+// drainage before terminality. Policy/compatibility holds await an end because
 // their inputs have not changed. Runtime holds instead survive user lifecycle
 // transitions and clear only through an owner-managed ceiling raise.
 bool TaskTable::allows(const Task &task, TaskChange change) {
@@ -362,24 +475,32 @@ bool TaskTable::allows(const Task &task, TaskChange change) {
     switch (change) {
     case TaskChange::pause:
         // User pause must survive a later model-limit raise (C-RUN-003).
-        return task.lifecycle == AYNI_TASK_READY && task.hold_status == AYNI_OK &&
+        return (task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_RUNNING) &&
+               (task.hold_status == AYNI_OK || task.hold_status == AYNI_RESULT_UNKNOWN ||
+                waiting_for_resource(task)) &&
                task.recovery_hold_status == AYNI_OK;
     case TaskChange::complete:
     case TaskChange::fail:
         return lifecycle == AYNI_TASK_READY;
     case TaskChange::resume:
         // Resume may remove user pause, but cannot clear the model overlay.
-        return task.lifecycle == AYNI_TASK_PAUSED && task.hold_status == AYNI_OK &&
+        return task.lifecycle == AYNI_TASK_PAUSED &&
+               (task.hold_status == AYNI_OK || waiting_for_resource(task)) &&
                task.recovery_hold_status == AYNI_OK;
     case TaskChange::cancel:
     case TaskChange::expire:
-        return lifecycle == AYNI_TASK_READY || lifecycle == AYNI_TASK_PAUSED;
+        return lifecycle == AYNI_TASK_READY || lifecycle == AYNI_TASK_RUNNING ||
+               lifecycle == AYNI_TASK_PAUSED;
     }
     return false;
 }
 
 bool TaskTable::at_largest_revision(const Task &task) {
-    return task.revision == max_revision;
+    return max_revision - task.revision <= reserved_call_revisions(task);
+}
+
+bool TaskTable::can_begin_call(const Task &task) {
+    return task.call.id == 0U && max_revision - task.revision >= call_acceptance_revisions;
 }
 
 bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter) const {
@@ -442,7 +563,9 @@ TaskTable::Restore TaskTable::restore(const NewTask &task, uint64_t task_id,
         return Restore::restored;
     }
     uint32_t replaced = 0;
-    if (!find(replaced_task_id, replaced) || is_live(tasks_[replaced].lifecycle)) {
+    if (!find(replaced_task_id, replaced) || is_live(tasks_[replaced].lifecycle) ||
+        (retention_.retains != nullptr &&
+         retention_.retains(retention_.context, tasks_[replaced]))) {
         return Restore::corrupt;
     }
     const uint32_t slot = tasks_[replaced].slot;
@@ -458,15 +581,23 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
     // Terminal history is immutable. Policy/compatibility holds only end;
     // the independent runtime overlay survives ordinary lifecycle changes.
     if (!is_live(task.lifecycle) ||
-        ((task.hold_status != AYNI_OK || task.recovery_hold_status != AYNI_OK) &&
+        (((task.hold_status != AYNI_OK &&
+           !(task.hold_status == AYNI_RESULT_UNKNOWN && task.call.id != 0U) &&
+           !waiting_for_resource(task)) ||
+          task.recovery_hold_status != AYNI_OK) &&
          is_live(state.lifecycle)) ||
+        // An ordinary live transition cannot clear the wait overlay; v12 owns that change.
+        (waiting_for_resource(task) && is_live(state.lifecycle) &&
+         (state.hold_status != task.hold_status || state.hold_reason != task.hold_reason)) ||
         !state.model_calls.valid() || state.model_calls.used < task.model_calls.used ||
         (task.created_transition_id != stamp.transition_id &&
          state.model_calls.limit != task.model_calls.limit) ||
         (task.model_calls.blocked && !state.model_calls.blocked) || !is_reached(state.lifecycle) ||
         state.revision < task.revision || state.step_count != task.step_count ||
-        state.cancel_revision > state.revision ||
-        (state.cancel_revision != 0U) != (state.lifecycle == AYNI_TASK_CANCELLED) ||
+        state.cancel_revision > state.revision || !state.call.valid(state.lifecycle) ||
+        (state.cancel_revision != 0U) !=
+            (state.lifecycle == AYNI_TASK_CANCELLED || (state.lifecycle == AYNI_TASK_CANCELLING &&
+                                                        state.call.end == TaskCall::End::cancel)) ||
         (!held && state.hold_reason != AYNI_REASON_NONE) ||
         (held && state.lifecycle == AYNI_TASK_READY)) {
         return Restore::corrupt;
@@ -478,6 +609,7 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
         --held_count_;
     }
     task.model_calls = state.model_calls;
+    task.call = state.call;
     task.lifecycle = state.lifecycle;
     task.revision = state.revision;
     task.cancel_revision = state.cancel_revision;
@@ -502,7 +634,8 @@ TaskTable::Restore TaskTable::restore_authority_state(uint32_t index, const Task
     if (!is_live(task.lifecycle) || state.lifecycle != task.lifecycle ||
         state.revision != task.revision || state.cancel_revision != task.cancel_revision ||
         state.hold_status != task.hold_status || state.hold_reason != task.hold_reason ||
-        state.step_count != task.step_count || state.model_calls != task.model_calls) {
+        state.step_count != task.step_count || state.model_calls != task.model_calls ||
+        state.call != task.call) {
         return Restore::corrupt;
     }
     authority_changed(index, stamp);
@@ -516,7 +649,8 @@ TaskTable::Restore TaskTable::restore_reauthorization_state(uint32_t index, cons
         stamp.commit_seq <= task.commit_seq || state.revision != task.revision + 1U ||
         state.lifecycle != task.lifecycle || state.cancel_revision != task.cancel_revision ||
         state.hold_status != task.hold_status || state.hold_reason != task.hold_reason ||
-        state.step_count != task.step_count || state.model_calls != task.model_calls) {
+        state.step_count != task.step_count || state.model_calls != task.model_calls ||
+        state.call != task.call) {
         return Restore::corrupt;
     }
     reauthorize(index, stamp);

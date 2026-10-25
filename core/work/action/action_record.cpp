@@ -40,7 +40,7 @@ bool ActionRecord::valid(const ActionFact &fact) {
         !foundation::is_kernel_id(id.logical_call_id) || id.operation_id == id.logical_call_id ||
         id.binding_id.size() == 0U || id.binding_version == 0U || !valid_stamp(fact.prepared) ||
         !valid_stamp(fact.latest) ||
-        foundation::id_boot_epoch(id.operation_id) != fact.prepared.boot_epoch ||
+        foundation::id_boot_epoch(id.operation_id) > fact.prepared.boot_epoch ||
         foundation::id_boot_epoch(id.logical_call_id) > fact.prepared.boot_epoch ||
         !known_effect(fact.effect)) {
         return false;
@@ -60,8 +60,9 @@ bool ActionRecord::valid(const ActionFact &fact) {
     case ActionPhase::completed:
         return fact.effect == ActionEffect::complete && final_result(fact.evidence);
     case ActionPhase::cancelled:
-        return fact.effect == ActionEffect::none &&
-               fact.evidence == ActionEvidence::local_non_delivery;
+        return fact.evidence == ActionEvidence::provider_result ||
+               (fact.effect == ActionEffect::none &&
+                fact.evidence == ActionEvidence::local_non_delivery);
     case ActionPhase::failed:
         // A known failure may still have effects; only authoritative
         // nonacceptance distinguishes a sealed, never-accepted operation.
@@ -89,8 +90,19 @@ ayni_status_t ActionRecord::prepare(const ActionIdentity &identity, ActionStamp 
 }
 
 bool ActionRecord::advances(ActionStamp stamp) const {
-    return valid_stamp(stamp) && stamp.boot_epoch == fact_.latest.boot_epoch &&
+    const bool restored =
+        delivery_ == Delivery::restored_prepared || delivery_ == Delivery::restored;
+    return valid_stamp(stamp) &&
+           (stamp.boot_epoch == fact_.latest.boot_epoch ||
+            (restored && stamp.boot_epoch > fact_.latest.boot_epoch)) &&
            ordered(fact_.latest, stamp);
+}
+
+void ActionRecord::restore_validated(const ActionFact &fact) {
+    fact_ = fact;
+    // A persisted barrier proves possible delivery, never permission to repeat it.
+    delivery_ =
+        fact.phase == ActionPhase::prepared ? Delivery::restored_prepared : Delivery::restored;
 }
 
 ayni_status_t ActionRecord::begin_dispatch(ActionStamp stamp, uint64_t durable_seq) {
@@ -103,6 +115,7 @@ ayni_status_t ActionRecord::begin_dispatch(ActionStamp stamp, uint64_t durable_s
     fact_.phase = ActionPhase::dispatching;
     fact_.effect = ActionEffect::unknown;
     fact_.latest = stamp;
+    delivery_ = Delivery::unclaimed;
     return AYNI_OK;
 }
 
@@ -117,7 +130,7 @@ bool ActionRecord::claim_dispatch(uint64_t current_boot, uint64_t durable_seq) {
 }
 
 ayni_status_t ActionRecord::cancel_before_delivery(ActionStamp stamp) {
-    if (delivery_ != Delivery::unclaimed ||
+    if ((delivery_ != Delivery::unclaimed && delivery_ != Delivery::restored_prepared) ||
         (fact_.phase != ActionPhase::prepared && fact_.phase != ActionPhase::dispatching)) {
         return AYNI_INVALID_STATE;
     }
@@ -134,7 +147,7 @@ ayni_status_t ActionRecord::rejected_not_retained(ActionStamp stamp) {
 }
 
 bool ActionRecord::receiving() const {
-    return delivery_ == Delivery::claimed &&
+    return (delivery_ == Delivery::claimed || delivery_ == Delivery::restored) &&
            (fact_.phase == ActionPhase::dispatching || fact_.phase == ActionPhase::in_progress);
 }
 
@@ -167,11 +180,27 @@ ayni_status_t ActionRecord::abandon(ActionStamp stamp) {
                        : AYNI_INVALID_STATE;
 }
 
+ayni_status_t ActionRecord::cancelled(ActionEffect effect, ActionStamp stamp) {
+    if (!known_effect(effect)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return receiving()
+               ? finish(ActionPhase::cancelled, effect, ActionEvidence::provider_result, stamp)
+               : AYNI_INVALID_STATE;
+}
+
+bool ActionRecord::unresolved(const ActionFact &fact) {
+    return fact.phase == ActionPhase::result_unknown ||
+           ((fact.phase == ActionPhase::failed || fact.phase == ActionPhase::cancelled) &&
+            fact.effect == ActionEffect::unknown);
+}
+
 // The caller admits an authoritative query, never an absence in a best-effort
 // cache. Old delivery must be accounted for before NONE can permit a new binding.
 ayni_status_t ActionRecord::reconcile(QueryConclusion conclusion, ActionEffect effect,
                                       OldAttempt disposition, ActionStamp stamp) {
-    if (fact_.phase != ActionPhase::result_unknown || delivery_ != Delivery::finished) {
+    if (!unresolved(fact_) ||
+        (delivery_ != Delivery::finished && delivery_ != Delivery::restored)) {
         return AYNI_INVALID_STATE;
     }
     if ((disposition != OldAttempt::drained && disposition != OldAttempt::isolated) ||
