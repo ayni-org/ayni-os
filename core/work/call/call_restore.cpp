@@ -59,6 +59,12 @@ bool result_matches(const CallRecord &record) {
     case AYNI_CALL_CANCELLED:
         return state.status == AYNI_OK && state.reason == AYNI_REASON_NONE &&
                (action == nullptr || action->phase == ActionPhase::cancelled);
+    case AYNI_CALL_SKIPPED:
+        return state.status == AYNI_EXPIRED && state.reason == AYNI_REASON_RESOURCE_WAIT &&
+               !state.query && state.cancel_cause == CallCancelCause::none &&
+               state.attempt.request_id == 0U && record.result.size == 0U &&
+               (action == nullptr || (action->phase == ActionPhase::cancelled &&
+                                      action->evidence == ActionEvidence::local_non_delivery));
     case AYNI_CALL_ABANDONED:
         return state.status == AYNI_RESULT_UNKNOWN && record.result.size == 0U &&
                action != nullptr && action->phase == ActionPhase::result_unknown;

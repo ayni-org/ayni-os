@@ -20,9 +20,9 @@
 | 级别 | 工作 | 等待超限时 |
 |---|---|---|
 | 0 | 本地停止路径 | 不排队（C-STOP-001） |
-| 1 | 前台交互、已到期提醒 | 延后并向用户说明原因 |
+| 1 | 前台交互、已到期提醒 | 前台等待 30 秒后暂停；提醒保留待办（ADR-0047） |
 | 2 | 普通工作 | 按工作声明延后、过期或暂停，并记录原因 |
-| 3 | 后台反思 | 可以不运行；不得进入无原因的永久等待 |
+| 3 | 后台周期工作 | 等待 30 秒后跳过本 Task 并记录原因，后续周期继续（ADR-0047） |
 
 ## 规则
 
@@ -31,12 +31,12 @@
 | C-RES-001 | 资源由 Kernel 按 Capability 声明的所需资源自动申请、协调和释放；Agent、策略与 Provider 不直接持有驱动锁 | 策略在回调里直接锁住电机驱动，另一个实例的停止确认无法取得资源 | E1 步骤 3；`MA-018` |
 | C-RES-002 | 一次调用所需的资源组全有或全无地准入；不允许部分占用后等待其余资源。同一资源按共享容量准入，不同资源声明同一非空冲突域则互斥；组内自冲突拒绝（ADR-0046） | A 占住麦克风等扬声器，B 占住扬声器等麦克风，二者互相等待 | M1 正常机制已实现：`ResourceAdmissionTest.group_admission_is_atomic_and_held_units_do_not_overflow`、`ConflictDomainTest.self_conflicting_group_is_rejected_without_partial_admission`、`ProviderApi.conflicting_resource_group_is_rejected_before_any_provider_submission`；调用消费见 ADR-0045，完整 E1 仍待验收 |
 | C-RES-003 | 资源与 Task 运行限制的联合准入在同一 transition 中先判定、后应用；任一项不满足时两者都不改变（ADR-0042） | 资源已标为占用，Task 调用次数检查失败后资源没有归还 | `MA-018` 单元测试；E1 步骤 5 |
-| C-RES-004 | 准入按上表的优先级排序；同级按 Agent 实例轮转、实例内 FIFO；跳过不可准入的实例队首但不允许其后继越过；低优先级可使用没有高优先级可准入请求的资源，并记录等待时间（ADR-0042） | 后台反思持续占用模型槽，到期提醒的语音合成一直排不上 | M1 部分实现（资源模块）：`ResourceAdmissionTest.agents_rotate_and_each_agents_requests_remain_fifo`、`ResourceAdmissionTest.blocked_head_preserves_fifo_and_other_agents_can_use_free_resources`、`ResourceAdmissionTest.foreground_goes_first_without_preempting_existing_background_work`；调用消费已接通；可信工作分类/产品优先级仍待补齐 |
-| C-RES-005 | 每类工作声明等待上限与超限后的处理（延后、过期或暂停）及原因码；等待超限不得静默保留在队列中 | 资源被长期占用时，排队请求无期限等待且没有任何原因可查 | M1 已实现（occurrence 等待 Task 槽位或 ID：GoalType 声明等待上限，超限跳过并计数、记原因码，可声明无界等待；Goal 信息给出当前的等待原因，ADR-0020；有停下的 Task 的 Goal 同样等待并跳过，原因 `TASK_HELD`，ADR-0022；跳过最后一个 occurrence 且没有未结束的 Task 时 Goal 进入 `FAILED`，原因保留在 `skip_reason`，ADR-0023）：`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.skipping_the_last_occurrence_fails_the_goal`、`WorkWait.skip_leaves_a_goal_with_a_live_task_active`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.wait_reason_reports_what_would_hold_the_next_occurrence`、`WorkDecision.held_task_keeps_its_goal_from_deriving_until_it_ends`、`WorkDecision.held_task_keeps_its_goal_waiting_with_room_in_the_table`；Task 执行中的等待（资源、运行限制）与延后、暂停两种处理随 `MA-018`（ADR-0022 决策 1）；E1 步骤 10 |
+| C-RES-004 | 准入按上表的优先级排序；同级按 Agent 实例轮转、实例内 FIFO；跳过不可准入的实例队首但不允许其后继越过；低优先级可使用没有高优先级可准入请求的资源，并记录等待时间（ADR-0042） | 后台反思持续占用模型槽，到期提醒的语音合成一直排不上 | M1 部分实现（资源模块）：`ResourceAdmissionTest.agents_rotate_and_each_agents_requests_remain_fifo`、`ResourceAdmissionTest.blocked_head_preserves_fifo_and_other_agents_can_use_free_resources`、`ResourceAdmissionTest.foreground_goes_first_without_preempting_existing_background_work`；调用与可信分类已接通：`ManagedCall.foreground_and_reminders_run_before_ordinary_and_background_work`；完整 E1 待验收 |
+| C-RES-005 | 每类工作声明等待上限与超限后的处理（延后、过期或暂停）及原因码；等待超限不得静默保留在队列中 | 资源被长期占用时，排队请求无期限等待且没有任何原因可查 | M1 已实现（occurrence 等待 Task 槽位或 ID：GoalType 声明等待上限，超限跳过并计数、记原因码，可声明无界等待；Goal 信息给出当前的等待原因，ADR-0020；有停下的 Task 的 Goal 同样等待并跳过，原因 `TASK_HELD`，ADR-0022；跳过最后一个 occurrence 且没有未结束的 Task 时 Goal 进入 `FAILED`，原因保留在 `skip_reason`，ADR-0023）：`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.skipping_the_last_occurrence_fails_the_goal`、`WorkWait.skip_leaves_a_goal_with_a_live_task_active`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.wait_reason_reports_what_would_hold_the_next_occurrence`、`WorkDecision.held_task_keeps_its_goal_from_deriving_until_it_ends`、`WorkDecision.held_task_keeps_its_goal_waiting_with_room_in_the_table`；Task 执行中的资源等待：`ManagedCall.ordinary_wait_expiry_pauses_without_dispatching_the_queued_call`、`ManagedCall.reminder_waits_beyond_thirty_seconds_without_owner_resume`、`ManagedCall.background_wait_skips_one_task_and_next_period_can_execute`；后台频率与声明边界：`ManagedCall.background_period_floor_is_trusted_and_visible_in_goal_diagnostics`、`WorkModel.work_profiles_reject_invalid_classes_periods_and_reminder_waits`（ADR-0047）；E1 步骤 10 |
 | C-RES-006 | 首版不强制抢占不可中断的物理动作；优先级不意味着可以中断已开始的物理副作用，只能排队、超时或经可取消操作释放 | 前台请求到达时直接夺走正在转向的底盘资源 | M1 部分实现（不抢占已有资源 claim）：`ResourceAdmissionTest.foreground_goes_first_without_preempting_existing_background_work`；真实物理动作未实现/验证 |
 | C-RES-007 | 调用完成、失败、取消、超时或所属实例停止时释放其资源；释放与调用终态在同一 transition 中应用 | 调用超时后资源仍标为占用，后续请求永远无法准入 | E1 步骤 4 |
 | C-RES-008 | 未确认已停止的执行器资源进入 `QUARANTINED`，不分配给下一请求；许可结束或租期结束不解除隔离，Provider 也不能无限续租；只有停止确认回到 ActionRecord 后才释放；隔离同时阻止同冲突域内的其他资源准入 | 许可到期后资源立即可分配，下一个动作在电机仍在转动时被准入 | M1 部分实现（占用结束后隔离，精确 call_id + 占用代际确认）：`ResourceAdmissionTest.actuator_quarantine_requires_the_exact_released_call_confirmation`、`ResourceAdmissionTest.old_claim_cannot_release_or_unquarantine_a_reacquired_call`、`ConflictDomainTest.stop_quarantine_blocks_all_other_members_until_exact_confirmation`；许可/ActionRecord 消费及物理停止尚未验证 |
-| C-RES-009 | 共享资源在声明容量内允许并行；独占资源任一时刻至多一个占用者；轨迹记录足以解释准入顺序与最长等待 | 容量为 1 的模型槽同时有两个活跃请求 | M1 部分实现（有界容量与诊断）：`ResourceAdmissionTest.group_admission_is_atomic_and_held_units_do_not_overflow`、`ResourceAdmissionTest.health_does_not_clear_holders_and_shared_spare_units_remain_usable`；E1 集成轨迹待实现 |
+| C-RES-009 | 共享资源在声明容量内允许并行；独占资源任一时刻至多一个占用者；轨迹记录足以解释准入顺序与最长等待 | 容量为 1 的模型槽同时有两个活跃请求 | M1 部分实现（有界容量与诊断）：`ResourceAdmissionTest.group_admission_is_atomic_and_held_units_do_not_overflow`、`ResourceAdmissionTest.health_does_not_clear_holders_and_shared_spare_units_remain_usable`、`ManagedCall.resource_queue_snapshot_keeps_peak_wait_after_admission`；公开队列摘要复制容量、等待/持有数量及本 boot 最大等待；E1 集成轨迹待实现 |
 | C-RES-010 | 媒体采集以有期限的系统订阅占用资源，不能永久持锁；视觉分析占模型槽，不必长期占用摄像头；播放与录音是否互斥由音频资源组声明 | 一次视觉分析请求在等待模型结果期间一直独占摄像头 | E1 步骤 3、8 |
 | C-RES-011 | 模型槽被占用期间，不依赖模型的本地工作照常推进；Kernel 不因等待外部 I/O 阻塞 `step` | B 的模型请求延迟时，A 的本地按键事件也被卡住 | E1 步骤 2（本地事件在 10 次 `step` 内处理） |
 | C-RES-012 | 每个控制域任一时刻只有一个 authority-owner Kernel；控制域的 `authority_epoch` 由 owner 与执行端分别持久化 | 两台设备各自认为自己是底盘的 owner，交替签发许可 | `MA-018`；`MA-038`；ADR-0001 |
@@ -65,3 +65,7 @@
 Device/Component 注册和查询在 `resources.h`，描述复制到 `catalog/device`，不从发现结果自动接纳。Component 恰有一个 Device 父引用；Resource 关联 0–8 个不同 Component，可跨多个组件，一个组件也可对应多个资源；关联只描述结构，不授予能力。注册可任意排序，start 统一拒绝未解析父引用并保持 CONFIGURING。目录查询为 owner 线程的复制输出，错误不改输出；Device 的资源数按资源去重。
 
 冲突域仅约束不同资源，同时保留同一资源的共享容量；占用或隔离的任一成员阻止其他同域成员。不可准入的 Agent 不阻塞其他 Agent 的无冲突请求：`ConflictDomainTest.sharing_and_unrelated_agents_continue_while_other_domain_member_waits`。本层不证明实际硬件停止；许可/ActionRecord 的确认链继续留在 MA-018B。
+
+## ABI 0.33 可信工作分类
+
+GoalType 的 WorkProfile 决定资源优先级与等待结果，Goal 创建后持久保留；策略请求无优先级覆盖入口。ordinary/foreground 30 秒后暂停，reminder 持续等待，background 30 秒后以 Call SKIPPED / Task EXPIRED 结束本次。后续周期沿原 cursor；已派生 Task 的跳过由 Call 诊断，不增加 Goal 的派生前 occurrences_skipped。默认后台周期下限为 5 分钟，可信配置可设至少系统周期下限，创建参数只可选择更慢周期。后台派生前 occurrence 等待须有限且至多 30 秒，沿既有跳过/合并机制避免任务槽拥塞时无限保留。改 profile 需新 GoalType 版本，不匹配的旧 Goal 保留并暂停；新增恢复实验仍暂停。

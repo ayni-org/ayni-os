@@ -117,7 +117,8 @@ class WorkReplay {
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
                                                  foundation::TransitionStamp stamp);
     // Full row must match this batch and its owning Task; never reissues I/O.
-    durability::RecordUse restore_call(const uint8_t *body, uint32_t size, work::ActionStamp stamp);
+    durability::RecordUse restore_call(uint16_t version, const uint8_t *body, uint32_t size,
+                                       work::ActionStamp stamp);
     // Every retained selected call and terminal outcome agrees with its Task.
     bool calls_consistent(uint64_t boot_epoch_limit) const;
     // Closes the exact query acceptance with its durable owner's canonical command.

@@ -80,6 +80,31 @@ class CallTableTest : public ::testing::Test {
     uint32_t index = CallTable::no_index;
 };
 
+// ADR-0047/records.md: the Core queue outcome requires v2 but retains the v1 row layout.
+TEST_F(CallTableTest, skipped_wait_encodes_non_delivery_and_does_not_allow_a_dispatched_attempt) {
+    insert();
+    ASSERT_EQ(calls.skip_before_dispatch(index, stamp(2)), AYNI_OK);
+    const auto saved = calls.record(index);
+    ASSERT_TRUE(CallTable::valid_record(saved));
+    const auto version = call_record_version_for(saved.state);
+    EXPECT_EQ(version, call_skipped_record_version);
+    std::vector<uint8_t> bytes(call_record_size(saved));
+    write_call_record(saved, bytes.data());
+    CallRecord decoded{};
+    ASSERT_TRUE(
+        read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded, version));
+    EXPECT_EQ(decoded.state.outcome, AYNI_CALL_SKIPPED);
+    EXPECT_EQ(decoded.state.reason, AYNI_REASON_RESOURCE_WAIT);
+    EXPECT_EQ(decoded.state.attempt.request_id, 0U);
+    EXPECT_FALSE(decoded.action.has_value());
+    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
+                                  call_record_version));
+    calls.clear();
+    dispatch();
+    EXPECT_EQ(calls.skip_before_dispatch(index, stamp(4)), AYNI_INVALID_STATE);
+    EXPECT_EQ(calls.state(index).outcome, 0U);
+}
+
 TEST_F(CallTableTest, accepted_input_is_owned_and_step_identity_cannot_be_accepted_twice) {
     insert();
     input_bytes.fill(0);

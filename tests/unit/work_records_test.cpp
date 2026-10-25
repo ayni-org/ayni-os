@@ -295,6 +295,31 @@ TEST(WorkRecords, instance_record_of_another_size_is_refused) {
 // GOAL: what the goal was created with, its goal type by id and version for
 // a later boot to resolve, durations rather than times, and its parameters,
 // which the record keeps in place.
+// ADR-0047/records.md: the appended profile preserves the old prefix and has explicit versions.
+TEST(WorkRecords, nondefault_goal_profile_has_explicit_journal_and_snapshot_encoding) {
+    GoalFields fields;
+    fields.period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
+    auto goal = goal_of(fields);
+    const auto old_body = written_goal(goal, fields.parameters);
+    goal.work_profile = {AYNI_WORK_BACKGROUND, AYNI_BACKGROUND_PERIOD_DEFAULT_US};
+    const auto body = written_goal(goal, fields.parameters);
+    ASSERT_EQ(body.size(), old_body.size() + ayni::work::goal_work_profile_size);
+    EXPECT_EQ(std::memcmp(body.data(), old_body.data(), old_body.size()), 0);
+    EXPECT_EQ(load_le32(body.data() + old_body.size()), AYNI_WORK_BACKGROUND);
+    const auto journal = ayni::work::goal_record_version_for(goal, true);
+    const auto snapshot = ayni::work::goal_snapshot_version_for(goal, true);
+    EXPECT_EQ(journal, ayni::work::goal_work_profile_record_version);
+    EXPECT_EQ(snapshot, ayni::work::goal_work_profile_snapshot_version);
+    for (const auto version : {journal, snapshot}) {
+        GoalRecord record{};
+        ASSERT_TRUE(ayni::work::read_goal_record(body.data(), static_cast<uint32_t>(body.size()),
+                                                 record, version));
+        EXPECT_TRUE(record.goal.work_profile == goal.work_profile);
+        EXPECT_EQ(string_of(record.goal.parameters), fields.parameters);
+        EXPECT_TRUE(record.authority_required);
+    }
+}
+
 TEST(WorkRecords, goal_record_round_trips_with_its_strings_and_parameters) {
     GoalFields local;
     local.goal_type_id = long_id;

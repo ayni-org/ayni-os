@@ -115,6 +115,20 @@ typedef struct ayni_resource_info_v1 {
     ayni_catalog_name_v1 conflict_domain_id; /* Empty has size zero. */
 } ayni_resource_info_v1;
 
+/* Boot-local queue diagnostics; no acquisition or reservation. Since 0.33. */
+typedef struct ayni_resource_queue_info_v1 {
+    uint32_t struct_size; /* Caller supplies sizeof. */
+    uint32_t capacity;    /* Configured request groups, including held groups; zero disables. */
+    uint32_t waiting;     /* Currently queued groups, at most capacity. */
+    uint32_t held;        /* Acquired groups; waiting + held <= capacity. */
+    uint64_t
+        longest_wait_us; /* Maximum current or completed queue wait this boot; zero before any. */
+} ayni_resource_queue_info_v1;
+
+/* Since 0.33. Any lifecycle, owner thread, no callback reentry; error preserves output. */
+ayni_status_t ayni_get_resource_queue(const ayni_kernel_t *kernel,
+                                      ayni_resource_queue_info_v1 *out_info);
+
 /* Since 0.32. CONFIGURING only; copied descriptors, duplicate INVALID_ARGUMENT,
  * disabled/full CAPACITY_EXCEEDED. Start rejects unresolved parent references. */
 ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc_v1 *device);

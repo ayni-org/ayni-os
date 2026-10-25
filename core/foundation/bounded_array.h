@@ -29,6 +29,8 @@ template <typename T> class BoundedArray {
     BoundedArray &operator=(const BoundedArray &) = delete;
 
     uint32_t size() const { return size_; }
+    // Configured maximum element count; never changes after construction.
+    uint32_t capacity() const { return capacity_; }
     bool full() const { return size_ == capacity_; }
 
     // index < size().

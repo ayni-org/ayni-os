@@ -244,6 +244,8 @@ class TaskTable {
     // requested. Preserve user pause; cancellation/expiry never reopens decisions.
     // Unknown call records remain pinned independently by the retention query.
     void finish_call(uint32_t index, foundation::TransitionStamp stamp);
+    // Expire one queued background Task; caller pairs a durable SKIPPED Call fact.
+    void skip_queued_call(uint32_t index, foundation::TransitionStamp stamp);
     // Resource wait expired before dispatch: retain the selected call and user
     // lifecycle, adding only an explicit-resume overlay (ADR-0045).
     void pause_resource_wait(uint32_t index, foundation::TransitionStamp stamp);

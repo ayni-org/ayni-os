@@ -347,4 +347,21 @@ uint64_t ResourceAdmission::next_deadline_us() const {
     return next;
 }
 
+ayni_resource_queue_info_v1 ResourceAdmission::queue_info(uint64_t now_us) const {
+    ayni_resource_queue_info_v1 info{sizeof(info), requests_.capacity(), 0, 0, longest_wait_us_};
+    for (uint32_t at = 0; at < requests_.size(); ++at) {
+        const auto &entry = requests_[at];
+        if (entry.phase == Phase::held) {
+            ++info.held;
+        } else {
+            ++info.waiting;
+            const auto waited = elapsed(now_us, entry.queued_us);
+            if (waited > info.longest_wait_us) {
+                info.longest_wait_us = waited;
+            }
+        }
+    }
+    return info;
+}
+
 } // namespace ayni::resources

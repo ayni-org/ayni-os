@@ -7,6 +7,23 @@
 
 extern "C" {
 
+ayni_status_t ayni_get_resource_queue(const ayni_kernel_t *kernel,
+                                      ayni_resource_queue_info_v1 *out_info) {
+    if (kernel == nullptr || out_info == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = ayni::catalog::check_struct_size(out_info->struct_size, sizeof(*out_info),
+                                                         sizeof(*out_info));
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (kernel->in_callback()) {
+        return AYNI_INVALID_STATE;
+    }
+    *out_info = kernel->resources.queue_info(kernel->host.monotonic_now_us(kernel->host.ctx));
+    return AYNI_OK;
+}
+
 ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc_v1 *device) {
     if (kernel == nullptr || device == nullptr) {
         return AYNI_INVALID_ARGUMENT;

@@ -98,6 +98,8 @@ class ResourceAdmission {
     uint64_t next_deadline_us() const;
     // Boot-local peak wait among requests acquired or removed.
     uint64_t longest_wait_us() const { return longest_wait_us_; }
+    // Copy group counts and maximum current/completed wait, without mutating statistics.
+    ayni_resource_queue_info_v1 queue_info(uint64_t now_us) const;
     // Number of live queued and held requests; no hidden overflow allocation.
     uint32_t size() const { return requests_.size(); }
     static constexpr uint32_t no_index = UINT32_MAX;

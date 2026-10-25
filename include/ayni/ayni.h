@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 32u
+#define AYNI_ABI_MINOR 33u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -962,6 +962,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_PROVIDER_RESULT ((ayni_reason_t)71)
 /* Since 0.31. EXPIRED: ordinary resource waiting reached its configured deadline. */
 #define AYNI_REASON_RESOURCE_WAIT ((ayni_reason_t)72)
+/* Since 0.33. INVALID_ARGUMENT: requested period is faster than the trusted background floor. */
+#define AYNI_REASON_BACKGROUND_FREQUENCY ((ayni_reason_t)73)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1097,6 +1099,28 @@ struct ayni_goal_requirement_sink_v1;
 typedef ayni_status_t (*ayni_goal_requirements_fn)(
     void *ctx, ayni_bytes_v1 parameters, const struct ayni_goal_requirement_sink_v1 *sink);
 
+typedef uint32_t ayni_work_class_t;
+/* Normal priority; resource timeout pauses the Task. Since 0.33. */
+#define AYNI_WORK_ORDINARY ((ayni_work_class_t)0)
+/* User interaction priority; resource timeout pauses the Task. Since 0.33. */
+#define AYNI_WORK_FOREGROUND ((ayni_work_class_t)1)
+/* Due reminder priority; resource wait is retained without timeout. Since 0.33. */
+#define AYNI_WORK_REMINDER ((ayni_work_class_t)2)
+/* Lowest priority, periodic only; resource timeout skips this Task. Since 0.33. */
+#define AYNI_WORK_BACKGROUND ((ayni_work_class_t)3)
+/* Default background period floor, in microseconds (5 minutes). Since 0.33. */
+#define AYNI_BACKGROUND_PERIOD_DEFAULT_US UINT64_C(300000000)
+/* Ordinary/foreground/background resource wait, in microseconds. Since 0.33. */
+#define AYNI_RESOURCE_WAIT_DEFAULT_US UINT64_C(30000000)
+
+/* Trusted GoalType scheduling profile; all zero preserves ordinary behavior. Since 0.33. */
+typedef struct ayni_work_profile_v1 {
+    ayni_work_class_t work_class;      /* One of WORK_*; never selected by a policy intent. */
+    uint32_t reserved;                 /* Must be zero. */
+    uint64_t background_period_min_us; /* BACKGROUND: 0 selects default, otherwise finite >= trigger
+                                          minimum; other classes: 0. */
+} ayni_work_profile_v1;
+
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
     uint32_t version;               /* nonzero */
@@ -1118,6 +1142,10 @@ typedef struct ayni_goal_type_v1 {
     /* Since 0.21. NULL explicitly declares zero needs for newly created Goals;
      * it does not reinterpret absent authorization metadata in older records. */
     ayni_goal_requirements_fn export_requirements;
+    /* Since 0.33. Copied into each Goal; changing it requires a new type version.
+     * REMINDER requires unbounded occurrence_wait_max_us; BACKGROUND allows INTERVAL only
+     * and requires occurrence_wait_max_us <= RESOURCE_WAIT_DEFAULT_US. */
+    ayni_work_profile_v1 work_profile;
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -1200,6 +1228,8 @@ typedef struct ayni_goal_info_v1 {
     /* Since 0.23: original relative expiry in microseconds; 0 means never.
      * This immutable value is independent of the current boot's expires_us. */
     uint64_t original_expiry_us;
+    /* Since 0.33. Immutable trusted scheduling semantics from creation. */
+    ayni_work_profile_v1 work_profile;
 } ayni_goal_info_v1;
 
 /*

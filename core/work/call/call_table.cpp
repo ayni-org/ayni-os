@@ -190,6 +190,22 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
 }
 
 ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp) {
+    return end_before_dispatch(
+        index, {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}}, stamp);
+}
+
+ayni_status_t CallTable::skip_before_dispatch(uint32_t index, ActionStamp stamp) {
+    const auto &state = slots_[index].entry->state;
+    if (state.attempt.request_id != 0U || state.cancel_cause != CallCancelCause::none) {
+        return AYNI_INVALID_STATE; // SKIPPED is a queue outcome, never a possible dispatch result.
+    }
+    return end_before_dispatch(
+        index, {AYNI_CALL_SKIPPED, AYNI_EXPIRED, AYNI_REASON_RESOURCE_WAIT, ActionEffect::none, {}},
+        stamp);
+}
+
+ayni_status_t CallTable::end_before_dispatch(uint32_t index, const CallResult &result,
+                                             ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
     if (!pending(entry) || !advances(entry, stamp)) {
         return AYNI_INVALID_STATE;
@@ -200,8 +216,7 @@ ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stam
             return status;
         }
     }
-    set_terminal(entry, {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
-                 stamp);
+    set_terminal(entry, result, stamp);
     return AYNI_OK;
 }
 

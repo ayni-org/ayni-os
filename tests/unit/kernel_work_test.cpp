@@ -89,6 +89,38 @@ TEST(WorkModel, registration_checks_its_arguments) {
     EXPECT_EQ(ayni_register_goal_type(kernel, &type), AYNI_INVALID_ARGUMENT);
 }
 
+// ADR-0047: trusted scheduling declarations must be internally consistent before registration.
+TEST(WorkModel, work_profiles_reject_invalid_classes_periods_and_reminder_waits) {
+    Node node;
+    node.create();
+    auto type = goal_type_desc("background", 1);
+    type.work_profile = {AYNI_WORK_BACKGROUND + 1, 0, 0};
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.work_profile = {AYNI_WORK_BACKGROUND, 0, 0};
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL);
+    type.work_profile.background_period_min_us = AYNI_TRIGGER_PERIOD_MIN_US - 1;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.work_profile.background_period_min_us = UINT64_MAX;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.work_profile.background_period_min_us = AYNI_TRIGGER_PERIOD_MIN_US;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.occurrence_wait_max_us = AYNI_RESOURCE_WAIT_DEFAULT_US;
+    ASSERT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_OK);
+    type = goal_type_desc("reminder", 1);
+    type.work_profile = {AYNI_WORK_REMINDER, 0, 0};
+    type.occurrence_wait_max_us = AYNI_RESOURCE_WAIT_DEFAULT_US;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    type.work_profile.reserved = 1;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.work_profile.reserved = 0;
+    type.work_profile.background_period_min_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
+    type.work_profile.background_period_min_us = 0;
+    EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_OK);
+}
+
 // C-PROD-001 and the configured capacities: a refused registration changes
 // nothing.
 TEST(WorkModel, registration_refuses_duplicates_and_capacity) {

@@ -8,8 +8,6 @@ namespace ayni::kernel {
 namespace {
 constexpr uint32_t identities_per_call =
     2; // Logical call and operation, both stable before dispatch.
-constexpr uint64_t default_wait_us =
-    30000000; // Ordinary foreground wait; reminders override later.
 
 ayni_string_v1 view(const catalog::CatalogId &id) {
     return {id.data(), id.size()};
@@ -185,14 +183,31 @@ authority::GrantCheck CallRuntime::check_input(uint32_t task_index, const catalo
 // resources. Sort resolved indices, keeping units attached to their resource.
 resources::ResourceRequest
 CallRuntime::resource_request(uint64_t call_id, uint64_t owner, const catalog::BindingLinks &links,
-                              const catalog::CallContract &contract) const {
+                              const catalog::CallContract &contract,
+                              const catalog::WorkProfile &profile) const {
     resources::ResourceRequest request{call_id,
                                        owner,
                                        resources::Priority::normal,
                                        resources::WaitAction::pause,
-                                       default_wait_us,
+                                       AYNI_RESOURCE_WAIT_DEFAULT_US,
                                        contract.resource_count,
                                        {}};
+    switch (profile.kind) {
+    case AYNI_WORK_FOREGROUND:
+        request.priority = resources::Priority::foreground;
+        break;
+    case AYNI_WORK_REMINDER:
+        request.priority = resources::Priority::foreground;
+        request.on_wait = resources::WaitAction::wait;
+        request.wait_us = resources::no_deadline;
+        break;
+    case AYNI_WORK_BACKGROUND:
+        request.priority = resources::Priority::background;
+        request.on_wait = resources::WaitAction::skip;
+        break;
+    default:
+        break; // ORDINARY preserves the existing normal queue and explicit pause semantics.
+    }
     for (uint32_t at = 0; at < contract.resource_count; ++at) {
         const resources::ResourceUnits units{links.resources[at], contract.resources[at].units};
         uint32_t place = at;
@@ -271,9 +286,10 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
     if (work_.calls.insert(
             identity, contract, work_.capabilities.domain_view(proposal.links.capability),
             {staging_, proposal.input_size}, {work_.ids.boot_epoch(), stamp}, index) != AYNI_OK ||
-        resources_.enqueue(
-            resource_request(identity.call_id, task.owner_instance_id, proposal.links, contract),
-            now_us) != AYNI_OK) {
+        resources_.enqueue(resource_request(identity.call_id, task.owner_instance_id,
+                                            proposal.links, contract,
+                                            work_.goals.at(task.goal_index).work_profile),
+                           now_us) != AYNI_OK) {
         return false;
     }
     slots_[index].active = Active{identity.call_id, Stage::queued, {}, std::nullopt};
