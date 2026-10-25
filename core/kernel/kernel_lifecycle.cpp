@@ -54,6 +54,14 @@ ayni_status_t ayni_kernel::start() {
     if (!work.goal_types.link_strategies(work.strategies)) {
         return AYNI_NOT_FOUND;
     }
+    const auto inventory = devices.validate();
+    if (inventory != AYNI_OK) {
+        return inventory;
+    }
+    const auto topology = resource_catalog.validate(devices);
+    if (topology != AYNI_OK) {
+        return topology;
+    }
     const auto linked =
         bindings.validate_all(work.capabilities, call_capabilities, providers, resource_catalog);
     if (linked != AYNI_OK) {

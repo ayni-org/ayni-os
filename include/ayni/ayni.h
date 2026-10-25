@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 31u
+#define AYNI_ABI_MINOR 32u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -173,6 +173,9 @@ typedef struct ayni_config_v1 {
     uint32_t call_capacity;
     uint32_t call_input_max_bytes;
     uint32_t call_result_max_bytes;
+    /* Since 0.32. Trusted physical topology; zero disables each directory. */
+    uint32_t device_capacity;
+    uint32_t component_capacity;
 } ayni_config_v1;
 
 /* Since 0.31. Bounded retained call bodies; no implicit history eviction. */
@@ -719,6 +722,13 @@ typedef struct ayni_string_v1 {
  * bytes of lowercase ASCII letters, digits, '.', '_' and '-'.
  */
 #define AYNI_CATALOG_ID_MAX_BYTES 32u
+
+/* Copied catalog ID; size 0 means no association, bytes beyond size are zero.
+ * No NUL terminator is required. Since 0.32. */
+typedef struct ayni_catalog_name_v1 {
+    uint32_t size;                        /* Bytes in data, at most AYNI_CATALOG_ID_MAX_BYTES. */
+    char data[AYNI_CATALOG_ID_MAX_BYTES]; /* Caller-owned immutable snapshot. */
+} ayni_catalog_name_v1;
 
 /* Object kinds an ayni_object_ref_v1 can name. */
 typedef uint32_t ayni_object_kind_t;

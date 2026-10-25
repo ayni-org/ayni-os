@@ -61,6 +61,26 @@ void place_call_runtime(Placer &placer, const KernelCapacities &capacities, Kern
                          {capacities.call_capacity, capacities.call_result_max_bytes}));
 }
 
+// Inventory descriptions and runtime admission stay separately owned in the arena.
+void place_resource_catalogs(Placer &placer, const KernelCapacities &capacities,
+                             KernelLayout &layout) {
+    layout.resource_catalog_offset =
+        placer.place(catalog::ResourceRegistry::storage_alignment,
+                     catalog::ResourceRegistry::storage_size(capacities.resource_capacity));
+    layout.resource_states_offset = placer.place(
+        resources::ResourceAdmission::storage_alignment,
+        resources::ResourceAdmission::state_storage_size(capacities.resource_capacity));
+    layout.resource_requests_offset = placer.place(
+        resources::ResourceAdmission::storage_alignment,
+        resources::ResourceAdmission::request_storage_size(capacities.resource_request_capacity));
+    layout.devices_offset =
+        placer.place(catalog::DeviceCatalog::storage_alignment,
+                     catalog::DeviceCatalog::device_storage_size(capacities.device_capacity));
+    layout.components_offset =
+        placer.place(catalog::DeviceCatalog::storage_alignment,
+                     catalog::DeviceCatalog::component_storage_size(capacities.component_capacity));
+}
+
 } // namespace
 
 KernelLayout layout_for(const KernelCapacities &capacities) {
@@ -124,15 +144,7 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
         placer.place(work::TaskAuthorityTable::storage_alignment,
                      work::TaskAuthorityTable::storage_size(
                          {capacities.task_capacity, capacities.goal_requirement_capacity}));
-    layout.resource_catalog_offset =
-        placer.place(catalog::ResourceRegistry::storage_alignment,
-                     catalog::ResourceRegistry::storage_size(capacities.resource_capacity));
-    layout.resource_states_offset = placer.place(
-        resources::ResourceAdmission::storage_alignment,
-        resources::ResourceAdmission::state_storage_size(capacities.resource_capacity));
-    layout.resource_requests_offset = placer.place(
-        resources::ResourceAdmission::storage_alignment,
-        resources::ResourceAdmission::request_storage_size(capacities.resource_request_capacity));
+    place_resource_catalogs(placer, capacities, layout);
     place_call_catalogs(placer, capacities, layout);
     place_call_runtime(placer, capacities, layout);
     layout.size = placer.end();

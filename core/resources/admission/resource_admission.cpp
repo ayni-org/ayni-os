@@ -51,14 +51,21 @@ ayni_resource_info_v1 ResourceAdmission::info(uint32_t index) const {
                     : state.used != 0U             ? AYNI_RESOURCE_HELD
                                                    : AYNI_RESOURCE_FREE;
     }
-    return {sizeof(ayni_resource_info_v1),
-            effective,
-            state.health,
-            resource.capacity,
-            state.used,
-            resource.flags,
-            state.quarantine.call_id,
-            state.quarantine.generation};
+    ayni_resource_info_v1 info{sizeof(ayni_resource_info_v1),
+                               effective,
+                               state.health,
+                               resource.capacity,
+                               state.used,
+                               resource.flags,
+                               state.quarantine.call_id,
+                               state.quarantine.generation,
+                               resource.component_count,
+                               {},
+                               resource.conflict_domain.snapshot()};
+    for (uint32_t at = 0; at < resource.component_count; ++at) {
+        info.components[at] = resource.components[at].snapshot();
+    }
+    return info;
 }
 
 // Validate before consuming a ticket/slot, including the complete resource
@@ -79,7 +86,12 @@ ayni_status_t ResourceAdmission::validate(const ResourceRequest &request) const 
             return AYNI_INVALID_ARGUMENT;
         }
     }
-    return AYNI_OK;
+    std::array<uint32_t, resource_group_max> indices{};
+    for (uint32_t at = 0; at < request.count; ++at) {
+        indices[at] = request.resources[at].index;
+    }
+    return registry_.compatible_group(indices.data(), request.count) ? AYNI_OK
+                                                                     : AYNI_INVALID_ARGUMENT;
 }
 
 // Accept a complete bounded group or leave both queue and ticket unchanged;
@@ -149,6 +161,18 @@ WaitReason ResourceAdmission::availability(const Entry &entry, uint32_t &index) 
         // Subtraction avoids overflow even when capacity is UINT32_MAX.
         if (units.units > registry_.at(units.index).capacity - state.used) {
             return WaitReason::occupied;
+        }
+    }
+    // A different resource in the domain also excludes this request. Quarantine
+    // survives release and health changes, so it blocks the whole conflict domain.
+    for (uint32_t at = 0; at < entry.request.count; ++at) {
+        for (uint32_t other = 0; other < registry_.size(); ++other) {
+            if (registry_.conflict(entry.request.resources[at].index, other) &&
+                (states_[other].used != 0U || states_[other].quarantine.call_id != 0U)) {
+                index = other;
+                return states_[other].quarantine.call_id != 0U ? WaitReason::quarantined
+                                                               : WaitReason::conflict;
+            }
         }
     }
     index = no_index;

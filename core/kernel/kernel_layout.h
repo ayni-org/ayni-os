@@ -36,6 +36,8 @@ struct KernelLayout {
     std::size_t calls_offset;                // Work-owned retained call rows and byte pools.
     std::size_t provider_completions_offset; // Separate Provider delivery capacity.
     std::size_t call_runtime_offset;         // Volatile I/O ownership and callback-copy buffers.
+    std::size_t devices_offset;              // Copied immutable device identities.
+    std::size_t components_offset;           // Copied component-to-device relationships.
     std::size_t size;
     std::size_t alignment; // a power of two
 };

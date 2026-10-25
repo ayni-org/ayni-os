@@ -137,8 +137,8 @@ TEST_F(ProviderApi, offline_resources_link_but_an_impossible_group_is_rejected) 
     capability.contract.resource_count = 1;
     register_all();
     EXPECT_EQ(ayni_start(node.kernel()), AYNI_NOT_FOUND);
-    const ayni_resource_desc_v1 resource{sizeof(resource), AYNI_RESOURCE_SHARED, demand.resource_id,
-                                         1, 0};
+    const ayni_resource_desc_v1 resource{
+        sizeof(resource), AYNI_RESOURCE_SHARED, demand.resource_id, 1, 0, 0, 0, nullptr, {}};
     ASSERT_EQ(ayni_register_resource(node.kernel(), &resource), AYNI_OK);
     EXPECT_EQ(ayni_start(node.kernel()), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(submissions, 0U);
@@ -154,8 +154,8 @@ TEST_F(ProviderApi, canonical_resource_order_does_not_change_offer_compatibility
     ASSERT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_OK);
     ASSERT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_OK);
     for (const auto &demand : demands) {
-        const ayni_resource_desc_v1 resource{sizeof(resource), AYNI_RESOURCE_SHARED,
-                                             demand.resource_id, 1, 0};
+        const ayni_resource_desc_v1 resource{
+            sizeof(resource), AYNI_RESOURCE_SHARED, demand.resource_id, 1, 0, 0, 0, nullptr, {}};
         ASSERT_EQ(ayni_register_resource(node.kernel(), &resource), AYNI_OK);
     }
     ASSERT_EQ(ayni_start(node.kernel()), AYNI_OK);
@@ -224,5 +224,24 @@ TEST_F(ProviderApi, disabled_directories_fail_explicitly_and_configuration_bound
     disabled.config().provider_capacity = AYNI_PROVIDER_CAPACITY_MAX + 1;
     EXPECT_EQ(ayni_kernel_memory_requirements(&disabled.config(), &size, &alignment),
               AYNI_INVALID_ARGUMENT);
+}
+// C-RES-002: an intrinsically conflicting declaration fails at startup, before I/O.
+TEST_F(ProviderApi, conflicting_resource_group_is_rejected_before_any_provider_submission) {
+    const ayni_call_resource_v1 demands[] = {{{"record", 6}, 1, 0}, {{"play", 4}, 1, 0}};
+    capability.contract.resources = demands;
+    capability.contract.resource_count = 2;
+    authority();
+    ASSERT_EQ(ayni_register_call_capability(node.kernel(), &capability), AYNI_OK);
+    ASSERT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_OK);
+    ASSERT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_OK);
+    for (const auto &demand : demands) {
+        const ayni_resource_desc_v1 resource{
+            sizeof(resource), AYNI_RESOURCE_SHARED, demand.resource_id, 1, 0, 0, 0,
+            nullptr,          {"audio", 5}};
+        ASSERT_EQ(ayni_register_resource(node.kernel(), &resource), AYNI_OK);
+    }
+    EXPECT_EQ(ayni_start(node.kernel()), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_CONFIGURING);
+    EXPECT_EQ(submissions, 0U);
 }
 } // namespace

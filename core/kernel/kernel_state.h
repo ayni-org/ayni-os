@@ -46,6 +46,8 @@ struct ayni_kernel {
           resource_catalog(storage.resource_catalog, capacities.resource_capacity),
           resources(resource_catalog, storage.resource_states, capacities.resource_capacity,
                     storage.resource_requests, capacities.resource_request_capacity),
+          devices(storage.devices, capacities.device_capacity, storage.components,
+                  capacities.component_capacity),
           call_capabilities(storage.call_capabilities, capacities.call_capability_capacity),
           providers(storage.providers, capacities.provider_capacity),
           bindings(storage.bindings, capacities.binding_capacity),
@@ -113,6 +115,7 @@ struct ayni_kernel {
     ayni::resources::ResourceAdmission resources;
     // Catalog owners retain immutable execution declarations and trusted selection;
     // callback contexts belong to runtime, while no live call state lives here.
+    ayni::catalog::DeviceCatalog devices; // Immutable inventory; no health or resource ownership.
     ayni::catalog::CallCapabilityRegistry call_capabilities;
     ayni::catalog::ProviderRegistry providers;
     ayni::catalog::BindingRegistry bindings;

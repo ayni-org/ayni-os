@@ -22,7 +22,7 @@ struct Arena {
 
 class ResourceAdmissionTest : public ::testing::Test {
   protected:
-    ResourceAdmissionTest()
+    explicit ResourceAdmissionTest(bool conflicts = false)
         : catalog_memory(ayni::catalog::ResourceRegistry::storage_size(resource_count)),
           state_memory(ResourceAdmission::state_storage_size(resource_count)),
           request_memory(ResourceAdmission::request_storage_size(request_count)),
@@ -30,13 +30,22 @@ class ResourceAdmissionTest : public ::testing::Test {
           admission(registry, state_memory.data(), resource_count, request_memory.data(),
                     request_count) {
         add("model", 5, AYNI_RESOURCE_SHARED, 1);
-        add("audio", 5, AYNI_RESOURCE_SHARED, 2);
-        add("motor", 5, AYNI_RESOURCE_EXCLUSIVE, 1, AYNI_RESOURCE_ACTUATOR);
+        add("audio", 5, AYNI_RESOURCE_SHARED, 2, 0, conflicts);
+        add("motor", 5, AYNI_RESOURCE_EXCLUSIVE, 1, AYNI_RESOURCE_ACTUATOR, conflicts);
         add("network", 7, AYNI_RESOURCE_SHARED, UINT32_MAX);
     }
     void add(const char *name, uint32_t length, ayni_resource_kind_t kind, uint32_t capacity,
-             uint32_t flags = 0) {
-        const ayni_resource_desc_v1 input{sizeof(input), kind, {name, length}, capacity, flags};
+             uint32_t flags = 0, bool conflict = false) {
+        const ayni_resource_desc_v1 input{sizeof(input),
+                                          kind,
+                                          {name, length},
+                                          capacity,
+                                          flags,
+                                          0,
+                                          0,
+                                          nullptr,
+                                          conflict ? ayni_string_v1{"shared.bus", 10}
+                                                   : ayni_string_v1{}};
         ayni::catalog::Resource decoded{};
         ASSERT_EQ(registry.decode(input, decoded), AYNI_OK);
         ASSERT_EQ(registry.add_validated(decoded), AYNI_OK);
@@ -293,4 +302,57 @@ TEST_F(ResourceAdmissionTest, malformed_groups_and_full_queue_preserve_existing_
     take(2);
 }
 
+class ConflictDomainTest : public ResourceAdmissionTest {
+  protected:
+    ConflictDomainTest() : ResourceAdmissionTest(true) {}
+};
+
+// C-RES-002/004: same-resource sharing survives, conflicting resources wait atomically.
+TEST_F(ConflictDomainTest, sharing_and_unrelated_agents_continue_while_other_domain_member_waits) {
+    queue(request(1, 1, 1));
+    take(1);
+    queue(request(2, 2, 1));
+    take(2);
+    queue(request(3, 3, 2));
+    EXPECT_FALSE(acquire(3, 0));
+    WaitReason reason{};
+    uint32_t resource = 0;
+    uint64_t waited = 0;
+    ASSERT_TRUE(admission.waiting(3, 0, reason, resource, waited));
+    EXPECT_EQ(reason, WaitReason::conflict);
+    EXPECT_EQ(resource, 1U);
+    queue(request(4, 4, 0));
+    take(4);
+    EXPECT_EQ(admission.info(2).used, 0U);
+    ASSERT_TRUE(release(1));
+    EXPECT_FALSE(acquire(3, 0));
+    ASSERT_TRUE(release(2));
+    take(3);
+}
+
+// C-RES-008: health cannot release another member's unconfirmed stop isolation.
+TEST_F(ConflictDomainTest, stop_quarantine_blocks_all_other_members_until_exact_confirmation) {
+    queue(request(1, 1, 2));
+    take(1);
+    ASSERT_TRUE(release(1));
+    queue(request(2, 2, 1));
+    EXPECT_FALSE(acquire(2, 0));
+    bool changed = false;
+    ASSERT_EQ(admission.set_health(2, AYNI_RESOURCE_OFFLINE, changed), AYNI_OK);
+    EXPECT_FALSE(acquire(2, 0));
+    EXPECT_FALSE(admission.confirm_stopped(2, {1, claims[1].generation + 1}));
+    ASSERT_TRUE(admission.confirm_stopped(2, claims[1]));
+    take(2);
+}
+
+// C-RES-002: an impossible group cannot consume a queue slot or a resource unit.
+TEST_F(ConflictDomainTest, self_conflicting_group_is_rejected_without_partial_admission) {
+    auto group = request(1, 1, 1);
+    group.count = 2;
+    group.resources[1] = {2, 1};
+    EXPECT_EQ(admission.enqueue(group, 0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(admission.size(), 0U);
+    EXPECT_EQ(admission.info(1).used, 0U);
+    EXPECT_EQ(admission.info(2).used, 0U);
+}
 } // namespace

@@ -41,6 +41,8 @@ struct KernelCapacities {
     uint32_t call_capacity = 0; // Retained calls and Provider delivery slots; zero disables.
     uint32_t call_input_max_bytes = AYNI_CALL_INPUT_BYTES_DEFAULT;   // Complete canonical input.
     uint32_t call_result_max_bytes = AYNI_CALL_RESULT_BYTES_DEFAULT; // UTF-8 result stride.
+    uint32_t device_capacity = 0;    // Trusted device inventory, disabled by default.
+    uint32_t component_capacity = 0; // Trusted parent links, disabled by default.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -80,6 +82,8 @@ struct KernelStorage {
     void *bindings = nullptr;          // Catalog-owned exact selections; null iff disabled.
     void *calls = nullptr; // Work-owned identities, state and bodies; null iff disabled.
     void *provider_completions = nullptr; // Reliable delivery storage, separate from Host slots.
+    void *devices = nullptr;              // DeviceCatalog identities; unused at zero capacity.
+    void *components = nullptr;           // DeviceCatalog parent links; unused at zero capacity.
     void *call_runtime = nullptr; // Boot-local I/O ownership plus staging and receipt copies.
 };
 

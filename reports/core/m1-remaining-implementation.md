@@ -5,8 +5,8 @@
 | 顺序 | 能力 | 实施及验收边界 | 状态 |
 |---|---|---|---|
 | 0 | 产品约束 | 废止费用额度，记录直连 API、公平性、持久暂停、满表拒绝及测试边界 | 已随 #60 合并 |
-| 1 | MA-018A | 可信静态资源目录；运行健康/占用/隔离；全有或全无；Agent 轮转、实例 FIFO；等待原因/期限；Task 持久调用次数与所有者提高上限 | 资源机制见 [#60](https://github.com/RobotSe7en/ayni/pull/60)；运行限制/所有者提高上限见 [#61](https://github.com/RobotSe7en/ayni/pull/61)（ADR-0043）；调用消费仍待 MA-008A |
-| 2 | MA-008A | 统一调用与稳定步骤身份，Binding 校验，ActionRecord、PREPARED/DISPATCHING 持久屏障，最终复核；进度/取消/终态可靠完成槽；B4 原子应用；Mock A/B；排空关闭 | 内部结果交接已合并 #62（ADR-0044）；内部调用契约已实施（ADR-0045），公开调用链尚未接入 |
+| 1 | MA-018A | 可信静态资源目录；运行健康/占用/隔离；全有或全无；Agent 轮转、实例 FIFO；等待原因/期限；Task 持久调用次数与所有者提高上限 | 资源机制见 [#60](https://github.com/RobotSe7en/ayni/pull/60)；运行限制/所有者提高上限见 [#61](https://github.com/RobotSe7en/ayni/pull/61)（ADR-0043）；调用消费已由 #64 接通；Device/Component/冲突域见 [#65](https://github.com/RobotSe7en/ayni/pull/65)；工作分类待交付 |
+| 2 | MA-008A | 统一调用与稳定步骤身份，Binding 校验，ActionRecord、PREPARED/DISPATCHING 持久屏障，最终复核；进度/取消/终态可靠完成槽；B4 原子应用；Mock A/B；排空关闭 | 内部结果交接已合并 #62（ADR-0044）；内部调用契约已合并 #63，公开调用链/完成/对账/等待恢复已合并 #64（ADR-0045）；可复用 Mock A/B 待交付 |
 | 3 | MA-018B | 过程与控制会话、nonce 锚定续租、到期不可恢复、即时授权门控、最小 Scene；停止确认前隔离；独立模拟执行端/停止链 | 未开始 |
 | 4 | MA-008B | 订阅 open/renew/close、代际/序号/gap、TTL/质量、媒体引用；新代际与依赖复核；可靠控制回执 | 未开始 |
 | 5 | MA-008C | libcurl multi 工作线程、yyjson 有界解析；运行时 endpoint/model/secret；非流式文本与工具调用；本地协议夹具；实 API 单独验证 | 未开始 |

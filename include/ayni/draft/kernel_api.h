@@ -37,21 +37,10 @@ extern "C" {
 
 /* ---- Catalog descriptors (contracts/domain/primitives.md) ------------- */
 
-typedef struct ayni_device_desc_v1 {
-    uint32_t struct_size;
-    uint32_t reserved; /* 0 */
-    ayni_string_v1 device_id;
-    ayni_string_v1 host_profile; /* "CORE_LITE", "CORE_FULL" */
-    ayni_string_v1 firmware_version;
-} ayni_device_desc_v1;
-
-/* Resource registration lives in ayni/resources.h since 0.29. Control-domain
- * authority epochs and device/binding associations remain MA-018B/MA-008;
- * the current ACTUATOR flag promises quarantine, not execution permission. */
-
-/* Call execution properties, Provider offers and Binding registration are
- * published in ayni/calls.h since 0.31. Device registration remains a draft. */
-ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc_v1 *device);
+/* Device/Component inventory and resource associations are published in
+ * ayni/resources.h since 0.32. Control-domain authority and measured
+ * calibration remain MA-018B/MA-026; ACTUATOR alone grants no execution.
+ * Call contracts, Provider offers and Bindings remain in ayni/calls.h since 0.31. */
 
 /*
  * ayni_start (ayni.h) will also freeze the catalog and validate every cross

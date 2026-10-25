@@ -28,6 +28,7 @@ ayni_add_core_module(catalog
         catalog/provider/provider_registry.cpp
         catalog/binding/binding_registry.cpp
         catalog/goal_type/goal_type_registry.cpp
+        catalog/device/device_catalog.cpp
         catalog/resource/resource_registry.cpp
         catalog/strategy/strategy_registry.cpp
     DEPENDS foundation)

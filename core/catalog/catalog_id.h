@@ -24,6 +24,8 @@ class CatalogId {
     bool assign(ayni_string_v1 text);
 
     bool equals(ayni_string_v1 text) const;
+    // Copied ABI snapshot, zero padded; an empty ID keeps size zero.
+    ayni_catalog_name_v1 snapshot() const;
 
     const char *data() const { return bytes_.data(); }
     uint32_t size() const { return size_; }
