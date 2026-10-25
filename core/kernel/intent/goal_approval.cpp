@@ -77,10 +77,10 @@ authority::GrantCheck check_context(const WorkModel &model, const ApprovalPlan &
     }
     for (uint32_t index = 0; index < plan.record.count; ++index) {
         const auto &need = plan.record.requirements[index];
-        const auto entry = model.capabilities.find(
+        const auto entry = model.catalogs.capabilities.find(
             {need.capability_id.data(), need.capability_id.size()}, need.capability_version);
         if (entry.kind != catalog::CapabilityRegistry::Lookup::Kind::found ||
-            !model.capabilities.matches_domain(entry.index, need.source_domain)) {
+            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain)) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_CATALOG_CHANGED};
         }
         if (need.dependency.grant_id != 0U) {
@@ -153,7 +153,6 @@ bool publish_batch(WorkModel &model, const Intent &intent, const authority::Sess
     outcome.commit_seq = stamp.commit_seq;
     outcome.due_work = true;
     outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
-    model.due_work_changed = true;
     return true;
 }
 
@@ -162,9 +161,6 @@ bool publish_batch(WorkModel &model, const Intent &intent, const authority::Sess
 ayni_status_t approve_goal(WorkModel &model, const Intent &intent,
                            const authority::Session &session, uint64_t now_us, uint64_t durable_seq,
                            IntentOutcome &outcome, IntentFailure &failure) {
-    if (!bound_management_session(model, session, durable_seq)) {
-        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
-    }
     ApprovalPlan plan{};
     const auto admitted = admit_goal(model, intent, now_us, plan, failure);
     if (admitted != AYNI_OK) {

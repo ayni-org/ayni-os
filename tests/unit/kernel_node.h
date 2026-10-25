@@ -5,9 +5,9 @@
 #ifndef AYNI_TESTS_UNIT_KERNEL_NODE_H
 #define AYNI_TESTS_UNIT_KERNEL_NODE_H
 
-#include "kernel/kernel_config.h"
-#include "kernel/kernel_state.h"
-#include "kernel/work_journal.h"
+#include "kernel/config/kernel_config.h"
+#include "kernel/persistence/work_journal.h"
+#include "kernel_test_probe.h"
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>
@@ -124,7 +124,7 @@ class Node {
     // White-box: deadline assertions about goals account for the separate
     // storage deadline added by ADR-0027. A due write sets more_ready instead.
     uint64_t with_storage_deadline(uint64_t goal_deadline) const {
-        const auto storage_deadline = kernel_->log.next_deadline();
+        const auto storage_deadline = ayni::kernel::KernelTestProbe::log(kernel_).next_deadline();
         return storage_deadline > sim_.now_us() && storage_deadline < goal_deadline
                    ? storage_deadline
                    : goal_deadline;
@@ -207,19 +207,19 @@ class Node {
         // White-box: applies the result of the append of the batch that
         // started the work model, one item and nothing else, so that a test
         // in RUNNING begins with nothing in flight or done.
-        for (int round = 0;
-             round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING && !kernel_->log.idle();
+        for (int round = 0; round < 100 && lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                            !ayni::kernel::KernelTestProbe::log(kernel_).idle();
              ++round) {
-            if (kernel_->completions.posted_count() > 0U) {
+            if (ayni::kernel::KernelTestProbe::completions(kernel_).posted_count() > 0U) {
                 step(1);
             } else {
                 // White-box: drive only the already committed startup batch,
                 // without deriving or deciding restored work in this fixture.
-                const auto deadline = kernel_->log.next_deadline();
+                const auto deadline = ayni::kernel::KernelTestProbe::log(kernel_).next_deadline();
                 if (deadline != UINT64_MAX && deadline > sim_.now_us()) {
                     sim_.advance_us(deadline - sim_.now_us());
                 }
-                kernel_->log.advance(sim_.now_us());
+                ayni::kernel::KernelTestProbe::log(kernel_).advance(sim_.now_us());
             }
             sim_.complete_storage();
         }

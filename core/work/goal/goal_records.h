@@ -8,6 +8,7 @@
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_RECORDS_H
 #define AYNI_CORE_WORK_GOAL_GOAL_RECORDS_H
 
+#include "durability/batch/record_types.h"
 #include "work/goal/goal_table.h"
 
 #include <ayni/ayni.h>
@@ -16,7 +17,7 @@
 
 namespace ayni::work {
 
-constexpr uint16_t goal_record_type = 3;
+constexpr uint16_t goal_record_type = durability::record_type::goal;
 constexpr uint16_t goal_record_version = 1;
 // Type 3/v2 keeps v1's body but requires paired type 17 authority metadata.
 constexpr uint16_t goal_with_authority_record_version = 2;
@@ -29,7 +30,7 @@ constexpr uint16_t goal_creation_stamp_snapshot_version = 4;
 constexpr uint16_t goal_work_profile_record_version = 5;
 constexpr uint16_t goal_work_profile_snapshot_version = 6;
 constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
-constexpr uint16_t goal_state_record_type = 4;
+constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;
 // Type 4/v2 carries state for an explicitly authorized Goal, including updates
 // to an older v2 Goal; this protects old readers without rewriting creation.

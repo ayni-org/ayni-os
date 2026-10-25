@@ -3,10 +3,12 @@
 #ifndef AYNI_CORE_WORK_CALL_CALL_RECORDS_H
 #define AYNI_CORE_WORK_CALL_CALL_RECORDS_H
 
+#include "durability/batch/record_types.h"
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-constexpr uint16_t call_record_type = 21; // REQUIRED; older readers explicitly refuse calls.
+// REQUIRED; older readers explicitly refuse calls.
+constexpr uint16_t call_record_type = durability::record_type::call;
 constexpr uint16_t call_record_version = 1;
 constexpr uint16_t call_execution_record_version =
     3; // Full original execution constraints and local stop facts.

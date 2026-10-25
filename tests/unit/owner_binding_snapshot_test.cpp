@@ -4,8 +4,8 @@
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/little_endian.h"
-#include "kernel/work_replay.h"
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_replay.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "work/agent/agent_records.h"
 #include "work_node.h"
 
@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -126,8 +128,8 @@ void activate_snapshot(const Snapshot &snapshot, ayni::hosts::sim::StorageImage 
 TEST(OwnerBindingSnapshot, paged_round_trip_keeps_the_original_binding_stamp_and_expected_owner) {
     WorkNode node;
     node.run();
-    ASSERT_NE(node.kernel()->work.principals.binding(), nullptr);
-    const auto binding = *node.kernel()->work.principals.binding();
+    ASSERT_NE(KernelTestProbe::work(node.kernel()).principals.binding(), nullptr);
+    const auto binding = *KernelTestProbe::work(node.kernel()).principals.binding();
     ASSERT_EQ(node.change_agent(AYNI_INTENT_INSTANCE_PAUSE, agent_a).status, AYNI_OK);
     node.node().recover(); // Store the pause without running application work.
     const Snapshot snapshot = snapshot_of(node);
@@ -140,13 +142,13 @@ TEST(OwnerBindingSnapshot, paged_round_trip_keeps_the_original_binding_stamp_and
     EXPECT_EQ(first.length, ayni::authority::owner_binding_record_size + snapshot_stamp_size);
     ASSERT_LT(binding.stamp.commit_seq, snapshot.metadata.covers_commit_seq);
 
-    node.kernel()->replay.discard_for_reload();
-    auto &principals = node.kernel()->work.principals;
+    KernelTestProbe::replay(node.kernel()).discard_for_reload();
+    auto &principals = KernelTestProbe::work(node.kernel()).principals;
     EXPECT_FALSE(principals.binding_known());
     ASSERT_NE(principals.owner(), nullptr);
     EXPECT_EQ(principals.owner()->principal_id, owner_id);
     EXPECT_EQ(principals.owner()->binding_revision, owner_binding);
-    ASSERT_EQ(import_snapshot(node.kernel()->work, snapshot), BatchCheck::ok);
+    ASSERT_EQ(import_snapshot(KernelTestProbe::work(node.kernel()), snapshot), BatchCheck::ok);
     ASSERT_NE(principals.binding(), nullptr);
     EXPECT_TRUE(principals.binding_matches());
     EXPECT_EQ(principals.binding()->principal_id, binding.principal_id);
@@ -175,9 +177,10 @@ TEST(OwnerBindingSnapshot, duplicate_or_nonleading_binding_is_corrupt) {
         }
         WorkNode restored;
         restored.run();
-        restored.kernel()->replay.discard_for_reload();
-        EXPECT_EQ(import_snapshot(restored.kernel()->work, changed), BatchCheck::corrupt);
-        restored.kernel()->replay.discard_for_reload();
+        KernelTestProbe::replay(restored.kernel()).discard_for_reload();
+        EXPECT_EQ(import_snapshot(KernelTestProbe::work(restored.kernel()), changed),
+                  BatchCheck::corrupt);
+        KernelTestProbe::replay(restored.kernel()).discard_for_reload();
     }
 }
 
@@ -196,9 +199,10 @@ TEST(OwnerBindingSnapshot, an_owner_binding_cannot_be_marked_optional) {
         ayni::durability::write_record_header(header, changed.bytes.data());
         WorkNode restored;
         restored.run();
-        restored.kernel()->replay.discard_for_reload();
-        EXPECT_EQ(import_snapshot(restored.kernel()->work, changed), BatchCheck::corrupt);
-        EXPECT_FALSE(restored.kernel()->work.principals.binding_known());
+        KernelTestProbe::replay(restored.kernel()).discard_for_reload();
+        EXPECT_EQ(import_snapshot(KernelTestProbe::work(restored.kernel()), changed),
+                  BatchCheck::corrupt);
+        EXPECT_FALSE(KernelTestProbe::work(restored.kernel()).principals.binding_known());
     }
 }
 
@@ -219,9 +223,10 @@ TEST(OwnerBindingSnapshot, binding_stamp_must_be_nonzero_and_within_the_snapshot
             ayni::foundation::store_le64(changed.bytes.data() + offset, zero ? 0 : boundary + 1U);
             WorkNode restored;
             restored.run();
-            restored.kernel()->replay.discard_for_reload();
-            EXPECT_EQ(import_snapshot(restored.kernel()->work, changed), BatchCheck::corrupt);
-            EXPECT_FALSE(restored.kernel()->work.principals.binding_known());
+            KernelTestProbe::replay(restored.kernel()).discard_for_reload();
+            EXPECT_EQ(import_snapshot(KernelTestProbe::work(restored.kernel()), changed),
+                      BatchCheck::corrupt);
+            EXPECT_FALSE(KernelTestProbe::work(restored.kernel()).principals.binding_known());
         }
     }
 }
@@ -239,7 +244,7 @@ TEST(OwnerBindingSnapshot, a_host_binding_mismatch_is_not_snapshot_corruption) {
         ASSERT_EQ(ayni_register_principal(kernel, &owner), AYNI_OK);
     });
     restored.create();
-    auto &model = restored.kernel()->work;
+    auto &model = KernelTestProbe::work(restored.kernel());
     ASSERT_EQ(import_snapshot(model, snapshot), BatchCheck::ok);
     ASSERT_TRUE(model.principals.binding_known());
     EXPECT_FALSE(model.principals.binding_matches());
@@ -257,7 +262,7 @@ TEST(OwnerBindingSnapshot,
     ASSERT_EQ(created.status, AYNI_OK);
     node.node().step(1); // Derive the task; do not let its strategy decide it.
     node.node().recover();
-    auto &model = node.kernel()->work;
+    auto &model = KernelTestProbe::work(node.kernel());
     ASSERT_EQ(model.goals.size(), 1U);
     ASSERT_EQ(model.tasks.size(), 1U);
     const auto goal = model.goals.at(0);
@@ -268,7 +273,7 @@ TEST(OwnerBindingSnapshot,
     ASSERT_GE(snapshot.bytes.size(), record_prefix);
     EXPECT_EQ(ayni::durability::read_record_header(snapshot.bytes.data()).type,
               ayni::work::instance_record_type);
-    node.kernel()->replay.discard_for_reload();
+    KernelTestProbe::replay(node.kernel()).discard_for_reload();
     ASSERT_EQ(import_snapshot(model, snapshot), BatchCheck::ok);
     EXPECT_FALSE(model.principals.binding_known());
     ASSERT_EQ(model.goals.size(), 1U);
@@ -281,7 +286,7 @@ TEST(OwnerBindingSnapshot,
     EXPECT_FALSE(ayni::work::TaskTable::is_held(model.tasks.at(0)));
     // White-box: raw import retains diagnostic facts; the boot must refuse
     // this image before finish/startup can acquire any new owner (ADR-0038).
-    EXPECT_FALSE(node.kernel()->replay.binding_matches());
+    EXPECT_FALSE(KernelTestProbe::replay(node.kernel()).binding_matches());
     EXPECT_EQ(model.goals.at(0).commit_seq, goal.commit_seq);
     EXPECT_EQ(model.tasks.at(0).commit_seq, task.commit_seq);
 }
@@ -289,8 +294,8 @@ TEST(OwnerBindingSnapshot,
 TEST(OwnerBindingReplay, the_binding_is_restored_once_without_replacing_the_expected_owner) {
     WorkNode node;
     node.run();
-    ASSERT_NE(node.kernel()->work.principals.binding(), nullptr);
-    const auto binding = *node.kernel()->work.principals.binding();
+    ASSERT_NE(KernelTestProbe::work(node.kernel()).principals.binding(), nullptr);
+    const auto binding = *KernelTestProbe::work(node.kernel()).principals.binding();
     std::array<uint8_t, ayni::authority::owner_binding_record_size> body{};
     ayni::authority::write_owner_binding_record(binding, body.data());
     const ayni::durability::RecordHeader header{
@@ -298,24 +303,26 @@ TEST(OwnerBindingReplay, the_binding_is_restored_once_without_replacing_the_expe
         ayni::durability::record_required, static_cast<uint32_t>(body.size())};
     const ayni::durability::BatchIdentity batch{1, binding.stamp.commit_seq,
                                                 binding.stamp.transition_id};
-    auto &replay = node.kernel()->replay;
-    auto &principals = node.kernel()->work.principals;
+    const uint64_t boot_epoch = KernelTestProbe::boot(node.kernel()).boot_epoch();
+    auto &replay = KernelTestProbe::replay(node.kernel());
+    auto &principals = KernelTestProbe::work(node.kernel()).principals;
     replay.discard_for_reload();
     for (const uint16_t version : {uint16_t{1}, uint16_t{2}}) {
         auto optional = header;
         optional.flags = 0;
         optional.version = version;
         EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(optional), RecordUse::corrupt);
-        EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, optional, body.data()),
-                  RecordUse::corrupt);
+        EXPECT_EQ(
+            ayni::kernel::WorkReplay::on_record(&replay, batch, optional, body.data(), boot_epoch),
+            RecordUse::corrupt);
         EXPECT_FALSE(principals.binding_known());
     }
     ASSERT_EQ(ayni::kernel::WorkReplay::classify_header(header), RecordUse::applied);
-    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data()),
+    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data(), boot_epoch),
               RecordUse::applied);
     ASSERT_NE(principals.binding(), nullptr);
     EXPECT_EQ(principals.binding()->stamp.commit_seq, binding.stamp.commit_seq);
-    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data()),
+    EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, batch, header, body.data(), boot_epoch),
               RecordUse::corrupt);
     replay.discard();
     EXPECT_FALSE(principals.binding_known());
@@ -327,8 +334,8 @@ TEST(OwnerBindingReplay, the_binding_is_restored_once_without_replacing_the_expe
 TEST(OwnerBindingJournal, the_binding_and_initial_instances_share_one_transition_and_batch) {
     WorkNode node;
     node.run();
-    ASSERT_NE(node.kernel()->work.principals.binding(), nullptr);
-    const auto binding = *node.kernel()->work.principals.binding();
+    ASSERT_NE(KernelTestProbe::work(node.kernel()).principals.binding(), nullptr);
+    const auto binding = *KernelTestProbe::work(node.kernel()).principals.binding();
     uint32_t bindings = 0;
     for (const auto &stored : node.node().sim().log()) {
         ayni::durability::BatchView batch{};
@@ -357,9 +364,11 @@ TEST(OwnerBindingJournal, the_binding_and_initial_instances_share_one_transition
                 ++instances;
                 ayni::work::InstanceRecord record{};
                 ASSERT_TRUE(ayni::work::read_instance_record(body, header.length, record));
-                ASSERT_NE(node.kernel()->work.agents.find_instance(record.instance_id), nullptr);
+                ASSERT_NE(
+                    KernelTestProbe::work(node.kernel()).agents.find_instance(record.instance_id),
+                    nullptr);
                 const auto &instance =
-                    *node.kernel()->work.agents.find_instance(record.instance_id);
+                    *KernelTestProbe::work(node.kernel()).agents.find_instance(record.instance_id);
                 EXPECT_EQ(instance.stamp.commit_seq, batch.identity.commit_seq);
                 EXPECT_EQ(instance.stamp.transition_id, batch.identity.transition_id);
             }
@@ -386,7 +395,8 @@ TEST(OwnerBindingJournal, an_optional_binding_is_rejected_before_recovery_writes
             WorkNode valid;
             valid.node().sim().durable_storage() = original;
             valid.run();
-            ASSERT_EQ(valid.kernel()->boot.generation(), snapshot.metadata.generation);
+            ASSERT_EQ(KernelTestProbe::boot(valid.kernel()).generation(),
+                      snapshot.metadata.generation);
         }
         for (const uint16_t version : {uint16_t{1}, uint16_t{2}}) {
             SCOPED_TRACE(version);

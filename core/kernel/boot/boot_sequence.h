@@ -27,11 +27,12 @@
 #define AYNI_CORE_KERNEL_BOOT_BOOT_SEQUENCE_H
 
 #include "durability/batch/prefix_scan.h"
+#include "durability/batch/record_types.h"
 #include "durability/snapshot/snapshot_codec.h"
 #include "kernel/completion/completion_pool.h"
+#include "kernel/persistence/work_replay.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "kernel/storage/write_schedule.h"
-#include "kernel/work_replay.h"
-#include "kernel/work_snapshot.h"
 
 #include <ayni/ayni.h>
 
@@ -41,7 +42,7 @@ namespace ayni::kernel {
 
 // BOOT_EPOCH (contracts/storage/records.md): a REQUIRED record whose body is
 // the epoch as a little-endian uint64.
-constexpr uint16_t boot_epoch_record_type = 1;
+constexpr uint16_t boot_epoch_record_type = durability::record_type::boot_epoch;
 constexpr uint16_t boot_epoch_record_version = 1;
 constexpr uint32_t boot_epoch_record_length = 8;
 

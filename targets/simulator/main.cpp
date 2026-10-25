@@ -34,6 +34,8 @@ const char *lifecycle_name(ayni_lifecycle_t state) {
         return "RUNNING";
     case AYNI_LIFECYCLE_RESTRICTED:
         return "RESTRICTED";
+    case AYNI_LIFECYCLE_FENCED:
+        return "FENCED";
     case AYNI_LIFECYCLE_DRAINING:
         return "DRAINING";
     case AYNI_LIFECYCLE_STOPPED:

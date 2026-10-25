@@ -57,7 +57,7 @@ core/
 ```
 
 - **第一级是模块边界**，由构建目标与 CI 依赖检查强制。依赖方向为 `kernel → work → {authority, resources, budget, knowledge} → catalog → durability → foundation`，同层四个模块之间禁止互相依赖。
-- **第二级按实体命名，用于查找。** 子目录之间的单向 include 规则在模块内声明并检查。`kernel/`、`budget/`、`durability/`、`foundation/` 职责集中，不再细分。
+- **第二级按实体命名，用于查找。** 子目录之间的单向 include 规则在模块内声明并检查。`kernel/`、`budget/`、`durability/`、`foundation/` 职责集中，不再细分。（kernel 后来按职责分出子目录，现行划分见 ADR-0051。）
 - **预算独立成 `budget/` 模块**，不放在 `resources/` 中，理由有三：
   - 变更理由不同：一边是计费配额，一边是 §2.10 的停止上限；
   - 恢复规则相反：已花的额度重启后不清零，许可则跨启动代际失效；

@@ -2,9 +2,9 @@
 
 #include "durability/batch/batch_codec.h"
 #include "durability/snapshot/snapshot_codec.h"
+#include "kernel/persistence/work_journal.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "kernel/storage/write_schedule.h"
-#include "kernel/work_journal.h"
-#include "kernel/work_snapshot.h"
 
 namespace ayni::kernel {
 

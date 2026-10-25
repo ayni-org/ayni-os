@@ -21,6 +21,7 @@
 #include "kernel/command/command_scene.h"
 #include "kernel/command/command_target.h"
 #include "kernel/command/command_task_limit.h"
+#include "kernel/command/intent_traits.h"
 #include "kernel/command/pending_revoke.h"
 #include "kernel/command/work_authority_result.h"
 
@@ -76,17 +77,21 @@ class CommandTable {
         const PendingRevoke *pending = nullptr; // Accepted volatile revoke, or none.
     };
 
+    // What fixes the table's storage.
+    struct Limits {
+        uint32_t rows;                    // Principals with a window each.
+        uint32_t capacity;                // Mappings per window; at least 1.
+        uint32_t canonical_max_bytes = 0; // Exact request bytes per mapping; 0 keeps none.
+        uint32_t pending_capacity = 0;    // Volatile revocations across all windows.
+    };
+
     // Required byte alignment for all table-owned arena regions.
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
-    // rows principals with capacity mappings each.
-    static std::size_t storage_size(uint32_t rows, uint32_t capacity,
-                                    uint32_t canonical_max_bytes = 0,
-                                    uint32_t pending_capacity = 0);
+    static std::size_t storage_size(const Limits &limits);
 
-    // storage holds storage_size(rows, capacity) bytes aligned to
-    // storage_alignment and outlives the table; capacity is at least 1.
-    CommandTable(void *storage, uint32_t rows, uint32_t capacity, uint32_t canonical_max_bytes = 0,
-                 uint32_t pending_capacity = 0);
+    // storage holds storage_size(limits) bytes aligned to storage_alignment
+    // and outlives the table.
+    CommandTable(void *storage, const Limits &limits);
 
     // Mutable arena ownership cannot be copied.
     CommandTable(const CommandTable &) = delete;

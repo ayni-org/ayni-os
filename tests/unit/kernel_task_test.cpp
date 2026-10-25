@@ -6,8 +6,8 @@
 // (ADR-0025) and the return values in each kernel state. Runs on the
 // simulation Host.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -18,6 +18,8 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -75,7 +77,7 @@ bool task_exists(WorkNode &work, uint64_t task_id) {
 
 // White-box: puts the task at the largest revision.
 void exhaust_task(WorkNode &work, uint64_t task_id) {
-    const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
+    const ayni::work::TaskTable &tasks = KernelTestProbe::work(work.kernel()).tasks;
     uint32_t index = 0;
     ASSERT_TRUE(tasks.find(task_id, index));
     const_cast<ayni::work::Task &>(tasks.at(index)).revision = max_revision;
@@ -83,7 +85,7 @@ void exhaust_task(WorkNode &work, uint64_t task_id) {
 
 // White-box: puts the goal at the largest revision.
 void exhaust_goal(WorkNode &work, uint64_t goal_id) {
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t index = 0;
     ASSERT_TRUE(goals.find(goal_id, index));
     const_cast<ayni::work::Goal &>(goals.at(index)).revision = max_revision;
@@ -256,7 +258,7 @@ TEST(WorkTask, only_running_derives_tasks) {
     }
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     // White-box: STOPPED answers no query, but the tables are still there.
-    const ayni::kernel::WorkModel &model = work.kernel()->work;
+    const ayni::kernel::WorkModel &model = KernelTestProbe::work(work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.goals.find(goal_id, index));
     EXPECT_EQ(model.goals.at(index).cursor.taken, 0U);
@@ -268,7 +270,7 @@ TEST(WorkTask, only_running_derives_tasks) {
 TEST(WorkTask, used_up_ids_leave_the_occurrence_waiting) {
     WorkNode work;
     work.run();
-    work.kernel()->work.ids.start(1, 0xFFFFFFFFU);
+    KernelTestProbe::work(work.kernel()).ids.start(1, 0xFFFFFFFFU);
     const uint64_t goal_id = once_goal(work); // takes the last id
     const ayni_step_report_v1 report = work.node().step();
     EXPECT_EQ(report.items_done, 0U);
@@ -386,7 +388,7 @@ TEST(WorkTask, child_in_an_earlier_place_follows_its_parent) {
     const uint64_t parent = folder_goal(work);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
     const uint64_t child = once_goal(work, parent);
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t child_index = 0;
     uint32_t parent_index = 0;
     ASSERT_TRUE(goals.find(child, child_index));
@@ -639,9 +641,9 @@ TEST(WorkTask, task_cancel_ends_a_goal_only_with_its_last_task) {
     const uint64_t third_task = task_of(work, goal_id);
     // White-box: the third occurrence was the last.
     uint32_t index = 0;
-    ASSERT_TRUE(work.kernel()->work.goals.find(goal_id, index));
-    const_cast<ayni::work::Goal &>(work.kernel()->work.goals.at(index)).cursor.next_due_us =
-        UINT64_MAX;
+    ASSERT_TRUE(KernelTestProbe::work(work.kernel()).goals.find(goal_id, index));
+    const_cast<ayni::work::Goal &>(KernelTestProbe::work(work.kernel()).goals.at(index))
+        .cursor.next_due_us = UINT64_MAX;
     ASSERT_EQ(work.cancel_task(second_task).status, AYNI_OK);
     EXPECT_EQ(work.goal(goal_id).lifecycle, AYNI_GOAL_ACTIVE);
     EXPECT_EQ(work.goal(goal_id).revision, before.revision);

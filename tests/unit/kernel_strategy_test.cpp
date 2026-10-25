@@ -4,8 +4,8 @@
 // holds that refuse a decision, and the order and budget of decisions. Runs
 // on the simulation Host.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -19,6 +19,8 @@
 #include <limits>
 #include <string>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -70,7 +72,7 @@ ayni_status_t fail(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 
 
 // White-box: puts the task at the largest revision.
 void exhaust_task(WorkNode &work, uint64_t task_id) {
-    const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
+    const ayni::work::TaskTable &tasks = KernelTestProbe::work(work.kernel()).tasks;
     uint32_t index = 0;
     ASSERT_TRUE(tasks.find(task_id, index));
     const_cast<ayni::work::Task &>(tasks.at(index)).revision = max_revision;
@@ -78,7 +80,7 @@ void exhaust_task(WorkNode &work, uint64_t task_id) {
 
 // White-box: the goal's mutable record.
 ayni::work::Goal &raw_goal(WorkNode &work, uint64_t goal_id) {
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t index = 0;
     EXPECT_TRUE(goals.find(goal_id, index));
     return const_cast<ayni::work::Goal &>(goals.at(index));
@@ -847,7 +849,7 @@ TEST(WorkDecision, tasks_ready_in_one_transition_are_decided_by_id) {
     // the table keeps it by moving its last task, the newer, to the front.
     const uint64_t last = once_goal(work);
     ASSERT_EQ(step_items(work), 1U);
-    const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
+    const ayni::work::TaskTable &tasks = KernelTestProbe::work(work.kernel()).tasks;
     uint32_t older_index = 0;
     uint32_t newer_index = 0;
     ASSERT_TRUE(tasks.find(task_of(work, older), older_index));
@@ -923,7 +925,7 @@ TEST(WorkDecision, only_running_decides) {
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
     EXPECT_TRUE(work.strategy().seen.empty());
     // White-box: STOPPED answers no query, but the tables are still there.
-    const ayni::kernel::WorkModel &model = work.kernel()->work;
+    const ayni::kernel::WorkModel &model = KernelTestProbe::work(work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.tasks.find(task_id, index));
     EXPECT_EQ(model.tasks.at(index).lifecycle, AYNI_TASK_READY);

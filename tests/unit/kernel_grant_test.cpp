@@ -1,6 +1,6 @@
 // MA-006 C public behavior: management provenance, finite attenuation,
 // durable parents, exact retries, and recovery without a renewed clock.
-#include "kernel/intent/authority_intent.h"
+#include "kernel/intent/work_model.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>
@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 using namespace ayni::test;
@@ -498,7 +500,7 @@ TEST(GrantApi, unknown_exact_capability_and_subject_are_refused_before_committin
     work.run();
     RangeScope range;
     const auto valid = work.body(range);
-    const auto before = work.node.kernel()->work.transitions.next_commit_seq();
+    const auto before = KernelTestProbe::work(work.node.kernel()).transitions.next_commit_seq();
     auto body = valid;
     body.capability_id = text("missing.capability");
     const auto unknown = work.submit(body, 1);
@@ -515,7 +517,7 @@ TEST(GrantApi, unknown_exact_capability_and_subject_are_refused_before_committin
     EXPECT_EQ(subject.status, AYNI_DENIED);
     EXPECT_EQ(subject.error.reason, AYNI_REASON_GRANT_SUBJECT);
     EXPECT_EQ(subject.error.object.id, UINT64_MAX);
-    EXPECT_EQ(work.node.kernel()->work.transitions.next_commit_seq(), before);
+    EXPECT_EQ(KernelTestProbe::work(work.node.kernel()).transitions.next_commit_seq(), before);
     EXPECT_EQ(work.submit(valid, 1).status, AYNI_OK);
 }
 
@@ -557,14 +559,30 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
     intent.kind = AYNI_INTENT_GRANT_CREATE;
     intent.command_id = 1;
     intent.grant_create = work.body(range);
-    auto &model = work.node.kernel()->work;
+    auto &model = KernelTestProbe::work(work.node.kernel());
     const auto current = *model.sessions.find(work.session);
     const auto before = model.transitions.next_commit_seq();
     // White-box Kernel-module trust-boundary fault injection. Public sessions
     // never manufacture these facts; production must still refuse stale input
     // before the authority table, allocator or transition clock changes.
+    const ayni_host_v1 &host = KernelTestProbe::host(work.node.kernel());
+    const auto apply = [&](ayni::kernel::WorkModel &target, const ayni::kernel::Intent &request,
+                           uint64_t durable, ayni::kernel::IntentFailure &failure) {
+        ayni::kernel::IntentOutcome outcome{};
+        const ayni::kernel::IntentContext context{
+            work.node.sim().now_us(),
+            durable,
+            true,
+            AYNI_OK,
+            {host.ctx, host.monotonic_now_us},
+            {&KernelTestProbe::ingress(work.node.kernel()), [](void *ingress) {
+                 return static_cast<ayni::kernel::EventIngress *>(ingress)->resume_boundary();
+             }}};
+        return ayni::kernel::apply_intent(target, request, context, outcome, failure);
+    };
     for (uint32_t fault = 0; fault < 3; ++fault) {
         auto session = current;
+        session.session_id = current.session_id + 1U + fault; // not opened through the ABI
         uint64_t durable = work.node.info().durable_seq;
         if (fault == 0U) {
             session.principal_id += 1U;
@@ -573,24 +591,24 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
         } else {
             durable = model.principals.binding()->stamp.commit_seq - 1U;
         }
-        ayni::kernel::IntentOutcome outcome{};
+        ASSERT_TRUE(model.sessions.open(session));
+        intent.session_id = session.session_id;
         ayni::kernel::IntentFailure failure{};
-        EXPECT_EQ(ayni::kernel::create_grant(model, intent, session, work.node.sim().now_us(),
-                                             durable, outcome, failure),
-                  AYNI_DENIED)
-            << fault;
+        EXPECT_EQ(apply(model, intent, durable, failure), AYNI_DENIED) << fault;
         EXPECT_EQ(failure.reason, AYNI_REASON_GRANT_CHANNEL);
         EXPECT_EQ(model.grants.size(), 0U);
         EXPECT_EQ(model.transitions.next_commit_seq(), before);
+        ASSERT_TRUE(model.sessions.close(session.session_id));
     }
     Node unbound;
     unbound.create();
-    ayni::kernel::IntentOutcome outcome{};
+    auto &unbound_model = KernelTestProbe::work(unbound.kernel());
+    ASSERT_TRUE(unbound_model.sessions.open(current));
+    intent.session_id = current.session_id;
     ayni::kernel::IntentFailure failure{};
-    EXPECT_EQ(
-        ayni::kernel::create_grant(unbound.kernel()->work, intent, current, 0, 0, outcome, failure),
-        AYNI_DENIED);
-    EXPECT_EQ(unbound.kernel()->work.grants.size(), 0U);
+    EXPECT_EQ(apply(unbound_model, intent, 0, failure), AYNI_DENIED);
+    EXPECT_EQ(failure.reason, AYNI_REASON_GRANT_CHANNEL);
+    EXPECT_EQ(unbound_model.grants.size(), 0U);
 }
 
 // C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
@@ -599,7 +617,7 @@ TEST(GrantApi, id_exhaustion_refuses_a_new_grant_and_does_not_accept_its_command
     work.run();
     RangeScope range;
     const auto body = work.body(range);
-    auto &model = work.node.kernel()->work;
+    auto &model = KernelTestProbe::work(work.node.kernel());
     const uint64_t boot = work.node.info().boot_epoch;
     // White-box boundary placement avoids allocating four billion objects.
     model.ids.start(boot, UINT32_MAX);
@@ -650,7 +668,7 @@ TEST(GrantApi, shared_kernel_check_denies_missing_or_newly_faulted_subject_facts
     const auto created = work.submit(work.body(range), 1);
     ASSERT_EQ(created.status, AYNI_OK);
     work.store(created.result.commit_seq);
-    auto &model = work.node.kernel()->work;
+    auto &model = KernelTestProbe::work(work.node.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.grants.find(created.result.object.id, index));
     const auto subject_id = work.subject();

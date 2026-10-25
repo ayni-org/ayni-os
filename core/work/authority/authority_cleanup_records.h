@@ -2,13 +2,14 @@
 #ifndef AYNI_CORE_WORK_AUTHORITY_AUTHORITY_CLEANUP_RECORDS_H
 #define AYNI_CORE_WORK_AUTHORITY_AUTHORITY_CLEANUP_RECORDS_H
 
+#include "durability/batch/record_types.h"
 #include "work/authority/authority_cleanup.h"
 
 #include <cstdint>
 
 namespace ayni::work {
 
-constexpr uint16_t authority_cleanup_record_type = 19;
+constexpr uint16_t authority_cleanup_record_type = durability::record_type::authority_cleanup;
 constexpr uint16_t authority_cleanup_record_version = 1;
 constexpr uint32_t authority_cleanup_record_size = 44;
 

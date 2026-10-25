@@ -5,13 +5,14 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_RECORDS_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_RECORDS_H
 
+#include "durability/batch/record_types.h"
 #include "kernel/command/command_table.h"
 
 #include <cstdint>
 
 namespace ayni::kernel {
 
-constexpr uint16_t command_record_type = 9;
+constexpr uint16_t command_record_type = durability::record_type::command_mapping;
 constexpr uint16_t command_record_version = 1;
 constexpr uint32_t command_record_size = 52; // ordinary v1
 constexpr uint16_t exact_command_record_version = 2;

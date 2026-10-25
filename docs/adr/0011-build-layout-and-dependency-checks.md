@@ -13,7 +13,7 @@ ADR-0008 与 ADR-0010 规定了 Core 九个模块的依赖方向、`runtime/` �
 1. **规则只声明一次。** Core 层次、子目录规则、Core 允许的标准头文件和各顶层目录可包含的头文件种类都写在 `tools/architecture.json`。CMake 与检查脚本读同一个文件，二者不会各写一份而出现分歧。
 2. **两道检查，各管一类依赖。**
    - 链接依赖：`cmake/AyniLayers.cmake` 的 `ayni_add_core_module` 在配置阶段拒绝指向同层或更高层的 `DEPENDS`。
-   - 包含依赖：`tools/check_deps.py` 扫描 `#include`，按目录套用规则，并解析相对路径，避免用 `../../core/...` 绕过。
+   - 包含依赖：`tools/check_deps.py` 扫描 `#include`，按目录套用规则，并解析相对路径，避免用 `../../core/...` 绕过。（模块根目录的声明与无环检查见 ADR-0051。）
    二者都有测试（`tests/tools/`），并在 CI 中运行。
 3. **Core 内部包含根不外泄。** Core 模块以 `PRIVATE` 方式链接 `ayni_core_internal`（包含根 `core/`），所以链接 `ayni_core` 的组件只看得到 `include/ayni/` 中的公开 API。
 4. **头文件分为四类。** `ayni/`（已实现的公开 ABI）、`ayni/draft/`（计划中的接口，只做编译检查，没有符号）、`ayni/hosts/<名称>`、`ayni/runtime/<名称>`。规则如下：

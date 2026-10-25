@@ -155,7 +155,6 @@ class TaskTable {
         uint32_t capacity;             // at most AYNI_TASK_CAPACITY_MAX
         uint32_t step_capacity;        // per task, at most AYNI_TASK_STEP_CAPACITY_MAX
         uint32_t checkpoint_max_bytes; // per task, at most AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX
-        uint32_t model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT; // 1..64 calls.
     };
 
     // Why a change is refused, in the order check() checks.
@@ -178,8 +177,10 @@ class TaskTable {
     static std::size_t storage_size(const Limits &limits);
 
     // storage holds storage_size(limits) bytes aligned to storage_alignment
-    // and outlives the table.
-    TaskTable(void *storage, const Limits &limits);
+    // and outlives the table. model_call_hard_limit (1..64 calls) bounds each
+    // Task's model requests and takes no storage, so it is not a Limit.
+    TaskTable(void *storage, const Limits &limits,
+              uint32_t model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT);
 
     TaskTable(const TaskTable &) = delete;
     TaskTable &operator=(const TaskTable &) = delete;

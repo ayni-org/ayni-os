@@ -1,6 +1,6 @@
 #include "kernel/completion/provider_mailbox.h"
 #include "foundation/attempt_identity.h"
-#include "kernel/ingress_lock.h"
+#include "kernel/ingress/ingress_lock.h"
 
 #include <cstring>
 #include <new>

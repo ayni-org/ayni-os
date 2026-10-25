@@ -4,20 +4,21 @@
 #ifndef AYNI_CORE_KERNEL_KERNEL_STATE_H
 #define AYNI_CORE_KERNEL_KERNEL_STATE_H
 
-#include "catalog/binding/binding_registry.h"
 #include "kernel/boot/boot_sequence.h"
-#include "kernel/call_runtime.h"
+#include "kernel/call/call_runtime.h"
 #include "kernel/commit/commit_log.h"
 #include "kernel/completion/completion_pool.h"
 #include "kernel/completion/provider_mailbox.h"
+#include "kernel/config/catalogs.h"
+#include "kernel/config/kernel_config.h"
+#include "kernel/decision/decision.h"
 #include "kernel/ingress/event_ingress.h"
-#include "kernel/intent/decision.h"
 #include "kernel/intent/work_model.h"
-#include "kernel/kernel_config.h"
+#include "kernel/kernel_layout.h"
+#include "kernel/persistence/work_journal.h"
+#include "kernel/persistence/work_replay.h"
 #include "kernel/storage/storage_budget.h"
 #include "kernel/storage/storage_maintenance.h"
-#include "kernel/work_journal.h"
-#include "kernel/work_replay.h"
 #include "knowledge/observation/observation_table.h"
 #include "resources/admission/resource_admission.h"
 
@@ -25,50 +26,55 @@
 
 #include <cstdint>
 
+namespace ayni::kernel {
+
+// How one owner item ended (ayni_kernel::run_transition): nothing to do, one
+// transition applied, or a defect that restricts the kernel.
+struct ItemEnd {
+    enum class Kind { none, applied, defect } kind;
+    ayni_restriction_t restriction = AYNI_RESTRICTION_NONE; // A defect's.
+};
+
+} // namespace ayni::kernel
+
 // Lives at the start of the caller's memory block; the stores follow it at
 // the offsets of kernel_layout.h.
 struct ayni_kernel {
     ayni_kernel(const ayni_host_v1 &host_table, const ayni::kernel::KernelCapacities &capacities,
                 const ayni::kernel::KernelLimits &limits,
                 const ayni::kernel::KernelStorage &storage)
-        : host(host_table), ingress(storage.ingress, capacities.ingress_capacity,
-                                    capacities.event_body_max_bytes, host),
-          completions(storage.completions, capacities.completion_slot_count, host, attempts),
-          writes(limits.storage_write_interval_us), work(capacities, limits, storage), replay(work),
-          boot(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes, work,
-               replay, writes),
-          log(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes, writes),
-          maintenance(host, completions, storage.storage_buffer, capacities.storage_buffer_bytes,
-                      work, writes),
-          decisions(storage.decisions,
-                    {capacities.policy_intent_capacity, capacities.task_step_capacity,
-                     capacities.task_checkpoint_max_bytes}),
+        : host(host_table),
+          ingress(storage[ayni::kernel::Store::ingress], capacities.ingress_capacity,
+                  capacities.event_body_max_bytes, host),
+          completions(storage[ayni::kernel::Store::completions], capacities.completion_slot_count,
+                      host, attempts),
+          writes(limits.storage_write_interval_us), catalogs(capacities, storage),
+          work(catalogs, capacities, limits, storage), replay(work),
+          boot(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
+               capacities.storage_buffer_bytes, work, replay, writes),
+          log(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
+              capacities.storage_buffer_bytes, writes),
+          maintenance(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
+                      capacities.storage_buffer_bytes, work, writes),
+          decisions(storage[ayni::kernel::Store::decisions],
+                    ayni::kernel::decision_limits(capacities)),
           budget(capacities, limits),
-          resource_catalog(storage.resource_catalog, capacities.resource_capacity),
-          resources(resource_catalog, storage.resource_states, capacities.resource_capacity,
-                    storage.resource_requests, capacities.resource_request_capacity),
-          devices(storage.devices, capacities.device_capacity, storage.components,
-                  capacities.component_capacity),
-          call_capabilities(storage.call_capabilities, capacities.call_capability_capacity),
-          providers(storage.providers, capacities.provider_capacity),
-          bindings(storage.bindings, capacities.binding_capacity),
-          provider_completions(storage.provider_completions,
-                               {capacities.call_capacity, capacities.call_result_max_bytes}, host),
-          permits(storage.permits, capacities.executor_capacity, resources),
-          observations(work.observation_sources, storage.observations,
+          resources(catalogs.resources, storage[ayni::kernel::Store::resource_states],
+                    capacities.resource_capacity, storage[ayni::kernel::Store::resource_requests],
+                    capacities.resource_request_capacity),
+          provider_completions(storage[ayni::kernel::Store::provider_completions],
+                               ayni::kernel::provider_mailbox_limits(capacities), host),
+          permits(storage[ayni::kernel::Store::permits], capacities.executor_capacity, resources),
+          observations(catalogs.observation_sources, storage[ayni::kernel::Store::observations],
                        capacities.observation_source_capacity),
-          calls(storage.call_runtime,
-                {capacities.call_capacity, capacities.call_input_max_bytes,
-                 capacities.call_result_max_bytes},
-                work, {call_capabilities, providers, bindings, resource_catalog}, resources,
-                permits, observations, provider_completions, attempts, host),
+          calls(storage[ayni::kernel::Store::call_runtime],
+                ayni::kernel::call_runtime_limits(capacities), work, catalogs, resources, permits,
+                observations, provider_completions, attempts, host),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
     ayni_status_t start();
-    ayni_status_t
-    validate_execution_catalog() const; // Startup cross-owner exact references, no callbacks.
     ayni_status_t step(uint32_t max_items, uint32_t max_time_us, ayni_step_report_v1 &report);
     ayni_status_t begin_shutdown();
     // Why the kernel is RESTRICTED or FENCED; NONE otherwise.
@@ -83,10 +89,18 @@ struct ayni_kernel {
     // public monotonic floor retained while a reload is incomplete.
     ayni_status_t intent_receipt(uint64_t principal_id, uint64_t command_id,
                                  ayni_intent_receipt_v1 &out) const;
+    // ayni_submit_intent after its gate (ADR-0017, ADR-0031): applies intent
+    // with one sample of the kernel, then, for a new revocation that took no
+    // transition, its pending revoke when storage admits one, and journals
+    // what was taken. out_committed says whether a transition was taken;
+    // AYNI_INTERNAL may have taken one too (ayni.h).
+    ayni_status_t submit_intent(const ayni::kernel::Intent &intent,
+                                ayni::kernel::IntentOutcome &outcome,
+                                ayni::kernel::IntentFailure &failure, bool &out_committed);
 
     // Caller code runs inside the kernel: functions that change the kernel
     // return AYNI_INVALID_STATE (ayni.h).
-    bool in_callback() const { return work.calling_out; }
+    bool in_callback() const { return work.calling_out(); }
 
     // Copy of the caller's table, with fields an older caller lacks left
     // zeroed. ctx and the functions stay caller-owned (see ayni_host_v1).
@@ -103,6 +117,8 @@ struct ayni_kernel {
     ayni::kernel::AttemptSequence attempts;
     ayni::kernel::CompletionPool completions;
     ayni::kernel::WriteSchedule writes;
+    // Every registry the Host fills in CONFIGURING; read-only from ayni_start.
+    ayni::kernel::Catalogs catalogs;
     ayni::kernel::WorkModel work;
     ayni::kernel::WorkReplay replay;
     ayni::kernel::BootSequence boot;
@@ -115,20 +131,12 @@ struct ayni_kernel {
     ayni::kernel::DecisionBuffer decisions;
     // The log's size against its limit and the free medium (C-STORE-011).
     ayni::kernel::StorageBudget budget;
-    // Static trusted directory; invariant/representation owned by catalog/resource.
-    ayni::catalog::ResourceRegistry resource_catalog;
     // Runtime allocation and wait state owned by resources/admission; no Task/Grant copy.
     ayni::resources::ResourceAdmission resources;
-    // Catalog owners retain immutable execution declarations and trusted selection;
-    // callback contexts belong to runtime, while no live call state lives here.
-    ayni::catalog::DeviceCatalog devices; // Immutable inventory; no health or resource ownership.
-    ayni::catalog::CallCapabilityRegistry call_capabilities;
-    ayni::catalog::ProviderRegistry providers;
-    ayni::catalog::BindingRegistry bindings;
     // Provider workers post through this independent reliable pool; Host controls keep theirs.
     ayni::kernel::ProviderMailbox provider_completions;
     ayni::resources::PermitTable permits; // Resource-owned live leases; zero-capacity by default.
-    // Live facts borrow static source descriptions from WorkModel's catalog owner.
+    // Live facts borrow static source descriptions from the catalogs.
     ayni::knowledge::ObservationTable observations;
     // Bounded cross-owner call coordination; workers only access provider_completions.
     ayni::kernel::CallRuntime calls;
@@ -192,6 +200,25 @@ struct ayni_kernel {
     bool takes_event_now() const;
     void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us,
                             ayni::work::InputResumeBoundary input);
+    // Each execution binding names a declared Scene at its version; Scenes are
+    // authority's, so Catalogs::close cannot check this. No callbacks.
+    ayni_status_t validate_execution_scenes() const;
+
+    // Runs item, one owner item that takes at most one transition (ADR-0051):
+    // an applied transition is journaled right away, a defect makes the
+    // kernel RESTRICTED with its restriction so nothing of it is stored, and
+    // none journals nothing. Returns whether the item applied.
+    template <typename Item> bool run_transition(Item item) {
+        using End = ayni::kernel::ItemEnd;
+        const uint64_t first_seq = work.transitions.next_commit_seq();
+        const End end = item();
+        if (end.kind == End::Kind::defect) {
+            enter_restricted(end.restriction);
+        } else if (end.kind == End::Kind::applied) {
+            journal(first_seq);
+        }
+        return end.kind == End::Kind::applied;
+    }
 
     // durable_seq() as of the last fence, which a reload must not go below.
     uint64_t durable_floor_ = 0;

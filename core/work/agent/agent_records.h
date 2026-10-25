@@ -5,6 +5,7 @@
 #ifndef AYNI_CORE_WORK_AGENT_AGENT_RECORDS_H
 #define AYNI_CORE_WORK_AGENT_AGENT_RECORDS_H
 
+#include "durability/batch/record_types.h"
 #include "work/agent/agent_table.h"
 
 #include <ayni/ayni.h>
@@ -13,7 +14,7 @@
 
 namespace ayni::work {
 
-constexpr uint16_t instance_record_type = 2;
+constexpr uint16_t instance_record_type = durability::record_type::instance;
 constexpr uint16_t instance_record_version = 1;
 constexpr uint32_t instance_record_size = 24;
 

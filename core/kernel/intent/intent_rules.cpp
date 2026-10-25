@@ -5,6 +5,7 @@
 // work tables check the object an intent names; work/propagation checks and
 // applies what the change does to the tasks it reaches.
 
+#include "kernel/command/intent_traits.h"
 #include "kernel/intent/authority_intent.h"
 #include "kernel/intent/work_model.h"
 
@@ -25,17 +26,11 @@ ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, ayni_object_ref
 }
 
 // A change that may bring the goals' due work forward: ayni_submit_intent
-// wakes the owner so that it steps.
-void mark_due_work(WorkModel &model, IntentOutcome &outcome) {
-    model.due_work_changed = true;
+// wakes the owner so that it steps. Pause brings nothing forward, so it
+// wakes no one (ADR-0018); its transition alone makes the next step search
+// again and report the deadline without the goals it holds (ADR-0019).
+void wake_for_due_work(IntentOutcome &outcome) {
     outcome.due_work = true;
-}
-
-// Pause brings nothing forward, so it wakes no one (ADR-0018), but the goals
-// it holds may include the one due earliest: the next step searches again
-// and reports the deadline without them (ADR-0019).
-void mark_due_work_held(WorkModel &model) {
-    model.due_work_changed = true;
 }
 
 // One check result type per table, with the same four outcomes.
@@ -110,7 +105,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                                   work::NewGoal &goal, IntentFailure &failure) {
     const GoalCreate &create = intent.create;
     const catalog::GoalTypeRegistry::Lookup type =
-        model.goal_types.find(create.goal_type_id, create.goal_type_version);
+        model.catalogs.goal_types.find(create.goal_type_id, create.goal_type_version);
     switch (type.kind) {
     case catalog::GoalTypeRegistry::Lookup::Kind::unknown_id:
         return refuse(AYNI_NOT_FOUND, AYNI_REASON_GOAL_TYPE_UNKNOWN,
@@ -121,7 +116,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
     case catalog::GoalTypeRegistry::Lookup::Kind::found:
         break;
     }
-    if (!model.goal_types.accepts_trigger(type.index, create.trigger.kind)) {
+    if (!model.catalogs.goal_types.accepts_trigger(type.index, create.trigger.kind)) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_TRIGGER_KIND,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
@@ -141,7 +136,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
     if (create.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) {
         static_cast<void>(trigger_source.assign(create.trigger_source)); // check_form()
     }
-    const catalog::GoalType &goal_type = model.goal_types.at(type.index);
+    const catalog::GoalType &goal_type = model.catalogs.goal_types.at(type.index);
     if (!goal_type.work_profile.accepts(create.trigger.kind, create.trigger.period_us)) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_BACKGROUND_FREQUENCY,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
@@ -172,10 +167,9 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
     // Validate parameters before exporting their requirements. Both callbacks
-    // are read-only under calling_out; all admission finishes before IDs.
-    model.calling_out = true;
-    const bool accepted = model.goal_types.accepts(type.index, create.parameters);
-    model.calling_out = false;
+    // are read-only under call_out; all admission finishes before IDs.
+    const bool accepted = model.call_out(
+        [&] { return model.catalogs.goal_types.accepts(type.index, create.parameters); });
     if (!accepted) {
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
@@ -194,7 +188,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     if (status != AYNI_OK) {
         return status;
     }
-    const auto &goal_type = model.goal_types.at(goal.goal_type_index);
+    const auto &goal_type = model.catalogs.goal_types.at(goal.goal_type_index);
     const auto &create = intent.create;
     work::GoalAuthorityRecord authority{};
     const auto requirements =
@@ -233,7 +227,7 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
     // its time from the next step's next_deadline_us.
     const work::Goal &created = model.goals.at(index);
     if (created.cursor.has_next() || created.expires_us != work::no_time) {
-        mark_due_work(model, outcome);
+        wake_for_due_work(outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, goal_id, model.goals.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
@@ -265,10 +259,8 @@ ayni_status_t change_goal(WorkModel &model, const Intent &intent, IntentOutcome 
     work::apply_goal_change(tables, index, change, stamp);
     // Resume may let the goal's subtree advance; cancel ends tasks, whose
     // places other goals may be waiting for.
-    if (change == work::GoalChange::pause) {
-        mark_due_work_held(model);
-    } else {
-        mark_due_work(model, outcome);
+    if (change != work::GoalChange::pause) {
+        wake_for_due_work(outcome);
     }
     outcome.object = object_ref(AYNI_OBJECT_GOAL, intent.target_id, model.goals.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
@@ -299,7 +291,7 @@ ayni_status_t cancel_task(WorkModel &model, const Intent &intent, IntentOutcome 
     const foundation::TransitionStamp stamp = model.transitions.next();
     work::end_task(tables, index, work::TaskChange::cancel, stamp);
     // The ended task's place may be what another goal is waiting for.
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
     return AYNI_OK;
@@ -329,7 +321,7 @@ ayni_status_t set_scene(WorkModel &model, const Intent &intent, IntentOutcome &o
     outcome.commit_seq = stamp.commit_seq;
     outcome.effect =
         prepared.changes_state ? AYNI_INTENT_EFFECT_CHANGED : AYNI_INTENT_EFFECT_NO_CHANGE;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -357,7 +349,7 @@ ayni_status_t raise_task_limit(WorkModel &model, const Intent &intent, IntentOut
     model.tasks.raise_model_limit(index, intent.model_call_limit, stamp);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -382,7 +374,7 @@ ayni_status_t resume_task_wait(WorkModel &model, const Intent &intent, IntentOut
     model.tasks.resume_wait(index, stamp);
     outcome.object = object_ref(AYNI_OBJECT_TASK, intent.target_id, model.tasks.at(index).revision);
     outcome.commit_seq = stamp.commit_seq;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -408,7 +400,7 @@ ayni_status_t query_call(WorkModel &model, const Intent &intent, IntentOutcome &
     outcome.object =
         object_ref(AYNI_OBJECT_CALL, intent.target_id, model.calls.query_revision(index));
     outcome.commit_seq = stamp.commit_seq;
-    mark_due_work(model, outcome);
+    wake_for_due_work(outcome);
     return AYNI_OK;
 }
 
@@ -437,10 +429,8 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
     work::apply_instance_change(tables, index, change, stamp);
     // Resume may let the instance's goals advance; stop ends tasks, whose
     // places other instances' goals may be waiting for.
-    if (change == work::InstanceChange::pause) {
-        mark_due_work_held(model);
-    } else {
-        mark_due_work(model, outcome);
+    if (change != work::InstanceChange::pause) {
+        wake_for_due_work(outcome);
     }
     outcome.object =
         object_ref(AYNI_OBJECT_AGENT_INSTANCE, intent.target_id, model.agents.at(index).revision);
@@ -494,7 +484,12 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
     CommandMapping mapping{principal_id,       intent.command_id, digest,
                            outcome.commit_seq, intent.kind,       outcome.object};
     mapping.effect = outcome.effect;
-    if (is_work_authority_command(intent.kind)) {
+    switch (intent_traits(intent.kind).identity) {
+    case CommandIdentity::ordinary:
+        return model.commands.insert(mapping) ? AYNI_OK : AYNI_INTERNAL;
+    case CommandIdentity::exact:
+        return model.commands.insert_exact(mapping) ? AYNI_OK : AYNI_INTERNAL;
+    case CommandIdentity::authorization: {
         if (!outcome.authorization) {
             return AYNI_INTERNAL;
         }
@@ -506,17 +501,28 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                    ? AYNI_OK
                    : AYNI_INTERNAL;
     }
-    const bool stored =
-        intent.kind == AYNI_INTENT_SCENE_SET_ENABLED || intent.kind == AYNI_INTENT_GRANT_CREATE ||
-                intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)
-            ? model.commands.insert_exact(mapping)
-            : model.commands.insert(mapping);
-    return stored ? AYNI_OK : AYNI_INTERNAL;
+    case CommandIdentity::revoke:
+        // Accepted into its pending control without a transition; the
+        // mapping is published when the control applies.
+        break;
+    }
+    return AYNI_INTERNAL;
 }
 
-// Reserve the retained command window before applying any domain transition.
-ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
-                                 IntentFailure &failure) {
+// The storage checks of ayni.h step 4, and room in the retained command
+// window, before applying any domain transition.
+ayni_status_t check_room(const WorkModel &model, const Intent &intent, uint64_t principal_id,
+                         bool has_room, ayni_status_t storage_status, IntentFailure &failure) {
+    if (storage_status != AYNI_OK) {
+        return refuse(AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE, ayni_object_ref_v1{},
+                      failure);
+    }
+    if (!has_room) {
+        return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
+    }
+    if (intent.command_id == 0U) {
+        return AYNI_OK;
+    }
     // Retained rows for principals no longer registered can fill the table.
     if (!model.commands.has_row(principal_id)) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
@@ -532,6 +538,12 @@ ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
 // The common result also carries ordinary mappings and pending revoke receipts.
 CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
                                        uint64_t principal_id, uint64_t digest) {
+    if (intent_traits(intent.kind).identity == CommandIdentity::ordinary) {
+        const CommandMapping *mapping = nullptr;
+        const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
+        return {AYNI_OK, lookup, mapping};
+    }
+    // Each exact kind is looked up by its own canonical request.
     switch (intent.kind) {
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return model.commands.find_exact(principal_id, intent.command_id, intent.scene);
@@ -561,39 +573,29 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
         return model.commands.find_exact(
             principal_id, intent.command_id,
             ReauthorizationCommand{intent.expected_revision, intent.reauthorization});
-    default: {
-        const CommandMapping *mapping = nullptr;
-        const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
-        return {AYNI_OK, lookup, mapping};
-    }
+    default: // an exact kind without a canonical request is a defect
+        return {AYNI_INTERNAL, CommandTable::Lookup::unmapped, nullptr};
     }
 }
 
 } // namespace
 
-ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
-                           IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status, uint64_t durable_seq, OwnerClock clock,
-                           InputResumeSampler input) {
+ayni_status_t apply_intent(WorkModel &model, const Intent &intent, const IntentContext &context,
+                           IntentOutcome &outcome, IntentFailure &failure) {
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    if ((intent.kind == AYNI_INTENT_SCENE_SET_ENABLED ||
-         intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE ||
-         intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)) &&
-        !bound_management_session(model, *session, durable_seq)) {
+    const IntentTraits &traits = intent_traits(intent.kind);
+    if (traits.session == SessionRule::management_on_retry &&
+        !bound_management_session(model, *session, context.durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
-    const bool exact =
-        intent.kind == AYNI_INTENT_SCENE_SET_ENABLED || is_target_command(intent.kind) ||
-        intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GRANT_REVOKE ||
-        is_work_authority_command(intent.kind);
-    const uint64_t digest =
-        intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
+    const uint64_t digest = intent.command_id != 0U && traits.identity == CommandIdentity::ordinary
+                                ? ordinary_command_digest(intent)
+                                : 0U;
     if (intent.command_id != 0U) {
         const auto match = find_command(model, intent, session->principal_id, digest);
         if (match.status != AYNI_OK) {
@@ -621,24 +623,27 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
             break;
         }
     }
-    if (intent.kind == AYNI_INTENT_GRANT_REVOKE) {
-        return accept_revoke(model, intent, *session, durable_seq, outcome, failure);
-    }
-    if (storage_status != AYNI_OK) {
-        return refuse(AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE, ayni_object_ref_v1{},
-                      failure);
-    }
-    if (!has_room) {
-        return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
-    }
-    if (intent.command_id != 0U) {
-        const auto room = check_command_room(model, session->principal_id, failure);
+    // A revocation reserves its pending control instead, independent of
+    // storage (ADR-0031).
+    if (traits.identity != CommandIdentity::revoke) {
+        const auto room = check_room(model, intent, session->principal_id, context.has_room,
+                                     context.storage_status, failure);
         if (room != AYNI_OK) {
             return room;
         }
     }
+    // The operation's own rules start here, so a retry returned above
+    // without this check.
+    if (traits.session == SessionRule::management &&
+        !bound_management_session(model, *session, context.durable_seq)) {
+        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
+    }
+    if (traits.identity == CommandIdentity::revoke) {
+        return accept_revoke(model, intent, *session, outcome, failure);
+    }
     const ayni_status_t status =
-        apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock, input);
+        apply_rules(model, intent, *session, context.now_us, context.durable_seq, outcome, failure,
+                    context.clock, context.input);
     return status == AYNI_OK && intent.command_id != 0U
                ? remember_command(model, intent, session->principal_id, digest, outcome)
                : status;

@@ -32,7 +32,7 @@ ayni_status_t emit_requirement(void *ctx, const ayni_goal_requirement_v1 *input)
         return result.status;
     }
     const auto capability =
-        exporting.model.capabilities.find(input->capability_id, input->capability_version);
+        exporting.model.catalogs.capabilities.find(input->capability_id, input->capability_version);
     if (capability.kind != catalog::CapabilityRegistry::Lookup::Kind::found) {
         result =
             capability.kind == catalog::CapabilityRegistry::Lookup::Kind::unknown_id
@@ -40,10 +40,10 @@ ayni_status_t emit_requirement(void *ctx, const ayni_goal_requirement_v1 *input)
                 : authority::GrantCheck{AYNI_UNSUPPORTED_VERSION, AYNI_REASON_CAPABILITY_VERSION};
         return result.status;
     }
-    const auto &registered = exporting.model.capabilities.at(capability.index);
+    const auto &registered = exporting.model.catalogs.capabilities.at(capability.index);
     result.status = exporting.model.goal_authority.stage(
         exporting.record, registered.id, registered.version,
-        exporting.model.capabilities.domain_view(capability.index), input->scope);
+        exporting.model.catalogs.capabilities.domain_view(capability.index), input->scope);
     result.reason = result.status == AYNI_CAPACITY_EXCEEDED  ? AYNI_REASON_GOAL_REQUIREMENT_CAPACITY
                     : result.status == AYNI_INVALID_ARGUMENT ? AYNI_REASON_GOAL_REQUIREMENT_INPUT
                                                              : AYNI_REASON_NONE;
@@ -91,9 +91,8 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
     RequirementExport exporting{*this, out};
     if (type.export_requirements != nullptr) {
         const ayni_goal_requirement_sink_v1 sink{sizeof(sink), &exporting, emit_requirement};
-        calling_out = true;
-        const auto status = type.export_requirements(type.ctx, create.parameters, &sink);
-        calling_out = false;
+        const auto status =
+            call_out([&] { return type.export_requirements(type.ctx, create.parameters, &sink); });
         if (exporting.result.status != AYNI_OK) {
             return exporting.result;
         }
@@ -103,7 +102,7 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
     }
     // Exporters can consume time without mutating Kernel state. Select against
     // the post-export clock, not the original trigger-schedule anchor.
-    now_us = clock.now_us != nullptr ? clock.now_us(clock.ctx) : now_us;
+    now_us = clock.now_us();
     if (!parent_covers_authority(create.parent_goal_id, out)) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT};
     }
@@ -216,7 +215,6 @@ void WorkModel::pause_goal_authority(uint32_t index) {
             tasks.authority_changed(at, stamp);
         }
     }
-    due_work_changed = true;
 }
 
 } // namespace ayni::kernel

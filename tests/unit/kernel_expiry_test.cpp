@@ -5,8 +5,8 @@
 // ayni_step reports. Runs on the simulation Host, whose clock moves only when
 // a test moves it.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -16,6 +16,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -117,12 +119,12 @@ uint64_t task_of(WorkNode &work, uint64_t goal_id) {
 
 // White-box: leaves exactly one id for this boot.
 void leave_one_id(WorkNode &work) {
-    work.kernel()->work.ids.start(1, 0xFFFFFFFFU);
+    KernelTestProbe::work(work.kernel()).ids.start(1, 0xFFFFFFFFU);
 }
 
 // White-box: puts the goal at the largest revision.
 void exhaust_goal(WorkNode &work, uint64_t goal_id) {
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t index = 0;
     ASSERT_TRUE(goals.find(goal_id, index));
     const_cast<ayni::work::Goal &>(goals.at(index)).revision = max_revision;
@@ -130,7 +132,7 @@ void exhaust_goal(WorkNode &work, uint64_t goal_id) {
 
 // White-box: the interval goal's next occurrence is its last.
 void make_next_occurrence_the_last(WorkNode &work, uint64_t goal_id) {
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t index = 0;
     ASSERT_TRUE(goals.find(goal_id, index));
     const_cast<ayni::work::Goal &>(goals.at(index)).cursor.taken = UINT32_MAX - 1U;
@@ -138,7 +140,7 @@ void make_next_occurrence_the_last(WorkNode &work, uint64_t goal_id) {
 
 // White-box: puts the task at the largest revision.
 void exhaust_task(WorkNode &work, uint64_t task_id) {
-    const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
+    const ayni::work::TaskTable &tasks = KernelTestProbe::work(work.kernel()).tasks;
     uint32_t index = 0;
     ASSERT_TRUE(tasks.find(task_id, index));
     const_cast<ayni::work::Task &>(tasks.at(index)).revision = max_revision;
@@ -313,7 +315,7 @@ TEST(WorkExpiry, equal_expiries_go_in_creation_order_whatever_the_places) {
     const uint64_t first = create(work, expiring(2U * second));
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
     const uint64_t later = create(work, expiring(2U * second));
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t first_index = 0;
     uint32_t later_index = 0;
     ASSERT_TRUE(goals.find(first, first_index));

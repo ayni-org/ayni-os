@@ -12,16 +12,15 @@
 #include "authority/grant/grant_table.h"
 #include "authority/principal/principal_registry.h"
 #include "authority/scene/scene_table.h"
-#include "catalog/capability/capability_registry.h"
-#include "catalog/goal_type/goal_type_registry.h"
-#include "catalog/strategy/strategy_registry.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
 #include "kernel/command/command_canonical.h"
 #include "kernel/command/command_table.h"
+#include "kernel/config/catalogs.h"
+#include "kernel/config/kernel_config.h"
+#include "kernel/config/store_limits.h"
 #include "kernel/intent/intent.h"
-#include "kernel/kernel_config.h"
-#include "kernel/transition_clock.h"
+#include "kernel/intent/transition_clock.h"
 #include "work/agent/agent_table.h"
 #include "work/authority/authority_cleanup.h"
 #include "work/call/call_table.h"
@@ -37,18 +36,44 @@
 
 namespace ayni::kernel {
 
-// Narrow borrowed clock for admission and post-callback consumption. Production
-// callers supply the Host clock; standalone model tests may use fixed now_us.
-struct OwnerClock {
-    void *ctx = nullptr;                     // Borrowed for this synchronous call only.
-    uint64_t (*now_us)(void *ctx) = nullptr; // Monotonic microseconds; null uses call's sample.
+// The Host monotonic clock, borrowed for one synchronous owner call. A rule
+// takes the sample the kernel made at entry (now_us) for schedules and the
+// checks before any caller code runs, and samples this clock again for a
+// check after caller code returns (a goal type's export, a strategy's
+// decide), so a deadline that passed meanwhile counts (ADR-0051).
+class OwnerClock {
+  public:
+    OwnerClock(void *ctx, uint64_t (*read)(void *ctx)) : ctx_(ctx), now_us_(read) {}
+    uint64_t now_us() const { return now_us_(ctx_); }
+
+  private:
+    void *ctx_;
+    uint64_t (*now_us_)(void *ctx);
 };
 
-// Kernel-owned ingress sampling capability, borrowed for synchronous admission.
-// Only publication of a new explicit reauthorization calls sample, never retry.
-struct InputResumeSampler {
-    void *ctx = nullptr; // Borrowed ingress owner; none only when no sampler is supplied.
-    work::InputResumeBoundary (*sample)(void *) = nullptr; // Locked frontier; null is unavailable.
+// The ingress frontier, borrowed for one synchronous admission. Only the
+// publication of a new explicit reauthorization samples it, never a retry.
+class InputResumeSampler {
+  public:
+    InputResumeSampler(void *ctx, work::InputResumeBoundary (*read)(void *ctx))
+        : ctx_(ctx), sample_(read) {}
+    work::InputResumeBoundary sample() const { return sample_(ctx_); } // Taken under its lock.
+
+  private:
+    void *ctx_;
+    work::InputResumeBoundary (*sample_)(void *ctx);
+};
+
+// What ayni_submit_intent samples once for an intent; every rule reads
+// these. Nothing has a default: a durable_seq left out would read as "all
+// durable" and weaken the binding and Grant checks without a compile error.
+struct IntentContext {
+    uint64_t now_us;              // Host monotonic clock at entry; a new goal's schedule starts.
+    uint64_t durable_seq;         // The current writer's acknowledged prefix at entry.
+    bool has_room;                // ayni_kernel::storage_has_room(): a transition may start.
+    ayni_status_t storage_status; // StorageBudget::admission(): AYNI_OK or AYNI_STORAGE_FAILED.
+    OwnerClock clock;
+    InputResumeSampler input;
 };
 
 // One stable scan identity; an orphaned dedicated Grant may retain a Goal ID
@@ -59,40 +84,22 @@ struct AuthorityCleanupGoal {
 };
 
 struct WorkModel {
-    WorkModel(const KernelCapacities &capacities, const KernelLimits &limits,
-              const KernelStorage &storage)
-        : sessions(storage.sessions, capacities.session_capacity),
-          goal_types(storage.goal_types, capacities.goal_type_capacity),
-          agents(storage.agents, capacities.agent_capacity),
-          goals(storage.goals, {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
-                                limits.goal_depth_max, limits.goal_children_max}),
-          tasks(storage.tasks,
-                {capacities.task_capacity, capacities.task_step_capacity,
-                 capacities.task_checkpoint_max_bytes, limits.task_model_call_hard_limit}),
-          strategies(storage.strategies, capacities.strategy_capacity),
-          commands(storage.commands, authority::PrincipalRegistry::capacity,
-                   capacities.command_capacity,
-                   exact_command_max_bytes(capacities.authority_scope_max_bytes,
-                                           capacities.goal_parameter_max_bytes,
-                                           capacities.goal_requirement_capacity),
-                   capacities.grant_capacity),
-          capabilities(storage.capabilities, capacities.capability_capacity,
-                       capacities.authority_scope_max_bytes),
-          observation_sources(storage.observation_sources, capacities.observation_source_capacity),
-          scenes(storage.scenes, {capacities.scene_capacity, capacities.authority_scope_max_bytes},
-                 capabilities, observation_sources),
-          execution_catalog(storage.execution_catalog, capacities.executor_capacity,
-                            capacities.execution_binding_capacity),
-          grants(storage.grants, {capacities.grant_capacity, capacities.authority_scope_max_bytes,
-                                  capacities.grant_delegation_depth_max}),
-          goal_authority(storage.goal_authority,
-                         {capacities.goal_capacity, capacities.goal_requirement_capacity,
-                          capacities.authority_scope_max_bytes}),
-          task_authority(storage.task_authority,
-                         {capacities.task_capacity, capacities.goal_requirement_capacity}),
-          calls(storage.calls,
-                {capacities.call_capacity, capacities.authority_scope_max_bytes,
-                 capacities.call_input_max_bytes, capacities.call_result_max_bytes}) {
+    // catalogs outlives the model.
+    WorkModel(const Catalogs &registered, const KernelCapacities &capacities,
+              const KernelLimits &limits, const KernelStorage &storage)
+        : catalogs(registered), sessions(storage[Store::sessions], capacities.session_capacity),
+          agents(storage[Store::agents], capacities.agent_capacity),
+          goals(storage[Store::goals],
+                {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
+                 limits.goal_depth_max, limits.goal_children_max}),
+          tasks(storage[Store::tasks], task_limits(capacities), limits.task_model_call_hard_limit),
+          commands(storage[Store::commands], command_limits(capacities)),
+          scenes(storage[Store::scenes], scene_limits(capacities), registered.capabilities,
+                 registered.observation_sources),
+          grants(storage[Store::grants], grant_limits(capacities)),
+          goal_authority(storage[Store::goal_authority], goal_authority_limits(capacities)),
+          task_authority(storage[Store::task_authority], task_authority_limits(capacities)),
+          calls(storage[Store::calls], call_limits(capacities)) {
         tasks.set_retention({this, retains_task});
         goals.set_retention({this, retains_goal});
     }
@@ -108,9 +115,9 @@ struct WorkModel {
     // was that transition.
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
-    work::WorkTables tables(uint64_t durable_seq = UINT64_MAX) {
-        return {goals,           tasks,       agents,
-                &goal_authority, durable_seq, grants.has_compatibility_holds() ? &grants : nullptr};
+    work::WorkTables tables() {
+        return {goals, tasks, agents, goal_authority,
+                grants.has_compatibility_holds() ? &grants : nullptr};
     }
     // Export a staged immutable ceiling and select existing durable Grants.
     authority::GrantCheck prepare_goal_authority(const catalog::GoalType &type,
@@ -174,24 +181,19 @@ struct WorkModel {
     bool insert_goal(const work::NewGoal &goal, uint64_t goal_id, foundation::TransitionStamp stamp,
                      uint32_t &out_index);
 
-    // Registration fills principals, goal types, agents and strategies in
+    // Goal types, strategies, capability schemas, observation sources and
+    // executors the rules read; closed before the model starts.
+    const Catalogs &catalogs;
+    // Registration fills principals, agents and Scene declarations in
     // CONFIGURING; the rest changes only in RUNNING.
     authority::PrincipalRegistry principals;
     authority::SessionTable sessions;
-    catalog::GoalTypeRegistry goal_types;
     work::AgentTable agents;
     work::GoalTable goals;
     work::TaskTable tasks;
-    catalog::StrategyRegistry strategies;
     // The commands accepted, which the log keeps with their transitions.
     CommandTable commands;
-    // Trusted, immutable authorization schemas; registration enables no I/O.
-    catalog::CapabilityRegistry capabilities;
-    catalog::ObservationSources
-        observation_sources;  // Immutable types shared by Scenes and knowledge.
     authority::Scenes scenes; // Finite restrictions and owner preference; no live observations.
-    catalog::ExecutionRegistry
-        execution_catalog; // Trusted ports/limits, independent of live permits.
     authority::GrantTable grants;
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;
@@ -200,29 +202,56 @@ struct WorkModel {
     work::AuthorityCleanup authority_cleanup; // Work-owned active/pending scan, no arena needed.
     foundation::IdAllocator ids;
     TransitionClock transitions;
-    // True while caller code runs inside one of these functions (a goal
-    // type's validator or a strategy's decide function). Caller code must
-    // not call the kernel; as a fail-safe, owner-thread functions that
-    // change state then refuse to run (ayni.h, C-POLICY-001), so nothing
-    // changes between a check and the change it allows.
     // Union of local completed steps and accepted call keys; a failed call still
     // consumes its Task's bounded step capacity and cannot be disguised as local progress.
     uint32_t accepted_step_count(uint32_t task_index) const;
     bool step_taken(uint32_t task_index, ayni_string_v1 key) const;
 
-    bool calling_out = false;
-    // Set by a change to the goals' due work (which goals may advance or
-    // expire, room in the task table, or a held task); cleared once a search
-    // finds none due. That search also records when the next due work comes
-    // and whether an id was left, so ayni_step searches again only after
-    // such a change, once that time has come or once no id is left
-    // (ADR-0019, ADR-0020, ADR-0022).
-    bool due_work_changed = false;
-    uint64_t next_due_work_us = work::no_time;
-    bool searched_with_id = true;
-    uint64_t searched_durable_seq = 0; // Due-search key, not permission state; 0 before search.
+    // Runs call, which calls caller code (a goal type's validator or
+    // requirement export, a strategy's decide function, a Provider or an
+    // executor port), with calling_out() true and returns call's result.
+    // The value before the call is restored after it, so a nested callout
+    // leaves the enclosing one marked (ADR-0051).
+    template <typename Call> auto call_out(Call &&call) -> decltype(call()) {
+        const bool enclosing = calling_out_;
+        calling_out_ = true;
+        const auto result = call();
+        calling_out_ = enclosing;
+        return result;
+    }
+    // True while caller code runs inside call_out. Caller code must not call
+    // the kernel; as a fail-safe, owner-thread functions that change state
+    // then refuse to run (ayni.h, C-POLICY-001), so nothing changes between a
+    // check and the change it allows.
+    bool calling_out() const { return calling_out_; }
+
+    // The goals' next due work by now_us (work::find_due_work over these
+    // tables). A search that finds none is kept, with when the next due work
+    // comes, and answers again until a transition, another durable_seq, the
+    // last id being taken, forget_due_work() or that time (ADR-0019,
+    // ADR-0020, ADR-0022, ADR-0051). Found work is not kept: doing it is a
+    // transition. out_next_us is now_us when work is found.
+    bool next_due_work(uint64_t now_us, uint64_t durable_seq, work::DueWork &out_work,
+                       uint64_t &out_next_us);
+    // For a change outside a transition to what the search reads. Recovery
+    // changes the tables: WorkReplay's reanchoring and holds, and
+    // CallRuntime's hold of a restored call whose binding changed. The task
+    // table also reads whether the runtime still holds a call's slot or
+    // lease (CallRuntime::runtime_retains), which a stopped call gives up
+    // without a transition. Every transition forgets the search by itself.
+    void forget_due_work() { due_search_kept_ = false; }
 
   private:
+    // The kept search and what it read besides the tables. The other four
+    // fields mean something only while due_search_kept_ is set; they stay
+    // apart rather than in one optional struct so they pack with
+    // calling_out_ (ADR-0051 decision 11).
+    uint64_t due_search_commit_seq_ = 0;        // transitions.next_commit_seq() at the search.
+    uint64_t due_search_durable_seq_ = 0;       // The durable_seq it was given.
+    uint64_t next_due_work_us_ = work::no_time; // The next due time it found, or no_time.
+    bool due_search_kept_ = false;              // Whether a search that found none is kept.
+    bool due_search_with_id_ = true;            // Whether an id was left at the search.
+    bool calling_out_ = false;
     // Cross-table retention reads owner facts; no duplicated reference counters.
     static bool retains_task(const void *context, const work::Task &task);
     static bool retains_goal(const void *context, const work::Goal &goal);
@@ -235,21 +264,18 @@ ayni_status_t open_session(WorkModel &model, const authority::Principal &princip
                            ayni_channel_t channel, uint64_t &out_session_id);
 
 // Steps 4 and 5 of ayni_submit_intent: the session, the command id, then
-// room for a transition (has_room) and the rules of the intent's kind;
-// applies the intent as one transition if they pass, and maps its command.
-// The kernel is RUNNING; now_us is the host monotonic clock, from which a
-// new goal's schedule starts. failure is reset, then says why on a refusal.
-ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_us, bool has_room,
-                           IntentOutcome &outcome, IntentFailure &failure,
-                           ayni_status_t storage_status = AYNI_OK,
-                           uint64_t durable_seq = UINT64_MAX, OwnerClock clock = {},
-                           InputResumeSampler input = {});
+// room for a transition and the rules of the intent's kind; applies the
+// intent as one transition if they pass, and maps its command. The kernel
+// is RUNNING. failure is reset, then says why on a refusal.
+ayni_status_t apply_intent(WorkModel &model, const Intent &intent, const IntentContext &context,
+                           IntentOutcome &outcome, IntentFailure &failure);
 
 // Records a local input from source as an occurrence, due at now_us, of
-// every goal whose trigger takes it, all in one transition (ADR-0021).
-// Returns false, changing nothing, when no goal takes it.
+// every goal whose trigger takes it, all in one transition (ADR-0021);
+// input is the ingress frontier the input leaves. Returns false, changing
+// nothing, when no goal takes it.
 bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us,
-                       work::InputResumeBoundary input = {});
+                       work::InputResumeBoundary input);
 
 // Does the goals' next due work by now_us (work::find_due_work): expires a
 // goal, derives a task or skips occurrences, each as one transition.
@@ -260,13 +286,12 @@ enum class DueWorkResult { none, applied, internal };
 DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
                           uint64_t durable_seq);
 // Whether do_due_work(now_us) would do something; out_next_us is then now_us.
-// When it would not, clears due_work_changed and sets out_next_us to when the
-// next due work comes (work::no_time: none will without a change). Scans the
-// goal table, each goal along at most goal_depth_max ancestors, and the task
-// table, only while due_work_changed is set, that time has come or the ids
-// have just run out.
+// When it would not, sets out_next_us to when the next due work or Grant
+// expiry comes (work::no_time: none will without a change). Scans the goal
+// table, each goal along at most goal_depth_max ancestors, and the task
+// table only when WorkModel::next_due_work keeps no search.
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
-                      uint64_t durable_seq = UINT64_MAX);
+                      uint64_t durable_seq);
 
 } // namespace ayni::kernel
 

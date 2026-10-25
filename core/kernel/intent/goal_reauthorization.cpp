@@ -77,10 +77,10 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
     const auto &goal = model.goals.at(plan.goal_index);
     for (uint32_t at = 0; at < plan.previous.count; ++at) {
         const auto &need = plan.previous.requirements[at];
-        const auto entry = model.capabilities.find(
+        const auto entry = model.catalogs.capabilities.find(
             {need.capability_id.data(), need.capability_id.size()}, need.capability_version);
         if (entry.kind != catalog::CapabilityRegistry::Lookup::Kind::found ||
-            !model.capabilities.matches_domain(entry.index, need.source_domain)) {
+            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain)) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_CATALOG_CHANGED};
         }
         std::optional<uint32_t> selected;
@@ -112,10 +112,7 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
 // only now; publication contains no caller callback, allocation or new choice.
 bool publish(WorkModel &model, const ReauthorizationPlan &plan, uint64_t now_us,
              InputResumeSampler input, IntentOutcome &outcome) {
-    if (input.sample == nullptr) {
-        return false;
-    }
-    const auto boundary = input.sample(input.ctx);
+    const auto boundary = input.sample();
     if (boundary.incarnation == 0U || !work::valid_input_resume_boundary(boundary)) {
         return false;
     }
@@ -149,7 +146,6 @@ bool publish(WorkModel &model, const ReauthorizationPlan &plan, uint64_t now_us,
     outcome.commit_seq = stamp.commit_seq;
     outcome.authorization = copy_work_authority_result(model.goal_authority.at(plan.goal_index));
     outcome.due_work = true;
-    model.due_work_changed = true;
     return true;
 }
 } // namespace

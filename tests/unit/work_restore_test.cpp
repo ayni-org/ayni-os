@@ -11,9 +11,10 @@
 #include "durability/journal/journal_ring.h"
 #include "foundation/kernel_id.h"
 #include "kernel/command/command_records.h"
+#include "kernel/config/store_limits.h"
 #include "kernel/intent/work_model.h"
-#include "kernel/work_journal.h"
-#include "kernel/work_replay.h"
+#include "kernel/persistence/work_journal.h"
+#include "kernel/persistence/work_replay.h"
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
@@ -1217,24 +1218,20 @@ class Model {
           goals_(GoalTable::storage_size(capacities.goal_capacity,
                                          capacities.goal_parameter_max_bytes)),
           sessions_(ayni::authority::SessionTable::storage_size(capacities.session_capacity)),
-          tasks_(TaskTable::storage_size({capacities.task_capacity, capacities.task_step_capacity,
-                                          capacities.task_checkpoint_max_bytes})),
+          tasks_(TaskTable::storage_size(ayni::kernel::task_limits(capacities))),
           strategies_(ayni::catalog::StrategyRegistry::storage_size(capacities.strategy_capacity)),
-          commands_(ayni::kernel::CommandTable::storage_size(
-              ayni::authority::PrincipalRegistry::capacity, capacities.command_capacity,
-              ayni::kernel::authority_command_max_bytes(capacities.authority_scope_max_bytes),
-              capacities.grant_capacity)),
+          commands_(
+              ayni::kernel::CommandTable::storage_size(ayni::kernel::command_limits(capacities))),
           capabilities_(ayni::catalog::CapabilityRegistry::storage_size(
               capacities.capability_capacity, capacities.authority_scope_max_bytes)),
-          grants_(ayni::authority::GrantTable::storage_size(
-              {capacities.grant_capacity, capacities.authority_scope_max_bytes,
-               capacities.grant_delegation_depth_max})),
+          grants_(
+              ayni::authority::GrantTable::storage_size(ayni::kernel::grant_limits(capacities))),
           goal_authority_(ayni::work::GoalAuthorityTable::storage_size(
-              {capacities.goal_capacity, capacities.goal_requirement_capacity,
-               capacities.authority_scope_max_bytes})),
+              ayni::kernel::goal_authority_limits(capacities))),
           task_authority_(ayni::work::TaskAuthorityTable::storage_size(
-              {capacities.task_capacity, capacities.goal_requirement_capacity})),
-          work_(capacities, {2, 4}, storage()) {
+              ayni::kernel::task_authority_limits(capacities))),
+          storage_(storage()), catalogs_(capacities, storage_),
+          work_(catalogs_, capacities, {2, 4}, storage_) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
             EXPECT_EQ(work_.agents.restore(owner_agent, owner, 1, AYNI_AGENT_RUNNING, {1, 1}),
@@ -1246,22 +1243,22 @@ class Model {
     WorkModel *operator->() { return &work_; }
 
   private:
+    // The stores WorkModel reads; the kernel's own stays unset.
     KernelStorage storage() {
-        return {nullptr,
-                nullptr,
-                nullptr,
-                agents_.data(),
-                goal_types_.data(),
-                goals_.data(),
-                sessions_.data(),
-                tasks_.data(),
-                strategies_.data(),
-                nullptr,
-                commands_.data(),
-                capabilities_.data(),
-                grants_.data(),
-                goal_authority_.data(),
-                task_authority_.data()};
+        using ayni::kernel::Store;
+        KernelStorage result;
+        result.set(Store::agents, agents_.data());
+        result.set(Store::goal_types, goal_types_.data());
+        result.set(Store::goals, goals_.data());
+        result.set(Store::sessions, sessions_.data());
+        result.set(Store::tasks, tasks_.data());
+        result.set(Store::strategies, strategies_.data());
+        result.set(Store::commands, commands_.data());
+        result.set(Store::capabilities, capabilities_.data());
+        result.set(Store::grants, grants_.data());
+        result.set(Store::goal_authority, goal_authority_.data());
+        result.set(Store::task_authority, task_authority_.data());
+        return result;
     }
 
     Block agents_;
@@ -1275,15 +1272,33 @@ class Model {
     Block grants_;
     Block goal_authority_;
     Block task_authority_;
+    KernelStorage storage_;
+    ayni::kernel::Catalogs catalogs_;
     WorkModel work_;
 };
 
-// Hands one record to the replay as the batch commit_seq would.
+// White-box, C-POLICY-001 and ADR-0051: call_out marks caller code for its
+// duration and restores the mark it found, so a nested callout leaves the
+// enclosing one marked and the model unmarked afterwards.
+TEST(WorkModelCallout, nested_call_out_keeps_the_enclosing_mark) {
+    Model model(small_capacities());
+    EXPECT_FALSE(model->calling_out());
+    const bool marked = model->call_out([&] {
+        const bool nested = model->call_out([&] { return model->calling_out(); });
+        return nested && model->calling_out();
+    });
+    EXPECT_TRUE(marked);
+    EXPECT_FALSE(model->calling_out());
+}
+
+// Hands one record to the replay as the batch commit_seq would, in the boot
+// epoch of the IDs the records below allocate.
 RecordUse feed(WorkReplay &replay, uint64_t commit_seq, uint16_t type,
                const std::vector<uint8_t> &body) {
+    constexpr uint64_t boot_epoch = 1;
     const ayni::durability::BatchIdentity batch{1, commit_seq, commit_seq + 100U};
     const RecordHeader header{type, 1, record_required, static_cast<uint32_t>(body.size())};
-    return WorkReplay::on_record(&replay, batch, header, body.data());
+    return WorkReplay::on_record(&replay, batch, header, body.data(), boot_epoch);
 }
 
 // A top-level goal as created: ACTIVE at revision 1, without a trigger.
@@ -1649,7 +1664,7 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, task_state_record(task_id)),
               RecordUse::applied);
     admit_zero_task_fixture(replay, *model, task_id, 2);
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
     Goal cancelled = created_goal(replay_goal_id);
     cancelled.lifecycle = AYNI_GOAL_CANCELLED;
     cancelled.revision = 2;
@@ -1658,14 +1673,14 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     ayni::work::write_goal_state_record(cancelled, body.data());
     ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
     EXPECT_TRUE(replay.complete());
-    EXPECT_FALSE(replay.consistent());
+    EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     Task cancelled_task = created_task(task_id, 0, 2);
     cancelled_task.lifecycle = AYNI_TASK_CANCELLED;
     cancelled_task.cancel_revision = 2;
     std::vector<uint8_t> task_body(ayni::work::task_state_record_size);
     ayni::work::write_task_state_record(cancelled_task, task_body.data());
     ASSERT_EQ(feed(replay, 3, ayni::work::task_state_record_type, task_body), RecordUse::applied);
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
 }
 
 // Ending a goal ends its descendants, and stopping an instance ends its
@@ -1692,7 +1707,7 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
                   RecordUse::applied);
         admit_zero_goal_fixture(*model, UINT64_C(0x100000005), 2);
         admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
-        EXPECT_TRUE(replay.consistent());
+        EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
         Goal cancelled = created_goal(UINT64_C(0x100000004));
         cancelled.lifecycle = AYNI_GOAL_CANCELLED;
         cancelled.revision = 2;
@@ -1700,7 +1715,7 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
         std::vector<uint8_t> body(ayni::work::goal_state_record_size);
         ayni::work::write_goal_state_record(cancelled, body.data());
         ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
-        EXPECT_FALSE(replay.consistent());
+        EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     }
     {
         Model model(small_capacities(), true);
@@ -1711,10 +1726,10 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
                        goal_state_record(UINT64_C(0x100000004))),
                   RecordUse::applied);
         admit_zero_goal_fixture(*model, UINT64_C(0x100000004), 1);
-        EXPECT_TRUE(replay.consistent());
+        EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
         ASSERT_EQ((*model).agents.restore(owner_agent, owner, 2, AYNI_AGENT_STOPPED, {102, 2}),
                   AgentTable::Restore::restored);
-        EXPECT_FALSE(replay.consistent());
+        EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     }
 }
 

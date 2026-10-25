@@ -5,8 +5,8 @@
 // task is decided, and pauses and new tasks keep or start the checkpoints.
 // Runs on the simulation Host.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -20,6 +20,8 @@
 #include <limits>
 #include <string>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -81,7 +83,7 @@ ScriptedStrategy::Answer in_turn(WorkNode &work, std::vector<ScriptedStrategy::A
 
 // White-box: sets the goal's revision.
 void set_goal_revision(WorkNode &work, uint64_t goal_id, uint32_t revision) {
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t index = 0;
     ASSERT_TRUE(goals.find(goal_id, index));
     const_cast<ayni::work::Goal &>(goals.at(index)).revision = revision;
@@ -89,7 +91,7 @@ void set_goal_revision(WorkNode &work, uint64_t goal_id, uint32_t revision) {
 
 // White-box: the private checkpoint the kernel keeps for the task.
 std::vector<uint8_t> kept_checkpoint(WorkNode &work, uint64_t task_id) {
-    const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
+    const ayni::work::TaskTable &tasks = KernelTestProbe::work(work.kernel()).tasks;
     uint32_t index = 0;
     EXPECT_TRUE(tasks.find(task_id, index));
     return bytes_of(tasks.checkpoint(index));
@@ -643,7 +645,7 @@ TEST(WorkCheckpoint, progress_to_the_largest_revision_leaves_the_task_undecided)
     ASSERT_EQ(step_items(work), 1U);
     const uint64_t task_id = task_of(work, goal_id);
     {
-        const ayni::work::TaskTable &tasks = work.kernel()->work.tasks;
+        const ayni::work::TaskTable &tasks = KernelTestProbe::work(work.kernel()).tasks;
         uint32_t index = 0;
         ASSERT_TRUE(tasks.find(task_id, index));
         const_cast<ayni::work::Task &>(tasks.at(index)).revision = max_revision - 1U;

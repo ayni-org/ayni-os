@@ -3,8 +3,8 @@
 // order in which due goals derive, and the deadline ayni_step reports. Runs
 // on the simulation Host, whose clock moves only when a test moves it.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -13,6 +13,9 @@
 
 #include <cstdint>
 #include <limits>
+#include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -77,8 +80,8 @@ struct HeldRequest {
     }
 
     void issue(WorkNode &work) {
-        ASSERT_EQ(work.kernel()->completions.issue(work.node().info().boot_epoch, &applied, nullptr,
-                                                   &accept, this),
+        ASSERT_EQ(KernelTestProbe::completions(work.kernel())
+                      .issue(work.node().info().boot_epoch, &applied, nullptr, &accept, this),
                   ayni::kernel::IssueResult::in_flight);
     }
     void post() {
@@ -293,7 +296,7 @@ TEST(WorkTrigger, tie_goes_to_the_goal_created_first_whatever_its_place) {
     const uint64_t first = delay_goal(work, second);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
     const uint64_t later = delay_goal(work, second);
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t first_index = 0;
     uint32_t later_index = 0;
     ASSERT_TRUE(goals.find(first, first_index));
@@ -370,7 +373,7 @@ TEST(WorkTrigger, used_up_ids_report_no_deadline) {
     WorkNode work;
     work.run();
     const uint64_t start = now(work);
-    work.kernel()->work.ids.start(1, 0xFFFFFFFEU);
+    KernelTestProbe::work(work.kernel()).ids.start(1, 0xFFFFFFFEU);
     const uint64_t goal_id = delay_goal(work, second);
     EXPECT_EQ(work.node().step().next_deadline_us,
               work.node().with_storage_deadline(start + second));
@@ -422,6 +425,104 @@ TEST(WorkTrigger, step_takes_occurrences_as_of_its_start) {
     EXPECT_EQ(report.items_done, 1U);
     EXPECT_EQ(work.task(task_of(work, goal_id)).occurrence_count, 1U);
     EXPECT_EQ(report.next_deadline_us, work.node().with_storage_deadline(start + second));
+}
+
+// --- The kept due-work search ------------------------------------------------
+
+// ADR-0051 decision 11: the search a step keeps, with its next due time,
+// answers as a new search would. Each change to the tables takes a
+// transition, which forgets it; recovery forgets it itself, and so does a
+// call's release (ManagedExecution.released_lease_lets_the_waiting_goal_derive).
+// A fixed pseudo-random run of creates, goal and instance changes, cancels,
+// steps, clock moves and restarts compares the two after every operation.
+TEST(WorkTrigger, kept_due_work_search_answers_as_a_new_search_would) {
+    WorkNode work;
+    work.timer_wait_max_us = 2U * second;
+    work.run();
+    std::vector<uint64_t> goals;
+    uint32_t state = 12345;
+    const auto next = [&state](uint32_t bound) {
+        state = state * 1103515245U + 12345U;
+        return (state >> 8U) % bound;
+    };
+    // Changes a random goal at its current revision, unless it has gone.
+    const auto change = [&](ayni_intent_kind_t kind) {
+        if (goals.empty()) {
+            return;
+        }
+        const uint64_t goal_id = goals[next(static_cast<uint32_t>(goals.size()))];
+        ayni_goal_info_v1 info{};
+        info.struct_size = sizeof(info);
+        if (ayni_get_goal(work.kernel(), goal_id, &info) == AYNI_OK) {
+            static_cast<void>(work.change(kind, goal_id, info.revision));
+        }
+    };
+    uint32_t kept_answers = 0; // Checks that the kept search answered with a time.
+    uint64_t checked_seq = 0;
+    uint64_t checked_durable_seq = 0;
+    for (uint32_t round = 0; round < 400; ++round) {
+        const uint64_t agent_id = next(2) == 0U ? agent_a : agent_b;
+        switch (next(10)) {
+        case 0: {
+            const Submitted created =
+                work.create(timed_body(work, AYNI_TRIGGER_DELAY, next(3) * second, 0, agent_id));
+            if (created.status == AYNI_OK) {
+                goals.push_back(created.result.object.id);
+            }
+            break;
+        }
+        case 1: {
+            const Submitted created = work.create(timed_body(
+                work, AYNI_TRIGGER_INTERVAL, next(3) * second, (1U + next(3)) * second, agent_id));
+            if (created.status == AYNI_OK) {
+                goals.push_back(created.result.object.id);
+            }
+            break;
+        }
+        case 2:
+        case 3:
+            change(next(2) == 0U ? AYNI_INTENT_GOAL_PAUSE : AYNI_INTENT_GOAL_RESUME);
+            break;
+        case 4:
+            if (next(3) == 0U) {
+                change(AYNI_INTENT_GOAL_CANCEL);
+            }
+            break;
+        case 5:
+            static_cast<void>(work.change_agent(next(2) == 0U ? AYNI_INTENT_INSTANCE_PAUSE
+                                                              : AYNI_INTENT_INSTANCE_RESUME,
+                                                agent_id));
+            break;
+        case 6:
+        case 7:
+            advance(work, next(2U * second));
+            break;
+        case 8:
+            static_cast<void>(work.node().step(1U + next(3)));
+            break;
+        default:
+            if (next(8) == 0U) {
+                work.node().reboot();
+                work.node().recover();
+                ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+                work.reopen_session();
+            } else {
+                static_cast<void>(work.node().step());
+            }
+            break;
+        }
+        const auto &model = KernelTestProbe::work(work.kernel());
+        const uint64_t durable_seq = KernelTestProbe::log(work.kernel()).durable_seq();
+        const bool no_transition = model.transitions.next_commit_seq() == checked_seq &&
+                                   durable_seq == checked_durable_seq;
+        const auto [kept, fresh] = ayni::kernel::kept_and_new_due_search(work.kernel(), now(work));
+        ASSERT_EQ(kept, fresh) << round;
+        kept_answers += no_transition && !fresh.due && fresh.next_us != no_time ? 1U : 0U;
+        checked_seq = model.transitions.next_commit_seq();
+        checked_durable_seq = durable_seq;
+    }
+    EXPECT_GT(goals.size(), 4U);
+    EXPECT_GT(kept_answers, 20U);
 }
 
 } // namespace

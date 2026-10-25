@@ -2,10 +2,11 @@
 // One codec serves journal/snapshot; replay proves owning Goal/Task facts.
 #ifndef AYNI_CORE_WORK_TASK_TASK_AUTHORITY_RECORDS_H
 #define AYNI_CORE_WORK_TASK_TASK_AUTHORITY_RECORDS_H
+#include "durability/batch/record_types.h"
 #include "work/task/task_authority.h"
 namespace ayni::work {
 
-constexpr uint16_t task_authority_record_type = 18;
+constexpr uint16_t task_authority_record_type = durability::record_type::task_authority;
 constexpr uint16_t task_authority_record_version = 1;
 // Five u64 identity/stamp words, then phase/count u32; references are u64/u32.
 constexpr uint32_t task_authority_record_fixed_size = 48;

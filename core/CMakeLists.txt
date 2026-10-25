@@ -59,92 +59,93 @@ ayni_add_core_module(knowledge
 
 ayni_add_core_module(work
     SOURCES
-        work/execution/execution_fact.cpp
         work/action/action_record.cpp
         work/action/action_records.cpp
-        work/call/call_input.cpp
-        work/call/call_table.cpp
-    work/call/call_reconciliation.cpp
-    work/call/call_query_validation.cpp
-    work/call/call_records.cpp
-    work/call/call_restore.cpp
+        work/agent/agent_records.cpp
+        work/agent/agent_table.cpp
         work/authority/authority_cleanup.cpp
         work/authority/authority_cleanup_records.cpp
         work/authority/authority_facts.cpp
-        work/agent/agent_records.cpp
-        work/agent/agent_table.cpp
+        work/call/call_input.cpp
+        work/call/call_query_validation.cpp
+        work/call/call_reconciliation.cpp
+        work/call/call_records.cpp
+        work/call/call_restore.cpp
+        work/call/call_table.cpp
+        work/execution/execution_fact.cpp
         work/goal/goal_authority.cpp
         work/goal/goal_authority_records.cpp
         work/goal/goal_records.cpp
-        work/goal/goal_table.cpp
         work/goal/goal_request.cpp
+        work/goal/goal_table.cpp
         work/goal/trigger_schedule.cpp
         work/propagation.cpp
-        work/task/task_records.cpp
         work/task/task_authority.cpp
         work/task/task_authority_records.cpp
+        work/task/task_records.cpp
         work/task/task_table.cpp
     DEPENDS authority catalog durability foundation)
 
 ayni_add_core_module(kernel
     SOURCES
+        kernel/api/call_api.cpp
+        kernel/api/execution_api.cpp
+        kernel/api/kernel_api.cpp
+        kernel/api/observation_api.cpp
+        kernel/api/provider_api.cpp
+        kernel/api/provider_completion_api.cpp
+        kernel/api/resource_api.cpp
+        kernel/api/scene_api.cpp
+        kernel/api/work_api.cpp
         kernel/boot/boot_sequence.cpp
-        kernel/observation_api.cpp
-        kernel/command/command_scene.cpp
-        kernel/scene_api.cpp
-        kernel/execution_api.cpp
-        kernel/scene_replay.cpp
-        kernel/command/command_canonical.cpp
+        kernel/call/call_admission.cpp
+        kernel/call/call_completion.cpp
+        kernel/call/call_dispatch.cpp
+        kernel/call/call_drain.cpp
+        kernel/call/call_reconciliation.cpp
+        kernel/call/call_runtime.cpp
+        kernel/call/call_wait.cpp
         kernel/command/command_approval.cpp
+        kernel/command/command_canonical.cpp
         kernel/command/command_goal_identity.cpp
         kernel/command/command_reauthorization.cpp
-        kernel/command/command_task_limit.cpp
-    kernel/command/command_target.cpp
         kernel/command/command_records.cpp
+        kernel/command/command_scene.cpp
         kernel/command/command_table.cpp
-        kernel/command/work_authority_result.cpp
+        kernel/command/command_target.cpp
+        kernel/command/command_task_limit.cpp
         kernel/command/pending_revoke.cpp
+        kernel/command/work_authority_result.cpp
         kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
         kernel/completion/provider_mailbox.cpp
+        kernel/config/catalogs.cpp
+        kernel/decision/decision.cpp
+        kernel/execution/execution_control.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
         kernel/intent/authority_intent.cpp
-    kernel/intent/goal_approval.cpp
+        kernel/intent/goal_approval.cpp
+        kernel/intent/goal_authority.cpp
         kernel/intent/goal_reauthorization.cpp
-        kernel/intent_receipt.cpp
-        kernel/intent/decision.cpp
         kernel/intent/intent.cpp
         kernel/intent/intent_rules.cpp
-        kernel/intent/goal_authority.cpp
         kernel/intent/task_authority.cpp
-        kernel/intent/work_model.cpp
         kernel/intent/work_authority_cleanup.cpp
-        kernel/kernel_api.cpp
-        kernel/resource_api.cpp
-        kernel/provider_api.cpp
-        kernel/provider_completion_api.cpp
+        kernel/intent/work_model.cpp
+        kernel/kernel_intent.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
+        kernel/persistence/call_store.cpp
+        kernel/persistence/goal_approval_replay.cpp
+        kernel/persistence/goal_reauthorization_replay.cpp
+        kernel/persistence/scene_store.cpp
+        kernel/persistence/work_cleanup_replay.cpp
+        kernel/persistence/work_journal.cpp
+        kernel/persistence/work_replay.cpp
+        kernel/persistence/work_snapshot.cpp
         kernel/storage/storage_budget.cpp
         kernel/storage/storage_maintenance.cpp
-        kernel/work_api.cpp
-        kernel/work_journal.cpp
-        kernel/work_replay.cpp
-    kernel/call_replay.cpp
-    kernel/call_admission.cpp
-    kernel/call_runtime.cpp
-    kernel/call_execution.cpp
-    kernel/call_control.cpp
-    kernel/call_dispatch.cpp
-    kernel/call_completion.cpp
-    kernel/call_query.cpp
-    kernel/call_reconciliation.cpp
-    kernel/call_drain.cpp
-        kernel/work_cleanup_replay.cpp
-        kernel/goal_approval_replay.cpp
-        kernel/goal_reauthorization_replay.cpp
-        kernel/work_snapshot.cpp
     DEPENDS work authority resources knowledge catalog durability foundation)
 
 # What consumers link: the top module pulls in every module below it.

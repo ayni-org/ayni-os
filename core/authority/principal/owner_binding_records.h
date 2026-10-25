@@ -5,11 +5,13 @@
 #ifndef AYNI_CORE_AUTHORITY_PRINCIPAL_OWNER_BINDING_RECORDS_H
 #define AYNI_CORE_AUTHORITY_PRINCIPAL_OWNER_BINDING_RECORDS_H
 
+#include "durability/batch/record_types.h"
+
 #include <cstdint>
 
 namespace ayni::authority {
 
-constexpr uint16_t owner_binding_record_type = 12;
+constexpr uint16_t owner_binding_record_type = durability::record_type::owner_binding;
 constexpr uint16_t owner_binding_record_version = 1;
 constexpr uint32_t owner_binding_record_size = 16;
 

@@ -4,8 +4,9 @@
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/little_endian.h"
+#include "kernel/boot/boot_sequence.h"
 #include "kernel/command/command_records.h"
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>
@@ -16,6 +17,8 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 using namespace ayni::test;
@@ -232,7 +235,7 @@ void expect_restricted(const std::vector<StoredBatch> &log, ayni_restriction_t r
     restored.node.recover();
     EXPECT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     EXPECT_EQ(restored.node.info().restriction, reason);
-    EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(restored.node.kernel()).grants.size(), 0U);
 }
 
 // C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
@@ -553,7 +556,7 @@ struct Snapshot {
 Snapshot snapshot_of(ReplayNode &source) {
     // White-box: snapshot module export/import owns the durable model here;
     // no authorization or recovery gate is bypassed in public fixtures.
-    auto &model = source.node.kernel()->work;
+    auto &model = KernelTestProbe::work(source.node.kernel());
     const auto layout = ayni::kernel::measure_snapshot(model);
     Snapshot result{};
     result.metadata.generation = 1;
@@ -593,7 +596,8 @@ BatchCheck import_snapshot(const Snapshot &snapshot,
     restored.node.create();
     auto metadata = snapshot.metadata;
     metadata.record_count = static_cast<uint32_t>(snapshot.records.size());
-    ayni::kernel::WorkSnapshotReader reader(restored.node.kernel()->work, metadata);
+    ayni::kernel::WorkSnapshotReader reader(KernelTestProbe::work(restored.node.kernel()),
+                                            metadata);
     for (const auto &record : snapshot.records) {
         const auto check = reader.apply(record.header, record.body.data());
         if (check != BatchCheck::ok) {
@@ -602,7 +606,7 @@ BatchCheck import_snapshot(const Snapshot &snapshot,
     }
     const auto check = reader.complete();
     if (check == BatchCheck::ok && verify) {
-        verify(restored.node.kernel()->work);
+        verify(KernelTestProbe::work(restored.node.kernel()));
     }
     return check;
 }
@@ -856,8 +860,10 @@ TEST(GrantReplay, snapshot_orders_a_reused_child_slot_after_its_parent_and_rejec
     const auto child = source.create(3, 11, 19, parent.result.object.id);
     ASSERT_EQ(child.status, AYNI_OK);
     source.store(child.result.commit_seq);
-    ASSERT_EQ(source.node.kernel()->work.grants.at(0).grant_id, child.result.object.id);
-    ASSERT_EQ(source.node.kernel()->work.grants.at(1).grant_id, parent.result.object.id);
+    ASSERT_EQ(KernelTestProbe::work(source.node.kernel()).grants.at(0).grant_id,
+              child.result.object.id);
+    ASSERT_EQ(KernelTestProbe::work(source.node.kernel()).grants.at(1).grant_id,
+              parent.result.object.id);
     auto snapshot = snapshot_of(source);
     std::vector<uint32_t> grant_indices;
     for (uint32_t index = 0; index < snapshot.records.size(); ++index) {
@@ -1292,8 +1298,9 @@ TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_
         normal.node.create_and_start();
         normal.node.recover();
         ASSERT_EQ(normal.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-        ASSERT_EQ(normal.node.kernel()->work.grants.size(), 1U);
-        EXPECT_EQ(normal.node.kernel()->work.grants.at(0).owner_principal_id, owner_id);
+        ASSERT_EQ(KernelTestProbe::work(normal.node.kernel()).grants.size(), 1U);
+        EXPECT_EQ(KernelTestProbe::work(normal.node.kernel()).grants.at(0).owner_principal_id,
+                  owner_id);
     }
     bool changed = false;
     const auto damaged = edited_log(original, [&](Batch &batch) {
@@ -1317,7 +1324,7 @@ TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_
     restored.node.recover();
     EXPECT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     EXPECT_EQ(restored.node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-    EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(restored.node.kernel()).grants.size(), 0U);
     ASSERT_EQ(restored.node.sim().log().size(), before.size());
     for (std::size_t index = 0; index < before.size(); ++index) {
         EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
@@ -1785,7 +1792,7 @@ TEST(GrantRevokeReplay, journal_root_and_progress_encoders_refuse_short_buffers_
     source.store(child.result.commit_seq);
     const auto revoked = source.revoke(3, root.result.object.id);
     ASSERT_EQ(revoked.status, AYNI_OK);
-    check_small_transition_buffers(source.node.kernel()->work);
+    check_small_transition_buffers(KernelTestProbe::work(source.node.kernel()));
     for (unsigned round = 0;
          round < 20 && source.grant(child.result.object.id).lifecycle != AYNI_GRANT_REVOKED;
          ++round) {
@@ -1794,7 +1801,7 @@ TEST(GrantRevokeReplay, journal_root_and_progress_encoders_refuse_short_buffers_
         source.node.sim().advance_us(1000000);
     }
     ASSERT_EQ(source.grant(child.result.object.id).lifecycle, AYNI_GRANT_REVOKED);
-    check_small_transition_buffers(source.node.kernel()->work);
+    check_small_transition_buffers(KernelTestProbe::work(source.node.kernel()));
 }
 
 // C-STORE-016 / ADR-0031 decision 6: revocation facts and partners commit atomically.
@@ -1877,8 +1884,8 @@ TEST(GrantRevokeReplay,
     // White-box fixture: copy immutable facts for the synthetic state codec;
     // the live Grant table is not modified.
     uint32_t child_index = 0;
-    ASSERT_TRUE(source.node.kernel()->work.grants.find(x, child_index));
-    auto child_fact = source.node.kernel()->work.grants.at(child_index);
+    ASSERT_TRUE(KernelTestProbe::work(source.node.kernel()).grants.find(x, child_index));
+    auto child_fact = KernelTestProbe::work(source.node.kernel()).grants.at(child_index);
     child_fact.lifecycle = AYNI_GRANT_REVOKED;
     child_fact.revision = 2;
     child_fact.revoked_by_root_id = a;
@@ -1915,7 +1922,7 @@ TEST(GrantRevokeReplay,
     EXPECT_EQ(restored.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     EXPECT_EQ(restored.node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
     // White-box: failed recovery must discard its partially restored facts.
-    EXPECT_EQ(restored.node.kernel()->work.grants.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(restored.node.kernel()).grants.size(), 0U);
     ASSERT_EQ(restored.node.sim().log().size(), before.size());
     for (std::size_t index = 0; index < before.size(); ++index) {
         EXPECT_EQ(restored.node.sim().log()[index].bytes, before[index].bytes);
@@ -1924,18 +1931,24 @@ TEST(GrantRevokeReplay,
 
 // White-box fixture: feed real stored domain records through WorkReplay's public
 // record interface, pausing at a semantic boundary before the whole boot finishes.
+// boot_epoch is the one the log's BOOT_EPOCH records name before the record.
 struct DomainRecord {
     BatchIdentity batch;
     Record record;
+    uint64_t boot_epoch;
 };
 
 std::vector<DomainRecord> domain_records(const std::vector<StoredBatch> &log) {
     std::vector<DomainRecord> result;
+    uint64_t boot_epoch = 0;
     for (const auto &stored : log) {
         const auto batch = decode(stored);
         for (const auto &record : batch.records) {
+            if (record.header.type == ayni::kernel::boot_epoch_record_type) {
+                boot_epoch = ayni::foundation::load_le64(record.body.data());
+            }
             if (ayni::kernel::WorkReplay::classify_header(record.header) == RecordUse::applied) {
-                result.push_back({batch.identity, record});
+                result.push_back({batch.identity, record, boot_epoch});
             }
         }
     }
@@ -1947,11 +1960,11 @@ TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_pro
     const auto records = domain_records(revoked_log(true));
     ReplayNode restored;
     restored.node.create();
-    auto &replay = restored.node.kernel()->replay;
+    auto &replay = KernelTestProbe::replay(restored.node.kernel());
     bool saw_child = false;
     for (const auto &item : records) {
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_state_record_type &&
             item.record.header.version == ayni::authority::grant_revoked_state_record_version) {
@@ -1961,7 +1974,7 @@ TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_pro
     }
     ASSERT_TRUE(saw_child);
     EXPECT_TRUE(replay.complete());
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
 // C-STORE-015: one missing command cannot be hidden by another Grant's create record.
@@ -1976,21 +1989,22 @@ TEST(GrantReplay, a_second_create_cannot_replace_an_unmatched_create_in_the_same
     const auto records = domain_records(source.node.sim().log());
     ReplayNode restored;
     restored.node.create();
-    auto &replay = restored.node.kernel()->replay;
+    auto &replay = KernelTestProbe::replay(restored.node.kernel());
     BatchIdentity first_batch{};
     bool waiting = false;
     for (const auto &item : records) {
         if (waiting) {
             if (item.record.header.type == ayni::authority::grant_record_type) {
-                EXPECT_EQ(ayni::kernel::WorkReplay::on_record(
-                              &replay, first_batch, item.record.header, item.record.body.data()),
-                          RecordUse::corrupt);
+                EXPECT_EQ(
+                    ayni::kernel::WorkReplay::on_record(&replay, first_batch, item.record.header,
+                                                        item.record.body.data(), item.boot_epoch),
+                    RecordUse::corrupt);
                 return;
             }
             continue; // Withhold the first command to exercise the unmatched boundary.
         }
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_record_type) {
             first_batch = item.batch;
@@ -2007,7 +2021,7 @@ TEST(GrantRevokeReplay, valid_progress_cannot_interrupt_a_create_waiting_for_its
     ReplayNode restored;
     restored.node.config().grant_capacity = 3;
     restored.node.create();
-    auto &replay = restored.node.kernel()->replay;
+    auto &replay = KernelTestProbe::replay(restored.node.kernel());
     uint64_t fresh_id = 0;
     for (const auto &item : records) {
         if (item.record.header.type == ayni::authority::grant_record_type) {
@@ -2026,17 +2040,18 @@ TEST(GrantRevokeReplay, valid_progress_cannot_interrupt_a_create_waiting_for_its
         }
         if (item.record.header.type == ayni::authority::grant_revocation_progress_record_type) {
             ASSERT_FALSE(another_create.body.empty());
-            ASSERT_EQ(ayni::kernel::WorkReplay::on_record(
-                          &replay, item.batch, another_create.header, another_create.body.data()),
-                      RecordUse::applied);
+            ASSERT_EQ(
+                ayni::kernel::WorkReplay::on_record(&replay, item.batch, another_create.header,
+                                                    another_create.body.data(), item.boot_epoch),
+                RecordUse::applied);
             ASSERT_FALSE(replay.complete());
             EXPECT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                          item.record.body.data()),
+                                                          item.record.body.data(), item.boot_epoch),
                       RecordUse::corrupt);
             return;
         }
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
     }
     FAIL() << "fixture did not contain a valid standalone cleanup progress";
@@ -2047,11 +2062,11 @@ TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_
     const auto records = domain_records(complete_log());
     ReplayNode restored;
     restored.node.create();
-    auto &replay = restored.node.kernel()->replay;
+    auto &replay = KernelTestProbe::replay(restored.node.kernel());
     bool waiting = false;
     for (const auto &item : records) {
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_record_type) {
             waiting = true;
@@ -2064,11 +2079,11 @@ TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_
     EXPECT_TRUE(replay.complete());
     for (const auto &item : records) {
         ASSERT_EQ(ayni::kernel::WorkReplay::on_record(&replay, item.batch, item.record.header,
-                                                      item.record.body.data()),
+                                                      item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
     }
     EXPECT_TRUE(replay.complete());
-    EXPECT_TRUE(replay.consistent());
+    EXPECT_TRUE(replay.consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
 } // namespace

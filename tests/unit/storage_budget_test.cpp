@@ -4,10 +4,10 @@
 // from StorageBudget, so a changed formula fails.
 
 #include "durability/batch/batch_codec.h"
-#include "kernel/kernel_config.h"
+#include "kernel/config/kernel_config.h"
+#include "kernel/persistence/work_journal.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "kernel/storage/storage_budget.h"
-#include "kernel/work_journal.h"
-#include "kernel/work_snapshot.h"
 
 #include <ayni/ayni.h>
 

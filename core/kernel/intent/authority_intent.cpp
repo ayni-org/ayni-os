@@ -25,14 +25,12 @@ ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, IntentFailure &
 ayni_status_t create_grant(WorkModel &model, const Intent &intent,
                            const authority::Session &session, uint64_t now_us, uint64_t durable_seq,
                            IntentOutcome &outcome, IntentFailure &failure) {
-    if (!bound_management_session(model, session, durable_seq)) {
-        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
-    }
     const ayni_grant_create_v1 &body = intent.grant_create;
     if (authority::needs_deferred_grant_feature(body.flags)) {
         return refuse(AYNI_UNSUPPORTED, AYNI_REASON_GRANT_UNSUPPORTED, failure);
     }
-    const auto capability = model.capabilities.find(body.capability_id, body.capability_version);
+    const auto capability =
+        model.catalogs.capabilities.find(body.capability_id, body.capability_version);
     switch (capability.kind) {
     case catalog::CapabilityRegistry::Lookup::Kind::unknown_id:
         return refuse(AYNI_NOT_FOUND, AYNI_REASON_CAPABILITY_UNKNOWN, failure);
@@ -52,9 +50,9 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
                                     body.parent_grant_id,
                                     session.principal_id,
                                     session.binding_revision,
-                                    model.capabilities.at(capability.index).id,
+                                    model.catalogs.capabilities.at(capability.index).id,
                                     body.capability_version,
-                                    model.capabilities.domain_view(capability.index),
+                                    model.catalogs.capabilities.domain_view(capability.index),
                                     &body.scope,
                                     body.lifetime,
                                     body.duration_us,
@@ -82,7 +80,6 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
     }
     outcome.object = {0, id, model.grants.at(index).revision, AYNI_OBJECT_GRANT};
     outcome.commit_seq = stamp.commit_seq;
-    model.due_work_changed = true;
     outcome.due_work = true;
     return AYNI_OK;
 }
@@ -108,11 +105,8 @@ void pending_revoke_outcome(const PendingRevoke &pending, const CommandMapping *
 // C-AUTH-024 reserves both exact command identity and its volatile deny Gate
 // before publishing PENDING, independent of storage availability.
 ayni_status_t accept_revoke(WorkModel &model, const Intent &intent,
-                            const authority::Session &session, uint64_t durable_seq,
-                            IntentOutcome &outcome, IntentFailure &failure) {
-    if (!bound_management_session(model, session, durable_seq)) {
-        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
-    }
+                            const authority::Session &session, IntentOutcome &outcome,
+                            IntentFailure &failure) {
     const auto check = model.grants.check_revoke(intent.target_id, intent.expected_revision);
     if (check.status != AYNI_OK) {
         return refuse(check.status, check.reason, failure);
@@ -161,7 +155,6 @@ bool apply_pending_revoke(WorkModel &model) {
         !model.commands.publish_accepted_revoke(*pending, mapping, model.ids.boot_epoch())) {
         return false;
     }
-    model.due_work_changed = true;
     return true;
 }
 

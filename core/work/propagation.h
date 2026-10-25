@@ -31,14 +31,11 @@ struct WorkTables {
     GoalTable &goals;
     TaskTable &tasks;
     AgentTable &agents;
-    // Optional for standalone work-table users; Kernel always supplies its owner.
-    const GoalAuthorityTable *authority = nullptr;
-    // Borrowed durable-prefix sample; max means all supplied facts are durable.
-    uint64_t durable_seq = UINT64_MAX;
-    // Borrowed Grant owner when static boot holds need inspection; null means
-    // no lookup is needed (none present, or standalone without Grant context).
-    // The sample lasts this owner call; full consumption still checks authority.
-    const authority::GrantTable *grants = nullptr;
+    const GoalAuthorityTable &authority;
+    // The Grant owner while a Grant has a compatibility hold this boot; null
+    // when none has, so no lookup is needed. The sample lasts this owner
+    // call; full consumption still checks authority.
+    const authority::GrantTable *grants;
 };
 
 // Whether a task the change would reach is at the largest revision. The goal
@@ -121,12 +118,13 @@ ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bo
 // first: its next occurrence when a task can be derived for it (no
 // derivation_blocker()), to be derived, or the end of that occurrence's
 // wait, its occurrence_wait_max_us from when it fell due, to be skipped
-// (GoalTable::skip_due). Returns false when none of that has come by
-// now_us. Either way sets out_next_us to the earliest time
+// (GoalTable::skip_due). A goal whose ancestors' binding is not yet
+// durable at durable_seq does not advance. Returns false when none of that
+// has come by now_us. Either way sets out_next_us to the earliest time
 // one of them comes, or to no_time when none will: only a change makes
 // another come, and the change says so.
-bool find_due_work(const WorkTables &tables, uint64_t now_us, bool id_left, DueWork &out_work,
-                   uint64_t &out_next_us);
+bool find_due_work(const WorkTables &tables, uint64_t now_us, uint64_t durable_seq, bool id_left,
+                   DueWork &out_work, uint64_t &out_next_us);
 // Derives the occurrences of goal_index due by now_us as the READY task
 // task_id. Only right after find_due_work(now_us) returned derive for it.
 void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t task_id,

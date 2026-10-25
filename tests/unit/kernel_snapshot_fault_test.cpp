@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 using ayni::hosts::sim::CutAppend;
@@ -45,14 +47,16 @@ ayni_step_report_v1 step(WorkNode &work, bool complete = true) {
 bool drain(WorkNode &work, bool stop_at_maintenance = false) {
     for (int round = 0; round < 10000; ++round) {
         step(work);
-        if (stop_at_maintenance && work.kernel()->maintenance.active()) {
+        if (stop_at_maintenance && KernelTestProbe::maintenance(work.kernel()).active()) {
             return true;
         }
         if (work.node().lifecycle() != AYNI_LIFECYCLE_RUNNING) {
             return false;
         }
-        if (work.kernel()->log.idle() && work.kernel()->completions.in_flight() == 0U &&
-            !work.kernel()->maintenance.active() && work.kernel()->storage_has_room()) {
+        if (KernelTestProbe::log(work.kernel()).idle() &&
+            KernelTestProbe::completions(work.kernel()).in_flight() == 0U &&
+            !KernelTestProbe::maintenance(work.kernel()).active() &&
+            work.kernel()->storage_has_room()) {
             return false;
         }
     }
@@ -109,7 +113,8 @@ bool wait_for_request(WorkNode &work, unsigned ordinal) {
     unsigned seen = 0;
     for (int round = 0; round < 10000; ++round) {
         const auto report = work.node().step(1);
-        if (work.kernel()->maintenance.active() && work.node().sim().pending_storage() != 0U) {
+        if (KernelTestProbe::maintenance(work.kernel()).active() &&
+            work.node().sim().pending_storage() != 0U) {
             if (++seen == ordinal) {
                 return true;
             }
@@ -120,7 +125,7 @@ bool wait_for_request(WorkNode &work, unsigned ordinal) {
             report.next_deadline_us > work.node().sim().now_us()) {
             work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
         }
-        if (work.kernel()->maintenance.done()) {
+        if (KernelTestProbe::maintenance(work.kernel()).done()) {
             return false;
         }
     }
@@ -141,9 +146,9 @@ Image activated_image() {
         }
         const uint64_t id = created.result.object.id;
         drain(work);
-        if (work.kernel()->maintenance.metadata().generation >= 2U) {
+        if (KernelTestProbe::maintenance(work.kernel()).metadata().generation >= 2U) {
             return {work.node().sim().durable_storage(), id, work.goal(id).revision,
-                    work.kernel()->maintenance.slot()};
+                    KernelTestProbe::maintenance(work.kernel()).slot()};
         }
         const auto cancelled = work.change(AYNI_INTENT_GOAL_CANCEL, id, work.goal(id).revision);
         if (cancelled.status != AYNI_OK) {
@@ -151,9 +156,9 @@ Image activated_image() {
             return {};
         }
         drain(work);
-        if (work.kernel()->maintenance.metadata().generation >= 2U) {
+        if (KernelTestProbe::maintenance(work.kernel()).metadata().generation >= 2U) {
             return {work.node().sim().durable_storage(), id, work.goal(id).revision,
-                    work.kernel()->maintenance.slot()};
+                    KernelTestProbe::maintenance(work.kernel()).slot()};
         }
     }
     ADD_FAILURE() << "a second committed snapshot never appeared";
@@ -257,7 +262,7 @@ namespace {
 // mutating port, while application behavior and completions use the C ABI.
 void rate_tick(WorkNode &work, uint64_t &last_deadline, unsigned &writes, unsigned &waits) {
     const auto report = work.node().step(1);
-    const uint64_t deadline = work.kernel()->writes.deadline();
+    const uint64_t deadline = KernelTestProbe::writes(work.kernel()).deadline();
     if (deadline != last_deadline) {
         if (writes != 0U) {
             EXPECT_GE(deadline, last_deadline + 10000U);
@@ -267,14 +272,15 @@ void rate_tick(WorkNode &work, uint64_t &last_deadline, unsigned &writes, unsign
     }
     work.node().sim().complete_storage();
     if (report.more_ready == 0U && work.node().sim().pending_storage() == 0U &&
-        work.kernel()->completions.posted_count() == 0U && report.next_deadline_us != UINT64_MAX &&
+        KernelTestProbe::completions(work.kernel()).posted_count() == 0U &&
+        report.next_deadline_us != UINT64_MAX &&
         report.next_deadline_us > work.node().sim().now_us()) {
         const auto attempts = work.node().sim().storage_attempts().size();
         const auto waiting = work.node().step(1);
         EXPECT_EQ(waiting.items_done, 0U);
         EXPECT_EQ(waiting.more_ready, 0U);
         EXPECT_EQ(work.node().sim().storage_attempts().size(), attempts);
-        EXPECT_EQ(work.kernel()->writes.deadline(), deadline);
+        EXPECT_EQ(KernelTestProbe::writes(work.kernel()).deadline(), deadline);
         ++waits;
         work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
     }
@@ -283,8 +289,10 @@ void rate_tick(WorkNode &work, uint64_t &last_deadline, unsigned &writes, unsign
 void rate_drain(WorkNode &work, uint64_t &deadline, unsigned &writes, unsigned &waits) {
     for (int round = 0; round < 10000; ++round) {
         rate_tick(work, deadline, writes, waits);
-        if (work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING && work.kernel()->log.idle() &&
-            work.kernel()->completions.in_flight() == 0U && !work.kernel()->maintenance.active() &&
+        if (work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+            KernelTestProbe::log(work.kernel()).idle() &&
+            KernelTestProbe::completions(work.kernel()).in_flight() == 0U &&
+            !KernelTestProbe::maintenance(work.kernel()).active() &&
             work.kernel()->storage_has_room()) {
             return;
         }
@@ -302,7 +310,8 @@ TEST(SnapshotFaults, every_mutating_phase_shares_the_interval_and_waits_without_
     rate_drain(work, deadline, writes, waits);
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     work.reopen_session();
-    for (int index = 0; index < 1000 && work.kernel()->maintenance.metadata().generation == 0U;
+    for (int index = 0;
+         index < 1000 && KernelTestProbe::maintenance(work.kernel()).metadata().generation == 0U;
          ++index) {
         const auto created =
             work.create(WorkNode::create_body(work.instance(agent_a), 0, "folder"));
@@ -317,7 +326,7 @@ TEST(SnapshotFaults, every_mutating_phase_shares_the_interval_and_waits_without_
                   AYNI_OK);
         rate_drain(work, deadline, writes, waits);
     }
-    EXPECT_GE(work.kernel()->maintenance.metadata().generation, 1U);
+    EXPECT_GE(KernelTestProbe::maintenance(work.kernel()).metadata().generation, 1U);
     EXPECT_GT(writes, 10U);
     EXPECT_GT(waits, 10U);
 }
@@ -347,7 +356,7 @@ TEST(SnapshotFaults, a_candidate_can_replace_a_superseded_slot_before_an_older_t
     ASSERT_TRUE(second_snapshot);
     ASSERT_TRUE(wait_for_request(work, 7)); // G2 activation durable, its trim pending.
     Image retained{work.node().sim().durable_storage(), goal_id, work.goal(goal_id).revision,
-                   work.kernel()->maintenance.slot()};
+                   KernelTestProbe::maintenance(work.kernel()).slot()};
     const uint32_t inactive = 1U - retained.active_slot;
     auto &candidate = retained.storage.snapshots[inactive];
     ayni::durability::SnapshotMetadata metadata{};
@@ -446,7 +455,7 @@ TEST(SnapshotFaults, retry_attempts_wait_exactly_ten_then_fifty_milliseconds_and
     work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
     const auto before = work.node().sim().storage_attempts().size();
     // White-box: advance only to the shared gate of the initial request.
-    const auto initial_gate = work.kernel()->writes.deadline();
+    const auto initial_gate = KernelTestProbe::writes(work.kernel()).deadline();
     if (initial_gate > work.node().sim().now_us()) {
         work.node().sim().advance_us(initial_gate - work.node().sim().now_us());
     }
@@ -496,7 +505,7 @@ TEST(SnapshotFaults, a_slow_strategy_cannot_spend_the_next_storage_interval_befo
     const auto body = WorkNode::create_body(work.instance(agent_a), 0, "timer", 1, {nullptr, 0},
                                             AYNI_TRIGGER_ONCE);
     ASSERT_EQ(work.create(body).status, AYNI_OK);
-    auto gate = work.kernel()->writes.deadline();
+    auto gate = KernelTestProbe::writes(work.kernel()).deadline();
     if (gate > work.node().sim().now_us()) {
         work.node().sim().advance_us(gate - work.node().sim().now_us());
     }
@@ -505,7 +514,7 @@ TEST(SnapshotFaults, a_slow_strategy_cannot_spend_the_next_storage_interval_befo
     work.node().step();
     ASSERT_EQ(work.node().sim().pending_storage(), 1U);
     ASSERT_EQ(work.node().sim().complete_storage(), 1U);
-    gate = work.kernel()->writes.deadline();
+    gate = KernelTestProbe::writes(work.kernel()).deadline();
     if (gate > work.node().sim().now_us()) {
         work.node().sim().advance_us(gate - work.node().sim().now_us());
     }
@@ -517,7 +526,7 @@ TEST(SnapshotFaults, a_slow_strategy_cannot_spend_the_next_storage_interval_befo
     ASSERT_EQ(work.node().sim().storage_attempts().size(), attempts_before + 1U);
     ASSERT_EQ(work.node().sim().pending_storage(), 1U);
     const auto actual_submit_time = work.node().sim().now_us();
-    EXPECT_GE(work.kernel()->writes.deadline(), actual_submit_time + 10000U);
+    EXPECT_GE(KernelTestProbe::writes(work.kernel()).deadline(), actual_submit_time + 10000U);
     ASSERT_EQ(work.node().sim().complete_storage(), 1U);
     work.node().step();
     EXPECT_EQ(work.node().sim().storage_attempts().size(), attempts_before + 1U);
@@ -609,7 +618,7 @@ bool compact(WorkNode &work) {
         }
         const uint64_t id = created.result.object.id;
         drain(work);
-        if (work.kernel()->maintenance.done()) {
+        if (KernelTestProbe::maintenance(work.kernel()).done()) {
             return true;
         }
         if (work.change(AYNI_INTENT_GOAL_CANCEL, id, work.goal(id).revision).status != AYNI_OK) {
@@ -617,7 +626,7 @@ bool compact(WorkNode &work) {
             return false;
         }
         drain(work);
-        if (work.kernel()->maintenance.done()) {
+        if (KernelTestProbe::maintenance(work.kernel()).done()) {
             return true;
         }
     }
@@ -659,18 +668,18 @@ TEST(SnapshotFaults, the_snapshot_after_a_recovered_one_takes_the_next_generatio
     WorkNode work;
     recover(work, active);
     // White-box: what recovery found, and what maintenance numbers from.
-    const uint64_t generation = work.kernel()->boot.generation();
+    const uint64_t generation = KernelTestProbe::boot(work.kernel()).generation();
     ASSERT_GE(generation, 2U);
-    ASSERT_EQ(work.kernel()->boot.active_slot(), active.active_slot);
-    EXPECT_EQ(work.kernel()->maintenance.generation(), generation);
+    ASSERT_EQ(KernelTestProbe::boot(work.kernel()).active_slot(), active.active_slot);
+    EXPECT_EQ(KernelTestProbe::maintenance(work.kernel()).generation(), generation);
     ASSERT_TRUE(compact(work));
-    EXPECT_EQ(work.kernel()->maintenance.metadata().generation, generation + 1U);
-    EXPECT_EQ(work.kernel()->maintenance.slot(), 1U - active.active_slot);
+    EXPECT_EQ(KernelTestProbe::maintenance(work.kernel()).metadata().generation, generation + 1U);
+    EXPECT_EQ(KernelTestProbe::maintenance(work.kernel()).slot(), 1U - active.active_slot);
     work.node().reboot();
     work.node().recover();
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(work.kernel()->boot.generation(), generation + 1U);
-    EXPECT_EQ(work.kernel()->boot.active_slot(), 1U - active.active_slot);
+    EXPECT_EQ(KernelTestProbe::boot(work.kernel()).generation(), generation + 1U);
+    EXPECT_EQ(KernelTestProbe::boot(work.kernel()).active_slot(), 1U - active.active_slot);
 }
 
 // C-STORE-009: a payload byte changed so that every record still reads is
@@ -699,7 +708,8 @@ TEST(SnapshotFaults, an_unknown_required_record_in_a_covered_batch_still_stops_r
     WorkNode work;
     recover(work, source);
     ASSERT_TRUE(wait_for_request(work, 7)); // activation durable, trim pending
-    const uint64_t covers = work.kernel()->maintenance.metadata().covers_commit_seq;
+    const uint64_t covers =
+        KernelTestProbe::maintenance(work.kernel()).metadata().covers_commit_seq;
     work.node().power_cut_and_start(CutAppend::lost);
     auto &log = work.node().sim().log();
     // The activation is stored, so recovery starts from the snapshot.
@@ -746,7 +756,8 @@ TEST(SnapshotFaults, a_snapshot_record_beyond_the_buffer_exceeds_capacity) {
     ASSERT_EQ(created.status, AYNI_OK);
     drain(large);
     ASSERT_TRUE(compact(large));
-    ASSERT_GE(large.kernel()->maintenance.metadata().covers_commit_seq, created.result.commit_seq);
+    ASSERT_GE(KernelTestProbe::maintenance(large.kernel()).metadata().covers_commit_seq,
+              created.result.commit_seq);
     const StorageImage image = large.node().sim().durable_storage();
 
     WorkNode small;

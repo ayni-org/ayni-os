@@ -22,6 +22,8 @@
 #include <thread>
 #include <vector>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 
 using namespace ayni::test;
@@ -715,7 +717,7 @@ namespace {
 TEST(KernelEvents, accepted_input_order_and_resume_frontier_share_the_ingress_lock) {
     Node node;
     node.run();
-    auto &ingress = node.kernel()->ingress; // White-box queue-owner evidence.
+    auto &ingress = KernelTestProbe::ingress(node.kernel()); // White-box queue-owner evidence.
     const auto empty = ingress.resume_boundary();
     EXPECT_EQ(empty.incarnation, node.info().boot_epoch);
     EXPECT_EQ(empty.through, 0U);
@@ -744,20 +746,22 @@ TEST(KernelEvents, accepted_input_order_and_resume_frontier_share_the_ingress_lo
 TEST(KernelEvents, exhausted_input_order_refuses_without_queueing_and_process_restart_resets_it) {
     Node node;
     node.run();
-    const auto before = node.kernel()->ingress.resume_boundary();
-    ayni::kernel::EventIngressTestPeer::exhaust_input_order(node.kernel()->ingress);
+    const auto before = KernelTestProbe::ingress(node.kernel()).resume_boundary();
+    ayni::kernel::EventIngressTestPeer::exhaust_input_order(
+        KernelTestProbe::ingress(node.kernel()));
     const auto wakes = node.sim().wake_count();
     EXPECT_EQ(post(node.kernel()), AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(node.kernel()->ingress.queued(), 0U);
-    EXPECT_EQ(node.kernel()->ingress.resume_boundary().through, UINT64_MAX);
+    EXPECT_EQ(KernelTestProbe::ingress(node.kernel()).queued(), 0U);
+    EXPECT_EQ(KernelTestProbe::ingress(node.kernel()).resume_boundary().through, UINT64_MAX);
     EXPECT_EQ(node.sim().wake_count(), wakes);
     EXPECT_EQ(node.sim().calls_under_lock(), 0U);
     node.reboot();
     node.recover();
-    EXPECT_NE(node.kernel()->ingress.resume_boundary().incarnation, before.incarnation);
-    EXPECT_EQ(node.kernel()->ingress.resume_boundary().through, 0U);
+    EXPECT_NE(KernelTestProbe::ingress(node.kernel()).resume_boundary().incarnation,
+              before.incarnation);
+    EXPECT_EQ(KernelTestProbe::ingress(node.kernel()).resume_boundary().through, 0U);
     EXPECT_EQ(post(node.kernel()), AYNI_OK);
-    EXPECT_EQ(node.kernel()->ingress.resume_boundary().through, 1U);
+    EXPECT_EQ(KernelTestProbe::ingress(node.kernel()).resume_boundary().through, 1U);
 }
 
 // ADR-0038 decision 11: one Goal's resume waterline never drops input for
@@ -768,11 +772,11 @@ TEST(WorkInput, resume_boundary_skips_old_input_only_for_its_own_goal) {
     const auto resumed = input_goal(work, "button");
     const auto other = input_goal(work, "button");
     ASSERT_EQ(post(work), AYNI_OK);
-    auto &model = work.kernel()->work;
+    auto &model = KernelTestProbe::work(work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.goals.find(resumed, index));
     auto record = model.goal_authority.at(index);
-    record.binding.input = work.kernel()->ingress.resume_boundary();
+    record.binding.input = KernelTestProbe::ingress(work.kernel()).resume_boundary();
     ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
     ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
     ASSERT_EQ(post(work), AYNI_OK);

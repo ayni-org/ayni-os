@@ -11,6 +11,7 @@ add_executable(ayni_unit_tests
     call_table_test.cpp
     call_contract_test.cpp
     resource_admission_test.cpp
+    kernel_layout_test.cpp
     kernel_resource_test.cpp
     kernel_provider_test.cpp
     kernel_call_test.cpp
@@ -29,6 +30,7 @@ add_executable(ayni_unit_tests
     kernel_grant_test.cpp
     kernel_goal_authority_test.cpp
     command_table_test.cpp
+    intent_policy_matrix_test.cpp
     work_authority_result_test.cpp
     completion_pool_test.cpp
     provider_mailbox_test.cpp
@@ -60,6 +62,7 @@ add_executable(ayni_unit_tests
     native_node_test.cpp
     owner_binding_records_test.cpp
     owner_binding_snapshot_test.cpp
+    persistent_store_test.cpp
     prefix_scan_test.cpp
     principal_registry_test.cpp
     capability_registry_test.cpp

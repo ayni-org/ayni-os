@@ -49,9 +49,9 @@ ayni_grant_create_v1 create_request() {
 class Commands {
   public:
     Commands(uint32_t capacity = 2, uint32_t controls = 2, uint32_t bytes = 340, uint32_t rows = 1)
-        : storage_(CommandTable::storage_size(rows, capacity, bytes, controls) / sizeof(uint64_t) +
-                   1),
-          table(storage_.data(), rows, capacity, bytes, controls) {}
+        : storage_(
+              CommandTable::storage_size({rows, capacity, bytes, controls}) / sizeof(uint64_t) + 1),
+          table(storage_.data(), {rows, capacity, bytes, controls}) {}
     const PendingRevoke *accept(uint64_t command = 5, uint64_t target = 99) {
         const PendingRevoke *control = nullptr;
         EXPECT_EQ(table.accept_revoke(accepted(command, target), control), AYNI_OK);

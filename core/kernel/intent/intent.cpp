@@ -6,6 +6,7 @@
 #include "foundation/digest.h"
 #include "kernel/command/command_approval.h"
 #include "kernel/command/command_canonical.h"
+#include "kernel/command/intent_traits.h"
 #include <ayni/calls.h>
 
 namespace ayni::kernel {
@@ -139,55 +140,40 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
 
 } // namespace
 
-bool is_implemented(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_SCENE_SET_ENABLED;
-}
-
 ayni_status_t check_form(const Intent &intent) {
+    // An exact command is recognised by its id, so it must have one.
+    if (is_exact_command(intent.kind) && intent.command_id == 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     if (intent.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
-        return intent.command_id == 0 || intent.scene.expected_revision != intent.expected_revision
+        return intent.scene.expected_revision != intent.expected_revision
                    ? AYNI_INVALID_ARGUMENT
                    : authority::validate_scene_change(intent.scene);
     }
     if (is_target_command(intent.kind)) {
         uint32_t size = 0;
-        return intent.command_id == 0U
-                   ? AYNI_INVALID_ARGUMENT
-                   : measure_target_command(
-                         {intent.kind, intent.expected_revision, intent.target_id}, size);
+        return measure_target_command({intent.kind, intent.expected_revision, intent.target_id},
+                                      size);
     }
     if (intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
-        if (intent.command_id == 0U) {
-            return AYNI_INVALID_ARGUMENT;
-        }
         uint32_t size = 0;
         return measure_task_limit_command(
             {intent.expected_revision, intent.target_id, intent.model_call_limit}, size);
     }
     if (intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
-        if (intent.command_id == 0U) {
-            return AYNI_INVALID_ARGUMENT;
-        }
         uint32_t size = 0;
         return measure_reauthorization_command({intent.expected_revision, intent.reauthorization},
                                                size);
     }
     if (intent.kind == AYNI_INTENT_GOAL_APPROVE) {
-        if (intent.command_id == 0U) {
-            return AYNI_INVALID_ARGUMENT;
-        }
         uint32_t size = 0;
         return measure_approval_command({intent.expected_revision, intent.approval}, size);
     }
     if (intent.kind == AYNI_INTENT_GRANT_REVOKE) {
-        return intent.command_id != 0U && intent.expected_revision != 0U && intent.target_id != 0U
-                   ? AYNI_OK
-                   : AYNI_INVALID_ARGUMENT;
+        return intent.expected_revision != 0U && intent.target_id != 0U ? AYNI_OK
+                                                                        : AYNI_INVALID_ARGUMENT;
     }
     if (intent.kind == AYNI_INTENT_GRANT_CREATE) {
-        if (intent.command_id == 0U) {
-            return AYNI_INVALID_ARGUMENT;
-        }
         uint32_t size = 0;
         return measure_authority_command({intent.expected_revision, &intent.grant_create}, size);
     }
@@ -206,7 +192,7 @@ ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, Inten
     if (raw.kind == 0U || raw.reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (!is_implemented(raw.kind)) {
+    if (!implements_intent(raw.kind)) {
         failure.reason = AYNI_REASON_INTENT_UNSUPPORTED;
         return AYNI_UNSUPPORTED;
     }

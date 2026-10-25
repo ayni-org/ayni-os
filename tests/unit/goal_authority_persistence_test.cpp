@@ -7,8 +7,8 @@
 #include "goal_approval_request.h"
 #include "goal_reauthorization_request.h"
 #include "kernel/command/command_records.h"
-#include "kernel/work_replay.h"
-#include "kernel/work_snapshot.h"
+#include "kernel/persistence/work_replay.h"
+#include "kernel/persistence/work_snapshot.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
 #include "work/goal/goal_authority_records.h"
@@ -26,6 +26,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 using namespace ayni::test;
@@ -164,11 +166,11 @@ class Fixture {
     }
     uint32_t goal_index(uint64_t id) {
         uint32_t index = 0;
-        EXPECT_TRUE(work.kernel()->work.goals.find(id, index));
+        EXPECT_TRUE(KernelTestProbe::work(work.kernel()).goals.find(id, index));
         return index;
     }
     GoalAuthorityRecord metadata(uint64_t goal_id, uint64_t grant_id = 0, uint32_t count = 1) {
-        auto &model = work.kernel()->work;
+        auto &model = KernelTestProbe::work(work.kernel());
         const auto &goal = model.goals.at(goal_index(goal_id));
         GoalAuthorityRecord record{};
         record.goal_id = goal_id;
@@ -192,16 +194,18 @@ class Fixture {
     void attach(uint64_t goal_id, uint64_t grant_id = 0, uint32_t count = 1) {
         const auto record = metadata(goal_id, grant_id, count);
         ASSERT_TRUE(valid_goal_authority_record(record));
-        ASSERT_EQ(work.kernel()->work.goal_authority.install_validated(goal_index(goal_id), record),
+        ASSERT_EQ(KernelTestProbe::work(work.kernel())
+                      .goal_authority.install_validated(goal_index(goal_id), record),
                   AYNI_OK);
         // White-box: replace the durable creation with the same transition
         // encoded by the real producer, retaining the exact injected facts.
         std::vector<uint8_t> bytes(
             ayni::kernel::transition_batch_max(capacities_of(work.node().config())));
         BatchWriter writer(bytes.data(), bytes.size(),
-                           {work.kernel()->log.writer_epoch(), record.stamp.commit_seq,
-                            record.stamp.transition_id});
-        bytes.resize(ayni::kernel::encode_transition(work.kernel()->work, record.stamp, writer));
+                           {KernelTestProbe::log(work.kernel()).writer_epoch(),
+                            record.stamp.commit_seq, record.stamp.transition_id});
+        bytes.resize(ayni::kernel::encode_transition(KernelTestProbe::work(work.kernel()),
+                                                     record.stamp, writer));
         ASSERT_FALSE(bytes.empty());
         auto &log = work.node().sim().log();
         const auto found = std::find_if(log.begin(), log.end(), [&](const auto &batch) {
@@ -214,17 +218,19 @@ class Fixture {
         work.node().sim().advance_us(duration_us);
         // ADR-0038: a pending bounded work scan consumes items before expiry.
         for (unsigned round = 0;
-             round < 128U && work.kernel()->work.grants.at(0).lifecycle == AYNI_GRANT_ACTIVE;
+             round < 128U &&
+             KernelTestProbe::work(work.kernel()).grants.at(0).lifecycle == AYNI_GRANT_ACTIVE;
              ++round) {
             work.node().step(1);
             work.node().sim().complete_storage();
             work.node().recover();
         }
-        ASSERT_EQ(work.kernel()->work.grants.at(0).lifecycle, AYNI_GRANT_EXPIRED);
+        ASSERT_EQ(KernelTestProbe::work(work.kernel()).grants.at(0).lifecycle, AYNI_GRANT_EXPIRED);
     }
     GoalAuthorityRecord saved(uint64_t id) {
         GoalAuthorityRecord result{};
-        EXPECT_TRUE(work.kernel()->work.goal_authority.read(goal_index(id), id, result));
+        EXPECT_TRUE(
+            KernelTestProbe::work(work.kernel()).goal_authority.read(goal_index(id), id, result));
         return result;
     }
     WorkNode work;
@@ -281,8 +287,9 @@ Snapshot snapshot(Fixture &fixture, uint32_t page_size = 512) {
 }
 
 BatchCheck import_snapshot(Fixture &fixture, const Snapshot &snapshot) {
-    fixture.work.kernel()->replay.discard_for_reload();
-    ayni::kernel::WorkSnapshotReader reader(fixture.work.kernel()->work, snapshot.metadata);
+    KernelTestProbe::replay(fixture.work.kernel()).discard_for_reload();
+    ayni::kernel::WorkSnapshotReader reader(KernelTestProbe::work(fixture.work.kernel()),
+                                            snapshot.metadata);
     for (const auto &record : snapshot.records) {
         const auto result = reader.apply(record.header, record.body.data());
         if (result != BatchCheck::ok) {
@@ -331,7 +338,7 @@ TEST(GoalAuthorityPersistence, journal_round_trip_preserves_zero_and_rejects_mis
     rejected.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
     rejected.run();
     EXPECT_EQ(rejected.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-    EXPECT_EQ(rejected.work.kernel()->work.goals.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(rejected.work.kernel()).goals.size(), 0U);
 }
 
 // C-STORE-015, ADR-0037 decision 8: a version promise is not satisfied by a
@@ -379,7 +386,7 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
         restored.work.node().sim().durable_storage() = changed;
         restored.run();
         EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-        EXPECT_EQ(restored.work.kernel()->work.goals.size(), 0U);
+        EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).goals.size(), 0U);
     }
 }
 
@@ -440,7 +447,8 @@ TEST(GoalAuthorityPersistence, paged_snapshot_keeps_adjacent_metadata_and_origin
     // White-box record layout: one maximum-size page for this exact GOAL.
     const uint32_t page_size =
         static_cast<uint32_t>(record_header_size) +
-        goal_record_size(source.work.kernel()->work.goals.at(source.goal_index(goal))) +
+        goal_record_size(
+            KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(goal))) +
         goal_state_record_size + 24U;
     const auto image = snapshot(source, page_size);
     ASSERT_TRUE(image.paired_across_page);
@@ -487,7 +495,7 @@ TEST(GoalAuthorityPersistence, snapshots_refuse_orphan_missing_and_future_metada
         Fixture restored;
         restored.run();
         EXPECT_EQ(import_snapshot(restored, changed), BatchCheck::corrupt);
-        restored.work.kernel()->replay.discard_for_reload();
+        KernelTestProbe::replay(restored.work.kernel()).discard_for_reload();
     }
 }
 
@@ -503,15 +511,15 @@ TEST(GoalAuthorityPersistence,
     const auto goal = source.goal();
     source.attach(goal, grant.result.object.id);
     source.expire();
-    const auto before = source.work.kernel()->work.transitions.latest().commit_seq;
+    const auto before = KernelTestProbe::work(source.work.kernel()).transitions.latest().commit_seq;
     EXPECT_EQ(source.create_grant().status, AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(source.work.kernel()->work.transitions.latest().commit_seq, before);
+    EXPECT_EQ(KernelTestProbe::work(source.work.kernel()).transitions.latest().commit_seq, before);
     const auto image = snapshot(source);
     Fixture restored;
     restored.run();
     ASSERT_EQ(import_snapshot(restored, image), BatchCheck::ok);
     EXPECT_EQ(restored.saved(goal).requirements[0].dependency.revision, 1U);
-    EXPECT_EQ(restored.work.kernel()->work.grants.at(0).revision, 2U);
+    EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).grants.at(0).revision, 2U);
 }
 
 // ADR-0037 decision 9: cancellation is not a durable unlink at API return.
@@ -529,7 +537,8 @@ TEST(GoalAuthorityPersistence, a_terminal_goal_releases_its_grant_only_after_wri
     source.work.node().recover();
     EXPECT_EQ(source.create_grant().status, AYNI_OK);
     // Historical terminal metadata can now name its legally reclaimed Grant.
-    EXPECT_TRUE(source.work.kernel()->replay.consistent());
+    EXPECT_TRUE(KernelTestProbe::replay(source.work.kernel())
+                    .consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
 // ADR-0037 decision 9: clearing a reused slot must not erase the old release fence.
@@ -548,9 +557,10 @@ TEST(GoalAuthorityPersistence, goal_slot_reuse_hands_old_references_to_the_relea
     const auto created =
         source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "folder"));
     ASSERT_EQ(created.status, AYNI_OK);
-    EXPECT_FALSE(source.work.kernel()->work.goal_authority.contains(0, goal));
-    EXPECT_TRUE(source.work.kernel()->work.goal_authority.contains(0, created.result.object.id));
-    EXPECT_EQ(source.work.kernel()->work.goal_authority.at(0).count, 0U);
+    EXPECT_FALSE(KernelTestProbe::work(source.work.kernel()).goal_authority.contains(0, goal));
+    EXPECT_TRUE(KernelTestProbe::work(source.work.kernel())
+                    .goal_authority.contains(0, created.result.object.id));
+    EXPECT_EQ(KernelTestProbe::work(source.work.kernel()).goal_authority.at(0).count, 0U);
     EXPECT_EQ(source.create_grant().status, AYNI_CAPACITY_EXCEEDED);
     source.work.node().recover();
     EXPECT_EQ(source.create_grant().status, AYNI_OK);
@@ -570,7 +580,7 @@ TEST(GoalAuthorityPersistence,
     snapshot_target.work.node().config().goal_requirement_capacity = 1;
     snapshot_target.run();
     EXPECT_EQ(import_snapshot(snapshot_target, image), BatchCheck::no_room);
-    snapshot_target.work.kernel()->replay.discard_for_reload();
+    KernelTestProbe::replay(snapshot_target.work.kernel()).discard_for_reload();
     Fixture journal_target;
     journal_target.work.node().config().goal_requirement_capacity = 1;
     journal_target.work.node().sim().durable_storage() = source.work.node().sim().durable_storage();
@@ -602,7 +612,7 @@ TEST(GoalAuthorityPersistence, live_references_to_missing_or_other_schema_grants
         Fixture target;
         target.run();
         EXPECT_EQ(import_snapshot(target, changed), BatchCheck::corrupt);
-        target.work.kernel()->replay.discard_for_reload();
+        KernelTestProbe::replay(target.work.kernel()).discard_for_reload();
     }
 }
 
@@ -615,7 +625,7 @@ TEST(GoalAuthorityPersistence,
     ASSERT_EQ(grant.status, AYNI_OK);
     source.work.node().recover();
     source.expire();
-    auto &model = source.work.kernel()->work;
+    auto &model = KernelTestProbe::work(source.work.kernel());
     const auto seq = model.transitions.next_commit_seq();
     model.grants.release_reference(grant.result.object.id, seq + 1U);
     model.grants.release_reference(grant.result.object.id, seq);
@@ -671,9 +681,10 @@ TEST(GoalAuthorityPersistence,
     source.attach(first);
     const auto second = source.goal();
     source.attach(second);
-    auto &model = source.work.kernel()->work;
+    auto &model = KernelTestProbe::work(source.work.kernel());
     const auto stamp = model.transitions.next();
     const BatchIdentity batch{1, stamp.commit_seq, stamp.transition_id};
+    const uint64_t boot_epoch = KernelTestProbe::boot(source.work.kernel()).boot_epoch();
     WorkReplay replay(model);
     for (const auto id : {first, second}) {
         // White-box: a valid same-batch ordinary pause precedes each new metadata set.
@@ -685,7 +696,7 @@ TEST(GoalAuthorityPersistence,
         ASSERT_EQ(WorkReplay::on_record(&replay, batch,
                                         {goal_state_record_type, goal_state_record_version,
                                          record_required, body.size()},
-                                        body.data()),
+                                        body.data(), boot_epoch),
                   RecordUse::applied);
     }
     for (const auto id : {first, second}) {
@@ -696,10 +707,10 @@ TEST(GoalAuthorityPersistence,
         EXPECT_EQ(WorkReplay::on_record(&replay, batch,
                                         {goal_authority_record_type, goal_authority_record_version,
                                          record_required, static_cast<uint32_t>(bytes.size())},
-                                        bytes.data()),
+                                        bytes.data(), boot_epoch),
                   id == first ? RecordUse::applied : RecordUse::corrupt);
     }
-    source.work.kernel()->replay.discard_for_reload();
+    KernelTestProbe::replay(source.work.kernel()).discard_for_reload();
 }
 
 // ADR-0037 decisions 3/8: a restored update can change selected references,
@@ -714,7 +725,7 @@ TEST(GoalAuthorityPersistence,
     const auto goal = source.goal();
     source.attach(goal, grant.result.object.id);
     const auto original = source.metadata(goal, grant.result.object.id);
-    auto &table = source.work.kernel()->work.goal_authority;
+    auto &table = KernelTestProbe::work(source.work.kernel()).goal_authority;
     for (unsigned change = 0; change < 4; ++change) {
         SCOPED_TRACE(change);
         auto next = original;
@@ -779,7 +790,7 @@ TEST(GoalAuthorityPersistence,
         Fixture target;
         target.run();
         EXPECT_EQ(import_snapshot(target, changed), BatchCheck::corrupt);
-        target.work.kernel()->replay.discard_for_reload();
+        KernelTestProbe::replay(target.work.kernel()).discard_for_reload();
     }
 }
 
@@ -796,7 +807,7 @@ TEST(GoalAuthorityPersistence, a_grant_for_another_agent_cannot_authorize_the_re
     Fixture target;
     target.run();
     EXPECT_EQ(import_snapshot(target, snapshot(source)), BatchCheck::corrupt);
-    target.work.kernel()->replay.discard_for_reload();
+    KernelTestProbe::replay(target.work.kernel()).discard_for_reload();
 }
 
 // ADR-0037 decision 8: syntactically valid wider needs are still not covered by
@@ -835,7 +846,7 @@ TEST(GoalAuthorityPersistence, a_narrow_grant_does_not_cover_a_wider_saved_requi
     Fixture target;
     target.run();
     EXPECT_EQ(import_snapshot(target, image), BatchCheck::corrupt);
-    target.work.kernel()->replay.discard_for_reload();
+    KernelTestProbe::replay(target.work.kernel()).discard_for_reload();
 }
 
 // ADR-0037 decisions 9/10: FAILED and both UNKNOWN outcomes choose durable
@@ -867,15 +878,15 @@ TEST(GoalAuthorityPersistence,
         ASSERT_EQ(replacement.status, AYNI_OK);
         // White-box precondition: the old row disappeared before its release
         // was confirmed, and the Grant owns that unconfirmed release fence.
-        ASSERT_FALSE(source.work.kernel()->work.goal_authority.contains(0, goal));
-        ASSERT_EQ(source.work.kernel()->work.grants.at(0).reference_release_seq,
+        ASSERT_FALSE(KernelTestProbe::work(source.work.kernel()).goal_authority.contains(0, goal));
+        ASSERT_EQ(KernelTestProbe::work(source.work.kernel()).grants.at(0).reference_release_seq,
                   replacement.result.commit_seq);
         for (unsigned round = 0; round < 5000; ++round) {
             const auto report = source.work.node().step(1);
             source.work.node().sim().complete_storage();
             if (source.work.node().info().boot_epoch > old_boot &&
                 source.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
-                source.work.kernel()->log.idle()) {
+                KernelTestProbe::log(source.work.kernel()).idle()) {
                 break;
             }
             if (report.more_ready == 0U && source.work.node().sim().pending_storage() == 0U &&
@@ -913,7 +924,7 @@ TEST(GoalAuthorityPersistence,
 // White-box snapshot fault helper: keep the exact Grant body and stamps,
 // add only a Goal binding and its required version, updating framing lengths.
 void bind_snapshot_grant(Fixture &source, Snapshot &image, uint64_t goal_id) {
-    auto grant = source.work.kernel()->work.grants.at(0);
+    auto grant = KernelTestProbe::work(source.work.kernel()).grants.at(0);
     grant.bound_goal_id = goal_id;
     const auto found = std::find_if(image.records.begin(), image.records.end(), [](const auto &r) {
         return r.header.type == ayni::authority::grant_record_type;
@@ -925,8 +936,9 @@ void bind_snapshot_grant(Fixture &source, Snapshot &image, uint64_t goal_id) {
         ayni::authority::grant_snapshot_record_size(grant, found->header.version);
     found->body.resize(found->header.length);
     ayni::authority::write_grant_snapshot_record(
-        grant, source.work.kernel()->work.grants.source_domain(0),
-        source.work.kernel()->work.grants.scope(0), found->body.data(), found->header.version);
+        grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+        KernelTestProbe::work(source.work.kernel()).grants.scope(0), found->body.data(),
+        found->header.version);
     image.metadata.payload_length += found->header.length - old_size;
 }
 
@@ -1003,7 +1015,8 @@ TEST(GoalApprovalPersistence, public_approval_survives_journal_and_snapshot_with
     booted.run();
     ASSERT_EQ(booted.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(booted.saved(created.result.object.id).requirements[0].dependency.grant_id, grant_id);
-    EXPECT_EQ(booted.work.kernel()->work.grants.at(0).bound_goal_id, created.result.object.id);
+    EXPECT_EQ(KernelTestProbe::work(booted.work.kernel()).grants.at(0).bound_goal_id,
+              created.result.object.id);
     // ADR-0038: complete permanent authority resumes without an extra confirmation.
     EXPECT_EQ(booted.work.goal(created.result.object.id).hold_reason, AYNI_REASON_NONE);
     intent.session_id = booted.work.session();
@@ -1015,7 +1028,8 @@ TEST(GoalApprovalPersistence, public_approval_survives_journal_and_snapshot_with
     ASSERT_EQ(import_snapshot(compacted, snapshot(source)), BatchCheck::ok);
     EXPECT_EQ(compacted.saved(created.result.object.id).requirements[0].dependency.grant_id,
               grant_id);
-    EXPECT_EQ(compacted.work.kernel()->work.grants.at(0).bound_goal_id, created.result.object.id);
+    EXPECT_EQ(KernelTestProbe::work(compacted.work.kernel()).grants.at(0).bound_goal_id,
+              created.result.object.id);
 }
 
 // C-STORE-019: removing any partner or changing approval identity/Grant lifetime
@@ -1043,13 +1057,13 @@ TEST(GoalApprovalPersistence, missing_partner_or_mismatched_exact_command_restri
             batch.records.erase(batch.records.begin() + fault);
         } else if (fault == 4U) {
             auto &record = batch.records.front();
-            auto grant = source.work.kernel()->work.grants.at(0);
+            auto grant = KernelTestProbe::work(source.work.kernel()).grants.at(0);
             grant.lifetime = AYNI_GRANT_CURRENT_BOOT;
             grant.duration_us = 10000;
             // White-box: valid differing lifetime through the real writer.
             ayni::authority::write_grant_record(
-                grant, source.work.kernel()->work.grants.source_domain(0),
-                source.work.kernel()->work.grants.scope(0), record.body.data());
+                grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
         } else {
             batch.records.push_back(batch.records.front());
         }
@@ -1058,7 +1072,7 @@ TEST(GoalApprovalPersistence, missing_partner_or_mismatched_exact_command_restri
         restored.work.node().sim().durable_storage().log.back() = encode(batch);
         restored.run();
         EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-        EXPECT_EQ(restored.work.kernel()->work.grants.size(), 0U);
+        EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).grants.size(), 0U);
     }
 }
 
@@ -1121,7 +1135,7 @@ TEST(GoalApprovalPersistence, unpaired_metadata_cannot_change_original_dependenc
     const auto grant = source.create_grant();
     ASSERT_EQ(grant.status, AYNI_OK);
     source.work.node().recover();
-    auto &model = source.work.kernel()->work;
+    auto &model = KernelTestProbe::work(source.work.kernel());
     auto record = source.saved(goal.result.object.id);
     const auto stamp = model.transitions.next();
     record.stamp = stamp;
@@ -1133,17 +1147,18 @@ TEST(GoalApprovalPersistence, unpaired_metadata_cannot_change_original_dependenc
     write_goal_state_record(model.goals.at(index), state.data());
     std::vector<uint8_t> bytes(goal_authority_record_size(record));
     write_goal_authority_record(record, bytes.data());
-    const BatchIdentity identity{source.work.kernel()->log.writer_epoch(), stamp.commit_seq,
-                                 stamp.transition_id};
+    const BatchIdentity identity{KernelTestProbe::log(source.work.kernel()).writer_epoch(),
+                                 stamp.commit_seq, stamp.transition_id};
+    const uint64_t boot_epoch = KernelTestProbe::boot(source.work.kernel()).boot_epoch();
     WorkReplay replay(model);
     const RecordHeader state_header{goal_state_record_type,
                                     goal_state_with_authority_record_version, record_required,
                                     static_cast<uint32_t>(state.size())};
-    ASSERT_EQ(WorkReplay::on_record(&replay, identity, state_header, state.data()),
+    ASSERT_EQ(WorkReplay::on_record(&replay, identity, state_header, state.data(), boot_epoch),
               RecordUse::applied);
     const RecordHeader authority_header{goal_authority_record_type, goal_authority_record_version,
                                         record_required, static_cast<uint32_t>(bytes.size())};
-    EXPECT_EQ(WorkReplay::on_record(&replay, identity, authority_header, bytes.data()),
+    EXPECT_EQ(WorkReplay::on_record(&replay, identity, authority_header, bytes.data(), boot_epoch),
               RecordUse::corrupt);
 }
 
@@ -1178,7 +1193,8 @@ TEST(GoalApprovalPersistence, unrelated_work_before_during_or_after_approval_res
     ASSERT_NE(approve_proposal(source), 0U);
     const auto image = source.work.node().sim().durable_storage();
     const auto original = decode(image.log.back());
-    auto instance = *source.work.kernel()->work.agents.find_instance(source.work.instance(agent_b));
+    auto instance = *KernelTestProbe::work(source.work.kernel())
+                         .agents.find_instance(source.work.instance(agent_b));
     instance.lifecycle = AYNI_AGENT_PAUSED;
     ++instance.revision;
     Record extra{{instance_record_type, instance_record_version, 0, instance_record_size},
@@ -1192,7 +1208,7 @@ TEST(GoalApprovalPersistence, unrelated_work_before_during_or_after_approval_res
         restored.work.node().sim().durable_storage().log.back() = encode(changed);
         restored.run();
         EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED) << at;
-        EXPECT_EQ(restored.work.kernel()->work.grants.size(), 0U);
+        EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).grants.size(), 0U);
     }
 }
 
@@ -1224,7 +1240,7 @@ TEST(GoalApprovalPersistence, wider_same_length_bound_scope_is_not_the_approved_
     const auto storage = source.work.node().sim().durable_storage();
     auto batch = decode(storage.log.back());
     auto image = snapshot(source);
-    auto &model = source.work.kernel()->work;
+    auto &model = KernelTestProbe::work(source.work.kernel());
     ayni_authority_value_set_v1 values{};
     values.struct_size = sizeof(values);
     values.kind = AYNI_AUTHORITY_I64;
@@ -1264,13 +1280,13 @@ TEST(GoalApprovalPersistence, snapshot_bound_duration_must_match_original_approv
     source.run();
     ASSERT_NE(approve_proposal(source, 1000000), 0U);
     auto image = snapshot(source);
-    auto grant = source.work.kernel()->work.grants.at(0);
+    auto grant = KernelTestProbe::work(source.work.kernel()).grants.at(0);
     ++grant.duration_us;
     for (auto &record : image.records) {
         if (record.header.type == ayni::authority::grant_record_type) {
             ayni::authority::write_grant_snapshot_record(
-                grant, source.work.kernel()->work.grants.source_domain(0),
-                source.work.kernel()->work.grants.scope(0), record.body.data(),
+                grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data(),
                 record.header.version);
         }
     }
@@ -1314,7 +1330,8 @@ TEST(GoalApprovalPersistence, maximum_missing_count_with_large_domains_fits_batc
     source.work.node().config().storage_buffer_bytes = 0;
     source.run_with_named_targets(AYNI_AUTHORITY_FIELD_COUNT_MAX);
     ASSERT_NE(approve_proposal(source), 0U);
-    EXPECT_EQ(source.work.kernel()->work.grants.size(), AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
+    EXPECT_EQ(KernelTestProbe::work(source.work.kernel()).grants.size(),
+              AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
     const auto batch = decode(source.work.node().sim().log().back());
     EXPECT_EQ(batch.records.size(), AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 3U);
 }
@@ -1379,12 +1396,12 @@ TEST(GoalApprovalPersistence, old_dependency_must_have_been_active_at_approval) 
     ASSERT_EQ(generic.status, AYNI_OK);
     source.work.node().recover();
     const auto spare = source.goal();
-    const auto spare_stamp = source.work.kernel()->work.transitions.latest();
+    const auto spare_stamp = KernelTestProbe::work(source.work.kernel()).transitions.latest();
     ASSERT_NE(spare, 0U);
     ASSERT_NE(approve_proposal(source), 0U);
     const auto original = source.work.node().sim().durable_storage();
     auto invalid_snapshot = snapshot(source);
-    auto terminal = source.work.kernel()->work.grants.at(0);
+    auto terminal = KernelTestProbe::work(source.work.kernel()).grants.at(0);
     terminal.lifecycle = AYNI_GRANT_EXPIRED;
     terminal.revision = ayni::authority::grant_terminal_revision;
     terminal.stamp = spare_stamp;
@@ -1397,8 +1414,8 @@ TEST(GoalApprovalPersistence, old_dependency_must_have_been_active_at_approval) 
             ayni::authority::read_grant_record_id(record.body.data(), record.header.length, id));
         if (id == generic.result.object.id) {
             ayni::authority::write_grant_snapshot_record(
-                terminal, source.work.kernel()->work.grants.source_domain(0),
-                source.work.kernel()->work.grants.scope(0), record.body.data(),
+                terminal, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data(),
                 record.header.version);
         }
     }
@@ -1714,7 +1731,8 @@ TEST(GoalApprovalPersistence, terminal_parent_history_survives_reclaimed_ancesto
         source.work.node().recover();
     }
     uint32_t index = 0;
-    ASSERT_FALSE(source.work.kernel()->work.grants.find(generic.result.object.id, index));
+    ASSERT_FALSE(
+        KernelTestProbe::work(source.work.kernel()).grants.find(generic.result.object.id, index));
     const auto compacted = snapshot(source);
     Fixture restored;
     restored.work.node().config().grant_capacity = 3;
@@ -1837,7 +1855,7 @@ TEST(WorkAuthorityPersistence, ended_grant_cohort_and_footer_are_one_complete_sc
             const ayni::foundation::TransitionStamp stamp{batch.identity.transition_id,
                                                           batch.identity.commit_seq};
             progress.visited(other, stamp);
-            progress.request(source.work.kernel()->work.goals.latest_id(), stamp);
+            progress.request(KernelTestProbe::work(source.work.kernel()).goals.latest_id(), stamp);
             Record footer{{authority_cleanup_record_type, authority_cleanup_record_version,
                            record_required, authority_cleanup_record_size},
                           std::vector<uint8_t>(authority_cleanup_record_size)};
@@ -1862,8 +1880,9 @@ TEST(WorkAuthorityPersistence, ended_grant_cohort_and_footer_are_one_complete_sc
     valid.work.node().sim().durable_storage() = image;
     valid.run();
     ASSERT_EQ(valid.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    for (uint32_t at = 0; at < valid.work.kernel()->work.grants.size(); ++at) {
-        EXPECT_EQ(valid.work.kernel()->work.grants.at(at).lifecycle, AYNI_GRANT_GOAL_ENDED);
+    for (uint32_t at = 0; at < KernelTestProbe::work(valid.work.kernel()).grants.size(); ++at) {
+        EXPECT_EQ(KernelTestProbe::work(valid.work.kernel()).grants.at(at).lifecycle,
+                  AYNI_GRANT_GOAL_ENDED);
     }
     const auto compacted = snapshot(source);
     Fixture compacted_reader;
@@ -1935,7 +1954,8 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
                 state->header.version = goal_state_with_authority_record_version;
             }
             // White-box byte edits use the production writer with a copied Goal.
-            auto goal_state = source.work.kernel()->work.goals.at(source.goal_index(goal));
+            auto goal_state =
+                KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(goal));
             goal_state.lifecycle = record.state.lifecycle;
             goal_state.revision = record.state.revision;
             goal_state.cursor.taken = record.state.taken;
@@ -1957,8 +1977,9 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
             Record partner{{goal_state_record_type, goal_state_authority_record_version,
                             record_required, goal_state_record_size},
                            std::vector<uint8_t>(goal_state_record_size)};
-            write_goal_state_record(source.work.kernel()->work.goals.at(source.goal_index(other)),
-                                    partner.body.data());
+            write_goal_state_record(
+                KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(other)),
+                partner.body.data());
             batch.records.insert(batch.records.begin() + 1, partner);
         } else {
             ASSERT_EQ(batch.records.front().header.type, goal_state_record_type);
@@ -1968,8 +1989,9 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
             Record partner{{goal_state_record_type, goal_state_authority_record_version,
                             record_required, goal_state_record_size},
                            std::vector<uint8_t>(goal_state_record_size)};
-            write_goal_state_record(source.work.kernel()->work.goals.at(source.goal_index(other)),
-                                    partner.body.data());
+            write_goal_state_record(
+                KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(other)),
+                partner.body.data());
             batch.records.push_back(std::move(partner));
             auto metadata = source.saved(other);
             metadata.phase = GoalAuthorityPhase::paused;
@@ -1984,7 +2006,8 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
             // Completing Goal B cannot erase Goal A's still-unpaired state,
             // even if the footer is a valid new request rather than a step.
             auto progress = cleanup_before(image.log, selected);
-            progress.request(source.work.kernel()->work.goals.latest_id(), metadata.stamp);
+            progress.request(KernelTestProbe::work(source.work.kernel()).goals.latest_id(),
+                             metadata.stamp);
             Record footer{{authority_cleanup_record_type, authority_cleanup_record_version,
                            record_required, authority_cleanup_record_size},
                           std::vector<uint8_t>(authority_cleanup_record_size)};
@@ -2003,7 +2026,7 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
     valid.run();
     ASSERT_EQ(valid.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(valid.saved(goal).phase, GoalAuthorityPhase::paused);
-    EXPECT_EQ(valid.work.kernel()->work.goals.at(valid.goal_index(goal)).lifecycle,
+    EXPECT_EQ(KernelTestProbe::work(valid.work.kernel()).goals.at(valid.goal_index(goal)).lifecycle,
               AYNI_GOAL_PAUSED);
 }
 
@@ -2016,7 +2039,7 @@ TEST(WorkAuthorityPersistence, snapshots_require_one_bounded_cleanup_fact_in_sec
     ASSERT_NE(goal, 0U);
     ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
     source.work.node().recover();
-    ASSERT_TRUE(source.work.kernel()->work.authority_cleanup.ready());
+    ASSERT_TRUE(KernelTestProbe::work(source.work.kernel()).authority_cleanup.ready());
     const auto original = snapshot(source, 512);
     for (unsigned fault = 0; fault < 6U; ++fault) {
         SCOPED_TRACE(fault);
@@ -2061,7 +2084,7 @@ TEST(WorkAuthorityPersistence, snapshots_require_one_bounded_cleanup_fact_in_sec
     Fixture valid;
     valid.run();
     ASSERT_EQ(import_snapshot(valid, original), BatchCheck::ok);
-    EXPECT_TRUE(valid.work.kernel()->work.authority_cleanup.ready());
+    EXPECT_TRUE(KernelTestProbe::work(valid.work.kernel()).authority_cleanup.ready());
 }
 
 // C-STORE-020/021: own-Goal and direct live Task phases are one durable fact.
@@ -2127,8 +2150,8 @@ TEST(WorkAuthorityPersistence, live_task_and_own_goal_pause_cannot_be_separated)
             } else if (record.header.type == task_state_record_type) {
                 record.header.version = task_state_record_version;
                 uint32_t at = 0;
-                ASSERT_TRUE(source.work.kernel()->work.tasks.find(task_id, at));
-                auto task = source.work.kernel()->work.tasks.at(at);
+                ASSERT_TRUE(KernelTestProbe::work(source.work.kernel()).tasks.find(task_id, at));
+                auto task = KernelTestProbe::work(source.work.kernel()).tasks.at(at);
                 task.lifecycle = AYNI_TASK_PAUSED; // F2 used canonical user pause for this deny.
                 write_task_state_record(task, record.body.data());
             }
@@ -2288,8 +2311,8 @@ TEST(GoalReauthorizationPersistence, crc_valid_partner_faults_reject_the_whole_b
         restored.work.node().sim().durable_storage().log.back() = encode(batch);
         restored.run();
         EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-        EXPECT_EQ(restored.work.kernel()->work.goals.size(), 0U);
-        EXPECT_EQ(restored.work.kernel()->work.tasks.size(), 0U);
+        EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).goals.size(), 0U);
+        EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).tasks.size(), 0U);
     }
 }
 
@@ -2336,10 +2359,11 @@ TEST(GoalReauthorizationPersistence, paged_snapshot_keeps_old_approval_and_new_b
     EXPECT_EQ(restored.saved(id).binding.established_seq, source.saved(id).binding.established_seq);
     EXPECT_EQ(restored.saved(id).requirements[0].dependency.grant_id,
               source.saved(id).requirements[0].dependency.grant_id);
-    const auto *approval = restored.work.kernel()->work.commands.mapped_in(
-        source.work.kernel()
-            ->work.commands.mapped_in(source.saved(id).binding.established_seq)
-            ->commit_seq);
+    const auto *approval =
+        KernelTestProbe::work(restored.work.kernel())
+            .commands.mapped_in(KernelTestProbe::work(source.work.kernel())
+                                    .commands.mapped_in(source.saved(id).binding.established_seq)
+                                    ->commit_seq);
     ASSERT_NE(approval, nullptr);
     EXPECT_EQ(approval->kind, AYNI_INTENT_GOAL_REAUTHORIZE);
 }
@@ -2453,14 +2477,16 @@ TEST(GoalAuthorityPersistence, ordinary_metadata_cannot_clear_a_persisted_deny) 
         }
         ASSERT_EQ(source.saved(id).phase, GoalAuthorityPhase::paused);
         const auto image = source.work.node().sim().durable_storage();
-        const auto stamp = source.work.kernel()->work.transitions.next();
-        Batch forged{
-            {source.work.kernel()->log.writer_epoch(), stamp.commit_seq, stamp.transition_id}, {}};
+        const auto stamp = KernelTestProbe::work(source.work.kernel()).transitions.next();
+        Batch forged{{KernelTestProbe::log(source.work.kernel()).writer_epoch(), stamp.commit_seq,
+                      stamp.transition_id},
+                     {}};
         Record state{{goal_state_record_type, goal_state_with_authority_record_version,
                       record_required, goal_state_record_size},
                      std::vector<uint8_t>(goal_state_record_size)};
-        write_goal_state_record(source.work.kernel()->work.goals.at(source.goal_index(id)),
-                                state.body.data());
+        write_goal_state_record(
+            KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(id)),
+            state.body.data());
         auto metadata = source.saved(id);
         metadata.phase = GoalAuthorityPhase::authorized;
         metadata.stamp = stamp;
@@ -2718,7 +2744,7 @@ TEST(GoalReauthorizationPersistence, replacement_cannot_issue_a_same_batch_dedic
         if (grant_id != dedicated) {
             continue;
         }
-        auto &model = source.work.kernel()->work;
+        auto &model = KernelTestProbe::work(source.work.kernel());
         uint32_t index = 0;
         ASSERT_TRUE(model.grants.find(dedicated, index));
         auto grant = model.grants.at(index);
@@ -2850,8 +2876,10 @@ TEST(GoalAuthorityPersistence, snapshot_child_cannot_borrow_a_wider_parent_grant
             continue;
         }
         uint32_t grant_index = 0;
-        ASSERT_TRUE(source.work.kernel()->work.grants.find(grant.result.object.id, grant_index));
-        record.requirements[0].scope = source.work.kernel()->work.grants.scope(grant_index);
+        ASSERT_TRUE(KernelTestProbe::work(source.work.kernel())
+                        .grants.find(grant.result.object.id, grant_index));
+        record.requirements[0].scope =
+            KernelTestProbe::work(source.work.kernel()).grants.scope(grant_index);
         ASSERT_TRUE(valid_goal_authority_record(record));
         std::vector<uint8_t> output(goal_authority_record_size(record));
         ASSERT_EQ(output.size(), row.body.size());
@@ -2936,7 +2964,7 @@ TEST(GoalReauthorizationPersistence, replacement_cannot_resume_a_user_paused_goa
     source.work.node().recover();
     auto image = source.work.node().sim().durable_storage();
     auto batch = decode(image.log.back());
-    auto goal = source.work.kernel()->work.goals.at(source.goal_index(id));
+    auto goal = KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(id));
     ASSERT_EQ(goal.lifecycle, AYNI_GOAL_PAUSED);
     goal.lifecycle = AYNI_GOAL_ACTIVE;
     ASSERT_EQ(batch.records.front().header.version, goal_state_reauthorization_record_version);
@@ -2959,9 +2987,9 @@ TEST(GoalReauthorizationPersistence, ordinary_task_state_cannot_follow_the_exact
     auto image = source.work.node().sim().durable_storage();
     auto batch = decode(image.log.back());
     uint32_t task_index = 0;
-    ASSERT_TRUE(
-        source.work.kernel()->work.tasks.find(source.work.goal(id).last_task_id, task_index));
-    auto task = source.work.kernel()->work.tasks.at(task_index);
+    ASSERT_TRUE(KernelTestProbe::work(source.work.kernel())
+                    .tasks.find(source.work.goal(id).last_task_id, task_index));
+    auto task = KernelTestProbe::work(source.work.kernel()).tasks.at(task_index);
     task.lifecycle = AYNI_TASK_CANCELLED;
     ++task.revision;
     task.cancel_revision = task.revision;
@@ -2992,15 +3020,15 @@ TEST(GoalReauthorizationPersistence, management_footer_cannot_also_consume_a_cle
     auto revoke = source.work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
     revoke.command_id = 103;
     ASSERT_EQ(source.work.submit(revoke).status, AYNI_OK);
-    auto wrong = source.work.kernel()->work.authority_cleanup;
+    auto wrong = KernelTestProbe::work(source.work.kernel()).authority_cleanup;
     ASSERT_TRUE(wrong.ready());
     ayni::kernel::AuthorityCleanupGoal selected{};
-    ASSERT_TRUE(source.work.kernel()->work.next_authority_cleanup_goal(selected));
+    ASSERT_TRUE(KernelTestProbe::work(source.work.kernel()).next_authority_cleanup_goal(selected));
     ASSERT_EQ(selected.goal_id, id);
     ASSERT_EQ(reauthorize(source, id, 104).status, AYNI_OK);
     const auto stamp = source.saved(id).stamp;
     wrong.visited(selected.goal_id, stamp);
-    wrong.request(source.work.kernel()->work.goals.latest_id(), stamp);
+    wrong.request(KernelTestProbe::work(source.work.kernel()).goals.latest_id(), stamp);
     source.work.node().recover();
     auto image = source.work.node().sim().durable_storage();
     auto batch = decode(image.log.back());
@@ -3032,7 +3060,7 @@ TEST(GoalApprovalPersistence, activation_rejects_each_noninitial_state_fact_with
             return r.header.type == goal_state_record_type;
         });
         ASSERT_NE(row, batch.records.end());
-        auto goal = source.work.kernel()->work.goals.at(source.goal_index(id));
+        auto goal = KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(id));
         switch (fault) {
         case 0:
             goal.lifecycle = AYNI_GOAL_PAUSED;
@@ -3072,7 +3100,7 @@ TEST(GoalApprovalPersistence, activation_rejects_each_noninitial_state_fact_with
         restored.run();
         EXPECT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
         EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-        EXPECT_EQ(restored.work.kernel()->work.grants.size(), 0U);
+        EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).grants.size(), 0U);
     }
 }
 
@@ -3168,8 +3196,8 @@ TEST(WorkAuthorityHistory, every_original_echo_field_is_checked_for_both_command
                 ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
                 if (fault == 1U) {
                     result.binding.parent = {original.parent_goal_id,
-                                             source.work.kernel()
-                                                 ->work.goals.at(source.goal_index(id))
+                                             KernelTestProbe::work(source.work.kernel())
+                                                 .goals.at(source.goal_index(id))
                                                  .created.commit_seq};
                 }
                 std::vector<uint8_t> saved(result_bytes.size);
@@ -3289,8 +3317,8 @@ TEST(WorkAuthoritySnapshot,
         positions[at] = static_cast<std::size_t>(found - image.records.begin());
     }
     uint32_t task_index = 0;
-    ASSERT_TRUE(source.work.kernel()->work.tasks.find(task_id, task_index));
-    const auto task = source.work.kernel()->work.tasks.at(task_index);
+    ASSERT_TRUE(KernelTestProbe::work(source.work.kernel()).tasks.find(task_id, task_index));
+    const auto task = KernelTestProbe::work(source.work.kernel()).tasks.at(task_index);
     for (unsigned fault = 0; fault < 22U; ++fault) {
         SCOPED_TRACE(fault);
         auto changed = image;
@@ -3423,8 +3451,7 @@ TEST(WorkAuthorityHistory, three_level_approval_history_survives_parent_reauthor
     EXPECT_EQ(child.requirements[0].dependency.grant_id,
               old_child.requirements[0].dependency.grant_id);
     EXPECT_EQ(child.phase, GoalAuthorityPhase::paused);
-    EXPECT_NE(restored.work.kernel()
-                  ->work
+    EXPECT_NE(KernelTestProbe::work(restored.work.kernel())
                   .check_goal_authority(restored.goal_index(goals[2]),
                                         restored.work.node().sim().now_us(), UINT64_MAX)
                   .status,

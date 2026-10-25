@@ -3,6 +3,7 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_WORK_AUTHORITY_RESULT_H
 #define AYNI_CORE_KERNEL_COMMAND_WORK_AUTHORITY_RESULT_H
 
+#include "kernel/command/intent_traits.h"
 #include "work/authority/authority_facts.h"
 #include "work/goal/goal_authority.h"
 
@@ -10,11 +11,6 @@
 #include <ayni/ayni.h>
 
 namespace ayni::kernel {
-
-// These exact command kinds create a new binding and must retain its result.
-constexpr bool is_work_authority_command(ayni_intent_kind_t kind) {
-    return kind == AYNI_INTENT_GOAL_APPROVE || kind == AYNI_INTENT_GOAL_REAUTHORIZE;
-}
 
 // One binding decision's result, independent of the Goal's later selections.
 struct WorkAuthorityResult {
