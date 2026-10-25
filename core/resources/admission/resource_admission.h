@@ -15,7 +15,7 @@ enum class Priority : uint32_t { foreground, normal, background, count };
 // Outcome for the work owner when a queued request reaches its deadline.
 enum class WaitAction : uint32_t { pause, skip, wait };
 // Pending diagnostics; available is neither an acquisition nor authorization.
-enum class WaitReason { available, fifo, occupied, offline, faulted, quarantined };
+enum class WaitReason { available, fifo, occupied, offline, faulted, quarantined, conflict };
 
 using catalog::resource_group_max;
 constexpr uint64_t no_deadline = UINT64_MAX;

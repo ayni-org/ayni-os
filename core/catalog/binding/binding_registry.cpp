@@ -109,6 +109,9 @@ ayni_status_t BindingRegistry::resolve(const Binding &binding,
             return AYNI_CAPACITY_EXCEEDED;
         }
     }
+    if (!resources.compatible_group(links.resources.data(), call.contract.resource_count)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     out = links;
     return AYNI_OK;
 }

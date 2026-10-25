@@ -36,6 +36,8 @@ ayni_call_wait_t CallRuntime::waiting(uint32_t index, uint64_t now_us, uint64_t 
             return AYNI_CALL_WAIT_OFFLINE;
         case resources::WaitReason::faulted:
             return AYNI_CALL_WAIT_FAULTED;
+        case resources::WaitReason::conflict:
+            return AYNI_CALL_WAIT_CONFLICT;
         case resources::WaitReason::quarantined:
             return AYNI_CALL_WAIT_QUARANTINED;
         }

@@ -2,7 +2,9 @@
 #define AYNI_CORE_CATALOG_RESOURCE_RESOURCE_REGISTRY_H
 
 #include "catalog/catalog_id.h"
+#include "catalog/device/device_catalog.h"
 #include "foundation/bounded_array.h"
+#include <array>
 #include <ayni/resources.h>
 
 namespace ayni::catalog {
@@ -16,6 +18,10 @@ struct Resource {
     ayni_resource_kind_t kind; // Shared or exclusive; capacity obeys kind.
     uint32_t capacity;         // Positive units; exclusive is exactly 1.
     uint32_t flags;            // 0 or ACTUATOR; an actuator is exclusive.
+    uint32_t component_count;  // Occupied prefix of components; zero for virtual resources.
+    std::array<CatalogId, AYNI_RESOURCE_COMPONENT_COUNT_MAX>
+        components;            // Unique copied associations.
+    CatalogId conflict_domain; // Empty means independent; different same-domain resources conflict.
 };
 
 // Stable slot indices for the Kernel lifetime. No removal or replacement:
@@ -35,6 +41,16 @@ class ResourceRegistry {
     ayni_status_t add_validated(const Resource &resource);
     // Exact name lookup; failure preserves index.
     bool find(ayni_string_v1 id, uint32_t &index) const;
+    // Startup inventory validation, without resolving mutable health or occupancy.
+    ayni_status_t validate(const DeviceCatalog &devices) const;
+    // Different resources conflict only when both name the same nonempty domain.
+    bool conflict(uint32_t left, uint32_t right) const;
+    // All indices are validated; one request must not contain mutually exclusive resources.
+    bool compatible_group(const uint32_t *indices, uint32_t count) const;
+    // Count resources naming this component; each association is unique.
+    uint32_t component_resources(ayni_string_v1 component) const;
+    // A resource spanning several components of one device is counted only once.
+    uint32_t device_resources(const DeviceCatalog &devices, ayni_string_v1 device) const;
     // Borrowed immutable entry, index < size().
     const Resource &at(uint32_t index) const { return entries_[index]; }
     // Number of registrations, not configured capacity.

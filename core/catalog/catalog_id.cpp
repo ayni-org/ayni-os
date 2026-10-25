@@ -40,4 +40,11 @@ bool CatalogId::equals(ayni_string_v1 text) const {
            (text.data != nullptr && std::memcmp(bytes_.data(), text.data, size_) == 0);
 }
 
+ayni_catalog_name_v1 CatalogId::snapshot() const {
+    ayni_catalog_name_v1 out{};
+    out.size = size_;
+    std::memcpy(out.data, bytes_.data(), size_);
+    return out;
+}
+
 } // namespace ayni::catalog

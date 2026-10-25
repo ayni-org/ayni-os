@@ -113,8 +113,8 @@ class ManagedCall : public ::testing::Test {
         ASSERT_EQ(ayni_register_goal_type(kernel, &goal_type), AYNI_OK);
         const ayni_capability_desc_v1 authority{sizeof(authority), 1, text("echo"), 0, 0, nullptr};
         ASSERT_EQ(ayni_register_capability(kernel, &authority), AYNI_OK);
-        const ayni_resource_desc_v1 resource{sizeof(resource), AYNI_RESOURCE_SHARED,
-                                             text("model.slot"), 1, 0};
+        const ayni_resource_desc_v1 resource{
+            sizeof(resource), AYNI_RESOURCE_SHARED, text("model.slot"), 1, 0, 0, 0, nullptr, {}};
         ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
         ASSERT_EQ(ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE),
                   AYNI_OK);

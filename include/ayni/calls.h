@@ -303,6 +303,9 @@ typedef uint32_t ayni_call_wait_t;
 #define AYNI_CALL_WAIT_COMPATIBILITY                                                               \
     ((ayni_call_wait_t)8) /* Saved contract unavailable this boot. Since 0.31. */
 
+/* Another resource in the configured conflict domain is held. Since 0.32. */
+#define AYNI_CALL_WAIT_CONFLICT ((ayni_call_wait_t)9)
+
 /* Since 0.31. Fixed copied diagnostics; no private representation or body pointers. */
 typedef uint32_t ayni_call_query_phase_t;
 #define AYNI_QUERY_NOT_REQUESTED                                                                   \
