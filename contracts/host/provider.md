@@ -6,7 +6,7 @@
 
 Provider 实现 Capability：外部模型 API、感知、媒体、检索、动作执行等。Provider 是可信内置代码（C-TRUST 表），但其**输出**是不可信数据，由 Kernel 校验后才影响状态（C-TRUST-001）。Provider 不持有领域对象的写权限，不调度任务。
 
-当前实施边界（ABI 0.31，ADR-0044/0045）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
+当前实施边界（ABI 0.33，ADR-0044/0045/0048）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
 
 ## 函数表
 
@@ -40,11 +40,11 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 | C-PROV-005 | 只有声明 `AUTHORITATIVE` 查询且保证记录完整的 Provider 才能返回 `NOT_ACCEPTED`；其余 Provider 查不到记录时返回 `UNKNOWN` | 不保存历史的 Provider 对未知请求返回 `NOT_ACCEPTED`，Kernel 据此重新派发 | E2 查询夹具；C-CALL-010 |
 | C-PROV-006 | 取消以事件报告 `CANCELLED`、`CANNOT_CANCEL` 或 `UNKNOWN`；取消结果在被应用前不被后到的进度覆盖；`CANCELLED` 不表示未计费或未外发 | 本地连接取消后，Provider 把远端已执行的可能性报告为从未接受；或 `CANNOT_CANCEL` 之后紧跟一条进度，Kernel 只看到进度，Task 一直停在 `CANCELLING` | 内部交接部分已实现：`ProviderMailboxTest.retains_cancel_and_terminal_until_the_owner_can_commit_each`、`ProviderMailboxTest.terminal_supersedes_progress_without_overwriting_accepted_cancel_control`、`ProviderMailboxTest.concurrent_progress_and_control_posts_preserve_both_channels`；公开取消/关闭：`ManagedCall.cancellation_waits_for_terminal_and_late_success_does_not_reopen_task`、`ManagedCall.normal_shutdown_requests_cancel_and_waits_for_returned_borrow`；E1 步骤 4；C-CALL-009 |
 | C-PROV-007 | 终态可携带 usage/token/bytes 诊断信息；缺失时明确未知，不形成费用账本；Task 调用计数来自本机接受事实（ADR-0042） | 把缺失 usage 伪造为 0 或据此重置 Task 调用计数 | MA-008；C-RUN-002、C-RUN-006 |
-| C-PROV-008 | Provider 不调用 Kernel API（`ayni_post_event` 与 `ayni_provider_post` 除外），不修改领域对象，不持有资源锁，不调度任务 | 感知 Provider 直接创建一个“场景观察” Goal | 评审；`providers/` 建立时在 `tools/architecture.json` 登记为只能包含公开头文件，由 `check_deps` 执行（ADR-0011） |
+| C-PROV-008 | Provider 不调用 Kernel API（`ayni_post_event` 与 `ayni_provider_post` 除外），不修改领域对象，不持有资源锁，不调度任务 | 感知 Provider 直接创建一个“场景观察” Goal | 评审；已登记 Provider 实例规则并由 `check_deps` 执行；`tests/tools/test_check_deps.py` 的 Provider 自身头/runtime 装配允许与跨 Provider/Core 私有头拒绝用例（ADR-0011/0048） |
 | C-PROV-009 | 模态按能力逐项声明；不因“兼容聊天 API”而假定支持图像、ASR、TTS 或流式输出 | 文本 Provider被绑定到视觉分析能力，运行时才发现不支持图像 | E4 步骤 1；C-BIND-001 |
 | C-PROV-010 | 流式输出是需单独协商的可选特性；未协商时 Provider 只返回完整终态 | v0.1 Provider 推送部分 token，Kernel 把部分结果当终态应用 | `MA-008` |
 | C-PROV-011 | 直连外部 API；endpoint/model/密钥引用运行时配置，密钥由 Provider/Host 持有，不进入 Core、日志或提交，不绕过本地权限（ADR-0042） | 模型输出改变 endpoint 或读取密钥 | `MA-027`；E3 步骤 6（M2 真实外部 API）；§5.1 |
-| C-PROV-012 | 测试用 Mock A / Mock B 是确定性的：相同输入、夹具种子与 FakeClock 轨迹下产生相同结果与完成时刻 | Mock 使用真实时间与随机数，E3 轨迹无法复现 | E1 步骤 2；E3 步骤 1–5 |
+| C-PROV-012 | 测试用 Mock A / Mock B 是确定性的：相同输入、夹具种子与 FakeClock 轨迹下产生相同结果与完成时刻 | Mock 使用真实时间与随机数，E3 轨迹无法复现 | 正常实现：`MockProvider.deferred_completion_copies_text_and_reports_action_progress`；固定推进顺序、A/B 一/两次推进延迟（ADR-0048）；完整 E1/E3 尚未验收 |
 | C-PROV-013 | 执行物理动作的 Provider 把指令交给执行端许可门，不直接写 PWM 或驱动寄存器；许可校验由执行端完成（C-PERMIT-007） | 运动 Provider 收到准入结果后直接设置 PWM 占空比 | `MA-015`；R1 B5 |
 | C-PROV-014 | Provider 的输入只含 Kernel 按上下文规则过滤后的数据；媒体以受控引用传入（C-PRIM-005），不传任意 URL 或文件路径 | Provider 收到 `file:///data/photos/` 路径并读取全部照片 | `MA-015`；C-WIRE-011 |
 
@@ -53,3 +53,7 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 `query(ctx, operation_id, attempt, completion)` 仅接收保存的原 operation 与独立查询 attempt；Provider 注册的 ID/version、端点、目的地与原契约必须精确匹配。未知结果不能改换实现。BEST_EFFORT 的查询仅提供诊断，不能解除原执行 UNKNOWN；AUTHORITATIVE 服务还须对 NOT_ACCEPTED 保证旧 operation 已被封闭。查询的进度/取消控制只用于有界 transport 排空，业务事实由查询终态给出。
 
 `ayni_begin_shutdown` 停止新准入，请求在途取消并等待每项借用终态。取消端口返回 REJECTED_NOT_RETAINED 仅表示本次取消未被接受，不能释放原请求。正常可写退出持久保存事实；已受限且存储不可写时仅排空易失交接，不声称结果已提交。自动重载保留未归还的 transport/完成槽；旧 boot 的结果不直接改变新工作事实，后续需新管理查询。故障、重载及传播竞态仍属暂停的专项证据。
+
+## 可复用 Mock 的当前边界
+
+`providers/mock` 提供 A/B 文本回显与模拟呈现，启动分配固定槽，调用线程只复制输入。组合根在 Kernel 步进之间显式推进；终态成功发表后清空局部正文，`close` 对在途借用返回 `BUSY`。上下文在 Kernel 成功销毁后才能释放。取消、容量和正常排空分别由 `MockProvider.cancellation_drains_the_borrow_and_close_refuses_while_pending`、`MockProvider.full_provider_queue_rejects_without_discarding_the_first_request`、`MockProvider.normal_shutdown_cancels_pending_work_and_returns_every_borrow` 验证。Mock 不执行网络或真实音频/动作，也不宣称物理停止。
