@@ -3,6 +3,8 @@
 - **关联**：计划 §2.2、§2.4「紧急停止」、§2.10、§4.1、§7.3；ADR-0001、ADR-0005；`MA-018`、`MA-026`、`MA-038`；E2 F12、F14，R1 A2–A4、B5
 - **属主**：`resources/permit`（签发、续租、失效判断，在 authority-owner Kernel）；`control/`（执行端许可门与包络校验）；`safety/`（独立停止链）。`control/` 与 `safety/` 不依赖 `core/`（ADR-0005、ADR-0011）。
 
+当前实施边界（ABI 0.34，ADR-0049）：`control/permit_gate` 已实现独立、调用方固定内存的本地许可校验。Core 仍拒绝物理调用；签发屏障、Scene、控制会话/停止账本与 Core 资源释放闭环尚未交付。gate 不访问硬件、不认证传输，不替代独立停止链或硬件停止证据。
+
 ## 角色
 
 | 角色 | 承担者 | 职责 | 不承担 |
@@ -16,7 +18,7 @@
 
 | 字段组 | 字段 | 规则 |
 |---|---|---|
-| 身份与范围 | `permit_id`、`operation_id`、控制域、控制模式、包络摘要 | 包络摘要按包络的领域字段规范化计算（C-VER-032） |
+| 身份与范围 | `permit_id`、`operation_id`、控制域、控制模式、完整数值包络 | ABI 0.34 携带最多 8 个字段及单位/闭区间，逐项比较，不只凭摘要（ADR-0049，按推荐选项实施） |
 | 代际 | `kernel_boot_epoch`、`authority_epoch`、`executor_boot_epoch`、`safety_epoch`、校准版本 | 任一项与执行端当前值不一致即失效 |
 | 时效 | 租期 `L`（由能力声明） | 会话为需续租的短租约；过程许可不续租，时长不超过该过程的最长执行时长 |
 | 新鲜度 | 回显的执行端 nonce | 见下节 |
@@ -70,12 +72,12 @@ E2 F14 的在途续租用例：原截止 100 ms，91 ms 签出续租，92 ms 撤
 |---|---|---|---|
 | C-PERMIT-001 | 每个控制域只由其当前 authority-owner Kernel 签发许可；执行端拒绝其他来源或旧 `authority_epoch` 的许可 | 非 owner 的 Kernel 向底盘控制器签发许可并被接受 | `MA-018`；`MA-038`（换主与分区） |
 | C-PERMIT-002 | 许可只在 `DISPATCHING` 屏障已持久（`durable_seq` 覆盖屏障）且屏障后复核通过后签发；签发与续租都是带 `requires_seq` 的对外输出 | 屏障还在写入时就签发许可，屏障写失败但电机已开始转动 | E2 F2、F10；C-COMMIT-006、C-COMMIT-007 |
-| C-PERMIT-003 | 执行端只能收紧：许可包络 ⊆ 准入时批准的包络 ⊆ 设备限值；执行端不得授予或扩大权限；扩大包络、改变控制模式或权限须重新准入并记录 | 执行端收到超出设备限值的速度指令时按限值“截断后照做”，并把会话包络改为更大的值 | `MA-018`；R1 A2；C-AUTH-016 |
+| C-PERMIT-003 | 执行端只能收紧：许可包络 ⊆ 准入时批准的包络 ⊆ 设备限值；执行端不得授予或扩大权限；扩大包络、改变控制模式或权限须重新准入并记录 | 执行端收到超出设备限值的速度指令时按限值“截断后照做”，并把会话包络改为更大的值 | 本地门：`ControlGate.incomplete_or_enlarged_envelopes_are_rejected_before_start`、`ControlGate.an_out_of_bounds_sample_stops_instead_of_clamping`；Core 准入待接入；R1 A2；C-AUTH-016 |
 | C-PERMIT-004 | 许可携带上表全部代际；执行端每个控制周期比对 `kernel_boot_epoch`、`authority_epoch`、`executor_boot_epoch`、`safety_epoch` 与校准版本，任一不一致即按包络声明的方式收敛停止 | 控制器重启后接受了重启前签发的许可 | E2 F14（Kernel 重启、校准失效、急停复位后重放旧许可） |
 | C-PERMIT-005 | 撤销 Grant 或关闭场景时，Kernel 在内存撤销栅栏建立的同一 transition 中停止续租受影响的许可，不等待撤销持久化完成；撤销消息传播失败时，执行端最迟在撤销时刻 + `L` 后收敛 | 撤销等 Flash 写完才停止续租，期间又续租了两次 | E2 F14（撤销传播失败；在途续租时序）；C-AUTH-006 |
-| C-PERMIT-006 | 执行端按“截止时间的计算”一节更新截止：`deadline = max(deadline, t_N + L)`，`t_N` 为执行端本地签发 nonce 的时刻；未知或已淘汰的 nonce 拒绝 | 执行端以续租到达时刻加 `L` 作为新截止，网络延迟 500 ms 的续租把截止推迟了 500 ms | E2 F14（延迟续租重放；在途续租时序） |
-| C-PERMIT-007 | 执行端拒绝任何缺少有效许可的指令，无论来源；每个控制周期检查代际一致、本地单调时间未超过截止、未处于停止锁存、校准有效、指令在包络内且年龄不超过上限，任一项不满足即收敛停止 | 绕过 Kernel 直接发给控制器的速度指令被执行 | R1 B5；E2 F14；C-TRUST-004 |
-| C-PERMIT-008 | 越过截止即为终态：会话或过程停止后，之后到达的任何许可或续租都不能恢复它；恢复运动须以新 `permit_id` 重新准入；资源在停止确认前保持隔离（C-RES-008） | 截止后 5 ms 到达的续租让已停止的会话重新开始运动 | E2 F14（截止之后才到达的续租） |
+| C-PERMIT-006 | 执行端按“截止时间的计算”一节更新截止：`deadline = max(deadline, t_N + L)`，`t_N` 为执行端本地签发 nonce 的时刻；未知或已淘汰的 nonce 拒绝 | 执行端以续租到达时刻加 `L` 作为新截止，网络延迟 500 ms 的续租把截止推迟了 500 ms | 正常本地门：`ControlGate.lease_anchors_at_nonce_and_renewal_never_uses_arrival_time`、`ControlGate.unknown_evicted_and_expired_challenges_do_not_start_execution`；E2 F14 传播专项待验收 |
+| C-PERMIT-007 | 执行端拒绝任何缺少有效许可的指令，无论来源；每个控制周期检查代际一致、本地单调时间未超过截止、未处于停止锁存、校准有效、指令在包络内且年龄不超过上限，任一项不满足即收敛停止 | 绕过 Kernel 直接发给控制器的速度指令被执行 | 本地门：`ControlGate.startup_requires_a_permit_and_first_sample_before_output`、`ControlGate.control_cycles_expire_the_last_sample_without_waiting_for_lease_end`、`ControlGate.missing_duplicate_wrong_unit_and_stale_samples_stop_the_permit`、`ControlGate.epoch_and_interlock_changes_do_not_allow_output_or_renewal`；执行器/独立停止证据待验收；C-TRUST-004 |
+| C-PERMIT-008 | 越过截止即为终态：会话或过程停止后，之后到达的任何许可或续租都不能恢复它；恢复运动须以新 `permit_id` 重新准入；资源在停止确认前保持隔离（C-RES-008） | 截止后 5 ms 到达的续租让已停止的会话重新开始运动 | 本地终态：`ControlGate.renewed_sessions_cannot_resume_after_the_exact_deadline`、`ControlGate.procedure_is_nonrenewable_and_expiry_is_permanently_terminal`；Core 隔离闭环及 E2 F14 待验收 |
 | C-PERMIT-009 | Kernel 处于受限栅栏、`RESTRICTED`、`DRAINING` 或正在重启时不签发、不续租任何许可 | 存储写失败进入受限栅栏后，许可仍按周期续租，电机一直转 | E2 F12（模拟执行端在失效时刻 + `L` 内停止）；C-COMMIT-009 |
 | C-PERMIT-010 | 会话租期 `L` 由能力声明，按能力风险与实测停止时间设定，并包含时钟漂移余量；过程许可时长不超过过程的最长执行时长且不续租 | 过程许可设为 10 分钟并可续租，撤销后电机最长还能转 10 分钟 | `MA-026` 停止上限实测；评审 |
 | C-PERMIT-011 | 无法给出停止上限的能力不开放会话形态；能力只有在适用于它的最坏停止上限满足其运动限值时才可开放 | 没有实测停止时间的底盘能力开放了遥操作会话 | `MA-026` |
@@ -95,3 +97,9 @@ E2 F14 的在途续租用例：原截止 100 ms，91 ms 签出续租，92 ms 撤
 | C-STOP-008 | 最坏停止上限按上表的故障类型分别预算并逐项实测；v0.1 只声明“在已测故障列表下的实测停止上限”，不声明独立安全功能或任何安全标准符合 | 用一个公式给出所有故障的停止时间，并在说明书写“符合功能安全” | `MA-026` 停止链报告 |
 | C-STOP-009 | 停止链故障矩阵至少覆盖：运动中 Flash 擦写、控制任务死锁、控制心跳正常时单独挂起 Kernel、panic/复位、欠压与 Wi-Fi 高负载，并在每种状态下触发急停；使能脚用逻辑分析仪记录，实际停止用编码器/IMU 或高速视频记录 | 只在空闲状态测一次急停就给出停止上限 | `MA-026` |
 | C-STOP-010 | 物理结果未知时，按能力的恢复属性重新测量、补偿或交给人工处理，不盲目重复；恢复后不重放旧运动命令（C-OUT-001） | 转向结果未知，重启后系统再转一次“确保到位” | E2 总通过标准；`MA-026` |
+
+## 本地 gate 生命周期与部署约束
+
+`control.h` 的输入来自可信本地适配器，不能将任意网络请求直接作为已认证 owner 许可。每次创建 gate 都必须更新 executor_boot_epoch；启动无许可且无输出，首次有效样本前 check 返回 NOT_READY。同一 permit 的 sequence 严格递增，每周期同时检查租期和最后样本年龄。样本时间必须属于执行端时钟，远端到达时间不能替代采集时间。
+
+停止分为立即禁止输出、等待本地测量、已确认三步；`ControlGate.cancellation_and_stop_measurement_are_separate_facts` 验证不将取消受理当作停止确认，未确认时 destroy 返回 BUSY。确认不能代表目标验证或 Core 资源释放。错误返回不授权输出，实际禁用及定期调用由适配器负责；线程挂起后的停止仍需要独立硬件/监督链。独立 C99 链接和无堆引用由 control_gate_from_c99_without_core、control_gate_does_not_reference_heap_allocator 检查；不作为实机部署证据。
