@@ -12,6 +12,8 @@
 #include <cstring>
 #include <vector>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 using ayni::hosts::sim::CutAppend;
@@ -152,10 +154,11 @@ class RevokeNode {
             }
             // White-box: quiescence only; all semantic assertions use ABI
             // receipts/GrantInfo rather than these scheduler internals.
-            if (node.lifecycle() == AYNI_LIFECYCLE_RUNNING && node.kernel()->log.idle() &&
-                node.kernel()->completions.in_flight() == 0U &&
-                !node.kernel()->maintenance.active() &&
-                node.kernel()->work.commands.pending_size() == 0U) {
+            if (node.lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+                KernelTestProbe::log(node.kernel()).idle() &&
+                KernelTestProbe::completions(node.kernel()).in_flight() == 0U &&
+                !KernelTestProbe::maintenance(node.kernel()).active() &&
+                KernelTestProbe::work(node.kernel()).commands.pending_size() == 0U) {
                 return;
             }
         }
@@ -186,10 +189,11 @@ class RevokeNode {
             for (unsigned phase = 0; phase < 2; ++phase) {
                 for (unsigned round = 0; round < 1000; ++round) {
                     tick();
-                    if (node.kernel()->maintenance.active()) {
+                    if (KernelTestProbe::maintenance(node.kernel()).active()) {
                         return true;
                     }
-                    if (node.kernel()->log.idle() && node.kernel()->completions.in_flight() == 0U) {
+                    if (KernelTestProbe::log(node.kernel()).idle() &&
+                        KernelTestProbe::completions(node.kernel()).in_flight() == 0U) {
                         break;
                     }
                 }
@@ -646,7 +650,7 @@ TEST(RevokeApi, failed_writer_isolation_preserves_the_gate_and_reports_no_durabl
     EXPECT_NE(work.receipt(2).phase, AYNI_INTENT_DURABLE);
     EXPECT_EQ(work.grant(target).effective_reason, AYNI_REASON_GRANT_REVOKED);
     // White-box: independent control state must survive this failed handoff.
-    EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
+    EXPECT_TRUE(KernelTestProbe::work(work.node.kernel()).grants.gated(target));
 }
 
 // C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
@@ -668,7 +672,7 @@ TEST(RevokeApi,
     EXPECT_EQ(ayni_get_intent_receipt(work.node.kernel(), owner_id, 1, &ordinary), AYNI_NOT_READY);
     EXPECT_EQ(std::memcmp(&ordinary, &before, sizeof(ordinary)), 0);
     // White-box: unavailable restored data cannot make its volatile gate disappear.
-    EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
+    EXPECT_TRUE(KernelTestProbe::work(work.node.kernel()).grants.gated(target));
 }
 
 // C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
@@ -695,10 +699,10 @@ TEST(RevokeApi, shutdown_after_reload_read_failure_keeps_unapplied_controls_with
     work.pending_is(command, target);
     // White-box read-only preconditions: actual failed reload has reset the
     // allocator/clock, while the older log object still has physical room.
-    ASSERT_EQ(work.node.kernel()->work.ids.boot_epoch(), 0U);
-    ASSERT_EQ(work.node.kernel()->work.transitions.next_commit_seq(), 0U);
-    ASSERT_TRUE(work.node.kernel()->log.has_room());
-    ASSERT_TRUE(work.node.kernel()->work.grants.gated(target));
+    ASSERT_EQ(KernelTestProbe::work(work.node.kernel()).ids.boot_epoch(), 0U);
+    ASSERT_EQ(KernelTestProbe::work(work.node.kernel()).transitions.next_commit_seq(), 0U);
+    ASSERT_TRUE(KernelTestProbe::log(work.node.kernel()).has_room());
+    ASSERT_TRUE(KernelTestProbe::work(work.node.kernel()).grants.gated(target));
     ASSERT_EQ(ayni_begin_shutdown(work.node.kernel()), AYNI_OK);
     work.pending_is(command, target);
     for (unsigned round = 0; round < 100 && work.node.lifecycle() != AYNI_LIFECYCLE_STOPPED;
@@ -708,12 +712,13 @@ TEST(RevokeApi, shutdown_after_reload_read_failure_keeps_unapplied_controls_with
         ASSERT_NE(work.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     }
     ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_STOPPED);
-    EXPECT_EQ(work.node.kernel()->work.transitions.next_commit_seq(), 0U);
-    const auto *control = work.node.kernel()->work.commands.pending(owner_id, command);
+    EXPECT_EQ(KernelTestProbe::work(work.node.kernel()).transitions.next_commit_seq(), 0U);
+    const auto *control =
+        KernelTestProbe::work(work.node.kernel()).commands.pending(owner_id, command);
     ASSERT_NE(control, nullptr);
     EXPECT_EQ(control->queued_boot_epoch, 0U);
     EXPECT_EQ(control->queued_commit_seq, 0U);
-    EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
+    EXPECT_TRUE(KernelTestProbe::work(work.node.kernel()).grants.gated(target));
 }
 
 // C-AUTH-027 / ADR-0031: receipts and handoff require the correct durable identity.
@@ -738,7 +743,7 @@ TEST(RevokeApi,
     ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
     EXPECT_EQ(work.node.info().restriction, AYNI_RESTRICTION_OWNER_BINDING_MISMATCH);
     work.pending_is(2, target);
-    EXPECT_TRUE(work.node.kernel()->work.grants.gated(target));
+    EXPECT_TRUE(KernelTestProbe::work(work.node.kernel()).grants.gated(target));
 }
 
 // C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
@@ -869,7 +874,7 @@ TEST(RevokeApi, paged_snapshot_keeps_its_frozen_model_while_accepting_a_volatile
     ASSERT_TRUE(work.wait_for_snapshot(next_command));
     // White-box: require more than one payload page, not just a header
     // request that happens to share the maintenance state machine.
-    ASSERT_GT(work.node.kernel()->maintenance.metadata().payload_length,
+    ASSERT_GT(KernelTestProbe::maintenance(work.node.kernel()).metadata().payload_length,
               work.node.config().storage_buffer_bytes);
     const auto before = work.grant(target);
     const uint64_t command = next_command++;
@@ -877,13 +882,14 @@ TEST(RevokeApi, paged_snapshot_keeps_its_frozen_model_while_accepting_a_volatile
     ASSERT_EQ(pending.status, AYNI_OK);
     EXPECT_EQ(pending.result.phase, AYNI_INTENT_PENDING);
     EXPECT_EQ(work.grant(target).effective_reason, AYNI_REASON_GRANT_REVOKED);
-    for (unsigned round = 0; round < 1000 && work.node.kernel()->maintenance.active(); ++round) {
+    for (unsigned round = 0;
+         round < 1000 && KernelTestProbe::maintenance(work.node.kernel()).active(); ++round) {
         EXPECT_EQ(work.grant(target).lifecycle, AYNI_GRANT_ACTIVE);
         EXPECT_EQ(work.grant(target).commit_seq, before.commit_seq);
         work.pending_is(command, target);
         work.tick();
     }
-    ASSERT_FALSE(work.node.kernel()->maintenance.active());
+    ASSERT_FALSE(KernelTestProbe::maintenance(work.node.kernel()).active());
     work.pending_is(command, target);
     // Crash before the accepted control is applied. The activated snapshot
     // must be valid and retain the frozen ACTIVE fact, excluding the gate.
@@ -984,7 +990,7 @@ TEST(RevokeApi, a_mapping_already_restored_during_recovery_is_not_a_public_recei
     work.node.reboot();
     for (unsigned round = 0; round < 1000; ++round) {
         // White-box: observe real replay progress; do not fabricate a mapping or lifecycle.
-        if (work.node.kernel()->work.commands.size() != 0U) {
+        if (KernelTestProbe::work(work.node.kernel()).commands.size() != 0U) {
             ASSERT_EQ(work.node.lifecycle(), AYNI_LIFECYCLE_RECOVERING);
             ayni_intent_receipt_v1 out{};
             out.struct_size = sizeof(out);

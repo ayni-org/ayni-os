@@ -2,8 +2,8 @@
 // intents, their check order and error detail, queries, ids across reboots
 // and the return values in each kernel state. Runs on the simulation Host.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -18,6 +18,8 @@
 #include <limits>
 #include <utility>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -458,7 +460,7 @@ TEST(WorkModel, full_goal_table_refuses_without_side_effects) {
 TEST(WorkModel, used_up_ids_refuse_goals_and_sessions) {
     WorkNode work;
     work.run();
-    work.kernel()->work.ids.start(1, 0xFFFFFFFFU);
+    KernelTestProbe::work(work.kernel()).ids.start(1, 0xFFFFFFFFU);
     const uint64_t last = work.create_goal();
     EXPECT_EQ(last, (uint64_t{1} << 32U) | 0xFFFFFFFFU);
     const int calls = work.rules().calls;
@@ -545,7 +547,7 @@ TEST(WorkModel, change_past_the_largest_revision_is_refused_and_changes_nothing)
     work.run();
     const uint64_t root = work.create_goal();
     const uint64_t child = work.create_goal(root);
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t index = 0;
     ASSERT_TRUE(goals.find(child, index));
     const_cast<ayni::work::Goal &>(goals.at(index)).revision = std::numeric_limits<uint32_t>::max();

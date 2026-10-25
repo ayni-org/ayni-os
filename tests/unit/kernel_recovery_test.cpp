@@ -7,8 +7,8 @@
 // RUNNING committed. Runs on the simulation Host.
 
 #include "durability/batch/batch_codec.h"
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work/task/task_records.h"
 #include "work_node.h"
 
@@ -25,6 +25,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -43,7 +45,7 @@ constexpr uint64_t period_us = AYNI_TRIGGER_PERIOD_MIN_US;
 
 // White-box: the commit_seq the next transition takes.
 uint64_t next_commit_seq(WorkNode &work) {
-    return work.kernel()->work.transitions.next_commit_seq();
+    return KernelTestProbe::work(work.kernel()).transitions.next_commit_seq();
 }
 
 ayni_goal_create_v1 goal_body(WorkNode &work, ayni_trigger_kind_t trigger,
@@ -90,7 +92,7 @@ void run_until_idle(WorkNode &work) {
         if (work.node().sim().complete_storage() == 0U && report.more_ready == 0U) {
             // White-box: only advance the storage deadline, never a future
             // goal deadline merely because the application is idle.
-            if (!work.kernel()->log.idle() && report.next_deadline_us != no_time &&
+            if (!KernelTestProbe::log(work.kernel()).idle() && report.next_deadline_us != no_time &&
                 report.next_deadline_us > work.node().sim().now_us()) {
                 work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
                 continue;
@@ -104,7 +106,7 @@ void run_until_idle(WorkNode &work) {
 // Waits for the next write budget without completing the write. This lets
 // scenarios place a power cut or inspect acceptance at a real I/O boundary.
 ayni_step_report_v1 storage_step(WorkNode &work) {
-    const uint64_t due = work.kernel()->log.next_deadline();
+    const uint64_t due = KernelTestProbe::log(work.kernel()).next_deadline();
     if (due != no_time && due > work.node().sim().now_us()) {
         work.node().sim().advance_us(due - work.node().sim().now_us());
     }
@@ -138,7 +140,7 @@ void prepare(WorkNode &work) {
 // and derived wait reasons are deliberately excluded; the API gate is checked
 // separately. Times that each boot anchors afresh (decision 6) are left out.
 std::string describe(WorkNode &work) {
-    const ayni::kernel::WorkModel &model = work.kernel()->work;
+    const ayni::kernel::WorkModel &model = KernelTestProbe::work(work.kernel());
     std::ostringstream out;
     std::vector<uint64_t> ids;
     for (uint32_t index = 0; index < model.agents.size(); ++index) {
@@ -213,7 +215,7 @@ std::string describe(WorkNode &work) {
 // ADR-0038: compatible schema 2 work exposes its retained lifecycle and
 // independent policy/user state, without introducing a recovery-only deny.
 void expect_normal_authority(WorkNode &work) {
-    const auto &model = work.kernel()->work;
+    const auto &model = KernelTestProbe::work(work.kernel());
     for (uint32_t index = 0; index < model.goals.size(); ++index) {
         const auto &stored = model.goals.at(index);
         const auto visible = work.goal(stored.goal_id);
@@ -254,7 +256,8 @@ class Views {
             const ayni_step_report_v1 report = work_.node().step(1);
             record();
             if (work_.node().sim().complete_storage() == 0U && report.more_ready == 0U) {
-                if (!work_.kernel()->log.idle() && report.next_deadline_us != no_time &&
+                if (!KernelTestProbe::log(work_.kernel()).idle() &&
+                    report.next_deadline_us != no_time &&
                     report.next_deadline_us > work_.node().sim().now_us()) {
                     work_.node().sim().advance_us(report.next_deadline_us -
                                                   work_.node().sim().now_us());
@@ -649,8 +652,8 @@ TEST(WorkRecovery, task_its_strategy_cannot_serve_is_held) {
         // White-box: compatibility recovery leaves private progress intact.
 
         uint32_t index = 0;
-        ASSERT_TRUE(work.kernel()->work.tasks.find(held.reminder_task, index));
-        const auto &tasks = work.kernel()->work.tasks;
+        ASSERT_TRUE(KernelTestProbe::work(work.kernel()).tasks.find(held.reminder_task, index));
+        const auto &tasks = KernelTestProbe::work(work.kernel()).tasks;
         EXPECT_EQ(tasks.at(index).step_count, before.step_count);
         EXPECT_EQ(tasks.at(index).checkpoint_writer_version, 1U);
         const std::vector<uint8_t> resumed = {7, static_cast<uint8_t>(before.step_count - 1U)};
@@ -855,7 +858,7 @@ TEST(WorkRecovery, log_beyond_the_capacities_restricts_and_shows_nothing) {
     info.struct_size = sizeof(info);
     EXPECT_EQ(ayni_get_goal(work.kernel(), goal_id, &info), AYNI_NOT_FOUND);
     // White-box: the tables hold nothing of the log.
-    const ayni::kernel::WorkModel &model = work.kernel()->work;
+    const ayni::kernel::WorkModel &model = KernelTestProbe::work(work.kernel());
     EXPECT_EQ(model.goals.size(), 0U);
     EXPECT_EQ(model.agents.at(0).instance_id, 0U);
 }

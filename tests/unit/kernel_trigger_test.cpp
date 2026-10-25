@@ -3,8 +3,8 @@
 // order in which due goals derive, and the deadline ayni_step reports. Runs
 // on the simulation Host, whose clock moves only when a test moves it.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work_node.h"
 
 #include <ayni/ayni.h>
@@ -13,6 +13,8 @@
 
 #include <cstdint>
 #include <limits>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -77,8 +79,8 @@ struct HeldRequest {
     }
 
     void issue(WorkNode &work) {
-        ASSERT_EQ(work.kernel()->completions.issue(work.node().info().boot_epoch, &applied, nullptr,
-                                                   &accept, this),
+        ASSERT_EQ(KernelTestProbe::completions(work.kernel())
+                      .issue(work.node().info().boot_epoch, &applied, nullptr, &accept, this),
                   ayni::kernel::IssueResult::in_flight);
     }
     void post() {
@@ -293,7 +295,7 @@ TEST(WorkTrigger, tie_goes_to_the_goal_created_first_whatever_its_place) {
     const uint64_t first = delay_goal(work, second);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, ended).status, AYNI_OK);
     const uint64_t later = delay_goal(work, second);
-    const ayni::work::GoalTable &goals = work.kernel()->work.goals;
+    const ayni::work::GoalTable &goals = KernelTestProbe::work(work.kernel()).goals;
     uint32_t first_index = 0;
     uint32_t later_index = 0;
     ASSERT_TRUE(goals.find(first, first_index));
@@ -370,7 +372,7 @@ TEST(WorkTrigger, used_up_ids_report_no_deadline) {
     WorkNode work;
     work.run();
     const uint64_t start = now(work);
-    work.kernel()->work.ids.start(1, 0xFFFFFFFEU);
+    KernelTestProbe::work(work.kernel()).ids.start(1, 0xFFFFFFFEU);
     const uint64_t goal_id = delay_goal(work, second);
     EXPECT_EQ(work.node().step().next_deadline_us,
               work.node().with_storage_deadline(start + second));

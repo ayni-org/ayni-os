@@ -8,8 +8,8 @@
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/boot/boot_sequence.h"
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 #include "work/agent/agent_records.h"
 
 #include <ayni/ayni.h>
@@ -23,6 +23,8 @@
 #include <cstring>
 #include <limits>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -484,7 +486,7 @@ TEST(KernelLifecycle, storage_faults_restrict_with_their_reason) {
         // when the store kept it.
         EXPECT_EQ(node.info().durable_seq, 0U);
         EXPECT_EQ(node.sim().log().size(), fault.log_size_after);
-        EXPECT_EQ(node.kernel()->completions.in_flight(), 0U);
+        EXPECT_EQ(KernelTestProbe::completions(node.kernel()).in_flight(), 0U);
     }
 }
 
@@ -581,9 +583,10 @@ TEST(KernelLifecycle, recovery_requests_use_boot_epoch_0) {
 
     Recorder recorder;
     HoldingPort port;
-    ASSERT_EQ(node.kernel()->completions.issue(node.info().boot_epoch, &Recorder::handle, &recorder,
-                                               &HoldingPort::call, &port),
-              ayni::kernel::IssueResult::in_flight);
+    ASSERT_EQ(
+        KernelTestProbe::completions(node.kernel())
+            .issue(node.info().boot_epoch, &Recorder::handle, &recorder, &HoldingPort::call, &port),
+        ayni::kernel::IssueResult::in_flight);
     ASSERT_EQ(port.held.size(), 1U);
     EXPECT_EQ(port.held[0].attempt.boot_epoch, batches * 3U + 1U);
     EXPECT_EQ(port.held[0].attempt.request_id, attempts.size() + 1U);
@@ -620,8 +623,8 @@ TEST(KernelLifecycle, recovery_waits_for_a_free_slot_without_spinning) {
     Recorder recorder;
     HoldingPort port;
     for (int request = 0; request < 4; ++request) { // completion_slot_count
-        ASSERT_EQ(node.kernel()->completions.issue(0, &Recorder::handle, &recorder,
-                                                   &HoldingPort::call, &port),
+        ASSERT_EQ(KernelTestProbe::completions(node.kernel())
+                      .issue(0, &Recorder::handle, &recorder, &HoldingPort::call, &port),
                   ayni::kernel::IssueResult::in_flight);
     }
     ayni_step_report_v1 report = node.step();
@@ -888,8 +891,9 @@ TEST(KernelLifecycle, step_reports_durable_seq_when_the_report_covers_it) {
 
 void post_four(Node &node, Recorder &recorder, HoldingPort &port) {
     for (int request = 0; request < 4; ++request) {
-        ASSERT_EQ(node.kernel()->completions.issue(node.info().boot_epoch, &Recorder::handle,
-                                                   &recorder, &HoldingPort::call, &port),
+        ASSERT_EQ(KernelTestProbe::completions(node.kernel())
+                      .issue(node.info().boot_epoch, &Recorder::handle, &recorder,
+                             &HoldingPort::call, &port),
                   ayni::kernel::IssueResult::in_flight);
     }
     port.post_all();

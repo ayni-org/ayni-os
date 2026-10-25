@@ -3,8 +3,8 @@
 // covered by completion_pool_test.cpp; start, step, shutdown and kernel info
 // by kernel_lifecycle_test.cpp.
 
-#include "kernel/kernel_state.h"
 #include "kernel_node.h"
+#include "kernel_test_probe.h"
 
 #include <ayni/ayni.h>
 #include <ayni/draft/kernel_api.h>
@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -187,15 +189,16 @@ TEST_F(KernelApi, create_copies_host_table_before_return) {
         ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
         std::memset(&host, 0xA5, sizeof(host));
     }
-    EXPECT_EQ(kernel->host.struct_size, sizeof(ayni_host_v1));
-    EXPECT_EQ(kernel->host.ctx, &ctx_target);
-    ASSERT_EQ(kernel->host.monotonic_now_us, &fixed_clock);
-    EXPECT_EQ(kernel->host.monotonic_now_us(kernel->host.ctx), 42U);
-    EXPECT_EQ(kernel->host.wake, &no_wake);
-    EXPECT_EQ(kernel->host.ingress_lock, &no_lock);
-    EXPECT_EQ(kernel->host.ingress_unlock, &no_unlock);
-    EXPECT_EQ(kernel->host.storage_append, nullptr);
-    EXPECT_EQ(kernel->host.storage_read_prefix, nullptr);
+    EXPECT_EQ(KernelTestProbe::host(kernel).struct_size, sizeof(ayni_host_v1));
+    EXPECT_EQ(KernelTestProbe::host(kernel).ctx, &ctx_target);
+    ASSERT_EQ(KernelTestProbe::host(kernel).monotonic_now_us, &fixed_clock);
+    EXPECT_EQ(KernelTestProbe::host(kernel).monotonic_now_us(KernelTestProbe::host(kernel).ctx),
+              42U);
+    EXPECT_EQ(KernelTestProbe::host(kernel).wake, &no_wake);
+    EXPECT_EQ(KernelTestProbe::host(kernel).ingress_lock, &no_lock);
+    EXPECT_EQ(KernelTestProbe::host(kernel).ingress_unlock, &no_unlock);
+    EXPECT_EQ(KernelTestProbe::host(kernel).storage_append, nullptr);
+    EXPECT_EQ(KernelTestProbe::host(kernel).storage_read_prefix, nullptr);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
@@ -206,8 +209,8 @@ TEST_F(KernelApi, create_copies_storage_ports) {
     host.storage_read_prefix = &reject_read;
     ayni_kernel_t *kernel = nullptr;
     ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
-    EXPECT_EQ(kernel->host.storage_append, &reject_append);
-    EXPECT_EQ(kernel->host.storage_read_prefix, &reject_read);
+    EXPECT_EQ(KernelTestProbe::host(kernel).storage_append, &reject_append);
+    EXPECT_EQ(KernelTestProbe::host(kernel).storage_read_prefix, &reject_read);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
@@ -241,8 +244,8 @@ TEST_F(KernelApi, host_table_without_storage_ports_is_accepted) {
     host.struct_size = offsetof(ayni_host_v1, storage_append);
     ayni_kernel_t *kernel = nullptr;
     ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
-    EXPECT_EQ(kernel->host.storage_append, nullptr);
-    EXPECT_EQ(kernel->host.storage_read_prefix, nullptr);
+    EXPECT_EQ(KernelTestProbe::host(kernel).storage_append, nullptr);
+    EXPECT_EQ(KernelTestProbe::host(kernel).storage_read_prefix, nullptr);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 

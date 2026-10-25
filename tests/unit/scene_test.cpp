@@ -3,6 +3,8 @@
 #include "work_node.h"
 #include <ayni/scenes.h>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 class SceneApi : public ::testing::Test {
@@ -131,7 +133,7 @@ TEST_F(SceneApi, original_definition_record_round_trip_preserves_constraints_and
     run();
     ASSERT_EQ(change(1, 0, true).status, AYNI_OK);
     // White-box: one codec round trip checks stored representation, not a recovery campaign.
-    const auto &scenes = node.kernel()->work.scenes;
+    const auto &scenes = KernelTestProbe::work(node.kernel()).scenes;
     const auto &state = scenes.state(0);
     std::vector<uint8_t> bytes(ayni::authority::scene_record_size(state));
     ayni::authority::write_scene_record(state, scenes.state_definition(0), bytes.data());

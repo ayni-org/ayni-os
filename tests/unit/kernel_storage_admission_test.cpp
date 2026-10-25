@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 
 using namespace ayni::test;
@@ -51,8 +53,8 @@ TEST(StorageAdmission, full_medium_refuses_new_state_but_keeps_the_original_comm
     ASSERT_EQ(accepted.status, AYNI_OK);
     // White-box: refusal must neither apply a transition nor allocate an
     // object, even though the first command has not reached storage yet.
-    const uint64_t next_commit = work.kernel()->work.transitions.next_commit_seq();
-    const uint32_t goals = work.kernel()->work.goals.size();
+    const uint64_t next_commit = KernelTestProbe::work(work.kernel()).transitions.next_commit_seq();
+    const uint32_t goals = KernelTestProbe::work(work.kernel()).goals.size();
     work.node().sim().set_storage_capacity(0);
     const auto repeated = create(work, body, 21);
     EXPECT_EQ(repeated.status, AYNI_OK);
@@ -61,8 +63,8 @@ TEST(StorageAdmission, full_medium_refuses_new_state_but_keeps_the_original_comm
     const auto refused = create(work, body, 22);
     EXPECT_EQ(refused.status, AYNI_STORAGE_FAILED);
     EXPECT_EQ(refused.error.reason, AYNI_REASON_STORAGE_SPACE);
-    EXPECT_EQ(work.kernel()->work.transitions.next_commit_seq(), next_commit);
-    EXPECT_EQ(work.kernel()->work.goals.size(), goals);
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).transitions.next_commit_seq(), next_commit);
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).goals.size(), goals);
     EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     work.node().sim().set_storage_capacity(UINT64_MAX);
 }
@@ -85,18 +87,18 @@ TEST(StorageAdmission, a_retained_principal_window_refuses_a_new_row_before_chan
     // White-box: recovery retained the unregistered former owner's one
     // command row. It must not be overwritten or dereferenced as a new row.
     const ayni_object_ref_v1 old_object{0, 99, 1, AYNI_OBJECT_GOAL};
-    work.kernel()->work.commands.insert(
-        {owner_id + 1U, 1, 100, 1, AYNI_INTENT_GOAL_CREATE, old_object});
-    const uint64_t next_commit = work.kernel()->work.transitions.next_commit_seq();
+    KernelTestProbe::work(work.kernel())
+        .commands.insert({owner_id + 1U, 1, 100, 1, AYNI_INTENT_GOAL_CREATE, old_object});
+    const uint64_t next_commit = KernelTestProbe::work(work.kernel()).transitions.next_commit_seq();
     const auto refused = create(work, folder(work), 1);
     EXPECT_EQ(refused.status, AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(refused.error.reason, AYNI_REASON_NONE);
     EXPECT_EQ(refused.error.object.kind, AYNI_OBJECT_PRINCIPAL);
     EXPECT_EQ(refused.error.object.id, owner_id);
-    EXPECT_EQ(work.kernel()->work.transitions.next_commit_seq(), next_commit);
-    EXPECT_EQ(work.kernel()->work.goals.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).transitions.next_commit_seq(), next_commit);
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).goals.size(), 0U);
     const ayni::kernel::CommandMapping *retained = nullptr;
-    EXPECT_EQ(work.kernel()->work.commands.find(owner_id + 1U, 1, 100, retained),
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).commands.find(owner_id + 1U, 1, 100, retained),
               ayni::kernel::CommandTable::Lookup::retried);
     ASSERT_NE(retained, nullptr);
     EXPECT_EQ(retained->object.id, 99U);
@@ -122,19 +124,19 @@ TEST(StorageAdmission, a_log_limit_without_room_to_compact_is_refused) {
 // leaves its batch in the journal, so the compaction waits for the journal
 // to drain. No new transition starts meanwhile (ADR-0027 decision 4).
 bool holds_while_compaction_waits(WorkNode &work) {
-    if (!work.kernel()->budget.compaction_due()) {
+    if (!KernelTestProbe::budget(work.kernel()).compaction_due()) {
         return false;
     }
-    EXPECT_FALSE(work.kernel()->log.idle());
-    EXPECT_FALSE(work.kernel()->maintenance.active());
-    const uint64_t next_commit = work.kernel()->work.transitions.next_commit_seq();
+    EXPECT_FALSE(KernelTestProbe::log(work.kernel()).idle());
+    EXPECT_FALSE(KernelTestProbe::maintenance(work.kernel()).active());
+    const uint64_t next_commit = KernelTestProbe::work(work.kernel()).transitions.next_commit_seq();
     const auto refused = create(work, folder(work), 0);
     EXPECT_EQ(refused.status, AYNI_BUSY);
     EXPECT_EQ(refused.error.reason, AYNI_REASON_STORAGE_BACKLOG);
-    EXPECT_EQ(work.kernel()->work.transitions.next_commit_seq(), next_commit);
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).transitions.next_commit_seq(), next_commit);
     settle(work);
-    EXPECT_TRUE(work.kernel()->maintenance.done());
-    EXPECT_FALSE(work.kernel()->budget.compaction_due());
+    EXPECT_TRUE(KernelTestProbe::maintenance(work.kernel()).done());
+    EXPECT_FALSE(KernelTestProbe::budget(work.kernel()).compaction_due());
     EXPECT_EQ(create(work, folder(work), 0).status, AYNI_OK);
     return true;
 }

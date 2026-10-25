@@ -19,6 +19,8 @@
 #include <set>
 #include <vector>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 
@@ -150,7 +152,7 @@ class AuthorityWork {
         EXPECT_EQ(work.submit(intent).status, AYNI_OK);
     }
     uint64_t bind(uint64_t goal_id, uint64_t generic_id) {
-        auto &model = work.kernel()->work;
+        auto &model = KernelTestProbe::work(work.kernel());
         uint32_t goal_index = 0;
         uint32_t generic_index = 0;
         EXPECT_TRUE(model.goals.find(goal_id, goal_index));
@@ -173,9 +175,9 @@ class AuthorityWork {
                                           goal_id};
         ayni::authority::GrantTable::BatchPlacement placement{};
         ayni::authority::GrantTable::Admission plan{};
-        const ayni::authority::GrantContext context{model.ids.boot_epoch(),
-                                                    work.node().sim().now_us(),
-                                                    work.kernel()->log.durable_seq(), goal_id};
+        const ayni::authority::GrantContext context{
+            model.ids.boot_epoch(), work.node().sim().now_us(),
+            KernelTestProbe::log(work.kernel()).durable_seq(), goal_id};
         EXPECT_EQ(
             model.grants.check_goal_create(request, need.scope, context, placement, plan).status,
             AYNI_OK);
@@ -354,8 +356,8 @@ TEST(GoalRequirements, authorization_pause_is_sticky_and_preserves_user_revision
     // White-box setup: E2b has no reauthorization entry point yet. Invoke the
     // real pause transition while the saved explicit-zero ceiling stays valid.
     uint32_t index = 0;
-    ASSERT_TRUE(node.work.kernel()->work.goals.find(id, index));
-    node.work.kernel()->work.pause_goal_authority(index);
+    ASSERT_TRUE(KernelTestProbe::work(node.work.kernel()).goals.find(id, index));
+    KernelTestProbe::work(node.work.kernel()).pause_goal_authority(index);
     const auto info = node.authority(id);
     EXPECT_EQ(info.phase, AYNI_GOAL_AUTHORITY_PAUSED);
     EXPECT_EQ(info.effective_reason, AYNI_REASON_GOAL_AUTHORITY_PAUSED);
@@ -382,8 +384,8 @@ TEST(GoalRequirements, exporter_failure_is_sticky_and_refusal_allocates_nothing)
     const auto next = node.create();
     ASSERT_EQ(next.status, AYNI_OK);
     // White-box observation only: no hidden work or consumed identity on refusal.
-    EXPECT_EQ(node.work.kernel()->work.goals.size(), 1U);
-    EXPECT_EQ(node.work.kernel()->work.goal_authority.at(0).count, 0U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).goals.size(), 1U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).goal_authority.at(0).count, 0U);
     EXPECT_EQ(node.calls, 2U);
 }
 
@@ -413,7 +415,8 @@ TEST(GoalRequirements, invalid_exports_and_reentry_preserve_the_original_status)
         };
         EXPECT_EQ(node.create().status, status);
     }
-    EXPECT_EQ(node.work.kernel()->work.goals.size(), 0U); // White-box absence after refusals
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).goals.size(),
+              0U); // White-box absence after refusals
 }
 
 // ADR-0037: every query failure preserves the complete caller-owned output.
@@ -521,13 +524,13 @@ TEST(WorkAuthorityCleanup, revoked_ready_work_stops_writing_and_other_goals_run)
     info.struct_size = sizeof(info);
     ASSERT_EQ(ayni_get_task_authority(node.work.kernel(), task, &info), AYNI_OK);
     EXPECT_EQ(info.phase, AYNI_TASK_AUTHORITY_PAUSED);
-    const auto before = node.work.kernel()->work.transitions.latest().commit_seq;
+    const auto before = KernelTestProbe::work(node.work.kernel()).transitions.latest().commit_seq;
     for (unsigned round = 0; round < 8U; ++round) {
         const auto report = node.work.node().step(1);
         EXPECT_EQ(report.items_done, 0U);
         EXPECT_EQ(report.more_ready, 0U);
     }
-    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, before);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).transitions.latest().commit_seq, before);
 }
 
 // C-AUTH-026/030 and ADR-0038: storage backpressure delays durable cleanup,
@@ -588,7 +591,7 @@ TEST(WorkAuthorityCleanup, policy_and_user_holds_survive_authority_pause_and_res
     EXPECT_EQ(node.work.task(task).revision, before.revision);
     EXPECT_EQ(node.work.task(task).hold_reason, before.hold_reason);
     EXPECT_EQ(node.authority(user.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     uint32_t goal_index = 0;
     ASSERT_TRUE(model.goals.find(user.result.object.id, goal_index));
     EXPECT_EQ(model.goals.at(goal_index).lifecycle, AYNI_GOAL_PAUSED);
@@ -599,8 +602,8 @@ TEST(WorkAuthorityCleanup, policy_and_user_holds_survive_authority_pause_and_res
     ASSERT_EQ(restored.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     // White-box: checkpoint bytes are deliberately private to the strategy.
     uint32_t task_index = 0;
-    ASSERT_TRUE(restored.work.kernel()->work.tasks.find(task, task_index));
-    const auto &tasks = restored.work.kernel()->work.tasks;
+    ASSERT_TRUE(KernelTestProbe::work(restored.work.kernel()).tasks.find(task, task_index));
+    const auto &tasks = KernelTestProbe::work(restored.work.kernel()).tasks;
     EXPECT_EQ(tasks.at(task_index).hold_reason, before.hold_reason);
     EXPECT_EQ(tasks.at(task_index).step_count, 1U);
     ASSERT_EQ(tasks.checkpoint(task_index).size, 1U);
@@ -627,7 +630,7 @@ TEST(WorkAuthorityCleanup, interrupted_scan_keeps_its_frontier_and_later_request
     node.work.node().recover();
     node.revoke(grant.result.object.id);
     node.work.node().recover();
-    auto &scan = node.work.kernel()->work.authority_cleanup;
+    auto &scan = KernelTestProbe::work(node.work.kernel()).authority_cleanup;
     // D's Grant-descendant cleanup has its own budget before the work scan.
     for (unsigned round = 0; round < 16U && scan.record().after_goal_id == 0U; ++round) {
         node.work.node().step(1);
@@ -648,7 +651,7 @@ TEST(WorkAuthorityCleanup, interrupted_scan_keeps_its_frontier_and_later_request
     node.work.node().power_cut_and_start(ayni::hosts::sim::CutAppend::lost);
     node.work.node().recover();
     ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    const auto recovered = node.work.kernel()->work.authority_cleanup.record();
+    const auto recovered = KernelTestProbe::work(node.work.kernel()).authority_cleanup.record();
     EXPECT_EQ(recovered.after_goal_id, persisted.after_goal_id);
     EXPECT_EQ(recovered.through_goal_id, persisted.through_goal_id);
     EXPECT_EQ(recovered.requested_through, persisted.requested_through);
@@ -657,7 +660,7 @@ TEST(WorkAuthorityCleanup, interrupted_scan_keeps_its_frontier_and_later_request
     for (const auto id : goals) {
         EXPECT_EQ(node.authority(id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
     }
-    EXPECT_FALSE(node.work.kernel()->work.authority_cleanup.ready());
+    EXPECT_FALSE(KernelTestProbe::work(node.work.kernel()).authority_cleanup.ready());
     EXPECT_EQ(node.authority(later.result.object.id).phase, AYNI_GOAL_AUTHORITY_AUTHORIZED);
 }
 
@@ -681,7 +684,7 @@ TEST(WorkAuthorityCleanup, a_recovery_scan_keeps_catalog_holds_volatile) {
             source.work.node().sim().durable_storage();
         incompatible.run();
         ASSERT_EQ(incompatible.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
-        ASSERT_TRUE(incompatible.work.kernel()->work.authority_cleanup.ready());
+        ASSERT_TRUE(KernelTestProbe::work(incompatible.work.kernel()).authority_cleanup.ready());
         incompatible.advance_work();
         EXPECT_EQ(incompatible.authority(created.result.object.id).phase,
                   AYNI_GOAL_AUTHORITY_AUTHORIZED);
@@ -748,7 +751,7 @@ TEST(GoalRequirements, parent_generation_change_immediately_denies_child_consump
     ASSERT_EQ(parent.status, AYNI_OK);
     const auto child = node.create(AYNI_TRIGGER_ONCE, parent.result.object.id);
     ASSERT_EQ(child.status, AYNI_OK);
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.goals.find(parent.result.object.id, index));
     auto record = model.goal_authority.at(index);
@@ -774,7 +777,7 @@ TEST(TaskAuthorityApi, a_task_cannot_substitute_its_selected_grant_revision) {
     ASSERT_EQ(goal.status, AYNI_OK);
     node.work.node().step(1);
     const auto id = node.work.goal(goal.result.object.id).last_task_id;
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.tasks.find(id, index));
     auto record = model.task_authority.at(model.tasks.at(index).slot);
@@ -832,7 +835,7 @@ TEST(TaskAuthorityApi, live_task_references_and_unconfirmed_terminal_state_preve
     node.work.node().sim().advance_us(duration_us);
     node.work.node().step(1);
     node.work.node().recover();
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.goals.find(goal.result.object.id, index));
     auto saved = model.goal_authority.at(index);
@@ -843,7 +846,9 @@ TEST(TaskAuthorityApi, live_task_references_and_unconfirmed_terminal_state_preve
     saved.requirements[0].source_domain = {domain.data(), static_cast<uint32_t>(domain.size())};
     saved.requirements[0].scope = {scope.data(), static_cast<uint32_t>(scope.size())};
     model.goal_authority.clear(index);
-    EXPECT_TRUE(model.grant_reclaim_exclusions(node.work.kernel()->log.durable_seq()).contains(0));
+    EXPECT_TRUE(
+        model.grant_reclaim_exclusions(KernelTestProbe::log(node.work.kernel()).durable_seq())
+            .contains(0));
     EXPECT_EQ(node.grant().status, AYNI_CAPACITY_EXCEEDED);
     ASSERT_EQ(model.goal_authority.install_validated(index, saved), AYNI_OK);
     ASSERT_EQ(node.work.change(AYNI_INTENT_GOAL_CANCEL, goal.result.object.id).status, AYNI_OK);
@@ -877,8 +882,8 @@ TEST(GoalRequirements, deadline_crossed_inside_strategy_discards_all_returned_pr
     EXPECT_EQ(node.work.task(task).step_count, 0U);
     // White-box: the ABI intentionally does not expose private checkpoint bytes.
     uint32_t index = 0;
-    ASSERT_TRUE(node.work.kernel()->work.tasks.find(task, index));
-    EXPECT_EQ(node.work.kernel()->work.tasks.checkpoint(index).size, 0U);
+    ASSERT_TRUE(KernelTestProbe::work(node.work.kernel()).tasks.find(task, index));
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).tasks.checkpoint(index).size, 0U);
     EXPECT_EQ(node.authority(created.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
 }
 
@@ -1030,7 +1035,7 @@ TEST(GoalApproval, fills_only_original_missing_items_and_retries_without_new_gra
     ASSERT_EQ(approved.status, AYNI_OK);
     EXPECT_EQ(approved.result.object.revision, proposed.result.object.revision + 1U);
     EXPECT_EQ(node.calls, calls);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 2U);
     EXPECT_EQ(node.requirement(id, 0).grant_id, generic.result.object.id);
     const auto bound = node.requirement(id, 1).grant_id;
     ASSERT_NE(bound, 0U);
@@ -1044,7 +1049,7 @@ TEST(GoalApproval, fills_only_original_missing_items_and_retries_without_new_gra
     const auto retry = node.work.submit(intent);
     ASSERT_EQ(retry.status, AYNI_OK);
     EXPECT_EQ(retry.result.commit_seq, approved.result.commit_seq);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 2U);
     node.work.node().recover();
     EXPECT_EQ(node.authority(id).missing_count, 0U);
     node.revoke(generic.result.object.id);
@@ -1063,10 +1068,11 @@ TEST(GoalApproval, insufficient_batch_capacity_and_invalid_approval_leave_the_pr
     ApprovalRequest request(node.work.kernel(), id);
     auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
     intent.command_id = node.command++;
-    const auto stamp = node.work.kernel()->work.transitions.latest();
+    const auto stamp = KernelTestProbe::work(node.work.kernel()).transitions.latest();
     EXPECT_EQ(node.work.submit(intent).status, AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), 0U);
-    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, stamp.commit_seq);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).transitions.latest().commit_seq,
+              stamp.commit_seq);
     EXPECT_EQ(node.work.goal(id).lifecycle, AYNI_GOAL_PROPOSED);
     EXPECT_EQ(node.requirement(id, 0).grant_id, 0U);
     EXPECT_EQ(node.requirement(id, 1).grant_id, 0U);
@@ -1098,9 +1104,9 @@ TEST(GoalApproval, a_lost_original_dependency_refuses_approval_without_reselecti
     node.work.node().recover();
     auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
     intent.command_id = node.command++;
-    const auto before = node.work.kernel()->work.grants.size();
+    const auto before = KernelTestProbe::work(node.work.kernel()).grants.size();
     EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), before);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), before);
     EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id, first.result.object.id);
     EXPECT_EQ(node.requirement(goal.result.object.id, 1).grant_id, 0U);
 }
@@ -1137,7 +1143,7 @@ TEST(GoalApproval, changed_echo_is_refused_and_exact_retry_survives_terminal_tar
     ASSERT_EQ(retry.status, AYNI_OK);
     EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
     EXPECT_EQ(retry.result.object.id, accepted.result.object.id);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 1U);
 }
 
 // ADR-0037: activation anchors the trigger, never the original expiry or a
@@ -1327,14 +1333,15 @@ TEST(GoalApproval, interrupted_append_recovers_all_missing_items_and_mapping_or_
         node.work.node().recover();
         ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
         node.work.reopen_session();
-        EXPECT_EQ(node.work.kernel()->work.grants.size(), cut == CutAppend::stored ? 2U : 0U);
+        EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(),
+                  cut == CutAppend::stored ? 2U : 0U);
         EXPECT_EQ(node.authority(goal.result.object.id).phase, cut == CutAppend::stored
                                                                    ? AYNI_GOAL_AUTHORITY_AUTHORIZED
                                                                    : AYNI_GOAL_AUTHORITY_PROPOSED);
         intent.session_id = node.work.session();
         const auto retry = node.work.submit(intent);
         ASSERT_EQ(retry.status, AYNI_OK);
-        EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+        EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 2U);
         if (cut == CutAppend::stored) {
             EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
         } else {
@@ -1372,7 +1379,7 @@ TEST(GoalApproval, failed_and_unknown_appends_reload_before_retrying_the_complet
             node.work.node().sim().complete_storage();
             if (node.work.node().info().boot_epoch > old_boot &&
                 node.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
-                node.work.kernel()->log.idle()) {
+                KernelTestProbe::log(node.work.kernel()).idle()) {
                 break;
             }
             if (report.more_ready == 0U && node.work.node().sim().pending_storage() == 0U &&
@@ -1385,12 +1392,12 @@ TEST(GoalApproval, failed_and_unknown_appends_reload_before_retrying_the_complet
         ASSERT_GT(node.work.node().info().boot_epoch, old_boot);
         ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
         node.work.reopen_session();
-        EXPECT_EQ(node.work.kernel()->work.grants.size(),
+        EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(),
                   fault == StorageFault::unknown_persisted ? 2U : 0U);
         intent.session_id = node.work.session();
         const auto retry = node.work.submit(intent);
         ASSERT_EQ(retry.status, AYNI_OK);
-        EXPECT_EQ(node.work.kernel()->work.grants.size(), 2U);
+        EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 2U);
         if (fault == StorageFault::unknown_persisted) {
             EXPECT_EQ(retry.result.commit_seq, accepted.result.commit_seq);
         } else {
@@ -1407,7 +1414,7 @@ TEST(GoalApproval, changed_same_version_domain_refuses_original_proposal) {
     const auto goal = node.create(AYNI_TRIGGER_NONE);
     ASSERT_EQ(goal.status, AYNI_OK);
     ApprovalRequest request(node.work.kernel(), goal.result.object.id);
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     const auto domain = model.capabilities.domain_view(0);
     Range wider(0, 200);
     const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
@@ -1448,7 +1455,7 @@ TEST(GoalApproval, expired_parent_authority_refuses_child_before_autonomous_paus
     intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
     intent.command_id = node.command++;
     EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 1U);
     EXPECT_EQ(node.work.goal(child.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
 }
 
@@ -1461,7 +1468,7 @@ TEST(GoalApproval, insufficient_ids_leave_all_missing_items_and_last_id_untouche
     const auto goal = node.create(AYNI_TRIGGER_NONE);
     ASSERT_EQ(goal.status, AYNI_OK);
     ApprovalRequest request(node.work.kernel(), goal.result.object.id);
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     model.ids.start(model.ids.boot_epoch(), ayni::foundation::max_id_sequence);
     auto intent = node.work.intent(AYNI_INTENT_GOAL_APPROVE, &request.body, request.info.revision);
     intent.command_id = node.command++;
@@ -1484,7 +1491,7 @@ TEST(GoalApproval, stale_lower_revision_and_exhausted_revision_have_no_effect) {
         const auto goal = node.create(AYNI_TRIGGER_NONE);
         ASSERT_EQ(goal.status, AYNI_OK);
         ApprovalRequest request(node.work.kernel(), goal.result.object.id);
-        auto &model = node.work.kernel()->work;
+        auto &model = KernelTestProbe::work(node.work.kernel());
         uint32_t index = 0;
         ASSERT_TRUE(model.goals.find(goal.result.object.id, index));
         const_cast<ayni::work::Goal &>(model.goals.at(index)).revision = revision;
@@ -1522,7 +1529,7 @@ TEST(GoalApproval, maximum_parameters_fit_exact_command_storage_and_retry) {
     ASSERT_EQ(accepted.status, AYNI_OK);
     node.work.node().recover();
     EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
-    EXPECT_EQ(node.work.kernel()->work.grants.size(), 1U);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), 1U);
 }
 
 // C-COMMIT-003/005 and ADR-0037: snapshot freeze refuses the whole approval
@@ -1604,7 +1611,7 @@ TEST(GoalApproval, real_snapshot_freeze_preserves_proposal_until_atomic_approval
     node.work.node().recover();
     EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(node.requirement(goal.result.object.id, 0).grant_id,
-              node.work.kernel()->work.grants.at(0).grant_id);
+              KernelTestProbe::work(node.work.kernel()).grants.at(0).grant_id);
 }
 
 // ADR-0038: absent admission never means the same thing as explicit zero needs.
@@ -1636,7 +1643,7 @@ TEST(TaskAuthorityApi, zero_requirements_are_admitted_and_missing_evidence_is_re
 
     // White-box: emulate unavailable admission during restore, without
     // persisting the deliberately inconsistent intermediate fixture.
-    auto &work = node.work.kernel()->work;
+    auto &work = KernelTestProbe::work(node.work.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(work.tasks.find(task_id, index));
     const auto slot = work.tasks.at(index).slot;
@@ -1718,7 +1725,7 @@ TEST(GoalReauthorization, stale_cas_echo_and_missing_coverage_publish_nothing) {
     auto intent =
         node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
     intent.command_id = node.command++;
-    const auto before = node.work.kernel()->work.transitions.latest();
+    const auto before = KernelTestProbe::work(node.work.kernel()).transitions.latest();
     EXPECT_EQ(node.work.submit(intent).status, AYNI_DENIED);
     --request.body.expected_authority_commit_seq;
     EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
@@ -1730,7 +1737,8 @@ TEST(GoalReauthorization, stale_cas_echo_and_missing_coverage_publish_nothing) {
     --request.body.original.expiry_us;
     ++intent.expected_revision;
     EXPECT_EQ(node.work.submit(intent).status, AYNI_REVISION_CONFLICT);
-    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).transitions.latest().commit_seq,
+              before.commit_seq);
     EXPECT_EQ(node.authority(goal.result.object.id).phase, AYNI_GOAL_AUTHORITY_PAUSED);
 }
 
@@ -1856,7 +1864,7 @@ TEST(GoalReauthorization, preserves_user_pause_policy_failure_steps_and_checkpoi
     EXPECT_EQ(after.step_count, before.step_count);
     EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PAUSED);
     uint32_t index = 0;
-    const auto &tasks = node.work.kernel()->work.tasks;
+    const auto &tasks = KernelTestProbe::work(node.work.kernel()).tasks;
     ASSERT_TRUE(tasks.find(task, index));
     ASSERT_EQ(tasks.checkpoint(index).size, 1U);
     EXPECT_EQ(tasks.checkpoint(index).data[0], 42U);
@@ -1881,7 +1889,7 @@ TEST(GoalReauthorization, exhausted_task_revision_refuses_whole_transaction) {
     node.work.node().recover();
     // White-box extreme revision setup; the ABI has no artificial revision setter.
     uint32_t index = 0;
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     ASSERT_TRUE(model.tasks.find(task, index));
     const_cast<ayni::work::Task &>(model.tasks.at(index)).revision = UINT32_MAX;
     ReauthorizationRequest request(node.work.kernel(), goal.result.object.id);
@@ -2141,7 +2149,7 @@ TEST(GoalReauthorization, failed_or_unknown_append_preserves_atomic_recovery_and
             node.work.node().sim().complete_storage();
             if (node.work.node().info().boot_epoch > boot &&
                 node.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
-                node.work.kernel()->log.idle()) {
+                KernelTestProbe::log(node.work.kernel()).idle()) {
                 break;
             }
             if (report.more_ready == 0U && node.work.node().sim().pending_storage() == 0U &&
@@ -2423,10 +2431,11 @@ TEST(GoalReauthorization, own_goal_expiry_refuses_before_autonomous_cleanup) {
     auto intent =
         node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
     intent.command_id = node.command++;
-    const auto before = node.work.kernel()->work.transitions.latest();
+    const auto before = KernelTestProbe::work(node.work.kernel()).transitions.latest();
     node.work.node().sim().advance_us(AYNI_TRIGGER_PERIOD_MIN_US);
     EXPECT_EQ(node.work.submit(intent).status, AYNI_INVALID_STATE);
-    EXPECT_EQ(node.work.kernel()->work.transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(KernelTestProbe::work(node.work.kernel()).transitions.latest().commit_seq,
+              before.commit_seq);
     EXPECT_EQ(node.authority(goal.result.object.id).commit_seq,
               request.body.expected_authority_commit_seq);
     EXPECT_TRUE(node.work.strategy().seen.empty());
@@ -2890,7 +2899,7 @@ TEST(WorkAuthorityRestart, full_grant_table_and_deep_shared_cohort_have_bounded_
         goal_id = created.result.object.id;
         node.work.node().recover();
     }
-    auto &model = node.work.kernel()->work;
+    auto &model = KernelTestProbe::work(node.work.kernel());
     uint32_t goal_index = 0;
     ASSERT_TRUE(model.goals.find(goal_id, goal_index));
     ASSERT_EQ(model
@@ -2914,8 +2923,8 @@ TEST(WorkAuthorityRestart, full_grant_table_and_deep_shared_cohort_have_bounded_
         ASSERT_TRUE(model.inherit_task_authority(task_id, stamp));
     }
     ASSERT_TRUE(node.work.strategy().seen.empty());
-    ASSERT_EQ(node.work.kernel()->work.tasks.size(), AYNI_TASK_CAPACITY_MAX);
-    ASSERT_EQ(node.work.kernel()->work.grants.size(), AYNI_GRANT_CAPACITY_MAX);
+    ASSERT_EQ(KernelTestProbe::work(node.work.kernel()).tasks.size(), AYNI_TASK_CAPACITY_MAX);
+    ASSERT_EQ(KernelTestProbe::work(node.work.kernel()).grants.size(), AYNI_GRANT_CAPACITY_MAX);
     const auto started = std::chrono::steady_clock::now();
     EXPECT_TRUE(ayni::kernel::awaits_decision(model, node.work.node().info().durable_seq));
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(

@@ -10,6 +10,8 @@
 #include <ayni/hosts/sim.h>
 #include <gtest/gtest.h>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 using ayni::hosts::sim::StorageFault;
@@ -31,9 +33,10 @@ void settle(WorkNode &work) {
         tick(work);
         // White-box: a stable RUNNING writer owns no pending completions.
         if (work.node().lifecycle() == AYNI_LIFECYCLE_RESTRICTED ||
-            (work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING && work.kernel()->log.idle() &&
-             work.kernel()->completions.in_flight() == 0U &&
-             !work.kernel()->maintenance.active())) {
+            (work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
+             KernelTestProbe::log(work.kernel()).idle() &&
+             KernelTestProbe::completions(work.kernel()).in_flight() == 0U &&
+             !KernelTestProbe::maintenance(work.kernel()).active())) {
             return;
         }
     }
@@ -92,7 +95,8 @@ TEST(KernelFence, exhausted_retries_reload_once_and_close_old_sessions) {
     const uint64_t old_epoch = work.node().info().boot_epoch;
     // ADR-0038: the same queue instance survives storage reload, even at its
     // u64 order boundary; only a new process may establish a new incarnation.
-    ayni::kernel::EventIngressTestPeer::exhaust_input_order(work.kernel()->ingress);
+    ayni::kernel::EventIngressTestPeer::exhaust_input_order(
+        KernelTestProbe::ingress(work.kernel()));
     const auto body = folder(work);
     const auto accepted = work.create(body);
     ASSERT_EQ(accepted.status, AYNI_OK);
@@ -102,8 +106,8 @@ TEST(KernelFence, exhausted_retries_reload_once_and_close_old_sessions) {
     settle(work);
     ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
     EXPECT_EQ(work.node().info().boot_epoch, old_epoch + 1U);
-    EXPECT_EQ(work.kernel()->ingress.resume_boundary().incarnation, old_epoch);
-    EXPECT_EQ(work.kernel()->ingress.resume_boundary().through, UINT64_MAX);
+    EXPECT_EQ(KernelTestProbe::ingress(work.kernel()).resume_boundary().incarnation, old_epoch);
+    EXPECT_EQ(KernelTestProbe::ingress(work.kernel()).resume_boundary().through, UINT64_MAX);
     const ayni_event_v1 event{sizeof(event), AYNI_EVENT_LOCAL_INPUT, text("button")};
     EXPECT_EQ(ayni_post_event(work.kernel(), &event), AYNI_CAPACITY_EXCEEDED);
     ayni_goal_info_v1 info{};
@@ -153,7 +157,7 @@ TEST(KernelFence, durable_seq_never_falls_while_a_fence_reloads) {
         EXPECT_GE(work.node().info().durable_seq, durable) << round;
         reloaded = reloaded || work.node().lifecycle() == AYNI_LIFECYCLE_RECOVERING;
         if (reloaded && work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING &&
-            work.kernel()->log.idle()) {
+            KernelTestProbe::log(work.kernel()).idle()) {
             break;
         }
     }

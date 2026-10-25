@@ -3,10 +3,11 @@
 // matching across slot reuse, and posts that never depend on queue space.
 
 #include "kernel/completion/completion_pool.h"
-#include "kernel/kernel_state.h"
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>
+
+#include "kernel_test_probe.h"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +20,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+using ayni::kernel::KernelTestProbe;
 
 namespace {
 
@@ -520,22 +523,24 @@ TEST(KernelCompletions, posts_succeed_while_the_event_queue_is_full) {
     FakePort port;
     Applied applied;
     for (int request = 0; request < 4; ++request) {
-        ASSERT_EQ(kernel->completions.issue(boot_epoch, &Applied::handle, &applied, &FakePort::call,
-                                            &port),
+        ASSERT_EQ(KernelTestProbe::completions(kernel).issue(boot_epoch, &Applied::handle, &applied,
+                                                             &FakePort::call, &port),
                   IssueResult::in_flight);
     }
     for (const auto &[attempt, completion] : port.accepted) {
         const ayni_completion_result_v1 result = result_for(attempt, 0);
         EXPECT_EQ(ayni_completion_post(completion, &result), AYNI_OK);
     }
-    EXPECT_EQ(kernel->completions.apply_posted(8), 4U);
+    EXPECT_EQ(KernelTestProbe::completions(kernel).apply_posted(8), 4U);
     EXPECT_EQ(applied.results.size(), 4U);
-    EXPECT_EQ(kernel->completions.in_flight(), 0U);
+    EXPECT_EQ(KernelTestProbe::completions(kernel).in_flight(), 0U);
     ASSERT_EQ(ayni_begin_shutdown(kernel), AYNI_OK);
     ayni_step_report_v1 report{};
     report.struct_size = sizeof(report);
     ASSERT_EQ(ayni_step(kernel, 100, 1000000, &report), AYNI_OK);
-    ASSERT_EQ(kernel->lifecycle, AYNI_LIFECYCLE_STOPPED);
+    ayni_lifecycle_t lifecycle = 0;
+    ASSERT_EQ(ayni_get_lifecycle(kernel, &lifecycle), AYNI_OK);
+    ASSERT_EQ(lifecycle, AYNI_LIFECYCLE_STOPPED);
     EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 

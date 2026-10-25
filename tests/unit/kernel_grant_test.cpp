@@ -12,6 +12,8 @@
 #include <cstring>
 #include <string>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 
@@ -498,7 +500,7 @@ TEST(GrantApi, unknown_exact_capability_and_subject_are_refused_before_committin
     work.run();
     RangeScope range;
     const auto valid = work.body(range);
-    const auto before = work.node.kernel()->work.transitions.next_commit_seq();
+    const auto before = KernelTestProbe::work(work.node.kernel()).transitions.next_commit_seq();
     auto body = valid;
     body.capability_id = text("missing.capability");
     const auto unknown = work.submit(body, 1);
@@ -515,7 +517,7 @@ TEST(GrantApi, unknown_exact_capability_and_subject_are_refused_before_committin
     EXPECT_EQ(subject.status, AYNI_DENIED);
     EXPECT_EQ(subject.error.reason, AYNI_REASON_GRANT_SUBJECT);
     EXPECT_EQ(subject.error.object.id, UINT64_MAX);
-    EXPECT_EQ(work.node.kernel()->work.transitions.next_commit_seq(), before);
+    EXPECT_EQ(KernelTestProbe::work(work.node.kernel()).transitions.next_commit_seq(), before);
     EXPECT_EQ(work.submit(valid, 1).status, AYNI_OK);
 }
 
@@ -557,7 +559,7 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
     intent.kind = AYNI_INTENT_GRANT_CREATE;
     intent.command_id = 1;
     intent.grant_create = work.body(range);
-    auto &model = work.node.kernel()->work;
+    auto &model = KernelTestProbe::work(work.node.kernel());
     const auto current = *model.sessions.find(work.session);
     const auto before = model.transitions.next_commit_seq();
     // White-box Kernel-module trust-boundary fault injection. Public sessions
@@ -587,10 +589,10 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
     unbound.create();
     ayni::kernel::IntentOutcome outcome{};
     ayni::kernel::IntentFailure failure{};
-    EXPECT_EQ(
-        ayni::kernel::create_grant(unbound.kernel()->work, intent, current, 0, 0, outcome, failure),
-        AYNI_DENIED);
-    EXPECT_EQ(unbound.kernel()->work.grants.size(), 0U);
+    EXPECT_EQ(ayni::kernel::create_grant(KernelTestProbe::work(unbound.kernel()), intent, current,
+                                         0, 0, outcome, failure),
+              AYNI_DENIED);
+    EXPECT_EQ(KernelTestProbe::work(unbound.kernel()).grants.size(), 0U);
 }
 
 // C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.
@@ -599,7 +601,7 @@ TEST(GrantApi, id_exhaustion_refuses_a_new_grant_and_does_not_accept_its_command
     work.run();
     RangeScope range;
     const auto body = work.body(range);
-    auto &model = work.node.kernel()->work;
+    auto &model = KernelTestProbe::work(work.node.kernel());
     const uint64_t boot = work.node.info().boot_epoch;
     // White-box boundary placement avoids allocating four billion objects.
     model.ids.start(boot, UINT32_MAX);
@@ -650,7 +652,7 @@ TEST(GrantApi, shared_kernel_check_denies_missing_or_newly_faulted_subject_facts
     const auto created = work.submit(work.body(range), 1);
     ASSERT_EQ(created.status, AYNI_OK);
     work.store(created.result.commit_seq);
-    auto &model = work.node.kernel()->work;
+    auto &model = KernelTestProbe::work(work.node.kernel());
     uint32_t index = 0;
     ASSERT_TRUE(model.grants.find(created.result.object.id, index));
     const auto subject_id = work.subject();

@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <vector>
 
+using ayni::kernel::KernelTestProbe;
+
 namespace {
 using namespace ayni::test;
 using ayni::hosts::sim::StorageFault;
@@ -87,16 +89,17 @@ TEST(StorageRecovery, retry_wait_is_readable_and_preserves_command_lookup_before
     ASSERT_EQ(accepted.status, AYNI_OK);
     work.node().sim().inject_fault(StoragePort::append, StorageFault::unknown_lost);
     // Drive to the failed completion, without reaching its retry deadline.
-    for (unsigned round = 0; round < 20 && !work.kernel()->log.paused(); ++round) {
+    for (unsigned round = 0; round < 20 && !KernelTestProbe::log(work.kernel()).paused(); ++round) {
         const auto report = work.node().step(1);
         work.node().sim().complete_storage();
         if (report.more_ready == 0U && work.node().sim().pending_storage() == 0U &&
-            report.next_deadline_us != UINT64_MAX && !work.kernel()->log.paused() &&
+            report.next_deadline_us != UINT64_MAX &&
+            !KernelTestProbe::log(work.kernel()).paused() &&
             report.next_deadline_us > work.node().sim().now_us()) {
             work.node().sim().advance_us(report.next_deadline_us - work.node().sim().now_us());
         }
     }
-    ASSERT_TRUE(work.kernel()->log.paused()); // White-box: storage retry wait.
+    ASSERT_TRUE(KernelTestProbe::log(work.kernel()).paused()); // White-box: storage retry wait.
     EXPECT_EQ(work.goal(accepted.result.object.id).goal_id, accepted.result.object.id);
     const auto repeated = command(work, body, 21);
     EXPECT_EQ(repeated.status, AYNI_OK);
