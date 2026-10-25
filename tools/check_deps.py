@@ -5,7 +5,11 @@ Rules:
   core/      Core modules include only strictly lower layers (ADR-0008), their
              own entity subdirectories as declared in core_subdir_deps, the
              implemented public API and core_std_headers. No draft, Host,
-             runtime or platform headers.
+             runtime or platform headers. Within a module the files at its
+             root count as one more subdirectory, MODULE_ROOT: every include
+             between two of its directories, root included, must be declared,
+             and the declared graph of each module must have no cycle
+             (ADR-0051).
   include/   Implemented public headers include only public_c_headers and other
              implemented public headers; drafts may also include drafts.
   others     Each listed top-level directory includes only the header kinds in
@@ -36,6 +40,8 @@ SOURCE_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".tpp", ".ixx", 
 STRICT_DIRS = {"core", "include"}
 NON_SOURCE_SUFFIXES = {".md", ".txt", ".cmake"}
 FIXED_RULE_DIRS = {"core", "include", "tests"}
+# Names the files directly in a Core module's directory in core_subdir_deps.
+MODULE_ROOT = "_root"
 
 
 class ConfigError(Exception):
@@ -78,9 +84,12 @@ class Architecture:
             self.skipped_dir_names = set(data["skipped_dir_names"])
         except KeyError as missing:
             raise ConfigError(f"missing key {missing}") from None
-        for module in self.subdir_deps:
+        for module, graph in self.subdir_deps.items():
             if module not in self.layer_of:
                 raise ConfigError(f"core_subdir_deps names unknown module '{module}'")
+            cycle = find_cycle(graph)
+            if cycle:
+                raise ConfigError(f"core_subdir_deps of '{module}' has a cycle: {' -> '.join(cycle)}")
         overlap = FIXED_RULE_DIRS & set(self.components)
         if overlap:
             raise ConfigError(f"{sorted(overlap)} have fixed rules and cannot be listed in components")
@@ -97,6 +106,32 @@ class Architecture:
             if include_path.startswith(prefix):
                 return self.header_kinds[prefix]
         return None
+
+
+def find_cycle(graph: dict[str, list[str]]) -> list[str]:
+    """A cycle of the directed graph, closed by repeating its first node, or [] if none."""
+    done: set[str] = set()
+    path: list[str] = []
+
+    def visit(node: str) -> list[str]:
+        if node in path:
+            return path[path.index(node):] + [node]
+        if node in done:
+            return []
+        path.append(node)
+        for target in graph.get(node, []):
+            cycle = visit(target)
+            if cycle:
+                return cycle
+        path.pop()
+        done.add(node)
+        return []
+
+    for node in sorted(graph):
+        cycle = visit(node)
+        if cycle:
+            return cycle
+    return []
 
 
 def parse_includes(text: str) -> list[Include]:
@@ -150,17 +185,24 @@ def classify_resolved(arch: Architecture, source: PurePosixPath, target: PurePos
     return Target("foreign", owner="/".join(target_parts[:2]))
 
 
+def module_dir(module: str, subdir: str) -> str:
+    if subdir == MODULE_ROOT:
+        return f"the root of core/{module} ('{MODULE_ROOT}')"
+    return f"core/{module}/{subdir}"
+
+
 def check_core(arch: Architecture, source: PurePosixPath, include: Include, target: Target) -> str | None:
     module = source.parts[1]
-    subdir = source.parts[2] if len(source.parts) >= 4 else None
+    subdir = source.parts[2] if len(source.parts) >= 4 else MODULE_ROOT
     if target.kind == "core":
         if target.module == module:
-            if subdir is None or target.subdir is None or target.subdir == subdir:
+            target_subdir = target.subdir or MODULE_ROOT
+            if target_subdir == subdir:
                 return None
             allowed = arch.subdir_deps.get(module, {}).get(subdir, [])
-            if target.subdir in allowed:
+            if target_subdir in allowed:
                 return None
-            return (f"core/{module}/{subdir} may not include core/{module}/{target.subdir}: "
+            return (f"{module_dir(module, subdir)} may not include {module_dir(module, target_subdir)}: "
                     f"not declared in core_subdir_deps")
         if arch.layer_of[target.module] > arch.layer_of[module]:
             return None

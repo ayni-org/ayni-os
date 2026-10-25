@@ -70,9 +70,36 @@ class CheckDepsTest(unittest.TestCase):
         self.architecture["core_subdir_deps"] = {"work": {"task": ["call"]}}
         self.assertEqual(self.violations(), [])
 
-    def test_core_module_root_reaches_own_subdirs(self):
-        self.write("core/work/work.cpp", '#include "work/task/task.h"\n#include "work/call/call.h"\n')
+    def test_core_module_root_includes_only_declared_subdirs(self):
+        # ADR-0051: the module root is one more node of the declared graph.
+        self.write("core/work/work.cpp", '#include "work/task/task.h"\n')
         self.assertEqual(self.violations(), [])
+        self.write("core/work/work.cpp", '#include "work/call/call.h"\n')
+        self.assert_single_violation("the root of core/work ('_root') may not include core/work/call")
+
+    def test_core_subdir_reaches_module_root_only_when_declared(self):
+        # ADR-0051: the blind spot through the root, spelled from the include root and relatively.
+        self.write("core/kernel/kernel_state.h")
+        self.write("core/kernel/intent/rules.cpp", '#include "kernel/kernel_state.h"\n')
+        self.assert_single_violation("core/kernel/intent may not include the root of core/kernel")
+        self.write("core/kernel/intent/rules.cpp", '#include "../kernel_state.h"\n')
+        self.assert_single_violation("core/kernel/intent may not include the root of core/kernel")
+        self.architecture["core_subdir_deps"] = {"kernel": {"intent": ["_root"]}}
+        self.assertEqual(self.violations(), [])
+
+    def test_cycle_in_declared_subdir_graph_is_a_configuration_error(self):
+        # ADR-0051: a declared cycle through the root, a longer one and a self-loop.
+        for graph, cycle in (({"_root": ["intent"], "intent": ["_root"]}, "_root -> intent -> _root"),
+                             ({"a": ["b"], "b": ["c"], "c": ["a"]}, "a -> b -> c -> a"),
+                             ({"a": ["a"]}, "a -> a")):
+            with self.subTest(cycle=cycle):
+                self.architecture["core_subdir_deps"] = {"kernel": graph}
+                with self.assertRaisesRegex(check_deps.ConfigError, f"'kernel' has a cycle: {cycle}"):
+                    check_deps.Architecture(self.architecture)
+
+    def test_acyclic_declared_subdir_graph_with_shared_targets_is_valid(self):
+        self.architecture["core_subdir_deps"] = {"kernel": {"_root": ["a", "b"], "a": ["c"], "b": ["c"]}}
+        check_deps.Architecture(self.architecture)
 
     def test_core_rejects_platform_and_unlisted_std_headers(self):
         self.write("core/kernel/kernel.cpp", "#include <vector>\n#include <freertos/FreeRTOS.h>\n#include <cstdint>\n")
