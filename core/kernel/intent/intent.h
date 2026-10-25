@@ -59,17 +59,14 @@ struct IntentOutcome {
     std::optional<WorkAuthorityResult> authorization;
 };
 
-// Whether the kind is one this library implements.
-bool is_implemented(ayni_intent_kind_t kind);
-
 // The argument rules that do not depend on kernel state: GOAL_CREATE has
 // expected_revision 0, a goal type id that is a catalog id, parameter data
 // unless their size is 0, a trigger kind this library defines with times
 // that fit it, and a trigger source that is a catalog id for LOCAL_INPUT and
-// empty otherwise. GRANT_CREATE requires a nonzero command ID and the raw
-// canonical request shape (independent of catalog and subjects). Returns
-// INVALID_ARGUMENT for malformed input or UNSUPPORTED_VERSION for newer
-// nested structs; changes no state.
+// empty otherwise. Every exact command kind (intent_traits.h) requires a
+// nonzero command ID and its raw canonical request shape (independent of
+// catalog and subjects). Returns INVALID_ARGUMENT for malformed input or
+// UNSUPPORTED_VERSION for newer nested structs; changes no state.
 ayni_status_t check_form(const Intent &intent);
 
 // Decodes and checks an intent from the C ABI in the order of ayni.h,
@@ -79,9 +76,9 @@ ayni_status_t check_form(const Intent &intent);
 // out_intent is complete only on AYNI_OK.
 ayni_status_t decode_intent(const ayni_intent_v1 &raw, Intent &out_intent, IntentFailure &failure);
 
-// The digest of an ordinary work command (kinds 1..8, C-WIRE-004): kind, expected
-// revision and the body, not the session, so that a retry over another
-// session, also after a restart, is the same command.
+// The digest of an ordinary command (intent_traits.h, C-WIRE-004): kind,
+// expected revision and the body, not the session, so that a retry over
+// another session, also after a restart, is the same command.
 uint64_t ordinary_command_digest(const Intent &intent);
 
 } // namespace ayni::kernel

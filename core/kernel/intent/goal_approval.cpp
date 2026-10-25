@@ -162,9 +162,6 @@ bool publish_batch(WorkModel &model, const Intent &intent, const authority::Sess
 ayni_status_t approve_goal(WorkModel &model, const Intent &intent,
                            const authority::Session &session, uint64_t now_us, uint64_t durable_seq,
                            IntentOutcome &outcome, IntentFailure &failure) {
-    if (!bound_management_session(model, session, durable_seq)) {
-        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, failure);
-    }
     ApprovalPlan plan{};
     const auto admitted = admit_goal(model, intent, now_us, plan, failure);
     if (admitted != AYNI_OK) {

@@ -1,6 +1,6 @@
 // MA-006 C public behavior: management provenance, finite attenuation,
 // durable parents, exact retries, and recovery without a renewed clock.
-#include "kernel/intent/authority_intent.h"
+#include "kernel/intent/work_model.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>
@@ -565,8 +565,15 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
     // White-box Kernel-module trust-boundary fault injection. Public sessions
     // never manufacture these facts; production must still refuse stale input
     // before the authority table, allocator or transition clock changes.
+    const auto apply = [&](ayni::kernel::WorkModel &target, const ayni::kernel::Intent &request,
+                           uint64_t durable, ayni::kernel::IntentFailure &failure) {
+        ayni::kernel::IntentOutcome outcome{};
+        return ayni::kernel::apply_intent(target, request, work.node.sim().now_us(), true, outcome,
+                                          failure, AYNI_OK, durable, {}, {});
+    };
     for (uint32_t fault = 0; fault < 3; ++fault) {
         auto session = current;
+        session.session_id = current.session_id + 1U + fault; // not opened through the ABI
         uint64_t durable = work.node.info().durable_seq;
         if (fault == 0U) {
             session.principal_id += 1U;
@@ -575,24 +582,24 @@ TEST(GrantApi, kernel_semantic_boundary_rejects_unproven_or_stale_owner_evidence
         } else {
             durable = model.principals.binding()->stamp.commit_seq - 1U;
         }
-        ayni::kernel::IntentOutcome outcome{};
+        ASSERT_TRUE(model.sessions.open(session));
+        intent.session_id = session.session_id;
         ayni::kernel::IntentFailure failure{};
-        EXPECT_EQ(ayni::kernel::create_grant(model, intent, session, work.node.sim().now_us(),
-                                             durable, outcome, failure),
-                  AYNI_DENIED)
-            << fault;
+        EXPECT_EQ(apply(model, intent, durable, failure), AYNI_DENIED) << fault;
         EXPECT_EQ(failure.reason, AYNI_REASON_GRANT_CHANNEL);
         EXPECT_EQ(model.grants.size(), 0U);
         EXPECT_EQ(model.transitions.next_commit_seq(), before);
+        ASSERT_TRUE(model.sessions.close(session.session_id));
     }
     Node unbound;
     unbound.create();
-    ayni::kernel::IntentOutcome outcome{};
+    auto &unbound_model = KernelTestProbe::work(unbound.kernel());
+    ASSERT_TRUE(unbound_model.sessions.open(current));
+    intent.session_id = current.session_id;
     ayni::kernel::IntentFailure failure{};
-    EXPECT_EQ(ayni::kernel::create_grant(KernelTestProbe::work(unbound.kernel()), intent, current,
-                                         0, 0, outcome, failure),
-              AYNI_DENIED);
-    EXPECT_EQ(KernelTestProbe::work(unbound.kernel()).grants.size(), 0U);
+    EXPECT_EQ(apply(unbound_model, intent, 0, failure), AYNI_DENIED);
+    EXPECT_EQ(failure.reason, AYNI_REASON_GRANT_CHANNEL);
+    EXPECT_EQ(unbound_model.grants.size(), 0U);
 }
 
 // C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.

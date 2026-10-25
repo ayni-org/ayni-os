@@ -21,6 +21,7 @@
 #include "kernel/command/command_scene.h"
 #include "kernel/command/command_target.h"
 #include "kernel/command/command_task_limit.h"
+#include "kernel/command/intent_traits.h"
 #include "kernel/command/pending_revoke.h"
 #include "kernel/command/work_authority_result.h"
 

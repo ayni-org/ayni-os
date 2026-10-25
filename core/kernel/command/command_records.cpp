@@ -5,10 +5,6 @@
 namespace ayni::kernel {
 namespace {
 
-bool ordinary_kind(ayni_intent_kind_t kind) {
-    return kind >= AYNI_INTENT_GOAL_CREATE && kind <= AYNI_INTENT_INSTANCE_STOP;
-}
-
 void write_fixed(const CommandMapping &mapping, uint64_t floor, durability::BodyWriter &writer) {
     writer.u64(mapping.principal_id);
     writer.u64(mapping.command_id);
@@ -99,7 +95,7 @@ uint32_t command_record_size_for(const CommandMapping &mapping) {
 bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_bytes_v1 canonical,
                           uint8_t *body, uint32_t size, ayni_bytes_v1 result) {
     if (body == nullptr || size == 0U || size != command_record_size_for(mapping) ||
-        (mapping.canonical_size == 0U ? canonical.size != 0U || !ordinary_kind(mapping.kind)
+        (mapping.canonical_size == 0U ? canonical.size != 0U || !is_ordinary_command(mapping.kind)
                                       : !valid_exact_mapping(mapping, canonical, result))) {
         return false;
     }
@@ -171,7 +167,7 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
             !valid_exact_mapping(mapping, canonical, result)) {
             return false;
         }
-    } else if (!ordinary_kind(mapping.kind)) {
+    } else if (!is_ordinary_command(mapping.kind)) {
         return false;
     }
     if (!reader.ok()) {

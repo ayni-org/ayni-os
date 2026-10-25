@@ -30,6 +30,7 @@ add_executable(ayni_unit_tests
     kernel_grant_test.cpp
     kernel_goal_authority_test.cpp
     command_table_test.cpp
+    intent_policy_matrix_test.cpp
     work_authority_result_test.cpp
     completion_pool_test.cpp
     provider_mailbox_test.cpp

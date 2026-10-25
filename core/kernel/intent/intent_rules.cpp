@@ -5,6 +5,7 @@
 // work tables check the object an intent names; work/propagation checks and
 // applies what the change does to the tasks it reaches.
 
+#include "kernel/command/intent_traits.h"
 #include "kernel/intent/authority_intent.h"
 #include "kernel/intent/work_model.h"
 
@@ -493,7 +494,12 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
     CommandMapping mapping{principal_id,       intent.command_id, digest,
                            outcome.commit_seq, intent.kind,       outcome.object};
     mapping.effect = outcome.effect;
-    if (is_work_authority_command(intent.kind)) {
+    switch (intent_traits(intent.kind).identity) {
+    case CommandIdentity::ordinary:
+        return model.commands.insert(mapping) ? AYNI_OK : AYNI_INTERNAL;
+    case CommandIdentity::exact:
+        return model.commands.insert_exact(mapping) ? AYNI_OK : AYNI_INTERNAL;
+    case CommandIdentity::authorization: {
         if (!outcome.authorization) {
             return AYNI_INTERNAL;
         }
@@ -505,17 +511,28 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
                    ? AYNI_OK
                    : AYNI_INTERNAL;
     }
-    const bool stored =
-        intent.kind == AYNI_INTENT_SCENE_SET_ENABLED || intent.kind == AYNI_INTENT_GRANT_CREATE ||
-                intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)
-            ? model.commands.insert_exact(mapping)
-            : model.commands.insert(mapping);
-    return stored ? AYNI_OK : AYNI_INTERNAL;
+    case CommandIdentity::revoke:
+        // Accepted into its pending control without a transition; the
+        // mapping is published when the control applies.
+        break;
+    }
+    return AYNI_INTERNAL;
 }
 
-// Reserve the retained command window before applying any domain transition.
-ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
-                                 IntentFailure &failure) {
+// The storage checks of ayni.h step 4, and room in the retained command
+// window, before applying any domain transition.
+ayni_status_t check_room(const WorkModel &model, const Intent &intent, uint64_t principal_id,
+                         bool has_room, ayni_status_t storage_status, IntentFailure &failure) {
+    if (storage_status != AYNI_OK) {
+        return refuse(AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE, ayni_object_ref_v1{},
+                      failure);
+    }
+    if (!has_room) {
+        return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
+    }
+    if (intent.command_id == 0U) {
+        return AYNI_OK;
+    }
     // Retained rows for principals no longer registered can fill the table.
     if (!model.commands.has_row(principal_id)) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
@@ -531,6 +548,12 @@ ayni_status_t check_command_room(const WorkModel &model, uint64_t principal_id,
 // The common result also carries ordinary mappings and pending revoke receipts.
 CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
                                        uint64_t principal_id, uint64_t digest) {
+    if (intent_traits(intent.kind).identity == CommandIdentity::ordinary) {
+        const CommandMapping *mapping = nullptr;
+        const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
+        return {AYNI_OK, lookup, mapping};
+    }
+    // Each exact kind is looked up by its own canonical request.
     switch (intent.kind) {
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return model.commands.find_exact(principal_id, intent.command_id, intent.scene);
@@ -560,11 +583,8 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
         return model.commands.find_exact(
             principal_id, intent.command_id,
             ReauthorizationCommand{intent.expected_revision, intent.reauthorization});
-    default: {
-        const CommandMapping *mapping = nullptr;
-        const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
-        return {AYNI_OK, lookup, mapping};
-    }
+    default: // an exact kind without a canonical request is a defect
+        return {AYNI_INTERNAL, CommandTable::Lookup::unmapped, nullptr};
     }
 }
 
@@ -580,19 +600,14 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
         return refuse(AYNI_DENIED, AYNI_REASON_SESSION_UNKNOWN,
                       object_ref(AYNI_OBJECT_SESSION, intent.session_id), failure);
     }
-    if ((intent.kind == AYNI_INTENT_SCENE_SET_ENABLED ||
-         intent.kind == AYNI_INTENT_GOAL_REAUTHORIZE ||
-         intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT || is_target_command(intent.kind)) &&
+    const IntentTraits &traits = intent_traits(intent.kind);
+    if (traits.session == SessionRule::management_on_retry &&
         !bound_management_session(model, *session, durable_seq)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
     }
-    const bool exact =
-        intent.kind == AYNI_INTENT_SCENE_SET_ENABLED || is_target_command(intent.kind) ||
-        intent.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-        intent.kind == AYNI_INTENT_GRANT_CREATE || intent.kind == AYNI_INTENT_GRANT_REVOKE ||
-        is_work_authority_command(intent.kind);
-    const uint64_t digest =
-        intent.command_id != 0U && !exact ? ordinary_command_digest(intent) : 0U;
+    const uint64_t digest = intent.command_id != 0U && traits.identity == CommandIdentity::ordinary
+                                ? ordinary_command_digest(intent)
+                                : 0U;
     if (intent.command_id != 0U) {
         const auto match = find_command(model, intent, session->principal_id, digest);
         if (match.status != AYNI_OK) {
@@ -620,21 +635,23 @@ ayni_status_t apply_intent(WorkModel &model, const Intent &intent, uint64_t now_
             break;
         }
     }
-    if (intent.kind == AYNI_INTENT_GRANT_REVOKE) {
-        return accept_revoke(model, intent, *session, durable_seq, outcome, failure);
-    }
-    if (storage_status != AYNI_OK) {
-        return refuse(AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE, ayni_object_ref_v1{},
-                      failure);
-    }
-    if (!has_room) {
-        return refuse(AYNI_BUSY, AYNI_REASON_STORAGE_BACKLOG, ayni_object_ref_v1{}, failure);
-    }
-    if (intent.command_id != 0U) {
-        const auto room = check_command_room(model, session->principal_id, failure);
+    // A revocation reserves its pending control instead, independent of
+    // storage (ADR-0031).
+    if (traits.identity != CommandIdentity::revoke) {
+        const auto room =
+            check_room(model, intent, session->principal_id, has_room, storage_status, failure);
         if (room != AYNI_OK) {
             return room;
         }
+    }
+    // The operation's own rules start here, so a retry returned above
+    // without this check.
+    if (traits.session == SessionRule::management &&
+        !bound_management_session(model, *session, durable_seq)) {
+        return refuse(AYNI_DENIED, AYNI_REASON_GRANT_CHANNEL, {}, failure);
+    }
+    if (traits.identity == CommandIdentity::revoke) {
+        return accept_revoke(model, intent, *session, outcome, failure);
     }
     const ayni_status_t status =
         apply_rules(model, intent, *session, now_us, durable_seq, outcome, failure, clock, input);

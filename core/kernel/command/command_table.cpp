@@ -59,15 +59,9 @@ bool matches_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v
 
 bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
                          ayni_bytes_v1 result_bytes) {
-    if (mapping.principal_id == 0U || mapping.command_id == 0U ||
-        mapping.object.kind != (is_work_authority_command(mapping.kind)         ? AYNI_OBJECT_GOAL
-                                : mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED ? AYNI_OBJECT_SCENE
-                                : mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT ? AYNI_OBJECT_CALL
-                                : (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-                                   mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT)
-                                    ? AYNI_OBJECT_TASK
-                                    : AYNI_OBJECT_GRANT) ||
-        mapping.object.id == 0U || mapping.canonical_size != bytes.size || bytes.size == 0U ||
+    if (!is_exact_command(mapping.kind) || mapping.principal_id == 0U || mapping.command_id == 0U ||
+        mapping.object.kind != intent_traits(mapping.kind).object || mapping.object.id == 0U ||
+        mapping.canonical_size != bytes.size || bytes.size == 0U ||
         mapping.result_size != result_bytes.size ||
         (is_work_authority_command(mapping.kind) && result_bytes.size == 0U)) {
         return false;
@@ -325,8 +319,7 @@ bool CommandTable::has_row(uint64_t principal_id) const {
 
 bool CommandTable::insert(const CommandMapping &mapping) {
     staged_.reset();
-    if (!can_insert(mapping.principal_id) || mapping.kind < AYNI_INTENT_GOAL_CREATE ||
-        mapping.kind > AYNI_INTENT_INSTANCE_STOP ||
+    if (!can_insert(mapping.principal_id) || !is_ordinary_command(mapping.kind) ||
         pending(mapping.principal_id, mapping.command_id) != nullptr) {
         return false;
     }
@@ -381,11 +374,7 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         if (bytes.size > canonical_max_bytes_ || result.size > canonical_max_bytes_ - bytes.size) {
             return Restore::no_room;
         }
-    } else if (mapping.kind == AYNI_INTENT_GRANT_CREATE ||
-               mapping.kind == AYNI_INTENT_GRANT_REVOKE ||
-               mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED ||
-               mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT ||
-               is_target_command(mapping.kind) || is_work_authority_command(mapping.kind)) {
+    } else if (is_exact_command(mapping.kind)) {
         return Restore::corrupt;
     }
     if (!can_insert(mapping.principal_id)) {
