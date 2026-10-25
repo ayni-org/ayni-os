@@ -1,6 +1,46 @@
+// The kernel's side of intents: the transition ayni_submit_intent takes,
+// with the sample of the kernel its rules read, and the receipt a command
+// reports afterwards (ADR-0017, ADR-0031).
+
 #include "kernel/kernel_state.h"
 
 #include "kernel/intent/authority_intent.h"
+
+namespace {
+
+ayni::work::InputResumeBoundary sample_input_boundary(void *context) {
+    return static_cast<ayni::kernel::EventIngress *>(context)->resume_boundary();
+}
+
+} // namespace
+
+ayni_status_t ayni_kernel::submit_intent(const ayni::kernel::Intent &intent,
+                                         ayni::kernel::IntentOutcome &outcome,
+                                         ayni::kernel::IntentFailure &failure,
+                                         bool &out_committed) {
+    ayni_status_t status = AYNI_OK;
+    out_committed = run_transition([&] {
+        const uint64_t before = work.transitions.next_commit_seq();
+        const ayni::kernel::IntentContext context{host.monotonic_now_us(host.ctx),
+                                                  log.durable_seq(),
+                                                  storage_has_room(),
+                                                  storage_admission_status(),
+                                                  {host.ctx, host.monotonic_now_us},
+                                                  {&ingress, sample_input_boundary}};
+        status = ayni::kernel::apply_intent(work, intent, context, outcome, failure);
+        // A revocation takes no transition of its own (ADR-0031).
+        if (status == AYNI_OK && intent.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
+            storage_has_room() && storage_admission_status() == AYNI_OK &&
+            work.transitions.next_commit_seq() == before) {
+            static_cast<void>(ayni::kernel::apply_pending_revoke(work));
+        }
+        // Also after AYNI_INTERNAL, which used up a commit_seq (ayni.h).
+        return ayni::kernel::ItemEnd{work.transitions.next_commit_seq() != before
+                                         ? ayni::kernel::ItemEnd::Kind::applied
+                                         : ayni::kernel::ItemEnd::Kind::none};
+    });
+    return status;
+}
 
 // C-AUTH-027: report one accepted result, with durability from the active
 // writer only. Partial recovery exposes accepted pending controls, not its window.

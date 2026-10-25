@@ -88,6 +88,15 @@ ayni_add_core_module(work
 
 ayni_add_core_module(kernel
     SOURCES
+        kernel/api/call_api.cpp
+        kernel/api/execution_api.cpp
+        kernel/api/kernel_api.cpp
+        kernel/api/observation_api.cpp
+        kernel/api/provider_api.cpp
+        kernel/api/provider_completion_api.cpp
+        kernel/api/resource_api.cpp
+        kernel/api/scene_api.cpp
+        kernel/api/work_api.cpp
         kernel/boot/boot_sequence.cpp
         kernel/call/call_admission.cpp
         kernel/call/call_completion.cpp
@@ -95,7 +104,7 @@ ayni_add_core_module(kernel
         kernel/call/call_drain.cpp
         kernel/call/call_reconciliation.cpp
         kernel/call/call_runtime.cpp
-        kernel/call_query.cpp
+        kernel/call/call_wait.cpp
         kernel/command/command_approval.cpp
         kernel/command/command_canonical.cpp
         kernel/command/command_goal_identity.cpp
@@ -113,7 +122,6 @@ ayni_add_core_module(kernel
         kernel/config/catalogs.cpp
         kernel/decision/decision.cpp
         kernel/execution/execution_control.cpp
-        kernel/execution_api.cpp
         kernel/ingress/event_ingress.cpp
         kernel/ingress/event_queue.cpp
         kernel/intent/authority_intent.cpp
@@ -125,11 +133,9 @@ ayni_add_core_module(kernel
         kernel/intent/task_authority.cpp
         kernel/intent/work_authority_cleanup.cpp
         kernel/intent/work_model.cpp
-        kernel/intent_receipt.cpp
-        kernel/kernel_api.cpp
+        kernel/kernel_intent.cpp
         kernel/kernel_layout.cpp
         kernel/kernel_lifecycle.cpp
-        kernel/observation_api.cpp
         kernel/persistence/call_store.cpp
         kernel/persistence/goal_approval_replay.cpp
         kernel/persistence/goal_reauthorization_replay.cpp
@@ -138,13 +144,8 @@ ayni_add_core_module(kernel
         kernel/persistence/work_journal.cpp
         kernel/persistence/work_replay.cpp
         kernel/persistence/work_snapshot.cpp
-        kernel/provider_api.cpp
-        kernel/provider_completion_api.cpp
-        kernel/resource_api.cpp
-        kernel/scene_api.cpp
         kernel/storage/storage_budget.cpp
         kernel/storage/storage_maintenance.cpp
-        kernel/work_api.cpp
     DEPENDS work authority resources knowledge catalog durability foundation)
 
 # What consumers link: the top module pulls in every module below it.

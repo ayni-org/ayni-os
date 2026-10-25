@@ -1,5 +1,6 @@
 // Trusted source/publication boundary; catalog and knowledge own all facts.
 #include "catalog/abi_checks.h"
+#include "kernel/api/api_gate.h"
 #include "kernel/kernel_state.h"
 #include <ayni/observations.h>
 
@@ -14,8 +15,9 @@ ayni_status_t ayni_register_observation_source(ayni_kernel_t *kernel,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.observation_sources.add_validated(decoded);
 }
@@ -24,11 +26,9 @@ ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
     if (kernel == nullptr || observation == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
-    }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
-        return AYNI_NOT_READY;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::running);
+        gated != AYNI_OK) {
+        return gated;
     }
     const auto status =
         kernel->observations.publish(*observation, kernel->host.monotonic_now_us(kernel->host.ctx));
@@ -48,8 +48,9 @@ ayni_status_t ayni_get_observation(const ayni_kernel_t *kernel, ayni_string_v1 s
     if (shape != AYNI_OK) {
         return shape;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     const auto status = kernel->observations.info(
         source_id, kernel->host.monotonic_now_us(kernel->host.ctx), *out_info);

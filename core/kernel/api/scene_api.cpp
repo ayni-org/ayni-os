@@ -1,4 +1,8 @@
+// C ABI entries of Scenes: declaration in CONFIGURING and the info query.
+// Authority owns their definitions, saved preferences and generations.
+
 #include "catalog/abi_checks.h"
+#include "kernel/api/api_gate.h"
 #include "kernel/kernel_state.h"
 #include <ayni/scenes.h>
 
@@ -7,8 +11,9 @@ ayni_status_t ayni_register_scene(ayni_kernel_t *kernel, const ayni_scene_desc_v
     if (kernel == nullptr || scene == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->work.scenes.register_description(*scene);
 }
@@ -22,8 +27,9 @@ ayni_status_t ayni_get_scene(const ayni_kernel_t *kernel, ayni_string_v1 scene_i
     if (shape != AYNI_OK) {
         return shape;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     const auto status = kernel->work.scenes.info(scene_id, kernel->durable_seq(), *out_info);
     if (status == AYNI_OK && kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {

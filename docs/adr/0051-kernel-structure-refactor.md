@@ -2,7 +2,7 @@
 
 - **状态**：已接受（只改结构、不改运行行为；用户 2026-10-25 同意按架构审查第 6 节顺序整改，6 步合为一个 PR）
 - **日期**：2026-10-25
-- **关联**：ADR-0008、ADR-0011、ADR-0014；`AGENTS.md` 模块设计与可读性要求；架构静态审查（基线 `e089a22`）F02、F03、F04、F05、F06、F07、F08、F09、F13、F14、F17、F20；ADR-0052
+- **关联**：ADR-0008、ADR-0011、ADR-0014；`AGENTS.md` 模块设计与可读性要求；架构静态审查（基线 `e089a22`）F02、F03、F04、F05、F06、F01、F07、F08、F09、F13、F14、F17、F20；ADR-0052
 
 ## 背景
 
@@ -54,14 +54,17 @@
 
 13. **目录注册表合为一个 `Catalogs`。** 10 个启动后不变的注册表原先分挂在 `WorkModel`（Goal 类型、策略、能力模式、观测来源、执行端）和 `ayni_kernel`（资源、设备、调用能力、Provider、绑定）上，没有可见的划分规则：`CallRuntime` 经 `CallCatalogs` 取其中 4 个，却经 `WorkModel` 读执行目录；启动校验横跨两边。现在 `kernel/config/Catalogs` 持有全部 10 个，由 `ayni_kernel` 拥有，CONFIGURING 期间经注册 ABI 写入；`Catalogs::close()` 在 `ayni_start` 中按原顺序连接策略，再检查设备清单、资源拓扑、绑定与执行绑定。`WorkModel`、`CallRuntime`、`ObservationTable` 与 `ResourceAdmission` 只持有常量引用，编译通过即说明它们不在启动后写目录。执行绑定所指的 Scene 属于 authority，仍由 kernel 在 `close()` 之后检查（`validate_execution_scenes`）。各注册表的内存区与放置顺序不变。
 
+14. **ABI 入口集中在 `kernel/api/`，入口规则与事务边界各写一处（门面先行）。** 9 个 ABI 文件从 kernel 根目录移入 `kernel/api/`；`architecture.json` 声明 `api` 可依赖根目录与 `completion`、`intent`、`persistence`、`storage`，根目录与其他子目录都不得包含 `api`。各入口原先手写的 44 处回调与生命周期检查改为 `api/api_gate.h` 中 7 个具名闸门（注册、运行中变更、所有者入口、查询、关闭会话、资源健康、销毁），每个入口在参数检查之后调用一次 `admit`，判断顺序与返回码不变。“取下一 commit_seq、执行、写日志、缺陷时进入 RESTRICTED”原在 6 处手写，现由 `ayni_kernel::run_transition` 统一：一项工作返回 `ItemEnd`（无事可做、已应用，或带限制原因的缺陷），已应用的事务立即写入日志。`ayni_submit_intent` 的事务（应用意图，必要时紧接着发布待撤销）从 ABI 文件移入 `ayni_kernel::submit_intent`，`CallRuntime::waiting` 从 ABI 文件移回 `call/call_wait.cpp`。根目录只剩 `ayni_kernel` 的表示与编排（`kernel_state.h`、`kernel_lifecycle.cpp`、`kernel_intent.cpp`、`kernel_layout`），由整改前的 9,494 行降为约 1,200 行。`ayni_kernel` 的成员暂仍公开；改为私有并经门面方法访问，以及 service 与 runtime 的分区，留待后续功能触及时逐步收紧。
+
 ## 后果
 
 - 依赖检查覆盖模块根目录；新增根目录与子目录之间的包含须先在 `architecture.json` 声明，引入环的声明会让检查直接失败。在未整改的 main 上运行新规则会报出 62 处未声明的包含。
 - 23 个测试文件原有 345 处 `kernel->member` 访问，现全部经 probe；只有 `kernel_layout_test` 为取 `sizeof(ayni_kernel)` 直接包含 `kernel_state.h`。白盒测试按新路径包含 kernel 头文件；只建工作模型的测试夹具用同一组尺寸函数分配存储。夹具原先只按 Grant 命令上限分配命令窗口，小于 `WorkModel` 实际使用的精确命令步长，现已一致。
 - 新增一种意图先在 traits 表加一行；授权与幂等属性在一处审阅。策略矩阵测试逐行写出期望值，改表必须同时改测试。
 - 新增持久实体（订阅、记忆、提醒）时，持久化编排要改的位置由 17 处减为上述 4 处（以 call 计），其余存储按同一契约逐个迁移。日志与快照的记录字节、顺序、版本与 REQUIRED 规则不变；快照中 call 先于 Scene 由列表顺序保证，读端仍拒绝逆序。
-- 内存布局的放置顺序与各存储尺寸不变。决定 1～9 之后，`tools/measure_kernel_memory.c` 的 4 个配置与整改前得到相同的字节数与对齐；为此 `WorkModel` 把两个到期搜索标志相邻放置，抵消外呼标志改为私有后的对齐填充。决定 10 让 `ayni_kernel` 固定增加 56 字节（`ExecutionControl` 保存自己的协作者引用与传输接口）；决定 13 把 `CallRuntime` 的 4 个目录引用和 `WorkModel` 中的 5 个注册表对象换成两个 `Catalogs` 引用，减少 16 字节；决定 11、12 不改变尺寸。整个整改之后，4 个配置各比整改前多 40 字节，与容量无关。ABI、存储 schema 与持久记录均不变。
+- 内存布局的放置顺序与各存储尺寸不变。决定 1～9 之后，`tools/measure_kernel_memory.c` 的 4 个配置与整改前得到相同的字节数与对齐；为此 `WorkModel` 把两个到期搜索标志相邻放置，抵消外呼标志改为私有后的对齐填充。决定 10 让 `ayni_kernel` 固定增加 56 字节（`ExecutionControl` 保存自己的协作者引用与传输接口）；决定 13 把 `CallRuntime` 的 4 个目录引用和 `WorkModel` 中的 5 个注册表对象换成两个 `Catalogs` 引用，减少 16 字节；决定 11、12、14 不改变尺寸。整个整改之后，4 个配置各比整改前多 40 字节，与容量无关。ABI、存储 schema 与持久记录均不变。
 - 许可与停止链在一个约 400 行的文件里，可以单独审阅和度量覆盖率；修改 Provider 调度不再改动它。
+- 新增 ABI 入口只需选一个闸门；新增一种 step 工作只需返回 `ItemEnd`，写日志与进入 RESTRICTED 由 `run_transition` 负责；目录启动后只读由类型保证，新增注册表只改 `Catalogs`。
 - 到期判断与下次到期时间总与重新搜索相同。代价是每个事务之后的下一步多做一次有界搜索（Goal 表、每个 Goal 至多 `goal_depth_max` 个祖先、Task 表），以前只在置位的事务之后搜索。原先不置位的持有（ABANDONED 调用持有 Task、恢复中因绑定变化持有 Task）之后，报告的下次时间可能早于实际，只多一次唤醒；现在与重新搜索一致。
 
 ## 备选方案
@@ -76,6 +79,7 @@
 - **一次迁移全部存储**：Grant、Goal、Task 的日志记录随命令种类变换版本，快照与日志的记录体也不同，宜先有配对数据表；本次只迁移结构最独立的 call 与 Scene，验证契约的形状。
 - **Grant 纪元校验移进 `GrantTable`**：`GrantTable` 不知道启动纪元，需要新增参数；Scene、调用与 Goal 授权的纪元规则都在重放里，放在一起便于审阅。
 - **`ExecutionControl` 直接持有 `CallRuntime` 的引用**：控制需要读取传输槽，双向引用会让 `call` 与 `execution` 两个目录成环；改用函数指针加上下文的窄接口，与 `TaskTable`、`CallTable` 的保留回调相同。
+- **一次完成 kernel 分区与成员私有**（`kernel/api`、`kernel/service`、`kernel/runtime` 三个子区，`ayni_kernel` 只留门面方法）：要改写全部 ABI 文件与编排代码对成员的访问，评审与合并冲突的成本集中在一个 PR；入口规则与事务边界的收益已由闸门与 `run_transition` 取得。审查也建议在前几项完成后渐进收尾。
 - **`ayni_step` 的各推进函数共用一个 `StepContext`**：决定需要时钟与调用运行时，到期工作需要授权时刻，存储推进两者都不要，合成一个结构只会让每个函数多出不用的字段；只对字段齐全、参数最多的意图入口这样做。
 - **所有管理会话都在命令查找之前检查**：会改变 Grant 创建、撤销与目标审批的重试结果与错误优先级（现在任一会话都能取回已接受命令的首次结果），超出只改结构的范围。表中显式区分两种规则，是否统一另行决定。
 
@@ -89,6 +93,7 @@
 - 抽出 `ExecutionControl` 不改任何测试：`managed_execution_test` 与其余调用、执行测试不变并通过；覆盖率见 PR。
 - `WorkTrigger.kept_due_work_search_answers_as_a_new_search_would`：固定种子的 400 步随机操作（创建延时与周期 Goal、暂停、恢复、取消、实例暂停与恢复、推进时钟、step、重启）中，每步之后比较保留的搜索与强制重新搜索的结果与下次时间，并要求其中多于 20 次由保留的搜索给出时间。让保留的搜索忽略事务会使它失败。
 - 目录合并后注册与启动失败的测试（注册顺序、缺失策略、设备与资源拓扑、绑定、执行绑定与 Scene 的错误码）不改期望值并通过；单独构造工作模型的测试夹具同样先建 `Catalogs`。
+- 闸门与 `run_transition` 不改任何测试：各入口在回调中、错误生命周期中的返回码测试（注册冻结、查询、关闭会话、资源健康、销毁）与事务、限制相关测试不改期望值并通过；`check_deps_repository` 检查 `api` 的新规则。
 - 删除默认值与空分支后，编译器报出的调用点只在测试中（Grant 信任边界测试、重放一致性测试）；生产调用点原本就传入完整参数。
 - 迁移到 probe 后测试数量与结果不变；搜索 `tests/` 中 `kernel()->`、`kernel_->`、`kernel->` 后接 `ayni_kernel` 成员的写法，结果为 0。
 - 现有完整测试在 GCC ASan/UBSan 下通过；命令与结果见 PR。

@@ -7,6 +7,7 @@
 
 #include "catalog/abi_checks.h"
 #include "catalog/catalog_id.h"
+#include "kernel/api/api_gate.h"
 #include "kernel/kernel_layout.h"
 #include "kernel/kernel_state.h"
 #include "kernel/persistence/work_journal.h"
@@ -505,8 +506,9 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->start();
 }
@@ -523,8 +525,9 @@ ayni_status_t ayni_step(ayni_kernel_t *kernel, uint32_t max_items, uint32_t max_
             return status;
         }
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     ayni_step_report_v1 report{};
     const ayni_status_t status = kernel->step(max_items, max_time_us, report);
@@ -543,8 +546,9 @@ ayni_status_t ayni_begin_shutdown(ayni_kernel_t *kernel) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->begin_shutdown();
 }
@@ -553,9 +557,9 @@ ayni_status_t ayni_destroy(ayni_kernel_t *kernel) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING &&
-                                  kernel->lifecycle != AYNI_LIFECYCLE_STOPPED)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::destroy);
+        gated != AYNI_OK) {
+        return gated;
     }
     kernel->~ayni_kernel();
     return AYNI_OK;

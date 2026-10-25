@@ -1,6 +1,7 @@
 // Resource registration, health and copied diagnostics. Only this boundary
 // selects lifecycle policy; the catalog and admission modules own all state.
 #include "catalog/abi_checks.h"
+#include "kernel/api/api_gate.h"
 #include "kernel/kernel_state.h"
 
 #include <ayni/resources.h>
@@ -17,8 +18,9 @@ ayni_status_t ayni_get_resource_queue(const ayni_kernel_t *kernel,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     *out_info = kernel->resources.queue_info(kernel->host.monotonic_now_us(kernel->host.ctx));
     return AYNI_OK;
@@ -33,8 +35,9 @@ ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.devices.add_validated(decoded);
 }
@@ -49,8 +52,9 @@ ayni_status_t ayni_register_component(ayni_kernel_t *kernel,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.devices.add_validated(decoded);
 }
@@ -67,8 +71,9 @@ ayni_status_t ayni_get_device(const ayni_kernel_t *kernel, ayni_string_v1 id,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->catalogs.devices.find_device(id, index)) {
@@ -90,8 +95,9 @@ ayni_status_t ayni_get_component(const ayni_kernel_t *kernel, ayni_string_v1 id,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->catalogs.devices.find_component(id, index)) {
@@ -111,8 +117,9 @@ ayni_status_t ayni_register_resource(ayni_kernel_t *kernel, const ayni_resource_
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.resources.add_validated(decoded);
 }
@@ -124,9 +131,9 @@ ayni_status_t ayni_set_resource_health(ayni_kernel_t *kernel, ayni_string_v1 res
     if (kernel == nullptr || !ayni::catalog::CatalogId::is_valid(resource_id)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || (kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING &&
-                                  kernel->lifecycle != AYNI_LIFECYCLE_RUNNING)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::resource_health);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->catalogs.resources.find(resource_id, index)) {
@@ -153,8 +160,9 @@ ayni_status_t ayni_get_resource(const ayni_kernel_t *kernel, ayni_string_v1 reso
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->catalogs.resources.find(resource_id, index)) {

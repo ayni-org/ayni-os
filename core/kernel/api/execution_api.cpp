@@ -1,28 +1,20 @@
+// C ABI entries of physical execution: executor and execution binding
+// registration, and a logical call's execution status. The catalog checks
+// their contracts; ExecutionControl owns permits and stops.
+
 #include "catalog/abi_checks.h"
+#include "kernel/api/api_gate.h"
 #include "kernel/kernel_state.h"
 #include <ayni/execution.h>
 
-// Catalog owns static type/limit checks; authority owns the exact Scene lookup.
-ayni_status_t ayni_kernel::validate_execution_scenes() const {
-    for (uint32_t at = 0; at < catalogs.execution.binding_count(); ++at) {
-        const auto &binding = catalogs.execution.binding(at);
-        uint32_t scene = 0;
-        if (!work.scenes.find_definition({binding.scene.data(), binding.scene.size()}, scene)) {
-            return AYNI_NOT_FOUND;
-        }
-        if (work.scenes.definition(scene).version != binding.scene_version) {
-            return AYNI_UNSUPPORTED_VERSION;
-        }
-    }
-    return AYNI_OK;
-}
 extern "C" {
 ayni_status_t ayni_register_executor(ayni_kernel_t *kernel, const ayni_executor_v1 *executor) {
     if (kernel == nullptr || executor == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.execution.add_executor(*executor);
 }
@@ -31,8 +23,9 @@ ayni_status_t ayni_register_execution_binding(ayni_kernel_t *kernel,
     if (kernel == nullptr || binding == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.execution.add_binding(*binding);
 }
@@ -46,8 +39,9 @@ ayni_status_t ayni_get_execution(const ayni_kernel_t *kernel, uint64_t logical_c
     if (shape != AYNI_OK) {
         return shape;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::owner);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.calls.find(logical_call_id, index)) {

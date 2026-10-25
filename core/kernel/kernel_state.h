@@ -26,6 +26,17 @@
 
 #include <cstdint>
 
+namespace ayni::kernel {
+
+// How one owner item ended (ayni_kernel::run_transition): nothing to do, one
+// transition applied, or a defect that restricts the kernel.
+struct ItemEnd {
+    enum class Kind { none, applied, defect } kind;
+    ayni_restriction_t restriction = AYNI_RESTRICTION_NONE; // A defect's.
+};
+
+} // namespace ayni::kernel
+
 // Lives at the start of the caller's memory block; the stores follow it at
 // the offsets of kernel_layout.h.
 struct ayni_kernel {
@@ -64,9 +75,6 @@ struct ayni_kernel {
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
     // C ABI has already checked the arguments.
     ayni_status_t start();
-    // Each execution binding names a declared Scene at its version; Scenes are
-    // authority's, so Catalogs::close cannot check this. No callbacks.
-    ayni_status_t validate_execution_scenes() const;
     ayni_status_t step(uint32_t max_items, uint32_t max_time_us, ayni_step_report_v1 &report);
     ayni_status_t begin_shutdown();
     // Why the kernel is RESTRICTED or FENCED; NONE otherwise.
@@ -81,6 +89,14 @@ struct ayni_kernel {
     // public monotonic floor retained while a reload is incomplete.
     ayni_status_t intent_receipt(uint64_t principal_id, uint64_t command_id,
                                  ayni_intent_receipt_v1 &out) const;
+    // ayni_submit_intent after its gate (ADR-0017, ADR-0031): applies intent
+    // with one sample of the kernel, then, for a new revocation that took no
+    // transition, its pending revoke when storage admits one, and journals
+    // what was taken. out_committed says whether a transition was taken;
+    // AYNI_INTERNAL may have taken one too (ayni.h).
+    ayni_status_t submit_intent(const ayni::kernel::Intent &intent,
+                                ayni::kernel::IntentOutcome &outcome,
+                                ayni::kernel::IntentFailure &failure, bool &out_committed);
 
     // Caller code runs inside the kernel: functions that change the kernel
     // return AYNI_INVALID_STATE (ayni.h).
@@ -184,6 +200,25 @@ struct ayni_kernel {
     bool takes_event_now() const;
     void handle_local_input(const ayni::catalog::CatalogId &source, uint64_t now_us,
                             ayni::work::InputResumeBoundary input);
+    // Each execution binding names a declared Scene at its version; Scenes are
+    // authority's, so Catalogs::close cannot check this. No callbacks.
+    ayni_status_t validate_execution_scenes() const;
+
+    // Runs item, one owner item that takes at most one transition (ADR-0051):
+    // an applied transition is journaled right away, a defect makes the
+    // kernel RESTRICTED with its restriction so nothing of it is stored, and
+    // none journals nothing. Returns whether the item applied.
+    template <typename Item> bool run_transition(Item item) {
+        using End = ayni::kernel::ItemEnd;
+        const uint64_t first_seq = work.transitions.next_commit_seq();
+        const End end = item();
+        if (end.kind == End::Kind::defect) {
+            enter_restricted(end.restriction);
+        } else if (end.kind == End::Kind::applied) {
+            journal(first_seq);
+        }
+        return end.kind == End::Kind::applied;
+    }
 
     // durable_seq() as of the last fence, which a reload must not go below.
     uint64_t durable_floor_ = 0;

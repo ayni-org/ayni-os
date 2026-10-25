@@ -17,6 +17,51 @@
 #include "kernel/intent/work_model.h"
 #include "kernel/kernel_state.h"
 
+namespace {
+
+using ayni::kernel::ItemEnd;
+
+// How each owner operation's result ends its item (ayni_kernel::run_transition).
+ItemEnd ended(ayni::kernel::DueWorkResult result) {
+    switch (result) {
+    case ayni::kernel::DueWorkResult::none:
+        return {ItemEnd::Kind::none};
+    case ayni::kernel::DueWorkResult::applied:
+        return {ItemEnd::Kind::applied};
+    case ayni::kernel::DueWorkResult::internal:
+        break;
+    }
+    return {ItemEnd::Kind::defect, AYNI_RESTRICTION_INTERNAL};
+}
+
+ItemEnd ended(ayni::kernel::DecisionResult result) {
+    switch (result) {
+    case ayni::kernel::DecisionResult::none:
+        return {ItemEnd::Kind::none};
+    case ayni::kernel::DecisionResult::applied:
+        return {ItemEnd::Kind::applied};
+    case ayni::kernel::DecisionResult::internal:
+        break;
+    }
+    return {ItemEnd::Kind::defect, AYNI_RESTRICTION_INTERNAL};
+}
+
+ItemEnd ended(ayni::kernel::RuntimeAdvance result) {
+    switch (result) {
+    case ayni::kernel::RuntimeAdvance::idle:
+        return {ItemEnd::Kind::none};
+    case ayni::kernel::RuntimeAdvance::applied:
+        return {ItemEnd::Kind::applied};
+    case ayni::kernel::RuntimeAdvance::attempt_exhausted:
+        return {ItemEnd::Kind::defect, AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED};
+    case ayni::kernel::RuntimeAdvance::internal:
+        break;
+    }
+    return {ItemEnd::Kind::defect, AYNI_RESTRICTION_INTERNAL};
+}
+
+} // namespace
+
 // One step's local budget and scheduling instant; never retained by Kernel.
 // Item application observes elapsed time, while boot/maintenance keep their
 // existing one-shot accounting without an additional clock sample (ADR-0035).
@@ -59,6 +104,22 @@ ayni_status_t ayni_kernel::start() {
     }
     ingress.open();
     lifecycle = AYNI_LIFECYCLE_RECOVERING;
+    return AYNI_OK;
+}
+
+// Catalogs::close checks the execution catalog itself; the Scene a binding
+// names is authority's.
+ayni_status_t ayni_kernel::validate_execution_scenes() const {
+    for (uint32_t at = 0; at < catalogs.execution.binding_count(); ++at) {
+        const auto &binding = catalogs.execution.binding(at);
+        uint32_t scene = 0;
+        if (!work.scenes.find_definition({binding.scene.data(), binding.scene.size()}, scene)) {
+            return AYNI_NOT_FOUND;
+        }
+        if (work.scenes.definition(scene).version != binding.scene_version) {
+            return AYNI_UNSUPPORTED_VERSION;
+        }
+    }
     return AYNI_OK;
 }
 
@@ -133,26 +194,24 @@ void ayni_kernel::apply_revocations(StepBudget &progress) {
             enter_restricted(AYNI_RESTRICTION_INTERNAL);
         }
         while ((lifecycle == AYNI_LIFECYCLE_RUNNING || lifecycle == AYNI_LIFECYCLE_DRAINING) &&
-               appends() && progress.available() && has_room()) {
-            const uint64_t first_seq = work.transitions.next_commit_seq();
-            bool applied = ayni::kernel::apply_pending_revoke(work);
-            if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
-                applied = ayni::kernel::apply_revocation_cleanup(work);
-            }
-            if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
-                applied = work.advance_authority_cleanup(host.monotonic_now_us(host.ctx),
-                                                         log.durable_seq());
-            }
-            if (work.transitions.next_commit_seq() != first_seq) {
-                if (!applied) {
-                    enter_restricted(AYNI_RESTRICTION_INTERNAL);
-                    break;
-                }
-                journal(first_seq);
-                progress.applied(host);
-            } else {
-                break;
-            }
+               appends() && progress.available() && has_room() && run_transition([&] {
+                   const uint64_t before = work.transitions.next_commit_seq();
+                   bool applied = ayni::kernel::apply_pending_revoke(work);
+                   if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
+                       applied = ayni::kernel::apply_revocation_cleanup(work);
+                   }
+                   if (!applied && lifecycle == AYNI_LIFECYCLE_RUNNING) {
+                       applied = work.advance_authority_cleanup(host.monotonic_now_us(host.ctx),
+                                                                log.durable_seq());
+                   }
+                   // A transition none of them reports applied is a defect.
+                   if (work.transitions.next_commit_seq() == before) {
+                       return ItemEnd{ItemEnd::Kind::none};
+                   }
+                   return applied ? ItemEnd{ItemEnd::Kind::applied}
+                                  : ItemEnd{ItemEnd::Kind::defect, AYNI_RESTRICTION_INTERNAL};
+               })) {
+            progress.applied(host);
         }
     }
 }
@@ -176,21 +235,14 @@ void ayni_kernel::apply_calls(StepBudget &progress) {
         // journal() can fence/restrict this writer. Never carry RUNNING across
         // that transition into another call dispatch in the same bounded step.
         const auto mode = call_mode();
-        const uint64_t first_seq = work.transitions.next_commit_seq();
         const auto admission =
             has_room() ? Runtime::JournalAdmission::available : Runtime::JournalAdmission::blocked;
-        const auto result = calls.advance_managed(host.monotonic_now_us(host.ctx),
-                                                  log.durable_seq(), mode, admission);
-        if (result == Runtime::Advance::idle) {
+        if (!run_transition([&] {
+                return ended(calls.advance_managed(host.monotonic_now_us(host.ctx),
+                                                   log.durable_seq(), mode, admission));
+            })) {
             break;
         }
-        if (result == Runtime::Advance::internal || result == Runtime::Advance::attempt_exhausted) {
-            enter_restricted(result == Runtime::Advance::attempt_exhausted
-                                 ? AYNI_RESTRICTION_ATTEMPT_ID_EXHAUSTED
-                                 : AYNI_RESTRICTION_INTERNAL);
-            break;
-        }
-        journal(first_seq);
         progress.applied(host);
     }
 }
@@ -207,33 +259,20 @@ void ayni_kernel::apply_ready_work(StepBudget &progress) {
     // journal() restricts on ends both loops: nothing after it is stored.
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
-        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
-            const uint64_t first_seq = work.transitions.next_commit_seq();
-            const auto result = ayni::kernel::do_due_work(
-                work, progress.started_us, host.monotonic_now_us(host.ctx), log.durable_seq());
-            if (result == ayni::kernel::DueWorkResult::none) {
-                break;
-            }
-            if (result == ayni::kernel::DueWorkResult::internal) {
-                enter_restricted(AYNI_RESTRICTION_INTERNAL);
-                break;
-            }
-            journal(first_seq);
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room() &&
+               run_transition([&] {
+                   return ended(ayni::kernel::do_due_work(work, progress.started_us,
+                                                          host.monotonic_now_us(host.ctx),
+                                                          log.durable_seq()));
+               })) {
             progress.applied(host);
         }
-        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room()) {
-            const uint64_t first_seq = work.transitions.next_commit_seq();
-            const auto decided = ayni::kernel::decide_next(
-                work, decisions, ready_before, progress.started_us, log.durable_seq(),
-                {host.ctx, host.monotonic_now_us}, calls);
-            if (decided == ayni::kernel::DecisionResult::none) {
-                break;
-            }
-            if (decided == ayni::kernel::DecisionResult::internal) {
-                enter_restricted(AYNI_RESTRICTION_INTERNAL);
-                break;
-            }
-            journal(first_seq);
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room() &&
+               run_transition([&] {
+                   return ended(ayni::kernel::decide_next(
+                       work, decisions, ready_before, progress.started_us, log.durable_seq(),
+                       {host.ctx, host.monotonic_now_us}, calls));
+               })) {
             progress.applied(host);
         }
     }
@@ -427,11 +466,13 @@ void ayni_kernel::handle_local_input(const ayni::catalog::CatalogId &source, uin
         ++events_discarded;
         return;
     }
-    const uint64_t first_seq = work.transitions.next_commit_seq();
-    if (!ayni::kernel::apply_local_input(work, source, now_us, input)) {
-        ++events_unmatched;
-    }
-    journal(first_seq);
+    static_cast<void>(run_transition([&] {
+        if (!ayni::kernel::apply_local_input(work, source, now_us, input)) {
+            ++events_unmatched;
+            return ItemEnd{ItemEnd::Kind::none};
+        }
+        return ItemEnd{ItemEnd::Kind::applied};
+    }));
 }
 
 // FENCED recovers too: its boot sequence first isolates the old writer.

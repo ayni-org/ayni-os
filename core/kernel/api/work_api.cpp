@@ -1,13 +1,14 @@
 // C ABI entry points of the work model (ADR-0017): registration of
 // principals, agents, goal types and strategies, sessions, intents and their
 // queries.
-// They check arguments and struct sizes, then whether a callback is running,
-// then the lifecycle state (contracts/domain/lifecycles.md); the rules of
+// They check arguments and struct sizes, then their gate (api_gate.h): whether
+// a callback is running and the lifecycle state; the rules of
 // sessions and intents live in kernel/intent/. Every struct here is new in
 // 0.5 or later or changed since, so its only layout is its sizeof.
 
 #include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
+#include "kernel/api/api_gate.h"
 #include "kernel/intent/authority_intent.h"
 #include "kernel/intent/intent.h"
 #include "kernel/intent/work_model.h"
@@ -27,18 +28,8 @@ template <typename Struct> ayni_status_t check_size(const Struct &value) {
     return check_struct_size(value.struct_size, sizeof(Struct), sizeof(Struct));
 }
 
-// Queries answer from RECOVERING to DRAINING, with state that may not be
-// durable yet (C-COMMIT-004).
-bool answers_queries(ayni_lifecycle_t lifecycle) {
-    return lifecycle != AYNI_LIFECYCLE_CONFIGURING && lifecycle != AYNI_LIFECYCLE_STOPPED;
-}
-
 bool is_channel(ayni_channel_t channel) {
     return channel == AYNI_CHANNEL_VOICE || channel == AYNI_CHANNEL_MANAGEMENT;
-}
-
-ayni::work::InputResumeBoundary sample_input_boundary(void *context) {
-    return static_cast<ayni::kernel::EventIngress *>(context)->resume_boundary();
 }
 
 // Registering an id twice is an argument error; the capacity comes last.
@@ -75,33 +66,14 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
-    }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
-        return AYNI_NOT_READY;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::running);
+        gated != AYNI_OK) {
+        return gated;
     }
     ayni::kernel::IntentOutcome outcome{};
-    const uint64_t now_us = kernel->host.monotonic_now_us(kernel->host.ctx);
-    const uint64_t first_seq = kernel->work.transitions.next_commit_seq();
     const bool log_was_idle = kernel->log.idle();
-    const ayni::kernel::IntentContext context{now_us,
-                                              kernel->log.durable_seq(),
-                                              kernel->storage_has_room(),
-                                              kernel->storage_admission_status(),
-                                              {kernel->host.ctx, kernel->host.monotonic_now_us},
-                                              {&kernel->ingress, sample_input_boundary}};
-    status = ayni::kernel::apply_intent(kernel->work, decoded, context, outcome, failure);
-    if (status == AYNI_OK && decoded.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&
-        kernel->storage_has_room() && kernel->storage_admission_status() == AYNI_OK &&
-        kernel->work.transitions.next_commit_seq() == first_seq) {
-        static_cast<void>(ayni::kernel::apply_pending_revoke(kernel->work));
-    }
-    // Also AYNI_INTERNAL, which used up a commit_seq (ayni.h).
-    const bool committed = kernel->work.transitions.next_commit_seq() != first_seq;
-    if (committed) {
-        kernel->journal(first_seq);
-    }
+    bool committed = false;
+    status = kernel->submit_intent(decoded, outcome, failure, committed);
     if (status == AYNI_OK && out_result != nullptr) {
         ayni_intent_result_v1 result{};
         result.struct_size = sizeof(result);
@@ -267,8 +239,9 @@ ayni_status_t copy_authority_field(ayni_bytes_v1 bytes, uint32_t field_index,
 // Query framing before borrowing a requirement; all callers preserve outputs.
 ayni_status_t find_requirement(const ayni_kernel *kernel, uint64_t goal_id, uint32_t at,
                                ayni::work::GoalRequirement &out) {
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     ayni::work::GoalAuthorityRecord record{};
@@ -297,8 +270,9 @@ ayni_status_t ayni_register_principal(ayni_kernel_t *kernel,
         principal->binding_revision == 0U || principal->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->work.principals.add_owner(
                {principal->principal_id, principal->binding_revision, principal->kind})
@@ -317,8 +291,9 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
     if (agent->agent_id == 0U || agent->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return add_status(kernel->work.agents.add(agent->agent_id));
 }
@@ -333,8 +308,9 @@ ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
     if (status != AYNI_OK) {
         return status;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->catalogs.capabilities.add_validated(*capability, encoding);
 }
@@ -363,8 +339,9 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
                    : goal_type->strategy_id.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     type.version = goal_type->version;
     type.ctx = goal_type->ctx;
@@ -397,8 +374,9 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
         strategy->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || kernel->lifecycle != AYNI_LIFECYCLE_CONFIGURING) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
+        gated != AYNI_OK) {
+        return gated;
     }
     entry.version = strategy->version;
     entry.ctx = strategy->ctx;
@@ -423,11 +401,9 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
         session->reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback()) {
-        return AYNI_INVALID_STATE;
-    }
-    if (kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
-        return AYNI_NOT_READY;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::running);
+        gated != AYNI_OK) {
+        return gated;
     }
     const auto *principal = kernel->work.principals.find(session->principal_id);
     if (principal == nullptr) {
@@ -447,8 +423,9 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id) {
     if (kernel == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (kernel->in_callback() || !answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::session_close);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->work.sessions.close(session_id) ? AYNI_OK : AYNI_NOT_FOUND;
 }
@@ -485,8 +462,9 @@ ayni_status_t ayni_get_intent_receipt(const ayni_kernel_t *kernel, uint64_t prin
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     return kernel->intent_receipt(principal_id, command_id, *out_receipt);
 }
@@ -500,8 +478,9 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     const ayni::work::AgentInstance *agent = kernel->work.agents.find_agent(agent_id);
     if (agent == nullptr) {
@@ -528,8 +507,9 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.goals.find(goal_id, index)) {
@@ -548,8 +528,9 @@ ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.tasks.find(task_id, index)) {
@@ -570,8 +551,9 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.grants.find(grant_id, index)) {
@@ -623,8 +605,9 @@ ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_i
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.grants.find(grant_id, index)) {
@@ -639,8 +622,9 @@ ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goa
     if (kernel == nullptr || out_size == nullptr || (buffer == nullptr && capacity != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.goals.find(goal_id, index)) {
@@ -669,8 +653,9 @@ ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal
     if (status != AYNI_OK) {
         return status;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.goals.find(goal_id, index)) {
@@ -778,8 +763,9 @@ ayni_status_t ayni_get_task_authority(const ayni_kernel_t *kernel, uint64_t task
     if (size != AYNI_OK) {
         return size;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.tasks.find(task_id, index)) {
@@ -819,8 +805,9 @@ ayni_status_t ayni_get_task_authority_reference(const ayni_kernel_t *kernel, uin
     if (size != AYNI_OK) {
         return size;
     }
-    if (!answers_queries(kernel->lifecycle)) {
-        return AYNI_INVALID_STATE;
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
     }
     uint32_t index = 0;
     if (!kernel->work.tasks.find(task_id, index)) {
