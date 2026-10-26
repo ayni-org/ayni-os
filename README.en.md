@@ -4,7 +4,7 @@
 
 **A cross-device personal assistant AgentOS: one assistant for the user, with multiple Agents sharing managed system services.**
 
-> This repository is at M1 (experimental ABI 0.38, storage schema 2). The Core work, authority, resource, managed-call and execution mechanisms have normal-path validation. P1 adds typed tools, a Native OpenAI-compatible Provider, rules, ToolLoop and bounded conversation values; see [M1 progress](reports/core/m1-progress.md) and [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md). Next: the single-process Native CLI, two Agents and conversation file storage. Kernel history erasure and individual-turn deletion remain P3 work. ESP32, full E1–E4, Core Alpha and hardware acceptance remain unverified. The rest of this README describes the design targets.
+> This repository is at M1 (experimental ABI 0.39, storage schema 2). The Core work, authority, resource, managed-call and execution mechanisms have normal-path validation. P1 adds typed tools, a Native OpenAI-compatible Provider, rules, ToolLoop and bounded conversation values; see [M1 progress](reports/core/m1-progress.md) and [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md). P2 implements the single-process Native CLI, two Agents and conversation file storage, with normal sessions and orderly reopen validated; see the [CLI guide](targets/native_cli/README.md). Next: P3 structure and memory. Kernel history erasure and individual-turn deletion remain P3 work. ESP32, full E1–E4, Core Alpha and hardware acceptance remain unverified. The rest of this README describes the design targets.
 
 See the [Ayni implementation plan](docs/ayni_v1.0.md) (Chinese) for the complete design, scope, draft interfaces, and acceptance gates.
 
