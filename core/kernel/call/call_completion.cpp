@@ -131,13 +131,18 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
         applied = work_.calls.cancel_response(index, kind, action_stamp);
     } else {
         terminal = true;
-        work::CallResult result{
+        const work::CallResult result{
             kind,
             message.status,
             message.reason,
             static_cast<work::ActionEffect>(message.effect),
-            {reinterpret_cast<const char *>(message.payload.data), message.payload.size}};
-        applied = message.query_result == 0U
+            {reinterpret_cast<const char *>(message.payload.data), message.payload.size},
+            message.body};
+        // The list's shape was checked when posted; its tools and values are checked here.
+        const bool tools =
+            message.body == work::CallResultKind::text ||
+            valid_tool_calls(task_index, slots_[index].active->delivery->tools, message.payload);
+        applied = message.query_result == 0U && tools
                       ? work_.calls.finish(index, result, action_stamp,
                                            control_.result_dependencies(index))
                       : AYNI_INVALID_ARGUMENT;

@@ -6,6 +6,7 @@
 #include "catalog/binding/binding_registry.h"
 #include "work/action/action_record.h"
 #include "work/call/call_input.h"
+#include "work/call/tool_calls.h"
 #include "work/execution/execution_fact.h"
 
 namespace ayni::work {
@@ -69,7 +70,9 @@ struct CallResult {
     ayni_status_t status;        // Public failure class, OK only for successful completion/cancel.
     ayni_reason_t reason;        // Public cause, NONE for success.
     ActionEffect effect;         // Explicit Provider knowledge, checked against outcome.
-    ayni_string_v1 text;         // Copied bounded UTF-8 body; empty for ABANDONED.
+    ayni_string_v1 text;         // Copied bounded body as kind says; empty for ABANDONED.
+    // UTF-8 text, or a tool-call list only in a TOOL_CALLS contract's completion.
+    CallResultKind kind = CallResultKind::text;
 };
 
 // Whether exact input evidence still permits a result to advance dependent work.
@@ -84,7 +87,8 @@ struct CallRecord {
     std::optional<ActionFact> action; // Absent until resource admission is recorded.
     ayni_bytes_v1 domain;             // Original authority schema bytes, required.
     ayni_bytes_v1 input;              // Canonical request authorized against domain, required.
-    ayni_string_v1 result;            // Terminal text body, empty before completion.
+    ayni_string_v1 result;            // Terminal body as result_kind says, empty before completion.
+    CallResultKind result_kind = CallResultKind::text; // Unless a completion holds tool calls.
 };
 
 // Fixed slots keep noncopyable ActionRecord claims stable. Retained input and
@@ -188,6 +192,8 @@ class CallTable {
     ayni_bytes_v1 domain(uint32_t index) const;     // Original schema, never a replacement catalog.
     ayni_bytes_v1 input(uint32_t index) const;      // Canonical bytes actually authorized and sent.
     ayni_string_v1 result(uint32_t index) const; // Retained terminal text, empty before terminal.
+    // Retained tool-call list (tool_calls.h); empty unless the result holds tool calls.
+    ayni_bytes_v1 tool_calls(uint32_t index) const;
 
   private:
     struct Entry {
@@ -198,6 +204,9 @@ class CallTable {
         uint32_t domain_size;               // Used bytes in original schema stride.
         uint32_t input_size;                // Used bytes in canonical input stride.
         uint32_t result_size; // Used UTF-8 result bytes, zero also permits empty success.
+        // How the result bytes read; set by insert, since an initializer here
+        // would stop Clang constructing the nested Entry in place.
+        CallResultKind result_kind;
     };
     struct Slot {
         std::optional<Entry> entry; // Empty means free; removing never moves another call.
@@ -211,7 +220,11 @@ class CallTable {
     usable_result(const CallResult &validated,
                   ResultDependencies dependencies); // Never normalizes invalid Provider evidence.
     static bool valid_result(const CallResult &result); // Shared execution/query result shape.
-    static bool pending(const Entry &entry); // No terminal call result has been committed.
+    // Body of either kind within this contract's result bound, before any mutation.
+    static ayni_status_t check_body(const catalog::CallContract &contract, ayni_string_v1 body,
+                                    CallResultKind kind);
+    ayni_string_v1 body(uint32_t index) const; // Retained result bytes of either kind.
+    static bool pending(const Entry &entry);   // No terminal call result has been committed.
     uint8_t *bytes(uint32_t index) const; // One address formula for the complete slot byte region.
     void set_terminal(Entry &entry, const CallResult &result, ActionStamp stamp);
     // Shared local non-delivery transition; callers supply a fixed validated Core outcome.

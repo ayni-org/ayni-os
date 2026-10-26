@@ -32,8 +32,14 @@ struct Catalogs {
     // Ends registration (ayni_start): links each goal type to its strategy,
     // then checks the device inventory, the resource topology, every
     // binding and every execution binding against the catalogs they name,
-    // in that order. The first failure's status, or AYNI_OK.
+    // then links each goal type's tools to dispatchable TOOL Bindings, in
+    // that order. The first failure's status, or AYNI_OK.
     ayni_status_t close();
+    // Whether a resolved Binding's calls can run in this build: AYNI_OK, or
+    // AYNI_UNSUPPORTED for a subscription, a physical Binding without an
+    // ExecutionBinding, or a nonphysical one holding an actuator (ADR-0050).
+    ayni_status_t dispatchable(const catalog::Binding &binding,
+                               const catalog::BindingLinks &links) const;
 
     catalog::GoalTypeRegistry goal_types;
     catalog::StrategyRegistry strategies;

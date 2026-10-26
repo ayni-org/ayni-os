@@ -134,3 +134,5 @@ ABI 0.25 起，`ayni_post_event` 在同一 ingress 实例的 u64 输入顺序耗
 ABI 0.32 增加调用等待诊断 `AYNI_CALL_WAIT_CONFLICT`（9）：其他同冲突域资源被占用，当前调用尚未准入。它是 wait 枚举，不是错误原因码；若对方处于停止隔离则仍报告 `AYNI_CALL_WAIT_QUARANTINED`。
 
 ABI 0.33 增加 `AYNI_REASON_BACKGROUND_FREQUENCY`（73），属于 `INVALID_ARGUMENT`：创建参数中的周期短于可信后台频率下限。`AYNI_CALL_SKIPPED`（8）是 Core 专用终态，不是 Provider 回执；表示资源等待到期且未派发，诊断为 `EXPIRED/RESOURCE_WAIT`，没有外部效果。
+
+ABI 0.37 增加 `AYNI_REASON_MODEL_OUTPUT`（76），用于 `FAILED` 的模型调用：模型确实运行了，但输出无法变成类型化结果（参数无法解码、工具不在提供的视图中、取值越界或正文超限）。状态为 `INVALID_ARGUMENT`，列表超出结果上限时为 `CAPACITY_EXCEEDED`。它由 Provider 报告，策略可以据此重试或结束；Provider 仍发表的不合格列表不用这个原因，而是 `RESULT_UNKNOWN`/`PROVIDER_RESULT`（ADR-0054）。

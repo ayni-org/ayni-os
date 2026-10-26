@@ -228,7 +228,13 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
         if (!attempts_.next(work_.ids.boot_epoch(), attempt)) {
             return Advance::attempt_exhausted;
         }
-        if (mailbox_.reserve(attempt, reservation) != AYNI_OK) {
+        // Only a TOOL_CALLS model attempt may post a list, within its own result bound.
+        const auto &contract = work_.calls.contract(index);
+        const uint32_t written_limit =
+            contract.result_format == catalog::call_tool_calls_result_format
+                ? contract.result_text_limit
+                : 0U;
+        if (mailbox_.reserve(attempt, reservation, written_limit) != AYNI_OK) {
             return Advance::internal;
         }
         if (work_.calls.begin_dispatch(index, attempt,

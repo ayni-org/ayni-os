@@ -16,10 +16,22 @@
 
 #include <ayni/ayni.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
 namespace ayni::catalog {
+
+// One tool a goal type's model calls may be offered (ADR-0054): an exact
+// Binding, which grants no authority by being listed.
+struct GoalTypeTool {
+    static constexpr uint32_t no_binding = 0xFFFFFFFFU;
+
+    CatalogId binding_id;
+    uint32_t binding_version = 0;
+    // In the binding registry, once link_tools() succeeded.
+    uint32_t binding_index = no_binding;
+};
 
 struct GoalType {
     static constexpr uint32_t no_strategy = 0xFFFFFFFFU;
@@ -41,6 +53,9 @@ struct GoalType {
     // Trusted declaration callback; null means explicitly no new-Goal needs.
     ayni_goal_requirements_fn export_requirements = nullptr;
     WorkProfile work_profile{}; // Immutable trusted scheduling semantics, copied into Goals.
+    // The allow list in declared order; tools[0, tool_count) are distinct by binding id.
+    std::array<GoalTypeTool, AYNI_GOAL_TYPE_TOOL_COUNT_MAX> tools{};
+    uint32_t tool_count = 0;
 };
 
 class GoalTypeRegistry {
@@ -93,6 +108,22 @@ class GoalTypeRegistry {
     // and ayni_start, which stays in CONFIGURING, resolves them again on
     // its next call.
     bool link_strategies(const StrategyRegistry &strategies);
+    // Resolves every tool of every type: resolve(tool, out_index) returns
+    // AYNI_OK with the Binding's index, or why it cannot be a tool. Returns
+    // the first failure, leaving the indexes incomplete for ayni_start to
+    // resolve again, as link_strategies does.
+    template <typename Resolve> ayni_status_t link_tools(Resolve resolve) {
+        for (uint32_t index = 0; index < types_.size(); ++index) {
+            GoalType &type = types_[index];
+            for (uint32_t at = 0; at < type.tool_count; ++at) {
+                const ayni_status_t status = resolve(type.tools[at], type.tools[at].binding_index);
+                if (status != AYNI_OK) {
+                    return status;
+                }
+            }
+        }
+        return AYNI_OK;
+    }
 
   private:
     foundation::BoundedArray<GoalType> types_;

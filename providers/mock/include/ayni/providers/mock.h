@@ -10,7 +10,14 @@ namespace ayni::providers::mock {
 // A and B have distinct Provider/endpoint IDs and one/two advance ticks of latency.
 enum class Variant { a, b };
 // Text is a model-class unary echo; action simulates local presentation with progress.
-enum class Service { text, action };
+// Typed arguments Core already checked are accepted and ignored.
+// Tools is a model-class unary of result format TOOL_CALLS (ADR-0054): leading
+// "call:<binding_id>" words of the input become calls of those offered tools,
+// each field at its first offered value and the rest of the text as each body;
+// without such words it echoes. An unoffered tool, a body over a tool's limit
+// or a list over the result limit fails with MODEL_OUTPUT, as undecodable
+// model output would.
+enum class Service { text, action, tools };
 // Startup bounds; no allocation occurs in submit/cancel/advance.
 struct Config {
     Variant variant = Variant::a;

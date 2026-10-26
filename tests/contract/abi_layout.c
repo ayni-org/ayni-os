@@ -219,7 +219,18 @@ AYNI_LAYOUT(work_profile_period, offsetof(ayni_work_profile_v1, background_perio
 AYNI_LAYOUT(work_profile_size, sizeof(ayni_work_profile_v1) == 16);
 AYNI_LAYOUT(goal_type_work_profile,
             offsetof(ayni_goal_type_v1, work_profile) == AYNI_ROUND8(24 + 7 * AYNI_PTR));
-AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 16);
+AYNI_LAYOUT(goal_type_tool_count,
+            offsetof(ayni_goal_type_v1, tool_count) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 16);
+AYNI_LAYOUT(goal_type_tool_reserved,
+            offsetof(ayni_goal_type_v1, tool_reserved) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 20);
+AYNI_LAYOUT(goal_type_tools,
+            offsetof(ayni_goal_type_v1, tools) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 24);
+AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) ==
+                                AYNI_ROUND8(AYNI_ROUND8(24 + 7 * AYNI_PTR) + 24 + AYNI_PTR));
+AYNI_LAYOUT(tool_ref_binding_id, offsetof(ayni_tool_ref_v1, binding_id) == 0);
+AYNI_LAYOUT(tool_ref_binding_version, offsetof(ayni_tool_ref_v1, binding_version) == 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_ref_reserved, offsetof(ayni_tool_ref_v1, reserved) == 4 + 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_ref_size, sizeof(ayni_tool_ref_v1) == 8 + 2 * AYNI_PTR);
 
 AYNI_LAYOUT(goal_info_struct_size, offsetof(ayni_goal_info_v1, struct_size) == 0);
 AYNI_LAYOUT(goal_info_lifecycle, offsetof(ayni_goal_info_v1, lifecycle) == 4);
@@ -339,7 +350,8 @@ AYNI_LAYOUT(snapshot_step_count, offsetof(ayni_task_snapshot_v1, step_count) == 
 AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(80 + 11 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_call_tool, offsetof(ayni_task_snapshot_v1, call_tool) == 80 + 11 * AYNI_PTR);
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(80 + 12 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -596,8 +608,33 @@ AYNI_LAYOUT(provider_request_endpoint_id,
 AYNI_LAYOUT(provider_request_arguments,
             offsetof(ayni_provider_request_v1, arguments) == 48 + 4 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_text, offsetof(ayni_provider_request_v1, text) == 56 + 5 * AYNI_PTR);
+AYNI_LAYOUT(provider_request_tool_count,
+            offsetof(ayni_provider_request_v1, tool_count) == 56 + 8 * AYNI_PTR);
+AYNI_LAYOUT(provider_request_tool_reserved,
+            offsetof(ayni_provider_request_v1, tool_reserved) == 60 + 8 * AYNI_PTR);
+AYNI_LAYOUT(provider_request_tool_context,
+            offsetof(ayni_provider_request_v1, tool_context) == 64 + 8 * AYNI_PTR);
+AYNI_LAYOUT(provider_request_tool, offsetof(ayni_provider_request_v1, tool) == 64 + 9 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_size,
-            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(56 + 8 * AYNI_PTR));
+            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(64 + 10 * AYNI_PTR));
+AYNI_LAYOUT(tool_struct_size, offsetof(ayni_tool_v1, struct_size) == 0);
+AYNI_LAYOUT(tool_binding_version, offsetof(ayni_tool_v1, binding_version) == 4);
+AYNI_LAYOUT(tool_binding_id, offsetof(ayni_tool_v1, binding_id) == 8);
+AYNI_LAYOUT(tool_capability_id, offsetof(ayni_tool_v1, capability_id) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_capability_version,
+            offsetof(ayni_tool_v1, capability_version) == 8 + 4 * AYNI_PTR);
+AYNI_LAYOUT(tool_text_limit, offsetof(ayni_tool_v1, text_limit) == 12 + 4 * AYNI_PTR);
+AYNI_LAYOUT(tool_field_count, offsetof(ayni_tool_v1, field_count) == 16 + 4 * AYNI_PTR);
+AYNI_LAYOUT(tool_reserved, offsetof(ayni_tool_v1, reserved) == 20 + 4 * AYNI_PTR);
+AYNI_LAYOUT(tool_fields, offsetof(ayni_tool_v1, fields) == AYNI_ROUND8(24 + 4 * AYNI_PTR));
+AYNI_LAYOUT(tool_tokens,
+            offsetof(ayni_tool_v1, tokens) ==
+                AYNI_ROUND8(24 + 4 * AYNI_PTR) +
+                    AYNI_AUTHORITY_FIELD_COUNT_MAX * sizeof(ayni_authority_field_desc_v1));
+AYNI_LAYOUT(tool_size, sizeof(ayni_tool_v1) ==
+                           AYNI_ROUND8(offsetof(ayni_tool_v1, tokens) +
+                                       AYNI_AUTHORITY_FIELD_COUNT_MAX *
+                                           AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX * 2 * AYNI_PTR));
 AYNI_LAYOUT(provider_struct_size, offsetof(ayni_provider_v1, struct_size) == 0);
 AYNI_LAYOUT(provider_version, offsetof(ayni_provider_v1, version) == 4);
 AYNI_LAYOUT(provider_provider_id, offsetof(ayni_provider_v1, provider_id) == 8);
@@ -634,7 +671,32 @@ AYNI_LAYOUT(provider_result_reason, offsetof(ayni_provider_result_v1, reason) ==
 AYNI_LAYOUT(provider_result_effect, offsetof(ayni_provider_result_v1, effect) == 40);
 AYNI_LAYOUT(provider_result_query_result, offsetof(ayni_provider_result_v1, query_result) == 44);
 AYNI_LAYOUT(provider_result_result, offsetof(ayni_provider_result_v1, result) == 48);
-AYNI_LAYOUT(provider_result_size, sizeof(ayni_provider_result_v1) == 48 + 2 * AYNI_PTR);
+AYNI_LAYOUT(provider_result_tool_call_count,
+            offsetof(ayni_provider_result_v1, tool_call_count) == 48 + 2 * AYNI_PTR);
+AYNI_LAYOUT(provider_result_tool_reserved,
+            offsetof(ayni_provider_result_v1, tool_reserved) == 52 + 2 * AYNI_PTR);
+AYNI_LAYOUT(provider_result_tool_calls,
+            offsetof(ayni_provider_result_v1, tool_calls) == 56 + 2 * AYNI_PTR);
+AYNI_LAYOUT(provider_result_size,
+            sizeof(ayni_provider_result_v1) == AYNI_ROUND8(56 + 3 * AYNI_PTR));
+AYNI_LAYOUT(tool_call_struct_size, offsetof(ayni_tool_call_v1, struct_size) == 0);
+AYNI_LAYOUT(tool_call_binding_version, offsetof(ayni_tool_call_v1, binding_version) == 4);
+AYNI_LAYOUT(tool_call_binding_id, offsetof(ayni_tool_call_v1, binding_id) == 8);
+AYNI_LAYOUT(tool_call_arguments, offsetof(ayni_tool_call_v1, arguments) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_call_text, offsetof(ayni_tool_call_v1, text) == 16 + 3 * AYNI_PTR);
+AYNI_LAYOUT(tool_call_size, sizeof(ayni_tool_call_v1) == 16 + 5 * AYNI_PTR);
+AYNI_LAYOUT(task_tool_call_struct_size, offsetof(ayni_task_tool_call_v1, struct_size) == 0);
+AYNI_LAYOUT(task_tool_call_reserved, offsetof(ayni_task_tool_call_v1, reserved) == 4);
+AYNI_LAYOUT(task_tool_call_call, offsetof(ayni_task_tool_call_v1, call) == 8);
+AYNI_LAYOUT(task_tool_call_fields,
+            offsetof(ayni_task_tool_call_v1, fields) == AYNI_ROUND8(24 + 5 * AYNI_PTR));
+AYNI_LAYOUT(task_tool_call_tokens,
+            offsetof(ayni_task_tool_call_v1, tokens) ==
+                AYNI_ROUND8(24 + 5 * AYNI_PTR) +
+                    AYNI_AUTHORITY_FIELD_COUNT_MAX * sizeof(ayni_scope_field_v1));
+AYNI_LAYOUT(task_tool_call_size, sizeof(ayni_task_tool_call_v1) ==
+                                     AYNI_ROUND8(offsetof(ayni_task_tool_call_v1, tokens) +
+                                                 AYNI_AUTHORITY_FIELD_COUNT_MAX * 2 * AYNI_PTR));
 
 AYNI_LAYOUT(config_call_capacity, offsetof(ayni_config_v1, call_capacity) == 132);
 AYNI_LAYOUT(config_call_input_max_bytes, offsetof(ayni_config_v1, call_input_max_bytes) == 136);
@@ -674,8 +736,12 @@ AYNI_LAYOUT(ayni_task_call_result_v1_requires_seq,
 AYNI_LAYOUT(ayni_task_call_result_v1_status, offsetof(ayni_task_call_result_v1, status) == 32);
 AYNI_LAYOUT(ayni_task_call_result_v1_reason, offsetof(ayni_task_call_result_v1, reason) == 36);
 AYNI_LAYOUT(ayni_task_call_result_v1_text, offsetof(ayni_task_call_result_v1, text) == 40);
+AYNI_LAYOUT(ayni_task_call_result_v1_tool_call_count,
+            offsetof(ayni_task_call_result_v1, tool_call_count) == 40 + 2 * AYNI_PTR);
+AYNI_LAYOUT(ayni_task_call_result_v1_reserved,
+            offsetof(ayni_task_call_result_v1, reserved) == 44 + 2 * AYNI_PTR);
 AYNI_LAYOUT(ayni_task_call_result_v1_size,
-            sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(40 + 2 * AYNI_PTR));
+            sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(48 + 2 * AYNI_PTR));
 
 AYNI_LAYOUT(ayni_call_info_v1_struct_size, offsetof(ayni_call_info_v1, struct_size) == 0);
 AYNI_LAYOUT(ayni_call_info_v1_phase, offsetof(ayni_call_info_v1, phase) == 4);
@@ -698,7 +764,7 @@ AYNI_LAYOUT(ayni_call_info_v1_cancel_result, offsetof(ayni_call_info_v1, cancel_
 AYNI_LAYOUT(ayni_call_info_v1_input_bytes, offsetof(ayni_call_info_v1, input_bytes) == 96);
 AYNI_LAYOUT(ayni_call_info_v1_result_bytes, offsetof(ayni_call_info_v1, result_bytes) == 100);
 AYNI_LAYOUT(ayni_call_info_v1_wait_reason, offsetof(ayni_call_info_v1, wait_reason) == 104);
-AYNI_LAYOUT(ayni_call_info_v1_reserved, offsetof(ayni_call_info_v1, reserved) == 108);
+AYNI_LAYOUT(ayni_call_info_v1_tool_call_count, offsetof(ayni_call_info_v1, tool_call_count) == 108);
 AYNI_LAYOUT(ayni_call_info_v1_waited_us, offsetof(ayni_call_info_v1, waited_us) == 112);
 AYNI_LAYOUT(ayni_call_info_v1_size, sizeof(ayni_call_info_v1) == 160);
 AYNI_LAYOUT(ayni_call_info_v1_query_revision, offsetof(ayni_call_info_v1, query_revision) == 120);

@@ -358,3 +358,9 @@ Scene 的一次改变与精确 `type9/v9` 命令同批且无其他领域更新�
 物理 `CALL_STATE type21/v3` 在 v1 的 ActionState 长度串之后追加 ExecutionFact；非物理保留 v1，后台未派发跳过保留 v2。尾部固定112 B，加三个 ID 字符串的正文、各数值投影固定16 B+字段/单位正文、各观察引用固定32 B+来源ID正文。按顺序为：Binding ID/version、Executor ID/version、Scene ID/version、form/lease_us/max_command_age_us/field_count；各字段 name/unit 两个长度串与 minimum_field_id/maximum_field_id u32；scene_enable_seq/control_domain u64、control_mode u32、Kernel/authority/Executor/safety 四个 epoch u64、calibration_version u32、phase/target/stop_cause/dependency_count 四个 u32；各依赖 source ID 长度串、version u32、boot/generation/sequence 三个 u64。
 
 phase=1 PREPARED、2 DISPATCHING、3 STOPPED、4 NOT_STARTED；target=0 UNVERIFIED、1 SATISFIED、2 UNSATISFIED。已停止事实不能回到运行；原约束、代际和依赖不能改变。完整数值从原 canonical input 提取，不再复制另一份参数。nonce、deadline、轮询时间、在线端口诊断不持久；permit_id 取原执行 attempt.request_id，不另分配或恢复新 ID。执行停止可先独立提交，结果/Task 步骤仍同批，直到必要停止与借用清理完成才可回收。新增记录正常 codec 与功能证据不等于新恢复/中断专项已经验证。
+
+## ABI 0.37：类型化工具调用（ADR-0054）
+
+schema 2 保持。结果格式为 TOOL_CALLS 的调用契约，其每一行（含尚未完成、失败与 SKIPPED）都写 REQUIRED `CALL_STATE type21/v4`：v1 的完整布局后接 u32 结果种类，1 为 UTF-8 文本、2 为工具调用列表；种类 2 只能是 `COMPLETED`，结果长度串里是下述列表。TOOL_CALLS 只用于非物理模型契约，所以 v4 不与 v3 的执行尾部同时出现。旧 reader 遇到 v4 明确拒绝，不会把列表当作文本读出。
+
+工具调用列表格式 1（全部整数小端，长度串为 u32 字节数加正文）：调用数 u32（1～8）；每个调用依次为 Binding version u32（非零）、Binding ID 长度串、字段数 u32（≤ 8）、各字段、正文长度串；每个字段依次为字段 ID u32、种类 u32、单位长度串，I64 再接 i64 值（原位编码），ENUM/IDENTIFIER 再接取值长度串。字段 ID 非零且在调用内严格递增；ID、单位与取值都是 CatalogId，I64 必须有单位，枚举与标识符的单位为空；正文为最长 65536 B 的 UTF-8。解码严格：任何越界、非规范顺序、未知种类或尾部多余字节都使整行无效。列表大小受该调用契约的 result_text_limit 约束，与文本结果相同；编码不存指针，也不保存模型原始 JSON。

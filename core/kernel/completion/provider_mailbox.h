@@ -5,6 +5,8 @@
 #ifndef AYNI_CORE_KERNEL_COMPLETION_PROVIDER_MAILBOX_H
 #define AYNI_CORE_KERNEL_COMPLETION_PROVIDER_MAILBOX_H
 
+#include "work/call/tool_calls.h"
+
 #include <array>
 #include <ayni/calls.h>
 #include <cstddef>
@@ -34,6 +36,13 @@ enum class ProviderMessageKind {
     abandoned,
 };
 
+// Encodes a measured typed payload straight into its lane, under the ingress
+// lock, so no producer-side buffer of the lane's size is needed.
+struct PayloadWriter {
+    const void *context; // Producer input, unchanged since it was measured.
+    void (*write)(const void *context, uint8_t *out, uint32_t size); // Exactly size bytes.
+};
+
 // Untrusted, bounded message view; input data is copied before post returns.
 struct ProviderMessage {
     ProviderMessageKind kind;      // Chooses progress, cancel control or terminal lane.
@@ -43,6 +52,10 @@ struct ProviderMessage {
     ayni_bytes_v1 payload;         // Schema-owned bytes; cancel control has no payload.
     ayni_call_effect_t effect = 0; // Untrusted assertion; zero is invalid at the consumer.
     uint32_t query_result = 0;     // Zero for ordinary submit, explicit evidence for query.
+    // How the payload reads; the consumer checks it against the call's contract.
+    work::CallResultKind body = work::CallResultKind::text;
+    // Present only for a terminal with no payload.data: fills payload.size bytes.
+    const PayloadWriter *writer = nullptr;
 };
 
 // Identity of one reserved slot/attempt, scoped to this mailbox's lifetime.
@@ -83,8 +96,10 @@ class ProviderMailbox {
 
     // Owner: reserve before submit. Request IDs must strictly increase across
     // all reservations, including boot changes, so an old token never aliases.
+    // written_limit bounds a written terminal for this attempt; 0 refuses one.
     // Capacity or malformed identity errors preserve out and consume no identity.
-    ayni_status_t reserve(ayni_attempt_ref_v1 attempt, ProviderReservation &out);
+    ayni_status_t reserve(ayni_attempt_ref_v1 attempt, ProviderReservation &out,
+                          uint32_t written_limit = 0);
     // Owner: target for a live exact reservation; null when stale. Its address
     // survives reuse, but callers must retain the original attempt identity.
     ayni_provider_completion_t *completion(ProviderReservation reservation);
@@ -93,7 +108,9 @@ class ProviderMailbox {
     // Any producer: valid progress can replace only progress; a cancel control
     // is accepted once. Terminal publication ends producer delivery: later
     // posts are rejected, while previously accepted cancel remains pending.
-    // Older progress is acknowledged but ignored. All other errors preserve data.
+    // A written terminal over its attempt's written_limit is CAPACITY_EXCEEDED,
+    // or INVALID_ARGUMENT when the attempt takes none. Older progress is
+    // acknowledged but ignored. All other errors preserve data.
     ayni_status_t post(ProviderReservation reservation, const ProviderMessage &message);
     // Owner-created mask: deferred reliable terminals remain owned but do not spin or starve peers.
     using BlockedSlots = std::array<bool, capacity_max>;
@@ -126,6 +143,7 @@ class ProviderMailbox {
         uint32_t size;             // Payload bytes, <= payload_bytes_; zero is a valid payload.
         ayni_call_effect_t effect; // Copied assertion; domain validates result/effect pairing.
         uint32_t query_result;     // Copied query classification; zero for submit.
+        work::CallResultKind body = work::CallResultKind::text; // Domain validates it.
     };
     // Keep acknowledged cancellation identity until terminal so duplicate control
     // cannot be accepted again. Separate stages do not overload payload length.
@@ -140,6 +158,7 @@ class ProviderMailbox {
         std::optional<Result> progress;      // Latest unapplied progress; empty after ack/terminal.
         std::optional<Cancel> cancel;        // Empty before the first accepted cancel response.
         std::optional<Result> terminal;      // Immutable once posted, released only by owner ack.
+        uint32_t written_limit = 0;          // Bytes a written terminal may take; 0 refuses one.
     };
     struct Slot {
         ayni_provider_completion target; // Immutable owner/address across slot incarnations.

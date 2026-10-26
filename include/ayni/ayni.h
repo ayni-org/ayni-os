@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 36u
+#define AYNI_ABI_MINOR 37u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -594,7 +594,10 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
  * CONFIGURING, when the host lacks the complete storage port group
  * (including a legacy table with only append/read_prefix); since
  * 0.10 AYNI_NOT_FOUND, staying in CONFIGURING, when a goal type names a
- * strategy that is not registered (C-LIFE-003).
+ * strategy that is not registered (C-LIFE-003). Since 0.37, also staying in
+ * CONFIGURING, AYNI_NOT_FOUND when a goal type's tool names no registered
+ * Binding and AYNI_INVALID_ARGUMENT when it names a MODEL-class or
+ * subscription Binding.
  */
 ayni_status_t ayni_start(ayni_kernel_t *kernel);
 
@@ -975,6 +978,9 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_EXECUTION_SCENE ((ayni_reason_t)74)
 /* Exact measured prerequisite is absent, changed or expired. Since 0.35. */
 #define AYNI_REASON_EXECUTION_OBSERVATION ((ayni_reason_t)75)
+/* Model output could not become a typed result: undecodable tool arguments,
+ * an unknown tool or values outside the offered ones. Since 0.37. */
+#define AYNI_REASON_MODEL_OUTPUT ((ayni_reason_t)76)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1132,6 +1138,17 @@ typedef struct ayni_work_profile_v1 {
                                           minimum; other classes: 0. */
 } ayni_work_profile_v1;
 
+/* Maximum tools one GoalType offers to its model calls. Since 0.37. */
+#define AYNI_GOAL_TYPE_TOOL_COUNT_MAX 8u
+
+/* One tool a GoalType allows its model calls to propose: an exact Binding of a
+ * TOOL capability. It grants no authority (ADR-0054). Since 0.37. */
+typedef struct ayni_tool_ref_v1 {
+    ayni_string_v1 binding_id; /* catalog id of a registered Binding */
+    uint32_t binding_version;  /* nonzero exact version */
+    uint32_t reserved;         /* must be 0 */
+} ayni_tool_ref_v1;
+
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
     uint32_t version;               /* nonzero */
@@ -1157,6 +1174,14 @@ typedef struct ayni_goal_type_v1 {
      * REMINDER requires unbounded occurrence_wait_max_us; BACKGROUND allows INTERVAL only
      * and requires occurrence_wait_max_us <= RESOURCE_WAIT_DEFAULT_US. */
     ayni_work_profile_v1 work_profile;
+    /* Since 0.37. The allow list of tools for this type's model calls, at most
+     * GOAL_TYPE_TOOL_COUNT_MAX with distinct binding ids; tools may be NULL only when
+     * tool_count is 0. Copied; ayni_start requires each to name a registered
+     * TOOL-class, non-subscription Binding. A model call is offered only the
+     * listed tools its Task's Goal is authorized for (ADR-0054). */
+    uint32_t tool_count;
+    uint32_t tool_reserved; /* must be 0 */
+    const ayni_tool_ref_v1 *tools;
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -1481,7 +1506,9 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
  * version, a goal_type_id that is not a catalog id, trigger_kinds that is 0
  * or holds a kind this library does not define, a nonzero reserved field, a
  * strategy_id that is not a catalog id, or is not empty when trigger_kinds
- * holds NONE alone, or an id and version already registered;
+ * holds NONE alone, since 0.37 a malformed or duplicate tool reference or
+ * more than GOAL_TYPE_TOOL_COUNT_MAX tools, or an id and version already
+ * registered;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size;
  * AYNI_INVALID_STATE outside CONFIGURING; AYNI_CAPACITY_EXCEEDED once
  * goal_type_capacity versions are registered.
@@ -1523,6 +1550,8 @@ typedef struct ayni_task_step_v1 {
 /* Since 0.31. Defined in calls.h; borrowed only during a strategy callback. */
 struct ayni_call_request_v1;
 struct ayni_task_call_result_v1;
+/* Since 0.37. Defined in calls.h. */
+struct ayni_task_tool_call_v1;
 
 /* What a strategy sees of a task. The views point into kernel memory and
  * are valid only during the decide call (C-POLICY-004). */
@@ -1554,6 +1583,11 @@ typedef struct ayni_task_snapshot_v1 {
     const void *call_context;
     ayni_status_t (*call_result)(const void *context, ayni_string_v1 step_key,
                                  struct ayni_task_call_result_v1 *out);
+    /* Since 0.37. Read tool call index (below the result's tool_call_count)
+     * of this Task's completed model call by step key, with call_context.
+     * The typed view borrows Core memory and out until decide returns. */
+    ayni_status_t (*call_tool)(const void *context, ayni_string_v1 step_key, uint32_t index,
+                               struct ayni_task_tool_call_v1 *out);
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in

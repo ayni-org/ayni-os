@@ -45,6 +45,30 @@ template <typename AddResult> ayni_status_t add_status(AddResult result) {
     return AYNI_CAPACITY_EXCEEDED;
 }
 
+// Copies a goal type's tool allow list (ADR-0054). Bindings resolve at start,
+// so only the references' shape and distinct binding ids are checked here.
+bool read_tools(const ayni_goal_type_v1 &input, ayni::catalog::GoalType &type) {
+    if (input.tool_count > AYNI_GOAL_TYPE_TOOL_COUNT_MAX || input.tool_reserved != 0U ||
+        (input.tool_count != 0U && input.tools == nullptr)) {
+        return false;
+    }
+    for (uint32_t at = 0; at < input.tool_count; ++at) {
+        const ayni_tool_ref_v1 &tool = input.tools[at];
+        if (tool.binding_version == 0U || tool.reserved != 0U ||
+            !type.tools[at].binding_id.assign(tool.binding_id)) {
+            return false;
+        }
+        for (uint32_t before = 0; before < at; ++before) {
+            if (type.tools[before].binding_id.equals(tool.binding_id)) {
+                return false;
+            }
+        }
+        type.tools[at].binding_version = tool.binding_version;
+    }
+    type.tool_count = input.tool_count;
+    return true;
+}
+
 // Runs steps 1 to 5 of ayni_submit_intent once out_error is known to be
 // writable or absent; failure receives the detail of a refusal.
 // C-WIRE-004/C-AUTH-027: decode and apply before publishing a result; an exact
@@ -336,7 +360,8 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
         (type.work_profile.kind == AYNI_WORK_BACKGROUND &&
          goal_type->trigger_kinds != AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL)) ||
         (has_tasks ? !type.strategy_id.assign(goal_type->strategy_id)
-                   : goal_type->strategy_id.size != 0U)) {
+                   : goal_type->strategy_id.size != 0U) ||
+        !read_tools(*goal_type, type)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);

@@ -9,7 +9,7 @@
 | 2 | — | MA-008A | 统一调用与稳定步骤身份，Binding 校验，ActionRecord、PREPARED/DISPATCHING 持久屏障，最终复核；进度/取消/终态可靠完成槽；B4 原子应用；Mock A/B；排空关闭 | 内部结果交接已合并 #62（ADR-0044）；内部调用契约已合并 #63，公开调用链/完成/对账/等待恢复已合并 #64（ADR-0045）；可复用 Mock A/B 已由 #67 交付 |
 | 3 | — | MA-018B | 过程与控制会话、nonce 锚定续租、到期不可恢复、即时授权门控、最小 Scene；停止确认前隔离；独立模拟执行端/停止链 | 独立门 #68（ADR-0049）；Core、Scene、最小观察和 Mock 停止闭环见 [#69](https://github.com/RobotSe7en/ayni/pull/69)（ADR-0050）；执行端端口异步化见 [#71](https://github.com/RobotSe7en/ayni/pull/71)（ADR-0052）；正常功能通过，故障/恢复与硬件专项待验收 |
 | 4 | P0 | 结构收尾 | 审查项 F05 泛型精确命令查找、F06 调用对 Task 的传播移到 work、F11 主版本 0 只收当前 ABI 布局、F16 前半共享默认配置、F19 文档/草案对齐；两个 runner 的并行 CI；行为、ABI 0.36 布局与 schema 2 不变 | [#72](https://github.com/RobotSe7en/ayni/pull/72)（ADR-0053） |
-| 5 | P1 | MA-008C | typed 工具调用结果（至多 8 项）与工具视图，GoalType 允许列表内已授权的部分，ABI 0.37；OpenAI-compatible Provider：libcurl multi 工作线程、yyjson 有界解析、运行时 endpoint/model/密钥环境变量名，非流式文本与工具调用，无自动重试；本地协议夹具，实 API 单独验证 | 未开始 |
+| 5 | P1 | MA-008C | typed 工具调用结果（至多 8 项）与工具视图，GoalType 允许列表内已授权的部分，ABI 0.37；OpenAI-compatible Provider：libcurl multi 工作线程、yyjson 有界解析、运行时 endpoint/model/密钥环境变量名，非流式文本与工具调用，无自动重试；本地协议夹具，实 API 单独验证 | Core 侧 typed 工具调用、工具视图与允许列表见 [#73](https://github.com/RobotSe7en/ayni/pull/73)（ADR-0054，ABI 0.37）；OpenAI-compatible Provider 未开始 |
 | 6 | P1 | MA-009 | 规则和 ToolLoop 两策略；单轮最多 8 调用、按序；命名版本步骤；未知阻止后续；检查点明确兼容；补偿新调用新授权；多轮对话保存最近轮次与模型摘要，P1 只删整个对话 | 未开始 |
 | 7 | P2 | MA-020 前半 | runtime 演示装配（F16 后半）与 SimNode；单进程 Native CLI 内嵌 Kernel，命令映射已有意图；显式点名对 A/B 说话；脚本化 Mock CLI 会话含重启继续 | 未开始 |
 | 8 | P3 | 结构整改 | F01 `ayni_kernel` 成员私有化与 service/runtime 分区，F14 StepContext，F08 作用域重入守卫；行为、ABI 与 schema 不变 | 未开始 |

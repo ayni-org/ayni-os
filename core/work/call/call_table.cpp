@@ -30,10 +30,31 @@ bool CallTable::valid_result(const CallResult &result) {
     }
 }
 
-ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) const {
-    return valid_result(result)
-               ? check_call_text(result.text, slots_[index].entry->contract.result_text_limit)
+// A tool-call list is the whole of a TOOL_CALLS completion's body, never
+// beside text, and is bounded like text by the contract's result limit.
+ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_string_v1 body,
+                                    CallResultKind kind) {
+    if (kind == CallResultKind::text) {
+        return check_call_text(body, contract.result_text_limit);
+    }
+    if (kind != CallResultKind::tool_calls ||
+        contract.result_format != catalog::call_tool_calls_result_format) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (body.size > contract.result_text_limit) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    return tool_call_count({reinterpret_cast<const uint8_t *>(body.data), body.size}) != 0U
+               ? AYNI_OK
                : AYNI_INVALID_ARGUMENT;
+}
+
+ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) const {
+    if (!valid_result(result) ||
+        (result.kind == CallResultKind::tool_calls && result.outcome != AYNI_CALL_COMPLETED)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return check_body(slots_[index].entry->contract, result.text, result.kind);
 }
 
 // Stale evidence cannot yield a usable completed step. Keep measured side effects,
@@ -156,6 +177,7 @@ ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContr
         entry.domain_size = domain_body.size;
         entry.input_size = input_body.size;
         entry.result_size = 0;
+        entry.result_kind = CallResultKind::text;
         copy_bodies(at, domain_body, input_body, {});
         ++size_;
         index = at;
@@ -238,6 +260,7 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     entry.state.status = result.status;
     entry.state.reason = result.reason;
     entry.result_size = result.text.size;
+    entry.result_kind = result.kind;
 }
 
 ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp) {
@@ -429,9 +452,20 @@ ayni_bytes_v1 CallTable::domain(uint32_t index) const {
 ayni_bytes_v1 CallTable::input(uint32_t index) const {
     return {bytes(index) + limits_.domain_bytes, slots_[index].entry->input_size};
 }
-ayni_string_v1 CallTable::result(uint32_t index) const {
+ayni_string_v1 CallTable::body(uint32_t index) const {
     return {
         reinterpret_cast<const char *>(bytes(index) + limits_.domain_bytes + limits_.input_bytes),
         slots_[index].entry->result_size};
+}
+ayni_string_v1 CallTable::result(uint32_t index) const {
+    return slots_[index].entry->result_kind == CallResultKind::text ? body(index)
+                                                                    : ayni_string_v1{};
+}
+ayni_bytes_v1 CallTable::tool_calls(uint32_t index) const {
+    if (slots_[index].entry->result_kind != CallResultKind::tool_calls) {
+        return {};
+    }
+    const auto list = body(index);
+    return {reinterpret_cast<const uint8_t *>(list.data), list.size};
 }
 } // namespace ayni::work

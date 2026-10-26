@@ -6,10 +6,13 @@ add_executable(ayni_unit_tests
     managed_execution_test.cpp
     control_gate_test.cpp
     mock_provider_test.cpp
+    mock_tools_test.cpp
     action_record_test.cpp
     call_input_test.cpp
     call_table_test.cpp
     call_contract_test.cpp
+    tool_calls_test.cpp
+    kernel_tool_call_test.cpp
     resource_admission_test.cpp
     kernel_layout_test.cpp
     kernel_resource_test.cpp

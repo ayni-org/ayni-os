@@ -43,6 +43,7 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     output.request_call = stage_request;
     snapshot.call_context = this;
     snapshot.call_result = read_result;
+    snapshot.call_tool = read_tool_call;
 }
 
 void CallRuntime::end_decision() {
@@ -81,23 +82,11 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     if (resolved != AYNI_OK) {
         return resolved;
     }
+    const auto dispatchable = catalogs_.dispatchable(binding, proposal.links);
+    if (dispatchable != AYNI_OK) {
+        return dispatchable;
+    }
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
-    if (contract.form == catalog::CallForm::subscription) {
-        return AYNI_UNSUPPORTED; // Subscription lifecycle is delivered separately (ADR-0050).
-    }
-    const bool physical = (contract.effects & catalog::call_effect_physical) != 0U;
-    uint32_t execution = 0;
-    if (physical &&
-        !catalogs_.execution.find_binding(request.binding_id, request.binding_version, execution)) {
-        return AYNI_UNSUPPORTED;
-    }
-    for (uint32_t at = 0; at < contract.resource_count; ++at) {
-        if (!physical && (catalogs_.resources.at(proposal.links.resources[at]).flags &
-                          AYNI_RESOURCE_ACTUATOR) != 0U) {
-            return AYNI_UNSUPPORTED; // Every actuator acquisition uses the same permit/stop
-                                     // consumer.
-        }
-    }
     if ((contract.category == catalog::CallClass::model) !=
         (request.kind == AYNI_POLICY_REQUEST_MODEL)) {
         return AYNI_INVALID_ARGUMENT;
@@ -148,7 +137,9 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             state.outcome == 0U ? 0U : state.latest.transition.commit_seq,
             state.status,
             state.reason,
-            calls.result(index)};
+            calls.result(index),
+            work::tool_call_count(calls.tool_calls(index)),
+            0};
     return AYNI_OK;
 }
 

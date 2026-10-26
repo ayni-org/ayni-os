@@ -29,6 +29,8 @@ constexpr uint32_t call_effect_mask =
 constexpr uint32_t call_text_limit_max = AYNI_CALL_TEXT_BYTES_MAX;
 constexpr uint32_t call_fields_text_input_format = AYNI_CALL_INPUT_FIELDS_TEXT;
 constexpr uint32_t call_text_result_format = AYNI_CALL_RESULT_TEXT;
+// Text or typed tool calls; only nonphysical, non-subscription MODEL contracts.
+constexpr uint32_t call_tool_calls_result_format = AYNI_CALL_RESULT_TOOL_CALLS;
 
 // One static requirement; binding resolves the name only after registration.
 struct CallResource {
@@ -36,9 +38,10 @@ struct CallResource {
     uint32_t units; // Positive resource units; checked against its catalog at start.
 };
 
-// First typed input/output schema pair: complete authority fields + UTF-8 text,
-// then UTF-8 text. The enclosing capability version owns business semantics;
-// these format versions identify representation, not ABI or storage schema.
+// Typed input of complete authority fields + UTF-8 text; a result of UTF-8
+// text or, for format 2, text or a tool-call list (ADR-0054). The enclosing
+// capability version owns business semantics; these format versions identify
+// representation, not ABI or storage schema.
 struct CallContract {
     CallForm form;               // Unary/action/subscription; no implicit default.
     CallClass category;          // MODEL always consumes the Task model count.
@@ -49,9 +52,9 @@ struct CallContract {
     uint32_t dedupe_window_ms;   // Zero means no service-side operation-ID deduplication.
     uint32_t timeout_ms;         // Positive duration, never a saved monotonic timestamp.
     uint32_t input_format;       // First fields/text representation is 1; unknown rejected.
-    uint32_t result_format;      // First text representation is 1; unknown rejected.
+    uint32_t result_format;      // Text 1 or text/tool calls 2; unknown rejected.
     uint32_t input_text_limit;   // Bytes, 0..call_text_limit_max; zero permits only empty text.
-    uint32_t result_text_limit;  // Bytes, same bound; limit failure does not truncate.
+    uint32_t result_text_limit;  // Bytes, also of a tool list; failure does not truncate.
     uint32_t resource_count;     // Valid prefix of resources, 0..resource_group_max.
     std::array<CallResource, resource_group_max> resources; // Copied, sorted by ID.
 };

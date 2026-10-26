@@ -57,6 +57,11 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_CALL_INPUT_FIELDS_TEXT 1u
 /* Bounded UTF-8 text, including empty text. Since 0.31. */
 #define AYNI_CALL_RESULT_TEXT 1u
+/* Final UTF-8 text, or a list of typed tool calls for the strategy. MODEL
+ * class only, never PHYSICAL or subscription (ADR-0054). Since 0.37. */
+#define AYNI_CALL_RESULT_TOOL_CALLS 2u
+/* Maximum tool calls in one result. Since 0.37. */
+#define AYNI_CALL_TOOL_COUNT_MAX 8u
 /* Maximum members of one atomic resource group. Since 0.31. */
 #define AYNI_CALL_RESOURCE_COUNT_MAX AYNI_RESOURCE_GROUP_COUNT_MAX
 /* Maximum supported text bytes per input or result. Since 0.31. */
@@ -85,6 +90,18 @@ typedef struct ayni_call_request_v1 {
     ayni_string_v1 text;            /* Bounded UTF-8 business body, never credentials. */
 } ayni_call_request_v1;
 
+/* Since 0.37. One call a model proposes: an offered tool's exact Binding,
+ * every authority field with one concrete value, and an optional body for
+ * that tool's input text. A proposal only: the strategy decides whether to
+ * request it, and the request is checked like any other (ADR-0054). */
+typedef struct ayni_tool_call_v1 {
+    uint32_t struct_size;
+    uint32_t binding_version;  /* Nonzero exact version. */
+    ayni_string_v1 binding_id; /* Catalog id of an offered tool. */
+    ayni_scope_v1 arguments;   /* Every field once, one value each, in any order. */
+    ayni_string_v1 text;       /* UTF-8 body within the tool's input text limit. */
+} ayni_tool_call_v1;
+
 /* Since 0.31. A strategy sees only its Task's original call and result. A nonzero
  * requires_seq must be covered by the snapshot's durable prefix before its body
  * can be used for a further external call; the Kernel enforces that gate. */
@@ -97,7 +114,24 @@ typedef struct ayni_task_call_result_v1 {
     ayni_status_t status;     /* Classified result status. */
     ayni_reason_t reason;     /* Classified result cause. */
     ayni_string_v1 text;      /* Borrowed only during decide; empty while pending/unknown. */
+    /* Since 0.37. Nonzero only for a completed TOOL_CALLS result that holds
+     * tool calls instead of text; read each with snapshot call_tool. */
+    uint32_t tool_call_count;
+    uint32_t reserved; /* Written zero. */
 } ayni_task_call_result_v1;
+
+/* Since 0.37. Caller storage for one decoded tool call. call.arguments.fields
+ * points into fields and each token set into tokens, so use out in place
+ * (copying the struct keeps pointers to the original); strings borrow Core
+ * memory until decide returns. To run it, a strategy copies call's binding,
+ * arguments and text into an ayni_call_request_v1 of kind REQUEST_CALL. */
+typedef struct ayni_task_tool_call_v1 {
+    uint32_t struct_size;
+    uint32_t reserved; /* Written zero. */
+    ayni_tool_call_v1 call;
+    ayni_scope_field_v1 fields[AYNI_AUTHORITY_FIELD_COUNT_MAX];
+    ayni_string_v1 tokens[AYNI_AUTHORITY_FIELD_COUNT_MAX];
+} ayni_task_tool_call_v1;
 
 typedef struct ayni_call_resource_v1 {
     ayni_string_v1 resource_id; /* Nonempty catalog ID; unique within the group. */
@@ -109,20 +143,20 @@ typedef struct ayni_call_resource_v1 {
  * advertisements must match every field, including limits and resources.
  */
 typedef struct ayni_call_contract_v1 {
-    uint32_t struct_size;                   /* sizeof this structure. */
-    ayni_call_form_t form;                  /* One explicit call form; zero is invalid. */
-    ayni_call_class_t category;             /* TOOL or MODEL; never inferred from name. */
-    uint32_t effects;                       /* Zero or CALL_EFFECT flags. */
-    ayni_call_idempotency_t idempotency;    /* Repeatability, not automatic retry policy. */
-    ayni_call_query_authority_t query;      /* Remote evidence strength. */
-    ayni_call_cancel_mode_t cancel;         /* Remote cancel support. */
-    uint32_t dedupe_window_ms;              /* Zero: no server operation-ID deduplication. */
-    uint32_t timeout_ms;                    /* Positive request duration, not queue wait. */
-    uint32_t input_format;                  /* CALL_INPUT_FIELDS_TEXT in this version. */
-    uint32_t result_format;                 /* CALL_RESULT_TEXT in this version. */
-    uint32_t input_text_limit;              /* Bytes, 0..CALL_TEXT_BYTES_MAX. */
-    uint32_t result_text_limit;             /* Bytes, 0..CALL_TEXT_BYTES_MAX. */
-    uint32_t resource_count;                /* 0..CALL_RESOURCE_COUNT_MAX. */
+    uint32_t struct_size;                /* sizeof this structure. */
+    ayni_call_form_t form;               /* One explicit call form; zero is invalid. */
+    ayni_call_class_t category;          /* TOOL or MODEL; never inferred from name. */
+    uint32_t effects;                    /* Zero or CALL_EFFECT flags. */
+    ayni_call_idempotency_t idempotency; /* Repeatability, not automatic retry policy. */
+    ayni_call_query_authority_t query;   /* Remote evidence strength. */
+    ayni_call_cancel_mode_t cancel;      /* Remote cancel support. */
+    uint32_t dedupe_window_ms;           /* Zero: no server operation-ID deduplication. */
+    uint32_t timeout_ms;                 /* Positive request duration, not queue wait. */
+    uint32_t input_format;               /* CALL_INPUT_FIELDS_TEXT in this version. */
+    uint32_t result_format;              /* CALL_RESULT_TEXT or, since 0.37, TOOL_CALLS. */
+    uint32_t input_text_limit;           /* Bytes, 0..CALL_TEXT_BYTES_MAX. */
+    uint32_t result_text_limit; /* Bytes, 0..CALL_TEXT_BYTES_MAX; also bounds a tool list. */
+    uint32_t resource_count;    /* 0..CALL_RESOURCE_COUNT_MAX. */
     const ayni_call_resource_v1 *resources; /* Null only when resource_count is zero. */
 } ayni_call_contract_v1;
 
@@ -185,6 +219,12 @@ typedef struct ayni_call_query_result_v1 {
 
 /* Untrusted result view, copied before post returns. Diagnostic status/reason
  * contain only public codes; result is business data, never an error log.
+ * Since 0.37 a COMPLETED result of a TOOL_CALLS call holds either text or
+ * 1..CALL_TOOL_COUNT_MAX tool calls with empty text, never both; every other
+ * outcome has none. A list must name only tools offered with the request and
+ * values inside their offered sets, otherwise the receipt is invalid Provider
+ * evidence. Report undecodable model output as FAILED with reason
+ * MODEL_OUTPUT instead, as when post refuses a list over result_text_limit.
  */
 typedef struct ayni_provider_result_v1 {
     uint32_t struct_size;        /* sizeof this structure. */
@@ -196,10 +236,19 @@ typedef struct ayni_provider_result_v1 {
     ayni_call_effect_t effect;   /* Explicit knowledge, never inferred from HTTP status. */
     uint32_t query_result;       /* Zero for submit; QUERY_RESULT value for a query. */
     ayni_string_v1 result;       /* Bounded UTF-8 text, empty for cancellation controls. */
+    uint32_t tool_call_count;    /* Since 0.37. Zero, or the size of tool_calls. */
+    uint32_t tool_reserved;      /* Since 0.37. Must be zero. */
+    const ayni_tool_call_v1 *tool_calls; /* Since 0.37. Null only when tool_call_count is 0. */
 } ayni_provider_result_v1;
 
 /* Any non-ISR thread, including synchronous submission. Copies into capacity
  * reserved for the attempt, independently of storage/event queue pressure.
+ * A tool list is checked and encoded here: counts, ids, non-singleton values,
+ * duplicate fields, invalid UTF-8, or one on an attempt that takes no list,
+ * return INVALID_ARGUMENT; a struct larger than this version's returns
+ * UNSUPPORTED_VERSION (smaller, INVALID_ARGUMENT); a body over
+ * CALL_TEXT_BYTES_MAX, or an encoding over the call's result_text_limit,
+ * returns CAPACITY_EXCEEDED. Shape is checked before the attempt is found.
  * Stale/duplicate reliable posts return INVALID_STATE. Older progress is
  * ignored with OK. A successful terminal post ends the delivery borrow;
  * runtime still joins the producer before destroying Core/context storage.
@@ -207,6 +256,25 @@ typedef struct ayni_provider_result_v1 {
  */
 ayni_status_t ayni_provider_post(ayni_provider_completion_t *completion,
                                  const ayni_provider_result_v1 *result);
+
+/* Since 0.37. One offered tool as the model may use it: the Binding, its
+ * capability, the input text limit and each authority field with the values
+ * this Task is authorized for. A target or egress field shows only the
+ * Binding's own endpoint or destination. Token sets point into tokens.
+ * Names and descriptions for the model belong to the Provider's trusted
+ * configuration, keyed by binding_id and field_id (ADR-0054). */
+typedef struct ayni_tool_v1 {
+    uint32_t struct_size;
+    uint32_t binding_version;
+    ayni_string_v1 binding_id;
+    ayni_string_v1 capability_id;
+    uint32_t capability_version;
+    uint32_t text_limit; /* The Binding's input text limit, in bytes. */
+    uint32_t field_count;
+    uint32_t reserved; /* Written zero. */
+    ayni_authority_field_desc_v1 fields[AYNI_AUTHORITY_FIELD_COUNT_MAX];
+    ayni_string_v1 tokens[AYNI_AUTHORITY_FIELD_COUNT_MAX][AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX];
+} ayni_tool_v1;
 
 /* Callback inputs borrow Core storage only until the callback returns. A
  * retaining Provider copies them before returning ACCEPTED/ACCEPT_UNKNOWN.
@@ -228,6 +296,16 @@ typedef struct ayni_provider_request_v1 {
      * status read answered NOT_FOUND for it first (ADR-0052). Workers only issue
      * samples under that gate. Copy before retention, never accept it later. */
     const ayni_execution_permit_v1 *execution_permit;
+    /* Since 0.37. Tools offered to a TOOL_CALLS call, zero otherwise. During
+     * this submit only, on its thread, tool(tool_context, index, out) fills
+     * caller storage whose struct_size is set, for index below tool_count; its
+     * views borrow Core storage until submit returns. Outside any submit it
+     * returns INVALID_STATE; a Provider never keeps it, since during a later
+     * submit it would describe that call's tools. Null when tool_count is 0. */
+    uint32_t tool_count;
+    uint32_t tool_reserved; /* Written zero. */
+    const void *tool_context;
+    ayni_status_t (*tool)(const void *context, uint32_t index, ayni_tool_v1 *out);
 } ayni_provider_request_v1;
 
 /* All callbacks run on the owner thread, without reentry or blocking I/O.
@@ -347,7 +425,7 @@ typedef struct ayni_call_info_v1 {
     uint32_t input_bytes;              /* Retained complete canonical input length. */
     uint32_t result_bytes;        /* Retained UTF-8 result length, zero permits empty success. */
     ayni_call_wait_t wait_reason; /* Derived from pending runtime ownership. */
-    uint32_t reserved;            /* Written zero. */
+    uint32_t tool_call_count;     /* Since 0.37. Tool calls held instead of result text. */
     uint64_t waited_us;           /* This boot's resource wait duration; zero outside a queue. */
     uint32_t query_revision; /* Starts at one; CAS increases once per accepted management query. */
     ayni_call_query_phase_t query_phase; /* Zero before the first owner query. */
@@ -364,7 +442,8 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                             ayni_call_info_v1 *out_info);
 /* Copy terminal text to caller storage only after its batch is durable. BUSY for
  * pending/not-yet-durable, RESULT_UNKNOWN for abandoned tracking. BUFFER_TOO_SMALL
- * sets out_size only; other failures preserve outputs. No terminating NUL added. */
+ * sets out_size only; other failures preserve outputs. No terminating NUL added.
+ * A result of tool calls has no text and copies zero bytes. */
 ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logical_call_id,
                                     char *buffer, uint32_t capacity, uint32_t *out_size);
 

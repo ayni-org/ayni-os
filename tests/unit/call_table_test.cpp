@@ -3,6 +3,7 @@
 #include "work/call/call_records.h"
 
 #include "foundation/kernel_id.h"
+#include "foundation/little_endian.h"
 
 #include <array>
 #include <cstring>
@@ -86,7 +87,7 @@ TEST_F(CallTableTest, skipped_wait_encodes_non_delivery_and_does_not_allow_a_dis
     ASSERT_EQ(calls.skip_before_dispatch(index, stamp(2)), AYNI_OK);
     const auto saved = calls.record(index);
     ASSERT_TRUE(CallTable::valid_record(saved));
-    const auto version = call_record_version_for(saved.state);
+    const auto version = call_record_version_for(saved);
     EXPECT_EQ(version, call_skipped_record_version);
     std::vector<uint8_t> bytes(call_record_size(saved));
     write_call_record(saved, bytes.data());
@@ -361,3 +362,104 @@ TEST_F(CallTableTest, stale_query_preserves_effect_but_rejects_invalid_evidence_
     EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
 }
 } // namespace
+
+// ADR-0054: a TOOL_CALLS completion keeps its typed list as the result body,
+// and every row of such a contract is v4 so old readers refuse it explicitly.
+TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
+    contract.category = ayni::catalog::CallClass::model;
+    contract.result_format = AYNI_CALL_RESULT_TOOL_CALLS;
+    contract.result_text_limit = 64;
+    constexpr CallTable::Limits tool_limits{1, 32, 64, 64};
+    std::vector<uint64_t> tool_storage(CallTable::storage_size(tool_limits) / sizeof(uint64_t) + 1);
+    CallTable table{tool_storage.data(), tool_limits};
+    ASSERT_EQ(table.insert(identity, contract,
+                           {domain.data(), static_cast<uint32_t>(domain.size())},
+                           {input_bytes.data(), input_size}, stamp(1), index),
+              AYNI_OK);
+    EXPECT_EQ(call_record_version_for(table.record(index)), call_tool_calls_record_version);
+    ASSERT_EQ(table.prepare(index, stamp(2)), AYNI_OK);
+    ASSERT_EQ(table.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_TRUE(table.claim_dispatch(index, boot, 3));
+
+    const ayni_tool_call_v1 call{
+        sizeof(call), 1, {"lamp.off", 8}, {sizeof(ayni_scope_v1), 0, nullptr}, {"now", 3}};
+    uint32_t size = 0;
+    ASSERT_EQ(measure_tool_calls(&call, 1, size), AYNI_OK);
+    std::vector<uint8_t> list(size);
+    write_tool_calls(&call, 1, list.data(), size);
+    const ayni_string_v1 body{reinterpret_cast<const char *>(list.data()), size};
+    EXPECT_EQ(table.finish(index,
+                           {AYNI_CALL_FAILED, AYNI_INVALID_ARGUMENT, AYNI_REASON_MODEL_OUTPUT,
+                            ActionEffect::none, body, CallResultKind::tool_calls},
+                           stamp(4)),
+              AYNI_INVALID_ARGUMENT);
+    const std::vector<uint8_t> broken(list.begin(), list.end() - 1);
+    EXPECT_EQ(table.finish(index,
+                           {AYNI_CALL_COMPLETED,
+                            AYNI_OK,
+                            AYNI_REASON_NONE,
+                            ActionEffect::complete,
+                            {reinterpret_cast<const char *>(broken.data()), size - 1U},
+                            CallResultKind::tool_calls},
+                           stamp(4)),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(table.state(index).outcome, 0U);
+    ASSERT_EQ(table.finish(index,
+                           {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete,
+                            body, CallResultKind::tool_calls},
+                           stamp(4)),
+              AYNI_OK);
+    EXPECT_EQ(table.result(index).size, 0U);
+    ASSERT_EQ(table.tool_calls(index).size, size);
+    EXPECT_EQ(tool_call_count(table.tool_calls(index)), 1U);
+
+    const auto record = table.record(index);
+    EXPECT_EQ(record.result_kind, CallResultKind::tool_calls);
+    ASSERT_EQ(call_record_version_for(record), call_tool_calls_record_version);
+    std::vector<uint8_t> bytes(call_record_size(record));
+    write_call_record(record, bytes.data());
+    CallRecord decoded{};
+    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
+                                 call_tool_calls_record_version));
+    EXPECT_EQ(decoded.result_kind, CallResultKind::tool_calls);
+    std::vector<uint64_t> restored_storage(tool_storage.size());
+    CallTable restored{restored_storage.data(), tool_limits};
+    ASSERT_EQ(restored.restore_validated(decoded), AYNI_OK);
+    ASSERT_TRUE(restored.find(identity.call_id, index));
+    EXPECT_EQ(restored.result(index).size, 0U);
+    EXPECT_EQ(tool_call_count(restored.tool_calls(index)), 1U);
+    // An invalid kind tail or a list in a text contract is refused, not reinterpreted.
+    ayni::foundation::store_le32(bytes.data() + bytes.size() - 4U, 3U);
+    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
+                                  call_tool_calls_record_version));
+    auto text_record = record;
+    text_record.contract.result_format = AYNI_CALL_RESULT_TEXT;
+    text_record.contract.category = ayni::catalog::CallClass::tool;
+    EXPECT_FALSE(CallTable::valid_record(text_record));
+}
+
+// A text contract never accepts a tool list, nor a list over its result bound.
+TEST_F(CallTableTest, tool_call_list_needs_its_contract_and_fits_its_bound) {
+    const ayni_tool_call_v1 call{
+        sizeof(call), 1, {"lamp.off", 8}, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
+    uint32_t size = 0;
+    ASSERT_EQ(measure_tool_calls(&call, 1, size), AYNI_OK);
+    ASSERT_GT(size, contract.result_text_limit);
+    std::vector<uint8_t> list(size);
+    write_tool_calls(&call, 1, list.data(), size);
+    const CallResult result{AYNI_CALL_COMPLETED,
+                            AYNI_OK,
+                            AYNI_REASON_NONE,
+                            ActionEffect::complete,
+                            {reinterpret_cast<const char *>(list.data()), size},
+                            CallResultKind::tool_calls};
+    dispatch();
+    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_INVALID_ARGUMENT);
+    calls.clear();
+    contract.category = ayni::catalog::CallClass::model;
+    contract.result_format = AYNI_CALL_RESULT_TOOL_CALLS;
+    dispatch();
+    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(calls.state(index).outcome, 0U);
+}

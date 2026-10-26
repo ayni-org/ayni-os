@@ -66,3 +66,18 @@ CallRecord 保存原始有限参数域、规范输入、确切 Capability/Provid
 | C-CALL-013 | 所有者管理查询原 operation 不依赖原执行 Grant；精确命令/CAS 去重，查询失败或弱证据不重试执行、不切换 Provider、不恢复取消 Task | 撤权后无法确认原动作；重复管理命令产生重复查询或查询成功复活取消任务 | 正常公开场景：`ManagedCall.owner_reconciles_after_grant_revocation_without_repeating_execution`、`ManagedCall.reconciled_result_resumes_only_the_still_waiting_task`、`ManagedCall.a_cancelled_task_stays_cancelled_when_reconciliation_finds_success`、`ManagedCall.query_requires_management_channel_exact_identity_and_current_query_revision`、`BestEffortCall.missing_record_never_proves_nonexecution`、`BestEffortCall.nonauthoritative_found_result_keeps_execution_unknown`；查询记录正常 codec：`CallTableTest.reconciliation_record_codec_preserves_query_generation_and_execution_identity`；重启/故障专项未验证 |
 
 ABI 0.31 的普通资源等待超时只暂停原 Task，保留选定调用、输入和模型计数。所有者使用 `TASK_RESUME_WAIT`（非零 command_id、Task revision、MANAGEMENT 会话）显式重排队；普通 Goal/实例恢复不解除该暂停。解除等待不会解除用户暂停、授权或兼容限制；取消可以结束尚未派发的调用。正常验证：`ManagedCall.owner_resumes_the_same_resource_wait_without_another_model_charge`、`ManagedCall.wait_resume_preserves_user_pause_and_ordinary_resume_preserves_wait`、`ManagedCall.retained_resource_wait_can_be_cancelled_without_provider_dispatch`、`ManagedCall.wait_resume_never_bypasses_revoked_execution_authority`。新恢复/故障专项未执行。
+
+## ABI 0.37 的类型化工具调用（ADR-0054）
+
+GoalType 以 `tools` 声明最多 8 个可提议的工具 Binding（精确 ID 与版本，ID 不重复）。列出本身不授予任何权限；注册只检查引用的形状，`ayni_start` 再把每一项解析为策略可以请求的 TOOL 类 Binding（与提交时同一项派发检查），未知的返回 `AYNI_NOT_FOUND`，模型、订阅或无法派发的 Binding 返回 `AYNI_INVALID_ARGUMENT`，Kernel 留在 CONFIGURING。
+
+结果格式为 `AYNI_CALL_RESULT_TOOL_CALLS` 的调用只能是非物理、非订阅的 MODEL 契约。派发时 Provider 得到这次调用可用的工具：允许列表中能对上 Task 所属 Goal 某一需求的 Binding（同 Capability 与版本、同来源域，且该需求的上限容许 Binding 自己的端点或目的地），即“允许列表 ∩ 已授权”。每个工具的视图给出字段的类型、单位和该上限内的取值；路由字段只列 Binding 自己的端点或目的地。视图回调只在本次 `submit` 内、在其线程上有效，任何 `submit` 之外返回 `AYNI_INVALID_STATE`；Provider 不保留它。
+
+完成时 Provider 给出最终文本或 1～8 个类型化调用，二者择一；每个调用给出精确 Binding、每个字段恰好一个值和正文。形状错误或向文本格式调用发表列表在 `ayni_provider_post` 时返回 `AYNI_INVALID_ARGUMENT`，编码超出该调用的 `result_text_limit` 返回 `AYNI_CAPACITY_EXCEEDED`，借用保持。Kernel 在应用回执时按提交时的视图逐项复核；模型输出无法变成类型化结果（无法解码、未知工具、取值越界）时，Provider 应报告 `FAILED` 与 `AYNI_REASON_MODEL_OUTPUT`，由策略决定下一步。
+
+调用列表随调用记录持久（type21/v4），策略经快照的 `call_tool` 读取本 Task 的提议，`ayni_call_info_v1.tool_call_count` 公开数量，`ayni_copy_call_result` 对列表复制 0 字节。Kernel 不执行提议：策略要执行某个提议，须在下一次决定中自己提交 REQUEST_CALL。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-CALL-014 | 模型调用只能提议本 Task 可用的工具：GoalType 允许列表中已被 Goal 授权需求覆盖的 Binding，取值在该需求的上限内；回执中视图之外的工具、取值、路由或超出工具输入上限的正文是无效证据，调用以 `ABANDONED`/`RESULT_UNKNOWN`/`PROVIDER_RESULT` 结束、Task 按未知调用暂停，不交给策略 | Provider 返回未提供的 `lamp`，或 45 分钟超出 Goal 的 30 分钟上限，策略据此执行 | M1 已实现：`ToolCalls.model_call_is_offered_only_listed_tools_within_the_goal_ceiling`、`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`、`ToolCalls.malformed_lists_are_refused_on_post_and_keep_the_borrow`、`ToolAllowList.registration_checks_each_reference`、`ToolStart.start_needs_each_tool_to_be_an_ordinary_tool_binding`；Mock 模型输出失败：`MockTools.unoffered_tool_fails_as_model_output`、`MockTools.body_over_the_tool_limit_fails_as_model_output`、`MockTools.list_over_the_result_limit_fails_as_model_output` |
+| C-CALL-015 | 提议的工具调用不自动执行：策略以新的 REQUEST_CALL 请求它，与任何请求一样经过 Binding、授权、资源和派发屏障；提议列表随调用记录持久，重启后仍可读取 | 收到模型提议后 Kernel 直接派发，或绕过 Grant 检查 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.decoder_rejects_noncanonical_or_truncated_lists` |
