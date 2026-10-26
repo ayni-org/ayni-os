@@ -8,10 +8,10 @@
 #include "catalog/abi_checks.h"
 #include "catalog/catalog_id.h"
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_layout.h"
-#include "kernel/kernel_state.h"
-#include "kernel/persistence/work_journal.h"
-#include "kernel/storage/storage_budget.h"
+#include "kernel/runtime/kernel_layout.h"
+#include "kernel/runtime/kernel_state.h"
+#include "kernel/runtime/storage/storage_budget.h"
+#include "kernel/service/persistence/work_journal.h"
 
 #include <ayni/ayni.h>
 
@@ -371,7 +371,7 @@ ayni_status_t ayni_get_lifecycle(const ayni_kernel_t *kernel, ayni_lifecycle_t *
     if (kernel == nullptr || out_state == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    *out_state = kernel->lifecycle;
+    *out_state = kernel->state();
     return AYNI_OK;
 }
 
@@ -384,15 +384,7 @@ ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info
     if (status != AYNI_OK) {
         return status;
     }
-    ayni_kernel_info_v1 info{};
-    info.struct_size = sizeof(info);
-    info.lifecycle = kernel->lifecycle;
-    info.restriction = kernel->restriction();
-    info.boot_epoch = kernel->boot.boot_epoch();
-    info.durable_seq = kernel->durable_seq();
-    info.events_unmatched = kernel->events_unmatched;
-    info.events_discarded = kernel->events_discarded;
-    *out_info = info;
+    kernel->describe(*out_info);
     return AYNI_OK;
 }
 
@@ -493,11 +485,7 @@ ayni_status_t ayni_post_event(ayni_kernel_t *kernel, const ayni_event_v1 *event)
     if (!source.assign(event->source)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const ayni_status_t status = kernel->ingress.post_local_input(source);
-    if (status == AYNI_OK) {
-        kernel->host.wake(kernel->host.ctx);
-    }
-    return status;
+    return kernel->post_local_input(source);
 }
 
 } // extern "C"

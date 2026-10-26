@@ -1,24 +1,193 @@
 {
   "_comment": "Single source of the dependency rules. Read by cmake/AyniLayers.cmake (Core link graph) and tools/check_deps.py (#include graph). See ADR-0008, ADR-0010 and ADR-0011.",
   "core_layers": [
-    ["kernel"],
-    ["work"],
-    ["authority", "resources", "knowledge"],
-    ["catalog"],
-    ["durability"],
-    ["foundation"]
+    [
+      "kernel"
+    ],
+    [
+      "work"
+    ],
+    [
+      "authority",
+      "resources",
+      "knowledge"
+    ],
+    [
+      "catalog"
+    ],
+    [
+      "durability"
+    ],
+    [
+      "foundation"
+    ]
   ],
   "_core_subdir_deps": "Per module: which of its own directories each directory may include, e.g. {\"work\": {\"task\": [\"call\"]}}. \"_root\" names the files directly in the module directory, as source and as target. Undeclared pairs are forbidden, and each module's declared graph must have no cycle (ADR-0051).",
   "core_subdir_deps": {
-    "work": {"_root": ["agent", "call", "goal", "task"], "goal": ["authority"], "task": ["authority"], "call": ["action", "execution"]},
-    "resources": {"permit": ["admission"]},
-    "authority": {"grant": ["scope"], "scene": ["scope"]},
-    "catalog": {"goal_type": ["_root", "strategy"], "capability": ["_root", "resource"], "resource": ["_root", "device"], "device": ["_root"], "provider": ["_root", "capability"], "binding": ["_root", "capability", "provider", "resource"], "execution": ["_root", "binding", "capability", "resource"], "observation": ["_root"], "strategy": ["_root"]},
-    "kernel": {"_root": ["boot", "call", "commit", "completion", "config", "decision", "ingress", "intent", "persistence", "storage"], "api": ["_root", "completion", "intent", "persistence", "storage"], "boot": ["completion", "persistence", "storage"], "call": ["completion", "config", "execution", "intent"], "commit": ["completion", "storage"], "completion": ["ingress"], "config": ["command"], "decision": ["call", "intent"], "execution": ["completion", "intent"], "intent": ["command", "config"], "persistence": ["command", "config", "intent"], "storage": ["completion", "config", "persistence"]},
-    "durability": {"snapshot": ["batch"]}
+    "work": {
+      "_root": [
+        "agent",
+        "call",
+        "goal",
+        "task"
+      ],
+      "goal": [
+        "authority"
+      ],
+      "task": [
+        "authority"
+      ],
+      "call": [
+        "action",
+        "execution"
+      ]
+    },
+    "resources": {
+      "permit": [
+        "admission"
+      ]
+    },
+    "authority": {
+      "grant": [
+        "scope"
+      ],
+      "scene": [
+        "scope"
+      ]
+    },
+    "catalog": {
+      "goal_type": [
+        "_root",
+        "strategy"
+      ],
+      "capability": [
+        "_root",
+        "resource"
+      ],
+      "resource": [
+        "_root",
+        "device"
+      ],
+      "device": [
+        "_root"
+      ],
+      "provider": [
+        "_root",
+        "capability"
+      ],
+      "binding": [
+        "_root",
+        "capability",
+        "provider",
+        "resource"
+      ],
+      "execution": [
+        "_root",
+        "binding",
+        "capability",
+        "resource"
+      ],
+      "observation": [
+        "_root"
+      ],
+      "strategy": [
+        "_root"
+      ]
+    },
+    "kernel": {
+      "api": [
+        "runtime",
+        "runtime/storage",
+        "config",
+        "ports",
+        "service/model",
+        "service/intent",
+        "service/persistence"
+      ],
+      "runtime": [
+        "runtime/boot",
+        "runtime/commit",
+        "runtime/ingress",
+        "runtime/storage",
+        "service/call",
+        "service/decision",
+        "service/model",
+        "service/intent",
+        "service/persistence",
+        "config",
+        "ports"
+      ],
+      "runtime/boot": [
+        "ports",
+        "service/persistence",
+        "runtime/storage"
+      ],
+      "runtime/commit": [
+        "ports",
+        "runtime/storage"
+      ],
+      "runtime/ingress": [
+        "ports"
+      ],
+      "runtime/storage": [
+        "ports",
+        "config",
+        "service/persistence"
+      ],
+      "service/model": [
+        "service/command",
+        "config",
+        "ports"
+      ],
+      "service/intent": [
+        "service/model",
+        "service/command",
+        "config"
+      ],
+      "service/call": [
+        "ports",
+        "config",
+        "service/execution",
+        "service/model"
+      ],
+      "service/decision": [
+        "service/call",
+        "service/model"
+      ],
+      "service/execution": [
+        "ports",
+        "service/model"
+      ],
+      "service/persistence": [
+        "service/command",
+        "config",
+        "service/model"
+      ],
+      "service/command": [],
+      "ports": [],
+      "config": []
+    },
+    "durability": {
+      "snapshot": [
+        "batch"
+      ]
+    }
   },
-  "core_std_headers": ["array", "cstddef", "cstdint", "cstring", "limits", "new", "optional", "type_traits", "utility"],
-  "public_c_headers": ["stddef.h", "stdint.h"],
+  "core_std_headers": [
+    "array",
+    "cstddef",
+    "cstdint",
+    "cstring",
+    "limits",
+    "new",
+    "optional",
+    "type_traits",
+    "utility"
+  ],
+  "public_c_headers": [
+    "stddef.h",
+    "stdint.h"
+  ],
   "header_kinds": {
     "ayni/draft/": "draft",
     "ayni/hosts/": "hosts",
@@ -29,15 +198,60 @@
   },
   "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. 'kind:instance' allows the public headers of one instance of that kind, such as the runtime/common headers every composition root shares (ADR-0053). core/, include/ and tests/ have fixed rules in check_deps.py.",
   "components": {
-    "hosts": ["api", "own", "external"],
-    "runtime": ["api", "hosts", "providers", "strategies", "own", "runtime:common", "external"],
-    "providers": ["api", "own", "external"],
-    "strategies": ["api", "own", "external"],
-    "targets": ["api", "runtime", "external"],
-    "control": ["api", "external"],
-    "safety": ["api", "external"],
-    "examples": ["api", "external"]
+    "hosts": [
+      "api",
+      "own",
+      "external"
+    ],
+    "runtime": [
+      "api",
+      "hosts",
+      "providers",
+      "strategies",
+      "own",
+      "runtime:common",
+      "external"
+    ],
+    "providers": [
+      "api",
+      "own",
+      "external"
+    ],
+    "strategies": [
+      "api",
+      "own",
+      "external"
+    ],
+    "targets": [
+      "api",
+      "runtime",
+      "external"
+    ],
+    "control": [
+      "api",
+      "external"
+    ],
+    "safety": [
+      "api",
+      "external"
+    ],
+    "examples": [
+      "api",
+      "external"
+    ]
   },
-  "unchecked_dirs": [".git", ".github", "cmake", "contracts", "docs", "reports", "tests", "tools"],
-  "skipped_dir_names": ["build", "managed_components"]
+  "unchecked_dirs": [
+    ".git",
+    ".github",
+    "cmake",
+    "contracts",
+    "docs",
+    "reports",
+    "tests",
+    "tools"
+  ],
+  "skipped_dir_names": [
+    "build",
+    "managed_components"
+  ]
 }

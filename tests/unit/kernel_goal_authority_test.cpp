@@ -4,8 +4,8 @@
 #include "foundation/little_endian.h"
 #include "goal_approval_request.h"
 #include "goal_reauthorization_request.h"
-#include "kernel/decision/decision.h"
-#include "kernel/storage/storage_budget.h"
+#include "kernel/runtime/storage/storage_budget.h"
+#include "kernel/service/decision/decision.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
 
@@ -1568,11 +1568,12 @@ TEST(GoalApproval, real_snapshot_freeze_preserves_proposal_until_atomic_approval
         ASSERT_EQ(temporary.status, AYNI_OK);
         for (unsigned step = 0; step < 10000; ++step) {
             tick();
-            if (kernel.maintenance.active()) {
+            if (KernelTestProbe::maintenance(&kernel).active()) {
                 frozen = true;
                 break;
             }
-            if (kernel.log.idle() && kernel.completions.in_flight() == 0U) {
+            if (KernelTestProbe::log(&kernel).idle() &&
+                KernelTestProbe::completions(&kernel).in_flight() == 0U) {
                 break;
             }
         }
@@ -1583,30 +1584,31 @@ TEST(GoalApproval, real_snapshot_freeze_preserves_proposal_until_atomic_approval
                   AYNI_OK);
         for (unsigned step = 0; step < 10000; ++step) {
             tick();
-            if (kernel.maintenance.active()) {
+            if (KernelTestProbe::maintenance(&kernel).active()) {
                 frozen = true;
                 break;
             }
-            if (kernel.log.idle() && kernel.completions.in_flight() == 0U) {
+            if (KernelTestProbe::log(&kernel).idle() &&
+                KernelTestProbe::completions(&kernel).in_flight() == 0U) {
                 break;
             }
         }
     }
     ASSERT_TRUE(frozen);
-    const auto before = kernel.work.transitions.latest();
+    const auto before = KernelTestProbe::work(&kernel).transitions.latest();
     EXPECT_EQ(node.work.submit(intent).status, AYNI_BUSY);
-    EXPECT_EQ(kernel.work.transitions.latest().commit_seq, before.commit_seq);
-    EXPECT_EQ(kernel.work.grants.size(), 0U);
+    EXPECT_EQ(KernelTestProbe::work(&kernel).transitions.latest().commit_seq, before.commit_seq);
+    EXPECT_EQ(KernelTestProbe::work(&kernel).grants.size(), 0U);
     EXPECT_EQ(node.work.goal(goal.result.object.id).lifecycle, AYNI_GOAL_PROPOSED);
-    for (unsigned step = 0; step < 10000 && !kernel.maintenance.done(); ++step) {
+    for (unsigned step = 0; step < 10000 && !KernelTestProbe::maintenance(&kernel).done(); ++step) {
         tick();
     }
-    ASSERT_TRUE(kernel.maintenance.done());
+    ASSERT_TRUE(KernelTestProbe::maintenance(&kernel).done());
     const auto accepted = node.work.submit(intent);
     ASSERT_EQ(accepted.status, AYNI_OK);
     node.work.node().recover();
     EXPECT_EQ(node.work.submit(intent).result.commit_seq, accepted.result.commit_seq);
-    EXPECT_EQ(kernel.work.grants.size(), 1U);
+    EXPECT_EQ(KernelTestProbe::work(&kernel).grants.size(), 1U);
     node.work.node().reboot();
     node.work.node().recover();
     EXPECT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);

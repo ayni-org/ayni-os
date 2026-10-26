@@ -1,6 +1,6 @@
 // Executor request lanes and answers, ADR-0052. White-box transport tests:
 // what Core does with an answer is covered by ManagedExecution.
-#include "kernel/completion/executor_mailbox.h"
+#include "kernel/ports/executor_mailbox.h"
 #include <ayni/hosts/sim.h>
 #include <gtest/gtest.h>
 #include <thread>

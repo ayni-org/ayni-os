@@ -5,9 +5,9 @@
 // block as one allocation, so it cannot catch two stores sharing bytes;
 // these checks do.
 
-#include "kernel/config/store_limits.h"
-#include "kernel/kernel_layout.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_layout.h"
+#include "kernel/runtime/kernel_state.h"
+#include "kernel/service/model/store_limits.h"
 
 #include <gtest/gtest.h>
 

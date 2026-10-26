@@ -1,7 +1,7 @@
 // C-STORE-011: real space exhaustion is distinct from temporary journal
 // backpressure, and neither may invalidate an accepted command's result.
 
-#include "kernel/storage/storage_budget.h"
+#include "kernel/runtime/storage/storage_budget.h"
 #include "work_node.h"
 
 #include <gtest/gtest.h>

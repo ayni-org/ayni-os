@@ -4,7 +4,7 @@
 
 #include "catalog/abi_checks.h"
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 #include <ayni/execution.h>
 
 extern "C" {
@@ -16,7 +16,7 @@ ayni_status_t ayni_register_executor(ayni_kernel_t *kernel, const ayni_executor_
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.execution.add_executor(*executor);
+    return kernel->configure(*executor);
 }
 ayni_status_t ayni_register_execution_binding(ayni_kernel_t *kernel,
                                               const ayni_execution_binding_v1 *binding) {
@@ -27,7 +27,7 @@ ayni_status_t ayni_register_execution_binding(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.execution.add_binding(*binding);
+    return kernel->configure(*binding);
 }
 ayni_status_t ayni_get_execution(const ayni_kernel_t *kernel, uint64_t logical_call_id,
                                  ayni_execution_info_v1 *out_info) {
@@ -44,16 +44,16 @@ ayni_status_t ayni_get_execution(const ayni_kernel_t *kernel, uint64_t logical_c
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.calls.find(logical_call_id, index)) {
+    if (!kernel->model().calls.find(logical_call_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &state = kernel->work.calls.state(index);
+    const auto &state = kernel->model().calls.state(index);
     if (!state.execution) {
         return AYNI_NOT_FOUND;
     }
-    const auto &identity = kernel->work.calls.identity(index);
+    const auto &identity = kernel->model().calls.identity(index);
     const auto &execution = *state.execution;
-    const auto *lease = kernel->permits.find(logical_call_id);
+    const auto *lease = kernel->permit_view().find(logical_call_id);
     *out_info = {sizeof(*out_info),
                  execution.phase,
                  logical_call_id,

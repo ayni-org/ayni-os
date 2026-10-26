@@ -9,7 +9,7 @@ kernel → work → {authority, resources, knowledge} → catalog → durability
 ```
 
 - 层次与子目录规则只在 [`tools/architecture.json`](../tools/architecture.json) 声明一次。CMake 的 `ayni_add_core_module` 据此在配置时拒绝向上或同层的链接依赖；`tools/check_deps.py` 据此检查 `#include`（ADR-0011）。
-- 模块内的实体子目录（如 `work/task/`）之间默认不能互相包含；需要时在 `core_subdir_deps` 中逐对声明。模块根目录下的文件记作 `_root`，与子目录一样逐对声明，两个方向都要；每个模块声明的子目录图不得有环（ADR-0051）。
+- 模块内的实体子目录（如 `work/task/`）之间默认不能互相包含；需要时在 `core_subdir_deps` 中逐对声明。模块根目录下的文件记作 `_root`，与子目录一样逐对声明，两个方向都要；每个模块声明的子目录图不得有环（ADR-0051）。嵌套路径按已声明边界的最长前缀匹配，runtime → service 的方向及服务内部约束同时检查（ADR-0058）。
 - Core 内部头文件以模块名开头包含，例如 `#include "work/task/task.h"`。这个包含根只对 Core 模块自身可见，Core 之外只能使用 `include/ayni/` 中已实现的公开 API。
 - Core 只能包含 `core_std_headers` 中列出的标准头文件，不包含平台、Host、runtime 或草案头文件。
 
@@ -19,7 +19,7 @@ kernel → work → {authority, resources, knowledge} → catalog → durability
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
-| `kernel` | `api/`：C ABI 参数检查、注册、会话、意图与查询，每个入口经 `api_gate` 中一个具名闸门检查回调与生命周期；`kernel_lifecycle`：所有者线程的启动、工作、栅栏重载、维护与关闭编排，每个事务经 `run_transition` 写入日志；`kernel_layout`、`config/`：有界内存布局、配置与各存储的尺寸，以及启动后只读的全部注册目录（`Catalogs`）；`ingress/`、`completion/`：事件队列、完成槽与 Provider/执行端信箱；`boot/`：物理日志发现、快照与尾部恢复、writer 握手及启动记录；`commit/`、`command/`：日志提交与按 principal 有界的命令窗口，每种意图的会话规则与命令身份只写在 `intent_traits` 一张表里，精确命令经 `ExactCommand` 特化给出规范编解码，由一个泛型查找按完整字节比较（ADR-0053），撤销另有易失 `pending_revoke`；`kernel_intent`：意图的事务与三个阶段的回执查询；`storage/`：共享写频与重试调度、日志上限与介质空间预算、快照发布与轮转；`intent/`：工作模型、意图解码/规则与触发；`decision/`：策略决定；`call/`：调用运行时（准入、派发、完成与对账），调用事实对 Task 的影响交给 work 层；`execution/`：物理执行控制（Scene 与观测前提、许可签发、续租、轮询、急停与停止提交）；`persistence/`：`work_journal`、`work_replay`、`work_snapshot` 按领域属主编排持久导出与恢复，`persistent_store` 契约让 `call_store`、`scene_store` 等存储自述记录、预算与快照行（ADR-0015～0027、ADR-0051～0053） | M0 |
+| `kernel` | `api/`：C ABI 解码与具名生命周期闸门；`runtime/`：私有组合状态、facade、StepContext、生命周期/启动/提交/存储维护与 ingress；`service/`：model、intent、decision、call、execution、command 与持久实体编解码/重放；`config/`：启动目录与配置类型；`ports/`：共享完成槽、邮箱、锁和回调作用域守卫。依赖 api → runtime → service，service 内部仍按不变量分区；所有领域表继续归其原有模块（ADR-0058） | M0 |
 | `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效、授权上限与记录；`task/`：Task 生命周期、容量回收、步骤、私有检查点与授权快照；`call/`、`action/`：逻辑调用身份、保留的业务正文与副作用持久屏障；`execution/`：物理执行与停止事实；`authority/`：工作侧的准入证据与有界清理游标；`propagation`：跨表放行、派生选择与传播；`call_propagation`：调用的终态、对账与等待跳过如何落到 Task（ADR-0017～0027、ADR-0037、ADR-0038、ADR-0044、ADR-0053） | M1（`MA-004`） |
 | `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec（ADR-0017、0028）；`scope/`：有限字段规范化、typed/encoded 覆盖与实际请求完整性（ADR-0029）；`grant/`：Grant 创建/受限委派、撤销 Gate、持久根撤销与有界清理（ADR-0030、0031）；`scene/`：Scene 声明与持久所有者偏好（ADR-0050） | M1（`MA-004`） |
 | `resources` | `admission/`：有界全组准入、Agent 轮转/实例 FIFO、等待期限/原因、健康/占用及带代际的执行器隔离；`permit/`：本次启动的许可占用、轮询与隔离（ADR-0046、ADR-0049、ADR-0050） | M1（`MA-018A`） |

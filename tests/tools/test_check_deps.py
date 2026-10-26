@@ -48,14 +48,14 @@ class CheckDepsTest(unittest.TestCase):
     def test_provider_cannot_include_another_provider_or_core_internal(self):
         self.write("providers/mock/mock.cpp", "#include <ayni/providers/network.h>\n")
         self.assert_single_violation("providers/ may not include")
-        self.write("providers/mock/mock.cpp", '#include "kernel/kernel_state.h"\n')
+        self.write("providers/mock/mock.cpp", '#include "kernel/runtime/kernel_state.h"\n')
         self.assert_single_violation("Core-internal header")
 
     def test_strategies_use_only_public_component_boundaries(self):
         self.write("strategies/builtin/loop.cpp", "#include <ayni/strategies/builtin.h>\n#include <ayni/calls.h>\n")
         self.write("runtime/native_node/node.cpp", "#include <ayni/strategies/builtin.h>\n")
         self.assertEqual(self.violations(), [])
-        self.write("strategies/builtin/loop.cpp", '#include "kernel/kernel_state.h"\n')
+        self.write("strategies/builtin/loop.cpp", '#include "kernel/runtime/kernel_state.h"\n')
         self.assert_single_violation("Core-internal header")
         self.write("strategies/builtin/loop.cpp", "#include <ayni/providers/mock.h>\n")
         self.assert_single_violation("strategies/ may not include")
@@ -95,6 +95,42 @@ class CheckDepsTest(unittest.TestCase):
         self.assert_single_violation("core/kernel/intent may not include the root of core/kernel")
         self.architecture["core_subdir_deps"] = {"kernel": {"intent": ["_root"]}}
         self.assertEqual(self.violations(), [])
+
+    def test_nested_kernel_partitions_preserve_allowed_service_calls(self):
+        # ADR-0058: a runtime depends on a service; services share lower ports.
+        self.write("core/kernel/runtime/step.cpp", '#include "kernel/service/model/work_model.h"\n')
+        self.write("core/kernel/service/call/call.cpp", '#include "kernel/ports/provider_mailbox.h"\n')
+        self.assertEqual(self.violations(), [])
+
+    def test_nested_service_cannot_include_runtime_even_by_relative_path(self):
+        # ADR-0058: resolving a relative include cannot bypass the partition boundary.
+        self.write("core/kernel/runtime/kernel_state.h")
+        self.write("core/kernel/service/model/model.cpp", '#include "../../runtime/kernel_state.h"\n')
+        self.assert_single_violation("core/kernel/service/model may not include core/kernel/runtime")
+
+    def test_longest_declared_nested_boundary_keeps_service_internals_separate(self):
+        # ADR-0058: declaring a common parent cannot erase its stricter child rule.
+        self.architecture["core_subdir_deps"]["kernel"]["service"] = ["service/decision"]
+        self.write("core/kernel/service/model/model.cpp", '#include "kernel/service/decision/decision.h"\n')
+        self.assert_single_violation("core/kernel/service/model may not include core/kernel/service/decision")
+
+    def test_include_root_alias_cannot_hide_runtime_behind_allowed_ports(self):
+        # ADR-0058: canonical and dot-segment include spellings share a boundary,
+        # including headers absent from a fixture or generated at build time.
+        for exists in (False, True):
+            if exists:
+                self.write("core/kernel/runtime/kernel_state.h")
+            for path in ("kernel/runtime/kernel_state.h", "kernel/ports/../runtime/kernel_state.h"):
+                with self.subTest(exists=exists, path=path):
+                    self.write("core/kernel/service/model/model.cpp", f'#include "{path}"\n')
+                    self.assert_single_violation("core/kernel/service/model may not include core/kernel/runtime")
+
+    def test_nested_partition_cycle_is_rejected(self):
+        # ADR-0058: nested names participate in the same deterministic cycle check.
+        self.architecture["core_subdir_deps"] = {
+            "kernel": {"runtime": ["service/model"], "service/model": ["runtime"]}}
+        with self.assertRaisesRegex(check_deps.ConfigError, "has a cycle"):
+            check_deps.Architecture(self.architecture)
 
     def test_cycle_in_declared_subdir_graph_is_a_configuration_error(self):
         # ADR-0051: a declared cycle through the root, a longer one and a self-loop.

@@ -4,7 +4,7 @@
 // leaves (ADR-0026 decision 9), the mapping a transition journals, and the
 // replay of COMMAND_MAPPING records.
 
-#include "kernel/command/command_table.h"
+#include "kernel/service/command/command_table.h"
 
 #include <gtest/gtest.h>
 

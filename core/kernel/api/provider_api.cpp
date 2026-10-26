@@ -1,7 +1,7 @@
 // Trusted registration boundaries. Catalogs own parsing and static contracts;
 // Kernel decides lifecycle and later joins them with live work and authority.
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 
 #include <ayni/calls.h>
 
@@ -20,7 +20,7 @@ ayni_status_t ayni_register_call_capability(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.call_capabilities.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 
 ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_v1 *provider) {
@@ -36,7 +36,7 @@ ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.providers.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 
 ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding) {
@@ -52,6 +52,6 @@ ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.bindings.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 } // extern "C"

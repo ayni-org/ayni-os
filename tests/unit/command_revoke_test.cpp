@@ -1,6 +1,6 @@
 // ADR-0031: independent revoke identity and effect-bearing command v3.
 #include "foundation/little_endian.h"
-#include "kernel/command/command_records.h"
+#include "kernel/service/command/command_records.h"
 
 #include <gtest/gtest.h>
 

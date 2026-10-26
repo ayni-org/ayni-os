@@ -6,7 +6,7 @@
 
 #include "catalog/catalog_id.h"
 #include "foundation/little_endian.h"
-#include "kernel/command/command_records.h"
+#include "kernel/service/command/command_records.h"
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_records.h"
 #include "work/task/task_records.h"

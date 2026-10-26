@@ -5,9 +5,9 @@
 #include "foundation/crc32.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
-#include "kernel/config/store_limits.h"
-#include "kernel/persistence/work_replay.h"
-#include "kernel/persistence/work_snapshot.h"
+#include "kernel/service/model/store_limits.h"
+#include "kernel/service/persistence/work_replay.h"
+#include "kernel/service/persistence/work_snapshot.h"
 #include "work/task/task_records.h"
 
 #include <gtest/gtest.h>
@@ -80,7 +80,7 @@ class Model {
           task_authority_(store(ayni::work::TaskAuthorityTable::storage_size(
               ayni::kernel::task_authority_limits(config)))),
           storage_(storage()), catalogs_(capacities_, storage_),
-          model_(catalogs_, capacities_, limits, storage_) {}
+          model_(catalogs_, capacities_, limits, storage_, callbacks_) {}
 
     WorkModel &get() { return model_; }
 
@@ -108,6 +108,7 @@ class Model {
         capabilities_, grants_, goal_authority_, task_authority_;
     ayni::kernel::KernelStorage storage_;
     ayni::kernel::Catalogs catalogs_;
+    ayni::kernel::CallbackGate callbacks_;
     WorkModel model_;
 };
 

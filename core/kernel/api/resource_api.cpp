@@ -2,7 +2,7 @@
 // selects lifecycle policy; the catalog and admission modules own all state.
 #include "catalog/abi_checks.h"
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 
 #include <ayni/resources.h>
 
@@ -22,7 +22,7 @@ ayni_status_t ayni_get_resource_queue(const ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    *out_info = kernel->resources.queue_info(kernel->host.monotonic_now_us(kernel->host.ctx));
+    *out_info = kernel->resource_view().queue_info(kernel->now_us());
     return AYNI_OK;
 }
 
@@ -39,7 +39,7 @@ ayni_status_t ayni_register_device(ayni_kernel_t *kernel, const ayni_device_desc
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.devices.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 
 ayni_status_t ayni_register_component(ayni_kernel_t *kernel,
@@ -56,7 +56,7 @@ ayni_status_t ayni_register_component(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.devices.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 
 // Inventory diagnostics are copied and include unavailable resources. Health is
@@ -76,11 +76,11 @@ ayni_status_t ayni_get_device(const ayni_kernel_t *kernel, ayni_string_v1 id,
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->catalogs.devices.find_device(id, index)) {
+    if (!kernel->catalog().devices.find_device(id, index)) {
         return AYNI_NOT_FOUND;
     }
-    *out_info = {sizeof(*out_info), kernel->catalogs.devices.device_component_count(id),
-                 kernel->catalogs.resources.device_resources(kernel->catalogs.devices, id), 0};
+    *out_info = {sizeof(*out_info), kernel->catalog().devices.device_component_count(id),
+                 kernel->catalog().resources.device_resources(kernel->catalog().devices, id), 0};
     return AYNI_OK;
 }
 
@@ -100,11 +100,11 @@ ayni_status_t ayni_get_component(const ayni_kernel_t *kernel, ayni_string_v1 id,
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->catalogs.devices.find_component(id, index)) {
+    if (!kernel->catalog().devices.find_component(id, index)) {
         return AYNI_NOT_FOUND;
     }
-    *out_info = {sizeof(*out_info), kernel->catalogs.resources.component_resources(id),
-                 kernel->catalogs.devices.component(index).device.snapshot()};
+    *out_info = {sizeof(*out_info), kernel->catalog().resources.component_resources(id),
+                 kernel->catalog().devices.component(index).device.snapshot()};
     return AYNI_OK;
 }
 
@@ -121,7 +121,7 @@ ayni_status_t ayni_register_resource(ayni_kernel_t *kernel, const ayni_resource_
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.resources.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 
 // Health affects future admission, not an acquired claim's lifetime. A wake
@@ -136,15 +136,10 @@ ayni_status_t ayni_set_resource_health(ayni_kernel_t *kernel, ayni_string_v1 res
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->catalogs.resources.find(resource_id, index)) {
+    if (!kernel->catalog().resources.find(resource_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    bool changed = false;
-    const auto status = kernel->resources.set_health(index, health, changed);
-    if (status == AYNI_OK && changed) {
-        kernel->host.wake(kernel->host.ctx);
-    }
-    return status;
+    return kernel->set_resource_health(index, health);
 }
 
 // Validate the caller's output before copying current diagnostics; no borrowed
@@ -165,10 +160,10 @@ ayni_status_t ayni_get_resource(const ayni_kernel_t *kernel, ayni_string_v1 reso
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->catalogs.resources.find(resource_id, index)) {
+    if (!kernel->catalog().resources.find(resource_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    *out_info = kernel->resources.info(index);
+    *out_info = kernel->resource_view().info(index);
     return AYNI_OK;
 }
 

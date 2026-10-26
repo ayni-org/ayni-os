@@ -5,8 +5,8 @@
 // them. intent_traits.h must agree with every row, and each column is then
 // checked through the C ABI and the command window that read the table.
 
-#include "kernel/command/command_table.h"
-#include "kernel/command/intent_traits.h"
+#include "kernel/service/command/command_table.h"
+#include "kernel/service/command/intent_traits.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>

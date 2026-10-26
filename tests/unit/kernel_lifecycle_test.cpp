@@ -7,7 +7,7 @@
 #include "foundation/crc32.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
-#include "kernel/boot/boot_sequence.h"
+#include "kernel/runtime/boot/boot_sequence.h"
 #include "kernel_node.h"
 #include "kernel_test_probe.h"
 #include "work/agent/agent_records.h"

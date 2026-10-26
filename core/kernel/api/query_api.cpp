@@ -1,7 +1,7 @@
 // Bounded copying management queries (ADR-0057). Tables retain ownership of
 // their facts; this entry exposes stable IDs without leaking slots or pointers.
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 
 namespace {
 // Check the whole output bound before publishing any ID. No partial listing is
@@ -39,7 +39,7 @@ ayni_status_t ayni_list_objects(const ayni_kernel_t *kernel, ayni_object_kind_t 
     if (gated != AYNI_OK) {
         return gated;
     }
-    const auto &work = kernel->work;
+    const auto &work = kernel->model();
     switch (kind) {
     case AYNI_OBJECT_GOAL:
         return copy_ids(work.goals.size(), ids, capacity, out_count,

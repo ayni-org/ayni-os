@@ -1,6 +1,6 @@
 // ADR-0030: ordinary v1 remains readable; auth v2 must carry exact identity.
 #include "foundation/little_endian.h"
-#include "kernel/command/command_records.h"
+#include "kernel/service/command/command_records.h"
 
 #include <gtest/gtest.h>
 

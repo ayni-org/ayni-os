@@ -1,6 +1,6 @@
 // Normal bounded asynchronous delivery, C-PROV-006/C-CALL-012, ADR-0044.
 // White-box transport tests: no Provider dispatch or business commit is claimed.
-#include "kernel/completion/provider_mailbox.h"
+#include "kernel/ports/provider_mailbox.h"
 #include <array>
 #include <ayni/hosts/sim.h>
 #include <gtest/gtest.h>

@@ -2,10 +2,10 @@
 // and selected references; it never borrows the Goal's later authorization.
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
-#include "kernel/command/command_records.h"
-#include "kernel/command/command_table.h"
-#include "kernel/command/work_authority_result.h"
-#include "kernel/persistence/work_replay.h"
+#include "kernel/service/command/command_records.h"
+#include "kernel/service/command/command_table.h"
+#include "kernel/service/command/work_authority_result.h"
+#include "kernel/service/persistence/work_replay.h"
 
 #include <gtest/gtest.h>
 

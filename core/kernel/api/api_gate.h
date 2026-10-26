@@ -10,7 +10,7 @@
 #ifndef AYNI_CORE_KERNEL_API_API_GATE_H
 #define AYNI_CORE_KERNEL_API_API_GATE_H
 
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 
 #include <ayni/ayni.h>
 
@@ -70,7 +70,7 @@ inline ayni_status_t admit(const ayni_kernel &kernel, const ApiGate &entry) {
     if (!entry.from_callback && kernel.in_callback()) {
         return AYNI_INVALID_STATE;
     }
-    return (entry.lifecycles & lifecycle_bit(kernel.lifecycle)) != 0U ? AYNI_OK : entry.outside;
+    return (entry.lifecycles & lifecycle_bit(kernel.state())) != 0U ? AYNI_OK : entry.outside;
 }
 
 } // namespace ayni::kernel

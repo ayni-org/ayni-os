@@ -6,10 +6,10 @@
 
 #include "durability/batch/batch_codec.h"
 #include "durability/batch/record_types.h"
-#include "kernel/persistence/persistent_store.h"
-#include "kernel/persistence/work_journal.h"
-#include "kernel/persistence/work_replay.h"
-#include "kernel/persistence/work_snapshot.h"
+#include "kernel/service/persistence/persistent_store.h"
+#include "kernel/service/persistence/work_journal.h"
+#include "kernel/service/persistence/work_replay.h"
+#include "kernel/service/persistence/work_snapshot.h"
 
 #include <gtest/gtest.h>
 

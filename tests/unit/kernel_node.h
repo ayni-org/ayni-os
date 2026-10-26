@@ -6,7 +6,7 @@
 #define AYNI_TESTS_UNIT_KERNEL_NODE_H
 
 #include "kernel/config/kernel_config.h"
-#include "kernel/persistence/work_journal.h"
+#include "kernel/service/persistence/work_journal.h"
 #include "kernel_test_probe.h"
 
 #include <ayni/ayni.h>

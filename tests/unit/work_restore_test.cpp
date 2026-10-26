@@ -10,11 +10,11 @@
 #include "durability/batch/batch_codec.h"
 #include "durability/journal/journal_ring.h"
 #include "foundation/kernel_id.h"
-#include "kernel/command/command_records.h"
-#include "kernel/config/store_limits.h"
-#include "kernel/intent/work_model.h"
-#include "kernel/persistence/work_journal.h"
-#include "kernel/persistence/work_replay.h"
+#include "kernel/service/command/command_records.h"
+#include "kernel/service/model/store_limits.h"
+#include "kernel/service/model/work_model.h"
+#include "kernel/service/persistence/work_journal.h"
+#include "kernel/service/persistence/work_replay.h"
 #include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
@@ -1231,7 +1231,7 @@ class Model {
           task_authority_(ayni::work::TaskAuthorityTable::storage_size(
               ayni::kernel::task_authority_limits(capacities))),
           storage_(storage()), catalogs_(capacities, storage_),
-          work_(catalogs_, capacities, {2, 4}, storage_) {
+          work_(catalogs_, capacities, {2, 4}, storage_, callbacks_) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
             EXPECT_EQ(work_.agents.restore(owner_agent, owner, 1, AYNI_AGENT_RUNNING, {1, 1}),
@@ -1274,6 +1274,7 @@ class Model {
     Block task_authority_;
     KernelStorage storage_;
     ayni::kernel::Catalogs catalogs_;
+    ayni::kernel::CallbackGate callbacks_;
     WorkModel work_;
 };
 
