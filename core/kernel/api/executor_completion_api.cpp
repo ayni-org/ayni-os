@@ -1,4 +1,5 @@
-// Executor answers are the second permitted cross-thread boundary (ADR-0052).
+// Executor answers cross from producer threads to the owner, like Provider
+// posts (ADR-0052).
 // Whether a nonce or status is valid is checked by the owner after the copy.
 #include "catalog/abi_checks.h"
 #include "kernel/completion/executor_mailbox.h"

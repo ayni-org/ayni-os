@@ -113,7 +113,7 @@ ayni_status_t ExecutorMailbox::post(const ayni_executor_completion_t &target,
         answer.output = response.output;
     }
     {
-        auto &slot = lanes_[target.executor * lane_count + target.lane];
+        auto &slot = at(target.executor, static_cast<ExecutorLane>(target.lane));
         const IngressGuard guard(host_);
         if (!slot.request || slot.answer || slot.request->kind != response.kind ||
             !foundation::same_attempt(slot.request->identity, response.request)) {

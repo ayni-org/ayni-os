@@ -46,8 +46,9 @@ class PermitTable {
         return slots_[index] ? &*slots_[index] : nullptr;
     }
     bool available(uint32_t executor) const; // Pure preflight, no reservation or eviction.
+    // first_poll_us is when the owner first reads the executor's status.
     bool install(uint64_t call_id, uint32_t executor, ResourceClaim claim,
-                 const ayni_execution_permit_v1 &permit, uint64_t now_us);
+                 const ayni_execution_permit_v1 &permit, uint64_t first_poll_us);
     PermitLease *find(uint64_t call_id); // Owner-thread borrow, null when no live lease.
     const PermitLease *find(uint64_t call_id) const;
     // First stop request quarantines actuator resources immediately, independently of log room.
@@ -59,8 +60,7 @@ class PermitTable {
     // Caller has durably committed stopped, or is explicitly closing after the exact borrow
     // drains. Releases measured-stop quarantine; closing alone creates no durable success.
     bool release_stopped(uint64_t call_id);
-    uint64_t next_deadline_us() const; // Earliest pending poll, UINT64_MAX for no lease.
-    bool empty() const;                // No borrowed executor/resource execution remains.
+    bool empty() const; // No borrowed executor/resource execution remains.
   private:
     using Slot = std::optional<PermitLease>;
     Slot *slots_;                  // Executor-indexed caller arena; no moving entries.

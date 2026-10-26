@@ -126,11 +126,12 @@ class ExecutionControl {
     Advance poll(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     // One taken answer of a lease's lane; allowed is poll's fresh gate.
     Advance apply(resources::PermitLease &lease, ExecutorLane lane, uint64_t now_us, bool allowed);
-    // Sends request through port on a closed lane of executor. A refusal
-    // stays on the lane as its answer and is read like a posted one.
+    // Sends a new request of kind for call_id through port on a closed lane
+    // of executor. A refusal stays on the lane as its answer and is read like
+    // a posted one.
     template <typename Port>
-    Advance send(uint32_t executor, ExecutorLane lane, ExecutorRequest request, uint64_t now_us,
-                 Port port);
+    Advance send(uint32_t executor, ExecutorLane lane, ayni_executor_request_t kind,
+                 uint64_t call_id, bool after_terminal, uint64_t now_us, Port port);
     // The lane's request once answered or past its deadline (then
     // RESULT_UNKNOWN), closing the lane; pending leaves it open.
     Reply take(uint32_t executor, ExecutorLane lane, uint64_t now_us, ExecutorRequest &out_request,
@@ -138,6 +139,8 @@ class ExecutionControl {
     bool due(uint32_t executor, ExecutorLane lane, uint64_t now_us) const;
     bool any_due(uint32_t executor, uint64_t now_us) const;
     bool executor_of(const work::ExecutionFact &fact, uint32_t &out_index) const;
+    // Stopping, and its stop request is neither open nor sent.
+    bool stop_unsent(const resources::PermitLease &lease) const;
     // One gate for renewal and immediate stopping.
     bool should_stop(const resources::PermitLease &lease, uint64_t now_us, uint64_t durable_seq,
                      Mode mode) const;

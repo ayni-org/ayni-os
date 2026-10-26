@@ -11,6 +11,8 @@ using ayni::providers::mock_execution::Answers;
 using ayni::providers::mock_execution::Executor;
 using ayni::providers::mock_execution::PermitStart;
 using ayni::providers::mock_execution::StopConfirmation;
+constexpr uint64_t tick_us = 10000;   // Clock advance of one pump or step_core round.
+constexpr uint32_t lease_us = 200000; // The registered execution binding's lease.
 ayni_catalog_name_v1 name(const char *value) {
     ayni_catalog_name_v1 out{};
     out.size = static_cast<uint32_t>(std::strlen(value));
@@ -176,7 +178,7 @@ class ManagedExecution : public ::testing::Test {
                                                   1,
                                                   text("look"),
                                                   execution_form,
-                                                  200000,
+                                                  lease_us,
                                                   100000,
                                                   1,
                                                   &mapping};
@@ -200,8 +202,8 @@ class ManagedExecution : public ::testing::Test {
     }
     void pump(unsigned rounds) {
         for (unsigned at = 0; at < rounds; ++at) {
-            now += 10000;
-            work.node().sim().advance_us(10000);
+            now += tick_us;
+            work.node().sim().advance_us(tick_us);
             work.node().sim().complete_storage();
             ASSERT_EQ(executor.advance(), AYNI_OK);
             work.node().step();
@@ -219,8 +221,8 @@ class ManagedExecution : public ::testing::Test {
     // Core alone: its clock moves, the executor's work loop does not run.
     void step_core(unsigned rounds = 1) {
         for (unsigned at = 0; at < rounds; ++at) {
-            now += 10000;
-            work.node().sim().advance_us(10000);
+            now += tick_us;
+            work.node().sim().advance_us(tick_us);
             work.node().sim().complete_storage();
             work.node().step();
         }
@@ -385,8 +387,8 @@ TEST_F(ManagedExecution, released_lease_lets_the_waiting_goal_derive) {
     const auto waiting = create(agent_b);
     ASSERT_EQ(work.cancel_task(original_task).status, AYNI_OK);
     for (unsigned round = 0; round < 60; ++round) {
-        now += 10000;
-        work.node().sim().advance_us(10000);
+        now += tick_us;
+        work.node().sim().advance_us(tick_us);
         work.node().sim().complete_storage();
         ASSERT_EQ(executor.advance(), AYNI_OK);
         work.node().step(1);
@@ -625,7 +627,7 @@ TEST_F(ManagedExecution, lost_link_ends_output_by_the_executors_own_lease) {
     EXPECT_EQ(executor.renewals(), renewals);
     EXPECT_EQ(gate().phase, AYNI_CONTROL_STOPPED);
     EXPECT_EQ(gate().stop_cause, AYNI_CONTROL_STOP_EXPIRED);
-    EXPECT_LE(gate().stop_confirmed_at_us, lost_at + 200000 + 10000);
+    EXPECT_LE(gate().stop_confirmed_at_us, lost_at + lease_us + tick_us);
     EXPECT_EQ(execution().phase, AYNI_EXECUTION_DISPATCHING);
     EXPECT_EQ(execution().executor_status, AYNI_RESULT_UNKNOWN);
     EXPECT_EQ(resource().quarantine_id, executor.logical_call());
@@ -684,7 +686,7 @@ TEST_F(ManagedExecution, not_found_proves_not_started_only_from_a_read_after_the
         step_core();
     }
     ASSERT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U);
-    now += 300000;
+    now += lease_us + 10 * tick_us;
     ASSERT_EQ(executor.advance(), AYNI_OK);
     ASSERT_EQ(executor.pending(), 0U);
     // No Core time passes: the terminal is taken while the read is pending,
@@ -740,6 +742,61 @@ TEST_F(ManagedExecution, revocation_while_a_renewal_challenge_is_held_sends_no_r
     }
     serve(20);
     EXPECT_EQ(executor.renewals(), renewals);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052 decision 3: a Host that steps only when more is ready or at the
+// reported deadline. A stop sent while a status read is open still reports
+// when its answer is due, and a stop left unanswered goes out again.
+TEST_F(ManagedExecution, open_requests_wake_a_host_that_sleeps_until_the_reported_deadline) {
+    answers = Answers::held;
+    start(AYNI_FORM_SESSION, 200);
+    create();
+    for (unsigned round = 0; round < 100 && executor.submissions() == 0; ++round) {
+        serve(1);
+    }
+    ASSERT_EQ(executor.submissions(), 1U);
+    for (unsigned round = 0; round < 10 && executor.held(AYNI_EXECUTOR_STATUS) == 0; ++round) {
+        step_core();
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U);
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, grants[0]};
+    auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    auto report = work.node().step();
+    for (unsigned round = 0; round < 10 && report.more_ready != 0U; ++round) {
+        report = work.node().step();
+    }
+    ASSERT_EQ(report.more_ready, 0U);
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_STOP), 1U);
+    executor.drop_requests(); // The link is lost: nothing is answered.
+    for (unsigned round = 0; round < 10 && executor.held(AYNI_EXECUTOR_STOP) == 0; ++round) {
+        const uint64_t at = work.node().sim().now_us();
+        ASSERT_NE(report.next_deadline_us, UINT64_MAX) << round;
+        ASSERT_GT(report.next_deadline_us, at) << round;
+        now += report.next_deadline_us - at;
+        work.node().sim().advance_us(report.next_deadline_us - at);
+        report = work.node().step();
+        for (unsigned more = 0; more < 10 && report.more_ready != 0U; ++more) {
+            report = work.node().step();
+        }
+    }
+    EXPECT_EQ(executor.held(AYNI_EXECUTOR_STOP), 1U); // Sent again.
+    EXPECT_EQ(execution().executor_status, AYNI_RESULT_UNKNOWN);
+}
+// ADR-0052: the first status read waits one poll period after the permit goes
+// to the Provider, so a permit forwarded to the gate within it is not fenced
+// by an early NOT_FOUND.
+TEST_F(ManagedExecution, a_permit_forwarded_within_a_poll_period_starts) {
+    permit_start = PermitStart::at_advance;
+    start();
+    const auto goal = create();
+    wait_submission();
+    step_core(); // Core runs a round ahead of the forwarded permit.
+    pump(40);
+    EXPECT_GT(executor.samples(), 0U);
+    EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
     EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
     EXPECT_EQ(resource().quarantine_id, 0U);
 }

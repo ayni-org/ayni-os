@@ -86,7 +86,7 @@ class ExecutorMailbox {
     struct Lane {
         ayni_executor_completion target;        // Immutable address across requests.
         std::optional<ExecutorRequest> request; // Empty is closed; owner writes under lock.
-        std::optional<ExecutorAnswer> answer;   // Posted under lock, at most once per request.
+        std::optional<ExecutorAnswer> answer;   // Only with a request, at most one; under lock.
     };
     Lane &at(uint32_t executor, ExecutorLane lane);
     const Lane &at(uint32_t executor, ExecutorLane lane) const;

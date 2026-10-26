@@ -107,8 +107,10 @@ typedef struct ayni_executor_v1 {
 
 /* Any non-ISR thread, including inside the request port; copies the answer.
  * OK; INVALID_ARGUMENT for a malformed answer or a target Core did not give;
- * INVALID_STATE when the request is no longer awaited: already answered,
- * refused, given up after poll_period_us, or its permit released. Since 0.36. */
+ * UNSUPPORTED_VERSION for a larger struct_size; INVALID_STATE when the request
+ * is no longer awaited: already answered, refused, given up after
+ * poll_period_us, or its permit released. A port that posts and then refuses
+ * has its refusal taken, not the post. Since 0.36. */
 ayni_status_t ayni_executor_post(ayni_executor_completion_t *completion,
                                  const ayni_executor_response_v1 *response);
 
