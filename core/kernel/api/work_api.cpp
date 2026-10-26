@@ -69,6 +69,30 @@ bool read_tools(const ayni_goal_type_v1 &input, ayni::catalog::GoalType &type) {
     return true;
 }
 
+// ADR-0056: reject ambiguous/invalid declarations before copying a registration.
+bool read_checkpoint_readers(const ayni_strategy_v1 &input, ayni::catalog::Strategy &entry) {
+    if (input.reader_count > AYNI_CHECKPOINT_READER_COUNT_MAX || input.reader_reserved != 0U ||
+        (input.reader_count != 0U && input.readers == nullptr)) {
+        return false;
+    }
+    for (uint32_t at = 0; at < input.reader_count; ++at) {
+        const auto &reader = input.readers[at];
+        if (!entry.readers[at].id.assign(reader.strategy_id) || reader.min_version == 0U ||
+            reader.max_version < reader.min_version) {
+            return false;
+        }
+        for (uint32_t before = 0; before < at; ++before) {
+            if (entry.readers[before].id.equals(reader.strategy_id)) {
+                return false;
+            }
+        }
+        entry.readers[at].min_version = reader.min_version;
+        entry.readers[at].max_version = reader.max_version;
+    }
+    entry.reader_count = input.reader_count;
+    return true;
+}
+
 // Runs steps 1 to 5 of ayni_submit_intent once out_error is known to be
 // writable or absent; failure receives the detail of a refusal.
 // C-WIRE-004/C-AUTH-027: decode and apply before publishing a result; an exact
@@ -396,7 +420,7 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
         strategy->decide == nullptr || strategy->max_intents_per_call == 0U ||
         strategy->max_intents_per_call > kernel->decisions.intent_capacity() ||
         strategy->max_checkpoint_bytes > kernel->work.tasks.checkpoint_max_bytes() ||
-        strategy->reserved != 0U) {
+        strategy->reserved != 0U || !read_checkpoint_readers(*strategy, entry)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::registration);
@@ -562,6 +586,40 @@ ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
         return AYNI_NOT_FOUND;
     }
     write_task_info(*kernel, index, *out_info);
+    return AYNI_OK;
+}
+
+// Export only the completed durable decision, so an outer conversation store
+// cannot discard old rounds based on an uncommitted summary (ADR-0056).
+ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t task_id,
+                                        uint8_t *buffer, uint32_t capacity, uint32_t *out_size) {
+    if (kernel == nullptr || out_size == nullptr || (capacity != 0U && buffer == nullptr)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+        gated != AYNI_OK) {
+        return gated;
+    }
+    uint32_t index = 0;
+    if (!kernel->work.tasks.find(task_id, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto &task = kernel->work.tasks.at(index);
+    if (task.lifecycle != AYNI_TASK_COMPLETED) {
+        return ayni::work::TaskTable::is_live(task.lifecycle) ? AYNI_BUSY : AYNI_INVALID_STATE;
+    }
+    if (task.commit_seq > kernel->durable_seq()) {
+        return AYNI_BUSY;
+    }
+    const auto checkpoint = kernel->work.tasks.checkpoint(index);
+    if (capacity < checkpoint.size) {
+        *out_size = checkpoint.size;
+        return AYNI_BUFFER_TOO_SMALL;
+    }
+    if (checkpoint.size != 0U) {
+        std::memcpy(buffer, checkpoint.data, checkpoint.size);
+    }
+    *out_size = checkpoint.size;
     return AYNI_OK;
 }
 

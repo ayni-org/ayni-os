@@ -1071,9 +1071,9 @@ void WorkReplay::hold_tasks() {
         if (task.checkpoint_writer_version == 0U) {
             continue;
         }
-        if (strategy.version != task.checkpoint_writer_version ||
-            !strategy.id.equals(
-                {task.checkpoint_writer_id.data(), task.checkpoint_writer_id.size()})) {
+        if (!strategy.accepts_checkpoint(
+                {task.checkpoint_writer_id.data(), task.checkpoint_writer_id.size()},
+                task.checkpoint_writer_version)) {
             tasks.hold_restored(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_STRATEGY_CHANGED);
         } else if (task.checkpoint_size > strategy.max_checkpoint_bytes) {
             tasks.hold_restored(index, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT);

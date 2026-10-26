@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 37u
+#define AYNI_ABI_MINOR 38u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1313,8 +1313,8 @@ typedef struct ayni_task_info_v1 {
      * cannot decide (ADR-0026), without changing its revision: its goal is
      * held, with AYNI_NOT_FOUND and AYNI_REASON_GOAL_TYPE_UNKNOWN, or
      * AYNI_UNSUPPORTED_VERSION and the goal's hold_reason; or its goal type
-     * names another strategy or version than the one that wrote its private
-     * checkpoint, with AYNI_UNSUPPORTED_VERSION and
+     * names a strategy that does not accept the private checkpoint writer
+     * (explicit readers since 0.38), with AYNI_UNSUPPORTED_VERSION and
      * AYNI_REASON_STRATEGY_CHANGED; or its
      * checkpoint is larger than that strategy's max_checkpoint_bytes, with
      * AYNI_CAPACITY_EXCEEDED and AYNI_REASON_POLICY_OUTPUT_LIMIT. A later
@@ -1682,6 +1682,16 @@ typedef struct ayni_policy_output_v1 {
 typedef ayni_status_t (*ayni_decide_fn)(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                                         ayni_policy_output_v1 *output);
 
+/* Since 0.38. Explicit checkpoint readers, copied at registration. The current
+ * strategy's exact id/version is always accepted; these allow other writers.
+ * Acceptance promises format compatibility, never permission to redo a step. */
+#define AYNI_CHECKPOINT_READER_COUNT_MAX 4u
+typedef struct ayni_checkpoint_reader_v1 {
+    ayni_string_v1 strategy_id; /* Nonempty catalog id of the old writer. */
+    uint32_t min_version;       /* Positive inclusive version, <= max_version. */
+    uint32_t max_version;       /* Inclusive version; no wildcard or zero. */
+} ayni_checkpoint_reader_v1;
+
 typedef struct ayni_strategy_v1 {
     uint32_t struct_size;
     uint32_t version;              /* nonzero */
@@ -1696,6 +1706,11 @@ typedef struct ayni_strategy_v1 {
      * to task_checkpoint_max_bytes; 0 when it keeps none. */
     uint32_t max_checkpoint_bytes;
     uint32_t reserved; /* must be 0 */
+    /* Since 0.38. Up to CHECKPOINT_READER_COUNT_MAX distinct writer ids; zero
+     * preserves exact-self compatibility. Null only when reader_count is zero. */
+    uint32_t reader_count;
+    uint32_t reader_reserved; /* Since 0.38. Must be zero. */
+    const ayni_checkpoint_reader_v1 *readers;
 } ayni_strategy_v1;
 
 /*
@@ -1708,7 +1723,8 @@ typedef struct ayni_strategy_v1 {
  * strategy_id that is not a catalog id, a max_intents_per_call of 0 or
  * above policy_intent_capacity, a max_checkpoint_bytes above
  * task_checkpoint_max_bytes, a nonzero reserved field, or a strategy_id
- * already registered;
+ * already registered; since 0.38 also invalid reader ids/ranges, duplicate
+ * reader ids, too many readers, a missing array or nonzero reader_reserved;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for struct_size, and
  * likewise for an intent_size below or above this library's
  * sizeof(ayni_policy_intent_v1); AYNI_INVALID_STATE outside CONFIGURING;
@@ -1843,6 +1859,14 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
  * goal, with its tasks (ADR-0025). */
 ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
                             ayni_task_info_v1 *out_info);
+
+/* Since 0.38. Trusted owner-thread export of a completed Task's private state.
+ * Like get_task, not an authorization boundary for untrusted clients. BUSY
+ * until COMPLETED and the complete Task transition is durable; other terminal
+ * lifecycles return INVALID_STATE. BUFFER_TOO_SMALL sets only out_size. Other
+ * failures preserve all output. No borrowed pointer escapes the callback. */
+ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t task_id,
+                                        uint8_t *buffer, uint32_t capacity, uint32_t *out_size);
 
 /* ---- Events (since 0.9) ------------------------------------------------
  *

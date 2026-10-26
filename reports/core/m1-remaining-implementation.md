@@ -10,8 +10,8 @@
 | 3 | — | MA-018B | 过程与控制会话、nonce 锚定续租、到期不可恢复、即时授权门控、最小 Scene；停止确认前隔离；独立模拟执行端/停止链 | 独立门 #68（ADR-0049）；Core、Scene、最小观察和 Mock 停止闭环见 [#69](https://github.com/RobotSe7en/ayni/pull/69)（ADR-0050）；执行端端口异步化见 [#71](https://github.com/RobotSe7en/ayni/pull/71)（ADR-0052）；正常功能通过，故障/恢复与硬件专项待验收 |
 | 4 | P0 | 结构收尾 | 审查项 F05 泛型精确命令查找、F06 调用对 Task 的传播移到 work、F11 主版本 0 只收当前 ABI 布局、F16 前半共享默认配置、F19 文档/草案对齐；两个 runner 的并行 CI；行为、ABI 0.36 布局与 schema 2 不变 | [#72](https://github.com/RobotSe7en/ayni/pull/72)（ADR-0053） |
 | 5 | P1 | MA-008C | typed 工具调用结果（至多 8 项）与工具视图，GoalType 允许列表内已授权的部分，ABI 0.37；OpenAI-compatible Provider：libcurl multi 工作线程、yyjson 有界解析、运行时 endpoint/model/密钥环境变量名，非流式文本与工具调用，无自动重试；本地协议夹具，实 API 单独验证 | Core 侧 typed 工具调用、工具视图与允许列表见 [#73](https://github.com/RobotSe7en/ayni/pull/73)（ADR-0054，ABI 0.37）；Native OpenAI-compatible Provider、本地夹具与 DeepSeek 文本/工具提议验证见 [#75](https://github.com/RobotSe7en/ayni/pull/75)（ADR-0055） |
-| 6 | P1 | MA-009 | 规则和 ToolLoop 两策略；单轮最多 8 调用、按序；命名版本步骤；未知阻止后续；检查点明确兼容；补偿新调用新授权；多轮对话保存最近轮次与模型摘要，P1 只删整个对话 | 未开始 |
-| 7 | P2 | MA-020 前半 | runtime 演示装配（F16 后半）与 SimNode；单进程 Native CLI 内嵌 Kernel，命令映射已有意图；显式点名对 A/B 说话；脚本化 Mock CLI 会话含重启继续 | 未开始 |
+| 6 | P1 | MA-009 | 规则和 ToolLoop 两策略；单轮最多 8 调用、按序；命名版本步骤；未知阻止后续；检查点明确兼容；补偿新调用新授权；多轮对话保存最近轮次与模型摘要，P1 只删整个对话 | 已交付 [#76](https://github.com/RobotSe7en/ayni/pull/76)（ADR-0056）；文件存储随 P2 |
+| 7 | P2 | MA-020 前半 | runtime 演示装配（F16 后半）、SimNode 与对话文件存储；单进程 Native CLI 内嵌 Kernel，命令映射已有意图；显式点名对 A/B 说话；脚本化 Mock CLI 会话含重启继续 | 未开始 |
 | 8 | P3 | 结构整改 | F01 `ayni_kernel` 成员私有化与 service/runtime 分区，F14 StepContext，F08 作用域重入守卫；行为、ABI 与 schema 不变 | 未开始 |
 | 9 | P3 | MA-011A | 私有命名空间与所有者公共档案；来源/版本/确认状态；有限检索与上下文 lineage；tombstone 立即拒绝传递派生依赖、有界擦除；单轮对话删除使摘要失效；满表拒绝；随同 F04（Grant/命令）、F12、F10 | 未开始 |
 | 10 | P4 | MA-011B | 可信 UTC 独立于 monotonic；单次/每日/每周与有界时区规则；不可信待校时；稳定 occurrence；DST/跳时补发至多一次 | 未开始 |
@@ -29,3 +29,5 @@
 实现通则：复用现有授权目录、命令幂等、提交协调和记录 codec；不从模型接受驱动/资源锁或任意端点。Provider 线程只向预留槽投递，不能直接改 Core。可靠完成记录遇存储背压保留，不被 progress 覆盖。Task 普通恢复不重置调用计数；提高软限额不超过启动硬容量。默认模型槽 1、Task 模型调用 8、请求超时 30 秒；前台等待超限暂停、提醒可明确无界等待、后台跳过有计数；低容量配置可禁用尚不使用的表。
 
 完成定义：每项有契约、实现、正常测试、作者设计自查和适用独立审查；本地按相关行为选择检查，CI 运行既有 ASan/UBSan 全套。ABI/容量变化量 arena，硬件数字另测。完整 E1–E4、Core Alpha、故障恢复、ESP32 烧录、Web/语音/屏幕均不能由本表的普通集成替代。
+
+用户 2026-10-26 在 P1 PR 3 开工时选定：P1 交付 Core 外对话值组件及已完成 Task 检查点导出，P2 接对话文件存储；Kernel 历史正文擦除/单轮删除仍随 P3。

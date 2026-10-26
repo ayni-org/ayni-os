@@ -6,7 +6,7 @@
 
 Provider 实现 Capability：外部模型 API、感知、媒体、检索、动作执行等。Provider 是可信内置代码（C-TRUST 表），但其**输出**是不可信数据，由 Kernel 校验后才影响状态（C-TRUST-001）。Provider 不持有领域对象的写权限，不调度任务。
 
-当前实施边界（ABI 0.37，ADR-0044/0045/0048/0054/0055）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
+当前实施边界（ABI 0.38，ADR-0044/0045/0048/0054/0055）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
 
 ## 函数表
 

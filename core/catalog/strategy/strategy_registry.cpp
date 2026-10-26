@@ -2,6 +2,20 @@
 
 namespace ayni::catalog {
 
+bool Strategy::accepts_checkpoint(ayni_string_v1 writer, uint32_t writer_version) const {
+    if (id.equals(writer) && version == writer_version) {
+        return true;
+    }
+    for (uint32_t at = 0; at < reader_count; ++at) {
+        const auto &reader = readers[at];
+        if (reader.id.equals(writer) && writer_version >= reader.min_version &&
+            writer_version <= reader.max_version) {
+            return true;
+        }
+    }
+    return false;
+}
+
 StrategyRegistry::AddResult StrategyRegistry::add(const Strategy &strategy) {
     uint32_t existing = 0;
     if (find(strategy.id, existing)) {

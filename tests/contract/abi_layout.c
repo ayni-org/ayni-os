@@ -384,7 +384,18 @@ AYNI_LAYOUT(strategy_intent_size, offsetof(ayni_strategy_v1, intent_size) == 12 
 AYNI_LAYOUT(strategy_max_checkpoint_bytes,
             offsetof(ayni_strategy_v1, max_checkpoint_bytes) == 16 + 4 * AYNI_PTR);
 AYNI_LAYOUT(strategy_reserved, offsetof(ayni_strategy_v1, reserved) == 20 + 4 * AYNI_PTR);
-AYNI_LAYOUT(strategy_size, sizeof(ayni_strategy_v1) == 24 + 4 * AYNI_PTR);
+/* ABI 0.38 / ADR-0056: copied explicit checkpoint readers, on both pointer widths. */
+AYNI_LAYOUT(strategy_reader_count, offsetof(ayni_strategy_v1, reader_count) == 24 + 4 * AYNI_PTR);
+AYNI_LAYOUT(strategy_reader_reserved,
+            offsetof(ayni_strategy_v1, reader_reserved) == 28 + 4 * AYNI_PTR);
+AYNI_LAYOUT(strategy_readers, offsetof(ayni_strategy_v1, readers) == 32 + 4 * AYNI_PTR);
+AYNI_LAYOUT(strategy_size, sizeof(ayni_strategy_v1) == 32 + 5 * AYNI_PTR);
+AYNI_LAYOUT(checkpoint_reader_id, offsetof(ayni_checkpoint_reader_v1, strategy_id) == 0);
+AYNI_LAYOUT(checkpoint_reader_min,
+            offsetof(ayni_checkpoint_reader_v1, min_version) == 2 * AYNI_PTR);
+AYNI_LAYOUT(checkpoint_reader_max,
+            offsetof(ayni_checkpoint_reader_v1, max_version) == 4 + 2 * AYNI_PTR);
+AYNI_LAYOUT(checkpoint_reader_size, sizeof(ayni_checkpoint_reader_v1) == 8 + 2 * AYNI_PTR);
 
 AYNI_LAYOUT(task_target_struct_size, offsetof(ayni_task_target_v1, struct_size) == 0);
 AYNI_LAYOUT(task_target_reserved, offsetof(ayni_task_target_v1, reserved) == 4);

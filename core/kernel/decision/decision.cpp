@@ -353,8 +353,8 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     output.struct_size = sizeof(output);
     output.intent_capacity = strategy.max_intents_per_call;
     output.intents = decisions.clear(strategy.max_intents_per_call);
-    // Only this strategy decides the task, so it wrote the checkpoint
-    // within its own limit.
+    // Startup checked the old writer against this strategy's reader promises
+    // and capacity; later decisions use this writer (ADR-0024, ADR-0056).
     output.checkpoint_capacity = strategy.max_checkpoint_bytes;
     output.checkpoint_size = snapshot.checkpoint.state.size;
     output.checkpoint =
