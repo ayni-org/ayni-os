@@ -30,10 +30,16 @@ std::optional<ayni::kernel::ProviderMessageKind> kind_of(ayni_call_outcome_t out
     }
 }
 
-// Runs under the mailbox lock; the list is the caller's, unchanged since measured.
+// The list as measured: its address and count are not read from the caller again.
+struct MeasuredCalls {
+    const ayni_tool_call_v1 *calls;
+    uint32_t count;
+};
+
+// Runs under the mailbox lock, during the caller's post.
 void write_calls(const void *context, uint8_t *out, uint32_t size) {
-    const auto &result = *static_cast<const ayni_provider_result_v1 *>(context);
-    ayni::work::write_tool_calls(result.tool_calls, result.tool_call_count, out, size);
+    const auto &list = *static_cast<const MeasuredCalls *>(context);
+    ayni::work::write_tool_calls(list.calls, list.count, out, size);
 }
 } // namespace
 
@@ -64,7 +70,8 @@ extern "C" ayni_status_t ayni_provider_post(ayni_provider_completion_t *completi
         result->query_result};
     // Shape is checked on this thread; whether each tool was offered and its
     // values allowed is checked by the owner against its catalogs (ADR-0054).
-    const ayni::kernel::PayloadWriter writer{result, write_calls};
+    const MeasuredCalls measured_calls{result->tool_calls, result->tool_call_count};
+    const ayni::kernel::PayloadWriter writer{&measured_calls, write_calls};
     if (result->tool_call_count != 0U) {
         uint32_t size = 0;
         if (result->outcome != AYNI_CALL_COMPLETED || result->result.size != 0U) {

@@ -88,7 +88,7 @@ struct CallRecord {
     ayni_bytes_v1 domain;             // Original authority schema bytes, required.
     ayni_bytes_v1 input;              // Canonical request authorized against domain, required.
     ayni_string_v1 result;            // Terminal body as result_kind says, empty before completion.
-    CallResultKind result_kind;       // Text, unless a completion holds tool calls.
+    CallResultKind result_kind = CallResultKind::text; // Unless a completion holds tool calls.
 };
 
 // Fixed slots keep noncopyable ActionRecord claims stable. Retained input and
@@ -203,8 +203,10 @@ class CallTable {
         std::optional<ActionRecord> action; // Empty before resource admission; never copied.
         uint32_t domain_size;               // Used bytes in original schema stride.
         uint32_t input_size;                // Used bytes in canonical input stride.
-        uint32_t result_size;       // Used UTF-8 result bytes, zero also permits empty success.
-        CallResultKind result_kind; // How the result bytes read; text before a terminal.
+        uint32_t result_size; // Used UTF-8 result bytes, zero also permits empty success.
+        // How the result bytes read; set by insert, since an initializer here
+        // would stop Clang constructing the nested Entry in place.
+        CallResultKind result_kind;
     };
     struct Slot {
         std::optional<Entry> entry; // Empty means free; removing never moves another call.

@@ -96,8 +96,10 @@ class ProviderMailbox {
 
     // Owner: reserve before submit. Request IDs must strictly increase across
     // all reservations, including boot changes, so an old token never aliases.
+    // written_limit bounds a written terminal for this attempt; 0 refuses one.
     // Capacity or malformed identity errors preserve out and consume no identity.
-    ayni_status_t reserve(ayni_attempt_ref_v1 attempt, ProviderReservation &out);
+    ayni_status_t reserve(ayni_attempt_ref_v1 attempt, ProviderReservation &out,
+                          uint32_t written_limit = 0);
     // Owner: target for a live exact reservation; null when stale. Its address
     // survives reuse, but callers must retain the original attempt identity.
     ayni_provider_completion_t *completion(ProviderReservation reservation);
@@ -106,7 +108,9 @@ class ProviderMailbox {
     // Any producer: valid progress can replace only progress; a cancel control
     // is accepted once. Terminal publication ends producer delivery: later
     // posts are rejected, while previously accepted cancel remains pending.
-    // Older progress is acknowledged but ignored. All other errors preserve data.
+    // A written terminal over its attempt's written_limit is CAPACITY_EXCEEDED,
+    // or INVALID_ARGUMENT when the attempt takes none. Older progress is
+    // acknowledged but ignored. All other errors preserve data.
     ayni_status_t post(ProviderReservation reservation, const ProviderMessage &message);
     // Owner-created mask: deferred reliable terminals remain owned but do not spin or starve peers.
     using BlockedSlots = std::array<bool, capacity_max>;
@@ -139,7 +143,7 @@ class ProviderMailbox {
         uint32_t size;             // Payload bytes, <= payload_bytes_; zero is a valid payload.
         ayni_call_effect_t effect; // Copied assertion; domain validates result/effect pairing.
         uint32_t query_result;     // Copied query classification; zero for submit.
-        work::CallResultKind body; // Copied payload kind; domain validates it.
+        work::CallResultKind body = work::CallResultKind::text; // Domain validates it.
     };
     // Keep acknowledged cancellation identity until terminal so duplicate control
     // cannot be accepted again. Separate stages do not overload payload length.
@@ -154,6 +158,7 @@ class ProviderMailbox {
         std::optional<Result> progress;      // Latest unapplied progress; empty after ack/terminal.
         std::optional<Cancel> cancel;        // Empty before the first accepted cancel response.
         std::optional<Result> terminal;      // Immutable once posted, released only by owner ack.
+        uint32_t written_limit = 0;          // Bytes a written terminal may take; 0 refuses one.
     };
     struct Slot {
         ayni_provider_completion target; // Immutable owner/address across slot incarnations.

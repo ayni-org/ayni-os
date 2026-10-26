@@ -164,9 +164,10 @@ class ToolCalls : public ::testing::Test {
                                          model ? 1U : 0U,
                                          model ? &units : nullptr};
         };
+        // The planner's own result bound is below the 512-byte result lane.
         const ayni_call_capability_v1 planner{
             sizeof(ayni_call_capability_v1), 1, text("planner"),
-            contract(AYNI_CALL_MODEL, AYNI_CALL_RESULT_TOOL_CALLS, 64, 512)};
+            contract(AYNI_CALL_MODEL, AYNI_CALL_RESULT_TOOL_CALLS, 64, 128)};
         const ayni_call_capability_v1 offers[] = {
             {sizeof(ayni_call_capability_v1), 1, text("timer.set"),
              contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32)},
@@ -513,6 +514,10 @@ TEST_F(ToolCalls, strategy_requests_a_proposed_call_through_the_ordinary_checks)
     EXPECT_EQ(pending[1].fields, (std::vector<uint32_t>{minutes_field, mode_field, target_field}));
     EXPECT_EQ(pending[1].integers, std::vector<int64_t>{10});
     EXPECT_EQ(pending[1].words, (std::vector<std::string>{"quiet", "local.timer"}));
+    // A text-format call takes no list at all.
+    Proposal again;
+    const auto listed_reply = completed(1, &again.call, 1);
+    EXPECT_EQ(ayni_provider_post(pending[1].completion, &listed_reply), AYNI_INVALID_ARGUMENT);
     post_text(1, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("set"));
     pump(20);
     EXPECT_EQ(acted, "set");
@@ -540,6 +545,10 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);
     result = completed(0, nullptr, 1);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);
+    // Two calls fit the lane but not the planner's own result bound.
+    const std::array<ayni_tool_call_v1, 2> two{{proposal.call, proposal.call}};
+    result = completed(0, two.data(), 2);
+    EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_CAPACITY_EXCEEDED);
     proposal.fields[0].allowed.values.integer = {10, 20};
     result = completed(0, &proposal.call, 1);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);

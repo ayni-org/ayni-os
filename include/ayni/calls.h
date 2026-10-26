@@ -123,7 +123,8 @@ typedef struct ayni_task_call_result_v1 {
 /* Since 0.37. Caller storage for one decoded tool call. call.arguments.fields
  * points into fields and each token set into tokens, so use out in place
  * (copying the struct keeps pointers to the original); strings borrow Core
- * memory until decide returns. call can be passed to request_call as is. */
+ * memory until decide returns. To run it, a strategy copies call's binding,
+ * arguments and text into an ayni_call_request_v1 of kind REQUEST_CALL. */
 typedef struct ayni_task_tool_call_v1 {
     uint32_t struct_size;
     uint32_t reserved; /* Written zero. */
@@ -221,10 +222,9 @@ typedef struct ayni_call_query_result_v1 {
  * Since 0.37 a COMPLETED result of a TOOL_CALLS call holds either text or
  * 1..CALL_TOOL_COUNT_MAX tool calls with empty text, never both; every other
  * outcome has none. A list must name only tools offered with the request and
- * values inside their offered sets, and its encoding (contracts/storage/
- * records.md) must fit result_text_limit; otherwise the receipt is invalid
- * Provider evidence. Report undecodable model output as FAILED with reason
- * MODEL_OUTPUT instead.
+ * values inside their offered sets, otherwise the receipt is invalid Provider
+ * evidence. Report undecodable model output as FAILED with reason
+ * MODEL_OUTPUT instead, as when post refuses a list over result_text_limit.
  */
 typedef struct ayni_provider_result_v1 {
     uint32_t struct_size;        /* sizeof this structure. */
@@ -243,9 +243,12 @@ typedef struct ayni_provider_result_v1 {
 
 /* Any non-ISR thread, including synchronous submission. Copies into capacity
  * reserved for the attempt, independently of storage/event queue pressure.
- * A malformed tool list (wrong struct sizes, counts, ids or non-singleton
- * values, duplicate fields) returns INVALID_ARGUMENT; one beyond the reserved
- * result bytes returns CAPACITY_EXCEEDED.
+ * A tool list is checked and encoded here: counts, ids, non-singleton values,
+ * duplicate fields, invalid UTF-8, or one on an attempt that takes no list,
+ * return INVALID_ARGUMENT; a struct larger than this version's returns
+ * UNSUPPORTED_VERSION (smaller, INVALID_ARGUMENT); a body over
+ * CALL_TEXT_BYTES_MAX, or an encoding over the call's result_text_limit,
+ * returns CAPACITY_EXCEEDED. Shape is checked before the attempt is found.
  * Stale/duplicate reliable posts return INVALID_STATE. Older progress is
  * ignored with OK. A successful terminal post ends the delivery borrow;
  * runtime still joins the producer before destroying Core/context storage.
@@ -294,9 +297,11 @@ typedef struct ayni_provider_request_v1 {
      * samples under that gate. Copy before retention, never accept it later. */
     const ayni_execution_permit_v1 *execution_permit;
     /* Since 0.37. Tools offered to a TOOL_CALLS call, zero otherwise. During
-     * submit only, tool(tool_context, index, out) fills caller storage whose
-     * struct_size is set, for index below tool_count; its views borrow Core
-     * storage until submit returns. tool is null when tool_count is 0. */
+     * this submit only, on its thread, tool(tool_context, index, out) fills
+     * caller storage whose struct_size is set, for index below tool_count; its
+     * views borrow Core storage until submit returns. Outside any submit it
+     * returns INVALID_STATE; a Provider never keeps it, since during a later
+     * submit it would describe that call's tools. Null when tool_count is 0. */
     uint32_t tool_count;
     uint32_t tool_reserved; /* Written zero. */
     const void *tool_context;

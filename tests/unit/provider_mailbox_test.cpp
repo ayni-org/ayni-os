@@ -26,9 +26,9 @@ class ProviderMailboxTest : public ::testing::Test {
     uint32_t required = 0;
     ProviderMessage message{};
     ProviderReceipt receipt{};
-    ProviderReservation reserve(uint64_t id) {
+    ProviderReservation reserve(uint64_t id, uint32_t written_limit = 0) {
         ProviderReservation reservation{};
-        EXPECT_EQ(mailbox.reserve({boot_epoch, id}, reservation), AYNI_OK);
+        EXPECT_EQ(mailbox.reserve({boot_epoch, id}, reservation, written_limit), AYNI_OK);
         return reservation;
     }
     ayni_status_t post(ProviderReservation reservation, Kind kind, uint64_t sequence = 0,
@@ -271,7 +271,8 @@ TEST_F(ProviderMailboxTest, attempt_identity_is_monotone_even_after_a_slot_was_w
 
 namespace {
 // ADR-0054: a typed body is encoded into its reserved lane under the lock and
-// keeps its kind; a writer never serves progress or an over-bound body.
+// keeps its kind; a writer never serves progress, an attempt that takes no
+// written body, or one over the lane or the attempt's own bound.
 TEST_F(ProviderMailboxTest, written_terminal_keeps_its_kind_and_lane_bound) {
     struct Fill {
         static void write(const void *context, uint8_t *out, uint32_t size) {
@@ -282,7 +283,8 @@ TEST_F(ProviderMailboxTest, written_terminal_keeps_its_kind_and_lane_bound) {
     };
     const uint8_t value = 0x5A;
     const PayloadWriter writer{&value, Fill::write};
-    const auto reservation = reserve(1);
+    const auto text_only = reserve(1);
+    const auto reservation = reserve(2, 4);
     ProviderMessage written{Kind::completed, 0, AYNI_OK, AYNI_REASON_NONE, {nullptr, 4}};
     written.body = ayni::work::CallResultKind::tool_calls;
     written.writer = &writer;
@@ -293,6 +295,10 @@ TEST_F(ProviderMailboxTest, written_terminal_keeps_its_kind_and_lane_bound) {
     written.sequence = 0;
     written.payload.size = body_capacity + 1U;
     EXPECT_EQ(mailbox.post(reservation, written), AYNI_CAPACITY_EXCEEDED);
+    written.payload.size = 5;
+    EXPECT_EQ(mailbox.post(reservation, written), AYNI_CAPACITY_EXCEEDED);
+    written.payload.size = 4;
+    EXPECT_EQ(mailbox.post(text_only, written), AYNI_INVALID_ARGUMENT);
     const uint8_t stray = 1;
     written.payload = {&stray, 4};
     EXPECT_EQ(mailbox.post(reservation, written), AYNI_INVALID_ARGUMENT);
@@ -306,5 +312,6 @@ TEST_F(ProviderMailboxTest, written_terminal_keeps_its_kind_and_lane_bound) {
     EXPECT_EQ(buffer[0], value);
     EXPECT_EQ(buffer[3], value);
     EXPECT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    EXPECT_TRUE(mailbox.withdraw(text_only));
 }
 } // namespace

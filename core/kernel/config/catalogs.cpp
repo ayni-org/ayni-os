@@ -37,9 +37,13 @@ ayni_status_t Catalogs::close() {
     if (linked != AYNI_OK) {
         return linked;
     }
-    // A model may propose only ordinary unary/action tools (ADR-0054).
-    const auto tools = goal_types.link_tools([&](const catalog::GoalTypeTool &tool,
-                                                 uint32_t &out_index) {
+    const auto executable =
+        execution.validate_all(bindings, capabilities, call_capabilities, resources);
+    if (executable != AYNI_OK) {
+        return executable;
+    }
+    // A model may propose only tools a strategy could request (ADR-0054).
+    return goal_types.link_tools([&](const catalog::GoalTypeTool &tool, uint32_t &out_index) {
         uint32_t index = 0;
         catalog::BindingLinks links{};
         if (!bindings.find({tool.binding_id.data(), tool.binding_id.size()}, tool.binding_version,
@@ -50,18 +54,34 @@ ayni_status_t Catalogs::close() {
                                               providers, resources, links) != AYNI_OK) {
             return AYNI_INTERNAL; // validate_all resolved every Binding.
         }
-        const auto &contract = call_capabilities.at(links.call).contract;
-        if (contract.category != catalog::CallClass::tool ||
-            contract.form == catalog::CallForm::subscription) {
+        if (call_capabilities.at(links.call).contract.category != catalog::CallClass::tool ||
+            dispatchable(bindings.at(index), links) != AYNI_OK) {
             return AYNI_INVALID_ARGUMENT;
         }
         out_index = index;
         return AYNI_OK;
     });
-    if (tools != AYNI_OK) {
-        return tools;
+}
+
+ayni_status_t Catalogs::dispatchable(const catalog::Binding &binding,
+                                     const catalog::BindingLinks &links) const {
+    const auto &contract = call_capabilities.at(links.call).contract;
+    if (contract.form == catalog::CallForm::subscription) {
+        return AYNI_UNSUPPORTED; // Subscription lifecycle is delivered separately (ADR-0050).
     }
-    return execution.validate_all(bindings, capabilities, call_capabilities, resources);
+    const bool physical = (contract.effects & catalog::call_effect_physical) != 0U;
+    uint32_t execution_index = 0;
+    if (physical && !execution.find_binding({binding.id.data(), binding.id.size()}, binding.version,
+                                            execution_index)) {
+        return AYNI_UNSUPPORTED;
+    }
+    for (uint32_t at = 0; at < contract.resource_count; ++at) {
+        // Every actuator acquisition uses the same permit/stop consumer.
+        if (!physical && (resources.at(links.resources[at]).flags & AYNI_RESOURCE_ACTUATOR) != 0U) {
+            return AYNI_UNSUPPORTED;
+        }
+    }
+    return AYNI_OK;
 }
 
 } // namespace ayni::kernel

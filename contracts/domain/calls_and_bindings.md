@@ -69,11 +69,11 @@ ABI 0.31 的普通资源等待超时只暂停原 Task，保留选定调用、输
 
 ## ABI 0.37 的类型化工具调用（ADR-0054）
 
-GoalType 以 `tools` 声明最多 8 个可提议的工具 Binding（精确 ID 与版本，ID 不重复）。列出本身不授予任何权限；注册只检查引用的形状，`ayni_start` 再把每一项解析为非订阅的 TOOL 类 Binding，未知的返回 `AYNI_NOT_FOUND`，模型或订阅 Binding 返回 `AYNI_INVALID_ARGUMENT`，Kernel 留在 CONFIGURING。
+GoalType 以 `tools` 声明最多 8 个可提议的工具 Binding（精确 ID 与版本，ID 不重复）。列出本身不授予任何权限；注册只检查引用的形状，`ayni_start` 再把每一项解析为策略可以请求的 TOOL 类 Binding（与提交时同一项派发检查），未知的返回 `AYNI_NOT_FOUND`，模型、订阅或无法派发的 Binding 返回 `AYNI_INVALID_ARGUMENT`，Kernel 留在 CONFIGURING。
 
-结果格式为 `AYNI_CALL_RESULT_TOOL_CALLS` 的调用只能是非物理、非订阅的 MODEL 契约。派发时 Provider 得到这次调用可用的工具：允许列表中能对上 Task 所属 Goal 某一需求的 Binding（同 Capability 与版本、同来源域，且该需求的上限容许 Binding 自己的端点或目的地），即“允许列表 ∩ 已授权”。每个工具的视图给出字段的类型、单位和该上限内的取值；路由字段只列 Binding 自己的端点或目的地。视图只在 `submit` 返回前借用，之后的读取返回 `AYNI_INVALID_STATE`。
+结果格式为 `AYNI_CALL_RESULT_TOOL_CALLS` 的调用只能是非物理、非订阅的 MODEL 契约。派发时 Provider 得到这次调用可用的工具：允许列表中能对上 Task 所属 Goal 某一需求的 Binding（同 Capability 与版本、同来源域，且该需求的上限容许 Binding 自己的端点或目的地），即“允许列表 ∩ 已授权”。每个工具的视图给出字段的类型、单位和该上限内的取值；路由字段只列 Binding 自己的端点或目的地。视图回调只在本次 `submit` 内、在其线程上有效，任何 `submit` 之外返回 `AYNI_INVALID_STATE`；Provider 不保留它。
 
-完成时 Provider 给出最终文本或 1～8 个类型化调用，二者择一；每个调用给出精确 Binding、每个字段恰好一个值和正文。形状错误在 `ayni_provider_post` 时返回 `AYNI_INVALID_ARGUMENT`，超出结果通道返回 `AYNI_CAPACITY_EXCEEDED`，借用保持。Kernel 在应用回执时按提交时的视图逐项复核；模型输出无法变成类型化结果（无法解码、未知工具、取值越界）时，Provider 应报告 `FAILED` 与 `AYNI_REASON_MODEL_OUTPUT`，由策略决定下一步。
+完成时 Provider 给出最终文本或 1～8 个类型化调用，二者择一；每个调用给出精确 Binding、每个字段恰好一个值和正文。形状错误或向文本格式调用发表列表在 `ayni_provider_post` 时返回 `AYNI_INVALID_ARGUMENT`，编码超出该调用的 `result_text_limit` 返回 `AYNI_CAPACITY_EXCEEDED`，借用保持。Kernel 在应用回执时按提交时的视图逐项复核；模型输出无法变成类型化结果（无法解码、未知工具、取值越界）时，Provider 应报告 `FAILED` 与 `AYNI_REASON_MODEL_OUTPUT`，由策略决定下一步。
 
 调用列表随调用记录持久（type21/v4），策略经快照的 `call_tool` 读取本 Task 的提议，`ayni_call_info_v1.tool_call_count` 公开数量，`ayni_copy_call_result` 对列表复制 0 字节。Kernel 不执行提议：策略要执行某个提议，须在下一次决定中自己提交 REQUEST_CALL。
 

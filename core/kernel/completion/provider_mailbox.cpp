@@ -76,7 +76,8 @@ uint8_t *ProviderMailbox::payload_of(uint32_t index, ProviderMessageKind kind) c
 
 // Reserve all delivery capacity before any Provider is allowed to keep work.
 // Failed admission leaves both identity high-water mark and caller output intact.
-ayni_status_t ProviderMailbox::reserve(ayni_attempt_ref_v1 identity, ProviderReservation &out) {
+ayni_status_t ProviderMailbox::reserve(ayni_attempt_ref_v1 identity, ProviderReservation &out,
+                                       uint32_t written_limit) {
     const IngressGuard guard(host_);
     if (identity.boot_epoch == 0U || identity.request_id <= last_request_id_) {
         return AYNI_INVALID_ARGUMENT;
@@ -88,7 +89,7 @@ ayni_status_t ProviderMailbox::reserve(ayni_attempt_ref_v1 identity, ProviderRes
         if (slots_[index].attempt) {
             continue;
         }
-        slots_[index].attempt = Attempt{identity, 0, {}, {}, {}};
+        slots_[index].attempt = Attempt{identity, 0, {}, {}, {}, written_limit};
         ++in_flight_;
         last_request_id_ = identity.request_id;
         out = {index, identity};
@@ -110,6 +111,10 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
         auto *attempt = find(reservation);
         if (attempt == nullptr || attempt->terminal) {
             return AYNI_INVALID_STATE;
+        }
+        // A written list is bounded by its call's own result limit, not only by the lane.
+        if (message.writer != nullptr && message.payload.size > attempt->written_limit) {
+            return attempt->written_limit == 0U ? AYNI_INVALID_ARGUMENT : AYNI_CAPACITY_EXCEEDED;
         }
         const Result result{message.kind,         message.status, message.reason,
                             message.payload.size, message.effect, message.query_result,

@@ -7,6 +7,7 @@
 #include "durability/batch/record_body.h"
 #include "work/call/call_input.h"
 
+#include <cstring>
 #include <limits>
 
 namespace ayni::work {
@@ -30,13 +31,20 @@ bool integer(ayni_authority_value_kind_t kind) {
     return kind == AYNI_AUTHORITY_I64;
 }
 
-// One ABI call's validated singleton values, by input index, and their id order.
+// One ABI call as validated: its sizes and views are what the write uses, so
+// a list changed after validation cannot make the write overrun its sizes.
 struct CallValues {
+    uint32_t version = 0;
+    ayni_string_v1 binding_id{};
+    uint32_t count = 0;
+    std::array<uint32_t, AYNI_AUTHORITY_FIELD_COUNT_MAX> ids{}; // By input index.
     catalog::FieldOrder order{};
     std::array<catalog::FieldValues, AYNI_AUTHORITY_FIELD_COUNT_MAX> values{};
+    ayni_string_v1 text{};
 };
 
-ayni_status_t read_call(const ayni_tool_call_v1 &call, CallValues &out, uint32_t &size) {
+ayni_status_t read_call(const ayni_tool_call_v1 &input, CallValues &out, uint32_t &size) {
+    const ayni_tool_call_v1 call = input; // One read of the caller's sizes and views.
     auto status = catalog::check_struct_size(call.struct_size, sizeof(call), sizeof(call));
     if (status != AYNI_OK) {
         return status;
@@ -65,25 +73,29 @@ ayni_status_t read_call(const ayni_tool_call_v1 &call, CallValues &out, uint32_t
         }
         total += field_fixed_size + values.unit.size +
                  (integer(values.kind) ? integer_size : token_length_size + values.tokens[0].size);
+        out.ids[at] = field.field_id;
     }
     // The tool's own text limit is checked by the Kernel against its Binding.
     status = check_call_text(call.text, catalog::call_text_limit_max);
     if (status != AYNI_OK) {
         return status;
     }
+    out.version = call.binding_version;
+    out.binding_id = call.binding_id;
+    out.count = call.arguments.field_count;
+    out.text = call.text;
     size = total;
     return AYNI_OK;
 }
 
-void write_call(const ayni_tool_call_v1 &call, const CallValues &values,
-                durability::BodyWriter &writer) {
-    writer.u32(call.binding_version);
-    writer.bytes(call.binding_id.data, call.binding_id.size);
-    writer.u32(call.arguments.field_count);
-    for (uint32_t at = 0; at < call.arguments.field_count; ++at) {
+void write_call(const CallValues &values, durability::BodyWriter &writer) {
+    writer.u32(values.version);
+    writer.bytes(values.binding_id.data, values.binding_id.size);
+    writer.u32(values.count);
+    for (uint32_t at = 0; at < values.count; ++at) {
         const uint32_t index = values.order[at];
         const auto &value = values.values[index];
-        writer.u32(call.arguments.fields[index].field_id);
+        writer.u32(values.ids[index]);
         writer.u32(value.kind);
         writer.bytes(value.unit.data, value.unit.size);
         if (integer(value.kind)) {
@@ -92,7 +104,7 @@ void write_call(const ayni_tool_call_v1 &call, const CallValues &values,
             writer.bytes(value.tokens[0].data, value.tokens[0].size);
         }
     }
-    writer.bytes(call.text.data, call.text.size);
+    writer.bytes(values.text.data, values.text.size);
 }
 
 ayni_string_v1 string(const uint8_t *data, uint32_t size) {
@@ -215,11 +227,21 @@ ayni_status_t measure_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count,
 void write_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint8_t *out, uint32_t size) {
     durability::BodyWriter writer(out, size);
     writer.u32(count);
+    uint32_t total = list_header_size;
     for (uint32_t at = 0; at < count; ++at) {
         CallValues values;
         uint32_t call_size = 0;
-        static_cast<void>(read_call(calls[at], values, call_size)); // Measured unchanged.
-        write_call(calls[at], values, writer);
+        // Validated again: a list changed since it was measured is written as
+        // zeros, which no reader takes for a list.
+        if (read_call(calls[at], values, call_size) != AYNI_OK || call_size > size - total) {
+            std::memset(out, 0, size);
+            return;
+        }
+        total += call_size;
+        write_call(values, writer);
+    }
+    if (total != size) {
+        std::memset(out, 0, size);
     }
 }
 

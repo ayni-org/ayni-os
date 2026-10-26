@@ -43,8 +43,9 @@ struct ToolCallView {
 // Field order is free. Failure preserves size: INVALID_ARGUMENT, UNSUPPORTED_VERSION
 // for a larger struct, or CAPACITY_EXCEEDED for text beyond the format bound.
 ayni_status_t measure_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint32_t &size);
-// Requires an unchanged list that passed measure_tool_calls with this size, and
-// size writable bytes; writes each call's fields in ascending id order.
+// Writes a list that passed measure_tool_calls with this size into size
+// writable bytes, each call's fields in ascending id order. Validates it again
+// and writes only zeros, never past size, if it changed since it was measured.
 void write_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint8_t *out, uint32_t size);
 // Strict decode of a whole list, with the measure rules and canonical field
 // order; its call count, or 0 when the body is not a valid list.

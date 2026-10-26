@@ -201,7 +201,6 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint1
     }
     durability::BodyReader reader(body, size);
     CallRecord record{};
-    record.result_kind = CallResultKind::text;
     auto &id = record.identity;
     id.call_id = reader.u64();
     id.operation_id = reader.u64();
