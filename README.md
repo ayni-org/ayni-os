@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1（实验性 ABI 0.36、storage schema 2）。Core 已交付工作模型、触发与策略、日志/快照、授权、共享资源与 Task 运行限制、公开调用和 Mock A/B；MA-018B 已接入许可签发/续租、持久 Scene、最小可信观察及 Mock 停止确认闭环，执行端端口已改为异步请求。当前边界与证据见 [M1 进度](reports/core/m1-progress.md)、[ADR-0050](docs/adr/0050-managed-execution-and-scenes.md) 和 [ADR-0052](docs/adr/0052-remote-executor-and-observation-input.md)。结构收尾见 [ADR-0053](docs/adr/0053-m1-structure-wrap-up.md)。用户已选定先做文本纵切：下一步为 typed 工具调用、OpenAI-compatible Provider 与两种策略，随后单进程 Native CLI、记忆、日历、订阅、统一助理和 SDK。Native/模拟 Host 已有存储实现；ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
+> 当前仓库处于 M1（实验性 ABI 0.38、storage schema 2）。Core 的工作、授权、资源、公开调用与受管理执行正常闭环已交付；P1 的 typed 工具调用、Native OpenAI-compatible Provider、规则与 ToolLoop、有界对话组件见 [M1 进度](reports/core/m1-progress.md) 和 [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md)。下一步是单进程 Native CLI、双 Agent 与对话文件存储。Kernel 历史正文擦除及单轮删除随 P3；ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
@@ -20,7 +20,7 @@ Ayni 的领域契约是任务、权限与执行语义的权威；ROS 2、MHS、M
 |---|---|
 | 应用、Coordinator、策略与 Skills | 提醒、观察等业务语义；路由用户请求、选择 Agent、组合有界工作流；规则、Tool Loop 和规划器均位于 Kernel 之上 |
 | C API / SDK | 提交类型化意图或命令、查询快照、注册目标类型与能力；封装保持同一套权限、错误和生命周期语义 |
-| 共享 Kernel 服务 | 按不变量属主分为九个模块，第二级按实体命名：`kernel`（入口、编排与输出门控）、`work`（Agent/Goal/Task、调用与动作账本）、`authority`（主体、Grant、Scene）、`resources`（准入、租期与许可）、`budget`（预算层级、预留与结算）、`knowledge`（观察、记忆与上下文）、`catalog`、`durability`、`foundation` |
+| 共享 Kernel 服务 | 按不变量属主分为八个模块，第二级按实体命名：`kernel`（入口、编排与输出门控）、`work`（Agent/Goal/Task、调用与动作账本）、`authority`（主体、Grant、Scene）、`resources`（准入、租期与许可）、`knowledge`（观察、记忆与上下文）、`catalog`、`durability`、`foundation` |
 | 异步执行与平台服务 | Host 提供时钟、存储、网络和生命周期；Provider 承担模型、感知、媒体及动作 |
 | 本地控制与停止 | 控制器在已准入包络内凭短租约许可执行，执行端只能收紧；本地停止监督器独立于模型和普通工作队列，停止链含硬件失能 |
 | OS、驱动与硬件 | 使用现有操作系统调度；Driver 接入具体硬件；停止链依赖的时钟、中断与硬件超时须实测 |

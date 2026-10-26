@@ -7,7 +7,7 @@
 | 工具 | 版本 | 用途 |
 |---|---|---|
 | Ubuntu | 24.04.5 LTS，x86_64 | 本地；CI 用 `ubuntu:24.04` 容器（见“CI 机器”） |
-| CMake | M0：3.28.3；M1 容器：3.31.6（最低要求 3.22） | Native 构建 |
+| CMake | M0 / CI 工具镜像：3.28.3；早期 M1 容器：3.31.6（最低要求 3.22） | Native 构建 |
 | Ninja | 1.11.1 | CMake 预设使用的生成器 |
 | GCC | 13.3.0 | Native 构建，含 ASan/UBSan 与 TSan |
 | Clang | 18.1.3 | Native 构建 |

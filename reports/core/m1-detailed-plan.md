@@ -2,7 +2,7 @@
 
 > 本文是用户 2026-10-26 批准的 M1 详细实施计划全文，从同名 Claude 文档导出（第 13 版），正文保持原样，文中的“你”指用户。原文的阶段图未导出，各阶段内容见正文。
 >
-> **执行情况（2026-10-26）：** P0 已由 [#72](https://github.com/RobotSe7en/ayni/pull/72)（ADR-0053）完成；P1 PR 1 已由 [#73](https://github.com/RobotSe7en/ayni/pull/73)（ADR-0054，ABI 0.37）完成。P1 PR 2 已由 [#75](https://github.com/RobotSe7en/ayni/pull/75)（ADR-0055）交付 Native Provider，并以本次授权的测试密钥完成独立 DeepSeek（`deepseek-chat`，`https://api.deepseek.com`）文本/工具验证；未建立长期密钥配置或自动实 API workflow。之后的状态以 [m1-progress.md](m1-progress.md) 和 [M1 剩余实施顺序](m1-remaining-implementation.md) 为准；与本文不一致时以这两页和对应 ADR 为准。
+> **执行情况（2026-10-26）：** P0 已由 [#72](https://github.com/RobotSe7en/ayni/pull/72)（ADR-0053）完成；P1 PR 1 已由 [#73](https://github.com/RobotSe7en/ayni/pull/73)（ADR-0054，ABI 0.37）完成。P1 PR 2 已由 [#75](https://github.com/RobotSe7en/ayni/pull/75)（ADR-0055）交付 Native Provider，并以本次授权的测试密钥完成独立 DeepSeek（`deepseek-chat`，`https://api.deepseek.com`）文本/工具验证；未建立长期密钥配置或自动实 API workflow。P1 PR 3 已由 [#76](https://github.com/RobotSe7en/ayni/pull/76)（ADR-0056，ABI 0.38）交付两策略与有界对话组件；用户在实施时选定跨 Task 对话文件存储随 P2，P1 提供明确快照/候选及已持久完成检查点导出。之后的状态以 [m1-progress.md](m1-progress.md) 和 [M1 剩余实施顺序](m1-remaining-implementation.md) 为准；与本文不一致时以这两页和对应 ADR 为准。
 
 2026-10-26 · Danny Wong
 
