@@ -8,7 +8,7 @@ This checkout is in M1. `core/` implements the Kernel lifecycle, event ingress, 
 
 Keep implementations within the planned layout:
 
-- `core/`: portable Kernel state, scheduling, authorization, and recovery, split by invariant owner into `kernel/`, `work/`, `authority/`, `resources/`, `budget/`, `knowledge/`, `catalog/`, `durability/`, and `foundation/`, with entity-named subdirectories such as `work/task/` (ADR-0008).
+- `core/`: portable Kernel state, scheduling, authorization, and recovery, split by invariant owner into `kernel/`, `work/`, `authority/`, `resources/`, `knowledge/`, `catalog/`, `durability/`, and `foundation/`, with entity-named subdirectories such as `work/task/` (ADR-0008; the budget module was cancelled by ADR-0042).
 - `include/ayni/`, `contracts/`: public C/C++ interfaces and versioned contracts.
 - `strategies/`, `applications/`: variable policies, goal types, scenes, and assistant workflows.
 - `hosts/`, `providers/`, `drivers/esp32/`: platform services, asynchronous I/O, and hardware drivers.

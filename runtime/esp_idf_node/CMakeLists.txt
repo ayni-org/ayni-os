@@ -3,6 +3,7 @@
 idf_component_register(
     SRCS "esp_idf_node.cpp"
     INCLUDE_DIRS "include"
+    PRIV_INCLUDE_DIRS "../common/include"
     PRIV_REQUIRES esp_idf heap log)
 
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../core" "${CMAKE_CURRENT_BINARY_DIR}/ayni_core")

@@ -319,7 +319,7 @@ WorldModel/状态估计位于 Provider，VLA 位于策略或推理 Provider。�
 
 | 契约 | 版本域 | 兼容规则 |
 |---|---|---|
-| Core—Host / 原生 SDK | `abi_major`、结构大小及功能位 | ABI 主版本不兼容时拒绝；新增可选尾字段按 `struct_size` 处理；不得跨 ABI 传 STL、异常或 OS 句柄 |
+| Core—Host / 原生 SDK | `abi_major`、结构大小及功能位 | ABI 主版本不兼容时拒绝；主版本 0 下 minor 精确匹配、每个结构体只收当前布局，主版本 ≥ 1 时新增可选尾字段按 `struct_size` 处理（ADR-0053）；不得跨 ABI 传 STL、异常或 OS 句柄 |
 | 管理与设备间协议 | `protocol_major/minor`、能力版本和功能协商 | 主版本不兼容拒绝；未知可选字段可忽略，未知必需功能/动作拒绝；v0.1 管理 API 与 v0.2 设备互通共用领域语义 |
 | 持久化格式 | `storage_schema`、记录版本、迁移版本 | 校验、迁移与回滚有单独用例；不支持版本进入只读/暂停，不能当空数据重建 |
 

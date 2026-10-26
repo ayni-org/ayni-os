@@ -36,11 +36,8 @@ typedef uint32_t ayni_stop_fact_t;
 #define AYNI_STOP_COMMAND_DELIVERED ((ayni_stop_fact_t)2)
 #define AYNI_STOP_CONFIRMED ((ayni_stop_fact_t)3)
 
-typedef uint32_t ayni_target_verification_t;
-
-#define AYNI_TARGET_VERIFIED ((ayni_target_verification_t)1)
-#define AYNI_TARGET_ESTIMATED ((ayni_target_verification_t)2)
-#define AYNI_TARGET_UNKNOWN ((ayni_target_verification_t)3)
+/* Whether a target was reached is ayni_execution_target_t in
+ * <ayni/execution.h> (ABI 0.35); this draft no longer has its own values. */
 
 #ifdef __cplusplus
 }

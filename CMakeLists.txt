@@ -34,6 +34,7 @@ add_subdirectory(hosts/sim)
 add_subdirectory(providers/mock)
 add_subdirectory(control/permit_gate)
 add_subdirectory(providers/mock_execution)
+add_subdirectory(runtime/common)
 add_subdirectory(runtime/native_node)
 add_subdirectory(targets/simulator)
 

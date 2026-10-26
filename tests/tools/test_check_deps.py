@@ -150,6 +150,17 @@ class CheckDepsTest(unittest.TestCase):
         self.write("runtime/esp_idf_node/node.cpp", "#include <ayni/runtime/native_node.h>\n")
         self.assert_single_violation("runtime/ may not include <ayni/runtime/native_node.h>")
 
+    def test_every_runtime_shares_runtime_common_only(self):
+        # ADR-0053: one named instance, not every other runtime.
+        self.write("runtime/native_node/node.cpp",
+                   "#include <ayni/runtime/common/default_config.h>\n")
+        self.write("runtime/esp_idf_node/node.cpp",
+                   "#include <ayni/runtime/common/default_config.h>\n")
+        self.assertEqual(self.violations(), [])
+        self.write("hosts/native/native_host.cpp",
+                   "#include <ayni/runtime/common/default_config.h>\n")
+        self.assert_single_violation("hosts/ may not include <ayni/runtime/common/default_config.h>")
+
     def test_core_internal_headers_never_leave_core(self):
         self.write("runtime/native_node/node.cpp", '#include "kernel/kernel.h"\n')
         self.write("control/permit_gate.cpp", '#include "resources/permit/permit.h"\n')

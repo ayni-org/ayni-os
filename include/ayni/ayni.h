@@ -18,11 +18,10 @@
  * - Each function lists every status it can return (C-STATUS-001). A failed
  *   call has no effect and writes no output unless its comment says so.
  * - Every ABI struct starts with struct_size, set to sizeof the caller's view
- *   of the struct (contracts/domain/versions.md). A struct_size below the
- *   first published layout of the ABI major is AYNI_INVALID_ARGUMENT; one
- *   larger than this library knows means the caller was built against a
- *   newer minor and is AYNI_UNSUPPORTED_VERSION. A shorter struct from an
- *   older caller gets defaults for the fields it lacks.
+ *   of the struct (contracts/domain/versions.md). While the major is 0 each
+ *   struct has only the layout of this minor: a smaller struct_size is
+ *   AYNI_INVALID_ARGUMENT, and a larger one means the caller was built
+ *   against a newer minor and is AYNI_UNSUPPORTED_VERSION.
  */
 #ifndef AYNI_AYNI_H
 #define AYNI_AYNI_H
@@ -87,14 +86,13 @@ typedef struct ayni_kernel ayni_kernel_t;
 typedef struct ayni_config_v1 {
     uint32_t struct_size;
     uint32_t abi_major; /* must equal AYNI_ABI_MAJOR */
-    /* Since 0.2; must equal AYNI_ABI_MINOR while the major is 0. A caller
-     * whose struct_size ends before this field was built against 0.1. */
+    /* Since 0.2; must equal AYNI_ABI_MINOR while the major is 0. */
     uint32_t abi_minor;
     /*
      * Since 0.3. Capacities fixed for the kernel's lifetime (ADR-0014,
      * contracts/domain/limits.md). Each must be between its _MIN (1 unless
-     * defined) and its _MAX; a field that struct_size does not cover takes its
-     * _DEFAULT. The defaults are unmeasured initial assumptions (C-LIMIT-003).
+     * defined) and its _MAX; _DEFAULT is the value to use without a measured
+     * need. The defaults are unmeasured initial assumptions (C-LIMIT-003).
      */
     uint32_t ingress_capacity; /* events queued by ayni_post_event */
     /* Room for an event body in each queued event. No implemented event kind
@@ -560,8 +558,8 @@ ayni_status_t ayni_kernel_memory_requirements(const ayni_config_v1 *config, size
  *
  * Failures, with *out_kernel set to NULL (when out_kernel is not NULL) and
  * the memory left untouched:
- * - AYNI_INVALID_ARGUMENT: a null pointer, a struct_size shorter than the
- *   first published layout, a capacity outside its range, a missing required
+ * - AYNI_INVALID_ARGUMENT: a null pointer, a struct_size shorter than this
+ *   library's layout, a capacity outside its range, a missing required
  *   host function, an incomplete storage port group, or memory not aligned
  *   as reported by ayni_kernel_memory_requirements;
  * - AYNI_UNSUPPORTED_VERSION: the caller's ABI version is not accepted (see
@@ -578,11 +576,9 @@ ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host
 ayni_status_t ayni_get_lifecycle(const ayni_kernel_t *kernel, ayni_lifecycle_t *out_state);
 
 /*
- * Writes the fields of out_info that out_info->struct_size covers whole; a
- * field it covers in part is left as it was. Callable in every lifecycle
- * state. Returns AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL
- * pointer; AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
- * out_info->struct_size as for every ABI struct.
+ * Writes *out_info. Callable in every lifecycle state. Returns AYNI_OK;
+ * AYNI_INVALID_ARGUMENT for a NULL pointer; AYNI_INVALID_ARGUMENT or
+ * AYNI_UNSUPPORTED_VERSION for out_info->struct_size as for every ABI struct.
  */
 ayni_status_t ayni_get_kernel_info(const ayni_kernel_t *kernel, ayni_kernel_info_v1 *out_info);
 
@@ -624,7 +620,7 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * RECOVERING they stay queued. Does at most max_items items and stops once
  * max_time_us has passed on the host clock, checked after each item; never
  * waits on storage or any other I/O (C-LIMIT-011). out_report (nullable)
- * receives the fields its struct_size covers.
+ * receives the report.
  *
  * Since 0.14 every transition, in RUNNING, writes one batch into the
  * storage buffer and waits there until the host has stored it (ADR-0026):
@@ -1703,7 +1699,7 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id);
  *
  * Checks run in this order, and the first failure is returned:
  * 1. arguments: AYNI_INVALID_ARGUMENT for a NULL kernel or intent, kind 0,
- *    a nonzero reserved field, or a struct_size below its first layout;
+ *    a nonzero reserved field, or a struct_size below its layout;
  *    AYNI_UNSUPPORTED_VERSION for a struct_size larger than this library
  *    knows. Applies to intent, out_result, out_error and, for the kinds
  *    implemented here, the body, which must not be NULL. GOAL_CREATE also
@@ -1792,8 +1788,8 @@ ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *in
                                  ayni_intent_result_v1 *out_result, ayni_error_v1 *out_error);
 
 /*
- * Query functions. They write the fields that out_info->struct_size covers
- * and return AYNI_OK; AYNI_INVALID_ARGUMENT for a NULL pointer;
+ * Query functions. They write *out_info and return AYNI_OK;
+ * AYNI_INVALID_ARGUMENT for a NULL pointer;
  * AYNI_INVALID_ARGUMENT or AYNI_UNSUPPORTED_VERSION for
  * out_info->struct_size; AYNI_INVALID_STATE in CONFIGURING and STOPPED;
  * AYNI_NOT_FOUND for an id nothing has. The state they report may not be

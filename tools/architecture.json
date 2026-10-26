@@ -26,10 +26,10 @@
     "ayni/providers/": "providers",
     "ayni/": "api"
   },
-  "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. core/, include/ and tests/ have fixed rules in check_deps.py.",
+  "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. 'kind:instance' allows the public headers of one instance of that kind, such as the runtime/common headers every composition root shares (ADR-0053). core/, include/ and tests/ have fixed rules in check_deps.py.",
   "components": {
     "hosts": ["api", "own", "external"],
-    "runtime": ["api", "hosts", "providers", "own", "external"],
+    "runtime": ["api", "hosts", "providers", "own", "runtime:common", "external"],
     "providers": ["api", "own", "external"],
     "targets": ["api", "runtime", "external"],
     "control": ["api", "external"],

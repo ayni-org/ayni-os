@@ -1,6 +1,7 @@
 #include <ayni/runtime/esp_idf_node.h>
 
 #include <ayni/hosts/esp_idf.h>
+#include <ayni/runtime/common/default_config.h>
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -48,32 +49,7 @@ ayni_status_t run_hello() {
         return status;
     }
 
-    ayni_config_v1 config{};
-    config.struct_size = sizeof(config);
-    config.abi_major = AYNI_ABI_MAJOR;
-    config.abi_minor = AYNI_ABI_MINOR;
-    config.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
-    config.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
-    config.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
-    config.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
-    config.agent_capacity = AYNI_AGENT_CAPACITY_DEFAULT;
-    config.goal_type_capacity = AYNI_GOAL_TYPE_CAPACITY_DEFAULT;
-    config.goal_capacity = AYNI_GOAL_CAPACITY_DEFAULT;
-    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT;
-    config.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
-    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
-    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
-    config.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
-    config.strategy_capacity = AYNI_STRATEGY_CAPACITY_DEFAULT;
-    config.policy_intent_capacity = AYNI_POLICY_INTENT_CAPACITY_DEFAULT;
-    config.task_step_capacity = AYNI_TASK_STEP_CAPACITY_DEFAULT;
-    config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT;
-    config.command_capacity = AYNI_COMMAND_CAPACITY_DEFAULT;
-    config.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
-    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
-    config.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
-    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
-    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
+    const ayni_config_v1 config = default_config();
     std::size_t size = 0;
     std::size_t align = 0;
     status = ayni_kernel_memory_requirements(&config, &size, &align);
