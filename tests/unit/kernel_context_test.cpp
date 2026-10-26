@@ -16,6 +16,8 @@ class KernelContext : public testing::Test {
     uint64_t owner = 0;
     uint64_t next_command = 1;
     bool require_approval = false;
+    uint32_t registered_version = 1;
+    uint32_t registered_context_mode = AYNI_GOAL_CONTEXT_AGENT;
     void SetUp() override {
         node.config().goal_capacity = 2;
         node.config().command_capacity = 32;
@@ -29,9 +31,10 @@ class KernelContext : public testing::Test {
             ASSERT_EQ(ayni_register_principal(kernel, &principal), AYNI_OK);
             auto agent = agent_desc(agent_a);
             ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
-            auto type =
-                goal_type_desc("context", 1, nullptr, nullptr, AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE));
-            type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
+            auto type = goal_type_desc("context", registered_version, nullptr, nullptr,
+                                       AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE));
+            type.context_mode = registered_context_mode;
+            type.validate = [](void *, ayni_bytes_v1) { return AYNI_OK; };
             if (require_approval) {
                 const ayni_capability_desc_v1 cap{sizeof(cap), 1, text("observe"), 0, 0, nullptr};
                 ASSERT_EQ(ayni_register_capability(kernel, &cap), AYNI_OK);
@@ -110,13 +113,13 @@ class KernelContext : public testing::Test {
                                      info.generation, task,   turn};
         return submit(kind, &body, info.revision);
     }
-    Submitted create() {
+    Submitted create(ayni_bytes_v1 parameters = {nullptr, 0}) {
         const auto body =
-            WorkNode::create_body(owner, 0, "context", 1, {nullptr, 0}, AYNI_TRIGGER_ONCE);
+            WorkNode::create_body(owner, 0, "context", 1, parameters, AYNI_TRIGGER_ONCE);
         return submit(AYNI_INTENT_GOAL_CREATE, &body);
     }
-    uint64_t complete() {
-        const auto created = create();
+    uint64_t complete(ayni_bytes_v1 parameters = {nullptr, 0}) {
+        const auto created = create(parameters);
         EXPECT_EQ(created.status, AYNI_OK);
         if (created.status != AYNI_OK) {
             return 0;
@@ -540,5 +543,37 @@ TEST_F(KernelContext, policy_callback_cannot_export_another_goals_or_tasks_priva
     };
     EXPECT_NE(complete(), 0U);
     EXPECT_TRUE(checked);
+}
+class KernelLegacyContext : public KernelContext {
+    void SetUp() override {
+        registered_context_mode = AYNI_GOAL_CONTEXT_NONE;
+        KernelContext::SetUp();
+    }
+};
+// ADR-0060: a new trusted context version cannot adopt untracked content from the old version.
+TEST_F(KernelLegacyContext, changed_type_version_rejects_untracked_historical_body_exports) {
+    const uint8_t original[] = {'o', 'l', 'd'};
+    const auto task_id = complete({original, sizeof(original)});
+    ASSERT_NE(task_id, 0U);
+    ayni_task_info_v1 task{};
+    task.struct_size = sizeof(task);
+    ASSERT_EQ(ayni_get_task(node.kernel(), task_id, &task), AYNI_OK);
+    uint8_t output[8]{};
+    uint32_t copied = 0;
+    ASSERT_EQ(
+        ayni_get_goal_parameters(node.kernel(), task.goal_id, output, sizeof(output), &copied),
+        AYNI_OK);
+    EXPECT_EQ(copied, sizeof(original));
+    registered_version = 2;
+    registered_context_mode = AYNI_GOAL_CONTEXT_AGENT;
+    reopen();
+    copied = 99;
+    EXPECT_EQ(
+        ayni_get_goal_parameters(node.kernel(), task.goal_id, output, sizeof(output), &copied),
+        AYNI_EXPIRED);
+    EXPECT_EQ(ayni_copy_task_checkpoint(node.kernel(), task_id, output, sizeof(output), &copied),
+              AYNI_EXPIRED);
+    EXPECT_EQ(copied, 99U);
+    EXPECT_EQ(output[0], original[0]);
 }
 } // namespace

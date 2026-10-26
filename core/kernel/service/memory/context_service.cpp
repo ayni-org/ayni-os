@@ -77,9 +77,14 @@ bool task_context_sources(const WorkModel &model, uint32_t task_index,
 }
 bool goal_content_compatible(const WorkModel &model, uint32_t goal_index) {
     const auto &goal = model.goals.at(goal_index);
-    if (goal.goal_type_index == work::GoalTable::no_index ||
-        model.catalogs.goal_types.at(goal.goal_type_index).context_mode ==
-            catalog::GoalContext::none) {
+    const auto &types = model.catalogs.goal_types;
+    // An unavailable old version must not hide the current trusted declaration for its ID.
+    // Entirely unknown ordinary types retain owner diagnostics; tracked sources are still gated.
+    const bool needs_context =
+        goal.goal_type_index == work::GoalTable::no_index
+            ? types.has_agent_context({goal.goal_type_id.data(), goal.goal_type_id.size()})
+            : types.at(goal.goal_type_index).context_mode == catalog::GoalContext::agent;
+    if (!needs_context) {
         return true;
     }
     const auto *sources =

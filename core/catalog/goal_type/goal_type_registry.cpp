@@ -32,6 +32,16 @@ GoalTypeRegistry::Lookup GoalTypeRegistry::find(ayni_string_v1 id, uint32_t vers
     return lookup;
 }
 
+bool GoalTypeRegistry::has_agent_context(ayni_string_v1 id) const {
+    for (uint32_t index = 0; index < types_.size(); ++index) {
+        const auto &type = types_[index];
+        if (type.id.equals(id) && type.context_mode == GoalContext::agent) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool GoalTypeRegistry::accepts(uint32_t index, ayni_bytes_v1 parameters) const {
     const GoalType &type = types_[index];
     if (type.validate == nullptr) {

@@ -95,6 +95,9 @@ class GoalTypeRegistry {
     AddResult add(const GoalType &type);
 
     Lookup find(ayni_string_v1 id, uint32_t version) const;
+    // Any current trusted version declares this ID as context-bearing. Used only when the
+    // saved exact version is unavailable, so unknown ordinary work keeps its legacy semantics.
+    bool has_agent_context(ayni_string_v1 id) const;
 
     // index from a found Lookup.
     const GoalType &at(uint32_t index) const { return types_[index]; }
