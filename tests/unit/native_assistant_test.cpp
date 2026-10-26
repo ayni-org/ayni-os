@@ -14,6 +14,10 @@
 #include <vector>
 namespace {
 using namespace ayni::runtime;
+// ADR-0060 requires durable completion, not a five-second wall-clock SLA. Leave
+// room for sanitizer overhead and concurrent fsync-heavy Host tests; a stall
+// still fails at this finite deadline with the outstanding public state.
+constexpr auto async_test_timeout = std::chrono::seconds(30);
 class NativeAssistant : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -22,7 +26,7 @@ class NativeAssistant : public ::testing::Test {
     }
     void TearDown() override { EXPECT_EQ(app.close(), AYNI_OK); }
     void settle() {
-        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto end = std::chrono::steady_clock::now() + async_test_timeout;
         do {
             ASSERT_EQ(app.advance(notices), AYNI_OK);
             if (app.idle()) {
@@ -30,7 +34,15 @@ class NativeAssistant : public ::testing::Test {
             }
             app.wait();
         } while (std::chrono::steady_clock::now() < end);
-        FAIL() << "runtime did not become idle";
+        const auto state = run(Operation::status);
+        FAIL() << "runtime did not become idle: status=" << state.status
+               << ", durable_seq=" << state.kernel.durable_seq
+               << ", context_seq=" << state.context.commit_seq
+               << ", context_action=" << state.context.pending_action
+               << ", privacy_phase=" << state.privacy.phase
+               << ", pending_goal=" << state.pending_goal
+               << ", pending_commands=" << state.pending_commands << ", saving=" << state.saving
+               << ", storage_status=" << state.storage_status;
     }
     Reply run(Operation op, uint64_t id = 0, const std::string &text = {},
               uint64_t agent = demo_agent_b) {
@@ -210,7 +222,7 @@ TEST_F(NativeAssistant, invalidating_publication_preserves_draft_across_reopen_a
     settle();
     ASSERT_EQ(run(Operation::say, saved.id, "保留本轮原始提问").status, AYNI_OK);
     bool publishing = false;
-    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto end = std::chrono::steady_clock::now() + async_test_timeout;
     do {
         ASSERT_EQ(app.advance(notices), AYNI_OK);
         const auto status = run(Operation::status);
