@@ -14,7 +14,7 @@ struct Config {
     std::string provider_id = "openai.compat";
     std::string endpoint_id = "openai.chat";
     std::string destination_id = "openai.remote";
-    uint32_t request_capacity = 2;        // 1..8 concurrent requests; fixed at configure.
+    uint32_t request_capacity = 1;        // 1..8 concurrent requests; fixed at configure.
     uint32_t text_max_bytes = 4096;       // Input and result limit, 1..CALL_TEXT_BYTES_MAX.
     uint32_t response_max_bytes = 131072; // Whole HTTP body, 1..1048576 bytes.
     uint32_t timeout_ms = 30000;          // From submit, including the local queue; 1..300000 ms.

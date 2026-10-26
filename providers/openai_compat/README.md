@@ -12,7 +12,7 @@ redirects, ambient proxies, netrc, automatic retries and service fallback are di
 
 `describe` provides the `openai.chat` call contract. The composition root registers
 an authority descriptor with one IDENTIFIER egress-destination field containing
-`destination_id`, the call capability, Provider and Binding. An authorized request
+`destination_id`, the shared `model.slot` resource (default capacity 1), call capability, Provider and Binding. An authorized request
 must contain that destination as its concrete argument. The descriptor itself does
 not grant permission. Core does not receive the API URL or credential.
 
@@ -32,7 +32,7 @@ are call outcomes. Cancellation reports CANCEL_UNKNOWN followed by ABANDONED;
 a late cancellation cannot replace an already obtained result.
 
 The default request/result text limit is 4096 bytes, response JSON limit 128 KiB,
-concurrency 2, timeout 30 seconds, and `max_tokens` 1024. Configure smaller bounds
+concurrency 1, timeout 30 seconds, and `max_tokens` 1024. Configure smaller bounds
 as needed; an unsupported server parameter is an error, never silently removed.
 JSON depth is 8, container length is 64, and a tool result holds at most 8 calls.
 The Provider owns fixed protocol buffers; libcurl/TLS retain their own bounded-by-

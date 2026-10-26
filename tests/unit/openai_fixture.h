@@ -54,7 +54,7 @@ class OpenaiFixture : public ::testing::Test {
         c.binding_capacity = 2;
         c.call_input_max_bytes = 640;
         c.call_result_max_bytes = result_limit;
-        c.resource_capacity = 1;
+        c.resource_capacity = 2;
         c.resource_request_capacity = 4;
         work.node().on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
         work.strategy().answer = [this](const auto &snapshot, auto &output) {
@@ -104,11 +104,20 @@ class OpenaiFixture : public ::testing::Test {
         const ayni_capability_desc_v1 tool{
             sizeof(tool), 1, tool_descriptor.capabilities->capability_id, 2, 0, fields};
         ASSERT_EQ(ayni_register_capability(kernel, &tool), AYNI_OK);
-        const auto resource_id = tool_descriptor.capabilities->contract.resources[0].resource_id;
-        const ayni_resource_desc_v1 resource{
-            sizeof(resource), AYNI_RESOURCE_SHARED, resource_id, 1, 0, 0, 0, nullptr, {}};
-        ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
-        ASSERT_EQ(ayni_set_resource_health(kernel, resource_id, AYNI_RESOURCE_ONLINE), AYNI_OK);
+        for (const auto *desc : {&descriptor, &tool_descriptor}) {
+            const auto resource_id = desc->capabilities->contract.resources[0].resource_id;
+            const ayni_resource_desc_v1 resource{sizeof(resource),
+                                                 AYNI_RESOURCE_SHARED,
+                                                 resource_id,
+                                                 desc == &descriptor ? model_capacity : 1U,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 nullptr,
+                                                 {}};
+            ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
+            ASSERT_EQ(ayni_set_resource_health(kernel, resource_id, AYNI_RESOURCE_ONLINE), AYNI_OK);
+        }
         for (const auto *desc : {&descriptor, &tool_descriptor}) {
             ASSERT_EQ(ayni_register_call_capability(kernel, desc->capabilities), AYNI_OK);
             ASSERT_EQ(ayni_register_provider(kernel, desc), AYNI_OK);
@@ -269,6 +278,7 @@ class OpenaiFixture : public ::testing::Test {
     std::string reply, proposal;
     std::string prompt = "say hello";
     uint64_t command = 0, last_goal = 0;
+    uint32_t model_capacity = 1;
 };
 
 } // namespace ayni::test

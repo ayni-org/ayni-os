@@ -238,6 +238,7 @@ TEST_F(OpenaiProvider, terminal_slot_is_reusable_for_a_new_attempt) {
     EXPECT_EQ(server->requests(), 2U);
 }
 TEST_F(OpenaiProvider, full_provider_queue_preserves_the_accepted_request) {
+    model_capacity = 2; // Exercise the Provider bound separately from Core model-slot admission.
     start(text_reply, 200, 200);
     const auto first = create();
     wait_request();

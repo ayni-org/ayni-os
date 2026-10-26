@@ -167,6 +167,7 @@ struct Provider::Impl {
     std::atomic<bool> stopping{false};
     std::atomic<uint32_t> active{0};
     std::atomic<ayni_status_t> failure{AYNI_OK};
+    ayni_call_resource_v1 resource{}; // model.slot admission remains owned by Core.
     ayni_call_capability_v1 capability{};
     ayni_provider_v1 descriptor{};
 
@@ -262,6 +263,8 @@ struct Provider::Impl {
     }
     void build_descriptor() {
         static constexpr char capability_id[] = "openai.chat";
+        static constexpr char resource_id[] = "model.slot";
+        resource = {{resource_id, sizeof(resource_id) - 1}, 1, 0};
         capability = {sizeof(capability),
                       contract_version,
                       {capability_id, sizeof(capability_id) - 1},
@@ -269,7 +272,7 @@ struct Provider::Impl {
                        AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
                        AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, config.timeout_ms,
                        AYNI_CALL_INPUT_FIELDS_TEXT, AYNI_CALL_RESULT_TOOL_CALLS,
-                       config.text_max_bytes, config.text_max_bytes, 0, nullptr}};
+                       config.text_max_bytes, config.text_max_bytes, 1, &resource}};
         descriptor = {sizeof(descriptor),
                       contract_version,
                       text(config.provider_id),

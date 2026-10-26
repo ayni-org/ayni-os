@@ -6,7 +6,7 @@
 
 Provider 实现 Capability：外部模型 API、感知、媒体、检索、动作执行等。Provider 是可信内置代码（C-TRUST 表），但其**输出**是不可信数据，由 Kernel 校验后才影响状态（C-TRUST-001）。Provider 不持有领域对象的写权限，不调度任务。
 
-当前实施边界（ABI 0.33，ADR-0044/0045/0048）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
+当前实施边界（ABI 0.37，ADR-0044/0045/0048/0054/0055）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
 
 ## 函数表
 
@@ -84,4 +84,4 @@ HTTP 分类与非法参数、列表数量/编码上限由 `OpenaiHttpError`、`O
 工具声明、解码与错误规则沿用 ABI 0.37 章节；JSON 深度 8、每容器 64 项，固定解析池。
 取消先发表 CANCEL_UNKNOWN，再 ABANDONED 归还借用；HTTP/模型错误的 effect 为 UNKNOWN，
 不能由错误码推断从未外发或未计费。正常排空后，组合根须 join worker 才能释放上下文。
-独立手动 DeepSeek 验证见本次 PR；它不代替新的故障/恢复专项或完整 E1–E4。
+独立手动 DeepSeek 验证见 [#75](https://github.com/RobotSe7en/ayni/pull/75)；它不代替新的故障/恢复专项或完整 E1–E4。
