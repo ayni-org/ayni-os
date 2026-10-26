@@ -14,7 +14,7 @@ bool PermitTable::available(uint32_t executor) const {
     return executor < capacity_ && !slots_[executor];
 }
 bool PermitTable::install(uint64_t call_id, uint32_t executor, ResourceClaim claim,
-                          const ayni_execution_permit_v1 &permit, uint64_t now_us) {
+                          const ayni_execution_permit_v1 &permit, uint64_t first_poll_us) {
     if (!available(executor) || call_id == 0 || claim.call_id != call_id || claim.generation == 0 ||
         !resources_.executable(claim)) {
         return false;
@@ -23,7 +23,7 @@ bool PermitTable::install(uint64_t call_id, uint32_t executor, ResourceClaim cla
                                    executor,
                                    claim,
                                    permit,
-                                   now_us,
+                                   first_poll_us,
                                    PermitLease::Phase::issued,
                                    PermitLease::StopDelivery::pending,
                                    AYNI_OK,
@@ -105,15 +105,6 @@ bool PermitTable::release_stopped(uint64_t call_id) {
     resources_.confirm_all_stopped(lease->claim);
     slots_[lease->executor_index].reset();
     return true;
-}
-uint64_t PermitTable::next_deadline_us() const {
-    uint64_t next = UINT64_MAX;
-    for (uint32_t at = 0; at < capacity_; ++at) {
-        if (slots_[at] && !slots_[at]->stopped && slots_[at]->poll_after_us < next) {
-            next = slots_[at]->poll_after_us;
-        }
-    }
-    return next;
 }
 bool PermitTable::empty() const {
     for (uint32_t at = 0; at < capacity_; ++at) {

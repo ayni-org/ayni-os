@@ -72,6 +72,7 @@
 | [#69](https://github.com/RobotSe7en/ayni/pull/69) | 2026-10-25 | `MA-018B` 受管理执行闭环 | Core 签发/续租、持久 Scene、最小 Observation、停止事实与资源隔离、Mock 执行器，ABI 0.35 | ADR-0050 |
 
 | [#70](https://github.com/RobotSe7en/ayni/pull/70) | 2026-10-25 | 架构整改（审查基线 `e089a22`） | 依赖检查覆盖根目录、存储清单单一出处、外呼作用域、测试探针、意图 traits、记录登记与存储契约、`ExecutionControl`、到期搜索按事务失效、显式上下文、统一目录与 ABI 闸门；行为、ABI 0.35 与 schema 2 不变 | ADR-0051、ADR-0052（提议） |
+| [#71](https://github.com/RobotSe7en/ayni/pull/71) | 2026-10-26 | 异步执行端端口 | 执行端端口改为请求，回答经执行端邮箱由任意线程投递，停止链按异步回答重新论证，Mock 可延迟或丢弃回答，ABI 0.36 | ADR-0052 |
 
 ## 工作包日期
 
@@ -85,13 +86,13 @@
 
 ## 交接状态（2026-10-25）
 
-当前功能基线见 [#69](https://github.com/RobotSe7en/ayni/pull/69)（ABI 0.35 / schema 2），结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70)。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)；新故障/恢复专项继续暂停。
+当前功能基线见 [#71](https://github.com/RobotSe7en/ayni/pull/71)（ABI 0.36 / schema 2，执行端端口异步化），结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70)。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)；新故障/恢复专项继续暂停。
 
 - **已完成：** MA-003/004/005/010、MA-006 A–F；MA-018A 的资源目录/公平准入、Task 持久运行限制和工作等待策略；MA-008A 的公开调用/持久派发、可靠完成、原 Provider 对账、等待恢复及 Mock A/B。MA-018B 已实现 Core 许可签发/续租、持久 Scene、最小可信 Observation、独立 Mock 执行端及停止确认后释放隔离，正常用例与独立审查通过；验证详情在各 PR。
 - **结构整改：** #70 按架构审查第 6 节整改 kernel 结构，不改行为，14 项决定见 ADR-0051。后续功能按新边界接入：ABI 入口放 `kernel/api/` 并选一个闸门，step 中的工作经 `run_transition`，新持久实体实现 `PersistentStore` 契约，新注册表加入 `Catalogs`；`ayni_kernel` 成员私有化与 service/runtime 分区留待功能触及时逐步收紧。
 - **下一步：** MA-008B 的受管理订阅、观察序列/gap 与媒体生命周期；随后直连模型、工作流、记忆、提醒、统一助理、Native CLI 与正常集成。以双 Agent 的 Native 使用与集成为本轮完成标准。
-- **已定决定：** 当前 Task 的有界对话正文持久保存；所有者可撤销后对账、显式恢复等待超时的原 Task；后台等待 30 秒、默认最短周期 5 分钟；Scene 启用偏好跨重启保留；许可携带完整有界包络。当前 PR 无待决产品问题。
-- **仍有限制：** 新许可/Scene 的重启、传播失败及失效竞态矩阵未验收；最小 Observation 尚非连续订阅。真实模型、正文删除及后续 M1 应用能力未交付。ESP32、Web/语音/屏幕、完整 E1–E4、Core Alpha 和硬件验收均未完成。
+- **已定决定：** 当前 Task 的有界对话正文持久保存；所有者可撤销后对账、显式恢复等待超时的原 Task；后台等待 30 秒、默认最短周期 5 分钟；Scene 启用偏好跨重启保留；许可携带完整有界包络；执行端端口为异步请求，观测输入走 ingress 式队列（ADR-0052，后者随 MA-008B）。当前 PR 无待决产品问题。
+- **仍有限制：** 新许可/Scene 的重启、传播失败及失效竞态矩阵未验收；异步执行端只用 Mock 链路验证，真实远程链路与停止时限未验证；最小 Observation 尚非连续订阅。真实模型、正文删除及后续 M1 应用能力未交付。ESP32、Web/语音/屏幕、完整 E1–E4、Core Alpha 和硬件验收均未完成。
 
 ## 剩余工作
 
@@ -141,8 +142,6 @@
 - **M0 遗留**：开源许可证暂缓决定，仓库私有期间不受影响（计划 §14.2）；本地 API 的形态已由用户决定，IDL 与线格式仍待定（ADR-0009），在 ESP32 实测之后、最迟在 `MA-038` 编写消息解码器之前决定；开发机以 Linux 为准；300 元是目标值，超出须写明理由并由用户确认。
 
 ## 需要用户的事项
-
-- ADR-0052（提议）：远程执行端与跨线程观测输入的线程模型，推荐本地代理闸门加 ingress 式观测队列；须在 MA-008B 订阅数据源或第一个远程执行端开始实现之前选定。
 
 - 开发板（YD-ESP32-S3 类 DevKitC-1 兼容板，模组 N16R8，`reports/hardware/m0/board-feasibility.md`）插在用户的 Linux 电脑上时，经用户允许：烧录 Hello 固件、确认实际 Flash 与 PSRAM 容量、读取只读的 eFuse 摘要。不执行任何 burn 类命令。
 - 许可证在首次公开发布前决定。

@@ -97,6 +97,7 @@ enum class Store : uint32_t {
     provider_completions, // ProviderMailbox: reliable delivery, separate from Host slots.
     execution_catalog,    // ExecutionRegistry: copied executor ports and binding constraints.
     permits,              // PermitTable: volatile local leases and quarantine links.
+    executor_completions, // ExecutorMailbox: request lanes and answers per executor.
     scenes,               // Scenes: declarations, saved preferences and canonical byte pools.
     observation_sources,  // ObservationSources: copied source descriptions.
     observations,         // ObservationTable: the current boot's latest sample per source.

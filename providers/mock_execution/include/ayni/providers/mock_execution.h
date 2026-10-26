@@ -6,6 +6,12 @@
 #include <memory>
 namespace ayni::providers::mock_execution {
 enum class StopConfirmation { automatic, manual };
+// immediate answers each executor request inside its port; held keeps it
+// until answer() or drop_requests(), like a link that is slow or lost.
+enum class Answers { immediate, held };
+// at_advance hands an accepted permit to the gate at the next advance(), like
+// a Provider that forwards it over a link, instead of inside submit.
+enum class PermitStart { at_submit, at_advance };
 struct Config {
     void *clock_context = nullptr;        // Borrowed until close.
     uint64_t (*now_us)(void *) = nullptr; // Required trusted monotonic clock.
@@ -13,10 +19,13 @@ struct Config {
     uint32_t ticks_to_complete = 8;       // Positive number of accepted samples before success.
     uint32_t call_timeout_ms = 30000; // Positive declared Provider deadline; independent of lease.
     StopConfirmation stop_confirmation = StopConfirmation::automatic;
+    Answers answers = Answers::immediate;
+    PermitStart permit_start = PermitStart::at_submit;
     ayni_control_envelope_v1 limits{}; // Full measured local bounds, copied.
 };
 // One owner-thread executor, one action borrow and one independently controlled gate.
 // Runtime owns this component; neither Provider callbacks nor advance allocate.
+// A status read that answers NOT_FOUND also refuses that permit afterwards.
 class Executor {
   public:
     Executor();
@@ -28,6 +37,11 @@ class Executor {
     ayni_status_t describe_executor(ayni_executor_v1 &out) const;
     ayni_status_t advance();         // One sample/completion and optional local stop measurement.
     ayni_status_t confirm_stopped(); // Explicit simulated measurement, only after STOPPING.
+    // Held answers: serves every held request in arrival order against the
+    // gate now and posts its answer. OK, or the first refused post's status.
+    ayni_status_t answer();
+    void drop_requests(); // Held answers: discards them, as a lost link.
+    uint32_t held(ayni_executor_request_t kind) const;   // Held requests of kind.
     ayni_status_t info(ayni_control_info_v1 &out) const; // IDLE until first challenge creates gate.
     uint32_t pending() const;      // Provider borrow count, independent of physical stop.
     uint64_t samples() const;      // Accepted local outputs, never increments without permit.

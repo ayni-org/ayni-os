@@ -60,3 +60,5 @@ ABI 0.34 发布共享执行许可和本地 gate C 接口，独立库不依赖 Co
 
 
 ABI 0.35 发布 observations/scenes/execution 头文件：有界 BOOL/I64 当前 boot 观察、Scene 精确持久启停、本地 Mock Executor/ExecutionBinding 及执行查询。config 追加四个零默认容量，旧短前缀不自动启用；ProviderRequest 追加许可指针，0.x Host/Provider/SDK 与 gate 消费者统一重编译。Scene 意图编号 16，执行原因 74/75，避免沿用 draft 冲突编号。schema 2 保持；新增 REQUIRED type22/v1 Scene、type9/v9 管理命令、type21/v3 物理调用尾部；旧 reader 明确拒绝并保留目录，本轮无迁移工具。设备 wire 格式仍未决定。
+
+ABI 0.36 把四个执行端端口改为请求，回答经新的 `ayni_executor_post` 从任意非 ISR 线程投递（ADR-0052）；端口签名增加请求身份与完成目标，新增 `ayni_executor_response_v1` 与 `ayni_executor_output_v1`。执行端、Host、SDK 与 Mock 统一重编译；config 字段不变，arena 为执行端多预留回答通道。持久记录与 schema 2 不变。

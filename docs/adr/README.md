@@ -69,7 +69,7 @@
 
 | [0051](0051-kernel-structure-refactor.md) | Kernel 结构整改 | 已接受 | §2.0、§8 |
 
-| [0052](0052-remote-executor-and-observation-input.md) | 远程执行端与观测输入的线程模型 | 提议 | §2.10、§9.1 |
+| [0052](0052-remote-executor-and-observation-input.md) | 远程执行端与观测输入的线程模型 | 已接受 | §2.10、§9.1 |
 
 ## 模板
 

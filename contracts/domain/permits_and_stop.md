@@ -3,7 +3,7 @@
 - **关联**：计划 §2.2、§2.4「紧急停止」、§2.10、§4.1、§7.3；ADR-0001、ADR-0005；`MA-018`、`MA-026`、`MA-038`；E2 F12、F14，R1 A2–A4、B5
 - **属主**：`resources/permit`（签发、续租、失效判断，在 authority-owner Kernel）；`control/`（执行端许可门与包络校验）；`safety/`（独立停止链）。`control/` 与 `safety/` 不依赖 `core/`（ADR-0005、ADR-0011）。
 
-当前实施边界（ABI 0.35，ADR-0049/0050）：独立 `control/permit_gate` 与 Core 的 Scene、观察前提、持久许可签发/会话续租及停止事实已组成 Native Mock 调用链。物理 action 须注册精确 ExecutionBinding；默认配置不启用这些容量。仅验证本地可信端口与正常场景；真实硬件、远端认证、停止时限及新故障/恢复专项未验证。
+当前实施边界（ABI 0.36，ADR-0049/0050/0052）：独立 `control/permit_gate` 与 Core 的 Scene、观察前提、持久许可签发/会话续租及停止事实已组成 Native Mock 调用链；执行端端口自 0.36 起是异步请求，回答由任意线程投递。物理 action 须注册精确 ExecutionBinding；默认配置不启用这些容量。仅验证本地可信端口、Mock 的延迟与断链及正常场景；真实硬件、远端链路与认证、停止时限及新故障/恢复专项未验证。
 
 ## 角色
 
@@ -87,6 +87,7 @@ E2 F14 的在途续租用例：原截止 100 ms，91 ms 签出续租，92 ms 撤
 | C-PERMIT-015 | 跨设备控制时，全部许可与新鲜度校验在执行端所在节点完成；新鲜度只由执行端 nonce 与本地租期证明，无法证明则拒绝，不以“首次收到后 TTL”替代 | 在网络中滞留 3 秒的许可被执行端当作刚签发的许可接受 | `MA-038`（首次到达长延迟、分区下许可到期） |
 | C-PERMIT-016 | 静态准入（C-AUTH-016）由 Kernel 完成；执行期间的持续联锁（反馈丢失、堵转、倾斜、越界、断流、控制者失联）由执行端声明并逐控制周期执行，任一触发即按包络声明的方式收敛停止，不等待 Kernel；独立停止覆盖所有控制者 | 堵转检测放在 Kernel 的周期任务中，Kernel 被 Flash 写入挂起期间电机持续堵转 | `MA-018`；`MA-026` 故障矩阵 |
 | C-PERMIT-017 | 请求中的运动配置名（如 `calibrated-short-turn`）只是引用：执行端把它解析为本机实测并已启用的具体参数上限，解析不到、未启用或校准失效时拒绝；配置名本身不是校准证据或授权 | 新设备从未标定，却因收到 `calibrated-short-turn` 而按默认参数转动 | `MA-026`（底盘校准）；`MA-038` |
+| C-PERMIT-018 | 执行端请求的回答只应用一次，且不在发出该请求的工作项内应用；每个请求至少等待 `poll_period_us`，到期后仍未回答记为结果未知，迟到的回答被拒；派发的挑战回答到达后，Core 用新时间重新复核授权、资源与执行条件才安装许可，挑战被拒、nonce 无效或超时都在派发前结束调用（ADR-0052） | 链路恢复后才送达的 3 秒前的挑战回答被 Core 接受，其 nonce 签出许可并提交给 Provider | `ExecutorMailboxTest.one_answer_per_request_and_late_or_duplicate_posts_are_refused`、`ExecutorMailboxTest.malformed_answers_and_foreign_targets_change_nothing`、`ManagedExecution.held_challenge_waits_at_the_barrier_without_spinning`、`ManagedExecution.unanswered_challenge_times_out_before_any_permit`；真实链路待 `MA-038` |
 | C-STOP-001 | 停止路径不依赖普通事件队列的空位；停止监督器的安全状态是电平，用可覆盖的最新值寄存器（停止锁存 + `safety_epoch`）表达，不进入队列 | 事件队列满时，急停事件被丢弃或排在 128 个遥测事件之后 | E1 步骤 10；`MA-003` |
 | C-STOP-002 | 紧急停止由独立本地入口立即禁止运动准入，再向 Core 报告；它不取消提醒、不删除目标；电机保持失能，直到故障清除且所有者显式恢复；解除暂停不解除停止锁存 | 按下急停后，“解除暂停助理”就让底盘恢复运动 | E1 步骤 11；`MA-026` |
 | C-STOP-003 | L0：急停直接切断驱动器使能，或经 MCPWM fault 触发需软件恢复的 OST 制动；使能脚有外部下拉，复位与上电期间驱动器失能，不依赖固件 | 使能脚悬空，ESP32 复位期间电机短暂转动 | `MA-001` 电路审查；`MA-026` 使能脚实测 |
@@ -97,6 +98,8 @@ E2 F14 的在途续租用例：原截止 100 ms，91 ms 签出续租，92 ms 撤
 | C-STOP-008 | 最坏停止上限按上表的故障类型分别预算并逐项实测；v0.1 只声明“在已测故障列表下的实测停止上限”，不声明独立安全功能或任何安全标准符合 | 用一个公式给出所有故障的停止时间，并在说明书写“符合功能安全” | `MA-026` 停止链报告 |
 | C-STOP-009 | 停止链故障矩阵至少覆盖：运动中 Flash 擦写、控制任务死锁、控制心跳正常时单独挂起 Kernel、panic/复位、欠压与 Wi-Fi 高负载，并在每种状态下触发急停；使能脚用逻辑分析仪记录，实际停止用编码器/IMU 或高速视频记录 | 只在空闲状态测一次急停就给出停止上限 | `MA-026` |
 | C-STOP-010 | 物理结果未知时，按能力的恢复属性重新测量、补偿或交给人工处理，不盲目重复；恢复后不重放旧运动命令（C-OUT-001） | 转向结果未知，重启后系统再转一次“确保到位” | E2 总通过标准；`MA-026` |
+| C-STOP-011 | 续租是“状态读到 `ACTIVE` → 挑战 → 续租”的请求链，每个回答到达的工作项都重新判断是否应停止，仍允许才发出下一请求；需要停止时当项即请求停止，停止请求走独立通道，不等待在途的挑战、续租或状态读取；状态或控制请求被拒、输出无效或超时都请求停止（ADR-0052） | 撤销时一个续租挑战在途，挑战回答到达后 Core 仍发出续租，截止被推到撤销之后签发的 nonce + `L` | `ManagedExecution.revocation_while_a_renewal_challenge_is_held_sends_no_renewal`、`ManagedExecution.lost_link_ends_output_by_the_executors_own_lease`、`ManagedExecution.open_requests_wake_a_host_that_sleeps_until_the_reported_deadline`、`ExecutorMailboxTest.a_stop_lane_answers_while_other_lanes_wait`；C-PERMIT-005 |
+| C-STOP-012 | 状态读取答 `NOT_FOUND` 只有在该读取发出于 Core 看到 Provider 终态之后时，才证明许可从未开始并解除隔离；更早发出的读取再读一次；执行端答 `NOT_FOUND` 后必须拒绝该许可此后再开始；许可交给 Provider 后第一次状态读取等一个轮询周期（ADR-0052） | 终态之前发出的读取在许可转发到远程闸门之前答 `NOT_FOUND`，Core 据此释放执行器，许可随后到达闸门并开始输出 | `ManagedExecution.not_found_fences_a_permit_still_on_its_way_to_the_gate`、`ManagedExecution.not_found_proves_not_started_only_from_a_read_after_the_terminal`、`ManagedExecution.a_permit_forwarded_within_a_poll_period_starts`；远程闸门待 `MA-038` |
 
 ## 本地 gate 生命周期与部署约束
 
@@ -113,10 +116,18 @@ ExecutionBinding 声明原能力、Executor、Scene 的精确版本及数值投�
 
 许可 `permit_id` 使用持久 B3 原执行 attempt.request_id，`operation_id` 保持接受时的原动作身份。调用接受顺序可能被优先级/轮转改变，故不能用 operation_id 作为 gate 的单调许可序列。该 Executor 的独占资源使派发尝试顺序单调；所有代际仍需匹配。`ManagedExecution.priority_reordering_keeps_distinct_monotonic_dispatch_permits` 验证正常重排。
 
-本地端口在 Kernel owner 线程有界执行，不访问私有表、不等待 I/O；Provider 在 submit 内安装许可，工作循环随后逐样本经过 gate。停止与轮询在日志容量门控前推进；观察替换/过期、Grant 撤销、Scene 关闭、Task 取消或关闭阻止续租。`ManagedExecution.grant_revocation_stops_without_waiting_for_durable_cleanup`、`ManagedExecution.session_renews_with_fresh_nonce_and_normal_close_never_resumes_old_motion`、`ManagedExecution.procedure_expires_normally_without_renewal_and_never_revives`、`ManagedExecution.observation_replacement_stops_original_session` 覆盖正常消费。
+本地端口在 Kernel owner 线程有界执行，不访问私有表、不等待 I/O（0.36 起改为异步请求，见下节）；Provider 在 submit 内安装许可，工作循环随后逐样本经过 gate。停止与轮询在日志容量门控前推进；观察替换/过期、Grant 撤销、Scene 关闭、Task 取消或关闭阻止续租。`ManagedExecution.grant_revocation_stops_without_waiting_for_durable_cleanup`、`ManagedExecution.session_renews_with_fresh_nonce_and_normal_close_never_resumes_old_motion`、`ManagedExecution.procedure_expires_normally_without_renewal_and_never_revives`、`ManagedExecution.observation_replacement_stops_original_session` 覆盖正常消费。
 
 Provider 终态在停止未确认时继续占用可靠完成槽；不会阻塞其他槽。精确停止测量先提交，资源等待其持久后才释放；终态结果与 Task 进度继续 B4 同批。观察依赖在结果应用时再次检查，过期结果以 STALE 失败保留副作用事实，正文不进入下一步。`ManagedExecution.unconfirmed_stop_retains_terminal_and_quarantine_blocks_other_agent`、`ManagedExecution.replaced_dependency_cannot_publish_completed_step_after_execution_ended`、`ManagedExecution.cancelled_task_is_not_reopened_by_late_completion` 验证这些边界。
 
 无法追加的显式关闭只在本地停止已确认、Provider 借用结束后清理易失占用，不伪造持久完成；旧日志中的可能执行仍按 UNKNOWN 保留。该失效路径仅做代码审查，不列为恢复实验通过。目标结论首版只表示 Mock 的 UNVERIFIED/SATISFIED/UNSATISFIED；不宣称已实现 C-STOP-007 的真实传感测量、误差与容差档案。
 
 原调用超时同样阻止控制会话续租，见 `ManagedExecution.call_deadline_stops_session_independently_of_lease_renewals`。例行轮询与业务处理轮转，`ManagedExecution.one_item_steps_share_routine_polling_with_terminal_processing` 覆盖单项 step 预算；紧急停止仍优先。原完成与主动对账先共同验证原始结果，再复核观察依赖；`CallTableTest.stale_query_preserves_effect_but_rejects_invalid_evidence_before_filtering` 覆盖错误证据不可被过滤为合法失败，并保留有效结果的副作用事实。
+
+## ABI 0.36：异步执行端端口（ADR-0052）
+
+`challenge`、`renew`、`stop`、`status` 都是请求：端口返回 OK 表示收下，之后恰好一次 `ayni_executor_post` 回答，可在端口内或任意非 ISR 线程投递；返回其他状态即为拒绝，Core 把它当作回答。每个执行端有控制、停止、状态三条通道，各自至多一个未回答请求，请求身份与 Provider attempt 共用一个序列。每个请求至少等待 `poll_period_us`，到期后仍未回答按结果未知处理并拒收迟到回答；未到期的请求不算待办工作，`ayni_step` 不等待执行端。投递的校验与唤醒见 C-HOST-018、C-HOST-020，`ExecutorMailboxTest.one_answer_per_request_and_late_or_duplicate_posts_are_refused` 覆盖。
+
+派发在 `DISPATCHING` 屏障持久后发出挑战，回答到达后的工作项重新复核再安装许可（C-PERMIT-018）；续租链每一步重新判断是否应停止，撤销不等待在途请求（C-STOP-011）；`NOT_FOUND` 只从 Provider 终态之后发出的读取得到证明力，执行端答过后拒绝该许可（C-STOP-012）。停止回答不是停止证据，停止请求超时才重发（在急停轮次），被拒时由执行端自身租约收敛；只有状态回答里的停止测量能写入停止事实。
+
+续租因此跨三次往返、四个工作项，第一次续租还要等派发挑战的往返和一个轮询周期；会话租期 `L` 的声明须覆盖这些时间与漂移余量。Provider 须在一个轮询周期内把许可转发到远程闸门，否则许可被 `NOT_FOUND` 拦下，调用以停止结束。挑战 `BUSY` 由 0.35 的稍后重试改为结束调用。Mock 执行端可立即、延后或丢弃回答，也可把许可推迟到下一次 `advance()` 才交给闸门，用于上列用例；这些只是 Mock 链路，不作为真实远程执行端或停止时限的证据。

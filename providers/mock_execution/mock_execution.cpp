@@ -1,3 +1,4 @@
+#include <array>
 #include <ayni/providers/mock_execution.h>
 #include <cstring>
 #include <new>
@@ -24,12 +25,24 @@ bool same(const ayni_permit_epochs_v1 &a, const ayni_permit_epochs_v1 &b) {
 }
 } // namespace
 struct Executor::Impl {
+    // One executor request kept while answers are held; inputs are copies.
+    struct Request {
+        ayni_executor_request_t kind;
+        ayni_attempt_ref_v1 identity;
+        ayni_executor_completion_t *completion;
+        ayni_permit_epochs_v1 epochs;   // CHALLENGE.
+        ayni_permit_renewal_v1 renewal; // RENEW.
+        uint64_t permit_id;             // STOP and STATUS.
+    };
+    static constexpr uint32_t held_max = 8; // A full link refuses with BUSY.
     struct Pending {
         ayni_attempt_ref_v1 attempt;
         ayni_provider_completion_t *completion;
         uint32_t remaining;
         enum class Outcome { running, success, cancelled } outcome = Outcome::running;
-        bool produced = false; // Whether this operation emitted a permitted sample.
+        bool produced = false;             // Whether this operation emitted a permitted sample.
+        ayni_execution_permit_v1 permit{}; // Copied at submit.
+        bool started = false;              // Whether the gate accepted the permit.
     };
     Config config;
     std::unique_ptr<uint64_t[]> memory;
@@ -42,6 +55,9 @@ struct Executor::Impl {
     ayni_provider_v1 provider{};
     ayni_executor_v1 executor{};
     std::optional<Pending> pending;
+    std::array<Request, held_max> held{};
+    uint32_t held_count = 0;
+    uint64_t refused_through = 0; // Highest permit a status read answered NOT_FOUND.
     uint64_t sample_count = 0;
     uint64_t renewal_count = 0;
     uint64_t submit_count = 0;
@@ -83,81 +99,137 @@ struct Executor::Impl {
                     sample_age_max_us,
                     poll_period_us,
                     this,
-                    challenge,
-                    renew,
-                    stop,
-                    status};
+                    request_challenge,
+                    request_renew,
+                    request_stop,
+                    request_status};
     }
     // The trusted Core supplies its new boot at the first challenge. This gate is
     // never recreated or rebound after it has been configured for that generation.
-    static ayni_status_t challenge(void *context, const ayni_permit_epochs_v1 *expected,
-                                   ayni_executor_nonce_v1 *out) {
-        auto &self = *static_cast<Impl *>(context);
-        if (expected == nullptr || out == nullptr) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        if (expected->executor_boot_epoch != self.config.executor_boot_epoch ||
-            expected->safety_epoch != 1 || expected->calibration_version != 1) {
+    ayni_status_t challenge(const ayni_permit_epochs_v1 &expected, ayni_executor_nonce_v1 &out) {
+        if (expected.executor_boot_epoch != config.executor_boot_epoch ||
+            expected.safety_epoch != 1 || expected.calibration_version != 1) {
             return AYNI_DENIED;
         }
-        if (self.gate == nullptr) {
-            const ayni_control_config_v1 config{sizeof(config),
-                                                AYNI_ABI_MAJOR,
-                                                AYNI_ABI_MINOR,
-                                                1,
-                                                domain,
-                                                *expected,
-                                                duration_max_us,
-                                                duration_max_us,
-                                                sample_age_max_us,
-                                                0,
-                                                self.config.limits};
-            const auto created = ayni_control_create(&config, self.now(), self.memory.get(),
-                                                     self.memory_bytes, &self.gate);
+        if (gate == nullptr) {
+            const ayni_control_config_v1 settings{
+                sizeof(settings), AYNI_ABI_MAJOR,  AYNI_ABI_MINOR,    1, domain,       expected,
+                duration_max_us,  duration_max_us, sample_age_max_us, 0, config.limits};
+            const auto created =
+                ayni_control_create(&settings, now(), memory.get(), memory_bytes, &gate);
             if (created != AYNI_OK) {
                 return created;
             }
-            self.live = {*expected, 1, 0};
-        } else if (!same(*expected, self.live.epochs)) {
+            live = {expected, 1, 0};
+        } else if (!same(expected, live.epochs)) {
             return AYNI_STALE;
         }
-        return ayni_control_nonce(self.gate, self.now(), out);
+        return ayni_control_nonce(gate, now(), &out);
     }
-    static ayni_status_t renew(void *context, const ayni_permit_renewal_v1 *renewal) {
-        auto &self = *static_cast<Impl *>(context);
-        if (self.gate == nullptr) {
+    ayni_status_t renew(const ayni_permit_renewal_v1 &renewal) {
+        if (gate == nullptr) {
             return AYNI_NOT_READY;
         }
-        const auto status = ayni_control_renew(self.gate, renewal, self.now(), &self.live);
+        const auto status = ayni_control_renew(gate, &renewal, now(), &live);
         if (status == AYNI_OK) {
-            ++self.renewal_count;
+            ++renewal_count;
         }
         return status;
     }
-    static ayni_status_t stop(void *context, uint64_t permit_id) {
-        auto &self = *static_cast<Impl *>(context);
-        return self.gate == nullptr ? AYNI_NOT_FOUND
-                                    : ayni_control_stop(self.gate, permit_id, self.now());
+    ayni_status_t stop(uint64_t permit_id) {
+        return gate == nullptr ? AYNI_NOT_FOUND : ayni_control_stop(gate, permit_id, now());
     }
-    static ayni_status_t status(void *context, uint64_t permit_id, ayni_executor_status_v1 *out) {
-        auto &self = *static_cast<Impl *>(context);
-        if (out == nullptr || out->struct_size != sizeof(*out)) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        if (self.gate == nullptr || permit_id > self.permit.permit_id) {
+    // NOT_FOUND fences the permit: submit refuses it from then on.
+    ayni_status_t status(uint64_t permit_id, ayni_executor_status_v1 &out) {
+        if (gate == nullptr || permit_id > permit.permit_id) {
+            refused_through = permit_id > refused_through ? permit_id : refused_through;
             return AYNI_NOT_FOUND;
         }
-        if (permit_id != self.permit.permit_id) {
+        if (permit_id != permit.permit_id) {
             return AYNI_STALE;
         }
         // check updates expiry/interlocks; its denial is represented by the exact copied state.
-        const auto evaluated = ayni_control_check(self.gate, self.now(), &self.live);
+        const auto evaluated = ayni_control_check(gate, now(), &live);
         if (evaluated == AYNI_INVALID_ARGUMENT) {
             return evaluated;
         }
-        out->target = self.target;
-        out->control.struct_size = sizeof(out->control);
-        return ayni_control_get_info(self.gate, &out->control);
+        out.struct_size = sizeof(out);
+        out.target = target;
+        out.control.struct_size = sizeof(out.control);
+        return ayni_control_get_info(gate, &out.control);
+    }
+    // Serves one request against the gate as it is now and posts the answer.
+    ayni_status_t serve(const Request &request) {
+        ayni_executor_response_v1 response{};
+        response.struct_size = sizeof(response);
+        response.kind = request.kind;
+        response.request = request.identity;
+        switch (request.kind) {
+        case AYNI_EXECUTOR_CHALLENGE:
+            response.status = challenge(request.epochs, response.output.nonce);
+            break;
+        case AYNI_EXECUTOR_RENEW:
+            response.status = renew(request.renewal);
+            break;
+        case AYNI_EXECUTOR_STOP:
+            response.status = stop(request.permit_id);
+            break;
+        default:
+            response.status = status(request.permit_id, response.output.status);
+            break;
+        }
+        return ayni_executor_post(request.completion, &response);
+    }
+    // Immediate answers are posted inside the port; held ones wait for answer().
+    static ayni_status_t take(void *context, const Request &request) {
+        auto &self = *static_cast<Impl *>(context);
+        if (request.completion == nullptr) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        if (self.config.answers == Answers::immediate) {
+            return self.serve(request) == AYNI_OK ? AYNI_OK : AYNI_INTERNAL;
+        }
+        if (self.held_count == held_max) {
+            return AYNI_BUSY;
+        }
+        self.held[self.held_count++] = request;
+        return AYNI_OK;
+    }
+    static ayni_status_t request_challenge(void *context, ayni_attempt_ref_v1 identity,
+                                           const ayni_permit_epochs_v1 *expected,
+                                           ayni_executor_completion_t *completion) {
+        if (expected == nullptr) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        return take(context, {AYNI_EXECUTOR_CHALLENGE, identity, completion, *expected, {}, 0});
+    }
+    static ayni_status_t request_renew(void *context, ayni_attempt_ref_v1 identity,
+                                       const ayni_permit_renewal_v1 *renewal,
+                                       ayni_executor_completion_t *completion) {
+        if (renewal == nullptr) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        return take(context, {AYNI_EXECUTOR_RENEW, identity, completion, {}, *renewal, 0});
+    }
+    static ayni_status_t request_stop(void *context, ayni_attempt_ref_v1 identity,
+                                      uint64_t permit_id, ayni_executor_completion_t *completion) {
+        return take(context, {AYNI_EXECUTOR_STOP, identity, completion, {}, {}, permit_id});
+    }
+    static ayni_status_t request_status(void *context, ayni_attempt_ref_v1 identity,
+                                        uint64_t permit_id,
+                                        ayni_executor_completion_t *completion) {
+        return take(context, {AYNI_EXECUTOR_STATUS, identity, completion, {}, {}, permit_id});
+    }
+    ayni_status_t answer_held() {
+        ayni_status_t first = AYNI_OK;
+        for (uint32_t at = 0; at < held_count; ++at) {
+            const auto posted = serve(held[at]);
+            if (first == AYNI_OK) {
+                first = posted;
+            }
+        }
+        held_count = 0;
+        return first;
     }
     static ayni_submit_result_t submit(void *context, const ayni_provider_request_v1 *request,
                                        ayni_provider_completion_t *completion) {
@@ -169,18 +241,26 @@ struct Executor::Impl {
             request->execution_permit == nullptr || request->attempt.boot_epoch == 0 ||
             request->attempt.request_id == 0 || request->logical_call_id == 0 ||
             request->execution_permit->operation_id != request->operation_id ||
-            self.gate == nullptr || self.pending) {
+            request->execution_permit->permit_id <= self.refused_through || self.gate == nullptr ||
+            self.pending) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
-        if (ayni_control_start(self.gate, request->execution_permit, self.now(), &self.live) !=
-            AYNI_OK) {
+        const bool now_at_gate = self.config.permit_start == PermitStart::at_submit;
+        if (now_at_gate && ayni_control_start(self.gate, request->execution_permit, self.now(),
+                                              &self.live) != AYNI_OK) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
-        self.permit = *request->execution_permit;
-        self.pending = Pending{request->attempt, completion, self.config.ticks_to_complete};
+        self.pending = Pending{request->attempt,
+                               completion,
+                               self.config.ticks_to_complete,
+                               Pending::Outcome::running,
+                               false,
+                               *request->execution_permit,
+                               false};
+        if (now_at_gate) {
+            self.accept_permit();
+        }
         self.last_call = request->logical_call_id;
-        self.sequence = 0;
-        self.target = AYNI_TARGET_UNVERIFIED;
         ++self.submit_count;
         return AYNI_SUBMIT_ACCEPTED;
     }
@@ -193,8 +273,17 @@ struct Executor::Impl {
         if (self.pending->outcome == Pending::Outcome::running) {
             self.pending->outcome = Pending::Outcome::cancelled;
         }
-        const auto status = stop(context, self.permit.permit_id);
-        return status == AYNI_OK ? AYNI_SUBMIT_ACCEPTED : AYNI_SUBMIT_ACCEPT_UNKNOWN;
+        if (!self.pending->started) {
+            return AYNI_SUBMIT_ACCEPTED; // The gate never had it.
+        }
+        return self.stop(self.permit.permit_id) == AYNI_OK ? AYNI_SUBMIT_ACCEPTED
+                                                           : AYNI_SUBMIT_ACCEPT_UNKNOWN;
+    }
+    void accept_permit() {
+        permit = pending->permit;
+        pending->started = true;
+        sequence = 0;
+        target = AYNI_TARGET_UNVERIFIED;
     }
     ayni_status_t measure_stop() {
         if (gate == nullptr) {
@@ -225,6 +314,15 @@ struct Executor::Impl {
     ayni_status_t advance() {
         if (gate == nullptr) {
             return AYNI_OK;
+        }
+        // A forwarded permit reaches the gate now, unless a NOT_FOUND read fenced it.
+        if (pending && !pending->started && pending->outcome == Pending::Outcome::running) {
+            if (pending->permit.permit_id > refused_through &&
+                ayni_control_start(gate, &pending->permit, now(), &live) == AYNI_OK) {
+                accept_permit();
+            } else {
+                pending->outcome = Pending::Outcome::cancelled;
+            }
         }
         const auto evaluated = ayni_control_check(gate, now(), &live);
         if (evaluated == AYNI_INVALID_ARGUMENT) {
@@ -329,6 +427,21 @@ ayni_status_t Executor::advance() {
 }
 ayni_status_t Executor::confirm_stopped() {
     return impl_ ? impl_->measure_stop() : AYNI_INVALID_STATE;
+}
+ayni_status_t Executor::answer() {
+    return impl_ ? impl_->answer_held() : AYNI_INVALID_STATE;
+}
+void Executor::drop_requests() {
+    if (impl_) {
+        impl_->held_count = 0;
+    }
+}
+uint32_t Executor::held(ayni_executor_request_t kind) const {
+    uint32_t count = 0;
+    for (uint32_t at = 0; impl_ && at < impl_->held_count; ++at) {
+        count += impl_->held[at].kind == kind ? 1U : 0U;
+    }
+    return count;
 }
 ayni_status_t Executor::info(ayni_control_info_v1 &out) const {
     if (!impl_) {
