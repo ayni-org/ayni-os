@@ -38,6 +38,7 @@ add_subdirectory(control/permit_gate)
 add_subdirectory(providers/mock_execution)
 add_subdirectory(runtime/common)
 add_subdirectory(runtime/native_node)
+add_subdirectory(runtime/sim_node)
 add_subdirectory(targets/simulator)
 
 if(AYNI_BUILD_TESTS)

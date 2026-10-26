@@ -3,3 +3,8 @@ target_include_directories(ayni_runtime_native_node PUBLIC include)
 target_link_libraries(ayni_runtime_native_node
     PUBLIC ayni_api
     PRIVATE ayni_core ayni_host_native ayni_runtime_common ayni_warnings)
+
+add_library(ayni_runtime_assistant STATIC assistant.cpp assistant_commands.cpp conversation_store.cpp)
+target_include_directories(ayni_runtime_assistant PUBLIC include)
+target_link_libraries(ayni_runtime_assistant PUBLIC ayni_api ayni_runtime_common
+    PRIVATE ayni_runtime_native_node ayni_runtime_demo ayni_core ayni_strategies ayni_warnings)

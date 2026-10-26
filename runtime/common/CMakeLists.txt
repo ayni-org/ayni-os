@@ -3,3 +3,10 @@
 add_library(ayni_runtime_common INTERFACE)
 target_include_directories(ayni_runtime_common INTERFACE include)
 target_link_libraries(ayni_runtime_common INTERFACE ayni_api)
+
+# Native/Sim demo wiring is a separate target: ESP-IDF still uses only the
+# header-only default configuration above and never links curl or Mock profiles.
+add_library(ayni_runtime_demo STATIC demo_profile.cpp)
+target_include_directories(ayni_runtime_demo PUBLIC include)
+target_link_libraries(ayni_runtime_demo PUBLIC ayni_api
+    PRIVATE ayni_core ayni_provider_mock ayni_provider_openai_compat ayni_strategies ayni_warnings)
