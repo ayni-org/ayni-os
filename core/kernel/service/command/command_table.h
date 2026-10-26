@@ -164,6 +164,9 @@ class CommandTable {
     bool insert(const CommandMapping &mapping);
     // The mapping insert() or restore() added with commit_seq, if any.
     const CommandMapping *mapped_in(uint64_t commit_seq) const;
+    // Sequence of the last successfully added/restored mapping; zero after clear_restored.
+    // Snapshot restoration uses this owner fact to require global acceptance order.
+    uint64_t last_added_seq() const { return last_added_seq_; }
     // The principal's floor; 0 before anything gave way.
     uint64_t floor(uint64_t principal_id) const;
 

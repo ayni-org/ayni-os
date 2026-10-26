@@ -5,6 +5,7 @@
 #define AYNI_CORE_AUTHORITY_GRANT_GRANT_TABLE_H
 
 #include "authority/grant/grant_rules.h"
+#include "authority/grant/revocation_gate.h"
 #include "catalog/capability/capability_registry.h"
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
@@ -14,7 +15,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 
 namespace ayni::authority {
 
@@ -141,7 +141,7 @@ class GrantTable {
     static constexpr std::size_t storage_alignment = alignof(Grant);
     static constexpr std::size_t storage_size(Limits limits) {
         return foundation::BoundedArray<Grant>::storage_size(limits.capacity) +
-               foundation::BoundedArray<uint64_t>::storage_size(limits.capacity) +
+               RevocationGate::storage_size(limits.capacity) +
                static_cast<std::size_t>(limits.capacity) * limits.scope_max_bytes *
                    grant_value_regions;
     }
@@ -229,11 +229,19 @@ class GrantTable {
 
     // Gates are accepted control state, independent of restored Grant slots.
     // Publishing pending+gate and their durable handoff is Kernel-owned.
-    bool can_gate(uint64_t grant_id) const; // Valid ID and room, or an already installed Gate.
-    bool install_gate(uint64_t grant_id); // Idempotently deny this ID without changing Grant facts.
-    bool release_gate(uint64_t grant_id); // Remove exactly this ID; false when it has no Gate.
-    bool gated(uint64_t grant_id) const;  // Whether volatile accepted control denies this ID.
-    uint32_t gate_count() const { return gates_.size(); } // Number of installed volatile denies.
+    bool can_gate(uint64_t grant_id) const {
+        return gates_.can_gate(grant_id);
+    } // Valid ID and room, or an already installed Gate.
+    bool install_gate(uint64_t grant_id) {
+        return gates_.install_gate(grant_id);
+    } // Idempotently deny this ID without changing Grant facts.
+    bool release_gate(uint64_t grant_id) {
+        return gates_.release_gate(grant_id);
+    } // Remove exactly this ID; false when it has no Gate.
+    bool gated(uint64_t grant_id) const {
+        return gates_.gated(grant_id);
+    } // Whether volatile accepted control denies this ID.
+    uint32_t gate_count() const { return gates_.count(); } // Number of installed volatile denies.
     GrantCheck check_revoke(uint64_t grant_id,
                             uint32_t expected_revision) const; // First-accept CAS.
     // Result chosen from current facts for an already accepted control (C-AUTH-027).
@@ -305,6 +313,7 @@ class GrantTable {
     }
 
   private:
+    friend class GrantRestore; // Same module facet: sole historical validator/publisher.
     enum class Walk { root, stopped, broken };
     // The starting index is known to exist. Budgets count visited nodes, not
     // edges: chain/history use max depth + root; descendant/frontier checks
@@ -337,38 +346,12 @@ class GrantTable {
                        foundation::TransitionStamp stamp) const;
     void publish(const NewGrant &grant, const Admission &admission, uint64_t id,
                  foundation::TransitionStamp stamp, uint32_t &out_index);
-    // Snapshot may retain ancestors terminated after this creation; append
-    // replay requires every ancestor still active at that point in the log.
-    enum class AncestorHistory { active, later_terminal, invalid };
-    // Snapshots of commands retain commit sequence only. Creation callers also
-    // supply a transition ID, preserving their stricter two-axis ordering.
-    AncestorHistory history_at(uint32_t parent_index, uint64_t commit_seq,
-                               std::optional<uint64_t> transition_id = std::nullopt) const;
-    bool valid_revocation_metadata(uint64_t grant_id, uint64_t parent_grant_id,
-                                   ayni_grant_lifecycle_t lifecycle,
-                                   foundation::TransitionStamp stamp, uint64_t revoked_by_root_id,
-                                   uint64_t cleanup_after, uint64_t cleanup_through,
-                                   foundation::TransitionStamp cleanup_stamp) const;
     GrantCheck check_parent_contract(uint32_t parent_index, const NewGrant &child) const;
     bool valid_link(uint32_t child, uint32_t parent) const;
-    // Borrowed record state, independent of journal versus snapshot placement.
-    // ACTIVE uses the creation stamp/revision; terminal state follows it.
-    struct RestoredState {
-        foundation::TransitionStamp created; // Nonzero original transition/commit pair.
-        foundation::TransitionStamp stamp;   // Latest terminal pair, or created while ACTIVE.
-        uint32_t revision;                   // grant_active_revision or grant_terminal_revision.
-        ayni_grant_lifecycle_t lifecycle;    // ACTIVE, EXPIRED or REVOKED, never an effective hold.
-    };
-    bool valid_restored_fact(const GrantRecord &record, const RestoredState &state,
-                             uint32_t &out_parent) const;
-    bool fits_restored_fact(const GrantRecord &record) const;
-    Restore replay_placement(const GrantRecord &record, foundation::TransitionStamp created,
-                             const GrantReclaimExclusions &excluded, uint32_t &out_index) const;
-    void install_restored(const GrantRecord &record, const RestoredState &state, uint32_t index);
     uint8_t *domain_storage(uint32_t index) const;
     uint8_t *scope_storage(uint32_t index);
     foundation::BoundedArray<Grant> grants_;
-    foundation::BoundedArray<uint64_t> gates_;
+    RevocationGate gates_; // Owns accepted volatile denies; clear_restored never clears it.
     uint8_t *bytes_;
     Limits limits_;
 };

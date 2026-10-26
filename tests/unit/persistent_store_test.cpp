@@ -1,8 +1,5 @@
-// The persistent store contract (ADR-0051 decision 8): each store writes one
-// type of the record registry, its header is REQUIRED in the log and the
-// snapshot alike, and the journal and snapshot bounds grow by exactly the
-// share the store declares once it is enabled. The journal, snapshot and
-// restore tests check the bytes themselves.
+// The persistent store contract (ADR-0051/0059): each family owns its versions,
+// REQUIRED boundary, bounds and ordering. The journal and snapshot tests verify bytes.
 
 #include "durability/batch/batch_codec.h"
 #include "durability/batch/record_types.h"
@@ -31,7 +28,7 @@ namespace record_type = ayni::durability::record_type;
 constexpr uint32_t envelope = static_cast<uint32_t>(ayni::durability::record_header_size);
 constexpr WorkRecordContext contexts[] = {WorkRecordContext::journal, WorkRecordContext::snapshot};
 
-// Every store disabled; each test enables the one it measures.
+// Optional call/Scene stores disabled; mandatory authority/command capacities retained.
 KernelCapacities capacities() {
     KernelCapacities capacities{};
     capacities.agent_capacity = 2;
@@ -49,40 +46,55 @@ KernelCapacities capacities() {
     return capacities;
 }
 
-// records.md: calls follow the Tasks they name, Scenes follow calls.
-TEST(PersistentStore, each_store_writes_one_registered_type_in_log_order) {
-    ASSERT_EQ(persistent_store_count, 2U);
-    EXPECT_EQ(persistent_stores[0]->record_type, record_type::call);
-    EXPECT_EQ(persistent_stores[1]->record_type, record_type::scene);
+// ADR-0059: one descriptor owns each family; persisted order remains Grant/work/call/Scene/command.
+TEST(PersistentStore, every_record_kind_has_one_store_and_a_stable_snapshot_position) {
+    using ayni::kernel::StorePosition;
+    ASSERT_EQ(persistent_store_count, 4U);
+    EXPECT_EQ(persistent_stores[0]->record_type, record_type::grant);
+    EXPECT_EQ(persistent_stores[1]->record_type, record_type::call);
+    EXPECT_EQ(persistent_stores[2]->record_type, record_type::scene);
+    EXPECT_EQ(persistent_stores[3]->record_type, record_type::command_mapping);
+    EXPECT_EQ(persistent_stores[0]->position, StorePosition::before_work);
+    EXPECT_EQ(persistent_stores[1]->position, StorePosition::after_work);
+    EXPECT_EQ(persistent_stores[2]->position, StorePosition::after_work);
+    EXPECT_EQ(persistent_stores[3]->position, StorePosition::after_cleanup);
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
-        const uint16_t type = persistent_stores[rank]->record_type;
-        EXPECT_NE(std::find(std::begin(record_type::all), std::end(record_type::all), type),
-                  std::end(record_type::all));
-        uint32_t found = persistent_store_count;
-        ASSERT_TRUE(find_persistent_store(type, found));
-        EXPECT_EQ(found, rank);
+        const auto &store = *persistent_stores[rank];
+        for (uint32_t kind = 0; kind < store.kind_count; ++kind) {
+            const uint16_t type = store.kinds[kind].type;
+            EXPECT_NE(std::find(std::begin(record_type::all), std::end(record_type::all), type),
+                      std::end(record_type::all));
+            uint32_t found = persistent_store_count;
+            ASSERT_TRUE(find_persistent_store(type, found));
+            EXPECT_EQ(found, rank); // A repeated type would resolve to the earlier owner.
+        }
     }
     uint32_t found = 0;
     EXPECT_FALSE(find_persistent_store(record_type::goal, found));
-    EXPECT_FALSE(find_persistent_store(record_type::command_mapping, found));
 }
 
-TEST(PersistentStore, a_store_header_must_be_required_whether_or_not_its_version_is_known) {
+// ADR-0059: no storage migration changes unknown-version or legacy optional header semantics.
+TEST(PersistentStore, family_versions_keep_their_required_and_context_rules) {
     for (const auto *store : persistent_stores) {
-        for (const auto context : contexts) {
-            uint16_t known = 0;
-            for (uint16_t version = 1; version < 64U && known == 0U; ++version) {
-                known = store->knows(version, context) ? version : 0U;
+        for (uint32_t kind = 0; kind < store->kind_count; ++kind) {
+            const auto type = store->kinds[kind].type;
+            for (const auto context : contexts) {
+                for (uint16_t version = 0; version < 16U; ++version) {
+                    RecordHeader header{type, version, ayni::durability::record_required, 0};
+                    const auto classified = store->knows(type, version, context)
+                                                ? RecordUse::applied
+                                                : RecordUse::unknown;
+                    EXPECT_EQ(WorkReplay::classify_header(header, context), classified);
+                    header.flags = 0;
+                    const bool required = type != record_type::command_mapping || version >= 2U;
+                    EXPECT_EQ(WorkReplay::classify_header(header, context),
+                              required ? RecordUse::corrupt : classified);
+                }
+                RecordHeader unknown{type, UINT16_MAX, ayni::durability::record_required, 0};
+                EXPECT_EQ(WorkReplay::classify_header(unknown, context), RecordUse::unknown);
+                unknown.flags = 0;
+                EXPECT_EQ(WorkReplay::classify_header(unknown, context), RecordUse::corrupt);
             }
-            ASSERT_NE(known, 0U) << store->record_type;
-            RecordHeader header{store->record_type, known, ayni::durability::record_required, 0};
-            EXPECT_EQ(WorkReplay::classify_header(header, context), RecordUse::applied);
-            header.flags = 0;
-            EXPECT_EQ(WorkReplay::classify_header(header, context), RecordUse::corrupt);
-            header.version = UINT16_MAX;
-            EXPECT_EQ(WorkReplay::classify_header(header, context), RecordUse::corrupt);
-            header.flags = ayni::durability::record_required;
-            EXPECT_EQ(WorkReplay::classify_header(header, context), RecordUse::unknown);
         }
     }
 }
@@ -93,6 +105,9 @@ TEST(PersistentStore, an_enabled_store_adds_exactly_its_share_to_each_bound) {
     const KernelCapacities none = capacities();
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
         const auto &store = *persistent_stores[rank];
+        if (store.record_type != record_type::call && store.record_type != record_type::scene) {
+            continue; // Existing mandatory stores do not have an enable/disable transition.
+        }
         ASSERT_EQ(store.capacity(none), 0U);
         KernelCapacities enabled = none;
         if (store.record_type == record_type::call) {
@@ -103,7 +118,7 @@ TEST(PersistentStore, an_enabled_store_adds_exactly_its_share_to_each_bound) {
         ASSERT_EQ(store.capacity(enabled), 3U) << rank;
         const uint32_t record = envelope + store.record_max(enabled);
         EXPECT_EQ(ayni::kernel::transition_batch_max(enabled),
-                  ayni::kernel::transition_batch_max(none) + store.records_per_transition * record);
+                  ayni::kernel::transition_batch_max(none) + store.journal_max(enabled));
         EXPECT_EQ(ayni::kernel::snapshot_payload_max(enabled),
                   ayni::kernel::snapshot_payload_max(none) + uint64_t{3} * record);
         EXPECT_GE(ayni::kernel::snapshot_record_max(enabled), record);

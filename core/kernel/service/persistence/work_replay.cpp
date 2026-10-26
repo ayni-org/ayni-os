@@ -30,23 +30,7 @@ bool requires_authority_header(const durability::RecordHeader &header) {
             header.version >= work::goal_with_authority_record_version) ||
            (header.type == work::goal_state_record_type &&
             header.version >= work::goal_state_with_authority_record_version) ||
-           header.type == authority::owner_binding_record_type ||
-           header.type == authority::grant_record_type ||
-           header.type == authority::grant_state_record_type ||
-           header.type == authority::grant_revocation_record_type ||
-           header.type == authority::grant_revocation_progress_record_type ||
-           (header.type == command_record_type && header.version >= exact_command_record_version);
-}
-
-// Type13/v2 has different journal/snapshot bodies. Keep that context decision
-// separate from the common REQUIRED check and all other record families.
-bool knows_grant_body(uint16_t version, WorkRecordContext context) {
-    return version == authority::grant_record_version ||
-           (context == WorkRecordContext::journal &&
-            version == authority::goal_grant_record_version) ||
-           (context == WorkRecordContext::snapshot &&
-            (version == authority::grant_snapshot_record_version ||
-             version == authority::goal_grant_snapshot_record_version));
+           header.type == authority::owner_binding_record_type;
 }
 
 bool knows_goal_body(uint16_t version, WorkRecordContext context) {
@@ -117,38 +101,17 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                       WorkRecordContext context) {
     uint32_t rank = 0;
     const bool store = find_persistent_store(header.type, rank);
-    if ((store || requires_authority_header(header)) &&
+    if (((store && store_requires_marker(*persistent_stores[rank], header.type, header.version)) ||
+         requires_authority_header(header)) &&
         (header.flags & durability::record_required) == 0U) {
         return RecordUse::corrupt;
     }
     if (store) {
-        return persistent_stores[rank]->knows(header.version, context) ? RecordUse::applied
-                                                                       : RecordUse::unknown;
+        return persistent_stores[rank]->knows(header.type, header.version, context)
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
     }
     switch (header.type) {
-    case command_record_type:
-        return knows_command_record(header.version) ? RecordUse::applied : RecordUse::unknown;
-    case authority::grant_record_type:
-        return knows_grant_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
-    case authority::grant_state_record_type:
-        return context == WorkRecordContext::journal &&
-                       (header.version == authority::grant_state_record_version ||
-                        header.version == authority::grant_revoked_state_record_version ||
-                        header.version == authority::grant_goal_ended_state_record_version ||
-                        header.version == authority::grant_expired_with_work_record_version)
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
-    case authority::grant_revocation_record_type:
-        return context == WorkRecordContext::journal &&
-                       (header.version == authority::grant_revocation_record_version ||
-                        header.version == authority::grant_revocation_with_work_record_version)
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
-    case authority::grant_revocation_progress_record_type:
-        return context == WorkRecordContext::journal &&
-                       header.version == authority::grant_revocation_progress_record_version
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
     case work::goal_record_type:
         return knows_goal_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
     case work::goal_state_record_type:
