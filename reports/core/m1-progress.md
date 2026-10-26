@@ -86,7 +86,7 @@
 
 ## 交接状态（2026-10-25）
 
-当前功能基线见 [#69](https://github.com/RobotSe7en/ayni/pull/69)（ABI 0.35 / schema 2），结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70)。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)；新故障/恢复专项继续暂停。
+当前功能基线见 [#71](https://github.com/RobotSe7en/ayni/pull/71)（ABI 0.36 / schema 2，执行端端口异步化），结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70)。用户已批准 [M1 剩余实施顺序](m1-remaining-implementation.md)；新故障/恢复专项继续暂停。
 
 - **已完成：** MA-003/004/005/010、MA-006 A–F；MA-018A 的资源目录/公平准入、Task 持久运行限制和工作等待策略；MA-008A 的公开调用/持久派发、可靠完成、原 Provider 对账、等待恢复及 Mock A/B。MA-018B 已实现 Core 许可签发/续租、持久 Scene、最小可信 Observation、独立 Mock 执行端及停止确认后释放隔离，正常用例与独立审查通过；验证详情在各 PR。
 - **结构整改：** #70 按架构审查第 6 节整改 kernel 结构，不改行为，14 项决定见 ADR-0051。后续功能按新边界接入：ABI 入口放 `kernel/api/` 并选一个闸门，step 中的工作经 `run_transition`，新持久实体实现 `PersistentStore` 契约，新注册表加入 `Catalogs`；`ayni_kernel` 成员私有化与 service/runtime 分区留待功能触及时逐步收紧。
