@@ -6,7 +6,7 @@
 
 Provider 实现 Capability：外部模型 API、感知、媒体、检索、动作执行等。Provider 是可信内置代码（C-TRUST 表），但其**输出**是不可信数据，由 Kernel 校验后才影响状态（C-TRUST-001）。Provider 不持有领域对象的写权限，不调度任务。
 
-当前实施边界（ABI 0.33，ADR-0044/0045/0048）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
+当前实施边界（ABI 0.37，ADR-0044/0045/0048/0054/0055）：ProviderMailbox 已装入 Kernel，Provider/Binding 注册及文本 unary/action 通过公开接口消费。Host 完成槽与 Provider 槽分池，Provider 不能耗尽存储控制容量。读取不释放，业务提交准入后确认才释放。完成发表结束该 attempt 的投递，但 runtime 仍须 join 生产者线程后再销毁 Core/ctx；Kernel 不能替未协作线程证明退出。有界 Task 正文进入业务记录，凭据、原始媒体及诊断错误原文不进入。
 
 ## 函数表
 
@@ -63,3 +63,25 @@ Provider 自己把模型的工具调用映射到这些视图。未知工具、�
 ## 可复用 Mock 的当前边界
 
 `providers/mock` 提供 A/B 文本回显与模拟呈现，启动分配固定槽，调用线程只复制输入。组合根在 Kernel 步进之间显式推进；终态成功发表后清空局部正文，`close` 对在途借用返回 `BUSY`。上下文在 Kernel 成功销毁后才能释放。取消、容量和正常排空分别由 `MockProvider.cancellation_drains_the_borrow_and_close_refuses_while_pending`、`MockProvider.full_provider_queue_rejects_without_discarding_the_first_request`、`MockProvider.normal_shutdown_cancels_pending_work_and_returns_every_borrow` 验证。`tools` 服务是结果格式为 `TOOL_CALLS` 的确定性模型：输入开头的 `call:<binding_id>` 词各成为一个已提供工具的调用，字段取视图中的第一个值，其余文本为每个调用的正文；没有这类词时回显文本。未提供的工具、正文超出工具上限或列表超出结果上限都报告 `MODEL_OUTPUT`，由 `MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`、`MockTools.input_without_call_words_is_echoed_as_text`、`MockTools.unoffered_tool_fails_as_model_output` 验证。Mock 接受 Core 已检查过的类型化参数但不使用它们。Mock 不执行网络或真实音频/动作，也不宣称物理停止。
+
+## Native Chat Completions（ADR-0055）
+
+`providers/openai_compat` 用一个 libcurl multi worker 提供非流式文本与 function 工具提议。
+公开调用链的正常协议验证：`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects`、
+`OpenaiProvider.offered_function_becomes_exact_typed_values`、
+`OpenaiProvider.malformed_json_is_model_output_failure`、
+`OpenaiProvider.oversized_http_body_is_bounded_model_output_failure`、
+`OpenaiProvider.timeout_returns_borrow_without_retrying_unknown_execution`、
+`OpenaiProvider.shutdown_cancels_http_and_drains_the_borrow`。
+HTTP 分类与非法参数、列表数量/编码上限由 `OpenaiHttpError`、`OpenaiArguments`、`OpenaiListLimit`
+参数化夹具验证。日常测试只使用回环 HTTP，不需要密钥或外部模型。
+
+配置在启动时复制，密钥只由 Provider 从指定环境变量读取；HTTPS 校验保持开启，
+只有数字回环夹具允许 HTTP。拒绝 URL 用户信息、query、fragment，不跟随重定向，
+不用环境代理/netrc，不自动重试或更换参数；对应验证为
+`OpenaiConfiguration.rejects_unsafe_urls_and_missing_key_without_starting_io` 与
+`OpenaiProvider.redirect_does_not_send_credentials_to_another_server`。
+工具声明、解码与错误规则沿用 ABI 0.37 章节；JSON 深度 8、每容器 64 项，固定解析池。
+取消先发表 CANCEL_UNKNOWN，再 ABANDONED 归还借用；HTTP/模型错误的 effect 为 UNKNOWN，
+不能由错误码推断从未外发或未计费。正常排空后，组合根须 join worker 才能释放上下文。
+独立手动 DeepSeek 验证见 [#75](https://github.com/RobotSe7en/ayni/pull/75)；它不代替新的故障/恢复专项或完整 E1–E4。

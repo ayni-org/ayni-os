@@ -78,3 +78,4 @@
 ## 模板
 
 新 ADR 使用下一个编号，并包含以下小节：状态、日期、关联（计划章节、工作包、实验）、背景、决策、后果、备选方案、验证。提议状态的 ADR 另写明决定时点与决定依据。
+| [0055](0055-openai-compatible-provider.md) | Native OpenAI-compatible Provider、有界 JSON 与取消/排空 | 已接受 | §2.7、§3.3、§9.1 |
