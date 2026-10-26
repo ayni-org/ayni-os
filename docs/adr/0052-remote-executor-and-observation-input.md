@@ -54,3 +54,4 @@ Core 的外部 I/O 原有两种线程模型并存：
 - 延迟与断链：`ManagedExecution.held_challenge_waits_at_the_barrier_without_spinning`、`ManagedExecution.unanswered_challenge_times_out_before_any_permit`、`ManagedExecution.lost_link_ends_output_by_the_executors_own_lease`、`ManagedExecution.revocation_while_a_renewal_challenge_is_held_sends_no_renewal`。
 - `NOT_FOUND` 时序：`ManagedExecution.not_found_fences_a_permit_still_on_its_way_to_the_gate`、`ManagedExecution.not_found_proves_not_started_only_from_a_read_after_the_terminal`。
 - 未验证：真实远程链路与时限、执行端或 Kernel 重启与分区下的请求、观测队列（MA-008B）。
+- 实际命令、内存测量、CI 与独立审查见 [#71](https://github.com/RobotSe7en/ayni/pull/71)。

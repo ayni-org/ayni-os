@@ -72,7 +72,7 @@
 | [#69](https://github.com/RobotSe7en/ayni/pull/69) | 2026-10-25 | `MA-018B` 受管理执行闭环 | Core 签发/续租、持久 Scene、最小 Observation、停止事实与资源隔离、Mock 执行器，ABI 0.35 | ADR-0050 |
 
 | [#70](https://github.com/RobotSe7en/ayni/pull/70) | 2026-10-25 | 架构整改（审查基线 `e089a22`） | 依赖检查覆盖根目录、存储清单单一出处、外呼作用域、测试探针、意图 traits、记录登记与存储契约、`ExecutionControl`、到期搜索按事务失效、显式上下文、统一目录与 ABI 闸门；行为、ABI 0.35 与 schema 2 不变 | ADR-0051、ADR-0052（提议） |
-| 待定 | 2026-10-26 | 异步执行端端口 | 执行端端口改为请求，回答经执行端邮箱由任意线程投递，停止链按异步回答重新论证，Mock 可延迟或丢弃回答，ABI 0.36 | ADR-0052 |
+| [#71](https://github.com/RobotSe7en/ayni/pull/71) | 2026-10-26 | 异步执行端端口 | 执行端端口改为请求，回答经执行端邮箱由任意线程投递，停止链按异步回答重新论证，Mock 可延迟或丢弃回答，ABI 0.36 | ADR-0052 |
 
 ## 工作包日期
 
