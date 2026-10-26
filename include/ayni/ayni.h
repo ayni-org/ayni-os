@@ -141,27 +141,27 @@ typedef struct ayni_config_v1 {
      * and eight storage buffers. Maintenance reserves space before admit. */
     uint32_t storage_log_max_bytes;
     /* Since 0.17. Capability authorization schemas and their canonical
-     * domain/scope byte limit. Explicit zero is invalid; omitted fields
-     * take the documented defaults. Registration does not enable calls. */
+     * domain/scope byte limit. Zero is invalid. Registration does not
+     * enable calls. */
     uint32_t capability_capacity;
     uint32_t authority_scope_max_bytes;
     /* Since 0.18. Grants retain a source domain and scope each; depth
      * counts delegation edges, with root depth 0. Explicit zero is invalid. */
     uint32_t grant_capacity;
     uint32_t grant_delegation_depth_max;
-    /* Since 0.20. Requirements per Goal: 1..16; an omitted trailing field uses 4.
+    /* Since 0.20. Requirements per Goal: 1..16; the default is 4.
      * Each original domain and Scope separately uses authority_scope_max_bytes. */
     uint32_t goal_requirement_capacity;
     /* Since 0.29. Resource descriptors/live state and queued/held resource
-     * requests. Zero (also the omitted default) disables each table. An
-     * explicit profile enables them; no implicit hardware/resource discovery. */
+     * requests. Zero (the default) disables each table. An explicit
+     * profile enables them; no implicit hardware/resource discovery. */
     uint32_t resource_capacity;
     uint32_t resource_request_capacity;
-    /* Since 0.30. Per-Task model call hard ceiling, 1..64; 0 or omitted
-     * selects 64. Initial soft limit is min(8, ceiling). Fixed for this boot;
+    /* Since 0.30. Per-Task model call hard ceiling, 1..64; 0 selects 64.
+     * Initial soft limit is min(8, ceiling). Fixed for this boot;
      * independent of concurrent Provider slots and committed step capacity. */
     uint32_t task_model_call_hard_limit;
-    /* Since 0.31. Omitted/zero disables the respective trusted directory.
+    /* Since 0.31. Zero disables the respective trusted directory.
      * Counts include exact versions; none grows during execution. */
     uint32_t call_capability_capacity;
     uint32_t provider_capacity;
@@ -563,7 +563,10 @@ ayni_status_t ayni_kernel_memory_requirements(const ayni_config_v1 *config, size
  *   host function, an incomplete storage port group, or memory not aligned
  *   as reported by ayni_kernel_memory_requirements;
  * - AYNI_UNSUPPORTED_VERSION: the caller's ABI version is not accepted (see
- *   AYNI_ABI_MAJOR), or a struct_size is larger than this library knows;
+ *   AYNI_ABI_MAJOR), or a struct_size is larger than this library knows.
+ *   The version is judged before the size whenever config->struct_size
+ *   covers abi_minor, so a config from another minor gets this status
+ *   whatever its size;
  * - AYNI_BUFFER_TOO_SMALL: memory_size is below the reported size.
  */
 ayni_status_t ayni_create(const ayni_config_v1 *config, const ayni_host_v1 *host, void *memory,

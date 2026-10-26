@@ -189,8 +189,8 @@ class CommandTable {
 
     // An exact request's identity before its canonical bytes are encoded.
     struct ExactProbe {
-        ExactLookup result;             // The answer, unless encode is set.
-        bool encode;                    // Only the bytes decide: encode them into scratch_.
+        ExactLookup result;             // The answer, unless needs_bytes is set.
+        bool needs_bytes;               // Only the bytes decide: encode them into scratch_.
         const CommandMapping *existing; // Mapping the bytes must equal; null stages them.
     };
     // find_exact before encoding: shape, identity, floor, then byte capacity.
@@ -244,7 +244,7 @@ CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64
     uint32_t size = 0;
     const ayni_status_t measured = Command::measure(request, size);
     const ExactProbe probe = probe_exact(principal_id, command_id, kind, measured, size);
-    if (!probe.encode) {
+    if (!probe.needs_bytes) {
         return probe.result;
     }
     const ayni_status_t encoded = Command::encode(request, scratch_, canonical_max_bytes_, size);

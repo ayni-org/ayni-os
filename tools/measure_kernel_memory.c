@@ -9,8 +9,9 @@ static int measure(const char *label, const ayni_config_v1 *config) {
     return status != AYNI_OK;
 }
 int main(void) {
-    /* Every capacity at its _DEFAULT and the optional stores off, as
-     * runtime/common default_config() (ADR-0053). */
+    /* Every capacity at its _DEFAULT and the optional stores off: a C copy
+     * of runtime/common default_config() (ADR-0053), whose C++ header this
+     * C99 tool cannot include. Change both together. */
     ayni_config_v1 config = {0};
     config.struct_size = sizeof(config);
     config.abi_major = AYNI_ABI_MAJOR;

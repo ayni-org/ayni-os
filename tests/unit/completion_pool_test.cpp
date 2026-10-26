@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -455,6 +456,9 @@ TEST_F(CompletionPoolTest, completion_post_rejects_invalid_arguments) {
     EXPECT_EQ(ayni_completion_post(nullptr, &result), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(ayni_completion_post(completion, nullptr), AYNI_INVALID_ARGUMENT);
     result.struct_size = sizeof(result) - 1;
+    EXPECT_EQ(ayni_completion_post(completion, &result), AYNI_INVALID_ARGUMENT);
+    // The 0.3 layout, which ended before next_cursor (C-VER-003).
+    result.struct_size = static_cast<uint32_t>(offsetof(ayni_completion_result_v1, next_cursor));
     EXPECT_EQ(ayni_completion_post(completion, &result), AYNI_INVALID_ARGUMENT);
     result.struct_size = sizeof(result) + 8;
     EXPECT_EQ(ayni_completion_post(completion, &result), AYNI_UNSUPPORTED_VERSION);

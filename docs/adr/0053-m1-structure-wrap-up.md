@@ -16,7 +16,7 @@ M1 剩余工作从 P1 起新增模型 Provider、工具调用、记忆、日历�
 
 ## 决策
 
-1. **主版本 0 的每个 ABI 结构体只有本次 minor 的布局。** 配置、Host 表、Kernel 信息、step 报告和完成结果与其余结构体相同：`struct_size` 小于 `sizeof` 为 `AYNI_INVALID_ARGUMENT`，大于为 `AYNI_UNSUPPORTED_VERSION`。删除旧布局的最小尺寸、字段终点表、部分写出和“未覆盖字段取默认值”；配置的每个容量字段都必须给出且在范围内，允许 0 的字段仍由 0 取默认。`abi_major` 与 `abi_minor` 在每个布局中位置不变（C-VER-002），所以 `ayni_create` 与 `ayni_kernel_memory_requirements` 先在 `struct_size` 足以包含 `abi_minor` 时比较版本，再判断尺寸：其他 minor 的调用方无论配置长短都得到 `AYNI_UNSUPPORTED_VERSION`；连 `abi_minor` 都不含的配置（0.1）得到 `AYNI_INVALID_ARGUMENT`，原先为 `AYNI_UNSUPPORTED_VERSION`。布局与 `AYNI_ABI_MINOR` 不变：按 0.36 头文件编译的调用方填写 `sizeof`，行为不变；其他 minor 的调用方原本就被拒绝。主版本 ≥ 1 时 minor 只追加，届时再引入统一的前缀兼容读取，供所有结构体共用（C-VER-006）。`catalog::check_struct_size` 保留两个尺寸参数，主版本 0 下调用方都传自身 `sizeof`；不再使用的 `catalog::covers` 删除。
+1. **主版本 0 的每个 ABI 结构体只有本次 minor 的布局。** 配置、Host 表、Kernel 信息、step 报告和完成结果与其余结构体相同：`struct_size` 小于 `sizeof` 为 `AYNI_INVALID_ARGUMENT`，大于为 `AYNI_UNSUPPORTED_VERSION`。删除旧布局的最小尺寸、字段终点表、部分写出和“未覆盖字段取默认值”；配置的每个容量字段都必须给出且在范围内，允许 0 的字段仍由 0 取默认。`abi_major` 与 `abi_minor` 在每个布局中位置不变（C-VER-002），所以 `ayni_create` 与 `ayni_kernel_memory_requirements` 先在 `struct_size` 足以包含 `abi_minor` 时比较版本，再判断尺寸：其他 minor 的调用方无论配置长短都得到 `AYNI_UNSUPPORTED_VERSION`；连 `abi_minor` 都不含的配置（0.1）得到 `AYNI_INVALID_ARGUMENT`，原先为 `AYNI_UNSUPPORTED_VERSION`。布局与 `AYNI_ABI_MINOR` 不变：按 0.36 头文件编译的调用方填写 `sizeof`，行为不变；其他 minor 的调用方原本就被拒绝。0.36 头文件原注释允许 Kernel 信息与 step 报告以较短尺寸部分写出、配置省略尾部字段取默认值，按这些注释调用的 0.36 调用方现在得到 `AYNI_INVALID_ARGUMENT`。这是 C-VER-006“每次变更递增 minor”的一次例外：仓库内的调用方都填写 `sizeof`，ABI 尚未对外发布，不为只删除旧布局而递增 minor；下一次布局变化（P1 的 0.37）照常递增。主版本 ≥ 1 时 minor 只追加，届时再引入统一的前缀兼容读取，供所有结构体共用（C-VER-006）。`catalog::check_struct_size` 保留两个尺寸参数，主版本 0 下调用方都传自身 `sizeof`；不再使用的 `catalog::covers` 删除。
 2. **精确命令只有一个泛型查找。** `CommandTable::find_exact` 是模板，经 `ExactCommand<Request>` 取请求的意图种类与规范 `measure`/`encode`。特化写在各自编解码的头文件旁（`command_canonical.h`、`command_approval.h`、`command_reauthorization.h`、`command_task_limit.h`、`command_target.h`、`command_scene.h`），新的所有者命令加一个特化，不改命令表。查找分两段非模板实现：`probe_exact` 按形状、身份、下限与字节容量分类，`stage_exact` 在编码进 scratch 之后与已保存的映射逐字节比较或暂存候选；判断顺序、返回码与暂存规则不变。种类与编解码仍在编译期绑定，不经类型擦除，因此不与 ADR-0051 否决的方案冲突。撤销只读待生效控制、从不暂存，改名为 `find_revoke`，不作为特化。
 3. **调用事实对 Task 的影响由 work 层决定。** `work/call_propagation` 提供三条规则：`end_task_call`（终态调用：未知结果持有 Task；COMPLETED 先加步骤；其余结束调用并保留用户暂停）、`reconcile_task_call`（对账后仍未知则保持持有，Task 已不再选这个调用则不动，否则同 `end_task_call`）和 `skip_queued_call`（等待超时的排队调用记 SKIPPED 并结束本次运行，不推进下一个 occurrence）。`CallRuntime` 记录调用事实后在同一 stamp 中调用它们，不再有 `finish_task`。`architecture.json` 声明 work 根目录可包含 `call`；规则只调用 `CallTable`、`TaskTable` 已有的操作。资源等待暂停与恢复时的 Task 持有只改一张表，仍由调用方直接调用。
 4. **组合根共享一份默认配置。** `runtime/common/include/ayni/runtime/common/default_config.h` 提供 `ayni::runtime::default_config()`：每个容量取文档的 `_DEFAULT`，可选存储为 0（关闭），允许 0 的上限取默认。它只在 `runtime/` 内使用，不是公开 ABI。Native 用接口库 `ayni_runtime_common`，ESP-IDF 组件以私有包含目录引入。`architecture.json` 的组件规则增加 `kind:instance` 写法，`runtime` 可包含 `runtime:common`，仍不能包含其他 runtime 实例。SimNode 与演示装配随 P2。
@@ -26,8 +26,8 @@ M1 剩余工作从 P1 起新增模型 Provider、工具调用、记忆、日历�
 
 - ABI 布局、`AYNI_ABI_MINOR`、存储 schema 与持久记录均不变。旧布局的测试改为拒绝测试：配置与 Host 表的旧布局和任意更短尺寸、Kernel 信息与 step 报告的旧布局都为 `AYNI_INVALID_ARGUMENT`。只有 append/read_prefix 的 Host 表仍可 create、不能 start（C-HOST-015），现在以完整尺寸、其余存储端口为空的表表示。
 - `tools/measure_kernel_memory.c` 的 4 个配置在改动前后输出相同的字节数与对齐（默认 216,776 B、最小工作 12,360 B、双 Agent 调用 482,552 B、双 Agent 执行 535,576 B，对齐 8 B，Native 64 位 ASan 构建）。
-- P1 起新增的所有者命令只在自己的编解码头文件旁加一个 `ExactCommand` 特化，并在 `intent_traits` 加一行；工具调用对 Task 的影响在 `work/call_propagation` 加规则，不进 `CallRuntime`。
-- 新增配置字段只改 `default_config()` 一处；P2 的 CLI 直接使用它。
+- P1 起新增的所有者命令在自己的编解码头文件旁加一个 `ExactCommand` 特化，在 `intent_traits` 加一行，在 `Intent` 加请求字段，并在 `intent_rules.cpp` 的 `find_command` 加一个分支；命令表不变。工具调用对 Task 的影响在 `work/call_propagation` 加规则，不进 `CallRuntime`。
+- 新增配置字段改 `default_config()`，并同步 `tools/measure_kernel_memory.c` 中的 C 副本（C99 工具不能包含 C++ 头文件）；P2 的 CLI 直接使用 `default_config()`。
 
 ## 备选方案
 

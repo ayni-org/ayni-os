@@ -36,8 +36,8 @@ struct CapacityRange {
     uint32_t max_value;
 };
 
-// A capacity field must lie in [min, max]; zero, where the range allows it,
-// is resolved to a default by the caller.
+// A capacity field must lie in [min, max]. Where the range allows zero, its
+// meaning is the field's own: a default, a disabled table or a real limit.
 ayni_status_t read_capacity(const ayni_config_v1 &config, uint32_t ayni_config_v1::*field,
                             const CapacityRange &range, uint32_t *out) {
     const uint32_t value = config.*field;
@@ -84,7 +84,7 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::completion_slot_count,
      {1U, AYNI_COMPLETION_SLOT_COUNT_MAX},
      &KernelCapacities::completion_slot_count},
-    // Zero stays unresolved until every capacity has been read (C-VER-003).
+    // Zero stays unresolved until every capacity has been read.
     {&ayni_config_v1::storage_buffer_bytes,
      {0U, AYNI_STORAGE_BUFFER_BYTES_MAX},
      &KernelCapacities::storage_buffer_bytes},

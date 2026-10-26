@@ -25,7 +25,7 @@ namespace ayni::work {
 // known outcomes keep the step identity in the call table only, so a
 // strategy must inspect the result and choose a new step before trying
 // again. A task whose end was already requested only ends its call.
-// Returns false, changing nothing, when the task has no room for the step.
+// Returns false, changing nothing, when the task table refuses the step.
 bool end_task_call(const CallTable &calls, TaskTable &tasks, uint32_t call_index,
                    uint32_t task_index, foundation::TransitionStamp stamp);
 
