@@ -1,6 +1,6 @@
 # ADR-0057：双 Agent Native runtime、对话文件与 CLI
 
-- **状态**：已接受，P2 实施中
+- **状态**：已接受，P2 实现与本地正常验证完成
 - **日期**：2026-10-26
 - **关联**：MA-020 前半；ADR-0010、0042 决定 13、0053 F16、0056；C-LIFE-030、C-NATIVE-001～006
 
@@ -37,4 +37,4 @@ P1 已有规则、ToolLoop、Native 模型 Provider 和有界对话值，但可�
 
 ## 验证
 
-Native/Sim 装配、公开查询、正常重开、多轮文件与回环 HTTP 工具/摘要链通过本地正常功能验证；独立只读审查发现均已修复并复查。CLI 的验证随第二项记录。runtime 的完整命令与 CI 结果见 [#77](https://github.com/RobotSe7en/ayni/pull/77)。新增故障/恢复专项、完整 E1–E4、ESP32、硬件及真实服务多轮不在本次验证范围。
+Native/Sim 装配、公开查询、正常重开、多轮文件与回环 HTTP 工具/摘要链通过本地正常功能验证；独立只读审查发现均已修复并复查。CLI 五个脚本场景通过，包含双 Agent、摘要/重开、目录覆盖、配置与命令拒绝、Ctrl-C 正常退出。完整命令与 CI 结果见 runtime [#77](https://github.com/RobotSe7en/ayni/pull/77) 和 CLI [#78](https://github.com/RobotSe7en/ayni/pull/78)。新增故障/恢复专项、完整 E1–E4、ESP32、硬件及真实服务多轮不在本次验证范围。
