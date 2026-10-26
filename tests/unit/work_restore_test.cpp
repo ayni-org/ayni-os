@@ -1770,8 +1770,8 @@ void change_everything(WorkModel &work) {
     ASSERT_TRUE(work.tasks.insert({journal_id(1), owner, 0, 0, 1, 1}, journal_id(11), stamp(4)));
     ASSERT_TRUE(work.tasks.insert({journal_id(1), owner, 0, 0, 1, 1}, journal_id(12), stamp(5)));
 
-    ASSERT_TRUE(work.inherit_task_authority(journal_id(11), stamp(4)));
-    ASSERT_TRUE(work.inherit_task_authority(journal_id(12), stamp(5)));
+    ASSERT_TRUE(work.inherit_task_metadata(journal_id(11), stamp(4)));
+    ASSERT_TRUE(work.inherit_task_metadata(journal_id(12), stamp(5)));
 
     work.agents.start_all(work.ids, everything);
     for (const uint64_t id : {1U, 2U, 3U}) {
@@ -1798,7 +1798,7 @@ void change_everything(WorkModel &work) {
     work.tasks.progress(index, everything);
     ASSERT_TRUE(work.tasks.insert({journal_id(4), owner, 0, 3, 1, 1}, journal_id(13), everything));
 
-    ASSERT_TRUE(work.inherit_task_authority(journal_id(13), everything));
+    ASSERT_TRUE(work.inherit_task_metadata(journal_id(13), everything));
 
     ASSERT_TRUE(work.commands.has_row(principal));
     work.commands.insert({principal,

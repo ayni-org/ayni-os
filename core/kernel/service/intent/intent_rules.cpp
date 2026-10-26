@@ -7,6 +7,7 @@
 
 #include "kernel/service/command/intent_traits.h"
 #include "kernel/service/intent/authority_intent.h"
+#include "kernel/service/intent/memory_intent.h"
 #include "kernel/service/model/work_model.h"
 
 namespace ayni::kernel {
@@ -443,6 +444,9 @@ ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutc
 ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authority::Session &session,
                           uint64_t now_us, uint64_t durable_seq, IntentOutcome &outcome,
                           IntentFailure &failure, OwnerClock clock, InputResumeSampler input) {
+    if (is_memory_command(intent.kind)) {
+        return apply_memory_intent(model, intent.memory, now_us, durable_seq, outcome);
+    }
     // Work and Grant management retain their separate invariant owners.
     switch (intent.kind) {
     case AYNI_INTENT_SCENE_SET_ENABLED:
@@ -542,6 +546,9 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
         const CommandMapping *mapping = nullptr;
         const auto lookup = model.commands.find(principal_id, intent.command_id, digest, mapping);
         return {AYNI_OK, lookup, mapping};
+    }
+    if (is_memory_command(intent.kind)) {
+        return model.commands.find_exact(principal_id, intent.command_id, intent.memory);
     }
     // Each exact kind is looked up by its own canonical request.
     switch (intent.kind) {

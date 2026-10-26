@@ -95,6 +95,14 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
               result.binding.input.incarnation != 0U))) {
             return false;
         }
+    } else if (is_memory_command(mapping.kind)) {
+        MemoryCommand command{};
+        if (!read_memory_command(bytes, command) || command.kind != mapping.kind ||
+            !matches_target_revision(mapping,
+                                     command.target_id == 0 ? mapping.object.id : command.target_id,
+                                     command.expected_revision)) {
+            return false;
+        }
     } else if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
         authority::SceneChange command{};
         if (!read_scene_command(bytes, command) || mapping.object.origin_device_id != 0 ||

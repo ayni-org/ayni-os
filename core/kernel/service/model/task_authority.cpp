@@ -79,13 +79,15 @@ authority::GrantCheck WorkModel::check_task_authority(uint32_t index, uint64_t n
 
 // Derivation has reserved a Task slot and an unchanged complete Goal ceiling.
 // Release a replaced terminal Task only after every fallible admission passed.
-bool WorkModel::inherit_task_authority(uint64_t task_id, foundation::TransitionStamp stamp) {
+bool WorkModel::inherit_task_metadata(uint64_t task_id, foundation::TransitionStamp stamp) {
     uint32_t index = 0;
     if (!tasks.find(task_id, index)) {
         return false;
     }
     const auto &task = tasks.at(index);
     calls.retire_task(task.replaced_task_id);
+    clear_content_provenance(work::ProvenanceKind::task, task.slot, task.replaced_task_id,
+                             stamp.commit_seq);
     const auto ceiling = goal_authority.at(task.goal_index);
     work::TaskAuthorityRecord record{};
     record.task_id = task.task_id;
@@ -111,16 +113,18 @@ void WorkModel::release_task_references(const work::TaskAuthorityRecord &record,
     }
 }
 
-void WorkModel::clear_goal_task_authority(uint32_t goal_index, uint64_t commit_seq) {
+void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq) {
     for (uint32_t index = 0; index < tasks.size(); ++index) {
         const auto &task = tasks.at(index);
         work::TaskAuthorityRecord record{};
-        if (task.goal_index != goal_index ||
-            !task_authority.read(task.slot, task.task_id, record)) {
+        if (task.goal_index != goal_index) {
             continue;
         }
         calls.retire_task(task.task_id);
-        release_task_references(record, commit_seq);
+        clear_content_provenance(work::ProvenanceKind::task, task.slot, task.task_id, commit_seq);
+        if (task_authority.read(task.slot, task.task_id, record)) {
+            release_task_references(record, commit_seq);
+        }
         task_authority.clear(task.slot);
     }
 }

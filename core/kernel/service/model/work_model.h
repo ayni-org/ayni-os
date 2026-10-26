@@ -60,7 +60,10 @@ struct WorkModel {
           grants(storage[Store::grants], grant_limits(capacities)),
           goal_authority(storage[Store::goal_authority], goal_authority_limits(capacities)),
           task_authority(storage[Store::task_authority], task_authority_limits(capacities)),
-          calls(storage[Store::calls], call_limits(capacities)), callbacks_(callbacks) {
+          calls(storage[Store::calls], call_limits(capacities)),
+          memories(storage[Store::memories], memory_limits(capacities)),
+          provenance(storage[Store::provenance], provenance_limits(capacities)),
+          callbacks_(callbacks) {
         tasks.set_retention({this, retains_task});
         goals.set_retention({this, retains_goal});
     }
@@ -105,11 +108,11 @@ struct WorkModel {
     authority::GrantCheck check_task_authority(uint32_t task_index, uint64_t now_us,
                                                uint64_t durable_seq) const;
     // Publish inherited selections after derivation; hand off any replaced Task references.
-    bool inherit_task_authority(uint64_t task_id, foundation::TransitionStamp stamp);
+    bool inherit_task_metadata(uint64_t task_id, foundation::TransitionStamp stamp);
     // Release a Task's selected references at one accepted transition boundary.
     void release_task_references(const work::TaskAuthorityRecord &record, uint64_t commit_seq);
     // Release and clear exact Task metadata before its terminal Goal gives way.
-    void clear_goal_task_authority(uint32_t goal_index, uint64_t commit_seq);
+    void retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq);
     // Persist authorization pause for this Goal and its direct live Task admissions;
     // preserve their user/strategy state and saturated revisions.
     void pause_goal_authority(uint32_t index);
@@ -124,6 +127,14 @@ struct WorkModel {
     // Build a local mask from current work references. Terminal work stops
     // protecting its rows only after the current writer confirms its last stamp.
     authority::GrantReclaimExclusions grant_reclaim_exclusions(uint64_t durable_seq) const;
+    // Content owners release selected Grants with the same transition as source replacement.
+    void release_content_references(const knowledge::MemoryDependencies &dependencies,
+                                    uint64_t commit_seq);
+    // Stable work slot replacement unlinks its old content sources, then clears the slot.
+    void clear_content_provenance(work::ProvenanceKind kind, uint32_t slot, uint64_t id,
+                                  uint64_t commit_seq);
+    // Current and invalid retained content both protect their captured Grant identities.
+    void protect_content_grants(authority::GrantReclaimExclusions &excluded) const;
     // Hand off removed references after all fallible checks. Repeated releases
     // retain the latest fence; no Goal/Grant reference count is duplicated.
     void release_goal_references(const work::GoalAuthorityRecord &record, uint64_t commit_seq);
@@ -159,7 +170,9 @@ struct WorkModel {
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;
     work::TaskAuthorityTable task_authority; // Independent historical selections; no Scope copy.
-    work::CallTable calls; // Original call identities, canonical bodies and action facts.
+    work::CallTable calls;           // Original call identities, canonical bodies and action facts.
+    knowledge::MemoryTable memories; // Sole owner of memory facts, bodies and provenance.
+    work::ProvenanceTable provenance; // Work-owned complete content dependencies, no body copies.
     work::AuthorityCleanup authority_cleanup; // Work-owned active/pending scan, no arena needed.
     foundation::IdAllocator ids;
     TransitionClock transitions;
@@ -212,6 +225,10 @@ struct WorkModel {
     static bool retains_task(const void *context, const work::Task &task);
     static bool retains_goal(const void *context, const work::Goal &goal);
 };
+
+// Current durable owner binding and authenticated management channel.
+bool bound_management_session(const WorkModel &model, const authority::Session &session,
+                              uint64_t durable_seq);
 
 // Opens for the unchanged registered Principal already checked by the ABI
 // entry. AYNI_OK with a new id, or AYNI_CAPACITY_EXCEEDED when the session table

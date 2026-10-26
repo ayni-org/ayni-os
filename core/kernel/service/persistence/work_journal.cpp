@@ -184,9 +184,12 @@ class Encoder {
                 }
             }
             if (task.checkpoint_seq == stamp_.commit_seq) {
-                uint8_t *at =
-                    body(work::task_checkpoint_record_type, work::task_checkpoint_record_version,
-                         work::task_checkpoint_record_size(task));
+                uint8_t *at = body(work::task_checkpoint_record_type,
+                                   model_.provenance.find(work::ProvenanceKind::task, task.slot,
+                                                          task.task_id) != nullptr
+                                       ? work::task_checkpoint_provenance_version
+                                       : work::task_checkpoint_record_version,
+                                   work::task_checkpoint_record_size(task));
                 if (at != nullptr) {
                     work::write_task_checkpoint_record(task, tasks.checkpoint(index), at);
                 }

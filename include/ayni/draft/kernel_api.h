@@ -61,7 +61,7 @@ extern "C" {
  * may be interpreted as an implemented command (ADR-0042). Assign final
  * published values only when implementing each typed contract. */
 #define AYNI_INTENT_MEMORY_WRITE ((ayni_intent_kind_t)0x10001u)
-#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)0x10002u)
+/* Memory save/confirm/delete are published with typed bodies in ayni/memory.h, Since 0.40. */
 #define AYNI_INTENT_SUBSCRIPTION_OPEN ((ayni_intent_kind_t)0x10003u)
 #define AYNI_INTENT_SUBSCRIPTION_CLOSE ((ayni_intent_kind_t)0x10004u)
 /* ADR-0042: Core owns a generic persistent control group; the trusted assistant

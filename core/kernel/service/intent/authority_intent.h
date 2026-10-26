@@ -6,10 +6,6 @@
 
 namespace ayni::kernel {
 
-// Current durable owner binding and authenticated management channel.
-bool bound_management_session(const WorkModel &model, const authority::Session &session,
-                              uint64_t durable_seq);
-
 // The operations below run after apply_intent has checked their session rule
 // (intent_traits.h).
 

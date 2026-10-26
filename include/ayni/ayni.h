@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 39u
+#define AYNI_ABI_MINOR 40u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -182,7 +182,21 @@ typedef struct ayni_config_v1 {
     uint32_t executor_capacity;
     /* Since 0.35. Exact physical Binding constraints; zero disables. */
     uint32_t execution_binding_capacity;
+    /* Since 0.40. Whole-Kernel memory capacity; 0 disables, otherwise 1..256. */
+    uint32_t memory_capacity;
+    /* Since 0.40. Per-record UTF-8 body bytes, 1..4096; 0 selects 512. */
+    uint32_t memory_body_max_bytes;
+    /* Since 0.40. Direct source dependencies per value, 1..8; 0 selects 8. */
+    uint32_t memory_dependency_capacity;
 } ayni_config_v1;
+
+/* Whole-Kernel retained memory bounds. Since 0.40. */
+#define AYNI_MEMORY_CAPACITY_DEFAULT 64u
+#define AYNI_MEMORY_CAPACITY_MAX 256u
+#define AYNI_MEMORY_BODY_BYTES_DEFAULT 512u
+#define AYNI_MEMORY_BODY_BYTES_MAX 4096u
+#define AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT 8u
+#define AYNI_MEMORY_DEPENDENCY_CAPACITY_MAX 8u
 
 /* Since 0.31. Bounded retained call bodies; no implicit history eviction. */
 #define AYNI_CALL_CAPACITY_MAX 256u
@@ -981,6 +995,10 @@ typedef struct ayni_error_v1 {
 /* Model output could not become a typed result: undecodable tool arguments,
  * an unknown tool or values outside the offered ones. Since 0.37. */
 #define AYNI_REASON_MODEL_OUTPUT ((ayni_reason_t)76)
+/* Content source, version or captured memory permission is no longer usable. Since 0.40. */
+#define AYNI_REASON_MEMORY_SOURCE ((ayni_reason_t)77)
+/* Source closure exceeds the configured bound; no partial decision is accepted. Since 0.40. */
+#define AYNI_REASON_MEMORY_DEPENDENCIES ((ayni_reason_t)78)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1374,6 +1392,12 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_TASK_RESUME_WAIT ((ayni_intent_kind_t)15)
 /* Owner enables/disables an exact Scene definition with persistent CAS. Since 0.35. */
 #define AYNI_INTENT_SCENE_SET_ENABLED ((ayni_intent_kind_t)16)
+/* Explicitly save confirmed user memory; body ayni_memory_save_v1. Since 0.40. */
+#define AYNI_INTENT_MEMORY_SAVE ((ayni_intent_kind_t)17)
+/* Owner confirms existing content without removing its lineage. Since 0.40. */
+#define AYNI_INTENT_MEMORY_CONFIRM ((ayni_intent_kind_t)18)
+/* Immediate privacy barrier followed by bounded persisted cleanup. Since 0.40. */
+#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)19)
 
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {
@@ -1552,6 +1576,8 @@ struct ayni_call_request_v1;
 struct ayni_task_call_result_v1;
 /* Since 0.37. Defined in calls.h. */
 struct ayni_task_tool_call_v1;
+/* Since 0.40. Defined in memory.h, leased only to the current Task decision. */
+struct ayni_memory_view_v1;
 
 /* What a strategy sees of a task. The views point into kernel memory and
  * are valid only during the decide call (C-POLICY-004). */
@@ -1588,6 +1614,8 @@ typedef struct ayni_task_snapshot_v1 {
      * The typed view borrows Core memory and out until decide returns. */
     ayni_status_t (*call_tool)(const void *context, ayni_string_v1 step_key, uint32_t index,
                                struct ayni_task_tool_call_v1 *out);
+    /* Since 0.40. Restricted memory view; null when memory is disabled. */
+    const struct ayni_memory_view_v1 *memory;
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in
@@ -1602,6 +1630,8 @@ typedef uint32_t ayni_policy_intent_kind_t;
 #define AYNI_POLICY_REPORT_PROGRESS ((ayni_policy_intent_kind_t)4)   /* a step is done */
 #define AYNI_POLICY_REPORT_COMPLETION ((ayni_policy_intent_kind_t)5) /* the task is done */
 #define AYNI_POLICY_REPORT_FAILURE ((ayni_policy_intent_kind_t)6)    /* it cannot be done */
+/* Publish one unconfirmed private memory with the Task checkpoint and step. Since 0.40. */
+#define AYNI_POLICY_WRITE_MEMORY ((ayni_policy_intent_kind_t)7)
 
 typedef struct ayni_policy_intent_v1 {
     uint32_t struct_size;

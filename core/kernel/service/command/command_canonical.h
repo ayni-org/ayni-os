@@ -3,6 +3,7 @@
 // Byte budgets: contracts/storage/records.md, raw create/revoke identity.
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H
+#include "kernel/service/command/command_memory.h"
 
 #include <ayni/authority.h>
 
@@ -25,11 +26,13 @@ constexpr uint32_t authority_command_max_bytes(uint32_t scope_max_bytes) {
 // requirements == 0 selects the input-only parser bound; configured windows
 // supply their positive requirement capacity and include complete result bytes.
 constexpr uint32_t exact_command_max_bytes(uint32_t scope_bytes, uint32_t parameter_bytes,
-                                           uint32_t requirements = 0) {
+                                           uint32_t requirements = 0, uint32_t memory_bytes = 0) {
     const auto approval = approval_command_max_bytes(parameter_bytes) +
                           (requirements == 0U ? 0U : work_authority_result_size(requirements));
     const auto grant = authority_command_max_bytes(scope_bytes);
-    return grant > approval ? grant : approval;
+    const auto other = grant > approval ? grant : approval;
+    const auto memory = memory_command_max(memory_bytes);
+    return other > memory ? other : memory;
 }
 
 // Revoke identity is kind/expected_revision (u32 each) plus target_id (u64),

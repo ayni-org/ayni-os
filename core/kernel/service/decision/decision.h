@@ -31,9 +31,10 @@ class CallRuntime; // Bounded call coordinator, assembled by Kernel.
 class DecisionBuffer {
   public:
     struct Limits {
-        uint32_t intent_capacity;      // policy_intent_capacity
-        uint32_t step_capacity;        // task_step_capacity
-        uint32_t checkpoint_max_bytes; // task_checkpoint_max_bytes
+        uint32_t intent_capacity;       // policy_intent_capacity
+        uint32_t step_capacity;         // task_step_capacity
+        uint32_t checkpoint_max_bytes;  // task_checkpoint_max_bytes
+        uint32_t memory_body_bytes = 0; // Separate staged candidate bytes; zero when disabled.
     };
 
     // The step views, then the intents, then the checkpoint bytes: each
@@ -61,6 +62,9 @@ class DecisionBuffer {
     // and zeroes the rest of them, so nothing of an earlier decision is
     // left; state.size <= capacity <= checkpoint_max_bytes.
     uint8_t *load_checkpoint(ayni_bytes_v1 state, uint32_t capacity);
+    // Candidate staging is independent of the output checkpoint and zeroed after each decision.
+    uint8_t *memory_staging() { return memory_staging_; }
+    void scrub();
     // The first size <= checkpoint_max_bytes bytes of the buffer.
     ayni_bytes_v1 checkpoint(uint32_t size) const { return {checkpoint_, size}; }
 
@@ -69,6 +73,9 @@ class DecisionBuffer {
     ayni_policy_intent_v1 *intents_;
     uint8_t *checkpoint_;
     uint32_t intent_capacity_;
+    uint8_t *memory_staging_;   // Arena after checkpoint bytes, null only if memory disabled.
+    uint32_t checkpoint_bytes_; // Immutable full scratch span for erasure.
+    uint32_t memory_bytes_;     // Immutable candidate span, zero when disabled.
 };
 
 // Has the strategy of the task READY longest among those READY since before

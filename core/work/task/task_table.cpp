@@ -401,6 +401,10 @@ void TaskTable::set_checkpoint(uint32_t index, const catalog::CatalogId &writer_
         std::memcpy(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
                     state.data, state.size);
     }
+    // Replacing a shorter checkpoint must also discard the previous private tail (ADR-0060).
+    std::memset(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_ +
+                    state.size,
+                0, checkpoint_max_bytes_ - state.size);
     task.checkpoint_size = state.size;
     task.checkpoint_writer_id = writer_id;
     task.checkpoint_writer_version = writer_version;

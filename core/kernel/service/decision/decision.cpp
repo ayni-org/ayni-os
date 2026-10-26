@@ -2,6 +2,7 @@
 
 #include "catalog/catalog_id.h"
 #include "kernel/service/call/call_runtime.h"
+#include "kernel/service/memory/memory_decision.h"
 
 #include <array>
 #include <cstring>
@@ -87,7 +88,7 @@ static_assert(alignof(ayni_policy_intent_v1) <= alignof(ayni_task_step_v1),
 // leaves it READY, after committing its steps and private checkpoint either
 // way; or holds it with hold_status and hold_reason.
 struct Verdict {
-    enum class Kind { end, progress, hold, call };
+    enum class Kind { end, progress, hold, call, memory };
     Kind kind;
     work::TaskChange end;
     ayni_status_t hold_status;
@@ -101,7 +102,7 @@ Verdict hold(ayni_status_t status, ayni_reason_t reason) {
 bool is_implemented(ayni_policy_intent_kind_t kind) {
     return kind == AYNI_POLICY_REPORT_PROGRESS || kind == AYNI_POLICY_REPORT_COMPLETION ||
            kind == AYNI_POLICY_REPORT_FAILURE || kind == AYNI_POLICY_REQUEST_CALL ||
-           kind == AYNI_POLICY_REQUEST_MODEL;
+           kind == AYNI_POLICY_REQUEST_MODEL || kind == AYNI_POLICY_WRITE_MEMORY;
 }
 
 // A view of at most step_key_size bytes, so CatalogId::is_valid rejects a
@@ -167,11 +168,14 @@ Verdict judge_intents(const DecisionBuffer &decisions, uint32_t intent_count,
         if (intent.expected_revision != task.revision) {
             return hold(AYNI_REVISION_CONFLICT, AYNI_REASON_TASK_REVISION);
         }
-        if (intent.kind == AYNI_POLICY_REQUEST_CALL || intent.kind == AYNI_POLICY_REQUEST_MODEL) {
+        if (intent.kind == AYNI_POLICY_REQUEST_CALL || intent.kind == AYNI_POLICY_REQUEST_MODEL ||
+            intent.kind == AYNI_POLICY_WRITE_MEMORY) {
             if (intent_count != 1U || !catalog::CatalogId::is_valid(step_key_of(intent))) {
                 return hold(AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT);
             }
-            return {Verdict::Kind::call, work::TaskChange::complete, AYNI_OK, AYNI_REASON_NONE};
+            return {intent.kind == AYNI_POLICY_WRITE_MEMORY ? Verdict::Kind::memory
+                                                            : Verdict::Kind::call,
+                    work::TaskChange::complete, AYNI_OK, AYNI_REASON_NONE};
         }
         if (intent.kind == AYNI_POLICY_REPORT_PROGRESS) {
             const ayni_string_v1 key = step_key_of(intent);
@@ -240,7 +244,7 @@ void record(work::TaskTable &tasks, uint32_t task_index, const DecisionBuffer &d
             foundation::TransitionStamp stamp) {
     for (uint32_t index = 0; index < intent_count; ++index) {
         const ayni_policy_intent_v1 &intent = decisions.at(index);
-        if (intent.kind == AYNI_POLICY_REPORT_PROGRESS) {
+        if (intent.kind == AYNI_POLICY_REPORT_PROGRESS || intent.kind == AYNI_POLICY_WRITE_MEMORY) {
             // Cannot fail: judge_intents checked each step.
             static_cast<void>(tasks.add_step(task_index, step_key_of(intent), stamp));
         }
@@ -249,17 +253,46 @@ void record(work::TaskTable &tasks, uint32_t task_index, const DecisionBuffer &d
                          decisions.checkpoint(checkpoint_size), stamp);
 }
 
+// Check the one proposed side effect, then recheck the complete source union immediately
+// before publication. Export authorization may extend that union after the callback closes.
+Verdict judge_proposal(Verdict verdict, const DecisionBuffer &decisions, uint32_t index,
+                       uint64_t durable_seq, OwnerClock clock, CallRuntime &calls,
+                       MemoryDecision &memory) {
+    if (verdict.kind == Verdict::Kind::memory) {
+        const auto check = memory.check_proposal(decisions.at(0));
+        if (check != AYNI_OK) {
+            verdict = hold(check, AYNI_REASON_MEMORY_SOURCE);
+        }
+    }
+    if (verdict.kind == Verdict::Kind::call) {
+        const auto check = calls.check_proposal(index, decisions.at(0), clock.now_us(), durable_seq,
+                                                memory.dependencies());
+        if (check.status != AYNI_OK) {
+            verdict = hold(check.status, check.reason);
+        }
+    }
+    if (verdict.kind != Verdict::Kind::hold) {
+        if (const auto source = memory.validate(); source != AYNI_OK) {
+            verdict = hold(source, AYNI_REASON_MEMORY_SOURCE);
+        }
+    }
+    return verdict;
+}
+
 // Publish one already judged decision. Call acceptance is the same transition
 // as the strategy checkpoint, and any invariant failure is reported to Kernel.
 DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
                                 const catalog::Strategy &strategy,
                                 const ayni_policy_output_v1 &output, Verdict verdict,
-                                CallRuntime &calls, OwnerClock clock) {
+                                CallRuntime &calls, OwnerClock clock, MemoryDecision &memory) {
     work::WorkTables tables = model.tables();
     if (verdict.kind == Verdict::Kind::end && work::task_end_exhausts(tables, index, verdict.end)) {
         verdict = hold(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED);
     }
     const foundation::TransitionStamp stamp = model.transitions.next();
+    if (verdict.kind != Verdict::Kind::hold) {
+        memory.publish(stamp);
+    }
     switch (verdict.kind) {
     case Verdict::Kind::end:
         record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
@@ -278,6 +311,14 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
             return DecisionResult::internal;
         }
         break;
+    case Verdict::Kind::memory:
+        record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
+               stamp);
+        if (!memory.accept(stamp)) {
+            return DecisionResult::internal;
+        }
+        model.tasks.progress(index, stamp);
+        break;
     case Verdict::Kind::hold:
         if (verdict.hold_reason == AYNI_REASON_TASK_MODEL_CALL_LIMIT) {
             model.tasks.hold_model_calls(index, stamp);
@@ -293,14 +334,17 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
 
 std::size_t DecisionBuffer::storage_size(const Limits &limits) {
     return sizeof(ayni_task_step_v1) * limits.step_capacity +
-           sizeof(ayni_policy_intent_v1) * limits.intent_capacity + limits.checkpoint_max_bytes;
+           sizeof(ayni_policy_intent_v1) * limits.intent_capacity + limits.checkpoint_max_bytes +
+           limits.memory_body_bytes;
 }
 
 DecisionBuffer::DecisionBuffer(void *storage, const Limits &limits)
     : steps_(static_cast<ayni_task_step_v1 *>(storage)),
       intents_(reinterpret_cast<ayni_policy_intent_v1 *>(steps_ + limits.step_capacity)),
       checkpoint_(reinterpret_cast<uint8_t *>(intents_ + limits.intent_capacity)),
-      intent_capacity_(limits.intent_capacity) {
+      intent_capacity_(limits.intent_capacity),
+      memory_staging_(checkpoint_ + limits.checkpoint_max_bytes),
+      checkpoint_bytes_(limits.checkpoint_max_bytes), memory_bytes_(limits.memory_body_bytes) {
     for (uint32_t index = 0; index < limits.step_capacity; ++index) {
         new (steps_ + index) ayni_task_step_v1{};
     }
@@ -316,6 +360,9 @@ ayni_policy_intent_v1 *DecisionBuffer::clear(uint32_t count) {
     return intents_;
 }
 
+void DecisionBuffer::scrub() {
+    std::memset(checkpoint_, 0, checkpoint_bytes_ + memory_bytes_);
+}
 uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity) {
     if (state.size > 0U) {
         std::memcpy(checkpoint_, state.data, state.size);
@@ -348,7 +395,13 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
             .strategy_index;
     const catalog::Strategy &strategy = model.catalogs.strategies.at(strategy_index);
 
+    MemoryDecision memory(model, index, durable_seq, clock, decisions.memory_staging());
+    if (const auto source = memory.validate(); source != AYNI_OK) {
+        model.tasks.hold(index, source, AYNI_REASON_MEMORY_SOURCE, model.transitions.next());
+        return DecisionResult::applied;
+    }
     ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
+    snapshot.memory = model.memories.capacity() == 0 ? nullptr : memory.view();
     ayni_policy_output_v1 output{};
     output.struct_size = sizeof(output);
     output.intent_capacity = strategy.max_intents_per_call;
@@ -361,29 +414,34 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
         decisions.load_checkpoint(snapshot.checkpoint.state, strategy.max_checkpoint_bytes);
     // Nothing changes while the strategy runs (C-POLICY-001), so the task
     // it decides is still the one it saw.
-    calls.begin_decision(index, snapshot, output);
+    calls.begin_decision(index, snapshot, output, durable_seq);
     const ayni_status_t status =
         model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
     calls.end_decision();
+    memory.close();
 
     // A non-reentrant callback can still run past a Grant deadline. Discard all
     // returned progress/checkpoint output before committing if authority expired.
     if (model.check_task_authority(index, clock.now_us(), durable_seq).status != AYNI_OK) {
         model.pause_goal_authority(task.goal_index);
+        decisions.scrub();
+        calls.scrub_decision();
         return DecisionResult::applied;
     }
     Verdict verdict = judge_output(status, output.intent_count, output.checkpoint_size, strategy);
+    if (const auto source = memory.validate(); source != AYNI_OK) {
+        verdict = hold(source, source == AYNI_CAPACITY_EXCEEDED ? AYNI_REASON_MEMORY_DEPENDENCIES
+                                                                : AYNI_REASON_MEMORY_SOURCE);
+    }
     if (verdict.kind != Verdict::Kind::hold) {
         verdict = judge_intents(decisions, output.intent_count, model, index);
     }
-    if (verdict.kind == Verdict::Kind::call) {
-        const auto check =
-            calls.check_proposal(index, decisions.at(0), clock.now_us(), durable_seq);
-        if (check.status != AYNI_OK) {
-            verdict = hold(check.status, check.reason);
-        }
-    }
-    return publish_decision(model, decisions, index, strategy, output, verdict, calls, clock);
+    verdict = judge_proposal(verdict, decisions, index, durable_seq, clock, calls, memory);
+    const auto result =
+        publish_decision(model, decisions, index, strategy, output, verdict, calls, clock, memory);
+    decisions.scrub();
+    calls.scrub_decision();
+    return result;
 }
 
 bool awaits_decision(const WorkModel &model, uint64_t durable_seq) {

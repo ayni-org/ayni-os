@@ -69,6 +69,10 @@ ayni_status_t read_scene_change(const ayni_intent_v1 &raw, authority::SceneChang
 
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
+    case AYNI_INTENT_MEMORY_SAVE:
+    case AYNI_INTENT_MEMORY_CONFIRM:
+    case AYNI_INTENT_MEMORY_DELETE:
+        return decode_memory_command(raw, out_intent.memory);
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return read_scene_change(raw, out_intent.scene);
     case AYNI_INTENT_CALL_QUERY_RESULT:
@@ -144,6 +148,11 @@ ayni_status_t check_form(const Intent &intent) {
     // An exact command is recognised by its id, so it must have one.
     if (is_exact_command(intent.kind) && intent.command_id == 0U) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (is_memory_command(intent.kind)) {
+        uint32_t ignored = 0;
+        return intent.command_id == 0 ? AYNI_INVALID_ARGUMENT
+                                      : measure_memory_command(intent.memory, ignored);
     }
     if (intent.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
         return intent.scene.expected_revision != intent.expected_revision

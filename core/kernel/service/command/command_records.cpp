@@ -37,10 +37,14 @@ bool knows_command_record(uint16_t version) {
            version == work_authority_command_record_version ||
            version == task_limit_command_record_version ||
            version == call_query_command_record_version ||
-           version == resume_wait_command_record_version || version == scene_command_record_version;
+           version == resume_wait_command_record_version ||
+           version == scene_command_record_version || version == memory_command_record_version;
 }
 
 uint16_t command_record_version_for(const CommandMapping &mapping) {
+    if (is_memory_command(mapping.kind)) {
+        return memory_command_record_version;
+    }
     if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
         return scene_command_record_version;
     }
@@ -63,7 +67,9 @@ uint16_t command_record_version_for(const CommandMapping &mapping) {
 }
 
 uint32_t command_record_size_for(const CommandMapping &mapping) {
-    const uint32_t maximum = is_work_authority_command(mapping.kind)
+    const uint32_t maximum = is_memory_command(mapping.kind)
+                                 ? memory_command_max(knowledge::memory_body_max)
+                             : is_work_authority_command(mapping.kind)
                                  ? approval_command_max_bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX)
                                  : authority_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX);
     if (mapping.canonical_size > maximum) {
@@ -138,7 +144,8 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
         uint32_t canonical_size = 0;
         const uint8_t *bytes =
             reader.bytes(exact_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX,
-                                                 AYNI_GOAL_PARAMETER_MAX_BYTES_MAX),
+                                                 AYNI_GOAL_PARAMETER_MAX_BYTES_MAX, 0,
+                                                 knowledge::memory_body_max),
                          canonical_size);
         canonical = {bytes, canonical_size};
         mapping.canonical_size = canonical_size;
@@ -152,7 +159,9 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
         const auto expected_kind = version == revoke_command_record_version
                                        ? AYNI_INTENT_GRANT_REVOKE
                                        : AYNI_INTENT_GRANT_CREATE;
-        const bool right_kind = version == scene_command_record_version
+        const bool right_kind = version == memory_command_record_version
+                                    ? is_memory_command(mapping.kind)
+                                : version == scene_command_record_version
                                     ? mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED
                                 : version == resume_wait_command_record_version
                                     ? mapping.kind == AYNI_INTENT_TASK_RESUME_WAIT

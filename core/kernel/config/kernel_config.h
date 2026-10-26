@@ -47,7 +47,10 @@ struct KernelCapacities {
     uint32_t component_capacity = 0;         // Trusted parent links, disabled by default.
     uint32_t executor_capacity = 0;          // Local catalogs and permit ownership slots.
     uint32_t execution_binding_capacity = 0; // Static physical binding constraints.
-    uint32_t scene_capacity = 0; // Authority-owned declarations and durable owner preferences.
+    uint32_t scene_capacity = 0;  // Authority-owned declarations and durable owner preferences.
+    uint32_t memory_capacity = 0; // Whole-Kernel retained facts; zero disables.
+    uint32_t memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT; // Per-record UTF-8 stride.
+    uint32_t memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT; // Exact lineage.
     uint32_t observation_source_capacity = 0; // Static sources and current-boot samples.
 };
 
@@ -101,6 +104,8 @@ enum class Store : uint32_t {
     scenes,               // Scenes: declarations, saved preferences and canonical byte pools.
     observation_sources,  // ObservationSources: copied source descriptions.
     observations,         // ObservationTable: the current boot's latest sample per source.
+    memories,             // MemoryTable: owned facts and fixed UTF-8 bodies.
+    provenance,           // ProvenanceTable: exact Goal/Task content sources and erasure state.
     count,                // Not a store: the number of stores.
 };
 

@@ -449,6 +449,10 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
                       model_.goals.at(index_),
                       model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id))
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
+            : type == work::task_checkpoint_record_type &&
+                    model_.provenance.find(work::ProvenanceKind::task, model_.tasks.at(index_).slot,
+                                           model_.tasks.at(index_).task_id) != nullptr
+                ? work::task_checkpoint_provenance_version
             : type == work::task_state_record_type
                 ? work::task_state_version_for(model_.tasks.at(index_))
                 : snapshot_record_version;
@@ -559,7 +563,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     case work::task_steps_record_type:
         return task_steps(body, header.length);
     case work::task_checkpoint_record_type:
-        return task_checkpoint(body, header.length);
+        return task_checkpoint(header.version, body, header.length);
     case work::task_authority_record_type:
         return task_authority(body, header.length);
     case work::task_state_record_type:
@@ -708,7 +712,8 @@ durability::BatchCheck WorkSnapshotReader::task_steps(const uint8_t *body, uint3
                                              : work::TaskTable::Restore::corrupt);
 }
 
-durability::BatchCheck WorkSnapshotReader::task_checkpoint(const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::task_checkpoint(uint16_t version, const uint8_t *body,
+                                                           uint32_t size) {
     work::TaskCheckpointRecord record{};
     if (task_index_ == work::TaskTable::no_index || checkpoint_seen_ ||
         !work::read_task_checkpoint_record(body, size, record)) {
@@ -721,6 +726,10 @@ durability::BatchCheck WorkSnapshotReader::task_checkpoint(const uint8_t *body, 
     const auto restore =
         model_.tasks.restore_checkpoint(task_index_, record.writer_id, record.writer_version,
                                         record.state, {0, task.checkpoint_seq});
+    if (version == work::task_checkpoint_provenance_version &&
+        !model_.provenance.expect(work::ProvenanceKind::task, task.slot, task.task_id)) {
+        return durability::BatchCheck::no_room;
+    }
     checkpoint_seen_ = restore == work::TaskTable::Restore::restored;
     return snapshot_restore_check(restore);
 }

@@ -1,3 +1,4 @@
+#include "kernel/service/memory/memory_access.h"
 // C ABI entry points of the work model (ADR-0017): registration of
 // principals, agents, goal types and strategies, sessions, intents and their
 // queries.
@@ -595,6 +596,10 @@ ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t ta
     }
     if (task.commit_seq > kernel->durable_seq()) {
         return AYNI_BUSY;
+    }
+    if (!ayni::kernel::task_content_current(
+            {kernel->model(), kernel->now_us(), kernel->durable_seq()}, index)) {
+        return AYNI_EXPIRED;
     }
     const auto checkpoint = kernel->model().tasks.checkpoint(index);
     if (capacity < checkpoint.size) {

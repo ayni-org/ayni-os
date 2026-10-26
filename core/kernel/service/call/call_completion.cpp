@@ -1,6 +1,8 @@
 #include "foundation/attempt_identity.h"
 #include "kernel/service/call/call_runtime.h"
+#include "kernel/service/memory/memory_access.h"
 #include "work/call_propagation.h"
+#include <cstring>
 
 namespace ayni::kernel {
 namespace {
@@ -27,7 +29,7 @@ ayni_call_outcome_t outcome(ProviderMessageKind kind) {
 
 // Read never retires the delivery. Publication must succeed before acknowledge,
 // so journal backpressure cannot free a slot or lose a result body (C-CALL-012).
-CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
+CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
@@ -77,9 +79,18 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
         slots_[index].active->stage = Stage::waiting_stop;
         return control_.request_stop(call_id) ? Advance::applied : Advance::internal;
     }
+    // Source invalidation discards late plaintext while retaining the real physical outcome.
+    // Cancellation/UNKNOWN semantics remain owned by CallTable (ADR-0060).
+    if (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
+                              task_index)) {
+        std::memset(receipt_, 0, limits_.result_bytes);
+        message.payload = {};
+        message.body = work::CallResultKind::text;
+    }
     bool terminal = false;
     const auto applied =
         apply_receipt(index, task_index, message, work_.transitions.next(), terminal);
+    std::memset(receipt_, 0, limits_.result_bytes);
     if (applied != AYNI_OK ||
         mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
         return Advance::internal;

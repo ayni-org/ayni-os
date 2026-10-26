@@ -24,6 +24,8 @@ constexpr uint16_t call_query_command_record_version = 7;
 constexpr uint16_t resume_wait_command_record_version = 8;
 // Type9/v9 stores exact Scene commands and their changed/no-change effect.
 constexpr uint16_t scene_command_record_version = 9;
+// REQUIRED type9/v10 retains exact memory save/confirm/delete requests.
+constexpr uint16_t memory_command_record_version = 10;
 // records.md type 9/v2 adds canonical format and byte length (u32 each).
 constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
 constexpr uint16_t revoke_command_record_version = 3;

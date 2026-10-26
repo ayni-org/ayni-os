@@ -9,6 +9,7 @@
 #include <ayni/calls.h>
 #include <ayni/control.h>
 #include <ayni/execution.h>
+#include <ayni/memory.h>
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 #include <ayni/storage_format.h>
@@ -54,7 +55,7 @@ AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
 AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
 AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 168);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 180);
 
 AYNI_LAYOUT(config_device_capacity, offsetof(ayni_config_v1, device_capacity) == 144);
 AYNI_LAYOUT(config_component_capacity, offsetof(ayni_config_v1, component_capacity) == 148);
@@ -351,7 +352,7 @@ AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_call_tool, offsetof(ayni_task_snapshot_v1, call_tool) == 80 + 11 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(80 + 12 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(80 + 13 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -849,3 +850,14 @@ AYNI_LAYOUT(executor_response_size, sizeof(ayni_executor_response_v1) == 96);
 AYNI_LAYOUT(executor_response_request, offsetof(ayni_executor_response_v1, request) == 8);
 AYNI_LAYOUT(executor_response_status, offsetof(ayni_executor_response_v1, status) == 24);
 AYNI_LAYOUT(executor_response_output, offsetof(ayni_executor_response_v1, output) == 32);
+/* C-MEM-001: explicit copied body views and bounded policy lease, ABI 0.40. */
+AYNI_LAYOUT(memory_save_size, sizeof(ayni_memory_save_v1) == AYNI_ROUND8(40 + 4 * AYNI_PTR));
+AYNI_LAYOUT(memory_save_body, offsetof(ayni_memory_save_v1, body) == 32);
+AYNI_LAYOUT(memory_target_size, sizeof(ayni_memory_target_v1) == 16);
+AYNI_LAYOUT(memory_info_size, sizeof(ayni_memory_info_v1) == 72);
+AYNI_LAYOUT(memory_info_source_call, offsetof(ayni_memory_info_v1, source_call_id) == 56);
+AYNI_LAYOUT(memory_search_size, sizeof(ayni_memory_search_v1) == AYNI_ROUND8(24 + 4 * AYNI_PTR));
+AYNI_LAYOUT(memory_proposal_size,
+            sizeof(ayni_memory_proposal_v1) == AYNI_ROUND8(40 + 6 * AYNI_PTR));
+AYNI_LAYOUT(memory_proposal_step, offsetof(ayni_memory_proposal_v1, step_key) == 32);
+AYNI_LAYOUT(memory_view_size, sizeof(ayni_memory_view_v1) == 4 * AYNI_PTR);

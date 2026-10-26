@@ -38,6 +38,9 @@ inline ayni_config_v1 default_config() {
     config.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
     config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
     config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
+    config.memory_capacity = AYNI_MEMORY_CAPACITY_DEFAULT;
+    config.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;
+    config.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT;
     // Each field not set here is a store that stays off at 0, or a limit
     // whose 0 takes its default.
     return config;

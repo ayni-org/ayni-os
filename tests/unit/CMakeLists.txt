@@ -1,6 +1,8 @@
 include(GoogleTest)
 
 add_executable(ayni_unit_tests
+    kernel_memory_test.cpp
+    memory_table_test.cpp
     observation_test.cpp
     scene_test.cpp
     managed_execution_test.cpp

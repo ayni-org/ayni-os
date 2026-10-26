@@ -1,4 +1,5 @@
 #include "kernel/service/call/call_runtime.h"
+#include "kernel/service/memory/memory_permissions.h"
 #include "work/call_propagation.h"
 
 #include "foundation/deadline.h"
@@ -158,6 +159,10 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         return Advance::attempt_exhausted;
     case PermitIssue::defect:
         return Advance::internal;
+    }
+    if (!task_export_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index,
+                             catalogs_.bindings.at(binding_index))) {
+        return cancel_local(index, task_index);
     }
     if (!work_.calls.claim_dispatch(index, work_.ids.boot_epoch(), durable_seq)) {
         return Advance::internal;

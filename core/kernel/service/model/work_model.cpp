@@ -2,6 +2,17 @@
 
 namespace ayni::kernel {
 
+// C-AUTH-019/024/032: both authority commands require the current durable owner
+// binding and an authenticated management channel, independent of the payload.
+bool bound_management_session(const WorkModel &model, const authority::Session &session,
+                              uint64_t durable_seq) {
+    const auto *binding = model.principals.binding();
+    return session.channel == AYNI_CHANNEL_MANAGEMENT && binding != nullptr &&
+           binding->principal_id == session.principal_id &&
+           binding->binding_revision == session.binding_revision &&
+           binding->stamp.commit_seq <= durable_seq;
+}
+
 bool WorkModel::retains_task(const void *context, const work::Task &task) {
     const auto &model = *static_cast<const WorkModel *>(context);
     // Known terminal facts are encoded before a later replacement transition.
@@ -109,6 +120,7 @@ authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t d
             }
         }
     }
+    protect_content_grants(excluded);
     return excluded;
 }
 
@@ -132,13 +144,15 @@ bool WorkModel::insert_goal(const work::NewGoal &goal, uint64_t goal_id,
     const auto replacing = goals.giving_way();
     if (replacing != work::GoalTable::no_index) {
         // All creation admission has passed; terminal Tasks leave with this exact Goal.
-        clear_goal_task_authority(replacing, stamp.commit_seq);
+        retire_goal_task_metadata(replacing, stamp.commit_seq);
     }
     auto work = tables();
     if (!work::insert_goal(work, goal, goal_id, stamp, out_index)) {
         return false;
     }
     clear_goal_authority(out_index, goals.at(out_index).replaced_goal_id, stamp.commit_seq);
+    clear_content_provenance(work::ProvenanceKind::goal, out_index,
+                             goals.at(out_index).replaced_goal_id, stamp.commit_seq);
     return true;
 }
 
@@ -253,7 +267,7 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
         static_cast<void>(model.ids.allocate(task_id)); // find_due_work saw one left
         const auto stamp = model.transitions.next();
         work::derive(tables, work.goal_index, now_us, task_id, stamp);
-        if (!model.inherit_task_authority(task_id, stamp)) {
+        if (!model.inherit_task_metadata(task_id, stamp)) {
             return DueWorkResult::internal;
         }
         return DueWorkResult::applied;

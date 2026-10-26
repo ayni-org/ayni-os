@@ -25,9 +25,14 @@ constexpr uint64_t id_boot_epoch(uint64_t id) {
     return id >> kernel_id_epoch_shift;
 }
 
+// Decode the per-boot sequence through the same ID layout owner.
+constexpr uint32_t id_sequence(uint64_t id) {
+    return static_cast<uint32_t>(id);
+}
+
 // Shape only: existence, owner and the permitted boot bound are caller rules.
 constexpr bool is_kernel_id(uint64_t id) {
-    return id_boot_epoch(id) != 0U && static_cast<uint32_t>(id) != 0U;
+    return id_boot_epoch(id) != 0U && id_sequence(id) != 0U;
 }
 
 // Owns this boot's sequence; the caller supplies the already durable epoch.

@@ -60,7 +60,18 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
             config.call_input_max_bytes == 0U ? AYNI_CALL_INPUT_BYTES_DEFAULT
                                               : config.call_input_max_bytes,
             config.call_result_max_bytes == 0U ? AYNI_CALL_RESULT_BYTES_DEFAULT
-                                               : config.call_result_max_bytes};
+                                               : config.call_result_max_bytes,
+            config.device_capacity,
+            config.component_capacity,
+            config.executor_capacity,
+            config.execution_binding_capacity,
+            config.scene_capacity,
+            config.memory_capacity,
+            config.memory_body_max_bytes == 0 ? AYNI_MEMORY_BODY_BYTES_DEFAULT
+                                              : config.memory_body_max_bytes,
+            config.memory_dependency_capacity == 0 ? AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT
+                                                   : config.memory_dependency_capacity,
+            config.observation_source_capacity};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's

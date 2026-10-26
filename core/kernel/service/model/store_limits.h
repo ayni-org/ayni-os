@@ -16,12 +16,24 @@
 #include "kernel/config/kernel_config.h"
 #include "kernel/service/command/command_canonical.h"
 #include "kernel/service/command/command_table.h"
+#include "knowledge/memory/memory_table.h"
 #include "work/call/call_table.h"
 #include "work/goal/goal_authority.h"
+#include "work/provenance/provenance_table.h"
 #include "work/task/task_authority.h"
 #include "work/task/task_table.h"
 
 namespace ayni::kernel {
+
+// Same validated memory bounds drive arena placement, facts and record budgets.
+// Work provenance is required only when memory/context capabilities are enabled.
+inline work::ProvenanceTable::Limits provenance_limits(const KernelCapacities &c) {
+    return c.memory_capacity == 0 ? work::ProvenanceTable::Limits{0, 0}
+                                  : work::ProvenanceTable::Limits{c.goal_capacity, c.task_capacity};
+}
+inline knowledge::MemoryLimits memory_limits(const KernelCapacities &c) {
+    return {c.memory_capacity, c.memory_body_max_bytes, c.memory_dependency_capacity};
+}
 
 inline work::TaskTable::Limits task_limits(const KernelCapacities &capacities) {
     return {capacities.task_capacity, capacities.task_step_capacity,
@@ -33,9 +45,10 @@ inline work::TaskTable::Limits task_limits(const KernelCapacities &capacities) {
 // Grant may have one pending revocation (ADR-0031).
 inline CommandTable::Limits command_limits(const KernelCapacities &capacities) {
     return {authority::PrincipalRegistry::capacity, capacities.command_capacity,
-            exact_command_max_bytes(capacities.authority_scope_max_bytes,
-                                    capacities.goal_parameter_max_bytes,
-                                    capacities.goal_requirement_capacity),
+            exact_command_max_bytes(
+                capacities.authority_scope_max_bytes, capacities.goal_parameter_max_bytes,
+                capacities.goal_requirement_capacity,
+                capacities.memory_capacity == 0 ? 0 : capacities.memory_body_max_bytes),
             capacities.grant_capacity};
 }
 

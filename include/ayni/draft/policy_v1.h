@@ -26,7 +26,6 @@ extern "C" {
  * identity, binding, input digest, result reference and unknown state are
  * appended to ayni_task_step_v1 (C-CALL-004, C-ID-003). */
 #define AYNI_POLICY_PROPOSE_GOAL ((ayni_policy_intent_kind_t)1)
-#define AYNI_POLICY_WRITE_MEMORY ((ayni_policy_intent_kind_t)7)
 
 /*
  * The goal type fields still planned (max_wait_ms before defer, expire or

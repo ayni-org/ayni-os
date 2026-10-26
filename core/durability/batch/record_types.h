@@ -32,6 +32,8 @@ constexpr uint16_t task_authority = 18;            // work/task
 constexpr uint16_t authority_cleanup = 19;         // work/authority
 constexpr uint16_t action_state = 20;              // work/action
 constexpr uint16_t call = 21;                      // work/call
+constexpr uint16_t provenance = 24;                // work/provenance
+constexpr uint16_t memory = 23;                    // knowledge/memory
 constexpr uint16_t scene = 22;                     // authority/scene
 
 constexpr uint16_t all[] = {
@@ -57,6 +59,8 @@ constexpr uint16_t all[] = {
     action_state,
     call,
     scene,
+    memory,
+    provenance,
 };
 
 constexpr bool all_distinct() {

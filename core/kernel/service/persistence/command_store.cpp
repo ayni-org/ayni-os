@@ -211,6 +211,10 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
         !matches_task_limit_command(model, metadata, mapping, canonical)) {
         return durability::BatchCheck::corrupt;
     }
+    if (is_memory_command(mapping.kind) &&
+        !WorkReplay(model).matches_memory_command(mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED &&
         !WorkReplay(model).matches_scene_command(mapping, canonical)) {
         return durability::BatchCheck::corrupt;
