@@ -1,3 +1,4 @@
+#include "kernel/service/memory/memory_access.h"
 // C ABI entry points of the work model (ADR-0017): registration of
 // principals, agents, goal types and strategies, sessions, intents and their
 // queries.
@@ -363,7 +364,10 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     if (goal_type->version == 0U || !type.id.assign(goal_type->goal_type_id) ||
         goal_type->trigger_kinds == 0U ||
         (goal_type->trigger_kinds & ~GoalTypeRegistry::defined_trigger_kinds) != 0U ||
-        goal_type->reserved != 0U ||
+        goal_type->reserved != 0U || goal_type->context_reserved != 0 ||
+        goal_type->context_mode > AYNI_GOAL_CONTEXT_AGENT ||
+        (goal_type->context_mode == AYNI_GOAL_CONTEXT_AGENT &&
+         goal_type->trigger_kinds != AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE)) ||
         !ayni::catalog::WorkProfile::decode(goal_type->work_profile, type.work_profile) ||
         !type.work_profile.accepts_occurrence_wait(goal_type->occurrence_wait_max_us) ||
         (type.work_profile.kind == AYNI_WORK_BACKGROUND &&
@@ -378,6 +382,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
         return gated;
     }
     type.version = goal_type->version;
+    type.context_mode = static_cast<ayni::catalog::GoalContext>(goal_type->context_mode);
     type.ctx = goal_type->ctx;
     type.validate = goal_type->validate;
     type.export_requirements = goal_type->export_requirements;
@@ -581,7 +586,7 @@ ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t ta
     if (kernel == nullptr || out_size == nullptr || (capacity != 0U && buffer == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::content_query);
         gated != AYNI_OK) {
         return gated;
     }
@@ -595,6 +600,10 @@ ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t ta
     }
     if (task.commit_seq > kernel->durable_seq()) {
         return AYNI_BUSY;
+    }
+    if (!ayni::kernel::task_content_current(
+            {kernel->model(), kernel->now_us(), kernel->durable_seq()}, index)) {
+        return AYNI_EXPIRED;
     }
     const auto checkpoint = kernel->model().tasks.checkpoint(index);
     if (capacity < checkpoint.size) {
@@ -691,7 +700,7 @@ ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goa
     if (kernel == nullptr || out_size == nullptr || (buffer == nullptr && capacity != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::query);
+    if (const auto gated = ayni::kernel::admit(*kernel, ayni::kernel::gate::content_query);
         gated != AYNI_OK) {
         return gated;
     }
@@ -699,7 +708,16 @@ ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goa
     if (!kernel->model().goals.find(goal_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto parameters = kernel->model().goals.parameters(index);
+    const auto &model = kernel->model();
+    const auto *sources = model.provenance.find(ayni::work::ProvenanceKind::goal, index, goal_id);
+    if (sources != nullptr && model.goals.at(index).created.commit_seq > kernel->durable_seq()) {
+        return AYNI_BUSY;
+    }
+    if (!ayni::kernel::goal_content_current({model, kernel->now_us(), kernel->durable_seq()},
+                                            index)) {
+        return AYNI_EXPIRED;
+    }
+    const auto parameters = model.goals.parameters(index);
     if (capacity < parameters.size) {
         *out_size = parameters.size;
         return AYNI_BUFFER_TOO_SMALL;

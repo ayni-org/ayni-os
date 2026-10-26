@@ -297,6 +297,8 @@ class TaskTable {
     bool has_step(uint32_t index, ayni_string_v1 key) const;
     // Valid until the task's next change.
     ayni_bytes_v1 checkpoint(uint32_t index) const;
+    // Erase bytes under a separate provenance privacy stamp; keep the true workflow/writer facts.
+    void erase_checkpoint(uint32_t index);
 
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);

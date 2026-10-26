@@ -21,6 +21,8 @@ namespace ayni::work {
 
 constexpr uint16_t task_record_type = durability::record_type::task;
 constexpr uint16_t task_record_version = 1;
+// Snapshot Task explicitly requires a source footer, even before its first checkpoint.
+constexpr uint16_t task_provenance_snapshot_version = 2;
 constexpr uint16_t task_state_record_type = durability::record_type::task_state;
 constexpr uint16_t task_state_record_version = 1;
 // Same state body, but REQUIRED adjacent Task authority must follow (ADR-0038).
@@ -43,6 +45,8 @@ constexpr uint16_t task_steps_record_type = durability::record_type::task_steps;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = durability::record_type::task_checkpoint;
 constexpr uint16_t task_checkpoint_record_version = 1;
+// Same checkpoint body with REQUIRED paired content provenance (type 24, ADR-0060).
+constexpr uint16_t task_checkpoint_provenance_version = 2;
 // TASK and snapshot TASK layouts: contracts/storage/records.md.
 constexpr uint32_t task_record_size = 40;
 // created_transition_id, last commit_seq, steps_seq, checkpoint_seq, steps_before.

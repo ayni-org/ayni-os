@@ -4,6 +4,7 @@
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/service/command/command_records.h"
+#include "kernel/service/memory/memory_permissions.h"
 #include "kernel/service/model/store_limits.h"
 #include "kernel/service/persistence/persistent_store.h"
 #include "kernel/service/persistence/work_replay.h"
@@ -12,17 +13,20 @@ namespace {
 const StoreKind kinds[] = {{command_record_type, exact_command_record_version}};
 // records.md COMMAND_MAPPING snapshot suffix: original commit_seq, little endian.
 constexpr uint32_t command_tail_size = sizeof(uint64_t);
-bool knows(uint16_t, uint16_t version, WorkRecordContext) {
-    return knows_command_record(version);
+bool knows(uint16_t, uint16_t version, WorkRecordContext context) {
+    return knows_command_record(version) &&
+           (version != expired_command_record_version || context == WorkRecordContext::snapshot);
 }
 uint32_t capacity(const KernelCapacities &c) {
     return authority::PrincipalRegistry::capacity * c.command_capacity;
 }
 uint32_t record_max(const KernelCapacities &c) {
-    return command_record_max(command_limits(c).canonical_max_bytes) + command_tail_size;
+    return command_record_max(command_limits(c).canonical_max_bytes, c.memory_dependency_capacity) +
+           command_tail_size;
 }
 uint32_t journal_max(const KernelCapacities &capacities) {
-    return record_bytes(command_record_max(command_limits(capacities).canonical_max_bytes));
+    return record_bytes(command_record_max(command_limits(capacities).canonical_max_bytes,
+                                           capacities.memory_dependency_capacity));
 }
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
@@ -158,6 +162,51 @@ bool matches_target_command(const WorkModel &model, const durability::SnapshotMe
            task.hold_reason == AYNI_REASON_NONE && model.calls.find(task.call.id, call_index) &&
            model.calls.state(call_index).created.transition.commit_seq < mapping.commit_seq;
 }
+// Retired Grants leave exact receipts intact; retained Grants must still prove their first result.
+bool matches_grant_command(const WorkModel &model, const durability::SnapshotMetadata &metadata,
+                           const CommandMapping &mapping, ayni_bytes_v1 canonical) {
+    if (mapping.kind == AYNI_INTENT_GRANT_CREATE || mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
+        const auto *binding = model.principals.binding();
+        if (binding == nullptr || mapping.principal_id != binding->principal_id ||
+            mapping.commit_seq <= binding->stamp.commit_seq ||
+            !foundation::is_kernel_id(mapping.object.id) ||
+            foundation::id_boot_epoch(mapping.object.id) > metadata.boot_epoch) {
+            return false;
+        }
+        uint32_t index = 0;
+        if (model.grants.find(mapping.object.id, index)) {
+            const auto &retained = model.grants.at(index);
+            const bool matches =
+                mapping.kind == AYNI_INTENT_GRANT_CREATE
+                    ? WorkReplay::matches_grant_creation(mapping, canonical, retained,
+                                                         model.grants.source_domain(index),
+                                                         model.grants.scope(index))
+                    : matches_retained_revocation(mapping, retained);
+            if (!matches) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+// A destroyed canonical request cannot be re-proven, so the explicit expiry format requires
+// a later durable privacy fact and the same historical management owner.
+durability::BatchCheck restore_expired(WorkModel &model,
+                                       const durability::SnapshotMetadata &metadata,
+                                       const CommandMapping &mapping, uint64_t floor) {
+    // Canonical proof has deliberately been destroyed. Only an authenticated historical
+    // owner identity covered by a later retained privacy pass may use this explicit format.
+    const auto *owner = model.principals.binding();
+    if (owner == nullptr || owner->principal_id != mapping.principal_id ||
+        mapping.commit_seq <= owner->stamp.commit_seq ||
+        mapping.commit_seq >= model.privacy.record().stamp.commit_seq ||
+        !foundation::is_kernel_id(mapping.object.id) ||
+        foundation::id_boot_epoch(mapping.object.id) > metadata.boot_epoch) {
+        return durability::BatchCheck::corrupt;
+    }
+    model.release_command_sources(mapping.principal_id, mapping.commit_seq);
+    return snapshot_restore_check(model.commands.restore_checked(mapping, floor));
+}
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
                                      uint16_t version, const uint8_t *body, uint32_t size) {
     CommandMapping mapping{};
@@ -174,27 +223,17 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
         mapping.commit_seq > metadata.covers_commit_seq) {
         return durability::BatchCheck::corrupt;
     }
-    if (mapping.kind == AYNI_INTENT_GRANT_CREATE || mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
-        const auto *binding = model.principals.binding();
-        if (binding == nullptr || mapping.principal_id != binding->principal_id ||
-            mapping.commit_seq <= binding->stamp.commit_seq ||
-            !foundation::is_kernel_id(mapping.object.id) ||
-            foundation::id_boot_epoch(mapping.object.id) > metadata.boot_epoch) {
-            return durability::BatchCheck::corrupt;
-        }
-        uint32_t index = 0;
-        if (model.grants.find(mapping.object.id, index)) {
-            const auto &retained = model.grants.at(index);
-            const bool matches =
-                mapping.kind == AYNI_INTENT_GRANT_CREATE
-                    ? WorkReplay::matches_grant_creation(mapping, canonical, retained,
-                                                         model.grants.source_domain(index),
-                                                         model.grants.scope(index))
-                    : matches_retained_revocation(mapping, retained);
-            if (!matches) {
-                return durability::BatchCheck::corrupt;
-            }
-        }
+    if (!WorkReplay(model).matches_command_sources(mapping, metadata.boot_epoch)) {
+        return durability::BatchCheck::corrupt;
+    }
+    if (mapping.sources.count > model.memories.limits().dependencies) {
+        return durability::BatchCheck::no_room;
+    }
+    if (mapping.privacy_expired) {
+        return restore_expired(model, metadata, mapping, floor);
+    }
+    if (!matches_grant_command(model, metadata, mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
     }
     if (is_work_authority_command(mapping.kind) &&
         (foundation::id_boot_epoch(mapping.object.id) > metadata.boot_epoch ||
@@ -211,6 +250,14 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
         !matches_task_limit_command(model, metadata, mapping, canonical)) {
         return durability::BatchCheck::corrupt;
     }
+    if (is_memory_command(mapping.kind) &&
+        !WorkReplay(model).matches_memory_command(mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
+    }
+    if (is_context_command(mapping.kind) &&
+        !WorkReplay(model).matches_context_command(mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED &&
         !WorkReplay(model).matches_scene_command(mapping, canonical)) {
         return durability::BatchCheck::corrupt;
@@ -218,6 +265,7 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
     if (is_target_command(mapping.kind) && !matches_target_command(model, metadata, mapping)) {
         return durability::BatchCheck::corrupt;
     }
+    model.release_command_sources(mapping.principal_id, mapping.commit_seq);
     return snapshot_restore_check(
         model.commands.restore_checked(mapping, floor, canonical, result_bytes));
 }
@@ -236,4 +284,11 @@ const PersistentStore command_store{command_record_type,
                                     snapshot_write,
                                     snapshot_advance,
                                     snapshot_read};
+// Complete source closure is stored with the receipt because its original Goal may give way.
+// Live permission is intentionally not required to restore historical content pending cleanup.
+bool WorkReplay::matches_command_sources(const CommandMapping &mapping,
+                                         uint64_t boot_epoch_limit) const {
+    return valid_command_sources(mapping) &&
+           memory_dependencies_history(model_, mapping.sources, boot_epoch_limit);
+}
 } // namespace ayni::kernel

@@ -97,6 +97,30 @@ bool action_matches(const CallRecord &record) {
     return has_attempt || (action.phase == ActionPhase::cancelled &&
                            action.evidence == ActionEvidence::local_non_delivery);
 }
+// An explicit privacy record removes input validation material; it must contain no body and
+// retains only independently valid schema/execution facts. Old readers refuse this record version.
+bool valid_content(const CallRecord &record, CallInputView &input) {
+    if (!record.state.content_erased) {
+        return read_call_input(record.domain, record.input, record.contract.input_text_limit,
+                               input) == AYNI_OK;
+    }
+    const auto &erased = *record.state.content_erased;
+    if (record.input.size != 0 || record.result.size != 0 ||
+        record.result_kind != CallResultKind::text || !at_or_before(record.state.created, erased) ||
+        same_stamp(record.state.created, erased) ||
+        erased.boot_epoch > foundation::max_boot_epoch) {
+        return false;
+    }
+    catalog::DomainReader reader(record.domain);
+    catalog::DomainField field{};
+    while (reader.next(field)) {
+    }
+    return reader.ok();
+}
+bool same_erasure(const CallState &before, const CallState &after) {
+    return before.content_erased.has_value() == after.content_erased.has_value() &&
+           (!before.content_erased || same_stamp(*before.content_erased, *after.content_erased));
+}
 } // namespace
 
 // Decode and live admission share the canonical input validator and contract
@@ -112,8 +136,7 @@ bool CallTable::valid_record(const CallRecord &record) {
             (record.identity.destination.size() != 0U) ||
         catalog::normalize_call_contract(record.contract, normalized) != AYNI_OK ||
         !catalog::same_call_contract(record.contract, normalized) ||
-        read_call_input(record.domain, record.input, record.contract.input_text_limit, input) !=
-            AYNI_OK ||
+        !valid_content(record, input) ||
         check_body(record.contract, record.result, record.result_kind) != AYNI_OK ||
         (record.result_kind == CallResultKind::tool_calls &&
          state.outcome != AYNI_CALL_COMPLETED) ||
@@ -135,7 +158,8 @@ bool CallTable::valid_record(const CallRecord &record) {
     // Neither replay nor a new catalog may infer a fresh execution generation.
     if (state.execution) {
         const auto &execution = *state.execution;
-        if (!valid_execution(execution, input.arguments) ||
+        if (!(state.content_erased ? valid_execution_metadata(execution)
+                                   : valid_execution(execution, input.arguments)) ||
             execution.epochs.kernel_boot_epoch != state.created.boot_epoch ||
             execution.scene_seq >= state.created.transition.commit_seq ||
             !execution.binding.binding.equals(
@@ -164,11 +188,18 @@ CallRecord CallTable::record(uint32_t index) const {
 void CallTable::copy_bodies(uint32_t index, ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
                             ayni_string_v1 result_body) {
     std::memcpy(bytes(index), domain_body.data, domain_body.size);
-    std::memcpy(bytes(index) + limits_.domain_bytes, input_body.data, input_body.size);
+    std::memset(bytes(index) + domain_body.size, 0, limits_.domain_bytes - domain_body.size);
+    if (input_body.size != 0) {
+        std::memcpy(bytes(index) + limits_.domain_bytes, input_body.data, input_body.size);
+    }
+    std::memset(bytes(index) + limits_.domain_bytes + input_body.size, 0,
+                limits_.input_bytes - input_body.size);
     if (result_body.size != 0U) {
         std::memcpy(bytes(index) + limits_.domain_bytes + limits_.input_bytes, result_body.data,
                     result_body.size);
     }
+    std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes + result_body.size, 0,
+                limits_.result_bytes - result_body.size);
 }
 
 // Replay can replace state only for the same immutable operation and request.
@@ -181,8 +212,8 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
     }
     uint32_t index = 0;
     if (!find(record.identity.call_id, index)) {
-        const auto status = insert(record.identity, record.contract, record.domain, record.input,
-                                   record.state.created, index);
+        const auto status = place_new(record.identity, record.contract, record.domain, record.input,
+                                      record.state.created, index);
         if (status != AYNI_OK) {
             return status;
         }
@@ -193,8 +224,9 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
         if (!same_identity(entry.identity, record.identity) ||
             !catalog::same_call_contract(entry.contract, record.contract) ||
             !same_bytes(domain(index), record.domain) || !same_bytes(input(index), record.input) ||
-            !same_stamp(before.created, after.created) || !advances(entry, after.latest) ||
-            (before.outcome != 0U && !unresolved(index)) || !query_advances(before, after) ||
+            !same_stamp(before.created, after.created) || !same_erasure(before, after) ||
+            !advances(entry, after.latest) || (before.outcome != 0U && !unresolved(index)) ||
+            !query_advances(before, after) ||
             !execution_advances(before.execution, after.execution) ||
             after.progress_sequence < before.progress_sequence ||
             (before.attempt.request_id != 0U &&
@@ -221,6 +253,8 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
         std::memcpy(bytes(index) + limits_.domain_bytes + limits_.input_bytes, record.result.data,
                     record.result.size);
     }
+    std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes + record.result.size, 0,
+                limits_.result_bytes - record.result.size);
     return AYNI_OK;
 }
 

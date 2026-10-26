@@ -10,6 +10,8 @@ namespace ayni::strategies {
 inline constexpr uint32_t rule_count_max = 8;
 inline constexpr uint32_t rule_steps_max = 16;
 inline constexpr uint32_t recent_rounds_max = 3;
+inline constexpr uint32_t retained_rounds_max =
+    recent_rounds_max + 1; // Superseded user publication.
 inline constexpr uint32_t turn_text_max = 384;
 inline constexpr uint32_t summary_text_max = 512;
 inline constexpr uint32_t state_bytes_max = 4096;
@@ -44,21 +46,31 @@ struct ConversationRecord {
     uint64_t summary_first = 0;
     uint64_t summary_last = 0;
     Text<summary_text_max> summary;
+    // Independent accepted input survives invalidation before publication.
+    Text<turn_text_max> draft;
     uint32_t round_count = 0;
-    std::array<Round, recent_rounds_max> rounds{};
+    std::array<Round, retained_rounds_max> rounds{};
 };
 
 // An outer store persists the candidate *before* accepting it. begin/finish are
 // pure: failure leaves the old record intact. erase increments generation so
 // a late completed Task cannot resurrect deleted context. File storage is P2;
-// physical erasure of Kernel journal history belongs to P3, not this value API.
+// Kernel context intents own the cross-store deletion barrier (ADR-0060).
 class Conversation {
   public:
     static ayni_status_t begin(const ConversationRecord &record, ayni_string_v1 user,
-                               Encoded &parameters);
+                               Encoded &parameters, uint64_t memory_id = 0);
+    // Extract independent user input from a validated turn, without exposing the wire layout.
+    static ayni_status_t input(ayni_bytes_v1 parameters, Text<turn_text_max> &out);
     static ayni_status_t finish(const ConversationRecord &current, ayni_bytes_v1 checkpoint,
                                 ConversationRecord &candidate);
+    // Preserve a superseded publication under its original turn identity, without its answer.
+    static ayni_status_t retain_published_input(const ConversationRecord &, uint64_t,
+                                                ConversationRecord &);
     static ayni_status_t erase(const ConversationRecord &current, ConversationRecord &candidate);
+    // Single/historical turn deletion clears generated text and preserves other retained users.
+    static ayni_status_t erase_round(const ConversationRecord &, uint64_t, ConversationRecord &);
+    static ayni_status_t erase_derived(const ConversationRecord &, ConversationRecord &);
     static ayni_status_t encode(const ConversationRecord &record, Encoded &out);
     static ayni_status_t decode(ayni_bytes_v1 bytes, ConversationRecord &out);
     static ayni_status_t validate_turn(void *, ayni_bytes_v1 parameters);

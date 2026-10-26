@@ -102,7 +102,8 @@
         "ports",
         "service/model",
         "service/intent",
-        "service/persistence"
+        "service/persistence",
+        "service/memory"
       ],
       "runtime": [
         "runtime/boot",
@@ -112,6 +113,7 @@
         "service/call",
         "service/decision",
         "service/model",
+        "service/memory",
         "service/intent",
         "service/persistence",
         "config",
@@ -142,17 +144,20 @@
       "service/intent": [
         "service/model",
         "service/command",
-        "config"
+        "config",
+        "service/memory"
       ],
       "service/call": [
         "ports",
         "config",
         "service/execution",
-        "service/model"
+        "service/model",
+        "service/memory"
       ],
       "service/decision": [
         "service/call",
-        "service/model"
+        "service/model",
+        "service/memory"
       ],
       "service/execution": [
         "ports",
@@ -161,15 +166,24 @@
       "service/persistence": [
         "service/command",
         "config",
-        "service/model"
+        "service/model",
+        "service/memory"
       ],
       "service/command": [],
       "ports": [],
-      "config": []
+      "config": [],
+      "service/memory": [
+        "service/model"
+      ]
     },
     "durability": {
       "snapshot": [
         "batch"
+      ]
+    },
+    "knowledge": {
+      "context": [
+        "memory"
       ]
     }
   },

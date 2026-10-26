@@ -5,6 +5,7 @@
 #include "kernel/service/call/call_runtime.h"
 
 #include "authority/scope/scope.h"
+#include "kernel/service/memory/memory_access.h"
 #include "work/call/tool_calls.h"
 
 #include <cstring>
@@ -232,6 +233,11 @@ ayni_status_t CallRuntime::read_tool_call(const void *context, ayni_string_v1 st
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.decision_ || !runtime.work_.calling_out()) {
         return AYNI_INVALID_STATE;
+    }
+    if (!task_content_current({runtime.work_, runtime.host_.monotonic_now_us(runtime.host_.ctx),
+                               runtime.decision_->durable_seq},
+                              runtime.decision_->task_index)) {
+        return AYNI_EXPIRED;
     }
     const auto &task = runtime.work_.tasks.at(runtime.decision_->task_index);
     uint32_t call_index = 0;

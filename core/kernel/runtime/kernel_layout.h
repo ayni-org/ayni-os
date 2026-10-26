@@ -49,7 +49,8 @@ KernelStorage storage_at(void *memory, const KernelLayout &layout);
 // config/store_limits.h does for the work model's stores.
 inline DecisionBuffer::Limits decision_limits(const KernelCapacities &capacities) {
     return {capacities.policy_intent_capacity, capacities.task_step_capacity,
-            capacities.task_checkpoint_max_bytes};
+            capacities.task_checkpoint_max_bytes,
+            capacities.memory_capacity == 0 ? 0 : capacities.memory_body_max_bytes};
 }
 
 inline CallRuntime::Limits call_runtime_limits(const KernelCapacities &capacities) {

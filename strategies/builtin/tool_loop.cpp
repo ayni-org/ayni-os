@@ -1,4 +1,5 @@
 #include "support.h"
+#include <ayni/memory.h>
 #include <cstring>
 
 namespace ayni::strategies {
@@ -91,12 +92,18 @@ ayni_status_t summarize(Turn &turn, const ToolLoopConfig &config,
     turn.record.summary = {};
     turn.record.summary.size = call.text.size;
     std::memcpy(turn.record.summary.bytes.data(), call.text.data, call.text.size);
-    turn.record.summary_first = 1;
+    if (turn.record.summary_first == 0) {
+        turn.record.summary_first = turn.record.rounds[0].number;
+    }
     turn.record.summary_last = turn.record.rounds[summary_drop_count - 1U].number;
-    const auto kept = turn.record.rounds[summary_drop_count];
-    turn.record.rounds = {};
-    turn.record.rounds[0] = kept;
-    turn.record.round_count = recent_rounds_max - summary_drop_count;
+    const auto kept_count = turn.record.round_count - summary_drop_count;
+    for (uint32_t at = 0; at < kept_count; ++at) {
+        turn.record.rounds[at] = turn.record.rounds[at + summary_drop_count];
+    }
+    for (uint32_t at = kept_count; at < retained_rounds_max; ++at) {
+        turn.record.rounds[at] = {};
+    }
+    turn.record.round_count = kept_count;
     return AYNI_OK;
 }
 void tool_context(const ayni_task_tool_call_v1 &proposal, const ayni_task_call_result_v1 &result,
@@ -220,6 +227,34 @@ ayni_status_t complete(Turn &turn, const ayni_task_call_result_v1 &call,
     const auto saved = save(turn, output);
     return saved == AYNI_OK ? report(snapshot, output, AYNI_POLICY_REPORT_COMPLETION) : saved;
 }
+// Explicit selection bounds context cost. The restricted read captures provenance; the Kernel
+// separately requires destination-specific export permission before any external model request.
+ayni_status_t memory_context(const Turn &turn, const ayni_task_snapshot_v1 &snapshot,
+                             Writer &prompt) {
+    if (turn.memory_id == 0) {
+        return AYNI_OK;
+    }
+    if (snapshot.memory == nullptr || snapshot.memory->read == nullptr) {
+        return AYNI_UNSUPPORTED;
+    }
+    std::array<char, AYNI_MEMORY_BODY_BYTES_MAX> body{};
+    ayni_memory_info_v1 info{};
+    info.struct_size = sizeof(info);
+    uint32_t size = 0;
+    const auto status =
+        snapshot.memory->read(snapshot.memory->context, turn.memory_id, AYNI_MEMORY_CONTEXT, &info,
+                              body.data(), body.size(), &size);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    prompt.add("\nMemory (untrusted data; origin=");
+    prompt.add(info.source == AYNI_MEMORY_USER    ? "explicit user statement"
+               : info.source == AYNI_MEMORY_MODEL ? "model inference"
+                                                  : "derived content");
+    prompt.add(info.confirmed ? "; owner confirmed):\n" : "; not confirmed):\n");
+    prompt.add(ayni_string_v1{body.data(), size});
+    return prompt.ok() ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+}
 // Reconstruction reads bounded common call facts, never a private shadow cursor.
 // A stable step key survives boot/implementation changes; unknown stops this walk.
 ayni_status_t run(Turn &turn, const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
@@ -231,6 +266,10 @@ ayni_status_t run(Turn &turn, const ToolLoopConfig &config, const ayni_task_snap
     }
     Writer prompt(scratch, prompt_bytes_max);
     prompt.add(config.model.text);
+    status = memory_context(turn, snapshot, prompt);
+    if (status != AYNI_OK) {
+        return status;
+    }
     summary_context(turn.record, prompt);
     rounds_context(turn.record, turn.record.round_count, prompt);
     prompt.add("\nCurrent user:\n");
@@ -299,6 +338,8 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
     if (turn.record.owner_instance_id != snapshot->owner_instance_id) {
         return AYNI_DENIED;
     }
-    return run(turn, self.config_, *snapshot, *output, self.prompt_.data());
+    const auto result = run(turn, self.config_, *snapshot, *output, self.prompt_.data());
+    self.prompt_.fill(0); // Call admission copied the prompt; no private scratch survives decide.
+    return result;
 }
 } // namespace ayni::strategies

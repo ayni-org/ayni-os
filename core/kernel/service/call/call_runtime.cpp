@@ -1,5 +1,6 @@
 #include "kernel/service/call/call_runtime.h"
 
+#include "kernel/service/memory/memory_access.h"
 #include "work/call_propagation.h"
 
 #include <new>
@@ -70,6 +71,16 @@ bool CallRuntime::idle() const {
     return true;
 }
 
+bool CallRuntime::privacy_released() const {
+    for (uint32_t index = 0; index < limits_.capacity; ++index) {
+        if (work_.calls.occupied(index) && work_.calls.state(index).content_erased &&
+            slots_[index].active && slots_[index].active->stage != Stage::blocked) {
+            return false;
+        }
+    }
+    return true;
+}
+
 CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_index,
                                               resources::WaitAction action, uint64_t now_us) {
     if (action == resources::WaitAction::wait) {
@@ -110,7 +121,7 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     }
     const auto blocked = blocked_receipts();
     if (mailbox_.has_pending(&blocked)) {
-        return consume(now_us);
+        return consume(now_us, durable_seq);
     }
     for (uint32_t scanned = 0; scanned < limits_.capacity; ++scanned) {
         const uint32_t index = cursor_;
@@ -149,6 +160,7 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
                    : Advance::idle;
     }
 
+    const bool content_current = task_content_current({work_, now_us, durable_seq}, task_index);
     if (state.outcome != 0U) {
         if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none &&
             mode != Mode::fenced) {
@@ -159,7 +171,7 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
                                                 : Advance::idle;
     }
     if (!slots_[index].active) {
-        if (task.call.end != work::TaskCall::End::none) {
+        if (!content_current || task.call.end != work::TaskCall::End::none) {
             return cancel_local(index, task_index);
         }
         // Expired waits persist through shutdown. User pause is independent and
@@ -177,7 +189,8 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     const bool user_stop =
         task.call.end != work::TaskCall::End::none || task.lifecycle == AYNI_TASK_PAUSED;
     const bool expired = delivery_expired(index, now_us);
-    const bool denied = authority.status != AYNI_OK && authority.status != AYNI_BUSY;
+    const bool denied =
+        !content_current || (authority.status != AYNI_OK && authority.status != AYNI_BUSY);
     if (mode != Mode::running || user_stop || expired || denied ||
         state.cancel_cause != work::CallCancelCause::none) {
         const auto cause = state.cancel_cause != work::CallCancelCause::none ? state.cancel_cause

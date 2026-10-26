@@ -175,6 +175,15 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::observation_source_capacity,
      {0U, AYNI_OBSERVATION_SOURCE_CAPACITY_MAX},
      &KernelCapacities::observation_source_capacity},
+    {&ayni_config_v1::memory_capacity,
+     {0U, AYNI_MEMORY_CAPACITY_MAX},
+     &KernelCapacities::memory_capacity},
+    {&ayni_config_v1::memory_body_max_bytes,
+     {0U, AYNI_MEMORY_BODY_BYTES_MAX},
+     &KernelCapacities::memory_body_max_bytes},
+    {&ayni_config_v1::memory_dependency_capacity,
+     {0U, AYNI_MEMORY_DEPENDENCY_CAPACITY_MAX},
+     &KernelCapacities::memory_dependency_capacity},
     {&ayni_config_v1::call_result_max_bytes,
      {0U, AYNI_CALL_RESULT_BYTES_MAX},
      &KernelCapacities::call_result_max_bytes},
@@ -189,6 +198,12 @@ ayni_status_t read_capacities(const ayni_config_v1 *config, KernelCapacities &ca
         if (status != AYNI_OK) {
             return status;
         }
+    }
+    if (capacities.memory_body_max_bytes == 0U) {
+        capacities.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;
+    }
+    if (capacities.memory_dependency_capacity == 0U) {
+        capacities.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT;
     }
     if (capacities.call_input_max_bytes == 0U) {
         capacities.call_input_max_bytes = AYNI_CALL_INPUT_BYTES_DEFAULT;

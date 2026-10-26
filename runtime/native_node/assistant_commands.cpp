@@ -85,11 +85,16 @@ Reply Assistant::Impl::say(const Command &command) {
         return reply;
     }
     strategies::Encoded parameters;
+    strategies::Text<strategies::turn_text_max> input;
     if (chat) {
-        const auto status =
-            strategies::Conversation::begin(current.record, runtime_text(command.text), parameters);
+        const auto status = strategies::Conversation::begin(
+            current.record, runtime_text(command.text), parameters, command.id);
         if (status != AYNI_OK) {
             return failure(status);
+        }
+        const auto decoded = strategies::Conversation::input(parameters.view(), input);
+        if (decoded != AYNI_OK) {
+            return failure(decoded);
         }
     }
     ayni_goal_create_v1 goal{};
@@ -107,6 +112,7 @@ Reply Assistant::Impl::say(const Command &command) {
         // Remember accepted work even if the outer save fails. Never submit a
         // second turn against the same baseline while this Goal exists.
         current.pending_goal = reply.id;
+        current.record.draft = input;
         reply.status = persist(current);
     } else {
         rule_goal = reply.id;
@@ -170,6 +176,17 @@ Reply Assistant::Impl::approve(uint64_t id, Operation operation) {
 }
 Reply Assistant::Impl::manage(const Command &command) {
     switch (command.operation) {
+    case Operation::memory_list:
+    case Operation::memory_show:
+    case Operation::memory_save:
+    case Operation::memory_edit:
+    case Operation::memory_confirm:
+    case Operation::memory_delete:
+    case Operation::memory_share:
+    case Operation::memory_export:
+    case Operation::profile_list:
+    case Operation::profile_save:
+        return memory(command);
     case Operation::say:
         return say(command);
     case Operation::grant: {
@@ -230,23 +247,14 @@ Reply Assistant::Impl::manage(const Command &command) {
         return submit(AYNI_INTENT_GOAL_CANCEL, &body, goal.revision);
     }
     case Operation::erase: {
-        if (current.pending_goal) {
-            Command cancel;
-            cancel.operation = Operation::cancel;
-            cancel.id = current.pending_goal;
-            const auto reply = manage(cancel);
-            if (reply.status != AYNI_OK) {
-                return reply;
-            }
-        }
-        auto candidate = current;
-        auto status = strategies::Conversation::erase(current.record, candidate.record);
+        ayni_context_info_v1 context{};
+        const auto status = context_info(context);
         if (status != AYNI_OK) {
             return failure(status);
         }
-        candidate.pending_goal = 0;
-        status = persist(candidate, {NoticeKind::context_erased, {}});
-        return failure(status);
+        return context_command(AYNI_INTENT_CONTEXT_FORGET, context, 0,
+                               command.id == 0 ? AYNI_CONTEXT_ERASE_ALL : AYNI_CONTEXT_ERASE_ROUND,
+                               command.id);
     }
     default:
         return failure(AYNI_UNSUPPORTED);
@@ -259,17 +267,35 @@ Reply Assistant::Impl::describe(const Command &command) const {
     if (command.operation == Operation::status) {
         reply.kernel.struct_size = sizeof(reply.kernel);
         reply.status = ayni_get_kernel_info(node.kernel(), &reply.kernel);
+        reply.privacy.struct_size = sizeof(reply.privacy);
+        if (reply.status == AYNI_OK) {
+            reply.status = ayni_get_privacy_status(node.kernel(), session, &reply.privacy);
+        }
+        if (reply.status == AYNI_OK) {
+            reply.status = context_info(reply.context);
+        }
         reply.last_round = current.record.last_round;
         reply.pending_goal = current.pending_goal;
         reply.storage_status = storage_status;
         reply.saving = saving.has_value();
         reply.pending_commands = pending_count;
     } else if (command.operation == Operation::conversation) {
+        ayni_context_info_v1 context{};
+        reply.status = context_info(context);
+        if (reply.status != AYNI_OK) {
+            return reply;
+        }
+        if (!context.usable || context.pending_action != AYNI_CONTEXT_IDLE ||
+            !matches(current, context)) {
+            reply.status = context.usable ? AYNI_BUSY : AYNI_EXPIRED;
+            return reply;
+        }
         const auto &record = current.record;
         auto &view = reply.conversation;
         view.generation = record.generation;
         view.revision = record.revision;
         view.summary.assign(record.summary.bytes.data(), record.summary.size);
+        view.draft.assign(record.draft.bytes.data(), record.draft.size);
         for (uint32_t at = 0; at < record.round_count; ++at) {
             const auto &round = record.rounds[at];
             view.turns.push_back({round.number,
@@ -336,6 +362,8 @@ Reply Assistant::execute(const Command &command) {
         if (impl_->storage_status != AYNI_OK) {
             return failure(impl_->storage_status);
         }
+        // File admission stays closed while saving; Core separately pins a published Task
+        // until the matching file ACK so unrelated management work cannot retire its source.
         if (impl_->saving) {
             return failure(AYNI_BUSY);
         }

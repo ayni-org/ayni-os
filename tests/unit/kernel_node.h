@@ -60,7 +60,18 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
             config.call_input_max_bytes == 0U ? AYNI_CALL_INPUT_BYTES_DEFAULT
                                               : config.call_input_max_bytes,
             config.call_result_max_bytes == 0U ? AYNI_CALL_RESULT_BYTES_DEFAULT
-                                               : config.call_result_max_bytes};
+                                               : config.call_result_max_bytes,
+            config.device_capacity,
+            config.component_capacity,
+            config.executor_capacity,
+            config.execution_binding_capacity,
+            config.scene_capacity,
+            config.memory_capacity,
+            config.memory_body_max_bytes == 0 ? AYNI_MEMORY_BODY_BYTES_DEFAULT
+                                              : config.memory_body_max_bytes,
+            config.memory_dependency_capacity == 0 ? AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT
+                                                   : config.memory_dependency_capacity,
+            config.observation_source_capacity};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's
@@ -123,6 +134,11 @@ class Node {
 
     // White-box: deadline assertions about goals account for the separate
     // storage deadline added by ADR-0027. A due write sets more_ready instead.
+    // White-box privacy checks include inactive arena tails, not just currently exposed bodies.
+    ayni_bytes_v1 arena_bytes() const {
+        return {reinterpret_cast<const uint8_t *>(memory_.data()),
+                static_cast<uint32_t>(memory_.size() * sizeof(uint64_t))};
+    }
     uint64_t with_storage_deadline(uint64_t goal_deadline) const {
         const auto storage_deadline = ayni::kernel::KernelTestProbe::log(kernel_).next_deadline();
         return storage_deadline > sim_.now_us() && storage_deadline < goal_deadline

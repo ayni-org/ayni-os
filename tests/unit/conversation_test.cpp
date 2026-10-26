@@ -23,9 +23,9 @@ TEST(Conversation, portable_record_round_trip_and_strict_version) {
     ASSERT_EQ(Conversation::decode(encoded.view(), restored), AYNI_OK);
     EXPECT_EQ(restored.id, 11U);
     EXPECT_EQ(restored.owner_instance_id, 22U);
-    encoded.bytes[4] = 2; // Portable header: version at byte 4.
+    encoded.bytes[4] = 3; // Portable header: version at byte 4.
     EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_UNSUPPORTED_VERSION);
-    encoded.bytes[4] = 1;
+    encoded.bytes[4] = 2;
     --encoded.size;
     EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_INVALID_ARGUMENT);
 }
@@ -66,7 +66,7 @@ TEST(Conversation, whole_delete_clears_text_and_lineage_together) {
     EXPECT_EQ(candidate.summary.size, 0U);
     EXPECT_EQ(candidate.summary_first, 0U);
     EXPECT_EQ(candidate.summary_last, 0U);
-    EXPECT_EQ(candidate.last_round, 0U);
+    EXPECT_EQ(candidate.last_round, 2U);
     EXPECT_EQ(candidate.generation, 2U);
     EXPECT_EQ(candidate.revision, 5U);
     EXPECT_EQ(record.summary.size, 8U); // Caller has not committed replacement yet.
@@ -194,8 +194,8 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
     ASSERT_EQ(Conversation::encode(record, record_bytes), AYNI_OK);
     ASSERT_EQ(Conversation::begin(empty(), text("x"), seed), AYNI_OK);
     constexpr uint32_t record_header_bytes = 8; // AYNC + version.
-    constexpr uint32_t turn_header_bytes = 20;  // AYNT + version + done + base_revision.
-    constexpr uint32_t input_bytes = 5;         // u32 size and one UTF-8 byte.
+    constexpr uint32_t turn_header_bytes = 28; // AYNT + version + done + base_revision + memory_id.
+    constexpr uint32_t input_bytes = 5;        // u32 size and one UTF-8 byte.
     Encoded raw;
     std::memcpy(raw.bytes.data(), seed.bytes.data(), turn_header_bytes);
     const auto record_body = record_bytes.size - record_header_bytes;
@@ -206,5 +206,50 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
     raw.size = turn_header_bytes + record_body + input_bytes;
     EXPECT_EQ(Conversation::validate_turn(nullptr, raw.view()), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(Conversation::begin(record, text("x"), seed), AYNI_CAPACITY_EXCEEDED);
+}
+} // namespace
+
+namespace {
+// ADR-0060: an independent accepted input survives invalidation and orderly record round-trip.
+TEST(Conversation, unpublished_input_survives_derived_erasure_and_is_bounded_when_resumed) {
+    auto record = empty();
+    record.draft.size = 5;
+    std::memcpy(record.draft.bytes.data(), "first", record.draft.size);
+    Encoded stored, parameters;
+    ASSERT_EQ(Conversation::encode(record, stored), AYNI_OK);
+    ConversationRecord restored, erased;
+    ASSERT_EQ(Conversation::decode(stored.view(), restored), AYNI_OK);
+    ASSERT_EQ(Conversation::erase_derived(restored, erased), AYNI_OK);
+    EXPECT_EQ(erased.draft.size, 5U);
+    ASSERT_EQ(Conversation::begin(erased, text("next"), parameters), AYNI_OK);
+    Text<turn_text_max> input;
+    ASSERT_EQ(Conversation::input(parameters.view(), input), AYNI_OK);
+    EXPECT_EQ(std::string(input.bytes.data(), input.size), "first\nnext");
+    erased.draft.size = turn_text_max;
+    erased.draft.bytes.fill('u');
+    EXPECT_EQ(Conversation::begin(erased, text("x"), parameters), AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(Conversation::erase(erased, restored), AYNI_OK);
+    EXPECT_EQ(restored.draft.size, 0U);
+}
+TEST(Conversation, superseded_publication_keeps_original_turn_identity_and_reserves_capacity) {
+    auto record = empty();
+    record.draft.size = 1;
+    record.draft.bytes[0] = 'u';
+    ConversationRecord retained, erased;
+    ASSERT_EQ(Conversation::retain_published_input(record, 1, retained), AYNI_OK);
+    ASSERT_EQ(retained.round_count, 1U);
+    EXPECT_EQ(retained.rounds[0].number, 1U);
+    ASSERT_EQ(Conversation::erase_round(retained, 1, erased), AYNI_OK);
+    EXPECT_EQ(erased.round_count, 0U);
+    EXPECT_EQ(erased.draft.size, 0U);
+    for (uint64_t turn = 2; turn <= retained_rounds_max; ++turn) {
+        retained.draft = record.draft;
+        ASSERT_EQ(Conversation::retain_published_input(retained, turn, erased), AYNI_OK);
+        retained = erased;
+    }
+    Encoded encoded;
+    EXPECT_EQ(Conversation::begin(retained, text("next"), encoded), AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(Conversation::erase_round(retained, 1, erased), AYNI_OK);
+    EXPECT_EQ(Conversation::begin(erased, text("next"), encoded), AYNI_OK);
 }
 } // namespace

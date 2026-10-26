@@ -27,9 +27,9 @@ namespace {
 TEST(DraftApi, intents_are_unsupported_before_their_bodies_are_read) {
     ayni::test::Node node;
     node.create();
-    for (const auto kind : {AYNI_INTENT_MEMORY_WRITE, AYNI_INTENT_MEMORY_DELETE,
-                            AYNI_INTENT_SUBSCRIPTION_OPEN, AYNI_INTENT_SUBSCRIPTION_CLOSE,
-                            AYNI_INTENT_ASSISTANT_PAUSE, AYNI_INTENT_ASSISTANT_RESUME}) {
+    for (const auto kind :
+         {AYNI_INTENT_MEMORY_WRITE, AYNI_INTENT_SUBSCRIPTION_OPEN, AYNI_INTENT_SUBSCRIPTION_CLOSE,
+          AYNI_INTENT_ASSISTANT_PAUSE, AYNI_INTENT_ASSISTANT_RESUME}) {
         ayni_intent_v1 intent{};
         intent.struct_size = sizeof(intent);
         intent.kind = kind;

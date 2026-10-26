@@ -1,17 +1,6 @@
 #include "kernel/service/intent/authority_intent.h"
 
 namespace ayni::kernel {
-// C-AUTH-019/024/032: both authority commands require the current durable owner
-// binding and an authenticated management channel, independent of the payload.
-bool bound_management_session(const WorkModel &model, const authority::Session &session,
-                              uint64_t durable_seq) {
-    const auto *binding = model.principals.binding();
-    return session.channel == AYNI_CHANNEL_MANAGEMENT && binding != nullptr &&
-           binding->principal_id == session.principal_id &&
-           binding->binding_revision == session.binding_revision &&
-           binding->stamp.commit_seq <= durable_seq;
-}
-
 namespace {
 ayni_status_t refuse(ayni_status_t status, ayni_reason_t reason, IntentFailure &failure,
                      ayni_object_ref_v1 object = {}) {
@@ -151,6 +140,7 @@ bool apply_pending_revoke(WorkModel &model) {
                                  {0, plan.grant_id, plan.revision, AYNI_OBJECT_GRANT},
                                  0,
                                  plan.effect};
+    model.release_command_sources(mapping.principal_id, stamp.commit_seq);
     if (!model.grants.apply_revoke(plan, stamp) ||
         !model.commands.publish_accepted_revoke(*pending, mapping, model.ids.boot_epoch())) {
         return false;

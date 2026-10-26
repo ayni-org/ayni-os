@@ -15,6 +15,7 @@ inline constexpr std::string_view summary_step = "dialog.summary.v1";
 struct Turn {
     ConversationRecord record;
     uint64_t base_revision = 0;
+    uint64_t memory_id = 0; // Optional explicit source selected for this turn; zero selects none.
     Text<turn_text_max> input;
     bool done = false;
 };

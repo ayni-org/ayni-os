@@ -17,6 +17,7 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 
+#include "kernel/service/command/command_context.h"
 #include "kernel/service/command/command_reauthorization.h"
 #include "kernel/service/command/command_scene.h"
 #include "kernel/service/command/command_target.h"
@@ -49,8 +50,14 @@ struct CommandMapping {
     ayni_intent_effect_t effect =
         AYNI_INTENT_EFFECT_CHANGED; // First result, even after target changes.
     CommandRetention retention = CommandRetention::normal; // volatile; never persisted
-    uint32_t result_size = 0; // Historical work authorization bytes; 0 for other command kinds.
+    uint32_t result_size = 0;     // Historical work authorization bytes; 0 for other command kinds.
+    bool privacy_expired = false; // Identity retained after canonical/result/digest erasure.
+    knowledge::MemoryDependencies
+        sources{}; // Captured Goal sources; survive target retirement until expiry.
 };
+
+// Intrinsic tombstone syntax. Original acceptance metadata survives, private bytes do not.
+bool valid_expired_mapping(const CommandMapping &mapping);
 
 // Exact mapping syntax, effect/result, accepted flags and digest are checked at each trust
 // boundary by this one owner; no catalog or subject lookup is involved.
@@ -116,6 +123,8 @@ class CommandTable {
     bool insert_exact(CommandMapping mapping, ayni_bytes_v1 result = {});
     // Checks capacity including pinned mappings, without changing any floor.
     bool can_insert(uint64_t principal_id) const;
+    // Next evicted result, or null if there is room/no evictable row; borrowed until mutation.
+    const CommandMapping *eviction_candidate(uint64_t principal_id) const;
     // Identity is always pending-first. A non-revoke kind conflicts with a
     // pending revoke, independently of any ordinary hash/floor.
     Lookup find_pending(uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind,
@@ -179,6 +188,10 @@ class CommandTable {
                             ayni_bytes_v1 canonical = {}, ayni_bytes_v1 result = {});
     uint32_t size() const; // Total retained mappings across principals, not pending controls.
     const CommandMapping &at(uint32_t index) const; // Flattened retained index, below size().
+    // Erase one retained receipt by globally unique acceptance sequence, preserving retry identity.
+    bool expire_content(uint64_t commit_seq);
+    // End the synchronous exact-command candidate lifetime, including rejected/retried requests.
+    void discard_candidate();
     // Full reset including accepted controls. Recovery discard uses clear_restored().
     void clear();
 

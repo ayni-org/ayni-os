@@ -69,3 +69,5 @@ ABI 0.37 增加类型化工具调用（ADR-0054）：`ayni_goal_type_v1` 追加�
 ABI 0.38（ADR-0056）在策略注册尾部增加有界 checkpoint reader 声明，并发布 `ayni_copy_task_checkpoint`。旧 Host/Provider/策略/SDK 重编译，0.x 仍只收当前布局；默认 exact-self 兼容不变，显式 reader 只放行声明的旧私有格式，步骤和调用身份不变。配置字段、schema 2 与持久记录布局不变；Core arena 增量仅为策略目录中的兼容声明。
 
 ABI 0.39（ADR-0057）增加可信管理查询 `ayni_list_objects`，复制当前保留对象的 ID；没有新增 ABI 结构、Kernel 字段或持久实体。布局、arena 与 schema 2 不变；0.x 的精确 minor 匹配仍要求调用方重编译。
+
+ABI 0.40（ADR-0060）新增 memory/context 管理和策略借用视图、GoalType `context_mode`、三项记忆配置；0.39 调用方须重新编译，结构大小严格匹配。storage schema 仍为 2，来源/擦除语义用 REQUIRED 类型和新版本表达，旧 reader 不支持时受限保留目录。Native `AYNF`/`AYNC`/`AYNT` 升为 2；不收养缺少来源证据的旧 chat，旧普通 Core 工作继续原规则。

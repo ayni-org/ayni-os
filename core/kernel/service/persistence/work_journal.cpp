@@ -98,10 +98,12 @@ class Encoder {
                 continue;
             }
             const uint16_t version = work::goal_record_version_for(
-                goal, model_.goal_authority.contains(index, goal.goal_id));
-            uint8_t *at = body(work::goal_record_type, version, work::goal_record_size(goal));
+                goal, model_.goal_authority.contains(index, goal.goal_id),
+                model_.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
+            uint8_t *at =
+                body(work::goal_record_type, version, work::goal_record_size(goal, version));
             if (at != nullptr) {
-                work::write_goal_record(goal, model_.goals.parameters(index), at);
+                work::write_goal_record(goal, model_.goals.parameters(index), at, version);
             }
         }
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {
@@ -184,9 +186,12 @@ class Encoder {
                 }
             }
             if (task.checkpoint_seq == stamp_.commit_seq) {
-                uint8_t *at =
-                    body(work::task_checkpoint_record_type, work::task_checkpoint_record_version,
-                         work::task_checkpoint_record_size(task));
+                uint8_t *at = body(work::task_checkpoint_record_type,
+                                   model_.provenance.find(work::ProvenanceKind::task, task.slot,
+                                                          task.task_id) != nullptr
+                                       ? work::task_checkpoint_provenance_version
+                                       : work::task_checkpoint_record_version,
+                                   work::task_checkpoint_record_size(task));
                 if (at != nullptr) {
                     work::write_task_checkpoint_record(task, tasks.checkpoint(index), at);
                 }

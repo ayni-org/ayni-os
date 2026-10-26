@@ -11,6 +11,8 @@
 
 #include <ayni/authority.h>
 #include <ayni/calls.h>
+#include <ayni/context.h>
+#include <ayni/memory.h>
 #include <ayni/scenes.h>
 
 #include <gtest/gtest.h>
@@ -59,6 +61,13 @@ constexpr Row matrix[] = {
     {AYNI_INTENT_CALL_QUERY_RESULT,      management_on_retry, exact,         AYNI_OBJECT_CALL},
     {AYNI_INTENT_TASK_RESUME_WAIT,       management_on_retry, exact,         AYNI_OBJECT_TASK},
     {AYNI_INTENT_SCENE_SET_ENABLED,      management_on_retry, exact,         AYNI_OBJECT_SCENE},
+    {AYNI_INTENT_MEMORY_SAVE,            management_on_retry, exact,         AYNI_OBJECT_MEMORY},
+    {AYNI_INTENT_MEMORY_CONFIRM,         management_on_retry, exact,         AYNI_OBJECT_MEMORY},
+    {AYNI_INTENT_MEMORY_DELETE,          management_on_retry, exact,         AYNI_OBJECT_MEMORY},
+    {AYNI_INTENT_CONTEXT_OPEN,           management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_CONTEXT_PUBLISH,        management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_CONTEXT_FORGET,         management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_CONTEXT_ACK,            management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
 };
 // clang-format on
 
@@ -172,10 +181,23 @@ class IntentPolicy : public ::testing::Test {
         limit_ = {sizeof(limit_), 1, absent};
         query_ = {sizeof(query_), 0, absent};
         scene_ = {sizeof(scene_), 1, text("look"), 1, 0};
-        requests_ = {{&create_, 0}, {&goal_, 1},     {&goal_, 1},     {&goal_, 1},
-                     {&task_, 1},   {&instance_, 1}, {&instance_, 1}, {&instance_, 1},
-                     {&grant_, 0},  {&revoke_, 1},   {&approve_, 1},  {&reauthorize_, 1},
-                     {&limit_, 1},  {&query_, 1},    {&task_, 1},     {&scene_, 0}};
+        memory_.struct_size = sizeof(memory_);
+        memory_.name_space = AYNI_MEMORY_PRIVATE;
+        memory_.namespace_id = instance_id;
+        memory_.body = text("preference");
+        memory_target_ = {sizeof(memory_target_), 0, absent};
+        context_open_ = {sizeof(context_open_), AYNI_CONTEXT_IDLE, instance_id, 0, 0, 0, 0};
+        context_publish_ = {sizeof(context_publish_), AYNI_CONTEXT_IDLE, 0, absent, 0, absent, 1};
+        context_forget_ = {sizeof(context_forget_), AYNI_CONTEXT_ERASE_ALL, 0, absent, 0, 0, 0};
+        context_ack_ = {sizeof(context_ack_), AYNI_CONTEXT_IDLE, 0, absent, 0, 0, 0};
+        requests_ = {{&create_, 0},         {&goal_, 1},         {&goal_, 1},
+                     {&goal_, 1},           {&task_, 1},         {&instance_, 1},
+                     {&instance_, 1},       {&instance_, 1},     {&grant_, 0},
+                     {&revoke_, 1},         {&approve_, 1},      {&reauthorize_, 1},
+                     {&limit_, 1},          {&query_, 1},        {&task_, 1},
+                     {&scene_, 0},          {&memory_, 0},       {&memory_target_, 1},
+                     {&memory_target_, 1},  {&context_open_, 0}, {&context_publish_, 1},
+                     {&context_forget_, 1}, {&context_ack_, 1}};
         ASSERT_EQ(requests_.size(), std::size(matrix));
     }
 
@@ -193,6 +215,9 @@ class IntentPolicy : public ::testing::Test {
     ayni_task_raise_model_limit_v1 limit_{};
     ayni_call_query_result_v1 query_{};
     ayni_scene_set_enabled_v1 scene_{};
+    ayni_memory_save_v1 memory_{};
+    ayni_memory_target_v1 memory_target_{};
+    ayni_context_command_v1 context_open_{}, context_publish_{}, context_forget_{}, context_ack_{};
     std::vector<Request> requests_;
 };
 

@@ -131,6 +131,8 @@ struct ayni_kernel {
     uint64_t writer_durable_seq() const { return log.durable_seq(); }
     // True when the writer has no queued batch or outstanding request.
     bool writer_idle() const { return log.idle(); }
+    // Last complete local snapshot generation, for privacy completion/capacity diagnostics.
+    uint64_t snapshot_generation() const { return maintenance.generation(); }
     // Number of intents the single decision buffer can stage; bounds registration.
     uint32_t decision_capacity() const { return decisions.intent_capacity(); }
     // Copy all Kernel diagnostics into an already validated caller value.
@@ -277,6 +279,8 @@ struct ayni_kernel {
     void begin_maintenance();
     // Rereads the free medium and starts a compaction that is due.
     void refresh_storage();
+    // A privacy cursor may progress after its durable source barrier and external release gates.
+    bool privacy_ready() const;
     // A maintenance run holds the storage buffer.
     bool maintaining() const;
     // When the next paced storage request may start (ayni_step_report_v1).

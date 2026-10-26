@@ -16,7 +16,11 @@ constexpr uint16_t call_skipped_record_version = 2; // Same layout; adds Core-on
 // Every row of a TOOL_CALLS contract: the v2 layout and outcomes plus a trailing
 // result kind, so old readers explicitly refuse tool-call lists (ADR-0054).
 constexpr uint16_t call_tool_calls_record_version = 4;
-constexpr uint32_t call_result_kind_size = 4; // The v4 trailing u32.
+// Erased request/result bodies plus an explicit privacy stamp and execution-presence tag.
+// Real action/query/execution outcomes retain their original encodings (ADR-0060).
+constexpr uint16_t call_erased_record_version = 5;
+constexpr uint32_t call_erasure_tail_size = 28; // u32 execution-present + 24-byte ActionStamp.
+constexpr uint32_t call_result_kind_size = 4;   // The v4 trailing u32.
 // Normal rows preserve v1; old readers explicitly refuse a background skip.
 uint16_t call_record_version_for(const CallRecord &record);
 constexpr uint32_t call_record_fixed_size = 288; // Fixed fields and ten string/body lengths.

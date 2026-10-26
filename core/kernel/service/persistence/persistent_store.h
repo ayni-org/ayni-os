@@ -133,14 +133,19 @@ inline bool within_snapshot(foundation::TransitionStamp stamp,
            stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
 }
 
-extern const PersistentStore grant_store;   // Grant family and parent-first snapshots.
-extern const PersistentStore call_store;    // Calls after their Task facts.
-extern const PersistentStore scene_store;   // Scene preferences after calls.
-extern const PersistentStore command_store; // Exact owner command history closes each walk.
+extern const PersistentStore grant_store;      // Grant family and parent-first snapshots.
+extern const PersistentStore call_store;       // Calls after their Task facts.
+extern const PersistentStore scene_store;      // Scene preferences after calls.
+extern const PersistentStore provenance_store; // Work source sets follow original work identities.
+extern const PersistentStore memory_store;     // Memory rows after their namespace identities.
+extern const PersistentStore privacy_store;    // Source request or one explicit cleanup effect.
+extern const PersistentStore context_store;    // Agent file anchors and exact pending file actions.
+extern const PersistentStore command_store;    // Exact owner command history closes each walk.
 
 // Compile-time storage order; each descriptor owns the types, bounds and row traversal.
-inline constexpr const PersistentStore *persistent_stores[] = {&grant_store, &call_store,
-                                                               &scene_store, &command_store};
+inline constexpr const PersistentStore *persistent_stores[] = {
+    &grant_store,  &call_store,       &scene_store,   &context_store,
+    &memory_store, &provenance_store, &privacy_store, &command_store};
 inline constexpr uint32_t persistent_store_count =
     static_cast<uint32_t>(sizeof(persistent_stores) / sizeof(persistent_stores[0]));
 

@@ -65,12 +65,13 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | `CALL_IDENTITY` | `work/call` | B3 |
 | `ACTION_STATE`（20/v1 codec，嵌入 CALL_STATE，不单独写 journal） | `work/action` | 通过 REQUIRED CALL_STATE 保留；准备、屏障与终态各自的批次，终态在 B4 |
 | `CALL_RESULT` | `work/call` | B4 |
-| `MEMORY_RECORD`、`MEMORY_TOMBSTONE`、`LINEAGE` | `knowledge` | B4、B5 |
+| `MEMORY`（23/v1）、`CONTEXT`（26/v1），REQUIRED | `knowledge` | 管理/策略变更，见 P3 记录布局 |
+| `PROVENANCE`（24/v1、v2）、`PRIVACY`（25/v1），REQUIRED | `work/provenance`、`work/privacy` | 同批来源与独立清理进度，见 P3 记录布局 |
 | `GRANT_CREATE`（类型13，版本1，REQUIRED） | `authority/grant` | Grant创建，与v2命令身份/结果同批（ADR-0030） |
 | `GRANT_STATE`（类型14，版本1/2/3/4，REQUIRED） | `authority/grant` | v1 旧到期，v2 后代撤销，v3 专属 Goal 结束，v4 到期并要求工作清理；不持久 Gate |
 | `GRANT_REVOCATION`（类型15，版本1/2，REQUIRED） | `authority/grant` | 显式根撤销或明确 no-op，与 v3 命令结果同批；v2 另要求工作清理 footer（ADR-0031、0038） |
 | `GRANT_REVOCATION_PROGRESS`（类型16，版本1，REQUIRED） | `authority/grant` | 根cursor与本步后代状态（如有）同批B5（ADR-0031） |
-| `INVALIDATION_CURSOR` | `knowledge/lineage` | B5 |
+| `INVALIDATION_CURSOR` | 已由 PRIVACY 25/v1 表达，不另分配类型 | B5 |
 | `SNAPSHOT_COMMIT`（类型 11，版本 1，REQUIRED；正文见下） | `durability` | 快照切换 |
 
 ## 动作事实正文（ABI 0.31 嵌入调用记录）
@@ -364,3 +365,27 @@ phase=1 PREPARED、2 DISPATCHING、3 STOPPED、4 NOT_STARTED；target=0 UNVERIFI
 schema 2 保持。结果格式为 TOOL_CALLS 的调用契约，其每一行（含尚未完成、失败与 SKIPPED）都写 REQUIRED `CALL_STATE type21/v4`：v1 的完整布局后接 u32 结果种类，1 为 UTF-8 文本、2 为工具调用列表；种类 2 只能是 `COMPLETED`，结果长度串里是下述列表。TOOL_CALLS 只用于非物理模型契约，所以 v4 不与 v3 的执行尾部同时出现。旧 reader 遇到 v4 明确拒绝，不会把列表当作文本读出。
 
 工具调用列表格式 1（全部整数小端，长度串为 u32 字节数加正文）：调用数 u32（1～8）；每个调用依次为 Binding version u32（非零）、Binding ID 长度串、字段数 u32（≤ 8）、各字段、正文长度串；每个字段依次为字段 ID u32、种类 u32、单位长度串，I64 再接 i64 值（原位编码），ENUM/IDENTIFIER 再接取值长度串。字段 ID 非零且在调用内严格递增；ID、单位与取值都是 CatalogId，I64 必须有单位，枚举与标识符的单位为空；正文为最长 65536 B 的 UTF-8。解码严格：任何越界、非规范顺序、未知种类或尾部多余字节都使整行无效。列表大小受该调用契约的 result_text_limit 约束，与文本结果相同；编码不存指针，也不保存模型原始 JSON。
+
+## P3 记忆与内容来源记录（ADR-0060，ABI 0.40）
+
+schema 仍为 2。以下新类型/版本全部 REQUIRED；不了解它们的 reader 受限并保留原目录，不能忽略来源继续输出。除注明快照专用外，journal/snapshot 共用属主编解码；整数小端，无 native padding。
+
+**共享来源列表**：`count:u32` 后接 count 个 52 字节引用，顺序为 `kind:u32, id:u64, revision:u32, actor_instance_id:u64, purpose:u32, read_grant_id:u64, read_revision:u32, egress_grant_id:u64, egress_revision:u32`。kind 为 memory=1/context=2；无 Grant 使用 ID/revision 同为 0。格式上限 8；当前配置更小归为容量不足，非法引用仍归损坏。完整闭包包含实际权限，不允许同一身份的不同版本替换合并。
+
+| 类型/版本 | 记录体与配对 |
+|---|---|
+| 23/v1 MEMORY | 32 字节头：`id:u64, revision:u32, state:u32, transition_id:u64, commit_seq:u64`；后接 MemoryValue：`namespace:u32, namespace_id:u64, source:u32, profile_field:u32, confirmed:u32, source_call_id:u64`，再接长度前缀 body、tag_count 和各 tag、keyword_count 和各 keyword、共享来源列表。值固定开销 48 字节，包含四个长度/count 字段。管理变更与 exact 命令同批；策略写与 Task checkpoint/provenance 同批。删除/修改另需同批 privacy 请求。 |
+| 24/v1 PROVENANCE | 32 字节头：`work_id:u64, kind:u32, content:u32, transition_id:u64, commit_seq:u64`，后接共享来源列表。kind 为 Goal=1/Task=2；content 为 available=1/erased=2。available 必须与 Goal 创建或 Task checkpoint 的 stamp 精确配对；erased 只作为快照表示，正文/依赖均为空。 |
+| 24/v2 PROVENANCE | v1 后附 `origin_context_id:u64, origin_file_generation:u64`；仅有完整 primary anchor 证据的 Goal 使用，Task 仍由 Goal 继承原文件基础。 |
+| 25/v1 PRIVACY | 固定 48 字节：`request_seq:u64, phase:u32, effect:u32, cursor:u64, snapshot_generation:u64, transition_id:u64, commit_seq:u64`。请求与来源失效同批；普通进度单独批次且只改变一个属主表示。 |
+| 26/v1 CONTEXT | 固定 80 字节后接共享来源列表：`id:u64, owner_instance_id:u64, revision:u32, pending_action:u32, generation:u64, last_turn:u64, old_revision:u32, reserved:u32=0, turn_id:u64, task_id:u64, transition_id:u64, commit_seq:u64`。OPEN/PUBLISH/FORGET/ACK 必须有精确命令伙伴；FORGET 另需 privacy 请求。清理诱发的 Context 擦除仅由 privacy 进度记录表达。 |
+
+Goal 3/v7 journal、3/v8 snapshot 保留原工作布局，并始终含 12 字节 profile 尾部；版本明确要求后续来源记录，v8 还保留原 created stamp。Task 5/v2 snapshot 和 checkpoint 8/v2 的正文布局与原版相同，但明确要求 type 24 来源伙伴；没有 footer 的待定工作不能在恢复结束时发布。旧普通工作继续使用原版本。
+
+命令 type 9：v10 Memory、v12 Context 均使用既有 52 字节映射加两个 u32（authority_command_format、canonical size）的 60 字节 exact 包络。Memory canonical 共用 MemoryValue 编码；Context canonical 固定 56 字节，由 kind/expected_revision、owner/context/generation/task/turn、action/reserved 组成。v11 是 snapshot-only 的 52 字节 privacy-expired 身份，digest=0、不保留 canonical/result 副本；同身份重试返回 EXPIRED，不匹配新的正文。v13 是一个非递归包装：`base_version:u32, base_size:u32, 原版本完整 body, 共享来源列表`；保存 Goal 命令来源独立于目标 Goal 生命周期。快照沿用既有额外 8 字节原 commit_seq 表达，不把当前快照序号当原始命令身份。
+
+Call 21/v5 是正文已擦除的显式表示，用于快照及擦除后晚到完成/查询的 journal：复用原 Call 前缀、输入/结果长度、动作事实，正文长度为 0；action 后追加 `execution_present:u32` 与 24 字节 content_erased ActionStamp（boot_epoch、transition_id、commit_seq），有 execution 时再写原执行尾部。保留原 outcome/latest 及真实物理动作事实；工具正文不另留 v4 列表。晚到完成或查询先按原结果契约分类，再抑制正文，不能因隐私擦除改写执行结论。
+
+清理 phase：memories=1、contexts=2、goals=3、tasks=4、calls=5、commands=6、files=7、compact=8、purge=9、complete=10；idle=0 不序列化。effect：none=0、memory=1、context=2、goal=3、task=4、call=5、command=6、remove_memory=7。cursor 是对象稳定 ID；命令阶段使用原 commit_seq。Context effect 之后唯一允许的回退是 memories/cursor=0/effect=none，直至来源稳定；其他普通进度不能倒退。files→compact 须所有 Context ACK 且外部借用释放；目标 snapshot_generation 为当前代际+2，溢出明确停止并报告容量失败。purge/complete 快照不能宣称超过本快照 generation 的轮转已完成。scrubbed Memory 从新快照省略；erased Provenance 保留不可用身份标记，正文/依赖为空，运行时完成双槽覆盖后移除 tombstone。
+
+**Native 外层文件**不属于 Core schema：AYNF v2 固定 32 字节头为 `magic:u32, version:u32, encoded_size:u64, pending_goal:u64, context_id:u64`。正文 AYNC v2 为 magic/version 后的 Conversation 字段：7 个 u64（id、owner、隐私 generation、文件 revision、last_round、summary_first、summary_last），长度前缀 summary、独立 draft、round_count:u32，再逐轮 number:u64/user/answer。AYNT v2 固定头 28 字节（magic、version、done、base_revision、memory_id）后接相同 Conversation 字段和本轮 input。独立草稿与 pending_goal 同次保存；发布前必须保存完毕。正常保留 3 轮、额外 1 槽承接失效发布原始输入；原轮号不重新分配。旧 AYNF/AYNC v1 在 Kernel 启动写入之前拒绝，无自动迁移。

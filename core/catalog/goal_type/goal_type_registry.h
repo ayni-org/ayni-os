@@ -33,6 +33,7 @@ struct GoalTypeTool {
     uint32_t binding_index = no_binding;
 };
 
+enum class GoalContext : uint32_t { none = 0, agent = 1 }; // Trusted input provenance declaration.
 struct GoalType {
     static constexpr uint32_t no_strategy = 0xFFFFFFFFU;
 
@@ -56,6 +57,7 @@ struct GoalType {
     // The allow list in declared order; tools[0, tool_count) are distinct by binding id.
     std::array<GoalTypeTool, AYNI_GOAL_TYPE_TOOL_COUNT_MAX> tools{};
     uint32_t tool_count = 0;
+    GoalContext context_mode = GoalContext::none; // Agent mode captures its current file sources.
 };
 
 class GoalTypeRegistry {
@@ -93,6 +95,9 @@ class GoalTypeRegistry {
     AddResult add(const GoalType &type);
 
     Lookup find(ayni_string_v1 id, uint32_t version) const;
+    // Any current trusted version declares this ID as context-bearing. Used only when the
+    // saved exact version is unavailable, so unknown ordinary work keeps its legacy semantics.
+    bool has_agent_context(ayni_string_v1 id) const;
 
     // index from a found Lookup.
     const GoalType &at(uint32_t index) const { return types_[index]; }

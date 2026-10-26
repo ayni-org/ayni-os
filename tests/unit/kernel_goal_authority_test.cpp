@@ -2922,7 +2922,7 @@ TEST(WorkAuthorityRestart, full_grant_table_and_deep_shared_cohort_have_bounded_
         ASSERT_TRUE(model.ids.allocate(task_id));
         const auto stamp = model.transitions.next();
         ayni::work::derive(tables, goal_index, node.work.node().sim().now_us(), task_id, stamp);
-        ASSERT_TRUE(model.inherit_task_authority(task_id, stamp));
+        ASSERT_TRUE(model.inherit_task_metadata(task_id, stamp));
     }
     ASSERT_TRUE(node.work.strategy().seen.empty());
     ASSERT_EQ(KernelTestProbe::work(node.work.kernel()).tasks.size(), AYNI_TASK_CAPACITY_MAX);

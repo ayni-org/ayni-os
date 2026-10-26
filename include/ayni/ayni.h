@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 39u
+#define AYNI_ABI_MINOR 40u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -182,7 +182,21 @@ typedef struct ayni_config_v1 {
     uint32_t executor_capacity;
     /* Since 0.35. Exact physical Binding constraints; zero disables. */
     uint32_t execution_binding_capacity;
+    /* Since 0.40. Whole-Kernel memory capacity; 0 disables, otherwise 1..256. */
+    uint32_t memory_capacity;
+    /* Since 0.40. Per-record UTF-8 body bytes, 1..4096; 0 selects 512. */
+    uint32_t memory_body_max_bytes;
+    /* Since 0.40. Direct source dependencies per value, 1..8; 0 selects 8. */
+    uint32_t memory_dependency_capacity;
 } ayni_config_v1;
+
+/* Whole-Kernel retained memory bounds. Since 0.40. */
+#define AYNI_MEMORY_CAPACITY_DEFAULT 64u
+#define AYNI_MEMORY_CAPACITY_MAX 256u
+#define AYNI_MEMORY_BODY_BYTES_DEFAULT 512u
+#define AYNI_MEMORY_BODY_BYTES_MAX 4096u
+#define AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT 8u
+#define AYNI_MEMORY_DEPENDENCY_CAPACITY_MAX 8u
 
 /* Since 0.31. Bounded retained call bodies; no implicit history eviction. */
 #define AYNI_CALL_CAPACITY_MAX 256u
@@ -758,6 +772,8 @@ typedef uint32_t ayni_object_kind_t;
 #define AYNI_OBJECT_SCENE ((ayni_object_kind_t)13)
 #define AYNI_OBJECT_OBSERVATION ((ayni_object_kind_t)14)
 #define AYNI_OBJECT_MEMORY ((ayni_object_kind_t)15)
+/* Persistent Agent content/file anchor. Since 0.40. */
+#define AYNI_OBJECT_CONTEXT ((ayni_object_kind_t)20)
 #define AYNI_OBJECT_SUBSCRIPTION ((ayni_object_kind_t)16)
 #define AYNI_OBJECT_PRINCIPAL ((ayni_object_kind_t)17)
 #define AYNI_OBJECT_SESSION ((ayni_object_kind_t)18)
@@ -981,6 +997,12 @@ typedef struct ayni_error_v1 {
 /* Model output could not become a typed result: undecodable tool arguments,
  * an unknown tool or values outside the offered ones. Since 0.37. */
 #define AYNI_REASON_MODEL_OUTPUT ((ayni_reason_t)76)
+/* DENIED: requested memory read/write/export permission is absent. Since 0.40. */
+#define AYNI_REASON_MEMORY_SOURCE ((ayni_reason_t)77)
+/* CAPACITY_EXCEEDED: memory/source storage cannot accept this decision. Since 0.40. */
+#define AYNI_REASON_MEMORY_DEPENDENCIES ((ayni_reason_t)78)
+/* EXPIRED: a captured source, version or permission is no longer usable. Since 0.40. */
+#define AYNI_REASON_MEMORY_EXPIRED ((ayni_reason_t)79)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1149,6 +1171,10 @@ typedef struct ayni_tool_ref_v1 {
     uint32_t reserved;         /* must be 0 */
 } ayni_tool_ref_v1;
 
+typedef uint32_t ayni_goal_context_t;
+#define AYNI_GOAL_CONTEXT_NONE ((ayni_goal_context_t)0) /* Independent input. Since 0.40. */
+#define AYNI_GOAL_CONTEXT_AGENT                                                                    \
+    ((ayni_goal_context_t)1) /* Current per-Agent file basis. Since 0.40. */
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
     uint32_t version;               /* nonzero */
@@ -1182,6 +1208,10 @@ typedef struct ayni_goal_type_v1 {
     uint32_t tool_count;
     uint32_t tool_reserved; /* must be 0 */
     const ayni_tool_ref_v1 *tools;
+    /* Since 0.40. AGENT accepts ONCE alone and requires an acknowledged content anchor.
+     * Kernel captures its complete sources and exact file basis in the creation transition. */
+    ayni_goal_context_t context_mode;
+    uint32_t context_reserved; /* must be zero */
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -1374,6 +1404,20 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_TASK_RESUME_WAIT ((ayni_intent_kind_t)15)
 /* Owner enables/disables an exact Scene definition with persistent CAS. Since 0.35. */
 #define AYNI_INTENT_SCENE_SET_ENABLED ((ayni_intent_kind_t)16)
+/* Explicitly save confirmed user memory; body ayni_memory_save_v1. Since 0.40. */
+#define AYNI_INTENT_MEMORY_SAVE ((ayni_intent_kind_t)17)
+/* Owner confirms existing content without removing its lineage. Since 0.40. */
+#define AYNI_INTENT_MEMORY_CONFIRM ((ayni_intent_kind_t)18)
+/* Immediate privacy barrier followed by bounded persisted cleanup. Since 0.40. */
+#define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)19)
+/* Open an empty per-Agent content anchor. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_OPEN ((ayni_intent_kind_t)20)
+/* Commit completed Task provenance before publishing its conversation file. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_PUBLISH ((ayni_intent_kind_t)21)
+/* Invalidate a conversation or exact turn before asynchronous erasure. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_FORGET ((ayni_intent_kind_t)22)
+/* Acknowledge the exact current file revision/generation after durable replacement. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_ACK ((ayni_intent_kind_t)23)
 
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {
@@ -1552,6 +1596,8 @@ struct ayni_call_request_v1;
 struct ayni_task_call_result_v1;
 /* Since 0.37. Defined in calls.h. */
 struct ayni_task_tool_call_v1;
+/* Since 0.40. Defined in memory.h, leased only to the current Task decision. */
+struct ayni_memory_view_v1;
 
 /* What a strategy sees of a task. The views point into kernel memory and
  * are valid only during the decide call (C-POLICY-004). */
@@ -1588,6 +1634,8 @@ typedef struct ayni_task_snapshot_v1 {
      * The typed view borrows Core memory and out until decide returns. */
     ayni_status_t (*call_tool)(const void *context, ayni_string_v1 step_key, uint32_t index,
                                struct ayni_task_tool_call_v1 *out);
+    /* Since 0.40. Restricted memory view; null when memory is disabled. */
+    const struct ayni_memory_view_v1 *memory;
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in
@@ -1602,6 +1650,8 @@ typedef uint32_t ayni_policy_intent_kind_t;
 #define AYNI_POLICY_REPORT_PROGRESS ((ayni_policy_intent_kind_t)4)   /* a step is done */
 #define AYNI_POLICY_REPORT_COMPLETION ((ayni_policy_intent_kind_t)5) /* the task is done */
 #define AYNI_POLICY_REPORT_FAILURE ((ayni_policy_intent_kind_t)6)    /* it cannot be done */
+/* Publish one unconfirmed private memory with the Task checkpoint and step. Since 0.40. */
+#define AYNI_POLICY_WRITE_MEMORY ((ayni_policy_intent_kind_t)7)
 
 typedef struct ayni_policy_intent_v1 {
     uint32_t struct_size;
@@ -1876,7 +1926,8 @@ ayni_status_t ayni_list_objects(const ayni_kernel_t *kernel, ayni_object_kind_t 
  * Like get_task, not an authorization boundary for untrusted clients. BUSY
  * until COMPLETED and the complete Task transition is durable; other terminal
  * lifecycles return INVALID_STATE. BUFFER_TOO_SMALL sets only out_size. Other
- * failures preserve all output. No borrowed pointer escapes the callback. */
+ * failures preserve all output. Since 0.40, callbacks are rejected and expired
+ * content sources return EXPIRED; only the trusted outer owner may export. */
 ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t task_id,
                                         uint8_t *buffer, uint32_t capacity, uint32_t *out_size);
 

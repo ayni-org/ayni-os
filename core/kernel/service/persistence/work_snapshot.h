@@ -125,9 +125,9 @@ class WorkSnapshotReader {
     durability::BatchCheck goal_authority(const uint8_t *body, uint32_t size);
     // Maps supported payload record kinds to their monotone section.
     static bool record_section(uint16_t type, Section &out);
-    durability::BatchCheck task(const uint8_t *body, uint32_t size);
+    durability::BatchCheck task(uint16_t version, const uint8_t *body, uint32_t size);
     durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
-    durability::BatchCheck task_checkpoint(const uint8_t *body, uint32_t size);
+    durability::BatchCheck task_checkpoint(uint16_t version, const uint8_t *body, uint32_t size);
     durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
     durability::BatchCheck task_state(const uint8_t *body, uint32_t size, uint16_t version);
     durability::BatchCheck authority_cleanup(const uint8_t *body, uint32_t size);

@@ -62,6 +62,8 @@ struct CallState {
     std::optional<ExecutionFact>
         execution; // Physical constraints and independent stop; absent for ordinary I/O.
     std::optional<CallQuery> query; // Absent before owner reconciliation; never an execution retry.
+    std::optional<ActionStamp> content_erased; // None retains bodies; otherwise irreversible
+                                               // privacy stamp, independent of outcome.
 };
 
 // Borrowed terminal input already matched to the original attempt by the caller.
@@ -86,8 +88,8 @@ struct CallRecord {
     CallState state;                  // Latest business facts, no transport or resource handles.
     std::optional<ActionFact> action; // Absent until resource admission is recorded.
     ayni_bytes_v1 domain;             // Original authority schema bytes, required.
-    ayni_bytes_v1 input;              // Canonical request authorized against domain, required.
-    ayni_string_v1 result;            // Terminal body as result_kind says, empty before completion.
+    ayni_bytes_v1 input;   // Canonical request authorized against domain; empty only after erasure.
+    ayni_string_v1 result; // Terminal body as result_kind says, empty before completion.
     CallResultKind result_kind = CallResultKind::text; // Unless a completion holds tool calls.
 };
 
@@ -181,6 +183,11 @@ class CallTable {
     // Stable ID and Task/step lookups; failures preserve index.
     bool find(uint64_t call_id, uint32_t &index) const;
     bool find_step(uint64_t task_id, ayni_string_v1 key, uint32_t &index) const;
+    // Erase this call's entire request/result regions without changing its real action outcome.
+    // The privacy coordinator persists this separate stamp and owns restartable sweep progress.
+    ayni_status_t erase_content(uint32_t index, ActionStamp stamp);
+    // Same result transition, after evidence validation: discard only private result bytes.
+    void discard_result(uint32_t index);
     // Slots may contain holes; only occupied indices are legal for accessors/mutations.
     bool occupied(uint32_t index) const;
     uint32_t capacity() const { return limits_.capacity; } // Fixed metadata slots, including holes.
@@ -211,6 +218,11 @@ class CallTable {
     struct Slot {
         std::optional<Entry> entry; // Empty means free; removing never moves another call.
     };
+    // Reserve a unique slot after normal admission or complete record validation; empty input
+    // is possible only for a restored explicitly erased row.
+    ayni_status_t place_new(const CallIdentity &identity, const catalog::CallContract &contract,
+                            ayni_bytes_v1 domain, ayni_bytes_v1 input, ActionStamp stamp,
+                            uint32_t &index);
     // Admission shape excludes schema/authority, already checked by their owners.
     static bool valid_identity(const CallIdentity &identity, ActionStamp stamp);
     static bool advances(const Entry &entry, ActionStamp stamp); // Strict stamp order in this boot.

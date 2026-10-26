@@ -100,7 +100,11 @@ ayni_status_t CallTable::reconcile(uint32_t index, uint32_t conclusion, const Ca
           input.text.size != 0U))) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto result = usable_result(input, dependencies);
+    auto result = usable_result(input, dependencies);
+    if (entry.state.content_erased) {
+        result.text = {};
+        result.kind = CallResultKind::text;
+    }
 
     const auto fact =
         conclusion == AYNI_QUERY_RESULT_NOT_ACCEPTED ? ActionRecord::QueryConclusion::not_accepted
@@ -115,6 +119,8 @@ ayni_status_t CallTable::reconcile(uint32_t index, uint32_t conclusion, const Ca
         std::memcpy(bytes(index) + limits_.domain_bytes + limits_.input_bytes, result.text.data,
                     result.text.size);
     }
+    std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes + result.text.size, 0,
+                limits_.result_bytes - result.text.size);
     set_terminal(entry, result, stamp);
     entry.state.query->phase = CallQuery::Phase::finished;
     entry.state.query->conclusion = conclusion;

@@ -5,6 +5,7 @@
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <gtest/gtest.h>
@@ -361,6 +362,61 @@ TEST_F(CallTableTest, stale_query_preserves_effect_but_rejects_invalid_evidence_
     EXPECT_EQ(calls.result(index).size, 0U);
     EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
 }
+
+// ADR-0060: erasure is independent of execution outcome and has an explicit REQUIRED codec.
+TEST_F(CallTableTest, erased_completed_call_retains_action_facts_and_restores_without_plaintext) {
+    dispatch();
+    ASSERT_EQ(
+        calls.finish(
+            index,
+            {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"answer", 6}},
+            stamp(4)),
+        AYNI_OK);
+    ASSERT_EQ(calls.erase_content(index, stamp(5)), AYNI_OK);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(calls.action(index)->phase, ActionPhase::completed);
+    EXPECT_EQ(calls.input(index).size, 0U);
+    EXPECT_EQ(calls.result(index).size, 0U);
+    const auto *begin = reinterpret_cast<const char *>(storage.data());
+    const auto *end = begin + storage.size() * sizeof(uint64_t);
+    for (const std::string marker : {"question", "answer"}) {
+        EXPECT_EQ(std::search(begin, end, marker.begin(), marker.end()), end);
+    }
+    const auto record = calls.record(index);
+    ASSERT_TRUE(CallTable::valid_record(record));
+    EXPECT_EQ(call_record_version_for(record), call_erased_record_version);
+    std::vector<uint8_t> encoded(call_record_size(record));
+    write_call_record(record, encoded.data());
+    CallRecord decoded{};
+    ASSERT_TRUE(read_call_record(encoded.data(), static_cast<uint32_t>(encoded.size()), decoded,
+                                 call_erased_record_version));
+    std::vector<uint64_t> restored_storage(storage.size());
+    CallTable restored(restored_storage.data(), limits);
+    ASSERT_EQ(restored.restore_validated(decoded), AYNI_OK);
+    uint32_t restored_index = 0;
+    ASSERT_TRUE(restored.find(identity.call_id, restored_index));
+    EXPECT_EQ(restored.state(restored_index).outcome, AYNI_CALL_COMPLETED);
+    ASSERT_TRUE(restored.state(restored_index).content_erased.has_value());
+    EXPECT_EQ(restored.state(restored_index).content_erased->transition.commit_seq, 5U);
+    EXPECT_EQ(restored.input(restored_index).size, 0U);
+}
+// A late real completion still advances the ledger, but cannot refill an erased content region.
+TEST_F(CallTableTest, late_completion_cannot_refill_erased_call_bodies) {
+    dispatch();
+    ASSERT_EQ(calls.erase_content(index, stamp(4)), AYNI_OK);
+    ASSERT_EQ(calls.finish(index,
+                           {AYNI_CALL_COMPLETED,
+                            AYNI_OK,
+                            AYNI_REASON_NONE,
+                            ActionEffect::complete,
+                            {"late answer", 11}},
+                           stamp(5)),
+              AYNI_OK);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(calls.result(index).size, 0U);
+    EXPECT_EQ(calls.input(index).size, 0U);
+    EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
+}
 } // namespace
 
 // ADR-0054: a TOOL_CALLS completion keeps its typed list as the result body,
@@ -437,6 +493,17 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     text_record.contract.result_format = AYNI_CALL_RESULT_TEXT;
     text_record.contract.category = ayni::catalog::CallClass::tool;
     EXPECT_FALSE(CallTable::valid_record(text_record));
+    // ADR-0060: the typed list and its kind are erased, while the real completion remains.
+    ASSERT_EQ(table.erase_content(index, stamp(5)), AYNI_OK);
+    const auto erased = table.record(index);
+    ASSERT_EQ(call_record_version_for(erased), call_erased_record_version);
+    bytes.resize(call_record_size(erased));
+    write_call_record(erased, bytes.data());
+    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
+                                 call_erased_record_version));
+    EXPECT_EQ(decoded.result.size, 0U);
+    EXPECT_EQ(decoded.result_kind, CallResultKind::text);
+    EXPECT_EQ(decoded.state.outcome, AYNI_CALL_COMPLETED);
 }
 
 // A text contract never accepts a tool list, nor a list over its result bound.
@@ -462,4 +529,31 @@ TEST_F(CallTableTest, tool_call_list_needs_its_contract_and_fits_its_bound) {
     dispatch();
     EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(calls.state(index).outcome, 0U);
+}
+
+// ADR-0060: a conclusive query retains the real outcome after erasure, never its late body.
+TEST_F(CallTableTest, authoritative_query_after_erasure_keeps_outcome_without_refilling_content) {
+    contract.query = ayni::catalog::QueryAuthority::authoritative;
+    dispatch();
+    ASSERT_EQ(
+        calls.finish(
+            index,
+            {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
+            stamp(4)),
+        AYNI_OK);
+    ASSERT_EQ(calls.request_query(index, stamp(5)), AYNI_OK);
+    ASSERT_EQ(calls.begin_query(index, {boot, 6}, stamp(6)), AYNI_OK);
+    ASSERT_EQ(calls.erase_content(index, stamp(7)), AYNI_OK);
+    ASSERT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND,
+                              {AYNI_CALL_COMPLETED,
+                               AYNI_OK,
+                               AYNI_REASON_NONE,
+                               ActionEffect::complete,
+                               {"late answer", 11}},
+                              stamp(8)),
+              AYNI_OK);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(calls.result(index).size, 0U);
+    EXPECT_EQ(calls.input(index).size, 0U);
+    EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
 }

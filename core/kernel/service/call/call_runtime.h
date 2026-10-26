@@ -42,12 +42,15 @@ class CallRuntime {
     // Install Task-scoped read/stage callbacks; end_decision seals them immediately
     // after decide returns, retaining only the copied proposal for validation.
     void begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &snapshot,
-                        ayni_policy_output_v1 &output);
+                        ayni_policy_output_v1 &output, uint64_t durable_seq);
     void end_decision();
+    // After publication/refusal, erase the copied proposal text, including unused buffer tail.
+    void scrub_decision();
     // One sole REQUEST intent must name the staged step and class. Checks all
     // capacities and authorization before the decision takes a transition stamp.
     authority::GrantCheck check_proposal(uint32_t task_index, const ayni_policy_intent_v1 &intent,
-                                         uint64_t now_us, uint64_t durable_seq);
+                                         uint64_t now_us, uint64_t durable_seq,
+                                         knowledge::MemoryDependencies &dependencies);
     // Preflight succeeded unchanged on the owner thread; accepts original identity,
     // canonical body, resource wait and Task state in this one transition.
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us);
@@ -69,6 +72,8 @@ class CallRuntime {
                              uint64_t &waited_us) const;
     uint64_t next_deadline_us() const; // Monotonic; UINT64_MAX when no timer is pending.
     bool idle() const; // No retained delivery/queued runtime, independent of durable history.
+    // Every erased call has released its local transport/Provider borrow; unrelated calls may run.
+    bool privacy_released() const;
     // After an automatic storage reload, map retained transport handles back to
     // stable call IDs. Preserves pending receipts; does not restore submit claims.
     bool rebind_restored();
@@ -107,7 +112,8 @@ class CallRuntime {
         ayni_policy_intent_kind_t kind; // REQUEST_CALL or REQUEST_MODEL, matched at consumption.
     };
     struct Decision {
-        uint32_t task_index; // Stable during the synchronous callback only.
+        uint32_t task_index;  // Stable during the synchronous callback only.
+        uint64_t durable_seq; // Acknowledged prefix shared with the memory decision lease.
         ayni_policy_intent_v1
             *intents; // Original Kernel buffer, never trust a replaced output pointer.
         ayni_policy_output_v1 *output; // Kernel's actual stack output, not a replacement pointer.
@@ -151,7 +157,7 @@ class CallRuntime {
     Advance
     cancel_transport(Delivery &delivery); // One shared cancel port contract, never a terminal.
     bool transport_ready(Mode mode) const;
-    Advance consume(uint64_t now_us);
+    Advance consume(uint64_t now_us, uint64_t durable_seq);
     // Applies one exact receipt to its invariant owner, before mailbox acknowledgement.
     ayni_status_t apply_receipt(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                                 foundation::TransitionStamp stamp, bool &terminal);

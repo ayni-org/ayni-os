@@ -8,7 +8,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/AyniLayers.cmake")
 
 ayni_add_core_module(foundation
     SOURCES
-        foundation/crc32.cpp)
+        foundation/crc32.cpp
+        foundation/utf8.cpp)
 
 ayni_add_core_module(durability
     SOURCES
@@ -57,7 +58,12 @@ ayni_add_core_module(resources
 
 ayni_add_core_module(knowledge
     SOURCES knowledge/observation/observation_table.cpp
-    DEPENDS catalog foundation)
+            knowledge/memory/memory_types.cpp
+            knowledge/memory/memory_table.cpp
+            knowledge/memory/memory_records.cpp
+            knowledge/context/context_table.cpp
+            knowledge/context/context_records.cpp
+    DEPENDS catalog durability foundation)
 
 ayni_add_core_module(work
     SOURCES
@@ -83,12 +89,16 @@ ayni_add_core_module(work
         work/goal/goal_request.cpp
         work/goal/goal_table.cpp
         work/goal/trigger_schedule.cpp
+        work/privacy/privacy_cleanup.cpp
+        work/privacy/privacy_records.cpp
+        work/provenance/provenance_records.cpp
+        work/provenance/provenance_table.cpp
         work/propagation.cpp
         work/task/task_authority.cpp
         work/task/task_authority_records.cpp
         work/task/task_records.cpp
         work/task/task_table.cpp
-    DEPENDS authority catalog durability foundation)
+    DEPENDS authority knowledge catalog durability foundation)
 
 ayni_add_core_module(kernel
     SOURCES
@@ -101,6 +111,7 @@ ayni_add_core_module(kernel
         kernel/api/provider_completion_api.cpp
         kernel/api/query_api.cpp
         kernel/api/resource_api.cpp
+        kernel/api/memory_api.cpp
         kernel/api/scene_api.cpp
         kernel/api/work_api.cpp
         kernel/runtime/boot/boot_sequence.cpp
@@ -113,6 +124,7 @@ ayni_add_core_module(kernel
         kernel/service/call/call_tools.cpp
         kernel/service/call/call_wait.cpp
         kernel/service/command/command_approval.cpp
+        kernel/service/command/command_memory.cpp
         kernel/service/command/command_canonical.cpp
         kernel/service/command/command_goal_identity.cpp
         kernel/service/command/command_reauthorization.cpp
@@ -137,9 +149,19 @@ ayni_add_core_module(kernel
         kernel/service/model/goal_authority.cpp
         kernel/service/intent/goal_reauthorization.cpp
         kernel/service/intent/intent.cpp
+        kernel/service/intent/memory_intent.cpp
+        kernel/service/memory/memory_access.cpp
+        kernel/service/memory/memory_permissions.cpp
+        kernel/service/memory/memory_decision.cpp
+        kernel/service/memory/privacy_service.cpp
+        kernel/service/command/command_context.cpp
+        kernel/service/memory/context_service.cpp
+        kernel/service/intent/context_intent.cpp
+        kernel/api/context_api.cpp
         kernel/service/intent/intent_rules.cpp
         kernel/service/model/task_authority.cpp
         kernel/service/model/work_authority_cleanup.cpp
+        kernel/service/model/work_provenance.cpp
         kernel/service/model/work_model.cpp
         kernel/runtime/kernel_intent.cpp
         kernel/runtime/kernel_facade.cpp
@@ -150,6 +172,10 @@ ayni_add_core_module(kernel
         kernel/service/persistence/command_store.cpp
         kernel/service/persistence/goal_approval_replay.cpp
         kernel/service/persistence/goal_reauthorization_replay.cpp
+        kernel/service/persistence/provenance_store.cpp
+        kernel/service/persistence/privacy_store.cpp
+        kernel/service/persistence/context_store.cpp
+        kernel/service/persistence/memory_store.cpp
         kernel/service/persistence/scene_store.cpp
         kernel/service/persistence/work_cleanup_replay.cpp
         kernel/service/persistence/work_journal.cpp

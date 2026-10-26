@@ -1,4 +1,5 @@
 #include "kernel/service/call/call_runtime.h"
+#include "kernel/service/memory/memory_access.h"
 #include "work/call_propagation.h"
 
 #include "foundation/deadline.h"
@@ -88,6 +89,11 @@ CallRuntime::Advance CallRuntime::advance_query(uint32_t index, uint64_t now_us,
     const auto &query = *work_.calls.state(index).query;
     auto &active = slots_[index].active;
     if (!active) {
+        uint32_t task_index = 0;
+        if (!work_.tasks.find(work_.calls.identity(index).task_id, task_index) ||
+            !task_content_current({work_, now_us, durable_seq}, task_index)) {
+            return end_query(index, AYNI_EXPIRED, AYNI_REASON_MEMORY_EXPIRED);
+        }
         if (mode != Mode::running || query.phase == work::CallQuery::Phase::dispatching) {
             return end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE);
         }
@@ -95,7 +101,11 @@ CallRuntime::Advance CallRuntime::advance_query(uint32_t index, uint64_t now_us,
                    ? prepare_query(index)
                    : Advance::idle;
     }
-    if (mode != Mode::running || now_us >= active->delivery->deadline_us) {
+    uint32_t task_index = 0;
+    const bool content_current =
+        work_.tasks.find(work_.calls.identity(index).task_id, task_index) &&
+        task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index);
+    if (!content_current || mode != Mode::running || now_us >= active->delivery->deadline_us) {
         if (active->stage == Stage::submitted) {
             return cancel_transport(*active->delivery);
         }
@@ -121,7 +131,11 @@ bool CallRuntime::query_ready(uint32_t index, uint64_t now_us, uint64_t durable_
                (work_.calls.state(index).latest.transition.commit_seq <= durable_seq &&
                 mailbox_.in_flight() < limits_.capacity);
     }
-    if (mode != Mode::running || now_us >= active->delivery->deadline_us) {
+    uint32_t task_index = 0;
+    const bool content_current =
+        work_.tasks.find(work_.calls.identity(index).task_id, task_index) &&
+        task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index);
+    if (!content_current || mode != Mode::running || now_us >= active->delivery->deadline_us) {
         return active->stage != Stage::submitted ||
                active->delivery->cancel == Delivery::Cancel::none;
     }

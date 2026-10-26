@@ -12,7 +12,8 @@ namespace {
 bool knows(uint16_t, uint16_t version, WorkRecordContext) {
     return version == work::call_record_version || version == work::call_skipped_record_version ||
            version == work::call_execution_record_version ||
-           version == work::call_tool_calls_record_version;
+           version == work::call_tool_calls_record_version ||
+           version == work::call_erased_record_version;
 }
 uint32_t capacity(const KernelCapacities &capacities) {
     return capacities.call_capacity;
@@ -76,6 +77,9 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
     if (!work::read_call_record(body, size, record, version) ||
         record.state.latest.boot_epoch > metadata.boot_epoch ||
         !within_snapshot(record.state.latest.transition, metadata) ||
+        (record.state.content_erased &&
+         (record.state.content_erased->boot_epoch > metadata.boot_epoch ||
+          !within_snapshot(record.state.content_erased->transition, metadata))) ||
         model.calls.find(record.identity.call_id, duplicate)) {
         return durability::BatchCheck::corrupt;
     }
@@ -184,6 +188,17 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
             return false;
         }
         const auto &task = model_.tasks.at(task_index);
+        if (state.content_erased) {
+            const auto *sources =
+                model_.provenance.find(work::ProvenanceKind::task, task.slot, task.task_id);
+            if (sources == nullptr || sources->content != work::ContentState::erased ||
+                state.content_erased->boot_epoch > boot_epoch_limit ||
+                state.content_erased->transition.commit_seq < sources->stamp.commit_seq ||
+                state.content_erased->transition.commit_seq >
+                    model_.privacy.record().stamp.commit_seq) {
+                return false;
+            }
+        }
         if (id.owner_instance_id != task.owner_instance_id ||
             task.created_transition_id >= state.created.transition.transition_id ||
             (state.outcome == 0U && task.call.id != id.call_id) ||

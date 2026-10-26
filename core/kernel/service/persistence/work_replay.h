@@ -35,6 +35,14 @@ class WorkReplay {
     bool binding_matches() const;
     // Retained Scene command/state relation, shared with snapshots; no startup catalog lookup.
     bool matches_scene_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
+    // Retained memory request/fact relation, with later versions retaining their newer stamps.
+    bool matches_memory_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
+    // Captured command sources remain independently provable after their Goal retires.
+    bool matches_command_sources(const CommandMapping &mapping, uint64_t boot_epoch_limit) const;
+    // Pair exact commands to the one domain transition before installing the retry result.
+    bool pair_domain_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                             ayni_bytes_v1 result_bytes);
+    bool matches_context_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
     // model outlives the replay.
     explicit WorkReplay(WorkModel &model) : model_(model) {}
     // No transition or boot epoch bound, said explicitly: a journal record
@@ -95,10 +103,28 @@ class WorkReplay {
     durability::RecordUse apply(const durability::BatchIdentity &batch,
                                 const durability::RecordHeader &header, const uint8_t *body,
                                 uint64_t boot_epoch_limit);
+    // Each open atomic partner admits only record kinds that can close its proof.
+    bool allows_pending_record(const durability::RecordHeader &header) const;
     // Dispatch while batch_seq_ still names the previously consumed record.
     durability::RecordUse apply_record(const durability::BatchIdentity &batch,
                                        const durability::RecordHeader &header, const uint8_t *body,
                                        uint64_t boot_epoch_limit);
+    bool provenance_consistent(uint64_t boot_epoch_limit) const;
+    bool contexts_consistent(uint64_t boot_epoch_limit) const;
+    // Content sources accompany the same Goal/Task transition.
+    durability::RecordUse restore_provenance(uint16_t version, const uint8_t *body, uint32_t size,
+                                             foundation::TransitionStamp stamp);
+    // A source invalidation request or one deterministic bounded privacy cleanup item.
+    durability::RecordUse restore_privacy(const uint8_t *body, uint32_t size,
+                                          foundation::TransitionStamp stamp, uint64_t boot_epoch);
+    // One memory mutation closes with its exact authenticated owner command.
+    durability::RecordUse restore_memory(const uint8_t *body, uint32_t size,
+                                         foundation::TransitionStamp stamp,
+                                         uint64_t boot_epoch_limit);
+    bool pair_memory_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
+    durability::RecordUse restore_context(const uint8_t *body, uint32_t size,
+                                          foundation::TransitionStamp stamp, uint64_t boot_epoch);
+    bool pair_context_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
     durability::RecordUse restore_scene(const uint8_t *body, uint32_t size,
                                         foundation::TransitionStamp stamp,
                                         uint64_t boot_epoch_limit);
@@ -124,6 +150,8 @@ class WorkReplay {
     // Full row must match this batch and its owning Task; never reissues I/O.
     durability::RecordUse restore_call(uint16_t version, const uint8_t *body, uint32_t size,
                                        work::ActionStamp stamp);
+    // Memory identities share the Kernel ID universe with work and authority facts.
+    bool memory_identities_consistent(uint64_t boot_epoch_limit) const;
     // Every retained selected call and terminal outcome agrees with its Task.
     bool calls_consistent(uint64_t boot_epoch_limit) const;
     // Closes the exact query acceptance with its durable owner's canonical command.
@@ -136,8 +164,8 @@ class WorkReplay {
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_steps(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
-    durability::RecordUse restore_task_checkpoint(const uint8_t *body, uint32_t size,
-                                                  foundation::TransitionStamp stamp);
+    durability::RecordUse restore_task_checkpoint(uint16_t version, const uint8_t *body,
+                                                  uint32_t size, foundation::TransitionStamp stamp);
     // A create uses an ID of the epoch preceding it, a revocation one of an
     // epoch no later: a later BOOT_EPOCH must not legitimize a future ID.
     durability::RecordUse restore_grant(uint16_t version, const uint8_t *body, uint32_t size,
@@ -151,7 +179,7 @@ class WorkReplay {
     durability::RecordUse restore_revocation_progress(const uint8_t *body, uint32_t size,
                                                       foundation::TransitionStamp stamp);
     durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
-                                          uint64_t commit_seq);
+                                          uint64_t commit_seq, uint64_t boot_epoch_limit);
     // One approval's ordered relation, independent of record body decoding.
     // Prove the admitted generation and original parent chain at a known sequence.
     enum class BindingEvidence {
@@ -273,6 +301,34 @@ class WorkReplay {
             TargetCommand request;     // Exact before-CAS and Call/Task target identity.
             bool command_seen = false; // Acceptance cannot finish without its paired owner command.
         };
+        // Before-image evidence kept only until one owner memory command seals the batch.
+        struct MemoryPair {
+            uint64_t object_id;     // Exact changed row, positive while optional is engaged.
+            bool confirmation_only; // True iff content/source/lineage were preserved.
+            bool command_seen; // False until exact request/fact or policy provenance is proved.
+            uint64_t policy_task_id = 0;   // Nonzero for a paired Task decision, no owner command.
+            bool privacy_required = false; // Replacing a source revision requires its use barrier.
+            bool privacy_seen = false;     // Request footer proved in this same transition.
+            bool complete() const { return command_seen && (!privacy_required || privacy_seen); }
+        };
+        bool privacy_progress = false; // A standalone cleanup effect seals this entire batch.
+        std::optional<uint64_t>
+            checkpoint_sources; // Tracked checkpoint awaits same-transition sources.
+        std::optional<uint64_t>
+            goal_sources;                 // Tracked immutable Goal input awaits creation footer.
+        std::optional<MemoryPair> memory; // Empty outside a standalone memory mutation.
+        struct ContextPair {
+            uint64_t object_id; // Exact anchor changed in this transition.
+            ContextCommand
+                expected; // Before-image request proven from its unique state transition.
+            bool command_seen = false; // Owner command still required until proven.
+            bool privacy_seen = false; // FORGET also requires the same-transition reset barrier.
+            bool complete() const {
+                return command_seen &&
+                       (expected.kind != AYNI_INTENT_CONTEXT_FORGET || privacy_seen);
+            }
+        };
+        std::optional<ContextPair> context; // No work/other memory mutation may share this batch.
         struct ScenePair {
             uint64_t object_id; // Exact changed state awaiting its canonical owner command.
             bool command_seen;  // True seals the standalone transition until the next batch.
@@ -282,7 +338,8 @@ class WorkReplay {
         std::optional<TargetCommandPair> target_command; // Only this batch's query or wait resume.
         // Existing work/command partners, independently of the new scan footer.
         bool partners_complete() const {
-            return (!scene || scene->command_seen) &&
+            return !goal_sources && !checkpoint_sources && (!memory || memory->complete()) &&
+                   (!context || context->complete()) && (!scene || scene->command_seen) &&
                    (!target_command || target_command->command_seen) &&
                    (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
                    !task && !task_authority && !goal_authority && !authority.pending() &&

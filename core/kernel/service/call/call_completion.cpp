@@ -1,9 +1,22 @@
 #include "foundation/attempt_identity.h"
 #include "kernel/service/call/call_runtime.h"
+#include "kernel/service/memory/memory_access.h"
 #include "work/call_propagation.h"
+#include <cstring>
 
 namespace ayni::kernel {
 namespace {
+// The reliable mailbox retains its own copy until acknowledge; this temporary receipt copy
+// must be erased on every return, including query notices and waiting for physical stop.
+struct ReceiptScratch {
+    uint8_t *data; // Borrowed CallRuntime scratch, never the mailbox's retained delivery.
+    uint32_t size; // Full allocated bytes, including unused tail; zero iff disabled.
+    ~ReceiptScratch() {
+        if (data != nullptr) {
+            std::memset(data, 0, size);
+        }
+    }
+};
 ayni_call_outcome_t outcome(ProviderMessageKind kind) {
     switch (kind) {
     case ProviderMessageKind::completed:
@@ -27,7 +40,8 @@ ayni_call_outcome_t outcome(ProviderMessageKind kind) {
 
 // Read never retires the delivery. Publication must succeed before acknowledge,
 // so journal backpressure cannot free a slot or lose a result body (C-CALL-012).
-CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
+CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
+    const ReceiptScratch scratch{receipt_, limits_.result_bytes};
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
@@ -80,6 +94,13 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us) {
     bool terminal = false;
     const auto applied =
         apply_receipt(index, task_index, message, work_.transitions.next(), terminal);
+    // Validate the original Provider evidence first, including UTF-8 and offered tools.
+    // Privacy may discard a valid late body; it must never turn malformed evidence into success.
+    if (applied == AYNI_OK &&
+        !task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
+                              task_index)) {
+        work_.calls.discard_result(index);
+    }
     if (applied != AYNI_OK ||
         mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
         return Advance::internal;
@@ -234,7 +255,8 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
             continue;
         }
         const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
-        const bool stopping = mode != Mode::running || task.call.end != work::TaskCall::End::none ||
+        const bool stopping = !task_content_current({work_, now_us, durable_seq}, task_index) ||
+                              mode != Mode::running || task.call.end != work::TaskCall::End::none ||
                               task.lifecycle == AYNI_TASK_PAUSED ||
                               state.cancel_cause != work::CallCancelCause::none ||
                               (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||

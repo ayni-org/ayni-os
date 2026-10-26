@@ -3,6 +3,7 @@
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
+#include <ayni/memory.h>
 #include <ayni/resources.h>
 #include <ayni/storage_format.h>
 

@@ -89,6 +89,7 @@ KernelCapacities every_store_capacities() {
     capacities.component_capacity = 3;
     capacities.executor_capacity = 2;
     capacities.execution_binding_capacity = 3;
+    capacities.memory_capacity = 4;
     capacities.scene_capacity = 2;
     capacities.observation_source_capacity = 3;
     return capacities;
@@ -138,6 +139,8 @@ TEST(KernelLayout, each_region_is_sized_by_its_stores_limits_function) {
                   ayni::work::TaskAuthorityTable::storage_size(task_authority_limits(capacities)));
         EXPECT_EQ(layout[Store::calls].size,
                   ayni::work::CallTable::storage_size(call_limits(capacities)));
+        EXPECT_EQ(layout[Store::memories].size,
+                  ayni::knowledge::MemoryTable::storage_size(memory_limits(capacities)));
         EXPECT_EQ(layout[Store::scenes].size,
                   ayni::authority::Scenes::storage_size(scene_limits(capacities)));
         EXPECT_EQ(layout[Store::decisions].size,

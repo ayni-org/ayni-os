@@ -37,9 +37,9 @@ class JournalRing {
     bool empty() const { return first_start_ == first_end_; }
     // The oldest batch queued; only when not empty().
     const uint8_t *front(uint32_t &out_size) const;
-    // Drops the oldest batch; only when not empty().
+    // Drops and erases the oldest batch; only after its Host borrow ended and not empty().
     void pop_front();
-    void clear();
+    void clear(); // Erases the entire buffer; caller must own it without any I/O borrow.
 
   private:
     // The free run a new batch takes: after the later run, or before the

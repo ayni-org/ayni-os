@@ -9,8 +9,8 @@ namespace ayni::runtime {
 namespace {
 constexpr char filename[] = "conversation.bin";
 constexpr char temporary[] = ".conversation.pending";
-constexpr uint64_t format_version = 1;
-constexpr uint32_t version_offset = 4, length_offset = 8, pending_offset = 16;
+constexpr uint64_t format_version = 2;
+constexpr uint32_t version_offset = 4, length_offset = 8, pending_offset = 16, context_offset = 24;
 constexpr uint32_t u32_bytes = 4, u64_bytes = 8, byte_bits = 8;
 void put(uint8_t *p, uint64_t v, uint32_t n) {
     for (uint32_t i = 0; i < n; ++i) {
@@ -43,6 +43,7 @@ ayni_status_t ConversationStore::open(const char *directory, SavedConversation &
         return AYNI_STORAGE_FAILED;
     }
     const auto status = read(state);
+    bytes_.fill(0);
     if (status != AYNI_OK && status != AYNI_NOT_FOUND) {
         close();
         return status;
@@ -91,6 +92,10 @@ ayni_status_t ConversationStore::read(SavedConversation &state) {
     }
     SavedConversation candidate;
     candidate.pending_goal = get(bytes_.data() + pending_offset, u64_bytes);
+    candidate.context_id = get(bytes_.data() + context_offset, u64_bytes);
+    if (candidate.context_id == 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     const auto status = strategies::Conversation::decode(
         {bytes_.data() + header_size, size - header_size}, candidate.record);
     if (status == AYNI_OK) {
@@ -99,6 +104,9 @@ ayni_status_t ConversationStore::read(SavedConversation &state) {
     return status;
 }
 ayni_status_t ConversationStore::save(const SavedConversation &state) {
+    if (state.context_id == 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     strategies::Encoded encoded;
     const auto status = strategies::Conversation::encode(state.record, encoded);
     if (status != AYNI_OK) {
@@ -111,10 +119,12 @@ ayni_status_t ConversationStore::save(const SavedConversation &state) {
     if (phase_ != Phase::idle) {
         return AYNI_BUSY;
     }
+    bytes_.fill(0);
     std::memcpy(bytes_.data(), "AYNF", version_offset);
     put(bytes_.data() + version_offset, format_version, u32_bytes);
     put(bytes_.data() + length_offset, encoded.size, u64_bytes);
     put(bytes_.data() + pending_offset, state.pending_goal, u64_bytes);
+    put(bytes_.data() + context_offset, state.context_id, u64_bytes);
     std::memcpy(bytes_.data() + header_size, encoded.bytes.data(), encoded.size);
     size_ = header_size + encoded.size;
     phase_ = Phase::queued;
@@ -174,6 +184,8 @@ bool ConversationStore::poll(ayni_status_t &status) {
         return false;
     }
     status = status_;
+    bytes_.fill(0);
+    size_ = 0;
     phase_ = Phase::idle;
     return true;
 }
@@ -192,6 +204,8 @@ void ConversationStore::close() {
         ::close(directory_);
     }
     directory_ = -1;
+    bytes_.fill(0);
+    size_ = 0;
     phase_ = Phase::idle;
 }
 } // namespace ayni::runtime

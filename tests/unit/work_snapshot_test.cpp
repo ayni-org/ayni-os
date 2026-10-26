@@ -146,7 +146,7 @@ void admit_fixture_work(WorkModel &model) {
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const auto &task = model.tasks.at(index);
         if (!model.task_authority.contains(task.slot, task.task_id)) {
-            ASSERT_TRUE(model.inherit_task_authority(
+            ASSERT_TRUE(model.inherit_task_metadata(
                 task.task_id, {task.created_transition_id, task.created_transition_id}));
         }
     }

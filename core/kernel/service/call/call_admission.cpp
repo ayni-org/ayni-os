@@ -1,4 +1,5 @@
 #include "kernel/service/call/call_runtime.h"
+#include "kernel/service/memory/memory_permissions.h"
 
 #include "authority/scope/scope.h"
 
@@ -33,12 +34,12 @@ bool routing_matches(const catalog::Binding &binding, ayni_bytes_v1 arguments) {
 } // namespace
 
 void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &snapshot,
-                                 ayni_policy_output_v1 &output) {
+                                 ayni_policy_output_v1 &output, uint64_t durable_seq) {
     proposal_.reset();
     if (limits_.capacity == 0U) {
         return;
     }
-    decision_ = Decision{task_index, output.intents, &output};
+    decision_ = Decision{task_index, durable_seq, output.intents, &output};
     output.call_context = this;
     output.request_call = stage_request;
     snapshot.call_context = this;
@@ -50,6 +51,12 @@ void CallRuntime::end_decision() {
     decision_.reset();
 }
 
+void CallRuntime::scrub_decision() {
+    proposal_.reset();
+    if (staging_ != nullptr) {
+        std::memset(staging_, 0, limits_.input_bytes);
+    }
+}
 ayni_status_t CallRuntime::stage_request(void *context, const ayni_call_request_v1 *request) {
     if (context == nullptr || request == nullptr) {
         return AYNI_INVALID_ARGUMENT;
@@ -122,6 +129,11 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.decision_ || !runtime.work_.calling_out()) {
         return AYNI_INVALID_STATE;
+    }
+    if (!task_content_current({runtime.work_, runtime.host_.monotonic_now_us(runtime.host_.ctx),
+                               runtime.decision_->durable_seq},
+                              runtime.decision_->task_index)) {
+        return AYNI_EXPIRED;
     }
     const auto &task = runtime.work_.tasks.at(runtime.decision_->task_index);
     uint32_t index = 0;
@@ -220,7 +232,8 @@ CallRuntime::resource_request(uint64_t call_id, uint64_t owner, const catalog::B
 // cannot feed another external call until the preceding Task/result batch is durable.
 authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
                                                   const ayni_policy_intent_v1 &intent,
-                                                  uint64_t now_us, uint64_t durable_seq) {
+                                                  uint64_t now_us, uint64_t durable_seq,
+                                                  knowledge::MemoryDependencies &dependencies) {
     const auto &task = work_.tasks.at(task_index);
     if (!proposal_ || proposal_->task_id != task.task_id || proposal_->kind != intent.kind ||
         !proposal_->step.equals({intent.step_key, intent.step_key_size})) {
@@ -254,10 +267,17 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
     }
     const auto authority = check_input(task_index, catalogs_.bindings.at(proposal.binding_index),
                                        domain, input, now_us, durable_seq);
-    return authority.status == AYNI_OK
-               ? control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index),
-                                  input.arguments, now_us, durable_seq, proposal_->execution)
-               : authority;
+    if (authority.status != AYNI_OK) {
+        return authority;
+    }
+    const auto exported =
+        memory_export_permissions({work_, now_us, durable_seq}, task.owner_instance_id,
+                                  catalogs_.bindings.at(proposal.binding_index), dependencies);
+    if (exported != AYNI_OK) {
+        return {exported, memory_reason(exported)};
+    }
+    return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index),
+                            input.arguments, now_us, durable_seq, proposal_->execution);
 }
 
 // Exact capacity and identity preflights have succeeded. Any refusal here is an
