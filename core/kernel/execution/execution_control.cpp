@@ -396,7 +396,8 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
         lease->stop_delivery == resources::PermitLease::StopDelivery::pending &&
         executors_.request(index, ExecutorLane::stop) == nullptr) {
         // A not-installed permit remains quarantined until terminal + authoritative absence.
-        // An unanswered stop is sent again; no answer is physical stop evidence.
+        // An unanswered stop is sent again, a refused one leaves the gate to
+        // expire; no answer is physical stop evidence.
         lease->stop_delivery = resources::PermitLease::StopDelivery::sent;
         lease->poll_after_us = now_us;
         const uint64_t permit_id = lease->permit.permit_id;
