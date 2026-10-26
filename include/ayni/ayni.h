@@ -40,7 +40,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 38u
+#define AYNI_ABI_MINOR 39u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1859,6 +1859,18 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
  * goal, with its tasks (ADR-0025). */
 ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
                             ayni_task_info_v1 *out_info);
+
+/* Since 0.39. Copies all retained GOAL, TASK, CALL or GRANT IDs, including
+ * terminal objects, in unspecified order. Trusted owner-thread query with the
+ * same lifecycle rules as get_task; not an authorization boundary. No callback
+ * is permitted. No snapshot survives the next mutation: query/list together
+ * between steps. Work is bounded by the configured table capacity.
+ * OK writes count IDs and out_count. BUFFER_TOO_SMALL writes only the required
+ * out_count; NULL ids is valid only with capacity 0. INVALID_ARGUMENT for NULL
+ * kernel/out_count or invalid buffer, UNSUPPORTED for other kinds. Other
+ * failures preserve outputs. IDs may disappear through normal reclamation. */
+ayni_status_t ayni_list_objects(const ayni_kernel_t *kernel, ayni_object_kind_t kind, uint64_t *ids,
+                                uint32_t capacity, uint32_t *out_count);
 
 /* Since 0.38. Trusted owner-thread export of a completed Task's private state.
  * Like get_task, not an authorization boundary for untrusted clients. BUSY

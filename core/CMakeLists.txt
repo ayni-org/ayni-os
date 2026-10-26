@@ -97,6 +97,7 @@ ayni_add_core_module(kernel
         kernel/api/observation_api.cpp
         kernel/api/provider_api.cpp
         kernel/api/provider_completion_api.cpp
+        kernel/api/query_api.cpp
         kernel/api/resource_api.cpp
         kernel/api/scene_api.cpp
         kernel/api/work_api.cpp

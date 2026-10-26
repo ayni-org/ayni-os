@@ -24,6 +24,10 @@ struct Config {
     Service service = Service::text;
     uint32_t request_capacity = 4; // Concurrent borrows, 1..64; terminal post releases one.
     uint32_t text_max_bytes = 512; // Copied input/result bytes per slot, 1..4096.
+    // Optional deterministic final text for conversation/summary fixtures, copied
+    // at configure (at most 512 bytes). Empty preserves echo/tool behavior. Such
+    // fixtures accept up to 8192 input bytes; tool proposals still take priority.
+    ayni_string_v1 reply_text{};
 };
 // Single owner-thread component. Call advance between Kernel steps to deliver
 // completions; callbacks only copy/enqueue. No private Kernel state is accessed.

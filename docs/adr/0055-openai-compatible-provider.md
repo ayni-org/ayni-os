@@ -10,6 +10,8 @@ Core 已交付 typed 工具视图与结果接口。现在需要用真实文本�
 
 ## 决策
 
+生命周期修订：下述销毁后 `close` 的历史安排由 ADR-0057 决策 7 补充；当前先在 Kernel STOPPED 后 `quiesce`/join 网络生产者并保留 ctx，再销毁 Kernel/Host，最后 `close` 释放 Provider，避免 terminal post 尚在返回时释放 Host。
+
 1. **组件边界。** `providers/openai_compat` 只含公开 ABI、Provider 自身头和外部库；`provider.cpp` 拥有配置、完成借用、工作线程与 libcurl，`protocol.cpp` 拥有 JSON 读写和工具映射。Native 根 CMake 引入 libcurl ≥7.85、Threads 和按发布包哈希固定的 yyjson 0.10.0（MIT）；ESP-IDF 的组合根不包含此目录。libcurl 使用其随发行版安装的 curl 许可，TLS 依赖由宿主软件包提供。
 2. **调用声明。** 单一 `openai.chat` capability，UNARY/MODEL，FIELDS_TEXT → TOOL_CALLS，声明 EGRESS 与 BILLING、NOT_IDEMPOTENT、QUERY_NONE 和 CANCEL_REQUEST。Provider/端点/目的地 ID 由组合根配置；契约占用 `model.slot` 的 1 单位，组合根注册该共享资源（默认容量 1）、对应 IDENTIFIER 外发字段与 Binding。一次输入是一个 user message，工具由 submit 视图生成；多轮上下文的内容仍归后续策略。
 3. **固定容量与线程。** configure 分配槽、正文、请求/响应缓冲和两个 yyjson 内存池，并启动一个线程运行 curl multi；curl/TLS 的内部内存由该库管理，不声称整个进程无堆。submit/cancel 在 Kernel owner 上非阻塞、不分配，只复制有限视图或设置取消请求；工具回调仅在本次 submit 内调用，绝不保存。release/acquire 发布槽；worker 拥有 running/ready 与 HTTP 状态，结果只经 `ayni_provider_post`。fatal multi 错误后 worker 留在排空模式，接住错误发生前已开始复制的 submit，直到显式 close；不因致命错误丢失借用。

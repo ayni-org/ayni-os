@@ -19,6 +19,9 @@ struct Config {
     uint32_t response_max_bytes = 131072; // Whole HTTP body, 1..1048576 bytes.
     uint32_t timeout_ms = 30000;          // From submit, including the local queue; 1..300000 ms.
     uint32_t max_output_tokens = 1024;    // Sent as max_tokens, 1..8192; distinct from byte limits.
+    // TEXT declares openai.text and offers no tools (conversation summaries);
+    // TOOL_CALLS preserves openai.chat. Other formats are rejected.
+    uint32_t result_format = AYNI_CALL_RESULT_TOOL_CALLS;
 };
 // Owner-thread configure/describe/close and callbacks; one internal I/O worker.
 // submit copies views without I/O, allocation or waiting. Worker calls only provider_post.
@@ -33,6 +36,10 @@ class Provider {
     ayni_status_t configure(const Config &config);
     // Nested descriptor views remain valid until close; registration copies them.
     ayni_status_t describe(ayni_provider_v1 &out) const;
+    // After the registered Kernel is STOPPED, join the worker while keeping its
+    // registered context/descriptor alive until Kernel destruction. BUSY while
+    // a post is still returning; repeat after yielding. No further submits allowed.
+    ayni_status_t quiesce();
     // BUSY while any borrow remains. After Kernel drain, joins the worker. Keep the
     // configured context until Kernel destruction; call close after destroy succeeds.
     ayni_status_t close();

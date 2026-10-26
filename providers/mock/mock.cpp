@@ -8,6 +8,8 @@ namespace ayni::providers::mock {
 namespace {
 constexpr uint32_t request_capacity_max = 64;
 constexpr uint32_t text_bytes_max = 4096;
+constexpr uint32_t fixture_input_max = 8192;
+constexpr uint32_t fixture_reply_max = 512;
 constexpr uint32_t contract_version = 1;
 constexpr uint32_t request_timeout_ms = 30000;
 constexpr uint32_t variant_b_ticks = 2;
@@ -69,6 +71,7 @@ struct Provider::Impl {
     explicit Impl(Config config_value) : config(config_value) {}
 
     Config config;
+    char reply[fixture_reply_max]{}; // Copied fixture response; no borrowed config pointer.
     std::unique_ptr<Slot[]> slots;
     std::unique_ptr<char[]> bodies;
     std::unique_ptr<Plan[]> plans; // Tools service only.
@@ -351,6 +354,8 @@ struct Provider::Impl {
             result.result = {};
             result.tool_call_count = plan->count;
             result.tool_calls = calls_of(index);
+        } else if (success && config.reply_text.size) {
+            result.result = {reply, config.reply_text.size};
         }
         const auto status = ayni_provider_post(slot.completion, &result);
         if (status == AYNI_OK) {
@@ -376,12 +381,20 @@ ayni_status_t Provider::configure(Config config) {
         (config.service != Service::text && config.service != Service::action &&
          config.service != Service::tools) ||
         config.request_capacity == 0 || config.request_capacity > request_capacity_max ||
-        config.text_max_bytes == 0 || config.text_max_bytes > text_bytes_max) {
+        config.text_max_bytes == 0 ||
+        config.text_max_bytes > (config.reply_text.size ? fixture_input_max : text_bytes_max) ||
+        config.reply_text.size > fixture_reply_max ||
+        config.reply_text.size > config.text_max_bytes ||
+        (config.reply_text.size && !config.reply_text.data)) {
         return AYNI_INVALID_ARGUMENT;
     }
     std::unique_ptr<Impl> created(new (std::nothrow) Impl(config));
     if (!created) {
         return AYNI_CAPACITY_EXCEEDED;
+    }
+    if (config.reply_text.size) {
+        std::memcpy(created->reply, config.reply_text.data, config.reply_text.size);
+        created->config.reply_text.data = created->reply;
     }
     created->slots.reset(new (std::nothrow) Impl::Slot[config.request_capacity]);
     created->bodies.reset(new (std::nothrow) char[config.request_capacity * config.text_max_bytes]);

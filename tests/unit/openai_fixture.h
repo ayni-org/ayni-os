@@ -258,6 +258,16 @@ class OpenaiFixture : public ::testing::Test {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_STOPPED);
+            if (descriptor.ctx) {
+                // ADR-0057/C-HOST-018: a consumed terminal post may still be
+                // returning through Host wake. Keep contexts until destroy.
+                auto status = provider.quiesce();
+                for (unsigned i = 0; status == AYNI_BUSY && i < 1000; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    status = provider.quiesce();
+                }
+                ASSERT_EQ(status, AYNI_OK);
+            }
             ASSERT_EQ(work.node().destroy(), AYNI_OK);
         }
         if (descriptor.ctx) {
