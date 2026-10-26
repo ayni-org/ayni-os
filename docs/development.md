@@ -71,13 +71,13 @@ ctest --test-dir build/native --output-on-failure
 
 ### CI 机器
 
-CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门跑 CI 的 Ubuntu Server 26.10 虚拟机，4 核 8 线程、8 GiB 内存，一个 runner 实例，使用无 sudo 的用户并开机自启。一次只接一个 job；构建与测试并行度仍为 4。宿主提供 Git、Docker、Bash 与 `flock`，Native 工具来自 Ubuntu 24.04 包（GCC 13.3.0、Clang/clang-format 18.1.3、CMake 3.28.3、ccache 4.9.1），版本与宿主系统无关；固件用 `espressif/idf:v6.0.3`。
+CI 全部在自托管 runner 上跑（用户 2026-10-23 决定）：一台专门跑 CI 的机器 `danny-cipc`，32 个 CPU、约 7.2 GiB 内存与 4 GiB swap，上面有两个 runner 实例（用户 2026-10-26 告知），共用一个 Docker daemon，以同一个无 sudo 的用户运行并开机自启。两个 runner 同时各接一个 job；每个 Native 容器 12 CPU、3 GiB，两个容器合计 6 GiB，给宿主留出约 1 GiB。构建并行度 6（编译占内存），测试并行度 12（测试主要等进程启动），TSan 测试在 `native.sh` 中限为 6；`native.sh` 结束时打印容器的内存峰值（cgroup v2 `memory.peak`），调整并行度或限额时以它为准。宿主提供 Git、Docker、Bash 与 `flock`，Native 工具来自 Ubuntu 24.04 包（GCC 13.3.0、Clang/clang-format 18.1.3、CMake 3.28.3、ccache 4.9.1），版本与宿主系统无关；固件用 `espressif/idf:v6.0.3`。
 
 检查、Native 构建与 clang-tidy 共用本机 `ayni-ci-tools:<配方键>` 镜像。`tools/ci/run_tools.sh prepare` 以基础镜像名和 `tools/ci/install_tools.sh` 内容生成缓存键：首次或镜像缺失时，在受限容器里安装一次，只有安装成功才发布本地镜像；后续直接复用。更新工具包或安全补丁时修改安装配方的 revision，触发重新安装。镜像保留在 runner 的 Docker daemon 中，不上传注册表；新 runner 或清除镜像后会重建。基础镜像标签与 apt 仓库允许更新，此缓存用于避免重复安装，不声称锁定每个包的精确版本；Native job 会打印实际工具版本。
 
-Native 命令通过 `tools/ci/run_tools.sh run <命令> <参数…>` 执行，每个容器限制 4 CPU、3 GiB 内存并禁止额外 swap，按该机器单 job 的资源预算留出余量。镜像初始化也使用同样限制；失败会清理安装容器，不复用半成品。镜像初始化用本机用户级 `flock` 串行，当前只支持这些 job 共用一个 Docker daemon。源码继续挂载到 `/__w/ayni/ayni`，以保持 Debug 的 ccache 路径；命令以 runner UID/GID 运行，取消也不会留下 root 属主的源码文件；Docker init 转发取消信号并回收子进程。checkout 和资源检查在宿主执行；普通代码 PR 的轻量检查与完整 ASan/UBSan 通过 `tools/ci/checks.sh` 在同一容器运行。附加 Release/Clang/TSan 由一个 job 的同一容器按需依次执行，使用 `tools/ci/native.sh`；不再为每个配置/命令重新安排多个 job 和容器。
+Native 命令通过 `tools/ci/run_tools.sh run <命令> <参数…>` 执行，每个容器限制 12 CPU、3 GiB 内存并禁止额外 swap，两个 runner 同时运行时仍在机器的预算内。镜像初始化也使用同样限制；失败会清理安装容器，不复用半成品。镜像初始化用本机用户级 `flock` 串行，两个 runner 以同一用户运行，所以共用一把锁。源码在每个容器里都挂载到 `/__w/ayni/ayni`：路径属于容器，两个 job 不冲突，Debug 的 ccache 键也保持不变；命令以 runner UID/GID 运行，取消也不会留下 root 属主的源码文件；Docker init 转发取消信号并回收子进程。checkout 和资源检查在宿主执行；普通代码 PR 的轻量检查与完整 ASan/UBSan 通过 `tools/ci/checks.sh` 在同一容器运行。附加 Release/Clang/TSan 是矩阵中的独立 job（`tools/ci/select_checks.py` 输出 `native_presets`），每个 job 一个容器运行 `tools/ci/native.sh <预设>`，两个 runner 并行取用；ESP-IDF job 同样与它们并行。
 
-编译缓存与 GoogleTest 发布包继续使用原 Docker 卷 `ayni-ccache`、`ayni-ccache-esp-idf`、`ayni-downloads`，跨运行保留；首次采用 Native 卷时只在属主不同的情况下修正一次。ESP-IDF job 仍用原 job container 和缓存，最后把 root 创建的文件归还 runner。
+编译缓存与 GoogleTest 发布包继续使用 Docker 卷 `ayni-ccache`、`ayni-ccache-esp-idf`、`ayni-downloads`，跨运行保留，两个 runner 共用：ccache 支持多个进程同时读写，共用比各自一份命中率更高。Native ccache 上限 4 GiB，容纳四个 Native 配置（原 1 GiB 已满）。`prepare` 只接管 root 属主的卷（旧的 root job 容器或新建的卷），属于另一个非 root 用户时报错退出：两个 runner 若以不同用户运行，每次接管都会打断另一个 runner 正在使用缓存的 job。ESP-IDF job 仍用原 job container 和缓存，最后把 root 创建的文件归还 runner。
 
 机器的一次性准备要 sudo，之后运行 CI 不需要：
 

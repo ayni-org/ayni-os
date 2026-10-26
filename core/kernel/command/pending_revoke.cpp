@@ -7,8 +7,8 @@
 
 namespace ayni::kernel {
 
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const CanonicalRevokeView &input) {
+CommandTable::ExactLookup CommandTable::find_revoke(uint64_t principal_id, uint64_t command_id,
+                                                    const CanonicalRevokeView &input) {
     staged_.reset();
     std::array<uint8_t, revoke_command_size> bytes{};
     uint32_t size = 0;

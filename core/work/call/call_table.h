@@ -197,7 +197,7 @@ class CallTable {
         std::optional<ActionRecord> action; // Empty before resource admission; never copied.
         uint32_t domain_size;               // Used bytes in original schema stride.
         uint32_t input_size;                // Used bytes in canonical input stride.
-        uint32_t result_size = 0; // Used UTF-8 result bytes, zero also permits empty success.
+        uint32_t result_size; // Used UTF-8 result bytes, zero also permits empty success.
     };
     struct Slot {
         std::optional<Entry> entry; // Empty means free; removing never moves another call.

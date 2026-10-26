@@ -1,7 +1,8 @@
 name: ci
 
 # Ordinary code PRs run checks and ASan/UBSan in one cached container.
-# Extra native configurations and ESP-IDF run only periodically or via ci:full/manual.
+# Extra native configurations (one job each) and ESP-IDF run only
+# periodically or via ci:full/manual; two runners take them in parallel.
 # Weekly/manual runs cover every configuration; main pushes run checks only.
 on:
   push:
@@ -34,10 +35,14 @@ env:
   GIT_CONFIG_COUNT: 1
   GIT_CONFIG_KEY_0: safe.directory
   GIT_CONFIG_VALUE_0: '*'
-  # Peaks measured with four jobs: about 1 GiB to build native-asan, 0.7 GiB
-  # to build the firmware and 0.2 GiB to run the sanitizer tests.
-  CMAKE_BUILD_PARALLEL_LEVEL: 4
-  CTEST_PARALLEL_LEVEL: 4
+  # Two runners share one 32-CPU machine with about 7 GiB of memory; each
+  # native container gets 12 CPUs and 3 GiB (tools/ci/run_tools.sh). Peaks
+  # measured with four jobs: about 1 GiB to build native-asan, 0.7 GiB to
+  # build the firmware and 0.2 GiB to run the sanitizer tests. Compiling
+  # takes the memory, so builds use 6 jobs; tests mostly wait on process
+  # start and use 12.
+  CMAKE_BUILD_PARALLEL_LEVEL: 6
+  CTEST_PARALLEL_LEVEL: 12
   IDF_PY_BUILD_JOBS: 4
 
 jobs:
@@ -47,9 +52,7 @@ jobs:
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
     outputs:
-      release: ${{ steps.scope.outputs.release }}
-      clang: ${{ steps.scope.outputs.clang }}
-      tsan: ${{ steps.scope.outputs.tsan }}
+      native_presets: ${{ steps.scope.outputs.native_presets }}
       esp_idf: ${{ steps.scope.outputs.esp_idf }}
     steps:
       - uses: actions/checkout@v4
@@ -79,33 +82,33 @@ jobs:
           RUN_ASAN: ${{ steps.scope.outputs.asan }}
         run: tools/ci/run_tools.sh run bash tools/ci/checks.sh "$RUN_ASAN"
 
+  # One job per configuration, so that both runners build at once.
   native:
     name: periodic or requested native configurations
     needs: checks
-    if: needs.checks.outputs.release == 'true' || needs.checks.outputs.clang == 'true' || needs.checks.outputs.tsan == 'true'
+    if: needs.checks.outputs.native_presets != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: ${{ fromJSON(needs.checks.outputs.native_presets) }}
     runs-on: [self-hosted, linux]
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare cached native tools
+        run: tools/ci/run_tools.sh prepare
       - name: Check ASLR for ThreadSanitizer
-        if: needs.checks.outputs.tsan == 'true'
+        if: matrix.preset == 'native-tsan'
         run: |
           bits=$(tools/ci/run_tools.sh mmap-bits)
           if [ "$bits" -gt 28 ]; then
             echo "::error::vm.mmap_rnd_bits is $bits; ThreadSanitizer needs 28"
             exit 1
           fi
-      - name: Selected native suites in one container
+      - name: Complete suite
         env:
-          RUN_RELEASE: ${{ needs.checks.outputs.release }}
-          RUN_CLANG: ${{ needs.checks.outputs.clang }}
-          RUN_TSAN: ${{ needs.checks.outputs.tsan }}
-        run: |
-          tools/ci/run_tools.sh run bash -euo pipefail -c '
-            if [ "$1" = true ]; then bash tools/ci/native.sh native-release; fi
-            if [ "$2" = true ]; then bash tools/ci/native.sh native-debug; fi
-            if [ "$3" = true ]; then bash tools/ci/native.sh native-tsan; fi
-          ' bash "$RUN_RELEASE" "$RUN_CLANG" "$RUN_TSAN"
+          PRESET: ${{ matrix.preset }}
+        run: tools/ci/run_tools.sh run bash tools/ci/native.sh "$PRESET"
 
   clang-tidy:
     name: clang-tidy (advisory)

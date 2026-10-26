@@ -235,6 +235,8 @@ def check_component(arch: Architecture, source: PurePosixPath, include: Include,
         return None
     if "own" in allowed and target.kind == component and target.module == instance_of(source.parts):
         return None
+    if f"{target.kind}:{target.module}" in allowed:
+        return None
     return f"{component}/ may not include {describe(include, target)}"
 
 

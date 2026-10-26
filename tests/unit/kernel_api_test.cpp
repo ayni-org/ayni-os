@@ -224,29 +224,7 @@ TEST_F(KernelApi, create_rejects_only_one_storage_port) {
     host = valid_host();
     host.storage_read_prefix = &reject_read;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
-    // A table ending inside storage_read_prefix has storage_append alone.
-    host = valid_host();
-    host.storage_append = &reject_append;
-    host.storage_read_prefix = &reject_read;
-    host.struct_size =
-        offsetof(ayni_host_v1, storage_read_prefix) + sizeof(host.storage_read_prefix) - 1U;
-    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(kernel, nullptr);
-}
-
-// A 0.3 Host table ends before the storage ports; it is still valid, and the
-// kernel it creates cannot start (kernel_lifecycle_test.cpp).
-TEST_F(KernelApi, host_table_without_storage_ports_is_accepted) {
-    const ayni_config_v1 config = valid_config();
-    ayni_host_v1 host = valid_host();
-    host.storage_append = &reject_append;
-    host.storage_read_prefix = &reject_read;
-    host.struct_size = offsetof(ayni_host_v1, storage_append);
-    ayni_kernel_t *kernel = nullptr;
-    ASSERT_EQ(create(&config, &host, &kernel), AYNI_OK);
-    EXPECT_EQ(KernelTestProbe::host(kernel).storage_append, nullptr);
-    EXPECT_EQ(KernelTestProbe::host(kernel).storage_read_prefix, nullptr);
-    EXPECT_EQ(ayni_destroy(kernel), AYNI_OK);
 }
 
 TEST_F(KernelApi, create_rejects_null_arguments) {
@@ -283,29 +261,37 @@ TEST_F(KernelApi, create_rejects_missing_wake_or_ingress_lock) {
     EXPECT_EQ(kernel, nullptr);
 }
 
-// A table that ends inside or before the 0.3 ports lacks required ports; the
-// partly covered pointer must not be read as one.
-TEST_F(KernelApi, host_table_without_0_3_ports_is_invalid_argument) {
+// ADR-0053: while the major is 0 a struct has only this minor's layout. A
+// shorter config or Host table is refused whole, even when the fields it
+// lacks have defaults or are optional ports.
+TEST_F(KernelApi, struct_size_below_this_layout_is_invalid_argument) {
+    const ayni_host_v1 host = valid_host();
+    ayni_kernel_t *kernel = nullptr;
+    std::size_t bytes = 17;
+    std::size_t alignment = 19;
+    for (const std::size_t size :
+         {offsetof(ayni_config_v1, abi_major) + sizeof(uint32_t) - 1U,
+          offsetof(ayni_config_v1, ingress_capacity), offsetof(ayni_config_v1, command_capacity),
+          sizeof(ayni_config_v1) - 1U}) {
+        ayni_config_v1 config = valid_config();
+        config.struct_size = static_cast<uint32_t>(size);
+        EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT) << size;
+        EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment),
+                  AYNI_INVALID_ARGUMENT)
+            << size;
+    }
     const ayni_config_v1 config = valid_config();
-    ayni_kernel_t *kernel = nullptr;
-    ayni_host_v1 host = valid_host();
-    host.struct_size = offsetof(ayni_host_v1, wake);
-    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
-    host.struct_size = offsetof(ayni_host_v1, ingress_unlock) + sizeof(host.ingress_unlock) - 1;
-    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    for (const std::size_t size :
+         {offsetof(ayni_host_v1, monotonic_now_us), offsetof(ayni_host_v1, wake),
+          offsetof(ayni_host_v1, storage_append), offsetof(ayni_host_v1, storage_read_log),
+          sizeof(ayni_host_v1) - 1U}) {
+        ayni_host_v1 short_host = valid_host();
+        short_host.struct_size = static_cast<uint32_t>(size);
+        EXPECT_EQ(create(&config, &short_host, &kernel), AYNI_INVALID_ARGUMENT) << size;
+    }
     EXPECT_EQ(kernel, nullptr);
-}
-
-TEST_F(KernelApi, struct_size_below_first_layout_is_invalid_argument) {
-    ayni_config_v1 config = valid_config();
-    ayni_host_v1 host = valid_host();
-    ayni_kernel_t *kernel = nullptr;
-
-    config.struct_size = offsetof(ayni_config_v1, abi_major) + sizeof(config.abi_major) - 1;
-    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
-    config = valid_config();
-    host.struct_size = offsetof(ayni_host_v1, monotonic_now_us) + sizeof(host.monotonic_now_us) - 1;
-    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(bytes, 17U);
+    EXPECT_EQ(alignment, 19U);
 }
 
 TEST_F(KernelApi, capacity_outside_its_range_is_invalid_argument) {
@@ -432,107 +418,6 @@ TEST_F(KernelApi, goal_tree_limits_need_no_memory) {
     EXPECT_EQ(required_size(config), base);
 }
 
-// C-VER-003: a field that struct_size does not cover is never read and takes
-// its documented default.
-// The command field of 0.14 at its default.
-ayni_config_v1 with_command_default(ayni_config_v1 config) {
-    config.command_capacity = AYNI_COMMAND_CAPACITY_DEFAULT;
-    config.capability_capacity = AYNI_CAPABILITY_CAPACITY_DEFAULT;
-    config.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
-    config.grant_capacity = AYNI_GRANT_CAPACITY_DEFAULT;
-    config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
-    config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_DEFAULT;
-    return config;
-}
-
-// The step and checkpoint fields of 0.12 and the field after them at their
-// defaults.
-ayni_config_v1 with_step_defaults(ayni_config_v1 config) {
-    config.task_step_capacity = AYNI_TASK_STEP_CAPACITY_DEFAULT;
-    config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT;
-    return with_command_default(config);
-}
-
-// The strategy fields of 0.10 and those after them at their defaults.
-ayni_config_v1 with_strategy_defaults(ayni_config_v1 config) {
-    config.strategy_capacity = AYNI_STRATEGY_CAPACITY_DEFAULT;
-    config.policy_intent_capacity = AYNI_POLICY_INTENT_CAPACITY_DEFAULT;
-    return with_step_defaults(config);
-}
-
-// The work model fields of 0.5 to 0.14 at their defaults.
-ayni_config_v1 with_work_defaults(ayni_config_v1 config) {
-    config.agent_capacity = AYNI_AGENT_CAPACITY_DEFAULT;
-    config.goal_type_capacity = AYNI_GOAL_TYPE_CAPACITY_DEFAULT;
-    config.goal_capacity = AYNI_GOAL_CAPACITY_DEFAULT;
-    config.goal_parameter_max_bytes = AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT;
-    config.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
-    config.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
-    config.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
-    config.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
-    return with_strategy_defaults(config);
-}
-
-TEST_F(KernelApi, uncovered_capacities_take_their_defaults) {
-    ayni_config_v1 defaults = with_work_defaults(valid_config());
-    defaults.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
-    defaults.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
-    defaults.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
-    defaults.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
-
-    ayni_config_v1 short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, ingress_capacity);
-    short_config.ingress_capacity = 0; // would be rejected if it were read
-    short_config.storage_buffer_bytes = 0;
-    short_config.agent_capacity = 0;
-    EXPECT_EQ(required_size(short_config), required_size(defaults));
-
-    // A config ending before storage_buffer_bytes keeps its own capacities.
-    ayni_config_v1 only_storage_default = with_work_defaults(valid_config());
-    only_storage_default.storage_buffer_bytes = AYNI_STORAGE_BUFFER_BYTES_DEFAULT;
-    short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, storage_buffer_bytes);
-    short_config.storage_buffer_bytes = 0;
-    short_config.goal_capacity = 0;
-    EXPECT_EQ(required_size(short_config), required_size(only_storage_default));
-
-    // So does one ending before the work model fields.
-    short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, agent_capacity);
-    short_config.session_capacity = 0;
-    EXPECT_EQ(required_size(short_config), required_size(with_work_defaults(valid_config())));
-
-    // One ending before the field of 0.6 takes its default and those after.
-    ayni_config_v1 only_task_default = with_strategy_defaults(valid_config());
-    only_task_default.task_capacity = AYNI_TASK_CAPACITY_DEFAULT;
-    short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, task_capacity);
-    short_config.task_capacity = 0;
-    EXPECT_EQ(required_size(short_config), required_size(only_task_default));
-
-    // One ending before the fields of 0.10 takes their defaults and those
-    // after.
-    short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, strategy_capacity);
-    short_config.strategy_capacity = 0;
-    short_config.policy_intent_capacity = 0;
-    EXPECT_EQ(required_size(short_config), required_size(with_strategy_defaults(valid_config())));
-
-    // One ending before the fields of 0.12 takes their defaults and the one
-    // after.
-    short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, task_step_capacity);
-    short_config.task_step_capacity = 0;
-    short_config.task_checkpoint_max_bytes = AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX + 1U;
-    EXPECT_EQ(required_size(short_config), required_size(with_step_defaults(valid_config())));
-
-    // And one ending before the field of 0.14 takes only its default.
-    short_config = valid_config();
-    short_config.struct_size = offsetof(ayni_config_v1, command_capacity);
-    short_config.command_capacity = 0;
-    EXPECT_EQ(required_size(short_config), required_size(with_command_default(valid_config())));
-}
-
 TEST_F(KernelApi, struct_size_from_newer_minor_is_unsupported_version) {
     ayni_config_v1 config = valid_config();
     ayni_host_v1 host = valid_host();
@@ -564,16 +449,24 @@ TEST_F(KernelApi, create_rejects_other_abi_minor) {
     EXPECT_EQ(kernel, nullptr);
 }
 
-// A 0.1 caller's config ends before abi_minor; major 0 accepts no other minor.
-TEST_F(KernelApi, config_from_abi_0_1_is_unsupported_version) {
+// abi_major and abi_minor keep their place in every layout, so a caller of
+// another minor hears so even when its config has another size; a config
+// that ends before abi_minor cannot say its version at all.
+TEST_F(KernelApi, config_version_is_judged_before_its_size) {
     ayni_config_v1 config = valid_config();
-    config.struct_size = offsetof(ayni_config_v1, abi_minor);
+    config.abi_minor = AYNI_ABI_MINOR - 1U;
+    config.struct_size = offsetof(ayni_config_v1, command_capacity);
     const ayni_host_v1 host = valid_host();
     ayni_kernel_t *kernel = nullptr;
     EXPECT_EQ(create(&config, &host, &kernel), AYNI_UNSUPPORTED_VERSION);
     std::size_t size = 0;
     std::size_t align = 0;
     EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_UNSUPPORTED_VERSION);
+    config.struct_size = sizeof(config) + 8U;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_UNSUPPORTED_VERSION);
+    config.struct_size = offsetof(ayni_config_v1, abi_minor);
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(kernel, nullptr);
 }
 
 TEST_F(KernelApi, create_rejects_misaligned_memory) {
@@ -637,14 +530,10 @@ TEST_F(KernelApi, get_lifecycle_rejects_null_output) {
 
 } // namespace
 
-// ADR-0037 decision 7 / C-VER-003: only an omitted trailing field defaults.
-TEST_F(KernelApi, goal_requirement_capacity_defaults_only_when_the_field_is_absent) {
+// ADR-0037 decision 7: the requirement capacity has no zero default.
+TEST_F(KernelApi, goal_requirement_capacity_must_be_in_its_range) {
     auto config = valid_config();
-    const auto expected = required_size(config);
     config.goal_requirement_capacity = 0;
-    config.struct_size = offsetof(ayni_config_v1, goal_requirement_capacity);
-    EXPECT_EQ(required_size(config), expected);
-    config.struct_size = sizeof(config);
     std::size_t bytes = 17;
     std::size_t alignment = 19;
     EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_INVALID_ARGUMENT);

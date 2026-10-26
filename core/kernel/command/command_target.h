@@ -2,6 +2,8 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_TARGET_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TARGET_H
 
+#include "kernel/command/exact_command.h"
+
 #include <ayni/ayni.h>
 #include <cstdint>
 
@@ -30,5 +32,11 @@ ayni_status_t encode_target_command(const TargetCommand &input, uint8_t *out, ui
                                     uint32_t &written);
 // Exact size/kind and shared shape checks; failure preserves out.
 bool read_target_command(ayni_bytes_v1 bytes, TargetCommand &out);
+// The request carries its own kind; measure refuses any other.
+template <> struct ExactCommand<TargetCommand> {
+    static constexpr ayni_intent_kind_t kind(const TargetCommand &request) { return request.kind; }
+    static constexpr auto measure = measure_target_command;
+    static constexpr auto encode = encode_target_command;
+};
 } // namespace ayni::kernel
 #endif

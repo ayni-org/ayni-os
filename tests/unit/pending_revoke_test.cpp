@@ -74,7 +74,7 @@ TEST(PendingRevoke, revoke_lookup_invalidates_create_scratch_without_staging_a_p
     ASSERT_EQ(commands.table.find_exact(owner, 5, CanonicalCommandView{0, &create}).lookup,
               Lookup::unmapped);
     const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, 99};
-    const auto found = commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &revoke});
+    const auto found = commands.table.find_revoke(owner, 5, CanonicalRevokeView{1, &revoke});
     ASSERT_EQ(found.status, AYNI_OK);
     ASSERT_EQ(found.lookup, Lookup::unmapped);
     EXPECT_EQ(found.mapping, nullptr);
@@ -120,7 +120,7 @@ TEST(PendingRevoke, acceptance_copies_identity_without_publishing_a_window_or_qu
     EXPECT_EQ(commands.table.pending_size(), 1U);
     const auto canonical = control->canonical;
     const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, 99};
-    const auto found = commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &revoke});
+    const auto found = commands.table.find_revoke(owner, 5, CanonicalRevokeView{1, &revoke});
     EXPECT_EQ(found.lookup, Lookup::retried);
     EXPECT_EQ(found.pending, control);
     EXPECT_EQ(found.mapping, nullptr);
@@ -168,9 +168,9 @@ TEST(PendingRevoke, pending_identity_precedes_all_kinds_window_and_a_later_floor
     EXPECT_EQ(commands.table.find_exact(owner, 5, CanonicalCommandView{0, &create}).lookup,
               Lookup::conflict);
     const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, 99};
-    EXPECT_EQ(commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &revoke}).lookup,
+    EXPECT_EQ(commands.table.find_revoke(owner, 5, CanonicalRevokeView{1, &revoke}).lookup,
               Lookup::retried);
-    EXPECT_EQ(commands.table.find_exact(owner, 5, CanonicalRevokeView{2, &revoke}).lookup,
+    EXPECT_EQ(commands.table.find_revoke(owner, 5, CanonicalRevokeView{2, &revoke}).lookup,
               Lookup::conflict);
     const PendingRevoke *receipt = nullptr;
     EXPECT_EQ(commands.table.lookup_receipt(owner, 5, receipt, mapping), Lookup::retried);
@@ -178,7 +178,7 @@ TEST(PendingRevoke, pending_identity_precedes_all_kinds_window_and_a_later_floor
     EXPECT_EQ(mapping, nullptr);
     ASSERT_TRUE(commands.table.publish_accepted_revoke(*control, result(*control, 3), 2));
     EXPECT_EQ(commands.table.floor(owner), 60U);
-    EXPECT_EQ(commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &revoke}).lookup,
+    EXPECT_EQ(commands.table.find_revoke(owner, 5, CanonicalRevokeView{1, &revoke}).lookup,
               Lookup::retried);
     EXPECT_EQ(commands.table.size(), 1U);
 }
@@ -345,7 +345,7 @@ TEST(PendingRevoke, full_revoke_identity_still_wins_when_the_window_digest_colli
     auto *mapping = const_cast<CommandMapping *>(commands.table.mapped(owner, 5));
     ASSERT_NE(mapping, nullptr);
     mapping->digest = authority_command_digest({other_bytes.data(), 16});
-    const auto found = commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &other});
+    const auto found = commands.table.find_revoke(owner, 5, CanonicalRevokeView{1, &other});
     EXPECT_EQ(found.lookup, Lookup::conflict);
     EXPECT_EQ(found.mapping, nullptr);
     EXPECT_EQ(mapping->object.id, 99U);
@@ -360,11 +360,11 @@ TEST(PendingRevoke, malformed_requests_and_zero_identity_leave_the_accepted_cont
     const ayni_grant_revoke_v1 body{sizeof(body), 0, 99};
     const std::array<CanonicalRevokeView, 2> malformed{{{0, &body}, {1, nullptr}}};
     for (const auto &request : malformed) {
-        EXPECT_EQ(commands.table.find_exact(owner, 6, request).status, AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(commands.table.find_revoke(owner, 6, request).status, AYNI_INVALID_ARGUMENT);
     }
-    EXPECT_EQ(commands.table.find_exact(0, 6, CanonicalRevokeView{1, &body}).status,
+    EXPECT_EQ(commands.table.find_revoke(0, 6, CanonicalRevokeView{1, &body}).status,
               AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(commands.table.find_exact(owner, 0, CanonicalRevokeView{1, &body}).status,
+    EXPECT_EQ(commands.table.find_revoke(owner, 0, CanonicalRevokeView{1, &body}).status,
               AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(commands.table.pending(0, 5), nullptr);
     EXPECT_EQ(commands.table.pending(owner, 0), nullptr);
@@ -414,9 +414,9 @@ TEST(PendingRevoke, mapped_and_expired_commands_cannot_be_accepted_as_new_contro
     EXPECT_EQ(commands.table.accept_revoke(accepted(), out), AYNI_EXPIRED);
     EXPECT_EQ(out, &sentinel);
     const ayni_grant_revoke_v1 body{sizeof(body), 0, 99};
-    EXPECT_EQ(commands.table.find_exact(owner, 5, CanonicalRevokeView{1, &body}).lookup,
+    EXPECT_EQ(commands.table.find_revoke(owner, 5, CanonicalRevokeView{1, &body}).lookup,
               Lookup::expired);
-    EXPECT_EQ(commands.table.find_exact(owner, 6, CanonicalRevokeView{1, &body}).lookup,
+    EXPECT_EQ(commands.table.find_revoke(owner, 6, CanonicalRevokeView{1, &body}).lookup,
               Lookup::conflict);
     EXPECT_EQ(commands.table.pending_size(), 0U);
     EXPECT_EQ(commands.table.size(), 1U);
@@ -437,7 +437,7 @@ TEST(PendingRevoke, ordinary_only_windows_explicitly_refuse_exact_revoke_storage
     Commands legacy(1, 0, 0);
     ASSERT_TRUE(legacy.table.insert(ordinary(5, 1)));
     const ayni_grant_revoke_v1 body{sizeof(body), 0, 99};
-    EXPECT_EQ(legacy.table.find_exact(owner, 6, CanonicalRevokeView{1, &body}).status,
+    EXPECT_EQ(legacy.table.find_revoke(owner, 6, CanonicalRevokeView{1, &body}).status,
               AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(legacy.table.can_accept_revoke(accepted(6)), AYNI_CAPACITY_EXCEEDED);
     EXPECT_FALSE(legacy.table.can_insert(owner + 1U));

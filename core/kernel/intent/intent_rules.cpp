@@ -562,8 +562,8 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
             CanonicalCommandView{intent.expected_revision, &intent.grant_create});
     case AYNI_INTENT_GRANT_REVOKE: {
         const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, intent.target_id};
-        return model.commands.find_exact(principal_id, intent.command_id,
-                                         CanonicalRevokeView{intent.expected_revision, &revoke});
+        return model.commands.find_revoke(principal_id, intent.command_id,
+                                          CanonicalRevokeView{intent.expected_revision, &revoke});
     }
     case AYNI_INTENT_GOAL_APPROVE:
         return model.commands.find_exact(

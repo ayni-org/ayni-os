@@ -1,13 +1,10 @@
 #include "kernel/call/call_runtime.h"
 
+#include "work/call_propagation.h"
+
 #include <new>
 
 namespace ayni::kernel {
-namespace {
-ayni_string_v1 view(const catalog::CatalogId &id) {
-    return {id.data(), id.size()};
-}
-} // namespace
 
 std::size_t CallRuntime::storage_size(Limits limits) {
     return limits.capacity == 0U
@@ -73,25 +70,6 @@ bool CallRuntime::idle() const {
     return true;
 }
 
-// Only a successful terminal result commits a completed call step. Other known
-// outcomes also reserve their stable step identity in CallTable, so a strategy
-// must inspect the result and explicitly choose a new step before trying again.
-bool CallRuntime::finish_task(uint32_t call_index, uint32_t task_index,
-                              foundation::TransitionStamp stamp) {
-    const auto &state = work_.calls.state(call_index);
-    const auto &task = work_.tasks.at(task_index);
-    if (state.outcome == AYNI_CALL_ABANDONED && task.call.end == work::TaskCall::End::none) {
-        work_.tasks.hold_unknown_call(task_index, stamp);
-        return true;
-    }
-    if (task.call.end == work::TaskCall::End::none && state.outcome == AYNI_CALL_COMPLETED &&
-        !work_.tasks.add_step(task_index, view(work_.calls.identity(call_index).step_key), stamp)) {
-        return false;
-    }
-    work_.tasks.finish_call(task_index, stamp);
-    return true;
-}
-
 CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_index,
                                               resources::WaitAction action, uint64_t now_us) {
     if (action == resources::WaitAction::wait) {
@@ -99,12 +77,10 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
     }
     const auto stamp = work_.transitions.next();
     if (action == resources::WaitAction::skip) {
-        if (work_.calls.skip_before_dispatch(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
+        if (work::skip_queued_call(work_.calls, work_.tasks, index, task_index,
+                                   {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
             return Advance::internal;
         }
-        // The occurrence was already taken when this Task was derived. Its
-        // EXPIRED/SKIPPED facts close this run without advancing the next cursor.
-        work_.tasks.skip_queued_call(task_index, stamp);
     } else {
         work_.tasks.pause_resource_wait(task_index, stamp);
     }
@@ -119,7 +95,7 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
     }
     const auto stamp = work_.transitions.next();
     if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
-        !finish_task(index, task_index, stamp)) {
+        !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
         return Advance::internal;
     }
     release(index, host_.monotonic_now_us(host_.ctx));

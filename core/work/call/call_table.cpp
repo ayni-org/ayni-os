@@ -155,6 +155,7 @@ ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContr
         entry.state.latest = stamp;
         entry.domain_size = domain_body.size;
         entry.input_size = input_body.size;
+        entry.result_size = 0;
         copy_bodies(at, domain_body, input_body, {});
         ++size_;
         index = at;

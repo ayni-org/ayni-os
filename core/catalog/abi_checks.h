@@ -1,6 +1,6 @@
-// C-VER-003 struct_size rules shared by catalog, authority and Kernel.
-// A field is read only when struct_size covers it; layouts outside the known
-// bounds are refused.
+// C-VER-003 struct_size rules shared by catalog, authority and Kernel. While
+// the ABI major is 0 every struct has the one layout of this minor, so each
+// caller passes its sizeof as both sizes (ADR-0053).
 
 #ifndef AYNI_CORE_CATALOG_ABI_CHECKS_H
 #define AYNI_CORE_CATALOG_ABI_CHECKS_H
@@ -12,14 +12,9 @@
 
 namespace ayni::catalog {
 
-// Whether the published ABI prefix contains the complete field.
-inline bool covers(uint32_t struct_size, std::size_t field_offset, std::size_t field_size) {
-    return struct_size >= field_offset + field_size;
-}
-
-// AYNI_INVALID_ARGUMENT below the first published layout of the ABI major,
-// AYNI_UNSUPPORTED_VERSION beyond the layout this library knows. A struct new
-// in this minor has one layout, so both sizes are its sizeof.
+// AYNI_INVALID_ARGUMENT below min_size, AYNI_UNSUPPORTED_VERSION beyond the
+// layout this library knows (C-VER-004). From major 1 on, min_size is the
+// first layout of the major and shorter callers get defaults (C-VER-006).
 inline ayni_status_t check_struct_size(uint32_t struct_size, std::size_t min_size,
                                        std::size_t known_size) {
     if (struct_size < min_size) {

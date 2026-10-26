@@ -74,8 +74,8 @@ class CheckDepsTest(unittest.TestCase):
         # ADR-0051: the module root is one more node of the declared graph.
         self.write("core/work/work.cpp", '#include "work/task/task.h"\n')
         self.assertEqual(self.violations(), [])
-        self.write("core/work/work.cpp", '#include "work/call/call.h"\n')
-        self.assert_single_violation("the root of core/work ('_root') may not include core/work/call")
+        self.write("core/work/work.cpp", '#include "work/action/action.h"\n')
+        self.assert_single_violation("the root of core/work ('_root') may not include core/work/action")
 
     def test_core_subdir_reaches_module_root_only_when_declared(self):
         # ADR-0051: the blind spot through the root, spelled from the include root and relatively.
@@ -149,6 +149,17 @@ class CheckDepsTest(unittest.TestCase):
     def test_runtime_does_not_include_other_runtime(self):
         self.write("runtime/esp_idf_node/node.cpp", "#include <ayni/runtime/native_node.h>\n")
         self.assert_single_violation("runtime/ may not include <ayni/runtime/native_node.h>")
+
+    def test_every_runtime_shares_runtime_common_only(self):
+        # ADR-0053: one named instance, not every other runtime.
+        self.write("runtime/native_node/node.cpp",
+                   "#include <ayni/runtime/common/default_config.h>\n")
+        self.write("runtime/esp_idf_node/node.cpp",
+                   "#include <ayni/runtime/common/default_config.h>\n")
+        self.assertEqual(self.violations(), [])
+        self.write("hosts/native/native_host.cpp",
+                   "#include <ayni/runtime/common/default_config.h>\n")
+        self.assert_single_violation("hosts/ may not include <ayni/runtime/common/default_config.h>")
 
     def test_core_internal_headers_never_leave_core(self):
         self.write("runtime/native_node/node.cpp", '#include "kernel/kernel.h"\n')

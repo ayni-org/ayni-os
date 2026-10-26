@@ -172,12 +172,18 @@ TEST(KernelLifecycle, start_without_storage_is_unsupported_and_stays_configuring
     EXPECT_EQ(node.destroy(), AYNI_OK);
 }
 
-// C-HOST-015: an older short Host table is valid for creation but cannot
-// promise the storage semantics required by the current recovery protocol.
-TEST(KernelLifecycle, short_host_with_only_legacy_storage_cannot_start) {
+// C-HOST-015: a Host table with only the append/read_prefix pair is valid
+// for creation but cannot promise the storage semantics required by the
+// current recovery protocol.
+TEST(KernelLifecycle, host_with_only_legacy_storage_cannot_start) {
     Node fixture;
     auto host = fixture.sim().table();
-    host.struct_size = offsetof(ayni_host_v1, storage_read_log);
+    host.storage_read_log = nullptr;
+    host.storage_fence_writers = nullptr;
+    host.storage_write_snapshot = nullptr;
+    host.storage_read_snapshot = nullptr;
+    host.storage_trim_prefix = nullptr;
+    host.storage_free_bytes = nullptr;
     std::size_t bytes = 0;
     std::size_t alignment = 0;
     ASSERT_EQ(ayni_kernel_memory_requirements(&fixture.config(), &bytes, &alignment), AYNI_OK);
@@ -792,11 +798,16 @@ TEST(KernelLifecycle, kernel_info_checks_its_output) {
     Node node;
     node.create();
     EXPECT_EQ(ayni_get_kernel_info(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
-    // The first layout, from ABI 0.4, ends after boot_epoch.
-    const uint32_t first_layout = offsetof(ayni_kernel_info_v1, durable_seq);
+    // ADR-0053: an older layout, such as that of 0.4 ending after boot_epoch,
+    // is refused like any shorter size.
     ayni_kernel_info_v1 info{};
-    info.struct_size = first_layout - 1U;
-    EXPECT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_INVALID_ARGUMENT);
+    for (const uint32_t size : {static_cast<uint32_t>(offsetof(ayni_kernel_info_v1, durable_seq)),
+                                static_cast<uint32_t>(sizeof(info) - 1U)}) {
+        std::memset(&info, 0xA5, sizeof(info));
+        info.struct_size = size;
+        EXPECT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(info.boot_epoch, 0xA5A5A5A5A5A5A5A5U);
+    }
     info.struct_size = sizeof(info) + 8;
     EXPECT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_UNSUPPORTED_VERSION);
 
@@ -811,41 +822,6 @@ TEST(KernelLifecycle, kernel_info_checks_its_output) {
     EXPECT_EQ(info.durable_seq, 0U);
     EXPECT_EQ(info.events_unmatched, 0U);
     EXPECT_EQ(info.events_discarded, 0U);
-
-    // An older caller gets the fields it has and nothing beyond them.
-    std::memset(&info, 0xA5, sizeof(info));
-    info.struct_size = first_layout;
-    ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
-    EXPECT_EQ(info.struct_size, first_layout);
-    EXPECT_EQ(info.boot_epoch, 0U);
-    EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
-
-    // A size that ends inside durable_seq gets whole fields only.
-    std::memset(&info, 0xA5, sizeof(info));
-    info.struct_size = first_layout + 4U;
-    ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
-    EXPECT_EQ(info.struct_size, first_layout + 4U);
-    EXPECT_EQ(info.boot_epoch, 0U);
-    EXPECT_EQ(info.durable_seq, 0xA5A5A5A5A5A5A5A5U);
-
-    // The 0.5 layout ends after durable_seq, before the event counters (0.9);
-    // each counter is written once the size covers it whole.
-    const uint32_t layout_0_5 = offsetof(ayni_kernel_info_v1, events_unmatched);
-    for (const uint32_t size : {layout_0_5, layout_0_5 + 4U}) {
-        std::memset(&info, 0xA5, sizeof(info));
-        info.struct_size = size;
-        ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
-        EXPECT_EQ(info.durable_seq, 0U) << size;
-        EXPECT_EQ(info.events_unmatched, 0xA5A5A5A5A5A5A5A5U) << size;
-        EXPECT_EQ(info.events_discarded, 0xA5A5A5A5A5A5A5A5U) << size;
-    }
-    for (const uint32_t size : {layout_0_5 + 8U, layout_0_5 + 12U}) {
-        std::memset(&info, 0xA5, sizeof(info));
-        info.struct_size = size;
-        ASSERT_EQ(ayni_get_kernel_info(node.kernel(), &info), AYNI_OK);
-        EXPECT_EQ(info.events_unmatched, 0U) << size;
-        EXPECT_EQ(info.events_discarded, 0xA5A5A5A5A5A5A5A5U) << size;
-    }
 }
 
 // A rejected step has no effect: no storage request is issued.
@@ -856,8 +832,11 @@ TEST(KernelLifecycle, step_rejects_bad_arguments_without_effect) {
     report.struct_size = sizeof(report);
     EXPECT_EQ(ayni_step(node.kernel(), 0, 1, &report), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(ayni_step(node.kernel(), 1, 0, &report), AYNI_INVALID_ARGUMENT);
-    // Smaller than the report of 0.2, which ends with next_deadline_us.
-    report.struct_size = offsetof(ayni_step_report_v1, next_deadline_us) + 7U;
+    // Neither an older layout, such as that of 0.2 before durable_seq, nor any
+    // other shorter size (ADR-0053).
+    report.struct_size = offsetof(ayni_step_report_v1, durable_seq);
+    EXPECT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_INVALID_ARGUMENT);
+    report.struct_size = sizeof(report) - 1U;
     EXPECT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_INVALID_ARGUMENT);
     report.struct_size = sizeof(report) + 8;
     EXPECT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_UNSUPPORTED_VERSION);
@@ -867,22 +846,16 @@ TEST(KernelLifecycle, step_rejects_bad_arguments_without_effect) {
     EXPECT_EQ(node.sim().pending_storage(), 1U);
 }
 
-// C-VER-003: a report from before 0.14 ends before durable_seq, which the
-// step then leaves as it was; a newer one gets durable_seq too.
-TEST(KernelLifecycle, step_reports_durable_seq_when_the_report_covers_it) {
+TEST(KernelLifecycle, step_reports_durable_seq) {
     Node node;
     node.create_and_start();
     node.recover();
     ASSERT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
     ayni_step_report_v1 report{};
     std::memset(&report, 0xA5, sizeof(report));
-    report.struct_size = offsetof(ayni_step_report_v1, durable_seq);
-    ASSERT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_OK);
-    EXPECT_EQ(report.struct_size, offsetof(ayni_step_report_v1, durable_seq));
-    EXPECT_EQ(report.items_done, 0U);
-    EXPECT_EQ(report.durable_seq, 0xA5A5A5A5A5A5A5A5U);
     report.struct_size = sizeof(report);
     ASSERT_EQ(ayni_step(node.kernel(), 1, 1, &report), AYNI_OK);
+    EXPECT_EQ(report.struct_size, sizeof(report));
     EXPECT_EQ(report.durable_seq, 2U); // the boot batch
     EXPECT_EQ(report.durable_seq, node.info().durable_seq);
 }

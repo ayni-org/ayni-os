@@ -56,7 +56,7 @@ ABI 0.16 起，已完整验证的存储所有者与 Host 认证绑定不匹配�
 
 `ayni_submit_intent` 的参数错误与 `UNSUPPORTED`（未实现的意图种类）先于状态检查；`ayni_post_event` 的参数错误、未实现的事件种类与无效来源同样先于状态检查（ADR-0021）。重载清空旧会话；隔离尚未确认或隔离失败保留旧诊断时，已有会话仍可关闭，但不能开放新准入。`ayni_step` 只在 `RUNNING` 且存储允许新 transition 时做到期工作并调用策略。ABI 0.31 的 Provider 完成与对账使用独立可靠回送槽；FENCED 中只收敛传输借用，旧 boot 结果不直接解除未知事实。新增隔离/恢复专项及物理许可验收仍待后续安排；本地输入不替代这些回执。
 
-GoalType 校验与策略 `decide` 回调不得调用 Kernel（C-POLICY-001）；回调内调用接受非 const Kernel 的所有者线程函数，仍在参数检查后、生命周期检查前返回 `INVALID_STATE`。已受理存储请求不因重试期限或 shutdown 被合成完成；缓冲与完成槽等 Host 真正 post 后才归还。验证：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.short_host_with_only_legacy_storage_cannot_start`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`、`KernelFence.shutdown_during_retry_never_starts_recovery`。
+GoalType 校验与策略 `decide` 回调不得调用 Kernel（C-POLICY-001）；回调内调用接受非 const Kernel 的所有者线程函数，仍在参数检查后、生命周期检查前返回 `INVALID_STATE`。已受理存储请求不因重试期限或 shutdown 被合成完成；缓冲与完成槽等 Host 真正 post 后才归还。验证：`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`、`KernelLifecycle.host_with_only_legacy_storage_cannot_start`、`KernelLifecycle.shutdown_during_recovery_waits_for_the_request_in_flight`、`KernelFence.shutdown_during_retry_never_starts_recovery`。
 
 ## AgentInstance
 

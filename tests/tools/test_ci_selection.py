@@ -59,6 +59,12 @@ class CiSelectionTest(unittest.TestCase):
                                        "include/ayni/ayni.h"]),
                          {"asan"})
 
+    def test_extra_native_configurations_are_one_matrix_job_each(self):
+        self.assertEqual(selection.native_presets(selection.select_checks("schedule", [])),
+                         ["native-release", "native-debug", "native-tsan"])
+        self.assertEqual(
+            selection.native_presets(selection.select_checks("pull_request", ["core/a.cpp"])), [])
+
     def test_merge_diff_includes_earlier_commits_and_old_paths_of_moves(self):
         with tempfile.TemporaryDirectory() as root:
             def git(*args):
@@ -87,6 +93,7 @@ class CiSelectionTest(unittest.TestCase):
             self.assertEqual(outputs["asan"], "true")
             self.assertEqual(outputs["tsan"], "false")
             self.assertEqual(outputs["esp_idf"], "false")
+            self.assertEqual(outputs["native_presets"], "[]")
 
 
 if __name__ == "__main__":

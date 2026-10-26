@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1（实验性 ABI 0.36、storage schema 2）。Core 已交付工作模型、触发与策略、日志/快照、授权、共享资源与 Task 运行限制、公开调用和 Mock A/B；MA-018B 已接入许可签发/续租、持久 Scene、最小可信观察及 Mock 停止确认闭环，执行端端口已改为异步请求。当前边界与证据见 [M1 进度](reports/core/m1-progress.md)、[ADR-0050](docs/adr/0050-managed-execution-and-scenes.md) 和 [ADR-0052](docs/adr/0052-remote-executor-and-observation-input.md)。下一步为订阅，随后直连模型、工作流、记忆、提醒、统一助理和 Native CLI。Native/模拟 Host 已有存储实现；ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
+> 当前仓库处于 M1（实验性 ABI 0.36、storage schema 2）。Core 已交付工作模型、触发与策略、日志/快照、授权、共享资源与 Task 运行限制、公开调用和 Mock A/B；MA-018B 已接入许可签发/续租、持久 Scene、最小可信观察及 Mock 停止确认闭环，执行端端口已改为异步请求。当前边界与证据见 [M1 进度](reports/core/m1-progress.md)、[ADR-0050](docs/adr/0050-managed-execution-and-scenes.md) 和 [ADR-0052](docs/adr/0052-remote-executor-and-observation-input.md)。结构收尾见 [ADR-0053](docs/adr/0053-m1-structure-wrap-up.md)。用户已选定先做文本纵切：下一步为 typed 工具调用、OpenAI-compatible Provider 与两种策略，随后单进程 Native CLI、记忆、日历、订阅、统一助理和 SDK。Native/模拟 Host 已有存储实现；ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 

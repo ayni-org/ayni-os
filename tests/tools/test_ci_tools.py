@@ -23,7 +23,7 @@ class CiToolsTest(unittest.TestCase):
         self.log = self.root / "calls.jsonl"
         docker = self.bin / "docker"
         docker.write_text('''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_CALLS"], "a") as log:
     log.write(json.dumps(args) + "\\n")
@@ -39,6 +39,13 @@ elif args[0] == "commit":
     if not status:
         state.write_text(args[-1])
     sys.exit(status)
+elif args[0] == "run" and "FAKE_CACHE_ROOT" in os.environ and "-c" in args:
+    # Run the cache adoption script on local directories, as another user if asked.
+    root = os.environ["FAKE_CACHE_ROOT"]
+    script = args[args.index("-c") + 1]
+    script = script.replace("/ccache", root + "/ccache").replace("/downloads", root + "/downloads")
+    identity = os.environ.get("FAKE_IDENTITY", args[-1])
+    sys.exit(subprocess.call(["bash", "-eu", "-c", script, "bash", identity]))
 elif args[0] == "run":
     sys.exit(int(os.environ.get("FAKE_RUN_STATUS", "0")))
 ''')
@@ -96,10 +103,30 @@ elif args[0] == "run":
         self.assertNotIn("PRIVATE_TOKEN", call)
         self.assertIn("--user", call)
         self.assertIn("--memory=3g", call)
-        self.assertIn("--cpus=4", call)
+        self.assertIn("--cpus=12", call)
         self.assertIn("--pull=never", call)
         self.assertIn("--init", call)
         self.assertFalse(any(c[0] == "create" for c in self.calls()))
+
+    def test_prepare_adopts_root_caches_but_not_those_of_another_user(self):
+        # Two runners share the Docker daemon and its caches: taking a cache
+        # from the other runner's user would break that runner's running job.
+        caches = self.root / "caches"
+        for name in ("ccache", "downloads"):
+            (caches / name).mkdir(parents=True)
+        own = f"{os.getuid()}:{os.getgid()}"
+        result = self.run_script("prepare", FAKE_CACHE_ROOT=str(caches), FAKE_IDENTITY=own)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        if os.getuid() == 0:
+            # A new volume belongs to root; the runners' user adopts it once.
+            result = self.run_script("prepare", FAKE_CACHE_ROOT=str(caches),
+                                     FAKE_IDENTITY="4242:4242")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((caches / "ccache").stat().st_uid, 4242)
+        result = self.run_script("prepare", FAKE_CACHE_ROOT=str(caches), FAKE_IDENTITY="4343:4343")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("run every runner on this Docker daemon as one user", result.stderr)
+        self.assertNotEqual((caches / "ccache").stat().st_uid, 4343)
 
     def test_mmap_read_has_no_checkout_or_cache_mounts(self):
         result = self.run_script("mmap-bits")

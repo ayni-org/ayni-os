@@ -14,6 +14,7 @@
 
 namespace {
 
+using ayni::kernel::CanonicalCommandView;
 using ayni::kernel::CommandMapping;
 using ayni::kernel::CommandTable;
 using Lookup = CommandTable::Lookup;
@@ -322,7 +323,7 @@ class ExactCommands {
           table_(memory_.data(), {rows, capacity, bytes}) {}
     CommandTable *operator->() { return &table_; }
     CommandTable::ExactLookup find(uint64_t command, const ayni_grant_create_v1 &request) {
-        return table_.find_exact(owner, command, {0, &request});
+        return table_.find_exact(owner, command, CanonicalCommandView{0, &request});
     }
     void accept(uint64_t command, const ayni_grant_create_v1 &request, uint64_t seq) {
         const auto result = find(command, request);
@@ -497,7 +498,8 @@ TEST(CommandTable, exact_invalid_principal_or_command_cannot_stage_or_change_an_
     const auto request = exact_request();
     commands.accept(5, request, 9);
     for (const auto &ids : {std::pair<uint64_t, uint64_t>{0, 6}, {owner, 0}}) {
-        const auto result = commands->find_exact(ids.first, ids.second, {0, &request});
+        const auto result =
+            commands->find_exact(ids.first, ids.second, CanonicalCommandView{0, &request});
         EXPECT_EQ(result.status, AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(result.lookup, Lookup::unmapped);
         EXPECT_EQ(result.mapping, nullptr);
@@ -531,7 +533,8 @@ TEST(CommandTable, staged_identity_cannot_be_consumed_by_another_principal_id_ki
     candidate.object.revision = 2;
     refuses(candidate);
     commands.accept(5, request, 9);
-    ASSERT_EQ(commands->find_exact(other, 6, {0, &request}).lookup, Lookup::unmapped);
+    ASSERT_EQ(commands->find_exact(other, 6, CanonicalCommandView{0, &request}).lookup,
+              Lookup::unmapped);
     candidate = exact_mapping(6, 10);
     candidate.principal_id = other;
     EXPECT_FALSE(commands->insert_exact(candidate)); // The only principal row is retained.
@@ -566,7 +569,8 @@ TEST(CommandTable, failed_exact_lookup_invalidates_the_previous_publishable_cand
         auto request = exact_request();
         ASSERT_EQ(commands.find(5, request).lookup, Lookup::unmapped);
         if (invalid_identity) {
-            EXPECT_EQ(commands->find_exact(0, 6, {0, &request}).status, AYNI_INVALID_ARGUMENT);
+            EXPECT_EQ(commands->find_exact(0, 6, CanonicalCommandView{0, &request}).status,
+                      AYNI_INVALID_ARGUMENT);
         } else {
             request.lifetime = AYNI_GRANT_CURRENT_BOOT; // Missing required duration.
             EXPECT_EQ(commands.find(6, request).status, AYNI_INVALID_ARGUMENT);

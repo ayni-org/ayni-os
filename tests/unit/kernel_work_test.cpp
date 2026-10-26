@@ -412,11 +412,11 @@ TEST(WorkModel, child_goals_follow_their_parent_and_the_tree_limits) {
                    AYNI_INVALID_STATE, AYNI_REASON_PARENT_STATE, AYNI_OBJECT_GOAL, root);
 }
 
-// A config that ends before goal_depth_max gets the default tree limits
-// (limits.md): depth 2 and 4 live children per goal.
-TEST(WorkModel, tree_limits_missing_from_the_config_take_their_defaults) {
+// The default tree limits (limits.md): depth 2 and 4 live children per goal.
+TEST(WorkModel, tree_limits_at_their_defaults_bound_the_tree) {
     WorkNode work;
-    work.node().config().struct_size = offsetof(ayni_config_v1, goal_depth_max);
+    work.node().config().goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
+    work.node().config().goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
     work.node().config().goal_capacity = 16;
     work.run();
     const uint64_t root = work.create_goal();

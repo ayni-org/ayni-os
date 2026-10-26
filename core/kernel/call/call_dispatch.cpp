@@ -1,4 +1,5 @@
 #include "kernel/call/call_runtime.h"
+#include "work/call_propagation.h"
 
 #include "foundation/deadline.h"
 
@@ -58,7 +59,7 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
                                 work::ActionEffect::unknown,
                                 {}},
                                {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
-            !finish_task(index, task_index, stamp)) {
+            !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
             return Advance::internal;
         }
         return Advance::applied;
@@ -211,7 +212,7 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && mailbox_.withdraw(delivery.reservation)) {
         const auto stamp = work_.transitions.next();
         if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
-            !finish_task(index, task_index, stamp)) {
+            !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
             return Advance::internal;
         }
         release(index, now_us);

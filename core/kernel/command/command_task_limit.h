@@ -2,6 +2,8 @@
 #ifndef AYNI_CORE_KERNEL_COMMAND_COMMAND_TASK_LIMIT_H
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TASK_LIMIT_H
 
+#include "kernel/command/exact_command.h"
+
 #include <ayni/ayni.h>
 #include <cstdint>
 
@@ -26,5 +28,12 @@ ayni_status_t encode_task_limit_command(const TaskLimitCommand &input, uint8_t *
                                         uint32_t capacity, uint32_t &written);
 // Exact size/kind and shared shape checks; failure preserves out.
 bool read_task_limit_command(ayni_bytes_v1 bytes, TaskLimitCommand &out);
+template <> struct ExactCommand<TaskLimitCommand> {
+    static constexpr ayni_intent_kind_t kind(const TaskLimitCommand &) {
+        return AYNI_INTENT_TASK_RAISE_MODEL_LIMIT;
+    }
+    static constexpr auto measure = measure_task_limit_command;
+    static constexpr auto encode = encode_task_limit_command;
+};
 } // namespace ayni::kernel
 #endif

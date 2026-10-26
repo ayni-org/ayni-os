@@ -10,7 +10,7 @@
   ],
   "_core_subdir_deps": "Per module: which of its own directories each directory may include, e.g. {\"work\": {\"task\": [\"call\"]}}. \"_root\" names the files directly in the module directory, as source and as target. Undeclared pairs are forbidden, and each module's declared graph must have no cycle (ADR-0051).",
   "core_subdir_deps": {
-    "work": {"_root": ["agent", "goal", "task"], "goal": ["authority"], "task": ["authority"], "call": ["action", "execution"]},
+    "work": {"_root": ["agent", "call", "goal", "task"], "goal": ["authority"], "task": ["authority"], "call": ["action", "execution"]},
     "resources": {"permit": ["admission"]},
     "authority": {"grant": ["scope"], "scene": ["scope"]},
     "catalog": {"goal_type": ["_root", "strategy"], "capability": ["_root", "resource"], "resource": ["_root", "device"], "device": ["_root"], "provider": ["_root", "capability"], "binding": ["_root", "capability", "provider", "resource"], "execution": ["_root", "binding", "capability", "resource"], "observation": ["_root"], "strategy": ["_root"]},
@@ -26,10 +26,10 @@
     "ayni/providers/": "providers",
     "ayni/": "api"
   },
-  "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. core/, include/ and tests/ have fixed rules in check_deps.py.",
+  "_components": "Header kinds each top-level directory may include. 'own' is the instance's own public headers (ayni/hosts/<name>.h or ayni/hosts/<name>/...); quoted includes that resolve inside the same instance are always allowed. 'kind:instance' allows the public headers of one instance of that kind, such as the runtime/common headers every composition root shares (ADR-0053). core/, include/ and tests/ have fixed rules in check_deps.py.",
   "components": {
     "hosts": ["api", "own", "external"],
-    "runtime": ["api", "hosts", "providers", "own", "external"],
+    "runtime": ["api", "hosts", "providers", "own", "runtime:common", "external"],
     "providers": ["api", "own", "external"],
     "targets": ["api", "runtime", "external"],
     "control": ["api", "external"],
