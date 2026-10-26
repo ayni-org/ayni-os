@@ -78,6 +78,8 @@ void place_execution_context(Placer &placer, const KernelCapacities &capacities)
                                                           capacities.execution_binding_capacity));
     placer.place(Store::permits, resources::PermitTable::storage_alignment,
                  resources::PermitTable::storage_size(capacities.executor_capacity));
+    placer.place(Store::executor_completions, ExecutorMailbox::storage_alignment,
+                 ExecutorMailbox::storage_size(capacities.executor_capacity));
     placer.place(Store::scenes, authority::Scenes::storage_alignment,
                  authority::Scenes::storage_size(scene_limits(capacities)));
     placer.place(Store::observation_sources, catalog::ObservationSources::storage_alignment,

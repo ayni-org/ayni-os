@@ -141,9 +141,22 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         !control_.allowed(index, now_us, durable_seq)) {
         return cancel_local(index, task_index);
     }
-    const auto issued = control_.issue(index, slots_[index].active->claim, input.arguments, now_us);
-    if (issued != AYNI_OK) {
-        return issued == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
+    // The permit's challenge is answered in a later item, so this recheck
+    // runs again before the nonce it brings is used (ADR-0052).
+    switch (control_.issue(index, slots_[index].active->claim, input.arguments, now_us)) {
+    case PermitIssue::issued:
+        break;
+    case PermitIssue::requested:
+        return Advance::applied;
+    case PermitIssue::waiting:
+    case PermitIssue::busy:
+        return Advance::idle;
+    case PermitIssue::refused:
+        return cancel_local(index, task_index);
+    case PermitIssue::exhausted:
+        return Advance::attempt_exhausted;
+    case PermitIssue::defect:
+        return Advance::internal;
     }
     if (!work_.calls.claim_dispatch(index, work_.ids.boot_epoch(), durable_seq)) {
         return Advance::internal;

@@ -239,7 +239,8 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
         if (active->stage == Stage::queued && resource_ready && choice.call_id == id.call_id) {
             return true;
         }
-        if ((active->stage == Stage::prepared || active->stage == Stage::barrier) &&
+        if ((active->stage == Stage::prepared ||
+             (active->stage == Stage::barrier && control_.issue_ready(at, now_us))) &&
             state.latest.transition.commit_seq <= durable_seq && authority.status == AYNI_OK) {
             return true;
         }

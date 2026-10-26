@@ -35,7 +35,7 @@ class CallRuntime {
     CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
                 resources::ResourceAdmission &resources, resources::PermitTable &permits,
                 const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
-                AttemptSequence &attempts, const ayni_host_v1 &host);
+                ExecutorMailbox &executors, AttemptSequence &attempts, const ayni_host_v1 &host);
     CallRuntime(const CallRuntime &) = delete;
     CallRuntime &operator=(const CallRuntime &) = delete;
 

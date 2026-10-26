@@ -1,7 +1,9 @@
-/* Managed local Mock execution ports and binding constraints, Since 0.35.
- * All ports run on the Kernel owner thread, are bounded/nonblocking and must
- * not reenter Core. Contexts survive successful Kernel destruction. Executor
- * command/sample loops remain outside Core and enforce control.h every cycle.
+/* Managed execution ports and binding constraints, Since 0.35. Since 0.36
+ * each port is a request answered later through ayni_executor_post (ADR-0052):
+ * request ports run on the Kernel owner thread, are bounded/nonblocking and
+ * must not reenter Core; answers may come from any non-ISR thread. Contexts
+ * survive successful Kernel destruction. Executor command/sample loops remain
+ * outside Core and enforce control.h every cycle.
  */
 #ifndef AYNI_EXECUTION_H
 #define AYNI_EXECUTION_H
@@ -31,11 +33,47 @@ typedef struct ayni_executor_status_v1 {
     ayni_control_info_v1 control; /* Fresh local gate snapshot after evaluating time/interlocks. */
 } ayni_executor_status_v1;
 
+typedef uint32_t ayni_executor_request_t;
+/* Asks for a fresh local nonce, answered in output.nonce. Since 0.36. */
+#define AYNI_EXECUTOR_CHALLENGE ((ayni_executor_request_t)1)
+/* Asks the gate to renew one SESSION; the gate validates expiry. Since 0.36. */
+#define AYNI_EXECUTOR_RENEW ((ayni_executor_request_t)2)
+/* Asks the gate to stop one permit; never stop confirmation. Since 0.36. */
+#define AYNI_EXECUTOR_STOP ((ayni_executor_request_t)3)
+/* Asks for fresh exact local facts, answered in output.status. Since 0.36. */
+#define AYNI_EXECUTOR_STATUS ((ayni_executor_request_t)4)
+
+/* Immutable target of one request lane, valid until the Kernel is destroyed. Since 0.36. */
+typedef struct ayni_executor_completion ayni_executor_completion_t;
+
+/* What an answer carries; only the arm of its kind is read. Since 0.36. */
+typedef union ayni_executor_output_v1 {
+    ayni_executor_nonce_v1 nonce;   /* CHALLENGE answered OK. */
+    ayni_executor_status_v1 status; /* STATUS answered OK. */
+} ayni_executor_output_v1;
+
+/* One request's answer, copied before ayni_executor_post returns. Since 0.36. */
+typedef struct ayni_executor_response_v1 {
+    uint32_t struct_size;           /* Exact sizeof. */
+    ayni_executor_request_t kind;   /* The answered request's kind. */
+    ayni_attempt_ref_v1 request;    /* Exact identity the request port received. */
+    ayni_status_t status;           /* The executor's answer; only OK carries an output. */
+    uint32_t reserved;              /* Zero. */
+    ayni_executor_output_v1 output; /* Read only for CHALLENGE or STATUS answered OK. */
+} ayni_executor_response_v1;
+
 /* Trusted registration, copied except the runtime-owned callback context. Since 0.35.
- * M1 local Mock only: callbacks exchange typed in-process facts, never network bytes.
- * challenge returns a freshly issued local nonce, never an issuer timestamp.
- * status returns NOT_FOUND only if this gate never accepted the exact permit;
- * it is authoritative local evidence, unlike external Provider query absence.
+ * Callbacks exchange typed facts; a remote executor carries them over its own link.
+ * Since 0.36 every port is a request (ADR-0052). OK keeps it: exactly one
+ * ayni_executor_post for that request follows, possibly before the port
+ * returns. Any other status refuses it: nothing is posted and Core takes the
+ * status as the answer. Inputs are borrowed only during the call. Core waits
+ * at least poll_period_us for an answer; one still missing then counts as
+ * RESULT_UNKNOWN and is refused if it comes later.
+ * challenge answers a freshly issued local nonce, never an issuer timestamp.
+ * status answers NOT_FOUND only if this gate never accepted the exact permit,
+ * and the gate refuses that permit from then on; it is authoritative local
+ * evidence, unlike external Provider query absence.
  */
 typedef struct ayni_executor_v1 {
     uint32_t struct_size;          /* Exact sizeof. */
@@ -49,20 +87,30 @@ typedef struct ayni_executor_v1 {
     uint32_t procedure_max_us;     /* Positive finite duration bound, microseconds. */
     uint32_t session_lease_max_us; /* Positive lease duration bound, microseconds. */
     uint32_t command_age_max_us;   /* Positive local sample-age bound, microseconds. */
-    uint32_t poll_period_us;       /* Positive trusted Core polling interval, <= shortest lease. */
+    uint32_t poll_period_us;       /* Positive Core poll and answer wait, <= shortest lease. */
     void *ctx;                     /* Runtime-owned until Kernel is successfully destroyed. */
-    ayni_status_t (*challenge)(
-        void *ctx, const ayni_permit_epochs_v1 *expected,
-        ayni_executor_nonce_v1 *out_nonce); /* Required, copied output on OK. */
-    ayni_status_t (*renew)(
-        void *ctx,
-        const ayni_permit_renewal_v1 *renewal); /* Required, local gate validates expiry. */
-    ayni_status_t (*stop)(
-        void *ctx, uint64_t permit_id); /* Required independent stop request, not confirmation. */
-    ayni_status_t (*status)(
-        void *ctx, uint64_t permit_id,
-        ayni_executor_status_v1 *out_status); /* Required, fresh exact local facts. */
+    /* Required. Since 0.36, a request answered with the nonce. */
+    ayni_status_t (*challenge)(void *ctx, ayni_attempt_ref_v1 request,
+                               const ayni_permit_epochs_v1 *expected,
+                               ayni_executor_completion_t *completion);
+    /* Required. Since 0.36, a request; only the gate's status is answered. */
+    ayni_status_t (*renew)(void *ctx, ayni_attempt_ref_v1 request,
+                           const ayni_permit_renewal_v1 *renewal,
+                           ayni_executor_completion_t *completion);
+    /* Required independent stop request, not confirmation. Since 0.36, answered later. */
+    ayni_status_t (*stop)(void *ctx, ayni_attempt_ref_v1 request, uint64_t permit_id,
+                          ayni_executor_completion_t *completion);
+    /* Required. Since 0.36, a request answered with fresh exact local facts. */
+    ayni_status_t (*status)(void *ctx, ayni_attempt_ref_v1 request, uint64_t permit_id,
+                            ayni_executor_completion_t *completion);
 } ayni_executor_v1;
+
+/* Any non-ISR thread, including inside the request port; copies the answer.
+ * OK; INVALID_ARGUMENT for a malformed answer or a target Core did not give;
+ * INVALID_STATE when the request is no longer awaited: already answered,
+ * refused, given up after poll_period_us, or its permit released. Since 0.36. */
+ayni_status_t ayni_executor_post(ayni_executor_completion_t *completion,
+                                 const ayni_executor_response_v1 *response);
 
 /* The same canonical authorized request supplies both numeric endpoints.
  * Use the same field twice for a single permitted value. Since 0.35. */
@@ -111,8 +159,9 @@ typedef struct ayni_execution_info_v1 {
     uint32_t execution_ended;     /* Provider terminal recorded, independent of stop or target. */
     ayni_execution_target_t target;       /* Trusted measured result, UNVERIFIED is not success. */
     ayni_control_stop_cause_t stop_cause; /* Explicit measured local gate reason, or NONE. */
-    ayni_status_t executor_status; /* Latest live port status; OK when no retained lease, never stop
-                                      evidence. */
+    /* Latest executor answer, RESULT_UNKNOWN when one never came (Since 0.36);
+     * OK when no retained lease, never stop evidence. */
+    ayni_status_t executor_status;
 } ayni_execution_info_v1;
 
 /* CONFIGURING owner-thread registrations; source descriptors are copied. Since 0.35. */

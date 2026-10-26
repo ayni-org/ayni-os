@@ -18,13 +18,14 @@ std::size_t CallRuntime::storage_size(Limits limits) {
 CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
                          resources::ResourceAdmission &resources, resources::PermitTable &permits,
                          const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
-                         AttemptSequence &attempts, const ayni_host_v1 &host)
+                         ExecutorMailbox &executors, AttemptSequence &attempts,
+                         const ayni_host_v1 &host)
     : work_(work), catalogs_(catalogs), resources_(resources), mailbox_(mailbox),
       attempts_(attempts), host_(host), limits_(limits), slots_(static_cast<Slot *>(storage)),
       staging_(limits.capacity == 0U ? nullptr
                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
       receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes),
-      control_(work, resources, permits, observations, host,
+      control_(work, resources, permits, observations, executors, attempts, host,
                {this, transport_holds, transport_retiring, transport_retire}) {
     work_.calls.set_runtime_retention(this, runtime_retains);
     static_assert(alignof(Slot) <= storage_alignment, "arena aligns call runtime slots");
@@ -46,6 +47,7 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
                                          // quarantine is released.
         return;
     }
+    control_.abandon_issue(active->call_id);
     if (active->claim.call_id != 0U) {
         static_cast<void>(resources_.release(active->claim));
         // Without an issued lease no Provider received a permit. This exact local proof

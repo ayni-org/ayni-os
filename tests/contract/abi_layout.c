@@ -766,3 +766,9 @@ AYNI_LAYOUT(execution_binding_fields,
 AYNI_LAYOUT(execution_info_size, sizeof(ayni_execution_info_v1) == 56);
 AYNI_LAYOUT(execution_info_permit, offsetof(ayni_execution_info_v1, permit_id) == 24);
 AYNI_LAYOUT(execution_info_port_status, offsetof(ayni_execution_info_v1, executor_status) == 52);
+/* ABI 0.36: executor ports are requests answered through ayni_executor_post (ADR-0052). */
+AYNI_LAYOUT(executor_output_size, sizeof(ayni_executor_output_v1) == 64);
+AYNI_LAYOUT(executor_response_size, sizeof(ayni_executor_response_v1) == 96);
+AYNI_LAYOUT(executor_response_request, offsetof(ayni_executor_response_v1, request) == 8);
+AYNI_LAYOUT(executor_response_status, offsetof(ayni_executor_response_v1, status) == 24);
+AYNI_LAYOUT(executor_response_output, offsetof(ayni_executor_response_v1, output) == 32);

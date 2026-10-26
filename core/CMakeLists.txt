@@ -90,6 +90,7 @@ ayni_add_core_module(kernel
     SOURCES
         kernel/api/call_api.cpp
         kernel/api/execution_api.cpp
+        kernel/api/executor_completion_api.cpp
         kernel/api/kernel_api.cpp
         kernel/api/observation_api.cpp
         kernel/api/provider_api.cpp
@@ -118,6 +119,7 @@ ayni_add_core_module(kernel
         kernel/command/work_authority_result.cpp
         kernel/commit/commit_log.cpp
         kernel/completion/completion_pool.cpp
+        kernel/completion/executor_mailbox.cpp
         kernel/completion/provider_mailbox.cpp
         kernel/config/catalogs.cpp
         kernel/decision/decision.cpp

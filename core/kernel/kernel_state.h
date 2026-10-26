@@ -8,6 +8,7 @@
 #include "kernel/call/call_runtime.h"
 #include "kernel/commit/commit_log.h"
 #include "kernel/completion/completion_pool.h"
+#include "kernel/completion/executor_mailbox.h"
 #include "kernel/completion/provider_mailbox.h"
 #include "kernel/config/catalogs.h"
 #include "kernel/config/kernel_config.h"
@@ -65,11 +66,13 @@ struct ayni_kernel {
           provider_completions(storage[ayni::kernel::Store::provider_completions],
                                ayni::kernel::provider_mailbox_limits(capacities), host),
           permits(storage[ayni::kernel::Store::permits], capacities.executor_capacity, resources),
+          executor_completions(storage[ayni::kernel::Store::executor_completions],
+                               capacities.executor_capacity, host),
           observations(catalogs.observation_sources, storage[ayni::kernel::Store::observations],
                        capacities.observation_source_capacity),
           calls(storage[ayni::kernel::Store::call_runtime],
                 ayni::kernel::call_runtime_limits(capacities), work, catalogs, resources, permits,
-                observations, provider_completions, attempts, host),
+                observations, provider_completions, executor_completions, attempts, host),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
@@ -136,9 +139,11 @@ struct ayni_kernel {
     // Provider workers post through this independent reliable pool; Host controls keep theirs.
     ayni::kernel::ProviderMailbox provider_completions;
     ayni::resources::PermitTable permits; // Resource-owned live leases; zero-capacity by default.
+    // Executor answers posted from any thread, three request lanes per executor (ADR-0052).
+    ayni::kernel::ExecutorMailbox executor_completions;
     // Live facts borrow static source descriptions from the catalogs.
     ayni::knowledge::ObservationTable observations;
-    // Bounded cross-owner call coordination; workers only access provider_completions.
+    // Bounded cross-owner call coordination; workers only access the two mailboxes.
     ayni::kernel::CallRuntime calls;
 
     // The largest batch one transition writes (work_journal.h).

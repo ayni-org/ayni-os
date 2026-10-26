@@ -223,7 +223,9 @@ typedef struct ayni_provider_request_v1 {
     ayni_scope_v1 arguments;      /* Complete concrete values actually authorized. */
     ayni_string_v1 text;          /* Bounded UTF-8 business body, never credentials. */
     /* Since 0.35. Borrowed through submit only; null for nonphysical I/O. Physical
-     * Providers install this permit before returning acceptance; workers only issue
+     * Providers hand this permit to the gate: a local gate installs it before
+     * acceptance returns; since 0.36 a remote one may receive it later, unless a
+     * status read answered NOT_FOUND for it first (ADR-0052). Workers only issue
      * samples under that gate. Copy before retention, never accept it later. */
     const ayni_execution_permit_v1 *execution_permit;
 } ayni_provider_request_v1;

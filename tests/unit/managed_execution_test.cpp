@@ -1,12 +1,15 @@
 // ADR-0050 / C-PERMIT-002/005 / C-STOP-006: public normal execution and declared boundaries.
-// No power loss, injected transport failure or restart campaign.
+// ADR-0052: executor answers held, lost or late through the Mock's link. No
+// power loss, Provider transport failure or restart campaign.
 #include "kernel_test_probe.h"
 #include "work_node.h"
 #include <ayni/providers/mock_execution.h>
 #include <ayni/scenes.h>
 namespace {
 using namespace ayni::test;
+using ayni::providers::mock_execution::Answers;
 using ayni::providers::mock_execution::Executor;
+using ayni::providers::mock_execution::PermitStart;
 using ayni::providers::mock_execution::StopConfirmation;
 ayni_catalog_name_v1 name(const char *value) {
     ayni_catalog_name_v1 out{};
@@ -68,6 +71,8 @@ class ManagedExecution : public ::testing::Test {
         config.ticks_to_complete = ticks;
         config.call_timeout_ms = timeout_ms;
         config.stop_confirmation = confirmation;
+        config.answers = answers;
+        config.permit_start = permit_start;
         config.limits.count = 1;
         config.limits.fields[0] = {name("yaw"), name("mrad"), -100, 100};
         ASSERT_EQ(executor.configure(config), AYNI_OK);
@@ -203,6 +208,23 @@ class ManagedExecution : public ::testing::Test {
             ASSERT_NE(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
         }
     }
+    // Held answers over a working link: each round delivers what Core asked
+    // in the previous one, well inside the poll period.
+    void serve(unsigned rounds) {
+        for (unsigned at = 0; at < rounds; ++at) {
+            static_cast<void>(executor.answer());
+            pump(1);
+        }
+    }
+    // Core alone: its clock moves, the executor's work loop does not run.
+    void step_core(unsigned rounds = 1) {
+        for (unsigned at = 0; at < rounds; ++at) {
+            now += 10000;
+            work.node().sim().advance_us(10000);
+            work.node().sim().complete_storage();
+            work.node().step();
+        }
+    }
     uint64_t create(uint64_t agent = agent_a) {
         const auto accepted = work.create(
             WorkNode::create_body(work.instance(agent), 0, "turn", 1, {}, AYNI_TRIGGER_ONCE));
@@ -244,6 +266,7 @@ class ManagedExecution : public ::testing::Test {
                 if (gate().phase == AYNI_CONTROL_STOPPING) {
                     EXPECT_EQ(executor.confirm_stopped(), AYNI_OK);
                 }
+                static_cast<void>(executor.answer());
                 pump(1);
             }
         }
@@ -255,6 +278,8 @@ class ManagedExecution : public ::testing::Test {
     Executor executor;
     ayni_provider_v1 provider{};
     ayni_execution_form_t execution_form = AYNI_FORM_PROCEDURE;
+    Answers answers = Answers::immediate;
+    PermitStart permit_start = PermitStart::at_submit;
     uint64_t now = 0;
     uint64_t command = 0;
     uint64_t task_id = 0;
@@ -532,6 +557,189 @@ TEST_F(ManagedExecution, one_item_steps_share_routine_polling_with_terminal_proc
         EXPECT_LE(report.items_done, 1U);
     }
     EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052: an unanswered challenge is not work. Nothing reaches a Provider
+// before its answer, and the call then runs as with an immediate executor.
+TEST_F(ManagedExecution, held_challenge_waits_at_the_barrier_without_spinning) {
+    answers = Answers::held;
+    start();
+    const auto goal = create();
+    for (unsigned round = 0; round < 100 && executor.held(AYNI_EXECUTOR_CHALLENGE) == 0; ++round) {
+        pump(1);
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_CHALLENGE), 1U);
+    for (unsigned at = 0; at < 5; ++at) {
+        EXPECT_EQ(work.node().step().more_ready, 0U) << at;
+    }
+    EXPECT_EQ(executor.held(AYNI_EXECUTOR_CHALLENGE), 1U);
+    EXPECT_EQ(executor.submissions(), 0U);
+    EXPECT_EQ(gate().phase, AYNI_CONTROL_IDLE);
+    ASSERT_EQ(executor.answer(), AYNI_OK);
+    work.node().step();
+    EXPECT_EQ(executor.submissions(), 1U);
+    serve(40);
+    EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052: a challenge unanswered within the poll period ends the call before
+// any permit, and its late answer is refused.
+TEST_F(ManagedExecution, unanswered_challenge_times_out_before_any_permit) {
+    answers = Answers::held;
+    start();
+    create();
+    for (unsigned round = 0; round < 100 && executor.held(AYNI_EXECUTOR_CHALLENGE) == 0; ++round) {
+        pump(1);
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_CHALLENGE), 1U);
+    pump(3);
+    EXPECT_EQ(executor.answer(), AYNI_INVALID_STATE);
+    serve(20);
+    EXPECT_EQ(executor.submissions(), 0U);
+    EXPECT_EQ(executor.samples(), 0U);
+    EXPECT_EQ(gate().phase, AYNI_CONTROL_IDLE);
+    EXPECT_EQ(resource().used, 0U);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052 / C-PERMIT-005: with the link lost, unanswered reads stop Core's
+// renewals, the executor's own lease ends the output, and the quarantine
+// stays until a measured stop reaches Core.
+TEST_F(ManagedExecution, lost_link_ends_output_by_the_executors_own_lease) {
+    answers = Answers::held;
+    start(AYNI_FORM_SESSION, 200);
+    create();
+    for (unsigned round = 0; round < 100 && executor.submissions() == 0; ++round) {
+        serve(1);
+    }
+    ASSERT_EQ(executor.submissions(), 1U);
+    serve(10);
+    const auto renewals = executor.renewals();
+    EXPECT_GT(renewals, 0U);
+    const uint64_t lost_at = now;
+    for (unsigned round = 0; round < 30; ++round) {
+        executor.drop_requests();
+        pump(1);
+    }
+    EXPECT_EQ(executor.renewals(), renewals);
+    EXPECT_EQ(gate().phase, AYNI_CONTROL_STOPPED);
+    EXPECT_EQ(gate().stop_cause, AYNI_CONTROL_STOP_EXPIRED);
+    EXPECT_LE(gate().stop_confirmed_at_us, lost_at + 200000 + 10000);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_DISPATCHING);
+    EXPECT_EQ(execution().executor_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(resource().quarantine_id, executor.logical_call());
+    serve(20);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
+    EXPECT_EQ(execution().stop_cause, AYNI_CONTROL_STOP_EXPIRED);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052: a read can answer NOT_FOUND while the permit is still on its way
+// to the gate. The answer fences the permit, so it never starts afterwards.
+TEST_F(ManagedExecution, not_found_fences_a_permit_still_on_its_way_to_the_gate) {
+    answers = Answers::held;
+    permit_start = PermitStart::at_advance;
+    start();
+    create();
+    for (unsigned round = 0; round < 100 && executor.submissions() == 0; ++round) {
+        static_cast<void>(executor.answer());
+        step_core();
+    }
+    ASSERT_EQ(executor.submissions(), 1U);
+    for (unsigned round = 0; round < 10 && executor.held(AYNI_EXECUTOR_STATUS) == 0; ++round) {
+        step_core();
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U);
+    ASSERT_EQ(executor.answer(), AYNI_OK);  // NOT_FOUND: the permit has not reached the gate.
+    ASSERT_EQ(executor.advance(), AYNI_OK); // The fenced permit is refused; the Provider ends.
+    EXPECT_EQ(executor.pending(), 0U);
+    step_core(3);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_DISPATCHING);
+    EXPECT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U); // Asked again after the terminal.
+    for (unsigned round = 0; round < 20 && resource().quarantine_id != 0U; ++round) {
+        static_cast<void>(executor.answer());
+        step_core();
+    }
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_NOT_STARTED);
+    EXPECT_EQ(execution().execution_ended, 1U);
+    EXPECT_EQ(executor.samples(), 0U);
+    EXPECT_EQ(gate().phase, AYNI_CONTROL_IDLE);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052: a NOT_FOUND read proves a permit never started only if it was
+// sent after the Provider's terminal; an earlier read, answered later, is
+// asked again. The executor's clock alone moves past the lease, so the
+// forwarded permit is refused at the gate and the Provider ends.
+TEST_F(ManagedExecution, not_found_proves_not_started_only_from_a_read_after_the_terminal) {
+    answers = Answers::held;
+    permit_start = PermitStart::at_advance;
+    start();
+    create();
+    for (unsigned round = 0; round < 100 && executor.submissions() == 0; ++round) {
+        static_cast<void>(executor.answer());
+        step_core();
+    }
+    ASSERT_EQ(executor.submissions(), 1U);
+    for (unsigned round = 0; round < 10 && executor.held(AYNI_EXECUTOR_STATUS) == 0; ++round) {
+        step_core();
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U);
+    now += 300000;
+    ASSERT_EQ(executor.advance(), AYNI_OK);
+    ASSERT_EQ(executor.pending(), 0U);
+    // No Core time passes: the terminal is taken while the read is pending,
+    // and the stop that follows the terminal goes out.
+    for (unsigned round = 0; round < 5 && executor.held(AYNI_EXECUTOR_STOP) == 0; ++round) {
+        work.node().step();
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_STOP), 1U);
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U);
+    ASSERT_EQ(executor.answer(), AYNI_OK); // NOT_FOUND to the read sent before the terminal.
+    for (unsigned round = 0; round < 5 && executor.held(AYNI_EXECUTOR_STATUS) == 0 &&
+                             execution().phase == AYNI_EXECUTION_DISPATCHING;
+         ++round) {
+        work.node().step();
+    }
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_DISPATCHING);
+    EXPECT_EQ(executor.held(AYNI_EXECUTOR_STATUS), 1U);
+    for (unsigned round = 0; round < 20 && resource().quarantine_id != 0U; ++round) {
+        static_cast<void>(executor.answer());
+        step_core();
+    }
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_NOT_STARTED);
+    EXPECT_EQ(executor.samples(), 0U);
+    EXPECT_EQ(resource().quarantine_id, 0U);
+}
+// ADR-0052 / C-PERMIT-005: a renewal goes out only if the gate still holds
+// when its challenge is answered, so a nonce issued after a revocation never
+// renews the session; the stop does not wait for that challenge.
+TEST_F(ManagedExecution, revocation_while_a_renewal_challenge_is_held_sends_no_renewal) {
+    answers = Answers::held;
+    start(AYNI_FORM_SESSION, 200);
+    create();
+    for (unsigned round = 0; round < 100 && executor.submissions() == 0; ++round) {
+        serve(1);
+    }
+    ASSERT_EQ(executor.submissions(), 1U);
+    for (unsigned round = 0; round < 20 && executor.held(AYNI_EXECUTOR_CHALLENGE) == 0; ++round) {
+        serve(1);
+    }
+    ASSERT_EQ(executor.held(AYNI_EXECUTOR_CHALLENGE), 1U);
+    const auto renewals = executor.renewals();
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, grants[0]};
+    auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &body, 1);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    work.node().step();
+    EXPECT_EQ(executor.held(AYNI_EXECUTOR_STOP), 1U);
+    ASSERT_EQ(executor.answer(), AYNI_OK); // The nonce is issued after the revocation.
+    EXPECT_EQ(gate().phase, AYNI_CONTROL_STOPPING);
+    for (unsigned round = 0; round < 5; ++round) {
+        work.node().step();
+        EXPECT_EQ(executor.held(AYNI_EXECUTOR_RENEW), 0U) << round;
+    }
+    serve(20);
+    EXPECT_EQ(executor.renewals(), renewals);
     EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
     EXPECT_EQ(resource().quarantine_id, 0U);
 }

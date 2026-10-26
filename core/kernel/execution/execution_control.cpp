@@ -127,34 +127,111 @@ work::ResultDependencies ExecutionControl::result_dependencies(uint32_t index) c
                : work::ResultDependencies::stale;
 }
 
-// The saved DISPATCHING barrier is already durable. A fresh challenge anchors
-// the executor's deadline, and the full envelope is derived from authorized bytes.
-ayni_status_t ExecutionControl::issue(uint32_t index, const resources::ResourceClaim &claim,
-                                      ayni_bytes_v1 arguments, uint64_t now_us) {
+bool ExecutionControl::executor_of(const work::ExecutionFact &fact, uint32_t &out_index) const {
+    return work_.catalogs.execution.find_executor(view(fact.binding.executor),
+                                                  fact.binding.executor_version, out_index);
+}
+
+// One identity per request, from the sequence Provider attempts use, so a
+// late answer can never name a newer request (C-ID-006).
+template <typename Port>
+RuntimeAdvance ExecutionControl::send(uint32_t executor, ExecutorLane lane, ExecutorRequest request,
+                                      uint64_t now_us, Port port) {
+    const auto &ports = work_.catalogs.execution.executor(executor).ports;
+    if (!attempts_.next(work_.ids.boot_epoch(), request.identity)) {
+        return Advance::attempt_exhausted;
+    }
+    request.deadline_us = foundation::deadline(now_us, ports.poll_period_us);
+    auto *target = executors_.open(executor, lane, request);
+    if (target == nullptr) {
+        return Advance::internal;
+    }
+    const auto status = work_.call_out([&] { return port(ports, request.identity, target); });
+    if (status != AYNI_OK) {
+        executors_.refuse(executor, lane, status);
+    }
+    return Advance::applied;
+}
+
+ExecutionControl::Reply ExecutionControl::take(uint32_t executor, ExecutorLane lane,
+                                               uint64_t now_us, ExecutorRequest &out_request,
+                                               ExecutorAnswer &out_answer) {
+    const auto *request = executors_.request(executor, lane);
+    if (request == nullptr) {
+        return Reply::pending;
+    }
+    Reply reply = Reply::answered;
+    if (!executors_.answer(executor, lane, out_answer)) {
+        if (now_us < request->deadline_us) {
+            return Reply::pending;
+        }
+        out_answer = {AYNI_RESULT_UNKNOWN, {}};
+        reply = Reply::expired;
+    }
+    out_request = *request;
+    executors_.close(executor, lane);
+    return reply;
+}
+
+bool ExecutionControl::due(uint32_t executor, ExecutorLane lane, uint64_t now_us) const {
+    const auto *request = executors_.request(executor, lane);
+    ExecutorAnswer answer{};
+    return request != nullptr &&
+           (now_us >= request->deadline_us || executors_.answer(executor, lane, answer));
+}
+
+bool ExecutionControl::any_due(uint32_t executor, uint64_t now_us) const {
+    return due(executor, ExecutorLane::stop, now_us) ||
+           due(executor, ExecutorLane::status, now_us) ||
+           due(executor, ExecutorLane::control, now_us);
+}
+
+// The saved DISPATCHING barrier is already durable. A challenge goes out
+// first; once its answer arrives the caller has rechecked the gates, the fresh
+// nonce anchors the executor's deadline and the full envelope is derived from
+// authorized bytes. Nothing reaches a Provider before the lease is installed.
+PermitIssue ExecutionControl::issue(uint32_t index, const resources::ResourceClaim &claim,
+                                    ayni_bytes_v1 arguments, uint64_t now_us) {
     const auto &saved = work_.calls.state(index).execution;
     if (!saved) {
-        return AYNI_OK;
+        return PermitIssue::issued;
     }
     const auto &fact = *saved;
     uint32_t executor = 0;
-    if (!work_.catalogs.execution.find_executor(view(fact.binding.executor),
-                                                fact.binding.executor_version, executor)) {
-        return AYNI_NOT_FOUND;
+    if (!executor_of(fact, executor)) {
+        return PermitIssue::refused;
     }
     if (!permits_.available(executor)) {
-        return AYNI_BUSY;
-    }
-    const auto &ports = work_.catalogs.execution.executor(executor).ports;
-    ayni_executor_nonce_v1 nonce{};
-    const auto status =
-        work_.call_out([&] { return ports.challenge(ports.ctx, &fact.epochs, &nonce); });
-    if (status != AYNI_OK) {
-        return status;
-    }
-    if (nonce.control_domain_id != fact.control_domain || nonce.nonce == 0) {
-        return AYNI_INVALID_ARGUMENT;
+        return PermitIssue::busy;
     }
     const auto &id = work_.calls.identity(index);
+    const auto *request = executors_.request(executor, ExecutorLane::control);
+    if (request == nullptr) {
+        const auto sent =
+            send(executor, ExecutorLane::control,
+                 {{}, AYNI_EXECUTOR_CHALLENGE, id.call_id, 0, false}, now_us,
+                 [&](const ayni_executor_v1 &ports, ayni_attempt_ref_v1 identity,
+                     ayni_executor_completion_t *target) {
+                     return ports.challenge(ports.ctx, identity, &fact.epochs, target);
+                 });
+        return sent == Advance::applied             ? PermitIssue::requested
+               : sent == Advance::attempt_exhausted ? PermitIssue::exhausted
+                                                    : PermitIssue::defect;
+    }
+    if (request->call_id != id.call_id) {
+        return PermitIssue::busy;
+    }
+    ExecutorRequest sent{};
+    ExecutorAnswer answer{};
+    const auto reply = take(executor, ExecutorLane::control, now_us, sent, answer);
+    if (reply == Reply::pending) {
+        return PermitIssue::waiting;
+    }
+    const auto &nonce = answer.output.nonce;
+    if (answer.status != AYNI_OK || nonce.control_domain_id != fact.control_domain ||
+        nonce.nonce == 0) {
+        return PermitIssue::refused;
+    }
     // Acceptance IDs may be reordered by priority/RR. The durable dispatch attempt
     // is assigned after exclusive acquisition, so each executor sees increasing permit IDs.
     ayni_execution_permit_v1 permit{sizeof(permit),
@@ -169,10 +246,37 @@ ayni_status_t ExecutionControl::issue(uint32_t index, const resources::ResourceC
                                     fact.binding.max_command_age_us,
                                     0,
                                     {}};
-    if (catalog::execution_envelope(fact.binding, arguments, permit.envelope) != AYNI_OK) {
-        return AYNI_INTERNAL;
+    if (catalog::execution_envelope(fact.binding, arguments, permit.envelope) != AYNI_OK ||
+        !permits_.install(id.call_id, executor, claim, permit, now_us)) {
+        return PermitIssue::refused;
     }
-    return permits_.install(id.call_id, executor, claim, permit, now_us) ? AYNI_OK : AYNI_INTERNAL;
+    return PermitIssue::issued;
+}
+
+bool ExecutionControl::issue_ready(uint32_t index, uint64_t now_us) const {
+    const auto &saved = work_.calls.state(index).execution;
+    uint32_t executor = 0;
+    if (!saved || !executor_of(*saved, executor)) {
+        return true;
+    }
+    if (!permits_.available(executor)) {
+        return false;
+    }
+    const auto *request = executors_.request(executor, ExecutorLane::control);
+    return request == nullptr || (request->call_id == work_.calls.identity(index).call_id &&
+                                  due(executor, ExecutorLane::control, now_us));
+}
+
+void ExecutionControl::abandon_issue(uint64_t call_id) {
+    if (permits_.find(call_id) != nullptr) {
+        return; // Its control lane carries renewals, which end with the lease.
+    }
+    for (uint32_t executor = 0; executor < permits_.capacity(); ++executor) {
+        const auto *request = executors_.request(executor, ExecutorLane::control);
+        if (request != nullptr && request->call_id == call_id) {
+            executors_.close(executor, ExecutorLane::control);
+        }
+    }
 }
 
 const ayni_execution_permit_v1 *ExecutionControl::permit(uint64_t call_id) const {
@@ -203,11 +307,13 @@ bool ExecutionControl::holds_lease(uint64_t call_id) const {
 }
 
 bool ExecutionControl::idle() const {
-    return permits_.empty();
+    return permits_.empty() && executors_.idle();
 }
 
 uint64_t ExecutionControl::next_deadline_us() const {
-    return permits_.next_deadline_us();
+    const uint64_t poll = permits_.next_deadline_us();
+    const uint64_t answer = executors_.next_deadline_us();
+    return poll < answer ? poll : answer;
 }
 
 // Durable work facts retain measured stop independently of Provider completion.
@@ -226,7 +332,8 @@ RuntimeAdvance ExecutionControl::commit_stop(uint32_t index) {
 }
 
 // Lease slots outlive work-model reload. Inhibition never trusts a partially
-// restored CallTable index or waits for a new writer to finish recovery.
+// restored CallTable index or waits for a new writer to finish recovery. A
+// stop goes out on its own lane, whatever the executor's other lanes await.
 RuntimeAdvance ExecutionControl::advance_urgent(uint64_t now_us, uint64_t durable_seq,
                                                 RuntimeMode mode) {
     for (uint32_t at = 0; at < permits_.capacity(); ++at) {
@@ -237,7 +344,8 @@ RuntimeAdvance ExecutionControl::advance_urgent(uint64_t now_us, uint64_t durabl
         const bool issue_stop =
             lease->phase == resources::PermitLease::Phase::issued
                 ? should_stop(*lease, now_us, durable_seq, mode)
-                : lease->stop_delivery == resources::PermitLease::StopDelivery::pending;
+                : lease->stop_delivery == resources::PermitLease::StopDelivery::pending &&
+                      executors_.request(at, ExecutorLane::stop) == nullptr;
         if (issue_stop) {
             return poll(at, now_us, durable_seq, mode);
         }
@@ -247,6 +355,8 @@ RuntimeAdvance ExecutionControl::advance_urgent(uint64_t now_us, uint64_t durabl
 
 // Independent ports never mutate persistent facts. In particular, journal
 // backpressure cannot delay disabling output or maintaining actuator quarantine.
+// One item sends one request or applies one answer, never both for the same
+// request; the gate allowed is evaluated fresh in every item.
 ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us,
                                                  uint64_t durable_seq, Mode mode) {
     auto *lease = permits_.at(index);
@@ -259,11 +369,22 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
             if (!permits_.release_stopped(call_id)) {
                 return Advance::internal;
             }
+            // Later answers for this permit are refused.
+            for (auto lane : {ExecutorLane::control, ExecutorLane::stop, ExecutorLane::status}) {
+                executors_.close(index, lane);
+            }
             // The task table reads the lease (CallRuntime::runtime_retains)
             // without a transition, also one restored without a call slot.
             work_.forget_due_work();
             transport_.retire(transport_.context, call_id, now_us);
             return Advance::applied;
+        }
+        // The measured stop needs nothing more from the executor.
+        for (auto lane : {ExecutorLane::control, ExecutorLane::stop, ExecutorLane::status}) {
+            if (due(index, lane, now_us)) {
+                executors_.close(index, lane);
+                return Advance::applied;
+            }
         }
         return Advance::idle;
     }
@@ -271,41 +392,108 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
     if (!allowed && !permits_.request_stop(lease->call_id)) {
         return Advance::internal;
     }
-    const auto &ports = work_.catalogs.execution.executor(lease->executor_index).ports;
     if (lease->phase == resources::PermitLease::Phase::stopping &&
-        lease->stop_delivery == resources::PermitLease::StopDelivery::pending) {
-        const auto status =
-            work_.call_out([&] { return ports.stop(ports.ctx, lease->permit.permit_id); });
+        lease->stop_delivery == resources::PermitLease::StopDelivery::pending &&
+        executors_.request(index, ExecutorLane::stop) == nullptr) {
         // A not-installed permit remains quarantined until terminal + authoritative absence.
-        // Port failure leaves the gate to expire; no return status is physical stop evidence.
-        lease->port_status = status;
+        // An unanswered stop is sent again; no answer is physical stop evidence.
         lease->stop_delivery = resources::PermitLease::StopDelivery::sent;
         lease->poll_after_us = now_us;
-        return Advance::applied;
+        const uint64_t permit_id = lease->permit.permit_id;
+        return send(index, ExecutorLane::stop, {{}, AYNI_EXECUTOR_STOP, lease->call_id, 0, false},
+                    now_us,
+                    [&](const ayni_executor_v1 &ports, ayni_attempt_ref_v1 identity,
+                        ayni_executor_completion_t *target) {
+                        return ports.stop(ports.ctx, identity, permit_id, target);
+                    });
     }
-    if (now_us < lease->poll_after_us) {
+    for (auto lane : {ExecutorLane::stop, ExecutorLane::status, ExecutorLane::control}) {
+        if (due(index, lane, now_us)) {
+            return apply(*lease, lane, now_us, allowed);
+        }
+    }
+    if (now_us < lease->poll_after_us ||
+        executors_.request(index, ExecutorLane::status) != nullptr) {
         return Advance::idle;
     }
-    lease->poll_after_us = foundation::deadline(now_us, ports.poll_period_us);
-    ayni_executor_status_v1 status{sizeof(status), AYNI_TARGET_UNVERIFIED, {}};
-    status.control.struct_size = sizeof(status.control);
-    const auto read =
-        work_.call_out([&] { return ports.status(ports.ctx, lease->permit.permit_id, &status); });
-    lease->port_status = read;
-    if (read == AYNI_NOT_FOUND && lease->terminal_seen) {
-        return permits_.not_started(lease->call_id) ? Advance::applied : Advance::internal;
+    lease->poll_after_us =
+        foundation::deadline(now_us, work_.catalogs.execution.executor(index).ports.poll_period_us);
+    const uint64_t permit_id = lease->permit.permit_id;
+    // Absence is authoritative only in a read sent after the Provider's terminal.
+    return send(index, ExecutorLane::status,
+                {{}, AYNI_EXECUTOR_STATUS, lease->call_id, 0, lease->terminal_seen}, now_us,
+                [&](const ayni_executor_v1 &ports, ayni_attempt_ref_v1 identity,
+                    ayni_executor_completion_t *target) {
+                    return ports.status(ports.ctx, identity, permit_id, target);
+                });
+}
+
+// A renewal is a chain: an ACTIVE status sends a challenge, and the
+// challenge's answer sends the renewal only if allowed still holds then. So
+// the nonce a renewal echoes was issued before Core last found the gate open.
+ExecutionControl::Advance ExecutionControl::apply(resources::PermitLease &lease, ExecutorLane lane,
+                                                  uint64_t now_us, bool allowed) {
+    const uint32_t index = lease.executor_index;
+    ExecutorRequest request{};
+    ExecutorAnswer answer{};
+    const auto reply = take(index, lane, now_us, request, answer);
+    if (reply == Reply::pending) {
+        return Advance::idle;
     }
-    if (read == AYNI_OK && !permits_.observe(lease->call_id, status)) {
-        lease->port_status = AYNI_INVALID_ARGUMENT;
+    lease.port_status = answer.status;
+    if (lane == ExecutorLane::stop) {
+        if (reply == Reply::expired) {
+            lease.stop_delivery = resources::PermitLease::StopDelivery::pending;
+        }
+        return Advance::applied;
     }
-    if (lease->port_status != AYNI_OK) {
-        return permits_.request_stop(lease->call_id) ? Advance::applied : Advance::internal;
+    const bool renewing = allowed && lease.phase == resources::PermitLease::Phase::issued &&
+                          lease.permit.form == AYNI_FORM_SESSION;
+    if (lane == ExecutorLane::status) {
+        if (answer.status == AYNI_NOT_FOUND && request.after_terminal) {
+            return permits_.not_started(lease.call_id) ? Advance::applied : Advance::internal;
+        }
+        if (answer.status == AYNI_NOT_FOUND && lease.terminal_seen) {
+            lease.poll_after_us = now_us; // Sent before the terminal: ask again.
+        }
+        if (answer.status == AYNI_OK && !permits_.observe(lease.call_id, answer.output.status)) {
+            lease.port_status = AYNI_INVALID_ARGUMENT;
+        }
+        if (lease.port_status != AYNI_OK) {
+            return permits_.request_stop(lease.call_id) ? Advance::applied : Advance::internal;
+        }
+        if (!renewing || answer.output.status.control.phase != AYNI_CONTROL_ACTIVE ||
+            executors_.request(index, ExecutorLane::control) != nullptr) {
+            return Advance::applied;
+        }
+        // Renewal uses the original complete generations and a new executor-local nonce.
+        const auto epochs = lease.permit.epochs;
+        return send(index, ExecutorLane::control,
+                    {{}, AYNI_EXECUTOR_CHALLENGE, lease.call_id, 0, false}, now_us,
+                    [&](const ayni_executor_v1 &ports, ayni_attempt_ref_v1 identity,
+                        ayni_executor_completion_t *target) {
+                        return ports.challenge(ports.ctx, identity, &epochs, target);
+                    });
     }
-    if (allowed && status.control.phase == AYNI_CONTROL_ACTIVE &&
-        lease->permit.form == AYNI_FORM_SESSION) {
-        return renew(*lease);
+    if (request.kind == AYNI_EXECUTOR_CHALLENGE && answer.status == AYNI_OK &&
+        (answer.output.nonce.control_domain_id != lease.permit.control_domain_id ||
+         answer.output.nonce.nonce == 0)) {
+        lease.port_status = AYNI_INVALID_ARGUMENT;
     }
-    return Advance::applied;
+    if (lease.port_status != AYNI_OK) {
+        return permits_.request_stop(lease.call_id) ? Advance::applied : Advance::internal;
+    }
+    if (request.kind != AYNI_EXECUTOR_CHALLENGE || !renewing) {
+        return Advance::applied;
+    }
+    const ayni_permit_renewal_v1 renewal{sizeof(renewal), 0, lease.permit.permit_id,
+                                         answer.output.nonce.nonce, lease.permit.epochs};
+    return send(index, ExecutorLane::control, {{}, AYNI_EXECUTOR_RENEW, lease.call_id, 0, false},
+                now_us,
+                [&](const ayni_executor_v1 &ports, ayni_attempt_ref_v1 identity,
+                    ayni_executor_completion_t *target) {
+                    return ports.renew(ports.ctx, identity, &renewal, target);
+                });
 }
 
 // Normal operation requires durable stopped evidence. Explicit closing of an
@@ -347,30 +535,6 @@ bool ExecutionControl::should_stop(const resources::PermitLease &lease, uint64_t
            !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);
 }
 
-// Renewal uses the original complete generations and a new executor-local nonce.
-ExecutionControl::Advance ExecutionControl::renew(resources::PermitLease &lease) {
-    const auto &ports = work_.catalogs.execution.executor(lease.executor_index).ports;
-    // Both port calls run under one callout: nothing between them reads the kernel.
-    const ayni_status_t renewed = work_.call_out([&]() -> ayni_status_t {
-        ayni_executor_nonce_v1 nonce{};
-        const auto challenged = ports.challenge(ports.ctx, &lease.permit.epochs, &nonce);
-        if (challenged != AYNI_OK) {
-            return challenged;
-        }
-        if (nonce.control_domain_id != lease.permit.control_domain_id || nonce.nonce == 0) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        const ayni_permit_renewal_v1 renewal{sizeof(renewal), 0, lease.permit.permit_id,
-                                             nonce.nonce, lease.permit.epochs};
-        return ports.renew(ports.ctx, &renewal);
-    });
-    lease.port_status = renewed;
-    if (renewed != AYNI_OK && !permits_.request_stop(lease.call_id)) {
-        return Advance::internal;
-    }
-    return Advance::applied;
-}
-
 RuntimeAdvance ExecutionControl::advance(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) {
     for (uint32_t scanned = 0; scanned < permits_.capacity(); ++scanned) {
         const uint32_t index = cursor_;
@@ -385,12 +549,15 @@ RuntimeAdvance ExecutionControl::advance(uint64_t now_us, uint64_t durable_seq, 
 
 // Match independent readiness without consulting Provider queues. Evaluating
 // authorization here is read-only; port callbacks are confined to advance
-// and advance_urgent.
+// and advance_urgent. An unanswered request is ready only at its deadline.
 bool ExecutionControl::ready(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) const {
     for (uint32_t at = 0; at < permits_.capacity(); ++at) {
         const auto *lease = permits_.at(at);
         if (lease == nullptr) {
             continue;
+        }
+        if (any_due(at, now_us)) {
+            return true;
         }
         if (lease->stopped) {
             if (stopped_releasable(*lease, durable_seq, mode)) {
@@ -398,10 +565,15 @@ bool ExecutionControl::ready(uint64_t now_us, uint64_t durable_seq, RuntimeMode 
             }
             continue;
         }
-        if (now_us >= lease->poll_after_us) {
+        if (now_us >= lease->poll_after_us &&
+            executors_.request(at, ExecutorLane::status) == nullptr) {
             return true;
         }
         if (lease->phase == resources::PermitLease::Phase::stopping) {
+            if (lease->stop_delivery == resources::PermitLease::StopDelivery::pending &&
+                executors_.request(at, ExecutorLane::stop) == nullptr) {
+                return true;
+            }
             continue;
         }
         if (should_stop(*lease, now_us, durable_seq, mode)) {
