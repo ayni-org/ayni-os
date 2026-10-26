@@ -280,7 +280,7 @@ TEST(CheckpointReaders, registration_rejects_invalid_ranges_and_copies_accepted_
     ASSERT_EQ(ayni_register_strategy(node.kernel(), &desc), AYNI_OK);
     readers[0].max_version = 1;
     // White-box: inspect the registered promise only; integration covers restart.
-    const auto &registry = node.kernel()->catalogs.strategies;
+    const auto &registry = node.kernel()->catalog().strategies;
     ayni::catalog::CatalogId id;
     ASSERT_TRUE(id.assign(text("new")));
     uint32_t index = 0;

@@ -1,3 +1,4 @@
+#include "kernel_test_probe.h"
 // ADR-0037 decisions 7–10: persistence fault fixtures attach validated facts
 // explicitly (White-box), then exercise the real journal,
 // snapshot, boot and ordinary Grant/Goal APIs. No fixture bypasses the reader.
@@ -6,9 +7,9 @@
 #include "durability/batch/batch_codec.h"
 #include "goal_approval_request.h"
 #include "goal_reauthorization_request.h"
-#include "kernel/command/command_records.h"
-#include "kernel/persistence/work_replay.h"
-#include "kernel/persistence/work_snapshot.h"
+#include "kernel/service/command/command_records.h"
+#include "kernel/service/persistence/work_replay.h"
+#include "kernel/service/persistence/work_snapshot.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
 #include "work/goal/goal_authority_records.h"
@@ -249,15 +250,18 @@ struct Snapshot {
 Snapshot snapshot(Fixture &fixture, uint32_t page_size = 512) {
     auto &kernel = *fixture.work.kernel();
     Snapshot result;
-    const auto layout = ayni::kernel::measure_snapshot(kernel.work);
+    const auto layout =
+        ayni::kernel::measure_snapshot(ayni::kernel::KernelTestProbe::work(&kernel));
     result.metadata.generation = 1;
-    result.metadata.covers_commit_seq = kernel.work.transitions.latest().commit_seq;
-    result.metadata.max_transition_id = kernel.work.transitions.latest().transition_id;
-    result.metadata.boot_epoch = kernel.log.boot_epoch();
-    result.metadata.writer_epoch = kernel.log.writer_epoch();
+    result.metadata.covers_commit_seq =
+        ayni::kernel::KernelTestProbe::work(&kernel).transitions.latest().commit_seq;
+    result.metadata.max_transition_id =
+        ayni::kernel::KernelTestProbe::work(&kernel).transitions.latest().transition_id;
+    result.metadata.boot_epoch = ayni::kernel::KernelTestProbe::log(&kernel).boot_epoch();
+    result.metadata.writer_epoch = ayni::kernel::KernelTestProbe::log(&kernel).writer_epoch();
     result.metadata.payload_length = layout.payload_length;
     result.metadata.record_count = layout.record_count;
-    ayni::kernel::WorkSnapshotWriter writer(kernel.work);
+    ayni::kernel::WorkSnapshotWriter writer(ayni::kernel::KernelTestProbe::work(&kernel));
     std::vector<uint8_t> page(page_size);
     uint16_t last_type = 0;
     for (unsigned round = 0; round < 100; ++round) {

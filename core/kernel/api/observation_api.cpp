@@ -1,7 +1,7 @@
 // Trusted source/publication boundary; catalog and knowledge own all facts.
 #include "catalog/abi_checks.h"
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 #include <ayni/observations.h>
 
 extern "C" {
@@ -19,7 +19,7 @@ ayni_status_t ayni_register_observation_source(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.observation_sources.add_validated(decoded);
+    return kernel->configure(decoded);
 }
 ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
                                        const ayni_observation_v1 *observation) {
@@ -30,12 +30,7 @@ ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    const auto status =
-        kernel->observations.publish(*observation, kernel->host.monotonic_now_us(kernel->host.ctx));
-    if (status == AYNI_OK) {
-        kernel->host.wake(kernel->host.ctx);
-    }
-    return status;
+    return kernel->publish_observation(*observation);
 }
 ayni_status_t ayni_get_observation(const ayni_kernel_t *kernel, ayni_string_v1 source_id,
                                    ayni_observation_info_v1 *out_info) {
@@ -52,9 +47,8 @@ ayni_status_t ayni_get_observation(const ayni_kernel_t *kernel, ayni_string_v1 s
         gated != AYNI_OK) {
         return gated;
     }
-    const auto status = kernel->observations.info(
-        source_id, kernel->host.monotonic_now_us(kernel->host.ctx), *out_info);
-    if (status == AYNI_OK && kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
+    const auto status = kernel->observation_view().info(source_id, kernel->now_us(), *out_info);
+    if (status == AYNI_OK && kernel->state() != AYNI_LIFECYCLE_RUNNING) {
         out_info->usable = 0; // A fenced/recovering Kernel cannot consume old physical context.
     }
     return status;

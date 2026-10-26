@@ -26,7 +26,7 @@ class CiSelectionTest(unittest.TestCase):
         self.assertEqual(self.enabled(["core/kernel/ingress_lock.h"], "push"), set())
 
     def test_concurrency_and_esp_changes_use_only_the_daily_suite(self):
-        self.assertEqual(self.enabled(["core/kernel/completion/completion_pool.cpp"]),
+        self.assertEqual(self.enabled(["core/kernel/ports/completion_pool.cpp"]),
                          {"asan"})
         self.assertEqual(self.enabled(["hosts/esp_idf/esp_idf_host.cpp"]),
                          {"asan"})

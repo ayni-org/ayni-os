@@ -11,8 +11,8 @@
 | 4 | P0 | 结构收尾 | 审查项 F05 泛型精确命令查找、F06 调用对 Task 的传播移到 work、F11 主版本 0 只收当前 ABI 布局、F16 前半共享默认配置、F19 文档/草案对齐；两个 runner 的并行 CI；行为、ABI 0.36 布局与 schema 2 不变 | [#72](https://github.com/RobotSe7en/ayni/pull/72)（ADR-0053） |
 | 5 | P1 | MA-008C | typed 工具调用结果（至多 8 项）与工具视图，GoalType 允许列表内已授权的部分，ABI 0.37；OpenAI-compatible Provider：libcurl multi 工作线程、yyjson 有界解析、运行时 endpoint/model/密钥环境变量名，非流式文本与工具调用，无自动重试；本地协议夹具，实 API 单独验证 | Core 侧 typed 工具调用、工具视图与允许列表见 [#73](https://github.com/RobotSe7en/ayni/pull/73)（ADR-0054，ABI 0.37）；Native OpenAI-compatible Provider、本地夹具与 DeepSeek 文本/工具提议验证见 [#75](https://github.com/RobotSe7en/ayni/pull/75)（ADR-0055） |
 | 6 | P1 | MA-009 | 规则和 ToolLoop 两策略；单轮最多 8 调用、按序；命名版本步骤；未知阻止后续；检查点明确兼容；补偿新调用新授权；多轮对话保存最近轮次与模型摘要，P1 只删整个对话 | 已交付 [#76](https://github.com/RobotSe7en/ayni/pull/76)（ADR-0056）；文件存储随 P2 |
-| 7 | P2 | MA-020 前半 | runtime 演示装配（F16 后半）、SimNode 与对话文件存储；单进程 Native CLI 内嵌 Kernel，命令映射已有意图；显式点名对 A/B 说话；脚本化 Mock CLI 会话含重启继续 | 实现及本地正常验证完成：runtime 见 #77，CLI 见 #78（ADR-0057）；实 API 多轮待本机试用 |
-| 8 | P3 | 结构整改 | F01 `ayni_kernel` 成员私有化与 service/runtime 分区，F14 StepContext，F08 作用域重入守卫；行为、ABI 与 schema 不变 | 未开始 |
+| 7 | P2 | MA-020 前半 | runtime 演示装配（F16 后半）、SimNode 与对话文件存储；单进程 Native CLI 内嵌 Kernel，命令映射已有意图；显式点名对 A/B 说话；脚本化 Mock CLI 会话含重启继续 | 已合并并通过正常验证/审查/CI：runtime 见 #77，CLI 见 #78（ADR-0057）；实 API 多轮待本机试用 |
+| 8 | P3 | 结构整改 | F01 `ayni_kernel` 成员私有化与 service/runtime 分区，F14 StepContext，F08 作用域重入守卫；行为、ABI 与 schema 不变 | 实施中，ADR-0058 |
 | 9 | P3 | MA-011A | 私有命名空间与所有者公共档案；来源/版本/确认状态；有限检索与上下文 lineage；tombstone 立即拒绝传递派生依赖、有界擦除；单轮对话删除使摘要失效；满表拒绝；随同 F04（Grant/命令）、F12、F10 | 未开始 |
 | 10 | P4 | MA-011B | 可信 UTC 独立于 monotonic；单次/每日/每周与有界时区规则；不可信待校时；稳定 occurrence；DST/跳时补发至多一次 | 未开始 |
 | 11 | P4 | MA-008B | 订阅 open/renew/close、代际/序号/gap、TTL/质量、媒体引用；任意线程观测队列（ADR-0052 决策 6，F15）；新代际与依赖复核；可靠控制回执 | 未开始 |

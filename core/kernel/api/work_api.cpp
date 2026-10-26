@@ -9,10 +9,10 @@
 #include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
 #include "kernel/api/api_gate.h"
-#include "kernel/intent/authority_intent.h"
-#include "kernel/intent/intent.h"
-#include "kernel/intent/work_model.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
+#include "kernel/service/intent/authority_intent.h"
+#include "kernel/service/intent/intent.h"
+#include "kernel/service/model/work_model.h"
 
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
@@ -30,19 +30,6 @@ template <typename Struct> ayni_status_t check_size(const Struct &value) {
 
 bool is_channel(ayni_channel_t channel) {
     return channel == AYNI_CHANNEL_VOICE || channel == AYNI_CHANNEL_MANAGEMENT;
-}
-
-// Registering an id twice is an argument error; the capacity comes last.
-template <typename AddResult> ayni_status_t add_status(AddResult result) {
-    switch (result) {
-    case AddResult::added:
-        return AYNI_OK;
-    case AddResult::duplicate:
-        return AYNI_INVALID_ARGUMENT;
-    case AddResult::full:
-        break;
-    }
-    return AYNI_CAPACITY_EXCEEDED;
 }
 
 // Copies a goal type's tool allow list (ADR-0054). Bindings resolve at start,
@@ -119,14 +106,14 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
         return gated;
     }
     ayni::kernel::IntentOutcome outcome{};
-    const bool log_was_idle = kernel->log.idle();
+    const bool log_was_idle = kernel->writer_idle();
     bool committed = false;
     status = kernel->submit_intent(decoded, outcome, failure, committed);
     if (status == AYNI_OK && out_result != nullptr) {
         ayni_intent_result_v1 result{};
         result.struct_size = sizeof(result);
         if (decoded.command_id != 0U) {
-            const auto *session = kernel->work.sessions.find(decoded.session_id);
+            const auto *session = kernel->model().sessions.find(decoded.session_id);
             ayni_intent_receipt_v1 receipt{};
             if (session == nullptr ||
                 kernel->intent_receipt(session->principal_id, decoded.command_id, receipt) !=
@@ -145,7 +132,7 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
             result.commit_seq = outcome.commit_seq;
             result.effect = outcome.effect;
             result.phase = AYNI_INTENT_APPLIED;
-            result.applied_boot_epoch = kernel->log.boot_epoch();
+            result.applied_boot_epoch = kernel->writer_boot_epoch();
         }
         *out_result = result;
     }
@@ -153,13 +140,13 @@ ayni_status_t submit(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
     // step. A batch already waiting woke it, and the post of an append's
     // result wakes it again.
     if ((committed && log_was_idle) || (status == AYNI_OK && outcome.due_work)) {
-        kernel->host.wake(kernel->host.ctx);
+        kernel->wake();
     }
     return status;
 }
 
 void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v1 &out) {
-    const ayni::work::Goal &goal = kernel.work.goals.at(index);
+    const ayni::work::Goal &goal = kernel.model().goals.at(index);
     ayni_goal_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = goal.lifecycle;
@@ -192,8 +179,8 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.hold_reason = goal.hold_reason;
     if (ayni::work::GoalTable::is_live(goal.lifecycle) && goal.lifecycle != AYNI_GOAL_PROPOSED &&
         info.hold_reason == AYNI_REASON_NONE) {
-        const auto authority = kernel.work.check_goal_authority(
-            index, kernel.host.monotonic_now_us(kernel.host.ctx), kernel.log.durable_seq());
+        const auto authority = kernel.model().check_goal_authority(index, kernel.now_us(),
+                                                                   kernel.writer_durable_seq());
         if (authority.status != AYNI_OK) {
             info.lifecycle = AYNI_GOAL_PAUSED;
             info.hold_reason = authority.reason;
@@ -203,8 +190,8 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     std::memcpy(info.trigger_source, goal.trigger_source.data(), goal.trigger_source.size());
     // The capacity wait reason is derived from tables without a clock read.
     if (goal.cursor.has_next()) {
-        info.wait_reason =
-            ayni::work::derivation_blocker(kernel.work.tasks, index, kernel.work.ids.available());
+        info.wait_reason = ayni::work::derivation_blocker(kernel.model().tasks, index,
+                                                          kernel.model().ids.available());
     }
     out = info;
 }
@@ -212,7 +199,7 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
 // Queries observe the immediate authority gate before bounded cleanup runs;
 // retained Task progress and existing non-authority holds remain unchanged.
 void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v1 &out) {
-    const auto &task = kernel.work.tasks.at(index);
+    const auto &task = kernel.model().tasks.at(index);
     ayni_task_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = ayni::work::TaskTable::effective_lifecycle(task);
@@ -231,13 +218,13 @@ void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v
     info.step_count = task.step_count;
     info.model_calls_used = task.model_calls.used;
     info.model_call_limit = task.model_calls.limit;
-    info.model_call_hard_limit = kernel.work.tasks.model_call_hard_limit();
+    info.model_call_hard_limit = kernel.model().tasks.model_call_hard_limit();
     info.model_call_limit_reached = task.model_calls.blocked ? 1U : 0U;
     info.logical_call_id = task.call.id;
     if (ayni::work::TaskTable::is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
         info.hold_status == AYNI_OK) {
-        const auto authority = kernel.work.check_task_authority(
-            index, kernel.host.monotonic_now_us(kernel.host.ctx), kernel.log.durable_seq());
+        const auto authority = kernel.model().check_task_authority(index, kernel.now_us(),
+                                                                   kernel.writer_durable_seq());
         if (authority.status != AYNI_OK) {
             info.lifecycle = AYNI_TASK_PAUSED;
             info.hold_status = authority.status;
@@ -293,8 +280,8 @@ ayni_status_t find_requirement(const ayni_kernel *kernel, uint64_t goal_id, uint
     }
     uint32_t index = 0;
     ayni::work::GoalAuthorityRecord record{};
-    if (!kernel->work.goals.find(goal_id, index) ||
-        !kernel->work.goal_authority.read(index, goal_id, record) || at >= record.count) {
+    if (!kernel->model().goals.find(goal_id, index) ||
+        !kernel->model().goal_authority.read(index, goal_id, record) || at >= record.count) {
         return AYNI_NOT_FOUND;
     }
     out = record.requirements[at];
@@ -322,10 +309,8 @@ ayni_status_t ayni_register_principal(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->work.principals.add_owner(
-               {principal->principal_id, principal->binding_revision, principal->kind})
-               ? AYNI_OK
-               : AYNI_CAPACITY_EXCEEDED;
+    return kernel->configure(ayni::authority::Principal{
+        principal->principal_id, principal->binding_revision, principal->kind});
 }
 
 ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v1 *agent) {
@@ -343,7 +328,7 @@ ayni_status_t ayni_register_agent(ayni_kernel_t *kernel, const ayni_agent_desc_v
         gated != AYNI_OK) {
         return gated;
     }
-    return add_status(kernel->work.agents.add(agent->agent_id));
+    return kernel->configure_agent(agent->agent_id);
 }
 
 ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
@@ -360,7 +345,7 @@ ayni_status_t ayni_register_capability(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->catalogs.capabilities.add_validated(*capability, encoding);
+    return kernel->configure(*capability, encoding);
 }
 
 ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_type_v1 *goal_type) {
@@ -398,7 +383,7 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
     type.export_requirements = goal_type->export_requirements;
     type.trigger_kinds = goal_type->trigger_kinds;
     type.occurrence_wait_max_us = goal_type->occurrence_wait_max_us;
-    return add_status(kernel->catalogs.goal_types.add(type));
+    return kernel->configure(type);
 }
 
 ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_v1 *strategy) {
@@ -418,8 +403,8 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     ayni::catalog::Strategy entry{};
     if (strategy->version == 0U || !entry.id.assign(strategy->strategy_id) ||
         strategy->decide == nullptr || strategy->max_intents_per_call == 0U ||
-        strategy->max_intents_per_call > kernel->decisions.intent_capacity() ||
-        strategy->max_checkpoint_bytes > kernel->work.tasks.checkpoint_max_bytes() ||
+        strategy->max_intents_per_call > kernel->decision_capacity() ||
+        strategy->max_checkpoint_bytes > kernel->model().tasks.checkpoint_max_bytes() ||
         strategy->reserved != 0U || !read_checkpoint_readers(*strategy, entry)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -432,7 +417,7 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     entry.decide = strategy->decide;
     entry.max_intents_per_call = strategy->max_intents_per_call;
     entry.max_checkpoint_bytes = strategy->max_checkpoint_bytes;
-    return add_status(kernel->catalogs.strategies.add(entry));
+    return kernel->configure(entry);
 }
 
 // C-AUTH-010/016: resolve the registered principal once, then require the
@@ -454,18 +439,18 @@ ayni_status_t ayni_open_session(ayni_kernel_t *kernel, const ayni_session_desc_v
         gated != AYNI_OK) {
         return gated;
     }
-    const auto *principal = kernel->work.principals.find(session->principal_id);
+    const auto *principal = kernel->model().principals.find(session->principal_id);
     if (principal == nullptr) {
         return AYNI_NOT_FOUND;
     }
     if (principal->binding_revision != session->binding_revision) {
         return AYNI_DENIED;
     }
-    const auto *binding = kernel->work.principals.binding();
+    const auto *binding = kernel->model().principals.binding();
     if (binding == nullptr || binding->stamp.commit_seq > kernel->durable_seq()) {
         return AYNI_NOT_READY;
     }
-    return ayni::kernel::open_session(kernel->work, *principal, session->channel, *out_session_id);
+    return kernel->open_session(*principal, session->channel, *out_session_id);
 }
 
 ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id) {
@@ -476,7 +461,7 @@ ayni_status_t ayni_close_session(ayni_kernel_t *kernel, uint64_t session_id) {
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->work.sessions.close(session_id) ? AYNI_OK : AYNI_NOT_FOUND;
+    return kernel->close_session(session_id);
 }
 
 ayni_status_t ayni_submit_intent(ayni_kernel_t *kernel, const ayni_intent_v1 *intent,
@@ -531,7 +516,7 @@ ayni_status_t ayni_get_agent(const ayni_kernel_t *kernel, uint64_t agent_id,
         gated != AYNI_OK) {
         return gated;
     }
-    const ayni::work::AgentInstance *agent = kernel->work.agents.find_agent(agent_id);
+    const ayni::work::AgentInstance *agent = kernel->model().agents.find_agent(agent_id);
     if (agent == nullptr) {
         return AYNI_NOT_FOUND;
     }
@@ -561,7 +546,7 @@ ayni_status_t ayni_get_goal(const ayni_kernel_t *kernel, uint64_t goal_id,
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.goals.find(goal_id, index)) {
+    if (!kernel->model().goals.find(goal_id, index)) {
         return AYNI_NOT_FOUND;
     }
     write_goal_info(*kernel, index, *out_info);
@@ -582,7 +567,7 @@ ayni_status_t ayni_get_task(const ayni_kernel_t *kernel, uint64_t task_id,
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.tasks.find(task_id, index)) {
+    if (!kernel->model().tasks.find(task_id, index)) {
         return AYNI_NOT_FOUND;
     }
     write_task_info(*kernel, index, *out_info);
@@ -601,17 +586,17 @@ ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t ta
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.tasks.find(task_id, index)) {
+    if (!kernel->model().tasks.find(task_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &task = kernel->work.tasks.at(index);
+    const auto &task = kernel->model().tasks.at(index);
     if (task.lifecycle != AYNI_TASK_COMPLETED) {
         return ayni::work::TaskTable::is_live(task.lifecycle) ? AYNI_BUSY : AYNI_INVALID_STATE;
     }
     if (task.commit_seq > kernel->durable_seq()) {
         return AYNI_BUSY;
     }
-    const auto checkpoint = kernel->work.tasks.checkpoint(index);
+    const auto checkpoint = kernel->model().tasks.checkpoint(index);
     if (capacity < checkpoint.size) {
         *out_size = checkpoint.size;
         return AYNI_BUFFER_TOO_SMALL;
@@ -639,10 +624,10 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.grants.find(grant_id, index)) {
+    if (!kernel->model().grants.find(grant_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &grant = kernel->work.grants.at(index);
+    const auto &grant = kernel->model().grants.at(index);
     ayni_grant_info_v1 info{};
     info.struct_size = sizeof(info);
     info.lifecycle = grant.lifecycle;
@@ -654,7 +639,8 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
     info.capability_version = grant.capability_version;
     info.capability_id_size = grant.capability_id.size();
     std::memcpy(info.capability_id, grant.capability_id.data(), info.capability_id_size);
-    info.field_count = ayni::catalog::DomainReader(kernel->work.grants.scope(index)).field_count();
+    info.field_count =
+        ayni::catalog::DomainReader(kernel->model().grants.scope(index)).field_count();
     info.allow_delegation = grant.allow_delegation ? 1U : 0U;
     info.depth = grant.depth;
     info.lifetime = grant.lifetime;
@@ -671,10 +657,10 @@ ayni_status_t ayni_get_grant(const ayni_kernel_t *kernel, uint64_t grant_id,
     info.cleanup_transition_id = grant.cleanup_stamp.transition_id;
     info.cleanup_commit_seq = grant.cleanup_stamp.commit_seq;
     info.bound_goal_id = grant.bound_goal_id;
-    info.effective_reason = kernel->work
-                                .check_grant(index, kernel->host.monotonic_now_us(kernel->host.ctx),
-                                             kernel->durable_seq(), grant.bound_goal_id)
-                                .reason;
+    info.effective_reason =
+        kernel->model()
+            .check_grant(index, kernel->now_us(), kernel->durable_seq(), grant.bound_goal_id)
+            .reason;
     *out_info = info;
     return AYNI_OK;
 }
@@ -693,10 +679,10 @@ ayni_status_t ayni_get_grant_field(const ayni_kernel_t *kernel, uint64_t grant_i
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.grants.find(grant_id, index)) {
+    if (!kernel->model().grants.find(grant_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    return copy_authority_field(kernel->work.grants.scope(index), field_index, *out_field);
+    return copy_authority_field(kernel->model().grants.scope(index), field_index, *out_field);
 }
 
 // Copy immutable input bytes; sizing cannot expose a partially copied result.
@@ -710,10 +696,10 @@ ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goa
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.goals.find(goal_id, index)) {
+    if (!kernel->model().goals.find(goal_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto parameters = kernel->work.goals.parameters(index);
+    const auto parameters = kernel->model().goals.parameters(index);
     if (capacity < parameters.size) {
         *out_size = parameters.size;
         return AYNI_BUFFER_TOO_SMALL;
@@ -741,17 +727,17 @@ ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.goals.find(goal_id, index)) {
+    if (!kernel->model().goals.find(goal_id, index)) {
         return AYNI_NOT_FOUND;
     }
     ayni_goal_authority_info_v1 info{};
     info.struct_size = sizeof(info);
     info.goal_id = goal_id;
-    const uint64_t now = kernel->host.monotonic_now_us(kernel->host.ctx);
+    const uint64_t now = kernel->now_us();
     info.effective_reason =
-        kernel->work.check_goal_authority(index, now, kernel->log.durable_seq()).reason;
+        kernel->model().check_goal_authority(index, now, kernel->writer_durable_seq()).reason;
     ayni::work::GoalAuthorityRecord record{};
-    if (kernel->work.goal_authority.read(index, goal_id, record)) {
+    if (kernel->model().goal_authority.read(index, goal_id, record)) {
         info.phase = static_cast<ayni_goal_authority_phase_t>(record.phase);
         info.transition_id = record.stamp.transition_id;
         info.commit_seq = record.stamp.commit_seq;
@@ -759,8 +745,8 @@ ayni_status_t ayni_get_goal_authority(const ayni_kernel_t *kernel, uint64_t goal
         info.binding_commit_seq = record.binding.established_seq;
         info.parent_binding_commit_seq = record.binding.parent.commit_seq;
         for (uint32_t at = 0; at < record.count; ++at) {
-            if (kernel->work
-                    .check_requirement(record.requirements[at], now, kernel->log.durable_seq(),
+            if (kernel->model()
+                    .check_requirement(record.requirements[at], now, kernel->writer_durable_seq(),
                                        goal_id)
                     .status != AYNI_OK) {
                 ++info.missing_count;
@@ -796,9 +782,8 @@ ayni_status_t ayni_get_goal_requirement(const ayni_kernel_t *kernel, uint64_t go
     std::memcpy(info.capability_id, requirement.capability_id.data(), info.capability_id_size);
     info.field_count = ayni::catalog::DomainReader(requirement.scope).field_count();
     info.effective_reason =
-        kernel->work
-            .check_requirement(requirement, kernel->host.monotonic_now_us(kernel->host.ctx),
-                               kernel->log.durable_seq(), goal_id)
+        kernel->model()
+            .check_requirement(requirement, kernel->now_us(), kernel->writer_durable_seq(), goal_id)
             .reason;
     *out_info = info;
     return AYNI_OK;
@@ -851,21 +836,20 @@ ayni_status_t ayni_get_task_authority(const ayni_kernel_t *kernel, uint64_t task
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.tasks.find(task_id, index)) {
+    if (!kernel->model().tasks.find(task_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &task = kernel->work.tasks.at(index);
+    const auto &task = kernel->model().tasks.at(index);
     ayni_task_authority_info_v1 info{};
     info.struct_size = sizeof(info);
     info.task_id = task_id;
     info.goal_id = task.goal_id;
     info.effective_reason =
-        kernel->work
-            .check_task_authority(index, kernel->host.monotonic_now_us(kernel->host.ctx),
-                                  kernel->log.durable_seq())
+        kernel->model()
+            .check_task_authority(index, kernel->now_us(), kernel->writer_durable_seq())
             .reason;
     ayni::work::TaskAuthorityRecord record{};
-    if (kernel->work.task_authority.read(task.slot, task_id, record)) {
+    if (kernel->model().task_authority.read(task.slot, task_id, record)) {
         info.phase = static_cast<ayni_task_authority_phase_t>(record.phase);
         info.binding_commit_seq = record.ceiling.commit_seq;
         info.transition_id = record.stamp.transition_id;
@@ -893,12 +877,12 @@ ayni_status_t ayni_get_task_authority_reference(const ayni_kernel_t *kernel, uin
         return gated;
     }
     uint32_t index = 0;
-    if (!kernel->work.tasks.find(task_id, index)) {
+    if (!kernel->model().tasks.find(task_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &task = kernel->work.tasks.at(index);
+    const auto &task = kernel->model().tasks.at(index);
     ayni::work::TaskAuthorityRecord record{};
-    if (!kernel->work.task_authority.read(task.slot, task_id, record) || at >= record.count) {
+    if (!kernel->model().task_authority.read(task.slot, task_id, record) || at >= record.count) {
         return AYNI_NOT_FOUND;
     }
     const auto reference = record.references[at];

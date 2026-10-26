@@ -1,6 +1,6 @@
 // ADR-0027: public behavior across retries, bounded maintenance and migration.
 #include "durability/batch/batch_codec.h"
-#include "kernel/storage/storage_budget.h"
+#include "kernel/runtime/storage/storage_budget.h"
 #include "kernel_node.h"
 #include "work_node.h"
 

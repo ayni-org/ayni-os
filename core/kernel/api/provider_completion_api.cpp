@@ -1,7 +1,7 @@
 // Provider posting is the permitted cross-thread boundary. Semantic effects,
 // schemas and query authority are checked by the owner after the mailbox copy.
 #include "catalog/abi_checks.h"
-#include "kernel/completion/provider_mailbox.h"
+#include "kernel/ports/provider_mailbox.h"
 #include "work/call/tool_calls.h"
 
 #include <optional>

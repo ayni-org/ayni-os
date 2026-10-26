@@ -2,8 +2,8 @@
 // ordering, the full-queue policy for droppable and other events, and
 // concurrent producers under the Host lock.
 
-#include "kernel/ingress/event_queue.h"
-#include "kernel/ingress/ingress_lock.h"
+#include "kernel/ports/ingress_lock.h"
+#include "kernel/runtime/ingress/event_queue.h"
 
 #include <ayni/hosts/sim.h>
 

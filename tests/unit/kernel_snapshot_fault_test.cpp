@@ -3,7 +3,7 @@
 #include "durability/snapshot/snapshot_codec.h"
 #include "foundation/crc32.h"
 #include "foundation/little_endian.h"
-#include "kernel/storage/storage_budget.h"
+#include "kernel/runtime/storage/storage_budget.h"
 #include "work_node.h"
 
 #include <gtest/gtest.h>
@@ -56,7 +56,7 @@ bool drain(WorkNode &work, bool stop_at_maintenance = false) {
         if (KernelTestProbe::log(work.kernel()).idle() &&
             KernelTestProbe::completions(work.kernel()).in_flight() == 0U &&
             !KernelTestProbe::maintenance(work.kernel()).active() &&
-            work.kernel()->storage_has_room()) {
+            KernelTestProbe::storage_has_room(work.kernel())) {
             return false;
         }
     }
@@ -293,7 +293,7 @@ void rate_drain(WorkNode &work, uint64_t &deadline, unsigned &writes, unsigned &
             KernelTestProbe::log(work.kernel()).idle() &&
             KernelTestProbe::completions(work.kernel()).in_flight() == 0U &&
             !KernelTestProbe::maintenance(work.kernel()).active() &&
-            work.kernel()->storage_has_room()) {
+            KernelTestProbe::storage_has_room(work.kernel())) {
             return;
         }
     }

@@ -4,7 +4,7 @@
 
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
-#include "kernel/command/command_records.h"
+#include "kernel/service/command/command_records.h"
 #include "kernel_node.h"
 #include "work_node.h"
 

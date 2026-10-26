@@ -1,11 +1,12 @@
+#include "kernel_test_probe.h"
 // OWNER_BINDING survives both persistence views without replacing the
 // Host's current expectation or granting legacy work execution rights.
 
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/little_endian.h"
-#include "kernel/persistence/work_replay.h"
-#include "kernel/persistence/work_snapshot.h"
+#include "kernel/service/persistence/work_replay.h"
+#include "kernel/service/persistence/work_snapshot.h"
 #include "work/agent/agent_records.h"
 #include "work_node.h"
 
@@ -44,15 +45,18 @@ struct Snapshot {
 Snapshot snapshot_of(WorkNode &node, uint32_t page_size = 64) {
     Snapshot snapshot;
     const auto &kernel = *node.kernel();
-    const auto layout = ayni::kernel::measure_snapshot(kernel.work);
+    const auto layout =
+        ayni::kernel::measure_snapshot(ayni::kernel::KernelTestProbe::work(&kernel));
     snapshot.metadata.generation = 1;
-    snapshot.metadata.covers_commit_seq = kernel.work.transitions.latest().commit_seq;
-    snapshot.metadata.max_transition_id = kernel.work.transitions.latest().transition_id;
-    snapshot.metadata.boot_epoch = kernel.log.boot_epoch();
-    snapshot.metadata.writer_epoch = kernel.log.writer_epoch();
+    snapshot.metadata.covers_commit_seq =
+        ayni::kernel::KernelTestProbe::work(&kernel).transitions.latest().commit_seq;
+    snapshot.metadata.max_transition_id =
+        ayni::kernel::KernelTestProbe::work(&kernel).transitions.latest().transition_id;
+    snapshot.metadata.boot_epoch = ayni::kernel::KernelTestProbe::log(&kernel).boot_epoch();
+    snapshot.metadata.writer_epoch = ayni::kernel::KernelTestProbe::log(&kernel).writer_epoch();
     snapshot.metadata.payload_length = layout.payload_length;
     snapshot.metadata.record_count = layout.record_count;
-    WorkSnapshotWriter writer(kernel.work);
+    WorkSnapshotWriter writer(ayni::kernel::KernelTestProbe::work(&kernel));
     std::vector<uint8_t> page(page_size);
     for (unsigned round = 0; round < 64; ++round) {
         uint32_t size = 0;

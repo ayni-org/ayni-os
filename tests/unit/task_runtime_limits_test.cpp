@@ -1,7 +1,7 @@
 // C-RUN-001/002/003: normal admission facts, independent holds, owner raise,
 // exact retry identity and codec. Call dispatch/recovery campaigns remain MA-008.
-#include "kernel/command/command_records.h"
-#include "kernel/command/command_task_limit.h"
+#include "kernel/service/command/command_records.h"
+#include "kernel/service/command/command_task_limit.h"
 #include "work/task/task_records.h"
 #include "work_node.h"
 

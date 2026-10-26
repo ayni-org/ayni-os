@@ -1,6 +1,7 @@
+#include "kernel/service/intent/intent.h"
 // MA-006 C public behavior: management provenance, finite attenuation,
 // durable parents, exact retries, and recovery without a renewed clock.
-#include "kernel/intent/work_model.h"
+#include "kernel/service/model/work_model.h"
 #include "work_node.h"
 
 #include <ayni/authority.h>

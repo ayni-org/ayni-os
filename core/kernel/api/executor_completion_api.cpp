@@ -2,7 +2,7 @@
 // posts (ADR-0052).
 // Whether a nonce or status is valid is checked by the owner after the copy.
 #include "catalog/abi_checks.h"
-#include "kernel/completion/executor_mailbox.h"
+#include "kernel/ports/executor_mailbox.h"
 
 extern "C" ayni_status_t ayni_executor_post(ayni_executor_completion_t *completion,
                                             const ayni_executor_response_v1 *response) {

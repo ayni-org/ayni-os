@@ -2,9 +2,9 @@
 #include "authority/scope/scope.h"
 #include "catalog/capability/field_domain.h"
 #include "foundation/little_endian.h"
-#include "kernel/command/command_approval.h"
-#include "kernel/command/command_canonical.h"
-#include "kernel/command/command_reauthorization.h"
+#include "kernel/service/command/command_approval.h"
+#include "kernel/service/command/command_canonical.h"
+#include "kernel/service/command/command_reauthorization.h"
 
 #include <gtest/gtest.h>
 

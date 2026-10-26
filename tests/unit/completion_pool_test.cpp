@@ -2,7 +2,7 @@
 // back-pressure when slots run out, exactly-once application, attempt
 // matching across slot reuse, and posts that never depend on queue space.
 
-#include "kernel/completion/completion_pool.h"
+#include "kernel/ports/completion_pool.h"
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>

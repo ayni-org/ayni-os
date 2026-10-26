@@ -3,7 +3,7 @@
 
 #include "catalog/abi_checks.h"
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 #include <ayni/scenes.h>
 
 extern "C" {
@@ -15,7 +15,7 @@ ayni_status_t ayni_register_scene(ayni_kernel_t *kernel, const ayni_scene_desc_v
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->work.scenes.register_description(*scene);
+    return kernel->configure(*scene);
 }
 ayni_status_t ayni_get_scene(const ayni_kernel_t *kernel, ayni_string_v1 scene_id,
                              ayni_scene_info_v1 *out_info) {
@@ -31,8 +31,8 @@ ayni_status_t ayni_get_scene(const ayni_kernel_t *kernel, ayni_string_v1 scene_i
         gated != AYNI_OK) {
         return gated;
     }
-    const auto status = kernel->work.scenes.info(scene_id, kernel->durable_seq(), *out_info);
-    if (status == AYNI_OK && kernel->lifecycle != AYNI_LIFECYCLE_RUNNING) {
+    const auto status = kernel->model().scenes.info(scene_id, kernel->durable_seq(), *out_info);
+    if (status == AYNI_OK && kernel->state() != AYNI_LIFECYCLE_RUNNING) {
         out_info->consumable = 0;
     }
     return status;

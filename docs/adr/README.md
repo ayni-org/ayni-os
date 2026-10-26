@@ -82,4 +82,6 @@
 
 | [0056](0056-builtin-strategies-and-conversations.md) | 规则策略、ToolLoop、有界对话与检查点 reader 声明 | 已接受 | §2.7、§3.3、§9.1 |
 
-| [0057](0057-native-dual-agent-cli.md) | 双 Agent Native/Sim 装配、对话文件与单进程 CLI | 已接受，实施中 | §3.2、§9.1、§14.1 |
+| [0057](0057-native-dual-agent-cli.md) | 双 Agent Native/Sim 装配、对话文件与单进程 CLI | 已接受，P2 已合并 | §3.2、§9.1、§14.1 |
+
+| [0058](0058-kernel-service-runtime-boundaries.md) | Kernel 私有状态、service/runtime 分区、StepContext 与 CallbackGate | 已接受 | §2.3、§3.2、§9.1 |

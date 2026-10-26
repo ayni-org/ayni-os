@@ -2,7 +2,7 @@
 // copy of its result once it finished (ayni/calls.h).
 
 #include "kernel/api/api_gate.h"
-#include "kernel/kernel_state.h"
+#include "kernel/runtime/kernel_state.h"
 
 #include <cstring>
 
@@ -33,7 +33,7 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
         gated != AYNI_OK) {
         return gated;
     }
-    const auto &calls = kernel->work.calls;
+    const auto &calls = kernel->model().calls;
     uint32_t index = 0;
     if (!calls.find(logical_call_id, index)) {
         return AYNI_NOT_FOUND;
@@ -42,8 +42,8 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
     const auto &state = calls.state(index);
     const auto *action = calls.action(index);
     uint64_t waited = 0;
-    const auto waiting = kernel->calls.waiting(
-        index, kernel->host.monotonic_now_us(kernel->host.ctx), kernel->durable_seq(), waited);
+    const auto waiting =
+        kernel->call_view().waiting(index, kernel->now_us(), kernel->durable_seq(), waited);
     const auto query = state.query.value_or(ayni::work::CallQuery{});
     *out_info = {sizeof(*out_info),
                  phase(state, action),
@@ -88,16 +88,15 @@ ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logica
         gated != AYNI_OK) {
         return gated;
     }
-    const auto &calls = kernel->work.calls;
+    const auto &calls = kernel->model().calls;
     uint32_t index = 0;
     if (!calls.find(logical_call_id, index)) {
         return AYNI_NOT_FOUND;
     }
     const auto &state = calls.state(index);
     // Use the current writer's prefix, never the monotonic floor during fencing.
-    if (kernel->lifecycle == AYNI_LIFECYCLE_FENCED ||
-        kernel->lifecycle == AYNI_LIFECYCLE_RECOVERING || state.outcome == 0U ||
-        state.latest.transition.commit_seq > kernel->log.durable_seq()) {
+    if (kernel->state() == AYNI_LIFECYCLE_FENCED || kernel->state() == AYNI_LIFECYCLE_RECOVERING ||
+        state.outcome == 0U || state.latest.transition.commit_seq > kernel->writer_durable_seq()) {
         return AYNI_BUSY;
     }
     if (state.outcome == AYNI_CALL_ABANDONED) {

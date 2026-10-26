@@ -1,6 +1,6 @@
 // ADR-0031: pending controls survive restored-state discard, share exact
 // command identity with every kind, and retain applied results until durable.
-#include "kernel/command/command_table.h"
+#include "kernel/service/command/command_table.h"
 
 #include <gtest/gtest.h>
 

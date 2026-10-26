@@ -8,7 +8,7 @@
 #ifndef AYNI_TESTS_UNIT_STORAGE_HOSTS_H
 #define AYNI_TESTS_UNIT_STORAGE_HOSTS_H
 
-#include "kernel/completion/completion_pool.h"
+#include "kernel/ports/completion_pool.h"
 #include "temp_directory.h"
 
 #include <ayni/ayni.h>

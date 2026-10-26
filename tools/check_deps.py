@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
 import sys
 from dataclasses import dataclass
@@ -152,10 +153,16 @@ def classify(arch: Architecture, root: Path, source: PurePosixPath, include: Inc
         if resolved.is_file() and resolved.is_relative_to(root.resolve()):
             return classify_resolved(arch, source, PurePosixPath(resolved.relative_to(root.resolve()).as_posix()))
 
-    parts = PurePosixPath(include.path).parts
+    # Include-root spellings name the same boundary after collapsing dot segments.
+    # Otherwise service could hide a runtime dependency behind ports/../runtime.
+    include_path = posixpath.normpath(include.path)
+    parts = PurePosixPath(include_path).parts
     if len(parts) >= 2 and parts[0] in arch.layer_of:
-        return Target("core", parts[0], parts[1] if len(parts) >= 3 else None)
-    kind = arch.header_kind(include.path)
+        resolved = (root / "core" / include.path).resolve()
+        if resolved.is_file() and resolved.is_relative_to(root.resolve()):
+            return classify_resolved(arch, source, PurePosixPath(resolved.relative_to(root.resolve()).as_posix()))
+        return Target("core", parts[0], core_directory(arch, parts[0], parts[1:-1]))
+    kind = arch.header_kind(include_path)
     if kind is None:
         return Target("external")
     if kind in ("hosts", "runtime", "providers", "strategies"):
@@ -174,7 +181,7 @@ def classify_resolved(arch: Architecture, source: PurePosixPath, target: PurePos
         return Target(arch.header_kind(public_path) or "foreign", owner="include")
     if target_parts[0] == "core":
         if len(target_parts) >= 3 and target_parts[1] in arch.layer_of:
-            subdir = target_parts[2] if len(target_parts) >= 4 else None
+            subdir = core_directory(arch, target_parts[1], target_parts[2:-1])
             return Target("core", target_parts[1], subdir)
         return Target("foreign", owner="core")
     same_instance = source_parts[0] == target_parts[0] and (
@@ -191,9 +198,22 @@ def module_dir(module: str, subdir: str) -> str:
     return f"core/{module}/{subdir}"
 
 
+def core_directory(arch: Architecture, module: str, parts: tuple[str, ...]) -> str:
+    """Use the most specific declared boundary, including nested kernel partitions."""
+    if not parts:
+        return MODULE_ROOT
+    graph = arch.subdir_deps.get(module, {})
+    boundaries = set(graph).union(target for targets in graph.values() for target in targets)
+    for count in range(len(parts), 0, -1):
+        candidate = "/".join(parts[:count])
+        if candidate in boundaries:
+            return candidate
+    return parts[0]
+
+
 def check_core(arch: Architecture, source: PurePosixPath, include: Include, target: Target) -> str | None:
     module = source.parts[1]
-    subdir = source.parts[2] if len(source.parts) >= 4 else MODULE_ROOT
+    subdir = core_directory(arch, module, source.parts[2:-1])
     if target.kind == "core":
         if target.module == module:
             target_subdir = target.subdir or MODULE_ROOT
