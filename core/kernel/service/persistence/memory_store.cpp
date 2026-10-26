@@ -28,7 +28,7 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
     uint32_t count = 0;
     for (uint32_t i = 0; i < model.memories.size(); ++i) {
         const auto &record = model.memories.at(i);
-        if (record.stamp.commit_seq != stamp.commit_seq) {
+        if (record.stamp.commit_seq != stamp.commit_seq || record.state == MemoryState::scrubbed) {
             continue;
         }
         if (++count > 1) {
@@ -126,8 +126,10 @@ durability::RecordUse WorkReplay::restore_memory(const uint8_t *body, uint32_t s
     }
     uint32_t previous = 0;
     bool confirmation = false;
+    bool revised = false;
     knowledge::MemoryDependencies released{};
     if (model_.memories.find(record.id, previous)) {
+        revised = true;
         const auto &old = model_.memories.at(previous);
         if (old.state != MemoryState::live || old.revision == UINT32_MAX ||
             record.revision != old.revision + 1 || record.state == MemoryState::scrubbed) {
@@ -150,8 +152,8 @@ durability::RecordUse WorkReplay::restore_memory(const uint8_t *body, uint32_t s
         return status == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
     }
     model_.release_content_references(released, stamp.commit_seq);
-    pairing_.memory = BatchPairing::MemoryPair{record.id, confirmation, false,
-                                               policy ? *pairing_.checkpoint_sources : 0};
+    pairing_.memory = BatchPairing::MemoryPair{
+        record.id, confirmation, false, policy ? *pairing_.checkpoint_sources : 0, revised, false};
     return RecordUse::applied;
 }
 bool WorkReplay::pair_memory_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) {

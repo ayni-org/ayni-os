@@ -69,6 +69,11 @@ ayni_status_t read_scene_change(const ayni_intent_v1 &raw, authority::SceneChang
 
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
+    case AYNI_INTENT_CONTEXT_OPEN:
+    case AYNI_INTENT_CONTEXT_PUBLISH:
+    case AYNI_INTENT_CONTEXT_FORGET:
+    case AYNI_INTENT_CONTEXT_ACK:
+        return decode_context_command(raw, out_intent.content_context);
     case AYNI_INTENT_MEMORY_SAVE:
     case AYNI_INTENT_MEMORY_CONFIRM:
     case AYNI_INTENT_MEMORY_DELETE:
@@ -148,6 +153,13 @@ ayni_status_t check_form(const Intent &intent) {
     // An exact command is recognised by its id, so it must have one.
     if (is_exact_command(intent.kind) && intent.command_id == 0U) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (is_context_command(intent.kind)) {
+        uint32_t size = 0;
+        return intent.content_context.kind != intent.kind ||
+                       intent.content_context.expected_revision != intent.expected_revision
+                   ? AYNI_INVALID_ARGUMENT
+                   : measure_context_command(intent.content_context, size);
     }
     if (is_memory_command(intent.kind)) {
         uint32_t ignored = 0;

@@ -142,6 +142,8 @@ bool valid_dependency(const MemoryDependency &dependency);
 ayni_status_t add_dependency(MemoryDependencies &set, const MemoryDependency &dependency,
                              uint32_t limit);
 // Monotone subset: existing export Grants stay exact; a read without export may gain its first.
+// Set equality ignores order but preserves every exact read/export permission.
+bool same_dependencies(const MemoryDependencies &a, const MemoryDependencies &b);
 bool contains_dependencies(const MemoryDependencies &set, const MemoryDependencies &subset);
 // Merge atomically, applying the same source/authorization union rule.
 ayni_status_t merge_dependencies(MemoryDependencies &set, const MemoryDependencies &input,

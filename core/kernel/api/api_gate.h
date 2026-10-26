@@ -51,6 +51,8 @@ inline constexpr ApiGate running{false, lifecycle_bit(AYNI_LIFECYCLE_RUNNING), A
 inline constexpr ApiGate owner{false, every_lifecycle, AYNI_INVALID_STATE};
 // Reads of the model; a strategy or validator may make them too.
 inline constexpr ApiGate query{true, query_lifecycles, AYNI_INVALID_STATE};
+// Private content exports must not let callbacks bypass captured policy provenance.
+inline constexpr ApiGate content_query{false, query_lifecycles, AYNI_INVALID_STATE};
 // Closing a session changes the model in any state a query answers.
 inline constexpr ApiGate session_close{false, query_lifecycles, AYNI_INVALID_STATE};
 // Resource health counts before and while work runs (C-RES-013).

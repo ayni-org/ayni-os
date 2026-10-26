@@ -102,6 +102,11 @@ Goal GoalTable::created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t rep
     return created;
 }
 
+void GoalTable::erase_parameters(uint32_t index) {
+    std::memset(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_, 0,
+                parameter_max_bytes_);
+    goals_[index].parameter_size = 0;
+}
 void GoalTable::place(const Goal &created, uint32_t index, ayni_bytes_v1 parameters) {
     if (index == goals_.size()) {
         // Cannot fail: the caller checked for room.
@@ -113,6 +118,10 @@ void GoalTable::place(const Goal &created, uint32_t index, ayni_bytes_v1 paramet
         std::memcpy(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_,
                     parameters.data, parameters.size);
     }
+    // Replacing a shorter value must not leave the old private tail in the retained arena.
+    std::memset(parameter_blocks_ + static_cast<std::size_t>(index) * parameter_max_bytes_ +
+                    parameters.size,
+                0, parameter_max_bytes_ - parameters.size);
 }
 
 GoalTable::Placement GoalTable::insert(const NewGoal &goal, uint64_t goal_id,

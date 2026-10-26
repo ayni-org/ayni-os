@@ -16,6 +16,7 @@
 #include "kernel/config/kernel_config.h"
 #include "kernel/service/command/command_canonical.h"
 #include "kernel/service/command/command_table.h"
+#include "knowledge/context/context_table.h"
 #include "knowledge/memory/memory_table.h"
 #include "work/call/call_table.h"
 #include "work/goal/goal_authority.h"
@@ -24,6 +25,10 @@
 #include "work/task/task_table.h"
 
 namespace ayni::kernel {
+
+inline uint32_t context_capacity(const KernelCapacities &c) {
+    return c.memory_capacity == 0 ? 0 : c.agent_capacity;
+}
 
 // Same validated memory bounds drive arena placement, facts and record budgets.
 // Work provenance is required only when memory/context capabilities are enabled.

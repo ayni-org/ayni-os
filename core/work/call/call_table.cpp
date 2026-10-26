@@ -143,11 +143,19 @@ bool CallTable::pending(const Entry &entry) {
 ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContract &contract,
                                 ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
                                 ActionStamp stamp, uint32_t &index) {
-    uint32_t duplicate = 0;
     if (!valid_identity(id, stamp) || domain_body.data == nullptr || input_body.data == nullptr ||
         domain_body.size == 0U || input_body.size < call_input_header_size ||
-        ((contract.effects & catalog::call_effect_egress) != 0U) != (id.destination.size() != 0U) ||
-        find(id.call_id, duplicate) ||
+        ((contract.effects & catalog::call_effect_egress) != 0U) != (id.destination.size() != 0U)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return place_new(id, contract, domain_body, input_body, stamp, index);
+}
+// Allocation and immutable identity uniqueness have one owner for admission and snapshot restore.
+ayni_status_t CallTable::place_new(const CallIdentity &id, const catalog::CallContract &contract,
+                                   ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
+                                   ActionStamp stamp, uint32_t &index) {
+    uint32_t duplicate = 0;
+    if (find(id.call_id, duplicate) ||
         find_step(id.task_id, {id.step_key.data(), id.step_key.size()}, duplicate)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -365,7 +373,11 @@ ayni_status_t CallTable::finish(uint32_t index, const CallResult &input, ActionS
     if (checked != AYNI_OK) {
         return checked;
     }
-    const auto result = usable_result(input, dependencies);
+    auto result = usable_result(input, dependencies);
+    if (entry.state.content_erased) {
+        result.text = {};
+        result.kind = CallResultKind::text;
+    }
     if (!pending(entry) || !advances(entry, stamp) || !entry.action) {
         return AYNI_INVALID_STATE;
     }
@@ -377,7 +389,30 @@ ayni_status_t CallTable::finish(uint32_t index, const CallResult &input, ActionS
         std::memcpy(bytes(index) + limits_.domain_bytes + limits_.input_bytes, result.text.data,
                     result.text.size);
     }
+    std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes + result.text.size, 0,
+                limits_.result_bytes - result.text.size);
     set_terminal(entry, result, stamp);
+    return AYNI_OK;
+}
+
+// The original input ceases to exist as a body, not as a fictional successful/failed action.
+void CallTable::discard_result(uint32_t index) {
+    auto &entry = *slots_[index].entry;
+    std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes, 0, limits_.result_bytes);
+    entry.result_size = 0;
+    entry.result_kind = CallResultKind::text;
+}
+
+ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp) {
+    auto &entry = *slots_[index].entry;
+    if (entry.state.content_erased || !advances(entry, stamp)) {
+        return AYNI_INVALID_STATE;
+    }
+    std::memset(bytes(index) + limits_.domain_bytes, 0, limits_.input_bytes + limits_.result_bytes);
+    entry.input_size = 0;
+    entry.result_size = 0;
+    entry.result_kind = CallResultKind::text;
+    entry.state.content_erased = stamp;
     return AYNI_OK;
 }
 

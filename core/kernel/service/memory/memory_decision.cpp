@@ -1,5 +1,6 @@
 #include "kernel/service/memory/memory_decision.h"
 #include "catalog/abi_checks.h"
+#include "kernel/service/memory/context_service.h"
 #include <cstring>
 namespace ayni::kernel {
 namespace {
@@ -141,6 +142,9 @@ ayni_status_t MemoryDecision::read(void *context, uint64_t id, ayni_memory_purpo
     return AYNI_OK;
 }
 ayni_status_t MemoryDecision::validate() const {
+    if (!task_content_compatible(model_, task_index_)) {
+        return AYNI_UNSUPPORTED_VERSION;
+    }
     if (failure_ != AYNI_OK) {
         return failure_;
     }
@@ -149,10 +153,12 @@ ayni_status_t MemoryDecision::validate() const {
                : AYNI_EXPIRED;
 }
 void MemoryDecision::publish(foundation::TransitionStamp stamp) {
-    if (dependencies_.count == 0 && !proposal_) {
+    const auto &task = model_.tasks.at(task_index_);
+    // Once tracked, even an empty source set stays paired with every later checkpoint.
+    if (dependencies_.count == 0 && !proposal_ &&
+        model_.provenance.find(work::ProvenanceKind::task, task.slot, task.task_id) == nullptr) {
         return;
     }
-    const auto &task = model_.tasks.at(task_index_);
     model_.provenance.assign(work::ProvenanceKind::task, task.slot, task.task_id, dependencies_,
                              stamp);
 }
@@ -183,8 +189,7 @@ ayni_status_t MemoryDecision::search(void *context, const ayni_memory_search_v1 
     }
     const auto actor = self.model_.tasks.at(self.task_index_).owner_instance_id;
     const auto space = static_cast<MemoryNamespace>(query->name_space);
-    if (purpose == MemoryPurpose::organize && space == MemoryNamespace::private_agent &&
-        query->namespace_id != actor) {
+    if (!memory_purpose_allowed(space, query->namespace_id, actor, purpose)) {
         self.failure_ = AYNI_DENIED;
         return self.failure_;
     }
@@ -326,6 +331,9 @@ bool MemoryDecision::accept(foundation::TransitionStamp stamp) {
                                           stamp.commit_seq);
     }
     model_.memories.install(proposal.plan, id, proposal.value, stamp);
+    if (proposal.target_id != 0) {
+        model_.privacy.request(stamp);
+    }
     return true;
 }
 } // namespace ayni::kernel

@@ -857,13 +857,15 @@ TEST(RevokeApi, revision_two_accepted_after_uncommitted_cleanup_can_change_resto
 // C-AUTH-026 / ADR-0031: bounded cleanup and retained recovery preserve terminal facts.
 TEST(RevokeApi, paged_snapshot_keeps_its_frozen_model_while_accepting_a_volatile_deny) {
     RevokeNode work;
-    work.node.config().grant_capacity = 17;
+    // P3 expands the maximum batch envelope; retain enough real rows for two payload pages.
+    constexpr uint32_t retained_grants = 24;
+    work.node.config().grant_capacity = retained_grants;
     work.node.config().command_capacity = 32;
     work.node.config().storage_buffer_bytes = smallest_storage_buffer(work.node.config());
     work.node.config().storage_log_max_bytes = 65536;
     work.run();
     uint64_t target = 0;
-    for (uint64_t command = 1; command <= 17; ++command) {
+    for (uint64_t command = 1; command <= retained_grants; ++command) {
         const auto id = work.durable_grant(command);
         ASSERT_NE(id, 0U);
         if (command == 1U) {

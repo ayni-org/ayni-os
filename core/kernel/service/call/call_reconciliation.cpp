@@ -92,7 +92,7 @@ CallRuntime::Advance CallRuntime::advance_query(uint32_t index, uint64_t now_us,
         uint32_t task_index = 0;
         if (!work_.tasks.find(work_.calls.identity(index).task_id, task_index) ||
             !task_content_current({work_, now_us, durable_seq}, task_index)) {
-            return end_query(index, AYNI_EXPIRED, AYNI_REASON_MEMORY_SOURCE);
+            return end_query(index, AYNI_EXPIRED, AYNI_REASON_MEMORY_EXPIRED);
         }
         if (mode != Mode::running || query.phase == work::CallQuery::Phase::dispatching) {
             return end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE);

@@ -5,12 +5,14 @@
 #include "authority/scene/scene_records.h"
 #include "foundation/kernel_id.h"
 #include "kernel/service/command/command_records.h"
+#include "knowledge/context/context_records.h"
 #include "knowledge/memory/memory_records.h"
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
 #include "work/call/call_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/privacy/privacy_records.h"
 #include "work/provenance/provenance_records.h"
 #include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
@@ -32,6 +34,10 @@ bool requires_authority_header(const durability::RecordHeader &header) {
             header.version >= work::goal_with_authority_record_version) ||
            (header.type == work::goal_state_record_type &&
             header.version >= work::goal_state_with_authority_record_version) ||
+           (header.type == work::task_record_type &&
+            header.version >= work::task_provenance_snapshot_version) ||
+           (header.type == work::task_checkpoint_record_type &&
+            header.version >= work::task_checkpoint_provenance_version) ||
            header.type == authority::owner_binding_record_type;
 }
 
@@ -40,10 +46,12 @@ bool knows_goal_body(uint16_t version, WorkRecordContext context) {
            version == work::goal_with_authority_record_version ||
            version == work::goal_authority_state_record_version ||
            (context == WorkRecordContext::journal &&
-            version == work::goal_work_profile_record_version) ||
+            (version == work::goal_work_profile_record_version ||
+             version == work::goal_provenance_record_version)) ||
            (context == WorkRecordContext::snapshot &&
             (version == work::goal_creation_stamp_snapshot_version ||
-             version == work::goal_work_profile_snapshot_version));
+             version == work::goal_work_profile_snapshot_version ||
+             version == work::goal_provenance_snapshot_version));
 }
 
 template <typename Restore> RecordUse use_of(Restore restore) {
@@ -141,9 +149,14 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                                                                         : RecordUse::unknown;
     case authority::owner_binding_record_type:
     case work::instance_record_type:
-    case work::task_record_type:
     case work::task_steps_record_type:
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
+    case work::task_record_type:
+        return header.version == work::task_record_version ||
+                       (context == WorkRecordContext::snapshot &&
+                        header.version == work::task_provenance_snapshot_version)
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
     case work::task_checkpoint_record_type:
         return header.version == work::task_checkpoint_record_version ||
                        header.version == work::task_checkpoint_provenance_version
@@ -170,12 +183,15 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         pairing_.target_command.reset();
         pairing_.scene.reset();
         pairing_.memory.reset();
+        pairing_.context.reset();
+        pairing_.privacy_progress = false;
         pairing_.reauthorization.reset();
         pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if ((pairing_.memory && pairing_.memory->command_seen) ||
+    if (pairing_.privacy_progress || (pairing_.memory && pairing_.memory->complete()) ||
+        (pairing_.context && pairing_.context->complete()) ||
         (pairing_.scene && pairing_.scene->command_seen) ||
         (pairing_.target_command && pairing_.target_command->command_seen) ||
         (pairing_.limit_raise &&
@@ -191,10 +207,24 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
 
 // Preserve the exact atomic partners while dispatch remains a short list of invariant owners.
 bool WorkReplay::allows_pending_record(const durability::RecordHeader &header) const {
-    if (pairing_.memory &&
-        header.type != (pairing_.memory->policy_task_id == 0 ? command_record_type
-                                                             : work::provenance_record_type)) {
-        return false;
+    if (pairing_.context) {
+        const auto &pair = *pairing_.context;
+        const auto expected = pair.expected.kind == AYNI_INTENT_CONTEXT_FORGET && !pair.privacy_seen
+                                  ? work::privacy_record_type
+                                  : command_record_type;
+        if (header.type != expected) {
+            return false;
+        }
+    }
+    if (pairing_.memory) {
+        const auto &pair = *pairing_.memory;
+        const auto expected =
+            pair.policy_task_id != 0 && !pair.command_seen ? work::provenance_record_type
+            : pair.privacy_required && !pair.privacy_seen  ? work::privacy_record_type
+                                                           : command_record_type;
+        if (header.type != expected) {
+            return false;
+        }
     }
     if ((pairing_.scene || pairing_.limit_raise || pairing_.target_command) &&
         header.type != command_record_type) {
@@ -239,7 +269,11 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     }
     switch (header.type) {
     case work::provenance_record_type:
-        return restore_provenance(body, size, stamp);
+        return restore_provenance(header.version, body, size, stamp);
+    case work::privacy_record_type:
+        return restore_privacy(body, size, stamp, boot_epoch_limit);
+    case knowledge::context_record_type:
+        return restore_context(body, size, stamp, boot_epoch_limit);
     case knowledge::memory_record_type:
         return restore_memory(body, size, stamp, boot_epoch_limit);
     case authority::scene_record_type:
@@ -277,7 +311,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::task_checkpoint_record_type:
         return restore_task_checkpoint(header.version, body, size, stamp);
     case command_record_type:
-        return restore_command(header.version, body, size, batch.commit_seq);
+        return restore_command(header.version, body, size, batch.commit_seq, boot_epoch_limit);
     default:
         return RecordUse::unknown;
     }
@@ -350,6 +384,9 @@ RecordUse WorkReplay::restore_goal(uint16_t version, const uint8_t *body, uint32
     pairing_.goal = record.goal_id;
     if (record.authority_required) {
         pairing_.goal_authority = record.goal_id;
+    }
+    if (record.provenance_required) {
+        pairing_.goal_sources = record.goal_id;
     }
     return RecordUse::applied;
 }
@@ -757,10 +794,61 @@ bool WorkReplay::pair_task_limit_command(const CommandMapping &mapping, ayni_byt
     return true;
 }
 
+// Each domain owns its exact request proof. No unrelated pending partner may be skipped.
+bool WorkReplay::pair_domain_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
+                                     ayni_bytes_v1 result_bytes) {
+    if (is_context_command(mapping.kind)) {
+        if (!pair_context_command(mapping, canonical)) {
+            return false;
+        }
+    } else if (pairing_.context) {
+        return false;
+    }
+    if (is_memory_command(mapping.kind)) {
+        if (!pair_memory_command(mapping, canonical)) {
+            return false;
+        }
+    } else if (pairing_.memory) {
+        return false;
+    }
+    if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        if (!pair_scene_command(mapping, canonical)) {
+            return false;
+        }
+    } else if (pairing_.scene) {
+        return false;
+    }
+    if (is_target_command(mapping.kind)) {
+        if (!pair_target_command(mapping, canonical)) {
+            return false;
+        }
+    } else if (pairing_.target_command) {
+        return false;
+    }
+    if (!pair_task_limit_command(mapping, canonical)) {
+        return false;
+    }
+    if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
+        if (!pair_approval_command(mapping, canonical, result_bytes)) {
+            return false;
+        }
+    } else if (pairing_.approval) {
+        return false;
+    }
+    if (mapping.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
+        if (!pair_reauthorization_command(mapping, canonical, result_bytes)) {
+            return false;
+        }
+    } else if (pairing_.reauthorization) {
+        return false;
+    }
+    return true;
+}
+
 // An absent principal's retry window is still durable state. Keeping it
 // prevents compaction from turning an old accepted command into a new one.
 RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uint32_t size,
-                                      uint64_t commit_seq) {
+                                      uint64_t commit_seq, uint64_t boot_epoch_limit) {
     CommandMapping mapping{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
@@ -770,43 +858,22 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         return RecordUse::corrupt;
     }
     mapping.commit_seq = commit_seq;
-    if (is_memory_command(mapping.kind)) {
-        if (!pair_memory_command(mapping, canonical)) {
-            return RecordUse::corrupt;
-        }
-    } else if (pairing_.memory) {
+    if (!pair_domain_command(mapping, canonical, result_bytes) ||
+        !matches_command_sources(mapping, boot_epoch_limit)) {
         return RecordUse::corrupt;
     }
-    if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
-        if (!pair_scene_command(mapping, canonical)) {
+    if (mapping.sources.count > model_.memories.limits().dependencies) {
+        return RecordUse::no_room;
+    }
+    uint32_t goal = 0;
+    if (mapping.object.kind == AYNI_OBJECT_GOAL && model_.goals.find(mapping.object.id, goal)) {
+        const auto *record =
+            model_.provenance.find(work::ProvenanceKind::goal, goal, mapping.object.id);
+        const knowledge::MemoryDependencies expected =
+            record == nullptr ? knowledge::MemoryDependencies{} : record->dependencies;
+        if (!knowledge::same_dependencies(mapping.sources, expected)) {
             return RecordUse::corrupt;
         }
-    } else if (pairing_.scene) {
-        return RecordUse::corrupt;
-    }
-    if (is_target_command(mapping.kind)) {
-        if (!pair_target_command(mapping, canonical)) {
-            return RecordUse::corrupt;
-        }
-    } else if (pairing_.target_command) {
-        return RecordUse::corrupt;
-    }
-    if (!pair_task_limit_command(mapping, canonical)) {
-        return RecordUse::corrupt;
-    }
-    if (mapping.kind == AYNI_INTENT_GOAL_APPROVE) {
-        if (!pair_approval_command(mapping, canonical, result_bytes)) {
-            return RecordUse::corrupt;
-        }
-    } else if (pairing_.approval) {
-        return RecordUse::corrupt;
-    }
-    if (mapping.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
-        if (!pair_reauthorization_command(mapping, canonical, result_bytes)) {
-            return RecordUse::corrupt;
-        }
-    } else if (pairing_.reauthorization) {
-        return RecordUse::corrupt;
     }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
         uint32_t index = 0;
@@ -835,6 +902,7 @@ RecordUse WorkReplay::restore_command(uint16_t version, const uint8_t *body, uin
         }
         pairing_.authority = {};
     }
+    model_.release_command_sources(mapping.principal_id, mapping.commit_seq);
     return use_of(model_.commands.restore_checked(mapping, floor, canonical, result_bytes));
 }
 
@@ -943,8 +1011,8 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
         }
     }
     if (!model_.provenance.complete() || !provenance_consistent(boot_epoch_limit) ||
-        !model_.grants.consistent() || !calls_consistent(boot_epoch_limit) ||
-        !memory_identities_consistent(boot_epoch_limit)) {
+        !contexts_consistent(boot_epoch_limit) || !model_.grants.consistent() ||
+        !calls_consistent(boot_epoch_limit) || !memory_identities_consistent(boot_epoch_limit)) {
         return false;
     }
     const auto &cleanup = model_.authority_cleanup.record();
@@ -1109,6 +1177,8 @@ void WorkReplay::discard() {
     model_.calls.clear();
     model_.memories.clear();
     model_.provenance.clear();
+    model_.privacy.clear();
+    model_.contexts.clear();
     model_.commands.clear_restored();
     model_.grants.clear_restored();
     model_.scenes.clear_states();

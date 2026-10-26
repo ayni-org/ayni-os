@@ -772,6 +772,8 @@ typedef uint32_t ayni_object_kind_t;
 #define AYNI_OBJECT_SCENE ((ayni_object_kind_t)13)
 #define AYNI_OBJECT_OBSERVATION ((ayni_object_kind_t)14)
 #define AYNI_OBJECT_MEMORY ((ayni_object_kind_t)15)
+/* Persistent Agent content/file anchor. Since 0.40. */
+#define AYNI_OBJECT_CONTEXT ((ayni_object_kind_t)20)
 #define AYNI_OBJECT_SUBSCRIPTION ((ayni_object_kind_t)16)
 #define AYNI_OBJECT_PRINCIPAL ((ayni_object_kind_t)17)
 #define AYNI_OBJECT_SESSION ((ayni_object_kind_t)18)
@@ -995,10 +997,12 @@ typedef struct ayni_error_v1 {
 /* Model output could not become a typed result: undecodable tool arguments,
  * an unknown tool or values outside the offered ones. Since 0.37. */
 #define AYNI_REASON_MODEL_OUTPUT ((ayni_reason_t)76)
-/* Content source, version or captured memory permission is no longer usable. Since 0.40. */
+/* DENIED: requested memory read/write/export permission is absent. Since 0.40. */
 #define AYNI_REASON_MEMORY_SOURCE ((ayni_reason_t)77)
-/* Source closure exceeds the configured bound; no partial decision is accepted. Since 0.40. */
+/* CAPACITY_EXCEEDED: memory/source storage cannot accept this decision. Since 0.40. */
 #define AYNI_REASON_MEMORY_DEPENDENCIES ((ayni_reason_t)78)
+/* EXPIRED: a captured source, version or permission is no longer usable. Since 0.40. */
+#define AYNI_REASON_MEMORY_EXPIRED ((ayni_reason_t)79)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1167,6 +1171,10 @@ typedef struct ayni_tool_ref_v1 {
     uint32_t reserved;         /* must be 0 */
 } ayni_tool_ref_v1;
 
+typedef uint32_t ayni_goal_context_t;
+#define AYNI_GOAL_CONTEXT_NONE ((ayni_goal_context_t)0) /* Independent input. Since 0.40. */
+#define AYNI_GOAL_CONTEXT_AGENT                                                                    \
+    ((ayni_goal_context_t)1) /* Current per-Agent file basis. Since 0.40. */
 typedef struct ayni_goal_type_v1 {
     uint32_t struct_size;
     uint32_t version;               /* nonzero */
@@ -1200,6 +1208,10 @@ typedef struct ayni_goal_type_v1 {
     uint32_t tool_count;
     uint32_t tool_reserved; /* must be 0 */
     const ayni_tool_ref_v1 *tools;
+    /* Since 0.40. AGENT accepts ONCE alone and requires an acknowledged content anchor.
+     * Kernel captures its complete sources and exact file basis in the creation transition. */
+    ayni_goal_context_t context_mode;
+    uint32_t context_reserved; /* must be zero */
 } ayni_goal_type_v1;
 
 typedef uint32_t ayni_goal_lifecycle_t;
@@ -1398,6 +1410,14 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_INTENT_MEMORY_CONFIRM ((ayni_intent_kind_t)18)
 /* Immediate privacy barrier followed by bounded persisted cleanup. Since 0.40. */
 #define AYNI_INTENT_MEMORY_DELETE ((ayni_intent_kind_t)19)
+/* Open an empty per-Agent content anchor. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_OPEN ((ayni_intent_kind_t)20)
+/* Commit completed Task provenance before publishing its conversation file. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_PUBLISH ((ayni_intent_kind_t)21)
+/* Invalidate a conversation or exact turn before asynchronous erasure. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_FORGET ((ayni_intent_kind_t)22)
+/* Acknowledge the exact current file revision/generation after durable replacement. Since 0.40. */
+#define AYNI_INTENT_CONTEXT_ACK ((ayni_intent_kind_t)23)
 
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {
@@ -1906,7 +1926,8 @@ ayni_status_t ayni_list_objects(const ayni_kernel_t *kernel, ayni_object_kind_t 
  * Like get_task, not an authorization boundary for untrusted clients. BUSY
  * until COMPLETED and the complete Task transition is durable; other terminal
  * lifecycles return INVALID_STATE. BUFFER_TOO_SMALL sets only out_size. Other
- * failures preserve all output. No borrowed pointer escapes the callback. */
+ * failures preserve all output. Since 0.40, callbacks are rejected and expired
+ * content sources return EXPIRED; only the trusted outer owner may export. */
 ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t task_id,
                                         uint8_t *buffer, uint32_t capacity, uint32_t *out_size);
 

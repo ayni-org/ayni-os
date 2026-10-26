@@ -274,7 +274,7 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         memory_export_permissions({work_, now_us, durable_seq}, task.owner_instance_id,
                                   catalogs_.bindings.at(proposal.binding_index), dependencies);
     if (exported != AYNI_OK) {
-        return {exported, AYNI_REASON_MEMORY_SOURCE};
+        return {exported, memory_reason(exported)};
     }
     return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index),
                             input.arguments, now_us, durable_seq, proposal_->execution);

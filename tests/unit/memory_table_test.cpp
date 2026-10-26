@@ -222,4 +222,19 @@ TEST_F(MemoryFacts, first_export_permission_extends_lineage_without_duplicate_re
     EXPECT_EQ(updated.count, 1U);
     EXPECT_EQ(updated.items[0].egress.id, grant);
 }
+// C-STORE-011: valid source bytes are distinct from this boot's lower dependency budget.
+TEST_F(MemoryFacts, lowering_dependency_capacity_does_not_classify_valid_history_as_corrupt) {
+    auto derived = value();
+    derived.source = MemorySource::derived;
+    derived.confirmed = false;
+    derived.dependencies.items[derived.dependencies.count++] = dependency(add(value()));
+    derived.dependencies.items[derived.dependencies.count++] = dependency(add(value()));
+    const auto id = add(derived);
+    MemoryLimits smaller = limits;
+    smaller.dependencies = 1;
+    std::vector<std::max_align_t> storage(arena.size());
+    MemoryTable restored(storage.data(), smaller);
+    EXPECT_EQ(restored.restore(table.at(index(id)), table.body(index(id))), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(restored.size(), 0U);
+}
 } // namespace

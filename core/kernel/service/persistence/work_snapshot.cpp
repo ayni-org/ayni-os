@@ -15,6 +15,13 @@
 namespace ayni::kernel {
 namespace {
 
+uint16_t goal_snapshot_version(const WorkModel &model, uint32_t index) {
+    const auto &goal = model.goals.at(index);
+    return work::goal_snapshot_version_for(
+        goal, model.goal_authority.contains(index, goal.goal_id),
+        model.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
+}
+
 // Descriptor positions preserve the persisted order; both traversal directions use it.
 SnapshotSection store_section(StorePosition position) {
     switch (position) {
@@ -129,7 +136,9 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
         }
     }
     for (uint32_t index = 0; index < model.goals.size(); ++index) {
-        count(layout, work::goal_record_size(model.goals.at(index)) + goal_extra);
+        count(layout,
+              work::goal_record_size(model.goals.at(index), goal_snapshot_version(model, index)) +
+                  goal_extra);
         if (model.goal_authority.contains(index, model.goals.at(index).goal_id)) {
             count(layout, work::goal_authority_record_size(model.goal_authority.at(index)));
         }
@@ -273,7 +282,9 @@ bool WorkSnapshotWriter::next_goal_record(uint16_t &type, uint32_t &size) {
         size = work::goal_authority_record_size(model_.goal_authority.at(index_));
     } else {
         type = work::goal_record_type;
-        size = work::goal_record_size(model_.goals.at(index_)) + goal_extra;
+        size =
+            work::goal_record_size(model_.goals.at(index_), goal_snapshot_version(model_, index_)) +
+            goal_extra;
     }
     return true;
 }
@@ -344,8 +355,9 @@ void WorkSnapshotWriter::write_record(uint16_t type, uint8_t *body) {
     }
     case work::goal_record_type: {
         const work::Goal &goal = model_.goals.at(index_);
-        const uint32_t base_size = work::goal_record_size(goal);
-        work::write_goal_record(goal, model_.goals.parameters(index_), body);
+        const auto version = goal_snapshot_version(model_, index_);
+        const uint32_t base_size = work::goal_record_size(goal, version);
+        work::write_goal_record(goal, model_.goals.parameters(index_), body, version);
         work::write_goal_state_record(goal, body + base_size);
         write_stamp(body + base_size + work::goal_state_record_size, goal.created.transition_id,
                     goal.created.commit_seq);
@@ -444,11 +456,12 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
         const uint16_t version =
             is_store_section(section_)
                 ? persistent_stores[store_]->snapshot_record(model_, store_cursor_.index).version
-            : type == work::goal_record_type
-                ? work::goal_snapshot_version_for(
-                      model_.goals.at(index_),
-                      model_.goal_authority.contains(index_, model_.goals.at(index_).goal_id))
+            : type == work::goal_record_type           ? goal_snapshot_version(model_, index_)
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
+            : type == work::task_record_type &&
+                    model_.provenance.find(work::ProvenanceKind::task, model_.tasks.at(index_).slot,
+                                           model_.tasks.at(index_).task_id) != nullptr
+                ? work::task_provenance_snapshot_version
             : type == work::task_checkpoint_record_type &&
                     model_.provenance.find(work::ProvenanceKind::task, model_.tasks.at(index_).slot,
                                            model_.tasks.at(index_).task_id) != nullptr
@@ -559,7 +572,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     case work::goal_authority_record_type:
         return goal_authority(body, header.length);
     case work::task_record_type:
-        return task(body, header.length);
+        return task(header.version, body, header.length);
     case work::task_steps_record_type:
         return task_steps(body, header.length);
     case work::task_checkpoint_record_type:
@@ -606,7 +619,8 @@ durability::BatchCheck WorkSnapshotReader::instance(const uint8_t *body, uint32_
 durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t *body,
                                                 uint32_t size) {
     if (version != work::goal_creation_stamp_snapshot_version &&
-        version != work::goal_work_profile_snapshot_version) {
+        version != work::goal_work_profile_snapshot_version &&
+        version != work::goal_provenance_snapshot_version) {
         return durability::BatchCheck::unsupported; // No inferred creation sequence for old
                                                     // snapshots.
     }
@@ -637,6 +651,10 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
     if (result == durability::BatchCheck::ok && record.authority_required) {
         goal_authority_pending_ = record.goal_id;
     }
+    if (result == durability::BatchCheck::ok && record.provenance_required &&
+        !model_.provenance.expect(work::ProvenanceKind::goal, index, record.goal_id)) {
+        return durability::BatchCheck::corrupt;
+    }
     return result;
 }
 
@@ -661,7 +679,8 @@ durability::BatchCheck WorkSnapshotReader::goal_authority(const uint8_t *body, u
     return durability::BatchCheck::ok;
 }
 
-durability::BatchCheck WorkSnapshotReader::task(const uint8_t *body, uint32_t size) {
+durability::BatchCheck WorkSnapshotReader::task(uint16_t version, const uint8_t *body,
+                                                uint32_t size) {
     work::TaskSnapshotRecord snapshot{};
     if (task_index_ != work::TaskTable::no_index ||
         !work::read_task_snapshot_record(body, size, snapshot)) {
@@ -683,6 +702,13 @@ durability::BatchCheck WorkSnapshotReader::task(const uint8_t *body, uint32_t si
     if (restore == work::TaskTable::Restore::restored) {
         static_cast<void>(model_.tasks.find(record.task_id, task_index_));
         checkpoint_seen_ = false;
+        // Erased work may never have written a checkpoint. Its REQUIRED Task marker
+        // reserves the source footer independently of the optional checkpoint record.
+        if (version == work::task_provenance_snapshot_version &&
+            !model_.provenance.expect(work::ProvenanceKind::task, model_.tasks.at(task_index_).slot,
+                                      record.task_id)) {
+            return durability::BatchCheck::corrupt;
+        }
     }
     return snapshot_restore_check(restore);
 }

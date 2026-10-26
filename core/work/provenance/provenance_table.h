@@ -14,12 +14,17 @@ enum class ContentState : uint32_t {
     awaiting_record = 3 // Replay-only expectation; never serialized or usable.
 };
 // One retained work identity's content provenance; zero ID means an unused slot.
+struct ContextOrigin {
+    uint64_t id = 0;         // Primary context anchor; zero means independent Goal input.
+    uint64_t generation = 0; // Exact input file generation, zero is valid for an empty new context.
+};
 struct ProvenanceRecord {
     uint64_t id = 0;                                // Exact Goal/Task identity; no record iff zero.
     ProvenanceKind kind = ProvenanceKind::goal;     // Determines the work owner and slot region.
     ContentState content = ContentState::available; // Erased is terminal for this exact work ID.
     knowledge::MemoryDependencies dependencies{};   // Complete accumulated set; never truncated.
     foundation::TransitionStamp stamp{}; // Last accepted union/erasure, positive iff ID is nonzero.
+    ContextOrigin origin{}; // Goal-only file publication basis; Task references its retained Goal.
 };
 // Owns metadata only; Goal/Task/Call owners erase their own body buffers.
 class ProvenanceTable {
@@ -47,9 +52,11 @@ class ProvenanceTable {
     // Consume fully validated, complete dependencies in the same transition as the owner.
     void assign(ProvenanceKind kind, uint32_t slot, uint64_t id,
                 const knowledge::MemoryDependencies &dependencies,
-                foundation::TransitionStamp stamp);
-    // Mark one already selected row erased while retaining its non-content source identities.
-    void erase(uint32_t index, foundation::TransitionStamp stamp);
+                foundation::TransitionStamp stamp, ContextOrigin origin = {});
+    // Irreversibly erase content and unlink its source set; Kernel releases exact Grant fences
+    // before this same-transition mutation. A Task inheriting only Goal sources may have no row
+    // yet.
+    void erase(ProvenanceKind kind, uint32_t slot, uint64_t id, foundation::TransitionStamp stamp);
     // A work identity gives way only with its owner's replacement transition.
     void clear(ProvenanceKind kind, uint32_t slot);
     // Discard recovered metadata; initialization and reload share one full clear.

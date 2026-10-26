@@ -15,6 +15,7 @@
 #include "kernel/runtime/kernel_state.h"
 #include "kernel/service/decision/decision.h"
 #include "kernel/service/intent/authority_intent.h"
+#include "kernel/service/memory/privacy_service.h"
 #include "kernel/service/model/work_model.h"
 
 namespace {
@@ -185,6 +186,9 @@ void ayni_kernel::apply_revocations(StepContext &progress) {
                        applied =
                            work.advance_authority_cleanup(progress.now_us(), log.durable_seq());
                    }
+                   if (!applied && privacy_ready()) {
+                       applied = ayni::kernel::advance_privacy(work, maintenance.generation());
+                   }
                    // A transition none of them reports applied is a defect.
                    if (work.transitions.next_commit_seq() == before) {
                        return ItemEnd{ItemEnd::Kind::none};
@@ -318,7 +322,7 @@ void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report
     report.more_ready = completions.posted_count() > 0U || boot_due || log_due || maintenance_due ||
                                 events_due || work_due || call_ready || revocation_ready() ||
                                 (lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
-                                 work.authority_cleanup.ready())
+                                 (work.authority_cleanup.ready() || privacy_ready()))
                             ? 1U
                             : 0U;
     report.next_deadline_us = progress.next_deadline_us;
@@ -551,9 +555,25 @@ void ayni_kernel::refresh_storage() {
         return;
     }
     budget.refresh(host);
-    if (budget.compaction_due() && log.idle()) {
+    const auto &privacy = work.privacy.record();
+    const bool privacy_rotation = privacy.phase == ayni::work::PrivacyPhase::compact &&
+                                  maintenance.generation() < privacy.snapshot_generation;
+    if ((budget.compaction_due() || privacy_rotation) && log.idle()) {
         begin_maintenance();
     }
+}
+
+bool ayni_kernel::privacy_ready() const {
+    if (lifecycle != AYNI_LIFECYCLE_RUNNING || !work.privacy.pending() ||
+        work.privacy.record().stamp.commit_seq > log.durable_seq()) {
+        return false;
+    }
+    if (work.privacy.record().phase == ayni::work::PrivacyPhase::files &&
+        (!calls.privacy_released() || !work.contexts.files_current())) {
+        return false;
+    }
+    ayni::work::PrivacyRecord next{};
+    return ayni::kernel::next_privacy_step(work, maintenance.generation(), next);
 }
 
 // Compaction covers the current writer's complete durable work boundary.

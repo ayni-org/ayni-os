@@ -25,9 +25,8 @@ bool same_reference(const ayni_observation_ref_v1 &a, const ayni_observation_ref
 bool execution_stopped(const ExecutionFact &fact) {
     return fact.phase == AYNI_EXECUTION_STOPPED || fact.phase == AYNI_EXECUTION_NOT_STARTED;
 }
-bool valid_execution(const ExecutionFact &fact, ayni_bytes_v1 arguments) {
+bool valid_execution_metadata(const ExecutionFact &fact) {
     const auto &epochs = fact.epochs;
-    ayni_control_envelope_v1 envelope{};
     if (catalog::validate_execution_binding(fact.binding) != AYNI_OK || fact.scene_seq == 0 ||
         fact.control_domain == 0 || fact.control_mode == 0 || epochs.kernel_boot_epoch == 0 ||
         epochs.authority_epoch == 0 || epochs.executor_boot_epoch == 0 ||
@@ -37,8 +36,7 @@ bool valid_execution(const ExecutionFact &fact, ayni_bytes_v1 arguments) {
         (fact.phase == AYNI_EXECUTION_STOPPED ? fact.stop_cause == AYNI_CONTROL_STOP_NONE
                                               : fact.stop_cause != AYNI_CONTROL_STOP_NONE ||
                                                     fact.target != AYNI_TARGET_UNVERIFIED) ||
-        fact.dependency_count > fact.dependencies.size() ||
-        catalog::execution_envelope(fact.binding, arguments, envelope) != AYNI_OK) {
+        fact.dependency_count > fact.dependencies.size()) {
         return false;
     }
     for (uint32_t at = 0; at < fact.dependency_count; ++at) {
@@ -58,6 +56,11 @@ bool valid_execution(const ExecutionFact &fact, ayni_bytes_v1 arguments) {
         }
     }
     return true;
+}
+bool valid_execution(const ExecutionFact &fact, ayni_bytes_v1 arguments) {
+    ayni_control_envelope_v1 envelope{};
+    return valid_execution_metadata(fact) &&
+           catalog::execution_envelope(fact.binding, arguments, envelope) == AYNI_OK;
 }
 bool same_execution_identity(const ExecutionFact &a, const ExecutionFact &b) {
     if (!catalog::same_execution_binding(a.binding, b.binding) || a.scene_seq != b.scene_seq ||

@@ -113,6 +113,7 @@
         "service/call",
         "service/decision",
         "service/model",
+        "service/memory",
         "service/intent",
         "service/persistence",
         "config",
@@ -178,6 +179,11 @@
     "durability": {
       "snapshot": [
         "batch"
+      ]
+    },
+    "knowledge": {
+      "context": [
+        "memory"
       ]
     }
   },

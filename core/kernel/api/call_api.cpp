@@ -1,3 +1,4 @@
+#include "kernel/service/memory/memory_access.h"
 // C ABI queries of one logical call: its phase and pending wait, and a
 // copy of its result once it finished (ayni/calls.h).
 
@@ -101,6 +102,13 @@ ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logica
     }
     if (state.outcome == AYNI_CALL_ABANDONED) {
         return AYNI_RESULT_UNKNOWN;
+    }
+    uint32_t task_index = 0;
+    if (state.content_erased ||
+        !kernel->model().tasks.find(calls.identity(index).task_id, task_index) ||
+        !ayni::kernel::task_content_current(
+            {kernel->model(), kernel->now_us(), kernel->writer_durable_seq()}, task_index)) {
+        return AYNI_EXPIRED;
     }
     const auto result = calls.result(index);
     if (capacity < result.size) {

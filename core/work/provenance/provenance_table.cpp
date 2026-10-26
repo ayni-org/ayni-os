@@ -27,9 +27,14 @@ const ProvenanceRecord *ProvenanceTable::find(ProvenanceKind kind, uint32_t slot
     return record.id == id ? &record : nullptr;
 }
 bool ProvenanceTable::expect(ProvenanceKind kind, uint32_t slot, uint64_t id) {
-    if (!valid_slot(kind, slot) || records_[index(kind, slot)].id != 0) {
+    if (!valid_slot(kind, slot)) {
         return false;
     }
+    const auto &old = records_[index(kind, slot)];
+    if (old.id != 0) {
+        return old.id == id && old.content == ContentState::awaiting_record;
+    }
+    // Task and checkpoint REQUIRED markers may both reserve this same pending identity.
     records_[index(kind, slot)] = {id, kind, ContentState::awaiting_record, {}, {}};
     return true;
 }
@@ -43,12 +48,12 @@ bool ProvenanceTable::complete() const {
 }
 void ProvenanceTable::assign(ProvenanceKind kind, uint32_t slot, uint64_t id,
                              const knowledge::MemoryDependencies &dependencies,
-                             foundation::TransitionStamp stamp) {
-    records_[index(kind, slot)] = {id, kind, ContentState::available, dependencies, stamp};
+                             foundation::TransitionStamp stamp, ContextOrigin origin) {
+    records_[index(kind, slot)] = {id, kind, ContentState::available, dependencies, stamp, origin};
 }
-void ProvenanceTable::erase(uint32_t at, foundation::TransitionStamp stamp) {
-    records_[at].content = ContentState::erased;
-    records_[at].stamp = stamp;
+void ProvenanceTable::erase(ProvenanceKind kind, uint32_t slot, uint64_t id,
+                            foundation::TransitionStamp stamp) {
+    records_[index(kind, slot)] = {id, kind, ContentState::erased, {}, stamp};
 }
 void ProvenanceTable::clear(ProvenanceKind kind, uint32_t slot) {
     if (valid_slot(kind, slot)) {
@@ -63,13 +68,29 @@ void ProvenanceTable::clear() {
 // Restore uses owner slots, exact IDs and monotone content state; Kernel proves work/stamp pairing.
 ayni_status_t ProvenanceTable::restore(uint32_t slot, const ProvenanceRecord &record,
                                        uint32_t dependency_limit) {
-    if (!foundation::is_kernel_id(record.id) || record.stamp.transition_id == 0 ||
-        record.stamp.commit_seq == 0 ||
-        (record.content != ContentState::available && record.content != ContentState::erased) ||
-        !knowledge::valid_dependencies(record.dependencies, dependency_limit)) {
+    if (record.origin.id != 0) {
+        bool present = false;
+        for (uint32_t i = 0; i < record.dependencies.count && i < knowledge::memory_dependency_max;
+             ++i) {
+            const auto &ref = record.dependencies.items[i];
+            present = present || (ref.kind == knowledge::DependencyKind::context &&
+                                  ref.id == record.origin.id);
+        }
+        if (record.kind != ProvenanceKind::goal || record.content != ContentState::available ||
+            !present) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+    } else if (record.origin.generation != 0) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (!valid_slot(record.kind, slot)) {
+    if ((record.kind != ProvenanceKind::goal && record.kind != ProvenanceKind::task) ||
+        !foundation::is_kernel_id(record.id) || record.stamp.transition_id == 0 ||
+        record.stamp.commit_seq == 0 ||
+        (record.content != ContentState::available && record.content != ContentState::erased) ||
+        !knowledge::valid_dependencies(record.dependencies, knowledge::memory_dependency_max)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (record.dependencies.count > dependency_limit || !valid_slot(record.kind, slot)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     const auto &old = records_[index(record.kind, slot)];

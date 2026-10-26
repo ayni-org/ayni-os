@@ -2,6 +2,7 @@
 // ADR-0052: executor answers held, lost or late through the Mock's link. No
 // power loss, Provider transport failure or restart campaign.
 #include "kernel_test_probe.h"
+#include "work/call/call_records.h"
 #include "work_node.h"
 #include <ayni/providers/mock_execution.h>
 #include <ayni/scenes.h>
@@ -801,3 +802,43 @@ TEST_F(ManagedExecution, a_permit_forwarded_within_a_poll_period_starts) {
     EXPECT_EQ(resource().quarantine_id, 0U);
 }
 } // namespace
+
+// ADR-0060: White-box clone of a normally completed physical call exercises the erased codec;
+// the actual Kernel/Mock action still follows its unchanged public stop chain.
+TEST_F(ManagedExecution, erased_physical_record_preserves_independent_execution_facts) {
+    start();
+    ASSERT_NE(create(), 0U);
+    wait_submission();
+    pump(30);
+    const auto &model = ayni::kernel::KernelTestProbe::work(work.kernel());
+    uint32_t index = 0;
+    ASSERT_TRUE(model.calls.find(executor.logical_call(), index));
+    const auto before = model.calls.record(index);
+    ASSERT_TRUE(before.state.execution.has_value());
+    const ayni::work::CallTable::Limits limits{1, 1024, 1024, 1024};
+    std::vector<uint64_t> storage(ayni::work::CallTable::storage_size(limits) / sizeof(uint64_t) +
+                                  1);
+    ayni::work::CallTable copy(storage.data(), limits);
+    ASSERT_EQ(copy.restore_validated(before), AYNI_OK);
+    ASSERT_TRUE(copy.find(before.identity.call_id, index));
+    auto erased_at = before.state.latest;
+    ++erased_at.transition.commit_seq;
+    ++erased_at.transition.transition_id;
+    ASSERT_EQ(copy.erase_content(index, erased_at), AYNI_OK);
+    const auto erased = copy.record(index);
+    ASSERT_EQ(ayni::work::call_record_version_for(erased), ayni::work::call_erased_record_version);
+    std::vector<uint8_t> bytes(ayni::work::call_record_size(erased));
+    ayni::work::write_call_record(erased, bytes.data());
+    ayni::work::CallRecord decoded{};
+    ASSERT_TRUE(ayni::work::read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()),
+                                             decoded, ayni::work::call_erased_record_version));
+    ASSERT_TRUE(decoded.state.execution.has_value());
+    EXPECT_EQ(decoded.state.execution->phase, before.state.execution->phase);
+    EXPECT_EQ(decoded.state.execution->target, before.state.execution->target);
+    EXPECT_EQ(decoded.state.execution->stop_cause, before.state.execution->stop_cause);
+    EXPECT_EQ(decoded.state.execution->epochs.kernel_boot_epoch,
+              before.state.execution->epochs.kernel_boot_epoch);
+    EXPECT_EQ(decoded.state.outcome, before.state.outcome);
+    EXPECT_EQ(decoded.input.size, 0U);
+    EXPECT_EQ(decoded.result.size, 0U);
+}

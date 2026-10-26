@@ -98,10 +98,12 @@ class Encoder {
                 continue;
             }
             const uint16_t version = work::goal_record_version_for(
-                goal, model_.goal_authority.contains(index, goal.goal_id));
-            uint8_t *at = body(work::goal_record_type, version, work::goal_record_size(goal));
+                goal, model_.goal_authority.contains(index, goal.goal_id),
+                model_.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
+            uint8_t *at =
+                body(work::goal_record_type, version, work::goal_record_size(goal, version));
             if (at != nullptr) {
-                work::write_goal_record(goal, model_.goals.parameters(index), at);
+                work::write_goal_record(goal, model_.goals.parameters(index), at, version);
             }
         }
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {

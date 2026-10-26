@@ -88,6 +88,8 @@ void place_execution_context(Placer &placer, const KernelCapacities &capacities)
                  knowledge::ObservationTable::storage_size(capacities.observation_source_capacity));
     placer.place(Store::memories, knowledge::MemoryTable::storage_alignment,
                  knowledge::MemoryTable::storage_size(memory_limits(capacities)));
+    placer.place(Store::contexts, knowledge::ContextTable::storage_alignment,
+                 knowledge::ContextTable::storage_size(context_capacity(capacities)));
     placer.place(Store::provenance, work::ProvenanceTable::storage_alignment,
                  work::ProvenanceTable::storage_size(provenance_limits(capacities)));
 }

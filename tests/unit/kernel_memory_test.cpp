@@ -1,5 +1,6 @@
 // ADR-0060: public management intents, durable memory facts and bounded private/profile queries.
 #include "work_node.h"
+#include <algorithm>
 #include <ayni/memory.h>
 namespace {
 using namespace ayni::test;
@@ -263,6 +264,7 @@ TEST_F(KernelMemory, another_agent_cannot_read_private_content_or_ignore_the_den
     ASSERT_EQ(created.status, AYNI_OK);
     uint64_t task_id = 0;
     for (unsigned i = 0; i < 100 && work.strategy().seen.empty(); ++i) {
+        work.node().sim().advance_us(10000);
         work.node().step();
         work.node().sim().complete_storage();
         task_id = work.goal(created.result.object.id).last_task_id;
@@ -390,4 +392,126 @@ TEST_F(KernelMemory, strategy_search_tracks_authorized_nonmatches_before_publish
                                         checkpoint.size(), &size),
               AYNI_EXPIRED);
 }
+
+// An empty source set is still a tracked policy write; completion must persist its matching footer.
+TEST_F(KernelMemory, policy_write_without_memory_reads_keeps_empty_provenance_through_completion) {
+    work.strategy().answer = [&](const ayni_task_snapshot_v1 &snapshot,
+                                 ayni_policy_output_v1 &out) {
+        if (snapshot.step_count != 0) {
+            return report(AYNI_POLICY_REPORT_COMPLETION, snapshot, out);
+        }
+        ayni_memory_proposal_v1 proposal{};
+        proposal.struct_size = sizeof(proposal);
+        proposal.source = AYNI_MEMORY_DERIVED;
+        proposal.step_key = text("note");
+        proposal.body = text("independent organization");
+        EXPECT_EQ(snapshot.memory->propose(snapshot.memory->context, &proposal), AYNI_OK);
+        out.intents[0] = policy_intent(AYNI_POLICY_WRITE_MEMORY, snapshot.revision, "note");
+        out.intent_count = 1;
+        return AYNI_OK;
+    };
+    const auto created = work.create(WorkNode::create_body(work.instance(agent_a), 0, "reminder", 1,
+                                                           {nullptr, 0}, AYNI_TRIGGER_ONCE));
+    ASSERT_EQ(created.status, AYNI_OK);
+    uint64_t task_id = 0;
+    for (unsigned i = 0; i < 100; ++i) {
+        work.node().sim().advance_us(10000);
+        work.node().step();
+        work.node().sim().complete_storage();
+        task_id = work.goal(created.result.object.id).last_task_id;
+        if (task_id != 0 && work.task(task_id).lifecycle == AYNI_TASK_COMPLETED) {
+            break;
+        }
+    }
+    ASSERT_NE(task_id, 0U);
+    ASSERT_EQ(work.task(task_id).lifecycle, AYNI_TASK_COMPLETED);
+    durable(work.task(task_id).commit_seq);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    ayni_memory_search_v1 query{sizeof(query),          AYNI_MEMORY_PRIVATE,
+                                work.instance(agent_a), 0,
+                                text("organization"),   {nullptr, 0}};
+    std::array<ayni_memory_info_v1, 3> rows{};
+    uint32_t count = 0;
+    ASSERT_EQ(
+        ayni_search_memory(work.kernel(), work.session(), &query, rows.data(), rows.size(), &count),
+        AYNI_OK);
+    ASSERT_EQ(count, 1U);
+    EXPECT_EQ(rows[0].confirmed, 0U);
+    EXPECT_EQ(rows[0].dependency_count, 0U);
+    EXPECT_EQ(body(rows[0].memory_id), "independent organization");
+}
 } // namespace
+
+// ADR-0060: normal deletion completes both managed snapshot rotations and expires only
+// affected exact receipts. White-box progress inspection observes the public operation's owners.
+TEST_F(KernelMemory, deletion_scrubs_retained_storage_and_preserves_unrelated_retry_after_reopen) {
+    const std::string secret = "unique-private-cleanup-marker";
+    const auto removed = save(91, secret.c_str());
+    const auto kept = save(92, "keep this preference");
+    ASSERT_EQ(removed.status, AYNI_OK);
+    ASSERT_EQ(kept.status, AYNI_OK);
+    durable(kept.result.commit_seq);
+    ASSERT_EQ(change(AYNI_INTENT_MEMORY_DELETE, 93, removed.result.object.id, 1).status, AYNI_OK);
+    for (unsigned i = 0; i < 500; ++i) {
+        work.node().sim().advance_us(10000);
+        work.node().step();
+        work.node().sim().complete_storage();
+    }
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto &storage = work.node().sim().durable_storage();
+    const auto arena = work.node().arena_bytes();
+    EXPECT_EQ(std::search(arena.data, arena.data + arena.size, secret.begin(), secret.end()),
+              arena.data + arena.size);
+    for (const auto &snapshot : storage.snapshots) {
+        ASSERT_FALSE(snapshot.empty());
+        EXPECT_EQ(std::search(snapshot.begin(), snapshot.end(), secret.begin(), secret.end()),
+                  snapshot.end());
+    }
+    for (const auto &batch : storage.log) {
+        EXPECT_EQ(std::search(batch.bytes.begin(), batch.bytes.end(), secret.begin(), secret.end()),
+                  batch.bytes.end());
+    }
+    EXPECT_EQ(save(91, secret.c_str()).status, AYNI_EXPIRED);
+    EXPECT_EQ(save(91, "changed retry").status, AYNI_EXPIRED);
+    EXPECT_EQ(save(92, "keep this preference").status, AYNI_OK);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    EXPECT_EQ(save(91, secret.c_str()).status, AYNI_EXPIRED);
+    EXPECT_EQ(body(kept.result.object.id), "keep this preference");
+    EXPECT_EQ(save(92, "keep this preference").status, AYNI_OK);
+}
+
+class KernelMemoryOneCommand : public KernelMemory {
+    void SetUp() override {
+        work.node().config().command_capacity = 1;
+        KernelMemory::SetUp();
+    }
+};
+// ADR-0060: evicted canonical input and shorter staging writes leave no hidden arena tail.
+TEST_F(KernelMemoryOneCommand, shorter_revision_erases_evicted_command_and_encoding_scratch) {
+    const std::string secret = "long-original-private-preference";
+    const auto saved = save(91, secret.c_str());
+    ASSERT_EQ(saved.status, AYNI_OK);
+    durable(saved.result.commit_seq);
+    ASSERT_EQ(save(92, "new", saved.result.object.id, 1).status, AYNI_OK);
+    for (unsigned i = 0; i < 500; ++i) {
+        work.node().sim().advance_us(10000);
+        work.node().step();
+        work.node().sim().complete_storage();
+    }
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto arena = work.node().arena_bytes();
+    EXPECT_EQ(std::search(arena.data, arena.data + arena.size, secret.begin(), secret.end()),
+              arena.data + arena.size);
+    EXPECT_EQ(body(saved.result.object.id), "new");
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    EXPECT_EQ(body(saved.result.object.id), "new");
+}

@@ -29,6 +29,9 @@ constexpr uint16_t goal_creation_stamp_snapshot_version = 4;
 // Type 3/v5 journal, v6 snapshot: v3/v4 plus the immutable scheduling profile.
 constexpr uint16_t goal_work_profile_record_version = 5;
 constexpr uint16_t goal_work_profile_snapshot_version = 6;
+// REQUIRED v7/v8 also require a complete content-source footer; profile tail is always present.
+constexpr uint16_t goal_provenance_record_version = 7;
+constexpr uint16_t goal_provenance_snapshot_version = 8;
 constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
 constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;
@@ -54,6 +57,8 @@ struct GoalRecord {
     uint32_t depth;
     NewGoal goal;
     bool authority_required = false; // v2+ require a paired ceiling; no Goal field copy.
+    bool provenance_required =
+        false; // v7/v8 require source metadata before use/replay publication.
 };
 
 struct GoalStateRecord {
@@ -61,12 +66,15 @@ struct GoalStateRecord {
     GoalState state;
 };
 
-uint32_t goal_record_size(const Goal &goal);
-// Select the REQUIRED extension only when a non-default profile is present.
-uint16_t goal_record_version_for(const Goal &goal, bool authority_present);
-uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present);
-// body has goal_record_size(goal) bytes; parameters are the goal's.
-void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body);
+uint32_t goal_record_size(const Goal &goal, uint16_t version = goal_record_version);
+// Preserve legacy layout unless authority, a scheduling profile or content provenance needs it.
+uint16_t goal_record_version_for(const Goal &goal, bool authority_present,
+                                 bool provenance_present = false);
+uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present,
+                                   bool provenance_present = false);
+// body has goal_record_size(goal, version) bytes; parameters are the goal's retained bytes.
+void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
+                       uint16_t version = goal_record_version);
 // Returns false for a body that does not hold a GOAL record: a size that
 // does not match, an invalid goal type id or trigger source.
 bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out,

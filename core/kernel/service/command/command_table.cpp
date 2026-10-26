@@ -55,13 +55,84 @@ bool matches_reauthorization_command(const CommandMapping &mapping, ayni_bytes_v
            command.reauthorization.expected_authority_commit_seq < result.binding.established_seq &&
            mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
 }
+// Context OPEN has the initial privacy revision; publication and ACK preserve it, FORGET advances.
+bool matches_context_result(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
+    ContextCommand command{};
+    if (!read_context_command(bytes, command) || command.kind != mapping.kind ||
+        mapping.object.origin_device_id != 0 || mapping.effect != AYNI_INTENT_EFFECT_CHANGED ||
+        (command.context_id != 0 && mapping.object.id != command.context_id)) {
+        return false;
+    }
+    const auto revision = command.kind == AYNI_INTENT_CONTEXT_OPEN ? 1U
+                          : command.kind == AYNI_INTENT_CONTEXT_FORGET
+                              ? command.expected_revision + 1U
+                              : command.expected_revision;
+    if (revision == 0 || mapping.object.revision != revision) {
+        return false;
+    }
+    return true;
+}
+// Canonical Grant creation keeps the immutable active revision and admitted delegation flags.
+bool matches_grant_result(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
+    AuthorityCommandRecord command{};
+    if (mapping.object.revision != authority::grant_active_revision ||
+        mapping.effect != AYNI_INTENT_EFFECT_CHANGED || !read_authority_command(bytes, command) ||
+        !authority::valid_persisted_grant_flags(command.flags)) {
+        return false;
+    }
+    return true;
+}
 } // namespace
 
+bool valid_expired_mapping(const CommandMapping &m) {
+    return implements_intent(m.kind) && m.privacy_expired && m.principal_id != 0 &&
+           m.command_id != 0 && m.digest == 0 && m.canonical_size == 0 && m.result_size == 0 &&
+           m.sources.count == 0 && m.object.origin_device_id == 0 && m.object.id != 0 &&
+           m.object.revision != 0 && m.object.kind == intent_traits(m.kind).object &&
+           (is_memory_command(m.kind) || is_work_authority_command(m.kind) ||
+            (is_ordinary_command(m.kind) && m.object.kind == AYNI_OBJECT_GOAL)) &&
+           m.effect == AYNI_INTENT_EFFECT_CHANGED && m.retention == CommandRetention::normal;
+}
+
+void CommandTable::discard_candidate() {
+    std::memset(scratch_, 0, canonical_max_bytes_);
+    staged_.reset();
+}
+
+// Privacy is independent of the first result: keep its identity/sequence but destroy all copies
+// of exact private input, including unused slot tails and the ephemeral encoding candidate.
+bool CommandTable::expire_content(uint64_t commit_seq) {
+    for (uint32_t row = 0; row < row_count_; ++row) {
+        auto *mappings = mappings_of(rows_[row]);
+        for (uint32_t index = 0; index < rows_[row].count; ++index) {
+            auto &mapping = mappings[index];
+            if (mapping.commit_seq != commit_seq) {
+                continue;
+            }
+            CommandMapping erased = mapping;
+            erased.privacy_expired = true;
+            erased.digest = 0;
+            erased.canonical_size = 0;
+            erased.result_size = 0;
+            erased.sources = {};
+            if (mapping.privacy_expired || !valid_expired_mapping(erased)) {
+                return false;
+            }
+            std::memset(canonical_of(mapping), 0, canonical_max_bytes_);
+            discard_candidate();
+            mapping = erased;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Validate the common envelope, then delegate each exact request to its domain codec.
 bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
                          ayni_bytes_v1 result_bytes) {
-    if (!is_exact_command(mapping.kind) || mapping.principal_id == 0U || mapping.command_id == 0U ||
-        mapping.object.kind != intent_traits(mapping.kind).object || mapping.object.id == 0U ||
-        mapping.canonical_size != bytes.size || bytes.size == 0U ||
+    if (mapping.privacy_expired || !is_exact_command(mapping.kind) || mapping.principal_id == 0U ||
+        mapping.command_id == 0U || mapping.object.kind != intent_traits(mapping.kind).object ||
+        mapping.object.id == 0U || mapping.canonical_size != bytes.size || bytes.size == 0U ||
         mapping.result_size != result_bytes.size ||
         (is_work_authority_command(mapping.kind) && result_bytes.size == 0U)) {
         return false;
@@ -74,11 +145,7 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
         return false;
     }
     if (mapping.kind == AYNI_INTENT_GRANT_CREATE) {
-        AuthorityCommandRecord command{};
-        if (mapping.object.revision != authority::grant_active_revision ||
-            mapping.effect != AYNI_INTENT_EFFECT_CHANGED ||
-            !read_authority_command(bytes, command) ||
-            !authority::valid_persisted_grant_flags(command.flags)) {
+        if (!matches_grant_result(mapping, bytes)) {
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_GRANT_REVOKE) {
@@ -93,6 +160,10 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
             (result_bytes.size != 0U &&
              (result.binding.parent.goal_id != command.approval.original.parent_goal_id ||
               result.binding.input.incarnation != 0U))) {
+            return false;
+        }
+    } else if (is_context_command(mapping.kind)) {
+        if (!matches_context_result(mapping, bytes)) {
             return false;
         }
     } else if (is_memory_command(mapping.kind)) {
@@ -179,6 +250,9 @@ CommandTable::Lookup CommandTable::find(uint64_t principal_id, uint64_t command_
     const CommandMapping *mappings = mappings_of(*row);
     for (uint32_t index = 0; index < row->count; ++index) {
         if (mappings[index].command_id == command_id) {
+            if (mappings[index].privacy_expired) {
+                return Lookup::expired;
+            }
             // A legacy digest-only lookup cannot establish exact identity,
             // even if it collides with an authorization command's digest.
             if (mappings[index].canonical_size != 0U || mappings[index].digest != digest) {
@@ -196,7 +270,7 @@ CommandTable::Lookup CommandTable::find(uint64_t principal_id, uint64_t command_
 CommandTable::ExactProbe CommandTable::probe_exact(uint64_t principal_id, uint64_t command_id,
                                                    ayni_intent_kind_t kind, ayni_status_t measured,
                                                    uint32_t size) {
-    staged_.reset();
+    discard_candidate();
     if (measured != AYNI_OK || principal_id == 0U || command_id == 0U) {
         return {{measured == AYNI_OK ? AYNI_INVALID_ARGUMENT : measured, Lookup::unmapped, nullptr},
                 false,
@@ -219,6 +293,9 @@ CommandTable::ExactProbe CommandTable::probe_exact(uint64_t principal_id, uint64
             return {{AYNI_OK, Lookup::expired, nullptr}, false, nullptr};
         }
     }
+    if (existing != nullptr && existing->privacy_expired) {
+        return {{AYNI_OK, Lookup::expired, nullptr}, false, nullptr};
+    }
     if (existing != nullptr && (existing->kind != kind || existing->canonical_size != size)) {
         return {{AYNI_OK, Lookup::conflict, nullptr}, false, nullptr};
     }
@@ -233,12 +310,15 @@ CommandTable::ExactLookup CommandTable::stage_exact(uint64_t principal_id, uint6
                                                     const CommandMapping *existing,
                                                     ayni_status_t encoded, uint32_t size) {
     if (encoded != AYNI_OK) {
+        discard_candidate();
         return {encoded, Lookup::unmapped, nullptr};
     }
     const uint64_t digest = authority_command_digest({scratch_, size});
     if (existing != nullptr) {
-        if (existing->digest != digest ||
-            std::memcmp(canonical_of(*existing), scratch_, size) != 0) {
+        const bool same =
+            existing->digest == digest && std::memcmp(canonical_of(*existing), scratch_, size) == 0;
+        discard_candidate();
+        if (!same) {
             return {AYNI_OK, Lookup::conflict, nullptr};
         }
         return {AYNI_OK, Lookup::retried, existing};
@@ -268,7 +348,7 @@ bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {
     if (!add(*row, mapping, {scratch_, staged_->size}, result)) {
         return false;
     }
-    staged_.reset();
+    discard_candidate();
     return true;
 }
 
@@ -343,7 +423,11 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         (mapping.canonical_size == 0U && result.size != 0U)) {
         return Restore::corrupt;
     }
-    if (mapping.canonical_size != 0U) {
+    if (mapping.privacy_expired) {
+        if (!valid_expired_mapping(mapping)) {
+            return Restore::corrupt;
+        }
+    } else if (mapping.canonical_size != 0U) {
         if (!valid_exact_mapping(mapping, bytes, result)) {
             return Restore::corrupt;
         }
@@ -446,26 +530,38 @@ uint8_t *CommandTable::canonical_of(const CommandMapping &mapping) const {
     return canonical_ + static_cast<std::size_t>(&mapping - mappings_) * canonical_max_bytes_;
 }
 
+// One eviction selector serves admission's Grant unlink fence and the table's actual replacement.
+const CommandMapping *CommandTable::eviction_candidate(uint64_t principal_id) const {
+    const auto *row = row_of(principal_id);
+    if (row == nullptr || row->count < capacity_) {
+        return nullptr;
+    }
+    const auto *mappings = mappings_of(*row);
+    const CommandMapping *candidate = nullptr;
+    for (uint32_t index = 0; index < row->count; ++index) {
+        if (mappings[index].retention == CommandRetention::normal &&
+            (candidate == nullptr || mappings[index].command_id < candidate->command_id)) {
+            candidate = mappings + index;
+        }
+    }
+    return candidate;
+}
+
 bool CommandTable::add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 bytes,
                        ayni_bytes_v1 result) {
     CommandMapping *mappings = mappings_of(row);
     if (row.count == capacity_) {
-        uint32_t smallest = row.count;
-        for (uint32_t index = 0; index < row.count; ++index) {
-            if (mappings[index].retention == CommandRetention::normal &&
-                (smallest == row.count ||
-                 mappings[index].command_id < mappings[smallest].command_id)) {
-                smallest = index;
-            }
-        }
-        if (smallest == row.count) {
+        const auto *evicted = eviction_candidate(row.principal_id);
+        if (evicted == nullptr) {
             return false; // All accepted revokes still need a durable result.
         }
+        const auto smallest = static_cast<uint32_t>(evicted - mappings);
         if (mappings[smallest].command_id > row.floor) {
             row.floor = mappings[smallest].command_id;
         }
         const uint32_t last = row.count - 1U;
         if (smallest != last) {
+            std::memset(canonical_of(mappings[smallest]), 0, canonical_max_bytes_);
             if (mappings[last].canonical_size != 0U) {
                 std::memmove(canonical_of(mappings[smallest]), canonical_of(mappings[last]),
                              mappings[last].canonical_size + mappings[last].result_size);
@@ -475,6 +571,8 @@ bool CommandTable::add(Row &row, const CommandMapping &mapping, ayni_bytes_v1 by
         --row.count;
     }
     CommandMapping &added = mappings[row.count];
+    // A shorter replacement must not retain the evicted request in its unused byte tail.
+    std::memset(canonical_of(added), 0, canonical_max_bytes_);
     if (bytes.size != 0U) {
         std::memcpy(canonical_of(added), bytes.data, bytes.size);
     }

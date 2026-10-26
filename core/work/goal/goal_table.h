@@ -360,6 +360,8 @@ class GoalTable {
     // index < size().
     const Goal &at(uint32_t index) const { return goals_[index]; }
     ayni_bytes_v1 parameters(uint32_t index) const;
+    // Privacy owner has persisted a separate erasure fact; preserve workflow identity/outcome.
+    void erase_parameters(uint32_t index);
     uint32_t size() const { return goals_.size(); }
 
     // Not terminal: PROPOSED, ACTIVE or PAUSED.

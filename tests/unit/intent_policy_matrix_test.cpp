@@ -63,6 +63,10 @@ constexpr Row matrix[] = {
     {AYNI_INTENT_MEMORY_SAVE,            management_on_retry, exact,         AYNI_OBJECT_MEMORY},
     {AYNI_INTENT_MEMORY_CONFIRM,         management_on_retry, exact,         AYNI_OBJECT_MEMORY},
     {AYNI_INTENT_MEMORY_DELETE,          management_on_retry, exact,         AYNI_OBJECT_MEMORY},
+    {AYNI_INTENT_CONTEXT_OPEN,           management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_CONTEXT_PUBLISH,        management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_CONTEXT_FORGET,         management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_CONTEXT_ACK,            management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
 };
 // clang-format on
 

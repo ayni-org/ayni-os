@@ -7,6 +7,7 @@
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/calls.h>
+#include <ayni/context.h>
 #include <ayni/control.h>
 #include <ayni/execution.h>
 #include <ayni/memory.h>
@@ -227,7 +228,7 @@ AYNI_LAYOUT(goal_type_tool_reserved,
 AYNI_LAYOUT(goal_type_tools,
             offsetof(ayni_goal_type_v1, tools) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 24);
 AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) ==
-                                AYNI_ROUND8(AYNI_ROUND8(24 + 7 * AYNI_PTR) + 24 + AYNI_PTR));
+                                AYNI_ROUND8(AYNI_ROUND8(24 + 7 * AYNI_PTR) + 32 + AYNI_PTR));
 AYNI_LAYOUT(tool_ref_binding_id, offsetof(ayni_tool_ref_v1, binding_id) == 0);
 AYNI_LAYOUT(tool_ref_binding_version, offsetof(ayni_tool_ref_v1, binding_version) == 2 * AYNI_PTR);
 AYNI_LAYOUT(tool_ref_reserved, offsetof(ayni_tool_ref_v1, reserved) == 4 + 2 * AYNI_PTR);
@@ -861,3 +862,10 @@ AYNI_LAYOUT(memory_proposal_size,
             sizeof(ayni_memory_proposal_v1) == AYNI_ROUND8(40 + 6 * AYNI_PTR));
 AYNI_LAYOUT(memory_proposal_step, offsetof(ayni_memory_proposal_v1, step_key) == 32);
 AYNI_LAYOUT(memory_view_size, sizeof(ayni_memory_view_v1) == 4 * AYNI_PTR);
+
+AYNI_LAYOUT(context_command_size, sizeof(ayni_context_command_v1) == 48);
+AYNI_LAYOUT(context_info_size, sizeof(ayni_context_info_v1) == 80);
+
+AYNI_LAYOUT(context_object_unique, AYNI_OBJECT_CONTEXT > AYNI_OBJECT_CALL);
+
+AYNI_LAYOUT(privacy_info_size, sizeof(ayni_privacy_info_v1) == 32);

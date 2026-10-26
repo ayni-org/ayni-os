@@ -7,6 +7,7 @@
 
 #include "durability/batch/record_types.h"
 #include "kernel/service/command/command_table.h"
+#include "knowledge/memory/memory_records.h"
 
 #include <cstdint>
 
@@ -26,6 +27,15 @@ constexpr uint16_t resume_wait_command_record_version = 8;
 constexpr uint16_t scene_command_record_version = 9;
 // REQUIRED type9/v10 retains exact memory save/confirm/delete requests.
 constexpr uint16_t memory_command_record_version = 10;
+// REQUIRED type9/v11 is a snapshot-only privacy-expired identity, without canonical bytes.
+constexpr uint16_t expired_command_record_version = 11;
+// REQUIRED type9/v12 retains exact scalar context management requests, without plaintext.
+constexpr uint16_t context_command_record_version = 12;
+// REQUIRED type9/v13 wraps one prior Goal command body with its complete captured sources.
+constexpr uint16_t sourced_command_record_version = 13;
+constexpr uint32_t sourced_command_prefix_size = 2 * sizeof(uint32_t);
+// Shared shape check; these sources explain retained private input, never grant new authority.
+bool valid_command_sources(const CommandMapping &mapping);
 // records.md type 9/v2 adds canonical format and byte length (u32 each).
 constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
 constexpr uint16_t revoke_command_record_version = 3;
@@ -37,12 +47,16 @@ constexpr uint32_t work_authority_command_record_fixed_size =
     exact_command_record_fixed_size + sizeof(uint32_t);
 // Type 9/v3 adds effect before those two canonical fields (u32 each).
 constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 3U * sizeof(uint32_t);
-constexpr uint32_t command_record_max(uint32_t canonical_max_bytes) {
+constexpr uint32_t command_record_max(uint32_t canonical_max_bytes, uint32_t dependency_max = 0) {
     const uint32_t create_max =
         canonical_max_bytes == 0U ? command_record_size
                                   : work_authority_command_record_fixed_size + canonical_max_bytes;
     constexpr uint32_t revoke_max = revoke_command_record_fixed_size + revoke_command_size;
-    return canonical_max_bytes == 0U || create_max >= revoke_max ? create_max : revoke_max;
+    const auto maximum =
+        canonical_max_bytes == 0U || create_max >= revoke_max ? create_max : revoke_max;
+    return dependency_max == 0 ? maximum
+                               : maximum + sourced_command_prefix_size +
+                                     knowledge::memory_dependencies_size(dependency_max);
 }
 bool knows_command_record(
     uint16_t version); // Exact supported body versions; unknown required records refuse.

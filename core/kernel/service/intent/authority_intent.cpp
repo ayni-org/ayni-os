@@ -140,6 +140,7 @@ bool apply_pending_revoke(WorkModel &model) {
                                  {0, plan.grant_id, plan.revision, AYNI_OBJECT_GRANT},
                                  0,
                                  plan.effect};
+    model.release_command_sources(mapping.principal_id, stamp.commit_seq);
     if (!model.grants.apply_revoke(plan, stamp) ||
         !model.commands.publish_accepted_revoke(*pending, mapping, model.ids.boot_epoch())) {
         return false;

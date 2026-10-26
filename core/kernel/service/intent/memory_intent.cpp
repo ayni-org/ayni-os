@@ -26,6 +26,9 @@ ayni_status_t save_memory(WorkModel &model, const MemoryCommand &command, Intent
                                          stamp.commit_seq);
     }
     model.memories.install(plan, id, value, stamp);
+    if (command.target_id != 0) {
+        model.privacy.request(stamp);
+    }
     outcome.object = {0, id, plan.revision, AYNI_OBJECT_MEMORY};
     outcome.commit_seq = stamp.commit_seq;
     return AYNI_OK;
@@ -52,6 +55,7 @@ ayni_status_t apply_memory_intent(WorkModel &model, const MemoryCommand &command
         return AYNI_EXPIRED;
     }
     const auto stamp = model.transitions.next();
+    model.privacy.request(stamp);
     if (command.kind == AYNI_INTENT_MEMORY_CONFIRM) {
         model.memories.confirm(index, stamp);
     } else {

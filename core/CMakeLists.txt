@@ -61,6 +61,8 @@ ayni_add_core_module(knowledge
             knowledge/memory/memory_types.cpp
             knowledge/memory/memory_table.cpp
             knowledge/memory/memory_records.cpp
+            knowledge/context/context_table.cpp
+            knowledge/context/context_records.cpp
     DEPENDS catalog durability foundation)
 
 ayni_add_core_module(work
@@ -87,6 +89,8 @@ ayni_add_core_module(work
         work/goal/goal_request.cpp
         work/goal/goal_table.cpp
         work/goal/trigger_schedule.cpp
+        work/privacy/privacy_cleanup.cpp
+        work/privacy/privacy_records.cpp
         work/provenance/provenance_records.cpp
         work/provenance/provenance_table.cpp
         work/propagation.cpp
@@ -149,6 +153,11 @@ ayni_add_core_module(kernel
         kernel/service/memory/memory_access.cpp
         kernel/service/memory/memory_permissions.cpp
         kernel/service/memory/memory_decision.cpp
+        kernel/service/memory/privacy_service.cpp
+        kernel/service/command/command_context.cpp
+        kernel/service/memory/context_service.cpp
+        kernel/service/intent/context_intent.cpp
+        kernel/api/context_api.cpp
         kernel/service/intent/intent_rules.cpp
         kernel/service/model/task_authority.cpp
         kernel/service/model/work_authority_cleanup.cpp
@@ -164,6 +173,8 @@ ayni_add_core_module(kernel
         kernel/service/persistence/goal_approval_replay.cpp
         kernel/service/persistence/goal_reauthorization_replay.cpp
         kernel/service/persistence/provenance_store.cpp
+        kernel/service/persistence/privacy_store.cpp
+        kernel/service/persistence/context_store.cpp
         kernel/service/persistence/memory_store.cpp
         kernel/service/persistence/scene_store.cpp
         kernel/service/persistence/work_cleanup_replay.cpp

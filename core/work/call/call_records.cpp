@@ -124,7 +124,7 @@ uint32_t call_record_max(CallTable::Limits limits) {
            catalog::resource_group_max *
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
-           limits.result_bytes + execution_record_max(); // A v4 kind never joins execution.
+           limits.result_bytes + execution_record_max() + call_erasure_tail_size;
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -138,6 +138,7 @@ uint32_t call_record_size(const CallRecord &record) {
     }
     return size + (record.action ? action_state_record_size(*record.action) : 0U) +
            (record.state.execution ? execution_record_size(*record.state.execution) : 0U) +
+           (record.state.content_erased ? call_erasure_tail_size : 0U) +
            (call_record_version_for(record) == call_tool_calls_record_version
                 ? call_result_kind_size
                 : 0U);
@@ -172,6 +173,10 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
         write_action_state_record(*record.action, action.data());
     }
     writer.bytes(action.data(), action_size);
+    if (record.state.content_erased) {
+        writer.u32(record.state.execution ? 1U : 0U);
+        write_action_stamp(*record.state.content_erased, writer);
+    }
     if (record.state.execution) {
         write_execution(*record.state.execution, writer);
     }
@@ -181,6 +186,9 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
 }
 
 uint16_t call_record_version_for(const CallRecord &record) {
+    if (record.state.content_erased) {
+        return call_erased_record_version;
+    }
     if (record.state.execution) {
         return call_execution_record_version;
     }
@@ -196,7 +204,8 @@ uint16_t call_record_version_for(const CallRecord &record) {
 bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint16_t version) {
     if (body == nullptr || size < call_record_fixed_size ||
         (version != call_record_version && version != call_skipped_record_version &&
-         version != call_execution_record_version && version != call_tool_calls_record_version)) {
+         version != call_execution_record_version && version != call_tool_calls_record_version &&
+         version != call_erased_record_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -229,7 +238,15 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint1
         }
         record.action = fact;
     }
-    if (version == call_execution_record_version) {
+    uint32_t has_execution = version == call_execution_record_version ? 1U : 0U;
+    if (version == call_erased_record_version) {
+        has_execution = reader.u32();
+        record.state.content_erased = read_action_stamp(reader);
+        if (has_execution > 1U) {
+            return false;
+        }
+    }
+    if (has_execution != 0U) {
         ExecutionFact execution{};
         if (!read_execution(reader, execution)) {
             return false;

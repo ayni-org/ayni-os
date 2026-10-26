@@ -7,14 +7,16 @@
 namespace ayni::kernel {
 namespace {
 bool knows(uint16_t, uint16_t version, WorkRecordContext) {
-    return version == work::provenance_record_version;
+    return version == work::provenance_record_version ||
+           version == work::context_provenance_record_version;
 }
 uint32_t capacity(const KernelCapacities &c) {
     const auto limits = provenance_limits(c);
     return limits.goals + limits.tasks;
 }
 uint32_t record_max(const KernelCapacities &c) {
-    return work::provenance_record_size(c.memory_dependency_capacity);
+    return work::provenance_record_size(c.memory_dependency_capacity) +
+           work::provenance_origin_bytes;
 }
 const StoreKind kinds[] = {{work::provenance_record_type, always_required}};
 uint32_t journal_max(const KernelCapacities &c) {
@@ -27,15 +29,18 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
     uint32_t count = 0;
     for (uint32_t i = 0; i < model.provenance.capacity(); ++i) {
         const auto &r = model.provenance.at(i);
-        if (r.id == 0 || r.stamp.commit_seq != stamp.commit_seq) {
+        // Erasure is replayed by its privacy cursor effect; only accepted content unions
+        // emit ordinary provenance journal rows. Snapshots retain both states explicitly.
+        if (r.id == 0 || r.content == work::ContentState::erased ||
+            r.stamp.commit_seq != stamp.commit_seq) {
             continue;
         }
         if (++count > 1) {
             return false;
         }
         auto *body = writer.add_record_body(
-            {work::provenance_record_type, work::provenance_record_version,
-             durability::record_required, work::provenance_record_size(r.dependencies.count)});
+            {work::provenance_record_type, work::provenance_record_version_for(r),
+             durability::record_required, work::provenance_record_size(r)});
         if (body == nullptr) {
             return false;
         }
@@ -51,8 +56,8 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     return cursor.index < model.provenance.capacity();
 }
 StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
-    return {work::provenance_record_version,
-            work::provenance_record_size(model.provenance.at(index).dependencies.count)};
+    return {work::provenance_record_version_for(model.provenance.at(index)),
+            work::provenance_record_size(model.provenance.at(index))};
 }
 void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
     work::write_provenance_record(model.provenance.at(index), body);
@@ -63,7 +68,7 @@ bool work_slot(const WorkModel &model, const work::ProvenanceRecord &record, uin
     uint32_t index = 0;
     if (record.kind == work::ProvenanceKind::goal && model.goals.find(record.id, index)) {
         slot = index;
-        latest = model.goals.at(index).commit_seq;
+        latest = model.goals.at(index).created.commit_seq;
         return true;
     }
     if (record.kind == work::ProvenanceKind::task && model.tasks.find(record.id, index)) {
@@ -74,14 +79,14 @@ bool work_slot(const WorkModel &model, const work::ProvenanceRecord &record, uin
     return false;
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t, const uint8_t *body, uint32_t size) {
+                                     uint16_t version, const uint8_t *body, uint32_t size) {
     work::ProvenanceRecord record{};
     uint32_t slot = 0;
     uint64_t latest = 0;
-    if (!work::read_provenance_record(body, size, record) ||
+    if (!work::read_provenance_record(body, size, record, version) ||
         !within_snapshot(record.stamp, metadata) || !work_slot(model, record, slot, latest) ||
-        record.stamp.commit_seq > latest ||
-        (record.kind == work::ProvenanceKind::task && record.stamp.commit_seq != latest)) {
+        (record.content == work::ContentState::available ? record.stamp.commit_seq != latest
+                                                         : record.stamp.commit_seq < latest)) {
         return durability::BatchCheck::corrupt;
     }
     // The earlier REQUIRED work record reserved this row; an unmarked or duplicate footer
@@ -114,19 +119,25 @@ const PersistentStore provenance_store{work::provenance_record_type,
 
 // A content-source change is part of that owner's already restored transition, never a
 // free-standing mutation.
-durability::RecordUse WorkReplay::restore_provenance(const uint8_t *body, uint32_t size,
+durability::RecordUse WorkReplay::restore_provenance(uint16_t version, const uint8_t *body,
+                                                     uint32_t size,
                                                      foundation::TransitionStamp stamp) {
     work::ProvenanceRecord record{};
     uint32_t slot = 0;
     uint64_t latest = 0;
-    if (!work::read_provenance_record(body, size, record) ||
+    if (!work::read_provenance_record(body, size, record, version) ||
         record.stamp.commit_seq != stamp.commit_seq ||
+        record.content != work::ContentState::available ||
         record.stamp.transition_id != stamp.transition_id ||
         !work_slot(model_, record, slot, latest) || latest != stamp.commit_seq) {
         return durability::RecordUse::corrupt;
     }
     if (record.kind == work::ProvenanceKind::task &&
         (!pairing_.checkpoint_sources || *pairing_.checkpoint_sources != record.id)) {
+        return durability::RecordUse::corrupt;
+    }
+    if (record.kind == work::ProvenanceKind::goal &&
+        (!pairing_.goal_sources || *pairing_.goal_sources != record.id)) {
         return durability::RecordUse::corrupt;
     }
     if (pairing_.memory && pairing_.memory->policy_task_id != 0) {
@@ -137,15 +148,15 @@ durability::RecordUse WorkReplay::restore_provenance(const uint8_t *body, uint32
             return durability::RecordUse::corrupt;
         }
         const auto &sources = model_.memories.at(memory_index).dependencies;
-        if (sources.count != record.dependencies.count ||
-            !knowledge::contains_dependencies(sources, record.dependencies) ||
-            !knowledge::contains_dependencies(record.dependencies, sources)) {
+        if (!knowledge::same_dependencies(sources, record.dependencies)) {
             return durability::RecordUse::corrupt;
         }
         pairing_.memory->command_seen = true;
     }
     if (record.kind == work::ProvenanceKind::task) {
         pairing_.checkpoint_sources.reset();
+    } else {
+        pairing_.goal_sources.reset();
     }
     const auto status =
         model_.provenance.restore(slot, record, model_.memories.limits().dependencies);
@@ -163,17 +174,35 @@ bool WorkReplay::provenance_consistent(uint64_t boot_epoch_limit) const {
         uint32_t index = 0;
         uint64_t actor = 0;
         uint64_t sequence = 0;
+        uint32_t body_size = 0;
         if (record.kind == work::ProvenanceKind::task && model_.tasks.find(record.id, index)) {
             actor = model_.tasks.at(index).owner_instance_id;
             sequence = model_.tasks.at(index).checkpoint_seq;
+            body_size = model_.tasks.checkpoint(index).size;
         } else if (record.kind == work::ProvenanceKind::goal &&
                    model_.goals.find(record.id, index)) {
             actor = model_.goals.at(index).owner_instance_id;
             sequence = model_.goals.at(index).created.commit_seq;
+            body_size = model_.goals.parameters(index).size;
         } else {
             return false;
         }
-        if (record.stamp.commit_seq != sequence ||
+        if (record.content == work::ContentState::erased &&
+            (body_size != 0 || record.dependencies.count != 0 ||
+             record.stamp.commit_seq > model_.privacy.record().stamp.commit_seq)) {
+            return false;
+        }
+        if (record.origin.id != 0) {
+            uint32_t context = 0;
+            if (!model_.contexts.find(record.origin.id, context) ||
+                model_.contexts.at(context).owner_instance_id != actor ||
+                model_.contexts.at(context).generation < record.origin.generation) {
+                return false;
+            }
+        }
+        if ((record.content == work::ContentState::available
+                 ? record.stamp.commit_seq != sequence
+                 : record.stamp.commit_seq < sequence) ||
             !memory_dependencies_history(model_, record.dependencies, boot_epoch_limit, actor)) {
             return false;
         }

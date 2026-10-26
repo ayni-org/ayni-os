@@ -27,6 +27,7 @@
 #include "work/call/call_table.h"
 #include "work/goal/goal_authority.h"
 #include "work/goal/goal_table.h"
+#include "work/privacy/privacy_cleanup.h"
 #include "work/propagation.h"
 #include "work/task/task_authority.h"
 #include "work/task/task_table.h"
@@ -62,6 +63,7 @@ struct WorkModel {
           task_authority(storage[Store::task_authority], task_authority_limits(capacities)),
           calls(storage[Store::calls], call_limits(capacities)),
           memories(storage[Store::memories], memory_limits(capacities)),
+          contexts(storage[Store::contexts], context_capacity(capacities)),
           provenance(storage[Store::provenance], provenance_limits(capacities)),
           callbacks_(callbacks) {
         tasks.set_retention({this, retains_task});
@@ -134,6 +136,8 @@ struct WorkModel {
     void clear_content_provenance(work::ProvenanceKind kind, uint32_t slot, uint64_t id,
                                   uint64_t commit_seq);
     // Current and invalid retained content both protect their captured Grant identities.
+    // Fence the next command eviction before replacing its captured Grant references.
+    void release_command_sources(uint64_t principal_id, uint64_t commit_seq);
     void protect_content_grants(authority::GrantReclaimExclusions &excluded) const;
     // Hand off removed references after all fallible checks. Repeated releases
     // retain the latest fence; no Goal/Grant reference count is duplicated.
@@ -172,6 +176,10 @@ struct WorkModel {
     work::TaskAuthorityTable task_authority; // Independent historical selections; no Scope copy.
     work::CallTable calls;           // Original call identities, canonical bodies and action facts.
     knowledge::MemoryTable memories; // Sole owner of memory facts, bodies and provenance.
+    knowledge::ContextTable
+        contexts; // File publication barriers and complete sources; no file text.
+    work::PrivacyCleanup
+        privacy; // Persistent privacy progress; no bodies, callbacks or storage handles.
     work::ProvenanceTable provenance; // Work-owned complete content dependencies, no body copies.
     work::AuthorityCleanup authority_cleanup; // Work-owned active/pending scan, no arena needed.
     foundation::IdAllocator ids;

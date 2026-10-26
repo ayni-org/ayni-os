@@ -3,6 +3,7 @@
 #include "work_node.h"
 
 #include <ayni/calls.h>
+#include <ayni/memory.h>
 #include <thread>
 
 namespace {
@@ -1118,4 +1119,177 @@ TEST_F(ManagedCall, background_period_floor_is_trusted_and_visible_in_goal_diagn
     EXPECT_EQ(profile.work_class, AYNI_WORK_BACKGROUND);
     EXPECT_EQ(profile.background_period_min_us, AYNI_BACKGROUND_PERIOD_DEFAULT_US);
 }
+
+class MemoryCall : public ManagedCall {
+    void SetUp() override {
+        work.node().config().memory_capacity = 3;
+        work.node().config().memory_body_max_bytes = 64;
+        work.node().config().memory_dependency_capacity = 3;
+        ManagedCall::SetUp();
+    }
+};
+// ADR-0060: a normal asynchronous model result waits for storage before the next memory decision.
+TEST_F(MemoryCall, model_result_becomes_unconfirmed_memory_after_its_durable_prefix) {
+    const auto ordinary = work.strategy().answer;
+    unsigned proposals = 0;
+    work.strategy().answer = [&](const ayni_task_snapshot_v1 &snapshot,
+                                 ayni_policy_output_v1 &out) {
+        for (uint32_t i = 0; i < snapshot.step_count; ++i) {
+            if (string_of(snapshot.steps[i].step_key) == "remember") {
+                return report(AYNI_POLICY_REPORT_COMPLETION, snapshot, out);
+            }
+        }
+        ayni_task_call_result_v1 result{};
+        result.struct_size = sizeof(result);
+        const auto status = snapshot.call_result(snapshot.call_context, text("ask"), &result);
+        if (status == AYNI_NOT_FOUND) {
+            return ordinary(snapshot, out);
+        }
+        EXPECT_EQ(status, AYNI_OK);
+        ++proposals;
+        ayni_memory_proposal_v1 proposal{};
+        proposal.struct_size = sizeof(proposal);
+        proposal.source = AYNI_MEMORY_MODEL;
+        proposal.source_call_id = result.logical_call_id;
+        proposal.step_key = text("remember");
+        proposal.body = result.text;
+        EXPECT_EQ(snapshot.memory->propose(snapshot.memory->context, &proposal), AYNI_OK);
+        out.intents[0] = policy_intent(AYNI_POLICY_WRITE_MEMORY, snapshot.revision, "remember");
+        out.intent_count = 1;
+        return AYNI_OK;
+    };
+    const auto goal = create();
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("inferred preference"));
+    // Completion is accepted, but withholding the ordinary ACK must not rerun or hold policy.
+    for (unsigned i = 0; i < 8; ++i) {
+        work.node().step();
+    }
+    EXPECT_EQ(proposals, 0U);
+    EXPECT_NE(work.task(work.goal(goal).last_task_id).lifecycle, AYNI_TASK_PAUSED);
+    pump(20);
+    EXPECT_EQ(proposals, 1U);
+    EXPECT_EQ(work.task(work.goal(goal).last_task_id).lifecycle, AYNI_TASK_COMPLETED);
+    ayni_memory_search_v1 query{sizeof(query),    AYNI_MEMORY_PRIVATE, work.instance(agent_a), 0,
+                                text("inferred"), {nullptr, 0}};
+    std::array<ayni_memory_info_v1, 3> rows{};
+    uint32_t count = 0;
+    ASSERT_EQ(
+        ayni_search_memory(work.kernel(), work.session(), &query, rows.data(), rows.size(), &count),
+        AYNI_OK);
+    ASSERT_EQ(count, 1U);
+    EXPECT_EQ(rows[0].source, AYNI_MEMORY_MODEL);
+    EXPECT_EQ(rows[0].source_call_id, pending[0].call);
+    EXPECT_EQ(rows[0].confirmed, 0U);
+}
+
+// ADR-0060: the public result copy is a content consumer, just like a strategy read.
+TEST_F(MemoryCall, source_deletion_immediately_blocks_public_call_result_copy) {
+    const ayni_memory_save_v1 value{sizeof(value),
+                                    AYNI_MEMORY_PRIVATE,
+                                    0,
+                                    work.instance(agent_a),
+                                    AYNI_PROFILE_NONE,
+                                    0,
+                                    text("preference"),
+                                    nullptr,
+                                    0,
+                                    0,
+                                    nullptr};
+    auto intent = work.intent(AYNI_INTENT_MEMORY_SAVE, &value);
+    intent.command_id = 600;
+    const auto saved = work.submit(intent);
+    ASSERT_EQ(saved.status, AYNI_OK);
+    pump(12);
+    const auto ordinary = work.strategy().answer;
+    work.strategy().answer = [&](const ayni_task_snapshot_v1 &snapshot,
+                                 ayni_policy_output_v1 &out) {
+        if (snapshot.step_count == 0) {
+            ayni_memory_info_v1 metadata{};
+            metadata.struct_size = sizeof(metadata);
+            char body[64]{};
+            uint32_t bytes = 0;
+            EXPECT_EQ(snapshot.memory->read(snapshot.memory->context, saved.result.object.id,
+                                            AYNI_MEMORY_CONTEXT, &metadata, body, sizeof(body),
+                                            &bytes),
+                      AYNI_OK);
+        }
+        return ordinary(snapshot, out);
+    };
+    create();
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("private answer"));
+    pump(12);
+    char answer[64]{};
+    uint32_t bytes = 0;
+    ASSERT_EQ(ayni_copy_call_result(work.kernel(), pending[0].call, answer, sizeof(answer), &bytes),
+              AYNI_OK);
+    const ayni_memory_target_v1 target{sizeof(target), 0, saved.result.object.id};
+    intent = work.intent(AYNI_INTENT_MEMORY_DELETE, &target, 1);
+    intent.command_id = 601;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    EXPECT_EQ(ayni_copy_call_result(work.kernel(), pending[0].call, answer, sizeof(answer), &bytes),
+              AYNI_EXPIRED);
+    pump(600);
+    EXPECT_EQ(call_info(pending[0].call).outcome, AYNI_CALL_COMPLETED);
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    EXPECT_EQ(call_info(pending[0].call).outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(ayni_copy_call_result(work.kernel(), pending[0].call, answer, sizeof(answer), &bytes),
+              AYNI_EXPIRED);
+}
 } // namespace
+
+// ADR-0060: privacy discards plaintext after checking Provider evidence, not before it.
+TEST_F(MemoryCall, invalid_late_text_remains_unknown_after_its_source_is_deleted) {
+    const ayni_memory_save_v1 value{sizeof(value),
+                                    AYNI_MEMORY_PRIVATE,
+                                    0,
+                                    work.instance(agent_a),
+                                    AYNI_PROFILE_NONE,
+                                    0,
+                                    text("preference"),
+                                    nullptr,
+                                    0,
+                                    0,
+                                    nullptr};
+    auto intent = work.intent(AYNI_INTENT_MEMORY_SAVE, &value);
+    intent.command_id = 600;
+    const auto saved = work.submit(intent);
+    ASSERT_EQ(saved.status, AYNI_OK);
+    pump(12);
+    const auto ordinary = work.strategy().answer;
+    work.strategy().answer = [&](const ayni_task_snapshot_v1 &snapshot,
+                                 ayni_policy_output_v1 &out) {
+        if (snapshot.step_count == 0) {
+            ayni_memory_info_v1 metadata{};
+            metadata.struct_size = sizeof(metadata);
+            char body[64]{};
+            uint32_t bytes = 0;
+            EXPECT_EQ(snapshot.memory->read(snapshot.memory->context, saved.result.object.id,
+                                            AYNI_MEMORY_CONTEXT, &metadata, body, sizeof(body),
+                                            &bytes),
+                      AYNI_OK);
+        }
+        return ordinary(snapshot, out);
+    };
+    create();
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    const ayni_memory_target_v1 target{sizeof(target), 0, saved.result.object.id};
+    intent = work.intent(AYNI_INTENT_MEMORY_DELETE, &target, 1);
+    intent.command_id = 601;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    const char invalid[] = {static_cast<char>(0xff)};
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, {invalid, sizeof(invalid)});
+    pump(12);
+    ayni_call_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_call(work.kernel(), pending[0].call, &info), AYNI_OK);
+    EXPECT_EQ(info.outcome, AYNI_CALL_ABANDONED);
+    EXPECT_EQ(info.reason, AYNI_REASON_PROVIDER_RESULT);
+}

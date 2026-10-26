@@ -62,6 +62,11 @@ struct DecisionAdmission {
 // Missing evidence reaches the consumption check, which records its refusal.
 bool admission_ready(const void *context, const work::Task &task) {
     const auto &query = *static_cast<const DecisionAdmission *>(context);
+    // Memory-capable decisions may consume their preceding call result or saved record.
+    // Wait for that Task transition's durable prefix instead of holding a normal I/O wait.
+    if (query.model.memories.capacity() != 0 && task.commit_seq > query.durable_seq) {
+        return false;
+    }
     const auto &authority = query.model.task_authority;
     if (authority.contains(task.slot, task.task_id) &&
         authority.at(task.slot).phase == work::TaskAuthorityPhase::paused) {
@@ -261,7 +266,7 @@ Verdict judge_proposal(Verdict verdict, const DecisionBuffer &decisions, uint32_
     if (verdict.kind == Verdict::Kind::memory) {
         const auto check = memory.check_proposal(decisions.at(0));
         if (check != AYNI_OK) {
-            verdict = hold(check, AYNI_REASON_MEMORY_SOURCE);
+            verdict = hold(check, memory_reason(check));
         }
     }
     if (verdict.kind == Verdict::Kind::call) {
@@ -273,7 +278,7 @@ Verdict judge_proposal(Verdict verdict, const DecisionBuffer &decisions, uint32_
     }
     if (verdict.kind != Verdict::Kind::hold) {
         if (const auto source = memory.validate(); source != AYNI_OK) {
-            verdict = hold(source, AYNI_REASON_MEMORY_SOURCE);
+            verdict = hold(source, memory_reason(source));
         }
     }
     return verdict;
@@ -397,7 +402,7 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
 
     MemoryDecision memory(model, index, durable_seq, clock, decisions.memory_staging());
     if (const auto source = memory.validate(); source != AYNI_OK) {
-        model.tasks.hold(index, source, AYNI_REASON_MEMORY_SOURCE, model.transitions.next());
+        model.tasks.hold(index, source, memory_reason(source), model.transitions.next());
         return DecisionResult::applied;
     }
     ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
@@ -430,8 +435,7 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     }
     Verdict verdict = judge_output(status, output.intent_count, output.checkpoint_size, strategy);
     if (const auto source = memory.validate(); source != AYNI_OK) {
-        verdict = hold(source, source == AYNI_CAPACITY_EXCEEDED ? AYNI_REASON_MEMORY_DEPENDENCIES
-                                                                : AYNI_REASON_MEMORY_SOURCE);
+        verdict = hold(source, memory_reason(source));
     }
     if (verdict.kind != Verdict::Kind::hold) {
         verdict = judge_intents(decisions, output.intent_count, model, index);

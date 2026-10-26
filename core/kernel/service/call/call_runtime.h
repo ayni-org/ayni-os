@@ -72,6 +72,8 @@ class CallRuntime {
                              uint64_t &waited_us) const;
     uint64_t next_deadline_us() const; // Monotonic; UINT64_MAX when no timer is pending.
     bool idle() const; // No retained delivery/queued runtime, independent of durable history.
+    // Every erased call has released its local transport/Provider borrow; unrelated calls may run.
+    bool privacy_released() const;
     // After an automatic storage reload, map retained transport handles back to
     // stable call IDs. Preserves pending receipts; does not restore submit claims.
     bool rebind_restored();

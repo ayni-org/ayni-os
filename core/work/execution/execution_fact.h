@@ -23,6 +23,8 @@ struct ExecutionFact {
     std::array<ayni_observation_ref_v1, AYNI_OBSERVATION_CONDITION_COUNT_MAX>
         dependencies; // Exact current-boot evidence.
 };
+// Intrinsic execution/stop facts remain checkable after private request content is erased.
+bool valid_execution_metadata(const ExecutionFact &fact);
 // Core declaration/request validation, also used for original persisted facts.
 bool valid_execution(const ExecutionFact &fact, ayni_bytes_v1 arguments);
 bool same_execution_identity(const ExecutionFact &left, const ExecutionFact &right);

@@ -15,13 +15,24 @@ bool bound_management_session(const WorkModel &model, const authority::Session &
 
 bool WorkModel::retains_task(const void *context, const work::Task &task) {
     const auto &model = *static_cast<const WorkModel *>(context);
+    for (uint32_t index = 0; index < model.contexts.size(); ++index) {
+        const auto &pending = model.contexts.at(index).pending;
+        if (pending.action == knowledge::ContextAction::publish &&
+            pending.task_id == task.task_id) {
+            return true;
+        }
+    }
     // Known terminal facts are encoded before a later replacement transition.
     // Unknown or pending calls retain the Task even after local cancellation.
-    return !model.calls.can_retire_task(task.task_id, UINT64_MAX);
+    // A privacy pass needs the retained target identity until its exact command bodies expire.
+    return model.privacy.pending() || !model.calls.can_retire_task(task.task_id, UINT64_MAX);
 }
 
 bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
     const auto &model = *static_cast<const WorkModel *>(context);
+    if (model.privacy.pending()) {
+        return true;
+    }
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const auto &task = model.tasks.at(index);
         if (task.goal_id == goal.goal_id &&

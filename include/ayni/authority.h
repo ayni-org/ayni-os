@@ -173,7 +173,9 @@ typedef struct ayni_goal_reauthorize_v1 {
  * callbacks, RECOVERING through DRAINING. On BUFFER_TOO_SMALL only out_size
  * changes to the required byte count; other errors change no output. A null
  * buffer is valid only with capacity 0. Combine with ayni_get_goal's immutable
- * fields to construct an exact approval request. No exporter is invoked. */
+ * fields to construct an exact approval request. No exporter is invoked.
+ * Since 0.40: tracked content returns BUSY before creation is durable, EXPIRED if its
+ * captured sources/file basis are unavailable; failure preserves body and size. */
 ayni_status_t ayni_get_goal_parameters(const ayni_kernel_t *kernel, uint64_t goal_id,
                                        uint8_t *buffer, uint32_t capacity, uint32_t *out_size);
 

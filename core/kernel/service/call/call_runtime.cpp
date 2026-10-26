@@ -71,6 +71,16 @@ bool CallRuntime::idle() const {
     return true;
 }
 
+bool CallRuntime::privacy_released() const {
+    for (uint32_t index = 0; index < limits_.capacity; ++index) {
+        if (work_.calls.occupied(index) && work_.calls.state(index).content_erased &&
+            slots_[index].active && slots_[index].active->stage != Stage::blocked) {
+            return false;
+        }
+    }
+    return true;
+}
+
 CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_index,
                                               resources::WaitAction action, uint64_t now_us) {
     if (action == resources::WaitAction::wait) {

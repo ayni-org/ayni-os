@@ -312,6 +312,10 @@ CommandTable::Lookup CommandTable::lookup_receipt(uint64_t principal_id, uint64_
                                                   const CommandMapping *&out_mapping) const {
     out_pending = pending(principal_id, command_id);
     out_mapping = mapped(principal_id, command_id);
+    if (out_mapping != nullptr && out_mapping->privacy_expired) {
+        out_mapping = nullptr;
+        return Lookup::expired;
+    }
     if (out_pending != nullptr || out_mapping != nullptr) {
         return Lookup::retried;
     }

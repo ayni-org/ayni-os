@@ -9,6 +9,12 @@ void WorkModel::release_content_references(const knowledge::MemoryDependencies &
         grants.release_reference(ref.egress.id, commit_seq);
     }
 }
+void WorkModel::release_command_sources(uint64_t principal_id, uint64_t commit_seq) {
+    const auto *mapping = commands.eviction_candidate(principal_id);
+    if (mapping != nullptr) {
+        release_content_references(mapping->sources, commit_seq);
+    }
+}
 void WorkModel::clear_content_provenance(work::ProvenanceKind kind, uint32_t slot, uint64_t id,
                                          uint64_t commit_seq) {
     const auto *record = provenance.find(kind, slot, id);
@@ -32,8 +38,14 @@ void WorkModel::protect_content_grants(authority::GrantReclaimExclusions &exclud
             }
         }
     };
+    for (uint32_t i = 0; i < commands.size(); ++i) {
+        protect(commands.at(i).sources);
+    }
     for (uint32_t i = 0; i < memories.size(); ++i) {
         protect(memories.at(i).dependencies);
+    }
+    for (uint32_t i = 0; i < contexts.size(); ++i) {
+        protect(contexts.at(i).dependencies);
     }
     for (uint32_t i = 0; i < provenance.capacity(); ++i) {
         if (provenance.at(i).id != 0) {

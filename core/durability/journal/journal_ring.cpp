@@ -1,6 +1,7 @@
 #include "durability/journal/journal_ring.h"
 
 #include "foundation/little_endian.h"
+#include <cstring>
 
 namespace ayni::durability {
 namespace {
@@ -48,7 +49,11 @@ const uint8_t *JournalRing::front(uint32_t &out_size) const {
 }
 
 void JournalRing::pop_front() {
-    first_start_ += entry_overhead + foundation::load_le32(buffer_ + first_start_);
+    // The acknowledged Host borrow has ended. Remove the consumed plaintext before reusing
+    // its slot; moving a cursor alone would leave old private bytes in the shared arena.
+    const auto consumed = entry_overhead + foundation::load_le32(buffer_ + first_start_);
+    std::memset(buffer_ + first_start_, 0, consumed);
+    first_start_ += consumed;
     if (first_start_ != first_end_) {
         return;
     }
@@ -64,6 +69,9 @@ void JournalRing::pop_front() {
 }
 
 void JournalRing::clear() {
+    // The caller reacquired the entire buffer after boot/maintenance and all prior I/O borrows.
+    // This also clears old snapshot page tails when the same arena returns to the journal.
+    std::memset(buffer_, 0, size_);
     first_start_ = 0;
     first_end_ = 0;
     second_end_ = 0;

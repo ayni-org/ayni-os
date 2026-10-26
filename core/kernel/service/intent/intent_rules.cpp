@@ -7,13 +7,22 @@
 
 #include "kernel/service/command/intent_traits.h"
 #include "kernel/service/intent/authority_intent.h"
+#include "kernel/service/intent/context_intent.h"
 #include "kernel/service/intent/memory_intent.h"
+#include "kernel/service/memory/context_service.h"
 #include "kernel/service/model/work_model.h"
 
 namespace ayni::kernel {
 namespace {
 
 using work::GoalTable;
+
+// Every intent return ends its canonical encoding borrow, including validation and capacity
+// refusals after lookup. Only insert_exact may consume the candidate inside this scope.
+struct CommandCandidate {
+    CommandTable &table;
+    ~CommandCandidate() { table.discard_candidate(); }
+};
 
 ayni_object_ref_v1 object_ref(ayni_object_kind_t kind, uint64_t id, uint32_t revision = 0) {
     return {0, id, revision, kind};
@@ -198,6 +207,12 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         return refuse(requirements.status, requirements.reason,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
+    GoalContent content{};
+    const auto sources = prepare_goal_content({model, clock.now_us(), durable_seq}, goal_type,
+                                              create.owner_instance_id, content);
+    if (sources != AYNI_OK) {
+        return refuse(sources, memory_reason(sources), {}, failure);
+    }
     uint64_t goal_id = 0;
     static_cast<void>(model.ids.allocate(goal_id)); // available() above
     const foundation::TransitionStamp stamp = model.transitions.next();
@@ -208,6 +223,10 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         return AYNI_INTERNAL;
     }
     authority.goal_id = goal_id;
+    if (content.origin.id != 0) {
+        model.provenance.assign(work::ProvenanceKind::goal, index, goal_id, content.dependencies,
+                                stamp, content.origin);
+    }
     authority.stamp = stamp;
     if (authority.phase != work::GoalAuthorityPhase::proposed) {
         authority.binding.established_seq = stamp.commit_seq;
@@ -447,6 +466,9 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
     if (is_memory_command(intent.kind)) {
         return apply_memory_intent(model, intent.memory, now_us, durable_seq, outcome);
     }
+    if (is_context_command(intent.kind)) {
+        return apply_context_intent(model, intent.content_context, now_us, durable_seq, outcome);
+    }
     // Work and Grant management retain their separate invariant owners.
     switch (intent.kind) {
     case AYNI_INTENT_SCENE_SET_ENABLED:
@@ -488,6 +510,15 @@ ayni_status_t remember_command(WorkModel &model, const Intent &intent, uint64_t 
     CommandMapping mapping{principal_id,       intent.command_id, digest,
                            outcome.commit_seq, intent.kind,       outcome.object};
     mapping.effect = outcome.effect;
+    uint32_t goal = 0;
+    if (mapping.object.kind == AYNI_OBJECT_GOAL && model.goals.find(mapping.object.id, goal)) {
+        const auto *sources =
+            model.provenance.find(work::ProvenanceKind::goal, goal, mapping.object.id);
+        if (sources != nullptr && sources->content == work::ContentState::available) {
+            mapping.sources = sources->dependencies;
+        }
+    }
+    model.release_command_sources(principal_id, outcome.commit_seq);
     switch (intent_traits(intent.kind).identity) {
     case CommandIdentity::ordinary:
         return model.commands.insert(mapping) ? AYNI_OK : AYNI_INTERNAL;
@@ -550,6 +581,9 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
     if (is_memory_command(intent.kind)) {
         return model.commands.find_exact(principal_id, intent.command_id, intent.memory);
     }
+    if (is_context_command(intent.kind)) {
+        return model.commands.find_exact(principal_id, intent.command_id, intent.content_context);
+    }
     // Each exact kind is looked up by its own canonical request.
     switch (intent.kind) {
     case AYNI_INTENT_SCENE_SET_ENABLED:
@@ -589,6 +623,7 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
 
 ayni_status_t apply_intent(WorkModel &model, const Intent &intent, const IntentContext &context,
                            IntentOutcome &outcome, IntentFailure &failure) {
+    const CommandCandidate candidate{model.commands};
     failure = IntentFailure{};
     const authority::Session *session = model.sessions.find(intent.session_id);
     if (session == nullptr) {

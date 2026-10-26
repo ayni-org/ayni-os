@@ -105,6 +105,7 @@ enum class Store : uint32_t {
     observation_sources,  // ObservationSources: copied source descriptions.
     observations,         // ObservationTable: the current boot's latest sample per source.
     memories,             // MemoryTable: owned facts and fixed UTF-8 bodies.
+    contexts,             // ContextTable: one file/version/source anchor per Agent.
     provenance,           // ProvenanceTable: exact Goal/Task content sources and erasure state.
     count,                // Not a store: the number of stores.
 };

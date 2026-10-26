@@ -84,11 +84,9 @@ bool historical_permission(const WorkModel &model, const knowledge::MemoryDepend
         grant.capability_version != memory_capability_version) {
         return false;
     }
-    auto fields = source_fields(source.id, source.purpose);
+    auto fields = memory_read_fields(source.id, source.purpose);
     ayni_string_v1 destination{};
-    if (capability.data == access_capability.data) {
-        fields.back() = number(memory_operation_field, memory_read_operation, code_unit);
-    } else {
+    if (capability.data != access_capability.data) {
         catalog::DomainReader reader(model.grants.scope(index));
         catalog::DomainField field{};
         while (reader.next(field)) {
@@ -100,12 +98,7 @@ bool historical_permission(const WorkModel &model, const knowledge::MemoryDepend
         if (!reader.ok() || destination.size == 0) {
             return false;
         }
-        auto &request = fields.back();
-        request.struct_size = sizeof(request);
-        request.field_id = memory_destination_field;
-        request.allowed.struct_size = sizeof(request.allowed);
-        request.allowed.kind = AYNI_AUTHORITY_IDENTIFIER;
-        request.allowed.values.tokens = {&destination, 1, 0};
+        fields = memory_export_fields(source.id, source.purpose, &destination);
     }
     const auto covered =
         authority::contains_request(model.grants.source_domain(index), model.grants.scope(index),
@@ -113,6 +106,29 @@ bool historical_permission(const WorkModel &model, const knowledge::MemoryDepend
     return covered.status == AYNI_OK && covered.covered;
 }
 } // namespace
+std::array<ayni_scope_field_v1, memory_scope_fields>
+memory_read_fields(uint64_t id, knowledge::MemoryPurpose purpose) {
+    auto fields = source_fields(id, purpose);
+    fields.back() = number(memory_operation_field, memory_read_operation, code_unit);
+    return fields;
+}
+std::array<ayni_scope_field_v1, memory_scope_fields>
+memory_export_fields(uint64_t id, knowledge::MemoryPurpose purpose,
+                     const ayni_string_v1 *destination) {
+    auto fields = source_fields(id, purpose);
+    auto &field = fields.back();
+    field.struct_size = sizeof(field);
+    field.field_id = memory_destination_field;
+    field.allowed.struct_size = sizeof(field.allowed);
+    field.allowed.kind = AYNI_AUTHORITY_IDENTIFIER;
+    field.allowed.values.tokens = {destination, 1, 0};
+    return fields;
+}
+bool memory_purpose_allowed(knowledge::MemoryNamespace space, uint64_t namespace_id, uint64_t actor,
+                            knowledge::MemoryPurpose purpose) {
+    return space != knowledge::MemoryNamespace::private_agent || namespace_id == actor ||
+           purpose != knowledge::MemoryPurpose::organize;
+}
 bool memory_dependencies_history(const WorkModel &model,
                                  const knowledge::MemoryDependencies &dependencies,
                                  uint64_t boot_epoch_limit, uint64_t actor) {
@@ -126,6 +142,12 @@ bool memory_dependencies_history(const WorkModel &model,
             return false;
         }
         if (ref.kind == knowledge::DependencyKind::context) {
+            uint32_t index = 0;
+            if (!model.contexts.find(ref.id, index) ||
+                model.contexts.at(index).owner_instance_id != ref.actor_instance_id ||
+                model.contexts.at(index).revision < ref.revision) {
+                return false;
+            }
             continue;
         }
         if ((actor != 0 && actor != ref.actor_instance_id) ||
@@ -134,6 +156,12 @@ bool memory_dependencies_history(const WorkModel &model,
             return false;
         }
         uint32_t source = 0;
+        if (model.memories.find(ref.id, source) &&
+            !memory_purpose_allowed(model.memories.at(source).space,
+                                    model.memories.at(source).namespace_id, ref.actor_instance_id,
+                                    ref.purpose)) {
+            return false;
+        }
         if (ref.read.id == 0 && model.memories.find(ref.id, source) &&
             (model.memories.at(source).space != knowledge::MemoryNamespace::private_agent ||
              model.memories.at(source).namespace_id != ref.actor_instance_id)) {
@@ -156,12 +184,11 @@ ayni_status_t memory_read_permission(const MemoryAccess &access, uint64_t actor,
             return AYNI_OK;
         }
         // C-PROD-042: background organization never enters another Agent's private namespace.
-        if (purpose == knowledge::MemoryPurpose::organize) {
+        if (!memory_purpose_allowed(record.space, record.namespace_id, actor, purpose)) {
             return AYNI_DENIED;
         }
     }
-    auto fields = source_fields(record.id, purpose);
-    fields.back() = number(memory_operation_field, memory_read_operation, code_unit);
+    auto fields = memory_read_fields(record.id, purpose);
     knowledge::MemoryGrantRef selected{};
     const auto status =
         select_permission(access, actor, access_capability,
@@ -188,14 +215,7 @@ ayni_status_t memory_export_permissions(const MemoryAccess &access, uint64_t act
         if (dependency.actor_instance_id != actor) {
             return AYNI_DENIED;
         }
-        auto fields = source_fields(dependency.id, dependency.purpose);
-        auto &field = fields.back();
-        field.struct_size = sizeof(field);
-        field.field_id = memory_destination_field;
-        field.allowed.struct_size = sizeof(field.allowed);
-        field.allowed.kind = AYNI_AUTHORITY_IDENTIFIER;
-        field.allowed.values.tokens.member_count = 1;
-        field.allowed.values.tokens.members = &destination;
+        auto fields = memory_export_fields(dependency.id, dependency.purpose, &destination);
         const auto status = select_permission(
             access, actor, export_capability,
             {sizeof(ayni_scope_v1), memory_scope_fields, fields.data()}, dependency.egress);

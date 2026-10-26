@@ -21,6 +21,8 @@ namespace ayni::work {
 
 constexpr uint16_t task_record_type = durability::record_type::task;
 constexpr uint16_t task_record_version = 1;
+// Snapshot Task explicitly requires a source footer, even before its first checkpoint.
+constexpr uint16_t task_provenance_snapshot_version = 2;
 constexpr uint16_t task_state_record_type = durability::record_type::task_state;
 constexpr uint16_t task_state_record_version = 1;
 // Same state body, but REQUIRED adjacent Task authority must follow (ADR-0038).

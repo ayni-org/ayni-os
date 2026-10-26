@@ -49,19 +49,18 @@ KernelCapacities capacities() {
 // ADR-0059: one descriptor owns each family; persisted order remains Grant/work/call/Scene/command.
 TEST(PersistentStore, every_record_kind_has_one_store_and_a_stable_snapshot_position) {
     using ayni::kernel::StorePosition;
-    ASSERT_EQ(persistent_store_count, 6U);
-    EXPECT_EQ(persistent_stores[0]->record_type, record_type::grant);
-    EXPECT_EQ(persistent_stores[1]->record_type, record_type::call);
-    EXPECT_EQ(persistent_stores[2]->record_type, record_type::scene);
-    EXPECT_EQ(persistent_stores[3]->record_type, record_type::memory);
-    EXPECT_EQ(persistent_stores[4]->record_type, record_type::provenance);
-    EXPECT_EQ(persistent_stores[5]->record_type, record_type::command_mapping);
-    EXPECT_EQ(persistent_stores[0]->position, StorePosition::before_work);
-    EXPECT_EQ(persistent_stores[1]->position, StorePosition::after_work);
-    EXPECT_EQ(persistent_stores[2]->position, StorePosition::after_work);
-    EXPECT_EQ(persistent_stores[3]->position, StorePosition::after_work);
-    EXPECT_EQ(persistent_stores[4]->position, StorePosition::after_work);
-    EXPECT_EQ(persistent_stores[5]->position, StorePosition::after_cleanup);
+    const uint16_t order[] = {record_type::grant,           record_type::call,
+                              record_type::scene,           record_type::context,
+                              record_type::memory,          record_type::provenance,
+                              record_type::privacy_cleanup, record_type::command_mapping};
+    ASSERT_EQ(persistent_store_count, std::size(order));
+    for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
+        EXPECT_EQ(persistent_stores[rank]->record_type, order[rank]);
+        const auto position = rank == 0                            ? StorePosition::before_work
+                              : rank + 1 == persistent_store_count ? StorePosition::after_cleanup
+                                                                   : StorePosition::after_work;
+        EXPECT_EQ(persistent_stores[rank]->position, position);
+    }
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
         const auto &store = *persistent_stores[rank];
         for (uint32_t kind = 0; kind < store.kind_count; ++kind) {

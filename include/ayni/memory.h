@@ -4,6 +4,7 @@
  */
 #ifndef AYNI_MEMORY_H
 #define AYNI_MEMORY_H
+#include <ayni/authority.h>
 #include <ayni/ayni.h>
 #ifdef __cplusplus
 extern "C" {
@@ -151,6 +152,40 @@ ayni_status_t ayni_search_memory(const ayni_kernel_t *kernel, uint64_t session_i
 ayni_status_t ayni_get_memory(const ayni_kernel_t *kernel, uint64_t session_id, uint64_t memory_id,
                               ayni_memory_info_v1 *out_info, char *body, uint32_t capacity,
                               uint32_t *out_bytes);
+/* Exact memory Grant scope builders; pure shape conversion, no authorization or I/O.
+ * Provide four output fields. Unit strings live with Core; export tokens borrow destination
+ * until Grant submission returns. Failure preserves fields. Since 0.40. */
+#define AYNI_MEMORY_SCOPE_FIELD_COUNT 4u
+ayni_status_t ayni_memory_read_scope(uint64_t memory_id, ayni_memory_purpose_t purpose,
+                                     ayni_scope_field_v1 *fields, uint32_t capacity);
+ayni_status_t ayni_memory_export_scope(uint64_t memory_id, ayni_memory_purpose_t purpose,
+                                       const ayni_string_v1 *destination,
+                                       ayni_scope_field_v1 *fields, uint32_t capacity);
+
+/* Managed erasure progress, independent of first command acceptance. Since 0.40. */
+typedef uint32_t ayni_privacy_phase_t;
+#define AYNI_PRIVACY_IDLE ((ayni_privacy_phase_t)0)    /* No invalidation requested. Since 0.40. */
+#define AYNI_PRIVACY_ERASING ((ayni_privacy_phase_t)1) /* Bounded owner sweep. Since 0.40. */
+#define AYNI_PRIVACY_FILES                                                                         \
+    ((ayni_privacy_phase_t)2) /* Waiting for files/transports. Since 0.40.                         \
+                               */
+#define AYNI_PRIVACY_COMPACTING                                                                    \
+    ((ayni_privacy_phase_t)3) /* Replacing both slots/log. Since 0.40. */
+#define AYNI_PRIVACY_COMPLETE                                                                      \
+    ((ayni_privacy_phase_t)4) /* Complete fact is durable. Since 0.40.                             \
+                               */
+typedef struct ayni_privacy_info_v1 {
+    uint32_t struct_size;
+    ayni_privacy_phase_t phase;
+    uint64_t request_seq;          /* Latest source invalidation; zero iff IDLE. */
+    uint64_t commit_seq;           /* Latest sweep fact; completion waits for durability. */
+    ayni_status_t progress_status; /* OK or explicit generation-capacity failure. */
+    uint32_t reserved;             /* Always zero. */
+} ayni_privacy_info_v1;
+/* MANAGEMENT-only owner-thread metadata query. Failure preserves output. */
+ayni_status_t ayni_get_privacy_status(const ayni_kernel_t *kernel, uint64_t session_id,
+                                      ayni_privacy_info_v1 *out);
+
 #ifdef __cplusplus
 }
 #endif

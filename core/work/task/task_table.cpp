@@ -393,6 +393,12 @@ bool TaskTable::add_step(uint32_t index, ayni_string_v1 key, foundation::Transit
     return true;
 }
 
+void TaskTable::erase_checkpoint(uint32_t index) {
+    auto &task = tasks_[index];
+    std::memset(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_, 0,
+                checkpoint_max_bytes_);
+    task.checkpoint_size = 0;
+}
 void TaskTable::set_checkpoint(uint32_t index, const catalog::CatalogId &writer_id,
                                uint32_t writer_version, ayni_bytes_v1 state,
                                foundation::TransitionStamp stamp) {

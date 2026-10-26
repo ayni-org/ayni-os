@@ -61,8 +61,11 @@ ayni_status_t check_memory_value(const MemoryValue &v, MemoryLimits limits) {
         !foundation::valid_utf8(v.body.data, v.body.size) ||
         (v.source_call_id != 0 && !foundation::is_kernel_id(v.source_call_id)) ||
         !valid_memory_labels(v.labels) ||
-        !valid_dependencies(v.dependencies, limits.dependencies)) {
+        !valid_dependencies(v.dependencies, memory_dependency_max)) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (v.dependencies.count > limits.dependencies) {
+        return AYNI_CAPACITY_EXCEEDED;
     }
     if (v.space == MemoryNamespace::owner_profile &&
         (v.source != MemorySource::user || !v.confirmed || v.dependencies.count != 0)) {
@@ -184,6 +187,9 @@ bool contains_dependencies(const MemoryDependencies &set, const MemoryDependenci
         }
     }
     return true;
+}
+bool same_dependencies(const MemoryDependencies &a, const MemoryDependencies &b) {
+    return a.count == b.count && contains_dependencies(a, b) && contains_dependencies(b, a);
 }
 ayni_status_t merge_dependencies(MemoryDependencies &set, const MemoryDependencies &input,
                                  uint32_t limit) {
