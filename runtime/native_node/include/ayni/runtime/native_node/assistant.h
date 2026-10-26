@@ -3,6 +3,8 @@
 #ifndef AYNI_RUNTIME_ASSISTANT_H
 #define AYNI_RUNTIME_ASSISTANT_H
 #include <ayni/calls.h>
+#include <ayni/context.h>
+#include <ayni/memory.h>
 #include <ayni/runtime/common/demo_profile.h>
 #include <memory>
 #include <string>
@@ -24,13 +26,24 @@ enum class Operation {
     query_result,
     cancel,
     conversation,
-    erase
+    erase,
+    memory_list,
+    memory_show,
+    memory_save,
+    memory_edit,
+    memory_confirm,
+    memory_delete,
+    memory_share,
+    memory_export,
+    profile_list,
+    profile_save
 };
 struct Command {
     Operation operation = Operation::status;
     uint64_t agent = demo_agent_b;
     uint64_t id = 0;
     uint32_t limit = 0;
+    ayni_profile_field_t profile_field = AYNI_PROFILE_NONE;
     std::string text;
 };
 enum class NoticeKind { none, answer, rule_completed, turn_aborted, context_erased };
@@ -44,10 +57,14 @@ struct ConversationTurn {
 };
 struct ConversationView {
     uint64_t generation = 0, revision = 0;
-    std::string summary;
+    std::string summary, draft;
     std::vector<ConversationTurn> turns;
 };
 enum class Message { none, accepted, rule_usage };
+struct MemoryEntry {
+    ayni_memory_info_v1 info{};
+    std::string body;
+};
 struct Reply {
     ayni_status_t status = AYNI_OK;
     ayni_reason_t reason = AYNI_REASON_NONE;
@@ -57,6 +74,8 @@ struct Reply {
     ayni_intent_phase_t phase = 0; // Public receipt phase; zero for queries.
     Message message = Message::none;
     ayni_kernel_info_v1 kernel{};
+    ayni_privacy_info_v1 privacy{};
+    ayni_context_info_v1 context{};
     uint64_t last_round = 0, pending_goal = 0;
     ayni_status_t storage_status = AYNI_OK;
     bool saving = false;
@@ -66,6 +85,7 @@ struct Reply {
     std::vector<ayni_task_info_v1> tasks;
     std::vector<ayni_call_info_v1> calls;
     std::vector<ayni_grant_info_v1> grants;
+    std::vector<MemoryEntry> memories;
 };
 class Assistant {
   public:

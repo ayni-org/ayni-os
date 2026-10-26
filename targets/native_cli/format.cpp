@@ -54,7 +54,7 @@ std::string format(const runtime::Notice &notice) {
     case runtime::NoticeKind::turn_aborted:
         return "B：本轮未完成，保留原对话；请用 /tasks 查看原因。";
     case runtime::NoticeKind::context_erased:
-        return "B：当前对话已清除；Kernel 历史正文擦除仍待 P3。";
+        return "B：对话删除已保存；/wait 等待 Kernel 历史正文清理完成。";
     default:
         return {};
     }
@@ -97,14 +97,34 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
             << " 待处理Goal=" << reply.pending_goal << " 文件状态=" << reply.storage_status
             << (reply.saving ? "（写入中）" : "");
     }
+    if (reply.privacy.struct_size) {
+        const char *phase = reply.privacy.phase == AYNI_PRIVACY_IDLE      ? "未请求"
+                            : reply.privacy.phase == AYNI_PRIVACY_ERASING ? "清理正文"
+                            : reply.privacy.phase == AYNI_PRIVACY_FILES ? "等待文件/在途调用"
+                            : reply.privacy.phase == AYNI_PRIVACY_COMPACTING ? "轮转历史存储"
+                                                                             : "已完成";
+        out << " 隐私清理=" << phase << " 清理状态=" << reply.privacy.progress_status;
+    }
     if (reply.conversation.generation) {
         out << " B 对话 generation=" << reply.conversation.generation
             << " revision=" << reply.conversation.revision;
         if (!reply.conversation.summary.empty()) {
             out << "\n未确认摘要：" << reply.conversation.summary;
         }
+        if (!reply.conversation.draft.empty()) {
+            out << "\n未完成输入：" << reply.conversation.draft;
+        }
         for (const auto &turn : reply.conversation.turns) {
             out << "\n轮次 " << turn.number << "\n你：" << turn.user << "\nB：" << turn.answer;
+        }
+    }
+    for (const auto &memory : reply.memories) {
+        const auto &info = memory.info;
+        out << "\nMemory " << info.memory_id << " revision=" << info.revision
+            << " owner=" << info.namespace_id << (info.confirmed ? " 已确认" : " 待确认")
+            << " source=" << info.source << (info.usable ? " 可用" : " 不可用");
+        if (!memory.body.empty()) {
+            out << "\n" << memory.body;
         }
     }
     for (const auto &goal : reply.goals) {

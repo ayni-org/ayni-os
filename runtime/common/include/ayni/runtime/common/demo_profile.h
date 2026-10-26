@@ -35,6 +35,8 @@ class DemoProfile {
     // Trusted aliases: model, summary, present; unknown returns empty. Views are
     // borrowed until close. Scope names the exact configured remote destination.
     ayni_string_v1 capability(const std::string &alias) const;
+    // Actual configured model destination; empty for local Mock.
+    ayni_string_v1 destination() const;
     ayni_scope_v1 scope(const std::string &alias) const;
 
   private:

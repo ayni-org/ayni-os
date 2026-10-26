@@ -10,6 +10,8 @@
 namespace ayni::runtime {
 struct SavedConversation {
     strategies::ConversationRecord record;
+    uint64_t context_id =
+        0; // Kernel anchor identity; record generation/revision mirror privacy/file versions.
     uint64_t pending_goal = 0; // Zero when no turn is outstanding; otherwise exact Goal ID.
 };
 class ConversationStore {
@@ -25,7 +27,7 @@ class ConversationStore {
     void close(); // Joins worker; call only after consuming the last save.
   private:
     enum class Phase { idle, queued, writing, done, stopping };
-    static constexpr uint32_t header_size = 24;
+    static constexpr uint32_t header_size = 32;
     static constexpr uint32_t file_size_max = header_size + strategies::state_bytes_max;
     using Buffer = std::array<uint8_t, file_size_max>;
     ayni_status_t read(SavedConversation &state);

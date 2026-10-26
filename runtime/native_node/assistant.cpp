@@ -10,7 +10,6 @@ using Clock = std::chrono::steady_clock;
 constexpr auto boot_timeout = std::chrono::seconds(10);
 constexpr uint32_t step_units = 64;
 constexpr uint64_t step_us = 10000;
-constexpr uint64_t conversation_id = 1;
 ayni_status_t private_directory(const std::string &path) {
     std::error_code error;
     const bool made = std::filesystem::create_directories(path, error);
@@ -47,8 +46,8 @@ ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &c
     }
     return status;
 }
-// Startup loads the outer record only under the Host's directory lock, after
-// Kernel identity recovery. A missing/mismatched record never adopts old work.
+// Check the outer file under the Host lock before boot can write or dispatch anything.
+// Legacy files lack source evidence and require an explicit future migration.
 ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelConfig &config) {
     auto status = private_directory(directory);
     if (status != AYNI_OK) {
@@ -57,6 +56,10 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     status = node.assemble(directory.c_str(), demo_config());
     if (status != AYNI_OK) {
         return status;
+    }
+    const auto file_status = store.open(directory.c_str(), current);
+    if (file_status != AYNI_OK && file_status != AYNI_NOT_FOUND) {
+        return file_status;
     }
     status = profile.assemble(node.kernel(), config);
     if (status != AYNI_OK) {
@@ -119,34 +122,9 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    status = store.open(directory.c_str(), current);
-    if (status == AYNI_NOT_FOUND) {
-        std::vector<uint64_t> goals;
-        status = ids(AYNI_OBJECT_GOAL, goals);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        for (const auto id : goals) {
-            ayni_goal_info_v1 goal{};
-            goal.struct_size = sizeof(goal);
-            status = ayni_get_goal(node.kernel(), id, &goal);
-            if (status != AYNI_OK) {
-                return status;
-            }
-            if (goal.owner_instance_id == instance(demo_agent_b)) {
-                return AYNI_NOT_READY;
-            }
-        }
-        current.record.id = conversation_id;
-        current.record.owner_instance_id = instance(demo_agent_b);
-        status = persist(current);
-    }
+    status = initialize_context(file_status == AYNI_NOT_FOUND);
     if (status != AYNI_OK) {
         return status;
-    }
-    if (current.record.id != conversation_id ||
-        current.record.owner_instance_id != instance(demo_agent_b)) {
-        return AYNI_DENIED;
     }
     std::vector<uint64_t> retained;
     status = ids(AYNI_OBJECT_GOAL, retained);
@@ -198,83 +176,6 @@ ayni_status_t Assistant::Impl::persist(SavedConversation candidate, Notice notic
     }
     return status;
 }
-// Apply a saved candidate before inspecting new completions. Admission stays
-// closed while saving, so no CLI-created Goal can reclaim an unexported Task.
-ayni_status_t Assistant::Impl::collect(std::vector<Notice> &notices) {
-    if (saving) {
-        ayni_status_t result = AYNI_OK;
-        if (!store.poll(result)) {
-            return AYNI_OK;
-        }
-        if (result != AYNI_OK) {
-            storage_status = result;
-            saving.reset();
-            return result;
-        }
-        current = saving->candidate;
-        if (saving->notice.kind != NoticeKind::none) {
-            notices.push_back(saving->notice);
-        }
-        saving.reset();
-    }
-    if (storage_status != AYNI_OK) {
-        return storage_status;
-    }
-    if (!current.pending_goal) {
-        return AYNI_OK;
-    }
-    ayni_goal_info_v1 goal{};
-    goal.struct_size = sizeof(goal);
-    auto status = ayni_get_goal(node.kernel(), current.pending_goal, &goal);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    if (goal.owner_instance_id != current.record.owner_instance_id) {
-        return AYNI_DENIED;
-    }
-    if (!goal.last_task_id) {
-        if (goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_EXPIRED ||
-            goal.lifecycle == AYNI_GOAL_FAILED) {
-            auto candidate = current;
-            candidate.pending_goal = 0;
-            return persist(candidate, {NoticeKind::turn_aborted, {}});
-        }
-        return AYNI_OK;
-    }
-    ayni_task_info_v1 task{};
-    task.struct_size = sizeof(task);
-    status = ayni_get_task(node.kernel(), goal.last_task_id, &task);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    if (task.lifecycle == AYNI_TASK_COMPLETED) {
-        strategies::Encoded encoded;
-        status = ayni_copy_task_checkpoint(node.kernel(), task.task_id, encoded.bytes.data(),
-                                           strategies::state_bytes_max, &encoded.size);
-        if (status == AYNI_BUSY) {
-            return AYNI_OK;
-        }
-        if (status != AYNI_OK) {
-            return status;
-        }
-        auto candidate = current;
-        status = strategies::Conversation::finish(current.record, encoded.view(), candidate.record);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        candidate.pending_goal = 0;
-        const auto &answer = candidate.record.rounds[candidate.record.round_count - 1].answer;
-        return persist(candidate,
-                       {NoticeKind::answer, std::string(answer.bytes.data(), answer.size)});
-    }
-    if (task.lifecycle == AYNI_TASK_FAILED || task.lifecycle == AYNI_TASK_CANCELLED ||
-        task.lifecycle == AYNI_TASK_EXPIRED) {
-        auto candidate = current;
-        candidate.pending_goal = 0;
-        return persist(candidate, {NoticeKind::turn_aborted, {}});
-    }
-    return AYNI_OK;
-}
 ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
     auto status = profile.advance();
     if (status != AYNI_OK) {
@@ -297,6 +198,15 @@ ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
     status = collect_receipts();
     if (status != AYNI_OK) {
         return status;
+    }
+    if (shutting_down) {
+        return AYNI_OK; // Preserve pending work; next open publishes only through the live anchor.
+    }
+    ayni_privacy_info_v1 privacy{};
+    privacy.struct_size = sizeof(privacy);
+    status = ayni_get_privacy_status(node.kernel(), session, &privacy);
+    if (status != AYNI_OK || privacy.progress_status != AYNI_OK) {
+        return status != AYNI_OK ? status : privacy.progress_status;
     }
     status = collect(notices);
     if (status != AYNI_OK) {
@@ -326,12 +236,23 @@ ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
     return AYNI_OK;
 }
 bool Assistant::Impl::idle() const {
-    if (!opened || saving || pending_count) {
+    if (!opened || saving || awaiting_notice || pending_count) {
         return false;
     }
     ayni_kernel_info_v1 info{};
     info.struct_size = sizeof(info);
     if (ayni_get_kernel_info(node.kernel(), &info) != AYNI_OK) {
+        return false;
+    }
+    ayni_context_info_v1 context{};
+    if (context_info(context) != AYNI_OK || context.pending_action != AYNI_CONTEXT_IDLE ||
+        context.commit_seq > info.durable_seq || !context.usable || !matches(current, context)) {
+        return false;
+    }
+    ayni_privacy_info_v1 privacy{};
+    privacy.struct_size = sizeof(privacy);
+    if (ayni_get_privacy_status(node.kernel(), session, &privacy) != AYNI_OK ||
+        (privacy.phase != AYNI_PRIVACY_IDLE && privacy.phase != AYNI_PRIVACY_COMPLETE)) {
         return false;
     }
     std::vector<uint64_t> objects;
@@ -387,8 +308,17 @@ ayni_status_t Assistant::Impl::stop() {
     }
     std::vector<Notice> ignored;
     const auto deadline = Clock::now() + boot_timeout;
-    while (saving) {
-        status = collect(ignored);
+    while (opened && state == AYNI_LIFECYCLE_RUNNING) {
+        ayni_context_info_v1 context{};
+        status = context_info(context);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        if (!saving && !awaiting_notice && !pending_count &&
+            context.pending_action == AYNI_CONTEXT_IDLE) {
+            break;
+        }
+        status = pump(ignored);
         if (status != AYNI_OK || Clock::now() > deadline) {
             return status != AYNI_OK ? status : AYNI_BUSY;
         }

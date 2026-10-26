@@ -1,5 +1,6 @@
 #include <array>
 #include <ayni/host_authority.h>
+#include <ayni/memory.h>
 #include <ayni/providers/mock.h>
 #include <ayni/providers/openai_compat.h>
 #include <ayni/resources.h>
@@ -7,6 +8,7 @@
 #include <ayni/runtime/common/demo_profile.h>
 #include <ayni/strategies/builtin.h>
 #include <cstring>
+#include <limits>
 #include <new>
 namespace ayni::runtime {
 namespace {
@@ -34,7 +36,7 @@ ayni_config_v1 demo_config() {
     c.call_input_max_bytes = strategies::prompt_bytes_max;
     c.call_result_max_bytes = strategies::prompt_bytes_max;
     c.call_capability_capacity = offer_count;
-    c.capability_capacity = offer_count;
+    c.capability_capacity = offer_count + 2;
     c.provider_capacity = offer_count;
     c.binding_capacity = offer_count;
     c.resource_capacity = 2;
@@ -219,12 +221,46 @@ struct DemoProfile::Impl {
         }
         const ayni_tool_ref_v1 tool{text("present"), 1, 0};
         type.goal_type_id = text("chat");
+        type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
         type.strategy_id = b.strategy_id;
         type.validate = strategies::Conversation::validate_turn;
         type.export_requirements = requirements;
         type.tool_count = 1;
         type.tools = &tool;
         return ayni_register_goal_type(kernel, &type);
+    }
+    // The schema is typed and bounded. Per-record operands are built by Core's public helpers;
+    // this composition root supplies only the configured external destination domain.
+    ayni_status_t register_memory(ayni_kernel_t *kernel) {
+        constexpr uint32_t field_count = AYNI_MEMORY_SCOPE_FIELD_COUNT;
+        constexpr uint32_t identity_fields = 2;
+        constexpr int64_t operation_write = 2;
+        std::array<ayni_authority_field_desc_v1, field_count> fields{};
+        for (uint32_t at = 0; at < field_count; ++at) {
+            auto &field = fields[at];
+            field.struct_size = sizeof(field);
+            field.field_id = at + 1;
+            field.usage = AYNI_AUTHORITY_PARAMETER;
+            field.domain.struct_size = sizeof(field.domain);
+            field.domain.kind = AYNI_AUTHORITY_I64;
+            field.domain.unit = text(at < identity_fields ? "id" : "code");
+            field.domain.values.integer = {
+                1, at < identity_fields ? std::numeric_limits<int64_t>::max() : operation_write};
+        }
+        ayni_capability_desc_v1 cap{sizeof(cap), 1, text("memory.access"),
+                                    field_count, 0, fields.data()};
+        auto status = ayni_register_capability(kernel, &cap);
+        if (status != AYNI_OK || offers[model_index].destination_id.size == 0) {
+            return status;
+        }
+        auto &destination_field_desc = fields.back();
+        destination_field_desc.usage = AYNI_AUTHORITY_EGRESS_DESTINATION;
+        destination_field_desc.domain = {};
+        destination_field_desc.domain.struct_size = sizeof(destination_field_desc.domain);
+        destination_field_desc.domain.kind = AYNI_AUTHORITY_IDENTIFIER;
+        destination_field_desc.domain.values.tokens = {&offers[model_index].destination_id, 1, 0};
+        cap.capability_id = text("memory.egress");
+        return ayni_register_capability(kernel, &cap);
     }
     ayni_status_t register_all(ayni_kernel_t *kernel) {
         const ayni_principal_desc_v1 principal{sizeof(principal), AYNI_PRINCIPAL_OWNER, demo_owner,
@@ -257,7 +293,8 @@ struct DemoProfile::Impl {
                 return status;
             }
         }
-        return register_policies(kernel);
+        status = register_memory(kernel);
+        return status == AYNI_OK ? register_policies(kernel) : status;
     }
 };
 DemoProfile::DemoProfile() = default;
@@ -331,6 +368,9 @@ ayni_string_v1 DemoProfile::capability(const std::string &alias) const {
     return at < offer_count && impl_->offers[at].capabilities
                ? impl_->offers[at].capabilities->capability_id
                : ayni_string_v1{};
+}
+ayni_string_v1 DemoProfile::destination() const {
+    return impl_ ? impl_->offers[model_index].destination_id : ayni_string_v1{};
 }
 ayni_scope_v1 DemoProfile::scope(const std::string &alias) const {
     return impl_ && (alias == "model" || alias == "summary") ? impl_->model_scope : empty_scope();
