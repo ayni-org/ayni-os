@@ -43,6 +43,8 @@ ayni_add_core_module(authority
         authority/scene/scene_records.cpp
         authority/grant/grant_records.cpp
         authority/grant/grant_table.cpp
+        authority/grant/grant_restore.cpp
+        authority/grant/revocation_gate.cpp
         authority/principal/owner_binding_records.cpp
         authority/principal/principal_registry.cpp
         authority/scope/scope.cpp
@@ -144,6 +146,8 @@ ayni_add_core_module(kernel
         kernel/runtime/kernel_layout.cpp
         kernel/runtime/kernel_lifecycle.cpp
         kernel/service/persistence/call_store.cpp
+        kernel/service/persistence/grant_store.cpp
+        kernel/service/persistence/command_store.cpp
         kernel/service/persistence/goal_approval_replay.cpp
         kernel/service/persistence/goal_reauthorization_replay.cpp
         kernel/service/persistence/scene_store.cpp

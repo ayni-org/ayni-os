@@ -9,7 +9,7 @@
 namespace ayni::kernel {
 namespace {
 
-bool knows(uint16_t version, WorkRecordContext) {
+bool knows(uint16_t, uint16_t version, WorkRecordContext) {
     return version == work::call_record_version || version == work::call_skipped_record_version ||
            version == work::call_execution_record_version ||
            version == work::call_tool_calls_record_version;
@@ -19,6 +19,11 @@ uint32_t capacity(const KernelCapacities &capacities) {
 }
 uint32_t record_max(const KernelCapacities &capacities) {
     return work::call_record_max(call_limits(capacities));
+}
+
+const StoreKind kinds[] = {{work::call_record_type, always_required}};
+uint32_t journal_max(const KernelCapacities &c) {
+    return capacity(c) == 0U ? 0U : record_bytes(record_max(c));
 }
 
 // One call advances per item/transition. Its full row follows Task progress,
@@ -47,7 +52,8 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
 }
 
 // Skips empty retained slots; the payload carries the journal body.
-bool snapshot_next(const WorkModel &model, uint32_t &index) {
+bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
+    auto &index = cursor.index;
     while (index < model.calls.capacity() && !model.calls.occupied(index)) {
         ++index;
     }
@@ -81,9 +87,20 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
 
 } // namespace
 
-const PersistentStore call_store{
-    work::call_record_type, knows,           capacity,       record_max,   1, journal,
-    snapshot_next,          snapshot_record, snapshot_write, snapshot_read};
+const PersistentStore call_store{work::call_record_type,
+                                 kinds,
+                                 1,
+                                 knows,
+                                 StorePosition::after_work,
+                                 capacity,
+                                 record_max,
+                                 journal_max,
+                                 journal,
+                                 snapshot_next,
+                                 snapshot_record,
+                                 snapshot_write,
+                                 advance_store_index,
+                                 snapshot_read};
 
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.

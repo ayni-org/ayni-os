@@ -20,11 +20,6 @@ namespace {
 
 constexpr uint32_t id_max = catalog::CatalogId::max_size;
 
-// One record with a body of body_size bytes.
-constexpr uint32_t record_bytes(uint32_t body_size) {
-    return static_cast<uint32_t>(durability::record_header_size) + body_size;
-}
-
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
@@ -38,9 +33,9 @@ class Encoder {
     // The first binding precedes the instances it starts. Work records
     // follow replay order, with the command mapping last.
     bool encode() {
-        return owner_binding() && instances() && revocation() && grants() &&
-               revocation_progress() && goals() && goal_authority() && tasks() && stores() &&
-               command() && authority_cleanup();
+        return owner_binding() && instances() && stores(StorePosition::before_work) && goals() &&
+               goal_authority() && tasks() && stores(StorePosition::after_work) &&
+               stores(StorePosition::after_cleanup) && authority_cleanup();
     }
 
   private:
@@ -56,9 +51,11 @@ class Encoder {
         return at;
     }
 
-    bool stores() {
+    bool stores(StorePosition position) {
         for (const PersistentStore *store : persistent_stores) {
-            ok_ = ok_ && store->journal(model_, stamp_, writer_);
+            if (store->position == position) {
+                ok_ = ok_ && store->journal(model_, stamp_, writer_);
+            }
         }
         return ok_;
     }
@@ -88,87 +85,6 @@ class Encoder {
                                work::instance_record_size);
             if (at != nullptr) {
                 work::write_instance_record(instance, at);
-            }
-        }
-        return ok_;
-    }
-
-    bool revocation() {
-        const auto *mapping = model_.commands.mapped_in(stamp_.commit_seq);
-        if (mapping == nullptr || mapping->kind != AYNI_INTENT_GRANT_REVOKE) {
-            return ok_;
-        }
-        authority::GrantTable::RevokePlan plan{mapping->object.id, mapping->object.revision,
-                                               mapping->effect, 0, 0};
-        if (mapping->effect == AYNI_INTENT_EFFECT_CHANGED) {
-            uint32_t index = 0;
-            if (!model_.grants.find(mapping->object.id, index)) {
-                return false;
-            }
-            const auto &grant = model_.grants.at(index);
-            if (!authority::is_revocation_root(grant.grant_id, grant.revoked_by_root_id) ||
-                grant.stamp.commit_seq != stamp_.commit_seq) {
-                return false;
-            }
-            plan.cleanup_after_grant_id = grant.cleanup_after_grant_id;
-            plan.cleanup_through_grant_id = grant.cleanup_through_grant_id;
-        }
-        auto *at = body(authority::grant_revocation_record_type,
-                        authority::grant_revocation_with_work_record_version,
-                        authority::grant_revocation_record_size);
-        if (at != nullptr) {
-            authority::write_grant_revocation_record(plan, at);
-        }
-        return ok_;
-    }
-
-    bool revocation_progress() {
-        for (uint32_t index = 0; index < model_.grants.size(); ++index) {
-            const auto &grant = model_.grants.at(index);
-            if (grant.cleanup_stamp.commit_seq != stamp_.commit_seq ||
-                grant.stamp.commit_seq == stamp_.commit_seq) {
-                continue;
-            }
-            auto *at = body(authority::grant_revocation_progress_record_type,
-                            authority::grant_revocation_progress_record_version,
-                            authority::grant_revocation_progress_record_size);
-            if (at != nullptr) {
-                authority::write_grant_revocation_progress_record(
-                    {grant.grant_id, grant.cleanup_after_grant_id, grant.cleanup_through_grant_id,
-                     0},
-                    at);
-            }
-        }
-        return ok_;
-    }
-
-    bool grants() {
-        for (uint32_t index = 0; index < model_.grants.size(); ++index) {
-            const auto &grant = model_.grants.at(index);
-            if (grant.stamp.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            // Explicit root revocation is encoded by its paired type 15.
-            if (grant.lifecycle == AYNI_GRANT_REVOKED &&
-                authority::is_revocation_root(grant.grant_id, grant.revoked_by_root_id)) {
-                continue;
-            }
-            const bool created = grant.created_stamp.commit_seq == stamp_.commit_seq;
-            const uint32_t size = created ? authority::grant_record_size(grant)
-                                          : authority::grant_state_record_size_for(grant);
-            uint8_t *at =
-                body(created ? authority::grant_record_type : authority::grant_state_record_type,
-                     created ? authority::grant_record_version_for(grant)
-                             : authority::grant_state_record_version_for(grant),
-                     size);
-            if (at == nullptr) {
-                continue;
-            }
-            if (created) {
-                authority::write_grant_record(grant, model_.grants.source_domain(index),
-                                              model_.grants.scope(index), at);
-            } else {
-                authority::write_grant_state_record(grant, at);
             }
         }
         return ok_;
@@ -335,22 +251,6 @@ class Encoder {
         return ok_;
     }
 
-    bool command() {
-        const CommandMapping *mapping = model_.commands.mapped_in(stamp_.commit_seq);
-        if (mapping == nullptr) {
-            return ok_;
-        }
-        const uint32_t size = command_record_size_for(*mapping);
-        uint8_t *at = body(command_record_type, command_record_version_for(*mapping), size);
-        if (at != nullptr) {
-            ok_ = write_command_record(*mapping, model_.commands.floor(mapping->principal_id),
-                                       model_.commands.canonical(*mapping), at, size,
-                                       model_.commands.authorization_result(*mapping)) &&
-                  ok_;
-        }
-        return ok_;
-    }
-
     const WorkModel &model_;
     foundation::TransitionStamp stamp_;
     durability::BatchWriter &writer_;
@@ -374,9 +274,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
             record_bytes(work::goal_authority_record_max(capacities.goal_requirement_capacity,
                                                          capacities.authority_scope_max_bytes));
     for (const PersistentStore *store : persistent_stores) {
-        if (store->capacity(capacities) != 0U) {
-            size += store->records_per_transition * record_bytes(store->record_max(capacities));
-        }
+        size += store->journal_max(capacities);
     }
     size += record_bytes(work::task_record_size);
     size += record_bytes(work::task_steps_record_max(steps));
@@ -385,18 +283,6 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += capacities.task_capacity *
             record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));
     size += record_bytes(work::authority_cleanup_record_size);
-    // Reserve all authority records conservatively, including the bounded
-    // startup expiry sweep. This avoids a second admission budget per kind.
-    const uint32_t batch_grants = capacities.goal_requirement_capacity < capacities.grant_capacity
-                                      ? capacities.goal_requirement_capacity
-                                      : capacities.grant_capacity;
-    size += batch_grants *
-            record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes));
-    size += capacities.grant_capacity * record_bytes(authority::grant_state_record_size);
-    size += record_bytes(authority::grant_revocation_record_size);
-    size += record_bytes(authority::grant_revoked_state_record_size);
-    size += record_bytes(authority::grant_revocation_progress_record_size);
-    size += record_bytes(command_record_max(command_limits(capacities).canonical_max_bytes));
     return size;
 }
 

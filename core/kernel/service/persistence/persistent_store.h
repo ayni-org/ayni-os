@@ -8,9 +8,8 @@
 // entry here. Journal restore stays in WorkReplay, which owns the pairing of
 // a batch's records across stores and commands.
 //
-// Every version of a store's record type is REQUIRED (contracts/storage/
-// records.md). The list is fixed at compile time; nothing registers at run
-// time.
+// REQUIRED versions are stated beside each family; legacy command v1 remains
+// optional (contracts/storage/records.md). Nothing registers at run time.
 
 #ifndef AYNI_CORE_KERNEL_PERSISTENCE_PERSISTENT_STORE_H
 #define AYNI_CORE_KERNEL_PERSISTENCE_PERSISTENT_STORE_H
@@ -30,38 +29,102 @@ enum class WorkRecordContext { journal, snapshot };
 
 // A row's record in the snapshot payload.
 struct StoreRecord {
-    uint16_t version;
-    uint32_t size; // body bytes, without the envelope
+    uint16_t version; // Supported body version for this complete retained row.
+    uint32_t size;    // body bytes, without the envelope
 };
 
+// Store-owned snapshot traversal. index is a retained row; order is zero initially,
+// then a Grant depth (edges) or the last emitted command commit sequence. Other stores
+// use index alone and keep order zero. It never survives one frozen snapshot walk.
+struct StoreCursor {
+    uint32_t index = 0; // Row index; snapshot_next selects it, snapshot_advance consumes it.
+    uint64_t order = 0; // Store-specific ordering frontier described above, not a persisted value.
+};
+
+// Existing storage order: Grant facts precede work; calls/Scenes follow Tasks;
+// command snapshots follow cleanup, while journal commands close before its footer.
+enum class StorePosition { before_work, after_work, after_cleanup };
+
+// One registered record family; required_from preserves optional legacy command v1.
+struct StoreKind {
+    uint16_t type;          // records.md type identity, never zero.
+    uint16_t required_from; // First REQUIRED version; older versions keep their existing rule.
+};
+
+// Owns one compile-time storage adapter; WorkReplay retains cross-store journal proofs.
 struct PersistentStore {
-    uint16_t record_type; // durability/batch/record_types.h
-    // Whether this build reads this version of the type in context.
-    bool (*knows)(uint16_t version, WorkRecordContext context);
-    // Rows these capacities retain; zero disables the store and its records.
+    uint16_t record_type;   // Snapshot row type; journal may write several declared kinds.
+    const StoreKind *kinds; // Immutable compile-time family; kind_count entries.
+    uint32_t kind_count;    // Positive family length; no runtime registration.
+    // Whether this build reads this type/version in the given storage context.
+    bool (*knows)(uint16_t type, uint16_t version, WorkRecordContext context);
+    StorePosition position; // Placement relative to work/cleanup, preserving schema 2 order.
+    // Rows these capacities retain; zero disables snapshot rows.
     uint32_t (*capacity)(const KernelCapacities &capacities);
-    // The largest body under these capacities.
+    // Largest snapshot body, excluding the envelope.
     uint32_t (*record_max)(const KernelCapacities &capacities);
-    // The most records of this type one transition writes.
-    uint32_t records_per_transition;
-    // Adds the records of the rows the transition stamp changed, in order;
-    // false when one does not fit or the rows break the bound above, a
-    // defect (AYNI_RESTRICTION_INTERNAL).
+    // Complete journal contribution, including envelopes and bounded startup sweeps.
+    uint32_t (*journal_max)(const KernelCapacities &capacities);
+    // Encode this transition's changed facts, preserving this store's internal order.
+    // False means a record does not fit or violates the declared bound: an internal defect.
     bool (*journal)(const WorkModel &model, foundation::TransitionStamp stamp,
                     durability::BatchWriter &writer);
-    // The first retained row at or after index, moving index to it; false
-    // when none is left. The writer keeps the model frozen across pages.
-    bool (*snapshot_next)(const WorkModel &model, uint32_t &index);
-    StoreRecord (*snapshot_record)(const WorkModel &model, uint32_t index);
-    // Writes the body snapshot_record(model, index) sized.
+    // Select without consuming; repeated selection of a frozen model is idempotent.
+    bool (*snapshot_next)(const WorkModel &model, StoreCursor &cursor);
+    StoreRecord (*snapshot_record)(const WorkModel &model, uint32_t index); // Selected row shape.
+    // Write the selected body into already measured caller storage.
     void (*snapshot_write)(const WorkModel &model, uint32_t index, uint8_t *body);
-    // Restores one payload row within the snapshot's boundary. References
-    // to other stores are checked once the payload is read
-    // (WorkReplay::consistent).
+    // Consume only after a whole record fits/is written, or after measuring it.
+    void (*snapshot_advance)(const WorkModel &model, StoreCursor &cursor);
+    // Restore one independently bounded row; WorkReplay keeps cross-record batch pairing.
+    // References across stores are proved after the payload by WorkReplay::consistent.
     durability::BatchCheck (*snapshot_read)(WorkModel &model,
                                             const durability::SnapshotMetadata &metadata,
                                             uint16_t version, const uint8_t *body, uint32_t size);
 };
+
+// Known non-command families require the marker even for an unknown version zero.
+inline constexpr uint16_t always_required = 0;
+// Count one record envelope without repeating its layout in store adapters.
+inline constexpr uint32_t record_bytes(uint32_t body_size) {
+    return static_cast<uint32_t>(durability::record_header_size) + body_size;
+}
+// The common row-order traversal consumes one retained table index.
+inline void advance_store_index(const WorkModel &, StoreCursor &cursor) {
+    ++cursor.index;
+}
+
+// Restore classifications are shared by all row adapters and the remaining work reader.
+template <typename Restore> durability::BatchCheck snapshot_restore_check(Restore value) {
+    switch (value) {
+    case Restore::restored:
+        return durability::BatchCheck::ok;
+    case Restore::no_room:
+        return durability::BatchCheck::no_room;
+    case Restore::corrupt:
+        return durability::BatchCheck::corrupt;
+    }
+    return durability::BatchCheck::corrupt;
+}
+
+// C-STORE-015/017: retained parents precede children despite terminal slot reuse.
+// The caller owns the bounded scan cursor and keeps the model frozen.
+template <typename Table, typename Depth>
+bool next_snapshot_at_depth(const Table &table, uint32_t max_depth, Depth &depth, uint32_t &index) {
+    for (;;) {
+        while (index < table.size() && table.at(index).depth != depth) {
+            ++index;
+        }
+        if (index < table.size()) {
+            return true;
+        }
+        if (depth == max_depth) {
+            return false;
+        }
+        ++depth;
+        index = 0;
+    }
+}
 
 // Set, and not after the snapshot's boundary.
 inline bool within_snapshot(foundation::TransitionStamp stamp,
@@ -70,12 +133,14 @@ inline bool within_snapshot(foundation::TransitionStamp stamp,
            stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
 }
 
-extern const PersistentStore call_store;  // call_store.cpp
-extern const PersistentStore scene_store; // scene_store.cpp
+extern const PersistentStore grant_store;   // Grant family and parent-first snapshots.
+extern const PersistentStore call_store;    // Calls after their Task facts.
+extern const PersistentStore scene_store;   // Scene preferences after calls.
+extern const PersistentStore command_store; // Exact owner command history closes each walk.
 
-// Log and payload order: after the Tasks a call refers to, before the
-// command that closes a batch.
-inline constexpr const PersistentStore *persistent_stores[] = {&call_store, &scene_store};
+// Compile-time storage order; each descriptor owns the types, bounds and row traversal.
+inline constexpr const PersistentStore *persistent_stores[] = {&grant_store, &call_store,
+                                                               &scene_store, &command_store};
 inline constexpr uint32_t persistent_store_count =
     static_cast<uint32_t>(sizeof(persistent_stores) / sizeof(persistent_stores[0]));
 
@@ -83,9 +148,21 @@ inline constexpr uint32_t persistent_store_count =
 // a type the kernel's own tables write.
 inline bool find_persistent_store(uint16_t type, uint32_t &out_rank) {
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
-        if (persistent_stores[rank]->record_type == type) {
-            out_rank = rank;
-            return true;
+        const auto &store = *persistent_stores[rank];
+        for (uint32_t kind = 0; kind < store.kind_count; ++kind) {
+            if (store.kinds[kind].type == type) {
+                out_rank = rank;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+// Unknown versions of a known family retain their historical REQUIRED boundary.
+inline bool store_requires_marker(const PersistentStore &store, uint16_t type, uint16_t version) {
+    for (uint32_t kind = 0; kind < store.kind_count; ++kind) {
+        if (store.kinds[kind].type == type) {
+            return version >= store.kinds[kind].required_from;
         }
     }
     return false;

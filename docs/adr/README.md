@@ -85,3 +85,5 @@
 | [0057](0057-native-dual-agent-cli.md) | 双 Agent Native/Sim 装配、对话文件与单进程 CLI | 已接受，P2 已合并 | §3.2、§9.1、§14.1 |
 
 | [0058](0058-kernel-service-runtime-boundaries.md) | Kernel 私有状态、service/runtime 分区、StepContext 与 CallbackGate | 已接受 | §2.3、§3.2、§9.1 |
+
+| [0059](0059-grant-restore-and-persistent-stores.md) | Grant 事实/撤销闸门/恢复职责与 Grant、命令持久适配 | 已接受 | §2.3、§2.8、§9.1 |
