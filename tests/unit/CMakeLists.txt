@@ -100,3 +100,15 @@ target_compile_options(ayni_unit_tests PRIVATE
 # -O3 made the Release build about 40% slower and checked nothing more.
 target_compile_options(ayni_unit_tests PRIVATE $<$<CONFIG:Release>:-O1>)
 gtest_discover_tests(ayni_unit_tests)
+
+# Separate protocol executable keeps network fixture dependencies out of Core tests.
+add_executable(ayni_openai_provider_tests openai_provider_test.cpp)
+target_link_libraries(ayni_openai_provider_tests PRIVATE ayni_core ayni_core_internal
+    ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_openai_provider_tests)
+
+# No CTest registration: this executable sends billed requests only when invoked
+# manually with --live and runtime environment configuration (ADR-0055).
+add_executable(ayni_openai_smoke EXCLUDE_FROM_ALL ../manual/openai_smoke.cpp)
+target_link_libraries(ayni_openai_smoke PRIVATE ayni_core ayni_core_internal
+    ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest)

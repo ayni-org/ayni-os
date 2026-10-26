@@ -13,6 +13,8 @@
 | Clang | 18.1.3 | Native 构建 |
 | clang-format / clang-tidy | 18.1.3 | 格式检查（阻断）与静态分析（仅报告） |
 | Python | 最低 3.9；M0 本地：3.13.16；M1 容器：3.12.3 | `tools/check_deps.py`、`tools/check_contracts.py` 与其测试 |
+| libcurl | 最低 7.85；本地/CI Ubuntu 包 8.5.0 | Native Chat Completions，须支持线程安全初始化与异步 DNS |
+| yyjson | 0.10.0，按 SHA-256 锁定（MIT） | Provider 有界 JSON；不进入 ESP-IDF |
 | GoogleTest | 1.17.0，按 SHA-256 锁定 | Native 单元测试（ADR-0012） |
 | ESP-IDF | v6.0.3，工具链 `esp-15.2.0_20251204` | ESP32-S3 固件；CI 使用镜像 `espressif/idf:v6.0.3` |
 
@@ -26,7 +28,7 @@ M0 本地 Clang 缺少 ASan 运行库（`libclang-rt-18-dev`），当时只验�
 
 ```sh
 sudo apt-get install -y build-essential clang cmake ninja-build python3 \
-    clang-format-18 clang-tidy-18 git
+    clang-format-18 clang-tidy-18 git libcurl4-openssl-dev
 ```
 
 ## Native 构建与测试
@@ -94,6 +96,15 @@ Native 命令通过 `tools/ci/run_tools.sh run <命令> <参数…>` 执行，�
 ```sh
 cmake --preset native-debug -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest-1.17.0
 ```
+
+### Native 模型 Provider
+
+Native 构建增加 `libcurl4-openssl-dev`；CI 安装配方已包含。yyjson 由
+`cmake/AyniYyjson.cmake` 固定版本/哈希，复用 `AYNI_DOWNLOAD_DIR`。离线配置可指定
+`-DFETCHCONTENT_SOURCE_DIR_YYJSON=/path/to/yyjson-0.10.0`，与 GoogleTest 相同。
+ESP-IDF 不引入 curl 或 yyjson。相关本地用例可用 `ctest -R Openai` 选择；
+测试只连回环 HTTP，不读取实服务密钥。手动实 API 程序显式构建、显式 `--live`，
+不注册为 CTest，运行方法见 [Provider 说明](../providers/openai_compat/README.md)。
 
 ## 依赖、契约、格式与静态分析
 
