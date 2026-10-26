@@ -72,6 +72,7 @@ ayni_add_core_module(work
         work/call/call_records.cpp
         work/call/call_restore.cpp
         work/call/call_table.cpp
+        work/call_propagation.cpp
         work/execution/execution_fact.cpp
         work/goal/goal_authority.cpp
         work/goal/goal_authority_records.cpp

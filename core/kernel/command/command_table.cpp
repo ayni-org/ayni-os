@@ -185,19 +185,17 @@ CommandTable::Lookup CommandTable::find(uint64_t principal_id, uint64_t command_
 
 // Shape is independent of retention. Lookup/floor precedes configured byte
 // capacity, so a stale or conflicting command keeps its original classification.
-template <typename Input>
-CommandTable::ExactLookup CommandTable::find_candidate(
-    uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind, const Input &input,
-    ayni_status_t (*measure)(const Input &, uint32_t &),
-    ayni_status_t (*encode)(const Input &, uint8_t *, uint32_t, uint32_t &)) {
+CommandTable::ExactProbe CommandTable::probe_exact(uint64_t principal_id, uint64_t command_id,
+                                                   ayni_intent_kind_t kind, ayni_status_t measured,
+                                                   uint32_t size) {
     staged_.reset();
-    uint32_t needed = 0;
-    auto status = measure(input, needed);
-    if (status != AYNI_OK || principal_id == 0U || command_id == 0U) {
-        return {status == AYNI_OK ? AYNI_INVALID_ARGUMENT : status, Lookup::unmapped, nullptr};
+    if (measured != AYNI_OK || principal_id == 0U || command_id == 0U) {
+        return {{measured == AYNI_OK ? AYNI_INVALID_ARGUMENT : measured, Lookup::unmapped, nullptr},
+                false,
+                nullptr};
     }
     if (pending(principal_id, command_id) != nullptr) {
-        return {AYNI_OK, Lookup::conflict, nullptr};
+        return {{AYNI_OK, Lookup::conflict, nullptr}, false, nullptr};
     }
     const Row *row = row_of(principal_id);
     const CommandMapping *existing = nullptr;
@@ -210,65 +208,35 @@ CommandTable::ExactLookup CommandTable::find_candidate(
             }
         }
         if (existing == nullptr && command_id <= row->floor) {
-            return {AYNI_OK, Lookup::expired, nullptr};
+            return {{AYNI_OK, Lookup::expired, nullptr}, false, nullptr};
         }
     }
-    if (existing != nullptr && (existing->kind != kind || existing->canonical_size != needed)) {
-        return {AYNI_OK, Lookup::conflict, nullptr};
+    if (existing != nullptr && (existing->kind != kind || existing->canonical_size != size)) {
+        return {{AYNI_OK, Lookup::conflict, nullptr}, false, nullptr};
     }
-    if (needed > canonical_max_bytes_) {
-        return {AYNI_CAPACITY_EXCEEDED, Lookup::unmapped, nullptr};
+    if (size > canonical_max_bytes_) {
+        return {{AYNI_CAPACITY_EXCEEDED, Lookup::unmapped, nullptr}, false, nullptr};
     }
-    status = encode(input, scratch_, canonical_max_bytes_, needed);
-    if (status != AYNI_OK) {
-        return {status, Lookup::unmapped, nullptr};
+    return {{AYNI_OK, Lookup::unmapped, nullptr}, true, existing};
+}
+
+CommandTable::ExactLookup CommandTable::stage_exact(uint64_t principal_id, uint64_t command_id,
+                                                    ayni_intent_kind_t kind,
+                                                    const CommandMapping *existing,
+                                                    ayni_status_t encoded, uint32_t size) {
+    if (encoded != AYNI_OK) {
+        return {encoded, Lookup::unmapped, nullptr};
     }
-    const uint64_t digest = authority_command_digest({scratch_, needed});
+    const uint64_t digest = authority_command_digest({scratch_, size});
     if (existing != nullptr) {
         if (existing->digest != digest ||
-            std::memcmp(canonical_of(*existing), scratch_, needed) != 0) {
+            std::memcmp(canonical_of(*existing), scratch_, size) != 0) {
             return {AYNI_OK, Lookup::conflict, nullptr};
         }
         return {AYNI_OK, Lookup::retried, existing};
     }
-    staged_ = StagedCommand{principal_id, command_id, digest, needed, kind};
+    staged_ = StagedCommand{principal_id, command_id, digest, size, kind};
     return {AYNI_OK, Lookup::unmapped, nullptr};
-}
-
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const CanonicalCommandView &input) {
-    return find_candidate(principal_id, command_id, AYNI_INTENT_GRANT_CREATE, input,
-                          measure_authority_command, encode_authority_command);
-}
-
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const ApprovalCommand &input) {
-    return find_candidate(principal_id, command_id, AYNI_INTENT_GOAL_APPROVE, input,
-                          measure_approval_command, encode_approval_command);
-}
-
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const ReauthorizationCommand &input) {
-    return find_candidate(principal_id, command_id, AYNI_INTENT_GOAL_REAUTHORIZE, input,
-                          measure_reauthorization_command, encode_reauthorization_command);
-}
-
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const TaskLimitCommand &input) {
-    return find_candidate(principal_id, command_id, AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, input,
-                          measure_task_limit_command, encode_task_limit_command);
-}
-
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const TargetCommand &input) {
-    return find_candidate(principal_id, command_id, input.kind, input, measure_target_command,
-                          encode_target_command);
-}
-
-CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
-                                                   const authority::SceneChange &input) {
-    return find_candidate(principal_id, command_id, AYNI_INTENT_SCENE_SET_ENABLED, input,
-                          measure_scene_command, encode_scene_command);
 }
 
 bool CommandTable::insert_exact(CommandMapping mapping, ayni_bytes_v1 result) {

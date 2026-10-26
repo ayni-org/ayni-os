@@ -834,8 +834,8 @@ TEST(GrantReplay, snapshot_reclaimed_result_restores_without_recreating_the_gran
                               [&](ayni::kernel::WorkModel &model) {
                                   uint32_t index = 0;
                                   EXPECT_FALSE(model.grants.find(created.result.object.id, index));
-                                  const auto retry =
-                                      model.commands.find_exact(owner_id, 1, {0, &request});
+                                  const auto retry = model.commands.find_exact(
+                                      owner_id, 1, ayni::kernel::CanonicalCommandView{0, &request});
                                   ASSERT_EQ(retry.status, AYNI_OK);
                                   ASSERT_EQ(retry.lookup,
                                             ayni::kernel::CommandTable::Lookup::retried);

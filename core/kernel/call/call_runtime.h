@@ -148,8 +148,6 @@ class CallRuntime {
     Advance expire_wait(uint32_t index, uint32_t task_index, resources::WaitAction action,
                         uint64_t now_us);
     Advance cancel_local(uint32_t index, uint32_t task_index);
-    // Result, step and lifecycle share one B4 stamp; cancellation never reopens work.
-    bool finish_task(uint32_t call_index, uint32_t task_index, foundation::TransitionStamp stamp);
     void release(uint32_t index, uint64_t now_us); // Exact claim/waiter; delivery already drained.
 
     bool active_index(uint64_t call_id,

@@ -3,6 +3,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_REAUTHORIZATION_H
 
 #include "kernel/command/command_goal_identity.h"
+#include "kernel/command/exact_command.h"
 
 namespace ayni::kernel {
 
@@ -32,5 +33,12 @@ ayni_status_t encode_reauthorization_command(const ReauthorizationCommand &input
                                              uint32_t capacity, uint32_t &out_size);
 // Strict canonical layout; publishes borrowed views only on complete success.
 bool read_reauthorization_command(ayni_bytes_v1 bytes, ReauthorizationCommand &out);
+template <> struct ExactCommand<ReauthorizationCommand> {
+    static constexpr ayni_intent_kind_t kind(const ReauthorizationCommand &) {
+        return AYNI_INTENT_GOAL_REAUTHORIZE;
+    }
+    static constexpr auto measure = measure_reauthorization_command;
+    static constexpr auto encode = encode_reauthorization_command;
+};
 } // namespace ayni::kernel
 #endif // AYNI_CORE_KERNEL_COMMAND_COMMAND_REAUTHORIZATION_H

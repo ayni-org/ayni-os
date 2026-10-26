@@ -7,6 +7,7 @@
 #include <ayni/authority.h>
 
 #include "kernel/command/command_approval.h"
+#include "kernel/command/exact_command.h"
 #include "kernel/command/work_authority_result.h"
 
 #include <cstdint>
@@ -80,6 +81,13 @@ bool read_authority_command(ayni_bytes_v1 bytes, AuthorityCommandRecord &out);
 bool authority_command_scope_matches(const AuthorityCommandRecord &command,
                                      ayni_bytes_v1 source_domain, ayni_bytes_v1 expanded_scope);
 uint64_t authority_command_digest(ayni_bytes_v1 bytes);
+template <> struct ExactCommand<CanonicalCommandView> {
+    static constexpr ayni_intent_kind_t kind(const CanonicalCommandView &) {
+        return AYNI_INTENT_GRANT_CREATE;
+    }
+    static constexpr auto measure = measure_authority_command;
+    static constexpr auto encode = encode_authority_command;
+};
 
 } // namespace ayni::kernel
 #endif // AYNI_CORE_KERNEL_COMMAND_COMMAND_CANONICAL_H

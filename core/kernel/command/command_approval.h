@@ -4,6 +4,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_APPROVAL_H
 
 #include "kernel/command/command_goal_identity.h"
+#include "kernel/command/exact_command.h"
 
 #include <ayni/authority.h>
 
@@ -40,6 +41,13 @@ ayni_status_t encode_approval_command(const ApprovalCommand &input, uint8_t *buf
                                       uint32_t capacity, uint32_t &out_size);
 // Strict kind/layout/shape with no trailing bytes; atomic borrowed output.
 bool read_approval_command(ayni_bytes_v1 bytes, ApprovalCommand &out);
+template <> struct ExactCommand<ApprovalCommand> {
+    static constexpr ayni_intent_kind_t kind(const ApprovalCommand &) {
+        return AYNI_INTENT_GOAL_APPROVE;
+    }
+    static constexpr auto measure = measure_approval_command;
+    static constexpr auto encode = encode_approval_command;
+};
 
 } // namespace ayni::kernel
 #endif // AYNI_CORE_KERNEL_COMMAND_COMMAND_APPROVAL_H

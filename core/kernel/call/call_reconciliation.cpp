@@ -1,4 +1,5 @@
 #include "kernel/call/call_runtime.h"
+#include "work/call_propagation.h"
 
 #include "foundation/deadline.h"
 
@@ -151,8 +152,6 @@ bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const Provi
     if (status != AYNI_OK) {
         return false;
     }
-    return work_.calls.state(index).outcome == AYNI_CALL_ABANDONED ||
-           work_.tasks.at(task_index).call.id != work_.calls.identity(index).call_id ||
-           finish_task(index, task_index, stamp);
+    return work::reconcile_task_call(work_.calls, work_.tasks, index, task_index, stamp);
 }
 } // namespace ayni::kernel

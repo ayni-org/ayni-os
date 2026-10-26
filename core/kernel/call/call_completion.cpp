@@ -1,5 +1,6 @@
 #include "foundation/attempt_identity.h"
 #include "kernel/call/call_runtime.h"
+#include "work/call_propagation.h"
 
 namespace ayni::kernel {
 namespace {
@@ -113,7 +114,10 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
                                                 work::ActionEffect::unknown,
                                                 {}},
                                                action_stamp);
-        return status == AYNI_OK && finish_task(index, task_index, stamp) ? AYNI_OK : AYNI_INTERNAL;
+        return status == AYNI_OK &&
+                       work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)
+                   ? AYNI_OK
+                   : AYNI_INTERNAL;
     }
     const auto kind = outcome(message.kind);
     terminal = false;
@@ -148,7 +152,8 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
                                           {}},
                                          action_stamp);
         }
-        if (applied == AYNI_OK && !finish_task(index, task_index, stamp)) {
+        if (applied == AYNI_OK &&
+            !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
             return AYNI_INTERNAL;
         }
     }

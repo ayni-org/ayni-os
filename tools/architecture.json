@@ -10,7 +10,7 @@
   ],
   "_core_subdir_deps": "Per module: which of its own directories each directory may include, e.g. {\"work\": {\"task\": [\"call\"]}}. \"_root\" names the files directly in the module directory, as source and as target. Undeclared pairs are forbidden, and each module's declared graph must have no cycle (ADR-0051).",
   "core_subdir_deps": {
-    "work": {"_root": ["agent", "goal", "task"], "goal": ["authority"], "task": ["authority"], "call": ["action", "execution"]},
+    "work": {"_root": ["agent", "call", "goal", "task"], "goal": ["authority"], "task": ["authority"], "call": ["action", "execution"]},
     "resources": {"permit": ["admission"]},
     "authority": {"grant": ["scope"], "scene": ["scope"]},
     "catalog": {"goal_type": ["_root", "strategy"], "capability": ["_root", "resource"], "resource": ["_root", "device"], "device": ["_root"], "provider": ["_root", "capability"], "binding": ["_root", "capability", "provider", "resource"], "execution": ["_root", "binding", "capability", "resource"], "observation": ["_root"], "strategy": ["_root"]},

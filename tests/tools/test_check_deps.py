@@ -74,8 +74,8 @@ class CheckDepsTest(unittest.TestCase):
         # ADR-0051: the module root is one more node of the declared graph.
         self.write("core/work/work.cpp", '#include "work/task/task.h"\n')
         self.assertEqual(self.violations(), [])
-        self.write("core/work/work.cpp", '#include "work/call/call.h"\n')
-        self.assert_single_violation("the root of core/work ('_root') may not include core/work/call")
+        self.write("core/work/work.cpp", '#include "work/action/action.h"\n')
+        self.assert_single_violation("the root of core/work ('_root') may not include core/work/action")
 
     def test_core_subdir_reaches_module_root_only_when_declared(self):
         # ADR-0051: the blind spot through the root, spelled from the include root and relatively.

@@ -21,6 +21,7 @@
 #include "kernel/command/command_scene.h"
 #include "kernel/command/command_target.h"
 #include "kernel/command/command_task_limit.h"
+#include "kernel/command/exact_command.h"
 #include "kernel/command/intent_traits.h"
 #include "kernel/command/pending_revoke.h"
 #include "kernel/command/work_authority_result.h"
@@ -103,26 +104,13 @@ class CommandTable {
     // Measures the independent raw request before looking up identity. An
     // unmapped AYNI_OK result stages its canonical bytes in owned scratch;
     // insert_exact consumes them without an intervening table mutation.
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
-                           const CanonicalCommandView &input);
-    // Approval uses the same exact identity window and staging invariant.
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
-                           const ApprovalCommand &input);
-    // Same window, exact identity and scratch owner for explicit reauthorization.
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
-                           const ReauthorizationCommand &input);
-    // Owner runtime-limit changes use the same exact window and staging rules.
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
-                           const TaskLimitCommand &input);
-    // Stages an exact query CAS/target for the same accepted command window.
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id, const TargetCommand &input);
-    // Exact Scene enable/disable identity, independent of current configuration.
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
-                           const authority::SceneChange &input);
+    // ExactCommand<Request> names the request's kind and canonical codec.
+    template <typename Request>
+    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id, const Request &request);
     // Revoke lookup clears any create candidate but does not stage one;
     // acceptance copies the request into a separate pending control (ADR-0031).
-    ExactLookup find_exact(uint64_t principal_id, uint64_t command_id,
-                           const CanonicalRevokeView &input);
+    ExactLookup find_revoke(uint64_t principal_id, uint64_t command_id,
+                            const CanonicalRevokeView &input);
     // Consume the exact candidate and copy optional historical result bytes in
     // the same configured byte stride. Refusal preserves the window/floor.
     bool insert_exact(CommandMapping mapping, ayni_bytes_v1 result = {});
@@ -199,12 +187,18 @@ class CommandTable {
         uint32_t count;        // Retained mappings in this row, at most capacity_.
     };
 
-    // One lookup/stage algorithm for two real exact request codecs.
-    template <typename Input>
-    ExactLookup
-    find_candidate(uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind,
-                   const Input &input, ayni_status_t (*measure)(const Input &, uint32_t &),
-                   ayni_status_t (*encode)(const Input &, uint8_t *, uint32_t, uint32_t &));
+    // An exact request's identity before its canonical bytes are encoded.
+    struct ExactProbe {
+        ExactLookup result;             // The answer, unless encode is set.
+        bool encode;                    // Only the bytes decide: encode them into scratch_.
+        const CommandMapping *existing; // Mapping the bytes must equal; null stages them.
+    };
+    // find_exact before encoding: shape, identity, floor, then byte capacity.
+    ExactProbe probe_exact(uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind,
+                           ayni_status_t measured, uint32_t size);
+    // find_exact after encoding size bytes into scratch_: retry, conflict or staged.
+    ExactLookup stage_exact(uint64_t principal_id, uint64_t command_id, ayni_intent_kind_t kind,
+                            const CommandMapping *existing, ayni_status_t encoded, uint32_t size);
     Row *row_of(uint64_t principal_id) const;
     Row *new_row(uint64_t principal_id);
     CommandMapping *mappings_of(const Row &row) const;
@@ -241,6 +235,21 @@ class CommandTable {
     uint64_t last_added_principal_ = 0;
     uint64_t last_added_command_ = 0;
 };
+
+template <typename Request>
+CommandTable::ExactLookup CommandTable::find_exact(uint64_t principal_id, uint64_t command_id,
+                                                   const Request &request) {
+    using Command = ExactCommand<Request>;
+    const ayni_intent_kind_t kind = Command::kind(request);
+    uint32_t size = 0;
+    const ayni_status_t measured = Command::measure(request, size);
+    const ExactProbe probe = probe_exact(principal_id, command_id, kind, measured, size);
+    if (!probe.encode) {
+        return probe.result;
+    }
+    const ayni_status_t encoded = Command::encode(request, scratch_, canonical_max_bytes_, size);
+    return stage_exact(principal_id, command_id, kind, probe.existing, encoded, size);
+}
 
 } // namespace ayni::kernel
 
