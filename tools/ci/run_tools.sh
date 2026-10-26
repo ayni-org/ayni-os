@@ -8,8 +8,10 @@ base_image=ubuntu:24.04
 recipe_key=$({ printf '%s\n' "$base_image"; cat "$recipe"; } | sha256sum | cut -d ' ' -f 1)
 image="ayni-ci-tools:$recipe_key"
 container_workspace=/__w/ayni/ayni
+# Two runners share one 32-CPU machine with about 7 GiB of memory, so each
+# container may use 12 CPUs and 3 GiB without swap (docs/development.md).
 # Init forwards cancellation signals to the command and reaps child processes.
-container_options=(--cpus=4 --memory=3g --memory-swap=3g --init)
+container_options=(--cpus=12 --memory=3g --memory-swap=3g --init)
 bootstrap_container=
 cleanup() {
     if [ -n "$bootstrap_container" ]; then
@@ -82,14 +84,20 @@ run_tools() {
 case "${1:-}" in
     prepare)
         prepare_image
-        # Named caches predate this image. Change their ownership only when
-        # adopting them from the former root job containers.
+        # Named caches predate this image: adopt them only from root, as the
+        # former job containers and a new volume leave them. Runners sharing
+        # this Docker daemon must run as one user; otherwise each job would
+        # take the caches from a job of the other runner still using them.
         docker run --rm "${container_options[@]}" --pull=never \
             --volume ayni-ccache:/ccache --volume ayni-downloads:/downloads \
             "$image" bash -eu -c '
                 for cache in /ccache /downloads; do
-                    if [ "$(stat -c %u:%g "$cache")" != "$1" ]; then
+                    owner=$(stat -c %u:%g "$cache")
+                    if [ "$owner" = 0:0 ]; then
                         chown -R "$1" "$cache"
+                    elif [ "$owner" != "$1" ]; then
+                        echo "$cache belongs to $owner, not $1: run every runner on this Docker daemon as one user" >&2
+                        exit 1
                     fi
                 done' bash "$(id -u):$(id -g)"
         ;;

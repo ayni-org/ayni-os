@@ -98,9 +98,9 @@ CI 的选择由 `tools/ci/select_checks.py` 和 `.github/workflows/ci.yml` 实�
 | 显式给 PR 加 `ci:full` 标签 | 手动请求完整四项 Native 配置与 ESP-IDF |
 | 每周一 02:00（北京时间）/ `workflow_dispatch` | 完整四项 Native 配置、ESP-IDF 与 advisory clang-tidy |
 
-日常 Native 验证只有 `native-asan`：GCC Debug 同时开启 ASan/UBSan，完整套件只跑一遍，不另外跑普通 Debug。Release、Clang Debug、TSan 和 ESP-IDF 仅在定期、`workflow_dispatch` 或显式 `ci:full` 时运行；不因并发、公共头、构建或 CI 路径自动追加。完整验证中的附加 Native 配置仍在一个 job/容器中依次运行。工作包收尾可对最终分支手动触发完整 CI；clang-tidy 仍不阻断，其他适用失败须处理。
+日常 Native 验证只有 `native-asan`：GCC Debug 同时开启 ASan/UBSan，完整套件只跑一遍，不另外跑普通 Debug。Release、Clang Debug、TSan 和 ESP-IDF 仅在定期、`workflow_dispatch` 或显式 `ci:full` 时运行；不因并发、公共头、构建或 CI 路径自动追加。完整验证中的附加 Native 配置各是一个矩阵 job，与 ESP-IDF 一起由两个 runner 并行取用。工作包收尾可对最终分支手动触发完整 CI；clang-tidy 仍不阻断，其他适用失败须处理。
 
-CI 使用一个自托管 runner，job 串行、任务内按预算并行。Native 工具镜像按安装配方缓存，常规运行不重装；复用 ccache、GoogleTest 下载和固定容器路径，见 `docs/development.md`。保持草稿跳过、旧运行取消与 main 不重跑构建。分支保护如配置必需检查，须与实际 job 名称和条件保持一致，不继续要求已删除的固定矩阵名称。
+CI 使用同一台机器上的两个自托管 runner（同一用户、共用 Docker daemon 与缓存卷），两个 job 可同时运行，任务内按预算并行。Native 工具镜像按安装配方缓存，常规运行不重装；复用 ccache、GoogleTest 下载和固定容器路径，见 `docs/development.md`。保持草稿跳过、旧运行取消与 main 不重跑构建。分支保护如配置必需检查，须与实际 job 名称和条件保持一致，不继续要求已删除的固定矩阵名称。
 
 TSan 启动受宿主 `vm.mmap_rnd_bits` 约束；处理方法见开发文档。审查 worktree 放在仓库外，避免依赖检查重复扫描。
 

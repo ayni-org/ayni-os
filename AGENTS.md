@@ -55,7 +55,7 @@ Target Core coverage ≥75% and safety-critical branch coverage ≥90%; record d
 
 ## Commit & Pull Request Guidelines
 
-Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. Open PRs as drafts and mark them ready after relevant local checks and the applicable review (`docs/workflow.md` steps 9–10); CI skips drafts to avoid consuming the single runner during development. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and any recovery traces actually collected; do not create a new recovery test campaign merely for PR evidence while that work is paused. Update contracts, migrations, ADRs, and relevant tests when semantics change; keep affected project documentation consistent.
+Use concise, imperative, scoped commit messages, for example `docs: clarify recovery guarantees`. Keep the initial history focused on documentation and repository setup. Open PRs as drafts and mark them ready after relevant local checks and the applicable review (`docs/workflow.md` steps 9–10); CI skips drafts to avoid consuming the shared runners during development. PRs should explain behavior, link relevant issues/plan sections, and report validation and limitations. Include screenshots for UI changes and any recovery traces actually collected; do not create a new recovery test campaign merely for PR evidence while that work is paused. Update contracts, migrations, ADRs, and relevant tests when semantics change; keep affected project documentation consistent.
 
 ## Architecture & Security Constraints
 

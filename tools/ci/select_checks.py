@@ -18,6 +18,15 @@ def select_checks(event, paths, full=False):
     return checks
 
 
+# The preset that runs each extra native configuration, in matrix order.
+NATIVE_PRESETS = {"release": "native-release", "clang": "native-debug", "tsan": "native-tsan"}
+
+
+def native_presets(checks):
+    """The extra native presets selected, one matrix job each."""
+    return [preset for name, preset in NATIVE_PRESETS.items() if checks[name]]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("event")
@@ -35,6 +44,7 @@ def main():
     checks = select_checks(args.event, paths, args.full)
     for name, enabled in checks.items():
         print(f"{name}={json.dumps(enabled)}")
+    print(f"native_presets={json.dumps(native_presets(checks), separators=(',', ':'))}")
 
 
 if __name__ == "__main__":
