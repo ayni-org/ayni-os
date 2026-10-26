@@ -51,6 +51,15 @@ class CheckDepsTest(unittest.TestCase):
         self.write("providers/mock/mock.cpp", '#include "kernel/kernel_state.h"\n')
         self.assert_single_violation("Core-internal header")
 
+    def test_strategies_use_only_public_component_boundaries(self):
+        self.write("strategies/builtin/loop.cpp", "#include <ayni/strategies/builtin.h>\n#include <ayni/calls.h>\n")
+        self.write("runtime/native_node/node.cpp", "#include <ayni/strategies/builtin.h>\n")
+        self.assertEqual(self.violations(), [])
+        self.write("strategies/builtin/loop.cpp", '#include "kernel/kernel_state.h"\n')
+        self.assert_single_violation("Core-internal header")
+        self.write("strategies/builtin/loop.cpp", "#include <ayni/providers/mock.h>\n")
+        self.assert_single_violation("strategies/ may not include")
+
     def test_core_rejects_upward_include(self):
         self.write("core/foundation/ids.cpp", '#include "kernel/kernel.h"\n')
         self.assert_single_violation("core/foundation may not include core/kernel")

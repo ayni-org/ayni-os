@@ -112,3 +112,8 @@ gtest_discover_tests(ayni_openai_provider_tests)
 add_executable(ayni_openai_smoke EXCLUDE_FROM_ALL ../manual/openai_smoke.cpp)
 target_link_libraries(ayni_openai_smoke PRIVATE ayni_core ayni_core_internal
     ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest)
+
+add_executable(ayni_strategies_tests strategies_test.cpp conversation_test.cpp)
+target_link_libraries(ayni_strategies_tests PRIVATE ayni_core ayni_core_internal
+    ayni_host_sim ayni_strategies ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_strategies_tests)

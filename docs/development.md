@@ -173,3 +173,7 @@ Hello 固件启动后打印芯片型号与版本、ESP-IDF 版本、复位原因
 - **模拟器运行**：`ayni-sim` 与全部 `ctest` 用例在 Linux 运行通过。
 - **实机运行**：尚未进行，需要开发板。
 - **长稳**：不适用于 M0。
+
+## 内建策略（MA-009）
+
+`strategies/builtin/` 仅链接公开 ABI，构建目标 `ayni_strategies`；相关测试目标 `ayni_strategies_tests`，用 `ctest -R '^(StrategiesFixture|Conversation|BuiltinRules|BuiltinLoop|CheckpointReaders)'` 选择。配置与对话保存顺序见组件 README。文件存储接入随 P2，不需要密钥或实 API。

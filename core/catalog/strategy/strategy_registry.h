@@ -13,11 +13,20 @@
 
 #include <ayni/ayni.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
 namespace ayni::catalog {
 
+// One accepted old writer's inclusive version interval (ADR-0056).
+struct CheckpointReader {
+    CatalogId id;             // Nonempty writer identity; owned by this registration.
+    uint32_t min_version = 0; // Positive lower bound when used.
+    uint32_t max_version = 0; // Inclusive upper bound, >= min_version.
+};
+
+// Owns immutable strategy registration and its explicit compatibility promise.
 struct Strategy {
     CatalogId id;
     uint32_t version = 0;
@@ -25,6 +34,11 @@ struct Strategy {
     ayni_decide_fn decide = nullptr;
     uint32_t max_intents_per_call = 0;
     uint32_t max_checkpoint_bytes = 0; // its private checkpoints' largest size
+    uint32_t reader_count = 0;         // Used prefix of readers; zero accepts only exact self.
+    std::array<CheckpointReader, AYNI_CHECKPOINT_READER_COUNT_MAX> readers{};
+
+    // Whether this implementation promises to read this nonempty old writer.
+    bool accepts_checkpoint(ayni_string_v1 writer, uint32_t writer_version) const;
 };
 
 class StrategyRegistry {
