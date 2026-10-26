@@ -44,6 +44,10 @@ class NativeNode {
     // C API unchanged. On failure the node holds nothing.
     ayni_status_t assemble(const char *state_directory);
 
+    // Explicit deployment capacities; copied by create, with identical ownership
+    // and failures to assemble(directory). The caller registers its profile.
+    ayni_status_t assemble(const char *state_directory, const ayni_config_v1 &config);
+
     // Owner thread, between ayni_step calls: true as soon as the Host's wake
     // was called since the previous return, false once timeout passes
     // without one, or at once when nothing is assembled.

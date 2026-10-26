@@ -24,7 +24,8 @@ fail with MODEL_OUTPUT; list encoding over the result byte limit also fails and
 returns the completion borrow. A model proposal does not execute the tool.
 
 All public methods and callbacks are owner-thread only. Call `ayni_begin_shutdown`,
-drive the Kernel until it stops, destroy it successfully, then `close()` the Provider.
+drive the Kernel until it stops, call `quiesce()` until its outstanding post has returned
+and its worker has joined, destroy the Kernel, then `close()` the Provider.
 `close()` returns BUSY while a borrow remains and joins the worker on success.
 Keep the object/context alive for as long as any Kernel has registered it. Poll
 `status()` for an unexpected local transport/publication error; HTTP/model failures
@@ -52,3 +53,6 @@ This sends two synthetic prompts and caps each output at 128 tokens. It is exclu
 from default builds and CTest. It prints assertions, not request headers or raw vendor
 responses. DeepSeek has been checked for these two operations; other services and
 long-running use require separate evidence.
+
+P2 adds explicit `result_format=AYNI_CALL_RESULT_TEXT` (`openai.text`) for summaries.
+The default remains TOOL_CALLS (`openai.chat`). Text calls receive no tool view.

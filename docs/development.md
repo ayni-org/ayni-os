@@ -176,4 +176,17 @@ Hello 固件启动后打印芯片型号与版本、ESP-IDF 版本、复位原因
 
 ## 内建策略（MA-009）
 
-`strategies/builtin/` 仅链接公开 ABI，构建目标 `ayni_strategies`；相关测试目标 `ayni_strategies_tests`，用 `ctest -R '^(StrategiesFixture|Conversation|BuiltinRules|BuiltinLoop|CheckpointReaders)'` 选择。配置与对话保存顺序见组件 README。文件存储接入随 P2，不需要密钥或实 API。
+`strategies/builtin/` 仅链接公开 ABI，构建目标 `ayni_strategies`；相关测试目标 `ayni_strategies_tests`，用 `ctest -R '^(StrategiesFixture|Conversation|BuiltinRules|BuiltinLoop|CheckpointReaders)'` 选择。配置与对话保存顺序见组件 README。P2 的文件存储接入见 `runtime/native_node`；本地 Mock 测试不需要密钥或实 API。
+
+### Native CLI（P2）
+
+先按资源预算设置 `CMAKE_BUILD_PARALLEL_LEVEL` 与 `CTEST_PARALLEL_LEVEL`，再构建 `ayni` 目标：
+
+```sh
+cmake --preset native-debug
+cmake --build --preset native-debug --target ayni ayni_native_assistant_tests
+./build/native/targets/native_cli/ayni --mock
+ctest --preset native-debug -R '^(NativeAssistant|KernelQuery|SimDemo|NativeCli)'
+```
+
+配置、授权与命令见 [CLI 使用说明](../targets/native_cli/README.md)。这是正常功能验证入口，CLI 测试通过 CTest 纳入 CI 的完整 ASan/UBSan 套件；真实服务由本机显式配置。目录默认在用户配置/数据位置，支持显式覆盖；`--help` 不读取密钥或启动 Kernel。

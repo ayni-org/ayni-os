@@ -5,20 +5,23 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace ayni::test {
 class LoopbackHttp {
   public:
     LoopbackHttp(std::string body, int status = 200, unsigned delay_ms = 0,
-                 std::string extra_headers = {})
+                 std::string extra_headers = {},
+                 std::function<std::string(const std::string &, unsigned)> responder = {})
         : body_(std::move(body)), status_(status), delay_ms_(delay_ms),
-          extra_headers_(std::move(extra_headers)) {
+          extra_headers_(std::move(extra_headers)), responder_(std::move(responder)) {
         listener_ = socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in address{};
         address.sin_family = AF_INET;
@@ -58,6 +61,10 @@ class LoopbackHttp {
         std::lock_guard<std::mutex> guard(mutex_);
         return request_;
     }
+    std::vector<std::string> history() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return history_;
+    }
 
   private:
     void serve(int client) {
@@ -84,6 +91,7 @@ class LoopbackHttp {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             request_ = request;
+            history_.push_back(request);
             ++requests_;
             changed_.wait_for(lock, std::chrono::milliseconds(delay_ms_),
                               [this] { return stopping_.load(); });
@@ -91,10 +99,11 @@ class LoopbackHttp {
         if (stopping_.load()) {
             return;
         }
+        const std::string body = responder_ ? responder_(request, requests_.load()) : body_;
         const std::string reply = "HTTP/1.1 " + std::to_string(status_) +
                                   " Fixture\r\nContent-Type: application/json\r\nContent-Length: " +
-                                  std::to_string(body_.size()) + "\r\nConnection: close\r\n" +
-                                  extra_headers_ + "\r\n" + body_;
+                                  std::to_string(body.size()) + "\r\nConnection: close\r\n" +
+                                  extra_headers_ + "\r\n" + body;
         size_t sent = 0;
         while (sent < reply.size()) {
             const auto count = send(client, reply.data() + sent, reply.size() - sent, MSG_NOSIGNAL);
@@ -129,11 +138,13 @@ class LoopbackHttp {
     int status_;
     unsigned delay_ms_;
     std::string extra_headers_;
+    std::function<std::string(const std::string &, unsigned)> responder_;
     std::atomic<bool> stopping_{false};
     std::atomic<unsigned> requests_{0};
     mutable std::mutex mutex_;
     std::condition_variable changed_;
     std::string request_;
+    std::vector<std::string> history_;
     std::thread worker_;
 };
 } // namespace ayni::test

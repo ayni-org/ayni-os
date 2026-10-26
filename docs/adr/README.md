@@ -81,3 +81,5 @@
 | [0055](0055-openai-compatible-provider.md) | Native OpenAI-compatible Provider、有界 JSON 与取消/排空 | 已接受 | §2.7、§3.3、§9.1 |
 
 | [0056](0056-builtin-strategies-and-conversations.md) | 规则策略、ToolLoop、有界对话与检查点 reader 声明 | 已接受 | §2.7、§3.3、§9.1 |
+
+| [0057](0057-native-dual-agent-cli.md) | 双 Agent Native/Sim 装配、对话文件与单进程 CLI | 已接受，实施中 | §3.2、§9.1、§14.1 |

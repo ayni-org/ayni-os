@@ -44,11 +44,13 @@ NativeNode::~NativeNode() {
 }
 
 ayni_status_t NativeNode::assemble(const char *state_directory) {
+    return assemble(state_directory, default_config());
+}
+
+ayni_status_t NativeNode::assemble(const char *state_directory, const ayni_config_v1 &config) {
     if (kernel_ != nullptr) {
         return AYNI_INVALID_STATE;
     }
-
-    const ayni_config_v1 config = default_config();
 
     std::size_t size = 0;
     std::size_t align = 0;

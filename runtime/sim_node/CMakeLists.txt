@@ -1,0 +1,4 @@
+add_library(ayni_runtime_sim_node STATIC sim_node.cpp)
+target_include_directories(ayni_runtime_sim_node PUBLIC include)
+target_link_libraries(ayni_runtime_sim_node PUBLIC ayni_api
+    PRIVATE ayni_core ayni_host_sim ayni_runtime_common ayni_warnings)

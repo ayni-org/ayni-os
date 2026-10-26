@@ -262,17 +262,21 @@ struct Provider::Impl {
         return AYNI_OK;
     }
     void build_descriptor() {
-        static constexpr char capability_id[] = "openai.chat";
+        static constexpr char chat_id[] = "openai.chat";
+        static constexpr char text_id[] = "openai.text";
+        const ayni_string_v1 capability_id = config.result_format == AYNI_CALL_RESULT_TEXT
+                                                 ? ayni_string_v1{text_id, sizeof(text_id) - 1}
+                                                 : ayni_string_v1{chat_id, sizeof(chat_id) - 1};
         static constexpr char resource_id[] = "model.slot";
         resource = {{resource_id, sizeof(resource_id) - 1}, 1, 0};
         capability = {sizeof(capability),
                       contract_version,
-                      {capability_id, sizeof(capability_id) - 1},
+                      capability_id,
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_MODEL,
                        AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
                        AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, config.timeout_ms,
-                       AYNI_CALL_INPUT_FIELDS_TEXT, AYNI_CALL_RESULT_TOOL_CALLS,
-                       config.text_max_bytes, config.text_max_bytes, 1, &resource}};
+                       AYNI_CALL_INPUT_FIELDS_TEXT, config.result_format, config.text_max_bytes,
+                       config.text_max_bytes, 1, &resource}};
         descriptor = {sizeof(descriptor),
                       contract_version,
                       text(config.provider_id),
@@ -599,7 +603,9 @@ ayni_status_t Provider::configure(const Config &config) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
-    if (!config.request_capacity || config.request_capacity > request_capacity_max ||
+    if ((config.result_format != AYNI_CALL_RESULT_TEXT &&
+         config.result_format != AYNI_CALL_RESULT_TOOL_CALLS) ||
+        !config.request_capacity || config.request_capacity > request_capacity_max ||
         !config.text_max_bytes || config.text_max_bytes > AYNI_CALL_TEXT_BYTES_MAX ||
         !config.response_max_bytes || config.response_max_bytes > response_bytes_max ||
         !config.timeout_ms || config.timeout_ms > timeout_max_ms || !config.max_output_tokens ||
@@ -641,6 +647,16 @@ ayni_status_t Provider::close() {
     const auto status = impl_->failure.load();
     impl_.reset();
     return status;
+}
+ayni_status_t Provider::quiesce() {
+    if (!impl_) {
+        return AYNI_INVALID_STATE;
+    }
+    if (impl_->active.load() != 0) {
+        return AYNI_BUSY;
+    }
+    impl_->stop();
+    return AYNI_OK;
 }
 uint32_t Provider::pending() const {
     return impl_ ? impl_->active.load() : 0;
