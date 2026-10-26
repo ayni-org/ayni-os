@@ -136,3 +136,10 @@ ABI 0.32 增加调用等待诊断 `AYNI_CALL_WAIT_CONFLICT`（9）：其他同�
 ABI 0.33 增加 `AYNI_REASON_BACKGROUND_FREQUENCY`（73），属于 `INVALID_ARGUMENT`：创建参数中的周期短于可信后台频率下限。`AYNI_CALL_SKIPPED`（8）是 Core 专用终态，不是 Provider 回执；表示资源等待到期且未派发，诊断为 `EXPIRED/RESOURCE_WAIT`，没有外部效果。
 
 ABI 0.37 增加 `AYNI_REASON_MODEL_OUTPUT`（76），用于 `FAILED` 的模型调用：模型确实运行了，但输出无法变成类型化结果（参数无法解码、工具不在提供的视图中、取值越界或正文超限）。状态为 `INVALID_ARGUMENT`，列表超出结果上限时为 `CAPACITY_EXCEEDED`。它由 Provider 报告，策略可以据此重试或结束；Provider 仍发表的不合格列表不用这个原因，而是 `RESULT_UNKNOWN`/`PROVIDER_RESULT`（ADR-0054）。
+
+## ABI 0.40 记忆诊断
+
+- `AYNI_REASON_MEMORY_SOURCE`（77）属于 `DENIED`：请求的读、写或外发许可缺失。
+- `AYNI_REASON_MEMORY_DEPENDENCIES`（78）属于 `CAPACITY_EXCEEDED`：记忆或完整来源集合超出本次容量。
+- `AYNI_REASON_MEMORY_EXPIRED`（79）属于 `EXPIRED`：已捕获的来源版本或许可失效。
+- 其他记忆分类失败保留原状态并使用 `NONE`；隐私清理查询的 `progress_status` 显示 Context/快照代际耗尽的容量失败，不假装已完成。

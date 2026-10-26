@@ -49,6 +49,7 @@
 | `C-RUN` | [domain/runtime_limits.md](domain/runtime_limits.md) | `work/task`、`resources`、Provider |
 | `C-PERMIT`、`C-STOP` | [domain/permits_and_stop.md](domain/permits_and_stop.md) | `resources`（签发）、`control/`、`safety/`（执行） |
 | `C-PROD` | [domain/product_semantics.md](domain/product_semantics.md) | 应用层 + `work`、`knowledge` |
+| `C-MEM` | [domain/memory.md](domain/memory.md) | `knowledge`、`work/provenance`、`work/privacy`、`kernel` |
 | `C-LIMIT` | [domain/limits.md](domain/limits.md) | `kernel`（配置） |
 | `C-HOST` | [host/host_ports.md](host/host_ports.md) | `kernel` 与各 Host |
 | `C-NATIVE` | [host/native_runtime.md](host/native_runtime.md) | `runtime/` |

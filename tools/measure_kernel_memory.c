@@ -9,7 +9,8 @@ static int measure(const char *label, const ayni_config_v1 *config) {
     return status != AYNI_OK;
 }
 int main(void) {
-    /* Every capacity at its _DEFAULT and the optional stores off: a C copy
+    /* Every capacity at its _DEFAULT, including memory; optional call/execution
+     * stores off: a C copy
      * of runtime/common default_config() (ADR-0053), whose C++ header this
      * C99 tool cannot include. Change both together. */
     ayni_config_v1 config = {0};
@@ -65,6 +66,7 @@ int main(void) {
     config.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_MIN;
     config.goal_requirement_capacity = 1;
     failed |= measure("minimum work", &config);
+    config.memory_capacity = AYNI_MEMORY_CAPACITY_DEFAULT;
     config.agent_capacity = 2;
     config.goal_type_capacity = 4;
     config.goal_capacity = 8;

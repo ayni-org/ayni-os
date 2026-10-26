@@ -79,7 +79,7 @@
 | C-LIMIT-009 | 媒体缓冲与上下文使用独立的缓冲池与字节上限，不挤占关键任务栈与内部 RAM | 一张大图片占满内部 RAM，停止监督任务栈溢出 | M2/M3 资源测量；E1 步骤 8 |
 | C-LIMIT-010 | 分配失败、存储满、TLS 失败都返回明确状态；拒绝新负载，同时保留停止与诊断能力 | 存储满时 Kernel 崩溃重启，停止按键失效 | 第 10.6 节「存储与恢复」；`MA-012` |
 | C-LIMIT-011 | 一次 `ayni_step` 最多处理 `max_items` 个工作项，并在 `max_time_us` 用尽后返回；`step` 内不等待网络、存储、模型或设备 | 一次 `step` 内同步等待 Flash 写完 | M1 已实现：`KernelLifecycle.step_applies_at_most_max_items`、`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`（请求在之后的 step 中完成）、`KernelLifecycle.recovery_waits_for_a_free_slot_without_spinning`（等待空闲槽时不报告 `more_ready`）；策略的决定每个算一个 item，只取本次 step 之前已是 `READY` 的 Task（ADR-0022）：`WorkDecision.step_stops_deciding_once_its_time_budget_is_spent`、`WorkDecision.task_is_decided_in_the_step_after_it_became_ready`；`MA-003`；第 10.6 节「事件与容量」 |
-| C-LIMIT-012 | 派生摘要的 lineage 条目数有上限，上限随配置给出；达到上限时按 C-PROD-032 处理 | lineage 数组写满后静默丢弃最早的依赖 | `MA-011` |
+| C-LIMIT-012 | 派生摘要的 lineage 条目数有上限，上限随配置给出；达到上限时按 C-PROD-032 处理 | lineage 数组写满后静默丢弃最早的依赖 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`；C-MEM-005 |
 
 D 的 Grant metadata 新增 revoker/cursor/独立 cleanup_stamp，snapshot Grant 尾为80 B，v3撤销mapping为80 B。Gate 在 GrantTable，pending metadata 与canonical/window scratch在CommandTable，按其 storage_size 统一分配；不在Kernel增加状态数组，也不另建普通结果窗口。清理每工作项至多处理一个候选，有限表/祖先扫描受配置界限约束；Native caller arena已两轮严格C99量测：默认110,792 B、最小31,616 B、对齐8 B，较C增加4,272/544 B。Gate/pending耗尽、全pin、背压与持久安全叶回收已有Native场景证据；容量失败组合未逐项穷尽，见ADR-0031。硬件RAM、栈与最坏step时长仍待量测，结构上界或Native arena数字不替代硬件证据。
 
@@ -92,3 +92,9 @@ D 的 Grant metadata 新增 revoker/cursor/独立 cleanup_stamp，snapshot Grant
 ## ABI 0.33 工作频率
 
 后台 GoalType 只接受 INTERVAL，默认最短 300,000,000 μs，可信配置可设有限值且不得小于 AYNI_TRIGGER_PERIOD_MIN_US；非后台类型的频率字段须为 0。后台派生前 occurrence 等待必须有限且不超过 30,000,000 μs；提醒必须无界等待。Goal 请求小于该下限时返回 INVALID_ARGUMENT/BACKGROUND_FREQUENCY。优先级及等待上限由可信分类决定，不由模型提高；这是每个 Goal 的运行频率约束，不是 Agent 累积费用或调用额度。
+
+## P3 记忆与来源容量（ABI 0.40）
+
+`memory_capacity` 默认 64、0 禁用、上限 256；`memory_body_max_bytes` 默认 512、范围 1～4096；`memory_dependency_capacity` 默认 8、范围 1～8。每个 Memory/Goal/Task/Context/命令来源集合都受同一依赖上限约束，不能把整张图压成一个 anchor 规避上限。Context 另占每 Agent 一个有界槽；清理期间保守保留 Goal/Task，可能暂时阻止回收。表满拒绝新记录，见 C-MEM-002/005。
+
+Native 对话正常保留最近 3 轮；第 4 槽只承接发布失效时已接受的独立用户输入，满 4 槽须先显式删除一轮才能提交新输入。未发布草稿最多 384 UTF-8 字节；续写合并为同一未编号输入，超限拒绝且保留原值。摘要最多 512 字节、portable state 4096 字节，两个限制分别检查。

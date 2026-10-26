@@ -87,3 +87,5 @@
 | [0058](0058-kernel-service-runtime-boundaries.md) | Kernel 私有状态、service/runtime 分区、StepContext 与 CallbackGate | 已接受 | §2.3、§3.2、§9.1 |
 
 | [0059](0059-grant-restore-and-persistent-stores.md) | Grant 事实/撤销闸门/恢复职责与 Grant、命令持久适配 | 已接受 | §2.3、§2.8、§9.1 |
+
+| [0060](0060-private-memory-and-lineage.md) | 有界私有记忆、来源权限、Context 文件屏障与逻辑隐私清理 | 已接受 | §2、§9.1、§14.1 |

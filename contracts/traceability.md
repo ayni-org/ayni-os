@@ -11,22 +11,23 @@
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 18 | 12 |
-| [domain/limits.md](domain/limits.md) | 12 | 6 |
+| [domain/limits.md](domain/limits.md) | 12 | 7 |
+| [domain/memory.md](domain/memory.md) | 12 | 12 |
 | [domain/permits_and_stop.md](domain/permits_and_stop.md) | 30 | 0 |
 | [domain/primitives.md](domain/primitives.md) | 8 | 0 |
-| [domain/product_semantics.md](domain/product_semantics.md) | 28 | 0 |
+| [domain/product_semantics.md](domain/product_semantics.md) | 28 | 3 |
 | [domain/resources_and_budget.md](domain/resources_and_budget.md) | 23 | 2 |
 | [domain/runtime_limits.md](domain/runtime_limits.md) | 8 | 0 |
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 3 |
 | [domain/versions.md](domain/versions.md) | 17 | 6 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 6 | 6 |
-| [host/policy_interface.md](host/policy_interface.md) | 12 | 7 |
+| [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 357 | 114 |
+| 合计 | 369 | 131 |
 
 ## 计划章节 → 契约文档
 
@@ -93,6 +94,7 @@
 | ADR-0042 | domain/runtime_limits.md |
 | ADR-0056 | host/policy_interface.md |
 | ADR-0057 | host/native_runtime.md |
+| ADR-0060 | domain/memory.md、host/native_runtime.md |
 
 ## 工作包 → 条款
 
@@ -107,7 +109,7 @@
 | `MA-008` | C-AUTH-005、C-AUTH-006、C-AUTH-018、C-CALL-001、C-CALL-003、C-CALL-004、C-BIND-002、C-BIND-003、C-COMMIT-012、C-LIFE-021、C-LIFE-022、C-RUN-002、C-RUN-003、C-RUN-007、C-VER-030、C-HOST-013、C-POLICY-008、C-POLICY-009、C-PROV-002、C-PROV-003、C-PROV-007、C-PROV-010、C-STORE-011 |
 | `MA-009` | C-LIMIT-005、C-LIMIT-006、C-POLICY-001、C-POLICY-002、C-POLICY-005、C-POLICY-008、C-POLICY-011 |
 | `MA-010` | C-COMMIT-003、C-COMMIT-014、C-ID-009、C-STORE-001 |
-| `MA-011` | C-ID-001、C-TIME-004、C-TIME-005、C-TIME-006、C-TIME-007、C-LIMIT-012、C-PROD-018、C-PROD-032、C-PROD-034、C-PROD-042、C-POLICY-009、C-JSON-010 |
+| `MA-011` | C-ID-001、C-TIME-004、C-TIME-005、C-TIME-006、C-TIME-007、C-PROD-018、C-POLICY-009、C-JSON-010 |
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
 | `MA-016` | C-AUTH-002、C-AUTH-012、C-AUTH-015、C-LIFE-020、C-PRIM-007、C-VER-010、C-WIRE-003、C-WIRE-006、C-WIRE-007、C-WIRE-009、C-WIRE-010 |
@@ -115,7 +117,7 @@
 | `MA-019` | C-LIFE-023、C-LIMIT-007、C-PROD-012、C-PROD-015、C-PROD-018、C-PROD-050、C-RUN-007、C-RUN-008 |
 | `MA-022` | C-AUTH-006、C-COMMIT-008、C-COMMIT-009、C-COMMIT-011、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
 | `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-PERMIT-016、C-PERMIT-017、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
-| `MA-027` | C-PROD-033、C-PROV-011 |
+| `MA-027` | C-PROD-033、C-PROD-035、C-PROV-011 |
 | `MA-028` | C-PROD-001、C-PROD-003、C-PROD-004、C-PROD-051 |
 | `MA-030` | C-WIRE-015 |
 | `MA-034` | C-TRUST-002 |
@@ -227,6 +229,22 @@
 | C-LIMIT-007 | M1 已实现（子目标深度与数量）：`WorkModel.child_goals_follow_their_parent_and_the_tree_limits`、`GoalTable.tree_limits_refuse_deeper_or_more_children`、`GoalTable.zero_limits_allow_top_level_goals_only`、`WorkModel.tree_limits_at_their_defaults_bound_the_tree`，子目标排在父目标之前时同样（ADR-0025）`GoalTable.child_in_an_earlier_place_is_still_in_its_parents_tree`；M1 已实现（本次启动内的去重）：等待的 occurrence 合并为一个 Task，节拍不变（ADR-0019）`TriggerSchedule.waiting_occurrences_are_taken_together_and_the_schedule_holds`、`WorkTrigger.occurrences_missed_between_steps_become_one_task`、`WorkTrigger.paused_goal_takes_what_fell_due_when_resumed`；M1 已实现（重启后：不补建断电期间错过的 occurrence，计时从恢复时刻按完整时长重新开始，ADR-0026 决策 6）：`WorkRecovery.timers_restart_from_the_recovery_clock_with_their_full_length`、`GoalRestore.reanchor_restarts_every_wait_in_full_at_recovery`；日历提醒的“错过补发一次”随 `MA-019`（C-PROD-018）；E2 F8 |
 | C-LIMIT-008 | M1 已实现（入口与完成槽）：`IngressQueue.full_queue_rejects_other_events_with_busy`、`IngressQueue.full_queue_replaces_newest_value_of_the_same_stream`、`IngressQueue.telemetry_flood_keeps_each_stream_in_order_and_accounted`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；本地输入不丢弃、队列满时返回 `BUSY`（ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`WorkInput.small_event_bodies_still_hold_a_source`；持续的事件流不挡到期工作：`WorkInput.steady_events_do_not_hold_back_due_work`；E1 步骤 10；`MA-003` |
 | C-LIMIT-011 | M1 已实现：`KernelLifecycle.step_applies_at_most_max_items`、`KernelLifecycle.step_returns_once_its_time_budget_is_spent`、`KernelLifecycle.recovery_lasts_until_the_epoch_append_completes`（请求在之后的 step 中完成）、`KernelLifecycle.recovery_waits_for_a_free_slot_without_spinning`（等待空闲槽时不报告 `more_ready`）；策略的决定每个算一个 item，只取本次 step 之前已是 `READY` 的 Task（ADR-0022）：`WorkDecision.step_stops_deciding_once_its_time_budget_is_spent`、`WorkDecision.task_is_decided_in_the_step_after_it_became_ready`；`MA-003`；第 10.6 节「事件与容量」 |
+| C-LIMIT-012 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`；C-MEM-005 |
+| C-MEM-001 | M1 已实现：`KernelMemory.explicit_save_is_confirmed_and_body_waits_for_durable_receipt`、`KernelMemory.exact_retry_and_revision_cas_do_not_replace_other_content`、`KernelMemory.management_authentication_applies_to_queries_and_exact_retries` |
+| C-MEM-002 | M1 已实现：`MemoryFacts.copies_bounded_text_and_rejects_full_table_without_eviction`、`MemoryFacts.byte_limit_precedes_utf8_scan_and_valid_text_uses_utf8_bytes`、`KernelMemory.full_capacity_and_small_output_buffers_leave_saved_facts_intact` |
+| C-MEM-003 | M1 已实现：`KernelMemory.another_agent_cannot_read_private_content_or_ignore_the_denial`、`NativeAssistant.sharing_private_memory_then_revoking_blocks_reads_and_old_context`、`NativeAssistant.profile_starts_empty_and_grant_to_a_does_not_authorize_b`；用途与时限的完整组合矩阵未验证 |
+| C-MEM-004 | M1 已实现：`MemoryFacts.confirmation_preserves_model_origin_and_source_dependencies`、`KernelMemory.policy_derived_memory_and_confirmation_retain_sources_across_reopen`、`MemoryCall.model_result_becomes_unconfirmed_memory_after_its_durable_prefix` |
+| C-MEM-005 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`、`MemoryFacts.changed_source_and_captured_permission_never_select_a_replacement`、`KernelMemory.strategy_read_checkpoint_survives_reopen_and_source_delete_blocks_export`、`KernelContext.policy_callback_cannot_export_another_goals_or_tasks_private_body` |
+| C-MEM-006 | M1 已实现：`MemoryFacts.exact_tags_and_keywords_combine_with_body_search`、`KernelMemory.unicode_search_keeps_private_namespaces_and_profile_separate`、`KernelMemory.strategy_search_tracks_authorized_nonmatches_before_publishing_a_page` |
+| C-MEM-007 | M1 已实现：`NativeAssistant.remote_memory_requires_separate_destination_grant_before_http_submission`、`MemoryFacts.first_export_permission_extends_lineage_without_duplicate_read_slots`；真实远端删除不在本契约内 |
+| C-MEM-008 | M1 已实现：`KernelMemory.deletion_blocks_body_before_storage_acknowledgement`、`KernelMemory.deletion_scrubs_retained_storage_and_preserves_unrelated_retry_after_reopen`、`MemoryCall.invalid_late_text_remains_unknown_after_its_source_is_deleted`、`CallTableTest.authoritative_query_after_erasure_keeps_outcome_without_refilling_content` |
+| C-MEM-009 | M1 已实现：`KernelContext.publication_waits_for_ack_and_old_task_cannot_publish_again`、`KernelContext.context_erasure_revisits_earlier_memory_until_sources_are_stable`、`NativeAssistant.invalidating_publication_preserves_draft_across_reopen_and_next_turn` |
+| C-MEM-010 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`、`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`Conversation.superseded_publication_keeps_original_turn_identity_and_reserves_capacity` |
+| C-MEM-011 | M1 已实现：`KernelContext.forget_immediately_blocks_old_checkpoint_and_waits_for_exact_file_ack`、`KernelContextApproval.retired_approval_canonical_is_erased_with_its_context`、`KernelMemory.deletion_scrubs_retained_storage_and_preserves_unrelated_retry_after_reopen`；新故障、恢复、耐久专项未验证，不保证介质取证擦除 |
+| C-MEM-012 | M1 已实现：`NativeAssistant.legacy_conversation_refusal_preserves_the_entire_kernel_directory`、`ContextCapacity.valid_history_exceeding_configured_dependencies_is_classified_as_capacity`、`MemoryFacts.lowering_dependency_capacity_does_not_classify_valid_history_as_corrupt`；迁移工具未实现 |
+| C-PROD-032 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`；C-MEM-005、C-LIMIT-012 |
+| C-PROD-034 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`；C-MEM-010 |
+| C-PROD-035 | M1 已实现所有者会话边界：`KernelMemory.management_authentication_applies_to_queries_and_exact_retries`；远程管理端仍随 MA-027；E1 步骤 7、C-AUTH-009 |
 | C-RES-005 | M1 已实现（occurrence 等待 Task 槽位或 ID：GoalType 声明等待上限，超限跳过并计数、记原因码，可声明无界等待；Goal 信息给出当前的等待原因，ADR-0020；有停下的 Task 的 Goal 同样等待并跳过，原因 `TASK_HELD`，ADR-0022；跳过最后一个 occurrence 且没有未结束的 Task 时 Goal 进入 `FAILED`，原因保留在 `skip_reason`，ADR-0023）：`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.skipping_the_last_occurrence_fails_the_goal`、`WorkWait.skip_leaves_a_goal_with_a_live_task_active`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.wait_reason_reports_what_would_hold_the_next_occurrence`、`WorkDecision.held_task_keeps_its_goal_from_deriving_until_it_ends`、`WorkDecision.held_task_keeps_its_goal_waiting_with_room_in_the_table`；Task 执行中的资源等待：`ManagedCall.ordinary_wait_expiry_pauses_without_dispatching_the_queued_call`、`ManagedCall.reminder_waits_beyond_thirty_seconds_without_owner_resume`、`ManagedCall.background_wait_skips_one_task_and_next_period_can_execute`；后台频率与声明边界：`ManagedCall.background_period_floor_is_trusted_and_visible_in_goal_diagnostics`、`WorkModel.work_profiles_reject_invalid_classes_periods_and_reminder_waits`（ADR-0047）；E1 步骤 10 |
 | C-RES-013 | M1 已实现（可信配置入口复制描述，启动后冻结，健康不改变持久状态）：`ResourceApi.registration_copies_trusted_metadata_and_health_never_commits_storage`、`ResourceApi.disabled_tables_and_invalid_descriptors_fail_explicitly`、`ResourceApi.configured_capacities_are_bounded_and_arena_size_accounts_for_both_tables`、`ResourceApi.device_component_resource_links_are_copied_and_resolved_at_start`、`ResourceApi.inventory_capacity_and_shape_failures_preserve_existing_descriptions`、`ResourceApi.component_association_shape_and_capacity_are_checked_before_registration`；v0.x 同进程原生代码为可信代码，不是隔离沙箱 |
 | C-STATUS-001 | M0 已实现：`include/ayni/ayni.h` 为每个已实现函数列出返回码，`tests/unit/kernel_api_test.cpp` 覆盖 `ayni_create` 文档列出的每个失败码；`MA-005` 生命周期返回值表：`KernelLifecycle.return_values_follow_the_state_table`、`KernelLifecycle.step_rejects_bad_arguments_without_effect`、`KernelLifecycle.kernel_info_checks_its_output`；工作模型：`WorkModel.return_values_follow_the_state_table`、`WorkModel.intent_arguments_are_refused_before_anything_else`、`WorkModel.registration_checks_its_arguments`、`WorkModel.queries_check_their_arguments`、`WorkTask.task_and_instance_bodies_are_checked_before_anything_else`、`WorkTask.task_query_checks_its_arguments`、`WorkTask.task_and_instance_intents_outside_running_are_not_ready` |
@@ -254,7 +272,7 @@
 | C-HOST-021 | M1 已实现（Kernel 报告的期限）：`WorkTrigger.delay_goal_derives_once_its_time_comes`、`WorkTrigger.deadline_counts_only_goals_that_could_derive`、`WorkTrigger.paused_goal_takes_what_fell_due_when_resumed`、`WorkTrigger.paused_instance_holds_the_occurrence_until_resumed`、`WorkTrigger.used_up_ids_report_no_deadline`、`WorkTrigger.budget_spent_before_deriving_still_reports_the_due_occurrence`、`WorkTrigger.draining_reports_no_deadline`、`WorkExpiry.goal_expires_at_its_time`、`WorkExpiry.expiry_counts_in_the_deadline`、`WorkExpiry.expiry_needs_neither_room_nor_an_id`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.paused_goal_waits_without_skipping`、`WorkWait.deadline_is_the_end_of_the_earliest_bounded_wait`、`WorkExpiry.clock_at_its_largest_value_finds_no_due_work`、`WorkInput.goal_takes_inputs_from_its_source`、`WorkInput.inputs_waiting_too_long_are_skipped`；存储退避与不空转 `KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`；按期限睡眠的应用循环随 E1 夹具与 `MA-007` |
 | C-NATIVE-001 | M1 已实现：`NativeAssistant.rule_and_chat_agents_use_separate_owned_work`、`NativeAssistant.proposed_turn_can_be_approved_after_normal_reopen`、`NativeAssistant.rule_agent_restores_its_pending_goal_and_reports_completion` |
 | C-NATIVE-002 | M1 已实现：`NativeAssistant.summary_and_conversation_survive_clean_close_and_reopen`、`NativeAssistant.continuing_past_retained_capacity_keeps_latest_context_and_queryable_calls`；异常退出窗口及文件故障未验证 |
-| C-NATIVE-003 | M1 已实现：`NativeAssistant.whole_context_delete_is_saved_and_does_not_erase_kernel_history`；历史擦除仍随 P3 |
+| C-NATIVE-003 | M1 已实现：`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`；新故障/恢复专项未验证 |
 | C-NATIVE-004 | M1 已实现：`NativeAssistant.local_http_tool_loop_and_text_only_summary_use_real_provider_wiring`；仅本地 HTTP 夹具，实 API 多轮未验证 |
 | C-NATIVE-005 | M1 已实现：`SimDemo.independent_nodes_use_the_same_profile_and_retain_storage_on_release` |
 | C-NATIVE-006 | M1 已实现：`NativeAssistant.grant_revoke_and_cancel_use_public_management_commands`（正常提交与持久等待）；PENDING 背压的 runtime 专项未验证，Core 既有回执测试保持 |
@@ -265,6 +283,7 @@
 | C-POLICY-008 | M1 已实现（`REPORT_PROGRESS` 以目录 ID 形式的 `step_key` 提交步骤，在 Task 内唯一，只增不删，快照按提交顺序给出，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.refused_decisions_commit_nothing_and_hold_with_their_reason`、`WorkCheckpoint.steps_bound_how_often_a_task_is_decided`、`WorkCheckpoint.steps_that_share_a_prefix_are_distinct`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`、`TaskTable.add_step_refuses_a_taken_invalid_or_extra_step`；M1 部分实现（跨重启：步骤与 `step_key` 由 Kernel 保存并按提交顺序恢复，换版本后的决定看到同样的步骤，ADR-0026）：`TaskRestore.restore_step_replays_each_step_at_its_position`、`WorkRecovery.task_its_strategy_cannot_serve_is_held`；换策略不重做随 `MA-009`，调用的步骤随 `MA-008`；E3 步骤 4；E4 步骤 2；C-ID-003 ；ADR-0056：`StrategiesFixture.declared_compatible_replacement_continues_without_redoing_a_step` |
 | C-POLICY-009 | M1 已实现（未知的类型或版本拒绝，参数由 GoalType 校验；GoalType 声明它接受的触发种类，Goal 只能选择其中之一，M1 为 `NONE`、`ONCE`、`DELAY`、`INTERVAL`、`LOCAL_INPUT`，ADR-0018、ADR-0019、ADR-0021；GoalType 声明 occurrence 等待 Task 槽位或 ID 的上限，ADR-0020；会产生 Task 的 GoalType 指定决定其 Task 的策略，完成由策略的决定表达，ADR-0022）：`WorkModel.unknown_goal_type_or_version_is_refused`、`WorkModel.parameters_are_checked_last_by_size_and_by_the_goal_type`、`GoalTypeRegistry.tells_an_unknown_id_from_an_unknown_version`、`GoalTypeRegistry.validator_decides_the_parameters`、`GoalTypeRegistry.type_without_validator_takes_no_parameters`、`GoalTypeRegistry.trigger_kinds_decide_the_accepted_triggers`、`WorkTask.goal_type_must_accept_the_trigger`、`WorkInput.goal_type_must_accept_local_input`、`WorkModel.registration_checks_its_arguments`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkStrategy.goal_type_names_a_strategy_exactly_when_its_goals_may_have_tasks`、`WorkDecision.goal_ends_with_the_last_of_its_tasks`；观察与订阅事件的触发随 `MA-018`，日历规则随 `MA-011`，暂停点与 Task 执行中的等待上限随 `MA-008`、`MA-018`；E4 步骤 5 |
 | C-POLICY-010 | M1 已实现（策略只在 `CONFIGURING` 中注册，同一 ID 同时只有一个版本，ADR-0022）：`WorkStrategy.registration_checks_its_arguments`、`StrategyRegistry.refuses_another_version_of_an_id_and_registrations_beyond_capacity`、`WorkModel.return_values_follow_the_state_table`；M1 已实现（重启后换版本：只有写入检查点的策略在同一版本读取它，否则 Task 停下，ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 2、4 ；ADR-0056：`StrategiesFixture.declared_compatible_replacement_continues_without_redoing_a_step` |
+| C-POLICY-012 | M1 已实现值、Task 来源导出及 Context 文件 ACK（C-MEM-009）：`StrategiesFixture.completed_checkpoint_export_has_a_durable_barrier_and_copy_bounds`、`StrategiesFixture.summary_replaces_old_rounds_only_in_a_successful_candidate`、`StrategiesFixture.unsuccessful_summary_preserves_every_original_round`、`StrategiesFixture.deleting_the_whole_conversation_refuses_a_late_turn`、`Conversation.whole_delete_clears_text_and_lineage_together` |
 | C-STORE-001 | M1 已实现（编解码）：`BatchCodec.every_damaged_byte_is_corrupt`、`BatchCodec.every_short_write_is_corrupt`、`BatchCodec.header_shorter_than_44_bytes_is_corrupt`、`BatchCodec.longer_header_from_a_later_writer_is_accepted`、`BatchCodec.commit_marker_of_another_commit_seq_is_corrupt`；`MA-010` 短写注入；E2 F7 |
 | C-STORE-002 | M1 已实现：Kernel 侧 `BatchCodec.every_short_write_is_corrupt`、`PrefixScan.damaged_batch_stops_the_scan`；Host 丢弃撕裂的尾部 `HostStorage.torn_tail_is_dropped_and_overwritten`、`NativeHost.torn_tail_is_truncated_before_the_next_append`；追加中断电的批次只在完整写入时计入 `WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；重放受限时丢弃已重放的全部内容 `WorkRecovery.log_beyond_the_capacities_restricts_and_shows_nothing`（ADR-0026）；E2 F0、F7、F8 |
 | C-STORE-003 | M1 已实现（物理读取、连续前缀与栅栏）：`PrefixScan.commit_seq_must_continue_exactly`、`WriterFenceScan.stale_physical_batch_never_moves_the_logical_cursor`、`WriterFenceScan.fence_must_advance_the_writer_and_match_its_header`、`WorkRecovery.every_stored_prefix_recovers_the_state_after_its_last_batch`、`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`；ADR-0027 |
