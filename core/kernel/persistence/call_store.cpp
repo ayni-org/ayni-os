@@ -11,7 +11,8 @@ namespace {
 
 bool knows(uint16_t version, WorkRecordContext) {
     return version == work::call_record_version || version == work::call_skipped_record_version ||
-           version == work::call_execution_record_version;
+           version == work::call_execution_record_version ||
+           version == work::call_tool_calls_record_version;
 }
 uint32_t capacity(const KernelCapacities &capacities) {
     return capacities.call_capacity;
@@ -34,9 +35,9 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
         if (++written > 1U || record.state.latest.transition.transition_id != stamp.transition_id) {
             return false;
         }
-        auto *at = writer.add_record_body(
-            {work::call_record_type, work::call_record_version_for(record.state),
-             durability::record_required, work::call_record_size(record)});
+        auto *at =
+            writer.add_record_body({work::call_record_type, work::call_record_version_for(record),
+                                    durability::record_required, work::call_record_size(record)});
         if (at == nullptr) {
             return false;
         }
@@ -53,8 +54,8 @@ bool snapshot_next(const WorkModel &model, uint32_t &index) {
     return index < model.calls.capacity();
 }
 StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
-    return {work::call_record_version_for(model.calls.state(index)),
-            work::call_record_size(model.calls.record(index))};
+    const auto record = model.calls.record(index);
+    return {work::call_record_version_for(record), work::call_record_size(record)};
 }
 void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
     work::write_call_record(model.calls.record(index), body);

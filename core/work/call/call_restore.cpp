@@ -114,7 +114,9 @@ bool CallTable::valid_record(const CallRecord &record) {
         !catalog::same_call_contract(record.contract, normalized) ||
         read_call_input(record.domain, record.input, record.contract.input_text_limit, input) !=
             AYNI_OK ||
-        check_call_text(record.result, record.contract.result_text_limit) != AYNI_OK ||
+        check_body(record.contract, record.result, record.result_kind) != AYNI_OK ||
+        (record.result_kind == CallResultKind::tool_calls &&
+         state.outcome != AYNI_CALL_COMPLETED) ||
         (state.attempt.boot_epoch == 0U) != (state.attempt.request_id == 0U) ||
         (state.attempt.request_id != 0U && (state.attempt.boot_epoch < state.created.boot_epoch ||
                                             state.attempt.boot_epoch > state.latest.boot_epoch)) ||
@@ -155,7 +157,8 @@ CallRecord CallTable::record(uint32_t index) const {
             entry.action ? std::optional<ActionFact>(entry.action->fact()) : std::nullopt,
             domain(index),
             input(index),
-            result(index)};
+            body(index),
+            entry.result_kind};
 }
 
 void CallTable::copy_bodies(uint32_t index, ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
@@ -208,6 +211,7 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
     auto &entry = *slots_[index].entry;
     entry.state = record.state;
     entry.result_size = record.result.size;
+    entry.result_kind = record.result_kind;
     if (record.action) {
         entry.action.emplace();
         entry.action->restore_validated(*record.action);

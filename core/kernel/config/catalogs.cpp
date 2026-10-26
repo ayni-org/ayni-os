@@ -37,6 +37,30 @@ ayni_status_t Catalogs::close() {
     if (linked != AYNI_OK) {
         return linked;
     }
+    // A model may propose only ordinary unary/action tools (ADR-0054).
+    const auto tools = goal_types.link_tools([&](const catalog::GoalTypeTool &tool,
+                                                 uint32_t &out_index) {
+        uint32_t index = 0;
+        catalog::BindingLinks links{};
+        if (!bindings.find({tool.binding_id.data(), tool.binding_id.size()}, tool.binding_version,
+                           index)) {
+            return AYNI_NOT_FOUND;
+        }
+        if (catalog::BindingRegistry::resolve(bindings.at(index), capabilities, call_capabilities,
+                                              providers, resources, links) != AYNI_OK) {
+            return AYNI_INTERNAL; // validate_all resolved every Binding.
+        }
+        const auto &contract = call_capabilities.at(links.call).contract;
+        if (contract.category != catalog::CallClass::tool ||
+            contract.form == catalog::CallForm::subscription) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        out_index = index;
+        return AYNI_OK;
+    });
+    if (tools != AYNI_OK) {
+        return tools;
+    }
     return execution.validate_all(bindings, capabilities, call_capabilities, resources);
 }
 

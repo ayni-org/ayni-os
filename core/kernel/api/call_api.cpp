@@ -64,7 +64,7 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                  calls.input(index).size,
                  calls.result(index).size,
                  waiting,
-                 0,
+                 ayni::work::tool_call_count(calls.tool_calls(index)),
                  waited,
                  calls.query_revision(index),
                  static_cast<ayni_call_query_phase_t>(query.phase),

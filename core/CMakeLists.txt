@@ -72,6 +72,7 @@ ayni_add_core_module(work
         work/call/call_records.cpp
         work/call/call_restore.cpp
         work/call/call_table.cpp
+        work/call/tool_calls.cpp
         work/call_propagation.cpp
         work/execution/execution_fact.cpp
         work/goal/goal_authority.cpp
@@ -106,6 +107,7 @@ ayni_add_core_module(kernel
         kernel/call/call_drain.cpp
         kernel/call/call_reconciliation.cpp
         kernel/call/call_runtime.cpp
+        kernel/call/call_tools.cpp
         kernel/call/call_wait.cpp
         kernel/command/command_approval.cpp
         kernel/command/command_canonical.cpp

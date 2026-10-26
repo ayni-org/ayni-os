@@ -124,7 +124,7 @@ uint32_t call_record_max(CallTable::Limits limits) {
            catalog::resource_group_max *
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
-           limits.result_bytes + execution_record_max();
+           limits.result_bytes + execution_record_max(); // A v4 kind never joins execution.
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -137,7 +137,10 @@ uint32_t call_record_size(const CallRecord &record) {
         size += call_record_resource_fixed_size + record.contract.resources[at].id.size();
     }
     return size + (record.action ? action_state_record_size(*record.action) : 0U) +
-           (record.state.execution ? execution_record_size(*record.state.execution) : 0U);
+           (record.state.execution ? execution_record_size(*record.state.execution) : 0U) +
+           (call_record_version_for(record) == call_tool_calls_record_version
+                ? call_result_kind_size
+                : 0U);
 }
 
 // The enclosing call owns the original action association; the action body uses
@@ -172,13 +175,20 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     if (record.state.execution) {
         write_execution(*record.state.execution, writer);
     }
+    if (call_record_version_for(record) == call_tool_calls_record_version) {
+        writer.u32(static_cast<uint32_t>(record.result_kind));
+    }
 }
 
-uint16_t call_record_version_for(const CallState &state) {
-    if (state.execution) {
+uint16_t call_record_version_for(const CallRecord &record) {
+    if (record.state.execution) {
         return call_execution_record_version;
     }
-    return state.outcome == AYNI_CALL_SKIPPED ? call_skipped_record_version : call_record_version;
+    if (record.contract.result_format == catalog::call_tool_calls_result_format) {
+        return call_tool_calls_record_version;
+    }
+    return record.state.outcome == AYNI_CALL_SKIPPED ? call_skipped_record_version
+                                                     : call_record_version;
 }
 
 // This reader does not consult this boot's catalog. Old input is interpreted
@@ -186,11 +196,12 @@ uint16_t call_record_version_for(const CallState &state) {
 bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint16_t version) {
     if (body == nullptr || size < call_record_fixed_size ||
         (version != call_record_version && version != call_skipped_record_version &&
-         version != call_execution_record_version)) {
+         version != call_execution_record_version && version != call_tool_calls_record_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
     CallRecord record{};
+    record.result_kind = CallResultKind::text;
     auto &id = record.identity;
     id.call_id = reader.u64();
     id.operation_id = reader.u64();
@@ -226,7 +237,10 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint1
         }
         record.state.execution = execution;
     }
-    if (!reader.ok() || version != call_record_version_for(record.state) ||
+    if (version == call_tool_calls_record_version) {
+        record.result_kind = static_cast<CallResultKind>(reader.u32());
+    }
+    if (!reader.ok() || version != call_record_version_for(record) ||
         !CallTable::valid_record(record)) {
         return false;
     }

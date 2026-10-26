@@ -123,8 +123,15 @@ ayni_status_t normalize_call_contract(const CallContract &input, CallContract &o
         return AYNI_INVALID_ARGUMENT;
     }
     if (input.input_format != call_fields_text_input_format ||
-        input.result_format != call_text_result_format) {
+        (input.result_format != call_text_result_format &&
+         input.result_format != call_tool_calls_result_format)) {
         return AYNI_UNSUPPORTED_VERSION;
+    }
+    // A model proposes tool calls; a tool or an actuator never does (ADR-0054).
+    if (input.result_format == call_tool_calls_result_format &&
+        (input.category != CallClass::model || (input.effects & call_effect_physical) != 0U ||
+         input.form == CallForm::subscription)) {
+        return AYNI_INVALID_ARGUMENT;
     }
     CallContract value = input;
     if (!normalize_resources(value)) {

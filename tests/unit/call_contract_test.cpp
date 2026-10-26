@@ -114,6 +114,30 @@ TEST(CallContract, invalid_declarations_and_unknown_formats_do_not_silently_defa
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
 }
 
+// ADR-0054: only a model proposes tool calls; a tool, an actuator or a
+// subscription never declares the format.
+TEST(CallContract, tool_call_results_belong_to_nonphysical_unary_or_action_models) {
+    auto input = contract();
+    input.result_format = call_tool_calls_result_format;
+    CallContract output{};
+    ASSERT_EQ(normalize_call_contract(input, output), AYNI_OK);
+    EXPECT_EQ(output.result_format, call_tool_calls_result_format);
+    output = {};
+    input.category = CallClass::tool;
+    EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
+    input = contract();
+    input.result_format = call_tool_calls_result_format;
+    input.effects = call_effect_physical;
+    EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
+    input.effects = 0;
+    input.form = CallForm::subscription;
+    EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
+    input.form = CallForm::unary;
+    input.result_format = call_tool_calls_result_format + 1U;
+    EXPECT_EQ(normalize_call_contract(input, output), AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(output.timeout_ms, 0U);
+}
+
 TEST(CallContract, side_effects_and_retry_properties_are_independent_declarations) {
     auto input = contract();
     input.form = CallForm::action;

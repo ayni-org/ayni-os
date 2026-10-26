@@ -47,9 +47,12 @@ bool ProviderMailbox::is_terminal(ProviderMessageKind kind) {
 
 ayni_status_t ProviderMailbox::check_message(const ProviderMessage &message) const {
     const bool progress = message.kind == ProviderMessageKind::progress;
+    const bool written = message.writer != nullptr;
     if ((!progress && !is_cancel(message.kind) && !is_terminal(message.kind)) ||
         (progress ? message.sequence == 0U : message.sequence != 0U) ||
-        (message.payload.size != 0U && message.payload.data == nullptr) ||
+        (written ? message.payload.data != nullptr || message.writer->write == nullptr ||
+                       !is_terminal(message.kind)
+                 : message.payload.size != 0U && message.payload.data == nullptr) ||
         (is_cancel(message.kind) && message.payload.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -109,7 +112,8 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
             return AYNI_INVALID_STATE;
         }
         const Result result{message.kind,         message.status, message.reason,
-                            message.payload.size, message.effect, message.query_result};
+                            message.payload.size, message.effect, message.query_result,
+                            message.body};
         if (is_cancel(message.kind)) {
             if (attempt->cancel) {
                 return AYNI_INVALID_STATE;
@@ -127,9 +131,11 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
                 // Terminal supersedes optional progress, never accepted cancel control.
                 attempt->progress.reset();
             }
-            if (message.payload.size != 0U) {
-                std::memcpy(payload_of(reservation.index, message.kind), message.payload.data,
-                            message.payload.size);
+            auto *lane = payload_of(reservation.index, message.kind);
+            if (message.writer != nullptr) {
+                message.writer->write(message.writer->context, lane, message.payload.size);
+            } else if (message.payload.size != 0U) {
+                std::memcpy(lane, message.payload.data, message.payload.size);
             }
         }
     }
@@ -189,7 +195,8 @@ ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, ui
                result->reason,
                {payload, result->size},
                result->effect,
-               result->query_result};
+               result->query_result,
+               result->body};
         receipt = {{index, slot.attempt->identity}, result->kind, sequence};
         required = result->size;
         cursor_ = (index + 1U) % capacity_;

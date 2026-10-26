@@ -85,6 +85,7 @@ class CallRuntime {
             execution,
             query
         } purpose = Purpose::execution; // Exact attempt protocol.
+        uint32_t tools = 0; // GoalType tool positions offered at submit, as bits (ADR-0054).
     };
     struct Active {
         uint64_t call_id; // Matches this CallTable slot; detects any premature replacement.
@@ -111,9 +112,31 @@ class CallRuntime {
             *intents; // Original Kernel buffer, never trust a replaced output pointer.
         ayni_policy_output_v1 *output; // Kernel's actual stack output, not a replacement pointer.
     };
+    // One GoalType tool as a Task's model call may be offered it (ADR-0054).
+    struct ToolOffer {
+        const catalog::Binding *binding; // Immutable registry entry.
+        catalog::BindingLinks links;     // Its capability and call contract.
+        ayni_bytes_v1 domain;            // The capability's registered domain.
+        ayni_bytes_v1 ceiling;           // The Goal requirement scope that admits its route.
+    };
+    // The submit in progress, for the Provider's tool callback only.
+    struct Offering {
+        uint32_t task_index; // Stable during the synchronous submit.
+        uint32_t positions;  // Offered GoalType tool positions, as bits.
+    };
     static ayni_status_t stage_request(void *context, const ayni_call_request_v1 *request);
     static ayni_status_t read_result(const void *context, ayni_string_v1 step,
                                      ayni_task_call_result_v1 *out);
+    static ayni_status_t read_tool_call(const void *context, ayni_string_v1 step, uint32_t index,
+                                        ayni_task_tool_call_v1 *out);
+    // Listed tool at position, if this Task's immutable Goal ceiling covers
+    // its capability and admits the Binding's route; no Grant liveness check.
+    bool offer_tool(uint32_t task_index, uint32_t position, ToolOffer &out) const;
+    uint32_t offered_tools(uint32_t task_index) const; // Positions, as bits.
+    static ayni_status_t describe_tool(const void *context, uint32_t index, ayni_tool_v1 *out);
+    // Every call names an offered tool with values in its ceiling and route and
+    // text within its limit. Shape was checked when posted; this adds the catalogs.
+    bool valid_tool_calls(uint32_t task_index, uint32_t positions, ayni_bytes_v1 list) const;
     ayni_status_t stage(const ayni_call_request_v1 &request);
     authority::GrantCheck check_input(uint32_t task_index, const catalog::Binding &binding,
                                       ayni_bytes_v1 domain, const work::CallInputView &input,
@@ -183,6 +206,7 @@ class CallRuntime {
     uint8_t *receipt_; // Owner copy; mailbox retains original until domain publication succeeds.
     std::optional<Decision> decision_; // Present only during decide; callback capability lease.
     std::optional<Proposal> proposal_; // Copied proposal survives callback until consumed/reset.
+    std::optional<Offering> offering_; // Present only while a Provider's submit runs.
     enum class NextLane {
         control,
         work

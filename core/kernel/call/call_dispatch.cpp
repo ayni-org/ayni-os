@@ -183,6 +183,14 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
         foundation::deadline(now_us, uint64_t{contract.timeout_ms} * microseconds_per_millisecond);
     active.stage = Stage::submitted;
     const auto *permit = control_.permit(id.call_id);
+    // Tools are fixed for this attempt; a receipt may name only these (ADR-0054).
+    delivery.tools = contract.result_format == catalog::call_tool_calls_result_format
+                         ? offered_tools(task_index)
+                         : 0U;
+    uint32_t tool_count = 0;
+    for (uint32_t bits = delivery.tools; bits != 0U; bits &= bits - 1U) {
+        ++tool_count;
+    }
     const ayni_provider_request_v1 request{sizeof(request),
                                            id.capability_version,
                                            delivery.reservation.attempt,
@@ -193,13 +201,19 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
                                            view(id.endpoint),
                                            arguments.view(),
                                            input.text,
-                                           permit};
+                                           permit,
+                                           tool_count,
+                                           0,
+                                           tool_count == 0U ? nullptr : this,
+                                           tool_count == 0U ? nullptr : describe_tool};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
+    offering_ = Offering{task_index, delivery.tools};
     const auto submitted = work_.call_out([&] {
         return provider.submit(provider.context, &request,
                                mailbox_.completion(delivery.reservation));
     });
+    offering_.reset();
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && permit != nullptr) {
         // Publish into the reserved reliable lane; absence still needs exact local gate evidence.
         const ProviderMessage rejected{

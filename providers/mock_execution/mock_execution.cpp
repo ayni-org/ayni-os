@@ -366,7 +366,10 @@ struct Executor::Impl {
             pending->produced ? (success ? AYNI_CALL_EFFECT_COMPLETE : AYNI_CALL_EFFECT_PARTIAL)
                               : AYNI_CALL_EFFECT_NONE,
             0,
-            success ? text("turn complete") : ayni_string_v1{}};
+            success ? text("turn complete") : ayni_string_v1{},
+            0,
+            0,
+            nullptr};
         const auto posted = ayni_provider_post(pending->completion, &result);
         if (posted == AYNI_OK) {
             pending.reset();

@@ -43,6 +43,7 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     output.request_call = stage_request;
     snapshot.call_context = this;
     snapshot.call_result = read_result;
+    snapshot.call_tool = read_tool_call;
 }
 
 void CallRuntime::end_decision() {
@@ -148,7 +149,9 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             state.outcome == 0U ? 0U : state.latest.transition.commit_seq,
             state.status,
             state.reason,
-            calls.result(index)};
+            calls.result(index),
+            work::tool_call_count(calls.tool_calls(index)),
+            0};
     return AYNI_OK;
 }
 

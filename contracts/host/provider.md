@@ -35,7 +35,7 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 |---|---|---|---|
 | C-PROV-001 | Provider 只在 `CONFIGURING` 注册；函数表与能力声明在注册时复制并校验限额；`ctx` 由调用方保持有效至 `ayni_destroy` 返回 `AYNI_OK` | 运行中注册新 Provider，或注册后修改能力声明使其与 Binding 不一致 | `MA-005`；C-LIFE-003 |
 | C-PROV-002 | `submit` 非阻塞，同步返回遵守 C-HOST-004 的三种结果；业务结果只经事件回送 | 模型 Provider 在 `submit` 内同步等待 HTTP 响应 | `MA-008`；C-CALL-003 |
-| C-PROV-003 | 终态携带与能力结果 Schema 一致的结构化结果；Kernel 先做 Schema 校验再做语义校验，不合格终态结束本机借用，但保留 RESULT_UNKNOWN 并记录 PROVIDER_RESULT 原因，不伪造未执行 | 模型返回自由文本“已完成”，Kernel 直接把 Task 标为完成 | `MA-008`；E1 步骤 9；C-TRUST-001 |
+| C-PROV-003 | 终态携带与能力结果 Schema 一致的结构化结果；Kernel 先做 Schema 校验再做语义校验，不合格终态结束本机借用，但保留 RESULT_UNKNOWN 并记录 PROVIDER_RESULT 原因，不伪造未执行 | 模型返回自由文本“已完成”，Kernel 直接把 Task 标为完成 | `MA-008`；E1 步骤 9；C-TRUST-001；工具调用列表的语义复核：`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`（C-CALL-014） |
 | C-PROV-004 | 厂商错误映射为状态码与原因码；厂商原始错误文本、凭据与请求正文不进入 `ayni_error_v1`、日志或用户可见文案 | 错误详情中包含带 API Key 的请求 URL | 评审；C-STATUS-006 |
 | C-PROV-005 | 只有声明 `AUTHORITATIVE` 查询且保证记录完整的 Provider 才能返回 `NOT_ACCEPTED`；其余 Provider 查不到记录时返回 `UNKNOWN` | 不保存历史的 Provider 对未知请求返回 `NOT_ACCEPTED`，Kernel 据此重新派发 | E2 查询夹具；C-CALL-010 |
 | C-PROV-006 | 取消以事件报告 `CANCELLED`、`CANNOT_CANCEL` 或 `UNKNOWN`；取消结果在被应用前不被后到的进度覆盖；`CANCELLED` 不表示未计费或未外发 | 本地连接取消后，Provider 把远端已执行的可能性报告为从未接受；或 `CANNOT_CANCEL` 之后紧跟一条进度，Kernel 只看到进度，Task 一直停在 `CANCELLING` | 内部交接部分已实现：`ProviderMailboxTest.retains_cancel_and_terminal_until_the_owner_can_commit_each`、`ProviderMailboxTest.terminal_supersedes_progress_without_overwriting_accepted_cancel_control`、`ProviderMailboxTest.concurrent_progress_and_control_posts_preserve_both_channels`；公开取消/关闭：`ManagedCall.cancellation_waits_for_terminal_and_late_success_does_not_reopen_task`、`ManagedCall.normal_shutdown_requests_cancel_and_waits_for_returned_borrow`；E1 步骤 4；C-CALL-009 |
@@ -54,6 +54,12 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 
 `ayni_begin_shutdown` 停止新准入，请求在途取消并等待每项借用终态。取消端口返回 REJECTED_NOT_RETAINED 仅表示本次取消未被接受，不能释放原请求。正常可写退出持久保存事实；已受限且存储不可写时仅排空易失交接，不声称结果已提交。自动重载保留未归还的 transport/完成槽；旧 boot 的结果不直接改变新工作事实，后续需新管理查询。故障、重载及传播竞态仍属暂停的专项证据。
 
+## 工具视图与类型化结果（ABI 0.37，ADR-0054）
+
+结果格式为 `TOOL_CALLS` 的模型调用，`ayni_provider_request_v1` 带 `tool_count` 与 `tool(tool_context, index, out)`：Provider 在 `submit` 内按下标读取每个可提议工具的视图（Binding 与 Capability 身份、正文上限、最多 8 个字段的类型、单位与取值），视图写入 Provider 提供的存储；`submit` 返回后回调返回 `AYNI_INVALID_STATE`。哪些工具可提议由 Kernel 决定（C-CALL-014）。
+
+Provider 自己把模型的工具调用映射到这些视图。未知工具、无法解码的参数、视图外的值或超出工具上限的正文，报告 `FAILED` 与 `AYNI_REASON_MODEL_OUTPUT`（状态为 `INVALID_ARGUMENT`，列表超出结果上限为 `CAPACITY_EXCEEDED`），不当作调用列表发表；仍发表的会被 Kernel 当作不合格终态（C-PROV-003）。`COMPLETED` 终态的 `tool_calls` 与 `result` 文本二者择一；Kernel 在 `ayni_provider_post` 内复制并编码列表，post 返回后 Provider 可复用其数组。模型原始 JSON、函数名映射与厂商 API 细节留在 Provider 内，不进入 Core。
+
 ## 可复用 Mock 的当前边界
 
-`providers/mock` 提供 A/B 文本回显与模拟呈现，启动分配固定槽，调用线程只复制输入。组合根在 Kernel 步进之间显式推进；终态成功发表后清空局部正文，`close` 对在途借用返回 `BUSY`。上下文在 Kernel 成功销毁后才能释放。取消、容量和正常排空分别由 `MockProvider.cancellation_drains_the_borrow_and_close_refuses_while_pending`、`MockProvider.full_provider_queue_rejects_without_discarding_the_first_request`、`MockProvider.normal_shutdown_cancels_pending_work_and_returns_every_borrow` 验证。Mock 不执行网络或真实音频/动作，也不宣称物理停止。
+`providers/mock` 提供 A/B 文本回显与模拟呈现，启动分配固定槽，调用线程只复制输入。组合根在 Kernel 步进之间显式推进；终态成功发表后清空局部正文，`close` 对在途借用返回 `BUSY`。上下文在 Kernel 成功销毁后才能释放。取消、容量和正常排空分别由 `MockProvider.cancellation_drains_the_borrow_and_close_refuses_while_pending`、`MockProvider.full_provider_queue_rejects_without_discarding_the_first_request`、`MockProvider.normal_shutdown_cancels_pending_work_and_returns_every_borrow` 验证。`tools` 服务是结果格式为 `TOOL_CALLS` 的确定性模型：输入开头的 `call:<binding_id>` 词各成为一个已提供工具的调用，字段取视图中的第一个值，其余文本为每个调用的正文；没有这类词时回显文本。未提供的工具、正文超出工具上限或列表超出结果上限都报告 `MODEL_OUTPUT`，由 `MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`、`MockTools.input_without_call_words_is_echoed_as_text`、`MockTools.unoffered_tool_fails_as_model_output` 验证。Mock 接受 Core 已检查过的类型化参数但不使用它们。Mock 不执行网络或真实音频/动作，也不宣称物理停止。
