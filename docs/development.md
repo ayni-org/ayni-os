@@ -193,6 +193,8 @@ ctest --preset native-debug -R '^(NativeAssistant|KernelQuery|SimDemo|NativeCli)
 
 ## C++ SDK 与公开示例
 
-P5 提供源码级 `include/ayni/ayni.hpp` 和 [四个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；C ABI minor 仍为0.45，未新增持久格式。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
+P5 提供源码级 `include/ayni/ayni.hpp` 和 [四个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；C ABI minor 仍为 0.45，未新增持久格式。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
 
 普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.two_agents_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。
+
+内存受限平台可用 `Kernel::create_in` 提供已经量过的调用方 arena；自有 aligned new 路径仍须满足完整配置容量，不能据 Native facade 大小推算 ESP32 可用容量。
