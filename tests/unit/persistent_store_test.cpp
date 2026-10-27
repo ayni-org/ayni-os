@@ -49,10 +49,10 @@ KernelCapacities capacities() {
 // ADR-0059: one descriptor owns each family; persisted order remains Grant/work/call/Scene/command.
 TEST(PersistentStore, every_record_kind_has_one_store_and_a_stable_snapshot_position) {
     using ayni::kernel::StorePosition;
-    const uint16_t order[] = {record_type::grant,           record_type::call,
-                              record_type::scene,           record_type::context,
-                              record_type::memory,          record_type::provenance,
-                              record_type::privacy_cleanup, record_type::command_mapping};
+    const uint16_t order[] = {
+        record_type::grant,      record_type::calendar,        record_type::call,
+        record_type::scene,      record_type::context,         record_type::memory,
+        record_type::provenance, record_type::privacy_cleanup, record_type::command_mapping};
     ASSERT_EQ(persistent_store_count, std::size(order));
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
         EXPECT_EQ(persistent_stores[rank]->record_type, order[rank]);

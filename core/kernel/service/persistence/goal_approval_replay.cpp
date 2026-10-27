@@ -264,7 +264,8 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping, ayni_bytes
     if (goal.created.commit_seq >= mapping.commit_seq ||
         goal.created.transition_id >= result.transition_id ||
         goal.revision < mapping.object.revision || goal.commit_seq < mapping.commit_seq ||
-        !matches_goal_creation(request.approval.original, goal, model_.goals.parameters(index)) ||
+        !matches_goal_creation(request.approval.original, goal, model_.goals.parameters(index),
+                               &model_.calendars.at(index).rule) ||
         !model_.goal_authority.read(index, goal.goal_id, record) ||
         record.phase == work::GoalAuthorityPhase::proposed || record.count != result.count ||
         record.stamp.commit_seq < mapping.commit_seq ||

@@ -78,6 +78,7 @@ enum class Store : uint32_t {
     agents,               // AgentTable.
     goal_types,           // GoalTypeRegistry.
     goals,                // GoalTable.
+    calendars,            // CalendarTable: civil rules and stable cursors.
     sessions,             // SessionTable.
     tasks,                // TaskTable.
     strategies,           // StrategyRegistry.

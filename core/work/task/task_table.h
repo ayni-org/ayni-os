@@ -42,6 +42,8 @@ struct NewTask {
     uint32_t goal_index;        // in the goal table
     uint32_t occurrence;        // the number of the latest occurrence it stands for
     uint32_t occurrence_count;  // how many it stands for, at least 1
+    int64_t calendar_local_s = AYNI_CALENDAR_TIME_NONE; // Planned civil key; -1 for other triggers.
+    int64_t calendar_utc_s = AYNI_CALENDAR_TIME_NONE;   // Resolved UTC; -1 iff no civil key.
 };
 
 // Durable per-Task model admission facts (C-RUN-002/003). Request acceptance
@@ -100,8 +102,10 @@ struct Task {
     uint32_t goal_index;
     uint32_t occurrence;
     uint32_t occurrence_count;
-    uint32_t revision;        // 1 at creation, raised by each change
-    uint32_t cancel_revision; // the revision that cancelled it; 0 otherwise
+    int64_t calendar_local_s = AYNI_CALENDAR_TIME_NONE; // Planned civil key; -1 for non-calendar.
+    int64_t calendar_utc_s = AYNI_CALENDAR_TIME_NONE; // Resolved planned UTC; -1 iff no civil key.
+    uint32_t revision;                                // 1 at creation, raised by each change
+    uint32_t cancel_revision;                         // the revision that cancelled it; 0 otherwise
     ayni_task_lifecycle_t lifecycle;
     // Policy failure or pending-call hold overlay; AYNI_OK/REASON_NONE means none.
     // UNKNOWN and RESOURCE_WAIT preserve the independent user lifecycle; their

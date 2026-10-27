@@ -138,6 +138,8 @@ struct ayni_kernel {
     // Copy all Kernel diagnostics into an already validated caller value.
     void describe(ayni_kernel_info_v1 &out) const;
     // Fresh Host clock and wake access preserve lifetime without exposing the Host table.
+    // Nonblocking Host sample decoded once per scheduling/intent frontier.
+    ayni::work::CalendarClock calendar_clock(uint64_t monotonic_us) const;
     uint64_t now_us() const { return host.monotonic_now_us(host.ctx); }
     // Notify the owner through the immutable Host port; safe for ingress producers.
     void wake() const { host.wake(host.ctx); }

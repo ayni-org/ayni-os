@@ -86,7 +86,9 @@ class WorkReplay {
 
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
-    bool complete() const { return pairing_.complete() && calls_consistent(unbounded); }
+    bool complete() const {
+        return pairing_.complete() && calls_consistent(unbounded) && calendars_consistent();
+    }
     // After the last batch: whether the tables hold a state a transition
     // leaves, beyond what each record's own checks cover.
     bool consistent(uint64_t boot_epoch_limit) const;
@@ -109,6 +111,7 @@ class WorkReplay {
     durability::RecordUse apply_record(const durability::BatchIdentity &batch,
                                        const durability::RecordHeader &header, const uint8_t *body,
                                        uint64_t boot_epoch_limit);
+    bool calendars_consistent() const; // Every calendar Goal has exactly its persisted row.
     bool provenance_consistent(uint64_t boot_epoch_limit) const;
     bool contexts_consistent(uint64_t boot_epoch_limit) const;
     // Content sources accompany the same Goal/Task transition.
@@ -125,6 +128,8 @@ class WorkReplay {
     durability::RecordUse restore_context(const uint8_t *body, uint32_t size,
                                           foundation::TransitionStamp stamp, uint64_t boot_epoch);
     bool pair_context_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
+    durability::RecordUse restore_calendar(const uint8_t *body, uint32_t size,
+                                           foundation::TransitionStamp stamp);
     durability::RecordUse restore_scene(const uint8_t *body, uint32_t size,
                                         foundation::TransitionStamp stamp,
                                         uint64_t boot_epoch_limit);
@@ -143,7 +148,7 @@ class WorkReplay {
     // Complete work scan footer: exact progress/request plus any pause cohort.
     durability::RecordUse restore_authority_cleanup(const uint8_t *body, uint32_t size,
                                                     foundation::TransitionStamp stamp);
-    durability::RecordUse restore_task(const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_task(uint16_t version, const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
                                                  foundation::TransitionStamp stamp);

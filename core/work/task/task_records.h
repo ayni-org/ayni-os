@@ -23,6 +23,9 @@ constexpr uint16_t task_record_type = durability::record_type::task;
 constexpr uint16_t task_record_version = 1;
 // Snapshot Task explicitly requires a source footer, even before its first checkpoint.
 constexpr uint16_t task_provenance_snapshot_version = 2;
+// Calendar creation appends stable civil/UTC occurrence identity (records.md type5).
+constexpr uint16_t task_calendar_record_version = 3;
+constexpr uint16_t task_calendar_provenance_snapshot_version = 4;
 constexpr uint16_t task_state_record_type = durability::record_type::task_state;
 constexpr uint16_t task_state_record_version = 1;
 // Same state body, but REQUIRED adjacent Task authority must follow (ADR-0038).
@@ -49,6 +52,10 @@ constexpr uint16_t task_checkpoint_record_version = 1;
 constexpr uint16_t task_checkpoint_provenance_version = 2;
 // TASK and snapshot TASK layouts: contracts/storage/records.md.
 constexpr uint32_t task_record_size = 40;
+constexpr uint32_t task_calendar_tail_size = 2 * sizeof(uint64_t);
+constexpr uint32_t task_record_max_size = task_record_size + task_calendar_tail_size;
+uint32_t task_creation_record_size(const Task &task);
+uint16_t task_creation_version(const Task &task, bool provenance = false);
 // created_transition_id, last commit_seq, steps_seq, checkpoint_seq, steps_before.
 constexpr uint32_t task_snapshot_tail_size = 36;
 constexpr uint32_t task_snapshot_record_size = task_record_size + task_snapshot_tail_size;
@@ -108,16 +115,18 @@ struct TaskCheckpointRecord {
     ayni_bytes_v1 state;
 };
 
-// body has task_record_size bytes.
+// body has task_creation_record_size(task) bytes; version selects legacy/calendar layout.
 void write_task_record(const Task &task, uint8_t *body);
 // Returns false for a body of another size.
-bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out);
+bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out,
+                      uint16_t version = task_record_version);
 
-// body has task_snapshot_record_size bytes. Preserves the selected frozen
+// body has task_creation_record_size(task) + task_snapshot_tail_size bytes. Preserves the frozen
 // Task's original creation/commit/step/checkpoint stamps (ADR-0041).
 void write_task_snapshot_record(const Task &task, uint8_t *body);
 // Reads exactly that snapshot body; no snapshot-global or cross-table checks.
-bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out);
+bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out,
+                               uint16_t version = task_record_version);
 
 // body has task_state_size_for(version) bytes; caller selects matching version.
 void write_task_state_record(const Task &task, uint8_t *body,

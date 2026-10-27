@@ -102,6 +102,8 @@ void TaskTable::place(const NewTask &task, uint64_t task_id, uint64_t replaced_t
     created.occurrence = task.occurrence;
     created.occurrence_count = task.occurrence_count;
     created.due_us = task.due_us;
+    created.calendar_local_s = task.calendar_local_s;
+    created.calendar_utc_s = task.calendar_utc_s;
     created.revision = 1;
     created.lifecycle = AYNI_TASK_READY;
     created.slot = slot;

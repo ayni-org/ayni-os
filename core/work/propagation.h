@@ -135,6 +135,8 @@ void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t t
 // not ended and no occurrence to come, it becomes FAILED in the same
 // transition, its descendants that are not terminal cancelled with their
 // tasks (ADR-0023), unless goal_end_exhausts: then it stays ACTIVE.
+// Shared post-skip lifecycle rule, including calendar occurrence consumption.
+void settle_skipped(WorkTables &tables, uint32_t goal_index, foundation::TransitionStamp stamp);
 void skip(WorkTables &tables, uint32_t goal_index, uint64_t now_us, ayni_reason_t reason,
           foundation::TransitionStamp stamp);
 

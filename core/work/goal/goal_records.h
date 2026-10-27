@@ -32,6 +32,11 @@ constexpr uint16_t goal_work_profile_snapshot_version = 6;
 // REQUIRED v7/v8 also require a complete content-source footer; profile tail is always present.
 constexpr uint16_t goal_provenance_record_version = 7;
 constexpr uint16_t goal_provenance_snapshot_version = 8;
+// Calendar Goals require type27 in the same state; 11/12 also require content provenance.
+constexpr uint16_t goal_calendar_record_version = 9;
+constexpr uint16_t goal_calendar_snapshot_version = 10;
+constexpr uint16_t goal_calendar_provenance_record_version = 11;
+constexpr uint16_t goal_calendar_provenance_snapshot_version = 12;
 constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
 constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;

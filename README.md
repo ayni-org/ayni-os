@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1（实验性 ABI 0.40、storage schema 2）。Core 的工作、授权、资源、公开调用与受管理执行正常闭环已交付；P1 的 typed 工具调用、Native OpenAI-compatible Provider、规则与 ToolLoop、有界对话组件见 [M1 进度](reports/core/m1-progress.md) 和 [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md)。P2 已实现单进程 Native CLI、双 Agent 与对话文件存储，正常会话及退出重开通过；使用方法见 [CLI 说明](targets/native_cli/README.md)。P3 已实现有界私有记忆、按 Agent 授权的基础档案、来源追踪、单轮删除与受管理正文清理（[ADR-0060](docs/adr/0060-private-memory-and-lineage.md)）；下一步 P4 时间与订阅。ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
+> 当前仓库处于 M1（实验性 ABI 0.41、storage schema 2）。Core 的工作、授权、资源、公开调用与受管理执行正常闭环已交付；P1 的 typed 工具调用、Native OpenAI-compatible Provider、规则与 ToolLoop、有界对话组件见 [M1 进度](reports/core/m1-progress.md) 和 [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md)。P2 已实现单进程 Native CLI、双 Agent 与对话文件存储，正常会话及退出重开通过；使用方法见 [CLI 说明](targets/native_cli/README.md)。P3 已实现有界私有记忆、按 Agent 授权的基础档案、来源追踪、单轮删除与受管理正文清理（[ADR-0060](docs/adr/0060-private-memory-and-lineage.md)）；P4 的可信 UTC、日历触发与稳定计划时刻已实现（[ADR-0061](docs/adr/0061-trusted-utc-and-calendar.md)），订阅随后交付。ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 

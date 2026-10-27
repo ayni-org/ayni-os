@@ -389,3 +389,15 @@ Call 21/v5 是正文已擦除的显式表示，用于快照及擦除后晚到完
 清理 phase：memories=1、contexts=2、goals=3、tasks=4、calls=5、commands=6、files=7、compact=8、purge=9、complete=10；idle=0 不序列化。effect：none=0、memory=1、context=2、goal=3、task=4、call=5、command=6、remove_memory=7。cursor 是对象稳定 ID；命令阶段使用原 commit_seq。Context effect 之后唯一允许的回退是 memories/cursor=0/effect=none，直至来源稳定；其他普通进度不能倒退。files→compact 须所有 Context ACK 且外部借用释放；目标 snapshot_generation 为当前代际+2，溢出明确停止并报告容量失败。purge/complete 快照不能宣称超过本快照 generation 的轮转已完成。scrubbed Memory 从新快照省略；erased Provenance 保留不可用身份标记，正文/依赖为空，运行时完成双槽覆盖后移除 tombstone。
 
 **Native 外层文件**不属于 Core schema：AYNF v2 固定 32 字节头为 `magic:u32, version:u32, encoded_size:u64, pending_goal:u64, context_id:u64`。正文 AYNC v2 为 magic/version 后的 Conversation 字段：7 个 u64（id、owner、隐私 generation、文件 revision、last_round、summary_first、summary_last），长度前缀 summary、独立 draft、round_count:u32，再逐轮 number:u64/user/answer。AYNT v2 固定头 28 字节（magic、version、done、base_revision、memory_id）后接相同 Conversation 字段和本轮 input。独立草稿与 pending_goal 同次保存；发布前必须保存完毕。正常保留 3 轮、额外 1 槽承接失效发布原始输入；原轮号不重新分配。旧 AYNF/AYNC v1 在 Kernel 启动写入之前拒绝，无自动迁移。
+
+
+## P4 日历记录（ADR-0061，ABI 0.41）
+
+存储 schema 仍为 2。新增类型/版本均 REQUIRED；不认识的 reader 在写入或执行前拒绝并保留原目录。
+
+- **type 27/v1 CALENDAR**：64 字节固定部分后接 TZ 字节。依次为 `goal_id:u64, transition_id:u64, commit_seq:u64, last_local_s:u64, last_utc_s:u64, taken:u32`，再接规则 `kind:u32, rule_version:u32, first_local_s:u64, timezone_length:u32, timezone_bytes`。未消费的两个 last 字段编码为 UINT64_MAX，其他时刻范围 0～253402300799 秒。TZ 长度 1～128；规则 kind 1/2/3 为单次/每日/每周，rule_version=1。日志和快照共用正文；仅规则创建或消费/跳过时更新 stamp。Goal 槽退役同时清空本行。单调投影、首次容量等待时刻和时钟可信状态均不持久化。
+- **type 3/v9、v10、v11、v12**：分别为无来源日历 Goal 的 journal/snapshot，以及带来源日历 Goal 的 journal/snapshot。沿用原 Goal 正文，始终携带 12 字节 work profile；快照保留原状态/creation stamp/current sequence 尾部。各版本要求对应 CALENDAR 行，v11/v12 另要求来源伙伴。GoalState 的 next_scheduled 位对日历恒为 0，日历剩余工作由规则与游标证明，恢复后重新投影。
+- **type 5/v3、v4**：日历 Task 创建使用 v3，快照有来源时用 v4；原 40 字节创建正文追加 `calendar_local_s:u64, calendar_utc_s:u64`，共 56 字节。快照再追加原 36 字节历史尾部，共 92 字节。v1/v2 只接受原布局，v3/v4 只接受新布局，不能按长度猜测版本。Task 的 occurrence 顺序计数必须对应该日历规则的计划本地键；旧非日历 Task 不改写。
+- **管理命令原始 Goal echo**：仅 CALENDAR_* 在原创建字段之后追加上述完整规则值（20 字节固定部分加 TZ）；普通 Goal 编码不变。审批/重新授权比较完整规则，不能仅比较日历 kind 或当前系统时区。
+
+完整事务须保持 Calendar 游标、Goal 状态、Task 创建与初始元数据同批；周期重新授权跳过积压的 CALENDAR 伙伴限定同一 Goal 和 stamp。实际故障/恢复矩阵仍未验收，正常重开证据与最终测试结果见对应 PR。

@@ -26,6 +26,7 @@
 #ifndef AYNI_AYNI_H
 #define AYNI_AYNI_H
 
+#include <ayni/calendar.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -40,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 40u
+#define AYNI_ABI_MINOR 41u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -467,6 +468,11 @@ typedef struct ayni_host_v1 {
     /* Nonblocking cached usable space, net of pending reservations and
      * Host quotas. AYNI_STORAGE_FAILED means space cannot be established. */
     ayni_status_t (*storage_free_bytes)(void *ctx, uint64_t *out_bytes);
+    /* Optional nonblocking owner-thread UTC snapshot. Null means unavailable.
+     * Writes a complete sample; must not call Kernel functions or take its ingress lock.
+     * Host may wake the owner after a trust/clock jump; Kernel requests a step
+     * at least once per second while a calendar Goal exists. Since 0.41. */
+    void (*utc_now)(void *ctx, ayni_utc_sample_v1 *out_sample);
 } ayni_host_v1;
 
 /*
@@ -1003,6 +1009,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_MEMORY_DEPENDENCIES ((ayni_reason_t)78)
 /* EXPIRED: a captured source, version or permission is no longer usable. Since 0.40. */
 #define AYNI_REASON_MEMORY_EXPIRED ((ayni_reason_t)79)
+/* NOT_READY: recurring calendar reauthorization needs trusted UTC to skip backlog. Since 0.41. */
+#define AYNI_REASON_TIME_UNTRUSTED ((ayni_reason_t)80)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1080,12 +1088,17 @@ typedef ayni_status_t (*ayni_goal_validate_fn)(void *ctx, ayni_bytes_v1 paramete
  * instance is RUNNING; ayni_step then derives each due occurrence as a task.
  *
  * Since 0.7 (ADR-0019). A goal's occurrences are numbered from 1 in the
- * order they fall due. Times are on the host's monotonic clock and keep
+ * order they fall due. DELAY/INTERVAL times are on the host's monotonic clock and keep
  * running while the goal cannot advance; they are not calendar times
  * (C-TIME-007). Occurrences that fall due while the goal cannot advance, or
  * before a step runs, wait and become one task, which names the latest of
  * them and how many it stands for (C-PROD-018, C-LIMIT-007); an interval
  * goal then keeps its schedule.
+ * Since 0.41 (ADR-0061), CALENDAR_* uses a separate immutable civil rule.
+ * Trusted UTC gates derivation; Task calendar_local_s/utc_s identify the latest
+ * coalesced planned occurrence. Calendar capacity waits use the first trusted
+ * observation of a due frontier on the local monotonic clock, without renewing
+ * that wait on subsequent UTC corrections.
  *
  * Since 0.8 (ADR-0020). While the task table has no room or no id is left,
  * or, since 0.10, while its strategy's decision holds a task of the goal
@@ -1119,6 +1132,12 @@ typedef uint32_t ayni_trigger_kind_t;
 #define AYNI_TRIGGER_INTERVAL ((ayni_trigger_kind_t)3)
 /* Since 0.9. One occurrence for each local input from trigger_source. */
 #define AYNI_TRIGGER_LOCAL_INPUT ((ayni_trigger_kind_t)4)
+/* One civil occurrence from the supplied calendar rule. Since 0.41. */
+#define AYNI_TRIGGER_CALENDAR_ONCE ((ayni_trigger_kind_t)5)
+/* One occurrence per local civil day. Since 0.41. */
+#define AYNI_TRIGGER_CALENDAR_DAILY ((ayni_trigger_kind_t)6)
+/* One occurrence per local civil week. Since 0.41. */
+#define AYNI_TRIGGER_CALENDAR_WEEKLY ((ayni_trigger_kind_t)7)
 /* Since 0.7. The shortest trigger_period_us: goals work on a scale of
  * seconds (plan §2.1), and occurrence numbers then last beyond any device's
  * life. */
@@ -1260,7 +1279,10 @@ typedef struct ayni_goal_info_v1 {
     /* Since 0.7. When the next occurrence falls due, on the host monotonic
      * clock; UINT64_MAX when none will: the trigger has none left or the
      * goal is terminal. Since 0.9, LOCAL_INPUT: when the earliest recorded
-     * occurrence not yet taken fell due; UINT64_MAX while none waits. */
+     * occurrence not yet taken fell due; UINT64_MAX while none waits.
+     * Since 0.41, CALENDAR_* is the last step's volatile monotonic projection;
+     * UINT64_MAX also means waiting for trusted time. ayni_get_calendar exposes
+     * the immutable rule and stable planned instants. */
     uint64_t next_due_us;
     /* Since 0.8. When the goal expires, on the host monotonic clock;
      * UINT64_MAX when it never will: it has no expiry, its expiry was
@@ -1367,6 +1389,10 @@ typedef struct ayni_task_info_v1 {
     /* Since 0.31. Selected logical call; zero when no call blocks the next
      * strategy decision. It remains set while cancellation or outcome is unresolved. */
     uint64_t logical_call_id;
+    /* Planned civil identity and UTC of the latest coalesced occurrence;
+     * -1 for non-calendar Tasks. Stable across restart. Since 0.41. */
+    int64_t calendar_local_s;
+    int64_t calendar_utc_s;
 } ayni_task_info_v1;
 
 /*
@@ -1468,7 +1494,16 @@ typedef struct ayni_goal_create_v1 {
     /* Since 0.9. LOCAL_INPUT: a catalog id naming the local input whose
      * events are its occurrences (ayni_post_event). Empty for other kinds. */
     ayni_string_v1 trigger_source;
+    /* CALENDAR_* only: required copied rule, kind must match trigger; null otherwise.
+     * Borrowed only through this synchronous call. Since 0.41. */
+    const ayni_calendar_rule_v1 *calendar;
 } ayni_goal_create_v1;
+
+/* Owner-thread copied calendar diagnostics. NOT_FOUND for a non-calendar or
+ * unknown Goal. Argument/size/lifecycle failures preserve out_info. Returns OK,
+ * INVALID_ARGUMENT/STATE, UNSUPPORTED_VERSION or NOT_FOUND. Since 0.41. */
+ayni_status_t ayni_get_calendar(const ayni_kernel_t *kernel, uint64_t goal_id,
+                                ayni_calendar_info_v1 *out_info);
 
 typedef struct ayni_goal_target_v1 {
     uint32_t struct_size;
@@ -1636,6 +1671,9 @@ typedef struct ayni_task_snapshot_v1 {
                                struct ayni_task_tool_call_v1 *out);
     /* Since 0.40. Restricted memory view; null when memory is disabled. */
     const struct ayni_memory_view_v1 *memory;
+    /* Planned civil identity/UTC; -1 for non-calendar Tasks. Since 0.41. */
+    int64_t calendar_local_s;
+    int64_t calendar_utc_s;
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in

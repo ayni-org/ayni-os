@@ -161,6 +161,9 @@ typedef struct ayni_goal_approve_v1 {
  * policy holds and terminal history. Execution waits for the new binding to
  * become durable. Children require separate reauthorization. All nested
  * input views belong to the caller through ayni_submit_intent. */
+/* Since 0.41, recurring CALENDAR_* reauthorization returns NOT_READY with
+ * TIME_UNTRUSTED until the Host supplies trusted UTC; retry explicitly after
+ * calibration. It then skips the revoked interval's unmaterialized backlog. */
 typedef struct ayni_goal_reauthorize_v1 {
     uint32_t struct_size;                   /* sizeof this descriptor. */
     uint32_t reserved;                      /* 0. */

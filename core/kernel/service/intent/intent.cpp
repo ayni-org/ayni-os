@@ -49,6 +49,12 @@ ayni_status_t read_goal_create(const ayni_goal_create_v1 &body, GoalCreate &out)
            body.owner_instance_id, body.parent_goal_id,
            body.parameters,        {body.trigger, body.trigger_delay_us, body.trigger_period_us},
            body.expiry_us,         body.trigger_source};
+    if (body.calendar != nullptr) {
+        const auto decoded = work::decode_calendar_rule(*body.calendar, out.calendar);
+        if (decoded != AYNI_OK) {
+            return decoded;
+        }
+    }
     return AYNI_OK;
 }
 
@@ -251,6 +257,12 @@ uint64_t ordinary_command_digest(const Intent &intent) {
     digest.add_u64(create.trigger.period_us);
     digest.add_u64(create.expiry_us);
     digest.add_bytes(create.trigger_source.data, create.trigger_source.size);
+    if (create.calendar.kind != 0) {
+        digest.add_u32(create.calendar.kind);
+        digest.add_u32(create.calendar.version);
+        digest.add_u64(static_cast<uint64_t>(create.calendar.first_local_s));
+        digest.add_bytes(create.calendar.timezone, create.calendar.timezone_size);
+    }
     return digest.value();
 }
 

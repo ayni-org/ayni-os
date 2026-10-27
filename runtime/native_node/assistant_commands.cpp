@@ -142,6 +142,16 @@ Reply Assistant::Impl::approve(uint64_t id, Operation operation) {
     original.goal_type_version = info.goal_type_version;
     original.parameters = parameters.view();
     original.trigger = info.trigger;
+    ayni_calendar_info_v1 calendar{};
+    if (info.trigger == AYNI_TRIGGER_CALENDAR_ONCE || info.trigger == AYNI_TRIGGER_CALENDAR_DAILY ||
+        info.trigger == AYNI_TRIGGER_CALENDAR_WEEKLY) {
+        calendar.struct_size = sizeof(calendar);
+        status = ayni_get_calendar(node.kernel(), id, &calendar);
+        if (status != AYNI_OK) {
+            return failure(status);
+        }
+        original.calendar = &calendar.rule;
+    }
     original.trigger_delay_us = info.trigger_delay_us;
     original.trigger_period_us = info.trigger_period_us;
     original.expiry_us = info.original_expiry_us;

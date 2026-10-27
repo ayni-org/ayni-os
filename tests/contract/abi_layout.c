@@ -115,7 +115,7 @@ AYNI_LAYOUT(host_write_snapshot, offsetof(ayni_host_v1, storage_write_snapshot) 
 AYNI_LAYOUT(host_read_snapshot, offsetof(ayni_host_v1, storage_read_snapshot) == 11 * AYNI_PTR);
 AYNI_LAYOUT(host_trim, offsetof(ayni_host_v1, storage_trim_prefix) == 12 * AYNI_PTR);
 AYNI_LAYOUT(host_free, offsetof(ayni_host_v1, storage_free_bytes) == 13 * AYNI_PTR);
-AYNI_LAYOUT(host_size, sizeof(ayni_host_v1) == 14 * AYNI_PTR);
+AYNI_LAYOUT(host_size, sizeof(ayni_host_v1) == 15 * AYNI_PTR);
 
 AYNI_LAYOUT(attempt_boot_epoch, offsetof(ayni_attempt_ref_v1, boot_epoch) == 0);
 AYNI_LAYOUT(attempt_request_id, offsetof(ayni_attempt_ref_v1, request_id) == 8);
@@ -295,7 +295,7 @@ AYNI_LAYOUT(create_trigger_period_us,
 AYNI_LAYOUT(create_expiry_us, offsetof(ayni_goal_create_v1, expiry_us) == 48 + 4 * AYNI_PTR);
 AYNI_LAYOUT(create_trigger_source,
             offsetof(ayni_goal_create_v1, trigger_source) == 56 + 4 * AYNI_PTR);
-AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == AYNI_ROUND8(56 + 6 * AYNI_PTR));
+AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == AYNI_ROUND8(56 + 7 * AYNI_PTR));
 
 AYNI_LAYOUT(target_struct_size, offsetof(ayni_goal_target_v1, struct_size) == 0);
 AYNI_LAYOUT(target_reserved, offsetof(ayni_goal_target_v1, reserved) == 4);
@@ -318,7 +318,7 @@ AYNI_LAYOUT(task_info_hold_status, offsetof(ayni_task_info_v1, hold_status) == 7
 AYNI_LAYOUT(task_info_hold_reason, offsetof(ayni_task_info_v1, hold_reason) == 76);
 AYNI_LAYOUT(task_info_step_count, offsetof(ayni_task_info_v1, step_count) == 80);
 AYNI_LAYOUT(task_info_reserved, offsetof(ayni_task_info_v1, reserved) == 84);
-AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 112);
+AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 128);
 AYNI_LAYOUT(task_call_id, offsetof(ayni_task_info_v1, logical_call_id) == 104);
 
 AYNI_LAYOUT(private_checkpoint_strategy_id, offsetof(ayni_private_checkpoint_v1, strategy_id) == 0);
@@ -353,7 +353,7 @@ AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_call_tool, offsetof(ayni_task_snapshot_v1, call_tool) == 80 + 11 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(80 + 13 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 13 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -869,3 +869,10 @@ AYNI_LAYOUT(context_info_size, sizeof(ayni_context_info_v1) == 80);
 AYNI_LAYOUT(context_object_unique, AYNI_OBJECT_CONTEXT > AYNI_OBJECT_CALL);
 
 AYNI_LAYOUT(privacy_info_size, sizeof(ayni_privacy_info_v1) == 32);
+
+/* ABI 0.41: civil time values and Task identities are fixed-width C99 records. */
+AYNI_LAYOUT(calendar_rule_size, sizeof(ayni_calendar_rule_v1) == 152);
+AYNI_LAYOUT(calendar_clock_size, sizeof(ayni_utc_sample_v1) == 16);
+AYNI_LAYOUT(calendar_info_size, sizeof(ayni_calendar_info_v1) == 216);
+AYNI_LAYOUT(task_calendar_local, offsetof(ayni_task_info_v1, calendar_local_s) == 112);
+AYNI_LAYOUT(task_calendar_utc, offsetof(ayni_task_info_v1, calendar_utc_s) == 120);

@@ -1,4 +1,5 @@
 #include "work/goal/goal_table.h"
+#include "work/goal/calendar_table.h"
 #include "work/goal/goal_authority.h"
 
 #include "catalog/goal_type/goal_type_registry.h"
@@ -198,7 +199,9 @@ GoalTable::Restore GoalTable::restore_authority_state(uint32_t index, const Goal
         state.cancel_revision != goal.cancel_revision ||
         state.occurrences_skipped != goal.occurrences_skipped ||
         state.skip_reason != goal.skip_reason || state.taken != goal.cursor.taken ||
-        state.waiting != goal.cursor.waiting || state.next_scheduled != goal.cursor.has_next() ||
+        state.waiting != goal.cursor.waiting ||
+        state.next_scheduled !=
+            (!is_calendar_trigger(goal.trigger.kind) && goal.cursor.has_next()) ||
         state.expiry_pending != (goal.expires_us != no_time)) {
         return Restore::corrupt;
     }
@@ -220,9 +223,10 @@ GoalTable::Restore GoalTable::restore_reauthorization_state(uint32_t index, cons
     }
     const auto skipped = state.occurrences_skipped - goal.occurrences_skipped;
     if (state.taken - goal.cursor.taken != skipped ||
-        (skipped == 0U &&
-         (state.waiting != goal.cursor.waiting || state.next_scheduled != goal.cursor.has_next() ||
-          state.skip_reason != goal.skip_reason)) ||
+        (skipped == 0U && (state.waiting != goal.cursor.waiting ||
+                           state.next_scheduled != (!is_calendar_trigger(goal.trigger.kind) &&
+                                                    goal.cursor.has_next()) ||
+                           state.skip_reason != goal.skip_reason)) ||
         (skipped != 0U && state.skip_reason != AYNI_REASON_GOAL_AUTHORITY_PAUSED)) {
         return Restore::corrupt;
     }
@@ -230,7 +234,9 @@ GoalTable::Restore GoalTable::restore_reauthorization_state(uint32_t index, cons
         if (skipped != goal.cursor.waiting || state.waiting != 0U || state.next_scheduled) {
             return Restore::corrupt;
         }
-    } else if (goal.trigger.kind != AYNI_TRIGGER_INTERVAL && skipped != 0U) {
+    } else if (goal.trigger.kind != AYNI_TRIGGER_INTERVAL &&
+               goal.trigger.kind != AYNI_TRIGGER_CALENDAR_DAILY &&
+               goal.trigger.kind != AYNI_TRIGGER_CALENDAR_WEEKLY && skipped != 0U) {
         return Restore::corrupt;
     }
     return restore_state(index, state, stamp);
@@ -441,6 +447,32 @@ void GoalTable::apply(uint32_t index, GoalChange change, foundation::TransitionS
             set_lifecycle(goals_[other], descendants_end, stamp);
         }
     }
+}
+
+bool GoalTable::project_calendar(uint32_t index, uint64_t deadline_us) {
+    auto &goal = goals_[index];
+    const auto projected =
+        is_live(goal.lifecycle) && goal.lifecycle != AYNI_GOAL_PROPOSED ? deadline_us : no_time;
+    const bool changed = projected != goal.cursor.next_due_us;
+    goal.cursor.next_due_us = projected;
+    return changed;
+}
+TakenOccurrences GoalTable::take_calendar(uint32_t index, uint32_t count, uint64_t due_us,
+                                          uint64_t task_id, foundation::TransitionStamp stamp) {
+    auto &goal = goals_[index];
+    goal.cursor.taken += count;
+    goal.cursor.next_due_us = no_time;
+    goal.last_task_id = task_id;
+    goal.commit_seq = stamp.commit_seq;
+    return {goal.cursor.taken, count, due_us};
+}
+
+void GoalTable::skip_calendar(uint32_t index, uint32_t count, uint64_t now_us, ayni_reason_t reason,
+                              foundation::TransitionStamp stamp) {
+    const auto last_task = goals_[index].last_task_id;
+    static_cast<void>(take_calendar(index, count, now_us, last_task, stamp));
+    goals_[index].occurrences_skipped += count;
+    goals_[index].skip_reason = reason;
 }
 
 TakenOccurrences GoalTable::take_due(uint32_t index, uint64_t now_us, uint64_t task_id,

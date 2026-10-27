@@ -25,6 +25,7 @@
 #include "work/agent/agent_table.h"
 #include "work/authority/authority_cleanup.h"
 #include "work/call/call_table.h"
+#include "work/goal/calendar_table.h"
 #include "work/goal/goal_authority.h"
 #include "work/goal/goal_table.h"
 #include "work/privacy/privacy_cleanup.h"
@@ -54,6 +55,7 @@ struct WorkModel {
           goals(storage[Store::goals],
                 {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
                  limits.goal_depth_max, limits.goal_children_max}),
+          calendars(storage[Store::calendars], capacities.goal_capacity),
           tasks(storage[Store::tasks], task_limits(capacities), limits.task_model_call_hard_limit),
           commands(storage[Store::commands], command_limits(capacities)),
           scenes(storage[Store::scenes], scene_limits(capacities), registered.capabilities,
@@ -142,8 +144,8 @@ struct WorkModel {
     // Hand off removed references after all fallible checks. Repeated releases
     // retain the latest fence; no Goal/Grant reference count is duplicated.
     void release_goal_references(const work::GoalAuthorityRecord &record, uint64_t commit_seq);
-    // A replaced Goal slot discards exactly its former identity's metadata.
-    void clear_goal_authority(uint32_t index, uint64_t previous_id, uint64_t commit_seq);
+    // A replaced Goal slot retires exactly its former calendar, authority and source metadata.
+    void retire_goal_metadata(uint32_t index, uint64_t previous_id, uint64_t commit_seq);
     // Request a persisted stable-ID pass after dependency/terminal changes.
     void request_authority_cleanup(foundation::TransitionStamp stamp);
     // Whether changed Goal/Grant facts in this transition request another pass.
@@ -166,6 +168,7 @@ struct WorkModel {
     authority::SessionTable sessions;
     work::AgentTable agents;
     work::GoalTable goals;
+    work::CalendarTable calendars; // Sole owner of civil rules, stable cursors and sampled UTC.
     work::TaskTable tasks;
     // The commands accepted, which the log keeps with their transitions.
     CommandTable commands;
@@ -203,6 +206,8 @@ struct WorkModel {
     // check and the change it allows.
     bool calling_out() const { return callbacks_.active(); }
 
+    // Refresh one sampled UTC frontier and all civil projections; no transition.
+    void refresh_calendars(work::CalendarClock clock);
     // The goals' next due work by now_us (work::find_due_work over these
     // tables). A search that finds none is kept, with when the next due work
     // comes, and answers again until a transition, another durable_seq, the

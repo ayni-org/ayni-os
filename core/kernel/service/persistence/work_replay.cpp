@@ -10,6 +10,7 @@
 #include "work/agent/agent_records.h"
 #include "work/authority/authority_cleanup_records.h"
 #include "work/call/call_records.h"
+#include "work/goal/calendar_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
 #include "work/privacy/privacy_records.h"
@@ -47,11 +48,15 @@ bool knows_goal_body(uint16_t version, WorkRecordContext context) {
            version == work::goal_authority_state_record_version ||
            (context == WorkRecordContext::journal &&
             (version == work::goal_work_profile_record_version ||
-             version == work::goal_provenance_record_version)) ||
+             version == work::goal_provenance_record_version ||
+             version == work::goal_calendar_record_version ||
+             version == work::goal_calendar_provenance_record_version)) ||
            (context == WorkRecordContext::snapshot &&
             (version == work::goal_creation_stamp_snapshot_version ||
              version == work::goal_work_profile_snapshot_version ||
-             version == work::goal_provenance_snapshot_version));
+             version == work::goal_provenance_snapshot_version ||
+             version == work::goal_calendar_snapshot_version ||
+             version == work::goal_calendar_provenance_snapshot_version));
 }
 
 template <typename Restore> RecordUse use_of(Restore restore) {
@@ -153,8 +158,10 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
         return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
     case work::task_record_type:
         return header.version == work::task_record_version ||
+                       header.version == work::task_calendar_record_version ||
                        (context == WorkRecordContext::snapshot &&
-                        header.version == work::task_provenance_snapshot_version)
+                        (header.version == work::task_provenance_snapshot_version ||
+                         header.version == work::task_calendar_provenance_snapshot_version))
                    ? RecordUse::applied
                    : RecordUse::unknown;
     case work::task_checkpoint_record_type:
@@ -276,6 +283,8 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         return restore_context(body, size, stamp, boot_epoch_limit);
     case knowledge::memory_record_type:
         return restore_memory(body, size, stamp, boot_epoch_limit);
+    case work::calendar_record_type:
+        return restore_calendar(body, size, stamp);
     case authority::scene_record_type:
         return restore_scene(body, size, stamp, boot_epoch_limit);
     case authority::owner_binding_record_type:
@@ -301,7 +310,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::task_authority_record_type:
         return restore_task_authority(body, size, {batch.transition_id, batch.commit_seq});
     case work::task_record_type:
-        return restore_task(body, size, stamp);
+        return restore_task(header.version, body, size, stamp);
     case work::call_record_type:
         return restore_call(header.version, body, size, {boot_epoch_limit, stamp});
     case work::task_state_record_type:
@@ -378,9 +387,7 @@ RecordUse WorkReplay::restore_goal(uint16_t version, const uint8_t *body, uint32
     if (model_.goals.at(index).depth != record.depth) {
         return RecordUse::corrupt;
     }
-    model_.clear_goal_authority(index, record.replaced_goal_id, stamp.commit_seq);
-    model_.clear_content_provenance(work::ProvenanceKind::goal, index, record.replaced_goal_id,
-                                    stamp.commit_seq);
+    model_.retire_goal_metadata(index, record.replaced_goal_id, stamp.commit_seq);
     pairing_.goal = record.goal_id;
     if (record.authority_required) {
         pairing_.goal_authority = record.goal_id;
@@ -491,12 +498,12 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t version, const uint8_t *bo
     return RecordUse::applied;
 }
 
-RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_task(uint16_t version, const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::TaskRecord record{};
     uint32_t goal_index = 0;
     if (pairing_.task_created_seq == stamp.commit_seq || pairing_.task.has_value() ||
-        !work::read_task_record(body, size, record) ||
+        !work::read_task_record(body, size, record, version) ||
         !model_.goals.find(record.task.goal_id, goal_index) ||
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return RecordUse::corrupt;
@@ -995,6 +1002,36 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
     return true;
 }
 
+bool WorkReplay::calendars_consistent() const {
+    for (uint32_t index = 0; index < model_.goals.size(); ++index) {
+        const auto &goal = model_.goals.at(index);
+        const auto &row = model_.calendars.at(index);
+        if (work::is_calendar_trigger(goal.trigger.kind)) {
+            if (row.goal_id != goal.goal_id || row.taken != goal.cursor.taken ||
+                work::calendar_kind(goal.trigger.kind) != row.rule.kind) {
+                return false;
+            }
+        } else if (row.goal_id != 0) {
+            return false;
+        }
+    }
+    for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
+        const auto &task = model_.tasks.at(index);
+        const auto &row = model_.calendars.at(task.goal_index);
+        if (work::is_calendar_trigger(model_.goals.at(task.goal_index).trigger.kind)) {
+            if (task.occurrence > row.taken ||
+                !work::calendar_occurrence_matches(row.rule, task.occurrence, task.calendar_local_s,
+                                                   task.calendar_utc_s)) {
+                return false;
+            }
+        } else if (task.calendar_local_s != AYNI_CALENDAR_TIME_NONE ||
+                   task.calendar_utc_s != AYNI_CALENDAR_TIME_NONE) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Ending a goal ends its descendants and every task it reaches, and
 // stopping an instance ends every goal it owns, in the same transition
 // (ADR-0018, ADR-0025 decision 5); so no stored transition leaves a live
@@ -1010,9 +1047,10 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
             return false;
         }
     }
-    if (!model_.provenance.complete() || !provenance_consistent(boot_epoch_limit) ||
-        !contexts_consistent(boot_epoch_limit) || !model_.grants.consistent() ||
-        !calls_consistent(boot_epoch_limit) || !memory_identities_consistent(boot_epoch_limit)) {
+    if (!calendars_consistent() || !model_.provenance.complete() ||
+        !provenance_consistent(boot_epoch_limit) || !contexts_consistent(boot_epoch_limit) ||
+        !model_.grants.consistent() || !calls_consistent(boot_epoch_limit) ||
+        !memory_identities_consistent(boot_epoch_limit)) {
         return false;
     }
     const auto &cleanup = model_.authority_cleanup.record();
@@ -1170,6 +1208,7 @@ void WorkReplay::discard() {
     model_.principals.drop_restored_binding();
     model_.agents.drop_restored();
     model_.goals.clear();
+    model_.calendars.clear();
     model_.goal_authority.clear_all();
     model_.task_authority.clear_all();
     model_.authority_cleanup.clear();

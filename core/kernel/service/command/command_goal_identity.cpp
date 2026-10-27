@@ -35,6 +35,9 @@ void write_goal_creation_identity(const GoalCreate &create, durability::BodyWrit
     writer.u64(create.trigger.period_us);
     writer.u64(create.expiry_us);
     writer.bytes(create.trigger_source.data, create.trigger_source.size);
+    if (create.calendar.kind != 0) {
+        work::write_calendar_rule(create.calendar, writer);
+    }
 }
 
 GoalCreate read_goal_creation_identity(durability::BodyReader &reader) {
@@ -51,11 +54,16 @@ GoalCreate read_goal_creation_identity(durability::BodyReader &reader) {
     create.trigger.period_us = reader.u64();
     create.expiry_us = reader.u64();
     create.trigger_source = read_id(reader);
+    if (work::is_calendar_trigger(create.trigger.kind)) {
+        if (!work::read_calendar_rule(reader, create.calendar)) {
+            create.calendar = {}; // Shared shape check refuses the missing required rule.
+        }
+    }
     return create;
 }
 
 bool matches_goal_creation(const GoalCreate &create, const work::Goal &goal,
-                           ayni_bytes_v1 parameters) {
+                           ayni_bytes_v1 parameters, const work::CalendarRule *calendar) {
     return goal.owner_instance_id == create.owner_instance_id &&
            goal.parent_goal_id == create.parent_goal_id &&
            goal.goal_type_version == create.goal_type_version &&
@@ -64,6 +72,8 @@ bool matches_goal_creation(const GoalCreate &create, const work::Goal &goal,
            goal.trigger.delay_us == create.trigger.delay_us &&
            goal.trigger.period_us == create.trigger.period_us &&
            goal.expiry_after_us == create.expiry_us &&
-           goal.trigger_source.equals(create.trigger_source);
+           goal.trigger_source.equals(create.trigger_source) &&
+           (create.calendar.kind == 0 ||
+            (calendar != nullptr && work::same_calendar_rule(create.calendar, *calendar)));
 }
 } // namespace ayni::kernel

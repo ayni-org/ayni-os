@@ -113,6 +113,8 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
     placer.place(Store::goals, work::GoalTable::storage_alignment,
                  work::GoalTable::storage_size(capacities.goal_capacity,
                                                capacities.goal_parameter_max_bytes));
+    placer.place(Store::calendars, work::CalendarTable::storage_alignment,
+                 work::CalendarTable::storage_size(capacities.goal_capacity));
     placer.place(Store::sessions, authority::SessionTable::storage_alignment,
                  authority::SessionTable::storage_size(capacities.session_capacity));
     placer.place(Store::tasks, work::TaskTable::storage_alignment,

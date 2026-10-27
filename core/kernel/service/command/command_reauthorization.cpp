@@ -13,7 +13,8 @@ ayni_status_t measure_reauthorization_command(const ReauthorizationCommand &inpu
         return AYNI_INVALID_ARGUMENT;
     }
     out_size = reauthorization_command_fixed_size + request.original.goal_type_id.size +
-               request.original.trigger_source.size + request.original.parameters.size;
+               request.original.trigger_source.size + request.original.parameters.size +
+               work::calendar_rule_size(request.original.calendar);
     return AYNI_OK;
 }
 

@@ -252,7 +252,8 @@ class WorkNode {
             }
             const ayni_goal_type_v1 types[] = {
                 goal_type_desc("reminder", 1, &ReminderRules::validate, &rules_),
-                goal_type_desc("timer", 1, nullptr, nullptr, any_trigger, timer_wait_max_us),
+                goal_type_desc("timer", 1, nullptr, nullptr, timer_trigger_kinds,
+                               timer_wait_max_us),
                 goal_type_desc("folder", 1, folder_validate, nullptr,
                                AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE)),
             };
@@ -268,6 +269,7 @@ class WorkNode {
 
     Node &node() { return node_; }
     ayni_kernel_t *kernel() { return node_.kernel(); }
+    uint32_t timer_trigger_kinds = any_trigger; // Tests may explicitly enable new trigger families.
     uint64_t timer_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     // Without a validator, "folder" goals take no parameters.
     ayni_goal_validate_fn folder_validate = nullptr;
