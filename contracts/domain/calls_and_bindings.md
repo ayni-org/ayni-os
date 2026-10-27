@@ -90,3 +90,5 @@ SUBSCRIPTION 仅用于 TOOL、非 PHYSICAL、CONFIRMED 取消契约；静态绑�
 策略通过 Task snapshot 的 subscription/subscription_observation 读取脱敏状态和最新样本。CLOSE_SUBSCRIPTION、WAIT_SUBSCRIPTION 都通过 request_call 暂存，只填 kind/step_key，其余业务字段清零；它们各自是唯一意图，不接受直接伪造的 policy intent。关闭不产生新调用；等待只写 Task 状态及检查点。WAITING 的新样本在 owner 消费后唤醒一次；忙时样本覆盖知识表最新值，FIFO 本身仍不覆盖。缓存过期本身和同状态续租 ACK 不触发决定；策略必须检查 usable。管理暂停或撤权先拒绝新样本，随后有界推进每条订阅停止；重新授权独立于用户恢复。正常停机/暂停后，已知 CANCELLED 的 preserved intent 复核权限和资源，以新代际重新开；FAILED、EXPIRED 和 UNKNOWN 不自动重开。
 
 Provider 的 submit/renew/cancel 在 owner 线程同步调用且必须有界、不阻塞；只能 post 完成或样本，不能重入 owner API。工作线程持有自有参数副本及原 opening/attempt，任意非 ISR 线程 post 时复制所有短期视图；全部生产者须在 Kernel 销毁前 join。STARTED/RENEWED 独立可靠，必须回显预先请求的 kind/sequence；迟到或关闭后的 ACK 只排空，不复活 gate。Provider 自身必须在有限 valid_until 停止采集，即使续租/关闭丢失。Core 立即拒绝消费不能撤回已外发数据；媒体读、外发、保留仍分别授权。真实采集/硬件在 M3，新的故障/恢复专项仍未执行。
+
+ABI 0.45：Task-scoped 调用结果视图携带原账本 effect（ADR-0066），与所有者查询共用取值属主。CANCELLED 本身不证明无影响；应用仅在影响已知时中止本 round/occurrence，UNKNOWN 保留待处理。通知完成另要求 COMPLETE 呈现证据。正常取消/新代际继续见 `AssistantApplication.paused_analysis_round_is_retained_and_new_generation_continues`；新增故障专项未验证。

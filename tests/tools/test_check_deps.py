@@ -60,6 +60,15 @@ class CheckDepsTest(unittest.TestCase):
         self.write("strategies/builtin/loop.cpp", "#include <ayni/providers/mock.h>\n")
         self.assert_single_violation("strategies/ may not include")
 
+    def test_applications_keep_runtime_and_provider_composition_outside_their_boundary(self):
+        # ADR-0066: runtime selects concrete components; applications use public mechanisms.
+        self.write("applications/assistant/goals.cpp", "#include <ayni/applications/assistant.h>\n#include <ayni/calls.h>\n")
+        self.write("runtime/native_node/node.cpp", "#include <ayni/applications/assistant.h>\n")
+        self.assertEqual(self.violations(), [])
+        for header in ("ayni/runtime/native_node.h", "ayni/providers/mock.h", "ayni/applications/other.h"):
+            self.write("applications/assistant/goals.cpp", f"#include <{header}>\n")
+            self.assert_single_violation("applications/ may not include")
+
     def test_core_rejects_upward_include(self):
         self.write("core/foundation/ids.cpp", '#include "kernel/kernel.h"\n')
         self.assert_single_violation("core/foundation may not include core/kernel")
