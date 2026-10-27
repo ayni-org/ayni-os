@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1（实验性 ABI 0.42、storage schema 2）。Core 的工作、授权、资源、公开调用与受管理执行正常闭环已交付；P1 的 typed 工具调用、Native OpenAI-compatible Provider、规则与 ToolLoop、有界对话组件见 [M1 进度](reports/core/m1-progress.md) 和 [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md)。P2 已实现单进程 Native CLI、双 Agent 与对话文件存储，正常会话及退出重开通过；使用方法见 [CLI 说明](targets/native_cli/README.md)。P3 已实现有界私有记忆、按 Agent 授权的基础档案、来源追踪、单轮删除与受管理正文清理（[ADR-0060](docs/adr/0060-private-memory-and-lineage.md)）；P4 的可信 UTC、日历触发与稳定计划时刻已实现（[ADR-0061](docs/adr/0061-trusted-utc-and-calendar.md)），任意线程观测入口与 Mock 媒体见 [ADR-0062](docs/adr/0062-observation-ingress-and-mock-media.md)，订阅生命周期随后交付。ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
+> 当前仓库处于 M1（实验性 ABI 0.43、storage schema 2）。Core 的工作、授权、资源、公开调用与受管理执行正常闭环已交付；P1 的 typed 工具调用、Native OpenAI-compatible Provider、规则与 ToolLoop、有界对话组件见 [M1 进度](reports/core/m1-progress.md) 和 [ADR-0056](docs/adr/0056-builtin-strategies-and-conversations.md)。P2 已实现单进程 Native CLI、双 Agent 与对话文件存储，正常会话及退出重开通过；使用方法见 [CLI 说明](targets/native_cli/README.md)。P3 已实现有界私有记忆、按 Agent 授权的基础档案、来源追踪、单轮删除与受管理正文清理（[ADR-0060](docs/adr/0060-private-memory-and-lineage.md)）；P4 的可信 UTC、日历触发与稳定计划时刻已实现（[ADR-0061](docs/adr/0061-trusted-utc-and-calendar.md)），任意线程观测入口与 Mock 媒体见 [ADR-0062](docs/adr/0062-observation-ingress-and-mock-media.md)，Task 所有订阅、自动续租与等待新样本/状态已交付（[ADR-0063](docs/adr/0063-task-subscription-leases.md)），P4 已合并，下一步 P5。ESP32 Host、Web/语音/屏幕、完整 E1–E4、Core Alpha 与实机验收尚未完成。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
@@ -59,7 +59,7 @@ v0.1 计划提供局域网管理、按键语音、持续视觉采集与受限分
 | 管理与设备协议 | 协议主/次版本、能力版本与功能协商；领域语义统一，认证与本机授权逐次校验 |
 | 持久化格式 | Schema、记录与迁移版本；迁移、损坏恢复和固件回滚共同验证 |
 
-三类版本独立演进，以领域契约和一致性用例保持对应；本次实现的 C ABI 为实验性 0.35，当前功能与验证见 [M1 进度](reports/core/m1-progress.md)；尚未实现的接口保留在草案头文件中。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
+三类版本独立演进，以领域契约和一致性用例保持对应；本次实现的 C ABI 为实验性 0.43，当前功能与验证见 [M1 进度](reports/core/m1-progress.md)；尚未实现的接口保留在草案头文件中。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
 
 ## 可选具身 Profile 与协议适配
 
