@@ -82,7 +82,7 @@
 
 | [0056](0056-builtin-strategies-and-conversations.md) | 规则策略、ToolLoop、有界对话与检查点 reader 声明 | 已接受 | §2.7、§3.3、§9.1 |
 
-| [0057](0057-native-dual-agent-cli.md) | 双 Agent Native/Sim 装配、对话文件与单进程 CLI | 已接受，P2 已合并 | §3.2、§9.1、§14.1 |
+| [0057](0057-native-dual-agent-cli.md) | 双 Agent Native/Sim 装配、对话文件与单进程 CLI | 已接受，P2 已合并；双 Agent 与点名由 0072 取代 | §3.2、§9.1、§14.1 |
 
 | [0058](0058-kernel-service-runtime-boundaries.md) | Kernel 私有状态、service/runtime 分区、StepContext 与 CallbackGate | 已接受 | §2.3、§3.2、§9.1 |
 
@@ -100,7 +100,7 @@
 
 | [0065](0065-persistent-pause-groups.md) | 通用持久暂停组 | 已接受 | P5、MA-019 |
 
-| [0066](0066-assistant-application-and-presentation.md) | 统一助理应用、四类目标与异步通知呈现 | 已接受 | §5.4、§9.1、§14.1 |
+| [0066](0066-assistant-application-and-presentation.md) | 统一助理应用、四类目标与异步通知呈现 | 已接受；路由/合并由 0072 取代 | §5.4、§9.1、§14.1 |
 
 | [0067](0067-cpp-sdk-and-public-examples.md) | 无异常 C++ 生命周期封装与四个公开接入示例 | 已接受 | §9.1、P5 |
 
@@ -111,3 +111,5 @@
 | [0070](0070-typed-multinode-normal-profile.md) | typed 多节点正常子集与固定服务 Task | 已接受（服务 Task 暂按推荐项） | §3.4、P6、MA-038 正常子集 |
 
 | [0071](0071-normal-integration-closeout-and-coverage-gap.md) | 正常集成收尾与覆盖率差距 | 已接受 | P6、§4.2、§9.1 |
+
+| [0072](0072-single-assistant-schedule-tool-and-stop.md) | 单一助理、模型计划工具与确定性停止 | 已接受 | §5.4、§9.1、§14.1 |
