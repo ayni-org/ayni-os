@@ -11,6 +11,15 @@ namespace {
 constexpr uint32_t checkpoint_format = 1;
 constexpr uint32_t model_rounds = 3;
 constexpr size_t prompt_bytes = 384;
+// Fixture capability schema: both authority export and call arguments name
+// the same exact simulated destination; Core retains the authorization rules.
+ayni_scope_field_v1 remote_field() {
+    static const ayni_string_v1 destination{remote_destination, sizeof(remote_destination) - 1};
+    auto value = initialized<ayni_authority_value_set_v1>();
+    value.kind = AYNI_AUTHORITY_IDENTIFIER;
+    value.values.tokens = {&destination, 1, 0};
+    return {sizeof(ayni_scope_field_v1), remote_destination_field, value};
+}
 ayni_string_v1 text(const char *value) {
     return {value, static_cast<uint32_t>(std::strlen(value))};
 }
@@ -198,6 +207,8 @@ const char *goal_type(GoalKind kind) {
         return "fixture.checkpoint";
     case GoalKind::composite:
         return "fixture.composite";
+    case GoalKind::remote:
+        return "fixture.remote";
     }
     return "";
 }
@@ -208,6 +219,12 @@ ayni_status_t Policy::validate_memory(void *, ayni_bytes_v1 bytes) {
 ayni_status_t Policy::requirements(void *ctx, ayni_bytes_v1,
                                    const ayni_goal_requirement_sink_v1 *sink) {
     const auto kind = *static_cast<const GoalKind *>(ctx);
+    if (kind == GoalKind::remote) {
+        const auto field = remote_field();
+        const ayni_goal_requirement_v1 need{
+            sizeof(need), 1, text("test.increment"), {sizeof(ayni_scope_v1), 1, &field}};
+        return sink->emit(sink->ctx, &need);
+    }
     const char *const needs[] = {"mock.text", "test.increment", "mock.observe", "notify.present"};
     const bool wanted[] = {kind == GoalKind::model || kind == GoalKind::repeat_model ||
                                kind == GoalKind::checkpoint || kind == GoalKind::composite,
@@ -232,6 +249,21 @@ ayni_status_t Policy::decide(void *, const ayni_task_snapshot_v1 *s, ayni_policy
     }
     if (same(s->goal_type_id, "fixture.local")) {
         return report(*s, *out, AYNI_POLICY_REPORT_COMPLETION);
+    }
+    if (same(s->goal_type_id, "fixture.remote")) {
+        auto done = initialized<ayni_task_call_result_v1>();
+        const auto status = result(*s, "remote.v1", done);
+        if (status == AYNI_NOT_FOUND) {
+            const auto field = remote_field();
+            auto call = initialized<ayni_call_request_v1>();
+            call.kind = AYNI_POLICY_REQUEST_CALL;
+            call.step_key = text("remote.v1");
+            call.binding_id = text("increment");
+            call.binding_version = 1;
+            call.arguments = {sizeof(ayni_scope_v1), 1, &field};
+            return out->request_call(out->call_context, &call);
+        }
+        return status == AYNI_OK ? report(*s, *out, AYNI_POLICY_REPORT_COMPLETION) : status;
     }
     if (same(s->goal_type_id, "fixture.memory_read")) {
         uint64_t id = 0;
