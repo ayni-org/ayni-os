@@ -141,6 +141,8 @@ target_link_libraries(ayni_assistant_application_tests PRIVATE ayni_core ayni_ru
 gtest_discover_tests(ayni_assistant_application_tests)
 
 add_executable(ayni_cpp_sdk_tests cpp_sdk_test.cpp)
+# Keep GoogleTest factories compatible with its RTTI-enabled sanitized library.
+# The standalone SDK smoke and examples enforce no-exceptions/no-RTTI clients.
 target_link_libraries(ayni_cpp_sdk_tests PRIVATE ayni_core ayni_host_sim ayni_runtime_common
-    ayni_core_options GTest::gtest_main)
+    ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_cpp_sdk_tests)
