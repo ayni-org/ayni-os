@@ -13,8 +13,8 @@
 |---|---|---|---|
 | 1 | `MA-003`、`MA-005` | 事件入口、完成槽、Kernel 生命周期与启动恢复、模拟 Host | 完成 |
 | 2 | `MA-004`、`MA-010` | 工作模型（主体、会话、Agent、Goal、Task、触发、事件、策略、步骤与检查点）；持久化与恢复 | `MA-004`、`MA-010` 完成 |
-| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖做 `006`，再交错做 `018A → 008A → 018B`，008C/008B 按 2026-10-26 的新顺序分属 P1/P4（ADR-0042 决定 11） | `MA-006` A–F 机制及 R1～R4 整理、018A、008A、018B 的正常功能已交付；008C（typed 工具调用 #73、Native Provider #75）已交付，008B 未开始 |
-| 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | MA-009 正常功能已交付 #76；MA-011 未开始 |
+| 3 | `MA-006`、`MA-018`、`MA-008` | 权限与审批、资源与执行许可、Provider 调用；按依赖做 `006`，再交错做 `018A → 008A → 018B`，008C/008B 按 2026-10-26 的新顺序分属 P1/P4（ADR-0042 决定 11） | `MA-006` A–F 机制及 R1～R4 整理、018A、008A、018B 的正常功能已交付；008C（typed 工具调用 #73、Native Provider #75）已交付，008B 正常功能已随 P4 #83/#84 交付 |
+| 4 | `MA-009`、`MA-011` | 双策略与顺序 Skill、私有记忆与删除 | MA-009 正常功能已交付 #76；MA-011A/B 正常功能已随 #81/#82 交付 |
 | 5 | `MA-019`、`MA-020` | 助理协调器、SDK 与接入示例 | 未开始 |
 | 6 | `MA-021`、`MA-022`、`MA-023`、`MA-033` | E1、E2、E3、E4 实验，然后写 Core Alpha 报告（`reports/core/`） | 未开始 |
 | 之后 | `MA-038` | 多节点确定性仿真；留在 M1（用户选择按原计划），在第 6 步之后做，不阻断 M2，M5 前必须完成；开始前须定 IDL 与线格式（ADR-0009） | 未开始 |
@@ -85,6 +85,9 @@
 
 | [#79](https://github.com/RobotSe7en/ayni/pull/79) | 2026-10-27 | P3 F01/F14/F08 | Kernel 私有状态、service/runtime/ports、StepContext 与回调守卫 | ADR-0058 |
 | [#80](https://github.com/RobotSe7en/ayni/pull/80) | 2026-10-27 | P3 F04/F12 | Grant 历史与拒绝闸门、Grant/命令 PersistentStore | ADR-0059 |
+| [#82](https://github.com/RobotSe7en/ayni/pull/82) | 2026-10-27 | P4 MA-011B | 可信 UTC、POSIX 日历、稳定补发/重新授权游标；ABI 0.41 | ADR-0061 |
+| [#83](https://github.com/RobotSe7en/ayni/pull/83) | 2026-10-27 | P4 MA-008B 入口 | 任意线程观测 FIFO、可靠 gap、Mock 媒体；ABI 0.42 | ADR-0062 |
+| [#84](https://github.com/RobotSe7en/ayni/pull/84) | 2026-10-27 | P4 MA-008B 订阅 | Task 所有订阅、有限租期/自动续租、新代际与 WAITING；ABI 0.43 | ADR-0063 |
 
 ## 工作包日期
 
@@ -100,12 +103,12 @@
 
 ## 交接状态（2026-10-27）
 
-当前已合并功能基线为 [#81](https://github.com/RobotSe7en/ayni/pull/81)（P3 记忆、来源授权与正文清理）；ABI 0.40 / schema 2。Native 文本 Provider 与 typed 工具调用见 #75、#73，结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70) 与 [#72](https://github.com/RobotSe7en/ayni/pull/72)（P0 结构收尾）。用户 2026-10-26 批准 [M1 详细实施计划](m1-detailed-plan.md)（全文，含各 PR 的拆分与设计要点），剩余工作按 [M1 剩余实施顺序](m1-remaining-implementation.md) 的 P0～P6 推进；新故障/恢复专项与变异活动继续暂停。
+当前已合并功能基线为 [#84](https://github.com/RobotSe7en/ayni/pull/84)（P4 Task 订阅与等待）；ABI 0.43 / schema 2。Native 文本 Provider 与 typed 工具调用见 #75、#73，结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70) 与 [#72](https://github.com/RobotSe7en/ayni/pull/72)（P0 结构收尾）。用户 2026-10-26 批准 [M1 详细实施计划](m1-detailed-plan.md)（全文，含各 PR 的拆分与设计要点），剩余工作按 [M1 剩余实施顺序](m1-remaining-implementation.md) 的 P0～P6 推进；新故障/恢复专项与变异活动继续暂停。
 
 - **已完成：** MA-003/004/005/010、MA-006 A–F；MA-018A 的资源目录/公平准入、Task 持久运行限制和工作等待策略；MA-008A 的公开调用/持久派发、可靠完成、原 Provider 对账、等待恢复及 Mock A/B。MA-018B 已实现 Core 许可签发/续租、持久 Scene、最小可信 Observation、独立 Mock 执行端及停止确认后释放隔离，正常用例与独立审查通过。MA-008C 前半（#73，ADR-0054）：模型调用可提议 typed 工具调用，模型只看到 GoalType 允许列表内已授权的工具，提议由策略按普通调用请求。MA-008C 后半（#75，ADR-0055）的 OpenAI-compatible Provider、本地协议夹具与独立 DeepSeek 验证已完成。MA-009（#76，ADR-0056）交付两策略、摘要候选、整段对话值删除与显式兼容替换，只有完成且已持久的 Task 检查点可导出。验证详情在各 PR。
 - **结构整改：** #70 按架构审查第 6 节整改 kernel 结构，14 项决定见 ADR-0051。#72（ADR-0053）完成审查项 F05、F06、F11、F16 前半与 F19：ABI 主版本 0 每个结构体只接受本次 minor 的布局；新的所有者命令在编解码旁加 `ExactCommand` 特化、在 `intent_traits` 加一行并在 `find_command` 加分支，命令表不变；调用事实对 Task 的影响写在 `work/call_propagation`；新增配置字段改 `runtime/common` 的 `default_config()` 并同步内存量测工具的 C 副本。F01/F14/F08 已随 P3 #79 完成，F04/F10/F12/F15/F18 按实施顺序表的阶段处理。
-- **P2 已合并：** 已实现双 Agent Native/Sim 装配、公开查询/管理、异步对话文件和单进程 CLI，ABI 0.39，schema 2 不变（ADR-0057）；正常功能、脚本会话与独立审查通过，runtime 见 [#77](https://github.com/RobotSe7en/ayni/pull/77)，CLI 见 [#78](https://github.com/RobotSe7en/ayni/pull/78)。P3 第一项 F01/F14/F08 已合并 [#79](https://github.com/RobotSe7en/ayni/pull/79)（ADR-0058）；Grant/命令存储及恢复职责前置整改已合并 [#80](https://github.com/RobotSe7en/ayni/pull/80)（ADR-0059），记忆与公共档案、来源授权及隐私清理实现见 [#81](https://github.com/RobotSe7en/ayni/pull/81)（ADR-0060，ABI 0.40）。当前推进 P4，实施状态见下条；用户本机实 API 多轮尚待试用。
-- **P4 实施中：** MA-011B 可信 UTC/日历在 `feat/p4-calendar` 完成正常实现、本地验证与独立审查，已开 [#82](https://github.com/RobotSe7en/ayni/pull/82)，尚未合并。用户确认 Task 所有订阅、POSIX TZ、M1 Mock 媒体；周期补发取最近时刻并计数，重新授权跳过周期积压、保留单次，UTC 不可信时暂缓周期重新授权（ADR-0061）。MA-008B 的任意线程样本、可靠 gap 和 Mock 媒体已完成正常实现、本地验证与独立审查，见 [#83](https://github.com/RobotSe7en/ayni/pull/83)（ADR-0062），尚未合并；Task 订阅 open/renew/close、30秒/半租期自动续租、ACTIVE 后分析及 WAITING 等新样本/状态的正常实现、本地验证与独立审查见 [#84](https://github.com/RobotSe7en/ayni/pull/84)（ADR-0063，ABI 0.43）。三项 PR 尚未合并，按 #82 → #83 → #84 依赖交付，下一步 P5；无未决产品问题，合并尚待用户授权。
+- **P2 已合并：** 已实现双 Agent Native/Sim 装配、公开查询/管理、异步对话文件和单进程 CLI，ABI 0.39，schema 2 不变（ADR-0057）；正常功能、脚本会话与独立审查通过，runtime 见 [#77](https://github.com/RobotSe7en/ayni/pull/77)，CLI 见 [#78](https://github.com/RobotSe7en/ayni/pull/78)。P3 第一项 F01/F14/F08 已合并 [#79](https://github.com/RobotSe7en/ayni/pull/79)（ADR-0058）；Grant/命令存储及恢复职责前置整改已合并 [#80](https://github.com/RobotSe7en/ayni/pull/80)（ADR-0059），记忆与公共档案、来源授权及隐私清理实现见 [#81](https://github.com/RobotSe7en/ayni/pull/81)（ADR-0060，ABI 0.40）。P4 已完成，见下条；下一步 P5；用户本机实 API 多轮尚待试用。
+- **P4 已合并：** 可信 UTC/POSIX 日历及稳定补发（[#82](https://github.com/RobotSe7en/ayni/pull/82)，ADR-0061）、任意线程观测/gap 与 Mock 媒体（[#83](https://github.com/RobotSe7en/ayni/pull/83)，ADR-0062）、Task 所有订阅/自动续租/新样本 WAITING（[#84](https://github.com/RobotSe7en/ayni/pull/84)，ADR-0063）完成正常实现、验证和独立审查，CI 通过后已按用户授权合并。下一步 P5 统一助理与 SDK；无未决 P4 产品问题。真实媒体仍在 M3，新故障/恢复专项继续暂停。
 - **已定决定：** 当前 Task 的有界对话正文持久保存；所有者可撤销后对账、显式恢复等待超时的原 Task；后台等待 30 秒、默认最短周期 5 分钟；Scene 启用偏好跨重启保留；许可携带完整有界包络；执行端端口为异步请求，观测输入走 ingress 式队列（ADR-0052，后者随 MA-008B）。2026-10-26 新增：先做文本纵切；0.x 只收当前布局；单进程 CLI；Provider 转成 typed 结构；模型可见工具为 GoalType 允许列表内已授权的部分；旧对话轮次由模型摘要替代（ADR-0042 决定 11～16）。P1 PR 2 的实 API 验证用 DeepSeek（用户 2026-10-26 选定），已用本次授权的测试密钥通过独立手动验证；没有建立长期密钥配置或自动实 API workflow。
 - **P2 用户选择（2026-10-26）：** `@a/@b` 与英文短命令配中文提示；配置和数据放用户目录，支持显式覆盖；密钥只从环境变量读取。
 - **CI：** 两个 self-hosted runner 在同一台机器上共享 Docker 守护进程、镜像与 ccache 卷；额外 native 配置按矩阵每个配置一个作业，两个 runner 并行取用（`docs/development.md`）。

@@ -14,8 +14,8 @@
 | 7 | P2 | MA-020 前半 | runtime 演示装配（F16 后半）、SimNode 与对话文件存储；单进程 Native CLI 内嵌 Kernel，命令映射已有意图；显式点名对 A/B 说话；脚本化 Mock CLI 会话含重启继续 | 已合并并通过正常验证/审查/CI：runtime 见 #77，CLI 见 #78（ADR-0057）；实 API 多轮待本机试用 |
 | 8 | P3 | 结构整改 | F01 `ayni_kernel` 成员私有化与 service/runtime 分区，F14 StepContext，F08 作用域重入守卫；行为、ABI 与 schema 不变 | 已合并 #79，ADR-0058 |
 | 9 | P3 | MA-011A | 私有命名空间与所有者公共档案；来源/版本/确认状态；有限检索与上下文 lineage；tombstone 立即拒绝传递派生依赖、有界擦除；单轮对话删除使摘要失效；满表拒绝；随同 F04（Grant/命令）、F12、F10 | Grant/命令存储与 F12 前置整改已合并 #80（ADR-0059），记忆、公共档案与来源清理见 #81（ADR-0060）；下一步 P4 |
-| 10 | P4 | MA-011B | 可信 UTC 独立于 monotonic；单次/每日/每周与有界时区规则；不可信待校时；稳定 occurrence；DST/跳时补发至多一次 | `feat/p4-calendar` 正常实现、本地验证与独立审查完成，[#82](https://github.com/RobotSe7en/ayni/pull/82) 交付中；尚未合并（ADR-0061） |
-| 11 | P4 | MA-008B | 订阅 open/renew/close、代际/序号/gap、TTL/质量、媒体引用；任意线程观测队列（ADR-0052 决策 6，F15）；新代际与依赖复核；可靠控制回执 | 任意线程样本、可靠 gap 与 Mock 媒体正常实现/验证/审查完成，见 [#83](https://github.com/RobotSe7en/ayni/pull/83)（ADR-0062），尚未合并；Task 订阅生命周期、自动续租和 WAITING 等待完成正常实现/本地验证/独立审查，见 [#84](https://github.com/RobotSe7en/ayni/pull/84)（ADR-0063）；尚未合并，随后 P5 |
+| 10 | P4 | MA-011B | 可信 UTC 独立于 monotonic；单次/每日/每周与有界时区规则；不可信待校时；稳定 occurrence；DST/跳时补发至多一次 | 正常实现、验证、独立审查与 CI 通过，已合并 [#82](https://github.com/RobotSe7en/ayni/pull/82)（ADR-0061） |
+| 11 | P4 | MA-008B | 订阅 open/renew/close、代际/序号/gap、TTL/质量、媒体引用；任意线程观测队列（ADR-0052 决策 6，F15）；新代际与依赖复核；可靠控制回执 | 任意线程样本、可靠 gap 与 Mock 媒体正常实现/验证/审查完成，见 [#83](https://github.com/RobotSe7en/ayni/pull/83)（ADR-0062），已合并；Task 订阅生命周期、自动续租和 WAITING 等待完成正常实现/本地验证/独立审查，见 [#84](https://github.com/RobotSe7en/ayni/pull/84)（ADR-0063），已合并；下一步 P5 |
 | 12 | P5 | MA-019 | 文本回合与提醒/设备检查/记忆整理/场景观察；通用持久暂停组、可信应用归类、新工作同样受限；通知成功呈现才完成、安静时段；随同 F04 完成 | 未开始 |
 | 13 | P5 | MA-020 后半 | C++17 包装 `ayni.hpp`、显式排空/关闭；四个接入/组合示例只用公开 API，CI 编译运行；双 Agent 演示 | 未开始 |
 | 14 | P6 | E1–E4 正常子场景 | 可复现 JSON 夹具/轨迹；公平/私有/限制、正常屏障、策略/Provider 切换与组合；独立子用例 ID，不冒充原完整实验 | 未开始 |
