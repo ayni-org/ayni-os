@@ -40,7 +40,8 @@ bool knows_command_record(uint16_t version) {
            version == resume_wait_command_record_version ||
            version == scene_command_record_version || version == memory_command_record_version ||
            version == expired_command_record_version || version == context_command_record_version ||
-           version == sourced_command_record_version;
+           version == sourced_command_record_version ||
+           version == pause_group_command_record_version;
 }
 
 bool valid_command_sources(const CommandMapping &mapping) {
@@ -61,6 +62,9 @@ uint16_t command_record_version_for(const CommandMapping &mapping) {
     }
     if (is_memory_command(mapping.kind)) {
         return memory_command_record_version;
+    }
+    if (mapping.kind == AYNI_INTENT_PAUSE_GROUP_SET) {
+        return pause_group_command_record_version;
     }
     if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
         return scene_command_record_version;
@@ -246,8 +250,10 @@ bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
                                        ? AYNI_INTENT_GRANT_REVOKE
                                        : AYNI_INTENT_GRANT_CREATE;
         const bool right_kind =
-            version == context_command_record_version  ? is_context_command(mapping.kind)
-            : version == memory_command_record_version ? is_memory_command(mapping.kind)
+            version == pause_group_command_record_version
+                ? mapping.kind == AYNI_INTENT_PAUSE_GROUP_SET
+            : version == context_command_record_version ? is_context_command(mapping.kind)
+            : version == memory_command_record_version  ? is_memory_command(mapping.kind)
             : version == scene_command_record_version
                 ? mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED
             : version == resume_wait_command_record_version

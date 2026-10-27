@@ -42,13 +42,14 @@ ayni_status_t read_goal_create(const ayni_goal_create_v1 &body, GoalCreate &out)
     if (status != AYNI_OK) {
         return status;
     }
-    if (body.reserved != 0U) {
+    if (body.reserved != 0U || body.pause_group_reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     out = {body.goal_type_id,      body.goal_type_version,
            body.owner_instance_id, body.parent_goal_id,
            body.parameters,        {body.trigger, body.trigger_delay_us, body.trigger_period_us},
            body.expiry_us,         body.trigger_source};
+    out.pause_group = body.pause_group;
     if (body.calendar != nullptr) {
         const auto decoded = work::decode_calendar_rule(*body.calendar, out.calendar);
         if (decoded != AYNI_OK) {
@@ -73,6 +74,31 @@ ayni_status_t read_scene_change(const ayni_intent_v1 &raw, authority::SceneChang
     return AYNI_OK;
 }
 
+// Decode the complete owner control before command lookup or any state change.
+ayni_status_t read_pause_group_change(const ayni_intent_v1 &raw, work::PauseGroupChange &out) {
+    const ayni_pause_group_set_v1 *body = nullptr;
+    const auto status = read_body(raw.body, body);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (body->reserved != 0 || body->paused > 1) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    out = {body->group, raw.expected_revision, body->paused != 0};
+    return AYNI_OK;
+}
+
+// Decode one complete limit request without introducing work-state validation.
+ayni_status_t read_task_limit(const ayni_intent_v1 &raw, Intent &out_intent) {
+    const ayni_task_raise_model_limit_v1 *body = nullptr;
+    const auto status = read_body(raw.body, body);
+    if (status == AYNI_OK) {
+        out_intent.target_id = body->task_id;
+        out_intent.model_call_limit = body->model_call_limit;
+    }
+    return status;
+}
+
 ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     switch (raw.kind) {
     case AYNI_INTENT_CONTEXT_OPEN:
@@ -84,20 +110,15 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
     case AYNI_INTENT_MEMORY_CONFIRM:
     case AYNI_INTENT_MEMORY_DELETE:
         return decode_memory_command(raw, out_intent.memory);
+    case AYNI_INTENT_PAUSE_GROUP_SET:
+        return read_pause_group_change(raw, out_intent.pause_group);
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return read_scene_change(raw, out_intent.scene);
     case AYNI_INTENT_CALL_QUERY_RESULT:
         return read_target(raw.body, &ayni_call_query_result_v1::logical_call_id,
                            out_intent.target_id);
-    case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT: {
-        const ayni_task_raise_model_limit_v1 *body = nullptr;
-        const auto status = read_body(raw.body, body);
-        if (status == AYNI_OK) {
-            out_intent.target_id = body->task_id;
-            out_intent.model_call_limit = body->model_call_limit;
-        }
-        return status;
-    }
+    case AYNI_INTENT_TASK_RAISE_MODEL_LIMIT:
+        return read_task_limit(raw, out_intent);
     case AYNI_INTENT_GOAL_CREATE:
         return read_goal_create(*static_cast<const ayni_goal_create_v1 *>(raw.body),
                                 out_intent.create);
@@ -171,6 +192,12 @@ ayni_status_t check_form(const Intent &intent) {
         uint32_t ignored = 0;
         return intent.command_id == 0 ? AYNI_INVALID_ARGUMENT
                                       : measure_memory_command(intent.memory, ignored);
+    }
+    if (intent.kind == AYNI_INTENT_PAUSE_GROUP_SET) {
+        uint32_t size = 0;
+        return intent.pause_group.expected_revision == intent.expected_revision
+                   ? measure_pause_group_command(intent.pause_group, size)
+                   : AYNI_INVALID_ARGUMENT;
     }
     if (intent.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
         return intent.scene.expected_revision != intent.expected_revision
@@ -262,6 +289,10 @@ uint64_t ordinary_command_digest(const Intent &intent) {
         digest.add_u32(create.calendar.version);
         digest.add_u64(static_cast<uint64_t>(create.calendar.first_local_s));
         digest.add_bytes(create.calendar.timezone, create.calendar.timezone_size);
+    }
+    // Preserve every old ungrouped command digest across this development upgrade.
+    if (create.pause_group != 0) {
+        digest.add_u32(create.pause_group);
     }
     return digest.value();
 }

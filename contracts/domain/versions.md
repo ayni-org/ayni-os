@@ -76,3 +76,5 @@ ABI 0.40（ADR-0060）新增 memory/context 管理和策略借用视图、GoalTy
 ABI 0.41（ADR-0061）增加可信 UTC 与日历规则/查询、GoalCreate 日历视图及 Task 计划时刻。Calendar REQUIRED 记录/游标/Task 版本见 storage/records.md，schema 2 不变。
 
 ABI 0.42（ADR-0062）增加任意线程 observation post/gap/info、media 引用及纯 validator；config 追加 observation_ingress_capacity，ObservationInfo 追加媒体和 gap 计数。旧 0.x Host/Provider/策略/SDK 须重编译，结构精确匹配。队列/样本/媒体不持久，没有新增记录或迁移，schema 2 不变。
+
+ABI 0.44（ADR-0065）追加不可变 Goal 暂停组、复制诊断、kind24 精确所有者控制和通用组查询。所有 0.x 调用方重编译；config 不变。schema 2 保持，含组 Goal 使用 REQUIRED type3/v13-v14、组偏好 type28/v1、命令 type9/v14，旧 reader 明确拒绝；无组旧布局保持可读。本轮无旧目录迁移工具。

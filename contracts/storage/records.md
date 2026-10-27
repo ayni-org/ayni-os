@@ -409,3 +409,11 @@ schema 2 保持，新增版本均 REQUIRED，旧 reader 显式拒绝并保留目
 STARTED 的 foreground→background、开启动作步骤和 Task 前台释放同批；之后后台回执不要求更新 Task.current_call。journal 仍每批至多一条 Call，Task/authority 变化逐 Call 收敛。正常快照/日志跨表校验拥有者、前后台引用与 Task 外键，UNKNOWN 阻止不安全回收。物理 Call 使用 scoped 观察时写 type21/v8（原v3）或v9（原v5擦除），每条观察依赖在原 source/version/boot/generation/sequence 后追加 subscription_id u64，0为Host；旧v3/v5读取为Host引用。
 
 TASK_STATE type6/v13/v14/v15/v16 对应原v1/v2/v3/v7 的普通、授权、重新授权及提高模型上限配对规则；在56 B选定调用布局后追加 wait_subscription_id、generation、sequence 三个u64与 phase u32，共84 B。只在有等待前沿时使用，call_id/end同零，lifecycle只能WAITING或其用户PAUSED；其他版本不能表达WAITING。snapshot仅用v13。等待所指 Call 必须属同一Task且有订阅事实，前沿代际不得晚于当前代际；状态/序号允许落后以在下一owner步唤醒。普通无等待行继续使用原版本，唤醒/终态清除等待；所有授权/模型元数据更新保留它。正常公开重开验证见 `SubscriptionFixture.orderly_restart_of_waiting_task_retains_frontier_and_follows_new_generation`；不替代新的故障/恢复专项。
+
+## P5 暂停组记录（ADR-0065，ABI 0.44）
+
+- REQUIRED `PAUSE_GROUP` type28/v1，正文 56 B：`group` u32、`paused` u32（0/1）、稳定 `object_id` u64、`revision` u32、reserved u32（0）、`transition_id` u64、`commit_seq` u64、逻辑输入 `incarnation` u64、`through` u64。编号 1～8；对象/版本/stamp 正，输入前沿复用 C-AUTH 的逻辑格式，不存单调时间。默认开放且未控制的组不写记录；没有新建/回收/重用组 ID 的路径。
+- 日志组事实排在所有工作/日历变化后及 COMMAND_MAPPING 前，必须与本批确切所有者命令配对；快照通过 PersistentStore 完整恢复每个已控制组，之后才结算 Task。
+- REQUIRED `GOAL` type3/v13 日志、v14 快照沿 profile 布局追加 `pause_group` u32 和 `provenance_required` u32（0/1）；组必须非零且在固定范围。日历规则由触发种类及原 type27 配对证明；profile 总是存在。v14 继续保留原 state/creation stamp/current sequence 尾部。无组 Goal 继续使用原版本。
+- REQUIRED `COMMAND_MAPPING` type9/v14 复用 exact v2 包络，canonical 16 B：kind=24 u32、expected_revision u32、group u32、paused u32。result revision 是 expected+1，effect=CHANGED。相同状态的新命令也推进一次控制 revision；同命令重试只返回首次结果。
+- Goal 审批/重新授权的 canonical echo 仅在非零组时末尾追加 group u32；旧无组字节与普通创建 digest 保持。含组新事实使旧 reader 遇 REQUIRED 新版本时拒绝，保留目录；无迁移工具。

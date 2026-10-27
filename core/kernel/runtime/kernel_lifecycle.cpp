@@ -149,13 +149,17 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     advance_recovery_and_maintenance(progress);
     apply_revocations(progress);
     apply_observation_gaps(progress);
-    calls.refresh_subscription_gates(progress.now_us(), log.durable_seq(), call_mode());
+    if (!calls.refresh_live_gates(progress.now_us(), log.durable_seq(), call_mode())) {
+        enter_restricted(AYNI_RESTRICTION_INTERNAL);
+    }
     apply_calls(progress);
     if (!work.calendars.empty()) {
         work.refresh_calendars(calendar_clock(progress.started_us));
     }
     apply_ready_work(progress);
-    calls.refresh_subscription_gates(progress.now_us(), log.durable_seq(), call_mode());
+    if (!calls.refresh_live_gates(progress.now_us(), log.durable_seq(), call_mode())) {
+        enter_restricted(AYNI_RESTRICTION_INTERNAL);
+    }
     take_queued_inputs(progress);
     take_queued_observations(progress);
     if (appends() && log.advance(progress.now_us())) {

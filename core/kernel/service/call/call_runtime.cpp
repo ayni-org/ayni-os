@@ -218,14 +218,17 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
         return Advance::internal;
     }
     const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
-    const bool user_stop =
-        task.call.end != work::TaskCall::End::none || task.lifecycle == AYNI_TASK_PAUSED;
+    const bool user_stop = (active.delivery && active.delivery->inhibition) ||
+                           task.call.end != work::TaskCall::End::none ||
+                           task.lifecycle == AYNI_TASK_PAUSED;
     const bool expired = delivery_expired(index, now_us);
     const bool denied =
         !content_current || (authority.status != AYNI_OK && authority.status != AYNI_BUSY);
     if (mode != Mode::running || user_stop || expired || denied ||
         state.cancel_cause != work::CallCancelCause::none) {
         const auto cause = state.cancel_cause != work::CallCancelCause::none ? state.cancel_cause
+                           : active.delivery && active.delivery->inhibition
+                               ? *active.delivery->inhibition
                            : mode != Mode::running ? work::CallCancelCause::shutdown
                            : user_stop             ? work::CallCancelCause::user
                            : expired               ? work::CallCancelCause::deadline

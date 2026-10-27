@@ -143,3 +143,5 @@ ABI 0.37 增加 `AYNI_REASON_MODEL_OUTPUT`（76），用于 `FAILED` 的模型�
 - `AYNI_REASON_MEMORY_DEPENDENCIES`（78）属于 `CAPACITY_EXCEEDED`：记忆或完整来源集合超出本次容量。
 - `AYNI_REASON_MEMORY_EXPIRED`（79）属于 `EXPIRED`：已捕获的来源版本或许可失效。
 - 其他记忆分类失败保留原状态并使用 `NONE`；隐私清理查询的 `progress_status` 显示 Context/快照代际耗尽的容量失败，不假装已完成。
+
+| 81 | `AYNI_REASON_PAUSE_GROUP` | `INVALID_STATE` | 独立暂停组限制；也标明未派生自主积压的跳过原因；Since 0.44 |

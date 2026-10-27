@@ -227,11 +227,11 @@ bool WorkModel::next_due_work(uint64_t now_us, uint64_t durable_seq, work::DueWo
 
 bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint64_t now_us,
                        work::InputResumeBoundary input) {
-    if (!model.goals.takes_input(source, &model.goal_authority, input)) {
+    if (!model.goals.takes_input(source, &model.goal_authority, input, &model.pause_groups)) {
         return false;
     }
-    model.goals.record_input(source, now_us, model.transitions.next(), &model.goal_authority,
-                             input);
+    model.goals.record_input(source, now_us, model.transitions.next(), &model.goal_authority, input,
+                             &model.pause_groups);
     return true;
 }
 

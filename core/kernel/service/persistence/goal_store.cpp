@@ -43,7 +43,9 @@ class Journal {
             uint8_t *at =
                 body(work::goal_record_type, version, work::goal_record_size(goal, version));
             if (at != nullptr) {
-                work::write_goal_record(goal, model_.goals.parameters(index), at, version);
+                work::write_goal_record(goal, model_.goals.parameters(index), at, version,
+                                        model_.provenance.find(work::ProvenanceKind::goal, index,
+                                                               goal.goal_id) != nullptr);
             }
         }
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {
@@ -118,13 +120,15 @@ bool knows_goal_body(uint16_t version, WorkRecordContext context) {
             (version == work::goal_work_profile_record_version ||
              version == work::goal_provenance_record_version ||
              version == work::goal_calendar_record_version ||
-             version == work::goal_calendar_provenance_record_version)) ||
+             version == work::goal_calendar_provenance_record_version ||
+             version == work::goal_group_record_version)) ||
            (context == WorkRecordContext::snapshot &&
             (version == work::goal_creation_stamp_snapshot_version ||
              version == work::goal_work_profile_snapshot_version ||
              version == work::goal_provenance_snapshot_version ||
              version == work::goal_calendar_snapshot_version ||
-             version == work::goal_calendar_provenance_snapshot_version));
+             version == work::goal_calendar_provenance_snapshot_version ||
+             version == work::goal_group_snapshot_version));
 }
 bool knows(uint16_t type, uint16_t version, WorkRecordContext context) {
     if (type == work::goal_record_type) {
@@ -208,7 +212,9 @@ void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
     const auto &goal = model.goals.at(index);
     const auto version = goal_snapshot_version(model, index);
     const auto base = work::goal_record_size(goal, version);
-    work::write_goal_record(goal, model.goals.parameters(index), body, version);
+    work::write_goal_record(
+        goal, model.goals.parameters(index), body, version,
+        model.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
     work::write_goal_state_record(goal, body + base);
     write_snapshot_stamp(body + base + work::goal_state_record_size,
                          {goal.created.transition_id, goal.created.commit_seq});
@@ -233,7 +239,8 @@ durability::BatchCheck goal(WorkModel &model, const durability::SnapshotMetadata
         version != work::goal_work_profile_snapshot_version &&
         version != work::goal_provenance_snapshot_version &&
         version != work::goal_calendar_snapshot_version &&
-        version != work::goal_calendar_provenance_snapshot_version) {
+        version != work::goal_calendar_provenance_snapshot_version &&
+        version != work::goal_group_snapshot_version) {
         return durability::BatchCheck::unsupported; // No inferred creation sequence for old
                                                     // snapshots.
     }

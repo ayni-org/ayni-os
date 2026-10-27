@@ -88,6 +88,8 @@ class BodyReader {
         return in_ + at_ - out_size;
     }
 
+    // Remaining framed bytes; malformed reads expose no optional suffix.
+    uint32_t remaining() const { return ok_ ? size_ - at_ : 0; }
     // Every read stayed inside the body and the body has nothing left.
     bool ok() const { return ok_ && at_ == size_; }
 

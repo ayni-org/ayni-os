@@ -264,11 +264,16 @@ class WorkNode {
                 strategy_desc(strategy_id, 1, &ScriptedStrategy::decide, &strategy_,
                               max_intents_per_call, max_checkpoint_bytes);
             ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
+            if (additional_registration) {
+                additional_registration(kernel);
+            }
         });
     }
 
     Node &node() { return node_; }
     ayni_kernel_t *kernel() { return node_.kernel(); }
+    std::function<void(ayni_kernel_t *)>
+        additional_registration;                // Optional extra public test catalog.
     uint32_t timer_trigger_kinds = any_trigger; // Tests may explicitly enable new trigger families.
     uint64_t timer_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     // Without a validator, "folder" goals take no parameters.

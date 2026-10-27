@@ -110,6 +110,9 @@ class ExecutionControl {
     // Earliest poll or request deadline; UINT64_MAX without either.
     uint64_t next_deadline_us() const;
 
+    // Latch every closed execution gate without I/O. A later resume cannot renew
+    // the old permit; budgeted owner items still deliver stop and await proof.
+    bool latch_closed_gates(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode);
     // Stops whose gate closed, before journal admission or any other work.
     RuntimeAdvance advance_urgent(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode);
     // One routine poll, renewal or release, scanning leases fairly.

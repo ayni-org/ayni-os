@@ -27,6 +27,7 @@
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
 #include "work/authority/authority_facts.h"
+#include "work/goal/pause_groups.h"
 #include "work/goal/trigger_schedule.h"
 
 #include <ayni/ayni.h>
@@ -65,6 +66,7 @@ struct NewGoal {
     catalog::CatalogId goal_type_id;
     uint32_t goal_type_version;
     catalog::WorkProfile work_profile{}; // Copied trusted classification and background floor.
+    uint32_t pause_group = 0;            // Immutable direct group; zero means none.
 };
 
 struct Goal {
@@ -100,6 +102,7 @@ struct Goal {
     // Independent authorization phase and binding belong to GoalAuthorityTable.
     ayni_reason_t hold_reason;
     ayni_goal_lifecycle_t lifecycle;
+    uint32_t pause_group = 0; // Immutable direct group; ancestors add their own restrictions.
     catalog::WorkProfile
         work_profile{}; // Immutable creation semantics, never inferred from a name.
 };
@@ -258,6 +261,9 @@ class GoalTable {
     // backlog. Once/delay retain their original due time (ADR-0038 decision 11).
     // Caller has already rejected an expired Goal; user pause is unchanged.
     void skip_authority_backlog(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp);
+    // Shared interval/input skip; caller supplies the independent suspension reason.
+    void skip_suspended_backlog(uint32_t index, uint64_t now_us, ayni_reason_t reason,
+                                foundation::TransitionStamp stamp);
     // Calendar owner projects UTC into this boot without persisting an absolute
     // monotonic value. No user revision or durable state changes here.
     bool project_calendar(uint32_t index, uint64_t deadline_us);
@@ -271,15 +277,15 @@ class GoalTable {
     // LOCAL_INPUT from that source, it is not terminal, paused or not, and
     // one more occurrence has a number (ADR-0021).
     bool takes_input(const catalog::CatalogId &source,
-                     const GoalAuthorityTable *authority = nullptr,
-                     InputResumeBoundary input = {}) const;
+                     const GoalAuthorityTable *authority = nullptr, InputResumeBoundary input = {},
+                     const PauseGroups *groups = nullptr) const;
     // Records the input as one occurrence, due at now_us, of every goal that
     // takes it, and gives each of them stamp.commit_seq; the revision stays,
     // as for take_due. Only after takes_input(source) returned true.
     void record_input(const catalog::CatalogId &source, uint64_t now_us,
                       foundation::TransitionStamp stamp,
-                      const GoalAuthorityTable *authority = nullptr,
-                      InputResumeBoundary input = {});
+                      const GoalAuthorityTable *authority = nullptr, InputResumeBoundary input = {},
+                      const PauseGroups *groups = nullptr);
     // Drops the expiry of goal index, which then never expires, and gives it
     // stamp.commit_seq; the revision stays. Only when expiring it would raise
     // a revision past the largest, its own or one of the goals or tasks the
@@ -365,6 +371,11 @@ class GoalTable {
     // Whether goal index is root or one of its descendants.
     bool in_subtree(uint32_t index, uint32_t root) const;
     static bool at_largest_revision(const Goal &goal);
+    // Single owner of group inheritance, shared by trigger and lifecycle gates.
+    bool group_paused(uint32_t index, const PauseGroups &groups) const {
+        return !visit_lineage(index,
+                              [&](uint32_t at) { return !groups.paused(goals_[at].pause_group); });
+    }
 
     // index < size().
     const Goal &at(uint32_t index) const { return goals_[index]; }
@@ -387,7 +398,8 @@ class GoalTable {
     // descendants.
     static bool ends(GoalChange change);
     bool takes(uint32_t index, const catalog::CatalogId &source,
-               const GoalAuthorityTable *authority, InputResumeBoundary input) const;
+               const GoalAuthorityTable *authority, InputResumeBoundary input,
+               const PauseGroups *groups) const;
     void set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
                        foundation::TransitionStamp stamp);
     // The goal insert() and restore() create.

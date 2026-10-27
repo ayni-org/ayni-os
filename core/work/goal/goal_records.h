@@ -37,6 +37,10 @@ constexpr uint16_t goal_calendar_record_version = 9;
 constexpr uint16_t goal_calendar_snapshot_version = 10;
 constexpr uint16_t goal_calendar_provenance_record_version = 11;
 constexpr uint16_t goal_calendar_provenance_snapshot_version = 12;
+// REQUIRED v13/v14 add immutable group membership, independent of calendar kind.
+constexpr uint16_t goal_group_record_version = 13;
+constexpr uint16_t goal_group_snapshot_version = 14;
+constexpr uint32_t goal_group_tail_size = 2 * sizeof(uint32_t); // records.md group + provenance.
 constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
 constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;
@@ -51,7 +55,8 @@ constexpr uint16_t goal_state_authority_record_version = 4;
 constexpr uint16_t goal_state_reauthorization_record_version = 5;
 // A GOAL record without its goal type id, trigger source and parameters.
 constexpr uint32_t goal_record_fixed_size = 108;
-constexpr uint32_t goal_record_max_fixed_size = goal_record_fixed_size + goal_work_profile_size;
+constexpr uint32_t goal_record_max_fixed_size =
+    goal_record_fixed_size + goal_work_profile_size + goal_group_tail_size;
 constexpr uint32_t goal_state_record_size = 48;
 
 // What a GOAL record holds. goal.parameters points into the body, and
@@ -79,7 +84,7 @@ uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present,
                                    bool provenance_present = false);
 // body has goal_record_size(goal, version) bytes; parameters are the goal's retained bytes.
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
-                       uint16_t version = goal_record_version);
+                       uint16_t version = goal_record_version, bool provenance_present = false);
 // Returns false for a body that does not hold a GOAL record: a size that
 // does not match, an invalid goal type id or trigger source.
 bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out,

@@ -38,6 +38,9 @@ void write_goal_creation_identity(const GoalCreate &create, durability::BodyWrit
     if (create.calendar.kind != 0) {
         work::write_calendar_rule(create.calendar, writer);
     }
+    if (create.pause_group != 0) {
+        writer.u32(create.pause_group);
+    }
 }
 
 GoalCreate read_goal_creation_identity(durability::BodyReader &reader) {
@@ -59,12 +62,16 @@ GoalCreate read_goal_creation_identity(durability::BodyReader &reader) {
             create.calendar = {}; // Shared shape check refuses the missing required rule.
         }
     }
+    if (reader.remaining() != 0) {
+        create.pause_group = reader.u32();
+    }
     return create;
 }
 
 bool matches_goal_creation(const GoalCreate &create, const work::Goal &goal,
                            ayni_bytes_v1 parameters, const work::CalendarRule *calendar) {
-    return goal.owner_instance_id == create.owner_instance_id &&
+    return goal.pause_group == create.pause_group &&
+           goal.owner_instance_id == create.owner_instance_id &&
            goal.parent_goal_id == create.parent_goal_id &&
            goal.goal_type_version == create.goal_type_version &&
            goal.goal_type_id.equals(create.goal_type_id) &&

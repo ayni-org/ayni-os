@@ -21,7 +21,8 @@ ayni_status_t measure_approval_command(const ApprovalCommand &input, uint32_t &o
         return AYNI_INVALID_ARGUMENT;
     }
     out_size = approval_command_fixed_size + create.goal_type_id.size + create.trigger_source.size +
-               create.parameters.size + work::calendar_rule_size(create.calendar);
+               create.parameters.size + work::calendar_rule_size(create.calendar) +
+               (create.pause_group != 0 ? goal_identity_group_size : 0U);
     return AYNI_OK;
 }
 

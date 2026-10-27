@@ -178,8 +178,9 @@ inline bool within_snapshot(foundation::TransitionStamp stamp,
            stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
 }
 
-extern const PersistentStore agent_store;    // Agent identities and lifecycle stamps.
-extern const PersistentStore goal_store;     // Parent-first Goal and adjacent authority facts.
+extern const PersistentStore pause_group_store; // Independent generic group preferences.
+extern const PersistentStore agent_store;       // Agent identities and lifecycle stamps.
+extern const PersistentStore goal_store;        // Parent-first Goal and adjacent authority facts.
 extern const PersistentStore task_store;     // Task creation, ordered steps, state and authority.
 extern const PersistentStore grant_store;    // Grant family and parent-first snapshots.
 extern const PersistentStore calendar_store; // Civil rules and stable consumed occurrence cursors.
@@ -193,9 +194,9 @@ extern const PersistentStore command_store;    // Exact owner command history cl
 
 // Compile-time storage order; each descriptor owns the types, bounds and row traversal.
 inline constexpr const PersistentStore *persistent_stores[] = {
-    &agent_store,    &grant_store,      &goal_store,    &task_store,
-    &calendar_store, &call_store,       &scene_store,   &context_store,
-    &memory_store,   &provenance_store, &privacy_store, &command_store};
+    &agent_store,   &grant_store,       &goal_store,    &task_store,   &calendar_store,
+    &call_store,    &scene_store,       &context_store, &memory_store, &provenance_store,
+    &privacy_store, &pause_group_store, &command_store};
 inline constexpr uint32_t persistent_store_count =
     static_cast<uint32_t>(sizeof(persistent_stores) / sizeof(persistent_stores[0]));
 

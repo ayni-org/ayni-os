@@ -3,6 +3,7 @@ include(GoogleTest)
 add_executable(ayni_unit_tests
     calendar_test.cpp
     kernel_calendar_test.cpp
+    kernel_pause_group_test.cpp
     kernel_memory_test.cpp
     kernel_context_test.cpp
     memory_table_test.cpp

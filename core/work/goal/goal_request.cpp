@@ -2,6 +2,7 @@
 #include "catalog/catalog_id.h"
 #include "catalog/goal_type/goal_type_registry.h"
 #include "work/goal/calendar_table.h"
+#include "work/goal/pause_groups.h"
 namespace ayni::work {
 namespace {
 // A local input trigger names its input by a catalog id; other kinds take
@@ -18,7 +19,8 @@ ayni_status_t check_goal_form(const GoalCreate &create) {
     return !catalog::CatalogId::is_valid(create.goal_type_id) ||
                    (create.parameters.data == nullptr && create.parameters.size != 0U) ||
                    !catalog::GoalTypeRegistry::defines_trigger(create.trigger.kind) ||
-                   !create.trigger.fits() || !trigger_source_fits(create) ||
+                   !create.trigger.fits() || !PauseGroups::valid_membership(create.pause_group) ||
+                   !trigger_source_fits(create) ||
                    create.calendar.kind != calendar_kind(create.trigger.kind)
                ? AYNI_INVALID_ARGUMENT
                : AYNI_OK;

@@ -557,6 +557,19 @@ bool ExecutionControl::should_stop(const resources::PermitLease &lease, uint64_t
            !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);
 }
 
+// Capture transient user/group pauses before the owner can accept a resume.
+// The lease owner makes this stop irreversible; this call never enters an executor port.
+bool ExecutionControl::latch_closed_gates(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) {
+    for (uint32_t index = 0; index < permits_.capacity(); ++index) {
+        const auto *lease = permits_.at(index);
+        if (lease != nullptr && !lease->stopped && should_stop(*lease, now_us, durable_seq, mode) &&
+            !permits_.request_stop(lease->call_id)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 RuntimeAdvance ExecutionControl::advance(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) {
     for (uint32_t scanned = 0; scanned < permits_.capacity(); ++scanned) {
         const uint32_t index = cursor_;

@@ -15,6 +15,13 @@ bool matches_target_revision(const CommandMapping &mapping, uint64_t id, uint32_
            mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
 }
 
+// The complete typed request and CAS result share one intrinsic command proof.
+bool matches_pause_group_result(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
+    work::PauseGroupChange command{};
+    return read_pause_group_command(bytes, command) &&
+           matches_target_revision(mapping, mapping.object.id, command.expected_revision);
+}
+
 // Revocation's changed/no-change/gone receipt is independent of target retention.
 bool matches_revoke_result(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
     RevokeCommandRecord command{};
@@ -128,6 +135,53 @@ bool CommandTable::expire_content(uint64_t commit_seq) {
 }
 
 // Validate the common envelope, then delegate each exact request to its domain codec.
+// Dispatch complete scalar/target command proofs; grant/work authority proofs stay above.
+bool matches_management_target(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
+    if (is_context_command(mapping.kind)) {
+        if (!matches_context_result(mapping, bytes)) {
+            return false;
+        }
+    } else if (is_memory_command(mapping.kind)) {
+        MemoryCommand command{};
+        if (!read_memory_command(bytes, command) || command.kind != mapping.kind ||
+            !matches_target_revision(mapping,
+                                     command.target_id == 0 ? mapping.object.id : command.target_id,
+                                     command.expected_revision)) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_PAUSE_GROUP_SET) {
+        if (!matches_pause_group_result(mapping, bytes)) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
+        authority::SceneChange command{};
+        if (!read_scene_command(bytes, command) || mapping.object.origin_device_id != 0 ||
+            (mapping.effect == AYNI_INTENT_EFFECT_CHANGED
+                 ? command.expected_revision == UINT32_MAX ||
+                       mapping.object.revision != command.expected_revision + 1
+                 : mapping.effect != AYNI_INTENT_EFFECT_NO_CHANGE ||
+                       command.expected_revision == 0 ||
+                       mapping.object.revision != command.expected_revision)) {
+            return false;
+        }
+    } else if (is_target_command(mapping.kind)) {
+        TargetCommand command{};
+        if (!read_target_command(bytes, command) || command.kind != mapping.kind ||
+            !matches_target_revision(mapping, command.target_id, command.expected_revision)) {
+            return false;
+        }
+    } else if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
+        TaskLimitCommand command{};
+        if (!read_task_limit_command(bytes, command) ||
+            !matches_target_revision(mapping, command.task_id, command.expected_revision)) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    return true;
+}
+
 bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
                          ayni_bytes_v1 result_bytes) {
     if (mapping.privacy_expired || !is_exact_command(mapping.kind) || mapping.principal_id == 0U ||
@@ -162,46 +216,11 @@ bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 bytes,
               result.binding.input.incarnation != 0U))) {
             return false;
         }
-    } else if (is_context_command(mapping.kind)) {
-        if (!matches_context_result(mapping, bytes)) {
-            return false;
-        }
-    } else if (is_memory_command(mapping.kind)) {
-        MemoryCommand command{};
-        if (!read_memory_command(bytes, command) || command.kind != mapping.kind ||
-            !matches_target_revision(mapping,
-                                     command.target_id == 0 ? mapping.object.id : command.target_id,
-                                     command.expected_revision)) {
-            return false;
-        }
-    } else if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED) {
-        authority::SceneChange command{};
-        if (!read_scene_command(bytes, command) || mapping.object.origin_device_id != 0 ||
-            (mapping.effect == AYNI_INTENT_EFFECT_CHANGED
-                 ? command.expected_revision == UINT32_MAX ||
-                       mapping.object.revision != command.expected_revision + 1
-                 : mapping.effect != AYNI_INTENT_EFFECT_NO_CHANGE ||
-                       command.expected_revision == 0 ||
-                       mapping.object.revision != command.expected_revision)) {
-            return false;
-        }
-    } else if (is_target_command(mapping.kind)) {
-        TargetCommand command{};
-        if (!read_target_command(bytes, command) || command.kind != mapping.kind ||
-            !matches_target_revision(mapping, command.target_id, command.expected_revision)) {
-            return false;
-        }
-    } else if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
-        TaskLimitCommand command{};
-        if (!read_task_limit_command(bytes, command) ||
-            !matches_target_revision(mapping, command.task_id, command.expected_revision)) {
-            return false;
-        }
     } else if (mapping.kind == AYNI_INTENT_GOAL_REAUTHORIZE) {
         if (!matches_reauthorization_command(mapping, bytes, result)) {
             return false;
         }
-    } else {
+    } else if (!matches_management_target(mapping, bytes)) {
         return false;
     }
     return mapping.digest == authority_command_digest(bytes);

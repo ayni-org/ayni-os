@@ -97,3 +97,5 @@
 | [0063](0063-task-subscription-leases.md) | Task 所有订阅、有限租期、可靠控制与新样本等待 | 已接受 | §2.2、§3.6、§9.1 |
 
 | [0064](0064-work-persistent-stores.md) | Agent、Goal 与 Task 的持久存储属主 | 已接受 | P5、F04 |
+
+| [0065](0065-persistent-pause-groups.md) | 通用持久暂停组 | 已接受 | P5、MA-019 |

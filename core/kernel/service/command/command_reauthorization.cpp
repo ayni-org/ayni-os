@@ -14,7 +14,8 @@ ayni_status_t measure_reauthorization_command(const ReauthorizationCommand &inpu
     }
     out_size = reauthorization_command_fixed_size + request.original.goal_type_id.size +
                request.original.trigger_source.size + request.original.parameters.size +
-               work::calendar_rule_size(request.original.calendar);
+               work::calendar_rule_size(request.original.calendar) +
+               (request.original.pause_group != 0 ? goal_identity_group_size : 0U);
     return AYNI_OK;
 }
 

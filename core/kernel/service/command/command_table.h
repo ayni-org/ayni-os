@@ -18,6 +18,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_TABLE_H
 
 #include "kernel/service/command/command_context.h"
+#include "kernel/service/command/command_pause_group.h"
 #include "kernel/service/command/command_reauthorization.h"
 #include "kernel/service/command/command_scene.h"
 #include "kernel/service/command/command_target.h"

@@ -14,21 +14,17 @@ uint32_t record_max(const KernelCapacities &) {
     return work::calendar_record_max_size;
 }
 uint32_t journal_max(const KernelCapacities &c) {
-    // Creation, consumption or explicit reauthorization changes one calendar
-    // row; startup/pause/cancel never rewrite its immutable cursor (ADR-0061).
-    return capacity(c) == 0 ? 0 : record_bytes(work::calendar_record_max_size);
+    // Group reopening can skip every member calendar in one bounded transition;
+    // ordinary creation/consumption still changes only its own row (ADR-0065).
+    return capacity(c) * record_bytes(work::calendar_record_max_size);
 }
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
-    uint32_t written = 0;
     for (uint32_t index = 0; index < model.goals.size(); ++index) {
         const auto &row = model.calendars.at(index);
         if (row.goal_id == 0 || row.stamp.commit_seq != stamp.commit_seq) {
             continue;
         }
-        if (++written > 1) {
-            return false;
-        } // Keep journal_max's single-row invariant explicit.
         auto *body =
             writer.add_record_body({work::calendar_record_type, work::calendar_record_version,
                                     durability::record_required, work::calendar_record_size(row)});

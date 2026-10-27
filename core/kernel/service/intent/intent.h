@@ -10,6 +10,7 @@
 #include "kernel/service/command/command_approval.h"
 #include "kernel/service/command/command_context.h"
 #include "kernel/service/command/command_memory.h"
+#include "kernel/service/command/command_pause_group.h"
 #include "kernel/service/command/command_reauthorization.h"
 #include "kernel/service/command/command_scene.h"
 #include "kernel/service/command/command_target.h"
@@ -49,9 +50,10 @@ struct Intent {
     GoalReauthorization reauthorization; // GOAL_REAUTHORIZE, including exact authority CAS.
     MemoryCommand memory;           // Owner memory save/confirm/delete, exact canonical semantics.
     ContextCommand content_context; // Owner anchor/file action, complete scalar request identity.
-    authority::SceneChange scene;   // SCENE_SET_ENABLED, copied complete command semantics.
-    uint32_t model_call_limit;      // TASK_RAISE_MODEL_LIMIT: new positive total ceiling.
-    uint64_t target_id;             // target intents: the goal, task, instance or Grant they name
+    work::PauseGroupChange pause_group; // Exact generic group control.
+    authority::SceneChange scene;       // SCENE_SET_ENABLED, copied complete command semantics.
+    uint32_t model_call_limit;          // TASK_RAISE_MODEL_LIMIT: new positive total ceiling.
+    uint64_t target_id; // target intents: the goal, task, instance or Grant they name
 };
 
 // The detail of a refused intent, beside its status.

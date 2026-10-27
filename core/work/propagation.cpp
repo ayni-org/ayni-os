@@ -10,7 +10,9 @@ struct After {
     ayni_goal_lifecycle_t goal_lifecycle = 0;
     uint64_t instance_id = 0;
     ayni_agent_lifecycle_t instance_lifecycle = 0;
-    bool ends = false;                      // the tasks it reaches end...
+    uint32_t pause_group = 0;  // Zero means no override; a control overrides one group.
+    bool group_paused = false; // Meaningful only with a nonzero pause_group.
+    bool ends = false;         // the tasks it reaches end...
     TaskChange ending = TaskChange::cancel; // ...by this change
 };
 
@@ -30,7 +32,13 @@ bool lifecycle_allows(const WorkTables &tables, uint32_t goal_index, uint64_t ow
     return tables.goals.visit_lineage(goal_index, [&](uint32_t index) {
         const ayni_goal_lifecycle_t lifecycle =
             index == after.goal_index ? after.goal_lifecycle : tables.goals.at(index).lifecycle;
-        return lifecycle == AYNI_GOAL_ACTIVE && !GoalTable::is_held(tables.goals.at(index));
+        const auto &goal = tables.goals.at(index);
+        const bool group_paused =
+            goal.pause_group != 0 &&
+            (goal.pause_group == after.pause_group
+                 ? after.group_paused
+                 : tables.groups != nullptr && tables.groups->paused(goal.pause_group));
+        return lifecycle == AYNI_GOAL_ACTIVE && !GoalTable::is_held(goal) && !group_paused;
     });
 }
 
@@ -178,6 +186,20 @@ After after_instance_change(uint64_t instance_id, InstanceChange change) {
 }
 
 } // namespace
+
+bool pause_group_change_exhausts(const WorkTables &tables, uint32_t group, bool paused) {
+    After after{};
+    after.pause_group = group;
+    after.group_paused = paused;
+    return settling_exhausts(tables, after, [](const Task &) { return true; });
+}
+void apply_pause_group_change(WorkTables &tables, uint32_t group, bool paused,
+                              foundation::TransitionStamp stamp) {
+    After after{};
+    after.pause_group = group;
+    after.group_paused = paused;
+    settle(tables, after, [](const Task &) { return true; }, stamp);
+}
 
 bool goal_change_exhausts_tasks(const WorkTables &tables, uint32_t goal_index, GoalChange change) {
     return settling_exhausts(tables, after_goal_change(goal_index, change), [&](const Task &task) {

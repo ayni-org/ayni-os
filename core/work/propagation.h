@@ -36,7 +36,13 @@ struct WorkTables {
     // when none has, so no lookup is needed. The sample lasts this owner
     // call; full consumption still checks authority.
     const authority::GrantTable *grants;
+    const PauseGroups *groups = nullptr; // Optional in module fixtures; owner always supplies it.
 };
+
+// Preflight and apply one independent group override, preserving Goal user lifecycle.
+bool pause_group_change_exhausts(const WorkTables &, uint32_t group, bool paused);
+void apply_pause_group_change(WorkTables &, uint32_t group, bool paused,
+                              foundation::TransitionStamp stamp);
 
 // Whether a task the change would reach is at the largest revision. The goal
 // table checks the goals themselves (GoalTable::check).
