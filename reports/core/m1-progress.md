@@ -94,6 +94,7 @@
 | [#88](https://github.com/RobotSe7en/ayni/pull/88) | 2026-10-27 | P5 MA-019 应用 | 统一路由、四类目标、异步通知及安静时段、并行状态与调用 effect，ABI 0.45/schema 2 | ADR-0066 |
 | [#89](https://github.com/RobotSe7en/ayni/pull/89) | 2026-10-27 | P5 MA-020 SDK/示例 | C++17 生命周期封装、四个公开示例与双 Agent Mock 脚本；ABI/schema 不变 | ADR-0067 |
 | [#90](https://github.com/RobotSe7en/ayni/pull/90) | 2026-10-27 | P6 正常集成 | 编译 JSON profile、SimNode 正常子场景、脱敏可重放轨迹；ABI/schema 不变 | ADR-0068 |
+| [#91](https://github.com/RobotSe7en/ayni/pull/91) | 2026-10-27 | P6 F18 Native 基线 | 最大配置、选定满表负载、编码/管理提交/step 分开计时与容量边界；ABI/schema 不变 | ADR-0069 |
 
 ## 工作包日期
 
@@ -110,7 +111,7 @@
 
 ## 交接状态（2026-10-27）
 
-当前功能基线为 [#90](https://github.com/RobotSe7en/ayni/pull/90)（P6 正常集成夹具）；ABI 0.45 / schema 2。Native 文本 Provider 与 typed 工具调用见 #75、#73，结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70) 与 [#72](https://github.com/RobotSe7en/ayni/pull/72)（P0 结构收尾）。用户 2026-10-26 批准 [M1 详细实施计划](m1-detailed-plan.md)（全文，含各 PR 的拆分与设计要点），剩余工作按 [M1 剩余实施顺序](m1-remaining-implementation.md) 的 P0～P6 推进；新故障/恢复专项与变异活动继续暂停。
+当前功能基线为 [#91](https://github.com/RobotSe7en/ayni/pull/91)（P6 Native 容量/编码测量）；ABI 0.45 / schema 2。Native 文本 Provider 与 typed 工具调用见 #75、#73，结构基线见 [#70](https://github.com/RobotSe7en/ayni/pull/70) 与 [#72](https://github.com/RobotSe7en/ayni/pull/72)（P0 结构收尾）。用户 2026-10-26 批准 [M1 详细实施计划](m1-detailed-plan.md)（全文，含各 PR 的拆分与设计要点），剩余工作按 [M1 剩余实施顺序](m1-remaining-implementation.md) 的 P0～P6 推进；新故障/恢复专项与变异活动继续暂停。
 
 - **已完成：** MA-003/004/005/010、MA-006 A–F；MA-018A 的资源目录/公平准入、Task 持久运行限制和工作等待策略；MA-008A 的公开调用/持久派发、可靠完成、原 Provider 对账、等待恢复及 Mock A/B。MA-018B 已实现 Core 许可签发/续租、持久 Scene、最小可信 Observation、独立 Mock 执行端及停止确认后释放隔离，正常用例与独立审查通过。MA-008C 前半（#73，ADR-0054）：模型调用可提议 typed 工具调用，模型只看到 GoalType 允许列表内已授权的工具，提议由策略按普通调用请求。MA-008C 后半（#75，ADR-0055）的 OpenAI-compatible Provider、本地协议夹具与独立 DeepSeek 验证已完成。MA-009（#76，ADR-0056）交付两策略、摘要候选、整段对话值删除与显式兼容替换，只有完成且已持久的 Task 检查点可导出。验证详情在各 PR。
 - **结构整改：** #70 按架构审查第 6 节整改 kernel 结构，14 项决定见 ADR-0051。#72（ADR-0053）完成审查项 F05、F06、F11、F16 前半与 F19：ABI 主版本 0 每个结构体只接受本次 minor 的布局；新的所有者命令在编解码旁加 `ExactCommand` 特化、在 `intent_traits` 加一行并在 `find_command` 加分支，命令表不变；调用事实对 Task 的影响写在 `work/call_propagation`；新增配置字段改 `runtime/common` 的 `default_config()` 并同步内存量测工具的 C 副本。F01/F14/F08 已随 P3 #79 完成，F04/F10/F12/F15/F18 按实施顺序表的阶段处理。
@@ -118,7 +119,7 @@
 - **P4 已合并：** 可信 UTC/POSIX 日历及稳定补发（[#82](https://github.com/RobotSe7en/ayni/pull/82)，ADR-0061）、任意线程观测/gap 与 Mock 媒体（[#83](https://github.com/RobotSe7en/ayni/pull/83)，ADR-0062）、Task 所有订阅/自动续租/新样本 WAITING（[#84](https://github.com/RobotSe7en/ayni/pull/84)，ADR-0063）完成正常实现、验证和独立审查，CI 通过后已按用户授权合并。P5 的 F04 存储整改与通用暂停组分别见 #86/#87；统一助理与通知应用见 #88，SDK/公开示例见 #89；P6 正常夹具见 #90，无未决 P4/P5 产品问题。真实媒体仍在 M3，新故障/恢复专项继续暂停。
 - **已定决定：** 当前 Task 的有界对话正文持久保存；所有者可撤销后对账、显式恢复等待超时的原 Task；后台等待 30 秒、默认最短周期 5 分钟；Scene 启用偏好跨重启保留；许可携带完整有界包络；执行端端口为异步请求，观测输入走 ingress 式队列（ADR-0052，后者随 MA-008B）。2026-10-26 新增：先做文本纵切；0.x 只收当前布局；单进程 CLI；Provider 转成 typed 结构；模型可见工具为 GoalType 允许列表内已授权的部分；旧对话轮次由模型摘要替代（ADR-0042 决定 11～16）。P1 PR 2 的实 API 验证用 DeepSeek（用户 2026-10-26 选定），已用本次授权的测试密钥通过独立手动验证；没有建立长期密钥配置或自动实 API workflow。
 - **P5 机制与用户选择（2026-10-27）：** Agent/Goal/Task 存储职责已迁入 PersistentStore（#86）；通用八组 gate、创建时固定的单组归属/祖先限制、独立暂停传播及输入前沿见 #87，解除保留原暂停和授权 hold，自主周期/事件不补积压。在途调用/许可在管理返回前锁存停止；正常验证与独立审查通过，故障/恢复与物理时限仍未验证。应用 #88 已接入点名优先简单路由、四类目标显式 CLI/API、线程化实际通知、组织候选与持续 Mock 观察；C++ SDK、有界排空/显式关闭、四个公开接入示例及双 Agent Mock 脚本见 #89（ADR-0067）。P6 正常 profile 见 #90；安静时段机制默认关闭，启用后明确 POSIX 时区，未校时普通通知等待，停止/故障指示继续；已开始呈现允许完成，成功回执持久后下一策略提交完成 Task（用户已选）。
-- **P6 正常集成：** 正常 JSON profile、共享执行器与脱敏轨迹见 #90（ADR-0068）；用户选定本轮记录完整推进步数、验证本地工作先于等待模型完成，10 步留作后续性能目标。下一步 MA-038 typed FakeTransport；远端执行采用固定服务 Task 或新增准入 API 的选择已提请用户。Native 容量/编码测量按 ADR-0069 交付，覆盖率/完整 CI 和报告随后交付，专项暂停不变。
+- **P6 正常集成：** 正常 JSON profile、共享执行器与脱敏轨迹见 #90（ADR-0068）；用户选定本轮记录完整推进步数、验证本地工作先于等待模型完成，10 步留作后续性能目标。下一步 MA-038 typed FakeTransport；远端执行采用固定服务 Task 或新增准入 API 的选择已提请用户。Native 容量/编码测量见 #91（ADR-0069），覆盖率/完整 CI 和报告随后交付，专项暂停不变。
 - **P2 用户选择（2026-10-26）：** `@a/@b` 与英文短命令配中文提示；配置和数据放用户目录，支持显式覆盖；密钥只从环境变量读取。
 - **CI：** 两个 self-hosted runner 在同一台机器上共享 Docker 守护进程、镜像与 ccache 卷；额外 native 配置按矩阵每个配置一个作业，两个 runner 并行取用（`docs/development.md`）。
 - **仍有限制：** 新许可/Scene 的重启、传播失败及失效竞态矩阵未验收；异步执行端只用 Mock 链路验证，真实远程链路与停止时限未验证；最小 Observation 尚非连续订阅。真实模型仅完成 Native 短文本/工具提议验证；多轮策略和文件存储通过 Mock/回环夹具及正常重开验证，受管理历史正文清理和单轮删除已接入 P3；新增故障/恢复与时限矩阵未验证。ESP32、Web/语音/屏幕、完整 E1–E4、Core Alpha 和硬件验收均未完成。

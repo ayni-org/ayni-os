@@ -25,7 +25,11 @@ with tempfile.TemporaryDirectory(prefix="ayni-measure-") as directory:
     assert result["accepted_buffer_min_bytes"] >= max(
         result["storage_min_bytes"], result["snapshot_record_bound_bytes"]
     )
-    assert result["source_revision"] and result["source_dirty"] in (0, 1)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    assert result["source_revision"] == revision and result["source_dirty"] in (0, 1)
 
 # The C99 query and C++ workload share one maximum configuration. Arena byte
 # counts depend on ABI/platform/build; compare profiles instead of fixing them.
