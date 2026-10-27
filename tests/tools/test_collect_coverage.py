@@ -80,5 +80,32 @@ class CoverageAggregation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "atomic counters"):
             TOOL.current_notes(build)
 
+    def test_missing_safety_c_or_cpp_source_is_a_gap_even_when_core_is_present(self):
+        self.add([self.line(1, [])], "core/example.cpp")
+        (self.root / "core").mkdir()
+        (self.root / "core/example.cpp").touch()
+        directory = self.root / "providers/mock"
+        directory.mkdir(parents=True)
+        (directory / "not_built.cpp").touch()
+        control = self.root / "control/permit_gate"
+        control.mkdir(parents=True)
+        (control / "not_built.c").touch()
+        self.assertEqual(self.coverage.missing("*.cpp"), [])
+        self.assertEqual(self.coverage.safety_source_gaps(),
+                         ["control/permit_gate/not_built.c", "providers/mock/not_built.cpp"])
+
+    def test_profile_overrides_and_handwritten_sanitizer_flags_are_rejected(self):
+        build = self.root / "build"
+        build.mkdir()
+        for flag in ("-fprofile-update=single", "-fprofile-update=prefer-atomic",
+                     "-fno-profile-arcs", "-fno-test-coverage", "-fsanitize=address",
+                     "-fsanitize-coverage=trace-pc"):
+            with self.subTest(flag=flag):
+                units = [{"directory": str(build), "output": "item.o", "file": "item.cpp",
+                          "command": "c++ --coverage -fprofile-update=atomic " + flag}]
+                (build / "compile_commands.json").write_text(json.dumps(units), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "conflicting"):
+                    TOOL.current_notes(build)
+
 if __name__ == "__main__":
     unittest.main()

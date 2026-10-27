@@ -109,3 +109,5 @@
 | [0069](0069-native-capacity-measurements.md) | Native 容量测量与编码开销口径 | 已接受 | §4.2、P6、F18 |
 
 | [0070](0070-typed-multinode-normal-profile.md) | typed 多节点正常子集与固定服务 Task | 已接受（服务 Task 暂按推荐项） | §3.4、P6、MA-038 正常子集 |
+
+| [0071](0071-normal-integration-closeout-and-coverage-gap.md) | 正常集成收尾与覆盖率差距 | 已接受 | P6、§4.2、§9.1 |

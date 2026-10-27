@@ -16,6 +16,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+SOURCE_PATTERNS = ("*.c", "*.cc", "*.cpp", "*.cxx")
+
 SAFETY_PREFIXES = (
     "core/", "control/permit_gate/", "providers/mock/", "providers/mock_execution/",
 )
@@ -68,10 +70,14 @@ class Coverage:
                     if path.startswith(prefixes) for hit in slots]
         return {"lines": [sum(lines), len(lines)], "branches": [sum(branches), len(branches)]}
 
-    def missing(self, pattern: str) -> list[str]:
-        return sorted(path.relative_to(self.root).as_posix()
-                      for path in (self.root / "core").rglob(pattern)
-                      if path.relative_to(self.root).as_posix() not in self.seen)
+    def missing(self, pattern: str, prefixes: tuple[str, ...] = ("core/",)) -> list[str]:
+        return sorted({path.relative_to(self.root).as_posix()
+                       for prefix in prefixes for path in (self.root / prefix).rglob(pattern)
+                       if path.relative_to(self.root).as_posix() not in self.seen})
+
+    def safety_source_gaps(self) -> list[str]:
+        return sorted({path for pattern in SOURCE_PATTERNS
+                       for path in self.missing(pattern, SAFETY_PREFIXES)})
 
 
 def run(command: list[str], root: Path) -> str:
@@ -86,6 +92,11 @@ def current_notes(build: Path) -> tuple[list[Path], list[str], int]:
         flags = shlex.split(unit["command"])
         if "--coverage" not in flags or "-fprofile-update=atomic" not in flags:
             raise ValueError("compilation database requires coverage with atomic counters")
+        allowed = {"-fprofile-update=atomic", "-fprofile-arcs", "-ftest-coverage"}
+        for flag in flags:
+            if (flag.startswith(("-fprofile", "-fno-profile", "-fno-test-coverage", "-fsanitize"))
+                    and flag not in allowed):
+                raise ValueError("conflicting profiling or sanitizer compilation argument")
         output = Path(unit["output"])
         if not output.is_absolute():
             output = Path(unit["directory"]) / output
@@ -154,6 +165,7 @@ def collect(root: Path, build: Path, raw: Path, gcov: str) -> dict:
         "conservative_safety_prefixes": list(SAFETY_PREFIXES),
         "conservative_safety": coverage.measure(SAFETY_PREFIXES),
         "core_cpp_without_gcov": coverage.missing("*.cpp"),
+        "conservative_safety_sources_without_gcov": coverage.safety_source_gaps(),
         "core_headers_without_gcov": coverage.missing("*.h"),
         "method": "line union; non-throw arcs; function+ordered-fallthrough layout slot union",
     }
@@ -178,7 +190,7 @@ def main() -> int:
             json.dump(result, output, ensure_ascii=False, indent=2)
             output.write("\n")
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 1 if result["core_cpp_without_gcov"] else 0
+        return 1 if result["core_cpp_without_gcov"] or result["conservative_safety_sources_without_gcov"] else 0
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(f"coverage collection failed: {error}", file=sys.stderr)
         return 2

@@ -248,6 +248,6 @@ python3 tools/collect_coverage.py --build build/native-coverage \
   --raw build/native-coverage/gcov-json --output build/native-coverage-summary.json
 ```
 
-原始目录和汇总文件必须是新的。收集器核对编译后二进制的源码修订/dirty、Debug/无 sanitizer 配置，并按当前 `compile_commands.json` 收集全部有效 TU，忽略旧对象遗留的 notes。每个 TU 的原始 JSON 和 gcov 诊断单独保留；Core cpp 缺失时返回失败。行按路径/行号取覆盖并集；分支先去编译器 `throw` 弧，再仅在相同函数、相同有序 fallthrough/长度布局内合并，保留其它布局，不排除防御/恢复分支。
+原始目录和汇总文件必须是新的。收集器核对编译后二进制的源码修订/dirty、Debug/无 sanitizer 配置，拒绝关闭计数、非 atomic 与手工 sanitizer 的冲突参数，并按当前 `compile_commands.json` 收集全部有效 TU，忽略旧对象遗留的 notes。每个 TU 的原始 JSON 和 gcov 诊断单独保留；Core 或安全保守范围的 C/C++ 实现缺失时返回失败。行按路径/行号取覆盖并集；分支先去编译器 `throw` 弧，再仅在相同函数、相同有序 fallthrough/长度布局内合并，保留其它布局，不排除防御/恢复分支。
 
 Core 和安全保守范围沿用 P4：`core/`、`control/permit_gate/`、`providers/mock/`、`providers/mock_execution/`，含全部 TU 中的相应头文件。缺少 gcov 条目的头文件单列供审查；未实例化模板/编译器未插桩的代码不能据此声称覆盖。工具结果不代表真实硬件或完整安全验收；未达目标的差距在本轮报告和 ADR 中记录。
