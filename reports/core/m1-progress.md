@@ -97,7 +97,7 @@
 | [#91](https://github.com/RobotSe7en/ayni/pull/91) | 2026-10-27 | P6 F18 Native 基线 | 最大配置、选定满表负载、编码/管理提交/step 分开计时与容量边界；ABI/schema 不变 | ADR-0069 |
 | [#92](https://github.com/RobotSe7en/ayni/pull/92) | 2026-10-27 | P6 MA-038 正常子集 | 独立 Kernel/时钟/存储、typed 远程调用/查询、固定服务 Task 与在途正常关闭；完整协议仍未完成 | ADR-0070 |
 | [#93](https://github.com/RobotSe7en/ayni/pull/93) | 2026-10-27 | P6 正常收尾 | 统一覆盖率、配置证据与正常集成报告，安全覆盖差距保持开放；ABI/schema 不变 | ADR-0071 |
-| [#94](https://github.com/RobotSe7en/ayni/pull/94) | 2026-10-27 | MA-019/MA-020 修订 | 单一 ToolLoop 助理、模型计划工具（待批、operation_id 去重）、确定性停止；AYNF v3/参数 format2，旧目录拒绝；ABI/schema 不变 | ADR-0072 |
+| [#94](https://github.com/RobotSe7en/ayni/pull/94) | 2026-10-27 | MA-019/MA-020 修订 | 单一 ToolLoop 助理、模型计划工具（待批、按 operation_id 找回、待批至多 4 个、停后不登记）、确定性停止；AYNF v3/参数 format2，旧目录拒绝；ABI/schema 不变 | ADR-0072 |
 
 ## 工作包日期
 

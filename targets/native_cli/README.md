@@ -32,7 +32,7 @@ cmake --build --preset native-debug --target ayni
 | 命令 | 用途 |
 |---|---|
 | 普通文本 | 与助理对话（ToolLoop）；`check/检查` 也是普通文本 |
-| `停` `停止` `stop` / `/stop` | 不经模型立即取消当前回答、暂停自主工作；提醒保留 |
+| `停` `停止` `stop` / `/stop` | 不经模型立即取消进行中的回答、暂停自主工作；提醒保留 |
 | `/status` / `/diagnostics` | 生命周期、受限原因、持久进度与对话保存状态 |
 | `/goals` `/tasks` `/calls` `/grants` | 查询仍保留的对象及诊断 ID |
 | `/grant model\|summary\|schedule\|notify\|health\|observe` | 创建长期授权 |
@@ -103,11 +103,11 @@ P2 的旧对话文件没有来源证据，P3 会在任何启动写入前拒绝�
 /diagnostics
 ```
 
-`/remind`、`/check`、`/observe` 与模型计划工具共用同一文法：`remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX 时区> <内容>`、`check [秒，至少 300]`、`observe`。模型登记的目标始终待批：CLI 显示“助理登记了新目标 N，等待你批准”，`/approve N` 后才运行，`/cancel N` 放弃；同一模型调用重试不会重复登记。`/tidy` 只由所有者发起。
+`/remind`、`/check`、`/observe` 与模型计划工具共用同一文法：`remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX 时区> <内容>`、`check [秒，至少 300]`、`observe`。模型登记的目标始终待批：CLI 显示“助理登记了新目标 N，等待你批准”（重新打开时对仍待批的再显示一次），`/approve N` 后才运行，`/cancel N` 放弃。待批的模型目标最多 4 个，满了助理会请你先处理；助理不知道今天的日期，“明天”这类说法会先问清具体日期。`/tidy` 只由所有者发起。
 
 四类目标都保留授权审批；先用 `/goals` 查看待批 ID，再明确 `/approve`，或事先 `/grant notify`、`/grant health`、`/grant summary`、`/grant observe`。整理最多四条本人私有记忆或已获 ORGANIZE 授权的公共档案；远程模型另需每条来源的 `/memory export <id> organize`，不会自动外发。持续观察仅是 Mock 标量，不是图像识别。
 
-“停”“停下”“停止”“stop”（可带句末标点）以及 `/stop` 走确定性停止：取消当前回答，暂停自主检查/观察/整理，已接受的提醒继续；不调用模型，也不受对话保存未完成的限制。`/resume-assistant` 恢复后台工作。
+“停”“停下”“停止”“stop”（可带句末标点）以及 `/stop` 走确定性停止：取消进行中的回答（如有），暂停自主检查/观察/整理，已接受的提醒继续；不调用模型，也不受对话保存未完成的限制。停止时助理尚未决定的计划请求不会登记目标。`/resume-assistant` 恢复后台工作。
 
 配置可加入 `quiet_hours=22:00-07:00` 与 `quiet_timezone=CST-8`；默认关闭，也可显式 `quiet_hours=off`。普通通知待可信校时及窗口开放；已开始写出的通知允许结束。CLI 输出线程完整写出并 flush 成功才是呈现证据；失败/未知不自动重播。明确取消待处理提醒后再创建，是新的用户意图。
 
