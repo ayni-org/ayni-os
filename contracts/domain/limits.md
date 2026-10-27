@@ -102,3 +102,5 @@ Native 对话正常保留最近 3 轮；第 4 槽只承接发布失效时已接�
 ## P4 观测与 Mock 媒体容量（ABI 0.42）
 
 source 容量为 0 时样本 FIFO 默认关闭，显式启用 FIFO 而无 source 返回 INVALID_ARGUMENT；有 source 时 observation_ingress_capacity 的 0 选择默认 16，显式范围 1～256。gap 独占每源一个槽，上限随 source 的 64，不消耗样本 FIFO。Core 只复制 metadata，不分配帧字节。Mock MediaStore 默认 4 对象 × 4096 B，可配置 1～64 对象、每对象 1～65536 B；分配/对象/字节耗尽显式 CAPACITY_EXCEEDED，不覆盖现有对象。见 C-OBS-002/006。
+
+ABI 0.43 / ADR-0063：订阅复用 call_capacity（最多256）和资源队列容量，不新增无限表；每 Call 一个 scoped Observation 槽、worker gate 与可靠 gap、一个独立 lease ACK 元数据槽。FIFO 同 Host 共用 observation_ingress_capacity，满返回 BUSY；gaps_pending 上限为 source_capacity + call_capacity。默认 lease 30000 ms，可信契约可覆盖为正 u32 毫秒，有限截止溢出拒绝。每 Task 每源最多一个 desiredOpen 订阅，显式关闭后可换新 step；忙时只保留最新知识，不积压分析任务。等待前预留 wait/wake/final-cancel 三次版本变更。

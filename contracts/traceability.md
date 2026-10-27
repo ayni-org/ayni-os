@@ -7,7 +7,7 @@
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 18 |
-| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 22 | 4 |
+| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 23 | 3 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 18 | 12 |
@@ -28,7 +28,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 375 | 137 |
+| 合计 | 376 | 136 |
 
 ## 计划章节 → 契约文档
 
@@ -115,7 +115,7 @@
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
 | `MA-016` | C-AUTH-002、C-AUTH-012、C-AUTH-015、C-LIFE-020、C-PRIM-007、C-VER-010、C-WIRE-003、C-WIRE-006、C-WIRE-007、C-WIRE-009、C-WIRE-010 |
-| `MA-018` | C-AUTH-005、C-AUTH-006、C-AUTH-007、C-AUTH-016、C-AUTH-018、C-SUB-004、C-COMMIT-009、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-012、C-RUN-004、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
+| `MA-018` | C-AUTH-005、C-AUTH-006、C-AUTH-007、C-AUTH-016、C-AUTH-018、C-COMMIT-009、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-012、C-RUN-004、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
 | `MA-019` | C-LIFE-023、C-LIMIT-007、C-PROD-012、C-PROD-015、C-PROD-018、C-PROD-050、C-RUN-007、C-RUN-008 |
 | `MA-022` | C-AUTH-006、C-COMMIT-008、C-COMMIT-009、C-COMMIT-011、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
 | `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-PERMIT-016、C-PERMIT-017、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
@@ -138,9 +138,9 @@
 | E1 步骤 5 | C-AUTH-004、C-LIMIT-005、C-RES-003 |
 | E1 步骤 6 | C-AUTH-001、C-AUTH-002、C-AUTH-004、C-AUTH-005、C-AUTH-011、C-LIFE-013 |
 | E1 步骤 7 | C-AUTH-009、C-AUTH-010、C-TRUST-001、C-PROD-002、C-PROD-035、C-PROD-040、C-PROD-041 |
-| E1 步骤 8 | C-SUB-001、C-SUB-002、C-SUB-003、C-LIMIT-009、C-PRIM-005、C-PROD-023、C-RES-010 |
+| E1 步骤 8 | C-LIMIT-009、C-PRIM-005、C-PROD-023、C-RES-010 |
 | E1 步骤 9 | C-CALL-005、C-COMMIT-012、C-ID-001、C-PROD-030、C-PROD-031、C-PROV-003 |
-| E1 步骤 10 | C-CALL-012、C-SUB-004、C-LIMIT-008、C-STOP-001、C-RES-005、C-HOST-006、C-WIRE-013 |
+| E1 步骤 10 | C-CALL-012、C-LIMIT-008、C-STOP-001、C-RES-005、C-HOST-006、C-WIRE-013 |
 | E1 步骤 11 | C-CALL-003、C-LIFE-023、C-STOP-002、C-PROD-010、C-PROD-012、C-PROD-013、C-PROD-014、C-PROD-016、C-PROD-018、C-PROD-020、C-PROD-021 |
 | E2 F0 | C-STORE-002 |
 | E2 F1 | C-AUTH-005、C-AUTH-007、C-TIME-003、C-PRIM-001、C-PRIM-006 |
@@ -166,7 +166,7 @@
 | E4 步骤 1 | C-CALL-001、C-BIND-001、C-POLICY-003、C-PROV-009、C-JSON-012 |
 | E4 步骤 2 | C-CALL-004、C-CALL-007、C-ID-003、C-POLICY-008 |
 | E4 步骤 3 | C-CALL-006、C-CALL-008、C-CALL-009、C-LIFE-011、C-LIFE-022、C-LIMIT-006 |
-| E4 步骤 4 | C-SUB-002、C-COMMIT-012、C-PROD-030 |
+| E4 步骤 4 | C-COMMIT-012、C-PROD-030 |
 | E4 步骤 5 | C-VER-011、C-VER-030、C-POLICY-009 |
 | E4 步骤 6 | C-VER-020、C-VER-021、C-VER-022、C-VER-031、C-STORE-004、C-STORE-010 |
 | E4 步骤 7 | C-PROD-010、C-PROD-011、C-PROD-013、C-PROD-015、C-PROD-017 |
@@ -194,7 +194,6 @@
 | C-AUTH-033 | M1 已实现（本地 C ABI 与持久场景）：`GoalReauthorization.dedicated_grant_wins_for_every_completely_covered_requirement`、`GoalReauthorization.never_unions_grants_and_selects_lowest_id_within_each_category`、`GoalReauthorization.requires_management_and_durable_existing_authority`、`GoalReauthorization.stale_cas_echo_and_missing_coverage_publish_nothing`、`GoalReauthorization.all_direct_live_tasks_bind_together_and_terminal_history_stays`、`GoalReauthorization.exhausted_task_revision_refuses_whole_transaction`、`GoalReauthorization.replaces_goal_and_ready_task_then_retries_without_reapplication`；ADR-0038 |
 | C-AUTH-034 | M1 已实现（本地 C ABI 与持久场景）：`GoalReauthorization.parent_does_not_resume_child_and_child_can_then_bind_new_parent`、`GoalReauthorization.preserves_user_pause_policy_failure_steps_and_checkpoint`、`GoalReauthorization.input_frontier_is_goal_local_and_not_resampled_on_retry`、`GoalReauthorization.interval_resume_skips_all_undeveloped_due_occurrences`、`GoalReauthorization.delayed_and_once_goals_keep_their_original_same_boot_schedule`、`GoalReauthorization.zero_requirement_child_gets_explicit_new_admission`、`GoalReauthorization.ordinary_resume_before_reauthorization_preserves_independent_pause_causes`；ADR-0038 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
-| C-SUB-004 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
 | C-CALL-014 | M1 已实现：`ToolCalls.model_call_is_offered_only_listed_tools_within_the_goal_ceiling`、`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`、`ToolCalls.malformed_lists_are_refused_on_post_and_keep_the_borrow`、`ToolAllowList.registration_checks_each_reference`、`ToolStart.start_needs_each_tool_to_be_an_ordinary_tool_binding`；Mock 模型输出失败：`MockTools.unoffered_tool_fails_as_model_output`、`MockTools.body_over_the_tool_limit_fails_as_model_output`、`MockTools.list_over_the_result_limit_fails_as_model_output` |
 | C-CALL-015 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.decoder_rejects_noncanonical_or_truncated_lists` |
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |
@@ -249,7 +248,7 @@
 | C-OBS-003 | M1 已实现：`ObservationIngress.full_fifo_refuses_samples_but_preserves_gap_and_local_input`、`ObservationIngress.later_gaps_count_only_new_losses_and_old_markers_are_idempotent`、`ObservationIngress.new_generation_gap_refuses_old_tail_and_explicit_zero_boundary_allows_first_sample`；本轮限正常顺序，竞态专项未验证 |
 | C-OBS-004 | M1 已实现：`ObservationIngress.owner_discards_expired_or_future_samples_and_respects_item_budget`、`ObservationApi.expiration_is_visible_without_erasing_the_last_fact`、`ObservationIngress.media_metadata_is_copied_and_expires_with_its_shorter_lifetime` |
 | C-OBS-005 | M1 已实现：`MockMedia.startup_and_schema_failures_are_explicit`、`ObservationIngress.media_owner_and_generation_cannot_be_fabricated_by_late_samples`；metadata 不证明真实字节存在、读/外发授权或内容真实性 |
-| C-OBS-006 | M1 已实现：`MockMedia.copied_bytes_require_exact_reference_owner_and_purpose`、`MockMedia.object_and_byte_limits_reject_without_overwriting_and_expiry_reclaims`、`MockMedia.generation_close_and_new_boot_reclaim_without_reusing_identity`；调用者负责真实授权及触发生命周期回收，自动订阅装配/真实媒体仍待实现 |
+| C-OBS-006 | M1 已实现：`MockMedia.copied_bytes_require_exact_reference_owner_and_purpose`、`MockMedia.object_and_byte_limits_reject_without_overwriting_and_expiry_reclaims`、`MockMedia.generation_close_and_new_boot_reclaim_without_reusing_identity`；调用者负责真实授权及触发生命周期回收，订阅 Mock 自动按关闭/过期/boot 回收（`SubscriptionFixture.two_tasks_share_capacity_but_keep_samples_media_and_close_isolated`）；真实媒体仍待 M3 |
 | C-PROD-032 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`；C-MEM-005、C-LIMIT-012 |
 | C-PROD-034 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`；C-MEM-010 |
 | C-PROD-035 | M1 已实现所有者会话边界：`KernelMemory.management_authentication_applies_to_queries_and_exact_retries`；远程管理端仍随 MA-027；E1 步骤 7、C-AUTH-009 |

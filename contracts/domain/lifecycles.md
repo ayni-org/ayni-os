@@ -125,6 +125,7 @@ ABI 0.31 已接通普通 unary/action 的 `RUNNING` 与 `CANCELLING`：接受调
 | `CANCELLED` | 6 | 终态：已取消，`cancel_revision` 记录取消它的版本 |
 | `FAILED` | 7 | 终态：已失败 |
 | `EXPIRED` | 8 | 终态：已失效 |
+| `WAITING` | 9 | 活 Task：等待订阅最新样本或状态变化；无前台调用，Since 0.43 |
 
 M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 
@@ -140,6 +141,8 @@ M1 已实现的转换（ADR-0018、ADR-0022、ADR-0024）：
 | `READY`、`PAUSED` | `EXPIRED` | 它的 Goal 或其祖先失效；同一 transition（ADR-0020） |
 
 放行条件：Task 只在它的 Goal 与该 Goal 的全部祖先都是 `ACTIVE`、owner 实例是 `RUNNING` 时前进。暂停不级联：暂停的 Goal 或实例不改写子目标的状态，只让其下的 Task 停下，恢复后自动继续。Goal 或实例的每次改变在同一个 transition 中按放行条件重算它触及的 `READY`/`PAUSED` Task，状态改变的才提升版本；派生也只发生在放行的 Goal 上。每次转换使该 Task 的 `revision` 加 1，规则同 Goal（C-COMMIT-012）。ABI 0.31 接受调用进入 `RUNNING`，取消须先经 `CANCELLING` 收敛。结束的 Task 仅在没有在途、未知影响或必要调用引用时才可在表满时让位给新 Task，此后查询返回 `NOT_FOUND`（ADR-0018）。
+
+ABI 0.43 / ADR-0063：READY 通过 WAIT_SUBSCRIPTION 到 WAITING；新样本或 generation/phase 改变使其回 READY，单纯续租不唤醒。WAITING 可暂停到 PAUSED 并保留前沿，恢复回 WAITING；取消/失效直接终态并清除前沿。授权/兼容 hold 独立保留。订阅 ACTIVE 不占前台 RUNNING，后台生命周期见 C-SUB-001～005。正常验证：`SubscriptionFixture.waiting_task_wakes_once_for_the_latest_sample_and_subscription_state`。
 
 ## ActionRecord
 

@@ -93,3 +93,5 @@
 | [0061](0061-trusted-utc-and-calendar.md) | 可信 UTC、POSIX 日历规则与稳定发生时刻 | 已接受 | §2.2、§9.1、§14.1 |
 
 | [0062](0062-observation-ingress-and-mock-media.md) | 有界观测入口、可靠失效前沿与 Mock 媒体 | 已接受 | §2.2、§3.6、§9.1 |
+
+| [0063](0063-task-subscription-leases.md) | Task 所有订阅、有限租期、可靠控制与新样本等待 | 已接受 | §2.2、§3.6、§9.1 |
