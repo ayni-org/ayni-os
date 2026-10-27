@@ -517,6 +517,13 @@ class Measurement {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc == 2 && std::string(argv[1]) == "--build-info") {
+        std::cout << "{\"source_revision\":\"" << AYNI_MEASURE_REVISION
+                  << "\",\"source_dirty\":" << AYNI_MEASURE_DIRTY << ",\"build_type\":\""
+                  << AYNI_MEASURE_BUILD_TYPE << "\",\"sanitizer\":\"" << AYNI_MEASURE_SANITIZER
+                  << "\",\"compiler\":\"" << __VERSION__ << "\"}\n";
+        return std::cout.good() ? 0 : 1;
+    }
     if (argc != 3 || (std::string(argv[1]) != "--small" && std::string(argv[1]) != "--maximum")) {
         std::cerr << "usage: ayni_native_measurements --small|--maximum OUTPUT.json\n";
         return 2;
