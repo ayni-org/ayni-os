@@ -1,0 +1,68 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E2-N1",
+  "experiment_step": "E2 F9",
+  "clauses": [
+    "C-COMMIT-004",
+    "C-WIRE-004",
+    "C-WIRE-016"
+  ],
+  "description": "正常持久屏障之后执行一次计数副作用，相同创建命令返回原 Goal。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "increment",
+      "agent": 1,
+      "capability": "increment"
+    },
+    {
+      "op": "goal",
+      "name": "action",
+      "agent": 1,
+      "kind": "action"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "action"
+      }
+    },
+    {
+      "op": "retry",
+      "goal": "action"
+    },
+    {
+      "op": "steps",
+      "count": 16
+    }
+  ],
+  "expect": [
+    {
+      "metric": "goal_count",
+      "value": "1"
+    },
+    {
+      "metric": "call_count",
+      "value": "1"
+    },
+    {
+      "metric": "increments",
+      "value": "1"
+    },
+    {
+      "metric": "barrier_checks",
+      "value": "1"
+    }
+  ]
+}

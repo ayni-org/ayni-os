@@ -1,0 +1,93 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E3-N1",
+  "experiment_step": "E3 步骤 4",
+  "clauses": [
+    "C-POLICY-008",
+    "C-POLICY-010",
+    "C-ID-003"
+  ],
+  "description": "在共同检查点正常暂停并关闭，替换模型 Binding 与兼容策略后接续原 Task。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 1,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "model",
+      "agent": 1,
+      "capability": "model"
+    },
+    {
+      "op": "grant",
+      "name": "increment",
+      "agent": 1,
+      "capability": "increment"
+    },
+    {
+      "op": "goal",
+      "name": "work",
+      "agent": 1,
+      "kind": "checkpoint"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_steps",
+        "value": "2",
+        "target": "work",
+        "compare": "at_least"
+      }
+    },
+    {
+      "op": "pause_goal",
+      "goal": "work"
+    },
+    {
+      "op": "reopen",
+      "provider": "b",
+      "strategy": "v2"
+    },
+    {
+      "op": "resume_goal",
+      "goal": "work"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "work"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "metric": "increments",
+      "value": "1"
+    },
+    {
+      "metric": "model_a_executions",
+      "value": "0"
+    },
+    {
+      "metric": "model_b_executions",
+      "value": "1"
+    },
+    {
+      "metric": "preserved_calls",
+      "value": "1"
+    },
+    {
+      "metric": "model_calls",
+      "value": "1",
+      "target": "work"
+    }
+  ]
+}

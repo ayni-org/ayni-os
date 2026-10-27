@@ -35,7 +35,7 @@ ctest --test-dir build/native --output-on-failure
 ./build/native/targets/simulator/ayni-sim
 ```
 
-These configure, build, test, and launch the simulator; `ayni-sim` takes no arguments until the M1 experiment fixtures land. Firmware builds use `idf.py build` from `targets/esp32_assistant/` after activating the pinned ESP-IDF environment. Document actual toolchain versions and executable checks when adding implementation; do not report planned commands as completed validation.
+These configure, build, test, and launch the simulator; `ayni-sim` without arguments keeps the lifecycle demo; `--list-normal` and `--case E1-N1 --output NEW_DIRECTORY` run the P6 normal fixtures. Full fault/recovery experiment runners remain outstanding. Firmware builds use `idf.py build` from `targets/esp32_assistant/` after activating the pinned ESP-IDF environment. Document actual toolchain versions and executable checks when adding implementation; do not report planned commands as completed validation.
 
 ## Coding Style & Naming Conventions
 

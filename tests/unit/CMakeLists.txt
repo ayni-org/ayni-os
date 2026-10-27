@@ -1,5 +1,3 @@
-include(GoogleTest)
-
 add_executable(ayni_unit_tests
     calendar_test.cpp
     kernel_calendar_test.cpp

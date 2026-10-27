@@ -1,5 +1,7 @@
 # 实验夹具格式
 
+P6 已实现的独立正常闭集见 [normal/README.md](normal/README.md)，使用 `fixture_schema=1` / `profile=m1-normal`。下文是原完整 schema 0 草案；故障/恢复动作及原完整实验仍未交付，不能作为正常 profile 输入。
+
 本目录规定 E1–E4 用例的数据格式（计划 §10.1、ADR-0012 第 3 条），并给出 M1 要实现的用例清单 [cases.md](cases.md)。M0 只规定格式，不包含可运行的用例；第一批用例文件与运行器在 M1 随 Kernel 实现加入。格式版本 `fixture_schema` 为 0（experimental），M1 写完第一批用例后收敛为 1，此后只追加字段，已发布字段的含义不变。
 
 ## 为什么用数据而不是测试代码

@@ -1,0 +1,108 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E1-N5",
+  "experiment_step": "E1 步骤 3",
+  "clauses": [
+    "C-RES-009",
+    "C-RES-010",
+    "C-SUB-001"
+  ],
+  "description": "两个 Agent 在共享摄像头容量内同时观察，分析仍串行占用单模型槽。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "observe_1",
+      "agent": 1,
+      "capability": "observe"
+    },
+    {
+      "op": "grant",
+      "name": "model_1",
+      "agent": 1,
+      "capability": "model"
+    },
+    {
+      "op": "grant",
+      "name": "notify_1",
+      "agent": 1,
+      "capability": "notify"
+    },
+    {
+      "op": "grant",
+      "name": "observe_2",
+      "agent": 2,
+      "capability": "observe"
+    },
+    {
+      "op": "grant",
+      "name": "model_2",
+      "agent": 2,
+      "capability": "model"
+    },
+    {
+      "op": "grant",
+      "name": "notify_2",
+      "agent": 2,
+      "capability": "notify"
+    },
+    {
+      "op": "goal",
+      "name": "workflow_1",
+      "agent": 1,
+      "kind": "composite"
+    },
+    {
+      "op": "goal",
+      "name": "workflow_2",
+      "agent": 2,
+      "kind": "composite"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "target": "workflow_1",
+        "value": "COMPLETED"
+      }
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "target": "workflow_2",
+        "value": "COMPLETED"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "metric": "max_camera_holders",
+      "value": "2"
+    },
+    {
+      "metric": "max_model_holders",
+      "value": "1"
+    },
+    {
+      "metric": "presentations",
+      "value": "2"
+    },
+    {
+      "metric": "model_a_executions",
+      "value": "2"
+    },
+    {
+      "metric": "subscription_stops",
+      "value": "2"
+    }
+  ]
+}

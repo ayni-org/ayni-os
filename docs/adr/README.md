@@ -103,3 +103,5 @@
 | [0066](0066-assistant-application-and-presentation.md) | 统一助理应用、四类目标与异步通知呈现 | 已接受 | §5.4、§9.1、§14.1 |
 
 | [0067](0067-cpp-sdk-and-public-examples.md) | 无异常 C++ 生命周期封装与四个公开接入示例 | 已接受 | §9.1、P5 |
+
+| [0068](0068-normal-integration-fixtures.md) | 正常集成夹具、编译数据与脱敏轨迹 | 已接受 | §10.1～10.5、P6 |

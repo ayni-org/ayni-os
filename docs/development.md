@@ -59,7 +59,7 @@ cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ```
 
-换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 仍不接受参数，`--experiment E1` 等入口随 M1 的实验夹具加入；它每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。F2 起批次与快照仅支持 schema 2；schema 0/1 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0038）。开发使用新的状态目录；回退需原二进制与原状态目录。
+换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 `--experiment E1` 等故障/恢复入口仍未交付。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。F2 起批次与快照仅支持 schema 2；schema 0/1 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0038）。开发使用新的状态目录；回退需原二进制与原状态目录。
 
 ### 测试并行与编译缓存
 
@@ -198,3 +198,16 @@ P5 提供源码级 `include/ayni/ayni.hpp` 和 [四个公开接入示例](../exa
 普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.two_agents_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。
 
 内存受限平台可用 `Kernel::create_in` 提供已经量过的调用方 arena；自有 aligned new 路径仍须满足完整配置容量，不能据 Native facade 大小推算 ESP32 可用容量。
+
+## P6 正常夹具
+
+Native 构建时需要 Python 3.9+，`tools/generate_normal_fixtures.py` 校验 JSON 并生成 C++ 只读表。公开格式、动作和范围见 [正常夹具契约](../contracts/fixtures/normal/README.md)，架构边界见 ADR-0068。设置本页资源预算和正整数并行度后：
+
+```sh
+cmake --build --preset native-debug --target ayni-sim ayni_normal_fixture_tests
+./build/native/targets/simulator/ayni-sim --list-normal
+./build/native/targets/simulator/ayni-sim --case E1-N1 --output build/normal-E1-N1
+ctest --preset native-debug -R 'NormalFixtures|normal_fixture_generator' --no-tests=error
+```
+
+输出目录必须尚不存在。每次保留 run.json 与 trace.jsonl，含实际配置、代码/工具链标记及第一次失败；只有静止点的正常排空/重开在本 profile 内。产物重放测试还验证 JSON、正文脱敏和两次完整轨迹一致；原故障/恢复动作明确拒绝。

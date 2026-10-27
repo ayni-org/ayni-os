@@ -1,0 +1,430 @@
+#include "normal_fixture_profile.h"
+#include <ayni/authority.h>
+#include <ayni/ayni.hpp>
+#include <ayni/host_authority.h>
+#include <ayni/memory.h>
+#include <ayni/resources.h>
+#include <ayni/runtime/common/memory_capability.h>
+#include <cstring>
+namespace ayni::runtime::fixtures {
+namespace {
+constexpr uint32_t text_limit = 512;
+constexpr uint32_t request_timeout_ms = 10000;
+ayni_string_v1 text(const char *s) {
+    return {s, static_cast<uint32_t>(std::strlen(s))};
+}
+bool same(ayni_string_v1 a, ayni_string_v1 b) {
+    return a.size == b.size &&
+           (!a.size || (a.data && b.data && std::memcmp(a.data, b.data, a.size) == 0));
+}
+// Inspect the public barrier immediately before the fixture effect (C-COMMIT-004).
+// No query reenters Core from submit; queued acceptance is not business execution.
+ayni_status_t check_barrier(ayni_kernel_t *kernel, uint64_t id) {
+    auto call = initialized<ayni_call_info_v1>();
+    auto info = initialized<ayni_kernel_info_v1>();
+    auto status = ayni_get_call(kernel, id, &call);
+    if (status == AYNI_OK) {
+        status = ayni_get_kernel_info(kernel, &info);
+    }
+    if (status != AYNI_OK) {
+        return status;
+    }
+    return call.requires_seq && call.requires_seq <= info.durable_seq ? AYNI_OK : AYNI_NOT_READY;
+}
+ayni_status_t register_capability(ayni_kernel_t *kernel, const ayni_provider_v1 &offer) {
+    const ayni_capability_desc_v1 cap{sizeof(cap), 1, offer.capabilities->capability_id,
+                                      0,           0, nullptr};
+    auto status = ayni_register_capability(kernel, &cap);
+    return status == AYNI_OK ? ayni_register_call_capability(kernel, offer.capabilities) : status;
+}
+ayni_status_t register_offer(ayni_kernel_t *kernel, const ayni_provider_v1 &offer,
+                             const char *binding) {
+    auto status = ayni_register_provider(kernel, &offer);
+    if (status == AYNI_OK && binding) {
+        const ayni_binding_v1 value{sizeof(value),
+                                    1,
+                                    text(binding),
+                                    offer.capabilities->capability_id,
+                                    1,
+                                    1,
+                                    offer.provider_id,
+                                    offer.endpoint_id,
+                                    offer.destination_id};
+        status = ayni_register_binding(kernel, &value);
+    }
+    return status;
+}
+// A trusted fixture domain using the public scope builder's four fields.
+// The normal profile has no external egress destination or credential.
+ayni_status_t register_memory(ayni_kernel_t *kernel) {
+    auto fields = memory_access_fields();
+    const ayni_capability_desc_v1 capability{
+        sizeof(capability), 1, text("memory.access"), static_cast<uint32_t>(fields.size()), 0,
+        fields.data()};
+    return ayni_register_capability(kernel, &capability);
+}
+} // namespace
+Counter::Counter(const char *capability, Effect effect) {
+    const bool notification = effect == Effect::notification;
+    resource_ = {text(notification ? "notification.slot" : "counter.slot"), 1, 0};
+    capability_ = initialized<ayni_call_capability_v1>();
+    capability_.version = 1;
+    capability_.capability_id = text(capability);
+    capability_.contract = {sizeof(ayni_call_contract_v1),
+                            AYNI_CALL_ACTION,
+                            AYNI_CALL_TOOL,
+                            notification ? AYNI_CALL_EFFECT_NOTIFICATION : 0U,
+                            AYNI_CALL_NOT_IDEMPOTENT,
+                            AYNI_CALL_QUERY_NONE,
+                            AYNI_CALL_CANCEL_REQUEST,
+                            0,
+                            request_timeout_ms,
+                            AYNI_CALL_INPUT_FIELDS_TEXT,
+                            AYNI_CALL_RESULT_TEXT,
+                            text_limit,
+                            0,
+                            1,
+                            &resource_,
+                            nullptr};
+}
+ayni_provider_v1 Counter::describe() {
+    auto out = initialized<ayni_provider_v1>();
+    out.version = 1;
+    out.provider_id = out.endpoint_id = capability_.capability_id;
+    out.ctx = this;
+    out.capability_count = 1;
+    out.capabilities = &capability_;
+    out.submit = submit;
+    out.cancel = cancel;
+    return out;
+}
+ayni_submit_result_t Counter::submit(void *ctx, const ayni_provider_request_v1 *request,
+                                     ayni_provider_completion_t *completion) {
+    auto &self = *static_cast<Counter *>(ctx);
+    if (!request || !completion || request->struct_size != sizeof(*request) ||
+        request->capability_version != 1 ||
+        !same(request->capability_id, self.capability_.capability_id) ||
+        !same(request->endpoint_id, self.capability_.capability_id) ||
+        request->arguments.field_count || request->text.size > text_limit) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    for (auto &slot : self.slots_) {
+        if (slot.phase == Phase::empty) {
+            slot = {Phase::queued, request->logical_call_id, request->attempt, completion};
+            return AYNI_SUBMIT_ACCEPTED;
+        }
+    }
+    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+}
+ayni_submit_result_t Counter::cancel(void *ctx, ayni_attempt_ref_v1 attempt) {
+    auto &self = *static_cast<Counter *>(ctx);
+    for (auto &slot : self.slots_) {
+        if (slot.phase != Phase::empty && slot.attempt.boot_epoch == attempt.boot_epoch &&
+            slot.attempt.request_id == attempt.request_id) {
+            if (slot.phase == Phase::queued) {
+                slot.phase = Phase::cancelled;
+            }
+            return AYNI_SUBMIT_ACCEPTED;
+        }
+    }
+    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+}
+ayni_status_t Counter::advance(ayni_kernel_t *kernel, uint64_t &barrier_checks) {
+    for (auto &slot : slots_) {
+        if (slot.phase == Phase::empty) {
+            continue;
+        }
+        if (slot.phase == Phase::queued) {
+            const auto status = check_barrier(kernel, slot.call);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            ++barrier_checks;
+            ++executions_;
+            slot.phase = Phase::terminal; // Receipt backpressure cannot execute the effect again.
+        }
+        const bool cancelled = slot.phase == Phase::cancelled;
+        auto result = initialized<ayni_provider_result_v1>();
+        result.outcome = cancelled ? AYNI_CALL_CANCELLED : AYNI_CALL_COMPLETED;
+        result.attempt = slot.attempt;
+        result.status = AYNI_OK;
+        result.effect = cancelled ? AYNI_CALL_EFFECT_NONE : AYNI_CALL_EFFECT_COMPLETE;
+        const auto status = ayni_provider_post(slot.completion, &result);
+        if (status == AYNI_BUSY) {
+            continue;
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+        slot = {};
+    }
+    return AYNI_OK;
+}
+bool Counter::pending() const {
+    for (const auto &slot : slots_) {
+        if (slot.phase != Phase::empty) {
+            return true;
+        }
+    }
+    return false;
+}
+ayni_status_t ModelProbe::configure(providers::mock::Variant variant, const Config &config,
+                                    Clock clock) {
+    clock_ = clock;
+    delay_us_ = config.model_delay_us;
+    const auto status =
+        provider_.configure({variant, providers::mock::Service::text, 1, text_limit, {}});
+    if (status != AYNI_OK) {
+        return status;
+    }
+    ayni_provider_v1 offer{};
+    const auto described = provider_.describe(offer);
+    if (described == AYNI_OK) {
+        original_ = offer;
+    }
+    return described;
+}
+ayni_provider_v1 ModelProbe::describe() {
+    auto offer = *original_;
+    offer.ctx = this;
+    offer.submit = submit;
+    offer.cancel = cancel;
+    return offer;
+}
+ayni_submit_result_t ModelProbe::submit(void *ctx, const ayni_provider_request_v1 *request,
+                                        ayni_provider_completion_t *completion) {
+    auto &self = *static_cast<ModelProbe *>(ctx);
+    if (self.dispatch_) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    const auto now = self.clock_.now_us(self.clock_.context);
+    if (self.delay_us_ > UINT64_MAX - now) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    const auto status = self.original_->submit(self.original_->ctx, request, completion);
+    if (status != AYNI_SUBMIT_REJECTED_NOT_RETAINED) {
+        self.dispatch_ =
+            Dispatch{request->logical_call_id, now + self.delay_us_, DispatchPhase::queued};
+    }
+    return status;
+}
+ayni_submit_result_t ModelProbe::cancel(void *ctx, ayni_attempt_ref_v1 attempt) {
+    auto &self = *static_cast<ModelProbe *>(ctx);
+    const auto status = self.original_->cancel(self.original_->ctx, attempt);
+    if (self.dispatch_ && status != AYNI_SUBMIT_REJECTED_NOT_RETAINED) {
+        self.dispatch_->due_us = self.clock_.now_us(self.clock_.context);
+        self.dispatch_->phase = DispatchPhase::cancelled;
+    }
+    return status;
+}
+ayni_status_t ModelProbe::advance(ayni_kernel_t *kernel, uint64_t &barrier_checks) {
+    if (!dispatch_) {
+        return AYNI_OK;
+    }
+    if (clock_.now_us(clock_.context) < dispatch_->due_us) {
+        return AYNI_OK;
+    }
+    if (dispatch_->phase == DispatchPhase::queued) {
+        const auto status = check_barrier(kernel, dispatch_->call);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        dispatch_->phase = DispatchPhase::checked;
+        ++barrier_checks;
+    }
+    const auto status = provider_.advance();
+    if (status == AYNI_BUSY) {
+        return AYNI_OK;
+    }
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!provider_.pending()) {
+        dispatch_.reset();
+    }
+    return AYNI_OK;
+}
+ayni_status_t ModelProbe::close() {
+    if (!original_) {
+        return AYNI_OK;
+    }
+    const auto status = provider_.close();
+    if (status == AYNI_OK) {
+        original_.reset();
+    }
+    return status;
+}
+const char *Profile::capability(const char *alias) {
+    if (std::strcmp(alias, "model") == 0) {
+        return "mock.text";
+    }
+    if (std::strcmp(alias, "increment") == 0) {
+        return "test.increment";
+    }
+    if (std::strcmp(alias, "notify") == 0) {
+        return "notify.present";
+    }
+    if (std::strcmp(alias, "observe") == 0) {
+        return "mock.observe";
+    }
+    if (std::strcmp(alias, "health") == 0) {
+        return "mock.health";
+    }
+    return "";
+}
+ayni_status_t Profile::assemble(ayni_kernel_t *kernel, Clock clock, const Config &config,
+                                Provider provider, Strategy strategy) {
+    kernel_ = kernel;
+    clock_ = clock;
+    auto status = model_a_.configure(providers::mock::Variant::a, config, clock);
+    if (status == AYNI_OK) {
+        status = model_b_.configure(providers::mock::Variant::b, config, clock);
+    }
+    providers::mock::SubscriptionConfig camera;
+    camera.clock_context = clock.context;
+    camera.now_us = clock.now_us;
+    // Keep the reusable Mock's normal 1 s cadence / 2 s TTL. Emitting every
+    // owner tick would turn this integration case into an ingress flood test.
+    if (status == AYNI_OK) {
+        status = camera_.configure(camera);
+    }
+    if (status == AYNI_OK) {
+        ayni_provider_v1 offer{};
+        status = camera_.describe(offer);
+        if (status == AYNI_OK) {
+            camera_offer_ = offer;
+        }
+    }
+    if (status == AYNI_OK) {
+        status = health_.configure(
+            {providers::mock::Variant::a, providers::mock::Service::health, 1, text_limit, {}});
+    }
+    if (status == AYNI_OK) {
+        ayni_provider_v1 offer{};
+        status = health_.describe(offer);
+        if (status == AYNI_OK) {
+            health_offer_ = offer;
+        }
+    }
+    return status == AYNI_OK ? register_services(provider, strategy) : status;
+}
+ayni_status_t Profile::register_services(Provider selected, Strategy revision) {
+    const ayni_principal_desc_v1 owner{sizeof(owner), AYNI_PRINCIPAL_OWNER, 1, 1, 0};
+    auto status = ayni_register_principal(kernel_, &owner);
+    for (uint64_t id : {UINT64_C(1), UINT64_C(2)}) {
+        const ayni_agent_desc_v1 agent{sizeof(agent), 0, id};
+        if (status == AYNI_OK) {
+            status = ayni_register_agent(kernel_, &agent);
+        }
+    }
+    for (const char *id :
+         {"model.slot", "counter.slot", "notification.slot", "camera.slot", "device.slot"}) {
+        const ayni_resource_desc_v1 resource{sizeof(resource),
+                                             AYNI_RESOURCE_SHARED,
+                                             text(id),
+                                             std::strcmp(id, "camera.slot") == 0 ? 2U : 1U,
+                                             0,
+                                             0,
+                                             0,
+                                             nullptr,
+                                             {}};
+        if (status == AYNI_OK) {
+            status = ayni_register_resource(kernel_, &resource);
+        }
+        if (status == AYNI_OK) {
+            status = ayni_set_resource_health(kernel_, resource.resource_id, AYNI_RESOURCE_ONLINE);
+        }
+    }
+    auto a = model_a_.describe(), b = model_b_.describe();
+    const auto increment = increment_.describe(), notify = notification_.describe();
+    for (const auto &offer : {a, increment, notify, *health_offer_, *camera_offer_}) {
+        if (status == AYNI_OK) {
+            status = register_capability(kernel_, offer);
+        }
+    }
+    if (status == AYNI_OK) {
+        status = register_offer(kernel_, a, selected == Provider::a ? "model" : nullptr);
+    }
+    if (status == AYNI_OK) {
+        status = register_offer(kernel_, b, selected == Provider::b ? "model" : nullptr);
+    }
+    if (status == AYNI_OK) {
+        status = register_offer(kernel_, increment, "increment");
+    }
+    if (status == AYNI_OK) {
+        status = register_offer(kernel_, notify, "notify");
+    }
+    if (status == AYNI_OK) {
+        status = register_offer(kernel_, *health_offer_, "health");
+    }
+    if (status == AYNI_OK) {
+        status = register_offer(kernel_, *camera_offer_, "observe");
+    }
+    auto source = initialized<ayni_observation_source_v1>();
+    if (status == AYNI_OK) {
+        status = camera_.describe_source(source);
+    }
+    if (status == AYNI_OK) {
+        status = ayni_register_observation_source(kernel_, &source);
+    }
+    if (status == AYNI_OK) {
+        status = register_memory(kernel_);
+    }
+    if (status == AYNI_OK) {
+        status = policy_.register_all(kernel_, revision);
+    }
+    applications::assistant::PolicyConfig config;
+    config.model_capability = text("mock.text");
+    config.present_capability = text("notify.present");
+    config.health_capability = text("mock.health");
+    config.observe_capability = text("mock.observe");
+    config.clock_context = clock_.context;
+    config.utc_now = clock_.utc_now;
+    return status == AYNI_OK ? assistant_.register_all(kernel_, config) : status;
+}
+ayni_status_t Profile::advance() {
+    auto status = model_a_.advance(kernel_, barrier_checks_);
+    if (status == AYNI_OK) {
+        status = model_b_.advance(kernel_, barrier_checks_);
+    }
+    if (status == AYNI_OK) {
+        status = increment_.advance(kernel_, barrier_checks_);
+    }
+    if (status == AYNI_OK) {
+        status = notification_.advance(kernel_, barrier_checks_);
+    }
+    if (status == AYNI_OK && camera_offer_) {
+        status = camera_.advance();
+    }
+    if (status == AYNI_OK && health_offer_) {
+        status = health_.advance();
+    }
+    return status == AYNI_BUSY ? AYNI_OK : status;
+}
+ayni_status_t Profile::close() {
+    if (increment_.pending() || notification_.pending() || camera_.pending()) {
+        return AYNI_BUSY;
+    }
+    auto status = model_a_.close();
+    if (status == AYNI_OK) {
+        status = model_b_.close();
+    }
+    if (status == AYNI_OK && camera_offer_) {
+        status = camera_.close();
+        if (status == AYNI_OK) {
+            camera_offer_.reset();
+        }
+    }
+    if (status == AYNI_OK && health_offer_) {
+        status = health_.close();
+        if (status == AYNI_OK) {
+            health_offer_.reset();
+        }
+    }
+    return status;
+}
+Totals Profile::totals() const {
+    return {model_a_.executions(),      model_b_.executions(), increment_.executions(),
+            notification_.executions(), barrier_checks_,       health_.executions()};
+}
+} // namespace ayni::runtime::fixtures
