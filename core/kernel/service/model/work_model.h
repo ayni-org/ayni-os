@@ -84,8 +84,12 @@ struct WorkModel {
     bool start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp);
 
     work::WorkTables tables() {
-        return {goals, tasks, agents, goal_authority,
-                grants.has_compatibility_holds() ? &grants : nullptr};
+        return {goals,
+                tasks,
+                agents,
+                goal_authority,
+                grants.has_compatibility_holds() ? &grants : nullptr,
+                &pause_groups};
     }
     // Export a staged immutable ceiling and select existing durable Grants.
     authority::GrantCheck prepare_goal_authority(const catalog::GoalType &type,
@@ -168,7 +172,8 @@ struct WorkModel {
     authority::SessionTable sessions;
     work::AgentTable agents;
     work::GoalTable goals;
-    work::CalendarTable calendars; // Sole owner of civil rules, stable cursors and sampled UTC.
+    work::PauseGroups pause_groups; // Independent bounded generic gates, never user lifecycle.
+    work::CalendarTable calendars;  // Sole owner of civil rules, stable cursors and sampled UTC.
     work::TaskTable tasks;
     // The commands accepted, which the log keeps with their transitions.
     CommandTable commands;

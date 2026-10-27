@@ -296,7 +296,8 @@ bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) 
             continue;
         }
         const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
-        const bool stopping = !task_content_current({work_, now_us, durable_seq}, task_index) ||
+        const bool stopping = (active->delivery && active->delivery->inhibition) ||
+                              !task_content_current({work_, now_us, durable_seq}, task_index) ||
                               mode != Mode::running || task.call.end != work::TaskCall::End::none ||
                               task.lifecycle == AYNI_TASK_PAUSED ||
                               state.cancel_cause != work::CallCancelCause::none ||

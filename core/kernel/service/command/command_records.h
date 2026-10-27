@@ -33,6 +33,8 @@ constexpr uint16_t expired_command_record_version = 11;
 constexpr uint16_t context_command_record_version = 12;
 // REQUIRED type9/v13 wraps one prior Goal command body with its complete captured sources.
 constexpr uint16_t sourced_command_record_version = 13;
+// REQUIRED type9/v14 stores exact independent pause-group controls.
+constexpr uint16_t pause_group_command_record_version = 14;
 constexpr uint32_t sourced_command_prefix_size = 2 * sizeof(uint32_t);
 // Shared shape check; these sources explain retained private input, never grant new authority.
 bool valid_command_sources(const CommandMapping &mapping);

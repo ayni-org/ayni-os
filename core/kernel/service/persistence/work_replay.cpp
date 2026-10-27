@@ -13,6 +13,7 @@
 #include "work/goal/calendar_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
+#include "work/goal/pause_group_records.h"
 #include "work/privacy/privacy_records.h"
 #include "work/provenance/provenance_records.h"
 #include "work/task/task_authority_records.h"
@@ -59,7 +60,7 @@ bool WorkReplay::binding_matches() const {
     // missing evidence is refused before the boot writes (ADR-0038).
     return model_.goals.size() == 0U && model_.commands.size() == 0U &&
            model_.grants.size() == 0U && model_.scenes.state_count() == 0 &&
-           model_.memories.size() == 0;
+           model_.memories.size() == 0 && model_.pause_groups.empty();
 }
 
 // The types apply() restores, so the two lists change together; a store of
@@ -105,6 +106,7 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         pairing_.limit_raise.reset();
         pairing_.target_command.reset();
         pairing_.scene.reset();
+        pairing_.pause_group.reset();
         pairing_.memory.reset();
         pairing_.context.reset();
         pairing_.privacy_progress = false;
@@ -113,7 +115,8 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if (pairing_.privacy_progress || (pairing_.memory && pairing_.memory->complete()) ||
+    if ((pairing_.pause_group && pairing_.pause_group->command_seen) || pairing_.privacy_progress ||
+        (pairing_.memory && pairing_.memory->complete()) ||
         (pairing_.context && pairing_.context->complete()) ||
         (pairing_.scene && pairing_.scene->command_seen) ||
         (pairing_.target_command && pairing_.target_command->command_seen) ||
@@ -149,7 +152,8 @@ bool WorkReplay::allows_pending_record(const durability::RecordHeader &header) c
             return false;
         }
     }
-    if ((pairing_.scene || pairing_.limit_raise || pairing_.target_command) &&
+    if ((pairing_.scene || pairing_.pause_group || pairing_.limit_raise ||
+         pairing_.target_command) &&
         header.type != command_record_type) {
         return false;
     }
@@ -199,6 +203,8 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
         return restore_context(body, size, stamp, boot_epoch_limit);
     case knowledge::memory_record_type:
         return restore_memory(body, size, stamp, boot_epoch_limit);
+    case work::pause_group_record_type:
+        return restore_pause_group(body, size, stamp, boot_epoch_limit);
     case work::calendar_record_type:
         return restore_calendar(body, size, stamp);
     case authority::scene_record_type:
@@ -720,6 +726,13 @@ bool WorkReplay::pair_task_limit_command(const CommandMapping &mapping, ayni_byt
 // Each domain owns its exact request proof. No unrelated pending partner may be skipped.
 bool WorkReplay::pair_domain_command(const CommandMapping &mapping, ayni_bytes_v1 canonical,
                                      ayni_bytes_v1 result_bytes) {
+    if (mapping.kind == AYNI_INTENT_PAUSE_GROUP_SET) {
+        if (!pair_pause_group_command(mapping, canonical)) {
+            return false;
+        }
+    } else if (pairing_.pause_group) {
+        return false;
+    }
     if (is_context_command(mapping.kind)) {
         if (!pair_context_command(mapping, canonical)) {
             return false;
@@ -954,6 +967,9 @@ bool WorkReplay::calendars_consistent() const {
 // goal under a terminal parent or a stopped owner, or a live task under a
 // terminal goal.
 bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
+    if (!pause_groups_consistent(boot_epoch_limit)) {
+        return false;
+    }
     for (uint32_t at = 0; at < model_.scenes.state_count(); ++at) {
         const auto id = model_.scenes.state(at).object_id;
         uint32_t index = 0;
@@ -1137,6 +1153,7 @@ void WorkReplay::discard() {
     model_.commands.clear_restored();
     model_.grants.clear_restored();
     model_.scenes.clear_states();
+    model_.pause_groups.clear();
     batch_seq_ = 0;
     pairing_ = {};
 }

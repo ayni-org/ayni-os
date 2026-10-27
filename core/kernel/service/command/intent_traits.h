@@ -44,7 +44,7 @@ struct IntentTraits {
 };
 
 // Kinds run from GOAL_CREATE to this one without gaps.
-constexpr ayni_intent_kind_t last_intent_kind = AYNI_INTENT_CONTEXT_ACK;
+constexpr ayni_intent_kind_t last_intent_kind = AYNI_INTENT_PAUSE_GROUP_SET;
 constexpr std::size_t intent_kind_count = last_intent_kind - AYNI_INTENT_GOAL_CREATE + 1U;
 
 constexpr std::array<IntentTraits, intent_kind_count> intent_traits_table{{
@@ -87,6 +87,8 @@ constexpr std::array<IntentTraits, intent_kind_count> intent_traits_table{{
      AYNI_OBJECT_CONTEXT},
     {AYNI_INTENT_CONTEXT_ACK, SessionRule::management_on_retry, CommandIdentity::exact,
      AYNI_OBJECT_CONTEXT},
+    {AYNI_INTENT_PAUSE_GROUP_SET, SessionRule::management_on_retry, CommandIdentity::exact,
+     AYNI_OBJECT_PAUSE_GROUP},
 }};
 
 // Each kind's row sits at its own position, so a lookup is an index.

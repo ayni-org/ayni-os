@@ -52,14 +52,10 @@ void CallRuntime::close_subscription_gate(uint32_t index) {
 // Every affected scope closes before any physical dispatch, regardless of Call
 // scan order. Provider close is a separate budgeted item; inhibition cannot be
 // undone by a late ACK, temporary authority recovery or journal backpressure.
-void CallRuntime::refresh_subscription_gates(uint64_t now_us, uint64_t durable_seq, Mode mode) {
+bool CallRuntime::refresh_live_gates(uint64_t now_us, uint64_t durable_seq, Mode mode) {
     for (uint32_t index = 0; index < limits_.capacity; ++index) {
         auto &active = slots_[index].active;
-        if (!active || !active->delivery || !active->collection || !work_.calls.occupied(index)) {
-            continue;
-        }
-        auto &collection = *active->collection;
-        if (collection.inhibition) {
+        if (!active || !active->delivery || !work_.calls.occupied(index)) {
             continue;
         }
         uint32_t task_index = 0;
@@ -67,6 +63,18 @@ void CallRuntime::refresh_subscription_gates(uint64_t now_us, uint64_t durable_s
             continue;
         }
         const auto &task = work_.tasks.at(task_index);
+        if (!active->collection && submitted(active->stage) &&
+            active->delivery->purpose == Delivery::Purpose::execution &&
+            (task.lifecycle == AYNI_TASK_PAUSED || task.call.end != work::TaskCall::End::none)) {
+            active->delivery->inhibition = work::CallCancelCause::user;
+        }
+        if (!active->collection) {
+            continue;
+        }
+        auto &collection = *active->collection;
+        if (collection.inhibition) {
+            continue;
+        }
         const auto &state = work_.calls.state(index);
         const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
         if (mode != Mode::running) {
@@ -89,6 +97,7 @@ void CallRuntime::refresh_subscription_gates(uint64_t now_us, uint64_t durable_s
             close_subscription_gate(index);
         }
     }
+    return control_.latch_closed_gates(now_us, durable_seq, mode);
 }
 ayni_status_t CallRuntime::subscription_info(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                                              ayni_subscription_info_v1 &out) const {

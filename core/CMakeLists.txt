@@ -91,6 +91,8 @@ ayni_add_core_module(work
         work/goal/goal_records.cpp
         work/goal/goal_request.cpp
         work/goal/goal_table.cpp
+        work/goal/pause_groups.cpp
+        work/goal/pause_group_records.cpp
         work/goal/trigger_schedule.cpp
         work/goal/calendar.cpp
         work/goal/calendar_zone.cpp
@@ -111,6 +113,7 @@ ayni_add_core_module(kernel
     SOURCES
         kernel/api/call_api.cpp
         kernel/api/calendar_api.cpp
+        kernel/api/pause_group_api.cpp
         kernel/api/execution_api.cpp
         kernel/api/executor_completion_api.cpp
         kernel/api/kernel_api.cpp
@@ -141,6 +144,7 @@ ayni_add_core_module(kernel
         kernel/service/command/command_reauthorization.cpp
         kernel/service/command/command_records.cpp
         kernel/service/command/command_scene.cpp
+        kernel/service/command/command_pause_group.cpp
         kernel/service/command/command_table.cpp
         kernel/service/command/command_target.cpp
         kernel/service/command/command_task_limit.cpp
@@ -170,6 +174,7 @@ ayni_add_core_module(kernel
         kernel/service/command/command_context.cpp
         kernel/service/memory/context_service.cpp
         kernel/service/intent/context_intent.cpp
+        kernel/service/intent/pause_group_intent.cpp
         kernel/api/context_api.cpp
         kernel/service/intent/intent_rules.cpp
         kernel/service/model/task_authority.cpp
@@ -185,6 +190,7 @@ ayni_add_core_module(kernel
         kernel/service/persistence/task_store.cpp
         kernel/service/persistence/call_store.cpp
         kernel/service/persistence/calendar_store.cpp
+        kernel/service/persistence/pause_group_store.cpp
         kernel/service/persistence/grant_store.cpp
         kernel/service/persistence/command_store.cpp
         kernel/service/persistence/goal_approval_replay.cpp

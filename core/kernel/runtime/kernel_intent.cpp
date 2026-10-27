@@ -44,7 +44,10 @@ ayni_status_t ayni_kernel::submit_intent(const ayni::kernel::Intent &intent,
     });
     // Management pause/revocation changes the refusal frontier before returning,
     // even when the corresponding per-Call journal updates must wait for space.
-    calls.refresh_subscription_gates(now_us(), log.durable_seq(), call_mode());
+    if (!calls.refresh_live_gates(now_us(), log.durable_seq(), call_mode())) {
+        enter_restricted(AYNI_RESTRICTION_INTERNAL);
+        return AYNI_INTERNAL;
+    }
     return status;
 }
 

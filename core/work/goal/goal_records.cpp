@@ -31,11 +31,15 @@ bool read_id(durability::BodyReader &reader, bool may_be_empty, catalog::Catalog
 
 uint32_t goal_record_size(const Goal &goal, uint16_t version) {
     return goal_record_fixed_size + goal.goal_type_id.size() + goal.trigger_source.size() +
-           goal.parameter_size + (has_profile(goal, version) ? goal_work_profile_size : 0U);
+           goal.parameter_size + (has_profile(goal, version) ? goal_work_profile_size : 0U) +
+           (version >= goal_group_record_version ? goal_group_tail_size : 0U);
 }
 
 uint16_t goal_record_version_for(const Goal &goal, bool authority_present,
                                  bool provenance_present) {
+    if (goal.pause_group != 0) {
+        return goal_group_record_version;
+    }
     if (is_calendar_trigger(goal.trigger.kind)) {
         return provenance_present ? goal_calendar_provenance_record_version
                                   : goal_calendar_record_version;
@@ -49,6 +53,9 @@ uint16_t goal_record_version_for(const Goal &goal, bool authority_present,
 }
 uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present,
                                    bool provenance_present) {
+    if (goal.pause_group != 0) {
+        return goal_group_snapshot_version;
+    }
     if (is_calendar_trigger(goal.trigger.kind)) {
         return provenance_present ? goal_calendar_provenance_snapshot_version
                                   : goal_calendar_snapshot_version;
@@ -62,8 +69,8 @@ uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present,
 }
 
 // Preserve the original prefix; only non-default creation semantics append a profile.
-void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
-                       uint16_t version) {
+void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body, uint16_t version,
+                       bool provenance_present) {
     durability::BodyWriter writer(body, goal_record_size(goal, version));
     writer.u64(goal.goal_id);
     writer.u64(goal.parent_goal_id);
@@ -87,6 +94,10 @@ void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body
         writer.u32(goal.work_profile.kind);
         writer.u64(goal.work_profile.background_period_us);
     }
+    if (version >= goal_group_record_version) {
+        writer.u32(goal.pause_group);
+        writer.u32(provenance_present ? 1U : 0U);
+    }
 }
 
 bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint16_t version) {
@@ -96,8 +107,7 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint1
         version != goal_work_profile_record_version &&
         version != goal_work_profile_snapshot_version &&
         version != goal_provenance_record_version && version != goal_provenance_snapshot_version &&
-        (version < goal_calendar_record_version ||
-         version > goal_calendar_provenance_snapshot_version)) {
+        (version < goal_calendar_record_version || version > goal_group_snapshot_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -143,7 +153,16 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint1
             return false;
         }
     }
-    if (is_calendar_trigger(out.goal.trigger.kind) != (version >= goal_calendar_record_version)) {
+    if (version >= goal_group_record_version) {
+        out.goal.pause_group = reader.u32();
+        const auto provenance = reader.u32();
+        if (!PauseGroups::valid_group(out.goal.pause_group) || provenance > 1) {
+            return false;
+        }
+        out.provenance_required = provenance != 0;
+    }
+    if (version < goal_group_record_version &&
+        is_calendar_trigger(out.goal.trigger.kind) != (version >= goal_calendar_record_version)) {
         return false;
     }
     // GoalTable owns trigger/profile validity for both parsed and typed inputs.

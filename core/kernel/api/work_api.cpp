@@ -175,6 +175,9 @@ void write_goal_info(const ayni_kernel &kernel, uint32_t index, ayni_goal_info_v
     info.expires_us = goal.expires_us;
     info.original_expiry_us = goal.expiry_after_us;
     info.work_profile = goal.work_profile.snapshot();
+    info.pause_group = goal.pause_group;
+    info.group_paused =
+        kernel.model().goals.group_paused(index, kernel.model().pause_groups) ? 1U : 0U;
     info.occurrences_skipped = goal.occurrences_skipped;
     info.skip_reason = goal.skip_reason;
     info.hold_reason = goal.hold_reason;

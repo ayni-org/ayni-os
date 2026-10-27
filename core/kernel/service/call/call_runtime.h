@@ -72,7 +72,9 @@ class CallRuntime {
     bool ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
     // Source/Task refusal frontier closes all affected gates even with no journal room.
     // This performs bounded owner bookkeeping only, never Provider callbacks.
-    void refresh_subscription_gates(uint64_t now_us, uint64_t durable_seq, Mode mode);
+    // Capture transient management gates before a following resume; no Provider/Executor I/O.
+    // False is a resource-owner invariant failure, never a completed stop.
+    bool refresh_live_gates(uint64_t now_us, uint64_t durable_seq, Mode mode);
     // Task and current lease must still permit collection, independent of queued transport.
     bool subscription_usable(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
     // Trusted owner projection; phase is distinct from the underlying Call action outcome.
@@ -125,6 +127,8 @@ class CallRuntime {
             query
         } purpose = Purpose::execution; // Exact attempt protocol.
         uint32_t tools = 0; // GoalType tool positions offered at submit, as bits (ADR-0054).
+        std::optional<work::CallCancelCause> inhibition{}; // Sticky user stop for this execution
+                                                           // attempt until budgeted cancellation.
     };
     struct Active {
         uint64_t call_id; // Matches this CallTable slot; detects any premature replacement.

@@ -13,10 +13,12 @@ using work::GoalCreate;
 
 // records.md: immutable creation scalars and three byte-string lengths.
 constexpr uint32_t goal_identity_fixed_size = 60;
+constexpr uint32_t goal_identity_group_size = sizeof(uint32_t); // Optional immutable group tail.
 constexpr uint32_t goal_identity_catalog_ids = 2;
 constexpr uint32_t goal_identity_max_bytes(uint32_t parameters) {
     return goal_identity_fixed_size + goal_identity_catalog_ids * AYNI_CATALOG_ID_MAX_BYTES +
-           parameters + work::calendar_rule_fixed_size + AYNI_CALENDAR_TZ_MAX_BYTES;
+           parameters + goal_identity_group_size + work::calendar_rule_fixed_size +
+           AYNI_CALENDAR_TZ_MAX_BYTES;
 }
 // Full raw echo shape, independent of the current Goal/catalog retention.
 bool valid_goal_creation_identity(const GoalCreate &create);

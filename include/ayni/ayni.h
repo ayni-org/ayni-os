@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 43u
+#define AYNI_ABI_MINOR 44u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -789,6 +789,9 @@ typedef uint32_t ayni_object_kind_t;
 /* Managed logical call, including retained unknown outcomes. Since 0.31. */
 #define AYNI_OBJECT_CALL ((ayni_object_kind_t)19)
 
+/* Persistent generic work gate. Since 0.44. */
+#define AYNI_OBJECT_PAUSE_GROUP ((ayni_object_kind_t)21)
+
 /*
  * Reference to a versioned object (plan section 3.6). A reference carries no
  * permission: the receiver resolves it against the authenticated source and
@@ -1014,6 +1017,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_MEMORY_EXPIRED ((ayni_reason_t)79)
 /* NOT_READY: recurring calendar reauthorization needs trusted UTC to skip backlog. Since 0.41. */
 #define AYNI_REASON_TIME_UNTRUSTED ((ayni_reason_t)80)
+/* INVALID_STATE: independent group suspension; skipped autonomous backlog. Since 0.44. */
+#define AYNI_REASON_PAUSE_GROUP ((ayni_reason_t)81)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1321,6 +1326,10 @@ typedef struct ayni_goal_info_v1 {
     uint64_t original_expiry_us;
     /* Since 0.33. Immutable trusted scheduling semantics from creation. */
     ayni_work_profile_v1 work_profile;
+    /* Immutable direct group; zero means none. Since 0.44. */
+    uint32_t pause_group;
+    /* 1 when its own or an ancestor group is paused, else 0. Since 0.44. */
+    uint32_t group_paused;
 } ayni_goal_info_v1;
 
 /*
@@ -1456,6 +1465,31 @@ typedef uint32_t ayni_intent_kind_t;
 /* Acknowledge the exact current file revision/generation after durable replacement. Since 0.40. */
 #define AYNI_INTENT_CONTEXT_ACK ((ayni_intent_kind_t)23)
 
+/* Fixed generic group numbers; zero is no membership. Since 0.44. */
+#define AYNI_PAUSE_GROUP_COUNT 8U
+/* Owner management CAS, exact nonzero command identity. Since 0.44. */
+#define AYNI_INTENT_PAUSE_GROUP_SET ((ayni_intent_kind_t)24)
+/* Desired independent group gate; never changes a Goal's user pause. Since 0.44. */
+typedef struct ayni_pause_group_set_v1 {
+    uint32_t struct_size; /* sizeof this structure. */
+    uint32_t group;       /* 1..AYNI_PAUSE_GROUP_COUNT. */
+    uint32_t paused;      /* 0 opens, 1 closes; unrelated holds remain. */
+    uint32_t reserved;    /* Must be zero. */
+} ayni_pause_group_set_v1;
+/* Copied owner-thread gate preference and its durability barrier. Since 0.44. */
+typedef struct ayni_pause_group_info_v1 {
+    uint32_t struct_size;   /* sizeof this structure. */
+    uint32_t group;         /* Queried nonzero group number. */
+    uint32_t revision;      /* Zero until its first accepted owner control. */
+    uint32_t paused;        /* 0 open, 1 paused; no physical-stop confirmation implied. */
+    uint64_t object_id;     /* Stable Kernel identity; zero before first control. */
+    uint64_t transition_id; /* Last control, zero with object_id. */
+    uint64_t commit_seq;    /* Last control, zero with object_id; compare durable_seq. */
+} ayni_pause_group_info_v1;
+/* Owner-thread copied query; preserves output on failure. Since 0.44. */
+ayni_status_t ayni_get_pause_group(const ayni_kernel_t *kernel, uint32_t group,
+                                   ayni_pause_group_info_v1 *out_info);
+
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {
     uint32_t struct_size;      /* sizeof this struct */
@@ -1508,6 +1542,10 @@ typedef struct ayni_goal_create_v1 {
     /* CALENDAR_* only: required copied rule, kind must match trigger; null otherwise.
      * Borrowed only through this synchronous call. Since 0.41. */
     const ayni_calendar_rule_v1 *calendar;
+    /* Trusted application membership; 0 means none, otherwise 1..COUNT.
+     * Copied immutably; ancestor groups also apply. Since 0.44. */
+    uint32_t pause_group;
+    uint32_t pause_group_reserved; /* Must be zero. Since 0.44. */
 } ayni_goal_create_v1;
 
 /* Owner-thread copied calendar diagnostics. NOT_FOUND for a non-calendar or

@@ -261,6 +261,10 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
         !WorkReplay(model).matches_context_command(mapping, canonical)) {
         return durability::BatchCheck::corrupt;
     }
+    if (mapping.kind == AYNI_INTENT_PAUSE_GROUP_SET &&
+        !WorkReplay(model).matches_pause_group_command(mapping, canonical)) {
+        return durability::BatchCheck::corrupt;
+    }
     if (mapping.kind == AYNI_INTENT_SCENE_SET_ENABLED &&
         !WorkReplay(model).matches_scene_command(mapping, canonical)) {
         return durability::BatchCheck::corrupt;

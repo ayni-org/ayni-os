@@ -33,6 +33,8 @@ class WorkReplay {
     // agent-only store may acquire its first owner; existing owner-controlled
     // work or commands cannot be adopted from the Host configuration.
     bool binding_matches() const;
+    // Retained generic gate and exact control relation, without live catalog lookup.
+    bool matches_pause_group_command(const CommandMapping &, ayni_bytes_v1 canonical) const;
     // Retained Scene command/state relation, shared with snapshots; no startup catalog lookup.
     bool matches_scene_command(const CommandMapping &mapping, ayni_bytes_v1 canonical) const;
     // Retained memory request/fact relation, with later versions retaining their newer stamps.
@@ -183,6 +185,10 @@ class WorkReplay {
                                              uint64_t boot_epoch_limit);
     durability::RecordUse restore_revocation_progress(const uint8_t *body, uint32_t size,
                                                       foundation::TransitionStamp stamp);
+    durability::RecordUse restore_pause_group(const uint8_t *, uint32_t,
+                                              foundation::TransitionStamp, uint64_t);
+    bool pause_groups_consistent(uint64_t boot_epoch_limit) const;
+    bool pair_pause_group_command(const CommandMapping &, ayni_bytes_v1);
     durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
                                           uint64_t commit_seq, uint64_t boot_epoch_limit);
     // One approval's ordered relation, independent of record body decoding.
@@ -338,6 +344,11 @@ class WorkReplay {
             uint64_t object_id; // Exact changed state awaiting its canonical owner command.
             bool command_seen;  // True seals the standalone transition until the next batch.
         };
+        struct PauseGroupPair {
+            uint32_t group;    // Exact nonzero group whose preference changed in this batch.
+            bool command_seen; // True only after its canonical owner request was proved.
+        };
+        std::optional<PauseGroupPair> pause_group; // No missing partner outside a group control.
         std::optional<ScenePair>
             scene; // Empty for non-Scene or no-change command-only transitions.
         std::optional<TargetCommandPair> target_command; // Only this batch's query or wait resume.
@@ -345,6 +356,7 @@ class WorkReplay {
         bool partners_complete() const {
             return !goal_sources && !checkpoint_sources && (!memory || memory->complete()) &&
                    (!context || context->complete()) && (!scene || scene->command_seen) &&
+                   (!pause_group || pause_group->command_seen) &&
                    (!target_command || target_command->command_seen) &&
                    (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
                    !task && !task_authority && !goal_authority && !authority.pending() &&

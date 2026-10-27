@@ -12,7 +12,7 @@ namespace {
 // Typed and decoded creation share the same intrinsic schedule/profile contract.
 bool valid_schedule(const NewGoal &goal) {
     return catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) && goal.trigger.fits() &&
-           goal.work_profile.valid() &&
+           goal.work_profile.valid() && PauseGroups::valid_membership(goal.pause_group) &&
            goal.work_profile.accepts(goal.trigger.kind, goal.trigger.period_us) &&
            goal.work_profile.accepts_occurrence_wait(goal.occurrence_wait_max_us);
 }
@@ -96,6 +96,7 @@ Goal GoalTable::created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t rep
         goal.expiry_us == 0U ? no_time : time_after(goal.created_us, goal.expiry_us);
     created.occurrence_wait_max_us = goal.occurrence_wait_max_us;
     created.work_profile = goal.work_profile;
+    created.pause_group = goal.pause_group;
     created.lifecycle = AYNI_GOAL_ACTIVE;
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {
         created.depth = goals_[created.parent_index].depth + 1U;
@@ -495,18 +496,22 @@ void GoalTable::skip_due(uint32_t index, uint64_t now_us, ayni_reason_t reason,
 
 void GoalTable::skip_authority_backlog(uint32_t index, uint64_t now_us,
                                        foundation::TransitionStamp stamp) {
+    skip_suspended_backlog(index, now_us, AYNI_REASON_GOAL_AUTHORITY_PAUSED, stamp);
+}
+void GoalTable::skip_suspended_backlog(uint32_t index, uint64_t now_us, ayni_reason_t reason,
+                                       foundation::TransitionStamp stamp) {
     const auto &goal = goals_[index];
     if ((goal.trigger.kind == AYNI_TRIGGER_INTERVAL ||
          goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT) &&
         goal.cursor.due_by(now_us)) {
-        skip_due(index, now_us, AYNI_REASON_GOAL_AUTHORITY_PAUSED, stamp);
+        skip_due(index, now_us, reason, stamp);
     }
 }
 
 bool GoalTable::takes_input(const catalog::CatalogId &source, const GoalAuthorityTable *authority,
-                            InputResumeBoundary input) const {
+                            InputResumeBoundary input, const PauseGroups *groups) const {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
-        if (takes(index, source, authority, input)) {
+        if (takes(index, source, authority, input, groups)) {
             return true;
         }
     }
@@ -515,10 +520,10 @@ bool GoalTable::takes_input(const catalog::CatalogId &source, const GoalAuthorit
 
 void GoalTable::record_input(const catalog::CatalogId &source, uint64_t now_us,
                              foundation::TransitionStamp stamp, const GoalAuthorityTable *authority,
-                             InputResumeBoundary input) {
+                             InputResumeBoundary input, const PauseGroups *groups) {
     for (uint32_t index = 0; index < goals_.size(); ++index) {
         Goal &goal = goals_[index];
-        if (takes(index, source, authority, input)) {
+        if (takes(index, source, authority, input, groups)) {
             work::record(now_us, goal.cursor);
             goal.commit_seq = stamp.commit_seq;
         }
@@ -677,10 +682,14 @@ void GoalTable::set_lifecycle(Goal &goal, ayni_goal_lifecycle_t lifecycle,
 }
 
 bool GoalTable::takes(uint32_t index, const catalog::CatalogId &source,
-                      const GoalAuthorityTable *authority, InputResumeBoundary input) const {
+                      const GoalAuthorityTable *authority, InputResumeBoundary input,
+                      const PauseGroups *groups) const {
     const Goal &goal = goals_[index];
-    return goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && is_live(goal.lifecycle) &&
-           goal.lifecycle != AYNI_GOAL_PROPOSED && !is_held(goal) &&
+    const bool group_allows = groups == nullptr || visit_lineage(index, [&](uint32_t at) {
+                                  return groups->allows_input(goals_[at].pause_group, input);
+                              });
+    return group_allows && goal.trigger.kind == AYNI_TRIGGER_LOCAL_INPUT &&
+           is_live(goal.lifecycle) && goal.lifecycle != AYNI_GOAL_PROPOSED && !is_held(goal) &&
            goal.trigger_source.equals({source.data(), source.size()}) && can_record(goal.cursor) &&
            (authority == nullptr ||
             (authority->authorized(index, goal.goal_id) &&

@@ -267,7 +267,7 @@ AYNI_LAYOUT(goal_info_trigger_source_size, offsetof(ayni_goal_info_v1, trigger_s
 AYNI_LAYOUT(goal_info_trigger_source, offsetof(ayni_goal_info_v1, trigger_source) == 188);
 AYNI_LAYOUT(goal_info_original_expiry, offsetof(ayni_goal_info_v1, original_expiry_us) == 224);
 AYNI_LAYOUT(goal_info_work_profile, offsetof(ayni_goal_info_v1, work_profile) == 232);
-AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 248);
+AYNI_LAYOUT(goal_info_size, sizeof(ayni_goal_info_v1) == 256);
 
 AYNI_LAYOUT(intent_struct_size, offsetof(ayni_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(intent_kind, offsetof(ayni_intent_v1, kind) == 4);
@@ -295,7 +295,7 @@ AYNI_LAYOUT(create_trigger_period_us,
 AYNI_LAYOUT(create_expiry_us, offsetof(ayni_goal_create_v1, expiry_us) == 48 + 4 * AYNI_PTR);
 AYNI_LAYOUT(create_trigger_source,
             offsetof(ayni_goal_create_v1, trigger_source) == 56 + 4 * AYNI_PTR);
-AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == AYNI_ROUND8(56 + 7 * AYNI_PTR));
+AYNI_LAYOUT(create_size, sizeof(ayni_goal_create_v1) == AYNI_ROUND8(64 + 7 * AYNI_PTR));
 
 AYNI_LAYOUT(target_struct_size, offsetof(ayni_goal_target_v1, struct_size) == 0);
 AYNI_LAYOUT(target_reserved, offsetof(ayni_goal_target_v1, reserved) == 4);
@@ -890,3 +890,9 @@ AYNI_LAYOUT(subscription_renew_size, sizeof(ayni_subscription_renew_v1) == 48);
 AYNI_LAYOUT(subscription_info_size, sizeof(ayni_subscription_info_v1) == 72);
 AYNI_LAYOUT(task_wait_subscription, offsetof(ayni_task_info_v1, wait_subscription_id) == 128);
 AYNI_LAYOUT(task_wait_phase, offsetof(ayni_task_info_v1, wait_phase) == 152);
+
+/* ADR-0065: append immutable membership and copy group diagnostics. */
+AYNI_LAYOUT(create_pause_group, offsetof(ayni_goal_create_v1, pause_group) == 56 + 7 * AYNI_PTR);
+AYNI_LAYOUT(goal_info_pause_group, offsetof(ayni_goal_info_v1, pause_group) == 248);
+AYNI_LAYOUT(pause_group_set_size, sizeof(ayni_pause_group_set_v1) == 16);
+AYNI_LAYOUT(pause_group_info_size, sizeof(ayni_pause_group_info_v1) == 40);

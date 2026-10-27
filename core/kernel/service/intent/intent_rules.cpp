@@ -9,6 +9,7 @@
 #include "kernel/service/intent/authority_intent.h"
 #include "kernel/service/intent/context_intent.h"
 #include "kernel/service/intent/memory_intent.h"
+#include "kernel/service/intent/pause_group_intent.h"
 #include "kernel/service/memory/context_service.h"
 #include "kernel/service/model/work_model.h"
 
@@ -164,6 +165,7 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                          goal_type.id,
                          goal_type.version,
                          goal_type.work_profile};
+    goal.pause_group = create.pause_group;
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);
@@ -474,6 +476,8 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
     }
     // Work and Grant management retain their separate invariant owners.
     switch (intent.kind) {
+    case AYNI_INTENT_PAUSE_GROUP_SET:
+        return set_pause_group(model, intent.pause_group, now_us, input, outcome, failure);
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return set_scene(model, intent, outcome, failure);
     case AYNI_INTENT_GOAL_CREATE: {
@@ -589,6 +593,8 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
     }
     // Each exact kind is looked up by its own canonical request.
     switch (intent.kind) {
+    case AYNI_INTENT_PAUSE_GROUP_SET:
+        return model.commands.find_exact(principal_id, intent.command_id, intent.pause_group);
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return model.commands.find_exact(principal_id, intent.command_id, intent.scene);
     case AYNI_INTENT_CALL_QUERY_RESULT:

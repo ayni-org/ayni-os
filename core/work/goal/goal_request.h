@@ -17,6 +17,7 @@ struct GoalCreate {
     work::Trigger trigger;       // Kind with matching delay/period in microseconds.
     uint64_t expiry_us;          // Microseconds from creation; 0: never.
     ayni_string_v1 trigger_source; // LOCAL_INPUT: the input it takes; empty otherwise
+    uint32_t pause_group = 0;      // Immutable application group; zero means none.
     CalendarRule calendar{};       // CALENDAR_*: copied immutable rule; absent for all other kinds.
 };
 
