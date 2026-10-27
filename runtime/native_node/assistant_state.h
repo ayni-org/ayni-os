@@ -33,7 +33,10 @@ struct Assistant::Impl {
     // Client receipt identities only; Core owns their effects and durable phase.
     std::array<uint64_t, AYNI_COMMAND_CAPACITY_DEFAULT> pending_commands{};
     uint32_t pending_count = 0;
-    uint64_t rule_goal = 0;
+    // Goals the schedule tool registered and the owner has not been told about yet; each is
+    // announced once its creation is durable (ADR-0072).
+    std::array<uint64_t, applications::assistant::ScheduleTool::request_capacity> proposals{};
+    uint32_t proposal_count = 0;
     bool opened = false;
     bool shutting_down = false;
     ayni_status_t start(const std::string &, const ModelConfig &, providers::presentation::Output,
@@ -50,17 +53,30 @@ struct Assistant::Impl {
     ayni_status_t erase_context(const ayni_context_info_v1 &);
     ayni_status_t collect_receipts();
     ayni_status_t persist(SavedConversation, Notice notice = {});
+    ayni_status_t announce(std::vector<Notice> &);
+    static ayni_status_t propose(void *, const ayni_goal_create_v1 *, uint64_t *);
     ayni_status_t stop();
     bool idle() const;
     Reply submit(ayni_intent_kind_t kind, const void *body, uint32_t revision = 0);
     Reply say(const Command &);
+    Reply stop_work();
+    Reply set_autonomy(const ayni_pause_group_info_v1 &, bool paused);
     Reply application_goal(const Command &);
     Reply manage(const Command &);
     Reply memory(const Command &);
     Reply describe(const Command &) const;
     Reply approve(uint64_t id, Operation operation);
+    // Immutable creation echo of a retained Goal, read back through public queries only. body
+    // views parameters and calendar, so a Creation is filled in place and never copied.
+    struct Creation {
+        strategies::Encoded parameters;
+        ayni_calendar_info_v1 calendar{};
+        ayni_goal_info_v1 info{};
+        ayni_goal_create_v1 body{};
+    };
+    ayni_status_t creation(uint64_t id, Creation &) const;
     ayni_status_t ids(ayni_object_kind_t kind, std::vector<uint64_t> &out) const;
-    uint64_t instance(uint64_t agent) const;
+    uint64_t assistant() const; // Current instance of the one assistant Agent.
 };
 inline bool matches(const SavedConversation &file, const ayni_context_info_v1 &context) {
     return file.context_id == context.context_id && file.record.generation == context.revision &&

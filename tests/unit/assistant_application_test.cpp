@@ -1,5 +1,6 @@
 // ADR-0066: normal application behavior through public C API and runtime composition.
 #include <ayni/applications/assistant.h>
+#include <ayni/applications/assistant/schedule_tool.h>
 #include <ayni/host_authority.h>
 #include <ayni/runtime/common/demo_profile.h>
 #include <ayni/runtime/sim_node.h>
@@ -35,7 +36,7 @@ class AssistantApplication : public ::testing::Test {
                 self.presented_output.emplace_back(s.data, s.size);
                 return AYNI_OK;
             }};
-        ASSERT_EQ(profile.assemble(node.kernel(), {}, {node.clock(), output, quiet}), AYNI_OK);
+        ASSERT_EQ(profile.assemble(node.kernel(), {}, {node.clock(), output, quiet, {}}), AYNI_OK);
         ASSERT_EQ(ayni_start(node.kernel()), AYNI_OK);
         pump();
         const ayni_session_desc_v1 session_desc{sizeof(session_desc), AYNI_CHANNEL_MANAGEMENT,
@@ -68,10 +69,10 @@ class AssistantApplication : public ::testing::Test {
             std::this_thread::sleep_for(std::chrono::microseconds(50));
         }
     }
-    uint64_t instance(uint64_t agent = demo_agent_b) {
+    uint64_t instance() {
         ayni_agent_info_v1 info{};
         info.struct_size = sizeof(info);
-        EXPECT_EQ(ayni_get_agent(node.kernel(), agent, &info), AYNI_OK);
+        EXPECT_EQ(ayni_get_agent(node.kernel(), demo_assistant, &info), AYNI_OK);
         return info.instance_id;
     }
     ayni_intent_result_v1 submit(ayni_intent_kind_t kind, const void *body, uint32_t revision = 0) {
@@ -85,11 +86,11 @@ class AssistantApplication : public ::testing::Test {
         pump();
         return result;
     }
-    void allow(const char *alias, uint64_t agent = demo_agent_b) {
+    void allow(const char *alias) {
         const ayni_grant_create_v1 body{sizeof(body),
                                         1,
                                         profile.capability(alias),
-                                        instance(agent),
+                                        instance(),
                                         0,
                                         AYNI_GRANT_PERMANENT,
                                         0,
@@ -175,8 +176,7 @@ TEST_F(UnavailableAssistantApplication,
     ASSERT_EQ(project(node.kernel(), activity), AYNI_OK);
     EXPECT_EQ(activity.primary, State::needs_attention);
 }
-TEST_F(QuietAssistantApplication,
-       due_notification_waits_without_blocking_the_legacy_channel_then_presents_once) {
+TEST_F(QuietAssistantApplication, due_notification_waits_for_trusted_time_then_presents_once) {
     allow("notify");
     ayni_calendar_rule_v1 rule{};
     rule.struct_size = sizeof(rule);
@@ -188,10 +188,6 @@ TEST_F(QuietAssistantApplication,
     const auto id = create({GoalKind::reminder, "安静后呈现", {}}, &rule);
     EXPECT_TRUE(presented().empty());
     EXPECT_NE(goal(id).lifecycle, AYNI_GOAL_SATISFIED);
-    ayni_resource_info_v1 legacy{};
-    legacy.struct_size = sizeof(legacy);
-    ASSERT_EQ(ayni_get_resource(node.kernel(), text("presentation.slot"), &legacy), AYNI_OK);
-    EXPECT_EQ(legacy.used, 0U);
     node.set_utc(86400 + 8 * 3600, AYNI_UTC_UNTRUSTED);
     pump();
     EXPECT_TRUE(presented().empty());
@@ -387,7 +383,43 @@ TEST_F(AssistantApplication, presented_reminder_is_not_replayed_after_orderly_cl
     EXPECT_EQ(goal(id).lifecycle, AYNI_GOAL_SATISFIED);
     EXPECT_EQ(presented().size(), 1U);
 }
-TEST(AssistantPolicy, routing_encoding_quiet_time_and_conflict_projection_are_explicit) {
+// ADR-0072: model-origin Goals carry their tool operation, need owner consent beyond every
+// standing Grant, and are found again by that operation only.
+TEST_F(AssistantApplication, model_origin_goal_waits_for_consent_and_is_found_by_its_operation) {
+    allow("notify");
+    ayni_calendar_rule_v1 calendar{};
+    calendar.struct_size = sizeof(calendar);
+    calendar.kind = AYNI_CALENDAR_ONCE;
+    calendar.rule_version = 1;
+    calendar.first_local_s = 2 * 86400;
+    calendar.timezone_size = 4;
+    std::memcpy(calendar.timezone, "UTC0", calendar.timezone_size);
+    Parameters owner{GoalKind::reminder, "主人创建", {}, Origin::owner, 0};
+    Parameters model{GoalKind::reminder, "模型创建", {}, Origin::model, 777};
+    const auto owned = create(owner, &calendar);
+    const auto proposed = create(model, &calendar);
+    EXPECT_EQ(goal(owned).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(goal(proposed).lifecycle, AYNI_GOAL_PROPOSED);
+    ayni_goal_authority_info_v1 authority{};
+    authority.struct_size = sizeof(authority);
+    ASSERT_EQ(ayni_get_goal_authority(node.kernel(), proposed, &authority), AYNI_OK);
+    std::vector<std::string> missing;
+    for (uint32_t at = 0; at < authority.requirement_count; ++at) {
+        ayni_goal_requirement_info_v1 requirement{};
+        requirement.struct_size = sizeof(requirement);
+        ASSERT_EQ(ayni_get_goal_requirement(node.kernel(), proposed, at, &requirement), AYNI_OK);
+        if (!requirement.grant_id) {
+            missing.emplace_back(requirement.capability_id, requirement.capability_id_size);
+        }
+    }
+    EXPECT_EQ(missing, std::vector<std::string>{"assistant.confirm"});
+    EXPECT_TRUE(profile.capability("assistant.confirm").size == 0);
+    uint64_t found = 0;
+    ASSERT_EQ(find_operation(node.kernel(), 777, found), AYNI_OK);
+    EXPECT_EQ(found, proposed);
+    EXPECT_EQ(find_operation(node.kernel(), 778, found), AYNI_NOT_FOUND);
+}
+TEST(AssistantPolicy, encoding_grammar_stop_phrases_and_quiet_time_are_explicit) {
     ayni_calendar_civil_v1 civil{};
     civil.struct_size = sizeof(civil);
     ASSERT_EQ(ayni_calendar_split_time(AYNI_CALENDAR_SECONDS_MAX, &civil), AYNI_OK);
@@ -397,16 +429,65 @@ TEST(AssistantPolicy, routing_encoding_quiet_time_and_conflict_projection_are_ex
     EXPECT_EQ(civil.hour, 23);
     EXPECT_EQ(civil.minute, 59);
     EXPECT_EQ(civil.second, 59);
-    std::string body;
-    EXPECT_EQ(route("@b check", 1, 2, body), 2U);
-    EXPECT_EQ(body, "check");
-    EXPECT_EQ(route("检查", 1, 2, body), 1U);
-    EXPECT_EQ(route("普通提问", 1, 2, body), 2U);
+    // ADR-0072: format 2 keeps the source order and adds origin plus the tool operation.
     Encoded encoded;
     Parameters original{GoalKind::memory_organize, {}, {1, 2}}, copy;
     ASSERT_EQ(encode(original, encoded), AYNI_OK);
     ASSERT_EQ(decode(encoded.view(), copy), AYNI_OK);
     EXPECT_EQ(copy.sources, original.sources);
+    EXPECT_EQ(copy.origin, Origin::owner);
+    const Parameters model{GoalKind::device_check, {}, {}, Origin::model, 0x0102030405060708U};
+    ASSERT_EQ(encode(model, encoded), AYNI_OK);
+    ASSERT_EQ(decode(encoded.view(), copy), AYNI_OK);
+    EXPECT_EQ(copy.origin, Origin::model);
+    EXPECT_EQ(copy.operation_id, model.operation_id);
+    EXPECT_EQ(encode({GoalKind::device_check, {}, {}, Origin::model, 0}, encoded),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(encode({GoalKind::memory_organize, {}, {1}, Origin::model, 9}, encoded),
+              AYNI_INVALID_ARGUMENT);
+    encoded.bytes[0] = 1; // Format 1 predates origin and is refused (ADR-0072).
+    EXPECT_EQ(decode(encoded.view(), copy), AYNI_INVALID_ARGUMENT);
+    // ADR-0072: one grammar for owner commands and the model tool; formatting is its inverse.
+    for (const auto *line :
+         {"remind once 2030-01-02T09:00 UTC0 喝水",
+          "remind weekly 2028-02-29T23:59 CST-8 第一行\n第二行", "check 600", "observe"}) {
+        Schedule schedule;
+        ASSERT_EQ(parse_schedule(line, schedule), AYNI_OK) << line;
+        Encoded bytes;
+        ayni_goal_create_v1 goal{};
+        ASSERT_EQ(prepare_goal(schedule, 1, bytes, goal), AYNI_OK) << line;
+        std::string canonical;
+        ASSERT_EQ(format_schedule(goal, canonical), AYNI_OK) << line;
+        EXPECT_EQ(canonical, line);
+    }
+    Schedule check;
+    ASSERT_EQ(parse_schedule("  check  ", check), AYNI_OK);
+    EXPECT_EQ(check.parameters.kind, GoalKind::device_check);
+    EXPECT_EQ(check.period_us, check_period_us);
+    for (const auto *line :
+         {"", "remind", "remind once 2030-02-30T09:00 UTC0 x",
+          "remind once 2030-01-02T24:00 UTC0 x", "remind once 2030-01-02 09:00 UTC0 x",
+          "remind hourly 2030-01-02T09:00 UTC0 x", "remind once 1969-12-31T23:59 UTC0 x",
+          "remind once 2030-01-02T09:00 Not/AZone x", "check 0", "check 5 extra", "check -5",
+          "observe now", "tidy 1", "提醒我喝水"}) {
+        Schedule rejected;
+        EXPECT_EQ(parse_schedule(line, rejected), AYNI_INVALID_ARGUMENT) << line;
+    }
+    Schedule empty_reminder;
+    ASSERT_EQ(parse_schedule("remind once 2030-01-02T09:00 UTC0", empty_reminder), AYNI_OK);
+    Encoded unused;
+    ayni_goal_create_v1 unused_goal{};
+    EXPECT_EQ(prepare_goal(empty_reminder, 1, unused, unused_goal), AYNI_INVALID_ARGUMENT);
+    Schedule fast;
+    ASSERT_EQ(parse_schedule("check 5", fast), AYNI_OK);
+    EXPECT_EQ(prepare_goal(fast, 1, unused, unused_goal), AYNI_INVALID_ARGUMENT);
+    // ADR-0072: only a whole stop phrase is a stop; anything longer is an ordinary turn.
+    for (const auto *phrase : {"停", " 停！", "停止。", "停下", "STOP", "Stop!", "stop."}) {
+        EXPECT_TRUE(stop_request(phrase)) << phrase;
+    }
+    for (const auto *phrase : {"", "！", "停一下", "不要停", "stop it", "停 停", "暂停"}) {
+        EXPECT_FALSE(stop_request(phrase)) << phrase;
+    }
     QuietHours quiet{true, 22 * 60, 7 * 60, "UTC0"};
     bool allowed = true;
     ASSERT_EQ(quiet.allows({sizeof(ayni_utc_sample_v1), AYNI_UTC_UNTRUSTED, 12 * 3600}, allowed),
@@ -418,11 +499,5 @@ TEST(AssistantPolicy, routing_encoding_quiet_time_and_conflict_projection_are_ex
     ASSERT_EQ(quiet.allows({sizeof(ayni_utc_sample_v1), AYNI_UTC_TRUSTED, 7 * 3600}, allowed),
               AYNI_OK);
     EXPECT_TRUE(allowed);
-    const auto merged = merge_suggestions(
-        {{"name", "A", 1, false}, {"name", "A", 2, false}, {"name", "B", 2, false}});
-    ASSERT_EQ(merged.size(), 2U);
-    EXPECT_EQ(merged[0].agents, 3U);
-    EXPECT_TRUE(merged[0].conflict);
-    EXPECT_TRUE(merged[1].conflict);
 }
 } // namespace

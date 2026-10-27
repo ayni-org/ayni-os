@@ -17,7 +17,7 @@ Notice published_notice(const SavedConversation &file) {
 ayni_status_t Assistant::Impl::context_info(ayni_context_info_v1 &context) const {
     context = {};
     context.struct_size = sizeof(context);
-    return ayni_get_context(node.kernel(), session, instance(demo_agent_b), &context);
+    return ayni_get_context(node.kernel(), session, assistant(), &context);
 }
 Reply Assistant::Impl::context_command(ayni_intent_kind_t kind, const ayni_context_info_v1 &context,
                                        uint64_t task, ayni_context_action_t action, uint64_t turn) {
@@ -43,13 +43,13 @@ ayni_status_t Assistant::Impl::initialize_context(bool missing) {
             ayni_goal_info_v1 goal{};
             goal.struct_size = sizeof(goal);
             status = ayni_get_goal(node.kernel(), id, &goal);
-            if (status != AYNI_OK || goal.owner_instance_id == instance(demo_agent_b)) {
+            if (status != AYNI_OK || goal.owner_instance_id == assistant()) {
                 return status == AYNI_OK ? AYNI_NOT_READY : status;
             }
         }
         ayni_context_command_v1 body{};
         body.struct_size = sizeof(body);
-        body.owner_instance_id = instance(demo_agent_b);
+        body.owner_instance_id = assistant();
         const auto accepted = submit(AYNI_INTENT_CONTEXT_OPEN, &body);
         if (accepted.status != AYNI_OK) {
             return accepted.status;

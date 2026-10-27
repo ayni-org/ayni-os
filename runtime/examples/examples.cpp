@@ -150,7 +150,7 @@ struct Fixture::Impl {
         if (status != AYNI_OK) {
             return status;
         }
-        status = profile.assemble(kernel.get(), {}, {{this, now, utc}, {this, present}, {}});
+        status = profile.assemble(kernel.get(), {}, {{this, now, utc}, {this, present}, {}, {}});
         if (status == AYNI_OK && model == Model::alternate_loopback) {
             status = register_alternate();
         }
@@ -247,8 +247,8 @@ uint64_t Fixture::instance() const {
         return 0;
     }
     auto info = initialized<ayni_agent_info_v1>();
-    return ayni_get_agent(impl_->kernel.get(), demo_agent_b, &info) == AYNI_OK ? info.instance_id
-                                                                               : 0;
+    return ayni_get_agent(impl_->kernel.get(), demo_assistant, &info) == AYNI_OK ? info.instance_id
+                                                                                 : 0;
 }
 uint64_t Fixture::now_us() const {
     return impl_ ? impl_->host.now_us() : 0;

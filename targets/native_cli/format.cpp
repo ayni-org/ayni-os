@@ -50,13 +50,16 @@ const char *goal_state(ayni_goal_lifecycle_t state) {
 std::string format(const runtime::Notice &notice) {
     switch (notice.kind) {
     case runtime::NoticeKind::answer:
-        return "B：" + notice.body;
-    case runtime::NoticeKind::rule_completed:
-        return "A：规则检查完成（Mock，无硬件操作）。";
+        return "助理：" + notice.body;
     case runtime::NoticeKind::turn_aborted:
-        return "B：本轮未完成，保留原对话；请用 /tasks 查看原因。";
+        return "助理：本轮未完成，保留原对话；请用 /tasks 查看原因。";
     case runtime::NoticeKind::context_erased:
-        return "B：对话删除已保存；/wait 等待 Kernel 历史正文清理完成。";
+        return "助理：对话删除已保存；/wait 等待 Kernel 历史正文清理完成。";
+    case runtime::NoticeKind::goal_proposed: {
+        const auto id = std::to_string(notice.id);
+        return "助理登记了新目标 " + id + "，等待你批准：" + notice.body + "\n/approve " + id +
+               " 批准，/cancel " + id + " 取消。";
+    }
     default:
         return {};
     }
@@ -80,8 +83,12 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
     if (reply.message == runtime::Message::accepted) {
         out << " 已受理；/wait 等待提交，/goals 查看是否待审批。";
     }
-    if (reply.message == runtime::Message::rule_usage) {
-        out << " A 使用预设规则：@a check；自由文本对话请用 @b。";
+    if (reply.message == runtime::Message::stopped) {
+        out << " 已停止：当前回答已取消，后台工作已暂停，提醒保留；/resume-assistant "
+               "恢复后台工作。";
+    }
+    if (operation == runtime::Operation::schedule && reply.status == AYNI_INVALID_ARGUMENT) {
+        out << " 计划格式无效，请用 /help。";
     }
     if (action == Action::wait) {
         out << (reply.status == AYNI_OK ? " 当前工作已收敛；待审批/暂停对象保留。"
@@ -134,7 +141,7 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
         out << " 隐私清理=" << phase << " 清理状态=" << reply.privacy.progress_status;
     }
     if (reply.conversation.generation) {
-        out << " B 对话 generation=" << reply.conversation.generation
+        out << " 对话 generation=" << reply.conversation.generation
             << " revision=" << reply.conversation.revision;
         if (!reply.conversation.summary.empty()) {
             out << "\n未确认摘要：" << reply.conversation.summary;
@@ -143,7 +150,7 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
             out << "\n未完成输入：" << reply.conversation.draft;
         }
         for (const auto &turn : reply.conversation.turns) {
-            out << "\n轮次 " << turn.number << "\n你：" << turn.user << "\nB：" << turn.answer;
+            out << "\n轮次 " << turn.number << "\n你：" << turn.user << "\n助理：" << turn.answer;
         }
     }
     for (const auto &memory : reply.memories) {

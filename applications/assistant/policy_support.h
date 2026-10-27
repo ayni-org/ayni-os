@@ -47,6 +47,13 @@ inline ayni_status_t request(ayni_policy_output_v1 &o, const char *binding, ayni
         scope,     body};
     return o.request_call(o.call_context, &r);
 }
+// The whole POSIX TZ rule must parse. Converting one day after the epoch validates it without
+// rejecting a legitimate west offset, whose local time at epoch 0 would be negative.
+inline ayni_status_t check_timezone(ayni_string_v1 timezone) {
+    constexpr int64_t validation_utc_s = 86400;
+    int64_t local = 0;
+    return ayni_calendar_local_time(timezone, validation_utc_s, &local);
+}
 inline ayni_scope_v1 empty_scope() {
     return {sizeof(ayni_scope_v1), 0, nullptr};
 }
@@ -81,6 +88,8 @@ inline bool confirmed_cancel(const ayni_task_call_result_v1 &call) {
            (call.effect == AYNI_CALL_EFFECT_NONE || call.effect == AYNI_CALL_EFFECT_PARTIAL ||
             call.effect == AYNI_CALL_EFFECT_COMPLETE);
 }
+// Every retained ID of one kind, never a partial list (C-LIFE-030). Owner thread.
+ayni_status_t objects(const ayni_kernel_t *, ayni_object_kind_t, std::vector<uint64_t> &);
 ayni_status_t organize(const Parameters &, const PolicyConfig &, const ayni_task_snapshot_v1 &,
                        ayni_policy_output_v1 &);
 ayni_status_t observe(const PolicyConfig &, const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &);

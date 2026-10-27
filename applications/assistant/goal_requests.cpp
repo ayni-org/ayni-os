@@ -36,4 +36,10 @@ ayni_status_t prepare_goal(const Parameters &p, uint64_t owner, uint64_t period,
     out = goal;
     return AYNI_OK;
 }
+ayni_status_t prepare_goal(const Schedule &s, uint64_t owner, Encoded &encoded,
+                           ayni_goal_create_v1 &out) {
+    return prepare_goal(s.parameters, owner, s.period_us,
+                        s.parameters.kind == GoalKind::reminder ? &s.calendar : nullptr, encoded,
+                        out);
+}
 } // namespace ayni::applications::assistant

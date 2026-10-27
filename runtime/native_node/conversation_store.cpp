@@ -9,7 +9,9 @@ namespace ayni::runtime {
 namespace {
 constexpr char filename[] = "conversation.bin";
 constexpr char temporary[] = ".conversation.pending";
-constexpr uint64_t format_version = 2;
+// 3: single-assistant directories (ADR-0072). Version 2 belonged to the dual-Agent layout, whose
+// Kernel state names a second Agent; it is refused before boot, never migrated.
+constexpr uint64_t format_version = 3;
 constexpr uint32_t version_offset = 4, length_offset = 8, pending_offset = 16, context_offset = 24;
 constexpr uint32_t u32_bytes = 4, u64_bytes = 8, byte_bits = 8;
 void put(uint8_t *p, uint64_t v, uint32_t n) {

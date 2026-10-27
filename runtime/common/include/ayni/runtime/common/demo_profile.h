@@ -3,6 +3,7 @@
 #ifndef AYNI_RUNTIME_DEMO_PROFILE_H
 #define AYNI_RUNTIME_DEMO_PROFILE_H
 #include <ayni/applications/assistant.h>
+#include <ayni/applications/assistant/schedule_tool.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/providers/presentation.h>
@@ -11,8 +12,7 @@
 #include <string>
 namespace ayni::runtime {
 inline constexpr uint64_t demo_owner = 1;
-inline constexpr uint64_t demo_agent_a = 1;
-inline constexpr uint64_t demo_agent_b = 2;
+inline constexpr uint64_t demo_assistant = 1; // The one assistant Agent (ADR-0072).
 inline constexpr uint32_t demo_binding_revision = 1;
 enum class Model { mock, remote };
 // Runtime configuration contains the environment variable NAME, never the key.
@@ -24,10 +24,12 @@ struct ModelConfig {
 };
 // Runtime owns concrete wiring. An explicit sink is required for notification evidence;
 // tests/Sim may supply a deterministic sink, while the CLI supplies checked write+flush.
+// Without a goal port the model schedule tool fails its calls with effect NONE.
 struct AssistantPorts {
     Clock clock;
     providers::presentation::Output output;
     applications::assistant::QuietHours quiet;
+    applications::assistant::GoalPort goals;
 };
 ayni_config_v1 demo_config();
 class DemoProfile {
@@ -39,12 +41,14 @@ class DemoProfile {
     // Configures the providers and immutable policies, then registers all objects.
     // On failure retain the profile until the partially configured Kernel is destroyed.
     ayni_status_t assemble(ayni_kernel_t *kernel, const ModelConfig &config, AssistantPorts ports);
-    ayni_status_t advance(); // Deliver deterministic Mock completions / poll transport health.
+    // Deliver deterministic Mock completions, settle schedule tool requests through the goal
+    // port and poll transport health. Owner thread, outside step.
+    ayni_status_t advance();
     ayni_status_t quiesce(); // STOPPED Kernel: join producers, preserve registered contexts.
     ayni_status_t close();   // Only after Kernel destruction; joins remote workers.
-    // Trusted aliases: model, summary, present (legacy Mock), notify, health, observe;
-    // unknown returns empty. Views are
-    // borrowed until close. Scope names the exact configured remote destination.
+    // Grantable aliases: model, summary, schedule, notify, health, observe; unknown (including
+    // the approval-only consent capability) returns empty. Views are borrowed until close.
+    // Scope names the exact configured remote destination.
     ayni_string_v1 capability(const std::string &alias) const;
     // Actual configured model destination; empty for local Mock.
     ayni_string_v1 destination() const;

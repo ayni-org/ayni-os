@@ -10,12 +10,14 @@
 #include <string>
 #include <vector>
 namespace ayni::runtime {
+// say starts a model turn unless its text is a stop phrase; stop and stop phrases take the
+// deterministic stop path instead (ADR-0072). schedule registers an owner Goal from the
+// shared grammar; memory_organize names its explicit memory sources.
 enum class Operation {
     say,
-    remind,
-    device_check,
+    stop,
+    schedule,
     memory_organize,
-    scene_observe,
     pause_assistant,
     resume_assistant,
     notifications,
@@ -46,22 +48,25 @@ enum class Operation {
     profile_list,
     profile_save
 };
+// One owner request to the single assistant. text is the say input, the schedule grammar
+// line (applications::assistant::parse_schedule), a grant alias or a memory body; sources
+// are the explicit memories an organize Goal reads.
 struct Command {
     Operation operation = Operation::status;
-    uint64_t agent = demo_agent_b;
     uint64_t id = 0;
     uint32_t limit = 0;
     ayni_profile_field_t profile_field = AYNI_PROFILE_NONE;
     std::string text;
-    uint64_t period_us = applications::assistant::check_period_us;
-    ayni_calendar_rule_v1 calendar{};
     std::vector<uint64_t> sources;
     ayni_memory_purpose_t purpose = AYNI_MEMORY_CONTEXT;
 };
-enum class NoticeKind { none, answer, rule_completed, turn_aborted, context_erased };
+// goal_proposed: the model registered Goal id, durable and waiting for owner approval; body is
+// its canonical schedule text, built by the runtime from the request, never by the model.
+enum class NoticeKind { none, answer, turn_aborted, context_erased, goal_proposed };
 struct Notice {
     NoticeKind kind = NoticeKind::none;
     std::string body;
+    uint64_t id = 0; // Goal ID for goal_proposed, zero otherwise.
 };
 struct ConversationTurn {
     uint64_t number;
@@ -72,7 +77,8 @@ struct ConversationView {
     std::string summary, draft;
     std::vector<ConversationTurn> turns;
 };
-enum class Message { none, accepted, rule_usage };
+// stopped: the deterministic stop path ran; the turn is cancelled and autonomy paused.
+enum class Message { none, accepted, stopped };
 struct MemoryEntry {
     ayni_memory_info_v1 info{};
     std::string body;

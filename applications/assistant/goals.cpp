@@ -24,11 +24,15 @@ ayni_status_t reminder_body(const Parameters &p, const ayni_task_snapshot_v1 &sn
     return AYNI_OK;
 }
 } // namespace
+// A model-origin Goal is admitted only when its owner consent requirement can be exported.
 ayni_status_t Goals::validate(void *context, ayni_bytes_v1 bytes) {
     try {
         Parameters p;
         const auto status = decode(bytes, p);
-        return status == AYNI_OK && p.kind != static_cast<TypeContext *>(context)->kind
+        const auto &type = *static_cast<const TypeContext *>(context);
+        return status == AYNI_OK &&
+                       (p.kind != type.kind ||
+                        (p.origin == Origin::model && !type.owner->config_.consent_capability.size))
                    ? AYNI_INVALID_ARGUMENT
                    : status;
     } catch (const std::bad_alloc &) {
@@ -48,6 +52,14 @@ ayni_status_t Goals::requirements(void *context, ayni_bytes_v1 bytes,
             const ayni_goal_requirement_v1 r{sizeof(r), 1, cap, scope};
             return sink->emit(sink->ctx, &r);
         };
+        // ADR-0072: owner consent is one more requirement no standing Grant covers, so a
+        // model-proposed Goal stays PROPOSED until approval binds a Grant to it.
+        if (p.origin == Origin::model) {
+            const auto consent = emit(c.consent_capability, empty_scope());
+            if (consent != AYNI_OK) {
+                return consent;
+            }
+        }
         if (p.kind == GoalKind::reminder) {
             return emit(c.present_capability, empty_scope());
         }
