@@ -43,6 +43,7 @@
 | `C-PRIM` | [domain/primitives.md](domain/primitives.md) | 各原语属主 |
 | `C-LIFE` | [domain/lifecycles.md](domain/lifecycles.md) | `kernel`、`work` |
 | `C-CALL`、`C-BIND`、`C-SUB` | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | `work`、`catalog` |
+| `C-OBS` | [domain/observations_and_media.md](domain/observations_and_media.md) | `knowledge/observation`、`kernel/runtime/ingress` |
 | `C-COMMIT`、`C-OUT` | [domain/commit_and_output.md](domain/commit_and_output.md) | `durability`、`kernel` |
 | `C-AUTH`、`C-TRUST` | [domain/authority_and_trust.md](domain/authority_and_trust.md) | `authority` |
 | `C-RES`、`C-BUDGET` | [domain/resources_and_budget.md](domain/resources_and_budget.md) | `resources` |

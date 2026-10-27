@@ -68,10 +68,22 @@ bool EventQueue::pop(EventHeader &out_header, uint8_t *body) {
     if (out_header.body_size > 0U) {
         std::memcpy(body, entry(index) + sizeof(EventHeader), out_header.body_size);
     }
+    static_cast<void>(take_head());
+    return true;
+}
+bool EventQueue::discard() {
+    if (count_ == 0) {
+        return false;
+    }
+    static_cast<void>(take_head());
+    return true;
+}
+uint16_t EventQueue::take_head() {
+    const auto index = at_position(0);
     head_ = (head_ + 1U) % capacity_;
     --count_;
     free_[free_count_++] = index;
-    return true;
+    return index;
 }
 
 void EventQueue::write(uint16_t index, const EventHeader &header, uint32_t replaced,

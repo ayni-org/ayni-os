@@ -7,6 +7,8 @@ add_executable(ayni_unit_tests
     kernel_context_test.cpp
     memory_table_test.cpp
     observation_test.cpp
+    observation_ingress_test.cpp
+    mock_media_test.cpp
     scene_test.cpp
     managed_execution_test.cpp
     control_gate_test.cpp

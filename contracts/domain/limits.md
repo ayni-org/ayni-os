@@ -98,3 +98,7 @@ D 的 Grant metadata 新增 revoker/cursor/独立 cleanup_stamp，snapshot Grant
 `memory_capacity` 默认 64、0 禁用、上限 256；`memory_body_max_bytes` 默认 512、范围 1～4096；`memory_dependency_capacity` 默认 8、范围 1～8。每个 Memory/Goal/Task/Context/命令来源集合都受同一依赖上限约束，不能把整张图压成一个 anchor 规避上限。Context 另占每 Agent 一个有界槽；清理期间保守保留 Goal/Task，可能暂时阻止回收。表满拒绝新记录，见 C-MEM-002/005。
 
 Native 对话正常保留最近 3 轮；第 4 槽只承接发布失效时已接受的独立用户输入，满 4 槽须先显式删除一轮才能提交新输入。未发布草稿最多 384 UTF-8 字节；续写合并为同一未编号输入，超限拒绝且保留原值。摘要最多 512 字节、portable state 4096 字节，两个限制分别检查。
+
+## P4 观测与 Mock 媒体容量（ABI 0.42）
+
+source 容量为 0 时样本 FIFO 默认关闭，显式启用 FIFO 而无 source 返回 INVALID_ARGUMENT；有 source 时 observation_ingress_capacity 的 0 选择默认 16，显式范围 1～256。gap 独占每源一个槽，上限随 source 的 64，不消耗样本 FIFO。Core 只复制 metadata，不分配帧字节。Mock MediaStore 默认 4 对象 × 4096 B，可配置 1～64 对象、每对象 1～65536 B；分配/对象/字节耗尽显式 CAPACITY_EXCEEDED，不覆盖现有对象。见 C-OBS-002/006。

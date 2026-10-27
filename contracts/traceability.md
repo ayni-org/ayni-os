@@ -13,6 +13,7 @@
 | [domain/lifecycles.md](domain/lifecycles.md) | 18 | 12 |
 | [domain/limits.md](domain/limits.md) | 12 | 7 |
 | [domain/memory.md](domain/memory.md) | 12 | 12 |
+| [domain/observations_and_media.md](domain/observations_and_media.md) | 6 | 6 |
 | [domain/permits_and_stop.md](domain/permits_and_stop.md) | 30 | 0 |
 | [domain/primitives.md](domain/primitives.md) | 8 | 0 |
 | [domain/product_semantics.md](domain/product_semantics.md) | 28 | 3 |
@@ -27,7 +28,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 369 | 131 |
+| 合计 | 375 | 137 |
 
 ## 计划章节 → 契约文档
 
@@ -35,7 +36,7 @@
 |---|---|
 | §0 | domain/product_semantics.md |
 | §2.1 | host/host_ports.md |
-| §2.2 | domain/authority_and_trust.md、domain/ids_and_time.md、domain/permits_and_stop.md、domain/primitives.md、domain/resources_and_budget.md |
+| §2.2 | domain/authority_and_trust.md、domain/ids_and_time.md、domain/observations_and_media.md、domain/permits_and_stop.md、domain/primitives.md、domain/resources_and_budget.md |
 | §2.3 | domain/primitives.md、domain/resources_and_budget.md、domain/runtime_limits.md |
 | §2.4 | domain/commit_and_output.md、domain/lifecycles.md、domain/permits_and_stop.md、domain/product_semantics.md |
 | §2.5 | domain/authority_and_trust.md、host/policy_interface.md |
@@ -47,7 +48,7 @@
 | §3.3 | host/policy_interface.md、host/provider.md |
 | §3.4 | domain/authority_and_trust.md、domain/ids_and_time.md、domain/limits.md、domain/status_codes.md、wire/envelope.md、wire/json_subset.md |
 | §3.5 | domain/authority_and_trust.md、wire/envelope.md |
-| §3.6 | domain/calls_and_bindings.md、domain/ids_and_time.md、domain/lifecycles.md、domain/primitives.md、host/provider.md、wire/envelope.md、wire/json_subset.md |
+| §3.6 | domain/calls_and_bindings.md、domain/ids_and_time.md、domain/lifecycles.md、domain/observations_and_media.md、domain/primitives.md、host/provider.md、wire/envelope.md、wire/json_subset.md |
 | §4.1 | domain/permits_and_stop.md、host/host_ports.md |
 | §4.2 | domain/limits.md、host/host_ports.md、storage/records.md |
 | §4.3 | domain/calls_and_bindings.md、domain/commit_and_output.md、domain/lifecycles.md、host/host_ports.md、storage/records.md |
@@ -57,7 +58,7 @@
 | §5.3 | domain/limits.md、domain/resources_and_budget.md、host/policy_interface.md |
 | §5.4 | domain/authority_and_trust.md、domain/product_semantics.md |
 | §7.3 | domain/permits_and_stop.md |
-| §9.1 | host/native_runtime.md |
+| §9.1 | domain/observations_and_media.md、host/native_runtime.md |
 | §10.6 | domain/limits.md、wire/json_subset.md |
 | §10.7 | domain/product_semantics.md |
 | §14.1 | domain/product_semantics.md、domain/runtime_limits.md |
@@ -92,6 +93,7 @@
 | ADR-0030 | domain/ids_and_time.md、domain/status_codes.md、storage/records.md、wire/envelope.md |
 | ADR-0031 | domain/commit_and_output.md、domain/limits.md、storage/records.md、wire/envelope.md |
 | ADR-0042 | domain/runtime_limits.md |
+| ADR-0050 | domain/observations_and_media.md |
 | ADR-0056 | host/policy_interface.md |
 | ADR-0057 | host/native_runtime.md |
 | ADR-0060 | domain/memory.md、host/native_runtime.md |
@@ -242,6 +244,12 @@
 | C-MEM-010 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`、`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`Conversation.superseded_publication_keeps_original_turn_identity_and_reserves_capacity` |
 | C-MEM-011 | M1 已实现：`KernelContext.forget_immediately_blocks_old_checkpoint_and_waits_for_exact_file_ack`、`KernelContextApproval.retired_approval_canonical_is_erased_with_its_context`、`KernelMemory.deletion_scrubs_retained_storage_and_preserves_unrelated_retry_after_reopen`；新故障、恢复、耐久专项未验证，不保证介质取证擦除 |
 | C-MEM-012 | M1 已实现：`NativeAssistant.legacy_conversation_refusal_preserves_the_entire_kernel_directory`、`KernelLegacyContext.changed_type_version_rejects_untracked_historical_body_exports`、`ContextCapacity.valid_history_exceeding_configured_dependencies_is_classified_as_capacity`、`MemoryFacts.lowering_dependency_capacity_does_not_classify_valid_history_as_corrupt`；迁移工具未实现 |
+| C-OBS-001 | M1 已实现：`ObservationIngress.worker_stack_views_are_copied_and_wake_outside_lock`、`ObservationIngress.close_discards_accepted_samples_and_orderly_reopen_rejects_old_boot`；join 是 runtime 调用前提，未验证未协作线程退出 |
+| C-OBS-002 | M1 已实现：`ObservationIngress.full_fifo_refuses_samples_but_preserves_gap_and_local_input`、`ObservationIngress.owner_discards_expired_or_future_samples_and_respects_item_budget`；队列上界见 C-LIMIT-008 |
+| C-OBS-003 | M1 已实现：`ObservationIngress.full_fifo_refuses_samples_but_preserves_gap_and_local_input`、`ObservationIngress.later_gaps_count_only_new_losses_and_old_markers_are_idempotent`、`ObservationIngress.new_generation_gap_refuses_old_tail_and_explicit_zero_boundary_allows_first_sample`；本轮限正常顺序，竞态专项未验证 |
+| C-OBS-004 | M1 已实现：`ObservationIngress.owner_discards_expired_or_future_samples_and_respects_item_budget`、`ObservationApi.expiration_is_visible_without_erasing_the_last_fact`、`ObservationIngress.media_metadata_is_copied_and_expires_with_its_shorter_lifetime` |
+| C-OBS-005 | M1 已实现：`MockMedia.startup_and_schema_failures_are_explicit`、`ObservationIngress.media_owner_and_generation_cannot_be_fabricated_by_late_samples`；metadata 不证明真实字节存在、读/外发授权或内容真实性 |
+| C-OBS-006 | M1 已实现：`MockMedia.copied_bytes_require_exact_reference_owner_and_purpose`、`MockMedia.object_and_byte_limits_reject_without_overwriting_and_expiry_reclaims`、`MockMedia.generation_close_and_new_boot_reclaim_without_reusing_identity`；调用者负责真实授权及触发生命周期回收，自动订阅装配/真实媒体仍待实现 |
 | C-PROD-032 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`；C-MEM-005、C-LIMIT-012 |
 | C-PROD-034 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`；C-MEM-010 |
 | C-PROD-035 | M1 已实现所有者会话边界：`KernelMemory.management_authentication_applies_to_queries_and_exact_retries`；远程管理端仍随 MA-027；E1 步骤 7、C-AUTH-009 |

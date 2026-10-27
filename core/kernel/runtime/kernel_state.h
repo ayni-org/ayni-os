@@ -12,6 +12,7 @@
 #include "kernel/runtime/boot/boot_sequence.h"
 #include "kernel/runtime/commit/commit_log.h"
 #include "kernel/runtime/ingress/event_ingress.h"
+#include "kernel/runtime/ingress/observation_ingress.h"
 #include "kernel/runtime/kernel_layout.h"
 #include "kernel/runtime/step_context.h"
 #include "kernel/runtime/storage/storage_budget.h"
@@ -74,6 +75,10 @@ struct ayni_kernel {
                                capacities.executor_capacity, host),
           observations(catalogs.observation_sources, storage[ayni::kernel::Store::observations],
                        capacities.observation_source_capacity),
+          observation_ingress(storage[ayni::kernel::Store::observation_ingress],
+                              capacities.observation_ingress_capacity,
+                              capacities.observation_source_capacity, catalogs.observation_sources,
+                              host),
           calls(storage[ayni::kernel::Store::call_runtime],
                 ayni::kernel::call_runtime_limits(capacities), work, catalogs, resources, permits,
                 observations, provider_completions, executor_completions, attempts, host),
@@ -121,6 +126,10 @@ struct ayni_kernel {
     const ayni::resources::PermitTable &permit_view() const { return permits; }
     // Observation reads retain their freshness checks; publication is a separate operation.
     const ayni::knowledge::ObservationTable &observation_view() const { return observations; }
+    // Any-thread diagnostics read only the transport's ingress-locked state.
+    const ayni::kernel::ObservationIngress &observation_ingress_view() const {
+        return observation_ingress;
+    }
     // Lifecycle and writer diagnostics have one owner; these never expose mutable state.
     ayni_lifecycle_t state() const { return lifecycle; }
     // Recovered boot identity; zero before recovery establishes it.
@@ -184,7 +193,13 @@ struct ayni_kernel {
     // Change the resource-owned health fact and wake only on actual change.
     ayni_status_t set_resource_health(uint32_t index, ayni_resource_health_t health);
     // Publish with a fresh Host time and wake on acceptance; no persistence is implied.
-    ayni_status_t publish_observation(const ayni_observation_v1 &observation);
+    ayni_status_t publish_observation(const ayni::knowledge::ObservationInput &observation);
+    // Any-thread producer operations; never read owner lifecycle or work facts.
+    ayni_status_t post_observation(uint64_t boot_epoch,
+                                   const ayni::knowledge::ObservationInput &input);
+    ayni_status_t report_observation_gap(uint64_t boot_epoch,
+                                         const ayni::catalog::CatalogId &source, uint32_t version,
+                                         ayni::knowledge::ObservationBoundary boundary);
     // Any-thread ingress, using only immutable Host ports and the ingress lock.
     ayni_status_t post_local_input(const ayni::catalog::CatalogId &source);
 
@@ -230,6 +245,8 @@ struct ayni_kernel {
     ayni::kernel::ExecutorMailbox executor_completions;
     // Live facts borrow static source descriptions from the catalogs.
     ayni::knowledge::ObservationTable observations;
+    ayni::kernel::ObservationIngress
+        observation_ingress; // Owns Host sample queue/gap lanes, no knowledge facts.
     // Bounded cross-owner call coordination; workers only access the two mailboxes.
     ayni::kernel::CallRuntime calls;
 
@@ -263,6 +280,8 @@ struct ayni_kernel {
     // One mapping of Kernel/writer lifecycle to permitted call operations.
     ayni::kernel::CallRuntime::Mode call_mode() const;
     // Drain only inputs queued before this phase, counting each against the budget.
+    void apply_observation_gaps(ayni::kernel::StepContext &progress);
+    void take_queued_observations(ayni::kernel::StepContext &progress);
     void take_queued_inputs(StepContext &progress);
     // Report pending work and deadlines even after the budget is exhausted.
     void report_step(StepContext &progress, ayni_step_report_v1 &report);

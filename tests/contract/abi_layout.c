@@ -56,7 +56,7 @@ AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
 AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
 AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 180);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 184);
 
 AYNI_LAYOUT(config_device_capacity, offsetof(ayni_config_v1, device_capacity) == 144);
 AYNI_LAYOUT(config_component_capacity, offsetof(ayni_config_v1, component_capacity) == 148);
@@ -822,7 +822,12 @@ AYNI_LAYOUT(observation_reference_boot, offsetof(ayni_observation_ref_v1, boot_e
 AYNI_LAYOUT(observation_size, sizeof(ayni_observation_v1) == 56 + 2 * AYNI_PTR);
 AYNI_LAYOUT(observation_generation, offsetof(ayni_observation_v1, generation) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(observation_condition_size, sizeof(ayni_observation_condition_v1) == 32 + 2 * AYNI_PTR);
-AYNI_LAYOUT(observation_info_size, sizeof(ayni_observation_info_v1) == 152);
+AYNI_LAYOUT(media_reference_size, sizeof(ayni_media_ref_v1) == 136);
+AYNI_LAYOUT(observation_post_size, sizeof(ayni_observation_post_v1) == 72 + 3 * AYNI_PTR);
+AYNI_LAYOUT(observation_gap_size, sizeof(ayni_observation_gap_v1) == 32 + 2 * AYNI_PTR);
+AYNI_LAYOUT(observation_ingress_info_size, sizeof(ayni_observation_ingress_info_v1) == 48);
+AYNI_LAYOUT(observation_info_size,
+            sizeof(ayni_observation_info_v1) == 152 + sizeof(ayni_media_ref_v1) + sizeof(uint64_t));
 AYNI_LAYOUT(observation_info_capture, offsetof(ayni_observation_info_v1, captured_at_us) == 128);
 AYNI_LAYOUT(scene_rule_size, sizeof(ayni_scene_rule_v1) == 16 + 3 * AYNI_PTR);
 AYNI_LAYOUT(scene_desc_size, sizeof(ayni_scene_desc_v1) == 16 + 4 * AYNI_PTR);

@@ -4,6 +4,64 @@
 #include "kernel/runtime/kernel_state.h"
 #include <ayni/observations.h>
 
+namespace {
+// Decode the borrowed ABI once; catalog registration receives only its typed value.
+ayni_status_t decode_source(const ayni_observation_source_v1 &input,
+                            ayni::catalog::ObservationSource &out) {
+    const auto shape =
+        ayni::catalog::check_struct_size(input.struct_size, sizeof(input), sizeof(input));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    ayni::catalog::ObservationSource value{};
+    if (!value.id.assign(input.source_id) || !value.unit.assign(input.unit)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    value.version = input.version;
+    value.kind = input.kind;
+    value.origin = input.origin;
+    value.validity_max_us = input.validity_max_us;
+    const auto status = ayni::catalog::validate_source(value);
+    if (status == AYNI_OK) {
+        out = value;
+    }
+    return status;
+}
+// Copy transient C views once; work transports only the validated value.
+ayni_status_t decode_sample(const ayni_observation_v1 &raw, const ayni_media_ref_v1 *media,
+                            ayni::knowledge::ObservationInput &out) {
+    const auto shape = ayni::catalog::check_struct_size(raw.struct_size, sizeof(raw), sizeof(raw));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    ayni::knowledge::ObservationInput value{};
+    if (raw.reserved != 0 || !value.source.assign(raw.source_id)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    value.source_version = raw.source_version;
+    value.generation = raw.generation;
+    value.sequence = raw.sequence;
+    value.captured_at_us = raw.captured_at_us;
+    value.valid_for_us = raw.valid_for_us;
+    value.quality = raw.quality;
+    value.value = raw.value;
+    if (media != nullptr) {
+        // Validate before copying: a rejected short ABI object need not contain
+        // the full current layout. Knowledge checks only sample/media pairing.
+        const auto status = ayni_validate_media_reference(media);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        value.media = *media;
+    }
+    const auto status = ayni::knowledge::validate_observation_input(value);
+    if (status == AYNI_OK) {
+        out = value;
+    }
+    return status;
+}
+} // namespace
+
 extern "C" {
 ayni_status_t ayni_register_observation_source(ayni_kernel_t *kernel,
                                                const ayni_observation_source_v1 *source) {
@@ -11,7 +69,7 @@ ayni_status_t ayni_register_observation_source(ayni_kernel_t *kernel,
         return AYNI_INVALID_ARGUMENT;
     }
     ayni::catalog::ObservationSource decoded{};
-    const auto status = ayni::catalog::decode_source(*source, decoded);
+    const auto status = decode_source(*source, decoded);
     if (status != AYNI_OK) {
         return status;
     }
@@ -30,7 +88,59 @@ ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->publish_observation(*observation);
+    ayni::knowledge::ObservationInput decoded{};
+    const auto status = decode_sample(*observation, nullptr, decoded);
+    return status == AYNI_OK ? kernel->publish_observation(decoded) : status;
+}
+// This worker boundary deliberately bypasses owner-thread gates; the locked
+// ingress boot gate decides acceptance without racing the owner lifecycle.
+ayni_status_t ayni_post_observation(ayni_kernel_t *kernel, const ayni_observation_post_v1 *post) {
+    if (kernel == nullptr || post == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        ayni::catalog::check_struct_size(post->struct_size, sizeof(*post), sizeof(*post));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    if (post->reserved != 0 || post->boot_epoch == 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    ayni::knowledge::ObservationInput decoded{};
+    const auto status = decode_sample(post->sample, post->media, decoded);
+    return status == AYNI_OK ? kernel->post_observation(post->boot_epoch, decoded) : status;
+}
+// Gaps share admission identity, but have source-reserved retention.
+ayni_status_t ayni_report_observation_gap(ayni_kernel_t *kernel,
+                                          const ayni_observation_gap_v1 *gap) {
+    if (kernel == nullptr || gap == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        ayni::catalog::check_struct_size(gap->struct_size, sizeof(*gap), sizeof(*gap));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    ayni::catalog::CatalogId source;
+    if (gap->boot_epoch == 0 || gap->generation == 0 || gap->source_version == 0 ||
+        !source.assign(gap->source_id)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return kernel->report_observation_gap(gap->boot_epoch, source, gap->source_version,
+                                          {gap->generation, gap->through_sequence});
+}
+ayni_status_t ayni_get_observation_ingress(const ayni_kernel_t *kernel,
+                                           ayni_observation_ingress_info_v1 *out) {
+    if (kernel == nullptr || out == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        ayni::catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    *out = kernel->observation_ingress_view().info();
+    return AYNI_OK;
 }
 ayni_status_t ayni_get_observation(const ayni_kernel_t *kernel, ayni_string_v1 source_id,
                                    ayni_observation_info_v1 *out_info) {

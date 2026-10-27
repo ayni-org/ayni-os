@@ -71,3 +71,8 @@ ABI 0.38（ADR-0056）在策略注册尾部增加有界 checkpoint reader 声明
 ABI 0.39（ADR-0057）增加可信管理查询 `ayni_list_objects`，复制当前保留对象的 ID；没有新增 ABI 结构、Kernel 字段或持久实体。布局、arena 与 schema 2 不变；0.x 的精确 minor 匹配仍要求调用方重编译。
 
 ABI 0.40（ADR-0060）新增 memory/context 管理和策略借用视图、GoalType `context_mode`、三项记忆配置；0.39 调用方须重新编译，结构大小严格匹配。storage schema 仍为 2，来源/擦除语义用 REQUIRED 类型和新版本表达，旧 reader 不支持时受限保留目录。Native `AYNF`/`AYNC`/`AYNT` 升为 2；不收养缺少来源证据的旧 chat，旧普通 Core 工作继续原规则。
+
+
+ABI 0.41（ADR-0061）增加可信 UTC 与日历规则/查询、GoalCreate 日历视图及 Task 计划时刻。Calendar REQUIRED 记录/游标/Task 版本见 storage/records.md，schema 2 不变。
+
+ABI 0.42（ADR-0062）增加任意线程 observation post/gap/info、media 引用及纯 validator；config 追加 observation_ingress_capacity，ObservationInfo 追加媒体和 gap 计数。旧 0.x Host/Provider/策略/SDK 须重编译，结构精确匹配。队列/样本/媒体不持久，没有新增记录或迁移，schema 2 不变。

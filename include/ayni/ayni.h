@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 41u
+#define AYNI_ABI_MINOR 42u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -189,6 +189,9 @@ typedef struct ayni_config_v1 {
     uint32_t memory_body_max_bytes;
     /* Since 0.40. Direct source dependencies per value, 1..8; 0 selects 8. */
     uint32_t memory_dependency_capacity;
+    /* Since 0.42. FIFO Host observation entries: 0 selects 16 when sources
+     * are enabled, otherwise disables; explicit 1..256 requires sources. */
+    uint32_t observation_ingress_capacity;
 } ayni_config_v1;
 
 /* Whole-Kernel retained memory bounds. Since 0.40. */

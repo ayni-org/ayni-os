@@ -134,7 +134,11 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     if (lifecycle == AYNI_LIFECYCLE_CONFIGURING || lifecycle == AYNI_LIFECYCLE_STOPPED) {
         return AYNI_INVALID_STATE;
     }
-    StepContext progress{now_us(), max_items, max_time_us, {host.ctx, host.monotonic_now_us}};
+    StepContext progress{now_us(),
+                         max_items,
+                         max_time_us,
+                         {host.ctx, host.monotonic_now_us},
+                         observation_ingress.queued()};
     while (progress.available() && completions.apply_posted(1) == 1U) {
         progress.applied();
     }
@@ -144,12 +148,14 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     refresh_storage();
     advance_recovery_and_maintenance(progress);
     apply_revocations(progress);
+    apply_observation_gaps(progress);
     apply_calls(progress);
     if (!work.calendars.empty()) {
         work.refresh_calendars(calendar_clock(progress.started_us));
     }
     apply_ready_work(progress);
     take_queued_inputs(progress);
+    take_queued_observations(progress);
     if (appends() && log.advance(progress.now_us())) {
         settle_log();
         if (!retire_durable_revocations()) {
@@ -294,6 +300,41 @@ void ayni_kernel::take_queued_inputs(StepContext &progress) {
     }
 }
 
+// Gap overlays are source-bounded refusal bookkeeping, like the existing
+// scheduling-frontier scans, rather than application work items. Visit each
+// source once so repeated producer gaps cannot starve ordinary due work.
+void ayni_kernel::apply_observation_gaps(StepContext &) {
+    if (lifecycle != AYNI_LIFECYCLE_RUNNING) {
+        return;
+    }
+    for (uint32_t source = 0; source < catalogs.observation_sources.size(); ++source) {
+        ayni::knowledge::ObservationBoundary boundary{};
+        if (observation_ingress.take_gap(source, boundary)) {
+            observations.invalidate(source, boundary);
+        }
+    }
+}
+// Accepted samples consume the same bounded item/time budget after ordinary
+// work and inputs. Expiry/future checks use owner application time, not arrival TTL.
+void ayni_kernel::take_queued_observations(StepContext &progress) {
+    auto waiting = progress.observations_ready;
+    ayni::kernel::QueuedObservation next{};
+    while (lifecycle == AYNI_LIFECYCLE_RUNNING && waiting != 0 && progress.available() &&
+           observation_ingress.take(next)) {
+        --waiting;
+        const bool owner_known =
+            !next.input.media ||
+            work.agents.find_instance(next.input.media->owner_instance_id) != nullptr;
+        const auto status = owner_known ? observations.publish_from_ingress(
+                                              next.input, next.source_index, progress.now_us())
+                                        : AYNI_NOT_FOUND;
+        if (status != AYNI_OK) {
+            observation_ingress.discarded();
+        }
+        progress.applied();
+    }
+}
+
 // Report all readiness even when this call spent its budget: a false idle
 // would lose the owner's next wakeup. Slot and storage backpressure still apply.
 void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report) {
@@ -335,6 +376,9 @@ void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report
     const bool events_due = takes_events() && takes_event_now() && ingress.queued() > 0U;
     report.more_ready = completions.posted_count() > 0U || boot_due || log_due || maintenance_due ||
                                 events_due || work_due || call_ready || revocation_ready() ||
+                                (lifecycle == AYNI_LIFECYCLE_RUNNING &&
+                                 (observation_ingress.queued() != 0 ||
+                                  observation_ingress.info().gaps_pending != 0)) ||
                                 (lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
                                  (work.authority_cleanup.ready() || privacy_ready()))
                             ? 1U
@@ -366,6 +410,7 @@ ayni_status_t ayni_kernel::begin_shutdown() {
     default:
         // A boot request in flight still completes; no new one is issued.
         // The batches RUNNING committed are still appended (appends()).
+        observation_ingress.close();
         lifecycle = AYNI_LIFECYCLE_DRAINING;
         return AYNI_OK;
     }
@@ -438,6 +483,7 @@ void ayni_kernel::journal(uint64_t first_seq) {
 }
 
 void ayni_kernel::enter_restricted(ayni_restriction_t reason) {
+    observation_ingress.close();
     lifecycle = AYNI_LIFECYCLE_RESTRICTED;
     restriction_ = reason;
 }
@@ -552,6 +598,7 @@ void ayni_kernel::enter_running() {
         return;
     }
     observations.begin_boot(boot.boot_epoch());
+    observation_ingress.begin_boot(boot.boot_epoch());
     if (work.start(boot.boot_epoch(), first)) {
         journal(first.commit_seq);
     }
@@ -567,6 +614,7 @@ void ayni_kernel::enter_fenced(ayni_restriction_t reason) {
         return;
     }
     durable_floor_ = durable_seq();
+    observation_ingress.close();
     lifecycle = AYNI_LIFECYCLE_FENCED;
     restriction_ = reason;
     maintenance.end();

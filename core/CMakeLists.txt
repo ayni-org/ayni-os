@@ -58,6 +58,7 @@ ayni_add_core_module(resources
 
 ayni_add_core_module(knowledge
     SOURCES knowledge/observation/observation_table.cpp
+            knowledge/observation/observation_input.cpp
             knowledge/memory/memory_types.cpp
             knowledge/memory/memory_table.cpp
             knowledge/memory/memory_records.cpp
@@ -148,6 +149,7 @@ ayni_add_core_module(kernel
         kernel/service/decision/decision.cpp
         kernel/service/execution/execution_control.cpp
         kernel/runtime/ingress/event_ingress.cpp
+        kernel/runtime/ingress/observation_ingress.cpp
         kernel/runtime/ingress/event_queue.cpp
         kernel/service/intent/authority_intent.cpp
         kernel/service/intent/goal_approval.cpp

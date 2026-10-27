@@ -65,6 +65,9 @@ class EventQueue {
     // body_max_bytes. Returns false when empty.
     bool pop(EventHeader &out_header, uint8_t *body);
 
+    // Drops one oldest entry without copying its body; owner closes admission first.
+    bool discard();
+
     uint32_t size() const { return count_; }
     const Counters &counters() const { return counters_; }
 
@@ -80,6 +83,7 @@ class EventQueue {
         uint32_t replaced; // for replace: the count already on that entry
     };
 
+    uint16_t take_head(); // Releases exactly one occupied slot, only while count_ > 0.
     void write(uint16_t index, const EventHeader &header, uint32_t replaced, const uint8_t *body);
     EventHeader header_of(uint16_t index) const;
     Room find_room(const EventHeader &header) const;
