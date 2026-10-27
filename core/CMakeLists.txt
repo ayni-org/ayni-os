@@ -180,6 +180,9 @@ ayni_add_core_module(kernel
         kernel/runtime/kernel_facade.cpp
         kernel/runtime/kernel_layout.cpp
         kernel/runtime/kernel_lifecycle.cpp
+        kernel/service/persistence/agent_store.cpp
+        kernel/service/persistence/goal_store.cpp
+        kernel/service/persistence/task_store.cpp
         kernel/service/persistence/call_store.cpp
         kernel/service/persistence/calendar_store.cpp
         kernel/service/persistence/grant_store.cpp

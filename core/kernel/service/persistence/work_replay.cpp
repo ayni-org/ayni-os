@@ -27,36 +27,7 @@ using durability::RecordUse;
 // discovery must not skip their ownership semantics as optional metadata.
 bool requires_authority_header(const durability::RecordHeader &header) {
     return header.type == work::authority_cleanup_record_type ||
-           (header.type == work::task_state_record_type &&
-            header.version >= work::task_state_authority_record_version) ||
-           header.type == work::task_authority_record_type ||
-           header.type == work::goal_authority_record_type ||
-           (header.type == work::goal_record_type &&
-            header.version >= work::goal_with_authority_record_version) ||
-           (header.type == work::goal_state_record_type &&
-            header.version >= work::goal_state_with_authority_record_version) ||
-           (header.type == work::task_record_type &&
-            header.version >= work::task_provenance_snapshot_version) ||
-           (header.type == work::task_checkpoint_record_type &&
-            header.version >= work::task_checkpoint_provenance_version) ||
            header.type == authority::owner_binding_record_type;
-}
-
-bool knows_goal_body(uint16_t version, WorkRecordContext context) {
-    return version == work::goal_record_version ||
-           version == work::goal_with_authority_record_version ||
-           version == work::goal_authority_state_record_version ||
-           (context == WorkRecordContext::journal &&
-            (version == work::goal_work_profile_record_version ||
-             version == work::goal_provenance_record_version ||
-             version == work::goal_calendar_record_version ||
-             version == work::goal_calendar_provenance_record_version)) ||
-           (context == WorkRecordContext::snapshot &&
-            (version == work::goal_creation_stamp_snapshot_version ||
-             version == work::goal_work_profile_snapshot_version ||
-             version == work::goal_provenance_snapshot_version ||
-             version == work::goal_calendar_snapshot_version ||
-             version == work::goal_calendar_provenance_snapshot_version));
 }
 
 template <typename Restore> RecordUse use_of(Restore restore) {
@@ -69,28 +40,6 @@ template <typename Restore> RecordUse use_of(Restore restore) {
         break;
     }
     return RecordUse::corrupt;
-}
-
-// Ordinary snapshots retain only state; journal-only versions prove their
-// authority/reauthorization or owner-command partners (ADR-0043).
-bool knows_task_state(uint16_t version, WorkRecordContext context) {
-    return version == work::task_state_record_version ||
-           version == work::task_state_runtime_record_version ||
-           version == work::task_state_call_record_version ||
-           version == work::task_state_subscription_wait_version ||
-           (context == WorkRecordContext::journal &&
-            (version == work::task_state_authority_record_version ||
-             version == work::task_state_reauthorization_record_version ||
-             version == work::task_state_runtime_authority_record_version ||
-             version == work::task_state_runtime_reauthorization_record_version ||
-             version == work::task_state_raise_limit_record_version ||
-             version == work::task_state_call_authority_record_version ||
-             version == work::task_state_call_reauthorization_record_version ||
-             version == work::task_state_call_raise_limit_record_version ||
-             version == work::task_state_resume_wait_record_version ||
-             version == work::task_state_subscription_wait_authority_version ||
-             version == work::task_state_subscription_wait_reauthorization_version ||
-             version == work::task_state_subscription_wait_raise_version));
 }
 
 } // namespace
@@ -132,49 +81,12 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
                    : RecordUse::unknown;
     }
     switch (header.type) {
-    case work::goal_record_type:
-        return knows_goal_body(header.version, context) ? RecordUse::applied : RecordUse::unknown;
-    case work::goal_state_record_type:
-        return header.version == work::goal_state_record_version ||
-                       header.version == work::goal_state_with_authority_record_version ||
-                       header.version == work::goal_state_with_cleanup_record_version ||
-                       (context == WorkRecordContext::journal &&
-                        (header.version == work::goal_state_authority_record_version ||
-                         header.version == work::goal_state_reauthorization_record_version))
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
-    case work::task_authority_record_type:
-        return header.version == work::task_authority_record_version ? RecordUse::applied
-                                                                     : RecordUse::unknown;
-    case work::goal_authority_record_type:
-        return header.version == work::goal_authority_record_version ||
-                       (context == WorkRecordContext::journal &&
-                        (header.version == work::goal_authority_pause_record_version ||
-                         header.version == work::goal_authority_reauthorization_record_version))
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
     case work::authority_cleanup_record_type:
         return header.version == work::authority_cleanup_record_version ? RecordUse::applied
                                                                         : RecordUse::unknown;
     case authority::owner_binding_record_type:
-    case work::instance_record_type:
-    case work::task_steps_record_type:
-        return header.version == 1U ? RecordUse::applied : RecordUse::unknown;
-    case work::task_record_type:
-        return header.version == work::task_record_version ||
-                       header.version == work::task_calendar_record_version ||
-                       (context == WorkRecordContext::snapshot &&
-                        (header.version == work::task_provenance_snapshot_version ||
-                         header.version == work::task_calendar_provenance_snapshot_version))
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
-    case work::task_checkpoint_record_type:
-        return header.version == work::task_checkpoint_record_version ||
-                       header.version == work::task_checkpoint_provenance_version
-                   ? RecordUse::applied
-                   : RecordUse::unknown;
-    case work::task_state_record_type:
-        return knows_task_state(header.version, context) ? RecordUse::applied : RecordUse::unknown;
+        return header.version == authority::owner_binding_record_version ? RecordUse::applied
+                                                                         : RecordUse::unknown;
     default:
         return RecordUse::unknown;
     }

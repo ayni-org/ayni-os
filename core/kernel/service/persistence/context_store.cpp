@@ -53,15 +53,18 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
 bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     return cursor.index < model.contexts.size();
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     return {knowledge::context_record_version,
             knowledge::context_record_size(model.contexts.at(index).dependencies.count)};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     knowledge::write_context_record(model.contexts.at(index), body);
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t, const uint8_t *body, uint32_t size) {
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     // Rows are decoded before cross-store consistency, but duplicate anchors and absent owners
     // can already be rejected without depending on later memories or provenance footers.
     ContextRecord record{};

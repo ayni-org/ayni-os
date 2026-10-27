@@ -64,18 +64,21 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     }
     return index < model.calls.capacity();
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     const auto record = model.calls.record(index);
     return {work::call_record_version_for(record), work::call_record_size(record)};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     work::write_call_record(model.calls.record(index), body);
 }
 
 // Snapshot rows are independently bounded by the covered durable prefix.
 // Cross-row references are proved after every section is restored.
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size) {
+                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     work::CallRecord record{};
     uint32_t duplicate = 0;
     if (!work::read_call_record(body, size, record, version) ||

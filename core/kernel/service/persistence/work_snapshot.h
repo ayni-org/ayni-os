@@ -68,35 +68,17 @@ class WorkSnapshotWriter {
   private:
     // The payload's order (records.md).
     using Section = SnapshotSection;
-    // A task's records, in order.
-    enum class TaskPart { task, steps, checkpoint, state, authority };
-    // A Goal v2 and its required authority record remain adjacent across pages.
-    enum class GoalPart { goal, authority };
     // Locate, but do not consume, the next complete record across all sections.
     bool next_record(uint16_t &type, uint32_t &size);
-    // Select the next retained instance, skipping never-started registrations.
-    bool next_instance_record(uint16_t &type, uint32_t &size);
-    // Select the current Task's next step/checkpoint/state; false after the Task table.
-    bool next_task_record(uint16_t &type, uint32_t &size);
     // Select the current store's next row, then the next store's; false after the last.
     bool next_store_record(StorePosition position, uint16_t &type, uint32_t &size);
-    // Select a Goal or its paired metadata without consuming a page cursor.
-    bool next_goal_record(uint16_t &type, uint32_t &size);
     // Encode the selected record into the already sized body buffer.
     void write_record(uint16_t type, uint8_t *body);
-    // Selected frozen Task identity plus original update/step/checkpoint stamps.
-    // Serialize the already selected frozen Task admission, without another identity check.
-    void write_task_authority(uint8_t *body);
     // Consume a record only after its complete bytes were written.
     void advance_record(uint16_t type);
 
     const WorkModel &model_;
     Section section_ = Section::owner_binding;
-    uint32_t index_ = 0; // of the instance, goal, task or store row in its table
-    uint32_t depth_ = 0; // goals go by depth, so parents come first
-    TaskPart task_part_ = TaskPart::task;
-    GoalPart goal_part_ = GoalPart::goal; // Reset when the complete pair is written.
-    uint32_t step_ = 0;                   // the task's next step key
     StoreCursor store_cursor_{}; // Store-owned traversal; reset when its descriptor changes.
     uint32_t store_ = 0;         // Selected descriptor within the current store section.
 };
@@ -120,34 +102,18 @@ class WorkSnapshotReader {
     // The payload's order (records.md).
     using Section = SnapshotSection;
     durability::BatchCheck owner_binding(const uint8_t *body, uint32_t size);
-    durability::BatchCheck instance(const uint8_t *body, uint32_t size);
-    durability::BatchCheck goal(uint16_t version, const uint8_t *body, uint32_t size);
-    durability::BatchCheck goal_authority(const uint8_t *body, uint32_t size);
     // Maps supported payload record kinds to their monotone section.
     static bool record_section(uint16_t type, Section &out);
-    durability::BatchCheck task(uint16_t version, const uint8_t *body, uint32_t size);
-    durability::BatchCheck task_steps(const uint8_t *body, uint32_t size);
-    durability::BatchCheck task_checkpoint(uint16_t version, const uint8_t *body, uint32_t size);
-    durability::BatchCheck task_authority(const uint8_t *body, uint32_t size);
-    durability::BatchCheck task_state(const uint8_t *body, uint32_t size, uint16_t version);
     durability::BatchCheck authority_cleanup(const uint8_t *body, uint32_t size);
 
     WorkModel &model_;
     durability::SnapshotMetadata metadata_;
     uint32_t records_ = 0;
     Section section_ = Section::owner_binding;
-    uint32_t store_ = 0; // of persistent_stores whose rows come, in order
-    // The Task whose records come, from TASK through TASK_AUTHORITY, and
-    // whether its checkpoint came.
-    uint32_t task_index_ = work::TaskTable::no_index;
-    bool checkpoint_seen_ = false;
-    // Contents precede state, then exactly one admission closes the current Task.
-    enum class TaskReadStage { contents, authority };
-    TaskReadStage task_stage_ = TaskReadStage::contents;
+    uint32_t store_ = 0;           // of persistent_stores whose rows come, in order
+    StoreReadCursor store_read_{}; // Active family owns object pairing across pages.
     // Exactly one REQUIRED scan fact, including an explicit initial idle fact.
     bool cleanup_seen_ = false;
-    // Goal v2 must be followed immediately by matching metadata, even across pages.
-    std::optional<uint64_t> goal_authority_pending_;
 };
 
 } // namespace ayni::kernel

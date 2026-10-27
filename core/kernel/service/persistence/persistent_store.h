@@ -16,6 +16,7 @@
 
 #include "durability/batch/batch_codec.h"
 #include "durability/snapshot/snapshot_codec.h"
+#include "foundation/little_endian.h"
 #include "foundation/transition_stamp.h"
 #include "kernel/config/kernel_config.h"
 #include "kernel/service/model/work_model.h"
@@ -29,8 +30,27 @@ enum class WorkRecordContext { journal, snapshot };
 
 // A row's record in the snapshot payload.
 struct StoreRecord {
-    uint16_t version; // Supported body version for this complete retained row.
-    uint32_t size;    // body bytes, without the envelope
+    uint16_t version;  // Supported body version for this complete retained row.
+    uint32_t size;     // body bytes, without the envelope
+    uint16_t type = 0; // Zero uses the family type; multi-record rows name the selected kind.
+};
+
+// An object's complete snapshot consists of a row and optional ordered parts.
+enum class StorePart { row, steps, checkpoint, state, authority };
+
+// One active family's read frontier; reset only after its whole object closes.
+// Goal uses paired_id with index==no_index; Task uses index with paired_id==0.
+// An expected_type belongs to that active object. checkpoint_seen is meaningful
+// only for an active Task; closing the object resets the complete cursor.
+struct StoreReadCursor {
+    uint32_t index = work::TaskTable::no_index; // Retained row; no_index between objects.
+    uint64_t paired_id = 0;       // Expected adjacent Goal authority identity; zero means none.
+    uint16_t expected_type = 0;   // Required next record type; zero allows optional extensions.
+    bool checkpoint_seen = false; // Current Task has its sole optional checkpoint.
+    // A family may change only after every required object partner was consumed.
+    bool complete() const {
+        return index == work::TaskTable::no_index && paired_id == 0 && expected_type == 0;
+    }
 };
 
 // Store-owned snapshot traversal. index is a retained row; order is zero initially,
@@ -38,17 +58,20 @@ struct StoreRecord {
 // use index alone and keep order zero. It never survives one frozen snapshot walk.
 struct StoreCursor {
     uint32_t index = 0; // Row index; snapshot_next selects it, snapshot_advance consumes it.
+    StorePart part = StorePart::row; // Selected part of this row; reset after authority.
+    uint32_t subindex = 0;           // Step key index within a Task; zero for all other rows.
     uint64_t order = 0; // Store-specific ordering frontier described above, not a persisted value.
 };
 
 // Existing storage order: Grant facts precede work; calls/Scenes follow Tasks;
 // command snapshots follow cleanup, while journal commands close before its footer.
-enum class StorePosition { before_work, after_work, after_cleanup };
+enum class StorePosition { instances, before_work, goals, tasks, after_work, after_cleanup };
 
 // One registered record family; required_from preserves optional legacy command v1.
 struct StoreKind {
     uint16_t type;          // records.md type identity, never zero.
-    uint16_t required_from; // First REQUIRED version; older versions keep their existing rule.
+    uint16_t required_from; // First REQUIRED version; never_required keeps every legacy envelope
+                            // optional.
 };
 
 // Owns one compile-time storage adapter; WorkReplay retains cross-store journal proofs.
@@ -71,20 +94,42 @@ struct PersistentStore {
                     durability::BatchWriter &writer);
     // Select without consuming; repeated selection of a frozen model is idempotent.
     bool (*snapshot_next)(const WorkModel &model, StoreCursor &cursor);
-    StoreRecord (*snapshot_record)(const WorkModel &model, uint32_t index); // Selected row shape.
+    StoreRecord (*snapshot_record)(const WorkModel &model,
+                                   const StoreCursor &cursor); // Selected row shape.
     // Write the selected body into already measured caller storage.
-    void (*snapshot_write)(const WorkModel &model, uint32_t index, uint8_t *body);
+    void (*snapshot_write)(const WorkModel &model, const StoreCursor &cursor, uint8_t *body);
     // Consume only after a whole record fits/is written, or after measuring it.
     void (*snapshot_advance)(const WorkModel &model, StoreCursor &cursor);
     // Restore one independently bounded row; WorkReplay keeps cross-record batch pairing.
     // References across stores are proved after the payload by WorkReplay::consistent.
     durability::BatchCheck (*snapshot_read)(WorkModel &model,
                                             const durability::SnapshotMetadata &metadata,
-                                            uint16_t version, const uint8_t *body, uint32_t size);
+                                            uint16_t version, const uint8_t *body, uint32_t size,
+                                            uint16_t type, StoreReadCursor &cursor);
+    // Complete multi-record payload bound; null uses capacity times the largest row.
+    uint64_t (*snapshot_max)(const KernelCapacities &) = nullptr;
 };
+
+// One exact command owns all Goal/Task replacement facts in its transition.
+inline bool goal_reauthorized_by(const CommandMapping *mapping, uint64_t goal_id) {
+    return mapping != nullptr && mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
+           mapping->object.id == goal_id;
+}
 
 // Known non-command families require the marker even for an unknown version zero.
 inline constexpr uint16_t always_required = 0;
+// Historical Agent/step headers accepted optional envelopes even for unknown versions.
+inline constexpr uint16_t never_required = UINT16_MAX;
+// Snapshot stamp tail (contracts/storage/records.md): two little-endian u64 fields.
+inline constexpr uint32_t snapshot_stamp_sequence_at = 8;
+inline constexpr uint32_t snapshot_stamp_size = 16;
+inline void write_snapshot_stamp(uint8_t *body, foundation::TransitionStamp stamp) {
+    foundation::store_le64(body, stamp.transition_id);
+    foundation::store_le64(body + snapshot_stamp_sequence_at, stamp.commit_seq);
+}
+inline foundation::TransitionStamp read_snapshot_stamp(const uint8_t *body) {
+    return {foundation::load_le64(body), foundation::load_le64(body + snapshot_stamp_sequence_at)};
+}
 // Count one record envelope without repeating its layout in store adapters.
 inline constexpr uint32_t record_bytes(uint32_t body_size) {
     return static_cast<uint32_t>(durability::record_header_size) + body_size;
@@ -133,6 +178,9 @@ inline bool within_snapshot(foundation::TransitionStamp stamp,
            stamp.commit_seq != 0U && stamp.commit_seq <= metadata.covers_commit_seq;
 }
 
+extern const PersistentStore agent_store;    // Agent identities and lifecycle stamps.
+extern const PersistentStore goal_store;     // Parent-first Goal and adjacent authority facts.
+extern const PersistentStore task_store;     // Task creation, ordered steps, state and authority.
 extern const PersistentStore grant_store;    // Grant family and parent-first snapshots.
 extern const PersistentStore calendar_store; // Civil rules and stable consumed occurrence cursors.
 extern const PersistentStore call_store;     // Calls after their Task facts.
@@ -145,8 +193,9 @@ extern const PersistentStore command_store;    // Exact owner command history cl
 
 // Compile-time storage order; each descriptor owns the types, bounds and row traversal.
 inline constexpr const PersistentStore *persistent_stores[] = {
-    &grant_store,  &calendar_store,   &call_store,    &scene_store,  &context_store,
-    &memory_store, &provenance_store, &privacy_store, &command_store};
+    &agent_store,    &grant_store,      &goal_store,    &task_store,
+    &calendar_store, &call_store,       &scene_store,   &context_store,
+    &memory_store,   &provenance_store, &privacy_store, &command_store};
 inline constexpr uint32_t persistent_store_count =
     static_cast<uint32_t>(sizeof(persistent_stores) / sizeof(persistent_stores[0]));
 
@@ -168,7 +217,8 @@ inline bool find_persistent_store(uint16_t type, uint32_t &out_rank) {
 inline bool store_requires_marker(const PersistentStore &store, uint16_t type, uint16_t version) {
     for (uint32_t kind = 0; kind < store.kind_count; ++kind) {
         if (store.kinds[kind].type == type) {
-            return version >= store.kinds[kind].required_from;
+            return store.kinds[kind].required_from != never_required &&
+                   version >= store.kinds[kind].required_from;
         }
     }
     return false;

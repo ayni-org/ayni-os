@@ -55,11 +55,13 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     }
     return cursor.index < model.provenance.capacity();
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     return {work::provenance_record_version_for(model.provenance.at(index)),
             work::provenance_record_size(model.provenance.at(index))};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     work::write_provenance_record(model.provenance.at(index), body);
 }
 // Rebind only to its original work identity; snapshot compaction may choose different row indices.
@@ -79,7 +81,8 @@ bool work_slot(const WorkModel &model, const work::ProvenanceRecord &record, uin
     return false;
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size) {
+                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     work::ProvenanceRecord record{};
     uint32_t slot = 0;
     uint64_t latest = 0;

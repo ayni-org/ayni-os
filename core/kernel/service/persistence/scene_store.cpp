@@ -60,11 +60,13 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     auto &index = cursor.index;
     return index < model.scenes.state_count();
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     return {authority::scene_record_version,
             authority::scene_record_size(model.scenes.state(index))};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     authority::write_scene_record(model.scenes.state(index), model.scenes.state_definition(index),
                                   body);
 }
@@ -72,7 +74,8 @@ void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
 // A preference follows the binding that owns it and lies within the
 // snapshot's boundary; its declaration is the one saved, not the catalog's.
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t, const uint8_t *body, uint32_t size) {
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     using durability::BatchCheck;
     authority::SceneRecord record{};
     const auto *binding = model.principals.binding();

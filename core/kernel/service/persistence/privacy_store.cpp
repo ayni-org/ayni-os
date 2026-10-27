@@ -35,14 +35,15 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
 bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     return cursor.index == 0 && model.privacy.record().phase != work::PrivacyPhase::idle;
 }
-StoreRecord snapshot_record(const WorkModel &, uint32_t) {
+StoreRecord snapshot_record(const WorkModel &, const StoreCursor &) {
     return {work::privacy_record_version, work::privacy_record_size};
 }
-void snapshot_write(const WorkModel &model, uint32_t, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &, uint8_t *body) {
     work::write_privacy_record(model.privacy.record(), body);
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t, const uint8_t *body, uint32_t size) {
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     work::PrivacyRecord record{};
     if (model.privacy.record().phase != work::PrivacyPhase::idle ||
         !work::read_privacy_record(body, size, record) ||
