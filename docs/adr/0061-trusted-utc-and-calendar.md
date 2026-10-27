@@ -31,4 +31,4 @@
 
 ## 验证
 
-正常模块与公开 ABI 场景、现有完整 Native 单元套件和公共 C99/C++ 头/layout 编译通过，独立审查发现已处理并复查；arena 增量已量测。最终命令、结果、CI 与资源数字集中在对应 PR。未执行新增故障/恢复专项，不声明完整 E1–E4、通知实际呈现、ESP32 或 Core Alpha 已验收。
+正常模块与公开 ABI 场景、现有完整 Native 单元套件和公共 C99/C++ 头/layout 编译通过，独立审查发现已处理并复查；arena 增量已量测。最终命令、结果、CI 与资源数字集中在 [#82](https://github.com/RobotSe7en/ayni/pull/82)。未执行新增故障/恢复专项，不声明完整 E1–E4、通知实际呈现、ESP32 或 Core Alpha 已验收。
