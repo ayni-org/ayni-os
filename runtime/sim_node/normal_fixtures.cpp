@@ -196,6 +196,17 @@ bool matches(int64_t actual, const Expect &expect) {
     }
     return false;
 }
+const char *comparison_name(Compare compare) {
+    switch (compare) {
+    case Compare::equal:
+        return "equal";
+    case Compare::at_most:
+        return "at_most";
+    case Compare::at_least:
+        return "at_least";
+    }
+    return "invalid";
+}
 // Owns the entire deployment and trace until every Core borrow is destroyed.
 // Trace caches are diagnostic copies, never an alternative owner of domain state.
 class Engine {
@@ -224,15 +235,12 @@ class Engine {
             int64_t actual = 0;
             const auto &expected = data_.expectations[at];
             status = metric(expected, actual);
-            if (status != AYNI_OK || !matches(actual, expected)) {
+            if (status != AYNI_OK || !record_expectation(expected, actual)) {
                 return {status == AYNI_OK ? AYNI_INVALID_STATE : status,
                         "expect " + std::to_string(at) + " " + metric_name(expected.metric) +
                             " actual=" + std::to_string(actual) +
                             " expected=" + std::to_string(expected.value)};
             }
-            emit("assertion", ",\"metric\":" + quoted(metric_name(expected.metric)) +
-                                  metric_scalar("actual", actual) +
-                                  metric_scalar("expected", expected.value));
         }
         return trace_.good() ? Result{} : Result{AYNI_INTERNAL, "trace output"};
     }
@@ -364,6 +372,16 @@ class Engine {
             snapshots_[key] = fields;
             emit(category, fields);
         }
+    }
+    bool record_expectation(const Expect &expected, int64_t actual) {
+        const bool passed = matches(actual, expected);
+        emit("assertion", ",\"metric\":" + quoted(metric_name(expected.metric)) +
+                              ",\"target\":" + quoted(expected.target) +
+                              ",\"comparison\":" + quoted(comparison_name(expected.compare)) +
+                              metric_scalar("actual", actual) +
+                              metric_scalar("expected", expected.value) +
+                              ",\"passed\":" + (passed ? "true" : "false"));
+        return passed;
     }
     ayni_status_t objects(ayni_object_kind_t kind, std::vector<uint64_t> &out) const {
         uint32_t count = 0;
@@ -695,10 +713,7 @@ class Engine {
         if (status != AYNI_OK) {
             return status;
         }
-        emit("assertion", ",\"metric\":" + quoted(metric_name(a.condition.metric)) +
-                              metric_scalar("actual", actual) +
-                              metric_scalar("expected", a.condition.value));
-        return matches(actual, a.condition) ? AYNI_OK : AYNI_INVALID_STATE;
+        return record_expectation(a.condition, actual) ? AYNI_OK : AYNI_INVALID_STATE;
     }
     ayni_status_t apply(const PauseGroup &a) {
         auto group = initialized<ayni_pause_group_info_v1>();

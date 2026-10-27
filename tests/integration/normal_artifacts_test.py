@@ -55,6 +55,10 @@ class NormalArtifacts(unittest.TestCase):
                             self.assertGreaterEqual(int(record["step"]), step)
                             clock, step = int(record["clock_us"]), int(record["step"])
                             self.assertFalse({"body", "text", "token", "password", "media_bytes"} & record.keys())
+                            if record["category"] == "assertion":
+                                self.assertTrue(record["passed"])
+                                self.assertIn(record["comparison"], {"equal", "at_most", "at_least"})
+                                self.assertIn("target", record)
                             for key in ("sequence", "step", "clock_us", "commit_seq", "operation_id",
                                         "logical_call_id", "request_id", "boot_epoch", "transition"):
                                 if key in record:
