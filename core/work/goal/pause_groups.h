@@ -59,7 +59,8 @@ class PauseGroups {
     void clear() { groups_ = {}; }
 
   private:
-    static constexpr uint32_t first_revision = 1; // Initial accepted control has no resume frontier.
+    static constexpr uint32_t first_revision =
+        1; // Initial accepted control has no resume frontier.
     // Only a closed-to-open control establishes a new queued-input frontier.
     static bool reopens(const PauseGroup &before, bool paused) { return before.paused && !paused; }
     std::array<PauseGroup, AYNI_PAUSE_GROUP_COUNT> groups_{}; // One slot per public group number.
