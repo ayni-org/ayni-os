@@ -71,4 +71,3 @@ with tempfile.TemporaryDirectory(prefix="ayni-multinode-") as root:
     first = run(sys.argv[1], Path(root) / "first")
     second = run(sys.argv[1], Path(root) / "second")
     assert first == second, "same normal scenario must produce identical logical artifacts"
-
