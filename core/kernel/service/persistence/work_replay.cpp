@@ -27,18 +27,6 @@ using durability::RecordUse;
 // discovery must not skip their ownership semantics as optional metadata.
 bool requires_authority_header(const durability::RecordHeader &header) {
     return header.type == work::authority_cleanup_record_type ||
-           (header.type == work::task_state_record_type &&
-            header.version >= work::task_state_authority_record_version) ||
-           header.type == work::task_authority_record_type ||
-           header.type == work::goal_authority_record_type ||
-           (header.type == work::goal_record_type &&
-            header.version >= work::goal_with_authority_record_version) ||
-           (header.type == work::goal_state_record_type &&
-            header.version >= work::goal_state_with_authority_record_version) ||
-           (header.type == work::task_record_type &&
-            header.version >= work::task_provenance_snapshot_version) ||
-           (header.type == work::task_checkpoint_record_type &&
-            header.version >= work::task_checkpoint_provenance_version) ||
            header.type == authority::owner_binding_record_type;
 }
 
@@ -53,9 +41,6 @@ template <typename Restore> RecordUse use_of(Restore restore) {
     }
     return RecordUse::corrupt;
 }
-
-// Ordinary snapshots retain only state; journal-only versions prove their
-// authority/reauthorization or owner-command partners (ADR-0043).
 
 } // namespace
 

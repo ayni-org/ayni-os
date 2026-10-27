@@ -234,6 +234,24 @@ BatchCheck import_model(WorkModel &model, const SnapshotMetadata &meta,
     return reader.complete();
 }
 
+// ADR-0064: an optional journal-only extension remains skippable in a snapshot.
+TEST(WorkSnapshot, optional_goal_state_extensions_preserve_the_normal_snapshot_view) {
+    Model original;
+    populate(original.get());
+    auto bytes = export_model(original.get());
+    auto meta = metadata(original.get());
+    const auto offset = bytes.size();
+    bytes.resize(offset + ayni::durability::record_header_size);
+    ayni::durability::write_record_header({ayni::durability::record_type::goal_state, 1, 0, 0},
+                                          bytes.data() + offset);
+    ++meta.record_count;
+    meta.payload_length = bytes.size();
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::ok);
+    EXPECT_EQ(restored.get().tasks.at(0).task_id, task_id);
+    EXPECT_EQ(restored.get().tasks.at(0).step_count, 2U);
+}
+
 // C-STORE-007, C-STORE-014: an arbitrarily paged snapshot keeps the exact
 // durable view, including original transition stamps and checkpoint order.
 TEST(WorkSnapshot, paged_round_trip_keeps_the_original_stamps_and_checkpoint) {

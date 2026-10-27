@@ -1,12 +1,7 @@
 #include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
 #include "kernel/service/persistence/persistent_store.h"
-#include "kernel/service/persistence/work_replay.h"
 #include "work/agent/agent_records.h"
-#include "work/goal/goal_authority_records.h"
-#include "work/goal/goal_records.h"
-#include "work/task/task_authority_records.h"
-#include "work/task/task_records.h"
 namespace ayni::kernel {
 namespace {
 constexpr uint32_t stamp_size = snapshot_stamp_size;

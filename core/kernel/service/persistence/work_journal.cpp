@@ -38,8 +38,6 @@ class Encoder {
     }
 
   private:
-    // One exact command owns every replacement state/admission in this batch.
-
     uint8_t *body(uint16_t type, uint16_t version, uint32_t length) {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
@@ -69,9 +67,6 @@ class Encoder {
         }
         return ok_;
     }
-
-    // Metadata follows the Goal state and shares exactly the authority change's
-    // stamp. No live catalog is consulted while serializing durable facts.
 
     bool authority_cleanup() {
         const auto &record = model_.authority_cleanup.record();

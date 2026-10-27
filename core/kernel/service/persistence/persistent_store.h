@@ -39,12 +39,18 @@ struct StoreRecord {
 enum class StorePart { row, steps, checkpoint, state, authority };
 
 // One active family's read frontier; reset only after its whole object closes.
+// Goal uses paired_id with index==no_index; Task uses index with paired_id==0.
+// An expected_type belongs to that active object. checkpoint_seen is meaningful
+// only for an active Task; closing the object resets the complete cursor.
 struct StoreReadCursor {
     uint32_t index = work::TaskTable::no_index; // Retained row; no_index between objects.
     uint64_t paired_id = 0;       // Expected adjacent Goal authority identity; zero means none.
     uint16_t expected_type = 0;   // Required next record type; zero allows optional extensions.
     bool checkpoint_seen = false; // Current Task has its sole optional checkpoint.
-    bool complete() const { return index == work::TaskTable::no_index && paired_id == 0; }
+    // A family may change only after every required object partner was consumed.
+    bool complete() const {
+        return index == work::TaskTable::no_index && paired_id == 0 && expected_type == 0;
+    }
 };
 
 // Store-owned snapshot traversal. index is a retained row; order is zero initially,
@@ -64,7 +70,8 @@ enum class StorePosition { instances, before_work, goals, tasks, after_work, aft
 // One registered record family; required_from preserves optional legacy command v1.
 struct StoreKind {
     uint16_t type;          // records.md type identity, never zero.
-    uint16_t required_from; // First REQUIRED version; older versions keep their existing rule.
+    uint16_t required_from; // First REQUIRED version; never_required keeps every legacy envelope
+                            // optional.
 };
 
 // Owns one compile-time storage adapter; WorkReplay retains cross-store journal proofs.
@@ -102,6 +109,12 @@ struct PersistentStore {
     // Complete multi-record payload bound; null uses capacity times the largest row.
     uint64_t (*snapshot_max)(const KernelCapacities &) = nullptr;
 };
+
+// One exact command owns all Goal/Task replacement facts in its transition.
+inline bool goal_reauthorized_by(const CommandMapping *mapping, uint64_t goal_id) {
+    return mapping != nullptr && mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
+           mapping->object.id == goal_id;
+}
 
 // Known non-command families require the marker even for an unknown version zero.
 inline constexpr uint16_t always_required = 0;

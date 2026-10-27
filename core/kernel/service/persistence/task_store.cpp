@@ -1,10 +1,6 @@
 #include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
 #include "kernel/service/persistence/persistent_store.h"
-#include "kernel/service/persistence/work_replay.h"
-#include "work/agent/agent_records.h"
-#include "work/goal/goal_authority_records.h"
-#include "work/goal/goal_records.h"
 #include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
 namespace ayni::kernel {
@@ -18,16 +14,11 @@ class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
             durability::BatchWriter &writer)
-        : model_(model), stamp_(stamp), writer_(writer) {}
+        : model_(model), stamp_(stamp), writer_(writer),
+          command_(model.commands.mapped_in(stamp.commit_seq)) {}
     bool encode() { return tasks(); }
 
   private:
-    // One exact command owns every replacement state/admission in this batch.
-    bool reauthorizes(uint64_t goal_id) const {
-        const auto *mapping = model_.commands.mapped_in(stamp_.commit_seq);
-        return mapping != nullptr && mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
-               mapping->object.id == goal_id;
-    }
     uint8_t *body(uint16_t type, uint16_t version, uint32_t length) {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
@@ -82,12 +73,12 @@ class Journal {
                 return false; // Schema 2 never infers authorization from absent metadata.
             }
             const bool changed = admission.stamp.commit_seq == stamp_.commit_seq;
-            const auto base = changed && reauthorizes(task.goal_id)
+            const auto base = changed && goal_reauthorized_by(command_, task.goal_id)
                                   ? work::task_state_reauthorization_record_version
                               : changed && task.created_transition_id != stamp_.transition_id
                                   ? work::task_state_authority_record_version
                                   : work::task_state_record_version;
-            const auto *command = model_.commands.mapped_in(stamp_.commit_seq);
+            const auto *command = command_;
             const auto version = work::task_state_version_for(
                 task, command != nullptr && command->kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
                           ? work::task_state_raise_limit_record_version
@@ -120,6 +111,7 @@ class Journal {
     const WorkModel &model_;
     foundation::TransitionStamp stamp_;
     durability::BatchWriter &writer_;
+    const CommandMapping *command_; // Immutable exact mapping for this synchronous encoding.
     bool ok_ = true;
 };
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -162,7 +154,8 @@ bool knows(uint16_t type, uint16_t version, WorkRecordContext context) {
         return version == work::task_checkpoint_record_version ||
                version == work::task_checkpoint_provenance_version;
     }
-    return version == 1;
+    return type == work::task_steps_record_type ? version == work::task_steps_record_version
+                                                : version == work::task_authority_record_version;
 }
 uint32_t capacity(const KernelCapacities &c) {
     return c.task_capacity;
@@ -421,8 +414,7 @@ durability::BatchCheck task_authority(WorkModel &model,
         return status == AYNI_CAPACITY_EXCEEDED ? durability::BatchCheck::no_room
                                                 : durability::BatchCheck::corrupt;
     }
-    cursor.index = work::TaskTable::no_index;
-    cursor.expected_type = 0;
+    cursor = {};
     return durability::BatchCheck::ok;
 }
 durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata &metadata,

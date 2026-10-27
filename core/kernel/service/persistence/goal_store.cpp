@@ -1,12 +1,8 @@
 #include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
 #include "kernel/service/persistence/persistent_store.h"
-#include "kernel/service/persistence/work_replay.h"
-#include "work/agent/agent_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
-#include "work/task/task_authority_records.h"
-#include "work/task/task_records.h"
 namespace ayni::kernel {
 namespace {
 constexpr uint32_t id_max = catalog::CatalogId::max_size;
@@ -22,16 +18,11 @@ class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
             durability::BatchWriter &writer)
-        : model_(model), stamp_(stamp), writer_(writer) {}
+        : model_(model), stamp_(stamp), writer_(writer),
+          command_(model.commands.mapped_in(stamp.commit_seq)) {}
     bool encode() { return goals() && goal_authority(); }
 
   private:
-    // One exact command owns every replacement state/admission in this batch.
-    bool reauthorizes(uint64_t goal_id) const {
-        const auto *mapping = model_.commands.mapped_in(stamp_.commit_seq);
-        return mapping != nullptr && mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
-               mapping->object.id == goal_id;
-    }
     uint8_t *body(uint16_t type, uint16_t version, uint32_t length) {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
@@ -64,7 +55,7 @@ class Journal {
                 model_.goal_authority.contains(index, goal.goal_id) &&
                 model_.goal_authority.at(index).stamp.commit_seq == stamp_.commit_seq &&
                 model_.goal_authority.at(index).phase == work::GoalAuthorityPhase::paused;
-            const uint16_t version = reauthorizes(goal.goal_id)
+            const uint16_t version = goal_reauthorized_by(command_, goal.goal_id)
                                          ? work::goal_state_reauthorization_record_version
                                      : authority_pause ? work::goal_state_authority_record_version
                                      : !work::GoalTable::is_live(goal.lifecycle) &&
@@ -94,7 +85,7 @@ class Journal {
                 record.stamp.transition_id != stamp_.transition_id) {
                 return false;
             }
-            const auto version = reauthorizes(record.goal_id)
+            const auto version = goal_reauthorized_by(command_, record.goal_id)
                                      ? work::goal_authority_reauthorization_record_version
                                  : record.phase == work::GoalAuthorityPhase::paused
                                      ? work::goal_authority_pause_record_version
@@ -110,6 +101,7 @@ class Journal {
     const WorkModel &model_;
     foundation::TransitionStamp stamp_;
     durability::BatchWriter &writer_;
+    const CommandMapping *command_; // Immutable exact mapping for this synchronous encoding.
     bool ok_ = true;
 };
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -143,6 +135,10 @@ bool knows(uint16_t type, uint16_t version, WorkRecordContext context) {
                (context == WorkRecordContext::journal &&
                 (version == work::goal_authority_pause_record_version ||
                  version == work::goal_authority_reauthorization_record_version));
+    }
+    // Snapshots carry state inside GOAL; optional journal-only extensions stay skippable.
+    if (context == WorkRecordContext::snapshot) {
+        return false;
     }
     return version == work::goal_state_record_version ||
            version == work::goal_state_with_authority_record_version ||
