@@ -113,4 +113,26 @@ TEST(ObservationApi, inferred_source_remains_explicit_and_missing_query_preserve
     ++out.struct_size;
     EXPECT_EQ(ayni_get_observation(node.kernel(), source_id, &out), AYNI_UNSUPPORTED_VERSION);
 }
+// ADR-0050/0062: adding async transport must preserve the synchronous ABI's
+// classified error order even when a sample has several invalid conditions.
+TEST(ObservationApi, source_failures_precede_expiry_but_future_time_precedes_source) {
+    Node node;
+    register_source(node);
+    node.run();
+    auto sample = observation(node);
+    node.sim().advance_us(100);
+    sample.source_id = {"missing", 7};
+    EXPECT_EQ(ayni_publish_observation(node.kernel(), &sample), AYNI_NOT_FOUND);
+    sample.source_id = source_id;
+    ++sample.source_version;
+    EXPECT_EQ(ayni_publish_observation(node.kernel(), &sample), AYNI_UNSUPPORTED_VERSION);
+    --sample.source_version;
+    sample.value = 2;
+    EXPECT_EQ(ayni_publish_observation(node.kernel(), &sample), AYNI_INVALID_ARGUMENT);
+    sample.value = 1;
+    EXPECT_EQ(ayni_publish_observation(node.kernel(), &sample), AYNI_EXPIRED);
+    sample.source_id = {"missing", 7};
+    sample.captured_at_us = node.sim().now_us() + 1;
+    EXPECT_EQ(ayni_publish_observation(node.kernel(), &sample), AYNI_INVALID_ARGUMENT);
+}
 } // namespace

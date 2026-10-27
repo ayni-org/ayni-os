@@ -11,12 +11,16 @@ namespace ayni::kernel {
 
 struct StepContext {
     // All budgets are explicit; the ABI has already rejected zero budgets.
-    StepContext(uint64_t started, uint32_t item_budget, uint32_t time_budget, OwnerClock clock)
-        : started_us(started), max_items(item_budget), max_time_us(time_budget), clock_(clock) {}
+    StepContext(uint64_t started, uint32_t item_budget, uint32_t time_budget, OwnerClock clock,
+                uint32_t observation_count = 0)
+        : started_us(started), max_items(item_budget), max_time_us(time_budget),
+          observations_ready(observation_count), clock_(clock) {}
 
     const uint64_t started_us;  // Monotonic entry time in us; fixed schedule/READY/report frontier.
     const uint32_t max_items;   // Positive item limit; includes storage completions and owner work.
     const uint32_t max_time_us; // Positive elapsed-time budget; never an absolute timestamp.
+    const uint32_t
+        observations_ready; // FIFO snapshot at entry; later producer posts wait for next step.
     uint64_t next_deadline_us = work::no_time; // Report deadline; no_time means none scheduled.
 
     // Storage admission is separate; this only checks this call's remaining budget.

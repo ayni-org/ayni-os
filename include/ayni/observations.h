@@ -1,11 +1,12 @@
 /* Trusted observation sources and current-boot facts, Since 0.35.
- * Registration and publication are owner-thread Host operations, never callable
- * from Provider workers. Subscription ingress will feed the same owner; this
- * initial interface does not start collection or grant access to a sensor.
+ * Registration and synchronous publication are owner-thread Host operations.
+ * Since 0.42, trusted Host workers may enqueue copied samples/gaps; the Kernel
+ * owner applies them. These interfaces do not start collection or grant sensor access.
  */
 #ifndef AYNI_OBSERVATIONS_H
 #define AYNI_OBSERVATIONS_H
 #include <ayni/ayni.h>
+#include <ayni/media.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,6 +15,10 @@ extern "C" {
 #define AYNI_OBSERVATION_SOURCE_CAPACITY_MAX 64u
 /* Maximum observation predicates in a Scene. Since 0.35. */
 #define AYNI_OBSERVATION_CONDITION_COUNT_MAX 8u
+/* Default queued Host samples when sources are enabled. Since 0.42. */
+#define AYNI_OBSERVATION_INGRESS_CAPACITY_DEFAULT 16u
+/* Maximum bounded sample queue entries. Since 0.42. */
+#define AYNI_OBSERVATION_INGRESS_CAPACITY_MAX 256u
 
 typedef uint32_t ayni_observation_kind_t;
 /* Exact 0/1 value with unit "bool". Since 0.35. */
@@ -65,6 +70,42 @@ typedef struct ayni_observation_v1 {
     int64_t value;                      /* BOOL is exactly 0/1; I64 uses the registered unit. */
 } ayni_observation_v1;
 
+/* Any non-ISR Host thread. Acceptance copies metadata into a bounded FIFO;
+ * it does not claim the owner accepted a fresh observation. Samples do not
+ * merge or evict control/input events; a full queue returns BUSY. Since 0.42. */
+typedef struct ayni_observation_post_v1 {
+    uint32_t struct_size; /* Exact sizeof. */
+    uint32_t reserved;    /* Zero. */
+    uint64_t boot_epoch;  /* Exact current Kernel boot, captured before launching the producer. */
+    ayni_observation_v1 sample; /* Copied intrinsic fields; owner later checks capture/expiry. */
+    const ayni_media_ref_v1 *media; /* Optional copied metadata; never retained as a pointer. */
+} ayni_observation_post_v1;
+
+/* Explicit telemetry discontinuity; retained separately from the bounded sample
+ * FIFO so a full queue cannot forget it. No sample value is fabricated. Since 0.42. */
+typedef struct ayni_observation_gap_v1 {
+    uint32_t struct_size;     /* Exact sizeof. */
+    uint32_t source_version;  /* Exact registered semantic source version. */
+    uint64_t boot_epoch;      /* Exact producer boot; old posts return STALE. */
+    ayni_string_v1 source_id; /* Copied nonempty registered source. */
+    uint64_t generation;      /* Positive; invalidates every older generation. */
+    uint64_t
+        through_sequence; /* Invalid through this sequence; 0 invalidates older generations only. */
+} ayni_observation_gap_v1;
+
+/* Consistent producer/owner diagnostics; all counts are since Kernel creation.
+ * Reading these counters changes no lifecycle or delivery state. Since 0.42. */
+typedef struct ayni_observation_ingress_info_v1 {
+    uint32_t struct_size;   /* Caller supplies exact sizeof. */
+    uint32_t capacity;      /* Configured FIFO entries; 0 means disabled. */
+    uint32_t queued;        /* Accepted samples not yet consumed, <= capacity. */
+    uint32_t gaps_pending;  /* Source gap markers not yet consumed, <= source capacity. */
+    uint64_t accepted;      /* Samples copied by successful enqueue. */
+    uint64_t rejected_busy; /* Samples rejected due to the queue bound. */
+    uint64_t gap_updates;   /* Forward gap-frontier updates; repeated markers do not increment. */
+    uint64_t discarded;     /* Samples discarded on close or rejected by owner validation. */
+} ayni_observation_ingress_info_v1;
+
 /* Finite Scene predicate; only GOOD measurements can satisfy it. Since 0.35. */
 typedef struct ayni_observation_condition_v1 {
     ayni_string_v1 source_id; /* Exact registered source. */
@@ -88,6 +129,10 @@ typedef struct ayni_observation_info_v1 {
     uint64_t captured_at_us;            /* Accepted local capture time. */
     uint64_t valid_until_us;            /* Capture + valid_for, exclusive deadline. */
     int64_t value;                      /* Typed scalar; not an assertion of current validity. */
+    /* Since 0.42. Opaque current sample metadata; media_id 0 means no media.
+     * A stale/expired sample also makes this reference unusable. */
+    ayni_media_ref_v1 media;
+    uint64_t sequence_gaps; /* Since 0.42. Explicit or observed skipped source sequences. */
 } ayni_observation_info_v1;
 
 /* CONFIGURING, copied descriptor; standard argument/version/capacity errors. Since 0.35. */
@@ -98,6 +143,19 @@ ayni_status_t ayni_register_observation_source(ayni_kernel_t *kernel,
  * STALE or EXPIRED; generation/sequence are not automatically incremented. Since 0.35. */
 ayni_status_t ayni_publish_observation(ayni_kernel_t *kernel,
                                        const ayni_observation_v1 *observation);
+/* Any non-ISR Host thread, RUNNING only, all producer threads joined before
+ * destroy. OK means copied; BUSY means caller retains ownership and may retry.
+ * NOT_READY, UNSUPPORTED (queue disabled), STALE (boot), INVALID_ARGUMENT,
+ * UNSUPPORTED_VERSION and NOT_FOUND preserve the queue. Since 0.42. */
+ayni_status_t ayni_post_observation(ayni_kernel_t *kernel, const ayni_observation_post_v1 *post);
+/* Same lifetime/thread rules; a forward marker always has reserved source
+ * capacity and wakes the owner. Repeated markers are idempotent. Since 0.42. */
+ayni_status_t ayni_report_observation_gap(ayni_kernel_t *kernel,
+                                          const ayni_observation_gap_v1 *gap);
+/* Any non-ISR thread; immutable lifetime plus ingress lock, no owner-state read.
+ * Argument/size failures preserve output. Since 0.42. */
+ayni_status_t ayni_get_observation_ingress(const ayni_kernel_t *kernel,
+                                           ayni_observation_ingress_info_v1 *out_info);
 /* Owner-thread copy. NOT_FOUND if no retained sample, other failures preserve out.
  * INVALID_ARGUMENT/STATE, UNSUPPORTED_VERSION follow ordinary Kernel queries. Since 0.35. */
 ayni_status_t ayni_get_observation(const ayni_kernel_t *kernel, ayni_string_v1 source_id,

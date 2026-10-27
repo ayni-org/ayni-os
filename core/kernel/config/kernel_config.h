@@ -51,7 +51,8 @@ struct KernelCapacities {
     uint32_t memory_capacity = 0; // Whole-Kernel retained facts; zero disables.
     uint32_t memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT; // Per-record UTF-8 stride.
     uint32_t memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT; // Exact lineage.
-    uint32_t observation_source_capacity = 0; // Static sources and current-boot samples.
+    uint32_t observation_source_capacity = 0;  // Static sources and current-boot samples.
+    uint32_t observation_ingress_capacity = 0; // Optional fixed Host sample FIFO.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -105,6 +106,7 @@ enum class Store : uint32_t {
     scenes,               // Scenes: declarations, saved preferences and canonical byte pools.
     observation_sources,  // ObservationSources: copied source descriptions.
     observations,         // ObservationTable: the current boot's latest sample per source.
+    observation_ingress,  // ObservationIngress: copied FIFO and reliable source gap cells.
     memories,             // MemoryTable: owned facts and fixed UTF-8 bodies.
     contexts,             // ContextTable: one file/version/source anchor per Agent.
     provenance,           // ProvenanceTable: exact Goal/Task content sources and erasure state.

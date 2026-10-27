@@ -1,5 +1,4 @@
 #include "knowledge/observation/observation_table.h"
-#include "catalog/abi_checks.h"
 #include <new>
 
 namespace ayni::knowledge {
@@ -16,14 +15,35 @@ ObservationTable::ObservationTable(const catalog::ObservationSources &sources, v
 }
 void ObservationTable::begin_boot(uint64_t boot_epoch) {
     for (uint32_t at = 0; at < capacity_; ++at) {
-        slots_[at].reset();
+        slots_[at] = {};
     }
     boot_epoch_ = boot_epoch;
 }
-bool ObservationTable::usable(const Sample &sample, uint64_t now_us) const {
+bool ObservationTable::usable(const Slot &slot, uint64_t now_us) const {
+    const auto &sample = *slot;
     return sample.quality == AYNI_OBSERVATION_GOOD && sample.captured_at_us <= now_us &&
-           now_us < sample.valid_until_us;
+           now_us < sample.valid_until_us &&
+           (!sample.media || now_us < sample.media->valid_until_us) &&
+           (!slot.invalid_through ||
+            after_boundary(sample.generation, sample.sequence, *slot.invalid_through));
 }
+namespace {
+ayni_status_t check_clock(const ObservationInput &input, uint64_t now_us, uint64_t boot_epoch) {
+    if (input.captured_at_us > now_us) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (boot_epoch == 0) {
+        return AYNI_NOT_READY;
+    }
+    if (input.media && input.media->boot_epoch != boot_epoch) {
+        return AYNI_STALE;
+    }
+    return AYNI_OK;
+}
+uint64_t saturated_add(uint64_t value, uint64_t increment) {
+    return increment > UINT64_MAX - value ? UINT64_MAX : value + increment;
+}
+} // namespace
 ayni_observation_ref_v1 ObservationTable::reference(uint32_t index, const Sample &sample) const {
     const auto &source = sources_.at(index);
     return {source.id.snapshot(), source.version, boot_epoch_, sample.generation, sample.sequence};
@@ -31,48 +51,82 @@ ayni_observation_ref_v1 ObservationTable::reference(uint32_t index, const Sample
 
 // Publication never upgrades the trusted source classification. All validation
 // precedes replacing the last fact, including generation/sequence and TTL checks.
-ayni_status_t ObservationTable::publish(const ayni_observation_v1 &input, uint64_t now_us) {
-    const auto shape = catalog::check_struct_size(input.struct_size, sizeof(input), sizeof(input));
-    if (shape != AYNI_OK) {
-        return shape;
-    }
-    if (!catalog::CatalogId::is_valid(input.source_id) || input.generation == 0 ||
-        input.sequence == 0 || input.source_version == 0 || input.reserved != 0 ||
-        input.valid_for_us == 0 || input.captured_at_us > now_us ||
-        input.captured_at_us > UINT64_MAX - input.valid_for_us ||
-        (input.quality != AYNI_OBSERVATION_GOOD && input.quality != AYNI_OBSERVATION_DEGRADED)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    if (boot_epoch_ == 0) {
-        return AYNI_NOT_READY;
+// Preserve the original owner API refusal order: future/boot, source rules,
+// expiry, then sequence. Queued inputs already passed immutable source rules.
+ayni_status_t ObservationTable::publish(const ObservationInput &input, uint64_t now_us) {
+    const auto timed = check_clock(input, now_us, boot_epoch_);
+    if (timed != AYNI_OK) {
+        return timed;
     }
     uint32_t index = 0;
-    if (!sources_.find(input.source_id, index)) {
+    if (!sources_.find({input.source.data(), input.source.size()}, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &source = sources_.at(index);
-    if (input.source_version != source.version) {
-        return AYNI_UNSUPPORTED_VERSION;
-    }
-    if (input.valid_for_us > source.validity_max_us ||
-        (source.kind == AYNI_OBSERVATION_BOOL && input.value != 0 && input.value != 1)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    const Sample value{input.generation,     input.sequence,
-                       input.captured_at_us, input.captured_at_us + input.valid_for_us,
-                       input.quality,        input.value};
-    if (now_us >= value.valid_until_us) {
+    const auto status = check_observation_source(input, sources_.at(index));
+    return status == AYNI_OK ? publish_current(input, index, now_us) : status;
+}
+ayni_status_t ObservationTable::publish_from_ingress(const ObservationInput &input, uint32_t index,
+                                                     uint64_t now_us) {
+    const auto timed = check_clock(input, now_us, boot_epoch_);
+    return timed == AYNI_OK ? publish_current(input, index, now_us) : timed;
+}
+ayni_status_t ObservationTable::publish_current(const ObservationInput &input, uint32_t index,
+                                                uint64_t now_us) {
+    if (now_us >= input.captured_at_us + input.valid_for_us ||
+        (input.media && now_us >= input.media->valid_until_us)) {
         return AYNI_EXPIRED;
     }
-    const auto &old = slots_[index];
-    if (old &&
-        (value.generation < old->generation ||
-         (value.generation == old->generation &&
-          (value.sequence <= old->sequence || value.captured_at_us < old->captured_at_us)))) {
+    return replace_sample(input, index);
+}
+// Only owner serial execution reaches this point: an invalidated frontier cannot
+// be revived by an old queued result, even while its diagnostic sample remains.
+ayni_status_t ObservationTable::replace_sample(const ObservationInput &input, uint32_t index) {
+    auto &slot = slots_[index];
+    if (slot.invalid_through &&
+        !after_boundary(input.generation, input.sequence, *slot.invalid_through)) {
         return AYNI_STALE;
     }
-    slots_[index] = value;
+    if (slot &&
+        (input.generation < slot->generation ||
+         (input.generation == slot->generation &&
+          (input.sequence <= slot->sequence || input.captured_at_us < slot->captured_at_us)))) {
+        return AYNI_STALE;
+    }
+    // A newly accepted sample ends the gap's unusable interval. Keep the floor
+    // so a later old tail cannot become usable after a generation change.
+    const auto before = known_through(slot, input.generation);
+    if (before != 0 && input.sequence > before && input.sequence - before > 1) {
+        slot.gaps = saturated_add(slot.gaps, input.sequence - before - 1);
+    }
+    slot.sample = Sample{input.generation,     input.sequence,
+                         input.captured_at_us, input.captured_at_us + input.valid_for_us,
+                         input.quality,        input.value,
+                         input.media};
     return AYNI_OK;
+}
+uint64_t ObservationTable::known_through(const Slot &slot, uint64_t generation) {
+    const auto observed = slot && slot->generation == generation ? slot->sequence : 0;
+    const auto invalid = slot.invalid_through && slot.invalid_through->generation == generation
+                             ? slot.invalid_through->through
+                             : 0;
+    return observed > invalid ? observed : invalid;
+}
+void ObservationTable::invalidate(uint32_t index, ObservationBoundary through) {
+    auto &slot = slots_[index];
+    // The current generation already rejects this old tail. Its historical
+    // sequences cannot be counted again without retaining unbounded history (C-OBS-003).
+    if (slot && through.generation < slot->generation) {
+        return;
+    }
+    if (slot.invalid_through &&
+        !after_boundary(through.generation, through.through, *slot.invalid_through)) {
+        return;
+    }
+    const auto before = known_through(slot, through.generation);
+    if (through.through > before) {
+        slot.gaps = saturated_add(slot.gaps, through.through - before);
+    }
+    slot.invalid_through = through;
 }
 
 ayni_status_t ObservationTable::info(ayni_string_v1 source, uint64_t now_us,
@@ -84,7 +138,7 @@ ayni_status_t ObservationTable::info(ayni_string_v1 source, uint64_t now_us,
     const auto &description = sources_.at(index);
     const auto &sample = *slots_[index];
     out = {sizeof(out),
-           usable(sample, now_us) ? 1U : 0U,
+           usable(slots_[index], now_us) ? 1U : 0U,
            reference(index, sample),
            description.kind,
            description.origin,
@@ -93,7 +147,9 @@ ayni_status_t ObservationTable::info(ayni_string_v1 source, uint64_t now_us,
            description.unit.snapshot(),
            sample.captured_at_us,
            sample.valid_until_us,
-           sample.value};
+           sample.value,
+           sample.media.value_or(ayni_media_ref_v1{}),
+           slots_[index].gaps};
     return AYNI_OK;
 }
 
@@ -107,7 +163,7 @@ ayni_status_t ObservationTable::require(const catalog::ObservationCondition &con
     const auto &source = sources_.at(index);
     const auto &sample = *slots_[index];
     if (source.version != condition.version || source.origin != AYNI_OBSERVATION_MEASURED ||
-        !usable(sample, now_us) || now_us - sample.captured_at_us > condition.max_age_us ||
+        !usable(slots_[index], now_us) || now_us - sample.captured_at_us > condition.max_age_us ||
         sample.value < condition.minimum || sample.value > condition.maximum) {
         return AYNI_NOT_READY;
     }
@@ -125,6 +181,6 @@ bool ObservationTable::current(const ayni_observation_ref_v1 &ref, uint64_t now_
     const auto &sample = *slots_[index];
     return sources_.at(index).version == ref.source_version &&
            sample.generation == ref.generation && sample.sequence == ref.sequence &&
-           usable(sample, now_us);
+           usable(slots_[index], now_us);
 }
 } // namespace ayni::knowledge

@@ -16,25 +16,6 @@ ayni_status_t validate_source(const ObservationSource &source) {
                ? AYNI_OK
                : AYNI_INVALID_ARGUMENT;
 }
-ayni_status_t decode_source(const ayni_observation_source_v1 &input, ObservationSource &out) {
-    const auto shape = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
-    if (shape != AYNI_OK) {
-        return shape;
-    }
-    ObservationSource value{};
-    if (!value.id.assign(input.source_id) || !value.unit.assign(input.unit)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    value.version = input.version;
-    value.kind = input.kind;
-    value.origin = input.origin;
-    value.validity_max_us = input.validity_max_us;
-    const auto status = validate_source(value);
-    if (status == AYNI_OK) {
-        out = value;
-    }
-    return status;
-}
 ayni_status_t decode_condition(const ayni_observation_condition_v1 &input,
                                ObservationCondition &out) {
     ObservationCondition value{};

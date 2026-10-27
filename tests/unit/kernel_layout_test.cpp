@@ -92,6 +92,7 @@ KernelCapacities every_store_capacities() {
     capacities.memory_capacity = 4;
     capacities.scene_capacity = 2;
     capacities.observation_source_capacity = 3;
+    capacities.observation_ingress_capacity = 2;
     return capacities;
 }
 

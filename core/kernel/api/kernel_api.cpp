@@ -172,6 +172,9 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::scene_capacity,
      {0U, AYNI_SCENE_CAPACITY_MAX},
      &KernelCapacities::scene_capacity},
+    {&ayni_config_v1::observation_ingress_capacity,
+     {0U, AYNI_OBSERVATION_INGRESS_CAPACITY_MAX},
+     &KernelCapacities::observation_ingress_capacity},
     {&ayni_config_v1::observation_source_capacity,
      {0U, AYNI_OBSERVATION_SOURCE_CAPACITY_MAX},
      &KernelCapacities::observation_source_capacity},
@@ -198,6 +201,14 @@ ayni_status_t read_capacities(const ayni_config_v1 *config, KernelCapacities &ca
         if (status != AYNI_OK) {
             return status;
         }
+    }
+    if (capacities.observation_source_capacity == 0 &&
+        capacities.observation_ingress_capacity != 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (capacities.observation_source_capacity != 0 &&
+        capacities.observation_ingress_capacity == 0) {
+        capacities.observation_ingress_capacity = AYNI_OBSERVATION_INGRESS_CAPACITY_DEFAULT;
     }
     if (capacities.memory_body_max_bytes == 0U) {
         capacities.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;

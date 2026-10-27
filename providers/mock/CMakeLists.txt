@@ -1,3 +1,3 @@
-add_library(ayni_provider_mock STATIC mock.cpp)
+add_library(ayni_provider_mock STATIC mock.cpp media.cpp)
 target_include_directories(ayni_provider_mock PUBLIC include)
 target_link_libraries(ayni_provider_mock PUBLIC ayni_api PRIVATE ayni_core_options)

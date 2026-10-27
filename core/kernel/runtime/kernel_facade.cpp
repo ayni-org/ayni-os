@@ -89,7 +89,8 @@ ayni_status_t ayni_kernel::set_resource_health(uint32_t index, ayni_resource_hea
     }
     return status;
 }
-ayni_status_t ayni_kernel::publish_observation(const ayni_observation_v1 &observation) {
+ayni_status_t
+ayni_kernel::publish_observation(const ayni::knowledge::ObservationInput &observation) {
     const auto status = observations.publish(observation, now_us());
     if (status == AYNI_OK) {
         wake();
@@ -100,6 +101,25 @@ ayni_status_t ayni_kernel::publish_observation(const ayni_observation_v1 &observ
 // or CallbackGate from an arbitrary producer thread (C-HOST-001, ADR-0021).
 ayni_status_t ayni_kernel::post_local_input(const ayni::catalog::CatalogId &source) {
     const auto status = ingress.post_local_input(source);
+    if (status == AYNI_OK) {
+        wake();
+    }
+    return status;
+}
+
+ayni_status_t ayni_kernel::post_observation(uint64_t boot_epoch,
+                                            const ayni::knowledge::ObservationInput &input) {
+    const auto status = observation_ingress.post(boot_epoch, input);
+    if (status == AYNI_OK) {
+        wake();
+    }
+    return status;
+}
+ayni_status_t ayni_kernel::report_observation_gap(uint64_t boot_epoch,
+                                                  const ayni::catalog::CatalogId &source,
+                                                  uint32_t version,
+                                                  ayni::knowledge::ObservationBoundary boundary) {
+    const auto status = observation_ingress.gap(boot_epoch, source, version, boundary);
     if (status == AYNI_OK) {
         wake();
     }

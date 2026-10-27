@@ -25,7 +25,6 @@ struct ObservationCondition {
 };
 // Shared typed rules; ABI decoding only checks layout and copies token views.
 ayni_status_t validate_source(const ObservationSource &source);
-ayni_status_t decode_source(const ayni_observation_source_v1 &input, ObservationSource &out);
 ayni_status_t decode_condition(const ayni_observation_condition_v1 &input,
                                ObservationCondition &out);
 

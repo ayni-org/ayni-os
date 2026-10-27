@@ -11,6 +11,7 @@
 
 #include <ayni/ayni.h>
 #include <ayni/hosts/sim.h>
+#include <ayni/observations.h>
 
 #include <gtest/gtest.h>
 
@@ -71,7 +72,10 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
                                               : config.memory_body_max_bytes,
             config.memory_dependency_capacity == 0 ? AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT
                                                    : config.memory_dependency_capacity,
-            config.observation_source_capacity};
+            config.observation_source_capacity,
+            config.observation_ingress_capacity != 0  ? config.observation_ingress_capacity
+            : config.observation_source_capacity != 0 ? AYNI_OBSERVATION_INGRESS_CAPACITY_DEFAULT
+                                                      : 0};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's
