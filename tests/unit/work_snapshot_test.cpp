@@ -1,6 +1,7 @@
 // White-box module tests: snapshot round trips preserve durable ownership,
 // stamps and selection order without persisting boot compatibility holds.
 
+#include "authority/principal/owner_binding_records.h"
 #include "durability/snapshot/snapshot_codec.h"
 #include "foundation/crc32.h"
 #include "foundation/kernel_id.h"
@@ -250,6 +251,23 @@ TEST(WorkSnapshot, optional_goal_state_extensions_preserve_the_normal_snapshot_v
     ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::ok);
     EXPECT_EQ(restored.get().tasks.at(0).task_id, task_id);
     EXPECT_EQ(restored.get().tasks.at(0).step_count, 2U);
+}
+
+// ADR-0065: normal group preference snapshots retain the exact logical input frontier.
+TEST(WorkSnapshot, group_preferences_preserve_logical_reopen_frontiers_across_pages) {
+    Model original;
+    ASSERT_TRUE(original.get().principals.restore_binding({7, 3}, {1, 1}));
+    original.get().pause_groups.apply({1, 0, true}, instance_id, {2, 2}, {});
+    original.get().pause_groups.apply({1, 1, false}, instance_id, {3, 3}, {1, 7});
+    const auto bytes = export_model(original.get(), 128);
+    EXPECT_EQ(bytes, export_model(original.get(), 4096));
+    Model restored;
+    ASSERT_EQ(import_model(restored.get(), metadata(original.get()), bytes), BatchCheck::ok);
+    const auto &row = restored.get().pause_groups.at(1);
+    EXPECT_FALSE(row.paused);
+    EXPECT_EQ(row.revision, 2U);
+    EXPECT_EQ(row.input.incarnation, 1U);
+    EXPECT_EQ(row.input.through, 7U);
 }
 
 // C-STORE-007, C-STORE-014: an arbitrarily paged snapshot keeps the exact

@@ -209,9 +209,11 @@ class ManagedCall : public ::testing::Test {
                                       {nullptr, 0}};
         ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
     }
-    uint64_t create(uint64_t agent = agent_a) {
-        const auto created = work.create(
-            WorkNode::create_body(work.instance(agent), 0, "chat", 1, {}, AYNI_TRIGGER_ONCE));
+    uint64_t create(uint64_t agent = agent_a, uint32_t pause_group = 0) {
+        auto body =
+            WorkNode::create_body(work.instance(agent), 0, "chat", 1, {}, AYNI_TRIGGER_ONCE);
+        body.pause_group = pause_group;
+        const auto created = work.create(body);
         EXPECT_EQ(created.status, AYNI_OK);
         return created.result.object.id;
     }
@@ -340,6 +342,26 @@ TEST_F(ManagedCall, async_worker_result_advances_the_same_task_and_preserves_cop
     EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
     EXPECT_EQ(seen_result, "answer");
     EXPECT_EQ(seen_call, pending[0].call);
+}
+
+// ADR-0065: a brief group pause remains a cancellation request for an in-flight model.
+TEST_F(ManagedCall, group_pause_then_resume_before_step_cancels_the_original_delivery) {
+    create(agent_a, 1);
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    cancel_posts_terminal = true;
+    ayni_pause_group_set_v1 body{sizeof(body), 1, 1, 0};
+    auto intent = work.intent(AYNI_INTENT_PAUSE_GROUP_SET, &body, 0);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    body.paused = 0;
+    intent.expected_revision = 1;
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    pump(12);
+    EXPECT_EQ(cancellations, 1U);
+    EXPECT_EQ(pending.size(), 1U);
+    EXPECT_TRUE(pending[0].ended);
 }
 
 TEST_F(ManagedCall, cancellation_waits_for_terminal_and_late_success_does_not_reopen_task) {

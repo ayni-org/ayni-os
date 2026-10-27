@@ -303,9 +303,10 @@ class SubscriptionFixture : public testing::Test {
             opening.ended = true;
         }
     }
-    uint64_t create(uint64_t agent = agent_a) {
-        const auto body =
+    uint64_t create(uint64_t agent = agent_a, uint32_t pause_group = 0) {
+        auto body =
             WorkNode::create_body(work.instance(agent), 0, "observe", 1, {}, AYNI_TRIGGER_ONCE);
+        body.pause_group = pause_group;
         const auto goal = work.create(body);
         EXPECT_EQ(goal.status, AYNI_OK);
         return goal.result.object.id;

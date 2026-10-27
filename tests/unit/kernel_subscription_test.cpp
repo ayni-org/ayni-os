@@ -55,6 +55,31 @@ TEST_F(SubscriptionFixture, half_lease_renewal_confirms_the_requested_absolute_d
     EXPECT_EQ(subscription().valid_until_us, requested);
     EXPECT_EQ(subscription().subscription.generation, initial.subscription.generation);
 }
+// ADR-0065: a group gate uses the same immediate stop boundary and new-generation reopen.
+TEST_F(SubscriptionFixture, group_pause_closes_capture_before_returning_and_reopens_fresh) {
+    create(agent_a, 1);
+    pump(20);
+    const auto before = subscription();
+    ASSERT_EQ(observation().usable, 1U);
+    ayni_pause_group_set_v1 body{sizeof(body), 1, 1, 0};
+    auto intent = work.intent(AYNI_INTENT_PAUSE_GROUP_SET, &body, 0);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    EXPECT_EQ(observation().usable, 0U);
+    pump(8);
+    EXPECT_EQ(subscription().phase, AYNI_SUBSCRIPTION_STOPPED);
+    EXPECT_EQ(camera.pending(), 0U);
+    body.paused = 0;
+    intent.expected_revision = 1;
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    pump(20);
+    ASSERT_EQ(openings.size(), 2U);
+    EXPECT_EQ(subscription().subscription.subscription_id, before.subscription.subscription_id);
+    EXPECT_GT(subscription().subscription.generation, before.subscription.generation);
+    EXPECT_EQ(observation().usable, 1U);
+}
+
 TEST_F(SubscriptionFixture, task_pause_invalidates_cache_and_resume_opens_a_new_generation) {
     const auto goal = create();
     pump(20);

@@ -228,9 +228,11 @@ class ManagedExecution : public ::testing::Test {
             work.node().step();
         }
     }
-    uint64_t create(uint64_t agent = agent_a) {
-        const auto accepted = work.create(
-            WorkNode::create_body(work.instance(agent), 0, "turn", 1, {}, AYNI_TRIGGER_ONCE));
+    uint64_t create(uint64_t agent = agent_a, uint32_t pause_group = 0) {
+        auto body =
+            WorkNode::create_body(work.instance(agent), 0, "turn", 1, {}, AYNI_TRIGGER_ONCE);
+        body.pause_group = pause_group;
+        const auto accepted = work.create(body);
         EXPECT_EQ(accepted.status, AYNI_OK);
         return accepted.result.object.id;
     }
@@ -324,6 +326,31 @@ TEST_F(ManagedExecution,
     pump(10);
     EXPECT_EQ(executor.submissions(), 1U);
 }
+// ADR-0065/C-PERMIT-005: two management controls without step cannot revive old motion.
+TEST_F(ManagedExecution, group_pause_then_resume_before_step_still_stops_the_old_session) {
+    start(AYNI_FORM_SESSION, 200);
+    create(agent_a, 1);
+    wait_submission();
+    pump(20);
+    ASSERT_EQ(gate().phase, AYNI_CONTROL_ACTIVE);
+    const auto samples = executor.samples();
+    const auto renewals = executor.renewals();
+    ayni_pause_group_set_v1 body{sizeof(body), 1, 1, 0};
+    auto intent = work.intent(AYNI_INTENT_PAUSE_GROUP_SET, &body, 0);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    body.paused = 0;
+    intent.expected_revision = 1;
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    work.node().step();
+    pump(20);
+    EXPECT_EQ(executor.samples(), samples);
+    EXPECT_EQ(executor.renewals(), renewals);
+    EXPECT_EQ(executor.submissions(), 1U);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
+}
+
 TEST_F(ManagedExecution, unconfirmed_stop_retains_terminal_and_quarantine_blocks_other_agent) {
     start(AYNI_FORM_PROCEDURE, 2, StopConfirmation::manual);
     create();
