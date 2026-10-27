@@ -1,0 +1,23 @@
+# Re-evaluated on every build; unchanged metadata does not force a recompile.
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${SOURCE_ROOT}"
+    RESULT_VARIABLE revision_status OUTPUT_VARIABLE revision OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND git status --porcelain WORKING_DIRECTORY "${SOURCE_ROOT}"
+    RESULT_VARIABLE changes_status OUTPUT_VARIABLE changes OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT revision_status EQUAL 0 OR NOT changes_status EQUAL 0)
+    message(FATAL_ERROR "Measurement metadata requires a readable Git checkout")
+endif()
+if(changes)
+    set(dirty 1)
+else()
+    set(dirty 0)
+endif()
+set(content "#define AYNI_MEASURE_REVISION \"${revision}\"\n#define AYNI_MEASURE_DIRTY ${dirty}\n")
+set(previous "")
+if(EXISTS "${OUTPUT}")
+    file(READ "${OUTPUT}" previous)
+endif()
+if(NOT content STREQUAL previous)
+    get_filename_component(output_directory "${OUTPUT}" DIRECTORY)
+    file(MAKE_DIRECTORY "${output_directory}")
+    file(WRITE "${OUTPUT}" "${content}")
+endif()

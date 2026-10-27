@@ -1,5 +1,5 @@
 /* Reproducible ABI arena profiles; Native numbers are not ESP32 measurements. */
-#include <ayni/ayni.h>
+#include "measurement_profiles.h"
 #include <stdio.h>
 
 static int measure(const char *label, const ayni_config_v1 *config) {
@@ -104,5 +104,7 @@ int main(void) {
     config.executor_capacity = 1;
     config.execution_binding_capacity = 2;
     failed |= measure("Native two-agent execution profile", &config);
+    config = ayni_measure_maximum_config();
+    failed |= measure("Native maximum capacities (automatic storage)", &config);
     return failed;
 }

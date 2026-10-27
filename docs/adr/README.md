@@ -105,3 +105,5 @@
 | [0067](0067-cpp-sdk-and-public-examples.md) | 无异常 C++ 生命周期封装与四个公开接入示例 | 已接受 | §9.1、P5 |
 
 | [0068](0068-normal-integration-fixtures.md) | 正常集成夹具、编译数据与脱敏轨迹 | 已接受 | §10.1～10.5、P6 |
+
+| [0069](0069-native-capacity-measurements.md) | Native 容量测量与编码开销口径 | 已接受 | §4.2、P6、F18 |
