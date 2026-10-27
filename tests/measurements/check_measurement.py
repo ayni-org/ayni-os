@@ -30,6 +30,11 @@ with tempfile.TemporaryDirectory(prefix="ayni-measure-") as directory:
         check=True, text=True, capture_output=True,
     ).stdout.strip()
     assert result["source_revision"] == revision and result["source_dirty"] in (0, 1)
+    metadata = json.loads(subprocess.run(
+        [sys.argv[1], "--build-info"], check=True, text=True, capture_output=True,
+    ).stdout)
+    for field in ("source_revision", "source_dirty", "build_type", "sanitizer", "compiler"):
+        assert metadata[field] == result[field]
 
 # The C99 query and C++ workload share one maximum configuration. Arena byte
 # counts depend on ABI/platform/build; compare profiles instead of fixing them.
