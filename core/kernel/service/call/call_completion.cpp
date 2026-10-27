@@ -19,6 +19,10 @@ struct ReceiptScratch {
 };
 ayni_call_outcome_t outcome(ProviderMessageKind kind) {
     switch (kind) {
+    case ProviderMessageKind::subscription_started:
+        return AYNI_CALL_SUBSCRIPTION_STARTED;
+    case ProviderMessageKind::subscription_renewed:
+        return AYNI_CALL_SUBSCRIPTION_RENEWED;
     case ProviderMessageKind::completed:
         return AYNI_CALL_COMPLETED;
     case ProviderMessageKind::failed:
@@ -74,14 +78,20 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
     const bool old_boot = receipt.reservation.attempt.boot_epoch != work_.ids.boot_epoch();
     if ((query || old_boot) && (message.kind == ProviderMessageKind::progress ||
                                 message.kind == ProviderMessageKind::cannot_cancel ||
-                                message.kind == ProviderMessageKind::cancel_unknown)) {
+                                message.kind == ProviderMessageKind::cancel_unknown ||
+                                provider_subscription_control(message.kind))) {
         return mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale
                    ? Advance::internal
                    : Advance::applied;
     }
-    const bool terminal_message = message.kind != ProviderMessageKind::progress &&
-                                  message.kind != ProviderMessageKind::cannot_cancel &&
-                                  message.kind != ProviderMessageKind::cancel_unknown;
+    if (!query && !old_boot && provider_subscription_control(message.kind)) {
+        return consume_subscription_control(index, task_index, message, receipt,
+                                            host_.monotonic_now_us(host_.ctx), durable_seq);
+    }
+    if (!query && !old_boot && subscription_stop_pending(index)) {
+        return commit_subscription_stop(index);
+    }
+    const bool terminal_message = provider_terminal(message.kind);
     const auto &execution = work_.calls.state(index).execution;
     if (!query && terminal_message && execution && !work::execution_stopped(*execution)) {
         const auto call_id = work_.calls.identity(index).call_id;
@@ -199,6 +209,22 @@ uint64_t CallRuntime::next_deadline_us() const {
             deadline = active->delivery->deadline_us;
         }
     }
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        const auto &active = slots_[at].active;
+        if (active && active->stage == Stage::lease_stop) {
+            const auto stop = collection_stop_deadline(*active->collection);
+            if (stop < deadline) {
+                deadline = stop;
+            }
+        } else if (active && active->delivery && active->collection) {
+            const auto &lease = *active->collection;
+            if (!lease.inhibition && !lease.pending &&
+                active->delivery->cancel == Delivery::Cancel::none &&
+                lease.renew_at_us < deadline) {
+                deadline = lease.renew_at_us;
+            }
+        }
+    }
     return deadline;
 }
 
@@ -212,6 +238,16 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
     if (mailbox_.has_pending(&blocked)) {
         return true;
     }
+    uint32_t waiting_task = 0;
+    if (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
+        return true;
+    }
+    return calls_ready(now_us, durable_seq, mode);
+}
+
+// Match the ordinary Call progress lane, including retained background leases.
+// A completed transport alone is idle until its Task, query or stop can advance.
+bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
     resources::AdmissionChoice choice{};
     const bool resource_ready = resources_.next(now_us, choice);
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
@@ -232,6 +268,11 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const 
             return true; // advance reports the invariant failure, instead of hiding it.
         }
         const auto &task = work_.tasks.at(task_index);
+        if (subscription_stop_pending(at) ||
+            subscription_reopen_ready(at, now_us, durable_seq, mode) ||
+            subscription_renew_ready(at, now_us, durable_seq)) {
+            return true;
+        }
         if (state.outcome != 0U) {
             if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none) {
                 return mode != Mode::fenced;

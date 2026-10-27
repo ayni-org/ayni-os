@@ -104,7 +104,8 @@ class StrategiesFixture : public ::testing::Test {
                               policies::prompt_bytes_max,
                               1024,
                               model ? 1U : 0U,
-                              model ? &slot : nullptr};
+                              model ? &slot : nullptr,
+                              nullptr};
             ASSERT_EQ(ayni_register_call_capability(kernel, &offer), AYNI_OK);
         }
         ayni_provider_v1 provider{};

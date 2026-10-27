@@ -20,7 +20,11 @@ struct Provider {
     decltype(ayni_provider_v1::submit) submit; // Required bounded owner-thread submission.
     decltype(ayni_provider_v1::cancel) cancel; // Null iff no offer supports cancellation.
     decltype(ayni_provider_v1::query) query;   // Null iff no offer supports outcome queries.
+    decltype(ayni_provider_v1::renew) renew = nullptr; // Required exactly for subscription offers.
 };
+
+// Exact callbacks and destination must match the aggregate typed offers.
+bool valid_provider_callbacks(const Provider &provider);
 
 // Caller-arena directory with stable indices; cannot replace a Provider while
 // a saved Binding or in-flight operation still names its exact version.
@@ -33,8 +37,6 @@ class ProviderRegistry {
     }
     // Borrows storage for the Kernel lifetime; no ownership of callback contexts.
     ProviderRegistry(void *storage, uint32_t capacity) : entries_(storage, capacity) {}
-    // Validates all nested offers before publishing a copy. Failure preserves out.
-    static ayni_status_t decode(const ayni_provider_v1 &input, Provider &out);
     // Input came from decode in this synchronous call; duplicate/full preserves entries.
     ayni_status_t add_validated(const Provider &provider);
     // Exact immutable identity lookup; failure preserves index.

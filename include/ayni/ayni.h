@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 42u
+#define AYNI_ABI_MINOR 43u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1339,6 +1339,8 @@ typedef uint32_t ayni_task_lifecycle_t;
 #define AYNI_TASK_CANCELLED ((ayni_task_lifecycle_t)6)
 #define AYNI_TASK_FAILED ((ayni_task_lifecycle_t)7)
 #define AYNI_TASK_EXPIRED ((ayni_task_lifecycle_t)8)
+/* Live Task waiting for a new subscription sample/state; no polling decision. Since 0.43. */
+#define AYNI_TASK_WAITING ((ayni_task_lifecycle_t)9)
 
 /* Since 0.6. A task of a goal; its owner is the goal's (C-LIFE-020). */
 typedef struct ayni_task_info_v1 {
@@ -1396,6 +1398,12 @@ typedef struct ayni_task_info_v1 {
      * -1 for non-calendar Tasks. Stable across restart. Since 0.41. */
     int64_t calendar_local_s;
     int64_t calendar_utc_s;
+    /* Since 0.43. Durable wait frontier; all zero when no subscription wait. */
+    uint64_t wait_subscription_id;
+    uint64_t wait_generation;
+    uint64_t wait_sequence;
+    uint32_t wait_phase;
+    uint32_t wait_reserved; /* Written zero. */
 } ayni_task_info_v1;
 
 /*
@@ -1632,6 +1640,8 @@ typedef struct ayni_task_step_v1 {
 /* Since 0.31. Defined in calls.h; borrowed only during a strategy callback. */
 struct ayni_call_request_v1;
 struct ayni_task_call_result_v1;
+struct ayni_subscription_info_v1;
+struct ayni_observation_info_v1;
 /* Since 0.37. Defined in calls.h. */
 struct ayni_task_tool_call_v1;
 /* Since 0.40. Defined in memory.h, leased only to the current Task decision. */
@@ -1677,6 +1687,12 @@ typedef struct ayni_task_snapshot_v1 {
     /* Planned civil identity/UTC; -1 for non-calendar Tasks. Since 0.41. */
     int64_t calendar_local_s;
     int64_t calendar_utc_s;
+    /* Since 0.43. Task-scoped subscription diagnostics and copied metadata;
+     * callbacks borrow call_context and are valid only during this decide call. */
+    ayni_status_t (*subscription)(const void *context, ayni_string_v1 step_key,
+                                  struct ayni_subscription_info_v1 *out);
+    ayni_status_t (*subscription_observation)(const void *context, ayni_string_v1 step_key,
+                                              struct ayni_observation_info_v1 *out);
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements; the other planned kinds are in
@@ -1693,6 +1709,10 @@ typedef uint32_t ayni_policy_intent_kind_t;
 #define AYNI_POLICY_REPORT_FAILURE ((ayni_policy_intent_kind_t)6)    /* it cannot be done */
 /* Publish one unconfirmed private memory with the Task checkpoint and step. Since 0.40. */
 #define AYNI_POLICY_WRITE_MEMORY ((ayni_policy_intent_kind_t)7)
+/* Close this Task's retained subscription by step_key; no new authority required. Since 0.43. */
+#define AYNI_POLICY_CLOSE_SUBSCRIPTION ((ayni_policy_intent_kind_t)8)
+/* Wait for new data/state of this Task's subscription step, retaining its lease. Since 0.43. */
+#define AYNI_POLICY_WAIT_SUBSCRIPTION ((ayni_policy_intent_kind_t)9)
 
 typedef struct ayni_policy_intent_v1 {
     uint32_t struct_size;

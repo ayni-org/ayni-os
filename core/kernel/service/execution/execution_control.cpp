@@ -19,7 +19,7 @@ bool valid_nonce(const ayni_executor_nonce_v1 &nonce, uint64_t control_domain_id
 authority::GrantCheck
 ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::Binding &binding,
                           ayni_bytes_v1 arguments, uint64_t now_us, uint64_t durable_seq,
-                          std::optional<work::ExecutionFact> &out_fact) const {
+                          uint64_t task_id, std::optional<work::ExecutionFact> &out_fact) const {
     if ((contract.effects & catalog::call_effect_physical) == 0U) {
         return {AYNI_OK, AYNI_REASON_NONE};
     }
@@ -56,7 +56,7 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
     fact.dependency_count = definition.condition_count;
     for (uint32_t at = 0; at < fact.dependency_count; ++at) {
         const auto status = observations_.require(definition.conditions[at].predicate, now_us,
-                                                  fact.dependencies[at]);
+                                                  fact.dependencies[at], task_id);
         if (status != AYNI_OK) {
             return {status, AYNI_REASON_EXECUTION_OBSERVATION};
         }
@@ -119,7 +119,8 @@ bool ExecutionControl::dependencies_current(uint32_t index, uint64_t now_us) con
     for (uint32_t at = 0; at < fact.dependency_count; ++at) {
         ayni_observation_ref_v1 fresh{};
         if (!observations_.current(fact.dependencies[at], now_us) ||
-            observations_.require(definition.conditions[at].predicate, now_us, fresh) != AYNI_OK) {
+            observations_.require(definition.conditions[at].predicate, now_us, fresh,
+                                  work_.calls.identity(index).task_id) != AYNI_OK) {
             return false;
         }
     }

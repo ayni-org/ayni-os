@@ -3,8 +3,8 @@
 // private checkpoint. A task belongs to one goal and keeps that goal's owner
 // for its life (C-LIFE-020). A READY task waits for its strategy's decision,
 // which ends it, holds it, or commits steps and leaves it READY. A task's
-// steps are unique, bounded and only ever added to, so a task takes at most
-// step_capacity + 1 decisions that do not hold it.
+// steps are unique, bounded and only ever added to. Subscription waits may
+// resume without adding a step; each wake requires new sample/state evidence.
 //
 // An ended task keeps its place until a new task needs one: then the task
 // that ended first gives way, and a task that has not ended never does. A
@@ -26,11 +26,13 @@
 #include "foundation/bounded_array.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
+#include "work/subscription/subscription_wait.h"
 
 #include <ayni/ayni.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace ayni::work {
 
@@ -123,7 +125,9 @@ struct Task {
     catalog::CatalogId checkpoint_writer_id;
     TaskModelCalls model_calls{}; // This Task owns its consumption and independent durable hold.
     TaskCall call{}; // Persisted selected logical call and requested end, never a mailbox slot.
-    uint32_t slot;   // the table's own: which blocks hold them
+    std::optional<SubscriptionWait>
+        subscription_wait{}; // Present only in WAITING or its user PAUSED overlay.
+    uint32_t slot;           // the table's own: which blocks hold them
     // This boot cannot serve an otherwise recoverable task. Kept apart
     // from the durable state so compaction cannot make the hold permanent.
     ayni_status_t recovery_hold_status;
@@ -140,7 +144,17 @@ struct TaskState {
     uint32_t step_count;
     TaskModelCalls model_calls{}; // Preserved across lifecycle/authorization changes.
     TaskCall call{}; // Preserved across authorization; only the call coordinator may clear it.
+    std::optional<SubscriptionWait>
+        subscription_wait{}; // Present only in WAITING or its user PAUSED overlay.
 };
+
+// A wait owns no foreground call. User pause preserves its exact frontier.
+inline bool valid_subscription_wait(const std::optional<SubscriptionWait> &wait,
+                                    ayni_task_lifecycle_t lifecycle, uint64_t call_id) {
+    return wait ? wait->valid() && call_id == 0 &&
+                      (lifecycle == AYNI_TASK_WAITING || lifecycle == AYNI_TASK_PAUSED)
+                : lifecycle != AYNI_TASK_WAITING;
+}
 
 // Pause takes READY to PAUSED and resume takes it back, unless a decision
 // holds it; cancel takes a READY or PAUSED task to CANCELLED, and expire,
@@ -275,6 +289,14 @@ class TaskTable {
     void hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
               foundation::TransitionStamp stamp);
 
+    // Reserve wait, wake and terminal revisions before entering an event wait.
+    static bool can_wait_subscription(const Task &task);
+    // Prevalidated READY decision retains its checkpoint without taking another step key.
+    void wait_subscription(uint32_t index, const SubscriptionWait &basis,
+                           foundation::TransitionStamp stamp);
+    // Latest data/state changed; ready exactly once, with a final revision reserved for
+    // cancellation.
+    bool wake_subscription(uint32_t index, foundation::TransitionStamp stamp);
     // The steps and private checkpoint a decision of the READY task index
     // commits, in the transition stamp that then applies the decision by
     // progress() or work::end_task() (ADR-0024). add_step appends key and

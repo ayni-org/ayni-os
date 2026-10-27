@@ -83,6 +83,18 @@ bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotR
 }
 
 uint16_t task_state_version_for(const Task &task, uint16_t base) {
+    if (task.subscription_wait) {
+        switch (base) {
+        case task_state_authority_record_version:
+            return task_state_subscription_wait_authority_version;
+        case task_state_reauthorization_record_version:
+            return task_state_subscription_wait_reauthorization_version;
+        case task_state_raise_limit_record_version:
+            return task_state_subscription_wait_raise_version;
+        default:
+            return task_state_subscription_wait_version;
+        }
+    }
     if (base == task_state_resume_wait_record_version) {
         return base;
     }
@@ -112,6 +124,9 @@ uint16_t task_state_version_for(const Task &task, uint16_t base) {
 }
 
 uint32_t task_state_size_for(uint16_t version) {
+    if (version >= task_state_subscription_wait_version) {
+        return task_state_max_size;
+    }
     if (version >= task_state_call_record_version) {
         return task_state_call_record_size;
     }
@@ -123,14 +138,18 @@ uint16_t task_state_base_version(uint16_t version) {
     switch (version) {
     case task_state_runtime_record_version:
     case task_state_call_record_version:
+    case task_state_subscription_wait_version:
         return task_state_record_version;
     case task_state_runtime_authority_record_version:
     case task_state_call_authority_record_version:
+    case task_state_subscription_wait_authority_version:
         return task_state_authority_record_version;
     case task_state_runtime_reauthorization_record_version:
     case task_state_call_reauthorization_record_version:
+    case task_state_subscription_wait_reauthorization_version:
         return task_state_reauthorization_record_version;
     case task_state_call_raise_limit_record_version:
+    case task_state_subscription_wait_raise_version:
         return task_state_raise_limit_record_version;
     default:
         return version;
@@ -155,11 +174,18 @@ void write_task_state_record(const Task &task, uint8_t *body, uint16_t version) 
         writer.u64(task.call.id);
         writer.u32(static_cast<uint32_t>(task.call.end));
     }
+    if (version >= task_state_subscription_wait_version) {
+        const auto &wait = *task.subscription_wait;
+        writer.u64(wait.subscription_id);
+        writer.u64(wait.generation);
+        writer.u64(wait.sequence);
+        writer.u32(static_cast<uint32_t>(wait.phase));
+    }
 }
 
 bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out,
                             uint16_t version) {
-    if (version < task_state_record_version || version > task_state_resume_wait_record_version ||
+    if (version < task_state_record_version || version > task_state_version_max ||
         size != task_state_size_for(version)) {
         return false;
     }
@@ -185,8 +211,18 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
         out.state.call.id = reader.u64();
         out.state.call.end = static_cast<TaskCall::End>(reader.u32());
     }
+    if (version >= task_state_subscription_wait_version) {
+        SubscriptionWait wait{};
+        wait.subscription_id = reader.u64();
+        wait.generation = reader.u64();
+        wait.sequence = reader.u64();
+        wait.phase = static_cast<SubscriptionPhase>(reader.u32());
+        out.state.subscription_wait = wait;
+    }
     return reader.ok() && out.state.model_calls.valid() &&
-           out.state.call.valid(out.state.lifecycle);
+           out.state.call.valid(out.state.lifecycle) &&
+           valid_subscription_wait(out.state.subscription_wait, out.state.lifecycle,
+                                   out.state.call.id);
 }
 
 uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range) {

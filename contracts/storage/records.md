@@ -401,3 +401,11 @@ Call 21/v5 是正文已擦除的显式表示，用于快照及擦除后晚到完
 - **管理命令原始 Goal echo**：仅 CALENDAR_* 在原创建字段之后追加上述完整规则值（20 字节固定部分加 TZ）；普通 Goal 编码不变。审批/重新授权比较完整规则，不能仅比较日历 kind 或当前系统时区。
 
 完整事务须保持 Calendar 游标、Goal 状态、Task 创建与初始元数据同批；周期重新授权跳过积压的 CALENDAR 伙伴限定同一 Goal 和 stamp。实际故障/恢复矩阵仍未验收，正常重开证据与最终测试结果见对应 PR。
+
+## Task 订阅与等待（ABI 0.43，ADR-0063）
+
+schema 2 保持，新增版本均 REQUIRED，旧 reader 显式拒绝并保留目录。CALL_STATE type21/v6 复用 v1 完整前缀及 action 后追加订阅尾；v7 使用 v5 擦除布局再追加同一尾。尾依次 source 的 u32 长度/字节，source_version、lease_ms、phase、desired、attachment 各 u32，generation、lease_sequence 各 u64，control_status、control_reason 各 u32：固定48 B 加 source正文。phase 1..6 对应公共枚举，desired 1/2=open/closed，attachment 1/2=foreground/background。generation 是全局 Kernel ID、也作为当前代 action.operation；初代等于原 operation，后代只在已知停止且旧 borrow 返回后替换旧 action/attempt。无 monotonic 截止、占用或 raw media 持久化。
+
+STARTED 的 foreground→background、开启动作步骤和 Task 前台释放同批；之后后台回执不要求更新 Task.current_call。journal 仍每批至多一条 Call，Task/authority 变化逐 Call 收敛。正常快照/日志跨表校验拥有者、前后台引用与 Task 外键，UNKNOWN 阻止不安全回收。物理 Call 使用 scoped 观察时写 type21/v8（原v3）或v9（原v5擦除），每条观察依赖在原 source/version/boot/generation/sequence 后追加 subscription_id u64，0为Host；旧v3/v5读取为Host引用。
+
+TASK_STATE type6/v13/v14/v15/v16 对应原v1/v2/v3/v7 的普通、授权、重新授权及提高模型上限配对规则；在56 B选定调用布局后追加 wait_subscription_id、generation、sequence 三个u64与 phase u32，共84 B。只在有等待前沿时使用，call_id/end同零，lifecycle只能WAITING或其用户PAUSED；其他版本不能表达WAITING。snapshot仅用v13。等待所指 Call 必须属同一Task且有订阅事实，前沿代际不得晚于当前代际；状态/序号允许落后以在下一owner步唤醒。普通无等待行继续使用原版本，唤醒/终态清除等待；所有授权/模型元数据更新保留它。正常公开重开验证见 `SubscriptionFixture.orderly_restart_of_waiting_task_retains_frontier_and_follows_new_generation`；不替代新的故障/恢复专项。

@@ -15,11 +15,13 @@ std::size_t CallRuntime::storage_size(Limits limits) {
 
 CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
                          resources::ResourceAdmission &resources, resources::PermitTable &permits,
-                         const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
+                         knowledge::ObservationTable &observations,
+                         SubscriptionIngressPort subscription_ingress, ProviderMailbox &mailbox,
                          ExecutorMailbox &executors, AttemptSequence &attempts,
                          const ayni_host_v1 &host)
-    : work_(work), catalogs_(catalogs), resources_(resources), mailbox_(mailbox),
-      attempts_(attempts), host_(host), limits_(limits), slots_(static_cast<Slot *>(storage)),
+    : observations_(observations), subscription_ingress_(subscription_ingress), work_(work),
+      catalogs_(catalogs), resources_(resources), mailbox_(mailbox), attempts_(attempts),
+      host_(host), limits_(limits), slots_(static_cast<Slot *>(storage)),
       staging_(limits.capacity == 0U ? nullptr
                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
       receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes),
@@ -37,6 +39,17 @@ CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Ca
 void CallRuntime::release(uint32_t index, uint64_t now_us) {
     auto &active = slots_[index].active;
     if (!active) {
+        return;
+    }
+    if (active->stage != Stage::lease_stop) {
+        close_subscription_gate(index);
+    }
+    const bool uncertain =
+        active->collection &&
+        (active->stage == Stage::lease_stop ||
+         (work_.calls.occupied(index) && work_.calls.state(index).outcome == AYNI_CALL_ABANDONED));
+    if (uncertain && now_us < collection_stop_deadline(*active->collection)) {
+        await_subscription_stop(index);
         return;
     }
     if (control_.holds_lease(active->call_id)) {
@@ -123,6 +136,14 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     if (mailbox_.has_pending(&blocked)) {
         return consume(now_us, durable_seq);
     }
+    uint32_t waiting_task = 0;
+    if (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
+        if (!work_.tasks.wake_subscription(waiting_task, work_.transitions.next())) {
+            return Advance::internal;
+        }
+        work_.forget_due_work();
+        return Advance::applied;
+    }
     for (uint32_t scanned = 0; scanned < limits_.capacity; ++scanned) {
         const uint32_t index = cursor_;
         cursor_ = (cursor_ + 1U) % limits_.capacity;
@@ -152,6 +173,11 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
         return Advance::internal;
     }
     const auto &task = work_.tasks.at(task_index);
+    if (slots_[index].active && slots_[index].active->stage == Stage::lease_stop) {
+        return state.outcome == 0 && mode != Mode::fenced
+                   ? restore_wait(index, task_index, now_us, mode)
+                   : Advance::idle;
+    }
     if (slots_[index].active && slots_[index].active->stage == Stage::retiring) {
         // A storage reload may have retained the physical lease after its volatile
         // Provider terminal was drained. First persist stop, then retain UNKNOWN.
@@ -161,6 +187,12 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     }
 
     const bool content_current = task_content_current({work_, now_us, durable_seq}, task_index);
+    if (subscription_reopen_ready(index, now_us, durable_seq, mode)) {
+        return reopen_subscription(index, task_index, now_us, durable_seq, mode);
+    }
+    if (subscription_stop_pending(index)) {
+        return commit_subscription_stop(index);
+    }
     if (state.outcome != 0U) {
         if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none &&
             mode != Mode::fenced) {
@@ -269,9 +301,16 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
 // including when max_items=1. No hidden second callback bypasses the step budget.
 CallRuntime::Advance CallRuntime::advance_managed(uint64_t now_us, uint64_t durable_seq, Mode mode,
                                                   JournalAdmission admission) {
+    const auto expired = release_expired_subscriptions(now_us);
+    if (expired != Advance::idle) {
+        return expired;
+    }
     const auto urgent = control_.advance_urgent(now_us, durable_seq, mode);
     if (urgent != Advance::idle) {
         return urgent;
+    }
+    if (subscription_cancel_ready()) {
+        return advance_subscription_control(now_us, durable_seq, mode, admission);
     }
     if (next_lane_ == NextLane::control) {
         next_lane_ = NextLane::work;
@@ -279,6 +318,12 @@ CallRuntime::Advance CallRuntime::advance_managed(uint64_t now_us, uint64_t dura
         if (control != Advance::idle) {
             return control;
         }
+        const auto subscription =
+            advance_subscription_control(now_us, durable_seq, mode, admission);
+        if (subscription != Advance::idle) {
+            return subscription;
+        }
+
     } else {
         next_lane_ = NextLane::control;
     }

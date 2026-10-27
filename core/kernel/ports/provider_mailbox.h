@@ -34,7 +34,23 @@ enum class ProviderMessageKind {
     cannot_cancel,
     cancel_unknown,
     abandoned,
+    subscription_started,
+    subscription_renewed,
 };
+
+// One classification for mailbox, normal consumption and fenced/closing drain.
+inline bool provider_subscription_control(ProviderMessageKind kind) {
+    return kind == ProviderMessageKind::subscription_started ||
+           kind == ProviderMessageKind::subscription_renewed;
+}
+inline bool provider_cancel_control(ProviderMessageKind kind) {
+    return kind == ProviderMessageKind::cannot_cancel ||
+           kind == ProviderMessageKind::cancel_unknown;
+}
+inline bool provider_terminal(ProviderMessageKind kind) {
+    return kind == ProviderMessageKind::completed || kind == ProviderMessageKind::failed ||
+           kind == ProviderMessageKind::cancelled || kind == ProviderMessageKind::abandoned;
+}
 
 // Encodes a measured typed payload straight into its lane, under the ingress
 // lock, so no producer-side buffer of the lane's size is needed.
@@ -46,7 +62,7 @@ struct PayloadWriter {
 // Untrusted, bounded message view; input data is copied before post returns.
 struct ProviderMessage {
     ProviderMessageKind kind;      // Chooses progress, cancel control or terminal lane.
-    uint64_t sequence;             // Positive for progress, zero for all reliable receipts.
+    uint64_t sequence;             // Positive for progress/lease controls; zero for other receipts.
     ayni_status_t status;          // Classified scalar, interpreted by the domain consumer.
     ayni_reason_t reason;          // Classified scalar, never vendor text or credentials.
     ayni_bytes_v1 payload;         // Schema-owned bytes; cancel control has no payload.
@@ -100,6 +116,10 @@ class ProviderMailbox {
     // Capacity or malformed identity errors preserve out and consume no identity.
     ayni_status_t reserve(ayni_attempt_ref_v1 attempt, ProviderReservation &out,
                           uint32_t written_limit = 0);
+    // Owner reserves one exact lease ACK before start/renew callback. Its metadata
+    // lane is independent of cancel/terminal; a result cannot invent a requested sequence.
+    bool expect_subscription_control(ProviderReservation reservation, ProviderMessageKind kind,
+                                     uint64_t sequence);
     // Owner: target for a live exact reservation; null when stale. Its address
     // survives reuse, but callers must retain the original attempt identity.
     ayni_provider_completion_t *completion(ProviderReservation reservation);
@@ -152,6 +172,12 @@ class ProviderMailbox {
         Result result; // Cannot-cancel/unknown, always without payload.
         Stage stage;   // One pending control is consumed once before terminal.
     };
+    // Request metadata and one non-replaceable ACK; no payload stride is needed.
+    struct LeaseControl {
+        ProviderMessageKind kind;     // Exactly the requested start or renew ACK kind.
+        uint64_t sequence;            // Strictly next confirmed lease control, positive.
+        std::optional<Result> result; // Empty before the Provider posts its reserved ACK.
+    };
     struct Attempt {
         ayni_attempt_ref_v1 identity;        // Exact nonzero incarnation of this reserved slot.
         uint64_t last_progress_sequence = 0; // Highest seen; zero means no progress ever posted.
@@ -159,6 +185,8 @@ class ProviderMailbox {
         std::optional<Cancel> cancel;        // Empty before the first accepted cancel response.
         std::optional<Result> terminal;      // Immutable once posted, released only by owner ack.
         uint32_t written_limit = 0;          // Bytes a written terminal may take; 0 refuses one.
+        std::optional<LeaseControl> lease_control{}; // Reserved only by an explicit owner request.
+        uint64_t last_lease_sequence = 0; // Highest acknowledged lease control, 0 before start.
     };
     struct Slot {
         ayni_provider_completion target; // Immutable owner/address across slot incarnations.
@@ -168,8 +196,6 @@ class ProviderMailbox {
     // kind classification and address math read only immutable configuration.
     Attempt *find(ProviderReservation reservation);
     static const Result *pending(const Attempt &attempt);
-    static bool is_cancel(ProviderMessageKind kind);
-    static bool is_terminal(ProviderMessageKind kind);
     ayni_status_t check_message(const ProviderMessage &message) const;
     uint8_t *payload_of(uint32_t index, ProviderMessageKind kind) const;
     void release(uint32_t index);

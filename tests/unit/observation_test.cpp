@@ -1,7 +1,9 @@
 // ADR-0050: normal public observation facts consumed by Scene prerequisites.
 #include "kernel_node.h"
+#include "knowledge/observation/observation_table.h"
 #include <ayni/observations.h>
 #include <gtest/gtest.h>
+#include <vector>
 
 namespace {
 using ayni::test::Node;
@@ -134,5 +136,60 @@ TEST(ObservationApi, source_failures_precede_expiry_but_future_time_precedes_sou
     sample.source_id = {"missing", 7};
     sample.captured_at_us = node.sim().now_us() + 1;
     EXPECT_EQ(ayni_publish_observation(node.kernel(), &sample), AYNI_INVALID_ARGUMENT);
+}
+// ADR-0063/C-SUB-002: Scene requirements select the owning Task's scope and
+// preserve exact dependency identity; closing one scope cannot validate another.
+TEST(ObservationTable, task_scopes_isolate_scene_dependencies_and_closed_refs_stay_invalid) {
+    using ayni::catalog::ObservationSource;
+    using ayni::catalog::ObservationSources;
+    using ayni::knowledge::ObservationTable;
+    constexpr uint32_t source_count = 1;
+    constexpr uint32_t subscriptions = 2;
+    std::vector<uint64_t> registry_bytes(
+        ObservationSources::storage_size(source_count) / sizeof(uint64_t) + 1);
+    ObservationSources sources(registry_bytes.data(), source_count);
+    ObservationSource description{};
+    ASSERT_TRUE(description.id.assign(source_id));
+    ASSERT_TRUE(description.unit.assign({"bool", 4}));
+    description.version = 1;
+    description.kind = AYNI_OBSERVATION_BOOL;
+    description.origin = AYNI_OBSERVATION_MEASURED;
+    description.validity_max_us = 100;
+    ASSERT_EQ(sources.add_validated(description), AYNI_OK);
+    std::vector<uint64_t> bytes(
+        ObservationTable::storage_size(source_count, subscriptions) / sizeof(uint64_t) + 1);
+    ObservationTable facts(sources, bytes.data(), source_count, subscriptions);
+    facts.begin_boot(1);
+    facts.begin_subscription(0, 0, 10, 20, 30);
+    facts.begin_subscription(1, 0, 11, 21, 31);
+    facts.activate_subscription(0, 30, 100);
+    facts.activate_subscription(1, 31, 100);
+    ayni::knowledge::ObservationInput sample{};
+    sample.source = description.id;
+    sample.source_version = 1;
+    sample.generation = 30;
+    sample.sequence = 1;
+    sample.captured_at_us = 1;
+    sample.valid_for_us = 100;
+    sample.quality = AYNI_OBSERVATION_GOOD;
+    sample.value = 1;
+    ASSERT_EQ(facts.publish_subscription(sample, 0, 20, 1), AYNI_OK);
+    const ayni::catalog::ObservationCondition condition{description.id, 1, 1, 1, 100};
+    ayni_observation_ref_v1 a{}, b{};
+    ASSERT_EQ(facts.require(condition, 1, a, 10), AYNI_OK);
+    EXPECT_EQ(facts.require(condition, 1, b, 11), AYNI_NOT_READY);
+    sample.generation = 31;
+    ASSERT_EQ(facts.publish_subscription(sample, 1, 21, 1), AYNI_OK);
+    ASSERT_EQ(facts.require(condition, 1, b, 11), AYNI_OK);
+    EXPECT_NE(a.subscription_id, b.subscription_id);
+    EXPECT_TRUE(facts.current(a, 1));
+    EXPECT_TRUE(facts.current(b, 1));
+    facts.close_subscription(0);
+    EXPECT_FALSE(facts.current(a, 1));
+    EXPECT_TRUE(facts.current(b, 1));
+    EXPECT_EQ(facts.require(condition, 1, a, 10), AYNI_NOT_READY);
+    facts.begin_subscription(0, 0, 10, 20, 32);
+    facts.activate_subscription(0, 32, 100);
+    EXPECT_FALSE(facts.current(a, 1));
 }
 } // namespace

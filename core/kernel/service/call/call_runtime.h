@@ -6,6 +6,7 @@
 #include "kernel/config/catalogs.h"
 #include "kernel/ports/attempt_sequence.h"
 #include "kernel/ports/provider_mailbox.h"
+#include "kernel/ports/subscription_ingress_port.h"
 #include "kernel/service/execution/execution_control.h"
 #include "kernel/service/model/work_model.h"
 #include "knowledge/observation/observation_table.h"
@@ -34,7 +35,8 @@ class CallRuntime {
     // All owners and the aligned arena outlive this coordinator and its producers.
     CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
                 resources::ResourceAdmission &resources, resources::PermitTable &permits,
-                const knowledge::ObservationTable &observations, ProviderMailbox &mailbox,
+                knowledge::ObservationTable &observations,
+                SubscriptionIngressPort subscription_ingress, ProviderMailbox &mailbox,
                 ExecutorMailbox &executors, AttemptSequence &attempts, const ayni_host_v1 &host);
     CallRuntime(const CallRuntime &) = delete;
     CallRuntime &operator=(const CallRuntime &) = delete;
@@ -63,10 +65,19 @@ class CallRuntime {
     Advance advance_managed(uint64_t now_us, uint64_t durable_seq, Mode mode,
                             JournalAdmission admission);
     bool control_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
-        return control_.ready(now_us, durable_seq, mode);
+        return subscription_expiry_ready(now_us) || subscription_cancel_ready() ||
+               control_.ready(now_us, durable_seq, mode);
     }
     // Ready/deadline projection does not invoke Providers or mutate domain state.
     bool ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    // Source/Task refusal frontier closes all affected gates even with no journal room.
+    // This performs bounded owner bookkeeping only, never Provider callbacks.
+    void refresh_subscription_gates(uint64_t now_us, uint64_t durable_seq, Mode mode);
+    // Task and current lease must still permit collection, independent of queued transport.
+    bool subscription_usable(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
+    // Trusted owner projection; phase is distinct from the underlying Call action outcome.
+    ayni_status_t subscription_info(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                                    ayni_subscription_info_v1 &out) const;
     // Pure projection of the selected call's pending dependency; never caches it in Task.
     ayni_call_wait_t waiting(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                              uint64_t &waited_us) const;
@@ -79,7 +90,30 @@ class CallRuntime {
     bool rebind_restored();
 
   private:
-    enum class Stage { queued, prepared, barrier, submitted, waiting_stop, retiring, blocked };
+    enum class Stage {
+        queued,
+        prepared,
+        barrier,
+        submitted,
+        waiting_stop,
+        retiring,
+        lease_stop,
+        blocked
+    };
+    // A requested absolute deadline is kept until its exact reliable ACK arrives.
+    struct LeaseRequest {
+        uint64_t sequence;           // Positive control serial, STARTED is 1.
+        uint64_t requested_until_us; // Exact finite extension proposed to Provider.
+        uint64_t renew_at_us;        // Half-duration schedule fixed when the request was issued.
+    };
+    struct CollectionLease {
+        uint64_t
+            valid_until_us;   // Confirmed/current opening deadline, never extended by ACK arrival.
+        uint64_t renew_at_us; // Half-duration point; UINT64_MAX while awaiting control or closing.
+        std::optional<work::CallCancelCause>
+            inhibition{};                    // Sticky refusal before its journal row fits.
+        std::optional<LeaseRequest> pending; // None when no requested ACK is outstanding.
+    };
     struct Delivery {
         ProviderReservation reservation; // Mailbox-owned exact incarnation, borrowed until ack.
         const catalog::Provider *provider =
@@ -96,7 +130,10 @@ class CallRuntime {
         uint64_t call_id; // Matches this CallTable slot; detects any premature replacement.
         Stage stage; // queued: no claim; prepared: claim only; barrier/submitted: delivery too.
         resources::ResourceClaim claim{}; // Empty while queued, otherwise exact held generation.
-        std::optional<Delivery> delivery; // Present in barrier, submitted and waiting_stop stages.
+        std::optional<Delivery>
+            delivery; // Present in barrier/submitted/waiting_stop, never lease_stop.
+        std::optional<CollectionLease>
+            collection{}; // Subscription lease outlives an uncertain ended borrow.
     };
     struct Slot {
         std::optional<Active> active;
@@ -108,7 +145,10 @@ class CallRuntime {
         catalog::BindingLinks links; // Catalog resolution, not cached authority or availability.
         uint32_t input_size;         // Canonical bytes in staging_, bounded by limits_.input_bytes.
         std::optional<work::ExecutionFact>
-            execution;                  // Validated original constraints for physical calls only.
+            execution; // Validated original constraints for physical calls only.
+        std::optional<uint32_t> subscription_index; // Present only for Task-local close or wait.
+        std::optional<work::SubscriptionWait>
+            wait_basis;                 // Present iff this proposal waits at a copied frontier.
         ayni_policy_intent_kind_t kind; // REQUEST_CALL or REQUEST_MODEL, matched at consumption.
     };
     struct Decision {
@@ -131,6 +171,13 @@ class CallRuntime {
         uint32_t positions;  // Offered GoalType tool positions, as bits.
     };
     static ayni_status_t stage_request(void *context, const ayni_call_request_v1 *request);
+    // Resolve only within the active Task decision and current content capability.
+    ayni_status_t subscription_step(ayni_string_v1 step, uint32_t &index) const;
+    // Task-scoped copies, only while the strategy's decision capability is active.
+    static ayni_status_t read_subscription(const void *context, ayni_string_v1 step,
+                                           ayni_subscription_info_v1 *out);
+    static ayni_status_t read_subscription_observation(const void *context, ayni_string_v1 step,
+                                                       ayni_observation_info_v1 *out);
     static ayni_status_t read_result(const void *context, ayni_string_v1 step,
                                      ayni_task_call_result_v1 *out);
     static ayni_status_t read_tool_call(const void *context, ayni_string_v1 step, uint32_t index,
@@ -144,6 +191,10 @@ class CallRuntime {
     // text within its limit. Shape was checked when posted; this adds the catalogs.
     bool valid_tool_calls(uint32_t task_index, uint32_t positions, ayni_bytes_v1 list) const;
     ayni_status_t stage(const ayni_call_request_v1 &request);
+    // Close uses only a Task-local step; it never reauthorizes capture or allocates I/O.
+    ayni_status_t stage_subscription_target(const ayni_call_request_v1 &request);
+    // Install one copied proposal and its matching policy intent in the original output.
+    void stage_intent(const Proposal &proposal);
     authority::GrantCheck check_input(uint32_t task_index, const catalog::Binding &binding,
                                       ayni_bytes_v1 domain, const work::CallInputView &input,
                                       uint64_t now_us, uint64_t durable_seq) const;
@@ -154,6 +205,51 @@ class CallRuntime {
     // Fencing never drops pending receipts. Explicit unwritable shutdown may
     // discard volatile outcomes without reporting a committed business success.
     Advance drain_transport(Mode mode);
+    static constexpr uint64_t microseconds_per_millisecond = 1000; // Host request unit conversion.
+    // Current latest sample/state frontier, independent of renewal ACK count.
+    work::SubscriptionWait subscription_wait_basis(uint32_t index) const;
+    // A waiting Task wakes once when its latest frontier changes; no polling decision.
+    bool next_subscription_wakeup(uint64_t now_us, uint64_t durable_seq,
+                                  uint32_t &task_index) const;
+    // One lease computation serves initial submit and every renewal.
+    static LeaseRequest plan_subscription_lease(uint64_t now_us, uint32_t lease_ms,
+                                                uint64_t sequence);
+    // Bind closed sink and cache lifetime before the first Provider callback.
+    bool prepare_subscription_delivery(uint32_t index, uint64_t now_us,
+                                       ayni_subscription_open_v1 &out);
+    // Reliable lease ACK is not a terminal and must not release the transport reservation.
+    Advance consume_subscription_control(uint32_t index, uint32_t task_index,
+                                         const ProviderMessage &message,
+                                         const ProviderReceipt &receipt, uint64_t now_us,
+                                         uint64_t durable_seq);
+    // One renewal request, reusing complete saved arguments and fresh authority checks.
+    Advance renew_subscription(uint32_t index, uint64_t now_us, uint64_t durable_seq);
+    // Independent cancellations stay ready even while journal admission is blocked.
+    bool subscription_cancel_ready() const;
+    // Pending domain stop remains ready after its independent cancel was already sent.
+    bool subscription_stop_pending(uint32_t index) const;
+    // Uncertain collection retains its units until the longest requested lease ends.
+    static uint64_t collection_stop_deadline(const CollectionLease &lease);
+    void await_subscription_stop(uint32_t index);
+    bool subscription_expiry_ready(uint64_t now_us) const;
+    Advance release_expired_subscriptions(uint64_t now_us);
+    // Routine renew readiness is reported only through the journal-admitted work lane.
+    bool subscription_renew_ready(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
+    // Revoke the locked producer projection and cached knowledge in the same owner turn.
+    void close_subscription_gate(uint32_t index);
+    // One independent cancel/renew callback within the step budget; no wait for persistence.
+    Advance advance_subscription_control(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                         JournalAdmission admission);
+    // Persist this generation's previously established refusal before consuming a terminal.
+    Advance commit_subscription_stop(uint32_t index);
+    // A stopped preserved subscription can rejoin resource admission, with a new operation.
+    Advance reopen_subscription(uint32_t index, uint32_t task_index, uint64_t now_us,
+                                uint64_t durable_seq, Mode mode);
+    // Same eligibility predicate for advance and readiness; no eager new-generation allocation.
+    bool subscription_reopen_ready(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                                   Mode mode) const;
+    // One original-selection/domain compatibility proof for restore and normal subscription reopen.
+    bool compatible_call(uint32_t index, catalog::BindingLinks &links) const;
     Advance
     cancel_transport(Delivery &delivery); // One shared cancel port contract, never a terminal.
     bool transport_ready(Mode mode) const;
@@ -168,6 +264,8 @@ class CallRuntime {
     bool consume_query(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                        foundation::TransitionStamp stamp);
     Advance end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
+    // Scan domain calls and their shared admission queue after reliable ingress.
+    bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
     Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, Mode mode);
     Advance progress_dispatch(uint32_t index, uint32_t task_index, uint64_t now_us,
@@ -199,6 +297,10 @@ class CallRuntime {
         return stage == Stage::submitted || stage == Stage::waiting_stop;
     }
 
+    knowledge::ObservationTable
+        &observations_; // Borrowed knowledge owner, never copied sample state.
+    SubscriptionIngressPort
+        subscription_ingress_; // Fixed capability for locked worker-gate projection.
     WorkModel &work_;          // Domain facts, never accessed by Provider worker threads.
     const Catalogs &catalogs_; // Closed before work starts.
     resources::ResourceAdmission &resources_; // Sole owner of occupancy and queue fairness.

@@ -9,6 +9,7 @@
 #include <ayni/authority.h>
 #include <ayni/control.h>
 #include <ayni/resources.h>
+#include <ayni/subscriptions.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,7 +20,7 @@ typedef uint32_t ayni_call_form_t;
 #define AYNI_CALL_UNARY ((ayni_call_form_t)1)
 /* One tracked operation, whose effects are recorded independently. Since 0.31. */
 #define AYNI_CALL_ACTION ((ayni_call_form_t)2)
-/* Recognized; execution requires subscription support. Since 0.31. */
+/* Finite Task-owned collection lease; implemented Since 0.43. Declared Since 0.31. */
 #define AYNI_CALL_SUBSCRIPTION ((ayni_call_form_t)3)
 typedef uint32_t ayni_call_class_t;
 /* Ordinary capability, still subject to all declared effects. Since 0.31. */
@@ -109,7 +110,7 @@ typedef struct ayni_task_call_result_v1 {
     uint32_t struct_size;
     uint32_t outcome;         /* Zero pending; otherwise AYNI_CALL_* terminal value. */
     uint64_t logical_call_id; /* Stable nonzero identity. */
-    uint64_t operation_id;    /* Stable nonzero operation identity, including pure calls. */
+    uint64_t operation_id;    /* Current generation operation; stable for ordinary calls. */
     uint64_t requires_seq;    /* Last result commit sequence; zero before terminal. */
     ayni_status_t status;     /* Classified result status. */
     ayni_reason_t reason;     /* Classified result cause. */
@@ -158,6 +159,8 @@ typedef struct ayni_call_contract_v1 {
     uint32_t result_text_limit; /* Bytes, 0..CALL_TEXT_BYTES_MAX; also bounds a tool list. */
     uint32_t resource_count;    /* 0..CALL_RESOURCE_COUNT_MAX. */
     const ayni_call_resource_v1 *resources; /* Null only when resource_count is zero. */
+    /* Since 0.43. Required for SUBSCRIPTION, null for every other form. Copied. */
+    const ayni_subscription_contract_v1 *subscription;
 } ayni_call_contract_v1;
 
 /* Supplements the authority descriptor of the same exact ID/version. */
@@ -190,6 +193,10 @@ typedef uint32_t ayni_call_outcome_t;
 #define AYNI_CALL_ABANDONED ((ayni_call_outcome_t)7)
 /* Core-only terminal: background resource wait expired before dispatch. Since 0.33. */
 #define AYNI_CALL_SKIPPED ((ayni_call_outcome_t)8)
+/* Reliable start ACK; sequence=1, no payload, keeps the delivery borrow. Since 0.43. */
+#define AYNI_CALL_SUBSCRIPTION_STARTED ((ayni_call_outcome_t)9)
+/* Reliable renew ACK; exact requested positive lease sequence, no payload. Since 0.43. */
+#define AYNI_CALL_SUBSCRIPTION_RENEWED ((ayni_call_outcome_t)10)
 typedef uint32_t ayni_call_effect_t;
 /* Affirmative evidence of no external effect. Since 0.31. */
 #define AYNI_CALL_EFFECT_NONE ((ayni_call_effect_t)1)
@@ -230,7 +237,7 @@ typedef struct ayni_provider_result_v1 {
     uint32_t struct_size;        /* sizeof this structure. */
     ayni_call_outcome_t outcome; /* One explicit delivery kind. */
     ayni_attempt_ref_v1 attempt; /* Original request identity, never read from a reused slot. */
-    uint64_t sequence;           /* Positive for progress, zero for reliable receipts. */
+    uint64_t sequence;           /* Positive for progress/lease ACK, zero for other receipts. */
     ayni_status_t status;        /* Classified result, not a vendor status number. */
     ayni_reason_t reason;        /* Public cause; NONE when there is no finer classification. */
     ayni_call_effect_t effect;   /* Explicit knowledge, never inferred from HTTP status. */
@@ -284,7 +291,7 @@ typedef struct ayni_provider_request_v1 {
     uint32_t capability_version;  /* Exact registered version. */
     ayni_attempt_ref_v1 attempt;  /* Nonzero boot/request pair; never reused. */
     uint64_t logical_call_id;     /* Stable across attempts of this step. */
-    uint64_t operation_id;        /* Stable action identity; also allocated for pure calls. */
+    uint64_t operation_id;        /* Current generation operation; stable for ordinary calls. */
     uint64_t deadline_us;         /* Current boot monotonic deadline. */
     ayni_string_v1 capability_id; /* Matched capability, not model-supplied endpoint. */
     ayni_string_v1 endpoint_id;   /* Trusted local endpoint token; never a URL. */
@@ -306,6 +313,8 @@ typedef struct ayni_provider_request_v1 {
     uint32_t tool_reserved; /* Written zero. */
     const void *tool_context;
     ayni_status_t (*tool)(const void *context, uint32_t index, ayni_tool_v1 *out);
+    /* Since 0.43. Non-null only for a subscription; copy during submit. */
+    const ayni_subscription_open_v1 *subscription;
 } ayni_provider_request_v1;
 
 /* All callbacks run on the owner thread, without reentry or blocking I/O.
@@ -330,6 +339,9 @@ typedef struct ayni_provider_v1 {
     /* Required iff at least one offer declares remote outcome queries. */
     ayni_submit_result_t (*query)(void *ctx, uint64_t operation_id, ayni_attempt_ref_v1 attempt,
                                   ayni_provider_completion_t *completion);
+    /* Since 0.43. Required for subscription offers; nonblocking, ACK through
+     * the original completion. REJECTED_NOT_RETAINED preserves the old lease. */
+    ayni_submit_result_t (*renew)(void *ctx, const ayni_subscription_renew_v1 *request);
 } ayni_provider_v1;
 
 /* Explicit immutable binding, checked as a whole before start. Changing a
@@ -411,7 +423,7 @@ typedef struct ayni_call_info_v1 {
     ayni_call_phase_t phase;
     uint64_t logical_call_id;    /* Stable nonzero call identity. */
     uint64_t task_id;            /* Exact retained owner Task. */
-    uint64_t operation_id;       /* Stable nonzero operation identity. */
+    uint64_t operation_id;       /* Current generation operation; stable for ordinary calls. */
     uint64_t owner_instance_id;  /* Agent instance for resource fairness. */
     ayni_attempt_ref_v1 attempt; /* Both zero until dispatch preparation. */
     uint64_t progress_sequence;  /* Greatest applied progress sequence, zero initially. */

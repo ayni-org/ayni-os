@@ -67,7 +67,10 @@ CallRuntime::Advance CallRuntime::dispatch_query(uint32_t index, uint64_t now_us
         now_us, uint64_t{work_.calls.contract(index).timeout_ms} * microseconds_per_millisecond);
     active.stage = Stage::submitted;
     const auto submitted = work_.call_out([&] {
-        return delivery.provider->query(delivery.provider->context, id.operation_id,
+        return delivery.provider->query(delivery.provider->context,
+                                        work_.calls.state(index).subscription
+                                            ? work_.calls.state(index).subscription->generation
+                                            : id.operation_id,
                                         delivery.reservation.attempt,
                                         mailbox_.completion(delivery.reservation));
     });
@@ -88,6 +91,11 @@ CallRuntime::Advance CallRuntime::advance_query(uint32_t index, uint64_t now_us,
                                                 uint64_t durable_seq, Mode mode) {
     const auto &query = *work_.calls.state(index).query;
     auto &active = slots_[index].active;
+    // UNKNOWN may have returned its mailbox borrow while its finite collection
+    // still owns resource units. Expiry releases this owner before query I/O.
+    if (active && active->stage == Stage::lease_stop) {
+        return Advance::idle;
+    }
     if (!active) {
         uint32_t task_index = 0;
         if (!work_.tasks.find(work_.calls.identity(index).task_id, task_index) ||
@@ -125,6 +133,9 @@ CallRuntime::Advance CallRuntime::advance_query(uint32_t index, uint64_t now_us,
 bool CallRuntime::query_ready(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                               Mode mode) const {
     const auto &active = slots_[index].active;
+    if (active && active->stage == Stage::lease_stop) {
+        return false;
+    }
     if (!active) {
         return mode != Mode::running ||
                work_.calls.state(index).query->phase == work::CallQuery::Phase::dispatching ||

@@ -32,6 +32,20 @@ ayni_status_t Catalogs::close() {
     if (topology != AYNI_OK) {
         return topology;
     }
+    // Subscription source semantics are exact and independent of registration order.
+    for (uint32_t at = 0; at < call_capabilities.size(); ++at) {
+        const auto &spec = call_capabilities.at(at).contract.subscription;
+        if (!spec) {
+            continue;
+        }
+        uint32_t source = 0;
+        if (!observation_sources.find({spec->source.data(), spec->source.size()}, source)) {
+            return AYNI_NOT_FOUND;
+        }
+        if (observation_sources.at(source).version != spec->source_version) {
+            return AYNI_UNSUPPORTED_VERSION;
+        }
+    }
     const auto linked =
         bindings.validate_all(capabilities, call_capabilities, providers, resources);
     if (linked != AYNI_OK) {
@@ -55,6 +69,7 @@ ayni_status_t Catalogs::close() {
             return AYNI_INTERNAL; // validate_all resolved every Binding.
         }
         if (call_capabilities.at(links.call).contract.category != catalog::CallClass::tool ||
+            call_capabilities.at(links.call).contract.form == catalog::CallForm::subscription ||
             dispatchable(bindings.at(index), links) != AYNI_OK) {
             return AYNI_INVALID_ARGUMENT;
         }
@@ -66,9 +81,6 @@ ayni_status_t Catalogs::close() {
 ayni_status_t Catalogs::dispatchable(const catalog::Binding &binding,
                                      const catalog::BindingLinks &links) const {
     const auto &contract = call_capabilities.at(links.call).contract;
-    if (contract.form == catalog::CallForm::subscription) {
-        return AYNI_UNSUPPORTED; // Subscription lifecycle is delivered separately (ADR-0050).
-    }
     const bool physical = (contract.effects & catalog::call_effect_physical) != 0U;
     uint32_t execution_index = 0;
     if (physical && !execution.find_binding({binding.id.data(), binding.id.size()}, binding.version,

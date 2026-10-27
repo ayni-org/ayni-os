@@ -6,6 +6,8 @@ const char *task_state(ayni_task_lifecycle_t state) {
     switch (state) {
     case AYNI_TASK_READY:
         return "就绪";
+    case AYNI_TASK_WAITING:
+        return "等待订阅";
     case AYNI_TASK_RUNNING:
         return "执行中";
     case AYNI_TASK_PAUSED:

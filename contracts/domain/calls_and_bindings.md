@@ -3,7 +3,7 @@
 - **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021、ADR-0026；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
 - **属主**：`work/call`、`work/action`、`work/subscription`（调用实例）；`catalog/capability`、`catalog/binding`（描述与选择约束）
 
-当前实施边界（ABI 0.31 / ADR-0045）：公开 Provider/Binding 注册、有限 typed 参数与 UTF-8 正文、统一调用身份/资源/屏障、可靠完成、Task RUNNING/CANCELLING、所有者主动对账已接入 Kernel。journal/snapshot 共用完整调用记录，默认配置不启用调用容量。本轮验证限正常路径和公开边界；新故障/恢复专项、订阅、嵌套工具结果及长期记忆删除仍待后续包。ABI 0.35 的物理 Mock 许可及最小观察前提见 permits_and_stop.md；ProviderRequest 新增只在 submit 内借用的 execution_permit，非物理请求为 null，旧 0.x 消费者须重编译。
+当前实施边界（ABI 0.31 / ADR-0045）：公开 Provider/Binding 注册、有限 typed 参数与 UTF-8 正文、统一调用身份/资源/屏障、可靠完成、Task RUNNING/CANCELLING、所有者主动对账已接入 Kernel。journal/snapshot 共用完整调用记录，默认配置不启用调用容量。本轮验证限正常路径和公开边界；后续已交付范围见各 ABI 段；新故障/恢复专项仍暂停。ABI 0.35 的物理 Mock 许可及最小观察前提见 permits_and_stop.md；ProviderRequest 新增只在 submit 内借用的 execution_permit，非物理请求为 null，旧 0.x 消费者须重编译。
 
 ## 调用形态
 
@@ -46,10 +46,11 @@
 | C-BIND-001 | 注册时核对 Binding 与 Capability 的类型、Schema/语义版本、调用形态、模态、资源与取消/查询特性；不匹配的 Binding 在 `ayni_start` 时拒绝 | 视觉分析能力绑定到只支持文本的 Provider | E4 步骤 1 |
 | C-BIND-002 | 同名能力可以有多个 Binding；应用提供选择约束，Kernel 只在满足权限、外发与运行限制约束的候选中准入 | Kernel 选了未获外发授权的云端 Provider | `MA-008` |
 | C-BIND-003 | 准备记录保存具体 Binding 及版本；改变已批准服务或数据目的地的 fallback 必须重新授权 | 主 Provider 失败后自动改用更贵的服务 | `MA-008`；C-RUN-005 |
-| C-SUB-001 | 订阅在 `ACTIVE`（Provider 确认开始）之前不接纳业务观察 | 订阅请求刚发出就把事件写入上下文 | E1 步骤 8 |
-| C-SUB-002 | 订阅事件按 `(subscription_id, generation, sequence)` 校验；旧代际或旧 `boot_epoch` 的事件只可用于必要的脱敏对账，不重新启用观察，也不进入新上下文 | 关闭观察后迟到的旧帧触发了一次分析 | E1 步骤 8；E4 步骤 4 |
-| C-SUB-003 | 订阅续租重新检查权限与运行限制；续租失败立即停止新采集与上传；Provider 未确认结束时资源按原规则释放或隔离 | 撤销授权后订阅凭旧租期继续上传 | E1 步骤 8 |
-| C-SUB-004 | 每类事件声明是否可合并、可丢弃及 gap 行为；遥测不承诺无限历史，控制事件不使用遥测的丢弃策略 | 队列满时丢弃存储确认事件 | M1 已实现（本地输入不合并、不丢弃，队列满时返回 `BUSY`，ADR-0021）：`KernelEvents.full_queue_refuses_until_a_step_takes_one`、`IngressQueue.full_queue_rejects_other_events_with_busy`；遥测的合并与丢弃见 C-LIMIT-008，订阅事件的 gap 随 `MA-018`；E1 步骤 10；C-HOST-006 |
+| C-SUB-001 | 订阅归一个 Task；Provider 的可靠 STARTED 确认前 gate 关闭，确认与 Task 前台释放同批，ACTIVE 后可继续模型分析 | 请求刚发出就写上下文，或连续观察阻止 Task 分析 | 正常公开验证：`SubscriptionFixture.start_ack_precedes_samples_and_active_collection_allows_model_call`；完整 E1 未验证 |
+| C-SUB-002 | 样本/媒体按 subscription、boot、全局不复用 generation、递增 sequence 校验；不同 Task 同源隔离；关闭立即使缓存与 Scene 旧引用不可用，正常重开原意图以新代际准入 | 旧帧触发分析，或关闭 A 的媒体清理 B | 正常公开验证：`SubscriptionFixture.task_pause_invalidates_cache_and_resume_opens_a_new_generation`、`SubscriptionFixture.two_tasks_share_capacity_but_keep_samples_media_and_close_isolated`、`SubscriptionFixture.orderly_restart_preserves_intent_and_rechecks_a_fresh_opening`；完整竞态/恢复专项未验证 |
+| C-SUB-003 | 默认30秒、半租期由 Kernel 重查完整授权/运行限制/资源后续租；ACK 只确认请求的绝对截止。拒绝/暂停/结束立即关闭采样 gate、停止续租并请求关闭；UNKNOWN 归还 transport 后资源仍保留至最长已请求租期 | 延迟 ACK 从到达时重新计租；UNKNOWN 提前释放仍在采集的资源 | 正常公开验证：`SubscriptionFixture.half_lease_renewal_confirms_the_requested_absolute_deadline`、`SubscriptionFixture.explicit_strategy_close_releases_its_own_subscription_after_terminal`、`SubscriptionQueryFixture.unknown_retains_units_and_query_waits_until_the_longest_requested_lease`、`SubscriptionBackpressureFixture.one_completion_item_reports_the_stop_still_ready_after_cancel_was_sent`；完整 E1 未验证 |
+| C-SUB-004 | 遥测传输 FIFO 满拒绝、不合并/淘汰；每 Host 源和订阅有可靠 gap 前沿。STARTED/RENEWED 与取消/终态独立可靠，不使用遥测策略 | 满队列丢弃租期确认，或 gap 丢失后继续动作 | 正常验证：`ObservationIngress.full_fifo_refuses_samples_but_preserves_gap_and_local_input`、`ProviderMailboxTest.exact_lease_ack_is_retained_independently_until_owner_commit`、`ProviderMailboxTest.renew_controls_require_the_next_explicit_request_and_keep_cancel_receipt`；完整并发专项未验证 |
+| C-SUB-005 | 策略用 WAIT_SUBSCRIPTION 等待 Task 所有订阅的新样本或状态变化；WAITING 保存最近代际/序号/状态前沿，不轮询、不逐帧积压；续租 ACK 本身不唤醒。暂停保留前沿，终态清除；预留唤醒与最终取消的版本号 | 无输入仍反复调用模型，或管理操作消耗最终唤醒版本 | 正常验证：`SubscriptionFixture.waiting_task_wakes_once_for_the_latest_sample_and_subscription_state`、`SubscriptionFixture.model_busy_consumer_resumes_with_the_latest_sample_then_waits`、`SubscriptionFixture.orderly_restart_of_waiting_task_retains_frontier_and_follows_new_generation`、`TaskTable.subscription_wait_reserves_a_wakeup_and_the_final_cancel_at_revision_limit`；不宣称逐帧历史 |
 
 ## ABI 0.31 的调用消费
 
@@ -81,3 +82,11 @@ GoalType 以 `tools` 声明最多 8 个可提议的工具 Binding（精确 ID �
 |---|---|---|---|
 | C-CALL-014 | 模型调用只能提议本 Task 可用的工具：GoalType 允许列表中已被 Goal 授权需求覆盖的 Binding，取值在该需求的上限内；回执中视图之外的工具、取值、路由或超出工具输入上限的正文是无效证据，调用以 `ABANDONED`/`RESULT_UNKNOWN`/`PROVIDER_RESULT` 结束、Task 按未知调用暂停，不交给策略 | Provider 返回未提供的 `lamp`，或 45 分钟超出 Goal 的 30 分钟上限，策略据此执行 | M1 已实现：`ToolCalls.model_call_is_offered_only_listed_tools_within_the_goal_ceiling`、`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`、`ToolCalls.malformed_lists_are_refused_on_post_and_keep_the_borrow`、`ToolAllowList.registration_checks_each_reference`、`ToolStart.start_needs_each_tool_to_be_an_ordinary_tool_binding`；Mock 模型输出失败：`MockTools.unoffered_tool_fails_as_model_output`、`MockTools.body_over_the_tool_limit_fails_as_model_output`、`MockTools.list_over_the_result_limit_fails_as_model_output` |
 | C-CALL-015 | 提议的工具调用不自动执行：策略以新的 REQUEST_CALL 请求它，与任何请求一样经过 Binding、授权、资源和派发屏障；提议列表随调用记录持久，重启后仍可读取 | 收到模型提议后 Kernel 直接派发，或绕过 Grant 检查 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.decoder_rejects_noncanonical_or_truncated_lists` |
+
+## ABI 0.43 的 Task 订阅（ADR-0063）
+
+SUBSCRIPTION 仅用于 TOOL、非 PHYSICAL、CONFIRMED 取消契约；静态绑定 source/version 和有限 lease（0选择默认30秒）。注册时 Provider 的续租端口和每个 offer 必须匹配。策略仍以 REQUEST_CALL 打开。STARTED 使开启动作成为已提交步骤，同时释放 Task.current_call；后台订阅继续占原资源，每代各有一次派发 claim 和持久屏障。订阅 ID 是原逻辑 Call，当前 generation 同时是该代 operation；查询只指向当前代，无自动重试 UNKNOWN。source 的 trusted Host 槽与各 Task scoped 槽分开，Scene 在该 Task 范围选取最新代际，不能从另一 Task 借观察权限。
+
+策略通过 Task snapshot 的 subscription/subscription_observation 读取脱敏状态和最新样本。CLOSE_SUBSCRIPTION、WAIT_SUBSCRIPTION 都通过 request_call 暂存，只填 kind/step_key，其余业务字段清零；它们各自是唯一意图，不接受直接伪造的 policy intent。关闭不产生新调用；等待只写 Task 状态及检查点。WAITING 的新样本在 owner 消费后唤醒一次；忙时样本覆盖知识表最新值，FIFO 本身仍不覆盖。缓存过期本身和同状态续租 ACK 不触发决定；策略必须检查 usable。管理暂停或撤权先拒绝新样本，随后有界推进每条订阅停止；重新授权独立于用户恢复。正常停机/暂停后，已知 CANCELLED 的 preserved intent 复核权限和资源，以新代际重新开；FAILED、EXPIRED 和 UNKNOWN 不自动重开。
+
+Provider 的 submit/renew/cancel 在 owner 线程同步调用且必须有界、不阻塞；只能 post 完成或样本，不能重入 owner API。工作线程持有自有参数副本及原 opening/attempt，任意非 ISR 线程 post 时复制所有短期视图；全部生产者须在 Kernel 销毁前 join。STARTED/RENEWED 独立可靠，必须回显预先请求的 kind/sequence；迟到或关闭后的 ACK 只排空，不复活 gate。Provider 自身必须在有限 valid_until 停止采集，即使续租/关闭丢失。Core 立即拒绝消费不能撤回已外发数据；媒体读、外发、保留仍分别授权。真实采集/硬件在 M3，新的故障/恢复专项仍未执行。

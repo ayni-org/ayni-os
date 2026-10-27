@@ -1,62 +1,22 @@
 #include "catalog/provider/provider_registry.h"
 
-#include "catalog/abi_checks.h"
-
 namespace ayni::catalog {
-namespace {
 // The aggregate descriptor must make supported operations unambiguous. A
 // local-only Provider cannot retain an unused external destination token.
-bool callbacks_match(const Provider &value) {
+bool valid_provider_callbacks(const Provider &value) {
     bool cancel = false;
     bool query = false;
     bool egress = false;
+    bool subscription = false;
     for (uint32_t at = 0; at < value.count; ++at) {
         const auto &contract = value.offers[at].contract;
         cancel = cancel || contract.cancel != CancelMode::none;
         query = query || contract.query != QueryAuthority::none;
+        subscription = subscription || contract.form == CallForm::subscription;
         egress = egress || (contract.effects & call_effect_egress) != 0U;
     }
     return cancel == (value.cancel != nullptr) && query == (value.query != nullptr) &&
-           egress == (value.destination.size() != 0U);
-}
-} // namespace
-
-// Validate the whole nested registration first; neither earlier offers nor
-// borrowed views survive failure, including duplicate identity or oversized ABI.
-ayni_status_t ProviderRegistry::decode(const ayni_provider_v1 &input, Provider &out) {
-    const auto status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
-    if (status != AYNI_OK) {
-        return status;
-    }
-    Provider value{};
-    if (input.version == 0U || !value.id.assign(input.provider_id) ||
-        !value.endpoint.assign(input.endpoint_id) || input.reserved != 0U ||
-        input.capability_count == 0U || input.capability_count > value.offers.size() ||
-        input.capabilities == nullptr || input.submit == nullptr ||
-        (input.destination_id.size != 0U && !value.destination.assign(input.destination_id))) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    value.version = input.version;
-    value.context = input.ctx;
-    value.submit = input.submit;
-    value.cancel = input.cancel;
-    value.query = input.query;
-    for (uint32_t at = 0; at < input.capability_count; ++at) {
-        auto &next = value.offers[at];
-        const auto decoded = decode_call_capability(input.capabilities[at], next);
-        if (decoded != AYNI_OK) {
-            return decoded;
-        }
-        if (offer(value, {next.id.data(), next.id.size()}, next.version) != nullptr) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        ++value.count;
-    }
-    if (!callbacks_match(value)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    out = value;
-    return AYNI_OK;
+           egress == (value.destination.size() != 0U) && subscription == (value.renew != nullptr);
 }
 
 ayni_status_t ProviderRegistry::add_validated(const Provider &provider) {

@@ -318,7 +318,7 @@ AYNI_LAYOUT(task_info_hold_status, offsetof(ayni_task_info_v1, hold_status) == 7
 AYNI_LAYOUT(task_info_hold_reason, offsetof(ayni_task_info_v1, hold_reason) == 76);
 AYNI_LAYOUT(task_info_step_count, offsetof(ayni_task_info_v1, step_count) == 80);
 AYNI_LAYOUT(task_info_reserved, offsetof(ayni_task_info_v1, reserved) == 84);
-AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 128);
+AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 160);
 AYNI_LAYOUT(task_call_id, offsetof(ayni_task_info_v1, logical_call_id) == 104);
 
 AYNI_LAYOUT(private_checkpoint_strategy_id, offsetof(ayni_private_checkpoint_v1, strategy_id) == 0);
@@ -353,7 +353,7 @@ AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_call_tool, offsetof(ayni_task_snapshot_v1, call_tool) == 80 + 11 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 13 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 15 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -599,13 +599,13 @@ AYNI_LAYOUT(call_contract_result_text_limit,
             offsetof(ayni_call_contract_v1, result_text_limit) == 48);
 AYNI_LAYOUT(call_contract_resource_count, offsetof(ayni_call_contract_v1, resource_count) == 52);
 AYNI_LAYOUT(call_contract_resources, offsetof(ayni_call_contract_v1, resources) == 56);
-AYNI_LAYOUT(call_contract_size, sizeof(ayni_call_contract_v1) == 56 + AYNI_PTR);
+AYNI_LAYOUT(call_contract_size, sizeof(ayni_call_contract_v1) == 56 + 2 * AYNI_PTR);
 AYNI_LAYOUT(call_capability_struct_size, offsetof(ayni_call_capability_v1, struct_size) == 0);
 AYNI_LAYOUT(call_capability_version, offsetof(ayni_call_capability_v1, version) == 4);
 AYNI_LAYOUT(call_capability_capability_id, offsetof(ayni_call_capability_v1, capability_id) == 8);
 AYNI_LAYOUT(call_capability_contract,
             offsetof(ayni_call_capability_v1, contract) == 8 + 2 * AYNI_PTR);
-AYNI_LAYOUT(call_capability_size, sizeof(ayni_call_capability_v1) == 64 + 3 * AYNI_PTR);
+AYNI_LAYOUT(call_capability_size, sizeof(ayni_call_capability_v1) == 64 + 4 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_struct_size, offsetof(ayni_provider_request_v1, struct_size) == 0);
 AYNI_LAYOUT(provider_request_capability_version,
             offsetof(ayni_provider_request_v1, capability_version) == 4);
@@ -629,7 +629,7 @@ AYNI_LAYOUT(provider_request_tool_context,
             offsetof(ayni_provider_request_v1, tool_context) == 64 + 8 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_tool, offsetof(ayni_provider_request_v1, tool) == 64 + 9 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_size,
-            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(64 + 10 * AYNI_PTR));
+            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(64 + 11 * AYNI_PTR));
 AYNI_LAYOUT(tool_struct_size, offsetof(ayni_tool_v1, struct_size) == 0);
 AYNI_LAYOUT(tool_binding_version, offsetof(ayni_tool_v1, binding_version) == 4);
 AYNI_LAYOUT(tool_binding_id, offsetof(ayni_tool_v1, binding_id) == 8);
@@ -662,7 +662,7 @@ AYNI_LAYOUT(provider_capabilities, offsetof(ayni_provider_v1, capabilities) == 1
 AYNI_LAYOUT(provider_submit, offsetof(ayni_provider_v1, submit) == 16 + 8 * AYNI_PTR);
 AYNI_LAYOUT(provider_cancel, offsetof(ayni_provider_v1, cancel) == 16 + 9 * AYNI_PTR);
 AYNI_LAYOUT(provider_query, offsetof(ayni_provider_v1, query) == 16 + 10 * AYNI_PTR);
-AYNI_LAYOUT(provider_size, sizeof(ayni_provider_v1) == 16 + 11 * AYNI_PTR);
+AYNI_LAYOUT(provider_size, sizeof(ayni_provider_v1) == 16 + 12 * AYNI_PTR);
 AYNI_LAYOUT(binding_struct_size, offsetof(ayni_binding_v1, struct_size) == 0);
 AYNI_LAYOUT(binding_version, offsetof(ayni_binding_v1, version) == 4);
 AYNI_LAYOUT(binding_binding_id, offsetof(ayni_binding_v1, binding_id) == 8);
@@ -817,7 +817,7 @@ AYNI_LAYOUT(provider_request_execution_permit,
 AYNI_LAYOUT(observation_source_size, sizeof(ayni_observation_source_v1) == 24 + 4 * AYNI_PTR);
 AYNI_LAYOUT(observation_source_validity,
             offsetof(ayni_observation_source_v1, validity_max_us) == 16 + 4 * AYNI_PTR);
-AYNI_LAYOUT(observation_reference_size, sizeof(ayni_observation_ref_v1) == 64);
+AYNI_LAYOUT(observation_reference_size, sizeof(ayni_observation_ref_v1) == 72);
 AYNI_LAYOUT(observation_reference_boot, offsetof(ayni_observation_ref_v1, boot_epoch) == 40);
 AYNI_LAYOUT(observation_size, sizeof(ayni_observation_v1) == 56 + 2 * AYNI_PTR);
 AYNI_LAYOUT(observation_generation, offsetof(ayni_observation_v1, generation) == 8 + 2 * AYNI_PTR);
@@ -827,8 +827,8 @@ AYNI_LAYOUT(observation_post_size, sizeof(ayni_observation_post_v1) == 72 + 3 * 
 AYNI_LAYOUT(observation_gap_size, sizeof(ayni_observation_gap_v1) == 32 + 2 * AYNI_PTR);
 AYNI_LAYOUT(observation_ingress_info_size, sizeof(ayni_observation_ingress_info_v1) == 48);
 AYNI_LAYOUT(observation_info_size,
-            sizeof(ayni_observation_info_v1) == 152 + sizeof(ayni_media_ref_v1) + sizeof(uint64_t));
-AYNI_LAYOUT(observation_info_capture, offsetof(ayni_observation_info_v1, captured_at_us) == 128);
+            sizeof(ayni_observation_info_v1) == 160 + sizeof(ayni_media_ref_v1) + sizeof(uint64_t));
+AYNI_LAYOUT(observation_info_capture, offsetof(ayni_observation_info_v1, captured_at_us) == 136);
 AYNI_LAYOUT(scene_rule_size, sizeof(ayni_scene_rule_v1) == 16 + 3 * AYNI_PTR);
 AYNI_LAYOUT(scene_desc_size, sizeof(ayni_scene_desc_v1) == 16 + 4 * AYNI_PTR);
 AYNI_LAYOUT(scene_desc_rules, offsetof(ayni_scene_desc_v1, rules) == 16 + 2 * AYNI_PTR);
@@ -881,3 +881,12 @@ AYNI_LAYOUT(calendar_clock_size, sizeof(ayni_utc_sample_v1) == 16);
 AYNI_LAYOUT(calendar_info_size, sizeof(ayni_calendar_info_v1) == 216);
 AYNI_LAYOUT(task_calendar_local, offsetof(ayni_task_info_v1, calendar_local_s) == 112);
 AYNI_LAYOUT(task_calendar_utc, offsetof(ayni_task_info_v1, calendar_utc_s) == 120);
+
+/* ABI 0.43: no pointer or enum representation leaks into durable wait identities. */
+AYNI_LAYOUT(subscription_ref_size, sizeof(ayni_subscription_ref_v1) == 24);
+AYNI_LAYOUT(subscription_contract_size,
+            sizeof(ayni_subscription_contract_v1) == 16 + 2 * sizeof(void *));
+AYNI_LAYOUT(subscription_renew_size, sizeof(ayni_subscription_renew_v1) == 48);
+AYNI_LAYOUT(subscription_info_size, sizeof(ayni_subscription_info_v1) == 72);
+AYNI_LAYOUT(task_wait_subscription, offsetof(ayni_task_info_v1, wait_subscription_id) == 128);
+AYNI_LAYOUT(task_wait_phase, offsetof(ayni_task_info_v1, wait_phase) == 152);

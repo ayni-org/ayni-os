@@ -23,6 +23,10 @@ std::optional<ayni::kernel::ProviderMessageKind> kind_of(ayni_call_outcome_t out
         return Kind::cannot_cancel;
     case AYNI_CALL_CANCEL_UNKNOWN:
         return Kind::cancel_unknown;
+    case AYNI_CALL_SUBSCRIPTION_STARTED:
+        return Kind::subscription_started;
+    case AYNI_CALL_SUBSCRIPTION_RENEWED:
+        return Kind::subscription_renewed;
     case AYNI_CALL_ABANDONED:
         return Kind::abandoned;
     default:

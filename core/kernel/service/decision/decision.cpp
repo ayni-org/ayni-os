@@ -107,7 +107,8 @@ Verdict hold(ayni_status_t status, ayni_reason_t reason) {
 bool is_implemented(ayni_policy_intent_kind_t kind) {
     return kind == AYNI_POLICY_REPORT_PROGRESS || kind == AYNI_POLICY_REPORT_COMPLETION ||
            kind == AYNI_POLICY_REPORT_FAILURE || kind == AYNI_POLICY_REQUEST_CALL ||
-           kind == AYNI_POLICY_REQUEST_MODEL || kind == AYNI_POLICY_WRITE_MEMORY;
+           kind == AYNI_POLICY_REQUEST_MODEL || kind == AYNI_POLICY_WRITE_MEMORY ||
+           kind == AYNI_POLICY_CLOSE_SUBSCRIPTION || kind == AYNI_POLICY_WAIT_SUBSCRIPTION;
 }
 
 // A view of at most step_key_size bytes, so CatalogId::is_valid rejects a
@@ -174,6 +175,8 @@ Verdict judge_intents(const DecisionBuffer &decisions, uint32_t intent_count,
             return hold(AYNI_REVISION_CONFLICT, AYNI_REASON_TASK_REVISION);
         }
         if (intent.kind == AYNI_POLICY_REQUEST_CALL || intent.kind == AYNI_POLICY_REQUEST_MODEL ||
+            intent.kind == AYNI_POLICY_CLOSE_SUBSCRIPTION ||
+            intent.kind == AYNI_POLICY_WAIT_SUBSCRIPTION ||
             intent.kind == AYNI_POLICY_WRITE_MEMORY) {
             if (intent_count != 1U || !catalog::CatalogId::is_valid(step_key_of(intent))) {
                 return hold(AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT);

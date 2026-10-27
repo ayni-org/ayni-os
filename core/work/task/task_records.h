@@ -44,6 +44,12 @@ constexpr uint16_t task_state_call_reauthorization_record_version = 10;
 constexpr uint16_t task_state_call_raise_limit_record_version = 11;
 // Explicit owner wait resume; same selected-call body, paired with type9/v8.
 constexpr uint16_t task_state_resume_wait_record_version = 12;
+// Subscription event wait extends the complete selected-call body; same base pairing meanings.
+constexpr uint16_t task_state_subscription_wait_version = 13;
+constexpr uint16_t task_state_subscription_wait_authority_version = 14;
+constexpr uint16_t task_state_subscription_wait_reauthorization_version = 15;
+constexpr uint16_t task_state_subscription_wait_raise_version = 16;
+constexpr uint16_t task_state_version_max = task_state_subscription_wait_raise_version;
 constexpr uint16_t task_steps_record_type = durability::record_type::task_steps;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = durability::record_type::task_checkpoint;
@@ -66,6 +72,12 @@ constexpr uint32_t task_state_runtime_record_size =
 // Selected logical call u64 and requested drain end u32; records.md type6/v8+.
 constexpr uint32_t task_state_call_record_size =
     task_state_runtime_record_size + sizeof(uint64_t) + sizeof(uint32_t);
+// Subscription ID, generation, sequence and phase; no monotonic deadline in durable waits.
+constexpr uint32_t task_state_wait_identity_count = 3; // subscription, generation, sequence.
+constexpr uint32_t task_state_subscription_wait_tail =
+    task_state_wait_identity_count * sizeof(uint64_t) + sizeof(uint32_t);
+constexpr uint32_t task_state_max_size =
+    task_state_call_record_size + task_state_subscription_wait_tail;
 // Legacy defaults need no extension. All other runtime facts require type6/v4+.
 uint16_t task_state_version_for(const Task &task, uint16_t base = task_state_record_version);
 // Fixed body bytes for the selected known version; excludes the record envelope.

@@ -14,9 +14,7 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
         if (mailbox_.read_next(receipt_, limits_.result_bytes, size, message, receipt) != AYNI_OK) {
             return Advance::internal;
         }
-        const bool terminal = message.kind != ProviderMessageKind::progress &&
-                              message.kind != ProviderMessageKind::cannot_cancel &&
-                              message.kind != ProviderMessageKind::cancel_unknown;
+        const bool terminal = provider_terminal(message.kind);
         if (mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
             return Advance::internal;
         }
@@ -28,6 +26,11 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
                         receipt.reservation.attempt.request_id) {
                     // Exact ended borrow also permits authoritative absence.
                     static_cast<void>(control_.delivery_ended(active->call_id));
+                    // An unwritable close records no conclusive subscription fact.
+                    // Keep its units until the longest requested finite lease ends.
+                    if (active->collection) {
+                        await_subscription_stop(at);
+                    }
                     release(at, host_.monotonic_now_us(host_.ctx));
                     break;
                 }
@@ -37,7 +40,7 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         auto &active = slots_[at].active;
-        if (!active || active->stage == Stage::retiring) {
+        if (!active || active->stage == Stage::retiring || active->stage == Stage::lease_stop) {
             continue;
         }
         if (!submitted(active->stage)) {
@@ -84,7 +87,7 @@ bool CallRuntime::transport_ready(Mode mode) const {
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
-        if (active && active->stage != Stage::retiring &&
+        if (active && active->stage != Stage::retiring && active->stage != Stage::lease_stop &&
             (!submitted(active->stage) || active->delivery->cancel == Delivery::Cancel::none)) {
             return true;
         }
@@ -99,6 +102,13 @@ bool CallRuntime::rebind_restored() {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
         if (!active) {
+            continue;
+        }
+        if (active->stage == Stage::lease_stop) {
+            uint32_t restored = 0;
+            if (!work_.calls.find(active->call_id, restored)) {
+                return false;
+            }
             continue;
         }
         if (active->stage == Stage::retiring) {

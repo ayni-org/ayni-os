@@ -266,7 +266,8 @@ bool Assistant::Impl::idle() const {
             return false;
         }
         if (task.commit_seq > info.durable_seq || task.lifecycle == AYNI_TASK_READY ||
-            task.lifecycle == AYNI_TASK_RUNNING || task.lifecycle == AYNI_TASK_CANCELLING) {
+            task.lifecycle == AYNI_TASK_RUNNING || task.lifecycle == AYNI_TASK_WAITING ||
+            task.lifecycle == AYNI_TASK_CANCELLING) {
             return false;
         }
         // Completion is not yet a saved conversation: collect must cross both

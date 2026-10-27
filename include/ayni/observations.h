@@ -54,6 +54,7 @@ typedef struct ayni_observation_ref_v1 {
     uint64_t boot_epoch;            /* Kernel boot that accepted this observation. */
     uint64_t generation;            /* Positive collection generation owned by producer. */
     uint64_t sequence;              /* Positive source sequence within that generation. */
+    uint64_t subscription_id; /* Since 0.43. 0 for trusted Host facts; otherwise exact Task call. */
 } ayni_observation_ref_v1;
 
 /* Owner-thread publication; all fields copied, no media or arbitrary paths. Since 0.35. */
@@ -99,7 +100,7 @@ typedef struct ayni_observation_ingress_info_v1 {
     uint32_t struct_size;   /* Caller supplies exact sizeof. */
     uint32_t capacity;      /* Configured FIFO entries; 0 means disabled. */
     uint32_t queued;        /* Accepted samples not yet consumed, <= capacity. */
-    uint32_t gaps_pending;  /* Source gap markers not yet consumed, <= source capacity. */
+    uint32_t gaps_pending;  /* Pending Host/scoped gaps, <= source capacity + call capacity. */
     uint64_t accepted;      /* Samples copied by successful enqueue. */
     uint64_t rejected_busy; /* Samples rejected due to the queue bound. */
     uint64_t gap_updates;   /* Forward gap-frontier updates; repeated markers do not increment. */
