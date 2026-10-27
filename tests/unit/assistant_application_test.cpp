@@ -414,10 +414,13 @@ TEST_F(AssistantApplication, model_origin_goal_waits_for_consent_and_is_found_by
     }
     EXPECT_EQ(missing, std::vector<std::string>{"assistant.confirm"});
     EXPECT_TRUE(profile.capability("assistant.confirm").size == 0);
-    uint64_t found = 0;
-    ASSERT_EQ(find_operation(node.kernel(), 777, found), AYNI_OK);
-    EXPECT_EQ(found, proposed);
-    EXPECT_EQ(find_operation(node.kernel(), 778, found), AYNI_NOT_FOUND);
+    ModelGoals found;
+    ASSERT_EQ(model_goals(node.kernel(), 777, found), AYNI_OK);
+    EXPECT_EQ(found.registered, proposed);
+    EXPECT_EQ(found.waiting, std::vector<uint64_t>{proposed});
+    ASSERT_EQ(model_goals(node.kernel(), 778, found), AYNI_OK);
+    EXPECT_EQ(found.registered, 0U);
+    EXPECT_EQ(found.waiting, std::vector<uint64_t>{proposed});
 }
 TEST(AssistantPolicy, encoding_grammar_stop_phrases_and_quiet_time_are_explicit) {
     ayni_calendar_civil_v1 civil{};
@@ -482,10 +485,12 @@ TEST(AssistantPolicy, encoding_grammar_stop_phrases_and_quiet_time_are_explicit)
     ASSERT_EQ(parse_schedule("check 5", fast), AYNI_OK);
     EXPECT_EQ(prepare_goal(fast, 1, unused, unused_goal), AYNI_INVALID_ARGUMENT);
     // ADR-0072: only a whole stop phrase is a stop; anything longer is an ordinary turn.
-    for (const auto *phrase : {"停", " 停！", "停止。", "停下", "STOP", "Stop!", "stop."}) {
+    for (const auto *phrase : {"停", " 停！", "停止。", "停下", "STOP", "Stop!", "stop.",
+                               "\u3000停\u3000", "停。\u3000"}) {
         EXPECT_TRUE(stop_request(phrase)) << phrase;
     }
-    for (const auto *phrase : {"", "！", "停一下", "不要停", "stop it", "停 停", "暂停"}) {
+    for (const auto *phrase :
+         {"", "！", "\u3000", "停一下", "不要停", "stop it", "停 停", "停\u3000停", "暂停"}) {
         EXPECT_FALSE(stop_request(phrase)) << phrase;
     }
     QuietHours quiet{true, 22 * 60, 7 * 60, "UTC0"};

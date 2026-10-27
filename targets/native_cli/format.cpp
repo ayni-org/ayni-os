@@ -84,8 +84,8 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
         out << " 已受理；/wait 等待提交，/goals 查看是否待审批。";
     }
     if (reply.message == runtime::Message::stopped) {
-        out << " 已停止：当前回答已取消，后台工作已暂停，提醒保留；/resume-assistant "
-               "恢复后台工作。";
+        out << " 已停止：进行中的回答（如有）已取消，后台工作已暂停，提醒保留；"
+               "/resume-assistant 恢复后台工作。";
     }
     if (operation == runtime::Operation::schedule && reply.status == AYNI_INVALID_ARGUMENT) {
         out << " 计划格式无效，请用 /help。";

@@ -55,6 +55,16 @@ bool strip_suffix(std::string &input, const char *suffix) {
     input.resize(input.size() - size);
     return true;
 }
+bool strip_prefix(std::string &input, const char *prefix) {
+    const auto size = std::strlen(prefix);
+    if (input.size() < size || input.compare(0, size, prefix) != 0) {
+        return false;
+    }
+    input.erase(0, size);
+    return true;
+}
+// Whole UTF-8 sequences: trimming a byte set would cut into CJK punctuation such as "。".
+constexpr char ideographic_space[] = "\xE3\x80\x80"; // U+3000, typed by CJK input methods.
 } // namespace
 ayni_status_t detail::objects(const ayni_kernel_t *k, ayni_object_kind_t kind,
                               std::vector<uint64_t> &ids) {
@@ -131,17 +141,19 @@ ayni_status_t decode(ayni_bytes_v1 input, Parameters &out) {
     return AYNI_OK;
 }
 bool stop_request(const std::string &input) {
-    constexpr const char *space = " \t\r\n";
     auto phrase = input;
     for (bool stripped = true; stripped;) {
-        const auto last = phrase.find_last_not_of(space);
-        phrase.resize(last == std::string::npos ? 0 : last + 1);
         stripped = false;
-        for (const auto *mark : {"!", ".", "！", "。"}) {
-            stripped = stripped || strip_suffix(phrase, mark);
+        for (const auto *tail : {" ", "\t", "\r", "\n", ideographic_space, "!", ".", "！", "。"}) {
+            stripped = stripped || strip_suffix(phrase, tail);
         }
     }
-    phrase.erase(0, std::min(phrase.size(), phrase.find_first_not_of(space)));
+    for (bool stripped = true; stripped;) {
+        stripped = false;
+        for (const auto *head : {" ", "\t", "\r", "\n", ideographic_space}) {
+            stripped = stripped || strip_prefix(phrase, head);
+        }
+    }
     for (const auto *stop : {"停", "停下", "停止", "stop"}) {
         if (same_phrase(phrase, stop)) {
             return true;

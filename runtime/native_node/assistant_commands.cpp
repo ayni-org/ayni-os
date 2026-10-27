@@ -104,26 +104,32 @@ Reply Assistant::Impl::say(const Command &command) {
     reply.status = persist(current);
     return reply;
 }
+// Cancels the turn Goal still in flight. A turn already ending, or none, needs nothing.
+Reply Assistant::Impl::cancel_pending_turn() {
+    if (!current.pending_goal) {
+        return {};
+    }
+    ayni_goal_info_v1 goal{};
+    goal.struct_size = sizeof(goal);
+    const auto status = ayni_get_goal(node.kernel(), current.pending_goal, &goal);
+    if (status != AYNI_OK) {
+        return failure(status);
+    }
+    if (goal.lifecycle != AYNI_GOAL_PROPOSED && goal.lifecycle != AYNI_GOAL_ACTIVE &&
+        goal.lifecycle != AYNI_GOAL_PAUSED) {
+        return {};
+    }
+    const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
+    return submit(AYNI_INTENT_GOAL_CANCEL, &target, goal.revision);
+}
 // Deterministic stop (ADR-0072): no model call and no actuator; the hardware emergency stop
 // is a separate chain. Cancels the pending turn, then pauses autonomous work while reminders
 // stay. A step already in effect is skipped, so repeating a stop after a partial failure
 // finishes the rest and never spends another revision.
 Reply Assistant::Impl::stop_work() {
-    if (current.pending_goal) {
-        ayni_goal_info_v1 goal{};
-        goal.struct_size = sizeof(goal);
-        const auto status = ayni_get_goal(node.kernel(), current.pending_goal, &goal);
-        if (status != AYNI_OK) {
-            return failure(status);
-        }
-        if (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
-            goal.lifecycle == AYNI_GOAL_PAUSED) {
-            const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
-            const auto cancelled = submit(AYNI_INTENT_GOAL_CANCEL, &target, goal.revision);
-            if (cancelled.status != AYNI_OK) {
-                return cancelled;
-            }
-        }
+    const auto cancelled = cancel_pending_turn();
+    if (cancelled.status != AYNI_OK) {
+        return cancelled;
     }
     ayni_pause_group_info_v1 group{};
     group.struct_size = sizeof(group);

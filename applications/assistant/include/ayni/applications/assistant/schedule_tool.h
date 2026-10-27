@@ -4,9 +4,19 @@
 #define AYNI_APPLICATIONS_ASSISTANT_SCHEDULE_TOOL_H
 #include <array>
 #include <ayni/applications/assistant.h>
+#include <ayni/calendar.h>
+#include <vector>
 namespace ayni::applications::assistant {
-// Bytes. Input covers the longest canonical reminder; results add a Goal ID and its state.
+// Longest canonical schedule text, "remind weekly YYYY-MM-DDTHH:MM <zone> <text>", in bytes.
+inline constexpr uint32_t schedule_canonical_max =
+    sizeof("remind weekly YYYY-MM-DDTHH:MM  ") - 1 + AYNI_CALENDAR_TZ_MAX_BYTES + text_bytes_max;
+// Bytes. Model input may space the same words more loosely than the canonical form; a result
+// adds the Goal ID and its approval state to the canonical text.
 inline constexpr uint32_t schedule_text_max = 640, schedule_result_max = 768;
+static_assert(schedule_text_max >= schedule_canonical_max, "input must hold any schedule");
+// Model Goals that may wait for owner approval at once. Chat turns and owner Goals share the
+// Goal table, so a misbehaving model must not be able to fill it.
+inline constexpr uint32_t model_goals_waiting_max = 4;
 // Goal admission supplied by the runtime and called only from ScheduleTool::settle, on the
 // Kernel owner thread outside step. OK writes the new Goal ID. BUSY asks for a later retry.
 // INVALID_STATE means admission has closed for good (shutdown). Any other status is a refusal
@@ -15,18 +25,27 @@ struct GoalPort {
     void *context = nullptr;
     ayni_status_t (*create)(void *, const ayni_goal_create_v1 *, uint64_t *goal_id) = nullptr;
 };
-// Retained Goal registered by this exact tool operation; NOT_FOUND when none is retained.
-// Owner thread, outside callbacks.
-ayni_status_t find_operation(const ayni_kernel_t *, uint64_t operation_id, uint64_t &goal_id);
+// Retained schedule Goals of model origin: the one registered by operation_id (0 when none is
+// retained; pass operation 0 to match none) and every one still waiting for owner approval, in
+// ID order. Owner thread, outside callbacks. BUSY while a tracked creation is not yet durable.
+struct ModelGoals {
+    uint64_t registered = 0;
+    std::vector<uint64_t> waiting;
+};
+ayni_status_t model_goals(const ayni_kernel_t *, uint64_t operation_id, ModelGoals &);
 // Local TOOL Provider of capability "assistant.schedule" on endpoint "assistant.local". Its
 // callbacks run on the Kernel owner thread and only copy a request into a bounded slot, so it
 // needs no lock. settle() decides each request once, through GoalPort, and posts the receipt:
-//   registered  COMPLETED, "registered goal N: <canonical schedule>; <approval state>"
-//   refused     COMPLETED, "rejected: ...", so the model can ask the user and call again
-//   no port, or admission closed  FAILED with effect NONE
-// An operation that already registered a retained Goal is answered with that Goal instead of
-// creating another. There is no remote cancel or query: an attempt in flight at a crash stays
-// UNKNOWN, and the owner resolves it with the Goal list.
+//   registered   COMPLETED, "registered goal N: <canonical schedule>; <approval state>"
+//   refused      COMPLETED, "rejected: ...; nothing was registered", so the model can ask the
+//                user and call again. COMPLETED means the tool answered; the text says what.
+//   turn ended   CANCELLED, effect NONE: the calling Task stopped before the decision
+//   no port, or admission closed   FAILED, effect NONE
+// An operation decided again after its Goal was registered (an error interrupted the decision)
+// answers with that Goal; Core never resubmits a NOT_IDEMPOTENT call by itself. Each new model
+// tool call is a new operation, so model_goals_waiting_max bounds what the model can register.
+// There is no remote cancel or query: an attempt in flight at a crash stays UNKNOWN, and the
+// owner resolves it with the Goal list.
 class ScheduleTool {
   public:
     static constexpr uint32_t request_capacity = 4;

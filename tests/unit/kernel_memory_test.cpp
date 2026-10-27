@@ -2,6 +2,7 @@
 #include "work_node.h"
 #include <algorithm>
 #include <ayni/memory.h>
+#include <ayni/runtime/common/memory_capability.h>
 namespace {
 using namespace ayni::test;
 class KernelMemory : public testing::Test {
@@ -484,6 +485,88 @@ TEST_F(KernelMemory, deletion_scrubs_retained_storage_and_preserves_unrelated_re
     EXPECT_EQ(save(91, secret.c_str()).status, AYNI_EXPIRED);
     EXPECT_EQ(body(kept.result.object.id), "keep this preference");
     EXPECT_EQ(save(92, "keep this preference").status, AYNI_OK);
+}
+
+// ADR-0072: with one assistant the runtime grants memory without naming an Agent, so Core alone
+// keeps a profile read Grant to the instance it names.
+class KernelMemoryAccess : public KernelMemory {
+    void SetUp() override {
+        work.additional_registration = [](ayni_kernel_t *kernel) {
+            auto fields = ayni::runtime::memory_access_fields();
+            const ayni_capability_desc_v1 capability{sizeof(capability),
+                                                     1,
+                                                     text("memory.access"),
+                                                     static_cast<uint32_t>(fields.size()),
+                                                     0,
+                                                     fields.data()};
+            ASSERT_EQ(ayni_register_capability(kernel, &capability), AYNI_OK);
+        };
+        KernelMemory::SetUp();
+    }
+
+  protected:
+    // Runs one Goal of the instance until its policy has read the record once.
+    ayni_task_info_v1 read_as(uint64_t instance, uint64_t memory, ayni_status_t &read) {
+        read = AYNI_INTERNAL;
+        bool answered = false;
+        work.strategy().answer = [&, memory](const ayni_task_snapshot_v1 &snapshot,
+                                             ayni_policy_output_v1 &out) {
+            std::array<char, 64> body{};
+            ayni_memory_info_v1 metadata{};
+            metadata.struct_size = sizeof(metadata);
+            uint32_t bytes = 0;
+            read = snapshot.memory->read(snapshot.memory->context, memory, AYNI_MEMORY_CONTEXT,
+                                         &metadata, body.data(), body.size(), &bytes);
+            answered = true;
+            return report(AYNI_POLICY_REPORT_COMPLETION, snapshot, out);
+        };
+        const auto created = work.create(
+            WorkNode::create_body(instance, 0, "reminder", 1, {nullptr, 0}, AYNI_TRIGGER_ONCE));
+        EXPECT_EQ(created.status, AYNI_OK);
+        uint64_t task = 0;
+        for (unsigned i = 0; i < 100; ++i) {
+            work.node().sim().advance_us(10000);
+            work.node().step();
+            work.node().sim().complete_storage();
+            task = work.goal(created.result.object.id).last_task_id;
+            if (answered && task && work.task(task).lifecycle != AYNI_TASK_RUNNING) {
+                break;
+            }
+        }
+        EXPECT_TRUE(answered);
+        return task ? work.task(task) : ayni_task_info_v1{};
+    }
+};
+TEST_F(KernelMemoryAccess, profile_grant_to_one_agent_does_not_authorize_another) {
+    const auto saved = save(1, "中文", 0, 0, 0, AYNI_MEMORY_PROFILE);
+    ASSERT_EQ(saved.status, AYNI_OK);
+    durable(saved.result.commit_seq);
+    std::array<ayni_scope_field_v1, AYNI_MEMORY_SCOPE_FIELD_COUNT> fields{};
+    ASSERT_EQ(ayni_memory_read_scope(saved.result.object.id, AYNI_MEMORY_CONTEXT, fields.data(),
+                                     static_cast<uint32_t>(fields.size())),
+              AYNI_OK);
+    const ayni_grant_create_v1 grant{
+        sizeof(grant),
+        1,
+        text("memory.access"),
+        work.instance(agent_a),
+        0,
+        AYNI_GRANT_PERMANENT,
+        0,
+        0,
+        {sizeof(ayni_scope_v1), static_cast<uint32_t>(fields.size()), fields.data()}};
+    const auto granted = work.submit(
+        {sizeof(ayni_intent_v1), AYNI_INTENT_GRANT_CREATE, 2, work.session(), 0, 0, &grant});
+    ASSERT_EQ(granted.status, AYNI_OK);
+    durable(granted.result.commit_seq);
+    ayni_status_t read = AYNI_OK;
+    const auto granted_task = read_as(work.instance(agent_a), saved.result.object.id, read);
+    EXPECT_EQ(read, AYNI_OK);
+    EXPECT_EQ(granted_task.lifecycle, AYNI_TASK_COMPLETED);
+    const auto other_task = read_as(work.instance(agent_b), saved.result.object.id, read);
+    EXPECT_EQ(read, AYNI_DENIED);
+    EXPECT_EQ(other_task.lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(other_task.hold_reason, AYNI_REASON_MEMORY_SOURCE);
 }
 
 class KernelMemoryOneCommand : public KernelMemory {

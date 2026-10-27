@@ -33,9 +33,10 @@ struct Assistant::Impl {
     // Client receipt identities only; Core owns their effects and durable phase.
     std::array<uint64_t, AYNI_COMMAND_CAPACITY_DEFAULT> pending_commands{};
     uint32_t pending_count = 0;
-    // Goals the schedule tool registered and the owner has not been told about yet; each is
-    // announced once its creation is durable (ADR-0072).
-    std::array<uint64_t, applications::assistant::ScheduleTool::request_capacity> proposals{};
+    // Model Goals waiting for approval that the owner has not been told about since open: every
+    // one found at open, then each the schedule tool registers. A Goal is announced once its
+    // creation is durable (ADR-0072). The tool keeps at most model_goals_waiting_max waiting.
+    std::array<uint64_t, applications::assistant::model_goals_waiting_max> proposals{};
     uint32_t proposal_count = 0;
     bool opened = false;
     bool shutting_down = false;
@@ -59,6 +60,7 @@ struct Assistant::Impl {
     bool idle() const;
     Reply submit(ayni_intent_kind_t kind, const void *body, uint32_t revision = 0);
     Reply say(const Command &);
+    Reply cancel_pending_turn();
     Reply stop_work();
     Reply set_autonomy(const ayni_pause_group_info_v1 &, bool paused);
     Reply application_goal(const Command &);
@@ -69,6 +71,9 @@ struct Assistant::Impl {
     // Immutable creation echo of a retained Goal, read back through public queries only. body
     // views parameters and calendar, so a Creation is filled in place and never copied.
     struct Creation {
+        Creation() = default;
+        Creation(const Creation &) = delete;
+        Creation &operator=(const Creation &) = delete;
         strategies::Encoded parameters;
         ayni_calendar_info_v1 calendar{};
         ayni_goal_info_v1 info{};

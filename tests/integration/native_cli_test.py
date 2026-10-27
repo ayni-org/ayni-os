@@ -11,6 +11,8 @@ import tempfile
 import unittest
 
 BINARY = sys.argv.pop(1)
+# conversation.bin starts with b'AYNF' and then its little-endian format version.
+FORMAT_VERSION_OFFSET = 4
 
 
 class NativeCli(unittest.TestCase):
@@ -96,7 +98,7 @@ class NativeCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = self.session(directory, ['停！', '/status', '/resume-assistant', '/wait', '/status', '/quit'])
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('已停止：当前回答已取消，后台工作已暂停，提醒保留', result.stdout)
+            self.assertIn('已停止：进行中的回答（如有）已取消，后台工作已暂停，提醒保留', result.stdout)
             lines = [line for line in result.stdout.splitlines() if '助理：' in line and '处理' in line]
             self.assertEqual(len(lines), 2, result.stdout)
             self.assertIn('自主工作暂停', lines[0])
@@ -111,7 +113,7 @@ class NativeCli(unittest.TestCase):
             state = pathlib.Path(directory) / 'data' / 'ayni'
             conversation = state / 'conversation.bin'
             legacy = bytearray(conversation.read_bytes())
-            legacy[4] = 2
+            legacy[FORMAT_VERSION_OFFSET] = 2  # AYNF v2, written by the dual-Agent version.
             conversation.write_bytes(legacy)
             before = {path.relative_to(state): path.read_bytes() for path in state.rglob('*') if path.is_file()}
             second = self.session(directory, ['/quit'])

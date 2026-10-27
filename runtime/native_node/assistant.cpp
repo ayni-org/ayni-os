@@ -137,6 +137,17 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
+    // A proposal announced before a restart, or never announced because of one, is told again.
+    applications::assistant::ModelGoals model;
+    status = applications::assistant::model_goals(node.kernel(), 0, model);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    for (const auto id : model.waiting) {
+        if (proposal_count < proposals.size()) {
+            proposals[proposal_count++] = id;
+        }
+    }
     opened = true;
     return AYNI_OK;
 }
