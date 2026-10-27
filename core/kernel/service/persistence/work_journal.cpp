@@ -18,8 +18,6 @@
 namespace ayni::kernel {
 namespace {
 
-constexpr uint32_t id_max = catalog::CatalogId::max_size;
-
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
@@ -33,18 +31,15 @@ class Encoder {
     // The first binding precedes the instances it starts. Work records
     // follow replay order, with the command mapping last.
     bool encode() {
-        return owner_binding() && instances() && stores(StorePosition::before_work) && goals() &&
-               goal_authority() && tasks() && stores(StorePosition::after_work) &&
+        return owner_binding() && stores(StorePosition::instances) &&
+               stores(StorePosition::before_work) && stores(StorePosition::goals) &&
+               stores(StorePosition::tasks) && stores(StorePosition::after_work) &&
                stores(StorePosition::after_cleanup) && authority_cleanup();
     }
 
   private:
     // One exact command owns every replacement state/admission in this batch.
-    bool reauthorizes(uint64_t goal_id) const {
-        const auto *mapping = model_.commands.mapped_in(stamp_.commit_seq);
-        return mapping != nullptr && mapping->kind == AYNI_INTENT_GOAL_REAUTHORIZE &&
-               mapping->object.id == goal_id;
-    }
+
     uint8_t *body(uint16_t type, uint16_t version, uint32_t length) {
         uint8_t *at = writer_.add_record_body(header(type, version, length));
         ok_ = ok_ && at != nullptr;
@@ -75,173 +70,8 @@ class Encoder {
         return ok_;
     }
 
-    bool instances() {
-        for (uint32_t index = 0; index < model_.agents.size(); ++index) {
-            const work::AgentInstance &instance = model_.agents.at(index);
-            if (instance.stamp.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            uint8_t *at = body(work::instance_record_type, work::instance_record_version,
-                               work::instance_record_size);
-            if (at != nullptr) {
-                work::write_instance_record(instance, at);
-            }
-        }
-        return ok_;
-    }
-
-    bool goals() {
-        for (uint32_t index = 0; index < model_.goals.size(); ++index) {
-            const work::Goal &goal = model_.goals.at(index);
-            if (goal.commit_seq != stamp_.commit_seq ||
-                goal.created.transition_id != stamp_.transition_id) {
-                continue;
-            }
-            const uint16_t version = work::goal_record_version_for(
-                goal, model_.goal_authority.contains(index, goal.goal_id),
-                model_.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
-            uint8_t *at =
-                body(work::goal_record_type, version, work::goal_record_size(goal, version));
-            if (at != nullptr) {
-                work::write_goal_record(goal, model_.goals.parameters(index), at, version);
-            }
-        }
-        for (uint32_t index = 0; index < model_.goals.size(); ++index) {
-            const work::Goal &goal = model_.goals.at(index);
-            if (goal.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            const bool authority_pause =
-                model_.goal_authority.contains(index, goal.goal_id) &&
-                model_.goal_authority.at(index).stamp.commit_seq == stamp_.commit_seq &&
-                model_.goal_authority.at(index).phase == work::GoalAuthorityPhase::paused;
-            const uint16_t version = reauthorizes(goal.goal_id)
-                                         ? work::goal_state_reauthorization_record_version
-                                     : authority_pause ? work::goal_state_authority_record_version
-                                     : !work::GoalTable::is_live(goal.lifecycle) &&
-                                             model_.grants.has_active_goal_grants(goal.goal_id)
-                                         ? work::goal_state_with_cleanup_record_version
-                                     : model_.goal_authority.contains(index, goal.goal_id)
-                                         ? work::goal_state_with_authority_record_version
-                                         : work::goal_state_record_version;
-            uint8_t *at = body(work::goal_state_record_type, version, work::goal_state_record_size);
-            if (at != nullptr) {
-                work::write_goal_state_record(goal, at);
-            }
-        }
-        return ok_;
-    }
-
     // Metadata follows the Goal state and shares exactly the authority change's
     // stamp. No live catalog is consulted while serializing durable facts.
-    bool goal_authority() {
-        uint32_t written = 0;
-        for (uint32_t index = 0; index < model_.goals.size(); ++index) {
-            work::GoalAuthorityRecord record{};
-            if (!model_.goal_authority.read(index, model_.goals.at(index).goal_id, record) ||
-                record.stamp.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            if (++written > work::goal_authority_records_per_transition ||
-                record.stamp.transition_id != stamp_.transition_id) {
-                return false;
-            }
-            const auto version = reauthorizes(record.goal_id)
-                                     ? work::goal_authority_reauthorization_record_version
-                                 : record.phase == work::GoalAuthorityPhase::paused
-                                     ? work::goal_authority_pause_record_version
-                                     : work::goal_authority_record_version;
-            auto *at = body(work::goal_authority_record_type, version,
-                            work::goal_authority_record_size(record));
-            if (at != nullptr) {
-                work::write_goal_authority_record(record, at);
-            }
-        }
-        return ok_;
-    }
-
-    bool tasks() {
-        const work::TaskTable &tasks = model_.tasks;
-        for (uint32_t index = 0; index < tasks.size(); ++index) {
-            const work::Task &task = tasks.at(index);
-            if (task.commit_seq != stamp_.commit_seq ||
-                task.created_transition_id != stamp_.transition_id) {
-                continue;
-            }
-            uint8_t *at = body(work::task_record_type, work::task_creation_version(task),
-                               work::task_creation_record_size(task));
-            if (at != nullptr) {
-                work::write_task_record(task, at);
-            }
-        }
-        for (uint32_t index = 0; index < tasks.size(); ++index) {
-            const work::Task &task = tasks.at(index);
-            if (task.steps_seq == stamp_.commit_seq) {
-                const work::TaskStepRange range{task.steps_before,
-                                                task.step_count - task.steps_before};
-                uint8_t *at = body(work::task_steps_record_type, work::task_steps_record_version,
-                                   work::task_steps_record_size(tasks, index, range));
-                if (at != nullptr) {
-                    work::write_task_steps_record(tasks, index, range, at);
-                }
-            }
-            if (task.checkpoint_seq == stamp_.commit_seq) {
-                uint8_t *at = body(work::task_checkpoint_record_type,
-                                   model_.provenance.find(work::ProvenanceKind::task, task.slot,
-                                                          task.task_id) != nullptr
-                                       ? work::task_checkpoint_provenance_version
-                                       : work::task_checkpoint_record_version,
-                                   work::task_checkpoint_record_size(task));
-                if (at != nullptr) {
-                    work::write_task_checkpoint_record(task, tasks.checkpoint(index), at);
-                }
-            }
-        }
-        for (uint32_t index = 0; index < tasks.size(); ++index) {
-            const work::Task &task = tasks.at(index);
-            if (task.commit_seq != stamp_.commit_seq) {
-                continue;
-            }
-            work::TaskAuthorityRecord admission{};
-            if (!model_.task_authority.read(task.slot, task.task_id, admission)) {
-                return false; // Schema 2 never infers authorization from absent metadata.
-            }
-            const bool changed = admission.stamp.commit_seq == stamp_.commit_seq;
-            const auto base = changed && reauthorizes(task.goal_id)
-                                  ? work::task_state_reauthorization_record_version
-                              : changed && task.created_transition_id != stamp_.transition_id
-                                  ? work::task_state_authority_record_version
-                                  : work::task_state_record_version;
-            const auto *command = model_.commands.mapped_in(stamp_.commit_seq);
-            const auto version = work::task_state_version_for(
-                task, command != nullptr && command->kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
-                          ? work::task_state_raise_limit_record_version
-                      : command != nullptr && command->kind == AYNI_INTENT_TASK_RESUME_WAIT
-                          ? work::task_state_resume_wait_record_version
-                          : base);
-            uint8_t *at =
-                body(work::task_state_record_type, version, work::task_state_size_for(version));
-            if (at != nullptr) {
-                work::write_task_state_record(task, at, version);
-            }
-            if (changed && !task_authority(admission)) {
-                return false;
-            }
-        }
-        return ok_;
-    }
-
-    bool task_authority(const work::TaskAuthorityRecord &record) {
-        if (record.stamp.transition_id != stamp_.transition_id) {
-            return false;
-        }
-        auto *at = body(work::task_authority_record_type, work::task_authority_record_version,
-                        work::task_authority_record_max(record.count));
-        if (at != nullptr) {
-            work::write_task_authority_record(record, at);
-        }
-        return ok_;
-    }
 
     bool authority_cleanup() {
         const auto &record = model_.authority_cleanup.record();
@@ -265,28 +95,12 @@ class Encoder {
 } // namespace
 
 uint32_t transition_batch_max(const KernelCapacities &capacities) {
-    const uint32_t steps = capacities.task_step_capacity < capacities.policy_intent_capacity
-                               ? capacities.task_step_capacity
-                               : capacities.policy_intent_capacity;
     uint32_t size =
         static_cast<uint32_t>(durability::batch_header_size + durability::commit_marker_size);
     size += record_bytes(authority::owner_binding_record_size);
-    size += capacities.agent_capacity * record_bytes(work::instance_record_size);
-    size += record_bytes(work::goal_record_max_fixed_size + 2U * id_max +
-                         capacities.goal_parameter_max_bytes);
-    size += capacities.goal_capacity * record_bytes(work::goal_state_record_size);
-    size += work::goal_authority_records_per_transition *
-            record_bytes(work::goal_authority_record_max(capacities.goal_requirement_capacity,
-                                                         capacities.authority_scope_max_bytes));
     for (const PersistentStore *store : persistent_stores) {
         size += store->journal_max(capacities);
     }
-    size += record_bytes(work::task_record_max_size);
-    size += record_bytes(work::task_steps_record_max(steps));
-    size += record_bytes(work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
-    size += capacities.task_capacity * record_bytes(work::task_state_max_size);
-    size += capacities.task_capacity *
-            record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));
     size += record_bytes(work::authority_cleanup_record_size);
     return size;
 }

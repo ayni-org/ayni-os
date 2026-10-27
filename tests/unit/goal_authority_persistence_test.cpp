@@ -456,6 +456,14 @@ TEST(GoalAuthorityPersistence, paged_snapshot_keeps_adjacent_metadata_and_origin
         goal_state_record_size + 24U;
     const auto image = snapshot(source, page_size);
     ASSERT_TRUE(image.paired_across_page);
+    // ADR-0064: page boundaries do not change a family's selected record bytes.
+    const auto large_page = snapshot(source, 4096);
+    ASSERT_EQ(image.records.size(), large_page.records.size());
+    for (size_t index = 0; index < image.records.size(); ++index) {
+        EXPECT_EQ(image.records[index].header.type, large_page.records[index].header.type);
+        EXPECT_EQ(image.records[index].header.version, large_page.records[index].header.version);
+        EXPECT_EQ(image.records[index].body, large_page.records[index].body);
+    }
     Fixture restored;
     restored.run();
     ASSERT_EQ(import_snapshot(restored, image), BatchCheck::ok);

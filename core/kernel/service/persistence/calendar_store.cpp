@@ -45,10 +45,12 @@ bool next(const WorkModel &model, StoreCursor &cursor) {
     }
     return cursor.index < model.goals.size();
 }
-StoreRecord shape(const WorkModel &model, uint32_t index) {
+StoreRecord shape(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     return {work::calendar_record_version, work::calendar_record_size(model.calendars.at(index))};
 }
-void write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     work::write_calendar_record(model.calendars.at(index), body);
 }
 bool restore(WorkModel &model, const work::CalendarRow &row) {
@@ -63,7 +65,8 @@ bool restore(WorkModel &model, const work::CalendarRow &row) {
            model.calendars.restore_validated(index, row);
 }
 durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                            uint16_t, const uint8_t *body, uint32_t size) {
+                            uint16_t, const uint8_t *body, uint32_t size, uint16_t,
+                            StoreReadCursor &) {
     work::CalendarRow row{};
     return work::read_calendar_record(body, size, row) && within_snapshot(row.stamp, metadata) &&
                    restore(model, row)

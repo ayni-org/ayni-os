@@ -47,14 +47,17 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
 bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     return cursor.index < model.memories.size();
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     return {memory_record_version, memory_record_size(model.memories.at(index))};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     write_memory_record(model.memories.at(index), model.memories.body(index), body);
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t, const uint8_t *body, uint32_t size) {
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     DecodedMemory decoded{};
     uint32_t duplicate = 0;
     const auto *owner = model.principals.binding();

@@ -174,19 +174,22 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     return next_snapshot_at_depth(model.grants, AYNI_GRANT_DELEGATION_DEPTH_MAX_MAX, cursor.order,
                                   cursor.index);
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     const auto &grant = model.grants.at(index);
     const auto version = authority::grant_snapshot_record_version_for(grant);
     return {version, authority::grant_snapshot_record_size(grant, version)};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     authority::write_grant_snapshot_record(
         model.grants.at(index), model.grants.source_domain(index), model.grants.scope(index), body,
         authority::grant_snapshot_record_version_for(model.grants.at(index)));
 }
 
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size) {
+                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     authority::GrantSnapshotRecord record{};
     const auto *binding = model.principals.binding();
     if (!authority::read_grant_snapshot_record(body, size, record, version) ||

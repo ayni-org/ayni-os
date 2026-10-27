@@ -56,12 +56,14 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     }
     return found;
 }
-StoreRecord snapshot_record(const WorkModel &model, uint32_t index) {
+StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
+    const auto index = cursor.index;
     const auto &mapping = model.commands.at(index);
     return {command_record_version_for(mapping),
             command_record_size_for(mapping) + command_tail_size};
 }
-void snapshot_write(const WorkModel &model, uint32_t index, uint8_t *body) {
+void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
+    const auto index = cursor.index;
     const auto &mapping = model.commands.at(index);
     const auto base_size = command_record_size_for(mapping);
     static_cast<void>(write_command_record(mapping, model.commands.floor(mapping.principal_id),
@@ -208,7 +210,8 @@ durability::BatchCheck restore_expired(WorkModel &model,
     return snapshot_restore_check(model.commands.restore_checked(mapping, floor));
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size) {
+                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     StoreReadCursor &) {
     CommandMapping mapping{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};

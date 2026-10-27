@@ -50,16 +50,19 @@ KernelCapacities capacities() {
 TEST(PersistentStore, every_record_kind_has_one_store_and_a_stable_snapshot_position) {
     using ayni::kernel::StorePosition;
     const uint16_t order[] = {
-        record_type::grant,      record_type::calendar,        record_type::call,
+        record_type::instance,   record_type::grant,           record_type::goal,
+        record_type::task,       record_type::calendar,        record_type::call,
         record_type::scene,      record_type::context,         record_type::memory,
         record_type::provenance, record_type::privacy_cleanup, record_type::command_mapping};
+    const StorePosition positions[] = {
+        StorePosition::instances,  StorePosition::before_work, StorePosition::goals,
+        StorePosition::tasks,      StorePosition::after_work,  StorePosition::after_work,
+        StorePosition::after_work, StorePosition::after_work,  StorePosition::after_work,
+        StorePosition::after_work, StorePosition::after_work,  StorePosition::after_cleanup};
     ASSERT_EQ(persistent_store_count, std::size(order));
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
         EXPECT_EQ(persistent_stores[rank]->record_type, order[rank]);
-        const auto position = rank == 0                            ? StorePosition::before_work
-                              : rank + 1 == persistent_store_count ? StorePosition::after_cleanup
-                                                                   : StorePosition::after_work;
-        EXPECT_EQ(persistent_stores[rank]->position, position);
+        EXPECT_EQ(persistent_stores[rank]->position, positions[rank]);
     }
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {
         const auto &store = *persistent_stores[rank];
@@ -73,7 +76,7 @@ TEST(PersistentStore, every_record_kind_has_one_store_and_a_stable_snapshot_posi
         }
     }
     uint32_t found = 0;
-    EXPECT_FALSE(find_persistent_store(record_type::goal, found));
+    EXPECT_FALSE(find_persistent_store(record_type::boot_epoch, found));
 }
 
 // ADR-0059: no storage migration changes unknown-version or legacy optional header semantics.
@@ -89,14 +92,29 @@ TEST(PersistentStore, family_versions_keep_their_required_and_context_rules) {
                                                 : RecordUse::unknown;
                     EXPECT_EQ(WorkReplay::classify_header(header, context), classified);
                     header.flags = 0;
-                    const bool required = type != record_type::command_mapping || version >= 2U;
+                    // ADR-0064 preserves legacy optional envelope acceptance exactly.
+                    const uint16_t first_required =
+                        type == record_type::instance || type == record_type::task_steps ||
+                                type == record_type::command_mapping || type == record_type::goal ||
+                                type == record_type::goal_state
+                            ? 2U
+                        : type == record_type::task ? 2U
+                        : type == record_type::task_state || type == record_type::task_checkpoint
+                            ? 2U
+                            : 0U;
+                    const bool optional_legacy =
+                        type == record_type::instance || type == record_type::task_steps;
+                    const bool required = !optional_legacy && version >= first_required;
                     EXPECT_EQ(WorkReplay::classify_header(header, context),
                               required ? RecordUse::corrupt : classified);
                 }
                 RecordHeader unknown{type, UINT16_MAX, ayni::durability::record_required, 0};
                 EXPECT_EQ(WorkReplay::classify_header(unknown, context), RecordUse::unknown);
                 unknown.flags = 0;
-                EXPECT_EQ(WorkReplay::classify_header(unknown, context), RecordUse::corrupt);
+                EXPECT_EQ(WorkReplay::classify_header(unknown, context),
+                          type == record_type::instance || type == record_type::task_steps
+                              ? RecordUse::unknown
+                              : RecordUse::corrupt);
             }
         }
     }
