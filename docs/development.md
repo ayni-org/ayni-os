@@ -211,3 +211,16 @@ ctest --preset native-debug -R 'NormalFixtures|normal_fixture_generator' --no-te
 ```
 
 输出目录必须尚不存在。每次保留 run.json 与 trace.jsonl，含实际配置、代码/工具链标记及第一次失败；只有静止点的正常排空/重开在本 profile 内。产物重放测试还验证 JSON、正文脱敏和两次完整轨迹一致；原故障/恢复动作明确拒绝。
+
+## Native 容量与耗时测量
+
+`tests/measurements` 是允许只读访问 Core 的测试工具，方法与限制见 ADR-0069。先按资源检查设置正整数构建/测试并行度；Release 无 sanitizer 的耗时才能与该基线比较：
+
+```sh
+cmake --preset native-release
+cmake --build --preset native-release --target ayni_native_measurements ayni_memory_measurements
+./build/native-release/tests/measurements/ayni_memory_measurements
+./build/native-release/tests/measurements/ayni_native_measurements --maximum build/native-maximum.json
+```
+
+`--small OUTPUT.json` 用于正常功能 smoke。输出分别记录编码、管理提交、填充/排空、满表工作与静止 step 的样本数、最大值和 p99（ns）；Host 与计时均为真实单调时钟。`--maximum` 的所有配置容量取上限，但只填满 Goal、Task、Grant 和 Memory，其他占用如实列明；1 GiB 是逻辑模拟存储额度。最大观测值不能充当硬实时或 ESP32 证据；CI 的小负载不设性能阈值。
