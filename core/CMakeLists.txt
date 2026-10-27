@@ -89,6 +89,10 @@ ayni_add_core_module(work
         work/goal/goal_request.cpp
         work/goal/goal_table.cpp
         work/goal/trigger_schedule.cpp
+        work/goal/calendar.cpp
+        work/goal/calendar_zone.cpp
+        work/goal/calendar_table.cpp
+        work/goal/calendar_records.cpp
         work/privacy/privacy_cleanup.cpp
         work/privacy/privacy_records.cpp
         work/provenance/provenance_records.cpp
@@ -103,6 +107,7 @@ ayni_add_core_module(work
 ayni_add_core_module(kernel
     SOURCES
         kernel/api/call_api.cpp
+        kernel/api/calendar_api.cpp
         kernel/api/execution_api.cpp
         kernel/api/executor_completion_api.cpp
         kernel/api/kernel_api.cpp
@@ -168,6 +173,7 @@ ayni_add_core_module(kernel
         kernel/runtime/kernel_layout.cpp
         kernel/runtime/kernel_lifecycle.cpp
         kernel/service/persistence/call_store.cpp
+        kernel/service/persistence/calendar_store.cpp
         kernel/service/persistence/grant_store.cpp
         kernel/service/persistence/command_store.cpp
         kernel/service/persistence/goal_approval_replay.cpp

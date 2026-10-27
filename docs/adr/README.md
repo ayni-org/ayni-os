@@ -89,3 +89,5 @@
 | [0059](0059-grant-restore-and-persistent-stores.md) | Grant 事实/撤销闸门/恢复职责与 Grant、命令持久适配 | 已接受 | §2.3、§2.8、§9.1 |
 
 | [0060](0060-private-memory-and-lineage.md) | 有界私有记忆、来源权限、Context 文件屏障与逻辑隐私清理 | 已接受 | §2、§9.1、§14.1 |
+
+| [0061](0061-trusted-utc-and-calendar.md) | 可信 UTC、POSIX 日历规则与稳定发生时刻 | 已接受 | §2.2、§9.1、§14.1 |

@@ -258,6 +258,15 @@ class GoalTable {
     // backlog. Once/delay retain their original due time (ADR-0038 decision 11).
     // Caller has already rejected an expired Goal; user pause is unchanged.
     void skip_authority_backlog(uint32_t index, uint64_t now_us, foundation::TransitionStamp stamp);
+    // Calendar owner projects UTC into this boot without persisting an absolute
+    // monotonic value. No user revision or durable state changes here.
+    bool project_calendar(uint32_t index, uint64_t deadline_us);
+    // Consume exactly the calendar owner's coalesced count in the same transition.
+    TakenOccurrences take_calendar(uint32_t index, uint32_t count, uint64_t due_us,
+                                   uint64_t task_id, foundation::TransitionStamp stamp);
+    // Calendar skip owns the same cursor but retains the previous last Task.
+    void skip_calendar(uint32_t index, uint32_t count, uint64_t now_us, ayni_reason_t reason,
+                       foundation::TransitionStamp stamp);
     // Whether some goal takes a local input from source: its trigger is
     // LOCAL_INPUT from that source, it is not terminal, paused or not, and
     // one more occurrence has a number (ADR-0021).

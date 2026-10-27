@@ -10,6 +10,8 @@
 #include <utility>
 
 #include <pthread.h>
+#include <sys/timex.h>
+#include <time.h>
 
 namespace ayni::hosts::native {
 namespace {
@@ -22,6 +24,22 @@ uint64_t monotonic_now_us(void * /*ctx*/) {
     const auto since_origin = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(since_origin).count());
+}
+
+// Linux clock discipline supplies trust; a merely plausible wall-clock date
+// cannot authorize calendar triggers. Both calls are local nonblocking reads.
+void utc_now(void *, ayni_utc_sample_v1 *out) {
+    *out = {sizeof(*out), AYNI_UTC_UNAVAILABLE, 0};
+    struct timespec wall {};
+    if (::clock_gettime(CLOCK_REALTIME, &wall) != 0) {
+        return;
+    }
+    struct timex discipline {};
+    const auto state = ::adjtimex(&discipline);
+    out->utc_s = wall.tv_sec;
+    out->trust = state >= 0 && state != TIME_ERROR && (discipline.status & STA_UNSYNC) == 0
+                     ? AYNI_UTC_TRUSTED
+                     : AYNI_UTC_UNTRUSTED;
 }
 
 // One accepted storage call, as the I/O thread needs it once the port has
@@ -263,6 +281,7 @@ ayni_host_v1 Host::table() {
     host.struct_size = sizeof(ayni_host_v1);
     host.ctx = this;
     host.monotonic_now_us = &monotonic_now_us;
+    host.utc_now = &utc_now;
     host.wake = &Host::wake;
     host.ingress_lock = &Host::ingress_lock;
     host.ingress_unlock = &Host::ingress_unlock;

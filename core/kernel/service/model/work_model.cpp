@@ -43,6 +43,22 @@ bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
     return false;
 }
 
+void WorkModel::refresh_calendars(work::CalendarClock clock) {
+    if (calendars.empty()) {
+        return;
+    }
+    calendars.set_clock(clock);
+    bool changed = false;
+    for (uint32_t index = 0; index < goals.size(); ++index) {
+        if (work::is_calendar_trigger(goals.at(index).trigger.kind)) {
+            changed = goals.project_calendar(index, calendars.deadline(index)) || changed;
+        }
+    }
+    if (changed) {
+        forget_due_work();
+    }
+}
+
 bool WorkModel::start(uint64_t boot_epoch, foundation::TransitionStamp first_stamp) {
     ids.start(boot_epoch);
     transitions.start(first_stamp);
@@ -142,7 +158,9 @@ void WorkModel::release_goal_references(const work::GoalAuthorityRecord &record,
     }
 }
 
-void WorkModel::clear_goal_authority(uint32_t index, uint64_t previous_id, uint64_t commit_seq) {
+void WorkModel::retire_goal_metadata(uint32_t index, uint64_t previous_id, uint64_t commit_seq) {
+    calendars.retire(index);
+    clear_content_provenance(work::ProvenanceKind::goal, index, previous_id, commit_seq);
     work::GoalAuthorityRecord record{};
     if (goal_authority.read(index, previous_id, record)) {
         release_goal_references(record, commit_seq);
@@ -161,9 +179,7 @@ bool WorkModel::insert_goal(const work::NewGoal &goal, uint64_t goal_id,
     if (!work::insert_goal(work, goal, goal_id, stamp, out_index)) {
         return false;
     }
-    clear_goal_authority(out_index, goals.at(out_index).replaced_goal_id, stamp.commit_seq);
-    clear_content_provenance(work::ProvenanceKind::goal, out_index,
-                             goals.at(out_index).replaced_goal_id, stamp.commit_seq);
+    retire_goal_metadata(out_index, goals.at(out_index).replaced_goal_id, stamp.commit_seq);
     return true;
 }
 
@@ -277,14 +293,39 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
         uint64_t task_id = 0;
         static_cast<void>(model.ids.allocate(task_id)); // find_due_work saw one left
         const auto stamp = model.transitions.next();
-        work::derive(tables, work.goal_index, now_us, task_id, stamp);
+        if (work::is_calendar_trigger(model.goals.at(work.goal_index).trigger.kind)) {
+            const auto due = model.calendars.consume(work.goal_index, stamp);
+            const auto taken =
+                model.goals.take_calendar(work.goal_index, due.count, now_us, task_id, stamp);
+            const auto &goal = model.goals.at(work.goal_index);
+            const work::NewTask task{goal.goal_id, goal.owner_instance_id,
+                                     now_us,       work.goal_index,
+                                     taken.latest, taken.count,
+                                     due.local_s,  due.utc_s};
+            if (!model.tasks.insert(task, task_id, stamp)) {
+                return DueWorkResult::internal;
+            }
+            model.goals.project_calendar(work.goal_index,
+                                         model.calendars.deadline(work.goal_index));
+        } else {
+            work::derive(tables, work.goal_index, now_us, task_id, stamp);
+        }
         if (!model.inherit_task_metadata(task_id, stamp)) {
             return DueWorkResult::internal;
         }
         return DueWorkResult::applied;
     }
     case work::DueWork::Kind::skip:
-        work::skip(tables, work.goal_index, now_us, work.skip_reason, model.transitions.next());
+        if (work::is_calendar_trigger(model.goals.at(work.goal_index).trigger.kind)) {
+            const auto stamp = model.transitions.next();
+            const auto due = model.calendars.consume(work.goal_index, stamp);
+            model.goals.skip_calendar(work.goal_index, due.count, now_us, work.skip_reason, stamp);
+            work::settle_skipped(tables, work.goal_index, stamp);
+            model.goals.project_calendar(work.goal_index,
+                                         model.calendars.deadline(work.goal_index));
+        } else {
+            work::skip(tables, work.goal_index, now_us, work.skip_reason, model.transitions.next());
+        }
         return DueWorkResult::applied;
     }
     return DueWorkResult::none;

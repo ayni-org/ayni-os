@@ -399,6 +399,10 @@ void derive(WorkTables &tables, uint32_t goal_index, uint64_t now_us, uint64_t t
 void skip(WorkTables &tables, uint32_t goal_index, uint64_t now_us, ayni_reason_t reason,
           foundation::TransitionStamp stamp) {
     tables.goals.skip_due(goal_index, now_us, reason, stamp);
+    settle_skipped(tables, goal_index, stamp);
+}
+
+void settle_skipped(WorkTables &tables, uint32_t goal_index, foundation::TransitionStamp stamp) {
     // Nothing more comes of a goal skipped past its last occurrence with no
     // task left, so it fails as after a failed last task. The skip raised
     // no revision, so the check sees every revision the end would raise.

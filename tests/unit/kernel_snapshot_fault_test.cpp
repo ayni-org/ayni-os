@@ -761,6 +761,9 @@ TEST(SnapshotFaults, a_snapshot_record_beyond_the_buffer_exceeds_capacity) {
     const StorageImage image = large.node().sim().durable_storage();
 
     WorkNode small;
+    // Keep the existing oversized-record scenario below the newer calendar batch envelope.
+    small.node().config().goal_capacity = 1;
+    small.node().config().task_capacity = 1;
     small.node().config().goal_requirement_capacity = 1;
     small.node().config().authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_MIN;
     small.node().config().storage_buffer_bytes = smallest_storage_buffer(small.node().config());

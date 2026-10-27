@@ -68,7 +68,9 @@ class GoalTypeRegistry {
     static constexpr uint32_t defined_trigger_kinds =
         AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE) |
         AYNI_TRIGGER_BIT(AYNI_TRIGGER_DELAY) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_INTERVAL) |
-        AYNI_TRIGGER_BIT(AYNI_TRIGGER_LOCAL_INPUT);
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_LOCAL_INPUT) | AYNI_TRIGGER_BIT(AYNI_TRIGGER_CALENDAR_ONCE) |
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_CALENDAR_DAILY) |
+        AYNI_TRIGGER_BIT(AYNI_TRIGGER_CALENDAR_WEEKLY);
     static bool defines_trigger(ayni_trigger_kind_t kind) {
         return kind < 32U && (defined_trigger_kinds & AYNI_TRIGGER_BIT(kind)) != 0U;
     }

@@ -1,4 +1,5 @@
 #include "work/goal/trigger_schedule.h"
+#include "work/goal/calendar_table.h"
 
 namespace ayni::work {
 namespace {
@@ -25,8 +26,9 @@ bool Trigger::fits() const {
 TriggerCursor start_schedule(const Trigger &trigger, uint64_t created_us) {
     // ONCE has delay_us 0, so it is due at creation. A local input trigger
     // has nothing due until an input arrives.
-    const bool scheduled =
-        trigger.kind != AYNI_TRIGGER_NONE && trigger.kind != AYNI_TRIGGER_LOCAL_INPUT;
+    const bool scheduled = trigger.kind != AYNI_TRIGGER_NONE &&
+                           trigger.kind != AYNI_TRIGGER_LOCAL_INPUT &&
+                           !is_calendar_trigger(trigger.kind);
     return {0, scheduled ? time_after(created_us, trigger.delay_us) : no_time};
 }
 
@@ -72,6 +74,10 @@ void record(uint64_t at_us, TriggerCursor &cursor) {
 }
 
 bool occurs_again(const Trigger &trigger, const TriggerCursor &cursor) {
+    if (is_calendar_trigger(trigger.kind)) {
+        return trigger.kind == AYNI_TRIGGER_CALENDAR_ONCE ? cursor.taken == 0
+                                                          : cursor.taken < last_number;
+    }
     return cursor.has_next() || (trigger.kind == AYNI_TRIGGER_LOCAL_INPUT && can_record(cursor));
 }
 

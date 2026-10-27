@@ -3,6 +3,7 @@
 // with their owners. Views remain caller-owned throughout the immediate call.
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_REQUEST_H
 #define AYNI_CORE_WORK_GOAL_GOAL_REQUEST_H
+#include "work/goal/calendar.h"
 #include "work/goal/trigger_schedule.h"
 namespace ayni::work {
 
@@ -16,6 +17,7 @@ struct GoalCreate {
     work::Trigger trigger;       // Kind with matching delay/period in microseconds.
     uint64_t expiry_us;          // Microseconds from creation; 0: never.
     ayni_string_v1 trigger_source; // LOCAL_INPUT: the input it takes; empty otherwise
+    CalendarRule calendar{};       // CALENDAR_*: copied immutable rule; absent for all other kinds.
 };
 
 // One shape rule for ordinary creation and the approval's full original echo.

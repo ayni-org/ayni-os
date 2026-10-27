@@ -65,6 +65,7 @@ class Model {
           types_(store(ayni::catalog::GoalTypeRegistry::storage_size(config.goal_type_capacity))),
           goals_(store(
               GoalTable::storage_size(config.goal_capacity, config.goal_parameter_max_bytes))),
+          calendars_(store(ayni::work::CalendarTable::storage_size(config.goal_capacity))),
           sessions_(store(ayni::authority::SessionTable::storage_size(config.session_capacity))),
           tasks_(store(TaskTable::storage_size(ayni::kernel::task_limits(config)))),
           strategies_(
@@ -92,6 +93,7 @@ class Model {
         result.set(Store::agents, agents_.data());
         result.set(Store::goal_types, types_.data());
         result.set(Store::goals, goals_.data());
+        result.set(Store::calendars, calendars_.data());
         result.set(Store::sessions, sessions_.data());
         result.set(Store::tasks, tasks_.data());
         result.set(Store::strategies, strategies_.data());
@@ -104,8 +106,8 @@ class Model {
     }
 
     ayni::kernel::KernelCapacities capacities_;
-    std::vector<uint64_t> agents_, types_, goals_, sessions_, tasks_, strategies_, commands_,
-        capabilities_, grants_, goal_authority_, task_authority_;
+    std::vector<uint64_t> agents_, types_, goals_, calendars_, sessions_, tasks_, strategies_,
+        commands_, capabilities_, grants_, goal_authority_, task_authority_;
     ayni::kernel::KernelStorage storage_;
     ayni::kernel::Catalogs catalogs_;
     ayni::kernel::CallbackGate callbacks_;

@@ -27,6 +27,9 @@ ayni_status_t ayni_kernel::submit_intent(const ayni::kernel::Intent &intent,
                                                   storage_admission_status(),
                                                   {host.ctx, host.monotonic_now_us},
                                                   {&ingress, sample_input_boundary}};
+        if (!work.calendars.empty()) {
+            work.refresh_calendars(calendar_clock(context.now_us));
+        }
         status = ayni::kernel::apply_intent(work, intent, context, outcome, failure);
         // A revocation takes no transition of its own (ADR-0031).
         if (status == AYNI_OK && intent.kind == AYNI_INTENT_GRANT_REVOKE && !outcome.retried &&

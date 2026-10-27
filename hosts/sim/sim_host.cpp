@@ -27,6 +27,7 @@ ayni_host_v1 Host::table() {
     host.struct_size = sizeof(ayni_host_v1);
     host.ctx = this;
     host.monotonic_now_us = &Host::monotonic_now_us;
+    host.utc_now = &Host::utc_now;
     host.wake = &Host::wake;
     host.ingress_lock = &Host::ingress_lock;
     host.ingress_unlock = &Host::ingress_unlock;
@@ -85,6 +86,12 @@ std::optional<StorageFault> Host::next_fault(StoragePort port) {
     const StorageFault fault = queue.front();
     queue.pop_front();
     return fault;
+}
+
+void Host::utc_now(void *ctx, ayni_utc_sample_v1 *out) {
+    auto &self = *static_cast<Host *>(ctx);
+    self.note_call();
+    *out = {sizeof(*out), self.utc_trust_, self.utc_s_};
 }
 
 uint64_t Host::monotonic_now_us(void *ctx) {

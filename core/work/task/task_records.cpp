@@ -2,17 +2,38 @@
 
 namespace ayni::work {
 
+uint32_t task_creation_record_size(const Task &task) {
+    return task_record_size +
+           (task.calendar_local_s == AYNI_CALENDAR_TIME_NONE ? 0 : task_calendar_tail_size);
+}
+uint16_t task_creation_version(const Task &task, bool provenance) {
+    return task.calendar_local_s != AYNI_CALENDAR_TIME_NONE
+               ? (provenance ? task_calendar_provenance_snapshot_version
+                             : task_calendar_record_version)
+               : (provenance ? task_provenance_snapshot_version : task_record_version);
+}
 void write_task_record(const Task &task, uint8_t *body) {
-    durability::BodyWriter writer(body, task_record_size);
+    durability::BodyWriter writer(body, task_creation_record_size(task));
     writer.u64(task.task_id);
     writer.u64(task.goal_id);
     writer.u64(task.owner_instance_id);
     writer.u64(task.replaced_task_id);
     writer.u32(task.occurrence);
     writer.u32(task.occurrence_count);
+    if (task.calendar_local_s != AYNI_CALENDAR_TIME_NONE) {
+        writer.u64(static_cast<uint64_t>(task.calendar_local_s));
+        writer.u64(static_cast<uint64_t>(task.calendar_utc_s));
+    }
 }
 
-bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
+bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out, uint16_t version) {
+    const auto expected = version == task_calendar_record_version ||
+                                  version == task_calendar_provenance_snapshot_version
+                              ? task_record_max_size
+                              : task_record_size;
+    if (size != expected) {
+        return false;
+    }
     durability::BodyReader reader(body, size);
     out = TaskRecord{};
     out.task_id = reader.u64();
@@ -21,6 +42,16 @@ bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
     out.replaced_task_id = reader.u64();
     out.task.occurrence = reader.u32();
     out.task.occurrence_count = reader.u32();
+    if (size == task_record_max_size) {
+        const auto local = reader.u64();
+        const auto utc = reader.u64();
+        if (local > static_cast<uint64_t>(AYNI_CALENDAR_SECONDS_MAX) ||
+            utc > static_cast<uint64_t>(AYNI_CALENDAR_SECONDS_MAX)) {
+            return false;
+        }
+        out.task.calendar_local_s = static_cast<int64_t>(local);
+        out.task.calendar_utc_s = static_cast<int64_t>(utc);
+    }
     return reader.ok();
 }
 
@@ -28,7 +59,7 @@ bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
 // byte layout belongs here, while restoration policy remains with its owner.
 void write_task_snapshot_record(const Task &task, uint8_t *body) {
     write_task_record(task, body);
-    durability::BodyWriter writer(body + task_record_size, task_snapshot_tail_size);
+    durability::BodyWriter writer(body + task_creation_record_size(task), task_snapshot_tail_size);
     writer.u64(task.created_transition_id);
     writer.u64(task.commit_seq);
     writer.u64(task.steps_seq);
@@ -36,12 +67,14 @@ void write_task_snapshot_record(const Task &task, uint8_t *body) {
     writer.u32(task.steps_before);
 }
 
-bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out) {
-    if (size != task_snapshot_record_size ||
-        !read_task_record(body, task_record_size, out.creation)) {
+bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out,
+                               uint16_t version) {
+    if ((size != task_snapshot_record_size &&
+         size != task_snapshot_record_size + task_calendar_tail_size) ||
+        !read_task_record(body, size - task_snapshot_tail_size, out.creation, version)) {
         return false;
     }
-    durability::BodyReader reader(body + task_record_size, task_snapshot_tail_size);
+    durability::BodyReader reader(body + size - task_snapshot_tail_size, task_snapshot_tail_size);
     out.stamp = {reader.u64(), reader.u64()};
     out.steps_seq = reader.u64();
     out.checkpoint_seq = reader.u64();

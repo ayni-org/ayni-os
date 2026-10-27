@@ -40,7 +40,8 @@ ayni_status_t admit_goal(const WorkModel &model, const Intent &intent, uint64_t 
     }
     if (!model.goal_authority.read(plan.goal_index, goal.goal_id, plan.record) ||
         plan.record.phase != work::GoalAuthorityPhase::proposed ||
-        !matches_goal_creation(request.original, goal, model.goals.parameters(plan.goal_index)) ||
+        !matches_goal_creation(request.original, goal, model.goals.parameters(plan.goal_index),
+                               &model.calendars.at(plan.goal_index).rule) ||
         request.missing_mask != work::missing_requirement_mask(plan.record)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GOAL_APPROVAL_CHANGED, failure, object);
     }

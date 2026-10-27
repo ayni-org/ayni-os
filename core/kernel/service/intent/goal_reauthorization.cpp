@@ -43,13 +43,19 @@ ayni_status_t admit_goal(const WorkModel &model, const Intent &intent, uint64_t 
     if (plan.previous.stamp.commit_seq != request.expected_authority_commit_seq) {
         return refuse(AYNI_REVISION_CONFLICT, AYNI_REASON_GOAL_AUTHORITY_REVISION, failure);
     }
-    if (!matches_goal_creation(request.original, goal, model.goals.parameters(plan.goal_index))) {
+    if (!matches_goal_creation(request.original, goal, model.goals.parameters(plan.goal_index),
+                               &model.calendars.at(plan.goal_index).rule)) {
         return refuse(AYNI_DENIED, AYNI_REASON_GOAL_REAUTHORIZATION_CHANGED, failure);
     }
     const auto current = model.check_goal_authority(plan.goal_index, now_us, durable_seq);
     if (plan.previous.phase == work::GoalAuthorityPhase::authorized &&
         (current.status == AYNI_OK || current.status == AYNI_BUSY)) {
         return refuse(AYNI_INVALID_STATE, AYNI_REASON_GOAL_STATE, failure);
+    }
+    if ((goal.trigger.kind == AYNI_TRIGGER_CALENDAR_DAILY ||
+         goal.trigger.kind == AYNI_TRIGGER_CALENDAR_WEEKLY) &&
+        !model.calendars.clock().trusted) {
+        return refuse(AYNI_NOT_READY, AYNI_REASON_TIME_UNTRUSTED, failure);
     }
     return AYNI_OK;
 }
@@ -126,6 +132,15 @@ bool publish(WorkModel &model, const ReauthorizationPlan &plan, uint64_t now_us,
     model.release_goal_references(plan.previous, stamp.commit_seq);
     model.goal_authority.bind(plan.goal_index, plan.references, stamp, parent, boundary);
     model.goals.reauthorize(plan.goal_index, now_us, stamp);
+    if (goal.trigger.kind == AYNI_TRIGGER_CALENDAR_DAILY ||
+        goal.trigger.kind == AYNI_TRIGGER_CALENDAR_WEEKLY) {
+        const auto due = model.calendars.due(plan.goal_index);
+        if (due.count != 0) {
+            static_cast<void>(model.calendars.consume(plan.goal_index, stamp));
+            model.goals.skip_calendar(plan.goal_index, due.count, now_us,
+                                      AYNI_REASON_GOAL_AUTHORITY_PAUSED, stamp);
+        }
+    }
     for (uint32_t at = 0; at < model.tasks.size(); ++at) {
         const auto &task = model.tasks.at(at);
         if (task.goal_id != goal.goal_id || !work::TaskTable::is_live(task.lifecycle)) {

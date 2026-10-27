@@ -34,6 +34,7 @@ constexpr uint16_t action_state = 20;              // work/action
 constexpr uint16_t call = 21;                      // work/call
 constexpr uint16_t provenance = 24;                // work/provenance
 constexpr uint16_t privacy_cleanup = 25;           // work/privacy
+constexpr uint16_t calendar = 27;                  // work/goal
 constexpr uint16_t context = 26;                   // knowledge/context
 constexpr uint16_t memory = 23;                    // knowledge/memory
 constexpr uint16_t scene = 22;                     // authority/scene
@@ -65,6 +66,7 @@ constexpr uint16_t all[] = {
     provenance,
     privacy_cleanup,
     context,
+    calendar,
 };
 
 constexpr bool all_distinct() {

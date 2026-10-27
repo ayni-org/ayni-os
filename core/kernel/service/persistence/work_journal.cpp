@@ -168,8 +168,8 @@ class Encoder {
                 task.created_transition_id != stamp_.transition_id) {
                 continue;
             }
-            uint8_t *at =
-                body(work::task_record_type, work::task_record_version, work::task_record_size);
+            uint8_t *at = body(work::task_record_type, work::task_creation_version(task),
+                               work::task_creation_record_size(task));
             if (at != nullptr) {
                 work::write_task_record(task, at);
             }
@@ -281,7 +281,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     for (const PersistentStore *store : persistent_stores) {
         size += store->journal_max(capacities);
     }
-    size += record_bytes(work::task_record_size);
+    size += record_bytes(work::task_record_max_size);
     size += record_bytes(work::task_steps_record_max(steps));
     size += record_bytes(work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
     size += capacities.task_capacity * record_bytes(work::task_state_call_record_size);

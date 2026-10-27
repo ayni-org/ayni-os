@@ -11,6 +11,7 @@ namespace ayni::test {
 // Own the strings/parameters so the request remains valid after Goal reclamation.
 struct ApprovalRequest {
     ayni_goal_info_v1 info{};
+    ayni_calendar_info_v1 calendar{}; // Owns the borrowed calendar echo through the request.
     std::vector<uint8_t> parameters;
     ayni_goal_approve_v1 body{};
 
@@ -34,6 +35,13 @@ struct ApprovalRequest {
         original.goal_type_version = info.goal_type_version;
         original.parameters = {parameters.data(), size};
         original.trigger = info.trigger;
+        if (info.trigger == AYNI_TRIGGER_CALENDAR_ONCE ||
+            info.trigger == AYNI_TRIGGER_CALENDAR_DAILY ||
+            info.trigger == AYNI_TRIGGER_CALENDAR_WEEKLY) {
+            calendar.struct_size = sizeof(calendar);
+            EXPECT_EQ(ayni_get_calendar(kernel, goal_id, &calendar), AYNI_OK);
+            original.calendar = &calendar.rule;
+        }
         original.trigger_delay_us = info.trigger_delay_us;
         original.trigger_period_us = info.trigger_period_us;
         original.expiry_us = info.original_expiry_us;

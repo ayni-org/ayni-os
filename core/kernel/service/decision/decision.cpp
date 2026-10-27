@@ -218,6 +218,8 @@ ayni_task_snapshot_v1 snapshot_of(const WorkModel &model, DecisionBuffer &decisi
     snapshot.goal_id = task.goal_id;
     snapshot.owner_instance_id = task.owner_instance_id;
     snapshot.due_us = task.due_us;
+    snapshot.calendar_local_s = task.calendar_local_s;
+    snapshot.calendar_utc_s = task.calendar_utc_s;
     snapshot.now_us = now_us;
     snapshot.occurrence = task.occurrence;
     snapshot.occurrence_count = task.occurrence_count;

@@ -5,6 +5,7 @@
 #include "foundation/kernel_id.h"
 #include "kernel/service/command/command_records.h"
 #include "work/authority/authority_cleanup_records.h"
+#include "work/goal/calendar_records.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
@@ -27,7 +28,7 @@ bool WorkReplay::allows_reauthorization_record(const durability::RecordHeader &h
                 work::task_state_base_version(header.version) ==
                     work::task_state_reauthorization_record_version) ||
                header.type == work::task_authority_record_type ||
-               header.type == command_record_type;
+               header.type == work::calendar_record_type || header.type == command_record_type;
     case Stage::command:
         return header.type == work::authority_cleanup_record_type;
     }
@@ -115,7 +116,8 @@ bool WorkReplay::pair_reauthorization_command(const CommandMapping &mapping,
         mapping.object.id != pair.goal_id || request.expected_revision != pair.revision ||
         request.reauthorization.expected_authority_commit_seq != pair.authority_seq ||
         !matches_goal_creation(request.reauthorization.original, goal,
-                               model_.goals.parameters(pair.goal_index)) ||
+                               model_.goals.parameters(pair.goal_index),
+                               &model_.calendars.at(pair.goal_index).rule) ||
         !work_authority_result_matches(record, result_bytes) ||
         !reauthorized_cohort_complete(pair.goal_index, record.stamp)) {
         return false;
@@ -154,7 +156,7 @@ bool WorkReplay::matches_goal_reauthorization(const CommandMapping &mapping,
         record.stamp.commit_seq < mapping.commit_seq || record.count != result.count ||
         !retains_work_authority_result(record, result) ||
         !matches_goal_creation(request.reauthorization.original, goal,
-                               model_.goals.parameters(index))) {
+                               model_.goals.parameters(index), &model_.calendars.at(index).rule)) {
         return false;
     }
     record.binding = result.binding;

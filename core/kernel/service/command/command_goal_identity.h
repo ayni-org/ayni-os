@@ -4,6 +4,7 @@
 #define AYNI_CORE_KERNEL_COMMAND_COMMAND_GOAL_IDENTITY_H
 
 #include "durability/batch/record_body.h"
+#include "work/goal/calendar_records.h"
 #include "work/goal/goal_request.h"
 #include "work/goal/goal_table.h"
 
@@ -15,7 +16,7 @@ constexpr uint32_t goal_identity_fixed_size = 60;
 constexpr uint32_t goal_identity_catalog_ids = 2;
 constexpr uint32_t goal_identity_max_bytes(uint32_t parameters) {
     return goal_identity_fixed_size + goal_identity_catalog_ids * AYNI_CATALOG_ID_MAX_BYTES +
-           parameters;
+           parameters + work::calendar_rule_fixed_size + AYNI_CALENDAR_TZ_MAX_BYTES;
 }
 // Full raw echo shape, independent of the current Goal/catalog retention.
 bool valid_goal_creation_identity(const GoalCreate &create);
@@ -26,6 +27,6 @@ void write_goal_creation_identity(const GoalCreate &create, durability::BodyWrit
 GoalCreate read_goal_creation_identity(durability::BodyReader &reader);
 // Same immutable comparison for live admission and historical replay evidence.
 bool matches_goal_creation(const GoalCreate &create, const work::Goal &goal,
-                           ayni_bytes_v1 parameters);
+                           ayni_bytes_v1 parameters, const work::CalendarRule *calendar = nullptr);
 } // namespace ayni::kernel
 #endif // AYNI_CORE_KERNEL_COMMAND_COMMAND_GOAL_IDENTITY_H

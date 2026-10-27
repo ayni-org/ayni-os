@@ -1217,6 +1217,7 @@ class Model {
           goal_types_(ayni::catalog::GoalTypeRegistry::storage_size(capacities.goal_type_capacity)),
           goals_(GoalTable::storage_size(capacities.goal_capacity,
                                          capacities.goal_parameter_max_bytes)),
+          calendars_(ayni::work::CalendarTable::storage_size(capacities.goal_capacity)),
           sessions_(ayni::authority::SessionTable::storage_size(capacities.session_capacity)),
           tasks_(TaskTable::storage_size(ayni::kernel::task_limits(capacities))),
           strategies_(ayni::catalog::StrategyRegistry::storage_size(capacities.strategy_capacity)),
@@ -1250,6 +1251,7 @@ class Model {
         result.set(Store::agents, agents_.data());
         result.set(Store::goal_types, goal_types_.data());
         result.set(Store::goals, goals_.data());
+        result.set(Store::calendars, calendars_.data());
         result.set(Store::sessions, sessions_.data());
         result.set(Store::tasks, tasks_.data());
         result.set(Store::strategies, strategies_.data());
@@ -1264,6 +1266,7 @@ class Model {
     Block agents_;
     Block goal_types_;
     Block goals_;
+    Block calendars_;
     Block sessions_;
     Block tasks_;
     Block strategies_;

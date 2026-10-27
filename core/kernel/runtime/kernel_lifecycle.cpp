@@ -105,6 +105,17 @@ ayni_status_t ayni_kernel::validate_execution_scenes() const {
     return AYNI_OK;
 }
 
+ayni::work::CalendarClock ayni_kernel::calendar_clock(uint64_t monotonic_us) const {
+    ayni_utc_sample_v1 sample{};
+    sample.struct_size = sizeof(sample);
+    if (host.utc_now != nullptr) {
+        host.utc_now(host.ctx, &sample);
+    }
+    return {sample.utc_s, monotonic_us,
+            sample.struct_size == sizeof(sample) && sample.trust == AYNI_UTC_TRUSTED &&
+                sample.utc_s >= 0 && sample.utc_s <= AYNI_CALENDAR_SECONDS_MAX};
+}
+
 // Each applied completion is one item and the clock is read after each; the
 // boot sequence, or else a maintenance run, then takes at most one step of
 // its own, also one item. A storage request is never awaited: its result
@@ -134,6 +145,9 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     advance_recovery_and_maintenance(progress);
     apply_revocations(progress);
     apply_calls(progress);
+    if (!work.calendars.empty()) {
+        work.refresh_calendars(calendar_clock(progress.started_us));
+    }
     apply_ready_work(progress);
     take_queued_inputs(progress);
     if (appends() && log.advance(progress.now_us())) {
@@ -325,6 +339,19 @@ void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report
                                  (work.authority_cleanup.ready() || privacy_ready()))
                             ? 1U
                             : 0U;
+    // Re-read civil time within one second even without storage/events: OS clock
+    // correction must not leave an old projection asleep indefinitely (ADR-0061).
+    constexpr uint64_t calendar_poll_us = 1000000;
+    if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
+        for (uint32_t index = 0; index < work.goals.size(); ++index) {
+            if (ayni::work::is_calendar_trigger(work.goals.at(index).trigger.kind) &&
+                ayni::work::GoalTable::is_live(work.goals.at(index).lifecycle)) {
+                progress.include_deadline(
+                    ayni::work::time_after(progress.started_us, calendar_poll_us));
+                break;
+            }
+        }
+    }
     report.next_deadline_us = progress.next_deadline_us;
     report.durable_seq = durable_seq();
 }

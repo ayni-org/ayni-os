@@ -80,7 +80,8 @@ void count(SnapshotLayout &layout, uint32_t body) {
 
 uint32_t snapshot_record_max(const KernelCapacities &capacities) {
     uint32_t size =
-        maximum(owner_binding_size, maximum(instance_size, work::task_snapshot_record_size));
+        maximum(owner_binding_size, maximum(instance_size, work::task_snapshot_record_size +
+                                                               work::task_calendar_tail_size));
     size = maximum(size, work::goal_record_max_fixed_size + 2U * id_max +
                              capacities.goal_parameter_max_bytes + goal_extra);
     size = maximum(size, work::goal_authority_record_max(capacities.goal_requirement_capacity,
@@ -110,8 +111,8 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
                                                              capacities.authority_scope_max_bytes));
     size +=
         uint64_t{capacities.task_capacity} *
-        (record_prefix + work::task_snapshot_record_size + record_prefix +
-         work::task_state_call_record_size +
+        (record_prefix + work::task_snapshot_record_size + work::task_calendar_tail_size +
+         record_prefix + work::task_state_call_record_size +
          uint64_t{capacities.task_step_capacity} *
              (record_prefix + work::task_steps_record_max(1)) +
          record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
@@ -145,7 +146,8 @@ SnapshotLayout measure_snapshot(const WorkModel &model) {
     }
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const work::Task &task = model.tasks.at(index);
-        count(layout, work::task_snapshot_record_size);
+        count(layout, work::task_creation_record_size(model.tasks.at(index)) +
+                          work::task_snapshot_tail_size);
         work::TaskAuthorityRecord authority{};
         if (model.task_authority.read(task.slot, task.task_id, authority)) {
             count(layout, work::task_authority_record_max(authority.count));
@@ -303,7 +305,8 @@ bool WorkSnapshotWriter::next_task_record(uint16_t &type, uint32_t &size) {
     }
     if (task_part_ == TaskPart::task) {
         type = work::task_record_type;
-        size = work::task_snapshot_record_size;
+        size = work::task_creation_record_size(model_.tasks.at(index_)) +
+               work::task_snapshot_tail_size;
         return true;
     }
     if (task_part_ == TaskPart::steps) {
@@ -458,10 +461,12 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
                 ? persistent_stores[store_]->snapshot_record(model_, store_cursor_.index).version
             : type == work::goal_record_type           ? goal_snapshot_version(model_, index_)
             : type == work::goal_authority_record_type ? work::goal_authority_record_version
-            : type == work::task_record_type &&
-                    model_.provenance.find(work::ProvenanceKind::task, model_.tasks.at(index_).slot,
-                                           model_.tasks.at(index_).task_id) != nullptr
-                ? work::task_provenance_snapshot_version
+            : type == work::task_record_type
+                ? work::task_creation_version(
+                      model_.tasks.at(index_),
+                      model_.provenance.find(work::ProvenanceKind::task,
+                                             model_.tasks.at(index_).slot,
+                                             model_.tasks.at(index_).task_id) != nullptr)
             : type == work::task_checkpoint_record_type &&
                     model_.provenance.find(work::ProvenanceKind::task, model_.tasks.at(index_).slot,
                                            model_.tasks.at(index_).task_id) != nullptr
@@ -620,7 +625,9 @@ durability::BatchCheck WorkSnapshotReader::goal(uint16_t version, const uint8_t 
                                                 uint32_t size) {
     if (version != work::goal_creation_stamp_snapshot_version &&
         version != work::goal_work_profile_snapshot_version &&
-        version != work::goal_provenance_snapshot_version) {
+        version != work::goal_provenance_snapshot_version &&
+        version != work::goal_calendar_snapshot_version &&
+        version != work::goal_calendar_provenance_snapshot_version) {
         return durability::BatchCheck::unsupported; // No inferred creation sequence for old
                                                     // snapshots.
     }
@@ -683,7 +690,7 @@ durability::BatchCheck WorkSnapshotReader::task(uint16_t version, const uint8_t 
                                                 uint32_t size) {
     work::TaskSnapshotRecord snapshot{};
     if (task_index_ != work::TaskTable::no_index ||
-        !work::read_task_snapshot_record(body, size, snapshot)) {
+        !work::read_task_snapshot_record(body, size, snapshot, version)) {
         return durability::BatchCheck::corrupt;
     }
     auto &record = snapshot.creation;
@@ -704,7 +711,8 @@ durability::BatchCheck WorkSnapshotReader::task(uint16_t version, const uint8_t 
         checkpoint_seen_ = false;
         // Erased work may never have written a checkpoint. Its REQUIRED Task marker
         // reserves the source footer independently of the optional checkpoint record.
-        if (version == work::task_provenance_snapshot_version &&
+        if ((version == work::task_provenance_snapshot_version ||
+             version == work::task_calendar_provenance_snapshot_version) &&
             !model_.provenance.expect(work::ProvenanceKind::task, model_.tasks.at(task_index_).slot,
                                       record.task_id)) {
             return durability::BatchCheck::corrupt;

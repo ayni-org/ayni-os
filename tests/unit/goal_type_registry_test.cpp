@@ -153,12 +153,14 @@ TEST(GoalTypeRegistry, trigger_kinds_decide_the_accepted_triggers) {
     EXPECT_FALSE(registry->accepts_trigger(0, 0xFFFFFFFFU));
 }
 
-TEST(GoalTypeRegistry, defines_the_time_and_local_input_triggers_only) {
-    for (const ayni_trigger_kind_t kind : {AYNI_TRIGGER_NONE, AYNI_TRIGGER_ONCE, AYNI_TRIGGER_DELAY,
-                                           AYNI_TRIGGER_INTERVAL, AYNI_TRIGGER_LOCAL_INPUT}) {
+TEST(GoalTypeRegistry, defines_monotonic_local_input_and_civil_calendar_triggers) {
+    for (const ayni_trigger_kind_t kind :
+         {AYNI_TRIGGER_NONE, AYNI_TRIGGER_ONCE, AYNI_TRIGGER_DELAY, AYNI_TRIGGER_INTERVAL,
+          AYNI_TRIGGER_LOCAL_INPUT, AYNI_TRIGGER_CALENDAR_ONCE, AYNI_TRIGGER_CALENDAR_DAILY,
+          AYNI_TRIGGER_CALENDAR_WEEKLY}) {
         EXPECT_TRUE(GoalTypeRegistry::defines_trigger(kind)) << kind;
     }
-    for (const ayni_trigger_kind_t kind : {5U, 31U, 32U, 0xFFFFFFFFU}) {
+    for (const ayni_trigger_kind_t kind : {8U, 31U, 32U, 0xFFFFFFFFU}) {
         EXPECT_FALSE(GoalTypeRegistry::defines_trigger(kind)) << kind;
     }
 }

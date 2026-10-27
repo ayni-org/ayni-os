@@ -1,4 +1,5 @@
 #include "work/goal/goal_records.h"
+#include "work/goal/calendar_table.h"
 
 #include "durability/batch/record_body.h"
 
@@ -12,7 +13,7 @@ constexpr uint32_t known_flags = next_scheduled_flag | expiry_pending_flag;
 // Tracked content always carries a profile tail, including the ordinary default value.
 bool has_profile(const Goal &goal, uint16_t version) {
     return !goal.work_profile.is_default() || version == goal_provenance_record_version ||
-           version == goal_provenance_snapshot_version;
+           version == goal_provenance_snapshot_version || version >= goal_calendar_record_version;
 }
 
 // Reads a catalog id field; empty only when may_be_empty. A read past the
@@ -35,6 +36,10 @@ uint32_t goal_record_size(const Goal &goal, uint16_t version) {
 
 uint16_t goal_record_version_for(const Goal &goal, bool authority_present,
                                  bool provenance_present) {
+    if (is_calendar_trigger(goal.trigger.kind)) {
+        return provenance_present ? goal_calendar_provenance_record_version
+                                  : goal_calendar_record_version;
+    }
     if (provenance_present) {
         return goal_provenance_record_version;
     }
@@ -44,6 +49,10 @@ uint16_t goal_record_version_for(const Goal &goal, bool authority_present,
 }
 uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present,
                                    bool provenance_present) {
+    if (is_calendar_trigger(goal.trigger.kind)) {
+        return provenance_present ? goal_calendar_provenance_snapshot_version
+                                  : goal_calendar_snapshot_version;
+    }
     if (provenance_present) {
         return goal_provenance_snapshot_version;
     }
@@ -86,14 +95,18 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint1
         version != goal_creation_stamp_snapshot_version &&
         version != goal_work_profile_record_version &&
         version != goal_work_profile_snapshot_version &&
-        version != goal_provenance_record_version && version != goal_provenance_snapshot_version) {
+        version != goal_provenance_record_version && version != goal_provenance_snapshot_version &&
+        (version < goal_calendar_record_version ||
+         version > goal_calendar_provenance_snapshot_version)) {
         return false;
     }
     durability::BodyReader reader(body, size);
     out = GoalRecord{};
     out.authority_required = version >= goal_with_authority_record_version;
-    out.provenance_required =
-        version == goal_provenance_record_version || version == goal_provenance_snapshot_version;
+    out.provenance_required = version == goal_provenance_record_version ||
+                              version == goal_provenance_snapshot_version ||
+                              version == goal_calendar_provenance_record_version ||
+                              version == goal_calendar_provenance_snapshot_version;
     out.goal_id = reader.u64();
     out.goal.parent_goal_id = reader.u64();
     out.goal.owner_instance_id = reader.u64();
@@ -121,12 +134,17 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint1
     const uint8_t *parameters = reader.bytes(size, parameter_size);
     out.goal.parameters = {parameters, parameter_size};
     if (version == goal_work_profile_record_version ||
-        version == goal_work_profile_snapshot_version || out.provenance_required) {
+        version == goal_work_profile_snapshot_version || out.provenance_required ||
+        version >= goal_calendar_record_version) {
         out.goal.work_profile.kind = reader.u32();
         out.goal.work_profile.background_period_us = reader.u64();
-        if (out.goal.work_profile.is_default() && !out.provenance_required) {
+        if (out.goal.work_profile.is_default() && !out.provenance_required &&
+            version < goal_calendar_record_version) {
             return false;
         }
+    }
+    if (is_calendar_trigger(out.goal.trigger.kind) != (version >= goal_calendar_record_version)) {
+        return false;
     }
     // GoalTable owns trigger/profile validity for both parsed and typed inputs.
     return reader.ok();
@@ -143,7 +161,9 @@ void write_goal_state_record(const Goal &goal, uint8_t *body) {
     writer.u32(goal.skip_reason);
     writer.u32(goal.cursor.taken);
     writer.u32(goal.cursor.waiting);
-    writer.u32((goal.cursor.has_next() ? next_scheduled_flag : 0U) |
+    writer.u32((!is_calendar_trigger(goal.trigger.kind) && goal.cursor.has_next()
+                    ? next_scheduled_flag
+                    : 0U) |
                (goal.expires_us != no_time ? expiry_pending_flag : 0U));
 }
 

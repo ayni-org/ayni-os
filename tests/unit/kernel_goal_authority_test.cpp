@@ -54,6 +54,7 @@ class AuthorityWork {
             ASSERT_EQ(ayni_register_strategy(kernel, &strategy), AYNI_OK);
             auto type = goal_type_desc("authorized", 1, nullptr, this);
             type.export_requirements = emit;
+            type.trigger_kinds = trigger_kinds;
             if (allow_parameters) {
                 type.validate = [](void *, ayni_bytes_v1) { return AYNI_OK; };
             }
@@ -200,6 +201,7 @@ class AuthorityWork {
     bool agent_b_available = true;
     bool allow_parameters = false;
     uint32_t count = 1;
+    uint32_t trigger_kinds = any_trigger;
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> low{};
     std::array<int64_t, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> high{10, 80};
     uint32_t calls = 0;
@@ -3147,6 +3149,62 @@ TEST(AuthorityQueries, parameter_query_refuses_null_outputs_and_accepts_empty_pa
               AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(ayni_get_goal_parameters(kernel, goal.result.object.id, nullptr, 0, &size), AYNI_OK);
     EXPECT_EQ(size, 0U);
+}
+
+// ADR-0061: normal revoke/reauthorize/orderly reopen preserves the skipped civil frontier.
+TEST(WorkAuthority, calendar_reauthorization_waits_for_time_then_skips_backlog_and_reopens) {
+    AuthorityWork node;
+    node.trigger_kinds |= AYNI_TRIGGER_BIT(AYNI_TRIGGER_CALENDAR_DAILY);
+    node.run();
+    constexpr int64_t day_s = 86400;
+    constexpr int64_t first = 1793059200; // 2026-10-27 00:00 UTC.
+    node.work.node().sim().set_utc(first);
+    const auto grant = node.grant();
+    ASSERT_EQ(grant.status, AYNI_OK);
+    node.work.node().recover();
+    ayni_calendar_rule_v1 calendar{};
+    calendar.struct_size = sizeof(calendar);
+    calendar.kind = AYNI_CALENDAR_DAILY;
+    calendar.rule_version = 1;
+    calendar.first_local_s = first;
+    calendar.timezone_size = 4;
+    std::memcpy(calendar.timezone, "UTC0", calendar.timezone_size);
+    auto body = WorkNode::create_body(node.work.instance(agent_a), 0, "authorized", 1, {},
+                                      AYNI_TRIGGER_CALENDAR_DAILY);
+    body.calendar = &calendar;
+    const auto created = node.work.create(body);
+    ASSERT_EQ(created.status, AYNI_OK);
+    const auto id = created.result.object.id;
+    node.advance_work();
+    ASSERT_EQ(node.work.goal(id).occurrences, 1U);
+    const auto first_task = node.work.goal(id).last_task_id;
+    node.revoke(grant.result.object.id);
+    node.advance_work();
+    ASSERT_EQ(node.grant().status, AYNI_OK);
+    node.work.node().recover();
+    ReauthorizationRequest request(node.work.kernel(), id);
+    auto intent =
+        node.work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = node.command++;
+    node.work.node().sim().set_utc(first + 3 * day_s, AYNI_UTC_UNTRUSTED);
+    const auto waiting = node.work.submit(intent);
+    EXPECT_EQ(waiting.status, AYNI_NOT_READY);
+    EXPECT_EQ(waiting.error.reason, AYNI_REASON_TIME_UNTRUSTED);
+    EXPECT_EQ(node.work.goal(id).occurrences, 1U);
+    node.work.node().sim().set_utc(first + 3 * day_s);
+    ASSERT_EQ(node.work.submit(intent).status, AYNI_OK);
+    node.advance_work();
+    EXPECT_EQ(node.work.goal(id).occurrences, 4U);
+    EXPECT_EQ(node.work.goal(id).occurrences_skipped, 3U);
+    EXPECT_EQ(node.work.goal(id).last_task_id, first_task);
+    node.work.node().reboot();
+    node.work.node().recover();
+    ASSERT_EQ(node.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    node.work.reopen_session();
+    node.work.node().sim().set_utc(first + 4 * day_s);
+    node.advance_work();
+    EXPECT_EQ(node.work.goal(id).occurrences, 5U);
+    EXPECT_NE(node.work.goal(id).last_task_id, first_task);
 }
 
 } // namespace

@@ -222,6 +222,9 @@ ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::Go
         // stay used up, as ayni.h says for this defect.
         return AYNI_INTERNAL;
     }
+    if (work::is_calendar_trigger(create.trigger.kind)) {
+        model.calendars.install(index, goal_id, create.calendar, stamp);
+    }
     authority.goal_id = goal_id;
     if (content.origin.id != 0) {
         model.provenance.assign(work::ProvenanceKind::goal, index, goal_id, content.dependencies,

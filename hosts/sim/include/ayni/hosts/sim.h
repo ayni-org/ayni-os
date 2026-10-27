@@ -92,6 +92,12 @@ class Host {
     // after reading it; 0 turns this off.
     void advance_per_read_us(uint64_t delta_us) { advance_per_read_us_ = delta_us; }
 
+    // Independent absolute clock; owner thread may change trust or jump UTC.
+    void set_utc(int64_t seconds, ayni_utc_trust_t trust = AYNI_UTC_TRUSTED) {
+        utc_s_ = seconds;
+        utc_trust_ = trust;
+        wake(this);
+    }
     // Any thread.
     uint64_t wake_count() const { return wake_count_.load(); }
     // Host calls made by a thread that held the ingress lock at the time.
@@ -136,6 +142,7 @@ class Host {
     };
 
     static uint64_t monotonic_now_us(void *ctx);
+    static void utc_now(void *ctx, ayni_utc_sample_v1 *out);
     static void wake(void *ctx);
     static void ingress_lock(void *ctx);
     static void ingress_unlock(void *ctx);
@@ -175,6 +182,8 @@ class Host {
     std::optional<StorageFault> next_fault(StoragePort port);
 
     uint64_t now_us_;
+    int64_t utc_s_ = 0; // Simulated UTC seconds; advances only through set_utc.
+    ayni_utc_trust_t utc_trust_ = AYNI_UTC_UNAVAILABLE; // No guessed time on startup.
     uint64_t advance_per_read_us_ = 0;
     std::atomic<uint64_t> wake_count_{0};
     std::atomic<uint64_t> calls_under_lock_{0};

@@ -214,6 +214,8 @@ void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v
     info.occurrence = task.occurrence;
     info.occurrence_count = task.occurrence_count;
     info.due_us = task.due_us;
+    info.calendar_local_s = task.calendar_local_s;
+    info.calendar_utc_s = task.calendar_utc_s;
     info.hold_status = ayni::work::TaskTable::effective_hold_status(task);
     info.hold_reason = ayni::work::TaskTable::effective_hold_reason(task);
     info.step_count = task.step_count;
