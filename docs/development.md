@@ -190,3 +190,9 @@ ctest --preset native-debug -R '^(NativeAssistant|KernelQuery|SimDemo|NativeCli)
 ```
 
 配置、授权与命令见 [CLI 使用说明](../targets/native_cli/README.md)。这是正常功能验证入口，CLI 测试通过 CTest 纳入 CI 的完整 ASan/UBSan 套件；真实服务由本机显式配置。目录默认在用户配置/数据位置，支持显式覆盖；`--help` 不读取密钥或启动 Kernel。
+
+## C++ SDK 与公开示例
+
+P5 提供源码级 `include/ayni/ayni.hpp` 和 [四个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；C ABI minor 仍为0.45，未新增持久格式。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
+
+普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.two_agents_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。

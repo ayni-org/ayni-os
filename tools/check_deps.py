@@ -79,6 +79,7 @@ class Architecture:
             self.subdir_deps: dict[str, dict[str, list[str]]] = data["core_subdir_deps"]
             self.core_std_headers = set(data["core_std_headers"])
             self.public_c_headers = set(data["public_c_headers"])
+            self.public_cpp_headers = set(data.get("public_cpp_headers", []))
             self.header_kinds: dict[str, str] = data["header_kinds"]
             self.components: dict[str, list[str]] = data["components"]
             self.unchecked_dirs = set(data["unchecked_dirs"])
@@ -241,6 +242,8 @@ def check_public_header(arch: Architecture, source: PurePosixPath, include: Incl
     if target.kind == "api" or (is_draft and target.kind == "draft"):
         return None
     if target.kind == "external" and not include.quoted and include.path in arch.public_c_headers:
+        return None
+    if source.as_posix() == "include/ayni/ayni.hpp" and target.kind == "external" and not include.quoted and include.path in arch.public_cpp_headers:
         return None
     which = "draft" if is_draft else "implemented public"
     return f"{which} header may not include {describe(include, target)}"

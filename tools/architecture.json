@@ -204,6 +204,7 @@
     "stddef.h",
     "stdint.h"
   ],
+  "public_cpp_headers": ["new", "optional"],
   "header_kinds": {
     "ayni/draft/": "draft",
     "ayni/hosts/": "hosts",
@@ -256,6 +257,7 @@
     ],
     "examples": [
       "api",
+      "runtime:examples",
       "external"
     ]
   },

@@ -1,3 +1,4 @@
+#include <ayni/ayni.hpp> // Compile the facade with the pinned firmware toolchain as well.
 #include <ayni/runtime/esp_idf_node.h>
 
 #include <ayni/hosts/esp_idf.h>
