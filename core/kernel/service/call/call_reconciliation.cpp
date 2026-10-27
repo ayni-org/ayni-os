@@ -6,7 +6,6 @@
 
 namespace ayni::kernel {
 namespace {
-constexpr uint64_t microseconds_per_millisecond = 1000;
 ayni_string_v1 view(const catalog::CatalogId &id) {
     return {id.data(), id.size()};
 }

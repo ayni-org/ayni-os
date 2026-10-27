@@ -9,7 +9,7 @@ python3 -m unittest discover -s tests/tools -p 'test_ci_*.py' -v
 python3 tools/check_deps.py
 python3 tools/check_contracts.py
 python3 tools/check_readability.py
-git ls-files -z '*.c' '*.cpp' '*.h' | xargs -0 clang-format-18 --dry-run --Werror
+git ls-files -z '*.c' '*.cpp' '*.h' '*.hpp' | xargs -0 clang-format-18 --dry-run --Werror
 git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 if [ "$run_asan" = true ]; then
     # CTest also runs checker unit tests, ABI probes and all existing regressions.

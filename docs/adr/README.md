@@ -101,3 +101,5 @@
 | [0065](0065-persistent-pause-groups.md) | 通用持久暂停组 | 已接受 | P5、MA-019 |
 
 | [0066](0066-assistant-application-and-presentation.md) | 统一助理应用、四类目标与异步通知呈现 | 已接受 | §5.4、§9.1、§14.1 |
+
+| [0067](0067-cpp-sdk-and-public-examples.md) | 无异常 C++ 生命周期封装与四个公开接入示例 | 已接受 | §9.1、P5 |

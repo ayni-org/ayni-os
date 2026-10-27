@@ -41,6 +41,7 @@ add_subdirectory(providers/mock_execution)
 add_subdirectory(runtime/common)
 add_subdirectory(runtime/native_node)
 add_subdirectory(runtime/sim_node)
+add_subdirectory(runtime/examples)
 add_subdirectory(targets/simulator)
 add_subdirectory(targets/native_cli)
 
@@ -48,3 +49,5 @@ if(AYNI_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+add_subdirectory(examples)

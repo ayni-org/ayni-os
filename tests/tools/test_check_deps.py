@@ -69,6 +69,17 @@ class CheckDepsTest(unittest.TestCase):
             self.write("applications/assistant/goals.cpp", f"#include <{header}>\n")
             self.assert_single_violation("applications/ may not include")
 
+    def test_cpp_sdk_headers_are_narrow_and_examples_use_only_the_fixture_composition_api(self):
+        # ADR-0067: C++ facilities are allowed only in the explicit wrapper header.
+        self.write("include/ayni/ayni.hpp", "#include <new>\n#include <optional>\n#include <ayni/ayni.h>\n")
+        self.write("examples/new_hardware.cpp", "#include <ayni/ayni.hpp>\n#include <ayni/runtime/examples.h>\n")
+        self.assertEqual(self.violations(), [])
+        self.write("include/ayni/other.h", "#include <optional>\n")
+        self.assert_single_violation("implemented public header may not include")
+        self.write("include/ayni/other.h", "")
+        self.write("examples/new_hardware.cpp", "#include <ayni/runtime/native_node.h>\n")
+        self.assert_single_violation("examples/ may not include")
+
     def test_core_rejects_upward_include(self):
         self.write("core/foundation/ids.cpp", '#include "kernel/kernel.h"\n')
         self.assert_single_violation("core/foundation may not include core/kernel")
