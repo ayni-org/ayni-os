@@ -1,0 +1,128 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E1-N1",
+  "experiment_step": "E1 步骤 1",
+  "clauses": [
+    "C-MEM-003",
+    "C-MEM-005"
+  ],
+  "description": "私有事实只在明确共享期间可由另一 Agent 读取；撤销后再次拒绝。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "save_memory",
+      "name": "private",
+      "agent": 1,
+      "body": "SYNTHETIC_PRIVATE_E1_N1 🧪"
+    },
+    {
+      "op": "goal",
+      "name": "own",
+      "agent": 1,
+      "kind": "memory_read",
+      "memory": "private"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "own"
+      }
+    },
+    {
+      "op": "goal",
+      "name": "denied",
+      "agent": 2,
+      "kind": "memory_read",
+      "memory": "private"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "PAUSED",
+        "target": "denied"
+      }
+    },
+    {
+      "op": "share_memory",
+      "name": "sharing",
+      "memory": "private",
+      "agent": 2
+    },
+    {
+      "op": "goal",
+      "name": "shared",
+      "agent": 2,
+      "kind": "memory_read",
+      "memory": "private"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "shared"
+      }
+    },
+    {
+      "op": "revoke",
+      "grant": "sharing"
+    },
+    {
+      "op": "goal",
+      "name": "revoked",
+      "agent": 2,
+      "kind": "memory_read",
+      "memory": "private"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "PAUSED",
+        "target": "revoked"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "metric": "task_state",
+      "value": "PAUSED",
+      "target": "denied"
+    },
+    {
+      "metric": "task_state",
+      "value": "COMPLETED",
+      "target": "shared"
+    },
+    {
+      "metric": "task_state",
+      "value": "PAUSED",
+      "target": "revoked"
+    },
+    {
+      "metric": "call_count",
+      "value": "0"
+    },
+    {
+      "metric": "hold_status",
+      "target": "denied",
+      "value": "DENIED"
+    },
+    {
+      "metric": "hold_status",
+      "target": "revoked",
+      "value": "DENIED"
+    }
+  ]
+}

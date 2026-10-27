@@ -1,0 +1,86 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E1-N3",
+  "experiment_step": "E1 步骤 5",
+  "clauses": [
+    "C-RUN-002",
+    "C-LIMIT-005"
+  ],
+  "description": "一个 Task 达到两次模型硬上限后暂停，另一个 Agent 的正常工作仍完成。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 2
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "model_a",
+      "agent": 1,
+      "capability": "model"
+    },
+    {
+      "op": "grant",
+      "name": "model_b",
+      "agent": 2,
+      "capability": "model"
+    },
+    {
+      "op": "goal",
+      "name": "limited",
+      "agent": 1,
+      "kind": "repeat_model"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "PAUSED",
+        "target": "limited"
+      }
+    },
+    {
+      "op": "goal",
+      "name": "other",
+      "agent": 2,
+      "kind": "model"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "other"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "metric": "model_calls",
+      "value": "2",
+      "target": "limited"
+    },
+    {
+      "metric": "model_limit",
+      "value": "2",
+      "target": "limited"
+    },
+    {
+      "metric": "hold_reason",
+      "value": "TASK_MODEL_CALL_LIMIT",
+      "target": "limited"
+    },
+    {
+      "metric": "model_a_executions",
+      "value": "3"
+    },
+    {
+      "metric": "max_model_holders",
+      "value": "1"
+    }
+  ]
+}

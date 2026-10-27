@@ -1,0 +1,95 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E4-N2",
+  "experiment_step": "E4 步骤 7",
+  "clauses": [
+    "C-PROD-020",
+    "C-PROD-011",
+    "C-PROD-014"
+  ],
+  "description": "暂停自主工作期间提醒仍完成；正常关闭重开后不重放已呈现提醒。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "notify",
+      "agent": 2,
+      "capability": "notify"
+    },
+    {
+      "op": "grant",
+      "name": "health",
+      "agent": 2,
+      "capability": "health"
+    },
+    {
+      "op": "pause_group",
+      "group": 1
+    },
+    {
+      "op": "goal",
+      "name": "check",
+      "agent": 2,
+      "kind": "device_check",
+      "pause_group": 1
+    },
+    {
+      "op": "goal",
+      "name": "reminder",
+      "agent": 2,
+      "kind": "reminder",
+      "calendar_s": "86400",
+      "body": "SYNTHETIC_REMINDER_E4_N2"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "reminder"
+      }
+    },
+    {
+      "op": "reopen",
+      "provider": "a",
+      "strategy": "v1"
+    },
+    {
+      "op": "steps",
+      "count": 64
+    }
+  ],
+  "expect": [
+    {
+      "metric": "presentations",
+      "value": "1"
+    },
+    {
+      "metric": "task_state",
+      "value": "COMPLETED",
+      "target": "reminder"
+    },
+    {
+      "metric": "goal_state",
+      "value": "ACTIVE",
+      "target": "check"
+    },
+    {
+      "metric": "goal_group_paused",
+      "target": "check",
+      "value": "1"
+    },
+    {
+      "metric": "health_executions",
+      "value": "0"
+    }
+  ]
+}

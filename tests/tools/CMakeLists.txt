@@ -17,6 +17,9 @@ add_test(NAME check_readability_rules
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME check_readability_repository
     COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tools/check_readability.py" --root "${AYNI_ROOT}")
+add_test(NAME normal_fixture_generator_rules
+    COMMAND "${Python3_EXECUTABLE}" -m unittest -v test_generate_normal_fixtures
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ayni_add_core_module enforces the layer order at configure time. Each case
 # configures a probe project; rejections must name the offending dependency.

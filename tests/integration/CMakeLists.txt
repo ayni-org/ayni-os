@@ -2,3 +2,14 @@ find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)
 add_test(NAME NativeCli.scripted_sessions COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/native_cli_test.py $<TARGET_FILE:ayni>)
 set_tests_properties(NativeCli.scripted_sessions PROPERTIES TIMEOUT 90)
+
+add_executable(ayni_normal_fixture_tests normal_fixture_test.cpp)
+target_link_libraries(ayni_normal_fixture_tests PRIVATE ayni_sim_normal_fixtures
+    ayni_warnings GTest::gtest_main)
+target_compile_definitions(ayni_normal_fixture_tests PRIVATE
+    AYNI_NORMAL_ARTIFACT_ROOT="${CMAKE_CURRENT_BINARY_DIR}/normal-artifacts")
+gtest_discover_tests(ayni_normal_fixture_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
+add_test(NAME NormalFixtures.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/normal_artifacts_test.py" $<TARGET_FILE:ayni-sim>
+    "${CMAKE_CURRENT_BINARY_DIR}/normal-artifacts")
+set_tests_properties(NormalFixtures.artifacts_replay PROPERTIES TIMEOUT 120)

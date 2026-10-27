@@ -1,0 +1,87 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E1-N4",
+  "experiment_step": "E1 步骤 11",
+  "clauses": [
+    "C-PROD-020",
+    "C-LIFE-023"
+  ],
+  "description": "自主暂停、恢复再暂停读取当前 revision；暂停积压跳过，下一正常周期只执行一次。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "health",
+      "agent": 2,
+      "capability": "health"
+    },
+    {
+      "op": "pause_group",
+      "group": 1
+    },
+    {
+      "op": "goal",
+      "name": "check",
+      "agent": 2,
+      "kind": "device_check",
+      "pause_group": 1
+    },
+    {
+      "op": "steps",
+      "count": 32
+    },
+    {
+      "op": "resume_group",
+      "group": 1
+    },
+    {
+      "op": "steps",
+      "count": 32
+    },
+    {
+      "op": "assert",
+      "condition": {
+        "metric": "health_executions",
+        "value": "0"
+      }
+    },
+    {
+      "op": "advance_clock",
+      "microseconds": "300000000"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "health_executions",
+        "value": "1"
+      }
+    },
+    {
+      "op": "pause_group",
+      "group": 1
+    },
+    {
+      "op": "steps",
+      "count": 32
+    }
+  ],
+  "expect": [
+    {
+      "metric": "health_executions",
+      "value": "1"
+    },
+    {
+      "metric": "goal_group_paused",
+      "target": "check",
+      "value": "1"
+    }
+  ]
+}

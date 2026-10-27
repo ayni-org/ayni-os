@@ -1,0 +1,77 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E4-N1",
+  "experiment_step": "E4 步骤 1",
+  "clauses": [
+    "C-CALL-001",
+    "C-POLICY-003",
+    "C-SUB-002",
+    "C-PROD-011"
+  ],
+  "description": "公开注册的组合先读取当前 Mock 样本，再分析、确认订阅停止并模拟呈现。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "observe",
+      "agent": 1,
+      "capability": "observe"
+    },
+    {
+      "op": "grant",
+      "name": "model",
+      "agent": 1,
+      "capability": "model"
+    },
+    {
+      "op": "grant",
+      "name": "notify",
+      "agent": 1,
+      "capability": "notify"
+    },
+    {
+      "op": "goal",
+      "name": "workflow",
+      "agent": 1,
+      "kind": "composite"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "workflow"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "metric": "presentations",
+      "value": "1"
+    },
+    {
+      "metric": "model_a_executions",
+      "value": "1"
+    },
+    {
+      "metric": "subscription_stops",
+      "value": "1"
+    },
+    {
+      "metric": "call_count",
+      "value": "3"
+    },
+    {
+      "metric": "max_camera_holders",
+      "value": "1"
+    }
+  ]
+}

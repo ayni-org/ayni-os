@@ -1,0 +1,121 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-normal",
+  "case_id": "E1-N2",
+  "experiment_step": "E1 步骤 2",
+  "clauses": [
+    "C-RES-009",
+    "C-RES-011"
+  ],
+  "description": "单模型槽等待期间本地事件先完成；记录完整持久推进步数，不把10步性能目标作为本轮门槛。",
+  "seed": "0",
+  "config": {
+    "tick_us": "1000",
+    "model_delay_us": "100000",
+    "step_units": 64,
+    "max_steps": 10000,
+    "model_hard_limit": 8
+  },
+  "script": [
+    {
+      "op": "grant",
+      "name": "model_b",
+      "agent": 2,
+      "capability": "model"
+    },
+    {
+      "op": "grant",
+      "name": "model_a",
+      "agent": 1,
+      "capability": "model"
+    },
+    {
+      "op": "goal",
+      "name": "b",
+      "agent": 2,
+      "kind": "model"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "max_model_holders",
+        "value": "1"
+      }
+    },
+    {
+      "op": "goal",
+      "name": "a",
+      "agent": 1,
+      "kind": "model"
+    },
+    {
+      "op": "goal",
+      "name": "local",
+      "agent": 1,
+      "kind": "local"
+    },
+    {
+      "op": "local_input",
+      "goal": "local"
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "local"
+      }
+    },
+    {
+      "op": "assert",
+      "condition": {
+        "metric": "model_a_executions",
+        "value": "0"
+      }
+    },
+    {
+      "op": "assert",
+      "condition": {
+        "metric": "task_state",
+        "target": "b",
+        "value": "RUNNING"
+      }
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "a"
+      }
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "metric": "task_state",
+        "value": "COMPLETED",
+        "target": "b"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "metric": "max_model_holders",
+      "value": "1"
+    },
+    {
+      "metric": "local_steps",
+      "value": "1",
+      "target": "local",
+      "compare": "at_least"
+    },
+    {
+      "metric": "model_a_executions",
+      "value": "2"
+    },
+    {
+      "metric": "call_count",
+      "value": "2"
+    }
+  ]
+}

@@ -1,16 +1,18 @@
 // ayni-sim: native executable over runtime/ (ADR-0010). It assembles a Kernel
 // whose log lives in a new temporary state directory, recovers it (a first
 // boot, so it only persists boot epoch 1), reports its lifecycle, shuts it
-// down and removes the directory. Experiment runners (--experiment E1..E4)
-// arrive with the M1 fixtures.
+// down and removes the directory. --case runs a compiled P6 normal fixture;
+// full fault/recovery experiments remain explicitly unsupported.
 
 #include <ayni/ayni.h>
 #include <ayni/runtime/native_node.h>
+#include <ayni/runtime/sim_node/fixtures.h>
 
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -122,8 +124,29 @@ bool step_while(ayni::runtime::NativeNode &node, ayni_lifecycle_t state, const c
 
 int main(int argc, char **argv) {
     if (argc > 1) {
-        std::fprintf(stderr, "ayni-sim: unsupported argument '%s'; it takes no options yet\n",
-                     argv[1]);
+        const auto cases = ayni::runtime::fixtures::cases();
+        if (argc == 2 && std::strcmp(argv[1], "--list-normal") == 0) {
+            for (size_t at = 0; at < cases.size; ++at) {
+                std::printf("%s\t%s\n", cases.data[at].id, cases.data[at].description);
+            }
+            return 0;
+        }
+        if (argc == 5 && std::strcmp(argv[1], "--case") == 0 &&
+            std::strcmp(argv[3], "--output") == 0) {
+            for (size_t at = 0; at < cases.size; ++at) {
+                if (std::strcmp(argv[2], cases.data[at].id) == 0) {
+                    const auto result = ayni::runtime::fixtures::run(cases.data[at], argv[4]);
+                    std::printf("%s: %s (status=%" PRId32 ", close=%" PRId32 ", artifacts=%" PRId32
+                                ") %s\n",
+                                argv[2], result.status == AYNI_OK ? "passed" : "failed",
+                                result.status, result.close_status, result.artifact_status,
+                                result.detail.c_str());
+                    return result.status == AYNI_OK ? 0 : 1;
+                }
+            }
+        }
+        std::fprintf(stderr, "ayni-sim: use --list-normal or --case E1-N1 --output NEW_DIRECTORY; "
+                             "full fault/recovery experiments are unavailable\n");
         return 2;
     }
 

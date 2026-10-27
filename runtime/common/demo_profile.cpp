@@ -7,9 +7,9 @@
 #include <ayni/resources.h>
 #include <ayni/runtime/common/default_config.h>
 #include <ayni/runtime/common/demo_profile.h>
+#include <ayni/runtime/common/memory_capability.h>
 #include <ayni/strategies/builtin.h>
 #include <cstring>
-#include <limits>
 #include <new>
 namespace ayni::runtime {
 namespace {
@@ -307,20 +307,7 @@ struct DemoProfile::Impl {
     // this composition root supplies only the configured external destination domain.
     ayni_status_t register_memory(ayni_kernel_t *kernel) {
         constexpr uint32_t field_count = AYNI_MEMORY_SCOPE_FIELD_COUNT;
-        constexpr uint32_t identity_fields = 2;
-        constexpr int64_t operation_write = 2;
-        std::array<ayni_authority_field_desc_v1, field_count> fields{};
-        for (uint32_t at = 0; at < field_count; ++at) {
-            auto &field = fields[at];
-            field.struct_size = sizeof(field);
-            field.field_id = at + 1;
-            field.usage = AYNI_AUTHORITY_PARAMETER;
-            field.domain.struct_size = sizeof(field.domain);
-            field.domain.kind = AYNI_AUTHORITY_I64;
-            field.domain.unit = text(at < identity_fields ? "id" : "code");
-            field.domain.values.integer = {
-                1, at < identity_fields ? std::numeric_limits<int64_t>::max() : operation_write};
-        }
+        auto fields = memory_access_fields();
         ayni_capability_desc_v1 cap{sizeof(cap), 1, text("memory.access"),
                                     field_count, 0, fields.data()};
         auto status = ayni_register_capability(kernel, &cap);
