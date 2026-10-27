@@ -12,7 +12,8 @@ add_custom_target(ayni_generate_normal_fixtures
     BYPRODUCTS "${normal_fixture_source}"
     WORKING_DIRECTORY "${AYNI_ROOT}" VERBATIM)
 add_library(ayni_sim_normal_fixtures STATIC normal_fixtures.cpp
-    normal_fixture_profile.cpp "${normal_fixture_source}")
+    normal_fixture_profile.cpp multinode_transport.cpp multinode_normal.cpp
+    "${normal_fixture_source}")
 add_dependencies(ayni_sim_normal_fixtures ayni_generate_normal_fixtures)
 target_include_directories(ayni_sim_normal_fixtures PUBLIC include)
 target_compile_definitions(ayni_sim_normal_fixtures PRIVATE

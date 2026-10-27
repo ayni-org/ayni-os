@@ -124,6 +124,14 @@ bool step_while(ayni::runtime::NativeNode &node, ayni_lifecycle_t state, const c
 
 int main(int argc, char **argv) {
     if (argc > 1) {
+        if (argc == 4 && std::strcmp(argv[1], "--multinode-normal") == 0 &&
+            std::strcmp(argv[2], "--output") == 0) {
+            const auto result = ayni::runtime::fixtures::run_multinode(argv[3]);
+            std::printf(
+                "MA038-N1: status=%" PRId32 ", close=%" PRId32 ", artifacts=%" PRId32 " %s\n",
+                result.status, result.close_status, result.artifact_status, result.detail.c_str());
+            return result.status == AYNI_OK ? 0 : 1;
+        }
         const auto cases = ayni::runtime::fixtures::cases();
         if (argc == 2 && std::strcmp(argv[1], "--list-normal") == 0) {
             for (size_t at = 0; at < cases.size; ++at) {
@@ -145,7 +153,8 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        std::fprintf(stderr, "ayni-sim: use --list-normal or --case E1-N1 --output NEW_DIRECTORY; "
+        std::fprintf(stderr, "ayni-sim: use --list-normal, --case E1-N1 --output NEW_DIRECTORY, "
+                             "or --multinode-normal --output NEW_DIRECTORY; "
                              "full fault/recovery experiments are unavailable\n");
         return 2;
     }

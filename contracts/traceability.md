@@ -21,7 +21,7 @@
 | [domain/runtime_limits.md](domain/runtime_limits.md) | 8 | 0 |
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 3 |
 | [domain/versions.md](domain/versions.md) | 17 | 6 |
-| [fixtures/normal/README.md](fixtures/normal/README.md) | 6 | 0 |
+| [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 5 | 0 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 10 | 6 |
@@ -30,7 +30,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 392 | 136 |
+| 合计 | 396 | 136 |
 
 ## 计划章节 → 契约文档
 

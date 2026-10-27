@@ -13,3 +13,6 @@ add_test(NAME NormalFixtures.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/normal_artifacts_test.py" $<TARGET_FILE:ayni-sim>
     "${CMAKE_CURRENT_BINARY_DIR}/normal-artifacts")
 set_tests_properties(NormalFixtures.artifacts_replay PROPERTIES TIMEOUT 120)
+add_test(NAME MultinodeNormal.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/multinode_artifacts_test.py" $<TARGET_FILE:ayni-sim>)
+set_tests_properties(MultinodeNormal.artifacts_replay PROPERTIES TIMEOUT 120)

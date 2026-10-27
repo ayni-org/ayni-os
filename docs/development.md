@@ -224,3 +224,7 @@ cmake --build --preset native-release --target ayni_native_measurements ayni_mem
 ```
 
 `--small OUTPUT.json` 用于正常功能 smoke。输出分别记录编码、管理提交、填充/排空、满表工作与静止 step 的样本数、最大值和 p99（ns）；Host 与计时均为真实单调时钟。`--maximum` 的所有配置容量取上限，但只填满 Goal、Task、Grant 和 Memory，其他占用如实列明；1 GiB 是逻辑模拟存储额度。最大观测值不能充当硬实时或 ESP32 证据；CI 的小负载不设性能阈值。
+
+## 多节点正常模拟
+
+构建 `ayni-sim` 后运行 `./build/native/targets/simulator/ayni-sim --multinode-normal --output NEW_DIRECTORY`，目录必须是新的。`MA038-N1` 的两个独立 Kernel 使用 typed FakeTransport，记录两次远程调用、两种查询、节点限定身份、独立时钟/持久前缀与在途正常关闭；产物为 `run.json` / `trace.jsonl`。它不读取线消息，不提供真实认证、持久重试映射或完整 MA-038 故障矩阵；细节与暂定服务 Task 选择见 ADR-0070。

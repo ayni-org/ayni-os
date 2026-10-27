@@ -42,3 +42,13 @@
 | C-FIX-004 | 重开先拒绝在途/未知效果，在静止点正常排空；保留 Task/owner/Call/operation/模型次数和步骤；不替换旧已接受身份 | 新建一个 Task 假装从旧检查点继续 | E3-N1、E4-N2；`NormalFixtures.compiled_normal_scenario_records_successful_execution`；原恢复矩阵仍未验证 |
 | C-FIX-005 | run/trace 不含私有正文、凭据或媒体；元数据明确正常范围及硬件/专项未验证；版本和实际配置可复查 | trace 打印 memory.read 正文，或把模拟结果写成实机 E1–E4 通过 | tests/integration/normal_artifacts_test.py 的实际 JSON/合成正文检查与双次重放；实际结果在 PR |
 | C-FIX-006 | 首个失败与 close/artifact 分类独立；不能确认关闭时保留整个组合，包含外部注册上下文 | 清理抛异常越过借用保留，先析构 policy 再销毁 Kernel | 正常关闭由九个场景验证；异常及保留边界为独立静态审查，未新增故障/恢复专项 |
+| C-FIX-007 | MA038-N1 使用两个独立 Kernel、时钟和存储；仅推进 A 不改变 B 的时钟或持久前缀，跨节点身份加节点限定 | 把相同数值 Task/instance ID 当成同一对象，或推进 A 同时替 B 提交 | tests/integration/multinode_artifacts_test.py；运行时实际独立推进断言，未验证节点冒充 |
+| C-FIX-008 | typed 通道只按预配置 peer/instance 映射创建接收端独立服务 Goal/Task，两端各自经本地 Grant 与 Core 消费检查；原 Task 身份/归属保持 | 把源 Task 搬到接收端，或把源 Grant ID 当作接收端权限 | tests/integration/multinode_artifacts_test.py；正常选中本机 Grant 及接收端实际计数检查；拒绝/认证矩阵未验证 |
+| C-FIX-009 | 执行中与完成查询记录节点限定的 operation、Goal/Task、状态及持久前缀；仅确认接收端成功效果与 Task/Call 都持久后返回成功；查不到不推定 NOT_ACCEPTED | 把接收排队当完成，或凭缓存缺失声称动作未执行 | tests/integration/multinode_artifacts_test.py；四条实际 query_reply；完整协议查询/低水位语义未验证 |
+| C-FIX-010 | 多节点正常关闭先在两端 RUNNING 时有界完成已接受服务，再进入 DRAINING；只读查询可取消，业务调用不能丢弃；异常仍保留全组合 | 接收端先 DRAINING 导致策略不能完成，释放仍被源 completion 借用的 Link | tests/integration/multinode_artifacts_test.py 的第二次调用在途关闭；异常保留边界独立审查，无新故障专项 |
+
+## MA-038 正常子集
+
+`ayni-sim --multinode-normal --output NEW_DIRECTORY` 重放独立的 `MA038-N1`，不属于上面的 JSON 动作 schema。接收端使用固定服务 Task，发起端保持原 Task；当前按推荐项实现、改选再改，见 ADR-0070。两次模拟计数调用验证本机授权、目的地 Scope、两端本地事件响应、执行中/完成查询和第二次调用的在途正常关闭。`run.json` 与 `trace.jsonl` 不含正文，记录独立时钟/前缀、节点限定 Call/operation 和实际查询汇总；两次逻辑产物相同。
+
+通道为进程内 typed 对象，预配对 peer 由组合根提供；不是网络认证或字节解码器。接收映射仅在本次运行内有界保留，不提供重试去重、低水位、NOT_ACCEPTED 墓碑或重启恢复保证，不宣称 C-WIRE-006～013 的完整实现。IDL/线格式仍按 ADR-0009 待定；新的失效/分区/重放/恢复矩阵继续暂停。

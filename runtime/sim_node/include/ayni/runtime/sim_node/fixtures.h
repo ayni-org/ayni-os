@@ -152,5 +152,7 @@ struct Result {
 // Creates output_directory exclusively, writes run.json /
 // trace.jsonl, and closes all borrows before returning. Existing directories are refused.
 Result run(const Case &, const char *output_directory);
+// MA-038 closed typed normal scenario; output directory must not exist.
+Result run_multinode(const std::string &output_directory);
 } // namespace ayni::runtime::fixtures
 #endif
