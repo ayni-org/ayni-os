@@ -13,7 +13,11 @@ bool knows(uint16_t, uint16_t version, WorkRecordContext) {
     return version == work::call_record_version || version == work::call_skipped_record_version ||
            version == work::call_execution_record_version ||
            version == work::call_tool_calls_record_version ||
-           version == work::call_erased_record_version;
+           version == work::call_erased_record_version ||
+           version == work::call_subscription_record_version ||
+           version == work::call_erased_subscription_record_version ||
+           version == work::call_scoped_execution_record_version ||
+           version == work::call_erased_scoped_execution_record_version;
 }
 uint32_t capacity(const KernelCapacities &capacities) {
     return capacities.call_capacity;
@@ -129,20 +133,39 @@ durability::RecordUse WorkReplay::restore_call(uint16_t version, const uint8_t *
     const bool exists = model_.calls.find(record.identity.call_id, call_index);
     if (!exists &&
         (record.state.created.transition.commit_seq != stamp.transition.commit_seq ||
+         (record.state.subscription &&
+          (record.state.subscription->attachment != work::SubscriptionAttachment::foreground ||
+           record.state.subscription->phase != work::SubscriptionPhase::starting ||
+           record.state.subscription->generation != record.identity.operation_id)) ||
          record.action || record.state.outcome != 0U || task.call.id != record.identity.call_id ||
          task.commit_seq != stamp.transition.commit_seq)) {
         return RecordUse::corrupt;
     }
-    // A known result releases the selected call only with the Task in this batch.
-    // UNKNOWN keeps the reference unless a user cancellation has already drained it.
+    // Initial foreground admission and detachment pair with Task progress. Once
+    // detached, a background generation never owns another current_call link.
     const bool terminal = record.state.outcome != 0U;
     const bool reconciliation = record.state.query.has_value();
     const bool resolved = exists && model_.calls.state(call_index).outcome == AYNI_CALL_ABANDONED &&
                           record.state.outcome != AYNI_CALL_ABANDONED;
     const bool cancelled_task = !work::TaskTable::is_live(task.lifecycle);
-    if ((terminal && (!reconciliation || (resolved && !cancelled_task)) &&
-         task.commit_seq != stamp.transition.commit_seq) ||
-        (!terminal && task.call.id != record.identity.call_id)) {
+    const bool subscription = record.state.subscription.has_value();
+    const bool foreground_before = subscription && exists &&
+                                   model_.calls.state(call_index).subscription &&
+                                   model_.calls.state(call_index).subscription->attachment ==
+                                       work::SubscriptionAttachment::foreground;
+    const bool foreground_after = subscription && record.state.subscription->attachment ==
+                                                      work::SubscriptionAttachment::foreground;
+    if (subscription) {
+        const bool detached = foreground_before && !foreground_after;
+        if ((foreground_after && task.call.id != record.identity.call_id) ||
+            (detached && (task.commit_seq != stamp.transition.commit_seq ||
+                          (record.state.outcome != AYNI_CALL_ABANDONED &&
+                           task.call.id == record.identity.call_id)))) {
+            return RecordUse::corrupt;
+        }
+    } else if ((terminal && (!reconciliation || (resolved && !cancelled_task)) &&
+                task.commit_seq != stamp.transition.commit_seq) ||
+               (!terminal && task.call.id != record.identity.call_id)) {
         return RecordUse::corrupt;
     }
     if (reconciliation && record.state.query->phase == work::CallQuery::Phase::requested) {
@@ -201,7 +224,13 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
         }
         if (id.owner_instance_id != task.owner_instance_id ||
             task.created_transition_id >= state.created.transition.transition_id ||
-            (state.outcome == 0U && task.call.id != id.call_id) ||
+            (state.outcome == 0U &&
+             (!state.subscription ||
+              state.subscription->attachment == work::SubscriptionAttachment::foreground) &&
+             task.call.id != id.call_id) ||
+            (state.outcome == 0U && state.subscription &&
+             state.subscription->attachment == work::SubscriptionAttachment::background &&
+             task.call.id == id.call_id) ||
             (state.outcome != 0U && state.outcome != AYNI_CALL_ABANDONED &&
              task.call.id == id.call_id)) {
             return false;
@@ -217,6 +246,14 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         const auto &task = model_.tasks.at(index);
         uint32_t call_index = 0;
+        if (task.subscription_wait &&
+            (!model_.calls.find(task.subscription_wait->subscription_id, call_index) ||
+             model_.calls.identity(call_index).task_id != task.task_id ||
+             !model_.calls.state(call_index).subscription ||
+             task.subscription_wait->generation >
+                 model_.calls.state(call_index).subscription->generation)) {
+            return false;
+        }
         if (task.call.id != 0U && (!model_.calls.find(task.call.id, call_index) ||
                                    model_.calls.identity(call_index).task_id != task.task_id)) {
             return false;

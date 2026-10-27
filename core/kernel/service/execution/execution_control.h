@@ -75,7 +75,7 @@ class ExecutionControl {
     // input; nothing for any other contract. No permit or nonce is issued.
     authority::GrantCheck prepare(const catalog::CallContract &contract,
                                   const catalog::Binding &binding, ayni_bytes_v1 arguments,
-                                  uint64_t now_us, uint64_t durable_seq,
+                                  uint64_t now_us, uint64_t durable_seq, uint64_t task_id,
                                   std::optional<work::ExecutionFact> &out_fact) const;
     // Immediately before dispatch and at every renewal: the saved Scene
     // generation, boot, owner binding and observations still hold.

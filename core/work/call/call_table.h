@@ -8,6 +8,7 @@
 #include "work/call/call_input.h"
 #include "work/call/tool_calls.h"
 #include "work/execution/execution_fact.h"
+#include "work/subscription/subscription_fact.h"
 
 namespace ayni::work {
 
@@ -61,6 +62,7 @@ struct CallState {
     ayni_reason_t reason = AYNI_REASON_NONE; // Terminal cause; no string data.
     std::optional<ExecutionFact>
         execution; // Physical constraints and independent stop; absent for ordinary I/O.
+    std::optional<SubscriptionFact> subscription; // Sole durable lease intent/generation facts.
     std::optional<CallQuery> query; // Absent before owner reconciliation; never an execution retry.
     std::optional<ActionStamp> content_erased; // None retains bodies; otherwise irreversible
                                                // privacy stamp, independent of outcome.
@@ -118,6 +120,16 @@ class CallTable {
     ayni_status_t insert(const CallIdentity &identity, const catalog::CallContract &contract,
                          ayni_bytes_v1 domain, ayni_bytes_v1 input, ActionStamp stamp,
                          uint32_t &index);
+    // Confirm exactly the next start/renew ACK and detach initial Task admission atomically.
+    ayni_status_t confirm_subscription(uint32_t index, uint64_t sequence, ActionStamp stamp);
+    // Stop this generation; desired distinguishes a pause from explicit intent closure.
+    ayni_status_t stop_subscription(uint32_t index, CallCancelCause cause,
+                                    SubscriptionDesired desired, ActionStamp stamp);
+    // Preserve a failed/malformed lease control independently of eventual close outcome.
+    ayni_status_t fail_subscription(uint32_t index, ayni_status_t status, ayni_reason_t reason,
+                                    ActionStamp stamp);
+    // Only a confirmed stopped, known generation can establish a new operation/claim.
+    ayni_status_t restart_subscription(uint32_t index, uint64_t generation, ActionStamp stamp);
     // Attach prevalidated execution constraints in the same initial acceptance transition.
     void attach_execution(uint32_t index, const ExecutionFact &fact);
     // Independent local stop measurement, never inferred from Provider cancellation.

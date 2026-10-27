@@ -19,6 +19,13 @@ constexpr uint16_t call_tool_calls_record_version = 4;
 // Erased request/result bodies plus an explicit privacy stamp and execution-presence tag.
 // Real action/query/execution outcomes retain their original encodings (ADR-0060).
 constexpr uint16_t call_erased_record_version = 5;
+// Finite subscription state, with a second version for erased bodies (ADR-0063).
+constexpr uint16_t call_subscription_record_version = 6;
+constexpr uint16_t call_erased_subscription_record_version = 7;
+// Existing physical layout plus scoped ObservationRef identities; erasure remains explicit.
+constexpr uint16_t call_scoped_execution_record_version = 8;
+constexpr uint16_t call_erased_scoped_execution_record_version = 9;
+constexpr uint32_t call_subscription_fixed_bytes = 48; // Source length, versions, enums, two u64.
 constexpr uint32_t call_erasure_tail_size = 28; // u32 execution-present + 24-byte ActionStamp.
 constexpr uint32_t call_result_kind_size = 4;   // The v4 trailing u32.
 // Normal rows preserve v1; old readers explicitly refuse a background skip.

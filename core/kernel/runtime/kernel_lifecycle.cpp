@@ -149,11 +149,13 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     advance_recovery_and_maintenance(progress);
     apply_revocations(progress);
     apply_observation_gaps(progress);
+    calls.refresh_subscription_gates(progress.now_us(), log.durable_seq(), call_mode());
     apply_calls(progress);
     if (!work.calendars.empty()) {
         work.refresh_calendars(calendar_clock(progress.started_us));
     }
     apply_ready_work(progress);
+    calls.refresh_subscription_gates(progress.now_us(), log.durable_seq(), call_mode());
     take_queued_inputs(progress);
     take_queued_observations(progress);
     if (appends() && log.advance(progress.now_us())) {
@@ -313,6 +315,13 @@ void ayni_kernel::apply_observation_gaps(StepContext &) {
             observations.invalidate(source, boundary);
         }
     }
+    for (uint32_t index = 0; index < observation_ingress.subscription_capacity(); ++index) {
+        ayni_subscription_ref_v1 reference{};
+        ayni::knowledge::ObservationBoundary boundary{};
+        if (observation_ingress.take_subscription_gap(index, reference, boundary)) {
+            observations.invalidate_subscription(index, reference.generation, boundary);
+        }
+    }
 }
 // Accepted samples consume the same bounded item/time budget after ordinary
 // work and inputs. Expiry/future checks use owner application time, not arrival TTL.
@@ -325,9 +334,25 @@ void ayni_kernel::take_queued_observations(StepContext &progress) {
         const bool owner_known =
             !next.input.media ||
             work.agents.find_instance(next.input.media->owner_instance_id) != nullptr;
-        const auto status = owner_known ? observations.publish_from_ingress(
-                                              next.input, next.source_index, progress.now_us())
-                                        : AYNI_NOT_FOUND;
+        ayni_status_t status = AYNI_NOT_FOUND;
+        if (owner_known && next.scope) {
+            const auto &scope = *next.scope;
+            const bool current =
+                scope.reference.boot_epoch == work.ids.boot_epoch() &&
+                work.calls.occupied(scope.call_index) &&
+                work.calls.identity(scope.call_index).call_id == scope.reference.subscription_id &&
+                work.calls.state(scope.call_index).subscription &&
+                work.calls.state(scope.call_index).subscription->generation ==
+                    scope.reference.generation &&
+                calls.subscription_usable(scope.call_index, progress.now_us(), log.durable_seq());
+            status = current ? observations.publish_subscription(next.input, scope.call_index,
+                                                                 scope.reference.subscription_id,
+                                                                 progress.now_us())
+                             : AYNI_STALE;
+        } else if (owner_known) {
+            status =
+                observations.publish_from_ingress(next.input, next.source_index, progress.now_us());
+        }
         if (status != AYNI_OK) {
             observation_ingress.discarded();
         }

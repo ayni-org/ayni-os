@@ -80,7 +80,9 @@ bool action_matches(const CallRecord &record) {
     const auto &action = *record.action;
     const auto &id = record.identity;
     const auto &state = record.state;
-    if (!ActionRecord::valid(action) || action.identity.operation_id != id.operation_id ||
+    if (!ActionRecord::valid(action) ||
+        action.identity.operation_id !=
+            (state.subscription ? state.subscription->generation : id.operation_id) ||
         action.identity.logical_call_id != id.call_id ||
         action.identity.binding_version != id.binding_version ||
         !same_id(action.identity.binding_id, id.binding_id) ||
@@ -117,11 +119,86 @@ bool valid_content(const CallRecord &record, CallInputView &input) {
     }
     return reader.ok();
 }
+// Only this transition permits replacing the prior generation's sealed action/attempt.
+// A background known close is not an unresolved unary/action retry.
+bool reopens_subscription(const CallState &before, const CallState &after) {
+    return before.subscription && after.subscription && before.outcome == AYNI_CALL_CANCELLED &&
+           after.outcome == 0 && after.attempt.request_id == 0 &&
+           after.cancel_cause == CallCancelCause::none && after.cancel_result == 0 &&
+           after.progress_sequence == 0 &&
+           after.subscription->generation > before.subscription->generation &&
+           subscription_advances(*before.subscription, *after.subscription);
+}
+bool subscriptions_advance(const CallState &before, const CallState &after) {
+    return before.subscription.has_value() == after.subscription.has_value() &&
+           (!before.subscription ||
+            subscription_advances(*before.subscription, *after.subscription));
+}
+// After a known terminal, only desired intent may close. The result/action proof
+// is immutable until a separately validated new generation is established.
+bool known_subscription_unchanged(const CallRecord &before, const CallRecord &after) {
+    const auto &a = before.state;
+    const auto &b = after.state;
+    if (a.outcome != b.outcome || a.status != b.status || a.reason != b.reason ||
+        a.progress_sequence != b.progress_sequence ||
+        !same_bytes({reinterpret_cast<const uint8_t *>(before.result.data), before.result.size},
+                    {reinterpret_cast<const uint8_t *>(after.result.data), after.result.size}) ||
+        before.result_kind != after.result_kind ||
+        before.action.has_value() != after.action.has_value() ||
+        a.subscription->phase != b.subscription->phase ||
+        a.subscription->lease_sequence != b.subscription->lease_sequence ||
+        a.subscription->control_status != b.subscription->control_status ||
+        a.subscription->control_reason != b.subscription->control_reason) {
+        return false;
+    }
+    if (!before.action) {
+        return true;
+    }
+    return before.action->phase == after.action->phase &&
+           before.action->effect == after.action->effect &&
+           before.action->evidence == after.action->evidence &&
+           same_stamp(before.action->latest, after.action->latest);
+}
 bool same_erasure(const CallState &before, const CallState &after) {
     return before.content_erased.has_value() == after.content_erased.has_value() &&
            (!before.content_erased || same_stamp(*before.content_erased, *after.content_erased));
 }
 } // namespace
+
+// A lease confirmation cannot exist without the generation's own dispatch proof.
+bool valid_subscription_record(const CallRecord &record) {
+    const auto &state = record.state;
+    if (record.contract.subscription.has_value() != state.subscription.has_value()) {
+        return false;
+    }
+    if (!state.subscription) {
+        return true;
+    }
+    const auto &fact = *state.subscription;
+    if (!valid_subscription(fact) ||
+        foundation::id_boot_epoch(fact.generation) > state.latest.boot_epoch ||
+        fact.generation < record.identity.operation_id) {
+        return false;
+    }
+    if (fact.lease_sequence != 0 && (!record.action || state.attempt.request_id == 0 ||
+                                     record.action->phase == ActionPhase::prepared ||
+                                     record.action->phase == ActionPhase::dispatching)) {
+        return false;
+    }
+    if (fact.phase == SubscriptionPhase::active &&
+        (state.outcome != 0 || state.cancel_cause != CallCancelCause::none)) {
+        return false;
+    }
+    if (fact.phase == SubscriptionPhase::starting && state.cancel_cause != CallCancelCause::none) {
+        return false;
+    }
+    if ((fact.phase == SubscriptionPhase::stopping || fact.phase == SubscriptionPhase::expired) &&
+        state.cancel_cause == CallCancelCause::none && state.outcome == 0) {
+        return false;
+    }
+    return fact.phase != SubscriptionPhase::stopped ||
+           (state.outcome != 0 && state.outcome != AYNI_CALL_ABANDONED);
+}
 
 // Decode and live admission share the canonical input validator and contract
 // normalizer. Original schemas are never substituted by this boot's registration.
@@ -148,6 +225,9 @@ bool CallTable::valid_record(const CallRecord &record) {
          (state.cancel_cause == CallCancelCause::none || state.attempt.request_id == 0U ||
           (state.cancel_result != AYNI_CALL_CANNOT_CANCEL &&
            state.cancel_result != AYNI_CALL_CANCEL_UNKNOWN)))) {
+        return false;
+    }
+    if (!valid_subscription_record(record)) {
         return false;
     }
     if (((record.contract.effects & catalog::call_effect_physical) != 0) !=
@@ -221,22 +301,28 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
         const auto &entry = *slots_[index].entry;
         const auto &before = entry.state;
         const auto &after = record.state;
+        const bool reopening = reopens_subscription(before, after);
         if (!same_identity(entry.identity, record.identity) ||
             !catalog::same_call_contract(entry.contract, record.contract) ||
             !same_bytes(domain(index), record.domain) || !same_bytes(input(index), record.input) ||
             !same_stamp(before.created, after.created) || !same_erasure(before, after) ||
-            !advances(entry, after.latest) || (before.outcome != 0U && !unresolved(index)) ||
-            !query_advances(before, after) ||
+            !advances(entry, after.latest) ||
+            (before.outcome != 0U && !unresolved(index) && !reopening &&
+             (!before.subscription ||
+              !known_subscription_unchanged(this->record(index), record))) ||
+            !query_advances(before, after) || !subscriptions_advance(before, after) ||
             !execution_advances(before.execution, after.execution) ||
-            after.progress_sequence < before.progress_sequence ||
-            (before.attempt.request_id != 0U &&
+            (!reopening && after.progress_sequence < before.progress_sequence) ||
+            (!reopening && before.attempt.request_id != 0U &&
              (before.attempt.request_id != after.attempt.request_id ||
               before.attempt.boot_epoch != after.attempt.boot_epoch)) ||
-            (before.cancel_cause != CallCancelCause::none &&
+            (!reopening && before.cancel_cause != CallCancelCause::none &&
              before.cancel_cause != after.cancel_cause) ||
-            (before.cancel_result != 0U && before.cancel_result != after.cancel_result) ||
-            (entry.action && (!record.action || !same_stamp(entry.action->fact().prepared,
-                                                            record.action->prepared)))) {
+            (!reopening && before.cancel_result != 0U &&
+             before.cancel_result != after.cancel_result) ||
+            (!reopening && entry.action &&
+             (!record.action ||
+              !same_stamp(entry.action->fact().prepared, record.action->prepared)))) {
             return AYNI_INVALID_ARGUMENT;
         }
     }
@@ -244,6 +330,9 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
     entry.state = record.state;
     entry.result_size = record.result.size;
     entry.result_kind = record.result_kind;
+    if (!record.action) {
+        entry.action.reset();
+    }
     if (record.action) {
         entry.action.emplace();
         entry.action->restore_validated(*record.action);

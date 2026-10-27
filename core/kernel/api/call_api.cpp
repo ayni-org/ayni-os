@@ -50,7 +50,7 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                  phase(state, action),
                  id.call_id,
                  id.task_id,
-                 id.operation_id,
+                 state.subscription ? state.subscription->generation : id.operation_id,
                  id.owner_instance_id,
                  state.attempt,
                  state.progress_sequence,

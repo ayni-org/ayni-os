@@ -80,7 +80,9 @@ ayni_add_core_module(work
         work/call/call_reconciliation.cpp
         work/call/call_records.cpp
         work/call/call_restore.cpp
+        work/subscription/subscription_fact.cpp
         work/call/call_table.cpp
+        work/call/call_subscription.cpp
         work/call/tool_calls.cpp
         work/call_propagation.cpp
         work/execution/execution_fact.cpp
@@ -113,6 +115,7 @@ ayni_add_core_module(kernel
         kernel/api/executor_completion_api.cpp
         kernel/api/kernel_api.cpp
         kernel/api/observation_api.cpp
+        kernel/api/subscription_api.cpp
         kernel/api/provider_api.cpp
         kernel/api/provider_completion_api.cpp
         kernel/api/query_api.cpp
@@ -127,6 +130,8 @@ ayni_add_core_module(kernel
         kernel/service/call/call_drain.cpp
         kernel/service/call/call_reconciliation.cpp
         kernel/service/call/call_runtime.cpp
+        kernel/service/call/call_subscription.cpp
+        kernel/service/call/call_subscription_control.cpp
         kernel/service/call/call_tools.cpp
         kernel/service/call/call_wait.cpp
         kernel/service/command/command_approval.cpp
@@ -150,6 +155,7 @@ ayni_add_core_module(kernel
         kernel/service/execution/execution_control.cpp
         kernel/runtime/ingress/event_ingress.cpp
         kernel/runtime/ingress/observation_ingress.cpp
+        kernel/runtime/ingress/observation_subscription_ingress.cpp
         kernel/runtime/ingress/event_queue.cpp
         kernel/service/intent/authority_intent.cpp
         kernel/service/intent/goal_approval.cpp

@@ -77,6 +77,7 @@ bool knows_task_state(uint16_t version, WorkRecordContext context) {
     return version == work::task_state_record_version ||
            version == work::task_state_runtime_record_version ||
            version == work::task_state_call_record_version ||
+           version == work::task_state_subscription_wait_version ||
            (context == WorkRecordContext::journal &&
             (version == work::task_state_authority_record_version ||
              version == work::task_state_reauthorization_record_version ||
@@ -86,7 +87,10 @@ bool knows_task_state(uint16_t version, WorkRecordContext context) {
              version == work::task_state_call_authority_record_version ||
              version == work::task_state_call_reauthorization_record_version ||
              version == work::task_state_call_raise_limit_record_version ||
-             version == work::task_state_resume_wait_record_version));
+             version == work::task_state_resume_wait_record_version ||
+             version == work::task_state_subscription_wait_authority_version ||
+             version == work::task_state_subscription_wait_reauthorization_version ||
+             version == work::task_state_subscription_wait_raise_version));
 }
 
 } // namespace

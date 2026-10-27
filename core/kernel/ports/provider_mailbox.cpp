@@ -28,32 +28,17 @@ ProviderMailbox::ProviderMailbox(void *storage, Limits limits, const ayni_host_v
     }
 }
 
-bool ProviderMailbox::is_cancel(ProviderMessageKind kind) {
-    return kind == ProviderMessageKind::cannot_cancel ||
-           kind == ProviderMessageKind::cancel_unknown;
-}
-
-bool ProviderMailbox::is_terminal(ProviderMessageKind kind) {
-    switch (kind) {
-    case ProviderMessageKind::completed:
-    case ProviderMessageKind::failed:
-    case ProviderMessageKind::cancelled:
-    case ProviderMessageKind::abandoned:
-        return true;
-    default:
-        return false;
-    }
-}
-
 ayni_status_t ProviderMailbox::check_message(const ProviderMessage &message) const {
     const bool progress = message.kind == ProviderMessageKind::progress;
     const bool written = message.writer != nullptr;
-    if ((!progress && !is_cancel(message.kind) && !is_terminal(message.kind)) ||
-        (progress ? message.sequence == 0U : message.sequence != 0U) ||
+    const bool lease = provider_subscription_control(message.kind);
+    if ((!progress && !lease && !provider_cancel_control(message.kind) &&
+         !provider_terminal(message.kind)) ||
+        ((progress || lease) ? message.sequence == 0U : message.sequence != 0U) ||
         (written ? message.payload.data != nullptr || message.writer->write == nullptr ||
-                       !is_terminal(message.kind)
+                       !provider_terminal(message.kind)
                  : message.payload.size != 0U && message.payload.data == nullptr) ||
-        (is_cancel(message.kind) && message.payload.size != 0U)) {
+        ((provider_cancel_control(message.kind) || lease) && message.payload.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
     return message.payload.size > payload_bytes_ ? AYNI_CAPACITY_EXCEEDED : AYNI_OK;
@@ -119,7 +104,14 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
         const Result result{message.kind,         message.status, message.reason,
                             message.payload.size, message.effect, message.query_result,
                             message.body};
-        if (is_cancel(message.kind)) {
+        if (provider_subscription_control(message.kind)) {
+            auto &control = attempt->lease_control;
+            if (!control || control->result || control->sequence != message.sequence ||
+                control->kind != message.kind) {
+                return AYNI_INVALID_STATE;
+            }
+            control->result = result;
+        } else if (provider_cancel_control(message.kind)) {
             if (attempt->cancel) {
                 return AYNI_INVALID_STATE;
             }
@@ -152,10 +144,27 @@ const ProviderMailbox::Result *ProviderMailbox::pending(const Attempt &attempt) 
     if (attempt.cancel && attempt.cancel->stage == Cancel::Stage::pending) {
         return &attempt.cancel->result;
     }
+    if (attempt.lease_control && attempt.lease_control->result) {
+        return &*attempt.lease_control->result;
+    }
     if (attempt.terminal) {
         return &*attempt.terminal;
     }
     return attempt.progress ? &*attempt.progress : nullptr;
+}
+
+bool ProviderMailbox::expect_subscription_control(ProviderReservation reservation,
+                                                  ProviderMessageKind kind, uint64_t sequence) {
+    const IngressGuard guard(host_);
+    auto *attempt = find(reservation);
+    if (!attempt || attempt->terminal || attempt->lease_control ||
+        !provider_subscription_control(kind) || attempt->last_lease_sequence == UINT64_MAX ||
+        sequence != attempt->last_lease_sequence + 1 ||
+        (kind == ProviderMessageKind::subscription_started) != (sequence == 1)) {
+        return false;
+    }
+    attempt->lease_control = LeaseControl{kind, sequence, {}};
+    return true;
 }
 
 ayni_provider_completion_t *ProviderMailbox::completion(ProviderReservation reservation) {
@@ -191,9 +200,10 @@ ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, ui
         if (result->size != 0U) {
             std::memcpy(payload, payload_of(index, result->kind), result->size);
         }
-        const auto sequence = result->kind == ProviderMessageKind::progress
-                                  ? slot.attempt->last_progress_sequence
-                                  : 0U;
+        const auto sequence =
+            result->kind == ProviderMessageKind::progress ? slot.attempt->last_progress_sequence
+            : provider_subscription_control(result->kind) ? slot.attempt->lease_control->sequence
+                                                          : 0U;
         out = {result->kind,
                sequence,
                result->status,
@@ -231,10 +241,20 @@ ProviderMailbox::Acknowledge ProviderMailbox::acknowledge(const ProviderReceipt 
         attempt->progress.reset();
         return Acknowledge::consumed;
     }
+    if (provider_subscription_control(receipt.kind)) {
+        const auto &control = attempt->lease_control;
+        if (!control || !control->result || control->kind != receipt.kind ||
+            control->sequence != receipt.sequence) {
+            return Acknowledge::stale;
+        }
+        attempt->last_lease_sequence = receipt.sequence;
+        attempt->lease_control.reset();
+        return Acknowledge::consumed;
+    }
     if (receipt.sequence != 0U) {
         return Acknowledge::stale;
     }
-    if (is_cancel(receipt.kind)) {
+    if (provider_cancel_control(receipt.kind)) {
         if (!attempt->cancel || attempt->cancel->stage != Cancel::Stage::pending ||
             attempt->cancel->result.kind != receipt.kind) {
             return Acknowledge::stale;
@@ -243,7 +263,8 @@ ProviderMailbox::Acknowledge ProviderMailbox::acknowledge(const ProviderReceipt 
         return Acknowledge::consumed;
     }
     if (!attempt->terminal || attempt->terminal->kind != receipt.kind ||
-        (attempt->cancel && attempt->cancel->stage == Cancel::Stage::pending)) {
+        (attempt->cancel && attempt->cancel->stage == Cancel::Stage::pending) ||
+        (attempt->lease_control && attempt->lease_control->result)) {
         return Acknowledge::stale;
     }
     release(receipt.reservation.index);
@@ -254,7 +275,8 @@ bool ProviderMailbox::withdraw(ProviderReservation reservation) {
     const IngressGuard guard(host_);
     const auto *attempt = find(reservation);
     if (attempt == nullptr || attempt->terminal || attempt->cancel ||
-        attempt->last_progress_sequence != 0U) {
+        attempt->last_progress_sequence != 0U || attempt->last_lease_sequence != 0U ||
+        (attempt->lease_control && attempt->lease_control->result)) {
         return false;
     }
     release(reservation.index);

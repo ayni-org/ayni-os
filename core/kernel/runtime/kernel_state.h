@@ -74,14 +74,15 @@ struct ayni_kernel {
           executor_completions(storage[ayni::kernel::Store::executor_completions],
                                capacities.executor_capacity, host),
           observations(catalogs.observation_sources, storage[ayni::kernel::Store::observations],
-                       capacities.observation_source_capacity),
+                       capacities.observation_source_capacity, capacities.call_capacity),
           observation_ingress(storage[ayni::kernel::Store::observation_ingress],
                               capacities.observation_ingress_capacity,
                               capacities.observation_source_capacity, catalogs.observation_sources,
-                              host),
+                              host, capacities.call_capacity),
           calls(storage[ayni::kernel::Store::call_runtime],
                 ayni::kernel::call_runtime_limits(capacities), work, catalogs, resources, permits,
-                observations, provider_completions, executor_completions, attempts, host),
+                observations, observation_ingress.subscription_port(), provider_completions,
+                executor_completions, attempts, host),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The

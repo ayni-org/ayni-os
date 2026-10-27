@@ -73,7 +73,7 @@ struct Executor::Impl {
                        AYNI_CALL_EFFECT_PHYSICAL, AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE,
                        AYNI_CALL_CANCEL_REQUEST, 0, config.call_timeout_ms,
                        AYNI_CALL_INPUT_FIELDS_TEXT, AYNI_CALL_RESULT_TEXT, text_bytes, text_bytes,
-                       1, &resource}};
+                       1, &resource, nullptr}};
         provider = {sizeof(provider),
                     version,
                     text("mock.execution"),
@@ -85,6 +85,7 @@ struct Executor::Impl {
                     &capability,
                     submit,
                     cancel,
+                    nullptr,
                     nullptr};
         executor = {sizeof(executor),
                     version,

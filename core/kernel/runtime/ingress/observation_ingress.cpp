@@ -12,21 +12,37 @@ std::size_t gaps_offset(uint32_t capacity) {
     return (bytes + alignment - 1) / alignment * alignment;
 }
 } // namespace
-std::size_t ObservationIngress::storage_size(uint32_t capacity, uint32_t sources) {
-    return capacity == 0
-               ? 0
-               : gaps_offset(capacity) + foundation::BoundedArray<Gap>::storage_size(sources);
+std::size_t ObservationIngress::sessions_offset(uint32_t capacity, uint32_t sources) {
+    const auto bytes = gaps_offset(capacity) + foundation::BoundedArray<Gap>::storage_size(sources);
+    constexpr auto alignment = alignof(ObservationSubscriptionCell);
+    return (bytes + alignment - 1) / alignment * alignment;
+}
+std::size_t ObservationIngress::storage_size(uint32_t capacity, uint32_t sources,
+                                             uint32_t subscriptions) {
+    return capacity == 0 ? 0
+                         : sessions_offset(capacity, sources) +
+                               foundation::BoundedArray<ObservationSubscriptionCell>::storage_size(
+                                   subscriptions);
 }
 ObservationIngress::ObservationIngress(void *storage, uint32_t capacity, uint32_t sources,
                                        const catalog::ObservationSources &registry,
-                                       const ayni_host_v1 &host)
+                                       const ayni_host_v1 &host, uint32_t subscriptions)
     : registry_(registry), host_(host), capacity_(capacity),
+      sessions_(capacity == 0
+                    ? nullptr
+                    : static_cast<uint8_t *>(storage) + sessions_offset(capacity, sources),
+                capacity == 0 ? 0 : subscriptions),
       gaps_(capacity == 0 ? nullptr : static_cast<uint8_t *>(storage) + gaps_offset(capacity),
             capacity == 0 ? 0 : sources) {
     static_assert(std::is_trivially_copyable<QueuedObservation>::value,
                   "internal queue body must be copied");
     if (capacity != 0) {
         queue_.emplace(storage, capacity, sizeof(QueuedObservation));
+        while (sessions_.size() < subscriptions) {
+            ObservationSubscriptionCell cell{};
+            cell.target = {this, sessions_.size()};
+            static_cast<void>(sessions_.push_back(cell));
+        }
         while (gaps_.size() < sources) {
             static_cast<void>(gaps_.push_back({}));
         }
@@ -62,6 +78,11 @@ void ObservationIngress::close() {
         const IngressGuard guard(host_);
         gaps_[index].reset();
     }
+    for (uint32_t index = 0; index < sessions_.size(); ++index) {
+        const IngressGuard guard(host_);
+        sessions_[index].binding.reset();
+        sessions_[index].gap.reset();
+    }
 }
 ayni_status_t ObservationIngress::post(uint64_t boot_epoch,
                                        const knowledge::ObservationInput &input) {
@@ -80,12 +101,13 @@ ayni_status_t ObservationIngress::post(uint64_t boot_epoch,
         status != AYNI_OK) {
         return status;
     }
-    const QueuedObservation queued{input, index};
+    return enqueue({input, {}, index});
+}
+ayni_status_t ObservationIngress::enqueue(const QueuedObservation &queued) {
     EventHeader header{};
     header.kind = sample_kind;
     header.body_size = sizeof(queued);
-    // This event class is explicitly FIFO/non-droppable; control receipts and
-    // local inputs use their original queues, never telemetry eviction rules.
+    // This class remains non-droppable; no sample may overwrite a control receipt.
     const auto status = queue_->push(header, reinterpret_cast<const uint8_t *>(&queued));
     if (status == AYNI_OK) {
         ++accepted_;
@@ -147,6 +169,10 @@ ayni_observation_ingress_info_v1 ObservationIngress::info() const {
     for (uint32_t index = 0; index < gaps_.size(); ++index) {
         pending +=
             gaps_[index] && gaps_[index]->phase == ObservationGapCell::Phase::pending ? 1U : 0U;
+    }
+    for (uint32_t index = 0; index < sessions_.size(); ++index) {
+        const auto &gap = sessions_[index].gap;
+        pending += gap && gap->phase == ObservationGapCell::Phase::pending ? 1U : 0U;
     }
     return {sizeof(ayni_observation_ingress_info_v1),
             capacity_,

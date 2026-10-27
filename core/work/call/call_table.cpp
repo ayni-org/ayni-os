@@ -182,6 +182,11 @@ ayni_status_t CallTable::place_new(const CallIdentity &id, const catalog::CallCo
         entry.contract = contract;
         entry.state.created = stamp;
         entry.state.latest = stamp;
+        if (contract.subscription) {
+            entry.state.subscription = SubscriptionFact{};
+            entry.state.subscription->generation =
+                id.operation_id; // Unique collection and per-generation operation identity.
+        }
         entry.domain_size = domain_body.size;
         entry.input_size = input_body.size;
         entry.result_size = 0;
@@ -230,7 +235,9 @@ ayni_status_t CallTable::prepare(uint32_t index, ActionStamp stamp) {
     }
     const auto &id = entry.identity;
     const auto status = ActionRecord::prepare(
-        {id.operation_id, id.call_id, id.binding_id, id.binding_version}, stamp, entry.action);
+        {entry.state.subscription ? entry.state.subscription->generation : id.operation_id,
+         id.call_id, id.binding_id, id.binding_version},
+        stamp, entry.action);
     if (status == AYNI_OK) {
         entry.state.latest = stamp;
     }
@@ -269,6 +276,30 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     entry.state.reason = result.reason;
     entry.result_size = result.text.size;
     entry.result_kind = result.kind;
+    if (entry.state.subscription) {
+        auto &subscription = *entry.state.subscription;
+        subscription.attachment = SubscriptionAttachment::background;
+        if (subscription.control_status != AYNI_OK) {
+            subscription.phase = SubscriptionPhase::failed;
+        } else if (subscription.phase == SubscriptionPhase::expired ||
+                   result.status == AYNI_EXPIRED) {
+            subscription.phase = SubscriptionPhase::expired;
+            subscription.desired = SubscriptionDesired::closed;
+        } else if (result.outcome == AYNI_CALL_CANCELLED) {
+            subscription.phase = subscription.phase == SubscriptionPhase::expired
+                                     ? SubscriptionPhase::expired
+                                     : SubscriptionPhase::stopped;
+            if (entry.state.cancel_cause == CallCancelCause::none) {
+                subscription.desired = SubscriptionDesired::closed;
+            }
+        } else if (result.outcome == AYNI_CALL_COMPLETED) {
+            subscription.phase = SubscriptionPhase::stopped;
+            subscription.desired = SubscriptionDesired::closed;
+        } else {
+            subscription.phase = SubscriptionPhase::failed;
+            subscription.desired = SubscriptionDesired::closed;
+        }
+    }
 }
 
 ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp) {

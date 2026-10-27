@@ -153,7 +153,8 @@ class ManagedCall : public ::testing::Test {
                                64,
                                64,
                                1,
-                               &units};
+                               &units,
+                               nullptr};
         ASSERT_EQ(ayni_register_call_capability(kernel, &capability), AYNI_OK);
         ayni_provider_v1 provider{};
         provider.struct_size = sizeof(provider);

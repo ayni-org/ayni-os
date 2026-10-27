@@ -564,7 +564,8 @@ TEST(TaskTable, full_table_of_live_tasks_refuses_and_changes_nothing) {
 
 TEST(TaskTable, live_lifecycles_are_the_ones_not_ended) {
     for (const ayni_task_lifecycle_t lifecycle :
-         {AYNI_TASK_READY, AYNI_TASK_RUNNING, AYNI_TASK_PAUSED, AYNI_TASK_CANCELLING}) {
+         {AYNI_TASK_READY, AYNI_TASK_RUNNING, AYNI_TASK_PAUSED, AYNI_TASK_CANCELLING,
+          AYNI_TASK_WAITING}) {
         EXPECT_TRUE(TaskTable::is_live(lifecycle)) << lifecycle;
     }
     for (const ayni_task_lifecycle_t lifecycle :
@@ -594,6 +595,31 @@ TEST(TaskTable, authority_state_preserves_live_holds_and_refuses_terminal_histor
         EXPECT_EQ(tasks.task(id).commit_seq,
                   change == TaskChange::pause ? task.commit_seq + 1U : task.commit_seq);
     }
+}
+
+// ADR-0063/C-SUB-005: metadata operations cannot spend the wake/final-cancel reserve.
+TEST(TaskTable, subscription_wait_reserves_a_wakeup_and_the_final_cancel_at_revision_limit) {
+    Tasks tasks(1);
+    const auto id = tasks.create();
+    auto &task = tasks.raw(id);
+    constexpr uint32_t wait_wake_cancel = 3;
+    task.revision = std::numeric_limits<uint32_t>::max() - wait_wake_cancel;
+    ASSERT_TRUE(TaskTable::can_wait_subscription(task));
+    ayni::foundation::IdAllocator ids;
+    ids.start(1);
+    ayni::work::SubscriptionWait basis{};
+    ASSERT_TRUE(ids.allocate(basis.subscription_id));
+    ASSERT_TRUE(ids.allocate(basis.generation));
+    tasks->wait_subscription(tasks.index_of(id), basis, {2, 2});
+    EXPECT_TRUE(TaskTable::at_largest_revision(tasks.task(id)));
+    EXPECT_EQ(tasks.change(id, TaskChange::pause), ChangeCheck::revision_exhausted);
+    ASSERT_TRUE(tasks->wake_subscription(tasks.index_of(id), {3, 3}));
+    EXPECT_EQ(tasks.task(id).lifecycle, AYNI_TASK_READY);
+    EXPECT_FALSE(tasks.task(id).subscription_wait);
+    ASSERT_EQ(tasks->check(tasks.index_of(id), TaskChange::cancel, task.revision),
+              ChangeCheck::allowed);
+    tasks->apply(tasks.index_of(id), TaskChange::cancel, {4, 4});
+    EXPECT_EQ(tasks.task(id).revision, std::numeric_limits<uint32_t>::max());
 }
 
 } // namespace

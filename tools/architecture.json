@@ -35,11 +35,13 @@
         "authority"
       ],
       "task": [
-        "authority"
+        "authority",
+        "subscription"
       ],
       "call": [
         "action",
-        "execution"
+        "execution",
+        "subscription"
       ]
     },
     "resources": {

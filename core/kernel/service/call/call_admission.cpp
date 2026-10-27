@@ -45,6 +45,8 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     snapshot.call_context = this;
     snapshot.call_result = read_result;
     snapshot.call_tool = read_tool_call;
+    snapshot.subscription = read_subscription;
+    snapshot.subscription_observation = read_subscription_observation;
 }
 
 void CallRuntime::end_decision() {
@@ -70,11 +72,17 @@ ayni_status_t CallRuntime::stage_request(void *context, const ayni_call_request_
 // domain mutation and does not consume a step, call count, resource or identity.
 ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     if (request.struct_size != sizeof(request) || request.reserved != 0U ||
-        (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL)) {
+        (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL &&
+         request.kind != AYNI_POLICY_CLOSE_SUBSCRIPTION &&
+         request.kind != AYNI_POLICY_WAIT_SUBSCRIPTION)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (proposal_) {
         return AYNI_CAPACITY_EXCEEDED;
+    }
+    if (request.kind == AYNI_POLICY_CLOSE_SUBSCRIPTION ||
+        request.kind == AYNI_POLICY_WAIT_SUBSCRIPTION) {
+        return stage_subscription_target(request);
     }
     Proposal proposal{};
     if (!proposal.step.assign(request.step_key) ||
@@ -107,15 +115,44 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     }
     proposal.task_id = work_.tasks.at(decision_->task_index).task_id;
     proposal.kind = request.kind;
+    stage_intent(proposal);
+    return AYNI_OK;
+}
+void CallRuntime::stage_intent(const Proposal &proposal) {
     proposal_ = proposal;
     auto &intent = decision_->intents[0];
     intent = {};
     intent.struct_size = sizeof(intent);
-    intent.kind = request.kind;
+    intent.kind = proposal.kind;
     intent.expected_revision = work_.tasks.at(decision_->task_index).revision;
     intent.step_key_size = proposal.step.size();
     std::memcpy(intent.step_key, proposal.step.data(), proposal.step.size());
     decision_->output->intent_count = 1;
+}
+// Close and wait refer to an existing Task-owned step, never a new route.
+// Capturing the frontier within decide cannot race with owner sample application.
+ayni_status_t CallRuntime::stage_subscription_target(const ayni_call_request_v1 &request) {
+    if (request.binding_version != 0 || request.binding_id.size != 0 || request.text.size != 0 ||
+        request.arguments.struct_size != 0 || request.arguments.field_count != 0 ||
+        request.arguments.fields != nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    Proposal proposal{};
+    if (!proposal.step.assign(request.step_key)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    uint32_t index = 0;
+    const auto status = subscription_step(request.step_key, index);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    proposal.task_id = work_.tasks.at(decision_->task_index).task_id;
+    proposal.subscription_index = index;
+    if (request.kind == AYNI_POLICY_WAIT_SUBSCRIPTION) {
+        proposal.wait_basis = subscription_wait_basis(index);
+    }
+    proposal.kind = request.kind;
+    stage_intent(proposal);
     return AYNI_OK;
 }
 
@@ -145,7 +182,8 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
     *out = {sizeof(*out),
             state.outcome,
             calls.identity(index).call_id,
-            calls.identity(index).operation_id,
+            state.subscription ? state.subscription->generation
+                               : calls.identity(index).operation_id,
             state.outcome == 0U ? 0U : state.latest.transition.commit_seq,
             state.status,
             state.reason,
@@ -240,6 +278,12 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT};
     }
     const auto &proposal = *proposal_;
+    if (proposal.subscription_index) {
+        return !proposal.wait_basis || work::TaskTable::can_wait_subscription(task)
+                   ? authority::GrantCheck{AYNI_OK, AYNI_REASON_NONE}
+                   : authority::GrantCheck{AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
+    }
+
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     if (task.call.id != 0U || work_.step_taken(task_index, view(proposal.step))) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_STEP_TAKEN};
@@ -259,6 +303,19 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         contract.result_text_limit > limits_.result_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT};
     }
+    if (contract.subscription) {
+        for (uint32_t at = 0; at < work_.calls.capacity(); ++at) {
+            if (!work_.calls.occupied(at) || work_.calls.identity(at).task_id != task.task_id) {
+                continue;
+            }
+            const auto &saved = work_.calls.contract(at).subscription;
+            const auto &state = work_.calls.state(at).subscription;
+            if (saved && state && state->desired == work::SubscriptionDesired::open &&
+                saved->source.equals(view(contract.subscription->source))) {
+                return {AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT};
+            }
+        }
+    }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     work::CallInputView input{};
     if (work::read_call_input(domain, {staging_, proposal.input_size}, contract.input_text_limit,
@@ -277,13 +334,36 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {exported, memory_reason(exported)};
     }
     return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index),
-                            input.arguments, now_us, durable_seq, proposal_->execution);
+                            input.arguments, now_us, durable_seq, task.task_id,
+                            proposal_->execution);
 }
 
 // Exact capacity and identity preflights have succeeded. Any refusal here is an
 // internal invariant failure; no callback can intervene between check and apply.
 bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us) {
     const auto &proposal = *proposal_;
+    // Waiting consumes a Task transition and checkpoint, not another call,
+    // resource acquisition, model charge or step identity (C-SUB-005).
+    if (proposal.wait_basis) {
+        work_.tasks.wait_subscription(task_index, *proposal.wait_basis, stamp);
+        proposal_.reset();
+        return true;
+    }
+    // The producer and cache projections close with the explicit stop fact,
+    // while the original Provider borrow remains owned until terminal receipt.
+    if (proposal.subscription_index) {
+        const auto index = *proposal.subscription_index;
+        if (work_.calls.stop_subscription(index, work::CallCancelCause::user,
+                                          work::SubscriptionDesired::closed,
+                                          {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
+            return false;
+        }
+        close_subscription_gate(index);
+        work_.tasks.progress(task_index, stamp);
+        proposal_.reset();
+        return true;
+    }
+
     const auto &binding = catalogs_.bindings.at(proposal.binding_index);
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     const auto &task = work_.tasks.at(task_index);

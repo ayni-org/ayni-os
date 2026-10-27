@@ -10,6 +10,9 @@ ayni_call_wait_t CallRuntime::waiting(uint32_t index, uint64_t now_us, uint64_t 
                                       uint64_t &waited_us) const {
     waited_us = 0;
     const auto &state = work_.calls.state(index);
+    if (slots_[index].active && slots_[index].active->stage == Stage::lease_stop) {
+        return AYNI_CALL_WAIT_QUARANTINED;
+    }
     if (work_.calls.query_pending(index) && slots_[index].active &&
         slots_[index].active->stage == Stage::submitted) {
         return AYNI_CALL_WAIT_PROVIDER;

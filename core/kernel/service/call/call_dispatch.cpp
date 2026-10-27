@@ -6,7 +6,6 @@
 
 namespace ayni::kernel {
 namespace {
-constexpr uint64_t microseconds_per_millisecond = 1000;
 ayni_string_v1 view(const catalog::CatalogId &id) {
     return {id.data(), id.size()};
 }
@@ -65,19 +64,8 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
         }
         return Advance::applied;
     }
-    uint32_t binding_index = 0;
     catalog::BindingLinks links{};
-    const bool compatible =
-        catalogs_.bindings.find(view(id.binding_id), id.binding_version, binding_index) &&
-        catalog::BindingRegistry::same_selection(id.binding(),
-                                                 catalogs_.bindings.at(binding_index)) &&
-        catalog::BindingRegistry::resolve(catalogs_.bindings.at(binding_index),
-                                          catalogs_.capabilities, catalogs_.call_capabilities,
-                                          catalogs_.providers, catalogs_.resources,
-                                          links) == AYNI_OK &&
-        catalog::same_call_contract(work_.calls.contract(index),
-                                    catalogs_.call_capabilities.at(links.call).contract) &&
-        catalogs_.capabilities.matches_domain(links.capability, work_.calls.domain(index));
+    const bool compatible = compatible_call(index, links);
     if (!compatible) {
         slots_[index].active = Active{id.call_id, Stage::blocked, {}, std::nullopt};
         work_.tasks.hold_restored(task_index, AYNI_UNSUPPORTED_VERSION,
@@ -98,11 +86,42 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
     return Advance::applied;
 }
 
+// Original immutable route/domain/contract must still exist; catalog indices
+// are freshly resolved and never copied into durable Call state.
+bool CallRuntime::compatible_call(uint32_t index, catalog::BindingLinks &links) const {
+    const auto &id = work_.calls.identity(index);
+    uint32_t binding = 0;
+    return catalogs_.bindings.find(view(id.binding_id), id.binding_version, binding) &&
+           catalog::BindingRegistry::same_selection(id.binding(), catalogs_.bindings.at(binding)) &&
+           catalog::BindingRegistry::resolve(catalogs_.bindings.at(binding), catalogs_.capabilities,
+                                             catalogs_.call_capabilities, catalogs_.providers,
+                                             catalogs_.resources, links) == AYNI_OK &&
+           catalog::same_call_contract(work_.calls.contract(index),
+                                       catalogs_.call_capabilities.at(links.call).contract) &&
+           catalogs_.capabilities.matches_domain(links.capability, work_.calls.domain(index));
+}
+
 // Publish cancellation intent before contacting a Provider. A refused cancel
 // leaves its original attempt live and never synthesizes a terminal receipt.
 CallRuntime::Advance CallRuntime::stop(uint32_t index, uint32_t task_index, Mode mode,
                                        work::CallCancelCause cause) {
     auto &active = *slots_[index].active;
+    if (work_.calls.state(index).subscription &&
+        work_.calls.state(index).cancel_cause == work::CallCancelCause::none) {
+        const auto &task = work_.tasks.at(task_index);
+        const bool preserve = work::TaskTable::is_live(task.lifecycle) &&
+                              task.call.end == work::TaskCall::End::none &&
+                              cause != work::CallCancelCause::deadline &&
+                              !work_.calls.state(index).content_erased;
+        const auto desired =
+            preserve ? work::SubscriptionDesired::open : work::SubscriptionDesired::closed;
+        close_subscription_gate(index);
+        return work_.calls.stop_subscription(index, cause, desired,
+                                             {work_.ids.boot_epoch(), work_.transitions.next()}) ==
+                       AYNI_OK
+                   ? Advance::applied
+                   : Advance::internal;
+    }
     if (!submitted(active.stage)) {
         return mode == Mode::fenced ? Advance::idle : cancel_local(index, task_index);
     }
@@ -196,21 +215,27 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
     for (uint32_t bits = delivery.tools; bits != 0U; bits &= bits - 1U) {
         ++tool_count;
     }
-    const ayni_provider_request_v1 request{sizeof(request),
-                                           id.capability_version,
-                                           delivery.reservation.attempt,
-                                           id.call_id,
-                                           id.operation_id,
-                                           delivery.deadline_us,
-                                           view(id.capability_id),
-                                           view(id.endpoint),
-                                           arguments.view(),
-                                           input.text,
-                                           permit,
-                                           tool_count,
-                                           0,
-                                           tool_count == 0U ? nullptr : this,
-                                           tool_count == 0U ? nullptr : describe_tool};
+    ayni_subscription_open_v1 subscription{};
+    if (contract.subscription && !prepare_subscription_delivery(index, now_us, subscription)) {
+        return Advance::internal;
+    }
+    const ayni_provider_request_v1 request{
+        sizeof(request),
+        id.capability_version,
+        delivery.reservation.attempt,
+        id.call_id,
+        contract.subscription ? work_.calls.state(index).subscription->generation : id.operation_id,
+        delivery.deadline_us,
+        view(id.capability_id),
+        view(id.endpoint),
+        arguments.view(),
+        input.text,
+        permit,
+        tool_count,
+        0,
+        tool_count == 0U ? nullptr : this,
+        tool_count == 0U ? nullptr : describe_tool,
+        contract.subscription ? &subscription : nullptr};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
     offering_ = Offering{task_index, delivery.tools};

@@ -71,6 +71,7 @@ class ToolCalls : public ::testing::Test {
         config.binding_capacity = 4;
         config.goal_type_capacity = 2;
         config.resource_capacity = 1;
+        config.observation_source_capacity = 1;
         config.resource_request_capacity = 4;
         config.storage_buffer_bytes = 0;
         work.node().on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
@@ -144,6 +145,18 @@ class ToolCalls : public ::testing::Test {
         ASSERT_EQ(ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE),
                   AYNI_OK);
         const ayni_call_resource_v1 units{resource.resource_id, 1, 0};
+        // ADR-0063: the allow-list rejection uses a valid subscription contract,
+        // so it still proves model tools exclude subscriptions, not malformed offers.
+        const ayni_observation_source_v1 source{sizeof(source),
+                                                1,
+                                                text("lamp.sensor"),
+                                                AYNI_OBSERVATION_BOOL,
+                                                AYNI_OBSERVATION_MEASURED,
+                                                text("bool"),
+                                                100};
+        ASSERT_EQ(ayni_register_observation_source(kernel, &source), AYNI_OK);
+        const ayni_subscription_contract_v1 subscription{sizeof(subscription), 1, source.source_id,
+                                                         AYNI_SUBSCRIPTION_LEASE_MS_DEFAULT, 0};
         auto contract = [&](ayni_call_class_t category, uint32_t result_format,
                             uint32_t input_limit, uint32_t result_limit,
                             ayni_call_form_t form = AYNI_CALL_UNARY) {
@@ -154,7 +167,8 @@ class ToolCalls : public ::testing::Test {
                                          0,
                                          AYNI_CALL_IDEMPOTENT,
                                          AYNI_CALL_QUERY_NONE,
-                                         AYNI_CALL_CANCEL_REQUEST,
+                                         form == AYNI_CALL_SUBSCRIPTION ? AYNI_CALL_CANCEL_CONFIRMED
+                                                                        : AYNI_CALL_CANCEL_REQUEST,
                                          0,
                                          30000,
                                          AYNI_CALL_INPUT_FIELDS_TEXT,
@@ -162,7 +176,8 @@ class ToolCalls : public ::testing::Test {
                                          input_limit,
                                          result_limit,
                                          model ? 1U : 0U,
-                                         model ? &units : nullptr};
+                                         model ? &units : nullptr,
+                                         form == AYNI_CALL_SUBSCRIPTION ? &subscription : nullptr};
         };
         // The planner's own result bound is below the 512-byte result lane.
         const ayni_call_capability_v1 planner{
@@ -195,6 +210,9 @@ class ToolCalls : public ::testing::Test {
         provider.endpoint_id = text("local.timer");
         provider.capability_count = 3;
         provider.capabilities = offers;
+        provider.renew = [](void *, const ayni_subscription_renew_v1 *) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        };
         ASSERT_EQ(ayni_register_provider(kernel, &provider), AYNI_OK);
         const ayni_binding_v1 bindings[] = {
             {sizeof(ayni_binding_v1),

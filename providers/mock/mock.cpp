@@ -113,7 +113,8 @@ struct Provider::Impl {
                                config.text_max_bytes,
                                config.text_max_bytes,
                                1,
-                               &resource};
+                               &resource,
+                               nullptr};
         descriptor = {sizeof(descriptor),
                       contract_version,
                       text(tools   ? (a ? "mock.a.tools" : "mock.b.tools")
@@ -129,6 +130,7 @@ struct Provider::Impl {
                       &capability,
                       submit,
                       cancel,
+                      nullptr,
                       nullptr};
     }
 

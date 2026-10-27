@@ -35,9 +35,15 @@ bool execution_stopped(const ExecutionFact &fact); // STOPPED or proven NOT_STAR
 constexpr uint32_t execution_record_fixed_bytes = 112;
 constexpr uint32_t execution_field_fixed_bytes = 16;
 constexpr uint32_t execution_dependency_fixed_bytes = 32;
+constexpr uint32_t execution_scoped_dependency_bytes = sizeof(uint64_t); // v8/v9 subscription ID.
+// Old records omit subscription_id; scoped layouts append it to each dependency.
+enum class ObservationRecordLayout { source, scoped };
+bool has_scoped_dependencies(const ExecutionFact &fact);
 uint32_t execution_record_max();
 uint32_t execution_record_size(const ExecutionFact &fact);
-void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer);
-bool read_execution(durability::BodyReader &reader, ExecutionFact &out);
+void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer,
+                     ObservationRecordLayout layout = ObservationRecordLayout::source);
+bool read_execution(durability::BodyReader &reader, ExecutionFact &out,
+                    ObservationRecordLayout layout = ObservationRecordLayout::source);
 } // namespace ayni::work
 #endif

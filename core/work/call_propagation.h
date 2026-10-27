@@ -19,13 +19,15 @@
 namespace ayni::work {
 
 // The call call_index of task task_index has the terminal fact recorded in
-// stamp. A call ABANDONED with an unknown outcome holds the task until a
+// stamp. For a selected foreground call, ABANDONED holds the task until a
 // reconciliation or a cancel ends it. Otherwise the task's call ends,
 // keeping a user pause; a COMPLETED call first adds its step, while other
 // known outcomes keep the step identity in the call table only, so a
 // strategy must inspect the result and choose a new step before trying
 // again. A task whose end was already requested only ends its call.
 // Returns false, changing nothing, when the task table refuses the step.
+// Detached background subscriptions update their own row without ending or
+// adding steps to another foreground call owned by the same Task.
 bool end_task_call(const CallTable &calls, TaskTable &tasks, uint32_t call_index,
                    uint32_t task_index, foundation::TransitionStamp stamp);
 

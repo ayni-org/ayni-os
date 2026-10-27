@@ -85,10 +85,12 @@ void place_execution_context(Placer &placer, const KernelCapacities &capacities)
     placer.place(Store::observation_sources, catalog::ObservationSources::storage_alignment,
                  catalog::ObservationSources::storage_size(capacities.observation_source_capacity));
     placer.place(Store::observations, knowledge::ObservationTable::storage_alignment,
-                 knowledge::ObservationTable::storage_size(capacities.observation_source_capacity));
+                 knowledge::ObservationTable::storage_size(capacities.observation_source_capacity,
+                                                           capacities.call_capacity));
     placer.place(Store::observation_ingress, ObservationIngress::storage_alignment,
                  ObservationIngress::storage_size(capacities.observation_ingress_capacity,
-                                                  capacities.observation_source_capacity));
+                                                  capacities.observation_source_capacity,
+                                                  capacities.call_capacity));
     placer.place(Store::memories, knowledge::MemoryTable::storage_alignment,
                  knowledge::MemoryTable::storage_size(memory_limits(capacities)));
     placer.place(Store::contexts, knowledge::ContextTable::storage_alignment,

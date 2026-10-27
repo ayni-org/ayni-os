@@ -9,6 +9,7 @@
 
 #include <array>
 #include <ayni/calls.h>
+#include <optional>
 
 namespace ayni::catalog {
 
@@ -38,6 +39,13 @@ struct CallResource {
     uint32_t units; // Positive resource units; checked against its catalog at start.
 };
 
+// A subscription binds exactly one copied observation source and a finite lease.
+struct SubscriptionContract {
+    CatalogId source; // Nonempty static source identity, resolved when configuring closes.
+    uint32_t source_version = 0; // Positive exact source semantics.
+    uint32_t lease_ms =
+        AYNI_SUBSCRIPTION_LEASE_MS_DEFAULT; // Positive duration, never an OS handle.
+};
 // Typed input of complete authority fields + UTF-8 text; a result of UTF-8
 // text or, for format 2, text or a tool-call list (ADR-0054). The enclosing
 // capability version owns business semantics; these format versions identify
@@ -57,6 +65,7 @@ struct CallContract {
     uint32_t result_text_limit;  // Bytes, also of a tool list; failure does not truncate.
     uint32_t resource_count;     // Valid prefix of resources, 0..resource_group_max.
     std::array<CallResource, resource_group_max> resources; // Copied, sorted by ID.
+    std::optional<SubscriptionContract> subscription{}; // Present exactly for subscription form.
 };
 
 // One exact capability version's behavior, supplementing its authority domain.
@@ -71,10 +80,6 @@ struct CallCapability {
 ayni_status_t normalize_call_contract(const CallContract &input, CallContract &out);
 // Compares already normalized contracts, including limits and every resource.
 bool same_call_contract(const CallContract &left, const CallContract &right);
-// ABI shape and values use the same normalizer as internal typed registration.
-// Copies all nested views; any failure preserves out.
-ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallCapability &out);
-
 // Bounded static directory. No registered pointer or concrete Provider escapes.
 class CallCapabilityRegistry {
   public:

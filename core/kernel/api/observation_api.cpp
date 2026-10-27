@@ -129,6 +129,35 @@ ayni_status_t ayni_report_observation_gap(ayni_kernel_t *kernel,
     return kernel->report_observation_gap(gap->boot_epoch, source, gap->source_version,
                                           {gap->generation, gap->through_sequence});
 }
+// Opaque immutable target plus original opening avoids reading any owner state
+// on a Provider worker. Reuse the Host sample decoder and transport validator.
+ayni_status_t ayni_subscription_post_observation(ayni_subscription_sink_t *sink,
+                                                 const ayni_subscription_observation_v1 *post) {
+    if (!sink || !post || !sink->pool || !sink->pool->owns(sink)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        ayni::catalog::check_struct_size(post->struct_size, sizeof(*post), sizeof(*post));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    if (post->reserved != 0 || post->subscription.subscription_id == 0 ||
+        post->subscription.boot_epoch == 0 || post->subscription.generation == 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    ayni::knowledge::ObservationInput value{};
+    const auto status = decode_sample(post->sample, post->media, value);
+    return status == AYNI_OK ? sink->pool->post_subscription(sink->index, post->subscription, value)
+                             : status;
+}
+ayni_status_t ayni_subscription_report_gap(ayni_subscription_sink_t *sink,
+                                           ayni_subscription_ref_v1 reference, uint64_t through) {
+    if (!sink || !sink->pool || !sink->pool->owns(sink) || reference.subscription_id == 0 ||
+        reference.boot_epoch == 0 || reference.generation == 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return sink->pool->subscription_gap(sink->index, reference, through);
+}
 ayni_status_t ayni_get_observation_ingress(const ayni_kernel_t *kernel,
                                            ayni_observation_ingress_info_v1 *out) {
     if (kernel == nullptr || out == nullptr) {

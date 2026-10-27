@@ -276,7 +276,7 @@ struct Provider::Impl {
                        AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
                        AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, config.timeout_ms,
                        AYNI_CALL_INPUT_FIELDS_TEXT, config.result_format, config.text_max_bytes,
-                       config.text_max_bytes, 1, &resource}};
+                       config.text_max_bytes, 1, &resource, nullptr}};
         descriptor = {sizeof(descriptor),
                       contract_version,
                       text(config.provider_id),
@@ -288,6 +288,7 @@ struct Provider::Impl {
                       &capability,
                       submit,
                       cancel,
+                      nullptr,
                       nullptr};
     }
     static ayni_submit_result_t submit(void *context, const ayni_provider_request_v1 *request,

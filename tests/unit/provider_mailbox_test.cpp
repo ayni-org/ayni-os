@@ -314,4 +314,48 @@ TEST_F(ProviderMailboxTest, written_terminal_keeps_its_kind_and_lane_bound) {
     EXPECT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
     EXPECT_TRUE(mailbox.withdraw(text_only));
 }
+// ADR-0063: lease ACKs have reserved metadata capacity, never progress or terminal slots.
+TEST_F(ProviderMailboxTest, exact_lease_ack_is_retained_independently_until_owner_commit) {
+    const auto target = reserve(1);
+    EXPECT_EQ(post(target, Kind::subscription_started, 1), AYNI_INVALID_STATE);
+    ASSERT_TRUE(mailbox.expect_subscription_control(target, Kind::subscription_started, 1));
+    EXPECT_EQ(post(target, Kind::subscription_started, 2), AYNI_INVALID_STATE);
+    ASSERT_EQ(post(target, Kind::subscription_started, 1), AYNI_OK);
+    ASSERT_EQ(post(target, Kind::progress, 1), AYNI_OK);
+    ASSERT_EQ(post(target, Kind::completed), AYNI_OK);
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_EQ(message.kind, Kind::subscription_started);
+    EXPECT_EQ(message.sequence, 1U);
+    EXPECT_EQ(mailbox.in_flight(), 1U);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    EXPECT_EQ(mailbox.in_flight(), 1U);
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_EQ(message.kind, Kind::completed);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    EXPECT_EQ(mailbox.in_flight(), 0U);
+}
+TEST_F(ProviderMailboxTest,
+       renew_controls_require_the_next_explicit_request_and_keep_cancel_receipt) {
+    const auto target = reserve(1);
+    ASSERT_TRUE(mailbox.expect_subscription_control(target, Kind::subscription_started, 1));
+    ASSERT_EQ(post(target, Kind::subscription_started, 1), AYNI_OK);
+    ASSERT_EQ(read(), AYNI_OK);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    EXPECT_FALSE(mailbox.expect_subscription_control(target, Kind::subscription_renewed, 3));
+    ASSERT_TRUE(mailbox.expect_subscription_control(target, Kind::subscription_renewed, 2));
+    ASSERT_EQ(post(target, Kind::subscription_renewed, 2), AYNI_OK);
+    ASSERT_EQ(post(target, Kind::cannot_cancel), AYNI_OK);
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_EQ(message.kind, Kind::cannot_cancel);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_EQ(message.kind, Kind::subscription_renewed);
+    EXPECT_EQ(message.sequence, 2U);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    EXPECT_EQ(post(target, Kind::subscription_renewed, 2), AYNI_INVALID_STATE);
+    ASSERT_EQ(post(target, Kind::cancelled), AYNI_OK);
+    ASSERT_EQ(read(), AYNI_OK);
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    EXPECT_EQ(host.calls_under_lock(), 0U);
+}
 } // namespace

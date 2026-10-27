@@ -284,7 +284,7 @@ uint32_t transition_batch_max(const KernelCapacities &capacities) {
     size += record_bytes(work::task_record_max_size);
     size += record_bytes(work::task_steps_record_max(steps));
     size += record_bytes(work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
-    size += capacities.task_capacity * record_bytes(work::task_state_call_record_size);
+    size += capacities.task_capacity * record_bytes(work::task_state_max_size);
     size += capacities.task_capacity *
             record_bytes(work::task_authority_record_max(capacities.goal_requirement_capacity));
     size += record_bytes(work::authority_cleanup_record_size);

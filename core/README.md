@@ -19,8 +19,8 @@ kernel → work → {authority, resources, knowledge} → catalog → durability
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
-| `kernel` | `api/`：C ABI 解码与具名生命周期闸门；`runtime/`：私有组合状态、facade、StepContext、生命周期/启动/提交/存储维护与 ingress；`service/`：model、intent、decision、call、execution、command 与持久实体编解码/重放（Grant/command 与 Call/Scene 共用 PersistentStore，ADR-0059）；`config/`：启动目录与配置类型；`ports/`：共享完成槽、邮箱、锁和回调作用域守卫。依赖 api → runtime → service，service 内部仍按不变量分区；所有领域表继续归其原有模块（ADR-0058） | M0 |
-| `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效、授权上限与记录；`task/`：Task 生命周期、容量回收、步骤、私有检查点与授权快照；`call/`、`action/`：逻辑调用身份、保留的业务正文与副作用持久屏障；`execution/`：物理执行与停止事实；`authority/`：工作侧的准入证据与有界清理游标；`propagation`：跨表放行、派生选择与传播；`call_propagation`：调用的终态、对账与等待跳过如何落到 Task（ADR-0017～0027、ADR-0037、ADR-0038、ADR-0044、ADR-0053） | M1（`MA-004`） |
+| `kernel` | `api/`：C ABI 解码与具名生命周期闸门；`runtime/`：私有组合状态、facade、StepContext、生命周期/启动/提交/存储维护与 ingress；`service/`：model、intent、decision、call、execution、command 与持久实体编解码/重放（Grant/command 与 Call/Scene 共用 PersistentStore，ADR-0059）；`config/`：启动目录与配置类型；`ports/`：共享完成槽、独立可靠租期控制邮箱、窄订阅 ingress 端口、锁和回调作用域守卫。依赖 api → runtime → service，service 内部仍按不变量分区；所有领域表继续归其原有模块（ADR-0058） | M0 |
+| `work` | `agent/`：驻留实例的生命周期与记录；`goal/`：Goal 树、版本、终态让位、触发游标、失效、授权上限与记录；`task/`：Task 生命周期、订阅等待前沿、容量回收、步骤、私有检查点与授权快照；`subscription/`：Task 所有订阅的持久代际/租期控制事实；`call/`、`action/`：逻辑调用身份、保留的业务正文与副作用持久屏障；`execution/`：物理执行与停止事实；`authority/`：工作侧的准入证据与有界清理游标；`propagation`：跨表放行、派生选择与传播；`call_propagation`：调用的终态、对账与等待跳过如何落到 Task（ADR-0017～0027、ADR-0037、ADR-0038、ADR-0044、ADR-0053） | M1（`MA-004`） |
 | `authority` | `principal/`：可信 Host 认证的所有者主体与会话表、持久 OwnerBinding 及记录 codec（ADR-0017、0028）；`scope/`：有限字段规范化、typed/encoded 覆盖与实际请求完整性（ADR-0029）；`grant/`：Grant 事实表与受限委派、独立 RevocationGate、GrantRestore 历史恢复、持久根撤销与有界清理（ADR-0030、0031、0059）；`scene/`：Scene 声明与持久所有者偏好（ADR-0050） | M1（`MA-004`） |
 | `resources` | `admission/`：有界全组准入、Agent 轮转/实例 FIFO、等待期限/原因、健康/占用及带代际的执行器隔离；`permit/`：本次启动的许可占用、轮询与隔离（ADR-0046、ADR-0049、ADR-0050） | M1（`MA-018A`） |
 | `knowledge` | `observation/`：本次启动的观测、有效期与依赖身份，不做采集 I/O（ADR-0050）；记忆随 011A | M1（`MA-008`） |

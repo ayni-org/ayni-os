@@ -112,7 +112,7 @@ uint64_t snapshot_payload_max(const KernelCapacities &capacities) {
     size +=
         uint64_t{capacities.task_capacity} *
         (record_prefix + work::task_snapshot_record_size + work::task_calendar_tail_size +
-         record_prefix + work::task_state_call_record_size +
+         record_prefix + work::task_state_max_size +
          uint64_t{capacities.task_step_capacity} *
              (record_prefix + work::task_steps_record_max(1)) +
          record_prefix + work::task_checkpoint_record_max(capacities.task_checkpoint_max_bytes));
