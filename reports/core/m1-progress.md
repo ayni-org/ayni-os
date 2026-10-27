@@ -97,7 +97,7 @@
 | [#91](https://github.com/RobotSe7en/ayni/pull/91) | 2026-10-27 | P6 F18 Native 基线 | 最大配置、选定满表负载、编码/管理提交/step 分开计时与容量边界；ABI/schema 不变 | ADR-0069 |
 | [#92](https://github.com/RobotSe7en/ayni/pull/92) | 2026-10-27 | P6 MA-038 正常子集 | 独立 Kernel/时钟/存储、typed 远程调用/查询、固定服务 Task 与在途正常关闭；完整协议仍未完成 | ADR-0070 |
 | [#93](https://github.com/RobotSe7en/ayni/pull/93) | 2026-10-27 | P6 正常收尾 | 统一覆盖率、配置证据与正常集成报告，安全覆盖差距保持开放；ABI/schema 不变 | ADR-0071 |
-| [#PRNUM](https://github.com/RobotSe7en/ayni/pull/PRNUM) | 2026-10-27 | MA-019/MA-020 修订 | 单一 ToolLoop 助理、模型计划工具（待批、operation_id 去重）、确定性停止；AYNF v3/参数 format2，旧目录拒绝；ABI/schema 不变 | ADR-0072 |
+| [#94](https://github.com/RobotSe7en/ayni/pull/94) | 2026-10-27 | MA-019/MA-020 修订 | 单一 ToolLoop 助理、模型计划工具（待批、operation_id 去重）、确定性停止；AYNF v3/参数 format2，旧目录拒绝；ABI/schema 不变 | ADR-0072 |
 
 ## 工作包日期
 
@@ -114,9 +114,9 @@
 
 ## 交接状态（2026-10-27）
 
-当前功能基线为 [#PRNUM](https://github.com/RobotSe7en/ayni/pull/PRNUM)（单一助理、模型计划工具与确定性停止，ADR-0072），其前为 #93（P6 正常集成收尾）；ABI 0.45 / schema 2。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。完整实验、Core Alpha 和硬件验收仍未完成。
+当前功能基线为 [#94](https://github.com/RobotSe7en/ayni/pull/94)（单一助理、模型计划工具与确定性停止，ADR-0072），其前为 #93（P6 正常集成收尾）；ABI 0.45 / schema 2。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。完整实验、Core Alpha 和硬件验收仍未完成。
 
-- **已交付：** 单一助理 Native CLI（#PRNUM 起取代双 Agent 与点名路由；模型可登记待批目标，“停”不经模型）、typed 文本/工具调用与双策略、私有记忆/共享撤销、可信日历提醒、Mock 订阅/场景观察、统一助理/暂停组/安静时段、C++ SDK 和公开示例。结构整改与各功能的契约/验证入口在上方 PR 表及报告。
+- **已交付：** 单一助理 Native CLI（#94 起取代双 Agent 与点名路由；模型可登记待批目标，“停”不经模型）、typed 文本/工具调用与双策略、私有记忆/共享撤销、可信日历提醒、Mock 订阅/场景观察、统一助理/暂停组/安静时段、C++ SDK 和公开示例。结构整改与各功能的契约/验证入口在上方 PR 表及报告。
 - **P6：** 正常 JSON profile/脱敏重放见 #90（ADR-0068）；最大配置及选定满表测量见 #91（ADR-0069）；typed 多节点正常调用/查询与在途关闭见 #92（ADR-0070）。#93 统一覆盖率、配置证据和报告；Core 行覆盖达到目标，通用安全分支 90% 目标仍有差距（ADR-0071），未缩统计范围。
 - **用户已定：** E1 本轮记录完整 step 数并验模型等待不阻塞本地工作，10 步留作性能目标。ADR-0072：单一 ToolLoop 助理、模型目标默认待批、“停”取消回答并暂停自主工作且保留提醒、双 Agent 目录启动前拒绝不迁移（取代 P5 点名优先简单路由）；安静时段默认关闭、未校时普通通知等待、自主暂停不补积压/提醒补一次、单组归属并继承祖先限制、通知成功回执持久后下一策略完成 Task，均保持（ADR-0065/0066）。
 - **待确认：** 固定服务 Task 已按推荐项实现、改选再改；用户尚未回复与新增远程 Core 准入 API 的范围选择，不记为已确认。真实模型短文本/工具独立验证沿用 #75；用户本机多轮试用（含模型调用计划工具）仍待完成，未建立长期密钥配置。
