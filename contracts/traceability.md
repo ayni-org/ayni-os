@@ -10,7 +10,7 @@
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 23 | 3 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
-| [domain/lifecycles.md](domain/lifecycles.md) | 18 | 12 |
+| [domain/lifecycles.md](domain/lifecycles.md) | 19 | 12 |
 | [domain/limits.md](domain/limits.md) | 12 | 7 |
 | [domain/memory.md](domain/memory.md) | 12 | 12 |
 | [domain/observations_and_media.md](domain/observations_and_media.md) | 6 | 6 |
@@ -28,7 +28,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 376 | 136 |
+| 合计 | 377 | 136 |
 
 ## 计划章节 → 契约文档
 
