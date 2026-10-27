@@ -1,5 +1,6 @@
 #include "config.h"
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -19,7 +20,22 @@ std::string trim(std::string value) {
     }
     return value.substr(first, value.find_last_not_of(" \t\r") - first + 1);
 }
-bool load(const std::string &path, bool required, runtime::ModelConfig &model, std::string &error) {
+bool minute(const std::string &value, uint32_t &out) {
+    if (value.size() != 5 || value[2] != ':') {
+        return false;
+    }
+    uint32_t hour = 0, part = 0;
+    const auto h = std::from_chars(value.data(), value.data() + 2, hour);
+    const auto m = std::from_chars(value.data() + 3, value.data() + 5, part);
+    if (h.ec != std::errc{} || h.ptr != value.data() + 2 || m.ec != std::errc{} ||
+        m.ptr != value.data() + 5 || hour >= 24 || part >= 60) {
+        return false;
+    }
+    out = hour * 60 + part;
+    return true;
+}
+bool load(const std::string &path, bool required, Options &options, std::string &error) {
+    auto &model = options.model;
     std::error_code ec;
     const bool exists = std::filesystem::exists(path, ec);
     if (ec || (!exists && required)) {
@@ -77,6 +93,16 @@ bool load(const std::string &path, bool required, runtime::ModelConfig &model, s
             model.model_name = value;
         } else if (key == "key_environment") {
             model.key_environment = value;
+        } else if (key == "quiet_timezone") {
+            options.quiet.timezone = value;
+        } else if (key == "quiet_hours") {
+            options.quiet.enabled = value != "off";
+            if (options.quiet.enabled && (value.size() != 11 || value[5] != '-' ||
+                                          !minute(value.substr(0, 5), options.quiet.start_minute) ||
+                                          !minute(value.substr(6), options.quiet.end_minute))) {
+                error = "quiet_hours 使用 HH:MM-HH:MM 或 off。";
+                return false;
+            }
         } else {
             error = "未知配置项；不支持在文件中保存密钥。";
             return false;
@@ -133,11 +159,15 @@ bool read_options(int argc, char **argv, Options &out, std::string &error) {
         error = "请设置 HOME/XDG 目录或显式指定配置与数据目录。";
         return false;
     }
-    if (!load(out.config_file, explicit_config, out.model, error)) {
+    if (!load(out.config_file, explicit_config, out, error)) {
         return false;
     }
     if (mock) {
         out.model = {};
+    }
+    if (out.quiet.validate() != AYNI_OK) {
+        error = "安静时段须为非空区间，并配置明确的 POSIX quiet_timezone。";
+        return false;
     }
     if (out.model.model == runtime::Model::remote &&
         (out.model.base_url.empty() || out.model.model_name.empty() ||

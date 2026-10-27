@@ -1,3 +1,4 @@
+#include <atomic>
 #include <ayni/hosts/sim.h>
 #include <ayni/runtime/sim_node.h>
 #include <new>
@@ -7,6 +8,17 @@ struct SimNode::Impl {
     ayni_kernel_t *kernel = nullptr;
     void *memory = nullptr;
     size_t alignment = 0;
+    // Host itself stays owner-thread-only. These atomic copies expose the same
+    // clock to the presentation worker; UTC packs seconds and trust in one read.
+    std::atomic<uint64_t> public_now{0}, public_utc{0};
+    static constexpr uint32_t trust_bits = 2;
+    static constexpr uint64_t trust_mask = 3;
+    static uint64_t now(void *context) { return static_cast<Impl *>(context)->public_now.load(); }
+    static void utc(void *context, ayni_utc_sample_v1 *out) {
+        const auto packed = static_cast<Impl *>(context)->public_utc.load();
+        *out = {sizeof(*out), static_cast<ayni_utc_trust_t>(packed & trust_mask),
+                static_cast<int64_t>(packed >> trust_bits)};
+    }
 };
 SimNode::SimNode() = default;
 SimNode::~SimNode() {
@@ -46,6 +58,17 @@ void SimNode::advance(uint64_t microseconds) {
     if (impl_) {
         impl_->host.complete_storage();
         impl_->host.advance_us(microseconds);
+        impl_->public_now.store(impl_->host.now_us());
+    }
+}
+void SimNode::set_utc(int64_t seconds, ayni_utc_trust_t trust) {
+    if (impl_) {
+        impl_->host.set_utc(seconds, trust);
+        const auto packed =
+            seconds >= 0 && seconds <= AYNI_CALENDAR_SECONDS_MAX && trust <= AYNI_UTC_TRUSTED
+                ? (static_cast<uint64_t>(seconds) << Impl::trust_bits) | trust
+                : 0;
+        impl_->public_utc.store(packed);
     }
 }
 ayni_status_t SimNode::release() {
@@ -63,5 +86,11 @@ ayni_status_t SimNode::release() {
 }
 ayni_kernel_t *SimNode::kernel() const {
     return impl_ ? impl_->kernel : nullptr;
+}
+Clock SimNode::clock() const {
+    if (!impl_) {
+        return {};
+    }
+    return {impl_.get(), Impl::now, Impl::utc};
 }
 } // namespace ayni::runtime

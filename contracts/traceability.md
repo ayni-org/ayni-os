@@ -22,13 +22,13 @@
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 3 |
 | [domain/versions.md](domain/versions.md) | 17 | 6 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
-| [host/native_runtime.md](host/native_runtime.md) | 6 | 6 |
+| [host/native_runtime.md](host/native_runtime.md) | 10 | 6 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 377 | 136 |
+| 合计 | 381 | 136 |
 
 ## 计划章节 → 契约文档
 
@@ -116,7 +116,7 @@
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
 | `MA-016` | C-AUTH-002、C-AUTH-012、C-AUTH-015、C-LIFE-020、C-PRIM-007、C-VER-010、C-WIRE-003、C-WIRE-006、C-WIRE-007、C-WIRE-009、C-WIRE-010 |
 | `MA-018` | C-AUTH-005、C-AUTH-006、C-AUTH-007、C-AUTH-016、C-AUTH-018、C-COMMIT-009、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-012、C-RUN-004、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
-| `MA-019` | C-LIFE-023、C-LIMIT-007、C-PROD-012、C-PROD-015、C-PROD-018、C-PROD-050、C-RUN-007、C-RUN-008 |
+| `MA-019` | C-LIFE-023、C-LIMIT-007、C-PROD-012、C-PROD-015、C-PROD-018、C-RUN-007、C-RUN-008 |
 | `MA-022` | C-AUTH-006、C-COMMIT-008、C-COMMIT-009、C-COMMIT-011、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
 | `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-PERMIT-016、C-PERMIT-017、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
 | `MA-027` | C-PROD-033、C-PROD-035、C-PROV-011 |
@@ -141,7 +141,7 @@
 | E1 步骤 8 | C-LIMIT-009、C-PRIM-005、C-PROD-023、C-RES-010 |
 | E1 步骤 9 | C-CALL-005、C-COMMIT-012、C-ID-001、C-PROD-030、C-PROD-031、C-PROV-003 |
 | E1 步骤 10 | C-CALL-012、C-LIMIT-008、C-STOP-001、C-RES-005、C-HOST-006、C-WIRE-013 |
-| E1 步骤 11 | C-CALL-003、C-LIFE-023、C-STOP-002、C-PROD-010、C-PROD-012、C-PROD-013、C-PROD-014、C-PROD-016、C-PROD-018、C-PROD-020、C-PROD-021 |
+| E1 步骤 11 | C-CALL-003、C-LIFE-023、C-STOP-002、C-PROD-012、C-PROD-014、C-PROD-016、C-PROD-018 |
 | E2 F0 | C-STORE-002 |
 | E2 F1 | C-AUTH-005、C-AUTH-007、C-TIME-003、C-PRIM-001、C-PRIM-006 |
 | E2 F2 | C-COMMIT-006、C-PERMIT-002、C-PRIM-001 |
@@ -169,7 +169,7 @@
 | E4 步骤 4 | C-COMMIT-012、C-PROD-030 |
 | E4 步骤 5 | C-VER-011、C-VER-030、C-POLICY-009 |
 | E4 步骤 6 | C-VER-020、C-VER-021、C-VER-022、C-VER-031、C-STORE-004、C-STORE-010 |
-| E4 步骤 7 | C-PROD-010、C-PROD-011、C-PROD-013、C-PROD-015、C-PROD-017 |
+| E4 步骤 7 | C-PROD-015、C-PROD-017 |
 
 ## 已实现的条款
 

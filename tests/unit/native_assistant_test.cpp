@@ -1,6 +1,7 @@
 // ADR-0057: public Native usage, normal orderly reopen, and deterministic Sim wiring.
 #include "loopback_http.h"
 #include "temp_directory.h"
+#include <algorithm>
 #include <ayni/host_authority.h>
 #include <ayni/runtime/native_node/assistant.h>
 #include <ayni/runtime/sim_node.h>
@@ -86,6 +87,30 @@ TEST_F(NativeAssistant, rule_and_chat_agents_use_separate_owned_work) {
     EXPECT_NE(conversation().find("你好"), std::string::npos);
     EXPECT_EQ(notices.size(), 2U);
     EXPECT_FALSE(run(Operation::calls).calls.empty());
+}
+// ADR-0066: grouped autonomous Goal echoes retain immutable membership during approval.
+TEST_F(NativeAssistant, autonomous_goals_reopen_and_approve_through_the_public_application) {
+    Command check;
+    check.operation = Operation::device_check;
+    check.agent = demo_agent_a;
+    const auto first = app.execute(check);
+    ASSERT_EQ(first.status, AYNI_OK);
+    check.period_us *= 2;
+    const auto second = app.execute(check);
+    ASSERT_EQ(second.status, AYNI_OK);
+    ASSERT_NE(first.id, second.id);
+    settle();
+    ASSERT_EQ(app.close(), AYNI_OK);
+    ASSERT_EQ(app.open(directory.path(), {}), AYNI_OK);
+    settle();
+    ASSERT_EQ(run(Operation::approve, first.id).status, AYNI_OK);
+    settle();
+    const auto goals = run(Operation::goals);
+    const auto found = std::find_if(goals.goals.begin(), goals.goals.end(),
+                                    [&](const auto &g) { return g.goal_id == first.id; });
+    ASSERT_NE(found, goals.goals.end());
+    EXPECT_EQ(found->pause_group, ayni::applications::assistant::autonomous_group);
+    EXPECT_EQ(found->lifecycle, AYNI_GOAL_ACTIVE);
 }
 TEST_F(NativeAssistant, summary_and_conversation_survive_clean_close_and_reopen) {
     allow_chat();
@@ -484,7 +509,9 @@ TEST(SimDemo, independent_nodes_use_the_same_profile_and_retain_storage_on_relea
         for (auto *node : {&first, &second}) {
             DemoProfile profile;
             ASSERT_EQ(node->assemble(demo_config()), AYNI_OK);
-            ASSERT_EQ(profile.assemble(node->kernel(), {}), AYNI_OK);
+            const ayni::providers::presentation::Output sink{
+                nullptr, [](void *, ayni_string_v1) { return AYNI_OK; }};
+            ASSERT_EQ(profile.assemble(node->kernel(), {}, {node->clock(), sink, {}}), AYNI_OK);
             ASSERT_EQ(ayni_start(node->kernel()), AYNI_OK);
             for (unsigned i = 0; i < 200; ++i) {
                 ayni_step_report_v1 report{};

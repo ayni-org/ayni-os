@@ -36,6 +36,8 @@ struct CalendarZone {
 bool parse_calendar_zone(const char *bytes, uint32_t size, CalendarZone &out);
 // Signed epoch day; internal neighbouring-year arithmetic also uses days before 1970.
 int64_t calendar_days(int32_t year, int32_t month, int32_t day);
+// Split supported civil seconds using the same Gregorian rules as calendar scheduling.
+bool calendar_fields(int64_t local_s, ayni_calendar_civil_v1 &out);
 // Seconds west of UTC at this instant; bounded neighbouring annual transitions.
 int32_t calendar_offset(const CalendarZone &zone, int64_t utc_s);
 // Fold chooses the earlier instant; a missing civil time moves to the first valid

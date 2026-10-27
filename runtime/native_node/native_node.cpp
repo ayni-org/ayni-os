@@ -7,6 +7,13 @@
 #include <utility>
 
 namespace ayni::runtime {
+Clock NativeNode::clock() const {
+    if (!host_) {
+        return {};
+    }
+    const auto table = host_->table();
+    return {table.ctx, table.monotonic_now_us, table.utc_now};
+}
 namespace {
 
 ayni_status_t storage_status(hosts::native::StorageStatus status) {

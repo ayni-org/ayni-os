@@ -208,8 +208,9 @@ class CallTable {
     const catalog::CallContract &contract(uint32_t index) const; // Saved original semantics.
     const CallState &state(uint32_t index) const;   // Borrowed until next owner mutation.
     const ActionFact *action(uint32_t index) const; // Null before resource admission/preparation.
-    ayni_bytes_v1 domain(uint32_t index) const;     // Original schema, never a replacement catalog.
-    ayni_bytes_v1 input(uint32_t index) const;      // Canonical bytes actually authorized and sent.
+    ActionEffect effect(uint32_t index) const;   // Ledger evidence; NONE before an action exists.
+    ayni_bytes_v1 domain(uint32_t index) const;  // Original schema, never a replacement catalog.
+    ayni_bytes_v1 input(uint32_t index) const;   // Canonical bytes actually authorized and sent.
     ayni_string_v1 result(uint32_t index) const; // Retained terminal text, empty before terminal.
     // Retained tool-call list (tool_calls.h); empty unless the result holds tool calls.
     ayni_bytes_v1 tool_calls(uint32_t index) const;

@@ -132,3 +132,8 @@ target_link_libraries(ayni_native_assistant_tests PRIVATE ayni_core ayni_core_in
     ayni_host_sim ayni_runtime_assistant ayni_runtime_sim_node ayni_runtime_demo
     ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_native_assistant_tests)
+
+add_executable(ayni_assistant_application_tests assistant_application_test.cpp)
+target_link_libraries(ayni_assistant_application_tests PRIVATE ayni_core ayni_runtime_demo
+    ayni_runtime_sim_node ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_assistant_application_tests)

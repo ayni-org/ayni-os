@@ -180,6 +180,30 @@ int64_t calendar_days(int32_t year, int32_t month, int32_t day) {
     return days + day - 1;
 }
 
+// Share the scheduler's Gregorian arithmetic with public civil views. A bounded
+// month walk avoids a second date algorithm in notification and other applications.
+bool calendar_fields(int64_t local_s, ayni_calendar_civil_v1 &out) {
+    if (local_s < 0 || local_s > AYNI_CALENDAR_SECONDS_MAX) {
+        return false;
+    }
+    ayni_calendar_civil_v1 fields{};
+    fields.struct_size = sizeof(fields);
+    fields.year = year_at(local_s);
+    fields.month = 1;
+    auto day = local_s / calendar_day_s - calendar_days(fields.year, fields.month, 1);
+    while (day >= days_in_month(fields.year, fields.month)) {
+        day -= days_in_month(fields.year, fields.month);
+        ++fields.month;
+    }
+    fields.day = static_cast<int32_t>(day) + 1;
+    const auto seconds = local_s % calendar_day_s;
+    fields.hour = static_cast<int32_t>(seconds / calendar_hour_s);
+    fields.minute = static_cast<int32_t>((seconds % calendar_hour_s) / calendar_minute_s);
+    fields.second = static_cast<int32_t>(seconds % calendar_minute_s);
+    out = fields;
+    return true;
+}
+
 bool parse_calendar_zone(const char *bytes, uint32_t size, CalendarZone &out) {
     if (bytes == nullptr || size == 0 || size > AYNI_CALENDAR_TZ_MAX_BYTES) {
         return false;

@@ -321,5 +321,17 @@ int main(void) {
     failures +=
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");
     failures += expect(ayni_destroy(kernel) == AYNI_OK, "destroy");
+    {
+        /* ABI 0.45: pure civil values also work without a live Kernel. */
+        const ayni_string_v1 zone = {"CST-8", 5u};
+        ayni_calendar_civil_v1 civil = {0};
+        int64_t local = 0;
+        civil.struct_size = sizeof civil;
+        failures +=
+            expect(ayni_calendar_local_time(zone, 0, &local) == AYNI_OK &&
+                       ayni_calendar_split_time(local, &civil) == AYNI_OK && civil.year == 1970 &&
+                       civil.month == 1 && civil.day == 1 && civil.hour == 8,
+                   "pure calendar conversion");
+    }
     return failures == 0 ? 0 : 1;
 }

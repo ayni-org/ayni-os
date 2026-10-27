@@ -12,6 +12,14 @@
 namespace ayni::runtime {
 enum class Operation {
     say,
+    remind,
+    device_check,
+    memory_organize,
+    scene_observe,
+    pause_assistant,
+    resume_assistant,
+    notifications,
+    diagnostics,
     status,
     goals,
     tasks,
@@ -45,6 +53,10 @@ struct Command {
     uint32_t limit = 0;
     ayni_profile_field_t profile_field = AYNI_PROFILE_NONE;
     std::string text;
+    uint64_t period_us = applications::assistant::check_period_us;
+    ayni_calendar_rule_v1 calendar{};
+    std::vector<uint64_t> sources;
+    ayni_memory_purpose_t purpose = AYNI_MEMORY_CONTEXT;
 };
 enum class NoticeKind { none, answer, rule_completed, turn_aborted, context_erased };
 struct Notice {
@@ -80,6 +92,8 @@ struct Reply {
     ayni_status_t storage_status = AYNI_OK;
     bool saving = false;
     uint32_t pending_commands = 0;
+    applications::assistant::Activity activity;
+    std::vector<applications::assistant::Presentation> presentations;
     ConversationView conversation;
     std::vector<ayni_goal_info_v1> goals;
     std::vector<ayni_task_info_v1> tasks;
@@ -95,7 +109,10 @@ class Assistant {
     Assistant &operator=(const Assistant &) = delete;
     // Directory must be owner-private; creates missing directories with mode 0700.
     // Boot/registration/file loading finishes before returning OK. No auto-grants.
-    ayni_status_t open(const std::string &directory, const ModelConfig &config);
+    // Without a channel callback notifications fail explicitly with UNSUPPORTED.
+    ayni_status_t open(const std::string &directory, const ModelConfig &config,
+                       providers::presentation::Output output = {},
+                       applications::assistant::QuietHours quiet = {});
     Reply execute(const Command &command);
     // Bounded Kernel step plus polling only; file/network I/O use workers. Replies
     // are published only after their conversation candidate has been saved.

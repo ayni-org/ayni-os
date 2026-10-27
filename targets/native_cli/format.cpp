@@ -90,7 +90,33 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
     if (reply.status != AYNI_OK) {
         return out.str();
     }
-    if (reply.kernel.struct_size) {
+    if (operation == runtime::Operation::status && reply.kernel.struct_size) {
+        using applications::assistant::State;
+        const char *state = reply.activity.primary == State::processing           ? "正在处理"
+                            : reply.activity.primary == State::observing          ? "后台观察"
+                            : reply.activity.primary == State::awaiting_authority ? "等待授权"
+                            : reply.activity.primary == State::paused             ? "已暂停"
+                            : reply.activity.primary == State::offline            ? "离线"
+                            : reply.activity.primary == State::needs_attention    ? "需要处理"
+                                                                                  : "可用";
+        out << " 助理：" << state;
+        if (reply.activity.autonomy_paused) {
+            out << "；自主工作暂停，提醒继续";
+        }
+        out << "；处理 " << reply.activity.processing << "，后台观察 " << reply.activity.observing
+            << "，等待授权 " << reply.activity.awaiting_authority << "，需要处理 "
+            << reply.activity.needs_attention;
+    }
+    for (const auto presentation : reply.presentations) {
+        using applications::assistant::Presentation;
+        out << "\n通知："
+            << (presentation == Presentation::available    ? "AVAILABLE"
+                : presentation == Presentation::presenting ? "PRESENTING"
+                : presentation == Presentation::presented  ? "PRESENTED"
+                : presentation == Presentation::unknown    ? "PRESENTATION_UNKNOWN"
+                                                           : "PRESENTATION_FAILED");
+    }
+    if (reply.kernel.struct_size && operation == runtime::Operation::diagnostics) {
         out << " ABI " << AYNI_ABI_MAJOR << '.' << AYNI_ABI_MINOR
             << " boot=" << reply.kernel.boot_epoch << " durable_seq=" << reply.kernel.durable_seq
             << " lifecycle=" << reply.kernel.lifecycle
@@ -99,7 +125,7 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
             << " 待处理Goal=" << reply.pending_goal << " 文件状态=" << reply.storage_status
             << (reply.saving ? "（写入中）" : "");
     }
-    if (reply.privacy.struct_size) {
+    if (reply.privacy.struct_size && operation == runtime::Operation::diagnostics) {
         const char *phase = reply.privacy.phase == AYNI_PRIVACY_IDLE      ? "未请求"
                             : reply.privacy.phase == AYNI_PRIVACY_ERASING ? "清理正文"
                             : reply.privacy.phase == AYNI_PRIVACY_FILES ? "等待文件/在途调用"

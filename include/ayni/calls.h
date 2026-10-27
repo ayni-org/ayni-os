@@ -119,6 +119,8 @@ typedef struct ayni_task_call_result_v1 {
      * tool calls instead of text; read each with snapshot call_tool. */
     uint32_t tool_call_count;
     uint32_t reserved; /* Written zero. */
+    uint32_t effect;   /* AYNI_CALL_EFFECT_* evidence; UNKNOWN must not be retried. Since 0.45. */
+    uint32_t effect_reserved; /* Written zero. Since 0.45. */
 } ayni_task_call_result_v1;
 
 /* Since 0.37. Caller storage for one decoded tool call. call.arguments.fields

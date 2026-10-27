@@ -78,3 +78,5 @@ ABI 0.41（ADR-0061）增加可信 UTC 与日历规则/查询、GoalCreate 日�
 ABI 0.42（ADR-0062）增加任意线程 observation post/gap/info、media 引用及纯 validator；config 追加 observation_ingress_capacity，ObservationInfo 追加媒体和 gap 计数。旧 0.x Host/Provider/策略/SDK 须重编译，结构精确匹配。队列/样本/媒体不持久，没有新增记录或迁移，schema 2 不变。
 
 ABI 0.44（ADR-0065）追加不可变 Goal 暂停组、复制诊断、kind24 精确所有者控制和通用组查询。所有 0.x 调用方重编译；config 不变。schema 2 保持，含组 Goal 使用 REQUIRED type3/v13-v14、组偏好 type28/v1、命令 type9/v14，旧 reader 明确拒绝；无组旧布局保持可读。本轮无旧目录迁移工具。
+
+ABI 0.45（ADR-0066）增加纯日历 UTC→本地秒和 Gregorian 字段拆分，Task 调用结果视图追加 effect，正常编译消费者和布局验证同步；无 Kernel 配置/状态或持久布局变化；所有 0.x 调用方重编译。统一助理业务与真实异步通知渠道位于 Core 外，schema 2 保持。

@@ -6,6 +6,10 @@
 #include <new>
 
 namespace ayni::work {
+ActionEffect CallTable::effect(uint32_t index) const {
+    const auto *fact = action(index);
+    return fact == nullptr ? ActionEffect::none : fact->effect;
+}
 catalog::Binding CallIdentity::binding() const {
     return {binding_id,  binding_version,  capability_id, capability_version,
             provider_id, provider_version, endpoint,      destination};

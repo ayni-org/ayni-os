@@ -59,10 +59,10 @@ Reply Assistant::Impl::memory(const Command &command) {
             return refused(AYNI_UNSUPPORTED);
         }
         const auto status =
-            exporting ? ayni_memory_export_scope(command.id, AYNI_MEMORY_CONTEXT, &destination,
-                                                 fields.data(), fields.size())
-                      : ayni_memory_read_scope(command.id, AYNI_MEMORY_CONTEXT, fields.data(),
-                                               fields.size());
+            exporting
+                ? ayni_memory_export_scope(command.id, command.purpose, &destination, fields.data(),
+                                           fields.size())
+                : ayni_memory_read_scope(command.id, command.purpose, fields.data(), fields.size());
         if (status != AYNI_OK) {
             return refused(status);
         }

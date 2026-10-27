@@ -11,6 +11,8 @@ struct SubscriptionConfig {
     uint32_t media_objects = 8;    // 1..64 independent bounded three-byte frames.
     uint32_t lease_ms = AYNI_SUBSCRIPTION_LEASE_MS_DEFAULT; // 0 selects the public default.
     uint64_t frame_interval_us = 1000000; // Positive finite minimum sample interval.
+    uint32_t change_every_frames =
+        0; // 0 keeps scalar 1; otherwise alternate 0/1 per this many frames.
     uint64_t sample_ttl_us =
         2000000;                   // Positive finite source validity; bytes also bounded by lease.
     void *clock_context = nullptr; // Borrowed until close.
