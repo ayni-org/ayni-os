@@ -754,7 +754,11 @@ AYNI_LAYOUT(ayni_task_call_result_v1_tool_call_count,
 AYNI_LAYOUT(ayni_task_call_result_v1_reserved,
             offsetof(ayni_task_call_result_v1, reserved) == 44 + 2 * AYNI_PTR);
 AYNI_LAYOUT(ayni_task_call_result_v1_size,
-            sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(48 + 2 * AYNI_PTR));
+            sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(56 + 2 * AYNI_PTR));
+AYNI_LAYOUT(ayni_task_call_result_v1_effect,
+            offsetof(ayni_task_call_result_v1, effect) == 48 + 2 * AYNI_PTR);
+AYNI_LAYOUT(ayni_task_call_result_v1_effect_reserved,
+            offsetof(ayni_task_call_result_v1, effect_reserved) == 52 + 2 * AYNI_PTR);
 
 AYNI_LAYOUT(ayni_call_info_v1_struct_size, offsetof(ayni_call_info_v1, struct_size) == 0);
 AYNI_LAYOUT(ayni_call_info_v1_phase, offsetof(ayni_call_info_v1, phase) == 4);
@@ -877,6 +881,7 @@ AYNI_LAYOUT(privacy_info_size, sizeof(ayni_privacy_info_v1) == 32);
 
 /* ABI 0.41: civil time values and Task identities are fixed-width C99 records. */
 AYNI_LAYOUT(calendar_rule_size, sizeof(ayni_calendar_rule_v1) == 152);
+AYNI_LAYOUT(calendar_civil_size, sizeof(ayni_calendar_civil_v1) == 28);
 AYNI_LAYOUT(calendar_clock_size, sizeof(ayni_utc_sample_v1) == 16);
 AYNI_LAYOUT(calendar_info_size, sizeof(ayni_calendar_info_v1) == 216);
 AYNI_LAYOUT(task_calendar_local, offsetof(ayni_task_info_v1, calendar_local_s) == 112);

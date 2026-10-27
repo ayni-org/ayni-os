@@ -1,0 +1,4 @@
+add_library(ayni_provider_presentation STATIC presentation.cpp)
+target_include_directories(ayni_provider_presentation PUBLIC include)
+find_package(Threads REQUIRED)
+target_link_libraries(ayni_provider_presentation PUBLIC ayni_api PRIVATE ayni_warnings Threads::Threads)

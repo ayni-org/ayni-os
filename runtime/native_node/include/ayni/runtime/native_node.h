@@ -9,6 +9,7 @@
 #define AYNI_RUNTIME_NATIVE_NODE_H
 
 #include <ayni/ayni.h>
+#include <ayni/runtime/common/clock.h>
 
 #include <chrono>
 #include <cstddef>
@@ -63,6 +64,7 @@ class NativeNode {
 
     // Null unless assembled. Valid until release() returns AYNI_OK.
     ayni_kernel_t *kernel() const { return kernel_; }
+    Clock clock() const; // Same Host clock ports, borrowed until release.
 
   private:
     // Kept out of this header so that targets depend on runtime/ only

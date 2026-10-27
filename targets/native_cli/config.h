@@ -6,6 +6,7 @@ namespace ayni::cli {
 struct Options {
     std::string config_file, data_directory;
     runtime::ModelConfig model;
+    applications::assistant::QuietHours quiet;
     bool help = false;
 };
 // Strict bounded key=value file. Errors never include configuration values.

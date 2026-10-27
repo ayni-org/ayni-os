@@ -1,11 +1,13 @@
 #include "commands.h"
 #include "config.h"
+#include "console.h"
 #include "format.h"
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -19,26 +21,20 @@ static_assert(std::atomic<bool>::is_always_lock_free, "signal handler requires l
 void stop_signal(int) {
     interrupted.store(true, std::memory_order_relaxed);
 }
-std::mutex output_mutex;
-// Model/user data cannot inject terminal control sequences into the CLI.
-void output(const std::string &text) {
-    std::lock_guard<std::mutex> lock(output_mutex);
-    for (const char value : text) {
-        const auto byte = static_cast<unsigned char>(value);
-        if ((byte >= 32 && byte != 127) || value == '\n' || value == '\t') {
-            std::cout.put(value);
-        } else {
-            std::cout.put('?');
-        }
+ayni_status_t present(void *context, ayni_string_v1 text) {
+    try {
+        return static_cast<cli::Console *>(context)->present("提醒：" +
+                                                             std::string(text.data, text.size));
+    } catch (...) {
+        return AYNI_RESULT_UNKNOWN;
     }
-    std::cout << std::endl;
 }
 // One queued request and one copied reply. The input thread never touches Core;
 // /wait is a pending control request while the worker continues advancing I/O.
 class Driver {
   public:
-    explicit Driver(cli::Options options)
-        : worker_([this, options] {
+    explicit Driver(cli::Options options, cli::Console &console)
+        : console_(console), worker_([this, options] {
               try {
                   run(options);
               } catch (const std::exception &) {
@@ -60,6 +56,12 @@ class Driver {
         changed_.notify_all();
         if (worker_.joinable()) {
             worker_.join();
+        }
+        if (final_status_ != AYNI_OK) {
+            // One failure boundary for startup, runtime and exception unwinding:
+            // retained application callbacks still borrow the live Console here.
+            static_cast<void>(console_.close());
+            std::_Exit(1);
         }
     }
     ayni_status_t ready() {
@@ -98,7 +100,8 @@ class Driver {
     }
     void run(const cli::Options &options) {
         runtime::Assistant app;
-        auto status = app.open(options.data_directory, options.model);
+        auto status =
+            app.open(options.data_directory, options.model, {&console_, present}, options.quiet);
         std::vector<runtime::Notice> notices;
         runtime::Command state;
         state.operation = runtime::Operation::status;
@@ -115,7 +118,10 @@ class Driver {
             app.wait();
         }
         for (const auto &notice : notices) {
-            output(cli::format(notice));
+            const auto emitted = console_.post(cli::format(notice));
+            if (status == AYNI_OK) {
+                status = emitted;
+            }
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -125,11 +131,17 @@ class Driver {
         changed_.notify_all();
         bool waiting = false, quitting = status != AYNI_OK;
         auto wait_deadline = std::chrono::steady_clock::now();
-        while (!quitting) {
+        while (!quitting && !interrupted.load(std::memory_order_relaxed)) {
             notices.clear();
             status = app.advance(notices);
+            if (status == AYNI_OK) {
+                status = console_.status();
+            }
             for (const auto &notice : notices) {
-                output(cli::format(notice));
+                const auto emitted = console_.post(cli::format(notice));
+                if (status == AYNI_OK) {
+                    status = emitted;
+                }
             }
             if (status != AYNI_OK) {
                 break;
@@ -173,6 +185,7 @@ class Driver {
         }
         changed_.notify_all();
     }
+    cli::Console &console_;
     std::mutex mutex_;
     std::condition_variable changed_;
     std::optional<cli::Request> pending_;
@@ -241,10 +254,18 @@ int main(int argc, char **argv) {
         }
         std::signal(SIGINT, stop_signal);
         std::signal(SIGTERM, stop_signal);
-        Driver driver(options);
+        std::signal(SIGPIPE, SIG_IGN); // EPIPE becomes UNKNOWN channel evidence, not abrupt death.
+        auto console = std::make_unique<ayni::cli::Console>();
+        bool output_failed = false;
+        const auto output = [&](const std::string &body) {
+            const auto sent = console->post(body);
+            output_failed = output_failed || sent != AYNI_OK;
+            return sent;
+        };
+        Driver driver(options, *console);
         const auto status = driver.ready();
         if (status != AYNI_OK) {
-            std::cerr << "启动失败 status=" << status << '\n';
+            output("启动失败 status=" + std::to_string(status));
             return 1;
         }
         output("Ayni Native CLI：A=规则，B=ToolLoop。输入 /help 查看命令；首次使用须明确授权。");
@@ -292,7 +313,20 @@ int main(int argc, char **argv) {
         if (closed.status != AYNI_OK) {
             output(ayni::cli::format(closed, quit.action, quit.command.operation));
         }
-        return failed || closed.status != AYNI_OK ? 1 : 0;
+        if (closed.status != AYNI_OK) {
+            // A failed drain may retain a Provider callback borrowing this channel.
+            // Process exit reclaims it; do not destroy it underneath that worker.
+            static_cast<void>(console.release());
+            // Explicit failed shutdown: stdout may be stuck inside a standard
+            // stream lock, so normal exit flushing could block again.
+            std::_Exit(1);
+        }
+        const auto channel = console ? console->close() : AYNI_NOT_READY;
+        if (console && channel != AYNI_OK) {
+            static_cast<void>(console.release());
+            std::_Exit(1);
+        }
+        return failed || output_failed || closed.status != AYNI_OK || channel != AYNI_OK ? 1 : 0;
     } catch (const std::exception &) {
         std::cerr << "CLI 资源或系统操作失败。\n";
         return 1;

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ADR-0057: normal scripted CLI use, orderly reopen and public diagnostics."""
 import os
+import fcntl
 import pathlib
 import selectors
 import signal
@@ -34,6 +35,28 @@ class NativeCli(unittest.TestCase):
                         process.kill()
                         process.communicate()
 
+    @unittest.skipUnless(hasattr(fcntl, "F_SETPIPE_SZ"), "Linux pipe sizing")
+    def test_stdout_backpressure_keeps_command_processing_and_reports_failed_drain(self):
+        # ADR-0066: ordinary console output also stays outside the Kernel owner.
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / 'config'
+            config.write_text('provider=mock\n')
+            with subprocess.Popen([BINARY, '--config', str(config), '--data-dir', directory + '/state'],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as process:
+                try:
+                    fcntl.fcntl(process.stdout.fileno(), fcntl.F_SETPIPE_SZ, 4096)
+                    process.stdin.write('/status\n' * 200 + '/quit\n')
+                    process.stdin.close()
+                    # Do not drain stdout until quit has been processed. A blocking
+                    # owner or normal-exit flush would exceed this finite deadline.
+                    process.wait(timeout=12)
+                    self.assertEqual(process.returncode, 1)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait()
+
     def session(self, directory, commands, *args):
         env = os.environ.copy()
         env['XDG_CONFIG_HOME'] = str(pathlib.Path(directory) / 'config')
@@ -57,7 +80,7 @@ class NativeCli(unittest.TestCase):
             self.assertIn('中文第4轮', first.stdout)
             self.assertIn('已完成', first.stdout)
             self.assertIn('Call ', first.stdout)
-            second = self.session(directory, ['/conversation', '@b 重开后的第五轮', '/wait', '/status', '/quit'])
+            second = self.session(directory, ['/conversation', '@b 重开后的第五轮', '/wait', '/diagnostics', '/quit'])
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertIn('中文第4轮', second.stdout)
             self.assertIn('对话轮次=5', second.stdout)
@@ -81,7 +104,7 @@ class NativeCli(unittest.TestCase):
 
     def test_invalid_command_is_reported_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
-            result = self.session(directory, ['/grant b model surplus', '/status', '/quit'])
+            result = self.session(directory, ['/grant b model surplus', '/diagnostics', '/quit'])
             self.assertEqual(result.returncode, 1)
             self.assertIn('ERROR 命令格式无效', result.stdout)
             self.assertIn('对话轮次=0', result.stdout)

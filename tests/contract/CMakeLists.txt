@@ -10,6 +10,8 @@ file(GLOB_RECURSE ayni_cxx_headers CONFIGURE_DEPENDS
     "${AYNI_ROOT}/runtime/common/include/*.h"
     "${AYNI_ROOT}/providers/mock/include/*.h"
     "${AYNI_ROOT}/providers/mock_execution/include/*.h"
+    "${AYNI_ROOT}/providers/presentation/include/*.h"
+    "${AYNI_ROOT}/applications/assistant/include/*.h"
     "${AYNI_ROOT}/strategies/builtin/include/*.h")
 
 set(header_check_sources)
@@ -41,7 +43,7 @@ endforeach()
 
 # abi_layout.c pins the published struct layouts at compile time (C-VER-002).
 add_library(ayni_header_checks OBJECT ${header_check_sources} abi_layout.c)
-target_link_libraries(ayni_header_checks PRIVATE ayni_api ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_runtime_sim_node ayni_runtime_common ayni_provider_mock ayni_provider_mock_execution ayni_strategies ayni_warnings)
+target_link_libraries(ayni_header_checks PRIVATE ayni_api ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_runtime_sim_node ayni_runtime_common ayni_provider_mock ayni_provider_mock_execution ayni_strategies ayni_assistant_application ayni_provider_presentation ayni_warnings)
 target_compile_options(ayni_header_checks PRIVATE $<$<COMPILE_LANGUAGE:C>:-pedantic-errors>)
 
 # The implemented ABI is callable and linkable from a plain C99 program.

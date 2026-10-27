@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 44u
+#define AYNI_ABI_MINOR 45u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1553,6 +1553,14 @@ typedef struct ayni_goal_create_v1 {
  * INVALID_ARGUMENT/STATE, UNSUPPORTED_VERSION or NOT_FOUND. Since 0.41. */
 ayni_status_t ayni_get_calendar(const ayni_kernel_t *kernel, uint64_t goal_id,
                                 ayni_calendar_info_v1 *out_info);
+/* Pure bounded UTC-to-civil conversion using the calendar POSIX TZ parser.
+ * No Kernel, authority or process-global timezone state. UTC/civil range is
+ * 0..CALENDAR_SECONDS_MAX. Failure preserves out_local_s. Since 0.45. */
+ayni_status_t ayni_calendar_local_time(ayni_string_v1 timezone, int64_t utc_s,
+                                       int64_t *out_local_s);
+/* Split 0..CALENDAR_SECONDS_MAX civil seconds into Gregorian fields, without
+ * I/O or global TZ. Argument/version failures preserve output. Since 0.45. */
+ayni_status_t ayni_calendar_split_time(int64_t local_s, ayni_calendar_civil_v1 *out_fields);
 
 typedef struct ayni_goal_target_v1 {
     uint32_t struct_size;

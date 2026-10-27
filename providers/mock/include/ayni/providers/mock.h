@@ -17,7 +17,7 @@ enum class Variant { a, b };
 // without such words it echoes. An unoffered tool, a body over a tool's limit
 // or a list over the result limit fails with MODEL_OUTPUT, as undecodable
 // model output would.
-enum class Service { text, action, tools };
+enum class Service { text, action, tools, health };
 // Startup bounds; no allocation occurs in submit/cancel/advance.
 struct Config {
     Variant variant = Variant::a;

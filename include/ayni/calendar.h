@@ -60,4 +60,15 @@ typedef struct ayni_calendar_info_v1 {
     uint64_t transition_id;     /* Row's last applied change, positive. */
     uint64_t commit_seq;        /* Row's last applied change; compare with durable_seq. */
 } ayni_calendar_info_v1;
+
+/* Pure Gregorian civil fields; no timezone or Host state. Since 0.45. */
+typedef struct ayni_calendar_civil_v1 {
+    uint32_t struct_size; /* Exact sizeof, supplied by caller. */
+    int32_t year;         /* Gregorian year, 1970..9999; no absent value. */
+    int32_t month;        /* Calendar month, 1..12. */
+    int32_t day;          /* Calendar day, 1..31, valid for this month/year. */
+    int32_t hour;         /* Local hour, 0..23. */
+    int32_t minute;       /* Local minute, 0..59. */
+    int32_t second;       /* Local second, 0..59; no leap second encoding. */
+} ayni_calendar_civil_v1;
 #endif

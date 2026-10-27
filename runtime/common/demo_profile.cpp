@@ -2,6 +2,7 @@
 #include <ayni/host_authority.h>
 #include <ayni/memory.h>
 #include <ayni/providers/mock.h>
+#include <ayni/providers/mock/subscription.h>
 #include <ayni/providers/openai_compat.h>
 #include <ayni/resources.h>
 #include <ayni/runtime/common/default_config.h>
@@ -13,7 +14,8 @@
 namespace ayni::runtime {
 namespace {
 constexpr uint32_t model_index = 0, summary_index = 1, present_index = 2;
-constexpr uint32_t offer_count = 3, destination_field = 1;
+constexpr uint32_t notify_index = 3, health_index = 4, observe_index = 5;
+constexpr uint32_t offer_count = 6, legacy_offer_count = 3, destination_field = 1;
 ayni_string_v1 text(const char *s) {
     return {s, static_cast<uint32_t>(std::strlen(s))};
 }
@@ -25,10 +27,10 @@ ayni_config_v1 demo_config() {
     auto c = default_config();
     c.storage_buffer_bytes = 0;
     c.agent_capacity = 2;
-    c.goal_type_capacity = 2;
+    c.goal_type_capacity = 6;
     c.goal_capacity = 16;
     c.task_capacity = 16;
-    c.strategy_capacity = 2;
+    c.strategy_capacity = 3;
     c.goal_parameter_max_bytes = strategies::state_bytes_max;
     c.task_checkpoint_max_bytes = strategies::state_bytes_max;
     c.task_step_capacity = 64;
@@ -39,7 +41,8 @@ ayni_config_v1 demo_config() {
     c.capability_capacity = offer_count + 2;
     c.provider_capacity = offer_count;
     c.binding_capacity = offer_count;
-    c.resource_capacity = 2;
+    c.resource_capacity = 6;
+    c.observation_source_capacity = 1;
     c.resource_request_capacity = 16;
     return c;
 }
@@ -50,10 +53,68 @@ struct DemoProfile::Impl {
     std::array<ayni_provider_v1, offer_count> offers{};
     strategies::Rules rules;
     strategies::ToolLoop loop;
+    applications::assistant::Goals assistant_goals;
+    providers::presentation::Provider presenter;
+    providers::mock::SubscriptionProvider camera;
+    AssistantPorts ports;
+    ayni_kernel_t *owner_kernel = nullptr;
     strategies::RuleStep step{};
     strategies::Rule rule{};
     ayni_scope_field_v1 destination{};
     ayni_scope_v1 model_scope = empty_scope();
+
+    ayni_status_t configure_assistant() {
+        if (!ports.clock.now_us) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        auto status = ports.quiet.validate();
+        if (status != AYNI_OK) {
+            return status;
+        }
+        status = presenter.configure(ports.output, {this, current_window});
+        if (status != AYNI_OK) {
+            return status;
+        }
+        offers[notify_index] = presenter.describe();
+        providers::mock::SubscriptionConfig subscription;
+        subscription.clock_context = ports.clock.context;
+        subscription.now_us = ports.clock.now_us;
+        subscription.change_every_frames = 10;
+        status = camera.configure(subscription);
+        if (status == AYNI_OK) {
+            status = camera.describe(offers[observe_index]);
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+        status = mocks[health_index].configure(
+            {providers::mock::Variant::a, providers::mock::Service::health, 2, 512,
+             text("Mock device health: healthy; no repair or motion.")});
+        return status == AYNI_OK ? mocks[health_index].describe(offers[health_index]) : status;
+    }
+    ayni_status_t update_window() {
+        ayni_utc_sample_v1 sample{sizeof(sample), AYNI_UTC_UNAVAILABLE, 0};
+        if (ports.clock.utc_now) {
+            ports.clock.utc_now(ports.clock.context, &sample);
+        }
+        bool allowed = false;
+        const auto status = ports.quiet.allows(sample, allowed);
+        if (status == AYNI_OK) {
+            presenter.set_available(allowed);
+        }
+        return status == AYNI_OK ? ayni_set_resource_health(
+                                       owner_kernel, text("notification.window"),
+                                       allowed ? AYNI_RESOURCE_ONLINE : AYNI_RESOURCE_OFFLINE)
+                                 : status;
+    }
+    static ayni_status_t current_window(void *context, bool *out) {
+        const auto &self = *static_cast<Impl *>(context);
+        ayni_utc_sample_v1 sample{sizeof(sample), AYNI_UTC_UNAVAILABLE, 0};
+        if (self.ports.clock.utc_now) {
+            self.ports.clock.utc_now(self.ports.clock.context, &sample);
+        }
+        return self.ports.quiet.allows(sample, *out);
+    }
 
     ayni_status_t configure(const ModelConfig &config) {
         model = config.model;
@@ -132,7 +193,8 @@ struct DemoProfile::Impl {
         if (status != AYNI_OK) {
             return status;
         }
-        static const char *const bindings[] = {"model", "summary", "present"};
+        static const char *const bindings[] = {"model",  "summary", "present",
+                                               "notify", "health",  "observe"};
         const ayni_binding_v1 binding{sizeof(binding),
                                       1,
                                       text(bindings[at]),
@@ -148,7 +210,7 @@ struct DemoProfile::Impl {
     static ayni_status_t requirements(void *ctx, ayni_bytes_v1,
                                       const ayni_goal_requirement_sink_v1 *sink) {
         const auto &self = *static_cast<Impl *>(ctx);
-        for (uint32_t at = 0; at < offer_count; ++at) {
+        for (uint32_t at = 0; at < legacy_offer_count; ++at) {
             const ayni_goal_requirement_v1 req{
                 sizeof(req), 1, self.offers[at].capabilities->capability_id,
                 at == present_index ? empty_scope() : self.model_scope};
@@ -227,7 +289,19 @@ struct DemoProfile::Impl {
         type.export_requirements = requirements;
         type.tool_count = 1;
         type.tools = &tool;
-        return ayni_register_goal_type(kernel, &type);
+        status = ayni_register_goal_type(kernel, &type);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        applications::assistant::PolicyConfig assistant_config;
+        assistant_config.model_scope = model_scope;
+        assistant_config.model_capability = offers[summary_index].capabilities->capability_id;
+        assistant_config.present_capability = offers[notify_index].capabilities->capability_id;
+        assistant_config.health_capability = offers[health_index].capabilities->capability_id;
+        assistant_config.observe_capability = offers[observe_index].capabilities->capability_id;
+        assistant_config.clock_context = ports.clock.context;
+        assistant_config.utc_now = ports.clock.utc_now;
+        return assistant_goals.register_all(kernel, assistant_config);
     }
     // The schema is typed and bounded. Per-record operands are built by Core's public helpers;
     // this composition root supplies only the configured external destination domain.
@@ -276,7 +350,8 @@ struct DemoProfile::Impl {
                 return status;
             }
         }
-        for (const auto id : {"model.slot", "presentation.slot"}) {
+        for (const auto id : {"model.slot", "presentation.slot", "notification.slot",
+                              "notification.window", "device.slot", "camera.slot"}) {
             const ayni_resource_desc_v1 resource{
                 sizeof(resource), AYNI_RESOURCE_SHARED, text(id), 1, 0, 0, 0, nullptr, {}};
             status = ayni_register_resource(kernel, &resource);
@@ -293,13 +368,32 @@ struct DemoProfile::Impl {
                 return status;
             }
         }
+        ayni_observation_source_v1 source{};
+        status = camera.describe_source(source);
+        if (status == AYNI_OK) {
+            status = ayni_register_observation_source(kernel, &source);
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+        status = update_window();
+        if (status != AYNI_OK) {
+            return status;
+        }
         status = register_memory(kernel);
         return status == AYNI_OK ? register_policies(kernel) : status;
     }
 };
 DemoProfile::DemoProfile() = default;
-DemoProfile::~DemoProfile() = default;
-ayni_status_t DemoProfile::assemble(ayni_kernel_t *kernel, const ModelConfig &config) {
+DemoProfile::~DemoProfile() {
+    // A retained producer also borrows policies/clock/window contexts in this Impl.
+    // Keep the entire composition alive if the caller skipped successful drain.
+    if (impl_ && close() != AYNI_OK) {
+        static_cast<void>(impl_.release());
+    }
+}
+ayni_status_t DemoProfile::assemble(ayni_kernel_t *kernel, const ModelConfig &config,
+                                    AssistantPorts ports) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
@@ -307,12 +401,32 @@ ayni_status_t DemoProfile::assemble(ayni_kernel_t *kernel, const ModelConfig &co
     if (!impl_) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    const auto status = impl_->configure(config);
+    impl_->owner_kernel = kernel;
+    impl_->ports = std::move(ports);
+    auto status = impl_->configure_assistant();
+    if (status != AYNI_OK) {
+        return status;
+    }
+    status = impl_->configure(config);
     return status == AYNI_OK ? impl_->register_all(kernel) : status;
 }
 ayni_status_t DemoProfile::advance() {
     if (!impl_) {
         return AYNI_INVALID_STATE;
+    }
+    ayni_lifecycle_t lifecycle = 0;
+    auto advanced = ayni_get_lifecycle(impl_->owner_kernel, &lifecycle);
+    if (advanced == AYNI_OK && lifecycle == AYNI_LIFECYCLE_RUNNING) {
+        advanced = impl_->update_window();
+    }
+    if (advanced == AYNI_OK) {
+        advanced = impl_->presenter.advance();
+    }
+    if (advanced == AYNI_OK) {
+        advanced = impl_->camera.advance();
+    }
+    if (advanced != AYNI_OK) {
+        return advanced;
     }
     for (auto &provider : impl_->mocks) {
         if (provider.pending()) {
@@ -335,6 +449,9 @@ ayni_status_t DemoProfile::close() {
     if (impl_->remote.pending() || impl_->summary.pending()) {
         return AYNI_BUSY;
     }
+    if (impl_->presenter.pending() || impl_->camera.pending()) {
+        return AYNI_BUSY;
+    }
     for (const auto &provider : impl_->mocks) {
         if (provider.pending()) {
             return AYNI_BUSY;
@@ -346,6 +463,10 @@ ayni_status_t DemoProfile::close() {
 ayni_status_t DemoProfile::quiesce() {
     if (!impl_) {
         return AYNI_OK;
+    }
+    const auto presented = impl_->presenter.quiesce();
+    if (presented != AYNI_OK) {
+        return presented;
     }
     if (impl_->model == Model::remote) {
         for (auto *provider : {&impl_->remote, &impl_->summary}) {
@@ -364,6 +485,9 @@ ayni_string_v1 DemoProfile::capability(const std::string &alias) const {
     const auto at = alias == "model"     ? model_index
                     : alias == "summary" ? summary_index
                     : alias == "present" ? present_index
+                    : alias == "notify"  ? notify_index
+                    : alias == "health"  ? health_index
+                    : alias == "observe" ? observe_index
                                          : offer_count;
     return at < offer_count && impl_->offers[at].capabilities
                ? impl_->offers[at].capabilities->capability_id

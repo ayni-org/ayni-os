@@ -114,5 +114,5 @@ E3 步骤 6（真实外部模型 API）不属于 M1 确定性夹具，M2 以脱�
 | `E4.S6.rollback_unreadable_state` | 新格式已写入新动作、Task 调用计数与删除后回滚到模拟旧固件 | 旧固件进入安全诊断，不回到旧快照执行；动作不重复、消费不回退、删除不复活 | C-VER-020、C-VER-022、C-STORE-004 |
 | `E4.S6.compat_matrix_matches` | 按升级清单的兼容矩阵逐项运行 | 实际行为与矩阵一致 | C-VER-031 |
 | `E4.S7.queued_not_presented_restart` | 通知已入列、未呈现时重启 | 保持待呈现 | C-PROD-010、C-PROD-013 |
-| `E4.S7.present_success_commits_with_task` | 呈现器返回成功 | `notify.present` 的成功结果与 Task 完成同批提交，无需用户 ACK | C-PROD-011、C-PROD-015、C-PROD-017 |
+| `E4.S7.present_success_commits_with_task` | 呈现器返回成功 | `notify.present` 的成功结果先持久，随后按原步骤完成 Task，无需用户 ACK | C-PROD-011、C-PROD-015、C-PROD-017 |
 | `E4.S7.present_unknown_pending` | 呈现器返回未知，随后回执重复 | 按 `RESULT_UNKNOWN` 待处理；重复回执不重复终结 | C-PROD-013 |

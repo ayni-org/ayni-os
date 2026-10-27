@@ -58,8 +58,7 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                  state.outcome,
                  state.status,
                  state.reason,
-                 action == nullptr ? AYNI_CALL_EFFECT_NONE
-                                   : static_cast<ayni_call_effect_t>(action->effect),
+                 static_cast<ayni_call_effect_t>(calls.effect(index)),
                  state.cancel_cause == ayni::work::CallCancelCause::none ? 0U : 1U,
                  state.cancel_result,
                  calls.input(index).size,

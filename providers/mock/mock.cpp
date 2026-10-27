@@ -91,19 +91,24 @@ struct Provider::Impl {
     void build_descriptor() {
         const bool tools = config.service == Service::tools;
         const bool model = config.service == Service::text || tools;
+        const bool health = config.service == Service::health;
         const bool a = config.variant == Variant::a;
-        resource = {text(model ? "model.slot" : "presentation.slot"), 1, 0};
+        resource = {text(model    ? "model.slot"
+                         : health ? "device.slot"
+                                  : "presentation.slot"),
+                    1, 0};
         capability = {};
         capability.struct_size = sizeof(capability);
         capability.version = contract_version;
-        capability.capability_id = text(tools   ? "mock.tools"
-                                        : model ? "mock.text"
-                                                : "mock.present");
+        capability.capability_id = text(tools    ? "mock.tools"
+                                        : model  ? "mock.text"
+                                        : health ? "mock.health"
+                                                 : "mock.present");
         capability.contract = {sizeof(capability.contract),
-                               model ? AYNI_CALL_UNARY : AYNI_CALL_ACTION,
+                               model || health ? AYNI_CALL_UNARY : AYNI_CALL_ACTION,
                                model ? AYNI_CALL_MODEL : AYNI_CALL_TOOL,
                                0,
-                               model ? AYNI_CALL_IDEMPOTENT : AYNI_CALL_NOT_IDEMPOTENT,
+                               model || health ? AYNI_CALL_IDEMPOTENT : AYNI_CALL_NOT_IDEMPOTENT,
                                AYNI_CALL_QUERY_NONE,
                                AYNI_CALL_CANCEL_REQUEST,
                                0,
@@ -117,12 +122,14 @@ struct Provider::Impl {
                                nullptr};
         descriptor = {sizeof(descriptor),
                       contract_version,
-                      text(tools   ? (a ? "mock.a.tools" : "mock.b.tools")
-                           : model ? (a ? "mock.a.text" : "mock.b.text")
-                                   : (a ? "mock.a.present" : "mock.b.present")),
-                      text(tools   ? (a ? "mock.a.planner" : "mock.b.planner")
-                           : model ? (a ? "mock.a.model" : "mock.b.model")
-                                   : (a ? "mock.a.output" : "mock.b.output")),
+                      text(tools    ? (a ? "mock.a.tools" : "mock.b.tools")
+                           : model  ? (a ? "mock.a.text" : "mock.b.text")
+                           : health ? "mock.health"
+                                    : (a ? "mock.a.present" : "mock.b.present")),
+                      text(tools    ? (a ? "mock.a.planner" : "mock.b.planner")
+                           : model  ? (a ? "mock.a.model" : "mock.b.model")
+                           : health ? "mock.device"
+                                    : (a ? "mock.a.output" : "mock.b.output")),
                       {},
                       this,
                       1,
@@ -381,7 +388,7 @@ ayni_status_t Provider::configure(Config config) {
     }
     if ((config.variant != Variant::a && config.variant != Variant::b) ||
         (config.service != Service::text && config.service != Service::action &&
-         config.service != Service::tools) ||
+         config.service != Service::tools && config.service != Service::health) ||
         config.request_capacity == 0 || config.request_capacity > request_capacity_max ||
         config.text_max_bytes == 0 ||
         config.text_max_bytes > (config.reply_text.size ? fixture_input_max : text_bytes_max) ||

@@ -99,3 +99,5 @@
 | [0064](0064-work-persistent-stores.md) | Agent、Goal 与 Task 的持久存储属主 | 已接受 | P5、F04 |
 
 | [0065](0065-persistent-pause-groups.md) | 通用持久暂停组 | 已接受 | P5、MA-019 |
+
+| [0066](0066-assistant-application-and-presentation.md) | 统一助理应用、四类目标与异步通知呈现 | 已接受 | §5.4、§9.1、§14.1 |

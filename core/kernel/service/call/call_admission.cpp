@@ -189,6 +189,8 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             state.reason,
             calls.result(index),
             work::tool_call_count(calls.tool_calls(index)),
+            0,
+            static_cast<uint32_t>(calls.effect(index)),
             0};
     return AYNI_OK;
 }

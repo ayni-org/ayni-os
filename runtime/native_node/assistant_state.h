@@ -36,7 +36,8 @@ struct Assistant::Impl {
     uint64_t rule_goal = 0;
     bool opened = false;
     bool shutting_down = false;
-    ayni_status_t start(const std::string &, const ModelConfig &);
+    ayni_status_t start(const std::string &, const ModelConfig &, providers::presentation::Output,
+                        applications::assistant::QuietHours);
     ayni_status_t pump(std::vector<Notice> &);
     ayni_status_t collect(std::vector<Notice> &);
     ayni_status_t context_info(ayni_context_info_v1 &) const;
@@ -53,6 +54,7 @@ struct Assistant::Impl {
     bool idle() const;
     Reply submit(ayni_intent_kind_t kind, const void *body, uint32_t revision = 0);
     Reply say(const Command &);
+    Reply application_goal(const Command &);
     Reply manage(const Command &);
     Reply memory(const Command &);
     Reply describe(const Command &) const;

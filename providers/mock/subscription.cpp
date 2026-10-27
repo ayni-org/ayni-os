@@ -215,16 +215,19 @@ struct SubscriptionProvider::Impl {
         }
         // Pending frames retain their original capture/TTL while FIFO backpressure lasts.
         const auto captured = slot.frame->captured_at_us;
-        const ayni_observation_v1 sample{sizeof(sample),
-                                         slot.opening.source_version,
-                                         text("mock.camera"),
-                                         slot.opening.subscription.generation,
-                                         slot.sequence,
-                                         captured,
-                                         config.sample_ttl_us,
-                                         AYNI_OBSERVATION_GOOD,
-                                         0,
-                                         1};
+        const ayni_observation_v1 sample{
+            sizeof(sample),
+            slot.opening.source_version,
+            text("mock.camera"),
+            slot.opening.subscription.generation,
+            slot.sequence,
+            captured,
+            config.sample_ttl_us,
+            AYNI_OBSERVATION_GOOD,
+            0,
+            config.change_every_frames == 0
+                ? 1
+                : static_cast<int64_t>((slot.sequence / config.change_every_frames) % 2)};
         const ayni_subscription_observation_v1 post{sizeof(post), 0, slot.opening.subscription,
                                                     sample, &slot.frame->reference};
         const auto status = ayni_subscription_post_observation(slot.opening.sink, &post);

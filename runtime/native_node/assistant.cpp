@@ -6,10 +6,13 @@
 #include <unistd.h>
 namespace ayni::runtime {
 namespace {
-using Clock = std::chrono::steady_clock;
+using SteadyClock = std::chrono::steady_clock;
 constexpr auto boot_timeout = std::chrono::seconds(10);
 constexpr uint32_t step_units = 64;
 constexpr uint64_t step_us = 10000;
+ayni_status_t unavailable_channel(void *, ayni_string_v1) {
+    return AYNI_UNSUPPORTED;
+}
 ayni_status_t private_directory(const std::string &path) {
     std::error_code error;
     const bool made = std::filesystem::create_directories(path, error);
@@ -31,7 +34,9 @@ Assistant::~Assistant() {
         static_cast<void>(impl_.release());
     }
 }
-ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &config) {
+ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &config,
+                              providers::presentation::Output output,
+                              applications::assistant::QuietHours quiet) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
@@ -40,7 +45,7 @@ ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &c
     } catch (const std::bad_alloc &) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    const auto status = impl_->start(directory, config);
+    const auto status = impl_->start(directory, config, output, std::move(quiet));
     if (status != AYNI_OK && impl_->stop() == AYNI_OK) {
         impl_.reset();
     }
@@ -48,7 +53,9 @@ ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &c
 }
 // Check the outer file under the Host lock before boot can write or dispatch anything.
 // Legacy files lack source evidence and require an explicit future migration.
-ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelConfig &config) {
+ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelConfig &config,
+                                     providers::presentation::Output output,
+                                     applications::assistant::QuietHours quiet) {
     auto status = private_directory(directory);
     if (status != AYNI_OK) {
         return status;
@@ -61,7 +68,10 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (file_status != AYNI_OK && file_status != AYNI_NOT_FOUND) {
         return file_status;
     }
-    status = profile.assemble(node.kernel(), config);
+    if (!output.write) {
+        output.write = unavailable_channel;
+    }
+    status = profile.assemble(node.kernel(), config, {node.clock(), output, std::move(quiet)});
     if (status != AYNI_OK) {
         return status;
     }
@@ -69,7 +79,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    const auto deadline = Clock::now() + boot_timeout;
+    const auto deadline = SteadyClock::now() + boot_timeout;
     ayni_lifecycle_t lifecycle = AYNI_LIFECYCLE_RECOVERING;
     while (lifecycle == AYNI_LIFECYCLE_RECOVERING) {
         ayni_step_report_v1 report{};
@@ -82,7 +92,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
         if (status != AYNI_OK) {
             return status;
         }
-        if (Clock::now() > deadline) {
+        if (SteadyClock::now() > deadline) {
             return AYNI_BUSY;
         }
         if (!report.more_ready) {
@@ -114,7 +124,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
         if (status != AYNI_OK) {
             return status;
         }
-        if (Clock::now() > deadline) {
+        if (SteadyClock::now() > deadline) {
             return AYNI_BUSY;
         }
         node.wait_for_wake(std::chrono::milliseconds(2));
@@ -138,7 +148,9 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
         if (status != AYNI_OK) {
             return status;
         }
-        if (goal.owner_instance_id == instance(demo_agent_a) &&
+        if (goal.goal_type_id_size == std::strlen("rule.check") &&
+            std::memcmp(goal.goal_type_id, "rule.check", goal.goal_type_id_size) == 0 &&
+            goal.owner_instance_id == instance(demo_agent_a) &&
             (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
              goal.lifecycle == AYNI_GOAL_PAUSED)) {
             if (rule_goal) {
@@ -265,8 +277,22 @@ bool Assistant::Impl::idle() const {
         if (ayni_get_task(node.kernel(), id, &task) != AYNI_OK) {
             return false;
         }
+        bool deferred_notification = false;
+        if (task.logical_call_id) {
+            ayni_call_info_v1 call{};
+            call.struct_size = sizeof(call);
+            ayni_goal_info_v1 goal{};
+            goal.struct_size = sizeof(goal);
+            if (ayni_get_call(node.kernel(), task.logical_call_id, &call) != AYNI_OK ||
+                ayni_get_goal(node.kernel(), task.goal_id, &goal) != AYNI_OK) {
+                return false;
+            }
+            deferred_notification =
+                call.wait_reason == AYNI_CALL_WAIT_OFFLINE &&
+                std::string(goal.goal_type_id, goal.goal_type_id_size) == "assistant.reminder";
+        }
         if (task.commit_seq > info.durable_seq || task.lifecycle == AYNI_TASK_READY ||
-            task.lifecycle == AYNI_TASK_RUNNING || task.lifecycle == AYNI_TASK_WAITING ||
+            (task.lifecycle == AYNI_TASK_RUNNING && !deferred_notification) ||
             task.lifecycle == AYNI_TASK_CANCELLING) {
             return false;
         }
@@ -285,8 +311,14 @@ bool Assistant::Impl::idle() const {
         if (ayni_get_goal(node.kernel(), id, &goal) != AYNI_OK) {
             return false;
         }
+        const auto clock = node.clock();
+        const bool due_now = clock.now_us && goal.next_due_us != UINT64_MAX &&
+                             goal.next_due_us <= clock.now_us(clock.context);
+        // Future reminders/periods and subscription waits are retained work,
+        // not a reason for /wait to block. A due first occurrence still is.
         if (goal.commit_seq > info.durable_seq ||
-            (goal.lifecycle == AYNI_GOAL_ACTIVE && !goal.last_task_id)) {
+            (goal.lifecycle == AYNI_GOAL_ACTIVE && !goal.group_paused && !goal.last_task_id &&
+             (due_now || goal.goal_id == current.pending_goal || goal.goal_id == rule_goal))) {
             return false;
         }
         if ((goal.goal_id == current.pending_goal || goal.goal_id == rule_goal) &&
@@ -308,7 +340,7 @@ ayni_status_t Assistant::Impl::stop() {
         return status;
     }
     std::vector<Notice> ignored;
-    const auto deadline = Clock::now() + boot_timeout;
+    const auto deadline = SteadyClock::now() + boot_timeout;
     while (opened && state == AYNI_LIFECYCLE_RUNNING) {
         ayni_context_info_v1 context{};
         status = context_info(context);
@@ -320,7 +352,7 @@ ayni_status_t Assistant::Impl::stop() {
             break;
         }
         status = pump(ignored);
-        if (status != AYNI_OK || Clock::now() > deadline) {
+        if (status != AYNI_OK || SteadyClock::now() > deadline) {
             return status != AYNI_OK ? status : AYNI_BUSY;
         }
         node.wait_for_wake(std::chrono::milliseconds(2));
@@ -340,7 +372,7 @@ ayni_status_t Assistant::Impl::stop() {
             if (status != AYNI_OK) {
                 return status;
             }
-            if (Clock::now() > deadline) {
+            if (SteadyClock::now() > deadline) {
                 return AYNI_BUSY;
             }
             node.wait_for_wake(std::chrono::milliseconds(2));
@@ -356,7 +388,7 @@ ayni_status_t Assistant::Impl::stop() {
             current = saving->candidate;
             saving.reset();
         }
-        if (Clock::now() > deadline) {
+        if (SteadyClock::now() > deadline) {
             return AYNI_BUSY;
         }
         node.wait_for_wake(std::chrono::milliseconds(2));
@@ -370,7 +402,7 @@ ayni_status_t Assistant::Impl::stop() {
         if (status != AYNI_BUSY) {
             break;
         }
-        if (Clock::now() > deadline) {
+        if (SteadyClock::now() > deadline) {
             return AYNI_BUSY;
         }
         node.wait_for_wake(std::chrono::milliseconds(2));

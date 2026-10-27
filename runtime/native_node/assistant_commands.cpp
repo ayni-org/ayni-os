@@ -71,7 +71,12 @@ ayni_status_t Assistant::Impl::collect_receipts() {
     }
     return AYNI_OK;
 }
-Reply Assistant::Impl::say(const Command &command) {
+Reply Assistant::Impl::say(const Command &request) {
+    Command command = request;
+    if (!command.agent) {
+        command.agent =
+            applications::assistant::route(request.text, demo_agent_a, demo_agent_b, command.text);
+    }
     if (command.agent != demo_agent_a && command.agent != demo_agent_b) {
         return failure(AYNI_INVALID_ARGUMENT);
     }
@@ -138,6 +143,7 @@ Reply Assistant::Impl::approve(uint64_t id, Operation operation) {
     original.struct_size = sizeof(original);
     original.owner_instance_id = info.owner_instance_id;
     original.parent_goal_id = info.parent_goal_id;
+    original.pause_group = info.pause_group;
     original.goal_type_id = {info.goal_type_id, info.goal_type_id_size};
     original.goal_type_version = info.goal_type_version;
     original.parameters = parameters.view();
@@ -199,6 +205,25 @@ Reply Assistant::Impl::manage(const Command &command) {
         return memory(command);
     case Operation::say:
         return say(command);
+    case Operation::remind:
+    case Operation::device_check:
+    case Operation::memory_organize:
+    case Operation::scene_observe:
+        return application_goal(command);
+    case Operation::pause_assistant:
+    case Operation::resume_assistant: {
+        ayni_pause_group_info_v1 info{};
+        info.struct_size = sizeof(info);
+        const auto status =
+            ayni_get_pause_group(node.kernel(), applications::assistant::autonomous_group, &info);
+        if (status != AYNI_OK) {
+            return failure(status);
+        }
+        const ayni_pause_group_set_v1 body{
+            sizeof(body), applications::assistant::autonomous_group,
+            command.operation == Operation::pause_assistant ? 1U : 0U, 0};
+        return submit(AYNI_INTENT_PAUSE_GROUP_SET, &body, info.revision);
+    }
     case Operation::grant: {
         const auto cap = profile.capability(command.text);
         if (!cap.size || (command.agent != demo_agent_a && command.agent != demo_agent_b)) {
@@ -274,7 +299,7 @@ Reply Assistant::Impl::manage(const Command &command) {
 // language and formatting; no presentation text or private Core pointers escape.
 Reply Assistant::Impl::describe(const Command &command) const {
     Reply reply;
-    if (command.operation == Operation::status) {
+    if (command.operation == Operation::status || command.operation == Operation::diagnostics) {
         reply.kernel.struct_size = sizeof(reply.kernel);
         reply.status = ayni_get_kernel_info(node.kernel(), &reply.kernel);
         reply.privacy.struct_size = sizeof(reply.privacy);
@@ -289,6 +314,36 @@ Reply Assistant::Impl::describe(const Command &command) const {
         reply.storage_status = storage_status;
         reply.saving = saving.has_value();
         reply.pending_commands = pending_count;
+        if (reply.status == AYNI_OK) {
+            reply.status = applications::assistant::project(node.kernel(), reply.activity);
+        }
+    } else if (command.operation == Operation::notifications) {
+        std::vector<uint64_t> objects;
+        reply.status = ids(AYNI_OBJECT_CALL, objects);
+        for (const auto id : objects) {
+            if (reply.status != AYNI_OK) {
+                break;
+            }
+            ayni_call_info_v1 call{};
+            call.struct_size = sizeof(call);
+            reply.status = ayni_get_call(node.kernel(), id, &call);
+            if (reply.status != AYNI_OK) {
+                break;
+            }
+            ayni_task_info_v1 task{};
+            task.struct_size = sizeof(task);
+            reply.status = ayni_get_task(node.kernel(), call.task_id, &task);
+            if (reply.status != AYNI_OK) {
+                break;
+            }
+            ayni_goal_info_v1 goal{};
+            goal.struct_size = sizeof(goal);
+            reply.status = ayni_get_goal(node.kernel(), task.goal_id, &goal);
+            if (reply.status == AYNI_OK &&
+                std::string(goal.goal_type_id, goal.goal_type_id_size) == "assistant.reminder") {
+                reply.presentations.push_back(applications::assistant::presentation(call));
+            }
+        }
     } else if (command.operation == Operation::conversation) {
         ayni_context_info_v1 context{};
         reply.status = context_info(context);
@@ -360,6 +415,8 @@ Reply Assistant::execute(const Command &command) {
     try {
         switch (command.operation) {
         case Operation::status:
+        case Operation::diagnostics:
+        case Operation::notifications:
         case Operation::goals:
         case Operation::tasks:
         case Operation::calls:
