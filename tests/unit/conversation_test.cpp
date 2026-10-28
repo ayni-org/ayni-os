@@ -156,21 +156,28 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     }
     EXPECT_EQ(requests[0], requests[1]);
     EXPECT_EQ(checkpoints[0].bytes, checkpoints[1].bytes);
-    EXPECT_NE(requests[0].find("dialog.summary.v1"), std::string::npos);
+    // The summary request frames its instructions apart from the conversation data (ADR-0074).
+    EXPECT_EQ(requests[0].rfind("dialog.summary.v1" AYNI_MODEL_INSTRUCTIONS_PREFIX, 0), 0U);
     std::cout << "ConversationRecord=" << sizeof(ConversationRecord)
               << " ToolLoop=" << sizeof(ToolLoop) << " max_turn_encoding=" << parameters.size
               << " bytes\n";
 }
-// ADR-0073: the model request states the local date, weekday and zone, so the model resolves
-// relative dates itself; an untrusted clock is marked, and a missing one states "unknown".
-TEST(BuiltinLoop, model_request_states_the_local_time) {
+// ADR-0073/0074: the instructions of the model request state the local date, weekday and zone,
+// so the model resolves relative dates itself, apart from the conversation data. An untrusted
+// clock is marked, an unusable one states "unknown", and the same sample gives the same bytes.
+TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
     struct FakeClock {
         ayni_utc_sample_v1 sample{sizeof(ayni_utc_sample_v1), AYNI_UTC_TRUSTED, 1793149500};
         static void now(void *context, ayni_utc_sample_v1 *out) {
             *out = static_cast<FakeClock *>(context)->sample; // 2026-10-28T01:05:00Z
         }
     } clock;
-    const auto request = [&](const char *zone) {
+    struct Body {
+        std::string instructions;
+        std::string data;
+        std::string bytes;
+    };
+    const auto request = [&](const char *zone, bool port = true) {
         ToolLoop loop;
         ToolLoopConfig config;
         config.identity.id = text("loop");
@@ -180,7 +187,7 @@ TEST(BuiltinLoop, model_request_states_the_local_time) {
                         {sizeof(ayni_scope_v1), 0, nullptr},
                         text("prefix")};
         config.summary = config.model;
-        config.clock = {&clock, FakeClock::now, text(zone)};
+        config.clock = {&clock, port ? FakeClock::now : nullptr, text(zone)};
         EXPECT_EQ(loop.configure(config), AYNI_OK);
         Encoded parameters;
         EXPECT_EQ(Conversation::begin(empty(), text("明天提醒我"), parameters), AYNI_OK);
@@ -192,32 +199,45 @@ TEST(BuiltinLoop, model_request_states_the_local_time) {
             return AYNI_NOT_FOUND;
         };
         Encoded checkpoint;
-        std::string sent;
+        Body body;
         ayni_policy_output_v1 output{};
         output.struct_size = sizeof(output);
         output.checkpoint = checkpoint.bytes.data();
         output.checkpoint_capacity = state_bytes_max;
-        output.call_context = &sent;
+        output.call_context = &body.bytes;
         output.request_call = [](void *ctx, const ayni_call_request_v1 *r) {
             *static_cast<std::string *>(ctx) = std::string(r->text.data, r->text.size);
             return AYNI_OK;
         };
         auto descriptor = loop.describe();
         EXPECT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_OK);
-        return sent;
+        const std::string prefix = AYNI_MODEL_INSTRUCTIONS_PREFIX;
+        EXPECT_EQ(body.bytes.rfind(prefix, 0), 0U) << body.bytes;
+        const auto newline = body.bytes.find('\n');
+        const auto size = std::stoul(body.bytes.substr(prefix.size(), newline - prefix.size()));
+        body.instructions = body.bytes.substr(newline + 1, size);
+        body.data = body.bytes.substr(newline + 1 + size);
+        return body;
     };
-    EXPECT_EQ(request("CST-8").rfind("prefix\nCurrent local time: 2026-10-28 09:05, Wednesday, "
-                                     "time zone CST-8.",
-                                     0),
-              0U);
-    EXPECT_NE(
-        request("EST5").find("Current local time: 2026-10-27 20:05, Tuesday, time zone EST5."),
-        std::string::npos);
+    const auto shanghai = request("CST-8");
+    EXPECT_EQ(shanghai.instructions, "prefix\nCurrent local time: 2026-10-28 09:05, Wednesday.\n"
+                                     "Time zone: CST-8");
+    EXPECT_EQ(shanghai.data, "\nCurrent user:\n明天提醒我");
+    EXPECT_EQ(request("CST-8").bytes, shanghai.bytes);
+    EXPECT_EQ(request("EST5").instructions,
+              "prefix\nCurrent local time: 2026-10-27 20:05, Tuesday.\nTime zone: EST5");
+    EXPECT_EQ(request("").instructions, "prefix\nCurrent local time: unknown.");
+    EXPECT_EQ(request("CST-8", false).instructions,
+              "prefix\nCurrent local time: unknown.\nTime zone: CST-8");
     clock.sample.trust = AYNI_UTC_UNTRUSTED;
-    EXPECT_NE(request("CST-8").find("Wednesday, time zone CST-8 (device clock not synchronized)."),
-              std::string::npos);
-    clock.sample.trust = AYNI_UTC_UNAVAILABLE;
-    EXPECT_NE(request("CST-8").find("Current local time: unknown."), std::string::npos);
+    EXPECT_EQ(request("CST-8").instructions,
+              "prefix\nCurrent local time: 2026-10-28 09:05, Wednesday (device clock not "
+              "synchronized).\nTime zone: CST-8");
+    for (const auto trust : {AYNI_UTC_UNAVAILABLE, static_cast<ayni_utc_trust_t>(3)}) {
+        clock.sample.trust = trust;
+        EXPECT_EQ(request("CST-8").instructions,
+                  "prefix\nCurrent local time: unknown.\nTime zone: CST-8");
+    }
     ToolLoop loop;
     ToolLoopConfig config;
     config.identity.id = text("loop");

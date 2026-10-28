@@ -7,6 +7,7 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <string_view>
 namespace ayni::cli {
 namespace {
 constexpr size_t config_bytes_max = 16384;
@@ -26,21 +27,24 @@ bool posix_timezone(const std::string &zone) {
 // the file is missing, older or ends without one.
 std::string tzif_rule(const std::string &path) {
     constexpr size_t tzif_bytes_max = 65536;
+    constexpr std::string_view magic = "TZif";
     std::ifstream file(path, std::ios::binary);
     std::string bytes(tzif_bytes_max, '\0');
     file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     bytes.resize(static_cast<size_t>(file.gcount()));
-    if (bytes.size() < 2 || bytes.compare(0, 4, "TZif") != 0 || bytes.back() != '\n') {
+    if (bytes.compare(0, magic.size(), magic) != 0 || bytes.back() != '\n') {
         return {};
     }
-    const auto start = bytes.rfind('\n', bytes.size() - 2);
-    const auto rule = start == std::string::npos
-                          ? std::string()
-                          : bytes.substr(start + 1, bytes.size() - start - 2);
+    const auto last = bytes.size() - 1; // The footer's closing newline.
+    const auto start = bytes.rfind('\n', last - 1);
+    const auto rule =
+        start == std::string::npos ? std::string() : bytes.substr(start + 1, last - start - 1);
     return posix_timezone(rule) ? rule : std::string();
 }
-// The machine's zone as a POSIX rule (ADR-0073), found as the C library does: TZ holding a rule,
-// else TZ naming a zone file (absolute, or under /usr/share/zoneinfo), else /etc/localtime.
+// The machine's zone as a POSIX rule (ADR-0073): TZ if it is a whole rule, else TZ without a
+// leading ':' as a zone file (absolute, or under /usr/share/zoneinfo), or /etc/localtime when
+// TZ is unset or empty. Unlike glibc, a rule wins over a file of the same name, an empty TZ is
+// not UTC, and TZDIR is not read.
 std::string system_timezone() {
     std::string zone = environment("TZ");
     if (posix_timezone(zone)) {

@@ -591,9 +591,17 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     ASSERT_EQ(turn.status, AYNI_OK);
     settle();
     ASSERT_EQ(server.requests(), 2U);
-    // ADR-0073: the request states the local time in the configured zone.
-    EXPECT_NE(server.history()[0].find("Current local time: "), std::string::npos);
-    EXPECT_NE(server.history()[0].find("time zone CST-8"), std::string::npos);
+    // ADR-0073/0074: the system message holds the instructions and the local time in the
+    // configured zone; the conversation alone is the user message.
+    const auto first = server.history()[0];
+    EXPECT_NE(first.find(
+                  R"("messages":[{"role":"system","content":"You are the owner's home assistant.)"),
+              std::string::npos);
+    EXPECT_NE(first.find("Current local time: "), std::string::npos);
+    EXPECT_NE(
+        first.find(
+            R"(\u000aTime zone: CST-8"},{"role":"user","content":"\u000aCurrent user:\u000a明早九点提醒我喝水"}])"),
+        std::string::npos);
     EXPECT_NE(server.history()[1].find("registered goal"), std::string::npos);
     EXPECT_NE(server.history()[1].find("waiting for owner approval"), std::string::npos);
     const auto goals = run(Operation::goals).goals;

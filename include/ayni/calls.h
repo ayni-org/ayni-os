@@ -56,6 +56,14 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_CALL_CANCEL_CONFIRMED ((ayni_call_cancel_mode_t)3)
 /* Complete singleton authority fields followed by UTF-8 text. Since 0.31. */
 #define AYNI_CALL_INPUT_FIELDS_TEXT 1u
+/* A MODEL body may keep the strategy's instructions apart from the data it
+ * passes on: this prefix, the instructions' byte count in decimal without
+ * leading zeros, a newline, the instructions, then the data. Core never reads
+ * it. A model Provider with message roles sends the instructions as the system
+ * message and the data as the user message. A body without the prefix is all
+ * data, so a strategy never starts a body with untrusted text. Body convention
+ * only, no layout change; Since 0.45 (ADR-0074). */
+#define AYNI_MODEL_INSTRUCTIONS_PREFIX "ayni-instructions:"
 /* Bounded UTF-8 text, including empty text. Since 0.31. */
 #define AYNI_CALL_RESULT_TEXT 1u
 /* Final UTF-8 text, or a list of typed tool calls for the strategy. MODEL

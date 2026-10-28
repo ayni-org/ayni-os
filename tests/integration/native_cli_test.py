@@ -151,7 +151,6 @@ class NativeCli(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertNotIn('do-not-print-this-fixture', result.stdout + result.stderr)
 
-
     def test_timezone_configuration_takes_only_a_posix_rule(self):
         # ADR-0073: the zone stated to the model must be a whole POSIX rule, never a zone name.
         with tempfile.TemporaryDirectory() as directory:

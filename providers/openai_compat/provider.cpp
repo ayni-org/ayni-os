@@ -401,9 +401,11 @@ struct Provider::Impl {
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;
         }
-        if (!protocol.encode(config, {slot.input.get(), slot.input_size}, slot.tools.data(),
-                             slot.tool_count, slot.request.get(), slot.request_size)) {
-            slot.answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE);
+        const auto encoded =
+            protocol.encode(config, {slot.input.get(), slot.input_size}, slot.tools.data(),
+                            slot.tool_count, slot.request.get(), slot.request_size);
+        if (encoded != AYNI_OK) {
+            slot.answer.fail(encoded, AYNI_REASON_NONE);
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;
         }

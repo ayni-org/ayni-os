@@ -35,8 +35,9 @@ struct Answer {
 class Protocol {
   public:
     explicit Protocol(size_t response_limit);
-    bool encode(const Config &config, ayni_string_v1 input, const Tool *tools, uint32_t tool_count,
-                char *buffer, size_t &size) const;
+    // INVALID_ARGUMENT for a malformed instructions frame, CAPACITY_EXCEEDED past the JSON limit.
+    ayni_status_t encode(const Config &config, ayni_string_v1 input, const Tool *tools,
+                         uint32_t tool_count, char *buffer, size_t &size) const;
     void decode(char *buffer, size_t size, const Tool *tools, uint32_t tool_count,
                 uint32_t result_limit, Answer &answer);
 

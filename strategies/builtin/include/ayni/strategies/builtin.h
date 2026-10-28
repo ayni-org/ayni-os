@@ -120,9 +120,11 @@ class Rules {
 };
 
 // Optional wall clock for model requests (ADR-0073), the one input read outside the snapshot.
-// Each request then states the local date, weekday and time in timezone, so the model resolves
-// relative dates itself, marking an untrusted sample as unsynchronized; without any sample or a
-// zone it states that the time is unknown.
+// The instructions of each main model request then state the local date, weekday and time in
+// timezone, and the zone itself, so the model resolves relative dates; an untrusted sample is
+// marked unsynchronized, and without a usable sample or a zone the time is stated as unknown.
+// With neither port nor zone nothing is stated. The time changes only that request's text: the
+// intent, step key and checkpoint never depend on it (C-POLICY-006).
 // utc_now must not block. timezone is a POSIX TZ rule, borrowed like the rest of the config.
 struct LocalClock {
     void *context = nullptr;
@@ -130,7 +132,8 @@ struct LocalClock {
     ayni_string_v1 timezone{};
 };
 // Both calls are MODEL class; summary binding must have a text result contract.
-// model.text is a trusted instruction prefix. Other user text is in parameters.
+// model.text and summary.text are trusted instructions, framed apart from the conversation data
+// (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
 struct ToolLoopConfig {
     Identity identity;
     Call model;

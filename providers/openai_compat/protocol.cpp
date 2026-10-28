@@ -3,6 +3,7 @@
 #include <cstring>
 #include <limits>
 #include <string_view>
+#include <system_error>
 #include <yyjson.h>
 
 namespace ayni::providers::openai_compat {
@@ -107,6 +108,36 @@ void tool_schema(Writer &out, const Tool &tool, uint32_t index) {
         out.raw(",");
     }
     out.raw("\"text\"]}}}");
+}
+
+// ADR-0074: a framed body states the strategy's instructions apart from its data. Core already
+// checked the whole body as UTF-8, so each part is valid when the split starts a character.
+ayni_status_t split(ayni_string_v1 body, ayni_string_v1 &instructions, ayni_string_v1 &data) {
+    constexpr std::string_view prefix = AYNI_MODEL_INSTRUCTIONS_PREFIX;
+    constexpr unsigned continuation_mask = 0xC0;
+    constexpr unsigned continuation = 0x80;
+    instructions = {};
+    data = body;
+    if (body.size < prefix.size() || std::memcmp(body.data, prefix.data(), prefix.size()) != 0) {
+        return AYNI_OK;
+    }
+    const char *const count_at = body.data + prefix.size();
+    const char *const end = body.data + body.size;
+    uint32_t count = 0;
+    const auto parsed = std::from_chars(count_at, end, count);
+    if (parsed.ec != std::errc{} || (*count_at == '0' && parsed.ptr - count_at > 1) ||
+        parsed.ptr == end || *parsed.ptr != '\n' ||
+        count > static_cast<size_t>(end - parsed.ptr - 1)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const char *const data_at = parsed.ptr + 1 + count;
+    if (data_at != end &&
+        (static_cast<unsigned char>(*data_at) & continuation_mask) == continuation) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    instructions = {parsed.ptr + 1, count};
+    data = {data_at, static_cast<uint32_t>(end - data_at)};
+    return AYNI_OK;
 }
 
 // Check depth before the parser creates a DOM. yyjson remains the syntax/UTF-8
@@ -356,15 +387,27 @@ Protocol::Protocol(size_t response_limit)
     : pool_size_(yyjson_read_max_memory_usage(response_limit, 0)),
       outer_pool_(new char[pool_size_]), arguments_pool_(new char[pool_size_]) {}
 
-bool Protocol::encode(const Config &config, ayni_string_v1 input, const Tool *tools,
-                      uint32_t tool_count, char *buffer, size_t &size) const {
+ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, const Tool *tools,
+                               uint32_t tool_count, char *buffer, size_t &size) const {
+    ayni_string_v1 instructions{};
+    ayni_string_v1 data{};
+    const auto framed = split(input, instructions, data);
+    if (framed != AYNI_OK) {
+        return framed;
+    }
     Writer out(buffer);
     out.raw("{\"model\":");
     out.string(config.model);
     out.raw(",\"max_tokens\":");
     out.number(config.max_output_tokens);
-    out.raw(",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":");
-    out.string(input);
+    out.raw(",\"stream\":false,\"messages\":[");
+    if (instructions.size) {
+        out.raw("{\"role\":\"system\",\"content\":");
+        out.string(instructions);
+        out.raw("},");
+    }
+    out.raw("{\"role\":\"user\",\"content\":");
+    out.string(data);
     out.raw("}]");
     if (tool_count) {
         out.raw(",\"tools\":[");
@@ -377,7 +420,7 @@ bool Protocol::encode(const Config &config, ayni_string_v1 input, const Tool *to
         out.raw("]");
     }
     out.raw("}");
-    return out.finish(size);
+    return out.finish(size) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 
 // Only an explicitly finished singleton choice is business evidence. Protocol

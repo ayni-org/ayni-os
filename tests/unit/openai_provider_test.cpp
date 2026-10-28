@@ -37,7 +37,51 @@ TEST_F(OpenaiProvider, text_completes_through_public_abi_and_declares_remote_eff
     EXPECT_NE(request.find("\"description\":\"second\""), std::string::npos);
     EXPECT_NE(request.find("\"enum\":[\"bright\",\"calm\"]"), std::string::npos);
     EXPECT_NE(request.find("Authorization: Bearer fixture-only-key"), std::string::npos);
+    EXPECT_NE(request.find(R"("messages":[{"role":"user","content":"say hello"}])"),
+              std::string::npos);
 }
+// ADR-0074: framed instructions become the system message, and the data alone the user message.
+TEST_F(OpenaiProvider, framed_instructions_become_the_system_message) {
+    prompt = AYNI_MODEL_INSTRUCTIONS_PREFIX "12\nrules 世界hello";
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(
+        server->request().find(
+            R"("messages":[{"role":"system","content":"rules 世界"},{"role":"user","content":"hello"}])"),
+        std::string::npos);
+}
+TEST_F(OpenaiProvider, empty_framed_instructions_send_only_the_user_message) {
+    prompt = AYNI_MODEL_INSTRUCTIONS_PREFIX "0\nhello";
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(server->request().find(R"("messages":[{"role":"user","content":"hello"}])"),
+              std::string::npos);
+}
+// A malformed frame fails before anything leaves the device.
+class OpenaiFrame : public OpenaiProvider, public ::testing::WithParamInterface<const char *> {};
+TEST_P(OpenaiFrame, malformed_instructions_frame_fails_without_egress) {
+    prompt = GetParam();
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(seen_result.status, AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(server->requests(), 0U);
+}
+INSTANTIATE_TEST_SUITE_P(Frames, OpenaiFrame,
+                         ::testing::Values(AYNI_MODEL_INSTRUCTIONS_PREFIX,
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "x\nhello",
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "+3\nabcd",
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "03\nabcd",
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "3",
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "9\nabc",
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "4294967296\nabc",
+                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "1\n世界"));
 TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
     start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
     create();

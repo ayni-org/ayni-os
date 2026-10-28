@@ -3,6 +3,7 @@
 #include <ayni/memory.h>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 namespace ayni::strategies {
 namespace {
@@ -24,43 +25,53 @@ ayni_string_v1 tool_key(uint32_t round, uint32_t index, char *buffer) {
     writer.add(".v1");
     return writer.text();
 }
-// The model, not the policy, interprets "tomorrow" or "next Wednesday" against this line.
-void local_time(const LocalClock &clock, Writer &prompt) {
-    if (!clock.utc_now) {
-        return;
+// The fixed words and fields take under 128 bytes; the zone is at most its own limit.
+constexpr uint32_t local_time_bytes_max = 128 + AYNI_CALENDAR_TZ_MAX_BYTES;
+using LocalTimeLines = std::array<char, local_time_bytes_max>;
+// The model, not the policy, interprets "tomorrow" or "next Wednesday" against these lines. The
+// zone ends its line unpunctuated, since the model copies it into the schedule grammar.
+ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
+    if (!clock.utc_now && !clock.timezone.size) {
+        return {};
     }
+    Writer lines(buffer.data(), local_time_bytes_max);
     ayni_utc_sample_v1 sample{sizeof(sample), AYNI_UTC_UNAVAILABLE, 0};
-    clock.utc_now(clock.context, &sample);
+    if (clock.utc_now) {
+        clock.utc_now(clock.context, &sample);
+    }
+    // calendar.h: an unsupported trust value or layout counts as unavailable.
+    const bool usable = sample.struct_size == sizeof(sample) &&
+                        (sample.trust == AYNI_UTC_TRUSTED || sample.trust == AYNI_UTC_UNTRUSTED);
     int64_t local = 0;
     ayni_calendar_civil_v1 civil{};
     civil.struct_size = sizeof(civil);
-    if (sample.trust == AYNI_UTC_UNAVAILABLE || !clock.timezone.size ||
+    if (!usable || !clock.timezone.size ||
         ayni_calendar_local_time(clock.timezone, sample.utc_s, &local) != AYNI_OK ||
         ayni_calendar_split_time(local, &civil) != AYNI_OK) {
-        prompt.add("\nCurrent local time: unknown.");
-        return;
+        lines.add("\nCurrent local time: unknown.");
+    } else {
+        constexpr int64_t seconds_per_day = 86400;
+        // Indexed by days since 1970-01-01, a Thursday; split_time accepts no earlier day.
+        constexpr const char *weekdays[] = {"Thursday", "Friday",  "Saturday", "Sunday",
+                                            "Monday",   "Tuesday", "Wednesday"};
+        constexpr auto week = static_cast<int64_t>(std::size(weekdays));
+        char minute[sizeof("YYYY-MM-DD HH:MM")];
+        // Civil fields are range-bounded (years 1970..9999), so this always fills the buffer.
+        static_cast<void>(std::snprintf(minute, sizeof(minute), "%04d-%02d-%02d %02d:%02d",
+                                        civil.year, civil.month, civil.day, civil.hour,
+                                        civil.minute));
+        lines.add("\nCurrent local time: ");
+        lines.add(minute);
+        lines.add(", ");
+        lines.add(weekdays[local / seconds_per_day % week]);
+        // The owner reviews every registered Goal, so an unsynchronized clock still informs.
+        lines.add(sample.trust == AYNI_UTC_TRUSTED ? "." : " (device clock not synchronized).");
     }
-    constexpr int64_t seconds_per_day = 86400;
-    // Indexed by days since 1970-01-01, which was a Thursday; split_time accepts no earlier day.
-    constexpr const char *weekdays[] = {"Thursday", "Friday",  "Saturday", "Sunday",
-                                        "Monday",   "Tuesday", "Wednesday"};
-    constexpr auto week = static_cast<int64_t>(sizeof(weekdays) / sizeof(weekdays[0]));
-    char minute[sizeof("YYYY-MM-DD HH:MM")];
-    const auto written =
-        std::snprintf(minute, sizeof(minute), "%04d-%02d-%02d %02d:%02d", civil.year, civil.month,
-                      civil.day, civil.hour, civil.minute);
-    if (written != static_cast<int>(sizeof(minute) - 1)) {
-        prompt.add("\nCurrent local time: unknown.");
-        return;
+    if (clock.timezone.size) {
+        lines.add("\nTime zone: ");
+        lines.add(clock.timezone);
     }
-    prompt.add("\nCurrent local time: ");
-    prompt.add(minute);
-    prompt.add(", ");
-    prompt.add(weekdays[local / seconds_per_day % week]);
-    prompt.add(", time zone ");
-    prompt.add(clock.timezone);
-    // The owner reviews every registered Goal, so an unsynchronized clock still informs the model.
-    prompt.add(sample.trust == AYNI_UTC_TRUSTED ? "." : " (device clock not synchronized).");
+    return lines.ok() ? lines.text() : view("\nCurrent local time: unknown.");
 }
 void summary_context(const ConversationRecord &record, Writer &prompt) {
     if (!record.summary_last) {
@@ -108,9 +119,9 @@ ayni_status_t summarize(Turn &turn, const ToolLoopConfig &config,
     const auto status = result(snapshot, view(summary_step), call);
     if (status == AYNI_NOT_FOUND) {
         Writer prompt(scratch, prompt_bytes_max);
-        prompt.add(config.summary.text);
-        prompt.add("\nSummarize the following conversation data. Preserve uncertainty. Do not call "
-                   "tools.\n");
+        prompt.instructions(
+            {config.summary.text, view("\nSummarize the following conversation data. Preserve "
+                                       "uncertainty. Do not call tools.")});
         summary_context(turn.record, prompt);
         rounds_context(turn.record, summary_drop_count, prompt);
         requested = true;
@@ -304,9 +315,9 @@ ayni_status_t run(Turn &turn, const ToolLoopConfig &config, const ayni_task_snap
     if (requested || status != AYNI_OK) {
         return status;
     }
+    LocalTimeLines time;
     Writer prompt(scratch, prompt_bytes_max);
-    prompt.add(config.model.text);
-    local_time(config.clock, prompt);
+    prompt.instructions({config.model.text, local_time(config.clock, time)});
     status = memory_context(turn, snapshot, prompt);
     if (status != AYNI_OK) {
         return status;

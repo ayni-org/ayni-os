@@ -2,6 +2,7 @@
 #ifndef AYNI_STRATEGIES_SUPPORT_H
 #define AYNI_STRATEGIES_SUPPORT_H
 #include <ayni/strategies/builtin.h>
+#include <initializer_list>
 #include <string_view>
 
 namespace ayni::strategies::detail {
@@ -42,6 +43,9 @@ ayni_status_t outcome(const ayni_task_call_result_v1 &result);
 class Writer {
   public:
     Writer(char *data, uint32_t capacity) : data_(data), capacity_(capacity) {}
+    // Opens a model body: the parts form the instructions, kept apart from the data added next
+    // (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074).
+    void instructions(std::initializer_list<ayni_string_v1> parts);
     void add(ayni_string_v1 text);
     void add(std::string_view text) { add(view(text)); }
     void number(uint64_t value);
