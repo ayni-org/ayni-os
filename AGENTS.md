@@ -51,6 +51,8 @@ Comments should explain invariants, ownership, design reasons, and non-obvious t
 
 Native tests use GoogleTest 1.17.0, fetched and pinned by `cmake/AyniGoogleTest.cmake` (ADR-0012); ESP32 tests will use ESP-IDF's Unity from M2. Per the user's 2026-10-24 workflow decision, add relevant normal-behavior tests for current development. Suspend mandatory planted-defect/mutation tests and new fault-injection or recovery-specific tests; do not move them into an automatic package-end requirement. Preserve existing tests and keep them in the CI full suite. Deferred fault/recovery evidence remains explicitly unverified; the plan's E1–E4 and hardware/release acceptance claims still require their own evidence when resumed. Use descriptive scenario names.
 
+User authorization on 2026-10-28 resumes the fault-injection and recovery work required for the staged full E2 → E1 → E3 → E4 experiments, including their runner. See `reports/core/m1-experiment-plan.md`. Mutation campaigns remain paused. Each stage is one PR, independently reviewed after PR submission, fixed, and automatically merged with a merge commit only after all applicable CI checks pass. This scoped authorization supersedes the pause above and does not include hardware operations or the later coverage/Alpha closeout.
+
 Target Core coverage ≥75% and safety-critical branch coverage ≥90%; record deviations with evidence and an ADR. Distinguish compilation, simulation, hardware, and endurance results. Record versions, configuration, fault points, and traces needed to reproduce results; report unexecuted checks and limitations explicitly.
 
 ## Commit & Pull Request Guidelines
