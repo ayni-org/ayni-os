@@ -1,5 +1,7 @@
 # Ayni M1 详细实施计划
 
+> **后续执行范围（2026-10-28）：** 本文保留 P0～P6 的原实施计划与当时完成标准，正常交付结果见 [M1 正常集成报告](m1-normal-integration.md)，最新单一助理基线及 #94/#95 修订见[交接状态](m1-progress.md#交接状态2026-10-28)。用户现已授权按[完整实验实施计划](m1-experiment-plan.md)完成缺口盘点、运行器/注入能力、E2、E1、E3、E4；每阶段一个 PR，提交后独立审查修复、最终适用 CI 全绿后自动合并。本文关于专项暂停的旧描述保留历史范围，本次实验所需故障/恢复活动已恢复，变异继续暂停；完整 E1 保留 ≤10 step 硬门槛。Core Alpha 报告等 E4 后工作另行安排。
+
 > 本文是用户 2026-10-26 批准的 M1 详细实施计划全文，从同名 Claude 文档导出（第 13 版），保留原计划结构并同步后续交付决定，文中的“你”指用户。原文的阶段图未导出，各阶段内容见正文。
 >
 > **执行情况（2026-10-26）：** P0 已由 [#72](https://github.com/RobotSe7en/ayni/pull/72)（ADR-0053）完成；P1 PR 1 已由 [#73](https://github.com/RobotSe7en/ayni/pull/73)（ADR-0054，ABI 0.37）完成。P1 PR 2 已由 [#75](https://github.com/RobotSe7en/ayni/pull/75)（ADR-0055）交付 Native Provider，并以本次授权的测试密钥完成独立 DeepSeek（`deepseek-chat`，`https://api.deepseek.com`）文本/工具验证；未建立长期密钥配置或自动实 API workflow。P1 PR 3 已由 [#76](https://github.com/RobotSe7en/ayni/pull/76)（ADR-0056，ABI 0.38）交付两策略与有界对话组件；用户在实施时选定跨 Task 对话文件存储随 P2，P1 提供明确快照/候选及已持久完成检查点导出。之后的状态以 [m1-progress.md](m1-progress.md) 和 [M1 剩余实施顺序](m1-remaining-implementation.md) 为准；与本文不一致时以这两页和对应 ADR 为准。
