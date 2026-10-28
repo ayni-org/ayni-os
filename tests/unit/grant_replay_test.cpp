@@ -2050,15 +2050,20 @@ TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_creat
     const auto snapshot = snapshot_of(source);
     ASSERT_EQ(import_snapshot(snapshot), BatchCheck::ok);
     constexpr unsigned bits_per_byte = 8;
+    uint32_t snapshot_grants = 0;
     for (std::size_t row = 0; row < snapshot.records.size(); ++row) {
         const auto &record = snapshot.records[row];
         if (record.header.type != ayni::authority::grant_record_type) {
             continue;
         }
+        ++snapshot_grants;
         ayni::authority::GrantSnapshotRecord decoded{};
         ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(
             record.body.data(), record.header.length, decoded, record.header.version));
         const auto start = static_cast<std::size_t>(decoded.create.scope.data - record.body.data());
+        ASSERT_GT(decoded.create.scope.size, 0U);
+        ASSERT_LE(start, record.body.size());
+        ASSERT_LE(decoded.create.scope.size, record.body.size() - start);
         for (std::size_t at = start; at < start + decoded.create.scope.size; ++at) {
             for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
                 SCOPED_TRACE(::testing::Message() << at << ':' << bit);
@@ -2068,6 +2073,7 @@ TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_creat
             }
         }
     }
+    ASSERT_EQ(snapshot_grants, 1U);
     const auto log = source.node.sim().log();
     ReplayNode control;
     control.node.sim().log() = log;

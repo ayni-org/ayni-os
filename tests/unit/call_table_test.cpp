@@ -1009,4 +1009,57 @@ TEST_F(CallTableTest, replay_preserves_known_subscription_result_until_a_new_gen
     EXPECT_EQ(restored.state(index).subscription->generation, generation);
     EXPECT_EQ(restored.state(index).outcome, 0U);
     EXPECT_EQ(restored.state(index).attempt.request_id, 0U);
+    auto queried_generation = reopened;
+    queried_generation.state.query =
+        CallQuery{1, CallQuery::Phase::requested, queried_generation.state.latest};
+    EXPECT_FALSE(CallTable::valid_record(queried_generation));
+}
+
+// White-box, C-CALL-008 / ADR-0063: a legal new-generation row from a known
+// stop must not replace a different history whose old operation remains UNKNOWN.
+TEST_F(CallTableTest, replay_cannot_reopen_an_unknown_subscription_with_a_legal_new_generation) {
+    contract.form = ayni::catalog::CallForm::subscription;
+    contract.cancel = ayni::catalog::CancelMode::confirmed;
+    contract.subscription = ayni::catalog::SubscriptionContract{id("sample"), 1, 30000};
+    insert();
+    const auto accepted = calls.record(index);
+    ASSERT_TRUE(CallTable::valid_record(accepted));
+    ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
+    ASSERT_EQ(
+        calls.finish(
+            index,
+            {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
+            stamp(4)),
+        AYNI_OK);
+    const auto unknown = calls.record(index);
+    ASSERT_TRUE(CallTable::valid_record(unknown));
+    ASSERT_TRUE(calls.unresolved(index));
+    const auto generation = identity.operation_id + 1;
+    EXPECT_EQ(calls.restart_subscription(index, generation, stamp(5)), AYNI_INVALID_STATE);
+
+    std::vector<uint64_t> alternate_storage(storage.size());
+    CallTable alternate(alternate_storage.data(), limits);
+    ASSERT_EQ(alternate.restore_validated(accepted), AYNI_OK);
+    ASSERT_EQ(alternate.prepare(index, stamp(2)), AYNI_OK);
+    ASSERT_EQ(alternate.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_TRUE(alternate.claim_dispatch(index, boot, 3));
+    ASSERT_EQ(alternate.stop_subscription(index, CallCancelCause::shutdown,
+                                          SubscriptionDesired::open, stamp(4)),
+              AYNI_OK);
+    ASSERT_EQ(alternate.finish(
+                  index, {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
+                  stamp(5)),
+              AYNI_OK);
+    ASSERT_EQ(alternate.restart_subscription(index, generation, stamp(6)), AYNI_OK);
+    const auto reopened = alternate.record(index);
+    ASSERT_TRUE(CallTable::valid_record(reopened));
+    EXPECT_EQ(calls.restore_validated(reopened), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_ABANDONED);
+    EXPECT_EQ(calls.state(index).latest.transition.commit_seq,
+              unknown.state.latest.transition.commit_seq);
+    EXPECT_EQ(calls.state(index).subscription->generation, unknown.state.subscription->generation);
+    EXPECT_TRUE(calls.unresolved(index));
+    EXPECT_FALSE(calls.can_retire_task(identity.task_id, UINT64_MAX));
 }

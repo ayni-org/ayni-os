@@ -15,6 +15,7 @@ add_executable(ayni_unit_tests
     execution_facts_test.cpp
     control_gate_test.cpp
     mock_provider_test.cpp
+    mock_execution_test.cpp
     mock_tools_test.cpp
     action_record_test.cpp
     call_input_test.cpp

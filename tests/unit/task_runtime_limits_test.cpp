@@ -1,5 +1,6 @@
 // C-RUN-001/002/003: normal admission facts, independent holds, owner raise,
 // exact retry identity and codec. Call dispatch/recovery campaigns remain MA-008.
+#include "journal_test_support.h"
 #include "kernel/service/command/command_records.h"
 #include "kernel/service/command/command_task_limit.h"
 #include "work/task/task_records.h"
@@ -214,5 +215,79 @@ TEST(TaskLimitCommand, codec_binds_task_revision_and_total_limit_to_exact_result
                                     restored, floor, canonical));
     EXPECT_EQ(restored.object.revision, mapping.object.revision);
     EXPECT_EQ(restored.digest, mapping.digest);
+}
+// C-RUN-003 / C-STORE-009: the owner command changes only the soft ceiling
+// and its hold. Every CRC-valid single-bit change to that complete state must
+// disagree with either the old Task or its exact management receipt.
+TEST(TaskLimitApi, altered_raise_state_cannot_be_repaired_by_a_later_valid_command) {
+    WorkNode source;
+    source.run();
+    source.strategy().answer = cannot_decide;
+    const auto task_id = create_task(source);
+    source.node().step(1);
+    const auto before = source.task(task_id);
+    const ayni_task_raise_model_limit_v1 body{sizeof(body), raised_limit, task_id};
+    auto request = source.intent(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &body, before.revision);
+    request.command_id = command_id;
+    const auto accepted = source.submit(request);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    for (unsigned round = 0;
+         round < 128 && source.node().info().durable_seq < accepted.result.commit_seq; ++round) {
+        source.node().sim().advance_us(AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT);
+        source.node().step();
+        source.node().sim().complete_storage();
+    }
+    ASSERT_GE(source.node().info().durable_seq, accepted.result.commit_seq);
+    const auto log = source.node().sim().log();
+    WorkNode control;
+    control.node().config() = source.node().config();
+    control.node().sim().log() = log;
+    control.node().create_and_start();
+    control.node().recover();
+    ASSERT_EQ(control.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    uint32_t targets = 0;
+    constexpr unsigned bits_per_byte = 8;
+    for (std::size_t item = 0; item < log.size(); ++item) {
+        const auto batch = read_stored_batch(log[item]);
+        if (batch.identity.commit_seq != accepted.result.commit_seq) {
+            continue;
+        }
+        for (std::size_t row = 0; row < batch.records.size(); ++row) {
+            const auto &record = batch.records[row];
+            if (record.header.type != task_state_record_type ||
+                task_state_base_version(record.header.version) !=
+                    task_state_raise_limit_record_version) {
+                continue;
+            }
+            ++targets;
+            ASSERT_FALSE(record.body.empty());
+            for (std::size_t at = 0; at < record.body.size(); ++at) {
+                for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                    SCOPED_TRACE(::testing::Message() << at << ':' << bit);
+                    auto changed = batch;
+                    changed.records[row].body[at] ^= static_cast<uint8_t>(1U << bit);
+                    auto candidate = log;
+                    candidate[item] = write_stored_batch(changed);
+                    WorkNode recovered;
+                    recovered.node().config() = source.node().config();
+                    recovered.node().sim().log() = std::move(candidate);
+                    recovered.node().create_and_start();
+                    recovered.node().recover();
+                    EXPECT_EQ(recovered.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+                    EXPECT_EQ(recovered.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+                    EXPECT_EQ(KernelTestProbe::work(recovered.kernel()).tasks.size(), 0U);
+                }
+            }
+        }
+    }
+    ASSERT_EQ(targets, 1U);
+    WorkNode smaller;
+    smaller.node().config() = source.node().config();
+    smaller.node().config().task_model_call_hard_limit = raised_limit - 1;
+    smaller.node().sim().log() = log;
+    smaller.node().create_and_start();
+    smaller.node().recover();
+    EXPECT_EQ(smaller.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(smaller.node().info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
 }
 } // namespace
