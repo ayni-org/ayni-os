@@ -109,6 +109,7 @@
 | [#100](https://github.com/RobotSe7en/ayni/pull/100) | 2026-10-28 | MA-023 完整 E3 | 双 Mock/规则与真实 ToolLoop、共同检查点、旧调用隔离与不兼容暂停；交付结果见 PR | ADR-0078 |
 | [#101](https://github.com/RobotSe7en/ayni/pull/101) | 2026-10-28 | MA-033 完整 E4 | Native/Sim 父子组合、11 个提交边界、依赖/停止、版本矩阵与通知；typed/开发期存储例外见 ADR | ADR-0079 |
 | [#102](https://github.com/RobotSe7en/ayni/pull/102) | 2026-10-28 | 安全覆盖收尾 | 原保守范围补测达到本轮用户接受的 ≥80%；修复订阅新代恢复与回调 ABI 尺寸分类，通用 90% 偏差保留 | ADR-0080 |
+| [#103](https://github.com/RobotSe7en/ayni/pull/103) | 2026-10-28 | Core Alpha Native 报告 | 汇总完整实验、SDK、最终配置和覆盖证据，保留兼容待决与平台边界；本轮结束，M2 暂缓 | ADR-0080 |
 
 ## 工作包日期
 
