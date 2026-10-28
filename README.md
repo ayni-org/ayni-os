@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1（实验性 ABI 0.45、storage schema 2）。P0～P6 的 Native 正常实现已交付：单一助理 CLI（ADR-0072：模型可登记待批目标，“停”不经模型）、文本/工具调用、记忆与日历、Mock 观察、统一助理、C++ SDK 与公开示例；正常组合、多节点 typed 子集和资源/覆盖率证据见 [M1 正常集成报告](reports/core/m1-normal-integration.md) 与 [交接状态](reports/core/m1-progress.md)。安全分支覆盖目标仍有差距，完整 E2/E1/E3 Native 实验见 #98/#99/#100（ADR-0076～0078）；E4 Native/Sim 组合与版本证据见 ADR-0079；完整 MA-038、Core Alpha、ESP32 存储及实机验收未完成；真实模型多轮仍待用户本机试用。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
+> 仓库已交付 M1 的 Native Core、模拟器与 C/C++ SDK（实验性 ABI 0.45、storage schema 2）：单一助理 CLI、文本/工具调用、记忆与日历、授权及恢复，电脑 E1～E4 证据见 [Core Alpha 报告](reports/core/m1-core-alpha.md)。原保守安全分支覆盖达到用户本轮接受的 ≥80%；通用 90% 偏差与既有存储兼容待决项保留（ADR-0080）。M2 暂缓；完整 MA-038、ESP32 存储/实机与真实模型多轮试用仍待后续安排。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 

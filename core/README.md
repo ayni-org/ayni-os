@@ -15,7 +15,7 @@ kernel → work → {authority, resources, knowledge} → catalog → durability
 
 ## 当前状态
 
-实际进度只记在 [M1 交接状态](../reports/core/m1-progress.md)，各机制与验证见对应 ADR 和 [契约追踪](../contracts/traceability.md)。下表描述已有代码，不表示完整 E1–E4 或 ESP32 持久化验收已通过；每个改动模块职责的 PR 同时更新本表。
+实际进度记在 [M1 交接状态](../reports/core/m1-progress.md)，Native E1～E4、SDK、覆盖与限制见 [Core Alpha 报告](../reports/core/m1-core-alpha.md)；各机制与验证见对应 ADR 和 [契约追踪](../contracts/traceability.md)。下表描述已有代码，不替代报告中的证据边界；ESP32 持久化仍未验收，每个改动模块职责的 PR 同时更新本表。
 
 | 模块 | 内容 | 首次出现代码 |
 |---|---|---|
