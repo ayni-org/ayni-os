@@ -118,7 +118,6 @@ uint64_t SharedServices::clock_delta(const ayni_step_report_v1 &last, uint64_t s
     return due == UINT64_MAX ? tick_us : due > now ? due - now : 0;
 }
 void SharedServices::abandon_kernel() {
-    assistant_.reset();
     notification_.quiesce();
     microphone_.quiesce();
     group_.quiesce();
@@ -131,8 +130,6 @@ ayni_status_t SharedServices::close() {
     const auto camera = camera_.close();
     if (camera == AYNI_OK) {
         last_opening_.reset();
-    }
-    if (camera == AYNI_OK) {
         camera_offer_.reset();
     }
     const auto a = model_a_.close();
