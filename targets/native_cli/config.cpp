@@ -43,8 +43,8 @@ std::string tzif_rule(const std::string &path) {
 }
 // The machine's zone as a POSIX rule (ADR-0073): TZ if it is a whole rule, else TZ without a
 // leading ':' as a zone file (absolute, or under /usr/share/zoneinfo), or /etc/localtime when
-// TZ is unset or empty. Unlike glibc, a rule wins over a file of the same name, an empty TZ is
-// not UTC, and TZDIR is not read.
+// TZ is unset or empty. Main differences from glibc: a rule wins over a file of the same name, an
+// empty TZ or ":" is not UTC, ":<rule>" is not parsed as a rule, and TZDIR is not read.
 std::string system_timezone() {
     std::string zone = environment("TZ");
     if (posix_timezone(zone)) {

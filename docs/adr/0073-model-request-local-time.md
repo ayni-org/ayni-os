@@ -11,7 +11,7 @@ ADR-0072 让模型把用户的长期要求换算成计划文法，但 ToolLoop �
 ## 决策
 
 1. **用户选择（产品语义，用户 2026-10-28 选定推荐项）。** 每次主模型请求在指令末尾写明当前本地时间与时区，例如 `Current local time: 2026-10-28 09:05, Wednesday.` 下一行 `Time zone: CST-8`；指令随请求作为 system 消息发送（ADR-0074）。时区单独成行且不跟标点，因为模型要把它原样抄进计划文法，而规则本身可含 `.`。时间在发请求时读取，不随用户输入持久化。提示词改为按这一行换算“明天”“下周三”等说法，默认用这一时区，时间未知时才询问用户。
-2. **时钟与时区。** 时间来自 Host 的 UTC 端口。未经同步的时钟仍写出时间，并标注 `device clock not synchronized`：模型登记的目标总要所有者看过规范文本再批准，日期不授权任何触发。样本不可用（端口为空、`UNAVAILABLE`、未知的信任值或结构大小）或没有时区时写 `unknown`；配置了时区就写出时区；端口与时区都没有时两行都不写。时区是 POSIX 规则：CLI 配置 `timezone=`；未配置时依次取：`TZ` 本身是完整规则；`TZ`（去掉开头的 `:`）指向的时区文件（如 `Asia/Shanghai`，绝对路径或相对 `/usr/share/zoneinfo`）末尾的 TZif 规则；`TZ` 未设或为空时 `/etc/localtime` 末尾的规则；都取不到则为未知。这与 glibc 不同：glibc 先把 `TZ` 当文件、空 `TZ` 当 UTC、读 `TZDIR`；没有转换规则的写法如 `EST5EDT` 不是完整规则，会落到同名文件。显式配置的值无效时拒绝启动；系统值无效时视为未知。
+2. **时钟与时区。** 时间来自 Host 的 UTC 端口。未经同步的时钟仍写出时间，并标注 `device clock not synchronized`：模型登记的目标总要所有者看过规范文本再批准，日期不授权任何触发。样本不可用（端口为空、`UNAVAILABLE`、未知的信任值或结构大小）或没有时区时写 `unknown`；配置了时区就写出时区；端口与时区都没有时两行都不写。时区是 POSIX 规则：CLI 配置 `timezone=`；未配置时依次取：`TZ` 本身是完整规则；`TZ`（去掉开头的 `:`）指向的时区文件（如 `Asia/Shanghai`，绝对路径或相对 `/usr/share/zoneinfo`）末尾的 TZif 规则；`TZ` 未设或为空时 `/etc/localtime` 末尾的规则；都取不到则为未知。与 glibc 的主要差异：glibc 先把 `TZ` 当文件、空 `TZ` 或 `:` 当 UTC、文件找不到时把 `:<规则>` 按规则解析、读 `TZDIR`；没有转换规则的写法如 `EST5EDT` 不是完整规则，会落到同名文件。显式配置的值无效时拒绝启动；系统值无效时视为未知。
 3. **模块归属。** `strategies::ToolLoop` 通过可选的 `LocalClock`（UTC 端口加时区）格式化这两行，只调用公开日历 API，不解释任何自然语言日期；这是策略在快照之外唯一读取的输入。`runtime/common` 把 Host 时钟与 `ModelConfig::timezone` 交给它；`targets/native_cli` 只负责取得时区。Core 与计划文法不变。
 
 ## 后果

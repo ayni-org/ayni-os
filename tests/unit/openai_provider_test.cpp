@@ -61,10 +61,28 @@ TEST_F(OpenaiProvider, empty_framed_instructions_send_only_the_user_message) {
     EXPECT_NE(server->request().find(R"("messages":[{"role":"user","content":"hello"}])"),
               std::string::npos);
 }
+TEST_F(OpenaiProvider, prefix_after_the_start_is_data) {
+    prompt = "say " AYNI_MODEL_INSTRUCTIONS_PREFIX "2\nhi";
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(server->request().find(
+                  R"("messages":[{"role":"user","content":"say )" AYNI_MODEL_INSTRUCTIONS_PREFIX
+                  R"(2\u000ahi"}])"),
+              std::string::npos);
+}
 // A malformed frame fails before anything leaves the device.
-class OpenaiFrame : public OpenaiProvider, public ::testing::WithParamInterface<const char *> {};
+struct Frame {
+    const char *name;
+    const char *body;
+};
+void PrintTo(const Frame &frame, std::ostream *out) {
+    *out << frame.name;
+}
+class OpenaiFrame : public OpenaiProvider, public ::testing::WithParamInterface<Frame> {};
 TEST_P(OpenaiFrame, malformed_instructions_frame_fails_without_egress) {
-    prompt = GetParam();
+    prompt = GetParam().body;
     start(text_reply);
     create();
     wait_done();
@@ -73,15 +91,18 @@ TEST_P(OpenaiFrame, malformed_instructions_frame_fails_without_egress) {
     EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
     EXPECT_EQ(server->requests(), 0U);
 }
-INSTANTIATE_TEST_SUITE_P(Frames, OpenaiFrame,
-                         ::testing::Values(AYNI_MODEL_INSTRUCTIONS_PREFIX,
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "x\nhello",
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "+3\nabcd",
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "03\nabcd",
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "3",
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "9\nabc",
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "4294967296\nabc",
-                                           AYNI_MODEL_INSTRUCTIONS_PREFIX "1\n世界"));
+INSTANTIATE_TEST_SUITE_P(
+    Frames, OpenaiFrame,
+    ::testing::Values(Frame{"prefix_only", AYNI_MODEL_INSTRUCTIONS_PREFIX},
+                      Frame{"not_a_number", AYNI_MODEL_INSTRUCTIONS_PREFIX "x\nhello"},
+                      Frame{"plus_sign", AYNI_MODEL_INSTRUCTIONS_PREFIX "+3\nabcd"},
+                      Frame{"leading_zero", AYNI_MODEL_INSTRUCTIONS_PREFIX "03\nabcd"},
+                      Frame{"no_newline", AYNI_MODEL_INSTRUCTIONS_PREFIX "3"},
+                      Frame{"space_before_newline", AYNI_MODEL_INSTRUCTIONS_PREFIX "3 \nabc"},
+                      Frame{"count_past_the_body", AYNI_MODEL_INSTRUCTIONS_PREFIX "9\nabc"},
+                      Frame{"count_overflow", AYNI_MODEL_INSTRUCTIONS_PREFIX "4294967296\nabc"},
+                      Frame{"split_inside_a_character", AYNI_MODEL_INSTRUCTIONS_PREFIX "1\n世界"}),
+    [](const auto &info) { return std::string(info.param.name); });
 TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
     start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
     create();

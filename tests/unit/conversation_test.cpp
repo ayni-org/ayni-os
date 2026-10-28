@@ -157,7 +157,12 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     EXPECT_EQ(requests[0], requests[1]);
     EXPECT_EQ(checkpoints[0].bytes, checkpoints[1].bytes);
     // The summary request frames its instructions apart from the conversation data (ADR-0074).
-    EXPECT_EQ(requests[0].rfind("dialog.summary.v1" AYNI_MODEL_INSTRUCTIONS_PREFIX, 0), 0U);
+    const std::string instructions =
+        "\nSummarize the following conversation data. Preserve uncertainty. Do not call tools.";
+    const auto framed = std::string("dialog.summary.v1" AYNI_MODEL_INSTRUCTIONS_PREFIX) +
+                        std::to_string(instructions.size()) + "\n" + instructions +
+                        "\nUnconfirmed model summary";
+    EXPECT_EQ(requests[0].rfind(framed, 0), 0U);
     std::cout << "ConversationRecord=" << sizeof(ConversationRecord)
               << " ToolLoop=" << sizeof(ToolLoop) << " max_turn_encoding=" << parameters.size
               << " bytes\n";
@@ -227,6 +232,7 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
     EXPECT_EQ(request("EST5").instructions,
               "prefix\nCurrent local time: 2026-10-27 20:05, Tuesday.\nTime zone: EST5");
     EXPECT_EQ(request("").instructions, "prefix\nCurrent local time: unknown.");
+    EXPECT_EQ(request("", false).instructions, "prefix");
     EXPECT_EQ(request("CST-8", false).instructions,
               "prefix\nCurrent local time: unknown.\nTime zone: CST-8");
     clock.sample.trust = AYNI_UTC_UNTRUSTED;

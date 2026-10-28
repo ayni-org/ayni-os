@@ -60,9 +60,10 @@ typedef uint32_t ayni_call_cancel_mode_t;
  * passes on: this prefix, the instructions' byte count in decimal without
  * leading zeros, a newline, the instructions, then the data. Core never reads
  * it. A model Provider with message roles sends the instructions as the system
- * message and the data as the user message. A body without the prefix is all
- * data, so a strategy never starts a body with untrusted text. Body convention
- * only, no layout change; Since 0.45 (ADR-0074). */
+ * message and the data as the user message; a body without the prefix is all
+ * data. A strategy must not start an unframed MODEL body with untrusted text,
+ * which could itself begin with this prefix. A strategy-Provider convention,
+ * not an ABI change: added under ABI 0.45 without a minor bump (ADR-0074). */
 #define AYNI_MODEL_INSTRUCTIONS_PREFIX "ayni-instructions:"
 /* Bounded UTF-8 text, including empty text. Since 0.31. */
 #define AYNI_CALL_RESULT_TEXT 1u

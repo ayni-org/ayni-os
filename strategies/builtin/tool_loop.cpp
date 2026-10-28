@@ -25,18 +25,24 @@ ayni_string_v1 tool_key(uint32_t round, uint32_t index, char *buffer) {
     writer.add(".v1");
     return writer.text();
 }
-// The fixed words and fields take under 128 bytes; the zone is at most its own limit.
-constexpr uint32_t local_time_bytes_max = 128 + AYNI_CALENDAR_TZ_MAX_BYTES;
+constexpr std::string_view time_label = "\nCurrent local time: ";
+constexpr std::string_view time_unsynchronized = " (device clock not synchronized).";
+constexpr std::string_view zone_label = "\nTime zone: ";
+// The longest lines: a minute, the longest weekday, the unsynchronized mark and the longest zone.
+constexpr uint32_t local_time_bytes_max =
+    time_label.size() + sizeof("YYYY-MM-DD HH:MM, Wednesday") - 1 + time_unsynchronized.size() +
+    zone_label.size() + AYNI_CALENDAR_TZ_MAX_BYTES;
 using LocalTimeLines = std::array<char, local_time_bytes_max>;
 // The model, not the policy, interprets "tomorrow" or "next Wednesday" against these lines. The
 // zone ends its line unpunctuated, since the model copies it into the schedule grammar.
+// configure has checked the zone through the calendar parser, which bounds its size.
 ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
     if (!clock.utc_now && !clock.timezone.size) {
         return {};
     }
     Writer lines(buffer.data(), local_time_bytes_max);
     ayni_utc_sample_v1 sample{sizeof(sample), AYNI_UTC_UNAVAILABLE, 0};
-    if (clock.utc_now) {
+    if (clock.utc_now && clock.timezone.size) {
         clock.utc_now(clock.context, &sample);
     }
     // calendar.h: an unsupported trust value or layout counts as unavailable.
@@ -45,10 +51,10 @@ ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
     int64_t local = 0;
     ayni_calendar_civil_v1 civil{};
     civil.struct_size = sizeof(civil);
-    if (!usable || !clock.timezone.size ||
-        ayni_calendar_local_time(clock.timezone, sample.utc_s, &local) != AYNI_OK ||
+    lines.add(time_label);
+    if (!usable || ayni_calendar_local_time(clock.timezone, sample.utc_s, &local) != AYNI_OK ||
         ayni_calendar_split_time(local, &civil) != AYNI_OK) {
-        lines.add("\nCurrent local time: unknown.");
+        lines.add("unknown.");
     } else {
         constexpr int64_t seconds_per_day = 86400;
         // Indexed by days since 1970-01-01, a Thursday; split_time accepts no earlier day.
@@ -60,18 +66,17 @@ ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
         static_cast<void>(std::snprintf(minute, sizeof(minute), "%04d-%02d-%02d %02d:%02d",
                                         civil.year, civil.month, civil.day, civil.hour,
                                         civil.minute));
-        lines.add("\nCurrent local time: ");
         lines.add(minute);
         lines.add(", ");
         lines.add(weekdays[local / seconds_per_day % week]);
         // The owner reviews every registered Goal, so an unsynchronized clock still informs.
-        lines.add(sample.trust == AYNI_UTC_TRUSTED ? "." : " (device clock not synchronized).");
+        lines.add(sample.trust == AYNI_UTC_TRUSTED ? std::string_view(".") : time_unsynchronized);
     }
     if (clock.timezone.size) {
-        lines.add("\nTime zone: ");
+        lines.add(zone_label);
         lines.add(clock.timezone);
     }
-    return lines.ok() ? lines.text() : view("\nCurrent local time: unknown.");
+    return lines.text();
 }
 void summary_context(const ConversationRecord &record, Writer &prompt) {
     if (!record.summary_last) {

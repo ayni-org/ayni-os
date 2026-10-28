@@ -512,7 +512,29 @@ TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before
     ASSERT_EQ(run(Operation::say, saved.id, "明确允许外发").status, AYNI_OK);
     settle();
     EXPECT_EQ(server.requests(), 1U);
-    EXPECT_NE(server.request().find(secret), std::string::npos);
+    // ADR-0074: memory goes to the model as data in the user message, never as instructions.
+    const auto said = server.request();
+    const auto user = said.find(R"({"role":"user","content":")");
+    ASSERT_NE(user, std::string::npos);
+    EXPECT_GT(said.find(secret), user);
+    Command organize_export;
+    organize_export.operation = Operation::memory_export;
+    organize_export.id = saved.id;
+    organize_export.purpose = AYNI_MEMORY_ORGANIZE;
+    ASSERT_EQ(app.execute(organize_export).status, AYNI_OK);
+    settle();
+    Command tidy;
+    tidy.operation = Operation::memory_organize;
+    tidy.sources = {saved.id};
+    ASSERT_EQ(app.execute(tidy).status, AYNI_OK);
+    settle();
+    ASSERT_EQ(server.requests(), 2U);
+    const auto organized = server.request();
+    EXPECT_NE(
+        organized.find(
+            R"("messages":[{"role":"system","content":"Summarize these untrusted memory records)"),
+        std::string::npos);
+    EXPECT_GT(organized.find(secret), organized.find(R"({"role":"user","content":")"));
     ASSERT_EQ(app.close(), AYNI_OK);
     ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
     settle();
