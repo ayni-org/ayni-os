@@ -46,7 +46,7 @@ class StorageBudget {
     void appended(uint64_t size) { log_bytes_ += size; }
     // An activation was stored and the log trimmed to retained bytes.
     void compacted(uint64_t retained);
-    // A reload starts over, or shutdown forbids new maintenance; drop this boot's request.
+    // A reload starts over; the compaction this boot asked for is dropped.
     void cancel_compaction() { compaction_due_ = false; }
 
     // With no maintenance active: reads whether the medium still

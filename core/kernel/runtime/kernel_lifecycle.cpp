@@ -668,7 +668,8 @@ void ayni_kernel::refresh_storage() {
     }
     budget.refresh(host);
     if (lifecycle == AYNI_LIFECYCLE_DRAINING) {
-        budget.cancel_compaction();
+        // Keep the logical log limit: when compaction would be required,
+        // closing releases only volatile borrows instead of growing the log.
         return;
     }
     const auto &privacy = work.privacy.record();
