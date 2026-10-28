@@ -24,13 +24,13 @@
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 5 | 0 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
-| [host/native_runtime.md](host/native_runtime.md) | 12 | 8 |
+| [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 398 | 138 |
+| 合计 | 399 | 139 |
 
 ## 计划章节 → 契约文档
 
@@ -293,6 +293,7 @@
 | C-NATIVE-006 | M1 已实现：`NativeAssistant.grant_revoke_and_cancel_use_public_management_commands`（正常提交与持久等待）；PENDING 背压的 runtime 专项未验证，Core 既有回执测试保持 |
 | C-NATIVE-011 | M1 已实现：`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval`、`NativeAssistant.model_goals_waiting_for_approval_are_bounded`、`NativeAssistant.stop_before_the_schedule_tool_decides_registers_nothing`、`AssistantApplication.model_origin_goal_waits_for_consent_and_is_found_by_its_operation`、`AssistantPolicy.encoding_grammar_stop_phrases_and_quiet_time_are_explicit`、`NativeAssistant.local_http_tool_loop_and_text_only_summary_use_real_provider_wiring`（文法拒绝回给模型）；仅本地 HTTP 夹具，真实模型多轮与崩溃时在途调用（UNKNOWN）未验证；GoalPort BUSY、无端口与准入关闭路径未构造 |
 | C-NATIVE-012 | M1 已实现：`NativeAssistant.stop_phrase_cancels_the_turn_pauses_autonomy_and_keeps_reminders`、`NativeAssistant.stop_is_not_held_behind_a_pending_conversation_save`、`AssistantPolicy.encoding_grammar_stop_phrases_and_quiet_time_are_explicit`；CLI 脚本 tests/integration/native_cli_test.py |
+| C-NATIVE-013 | M1 已实现：`BuiltinLoop.model_request_states_the_local_time`、`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval`；CLI 脚本 tests/integration/native_cli_test.py；读取 `TZ` 与时区文件的默认路径未自动测试，真实模型换算效果待本机试用 |
 | C-POLICY-001 | M1 已实现（GoalType 的校验与策略的 `decide` 期间，修改 Kernel 的调用返回 `INVALID_STATE` 且不产生效果，ADR-0022）：`WorkModel.validator_cannot_change_the_kernel_while_it_runs`、`WorkDecision.strategy_cannot_change_the_kernel_while_it_decides`；不执行 I/O、不阻塞只能评审；`MA-009` |
 | C-POLICY-002 | M1 已实现（超过 `max_intents_per_call` 的意图、超过 `max_checkpoint_bytes` 的私有检查点或策略返回 `CAPACITY_EXCEEDED` 时整次决定被拒绝，Task 停下并记 `POLICY_OUTPUT_LIMIT`，不提交步骤与检查点；上限在注册时检查，ADR-0022、ADR-0024）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkCheckpoint.refused_decisions_commit_nothing_and_hold_with_their_reason`、`WorkCheckpoint.kernel_reads_only_its_own_checkpoint_buffer`、`WorkStrategy.registration_checks_its_arguments`；`MA-009`；C-LIMIT-006 |
 | C-POLICY-003 | M1 已实现（结构大小、种类、版本与互相矛盾的结束意图；`step_key`、重复的步骤与步骤上限；策略只写 Kernel 提供的意图数组与私有检查点缓冲，注册时确认它写意图的步长与 Kernel 一致，Kernel 只读回自己的缓冲，并按自己保存的上限读私有检查点，ADR-0022、ADR-0024）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkCheckpoint.refused_decisions_commit_nothing_and_hold_with_their_reason`、`WorkStrategy.registration_checks_its_arguments`、`WorkDecision.strategy_starts_from_cleared_intents_that_only_the_kernel_reads`、`WorkCheckpoint.kernel_reads_only_its_own_checkpoint_buffer`、`WorkDecision.end_that_would_exhaust_a_revision_holds_the_task`、`WorkCheckpoint.end_that_would_exhaust_a_revision_commits_nothing`；授权、运行限制与资源随 `MA-006`、`MA-018`；E3 步骤 2；E4 步骤 1；C-TRUST-001 |
