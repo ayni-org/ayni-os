@@ -1,10 +1,10 @@
 # 完整实验运行 profile
 
-- **关联**：ADR-0075/0076/0077；计划 §10；[本轮实施顺序](../../../reports/core/m1-experiment-plan.md)
+- **关联**：ADR-0075～0078；计划 §10；[本轮实施顺序](../../../reports/core/m1-experiment-plan.md)
 
 `fixture_schema=1` / `profile=m1-experiment` 是独立于 P6 `m1-normal` 的受控故障运行格式。JSON 在构建时校验并编译成顺序 C++ 调用，Core 和运行中的 simulator 不解析外部脚本。原 schema 0 仍是历史完整草案，不直接接受；本 profile 只接受已经实现的闭集动作。
 
-初始六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；另有活动执行端断电后清理的 HARNESS 回归；E2 F0～F14 原清单及附加闭环场景已加入；完整 E1 的 32 个场景见 ADR-0077；E3/E4 仍按各自阶段验收。
+初始六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；另有活动执行端断电后清理的 HARNESS 回归；E2 F0～F14 原清单及附加闭环场景已加入；完整 E1 的场景见 ADR-0077；E3 见 ADR-0078，E4 仍按各自阶段验收。
 
 ## 数据、控制与边界
 
@@ -12,6 +12,7 @@
 
 | 动作 | 控制内容 |
 |---|---|
+| replacement | E3 双 Mock/规则与真实 ToolLoop 的有限重启/替换场景；只接受 replacement 部署；原进度/路由只读探针需启用测试 |
 | grant | 经管理意图授权本地测试计数能力，并等待正常持久推进 |
 | create | 创建 action、物理 turn 或无触发 folder，显式非零 command_id |
 | steps | 推进明确次数，storage 为 complete 或 held；held 不完成待决存储 |
@@ -31,7 +32,7 @@
 
 ## 运行与证据
 
-构建前按开发指南检查资源、设置正整数构建和测试并行度。`ayni-sim --list-experiments` 只列实际编译的用例；`--case HARNESS.S1.external_effect_survives_cut --output NEW_DIRECTORY` 执行单例；`--experiment HARNESS --output NEW_DIRECTORY` 执行本阶段自验证。`--experiment E2 --output NEW_DIRECTORY` 执行完整 E2 编译场景。`--experiment E1 --output NEW_DIRECTORY` 执行完整 E1。尚无用例的 E3/E4 不会空跑成功。
+构建前按开发指南检查资源、设置正整数构建和测试并行度。`ayni-sim --list-experiments` 只列实际编译的用例；`--case HARNESS.S1.external_effect_survives_cut --output NEW_DIRECTORY` 执行单例；`--experiment HARNESS --output NEW_DIRECTORY` 执行设施自验证；`--experiment E2/E1/E3 --output NEW_DIRECTORY` 中选择一个实验执行其完整编译场景。尚无用例的 E4 不会空跑成功。
 
 每例写出 `run.json` 与 `trace.jsonl`：实际源码修订、工具链、配置、ABI/schema、注入/重启、命令提交身份、公开 Goal/Task/Call 变化、独立效果计数、断言及首个失败。它是逐 step 公开观察与外部设施轨迹（含实际批次切断前缀、writer/boot、执行端 deadline/nonce 时间与停止测量），不是内部 journal 每条 transition 的镜像；记录不包含业务正文、密钥或媒体。输出目录须新建，拒绝覆盖已有证据。主失败、关闭失败与产物失败分别报告，任一失败 CLI 非零退出。
 

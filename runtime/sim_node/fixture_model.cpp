@@ -1,5 +1,6 @@
 #include "fixture_model.h"
 #include "fixture_call_barrier.h"
+#include <ayni/ayni.hpp>
 namespace ayni::runtime::fixtures {
 namespace {
 constexpr uint32_t text_limit = 512;
@@ -51,8 +52,8 @@ ayni_submit_result_t ModelProbe::submit(void *ctx, const ayni_provider_request_v
     }
     const auto status = self.original_->submit(self.original_->ctx, request, completion);
     if (status != AYNI_SUBMIT_REJECTED_NOT_RETAINED) {
-        self.dispatch_ =
-            Dispatch{request->logical_call_id, now + self.delay_us_, DispatchPhase::queued};
+        self.dispatch_ = Dispatch{request->logical_call_id, now + self.delay_us_,
+                                  DispatchPhase::queued, request->attempt, completion};
     }
     return status;
 }
@@ -122,5 +123,19 @@ ayni_status_t ModelProbe::close() {
 void ModelProbe::abandon_kernel() {
     provider_.abandon_kernel();
     dispatch_.reset();
+}
+std::optional<ayni_attempt_ref_v1> ModelProbe::attempt() const {
+    return dispatch_ ? std::optional<ayni_attempt_ref_v1>{dispatch_->attempt} : std::nullopt;
+}
+ayni_status_t ModelProbe::post_attempt(ayni_attempt_ref_v1 attempt) {
+    if (!dispatch_ || !provider_.pending()) {
+        return AYNI_NOT_FOUND;
+    }
+    auto result = initialized<ayni_provider_result_v1>();
+    result.attempt = attempt;
+    result.outcome = AYNI_CALL_COMPLETED;
+    result.effect = AYNI_CALL_EFFECT_COMPLETE;
+    result.status = AYNI_OK;
+    return ayni_provider_post(dispatch_->target, &result);
 }
 } // namespace ayni::runtime::fixtures

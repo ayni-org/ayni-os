@@ -11,7 +11,7 @@ def main():
     executable = sys.argv[1]
     with tempfile.TemporaryDirectory(prefix="ayni-experiment-replay-") as directory:
         root = Path(directory)
-        for suite in ("HARNESS", "E2", "E1"):
+        for suite in ("HARNESS", "E2", "E1", "E3"):
             outputs = []
             for iteration in range(2):
                 output = root / (suite + str(iteration))
@@ -67,6 +67,11 @@ def main():
                     for manifest, trace in artifacts.values():
                         assert "SYNTHETIC_PRIVATE_" not in trace and "SYNTHETIC_PROFILE_" not in trace
                         assert "SYNTHETIC_SOURCE_" not in trace and "SYNTHETIC_USER_NEW_VERSION_" not in trace
+                elif suite == "E3":
+                    canonical = (Path(__file__).resolve().parents[2] / "contracts/fixtures/cases.md").read_text()
+                    assert set(re.findall(r"`(E3\.[^`]+)`", canonical)) == artifacts.keys()
+                    assert all(value[0]["deployment"] == "replacement" for value in artifacts.values())
+                    assert all("SYNTHETIC_PRIVATE_E3" not in value[1] for value in artifacts.values())
                 else:
                     assert len(artifacts) == 7
                 outputs.append(artifacts)

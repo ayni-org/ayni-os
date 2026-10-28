@@ -30,7 +30,7 @@ add_custom_target(ayni_generate_experiment_fixtures
     BYPRODUCTS "${experiment_source}"
     WORKING_DIRECTORY "${AYNI_ROOT}" VERBATIM)
 add_library(ayni_sim_experiments STATIC experiment_evidence.cpp experiment_service.cpp experiment_world.cpp experiment_execution.cpp experiment_shared.cpp experiment_shared_memory.cpp experiment_shared_limits.cpp experiment_shared_resources.cpp experiment_shared_invalidation.cpp experiment_shared_presentation.cpp experiment_shared_ingress.cpp
-    experiment_runner.cpp "${experiment_source}")
+    experiment_replacement.cpp experiment_replacement_scenarios.cpp experiment_runner.cpp "${experiment_source}")
 add_dependencies(ayni_sim_experiments ayni_generate_experiment_fixtures)
 target_include_directories(ayni_sim_experiments PUBLIC include PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(ayni_sim_experiments PRIVATE
@@ -39,7 +39,7 @@ target_link_libraries(ayni_sim_experiments PUBLIC ayni_runtime_sim_node PRIVATE 
 # White-box fault injection reuses Core codecs only in the tests/ source. This
 # optional test dependency adds no Core header/type to production runtime APIs.
 if(AYNI_BUILD_TESTS)
-    target_sources(ayni_sim_experiments PRIVATE "${AYNI_ROOT}/tests/experiments/record_cut.cpp" "${AYNI_ROOT}/tests/experiments/completion_slots.cpp")
+    target_sources(ayni_sim_experiments PRIVATE "${AYNI_ROOT}/tests/experiments/record_cut.cpp" "${AYNI_ROOT}/tests/experiments/completion_slots.cpp" "${AYNI_ROOT}/tests/experiments/progress_evidence.cpp")
     target_include_directories(ayni_sim_experiments PRIVATE "${AYNI_ROOT}/core")
 else()
     target_sources(ayni_sim_experiments PRIVATE experiment_no_record_probe.cpp)

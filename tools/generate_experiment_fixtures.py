@@ -16,7 +16,7 @@ CASE_ID = re.compile(r"(?:HARNESS|E[1-4])\.(?:S[1-9][0-9]*|F(?:0|[1-9][0-9]*))\.
 METRICS = {"executions", "pending_calls", "pending_storage", "goal_count", "call_count",
            "call_phase", "call_outcome", "call_effect", "lifecycle", "writer_epoch", "faults_applied",
            "submissions", "call_durable", "call_operation", "task_count", "call_query_conclusion",
-           "goal_state", "task_state", "kernel_boot", "writer_advanced", "boot_advanced", "durable_kept", "memory_count", "task_steps", "checkpoint_value", "task_occurrence", "model_calls_used", "model_call_limit", "grant_lifecycle", "physical_submissions", "physical_samples", "physical_renewals", "physical_challenges", "held_renewals", "control_phase", "control_deadline", "shared_completed"}
+           "goal_state", "task_state", "kernel_boot", "writer_advanced", "boot_advanced", "durable_kept", "memory_count", "task_steps", "checkpoint_value", "task_occurrence", "model_calls_used", "model_call_limit", "grant_lifecycle", "physical_submissions", "physical_samples", "physical_renewals", "physical_challenges", "held_renewals", "control_phase", "control_deadline", "shared_completed", "replacement_completed"}
 VALUES = {
     "grant_lifecycle": {name: "AYNI_GRANT_" + name for name in ("ACTIVE", "REVOKED", "EXPIRED")},
     "control_phase": {name: "AYNI_CONTROL_" + name for name in ("IDLE", "ACTIVE", "STOPPING", "STOPPED")},
@@ -56,6 +56,13 @@ def action(item):
     if not isinstance(item, dict) or "op" not in item:
         raise FixtureError("action needs op")
     op = item["op"]
+    if op == "replacement":
+        keys(item, {"op", "scenario"})
+        scenario = item["scenario"]
+        if scenario not in {"baseline_checkpoint", "swap_provider_late_old_result", "unknown_call_not_rebound", "new_call_uses_new_binding", "completed_operation_returns_old", "swap_strategy_at_checkpoint", "incompatible_private_checkpoint", "unknown_strategy_version"}:
+            raise FixtureError("unsupported replacement scenario")
+        return ('w.evidence.equal("replacement deployment required", w.replacement != nullptr, 1); '
+                f'if (w.evidence.ok()) w.replacement->run(ReplacementScenario::{scenario})')
     if op == "shared":
         keys(item, {"op", "scenario"})
         scenario = item["scenario"]
@@ -212,7 +219,7 @@ def load_case(path, clauses, steps):
     check_nesting(item)
     keys(item, {"fixture_schema", "profile", "case_id", "experiment_step", "clauses", "script"},
          {"query_authority", "deployment"})
-    if item.get("deployment", "counter") not in {"counter", "physical", "shared", "shared_physical"}:
+    if item.get("deployment", "counter") not in {"counter", "physical", "shared", "shared_physical", "replacement"}:
         raise FixtureError("unsupported deployment")
     if item.get("query_authority", "AUTHORITATIVE") not in {"NONE", "BEST_EFFORT", "AUTHORITATIVE"}:
         raise FixtureError("unsupported query authority")
@@ -239,6 +246,10 @@ def load_case(path, clauses, steps):
             isinstance(a, dict) and (a.get("op") == "shared" or a.get("metric") == "shared_completed")
             for a in script):
         raise FixtureError("shared control/evidence requires shared deployment")
+    if item.get("deployment", "counter") != "replacement" and any(
+            isinstance(a, dict) and (a.get("op") == "replacement" or a.get("metric") == "replacement_completed")
+            for a in script):
+        raise FixtureError("replacement control/evidence requires replacement deployment")
     physical_metrics = {name for name in METRICS if name.startswith("physical_")} | {
         "held_renewals", "control_phase", "control_deadline"}
     if item.get("deployment", "counter") not in {"physical","shared_physical"} and any(
@@ -272,7 +283,7 @@ def compile_cases(root):
     if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root, text=True):
         revision += "+dirty"
     return ('#include "experiment_support.h"\n#include <ayni/runtime/sim_node/experiments.h>\n'
-            '#include \"experiment_execution.h\"\n#include \"experiment_shared.h\"\n'
+            '#include \"experiment_execution.h\"\n#include \"experiment_shared.h\"\n#include \"experiment_replacement.h\"\n'
             'namespace ayni::runtime::experiments {\nnamespace {\n' + "\n".join(functions) +
             "\nconst Case table[] = {\n" + ",\n".join(entries) + "\n};\n}\n"
             "Cases cases() { return {table, sizeof(table)/sizeof(table[0])}; }\n"

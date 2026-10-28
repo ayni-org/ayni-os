@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E3.S4.swap_strategy_at_checkpoint",
+  "experiment_step": "E3 步骤 4",
+  "clauses": [
+    "C-CALL-004",
+    "C-POLICY-008",
+    "C-POLICY-010"
+  ],
+  "deployment": "replacement",
+  "script": [
+    {
+      "op": "replacement",
+      "scenario": "swap_strategy_at_checkpoint"
+    },
+    {
+      "op": "expect",
+      "metric": "replacement_completed",
+      "value": "1"
+    }
+  ]
+}

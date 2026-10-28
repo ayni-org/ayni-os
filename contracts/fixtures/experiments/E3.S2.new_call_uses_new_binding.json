@@ -1,0 +1,24 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E3.S2.new_call_uses_new_binding",
+  "experiment_step": "E3 步骤 2",
+  "clauses": [
+    "C-CALL-011",
+    "C-ID-006",
+    "C-CALL-008",
+    "C-ID-004"
+  ],
+  "deployment": "replacement",
+  "script": [
+    {
+      "op": "replacement",
+      "scenario": "new_call_uses_new_binding"
+    },
+    {
+      "op": "expect",
+      "metric": "replacement_completed",
+      "value": "1"
+    }
+  ]
+}

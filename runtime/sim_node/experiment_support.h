@@ -58,7 +58,8 @@ enum class Metric {
     held_renewals,
     control_phase,
     control_deadline,
-    shared_completed
+    shared_completed,
+    replacement_completed
 };
 ayni_string_v1 text(const char *value);
 // Exact record boundaries are decoded only by the optional tests/ probe, using
@@ -80,6 +81,31 @@ enum class Damage { torn_tail, committed };
 
 bool verify_completion_slots(
     class Evidence &); // Test-only owner probe; explicit UNSUPPORTED otherwise.
+// Value-only inspection for experimental evidence absent from the public ABI.
+// The optional tests/ implementation reads through the established test accessor.
+struct TaskProgressEvidence {
+    std::string writer;
+    uint32_t writer_version = 0;
+    std::vector<uint8_t> state;
+    std::vector<std::string> steps;
+    bool operator==(const TaskProgressEvidence &other) const {
+        return writer == other.writer && writer_version == other.writer_version &&
+               state == other.state && steps == other.steps;
+    }
+};
+struct CallRouteEvidence {
+    std::string binding, capability, provider, endpoint, step;
+    uint32_t binding_version = 0, capability_version = 0, provider_version = 0;
+    bool operator==(const CallRouteEvidence &other) const {
+        return binding == other.binding && capability == other.capability &&
+               provider == other.provider && endpoint == other.endpoint && step == other.step &&
+               binding_version == other.binding_version &&
+               capability_version == other.capability_version &&
+               provider_version == other.provider_version;
+    }
+};
+ayni_status_t inspect_task_progress(const ayni_kernel_t *, uint64_t task, TaskProgressEvidence &);
+ayni_status_t inspect_call_route(const ayni_kernel_t *, uint64_t call, CallRouteEvidence &);
 
 // One execution record belongs to the external test world, surviving Kernel loss.
 // Execution counts every request to execute, so duplicate effects cannot be hidden
@@ -169,6 +195,7 @@ class Evidence {
 // only the Host durable image and external service ledger survive an abrupt cut.
 class Physical;
 class SharedServices;
+class Replacement;
 class World {
   public:
     explicit World(Evidence &evidence,
@@ -230,6 +257,7 @@ class World {
     Evidence &evidence;
     std::unique_ptr<Physical> physical;
     std::unique_ptr<SharedServices> shared;
+    std::unique_ptr<Replacement> replacement;
     uint64_t steps = 0;
     uint32_t items_per_step = step_items; // Work items per bounded Core step, 1..step_items.
     enum class Storage { complete, held };

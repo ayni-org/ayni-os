@@ -99,6 +99,8 @@ E2 的计数路径使用不可默认重复的 `test.increment`，断言 Kernel �
 
 E3 步骤 6（真实外部模型 API）不属于 M1 确定性夹具，M2 以脱敏证据单独记录（C-PROV-011）。
 
+ADR-0078：步骤 1～5 的八项完整 Native/Sim 用例已编译到 `experiments/`，由 `ayni-sim --experiment E3` 与 `ExperimentFixtures` 共用执行；`ReplacementPolicy.both_implementations_repeat_the_same_common_snapshot_decision` 比较同一共同快照的两次输出。原绑定、共同步骤及私有检查点由测试专属只读探针核对；测试关闭时明确 UNSUPPORTED。状态、版本和独立计数见实际产物；ESP32 与真实模型仍未验证。
+
 ## E4：有界组合、订阅依赖与语义升级/回滚
 
 | 用例 ID | 场景与注入 | 主要断言 | 条款 |

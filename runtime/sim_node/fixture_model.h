@@ -20,6 +20,11 @@ class ModelProbe {
     uint32_t pending() const { return provider_.pending(); }
     uint64_t next_due_us() const { return dispatch_ ? dispatch_->due_us : UINT64_MAX; }
     uint64_t executions() const { return provider_.executions(); }
+    // Value-only packet identity survives a cut; the target always belongs to
+    // a current live delivery. Never expose an old arena pointer to a scenario.
+    std::optional<ayni_attempt_ref_v1> attempt() const;
+    uint64_t current_call() const { return dispatch_ ? dispatch_->call : 0; }
+    ayni_status_t post_attempt(ayni_attempt_ref_v1);
 
   private:
     providers::mock::Provider provider_;
@@ -33,6 +38,8 @@ class ModelProbe {
         uint64_t call;
         uint64_t due_us;
         DispatchPhase phase;
+        ayni_attempt_ref_v1 attempt;
+        ayni_provider_completion_t *target;
     };
     std::optional<Dispatch> dispatch_;
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
