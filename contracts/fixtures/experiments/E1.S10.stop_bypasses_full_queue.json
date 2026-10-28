@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S10.stop_bypasses_full_queue",
+  "experiment_step": "E1 步骤 10",
+  "clauses": [
+    "C-STOP-001"
+  ],
+  "deployment": "physical",
+  "script": [
+    {
+      "op": "physical",
+      "action": "stop_full_queue"
+    },
+    {
+      "op": "expect",
+      "metric": "physical_submissions",
+      "value": "1"
+    }
+  ]
+}

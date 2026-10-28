@@ -254,7 +254,7 @@ Core 和安全保守范围沿用 P4：`core/`、`control/permit_gate/`、`provid
 
 ## 完整实验运行设施
 
-用户 2026-10-28 恢复完整 E2→E1→E3→E4 所需故障/恢复活动，变异继续暂停。先按本文检查资源并设置构建/测试并行度，再构建 `ayni-sim` 与 `ayni_experiment_tests`；当前 `--list-experiments` 列出 HARNESS 设施自验证，完整 E 用例随对应阶段加入，空实验拒绝。
+用户 2026-10-28 恢复完整 E2→E1→E3→E4 所需故障/恢复活动，变异继续暂停。先按本文检查资源并设置构建/测试并行度，再构建 `ayni-sim` 与 `ayni_experiment_tests`；当前 `--list-experiments` 列出 HARNESS 设施自验证及完整 E2（#98）与 E1（ADR-0077）Native/Sim 场景，E3/E4 随对应阶段加入，空实验拒绝。
 
 ```sh
 cmake --build --preset native-debug --target ayni-sim ayni_experiment_tests

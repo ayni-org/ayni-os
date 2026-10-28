@@ -57,7 +57,8 @@ enum class Metric {
     physical_challenges,
     held_renewals,
     control_phase,
-    control_deadline
+    control_deadline,
+    shared_completed
 };
 ayni_string_v1 text(const char *value);
 // Exact record boundaries are decoded only by the optional tests/ probe, using
@@ -77,6 +78,9 @@ enum class RecordPoint {
 };
 enum class Damage { torn_tail, committed };
 
+bool verify_completion_slots(
+    class Evidence &); // Test-only owner probe; explicit UNSUPPORTED otherwise.
+
 // One execution record belongs to the external test world, surviving Kernel loss.
 // Execution counts every request to execute, so duplicate effects cannot be hidden
 // by the ledger; this service deliberately does not perform operation-ID deduplication.
@@ -88,6 +92,8 @@ class ActionService {
   public:
     // Descriptors live here until the entire deployment is quiescent.
     explicit ActionService(ayni_call_query_authority_t query = AYNI_CALL_QUERY_AUTHORITATIVE);
+    ActionService(const char *capability, const ayni_call_resource_v1 *, uint32_t count,
+                  uint32_t effects = 0);
     ayni_provider_v1 describe();
     ayni_call_capability_v1 capability() const { return capability_; }
     uint64_t executions() const;
@@ -102,17 +108,20 @@ class ActionService {
     ayni_status_t post_old_attempt();
     // All producers are synchronous owner controls: forget pointers before power loss.
     void quiesce();
+    ayni_status_t drain(); // Synthetic service shutdown confirms its known effect, never hardware.
 
   private:
     struct Borrow {
         ayni_attempt_ref_v1 attempt{};
         uint64_t call = 0, operation = 0;
         ayni_provider_completion_t *completion = nullptr; // Null: this slot owns no borrow.
+        bool executed = false; // External effect ledger for this delivery, not a Core state copy.
     };
     std::array<Borrow, operation_capacity> calls_{}, queries_{};
     std::array<Effect, operation_capacity> effects_{};
     ayni_call_capability_v1 capability_{};
-    uint64_t submissions_ = 0; // Accepted deliveries, not effects; survives Kernel loss.
+    ayni_string_v1 provider_id_{}; // Static fixture identity, stable across simulated boots.
+    uint64_t submissions_ = 0;     // Accepted deliveries, not effects; survives Kernel loss.
     struct LastReceipt {
         ayni_provider_completion_t *target;
         ayni_provider_result_v1 result;
@@ -159,6 +168,7 @@ class Evidence {
 // Owns one complete simulated deployment. Registration/strategy may vary at restart;
 // only the Host durable image and external service ledger survive an abrupt cut.
 class Physical;
+class SharedServices;
 class World {
   public:
     explicit World(Evidence &evidence,
@@ -189,6 +199,9 @@ class World {
     bool saved_call_missing();
     bool retry(ayni_status_t expected = AYNI_OK);
     bool revoke();
+    bool revoke(uint64_t grant_id);
+    uint64_t owner_session() const { return session_; }
+    uint64_t last_command() const { return next_command_; } // Diagnostic receipt lookup only.
     bool conflict_command();
     bool expire_command();
     bool read_result();
@@ -216,6 +229,7 @@ class World {
     ActionService service;
     Evidence &evidence;
     std::unique_ptr<Physical> physical;
+    std::unique_ptr<SharedServices> shared;
     uint64_t steps = 0;
     uint32_t items_per_step = step_items; // Work items per bounded Core step, 1..step_items.
     enum class Storage { complete, held };
@@ -239,6 +253,13 @@ class World {
     std::optional<AcceptedGoal> accepted_goal_;
     std::optional<uint64_t> grant_;
     ayni_goal_create_v1 goal_body(const char *type, uint64_t agent) const;
+    struct HostSchedule {
+        ayni_step_report_v1 report;
+        uint64_t seen_wakes; // Host wake count sampled before step; new wakes run immediately.
+    };
+    std::optional<HostSchedule>
+        schedule_; // None before first step/restart; never a domain-state copy.
+    ayni_status_t close_services();
     bool register_profile();
     bool observe();
     void detach_clients(); // Ends all synchronous client borrows before any arena loss.

@@ -2,6 +2,9 @@
 // fail explicitly rather than substituting a different cut or reporting success.
 #include "experiment_support.h"
 namespace ayni::runtime::experiments {
+bool verify_completion_slots(Evidence &e) {
+    return e.status("completion probe requires AYNI_BUILD_TESTS", AYNI_UNSUPPORTED);
+}
 bool World::hold_record_append(RecordPoint) {
     return evidence.status("record probe requires AYNI_BUILD_TESTS", AYNI_UNSUPPORTED);
 }

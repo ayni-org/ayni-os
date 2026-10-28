@@ -1,0 +1,24 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S4.timeout_cancel_releases",
+  "experiment_step": "E1 步骤 4",
+  "clauses": [
+    "C-CALL-009",
+    "C-RES-007",
+    "C-HOST-005",
+    "C-PROV-006"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "timeout_cancel_releases"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

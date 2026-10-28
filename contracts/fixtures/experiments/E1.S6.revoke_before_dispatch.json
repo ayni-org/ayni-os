@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S6.revoke_before_dispatch",
+  "experiment_step": "E1 步骤 6",
+  "clauses": [
+    "C-AUTH-005",
+    "C-AUTH-011"
+  ],
+  "deployment": "physical",
+  "script": [
+    {
+      "op": "physical",
+      "action": "revoke_queued"
+    },
+    {
+      "op": "expect",
+      "metric": "physical_submissions",
+      "value": "0"
+    }
+  ]
+}

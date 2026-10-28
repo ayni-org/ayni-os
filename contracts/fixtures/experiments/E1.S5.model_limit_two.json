@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S5.model_limit_two",
+  "experiment_step": "E1 步骤 5",
+  "clauses": [
+    "C-RUN-001",
+    "C-RUN-002",
+    "C-RUN-003"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "model_limit_two"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

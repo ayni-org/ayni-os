@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S8.renewal_rechecks_grant",
+  "experiment_step": "E1 步骤 8",
+  "clauses": [
+    "C-SUB-003",
+    "C-RES-010",
+    "C-PRIM-005"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "renewal_rechecks_grant"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ ayni_string_v1 text(const char *value) {
     return {value, static_cast<uint32_t>(std::strlen(value))};
 }
 ActionService::ActionService(ayni_call_query_authority_t query_authority) {
+    provider_id_ = text("experiment.counter");
     capability_ = initialized<ayni_call_capability_v1>();
     capability_.version = 1;
     capability_.capability_id = text("test.increment");
@@ -26,10 +27,19 @@ ActionService::ActionService(ayni_call_query_authority_t query_authority) {
                             nullptr,
                             nullptr};
 }
+ActionService::ActionService(const char *capability, const ayni_call_resource_v1 *resources,
+                             uint32_t count, uint32_t effects)
+    : ActionService() {
+    provider_id_ = capability_.capability_id = text(capability);
+    capability_.contract.effects = effects;
+    capability_.contract.input_text_limit = effects == AYNI_CALL_EFFECT_NOTIFICATION ? 512U : 0U;
+    capability_.contract.resource_count = count;
+    capability_.contract.resources = resources;
+}
 ayni_provider_v1 ActionService::describe() {
     auto out = initialized<ayni_provider_v1>();
     out.version = 1;
-    out.provider_id = out.endpoint_id = text("experiment.counter");
+    out.provider_id = out.endpoint_id = provider_id_;
     out.ctx = this;
     out.capability_count = 1;
     out.capabilities = &capability_;
@@ -44,7 +54,8 @@ ayni_submit_result_t ActionService::submit(void *ctx, const ayni_provider_reques
                                            ayni_provider_completion_t *completion) {
     auto &self = *static_cast<ActionService *>(ctx);
     if (!request || !completion || request->struct_size != sizeof(*request) ||
-        !request->operation_id || request->arguments.field_count || request->text.size) {
+        !request->operation_id || request->arguments.field_count ||
+        request->text.size > self.capability_.contract.input_text_limit) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     for (auto &slot : self.calls_) {
@@ -95,7 +106,7 @@ uint32_t ActionService::pending_queries() const {
                                                [](const Borrow &v) { return v.completion; }));
 }
 ayni_status_t ActionService::execute(ayni_kernel_t *kernel) {
-    for (const auto &slot : calls_) {
+    for (auto &slot : calls_) {
         if (!slot.completion) {
             continue;
         }
@@ -122,6 +133,7 @@ ayni_status_t ActionService::execute(ayni_kernel_t *kernel) {
         }
         record->operation = slot.operation;
         ++record->executions;
+        slot.executed = true;
         return AYNI_OK;
     }
     return AYNI_NOT_FOUND;
@@ -222,5 +234,20 @@ ayni_status_t ActionService::post_old_attempt() {
         }
     }
     return AYNI_NOT_FOUND;
+}
+} // namespace ayni::runtime::experiments
+
+namespace ayni::runtime::experiments {
+ayni_status_t ActionService::drain() {
+    while (pending()) {
+        const auto &slot = *std::find_if(calls_.begin(), calls_.end(),
+                                         [](const Borrow &v) { return v.completion; });
+        const auto status = receipt(AYNI_CALL_CANCELLED, slot.executed ? AYNI_CALL_EFFECT_COMPLETE
+                                                                       : AYNI_CALL_EFFECT_NONE);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    return AYNI_OK;
 }
 } // namespace ayni::runtime::experiments

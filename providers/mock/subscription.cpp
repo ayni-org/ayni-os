@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <ayni/providers/mock/subscription.h>
 #include <cstring>
 #include <new>
@@ -358,6 +359,35 @@ ayni_status_t SubscriptionProvider::close() {
     }
     impl_.reset();
     return AYNI_OK;
+}
+void SubscriptionProvider::abandon_kernel() {
+    if (!impl_) {
+        return;
+    }
+    for (uint32_t at = 0; at < impl_->config.request_capacity; ++at) {
+        auto &slot = impl_->slots[at];
+        if (slot.completion) {
+            impl_->stop(slot, AYNI_CALL_CANCELLED);
+        }
+        slot = {};
+    }
+}
+uint64_t SubscriptionProvider::next_due_us() const {
+    if (!impl_) {
+        return UINT64_MAX;
+    }
+    auto due = UINT64_MAX;
+    for (uint32_t at = 0; at < impl_->config.request_capacity; ++at) {
+        const auto &slot = impl_->slots[at];
+        if (!slot.completion) {
+            continue;
+        }
+        const auto next = slot.phase != Impl::Phase::active || slot.renewal
+                              ? impl_->now()
+                              : std::min(slot.next_frame_us, slot.opening.valid_until_us);
+        due = std::min(due, next);
+    }
+    return due;
 }
 uint32_t SubscriptionProvider::pending() const {
     uint32_t count = 0;

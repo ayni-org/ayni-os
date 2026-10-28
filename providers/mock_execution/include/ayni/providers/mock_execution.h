@@ -37,7 +37,9 @@ class Executor {
     ayni_status_t configure(const Config &config); // One bounded startup allocation.
     ayni_status_t describe_provider(ayni_provider_v1 &out) const;
     ayni_status_t describe_executor(ayni_executor_v1 &out) const;
-    ayni_status_t advance();         // One sample/completion and optional local stop measurement.
+    ayni_status_t advance(); // One sample/completion and optional local stop measurement.
+    // Owner setup before the first accepted operation; never changes a live stop proof.
+    ayni_status_t set_stop_confirmation(StopConfirmation);
     ayni_status_t confirm_stopped(); // Explicit simulated measurement, only after STOPPING.
     // Held answers: serves every held request in arrival order against the
     // gate now and posts its answer. OK, or the first refused post's status.

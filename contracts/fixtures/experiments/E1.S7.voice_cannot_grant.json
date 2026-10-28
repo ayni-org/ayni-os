@@ -1,0 +1,25 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S7.voice_cannot_grant",
+  "experiment_step": "E1 步骤 7",
+  "clauses": [
+    "C-AUTH-009",
+    "C-AUTH-010",
+    "C-PROD-002",
+    "C-PROD-035",
+    "C-TRUST-001"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "voice_cannot_grant"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

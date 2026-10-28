@@ -16,7 +16,7 @@ CASE_ID = re.compile(r"(?:HARNESS|E[1-4])\.(?:S[1-9][0-9]*|F(?:0|[1-9][0-9]*))\.
 METRICS = {"executions", "pending_calls", "pending_storage", "goal_count", "call_count",
            "call_phase", "call_outcome", "call_effect", "lifecycle", "writer_epoch", "faults_applied",
            "submissions", "call_durable", "call_operation", "task_count", "call_query_conclusion",
-           "goal_state", "task_state", "kernel_boot", "writer_advanced", "boot_advanced", "durable_kept", "memory_count", "task_steps", "checkpoint_value", "task_occurrence", "model_calls_used", "model_call_limit", "grant_lifecycle", "physical_submissions", "physical_samples", "physical_renewals", "physical_challenges", "held_renewals", "control_phase", "control_deadline"}
+           "goal_state", "task_state", "kernel_boot", "writer_advanced", "boot_advanced", "durable_kept", "memory_count", "task_steps", "checkpoint_value", "task_occurrence", "model_calls_used", "model_call_limit", "grant_lifecycle", "physical_submissions", "physical_samples", "physical_renewals", "physical_challenges", "held_renewals", "control_phase", "control_deadline", "shared_completed"}
 VALUES = {
     "grant_lifecycle": {name: "AYNI_GRANT_" + name for name in ("ACTIVE", "REVOKED", "EXPIRED")},
     "control_phase": {name: "AYNI_CONTROL_" + name for name in ("IDLE", "ACTIVE", "STOPPING", "STOPPED")},
@@ -56,10 +56,17 @@ def action(item):
     if not isinstance(item, dict) or "op" not in item:
         raise FixtureError("action needs op")
     op = item["op"]
+    if op == "shared":
+        keys(item, {"op", "scenario"})
+        scenario = item["scenario"]
+        if scenario not in {"model_slot_contention", "local_rule_progresses", "private_read_denied", "explicit_share_then_revoke", "profile_scoped_to_agent", "voice_cannot_grant", "model_limit_two", "restart_keeps_model_calls", "exclusive_queue_shared_parallel", "resource_group_all_or_nothing", "timeout_cancel_releases", "close_stops_generation", "renewal_rechecks_grant", "delete_blocks_stale_summary", "user_edit_not_overwritten", "cleanup_resumes_after_restart", "revoke_blocks_stale_summary", "pause_keeps_reminder", "presentation_success_completes", "presentation_failed_pending", "presentation_unknown_pending", "duplicate_receipt_once", "receipt_lost_reconciled", "quiet_hours_deferred", "estop_keeps_reminder", "completion_slots_when_queue_full", "ordinary_work_expires_with_reason"}:
+            raise FixtureError("unsupported shared scenario")
+        return ('w.evidence.equal("shared deployment required", w.shared != nullptr, 1); '
+                f'if (w.evidence.ok()) w.shared->run(SharedScenario::{scenario})')
     if op == "physical":
         keys(item, {"op", "action"}, {"us", "status", "mode"})
         control = item["action"]
-        simple = {"prepare", "mark_invalidated", "stopped_within_bound", "invalidate_kernel", "invalidate_calibration",
+        simple = {"revoke_queued", "revoke_running", "unauthorized", "stop_full_queue", "quarantine", "prepare", "mark_invalidated", "stopped_within_bound", "invalidate_kernel", "invalidate_calibration",
                   "estop", "estop_before_dispatch", "reset_estop", "replay_permit_rejected", "replay_renewal_rejected", "unpermitted_rejected", "power_cycle", "drop_renewal"}
         prefix = 'w.evidence.equal("physical deployment required", w.physical != nullptr, 1); if (w.evidence.ok()) '
         if control in simple:
@@ -205,7 +212,7 @@ def load_case(path, clauses, steps):
     check_nesting(item)
     keys(item, {"fixture_schema", "profile", "case_id", "experiment_step", "clauses", "script"},
          {"query_authority", "deployment"})
-    if item.get("deployment", "counter") not in {"counter", "physical"}:
+    if item.get("deployment", "counter") not in {"counter", "physical", "shared", "shared_physical"}:
         raise FixtureError("unsupported deployment")
     if item.get("query_authority", "AUTHORITATIVE") not in {"NONE", "BEST_EFFORT", "AUTHORITATIVE"}:
         raise FixtureError("unsupported query authority")
@@ -228,9 +235,13 @@ def load_case(path, clauses, steps):
         raise FixtureError("expected 1..128 actions")
     if not isinstance(script[-1], dict) or script[-1].get("op") != "expect":
         raise FixtureError("case needs explicit final evidence")
+    if item.get("deployment", "counter") not in {"shared","shared_physical"} and any(
+            isinstance(a, dict) and (a.get("op") == "shared" or a.get("metric") == "shared_completed")
+            for a in script):
+        raise FixtureError("shared control/evidence requires shared deployment")
     physical_metrics = {name for name in METRICS if name.startswith("physical_")} | {
         "held_renewals", "control_phase", "control_deadline"}
-    if item.get("deployment", "counter") != "physical" and any(
+    if item.get("deployment", "counter") not in {"physical","shared_physical"} and any(
             isinstance(a, dict) and (a.get("op") == "physical" or a.get("metric") in physical_metrics)
             for a in script):
         raise FixtureError("physical control/evidence requires physical deployment")
@@ -261,7 +272,7 @@ def compile_cases(root):
     if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root, text=True):
         revision += "+dirty"
     return ('#include "experiment_support.h"\n#include <ayni/runtime/sim_node/experiments.h>\n'
-            '#include \"experiment_execution.h\"\n'
+            '#include \"experiment_execution.h\"\n#include \"experiment_shared.h\"\n'
             'namespace ayni::runtime::experiments {\nnamespace {\n' + "\n".join(functions) +
             "\nconst Case table[] = {\n" + ",\n".join(entries) + "\n};\n}\n"
             "Cases cases() { return {table, sizeof(table)/sizeof(table[0])}; }\n"

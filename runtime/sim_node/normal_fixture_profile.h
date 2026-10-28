@@ -1,6 +1,7 @@
 // Concrete, single-owner fixture deployment; producers progress outside step.
 #ifndef AYNI_RUNTIME_NORMAL_FIXTURE_PROFILE_H
 #define AYNI_RUNTIME_NORMAL_FIXTURE_PROFILE_H
+#include "fixture_model.h"
 #include <array>
 #include <ayni/applications/assistant.h>
 #include <ayni/applications/normal_fixtures.h>
@@ -37,31 +38,6 @@ class Counter {
     ayni_call_resource_v1 resource_{};
     ayni_call_capability_v1 capability_{};
     uint64_t executions_ = 0;
-    static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
-                                       ayni_provider_completion_t *);
-    static ayni_submit_result_t cancel(void *, ayni_attempt_ref_v1);
-};
-// Real reusable Mock plus a fake-time gate; the probe owns only dispatch diagnostics.
-class ModelProbe {
-  public:
-    ayni_status_t configure(providers::mock::Variant, const Config &, Clock);
-    ayni_provider_v1 describe();
-    ayni_status_t advance(ayni_kernel_t *, uint64_t &barrier_checks);
-    ayni_status_t close();
-    uint64_t executions() const { return provider_.executions(); }
-
-  private:
-    providers::mock::Provider provider_;
-    std::optional<ayni_provider_v1> original_;
-    Clock clock_{};
-    uint64_t delay_us_ = 0;
-    enum class DispatchPhase { queued, checked, cancelled };
-    struct Dispatch {
-        uint64_t call;
-        uint64_t due_us;
-        DispatchPhase phase;
-    };
-    std::optional<Dispatch> dispatch_;
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
                                        ayni_provider_completion_t *);
     static ayni_submit_result_t cancel(void *, ayni_attempt_ref_v1);

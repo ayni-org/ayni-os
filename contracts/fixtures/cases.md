@@ -2,7 +2,7 @@
 
 M1 要实现的确定性用例，格式见 [README.md](README.md)。每个计划步骤至少有一个用例；同一场景只在切断点或回答上不同的，在一行中列出多个用例 ID，每个 ID 仍是一个独立文件。条款列只写该用例主要证明的条款，步骤与条款的完整对应见 [traceability.md](../traceability.md)。本清单在 M1 写用例时可以增补，删除或改名须说明原因。
 
-E1 的确定性基线沿用计划 §10.2：每 Task 模型调用上限 2 次、设备模型并发槽 1；正常 Mock 在虚拟 100 ms 完成，超时用例延迟到 1,500 ms，请求 deadline 1,000 ms；资源等待上限 500 ms；本地规则事件在 10 次 `step` 内处理。
+E1 的确定性基线沿用计划 §10.2：每 Task 模型调用上限 2 次、设备模型并发槽 1；正常 Mock 在虚拟 100 ms 完成，超时用例延迟到 1,500 ms，请求 deadline 1,000 ms；资源等待上限 30 秒（用户 2026-10-28 修订原 500 ms）；本地规则事件在 10 次 `step` 内处理。
 
 ## E1：多个 Agent 共用系统服务
 
@@ -18,6 +18,8 @@ E1 的确定性基线沿用计划 §10.2：每 Task 模型调用上限 2 次、�
 | `E1.S4.unconfirmed_stop_quarantines` | 模拟执行器只报告停止指令已送达，没有停止确认 | 资源进入 `QUARANTINED`，不分配给下一动作；三种停止事实分别记录 | C-RES-008、C-STOP-006、C-LIFE-012、C-PRIM-004 |
 | `E1.S5.instance_quota_exhausted` | 已废止：ADR-0042 取消累计额度，保留历史用例 ID | 新运行限制用例另编号，不沿用旧用例宣称验证 | ADR-0042；C-RUN-001～004 |
 | `E1.S5.restart_keeps_consumption` | 已废止：ADR-0042 取消累计额度，保留历史用例 ID | 新运行限制用例另编号，不沿用旧用例宣称验证 | ADR-0042；C-RUN-001～004 |
+| `E1.S5.model_limit_two` | 替代旧累计额度场景：同一 Task 用完 2 次模型调用，普通暂停/恢复不清零，B 合法工作继续 | Task 计数 2、限制明确、模型槽释放；B 独立调用完成 | C-RUN-001、C-RUN-002、C-RUN-003 |
+| `E1.S5.restart_keeps_model_calls` | 同一已耗尽 Task 重启恢复 | 同一 Task 身份、已用调用数与上限保留，不自动追加调用 | C-RUN-002、C-RUN-003 |
 | `E1.S6.revoke_before_dispatch` | B 的运动请求排队时撤销运动授权 | 派发前拒绝；`trace_absent`：撤销之后的派发 | C-AUTH-005、C-AUTH-011 |
 | `E1.S6.revoke_in_flight` | 动作在途时撤销 | 发出取消；撤销响应依次为 `ACCEPTED`、`CANCELLING`、`STOP_CONFIRMED`；不显示为从未执行 | C-LIFE-013、C-AUTH-005 |
 | `E1.S6.unauthorised_motion_rejected` | A 提交 `motion.*` 调用 | 始终拒绝，派生工作不扩大授权 | C-AUTH-001、C-AUTH-002、C-AUTH-004 |
@@ -27,6 +29,7 @@ E1 的确定性基线沿用计划 §10.2：每 Task 模型调用上限 2 次、�
 | `E1.S8.renewal_rechecks_grant` | 撤销观察授权后到达续租时刻 | 续租失败，立即停止新采集与上传；资源按规则释放或隔离；媒体引用回收 | C-SUB-003、C-RES-010、C-PRIM-005 |
 | `E1.S9.delete_blocks_stale_summary` | 模型整理读取记录 X 后删除 X，再返回基于 X 的摘要 | 写回被 tombstone 拒绝，派生摘要失效；晚到结果不重新开放已取消工作 | C-PROD-030、C-PROD-031、C-RUN-006、C-PROV-007 |
 | `E1.S9.user_edit_not_overwritten` | 整理期间用户修改 X，旧结果返回 | 返回 `AYNI_REVISION_CONFLICT`，用户的新版本保留 | C-COMMIT-012、C-ID-001 |
+| `E1.S9.revoke_blocks_stale_summary` | B 按 CONTEXT 共享授权读取 A 记录并请求模型后，撤销原共享 Grant | 旧模型结果不进入新派生摘要；A 的原用户事实仍保留；不授予跨 Agent ORGANIZE 权限 | C-PROD-030、C-PROD-041 |
 | `E1.S9.cleanup_resumes_after_restart` | 删除后的正文清理进行中 `restart` | 清理继续，被删内容不复活 | C-PROD-030 |
 | `E1.S10.completion_slots_when_queue_full` | 普通事件队列满时投递存储确认与终态，并继续 submit | 确认与终态不丢失；完成槽耗尽时新 submit 返回 `AYNI_BUSY`；重复完成只应用一次 | C-HOST-006、C-LIMIT-008、C-CALL-012 |
 | `E1.S10.ordinary_work_expires_with_reason` | 持续的高优先工作压住普通工作 | 普通工作在等待上限后延后或过期并带原因码；停止链不进入普通资源队列 | C-RES-004、C-RES-005、C-RUN-007 |
@@ -37,6 +40,8 @@ E1 的确定性基线沿用计划 §10.2：每 Task 模型调用上限 2 次、�
 | `E1.S11.duplicate_receipt_once`、`E1.S11.receipt_lost_reconciled` | 回执重复；回执丢失后重启 | 重复回执不重复完成；丢失时按渠道属性对账，已确认的不重播 | C-PROD-014、C-PROD-013 |
 | `E1.S11.quiet_hours_deferred` | 提醒在安静时段到期 | 保持 `AVAILABLE`，按策略延后或过期，不标为完成；同一 occurrence 只触发一次 | C-PROD-016、C-TIME-005 |
 | `E1.S11.estop_keeps_reminder` | 提醒待呈现时按下急停 | 运动准入立即禁止；提醒不被取消，目标不被删除 | C-STOP-002 |
+
+32 个完整 E1 schema 1 用例在 `experiments/`；S3 非运动竞争使用 `test.actuator` 普通互斥测试资源，S4/S6/S10/S11 物理停止使用同一公开许可链与独立 Mock 执行器 `mock.actuator`，不绕过 ACTUATOR 的许可规则。S10 满队列集成验证真实 Kernel 的存储/Provider 完成，完成槽耗尽则由测试专属探针直接运行同一个 `CompletionPool` 属主，关闭测试时明确 `UNSUPPORTED`。正常 profile 与历史 schema 0 不代替这些场景。
 
 ## E2：动作关键阶段重启
 

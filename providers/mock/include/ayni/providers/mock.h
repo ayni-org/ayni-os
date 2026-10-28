@@ -50,6 +50,9 @@ class Provider {
     // Refuses BUSY while a completion is borrowed. Call only after registered
     // Kernels are destroyed (or before registration); success releases all local storage.
     ayni_status_t close();
+    // Owner-thread simulated process loss only: end all producers before the old
+    // Kernel arena is discarded; no post/receipt is made, execution counts remain.
+    void abandon_kernel();
     // Current accepted borrows, including terminal posts waiting for mailbox space.
     uint32_t pending() const;
     // Simulated business executions this configuration; cancellation before execution is excluded.

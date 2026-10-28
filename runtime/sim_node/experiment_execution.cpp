@@ -1,6 +1,7 @@
 #include "experiment_execution.h"
 #include "experiment_support.h"
 #include <algorithm>
+#include <ayni/host_authority.h>
 #include <cstring>
 namespace ayni::runtime::experiments {
 namespace {
@@ -153,8 +154,8 @@ ayni_status_t Physical::decide(void *, const ayni_task_snapshot_v1 *snapshot,
         text("turn.binding"), {sizeof(ayni_scope_v1), 1, &field}, {}};
     return output->request_call(output->call_context, &request);
 }
-bool Physical::prepare() {
-    if (!world_.grant(1, "mock.turn")) {
+bool Physical::prepare(uint64_t agent) {
+    if (!world_.grant(agent, "mock.turn")) {
         return false;
     }
     auto scene = initialized<ayni_scene_info_v1>();
@@ -197,17 +198,20 @@ bool Physical::advance() {
         e.fact("execution", "first_nonce_issued_at_us", *nonce_origin_);
     }
     e.changed("execution:phase", state.phase);
+    e.changed("execution:permit_id", state.permit_id);
+    e.changed("execution:operation_id", state.operation_id);
     e.changed("execution:deadline_us", state.deadline_us);
     e.changed("execution:samples", executor.samples());
     e.changed("execution:renewals", executor.renewals());
     e.changed("execution:submissions", executor.submissions());
     e.changed("execution:stop_confirmed_at_us", state.stop_confirmed_at_us);
     if (state.phase == AYNI_CONTROL_STOPPED) {
-        if (stopped_samples_ &&
-            !e.equal("stopped gate emits no output", executor.samples(), *stopped_samples_)) {
+        if (stopped_output_ && stopped_output_->permit_id == state.permit_id &&
+            !e.equal("stopped gate emits no output", executor.samples(),
+                     stopped_output_->samples)) {
             return false;
         }
-        stopped_samples_ = executor.samples();
+        stopped_output_ = StoppedOutput{state.permit_id, executor.samples()};
     }
     return true; // Cleanup can still measure/stop after a previously latched case failure.
 }
@@ -266,7 +270,7 @@ bool Physical::stopped_within_bound() {
            e.equal("stop no later than invalidation plus lease",
                    state.stop_confirmed_at_us <= *invalidated_at_ + lease_us, 1) &&
            elapse(static_cast<uint32_t>(tick_us)) &&
-           e.equal("no output after measured stop", executor.samples(), *stopped_samples_);
+           e.equal("no output after measured stop", executor.samples(), stopped_output_->samples);
 }
 bool Physical::change_live(Invalidation kind) {
     ayni_control_observation_v1 live{};
@@ -352,5 +356,201 @@ bool Physical::power_cycle() {
 }
 uint64_t Physical::deadline_offset() const {
     return nonce_origin_ ? info().deadline_us - *nonce_origin_ : 0;
+}
+} // namespace ayni::runtime::experiments
+
+namespace ayni::runtime::experiments {
+// E1 S4: cancellation delivery and a Provider terminal are separate from the
+// executor's measured stop; only the last fact may lift actuator quarantine.
+bool Physical::quarantine() {
+    auto &e = world_.evidence;
+    if (!e.status(
+            "require manual stop measurement",
+            executor.set_stop_confirmation(providers::mock_execution::StopConfirmation::manual)) ||
+        !prepare()) {
+        return false;
+    }
+    world_.create("turn");
+    if (!world_.until("actuator accepted", [&] { return executor.submissions() == 1; }) ||
+        !world_.step() || !world_.cancel_goal() || !world_.until("stop instruction delivered", [&] {
+            return info().phase == AYNI_CONTROL_STOPPING;
+        })) {
+        return false;
+    }
+    auto resource = initialized<ayni_resource_info_v1>();
+    auto execution = initialized<ayni_execution_info_v1>();
+    const auto original = executor.logical_call();
+    if (!e.status("read unconfirmed actuator",
+                  ayni_get_resource(world_.node.kernel(), text("mock.actuator"), &resource)) ||
+        !e.status("read unconfirmed execution",
+                  ayni_get_execution(world_.node.kernel(), original, &execution)) ||
+        !e.equal("actuator quarantine retains operation", resource.quarantine_id, original) ||
+        !e.equal("stop not measured", execution.phase == AYNI_EXECUTION_STOPPED, 0) ||
+        !world_.grant(2, "mock.turn")) {
+        return false;
+    }
+    world_.create("turn", 0, 2);
+    if (!world_.until("second action waits on quarantine",
+                      [&] { return world_.call().wait_reason == AYNI_CALL_WAIT_QUARANTINED; }) ||
+        !e.equal("quarantine prevents next submit", executor.submissions(), 1)) {
+        return false;
+    }
+    const auto queued = world_.call();
+    e.fact("resource", "quarantined_waiting_call", queued.logical_call_id);
+    if (!e.status("independent stop measured", executor.confirm_stopped()) ||
+        !world_.until("original queued action admitted after proof",
+                      [&] { return executor.submissions() == 2; })) {
+        return false;
+    }
+    if (!e.status("read measured original execution",
+                  ayni_get_execution(world_.node.kernel(), original, &execution)) ||
+        !e.status("read reclaimed actuator",
+                  ayni_get_resource(world_.node.kernel(), text("mock.actuator"), &resource)) ||
+        !e.equal("stop proof reaches Core", execution.phase, AYNI_EXECUTION_STOPPED) ||
+        !e.equal("quarantine cleared by stop proof", resource.quarantine_id, 0) ||
+        !e.equal("new holder uses reclaimed actuator", resource.used, 1) ||
+        !e.equal("original queued logical call admitted", executor.logical_call(),
+                 queued.logical_call_id) ||
+        !world_.cancel_goal() ||
+        !world_.until("second stop delivered",
+                      [&] { return info().phase == AYNI_CONTROL_STOPPING; }) ||
+        !e.status("second stop measured", executor.confirm_stopped())) {
+        return false;
+    }
+    return world_.until("all actuator resources returned", [&] {
+        return ayni_get_resource(world_.node.kernel(), text("mock.actuator"), &resource) ==
+                   AYNI_OK &&
+               resource.used == 0 && resource.quarantine_id == 0 && executor.pending() == 0;
+    });
+}
+} // namespace ayni::runtime::experiments
+
+namespace ayni::runtime::experiments {
+bool Physical::revoke_queued() {
+    auto &e = world_.evidence;
+    if (!prepare(2) ||
+        !e.status("occupancy unavailable",
+                  ayni_set_resource_health(world_.node.kernel(), text("mock.actuator"),
+                                           AYNI_RESOURCE_OFFLINE))) {
+        return false;
+    }
+    world_.create("turn", 0, 2);
+    if (!world_.until("motion queued",
+                      [&] { return world_.call().wait_reason == AYNI_CALL_WAIT_OFFLINE; }) ||
+        !world_.revoke() ||
+        !e.status("resource available after revoke",
+                  ayni_set_resource_health(world_.node.kernel(), text("mock.actuator"),
+                                           AYNI_RESOURCE_ONLINE)) ||
+        !world_.settle()) {
+        return false;
+    }
+    return e.equal("revoked queued motion never submitted", executor.submissions(), 0) &&
+           e.equal("revoked queued motion no output", executor.samples(), 0);
+}
+// C-LIFE-013: acceptance/durability, transport cancellation and the independently
+// measured durable stop fact are observed separately, never inferred from one another.
+bool Physical::revoke_running() {
+    auto &e = world_.evidence;
+    if (!e.status(
+            "manual in-flight stop measurement",
+            executor.set_stop_confirmation(providers::mock_execution::StopConfirmation::manual)) ||
+        !prepare(2)) {
+        return false;
+    }
+    world_.create("turn", 0, 2);
+    if (!world_.until("motion actually started", [&] { return executor.samples() > 0; }) ||
+        !mark_invalidated() || !world_.save_call() || !world_.revoke()) {
+        return false;
+    }
+    const auto command = world_.last_command();
+    auto receipt = initialized<ayni_intent_receipt_v1>();
+    const auto read_receipt = [&] {
+        return ayni_get_intent_receipt(world_.node.kernel(), 1, command, &receipt);
+    };
+    if (!e.status("read accepted revoke", read_receipt()) ||
+        !e.equal("revoke accepted phase",
+                 receipt.phase == AYNI_INTENT_PENDING || receipt.phase == AYNI_INTENT_APPLIED, 1)) {
+        return false;
+    }
+    e.fact("revoke", "ACCEPTED_phase", receipt.phase);
+    e.fact("revoke", "command_id", command);
+    if (!world_.until("revoke durably effective", [&] {
+            return read_receipt() == AYNI_OK && receipt.phase == AYNI_INTENT_DURABLE;
+        })) {
+        return false;
+    }
+    e.fact("revoke", "DURABLY_EFFECTIVE_seq", receipt.commit_seq);
+    if (!world_.until("revoked action cancelling without stop proof", [&] {
+            return world_.call().cancel_requested && info().phase == AYNI_CONTROL_STOPPING;
+        })) {
+        return false;
+    }
+    e.fact("revoke", "CANCELLING_call", world_.call().logical_call_id);
+    auto execution = initialized<ayni_execution_info_v1>();
+    if (!e.status("unconfirmed revoke execution",
+                  ayni_get_execution(world_.node.kernel(), executor.logical_call(), &execution)) ||
+        !e.equal("durable revoke alone is not stop proof",
+                 execution.phase == AYNI_EXECUTION_STOPPED, 0) ||
+        !e.status("independent revoke stop measured", executor.confirm_stopped()) ||
+        !world_.until("stop proof durably published", [&] {
+            return ayni_get_execution(world_.node.kernel(), executor.logical_call(), &execution) ==
+                       AYNI_OK &&
+                   execution.phase == AYNI_EXECUTION_STOPPED &&
+                   execution.requires_seq <= world_.info().durable_seq;
+        })) {
+        return false;
+    }
+    e.fact("revoke", "STOP_CONFIRMED_seq", execution.requires_seq);
+    return e.equal("in-flight motion was submitted", executor.submissions(), 1) &&
+           e.equal("in-flight motion had real simulated output", executor.samples() > 0, 1) &&
+           e.equal("in-flight effect not reported as none",
+                   world_.call().effect != AYNI_CALL_EFFECT_NONE, 1) &&
+           stopped_within_bound();
+}
+bool Physical::unauthorized() {
+    auto &e = world_.evidence;
+    // Preparing B's scene never gives A a standing Grant or a goal-scoped one.
+    if (!prepare(2)) {
+        return false;
+    }
+    const auto goal = world_.create("turn", 0, 1);
+    if (!world_.settle()) {
+        return false;
+    }
+    auto info = initialized<ayni_goal_info_v1>();
+    return e.status("read unauthorized motion request",
+                    ayni_get_goal(world_.node.kernel(), goal, &info)) &&
+           e.equal("A request awaits explicit authority", info.lifecycle, AYNI_GOAL_PROPOSED) &&
+           e.equal("unauthorized request creates no Task", info.last_task_id, 0) &&
+           e.equal("unauthorized motion no dispatch", executor.submissions(), 0) &&
+           e.equal("unauthorized motion no output", executor.samples(), 0);
+}
+bool Physical::stop_full_queue() {
+    if (!prepare()) {
+        return false;
+    }
+    world_.create("turn");
+    if (!world_.until("motion active before queue pressure",
+                      [&] { return executor.samples() > 0; })) {
+        return false;
+    }
+    auto event = initialized<ayni_event_v1>();
+    event.kind = AYNI_EVENT_LOCAL_INPUT;
+    event.source = text("unbound.button");
+    uint32_t accepted = 0;
+    ayni_status_t status = AYNI_OK;
+    while (accepted <= world_.config.ingress_capacity &&
+           (status = ayni_post_event(world_.node.kernel(), &event)) == AYNI_OK) {
+        ++accepted;
+    }
+    if (!world_.evidence.status("ordinary queue full", status, AYNI_BUSY) ||
+        !world_.evidence.equal("ordinary queue reached capacity", accepted,
+                               world_.config.ingress_capacity)) {
+        return false;
+    }
+    return estop() && world_.evidence.status("independent stop cycle", executor.advance()) &&
+           world_.evidence.equal(
+               "stop latch bypasses queue",
+               info().phase == AYNI_CONTROL_STOPPING || info().phase == AYNI_CONTROL_STOPPED, 1);
 }
 } // namespace ayni::runtime::experiments
