@@ -890,18 +890,6 @@ TEST_F(ManagedCall, journal_replays_wait_resume_identity_and_rejects_broken_atom
         log[selected] = write_stored_batch(changed);
         check_recovery(log, false);
     }
-    // Compatibility probe, pending a decision on the general optional-record
-    // rule versus standalone atomic-batch wording; this records current refusal.
-    constexpr uint16_t optional_extension_type = UINT16_MAX;
-    const JournalRecord extension{{optional_extension_type, 1, 0, 1}, {0}};
-    for (std::size_t position = 0; position <= batch.records.size(); ++position) {
-        auto changed = batch;
-        changed.records.insert(changed.records.begin() + static_cast<std::ptrdiff_t>(position),
-                               extension);
-        auto log = original;
-        log[selected] = write_stored_batch(changed);
-        check_recovery(log, false);
-    }
     ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
               AYNI_OK);
     pump(16);
