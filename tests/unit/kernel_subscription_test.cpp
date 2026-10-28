@@ -2,6 +2,85 @@
 #include "subscription_fixture.h"
 namespace {
 using namespace ayni::test;
+
+// ADR-0063 / C-SUB-001/003: the Mock owner receives an actual Kernel borrow
+// and sink. Rejected startup/renew inputs must neither retain it nor alter lease state.
+TEST_F(SubscriptionFixture, mock_capture_rejects_invalid_openings_and_renewals_atomically) {
+    manual_camera = true;
+    create();
+    pump(15, 10000, false);
+    ASSERT_EQ(openings.size(), 1U);
+    const auto opening = openings.front();
+    ayni_provider_request_v1 request{};
+    request.struct_size = sizeof(request);
+    request.attempt = opening.attempt;
+    request.subscription = &opening.value;
+    EXPECT_EQ(camera_ports.submit(camera_ports.ctx, nullptr, opening.completion),
+              AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    EXPECT_EQ(camera_ports.submit(camera_ports.ctx, &request, nullptr),
+              AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    request.subscription = nullptr;
+    EXPECT_EQ(camera_ports.submit(camera_ports.ctx, &request, opening.completion),
+              AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    const auto invalid_openings = {
+        +[](ayni_subscription_open_v1 &v) { v.struct_size = 0; },
+        +[](ayni_subscription_open_v1 &v) { v.sink = nullptr; },
+        +[](ayni_subscription_open_v1 &v) { v.valid_until_us = 0; },
+        +[](ayni_subscription_open_v1 &v) { v.subscription.boot_epoch = 0; },
+    };
+    for (const auto change : invalid_openings) {
+        auto invalid = opening.value;
+        change(invalid);
+        request.subscription = &invalid;
+        EXPECT_EQ(camera_ports.submit(camera_ports.ctx, &request, opening.completion),
+                  AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+        EXPECT_EQ(camera.pending(), 0U);
+    }
+    request.subscription = &opening.value;
+    const auto accepted = camera_ports.submit(camera_ports.ctx, &request, opening.completion);
+    if (accepted == AYNI_SUBMIT_ACCEPTED) {
+        manual_camera = false; // The real owner now owes the terminal and receives cancel.
+    }
+    ASSERT_EQ(accepted, AYNI_SUBMIT_ACCEPTED);
+    EXPECT_EQ(camera.close(), AYNI_BUSY);
+    EXPECT_EQ(camera.pending(), 1U);
+    EXPECT_LE(camera.next_due_us(), work.node().sim().now_us());
+    ayni_subscription_renew_v1 renewal{};
+    renewal.struct_size = sizeof(renewal);
+    renewal.subscription = opening.value.subscription;
+    renewal.sequence = 2;
+    renewal.valid_until_us = opening.value.valid_until_us + 1;
+    EXPECT_EQ(camera_ports.renew(camera_ports.ctx, &renewal), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    pump(3);
+    ASSERT_EQ(subscription().phase, AYNI_SUBSCRIPTION_ACTIVE);
+    EXPECT_EQ(camera_ports.renew(camera_ports.ctx, nullptr), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    const auto invalid_renewals = {
+        +[](ayni_subscription_renew_v1 &v) { v.struct_size = 0; },
+        +[](ayni_subscription_renew_v1 &v) { v.reserved = 1; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.subscription.subscription_id; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.subscription.boot_epoch; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.subscription.generation; },
+        +[](ayni_subscription_renew_v1 &v) { --v.sequence; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.sequence; },
+        +[](ayni_subscription_renew_v1 &v) { --v.valid_until_us; },
+        +[](ayni_subscription_renew_v1 &v) { v.valid_until_us = UINT64_MAX; },
+    };
+    for (const auto change : invalid_renewals) {
+        auto invalid = renewal;
+        change(invalid);
+        EXPECT_EQ(camera_ports.renew(camera_ports.ctx, &invalid),
+                  AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+        EXPECT_EQ(camera.pending(), 1U);
+        EXPECT_EQ(subscription().lease_sequence, 1U);
+    }
+    auto absent = opening.attempt;
+    ++absent.boot_epoch;
+    EXPECT_EQ(camera_ports.cancel(camera_ports.ctx, absent), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    absent = opening.attempt;
+    ++absent.request_id;
+    EXPECT_EQ(camera_ports.cancel(camera_ports.ctx, absent), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+}
+
 TEST_F(SubscriptionFixture, start_ack_precedes_samples_and_active_collection_allows_model_call) {
     const auto goal = create();
     pump(15, 10000, false);

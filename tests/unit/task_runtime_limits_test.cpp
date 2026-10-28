@@ -3,6 +3,7 @@
 #include "journal_test_support.h"
 #include "kernel/service/command/command_records.h"
 #include "kernel/service/command/command_task_limit.h"
+#include "snapshot_test_support.h"
 #include "work/task/task_records.h"
 #include "work_node.h"
 
@@ -215,6 +216,66 @@ TEST(TaskLimitCommand, codec_binds_task_revision_and_total_limit_to_exact_result
                                     restored, floor, canonical));
     EXPECT_EQ(restored.object.revision, mapping.object.revision);
     EXPECT_EQ(restored.digest, mapping.digest);
+}
+
+// C-RUN-003 / C-STORE-007: a snapshot has no preceding state to replay. Its
+// exact raise receipt must independently agree with the retained current Task.
+TEST(TaskLimitApi, snapshot_raise_receipt_proves_the_same_task_revision_and_ceiling) {
+    WorkNode source;
+    source.run();
+    source.strategy().answer = cannot_decide;
+    const auto task_id = create_task(source);
+    const auto before = source.task(task_id);
+    const ayni_task_raise_model_limit_v1 body{sizeof(body), raised_limit, task_id};
+    auto request = source.intent(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &body, before.revision);
+    request.command_id = command_id;
+    ASSERT_EQ(source.submit(request).status, AYNI_OK);
+    const auto original = snapshot_model(source.node());
+    const auto restore = [](const ModelSnapshot &snapshot) {
+        WorkNode target;
+        target.node().config() = snapshot.config;
+        return restore_model(snapshot, target.node());
+    };
+    ASSERT_EQ(restore(original), ayni::durability::BatchCheck::ok);
+    auto &tasks = KernelTestProbe::work(source.kernel()).tasks;
+    uint32_t index = 0;
+    ASSERT_TRUE(tasks.find(task_id, index));
+    const auto accepted = tasks.at(index);
+    const auto changes = {
+        +[](Task &t) { --t.revision; },
+        +[](Task &t) { ++t.revision; },
+        +[](Task &t) { --t.model_calls.limit; },
+        +[](Task &t) { ++t.model_calls.limit; },
+        +[](Task &t) { t.model_calls.used = t.model_calls.limit; },
+        +[](Task &t) { t.model_calls.blocked = true; },
+        +[](Task &t) { t.lifecycle = AYNI_TASK_COMPLETED; },
+    };
+    for (std::size_t variant = 0; variant < changes.size(); ++variant) {
+        SCOPED_TRACE(variant);
+        auto candidate = original;
+        auto changed = accepted;
+        const auto change = *(changes.begin() + variant);
+        change(changed);
+        uint32_t selected = 0;
+        for (auto &record : candidate.records) {
+            if (record.header.type != task_state_record_type) {
+                continue;
+            }
+            TaskStateRecord decoded{};
+            ASSERT_TRUE(read_task_state_record(record.body.data(), record.header.length, decoded,
+                                               record.header.version));
+            if (decoded.task_id == task_id) {
+                ++selected;
+                write_task_state_record(changed, record.body.data(), record.header.version);
+            }
+        }
+        ASSERT_EQ(selected, 1U);
+        EXPECT_EQ(restore(candidate), ayni::durability::BatchCheck::corrupt);
+    }
+    // A later ordinary cancellation is legitimate: the original command is historical,
+    // and its exact retry result must survive a greater current revision.
+    ASSERT_EQ(source.cancel_task(task_id).status, AYNI_OK);
+    ASSERT_EQ(restore(snapshot_model(source.node())), ayni::durability::BatchCheck::ok);
 }
 // C-RUN-003 / C-STORE-009: the owner command changes only the soft ceiling
 // and its hold. Every CRC-valid single-bit change to that complete state must

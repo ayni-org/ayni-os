@@ -71,6 +71,12 @@ class CallTableTest : public ::testing::Test {
         ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
         ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     }
+    std::vector<uint8_t> encoded() const {
+        const auto record = calls.record(index);
+        std::vector<uint8_t> bytes(call_record_size(record));
+        write_call_record(record, bytes.data());
+        return bytes;
+    }
     static constexpr CallTable::Limits limits{1, 32, 64, 16};
     std::vector<uint64_t> storage =
         std::vector<uint64_t>(CallTable::storage_size(limits) / sizeof(uint64_t) + 1);
@@ -208,6 +214,109 @@ TEST_F(CallTableTest, invalid_or_oversized_result_preserves_pending_call_and_act
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::dispatching);
     result.text = {nullptr, 0};
     EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_OK);
+}
+
+// C-CALL-008: a terminal's outcome/status/effect/body form one fact. Reject
+// inconsistent Provider evidence before changing either the Call or action ledger.
+TEST_F(CallTableTest, inconsistent_terminal_results_preserve_the_complete_pending_record) {
+    dispatch();
+    const auto before = encoded();
+    const CallResult valid{
+        AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {}};
+    const auto invalid = {
+        CallResult{AYNI_CALL_PROGRESS, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {}},
+        CallResult{
+            AYNI_CALL_COMPLETED, AYNI_NOT_READY, AYNI_REASON_NONE, ActionEffect::complete, {}},
+        CallResult{
+            AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_PROVIDER_RESULT, ActionEffect::complete, {}},
+        CallResult{AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
+        CallResult{AYNI_CALL_FAILED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
+        CallResult{
+            AYNI_CALL_FAILED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
+        CallResult{AYNI_CALL_CANCELLED, AYNI_NOT_READY, AYNI_REASON_NONE, ActionEffect::none, {}},
+        CallResult{
+            AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_PROVIDER_RESULT, ActionEffect::none, {}},
+        CallResult{AYNI_CALL_ABANDONED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::unknown, {}},
+        CallResult{
+            AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::none, {}},
+        CallResult{AYNI_CALL_ABANDONED,
+                   AYNI_RESULT_UNKNOWN,
+                   AYNI_REASON_NONE,
+                   ActionEffect::unknown,
+                   {"unproven", 8}},
+        CallResult{AYNI_CALL_FAILED,
+                   AYNI_NOT_READY,
+                   AYNI_REASON_NONE,
+                   static_cast<ActionEffect>(UINT32_MAX),
+                   {}},
+        CallResult{AYNI_CALL_COMPLETED,
+                   AYNI_OK,
+                   AYNI_REASON_NONE,
+                   ActionEffect::complete,
+                   {},
+                   static_cast<CallResultKind>(UINT32_MAX)},
+    };
+    for (const auto &result : invalid) {
+        SCOPED_TRACE(::testing::Message() << result.outcome << '/' << result.status << '/'
+                                          << static_cast<uint32_t>(result.effect));
+        EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(encoded(), before);
+    }
+    ASSERT_EQ(calls.finish(index, valid, stamp(4)), AYNI_OK);
+    EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
+}
+
+// C-CALL-002/008: valid states cannot advance with stale stamps, duplicate
+// control, a missing action/attempt, or an outcome from the wrong control lane.
+TEST_F(CallTableTest, rejected_lifecycle_operations_preserve_acceptance_and_action_facts) {
+    insert();
+    const auto reject = [&](auto operation, ayni_status_t expected = AYNI_INVALID_STATE) {
+        const auto before = encoded();
+        EXPECT_EQ(operation(), expected);
+        EXPECT_EQ(encoded(), before);
+    };
+    reject([&] { return calls.progress(index, 1, stamp(2)); });
+    reject([&] { return calls.rejected_not_retained(index, stamp(2)); });
+    reject([&] { return calls.begin_dispatch(index, {boot, 1}, stamp(2), 1); });
+    reject([&] { return calls.prepare(index, stamp(1)); });
+    auto stale = stamp(2);
+    --stale.boot_epoch;
+    reject([&] { return calls.prepare(index, stale); });
+    stale = stamp(2);
+    stale.transition.transition_id = 1;
+    reject([&] { return calls.prepare(index, stale); });
+    stale = stamp(2);
+    stale.transition.commit_seq = 1;
+    reject([&] { return calls.prepare(index, stale); });
+    ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
+    reject([&] { return calls.prepare(index, stamp(3)); });
+    reject([&] { return calls.progress(index, 1, stamp(3)); });
+    reject([&] { return calls.begin_dispatch(index, {boot, 0}, stamp(3), 2); });
+    reject([&] { return calls.begin_dispatch(index, {boot + 1, 1}, stamp(3), 2); });
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 1}, stamp(3), 2), AYNI_OK);
+    ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
+    reject([&] { return calls.cancel_response(index, AYNI_CALL_CANNOT_CANCEL, stamp(4)); });
+    reject([&] { return calls.progress(index, 0, stamp(4)); });
+    reject([&] { return calls.request_cancel(index, CallCancelCause::none, stamp(4)); },
+           AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(calls.request_cancel(index, CallCancelCause::deadline, stamp(4)), AYNI_OK);
+    reject([&] { return calls.request_cancel(index, CallCancelCause::shutdown, stamp(5)); });
+    reject([&] { return calls.cancel_response(index, AYNI_CALL_CANCELLED, stamp(5)); },
+           AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(calls.cancel_response(index, AYNI_CALL_CANNOT_CANCEL, stamp(5)), AYNI_OK);
+    reject([&] { return calls.cancel_response(index, AYNI_CALL_CANCEL_UNKNOWN, stamp(6)); });
+    ASSERT_EQ(calls.progress(index, 1, stamp(6)), AYNI_OK);
+    reject([&] { return calls.progress(index, 1, stamp(7)); });
+    const CallResult terminal{
+        AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}};
+    ASSERT_EQ(calls.finish(index, terminal, stamp(7)), AYNI_OK);
+    reject([&] { return calls.progress(index, 2, stamp(8)); });
+    reject([&] { return calls.request_cancel(index, CallCancelCause::user, stamp(8)); });
+    reject([&] { return calls.cancel_response(index, AYNI_CALL_CANCEL_UNKNOWN, stamp(8)); });
+    reject([&] { return calls.rejected_not_retained(index, stamp(8)); });
+    reject([&] { return calls.cancel_before_dispatch(index, stamp(8)); });
+    ASSERT_EQ(calls.erase_content(index, stamp(8)), AYNI_OK);
+    reject([&] { return calls.erase_content(index, stamp(9)); });
 }
 // C-CALL-002/C-COMMIT-007: normal full-row encoding retains the original
 // canonical body and action association, without serializing a submit claim.

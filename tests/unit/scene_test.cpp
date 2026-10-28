@@ -1,5 +1,6 @@
 // ADR-0050: public owner preferences, durable enable gate, exact commands and finite declarations.
 #include "authority/scene/scene_records.h"
+#include "journal_test_support.h"
 #include "snapshot_test_support.h"
 #include "work_node.h"
 #include <ayni/scenes.h>
@@ -209,6 +210,98 @@ TEST_F(SceneApi, retries_keep_original_receipt_and_no_change_keeps_scene_revisio
     receipt.struct_size = sizeof(receipt);
     ASSERT_EQ(ayni_get_intent_receipt(node.kernel(), owner_id, 2, &receipt), AYNI_OK);
     EXPECT_EQ(receipt.effect, AYNI_INTENT_EFFECT_NO_CHANGE);
+}
+
+// C-STORE-007/009 / ADR-0050: disabling preserves the saved declaration;
+// enabling may replace it. Historical and NO_CHANGE receipts survive recovery.
+TEST_F(SceneApi, preference_history_rejects_changed_definition_or_transition_facts) {
+    run();
+    const auto enabled = change(1, 0, true);
+    ASSERT_EQ(enabled.status, AYNI_OK);
+    store(enabled.result.commit_seq);
+    const auto disabled = change(2, 1, false);
+    ASSERT_EQ(disabled.status, AYNI_OK);
+    store(disabled.result.commit_seq);
+    const auto reopened = change(3, 2, true);
+    ASSERT_EQ(reopened.status, AYNI_OK);
+    store(reopened.result.commit_seq);
+    const auto unchanged = change(4, 3, true);
+    ASSERT_EQ(unchanged.status, AYNI_OK);
+    ASSERT_EQ(unchanged.result.effect, AYNI_INTENT_EFFECT_NO_CHANGE);
+    store(unchanged.result.commit_seq);
+    const auto snapshot = snapshot_model(node);
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    const auto configure = [&](Node &target) {
+        target.config() = snapshot.config;
+        target.on_create([](ayni_kernel_t *kernel) {
+            const auto principal = owner_desc();
+            ASSERT_EQ(ayni_register_principal(kernel, &principal), AYNI_OK);
+        });
+    };
+    const auto log = node.sim().log();
+    Node control;
+    configure(control);
+    control.sim().log() = log;
+    control.create_and_start();
+    control.recover();
+    ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    ASSERT_EQ(KernelTestProbe::work(control.kernel()).scenes.state_count(), 1U);
+    constexpr unsigned bits_per_byte = 8;
+    uint32_t selected = 0;
+    for (std::size_t item = 0; item < log.size(); ++item) {
+        const auto batch = read_stored_batch(log[item]);
+        if (batch.identity.commit_seq != disabled.result.commit_seq &&
+            batch.identity.commit_seq != reopened.result.commit_seq) {
+            continue;
+        }
+        for (std::size_t row = 0; row < batch.records.size(); ++row) {
+            const auto &record = batch.records[row];
+            if (record.header.type != ayni::authority::scene_record_type) {
+                continue;
+            }
+            ++selected;
+            ASSERT_FALSE(record.body.empty());
+            ayni::authority::SceneRecord decoded{};
+            ASSERT_TRUE(ayni::authority::read_scene_record(record.body.data(), record.header.length,
+                                                           decoded));
+            const auto definition_at =
+                static_cast<std::size_t>(decoded.definition.data - record.body.data());
+            for (std::size_t at = 0; at < record.body.size(); ++at) {
+                // ADR-0050 permits a new declaration on enable. Its unretained
+                // registration is not an independent proof of definition bytes.
+                if (batch.identity.commit_seq == reopened.result.commit_seq &&
+                    at >= definition_at) {
+                    continue;
+                }
+                for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                    SCOPED_TRACE(::testing::Message() << item << '/' << at << ':' << bit);
+                    auto changed = batch;
+                    changed.records[row].body[at] ^= static_cast<uint8_t>(1U << bit);
+                    auto candidate = log;
+                    candidate[item] = write_stored_batch(changed);
+                    Node recovered;
+                    configure(recovered);
+                    recovered.sim().log() = std::move(candidate);
+                    recovered.create_and_start();
+                    recovered.recover();
+                    EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+                    EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+                    EXPECT_EQ(KernelTestProbe::work(recovered.kernel()).scenes.state_count(), 0U);
+                }
+            }
+        }
+    }
+    constexpr uint32_t changed_preferences =
+        2; // Disable and re-enable after the first declaration.
+    ASSERT_EQ(selected, changed_preferences);
+    Node disabled_capacity;
+    configure(disabled_capacity);
+    disabled_capacity.config().scene_capacity = 0;
+    disabled_capacity.sim().log() = log;
+    disabled_capacity.create_and_start();
+    disabled_capacity.recover();
+    EXPECT_EQ(disabled_capacity.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(disabled_capacity.info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
 }
 TEST_F(SceneApi, conversation_session_cannot_enable_and_zero_command_is_rejected) {
     run();

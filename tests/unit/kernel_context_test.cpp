@@ -213,9 +213,9 @@ TEST_F(KernelContext, snapshot_context_rejects_invalid_history_missing_owner_and
     EXPECT_EQ(restore_model(original, disabled), ayni::durability::BatchCheck::no_room);
 }
 
-// C-MEM-009 / C-STORE-007/009: OPEN has one exact initial anchor shape and
-// owner. A CRC-valid changed fact cannot be justified by the unchanged receipt.
-TEST_F(KernelContext, changed_initial_anchor_bits_cannot_substitute_another_open_result) {
+// C-MEM-009 / C-STORE-007/009: OPEN has one exact snapshot shape. In journal
+// replay, each later management fact must match both its old state and receipt.
+TEST_F(KernelContext, changed_anchor_bits_cannot_substitute_another_management_result) {
     const auto opened = open();
     ASSERT_EQ(opened.status, AYNI_OK);
     durable(opened.result.commit_seq);
@@ -245,6 +245,22 @@ TEST_F(KernelContext, changed_initial_anchor_bits_cannot_substitute_another_open
             EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
         }
     }
+    const auto task = complete();
+    ASSERT_NE(task, 0U);
+    const auto published =
+        change(AYNI_INTENT_CONTEXT_PUBLISH, context(), task, AYNI_CONTEXT_IDLE, 1);
+    ASSERT_EQ(published.status, AYNI_OK);
+    durable(published.result.commit_seq);
+    const auto acknowledged = change(AYNI_INTENT_CONTEXT_ACK, context());
+    ASSERT_EQ(acknowledged.status, AYNI_OK);
+    durable(acknowledged.result.commit_seq);
+    const auto forgotten = change(AYNI_INTENT_CONTEXT_FORGET, context(), 0, AYNI_CONTEXT_ERASE_ALL);
+    ASSERT_EQ(forgotten.status, AYNI_OK);
+    durable(forgotten.result.commit_seq);
+    const auto erased = change(AYNI_INTENT_CONTEXT_ACK, context());
+    ASSERT_EQ(erased.status, AYNI_OK);
+    durable(erased.result.commit_seq);
+    ASSERT_EQ(restore_model(snapshot_model(node)), ayni::durability::BatchCheck::ok);
     const auto log = node.sim().log();
     const auto configure_recovery = [&](Node &target) {
         target.config() = snapshot.config;
@@ -259,38 +275,39 @@ TEST_F(KernelContext, changed_initial_anchor_bits_cannot_substitute_another_open
     control.create_and_start();
     control.recover();
     ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    std::size_t batch_index = log.size();
-    JournalBatch batch{};
-    std::size_t record_index = 0;
-    for (std::size_t at = 0; at < log.size(); ++at) {
-        auto decoded = read_stored_batch(log[at]);
-        for (std::size_t item = 0; item < decoded.records.size(); ++item) {
-            if (decoded.records[item].header.type == ayni::knowledge::context_record_type) {
-                batch_index = at;
-                record_index = item;
-                batch = std::move(decoded);
-                break;
+    uint32_t selected = 0;
+    for (std::size_t batch_index = 0; batch_index < log.size(); ++batch_index) {
+        const auto batch = read_stored_batch(log[batch_index]);
+        for (std::size_t record_index = 0; record_index < batch.records.size(); ++record_index) {
+            const auto &record = batch.records[record_index];
+            if (record.header.type != ayni::knowledge::context_record_type) {
+                continue;
+            }
+            ++selected;
+            ASSERT_FALSE(record.body.empty());
+            for (std::size_t at = 0; at < record.body.size(); ++at) {
+                for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                    SCOPED_TRACE(::testing::Message() << batch_index << '/' << at << ':' << bit);
+                    auto changed = batch;
+                    changed.records[record_index].body[at] ^= static_cast<uint8_t>(1U << bit);
+                    auto candidate = log;
+                    candidate[batch_index] = write_stored_batch(changed);
+                    Node recovered;
+                    configure_recovery(recovered);
+                    recovered.sim().log() = std::move(candidate);
+                    recovered.create_and_start();
+                    recovered.recover();
+                    EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+                    EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+                    EXPECT_EQ(
+                        ayni::kernel::KernelTestProbe::work(recovered.kernel()).contexts.size(),
+                        0U);
+                }
             }
         }
     }
-    ASSERT_LT(batch_index, log.size());
-    for (std::size_t at = 0; at < batch.records[record_index].body.size(); ++at) {
-        for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
-            SCOPED_TRACE(::testing::Message() << at << ':' << bit);
-            auto changed = batch;
-            changed.records[record_index].body[at] ^= static_cast<uint8_t>(1U << bit);
-            auto candidate = log;
-            candidate[batch_index] = write_stored_batch(changed);
-            Node recovered;
-            configure_recovery(recovered);
-            recovered.sim().log() = std::move(candidate);
-            recovered.create_and_start();
-            recovered.recover();
-            EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-            EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-            EXPECT_EQ(ayni::kernel::KernelTestProbe::work(recovered.kernel()).contexts.size(), 0U);
-        }
-    }
+    constexpr uint32_t management_transitions = 5; // OPEN, PUBLISH, ACK, FORGET, ACK.
+    ASSERT_EQ(selected, management_transitions);
 }
 
 TEST_F(KernelContext, explicit_open_is_required_and_retries_keep_one_anchor) {

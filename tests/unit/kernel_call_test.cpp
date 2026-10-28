@@ -1,5 +1,6 @@
 // Normal public ABI call scenarios, C-CALL-002/012, C-COMMIT-007 and ADR-0045.
 // Sim storage timing is explicit; no fault injection or restart campaign.
+#include "snapshot_test_support.h"
 #include "work_node.h"
 
 #include <ayni/calls.h>
@@ -325,6 +326,78 @@ class ManagedCall : public ::testing::Test {
     bool cancel_posts_terminal = false;
 };
 
+struct MalformedTerminal {
+    const char *name;
+    ayni_call_outcome_t outcome;
+    ayni_status_t status;
+    ayni_reason_t reason;
+    ayni_call_effect_t effect;
+    uint32_t query_result = 0;
+    const char *body = "";
+};
+class MalformedProviderResult : public ManagedCall,
+                                public ::testing::WithParamInterface<MalformedTerminal> {};
+
+// C-CALL-008/012: transport acceptance returns the borrow. Inconsistent
+// terminal evidence must still become diagnostic UNKNOWN, never fabricated success.
+TEST_P(MalformedProviderResult, returned_borrow_with_inconsistent_evidence_is_unknown) {
+    create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    auto &delivery = pending.front();
+    const auto &input = GetParam();
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.attempt = delivery.attempt;
+    result.outcome = input.outcome;
+    result.status = input.status;
+    result.reason = input.reason;
+    result.effect = input.effect;
+    result.query_result = input.query_result;
+    result.result = text(input.body);
+    const auto posted = ayni_provider_post(delivery.completion, &result);
+    delivery.ended = posted == AYNI_OK;
+    ASSERT_EQ(posted, AYNI_OK);
+    pump(12);
+    const auto info = call_info(delivery.call);
+    EXPECT_EQ(info.outcome, AYNI_CALL_ABANDONED);
+    EXPECT_EQ(info.status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(info.reason, AYNI_REASON_PROVIDER_RESULT);
+    EXPECT_EQ(info.effect, AYNI_CALL_EFFECT_UNKNOWN);
+    EXPECT_EQ(info.result_bytes, 0U);
+    EXPECT_TRUE(seen_result.empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TerminalEvidence, MalformedProviderResult,
+    ::testing::Values(MalformedTerminal{"completed_status", AYNI_CALL_COMPLETED, AYNI_NOT_READY,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_COMPLETE},
+                      MalformedTerminal{"completed_reason", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_PROVIDER_RESULT, AYNI_CALL_EFFECT_COMPLETE},
+                      MalformedTerminal{"completed_effect", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_PARTIAL},
+                      MalformedTerminal{"failed_success", AYNI_CALL_FAILED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"failed_unknown", AYNI_CALL_FAILED, AYNI_RESULT_UNKNOWN,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_UNKNOWN},
+                      MalformedTerminal{"cancelled_status", AYNI_CALL_CANCELLED, AYNI_NOT_READY,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"cancelled_reason", AYNI_CALL_CANCELLED, AYNI_OK,
+                                        AYNI_REASON_PROVIDER_RESULT, AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"abandoned_status", AYNI_CALL_ABANDONED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_UNKNOWN},
+                      MalformedTerminal{"abandoned_effect", AYNI_CALL_ABANDONED,
+                                        AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE,
+                                        AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"abandoned_body", AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_UNKNOWN, 0, "unproven"},
+                      MalformedTerminal{"unrequested_query", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_COMPLETE,
+                                        AYNI_QUERY_RESULT_FOUND},
+                      MalformedTerminal{"invalid_utf8", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_COMPLETE, 0, "\xff"}),
+    [](const ::testing::TestParamInfo<MalformedTerminal> &scenario) { return scenario.param.name; });
+
 TEST_F(ManagedCall, async_worker_result_advances_the_same_task_and_preserves_copied_input) {
     const auto goal = create();
     pump(12);
@@ -513,6 +586,58 @@ TEST_F(ManagedCall, owner_resumes_the_same_resource_wait_without_another_model_c
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(resume_wait(task, request, before.revision).result.commit_seq,
               accepted.result.commit_seq);
+}
+
+// C-STORE-007 / ADR-0045: an exact resume command is valid both at the
+// resumed state and after its same Call has advanced to terminal completion.
+TEST_F(ManagedCall, snapshot_retains_wait_resume_before_and_after_call_completion) {
+    const auto goal = expire_resource_wait();
+    const auto task = work.goal(goal).last_task_id;
+    const auto resumed = resume_wait(task, ++command, work.task(task).revision);
+    ASSERT_EQ(resumed.status, AYNI_OK);
+    const auto restore = [this] {
+        const auto snapshot = snapshot_model(work.node());
+        Node target;
+        target.config() = snapshot.config;
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+        EXPECT_EQ(restore_model(snapshot, target), ayni::durability::BatchCheck::ok);
+    };
+    restore();
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    pump(12);
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    restore();
+}
+
+// C-STORE-007 / C-CALL-011: the retained query command proves its exact
+// requested query, then remains a historical receipt after reconciliation.
+TEST_F(ManagedCall, snapshot_retains_requested_and_resolved_query_receipts) {
+    create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending.front().call;
+    post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(query_call(call, ++command).status, AYNI_OK);
+    const auto restore = [this] {
+        const auto snapshot = snapshot_model(work.node());
+        Node target;
+        target.config() = snapshot.config;
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+        EXPECT_EQ(restore_model(snapshot, target), ayni::durability::BatchCheck::ok);
+    };
+    restore();
+    pump(16);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE,
+               text("found"));
+    pump(12);
+    ASSERT_EQ(call_info(call).outcome, AYNI_CALL_COMPLETED);
+    restore();
 }
 
 // ADR-0045: wait and user pause can be released in either order without losing the other.

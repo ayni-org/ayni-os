@@ -1,6 +1,7 @@
 // MA-008A/ADR-0048: reusable providers exercise only public registration, calls and completions.
 #include "work_node.h"
 #include <ayni/providers/mock.h>
+#include <ayni/providers/mock/subscription.h>
 
 namespace {
 using namespace ayni::test;
@@ -259,5 +260,68 @@ TEST(MockProviderConfig, invalid_bounds_and_unconfigured_operations_fail_explici
     EXPECT_EQ(string_of(descriptor.provider_id), "mock.b.present");
     EXPECT_EQ(descriptor.capabilities->contract.query, AYNI_CALL_QUERY_NONE);
     EXPECT_EQ(provider.close(), AYNI_OK);
+}
+
+// ADR-0063: failed finite-capture configuration leaves no partial owner or
+// descriptor. Closing an idle owner is repeatable and allows clean reuse.
+TEST(MockSubscriptionConfig, unconfigured_operations_preserve_outputs_and_allow_idle_close) {
+    ayni::providers::mock::SubscriptionProvider camera;
+    ayni_provider_v1 provider{};
+    provider.version = 99;
+    ayni_observation_source_v1 source{};
+    source.version = 99;
+    EXPECT_EQ(camera.describe(provider), AYNI_NOT_READY);
+    EXPECT_EQ(provider.version, 99U);
+    EXPECT_EQ(camera.describe_source(source), AYNI_NOT_READY);
+    EXPECT_EQ(source.version, 99U);
+    EXPECT_EQ(camera.advance(), AYNI_NOT_READY);
+    EXPECT_EQ(camera.pending(), 0U);
+    EXPECT_EQ(camera.next_due_us(), UINT64_MAX);
+    EXPECT_EQ(camera.media_store(), nullptr);
+    camera.abandon_kernel();
+    EXPECT_EQ(camera.close(), AYNI_OK);
+    EXPECT_EQ(camera.close(), AYNI_OK);
+}
+
+TEST(MockSubscriptionConfig, invalid_bounds_are_atomic_and_both_variants_can_be_reconfigured) {
+    using ayni::providers::mock::SubscriptionConfig;
+    ayni::providers::mock::SubscriptionProvider camera;
+    SubscriptionConfig valid;
+    valid.now_us = [](void *) -> uint64_t { return 0; };
+    const auto changes = {
+        +[](SubscriptionConfig &c) { c.variant = static_cast<Variant>(UINT32_MAX); },
+        +[](SubscriptionConfig &c) { c.now_us = nullptr; },
+        +[](SubscriptionConfig &c) { c.request_capacity = 0; },
+        +[](SubscriptionConfig &c) { c.request_capacity = 65; },
+        +[](SubscriptionConfig &c) { c.frame_interval_us = 0; },
+        +[](SubscriptionConfig &c) { c.frame_interval_us = UINT64_MAX; },
+        +[](SubscriptionConfig &c) { c.sample_ttl_us = 0; },
+        +[](SubscriptionConfig &c) { c.sample_ttl_us = UINT64_MAX; },
+        +[](SubscriptionConfig &c) { c.media_objects = 0; },
+        +[](SubscriptionConfig &c) { c.media_objects = 65; },
+    };
+    for (const auto change : changes) {
+        auto invalid = valid;
+        change(invalid);
+        EXPECT_EQ(camera.configure(invalid), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(camera.media_store(), nullptr);
+    }
+    for (const auto variant : {Variant::a, Variant::b}) {
+        valid.variant = variant;
+        valid.lease_ms = 0; // Public default selection, not an infinite lease.
+        ASSERT_EQ(camera.configure(valid), AYNI_OK);
+        EXPECT_EQ(camera.configure(valid), AYNI_INVALID_STATE);
+        ayni_provider_v1 provider{};
+        ASSERT_EQ(camera.describe(provider), AYNI_OK);
+        EXPECT_EQ(string_of(provider.provider_id),
+                  variant == Variant::a ? "mock.a.camera" : "mock.b.camera");
+        EXPECT_EQ(provider.capabilities->contract.subscription->lease_ms,
+                  AYNI_SUBSCRIPTION_LEASE_MS_DEFAULT);
+        EXPECT_EQ(camera.advance(), AYNI_OK);
+        EXPECT_EQ(camera.next_due_us(), UINT64_MAX);
+        EXPECT_EQ(camera.pending(), 0U);
+        ASSERT_NE(camera.media_store(), nullptr);
+        EXPECT_EQ(camera.close(), AYNI_OK);
+    }
 }
 } // namespace
