@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -1062,7 +1063,8 @@ TEST(GoalApprovalPersistence, missing_partner_or_mismatched_exact_command_restri
     const auto image = source.work.node().sim().durable_storage();
     const auto original = decode(image.log.back());
     ASSERT_EQ(original.records.size(), 4U);
-    for (uint32_t fault = 0; fault < 6; ++fault) {
+    constexpr uint32_t pairing_faults = 8;
+    for (uint32_t fault = 0; fault < pairing_faults; ++fault) {
         SCOPED_TRACE(fault);
         auto batch = original;
         if (fault < 4U) {
@@ -1076,8 +1078,18 @@ TEST(GoalApprovalPersistence, missing_partner_or_mismatched_exact_command_restri
             ayni::authority::write_grant_record(
                 grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
                 KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
-        } else {
+        } else if (fault == 5U) {
             batch.records.push_back(batch.records.front());
+        } else {
+            // C-STORE-019: reject an extra Grant before State, or after State
+            // but before metadata; neither may hide behind the final command.
+            ASSERT_EQ(batch.records.front().header.type, ayni::authority::grant_record_type);
+            const auto state =
+                std::find_if(batch.records.begin(), batch.records.end(),
+                             [](const auto &r) { return r.header.type == goal_state_record_type; });
+            ASSERT_NE(state, batch.records.end());
+            const auto extra = batch.records.front();
+            batch.records.insert(fault == 6U ? state : std::next(state), extra);
         }
         Fixture restored;
         restored.work.node().sim().durable_storage() = image;
@@ -1618,6 +1630,12 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
     source.run();
     const auto parent = approve_proposal(source);
     ASSERT_NE(parent, 0U);
+    const auto unrelated = source.goal();
+    ASSERT_NE(unrelated, 0U);
+    const auto parent_created = KernelTestProbe::work(source.work.kernel())
+                                    .goals.at(source.goal_index(parent))
+                                    .created.commit_seq;
+    ASSERT_GT(parent_created, 1U);
     const auto created = source.work.create(
         WorkNode::create_body(source.work.instance(agent_a), parent, "proposal"));
     ASSERT_EQ(created.status, AYNI_OK);
@@ -1632,9 +1650,11 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
     source.work.node().recover();
     const auto journal = source.work.node().sim().durable_storage();
     const auto compacted = snapshot(source);
-    for (unsigned fault = 0; fault < 3; ++fault) {
+    constexpr unsigned binding_faults = 5;
+    for (unsigned fault = 0; fault < binding_faults; ++fault) {
         SCOPED_TRACE(fault);
-        auto forge_binding = [fault, child](std::vector<Record> &records) {
+        auto forge_binding = [fault, child, unrelated,
+                              parent_created](std::vector<Record> &records) {
             for (auto &row : records) {
                 if (row.header.type != goal_authority_record_type) {
                     continue;
@@ -1651,8 +1671,12 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
                     --record.binding.established_seq;
                 } else if (fault == 1U) {
                     --record.binding.parent.commit_seq;
-                } else {
+                } else if (fault == 2U) {
                     record.binding.input.incarnation = 1;
+                } else if (fault == 3U) {
+                    record.binding.parent.goal_id = unrelated;
+                } else {
+                    record.binding.parent.commit_seq = parent_created - 1;
                 }
                 EXPECT_TRUE(valid_goal_authority_record(record));
                 std::vector<uint8_t> bytes(row.body.size());
@@ -3114,6 +3138,102 @@ TEST(GoalApprovalPersistence, activation_rejects_each_noninitial_state_fact_with
         EXPECT_EQ(restored.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
         EXPECT_EQ(KernelTestProbe::work(restored.work.kernel()).grants.size(), 0U);
     }
+}
+
+// C-STORE-019: approval binds each newly issued Grant and replacement metadata
+// to the unchanged original Goal requirements and exact owner command. A later
+// matching row cannot repair a CRC-valid altered member of this atomic decision.
+TEST(GoalApprovalPersistence, changed_approval_fact_bits_cannot_be_repaired_by_the_exact_receipt) {
+    Fixture source;
+    source.run();
+    const auto goal = approve_proposal(source);
+    ASSERT_NE(goal, 0U);
+    const auto image = source.work.node().sim().durable_storage();
+    ASSERT_FALSE(image.log.empty());
+    const auto original = decode(image.log.back());
+    Fixture control;
+    control.work.node().sim().durable_storage() = image;
+    control.run();
+    ASSERT_EQ(control.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    constexpr unsigned bits_per_byte = 8;
+    uint32_t selected = 0;
+    for (std::size_t row = 0; row < original.records.size(); ++row) {
+        const auto &record = original.records[row];
+        if (record.header.type != ayni::authority::grant_record_type &&
+            record.header.type != goal_authority_record_type) {
+            continue;
+        }
+        ++selected;
+        ASSERT_FALSE(record.body.empty());
+        for (std::size_t at = 0; at < record.body.size(); ++at) {
+            for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                SCOPED_TRACE(::testing::Message() << record.header.type << '/' << at << ':' << bit);
+                auto changed = original;
+                changed.records[row].body[at] ^= static_cast<uint8_t>(1U << bit);
+                const auto stored = encode(changed);
+                BatchView decoded{};
+                ASSERT_EQ(read_batch(stored.bytes.data(), stored.bytes.size(), decoded),
+                          BatchCheck::ok);
+                Fixture recovered;
+                recovered.work.node().sim().durable_storage() = image;
+                recovered.work.node().sim().durable_storage().log.back() = stored;
+                recovered.run();
+                EXPECT_EQ(recovered.work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+                EXPECT_EQ(recovered.work.node().info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+                EXPECT_EQ(KernelTestProbe::work(recovered.work.kernel()).grants.size(), 0U);
+            }
+        }
+    }
+    constexpr uint32_t approval_facts = 2; // One dedicated Grant and its Goal authority metadata.
+    ASSERT_EQ(selected, approval_facts);
+}
+
+// C-STORE-019 / ADR-0059: retiring a terminal Goal does not erase the
+// immutable owner retry result. The new occupant supplies no authority for that old command.
+TEST(GoalApprovalPersistence, snapshot_preserves_exact_approval_receipt_after_goal_slot_reuse) {
+    Fixture source;
+    source.work.node().config().goal_capacity = 1;
+    source.run();
+    const auto goal = approve_proposal(source);
+    ASSERT_NE(goal, 0U);
+    constexpr uint64_t approval_command = 100; // approve_proposal's explicit management identity.
+    const auto &commands = KernelTestProbe::work(source.work.kernel()).commands;
+    const auto *accepted = commands.mapped(owner_id, approval_command);
+    ASSERT_NE(accepted, nullptr);
+    const auto first = *accepted;
+    const auto request = commands.canonical(*accepted);
+    const auto result = commands.authorization_result(*accepted);
+    const std::vector<uint8_t> canonical(request.data, request.data + request.size);
+    const std::vector<uint8_t> response(result.data, result.data + result.size);
+    ASSERT_FALSE(canonical.empty());
+    ASSERT_FALSE(response.empty());
+    ASSERT_EQ(source.work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
+    finish_authority_work(source);
+    const auto replacement =
+        source.work.create(WorkNode::create_body(source.work.instance(agent_a), 0, "folder"));
+    ASSERT_EQ(replacement.status, AYNI_OK);
+    source.work.node().recover();
+    uint32_t index = 0;
+    ASSERT_FALSE(KernelTestProbe::work(source.work.kernel()).goals.find(goal, index));
+    ASSERT_NE(commands.mapped(owner_id, approval_command), nullptr);
+    const auto compacted = snapshot(source);
+    Fixture target;
+    target.work.node().config().goal_capacity = 1;
+    target.run();
+    ASSERT_EQ(import_snapshot(target, compacted), BatchCheck::ok);
+    const auto &restored = KernelTestProbe::work(target.work.kernel()).commands;
+    const auto *receipt = restored.mapped(owner_id, approval_command);
+    ASSERT_NE(receipt, nullptr);
+    EXPECT_EQ(receipt->kind, AYNI_INTENT_GOAL_APPROVE);
+    EXPECT_EQ(receipt->object.id, goal);
+    EXPECT_EQ(receipt->object.revision, first.object.revision);
+    EXPECT_EQ(receipt->commit_seq, first.commit_seq);
+    const auto after_request = restored.canonical(*receipt);
+    const auto after_result = restored.authorization_result(*receipt);
+    EXPECT_EQ(std::vector<uint8_t>(after_request.data, after_request.data + after_request.size),
+              canonical);
+    EXPECT_EQ(std::vector<uint8_t>(after_result.data, after_result.data + after_result.size),
+              response);
 }
 
 // C-STORE-019/022: even a shape-valid canonical identity with a recomputed

@@ -290,6 +290,61 @@ class ManagedExecution : public ::testing::Test {
     uint64_t task_id = 0;
     std::vector<uint64_t> grants;
 };
+
+// White-box, ADR-0050 / C-PERMIT-002: a decoded physical Call must retain
+// the original binding/epoch/Scene and the exact possibility of permit dispatch.
+TEST_F(ManagedExecution, physical_call_record_rejects_changed_permit_identity_and_phase_proof) {
+    start(AYNI_FORM_SESSION, 200);
+    create();
+    wait_submission();
+    const auto &calls = ayni::kernel::KernelTestProbe::work(work.kernel()).calls;
+    uint32_t index = 0;
+    ASSERT_TRUE(calls.find(executor.logical_call(), index));
+    const auto original = calls.record(index);
+    ASSERT_TRUE(ayni::work::CallTable::valid_record(original));
+    ASSERT_TRUE(original.state.execution.has_value());
+    const auto changes = {
+        +[](ayni::work::CallRecord &r) { r.state.execution.reset(); },
+        +[](ayni::work::CallRecord &r) {
+            auto &f = *r.state.execution;
+            ++f.epochs.kernel_boot_epoch;
+            for (uint32_t at = 0; at < f.dependency_count; ++at) {
+                f.dependencies[at].boot_epoch = f.epochs.kernel_boot_epoch;
+            }
+        },
+        +[](ayni::work::CallRecord &r) {
+            r.state.execution->scene_seq = r.state.created.transition.commit_seq;
+        },
+        +[](ayni::work::CallRecord &r) {
+            EXPECT_TRUE(r.state.execution->binding.binding.assign(text("other")));
+        },
+        +[](ayni::work::CallRecord &r) { ++r.state.execution->binding.binding_version; },
+        +[](ayni::work::CallRecord &r) { r.state.execution->phase = AYNI_EXECUTION_PREPARED; },
+        +[](ayni::work::CallRecord &r) {
+            r.state.execution->phase = AYNI_EXECUTION_DISPATCHING;
+            r.state.attempt = {};
+        },
+    };
+    for (const auto change : changes) {
+        auto candidate = original;
+        change(candidate);
+        EXPECT_FALSE(ayni::work::CallTable::valid_record(candidate));
+    }
+    // The privacy path has no input projection; it must still validate metadata.
+    const ayni::work::CallTable::Limits limits{1, original.domain.size, original.input.size,
+                                               original.contract.result_text_limit};
+    std::vector<uint64_t> arena(ayni::work::CallTable::storage_size(limits) / sizeof(uint64_t) + 1);
+    ayni::work::CallTable copy(arena.data(), limits);
+    ASSERT_EQ(copy.restore_validated(original), AYNI_OK);
+    auto stamp = original.state.latest;
+    ++stamp.transition.transition_id;
+    ++stamp.transition.commit_seq;
+    ASSERT_EQ(copy.erase_content(0, stamp), AYNI_OK);
+    auto erased = copy.record(0);
+    ASSERT_TRUE(ayni::work::CallTable::valid_record(erased));
+    erased.state.execution->control_domain = 0;
+    EXPECT_FALSE(ayni::work::CallTable::valid_record(erased));
+}
 TEST_F(ManagedExecution, procedure_finishes_only_with_independent_stop_and_releases_actuator) {
     start();
     const auto goal = create();

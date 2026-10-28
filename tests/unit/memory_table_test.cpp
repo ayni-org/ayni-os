@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <initializer_list>
 #include <vector>
 namespace {
 using namespace ayni::knowledge;
@@ -56,6 +57,131 @@ class MemoryFacts : public testing::Test {
         return at;
     }
 };
+
+// White-box, C-MEM-001/004 and ADR-0060: identity, trust and provenance are
+// validated before a write plan exists. Rejection must preserve the plan.
+TEST_F(MemoryFacts, invalid_memory_values_cannot_publish_a_write_plan) {
+    struct Case {
+        const char *name;
+        void (*change)(MemoryValue &);
+    };
+    const Case cases[] = {
+        {"unknown namespace", [](auto &v) { v.space = static_cast<MemoryNamespace>(0); }},
+        {"zero namespace owner", [](auto &v) { v.namespace_id = 0; }},
+        {"nonkernel private owner", [](auto &v) { v.namespace_id = 1; }},
+        {"profile field in private memory", [](auto &v) { v.profile_field = ProfileField::name; }},
+        {"unknown source", [](auto &v) { v.source = static_cast<MemorySource>(0); }},
+        {"empty body", [](auto &v) { v.body = {}; }},
+        {"missing body bytes", [](auto &v) { v.body = {nullptr, 1}; }},
+        {"invalid source call", [](auto &v) { v.source_call_id = 1; }},
+        {"unconfirmed user origin", [](auto &v) { v.confirmed = false; }},
+        {"user origin claims model call",
+         [](auto &v) { v.source_call_id = UINT64_C(0x100000009); }},
+        {"tag count exceeds hard bound", [](auto &v) { v.labels.tag_count = memory_tag_max + 1; }},
+        {"keyword count exceeds hard bound",
+         [](auto &v) { v.labels.keyword_count = memory_keyword_max + 1; }},
+        {"empty active tag", [](auto &v) { v.labels.tag_count = 1; }},
+        {"empty active keyword", [](auto &v) { v.labels.keyword_count = 1; }},
+        {"malformed dependency", [](auto &v) { v.dependencies.count = 1; }},
+    };
+    for (const auto &test : cases) {
+        SCOPED_TRACE(test.name);
+        auto candidate = value();
+        test.change(candidate);
+        MemoryWritePlan plan{99, 99};
+        EXPECT_EQ(table.check_write(0, 0, candidate, plan), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(plan.index, 99U);
+        EXPECT_EQ(plan.revision, 99U);
+        EXPECT_EQ(table.size(), 0U);
+    }
+    // Only explicit confirmed user input may populate each supported profile field.
+    for (const auto field :
+         {ProfileField::name, ProfileField::language, ProfileField::interaction}) {
+        auto profile = value();
+        profile.space = MemoryNamespace::owner_profile;
+        profile.namespace_id = 10;
+        profile.profile_field = field;
+        EXPECT_EQ(check_memory_value(profile, limits), AYNI_OK);
+        profile.source = MemorySource::model;
+        EXPECT_EQ(check_memory_value(profile, limits), AYNI_INVALID_ARGUMENT);
+        profile.source = MemorySource::derived;
+        EXPECT_EQ(check_memory_value(profile, limits), AYNI_INVALID_ARGUMENT);
+        profile.source = MemorySource::user;
+        profile.confirmed = false;
+        EXPECT_EQ(check_memory_value(profile, limits), AYNI_INVALID_ARGUMENT);
+    }
+}
+
+// White-box, ADR-0060: every semantic field participates in equality; a
+// matching body cannot hide a changed permission, label, source or namespace.
+TEST_F(MemoryFacts, memory_value_equality_includes_labels_and_exact_source_permissions) {
+    auto original = value("body");
+    original.source = MemorySource::derived;
+    original.confirmed = false;
+    ASSERT_TRUE(original.labels.tags[0].assign({"tag", 3}));
+    original.labels.tag_count = 1;
+    ASSERT_TRUE(original.labels.keywords[0].assign({"key", 3}));
+    original.labels.keyword_count = 1;
+    original.dependencies.count = 1;
+    original.dependencies.items[0] = dependency(UINT64_C(0x100000009));
+    ASSERT_EQ(check_memory_value(original, limits), AYNI_OK);
+    EXPECT_TRUE(same_memory_value(original, original));
+    const auto changes = {
+        +[](MemoryValue &v) { v.space = MemoryNamespace::owner_profile; },
+        +[](MemoryValue &v) { ++v.namespace_id; },
+        +[](MemoryValue &v) { v.source = MemorySource::model; },
+        +[](MemoryValue &v) { v.profile_field = ProfileField::name; },
+        +[](MemoryValue &v) { v.confirmed = true; },
+        +[](MemoryValue &v) { v.source_call_id = UINT64_C(0x100000008); },
+        +[](MemoryValue &v) { v.body = {"edit", 4}; },
+        +[](MemoryValue &v) { --v.body.size; },
+        +[](MemoryValue &v) { v.labels.tag_count = 0; },
+        +[](MemoryValue &v) { v.labels.keyword_count = 0; },
+        +[](MemoryValue &v) { EXPECT_TRUE(v.labels.tags[0].assign({"new", 3})); },
+        +[](MemoryValue &v) { EXPECT_TRUE(v.labels.keywords[0].assign({"new", 3})); },
+        +[](MemoryValue &v) { v.dependencies.count = 0; },
+        +[](MemoryValue &v) { ++v.dependencies.items[0].revision; },
+        +[](MemoryValue &v) { v.dependencies.items[0].read = {UINT64_C(0x100000007), 1}; },
+        +[](MemoryValue &v) { v.dependencies.items[0].egress = {UINT64_C(0x100000006), 1}; },
+    };
+    unsigned scenario = 0;
+    for (const auto change : changes) {
+        SCOPED_TRACE(scenario++);
+        auto candidate = original;
+        change(candidate);
+        EXPECT_FALSE(same_memory_value(original, candidate));
+        EXPECT_FALSE(same_memory_value(candidate, original));
+    }
+}
+
+// White-box, ADR-0060: partial/invalid label arrays never replace caller
+// outputs; tags and keywords each have an independent finite, unique prefix.
+TEST_F(MemoryFacts, label_array_rejections_preserve_previous_outputs) {
+    const ayni_string_v1 duplicate[] = {{"same", 4}, {"same", 4}};
+    const ayni_string_v1 invalid[] = {{"\xc0\x80", 2}};
+    MemoryLabels out{};
+    out.tag_count = 1;
+    ASSERT_TRUE(out.tags[0].assign({"kept", 4}));
+    for (const bool tags : {false, true}) {
+        for (unsigned scenario = 0; scenario < 4; ++scenario) {
+            const ayni_string_v1 *bytes = nullptr;
+            uint32_t count = 1;
+            if (scenario == 1) {
+                bytes = duplicate;
+                count = 2;
+            } else if (scenario == 2) {
+                bytes = invalid;
+            } else if (scenario == 3) {
+                count = tags ? memory_tag_max + 1 : memory_keyword_max + 1;
+            }
+            EXPECT_FALSE(read_memory_labels(tags ? bytes : nullptr, tags ? count : 0,
+                                            tags ? nullptr : bytes, tags ? 0 : count, out));
+            EXPECT_EQ(out.tag_count, 1U);
+            EXPECT_TRUE(out.tags[0].equals({"kept", 4}));
+            EXPECT_EQ(out.keyword_count, 0U);
+        }
+    }
+}
 TEST_F(MemoryFacts, copies_bounded_text_and_rejects_full_table_without_eviction) {
     char text[] = "original";
     const auto id = add(value(text));
@@ -157,6 +283,97 @@ TEST_F(MemoryFacts, dependency_union_is_atomic_and_never_truncates) {
     EXPECT_EQ(merge_dependencies(set, input, 1), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(set.count, 1U);
     EXPECT_EQ(set.items[0].id, first);
+}
+
+// C-MEM-005: intrinsic source and Grant identities must be complete before
+// a dependency can enter a decision; context anchors never carry memory Grants.
+TEST_F(MemoryFacts, malformed_dependency_identities_cannot_change_the_source_union) {
+    const auto source = add(value());
+    uint64_t read = 0, egress = 0;
+    ASSERT_TRUE(ids.allocate(read));
+    ASSERT_TRUE(ids.allocate(egress));
+    auto original = dependency(source);
+    original.read = {read, 1};
+    original.egress = {egress, 1};
+    ASSERT_TRUE(valid_dependency(original));
+    const auto changes = {
+        +[](MemoryDependency &v) { v.kind = static_cast<DependencyKind>(0); },
+        +[](MemoryDependency &v) { v.id = 0; },
+        +[](MemoryDependency &v) { v.actor_instance_id = 0; },
+        +[](MemoryDependency &v) { v.revision = 0; },
+        +[](MemoryDependency &v) { v.purpose = static_cast<MemoryPurpose>(0); },
+        +[](MemoryDependency &v) { v.read.id = 0; },
+        +[](MemoryDependency &v) { v.read.revision = 0; },
+        +[](MemoryDependency &v) { v.read.id = 1; },
+        +[](MemoryDependency &v) { v.egress.id = 0; },
+        +[](MemoryDependency &v) { v.egress.revision = 0; },
+        +[](MemoryDependency &v) { v.egress.id = 1; },
+        +[](MemoryDependency &v) { v.kind = DependencyKind::context; },
+        +[](MemoryDependency &v) {
+            v.kind = DependencyKind::context;
+            v.read = {};
+        },
+    };
+    for (const auto change : changes) {
+        auto candidate = original;
+        change(candidate);
+        EXPECT_FALSE(valid_dependency(candidate));
+        MemoryDependencies set{};
+        EXPECT_EQ(add_dependency(set, candidate, limits.dependencies), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(set.count, 0U);
+        set.count = 1;
+        set.items[0] = candidate;
+        EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    }
+    MemoryDependencies set{};
+    EXPECT_EQ(add_dependency(set, original, 0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(add_dependency(set, original, memory_dependency_max + 1), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(set.count, 0U);
+    EXPECT_FALSE(valid_dependencies(set, memory_dependency_max + 1));
+    auto context = original;
+    context.kind = DependencyKind::context;
+    ASSERT_TRUE(ids.allocate(context.id));
+    context.read = {};
+    context.egress = {};
+    EXPECT_TRUE(valid_dependency(context));
+}
+
+// C-MEM-005: canonical reads merge only their first export permission. Two
+// different exports remain distinct, while conflicting source revisions are refused.
+TEST_F(MemoryFacts, dependency_set_validation_preserves_distinct_exports_and_rejects_aliases) {
+    const auto source = add(value());
+    uint64_t first = 0, second = 0;
+    ASSERT_TRUE(ids.allocate(first));
+    ASSERT_TRUE(ids.allocate(second));
+    auto ref = dependency(source);
+    ref.egress = {first, 1};
+    MemoryDependencies set{};
+    set.count = 2;
+    set.items[0] = ref;
+    set.items[1] = ref;
+    EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    set.items[1].egress = {};
+    EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    set.items[1].egress = {second, 1};
+    ASSERT_TRUE(valid_dependencies(set, limits.dependencies));
+    const auto accepted = set;
+    auto conflict = ref;
+    ++conflict.revision;
+    MemoryDependencies input{};
+    ASSERT_EQ(add_dependency(input, conflict, limits.dependencies), AYNI_OK);
+    EXPECT_EQ(merge_dependencies(set, input, limits.dependencies), AYNI_REVISION_CONFLICT);
+    EXPECT_TRUE(same_dependencies(set, accepted));
+    ++set.items[1].revision;
+    EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    set = accepted;
+    auto malformed = input;
+    malformed.items[0].actor_instance_id = 0;
+    EXPECT_EQ(merge_dependencies(set, malformed, limits.dependencies), AYNI_INVALID_ARGUMENT);
+    EXPECT_TRUE(same_dependencies(set, accepted));
+    auto invalid_target = malformed;
+    EXPECT_EQ(merge_dependencies(invalid_target, input, limits.dependencies),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_TRUE(same_dependencies(invalid_target, malformed));
 }
 TEST_F(MemoryFacts, exact_tags_and_keywords_combine_with_body_search) {
     auto v = value("likes green tea");

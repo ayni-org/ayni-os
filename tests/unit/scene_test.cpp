@@ -1,5 +1,7 @@
 // ADR-0050: public owner preferences, durable enable gate, exact commands and finite declarations.
 #include "authority/scene/scene_records.h"
+#include "journal_test_support.h"
+#include "snapshot_test_support.h"
 #include "work_node.h"
 #include <ayni/scenes.h>
 
@@ -75,6 +77,105 @@ class SceneApi : public ::testing::Test {
     uint64_t session = 0;
     bool register_scene = true;
 };
+
+// ADR-0050 / C-PERMIT-002: trusted Scene declarations must reject malformed
+// permission/source descriptions atomically, before consuming catalog capacity.
+TEST_F(SceneApi, invalid_scene_descriptions_leave_room_for_one_canonical_declaration) {
+    register_scene = false;
+    node.config().observation_source_capacity = 3;
+    node.create();
+    const ayni_observation_source_v1 inferred{sizeof(inferred),
+                                              1,
+                                              text("inferred"),
+                                              AYNI_OBSERVATION_BOOL,
+                                              AYNI_OBSERVATION_INFERRED,
+                                              text("bool"),
+                                              1000000};
+    ASSERT_EQ(ayni_register_observation_source(node.kernel(), &inferred), AYNI_OK);
+    auto another = inferred;
+    another.source_id = text("aaa");
+    another.origin = AYNI_OBSERVATION_MEASURED;
+    ASSERT_EQ(ayni_register_observation_source(node.kernel(), &another), AYNI_OK);
+    struct Case {
+        const char *name;
+        ayni_status_t expected;
+        void (*change)(ayni_scene_desc_v1 &, ayni_scene_rule_v1 &, ayni_observation_condition_v1 &);
+    };
+    const Case cases[] = {
+        {"short descriptor", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) { d.struct_size = 0; }},
+        {"future descriptor", AYNI_UNSUPPORTED_VERSION,
+         [](auto &d, auto &, auto &) { ++d.struct_size; }},
+        {"empty identity", AYNI_INVALID_ARGUMENT, [](auto &d, auto &, auto &) { d.scene_id = {}; }},
+        {"zero semantic version", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) { d.version = 0; }},
+        {"missing permission", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) { d.rule_count = 0; }},
+        {"too many permissions", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) { d.rule_count = AYNI_SCENE_RULE_COUNT_MAX + 1; }},
+        {"missing permission array", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) { d.rules = nullptr; }},
+        {"too many source conditions", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) {
+             d.condition_count = AYNI_OBSERVATION_CONDITION_COUNT_MAX + 1;
+         }},
+        {"missing condition array", AYNI_INVALID_ARGUMENT,
+         [](auto &d, auto &, auto &) { d.conditions = nullptr; }},
+        {"empty capability", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &r, auto &) { r.capability_id = {}; }},
+        {"zero capability version", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &r, auto &) { r.capability_version = 0; }},
+        {"reserved permission bits", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &r, auto &) { r.reserved = 1; }},
+        {"unknown capability", AYNI_NOT_FOUND,
+         [](auto &, auto &r, auto &) { r.capability_id = text("absent"); }},
+        {"unknown capability version", AYNI_UNSUPPORTED_VERSION,
+         [](auto &, auto &r, auto &) { ++r.capability_version; }},
+        {"malformed permission scope", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &r, auto &) { r.allowed.struct_size = 0; }},
+        {"empty observation source", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.source_id = {}; }},
+        {"unknown observation source", AYNI_NOT_FOUND,
+         [](auto &, auto &, auto &c) { c.source_id = text("absent"); }},
+        {"unknown source version", AYNI_UNSUPPORTED_VERSION,
+         [](auto &, auto &, auto &c) { ++c.source_version; }},
+        {"inferred evidence", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.source_id = text("inferred"); }},
+        {"inverted evidence range", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.minimum = 2; }},
+        {"negative boolean bound", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.minimum = -1; }},
+        {"oversized boolean bound", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.maximum = 2; }},
+        {"zero evidence age", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.max_age_us = 0; }},
+        {"unbounded evidence age", AYNI_INVALID_ARGUMENT,
+         [](auto &, auto &, auto &c) { c.max_age_us = UINT64_MAX; }},
+    };
+    for (const auto &test : cases) {
+        SCOPED_TRACE(test.name);
+        ayni_scene_rule_v1 rule{text("turn"), 1, 0, {sizeof(ayni_scope_v1), 0, nullptr}};
+        ayni_observation_condition_v1 condition{text("ready"), 1, 0, 0, 1, 500000};
+        ayni_scene_desc_v1 description{sizeof(description), 1, text("look"), 1, 1, &rule,
+                                       &condition};
+        test.change(description, rule, condition);
+        EXPECT_EQ(ayni_register_scene(node.kernel(), &description), test.expected);
+    }
+    const ayni_scene_rule_v1 duplicate_rules[] = {
+        {text("turn"), 1, 0, {sizeof(ayni_scope_v1), 0, nullptr}},
+        {text("turn"), 1, 0, {sizeof(ayni_scope_v1), 0, nullptr}}};
+    const ayni_observation_condition_v1 duplicate_conditions[] = {
+        {text("ready"), 1, 0, 0, 1, 500000}, {text("ready"), 1, 0, 0, 1, 500000}};
+    ayni_scene_desc_v1 duplicate{sizeof(duplicate), 1,      text("look"), 2, 0,
+                                 duplicate_rules,   nullptr};
+    EXPECT_EQ(ayni_register_scene(node.kernel(), &duplicate), AYNI_INVALID_ARGUMENT);
+    duplicate.rule_count = 1;
+    duplicate.condition_count = 2;
+    duplicate.conditions = duplicate_conditions;
+    EXPECT_EQ(ayni_register_scene(node.kernel(), &duplicate), AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(add_scene(node.kernel()), AYNI_OK);
+    EXPECT_EQ(ayni_register_scene(node.kernel(), &duplicate), AYNI_INVALID_ARGUMENT);
+}
 TEST_F(SceneApi, disabled_default_enable_waits_for_durability_close_blocks_immediately) {
     run();
     EXPECT_EQ(info().revision, 0U);
@@ -109,6 +210,98 @@ TEST_F(SceneApi, retries_keep_original_receipt_and_no_change_keeps_scene_revisio
     receipt.struct_size = sizeof(receipt);
     ASSERT_EQ(ayni_get_intent_receipt(node.kernel(), owner_id, 2, &receipt), AYNI_OK);
     EXPECT_EQ(receipt.effect, AYNI_INTENT_EFFECT_NO_CHANGE);
+}
+
+// C-STORE-007/009 / ADR-0050: disabling preserves the saved declaration;
+// enabling may replace it. Historical and NO_CHANGE receipts survive recovery.
+TEST_F(SceneApi, preference_history_rejects_changed_definition_or_transition_facts) {
+    run();
+    const auto enabled = change(1, 0, true);
+    ASSERT_EQ(enabled.status, AYNI_OK);
+    store(enabled.result.commit_seq);
+    const auto disabled = change(2, 1, false);
+    ASSERT_EQ(disabled.status, AYNI_OK);
+    store(disabled.result.commit_seq);
+    const auto reopened = change(3, 2, true);
+    ASSERT_EQ(reopened.status, AYNI_OK);
+    store(reopened.result.commit_seq);
+    const auto unchanged = change(4, 3, true);
+    ASSERT_EQ(unchanged.status, AYNI_OK);
+    ASSERT_EQ(unchanged.result.effect, AYNI_INTENT_EFFECT_NO_CHANGE);
+    store(unchanged.result.commit_seq);
+    const auto snapshot = snapshot_model(node);
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    const auto configure = [&](Node &target) {
+        target.config() = snapshot.config;
+        target.on_create([](ayni_kernel_t *kernel) {
+            const auto principal = owner_desc();
+            ASSERT_EQ(ayni_register_principal(kernel, &principal), AYNI_OK);
+        });
+    };
+    const auto log = node.sim().log();
+    Node control;
+    configure(control);
+    control.sim().log() = log;
+    control.create_and_start();
+    control.recover();
+    ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    ASSERT_EQ(KernelTestProbe::work(control.kernel()).scenes.state_count(), 1U);
+    constexpr unsigned bits_per_byte = 8;
+    uint32_t selected = 0;
+    for (std::size_t item = 0; item < log.size(); ++item) {
+        const auto batch = read_stored_batch(log[item]);
+        if (batch.identity.commit_seq != disabled.result.commit_seq &&
+            batch.identity.commit_seq != reopened.result.commit_seq) {
+            continue;
+        }
+        for (std::size_t row = 0; row < batch.records.size(); ++row) {
+            const auto &record = batch.records[row];
+            if (record.header.type != ayni::authority::scene_record_type) {
+                continue;
+            }
+            ++selected;
+            ASSERT_FALSE(record.body.empty());
+            ayni::authority::SceneRecord decoded{};
+            ASSERT_TRUE(ayni::authority::read_scene_record(record.body.data(), record.header.length,
+                                                           decoded));
+            const auto definition_at =
+                static_cast<std::size_t>(decoded.definition.data - record.body.data());
+            for (std::size_t at = 0; at < record.body.size(); ++at) {
+                // ADR-0050 permits a new declaration on enable. Its unretained
+                // registration is not an independent proof of definition bytes.
+                if (batch.identity.commit_seq == reopened.result.commit_seq &&
+                    at >= definition_at) {
+                    continue;
+                }
+                for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                    SCOPED_TRACE(::testing::Message() << item << '/' << at << ':' << bit);
+                    auto changed = batch;
+                    changed.records[row].body[at] ^= static_cast<uint8_t>(1U << bit);
+                    auto candidate = log;
+                    candidate[item] = write_stored_batch(changed);
+                    Node recovered;
+                    configure(recovered);
+                    recovered.sim().log() = std::move(candidate);
+                    recovered.create_and_start();
+                    recovered.recover();
+                    EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+                    EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+                    EXPECT_EQ(KernelTestProbe::work(recovered.kernel()).scenes.state_count(), 0U);
+                }
+            }
+        }
+    }
+    constexpr uint32_t changed_preferences =
+        2; // Disable and re-enable after the first declaration.
+    ASSERT_EQ(selected, changed_preferences);
+    Node disabled_capacity;
+    configure(disabled_capacity);
+    disabled_capacity.config().scene_capacity = 0;
+    disabled_capacity.sim().log() = log;
+    disabled_capacity.create_and_start();
+    disabled_capacity.recover();
+    EXPECT_EQ(disabled_capacity.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(disabled_capacity.info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
 }
 TEST_F(SceneApi, conversation_session_cannot_enable_and_zero_command_is_rejected) {
     run();
@@ -146,5 +339,64 @@ TEST_F(SceneApi, original_definition_record_round_trip_preserves_constraints_and
     EXPECT_EQ(std::memcmp(decoded.definition.data, scenes.state_definition(0).data,
                           decoded.definition.size),
               0);
+}
+
+// White-box, C-STORE-007/009 / ADR-0050: snapshot preferences retain their owner,
+// original declaration and stamp; malformed rows never become an enabled Scene.
+TEST_F(SceneApi, snapshot_scene_requires_original_owner_order_identity_and_unique_row) {
+    run();
+    const auto enabled = change(1, 0, true);
+    ASSERT_EQ(enabled.status, AYNI_OK);
+    store(enabled.result.commit_seq);
+    const auto original = snapshot_model(node);
+    ASSERT_EQ(restore_model(original), ayni::durability::BatchCheck::ok);
+    Node disabled;
+    disabled.config() = original.config;
+    disabled.config().scene_capacity = 0;
+    EXPECT_EQ(restore_model(original, disabled), ayni::durability::BatchCheck::no_room);
+    std::size_t target = original.records.size();
+    for (std::size_t at = 0; at < original.records.size(); ++at) {
+        if (original.records[at].header.type == ayni::authority::scene_record_type) {
+            target = at;
+        }
+    }
+    ASSERT_LT(target, original.records.size());
+    for (unsigned scenario = 0; scenario < 8; ++scenario) {
+        SCOPED_TRACE(scenario);
+        auto candidate = original;
+        auto &row = candidate.records[target];
+        ayni::authority::SceneRecord fact{};
+        ASSERT_TRUE(ayni::authority::read_scene_record(row.body.data(), row.header.length, fact));
+        if (scenario == 0) {
+            fact.state.stamp.commit_seq = 0;
+        } else if (scenario == 1) {
+            fact.state.stamp.transition_id = 0;
+        } else if (scenario == 2) {
+            fact.state.stamp.commit_seq = candidate.metadata.covers_commit_seq + 1;
+        } else if (scenario == 3) {
+            fact.state.stamp.transition_id = candidate.metadata.max_transition_id + 1;
+        } else if (scenario == 4) {
+            const auto &binding = *KernelTestProbe::work(node.kernel()).principals.binding();
+            fact.state.stamp = binding.stamp;
+        } else if (scenario == 5) {
+            ayni::foundation::IdAllocator allocator;
+            allocator.start(candidate.metadata.boot_epoch + 1);
+            ASSERT_TRUE(allocator.allocate(fact.state.object_id));
+        } else if (scenario == 6) {
+            candidate.records.insert(
+                candidate.records.begin() + static_cast<std::ptrdiff_t>(target), row);
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+            continue;
+        } else {
+            row.header.length = 1;
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+            continue;
+        }
+        // Decoded definition borrows row.body; encode separately before replacing it.
+        std::vector<uint8_t> body(row.body.size());
+        ayni::authority::write_scene_record(fact.state, fact.definition, body.data());
+        row.body = std::move(body);
+        EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+    }
 }
 } // namespace

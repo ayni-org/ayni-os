@@ -1,7 +1,10 @@
 // ADR-0060: context publication proves the original Task basis, while deletion invalidates
 // every dependent consumer before external files are acknowledged.
 #include "goal_approval_request.h"
+#include "journal_test_support.h"
 #include "kernel/service/memory/privacy_service.h"
+#include "knowledge/context/context_records.h"
+#include "snapshot_test_support.h"
 #include "work/provenance/provenance_table.h"
 #include "work_node.h"
 #include <ayni/context.h>
@@ -150,6 +153,182 @@ class KernelContext : public testing::Test {
         open_session();
     }
 };
+// White-box, C-STORE-007/009 / ADR-0060: a recovered anchor must have an existing
+// owner and lie inside the frozen snapshot boundary; duplicate rows are corrupt.
+TEST_F(KernelContext, snapshot_context_rejects_invalid_history_missing_owner_and_duplicate_anchor) {
+    const auto opened = open();
+    ASSERT_EQ(opened.status, AYNI_OK);
+    durable(opened.result.commit_seq);
+    const auto original = snapshot_model(node);
+    ASSERT_EQ(restore_model(original), ayni::durability::BatchCheck::ok);
+    std::size_t target = original.records.size();
+    for (std::size_t at = 0; at < original.records.size(); ++at) {
+        if (original.records[at].header.type == ayni::knowledge::context_record_type) {
+            target = at;
+        }
+    }
+    ASSERT_LT(target, original.records.size());
+    for (unsigned scenario = 0; scenario < 10; ++scenario) {
+        SCOPED_TRACE(scenario);
+        auto candidate = original;
+        auto &row = candidate.records[target];
+        ayni::knowledge::ContextRecord fact{};
+        ASSERT_TRUE(ayni::knowledge::read_context_record(row.body.data(), row.header.length, fact));
+        if (scenario == 0) {
+            fact.stamp.commit_seq = 0;
+        } else if (scenario == 1) {
+            fact.stamp.transition_id = 0;
+        } else if (scenario == 2) {
+            fact.stamp.commit_seq = candidate.metadata.covers_commit_seq + 1;
+        } else if (scenario == 3) {
+            fact.stamp.transition_id = candidate.metadata.max_transition_id + 1;
+        } else if (scenario == 4 || scenario == 5) {
+            ayni::foundation::IdAllocator allocator;
+            allocator.start(candidate.metadata.boot_epoch + 1);
+            uint64_t absent = 0;
+            ASSERT_TRUE(allocator.allocate(absent));
+            (scenario == 4 ? fact.id : fact.owner_instance_id) = absent;
+        } else if (scenario == 6) {
+            fact.revision = 0;
+        } else if (scenario == 7) {
+            fact.pending.action = static_cast<ayni::knowledge::ContextAction>(UINT32_MAX);
+        } else if (scenario == 8) {
+            candidate.records.insert(
+                candidate.records.begin() + static_cast<std::ptrdiff_t>(target), row);
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+            continue;
+        } else {
+            row.header.length = 1;
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+            continue;
+        }
+        std::vector<uint8_t> bytes(row.body.size());
+        ayni::knowledge::write_context_record(fact, bytes.data());
+        row.body = std::move(bytes);
+        EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+    }
+    Node disabled;
+    disabled.config() = original.config;
+    disabled.config().memory_capacity = 0;
+    EXPECT_EQ(restore_model(original, disabled), ayni::durability::BatchCheck::no_room);
+}
+
+// C-MEM-009 / C-STORE-007/009: OPEN has one exact snapshot shape. In journal
+// replay, each later management fact must match both its old state and receipt.
+TEST_F(KernelContext, changed_anchor_bits_cannot_substitute_another_management_result) {
+    const auto opened = open();
+    ASSERT_EQ(opened.status, AYNI_OK);
+    durable(opened.result.commit_seq);
+    const auto snapshot = snapshot_model(node);
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    std::size_t row_index = snapshot.records.size();
+    for (std::size_t at = 0; at < snapshot.records.size(); ++at) {
+        if (snapshot.records[at].header.type == ayni::knowledge::context_record_type) {
+            row_index = at;
+        }
+    }
+    ASSERT_LT(row_index, snapshot.records.size());
+    constexpr unsigned bits_per_byte = 8;
+    // records.md type26/v1: the final fixed fields are the two-u64 stamp.
+    // Snapshot commands retain commit_seq, not the original transition ID.
+    constexpr uint32_t transition_at =
+        ayni::knowledge::context_record_fixed_bytes - ayni::kernel::snapshot_stamp_size;
+    const auto bytes = snapshot.records[row_index].body.size();
+    for (std::size_t at = 0; at < bytes; ++at) {
+        if (at >= transition_at && at < transition_at + sizeof(uint64_t)) {
+            continue;
+        }
+        for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+            SCOPED_TRACE(::testing::Message() << at << ':' << bit);
+            auto candidate = snapshot;
+            candidate.records[row_index].body[at] ^= static_cast<uint8_t>(1U << bit);
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+        }
+    }
+    const auto task = complete();
+    ASSERT_NE(task, 0U);
+    const auto published =
+        change(AYNI_INTENT_CONTEXT_PUBLISH, context(), task, AYNI_CONTEXT_IDLE, 1);
+    ASSERT_EQ(published.status, AYNI_OK);
+    durable(published.result.commit_seq);
+    const auto acknowledged = change(AYNI_INTENT_CONTEXT_ACK, context());
+    ASSERT_EQ(acknowledged.status, AYNI_OK);
+    durable(acknowledged.result.commit_seq);
+    const auto forgotten = change(AYNI_INTENT_CONTEXT_FORGET, context(), 0, AYNI_CONTEXT_ERASE_ALL);
+    ASSERT_EQ(forgotten.status, AYNI_OK);
+    durable(forgotten.result.commit_seq);
+    const auto erased = change(AYNI_INTENT_CONTEXT_ACK, context());
+    ASSERT_EQ(erased.status, AYNI_OK);
+    durable(erased.result.commit_seq);
+    ASSERT_EQ(restore_model(snapshot_model(node)), ayni::durability::BatchCheck::ok);
+    const auto log = node.sim().log();
+    const auto configure_recovery = [&](Node &target) {
+        target.config() = snapshot.config;
+        target.on_create([](ayni_kernel_t *kernel) {
+            const auto principal = owner_desc();
+            ASSERT_EQ(ayni_register_principal(kernel, &principal), AYNI_OK);
+        });
+    };
+    Node control;
+    configure_recovery(control);
+    control.sim().log() = log;
+    control.create_and_start();
+    control.recover();
+    ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto reject_batch = [&](const JournalBatch &changed, std::size_t batch_index) {
+        auto candidate = log;
+        candidate[batch_index] = write_stored_batch(changed);
+        Node recovered;
+        configure_recovery(recovered);
+        recovered.sim().log() = std::move(candidate);
+        recovered.create_and_start();
+        recovered.recover();
+        EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+        EXPECT_EQ(ayni::kernel::KernelTestProbe::work(recovered.kernel()).contexts.size(), 0U);
+    };
+    uint32_t selected = 0;
+    for (std::size_t batch_index = 0; batch_index < log.size(); ++batch_index) {
+        const auto batch = read_stored_batch(log[batch_index]);
+        for (std::size_t record_index = 0; record_index < batch.records.size(); ++record_index) {
+            const auto &record = batch.records[record_index];
+            if (record.header.type != ayni::knowledge::context_record_type) {
+                continue;
+            }
+            ++selected;
+            ASSERT_FALSE(record.body.empty());
+            // C-STORE-009: partners occur exactly once in owner order, and
+            // a completed management batch cannot accept unrelated trailing facts.
+            for (std::size_t partner = 0; partner < batch.records.size(); ++partner) {
+                SCOPED_TRACE(::testing::Message() << batch_index << "/partner/" << partner);
+                auto omitted = batch;
+                omitted.records.erase(omitted.records.begin() +
+                                      static_cast<std::ptrdiff_t>(partner));
+                reject_batch(omitted, batch_index);
+                auto duplicated = batch;
+                const auto copy = duplicated.records[partner];
+                duplicated.records.insert(
+                    duplicated.records.begin() + static_cast<std::ptrdiff_t>(partner), copy);
+                reject_batch(duplicated, batch_index);
+            }
+            auto reversed = batch;
+            ASSERT_GT(reversed.records.size(), 1U);
+            std::reverse(reversed.records.begin(), reversed.records.end());
+            reject_batch(reversed, batch_index);
+            for (std::size_t at = 0; at < record.body.size(); ++at) {
+                for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                    SCOPED_TRACE(::testing::Message() << batch_index << '/' << at << ':' << bit);
+                    auto changed = batch;
+                    changed.records[record_index].body[at] ^= static_cast<uint8_t>(1U << bit);
+                    reject_batch(changed, batch_index);
+                }
+            }
+        }
+    }
+    constexpr uint32_t management_transitions = 5; // OPEN, PUBLISH, ACK, FORGET, ACK.
+    ASSERT_EQ(selected, management_transitions);
+}
+
 TEST_F(KernelContext, explicit_open_is_required_and_retries_keep_one_anchor) {
     EXPECT_EQ(create().status, AYNI_NOT_READY);
     const auto opened = open();

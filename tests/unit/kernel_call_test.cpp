@@ -1,9 +1,15 @@
 // Normal public ABI call scenarios, C-CALL-002/012, C-COMMIT-007 and ADR-0045.
 // Sim storage timing is explicit; no fault injection or restart campaign.
+#include "journal_test_support.h"
+#include "kernel/service/command/command_records.h"
+#include "snapshot_test_support.h"
+#include "work/call/call_records.h"
+#include "work/task/task_records.h"
 #include "work_node.h"
 
 #include <ayni/calls.h>
 #include <ayni/memory.h>
+#include <functional>
 #include <thread>
 
 namespace {
@@ -309,6 +315,31 @@ class ManagedCall : public ::testing::Test {
         EXPECT_EQ(ayni_get_call(work.kernel(), id, &info), AYNI_OK);
         return info;
     }
+    // Read the restored owner, rather than accepting a writer that omitted the receipt.
+    void expect_snapshot_receipt(const ModelSnapshot &snapshot, uint64_t command_id,
+                                 const Submitted &accepted) {
+        Node target;
+        target.config() = snapshot.config;
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+        ASSERT_EQ(restore_model(snapshot, target), ayni::durability::BatchCheck::ok);
+        const auto &commands = ayni::kernel::KernelTestProbe::work(target.kernel()).commands;
+        const auto *restored = commands.mapped(owner_id, command_id);
+        ASSERT_NE(restored, nullptr);
+        EXPECT_EQ(restored->command_id, command_id);
+        EXPECT_EQ(restored->commit_seq, accepted.result.commit_seq);
+        EXPECT_EQ(restored->object.kind, accepted.result.object.kind);
+        EXPECT_EQ(restored->object.id, accepted.result.object.id);
+        EXPECT_EQ(restored->object.revision, accepted.result.object.revision);
+        const auto &originals = ayni::kernel::KernelTestProbe::work(work.kernel()).commands;
+        const auto *original = originals.mapped(owner_id, command_id);
+        ASSERT_NE(original, nullptr);
+        EXPECT_EQ(restored->kind, original->kind);
+        EXPECT_EQ(restored->effect, original->effect);
+        const auto before = originals.canonical(*original);
+        const auto after = commands.canonical(*restored);
+        EXPECT_EQ(std::vector<uint8_t>(after.data, after.data + after.size),
+                  std::vector<uint8_t>(before.data, before.data + before.size));
+    }
     WorkNode work;
     std::vector<Pending> queries;
     std::vector<uint64_t> grants;
@@ -324,6 +355,80 @@ class ManagedCall : public ::testing::Test {
     unsigned cancellations = 0;
     bool cancel_posts_terminal = false;
 };
+
+struct MalformedTerminal {
+    const char *name;
+    ayni_call_outcome_t outcome;
+    ayni_status_t status;
+    ayni_reason_t reason;
+    ayni_call_effect_t effect;
+    uint32_t query_result = 0;
+    const char *body = "";
+};
+class MalformedProviderResult : public ManagedCall,
+                                public ::testing::WithParamInterface<MalformedTerminal> {};
+
+// C-CALL-008/012: transport acceptance returns the borrow. Inconsistent
+// terminal evidence must still become diagnostic UNKNOWN, never fabricated success.
+TEST_P(MalformedProviderResult, returned_borrow_with_inconsistent_evidence_is_unknown) {
+    create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    auto &delivery = pending.front();
+    const auto &input = GetParam();
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.attempt = delivery.attempt;
+    result.outcome = input.outcome;
+    result.status = input.status;
+    result.reason = input.reason;
+    result.effect = input.effect;
+    result.query_result = input.query_result;
+    result.result = text(input.body);
+    const auto posted = ayni_provider_post(delivery.completion, &result);
+    delivery.ended = posted == AYNI_OK;
+    ASSERT_EQ(posted, AYNI_OK);
+    pump(12);
+    const auto info = call_info(delivery.call);
+    EXPECT_EQ(info.outcome, AYNI_CALL_ABANDONED);
+    EXPECT_EQ(info.status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(info.reason, AYNI_REASON_PROVIDER_RESULT);
+    EXPECT_EQ(info.effect, AYNI_CALL_EFFECT_UNKNOWN);
+    EXPECT_EQ(info.result_bytes, 0U);
+    EXPECT_TRUE(seen_result.empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TerminalEvidence, MalformedProviderResult,
+    ::testing::Values(MalformedTerminal{"completed_status", AYNI_CALL_COMPLETED, AYNI_NOT_READY,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_COMPLETE},
+                      MalformedTerminal{"completed_reason", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_PROVIDER_RESULT, AYNI_CALL_EFFECT_COMPLETE},
+                      MalformedTerminal{"completed_effect", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_PARTIAL},
+                      MalformedTerminal{"failed_success", AYNI_CALL_FAILED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"failed_unknown", AYNI_CALL_FAILED, AYNI_RESULT_UNKNOWN,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_UNKNOWN},
+                      MalformedTerminal{"cancelled_status", AYNI_CALL_CANCELLED, AYNI_NOT_READY,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"cancelled_reason", AYNI_CALL_CANCELLED, AYNI_OK,
+                                        AYNI_REASON_PROVIDER_RESULT, AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"abandoned_status", AYNI_CALL_ABANDONED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_UNKNOWN},
+                      MalformedTerminal{"abandoned_effect", AYNI_CALL_ABANDONED,
+                                        AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE,
+                                        AYNI_CALL_EFFECT_NONE},
+                      MalformedTerminal{"abandoned_body", AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_UNKNOWN, 0, "unproven"},
+                      MalformedTerminal{"unrequested_query", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_COMPLETE,
+                                        AYNI_QUERY_RESULT_FOUND},
+                      MalformedTerminal{"invalid_utf8", AYNI_CALL_COMPLETED, AYNI_OK,
+                                        AYNI_REASON_NONE, AYNI_CALL_EFFECT_COMPLETE, 0, "\xff"}),
+    [](const ::testing::TestParamInfo<MalformedTerminal> &scenario) {
+        return scenario.param.name;
+    });
 
 TEST_F(ManagedCall, async_worker_result_advances_the_same_task_and_preserves_copied_input) {
     const auto goal = create();
@@ -342,6 +447,156 @@ TEST_F(ManagedCall, async_worker_result_advances_the_same_task_and_preserves_cop
     EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
     EXPECT_EQ(seen_result, "answer");
     EXPECT_EQ(seen_call, pending[0].call);
+}
+
+// C-CALL-001/002 / C-POLICY-001: failed callback staging consumes no proposal,
+// model charge, Call identity or resource; a later valid request still publishes once.
+TEST_F(ManagedCall, malformed_staged_requests_leave_the_real_decision_available) {
+    const auto ordinary = work.strategy().answer;
+    uint32_t decisions = 0;
+    work.strategy().answer = [&](const auto &, auto &output) {
+        ++decisions;
+        const ayni_call_request_v1 valid{sizeof(valid),
+                                         AYNI_POLICY_REQUEST_MODEL,
+                                         1,
+                                         0,
+                                         text("ask"),
+                                         text("mock.echo"),
+                                         {sizeof(ayni_scope_v1), 0, nullptr},
+                                         text("hello")};
+        EXPECT_EQ(output.request_call(nullptr, &valid), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(output.request_call(output.call_context, nullptr), AYNI_INVALID_ARGUMENT);
+        struct Invalid {
+            void (*change)(ayni_call_request_v1 &);
+            ayni_status_t status = AYNI_INVALID_ARGUMENT;
+        };
+        static const std::array<char, 65> oversized{};
+        const Invalid invalid[] = {
+            {[](auto &v) { v.struct_size = 0; }},
+            {[](auto &v) { ++v.struct_size; }, AYNI_UNSUPPORTED_VERSION},
+            {[](auto &v) { v.reserved = 1; }},
+            {[](auto &v) { v.kind = UINT32_MAX; }},
+            {[](auto &v) { v.step_key = {}; }},
+            {[](auto &v) { v.binding_id = {}; }},
+            {[](auto &v) { v.binding_id = text("unregistered"); }},
+            {[](auto &v) { v.binding_version = 0; }},
+            {[](auto &v) { ++v.binding_version; }},
+            {[](auto &v) { v.kind = AYNI_POLICY_REQUEST_CALL; }},
+            {[](auto &v) { v.arguments.struct_size = 0; }},
+            {[](auto &v) { v.arguments.field_count = 1; }},
+            {[](auto &v) { v.text = {nullptr, 1}; }},
+            {[](auto &v) { v.text = {"\xff", 1}; }},
+            {[](auto &v) { v.text = {oversized.data(), oversized.size()}; },
+             AYNI_CAPACITY_EXCEEDED},
+        };
+        for (const auto &fault : invalid) {
+            auto candidate = valid;
+            fault.change(candidate);
+            EXPECT_EQ(output.request_call(output.call_context, &candidate), fault.status);
+            EXPECT_EQ(output.intent_count, 0U);
+        }
+        for (const auto kind : {AYNI_POLICY_CLOSE_SUBSCRIPTION, AYNI_POLICY_WAIT_SUBSCRIPTION}) {
+            ayni_call_request_v1 target{};
+            target.struct_size = sizeof(target);
+            target.kind = kind;
+            target.step_key = text("ask");
+            const auto unexpected_routes = {
+                +[](ayni_call_request_v1 &v) { v.binding_version = 1; },
+                +[](ayni_call_request_v1 &v) { v.binding_id = text("mock.echo"); },
+                +[](ayni_call_request_v1 &v) { v.text = text("extra"); },
+                +[](ayni_call_request_v1 &v) { v.arguments.struct_size = sizeof(ayni_scope_v1); },
+                +[](ayni_call_request_v1 &v) { v.arguments.field_count = 1; },
+            };
+            for (const auto change : unexpected_routes) {
+                auto candidate = target;
+                change(candidate);
+                EXPECT_EQ(output.request_call(output.call_context, &candidate),
+                          AYNI_INVALID_ARGUMENT);
+                EXPECT_EQ(output.intent_count, 0U);
+            }
+            EXPECT_EQ(output.request_call(output.call_context, &target), AYNI_NOT_FOUND);
+        }
+        EXPECT_EQ(output.request_call(output.call_context, &valid), AYNI_OK);
+        EXPECT_EQ(output.request_call(output.call_context, &valid), AYNI_CAPACITY_EXCEEDED);
+        EXPECT_EQ(output.intent_count, 1U);
+        return AYNI_OK;
+    };
+    const auto goal = create();
+    pump(16);
+    ASSERT_EQ(decisions, 1U);
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending.front().text, "hello");
+    const auto task = work.goal(goal).last_task_id;
+    EXPECT_EQ(work.task(task).model_calls_used, 1U);
+    EXPECT_EQ(ayni::kernel::KernelTestProbe::work(work.kernel()).calls.size(), 1U);
+    work.strategy().answer = ordinary;
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("answer"));
+    pump(12);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(seen_result, "answer");
+}
+
+// C-CALL-002 / C-SUB-001: Task-scoped views expose no result when no step
+// exists, and malformed arguments cannot publish even partial output metadata.
+TEST_F(ManagedCall, callback_result_views_reject_bad_arguments_and_preserve_missing_outputs) {
+    uint32_t decisions = 0;
+    work.strategy().answer = [&](const auto &snapshot, auto &output) {
+        ++decisions;
+        const auto check = [&](auto read, auto &out, ayni_status_t future_shape) {
+            EXPECT_EQ(read(nullptr, &out), AYNI_INVALID_ARGUMENT);
+            EXPECT_EQ(read(snapshot.call_context, static_cast<decltype(&out)>(nullptr)),
+                      AYNI_INVALID_ARGUMENT);
+            out.struct_size = 0;
+            EXPECT_EQ(read(snapshot.call_context, &out), AYNI_INVALID_ARGUMENT);
+            out.struct_size = sizeof(out) + 1;
+            EXPECT_EQ(read(snapshot.call_context, &out), future_shape);
+            out.struct_size = sizeof(out);
+            EXPECT_EQ(read(snapshot.call_context, &out), AYNI_NOT_FOUND);
+        };
+        ayni_task_call_result_v1 result{};
+        result.struct_size = sizeof(result);
+        result.outcome = 99;
+        check(
+            [&](const void *context, ayni_task_call_result_v1 *out) {
+                return snapshot.call_result(context, text("missing"), out);
+            },
+            result, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(result.outcome, 99U);
+        ayni_task_tool_call_v1 tool{};
+        tool.struct_size = sizeof(tool);
+        tool.reserved = 99;
+        check(
+            [&](const void *context, ayni_task_tool_call_v1 *out) {
+                return snapshot.call_tool(context, text("missing"), 0, out);
+            },
+            tool, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(tool.reserved, 99U);
+        ayni_subscription_info_v1 subscription{};
+        subscription.struct_size = sizeof(subscription);
+        subscription.phase = 99;
+        check(
+            [&](const void *context, ayni_subscription_info_v1 *out) {
+                return snapshot.subscription(context, text("missing"), out);
+            },
+            subscription, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(subscription.phase, 99U);
+        ayni_observation_info_v1 observation{};
+        observation.struct_size = sizeof(observation);
+        observation.usable = 99;
+        check(
+            [&](const void *context, ayni_observation_info_v1 *out) {
+                return snapshot.subscription_observation(context, text("missing"), out);
+            },
+            observation, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(observation.usable, 99U);
+        return report(AYNI_POLICY_REPORT_COMPLETION, snapshot, output);
+    };
+    const auto goal = create();
+    pump(12);
+    ASSERT_EQ(decisions, 1U);
+    EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
+    EXPECT_TRUE(pending.empty());
+    EXPECT_EQ(ayni::kernel::KernelTestProbe::work(work.kernel()).calls.size(), 0U);
 }
 
 // ADR-0065: a brief group pause remains a cancellation request for an in-flight model.
@@ -513,6 +768,310 @@ TEST_F(ManagedCall, owner_resumes_the_same_resource_wait_without_another_model_c
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(resume_wait(task, request, before.revision).result.commit_seq,
               accepted.result.commit_seq);
+}
+
+// C-STORE-007 / ADR-0045: an exact resume command is valid both at the
+// resumed state and after its same Call has advanced to terminal completion.
+TEST_F(ManagedCall, snapshot_retains_wait_resume_before_and_after_call_completion) {
+    const auto goal = expire_resource_wait();
+    const auto task = work.goal(goal).last_task_id;
+    const auto resumed = resume_wait(task, ++command, work.task(task).revision);
+    ASSERT_EQ(resumed.status, AYNI_OK);
+    const auto original = snapshot_model(work.node());
+    expect_snapshot_receipt(original, command, resumed);
+    const auto &tasks = ayni::kernel::KernelTestProbe::work(work.kernel()).tasks;
+    uint32_t task_index = 0;
+    ASSERT_TRUE(tasks.find(task, task_index));
+    const auto changes = {
+        +[](ayni::work::Task &v) { ++v.revision; },
+        +[](ayni::work::Task &v) { v.hold_status = AYNI_BUSY; },
+        +[](ayni::work::Task &v) { v.hold_reason = AYNI_REASON_RESOURCE_WAIT; },
+    };
+    for (const auto change : changes) {
+        auto snapshot = original;
+        auto changed = tasks.at(task_index);
+        change(changed);
+        uint32_t selected = 0;
+        for (auto &row : snapshot.records) {
+            if (row.header.type != ayni::work::task_state_record_type) {
+                continue;
+            }
+            ayni::work::TaskStateRecord state{};
+            ASSERT_TRUE(ayni::work::read_task_state_record(row.body.data(), row.header.length,
+                                                           state, row.header.version));
+            if (state.task_id == task) {
+                ++selected;
+                const auto before = row.body;
+                ayni::work::write_task_state_record(changed, row.body.data(), row.header.version);
+                ASSERT_NE(row.body, before);
+            }
+        }
+        ASSERT_EQ(selected, 1U);
+        Node target;
+        target.config() = snapshot.config;
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+        EXPECT_EQ(restore_model(snapshot, target), ayni::durability::BatchCheck::corrupt);
+    }
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    pump(12);
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    expect_snapshot_receipt(snapshot_model(work.node()), command, resumed);
+}
+
+// C-STORE-009 / ADR-0045: journal replay restores the accepted wait-resume
+// with its original Call and charge, before or after that Call completes.
+TEST_F(ManagedCall, journal_replays_wait_resume_identity_and_rejects_broken_atomic_partners) {
+    const auto goal = expire_resource_wait();
+    const auto task = work.goal(goal).last_task_id;
+    const auto before = work.task(task);
+    const auto call = before.logical_call_id;
+    const auto operation = call_info(call).operation_id;
+    const auto command_id = ++command;
+    const auto accepted = resume_wait(task, command_id, before.revision);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    pump(8);
+    ASSERT_GE(work.node().info().durable_seq, accepted.result.commit_seq);
+    const auto original = work.node().sim().log();
+    const auto check_recovery = [&](const auto &log, bool valid) {
+        Node target;
+        target.config() = work.node().config();
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+        target.sim().log() = log;
+        target.create_and_start();
+        target.recover();
+        if (!valid) {
+            EXPECT_EQ(target.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+            EXPECT_EQ(target.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+            return;
+        }
+        ASSERT_EQ(target.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        const auto &model = ayni::kernel::KernelTestProbe::work(target.kernel());
+        uint32_t task_index = 0, call_index = 0;
+        ASSERT_TRUE(model.tasks.find(task, task_index));
+        ASSERT_TRUE(model.calls.find(call, call_index));
+        EXPECT_EQ(model.calls.identity(call_index).operation_id, operation);
+        EXPECT_EQ(model.tasks.at(task_index).model_calls.used, before.model_calls_used);
+        const auto *receipt = model.commands.mapped(owner_id, command_id);
+        ASSERT_NE(receipt, nullptr);
+        EXPECT_EQ(receipt->kind, AYNI_INTENT_TASK_RESUME_WAIT);
+        EXPECT_EQ(receipt->commit_seq, accepted.result.commit_seq);
+        EXPECT_EQ(receipt->object.id, task);
+        EXPECT_EQ(receipt->object.revision, accepted.result.object.revision);
+    };
+    check_recovery(original, true);
+    std::size_t selected = original.size();
+    JournalBatch batch{};
+    for (std::size_t at = 0; at < original.size(); ++at) {
+        if (original[at].commit_seq == accepted.result.commit_seq) {
+            selected = at;
+            batch = read_stored_batch(original[at]);
+        }
+    }
+    ASSERT_LT(selected, original.size());
+    constexpr std::size_t atomic_partners = 2; // Task state, then its exact owner command.
+    ASSERT_EQ(batch.records.size(), atomic_partners);
+    ASSERT_EQ(batch.records.front().header.type, ayni::work::task_state_record_type);
+    ASSERT_EQ(batch.records.back().header.type, ayni::kernel::command_record_type);
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        auto changed = batch;
+        if (fault == 0) {
+            changed.records.pop_back();
+        } else if (fault == 1) {
+            const auto repeated = changed.records.front();
+            changed.records.insert(changed.records.begin(), repeated);
+        } else {
+            std::reverse(changed.records.begin(), changed.records.end());
+        }
+        auto log = original;
+        log[selected] = write_stored_batch(changed);
+        check_recovery(log, false);
+    }
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    pump(12);
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    check_recovery(work.node().sim().log(), true);
+}
+
+// C-CALL-002/011 / C-STORE-009: a full-row Call update is not a new
+// acceptance. Intrinsically valid facts must still match its original Task,
+// route, action identity and exact enclosing batch before they can be restored.
+TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_identity) {
+    const auto goal = create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending.front().call;
+    const auto other_goal = create(agent_b);
+    pump(8);
+    const auto other_task = work.goal(other_goal).last_task_id;
+    ASSERT_NE(other_task, 0U);
+    ayni_provider_result_v1 progress{};
+    progress.struct_size = sizeof(progress);
+    progress.outcome = AYNI_CALL_PROGRESS;
+    progress.attempt = pending.front().attempt;
+    progress.sequence = 1;
+    progress.status = AYNI_OK;
+    progress.effect = AYNI_CALL_EFFECT_UNKNOWN;
+    ASSERT_EQ(ayni_provider_post(pending.front().completion, &progress), AYNI_OK);
+    pump(8);
+    const auto current = call_info(call);
+    ASSERT_EQ(current.progress_sequence, 1U);
+    ASSERT_GE(work.node().info().durable_seq, current.requires_seq);
+    const auto log = work.node().sim().log();
+    const auto configure = [&](Node &target) {
+        target.config() = work.node().config();
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+    };
+    Node control;
+    configure(control);
+    control.sim().log() = log;
+    control.create_and_start();
+    control.recover();
+    ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    std::size_t selected = log.size();
+    JournalBatch original{};
+    for (std::size_t at = 0; at < log.size(); ++at) {
+        if (log[at].commit_seq == current.requires_seq) {
+            selected = at;
+            original = read_stored_batch(log[at]);
+        }
+    }
+    ASSERT_LT(selected, log.size());
+    auto row =
+        std::find_if(original.records.begin(), original.records.end(), [](const auto &entry) {
+            return entry.header.type == ayni::work::call_record_type;
+        });
+    ASSERT_NE(row, original.records.end());
+    const auto row_index = static_cast<std::size_t>(row - original.records.begin());
+    struct Variant {
+        const char *name;
+        std::function<void(ayni::work::CallRecord &)> change;
+    };
+    const Variant variants[] = {
+        {"writer_boot",
+         [](auto &r) {
+             ++r.state.latest.boot_epoch;
+             ++r.action->latest.boot_epoch;
+         }},
+        {"commit",
+         [](auto &r) {
+             ++r.state.latest.transition.commit_seq;
+             ++r.action->latest.transition.commit_seq;
+         }},
+        {"transition",
+         [](auto &r) {
+             ++r.state.latest.transition.transition_id;
+             ++r.action->latest.transition.transition_id;
+         }},
+        {"goal_is_not_task", [&](auto &r) { r.identity.task_id = goal; }},
+        {"different_owner",
+         [&](auto &r) { r.identity.owner_instance_id = work.instance(agent_b); }},
+        {"different_task", [&](auto &r) { r.identity.task_id = other_task; }},
+        {"other_tasks_call",
+         [&](auto &r) {
+             r.identity.task_id = other_task;
+             r.identity.owner_instance_id = work.instance(agent_b);
+         }},
+        {"binding",
+         [](auto &r) {
+             ++r.identity.binding_version;
+             ++r.action->identity.binding_version;
+         }},
+        {"terminal_without_task_partner",
+         [](auto &r) {
+             r.state.outcome = AYNI_CALL_COMPLETED;
+             r.state.status = AYNI_OK;
+             r.state.reason = AYNI_REASON_NONE;
+             r.action->phase = ayni::work::ActionPhase::completed;
+             r.action->effect = ayni::work::ActionEffect::complete;
+             r.action->evidence = ayni::work::ActionEvidence::provider_result;
+         }},
+    };
+    for (const auto &variant : variants) {
+        SCOPED_TRACE(variant.name);
+        ayni::work::CallRecord record{};
+        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record,
+                                                 row->header.version));
+        ASSERT_EQ(record.identity.call_id, call);
+        ASSERT_TRUE(record.action.has_value());
+        variant.change(record);
+        ASSERT_TRUE(ayni::work::CallTable::valid_record(record));
+        auto changed = original;
+        std::vector<uint8_t> bytes(ayni::work::call_record_size(record));
+        ayni::work::write_call_record(record, bytes.data());
+        changed.records[row_index].body = std::move(bytes);
+        auto candidate = log;
+        candidate[selected] = write_stored_batch(changed);
+        Node recovered;
+        configure(recovered);
+        recovered.sim().log() = std::move(candidate);
+        recovered.create_and_start();
+        recovered.recover();
+        EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+        EXPECT_EQ(ayni::kernel::KernelTestProbe::work(recovered.kernel()).calls.size(), 0U);
+    }
+    Node smaller;
+    configure(smaller);
+    smaller.config().call_capacity = 1;
+    smaller.sim().log() = log;
+    smaller.create_and_start();
+    smaller.recover();
+    EXPECT_EQ(smaller.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(smaller.info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
+}
+
+// C-STORE-007 / C-CALL-011: the retained query command proves its exact
+// requested query, then remains a historical receipt after reconciliation.
+TEST_F(ManagedCall, snapshot_retains_requested_and_resolved_query_receipts) {
+    create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending.front().call;
+    post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    const auto accepted = query_call(call, ++command);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    const auto original = snapshot_model(work.node());
+    expect_snapshot_receipt(original, command, accepted);
+    auto candidate = original;
+    uint32_t selected = 0;
+    for (auto &row : candidate.records) {
+        if (row.header.type != ayni::work::call_record_type) {
+            continue;
+        }
+        ayni::work::CallRecord record{};
+        ASSERT_TRUE(ayni::work::read_call_record(row.body.data(), row.header.length, record,
+                                                 row.header.version));
+        if (record.identity.call_id == call) {
+            ++selected;
+            ASSERT_TRUE(record.state.query.has_value());
+            ++record.state.query->generation;
+            ASSERT_TRUE(ayni::work::CallTable::valid_record(record));
+            std::vector<uint8_t> bytes(ayni::work::call_record_size(record));
+            ayni::work::write_call_record(record, bytes.data());
+            row.body = std::move(bytes);
+        }
+    }
+    ASSERT_EQ(selected, 1U);
+    Node target;
+    target.config() = candidate.config;
+    target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+    EXPECT_EQ(restore_model(candidate, target), ayni::durability::BatchCheck::corrupt);
+    pump(16);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE,
+               text("found"));
+    pump(12);
+    ASSERT_EQ(call_info(call).outcome, AYNI_CALL_COMPLETED);
+    expect_snapshot_receipt(snapshot_model(work.node()), command, accepted);
 }
 
 // ADR-0045: wait and user pause can be released in either order without losing the other.

@@ -2,6 +2,83 @@
 #include "subscription_fixture.h"
 namespace {
 using namespace ayni::test;
+
+// ADR-0063 / C-SUB-001/003: the Mock owner receives an actual Kernel borrow
+// and sink. Rejected startup/renew inputs must neither retain it nor alter lease state.
+TEST_F(SubscriptionFixture, mock_capture_rejects_invalid_openings_and_renewals_atomically) {
+    uint32_t inspected = 0;
+    inspect_camera_submit = [&](const ayni_provider_request_v1 *original,
+                                ayni_provider_completion_t *completion) {
+        ++inspected;
+        auto request = *original;
+        EXPECT_EQ(camera_ports.submit(camera_ports.ctx, nullptr, completion),
+                  AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+        EXPECT_EQ(camera_ports.submit(camera_ports.ctx, original, nullptr),
+                  AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+        request.subscription = nullptr;
+        EXPECT_EQ(camera_ports.submit(camera_ports.ctx, &request, completion),
+                  AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+        const auto invalid_openings = {
+            +[](ayni_subscription_open_v1 &v) { v.struct_size = 0; },
+            +[](ayni_subscription_open_v1 &v) { v.sink = nullptr; },
+            +[](ayni_subscription_open_v1 &v) { v.valid_until_us = 0; },
+            +[](ayni_subscription_open_v1 &v) { v.subscription.boot_epoch = 0; },
+        };
+        for (const auto change : invalid_openings) {
+            auto invalid = *original->subscription;
+            change(invalid);
+            request.subscription = &invalid;
+            EXPECT_EQ(camera_ports.submit(camera_ports.ctx, &request, completion),
+                      AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+            EXPECT_EQ(camera.pending(), 0U);
+        }
+        // The fixture forwards the unchanged original while all borrowed views live.
+    };
+    create();
+    pump(15, 10000, false);
+    inspect_camera_submit = {};
+    ASSERT_EQ(inspected, 1U);
+    ASSERT_EQ(openings.size(), 1U);
+    const auto opening = openings.front();
+    EXPECT_EQ(camera.close(), AYNI_BUSY);
+    EXPECT_EQ(camera.pending(), 1U);
+    EXPECT_LE(camera.next_due_us(), work.node().sim().now_us());
+    ayni_subscription_renew_v1 renewal{};
+    renewal.struct_size = sizeof(renewal);
+    renewal.subscription = opening.value.subscription;
+    renewal.sequence = 2;
+    renewal.valid_until_us = opening.value.valid_until_us + 1;
+    EXPECT_EQ(camera_ports.renew(camera_ports.ctx, &renewal), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    pump(3);
+    ASSERT_EQ(subscription().phase, AYNI_SUBSCRIPTION_ACTIVE);
+    EXPECT_EQ(camera_ports.renew(camera_ports.ctx, nullptr), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    const auto invalid_renewals = {
+        +[](ayni_subscription_renew_v1 &v) { v.struct_size = 0; },
+        +[](ayni_subscription_renew_v1 &v) { v.reserved = 1; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.subscription.subscription_id; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.subscription.boot_epoch; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.subscription.generation; },
+        +[](ayni_subscription_renew_v1 &v) { --v.sequence; },
+        +[](ayni_subscription_renew_v1 &v) { ++v.sequence; },
+        +[](ayni_subscription_renew_v1 &v) { --v.valid_until_us; },
+        +[](ayni_subscription_renew_v1 &v) { v.valid_until_us = UINT64_MAX; },
+    };
+    for (const auto change : invalid_renewals) {
+        auto invalid = renewal;
+        change(invalid);
+        EXPECT_EQ(camera_ports.renew(camera_ports.ctx, &invalid),
+                  AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+        EXPECT_EQ(camera.pending(), 1U);
+        EXPECT_EQ(subscription().lease_sequence, 1U);
+    }
+    auto absent = opening.attempt;
+    ++absent.boot_epoch;
+    EXPECT_EQ(camera_ports.cancel(camera_ports.ctx, absent), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+    absent = opening.attempt;
+    ++absent.request_id;
+    EXPECT_EQ(camera_ports.cancel(camera_ports.ctx, absent), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
+}
+
 TEST_F(SubscriptionFixture, start_ack_precedes_samples_and_active_collection_allows_model_call) {
     const auto goal = create();
     pump(15, 10000, false);
@@ -97,6 +174,36 @@ TEST_F(SubscriptionFixture, task_pause_invalidates_cache_and_resume_opens_a_new_
     EXPECT_GT(subscription().subscription.generation, before.subscription.generation);
     EXPECT_EQ(subscription().phase, AYNI_SUBSCRIPTION_ACTIVE);
     EXPECT_EQ(observation().reference.generation, subscription().subscription.generation);
+}
+
+// C-SUB-002 / ADR-0063: known stop permits a fresh collection generation.
+// The journal must restore that generation without treating it as an old query.
+TEST_F(SubscriptionFixture, restart_replays_a_generation_previously_reopened_after_known_stop) {
+    const auto goal = create();
+    pump(20);
+    const auto first = subscription();
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal).status, AYNI_OK);
+    pump(8);
+    ASSERT_EQ(subscription().phase, AYNI_SUBSCRIPTION_STOPPED);
+    ASSERT_EQ(camera.pending(), 0U);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal).status, AYNI_OK);
+    pump(20);
+    const auto reopened = subscription();
+    ASSERT_EQ(reopened.phase, AYNI_SUBSCRIPTION_ACTIVE);
+    ASSERT_GT(reopened.subscription.generation, first.subscription.generation);
+    shutdown();
+    ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+    work.node().create_and_start();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    pump(25);
+    const auto recovered = subscription();
+    EXPECT_EQ(recovered.subscription.subscription_id, first.subscription.subscription_id);
+    EXPECT_EQ(recovered.task_id, first.task_id);
+    EXPECT_GT(recovered.subscription.generation, reopened.subscription.generation);
+    EXPECT_EQ(recovered.phase, AYNI_SUBSCRIPTION_ACTIVE);
+    EXPECT_EQ(work.goal(goal).last_task_id, first.task_id);
 }
 TEST_F(SubscriptionFixture, two_tasks_share_capacity_but_keep_samples_media_and_close_isolated) {
     create(agent_a);

@@ -2,6 +2,7 @@
 #include "kernel/service/memory/memory_permissions.h"
 
 #include "authority/scope/scope.h"
+#include "catalog/abi_checks.h"
 
 #include <cstring>
 
@@ -71,7 +72,12 @@ ayni_status_t CallRuntime::stage_request(void *context, const ayni_call_request_
 // Copy while every nested argument view is still live. A proposal is not a
 // domain mutation and does not consume a step, call count, resource or identity.
 ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
-    if (request.struct_size != sizeof(request) || request.reserved != 0U ||
+    const auto shape =
+        catalog::check_struct_size(request.struct_size, sizeof(request), sizeof(request));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    if (request.reserved != 0U ||
         (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL &&
          request.kind != AYNI_POLICY_CLOSE_SUBSCRIPTION &&
          request.kind != AYNI_POLICY_WAIT_SUBSCRIPTION)) {
@@ -160,8 +166,12 @@ ayni_status_t CallRuntime::stage_subscription_target(const ayni_call_request_v1 
 // Provider context or another Agent's bodies, and never claims volatile output durable.
 ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
                                        ayni_task_call_result_v1 *out) {
-    if (context == nullptr || out == nullptr || out->struct_size != sizeof(*out)) {
+    if (context == nullptr || out == nullptr) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape = catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
+    if (shape != AYNI_OK) {
+        return shape;
     }
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.decision_ || !runtime.work_.calling_out()) {
