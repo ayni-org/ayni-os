@@ -1,4 +1,5 @@
 #include "experiment_execution.h"
+#include "experiment_replacement.h"
 #include "experiment_shared.h"
 #include "experiment_support.h"
 #include <algorithm>
@@ -62,6 +63,15 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
     config.call_input_max_bytes = config.call_result_max_bytes = body_limit;
     config.call_capability_capacity = config.provider_capacity = config.binding_capacity =
         catalog_capacity;
+    if (deployment == Deployment::replacement) {
+        config.resource_capacity = 1;
+        config.task_checkpoint_max_bytes = config.goal_parameter_max_bytes =
+            strategies::state_bytes_max;
+        config.call_input_max_bytes = config.call_result_max_bytes = 512;
+        config.strategy_capacity = 2;
+        config.task_model_call_hard_limit = 2;
+        replacement = std::make_unique<Replacement>(*this);
+    }
     if (deployment == Deployment::physical || deployment == Deployment::shared_physical) {
         config.resource_capacity = config.scene_capacity = config.observation_source_capacity = 1;
         config.executor_capacity = config.execution_binding_capacity = 1;
@@ -96,6 +106,10 @@ World::~World() {
     if (shared) {
         shared->abandon_kernel();
         static_cast<void>(shared->close());
+    }
+    if (replacement) {
+        replacement->abandon_kernel();
+        static_cast<void>(replacement->close());
     }
     if (physical) {
         // Also needed when a legal script ended immediately after Kernel loss.
@@ -170,6 +184,7 @@ bool World::register_profile() {
            evidence.status("register binding", ayni_register_binding(kernel, &binding)) &&
            (!physical || physical->register_profile(kernel)) &&
            (!shared || shared->register_profile(kernel)) &&
+           (!replacement || replacement->register_profile(kernel)) &&
            (!registration || evidence.status("register extension", registration(kernel)));
 }
 // This finite policy consumes the original call exactly once, then commits a
@@ -269,6 +284,9 @@ bool World::advance_step(uint64_t clock_delta_us) {
     node.advance_clock(clock_delta_us);
     evidence.context(steps, host->now_us());
     if (shared && !shared->advance()) {
+        return false;
+    }
+    if (replacement && !replacement->advance()) {
         return false;
     }
     if (physical && !physical->advance()) {
@@ -373,6 +391,9 @@ void World::detach_clients() {
     if (shared) {
         shared->abandon_kernel();
     }
+    if (replacement) {
+        replacement->abandon_kernel();
+    }
     if (physical) {
         physical->executor.abandon_kernel();
     }
@@ -402,6 +423,9 @@ bool World::complete_old_writer() {
            evidence.equal("late writer cannot change log", host.log().size(), before);
 }
 ayni_status_t World::close() {
+    if (replacement) {
+        replacement->begin_close();
+    }
     if (shared && !shared->begin_close()) {
         return evidence.error_status();
     }
@@ -436,6 +460,9 @@ ayni_status_t World::close() {
             if (shared && !shared->advance()) {
                 return AYNI_INVALID_STATE;
             }
+            if (replacement && !replacement->advance()) {
+                return AYNI_INVALID_STATE;
+            }
             if (physical && !physical->advance()) {
                 return AYNI_INVALID_STATE;
             }
@@ -460,11 +487,13 @@ ayni_status_t World::close() {
     return released == AYNI_OK ? close_services() : released;
 }
 ayni_status_t World::close_services() {
+    const auto replaced = replacement ? replacement->close() : AYNI_OK;
+    evidence.status("close replacement services", replaced);
     const auto services = shared ? shared->close() : AYNI_OK;
     evidence.status("close shared services", services);
     const auto execution = physical ? physical->close() : AYNI_OK;
     evidence.status("close independent executor", execution);
-    return services != AYNI_OK ? services : execution;
+    return replaced != AYNI_OK ? replaced : services != AYNI_OK ? services : execution;
 }
 ayni_intent_result_v1 World::submit(ayni_intent_kind_t kind, const void *body, uint64_t command,
                                     uint32_t revision, ayni_status_t expected,
@@ -705,6 +734,8 @@ uint64_t World::instance(uint64_t agent) const {
 }
 uint64_t World::metric(Metric metric) const {
     switch (metric) {
+    case Metric::replacement_completed:
+        return replacement ? replacement->completed() : 0;
     case Metric::shared_completed:
         return shared ? shared->completed() : 0;
     case Metric::physical_submissions:

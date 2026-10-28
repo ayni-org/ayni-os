@@ -2,6 +2,12 @@
 // fail explicitly rather than substituting a different cut or reporting success.
 #include "experiment_support.h"
 namespace ayni::runtime::experiments {
+ayni_status_t inspect_task_progress(const ayni_kernel_t *, uint64_t, TaskProgressEvidence &) {
+    return AYNI_UNSUPPORTED;
+}
+ayni_status_t inspect_call_route(const ayni_kernel_t *, uint64_t, CallRouteEvidence &) {
+    return AYNI_UNSUPPORTED;
+}
 bool verify_completion_slots(Evidence &e) {
     return e.status("completion probe requires AYNI_BUILD_TESTS", AYNI_UNSUPPORTED);
 }

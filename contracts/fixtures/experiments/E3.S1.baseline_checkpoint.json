@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E3.S1.baseline_checkpoint",
+  "experiment_step": "E3 步骤 1",
+  "clauses": [
+    "C-POLICY-006",
+    "C-PROV-012"
+  ],
+  "deployment": "replacement",
+  "script": [
+    {
+      "op": "replacement",
+      "scenario": "baseline_checkpoint"
+    },
+    {
+      "op": "expect",
+      "metric": "replacement_completed",
+      "value": "1"
+    }
+  ]
+}

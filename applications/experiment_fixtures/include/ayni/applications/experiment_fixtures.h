@@ -11,5 +11,13 @@ class Services {
   private:
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);
 };
+// Finite E3 workflow semantics; runtime selects and composes implementations.
+namespace replacement {
+ayni_strategy_v1 rule_strategy();
+ayni_status_t register_goals(ayni_kernel_t *, ayni_string_v1 strategy_id,
+                             ayni_status_t (*validate)(void *, ayni_bytes_v1));
+// Returns handled=true when the shared prerequisite emitted a decision.
+ayni_status_t prerequisite(const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &, bool &handled);
+} // namespace replacement
 } // namespace ayni::applications::experiment_fixtures
 #endif

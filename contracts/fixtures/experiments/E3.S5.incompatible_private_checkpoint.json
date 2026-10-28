@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E3.S5.incompatible_private_checkpoint",
+  "experiment_step": "E3 步骤 5",
+  "clauses": [
+    "C-LIFE-024",
+    "C-POLICY-007",
+    "C-VER-030"
+  ],
+  "deployment": "replacement",
+  "script": [
+    {
+      "op": "replacement",
+      "scenario": "incompatible_private_checkpoint"
+    },
+    {
+      "op": "expect",
+      "metric": "replacement_completed",
+      "value": "1"
+    }
+  ]
+}

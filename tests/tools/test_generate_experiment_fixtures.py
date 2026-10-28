@@ -64,6 +64,23 @@ class ExperimentGenerator(unittest.TestCase):
         with self.assertRaises(fixtures.FixtureError):
             self.load(data)
 
+    def test_e3_inventory_and_deployment_are_enforced(self):
+        # ADR-0078 / E3: replacement evidence requires actual models and policies.
+        required = set(re.findall(r"`(E3\.[^`]+)`", (ROOT / "contracts/fixtures/cases.md").read_text()))
+        actual = {p.stem for p in (ROOT / "contracts/fixtures/experiments").glob("E3.*.json")}
+        self.assertEqual(required, actual)
+        for action in ({"op": "replacement", "scenario": "baseline_checkpoint"},
+                       {"op": "expect", "metric": "replacement_completed", "value": "1"}):
+            data = copy.deepcopy(self.base)
+            data["script"].insert(0, action)
+            with self.assertRaises(fixtures.FixtureError):
+                self.load(data)
+        data = copy.deepcopy(self.base)
+        data["deployment"] = "replacement"
+        data["script"].insert(0, {"op": "replacement", "scenario": "discard_checkpoint"})
+        with self.assertRaises(fixtures.FixtureError):
+            self.load(data)
+
     def test_recovery_record_and_physical_controls_reject_unimplemented_inputs(self):
         for action in ({"op": "start", "expected_lifecycle": "FENCED"},
                        {"op": "budget", "items": 0}, {"op": "budget", "items": 65},

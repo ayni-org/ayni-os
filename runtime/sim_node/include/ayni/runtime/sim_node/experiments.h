@@ -8,7 +8,7 @@
 #include <string>
 namespace ayni::runtime::experiments {
 class World;
-enum class Deployment { counter, physical, shared, shared_physical };
+enum class Deployment { counter, physical, shared, shared_physical, replacement };
 struct Case {
     const char *id;
     const char *experiment_step;

@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E3.S3.completed_operation_returns_old",
+  "experiment_step": "E3 步骤 3",
+  "clauses": [
+    "C-ID-003",
+    "C-POLICY-006"
+  ],
+  "deployment": "replacement",
+  "script": [
+    {
+      "op": "replacement",
+      "scenario": "completed_operation_returns_old"
+    },
+    {
+      "op": "expect",
+      "metric": "replacement_completed",
+      "value": "1"
+    }
+  ]
+}
