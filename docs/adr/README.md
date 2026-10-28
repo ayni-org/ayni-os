@@ -117,3 +117,5 @@
 | [0073](0073-model-request-local-time.md) | 模型请求写明当前本地时间 | 已接受 | §2.5、§5.4、§14.1 |
 
 | [0074](0074-model-instructions-as-system-message.md) | 模型请求的指令作为 system 消息 | 已接受 | §2.5、§5.4、§14.1 |
+
+| [0075](0075-full-experiment-runner-and-fault-controls.md) | 完整实验运行器与受控故障生命周期 | 已接受 | §10.1、MA-021/022/023/033 |

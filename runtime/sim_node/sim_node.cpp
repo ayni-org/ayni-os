@@ -57,6 +57,11 @@ ayni_status_t SimNode::assemble(const ayni_config_v1 &config) {
 void SimNode::advance(uint64_t microseconds) {
     if (impl_) {
         impl_->host.complete_storage();
+        advance_clock(microseconds);
+    }
+}
+void SimNode::advance_clock(uint64_t microseconds) {
+    if (impl_) {
         impl_->host.advance_us(microseconds);
         impl_->public_now.store(impl_->host.now_us());
     }
@@ -79,6 +84,24 @@ ayni_status_t SimNode::release() {
     if (status != AYNI_OK) {
         return status;
     }
+    ::operator delete(impl_->memory, std::align_val_t{impl_->alignment});
+    impl_->memory = nullptr;
+    impl_->kernel = nullptr;
+    return AYNI_OK;
+}
+hosts::sim::Host *SimNode::simulation() {
+    return impl_ ? &impl_->host : nullptr;
+}
+const hosts::sim::Host *SimNode::simulation() const {
+    return impl_ ? &impl_->host : nullptr;
+}
+ayni_status_t SimNode::power_cut(hosts::sim::CutAppend append) {
+    if (!impl_ || !impl_->kernel) {
+        return AYNI_INVALID_STATE;
+    }
+    // The simulated process cannot run cleanup or receive I/O after power loss.
+    // Host stops borrowing first; clients have already been quiesced by the root.
+    impl_->host.power_cut(append);
     ::operator delete(impl_->memory, std::align_val_t{impl_->alignment});
     impl_->memory = nullptr;
     impl_->kernel = nullptr;

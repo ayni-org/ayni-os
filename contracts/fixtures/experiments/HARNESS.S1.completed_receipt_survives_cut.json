@@ -1,0 +1,63 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "HARNESS.S1.completed_receipt_survives_cut",
+  "experiment_step": "HARNESS S1",
+  "clauses": [
+    "C-CALL-012",
+    "C-COMMIT-004"
+  ],
+  "script": [
+    {
+      "op": "grant"
+    },
+    {
+      "op": "create",
+      "type": "action",
+      "command": "101"
+    },
+    {
+      "op": "until",
+      "metric": "pending_calls",
+      "value": "1"
+    },
+    {
+      "op": "execute"
+    },
+    {
+      "op": "receipt",
+      "outcome": "COMPLETED",
+      "effect": "COMPLETE"
+    },
+    {
+      "op": "steps",
+      "count": 64
+    },
+    {
+      "op": "crash",
+      "append": "lost"
+    },
+    {
+      "op": "start"
+    },
+    {
+      "op": "steps",
+      "count": 32
+    },
+    {
+      "op": "expect",
+      "metric": "executions",
+      "value": "1"
+    },
+    {
+      "op": "expect",
+      "metric": "call_outcome",
+      "value": "COMPLETED"
+    },
+    {
+      "op": "expect",
+      "metric": "pending_calls",
+      "value": "0"
+    }
+  ]
+}

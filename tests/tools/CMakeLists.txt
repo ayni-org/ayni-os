@@ -23,6 +23,9 @@ add_test(NAME normal_fixture_generator_rules
 add_test(NAME coverage_aggregation_rules
     COMMAND "${Python3_EXECUTABLE}" -m unittest -v test_collect_coverage
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME experiment_fixture_generator_rules
+    COMMAND "${Python3_EXECUTABLE}" -m unittest -v test_generate_experiment_fixtures
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ayni_add_core_module enforces the layer order at configure time. Each case
 # configures a probe project; rejections must name the offending dependency.

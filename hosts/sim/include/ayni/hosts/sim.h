@@ -113,6 +113,8 @@ class Host {
     std::size_t complete_late_storage();
     // The next call of port meets fault.
     void inject_fault(StoragePort port, StorageFault fault);
+    // Counts faults actually selected by a submitted Host request, not queued plans.
+    uint64_t faults_applied() const { return faults_applied_; }
     std::size_t pending_storage() const { return pending_.size(); }
     // The attempt of every storage call so far, in call order.
     const std::vector<ayni_attempt_ref_v1> &storage_attempts() const { return attempts_; }
@@ -194,6 +196,7 @@ class Host {
     std::deque<Pending> pending_;
     std::vector<ayni_attempt_ref_v1> attempts_;
     std::array<std::deque<StorageFault>, 7> faults_;
+    uint64_t faults_applied_ = 0; // Diagnostic request count, survives simulated Kernel loss.
     struct LateAppend {
         uint32_t writer_epoch;
         StoredBatch batch;

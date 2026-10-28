@@ -85,6 +85,7 @@ std::optional<StorageFault> Host::next_fault(StoragePort port) {
     }
     const StorageFault fault = queue.front();
     queue.pop_front();
+    ++faults_applied_;
     return fault;
 }
 

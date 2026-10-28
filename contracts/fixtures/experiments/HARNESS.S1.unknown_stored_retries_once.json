@@ -1,0 +1,47 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "HARNESS.S1.unknown_stored_retries_once",
+  "experiment_step": "HARNESS S1",
+  "clauses": [
+    "C-COMMIT-008"
+  ],
+  "script": [
+    {
+      "op": "fault",
+      "port": "append",
+      "fault": "unknown_persisted"
+    },
+    {
+      "op": "create",
+      "type": "folder",
+      "command": "101"
+    },
+    {
+      "op": "steps",
+      "count": 128
+    },
+    {
+      "op": "expect",
+      "metric": "faults_applied",
+      "value": "1"
+    },
+    {
+      "op": "crash",
+      "append": "lost"
+    },
+    {
+      "op": "start"
+    },
+    {
+      "op": "expect",
+      "metric": "goal_count",
+      "value": "1"
+    },
+    {
+      "op": "expect",
+      "metric": "executions",
+      "value": "0"
+    }
+  ]
+}
