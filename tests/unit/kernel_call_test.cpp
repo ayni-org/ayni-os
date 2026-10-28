@@ -472,7 +472,7 @@ TEST_F(ManagedCall, malformed_staged_requests_leave_the_real_decision_available)
         static const std::array<char, 65> oversized{};
         const Invalid invalid[] = {
             {[](auto &v) { v.struct_size = 0; }},
-            {[](auto &v) { ++v.struct_size; }},
+            {[](auto &v) { ++v.struct_size; }, AYNI_UNSUPPORTED_VERSION},
             {[](auto &v) { v.reserved = 1; }},
             {[](auto &v) { v.kind = UINT32_MAX; }},
             {[](auto &v) { v.step_key = {}; }},
@@ -559,7 +559,7 @@ TEST_F(ManagedCall, callback_result_views_reject_bad_arguments_and_preserve_miss
             [&](const void *context, ayni_task_call_result_v1 *out) {
                 return snapshot.call_result(context, text("missing"), out);
             },
-            result, AYNI_INVALID_ARGUMENT);
+            result, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(result.outcome, 99U);
         ayni_task_tool_call_v1 tool{};
         tool.struct_size = sizeof(tool);
@@ -568,7 +568,7 @@ TEST_F(ManagedCall, callback_result_views_reject_bad_arguments_and_preserve_miss
             [&](const void *context, ayni_task_tool_call_v1 *out) {
                 return snapshot.call_tool(context, text("missing"), 0, out);
             },
-            tool, AYNI_INVALID_ARGUMENT);
+            tool, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(tool.reserved, 99U);
         ayni_subscription_info_v1 subscription{};
         subscription.struct_size = sizeof(subscription);

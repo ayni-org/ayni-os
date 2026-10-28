@@ -304,6 +304,17 @@ class ToolCalls : public ::testing::Test {
         }
         for (uint32_t index = 0; index < request->tool_count; ++index) {
             ayni_tool_v1 view{};
+            // C-VER-004: submit-time tool views share the public ABI size
+            // rule; malformed headers cannot partially publish offered metadata.
+            view.struct_size = 0;
+            view.text_limit = 99;
+            EXPECT_EQ(request->tool(request->tool_context, index, &view), AYNI_INVALID_ARGUMENT);
+            EXPECT_EQ(view.text_limit, 99U);
+            view.struct_size = sizeof(view) + 1;
+            EXPECT_EQ(request->tool(request->tool_context, index, &view), AYNI_UNSUPPORTED_VERSION);
+            EXPECT_EQ(view.text_limit, 99U);
+            EXPECT_EQ(request->tool(nullptr, index, &view), AYNI_INVALID_ARGUMENT);
+            EXPECT_EQ(request->tool(request->tool_context, index, nullptr), AYNI_INVALID_ARGUMENT);
             view.struct_size = sizeof(view);
             EXPECT_EQ(request->tool(request->tool_context, index, &view), AYNI_OK);
             ToolSeen seen;

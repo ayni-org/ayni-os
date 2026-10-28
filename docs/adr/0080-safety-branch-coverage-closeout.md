@@ -16,6 +16,7 @@
 4. **交付。** 覆盖率作为一个完整 PR，draft 提交后只读独立审查、修复并复核影响；最终适用 CI 全绿后 merge commit。Core Alpha 报告另一个 PR，补齐最终配置验证与证据索引，随后停止。M2、完整 MA-038、真实设备与付费模型均不自动开展。
 5. **问题处理。** 有实证的机制缺陷在本项范围内修复；涉及产品语义、兼容、验收阈值或统计范围的新决定先带证据询问用户。不把未达或未执行写成通过。
 6. **订阅新代恢复修复。** 补测发现确认停止后 live `restart_subscription` 生成的合法新代，会被 Call replay 的旧终态查询检查拒绝。沿用 ADR-0063 的新代准入，由原 `reopens_subscription` 证明已知停止及新的合法 generation；此分支要求无 query，其他历史仍走原 `query_advances`。UNKNOWN 不获新代重试权限，不改 ABI、记录版本或生产策略。
+7. **回调 ABI 尺寸分类修复。** 独立审查发现 `request_call`、`call_result`、`call_tool` 将较大的 `struct_size` 与短结构一起判为 INVALID_ARGUMENT，违反 C-VER-004 / ADR-0053；相邻的 Provider tool 描述回调也有同类缺陷。四个入口改用既有 `catalog::check_struct_size`，较大尺寸返回 UNSUPPORTED_VERSION，短尺寸或空指针仍拒绝，失败不写输出。不新增状态、ABI 布局或存储版本。
 
 ## 后果
 

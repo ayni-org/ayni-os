@@ -5,6 +5,7 @@
 #include "kernel/service/call/call_runtime.h"
 
 #include "authority/scope/scope.h"
+#include "catalog/abi_checks.h"
 #include "kernel/service/memory/memory_access.h"
 #include "work/call/tool_calls.h"
 
@@ -135,8 +136,12 @@ uint32_t CallRuntime::offered_tools(uint32_t task_index) const {
 
 // Fills the Provider's storage in place, since token sets point into it.
 ayni_status_t CallRuntime::describe_tool(const void *context, uint32_t index, ayni_tool_v1 *out) {
-    if (context == nullptr || out == nullptr || out->struct_size != sizeof(*out)) {
+    if (context == nullptr || out == nullptr) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape = catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
+    if (shape != AYNI_OK) {
+        return shape;
     }
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.offering_) {
@@ -227,8 +232,12 @@ bool CallRuntime::valid_tool_calls(uint32_t task_index, uint32_t positions,
 // Task-scoped like read_result: only this Task's own retained calls, during decide.
 ayni_status_t CallRuntime::read_tool_call(const void *context, ayni_string_v1 step, uint32_t index,
                                           ayni_task_tool_call_v1 *out) {
-    if (context == nullptr || out == nullptr || out->struct_size != sizeof(*out)) {
+    if (context == nullptr || out == nullptr) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape = catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
+    if (shape != AYNI_OK) {
+        return shape;
     }
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.decision_ || !runtime.work_.calling_out()) {
