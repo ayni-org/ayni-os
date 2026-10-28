@@ -21,6 +21,9 @@ struct ModelConfig {
     std::string base_url;
     std::string model_name;
     std::string key_environment = "AYNI_LLM_API_KEY";
+    // POSIX TZ rule, such as CST-8, in which each model request states the current local time
+    // (ADR-0073). Empty tells the model the time is unknown; an invalid rule fails assembly.
+    std::string timezone;
 };
 // Runtime owns concrete wiring. An explicit sink is required for notification evidence;
 // tests/Sim may supply a deterministic sink, while the CLI supplies checked write+flush.

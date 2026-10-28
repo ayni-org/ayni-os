@@ -582,6 +582,7 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
+    config.timezone = "CST-8";
     ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
     settle();
     allow_chat();
@@ -590,6 +591,9 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     ASSERT_EQ(turn.status, AYNI_OK);
     settle();
     ASSERT_EQ(server.requests(), 2U);
+    // ADR-0073: the request states the local time in the configured zone.
+    EXPECT_NE(server.history()[0].find("Current local time: "), std::string::npos);
+    EXPECT_NE(server.history()[0].find("time zone CST-8"), std::string::npos);
     EXPECT_NE(server.history()[1].find("registered goal"), std::string::npos);
     EXPECT_NE(server.history()[1].find("waiting for owner approval"), std::string::npos);
     const auto goals = run(Operation::goals).goals;

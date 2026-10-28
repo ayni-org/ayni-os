@@ -161,6 +161,72 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
               << " ToolLoop=" << sizeof(ToolLoop) << " max_turn_encoding=" << parameters.size
               << " bytes\n";
 }
+// ADR-0073: the model request states the local date, weekday and zone, so the model resolves
+// relative dates itself; an untrusted clock is marked, and a missing one states "unknown".
+TEST(BuiltinLoop, model_request_states_the_local_time) {
+    struct FakeClock {
+        ayni_utc_sample_v1 sample{sizeof(ayni_utc_sample_v1), AYNI_UTC_TRUSTED, 1793149500};
+        static void now(void *context, ayni_utc_sample_v1 *out) {
+            *out = static_cast<FakeClock *>(context)->sample; // 2026-10-28T01:05:00Z
+        }
+    } clock;
+    const auto request = [&](const char *zone) {
+        ToolLoop loop;
+        ToolLoopConfig config;
+        config.identity.id = text("loop");
+        config.model = {AYNI_POLICY_REQUEST_MODEL,
+                        text("model"),
+                        1,
+                        {sizeof(ayni_scope_v1), 0, nullptr},
+                        text("prefix")};
+        config.summary = config.model;
+        config.clock = {&clock, FakeClock::now, text(zone)};
+        EXPECT_EQ(loop.configure(config), AYNI_OK);
+        Encoded parameters;
+        EXPECT_EQ(Conversation::begin(empty(), text("明天提醒我"), parameters), AYNI_OK);
+        ayni_task_snapshot_v1 snapshot{};
+        snapshot.struct_size = sizeof(snapshot);
+        snapshot.owner_instance_id = empty().owner_instance_id;
+        snapshot.goal_parameters = parameters.view();
+        snapshot.call_result = [](const void *, ayni_string_v1, ayni_task_call_result_v1 *) {
+            return AYNI_NOT_FOUND;
+        };
+        Encoded checkpoint;
+        std::string sent;
+        ayni_policy_output_v1 output{};
+        output.struct_size = sizeof(output);
+        output.checkpoint = checkpoint.bytes.data();
+        output.checkpoint_capacity = state_bytes_max;
+        output.call_context = &sent;
+        output.request_call = [](void *ctx, const ayni_call_request_v1 *r) {
+            *static_cast<std::string *>(ctx) = std::string(r->text.data, r->text.size);
+            return AYNI_OK;
+        };
+        auto descriptor = loop.describe();
+        EXPECT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_OK);
+        return sent;
+    };
+    EXPECT_EQ(request("CST-8").rfind("prefix\nCurrent local time: 2026-10-28 09:05, Wednesday, "
+                                     "time zone CST-8.",
+                                     0),
+              0U);
+    EXPECT_NE(
+        request("EST5").find("Current local time: 2026-10-27 20:05, Tuesday, time zone EST5."),
+        std::string::npos);
+    clock.sample.trust = AYNI_UTC_UNTRUSTED;
+    EXPECT_NE(request("CST-8").find("Wednesday, time zone CST-8 (device clock not synchronized)."),
+              std::string::npos);
+    clock.sample.trust = AYNI_UTC_UNAVAILABLE;
+    EXPECT_NE(request("CST-8").find("Current local time: unknown."), std::string::npos);
+    ToolLoop loop;
+    ToolLoopConfig config;
+    config.identity.id = text("loop");
+    config.model = {
+        AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
+    config.summary = config.model;
+    config.clock = {&clock, FakeClock::now, text("Asia/Shanghai")};
+    EXPECT_EQ(loop.configure(config), AYNI_INVALID_ARGUMENT);
+}
 TEST(BuiltinLoop, foreign_conversation_owner_is_rejected_before_any_request) {
     Encoded parameters;
     ASSERT_EQ(Conversation::begin(empty(), text("hello"), parameters), AYNI_OK);

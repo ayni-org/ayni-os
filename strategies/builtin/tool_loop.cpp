@@ -1,5 +1,7 @@
 #include "support.h"
+#include <ayni/ayni.h>
 #include <ayni/memory.h>
+#include <cstdio>
 #include <cstring>
 
 namespace ayni::strategies {
@@ -21,6 +23,44 @@ ayni_string_v1 tool_key(uint32_t round, uint32_t index, char *buffer) {
     writer.number(index);
     writer.add(".v1");
     return writer.text();
+}
+// The model, not the policy, interprets "tomorrow" or "next Wednesday" against this line.
+void local_time(const LocalClock &clock, Writer &prompt) {
+    if (!clock.utc_now) {
+        return;
+    }
+    ayni_utc_sample_v1 sample{sizeof(sample), AYNI_UTC_UNAVAILABLE, 0};
+    clock.utc_now(clock.context, &sample);
+    int64_t local = 0;
+    ayni_calendar_civil_v1 civil{};
+    civil.struct_size = sizeof(civil);
+    if (sample.trust == AYNI_UTC_UNAVAILABLE || !clock.timezone.size ||
+        ayni_calendar_local_time(clock.timezone, sample.utc_s, &local) != AYNI_OK ||
+        ayni_calendar_split_time(local, &civil) != AYNI_OK) {
+        prompt.add("\nCurrent local time: unknown.");
+        return;
+    }
+    constexpr int64_t seconds_per_day = 86400;
+    // Indexed by days since 1970-01-01, which was a Thursday; split_time accepts no earlier day.
+    constexpr const char *weekdays[] = {"Thursday", "Friday",  "Saturday", "Sunday",
+                                        "Monday",   "Tuesday", "Wednesday"};
+    constexpr auto week = static_cast<int64_t>(sizeof(weekdays) / sizeof(weekdays[0]));
+    char minute[sizeof("YYYY-MM-DD HH:MM")];
+    const auto written =
+        std::snprintf(minute, sizeof(minute), "%04d-%02d-%02d %02d:%02d", civil.year, civil.month,
+                      civil.day, civil.hour, civil.minute);
+    if (written != static_cast<int>(sizeof(minute) - 1)) {
+        prompt.add("\nCurrent local time: unknown.");
+        return;
+    }
+    prompt.add("\nCurrent local time: ");
+    prompt.add(minute);
+    prompt.add(", ");
+    prompt.add(weekdays[local / seconds_per_day % week]);
+    prompt.add(", time zone ");
+    prompt.add(clock.timezone);
+    // The owner reviews every registered Goal, so an unsynchronized clock still informs the model.
+    prompt.add(sample.trust == AYNI_UTC_TRUSTED ? "." : " (device clock not synchronized).");
 }
 void summary_context(const ConversationRecord &record, Writer &prompt) {
     if (!record.summary_last) {
@@ -266,6 +306,7 @@ ayni_status_t run(Turn &turn, const ToolLoopConfig &config, const ayni_task_snap
     }
     Writer prompt(scratch, prompt_bytes_max);
     prompt.add(config.model.text);
+    local_time(config.clock, prompt);
     status = memory_context(turn, snapshot, prompt);
     if (status != AYNI_OK) {
         return status;
@@ -304,9 +345,14 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config) {
     if (configured_) {
         return AYNI_INVALID_STATE;
     }
+    // Any instant validates the whole rule; one day after the epoch keeps west offsets valid.
+    constexpr int64_t zone_check_utc_s = 86400;
+    int64_t local = 0;
     if (!valid_identity(config.identity) || !valid_call(config.model) ||
         !valid_call(config.summary) || config.model.kind != AYNI_POLICY_REQUEST_MODEL ||
-        config.summary.kind != AYNI_POLICY_REQUEST_MODEL) {
+        config.summary.kind != AYNI_POLICY_REQUEST_MODEL ||
+        (config.clock.timezone.size &&
+         ayni_calendar_local_time(config.clock.timezone, zone_check_utc_s, &local) != AYNI_OK)) {
         return AYNI_INVALID_ARGUMENT;
     }
     config_ = config;
