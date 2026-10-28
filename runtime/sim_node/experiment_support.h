@@ -196,7 +196,6 @@ class World {
     bool application_policy();
     bool exhaust_storage();
     void restore_storage();
-    uint64_t session() const { return session_; }
     bool hold_record_append(RecordPoint point);
     bool crash_after_record(RecordPoint point);
     bool damage_log(Damage damage);

@@ -221,9 +221,8 @@ ayni_status_t Physical::close() {
         // No Kernel remains, so no producer can renew the existing lease. This
         // is independent local convergence, not synthetic Kernel cancellation.
         world_.node.advance_clock(tick_us);
-        const auto advanced = executor.advance();
-        if (advanced != AYNI_OK) {
-            return advanced;
+        if (!advance()) {
+            return AYNI_INVALID_STATE;
         }
     }
     return AYNI_BUSY;

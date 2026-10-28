@@ -37,6 +37,11 @@ def main():
                     assert all(int(item["value"]) <= int(item["clock_us"])
                                for item in records if item["name"] in {
                                    "execution:stop_confirmed_at_us", "invalidated_at_us"})
+                    if case.name == "HARNESS.S1.crash_active_executor":
+                        assert any(item["name"] == "execution:phase" and item["value"] == "4"
+                                   for item in records), "close must record independent STOPPED"
+                        assert any(item["name"] == "execution:stop_confirmed_at_us" and int(item["value"]) > 0
+                                   for item in records)
                     assert [int(item["sequence"]) for item in records] == list(range(1, len(records) + 1))
                     artifacts[case.name] = (manifest, trace)
                 if suite == "E2":

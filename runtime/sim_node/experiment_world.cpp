@@ -396,6 +396,7 @@ ayni_status_t World::close() {
             // failure, and its status is reported independently by the runner.
             node.simulation()->complete_storage();
             node.advance_clock(tick_us);
+            evidence.context(steps, node.simulation()->now_us());
             if (physical && !physical->advance()) {
                 return AYNI_INVALID_STATE;
             }
