@@ -6,6 +6,7 @@ add_executable(ayni_unit_tests
     kernel_context_test.cpp
     memory_table_test.cpp
     memory_decision_test.cpp
+    provenance_test.cpp
     observation_test.cpp
     observation_ingress_test.cpp
     kernel_subscription_test.cpp

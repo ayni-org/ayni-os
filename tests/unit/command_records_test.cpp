@@ -1,5 +1,7 @@
 // ADR-0030: ordinary v1 remains readable; auth v2 must carry exact identity.
+#include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
+#include "kernel/service/command/command_memory.h"
 #include "kernel/service/command/command_records.h"
 
 #include <gtest/gtest.h>
@@ -36,6 +38,172 @@ CommandMapping auth_mapping(const std::vector<uint8_t> &bytes) {
             AYNI_INTENT_GRANT_CREATE,
             {0, 5, 1, AYNI_OBJECT_GRANT},
             static_cast<uint32_t>(bytes.size())};
+}
+
+struct ExactManagementResult {
+    CommandMapping mapping;
+    std::vector<uint8_t> canonical;
+};
+
+// Produce requests through their actual domain codec; the expected result is
+// supplied separately so a test cannot inherit the validator's revision formula.
+template <typename Request>
+ExactManagementResult management_result(const Request &request, ayni_object_kind_t object,
+                                        uint64_t id, uint32_t revision,
+                                        ayni_intent_effect_t effect = AYNI_INTENT_EFFECT_CHANGED) {
+    uint32_t size = 0;
+    EXPECT_EQ(ExactCommand<Request>::measure(request, size), AYNI_OK);
+    std::vector<uint8_t> bytes(size);
+    uint32_t written = 0;
+    EXPECT_EQ(ExactCommand<Request>::encode(request, bytes.data(), size, written), AYNI_OK);
+    EXPECT_EQ(written, size);
+    CommandMapping mapping{1,
+                           2,
+                           authority_command_digest(view(bytes)),
+                           9,
+                           ExactCommand<Request>::kind(request),
+                           {0, id, revision, object},
+                           size};
+    mapping.effect = effect;
+    return {mapping, std::move(bytes)};
+}
+
+// C-WIRE-017 / C-STORE-009: an exact receipt must prove the complete request
+// kind, local target and result revision. Recomputed digests cannot retarget it.
+TEST(CommandRecords, management_results_require_their_exact_kind_and_revision_contract) {
+    ayni::foundation::IdAllocator ids;
+    ids.start(1);
+    uint64_t actor = 0, context = 0, task = 0, call = 0, scene_id = 0, group = 0, memory = 0;
+    for (auto *id : {&actor, &context, &task, &call, &scene_id, &group, &memory}) {
+        ASSERT_TRUE(ids.allocate(*id));
+    }
+    ayni::catalog::CatalogId scene;
+    ASSERT_TRUE(scene.assign({"look", 4}));
+    using ayni::knowledge::ContextAction;
+    MemoryCommand save{};
+    save.kind = AYNI_INTENT_MEMORY_SAVE;
+    save.value.space = ayni::knowledge::MemoryNamespace::private_agent;
+    save.value.namespace_id = actor;
+    save.value.source = ayni::knowledge::MemorySource::user;
+    save.value.confirmed = true;
+    save.value.body = {"explicit", 8};
+    auto update = save;
+    update.target_id = memory;
+    update.expected_revision = 2;
+    const ExactManagementResult examples[] = {
+        management_result(TaskLimitCommand{2, task, 12}, AYNI_OBJECT_TASK, task, 3),
+        management_result(TargetCommand{AYNI_INTENT_CALL_QUERY_RESULT, 2, call}, AYNI_OBJECT_CALL,
+                          call, 3),
+        management_result(TargetCommand{AYNI_INTENT_TASK_RESUME_WAIT, 2, task}, AYNI_OBJECT_TASK,
+                          task, 3),
+        management_result(ayni::work::PauseGroupChange{1, 2, true}, AYNI_OBJECT_PAUSE_GROUP, group,
+                          3),
+        management_result(
+            ayni::authority::SceneChange{scene, 1, 2, ayni::authority::SceneMode::enabled},
+            AYNI_OBJECT_SCENE, scene_id, 3),
+        management_result(
+            ayni::authority::SceneChange{scene, 1, 2, ayni::authority::SceneMode::enabled},
+            AYNI_OBJECT_SCENE, scene_id, 2, AYNI_INTENT_EFFECT_NO_CHANGE),
+        management_result(ContextCommand{AYNI_INTENT_CONTEXT_OPEN, 0, actor}, AYNI_OBJECT_CONTEXT,
+                          context, 1),
+        management_result(ContextCommand{AYNI_INTENT_CONTEXT_PUBLISH, 2, 0, context, 1, task, 2},
+                          AYNI_OBJECT_CONTEXT, context, 2),
+        management_result(ContextCommand{AYNI_INTENT_CONTEXT_FORGET, 2, 0, context, 1, 0, 0,
+                                         ContextAction::erase_all},
+                          AYNI_OBJECT_CONTEXT, context, 3),
+        management_result(ContextCommand{AYNI_INTENT_CONTEXT_ACK, 2, 0, context, 1},
+                          AYNI_OBJECT_CONTEXT, context, 2),
+        management_result(save, AYNI_OBJECT_MEMORY, memory, 1),
+        management_result(update, AYNI_OBJECT_MEMORY, memory, 3),
+        management_result(MemoryCommand{AYNI_INTENT_MEMORY_CONFIRM, 2, memory}, AYNI_OBJECT_MEMORY,
+                          memory, 3),
+        management_result(MemoryCommand{AYNI_INTENT_MEMORY_DELETE, 2, memory}, AYNI_OBJECT_MEMORY,
+                          memory, 3),
+    };
+    const auto changes = {
+        +[](CommandMapping &v) { v.principal_id = 0; },
+        +[](CommandMapping &v) { v.command_id = 0; },
+        +[](CommandMapping &v) { v.object.kind = 0; },
+        +[](CommandMapping &v) { v.object.id = 0; },
+        +[](CommandMapping &v) { v.object.origin_device_id = 1; },
+        +[](CommandMapping &v) { v.object.revision = 0; },
+        +[](CommandMapping &v) { ++v.object.revision; },
+        +[](CommandMapping &v) { ++v.canonical_size; },
+        +[](CommandMapping &v) { ++v.result_size; },
+        +[](CommandMapping &v) { v.effect = AYNI_INTENT_EFFECT_TARGET_GONE; },
+        +[](CommandMapping &v) { v.privacy_expired = true; },
+        +[](CommandMapping &v) { v.digest ^= 1; },
+    };
+    for (const auto &example : examples) {
+        SCOPED_TRACE(example.mapping.kind);
+        ASSERT_TRUE(valid_exact_mapping(example.mapping, view(example.canonical)));
+        for (const auto change : changes) {
+            auto candidate = example.mapping;
+            change(candidate);
+            EXPECT_FALSE(valid_exact_mapping(candidate, view(example.canonical)));
+        }
+        for (const auto &other : examples) {
+            if (other.mapping.kind == example.mapping.kind) {
+                continue;
+            }
+            auto candidate = example.mapping;
+            candidate.canonical_size = static_cast<uint32_t>(other.canonical.size());
+            candidate.digest = authority_command_digest(view(other.canonical));
+            EXPECT_FALSE(valid_exact_mapping(candidate, view(other.canonical)));
+        }
+    }
+}
+
+// C-MEM-008 / C-STORE-007: privacy expiry retains only historical identity;
+// private bytes, digest, sources and non-content command kinds cannot hide in it.
+TEST(CommandRecords, expired_receipt_syntax_rejects_retained_private_or_foreign_identity) {
+    ayni::foundation::IdAllocator ids;
+    ids.start(1);
+    uint64_t memory = 0;
+    ASSERT_TRUE(ids.allocate(memory));
+    CommandMapping valid{1, 2, 0, 9, AYNI_INTENT_MEMORY_SAVE, {0, memory, 1, AYNI_OBJECT_MEMORY}};
+    valid.privacy_expired = true;
+    ASSERT_TRUE(valid_expired_mapping(valid));
+    const auto changes = {
+        +[](CommandMapping &v) { v.kind = 0; },
+        +[](CommandMapping &v) { v.privacy_expired = false; },
+        +[](CommandMapping &v) { v.principal_id = 0; },
+        +[](CommandMapping &v) { v.command_id = 0; },
+        +[](CommandMapping &v) { v.digest = 1; },
+        +[](CommandMapping &v) { v.canonical_size = 1; },
+        +[](CommandMapping &v) { v.result_size = 1; },
+        +[](CommandMapping &v) { v.sources.count = 1; },
+        +[](CommandMapping &v) { v.object.origin_device_id = 1; },
+        +[](CommandMapping &v) { v.object.id = 0; },
+        +[](CommandMapping &v) { v.object.revision = 0; },
+        +[](CommandMapping &v) { v.object.kind = AYNI_OBJECT_GOAL; },
+        +[](CommandMapping &v) { v.effect = AYNI_INTENT_EFFECT_NO_CHANGE; },
+        +[](CommandMapping &v) { v.retention = CommandRetention::accepted_revoke; },
+    };
+    for (const auto change : changes) {
+        auto candidate = valid;
+        change(candidate);
+        EXPECT_FALSE(valid_expired_mapping(candidate));
+    }
+    for (const auto kind :
+         {AYNI_INTENT_GOAL_CREATE, AYNI_INTENT_GOAL_APPROVE, AYNI_INTENT_GOAL_REAUTHORIZE,
+          AYNI_INTENT_MEMORY_CONFIRM, AYNI_INTENT_MEMORY_DELETE}) {
+        auto candidate = valid;
+        candidate.kind = kind;
+        candidate.object.kind =
+            kind == AYNI_INTENT_MEMORY_CONFIRM || kind == AYNI_INTENT_MEMORY_DELETE
+                ? AYNI_OBJECT_MEMORY
+                : AYNI_OBJECT_GOAL;
+        EXPECT_TRUE(valid_expired_mapping(candidate));
+    }
+    for (const auto kind : {AYNI_INTENT_GRANT_CREATE, AYNI_INTENT_TASK_RAISE_MODEL_LIMIT,
+                            AYNI_INTENT_CALL_QUERY_RESULT, AYNI_INTENT_PAUSE_GROUP_SET,
+                            AYNI_INTENT_SCENE_SET_ENABLED}) {
+        auto candidate = valid;
+        candidate.kind = kind;
+        candidate.object.kind = intent_traits(kind).object;
+        EXPECT_FALSE(valid_expired_mapping(candidate));
+    }
 }
 
 TEST(CommandRecords, ordinary_version_one_bytes_and_original_result_remain_compatible) {

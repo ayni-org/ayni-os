@@ -284,6 +284,97 @@ TEST_F(MemoryFacts, dependency_union_is_atomic_and_never_truncates) {
     EXPECT_EQ(set.count, 1U);
     EXPECT_EQ(set.items[0].id, first);
 }
+
+// C-MEM-005: intrinsic source and Grant identities must be complete before
+// a dependency can enter a decision; context anchors never carry memory Grants.
+TEST_F(MemoryFacts, malformed_dependency_identities_cannot_change_the_source_union) {
+    const auto source = add(value());
+    uint64_t read = 0, egress = 0;
+    ASSERT_TRUE(ids.allocate(read));
+    ASSERT_TRUE(ids.allocate(egress));
+    auto original = dependency(source);
+    original.read = {read, 1};
+    original.egress = {egress, 1};
+    ASSERT_TRUE(valid_dependency(original));
+    const auto changes = {
+        +[](MemoryDependency &v) { v.kind = static_cast<DependencyKind>(0); },
+        +[](MemoryDependency &v) { v.id = 0; },
+        +[](MemoryDependency &v) { v.actor_instance_id = 0; },
+        +[](MemoryDependency &v) { v.revision = 0; },
+        +[](MemoryDependency &v) { v.purpose = static_cast<MemoryPurpose>(0); },
+        +[](MemoryDependency &v) { v.read.id = 0; },
+        +[](MemoryDependency &v) { v.read.revision = 0; },
+        +[](MemoryDependency &v) { v.read.id = 1; },
+        +[](MemoryDependency &v) { v.egress.id = 0; },
+        +[](MemoryDependency &v) { v.egress.revision = 0; },
+        +[](MemoryDependency &v) { v.egress.id = 1; },
+        +[](MemoryDependency &v) { v.kind = DependencyKind::context; },
+        +[](MemoryDependency &v) {
+            v.kind = DependencyKind::context;
+            v.read = {};
+        },
+    };
+    for (const auto change : changes) {
+        auto candidate = original;
+        change(candidate);
+        EXPECT_FALSE(valid_dependency(candidate));
+        MemoryDependencies set{};
+        EXPECT_EQ(add_dependency(set, candidate, limits.dependencies), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(set.count, 0U);
+        set.count = 1;
+        set.items[0] = candidate;
+        EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    }
+    MemoryDependencies set{};
+    EXPECT_EQ(add_dependency(set, original, 0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(add_dependency(set, original, memory_dependency_max + 1), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(set.count, 0U);
+    EXPECT_FALSE(valid_dependencies(set, memory_dependency_max + 1));
+    auto context = original;
+    context.kind = DependencyKind::context;
+    ASSERT_TRUE(ids.allocate(context.id));
+    context.read = {};
+    context.egress = {};
+    EXPECT_TRUE(valid_dependency(context));
+}
+
+// C-MEM-005: canonical reads merge only their first export permission. Two
+// different exports remain distinct, while conflicting source revisions are refused.
+TEST_F(MemoryFacts, dependency_set_validation_preserves_distinct_exports_and_rejects_aliases) {
+    const auto source = add(value());
+    uint64_t first = 0, second = 0;
+    ASSERT_TRUE(ids.allocate(first));
+    ASSERT_TRUE(ids.allocate(second));
+    auto ref = dependency(source);
+    ref.egress = {first, 1};
+    MemoryDependencies set{};
+    set.count = 2;
+    set.items[0] = ref;
+    set.items[1] = ref;
+    EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    set.items[1].egress = {};
+    EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    set.items[1].egress = {second, 1};
+    ASSERT_TRUE(valid_dependencies(set, limits.dependencies));
+    const auto accepted = set;
+    auto conflict = ref;
+    ++conflict.revision;
+    MemoryDependencies input{};
+    ASSERT_EQ(add_dependency(input, conflict, limits.dependencies), AYNI_OK);
+    EXPECT_EQ(merge_dependencies(set, input, limits.dependencies), AYNI_REVISION_CONFLICT);
+    EXPECT_TRUE(same_dependencies(set, accepted));
+    ++set.items[1].revision;
+    EXPECT_FALSE(valid_dependencies(set, limits.dependencies));
+    set = accepted;
+    auto malformed = input;
+    malformed.items[0].actor_instance_id = 0;
+    EXPECT_EQ(merge_dependencies(set, malformed, limits.dependencies), AYNI_INVALID_ARGUMENT);
+    EXPECT_TRUE(same_dependencies(set, accepted));
+    auto invalid_target = malformed;
+    EXPECT_EQ(merge_dependencies(invalid_target, input, limits.dependencies),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_TRUE(same_dependencies(invalid_target, malformed));
+}
 TEST_F(MemoryFacts, exact_tags_and_keywords_combine_with_body_search) {
     auto v = value("likes green tea");
     ASSERT_TRUE(v.labels.tags[0].assign({"food", 4}));
