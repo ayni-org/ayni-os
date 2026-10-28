@@ -121,3 +121,7 @@
 | [0075](0075-full-experiment-runner-and-fault-controls.md) | 完整实验运行器与受控故障生命周期 | 已接受 | §10.1、MA-021/022/023/033 |
 
 | [0076](0076-e2-recovery-and-executor-evidence.md) | E2 精确提交切断与独立执行端证据 | 已接受 | §10.3、MA-022 |
+
+| [0077](0077-e1-shared-service-acceptance.md) | E1 共享服务完整验收与来源失效恢复 | 已接受 | §10.2、MA-021 |
+
+| [0078](0078-e3-provider-and-policy-replacement.md) | E3 重启后替换模型与兼容策略 | 已接受 | §10.4、MA-023 |
