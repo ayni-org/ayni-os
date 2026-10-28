@@ -21,6 +21,7 @@
 | [domain/runtime_limits.md](domain/runtime_limits.md) | 8 | 0 |
 | [domain/status_codes.md](domain/status_codes.md) | 7 | 3 |
 | [domain/versions.md](domain/versions.md) | 17 | 6 |
+| [fixtures/experiments/README.md](fixtures/experiments/README.md) | 5 | 0 |
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 5 | 0 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
@@ -30,7 +31,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 400 | 139 |
+| 合计 | 405 | 139 |
 
 ## 计划章节 → 契约文档
 
@@ -61,6 +62,7 @@
 | §5.4 | domain/authority_and_trust.md、domain/product_semantics.md |
 | §7.3 | domain/permits_and_stop.md |
 | §9.1 | domain/observations_and_media.md、host/native_runtime.md |
+| §10 | fixtures/experiments/README.md |
 | §10.1 | fixtures/normal/README.md |
 | §10.6 | domain/limits.md、wire/json_subset.md |
 | §10.7 | domain/product_semantics.md |
@@ -105,6 +107,7 @@
 | ADR-0067 | host/cpp_sdk.md |
 | ADR-0068 | fixtures/normal/README.md |
 | ADR-0072 | host/native_runtime.md |
+| ADR-0075 | fixtures/experiments/README.md |
 
 ## 工作包 → 条款
 

@@ -2,10 +2,11 @@
 // whose log lives in a new temporary state directory, recovers it (a first
 // boot, so it only persists boot epoch 1), reports its lifecycle, shuts it
 // down and removes the directory. --case runs a compiled P6 normal fixture;
-// full fault/recovery experiments remain explicitly unsupported.
+// --experiment runs only the fault profiles actually present in the compiled table.
 
 #include <ayni/ayni.h>
 #include <ayni/runtime/native_node.h>
+#include <ayni/runtime/sim_node/experiments.h>
 #include <ayni/runtime/sim_node/fixtures.h>
 
 #include <chrono>
@@ -122,7 +123,63 @@ bool step_while(ayni::runtime::NativeNode &node, ayni_lifecycle_t state, const c
 
 } // namespace
 
+// Returns -1 for another CLI mode; unknown suites never succeed with zero cases.
+int experiment_arguments(int argc, char **argv) {
+    namespace experiments = ayni::runtime::experiments;
+    const auto cases = experiments::cases();
+    if (argc == 2 && std::strcmp(argv[1], "--list-experiments") == 0) {
+        for (size_t at = 0; at < cases.size; ++at) {
+            std::printf("%s\t%s\n", cases.data[at].id, cases.data[at].experiment_step);
+        }
+        return 0;
+    }
+    if (argc != 5 || std::strcmp(argv[3], "--output") != 0) {
+        return -1;
+    }
+    const bool suite = std::strcmp(argv[1], "--experiment") == 0;
+    if (!suite && std::strcmp(argv[1], "--case") != 0) {
+        return -1;
+    }
+    std::vector<const experiments::Case *> selected;
+    const std::string prefix = std::string(argv[2]) + ".";
+    for (size_t at = 0; at < cases.size; ++at) {
+        const std::string id = cases.data[at].id;
+        if ((!suite && id == argv[2]) || (suite && id.compare(0, prefix.size(), prefix) == 0)) {
+            selected.push_back(&cases.data[at]);
+        }
+    }
+    if (selected.empty()) {
+        return -1;
+    }
+    if (suite) {
+        std::error_code error;
+        if (!std::filesystem::create_directory(argv[4], error)) {
+            std::fprintf(stderr, "ayni-sim: experiment output must be new\n");
+            return 1;
+        }
+    }
+    int status = 0;
+    for (const auto *data : selected) {
+        const auto output =
+            suite ? std::filesystem::path(argv[4]) / data->id : std::filesystem::path(argv[4]);
+        const auto result = experiments::run(*data, output.c_str());
+        const bool passed = result.status == AYNI_OK && result.close_status == AYNI_OK &&
+                            result.artifact_status == AYNI_OK;
+        std::printf("%s: %s status=%" PRId32 " close=%" PRId32 " artifacts=%" PRId32 " %s\n",
+                    data->id, passed ? "passed" : "failed", result.status, result.close_status,
+                    result.artifact_status, result.detail.c_str());
+        if (!passed) {
+            status = 1;
+        }
+    }
+    return status;
+}
+
 int main(int argc, char **argv) {
+    const auto experiment = experiment_arguments(argc, argv);
+    if (experiment != -1) {
+        return experiment;
+    }
     if (argc > 1) {
         if (argc == 4 && std::strcmp(argv[1], "--multinode-normal") == 0 &&
             std::strcmp(argv[2], "--output") == 0) {
@@ -154,8 +211,9 @@ int main(int argc, char **argv) {
             }
         }
         std::fprintf(stderr, "ayni-sim: use --list-normal, --case E1-N1 --output NEW_DIRECTORY, "
-                             "or --multinode-normal --output NEW_DIRECTORY; "
-                             "full fault/recovery experiments are unavailable\n");
+                             "--multinode-normal --output NEW_DIRECTORY, --list-experiments, "
+                             "or --experiment SUITE --output NEW_DIRECTORY; "
+                             "unknown/unimplemented cases are rejected\n");
         return 2;
     }
 

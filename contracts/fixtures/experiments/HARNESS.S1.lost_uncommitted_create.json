@@ -1,0 +1,33 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "HARNESS.S1.lost_uncommitted_create",
+  "experiment_step": "HARNESS S1",
+  "clauses": [
+    "C-STORE-002"
+  ],
+  "script": [
+    {
+      "op": "create",
+      "type": "folder",
+      "command": "101"
+    },
+    {
+      "op": "crash",
+      "append": "lost"
+    },
+    {
+      "op": "start"
+    },
+    {
+      "op": "expect",
+      "metric": "goal_count",
+      "value": "0"
+    },
+    {
+      "op": "expect",
+      "metric": "executions",
+      "value": "0"
+    }
+  ]
+}

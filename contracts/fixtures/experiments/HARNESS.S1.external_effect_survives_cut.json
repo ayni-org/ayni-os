@@ -1,0 +1,80 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "HARNESS.S1.external_effect_survives_cut",
+  "experiment_step": "HARNESS S1",
+  "clauses": [
+    "C-OUT-002",
+    "C-LIFE-010"
+  ],
+  "script": [
+    {
+      "op": "grant"
+    },
+    {
+      "op": "create",
+      "type": "action",
+      "command": "101"
+    },
+    {
+      "op": "until",
+      "metric": "pending_calls",
+      "value": "1"
+    },
+    {
+      "op": "execute"
+    },
+    {
+      "op": "expect",
+      "metric": "executions",
+      "value": "1"
+    },
+    {
+      "op": "crash",
+      "append": "lost"
+    },
+    {
+      "op": "start"
+    },
+    {
+      "op": "steps",
+      "count": 32
+    },
+    {
+      "op": "expect",
+      "metric": "executions",
+      "value": "1"
+    },
+    {
+      "op": "expect",
+      "metric": "call_phase",
+      "value": "RESULT_UNKNOWN"
+    },
+    {
+      "op": "expect",
+      "metric": "pending_calls",
+      "value": "0"
+    },
+    {
+      "op": "request_query"
+    },
+    {
+      "op": "answer_query",
+      "result": "FOUND"
+    },
+    {
+      "op": "steps",
+      "count": 32
+    },
+    {
+      "op": "expect",
+      "metric": "call_outcome",
+      "value": "COMPLETED"
+    },
+    {
+      "op": "expect",
+      "metric": "executions",
+      "value": "1"
+    }
+  ]
+}

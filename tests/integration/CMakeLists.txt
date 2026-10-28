@@ -16,3 +16,11 @@ set_tests_properties(NormalFixtures.artifacts_replay PROPERTIES TIMEOUT 120)
 add_test(NAME MultinodeNormal.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/multinode_artifacts_test.py" $<TARGET_FILE:ayni-sim>)
 set_tests_properties(MultinodeNormal.artifacts_replay PROPERTIES TIMEOUT 120)
+
+add_executable(ayni_experiment_tests experiment_fixture_test.cpp)
+target_include_directories(ayni_experiment_tests PRIVATE "${AYNI_ROOT}/runtime/sim_node")
+target_link_libraries(ayni_experiment_tests PRIVATE ayni_sim_experiments ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_experiment_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
+add_test(NAME ExperimentFixtures.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/experiment_artifacts_test.py" $<TARGET_FILE:ayni-sim>)
+set_tests_properties(ExperimentFixtures.artifacts_replay PROPERTIES TIMEOUT 120)
