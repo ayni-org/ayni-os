@@ -191,11 +191,11 @@ uint64_t Composite::create(uint64_t source, uint64_t agent) {
                        static_cast<uint32_t>(parameters.size())};
     return world_.submit(AYNI_INTENT_GOAL_CREATE, &goal).object.id;
 }
-ayni_task_info_v1 Composite::task() const {
+ayni_task_info_v1 Composite::task(std::optional<uint64_t> selected) const {
     auto goal = initialized<ayni_goal_info_v1>();
     auto result = initialized<ayni_task_info_v1>();
-    if (world_.evidence.status("composite Goal",
-                               ayni_get_goal(world_.node.kernel(), goal_, &goal)) &&
+    if (world_.evidence.status("composite Goal", ayni_get_goal(world_.node.kernel(),
+                                                               selected.value_or(goal_), &goal)) &&
         goal.last_task_id) {
         world_.evidence.status("composite Task",
                                ayni_get_task(world_.node.kernel(), goal.last_task_id, &result));

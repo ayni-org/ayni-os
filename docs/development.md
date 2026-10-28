@@ -59,7 +59,7 @@ cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ```
 
-换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 profile 已提供 `--experiment HARNESS`、`--experiment E2`、`--experiment E1` 、`--experiment E3` 与 `--experiment E4`，均须加 `--output NEW_DIRECTORY`；精确切断和版本探针须启用 `AYNI_BUILD_TESTS`。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。F2 起批次与快照仅支持 schema 2；schema 0/1 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0038）。开发使用新的状态目录；回退需原二进制与原状态目录。
+换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 profile 已提供 `--experiment HARNESS`、`--experiment E2`、`--experiment E1`、`--experiment E3` 与 `--experiment E4`，均须加 `--output NEW_DIRECTORY`；精确切断和版本探针须启用 `AYNI_BUILD_TESTS`。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。F2 起批次与快照仅支持 schema 2；schema 0/1 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0038）。开发使用新的状态目录；回退需原二进制与原状态目录。
 
 ### 测试并行与编译缓存
 
@@ -254,7 +254,7 @@ Core 和安全保守范围沿用 P4：`core/`、`control/permit_gate/`、`provid
 
 ## 完整实验运行设施
 
-用户 2026-10-28 恢复完整 E2→E1→E3→E4 所需故障/恢复活动，变异继续暂停。先按本文检查资源并设置构建/测试并行度，再构建 `ayni-sim` 与 `ayni_experiment_tests`；当前 `--list-experiments` 列出 HARNESS 设施自验证及完整 E2（#98）与 E1（ADR-0077）Native/Sim 场景，E3/E4 随对应阶段加入，空实验拒绝。
+用户 2026-10-28 恢复完整 E2→E1→E3→E4 所需故障/恢复活动，变异继续暂停。先按本文检查资源并设置构建/测试并行度，再构建 `ayni-sim` 与 `ayni_experiment_tests`；当前 `--list-experiments` 列出 HARNESS 设施自验证及完整 E2/E1/E3/E4 Native/Sim 场景（#98～#101，ADR-0076～0079）；未注册的实验拒绝。
 
 ```sh
 cmake --build --preset native-debug --target ayni-sim ayni_experiment_tests

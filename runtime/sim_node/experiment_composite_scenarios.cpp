@@ -156,15 +156,65 @@ bool Composite::invalidate_source(SourceChange change) {
         !world_.crash(hosts::sim::CutAppend::lost) || !world_.start() || !world_.settle(16)) {
         return false;
     }
-    return e.equal("recovery keeps deleted/shared dependency invalid", notification_.submissions(),
+    return verify_invalid_source(change) &&
+           e.equal("recovery keeps deleted/shared dependency invalid", notification_.submissions(),
                    0) &&
            e.equal("no stale derived memory after recovery", candidates(), 0) &&
            e.equal("invalidated model operation retained", call("analysis.v1").operation_id,
                    old_call.operation_id);
 }
+bool Composite::verify_invalid_source(SourceChange change) {
+    auto &e = world_.evidence;
+    auto metadata = initialized<ayni_memory_info_v1>();
+    uint32_t size = 0;
+    const auto status = ayni_get_memory(world_.node.kernel(), world_.owner_session(), source_,
+                                        &metadata, nullptr, 0, &size);
+    if (change == SourceChange::erase) {
+        if (status == AYNI_OK) {
+            // Cleanup may retain a tombstone for diagnostics; it must never be live.
+            if (!e.equal("deleted source is not live after reboot",
+                         metadata.state == AYNI_MEMORY_TOMBSTONE ||
+                             metadata.state == AYNI_MEMORY_SCRUBBED,
+                         1) ||
+                !e.equal("deleted source remains unusable", metadata.usable, 0)) {
+                return false;
+            }
+            char body[128]{};
+            return e.status("deleted source body denied after reboot",
+                            ayni_get_memory(world_.node.kernel(), world_.owner_session(), source_,
+                                            &metadata, body, sizeof(body), &size),
+                            AYNI_EXPIRED);
+        }
+        return e.status("deleted source remains absent after cleanup", status, AYNI_NOT_FOUND);
+    }
+    auto grant = initialized<ayni_grant_info_v1>();
+    if (!share_ || !e.status("source owner data retained", status) ||
+        !e.status("restored shared Grant", ayni_get_grant(world_.node.kernel(), *share_, &grant)) ||
+        !e.equal("shared Grant remains revoked after reboot", grant.lifecycle,
+                 AYNI_GRANT_REVOKED)) {
+        return false;
+    }
+    const auto parameters = std::to_string(source_);
+    auto body = initialized<ayni_goal_create_v1>();
+    body.goal_type_id = text("composite.read_source");
+    body.goal_type_version = 1;
+    body.owner_instance_id = world_.instance(1);
+    body.trigger = AYNI_TRIGGER_ONCE;
+    body.parameters = {reinterpret_cast<const uint8_t *>(parameters.data()),
+                       static_cast<uint32_t>(parameters.size())};
+    const auto fresh = world_.submit(AYNI_INTENT_GOAL_CREATE, &body);
+    if (!world_.until("fresh actor read is denied after revoked Grant recovery",
+                      [&] { return task(fresh.object.id).lifecycle == AYNI_TASK_PAUSED; })) {
+        return false;
+    }
+    return e.status("fresh actor cannot read revoked shared source",
+                    task(fresh.object.id).hold_status, AYNI_DENIED);
+}
 bool Composite::close_generation() {
     auto &e = world_.evidence;
-    if (!analysis_pending() ||
+    if (!e.status("closed capture still receives late analysis",
+                  model_.set_cancellation(fixtures::ModelProbe::Cancellation::late_success)) ||
+        !analysis_pending() ||
         !e.equal("active capture before closing", subscription().phase, AYNI_SUBSCRIPTION_ACTIVE)) {
         return false;
     }
@@ -193,11 +243,24 @@ bool Composite::close_generation() {
                   AYNI_NOT_READY)) {
         return false;
     }
-    model_delivery_ = true;
-    if (!world_.settle(16)) {
+    if (!world_.until("closed capture model cancellation durable", [&] {
+            const auto c = call("analysis.v1");
+            return c.cancel_requested && c.requires_seq <= world_.info().durable_seq;
+        })) {
         return false;
     }
-    return e.equal("closed generation does not notify", notification_.submissions(), 0) &&
+    model_delivery_ = true;
+    if (!world_.until("closed capture late analysis drained", [&] {
+            const auto c = call("analysis.v1");
+            return model_.pending() == 0 && c.outcome &&
+                   c.requires_seq <= world_.info().durable_seq;
+        })) {
+        return false;
+    }
+    return e.equal("closed capture actually receives late successful model", model_.executions(),
+                   1) &&
+           e.equal("closed capture never creates late candidate", candidates(), 0) &&
+           e.equal("closed generation does not notify", notification_.submissions(), 0) &&
            e.equal("old stopped generation retained diagnostically",
                    subscription().subscription.generation, current.subscription.generation) &&
            e.equal("paused workflow identity preserved", task().task_id, info.task_id);

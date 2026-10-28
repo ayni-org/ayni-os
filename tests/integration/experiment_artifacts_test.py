@@ -7,6 +7,26 @@ import sys
 import tempfile
 
 
+def verify_compatibility_matrix(matrix, artifacts):
+    """Compare declared versions/outcomes with the last actual owner/query facts."""
+    version_fields = {"storage", "strategy", "capability", "binding", "query_resolver",
+                      "goal_type", "scene", "required_task_state", "required_task_state_max"}
+    outcome_fields = {"task_state", "query_conclusion", "kernel_lifecycle", "scene_consumable", "control_phase"}
+    for row in matrix["rows"]:
+        evidence = [json.loads(line) for line in artifacts[row["case_id"]][1].splitlines()]
+        facts = {(item["category"], item["name"]): item["value"] for item in evidence}
+        assert isinstance(row["expected"], str) and row["expected"]  # Human-readable description.
+        for side in ("writer", "reader"):
+            assert row[side] and set(row[side]) <= version_fields
+            for field, expected in row[side].items():
+                assert facts.get((side, field)) == expected, (row["case_id"], side, field, expected, facts.get((side, field)))
+        assert row["outcome"] and set(row["outcome"]) <= outcome_fields
+        for field, expected in row["outcome"].items():
+            assert facts.get(("matrix", field)) == expected, (row["case_id"], field, expected)
+        for name, expected in row["assertions"].items():
+            assert any(item["category"] == "assertion" and item["name"] == name and item["value"] == expected for item in evidence), (row, name)
+
+
 def main():
     executable = sys.argv[1]
     with tempfile.TemporaryDirectory(prefix="ayni-experiment-replay-") as directory:
@@ -82,10 +102,7 @@ def main():
                     assert all("SYNTHETIC_E4_SOURCE" not in value[1] for value in artifacts.values())
                     matrix = json.loads((repo / "contracts/fixtures/e4-compatibility.json").read_text())
                     assert matrix["schema"] == 1 and len(matrix["rows"]) >= 9
-                    for row in matrix["rows"]:
-                        evidence = [json.loads(line) for line in artifacts[row["case_id"]][1].splitlines()]
-                        for name, expected in row["assertions"].items():
-                            assert any(item["category"] == "assertion" and item["name"] == name and item["value"] == expected for item in evidence), (row, name)
+                    verify_compatibility_matrix(matrix, artifacts)
                 else:
                     assert len(artifacts) == 7
                 outputs.append(artifacts)

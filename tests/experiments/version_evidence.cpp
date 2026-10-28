@@ -8,6 +8,8 @@ bool replace_storage_version(World &world, VersionFault fault, uint16_t version)
         return false;
     }
     auto image = world.node.simulation()->durable_storage();
+    world.evidence.fact("writer", "storage",
+                        fault == VersionFault::schema ? version : durability::storage_schema);
     bool changed_record = false;
     for (auto &stored : image.log) {
         durability::BatchView batch{};
@@ -23,7 +25,8 @@ bool replace_storage_version(World &world, VersionFault fault, uint16_t version)
         durability::RecordReader records(batch);
         durability::RecordHeader header{};
         const uint8_t *body = nullptr;
-        while (records.next(header, body) == durability::RecordReader::Next::record) {
+        auto next = records.next(header, body);
+        while (next == durability::RecordReader::Next::record) {
             if (fault == VersionFault::required_record && !changed_record &&
                 header.type == durability::record_type::task_state) {
                 header.version = version;
@@ -33,8 +36,17 @@ bool replace_storage_version(World &world, VersionFault fault, uint16_t version)
             if (!e.equal("encode original versioned record", writer.add_record(header, body), 1)) {
                 return false;
             }
+            next = records.next(header, body);
         }
-        bytes.resize(writer.finish());
+        if (!e.equal("version source record framing complete",
+                     next == durability::RecordReader::Next::end, 1)) {
+            return false;
+        }
+        const auto size = writer.finish();
+        if (!e.equal("version rewrite encoded complete batch", size != 0, 1)) {
+            return false;
+        }
+        bytes.resize(size);
         stored.bytes = std::move(bytes);
     }
     if (fault == VersionFault::required_record &&

@@ -3,8 +3,15 @@
 #include "experiment_composite.h"
 #include "experiment_support.h"
 namespace ayni::runtime::experiments {
+ayni_status_t inspect_call_acceptance(const ayni_kernel_t *, uint64_t, uint64_t &) {
+    return AYNI_UNSUPPORTED;
+}
 bool replace_storage_version(World &world, VersionFault, uint16_t) {
     return world.evidence.status("version probe requires AYNI_BUILD_TESTS", AYNI_UNSUPPORTED);
+}
+bool record_reader_versions(World &world) {
+    return world.evidence.status("catalog version probe requires AYNI_BUILD_TESTS",
+                                 AYNI_UNSUPPORTED);
 }
 ayni_status_t inspect_task_progress(const ayni_kernel_t *, uint64_t, TaskProgressEvidence &) {
     return AYNI_UNSUPPORTED;

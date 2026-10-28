@@ -126,6 +126,14 @@ bool Composite::registration_boundaries(CompositeScenario scenario) {
 bool Composite::version_boundary(VersionCase kind) {
     auto &e = world_.evidence;
     const auto original = call("increment.v1");
+    CallRouteEvidence original_route;
+    if (!e.status(
+            "inspect original writer semantics",
+            inspect_call_route(world_.node.kernel(), original.logical_call_id, original_route))) {
+        return false;
+    }
+    e.fact("writer", "capability", original_route.capability_version);
+    e.fact("writer", "binding", original_route.binding_version);
     if (kind == VersionCase::resolver &&
         !e.status("v1 external effect occurs", world_.service.execute(world_.node.kernel()))) {
         return false;
@@ -134,7 +142,7 @@ bool Composite::version_boundary(VersionCase kind) {
         return false;
     }
     world_.counter_profile = World::CounterProfile::v2;
-    if (!world_.start()) {
+    if (!world_.start() || !record_reader_versions(world_)) {
         return false;
     }
     if (kind == VersionCase::incompatible) {
@@ -144,6 +152,7 @@ bool Composite::version_boundary(VersionCase kind) {
             return false;
         }
         const auto old = call("increment.v1");
+        e.fact("matrix", "task_state", task().lifecycle);
         CallRouteEvidence route;
         return e.status("inspect old v1 semantic route",
                         inspect_call_route(world_.node.kernel(), old.logical_call_id, route)) &&
@@ -176,7 +185,7 @@ bool Composite::version_boundary(VersionCase kind) {
         return false;
     }
     world_.counter_profile = World::CounterProfile::v2_with_v1_query;
-    if (!world_.start()) {
+    if (!world_.start() || !record_reader_versions(world_)) {
         return false;
     }
     query();
@@ -189,6 +198,7 @@ bool Composite::version_boundary(VersionCase kind) {
         })) {
         return false;
     }
+    e.fact("matrix", "query_conclusion", call("increment.v1").query_conclusion);
     return e.equal("resolver kept old operation", call("increment.v1").operation_id,
                    original.operation_id) &&
            e.equal("resolver cannot execute new effect", world_.service.executions(), 1) &&
@@ -238,13 +248,14 @@ bool Composite::storage_boundary(VersionFault fault, uint16_t version) {
         }
         return true;
     };
-    if (!world_.start(AYNI_LIFECYCLE_RESTRICTED) ||
+    if (!world_.start(AYNI_LIFECYCLE_RESTRICTED) || !record_reader_versions(world_) ||
         !e.equal("unsupported schema diagnostic", world_.info().restriction,
                  AYNI_RESTRICTION_LOG_UNSUPPORTED) ||
         !world_.settle(4) || !preserved() || !world_.crash(hosts::sim::CutAppend::lost) ||
         !world_.start(AYNI_LIFECYCLE_RESTRICTED) || !preserved()) {
         return false;
     }
+    e.fact("matrix", "kernel_lifecycle", world_.lifecycle());
     return e.equal("unreadable input never replays old effect", world_.service.executions(), 1) &&
            e.equal("unreadable input never sends new model", model_.pending(), 0) &&
            e.equal("unreadable input never notifies", notification_.submissions(), 0);
@@ -263,8 +274,13 @@ bool Composite::goal_version_boundary() {
         return false;
     }
     auto goal = initialized<ayni_goal_info_v1>();
-    return e.status("retained old GoalType", ayni_get_goal(world_.node.kernel(), goal_, &goal)) &&
-           e.equal("old GoalType semantics never reset", goal.goal_type_version, 1) &&
+    if (!e.status("retained old GoalType", ayni_get_goal(world_.node.kernel(), goal_, &goal)) ||
+        !record_reader_versions(world_)) {
+        return false;
+    }
+    e.fact("writer", "goal_type", goal.goal_type_version);
+    e.fact("matrix", "task_state", task().lifecycle);
+    return e.equal("old GoalType semantics never reset", goal.goal_type_version, 1) &&
            e.equal("missing GoalType keeps original Task", task().task_id, original.task_id) &&
            e.equal("new GoalType never replays old action", world_.service.executions(), 0) &&
            e.equal("new GoalType never opens capture", camera_.pending(), 0);
@@ -306,10 +322,14 @@ bool Composite::scene_version_boundary() {
         !e.equal("old Scene object retained", after.object_id, before.object_id)) {
         return false;
     }
+    e.fact("writer", "scene", before.saved_version);
+    e.fact("reader", "scene", after.registered_version);
+    e.fact("matrix", "scene_consumable", after.consumable);
     world_.submit(AYNI_INTENT_GOAL_CREATE, &motion);
     if (!world_.settle(32)) {
         return false;
     }
+    e.fact("matrix", "control_phase", world_.physical->info().phase);
     return e.equal("v2 Scene cannot resubmit old parameters",
                    world_.physical->executor.submissions(), submissions) &&
            e.equal("incompatible Scene remains independently stopped",
@@ -328,13 +348,15 @@ bool Composite::compatible_current_profile() {
         return false;
     }
     strategy_version_ = future_version;
-    if (!world_.start() || !world_.settle(16) ||
+    if (!world_.start() || !record_reader_versions(world_) || !world_.settle(16) ||
         !e.status("compatible reader checkpoint",
                   inspect_task_progress(world_.node.kernel(), original.task_id, after))) {
         return false;
     }
     e.fact("compat", "writer_version", before.writer_version);
     e.fact("compat", "reader_version", strategy_version_);
+    e.fact("writer", "strategy", before.writer_version);
+    e.fact("matrix", "task_state", task().lifecycle);
     return e.equal("declared compatible reader preserves exact checkpoint", after == before, 1) &&
            e.equal("compatible upgrade preserves completed Task", task().lifecycle,
                    AYNI_TASK_COMPLETED) &&

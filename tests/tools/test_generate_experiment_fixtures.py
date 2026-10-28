@@ -2,6 +2,7 @@
 import copy
 import json
 import re
+import runpy
 from pathlib import Path
 import sys
 import tempfile
@@ -78,6 +79,22 @@ class ExperimentGenerator(unittest.TestCase):
         value["script"].insert(0, {"op": "composite", "scenario": "restart_at_each_boundary", "boundary": "unimplemented", "append": "stored"})
         with self.assertRaises(fixtures.FixtureError):
             self.load(value)
+
+    def test_compatibility_matrix_rejects_wrong_versions_and_outcomes(self):
+        # ADR-0079: version declarations must be checked independently of pass flags.
+        verify = runpy.run_path(str(ROOT / "tests/integration/experiment_artifacts_test.py"))["verify_compatibility_matrix"]
+        row = {"case_id": "example", "writer": {"strategy": "1"}, "reader": {"strategy": "2"}, "expected": "retained", "outcome": {"task_state": "5"}, "assertions": {"retained": "1"}}
+        records = [{"category": category, "name": name, "value": value} for category, name, value in (
+            ("writer", "strategy", "1"), ("reader", "strategy", "2"),
+            ("matrix", "task_state", "5"), ("assertion", "retained", "1"))]
+        artifacts = {"example": ({}, "\n".join(json.dumps(record) for record in records))}
+        verify({"rows": [row]}, artifacts)
+        for field in ("writer", "reader", "outcome"):
+            incorrect = copy.deepcopy(row)
+            key = next(iter(incorrect[field]))
+            incorrect[field][key] = "99"
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                verify({"rows": [incorrect]}, artifacts)
 
     def test_shared_evidence_requires_its_actual_deployment_and_closed_scenario(self):
         for action in ({"op": "shared", "scenario": "local_rule_progresses"},

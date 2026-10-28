@@ -78,10 +78,33 @@ bool Composite::restart_boundary(CompositeCut cut, hosts::sim::CutAppend disposi
         return false;
     }
     const auto previous = task();
-    const auto action = call("increment.v1"), analysis = call("analysis.v1"),
-               presentation = call("present.v1");
+    const auto action = call("increment.v1"), capture = call("capture.v1"),
+               analysis = call("analysis.v1"), presentation = call("present.v1");
     const auto durable_before = world_.info().durable_seq;
     const auto cut_seq = world_.node.simulation()->pending_append()->commit_seq;
+    const char *const keys[] = {"increment.v1", "capture.v1", "analysis.v1", "present.v1"};
+    const std::array originals{action, capture, analysis, presentation};
+    std::array<uint64_t, std::size(keys)> acceptance{};
+    std::array<bool, std::size(keys)> retained{};
+    uint32_t durable_model_count = 0;
+    for (uint32_t i = 0; i < originals.size(); ++i) {
+        if (!originals[i].logical_call_id) {
+            continue;
+        }
+        if (!e.status("inspect original acceptance fence",
+                      inspect_call_acceptance(world_.node.kernel(), originals[i].logical_call_id,
+                                              acceptance[i]))) {
+            return false;
+        }
+        retained[i] = acceptance[i] &&
+                      (acceptance[i] <= durable_before ||
+                       (disposition == hosts::sim::CutAppend::stored && acceptance[i] == cut_seq));
+        const auto name = std::string(keys[i]) + "_accepted_seq";
+        e.fact("cut", name.c_str(), acceptance[i]);
+        if (retained[i] && originals[i].logical_call_id == analysis.logical_call_id) {
+            durable_model_count = previous.model_calls_used;
+        }
+    }
     const auto presentations_before = notification_.executions();
     if (!e.equal("first action completed before cut", world_.service.executions(), 1) ||
         !world_.crash(disposition)) {
@@ -93,7 +116,9 @@ bool Composite::restart_boundary(CompositeCut cut, hosts::sim::CutAppend disposi
         return false;
     }
     if (!e.equal("cut retains original Task", task().task_id, previous.task_id) ||
-        !e.equal("cut cannot repeat completed effect", world_.service.executions(), 1)) {
+        !e.equal("cut cannot repeat completed effect", world_.service.executions(), 1) ||
+        !e.equal("durable model consumption retained exactly at restart", task().model_calls_used,
+                 durable_model_count)) {
         return false;
     }
     for (const char *key : {"increment.v1", "capture.v1", "analysis.v1", "present.v1"}) {
@@ -111,15 +136,16 @@ bool Composite::restart_boundary(CompositeCut cut, hosts::sim::CutAppend disposi
     }
     // Only durable accepted calls survive a lost append. A stored append also
     // retains its new identity; a lost never-accepted call may be planned anew.
-    for (const auto &saved : {action, analysis, presentation}) {
-        if (!saved.logical_call_id || !saved.requires_seq ||
-            (saved.requires_seq > durable_before &&
-             !(disposition == hosts::sim::CutAppend::stored && saved.requires_seq == cut_seq))) {
+    for (uint32_t i = 0; i < originals.size(); ++i) {
+        if (!retained[i]) {
             continue;
         }
+        const auto &saved = originals[i];
         auto restored = initialized<ayni_call_info_v1>();
         if (!e.status("durable original call retained",
                       ayni_get_call(world_.node.kernel(), saved.logical_call_id, &restored)) ||
+            !e.equal((std::string(keys[i]) + " logical identity retained across restart").c_str(),
+                     restored.logical_call_id, saved.logical_call_id) ||
             !e.equal("durable operation identity retained", restored.operation_id,
                      saved.operation_id)) {
             return false;
@@ -168,8 +194,8 @@ bool Composite::restart_boundary(CompositeCut cut, hosts::sim::CutAppend disposi
                      task().lifecycle == AYNI_TASK_COMPLETED, 0) ||
             !e.equal("no new candidate after unconfirmed dependency", candidates(),
                      expected_candidates) ||
-            !e.equal("unconfirmed analysis cannot increase model count",
-                     task().model_calls_used <= 1, 1)) {
+            !e.equal("unconfirmed dependency keeps exact durable model count",
+                     task().model_calls_used, durable_model_count)) {
             return false;
         }
         if (restored_analysis.phase == AYNI_CALL_RESULT_UNKNOWN) {

@@ -108,6 +108,8 @@ struct CallRouteEvidence {
 };
 ayni_status_t inspect_task_progress(const ayni_kernel_t *, uint64_t task, TaskProgressEvidence &);
 ayni_status_t inspect_call_route(const ayni_kernel_t *, uint64_t call, CallRouteEvidence &);
+// Acceptance fence, not the latest state fence; 0 means not yet journal-assigned.
+ayni_status_t inspect_call_acceptance(const ayni_kernel_t *, uint64_t call, uint64_t &commit_seq);
 
 // One execution record belongs to the external test world, surviving Kernel loss.
 // Execution counts every request to execute, so duplicate effects cannot be hidden

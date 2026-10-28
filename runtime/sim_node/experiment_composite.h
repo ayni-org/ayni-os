@@ -87,7 +87,7 @@ class Composite {
     bool finish();
     uint64_t create(uint64_t source, uint64_t agent = 1);
     uint64_t save_source(uint64_t agent = 1);
-    ayni_task_info_v1 task() const;
+    ayni_task_info_v1 task(std::optional<uint64_t> goal = std::nullopt) const;
     ayni_call_info_v1 call(const char *step) const;
     ayni_subscription_info_v1 subscription() const;
     uint32_t candidates() const;
@@ -97,6 +97,7 @@ class Composite {
     bool unknown_action();
     enum class SourceChange { erase, revoke };
     bool invalidate_source(SourceChange);
+    bool verify_invalid_source(SourceChange);
     bool close_generation();
     enum class VersionCase { incompatible, resolver };
     bool version_boundary(VersionCase);
@@ -111,5 +112,6 @@ class Composite {
 // Tests-only CRC-correct version injection uses the existing batch/record codecs.
 // It changes only the simulated media while no Kernel or producer exists.
 bool replace_storage_version(World &, VersionFault, uint16_t version);
+bool record_reader_versions(World &);
 } // namespace ayni::runtime::experiments
 #endif

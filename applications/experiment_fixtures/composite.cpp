@@ -160,9 +160,23 @@ ayni_status_t oversized_round(const ayni_task_snapshot_v1 &s, ayni_policy_output
     return request(out, AYNI_POLICY_REQUEST_MODEL, "round.v1", "tools.model",
                    {body.data(), static_cast<uint32_t>(body.size())});
 }
+ayni_status_t complete(const ayni_task_snapshot_v1 &s, ayni_policy_output_v1 &out) {
+    auto &intent = out.intents[0];
+    intent = initialized<ayni_policy_intent_v1>();
+    intent.kind = AYNI_POLICY_REPORT_COMPLETION;
+    intent.expected_revision = s.revision;
+    out.intent_count = 1;
+    return AYNI_OK;
+}
 // Completed action -> live capture -> analysis -> durable derived memory ->
 // confirmed capture close -> presentation. Common steps survive reader changes.
 ayni_status_t decide(void *, const ayni_task_snapshot_v1 *s, ayni_policy_output_v1 *out) {
+    if (same(s->goal_type_id, "composite.read_source")) {
+        char source[source_bytes]{};
+        uint32_t size = 0;
+        const auto status = read_source(*s, source, size);
+        return status == AYNI_OK ? complete(*s, *out) : status;
+    }
     if (same(s->goal_type_id, "composite.round")) {
         return oversized_round(*s, *out);
     }
@@ -217,12 +231,7 @@ ayni_status_t decide(void *, const ayni_task_snapshot_v1 *s, ayni_policy_output_
     if (presented.effect != AYNI_CALL_EFFECT_COMPLETE) {
         return AYNI_RESULT_UNKNOWN;
     }
-    auto &intent = out->intents[0];
-    intent = initialized<ayni_policy_intent_v1>();
-    intent.kind = AYNI_POLICY_REPORT_COMPLETION;
-    intent.expected_revision = s->revision;
-    out->intent_count = 1;
-    return AYNI_OK;
+    return complete(*s, *out);
 }
 ayni_status_t requirements(void *, ayni_bytes_v1, const ayni_goal_requirement_sink_v1 *sink) {
     for (const char *id : {"test.increment", "mock.observe", "mock.text", "notify.present"}) {
@@ -300,6 +309,15 @@ ayni_status_t register_workflow(ayni_kernel_t *kernel, uint32_t version, uint32_
     goal.export_requirements = round_requirements;
     goal.tool_count = 1;
     goal.tools = &notify;
+    status = ayni_register_goal_type(kernel, &goal);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    goal.goal_type_id = text("composite.read_source");
+    goal.validate = validate;
+    goal.export_requirements = nullptr;
+    goal.tool_count = 0;
+    goal.tools = nullptr;
     return ayni_register_goal_type(kernel, &goal);
 }
 } // namespace ayni::applications::experiment_fixtures::composite

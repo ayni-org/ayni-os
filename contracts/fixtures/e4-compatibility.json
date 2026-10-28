@@ -16,6 +16,9 @@
       "assertions": {
         "declared compatible reader preserves exact checkpoint": "1",
         "compatible upgrade preserves completed Task": "5"
+      },
+      "outcome": {
+        "task_state": "5"
       }
     },
     {
@@ -32,6 +35,9 @@
       "assertions": {
         "old capability version retained": "1",
         "v2 never executes v1 parameters": "0"
+      },
+      "outcome": {
+        "task_state": "3"
       }
     },
     {
@@ -47,6 +53,9 @@
       "assertions": {
         "resolver cannot execute new effect": "1",
         "resolver does not submit old parameters": "1"
+      },
+      "outcome": {
+        "query_conclusion": "1"
       }
     },
     {
@@ -61,6 +70,9 @@
       "assertions": {
         "old GoalType semantics never reset": "1",
         "new GoalType never replays old action": "0"
+      },
+      "outcome": {
+        "task_state": "3"
       }
     },
     {
@@ -75,6 +87,10 @@
       "assertions": {
         "new Scene version declared": "2",
         "new Scene cannot consume old owner approval": "0"
+      },
+      "outcome": {
+        "scene_consumable": "0",
+        "control_phase": "4"
       }
     },
     {
@@ -89,6 +105,9 @@
       "assertions": {
         "unsupported schema diagnostic": "6",
         "unreadable input never notifies": "0"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
       }
     },
     {
@@ -103,6 +122,9 @@
       "assertions": {
         "unsupported schema diagnostic": "6",
         "unreadable input never notifies": "0"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
       }
     },
     {
@@ -117,6 +139,9 @@
       "assertions": {
         "unsupported schema diagnostic": "6",
         "unreadable input never replays old effect": "1"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
       }
     },
     {
@@ -127,12 +152,15 @@
       },
       "reader": {
         "storage": "2",
-        "required_task_state": "current"
+        "required_task_state_max": "16"
       },
       "expected": "RESTRICTED; required unknown record retained",
       "assertions": {
         "unsupported schema diagnostic": "6",
         "unreadable input never notifies": "0"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
       }
     }
   ]
