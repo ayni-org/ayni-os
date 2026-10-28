@@ -132,6 +132,63 @@ TEST_F(CallTableTest, accepted_input_is_owned_and_step_identity_cannot_be_accept
     EXPECT_EQ(calls.size(), 1U);
 }
 
+// C-CALL-002: insertion owns intrinsic identity checks. Invalid identities
+// cannot consume the only slot or publish a caller's output index.
+TEST_F(CallTableTest, invalid_admission_identity_and_stamps_leave_the_slot_unclaimed) {
+    ayni::foundation::IdAllocator allocator;
+    allocator.start(boot + 1);
+    uint64_t future = 0;
+    ASSERT_TRUE(allocator.allocate(future));
+    const auto invalid = {
+        +[](CallIdentity &v) { v.call_id = 0; },
+        +[](CallIdentity &v) { v.operation_id = 0; },
+        +[](CallIdentity &v) { v.task_id = 0; },
+        +[](CallIdentity &v) { v.owner_instance_id = 0; },
+        +[](CallIdentity &v) { v.call_id = v.operation_id; },
+        +[](CallIdentity &v) { v.call_id = v.task_id; },
+        +[](CallIdentity &v) { v.operation_id = v.task_id; },
+        +[](CallIdentity &v) { v.step_key = {}; },
+        +[](CallIdentity &v) { v.binding_id = {}; },
+        +[](CallIdentity &v) { v.binding_version = 0; },
+        +[](CallIdentity &v) { v.capability_id = {}; },
+        +[](CallIdentity &v) { v.capability_version = 0; },
+        +[](CallIdentity &v) { v.provider_id = {}; },
+        +[](CallIdentity &v) { v.provider_version = 0; },
+        +[](CallIdentity &v) { v.endpoint = {}; },
+        +[](CallIdentity &v) { v.destination = id("unexpected"); },
+    };
+    const auto reject = [&](const CallIdentity &candidate, ActionStamp when) {
+        constexpr uint32_t unpublished = 99;
+        uint32_t output = unpublished;
+        EXPECT_EQ(calls.insert(candidate, contract,
+                               {domain.data(), static_cast<uint32_t>(domain.size())},
+                               {input_bytes.data(), input_size}, when, output),
+                  AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(output, unpublished);
+        EXPECT_EQ(calls.size(), 0U);
+        EXPECT_TRUE(calls.has_room());
+    };
+    for (const auto change : invalid) {
+        auto candidate = identity;
+        change(candidate);
+        reject(candidate, stamp(1));
+    }
+    for (auto member : {&CallIdentity::call_id, &CallIdentity::operation_id, &CallIdentity::task_id,
+                        &CallIdentity::owner_instance_id}) {
+        auto candidate = identity;
+        candidate.*member = future;
+        reject(candidate, stamp(1));
+    }
+    auto when = stamp(1);
+    when.transition.transition_id = 0;
+    reject(identity, when);
+    when = stamp(1);
+    when.transition.commit_seq = 0;
+    reject(identity, when);
+    insert();
+    EXPECT_EQ(calls.size(), 1U);
+}
+
 TEST_F(CallTableTest, both_durable_barriers_precede_the_only_dispatch_claim) {
     insert();
     EXPECT_FALSE(calls.claim_dispatch(index, boot, UINT64_MAX));

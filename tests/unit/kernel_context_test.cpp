@@ -275,6 +275,18 @@ TEST_F(KernelContext, changed_anchor_bits_cannot_substitute_another_management_r
     control.create_and_start();
     control.recover();
     ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    const auto reject_batch = [&](const JournalBatch &changed, std::size_t batch_index) {
+        auto candidate = log;
+        candidate[batch_index] = write_stored_batch(changed);
+        Node recovered;
+        configure_recovery(recovered);
+        recovered.sim().log() = std::move(candidate);
+        recovered.create_and_start();
+        recovered.recover();
+        EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+        EXPECT_EQ(ayni::kernel::KernelTestProbe::work(recovered.kernel()).contexts.size(), 0U);
+    };
     uint32_t selected = 0;
     for (std::size_t batch_index = 0; batch_index < log.size(); ++batch_index) {
         const auto batch = read_stored_batch(log[batch_index]);
@@ -285,23 +297,30 @@ TEST_F(KernelContext, changed_anchor_bits_cannot_substitute_another_management_r
             }
             ++selected;
             ASSERT_FALSE(record.body.empty());
+            // C-STORE-009: partners occur exactly once in owner order, and
+            // a completed management batch cannot accept unrelated trailing facts.
+            for (std::size_t partner = 0; partner < batch.records.size(); ++partner) {
+                SCOPED_TRACE(::testing::Message() << batch_index << "/partner/" << partner);
+                auto omitted = batch;
+                omitted.records.erase(omitted.records.begin() +
+                                      static_cast<std::ptrdiff_t>(partner));
+                reject_batch(omitted, batch_index);
+                auto duplicated = batch;
+                const auto copy = duplicated.records[partner];
+                duplicated.records.insert(
+                    duplicated.records.begin() + static_cast<std::ptrdiff_t>(partner), copy);
+                reject_batch(duplicated, batch_index);
+            }
+            auto reversed = batch;
+            ASSERT_GT(reversed.records.size(), 1U);
+            std::reverse(reversed.records.begin(), reversed.records.end());
+            reject_batch(reversed, batch_index);
             for (std::size_t at = 0; at < record.body.size(); ++at) {
                 for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
                     SCOPED_TRACE(::testing::Message() << batch_index << '/' << at << ':' << bit);
                     auto changed = batch;
                     changed.records[record_index].body[at] ^= static_cast<uint8_t>(1U << bit);
-                    auto candidate = log;
-                    candidate[batch_index] = write_stored_batch(changed);
-                    Node recovered;
-                    configure_recovery(recovered);
-                    recovered.sim().log() = std::move(candidate);
-                    recovered.create_and_start();
-                    recovered.recover();
-                    EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-                    EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
-                    EXPECT_EQ(
-                        ayni::kernel::KernelTestProbe::work(recovered.kernel()).contexts.size(),
-                        0U);
+                    reject_batch(changed, batch_index);
                 }
             }
         }

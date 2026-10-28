@@ -114,6 +114,86 @@ TEST(CallContract, invalid_declarations_and_unknown_formats_do_not_silently_defa
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
 }
 
+// C-CALL-001: enums, bounds and collection contracts are explicit. Refusal
+// leaves the previous canonical output intact, including its complete resource group.
+TEST(CallContract, invalid_enum_bounds_and_subscription_declarations_preserve_output) {
+    const auto sentinel = contract();
+    const auto changes = {
+        +[](CallContract &v) { v.form = static_cast<CallForm>(0); },
+        +[](CallContract &v) { v.idempotency = static_cast<CallIdempotency>(0); },
+        +[](CallContract &v) { v.query = static_cast<QueryAuthority>(0); },
+        +[](CallContract &v) { v.cancel = static_cast<CancelMode>(0); },
+        +[](CallContract &v) { v.input_text_limit = call_text_limit_max + 1; },
+        +[](CallContract &v) { v.resource_count = resource_group_max + 1; },
+        +[](CallContract &v) {
+            v.resource_count = 1;
+            v.resources[0] = {{}, 1};
+        },
+        +[](CallContract &v) { v.form = CallForm::subscription; },
+    };
+    for (const auto change : changes) {
+        auto candidate = contract();
+        change(candidate);
+        auto output = sentinel;
+        EXPECT_EQ(normalize_call_contract(candidate, output), AYNI_INVALID_ARGUMENT);
+        EXPECT_TRUE(same_call_contract(output, sentinel));
+    }
+    auto subscription = contract();
+    subscription.form = CallForm::subscription;
+    subscription.category = CallClass::tool;
+    subscription.effects = 0;
+    subscription.cancel = CancelMode::confirmed;
+    subscription.subscription = SubscriptionContract{id("camera"), 1, 500};
+    CallContract normalized{};
+    ASSERT_EQ(normalize_call_contract(subscription, normalized), AYNI_OK);
+    const auto invalid_collections = {
+        +[](CallContract &v) { v.form = CallForm::unary; },
+        +[](CallContract &v) { v.category = CallClass::model; },
+        +[](CallContract &v) { v.effects = call_effect_physical; },
+        +[](CallContract &v) { v.cancel = CancelMode::none; },
+        +[](CallContract &v) { v.subscription->source = {}; },
+        +[](CallContract &v) { v.subscription->source_version = 0; },
+        +[](CallContract &v) { v.subscription->lease_ms = 0; },
+    };
+    for (const auto change : invalid_collections) {
+        auto candidate = subscription;
+        change(candidate);
+        auto output = normalized;
+        EXPECT_EQ(normalize_call_contract(candidate, output), AYNI_INVALID_ARGUMENT);
+        EXPECT_TRUE(same_call_contract(output, normalized));
+    }
+}
+
+// C-BIND-001 / C-SUB-001: a Provider replacement must preserve every
+// collection source/lease and resource unit, even when all other fields agree.
+TEST(CallContract, exact_compatibility_includes_collection_and_resource_semantics) {
+    auto input = contract();
+    input.form = CallForm::subscription;
+    input.category = CallClass::tool;
+    input.effects = 0;
+    input.cancel = CancelMode::confirmed;
+    input.subscription = SubscriptionContract{id("camera"), 1, 500};
+    input.resource_count = 1;
+    input.resources[0] = {id("camera.slot"), 1};
+    CallContract original{};
+    ASSERT_EQ(normalize_call_contract(input, original), AYNI_OK);
+    const auto changes = {
+        +[](CallContract &v) { v.subscription->source = id("different.camera"); },
+        +[](CallContract &v) { ++v.subscription->source_version; },
+        +[](CallContract &v) { ++v.subscription->lease_ms; },
+        +[](CallContract &v) { v.resources[0].id = id("another.slot"); },
+        +[](CallContract &v) { ++v.resources[0].units; },
+    };
+    for (const auto change : changes) {
+        auto candidate = original;
+        change(candidate);
+        CallContract normalized{};
+        ASSERT_EQ(normalize_call_contract(candidate, normalized), AYNI_OK);
+        EXPECT_FALSE(same_call_contract(original, normalized));
+        EXPECT_FALSE(same_call_contract(normalized, original));
+    }
+}
+
 // ADR-0054: only a model proposes tool calls; a tool, an actuator or a
 // subscription never declares the format.
 TEST(CallContract, tool_call_results_belong_to_nonphysical_unary_or_action_models) {

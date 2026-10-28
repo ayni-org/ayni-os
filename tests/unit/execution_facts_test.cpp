@@ -301,4 +301,80 @@ TEST(ExecutionRegistry, binding_equality_includes_all_versions_limits_and_parame
         EXPECT_FALSE(ayni::catalog::same_execution_binding(candidate, original));
     }
 }
+
+// C-PERMIT-002/012: syntax admission owns all copied binding fields; final
+// catalog cross-reference resolution is a separate configuring-close operation.
+TEST(ExecutionRegistry, invalid_binding_syntax_preserves_capacity_and_canonical_field_order) {
+    using ayni::catalog::ExecutionRegistry;
+    const std::array<ayni_execution_field_v1, 2> fields{{
+        {{"yaw", 3}, {"degree", 6}, 1, 2},
+        {{"angle", 5}, {"degree", 6}, 1, 2},
+    }};
+    const ayni_execution_binding_v1 valid{sizeof(valid),
+                                          1,
+                                          {"motion", 6},
+                                          {"local", 5},
+                                          1,
+                                          1,
+                                          {"look", 4},
+                                          AYNI_FORM_PROCEDURE,
+                                          100000,
+                                          1000,
+                                          static_cast<uint32_t>(fields.size()),
+                                          fields.data()};
+    const auto changes = {
+        +[](ayni_execution_binding_v1 &v) { v.struct_size = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.binding_id = {}; },
+        +[](ayni_execution_binding_v1 &v) { v.executor_id = {}; },
+        +[](ayni_execution_binding_v1 &v) { v.scene_id = {}; },
+        +[](ayni_execution_binding_v1 &v) { v.fields = nullptr; },
+        +[](ayni_execution_binding_v1 &v) { v.field_count = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.field_count = AYNI_CONTROL_FIELD_COUNT_MAX + 1; },
+        +[](ayni_execution_binding_v1 &v) { v.binding_version = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.executor_version = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.scene_version = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.form = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.lease_us = 0; },
+        +[](ayni_execution_binding_v1 &v) { v.max_command_age_us = 0; },
+    };
+    std::vector<uint64_t> arena(ExecutionRegistry::storage_size(0, 1) / sizeof(uint64_t) + 1);
+    ExecutionRegistry registry(arena.data(), 0, 1);
+    for (const auto change : changes) {
+        auto candidate = valid;
+        change(candidate);
+        EXPECT_EQ(registry.add_binding(candidate), AYNI_INVALID_ARGUMENT);
+        uint32_t index = 99;
+        EXPECT_FALSE(registry.find_binding(valid.binding_id, valid.binding_version, index));
+        EXPECT_EQ(index, 99U);
+    }
+    auto future = valid;
+    ++future.struct_size;
+    EXPECT_EQ(registry.add_binding(future), AYNI_UNSUPPORTED_VERSION);
+    const auto invalid_fields = {
+        +[](ayni_execution_field_v1 &v) { v.field_id = {}; },
+        +[](ayni_execution_field_v1 &v) { v.unit = {}; },
+        +[](ayni_execution_field_v1 &v) { v.minimum_field_id = 0; },
+        +[](ayni_execution_field_v1 &v) { v.maximum_field_id = 0; },
+        +[](ayni_execution_field_v1 &v) { v.field_id = {"angle", 5}; },
+    };
+    for (const auto change : invalid_fields) {
+        auto mutable_fields = fields;
+        change(mutable_fields[0]);
+        auto candidate = valid;
+        candidate.fields = mutable_fields.data();
+        EXPECT_EQ(registry.add_binding(candidate), AYNI_INVALID_ARGUMENT);
+    }
+    ASSERT_EQ(registry.add_binding(valid), AYNI_OK);
+    uint32_t index = 99;
+    ASSERT_TRUE(registry.find_binding(valid.binding_id, valid.binding_version, index));
+    const auto &saved = registry.binding(index);
+    EXPECT_TRUE(saved.fields[0].id.equals({"angle", 5}));
+    EXPECT_TRUE(saved.fields[1].id.equals({"yaw", 3}));
+    EXPECT_EQ(registry.add_binding(valid), AYNI_INVALID_ARGUMENT);
+    auto another = valid;
+    ++another.binding_version;
+    EXPECT_EQ(registry.add_binding(another), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_FALSE(registry.find_binding(valid.binding_id, another.binding_version, index));
+    EXPECT_FALSE(registry.find_binding({"absent", 6}, valid.binding_version, index));
+}
 } // namespace
