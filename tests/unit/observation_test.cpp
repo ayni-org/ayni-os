@@ -29,6 +29,169 @@ void register_source(Node &node, ayni_observation_source_v1 description = source
     });
 }
 
+// ADR-0050/0062: ABI shape and static source type checks are atomic; a
+// refused descriptor cannot consume the one available observation slot.
+TEST(ObservationApi, invalid_source_shapes_and_semantics_leave_the_registration_slot_unused) {
+    Node node;
+    node.config().observation_source_capacity = 1;
+    node.create();
+    struct Case {
+        ayni_status_t expected;
+        void (*change)(ayni_observation_source_v1 &);
+    };
+    const Case cases[] = {
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.struct_size = 0; }},
+        {AYNI_UNSUPPORTED_VERSION, [](auto &s) { ++s.struct_size; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.source_id = {}; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.unit = {}; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.version = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.kind = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.origin = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.validity_max_us = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.validity_max_us = UINT64_MAX; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.unit = {"mrad", 4}; }},
+    };
+    auto description = source();
+    EXPECT_EQ(ayni_register_observation_source(nullptr, &description), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_register_observation_source(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
+    for (const auto &test : cases) {
+        description = source();
+        test.change(description);
+        EXPECT_EQ(ayni_register_observation_source(node.kernel(), &description), test.expected);
+    }
+    description = source();
+    EXPECT_EQ(ayni_register_observation_source(node.kernel(), &description), AYNI_OK);
+}
+
+// ADR-0062 / C-SUB-002: rejected Host samples cannot replace the current
+// observation. Use a fresh sequence so duplicate suppression cannot mask errors.
+TEST(ObservationApi, malformed_samples_preserve_the_last_accepted_identity_and_value) {
+    Node node;
+    register_source(node);
+    node.run();
+    auto current = observation(node);
+    ASSERT_EQ(ayni_publish_observation(node.kernel(), &current), AYNI_OK);
+    struct Case {
+        ayni_status_t expected;
+        void (*change)(ayni_observation_v1 &);
+    };
+    const Case cases[] = {
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.struct_size = 0; }},
+        {AYNI_UNSUPPORTED_VERSION, [](auto &s) { ++s.struct_size; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.reserved = 1; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.source_id = {}; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.source_version = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.generation = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.sequence = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.valid_for_us = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.valid_for_us = UINT64_MAX; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.quality = 0; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.quality = UINT32_MAX; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.value = -1; }},
+        {AYNI_INVALID_ARGUMENT, [](auto &s) { s.value = 2; }},
+        {AYNI_UNSUPPORTED_VERSION, [](auto &s) { ++s.source_version; }},
+        {AYNI_NOT_FOUND, [](auto &s) { s.source_id = {"absent", 6}; }},
+    };
+    EXPECT_EQ(ayni_publish_observation(nullptr, &current), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_publish_observation(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
+    for (const auto &test : cases) {
+        auto candidate = current;
+        ++candidate.sequence;
+        test.change(candidate);
+        EXPECT_EQ(ayni_publish_observation(node.kernel(), &candidate), test.expected);
+        const auto retained = info(node);
+        EXPECT_EQ(retained.reference.sequence, current.sequence);
+        EXPECT_EQ(retained.value, current.value);
+    }
+}
+
+// ADR-0062: null/short worker envelopes fail before retaining an ingress
+// item; malformed output buffers retain their caller-owned diagnostics.
+TEST(ObservationApi, malformed_worker_envelopes_and_queries_do_not_publish_partial_outputs) {
+    Node node;
+    register_source(node);
+    node.run();
+    ayni_observation_post_v1 post{};
+    post.struct_size = sizeof(post);
+    post.boot_epoch = node.info().boot_epoch;
+    post.sample = observation(node);
+    EXPECT_EQ(ayni_post_observation(nullptr, &post), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_post_observation(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
+    const auto original = post;
+    for (unsigned scenario = 0; scenario < 6; ++scenario) {
+        auto candidate = original;
+        ayni_media_ref_v1 malformed_media{};
+        if (scenario == 0) {
+            candidate.struct_size = 0;
+        }
+        if (scenario == 1) {
+            ++candidate.struct_size;
+        }
+        if (scenario == 2) {
+            candidate.reserved = 1;
+        }
+        if (scenario == 3) {
+            candidate.boot_epoch = 0;
+        }
+        if (scenario == 4) {
+            candidate.sample.reserved = 1;
+        }
+        if (scenario == 5) {
+            candidate.media = &malformed_media;
+        }
+        EXPECT_EQ(ayni_post_observation(node.kernel(), &candidate),
+                  scenario == 1 ? AYNI_UNSUPPORTED_VERSION : AYNI_INVALID_ARGUMENT);
+    }
+    ayni_observation_gap_v1 gap{};
+    gap.struct_size = sizeof(gap);
+    gap.boot_epoch = node.info().boot_epoch;
+    gap.source_id = source_id;
+    gap.source_version = 1;
+    gap.generation = 1;
+    EXPECT_EQ(ayni_report_observation_gap(nullptr, &gap), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_report_observation_gap(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
+    for (unsigned scenario = 0; scenario < 6; ++scenario) {
+        auto candidate = gap;
+        if (scenario == 0) {
+            candidate.struct_size = 0;
+        }
+        if (scenario == 1) {
+            ++candidate.struct_size;
+        }
+        if (scenario == 2) {
+            candidate.boot_epoch = 0;
+        }
+        if (scenario == 3) {
+            candidate.generation = 0;
+        }
+        if (scenario == 4) {
+            candidate.source_version = 0;
+        }
+        if (scenario == 5) {
+            candidate.source_id = {};
+        }
+        EXPECT_EQ(ayni_report_observation_gap(node.kernel(), &candidate),
+                  scenario == 1 ? AYNI_UNSUPPORTED_VERSION : AYNI_INVALID_ARGUMENT);
+    }
+    ayni_observation_info_v1 out{};
+    out.struct_size = sizeof(out);
+    out.reference.sequence = 99;
+    EXPECT_EQ(ayni_get_observation(nullptr, source_id, &out), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_get_observation(node.kernel(), source_id, nullptr), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_get_observation(node.kernel(), {}, &out), AYNI_INVALID_ARGUMENT);
+    out.struct_size = 0;
+    EXPECT_EQ(ayni_get_observation(node.kernel(), source_id, &out), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(out.reference.sequence, 99U);
+    ayni_observation_ingress_info_v1 ingress{};
+    ingress.struct_size = sizeof(ingress);
+    EXPECT_EQ(ayni_get_observation_ingress(nullptr, &ingress), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_get_observation_ingress(node.kernel(), nullptr), AYNI_INVALID_ARGUMENT);
+    ingress.struct_size = 0;
+    EXPECT_EQ(ayni_get_observation_ingress(node.kernel(), &ingress), AYNI_INVALID_ARGUMENT);
+    ingress.struct_size = sizeof(ingress) + 1;
+    EXPECT_EQ(ayni_get_observation_ingress(node.kernel(), &ingress), AYNI_UNSUPPORTED_VERSION);
+}
+
 TEST(ObservationApi, copied_source_and_explicit_capacity_precede_publication) {
     Node node;
     node.config().observation_source_capacity = 1;

@@ -4,6 +4,7 @@
 #include "authority/principal/owner_binding_records.h"
 #include "durability/batch/batch_codec.h"
 #include "foundation/little_endian.h"
+#include "journal_test_support.h"
 #include "kernel/runtime/boot/boot_sequence.h"
 #include "kernel/service/command/command_records.h"
 #include "kernel/service/persistence/work_snapshot.h"
@@ -27,57 +28,8 @@ using ayni::authority::GrantRecord;
 using ayni::hosts::sim::StoredBatch;
 using ayni::kernel::CommandMapping;
 
-struct Record {
-    RecordHeader header;
-    std::vector<uint8_t> body;
-};
-
-struct Batch {
-    BatchIdentity identity;
-    uint16_t schema;
-    std::vector<Record> records;
-};
-
-Batch decode(const StoredBatch &stored) {
-    BatchView view{};
-    EXPECT_FALSE(stored.torn);
-    EXPECT_EQ(read_batch(stored.bytes.data(), stored.bytes.size(), view), BatchCheck::ok);
-    Batch result{view.identity, view.schema, {}};
-    RecordReader reader(view);
-    RecordHeader header{};
-    const uint8_t *body = nullptr;
-    for (;;) {
-        const auto next = reader.next(header, body);
-        if (next == RecordReader::Next::end) {
-            break;
-        }
-        EXPECT_EQ(next, RecordReader::Next::record);
-        if (next != RecordReader::Next::record) {
-            break;
-        }
-        result.records.push_back({header, {body, body + header.length}});
-    }
-    return result;
-}
-
-StoredBatch encode(const Batch &batch) {
-    std::size_t body_size = 0;
-    for (const auto &record : batch.records) {
-        body_size += record.body.size();
-    }
-    StoredBatch stored{};
-    stored.commit_seq = batch.identity.commit_seq;
-    stored.bytes.resize(batch_size(body_size, batch.records.size()));
-    BatchWriter writer(stored.bytes.data(), stored.bytes.size(), batch.identity, batch.schema);
-    for (const auto &record : batch.records) {
-        EXPECT_EQ(record.header.length, record.body.size());
-        EXPECT_TRUE(writer.add_record(record.header, record.body.data()));
-    }
-    EXPECT_EQ(writer.finish(), stored.bytes.size());
-    BatchView checked{};
-    EXPECT_EQ(read_batch(stored.bytes.data(), stored.bytes.size(), checked), BatchCheck::ok);
-    return stored;
-}
+using Record = JournalRecord;
+using Batch = JournalBatch;
 
 class ReplayNode {
   public:
@@ -221,9 +173,9 @@ template <typename Edit>
 std::vector<StoredBatch> edited_log(const std::vector<StoredBatch> &original, Edit edit) {
     std::vector<StoredBatch> result;
     for (const auto &stored : original) {
-        auto batch = decode(stored);
+        auto batch = read_stored_batch(stored);
         edit(batch);
-        result.push_back(encode(batch));
+        result.push_back(write_stored_batch(batch));
     }
     return result;
 }
@@ -316,7 +268,7 @@ TEST(GrantReplay, neither_a_create_nor_an_exact_mapping_may_replay_without_its_p
 // C-STORE-015 / ADR-0030 decision 8: recovery checks complete authority facts and pairings.
 TEST(GrantReplay, pairing_cannot_cross_a_committed_batch_boundary) {
     auto log = complete_log();
-    auto source = decode(log.back());
+    auto source = read_stored_batch(log.back());
     Batch later{{source.identity.writer_epoch, source.identity.commit_seq + 1U,
                  source.identity.transition_id + 1U},
                 source.schema,
@@ -333,8 +285,8 @@ TEST(GrantReplay, pairing_cannot_cross_a_committed_batch_boundary) {
                                                    ayni::kernel::command_record_type;
                                         }),
                          source.records.end());
-    log.back() = encode(source);
-    log.push_back(encode(later));
+    log.back() = write_stored_batch(source);
+    log.push_back(write_stored_batch(later));
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
@@ -350,14 +302,14 @@ TEST(GrantReplay, one_committed_batch_cannot_contain_two_complete_root_create_ma
     source.store(second.result.commit_seq);
     auto log = source.node.sim().log();
     ASSERT_GE(log.size(), 2U);
-    auto combined = decode(log[log.size() - 2U]);
-    const auto later = decode(log.back());
+    auto combined = read_stored_batch(log[log.size() - 2U]);
+    const auto later = read_stored_batch(log.back());
     ASSERT_EQ(combined.records.size(), 2U);
     ASSERT_EQ(later.records.size(), 2U);
     // Both roots are independently legal and have no parent-stamp ordering
     // to reject this fault; only transition/command cardinality distinguishes it.
     combined.records.insert(combined.records.end(), later.records.begin(), later.records.end());
-    log[log.size() - 2U] = encode(combined);
+    log[log.size() - 2U] = write_stored_batch(combined);
     log.pop_back();
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
@@ -374,14 +326,14 @@ TEST(GrantReplay, an_ordinary_mapping_before_an_auth_pair_cannot_share_its_trans
     source.store(paused.result.commit_seq);
     auto log = source.node.sim().log();
     ASSERT_GE(log.size(), 2U);
-    const auto authority = decode(log[log.size() - 2U]);
-    auto combined = decode(log.back());
+    const auto authority = read_stored_batch(log[log.size() - 2U]);
+    auto combined = read_stored_batch(log.back());
     combined.identity = authority.identity;
     // A PAUSED subject can receive a Grant. Its lifecycle therefore does not
     // hide the illegal second command in this otherwise valid same-stamp batch.
     combined.records.insert(combined.records.end(), authority.records.begin(),
                             authority.records.end());
-    log[log.size() - 2U] = encode(combined);
+    log[log.size() - 2U] = write_stored_batch(combined);
     log.pop_back();
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
@@ -394,7 +346,7 @@ TEST(GrantReplay, two_ordinary_mappings_cannot_claim_one_transition_either) {
     ASSERT_EQ(paused.status, AYNI_OK);
     source.store(paused.result.commit_seq);
     auto log = source.node.sim().log();
-    auto combined = decode(log.back());
+    auto combined = read_stored_batch(log.back());
     const auto found =
         std::find_if(combined.records.begin(), combined.records.end(), [](const Record &record) {
             return record.header.type == ayni::kernel::command_record_type;
@@ -408,7 +360,7 @@ TEST(GrantReplay, two_ordinary_mappings_cannot_claim_one_transition_either) {
     mapping.command_id = 2;
     ayni::kernel::write_command_record(mapping, floor, duplicate.body.data());
     combined.records.push_back(duplicate);
-    log.back() = encode(combined);
+    log.back() = write_stored_batch(combined);
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
@@ -1644,7 +1596,7 @@ TEST(GrantRevokeReplay, a_later_boot_record_cannot_legitimize_an_earlier_future_
         }
     });
     ASSERT_TRUE(changed);
-    const auto last = decode(log.back());
+    const auto last = read_stored_batch(log.back());
     Batch later{{last.identity.writer_epoch, last.identity.commit_seq + 1U,
                  last.identity.transition_id + 1U},
                 last.schema,
@@ -1653,7 +1605,7 @@ TEST(GrantRevokeReplay, a_later_boot_record_cannot_legitimize_an_earlier_future_
                 std::vector<uint8_t>(8)};
     ayni::foundation::store_le64(boot.body.data(), 2);
     later.records.push_back(boot);
-    log.push_back(encode(later));
+    log.push_back(write_stored_batch(later));
     expect_restricted(log, AYNI_RESTRICTION_LOG_CORRUPT);
 }
 
@@ -1868,11 +1820,12 @@ TEST(GrantRevokeReplay,
         return record;
     };
     const auto append = [](std::vector<StoredBatch> &log, const std::vector<Record> &records) {
-        const auto previous = decode(log.back());
+        const auto previous = read_stored_batch(log.back());
         Batch next{previous.identity, previous.schema, records};
         ++next.identity.commit_seq;
         ++next.identity.transition_id;
-        log.push_back(encode(next)); // Every synthetic history retains a valid batch CRC.
+        log.push_back(
+            write_stored_batch(next)); // Every synthetic history retains a valid batch CRC.
     };
     auto prefix = source.node.sim().log();
     append(prefix, revoke_pair(a, 4));
@@ -1942,7 +1895,7 @@ std::vector<DomainRecord> domain_records(const std::vector<StoredBatch> &log) {
     std::vector<DomainRecord> result;
     uint64_t boot_epoch = 0;
     for (const auto &stored : log) {
-        const auto batch = decode(stored);
+        const auto batch = read_stored_batch(stored);
         for (const auto &record : batch.records) {
             if (record.header.type == ayni::kernel::boot_epoch_record_type) {
                 boot_epoch = ayni::foundation::load_le64(record.body.data());
@@ -2086,4 +2039,66 @@ TEST(GrantReplay, discarding_an_unmatched_create_allows_a_clean_replay_from_the_
     EXPECT_TRUE(replay.consistent(ayni::kernel::WorkReplay::unbounded));
 }
 
+// C-STORE-015 / ADR-0030: the retained canonical CREATE request proves the
+// entire granted scope. CRC-valid changes cannot broaden or narrow that result.
+TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_create_receipt) {
+    ReplayNode source;
+    source.run();
+    const auto created = source.create(1);
+    ASSERT_EQ(created.status, AYNI_OK);
+    source.store(created.result.commit_seq);
+    const auto snapshot = snapshot_of(source);
+    ASSERT_EQ(import_snapshot(snapshot), BatchCheck::ok);
+    constexpr unsigned bits_per_byte = 8;
+    for (std::size_t row = 0; row < snapshot.records.size(); ++row) {
+        const auto &record = snapshot.records[row];
+        if (record.header.type != ayni::authority::grant_record_type) {
+            continue;
+        }
+        ayni::authority::GrantSnapshotRecord decoded{};
+        ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(
+            record.body.data(), record.header.length, decoded, record.header.version));
+        const auto start = static_cast<std::size_t>(decoded.create.scope.data - record.body.data());
+        for (std::size_t at = start; at < start + decoded.create.scope.size; ++at) {
+            for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                SCOPED_TRACE(::testing::Message() << at << ':' << bit);
+                auto candidate = snapshot;
+                candidate.records[row].body[at] ^= static_cast<uint8_t>(1U << bit);
+                EXPECT_EQ(import_snapshot(candidate), BatchCheck::corrupt);
+            }
+        }
+    }
+    const auto log = source.node.sim().log();
+    ReplayNode control;
+    control.node.sim().log() = log;
+    control.node.create_and_start();
+    control.node.recover();
+    ASSERT_EQ(control.node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    uint32_t changed_records = 0;
+    for (std::size_t item = 0; item < log.size(); ++item) {
+        const auto batch = read_stored_batch(log[item]);
+        for (std::size_t row = 0; row < batch.records.size(); ++row) {
+            const auto &record = batch.records[row];
+            if (record.header.type != ayni::authority::grant_record_type) {
+                continue;
+            }
+            ++changed_records;
+            GrantRecord decoded{};
+            ASSERT_TRUE(ayni::authority::read_grant_record(record.body.data(), record.header.length,
+                                                           decoded, record.header.version));
+            const auto start = static_cast<std::size_t>(decoded.scope.data - record.body.data());
+            for (std::size_t at = start; at < start + decoded.scope.size; ++at) {
+                for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+                    SCOPED_TRACE(::testing::Message() << at << ':' << bit);
+                    auto changed = batch;
+                    changed.records[row].body[at] ^= static_cast<uint8_t>(1U << bit);
+                    auto candidate = log;
+                    candidate[item] = write_stored_batch(changed);
+                    expect_restricted(candidate, AYNI_RESTRICTION_LOG_CORRUPT);
+                }
+            }
+        }
+    }
+    EXPECT_EQ(changed_records, 1U);
+}
 } // namespace

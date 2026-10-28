@@ -45,6 +45,104 @@ class ActionRecordTest : public ::testing::Test {
     }
 };
 
+// C-CALL-008/009/010: outcome knowledge requires explicit evidence, not
+// merely a delivery status. The contract's finite legal combinations are an
+// independent table, including failures that retain partial/unknown effects.
+TEST_F(ActionRecordTest, persisted_phase_effect_and_evidence_follow_the_contract_matrix) {
+    struct Shape {
+        ActionPhase phase;
+        ActionEffect effect;
+        ActionEvidence evidence;
+    };
+    constexpr Shape legal[] = {
+        {ActionPhase::prepared, ActionEffect::none, ActionEvidence::none},
+        {ActionPhase::dispatching, ActionEffect::unknown, ActionEvidence::none},
+        {ActionPhase::in_progress, ActionEffect::unknown, ActionEvidence::none},
+        {ActionPhase::result_unknown, ActionEffect::unknown, ActionEvidence::none},
+        {ActionPhase::completed, ActionEffect::complete, ActionEvidence::provider_result},
+        {ActionPhase::completed, ActionEffect::complete, ActionEvidence::authoritative_result},
+        {ActionPhase::cancelled, ActionEffect::none, ActionEvidence::local_non_delivery},
+        {ActionPhase::cancelled, ActionEffect::none, ActionEvidence::provider_result},
+        {ActionPhase::cancelled, ActionEffect::partial, ActionEvidence::provider_result},
+        {ActionPhase::cancelled, ActionEffect::complete, ActionEvidence::provider_result},
+        {ActionPhase::cancelled, ActionEffect::unknown, ActionEvidence::provider_result},
+        {ActionPhase::failed, ActionEffect::none, ActionEvidence::provider_result},
+        {ActionPhase::failed, ActionEffect::partial, ActionEvidence::provider_result},
+        {ActionPhase::failed, ActionEffect::complete, ActionEvidence::provider_result},
+        {ActionPhase::failed, ActionEffect::unknown, ActionEvidence::provider_result},
+        {ActionPhase::failed, ActionEffect::none, ActionEvidence::authoritative_result},
+        {ActionPhase::failed, ActionEffect::partial, ActionEvidence::authoritative_result},
+        {ActionPhase::failed, ActionEffect::complete, ActionEvidence::authoritative_result},
+        {ActionPhase::failed, ActionEffect::unknown, ActionEvidence::authoritative_result},
+        {ActionPhase::failed, ActionEffect::none, ActionEvidence::authoritative_not_accepted},
+    };
+    for (uint32_t phase = 0; phase <= static_cast<uint32_t>(ActionPhase::result_unknown) + 1;
+         ++phase) {
+        for (uint32_t effect = 0; effect <= static_cast<uint32_t>(ActionEffect::unknown) + 1;
+             ++effect) {
+            for (uint32_t evidence = 0;
+                 evidence <= static_cast<uint32_t>(ActionEvidence::authoritative_not_accepted) + 1;
+                 ++evidence) {
+                auto candidate = record->fact();
+                candidate.phase = static_cast<ActionPhase>(phase);
+                candidate.effect = static_cast<ActionEffect>(effect);
+                candidate.evidence = static_cast<ActionEvidence>(evidence);
+                candidate.latest =
+                    phase == static_cast<uint32_t>(ActionPhase::prepared) ? stamp(1) : stamp(2);
+                bool expected = false;
+                for (const auto &shape : legal) {
+                    expected = expected || (candidate.phase == shape.phase &&
+                                            candidate.effect == shape.effect &&
+                                            candidate.evidence == shape.evidence);
+                }
+                EXPECT_EQ(ActionRecord::valid(candidate), expected)
+                    << phase << ',' << effect << ',' << evidence;
+            }
+        }
+    }
+}
+
+// White-box, C-COMMIT-006/007: malformed identities and unordered stamps
+// cannot install a dispatch claim, even with a legal prepared/unknown shape.
+TEST_F(ActionRecordTest, invalid_saved_identity_and_stamp_fields_are_rejected) {
+    const auto changes = {
+        +[](ActionFact &f) { f.identity.operation_id = 0; },
+        +[](ActionFact &f) { f.identity.logical_call_id = 0; },
+        +[](ActionFact &f) { f.identity.operation_id = f.identity.logical_call_id; },
+        +[](ActionFact &f) { f.identity.binding_id = {}; },
+        +[](ActionFact &f) { f.identity.binding_version = 0; },
+        +[](ActionFact &f) { f.prepared.boot_epoch = 0; },
+        +[](ActionFact &f) { f.prepared.boot_epoch = UINT64_MAX; },
+        +[](ActionFact &f) { f.prepared.transition.transition_id = 0; },
+        +[](ActionFact &f) { f.prepared.transition.commit_seq = 0; },
+        +[](ActionFact &f) { f.latest.boot_epoch = 0; },
+        +[](ActionFact &f) { f.latest.boot_epoch = UINT64_MAX; },
+        +[](ActionFact &f) { f.latest.transition.transition_id = 0; },
+        +[](ActionFact &f) { f.latest.transition.commit_seq = 0; },
+        +[](ActionFact &f) { --f.latest.boot_epoch; },
+        +[](ActionFact &f) { ++f.latest.transition.commit_seq; },
+        +[](ActionFact &f) { ++f.latest.transition.transition_id; },
+    };
+    for (const auto change : changes) {
+        auto candidate = record->fact();
+        change(candidate);
+        EXPECT_FALSE(ActionRecord::valid(candidate));
+    }
+    dispatch();
+    for (const auto change : {+[](ActionFact &f) { --f.latest.boot_epoch; },
+                              +[](ActionFact &f) {
+                                  f.latest.transition.transition_id =
+                                      f.prepared.transition.transition_id;
+                              },
+                              +[](ActionFact &f) {
+                                  f.latest.transition.commit_seq = f.prepared.transition.commit_seq;
+                              }}) {
+        auto candidate = record->fact();
+        change(candidate);
+        EXPECT_FALSE(ActionRecord::valid(candidate));
+    }
+}
+
 TEST_F(ActionRecordTest, preparation_and_dispatch_have_separate_durable_barriers) {
     EXPECT_EQ(record->begin_dispatch(stamp(2), 0), AYNI_BUSY);
     EXPECT_EQ(record->fact().phase, ActionPhase::prepared);

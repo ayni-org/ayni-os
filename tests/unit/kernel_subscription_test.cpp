@@ -98,6 +98,36 @@ TEST_F(SubscriptionFixture, task_pause_invalidates_cache_and_resume_opens_a_new_
     EXPECT_EQ(subscription().phase, AYNI_SUBSCRIPTION_ACTIVE);
     EXPECT_EQ(observation().reference.generation, subscription().subscription.generation);
 }
+
+// C-SUB-002 / ADR-0063: known stop permits a fresh collection generation.
+// The journal must restore that generation without treating it as an old query.
+TEST_F(SubscriptionFixture, restart_replays_a_generation_previously_reopened_after_known_stop) {
+    const auto goal = create();
+    pump(20);
+    const auto first = subscription();
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal).status, AYNI_OK);
+    pump(8);
+    ASSERT_EQ(subscription().phase, AYNI_SUBSCRIPTION_STOPPED);
+    ASSERT_EQ(camera.pending(), 0U);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal).status, AYNI_OK);
+    pump(20);
+    const auto reopened = subscription();
+    ASSERT_EQ(reopened.phase, AYNI_SUBSCRIPTION_ACTIVE);
+    ASSERT_GT(reopened.subscription.generation, first.subscription.generation);
+    shutdown();
+    ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+    work.node().create_and_start();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    pump(25);
+    const auto recovered = subscription();
+    EXPECT_EQ(recovered.subscription.subscription_id, first.subscription.subscription_id);
+    EXPECT_EQ(recovered.task_id, first.task_id);
+    EXPECT_GT(recovered.subscription.generation, reopened.subscription.generation);
+    EXPECT_EQ(recovered.phase, AYNI_SUBSCRIPTION_ACTIVE);
+    EXPECT_EQ(work.goal(goal).last_task_id, first.task_id);
+}
 TEST_F(SubscriptionFixture, two_tasks_share_capacity_but_keep_samples_media_and_close_isolated) {
     create(agent_a);
     create(agent_b);

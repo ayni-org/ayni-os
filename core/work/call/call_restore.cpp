@@ -310,7 +310,10 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
             (before.outcome != 0U && !unresolved(index) && !reopening &&
              (!before.subscription ||
               !known_subscription_unchanged(this->record(index), record))) ||
-            !query_advances(before, after) || !subscriptions_advance(before, after) ||
+            // ADR-0063: confirmed subscription closure permits a new generation,
+            // not a query of the old operation. Its fresh state has no query.
+            (reopening ? after.query.has_value() : !query_advances(before, after)) ||
+            !subscriptions_advance(before, after) ||
             !execution_advances(before.execution, after.execution) ||
             (!reopening && after.progress_sequence < before.progress_sequence) ||
             (!reopening && before.attempt.request_id != 0U &&

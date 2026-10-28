@@ -1,4 +1,7 @@
 // ADR-0060: public management intents, durable memory facts and bounded private/profile queries.
+#include "journal_test_support.h"
+#include "knowledge/memory/memory_records.h"
+#include "snapshot_test_support.h"
 #include "work_node.h"
 #include <algorithm>
 #include <ayni/memory.h>
@@ -72,6 +75,166 @@ class KernelMemory : public testing::Test {
         return std::string(buffer.data(), bytes);
     }
 };
+
+// White-box, C-STORE-007/009 / ADR-0060: the snapshot adapter must reject invalid
+// memory facts and missing namespace owners before restored content is exposed.
+TEST_F(KernelMemory, snapshot_memory_rejects_stamp_namespace_semantics_and_duplicate_facts) {
+    const auto saved = save(1, "private");
+    ASSERT_EQ(saved.status, AYNI_OK);
+    durable(saved.result.commit_seq);
+    const auto original = snapshot_model(work.node());
+    ASSERT_EQ(restore_model(original), ayni::durability::BatchCheck::ok);
+    std::size_t target = original.records.size();
+    for (std::size_t at = 0; at < original.records.size(); ++at) {
+        if (original.records[at].header.type == ayni::knowledge::memory_record_type) {
+            target = at;
+        }
+    }
+    ASSERT_LT(target, original.records.size());
+    for (unsigned scenario = 0; scenario < 14; ++scenario) {
+        SCOPED_TRACE(scenario);
+        auto candidate = original;
+        auto &row = candidate.records[target];
+        ayni::knowledge::DecodedMemory decoded{};
+        ASSERT_TRUE(
+            ayni::knowledge::read_memory_record(row.body.data(), row.header.length, decoded));
+        auto &fact = decoded.record;
+        if (scenario == 0) {
+            fact.stamp.commit_seq = 0;
+        } else if (scenario == 1) {
+            fact.stamp.transition_id = 0;
+        } else if (scenario == 2) {
+            fact.stamp.commit_seq = candidate.metadata.covers_commit_seq + 1;
+        } else if (scenario == 3) {
+            fact.stamp.transition_id = candidate.metadata.max_transition_id + 1;
+        } else if (scenario == 4) {
+            fact.stamp =
+                ayni::kernel::KernelTestProbe::work(work.kernel()).principals.binding()->stamp;
+        } else if (scenario == 5 || scenario == 6) {
+            ayni::foundation::IdAllocator allocator;
+            allocator.start(candidate.metadata.boot_epoch + 1);
+            uint64_t absent = 0;
+            ASSERT_TRUE(allocator.allocate(absent));
+            (scenario == 5 ? fact.id : fact.namespace_id) = absent;
+        } else if (scenario == 7) {
+            fact.revision = 0;
+        } else if (scenario == 8) {
+            fact.state = static_cast<ayni::knowledge::MemoryState>(0);
+        } else if (scenario == 9) {
+            fact.source = static_cast<ayni::knowledge::MemorySource>(0);
+        } else if (scenario == 10) {
+            fact.confirmed = false;
+        } else if (scenario == 11) {
+            fact.profile_field = ayni::knowledge::ProfileField::name;
+        } else if (scenario == 12) {
+            candidate.records.insert(
+                candidate.records.begin() + static_cast<std::ptrdiff_t>(target), row);
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+            continue;
+        } else {
+            row.header.length = 1;
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+            continue;
+        }
+        std::vector<uint8_t> bytes(ayni::knowledge::memory_record_size(fact));
+        ayni::knowledge::write_memory_record(fact, decoded.body, bytes.data());
+        row.header.length = static_cast<uint32_t>(bytes.size());
+        row.body = std::move(bytes);
+        EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+    }
+}
+
+// White-box, C-STORE-007/009: a smaller destination is a capacity error, never a
+// corrupt-data diagnosis or permission to evict an accepted private fact.
+TEST_F(KernelMemory, snapshot_memory_exhaustion_is_classified_as_no_room) {
+    ASSERT_EQ(save(1, "first").status, AYNI_OK);
+    const auto second = save(2, "second");
+    ASSERT_EQ(second.status, AYNI_OK);
+    durable(second.result.commit_seq);
+    const auto snapshot = snapshot_model(work.node());
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    Node smaller;
+    smaller.config() = snapshot.config;
+    smaller.config().memory_capacity = 1;
+    EXPECT_EQ(restore_model(snapshot, smaller), ayni::durability::BatchCheck::no_room);
+}
+
+// White-box, C-MEM-001 / C-STORE-007/009: a current SAVE's exact receipt
+// proves every value byte. Changing one value bit without changing that owner
+// command must reject recovery, even when batch framing and CRC remain valid.
+TEST_F(KernelMemory,
+       every_changed_current_memory_value_bit_disagrees_with_its_exact_owner_receipt) {
+    const auto saved = save(1, "private");
+    ASSERT_EQ(saved.status, AYNI_OK);
+    durable(saved.result.commit_seq);
+    const auto snapshot = snapshot_model(work.node());
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    std::size_t row_index = snapshot.records.size();
+    for (std::size_t at = 0; at < snapshot.records.size(); ++at) {
+        if (snapshot.records[at].header.type == ayni::knowledge::memory_record_type) {
+            row_index = at;
+        }
+    }
+    ASSERT_LT(row_index, snapshot.records.size());
+    const auto &row = snapshot.records[row_index];
+    constexpr unsigned bits_per_byte = 8;
+    for (std::size_t at = ayni::knowledge::memory_record_header_bytes; at < row.body.size(); ++at) {
+        for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+            SCOPED_TRACE(::testing::Message() << at << ':' << bit);
+            auto candidate = snapshot;
+            candidate.records[row_index].body[at] ^= static_cast<uint8_t>(1U << bit);
+            EXPECT_EQ(restore_model(candidate), ayni::durability::BatchCheck::corrupt);
+        }
+    }
+    const auto log = work.node().sim().log();
+    const auto configure_recovery = [&](Node &target) {
+        target.config() = snapshot.config;
+        target.on_create([](ayni_kernel_t *kernel) {
+            const auto owner = owner_desc();
+            ASSERT_EQ(ayni_register_principal(kernel, &owner), AYNI_OK);
+        });
+    };
+    Node control;
+    configure_recovery(control);
+    control.sim().log() = log;
+    control.create_and_start();
+    control.recover();
+    ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(ayni::kernel::KernelTestProbe::work(control.kernel()).memories.size(), 1U);
+    std::size_t batch_index = log.size();
+    JournalBatch batch{};
+    std::size_t record_index = 0;
+    for (std::size_t at = 0; at < log.size(); ++at) {
+        auto decoded = read_stored_batch(log[at]);
+        for (std::size_t item = 0; item < decoded.records.size(); ++item) {
+            if (decoded.records[item].header.type == ayni::knowledge::memory_record_type) {
+                batch_index = at;
+                record_index = item;
+                batch = std::move(decoded);
+                break;
+            }
+        }
+    }
+    ASSERT_LT(batch_index, log.size());
+    const auto bytes = batch.records[record_index].body.size();
+    for (std::size_t at = ayni::knowledge::memory_record_header_bytes; at < bytes; ++at) {
+        for (unsigned bit = 0; bit < bits_per_byte; ++bit) {
+            SCOPED_TRACE(::testing::Message() << at << ':' << bit);
+            auto changed = batch;
+            changed.records[record_index].body[at] ^= static_cast<uint8_t>(1U << bit);
+            auto candidate = log;
+            candidate[batch_index] = write_stored_batch(changed);
+            Node recovered;
+            configure_recovery(recovered);
+            recovered.sim().log() = std::move(candidate);
+            recovered.create_and_start();
+            recovered.recover();
+            EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+            EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+            EXPECT_EQ(ayni::kernel::KernelTestProbe::work(recovered.kernel()).memories.size(), 0U);
+        }
+    }
+}
 TEST_F(KernelMemory, explicit_save_is_confirmed_and_body_waits_for_durable_receipt) {
     const auto saved = save(1, "偏好绿茶");
     ASSERT_EQ(saved.status, AYNI_OK);

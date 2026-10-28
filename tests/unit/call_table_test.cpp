@@ -560,7 +560,7 @@ TEST_F(CallTableTest, authoritative_query_after_erasure_keeps_outcome_without_re
 }
 
 namespace {
-// White-box, C-CALL-002/008 and C-STORE-019: decoded facts must pass the same
+// White-box, C-CALL-002/008 and C-STORE-007/009: decoded facts must pass the same
 // intrinsic validator before any row is installed. Each case breaks one rule
 // of a row produced through the real call lifecycle, with a valid control first.
 struct InvalidCallFact {
@@ -576,6 +576,13 @@ void expect_invalid_call_facts(const CallRecord &valid,
         test.change(candidate);
         EXPECT_FALSE(CallTable::valid_record(candidate));
     }
+}
+uint64_t first_id_in_boot(uint64_t epoch) {
+    ayni::foundation::IdAllocator allocator;
+    allocator.start(epoch);
+    uint64_t result = 0;
+    EXPECT_TRUE(allocator.allocate(result));
+    return result;
 }
 } // namespace
 
@@ -596,7 +603,8 @@ TEST_F(CallTableTest, restored_pending_facts_reject_invalid_identity_history_and
             {"empty provider", [](auto &r) { r.identity.provider_id = {}; }},
             {"zero provider version", [](auto &r) { r.identity.provider_version = 0; }},
             {"empty endpoint", [](auto &r) { r.identity.endpoint = {}; }},
-            {"future call identity", [](auto &r) { r.identity.call_id += UINT64_C(1) << 32; }},
+            {"future call identity",
+             [](auto &r) { r.identity.call_id = first_id_in_boot(boot + 1); }},
             {"zero creation boot", [](auto &r) { r.state.created.boot_epoch = 0; }},
             {"zero creation sequence", [](auto &r) { r.state.created.transition.commit_seq = 0; }},
             {"zero creation transition",
@@ -747,4 +755,258 @@ TEST_F(CallTableTest, erased_record_cannot_regain_bodies_or_lose_its_explicit_er
             {"erased tool body tag", [](auto &r) { r.result_kind = CallResultKind::tool_calls; }},
             {"erased schema malformed", [](auto &r) { r.domain.size = 1; }},
         });
+}
+
+// White-box, C-CALL-008/010: a management query retains its own command and
+// attempt history. Corrupted evidence cannot turn UNKNOWN into a fresh retry.
+TEST_F(CallTableTest, restored_queries_require_separate_attempts_and_ordered_command_evidence) {
+    contract.query = ayni::catalog::QueryAuthority::authoritative;
+    dispatch();
+    ASSERT_EQ(
+        calls.finish(
+            index,
+            {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
+            stamp(4)),
+        AYNI_OK);
+    ASSERT_EQ(calls.request_query(index, stamp(5)), AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"zero query generation", [](auto &r) { r.state.query->generation = 0; }},
+            {"exhausted query generation", [](auto &r) { r.state.query->generation = UINT32_MAX; }},
+            {"query undeclared",
+             [](auto &r) { r.contract.query = ayni::catalog::QueryAuthority::none; }},
+            {"query boot before creation",
+             [](auto &r) { r.state.query->requested.boot_epoch = boot - 1; }},
+            {"query boot after latest",
+             [](auto &r) { r.state.query->requested.boot_epoch = boot + 1; }},
+            {"query sequence equals creation",
+             [](auto &r) {
+                 r.state.query->requested.transition.commit_seq =
+                     r.state.created.transition.commit_seq;
+             }},
+            {"query transition equals creation",
+             [](auto &r) {
+                 r.state.query->requested.transition.transition_id =
+                     r.state.created.transition.transition_id;
+             }},
+            {"query sequence after latest",
+             [](auto &r) { ++r.state.query->requested.transition.commit_seq; }},
+            {"query transition after latest",
+             [](auto &r) { ++r.state.query->requested.transition.transition_id; }},
+            {"requested phase has attempt", [](auto &r) { r.state.query->attempt = {boot, 6}; }},
+            {"requested phase has status", [](auto &r) { r.state.query->status = AYNI_NOT_READY; }},
+            {"requested phase has reason",
+             [](auto &r) { r.state.query->reason = AYNI_REASON_PROVIDER_RESULT; }},
+            {"requested phase has conclusion",
+             [](auto &r) { r.state.query->conclusion = AYNI_QUERY_RESULT_FOUND; }},
+            {"unknown query phase",
+             [](auto &r) { r.state.query->phase = static_cast<CallQuery::Phase>(0); }},
+        });
+    ASSERT_EQ(calls.begin_query(index, {boot, 6}, stamp(6)), AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"dispatch has no query attempt", [](auto &r) { r.state.query->attempt = {}; }},
+            {"query attempt has no boot", [](auto &r) { r.state.query->attempt.boot_epoch = 0; }},
+            {"query attempt has no request",
+             [](auto &r) { r.state.query->attempt.request_id = 0; }},
+            {"query attempt boot too old", [](auto &r) { --r.state.query->attempt.boot_epoch; }},
+            {"query attempt boot too new", [](auto &r) { ++r.state.query->attempt.boot_epoch; }},
+            {"query reuses execution attempt",
+             [](auto &r) { r.state.query->attempt = r.state.attempt; }},
+            {"dispatch query has error", [](auto &r) { r.state.query->status = AYNI_NOT_READY; }},
+            {"dispatch query has reason",
+             [](auto &r) { r.state.query->reason = AYNI_REASON_PROVIDER_RESULT; }},
+            {"dispatch query has conclusion",
+             [](auto &r) { r.state.query->conclusion = AYNI_QUERY_RESULT_FOUND; }},
+        });
+    ASSERT_EQ(calls.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, stamp(7)), AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"unknown query claims success", [](auto &r) { r.state.query->status = AYNI_OK; }},
+            {"found conclusion lacks execution result",
+             [](auto &r) {
+                 r.state.query->conclusion = AYNI_QUERY_RESULT_FOUND;
+                 r.state.query->status = AYNI_OK;
+             }},
+        });
+    ASSERT_EQ(calls.request_query(index, stamp(8)), AYNI_OK);
+    ASSERT_EQ(calls.begin_query(index, {boot, 7}, stamp(9)), AYNI_OK);
+    ASSERT_EQ(calls.reconcile(
+                  index, AYNI_QUERY_RESULT_FOUND,
+                  {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {}},
+                  stamp(10)),
+              AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"weak lookup cannot conclude",
+             [](auto &r) { r.contract.query = ayni::catalog::QueryAuthority::best_effort; }},
+            {"finished lookup lacks attempt", [](auto &r) { r.state.query->attempt = {}; }},
+            {"finished lookup has error", [](auto &r) { r.state.query->status = AYNI_NOT_READY; }},
+            {"finished lookup has reason",
+             [](auto &r) { r.state.query->reason = AYNI_REASON_PROVIDER_RESULT; }},
+            {"nonacceptance lacks tombstone proof",
+             [](auto &r) { r.state.query->conclusion = AYNI_QUERY_RESULT_NOT_ACCEPTED; }},
+            {"finished lookup unknown code",
+             [](auto &r) { r.state.query->conclusion = UINT32_MAX; }},
+        });
+}
+
+// White-box, ADR-0063: confirmed leases require the generation's dispatch
+// proof. Valid raw subscription facts alone cannot prove the Call lifecycle.
+TEST_F(CallTableTest, restored_subscription_rows_pair_contract_generation_and_dispatch_proof) {
+    contract.form = ayni::catalog::CallForm::subscription;
+    contract.cancel = ayni::catalog::CancelMode::confirmed;
+    contract.subscription = ayni::catalog::SubscriptionContract{id("sample"), 1, 30000};
+    dispatch();
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"missing lease facts", [](auto &r) { r.state.subscription.reset(); }},
+            {"future generation boot",
+             [](auto &r) { r.state.subscription->generation = first_id_in_boot(boot + 1); }},
+            {"generation predates operation", [](auto &r) { --r.state.subscription->generation; }},
+            {"starting lease has cancellation",
+             [](auto &r) { r.state.cancel_cause = CallCancelCause::user; }},
+            {"stopping lease lacks cancellation",
+             [](auto &r) { r.state.subscription->phase = SubscriptionPhase::stopping; }},
+            {"expired lease lacks cancellation",
+             [](auto &r) { r.state.subscription->phase = SubscriptionPhase::expired; }},
+            {"stopped lease has no terminal",
+             [](auto &r) { r.state.subscription->phase = SubscriptionPhase::stopped; }},
+        });
+    ASSERT_EQ(calls.confirm_subscription(index, 1, stamp(4)), AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"active lease has cancellation",
+             [](auto &r) { r.state.cancel_cause = CallCancelCause::user; }},
+            {"active lease lacks action",
+             [](auto &r) {
+                 r.action.reset();
+                 r.state.attempt = {};
+             }},
+            {"active lease lacks attempt", [](auto &r) { r.state.attempt = {}; }},
+            {"active lease has only prepared action",
+             [](auto &r) {
+                 r.action->phase = ActionPhase::prepared;
+                 r.action->latest = r.action->prepared;
+                 r.state.attempt = {};
+             }},
+            {"active lease has only dispatch barrier",
+             [](auto &r) {
+                 r.action->phase = ActionPhase::dispatching;
+                 r.action->latest = stamp(3);
+             }},
+        });
+}
+
+// White-box, C-STORE-007/009 / C-CALL-002: individually legal facts cannot
+// replace an accepted call's identity, normalized contract or canonical input.
+TEST_F(CallTableTest, replay_rejects_legal_facts_that_retarget_an_existing_call) {
+    insert();
+    const auto before = calls.record(index);
+    const InvalidCallFact changes[] = {
+        {"different operation", [](auto &r) { ++r.identity.operation_id; }},
+        {"different task", [](auto &r) { r.identity.task_id += 10; }},
+        {"different owner", [](auto &r) { r.identity.owner_instance_id += 10; }},
+        {"different step", [](auto &r) { r.identity.step_key = id("other"); }},
+        {"different binding", [](auto &r) { r.identity.binding_id = id("other"); }},
+        {"different binding version", [](auto &r) { ++r.identity.binding_version; }},
+        {"different capability", [](auto &r) { r.identity.capability_id = id("other"); }},
+        {"different capability version", [](auto &r) { ++r.identity.capability_version; }},
+        {"different provider", [](auto &r) { r.identity.provider_id = id("other"); }},
+        {"different provider version", [](auto &r) { ++r.identity.provider_version; }},
+        {"different endpoint", [](auto &r) { r.identity.endpoint = id("other"); }},
+        {"different timeout", [](auto &r) { ++r.contract.timeout_ms; }},
+        {"different query authority",
+         [](auto &r) { r.contract.query = ayni::catalog::QueryAuthority::authoritative; }},
+        {"different input limit", [](auto &r) { ++r.contract.input_text_limit; }},
+        {"different result limit", [](auto &r) { --r.contract.result_text_limit; }},
+        {"different original creation", [](auto &r) { r.state.created = stamp(2); }},
+    };
+    for (const auto &test : changes) {
+        SCOPED_TRACE(test.scenario);
+        auto candidate = before;
+        candidate.state.latest = stamp(3);
+        test.change(candidate);
+        ASSERT_TRUE(CallTable::valid_record(candidate));
+        EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(calls.identity(index).operation_id, identity.operation_id);
+        EXPECT_EQ(calls.state(index).latest.transition.commit_seq, 1U);
+        EXPECT_EQ(calls.size(), 1U);
+    }
+    auto candidate = before;
+    candidate.state.latest = stamp(3);
+    std::array<uint8_t, 64> replacement{};
+    uint32_t replacement_size = 0;
+    ASSERT_EQ(encode_call_input(before.domain,
+                                {{sizeof(ayni_scope_v1), 0, nullptr}, {"changed", 7}},
+                                contract.input_text_limit, replacement.data(), replacement.size(),
+                                replacement_size),
+              AYNI_OK);
+    candidate.input = {replacement.data(), replacement_size};
+    ASSERT_TRUE(CallTable::valid_record(candidate));
+    EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(calls.state(index).latest.transition.commit_seq, 1U);
+    EXPECT_EQ(calls.restore_validated(before), AYNI_INVALID_ARGUMENT);
+    // A valid strictly later row with the original identity/input is installable.
+    candidate = before;
+    candidate.state.latest = stamp(2);
+    ASSERT_TRUE(CallTable::valid_record(candidate));
+    EXPECT_EQ(calls.restore_validated(candidate), AYNI_OK);
+}
+
+// White-box, ADR-0063 / C-CALL-008: known subscription closure does not allow
+// rewriting the original result; only a separately allocated generation reopens.
+TEST_F(CallTableTest, replay_preserves_known_subscription_result_until_a_new_generation) {
+    contract.form = ayni::catalog::CallForm::subscription;
+    contract.cancel = ayni::catalog::CancelMode::confirmed;
+    contract.subscription = ayni::catalog::SubscriptionContract{id("sample"), 1, 30000};
+    dispatch();
+    ASSERT_EQ(calls.confirm_subscription(index, 1, stamp(4)), AYNI_OK);
+    ASSERT_EQ(calls.stop_subscription(index, CallCancelCause::shutdown, SubscriptionDesired::open,
+                                      stamp(5)),
+              AYNI_OK);
+    ASSERT_EQ(calls.finish(index,
+                           {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
+                           stamp(6)),
+              AYNI_OK);
+    const auto stopped = calls.record(index);
+    ASSERT_TRUE(CallTable::valid_record(stopped));
+    const InvalidCallFact changes[] = {
+        {"different progress", [](auto &r) { ++r.state.progress_sequence; }},
+        {"different result body", [](auto &r) { r.result = {"changed", 7}; }},
+        {"different lease phase",
+         [](auto &r) { r.state.subscription->phase = SubscriptionPhase::failed; }},
+        {"different lease acknowledgement",
+         [](auto &r) { ++r.state.subscription->lease_sequence; }},
+        {"different measured effect", [](auto &r) { r.action->effect = ActionEffect::partial; }},
+        {"different action terminal stamp", [](auto &r) { r.action->latest = stamp(7); }},
+    };
+    for (const auto &test : changes) {
+        SCOPED_TRACE(test.scenario);
+        auto candidate = stopped;
+        candidate.state.latest = stamp(7);
+        test.change(candidate);
+        ASSERT_TRUE(CallTable::valid_record(candidate));
+        EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(calls.state(index).latest.transition.commit_seq, 6U);
+        EXPECT_EQ(calls.state(index).subscription->lease_sequence, 1U);
+        EXPECT_EQ(calls.result(index).size, 0U);
+    }
+    std::vector<uint64_t> other_storage(storage.size());
+    CallTable restored(other_storage.data(), limits);
+    ASSERT_EQ(restored.restore_validated(stopped), AYNI_OK);
+    const auto generation = identity.operation_id + 1;
+    ASSERT_EQ(calls.restart_subscription(index, generation, stamp(7)), AYNI_OK);
+    const auto reopened = calls.record(index);
+    ASSERT_TRUE(CallTable::valid_record(reopened));
+    EXPECT_EQ(restored.restore_validated(reopened), AYNI_OK);
+    EXPECT_EQ(restored.state(index).subscription->generation, generation);
+    EXPECT_EQ(restored.state(index).outcome, 0U);
+    EXPECT_EQ(restored.state(index).attempt.request_id, 0U);
 }

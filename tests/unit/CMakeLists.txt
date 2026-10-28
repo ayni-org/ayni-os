@@ -8,9 +8,11 @@ add_executable(ayni_unit_tests
     observation_test.cpp
     observation_ingress_test.cpp
     kernel_subscription_test.cpp
+    subscription_facts_test.cpp
     mock_media_test.cpp
     scene_test.cpp
     managed_execution_test.cpp
+    execution_facts_test.cpp
     control_gate_test.cpp
     mock_provider_test.cpp
     mock_tools_test.cpp
