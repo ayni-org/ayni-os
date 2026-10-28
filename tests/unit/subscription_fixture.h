@@ -28,6 +28,9 @@ class SubscriptionFixture : public testing::Test {
     bool query_contract = false;
     std::vector<Opening> openings;
     std::vector<ayni_subscription_renew_v1> renewals;
+    // Optional inspection inside the real submit borrow; no request view escapes this callback.
+    std::function<void(const ayni_provider_request_v1 *, ayni_provider_completion_t *)>
+        inspect_camera_submit;
     std::vector<uint64_t> grants;
     uint64_t command = 0;
     bool finish_analysis = false;
@@ -144,6 +147,9 @@ class SubscriptionFixture : public testing::Test {
                             ayni_provider_completion_t *completion) {
             auto &self = *static_cast<SubscriptionFixture *>(context);
             self.openings.push_back({*request->subscription, request->attempt, completion});
+            if (self.inspect_camera_submit) {
+                self.inspect_camera_submit(request, completion);
+            }
             return self.manual_camera
                        ? AYNI_SUBMIT_ACCEPTED
                        : self.camera_ports.submit(self.camera_ports.ctx, request, completion);
