@@ -130,20 +130,20 @@ bool World::start() {
         !evidence.status("start", ayni_start(node.kernel())) || !recover()) {
         return false;
     }
-    if (lifecycle() == AYNI_LIFECYCLE_RUNNING) {
-        const ayni_session_desc_v1 session{sizeof(session), AYNI_CHANNEL_MANAGEMENT, owner_id, 1,
-                                           0};
-        // C-AUTH-010: RUNNING precedes durable first-owner binding. Only this
-        // documented readiness status permits another bounded local step.
-        return until("session readiness", [&] {
-            const auto status = ayni_open_session(node.kernel(), &session, &session_);
-            if (status == AYNI_NOT_READY) {
-                return false;
-            }
-            return evidence.status("open session", status);
-        });
+    const auto recovered = lifecycle();
+    if (!evidence.equal("recovery lifecycle", recovered, AYNI_LIFECYCLE_RUNNING)) {
+        return false;
     }
-    return true; // Recovery may deliberately end in diagnostic mode; the case must assert it.
+    const ayni_session_desc_v1 session{sizeof(session), AYNI_CHANNEL_MANAGEMENT, owner_id, 1, 0};
+    // C-AUTH-010: RUNNING precedes durable first-owner binding. Only this
+    // documented readiness status permits another bounded local step.
+    return until("session readiness", [&] {
+        const auto status = ayni_open_session(node.kernel(), &session, &session_);
+        if (status == AYNI_NOT_READY) {
+            return false;
+        }
+        return evidence.status("open session", status);
+    });
 }
 bool World::recover() {
     return until("recovery bound", [&] { return lifecycle() != AYNI_LIFECYCLE_RECOVERING; });
@@ -157,7 +157,7 @@ bool World::step() {
     if (storage == Storage::complete) {
         evidence.fact("storage", "completed", host->complete_storage());
     }
-    host->advance_us(tick_us);
+    node.advance_clock(tick_us);
     auto report = initialized<ayni_step_report_v1>();
     ++steps;
     evidence.context(steps, host->now_us());
@@ -272,7 +272,7 @@ ayni_status_t World::close() {
             // Cleanup remains possible after a failed case. It never clears the first
             // failure, and its status is reported independently by the runner.
             node.simulation()->complete_storage();
-            node.simulation()->advance_us(tick_us);
+            node.advance_clock(tick_us);
             auto report = initialized<ayni_step_report_v1>();
             const auto advanced = ayni_step(node.kernel(), step_items, step_time_us, &report);
             if (!evidence.status("shutdown step", advanced)) {

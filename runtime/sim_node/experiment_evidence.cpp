@@ -6,7 +6,7 @@ namespace {
 constexpr uint32_t evidence_limit = 20000;
 }
 void Evidence::failure(const std::string &message, ayni_status_t status) {
-    if (failure_.empty()) {
+    if (status_ == AYNI_OK) {
         failure_ = message;
         status_ = status;
     }

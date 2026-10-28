@@ -134,7 +134,9 @@ ayni_status_t ActionService::receipt(ayni_call_outcome_t outcome, ayni_call_effe
         result.outcome = outcome;
         result.effect = effect;
         result.attempt = slot.attempt;
-        result.status = outcome == AYNI_CALL_ABANDONED ? AYNI_RESULT_UNKNOWN : AYNI_OK;
+        result.status = outcome == AYNI_CALL_ABANDONED ? AYNI_RESULT_UNKNOWN
+                        : outcome == AYNI_CALL_FAILED  ? AYNI_NOT_READY
+                                                       : AYNI_OK;
         const auto status = ayni_provider_post(slot.completion, &result);
         if (status == AYNI_OK) {
             slot = {};
@@ -161,13 +163,20 @@ ayni_status_t ActionService::answer_query(uint32_t conclusion) {
         auto result = initialized<ayni_provider_result_v1>();
         result.attempt = slot.attempt;
         result.query_result = conclusion;
-        result.outcome = executed && conclusion == AYNI_QUERY_RESULT_FOUND ? AYNI_CALL_COMPLETED
-                                                                           : AYNI_CALL_ABANDONED;
-        result.effect = executed ? AYNI_CALL_EFFECT_COMPLETE : AYNI_CALL_EFFECT_UNKNOWN;
-        if (conclusion == AYNI_QUERY_RESULT_NOT_ACCEPTED) {
+        result.outcome = AYNI_CALL_ABANDONED;
+        result.effect = AYNI_CALL_EFFECT_UNKNOWN;
+        result.status = AYNI_RESULT_UNKNOWN;
+        if (conclusion == AYNI_QUERY_RESULT_FOUND) {
+            result.outcome = AYNI_CALL_COMPLETED;
+            result.effect = AYNI_CALL_EFFECT_COMPLETE;
+            result.status = AYNI_OK;
+        } else if (conclusion == AYNI_QUERY_RESULT_NOT_ACCEPTED) {
+            // C-LIFE-010: affirmative nonexecution is FAILED/NONE, not an
+            // ABANDONED result or permission to retry this operation automatically.
+            result.outcome = AYNI_CALL_FAILED;
             result.effect = AYNI_CALL_EFFECT_NONE;
+            result.status = AYNI_NOT_READY;
         }
-        result.status = result.outcome == AYNI_CALL_COMPLETED ? AYNI_OK : AYNI_RESULT_UNKNOWN;
         const auto status = ayni_provider_post(slot.completion, &result);
         if (status == AYNI_OK) {
             slot = {};

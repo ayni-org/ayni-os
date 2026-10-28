@@ -57,6 +57,11 @@ ayni_status_t SimNode::assemble(const ayni_config_v1 &config) {
 void SimNode::advance(uint64_t microseconds) {
     if (impl_) {
         impl_->host.complete_storage();
+        advance_clock(microseconds);
+    }
+}
+void SimNode::advance_clock(uint64_t microseconds) {
+    if (impl_) {
         impl_->host.advance_us(microseconds);
         impl_->public_now.store(impl_->host.now_us());
     }

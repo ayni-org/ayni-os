@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ayni::runtime::experiments {
@@ -84,8 +85,9 @@ class Evidence {
     }
     bool status(const char *name, ayni_status_t actual, ayni_status_t expected = AYNI_OK);
     bool equal(const char *name, uint64_t actual, uint64_t expected);
-    bool ok() const { return failure_.empty(); }
+    bool ok() const { return status_ == AYNI_OK; }
     const std::string &failure() const { return failure_; }
+    std::string take_failure() { return std::move(failure_); }
     ayni_status_t error_status() const { return status_; }
     const std::vector<std::string> &lines() const { return lines_; }
 

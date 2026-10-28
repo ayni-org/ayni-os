@@ -7,6 +7,14 @@
 namespace ayni::runtime::experiments {
 namespace {
 constexpr uint32_t storage_schema = 2; // contracts/storage/records.md, ADR-0038.
+void capture_failure(Result &result, Evidence &evidence) {
+    if (result.status == AYNI_OK) {
+        result.status = evidence.error_status();
+    }
+    if (result.detail.empty()) {
+        result.detail = evidence.take_failure(); // Moving preserves the cause without allocation.
+    }
+}
 bool write_artifacts(const Case &data, const std::filesystem::path &directory,
                      const Evidence &evidence, const ayni_config_v1 &config, const Result &result) {
     std::ofstream trace(directory / "trace.jsonl");
@@ -43,6 +51,7 @@ bool write_artifacts(const Case &data, const std::filesystem::path &directory,
 } // namespace
 Result run(const Case &data, const char *output_directory) {
     Result result;
+    Evidence evidence;
     try {
         const auto all = cases();
         bool registered = false;
@@ -58,26 +67,25 @@ Result run(const Case &data, const char *output_directory) {
             return {AYNI_INVALID_STATE, AYNI_OK, AYNI_INVALID_STATE,
                     "output must be a new directory"};
         }
-        Evidence evidence;
         World world(evidence);
+        result.close_status = AYNI_RESULT_UNKNOWN; // Only explicit close can confirm cleanup.
         if (world.start()) {
             data.execute(world);
         }
-        result.status = evidence.error_status();
-        result.detail = evidence.failure();
         result.close_status = world.close();
-        // Closing can discover a failure after the script itself succeeded.
-        if (result.status == AYNI_OK) {
-            result.status = evidence.error_status();
-            result.detail = evidence.failure();
-        }
+        capture_failure(result, evidence);
         if (!write_artifacts(data, directory, evidence, world.config, result)) {
             result.artifact_status = AYNI_INTERNAL;
         }
     } catch (const std::bad_alloc &) {
-        result.status = AYNI_CAPACITY_EXCEEDED;
-        result.detail = "fixture allocation";
+        capture_failure(result, evidence);
+        if (result.status == AYNI_OK) {
+            result.status = AYNI_CAPACITY_EXCEEDED;
+            result.detail = "allocation";
+        }
+        result.artifact_status = AYNI_CAPACITY_EXCEEDED;
     } catch (const std::filesystem::filesystem_error &) {
+        capture_failure(result, evidence);
         result.artifact_status = AYNI_INTERNAL;
     }
     return result;

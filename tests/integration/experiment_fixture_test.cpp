@@ -54,4 +54,37 @@ TEST(ExperimentEvidence, unregistered_case_is_rejected_before_creating_output) {
     const Case fabricated{"HARNESS.S1.fake", "HARNESS S1", "", "", nullptr};
     EXPECT_EQ(run(fabricated, "/unregistered-must-not-be-created").status, AYNI_INVALID_ARGUMENT);
 }
+// ADR-0075/C-EXP-014: an unreadable recovery cannot satisfy the empty-world
+// assertions of a lost-creation case and be misreported as a successful restart.
+TEST(ExperimentEvidence, rejected_recovery_fails_before_empty_world_assertions) {
+    Evidence evidence;
+    World world(evidence);
+    ASSERT_TRUE(world.start());
+    world.create("folder", 101);
+    ASSERT_TRUE(world.crash(ayni::hosts::sim::CutAppend::lost));
+    world.node.simulation()->inject_fault(ayni::hosts::sim::StoragePort::read_log,
+                                          ayni::hosts::sim::StorageFault::reject);
+    EXPECT_FALSE(world.start());
+    EXPECT_EQ(world.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_FALSE(evidence.ok());
+    EXPECT_NE(evidence.failure().find("recovery lifecycle"), std::string::npos);
+    EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_FALSE(evidence.ok());
+}
+// ADR-0075: held storage changes I/O scheduling, never which fake clock a
+// Provider/executor sees. Lease/deadline evidence must use the Core's time.
+TEST(ExperimentEvidence, core_and_provider_clock_stay_equal_with_storage_held) {
+    Evidence evidence;
+    World world(evidence);
+    ASSERT_TRUE(world.start());
+    const auto clock = world.node.clock();
+    EXPECT_EQ(clock.now_us(clock.context), world.node.simulation()->now_us());
+    world.storage = World::Storage::held;
+    const auto before = world.node.simulation()->now_us();
+    ASSERT_TRUE(world.step());
+    EXPECT_EQ(world.node.simulation()->now_us(), before + tick_us);
+    EXPECT_EQ(clock.now_us(clock.context), world.node.simulation()->now_us());
+    EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_TRUE(evidence.ok());
+}
 } // namespace
