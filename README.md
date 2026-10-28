@@ -4,7 +4,7 @@
 
 **面向个人消费者的跨设备助理 AgentOS：用户面对一个助理，多个 Agent 共用一套受管理的系统服务。**
 
-> 当前仓库处于 M1（实验性 ABI 0.45、storage schema 2）。P0～P6 的 Native 正常实现已交付：单一助理 CLI（ADR-0072：模型可登记待批目标，“停”不经模型）、文本/工具调用、记忆与日历、Mock 观察、统一助理、C++ SDK 与公开示例；正常组合、多节点 typed 子集和资源/覆盖率证据见 [M1 正常集成报告](reports/core/m1-normal-integration.md) 与 [交接状态](reports/core/m1-progress.md)。安全分支覆盖目标仍有差距，完整 E2/E1/E3 Native 实验见 #98/#99/#100（ADR-0076～0078）；E4、完整 MA-038、Core Alpha、ESP32 存储及实机验收未完成；真实模型多轮仍待用户本机试用。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
+> 当前仓库处于 M1（实验性 ABI 0.45、storage schema 2）。P0～P6 的 Native 正常实现已交付：单一助理 CLI（ADR-0072：模型可登记待批目标，“停”不经模型）、文本/工具调用、记忆与日历、Mock 观察、统一助理、C++ SDK 与公开示例；正常组合、多节点 typed 子集和资源/覆盖率证据见 [M1 正常集成报告](reports/core/m1-normal-integration.md) 与 [交接状态](reports/core/m1-progress.md)。安全分支覆盖目标仍有差距，完整 E2/E1/E3 Native 实验见 #98/#99/#100（ADR-0076～0078）；E4 Native/Sim 组合与版本证据见 ADR-0079；完整 MA-038、Core Alpha、ESP32 存储及实机验收未完成；真实模型多轮仍待用户本机试用。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
 
 完整设计、范围、接口草案及验收门槛见 [Ayni 实施计划](docs/ayni_v1.0.md)。
 
@@ -87,7 +87,7 @@ ROS 2 Bridge 位于 Core 外，将 Topic/Service/Action 分别映射到 `subscri
 | M5 · v0.2 | PC 与 ESP32 独立驻留、认证、远程调用、去重、查询与断连恢复 |
 | M6 | 按独立门槛扩展宿主、持久子任务委派、MCP/A2A、更多感知/机构及第三方隔离；有条件的 MHS 适配 R1.c |
 
-E1 验证多个 Agent 共用系统服务；E2 验证动作关键阶段重启；E3 验证重启后替换模型或兼容策略；E4 验证有界组合、订阅依赖与语义升级/回滚。E4 包含在途依赖失效、步骤恢复、不兼容版本暂停及模拟存储迁移回滚；真实 OTA 在 M4 验证。先在确定性模拟器通过，再在 ESP32 复核，最后补齐真实硬件结果。
+E1 验证多个 Agent 共用系统服务；E2 验证动作关键阶段重启；E3 验证重启后替换模型或兼容策略；E4 验证有界组合、订阅依赖与语义升级/回滚。E4 包含在途依赖失效、步骤恢复、不兼容版本暂停及不支持格式的拒绝/保留；M1 不做迁移器或兼容 reader，JSON Schema 关键字入口留到管理协议，真实 OTA/迁移在 M4 验证（ADR-0079）。先在确定性模拟器通过，再在 ESP32 复核，最后补齐真实硬件结果。
 
 计划接入示例包括 `new_hardware`、`new_model`、`new_strategy` 与 `composite_workflow`；新组合应用应复用公开接口完成，无需修改 Kernel 源码。
 

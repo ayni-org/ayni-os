@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "scope": "Native/Sim only; unsupported media is injected with owner codecs. No old firmware binary, migration or OTA is executed.",
+  "rows": [
+    {
+      "case_id": "E4.S6.compat_matrix_matches",
+      "writer": {
+        "strategy": "1",
+        "storage": "2"
+      },
+      "reader": {
+        "strategy": "2",
+        "storage": "2"
+      },
+      "expected": "completed; exact checkpoint preserved",
+      "assertions": {
+        "declared compatible reader preserves exact checkpoint": "1",
+        "compatible upgrade preserves completed Task": "5"
+      },
+      "outcome": {
+        "task_state": "5"
+      }
+    },
+    {
+      "case_id": "E4.S5.v2_only_pauses_old_operation",
+      "writer": {
+        "capability": "1",
+        "binding": "1"
+      },
+      "reader": {
+        "capability": "2",
+        "binding": "2"
+      },
+      "expected": "paused; no execution under v2",
+      "assertions": {
+        "old capability version retained": "1",
+        "v2 never executes v1 parameters": "0"
+      },
+      "outcome": {
+        "task_state": "3"
+      }
+    },
+    {
+      "case_id": "E4.S5.resolver_reconciles_v1",
+      "writer": {
+        "capability": "1"
+      },
+      "reader": {
+        "capability": "2",
+        "query_resolver": "1"
+      },
+      "expected": "original operation reconciled; no new execution",
+      "assertions": {
+        "resolver cannot execute new effect": "1",
+        "resolver does not submit old parameters": "1"
+      },
+      "outcome": {
+        "query_conclusion": "1"
+      }
+    },
+    {
+      "case_id": "E4.S5.goal_v2_holds_old_goal",
+      "writer": {
+        "goal_type": "1"
+      },
+      "reader": {
+        "goal_type": "2"
+      },
+      "expected": "paused; retained original Goal/Task",
+      "assertions": {
+        "old GoalType semantics never reset": "1",
+        "new GoalType never replays old action": "0"
+      },
+      "outcome": {
+        "task_state": "3"
+      }
+    },
+    {
+      "case_id": "E4.S5.scene_v2_blocks_old_permit",
+      "writer": {
+        "scene": "1"
+      },
+      "reader": {
+        "scene": "2"
+      },
+      "expected": "saved approval unusable; independent stop",
+      "assertions": {
+        "new Scene version declared": "2",
+        "new Scene cannot consume old owner approval": "0"
+      },
+      "outcome": {
+        "scene_consumable": "0",
+        "control_phase": "4"
+      }
+    },
+    {
+      "case_id": "E4.S6.unsupported_format_preserved",
+      "writer": {
+        "storage": "0"
+      },
+      "reader": {
+        "storage": "2"
+      },
+      "expected": "RESTRICTED; bytes preserved; no new writer/output",
+      "assertions": {
+        "unsupported schema diagnostic": "6",
+        "unreadable input never notifies": "0"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
+      }
+    },
+    {
+      "case_id": "E4.S6.unsupported_legacy_schema",
+      "writer": {
+        "storage": "1"
+      },
+      "reader": {
+        "storage": "2"
+      },
+      "expected": "RESTRICTED; bytes preserved; no new writer/output",
+      "assertions": {
+        "unsupported schema diagnostic": "6",
+        "unreadable input never notifies": "0"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
+      }
+    },
+    {
+      "case_id": "E4.S6.rollback_unreadable_state",
+      "writer": {
+        "storage": "3"
+      },
+      "reader": {
+        "storage": "2"
+      },
+      "expected": "RESTRICTED; no rollback to older state/output",
+      "assertions": {
+        "unsupported schema diagnostic": "6",
+        "unreadable input never replays old effect": "1"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
+      }
+    },
+    {
+      "case_id": "E4.S6.unsupported_record_version",
+      "writer": {
+        "storage": "2",
+        "required_task_state": "65535"
+      },
+      "reader": {
+        "storage": "2",
+        "required_task_state_max": "16"
+      },
+      "expected": "RESTRICTED; required unknown record retained",
+      "assertions": {
+        "unsupported schema diagnostic": "6",
+        "unreadable input never notifies": "0"
+      },
+      "outcome": {
+        "kernel_lifecycle": "4"
+      }
+    }
+  ]
+}

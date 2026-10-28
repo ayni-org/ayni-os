@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S4.delete_during_analysis",
+  "experiment_step": "E4 步骤 4",
+  "clauses": [
+    "C-PROD-030",
+    "C-COMMIT-012"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "delete_during_analysis"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

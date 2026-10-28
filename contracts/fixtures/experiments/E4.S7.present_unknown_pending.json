@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S7.present_unknown_pending",
+  "experiment_step": "E4 步骤 7",
+  "clauses": [
+    "C-PROD-013"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "present_unknown_pending"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S5.goal_v2_holds_old_goal",
+  "experiment_step": "E4 步骤 5",
+  "clauses": [
+    "C-VER-030"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "goal_v2_holds_old_goal"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S5.resolver_reconciles_v1",
+  "experiment_step": "E4 步骤 5",
+  "clauses": [
+    "C-VER-011"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "resolver_reconciles_v1"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

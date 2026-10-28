@@ -2,6 +2,7 @@
 import copy
 import json
 import re
+import runpy
 from pathlib import Path
 import sys
 import tempfile
@@ -50,6 +51,50 @@ class ExperimentGenerator(unittest.TestCase):
         actual = {path.stem for path in (ROOT / "contracts/fixtures/experiments").glob("E1.*.json")}
         self.assertGreaterEqual(len(required), 31)
         self.assertFalse(required - actual, sorted(required - actual))
+
+    def test_delivered_e4_covers_active_inventory_and_each_commit_disposition(self):
+        # ADR-0079: JSON registration and migration are explicit user-approved
+        # scope exceptions; every actual Core/typed and boundary case remains required.
+        required = set(re.findall(r"`(E4\.[^`]+)`", (ROOT / "contracts/fixtures/cases.md").read_text()))
+        required -= {"E4.S1.schema_keyword_rejected", "E4.S6.migration_interrupted"}
+        actual = {p.stem for p in (ROOT / "contracts/fixtures/experiments").glob("E4.*.json")}
+        self.assertFalse(required - actual, sorted(required - actual))
+        boundaries = {"action_receipt", "capture_prepare", "capture_dispatch", "analysis_prepare", "analysis_dispatch", "analysis_receipt", "summary", "capture_stop", "presentation_prepare", "presentation_receipt", "task_complete"}
+        for boundary in boundaries:
+            for disposition in ("lost", "stored"):
+                self.assertIn(f"E4.S2.{boundary}_{disposition}", actual)
+        self.assertIn("E4.S1.typed_schema_rejected", actual)
+        self.assertIn("E4.S6.unsupported_format_preserved", actual)
+        self.assertIn("E4.S6.unsupported_record_version", actual)
+
+    def test_composite_evidence_requires_actual_deployment_and_supported_cut(self):
+        for action in ({"op": "composite", "scenario": "register_and_run"},
+                       {"op": "expect", "metric": "composite_completed", "value": "1"}):
+            value = copy.deepcopy(self.base)
+            value["script"].insert(0, action)
+            with self.assertRaises(fixtures.FixtureError):
+                self.load(value)
+        value = copy.deepcopy(self.base)
+        value["deployment"] = "composite"
+        value["script"].insert(0, {"op": "composite", "scenario": "restart_at_each_boundary", "boundary": "unimplemented", "append": "stored"})
+        with self.assertRaises(fixtures.FixtureError):
+            self.load(value)
+
+    def test_compatibility_matrix_rejects_wrong_versions_and_outcomes(self):
+        # ADR-0079: version declarations must be checked independently of pass flags.
+        verify = runpy.run_path(str(ROOT / "tests/integration/experiment_artifacts_test.py"))["verify_compatibility_matrix"]
+        row = {"case_id": "example", "writer": {"strategy": "1"}, "reader": {"strategy": "2"}, "expected": "retained", "outcome": {"task_state": "5"}, "assertions": {"retained": "1"}}
+        records = [{"category": category, "name": name, "value": value} for category, name, value in (
+            ("writer", "strategy", "1"), ("reader", "strategy", "2"),
+            ("matrix", "task_state", "5"), ("assertion", "retained", "1"))]
+        artifacts = {"example": ({}, "\n".join(json.dumps(record) for record in records))}
+        verify({"rows": [row]}, artifacts)
+        for field in ("writer", "reader", "outcome"):
+            incorrect = copy.deepcopy(row)
+            key = next(iter(incorrect[field]))
+            incorrect[field][key] = "99"
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                verify({"rows": [incorrect]}, artifacts)
 
     def test_shared_evidence_requires_its_actual_deployment_and_closed_scenario(self):
         for action in ({"op": "shared", "scenario": "local_rule_progresses"},

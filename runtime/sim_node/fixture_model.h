@@ -9,7 +9,8 @@ namespace ayni::runtime::fixtures {
 class ModelProbe {
   public:
     ayni_status_t configure(providers::mock::Variant, uint64_t delay_us, Clock,
-                            std::optional<uint32_t> timeout_ms = std::nullopt);
+                            std::optional<uint32_t> timeout_ms = std::nullopt,
+                            providers::mock::Service = providers::mock::Service::text);
     ayni_provider_v1 describe();
     ayni_status_t advance(ayni_kernel_t *, uint64_t &barrier_checks);
     ayni_status_t close();

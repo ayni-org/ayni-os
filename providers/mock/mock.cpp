@@ -198,6 +198,13 @@ struct Provider::Impl {
             at = end < size ? end + 1U : end;
         }
         out.body_at = at;
+        // C-LIMIT-006: a ninth leading proposal invalidates the whole answer;
+        // it cannot become the text argument of an otherwise accepted eight.
+        if (out.count == AYNI_CALL_TOOL_COUNT_MAX && size - at >= call_prefix_size &&
+            std::memcmp(data + at, call_prefix, call_prefix_size) == 0) {
+            out.status = AYNI_CAPACITY_EXCEEDED;
+            return;
+        }
         uint32_t list = list_header_size;
         for (uint32_t call = 0; call < out.count; ++call) {
             const auto &planned = out.calls[call];

@@ -28,7 +28,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-VER-010 | 接收方遇到不同的 `protocol_major` 拒绝消息并返回 `UNSUPPORTED_VERSION`；相同主版本下未知的可选字段忽略，未知的必需字段或动作拒绝 | 新版本增加的必需安全字段被旧接收方忽略并照常执行 | `MA-016`；`wire/` 解析测试（M1） |
-| C-VER-011 | 能力调用按能力 ID 与能力版本协商；接收方没有该版本的实现或兼容 resolver 时拒绝，不以最新版本解释旧参数 | v2 解释器执行携带 v1 参数的调用 | E4 步骤 5 |
+| C-VER-011 | 能力调用按能力 ID 与能力版本协商；接收方没有该版本的实现或兼容 resolver 时拒绝，不以最新版本解释旧参数 | v2 解释器执行携带 v1 参数的调用 | M1 Native/Sim：`ExperimentFixtures` 的 E4.S5.v2_only_pauses_old_operation / resolver_reconciles_v1（ADR-0079）；远程协议与真实固件另验 |
 | C-VER-012 | v0.1 管理 API 与 v0.2 设备互通共用 `domain/` 中的领域类型与校验器，只在信封与传输上不同 | 管理 API 与设备协议各自定义一套 Goal 字段 | ADR-0009 选型后的双向往返测试 |
 
 ## 存储
@@ -36,7 +36,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-VER-020 | 每个持久记录带记录版本；每个快照与日志段带 `storage_schema`。读取到不支持的版本时进入 `RESTRICTED`（只读诊断），不得当作空数据重建 | 无法识别的快照被丢弃，Kernel 以空状态启动 | M1 已实现（日志、快照版本拒绝）：`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6 |
-| C-VER-021 | 迁移在切换提交前保留旧格式；迁移中断后可从旧格式重新开始 | 迁移写到一半掉电，新旧格式都不完整 | M1 部分实现（ADR-0038 开发版不提供迁移；旧格式拒绝并保留）：`StorageSchemaBoundary.unsupported_schema_is_still_rejected_after_a_process_restart`；E4 步骤 6 |
+| C-VER-021 | 迁移在切换提交前保留旧格式；迁移中断后可从旧格式重新开始 | 迁移写到一半掉电，新旧格式都不完整 | M1 开发期不适用（用户 2026-10-28 确认，ADR-0079：不提供迁移器/兼容 reader；旧格式拒绝并保留，迁移规则留后续阶段）：`StorageSchemaBoundary.unsupported_schema_is_still_rejected_after_a_process_restart`；E4 步骤 6 |
 | C-VER-022 | 回滚到旧固件时，若旧固件无法读取当前有效状态，只能进入安全诊断，不得回到过时快照继续执行 | 回滚后旧快照丢掉已接受的 Task 调用计数或让已删除的记忆复活 | M1 部分实现（当前 reader 遇不支持的 schema 安全受限；未执行旧固件二进制回滚）：`StorageSchemaBoundary.unsupported_schema_never_installs_a_writer_or_mutates_source`；完整 E4 步骤 6、M4 实机 OTA |
 | C-VER-023 | 不持久化 C++ 内存布局；持久格式由 `storage/records.md` 定义，与编译器和 ABI 无关 | 直接 `memcpy` 内存中的对象写入 Flash | M1 已实现（定长小端编解码与分页）：`BatchCodec.round_trip_keeps_identity_and_records`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`；GCC/Clang 共用固定格式测试；评审 |
 

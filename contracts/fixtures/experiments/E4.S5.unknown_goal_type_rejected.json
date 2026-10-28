@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S5.unknown_goal_type_rejected",
+  "experiment_step": "E4 步骤 5",
+  "clauses": [
+    "C-POLICY-009"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "unknown_goal_type_rejected"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

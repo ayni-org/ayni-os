@@ -1,3 +1,3 @@
-add_library(ayni_experiment_policy STATIC services.cpp replacement.cpp)
+add_library(ayni_experiment_policy STATIC services.cpp replacement.cpp composite.cpp)
 target_include_directories(ayni_experiment_policy PUBLIC include)
 target_link_libraries(ayni_experiment_policy PUBLIC ayni_api PRIVATE ayni_core_options)

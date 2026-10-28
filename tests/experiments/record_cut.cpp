@@ -7,7 +7,8 @@
 #include "work/call/call_records.h"
 namespace ayni::runtime::experiments {
 namespace {
-std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPoint point) {
+std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPoint point,
+                                 const char *step) {
     durability::BatchView batch{};
     if (durability::read_batch(stored.bytes.data(), stored.bytes.size(), batch) !=
         durability::BatchCheck::ok) {
@@ -49,7 +50,8 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
             break;
         case RecordPoint::prepared_call:
         case RecordPoint::dispatch_call:
-        case RecordPoint::terminal_call: {
+        case RecordPoint::terminal_call:
+        case RecordPoint::stopped_subscription: {
             if (header.type != work::call_record_type) {
                 break;
             }
@@ -58,10 +60,16 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
                 !call.action) {
                 break;
             }
+            if (step && !call.identity.step_key.equals(text(step))) {
+                break;
+            }
             matched = point == RecordPoint::prepared_call
                           ? call.action->phase == work::ActionPhase::prepared
                       : point == RecordPoint::dispatch_call
                           ? call.action->phase == work::ActionPhase::dispatching
+                      : point == RecordPoint::stopped_subscription
+                          ? call.state.subscription &&
+                                call.state.subscription->phase == work::SubscriptionPhase::stopped
                           : call.state.outcome != 0;
             break;
         }
@@ -78,12 +86,12 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
     return std::nullopt;
 }
 } // namespace
-bool World::hold_record_append(RecordPoint point) {
+bool World::hold_record_append(RecordPoint point, const char *step) {
     items_per_step = 1;
     storage = Storage::complete;
     return until("record append bound", [&] {
         const auto pending = node.simulation()->pending_append();
-        if (!pending || !boundary(*pending, point)) {
+        if (!pending || !boundary(*pending, point, step)) {
             return false;
         }
         storage = Storage::held;
@@ -93,9 +101,9 @@ bool World::hold_record_append(RecordPoint point) {
         return true;
     });
 }
-bool World::crash_after_record(RecordPoint point) {
+bool World::crash_after_record(RecordPoint point, const char *step) {
     const auto pending = node.simulation()->pending_append();
-    const auto offset = pending ? boundary(*pending, point) : std::nullopt;
+    const auto offset = pending ? boundary(*pending, point, step) : std::nullopt;
     if (!pending || !offset) {
         return evidence.status("cut record must be pending", AYNI_NOT_FOUND);
     }

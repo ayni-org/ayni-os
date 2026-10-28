@@ -125,3 +125,5 @@
 | [0077](0077-e1-shared-service-acceptance.md) | E1 共享服务完整验收与来源失效恢复 | 已接受 | §10.2、MA-021 |
 
 | [0078](0078-e3-provider-and-policy-replacement.md) | E3 重启后替换模型与兼容策略 | 已接受 | §10.4、MA-023 |
+
+| [0079](0079-e4-composite-and-version-acceptance.md) | E4 组合、订阅依赖与版本拒绝 | 已接受 | §10.5、MA-033 |

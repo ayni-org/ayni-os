@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S5.v2_only_pauses_old_operation",
+  "experiment_step": "E4 步骤 5",
+  "clauses": [
+    "C-VER-011",
+    "C-VER-030"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "v2_only_pauses_old_operation"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

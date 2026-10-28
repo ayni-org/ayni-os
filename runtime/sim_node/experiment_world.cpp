@@ -1,3 +1,4 @@
+#include "experiment_composite.h"
 #include "experiment_execution.h"
 #include "experiment_replacement.h"
 #include "experiment_shared.h"
@@ -72,7 +73,8 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.task_model_call_hard_limit = 2;
         replacement = std::make_unique<Replacement>(*this);
     }
-    if (deployment == Deployment::physical || deployment == Deployment::shared_physical) {
+    if (deployment == Deployment::physical || deployment == Deployment::shared_physical ||
+        deployment == Deployment::composite) {
         config.resource_capacity = config.scene_capacity = config.observation_source_capacity = 1;
         config.executor_capacity = config.execution_binding_capacity = 1;
         physical = std::make_unique<Physical>(*this);
@@ -94,6 +96,15 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         }
         shared = std::make_unique<SharedServices>(*this);
     }
+    if (deployment == Deployment::composite) {
+        config.resource_capacity = 4;
+        config.strategy_capacity = 3;
+        config.goal_requirement_capacity = 5;
+        config.observation_source_capacity = 2;
+        config.call_input_max_bytes = config.call_result_max_bytes = 512;
+        config.task_model_call_hard_limit = 2;
+        composite = std::make_unique<Composite>(*this);
+    }
 }
 World::~World() {
     if (node.kernel()) {
@@ -110,6 +121,10 @@ World::~World() {
     if (replacement) {
         replacement->abandon_kernel();
         static_cast<void>(replacement->close());
+    }
+    if (composite) {
+        composite->abandon_kernel();
+        static_cast<void>(composite->close());
     }
     if (physical) {
         // Also needed when a legal script ended immediately after Kernel loss.
@@ -166,17 +181,39 @@ bool World::register_profile() {
     goal.export_requirements = nullptr;
     const ayni_capability_desc_v1 authority{
         sizeof(authority), 1, text("test.increment"), 0, 0, nullptr};
-    const auto capability = service.capability();
-    const auto provider = service.describe();
-    const ayni_binding_v1 binding{sizeof(binding),
-                                  1,
-                                  text("increment"),
-                                  capability.capability_id,
-                                  1,
-                                  1,
-                                  provider.provider_id,
-                                  provider.endpoint_id,
-                                  {}};
+    constexpr uint32_t future_counter_version = 2;
+    const auto counter_version =
+        counter_profile == CounterProfile::v1 ? 1U : future_counter_version;
+    auto capability = service.capability();
+    capability.version = counter_version;
+    auto provider = service.describe();
+    provider.version = counter_version;
+    provider.capabilities = &capability;
+    const ayni_binding_v1 binding{sizeof(binding),          counter_version,      text("increment"),
+                                  capability.capability_id, counter_version,      counter_version,
+                                  provider.provider_id,     provider.endpoint_id, {}};
+    if (counter_profile == CounterProfile::v2_with_v1_query) {
+        auto old_capability = service.capability();
+        auto resolver = service.describe();
+        resolver.capabilities = &old_capability;
+        // A resolver is allowed to read old operation outcomes, never to dispatch.
+        resolver.submit = [](void *, const ayni_provider_request_v1 *,
+                             ayni_provider_completion_t *) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        };
+        if (!evidence.status("register v1 query resolver",
+                             ayni_register_provider(kernel, &resolver))) {
+            return false;
+        }
+    }
+    if (counter_version != authority.version) {
+        auto current = authority;
+        current.version = counter_version;
+        if (!evidence.status("register current counter authority",
+                             ayni_register_capability(kernel, &current))) {
+            return false;
+        }
+    }
     return evidence.status("register folder", ayni_register_goal_type(kernel, &goal)) &&
            evidence.status("register authority", ayni_register_capability(kernel, &authority)) &&
            evidence.status("register call", ayni_register_call_capability(kernel, &capability)) &&
@@ -185,6 +222,7 @@ bool World::register_profile() {
            (!physical || physical->register_profile(kernel)) &&
            (!shared || shared->register_profile(kernel)) &&
            (!replacement || replacement->register_profile(kernel)) &&
+           (!composite || composite->register_profile(kernel)) &&
            (!registration || evidence.status("register extension", registration(kernel)));
 }
 // This finite policy consumes the original call exactly once, then commits a
@@ -287,6 +325,9 @@ bool World::advance_step(uint64_t clock_delta_us) {
         return false;
     }
     if (replacement && !replacement->advance()) {
+        return false;
+    }
+    if (composite && !composite->advance()) {
         return false;
     }
     if (physical && !physical->advance()) {
@@ -394,6 +435,9 @@ void World::detach_clients() {
     if (replacement) {
         replacement->abandon_kernel();
     }
+    if (composite) {
+        composite->abandon_kernel();
+    }
     if (physical) {
         physical->executor.abandon_kernel();
     }
@@ -425,6 +469,9 @@ bool World::complete_old_writer() {
 ayni_status_t World::close() {
     if (replacement) {
         replacement->begin_close();
+    }
+    if (composite) {
+        composite->begin_close();
     }
     if (shared && !shared->begin_close()) {
         return evidence.error_status();
@@ -463,6 +510,9 @@ ayni_status_t World::close() {
             if (replacement && !replacement->advance()) {
                 return AYNI_INVALID_STATE;
             }
+            if (composite && !composite->advance()) {
+                return AYNI_INVALID_STATE;
+            }
             if (physical && !physical->advance()) {
                 return AYNI_INVALID_STATE;
             }
@@ -487,13 +537,18 @@ ayni_status_t World::close() {
     return released == AYNI_OK ? close_services() : released;
 }
 ayni_status_t World::close_services() {
+    const auto composed = composite ? composite->close() : AYNI_OK;
+    evidence.status("close composite services", composed);
     const auto replaced = replacement ? replacement->close() : AYNI_OK;
     evidence.status("close replacement services", replaced);
     const auto services = shared ? shared->close() : AYNI_OK;
     evidence.status("close shared services", services);
     const auto execution = physical ? physical->close() : AYNI_OK;
     evidence.status("close independent executor", execution);
-    return replaced != AYNI_OK ? replaced : services != AYNI_OK ? services : execution;
+    return composed != AYNI_OK   ? composed
+           : replaced != AYNI_OK ? replaced
+           : services != AYNI_OK ? services
+                                 : execution;
 }
 ayni_intent_result_v1 World::submit(ayni_intent_kind_t kind, const void *body, uint64_t command,
                                     uint32_t revision, ayni_status_t expected,
@@ -736,6 +791,8 @@ uint64_t World::metric(Metric metric) const {
     switch (metric) {
     case Metric::replacement_completed:
         return replacement ? replacement->completed() : 0;
+    case Metric::composite_completed:
+        return composite ? composite->completed() : 0;
     case Metric::shared_completed:
         return shared ? shared->completed() : 0;
     case Metric::physical_submissions:
