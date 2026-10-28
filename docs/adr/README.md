@@ -114,4 +114,5 @@
 
 | [0072](0072-single-assistant-schedule-tool-and-stop.md) | 单一助理、模型计划工具与确定性停止 | 已接受；“问用户日期”由 0073 取代 | §5.4、§9.1、§14.1 |
 
-| [0073](0073-model-request-local-time.md) | 模型请求写明当前本地时间 | 已接受（按推荐项） | §5.4、§14.1 |
+| [0073](0073-model-request-local-time.md) | 模型请求写明当前本地时间 | 已接受 | §2.5、§5.4、§14.1 |
+| [0074](0074-model-instructions-as-system-message.md) | 模型请求的指令作为 system 消息 | 已接受 | §2.5、§5.4、§14.1 |

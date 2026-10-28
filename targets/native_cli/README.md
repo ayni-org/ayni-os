@@ -55,7 +55,7 @@ model=deepseek-chat
 key_environment=AYNI_LLM_API_KEY
 ```
 
-时区用 `timezone=CST-8` 这样的 POSIX 规则配置（区域名如 `Asia/Shanghai` 会被拒绝）；不配置时按 C 库的顺序取本机时区（`TZ` 中的规则或它指向的时区文件，否则 `/etc/localtime`），都取不到时模型被告知时间未知。本机时钟未同步时仍写出时间并注明未同步（ADR-0073）。
+时区用 `timezone=CST-8` 这样的 POSIX 规则配置（区域名如 `Asia/Shanghai` 会被拒绝）；不配置时依次取本机时区：`TZ` 本身是完整规则；`TZ`（去掉开头的 `:`）指向的时区文件，绝对路径或相对 `/usr/share/zoneinfo`；`TZ` 未设或为空时 `/etc/localtime` 末尾的规则；都取不到时模型被告知时间未知。与 glibc 不同，规则优先于同名文件，空 `TZ` 不当作 UTC，也不读 `TZDIR`。本机时钟未同步时仍写出时间并注明未同步（ADR-0073）。指令与当前时间作为 system 消息发送，对话作为 user 消息（ADR-0074）。
 
 由本机环境提供 `AYNI_LLM_API_KEY`，启动时去掉 `--mock`。配置文件中只能写环境变量名，不能写密钥值；运行时不会自动切换服务或重试未知调用。模型服务仍使用 P1 的非流式 Chat Completions 接口。上述地址/模型是 P1 已单独验证的配置示例，不代表 P2 已完成真实服务多轮验收。
 

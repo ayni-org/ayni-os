@@ -2,7 +2,7 @@
 
 - **状态**：已接受；实现与验证见 [#95](https://github.com/RobotSe7en/ayni/pull/95)
 - **日期**：2026-10-28
-- **关联**：MA-019；ADR-0056、0072；C-NATIVE-011
+- **关联**：MA-019；ADR-0056、0072、0074；C-NATIVE-013、C-POLICY-001、C-POLICY-006
 
 ## 背景
 
@@ -10,24 +10,25 @@ ADR-0072 让模型把用户的长期要求换算成计划文法，但 ToolLoop �
 
 ## 决策
 
-1. **用户选择（产品语义，按推荐项实现，改选再改，2026-10-28）。** 每次主模型请求在指令前缀之后写一行当前本地时间：日期、时刻、星期与 POSIX 时区，例如 `Current local time: 2026-10-28 09:05, Wednesday, time zone CST-8.`。时间在发请求时读取，不随用户输入持久化。提示词改为按这一行换算“明天”“下周三”等说法，默认用这一时区，时间未知时才询问用户。
-2. **时钟与时区。** 时间来自 Host 的 UTC 端口。未经同步的时钟仍写出时间，并标注 `device clock not synchronized`：模型登记的目标总要所有者看过规范文本再批准，日期不授权任何触发。没有 UTC 样本或没有时区时写 `unknown`。时区是 POSIX 规则：CLI 配置 `timezone=`；未配置时按 C 库的顺序找本机时区：`TZ` 中的规则，`TZ` 指向的时区文件（如 `Asia/Shanghai`，相对 `/usr/share/zoneinfo`）末尾的 TZif 规则，否则 `/etc/localtime` 末尾的规则；都取不到则为未知。显式配置的值无效时拒绝启动；系统值无效时视为未知。
-3. **模块归属。** `strategies::ToolLoop` 通过可选的 `LocalClock`（UTC 端口加时区）格式化这一行，只调用公开日历 API，不解释任何自然语言日期；这是策略在快照之外唯一读取的输入。`runtime/common` 把 Host 时钟与 `ModelConfig::timezone` 交给它；`targets/native_cli` 只负责取得时区。Core 与计划文法不变。
+1. **用户选择（产品语义，用户 2026-10-28 选定推荐项）。** 每次主模型请求在指令末尾写明当前本地时间与时区，例如 `Current local time: 2026-10-28 09:05, Wednesday.` 下一行 `Time zone: CST-8`；指令随请求作为 system 消息发送（ADR-0074）。时区单独成行且不跟标点，因为模型要把它原样抄进计划文法，而规则本身可含 `.`。时间在发请求时读取，不随用户输入持久化。提示词改为按这一行换算“明天”“下周三”等说法，默认用这一时区，时间未知时才询问用户。
+2. **时钟与时区。** 时间来自 Host 的 UTC 端口。未经同步的时钟仍写出时间，并标注 `device clock not synchronized`：模型登记的目标总要所有者看过规范文本再批准，日期不授权任何触发。样本不可用（端口为空、`UNAVAILABLE`、未知的信任值或结构大小）或没有时区时写 `unknown`；配置了时区就写出时区；端口与时区都没有时两行都不写。时区是 POSIX 规则：CLI 配置 `timezone=`；未配置时依次取：`TZ` 本身是完整规则；`TZ`（去掉开头的 `:`）指向的时区文件（如 `Asia/Shanghai`，绝对路径或相对 `/usr/share/zoneinfo`）末尾的 TZif 规则；`TZ` 未设或为空时 `/etc/localtime` 末尾的规则；都取不到则为未知。这与 glibc 不同：glibc 先把 `TZ` 当文件、空 `TZ` 当 UTC、读 `TZDIR`；没有转换规则的写法如 `EST5EDT` 不是完整规则，会落到同名文件。显式配置的值无效时拒绝启动；系统值无效时视为未知。
+3. **模块归属。** `strategies::ToolLoop` 通过可选的 `LocalClock`（UTC 端口加时区）格式化这两行，只调用公开日历 API，不解释任何自然语言日期；这是策略在快照之外唯一读取的输入。`runtime/common` 把 Host 时钟与 `ModelConfig::timezone` 交给它；`targets/native_cli` 只负责取得时区。Core 与计划文法不变。
 
 ## 后果
 
 - 模型自行换算相对日期，代码里没有关键词或日期解析；换算仍可能出错，所以登记的目标照旧待所有者批准。
 - 回合若等待授权而跨过午夜，模型拿到的是发请求时的日期，“明天”按那一天理解。
-- 指令前缀之后多 70～100 字节；摘要请求不带时间。
-- `strategies` 原先“不执行 I/O”的约束增加一个例外：可选的时钟端口，须非阻塞。
+- 指令末尾多约 50～100 字节，另加时区规则本身（至多 128 字节）；摘要请求不带时间。
+- `strategies` 原先“不执行 I/O”的约束（C-POLICY-001）增加一个例外：可选的时钟端口，须非阻塞。确定性（C-POLICY-006）也有一个例外：时间只改变主模型请求的正文，意图种类、步骤键与私有检查点不依赖它；Kernel 只在受理调用时复制正文，已提交的步骤不会重新决定，所以恢复与重放不受影响；相同快照、检查点与时钟样本产生相同字节。
+- 星期按 1970-01-01 为星期四推算，与 Core 内部的同一换算重复；公开 API 没有星期函数。
 - 校验 POSIX 规则的写法（以纪元后一天调用 `ayni_calendar_local_time`）在 ToolLoop、CLI 和应用安静时段各有一份；三者分属不能互相依赖的模块，公开 API 没有单独的校验函数。
 
 ## 备选方案
 
-- 用户发消息时记录时间并随对话持久化：换算以说话时刻为准，最准确，但要改对话记录格式并再升一次版本；作为可改选项保留。
+- 用户发消息时记录时间并随对话持久化：换算以说话时刻为准，最准确，但要改对话记录格式并再升一次版本；用户未选。
 - 在代码中识别“明天”等说法并换算：说法无法枚举；拒绝。
 - 只在时钟已同步时写出时间：容器和部分虚拟机常报告未同步，模型又回到不知道日期；改为写出并标注。
 
 ## 验证
 
-`BuiltinLoop.model_request_states_the_local_time` 覆盖东西时区的日期与星期、未同步标注、无时间与非法时区；`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval` 检查真实 Provider 请求带上配置的时区；CLI 脚本检查 `timezone` 配置只接受 POSIX 规则。读取 `TZ` 与时区文件的默认路径依赖运行环境，没有自动测试，只在本地按几种 `TZ` 取值手工核对。命令、结果与 CI 见 [#95](https://github.com/RobotSe7en/ayni/pull/95)。
+`BuiltinLoop.model_request_instructions_state_the_local_time` 覆盖东西时区的日期与星期、同一样本两次决定字节相同、未同步标注、空端口、空时区、不可用与未知信任值，以及非法时区；`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval` 检查真实 Provider 请求的 system 消息带上配置的时区；CLI 脚本检查 `timezone` 配置只接受 POSIX 规则（只看退出码）。读取 `TZ` 与时区文件的默认路径依赖运行环境，没有自动测试，只在本地按几种 `TZ` 取值手工核对；`--mock` 保留时区未被测试观察。命令、结果与 CI 见 [#95](https://github.com/RobotSe7en/ayni/pull/95)。
