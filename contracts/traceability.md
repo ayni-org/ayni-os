@@ -8,7 +8,7 @@
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 18 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 23 | 3 |
-| [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 9 |
+| [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 10 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
 | [domain/lifecycles.md](domain/lifecycles.md) | 19 | 12 |
 | [domain/limits.md](domain/limits.md) | 12 | 7 |
@@ -31,7 +31,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 405 | 139 |
+| 合计 | 405 | 140 |
 
 ## 计划章节 → 契约文档
 
@@ -126,9 +126,9 @@
 | `MA-012` | C-LIMIT-010 |
 | `MA-015` | C-PRIM-005、C-PROV-013、C-PROV-014、C-WIRE-011 |
 | `MA-016` | C-AUTH-002、C-AUTH-012、C-AUTH-015、C-LIFE-020、C-PRIM-007、C-VER-010、C-WIRE-003、C-WIRE-006、C-WIRE-007、C-WIRE-009、C-WIRE-010 |
-| `MA-018` | C-AUTH-005、C-AUTH-006、C-AUTH-007、C-AUTH-016、C-AUTH-018、C-COMMIT-009、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-012、C-RUN-004、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
+| `MA-018` | C-AUTH-005、C-AUTH-006、C-AUTH-007、C-AUTH-016、C-AUTH-018、C-LIFE-021、C-LIFE-022、C-LIFE-023、C-LIMIT-002、C-PERMIT-001、C-PERMIT-016、C-PRIM-001、C-PRIM-008、C-RES-001、C-RES-003、C-RES-012、C-RUN-004、C-VER-030、C-HOST-013、C-POLICY-003、C-POLICY-009、C-STORE-011 |
 | `MA-019` | C-LIFE-023、C-LIMIT-007、C-PROD-012、C-PROD-015、C-PROD-018、C-RUN-007、C-RUN-008 |
-| `MA-022` | C-AUTH-006、C-COMMIT-008、C-COMMIT-009、C-COMMIT-011、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
+| `MA-022` | C-AUTH-006、C-HOST-012、C-HOST-013、C-STORE-005、C-STORE-011 |
 | `MA-026` | C-AUTH-011、C-PERMIT-010、C-PERMIT-011、C-PERMIT-012、C-PERMIT-016、C-PERMIT-017、C-STOP-002、C-STOP-003、C-STOP-004、C-STOP-005、C-STOP-007、C-STOP-008、C-STOP-009、C-STOP-010、C-STORE-012 |
 | `MA-027` | C-PROD-033、C-PROD-035、C-PROV-011 |
 | `MA-028` | C-PROD-001、C-PROD-003、C-PROD-004、C-PROD-051 |
@@ -153,7 +153,7 @@
 | E1 步骤 9 | C-CALL-005、C-COMMIT-012、C-ID-001、C-PROD-030、C-PROD-031、C-PROV-003 |
 | E1 步骤 10 | C-CALL-012、C-LIMIT-008、C-STOP-001、C-RES-005、C-HOST-006、C-WIRE-013 |
 | E1 步骤 11 | C-CALL-003、C-LIFE-023、C-STOP-002、C-PROD-012、C-PROD-014、C-PROD-016、C-PROD-018 |
-| E2 F0 | C-STORE-002 |
+| E2 F0 | C-EXP-002、C-STORE-002 |
 | E2 F1 | C-AUTH-005、C-AUTH-007、C-TIME-003、C-PRIM-001、C-PRIM-006 |
 | E2 F2 | C-COMMIT-006、C-PERMIT-002、C-PRIM-001 |
 | E2 F3 | C-OUT-002、C-LIFE-010、C-PRIM-001、C-STATUS-004 |
@@ -165,9 +165,9 @@
 | E2 F9 | C-COMMIT-004、C-ID-007、C-WIRE-004、C-WIRE-005、C-WIRE-016 |
 | E2 F10 | C-AUTH-005、C-AUTH-006、C-AUTH-024、C-COMMIT-007、C-COMMIT-017、C-OUT-003、C-LIFE-013、C-PERMIT-002、C-PRIM-006、C-HOST-004 |
 | E2 F11 | C-CALL-012、C-COMMIT-005、C-STORE-007 |
-| E2 F12 | C-AUTH-024、C-COMMIT-009、C-COMMIT-010、C-COMMIT-011、C-COMMIT-017、C-ID-009、C-PERMIT-009、C-STORE-005 |
+| E2 F12 | C-AUTH-024、C-COMMIT-010、C-COMMIT-011、C-COMMIT-017、C-ID-009、C-PERMIT-009、C-STORE-005 |
 | E2 F13 | C-LIFE-004 |
-| E2 F14 | C-TRUST-004、C-PERMIT-004、C-PERMIT-005、C-PERMIT-006、C-PERMIT-008、C-PERMIT-012、C-PERMIT-013 |
+| E2 F14 | C-TRUST-004、C-PERMIT-004、C-PERMIT-005、C-PERMIT-006、C-PERMIT-007、C-PERMIT-008、C-PERMIT-012、C-PERMIT-013 |
 | E3 步骤 1 | C-POLICY-006 |
 | E3 步骤 2 | C-CALL-002、C-CALL-008、C-CALL-011、C-ID-003、C-ID-004、C-ID-006、C-POLICY-003、C-POLICY-006、C-POLICY-010 |
 | E3 步骤 3 | C-ID-003、C-POLICY-006 |
@@ -210,9 +210,10 @@
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |
 | C-COMMIT-002 | M1 已实现（工作模型：恢复按序重放每个已存储批次各一次，追加中断电的批次只在完整写入时计入，ADR-0026）：`WorkRecovery.every_stored_prefix_recovers_the_state_after_its_last_batch`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`、`HostStorage.torn_tail_is_dropped_and_overwritten`；E2 F7、F8 |
 | C-COMMIT-004 | M1 已实现（查询标注：对象带 `commit_seq`，`ayni_get_kernel_info` 报告 `durable_seq`，结果未知的追加不计入）：`KernelLifecycle.durable_seq_follows_the_log_read_and_then_the_boot_batch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`；`durable_seq` 推进到 Host 已存储的批次，步骤报告也给出它（ADR-0026）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`KernelLifecycle.step_reports_durable_seq`、`KernelFence.durable_seq_never_falls_while_a_fence_reloads`；对外输出的 `requires_seq` 门控随产生对外输出的包；E2 F6、F9；属性测试：每个已释放输出的 seq ≤ 恢复后的 `durable_seq` |
-| C-COMMIT-008 | M1 已实现（三次尝试、10/50 ms 退避、失败后暂停、same command 先于 BUSY）：`KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`、`KernelFence.normal_append_in_flight_keeps_room_for_later_transitions`、`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`StorageRecovery.retry_wait_is_readable_and_preserves_command_lookup_before_busy`；E2 在途动作随 `MA-022` |
+| C-COMMIT-008 | M1 已实现（三次尝试、10/50 ms 退避、失败后暂停、same command 先于 BUSY）：`KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`、`KernelFence.normal_append_in_flight_keeps_room_for_later_transitions`、`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`StorageRecovery.retry_wait_is_readable_and_preserves_command_lookup_before_busy`；E2 在途动作已由 `E2.F12.write_unknown_then_ok` 验证（ADR-0076） |
+| C-COMMIT-009 | M1 已实现，Native/Sim 验证（停止新工作、事件不跨重载、查询诊断）：`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`；许可与动作对账的模拟证据：`E2.F12.write_failed_fence`、`E2.F12.write_failed_fence_counter`（ADR-0076）；硬件停止待验收 |
 | C-COMMIT-010 | M1 已实现（Native 排空、Sim 持久 epoch、WRITER_FENCE、物理 cursor）：`HostStorage.writer_fence_isolates_append_snapshot_and_trim`、`KernelFence.exhausted_retries_reload_once_and_close_old_sessions`、`SimStorageFaults.fence_rejects_an_owned_late_write_after_its_unknown_completion`、`WriterFenceScan.stale_physical_batch_never_moves_the_logical_cursor`；E2 F12 |
-| C-COMMIT-011 | M1 已实现（隔离不可确认则只读、不生成新 boot）：`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`；含动作与执行许可的停止验收随 `MA-022`；E2 F12 |
+| C-COMMIT-011 | M1 已实现（隔离不可确认则只读、不生成新 boot）：`KernelFence.unavailable_isolation_preserves_diagnostics_without_new_boot`；E2 F12 验证有在途动作时保持诊断（`E2.F12.fence_unavailable_readonly`）；独立许可在 F12 写失败栅栏中验证，硬件仍待验收 |
 | C-COMMIT-012 | M1 已实现（Goal、Task 与实例意图：创建取 0，其余取所指对象的当前版本；派生 Task 与跳过 occurrence 不提升 Goal 的版本，跳过使 Goal 失败时除外，ADR-0023；上限检查覆盖一个意图连带改变的全部 Goal、Task 与实例，ADR-0018；Kernel 自身的失效会使版本越过最大值时放弃该失效，Goal 保持原状，ADR-0020；策略的结束意图取快照中 Task 的版本，版本不符或结束会使 Task、Goal 或后代的版本越过最大值时 Task 停下并记原因，ADR-0022；结束 Goal 的 `TASK_CANCEL` 的上限检查覆盖 Goal 的结束，结束会使版本越过最大值的跳过只跳过，ADR-0023）：`WorkModel.stale_revision_is_a_conflict_and_changes_nothing`、`GoalTable.stale_revision_is_a_conflict_before_the_state_is_checked`、`GoalTable.change_past_the_largest_revision_is_refused`、`WorkModel.change_past_the_largest_revision_is_refused_and_changes_nothing`、`WorkTask.task_cancel_checks_the_task_then_its_revision_then_its_state`、`WorkTask.instance_intents_check_the_instance_then_its_revision_then_its_state`、`WorkTask.change_that_would_exhaust_a_task_revision_is_refused`、`WorkTask.resume_that_would_exhaust_a_task_revision_is_refused`、`WorkTask.stop_that_would_exhaust_a_goal_revision_is_refused`、`WorkTask.deriving_keeps_the_goal_revision_the_caller_holds`、`TaskTable.revision_is_checked_before_the_state_and_never_wraps`、`AgentTable.revision_is_checked_before_the_state_and_never_wraps`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkExpiry.expiry_that_would_exhaust_a_revision_is_dropped`、`GoalTable.skips_and_dropped_expiries_keep_the_revision`、`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkDecision.end_that_would_exhaust_a_revision_holds_the_task`、`WorkTask.task_cancel_that_would_exhaust_a_revision_its_goals_end_raises_is_refused`、`WorkWait.skip_whose_end_would_exhaust_a_revision_leaves_the_goal_active`；策略意图的依赖版本随步骤与调用（`MA-008`）；E1 步骤 9；E4 步骤 4 |
 | C-COMMIT-016 | M1 已实现：`WorkModel.commit_seq_of_unstored_work_is_reused_by_later_boots`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`（断电时尚未存储的 transition 之后的位置由下一次启动重新使用，ADR-0026）；对外输出的 `requires_seq` 门控随产生对外输出的包 |
 | C-COMMIT-017 | M1 已实现并通过 Native 场景：`RevokeApi.unknown_persisted_result_reconciles_original_canonical_and_original_sequence`、`RevokeApi.lost_unpersisted_creation_gets_target_gone_without_reusing_old_queued_durability`、`RevokeApi.failed_writer_isolation_preserves_the_gate_and_reports_no_durable_result`、`PendingRevoke.discard_retains_control_but_never_compares_an_old_queued_seq_in_a_new_boot`；最终交付见 ADR-0031；C-COMMIT-016；E2 F10、F12 |
