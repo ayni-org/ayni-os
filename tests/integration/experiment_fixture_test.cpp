@@ -54,7 +54,7 @@ TEST(ExperimentEvidence, unregistered_case_is_rejected_before_creating_output) {
     const Case fabricated{"HARNESS.S1.fake", "HARNESS S1", "", "", nullptr};
     EXPECT_EQ(run(fabricated, "/unregistered-must-not-be-created").status, AYNI_INVALID_ARGUMENT);
 }
-// ADR-0075/C-EXP-014: an unreadable recovery cannot satisfy the empty-world
+// ADR-0075/C-EXP-004: an unreadable recovery cannot satisfy the empty-world
 // assertions of a lost-creation case and be misreported as a successful restart.
 TEST(ExperimentEvidence, rejected_recovery_fails_before_empty_world_assertions) {
     Evidence evidence;
