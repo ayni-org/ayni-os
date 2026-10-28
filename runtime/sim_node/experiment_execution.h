@@ -41,6 +41,7 @@ class Physical {
     uint64_t deadline_offset() const;
     ayni_control_info_v1 info() const;
     providers::mock_execution::Executor executor;
+    uint32_t scene_version = 1; // Catalog choice only while no Kernel exists.
 
   private:
     World &world_;

@@ -96,14 +96,15 @@ bool Physical::register_profile(ayni_kernel_t *kernel) {
     const ayni_scene_rule_v1 rule{
         authority.capability_id, 1, 0, {sizeof(ayni_scope_v1), 0, nullptr}};
     const ayni_observation_condition_v1 condition{text("ready"), 1, 0, 1, 1, observation_age_us};
-    const ayni_scene_desc_v1 scene{sizeof(scene), 1, text("look"), 1, 1, &rule, &condition};
+    const ayni_scene_desc_v1 scene{sizeof(scene), scene_version, text("look"), 1, 1,
+                                   &rule,         &condition};
     const ayni_execution_field_v1 mapping{text("yaw"), text("mrad"), control_field, 1};
     const ayni_execution_binding_v1 execution{sizeof(execution),
                                               1,
                                               binding.binding_id,
                                               ports.executor_id,
                                               1,
-                                              1,
+                                              scene_version,
                                               text("look"),
                                               AYNI_FORM_SESSION,
                                               lease_us,

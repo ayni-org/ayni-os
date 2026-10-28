@@ -1,12 +1,12 @@
 # Ayni：Core 优先的跨设备个人助理 AgentOS 实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.78 · 2026-10-28；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.79 · 2026-10-28；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：面向个人消费者；用户面对一个统一助理，内部由多个 Agent 分工。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **首发验证设备**：现有 ESP32-S3 N16R8 开发板；型号、引脚、16 MB Flash / 8 MB PSRAM 均须实测确认。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：ABI 0.45 / schema 2；P0～P6 本轮 Native 正常实现与集成证据见 [M1 正常集成报告](../reports/core/m1-normal-integration.md)（#93，ADR-0071）。正常 JSON profile、容量/编码测量和 typed 多节点子集已交付；E2 Native 完整实验已由 #98 验证（ADR-0076），完整 E1/E3 Native 证据见 #99/#100（ADR-0077/0078）；安全分支覆盖目标仍有差距，E4、完整 MA-038、Core Alpha 与硬件验收未完成。真实模型多轮仍待用户本机试用；用户已授权按阶段完成完整 E2→E1→E3→E4，运行器与 E2/E1 已由 #97～#99 交付，当前交付 E3、随后推进 E4，故障/恢复专项恢复，变异继续暂停。
+> **当前状态**：ABI 0.45 / schema 2；P0～P6 本轮 Native 正常实现与集成证据见 [M1 正常集成报告](../reports/core/m1-normal-integration.md)（#93，ADR-0071）。正常 JSON profile、容量/编码测量和 typed 多节点子集已交付；E2 Native 完整实验已由 #98 验证（ADR-0076），完整 E1/E3 Native 证据见 #99/#100（ADR-0077/0078）；E4 Native/Sim 组合/版本证据见 ADR-0079；安全分支覆盖目标仍有差距，完整 MA-038、Core Alpha 与硬件验收未完成。真实模型多轮仍待用户本机试用；用户已授权按阶段完成完整 E2→E1→E3→E4，运行器与 E2/E1 已由 #97～#99 交付，E4 为本轮最后阶段，随后停止；对应故障/恢复专项已恢复，变异继续暂停。
 
 > **本轮范围**：实施用户 2026-10-25 批准的 M1 剩余计划。取消累计费用钱包与自建认证网关，改为运行限制和直连外部 API（ADR-0042）。本轮不制作旧存储迁移工具；确需破坏兼容时显式拒绝并保留旧目录。历史版本描述保留历史含义，不作为当前预算/网关交付要求。
 
@@ -909,7 +909,7 @@ E1–E4 先在电脑确定性模拟器完成，再在 ESP32 以同一契约复�
 
 ### 10.5 E4：有界组合、订阅依赖与语义升级/回滚
 
-**准备条件**：以公开 SDK 注册 `composite_workflow` 应用和版本化步骤，组合测试执行器、停止确认、订阅抓拍、Mock 分析与通知；沿用 E2 的独立计数器。两个兼容 ProviderBinding 加一个不匹配绑定；准备能力/Scene/GoalType v1/v2 及可读/不可读的模拟固件、存储版本。M1/M2 使用 Mock/LED 与测试版本，不开放真实运动或声称完成真实 OTA。
+**准备条件**：以公开 SDK 注册 `composite_workflow` 应用和版本化步骤，组合测试执行器、停止确认、订阅抓拍、Mock 分析与通知；沿用 E2 的独立计数器。两个兼容 ProviderBinding 加一个不匹配绑定；准备能力/Scene/GoalType v1/v2 及当前 reader 可读格式、CRC 正确的不支持 schema/必需记录版本。M1 不制作迁移器或旧格式兼容 reader；JSON Schema 关键字入口留到 MA-007，当前按 typed 描述验非法类型与界限（用户 2026-10-28 选择，ADR-0079）。M1/M2 使用 Mock/LED 与测试版本，不开放真实运动或声称完成真实 OTA。
 
 | 步骤 / 故障注入 | 预期轨迹 | 通过断言 |
 |---|---|---|
@@ -918,7 +918,7 @@ E1–E4 先在电脑确定性模拟器完成，再在 ESP32 以同一契约复�
 | 3. 父组合取消、动作未知或订阅停止未确认时返回后续结果 | 取消向下传播，未知阻止依赖步骤，资源确认释放或隔离 | 部分完成如实可见，不通过新 Provider 重做未知动作，无父子持锁死锁 |
 | 4. 分析在途时删记忆/撤销共享、关闭订阅或修改观察版本 | 依赖复核拒绝旧摘要和动作建议，旧代事件失效，清理可跨重启继续 | 删除内容不复活、停止后无新观察触发，公共档案不越权 |
 | 5. 存在旧操作时只注册不兼容能力/Scene/GoalType v2；再提供旧版本查询 resolver | 缺少旧语义时暂停；兼容查询可补原操作结果，不执行新动作 | 不用 v2 参数解释 v1，不扩大权限/费用，不丢旧调用身份 |
-| 6. 迁移中断；新格式已写入新动作/调用计数/删除后回滚模拟旧固件 | 有效提交保留；旧固件不兼容则安全诊断，不回旧快照执行 | 无动作重复、消费回退或删除复活；兼容矩阵与实际状态一致 |
+| 6. 已写入动作/调用计数/删除后，以不支持 schema 或必需记录版本重启当前 reader；重复重启 | 明确受限，原数据保留，不安装新 writer，不回旧快照执行；开发期迁移中断项不适用 | 无新动作、数据改写或删除复活；兼容矩阵与实际状态一致，不宣称运行旧固件二进制 |
 | 7. 通知已入列未呈现时重启，再给失败/成功/未知呈现证据 | 入列保持待呈现；`notify.present` 调用的成功结果先持久，随后按原步骤完成 Task（ADR-0066）；未知按 `RESULT_UNKNOWN` 待处理 | 仅成功呈现完成，无需用户 ACK；重复回执不重复终结 |
 
 **总通过标准**：新组合在 Native/ESP32 通过同一夹具，函数层级、共同检查点、绑定、订阅代际、删除依赖和旧语义恢复闭合。代码/契约/版本矩阵、计数和提交轨迹可复现。M3 补真实媒体/停止，M4 补真实 OTA/迁移回滚和通知呈现；模拟版本结果不能代替后两者。
@@ -999,15 +999,15 @@ cmake -S . -B build/native \
   -DCMAKE_BUILD_TYPE=Debug \
   -DAYNI_BUILD_TESTS=ON \
   -DAYNI_HOST=native
-cmake --build build/native -j
+cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ./build/native/targets/simulator/ayni-sim
 
-# planned: independent experiment runners with deterministic fixtures
-./build/native/targets/simulator/ayni-sim --experiment E1
-./build/native/targets/simulator/ayni-sim --experiment E2
-./build/native/targets/simulator/ayni-sim --experiment E3
-./build/native/targets/simulator/ayni-sim --experiment E4
+# Native/Sim compiled experiments; set build/test parallelism from resources first
+./build/native/targets/simulator/ayni-sim --experiment E1 --output NEW_E1_DIRECTORY
+./build/native/targets/simulator/ayni-sim --experiment E2 --output NEW_E2_DIRECTORY
+./build/native/targets/simulator/ayni-sim --experiment E3 --output NEW_E3_DIRECTORY
+./build/native/targets/simulator/ayni-sim --experiment E4 --output NEW_E4_DIRECTORY
 
 # planned optional build: enabled EMBODIMENT_V1 Mock fixtures only
 ./build/native/targets/simulator/ayni-sim --suite R1.a
@@ -1356,3 +1356,5 @@ v1.76 记录完整实验运行器（#97，ADR-0075）及 E2 F0～F14（ADR-0076�
 v1.77 记录完整 E1 共享服务验收（ADR-0077）：32 个确定性 Native 用例覆盖计划步骤 1～11，实际 ToolLoop/规则、资源/订阅、来源失效、可靠完成和提醒呈现闭合。本地事件继续受 ≤10 step 硬门槛约束；用户选择资源等待保留当前 30 秒，替代原 500 ms，不改 ABI。Core 修复来源失效后恢复旧可能派发调用被错误当作未派发取消的问题，仍保留 UNKNOWN 和原身份；ABI 0.45/schema 2 不变。ESP32、真实硬件、E3/E4 及 Core Alpha 仍须各自证据。
 
 v1.78 记录完整 E3（#100，ADR-0078）：规则测试策略与真实 ToolLoop 消费共同步骤，停机替换 Mock A/B 后保留旧调用路由、operation、Task 和消耗，未知调用不重绑；旧响应只投给当前有效邮箱并被拒绝。不兼容私有检查点或未知策略版本明确暂停，原字节和身份保留，可回退原 reader。ABI 0.45/schema 2 不变；E4、Core Alpha、完整 MA-038 与硬件仍待验收。
+
+v1.79 记录完整 E4（ADR-0079）的组合、11 项提交边界、来源/订阅失效、旧能力/GoalType/Scene 及通知证据；用户确认 M1 不做迁移/兼容 reader，并以 typed 注册边界验非法类型和界限，JSON Schema 关键字留到 MA-007。不支持的 schema/必需记录明确拒绝并保留数据；Mock 九项工具提议整轮拒绝。ABI 0.45/schema 2 不变；本轮止于 E4，安全覆盖、Core Alpha、完整 MA-038 与硬件另行安排。

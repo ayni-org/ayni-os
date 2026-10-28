@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S6.unsupported_legacy_schema",
+  "experiment_step": "E4 步骤 6",
+  "clauses": [
+    "C-VER-020",
+    "C-STORE-010"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "unsupported_legacy_schema"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

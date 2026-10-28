@@ -59,7 +59,8 @@ enum class Metric {
     control_phase,
     control_deadline,
     shared_completed,
-    replacement_completed
+    replacement_completed,
+    composite_completed
 };
 ayni_string_v1 text(const char *value);
 // Exact record boundaries are decoded only by the optional tests/ probe, using
@@ -75,7 +76,8 @@ enum class RecordPoint {
     revoked_grant,
     memory,
     task_checkpoint,
-    before_marker
+    before_marker,
+    stopped_subscription
 };
 enum class Damage { torn_tail, committed };
 
@@ -196,6 +198,7 @@ class Evidence {
 class Physical;
 class SharedServices;
 class Replacement;
+class Composite;
 class World {
   public:
     explicit World(Evidence &evidence,
@@ -236,9 +239,12 @@ class World {
     bool application_policy();
     bool exhaust_storage();
     void restore_storage();
-    bool hold_record_append(RecordPoint point);
-    bool crash_after_record(RecordPoint point);
+    bool hold_record_append(RecordPoint point, const char *step = nullptr);
+    bool crash_after_record(RecordPoint point, const char *step = nullptr);
     bool damage_log(Damage damage);
+    // Simulated catalog revisions, selected only while no Kernel exists.
+    enum class CounterProfile { v1, v2, v2_with_v1_query };
+    CounterProfile counter_profile = CounterProfile::v1; // v1 resolver never includes a v1 Binding.
     bool fault_pending(hosts::sim::StorageFault fault);
     bool complete_storage();
     bool complete_old_writer();
@@ -258,6 +264,7 @@ class World {
     std::unique_ptr<Physical> physical;
     std::unique_ptr<SharedServices> shared;
     std::unique_ptr<Replacement> replacement;
+    std::unique_ptr<Composite> composite;
     uint64_t steps = 0;
     uint32_t items_per_step = step_items; // Work items per bounded Core step, 1..step_items.
     enum class Storage { complete, held };

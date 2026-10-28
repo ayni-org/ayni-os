@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S1.typed_schema_rejected",
+  "experiment_step": "E4 步骤 1",
+  "clauses": [
+    "C-CALL-001",
+    "C-BIND-001"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "typed_schema_rejected"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

@@ -6,14 +6,14 @@ namespace {
 constexpr uint32_t text_limit = 512;
 }
 ayni_status_t ModelProbe::configure(providers::mock::Variant variant, uint64_t delay_us,
-                                    Clock clock, std::optional<uint32_t> timeout_ms) {
+                                    Clock clock, std::optional<uint32_t> timeout_ms,
+                                    providers::mock::Service service) {
     clock_ = clock;
     if (timeout_ms && *timeout_ms == 0) {
         return AYNI_INVALID_ARGUMENT;
     }
     delay_us_ = delay_us;
-    const auto status =
-        provider_.configure({variant, providers::mock::Service::text, 1, text_limit, {}});
+    const auto status = provider_.configure({variant, service, 1, text_limit, {}});
     if (status != AYNI_OK) {
         return status;
     }

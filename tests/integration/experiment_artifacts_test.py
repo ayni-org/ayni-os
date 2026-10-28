@@ -11,7 +11,7 @@ def main():
     executable = sys.argv[1]
     with tempfile.TemporaryDirectory(prefix="ayni-experiment-replay-") as directory:
         root = Path(directory)
-        for suite in ("HARNESS", "E2", "E1", "E3"):
+        for suite in ("HARNESS", "E2", "E1", "E3", "E4"):
             outputs = []
             for iteration in range(2):
                 output = root / (suite + str(iteration))
@@ -72,6 +72,20 @@ def main():
                     assert set(re.findall(r"`(E3\.[^`]+)`", canonical)) == artifacts.keys()
                     assert all(value[0]["deployment"] == "replacement" for value in artifacts.values())
                     assert all("SYNTHETIC_PRIVATE_E3" not in value[1] for value in artifacts.values())
+                elif suite == "E4":
+                    repo = Path(__file__).resolve().parents[2]
+                    canonical = (repo / "contracts/fixtures/cases.md").read_text()
+                    required = set(re.findall(r"`(E4\.[^`]+)`", canonical)) - {
+                        "E4.S1.schema_keyword_rejected", "E4.S6.migration_interrupted"}
+                    assert required <= artifacts.keys()
+                    assert all(value[0]["deployment"] == "composite" for value in artifacts.values())
+                    assert all("SYNTHETIC_E4_SOURCE" not in value[1] for value in artifacts.values())
+                    matrix = json.loads((repo / "contracts/fixtures/e4-compatibility.json").read_text())
+                    assert matrix["schema"] == 1 and len(matrix["rows"]) >= 9
+                    for row in matrix["rows"]:
+                        evidence = [json.loads(line) for line in artifacts[row["case_id"]][1].splitlines()]
+                        for name, expected in row["assertions"].items():
+                            assert any(item["category"] == "assertion" and item["name"] == name and item["value"] == expected for item in evidence), (row, name)
                 else:
                     assert len(artifacts) == 7
                 outputs.append(artifacts)

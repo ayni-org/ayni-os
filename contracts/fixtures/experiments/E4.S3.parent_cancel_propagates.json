@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S3.parent_cancel_propagates",
+  "experiment_step": "E4 步骤 3",
+  "clauses": [
+    "C-LIFE-011",
+    "C-LIFE-022",
+    "C-CALL-009"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "parent_cancel_propagates"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

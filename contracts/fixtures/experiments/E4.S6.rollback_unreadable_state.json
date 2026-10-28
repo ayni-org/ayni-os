@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S6.rollback_unreadable_state",
+  "experiment_step": "E4 步骤 6",
+  "clauses": [
+    "C-VER-020",
+    "C-VER-022",
+    "C-STORE-004"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "rollback_unreadable_state"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

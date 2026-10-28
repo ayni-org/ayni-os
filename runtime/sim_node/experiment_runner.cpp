@@ -19,6 +19,8 @@ const char *deployment_name(Deployment deployment) {
         return "shared_physical";
     case Deployment::replacement:
         return "replacement";
+    case Deployment::composite:
+        return "composite";
     }
     return "unsupported";
 }

@@ -19,5 +19,10 @@ ayni_status_t register_goals(ayni_kernel_t *, ayni_string_v1 strategy_id,
 // Returns handled=true when the shared prerequisite emitted a decision.
 ayni_status_t prerequisite(const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &, bool &handled);
 } // namespace replacement
+// E4 application owns ordered steps; runtime owns concrete services and faults.
+namespace composite {
+ayni_status_t register_workflow(ayni_kernel_t *, uint32_t strategy_version = 1,
+                                uint32_t goal_version = 1);
+} // namespace composite
 } // namespace ayni::applications::experiment_fixtures
 #endif

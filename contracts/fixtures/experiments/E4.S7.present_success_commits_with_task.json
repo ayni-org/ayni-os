@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S7.present_success_commits_with_task",
+  "experiment_step": "E4 步骤 7",
+  "clauses": [
+    "C-PROD-011",
+    "C-PROD-015",
+    "C-PROD-017"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "present_success_commits_with_task"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

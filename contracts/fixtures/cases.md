@@ -107,7 +107,8 @@ ADR-0078：步骤 1～5 的八项完整 Native/Sim 用例已编译到 `experimen
 |---|---|---|---|
 | `E4.S1.register_and_run` | 以公开接口注册 `composite_workflow` 与版本化步骤并执行 | Kernel 无业务分支改动；每步独立授权、调用身份与资源证据 | C-CALL-001、C-POLICY-003 |
 | `E4.S1.mismatched_binding_rejected` | 提供错误模态、资源或外发目的地的 Binding | 在 `ayni_start` 或派发前拒绝 | C-BIND-001、C-PROV-009 |
-| `E4.S1.schema_keyword_rejected` | 能力 Schema 使用子集之外的关键字 | 注册失败 | C-JSON-012 |
+| `E4.S1.schema_keyword_rejected` | JSON Schema 关键字入口，用户 2026-10-28 明确留到 MA-007 | M1 不适用且未验证；由下一行 typed 用例验本阶段公开接口 | C-JSON-012 |
+| `E4.S1.typed_schema_rejected` | typed 注册的非法类型/格式、缺时限与越界上限 | 明确拒绝且不消耗目录槽 | C-CALL-001、C-BIND-001 |
 | `E4.S2.restart_at_each_boundary` | 第一步完成、后续抓拍与分析待决时，在每个提交边界重启并换兼容策略（每个边界一个用例） | 完成步骤跳过，未派发步骤重新准入；新尝试沿用 `logical_call_id`；计数不增加 | C-CALL-004、C-CALL-007、C-ID-003、C-POLICY-008 |
 | `E4.S3.parent_cancel_propagates` | 父组合在子步骤在途时取消 | 取消向下传播；记录列出已完成、未执行与未知的步骤 | C-LIFE-011、C-LIFE-022、C-CALL-009 |
 | `E4.S3.unknown_step_blocks_dependents` | 某步骤结果未知 | 依赖它的步骤不执行，不换 Provider 重做；无父子持锁死锁 | C-CALL-006、C-CALL-008 |
@@ -117,9 +118,12 @@ ADR-0078：步骤 1～5 的八项完整 Native/Sim 用例已编译到 `experimen
 | `E4.S5.v2_only_pauses_old_operation` | 存在旧操作时只注册不兼容的 v2 | 缺少旧语义时暂停，不用 v2 解释 v1 参数 | C-VER-011、C-VER-030 |
 | `E4.S5.resolver_reconciles_v1` | 再提供旧版本查询 resolver | 补得原操作结果，不执行新动作 | C-VER-011 |
 | `E4.S5.unknown_goal_type_rejected` | 提交未注册的 GoalType | 拒绝 | C-POLICY-009 |
-| `E4.S6.migration_interrupted` | 存储迁移中断 | 从旧格式重新开始，校验通过后才切换 | C-VER-021、C-STORE-010 |
+| `E4.S6.migration_interrupted` | 开发期无迁移器或兼容 reader（用户 2026-10-28 确认） | M1 不适用；以不支持格式/版本的拒绝、保留和禁止输出替代 | C-VER-021、C-STORE-010 |
+| `E4.S6.unsupported_format_preserved`、`E4.S6.unsupported_legacy_schema`、`E4.S6.unsupported_record_version` | CRC 正确的 schema 0/1 或未知必需记录版本 | 受限、不安装 writer、不输出、原样保留并可重复拒绝 | C-VER-020、C-STORE-010 |
 | `E4.S6.rollback_unreadable_state` | 新格式已写入新动作、Task 调用计数与删除后回滚到模拟旧固件 | 旧固件进入安全诊断，不回到旧快照执行；动作不重复、消费不回退、删除不复活 | C-VER-020、C-VER-022、C-STORE-004 |
 | `E4.S6.compat_matrix_matches` | 按升级清单的兼容矩阵逐项运行 | 实际行为与矩阵一致 | C-VER-031 |
 | `E4.S7.queued_not_presented_restart` | 通知已入列、未呈现时重启 | 保持待呈现 | C-PROD-010、C-PROD-013 |
 | `E4.S7.present_success_commits_with_task` | 呈现器返回成功 | `notify.present` 的成功结果先持久，随后按原步骤完成 Task，无需用户 ACK | C-PROD-011、C-PROD-015、C-PROD-017 |
 | `E4.S7.present_unknown_pending` | 呈现器返回未知，随后回执重复 | 按 `RESULT_UNKNOWN` 待处理；重复回执不重复终结 | C-PROD-013 |
+
+ADR-0079：完整 Native/Sim profile 包含 E4；步骤 2 将 11 个实际 append 边界各展开为 lost/stored 用例，原边界总项另验 summary 批次撕裂。没有停止证明的旧采样或无查询的旧模型保持 UNKNOWN 并阻断依赖；已持久停止/结果的路径接续完成。额外覆盖撤销共享、GoalType/Scene 版本、失败通知，兼容矩阵见 `e4-compatibility.json`；CLI 重放逐行核对实际断言。JSON Schema 关键字和迁移两项依用户决定不适用于本阶段，不报告为通过。

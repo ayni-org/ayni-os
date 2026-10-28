@@ -1,0 +1,26 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S2.presentation_receipt_stored",
+  "experiment_step": "E4 步骤 2",
+  "clauses": [
+    "C-CALL-004",
+    "C-CALL-007",
+    "C-ID-003",
+    "C-POLICY-008"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "restart_at_each_boundary",
+      "boundary": "presentation_receipt",
+      "append": "stored"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

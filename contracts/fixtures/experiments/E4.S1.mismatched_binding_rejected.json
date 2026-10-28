@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S1.mismatched_binding_rejected",
+  "experiment_step": "E4 步骤 1",
+  "clauses": [
+    "C-BIND-001",
+    "C-PROV-009"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "mismatched_binding_rejected"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}

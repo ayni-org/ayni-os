@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E4.S7.queued_not_presented_restart",
+  "experiment_step": "E4 步骤 7",
+  "clauses": [
+    "C-PROD-010",
+    "C-PROD-013"
+  ],
+  "deployment": "composite",
+  "script": [
+    {
+      "op": "composite",
+      "scenario": "queued_not_presented_restart"
+    },
+    {
+      "op": "expect",
+      "metric": "composite_completed",
+      "value": "1"
+    }
+  ]
+}
