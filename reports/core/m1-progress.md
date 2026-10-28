@@ -98,6 +98,7 @@
 | [#92](https://github.com/RobotSe7en/ayni/pull/92) | 2026-10-27 | P6 MA-038 正常子集 | 独立 Kernel/时钟/存储、typed 远程调用/查询、固定服务 Task 与在途正常关闭；完整协议仍未完成 | ADR-0070 |
 | [#93](https://github.com/RobotSe7en/ayni/pull/93) | 2026-10-27 | P6 正常收尾 | 统一覆盖率、配置证据与正常集成报告，安全覆盖差距保持开放；ABI/schema 不变 | ADR-0071 |
 | [#94](https://github.com/RobotSe7en/ayni/pull/94) | 2026-10-27 | MA-019/MA-020 修订 | 单一 ToolLoop 助理、模型计划工具（待批、按 operation_id 找回、待批至多 4 个、停后不登记）、确定性停止；AYNF v3/参数 format2，旧目录拒绝；ABI/schema 不变 | ADR-0072 |
+| [#95](https://github.com/RobotSe7en/ayni/pull/95) | 2026-10-28 | MA-019 修订 | 每次模型请求写明当前本地日期、星期与时区，模型自行换算相对日期；CLI `timezone` 配置或本机时区；Core/ABI/schema 不变 | ADR-0073 |
 
 ## 工作包日期
 
@@ -114,7 +115,7 @@
 
 ## 交接状态（2026-10-27）
 
-当前功能基线为 [#94](https://github.com/RobotSe7en/ayni/pull/94)（单一助理、模型计划工具与确定性停止，ADR-0072），其前为 #93（P6 正常集成收尾）；ABI 0.45 / schema 2。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。完整实验、Core Alpha 和硬件验收仍未完成。
+当前功能基线为 [#95](https://github.com/RobotSe7en/ayni/pull/95)（模型请求写明当前本地时间，ADR-0073），其前为 #94（单一助理、模型计划工具与确定性停止，ADR-0072）；ABI 0.45 / schema 2。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。完整实验、Core Alpha 和硬件验收仍未完成。
 
 - **已交付：** 单一助理 Native CLI（#94 起取代双 Agent 与点名路由；模型可登记待批目标，“停”不经模型）、typed 文本/工具调用与双策略、私有记忆/共享撤销、可信日历提醒、Mock 订阅/场景观察、统一助理/暂停组/安静时段、C++ SDK 和公开示例。结构整改与各功能的契约/验证入口在上方 PR 表及报告。
 - **P6：** 正常 JSON profile/脱敏重放见 #90（ADR-0068）；最大配置及选定满表测量见 #91（ADR-0069）；typed 多节点正常调用/查询与在途关闭见 #92（ADR-0070）。#93 统一覆盖率、配置证据和报告；Core 行覆盖达到目标，通用安全分支 90% 目标仍有差距（ADR-0071），未缩统计范围。

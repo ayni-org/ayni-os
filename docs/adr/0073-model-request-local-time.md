@@ -1,6 +1,6 @@
 # ADR-0073：模型请求写明当前本地时间
 
-- **状态**：已接受；实现与验证见 PR
+- **状态**：已接受；实现与验证见 [#95](https://github.com/RobotSe7en/ayni/pull/95)
 - **日期**：2026-10-28
 - **关联**：MA-019；ADR-0056、0072；C-NATIVE-011
 
@@ -30,4 +30,4 @@ ADR-0072 让模型把用户的长期要求换算成计划文法，但 ToolLoop �
 
 ## 验证
 
-`BuiltinLoop.model_request_states_the_local_time` 覆盖东西时区的日期与星期、未同步标注、无时间与非法时区；`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval` 检查真实 Provider 请求带上配置的时区；CLI 脚本检查 `timezone` 配置只接受 POSIX 规则。读取 `TZ` 与时区文件的默认路径依赖运行环境，没有自动测试，只在本地按几种 `TZ` 取值手工核对。命令、结果与 CI 见 PR。
+`BuiltinLoop.model_request_states_the_local_time` 覆盖东西时区的日期与星期、未同步标注、无时间与非法时区；`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval` 检查真实 Provider 请求带上配置的时区；CLI 脚本检查 `timezone` 配置只接受 POSIX 规则。读取 `TZ` 与时区文件的默认路径依赖运行环境，没有自动测试，只在本地按几种 `TZ` 取值手工核对。命令、结果与 CI 见 [#95](https://github.com/RobotSe7en/ayni/pull/95)。
