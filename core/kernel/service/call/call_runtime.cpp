@@ -175,18 +175,17 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     const auto &task = work_.tasks.at(task_index);
     if (slots_[index].active && slots_[index].active->stage == Stage::lease_stop) {
         return state.outcome == 0 && mode != Mode::fenced
-                   ? restore_wait(index, task_index, now_us, mode)
+                   ? restore_wait(index, task_index, now_us, durable_seq, mode)
                    : Advance::idle;
     }
     if (slots_[index].active && slots_[index].active->stage == Stage::retiring) {
         // A storage reload may have retained the physical lease after its volatile
         // Provider terminal was drained. First persist stop, then retain UNKNOWN.
         return state.outcome == 0 && state.execution && work::execution_stopped(*state.execution)
-                   ? restore_wait(index, task_index, now_us, mode)
+                   ? restore_wait(index, task_index, now_us, durable_seq, mode)
                    : Advance::idle;
     }
 
-    const bool content_current = task_content_current({work_, now_us, durable_seq}, task_index);
     if (subscription_reopen_ready(index, now_us, durable_seq, mode)) {
         return reopen_subscription(index, task_index, now_us, durable_seq, mode);
     }
@@ -203,16 +202,9 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
                                                 : Advance::idle;
     }
     if (!slots_[index].active) {
-        if (!content_current || task.call.end != work::TaskCall::End::none) {
-            return cancel_local(index, task_index);
-        }
-        // Expired waits persist through shutdown. User pause is independent and
-        // also prevents a resumed call from joining the queue until released.
-        if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
-            return Advance::idle;
-        }
-        return restore_wait(index, task_index, now_us, mode);
+        return restore_wait(index, task_index, now_us, durable_seq, mode);
     }
+    const bool content_current = task_content_current({work_, now_us, durable_seq}, task_index);
     auto &active = *slots_[index].active;
     if (active.call_id != id.call_id) {
         return Advance::internal;

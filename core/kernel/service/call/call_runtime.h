@@ -271,7 +271,8 @@ class CallRuntime {
     // Scan domain calls and their shared admission queue after reliable ingress.
     bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
     Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
-    Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, Mode mode);
+    Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
+                         Mode mode);
     Advance progress_dispatch(uint32_t index, uint32_t task_index, uint64_t now_us,
                               uint64_t durable_seq);
     Advance stop(uint32_t index, uint32_t task_index, Mode mode, work::CallCancelCause cause);

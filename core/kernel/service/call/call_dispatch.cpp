@@ -43,7 +43,7 @@ struct ConcreteArguments {
 // Restore identities without restoring a submission claim. An old possible
 // dispatch becomes UNKNOWN; only a never-dispatched request can join a new queue.
 CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us,
-                                               Mode mode) {
+                                               uint64_t durable_seq, Mode mode) {
     if (mode == Mode::fenced) {
         return Advance::idle;
     }
@@ -63,6 +63,20 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
             return Advance::internal;
         }
         return Advance::applied;
+    }
+    // C-CALL-008 / C-PROD-030: a restored possible dispatch must become
+    // UNKNOWN above even after its source or authority was invalidated. Only
+    // known unsubmitted work may take the local non-delivery cancellation path.
+    const auto &task = work_.tasks.at(task_index);
+    if (!task_content_current({work_, now_us, durable_seq}, task_index) ||
+        task.call.end != work::TaskCall::End::none) {
+        return cancel_local(index, task_index);
+    }
+    // Expired waits persist through shutdown. User pause is independent and
+    // also prevents a resumed call from joining the queue until released.
+    // Only never-dispatched calls reach this gate (ADR-0047).
+    if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
+        return Advance::idle;
     }
     catalog::BindingLinks links{};
     const bool compatible = compatible_call(index, links);
