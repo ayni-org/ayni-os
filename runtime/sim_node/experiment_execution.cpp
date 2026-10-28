@@ -186,6 +186,7 @@ ayni_control_info_v1 Physical::info() const {
     return state;
 }
 bool Physical::advance() {
+    world_.evidence.context(world_.steps, world_.node.simulation()->now_us());
     if (!world_.evidence.status("local control cycle", executor.advance())) {
         return false;
     }
@@ -209,6 +210,23 @@ bool Physical::advance() {
         stopped_samples_ = executor.samples();
     }
     return true; // Cleanup can still measure/stop after a previously latched case failure.
+}
+ayni_status_t Physical::close() {
+    constexpr uint32_t stop_cycles = lease_us / tick_us + 1;
+    for (uint32_t at = 0; at <= stop_cycles; ++at) {
+        const auto closed = executor.close();
+        if (closed != AYNI_BUSY) {
+            return closed;
+        }
+        // No Kernel remains, so no producer can renew the existing lease. This
+        // is independent local convergence, not synthetic Kernel cancellation.
+        world_.node.advance_clock(tick_us);
+        const auto advanced = executor.advance();
+        if (advanced != AYNI_OK) {
+            return advanced;
+        }
+    }
+    return AYNI_BUSY;
 }
 bool Physical::elapse(uint32_t duration_us) {
     while (duration_us != 0 && world_.evidence.ok()) {
@@ -234,6 +252,7 @@ bool Physical::at(uint32_t offset_us) {
 }
 bool Physical::mark_invalidated() {
     invalidated_at_ = world_.node.simulation()->now_us();
+    world_.evidence.context(world_.steps, *invalidated_at_);
     world_.evidence.fact("execution", "invalidated_at_us", *invalidated_at_);
     return world_.evidence.ok();
 }

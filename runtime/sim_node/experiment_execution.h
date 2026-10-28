@@ -17,7 +17,8 @@ class Physical {
     bool prepare();
     bool publish(int64_t value);
     bool advance();
-    bool at(uint32_t offset_us);       // Since the first actual permit's nonce issue time.
+    ayni_status_t close();       // After Kernel destruction, await independent stop and release.
+    bool at(uint32_t offset_us); // Since the first actual permit's nonce issue time.
     bool elapse(uint32_t duration_us); // Local cycles, without Core steps.
     bool mark_invalidated();
     bool stopped_within_bound();

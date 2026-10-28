@@ -16,8 +16,9 @@ CASE_ID = re.compile(r"(?:HARNESS|E[1-4])\.(?:S[1-9][0-9]*|F(?:0|[1-9][0-9]*))\.
 METRICS = {"executions", "pending_calls", "pending_storage", "goal_count", "call_count",
            "call_phase", "call_outcome", "call_effect", "lifecycle", "writer_epoch", "faults_applied",
            "submissions", "call_durable", "call_operation", "task_count", "call_query_conclusion",
-           "goal_state", "task_state", "kernel_boot", "writer_advanced", "boot_advanced", "durable_kept", "memory_count", "task_steps", "checkpoint_value", "task_occurrence", "model_calls_used", "model_call_limit", "physical_submissions", "physical_samples", "physical_renewals", "physical_challenges", "held_renewals", "control_phase", "control_deadline"}
+           "goal_state", "task_state", "kernel_boot", "writer_advanced", "boot_advanced", "durable_kept", "memory_count", "task_steps", "checkpoint_value", "task_occurrence", "model_calls_used", "model_call_limit", "grant_lifecycle", "physical_submissions", "physical_samples", "physical_renewals", "physical_challenges", "held_renewals", "control_phase", "control_deadline"}
 VALUES = {
+    "grant_lifecycle": {name: "AYNI_GRANT_" + name for name in ("ACTIVE", "REVOKED", "EXPIRED")},
     "control_phase": {name: "AYNI_CONTROL_" + name for name in ("IDLE", "ACTIVE", "STOPPING", "STOPPED")},
     "call_phase": {name: "AYNI_CALL_" + name for name in
                    ("QUEUED", "PREPARED", "DISPATCHING", "IN_PROGRESS", "FINISHED", "RESULT_UNKNOWN")},
@@ -126,14 +127,14 @@ def action(item):
         keys(item, {"op", "point"})
         point = item["point"]
         if point not in {"goal_state", "task", "task_state", "task_authority",
-                         "prepared_call", "dispatch_call", "terminal_call", "memory", "task_checkpoint", "before_marker"}:
+                         "prepared_call", "dispatch_call", "terminal_call", "revoked_grant", "memory", "task_checkpoint", "before_marker"}:
             raise FixtureError("unsupported record cut point")
         function = "hold_record_append" if op == "hold_record" else "crash_after_record"
         return f'w.{function}(RecordPoint::{point})'
     if op in {"execute", "grant", "start_recovery", "save_call", "same_call",
-              "saved_call_missing", "revoke", "conflict_command", "expire_command", "read_result", "cancel_goal", "complete_storage", "complete_old_writer", "application_policy"}:
+              "saved_call_missing", "revoke", "conflict_command", "expire_command", "read_result", "cancel_goal", "complete_storage", "complete_old_writer", "application_policy", "exhaust_storage", "restore_storage"}:
         keys(item, {"op"})
-        return {"grant": "w.grant()", "application_policy": "w.application_policy()", "request_query": "w.request_query()",
+        return {"grant": "w.grant()", "exhaust_storage": "w.exhaust_storage()", "restore_storage": "w.restore_storage()", "application_policy": "w.application_policy()", "request_query": "w.request_query()",
                 "start_recovery": "w.start_recovery()", "save_call": "w.save_call()",
                 "same_call": "w.same_call()", "saved_call_missing": "w.saved_call_missing()",
                 "revoke": "w.revoke()",

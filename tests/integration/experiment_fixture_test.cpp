@@ -1,5 +1,6 @@
 // Full-fixture infrastructure (ADR-0075): real fault/restart and external count
 // self-checks use the same compiled scripts as the simulator CLI.
+#include "experiment_execution.h"
 #include "experiment_support.h"
 #include <algorithm>
 #include <ayni/runtime/sim_node/experiments.h>
@@ -108,6 +109,25 @@ TEST(ExperimentEvidence, oversized_prefix_cut_preserves_arena_and_pending_append
     EXPECT_EQ(after->commit_seq, before->commit_seq);
     EXPECT_EQ(after->bytes, before->bytes);
     EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_TRUE(evidence.ok());
+}
+// C-EXP-004/ADR-0076: a successful close after Kernel loss includes the
+// independent executor, which must stop by its preexisting lease and release.
+TEST(ExperimentEvidence, close_after_kernel_loss_waits_for_independent_executor) {
+    Evidence evidence;
+    World world(evidence, AYNI_CALL_QUERY_NONE, Deployment::physical);
+    ASSERT_TRUE(world.start());
+    ASSERT_TRUE(world.physical->prepare());
+    world.create("turn", 101);
+    ASSERT_TRUE(world.until("physical submit",
+                            [&] { return world.physical->executor.submissions() != 0; }));
+    ASSERT_TRUE(world.step());
+    const auto state = world.physical->info();
+    ASSERT_EQ(state.phase, AYNI_CONTROL_ACTIVE);
+    ASSERT_TRUE(world.crash(ayni::hosts::sim::CutAppend::lost));
+    EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_GE(world.node.simulation()->now_us(), state.deadline_us);
+    EXPECT_EQ(world.physical->executor.close(), AYNI_OK);
     EXPECT_TRUE(evidence.ok());
 }
 } // namespace

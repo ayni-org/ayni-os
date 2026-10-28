@@ -75,9 +75,12 @@ World::~World() {
         // Abruptly discard only this entirely synchronous simulated deployment.
         detach_clients();
         static_cast<void>(node.power_cut(hosts::sim::CutAppend::lost));
-        if (physical) {
-            static_cast<void>(physical->executor.power_cycle());
-        }
+    }
+    if (physical) {
+        // Also needed when a legal script ended immediately after Kernel loss.
+        physical->executor.abandon_kernel();
+        static_cast<void>(physical->executor.power_cycle());
+        static_cast<void>(physical->executor.close());
     }
 }
 ayni_status_t World::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
@@ -365,7 +368,9 @@ bool World::complete_old_writer() {
 }
 ayni_status_t World::close() {
     if (!node.kernel()) {
-        return AYNI_OK;
+        const auto closed = physical ? physical->close() : AYNI_OK;
+        evidence.status("close detached physical deployment", closed);
+        return closed;
     }
     if (lifecycle() != AYNI_LIFECYCLE_CONFIGURING && lifecycle() != AYNI_LIFECYCLE_STOPPED) {
         const auto accepted_before_shutdown = service.submissions();
@@ -405,17 +410,23 @@ ayni_status_t World::close() {
             }
         }
     }
+    if (lifecycle() != AYNI_LIFECYCLE_CONFIGURING && lifecycle() != AYNI_LIFECYCLE_STOPPED) {
+        observe(); // Preserve final public state for a bounded-shutdown failure.
+        evidence.status("shutdown bound", AYNI_BUSY);
+        return AYNI_BUSY;
+    }
     const auto released = node.release();
     evidence.status("destroy", released);
     if (released == AYNI_OK && physical) {
-        const auto closed = physical->executor.close();
+        const auto closed = physical->close();
         evidence.status("close physical deployment", closed);
         return closed;
     }
     return released;
 }
 ayni_intent_result_v1 World::submit(ayni_intent_kind_t kind, const void *body, uint64_t command,
-                                    uint32_t revision, ayni_status_t expected) {
+                                    uint32_t revision, ayni_status_t expected,
+                                    std::optional<ayni_reason_t> reason) {
     auto intent = initialized<ayni_intent_v1>();
     intent.kind = kind;
     intent.session_id = session_;
@@ -427,16 +438,41 @@ ayni_intent_result_v1 World::submit(ayni_intent_kind_t kind, const void *body, u
     auto error = initialized<ayni_error_v1>();
     evidence.status("submit", ayni_submit_intent(node.kernel(), &intent, &result, &error),
                     expected);
+    evidence.fact("command", "error_reason", error.reason);
+    if (reason) {
+        evidence.equal("intent error reason", error.reason, *reason);
+    }
     evidence.fact("command", "id", intent.command_id);
     evidence.fact("command", "commit_seq", result.commit_seq);
     return result;
 }
-uint64_t World::create(const char *type, uint64_t command, uint64_t agent) {
+ayni_goal_create_v1 World::goal_body(const char *type, uint64_t agent) const {
     auto body = initialized<ayni_goal_create_v1>();
     body.goal_type_version = 1;
     body.goal_type_id = text(type);
     body.owner_instance_id = instance(agent);
     body.trigger = std::strcmp(type, "folder") == 0 ? AYNI_TRIGGER_NONE : AYNI_TRIGGER_ONCE;
+    return body;
+}
+bool World::exhaust_storage() {
+    auto &host = *node.simulation();
+    host.set_storage_capacity(0);
+    const auto ports = host.table();
+    uint64_t available = UINT64_MAX;
+    if (!evidence.status("actual storage free bytes",
+                         ports.storage_free_bytes(ports.ctx, &available)) ||
+        !evidence.equal("full medium reports no space", available, 0)) {
+        return false;
+    }
+    const auto body = goal_body(physical ? "turn" : "action", 1);
+    submit(AYNI_INTENT_GOAL_CREATE, &body, 0, 0, AYNI_STORAGE_FAILED, AYNI_REASON_STORAGE_SPACE);
+    return evidence.ok();
+}
+void World::restore_storage() {
+    node.simulation()->set_storage_capacity(UINT64_MAX);
+}
+uint64_t World::create(const char *type, uint64_t command, uint64_t agent) {
+    const auto body = goal_body(type, agent);
     const auto result = submit(AYNI_INTENT_GOAL_CREATE, &body, command);
     if (evidence.ok()) {
         accepted_goal_ = AcceptedGoal{type, body, command ? command : next_command_, result};
@@ -661,6 +697,15 @@ uint64_t World::metric(Metric metric) const {
         return node.simulation()->faults_applied();
     case Metric::kernel_boot:
         return info().boot_epoch;
+    case Metric::grant_lifecycle: {
+        if (!grant_) {
+            evidence.status("saved grant required", AYNI_NOT_FOUND);
+            return 0;
+        }
+        auto grant = initialized<ayni_grant_info_v1>();
+        evidence.status("read original grant", ayni_get_grant(node.kernel(), *grant_, &grant));
+        return grant.lifecycle;
+    }
     case Metric::writer_advanced:
     case Metric::boot_advanced:
     case Metric::durable_kept: {

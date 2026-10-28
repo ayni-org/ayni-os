@@ -1,0 +1,25 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F2.storage_full_no_barrier",
+  "experiment_step": "E2 F2",
+  "clauses": [
+    "C-COMMIT-015",
+    "C-PERMIT-002"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "until", "metric": "call_phase", "value": "PREPARED"},
+    {"op": "until", "metric": "call_durable", "value": "1"},
+    {"op": "exhaust_storage"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "physical_submissions", "value": "0"},
+    {"op": "expect", "metric": "physical_samples", "value": "0"},
+    {"op": "expect", "metric": "physical_challenges", "value": "0"},
+    {"op": "restore_storage"},
+    {"op": "expect", "metric": "goal_count", "value": "1"}
+  ]
+}

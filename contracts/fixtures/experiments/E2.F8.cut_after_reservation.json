@@ -14,7 +14,7 @@
     {"op": "budget", "items": 1},
     {"op": "create", "type": "action", "command": "101"},
     {"op": "hold_record", "point": "task"},
-    {"op": "cut_record", "point": "task_authority"},
+    {"op": "cut_record", "point": "task_state"},
     {"op": "start"},
     {"op": "expect", "metric": "task_count", "value": "0"},
     {"op": "expect", "metric": "submissions", "value": "0"},

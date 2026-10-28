@@ -24,6 +24,9 @@
     {"op": "retry"},
     {"op": "read_result"},
     {"op": "expect", "metric": "submissions", "value": "1"},
-    {"op": "expect", "metric": "executions", "value": "1"}
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "expect", "metric": "call_effect", "value": "COMPLETE"},
+    {"op": "expect", "metric": "call_durable", "value": "1"}
   ]
 }

@@ -1,0 +1,32 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F11.cut_receipt_no_query",
+  "experiment_step": "E2 F11",
+  "clauses": [
+    "C-COMMIT-005",
+    "C-RUN-002",
+    "C-STORE-007"
+  ],
+  "query_authority": "NONE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "hold_record", "point": "terminal_call"},
+    {"op": "cut_record", "point": "before_marker"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "request_query", "status": "UNSUPPORTED"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"}
+  ]
+}

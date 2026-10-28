@@ -1,6 +1,7 @@
 // White-box injection only (C-COMMIT-002/005, E2 F0/F2/F8/F11): locate a
 // boundary with the existing batch/record owners, never duplicate their layout.
 // Compiled only with AYNI_BUILD_TESTS; no internal type escapes this file.
+#include "authority/grant/grant_records.h"
 #include "durability/batch/batch_codec.h"
 #include "experiment_support.h"
 #include "work/call/call_records.h"
@@ -21,6 +22,13 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
     while (reader.next(header, body) == durability::RecordReader::Next::record) {
         bool matched = false;
         switch (point) {
+        case RecordPoint::revoked_grant: {
+            authority::GrantRevocationRecord grant{};
+            matched = header.type == authority::grant_revocation_record_type &&
+                      authority::read_grant_revocation_record(body, header.length, grant) &&
+                      grant.effect == AYNI_INTENT_EFFECT_CHANGED;
+            break;
+        }
         case RecordPoint::goal_state:
             matched = header.type == durability::record_type::goal_state;
             break;

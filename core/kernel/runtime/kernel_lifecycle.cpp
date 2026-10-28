@@ -233,7 +233,11 @@ ayni::kernel::CallRuntime::Mode ayni_kernel::call_mode() const {
         return Mode::running;
     }
     if (lifecycle == AYNI_LIFECYCLE_DRAINING) {
-        return appends() && log.failure() == AYNI_RESTRICTION_NONE ? Mode::draining : Mode::closing;
+        // ADR-0016/0050: an unwritable shutdown releases volatile borrows without
+        // inventing durable cancellation. A restored medium can journal again.
+        return appends() && log.failure() == AYNI_RESTRICTION_NONE && budget.admits()
+                   ? Mode::draining
+                   : Mode::closing;
     }
     return Mode::fenced;
 }
@@ -654,11 +658,19 @@ void ayni_kernel::enter_fenced(ayni_restriction_t reason) {
 // After each transition and each step in RUNNING: a compaction starts once
 // the log asks for one and the journal has stored everything, so the
 // snapshot covers every transition applied.
+// Refresh the admission owner during shutdown too: a cached full-medium refusal
+// must not hold pre-dispatch borrows forever after the Host restores capacity.
+// DRAINING never starts a new compaction; it only drains promised work (C-LIFE-002, ADR-0027).
 void ayni_kernel::refresh_storage() {
-    if (lifecycle != AYNI_LIFECYCLE_RUNNING || maintaining()) {
+    if ((lifecycle != AYNI_LIFECYCLE_RUNNING && lifecycle != AYNI_LIFECYCLE_DRAINING) ||
+        maintaining()) {
         return;
     }
     budget.refresh(host);
+    if (lifecycle == AYNI_LIFECYCLE_DRAINING) {
+        budget.cancel_compaction();
+        return;
+    }
     const auto &privacy = work.privacy.record();
     const bool privacy_rotation = privacy.phase == ayni::work::PrivacyPhase::compact &&
                                   maintenance.generation() < privacy.snapshot_generation;

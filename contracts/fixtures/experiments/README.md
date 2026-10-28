@@ -4,7 +4,7 @@
 
 `fixture_schema=1` / `profile=m1-experiment` 是独立于 P6 `m1-normal` 的受控故障运行格式。JSON 在构建时校验并编译成顺序 C++ 调用，Core 和运行中的 simulator 不解析外部脚本。原 schema 0 仍是历史完整草案，不直接接受；本 profile 只接受已经实现的闭集动作。
 
-当前六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；E2 F0～F14 原清单及附加闭环场景已加入；E1/E3/E4 仍按各自阶段验收。
+初始六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；另有活动执行端断电后清理的 HARNESS 回归；E2 F0～F14 原清单及附加闭环场景已加入；E1/E3/E4 仍按各自阶段验收。
 
 ## 数据、控制与边界
 
@@ -21,7 +21,7 @@
 | execute / receipt | 外部计数副作用与 Provider 回执独立控制；接受请求不执行副作用，重启不重置计数 |
 | crash / start | 先停止同步模拟生产者并丢弃旧 completion 指针，Host 结束旧存储借用，再丢弃 arena；以同一 Host 镜像重建 |
 
-附加可选字段 `query_authority=NONE/BEST_EFFORT/AUTHORITATIVE`（默认 AUTHORITATIVE）、`deployment=counter/physical`（默认 counter）选择有限部署并写入 run.json。E2 新动作：`budget`（1～64）、`save_call/same_call`、`retry`、`revoke/cancel_goal`、`read_result`、`conflict_command/expire_command`、`start_recovery/finish_recovery`、`fault_pending/complete_storage/complete_old_writer`、`repeat_receipt/post_old_attempt`、`application_policy`。它们均通过原公开契约或模拟属主执行。
+附加可选字段 `query_authority=NONE/BEST_EFFORT/AUTHORITATIVE`（默认 AUTHORITATIVE）、`deployment=counter/physical`（默认 counter）选择有限部署并写入 run.json。E2 新动作：`budget`（1～64）、`save_call/same_call`、`retry`、`revoke/cancel_goal`、`read_result`、`conflict_command/expire_command`、`start_recovery/finish_recovery`、`fault_pending/complete_storage/complete_old_writer`、`repeat_receipt/post_old_attempt`、`application_policy`、`exhaust_storage/restore_storage`（实际 Host 容量及明确空间不足原因）。它们均通过原公开契约或模拟属主执行。
 
 `hold_record/cut_record` 只接受固定记录边界，`damage` 只接受 torn_tail/committed；精确 codec 探针仅在测试构建提供，关闭测试明确拒绝，不近似替代。`core_now` 推进 Core 而不走时；`physical` 的闭集动作控制执行端本地周期、链路、联锁、实际许可重放及测量。`at` 按首个实际许可的 nonce 时刻定位（0～1000000 µs），不会回拨时间；恢复链路须由脚本显式指定。重放测试丢弃旧 completion 指针，只向当前有效目标投递旧身份值。
 
@@ -36,7 +36,7 @@
 | 条款 | 约束 | 反例 | 验证 |
 |---|---|---|---|
 | C-EXP-001 | 完整 profile 在构建时拒绝未知/重复字段、未实现动作、无效步骤/条款、非法数值及超限；不能将正常 profile 或草案冒充完整实验 | storage_fault 被忽略、零断言脚本报告通过 | `tests/tools/test_generate_experiment_fixtures.py`；完整实验覆盖仍按各后续阶段报告 |
-| C-EXP-002 | 故障和重启作用于真实模拟 Host/Kernel；旧生产者先结束借用，持久镜像与外部效果独立保留 | 仅改查询结果变量假装断电，或沿用已释放的 completion | `ExperimentFixtures.compiled_scenario_records_actual_fault_and_assertion_results` 的 HARNESS.S1 六场景及 E2 F0～F14；`ExperimentEvidence.oversized_prefix_cut_preserves_arena_and_pending_append` |
+| C-EXP-002 | 故障和重启作用于真实模拟 Host/Kernel；旧生产者先结束借用，持久镜像与外部效果独立保留 | 仅改查询结果变量假装断电，或沿用已释放的 completion | `ExperimentFixtures.compiled_scenario_records_actual_fault_and_assertion_results` 的 HARNESS.S1 场景及 E2 F0～F14；`ExperimentEvidence.oversized_prefix_cut_preserves_arena_and_pending_append` |
 | C-EXP-003 | 副作用执行与回执分别控制；独立计数跨 Kernel 重启保留，测试服务不代替 Core 去重 | 每次重启清零计数而掩盖动作重复 | HARNESS.S1.external_effect_survives_cut、HARNESS.S1.completed_receipt_survives_cut |
 | C-EXP-004 | 首个失败不被后续匹配检查覆盖，关闭/产物错误仍导致失败；现有目录和未知/空实验拒绝 | 失败后清理返回 OK 把整例改成通过 | `ExperimentEvidence.first_failure_survives_later_success_and_retains_classified_status`；`ExperimentEvidence.unregistered_case_is_rejected_before_creating_output`；`ExperimentEvidence.rejected_recovery_fails_before_empty_world_assertions`；tests/integration/experiment_artifacts_test.py |
 | C-EXP-005 | CLI 与 GoogleTest 共用编译脚本及执行器；相同输入两次逻辑证据一致，版本/配置可查 | CLI 只打印预置“通过”，或分别维护两套恢复逻辑 | tests/integration/experiment_artifacts_test.py；`ExperimentFixtures.compiled_scenario_records_actual_fault_and_assertion_results`；`ExperimentEvidence.core_and_provider_clock_stay_equal_with_storage_held` |

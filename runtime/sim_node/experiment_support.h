@@ -50,6 +50,7 @@ enum class Metric {
     task_occurrence,
     model_calls_used,
     model_call_limit,
+    grant_lifecycle,
     physical_submissions,
     physical_samples,
     physical_renewals,
@@ -69,6 +70,7 @@ enum class RecordPoint {
     prepared_call,
     dispatch_call,
     terminal_call,
+    revoked_grant,
     memory,
     task_checkpoint,
     before_marker
@@ -177,7 +179,8 @@ class World {
     bool until(const char *name, const std::function<bool()> &condition,
                uint32_t bound = step_limit);
     ayni_intent_result_v1 submit(ayni_intent_kind_t, const void *body, uint64_t command = 0,
-                                 uint32_t revision = 0, ayni_status_t expected = AYNI_OK);
+                                 uint32_t revision = 0, ayni_status_t expected = AYNI_OK,
+                                 std::optional<ayni_reason_t> reason = std::nullopt);
     uint64_t create(const char *type = "action", uint64_t command = 0, uint64_t agent = 1);
     bool grant(uint64_t agent = 1, const char *capability = "test.increment");
     bool request_query(ayni_status_t expected = AYNI_OK);
@@ -191,6 +194,8 @@ class World {
     bool read_result();
     bool cancel_goal();
     bool application_policy();
+    bool exhaust_storage();
+    void restore_storage();
     uint64_t session() const { return session_; }
     bool hold_record_append(RecordPoint point);
     bool crash_after_record(RecordPoint point);
@@ -234,6 +239,7 @@ class World {
     };
     std::optional<AcceptedGoal> accepted_goal_;
     std::optional<uint64_t> grant_;
+    ayni_goal_create_v1 goal_body(const char *type, uint64_t agent) const;
     bool register_profile();
     bool observe();
     void detach_clients(); // Ends all synchronous client borrows before any arena loss.
