@@ -2,12 +2,18 @@
 #define AYNI_ASSISTANT_POLICY_SUPPORT_H
 #include <ayni/applications/assistant.h>
 #include <cstring>
+#include <string>
 namespace ayni::applications::assistant::detail {
 inline ayni_string_v1 text(const char *s) {
     return {s, static_cast<uint32_t>(std::strlen(s))};
 }
 inline ayni_string_v1 text(const std::string &s) {
     return {s.data(), static_cast<uint32_t>(s.size())};
+}
+// Opens a model body whose instructions stay apart from the data appended after them (ADR-0074).
+inline std::string model_body(const std::string &instructions) {
+    return AYNI_MODEL_INSTRUCTIONS_PREFIX + std::to_string(instructions.size()) + "\n" +
+           instructions;
 }
 inline bool taken(const ayni_task_snapshot_v1 &s, ayni_string_v1 key) {
     for (uint32_t i = 0; i < s.step_count; ++i) {

@@ -1,17 +1,62 @@
 #include "config.h"
 #include <array>
+#include <ayni/ayni.h>
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <string_view>
 namespace ayni::cli {
 namespace {
 constexpr size_t config_bytes_max = 16384;
 std::string environment(const char *name) {
     const auto *value = std::getenv(name);
     return value ? value : "";
+}
+// A whole POSIX TZ rule; one day after the epoch keeps west offsets valid.
+bool posix_timezone(const std::string &zone) {
+    constexpr int64_t zone_check_utc_s = 86400;
+    int64_t local = 0;
+    return !zone.empty() &&
+           ayni_calendar_local_time({zone.data(), static_cast<uint32_t>(zone.size())},
+                                    zone_check_utc_s, &local) == AYNI_OK;
+}
+// The POSIX rule a TZif v2+ file appends after its last data block, "\n<rule>\n"; empty when
+// the file is missing, older or ends without one.
+std::string tzif_rule(const std::string &path) {
+    constexpr size_t tzif_bytes_max = 65536;
+    constexpr std::string_view magic = "TZif";
+    std::ifstream file(path, std::ios::binary);
+    std::string bytes(tzif_bytes_max, '\0');
+    file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(file.gcount()));
+    if (bytes.compare(0, magic.size(), magic) != 0 || bytes.back() != '\n') {
+        return {};
+    }
+    const auto last = bytes.size() - 1; // The footer's closing newline.
+    const auto start = bytes.rfind('\n', last - 1);
+    const auto rule =
+        start == std::string::npos ? std::string() : bytes.substr(start + 1, last - start - 1);
+    return posix_timezone(rule) ? rule : std::string();
+}
+// The machine's zone as a POSIX rule (ADR-0073): TZ if it is a whole rule, else TZ without a
+// leading ':' as a zone file (absolute, or under /usr/share/zoneinfo), or /etc/localtime when
+// TZ is unset or empty. Main differences from glibc: a rule wins over a file of the same name, an
+// empty TZ or ":" is not UTC, ":<rule>" is not parsed as a rule, and TZDIR is not read.
+std::string system_timezone() {
+    std::string zone = environment("TZ");
+    if (posix_timezone(zone)) {
+        return zone;
+    }
+    if (!zone.empty() && zone.front() == ':') {
+        zone.erase(0, 1);
+    }
+    if (zone.empty()) {
+        return tzif_rule("/etc/localtime");
+    }
+    return tzif_rule(zone.front() == '/' ? zone : "/usr/share/zoneinfo/" + zone);
 }
 std::string trim(std::string value) {
     const auto first = value.find_first_not_of(" \t\r");
@@ -93,6 +138,12 @@ bool load(const std::string &path, bool required, Options &options, std::string 
             model.model_name = value;
         } else if (key == "key_environment") {
             model.key_environment = value;
+        } else if (key == "timezone") {
+            if (!posix_timezone(value)) {
+                error = "timezone 须为 POSIX 时区规则，例如 CST-8。";
+                return false;
+            }
+            model.timezone = value;
         } else if (key == "quiet_timezone") {
             options.quiet.timezone = value;
         } else if (key == "quiet_hours") {
@@ -159,11 +210,14 @@ bool read_options(int argc, char **argv, Options &out, std::string &error) {
         error = "请设置 HOME/XDG 目录或显式指定配置与数据目录。";
         return false;
     }
+    out.model.timezone = system_timezone();
     if (!load(out.config_file, explicit_config, out, error)) {
         return false;
     }
     if (mock) {
-        out.model = {};
+        runtime::ModelConfig local;
+        local.timezone = out.model.timezone; // The local Mock is told the same time.
+        out.model = local;
     }
     if (out.quiet.validate() != AYNI_OK) {
         error = "安静时段须为非空区间，并配置明确的 POSIX quiet_timezone。";

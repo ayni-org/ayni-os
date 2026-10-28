@@ -1,6 +1,9 @@
 #include "support.h"
+#include <ayni/ayni.h>
 #include <ayni/memory.h>
+#include <cstdio>
 #include <cstring>
+#include <iterator>
 
 namespace ayni::strategies {
 namespace {
@@ -21,6 +24,59 @@ ayni_string_v1 tool_key(uint32_t round, uint32_t index, char *buffer) {
     writer.number(index);
     writer.add(".v1");
     return writer.text();
+}
+constexpr std::string_view time_label = "\nCurrent local time: ";
+constexpr std::string_view time_unsynchronized = " (device clock not synchronized).";
+constexpr std::string_view zone_label = "\nTime zone: ";
+// The longest lines: a minute, the longest weekday, the unsynchronized mark and the longest zone.
+constexpr uint32_t local_time_bytes_max =
+    time_label.size() + sizeof("YYYY-MM-DD HH:MM, Wednesday") - 1 + time_unsynchronized.size() +
+    zone_label.size() + AYNI_CALENDAR_TZ_MAX_BYTES;
+using LocalTimeLines = std::array<char, local_time_bytes_max>;
+// The model, not the policy, interprets "tomorrow" or "next Wednesday" against these lines. The
+// zone ends its line unpunctuated, since the model copies it into the schedule grammar.
+// configure has checked the zone through the calendar parser, which bounds its size.
+ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
+    if (!clock.utc_now && !clock.timezone.size) {
+        return {};
+    }
+    Writer lines(buffer.data(), local_time_bytes_max);
+    ayni_utc_sample_v1 sample{sizeof(sample), AYNI_UTC_UNAVAILABLE, 0};
+    if (clock.utc_now && clock.timezone.size) {
+        clock.utc_now(clock.context, &sample);
+    }
+    // calendar.h: an unsupported trust value or layout counts as unavailable.
+    const bool usable = sample.struct_size == sizeof(sample) &&
+                        (sample.trust == AYNI_UTC_TRUSTED || sample.trust == AYNI_UTC_UNTRUSTED);
+    int64_t local = 0;
+    ayni_calendar_civil_v1 civil{};
+    civil.struct_size = sizeof(civil);
+    lines.add(time_label);
+    if (!usable || ayni_calendar_local_time(clock.timezone, sample.utc_s, &local) != AYNI_OK ||
+        ayni_calendar_split_time(local, &civil) != AYNI_OK) {
+        lines.add("unknown.");
+    } else {
+        constexpr int64_t seconds_per_day = 86400;
+        // Indexed by days since 1970-01-01, a Thursday; split_time accepts no earlier day.
+        constexpr const char *weekdays[] = {"Thursday", "Friday",  "Saturday", "Sunday",
+                                            "Monday",   "Tuesday", "Wednesday"};
+        constexpr auto week = static_cast<int64_t>(std::size(weekdays));
+        char minute[sizeof("YYYY-MM-DD HH:MM")];
+        // Civil fields are range-bounded (years 1970..9999), so this always fills the buffer.
+        static_cast<void>(std::snprintf(minute, sizeof(minute), "%04d-%02d-%02d %02d:%02d",
+                                        civil.year, civil.month, civil.day, civil.hour,
+                                        civil.minute));
+        lines.add(minute);
+        lines.add(", ");
+        lines.add(weekdays[local / seconds_per_day % week]);
+        // The owner reviews every registered Goal, so an unsynchronized clock still informs.
+        lines.add(sample.trust == AYNI_UTC_TRUSTED ? std::string_view(".") : time_unsynchronized);
+    }
+    if (clock.timezone.size) {
+        lines.add(zone_label);
+        lines.add(clock.timezone);
+    }
+    return lines.text();
 }
 void summary_context(const ConversationRecord &record, Writer &prompt) {
     if (!record.summary_last) {
@@ -68,9 +124,9 @@ ayni_status_t summarize(Turn &turn, const ToolLoopConfig &config,
     const auto status = result(snapshot, view(summary_step), call);
     if (status == AYNI_NOT_FOUND) {
         Writer prompt(scratch, prompt_bytes_max);
-        prompt.add(config.summary.text);
-        prompt.add("\nSummarize the following conversation data. Preserve uncertainty. Do not call "
-                   "tools.\n");
+        prompt.instructions(
+            {config.summary.text, view("\nSummarize the following conversation data. Preserve "
+                                       "uncertainty. Do not call tools.")});
         summary_context(turn.record, prompt);
         rounds_context(turn.record, summary_drop_count, prompt);
         requested = true;
@@ -264,8 +320,9 @@ ayni_status_t run(Turn &turn, const ToolLoopConfig &config, const ayni_task_snap
     if (requested || status != AYNI_OK) {
         return status;
     }
+    LocalTimeLines time;
     Writer prompt(scratch, prompt_bytes_max);
-    prompt.add(config.model.text);
+    prompt.instructions({config.model.text, local_time(config.clock, time)});
     status = memory_context(turn, snapshot, prompt);
     if (status != AYNI_OK) {
         return status;
@@ -304,9 +361,14 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config) {
     if (configured_) {
         return AYNI_INVALID_STATE;
     }
+    // Any instant validates the whole rule; one day after the epoch keeps west offsets valid.
+    constexpr int64_t zone_check_utc_s = 86400;
+    int64_t local = 0;
     if (!valid_identity(config.identity) || !valid_call(config.model) ||
         !valid_call(config.summary) || config.model.kind != AYNI_POLICY_REQUEST_MODEL ||
-        config.summary.kind != AYNI_POLICY_REQUEST_MODEL) {
+        config.summary.kind != AYNI_POLICY_REQUEST_MODEL ||
+        (config.clock.timezone.size &&
+         ayni_calendar_local_time(config.clock.timezone, zone_check_utc_s, &local) != AYNI_OK)) {
         return AYNI_INVALID_ARGUMENT;
     }
     config_ = config;

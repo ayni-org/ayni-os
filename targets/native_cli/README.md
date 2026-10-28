@@ -55,6 +55,8 @@ model=deepseek-chat
 key_environment=AYNI_LLM_API_KEY
 ```
 
+时区用 `timezone=CST-8` 这样的 POSIX 规则配置（区域名如 `Asia/Shanghai` 会被拒绝）；不配置时依次取本机时区：`TZ` 本身是完整规则；`TZ`（去掉开头的 `:`）指向的时区文件，绝对路径或相对 `/usr/share/zoneinfo`；`TZ` 未设或为空时 `/etc/localtime` 末尾的规则；都取不到时模型被告知时间未知。与 glibc 的主要差异：规则优先于同名文件，空 `TZ` 或 `:` 不当作 UTC，`:<规则>` 不按规则解析，不读 `TZDIR`。本机时钟未同步时仍写出时间并注明未同步（ADR-0073）。指令与当前时间作为 system 消息发送，对话作为 user 消息（ADR-0074）。
+
 由本机环境提供 `AYNI_LLM_API_KEY`，启动时去掉 `--mock`。配置文件中只能写环境变量名，不能写密钥值；运行时不会自动切换服务或重试未知调用。模型服务仍使用 P1 的非流式 Chat Completions 接口。上述地址/模型是 P1 已单独验证的配置示例，不代表 P2 已完成真实服务多轮验收。
 
 当前每条输入/回答上限 384 UTF-8 字节，保存最近 3 轮和至多 512 字节模型摘要；超限报错，不截断。摘要是未确认推断。正常退出重开继续使用原工作和已保存上下文；异常退出时 Kernel 日志与对话文件的跨库窗口尚未验证。`/forget [轮次]` 经 Kernel 屏障清理受管理正文；单轮删除保留其他原始输入、清除旧回答/摘要，下一轮按有效输入重建。`/diagnostics` 区分隐私清理进行中、完成及错误；`/wait` 等待文件 ACK 和双槽覆盖完成；终端通知也不承诺恰好一次。
@@ -103,7 +105,7 @@ P2 的旧对话文件没有来源证据，P3 会在任何启动写入前拒绝�
 /diagnostics
 ```
 
-`/remind`、`/check`、`/observe` 与模型计划工具共用同一文法：`remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX 时区> <内容>`、`check [秒，至少 300]`、`observe`。模型登记的目标始终待批：CLI 显示“助理登记了新目标 N，等待你批准”（重新打开时对仍待批的再显示一次），`/approve N` 后才运行，`/cancel N` 放弃。待批的模型目标最多 4 个，满了助理会请你先处理；助理不知道今天的日期，“明天”这类说法会先问清具体日期。`/tidy` 只由所有者发起。
+`/remind`、`/check`、`/observe` 与模型计划工具共用同一文法：`remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX 时区> <内容>`、`check [秒，至少 300]`、`observe`。模型登记的目标始终待批：CLI 显示“助理登记了新目标 N，等待你批准”（重新打开时对仍待批的再显示一次），`/approve N` 后才运行，`/cancel N` 放弃。待批的模型目标最多 4 个，满了助理会请你先处理。每次请求都会告诉模型当前本地日期、星期和时区，“明天”“下周三”由模型自行换算，登记的目标仍要你看过后批准。`/tidy` 只由所有者发起。
 
 四类目标都保留授权审批；先用 `/goals` 查看待批 ID，再明确 `/approve`，或事先 `/grant notify`、`/grant health`、`/grant summary`、`/grant observe`。整理最多四条本人私有记忆或已获 ORGANIZE 授权的公共档案；远程模型另需每条来源的 `/memory export <id> organize`，不会自动外发。持续观察仅是 Mock 标量，不是图像识别。
 

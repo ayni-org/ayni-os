@@ -16,6 +16,11 @@ an authority descriptor with one IDENTIFIER egress-destination field containing
 must contain that destination as its concrete argument. The descriptor itself does
 not grant permission. Core does not receive the API URL or credential.
 
+A request body framed with `AYNI_MODEL_INSTRUCTIONS_PREFIX` (`<ayni/calls.h>`) is sent
+as a system message holding the instructions and a user message holding the rest;
+empty instructions send no system message, and any other body is one user message. A malformed frame fails with INVALID_ARGUMENT and
+effect NONE before any HTTP request ([ADR-0074](../../docs/adr/0074-model-instructions-as-system-message.md)).
+
 Functions are named `tool_0`, `tool_1`, etc. within each request. Their description is
 the offered Binding ID; arguments are `field_<id>` and `text`. Integer units/ranges
 and token enums come from that request's authorized view. Responses must contain

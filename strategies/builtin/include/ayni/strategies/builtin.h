@@ -1,9 +1,11 @@
-// Bounded policies and conversation values (ADR-0056). No I/O, Kernel internals,
-// or allocation. Objects and borrowed configuration live through Kernel destroy;
-// one owner thread uses each strategy. Scratch is reset on every decide.
+// Bounded policies and conversation values (ADR-0056). No I/O beyond an injected nonblocking
+// clock (ADR-0073), no Kernel internals and no allocation. Objects and borrowed configuration
+// live through Kernel destroy; one owner thread uses each strategy. Scratch is reset on every
+// decide.
 #ifndef AYNI_STRATEGIES_BUILTIN_H
 #define AYNI_STRATEGIES_BUILTIN_H
 #include <array>
+#include <ayni/calendar.h>
 #include <ayni/calls.h>
 
 namespace ayni::strategies {
@@ -117,12 +119,26 @@ class Rules {
     uint32_t count_ = 0;
 };
 
+// Optional wall clock for model requests (ADR-0073), the one input read outside the snapshot.
+// The instructions of each main model request then state the local date, weekday and time in
+// timezone, and the zone itself, so the model resolves relative dates; an untrusted sample is
+// marked unsynchronized, and without a usable sample or a zone the time is stated as unknown.
+// With neither port nor zone nothing is stated. The time changes only that request's text: the
+// intent, step key and checkpoint never depend on it (C-POLICY-006).
+// utc_now must not block. timezone is a POSIX TZ rule, borrowed like the rest of the config.
+struct LocalClock {
+    void *context = nullptr;
+    void (*utc_now)(void *, ayni_utc_sample_v1 *) = nullptr;
+    ayni_string_v1 timezone{};
+};
 // Both calls are MODEL class; summary binding must have a text result contract.
-// model.text is a trusted instruction prefix. Other user text is in parameters.
+// model.text and summary.text are trusted instructions, framed apart from the conversation data
+// (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
 struct ToolLoopConfig {
     Identity identity;
     Call model;
     Call summary;
+    LocalClock clock;
 };
 class ToolLoop {
   public:

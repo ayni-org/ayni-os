@@ -152,6 +152,19 @@ ayni_status_t outcome(const ayni_task_call_result_v1 &result) {
     }
     return result.status == AYNI_OK ? AYNI_INVALID_STATE : result.status;
 }
+void Writer::instructions(std::initializer_list<ayni_string_v1> parts) {
+    uint64_t size = 0;
+    for (const auto &part : parts) {
+        size += part.size;
+    }
+    ok_ = ok_ && size_ == 0; // Only the start of a body can open it.
+    add(AYNI_MODEL_INSTRUCTIONS_PREFIX);
+    number(size);
+    add("\n");
+    for (const auto &part : parts) {
+        add(part);
+    }
+}
 void Writer::add(ayni_string_v1 text) {
     if (!ok_ || text.size > capacity_ - size_ || (text.size && !text.data)) {
         ok_ = false;

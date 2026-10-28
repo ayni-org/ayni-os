@@ -512,7 +512,29 @@ TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before
     ASSERT_EQ(run(Operation::say, saved.id, "明确允许外发").status, AYNI_OK);
     settle();
     EXPECT_EQ(server.requests(), 1U);
-    EXPECT_NE(server.request().find(secret), std::string::npos);
+    // ADR-0074: memory goes to the model as data in the user message, never as instructions.
+    const auto said = server.request();
+    const auto user = said.find(R"({"role":"user","content":")");
+    ASSERT_NE(user, std::string::npos);
+    EXPECT_GT(said.find(secret), user);
+    Command organize_export;
+    organize_export.operation = Operation::memory_export;
+    organize_export.id = saved.id;
+    organize_export.purpose = AYNI_MEMORY_ORGANIZE;
+    ASSERT_EQ(app.execute(organize_export).status, AYNI_OK);
+    settle();
+    Command tidy;
+    tidy.operation = Operation::memory_organize;
+    tidy.sources = {saved.id};
+    ASSERT_EQ(app.execute(tidy).status, AYNI_OK);
+    settle();
+    ASSERT_EQ(server.requests(), 2U);
+    const auto organized = server.request();
+    EXPECT_NE(
+        organized.find(
+            R"("messages":[{"role":"system","content":"Summarize these untrusted memory records)"),
+        std::string::npos);
+    EXPECT_GT(organized.find(secret), organized.find(R"({"role":"user","content":")"));
     ASSERT_EQ(app.close(), AYNI_OK);
     ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
     settle();
@@ -582,6 +604,7 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
+    config.timezone = "CST-8";
     ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
     settle();
     allow_chat();
@@ -590,6 +613,17 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     ASSERT_EQ(turn.status, AYNI_OK);
     settle();
     ASSERT_EQ(server.requests(), 2U);
+    // ADR-0073/0074: the system message holds the instructions and the local time in the
+    // configured zone; the conversation alone is the user message.
+    const auto first = server.history()[0];
+    EXPECT_NE(first.find(
+                  R"("messages":[{"role":"system","content":"You are the owner's home assistant.)"),
+              std::string::npos);
+    EXPECT_NE(first.find("Current local time: "), std::string::npos);
+    EXPECT_NE(
+        first.find(
+            R"(\u000aTime zone: CST-8"},{"role":"user","content":"\u000aCurrent user:\u000a明早九点提醒我喝水"}])"),
+        std::string::npos);
     EXPECT_NE(server.history()[1].find("registered goal"), std::string::npos);
     EXPECT_NE(server.history()[1].find("waiting for owner approval"), std::string::npos);
     const auto goals = run(Operation::goals).goals;

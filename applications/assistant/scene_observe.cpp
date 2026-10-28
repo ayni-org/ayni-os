@@ -117,9 +117,10 @@ ayni_status_t observe(const PolicyConfig &c, const ayni_task_snapshot_v1 &s,
         }
         const auto key = "observe.analysis." + std::to_string(state[round]);
         const auto prompt =
-            "分析 Mock 场景的标量观测（非真实图像）。值=" + std::to_string(sample.value) +
-            "，序列=" + std::to_string(sample.reference.sequence) +
-            "。简短描述，不推断真实设备或执行动作。";
+            model_body(
+                "分析 Mock 场景的标量观测（非真实图像），简短描述，不推断真实设备或执行动作。") +
+            "值=" + std::to_string(sample.value) +
+            "，序列=" + std::to_string(sample.reference.sequence) + "。";
         return request(o, "summary", text(key), text(prompt), c.model_scope, true);
     }
     // Subscription controls use the request stager as well as the public intent;
