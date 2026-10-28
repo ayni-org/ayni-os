@@ -9,6 +9,7 @@
 
 #include <ayni/calls.h>
 #include <ayni/memory.h>
+#include <functional>
 #include <thread>
 
 namespace {
@@ -909,6 +910,134 @@ TEST_F(ManagedCall, journal_replays_wait_resume_identity_and_rejects_broken_atom
     pump(12);
     ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     check_recovery(work.node().sim().log(), true);
+}
+
+// C-CALL-002/011 / C-STORE-009: a full-row Call update is not a new
+// acceptance. Intrinsically valid facts must still match its original Task,
+// route, action identity and exact enclosing batch before they can be restored.
+TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_identity) {
+    const auto goal = create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending.front().call;
+    const auto other_goal = create(agent_b);
+    pump(8);
+    const auto other_task = work.goal(other_goal).last_task_id;
+    ASSERT_NE(other_task, 0U);
+    ayni_provider_result_v1 progress{};
+    progress.struct_size = sizeof(progress);
+    progress.outcome = AYNI_CALL_PROGRESS;
+    progress.attempt = pending.front().attempt;
+    progress.sequence = 1;
+    progress.status = AYNI_OK;
+    progress.effect = AYNI_CALL_EFFECT_UNKNOWN;
+    ASSERT_EQ(ayni_provider_post(pending.front().completion, &progress), AYNI_OK);
+    pump(8);
+    const auto current = call_info(call);
+    ASSERT_EQ(current.progress_sequence, 1U);
+    ASSERT_GE(work.node().info().durable_seq, current.requires_seq);
+    const auto log = work.node().sim().log();
+    const auto configure = [&](Node &target) {
+        target.config() = work.node().config();
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+    };
+    Node control;
+    configure(control);
+    control.sim().log() = log;
+    control.create_and_start();
+    control.recover();
+    ASSERT_EQ(control.lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    std::size_t selected = log.size();
+    JournalBatch original{};
+    for (std::size_t at = 0; at < log.size(); ++at) {
+        if (log[at].commit_seq == current.requires_seq) {
+            selected = at;
+            original = read_stored_batch(log[at]);
+        }
+    }
+    ASSERT_LT(selected, log.size());
+    auto row =
+        std::find_if(original.records.begin(), original.records.end(), [](const auto &entry) {
+            return entry.header.type == ayni::work::call_record_type;
+        });
+    ASSERT_NE(row, original.records.end());
+    const auto row_index = static_cast<std::size_t>(row - original.records.begin());
+    struct Variant {
+        const char *name;
+        std::function<void(ayni::work::CallRecord &)> change;
+    };
+    const Variant variants[] = {
+        {"writer_boot",
+         [](auto &r) {
+             ++r.state.latest.boot_epoch;
+             ++r.action->latest.boot_epoch;
+         }},
+        {"commit",
+         [](auto &r) {
+             ++r.state.latest.transition.commit_seq;
+             ++r.action->latest.transition.commit_seq;
+         }},
+        {"transition",
+         [](auto &r) {
+             ++r.state.latest.transition.transition_id;
+             ++r.action->latest.transition.transition_id;
+         }},
+        {"goal_is_not_task", [&](auto &r) { r.identity.task_id = goal; }},
+        {"different_owner",
+         [&](auto &r) { r.identity.owner_instance_id = work.instance(agent_b); }},
+        {"different_task", [&](auto &r) { r.identity.task_id = other_task; }},
+        {"other_tasks_call",
+         [&](auto &r) {
+             r.identity.task_id = other_task;
+             r.identity.owner_instance_id = work.instance(agent_b);
+         }},
+        {"binding",
+         [](auto &r) {
+             ++r.identity.binding_version;
+             ++r.action->identity.binding_version;
+         }},
+        {"terminal_without_task_partner",
+         [](auto &r) {
+             r.state.outcome = AYNI_CALL_COMPLETED;
+             r.state.status = AYNI_OK;
+             r.state.reason = AYNI_REASON_NONE;
+             r.action->phase = ayni::work::ActionPhase::completed;
+             r.action->effect = ayni::work::ActionEffect::complete;
+             r.action->evidence = ayni::work::ActionEvidence::provider_result;
+         }},
+    };
+    for (const auto &variant : variants) {
+        SCOPED_TRACE(variant.name);
+        ayni::work::CallRecord record{};
+        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record,
+                                                 row->header.version));
+        ASSERT_EQ(record.identity.call_id, call);
+        ASSERT_TRUE(record.action.has_value());
+        variant.change(record);
+        ASSERT_TRUE(ayni::work::CallTable::valid_record(record));
+        auto changed = original;
+        std::vector<uint8_t> bytes(ayni::work::call_record_size(record));
+        ayni::work::write_call_record(record, bytes.data());
+        changed.records[row_index].body = std::move(bytes);
+        auto candidate = log;
+        candidate[selected] = write_stored_batch(changed);
+        Node recovered;
+        configure(recovered);
+        recovered.sim().log() = std::move(candidate);
+        recovered.create_and_start();
+        recovered.recover();
+        EXPECT_EQ(recovered.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_EQ(recovered.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+        EXPECT_EQ(ayni::kernel::KernelTestProbe::work(recovered.kernel()).calls.size(), 0U);
+    }
+    Node smaller;
+    configure(smaller);
+    smaller.config().call_capacity = 1;
+    smaller.sim().log() = log;
+    smaller.create_and_start();
+    smaller.recover();
+    EXPECT_EQ(smaller.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(smaller.info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
 }
 
 // C-STORE-007 / C-CALL-011: the retained query command proves its exact

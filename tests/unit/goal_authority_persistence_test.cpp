@@ -1630,6 +1630,12 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
     source.run();
     const auto parent = approve_proposal(source);
     ASSERT_NE(parent, 0U);
+    const auto unrelated = source.goal();
+    ASSERT_NE(unrelated, 0U);
+    const auto parent_created = KernelTestProbe::work(source.work.kernel())
+                                    .goals.at(source.goal_index(parent))
+                                    .created.commit_seq;
+    ASSERT_GT(parent_created, 1U);
     const auto created = source.work.create(
         WorkNode::create_body(source.work.instance(agent_a), parent, "proposal"));
     ASSERT_EQ(created.status, AYNI_OK);
@@ -1644,9 +1650,11 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
     source.work.node().recover();
     const auto journal = source.work.node().sim().durable_storage();
     const auto compacted = snapshot(source);
-    for (unsigned fault = 0; fault < 3; ++fault) {
+    constexpr unsigned binding_faults = 5;
+    for (unsigned fault = 0; fault < binding_faults; ++fault) {
         SCOPED_TRACE(fault);
-        auto forge_binding = [fault, child](std::vector<Record> &records) {
+        auto forge_binding = [fault, child, unrelated,
+                              parent_created](std::vector<Record> &records) {
             for (auto &row : records) {
                 if (row.header.type != goal_authority_record_type) {
                     continue;
@@ -1663,8 +1671,12 @@ TEST(GoalApprovalPersistence, forged_binding_history_is_rejected_in_journal_and_
                     --record.binding.established_seq;
                 } else if (fault == 1U) {
                     --record.binding.parent.commit_seq;
-                } else {
+                } else if (fault == 2U) {
                     record.binding.input.incarnation = 1;
+                } else if (fault == 3U) {
+                    record.binding.parent.goal_id = unrelated;
+                } else {
+                    record.binding.parent.commit_seq = parent_created - 1;
                 }
                 EXPECT_TRUE(valid_goal_authority_record(record));
                 std::vector<uint8_t> bytes(row.body.size());
