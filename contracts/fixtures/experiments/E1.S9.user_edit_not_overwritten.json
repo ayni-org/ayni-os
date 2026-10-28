@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S9.user_edit_not_overwritten",
+  "experiment_step": "E1 步骤 9",
+  "clauses": [
+    "C-COMMIT-012",
+    "C-ID-001"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "user_edit_not_overwritten"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

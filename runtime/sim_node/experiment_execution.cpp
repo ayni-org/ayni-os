@@ -153,8 +153,8 @@ ayni_status_t Physical::decide(void *, const ayni_task_snapshot_v1 *snapshot,
         text("turn.binding"), {sizeof(ayni_scope_v1), 1, &field}, {}};
     return output->request_call(output->call_context, &request);
 }
-bool Physical::prepare() {
-    if (!world_.grant(1, "mock.turn")) {
+bool Physical::prepare(uint64_t agent) {
+    if (!world_.grant(agent, "mock.turn")) {
         return false;
     }
     auto scene = initialized<ayni_scene_info_v1>();
@@ -352,5 +352,142 @@ bool Physical::power_cycle() {
 }
 uint64_t Physical::deadline_offset() const {
     return nonce_origin_ ? info().deadline_us - *nonce_origin_ : 0;
+}
+} // namespace ayni::runtime::experiments
+
+namespace ayni::runtime::experiments {
+// E1 S4: cancellation delivery and a Provider terminal are separate from the
+// executor's measured stop; only the last fact may lift actuator quarantine.
+bool Physical::quarantine() {
+    auto &e = world_.evidence;
+    if (!e.status(
+            "require manual stop measurement",
+            executor.set_stop_confirmation(providers::mock_execution::StopConfirmation::manual)) ||
+        !prepare()) {
+        return false;
+    }
+    world_.create("turn");
+    if (!world_.until("actuator accepted", [&] { return executor.submissions() == 1; }) ||
+        !world_.step() || !world_.cancel_goal() || !world_.until("stop instruction delivered", [&] {
+            return info().phase == AYNI_CONTROL_STOPPING;
+        })) {
+        return false;
+    }
+    auto resource = initialized<ayni_resource_info_v1>();
+    auto execution = initialized<ayni_execution_info_v1>();
+    const auto original = executor.logical_call();
+    if (!e.status("read unconfirmed actuator",
+                  ayni_get_resource(world_.node.kernel(), text("mock.actuator"), &resource)) ||
+        !e.status("read unconfirmed execution",
+                  ayni_get_execution(world_.node.kernel(), original, &execution)) ||
+        !e.equal("actuator quarantine retains operation", resource.quarantine_id, original) ||
+        !e.equal("stop not measured", execution.phase == AYNI_EXECUTION_STOPPED, 0) ||
+        !world_.grant(2, "mock.turn")) {
+        return false;
+    }
+    world_.create("turn", 0, 2);
+    if (!world_.settle() ||
+        !e.equal("quarantine prevents next submit", executor.submissions(), 1) ||
+        !e.status("independent stop measured", executor.confirm_stopped()) || !world_.settle()) {
+        return false;
+    }
+    if (!e.status("read measured execution",
+                  ayni_get_execution(world_.node.kernel(), original, &execution))) {
+        return false;
+    }
+    return e.equal("stop proof reaches Core", execution.phase, AYNI_EXECUTION_STOPPED) &&
+           world_.cancel_goal() && world_.settle();
+}
+} // namespace ayni::runtime::experiments
+
+namespace ayni::runtime::experiments {
+bool Physical::revoke_queued() {
+    auto &e = world_.evidence;
+    if (!prepare(2) ||
+        !e.status("occupancy unavailable",
+                  ayni_set_resource_health(world_.node.kernel(), text("mock.actuator"),
+                                           AYNI_RESOURCE_OFFLINE))) {
+        return false;
+    }
+    world_.create("turn", 0, 2);
+    if (!world_.until("motion queued",
+                      [&] { return world_.call().wait_reason == AYNI_CALL_WAIT_OFFLINE; }) ||
+        !world_.revoke() ||
+        !e.status("resource available after revoke",
+                  ayni_set_resource_health(world_.node.kernel(), text("mock.actuator"),
+                                           AYNI_RESOURCE_ONLINE)) ||
+        !world_.settle()) {
+        return false;
+    }
+    return e.equal("revoked queued motion never submitted", executor.submissions(), 0) &&
+           e.equal("revoked queued motion no output", executor.samples(), 0);
+}
+bool Physical::revoke_running() {
+    auto &e = world_.evidence;
+    if (!prepare(2)) {
+        return false;
+    }
+    world_.create("turn", 0, 2);
+    if (!world_.until("motion actually started", [&] { return executor.samples() > 0; }) ||
+        !mark_invalidated() || !world_.save_call() || !world_.revoke()) {
+        return false;
+    }
+    auto execution = initialized<ayni_execution_info_v1>();
+    if (!world_.until("in-flight stop measured", [&] {
+            return ayni_get_execution(world_.node.kernel(), executor.logical_call(), &execution) ==
+                       AYNI_OK &&
+                   execution.execution_ended;
+        })) {
+        return false;
+    }
+    return e.equal("in-flight motion was submitted", executor.submissions(), 1) &&
+           e.equal("in-flight motion had real simulated output", executor.samples() > 0, 1) &&
+           stopped_within_bound();
+}
+bool Physical::unauthorized() {
+    auto &e = world_.evidence;
+    // Preparing B's scene never gives A a standing Grant or a goal-scoped one.
+    if (!prepare(2)) {
+        return false;
+    }
+    const auto goal = world_.create("turn", 0, 1);
+    if (!world_.settle()) {
+        return false;
+    }
+    auto info = initialized<ayni_goal_info_v1>();
+    return e.status("read unauthorized motion request",
+                    ayni_get_goal(world_.node.kernel(), goal, &info)) &&
+           e.equal("A request awaits explicit authority", info.lifecycle, AYNI_GOAL_PROPOSED) &&
+           e.equal("unauthorized request creates no Task", info.last_task_id, 0) &&
+           e.equal("unauthorized motion no dispatch", executor.submissions(), 0) &&
+           e.equal("unauthorized motion no output", executor.samples(), 0);
+}
+bool Physical::stop_full_queue() {
+    if (!prepare()) {
+        return false;
+    }
+    world_.create("turn");
+    if (!world_.until("motion active before queue pressure",
+                      [&] { return executor.samples() > 0; })) {
+        return false;
+    }
+    auto event = initialized<ayni_event_v1>();
+    event.kind = AYNI_EVENT_LOCAL_INPUT;
+    event.source = text("unbound.button");
+    uint32_t accepted = 0;
+    ayni_status_t status = AYNI_OK;
+    while (accepted <= world_.config.ingress_capacity &&
+           (status = ayni_post_event(world_.node.kernel(), &event)) == AYNI_OK) {
+        ++accepted;
+    }
+    if (!world_.evidence.status("ordinary queue full", status, AYNI_BUSY) ||
+        !world_.evidence.equal("ordinary queue reached capacity", accepted,
+                               world_.config.ingress_capacity)) {
+        return false;
+    }
+    return estop() && world_.evidence.status("independent stop cycle", executor.advance()) &&
+           world_.evidence.equal(
+               "stop latch bypasses queue",
+               info().phase == AYNI_CONTROL_STOPPING || info().phase == AYNI_CONTROL_STOPPED, 1);
 }
 } // namespace ayni::runtime::experiments

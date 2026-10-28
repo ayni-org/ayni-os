@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S6.unauthorised_motion_rejected",
+  "experiment_step": "E1 步骤 6",
+  "clauses": [
+    "C-AUTH-001",
+    "C-AUTH-002",
+    "C-AUTH-004"
+  ],
+  "deployment": "physical",
+  "script": [
+    {
+      "op": "physical",
+      "action": "unauthorized"
+    },
+    {
+      "op": "expect",
+      "metric": "physical_submissions",
+      "value": "0"
+    }
+  ]
+}

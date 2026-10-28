@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S3.resource_group_all_or_nothing",
+  "experiment_step": "E1 步骤 3",
+  "clauses": [
+    "C-RES-001",
+    "C-RES-002",
+    "C-RES-006"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "resource_group_all_or_nothing"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

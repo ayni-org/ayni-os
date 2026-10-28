@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S11.receipt_lost_reconciled",
+  "experiment_step": "E1 步骤 11",
+  "clauses": [
+    "C-PROD-014",
+    "C-PROD-013"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "receipt_lost_reconciled"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

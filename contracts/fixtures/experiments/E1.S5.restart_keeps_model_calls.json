@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S5.restart_keeps_model_calls",
+  "experiment_step": "E1 步骤 5",
+  "clauses": [
+    "C-RUN-002",
+    "C-RUN-003"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "restart_keeps_model_calls"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

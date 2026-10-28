@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S7.profile_scoped_to_agent",
+  "experiment_step": "E1 步骤 7",
+  "clauses": [
+    "C-PROD-040"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "profile_scoped_to_agent"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

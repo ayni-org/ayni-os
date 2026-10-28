@@ -14,7 +14,12 @@ class Physical {
     explicit Physical(World &world);
     bool configure();
     bool register_profile(ayni_kernel_t *kernel);
-    bool prepare();
+    bool prepare(uint64_t agent = 1);
+    bool revoke_queued();
+    bool revoke_running();
+    bool unauthorized();
+    bool stop_full_queue();
+    bool quarantine();
     bool publish(int64_t value);
     bool advance();
     ayni_status_t close();       // After Kernel destruction, await independent stop and release.

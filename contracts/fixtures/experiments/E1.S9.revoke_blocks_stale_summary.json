@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S9.revoke_blocks_stale_summary",
+  "experiment_step": "E1 步骤 9",
+  "clauses": [
+    "C-PROD-030",
+    "C-PROD-041"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "revoke_blocks_stale_summary"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

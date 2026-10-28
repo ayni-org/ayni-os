@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S6.revoke_in_flight",
+  "experiment_step": "E1 步骤 6",
+  "clauses": [
+    "C-LIFE-013",
+    "C-AUTH-005"
+  ],
+  "deployment": "physical",
+  "script": [
+    {
+      "op": "physical",
+      "action": "revoke_running"
+    },
+    {
+      "op": "expect",
+      "metric": "physical_submissions",
+      "value": "1"
+    }
+  ]
+}

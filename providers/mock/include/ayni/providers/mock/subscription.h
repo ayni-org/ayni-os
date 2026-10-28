@@ -38,6 +38,10 @@ class SubscriptionProvider {
     ayni_status_t advance();
     // BUSY until every original delivery borrow was returned by terminal post.
     ayni_status_t close();
+    // Simulation power loss only: forget targets after all owner producers stop.
+    void abandon_kernel();
+    // Earliest owner advance, in the configured clock domain; UINT64_MAX when idle.
+    uint64_t next_due_us() const;
     uint32_t pending() const; // Accepted unreturned generation borrows.
     // Read-only store capability for explicitly authorized fixture reads; null unconfigured.
     const MediaStore *media_store() const;

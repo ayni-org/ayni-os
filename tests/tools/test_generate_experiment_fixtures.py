@@ -42,6 +42,28 @@ class ExperimentGenerator(unittest.TestCase):
         self.assertGreater(len(required), 40)
         self.assertFalse(required - actual, sorted(required - actual))
 
+    def test_delivered_e1_contains_every_active_canonical_variant(self):
+        # ADR-0077/0042: retired cumulative quota IDs remain historical; the new
+        # per-Task limit IDs must be present alongside every other original case.
+        required = set(re.findall(r"`(E1\.[^`]+)`", (ROOT / "contracts/fixtures/cases.md").read_text()))
+        required -= {"E1.S5.instance_quota_exhausted", "E1.S5.restart_keeps_consumption"}
+        actual = {path.stem for path in (ROOT / "contracts/fixtures/experiments").glob("E1.*.json")}
+        self.assertGreaterEqual(len(required), 31)
+        self.assertFalse(required - actual, sorted(required - actual))
+
+    def test_shared_evidence_requires_its_actual_deployment_and_closed_scenario(self):
+        for action in ({"op": "shared", "scenario": "local_rule_progresses"},
+                       {"op": "expect", "metric": "shared_completed", "value": "1"}):
+            data = copy.deepcopy(self.base)
+            data["script"].insert(0, action)
+            with self.assertRaises(fixtures.FixtureError):
+                self.load(data)
+        data = copy.deepcopy(self.base)
+        data["deployment"] = "shared"
+        data["script"].insert(0, {"op": "shared", "scenario": "skip_assertions"})
+        with self.assertRaises(fixtures.FixtureError):
+            self.load(data)
+
     def test_recovery_record_and_physical_controls_reject_unimplemented_inputs(self):
         for action in ({"op": "start", "expected_lifecycle": "FENCED"},
                        {"op": "budget", "items": 0}, {"op": "budget", "items": 65},

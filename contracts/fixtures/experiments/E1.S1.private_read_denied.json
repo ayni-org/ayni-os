@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S1.private_read_denied",
+  "experiment_step": "E1 步骤 1",
+  "clauses": [
+    "C-PRIM-007",
+    "C-PROD-042",
+    "C-WIRE-010"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "private_read_denied"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

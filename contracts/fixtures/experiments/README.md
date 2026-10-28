@@ -1,10 +1,10 @@
 # 完整实验运行 profile
 
-- **关联**：ADR-0075/0076；计划 §10；[本轮实施顺序](../../../reports/core/m1-experiment-plan.md)
+- **关联**：ADR-0075/0076/0077；计划 §10；[本轮实施顺序](../../../reports/core/m1-experiment-plan.md)
 
 `fixture_schema=1` / `profile=m1-experiment` 是独立于 P6 `m1-normal` 的受控故障运行格式。JSON 在构建时校验并编译成顺序 C++ 调用，Core 和运行中的 simulator 不解析外部脚本。原 schema 0 仍是历史完整草案，不直接接受；本 profile 只接受已经实现的闭集动作。
 
-初始六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；另有活动执行端断电后清理的 HARNESS 回归；E2 F0～F14 原清单及附加闭环场景已加入；E1/E3/E4 仍按各自阶段验收。
+初始六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；另有活动执行端断电后清理的 HARNESS 回归；E2 F0～F14 原清单及附加闭环场景已加入；完整 E1 的 32 个场景见 ADR-0077；E3/E4 仍按各自阶段验收。
 
 ## 数据、控制与边界
 
@@ -21,15 +21,17 @@
 | execute / receipt | 外部计数副作用与 Provider 回执独立控制；接受请求不执行副作用，重启不重置计数 |
 | crash / start | 先停止同步模拟生产者并丢弃旧 completion 指针，Host 结束旧存储借用，再丢弃 arena；以同一 Host 镜像重建 |
 
-附加可选字段 `query_authority=NONE/BEST_EFFORT/AUTHORITATIVE`（默认 AUTHORITATIVE）、`deployment=counter/physical`（默认 counter）选择有限部署并写入 run.json。E2 新动作：`budget`（1～64）、`save_call/same_call`、`retry`、`revoke/cancel_goal`、`read_result`、`conflict_command/expire_command`、`start_recovery/finish_recovery`、`fault_pending/complete_storage/complete_old_writer`、`repeat_receipt/post_old_attempt`、`application_policy`、`exhaust_storage/restore_storage`（实际 Host 容量及明确空间不足原因）。它们均通过原公开契约或模拟属主执行。
+附加可选字段 `query_authority=NONE/BEST_EFFORT/AUTHORITATIVE`（默认 AUTHORITATIVE）、`deployment=counter/physical/shared/shared_physical`（默认 counter）选择有限部署并写入 run.json。E2 新动作：`budget`（1～64）、`save_call/same_call`、`retry`、`revoke/cancel_goal`、`read_result`、`conflict_command/expire_command`、`start_recovery/finish_recovery`、`fault_pending/complete_storage/complete_old_writer`、`repeat_receipt/post_old_attempt`、`application_policy`、`exhaust_storage/restore_storage`（实际 Host 容量及明确空间不足原因）。它们均通过原公开契约或模拟属主执行。
 
 `hold_record/cut_record` 只接受固定记录边界，`damage` 只接受 torn_tail/committed；精确 codec 探针仅在测试构建提供，关闭测试明确拒绝，不近似替代。`core_now` 推进 Core 而不走时；`physical` 的闭集动作控制执行端本地周期、链路、联锁、实际许可重放及测量。`at` 按首个实际许可的 nonce 时刻定位（0～1000000 µs），不会回拨时间；恢复链路须由脚本显式指定。重放测试丢弃旧 completion 指针，只向当前有效目标投递旧身份值。
+
+`shared` 动作仅接受已实现的有限场景名；共享配置固定模型槽 1、Task 上限 2、100 ms 正常模型、1,500/1,000 ms 超时与用户选定的 30 秒资源等待，实际值进入轨迹。Host 依据公开 step report/wake 和 Provider 截止推进 FakeClock；所有实际 Core step 均计数，本地规则必须 ≤10 step。普通满队列的 Kernel 完成与完成槽耗尽分别验证，后者复用测试专属 CompletionPool 属主探针，测试关闭时拒绝。
 
 配置由本地模拟 profile 显式选定并完整记录；种子为 0，时钟只按脚本顺序推进，模型与真实设备均未接入。运行器不自动执行、取消或重试未知动作。测试服务不按 operation 去重，重复 execute 会使独立计数增加，防止服务自身掩盖 Core 重复派发。
 
 ## 运行与证据
 
-构建前按开发指南检查资源、设置正整数构建和测试并行度。`ayni-sim --list-experiments` 只列实际编译的用例；`--case HARNESS.S1.external_effect_survives_cut --output NEW_DIRECTORY` 执行单例；`--experiment HARNESS --output NEW_DIRECTORY` 执行本阶段自验证。`--experiment E2 --output NEW_DIRECTORY` 执行完整 E2 编译场景。尚无用例的 E1/E3/E4 不会空跑成功。
+构建前按开发指南检查资源、设置正整数构建和测试并行度。`ayni-sim --list-experiments` 只列实际编译的用例；`--case HARNESS.S1.external_effect_survives_cut --output NEW_DIRECTORY` 执行单例；`--experiment HARNESS --output NEW_DIRECTORY` 执行本阶段自验证。`--experiment E2 --output NEW_DIRECTORY` 执行完整 E2 编译场景。`--experiment E1 --output NEW_DIRECTORY` 执行完整 E1。尚无用例的 E3/E4 不会空跑成功。
 
 每例写出 `run.json` 与 `trace.jsonl`：实际源码修订、工具链、配置、ABI/schema、注入/重启、命令提交身份、公开 Goal/Task/Call 变化、独立效果计数、断言及首个失败。它是逐 step 公开观察与外部设施轨迹（含实际批次切断前缀、writer/boot、执行端 deadline/nonce 时间与停止测量），不是内部 journal 每条 transition 的镜像；记录不包含业务正文、密钥或媒体。输出目录须新建，拒绝覆盖已有证据。主失败、关闭失败与产物失败分别报告，任一失败 CLI 非零退出。
 

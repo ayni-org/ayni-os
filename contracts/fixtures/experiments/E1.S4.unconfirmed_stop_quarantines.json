@@ -1,0 +1,24 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S4.unconfirmed_stop_quarantines",
+  "experiment_step": "E1 步骤 4",
+  "clauses": [
+    "C-RES-008",
+    "C-STOP-006",
+    "C-LIFE-012",
+    "C-PRIM-004"
+  ],
+  "deployment": "physical",
+  "script": [
+    {
+      "op": "physical",
+      "action": "quarantine"
+    },
+    {
+      "op": "expect",
+      "metric": "physical_submissions",
+      "value": "1"
+    }
+  ]
+}

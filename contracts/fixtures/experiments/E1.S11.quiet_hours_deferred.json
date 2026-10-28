@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S11.quiet_hours_deferred",
+  "experiment_step": "E1 步骤 11",
+  "clauses": [
+    "C-PROD-016",
+    "C-TIME-005"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "quiet_hours_deferred"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

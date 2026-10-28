@@ -1,4 +1,5 @@
 #include "experiment_execution.h"
+#include "experiment_shared.h"
 #include "experiment_support.h"
 #include <algorithm>
 #include <ayni/host_authority.h>
@@ -61,11 +62,27 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
     config.call_input_max_bytes = config.call_result_max_bytes = body_limit;
     config.call_capability_capacity = config.provider_capacity = config.binding_capacity =
         catalog_capacity;
-    if (deployment == Deployment::physical) {
+    if (deployment == Deployment::physical || deployment == Deployment::shared_physical) {
         config.resource_capacity = config.scene_capacity = config.observation_source_capacity = 1;
         config.executor_capacity = config.execution_binding_capacity = 1;
         physical = std::make_unique<Physical>(*this);
         physical->configure();
+    }
+    if (deployment == Deployment::shared || deployment == Deployment::shared_physical) {
+        config.goal_type_capacity = 24;
+        config.strategy_capacity = 5;
+        config.goal_parameter_max_bytes = strategies::state_bytes_max;
+        config.task_checkpoint_max_bytes = strategies::state_bytes_max;
+        config.resource_capacity = 5;
+        config.observation_source_capacity = 1;
+        config.call_input_max_bytes = config.call_result_max_bytes = 512;
+        config.task_model_call_hard_limit = 2;
+        if (physical) {
+            config.resource_capacity = 6;
+            config.strategy_capacity = 6;
+            config.observation_source_capacity = 2;
+        }
+        shared = std::make_unique<SharedServices>(*this);
     }
 }
 World::~World() {
@@ -75,6 +92,10 @@ World::~World() {
         // Abruptly discard only this entirely synchronous simulated deployment.
         detach_clients();
         static_cast<void>(node.power_cut(hosts::sim::CutAppend::lost));
+    }
+    if (shared) {
+        shared->abandon_kernel();
+        static_cast<void>(shared->close());
     }
     if (physical) {
         // Also needed when a legal script ended immediately after Kernel loss.
@@ -148,6 +169,7 @@ bool World::register_profile() {
            evidence.status("register provider", ayni_register_provider(kernel, &provider)) &&
            evidence.status("register binding", ayni_register_binding(kernel, &binding)) &&
            (!physical || physical->register_profile(kernel)) &&
+           (!shared || shared->register_profile(kernel)) &&
            (!registration || evidence.status("register extension", registration(kernel)));
 }
 // This finite policy consumes the original call exactly once, then commits a
@@ -193,6 +215,7 @@ bool World::application_policy() {
     return true;
 }
 bool World::start_recovery() {
+    schedule_.reset();
     storage = Storage::complete;
     return evidence.status("assemble", node.assemble(config)) && register_profile() &&
            evidence.status("start", ayni_start(node.kernel()));
@@ -205,6 +228,7 @@ bool World::finish_recovery(ayni_lifecycle_t expected) {
         return false;
     }
     const auto recovered = lifecycle();
+    evidence.fact("recovery", "restriction", info().restriction);
     if (!evidence.equal("recovery lifecycle", recovered, expected)) {
         return false;
     }
@@ -226,7 +250,9 @@ bool World::recover() {
     return until("recovery bound", [&] { return lifecycle() != AYNI_LIFECYCLE_RECOVERING; });
 }
 bool World::step() {
-    return advance_step(tick_us);
+    return advance_step(
+        shared ? (schedule_ ? shared->clock_delta(schedule_->report, schedule_->seen_wakes) : 0)
+               : tick_us);
 }
 bool World::step_now() {
     return advance_step(0);
@@ -241,14 +267,20 @@ bool World::advance_step(uint64_t clock_delta_us) {
         evidence.fact("storage", "completed", host->complete_storage());
     }
     node.advance_clock(clock_delta_us);
+    evidence.context(steps, host->now_us());
+    if (shared && !shared->advance()) {
+        return false;
+    }
     if (physical && !physical->advance()) {
         return false;
     }
     auto report = initialized<ayni_step_report_v1>();
     ++steps;
     evidence.context(steps, host->now_us());
+    const auto seen_wakes = host->wake_count();
     const bool valid =
         evidence.status("step", ayni_step(node.kernel(), items_per_step, step_time_us, &report));
+    schedule_ = HostSchedule{report, seen_wakes};
     evidence.fact("step", "count", steps);
     evidence.fact("step", "item_budget", items_per_step);
     evidence.fact("storage", "durable_seq", info().durable_seq);
@@ -338,6 +370,9 @@ bool World::crash(hosts::sim::CutAppend append) {
 }
 void World::detach_clients() {
     service.quiesce();
+    if (shared) {
+        shared->abandon_kernel();
+    }
     if (physical) {
         physical->executor.abandon_kernel();
     }
@@ -367,10 +402,11 @@ bool World::complete_old_writer() {
            evidence.equal("late writer cannot change log", host.log().size(), before);
 }
 ayni_status_t World::close() {
+    if (shared && !shared->begin_close()) {
+        return evidence.error_status();
+    }
     if (!node.kernel()) {
-        const auto closed = physical ? physical->close() : AYNI_OK;
-        evidence.status("close detached physical deployment", closed);
-        return closed;
+        return close_services();
     }
     if (lifecycle() != AYNI_LIFECYCLE_CONFIGURING && lifecycle() != AYNI_LIFECYCLE_STOPPED) {
         const auto accepted_before_shutdown = service.submissions();
@@ -397,6 +433,9 @@ ayni_status_t World::close() {
             node.simulation()->complete_storage();
             node.advance_clock(tick_us);
             evidence.context(steps, node.simulation()->now_us());
+            if (shared && !shared->advance()) {
+                return AYNI_INVALID_STATE;
+            }
             if (physical && !physical->advance()) {
                 return AYNI_INVALID_STATE;
             }
@@ -418,12 +457,14 @@ ayni_status_t World::close() {
     }
     const auto released = node.release();
     evidence.status("destroy", released);
-    if (released == AYNI_OK && physical) {
-        const auto closed = physical->close();
-        evidence.status("close physical deployment", closed);
-        return closed;
-    }
-    return released;
+    return released == AYNI_OK ? close_services() : released;
+}
+ayni_status_t World::close_services() {
+    const auto services = shared ? shared->close() : AYNI_OK;
+    evidence.status("close shared services", services);
+    const auto execution = physical ? physical->close() : AYNI_OK;
+    evidence.status("close independent executor", execution);
+    return services != AYNI_OK ? services : execution;
 }
 ayni_intent_result_v1 World::submit(ayni_intent_kind_t kind, const void *body, uint64_t command,
                                     uint32_t revision, ayni_status_t expected,
@@ -495,17 +536,21 @@ bool World::grant(uint64_t agent, const char *capability) {
     if (evidence.ok()) {
         grant_ = result.object.id;
     }
-    return settle();
+    return shared ? until("Grant durable", [&] { return result.commit_seq <= info().durable_seq; })
+                  : settle();
 }
 bool World::revoke() {
     if (!grant_) {
         return evidence.status("grant required", AYNI_NOT_FOUND);
     }
+    return revoke(*grant_);
+}
+bool World::revoke(uint64_t grant_id) {
     auto current = initialized<ayni_grant_info_v1>();
-    if (!evidence.status("get grant", ayni_get_grant(node.kernel(), *grant_, &current))) {
+    if (!evidence.status("get grant", ayni_get_grant(node.kernel(), grant_id, &current))) {
         return false;
     }
-    const ayni_grant_revoke_v1 body{sizeof(body), 0, *grant_};
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, grant_id};
     submit(AYNI_INTENT_GRANT_REVOKE, &body, 0, current.revision);
     return evidence.ok();
 }
@@ -660,6 +705,8 @@ uint64_t World::instance(uint64_t agent) const {
 }
 uint64_t World::metric(Metric metric) const {
     switch (metric) {
+    case Metric::shared_completed:
+        return shared ? shared->completed() : 0;
     case Metric::physical_submissions:
         return physical ? physical->executor.submissions() : 0;
     case Metric::physical_samples:

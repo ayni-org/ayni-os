@@ -1,0 +1,22 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S1.explicit_share_then_revoke",
+  "experiment_step": "E1 步骤 1",
+  "clauses": [
+    "C-PROD-041",
+    "C-WIRE-010"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "explicit_share_then_revoke"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

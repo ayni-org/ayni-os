@@ -7,6 +7,19 @@
 namespace ayni::runtime::experiments {
 namespace {
 constexpr uint32_t storage_schema = 2; // contracts/storage/records.md, ADR-0038.
+const char *deployment_name(Deployment deployment) {
+    switch (deployment) {
+    case Deployment::counter:
+        return "counter";
+    case Deployment::physical:
+        return "physical";
+    case Deployment::shared:
+        return "shared";
+    case Deployment::shared_physical:
+        return "shared_physical";
+    }
+    return "unsupported";
+}
 void capture_failure(Result &result, Evidence &evidence) {
     if (result.status == AYNI_OK) {
         result.status = evidence.error_status();
@@ -32,8 +45,8 @@ bool write_artifacts(const Case &data, const std::filesystem::path &directory,
              << fixtures::quoted(data.id)
              << ",\"experiment_step\":" << fixtures::quoted(data.experiment_step)
              << ",\"source\":" << fixtures::quoted(data.source)
-             << ",\"clauses\":" << fixtures::quoted(data.clauses) << ",\"deployment\":"
-             << fixtures::quoted(data.deployment == Deployment::physical ? "physical" : "counter")
+             << ",\"clauses\":" << fixtures::quoted(data.clauses)
+             << ",\"deployment\":" << fixtures::quoted(deployment_name(data.deployment))
              << ",\"query_authority\":" << data.query_authority
              << ",\"revision\":" << fixtures::quoted(source_revision())
              << ",\"compiler\":" << fixtures::quoted(__VERSION__)

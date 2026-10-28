@@ -449,6 +449,19 @@ ayni_status_t Provider::close() {
     impl_.reset();
     return AYNI_OK;
 }
+void Provider::abandon_kernel() {
+    if (!impl_) {
+        return;
+    }
+    for (uint32_t at = 0; at < impl_->config.request_capacity; ++at) {
+        impl_->slots[at] = {};
+        std::memset(impl_->body(at), 0, impl_->config.text_max_bytes);
+        if (impl_->plans) {
+            impl_->plans[at] = {};
+        }
+    }
+    impl_->active = 0;
+}
 uint32_t Provider::pending() const {
     return impl_ ? impl_->active : 0;
 }

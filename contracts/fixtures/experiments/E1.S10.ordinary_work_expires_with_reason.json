@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S10.ordinary_work_expires_with_reason",
+  "experiment_step": "E1 步骤 10",
+  "clauses": [
+    "C-RES-004",
+    "C-RES-005",
+    "C-RUN-007"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "ordinary_work_expires_with_reason"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

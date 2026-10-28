@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S3.exclusive_queue_shared_parallel",
+  "experiment_step": "E1 步骤 3",
+  "clauses": [
+    "C-RES-004",
+    "C-RES-009",
+    "C-RES-010"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "exclusive_queue_shared_parallel"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

@@ -458,6 +458,19 @@ ayni_status_t Executor::describe_executor(ayni_executor_v1 &out) const {
 ayni_status_t Executor::advance() {
     return impl_ ? impl_->advance() : AYNI_INVALID_STATE;
 }
+ayni_status_t Executor::set_stop_confirmation(StopConfirmation mode) {
+    if (!impl_) {
+        return AYNI_NOT_READY;
+    }
+    if (impl_->submit_count != 0) {
+        return AYNI_INVALID_STATE;
+    }
+    if (mode != StopConfirmation::manual && mode != StopConfirmation::automatic) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    impl_->config.stop_confirmation = mode;
+    return AYNI_OK;
+}
 ayni_status_t Executor::confirm_stopped() {
     return impl_ ? impl_->measure_stop() : AYNI_INVALID_STATE;
 }

@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S11.pause_keeps_reminder",
+  "experiment_step": "E1 步骤 11",
+  "clauses": [
+    "C-PROD-020",
+    "C-PROD-021",
+    "C-LIFE-023"
+  ],
+  "deployment": "shared_physical",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "pause_keeps_reminder"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}

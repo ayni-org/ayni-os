@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E1.S8.close_stops_generation",
+  "experiment_step": "E1 步骤 8",
+  "clauses": [
+    "C-SUB-001",
+    "C-SUB-002",
+    "C-PROD-023"
+  ],
+  "deployment": "shared",
+  "script": [
+    {
+      "op": "shared",
+      "scenario": "close_stops_generation"
+    },
+    {
+      "op": "expect",
+      "metric": "shared_completed",
+      "value": "1"
+    }
+  ]
+}
