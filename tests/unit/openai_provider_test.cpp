@@ -102,7 +102,7 @@ INSTANTIATE_TEST_SUITE_P(
                       Frame{"count_past_the_body", AYNI_MODEL_INSTRUCTIONS_PREFIX "9\nabc"},
                       Frame{"count_overflow", AYNI_MODEL_INSTRUCTIONS_PREFIX "4294967296\nabc"},
                       Frame{"split_inside_a_character", AYNI_MODEL_INSTRUCTIONS_PREFIX "1\n世界"}),
-    [](const auto &info) { return std::string(info.param.name); });
+    [](const auto &test) { return std::string(test.param.name); });
 TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
     start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
     create();
