@@ -98,6 +98,205 @@ class ControlGate : public ::testing::Test {
     ayni_control_gate_t *gate = nullptr;
 };
 
+// C-PERMIT-012 / C-VER-004: failed construction never publishes a partially
+// configured owner. Every generation and finite timing bound is independently required.
+TEST(ControlGateConfig, invalid_configuration_and_storage_leave_output_unpublished) {
+    size_t bytes = 0;
+    size_t alignment = 0;
+    EXPECT_EQ(ayni_control_memory_requirements(nullptr, &alignment), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_memory_requirements(&bytes, nullptr), AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(ayni_control_memory_requirements(&bytes, &alignment), AYNI_OK);
+    std::vector<uint64_t> memory((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+    auto valid = config();
+    ayni_control_gate_t *gate = nullptr;
+    EXPECT_EQ(ayni_control_create(nullptr, 0, memory.data(), bytes, &gate), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_create(&valid, 0, nullptr, bytes, &gate), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_create(&valid, 0, memory.data(), bytes, nullptr), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_create(&valid, 0, reinterpret_cast<uint8_t *>(memory.data()) + 1,
+                                  bytes - 1, &gate),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_create(&valid, 0, memory.data(), bytes - 1, &gate),
+              AYNI_BUFFER_TOO_SMALL);
+    struct Invalid {
+        void (*change)(ayni_control_config_v1 &);
+        ayni_status_t status = AYNI_INVALID_ARGUMENT;
+    };
+    const Invalid invalid[] = {
+        {[](auto &v) { v.struct_size = 0; }},
+        {[](auto &v) { ++v.struct_size; }, AYNI_UNSUPPORTED_VERSION},
+        {[](auto &v) { ++v.abi_major; }, AYNI_UNSUPPORTED_VERSION},
+        {[](auto &v) { ++v.abi_minor; }, AYNI_UNSUPPORTED_VERSION},
+        {[](auto &v) { v.control_mode = 0; }},
+        {[](auto &v) { v.control_domain_id = 0; }},
+        {[](auto &v) { v.epochs.kernel_boot_epoch = 0; }},
+        {[](auto &v) { v.epochs.authority_epoch = 0; }},
+        {[](auto &v) { v.epochs.executor_boot_epoch = 0; }},
+        {[](auto &v) { v.epochs.safety_epoch = 0; }},
+        {[](auto &v) { v.epochs.calibration_version = 0; }},
+        {[](auto &v) { v.epochs.reserved = 1; }},
+        {[](auto &v) { v.procedure_max_us = 0; }},
+        {[](auto &v) { v.session_lease_max_us = 0; }},
+        {[](auto &v) { v.command_age_max_us = 0; }},
+        {[](auto &v) { v.reserved = 1; }},
+        {[](auto &v) { v.limits.count = 0; }},
+    };
+    for (const auto &fault : invalid) {
+        auto candidate = valid;
+        fault.change(candidate);
+        EXPECT_EQ(ayni_control_create(&candidate, 0, memory.data(), bytes, &gate), fault.status);
+        ASSERT_EQ(gate, nullptr);
+    }
+    ASSERT_EQ(ayni_control_create(&valid, 0, memory.data(), bytes, &gate), AYNI_OK);
+    EXPECT_EQ(ayni_control_destroy(gate), AYNI_OK);
+    EXPECT_EQ(ayni_control_destroy(nullptr), AYNI_INVALID_ARGUMENT);
+}
+
+// C-PERMIT-003/004/012: malformed/foreign permits cannot consume a fresh
+// challenge or replace the idle state. A valid permit still starts afterwards.
+TEST_F(ControlGate, invalid_permit_fields_preserve_the_fresh_challenge_and_idle_owner) {
+    const auto valid = permit();
+    struct Invalid {
+        void (*change)(ayni_execution_permit_v1 &);
+        ayni_status_t status = AYNI_INVALID_ARGUMENT;
+    };
+    const Invalid invalid[] = {
+        {[](auto &v) { v.struct_size = 0; }},
+        {[](auto &v) { ++v.struct_size; }, AYNI_UNSUPPORTED_VERSION},
+        {[](auto &v) { v.permit_id = 0; }},
+        {[](auto &v) { v.operation_id = 0; }},
+        {[](auto &v) { v.echoed_nonce = 0; }},
+        {[](auto &v) { v.reserved = 1; }},
+        {[](auto &v) { v.epochs.kernel_boot_epoch = 0; }},
+        {[](auto &v) { v.lease_us = 0; }},
+        {[](auto &v) { v.max_command_age_us = 0; }},
+        {[](auto &v) { v.form = 0; }},
+        {[](auto &v) { ++v.epochs.authority_epoch; }, AYNI_DENIED},
+        {[](auto &v) { ++v.control_domain_id; }, AYNI_DENIED},
+        {[](auto &v) { ++v.control_mode; }, AYNI_DENIED},
+        {[](auto &v) { ++v.lease_us; }, AYNI_DENIED},
+        {[](auto &v) { ++v.max_command_age_us; }, AYNI_DENIED},
+    };
+    for (const auto &fault : invalid) {
+        auto candidate = valid;
+        fault.change(candidate);
+        EXPECT_EQ(ayni_control_start(gate, &candidate, 0, &live), fault.status);
+        EXPECT_EQ(info().phase, AYNI_CONTROL_IDLE);
+        EXPECT_EQ(info().permit_id, 0U);
+    }
+    EXPECT_EQ(ayni_control_start(gate, nullptr, 0, &live), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_start(nullptr, &valid, 0, &live), AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(ayni_control_start(gate, &valid, 0, &live), AYNI_OK);
+    EXPECT_EQ(info().permit_id, valid.permit_id);
+}
+
+// C-PERMIT-004/006: a bad renewal cannot alter the accepted permit's
+// deadline. Live observations remain well-formed so identity checks are isolated.
+TEST_F(ControlGate, invalid_renewal_fields_preserve_the_running_deadline) {
+    const auto start = permit();
+    ASSERT_EQ(ayni_control_start(gate, &start, 0, &live), AYNI_OK);
+    const auto before = info();
+    const auto valid = renewal(nonce());
+    struct Invalid {
+        void (*change)(ayni_permit_renewal_v1 &);
+        ayni_status_t status = AYNI_INVALID_ARGUMENT;
+    };
+    const Invalid invalid[] = {
+        {[](auto &v) { ++v.permit_id; }, AYNI_INVALID_STATE},
+        {[](auto &v) { v.reserved = 1; }},
+        {[](auto &v) { v.epochs.kernel_boot_epoch = 0; }},
+        {[](auto &v) { v.echoed_nonce = 0; }},
+        {[](auto &v) { ++v.epochs.authority_epoch; }, AYNI_DENIED},
+    };
+    for (const auto &fault : invalid) {
+        auto candidate = valid;
+        fault.change(candidate);
+        EXPECT_EQ(ayni_control_renew(gate, &candidate, 0, &live), fault.status);
+        EXPECT_EQ(info().phase, AYNI_CONTROL_ACTIVE);
+        EXPECT_EQ(info().deadline_us, before.deadline_us);
+        EXPECT_EQ(info().permit_id, before.permit_id);
+    }
+    EXPECT_EQ(ayni_control_renew(gate, nullptr, 0, &live), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_renew(nullptr, &valid, 0, &live), AYNI_INVALID_ARGUMENT);
+}
+
+// C-PERMIT-012 / C-STOP-006: null handles and malformed live observations
+// never supply a stop proof or output sample. Bad live evidence stops output
+// while retaining the accepted permit identity for measured closure.
+TEST_F(ControlGate, missing_handles_and_malformed_observations_cannot_supply_execution_evidence) {
+    const auto start = permit();
+    auto input = sample();
+    ayni_executor_nonce_v1 challenge{};
+    challenge.nonce = 99;
+    EXPECT_EQ(ayni_control_nonce(nullptr, 0, &challenge), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_nonce(gate, 0, nullptr), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(challenge.nonce, 99U);
+    EXPECT_EQ(ayni_control_check(nullptr, 0, &live), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_sample(nullptr, &input, 0, &live), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_stop(nullptr, start.permit_id, 0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_stop(gate, 0, 0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_confirm_stopped(nullptr, start.permit_id, 0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_confirm_stopped(gate, 0, 0), AYNI_INVALID_ARGUMENT);
+    ayni_control_info_v1 out{};
+    out.struct_size = sizeof(out);
+    EXPECT_EQ(ayni_control_get_info(nullptr, &out), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_control_get_info(gate, nullptr), AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(ayni_control_start(gate, &start, 0, &live), AYNI_OK);
+    auto running = start;
+    const auto restart = [&] {
+        ASSERT_EQ(ayni_control_confirm_stopped(gate, running.permit_id, 0), AYNI_OK);
+        ++running.permit_id;
+        running.echoed_nonce = nonce();
+        ASSERT_EQ(ayni_control_start(gate, &running, 0, &live), AYNI_OK);
+    };
+    EXPECT_EQ(ayni_control_check(gate, 0, nullptr), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(info().phase, AYNI_CONTROL_STOPPING);
+    restart();
+    const auto changes = {
+        +[](ayni_control_observation_v1 &v) { v.epochs.kernel_boot_epoch = 0; },
+        +[](ayni_control_observation_v1 &v) { v.interlocks_ok = 2; },
+        +[](ayni_control_observation_v1 &v) { v.reserved = 1; },
+    };
+    for (const auto change : changes) {
+        auto invalid = live;
+        change(invalid);
+        EXPECT_EQ(ayni_control_check(gate, 0, &invalid), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(ayni_control_sample(gate, &input, 0, &invalid), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(info().phase, AYNI_CONTROL_STOPPING);
+        EXPECT_EQ(info().permit_id, running.permit_id);
+        restart();
+    }
+    // A malformed sample also stops output, with no fabricated physical stop proof.
+    const auto reject_sample = [&](const ayni_control_sample_v1 *candidate,
+                                   ayni_status_t expected) {
+        EXPECT_EQ(ayni_control_sample(gate, candidate, 0, &live), expected);
+        EXPECT_EQ(info().phase, AYNI_CONTROL_STOPPING);
+        EXPECT_EQ(info().last_sample_sequence, 0U);
+        restart();
+    };
+    reject_sample(nullptr, AYNI_INVALID_ARGUMENT);
+    input.struct_size = 0;
+    reject_sample(&input, AYNI_INVALID_ARGUMENT);
+    input = sample();
+    input.permit_id = 0;
+    reject_sample(&input, AYNI_DENIED);
+}
+
+// C-PERMIT-004 / C-STOP-006: a finite lease cannot wrap the clock. A later
+// regressed clock remains unusable even when the numeric sample rises again.
+TEST_F(ControlGate, overflowing_deadline_and_latched_clock_regression_never_start_output) {
+    constexpr uint64_t near_clock_end = UINT64_MAX - 1;
+    const auto challenge = nonce(near_clock_end);
+    const auto input = permit(AYNI_FORM_SESSION, challenge);
+    EXPECT_EQ(ayni_control_start(gate, &input, near_clock_end, &live), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(info().phase, AYNI_CONTROL_IDLE);
+    ayni_executor_nonce_v1 out{};
+    out.nonce = 99;
+    EXPECT_EQ(ayni_control_nonce(gate, near_clock_end - 1, &out), AYNI_STALE);
+    EXPECT_EQ(out.nonce, 99U);
+    EXPECT_EQ(ayni_control_nonce(gate, near_clock_end, &out), AYNI_STALE);
+    EXPECT_EQ(out.nonce, 99U);
+}
+
 TEST_F(ControlGate, startup_requires_a_permit_and_first_sample_before_output) {
     EXPECT_EQ(info().phase, AYNI_CONTROL_IDLE);
     EXPECT_EQ(ayni_control_check(gate, 0, &live), AYNI_INVALID_STATE);
