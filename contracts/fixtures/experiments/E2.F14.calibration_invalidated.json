@@ -1,0 +1,24 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F14.calibration_invalidated",
+  "experiment_step": "E2 F14",
+  "clauses": [
+    "C-PERMIT-004"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "until", "metric": "physical_submissions", "value": "1"},
+    {"op": "steps", "count": 1},
+    {"op": "expect", "metric": "control_phase", "value": "ACTIVE"},
+    {"op": "expect", "metric": "physical_samples", "value": "1"},
+    {"op": "save_call"},
+    {"op": "physical", "action": "invalidate_calibration"},
+    {"op": "physical", "action": "elapse", "us": 1000},
+    {"op": "physical", "action": "stopped_within_bound"},
+    {"op": "physical", "action": "replay_permit_rejected"},
+    {"op": "expect", "metric": "control_phase", "value": "STOPPED"}
+  ]
+}

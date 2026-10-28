@@ -1,0 +1,34 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F3.query_record_not_found",
+  "experiment_step": "E2 F3",
+  "clauses": [
+    "C-LIFE-010",
+    "C-STATUS-004"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "call_phase", "value": "DISPATCHING"},
+    {"op": "until", "metric": "call_durable", "value": "1"},
+    {"op": "expect", "metric": "pending_calls", "value": "0"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "crash", "append": "lost"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "pending_calls", "value": "0"},
+    {"op": "request_query"},
+    {"op": "answer_query", "result": "UNKNOWN"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "call_query_conclusion", "value": "UNKNOWN"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

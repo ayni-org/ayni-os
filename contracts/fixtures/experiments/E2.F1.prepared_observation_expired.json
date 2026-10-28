@@ -1,0 +1,29 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F1.prepared_observation_expired",
+  "experiment_step": "E2 F1",
+  "clauses": [
+    "C-AUTH-005",
+    "C-AUTH-007",
+    "C-PRIM-006",
+    "C-TIME-003"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "until", "metric": "call_phase", "value": "PREPARED"},
+    {"op": "until", "metric": "call_durable", "value": "1"},
+    {"op": "save_call"},
+    {"op": "crash", "append": "lost"},
+    {"op": "physical", "action": "elapse", "us": 600000},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "physical_submissions", "value": "0"},
+    {"op": "expect", "metric": "physical_samples", "value": "0"},
+    {"op": "expect", "metric": "control_phase", "value": "IDLE"}
+  ]
+}

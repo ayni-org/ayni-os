@@ -1,0 +1,41 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F3.query_not_executed",
+  "experiment_step": "E2 F3",
+  "clauses": [
+    "C-OUT-002",
+    "C-LIFE-010"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "call_phase", "value": "DISPATCHING"},
+    {"op": "until", "metric": "call_durable", "value": "1"},
+    {"op": "expect", "metric": "pending_calls", "value": "0"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "crash", "append": "lost"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "pending_calls", "value": "0"},
+    {"op": "request_query"},
+    {"op": "answer_query", "result": "NOT_ACCEPTED"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_outcome", "value": "FAILED"},
+    {"op": "expect", "metric": "call_effect", "value": "NONE"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "create", "type": "action", "command": "201"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "submissions", "value": "1"}
+  ]
+}

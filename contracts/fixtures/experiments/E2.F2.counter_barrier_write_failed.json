@@ -1,0 +1,24 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F2.counter_barrier_write_failed",
+  "experiment_step": "E2 F2",
+  "clauses": [
+    "C-COMMIT-006"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "hold_record", "point": "dispatch_call"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "fault_pending", "fault": "fail"},
+    {"op": "complete_storage"},
+    {"op": "steps", "count": 1, "storage": "held"},
+    {"op": "expect", "metric": "faults_applied", "value": "1"},
+    {"op": "expect", "metric": "call_durable", "value": "0"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

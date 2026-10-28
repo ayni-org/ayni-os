@@ -1,0 +1,17 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F9.expired_command",
+  "experiment_step": "E2 F9",
+  "clauses": [
+    "C-WIRE-005"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "create", "type": "folder", "command": "101"},
+    {"op": "steps", "count": 32},
+    {"op": "expire_command"},
+    {"op": "expect", "metric": "goal_count", "value": "2"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

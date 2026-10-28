@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F0.prepare_torn",
+  "experiment_step": "E2 F0",
+  "clauses": [
+    "C-STORE-002"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "hold_record", "point": "prepared_call"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "cut_record", "point": "before_marker"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "expect", "metric": "call_phase", "value": "QUEUED"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

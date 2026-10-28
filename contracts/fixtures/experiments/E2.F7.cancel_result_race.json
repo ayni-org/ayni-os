@@ -1,0 +1,27 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F7.cancel_result_race",
+  "experiment_step": "E2 F7",
+  "clauses": [
+    "C-CALL-002",
+    "C-CALL-011",
+    "C-ID-006"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "cancel_goal"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "goal_state", "value": "CANCELLED"},
+    {"op": "expect", "metric": "task_state", "value": "CANCELLED"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "submissions", "value": "1"}
+  ]
+}

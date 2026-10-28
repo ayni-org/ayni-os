@@ -1,6 +1,8 @@
+#include "experiment_execution.h"
 #include "experiment_support.h"
 #include <algorithm>
 #include <ayni/host_authority.h>
+#include <ayni/memory.h>
 #include <ayni/runtime/common/default_config.h>
 #include <cstring>
 namespace ayni::runtime::experiments {
@@ -9,14 +11,44 @@ constexpr uint32_t catalog_capacity = 8;
 constexpr uint32_t goal_capacity = 16;
 constexpr uint32_t body_limit = 128;
 constexpr uint32_t checkpoint_limit = 64;
+constexpr uint32_t command_flush_steps = 16;
 constexpr uint64_t owner_id = 1;
 ayni_status_t requirements(void *, ayni_bytes_v1, const ayni_goal_requirement_sink_v1 *sink) {
     const ayni_goal_requirement_v1 value{
         sizeof(value), 1, text("test.increment"), {sizeof(ayni_scope_v1), 0, nullptr}};
     return sink->emit(sink->ctx, &value);
 }
+ayni_status_t request_increment(ayni_policy_output_v1 &output) {
+    const ayni_call_request_v1 request{sizeof(request),
+                                       AYNI_POLICY_REQUEST_CALL,
+                                       1,
+                                       0,
+                                       text("increment"),
+                                       text("increment"),
+                                       {sizeof(ayni_scope_v1), 0, nullptr},
+                                       {}};
+    return output.request_call(output.call_context, &request);
+}
+ayni_status_t report_action(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output,
+                            const ayni_task_call_result_v1 &result) {
+    output.intents[0] = initialized<ayni_policy_intent_v1>();
+    output.intents[0].kind = result.outcome == AYNI_CALL_COMPLETED ? AYNI_POLICY_REPORT_COMPLETION
+                                                                   : AYNI_POLICY_REPORT_FAILURE;
+    output.intents[0].expected_revision = snapshot.revision;
+    output.intent_count = 1;
+    return AYNI_OK;
+}
+ayni_status_t decide_action(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output) {
+    auto result = initialized<ayni_task_call_result_v1>();
+    const auto found = snapshot.call_result(snapshot.call_context, text("increment"), &result);
+    if (found == AYNI_NOT_FOUND) {
+        return request_increment(output);
+    }
+    return found == AYNI_OK ? report_action(snapshot, output, result) : found;
+}
 } // namespace
-World::World(Evidence &out) : config(default_config()), evidence(out) {
+World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deployment)
+    : config(default_config()), service(query), evidence(out) {
     config.storage_buffer_bytes = 0;
     config.agent_capacity = 2;
     config.goal_type_capacity = catalog_capacity;
@@ -29,14 +61,23 @@ World::World(Evidence &out) : config(default_config()), evidence(out) {
     config.call_input_max_bytes = config.call_result_max_bytes = body_limit;
     config.call_capability_capacity = config.provider_capacity = config.binding_capacity =
         catalog_capacity;
+    if (deployment == Deployment::physical) {
+        config.resource_capacity = config.scene_capacity = config.observation_source_capacity = 1;
+        config.executor_capacity = config.execution_binding_capacity = 1;
+        physical = std::make_unique<Physical>(*this);
+        physical->configure();
+    }
 }
 World::~World() {
     if (node.kernel()) {
         // run() explicitly closes and reports its status. If an allocation throws
         // or close fails, this fallback must neither allocate nor post old borrows.
         // Abruptly discard only this entirely synchronous simulated deployment.
-        service.quiesce();
+        detach_clients();
         static_cast<void>(node.power_cut(hosts::sim::CutAppend::lost));
+        if (physical) {
+            static_cast<void>(physical->executor.power_cycle());
+        }
     }
 }
 ayni_status_t World::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
@@ -45,29 +86,9 @@ ayni_status_t World::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
     if (self.policy) {
         return self.policy(*snapshot, *output);
     }
-    auto result = initialized<ayni_task_call_result_v1>();
-    const auto found = snapshot->call_result(snapshot->call_context, text("increment"), &result);
-    if (found == AYNI_NOT_FOUND) {
-        const ayni_call_request_v1 request{sizeof(request),
-                                           AYNI_POLICY_REQUEST_CALL,
-                                           1,
-                                           0,
-                                           text("increment"),
-                                           text("increment"),
-                                           {sizeof(ayni_scope_v1), 0, nullptr},
-                                           {}};
-        return output->request_call(output->call_context, &request);
-    }
-    if (found != AYNI_OK) {
-        return found;
-    }
-    output->intents[0] = initialized<ayni_policy_intent_v1>();
-    output->intents[0].kind = result.outcome == AYNI_CALL_COMPLETED ? AYNI_POLICY_REPORT_COMPLETION
-                                                                    : AYNI_POLICY_REPORT_FAILURE;
-    output->intents[0].expected_revision = snapshot->revision;
-    output->intent_count = 1;
-    return AYNI_OK;
+    return decide_action(*snapshot, *output);
 }
+
 bool World::register_profile() {
     const auto kernel = node.kernel();
     const ayni_principal_desc_v1 owner{sizeof(owner), AYNI_PRINCIPAL_OWNER, owner_id, 1, 0};
@@ -123,16 +144,69 @@ bool World::register_profile() {
            evidence.status("register call", ayni_register_call_capability(kernel, &capability)) &&
            evidence.status("register provider", ayni_register_provider(kernel, &provider)) &&
            evidence.status("register binding", ayni_register_binding(kernel, &binding)) &&
+           (!physical || physical->register_profile(kernel)) &&
            (!registration || evidence.status("register extension", registration(kernel)));
 }
-bool World::start() {
-    if (!evidence.status("assemble", node.assemble(config)) || !register_profile() ||
-        !evidence.status("start", ayni_start(node.kernel())) || !recover()) {
+// This finite policy consumes the original call exactly once, then commits a
+// derived summary, machine step and private checkpoint in one owner transition.
+bool World::application_policy() {
+    policy = [](const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output) {
+        if (snapshot.checkpoint.state.size != 0) {
+            return decide_action(snapshot, output);
+        }
+        auto result = initialized<ayni_task_call_result_v1>();
+        const auto found = snapshot.call_result(snapshot.call_context, text("increment"), &result);
+        if (found == AYNI_NOT_FOUND) {
+            return request_increment(output);
+        }
+        if (found != AYNI_OK) {
+            return found;
+        }
+        if (result.outcome != AYNI_CALL_COMPLETED) {
+            return report_action(snapshot, output, result);
+        }
+        if (!snapshot.memory || output.checkpoint_capacity == 0) {
+            return AYNI_UNSUPPORTED;
+        }
+        auto proposal = initialized<ayni_memory_proposal_v1>();
+        proposal.source = AYNI_MEMORY_DERIVED;
+        proposal.step_key = text("summary");
+        proposal.body = text("action completed");
+        const auto proposed = snapshot.memory->propose(snapshot.memory->context, &proposal);
+        if (proposed != AYNI_OK) {
+            return proposed;
+        }
+        auto &intent = output.intents[0];
+        intent = initialized<ayni_policy_intent_v1>();
+        intent.kind = AYNI_POLICY_WRITE_MEMORY;
+        intent.expected_revision = snapshot.revision;
+        intent.step_key_size = proposal.step_key.size;
+        std::memcpy(intent.step_key, proposal.step_key.data, proposal.step_key.size);
+        output.intent_count = 1;
+        output.checkpoint[0] = 1;
+        output.checkpoint_size = 1;
+        return AYNI_OK;
+    };
+    return true;
+}
+bool World::start_recovery() {
+    storage = Storage::complete;
+    return evidence.status("assemble", node.assemble(config)) && register_profile() &&
+           evidence.status("start", ayni_start(node.kernel()));
+}
+bool World::start(ayni_lifecycle_t expected) {
+    return start_recovery() && finish_recovery(expected);
+}
+bool World::finish_recovery(ayni_lifecycle_t expected) {
+    if (!recover()) {
         return false;
     }
     const auto recovered = lifecycle();
-    if (!evidence.equal("recovery lifecycle", recovered, AYNI_LIFECYCLE_RUNNING)) {
+    if (!evidence.equal("recovery lifecycle", recovered, expected)) {
         return false;
+    }
+    if (recovered != AYNI_LIFECYCLE_RUNNING) {
+        return true; // A diagnostic result is permitted only by this explicit case expectation.
     }
     const ayni_session_desc_v1 session{sizeof(session), AYNI_CHANNEL_MANAGEMENT, owner_id, 1, 0};
     // C-AUTH-010: RUNNING precedes durable first-owner binding. Only this
@@ -149,6 +223,12 @@ bool World::recover() {
     return until("recovery bound", [&] { return lifecycle() != AYNI_LIFECYCLE_RECOVERING; });
 }
 bool World::step() {
+    return advance_step(tick_us);
+}
+bool World::step_now() {
+    return advance_step(0);
+}
+bool World::advance_step(uint64_t clock_delta_us) {
     if (steps == step_limit) {
         return evidence.equal("total step bound", steps, step_limit - 1);
     }
@@ -157,13 +237,17 @@ bool World::step() {
     if (storage == Storage::complete) {
         evidence.fact("storage", "completed", host->complete_storage());
     }
-    node.advance_clock(tick_us);
+    node.advance_clock(clock_delta_us);
+    if (physical && !physical->advance()) {
+        return false;
+    }
     auto report = initialized<ayni_step_report_v1>();
     ++steps;
     evidence.context(steps, host->now_us());
     const bool valid =
-        evidence.status("step", ayni_step(node.kernel(), step_items, step_time_us, &report));
+        evidence.status("step", ayni_step(node.kernel(), items_per_step, step_time_us, &report));
     evidence.fact("step", "count", steps);
+    evidence.fact("step", "item_budget", items_per_step);
     evidence.fact("storage", "durable_seq", info().durable_seq);
     evidence.changed("boot_epoch", info().boot_epoch);
     evidence.fact("external", "executions", service.executions());
@@ -204,6 +288,10 @@ bool World::observe() {
                 evidence.changed(key + ":requires_seq", out.requires_seq);
                 evidence.changed(key + ":request", out.attempt.request_id);
                 evidence.changed(key + ":boot", out.attempt.boot_epoch);
+                evidence.changed(key + ":query_boot", out.query_attempt.boot_epoch);
+                evidence.changed(key + ":query_request", out.query_attempt.request_id);
+                evidence.changed(key + ":query_phase", out.query_phase);
+                evidence.changed(key + ":query_conclusion", out.query_conclusion);
             } else {
                 auto out = initialized<ayni_goal_info_v1>();
                 if (!evidence.status("observe goal", ayni_get_goal(node.kernel(), ids[at], &out))) {
@@ -242,15 +330,45 @@ bool World::crash(hosts::sim::CutAppend append) {
     evidence.fact("fault", "external_executions", service.executions());
     // No asynchronous threads exist in this deployment. Drop every client pointer,
     // then Host::power_cut ends storage borrows before SimNode releases the arena.
-    service.quiesce();
-    session_ = 0;
+    detach_clients();
     return evidence.status("power cut", node.power_cut(append));
+}
+void World::detach_clients() {
+    service.quiesce();
+    if (physical) {
+        physical->executor.abandon_kernel();
+    }
+    session_ = 0;
+}
+bool World::fault_pending(hosts::sim::StorageFault fault) {
+    const auto pending = node.simulation()->pending_append();
+    if (!pending) {
+        return evidence.status("fault target must be pending", AYNI_NOT_FOUND);
+    }
+    evidence.fact("fault", "append_commit_seq", pending->commit_seq);
+    evidence.fact("fault", "append_outcome", static_cast<uint64_t>(fault));
+    return evidence.status("fault exact append",
+                           node.simulation()->fault_pending_append(pending->commit_seq, fault));
+}
+bool World::complete_storage() {
+    evidence.fact("storage", "explicit_completions", node.simulation()->complete_storage());
+    return evidence.ok();
+}
+bool World::complete_old_writer() {
+    auto &host = *node.simulation();
+    const auto before = host.log().size();
+    if (!evidence.equal("late writer copy actually exists", host.pending_late_storage() != 0, 1)) {
+        return false;
+    }
+    return evidence.equal("old writer rejected after fence", host.complete_late_storage(), 0) &&
+           evidence.equal("late writer cannot change log", host.log().size(), before);
 }
 ayni_status_t World::close() {
     if (!node.kernel()) {
         return AYNI_OK;
     }
     if (lifecycle() != AYNI_LIFECYCLE_CONFIGURING && lifecycle() != AYNI_LIFECYCLE_STOPPED) {
+        const auto accepted_before_shutdown = service.submissions();
         const auto begin = ayni_begin_shutdown(node.kernel());
         if (!evidence.status("begin shutdown", begin)) {
             return begin;
@@ -273,15 +391,27 @@ ayni_status_t World::close() {
             // failure, and its status is reported independently by the runner.
             node.simulation()->complete_storage();
             node.advance_clock(tick_us);
+            if (physical && !physical->advance()) {
+                return AYNI_INVALID_STATE;
+            }
             auto report = initialized<ayni_step_report_v1>();
             const auto advanced = ayni_step(node.kernel(), step_items, step_time_us, &report);
             if (!evidence.status("shutdown step", advanced)) {
                 return advanced;
             }
+            if (!evidence.equal("shutdown creates no delivery", service.submissions(),
+                                accepted_before_shutdown)) {
+                return AYNI_INVALID_STATE;
+            }
         }
     }
     const auto released = node.release();
     evidence.status("destroy", released);
+    if (released == AYNI_OK && physical) {
+        const auto closed = physical->executor.close();
+        evidence.status("close physical deployment", closed);
+        return closed;
+    }
     return released;
 }
 ayni_intent_result_v1 World::submit(ayni_intent_kind_t kind, const void *body, uint64_t command,
@@ -307,26 +437,157 @@ uint64_t World::create(const char *type, uint64_t command, uint64_t agent) {
     body.goal_type_id = text(type);
     body.owner_instance_id = instance(agent);
     body.trigger = std::strcmp(type, "folder") == 0 ? AYNI_TRIGGER_NONE : AYNI_TRIGGER_ONCE;
-    return submit(AYNI_INTENT_GOAL_CREATE, &body, command).object.id;
+    const auto result = submit(AYNI_INTENT_GOAL_CREATE, &body, command);
+    if (evidence.ok()) {
+        accepted_goal_ = AcceptedGoal{type, body, command ? command : next_command_, result};
+        accepted_goal_->body.goal_type_id = text(accepted_goal_->type.c_str());
+    }
+    return result.object.id;
 }
-bool World::grant(uint64_t agent) {
+bool World::grant(uint64_t agent, const char *capability) {
     const ayni_grant_create_v1 grant{sizeof(grant),
                                      1,
-                                     text("test.increment"),
+                                     text(capability),
                                      instance(agent),
                                      0,
                                      AYNI_GRANT_PERMANENT,
                                      0,
                                      0,
                                      {sizeof(ayni_scope_v1), 0, nullptr}};
-    submit(AYNI_INTENT_GRANT_CREATE, &grant);
+    const auto result = submit(AYNI_INTENT_GRANT_CREATE, &grant);
+    if (evidence.ok()) {
+        grant_ = result.object.id;
+    }
     return settle();
 }
-bool World::request_query() {
+bool World::revoke() {
+    if (!grant_) {
+        return evidence.status("grant required", AYNI_NOT_FOUND);
+    }
+    auto current = initialized<ayni_grant_info_v1>();
+    if (!evidence.status("get grant", ayni_get_grant(node.kernel(), *grant_, &current))) {
+        return false;
+    }
+    const ayni_grant_revoke_v1 body{sizeof(body), 0, *grant_};
+    submit(AYNI_INTENT_GRANT_REVOKE, &body, 0, current.revision);
+    return evidence.ok();
+}
+bool World::save_call() {
+    const auto current = call();
+    if (!evidence.equal("save nonzero call", current.logical_call_id != 0, 1)) {
+        return false;
+    }
+    const auto kernel = info();
+    saved_call_ = SavedCall{current, node.simulation()->writer_epoch(), kernel.boot_epoch,
+                            kernel.durable_seq};
+    evidence.fact("snapshot", "saved_writer_epoch", saved_call_->writer_epoch);
+    evidence.fact("snapshot", "saved_durable_seq", saved_call_->durable_seq);
+    return true;
+}
+bool World::same_call() {
+    if (!saved_call_) {
+        return evidence.status("saved call required", AYNI_NOT_FOUND);
+    }
+    auto current = initialized<ayni_call_info_v1>();
+    const auto &saved = saved_call_->call;
+    return evidence.status("find saved call",
+                           ayni_get_call(node.kernel(), saved.logical_call_id, &current)) &&
+           evidence.equal("logical call preserved", current.logical_call_id,
+                          saved.logical_call_id) &&
+           evidence.equal("operation preserved", current.operation_id, saved.operation_id) &&
+           evidence.equal("task preserved", current.task_id, saved.task_id) &&
+           evidence.equal("owner preserved", current.owner_instance_id, saved.owner_instance_id);
+}
+bool World::saved_call_missing() {
+    if (!saved_call_) {
+        return evidence.status("saved call required", AYNI_NOT_FOUND);
+    }
+    auto current = initialized<ayni_call_info_v1>();
+    return evidence.status(
+        "uncommitted call absent",
+        ayni_get_call(node.kernel(), saved_call_->call.logical_call_id, &current), AYNI_NOT_FOUND);
+}
+bool World::retry(ayni_status_t expected) {
+    if (!accepted_goal_) {
+        return evidence.status("accepted goal required", AYNI_NOT_FOUND);
+    }
+    const auto &original = *accepted_goal_;
+    const auto repeated =
+        submit(AYNI_INTENT_GOAL_CREATE, &original.body, original.command, 0, expected);
+    if (expected != AYNI_OK) {
+        return evidence.ok();
+    }
+    return evidence.equal("same command goal", repeated.object.id, original.result.object.id) &&
+           evidence.equal("same command sequence", repeated.commit_seq, original.result.commit_seq);
+}
+bool World::request_query(ayni_status_t expected) {
     const auto current = call();
     const ayni_call_query_result_v1 body{sizeof(body), 0, current.logical_call_id};
-    submit(AYNI_INTENT_CALL_QUERY_RESULT, &body, 0, current.query_revision);
-    return evidence.ok() && until("query dispatch", [&] { return service.pending_queries() != 0; });
+    submit(AYNI_INTENT_CALL_QUERY_RESULT, &body, 0, current.query_revision, expected);
+    return evidence.ok() && (expected != AYNI_OK || until("query dispatch", [&] {
+                                 return service.pending_queries() != 0;
+                             }));
+}
+bool World::conflict_command() {
+    if (!accepted_goal_) {
+        return evidence.status("accepted goal required", AYNI_NOT_FOUND);
+    }
+    auto changed = accepted_goal_->body;
+    const uint8_t different = 1;
+    changed.parameters = {&different, sizeof(different)};
+    submit(AYNI_INTENT_GOAL_CREATE, &changed, accepted_goal_->command, 0,
+           AYNI_IDEMPOTENCY_CONFLICT);
+    return evidence.ok();
+}
+bool World::expire_command() {
+    if (!accepted_goal_) {
+        return evidence.status("accepted goal required", AYNI_NOT_FOUND);
+    }
+    // Fill the real bounded retention table; a numeric jump alone cannot evict
+    // a retained command. No test-only expiry rule is introduced (C-WIRE-005).
+    auto original = *accepted_goal_;
+    original.body.goal_type_id = text(original.type.c_str());
+    create("folder", original.command + config.command_capacity + 1);
+    if (!settle()) {
+        return false;
+    }
+    for (uint32_t at = 0; at <= config.command_capacity; ++at) {
+        auto current = initialized<ayni_goal_info_v1>();
+        if (!evidence.status("get original goal",
+                             ayni_get_goal(node.kernel(), original.result.object.id, &current))) {
+            return false;
+        }
+        const ayni_goal_target_v1 target{sizeof(target), 0, current.goal_id};
+        const auto kind = current.lifecycle == AYNI_GOAL_PAUSED ? AYNI_INTENT_GOAL_RESUME
+                                                                : AYNI_INTENT_GOAL_PAUSE;
+        submit(kind, &target, 0, current.revision);
+        if (!settle(command_flush_steps)) {
+            return false;
+        }
+    }
+    submit(AYNI_INTENT_GOAL_CREATE, &original.body, original.command, 0, AYNI_EXPIRED);
+    return evidence.ok();
+}
+bool World::read_result() {
+    const auto current = call();
+    uint32_t bytes = UINT32_MAX;
+    return evidence.status(
+               "copy durable result",
+               ayni_copy_call_result(node.kernel(), current.logical_call_id, nullptr, 0, &bytes)) &&
+           evidence.equal("empty counter result", bytes, 0);
+}
+bool World::cancel_goal() {
+    if (!accepted_goal_) {
+        return evidence.status("accepted goal required", AYNI_NOT_FOUND);
+    }
+    auto current = initialized<ayni_goal_info_v1>();
+    if (!evidence.status(
+            "get goal", ayni_get_goal(node.kernel(), accepted_goal_->result.object.id, &current))) {
+        return false;
+    }
+    const ayni_goal_target_v1 body{sizeof(body), 0, current.goal_id};
+    submit(AYNI_INTENT_GOAL_CANCEL, &body, 0, current.revision);
+    return evidence.ok();
 }
 ayni_call_info_v1 World::call() const {
     uint64_t ids[operation_capacity]{};
@@ -362,6 +623,20 @@ uint64_t World::instance(uint64_t agent) const {
 }
 uint64_t World::metric(Metric metric) const {
     switch (metric) {
+    case Metric::physical_submissions:
+        return physical ? physical->executor.submissions() : 0;
+    case Metric::physical_samples:
+        return physical ? physical->executor.samples() : 0;
+    case Metric::physical_challenges:
+        return physical ? physical->executor.challenges() : 0;
+    case Metric::physical_renewals:
+        return physical ? physical->executor.renewals() : 0;
+    case Metric::held_renewals:
+        return physical ? physical->executor.held(AYNI_EXECUTOR_RENEW) : 0;
+    case Metric::control_phase:
+        return physical ? physical->info().phase : 0;
+    case Metric::control_deadline:
+        return physical ? physical->deadline_offset() : 0;
     case Metric::executions:
         return service.executions();
     case Metric::pending_calls:
@@ -384,6 +659,86 @@ uint64_t World::metric(Metric metric) const {
         return node.simulation()->writer_epoch();
     case Metric::faults_applied:
         return node.simulation()->faults_applied();
+    case Metric::kernel_boot:
+        return info().boot_epoch;
+    case Metric::writer_advanced:
+    case Metric::boot_advanced:
+    case Metric::durable_kept: {
+        if (!saved_call_) {
+            evidence.status("saved epoch required", AYNI_NOT_FOUND);
+            return 0;
+        }
+        if (metric == Metric::writer_advanced) {
+            return node.simulation()->writer_epoch() > saved_call_->writer_epoch ? 1 : 0;
+        }
+        const auto current = info();
+        return metric == Metric::boot_advanced ? current.boot_epoch == saved_call_->kernel_boot + 1
+                                               : current.durable_seq >= saved_call_->durable_seq;
+    }
+    case Metric::submissions:
+        return service.submissions();
+    case Metric::call_durable: {
+        const auto current = call();
+        return current.requires_seq && current.requires_seq <= info().durable_seq ? 1 : 0;
+    }
+    case Metric::call_operation:
+        return call().operation_id;
+    case Metric::task_count:
+        return count(AYNI_OBJECT_TASK);
+    case Metric::call_query_conclusion:
+        return call().query_conclusion;
+    case Metric::memory_count: {
+        const ayni_memory_search_v1 query{
+            sizeof(query), AYNI_MEMORY_PRIVATE, instance(1), 0, {}, {}};
+        std::array<ayni_memory_info_v1, goal_capacity> records{};
+        uint32_t size = 0;
+        evidence.status("search derived memories",
+                        ayni_search_memory(node.kernel(), session_, &query, records.data(),
+                                           records.size(), &size));
+        for (uint32_t at = 0; at < size; ++at) {
+            evidence.equal("one version of derived summary", records[at].revision, 1);
+            evidence.equal("derived source", records[at].source, AYNI_MEMORY_DERIVED);
+        }
+        return size;
+    }
+    case Metric::checkpoint_value: {
+        uint8_t value = 0;
+        uint32_t bytes = 0;
+        evidence.status("copy task checkpoint",
+                        ayni_copy_task_checkpoint(node.kernel(), call().task_id, &value,
+                                                  sizeof(value), &bytes));
+        evidence.equal("checkpoint byte count", bytes, 1);
+        return value;
+    }
+    case Metric::task_occurrence:
+    case Metric::model_calls_used:
+    case Metric::model_call_limit:
+    case Metric::task_steps:
+    case Metric::task_state: {
+        const auto current = call();
+        auto task = initialized<ayni_task_info_v1>();
+        evidence.status("get task state", ayni_get_task(node.kernel(), current.task_id, &task));
+        if (metric == Metric::task_occurrence) {
+            return task.occurrence;
+        }
+        if (metric == Metric::model_calls_used) {
+            return task.model_calls_used;
+        }
+        if (metric == Metric::model_call_limit) {
+            return task.model_call_limit;
+        }
+        return metric == Metric::task_steps ? task.step_count : task.lifecycle;
+    }
+    case Metric::goal_state: {
+        auto goal = initialized<ayni_goal_info_v1>();
+        if (!accepted_goal_) {
+            evidence.status("accepted goal required", AYNI_NOT_FOUND);
+            return 0;
+        }
+        evidence.status("get goal state",
+                        ayni_get_goal(node.kernel(), accepted_goal_->result.object.id, &goal));
+        return goal.lifecycle;
+    }
     }
     evidence.status("unknown metric", AYNI_INVALID_ARGUMENT);
     return 0;

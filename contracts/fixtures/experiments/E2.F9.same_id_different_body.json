@@ -1,0 +1,17 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F9.same_id_different_body",
+  "experiment_step": "E2 F9",
+  "clauses": [
+    "C-WIRE-004"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "create", "type": "folder", "command": "101"},
+    {"op": "steps", "count": 32},
+    {"op": "conflict_command"},
+    {"op": "expect", "metric": "goal_count", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

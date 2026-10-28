@@ -1,0 +1,27 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F10.estop_during_flush",
+  "experiment_step": "E2 F10",
+  "clauses": [
+    "C-COMMIT-007",
+    "C-AUTH-006",
+    "C-PRIM-006"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "hold_record", "point": "dispatch_call"},
+    {"op": "expect", "metric": "physical_submissions", "value": "0"},
+    {"op": "physical", "action": "estop_before_dispatch"},
+    {"op": "complete_storage"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "physical_submissions", "value": "0"},
+    {"op": "expect", "metric": "physical_samples", "value": "0"},
+    {"op": "expect", "metric": "control_phase", "value": "IDLE"},
+    {"op": "expect", "metric": "call_outcome", "value": "CANCELLED"},
+    {"op": "expect", "metric": "physical_challenges", "value": "0"}
+  ]
+}

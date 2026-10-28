@@ -1,0 +1,29 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F3.no_query_capability",
+  "experiment_step": "E2 F3",
+  "clauses": [
+    "C-STATUS-004"
+  ],
+  "query_authority": "NONE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "call_phase", "value": "DISPATCHING"},
+    {"op": "until", "metric": "call_durable", "value": "1"},
+    {"op": "expect", "metric": "pending_calls", "value": "0"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "crash", "append": "lost"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "pending_calls", "value": "0"},
+    {"op": "request_query", "status": "UNSUPPORTED"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

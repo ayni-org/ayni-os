@@ -1,0 +1,48 @@
+// One deterministic physical deployment profile. Core remains the only issuer;
+// this owner controls a simulated transport, local measurements and fake time.
+#ifndef AYNI_EXPERIMENT_EXECUTION_H
+#define AYNI_EXPERIMENT_EXECUTION_H
+#include <ayni/providers/mock_execution.h>
+#include <ayni/scenes.h>
+#include <optional>
+namespace ayni::runtime::experiments {
+class World;
+class Physical {
+  public:
+    static constexpr uint32_t lease_us = 100000;
+    static constexpr uint32_t observation_age_us = 500000;
+    explicit Physical(World &world);
+    bool configure();
+    bool register_profile(ayni_kernel_t *kernel);
+    bool prepare();
+    bool publish(int64_t value);
+    bool advance();
+    bool at(uint32_t offset_us);       // Since the first actual permit's nonce issue time.
+    bool elapse(uint32_t duration_us); // Local cycles, without Core steps.
+    bool mark_invalidated();
+    bool stopped_within_bound();
+    bool invalidate_kernel();
+    bool invalidate_calibration();
+    bool estop();
+    bool estop_before_dispatch();
+    bool reset_estop();
+    bool replay_permit_rejected();
+    bool replay_renewal_rejected();
+    bool unpermitted_rejected();
+    bool deliver_renewal(ayni_status_t expected);
+    bool drop_renewal();
+    bool power_cycle();
+    uint64_t deadline_offset() const;
+    ayni_control_info_v1 info() const;
+    providers::mock_execution::Executor executor;
+
+  private:
+    World &world_;
+    std::optional<uint64_t> nonce_origin_, invalidated_at_, stopped_samples_;
+    uint64_t observation_sequence_ = 0;
+    enum class Invalidation { kernel, calibration, estop };
+    bool change_live(Invalidation kind);
+    static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);
+};
+} // namespace ayni::runtime::experiments
+#endif

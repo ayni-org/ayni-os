@@ -1,0 +1,38 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F12.write_failed_fence",
+  "experiment_step": "E2 F12",
+  "clauses": [
+    "C-COMMIT-009",
+    "C-PERMIT-009"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "until", "metric": "physical_submissions", "value": "1"},
+    {"op": "steps", "count": 1},
+    {"op": "expect", "metric": "control_phase", "value": "ACTIVE"},
+    {"op": "save_call"},
+    {"op": "physical", "action": "link", "mode": "disconnected"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "create", "type": "folder", "command": "201"},
+    {"op": "until", "metric": "lifecycle", "value": "FENCED"},
+    {"op": "physical", "action": "mark_invalidated"},
+    {"op": "physical", "action": "elapse", "us": 100000},
+    {"op": "physical", "action": "stopped_within_bound"},
+    {"op": "expect", "metric": "physical_submissions", "value": "1"},
+    {"op": "expect", "metric": "physical_renewals", "value": "0"},
+    {"op": "physical", "action": "link", "mode": "connected"},
+    {"op": "until", "metric": "lifecycle", "value": "RECOVERING"},
+    {"op": "finish_recovery"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "physical_submissions", "value": "1"}
+  ]
+}

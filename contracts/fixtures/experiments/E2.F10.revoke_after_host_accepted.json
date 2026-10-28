@@ -1,0 +1,28 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F10.revoke_after_host_accepted",
+  "experiment_step": "E2 F10",
+  "clauses": [
+    "C-OUT-003",
+    "C-HOST-004",
+    "C-LIFE-013"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "revoke"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "pending_calls", "value": "1"},
+    {"op": "receipt", "outcome": "CANCELLED", "effect": "COMPLETE"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "call_outcome", "value": "CANCELLED"},
+    {"op": "expect", "metric": "call_effect", "value": "COMPLETE"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"}
+  ]
+}

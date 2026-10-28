@@ -1,0 +1,33 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F8.cut_after_cursor",
+  "experiment_step": "E2 F8",
+  "clauses": [
+    "C-COMMIT-002",
+    "C-COMMIT-005",
+    "C-RUN-002",
+    "C-LIMIT-007"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "hold_record", "point": "task"},
+    {"op": "cut_record", "point": "goal_state"},
+    {"op": "start"},
+    {"op": "expect", "metric": "task_count", "value": "0"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "expect", "metric": "task_count", "value": "1"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "task_count", "value": "1"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "task_occurrence", "value": "1"},
+    {"op": "expect", "metric": "model_calls_used", "value": "0"},
+    {"op": "expect", "metric": "model_call_limit", "value": "8"}
+  ]
+}

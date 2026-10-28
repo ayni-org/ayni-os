@@ -1,0 +1,32 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F12.fence_unavailable_readonly",
+  "experiment_step": "E2 F12",
+  "clauses": [
+    "C-COMMIT-011"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1", "bound": 600},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "fault", "port": "fence", "fault": "unavailable"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "create", "type": "folder", "command": "201"},
+    {"op": "until", "metric": "lifecycle", "value": "FENCED", "bound": 600},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "receipt", "outcome": "ABANDONED", "effect": "UNKNOWN"},
+    {"op": "until", "metric": "lifecycle", "value": "RESTRICTED", "bound": 600},
+    {"op": "expect", "metric": "boot_advanced", "value": "0"},
+    {"op": "expect", "metric": "faults_applied", "value": "4"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "durable_kept", "value": "1"}
+  ]
+}

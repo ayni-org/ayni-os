@@ -1,0 +1,21 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F13.retry_during_recovery",
+  "experiment_step": "E2 F13",
+  "clauses": [
+    "C-LIFE-004"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "create", "type": "folder", "command": "101"},
+    {"op": "steps", "count": 32},
+    {"op": "crash", "append": "lost"},
+    {"op": "start_recovery"},
+    {"op": "retry", "status": "NOT_READY"},
+    {"op": "finish_recovery"},
+    {"op": "retry"},
+    {"op": "expect", "metric": "goal_count", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

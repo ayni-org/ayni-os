@@ -1,3 +1,3 @@
 add_library(ayni_provider_mock_execution STATIC mock_execution.cpp)
 target_include_directories(ayni_provider_mock_execution PUBLIC include)
-target_link_libraries(ayni_provider_mock_execution PUBLIC ayni_api PRIVATE ayni_core_options ayni_control_gate)
+target_link_libraries(ayni_provider_mock_execution PUBLIC ayni_api PRIVATE ayni_core ayni_core_options ayni_control_gate)

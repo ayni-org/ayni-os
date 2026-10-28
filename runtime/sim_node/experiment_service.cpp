@@ -50,6 +50,7 @@ ayni_submit_result_t ActionService::submit(void *ctx, const ayni_provider_reques
     for (auto &slot : self.calls_) {
         if (!slot.completion) {
             slot = {request->attempt, request->logical_call_id, request->operation_id, completion};
+            ++self.submissions_;
             return AYNI_SUBMIT_ACCEPTED;
         }
     }
@@ -139,6 +140,7 @@ ayni_status_t ActionService::receipt(ayni_call_outcome_t outcome, ayni_call_effe
                                                        : AYNI_OK;
         const auto status = ayni_provider_post(slot.completion, &result);
         if (status == AYNI_OK) {
+            last_receipt_ = LastReceipt{slot.completion, result};
             slot = {};
         }
         return status;
@@ -186,7 +188,39 @@ ayni_status_t ActionService::answer_query(uint32_t conclusion) {
     return AYNI_NOT_FOUND;
 }
 void ActionService::quiesce() {
+    if (last_receipt_) {
+        old_attempt_ = last_receipt_->result.attempt;
+    }
+    for (const auto &slot : calls_) {
+        if (slot.completion) {
+            old_attempt_ = slot.attempt;
+            break;
+        }
+    }
     calls_ = {};
     queries_ = {};
+    last_receipt_.reset();
+}
+ayni_status_t ActionService::repeat_receipt() {
+    return last_receipt_ ? ayni_provider_post(last_receipt_->target, &last_receipt_->result)
+                         : AYNI_NOT_FOUND;
+}
+ayni_status_t ActionService::post_old_attempt() {
+    if (!old_attempt_) {
+        return AYNI_NOT_FOUND;
+    }
+    for (const auto &slot : queries_) {
+        if (slot.completion) {
+            auto result = initialized<ayni_provider_result_v1>();
+            result.attempt = *old_attempt_;
+            result.outcome = AYNI_CALL_COMPLETED;
+            result.effect = AYNI_CALL_EFFECT_COMPLETE;
+            result.status = AYNI_OK;
+            // Route an old packet to a currently valid target. Never dereference an
+            // old Kernel pointer merely to test boot/attempt rejection (C-ID-006).
+            return ayni_provider_post(slot.completion, &result);
+        }
+    }
+    return AYNI_NOT_FOUND;
 }
 } // namespace ayni::runtime::experiments

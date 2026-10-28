@@ -1,0 +1,25 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F7.tail_crc_error",
+  "experiment_step": "E2 F7",
+  "clauses": [
+    "C-COMMIT-002",
+    "C-STORE-001",
+    "C-STORE-002"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "hold_record", "point": "prepared_call"},
+    {"op": "save_call"},
+    {"op": "cut_record", "point": "before_marker"},
+    {"op": "damage", "region": "torn_tail"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "expect", "metric": "call_phase", "value": "QUEUED"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}
