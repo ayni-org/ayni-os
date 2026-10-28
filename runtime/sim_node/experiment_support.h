@@ -201,6 +201,7 @@ class World {
     bool revoke();
     bool revoke(uint64_t grant_id);
     uint64_t owner_session() const { return session_; }
+    uint64_t last_command() const { return next_command_; } // Diagnostic receipt lookup only.
     bool conflict_command();
     bool expire_command();
     bool read_result();

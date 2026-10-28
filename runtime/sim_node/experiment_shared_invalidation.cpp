@@ -174,12 +174,7 @@ bool SharedServices::invalidate_summary(SourceChange change) {
     }
     auto privacy = initialized<ayni_privacy_info_v1>();
     if (change == SourceChange::restart_cleanup) {
-        if (!e.status(
-                "privacy cleanup started",
-                ayni_get_privacy_status(world_.node.kernel(), world_.owner_session(), &privacy)) ||
-            !e.equal("cleanup unfinished at interruption", privacy.phase != AYNI_PRIVACY_COMPLETE,
-                     1) ||
-            !world_.until("delete accepted durably before restart",
+        if (!world_.until("delete accepted durably before restart",
                           [&] {
                               auto info = initialized<ayni_memory_info_v1>();
                               uint32_t size = 0;
@@ -187,7 +182,32 @@ bool SharedServices::invalidate_summary(SourceChange change) {
                                                      source, &info, nullptr, 0, &size) == AYNI_OK &&
                                      info.commit_seq <= world_.info().durable_seq;
                           }) ||
-            !world_.crash(hosts::sim::CutAppend::lost) || !world_.start()) {
+            !e.status(
+                "privacy at actual cut",
+                ayni_get_privacy_status(world_.node.kernel(), world_.owner_session(), &privacy))) {
+            return false;
+        }
+        e.fact("privacy", "cut_phase", privacy.phase);
+        e.fact("privacy", "cut_request_seq", privacy.request_seq);
+        e.fact("privacy", "cut_commit_seq", privacy.commit_seq);
+        if (!e.equal("cleanup unfinished at actual cut",
+                     privacy.phase != AYNI_PRIVACY_IDLE && privacy.phase != AYNI_PRIVACY_COMPLETE,
+                     1)) {
+            return false;
+        }
+        const auto request = privacy.request_seq;
+        if (!world_.crash(hosts::sim::CutAppend::lost) || !world_.start() ||
+            !e.status(
+                "privacy immediately after recovery",
+                ayni_get_privacy_status(world_.node.kernel(), world_.owner_session(), &privacy))) {
+            return false;
+        }
+        e.fact("privacy", "recovered_phase", privacy.phase);
+        e.fact("privacy", "recovered_request_seq", privacy.request_seq);
+        if (!e.equal("original cleanup request recovered", privacy.request_seq, request) ||
+            !e.equal("cleanup still needs progression after recovery",
+                     privacy.phase != AYNI_PRIVACY_IDLE && privacy.phase != AYNI_PRIVACY_COMPLETE,
+                     1)) {
             return false;
         }
     } else {

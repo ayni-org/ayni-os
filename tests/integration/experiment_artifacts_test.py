@@ -42,6 +42,14 @@ def main():
                                    for item in records), "close must record independent STOPPED"
                         assert any(item["name"] == "execution:stop_confirmed_at_us" and int(item["value"]) > 0
                                    for item in records)
+                    if case.name == "E1.S6.revoke_in_flight":
+                        phases = ("ACCEPTED_phase", "DURABLY_EFFECTIVE_seq", "CANCELLING_call", "STOP_CONFIRMED_seq")
+                        observed = [next(int(row["sequence"]) for row in records if row["category"] == "revoke" and row["name"] == name and int(row["value"]) > 0) for name in phases]
+                        assert observed == sorted(observed), "revoke confirmation phases must remain distinguishable"
+                    if case.name == "E1.S9.cleanup_resumes_after_restart":
+                        privacy = {row["name"]: int(row["value"]) for row in records if row["category"] == "privacy"}
+                        assert 0 < privacy["cut_phase"] < 4 and 0 < privacy["recovered_phase"] < 4
+                        assert privacy["cut_request_seq"] == privacy["recovered_request_seq"] > 0
                     assert [int(item["sequence"]) for item in records] == list(range(1, len(records) + 1))
                     artifacts[case.name] = (manifest, trace)
                 if suite == "E2":

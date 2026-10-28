@@ -18,7 +18,7 @@
     {
       "op": "expect",
       "metric": "physical_submissions",
-      "value": "1"
+      "value": "2"
     }
   ]
 }

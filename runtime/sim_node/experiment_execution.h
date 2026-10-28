@@ -44,7 +44,12 @@ class Physical {
 
   private:
     World &world_;
-    std::optional<uint64_t> nonce_origin_, invalidated_at_, stopped_samples_;
+    std::optional<uint64_t> nonce_origin_, invalidated_at_;
+    struct StoppedOutput {
+        uint64_t permit_id;
+        uint64_t samples;
+    };
+    std::optional<StoppedOutput> stopped_output_; // Diagnostic total scoped to the measured permit.
     uint64_t observation_sequence_ = 0;
     enum class Invalidation { kernel, calibration, estop };
     bool change_live(Invalidation kind);
