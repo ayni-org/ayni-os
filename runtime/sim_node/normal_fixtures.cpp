@@ -641,12 +641,11 @@ class Engine {
             calendar.timezone_size = 4;
             std::memcpy(calendar.timezone, "UTC0", calendar.timezone_size);
             calendar.first_local_s = a.calendar_s;
-            const applications::assistant::Parameters parameters{
-                *assistant == AssistantGoal::reminder
-                    ? applications::assistant::GoalKind::reminder
-                    : applications::assistant::GoalKind::device_check,
-                a.body,
-                {}};
+            applications::assistant::Parameters parameters;
+            parameters.kind = *assistant == AssistantGoal::reminder
+                                  ? applications::assistant::GoalKind::reminder
+                                  : applications::assistant::GoalKind::device_check;
+            parameters.text = a.body;
             status = applications::assistant::prepare_goal(
                 parameters, actor, applications::assistant::check_period_us,
                 *assistant == AssistantGoal::reminder ? &calendar : nullptr, encoded, body);

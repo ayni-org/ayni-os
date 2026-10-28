@@ -24,13 +24,13 @@
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 5 | 0 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
-| [host/native_runtime.md](host/native_runtime.md) | 10 | 6 |
+| [host/native_runtime.md](host/native_runtime.md) | 12 | 8 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
 | [host/provider.md](host/provider.md) | 14 | 0 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 396 | 136 |
+| 合计 | 398 | 138 |
 
 ## 计划章节 → 契约文档
 
@@ -101,8 +101,10 @@
 | ADR-0056 | host/policy_interface.md |
 | ADR-0057 | host/native_runtime.md |
 | ADR-0060 | domain/memory.md、host/native_runtime.md |
+| ADR-0066 | host/native_runtime.md |
 | ADR-0067 | host/cpp_sdk.md |
 | ADR-0068 | fixtures/normal/README.md |
+| ADR-0072 | host/native_runtime.md |
 
 ## 工作包 → 条款
 
@@ -239,7 +241,7 @@
 | C-LIMIT-012 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`；C-MEM-005 |
 | C-MEM-001 | M1 已实现：`KernelMemory.explicit_save_is_confirmed_and_body_waits_for_durable_receipt`、`KernelMemory.exact_retry_and_revision_cas_do_not_replace_other_content`、`KernelMemory.management_authentication_applies_to_queries_and_exact_retries` |
 | C-MEM-002 | M1 已实现：`MemoryFacts.copies_bounded_text_and_rejects_full_table_without_eviction`、`MemoryFacts.byte_limit_precedes_utf8_scan_and_valid_text_uses_utf8_bytes`、`KernelMemory.full_capacity_and_small_output_buffers_leave_saved_facts_intact` |
-| C-MEM-003 | M1 已实现：`KernelMemory.another_agent_cannot_read_private_content_or_ignore_the_denial`、`NativeAssistant.sharing_private_memory_then_revoking_blocks_reads_and_old_context`、`NativeAssistant.profile_starts_empty_and_grant_to_a_does_not_authorize_b`；用途与时限的完整组合矩阵未验证 |
+| C-MEM-003 | M1 已实现：`KernelMemory.another_agent_cannot_read_private_content_or_ignore_the_denial`、`KernelMemoryAccess.profile_grant_to_one_agent_does_not_authorize_another`、`NativeAssistant.sharing_profile_memory_then_revoking_blocks_reads_and_old_context`、`KernelMemory.unicode_search_keeps_private_namespaces_and_profile_separate`；用途与时限的完整组合矩阵未验证 |
 | C-MEM-004 | M1 已实现：`MemoryFacts.confirmation_preserves_model_origin_and_source_dependencies`、`KernelMemory.policy_derived_memory_and_confirmation_retain_sources_across_reopen`、`MemoryCall.model_result_becomes_unconfirmed_memory_after_its_durable_prefix` |
 | C-MEM-005 | M1 已实现：`MemoryFacts.dependency_union_is_atomic_and_never_truncates`、`MemoryFacts.changed_source_and_captured_permission_never_select_a_replacement`、`KernelMemory.strategy_read_checkpoint_survives_reopen_and_source_delete_blocks_export`、`KernelContext.policy_callback_cannot_export_another_goals_or_tasks_private_body` |
 | C-MEM-006 | M1 已实现：`MemoryFacts.exact_tags_and_keywords_combine_with_body_search`、`KernelMemory.unicode_search_keeps_private_namespaces_and_profile_separate`、`KernelMemory.strategy_search_tracks_authorized_nonmatches_before_publishing_a_page` |
@@ -283,12 +285,14 @@
 | C-HOST-019 | M1 已实现（恢复路径，同一时刻只有一个存储请求）：模拟 Host 在完成时才读写缓冲，`KernelLifecycle.first_boot_persists_epoch_1_before_running`、`KernelLifecycle.log_longer_than_the_buffer_is_read_in_chunks`；运行中的批次留在环中，追加完成才出环，之前不被覆盖（ADR-0026）：`WorkJournal.transition_waits_for_room_for_its_batch`；Native Host 的 I/O 线程在投递完成之前读写缓冲：`HostStorage.append_then_read_returns_the_same_bytes` |
 | C-HOST-020 | M1 已实现（完成槽与事件）：`CompletionPoolTest.post_wakes_the_owner_and_no_host_call_runs_under_the_lock`、`CompletionPoolTest.stale_posts_racing_slot_reuse_are_ignored`、`CompletionWake.result_is_applicable_when_the_owner_is_woken`、`NativeHost.ingress_lock_excludes_other_threads`、`SimHost.host_calls_under_the_ingress_lock_are_recorded`、`SimHostDeathTest.second_ingress_lock_on_one_thread_aborts`、`KernelLifecycle.first_boot_persists_epoch_1_before_running`（恢复全程没有持锁调用）、`KernelEvents.states_between_start_and_stopped_take_posts`、`KernelEvents.posts_from_host_threads_are_each_taken_once`、`KernelEvents.posts_racing_shutdown_are_each_counted_once`；ESP-IDF Host 随 `MA-007` 复核 |
 | C-HOST-021 | M1 已实现（Kernel 报告的期限）：`WorkTrigger.delay_goal_derives_once_its_time_comes`、`WorkTrigger.deadline_counts_only_goals_that_could_derive`、`WorkTrigger.paused_goal_takes_what_fell_due_when_resumed`、`WorkTrigger.paused_instance_holds_the_occurrence_until_resumed`、`WorkTrigger.used_up_ids_report_no_deadline`、`WorkTrigger.budget_spent_before_deriving_still_reports_the_due_occurrence`、`WorkTrigger.draining_reports_no_deadline`、`WorkExpiry.goal_expires_at_its_time`、`WorkExpiry.expiry_counts_in_the_deadline`、`WorkExpiry.expiry_needs_neither_room_nor_an_id`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.paused_goal_waits_without_skipping`、`WorkWait.deadline_is_the_end_of_the_earliest_bounded_wait`、`WorkExpiry.clock_at_its_largest_value_finds_no_due_work`、`WorkInput.goal_takes_inputs_from_its_source`、`WorkInput.inputs_waiting_too_long_are_skipped`；存储退避与不空转 `KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`；按期限睡眠的应用循环随 E1 夹具与 `MA-007` |
-| C-NATIVE-001 | M1 已实现：`NativeAssistant.rule_and_chat_agents_use_separate_owned_work`、`NativeAssistant.proposed_turn_can_be_approved_after_normal_reopen`、`NativeAssistant.rule_agent_restores_its_pending_goal_and_reports_completion` |
+| C-NATIVE-001 | M1 已实现：`NativeAssistant.check_text_is_an_ordinary_turn_of_the_single_assistant`、`NativeAssistant.proposed_turn_can_be_approved_after_normal_reopen`、`NativeAssistant.dual_agent_conversation_file_is_refused_before_any_boot_write`；CLI 脚本 tests/integration/native_cli_test.py |
 | C-NATIVE-002 | M1 已实现：`NativeAssistant.summary_and_conversation_survive_clean_close_and_reopen`、`NativeAssistant.continuing_past_retained_capacity_keeps_latest_context_and_queryable_calls`；异常退出窗口及文件故障未验证 |
 | C-NATIVE-003 | M1 已实现：`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`；新故障/恢复专项未验证 |
 | C-NATIVE-004 | M1 已实现：`NativeAssistant.local_http_tool_loop_and_text_only_summary_use_real_provider_wiring`；仅本地 HTTP 夹具，实 API 多轮未验证 |
 | C-NATIVE-005 | M1 已实现：`SimDemo.independent_nodes_use_the_same_profile_and_retain_storage_on_release` |
 | C-NATIVE-006 | M1 已实现：`NativeAssistant.grant_revoke_and_cancel_use_public_management_commands`（正常提交与持久等待）；PENDING 背压的 runtime 专项未验证，Core 既有回执测试保持 |
+| C-NATIVE-011 | M1 已实现：`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval`、`NativeAssistant.model_goals_waiting_for_approval_are_bounded`、`NativeAssistant.stop_before_the_schedule_tool_decides_registers_nothing`、`AssistantApplication.model_origin_goal_waits_for_consent_and_is_found_by_its_operation`、`AssistantPolicy.encoding_grammar_stop_phrases_and_quiet_time_are_explicit`、`NativeAssistant.local_http_tool_loop_and_text_only_summary_use_real_provider_wiring`（文法拒绝回给模型）；仅本地 HTTP 夹具，真实模型多轮与崩溃时在途调用（UNKNOWN）未验证；GoalPort BUSY、无端口与准入关闭路径未构造 |
+| C-NATIVE-012 | M1 已实现：`NativeAssistant.stop_phrase_cancels_the_turn_pauses_autonomy_and_keeps_reminders`、`NativeAssistant.stop_is_not_held_behind_a_pending_conversation_save`、`AssistantPolicy.encoding_grammar_stop_phrases_and_quiet_time_are_explicit`；CLI 脚本 tests/integration/native_cli_test.py |
 | C-POLICY-001 | M1 已实现（GoalType 的校验与策略的 `decide` 期间，修改 Kernel 的调用返回 `INVALID_STATE` 且不产生效果，ADR-0022）：`WorkModel.validator_cannot_change_the_kernel_while_it_runs`、`WorkDecision.strategy_cannot_change_the_kernel_while_it_decides`；不执行 I/O、不阻塞只能评审；`MA-009` |
 | C-POLICY-002 | M1 已实现（超过 `max_intents_per_call` 的意图、超过 `max_checkpoint_bytes` 的私有检查点或策略返回 `CAPACITY_EXCEEDED` 时整次决定被拒绝，Task 停下并记 `POLICY_OUTPUT_LIMIT`，不提交步骤与检查点；上限在注册时检查，ADR-0022、ADR-0024）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkCheckpoint.refused_decisions_commit_nothing_and_hold_with_their_reason`、`WorkCheckpoint.kernel_reads_only_its_own_checkpoint_buffer`、`WorkStrategy.registration_checks_its_arguments`；`MA-009`；C-LIMIT-006 |
 | C-POLICY-003 | M1 已实现（结构大小、种类、版本与互相矛盾的结束意图；`step_key`、重复的步骤与步骤上限；策略只写 Kernel 提供的意图数组与私有检查点缓冲，注册时确认它写意图的步长与 Kernel 一致，Kernel 只读回自己的缓冲，并按自己保存的上限读私有检查点，ADR-0022、ADR-0024）：`WorkDecision.refused_decisions_hold_the_task_with_their_reason`、`WorkCheckpoint.refused_decisions_commit_nothing_and_hold_with_their_reason`、`WorkStrategy.registration_checks_its_arguments`、`WorkDecision.strategy_starts_from_cleared_intents_that_only_the_kernel_reads`、`WorkCheckpoint.kernel_reads_only_its_own_checkpoint_buffer`、`WorkDecision.end_that_would_exhaust_a_revision_holds_the_task`、`WorkCheckpoint.end_that_would_exhaust_a_revision_commits_nothing`；授权、运行限制与资源随 `MA-006`、`MA-018`；E3 步骤 2；E4 步骤 1；C-TRUST-001 |

@@ -1,14 +1,16 @@
+#include "policy_support.h"
 #include <algorithm>
-#include <ayni/applications/assistant.h>
-#include <cstring>
 namespace ayni::applications::assistant {
 namespace {
-constexpr uint32_t parameter_version = 1, header_bytes = 4, id_bytes = 8, bits_per_byte = 8;
-constexpr uint32_t version_at = 0, kind_at = 1, source_count_at = 2, reserved_at = 3;
+constexpr uint32_t parameter_version = 2, header_bytes = 4, id_bytes = 8, bits_per_byte = 8;
+constexpr uint32_t version_at = 0, kind_at = 1, source_count_at = 2, origin_at = 3;
 constexpr uint32_t minutes_per_day = 1440, seconds_per_minute = 60;
 bool valid(const Parameters &p) {
     if (p.text.size() > text_bytes_max || p.sources.size() > memory_sources_max ||
-        static_cast<uint32_t>(p.kind) > static_cast<uint32_t>(GoalKind::scene_observe)) {
+        static_cast<uint32_t>(p.kind) > static_cast<uint32_t>(GoalKind::scene_observe) ||
+        static_cast<uint32_t>(p.origin) > static_cast<uint32_t>(Origin::model) ||
+        (p.origin == Origin::model) != (p.operation_id != 0) ||
+        (p.origin == Origin::model && p.kind == GoalKind::memory_organize)) {
         return false;
     }
     if (p.kind == GoalKind::reminder) {
@@ -26,7 +28,46 @@ bool valid(const Parameters &p) {
     }
     return true;
 }
-ayni_status_t objects(const ayni_kernel_t *k, ayni_object_kind_t kind, std::vector<uint64_t> &ids) {
+void put_id(Encoded &out, uint64_t id) {
+    for (uint32_t byte = 0; byte < id_bytes; ++byte) {
+        out.bytes[out.size++] = static_cast<uint8_t>(id >> (byte * bits_per_byte));
+    }
+}
+uint64_t get_id(const uint8_t *data, uint32_t &at) {
+    uint64_t id = 0;
+    for (uint32_t byte = 0; byte < id_bytes; ++byte) {
+        id |= static_cast<uint64_t>(data[at++]) << (byte * bits_per_byte);
+    }
+    return id;
+}
+// Exact ASCII case folding only; other bytes, including UTF-8, compare unchanged.
+bool same_phrase(const std::string &input, const char *phrase) {
+    return std::equal(input.begin(), input.end(), phrase, phrase + std::strlen(phrase),
+                      [](char a, char b) {
+                          return (a >= 'A' && a <= 'Z' ? static_cast<char>(a - 'A' + 'a') : a) == b;
+                      });
+}
+bool strip_suffix(std::string &input, const char *suffix) {
+    const auto size = std::strlen(suffix);
+    if (input.size() <= size || input.compare(input.size() - size, size, suffix) != 0) {
+        return false;
+    }
+    input.resize(input.size() - size);
+    return true;
+}
+bool strip_prefix(std::string &input, const char *prefix) {
+    const auto size = std::strlen(prefix);
+    if (input.size() < size || input.compare(0, size, prefix) != 0) {
+        return false;
+    }
+    input.erase(0, size);
+    return true;
+}
+// Whole UTF-8 sequences: trimming a byte set would cut into CJK punctuation such as "。".
+constexpr char ideographic_space[] = "\xE3\x80\x80"; // U+3000, typed by CJK input methods.
+} // namespace
+ayni_status_t detail::objects(const ayni_kernel_t *k, ayni_object_kind_t kind,
+                              std::vector<uint64_t> &ids) {
     uint32_t count = 0;
     auto status = ayni_list_objects(k, kind, nullptr, 0, &count);
     if (status != AYNI_OK && status != AYNI_BUFFER_TOO_SMALL) {
@@ -35,7 +76,6 @@ ayni_status_t objects(const ayni_kernel_t *k, ayni_object_kind_t kind, std::vect
     ids.resize(count);
     return ayni_list_objects(k, kind, ids.data(), count, &count);
 }
-} // namespace
 const char *goal_type(GoalKind kind) {
     switch (kind) {
     case GoalKind::reminder:
@@ -49,7 +89,8 @@ const char *goal_type(GoalKind kind) {
     }
     return "";
 }
-// Application parameter format 1: version/kind/source-count/reserved, LE IDs, UTF-8 body.
+// Application parameter format 2: version/kind/source-count/origin, the LE operation ID for
+// model origin only, LE source IDs, then the UTF-8 body. Format 1 data is refused (ADR-0072).
 ayni_status_t encode(const Parameters &p, Encoded &out) {
     if (!valid(p)) {
         return AYNI_INVALID_ARGUMENT;
@@ -58,11 +99,13 @@ ayni_status_t encode(const Parameters &p, Encoded &out) {
     next.bytes[version_at] = parameter_version;
     next.bytes[kind_at] = static_cast<uint8_t>(p.kind);
     next.bytes[source_count_at] = static_cast<uint8_t>(p.sources.size());
+    next.bytes[origin_at] = static_cast<uint8_t>(p.origin);
     next.size = header_bytes;
+    if (p.origin == Origin::model) {
+        put_id(next, p.operation_id);
+    }
     for (const auto id : p.sources) {
-        for (uint32_t byte = 0; byte < id_bytes; ++byte) {
-            next.bytes[next.size++] = static_cast<uint8_t>(id >> (byte * bits_per_byte));
-        }
+        put_id(next, id);
     }
     std::memcpy(next.bytes.data() + next.size, p.text.data(), p.text.size());
     next.size += static_cast<uint32_t>(p.text.size());
@@ -71,20 +114,24 @@ ayni_status_t encode(const Parameters &p, Encoded &out) {
 }
 ayni_status_t decode(ayni_bytes_v1 input, Parameters &out) {
     if (!input.data || input.size < header_bytes || input.size > parameter_bytes_max ||
-        input.data[version_at] != parameter_version || input.data[reserved_at] != 0 ||
-        input.data[source_count_at] > memory_sources_max ||
-        input.size < header_bytes + input.data[source_count_at] * id_bytes) {
+        input.data[version_at] != parameter_version ||
+        input.data[origin_at] > static_cast<uint8_t>(Origin::model) ||
+        input.data[source_count_at] > memory_sources_max) {
         return AYNI_INVALID_ARGUMENT;
     }
     Parameters next;
     next.kind = static_cast<GoalKind>(input.data[kind_at]);
+    next.origin = static_cast<Origin>(input.data[origin_at]);
+    const uint32_t ids = input.data[source_count_at] + (next.origin == Origin::model ? 1U : 0U);
+    if (input.size < header_bytes + ids * id_bytes) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     uint32_t at = header_bytes;
+    if (next.origin == Origin::model) {
+        next.operation_id = get_id(input.data, at);
+    }
     for (uint32_t source = 0; source < input.data[source_count_at]; ++source) {
-        uint64_t id = 0;
-        for (uint32_t byte = 0; byte < id_bytes; ++byte) {
-            id |= static_cast<uint64_t>(input.data[at++]) << (byte * bits_per_byte);
-        }
-        next.sources.push_back(id);
+        next.sources.push_back(get_id(input.data, at));
     }
     next.text.assign(reinterpret_cast<const char *>(input.data + at), input.size - at);
     if (!valid(next)) {
@@ -93,14 +140,26 @@ ayni_status_t decode(ayni_bytes_v1 input, Parameters &out) {
     out = std::move(next);
     return AYNI_OK;
 }
-uint64_t route(const std::string &input, uint64_t a, uint64_t b, std::string &body) {
-    body = input;
-    if (input.size() > 3 && input[0] == '@' && input[2] == ' ' &&
-        (input[1] == 'a' || input[1] == 'b')) {
-        body = input.substr(3);
-        return input[1] == 'a' ? a : b;
+bool stop_request(const std::string &input) {
+    auto phrase = input;
+    for (bool stripped = true; stripped;) {
+        stripped = false;
+        for (const auto *tail : {" ", "\t", "\r", "\n", ideographic_space, "!", ".", "！", "。"}) {
+            stripped = stripped || strip_suffix(phrase, tail);
+        }
     }
-    return input == "check" || input == "检查" ? a : b;
+    for (bool stripped = true; stripped;) {
+        stripped = false;
+        for (const auto *head : {" ", "\t", "\r", "\n", ideographic_space}) {
+            stripped = stripped || strip_prefix(phrase, head);
+        }
+    }
+    for (const auto *stop : {"停", "停下", "停止", "stop"}) {
+        if (same_phrase(phrase, stop)) {
+            return true;
+        }
+    }
+    return false;
 }
 ayni_status_t QuietHours::validate() const {
     if (!enabled) {
@@ -110,11 +169,7 @@ ayni_status_t QuietHours::validate() const {
         start_minute == end_minute) {
         return AYNI_INVALID_ARGUMENT;
     }
-    int64_t local = 0;
-    // Mid-range instant validates the zone without rejecting a legitimate west offset at epoch 0.
-    constexpr int64_t validation_utc_s = 86400;
-    return ayni_calendar_local_time({timezone.data(), static_cast<uint32_t>(timezone.size())},
-                                    validation_utc_s, &local);
+    return detail::check_timezone(detail::text(timezone));
 }
 ayni_status_t QuietHours::allows(ayni_utc_sample_v1 sample, bool &out) const {
     auto status = validate();
@@ -178,7 +233,7 @@ ayni_status_t project(const ayni_kernel_t *kernel, Activity &out) {
     State result = group.paused ? State::paused : State::available;
     activity.autonomy_paused = group.paused != 0;
     std::vector<uint64_t> ids;
-    status = objects(kernel, AYNI_OBJECT_GOAL, ids);
+    status = detail::objects(kernel, AYNI_OBJECT_GOAL, ids);
     if (status != AYNI_OK) {
         return status;
     }
@@ -194,7 +249,7 @@ ayni_status_t project(const ayni_kernel_t *kernel, Activity &out) {
             ++activity.awaiting_authority;
         }
     }
-    status = objects(kernel, AYNI_OBJECT_TASK, ids);
+    status = detail::objects(kernel, AYNI_OBJECT_TASK, ids);
     if (status != AYNI_OK) {
         return status;
     }
@@ -225,24 +280,5 @@ ayni_status_t project(const ayni_kernel_t *kernel, Activity &out) {
     activity.primary = result;
     out = activity;
     return AYNI_OK;
-}
-std::vector<Suggestion> merge_suggestions(const std::vector<Suggestion> &input) {
-    std::vector<Suggestion> out;
-    for (const auto &item : input) {
-        auto same = std::find_if(out.begin(), out.end(), [&](const auto &row) {
-            return row.key == item.key && row.value == item.value;
-        });
-        if (same != out.end()) {
-            same->agents |= item.agents;
-            continue;
-        }
-        out.push_back(item);
-    }
-    for (auto &item : out) {
-        item.conflict = std::any_of(out.begin(), out.end(), [&](const auto &other) {
-            return item.key == other.key && item.value != other.value;
-        });
-    }
-    return out;
 }
 } // namespace ayni::applications::assistant

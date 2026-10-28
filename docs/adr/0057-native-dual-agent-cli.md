@@ -1,6 +1,6 @@
 # ADR-0057：双 Agent Native runtime、对话文件与 CLI
 
-- **状态**：已接受，P2 实现与本地正常验证完成
+- **状态**：已接受，P2 实现与本地正常验证完成；双 Agent 装配与 `@a/@b` 点名已由 [ADR-0072](0072-single-assistant-schedule-tool-and-stop.md) 取代
 - **日期**：2026-10-26
 - **关联**：MA-020 前半；ADR-0010、0042 决定 13、0053 F16、0056；C-LIFE-030、C-NATIVE-001～006
 
@@ -17,7 +17,7 @@ P1 已有规则、ToolLoop、Native 模型 Provider 和有界对话值，但可�
 5. **对话文件。** 复用 `Conversation::encode/decode/finish/erase`；版本 1 文件 `conversation.bin` 为 `AYNF`、u32 版本、u64 正文字节数、u64 pending Goal ID（小端），后接既有 AYNC 编码。目录 0700、文件 0600；持有 Native Host 目录锁之后才读写。文件 worker 先写临时文件、fdatasync、rename，再 fsync 目录；保存成功才发布新上下文和答案。一次只排一个候选；保存期间拒绝新 mutation，避免新 Goal 回收尚未导出的终态 Task。未完成 Goal 的对应关系同文件保留；缺文件但已有 B 工作、owner 不匹配或未知格式均显式拒绝，不从历史猜测重建。文件保存与 Kernel journal 不是跨库事务；异常退出窗口、文件损坏与恢复专项未验收，不作断电一致性承诺。
 6. **摘要与 Mock。** Native Provider 的启动配置显式选择 `TOOL_CALLS/openai.chat` 或 `TEXT/openai.text`，摘要用后者，不向摘要调用提供工具。Mock 增加复制的固定回复配置，以已有 A/B 的调度和完成端口验证多轮；这不是语言理解或摘要质量。真实 Provider 的工具链与摘要使用回环协议夹具，实 API 多轮由用户本机独立试用。保留 P1 的 384 字节输入/回答、最近 3 轮、512 字节摘要；超限报错，不截断。
 7. **关闭。** 先收敛文件候选并驱动 Kernel 到 STOPPED；Provider `quiesce` 在 terminal post 已返回后 join 工作线程，保留注册 ctx；再销毁 Kernel/Host，最后释放 Profile。不能从“终态已消费”推断 post 已返回。未完成 turn 保留 pending Goal，正常重开按公开状态继续；不声称正常退出能撤回已外发请求。失败保留对象并报告，不能释放仍借用的内存。
-8. **CLI 产品选择（用户 2026-10-26 选定推荐项）。** `@a/@b` 点名，英文短命令、中文提示；配置默认 `$XDG_CONFIG_HOME/ayni/config`（回退 `~/.config/ayni/config`），数据默认 `$XDG_DATA_HOME/ayni`（回退 `~/.local/share/ayni`），支持显式路径覆盖。文件只保存 provider/base_url/model/key_environment，密钥值只由 Provider 从环境读取；无配置时明确使用 Mock，配置错误不自动退回 Mock。整段清除仅清当前外层值，Kernel 历史正文擦除和单轮删除仍属 P3。
+8. **CLI 产品选择（用户 2026-10-26 选定推荐项）。** `@a/@b` 点名，英文短命令、中文提示；配置默认 `$XDG_CONFIG_HOME/ayni/config`（回退 `~/.config/ayni/config`），数据默认 `$XDG_DATA_HOME/ayni`（回退 `~/.local/share/ayni`），支持显式路径覆盖。文件只保存 provider/base_url/model/key_environment，密钥值只由 Provider 从环境读取；无配置时明确使用 Mock，配置错误不自动退回 Mock。整段清除仅清当前外层值，Kernel 历史正文擦除和单轮删除仍属 P3。（自 ADR-0072 起 Native 只有一个助理，`@a/@b` 取消；配置、目录与密钥规则不变。）
 
 ## 后果
 

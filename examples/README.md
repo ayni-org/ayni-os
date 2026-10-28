@@ -18,10 +18,10 @@
 cmake --preset native-debug
 cmake --build --preset native-debug
 ctest --preset native-debug -R '^(CppSdk\.|cpp_sdk_|Examples\.)'
-bash examples/two_agents_demo.sh build/native/targets/native_cli/ayni
+bash examples/assistant_demo.sh build/native/targets/native_cli/ayni
 ```
 
-双 Agent 脚本仅用 Mock，使用自己创建的临时私有目录并清理；授予演示所需的具体权限，展示文本路由、两 Agent、自主暂停及保留提醒。Native 未可信校时时提醒保持待校时；它不把未呈现当成功。
+助理脚本仅用 Mock，使用自己创建的临时私有目录并清理；授予演示所需的具体权限，展示单一 ToolLoop 助理对话（含 `check` 作为普通文本）、自主检查/观察、“停”的确定性停止及保留提醒（ADR-0072）。Native 未可信校时时提醒保持待校时；它不把未呈现当成功。
 
 `new_model` 只使用 numeric-loopback 和进程内 fixture-only key，不读取真实凭据或访问外部模型。可复用协议 helper 在 Provider test_support，产品 CLI 不链接 fixture。独立示例若无法成功 close，会明确失败退出并保留借用至进程结束；这不作为正常关闭证据，也不是 SDK 库的通用退出策略。
 

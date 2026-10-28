@@ -71,7 +71,8 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (!output.write) {
         output.write = unavailable_channel;
     }
-    status = profile.assemble(node.kernel(), config, {node.clock(), output, std::move(quiet)});
+    status = profile.assemble(node.kernel(), config,
+                              {node.clock(), output, std::move(quiet), {this, propose}});
     if (status != AYNI_OK) {
         return status;
     }
@@ -136,36 +137,24 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    std::vector<uint64_t> retained;
-    status = ids(AYNI_OBJECT_GOAL, retained);
+    // A proposal announced before a restart, or never announced because of one, is told again.
+    applications::assistant::ModelGoals model;
+    status = applications::assistant::model_goals(node.kernel(), 0, model);
     if (status != AYNI_OK) {
         return status;
     }
-    for (const auto id : retained) {
-        ayni_goal_info_v1 goal{};
-        goal.struct_size = sizeof(goal);
-        status = ayni_get_goal(node.kernel(), id, &goal);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        if (goal.goal_type_id_size == std::strlen("rule.check") &&
-            std::memcmp(goal.goal_type_id, "rule.check", goal.goal_type_id_size) == 0 &&
-            goal.owner_instance_id == instance(demo_agent_a) &&
-            (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
-             goal.lifecycle == AYNI_GOAL_PAUSED)) {
-            if (rule_goal) {
-                return AYNI_CAPACITY_EXCEEDED;
-            }
-            rule_goal = id;
+    for (const auto id : model.waiting) {
+        if (proposal_count < proposals.size()) {
+            proposals[proposal_count++] = id;
         }
     }
     opened = true;
     return AYNI_OK;
 }
-uint64_t Assistant::Impl::instance(uint64_t agent) const {
+uint64_t Assistant::Impl::assistant() const {
     ayni_agent_info_v1 info{};
     info.struct_size = sizeof(info);
-    return ayni_get_agent(node.kernel(), agent, &info) == AYNI_OK ? info.instance_id : 0;
+    return ayni_get_agent(node.kernel(), demo_assistant, &info) == AYNI_OK ? info.instance_id : 0;
 }
 ayni_status_t Assistant::Impl::ids(ayni_object_kind_t kind, std::vector<uint64_t> &out) const {
     uint32_t count = 0;
@@ -221,34 +210,10 @@ ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
         return status != AYNI_OK ? status : privacy.progress_status;
     }
     status = collect(notices);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    if (rule_goal) {
-        ayni_goal_info_v1 goal{};
-        goal.struct_size = sizeof(goal);
-        status = ayni_get_goal(node.kernel(), rule_goal, &goal);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        ayni_kernel_info_v1 info{};
-        info.struct_size = sizeof(info);
-        status = ayni_get_kernel_info(node.kernel(), &info);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        if (goal.lifecycle == AYNI_GOAL_SATISFIED && goal.commit_seq <= info.durable_seq) {
-            notices.push_back({NoticeKind::rule_completed, {}});
-            rule_goal = 0;
-        } else if (goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_FAILED ||
-                   goal.lifecycle == AYNI_GOAL_EXPIRED) {
-            rule_goal = 0;
-        }
-    }
-    return AYNI_OK;
+    return status == AYNI_OK ? announce(notices) : status;
 }
 bool Assistant::Impl::idle() const {
-    if (!opened || saving || awaiting_notice || pending_count) {
+    if (!opened || saving || awaiting_notice || pending_count || proposal_count) {
         return false;
     }
     ayni_kernel_info_v1 info{};
@@ -318,10 +283,10 @@ bool Assistant::Impl::idle() const {
         // not a reason for /wait to block. A due first occurrence still is.
         if (goal.commit_seq > info.durable_seq ||
             (goal.lifecycle == AYNI_GOAL_ACTIVE && !goal.group_paused && !goal.last_task_id &&
-             (due_now || goal.goal_id == current.pending_goal || goal.goal_id == rule_goal))) {
+             (due_now || goal.goal_id == current.pending_goal))) {
             return false;
         }
-        if ((goal.goal_id == current.pending_goal || goal.goal_id == rule_goal) &&
+        if (goal.goal_id == current.pending_goal &&
             (goal.lifecycle == AYNI_GOAL_SATISFIED || goal.lifecycle == AYNI_GOAL_CANCELLED ||
              goal.lifecycle == AYNI_GOAL_EXPIRED || goal.lifecycle == AYNI_GOAL_FAILED)) {
             return false;

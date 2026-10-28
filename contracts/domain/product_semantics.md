@@ -1,7 +1,7 @@
 # 五项产品语义
 
 - **关联**：计划 §0、§2.4「操作传播」、§4.4「解绑」、§5.2、§5.4、§14.1；ADR-0007、ADR-0019、ADR-0020、ADR-0026；`MA-011`、`MA-019`、`MA-028`；E1 步骤 1、7–9、11，E4 步骤 4、7，第 10.7 节试用流程
-- **属主**：应用层的助理协调器与 GoalType（`applications/`）负责路由、合并与呈现；Kernel 的 `work`（Goal/Task、调用）、`knowledge`（记忆、lineage、tombstone）与 `authority`（主体、Grant）负责其中的权威事实。协调器不直接修改 Kernel 对象（计划 §2.7）。
+- **属主**：应用层的助理协调器与 GoalType（`applications/`）负责会话入口、目标登记与呈现；Kernel 的 `work`（Goal/Task、调用）、`knowledge`（记忆、lineage、tombstone）与 `authority`（主体、Grant）负责其中的权威事实。协调器不直接修改 Kernel 对象（计划 §2.7）。
 
 本文把计划 §14.1 已确认的五项产品语义写成可判定的条款。它们改变时必须先由用户确认（计划 §14.2 末段），不能在实现中悄悄调整。
 
@@ -62,8 +62,8 @@
 | C-PROD-033 | 已外发给外部服务或模型的数据按保留说明处理；系统不承诺撤回模型已收到的内容；已发生的影响与可选 usage 诊断如实保留（ADR-0042，无费用结算表）；审计只留脱敏引用 | 删除确认页写着“已从所有地方彻底删除” | `MA-027`；第 10.7 节（删除记忆与派生摘要） |
 | C-PROD-034 | 混合摘要失效后可以只用仍有效的来源重新生成；删除不禁止用户之后主动提供独立的新记录 | 删除一条偏好后，用户再次说出同样的偏好也被拒绝保存 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs`；C-MEM-010 |
 | C-PROD-035 | 敏感删除须有已绑定管理端的认证证据 | 语音说“删掉所有记忆”就清空了公共档案 | M1 已实现所有者会话边界：`KernelMemory.management_authentication_applies_to_queries_and_exact_retries`；远程管理端仍随 MA-027；E1 步骤 7、C-AUTH-009 |
-| C-PROD-040 | 助理公共档案是归属所有者的独立命名空间，按 Agent 授予读、写、用途与期限；不是所有 Agent 自动可读；各 Agent 的记忆仍默认私有 | 新注册的 Agent 自动读取公共档案中的全部偏好 | M1 部分实现（管理保存、按 Agent/用途读，独立写档案仅所有者）：`NativeAssistant.profile_starts_empty_and_grant_to_a_does_not_authorize_b`；C-MEM-003/004；E1 步骤 7 完整场景未验收 |
-| C-PROD-041 | 用户明确让统一助理保存的偏好进入公共档案；私有记忆的共享与外发仍分别授权，共享一条不意味着共享整个私有库 | 用户共享一条私有事实后，另一个 Agent 可以检索该 Agent 的全部私有记录 | M1 部分实现（CLI 明确保存基础偏好、逐记录共享与外发）：`NativeAssistant.sharing_private_memory_then_revoking_blocks_reads_and_old_context`、`NativeAssistant.remote_memory_requires_separate_destination_grant_before_http_submission`；统一助理随 P5；E1 步骤 1、7 |
+| C-PROD-040 | 助理公共档案是归属所有者的独立命名空间，按 Agent 授予读、写、用途与期限；不是所有 Agent 自动可读；各 Agent 的记忆仍默认私有 | 新注册的 Agent 自动读取公共档案中的全部偏好 | M1 部分实现（管理保存、按 Agent/用途读，独立写档案仅所有者）：`KernelMemoryAccess.profile_grant_to_one_agent_does_not_authorize_another`、`NativeAssistant.sharing_profile_memory_then_revoking_blocks_reads_and_old_context`、`KernelMemory.unicode_search_keeps_private_namespaces_and_profile_separate`；C-MEM-003/004；E1 步骤 7 完整场景未验收 |
+| C-PROD-041 | 用户明确让统一助理保存的偏好进入公共档案；私有记忆的共享与外发仍分别授权，共享一条不意味着共享整个私有库 | 用户共享一条私有事实后，另一个 Agent 可以检索该 Agent 的全部私有记录 | M1 部分实现（CLI 明确保存基础偏好、逐记录共享与外发；跨 Agent 私有读拒绝在 Core 验证）：`NativeAssistant.sharing_profile_memory_then_revoking_blocks_reads_and_old_context`、`KernelMemory.another_agent_cannot_read_private_content_or_ignore_the_denial`、`NativeAssistant.remote_memory_requires_separate_destination_grant_before_http_submission`；统一助理随 P5；E1 步骤 1、7 |
 | C-PROD-042 | 后台整理不能读取其他 Agent 的私有记录，也不能把未经确认的推断改为已确认事实 | 记忆整理把“可能喜欢咖啡”的推断写成已确认偏好 | M1 部分实现（组织用途拒绝跨 Agent 私有读、模型/派生确认保持来源）：`MemoryFacts.confirmation_preserves_model_origin_and_source_dependencies`；后台整理调度随 P5；C-MEM-003/004；E1 步骤 1 |
-| C-PROD-050 | 助理状态是并发事实的投影：停止与故障警示优先，前台聆听/处理显示当前交互，等待授权与后台目标另列；不用单个枚举隐藏并行任务 | 后台观察进行中时用户按键提问，界面只显示“后台观察” | M1 正常实现：`AssistantPolicy.routing_encoding_quiet_time_and_conflict_projection_are_explicit`、`NativeAssistant.autonomous_goals_reopen_and_approve_through_the_public_application`；M1 文本状态；硬件停止指示未验收；完整 E1/E4 未验收 |
+| C-PROD-050 | 助理状态是并发事实的投影：停止与故障警示优先，前台聆听/处理显示当前交互，等待授权与后台目标另列；不用单个枚举隐藏并行任务 | 后台观察进行中时用户按键提问，界面只显示“后台观察” | M1 正常实现：`UnavailableAssistantApplication.unsupported_channel_preserves_pending_reminder_and_projects_failure`、`NativeAssistant.autonomous_goals_reopen_and_approve_through_the_public_application`；M1 文本状态；硬件停止指示未验收；完整 E1/E4 未验收 |
 | C-PROD-051 | 普通界面不显示内部 task ID、Provider 与资源锁等开发术语；这些只出现在开发诊断页 | 试用界面显示“blocked_on: model_slot#0” | `MA-028`；第 10.7 节 |

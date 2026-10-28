@@ -8,7 +8,7 @@ foreach(example IN ITEMS new_hardware new_model new_strategy composite_workflow)
     endif()
 endforeach()
 if(AYNI_BUILD_TESTS)
-    add_test(NAME Examples.two_agents_demo COMMAND bash
-        ${CMAKE_CURRENT_SOURCE_DIR}/two_agents_demo.sh $<TARGET_FILE:ayni>)
-    set_tests_properties(Examples.two_agents_demo PROPERTIES TIMEOUT 90)
+    add_test(NAME Examples.assistant_demo COMMAND bash
+        ${CMAKE_CURRENT_SOURCE_DIR}/assistant_demo.sh $<TARGET_FILE:ayni>)
+    set_tests_properties(Examples.assistant_demo PROPERTIES TIMEOUT 90)
 endif()

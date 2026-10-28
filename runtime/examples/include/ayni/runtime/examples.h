@@ -23,7 +23,7 @@ class Fixture {
     Fixture(const Fixture &) = delete;
     Fixture &operator=(const Fixture &) = delete;
     ayni_status_t open(Extension extension, Model model = Model::mock);
-    uint64_t instance() const; // Registered Agent B instance; zero before open.
+    uint64_t instance() const; // Registered assistant instance; zero before open.
     uint64_t now_us() const;   // Same monotonic domain as the example Host.
     ayni_string_v1 capability(const char *alias) const; // Borrowed through close.
     ayni_scope_v1 scope(const char *alias) const; // Exact model destination, empty for local tools.

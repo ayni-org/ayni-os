@@ -265,10 +265,15 @@ int main(int argc, char **argv) {
         Driver driver(options, *console);
         const auto status = driver.ready();
         if (status != AYNI_OK) {
-            output("启动失败 status=" + std::to_string(status));
+            // ADR-0072: directories of the earlier dual-Agent layout are refused, not migrated.
+            output("启动失败 status=" + std::to_string(status) +
+                   (status == AYNI_UNSUPPORTED_VERSION
+                        ? "：数据目录来自不兼容的旧版本（例如双 Agent 版本），未做任何修改；"
+                          "请用 --data-dir 指定新目录。"
+                        : ""));
             return 1;
         }
-        output("Ayni Native CLI：A=规则，B=ToolLoop。输入 /help 查看命令；首次使用须明确授权。");
+        output("Ayni Native CLI：单一助理（ToolLoop）。输入 /help 查看命令；首次使用须明确授权。");
         bool failed = false;
         for (;;) {
             if (isatty(STDIN_FILENO)) {

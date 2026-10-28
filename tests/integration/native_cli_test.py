@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ADR-0057: normal scripted CLI use, orderly reopen and public diagnostics."""
+"""ADR-0057/0072: normal scripted CLI use, orderly reopen and public diagnostics."""
 import os
 import fcntl
 import pathlib
@@ -11,6 +11,8 @@ import tempfile
 import unittest
 
 BINARY = sys.argv.pop(1)
+# conversation.bin starts with b'AYNF' and then its little-endian format version.
+FORMAT_VERSION_OFFSET = 4
 
 
 class NativeCli(unittest.TestCase):
@@ -64,23 +66,25 @@ class NativeCli(unittest.TestCase):
         return subprocess.run([BINARY, '--mock', *args], input='\n'.join(commands) + '\n',
                               text=True, capture_output=True, timeout=25, env=env)
 
-    def test_two_agents_summary_and_reopen(self):
+    def test_single_assistant_summary_and_reopen(self):
+        # ADR-0072: every plain line, including "check", is a turn of the one ToolLoop assistant.
         with tempfile.TemporaryDirectory() as directory:
             commands = []
-            for agent, capability in [('a', 'present'), ('b', 'model'), ('b', 'summary'), ('b', 'present')]:
-                commands += [f'/grant {agent} {capability}', '/wait']
-            commands += ['@a check', '/wait']
-            for turn in range(1, 5):
-                commands += [f'@b 中文第{turn}轮', '/wait']
+            for capability in ['model', 'summary', 'schedule']:
+                commands += [f'/grant {capability}', '/wait']
+            commands += ['check', '/wait']
+            for turn in range(2, 5):
+                commands += [f'中文第{turn}轮', '/wait']
             commands += ['/goals', '/tasks', '/calls', '/conversation', '/quit']
             first = self.session(directory, commands)
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-            self.assertIn('A：规则检查完成', first.stdout)
+            goals = [line for line in first.stdout.splitlines() if line.startswith('Goal ')]
+            self.assertEqual(len(goals), 4, first.stdout)
+            self.assertTrue(all('已完成' in line for line in goals), first.stdout)
             self.assertIn('未确认摘要', first.stdout)
             self.assertIn('中文第4轮', first.stdout)
-            self.assertIn('已完成', first.stdout)
             self.assertIn('Call ', first.stdout)
-            second = self.session(directory, ['/conversation', '@b 重开后的第五轮', '/wait', '/diagnostics', '/quit'])
+            second = self.session(directory, ['/conversation', '重开后的第五轮', '/wait', '/diagnostics', '/quit'])
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertIn('中文第4轮', second.stdout)
             self.assertIn('对话轮次=5', second.stdout)
@@ -89,10 +93,40 @@ class NativeCli(unittest.TestCase):
             self.assertEqual(state.stat().st_mode & 0o777, 0o700)
             self.assertEqual((state / 'conversation.bin').stat().st_mode & 0o777, 0o600)
 
+    def test_stop_phrase_pauses_background_work_without_the_model(self):
+        # ADR-0072: the phrase is handled before any grant or model call exists.
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.session(directory, ['停！', '/status', '/resume-assistant', '/wait', '/status', '/quit'])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('已停止：进行中的回答（如有）已取消，后台工作已暂停，提醒保留', result.stdout)
+            lines = [line for line in result.stdout.splitlines() if '助理：' in line and '处理' in line]
+            self.assertEqual(len(lines), 2, result.stdout)
+            self.assertIn('自主工作暂停', lines[0])
+            self.assertNotIn('自主工作暂停', lines[1])
+            self.assertNotIn('你：', result.stdout)
+
+    def test_dual_agent_directory_is_refused_unchanged(self):
+        # ADR-0072: the earlier layout is refused at startup, never migrated.
+        with tempfile.TemporaryDirectory() as directory:
+            first = self.session(directory, ['/quit'])
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            state = pathlib.Path(directory) / 'data' / 'ayni'
+            conversation = state / 'conversation.bin'
+            legacy = bytearray(conversation.read_bytes())
+            legacy[FORMAT_VERSION_OFFSET] = 2  # AYNF v2, written by the dual-Agent version.
+            conversation.write_bytes(legacy)
+            before = {path.relative_to(state): path.read_bytes() for path in state.rglob('*') if path.is_file()}
+            second = self.session(directory, ['/quit'])
+            self.assertEqual(second.returncode, 1, second.stdout + second.stderr)
+            self.assertIn('不兼容的旧版本', second.stdout)
+            self.assertNotIn('Ayni Native CLI', second.stdout)
+            after = {path.relative_to(state): path.read_bytes() for path in state.rglob('*') if path.is_file()}
+            self.assertEqual(before, after)
+
     def test_explicit_directory_and_eof_close(self):
         with tempfile.TemporaryDirectory() as directory:
             state = str(pathlib.Path(directory) / 'explicit')
-            first = self.session(directory, ['@b 等待批准', '/wait', '/goals'], '--data-dir', state)
+            first = self.session(directory, ['等待批准', '/wait', '/goals'], '--data-dir', state)
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
             self.assertIn('待审批', first.stdout)
             goal_line = next(line for line in first.stdout.splitlines() if line.startswith('Goal '))
@@ -104,7 +138,7 @@ class NativeCli(unittest.TestCase):
 
     def test_invalid_command_is_reported_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
-            result = self.session(directory, ['/grant b model surplus', '/diagnostics', '/quit'])
+            result = self.session(directory, ['/grant model surplus', '/diagnostics', '/quit'])
             self.assertEqual(result.returncode, 1)
             self.assertIn('ERROR 命令格式无效', result.stdout)
             self.assertIn('对话轮次=0', result.stdout)

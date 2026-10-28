@@ -13,11 +13,16 @@ inline constexpr uint32_t memory_sources_max = 4;
 inline constexpr uint32_t parameter_bytes_max = 560;
 inline constexpr uint64_t check_period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
 enum class GoalKind { reminder, device_check, memory_organize, scene_observe };
+// Who asked for the Goal. A model request is one schedule tool operation (ADR-0072).
+enum class Origin : uint8_t { owner, model };
 // Immutable input. Sources are explicit selected memory IDs; no implicit export.
+// operation_id is the creating tool operation, nonzero exactly for model origin.
 struct Parameters {
     GoalKind kind = GoalKind::reminder;
     std::string text;
     std::vector<uint64_t> sources;
+    Origin origin = Origin::owner;
+    uint64_t operation_id = 0;
 };
 struct Encoded {
     std::array<uint8_t, parameter_bytes_max> bytes{};
@@ -30,8 +35,27 @@ const char *goal_type(GoalKind);
 // Encoded storage must outlive submission; Core copies the request synchronously.
 ayni_status_t prepare_goal(const Parameters &, uint64_t owner_instance, uint64_t period_us,
                            const ayni_calendar_rule_v1 *, Encoded &, ayni_goal_create_v1 &);
-// Explicit mentions win; check/检查 selects A, other ordinary text selects B.
-uint64_t route(const std::string &, uint64_t agent_a, uint64_t agent_b, std::string &body);
+// One schedule grammar for owner commands and the model tool (ADR-0072):
+//   remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX-TZ> <text>
+//   check [<seconds>]
+//   observe
+// Organize stays owner-only because it names explicit memory sources.
+struct Schedule {
+    Parameters parameters;                // Owner origin as parsed; the tool marks model origin.
+    uint64_t period_us = check_period_us; // check only.
+    ayni_calendar_rule_v1 calendar{};     // remind only; the time zone is held inline.
+};
+// INVALID_ARGUMENT leaves out unchanged. Validates the civil date and the time zone, not
+// periods or text bounds; prepare_goal remains the single admission check for those.
+ayni_status_t parse_schedule(const std::string &, Schedule &);
+// The GoalCreate borrows the Schedule calendar and Encoded bytes until submission returns.
+ayni_status_t prepare_goal(const Schedule &, uint64_t owner_instance, Encoded &,
+                           ayni_goal_create_v1 &);
+// Canonical grammar text of a reminder, check or observe GoalCreate, for owner review.
+ayni_status_t format_schedule(const ayni_goal_create_v1 &, std::string &);
+// Deterministic stop phrase: without surrounding whitespace and trailing ! . ！ 。 marks, the
+// whole input is 停, 停下, 停止 or stop (ASCII case folded). Runtimes never send it to a model.
+bool stop_request(const std::string &);
 // Civil interval [start,end), possibly crossing midnight; equal endpoints are invalid.
 struct QuietHours {
     bool enabled = false;
@@ -41,10 +65,13 @@ struct QuietHours {
     ayni_status_t allows(ayni_utc_sample_v1, bool &out) const;
 };
 // Borrowed provider operands, fixed through Kernel destruction by the composition root.
+// consent_capability is authority only, never offered by a Provider or granted standing:
+// every model-origin Goal also requires it, so it stays PROPOSED until the owner approves.
+// Without it model-origin parameters are refused.
 struct PolicyConfig {
     ayni_scope_v1 model_scope{sizeof(ayni_scope_v1), 0, nullptr};
     ayni_string_v1 model_capability{}, present_capability{}, health_capability{},
-        observe_capability{};
+        observe_capability{}, consent_capability{};
     void *clock_context = nullptr;
     void (*utc_now)(void *, ayni_utc_sample_v1 *) = nullptr;
 };
@@ -87,12 +114,5 @@ struct Activity {
     bool autonomy_paused = false;
 };
 ayni_status_t project(const ayni_kernel_t *, Activity &);
-// Exact duplicates share evidence; conflicting values remain separate for owner review.
-struct Suggestion {
-    std::string key, value;
-    uint32_t agents = 0;
-    bool conflict = false;
-};
-std::vector<Suggestion> merge_suggestions(const std::vector<Suggestion> &);
 } // namespace ayni::applications::assistant
 #endif

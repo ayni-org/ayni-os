@@ -388,7 +388,7 @@ Call 21/v5 是正文已擦除的显式表示，用于快照及擦除后晚到完
 
 清理 phase：memories=1、contexts=2、goals=3、tasks=4、calls=5、commands=6、files=7、compact=8、purge=9、complete=10；idle=0 不序列化。effect：none=0、memory=1、context=2、goal=3、task=4、call=5、command=6、remove_memory=7。cursor 是对象稳定 ID；命令阶段使用原 commit_seq。Context effect 之后唯一允许的回退是 memories/cursor=0/effect=none，直至来源稳定；其他普通进度不能倒退。files→compact 须所有 Context ACK 且外部借用释放；目标 snapshot_generation 为当前代际+2，溢出明确停止并报告容量失败。purge/complete 快照不能宣称超过本快照 generation 的轮转已完成。scrubbed Memory 从新快照省略；erased Provenance 保留不可用身份标记，正文/依赖为空，运行时完成双槽覆盖后移除 tombstone。
 
-**Native 外层文件**不属于 Core schema：AYNF v2 固定 32 字节头为 `magic:u32, version:u32, encoded_size:u64, pending_goal:u64, context_id:u64`。正文 AYNC v2 为 magic/version 后的 Conversation 字段：7 个 u64（id、owner、隐私 generation、文件 revision、last_round、summary_first、summary_last），长度前缀 summary、独立 draft、round_count:u32，再逐轮 number:u64/user/answer。AYNT v2 固定头 28 字节（magic、version、done、base_revision、memory_id）后接相同 Conversation 字段和本轮 input。独立草稿与 pending_goal 同次保存；发布前必须保存完毕。正常保留 3 轮、额外 1 槽承接失效发布原始输入；原轮号不重新分配。旧 AYNF/AYNC v1 在 Kernel 启动写入之前拒绝，无自动迁移。
+**Native 外层文件**不属于 Core schema：AYNF v3 固定 32 字节头为 `magic:u32, version:u32, encoded_size:u64, pending_goal:u64, context_id:u64`。正文 AYNC v2 为 magic/version 后的 Conversation 字段：7 个 u64（id、owner、隐私 generation、文件 revision、last_round、summary_first、summary_last），长度前缀 summary、独立 draft、round_count:u32，再逐轮 number:u64/user/answer。AYNT v2 固定头 28 字节（magic、version、done、base_revision、memory_id）后接相同 Conversation 字段和本轮 input。独立草稿与 pending_goal 同次保存；发布前必须保存完毕。正常保留 3 轮、额外 1 槽承接失效发布原始输入；原轮号不重新分配。旧 AYNF/AYNC v1 在 Kernel 启动写入之前拒绝；AYNF v2 是双 Agent 版本的目录（布局与 v3 相同，Kernel 状态含第二个 Agent），同样在启动写入之前以 UNSUPPORTED_VERSION 拒绝（ADR-0072）；均无自动迁移。
 
 
 ## P4 日历记录（ADR-0061，ABI 0.41）

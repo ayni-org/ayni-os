@@ -17,7 +17,7 @@ Notice published_notice(const SavedConversation &file) {
 ayni_status_t Assistant::Impl::context_info(ayni_context_info_v1 &context) const {
     context = {};
     context.struct_size = sizeof(context);
-    return ayni_get_context(node.kernel(), session, instance(demo_agent_b), &context);
+    return ayni_get_context(node.kernel(), session, assistant(), &context);
 }
 Reply Assistant::Impl::context_command(ayni_intent_kind_t kind, const ayni_context_info_v1 &context,
                                        uint64_t task, ayni_context_action_t action, uint64_t turn) {
@@ -43,13 +43,13 @@ ayni_status_t Assistant::Impl::initialize_context(bool missing) {
             ayni_goal_info_v1 goal{};
             goal.struct_size = sizeof(goal);
             status = ayni_get_goal(node.kernel(), id, &goal);
-            if (status != AYNI_OK || goal.owner_instance_id == instance(demo_agent_b)) {
+            if (status != AYNI_OK || goal.owner_instance_id == assistant()) {
                 return status == AYNI_OK ? AYNI_NOT_READY : status;
             }
         }
         ayni_context_command_v1 body{};
         body.struct_size = sizeof(body);
-        body.owner_instance_id = instance(demo_agent_b);
+        body.owner_instance_id = assistant();
         const auto accepted = submit(AYNI_INTENT_CONTEXT_OPEN, &body);
         if (accepted.status != AYNI_OK) {
             return accepted.status;
@@ -162,21 +162,9 @@ ayni_status_t Assistant::Impl::publish_context(const ayni_context_info_v1 &conte
 // Invalidation is already durable. Clearing generated answers is conservative; undiscarded user
 // inputs stay independent facts. The original Call ledger keeps actual physical outcomes.
 ayni_status_t Assistant::Impl::erase_context(const ayni_context_info_v1 &context) {
-    if (current.pending_goal) {
-        ayni_goal_info_v1 goal{};
-        goal.struct_size = sizeof(goal);
-        auto status = ayni_get_goal(node.kernel(), current.pending_goal, &goal);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        if (goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED ||
-            goal.lifecycle == AYNI_GOAL_PROPOSED) {
-            const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
-            status = submit(AYNI_INTENT_GOAL_CANCEL, &target, goal.revision).status;
-            if (status != AYNI_OK) {
-                return status == AYNI_BUSY ? AYNI_OK : status;
-            }
-        }
+    const auto cancelled = cancel_pending_turn().status;
+    if (cancelled != AYNI_OK) {
+        return cancelled == AYNI_BUSY ? AYNI_OK : cancelled; // Retried on the next pass.
     }
     auto candidate = current;
     auto base = current.record;

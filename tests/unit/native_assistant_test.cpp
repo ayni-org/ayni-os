@@ -2,6 +2,7 @@
 #include "loopback_http.h"
 #include "temp_directory.h"
 #include <algorithm>
+#include <ayni/applications/assistant/schedule_tool.h>
 #include <ayni/host_authority.h>
 #include <ayni/runtime/native_node/assistant.h>
 #include <ayni/runtime/sim_node.h>
@@ -19,6 +20,8 @@ using namespace ayni::runtime;
 // room for sanitizer overhead and concurrent fsync-heavy Host tests; a stall
 // still fails at this finite deadline with the outstanding public state.
 constexpr auto async_test_timeout = std::chrono::seconds(30);
+// conversation.bin starts with "AYNF" and then its little-endian format version.
+constexpr size_t format_version_offset = 4;
 class NativeAssistant : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -45,13 +48,11 @@ class NativeAssistant : public ::testing::Test {
                << ", pending_commands=" << state.pending_commands << ", saving=" << state.saving
                << ", storage_status=" << state.storage_status;
     }
-    Reply run(Operation op, uint64_t id = 0, const std::string &text = {},
-              uint64_t agent = demo_agent_b) {
+    Reply run(Operation op, uint64_t id = 0, const std::string &text = {}) {
         Command command;
         command.operation = op;
         command.id = id;
         command.text = text;
-        command.agent = agent;
         return app.execute(command);
     }
     std::string conversation() {
@@ -63,39 +64,67 @@ class NativeAssistant : public ::testing::Test {
         }
         return out;
     }
-    void allow(uint64_t agent, const char *cap) {
-        const auto reply = run(Operation::grant, 0, cap, agent);
+    void allow(const char *cap) {
+        const auto reply = run(Operation::grant, 0, cap);
         ASSERT_EQ(reply.status, AYNI_OK);
         settle();
     }
     void allow_chat() {
-        for (const auto cap : {"model", "summary", "present"}) {
-            allow(demo_agent_b, cap);
+        for (const auto cap : {"model", "summary", "schedule"}) {
+            allow(cap);
         }
+    }
+    const ayni_goal_info_v1 *find(const std::vector<ayni_goal_info_v1> &goals, uint64_t id) {
+        const auto found = std::find_if(goals.begin(), goals.end(),
+                                        [&](const auto &goal) { return goal.goal_id == id; });
+        return found == goals.end() ? nullptr : &*found;
+    }
+    // Opening must refuse before boot writes anything: every regular file stays byte-identical.
+    void expect_refused_without_writes() {
+        std::map<std::filesystem::path, std::string> before;
+        for (const auto &entry : std::filesystem::directory_iterator(directory.path())) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            std::ifstream file(entry.path(), std::ios::binary);
+            before.emplace(entry.path(), std::string((std::istreambuf_iterator<char>(file)), {}));
+        }
+        EXPECT_EQ(app.open(directory.path(), {}), AYNI_UNSUPPORTED_VERSION);
+        for (const auto &entry : before) {
+            std::ifstream file(entry.first, std::ios::binary);
+            const std::string after((std::istreambuf_iterator<char>(file)), {});
+            EXPECT_EQ(after, entry.second) << entry.first;
+        }
+    }
+    std::string conversation_file() const {
+        return (std::filesystem::path(directory.path()) / "conversation.bin").string();
     }
     ayni::test::TempDirectory directory;
     Assistant app;
     std::vector<Notice> notices;
 };
-TEST_F(NativeAssistant, rule_and_chat_agents_use_separate_owned_work) {
-    allow(demo_agent_a, "present");
+// ADR-0072: one assistant; "check" is ordinary text for its model turn, not a rule route.
+TEST_F(NativeAssistant, check_text_is_an_ordinary_turn_of_the_single_assistant) {
     allow_chat();
-    ASSERT_EQ(run(Operation::say, 0, "check", demo_agent_a).status, AYNI_OK);
-    ASSERT_EQ(run(Operation::say, 0, "你好").status, AYNI_OK);
+    ASSERT_EQ(run(Operation::say, 0, "check").status, AYNI_OK);
     settle();
+    const auto goals = run(Operation::goals).goals;
+    ASSERT_EQ(goals.size(), 1U);
+    EXPECT_EQ(std::string(goals.front().goal_type_id, goals.front().goal_type_id_size), "chat");
     EXPECT_EQ(run(Operation::tasks).tasks.front().lifecycle, AYNI_TASK_COMPLETED);
-    EXPECT_NE(conversation().find("你好"), std::string::npos);
-    EXPECT_EQ(notices.size(), 2U);
+    EXPECT_NE(conversation().find("check"), std::string::npos);
+    ASSERT_EQ(notices.size(), 1U);
+    EXPECT_EQ(notices.front().kind, NoticeKind::answer);
     EXPECT_FALSE(run(Operation::calls).calls.empty());
 }
 // ADR-0066: grouped autonomous Goal echoes retain immutable membership during approval.
 TEST_F(NativeAssistant, autonomous_goals_reopen_and_approve_through_the_public_application) {
     Command check;
-    check.operation = Operation::device_check;
-    check.agent = demo_agent_a;
+    check.operation = Operation::schedule;
+    check.text = "check";
     const auto first = app.execute(check);
     ASSERT_EQ(first.status, AYNI_OK);
-    check.period_us *= 2;
+    check.text = "check 600";
     const auto second = app.execute(check);
     ASSERT_EQ(second.status, AYNI_OK);
     ASSERT_NE(first.id, second.id);
@@ -142,18 +171,66 @@ TEST_F(NativeAssistant, proposed_turn_can_be_approved_after_normal_reopen) {
     settle();
     EXPECT_NE(conversation().find("需要批准"), std::string::npos);
 }
-TEST_F(NativeAssistant, rule_agent_restores_its_pending_goal_and_reports_completion) {
-    const auto proposed = run(Operation::say, 0, "check", demo_agent_a);
-    ASSERT_EQ(proposed.status, AYNI_OK);
+// ADR-0072: a stop phrase never reaches a model. It cancels the pending turn and pauses the
+// autonomous group while reminders stay; a repeated stop has nothing left to submit.
+TEST_F(NativeAssistant, stop_phrase_cancels_the_turn_pauses_autonomy_and_keeps_reminders) {
+    allow("notify");
+    Command schedule;
+    schedule.operation = Operation::schedule;
+    schedule.text = "remind daily 2030-01-01T08:00 UTC0 喝水";
+    const auto reminder = app.execute(schedule);
+    ASSERT_EQ(reminder.status, AYNI_OK);
+    schedule.text = "check";
+    const auto check = app.execute(schedule);
+    ASSERT_EQ(check.status, AYNI_OK);
+    const auto turn = run(Operation::say, 0, "等待批准的一轮");
+    ASSERT_EQ(turn.status, AYNI_OK);
     settle();
-    ASSERT_EQ(app.close(), AYNI_OK);
-    ASSERT_EQ(app.open(directory.path(), {}), AYNI_OK);
+    const auto stopped = run(Operation::say, 0, " 停！");
+    ASSERT_EQ(stopped.status, AYNI_OK);
+    EXPECT_EQ(stopped.message, Message::stopped);
     settle();
-    EXPECT_EQ(run(Operation::say, 0, "check", demo_agent_a).status, AYNI_BUSY);
-    ASSERT_EQ(run(Operation::approve, proposed.id).status, AYNI_OK);
+    const auto goals = run(Operation::goals).goals;
+    ASSERT_NE(find(goals, turn.id), nullptr);
+    EXPECT_EQ(find(goals, turn.id)->lifecycle, AYNI_GOAL_CANCELLED);
+    ASSERT_NE(find(goals, reminder.id), nullptr);
+    EXPECT_EQ(find(goals, reminder.id)->lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(find(goals, reminder.id)->pause_group, 0U);
+    EXPECT_FALSE(find(goals, reminder.id)->group_paused);
+    ASSERT_NE(find(goals, check.id), nullptr);
+    EXPECT_TRUE(find(goals, check.id)->group_paused);
+    const auto state = run(Operation::status);
+    EXPECT_TRUE(state.activity.autonomy_paused);
+    EXPECT_EQ(state.last_round, 0U);
+    EXPECT_TRUE(run(Operation::calls).calls.empty());
+    EXPECT_EQ(run(Operation::conversation).conversation.draft, "等待批准的一轮");
+    const auto again = run(Operation::stop);
+    EXPECT_EQ(again.status, AYNI_OK);
+    EXPECT_EQ(again.message, Message::stopped);
+    EXPECT_EQ(again.command_id, 0U);
+    const auto next = run(Operation::say, 0, "停一下再说");
+    ASSERT_EQ(next.status, AYNI_OK);
+    EXPECT_EQ(run(Operation::status).pending_goal, next.id);
+}
+// ADR-0072: stop is admitted while the turn's conversation save is still pending, when every
+// other mutation waits.
+TEST_F(NativeAssistant, stop_is_not_held_behind_a_pending_conversation_save) {
+    allow_chat();
+    const auto turn = run(Operation::say, 0, "马上停止的一轮");
+    ASSERT_EQ(turn.status, AYNI_OK);
+    ASSERT_TRUE(run(Operation::status).saving);
+    EXPECT_EQ(run(Operation::say, 0, "另一轮").status, AYNI_BUSY);
+    const auto stopped = run(Operation::stop);
+    ASSERT_EQ(stopped.status, AYNI_OK);
+    EXPECT_EQ(stopped.message, Message::stopped);
     settle();
-    ASSERT_FALSE(notices.empty());
-    EXPECT_EQ(notices.back().kind, NoticeKind::rule_completed);
+    const auto goals = run(Operation::goals).goals;
+    ASSERT_NE(find(goals, turn.id), nullptr);
+    EXPECT_EQ(find(goals, turn.id)->lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_TRUE(std::any_of(notices.begin(), notices.end(), [](const Notice &notice) {
+        return notice.kind == NoticeKind::turn_aborted;
+    }));
+    EXPECT_EQ(run(Operation::status).last_round, 0U);
 }
 TEST_F(NativeAssistant, whole_context_delete_erases_content_and_preserves_actual_work_outcomes) {
     allow_chat();
@@ -296,43 +373,9 @@ TEST_F(NativeAssistant, invalidating_publication_preserves_draft_across_reopen_a
     EXPECT_TRUE(view.turns.empty());
     EXPECT_EQ(view.draft, "新的未完成输入");
 }
-// ADR-0060: sharing is per source and per Agent; revocation removes already captured context too.
-TEST_F(NativeAssistant, sharing_private_memory_then_revoking_blocks_reads_and_old_context) {
-    allow_chat();
-    const auto saved = run(Operation::memory_save, 0, "A 的私有偏好", demo_agent_a);
-    ASSERT_EQ(saved.status, AYNI_OK);
-    settle();
-    const auto denied = run(Operation::say, saved.id, "读取 A 的偏好");
-    ASSERT_EQ(denied.status, AYNI_OK);
-    settle();
-    auto tasks = run(Operation::tasks).tasks;
-    ASSERT_EQ(tasks.size(), 1U);
-    EXPECT_EQ(tasks.front().lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(tasks.front().hold_reason, AYNI_REASON_MEMORY_SOURCE);
-    EXPECT_TRUE(run(Operation::calls).calls.empty());
-    ASSERT_EQ(run(Operation::cancel, denied.id).status, AYNI_OK);
-    settle();
-    const auto grant = run(Operation::memory_share, saved.id, {}, demo_agent_b);
-    ASSERT_EQ(grant.status, AYNI_OK);
-    settle();
-    ASSERT_EQ(run(Operation::say, saved.id, "现在读取共享偏好").status, AYNI_OK);
-    settle();
-    ASSERT_FALSE(run(Operation::conversation).conversation.turns.front().answer.empty());
-    ASSERT_EQ(run(Operation::revoke, grant.id).status, AYNI_OK);
-    settle();
-    auto view = run(Operation::conversation).conversation;
-    ASSERT_EQ(view.turns.size(), 1U);
-    EXPECT_EQ(view.turns.front().user, "读取 A 的偏好\n现在读取共享偏好");
-    EXPECT_TRUE(view.turns.front().answer.empty());
-    const auto blocked = run(Operation::say, saved.id, "撤销后读取");
-    ASSERT_EQ(blocked.status, AYNI_OK);
-    settle();
-    tasks = run(Operation::tasks).tasks;
-    EXPECT_EQ(tasks.back().hold_reason, AYNI_REASON_MEMORY_SOURCE);
-    ASSERT_EQ(run(Operation::cancel, blocked.id).status, AYNI_OK);
-    settle();
-}
-TEST_F(NativeAssistant, profile_starts_empty_and_grant_to_a_does_not_authorize_b) {
+// ADR-0060: owner profile memory starts empty and is readable only through an explicit share;
+// revocation removes already captured context too.
+TEST_F(NativeAssistant, sharing_profile_memory_then_revoking_blocks_reads_and_old_context) {
     allow_chat();
     EXPECT_TRUE(run(Operation::profile_list).memories.empty());
     Command save;
@@ -342,47 +385,60 @@ TEST_F(NativeAssistant, profile_starts_empty_and_grant_to_a_does_not_authorize_b
     const auto saved = app.execute(save);
     ASSERT_EQ(saved.status, AYNI_OK);
     settle();
-    ASSERT_EQ(run(Operation::memory_share, saved.id, {}, demo_agent_a).status, AYNI_OK);
-    settle();
-    const auto denied = run(Operation::say, saved.id, "使用档案语言");
+    const auto denied = run(Operation::say, saved.id, "读取档案偏好");
     ASSERT_EQ(denied.status, AYNI_OK);
     settle();
-    const auto tasks = run(Operation::tasks).tasks;
+    auto tasks = run(Operation::tasks).tasks;
     ASSERT_EQ(tasks.size(), 1U);
+    EXPECT_EQ(tasks.front().lifecycle, AYNI_TASK_PAUSED);
     EXPECT_EQ(tasks.front().hold_reason, AYNI_REASON_MEMORY_SOURCE);
     EXPECT_TRUE(run(Operation::calls).calls.empty());
     ASSERT_EQ(run(Operation::cancel, denied.id).status, AYNI_OK);
+    settle();
+    const auto grant = run(Operation::memory_share, saved.id);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    settle();
+    ASSERT_EQ(run(Operation::say, saved.id, "现在读取共享偏好").status, AYNI_OK);
+    settle();
+    ASSERT_FALSE(run(Operation::conversation).conversation.turns.front().answer.empty());
+    ASSERT_EQ(run(Operation::revoke, grant.id).status, AYNI_OK);
+    settle();
+    auto view = run(Operation::conversation).conversation;
+    ASSERT_EQ(view.turns.size(), 1U);
+    EXPECT_EQ(view.turns.front().user, "读取档案偏好\n现在读取共享偏好");
+    EXPECT_TRUE(view.turns.front().answer.empty());
+    const auto blocked = run(Operation::say, saved.id, "撤销后读取");
+    ASSERT_EQ(blocked.status, AYNI_OK);
+    settle();
+    tasks = run(Operation::tasks).tasks;
+    EXPECT_EQ(tasks.back().hold_reason, AYNI_REASON_MEMORY_SOURCE);
+    ASSERT_EQ(run(Operation::cancel, blocked.id).status, AYNI_OK);
     settle();
 }
 // ADR-0060: a legacy file has no Kernel source evidence; refusal precedes every boot write.
 TEST_F(NativeAssistant, legacy_conversation_refusal_preserves_the_entire_kernel_directory) {
     ASSERT_EQ(app.close(), AYNI_OK);
-    const auto path = std::filesystem::path(directory.path()) / "conversation.bin";
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(conversation_file(), std::ios::binary);
     std::string legacy((std::istreambuf_iterator<char>(input)), {});
     input.close();
     ASSERT_GT(legacy.size(), 40U);
-    legacy[4] = 1; // AYNF v1: no context ID at bytes 24..31.
+    legacy[format_version_offset] = 1; // AYNF v1: no context ID at bytes 24..31.
     legacy.erase(24, 8);
     legacy[28] = 1; // AYNC v1 record version after the old 24-byte outer header.
     {
-        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        std::ofstream output(conversation_file(), std::ios::binary | std::ios::trunc);
         output.write(legacy.data(), static_cast<std::streamsize>(legacy.size()));
     }
-    std::map<std::filesystem::path, std::string> before;
-    for (const auto &entry : std::filesystem::directory_iterator(directory.path())) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        std::ifstream file(entry.path(), std::ios::binary);
-        before.emplace(entry.path(), std::string((std::istreambuf_iterator<char>(file)), {}));
-    }
-    EXPECT_EQ(app.open(directory.path(), {}), AYNI_UNSUPPORTED_VERSION);
-    for (const auto &entry : before) {
-        std::ifstream file(entry.first, std::ios::binary);
-        const std::string after((std::istreambuf_iterator<char>(file)), {});
-        EXPECT_EQ(after, entry.second) << entry.first;
-    }
+    expect_refused_without_writes();
+}
+// ADR-0072: a dual-Agent directory (AYNF v2) is refused before boot, never migrated.
+TEST_F(NativeAssistant, dual_agent_conversation_file_is_refused_before_any_boot_write) {
+    ASSERT_EQ(app.close(), AYNI_OK);
+    std::fstream file(conversation_file(), std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(format_version_offset);
+    file.put(2); // AYNF v2, written by the dual-Agent version.
+    file.close();
+    expect_refused_without_writes();
 }
 TEST_F(NativeAssistant, grant_revoke_and_cancel_use_public_management_commands) {
     auto grant = run(Operation::grant, 0, "model");
@@ -450,7 +506,7 @@ TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before
     EXPECT_EQ(server.requests(), 0U);
     ASSERT_EQ(run(Operation::cancel, denied.id).status, AYNI_OK);
     settle();
-    const auto grant = run(Operation::memory_export, saved.id, {}, demo_agent_b);
+    const auto grant = run(Operation::memory_export, saved.id);
     ASSERT_EQ(grant.status, AYNI_OK);
     settle();
     ASSERT_EQ(run(Operation::say, saved.id, "明确允许外发").status, AYNI_OK);
@@ -467,12 +523,14 @@ TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before
     ASSERT_EQ(app.close(), AYNI_OK);
     EXPECT_EQ(unsetenv("AYNI_P3_FIXTURE_KEY"), 0);
 }
+// ADR-0072: a malformed schedule request is answered with a refusal the model can read; the
+// turn continues and nothing is registered.
 TEST_F(NativeAssistant, local_http_tool_loop_and_text_only_summary_use_real_provider_wiring) {
     ASSERT_EQ(app.close(), AYNI_OK);
     const std::string answer =
         R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已处理"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"模拟输出\"}"}}]}}]})";
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"明天提醒我\"}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
         return count == 1 ? tool : answer;
     });
@@ -497,11 +555,202 @@ TEST_F(NativeAssistant, local_http_tool_loop_and_text_only_summary_use_real_prov
     const auto requests = server.history();
     ASSERT_EQ(requests.size(), 6U);
     EXPECT_NE(requests[0].find("\"tools\""), std::string::npos);
+    EXPECT_NE(requests[1].find("rejected: expected"), std::string::npos);
     EXPECT_EQ(requests[4].find("\"tools\""), std::string::npos);
     EXPECT_NE(requests[4].find("Summarize"), std::string::npos);
     EXPECT_EQ(run(Operation::conversation).conversation.summary, "已处理");
+    for (const auto &goal : run(Operation::goals).goals) {
+        EXPECT_EQ(std::string(goal.goal_type_id, goal.goal_type_id_size), "chat");
+    }
     ASSERT_EQ(app.close(), AYNI_OK);
     unsetenv("AYNI_P2_FIXTURE_KEY");
+}
+// ADR-0072: one model tool call registers one top-level Goal. It waits for the owner even when
+// every capability it uses is already granted, and the owner sees text read back from Kernel.
+TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owner_approval) {
+    ASSERT_EQ(app.close(), AYNI_OK);
+    const std::string answer =
+        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已登记，等你批准"}}]})";
+    const std::string tool =
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"remind once 2030-01-02T09:00 UTC0 喝水\"}"}}]}}]})";
+    ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
+        return count == 1 ? tool : answer;
+    });
+    ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
+    ModelConfig config;
+    config.model = Model::remote;
+    config.base_url = server.url();
+    config.model_name = "fixture";
+    config.key_environment = "AYNI_P7_FIXTURE_KEY";
+    ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
+    settle();
+    allow_chat();
+    allow("notify");
+    const auto turn = run(Operation::say, 0, "明早九点提醒我喝水");
+    ASSERT_EQ(turn.status, AYNI_OK);
+    settle();
+    ASSERT_EQ(server.requests(), 2U);
+    EXPECT_NE(server.history()[1].find("registered goal"), std::string::npos);
+    EXPECT_NE(server.history()[1].find("waiting for owner approval"), std::string::npos);
+    const auto goals = run(Operation::goals).goals;
+    const auto reminder = std::find_if(goals.begin(), goals.end(), [](const auto &goal) {
+        return std::string(goal.goal_type_id, goal.goal_type_id_size) == "assistant.reminder";
+    });
+    ASSERT_NE(reminder, goals.end());
+    EXPECT_EQ(reminder->lifecycle, AYNI_GOAL_PROPOSED);
+    EXPECT_EQ(reminder->parent_goal_id, 0U);
+    ASSERT_NE(find(goals, turn.id), nullptr);
+    EXPECT_EQ(find(goals, turn.id)->lifecycle, AYNI_GOAL_SATISFIED);
+    const auto proposed = std::find_if(notices.begin(), notices.end(), [](const Notice &notice) {
+        return notice.kind == NoticeKind::goal_proposed;
+    });
+    ASSERT_NE(proposed, notices.end());
+    EXPECT_EQ(proposed->id, reminder->goal_id);
+    EXPECT_EQ(proposed->body, "remind once 2030-01-02T09:00 UTC0 喝水");
+    EXPECT_EQ(std::count_if(
+                  notices.begin(), notices.end(),
+                  [](const Notice &notice) { return notice.kind == NoticeKind::goal_proposed; }),
+              1);
+    EXPECT_NE(conversation().find("已登记，等你批准"), std::string::npos);
+    ASSERT_EQ(run(Operation::approve, reminder->goal_id).status, AYNI_OK);
+    settle();
+    EXPECT_EQ(find(run(Operation::goals).goals, reminder->goal_id)->lifecycle, AYNI_GOAL_ACTIVE);
+    ASSERT_EQ(app.close(), AYNI_OK);
+    unsetenv("AYNI_P7_FIXTURE_KEY");
+}
+// ADR-0072: every model tool call is a new operation, so the count of model Goals still waiting
+// for the owner bounds what one reply can register; the next call is refused as text.
+TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
+    ASSERT_EQ(app.close(), AYNI_OK);
+    const std::string answer =
+        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"有一个没登记上"}}]})";
+    std::string tool =
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[)";
+    constexpr uint32_t calls = ayni::applications::assistant::model_goals_waiting_max + 1;
+    for (uint32_t at = 1; at <= calls; ++at) {
+        tool +=
+            std::string(at == 1 ? "" : ",") + R"({"id":"fixture)" + std::to_string(at) +
+            R"(","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"remind once 2030-01-0)" +
+            std::to_string(at) + R"(T09:00 UTC0 喝水\"}"}})";
+    }
+    tool += "]}}]}";
+    ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
+        return count == 1 ? tool : answer;
+    });
+    ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
+    ModelConfig config;
+    config.model = Model::remote;
+    config.base_url = server.url();
+    config.model_name = "fixture";
+    config.key_environment = "AYNI_P7_FIXTURE_KEY";
+    ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
+    settle();
+    allow_chat();
+    ASSERT_EQ(run(Operation::say, 0, "这几天每天早上提醒我喝水").status, AYNI_OK);
+    settle();
+    ASSERT_EQ(server.requests(), 2U);
+    const auto history = server.history();
+    const auto &results = history[1];
+    const auto occurrences = [&](const std::string &needle) {
+        size_t count = 0;
+        for (auto at = results.find(needle); at != std::string::npos;
+             at = results.find(needle, at + needle.size())) {
+            ++count;
+        }
+        return count;
+    };
+    EXPECT_EQ(occurrences("; waiting for owner approval"),
+              ayni::applications::assistant::model_goals_waiting_max);
+    EXPECT_EQ(occurrences("earlier goals still wait for owner approval"), 1U);
+    const auto goals = run(Operation::goals).goals;
+    EXPECT_EQ(std::count_if(goals.begin(), goals.end(),
+                            [](const auto &goal) {
+                                return std::string(goal.goal_type_id, goal.goal_type_id_size) ==
+                                           "assistant.reminder" &&
+                                       goal.lifecycle == AYNI_GOAL_PROPOSED;
+                            }),
+              ayni::applications::assistant::model_goals_waiting_max);
+    const auto proposed = [&] {
+        std::vector<uint64_t> ids;
+        for (const auto &notice : notices) {
+            if (notice.kind == NoticeKind::goal_proposed) {
+                ids.push_back(notice.id);
+            }
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+    const auto announced = proposed();
+    EXPECT_EQ(announced.size(), ayni::applications::assistant::model_goals_waiting_max);
+    // Every Goal still waiting is told again after a restart, once.
+    ASSERT_EQ(app.close(), AYNI_OK);
+    notices.clear();
+    ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
+    settle();
+    EXPECT_EQ(proposed(), announced);
+    ASSERT_EQ(app.close(), AYNI_OK);
+    unsetenv("AYNI_P7_FIXTURE_KEY");
+}
+// ADR-0072: a stop that lands after the schedule tool took a request but before it decided
+// registers nothing; the tool reports the moot call as cancelled without effect.
+TEST_F(NativeAssistant, stop_before_the_schedule_tool_decides_registers_nothing) {
+    ASSERT_EQ(app.close(), AYNI_OK);
+    const std::string answer =
+        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"不应出现"}}]})";
+    const std::string tool =
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"remind once 2030-01-02T09:00 UTC0 喝水\"}"}}]}}]})";
+    ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
+        return count == 1 ? tool : answer;
+    });
+    ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
+    ModelConfig config;
+    config.model = Model::remote;
+    config.base_url = server.url();
+    config.model_name = "fixture";
+    config.key_environment = "AYNI_P7_FIXTURE_KEY";
+    ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
+    settle();
+    allow_chat();
+    const auto turn = run(Operation::say, 0, "明早九点提醒我喝水");
+    ASSERT_EQ(turn.status, AYNI_OK);
+    // One pass settles the tool before it steps Core, so a call delivered to the tool by the
+    // last pass is still undecided until the next one.
+    uint64_t delivered = 0;
+    const auto end = std::chrono::steady_clock::now() + async_test_timeout;
+    while (!delivered && std::chrono::steady_clock::now() < end) {
+        ASSERT_EQ(app.advance(notices), AYNI_OK);
+        const auto calls = run(Operation::calls).calls;
+        const bool model_answered = std::any_of(
+            calls.begin(), calls.end(), [](const auto &call) { return call.tool_call_count; });
+        for (const auto &call : calls) {
+            if (model_answered && !call.outcome && call.wait_reason == AYNI_CALL_WAIT_PROVIDER) {
+                delivered = call.logical_call_id;
+            }
+        }
+        if (!delivered) {
+            app.wait();
+        }
+    }
+    ASSERT_NE(delivered, 0U);
+    ASSERT_EQ(run(Operation::say, 0, "停").message, Message::stopped);
+    settle();
+    const auto calls = run(Operation::calls).calls;
+    const auto call = std::find_if(calls.begin(), calls.end(),
+                                   [&](const auto &c) { return c.logical_call_id == delivered; });
+    ASSERT_NE(call, calls.end());
+    EXPECT_EQ(call->outcome, AYNI_CALL_CANCELLED);
+    EXPECT_EQ(call->effect, AYNI_CALL_EFFECT_NONE);
+    const auto goals = run(Operation::goals).goals;
+    ASSERT_EQ(goals.size(), 1U);
+    EXPECT_EQ(goals.front().goal_id, turn.id);
+    EXPECT_EQ(goals.front().lifecycle, AYNI_GOAL_CANCELLED);
+    EXPECT_EQ(server.requests(), 1U);
+    EXPECT_EQ(std::count_if(
+                  notices.begin(), notices.end(),
+                  [](const Notice &notice) { return notice.kind == NoticeKind::goal_proposed; }),
+              0);
+    ASSERT_EQ(app.close(), AYNI_OK);
+    unsetenv("AYNI_P7_FIXTURE_KEY");
 }
 TEST(SimDemo, independent_nodes_use_the_same_profile_and_retain_storage_on_release) {
     SimNode first, second;
@@ -511,7 +760,7 @@ TEST(SimDemo, independent_nodes_use_the_same_profile_and_retain_storage_on_relea
             ASSERT_EQ(node->assemble(demo_config()), AYNI_OK);
             const ayni::providers::presentation::Output sink{
                 nullptr, [](void *, ayni_string_v1) { return AYNI_OK; }};
-            ASSERT_EQ(profile.assemble(node->kernel(), {}, {node->clock(), sink, {}}), AYNI_OK);
+            ASSERT_EQ(profile.assemble(node->kernel(), {}, {node->clock(), sink, {}, {}}), AYNI_OK);
             ASSERT_EQ(ayni_start(node->kernel()), AYNI_OK);
             for (unsigned i = 0; i < 200; ++i) {
                 ayni_step_report_v1 report{};

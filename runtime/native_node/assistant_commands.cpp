@@ -71,112 +71,167 @@ ayni_status_t Assistant::Impl::collect_receipts() {
     }
     return AYNI_OK;
 }
-Reply Assistant::Impl::say(const Command &request) {
-    Command command = request;
-    if (!command.agent) {
-        command.agent =
-            applications::assistant::route(request.text, demo_agent_a, demo_agent_b, command.text);
-    }
-    if (command.agent != demo_agent_a && command.agent != demo_agent_b) {
-        return failure(AYNI_INVALID_ARGUMENT);
-    }
-    const bool chat = command.agent == demo_agent_b;
-    if ((chat && current.pending_goal) || (!chat && rule_goal)) {
+// One model turn of the single assistant (ADR-0072): no routing, one pending turn at a time.
+Reply Assistant::Impl::say(const Command &command) {
+    if (current.pending_goal) {
         return failure(AYNI_BUSY);
-    }
-    if (!chat && command.text != "check" && command.text != "检查") {
-        auto reply = failure(AYNI_UNSUPPORTED);
-        reply.message = Message::rule_usage;
-        return reply;
     }
     strategies::Encoded parameters;
     strategies::Text<strategies::turn_text_max> input;
-    if (chat) {
-        const auto status = strategies::Conversation::begin(
-            current.record, runtime_text(command.text), parameters, command.id);
-        if (status != AYNI_OK) {
-            return failure(status);
-        }
-        const auto decoded = strategies::Conversation::input(parameters.view(), input);
-        if (decoded != AYNI_OK) {
-            return failure(decoded);
-        }
+    auto status = strategies::Conversation::begin(current.record, runtime_text(command.text),
+                                                  parameters, command.id);
+    if (status == AYNI_OK) {
+        status = strategies::Conversation::input(parameters.view(), input);
+    }
+    if (status != AYNI_OK) {
+        return failure(status);
     }
     ayni_goal_create_v1 goal{};
     goal.struct_size = sizeof(goal);
     goal.goal_type_version = 1;
-    goal.goal_type_id = chat ? runtime_text("chat") : runtime_text("rule.check");
-    goal.owner_instance_id = instance(command.agent);
+    goal.goal_type_id = runtime_text("chat");
+    goal.owner_instance_id = assistant();
     goal.parameters = parameters.view();
     goal.trigger = AYNI_TRIGGER_ONCE;
     auto reply = submit(AYNI_INTENT_GOAL_CREATE, &goal);
     if (reply.status != AYNI_OK) {
         return reply;
     }
-    if (chat) {
-        // Remember accepted work even if the outer save fails. Never submit a
-        // second turn against the same baseline while this Goal exists.
-        current.pending_goal = reply.id;
-        current.record.draft = input;
-        reply.status = persist(current);
-    } else {
-        rule_goal = reply.id;
-    }
+    // Remember accepted work even if the outer save fails. Never submit a
+    // second turn against the same baseline while this Goal exists.
+    current.pending_goal = reply.id;
+    current.record.draft = input;
+    reply.status = persist(current);
     return reply;
 }
-// The approval echo is read through public APIs, with the same immutable
-// creation parameters used for reauthorization. Nothing reconstructs Core records.
-Reply Assistant::Impl::approve(uint64_t id, Operation operation) {
-    ayni_goal_info_v1 info{};
-    info.struct_size = sizeof(info);
-    auto status = ayni_get_goal(node.kernel(), id, &info);
+// Cancels the turn Goal still in flight. A turn already ending, or none, needs nothing.
+Reply Assistant::Impl::cancel_pending_turn() {
+    if (!current.pending_goal) {
+        return {};
+    }
+    ayni_goal_info_v1 goal{};
+    goal.struct_size = sizeof(goal);
+    const auto status = ayni_get_goal(node.kernel(), current.pending_goal, &goal);
     if (status != AYNI_OK) {
         return failure(status);
     }
-    strategies::Encoded parameters;
-    status = ayni_get_goal_parameters(node.kernel(), id, parameters.bytes.data(),
-                                      strategies::state_bytes_max, &parameters.size);
+    if (goal.lifecycle != AYNI_GOAL_PROPOSED && goal.lifecycle != AYNI_GOAL_ACTIVE &&
+        goal.lifecycle != AYNI_GOAL_PAUSED) {
+        return {};
+    }
+    const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
+    return submit(AYNI_INTENT_GOAL_CANCEL, &target, goal.revision);
+}
+// Deterministic stop (ADR-0072): no model call and no actuator; the hardware emergency stop
+// is a separate chain. Cancels the pending turn, then pauses autonomous work while reminders
+// stay. A step already in effect is skipped, so repeating a stop after a partial failure
+// finishes the rest and never spends another revision.
+Reply Assistant::Impl::stop_work() {
+    const auto cancelled = cancel_pending_turn();
+    if (cancelled.status != AYNI_OK) {
+        return cancelled;
+    }
+    ayni_pause_group_info_v1 group{};
+    group.struct_size = sizeof(group);
+    const auto status =
+        ayni_get_pause_group(node.kernel(), applications::assistant::autonomous_group, &group);
     if (status != AYNI_OK) {
         return failure(status);
     }
-    ayni_goal_create_v1 original{};
+    if (!group.paused) {
+        const auto paused = set_autonomy(group, true);
+        if (paused.status != AYNI_OK) {
+            return paused;
+        }
+    }
+    Reply reply;
+    reply.message = Message::stopped;
+    return reply;
+}
+// The autonomous group holds checks, organizing and observing; reminders never join it.
+Reply Assistant::Impl::set_autonomy(const ayni_pause_group_info_v1 &group, bool paused) {
+    const ayni_pause_group_set_v1 body{sizeof(body), applications::assistant::autonomous_group,
+                                       paused ? 1U : 0U, 0};
+    return submit(AYNI_INTENT_PAUSE_GROUP_SET, &body, group.revision);
+}
+// Schedule tool admission (ADR-0072) is the same management submission as an owner command,
+// so Core applies the same authority and capacity checks. Shutdown closes it for good.
+ayni_status_t Assistant::Impl::propose(void *context, const ayni_goal_create_v1 *goal,
+                                       uint64_t *out) {
+    auto &self = *static_cast<Impl *>(context);
+    if (!goal || !out) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (!self.opened || self.shutting_down) {
+        return AYNI_INVALID_STATE;
+    }
+    if (self.proposal_count == self.proposals.size()) {
+        return AYNI_BUSY;
+    }
+    const auto reply = self.submit(AYNI_INTENT_GOAL_CREATE, goal);
+    if (reply.status == AYNI_OK) {
+        self.proposals[self.proposal_count++] = reply.id;
+        *out = reply.id;
+    }
+    return reply.status;
+}
+// The creation echo is read through public APIs, with the same immutable parameters used for
+// approval, reauthorization and owner announcements. Nothing reconstructs Core records.
+ayni_status_t Assistant::Impl::creation(uint64_t id, Creation &out) const {
+    out.info.struct_size = sizeof(out.info);
+    auto status = ayni_get_goal(node.kernel(), id, &out.info);
+    if (status == AYNI_OK) {
+        status = ayni_get_goal_parameters(node.kernel(), id, out.parameters.bytes.data(),
+                                          strategies::state_bytes_max, &out.parameters.size);
+    }
+    if (status != AYNI_OK) {
+        return status;
+    }
+    const auto &info = out.info;
+    auto &original = out.body;
     original.struct_size = sizeof(original);
     original.owner_instance_id = info.owner_instance_id;
     original.parent_goal_id = info.parent_goal_id;
     original.pause_group = info.pause_group;
     original.goal_type_id = {info.goal_type_id, info.goal_type_id_size};
     original.goal_type_version = info.goal_type_version;
-    original.parameters = parameters.view();
+    original.parameters = out.parameters.view();
     original.trigger = info.trigger;
-    ayni_calendar_info_v1 calendar{};
     if (info.trigger == AYNI_TRIGGER_CALENDAR_ONCE || info.trigger == AYNI_TRIGGER_CALENDAR_DAILY ||
         info.trigger == AYNI_TRIGGER_CALENDAR_WEEKLY) {
-        calendar.struct_size = sizeof(calendar);
-        status = ayni_get_calendar(node.kernel(), id, &calendar);
+        out.calendar.struct_size = sizeof(out.calendar);
+        status = ayni_get_calendar(node.kernel(), id, &out.calendar);
         if (status != AYNI_OK) {
-            return failure(status);
+            return status;
         }
-        original.calendar = &calendar.rule;
+        original.calendar = &out.calendar.rule;
     }
     original.trigger_delay_us = info.trigger_delay_us;
     original.trigger_period_us = info.trigger_period_us;
     original.expiry_us = info.original_expiry_us;
     original.trigger_source = {info.trigger_source, info.trigger_source_size};
+    return AYNI_OK;
+}
+Reply Assistant::Impl::approve(uint64_t id, Operation operation) {
+    Creation goal;
+    auto status = creation(id, goal);
     ayni_goal_authority_info_v1 authority{};
     authority.struct_size = sizeof(authority);
-    status = ayni_get_goal_authority(node.kernel(), id, &authority);
+    if (status == AYNI_OK) {
+        status = ayni_get_goal_authority(node.kernel(), id, &authority);
+    }
     if (status != AYNI_OK) {
         return failure(status);
     }
     if (operation == Operation::reauthorize) {
-        const ayni_goal_reauthorize_v1 body{sizeof(body), 0, id, authority.commit_seq, original};
-        return submit(AYNI_INTENT_GOAL_REAUTHORIZE, &body, info.revision);
+        const ayni_goal_reauthorize_v1 body{sizeof(body), 0, id, authority.commit_seq, goal.body};
+        return submit(AYNI_INTENT_GOAL_REAUTHORIZE, &body, goal.info.revision);
     }
     ayni_goal_approve_v1 body{};
     body.struct_size = sizeof(body);
     body.goal_id = id;
     body.lifetime = AYNI_GRANT_PERMANENT;
-    body.original = original;
+    body.original = goal.body;
     for (uint32_t at = 0; at < authority.requirement_count; ++at) {
         ayni_goal_requirement_info_v1 requirement{};
         requirement.struct_size = sizeof(requirement);
@@ -188,7 +243,7 @@ Reply Assistant::Impl::approve(uint64_t id, Operation operation) {
             body.missing_mask |= uint32_t{1} << at;
         }
     }
-    return submit(AYNI_INTENT_GOAL_APPROVE, &body, info.revision);
+    return submit(AYNI_INTENT_GOAL_APPROVE, &body, goal.info.revision);
 }
 Reply Assistant::Impl::manage(const Command &command) {
     switch (command.operation) {
@@ -205,10 +260,8 @@ Reply Assistant::Impl::manage(const Command &command) {
         return memory(command);
     case Operation::say:
         return say(command);
-    case Operation::remind:
-    case Operation::device_check:
+    case Operation::schedule:
     case Operation::memory_organize:
-    case Operation::scene_observe:
         return application_goal(command);
     case Operation::pause_assistant:
     case Operation::resume_assistant: {
@@ -216,21 +269,24 @@ Reply Assistant::Impl::manage(const Command &command) {
         info.struct_size = sizeof(info);
         const auto status =
             ayni_get_pause_group(node.kernel(), applications::assistant::autonomous_group, &info);
-        if (status != AYNI_OK) {
-            return failure(status);
-        }
-        const ayni_pause_group_set_v1 body{
-            sizeof(body), applications::assistant::autonomous_group,
-            command.operation == Operation::pause_assistant ? 1U : 0U, 0};
-        return submit(AYNI_INTENT_PAUSE_GROUP_SET, &body, info.revision);
+        return status == AYNI_OK
+                   ? set_autonomy(info, command.operation == Operation::pause_assistant)
+                   : failure(status);
     }
     case Operation::grant: {
         const auto cap = profile.capability(command.text);
-        if (!cap.size || (command.agent != demo_agent_a && command.agent != demo_agent_b)) {
+        if (!cap.size) {
             return failure(AYNI_INVALID_ARGUMENT);
         }
-        const ayni_grant_create_v1 body{sizeof(body),         1, cap, instance(command.agent),    0,
-                                        AYNI_GRANT_PERMANENT, 0, 0,   profile.scope(command.text)};
+        const ayni_grant_create_v1 body{sizeof(body),
+                                        1,
+                                        cap,
+                                        assistant(),
+                                        0,
+                                        AYNI_GRANT_PERMANENT,
+                                        0,
+                                        0,
+                                        profile.scope(command.text)};
         return submit(AYNI_INTENT_GRANT_CREATE, &body);
     }
     case Operation::revoke: {
@@ -413,6 +469,12 @@ Reply Assistant::execute(const Command &command) {
         return failure(AYNI_INVALID_STATE);
     }
     try {
+        // Stop never waits behind a file save or a failed store, and never reaches a model.
+        if (command.operation == Operation::stop ||
+            (command.operation == Operation::say &&
+             applications::assistant::stop_request(command.text))) {
+            return impl_->stop_work();
+        }
         switch (command.operation) {
         case Operation::status:
         case Operation::diagnostics:

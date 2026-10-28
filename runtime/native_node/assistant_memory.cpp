@@ -16,7 +16,7 @@ Reply Assistant::Impl::memory(const Command &command) {
     if (op == Operation::memory_list || op == Operation::profile_list) {
         const ayni_memory_search_v1 query{sizeof(query),
                                           owner_profile ? AYNI_MEMORY_PROFILE : AYNI_MEMORY_PRIVATE,
-                                          owner_profile ? demo_owner : instance(command.agent),
+                                          owner_profile ? demo_owner : assistant(),
                                           0,
                                           runtime_text(command.text),
                                           {nullptr, 0}};
@@ -70,7 +70,7 @@ Reply Assistant::Impl::memory(const Command &command) {
             sizeof(grant),
             1,
             runtime_text(exporting ? "memory.egress" : "memory.access"),
-            instance(command.agent),
+            assistant(),
             0,
             AYNI_GRANT_PERMANENT,
             0,
@@ -93,9 +93,7 @@ Reply Assistant::Impl::memory(const Command &command) {
                            : owner_profile ? AYNI_MEMORY_PROFILE
                                            : AYNI_MEMORY_PRIVATE;
         value.memory_id = edit ? command.id : 0;
-        value.namespace_id = edit            ? info.namespace_id
-                             : owner_profile ? demo_owner
-                                             : instance(command.agent);
+        value.namespace_id = edit ? info.namespace_id : owner_profile ? demo_owner : assistant();
         value.profile_field = edit ? info.profile_field : command.profile_field;
         value.body = runtime_text(command.text);
         return submit(AYNI_INTENT_MEMORY_SAVE, &value, edit ? info.revision : 0);
