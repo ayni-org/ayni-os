@@ -9,6 +9,7 @@
 #include <array>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -556,4 +557,194 @@ TEST_F(CallTableTest, authoritative_query_after_erasure_keeps_outcome_without_re
     EXPECT_EQ(calls.result(index).size, 0U);
     EXPECT_EQ(calls.input(index).size, 0U);
     EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
+}
+
+namespace {
+// White-box, C-CALL-002/008 and C-STORE-019: decoded facts must pass the same
+// intrinsic validator before any row is installed. Each case breaks one rule
+// of a row produced through the real call lifecycle, with a valid control first.
+struct InvalidCallFact {
+    const char *scenario;
+    void (*change)(CallRecord &);
+};
+void expect_invalid_call_facts(const CallRecord &valid,
+                               std::initializer_list<InvalidCallFact> cases) {
+    ASSERT_TRUE(CallTable::valid_record(valid));
+    for (const auto &test : cases) {
+        SCOPED_TRACE(test.scenario);
+        auto candidate = valid;
+        test.change(candidate);
+        EXPECT_FALSE(CallTable::valid_record(candidate));
+    }
+}
+} // namespace
+
+TEST_F(CallTableTest, restored_pending_facts_reject_invalid_identity_history_and_delivery_shapes) {
+    insert();
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"zero call", [](auto &r) { r.identity.call_id = 0; }},
+            {"zero operation", [](auto &r) { r.identity.operation_id = 0; }},
+            {"zero task", [](auto &r) { r.identity.task_id = 0; }},
+            {"zero owner", [](auto &r) { r.identity.owner_instance_id = 0; }},
+            {"empty step", [](auto &r) { r.identity.step_key = {}; }},
+            {"empty binding", [](auto &r) { r.identity.binding_id = {}; }},
+            {"zero binding version", [](auto &r) { r.identity.binding_version = 0; }},
+            {"empty capability", [](auto &r) { r.identity.capability_id = {}; }},
+            {"zero capability version", [](auto &r) { r.identity.capability_version = 0; }},
+            {"empty provider", [](auto &r) { r.identity.provider_id = {}; }},
+            {"zero provider version", [](auto &r) { r.identity.provider_version = 0; }},
+            {"empty endpoint", [](auto &r) { r.identity.endpoint = {}; }},
+            {"future call identity", [](auto &r) { r.identity.call_id += UINT64_C(1) << 32; }},
+            {"zero creation boot", [](auto &r) { r.state.created.boot_epoch = 0; }},
+            {"zero creation sequence", [](auto &r) { r.state.created.transition.commit_seq = 0; }},
+            {"zero creation transition",
+             [](auto &r) { r.state.created.transition.transition_id = 0; }},
+            {"latest boot regressed", [](auto &r) { --r.state.latest.boot_epoch; }},
+            {"latest sequence regressed", [](auto &r) { --r.state.latest.transition.commit_seq; }},
+            {"latest transition regressed",
+             [](auto &r) { --r.state.latest.transition.transition_id; }},
+            {"latest boot exhausted", [](auto &r) { r.state.latest.boot_epoch = UINT64_MAX; }},
+            {"undeclared destination", [](auto &r) { r.identity.destination = id("elsewhere"); }},
+            {"missing egress destination",
+             [](auto &r) { r.contract.effects |= ayni::catalog::call_effect_egress; }},
+            {"invalid form",
+             [](auto &r) { r.contract.form = static_cast<ayni::catalog::CallForm>(0); }},
+            {"zero deadline", [](auto &r) { r.contract.timeout_ms = 0; }},
+            {"missing input", [](auto &r) { r.input = {}; }},
+            {"missing schema", [](auto &r) { r.domain = {}; }},
+            {"attempt boot without request", [](auto &r) { r.state.attempt.boot_epoch = boot; }},
+            {"attempt request without boot", [](auto &r) { r.state.attempt.request_id = 1; }},
+            {"old attempt boot", [](auto &r) { r.state.attempt = {boot - 1, 1}; }},
+            {"future attempt boot", [](auto &r) { r.state.attempt = {boot + 1, 1}; }},
+            {"invalid cancel cause",
+             [](auto &r) { r.state.cancel_cause = static_cast<CallCancelCause>(UINT32_MAX); }},
+            {"cancel result without intent",
+             [](auto &r) { r.state.cancel_result = AYNI_CALL_CANNOT_CANCEL; }},
+            {"cancel result without dispatch",
+             [](auto &r) {
+                 r.state.cancel_cause = CallCancelCause::user;
+                 r.state.cancel_result = AYNI_CALL_CANNOT_CANCEL;
+             }},
+            {"unproved progress", [](auto &r) { r.state.progress_sequence = 1; }},
+            {"pending error", [](auto &r) { r.state.status = AYNI_NOT_READY; }},
+            {"pending reason", [](auto &r) { r.state.reason = AYNI_REASON_PROVIDER_RESULT; }},
+            {"pending result body", [](auto &r) { r.result = {"early", 5}; }},
+            {"completed without action", [](auto &r) { r.state.outcome = AYNI_CALL_COMPLETED; }},
+            {"failed without action",
+             [](auto &r) {
+                 r.state.outcome = AYNI_CALL_FAILED;
+                 r.state.status = AYNI_NOT_READY;
+             }},
+            {"unknown outcome code", [](auto &r) { r.state.outcome = UINT32_MAX; }},
+            {"physical effect without permit facts",
+             [](auto &r) { r.contract.effects |= ayni::catalog::call_effect_physical; }},
+            {"subscription fact without contract", [](auto &r) { r.state.subscription.emplace(); }},
+        });
+}
+
+TEST_F(CallTableTest,
+       restored_dispatch_facts_require_matching_action_identity_and_original_stamps) {
+    dispatch();
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"missing action after dispatch", [](auto &r) { r.action.reset(); }},
+            {"mismatched action operation", [](auto &r) { ++r.action->identity.operation_id; }},
+            {"mismatched action call", [](auto &r) { ++r.action->identity.logical_call_id; }},
+            {"mismatched action binding",
+             [](auto &r) { r.action->identity.binding_id = id("other"); }},
+            {"mismatched action version", [](auto &r) { ++r.action->identity.binding_version; }},
+            {"preparation equals acceptance",
+             [](auto &r) { r.action->prepared = r.state.created; }},
+            {"preparation before acceptance",
+             [](auto &r) { r.action->prepared.transition.commit_seq = 0; }},
+            {"action exceeds call state",
+             [](auto &r) { ++r.action->latest.transition.commit_seq; }},
+            {"prepared action has attempt",
+             [](auto &r) {
+                 r.action->phase = ActionPhase::prepared;
+                 r.action->latest = r.action->prepared;
+             }},
+            {"dispatch has no attempt", [](auto &r) { r.state.attempt = {}; }},
+            {"invalid cancel result",
+             [](auto &r) {
+                 r.state.cancel_cause = CallCancelCause::user;
+                 r.state.cancel_result = AYNI_CALL_COMPLETED;
+             }},
+            {"premature completed outcome", [](auto &r) { r.state.outcome = AYNI_CALL_COMPLETED; }},
+            {"premature failed outcome",
+             [](auto &r) {
+                 r.state.outcome = AYNI_CALL_FAILED;
+                 r.state.status = AYNI_NOT_READY;
+             }},
+            {"premature cancelled outcome", [](auto &r) { r.state.outcome = AYNI_CALL_CANCELLED; }},
+            {"premature abandoned outcome",
+             [](auto &r) {
+                 r.state.outcome = AYNI_CALL_ABANDONED;
+                 r.state.status = AYNI_RESULT_UNKNOWN;
+             }},
+        });
+}
+
+TEST_F(CallTableTest, completed_record_requires_success_and_terminal_action_proof) {
+    dispatch();
+    ASSERT_EQ(
+        calls.finish(
+            index,
+            {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"done", 4}},
+            stamp(4)),
+        AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"completed error status", [](auto &r) { r.state.status = AYNI_NOT_READY; }},
+            {"completed reason", [](auto &r) { r.state.reason = AYNI_REASON_PROVIDER_RESULT; }},
+            {"missing completed proof",
+             [](auto &r) {
+                 r.action.reset();
+                 r.state.attempt = {};
+             }},
+            {"pending state with completed action",
+             [](auto &r) {
+                 r.state.outcome = 0;
+                 r.result = {};
+             }},
+            {"failed state with success status",
+             [](auto &r) { r.state.outcome = AYNI_CALL_FAILED; }},
+            {"failed state with unknown status",
+             [](auto &r) {
+                 r.state.outcome = AYNI_CALL_FAILED;
+                 r.state.status = AYNI_RESULT_UNKNOWN;
+             }},
+            {"cancelled state with completed action",
+             [](auto &r) { r.state.outcome = AYNI_CALL_CANCELLED; }},
+            {"abandoned state with success status",
+             [](auto &r) { r.state.outcome = AYNI_CALL_ABANDONED; }},
+            {"abandoned body",
+             [](auto &r) {
+                 r.state.outcome = AYNI_CALL_ABANDONED;
+                 r.state.status = AYNI_RESULT_UNKNOWN;
+             }},
+            {"erased row retains input", [](auto &r) { r.state.content_erased = stamp(5); }},
+        });
+}
+
+TEST_F(CallTableTest, erased_record_cannot_regain_bodies_or_lose_its_explicit_erasure_order) {
+    dispatch();
+    ASSERT_EQ(calls.erase_content(index, stamp(4)), AYNI_OK);
+    expect_invalid_call_facts(
+        calls.record(index),
+        {
+            {"erasure equals creation", [](auto &r) { r.state.content_erased = r.state.created; }},
+            {"erasure predates creation", [](auto &r) { r.state.content_erased = stamp(0); }},
+            {"erasure boot exhausted",
+             [](auto &r) { r.state.content_erased->boot_epoch = UINT64_MAX; }},
+            {"plaintext input resurrected",
+             [](auto &r) { r.input = {reinterpret_cast<const uint8_t *>("x"), 1}; }},
+            {"plaintext result resurrected", [](auto &r) { r.result = {"x", 1}; }},
+            {"erased tool body tag", [](auto &r) { r.result_kind = CallResultKind::tool_calls; }},
+            {"erased schema malformed", [](auto &r) { r.domain.size = 1; }},
+        });
 }
