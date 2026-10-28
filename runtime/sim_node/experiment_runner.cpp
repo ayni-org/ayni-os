@@ -17,6 +17,10 @@ void capture_failure(Result &result, Evidence &evidence) {
 }
 bool write_artifacts(const Case &data, const std::filesystem::path &directory,
                      const Evidence &evidence, const ayni_config_v1 &config, const Result &result) {
+    std::size_t kernel_bytes = 0, kernel_alignment = 0;
+    if (ayni_kernel_memory_requirements(&config, &kernel_bytes, &kernel_alignment) != AYNI_OK) {
+        return false;
+    }
     std::ofstream trace(directory / "trace.jsonl");
     for (const auto &line : evidence.lines()) {
         trace << line << '\n';
@@ -28,7 +32,9 @@ bool write_artifacts(const Case &data, const std::filesystem::path &directory,
              << fixtures::quoted(data.id)
              << ",\"experiment_step\":" << fixtures::quoted(data.experiment_step)
              << ",\"source\":" << fixtures::quoted(data.source)
-             << ",\"clauses\":" << fixtures::quoted(data.clauses)
+             << ",\"clauses\":" << fixtures::quoted(data.clauses) << ",\"deployment\":"
+             << fixtures::quoted(data.deployment == Deployment::physical ? "physical" : "counter")
+             << ",\"query_authority\":" << data.query_authority
              << ",\"revision\":" << fixtures::quoted(source_revision())
              << ",\"compiler\":" << fixtures::quoted(__VERSION__)
              << ",\"host\":\"native-sim\",\"seed\":\"0\",\"build_type\":"
@@ -37,6 +43,8 @@ bool write_artifacts(const Case &data, const std::filesystem::path &directory,
              << ",\"abi_major\":" << AYNI_ABI_MAJOR << ",\"abi_minor\":" << AYNI_ABI_MINOR
              << ",\"storage_schema\":" << storage_schema
              << ",\"kernel_config\":" << fixtures::configuration_json(config)
+             << ",\"kernel_memory_bytes\":" << kernel_bytes
+             << ",\"kernel_memory_alignment\":" << kernel_alignment
              << ",\"status\":" << result.status << ",\"close_status\":" << result.close_status
              << ",\"artifact_status\":" << artifact_status << ",\"passed\":"
              << (result.status == AYNI_OK && result.close_status == AYNI_OK &&
@@ -67,7 +75,7 @@ Result run(const Case &data, const char *output_directory) {
             return {AYNI_INVALID_STATE, AYNI_OK, AYNI_INVALID_STATE,
                     "output must be a new directory"};
         }
-        World world(evidence);
+        World world(evidence, data.query_authority, data.deployment);
         result.close_status = AYNI_RESULT_UNKNOWN; // Only explicit close can confirm cleanup.
         if (world.start()) {
             data.execute(world);

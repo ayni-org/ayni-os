@@ -1,0 +1,37 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F12.write_failed_fence_counter",
+  "experiment_step": "E2 F12",
+  "clauses": [
+    "C-COMMIT-009"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1", "bound": 600},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "fault", "port": "append", "fault": "fail"},
+    {"op": "create", "type": "folder", "command": "201"},
+    {"op": "until", "metric": "lifecycle", "value": "FENCED", "bound": 600},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "receipt", "outcome": "ABANDONED", "effect": "UNKNOWN"},
+    {"op": "until", "metric": "lifecycle", "value": "RECOVERING", "bound": 600},
+    {"op": "finish_recovery"},
+    {"op": "steps", "count": 64},
+    {"op": "same_call"},
+    {"op": "expect", "metric": "kernel_boot", "value": "2"},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "request_query"},
+    {"op": "answer_query", "result": "FOUND"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"}
+  ]
+}

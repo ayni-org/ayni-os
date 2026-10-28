@@ -1,0 +1,28 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F14.revoke_propagation_lost",
+  "experiment_step": "E2 F14",
+  "clauses": [
+    "C-PERMIT-005",
+    "C-PERMIT-007"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "until", "metric": "physical_submissions", "value": "1"},
+    {"op": "steps", "count": 1},
+    {"op": "expect", "metric": "control_phase", "value": "ACTIVE"},
+    {"op": "expect", "metric": "physical_samples", "value": "1"},
+    {"op": "save_call"},
+    {"op": "physical", "action": "link", "mode": "disconnected"},
+    {"op": "physical", "action": "mark_invalidated"},
+    {"op": "revoke"},
+    {"op": "core_now", "count": 32},
+    {"op": "physical", "action": "at", "us": 101000},
+    {"op": "physical", "action": "stopped_within_bound"},
+    {"op": "physical", "action": "link", "mode": "connected"},
+    {"op": "expect", "metric": "physical_submissions", "value": "1"}
+  ]
+}

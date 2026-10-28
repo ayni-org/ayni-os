@@ -74,6 +74,62 @@ void Host::power_cut(CutAppend append) {
     }
     pending_.clear();
 }
+std::optional<StoredBatch> Host::pending_append() const {
+    for (const auto &request : pending_) {
+        if (request.port == StoragePort::append) {
+            return StoredBatch{request.commit_seq,
+                               std::vector<uint8_t>(request.data, request.data + request.size)};
+        }
+    }
+    return std::nullopt;
+}
+ayni_status_t Host::fault_pending_append(uint64_t commit_seq, StorageFault fault) {
+    if (fault == StorageFault::reject || fault == StorageFault::accept_unknown ||
+        fault == StorageFault::unavailable) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    for (auto &request : pending_) {
+        if (request.port == StoragePort::append && request.commit_seq == commit_seq) {
+            if (request.fault) {
+                return AYNI_INVALID_STATE;
+            }
+            request.fault = fault;
+            ++faults_applied_;
+            return AYNI_OK;
+        }
+    }
+    return AYNI_NOT_FOUND;
+}
+ayni_status_t Host::power_cut_prefix(uint32_t prefix_bytes) {
+    for (const auto &request : pending_) {
+        if (request.port != StoragePort::append) {
+            continue;
+        }
+        if (prefix_bytes > request.size) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        for (const auto &batch : storage_.log) {
+            if (!batch.torn && has_identity(batch, request.writer_epoch, request.transition_id,
+                                            request.commit_seq)) {
+                return AYNI_INVALID_STATE;
+            }
+        }
+        if (prefix_bytes != 0) {
+            auto complete = request;
+            complete.fault.reset();
+            const auto result = run(complete);
+            if (result.outcome != AYNI_WRITE_OK) {
+                return AYNI_NOT_READY;
+            }
+            auto &stored = storage_.log.back();
+            stored.bytes.resize(prefix_bytes);
+            stored.torn = prefix_bytes < request.size;
+        }
+        pending_.clear();
+        return AYNI_OK;
+    }
+    return AYNI_NOT_FOUND;
+}
 
 std::optional<StorageFault> Host::next_fault(StoragePort port) {
     auto &queue = faults_[static_cast<std::size_t>(port)];

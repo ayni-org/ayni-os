@@ -3,15 +3,19 @@
 #ifndef AYNI_RUNTIME_SIM_NODE_EXPERIMENTS_H
 #define AYNI_RUNTIME_SIM_NODE_EXPERIMENTS_H
 #include <ayni/ayni.h>
+#include <ayni/calls.h>
 #include <cstddef>
 #include <string>
 namespace ayni::runtime::experiments {
 class World;
+enum class Deployment { counter, physical };
 struct Case {
     const char *id;
     const char *experiment_step;
     const char *source;
     const char *clauses;
+    ayni_call_query_authority_t query_authority;
+    Deployment deployment; // Finite simulated profile; no hardware access.
     void (*execute)(World &);
 };
 struct Cases {

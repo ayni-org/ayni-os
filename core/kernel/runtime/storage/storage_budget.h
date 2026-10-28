@@ -49,7 +49,7 @@ class StorageBudget {
     // A reload starts over; the compaction this boot asked for is dropped.
     void cancel_compaction() { compaction_due_ = false; }
 
-    // RUNNING with no maintenance active: reads whether the medium still
+    // With no maintenance active: reads whether the medium still
     // admits a transition, and asks for a compaction once the log reaches
     // three quarters of its limit or the log reserve would cross it. The
     // request stays until compacted(), cancel_compaction() or restart().

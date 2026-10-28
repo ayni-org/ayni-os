@@ -1,0 +1,32 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F6.terminal_durable_reply_lost",
+  "experiment_step": "E2 F6",
+  "clauses": [
+    "C-COMMIT-004",
+    "C-WIRE-007"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "until", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "until", "metric": "call_durable", "value": "1"},
+    {"op": "crash", "append": "lost"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "retry"},
+    {"op": "read_result"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "expect", "metric": "call_effect", "value": "COMPLETE"},
+    {"op": "expect", "metric": "call_durable", "value": "1"}
+  ]
+}

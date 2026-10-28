@@ -1,0 +1,25 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F10.revoke_during_flush",
+  "experiment_step": "E2 F10",
+  "clauses": [
+    "C-COMMIT-007",
+    "C-AUTH-006"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "hold_record", "point": "dispatch_call"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "revoke"},
+    {"op": "complete_storage"},
+    {"op": "steps", "count": 64},
+    {"op": "expect", "metric": "call_outcome", "value": "CANCELLED"},
+    {"op": "expect", "metric": "call_effect", "value": "NONE"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

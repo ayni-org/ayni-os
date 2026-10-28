@@ -1,5 +1,6 @@
 // Full-fixture infrastructure (ADR-0075): real fault/restart and external count
 // self-checks use the same compiled scripts as the simulator CLI.
+#include "experiment_execution.h"
 #include "experiment_support.h"
 #include <algorithm>
 #include <ayni/runtime/sim_node/experiments.h>
@@ -51,7 +52,8 @@ TEST(ExperimentEvidence, first_failure_survives_later_success_and_retains_classi
 }
 // ADR-0075: arbitrary callback pointers cannot bypass the compiled closed profile.
 TEST(ExperimentEvidence, unregistered_case_is_rejected_before_creating_output) {
-    const Case fabricated{"HARNESS.S1.fake", "HARNESS S1", "", "", nullptr};
+    const Case fabricated{"HARNESS.S1.fake",    "HARNESS S1",        "",     "",
+                          AYNI_CALL_QUERY_NONE, Deployment::counter, nullptr};
     EXPECT_EQ(run(fabricated, "/unregistered-must-not-be-created").status, AYNI_INVALID_ARGUMENT);
 }
 // ADR-0075/C-EXP-004: an unreadable recovery cannot satisfy the empty-world
@@ -85,6 +87,47 @@ TEST(ExperimentEvidence, core_and_provider_clock_stay_equal_with_storage_held) {
     EXPECT_EQ(world.node.simulation()->now_us(), before + tick_us);
     EXPECT_EQ(clock.now_us(clock.context), world.node.simulation()->now_us());
     EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_TRUE(evidence.ok());
+}
+// ADR-0076: an invalid exact cut must preserve the live arena and the pending
+// Host borrow; only a successfully installed durable prefix permits arena loss.
+TEST(ExperimentEvidence, oversized_prefix_cut_preserves_arena_and_pending_append) {
+    Evidence evidence;
+    World world(evidence);
+    ASSERT_TRUE(world.start());
+    world.create("folder", 101);
+    ASSERT_TRUE(world.until("pending append",
+                            [&] { return world.node.simulation()->pending_append().has_value(); }));
+    const auto before = world.node.simulation()->pending_append();
+    ASSERT_TRUE(before);
+    const auto *kernel = world.node.kernel();
+    EXPECT_EQ(world.node.power_cut_prefix(static_cast<uint32_t>(before->bytes.size() + 1)),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(world.node.kernel(), kernel);
+    const auto after = world.node.simulation()->pending_append();
+    ASSERT_TRUE(after);
+    EXPECT_EQ(after->commit_seq, before->commit_seq);
+    EXPECT_EQ(after->bytes, before->bytes);
+    EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_TRUE(evidence.ok());
+}
+// C-EXP-004/ADR-0076: a successful close after Kernel loss includes the
+// independent executor, which must stop by its preexisting lease and release.
+TEST(ExperimentEvidence, close_after_kernel_loss_waits_for_independent_executor) {
+    Evidence evidence;
+    World world(evidence, AYNI_CALL_QUERY_NONE, Deployment::physical);
+    ASSERT_TRUE(world.start());
+    ASSERT_TRUE(world.physical->prepare());
+    world.create("turn", 101);
+    ASSERT_TRUE(world.until("physical submit",
+                            [&] { return world.physical->executor.submissions() != 0; }));
+    ASSERT_TRUE(world.step());
+    const auto state = world.physical->info();
+    ASSERT_EQ(state.phase, AYNI_CONTROL_ACTIVE);
+    ASSERT_TRUE(world.crash(ayni::hosts::sim::CutAppend::lost));
+    EXPECT_EQ(world.close(), AYNI_OK);
+    EXPECT_GE(world.node.simulation()->now_us(), state.deadline_us);
+    EXPECT_EQ(world.physical->executor.close(), AYNI_OK);
     EXPECT_TRUE(evidence.ok());
 }
 } // namespace

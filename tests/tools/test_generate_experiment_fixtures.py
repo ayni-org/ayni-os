@@ -1,6 +1,7 @@
 """ADR-0075: full-profile input boundaries cannot turn unsupported cases green."""
 import copy
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -34,10 +35,46 @@ class ExperimentGenerator(unittest.TestCase):
         self.assertIn("w.service.execute(w.node.kernel())", source)
         self.assertNotIn("std::system", source)
 
+    def test_delivered_e2_contains_every_original_canonical_variant(self):
+        # ADR-0076: a suite cannot pass by omitting a difficult original variant.
+        required = set(re.findall(r"`(E2\.[^`]+)`", (ROOT / "contracts/fixtures/cases.md").read_text()))
+        actual = {path.stem for path in (ROOT / "contracts/fixtures/experiments").glob("E2.*.json")}
+        self.assertGreater(len(required), 40)
+        self.assertFalse(required - actual, sorted(required - actual))
+
+    def test_recovery_record_and_physical_controls_reject_unimplemented_inputs(self):
+        for action in ({"op": "start", "expected_lifecycle": "FENCED"},
+                       {"op": "budget", "items": 0}, {"op": "budget", "items": 65},
+                       {"op": "hold_record", "point": "byte_offset_99"},
+                       {"op": "damage", "region": "all_files"},
+                       {"op": "fault_pending", "fault": "reject"},
+                       {"op": "physical", "action": "at", "us": -1},
+                       {"op": "physical", "action": "at", "us": 1000001},
+                       {"op": "physical", "action": "prepare", "us": 1},
+                       {"op": "physical", "action": "link", "mode": "real_device"},
+                       {"op": "physical", "action": "deliver_renewal", "status": "DENIED"}):
+            data = copy.deepcopy(self.base)
+            data["script"].insert(0, action)
+            with self.subTest(action=action), self.assertRaises(fixtures.FixtureError):
+                self.load(data)
+        for field, value in (("query_authority", "ASSUMED"), ("deployment", "hardware")):
+            data = copy.deepcopy(self.base)
+            data[field] = value
+            with self.subTest(field=field), self.assertRaises(fixtures.FixtureError):
+                self.load(data)
+
     def test_unknown_actions_fields_and_states_are_refused(self):
         for action in ({"op": "network_retry"}, {"op": "grant", "url": "secret"},
                        {"op": "expect", "metric": "lifecycle", "value": "MAGIC"},
                        {"op": "fault", "port": "append", "fault": "ignore_failure"}):
+            data = copy.deepcopy(self.base)
+            data["script"].insert(0, action)
+            with self.assertRaises(fixtures.FixtureError):
+                self.load(data)
+
+    def test_physical_evidence_cannot_pass_on_an_absent_executor(self):
+        for action in ({"op": "physical", "action": "prepare"},
+                       {"op": "expect", "metric": "physical_submissions", "value": "0"}):
             data = copy.deepcopy(self.base)
             data["script"].insert(0, action)
             with self.assertRaises(fixtures.FixtureError):

@@ -1,0 +1,23 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F9.retry_same_command",
+  "experiment_step": "E2 F9",
+  "clauses": [
+    "C-COMMIT-004",
+    "C-WIRE-004",
+    "C-WIRE-016",
+    "C-ID-007"
+  ],
+  "query_authority": "AUTHORITATIVE",
+  "script": [
+    {"op": "create", "type": "folder", "command": "101"},
+    {"op": "steps", "count": 32},
+    {"op": "crash", "append": "lost"},
+    {"op": "start"},
+    {"op": "retry"},
+    {"op": "expect", "metric": "goal_count", "value": "1"},
+    {"op": "expect", "metric": "task_count", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"}
+  ]
+}

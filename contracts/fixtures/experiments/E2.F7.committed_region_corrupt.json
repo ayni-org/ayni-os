@@ -1,0 +1,25 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F7.committed_region_corrupt",
+  "experiment_step": "E2 F7",
+  "clauses": [
+    "C-STORE-009"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "steps", "count": 64},
+    {"op": "crash", "append": "lost"},
+    {"op": "damage", "region": "committed"},
+    {"op": "start", "expected_lifecycle": "RESTRICTED"},
+    {"op": "expect", "metric": "lifecycle", "value": "RESTRICTED"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"}
+  ]
+}

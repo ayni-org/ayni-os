@@ -1,0 +1,26 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F2.barrier_write_failed",
+  "experiment_step": "E2 F2",
+  "clauses": [
+    "C-COMMIT-006",
+    "C-PERMIT-002"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "hold_record", "point": "dispatch_call"},
+    {"op": "fault_pending", "fault": "fail"},
+    {"op": "complete_storage"},
+    {"op": "steps", "count": 1, "storage": "held"},
+    {"op": "expect", "metric": "physical_submissions", "value": "0"},
+    {"op": "expect", "metric": "physical_samples", "value": "0"},
+    {"op": "expect", "metric": "control_phase", "value": "IDLE"},
+    {"op": "expect", "metric": "faults_applied", "value": "1"},
+    {"op": "expect", "metric": "call_durable", "value": "0"},
+    {"op": "expect", "metric": "physical_challenges", "value": "0"}
+  ]
+}

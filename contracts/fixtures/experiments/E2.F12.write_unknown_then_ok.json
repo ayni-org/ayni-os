@@ -1,0 +1,30 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F12.write_unknown_then_ok",
+  "experiment_step": "E2 F12",
+  "clauses": [
+    "C-COMMIT-008"
+  ],
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1", "bound": 600},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "hold_record", "point": "terminal_call"},
+    {"op": "fault_pending", "fault": "unknown_persisted"},
+    {"op": "complete_storage"},
+    {"op": "steps", "count": 128},
+    {"op": "same_call"},
+    {"op": "retry"},
+    {"op": "read_result"},
+    {"op": "expect", "metric": "faults_applied", "value": "1"},
+    {"op": "expect", "metric": "task_count", "value": "1"},
+    {"op": "expect", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"}
+  ]
+}

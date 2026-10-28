@@ -31,12 +31,16 @@ class SimNode {
     // Host requests end without receipts, then the old arena is discarded.
     // Preserves fake time and durable storage; assemble creates a new Kernel.
     ayni_status_t power_cut(hosts::sim::CutAppend append);
+    // Same quiescence precondition; cuts a fresh pending append at an exact byte
+    // offset selected by the test's existing record codec. Failure retains arena.
+    ayni_status_t power_cut_prefix(uint32_t prefix_bytes);
     ayni_kernel_t *kernel() const;
     Clock clock() const; // Fake clock ports, borrowed until release.
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    void release_arena(); // Only after destroy or after every simulated I/O borrow has ended.
 };
 } // namespace ayni::runtime
 #endif

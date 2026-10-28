@@ -1,0 +1,28 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F11.duplicate_result",
+  "experiment_step": "E2 F11",
+  "clauses": [
+    "C-CALL-012"
+  ],
+  "script": [
+    {"op": "application_policy"},
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "until", "metric": "pending_calls", "value": "1"},
+    {"op": "save_call"},
+    {"op": "execute"},
+    {"op": "receipt", "outcome": "COMPLETED", "effect": "COMPLETE"},
+    {"op": "repeat_receipt"},
+    {"op": "steps", "count": 64},
+    {"op": "repeat_receipt"},
+    {"op": "expect", "metric": "call_outcome", "value": "COMPLETED"},
+    {"op": "expect", "metric": "submissions", "value": "1"},
+    {"op": "expect", "metric": "executions", "value": "1"},
+    {"op": "expect", "metric": "memory_count", "value": "1"},
+    {"op": "expect", "metric": "task_steps", "value": "2"},
+    {"op": "expect", "metric": "checkpoint_value", "value": "1"}
+  ]
+}

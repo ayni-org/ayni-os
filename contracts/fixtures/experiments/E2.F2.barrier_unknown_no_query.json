@@ -1,0 +1,32 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "E2.F2.barrier_unknown_no_query",
+  "experiment_step": "E2 F2",
+  "clauses": [
+    "C-COMMIT-006",
+    "C-OUT-002"
+  ],
+  "query_authority": "NONE",
+  "script": [
+    {"op": "grant"},
+    {"op": "budget", "items": 1},
+    {"op": "create", "type": "action", "command": "101"},
+    {"op": "hold_record", "point": "dispatch_call"},
+    {"op": "save_call"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "fault_pending", "fault": "unknown_persisted"},
+    {"op": "complete_storage"},
+    {"op": "steps", "count": 1, "storage": "held"},
+    {"op": "expect", "metric": "call_durable", "value": "0"},
+    {"op": "crash", "append": "lost"},
+    {"op": "start"},
+    {"op": "same_call"},
+    {"op": "steps", "count": 32},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"},
+    {"op": "expect", "metric": "submissions", "value": "0"},
+    {"op": "expect", "metric": "executions", "value": "0"},
+    {"op": "request_query", "status": "UNSUPPORTED"},
+    {"op": "expect", "metric": "call_phase", "value": "RESULT_UNKNOWN"}
+  ]
+}

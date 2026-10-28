@@ -1,0 +1,20 @@
+{
+  "fixture_schema": 1,
+  "profile": "m1-experiment",
+  "case_id": "HARNESS.S1.crash_active_executor",
+  "experiment_step": "HARNESS S1",
+  "clauses": [
+    "C-EXP-002",
+    "C-EXP-004"
+  ],
+  "deployment": "physical",
+  "script": [
+    {"op": "physical", "action": "prepare"},
+    {"op": "create", "type": "turn", "command": "101"},
+    {"op": "until", "metric": "physical_submissions", "value": "1"},
+    {"op": "steps", "count": 1},
+    {"op": "expect", "metric": "control_phase", "value": "ACTIVE"},
+    {"op": "crash", "append": "lost"},
+    {"op": "expect", "metric": "physical_submissions", "value": "1"}
+  ]
+}

@@ -111,11 +111,22 @@ class Host {
     // Delayed backend work owns copies, never Kernel buffers. A successful
     // fence rejects these old-epoch writes even after their UNKNOWN post.
     std::size_t complete_late_storage();
+    std::size_t pending_late_storage() const { return late_appends_.size(); }
     // The next call of port meets fault.
     void inject_fault(StoragePort port, StorageFault fault);
     // Counts faults actually selected by a submitted Host request, not queued plans.
     uint64_t faults_applied() const { return faults_applied_; }
     std::size_t pending_storage() const { return pending_.size(); }
+    // Owner-thread diagnostic copy of the next pending append. No borrowed
+    // Core pointer escapes; nullopt means no append has reached the Host.
+    std::optional<StoredBatch> pending_append() const;
+    // Override only an asynchronous outcome on the exact held append. Synchronous
+    // rejection/acceptance and fence faults cannot be changed after acceptance.
+    ayni_status_t fault_pending_append(uint64_t commit_seq, StorageFault fault);
+    // Keeps exactly prefix_bytes of a fresh pending append, then ends all I/O
+    // without receipts. Rejects a missing target, invalid size, or an already
+    // durable retry; it must not truncate a previously committed batch.
+    ayni_status_t power_cut_prefix(uint32_t prefix_bytes);
     // The attempt of every storage call so far, in call order.
     const std::vector<ayni_attempt_ref_v1> &storage_attempts() const { return attempts_; }
     // Completes every pending request in order and returns how many posts

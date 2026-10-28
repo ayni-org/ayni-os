@@ -12,6 +12,8 @@ enum class Answers { immediate, held };
 // at_advance hands an accepted permit to the gate at the next advance(), like
 // a Provider that forwards it over a link, instead of inside submit.
 enum class PermitStart { at_submit, at_advance };
+// Owner-controlled simulated transport; never changes the independent gate clock.
+enum class Link { connected, hold_renewals, disconnected };
 struct Config {
     void *clock_context = nullptr;        // Borrowed until close.
     uint64_t (*now_us)(void *) = nullptr; // Required trusted monotonic clock.
@@ -40,12 +42,32 @@ class Executor {
     // Held answers: serves every held request in arrival order against the
     // gate now and posts its answer. OK, or the first refused post's status.
     ayni_status_t answer();
-    void drop_requests(); // Held answers: discards them, as a lost link.
+    ayni_status_t answer_renewals(); // Deliver only held renewals at current local time.
+    void drop_requests();            // Held answers: discards them, as a lost link.
+    void set_link(Link link);        // Also controls cancellation delivery; no automatic replay.
+    void abandon_kernel(); // Synchronous producers drop every old-arena pointer before arena loss.
+    ayni_status_t
+    observe(const ayni_control_observation_v1 &live); // Trusted local generations/interlocks.
+    ayni_status_t
+    set_interlock(uint32_t clear); // Measured 0/1, including before the first challenge.
+    ayni_status_t observation(ayni_control_observation_v1 &out) const; // Copied local observation.
+    ayni_status_t
+    replay_permit(); // Replay the actual last accepted permit against the current gate.
+    ayni_status_t
+    replay_renewal(); // Replay the actual last received renewal, not a fabricated nonce.
+    ayni_status_t evict_challenges(); // Issue one full local nonce window before delayed delivery.
+    ayni_status_t
+    command_without_permit(); // Complete local sample with a different permit identity.
+    ayni_status_t
+    power_cycle(); // Simulated executor reboot: return UNKNOWN, disable, advance generation.
+    ayni_status_t
+    last_renewal_status() const; // Gate result, separate from answer mailbox delivery.
     uint32_t held(ayni_executor_request_t kind) const;   // Held requests of kind.
     ayni_status_t info(ayni_control_info_v1 &out) const; // IDLE until first challenge creates gate.
     uint32_t pending() const;      // Provider borrow count, independent of physical stop.
     uint64_t samples() const;      // Accepted local outputs, never increments without permit.
     uint64_t renewals() const;     // Successful gate renewals.
+    uint64_t challenges() const;   // Actual nonce requests, including ones before any submit.
     uint64_t submissions() const;  // Accepted original operations.
     uint64_t logical_call() const; // Last submitted stable call identity, zero before first.
     ayni_status_t close();         // Only after Kernel destruction and measured local stop.

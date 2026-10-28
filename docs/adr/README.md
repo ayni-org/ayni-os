@@ -119,3 +119,5 @@
 | [0074](0074-model-instructions-as-system-message.md) | 模型请求的指令作为 system 消息 | 已接受 | §2.5、§5.4、§14.1 |
 
 | [0075](0075-full-experiment-runner-and-fault-controls.md) | 完整实验运行器与受控故障生命周期 | 已接受 | §10.1、MA-021/022/023/033 |
+
+| [0076](0076-e2-recovery-and-executor-evidence.md) | E2 精确提交切断与独立执行端证据 | 已接受 | §10.3、MA-022 |

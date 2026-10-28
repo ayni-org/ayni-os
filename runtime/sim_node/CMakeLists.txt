@@ -27,10 +27,18 @@ add_custom_target(ayni_generate_experiment_fixtures
         --root "${AYNI_ROOT}" --output "${experiment_source}"
     BYPRODUCTS "${experiment_source}"
     WORKING_DIRECTORY "${AYNI_ROOT}" VERBATIM)
-add_library(ayni_sim_experiments STATIC experiment_evidence.cpp experiment_service.cpp experiment_world.cpp
+add_library(ayni_sim_experiments STATIC experiment_evidence.cpp experiment_service.cpp experiment_world.cpp experiment_execution.cpp
     experiment_runner.cpp "${experiment_source}")
 add_dependencies(ayni_sim_experiments ayni_generate_experiment_fixtures)
 target_include_directories(ayni_sim_experiments PUBLIC include PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(ayni_sim_experiments PRIVATE
     AYNI_FIXTURE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" AYNI_FIXTURE_SANITIZER="${AYNI_SANITIZE}")
-target_link_libraries(ayni_sim_experiments PUBLIC ayni_runtime_sim_node PRIVATE ayni_warnings)
+target_link_libraries(ayni_sim_experiments PUBLIC ayni_runtime_sim_node PRIVATE ayni_provider_mock_execution ayni_warnings)
+# White-box fault injection reuses Core codecs only in the tests/ source. This
+# optional test dependency adds no Core header/type to production runtime APIs.
+if(AYNI_BUILD_TESTS)
+    target_sources(ayni_sim_experiments PRIVATE "${AYNI_ROOT}/tests/experiments/record_cut.cpp")
+    target_include_directories(ayni_sim_experiments PRIVATE "${AYNI_ROOT}/core")
+else()
+    target_sources(ayni_sim_experiments PRIVATE experiment_no_record_probe.cpp)
+endif()
