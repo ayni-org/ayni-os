@@ -19,10 +19,9 @@ constexpr uint16_t snapshot_schema = 3;
 constexpr uint32_t snapshot_header_size = 72;
 constexpr uint32_t snapshot_marker_size = 24;
 
-// What a slot header carries. covers_commit_seq is the last batch the
-// snapshot holds; the log resumes after it.
+// Variable slot metadata; schema is fixed codec framing, not caller-selected.
+// covers_commit_seq is the last batch held; the log resumes after it.
 struct SnapshotMetadata {
-    uint16_t schema = snapshot_schema;
     uint64_t generation = 0;
     uint64_t covers_commit_seq = 0;
     uint64_t max_transition_id = 0;

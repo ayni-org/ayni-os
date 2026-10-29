@@ -174,7 +174,7 @@ void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
         goal, model.goals.parameters(index), body,
         {model.goal_authority.contains(index, goal.goal_id),
          model.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr});
-    work::write_goal_state_record(goal, body + base);
+    work::write_goal_state_record(goal, body + base, work::GoalRecordChange::state);
     write_snapshot_stamp(body + base + work::goal_state_record_size,
                          {goal.created.transition_id, goal.created.commit_seq});
     foundation::store_le64(body + base + goal_current_seq_at, goal.commit_seq);

@@ -161,9 +161,9 @@ TEST(PrefixScan, damaged_batch_stops_the_scan) {
     EXPECT_EQ(owner.seen, 1);
 }
 
-// C-STORE-004: unknown REQUIRED records and unknown flag bits stop the scan;
-// unknown optional records are skipped.
-TEST(PrefixScan, unknown_records_follow_the_required_flag) {
+// C-STORE-004/ADR-0082: unknown types, versions and flag bits stop the scan
+// regardless of REQUIRED; a known type without REQUIRED is corrupt.
+TEST(PrefixScan, unknown_records_are_rejected_regardless_of_the_required_flag) {
     const struct {
         RecordHeader record;
         BatchCheck expected;

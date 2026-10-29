@@ -90,12 +90,12 @@ TEST_F(TaskRuntimeLimits, runtime_codec_preserves_complete_runtime_and_default_f
     exhaust();
     const auto &task = tasks.at(0);
     std::array<uint8_t, task_state_record_size> bytes{};
-    write_task_state_record(task, bytes.data());
+    write_task_state_record(task, bytes.data(), ayni::work::TaskRecordChange::state);
     TaskStateRecord decoded{};
     ASSERT_TRUE(read_task_state_record(bytes.data(), bytes.size(), decoded));
     EXPECT_EQ(decoded.state.model_calls, task.model_calls);
     const auto &legacy = tasks.at(1);
-    write_task_state_record(legacy, bytes.data());
+    write_task_state_record(legacy, bytes.data(), ayni::work::TaskRecordChange::state);
     ASSERT_TRUE(read_task_state_record(bytes.data(), task_state_record_size, decoded));
     EXPECT_EQ(decoded.state.model_calls, TaskModelCalls{});
 }

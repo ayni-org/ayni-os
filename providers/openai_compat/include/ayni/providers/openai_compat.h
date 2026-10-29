@@ -23,7 +23,8 @@ struct Config {
     // TOOL_CALLS preserves openai.chat. Other formats are rejected.
     uint32_t result_format = AYNI_CALL_RESULT_TOOL_CALLS;
     // Required for each offered tool. Copied port; runtime owns context through quiesce.
-    // No tools (e.g. TEXT summaries) need no port. Worker never invokes it.
+    // A supplied port's shape is checked at configure; absence rejects only requests
+    // that offer tools. No tools (e.g. TEXT summaries) need no port. Worker never invokes it.
     ayni_tool_usage_port_v1 tool_usage{};
 };
 // Owner-thread configure/describe/close and callbacks; one internal I/O worker.

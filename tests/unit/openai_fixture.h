@@ -144,8 +144,8 @@ class OpenaiFixture : public ::testing::Test {
         }
         static const ayni_tool_ref_v1 tools[] = {{text("show"), 1, 0}};
         auto goal = goal_type_desc("assist", 1, nullptr, this);
-        goal.tool_count = 1;
-        goal.tools = tools;
+        goal.tool_count = offer_tools ? 1U : 0U;
+        goal.tools = offer_tools ? tools : nullptr;
         goal.export_requirements = [](void *ctx, ayni_bytes_v1,
                                       const ayni_goal_requirement_sink_v1 *sink) {
             const auto &self = *static_cast<OpenaiFixture *>(ctx);
@@ -359,6 +359,7 @@ class OpenaiFixture : public ::testing::Test {
     uint32_t model_capacity = 1;
     uint32_t model_result_format = AYNI_CALL_RESULT_TOOL_CALLS;
     bool usage_available = true;
+    bool offer_tools = true; // A tool-capable model may receive a request without tools.
     uint32_t usage_lookups = 0;
     ayni_status_t usage_status = AYNI_OK;
     std::thread::id owner_thread = std::this_thread::get_id();

@@ -17,6 +17,7 @@ namespace {
 constexpr uint32_t model_index = 0, summary_index = 1, schedule_index = 2;
 constexpr uint32_t notify_index = 3, health_index = 4, observe_index = 5;
 constexpr uint32_t offer_count = 6, chat_offer_count = 3, destination_field = 1;
+constexpr uint32_t binding_version = 1; // Shared by registration, tool refs and usage pairing.
 constexpr const char *bindings[] = {"model", "summary", "schedule", "notify", "health", "observe"};
 // Authority-only capabilities with no Provider: memory read/egress and model-Goal consent.
 constexpr uint32_t authority_only_count = 3;
@@ -160,7 +161,7 @@ struct DemoProfile::Impl {
                                      : status;
         }
         providers::openai_compat::Config c;
-        schedule_usage = schedule.usage({text(bindings[schedule_index]), 1, 0});
+        schedule_usage = schedule.usage({text(bindings[schedule_index]), binding_version, 0});
         c.tool_usage = {sizeof(ayni_tool_usage_port_v1), 0, this, lookup_usage};
         c.base_url = config.base_url;
         c.model = config.model_name;
@@ -234,15 +235,9 @@ struct DemoProfile::Impl {
         if (status != AYNI_OK) {
             return status;
         }
-        const ayni_binding_v1 binding{sizeof(binding),
-                                      1,
-                                      text(bindings[at]),
-                                      cap.capability_id,
-                                      1,
-                                      1,
-                                      offer.provider_id,
-                                      offer.endpoint_id,
-                                      offer.destination_id};
+        const ayni_binding_v1 binding{
+            sizeof(binding),   binding_version,   text(bindings[at]),  cap.capability_id, 1, 1,
+            offer.provider_id, offer.endpoint_id, offer.destination_id};
         return ayni_register_binding(kernel, &binding);
     }
 
@@ -273,12 +268,13 @@ struct DemoProfile::Impl {
         }
         strategies::ToolLoopConfig config;
         config.identity = {text("demo.loop"), 1, nullptr, 0};
-        config.model = {AYNI_POLICY_REQUEST_MODEL, text("model"), 1, model_scope, text(prompt)};
+        config.model = {AYNI_POLICY_REQUEST_MODEL, text("model"), binding_version, model_scope,
+                        text(prompt)};
         config.clock = {ports.clock.context,
                         ports.clock.utc_now,
                         {timezone.data(), static_cast<uint32_t>(timezone.size())}};
         config.summary = {
-            AYNI_POLICY_REQUEST_MODEL, text("summary"), 1, model_scope,
+            AYNI_POLICY_REQUEST_MODEL, text("summary"), binding_version, model_scope,
             text("Summarize in fewer than 140 Chinese characters and 512 UTF-8 bytes.")};
         auto status = loop.configure(config);
         if (status != AYNI_OK) {
@@ -295,7 +291,7 @@ struct DemoProfile::Impl {
         type.ctx = this;
         type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
         type.occurrence_wait_max_us = chat_wait_max_us;
-        const ayni_tool_ref_v1 tool{text(bindings[schedule_index]), 1, 0};
+        const ayni_tool_ref_v1 tool{text(bindings[schedule_index]), binding_version, 0};
         type.goal_type_id = text("chat");
         type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
         type.strategy_id = strategy.strategy_id;

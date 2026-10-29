@@ -707,7 +707,7 @@ TEST(GoalAuthorityPersistence,
         goal.lifecycle = AYNI_GOAL_PAUSED;
         ++goal.revision;
         std::array<uint8_t, goal_state_record_size> body{};
-        write_goal_state_record(goal, body.data());
+        write_goal_state_record(goal, body.data(), ayni::work::GoalRecordChange::state);
         ASSERT_EQ(WorkReplay::on_record(&replay, batch,
                                         {goal_state_record_type, goal_state_record_version,
                                          record_required, body.size()},
@@ -2191,7 +2191,8 @@ TEST(WorkAuthorityPersistence, live_task_and_own_goal_pause_cannot_be_separated)
                 ASSERT_TRUE(KernelTestProbe::work(source.work.kernel()).tasks.find(task_id, at));
                 auto task = KernelTestProbe::work(source.work.kernel()).tasks.at(at);
                 task.lifecycle = AYNI_TASK_PAUSED; // F2 used canonical user pause for this deny.
-                write_task_state_record(task, record.body.data());
+                write_task_state_record(task, record.body.data(),
+                                        ayni::work::TaskRecordChange::state);
             }
         }
         batch.records.erase(std::remove_if(batch.records.begin(), batch.records.end(),
@@ -2530,7 +2531,7 @@ TEST(GoalAuthorityPersistence, ordinary_metadata_cannot_clear_a_persisted_deny) 
                      std::vector<uint8_t>(goal_state_record_size)};
         write_goal_state_record(
             KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(id)),
-            state.body.data());
+            state.body.data(), ayni::work::GoalRecordChange::state);
         auto metadata = source.saved(id);
         metadata.phase = GoalAuthorityPhase::authorized;
         metadata.stamp = stamp;
@@ -3043,7 +3044,7 @@ TEST(GoalReauthorizationPersistence, ordinary_task_state_cannot_follow_the_exact
     Record extra{{task_state_record_type, task_state_record_version, record_required,
                   task_state_record_size},
                  std::vector<uint8_t>(task_state_record_size)};
-    write_task_state_record(task, extra.body.data());
+    write_task_state_record(task, extra.body.data(), ayni::work::TaskRecordChange::state);
     ASSERT_EQ(batch.records[batch.records.size() - 2U].header.type,
               ayni::kernel::command_record_type);
     batch.records.insert(batch.records.end() - 1, std::move(extra));
@@ -3140,7 +3141,7 @@ TEST(GoalApprovalPersistence, activation_rejects_each_noninitial_state_fact_with
             goal.cursor.next_due_us = 0;
             break;
         }
-        write_goal_state_record(goal, row->body.data());
+        write_goal_state_record(goal, row->body.data(), ayni::work::GoalRecordChange::state);
         Fixture restored;
         restored.work.node().sim().durable_storage() = image;
         restored.work.node().sim().durable_storage().log.back() = encode(batch);
@@ -3491,11 +3492,11 @@ TEST(WorkAuthoritySnapshot,
         } else if (fault == 5U) {
             auto value = task;
             value.task_id = created.result.object.id;
-            write_task_state_record(value, state.body.data());
+            write_task_state_record(value, state.body.data(), ayni::work::TaskRecordChange::state);
         } else if (fault < 8U) {
             auto value = task;
             value.step_count = fault == 6U ? 0U : task.step_count + 1U;
-            write_task_state_record(value, state.body.data());
+            write_task_state_record(value, state.body.data(), ayni::work::TaskRecordChange::state);
         } else if (fault == 8U) {
             ayni::foundation::store_le32(task_row.body.data() + steps_before_at,
                                          task.step_count + 1U);
@@ -3527,7 +3528,7 @@ TEST(WorkAuthoritySnapshot,
             } else {
                 value.owner_instance_id = source.work.instance(agent_b);
             }
-            write_task_record(value, task_row.body.data());
+            write_task_record(value, task_row.body.data(), false);
         } else if (fault == 18U) {
             ayni::foundation::store_le64(task_row.body.data() + stamp_at,
                                          image.metadata.max_transition_id + 1U);

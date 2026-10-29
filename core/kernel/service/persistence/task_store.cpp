@@ -34,10 +34,10 @@ class Journal {
                 task.created_transition_id != stamp_.transition_id) {
                 continue;
             }
-            uint8_t *at = body(work::task_record_type, work::task_record_version,
-                               work::task_creation_record_size(task));
+            uint8_t *at =
+                body(work::task_record_type, work::task_record_version, work::task_record_size);
             if (at != nullptr) {
-                work::write_task_record(task, at);
+                work::write_task_record(task, at, false);
             }
         }
         for (uint32_t index = 0; index < tasks.size(); ++index) {
@@ -138,7 +138,7 @@ uint32_t capacity(const KernelCapacities &c) {
 // A page must hold every possible part independently, including final state.
 uint32_t record_max(const KernelCapacities &c) {
     uint32_t result = work::task_snapshot_record_size;
-    const uint32_t sizes[] = {work::task_state_max_size, work::task_steps_record_max(1),
+    const uint32_t sizes[] = {work::task_state_record_size, work::task_steps_record_max(1),
                               work::task_checkpoint_record_max(c.task_checkpoint_max_bytes),
                               work::task_authority_record_max(c.goal_requirement_capacity)};
     for (const auto size : sizes) {
@@ -153,7 +153,7 @@ uint32_t record_max(const KernelCapacities &c) {
 uint64_t payload_max(const KernelCapacities &c) {
     return uint64_t{c.task_capacity} *
            (record_bytes(work::task_snapshot_record_size) +
-            record_bytes(work::task_state_max_size) +
+            record_bytes(work::task_state_record_size) +
             uint64_t{c.task_step_capacity} * record_bytes(work::task_steps_record_max(1)) +
             record_bytes(work::task_checkpoint_record_max(c.task_checkpoint_max_bytes)) +
             record_bytes(work::task_authority_record_max(c.goal_requirement_capacity)));
@@ -163,11 +163,10 @@ uint64_t payload_max(const KernelCapacities &c) {
 uint32_t journal_max(const KernelCapacities &c) {
     const auto steps = c.task_step_capacity < c.policy_intent_capacity ? c.task_step_capacity
                                                                        : c.policy_intent_capacity;
-    return record_bytes(work::task_record_max_size) +
-           record_bytes(work::task_steps_record_max(steps)) +
+    return record_bytes(work::task_record_size) + record_bytes(work::task_steps_record_max(steps)) +
            record_bytes(work::task_checkpoint_record_max(c.task_checkpoint_max_bytes)) +
            c.task_capacity *
-               (record_bytes(work::task_state_max_size) +
+               (record_bytes(work::task_state_record_size) +
                 record_bytes(work::task_authority_record_max(c.goal_requirement_capacity)));
 }
 // Empty steps/checkpoint parts are skipped without consuming a whole record.
@@ -226,7 +225,7 @@ void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
         work::write_task_checkpoint_record(task, model.tasks.checkpoint(index), body, sources);
         break;
     case StorePart::state:
-        work::write_task_state_record(task, body);
+        work::write_task_state_record(task, body, work::TaskRecordChange::state);
         break;
     case StorePart::authority:
         work::write_task_authority_record(model.task_authority.at(task.slot), body);

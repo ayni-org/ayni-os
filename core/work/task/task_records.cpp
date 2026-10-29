@@ -2,10 +2,6 @@
 
 namespace ayni::work {
 
-uint32_t task_creation_record_size(const Task &) {
-    return task_record_size;
-}
-
 // Calendar and source markers are current facts, not version-selected extensions.
 void write_task_record(const Task &task, uint8_t *body, bool provenance) {
     durability::BodyWriter writer(body, task_record_size);

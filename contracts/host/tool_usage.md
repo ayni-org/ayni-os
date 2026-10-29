@@ -10,11 +10,13 @@ Core 提供允许列表与当前授权交集中的 `ayni_tool_v1`，拥有可调
 
 lookup 是只读、同步、非重入且有界的 owner-thread 回调，不能等待网络/设备、调用 Kernel 或抛出异常。异步发现器须先准备可读描述，不能在 lookup 中发现设备。返回视图有效到下一次 lookup 或本次 submit 返回，消费者须在此前复制；port/context 活到模型 Provider quiesce 结束。创建失败、关闭和部分复制失败不接管调用借用，不发布半份说明。异步 worker 只读请求槽，不再访问 Core 或说明来源。
 
+模型 Provider 在 configure 时校验已提供端口的固定形状（当前 sizeof、reserved=0、lookup 非空）；struct_size=0 表示未提供端口。无工具请求允许端口缺席，包括可返回工具调用但本次不提供工具的请求；有工具时在 submit 拒绝缺席端口，逐项核对并复制说明。
+
 ## 规则
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-USAGE-001 | 使用工具的真实模型请求必须有 exact Binding ID/version 与 Capability ID/version 的说明；所有说明结构只收当前 sizeof，reserved=0；缺项、失配或错误明确拒绝，无 ID-only/旧说明回退 | 用设备名作为唯一说明；新版本借旧参数文法 | M1 已实现：`OpenaiProvider.tools_without_a_usage_port_are_rejected_before_http`、`OpenaiProvider.missing_exact_usage_is_rejected_before_http`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation` |
+| C-USAGE-001 | 使用工具的真实模型请求必须有 exact Binding ID/version 与 Capability ID/version 的说明；所有说明结构只收当前 sizeof，reserved=0；缺项、失配或错误明确拒绝，无 ID-only/旧说明回退 | 用设备名作为唯一说明；新版本借旧参数文法 | M1 已实现：`OpenaiProvider.tools_without_a_usage_port_are_rejected_before_http`、`OpenaiProvider.missing_exact_usage_is_rejected_before_http`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation`、`OpenaiConfiguration.rejects_malformed_present_usage_ports_before_initialization`、`OpenaiProvider.text_only_requests_need_no_usage_port`、`OpenaiProvider.tool_capable_requests_without_tools_need_no_usage_port` |
 | C-USAGE-002 | 每个工具所有身份/说明字符串总计至多4096 UTF-8字节，每字段解释至多256字节，均非空；字段数恰等权威视图且按 field_id 唯一匹配，不依赖数组顺序；超界拒绝，不截断 | 第9字段被忽略；超长说明被截成另一条文法；两个字段互换解释 | M1 已实现：`OpenaiProvider.exact_tool_and_field_description_budgets_reach_the_http_codec`、`OpenaiProvider.individually_bounded_strings_cannot_exceed_the_total_usage_budget`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation`、`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects` |
 | C-USAGE-003 | Provider 在 submit 内逐项读取并立即复制权威视图与用法；worker 只用固定请求槽。说明/源数组不在返回后借用，不把 callback 移到 worker | 第2次 lookup 覆盖第1工具；worker 回调已失效的 Core view | M1 已实现：`ToolUsage.copied_usage_survives_source_reuse_and_encodes_the_original_description`；`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects` 的 owner-thread lookup 断言；调用链审查 |
 | C-USAGE-004 | function 名仍为当前请求的 tool_N，参数仍为 field_ID/text；说明只进入工具 schema，类型、单位、范围、枚举、必填与 exact 回译仍来自权威视图；所有提议继续经过策略及 Core 授权/Call | 描述扩展可提议工具集合；示例直接触发电机 | M1 已实现：`OpenaiProvider.offered_function_becomes_exact_typed_values`、`OpenaiProvider.described_mock_device_runs_through_the_normal_managed_call`、`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects`、`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval` |

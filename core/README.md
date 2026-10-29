@@ -26,7 +26,7 @@ kernel → work → {authority, resources, knowledge} → catalog → durability
 | `knowledge` | `observation/`：本次启动的 Host/Task scoped 观测、有限租期、有效期与依赖身份，不做采集 I/O（ADR-0050、0063）；`memory/`：私有记忆事实、命名空间、正文与依赖；`context/`：受管理文件内容的发布状态与完整来源（ADR-0060） | M1（`MA-008`） |
 | `catalog` | `catalog_id`：目录 ID 规则；`goal_type/`：GoalType 版本、触发、参数校验与 WorkProfile；`strategy/`：策略注册；`capability/`：能力目录、授权字段与调用契约；`resource/`、`device/`：资源与设备/组件描述；`provider/`、`binding/`：Provider 与绑定；`execution/`：执行端与执行绑定；`observation/`：观测来源（ADR-0029、ADR-0044～0050） | M1（`MA-004`） |
 | `durability` | `batch/`：批次、记录 flags、记录类型登记、提交连续性及 writer fence 扫描；`journal/`：有界日志环；`snapshot/`：静态快照头部/尾标记及 CRC。只提供持久机制，不理解工作领域，不选择 Host，也不编排领域恢复次序（ADR-0016、0026、0027、0051） | M1（`MA-005`） |
-| `foundation` | `crc32`：可跨页累计的 CRC-32/ISO-HDLC；`little_endian.h`：定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器；`transition_stamp.h`；`bounded_array.h`：调用方内存上的有界数组。状态码仍只在公开头文件 `include/ayni/ayni.h` 定义 | M1（`MA-005`） |
+| `foundation` | `crc32`：可跨页累计的 CRC-32/ISO-HDLC；`little_endian.h`：定长小端读写；`kernel_id.h`：带启动代际的 ID 与分配器；`transition_stamp.h`；`bounded_array.h`：调用方内存上的有界数组；`utf8`：Unicode scalar UTF-8 校验，公开纯函数 `ayni_validate_utf8` 与内部消费者共用同一规则（ADR-0082）。状态码仍只在公开头文件 `include/ayni/ayni.h` 定义 | M1（`MA-005`） |
 
 模块在有源文件时才建立构建目标，避免空目标给人“已实现”的印象。`foundation` 承载 ID、时间、有界容器等内部类型；对外状态码仍以公开头文件为唯一来源，不在 Core 内复制一份。
 

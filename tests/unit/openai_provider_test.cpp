@@ -156,6 +156,18 @@ TEST_F(OpenaiProvider, text_only_requests_need_no_usage_port) {
     EXPECT_EQ(server->request().find("\"tools\":"), std::string::npos);
     EXPECT_EQ(usage_lookups, 0U);
 }
+// C-USAGE-001: absence depends on the actual tool view, not the result format.
+TEST_F(OpenaiProvider, tool_capable_requests_without_tools_need_no_usage_port) {
+    usage_available = false;
+    offer_tools = false;
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_EQ(server->request().find("\"tools\":"), std::string::npos);
+    EXPECT_EQ(usage_lookups, 0U);
+}
 TEST_F(OpenaiProvider, missing_exact_usage_is_rejected_before_http) {
     usage_status = AYNI_NOT_FOUND;
     start(text_reply);
@@ -521,6 +533,30 @@ TEST_F(OpenaiProvider, full_provider_queue_preserves_the_accepted_request) {
     wait_done();
     EXPECT_EQ(work.task(work.goal(first).last_task_id).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(server->requests(), 1U);
+}
+// C-USAGE-001: malformed supplied ports fail at configure, before key lookup or I/O.
+TEST(OpenaiConfiguration, rejects_malformed_present_usage_ports_before_initialization) {
+    Config config;
+    config.base_url = "https://example.com";
+    config.model = "fixture";
+    config.key_environment = "AYNI_PROTOCOL_MISSING_KEY";
+    const auto lookup =
+        +[](void *, const ayni_tool_v1 *, ayni_tool_usage_v1 *) { return AYNI_NOT_FOUND; };
+    const ayni_tool_usage_port_v1 ports[] = {
+        {sizeof(ayni_tool_usage_port_v1) - 1, 0, nullptr, lookup},
+        {sizeof(ayni_tool_usage_port_v1) + 1, 0, nullptr, lookup},
+        {sizeof(ayni_tool_usage_port_v1), 1, nullptr, lookup},
+        {sizeof(ayni_tool_usage_port_v1), 0, nullptr, nullptr},
+    };
+    Provider provider;
+    for (const auto &port : ports) {
+        config.tool_usage = port;
+        EXPECT_EQ(provider.configure(config), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(provider.pending(), 0U);
+    }
+    // An absent port is valid configuration; the missing key is then reported.
+    config.tool_usage = {};
+    EXPECT_EQ(provider.configure(config), AYNI_NOT_READY);
 }
 TEST(OpenaiConfiguration, rejects_unsafe_urls_and_missing_key_without_starting_io) {
     Config config;

@@ -2,8 +2,9 @@
 // requirements, create, lifecycle and kernel info queries, start, step,
 // shutdown, destroy, completion and event posting. They check arguments and
 // struct sizes; lifecycle semantics live in kernel_lifecycle.cpp. The work
-// model's entry points are in work_api.cpp. Everything else in the planned
-// API (include/ayni/draft/) has no symbol yet.
+// model's entry points are in work_api.cpp; other implemented entry points
+// live in the corresponding files in this directory. The remaining Host
+// trace draft (include/ayni/draft/host_v1.h) has no symbols yet.
 
 #include "catalog/abi_checks.h"
 #include "catalog/catalog_id.h"
