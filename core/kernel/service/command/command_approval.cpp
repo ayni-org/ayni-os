@@ -1,7 +1,7 @@
 #include "kernel/service/command/command_approval.h"
 
 #include "authority/grant/grant_rules.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::kernel {
 namespace {
@@ -44,7 +44,7 @@ ayni_status_t encode_approval_command(const ApprovalCommand &input, uint8_t *buf
     }
     const auto &approval = input.approval;
     const auto &create = approval.original;
-    durability::BodyWriter writer(buffer, needed);
+    foundation::BodyWriter writer(buffer, needed);
     writer.u32(AYNI_INTENT_GOAL_APPROVE);
     writer.u32(input.expected_revision);
     writer.u64(approval.goal_id);
@@ -66,7 +66,7 @@ bool read_approval_command(ayni_bytes_v1 bytes, ApprovalCommand &out) {
         bytes.size > approval_command_max_bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX)) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     if (reader.u32() != AYNI_INTENT_GOAL_APPROVE) {
         return false;
     }

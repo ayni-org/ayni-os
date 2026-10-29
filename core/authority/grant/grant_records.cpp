@@ -1,8 +1,9 @@
 #include "authority/grant/grant_records.h"
 
 #include "authority/scope/scope.h"
-#include "durability/batch/record_body.h"
+#include "catalog/capability/business_encoding.h"
 #include "foundation/kernel_id.h"
+#include "foundation/record_body.h"
 
 namespace ayni::authority {
 namespace {
@@ -12,7 +13,7 @@ constexpr uint32_t created_stamp_at = 0;
 constexpr uint32_t last_stamp_at = created_stamp_at + stamp_size;
 constexpr uint32_t revision_at = last_stamp_at + stamp_size;
 constexpr uint32_t lifecycle_at = revision_at + sizeof(uint32_t);
-// records.md: schema 3 snapshot v2 always includes the complete cleanup tail.
+// records.md: schema 4 snapshot v2 always includes the complete cleanup tail.
 constexpr uint32_t revoker_at = lifecycle_at + sizeof(uint32_t);
 constexpr uint32_t cleanup_after_at = revoker_at + sizeof(uint64_t);
 constexpr uint32_t cleanup_through_at = cleanup_after_at + sizeof(uint64_t);
@@ -55,21 +56,31 @@ bool valid_grant_record(const GrantRecord &record) {
         (record.replaced_grant_id != 0U && (!foundation::is_kernel_id(record.replaced_grant_id) ||
                                             record.replaced_grant_id == record.grant_id)) ||
         grant.source_domain.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
-        record.scope.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX) {
+        record.scope.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
+        grant.business_contract.size > AYNI_BUSINESS_CONTRACT_BYTES_MAX ||
+        (grant.business_contract.size != 0U && grant.business_contract.data == nullptr)) {
         return false;
     }
     const auto covered = covers(grant.source_domain, grant.source_domain, record.scope);
-    return covered.status == AYNI_OK && covered.covered;
+    if (covered.status != AYNI_OK || !covered.covered) {
+        return false;
+    }
+    if (grant.business_contract.size != 0U) {
+        catalog::DecodedBusiness proof;
+        return catalog::decode_business(grant.source_domain, grant.business_contract, proof) ==
+               AYNI_OK;
+    }
+    return true;
 }
 
 uint32_t grant_record_size(const Grant &grant) {
     return grant_record_fixed_size + grant.capability_id.size() + grant.source_domain_size +
-           grant.scope_size;
+           grant.scope_size + grant.business_contract_size;
 }
 
 void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
-                        uint8_t *body) {
-    durability::BodyWriter writer(body, grant_record_size(grant));
+                        ayni_bytes_v1 business, uint8_t *body) {
+    foundation::BodyWriter writer(body, grant_record_size(grant));
     writer.u64(grant.grant_id);
     writer.u64(grant.replaced_grant_id);
     writer.u64(grant.subject_instance_id);
@@ -85,6 +96,7 @@ void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 
     writer.bytes(domain.data, domain.size);
     writer.bytes(scope.data, scope.size);
     writer.u64(grant.bound_goal_id);
+    writer.bytes(business.data, business.size);
 }
 
 // Current creation has one complete body for ordinary and Goal-bound facts.
@@ -92,7 +104,7 @@ bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
     if (body == nullptr || size < grant_record_fixed_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     GrantRecord record{};
     record.grant_id = reader.u64();
     record.replaced_grant_id = reader.u64();
@@ -118,6 +130,7 @@ bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
     const uint8_t *scope = reader.bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX, scope_size);
     record.scope = {scope, scope_size};
     record.grant.bound_goal_id = reader.u64();
+    record.grant.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
     if (!reader.ok() || delegation > 1U || !valid_grant_record(record)) {
         return false;
     }
@@ -126,7 +139,7 @@ bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
 }
 
 void write_grant_state_record(const Grant &grant, uint8_t *body) {
-    durability::BodyWriter writer(body, grant_state_record_size);
+    foundation::BodyWriter writer(body, grant_state_record_size);
     writer.u64(grant.grant_id);
     writer.u32(grant.revision);
     writer.u32(grant.lifecycle);
@@ -139,7 +152,7 @@ bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecor
     if (body == nullptr || size != grant_state_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     GrantStateRecord record{reader.u64(), reader.u32(), reader.u32(), reader.u64()};
     const bool revoked = record.lifecycle == AYNI_GRANT_REVOKED;
     if (!reader.ok() || !foundation::is_kernel_id(record.grant_id) ||
@@ -159,8 +172,8 @@ uint32_t grant_snapshot_record_size(const Grant &grant) {
 }
 
 void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
-                                 uint8_t *body) {
-    write_grant_record(grant, domain, scope, body);
+                                 ayni_bytes_v1 business, uint8_t *body) {
+    write_grant_record(grant, domain, scope, business, body);
     uint8_t *tail = body + grant_record_size(grant);
     write_stamp(grant.created_stamp, tail + created_stamp_at);
     write_stamp(grant.stamp, tail + last_stamp_at);
@@ -196,7 +209,7 @@ bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapsho
 }
 
 void write_grant_revocation_record(const GrantTable::RevokePlan &plan, uint8_t *body) {
-    durability::BodyWriter writer(body, grant_revocation_record_size);
+    foundation::BodyWriter writer(body, grant_revocation_record_size);
     writer.u64(plan.grant_id);
     writer.u32(plan.revision);
     writer.u32(plan.effect);
@@ -210,7 +223,7 @@ bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevoc
     if (body == nullptr || size != grant_revocation_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     const GrantRevocationRecord record{reader.u64(), reader.u32(), reader.u32(), reader.u64(),
                                        reader.u64()};
     if (!reader.ok() || !foundation::is_kernel_id(record.grant_id) ||
@@ -234,7 +247,7 @@ bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevoc
 }
 
 void write_grant_revocation_progress_record(const GrantTable::CleanupPlan &plan, uint8_t *body) {
-    durability::BodyWriter writer(body, grant_revocation_progress_record_size);
+    foundation::BodyWriter writer(body, grant_revocation_progress_record_size);
     writer.u64(plan.root_grant_id);
     writer.u64(plan.after_grant_id);
     writer.u64(plan.through_grant_id);
@@ -247,7 +260,7 @@ bool read_grant_revocation_progress_record(const uint8_t *body, uint32_t size,
     if (body == nullptr || size != grant_revocation_progress_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     const GrantRevocationProgressRecord record{reader.u64(), reader.u64(), reader.u64()};
     if (!reader.ok() || !foundation::is_kernel_id(record.root_grant_id) ||
         !foundation::is_kernel_id(record.after_grant_id) ||

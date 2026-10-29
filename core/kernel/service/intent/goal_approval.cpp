@@ -61,7 +61,8 @@ authority::NewGrant grant_for(const GoalApproval &request, const work::GoalRequi
             request.lifetime,
             request.duration_us,
             0,
-            request.goal_id};
+            request.goal_id,
+            need.business_contract};
 }
 
 // Approval does not repair a changed parent or old dependency. It also cannot
@@ -81,7 +82,8 @@ authority::GrantCheck check_context(const WorkModel &model, const ApprovalPlan &
         const auto entry = model.catalogs.capabilities.find(
             {need.capability_id.data(), need.capability_id.size()}, need.capability_version);
         if (entry.kind != catalog::CapabilityRegistry::Lookup::Kind::found ||
-            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain)) {
+            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain) ||
+            !model.catalogs.capabilities.matches_business(entry.index, need.business_contract)) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_CATALOG_CHANGED};
         }
         if (need.dependency.grant_id != 0U) {

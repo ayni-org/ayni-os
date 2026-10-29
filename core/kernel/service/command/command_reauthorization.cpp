@@ -35,7 +35,7 @@ ayni_status_t encode_reauthorization_command(const ReauthorizationCommand &input
     if (body == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    durability::BodyWriter writer(body, needed);
+    foundation::BodyWriter writer(body, needed);
     writer.u32(AYNI_INTENT_GOAL_REAUTHORIZE);
     writer.u32(input.expected_revision);
     writer.u64(input.reauthorization.goal_id);
@@ -55,7 +55,7 @@ bool read_reauthorization_command(ayni_bytes_v1 bytes, ReauthorizationCommand &o
         bytes.size > reauthorization_command_max_bytes(AYNI_GOAL_PARAMETER_MAX_BYTES_MAX)) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     if (reader.u32() != AYNI_INTENT_GOAL_REAUTHORIZE) {
         return false;
     }

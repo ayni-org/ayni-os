@@ -32,7 +32,8 @@ uint32_t capacity(const KernelCapacities &c) {
     return c.grant_capacity;
 }
 uint32_t record_max(const KernelCapacities &c) {
-    return authority::grant_snapshot_record_max(c.authority_scope_max_bytes);
+    return authority::grant_snapshot_record_max(c.authority_scope_max_bytes,
+                                                c.business_contract_max_bytes);
 }
 uint32_t journal_max(const KernelCapacities &capacities) {
     uint32_t bytes = 0;
@@ -42,7 +43,8 @@ uint32_t journal_max(const KernelCapacities &capacities) {
                                       ? capacities.goal_requirement_capacity
                                       : capacities.grant_capacity;
     bytes += batch_grants *
-             record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes));
+             record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes,
+                                                      capacities.business_contract_max_bytes));
     bytes += capacities.grant_capacity * record_bytes(authority::grant_state_record_size);
     bytes += record_bytes(authority::grant_revocation_record_size);
     bytes += record_bytes(authority::grant_state_record_size);
@@ -119,7 +121,8 @@ class GrantJournal {
             }
             if (created) {
                 authority::write_grant_record(grant, model_.grants.source_domain(index),
-                                              model_.grants.scope(index), at);
+                                              model_.grants.scope(index),
+                                              model_.grants.business_contract(index), at);
             } else {
                 authority::write_grant_state_record(grant, at);
             }
@@ -168,7 +171,8 @@ StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
 void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
     const auto index = cursor.index;
     authority::write_grant_snapshot_record(
-        model.grants.at(index), model.grants.source_domain(index), model.grants.scope(index), body);
+        model.grants.at(index), model.grants.source_domain(index), model.grants.scope(index),
+        model.grants.business_contract(index), body);
 }
 
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,

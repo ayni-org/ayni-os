@@ -8,7 +8,7 @@
 // entry here. Journal restore stays in WorkReplay, which owns the pairing of
 // a batch's records across stores and commands.
 //
-// Every current family requires REQUIRED in schema 3 (ADR-0082). Nothing
+// Every current family requires REQUIRED in schema 4 (ADR-0082). Nothing
 // registers at run time.
 
 #ifndef AYNI_CORE_KERNEL_PERSISTENCE_PERSISTENT_STORE_H
@@ -70,7 +70,7 @@ enum class StorePosition { instances, before_work, goals, tasks, after_work, aft
 
 // One registered record type. Its current body is selected by storage context.
 struct StoreKind {
-    uint16_t type; // records.md identity, nonzero; schema 3 always requires REQUIRED.
+    uint16_t type; // records.md identity, nonzero; schema 4 always requires REQUIRED.
 };
 
 // Owns one compile-time storage adapter; WorkReplay retains cross-store journal proofs.
@@ -80,7 +80,7 @@ struct PersistentStore {
     uint32_t kind_count;    // Positive family length; no runtime registration.
     // Whether this build reads this type/version in the given storage context.
     bool (*knows)(uint16_t type, uint16_t version, WorkRecordContext context);
-    StorePosition position; // Placement relative to work/cleanup, preserving schema 3 order.
+    StorePosition position; // Placement relative to work/cleanup, preserving schema 4 order.
     // Rows these capacities retain; zero disables snapshot rows.
     uint32_t (*capacity)(const KernelCapacities &capacities);
     // Largest snapshot body, excluding the envelope.

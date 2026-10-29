@@ -20,8 +20,9 @@ uint64_t StorageBudget::log_reserve(uint32_t storage_buffer_bytes, uint32_t batc
 }
 
 uint32_t StorageBudget::log_max_default(uint32_t storage_buffer_bytes) {
-    // No overflow: a buffer is at most AYNI_STORAGE_BUFFER_BYTES_MAX, and
-    // the default one for the capacity maxima is smaller still.
+    // Both explicit and automatically derived schema-4 maxima fit uint32_t
+    // after this multiplication. Automatic sizing may exceed the explicit input
+    // limit when complete proof budgets are large (records.md / ADR-0084).
     return static_cast<uint32_t>(
         storage_max(uint64_t{log_max_buffers} * storage_buffer_bytes, log_max_floor_bytes));
 }

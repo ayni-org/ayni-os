@@ -1,5 +1,6 @@
 #include "catalog/execution/execution_registry.h"
 #include "catalog/abi_checks.h"
+#include "catalog/capability/business_encoding.h"
 #include <cstring>
 namespace ayni::catalog {
 namespace {
@@ -256,6 +257,31 @@ ayni_status_t ExecutionRegistry::validate_all(const BindingRegistry &bindings,
             executor.poll_period_us >= spec.lease_us ||
             spec.max_command_age_us > executor.command_age_max_us) {
             return AYNI_INVALID_ARGUMENT;
+        }
+        if (contract.business_contract.size != 0U) {
+            DecodedBusiness proof;
+            const auto checked = decode_business(capabilities.domain_view(capability.index),
+                                                 contract.business_contract, proof);
+            if (checked != AYNI_OK) {
+                return checked;
+            }
+            for (uint32_t field = 0; field < spec.field_count; ++field) {
+                const auto &control = spec.fields[field];
+                for (uint32_t path = 0; path < proof.count; ++path) {
+                    const auto &projection = proof.projections[path];
+                    if (projection.field_id != control.minimum_field &&
+                        projection.field_id != control.maximum_field) {
+                        continue;
+                    }
+                    for (uint32_t depth = 0; depth < projection.path_count; ++depth) {
+                        // ADR-0084: one permit cannot silently select the first
+                        // element of a multi-value physical control process.
+                        if (projection.path[depth] == AYNI_PROJECTION_LIST_ITEM) {
+                            return AYNI_UNSUPPORTED;
+                        }
+                    }
+                }
+            }
         }
         std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> minima{};
         std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> maxima{};

@@ -10,7 +10,7 @@ namespace ayni::kernel {
 std::size_t CallRuntime::storage_size(Limits limits) {
     return limits.capacity == 0U
                ? 0U
-               : sizeof(Slot) * limits.capacity + limits.input_bytes + limits.result_bytes;
+               : sizeof(Slot) * limits.capacity + limits.input_bytes + limits.result_bytes * 2U;
 }
 
 CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Catalogs &catalogs,
@@ -25,6 +25,7 @@ CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Ca
       staging_(limits.capacity == 0U ? nullptr
                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
       receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes),
+      normalized_(limits.capacity == 0U ? nullptr : receipt_ + limits.result_bytes),
       control_(work, resources, permits, observations, executors, attempts, host,
                {this, transport_holds, transport_retiring, transport_retire}) {
     work_.calls.set_runtime_retention(this, runtime_retains);
@@ -271,7 +272,8 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
         // Only a TOOL_CALLS model attempt may post a list, within its own result bound.
         const auto &contract = work_.calls.contract(index);
         const uint32_t written_limit =
-            contract.result_format == catalog::call_tool_calls_result_format
+            (contract.result_format == catalog::call_tool_calls_result_format ||
+             contract.result_format == catalog::call_value_result_format)
                 ? contract.result_text_limit
                 : 0U;
         if (mailbox_.reserve(attempt, reservation, written_limit) != AYNI_OK) {

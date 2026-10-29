@@ -1,5 +1,7 @@
 #include "work/call/call_table.h"
 
+#include "catalog/capability/business_encoding.h"
+#include "catalog/capability/value_validation.h"
 #include "foundation/kernel_id.h"
 
 #include <cstring>
@@ -99,12 +101,56 @@ bool action_matches(const CallRecord &record) {
     return has_attempt || (action.phase == ActionPhase::cancelled &&
                            action.evidence == ActionEvidence::local_non_delivery);
 }
+// Saved business interpretation includes exact execution, normalized defaults
+// and a present typed result unless its body was explicitly made unavailable.
+bool valid_business_content(const CallRecord &record) {
+    const auto &state = record.state;
+    if ((record.contract.input_format == catalog::call_value_input_format ||
+         record.contract.result_format == catalog::call_value_result_format) &&
+        record.contract.business_contract.size == 0U) {
+        return false;
+    }
+    if (record.contract.business_contract.size != 0U) {
+        catalog::DecodedBusiness proof;
+        if (catalog::decode_business(record.domain, record.contract.business_contract, proof) !=
+                AYNI_OK ||
+            !catalog::same_call_contract(record.contract, proof.execution)) {
+            return false;
+        }
+        if (!state.content_erased && record.result_kind == CallResultKind::text &&
+            (state.outcome == AYNI_CALL_COMPLETED || record.result.size != 0U)) {
+            ayni_value_node_v1 text{};
+            text.kind = AYNI_VALUE_TEXT;
+            text.subtree_end = 1;
+            text.value.text = record.result;
+            if (!catalog::scalar_matches(proof.result.nodes[0], text)) {
+                return false;
+            }
+        }
+        if (record.result_kind == CallResultKind::value) {
+            catalog::DecodedValue result;
+            if (catalog::read_normalized_value(
+                    proof.result.view(),
+                    {reinterpret_cast<const uint8_t *>(record.result.data), record.result.size},
+                    result) != AYNI_OK) {
+                return false;
+            }
+        }
+        if (!state.content_erased && state.outcome == AYNI_CALL_COMPLETED &&
+            record.contract.result_format == catalog::call_value_result_format &&
+            record.result_kind != CallResultKind::value &&
+            record.result_kind != CallResultKind::unavailable) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // An explicit privacy record removes input validation material; it must contain no body and
 // retains only independently valid schema/execution facts. Old readers refuse this record version.
 bool valid_content(const CallRecord &record, CallInputView &input) {
     if (!record.state.content_erased) {
-        return read_call_input(record.domain, record.input, record.contract.input_text_limit,
-                               input) == AYNI_OK;
+        return read_call_input(record.domain, record.input, record.contract, input) == AYNI_OK;
     }
     const auto &erased = *record.state.content_erased;
     if (record.input.size != 0 || record.result.size != 0 ||
@@ -213,7 +259,7 @@ bool CallTable::valid_record(const CallRecord &record) {
             (record.identity.destination.size() != 0U) ||
         catalog::normalize_call_contract(record.contract, normalized) != AYNI_OK ||
         !catalog::same_call_contract(record.contract, normalized) ||
-        !valid_content(record, input) ||
+        !valid_business_content(record) || !valid_content(record, input) ||
         check_body(record.contract, record.result, record.result_kind) != AYNI_OK ||
         (record.result_kind == CallResultKind::tool_calls &&
          state.outcome != AYNI_CALL_COMPLETED) ||
@@ -225,6 +271,9 @@ bool CallTable::valid_record(const CallRecord &record) {
          (state.cancel_cause == CallCancelCause::none || state.attempt.request_id == 0U ||
           (state.cancel_result != AYNI_CALL_CANNOT_CANCEL &&
            state.cancel_result != AYNI_CALL_CANCEL_UNKNOWN)))) {
+        return false;
+    }
+    if (record.result_kind == CallResultKind::unavailable && state.outcome == 0U) {
         return false;
     }
     if (!valid_subscription_record(record)) {
@@ -287,7 +336,8 @@ void CallTable::copy_bodies(uint32_t index, ayni_bytes_v1 domain_body, ayni_byte
 // requires a creation row before subsequent updates and checks batch pairing.
 ayni_status_t CallTable::restore_validated(const CallRecord &record) {
     if (record.domain.size > limits_.domain_bytes || record.input.size > limits_.input_bytes ||
-        record.contract.result_text_limit > limits_.result_bytes) {
+        record.contract.result_text_limit > limits_.result_bytes ||
+        record.contract.business_contract.size > limits_.business_bytes) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     uint32_t index = 0;

@@ -1,10 +1,10 @@
 #include "work/task/task_authority_records.h"
 
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 namespace ayni::work {
 
 void write_task_authority_record(const TaskAuthorityRecord &record, uint8_t *body) {
-    durability::BodyWriter writer(body, task_authority_record_max(record.count));
+    foundation::BodyWriter writer(body, task_authority_record_max(record.count));
     writer.u64(record.task_id);
     writer.u64(record.ceiling.goal_id);
     writer.u64(record.ceiling.commit_seq);
@@ -24,7 +24,7 @@ bool read_task_authority_record(const uint8_t *body, uint32_t size, TaskAuthorit
     if (body == nullptr || size < task_authority_record_fixed_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     TaskAuthorityRecord record{};
     record.task_id = reader.u64();
     record.ceiling = {reader.u64(), reader.u64()};

@@ -43,7 +43,8 @@ ayni_status_t emit_requirement(void *ctx, const ayni_goal_requirement_v1 *input)
     const auto &registered = exporting.model.catalogs.capabilities.at(capability.index);
     result.status = exporting.model.goal_authority.stage(
         exporting.record, registered.id, registered.version,
-        exporting.model.catalogs.capabilities.domain_view(capability.index), input->scope);
+        exporting.model.catalogs.capabilities.domain_view(capability.index), input->scope,
+        exporting.model.catalogs.capabilities.business_view(capability.index));
     result.reason = result.status == AYNI_CAPACITY_EXCEEDED  ? AYNI_REASON_GOAL_REQUIREMENT_CAPACITY
                     : result.status == AYNI_INVALID_ARGUMENT ? AYNI_REASON_GOAL_REQUIREMENT_INPUT
                                                              : AYNI_REASON_NONE;
@@ -123,9 +124,9 @@ authority::GrantCheck WorkModel::prepare_goal_authority(const catalog::GoalType 
             if (grant.subject_instance_id != create.owner_instance_id ||
                 (requirement.dependency.grant_id != 0U &&
                  grant.grant_id >= requirement.dependency.grant_id) ||
-                !grants.covers_saved_scope(at, requirement.capability_id,
-                                           requirement.capability_version,
-                                           requirement.source_domain, requirement.scope) ||
+                !grants.covers_saved_scope(
+                    at, requirement.capability_id, requirement.capability_version,
+                    requirement.source_domain, requirement.scope, requirement.business_contract) ||
                 check_grant(at, now_us, durable_seq).status != AYNI_OK) {
                 continue;
             }

@@ -8,16 +8,18 @@ namespace ayni::kernel {
 namespace {
 
 bool same_bytes(ayni_bytes_v1 left, ayni_bytes_v1 right) {
-    return left.size == right.size && std::memcmp(left.data, right.data, left.size) == 0;
+    return left.size == right.size &&
+           (left.size == 0U || std::memcmp(left.data, right.data, left.size) == 0);
 }
 
 // A newly issued Grant is exactly the saved item, not a wider covering Grant.
 template <typename Grant>
 bool matches_requirement(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
-                         const work::GoalRequirement &need) {
+                         ayni_bytes_v1 business, const work::GoalRequirement &need) {
     return grant.capability_id.equals({need.capability_id.data(), need.capability_id.size()}) &&
            grant.capability_version == need.capability_version &&
-           same_bytes(domain, need.source_domain) && same_bytes(scope, need.scope);
+           same_bytes(domain, need.source_domain) && same_bytes(scope, need.scope) &&
+           same_bytes(business, need.business_contract);
 }
 
 } // namespace
@@ -109,8 +111,9 @@ bool WorkReplay::pair_approval_grant(const authority::GrantRecord &record,
         const auto &need = original.requirements[index];
         if (need.dependency.grant_id == 0U) {
             ++missing;
-            matches = matches || matches_requirement(record.grant, record.grant.source_domain,
-                                                     record.scope, need);
+            matches =
+                matches || matches_requirement(record.grant, record.grant.source_domain,
+                                               record.scope, record.grant.business_contract, need);
         }
     }
     if (!matches || pair.count >= missing) {
@@ -198,9 +201,10 @@ bool WorkReplay::pair_approval_metadata(uint32_t index, const work::GoalAuthorit
         uint32_t grant_index = 0;
         if (after.revision != authority::grant_active_revision ||
             !model_.grants.find(after.grant_id, grant_index) ||
-            !matches_requirement(model_.grants.at(grant_index),
-                                 model_.grants.source_domain(grant_index),
-                                 model_.grants.scope(grant_index), original.requirements[item])) {
+            !matches_requirement(
+                model_.grants.at(grant_index), model_.grants.source_domain(grant_index),
+                model_.grants.scope(grant_index), model_.grants.business_contract(grant_index),
+                original.requirements[item])) {
             return false;
         }
         uint32_t at = 0;
@@ -307,7 +311,7 @@ bool WorkReplay::matches_goal_approval(const CommandMapping &mapping, ayni_bytes
             grant.lifetime != request.approval.lifetime ||
             grant.duration_us != request.approval.duration_us ||
             !matches_requirement(grant, model_.grants.source_domain(at), model_.grants.scope(at),
-                                 record.requirements[item])) {
+                                 model_.grants.business_contract(at), record.requirements[item])) {
             return false;
         }
     }
@@ -328,8 +332,8 @@ bool WorkReplay::matches_goal_selection(uint32_t goal_index, const work::GoalReq
            (grant.bound_goal_id == 0U || grant.bound_goal_id == goal.goal_id) &&
            (issued_here || model_.grants.active_at(grant_index, admission_seq)) &&
            model_.grants.covers_saved_scope(grant_index, need.capability_id,
-                                            need.capability_version, need.source_domain,
-                                            need.scope);
+                                            need.capability_version, need.source_domain, need.scope,
+                                            need.business_contract);
 }
 
 bool WorkReplay::saved_references_consistent(

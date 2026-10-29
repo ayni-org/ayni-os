@@ -2,7 +2,7 @@
 #ifndef AYNI_CORE_WORK_EXECUTION_FACT_H
 #define AYNI_CORE_WORK_EXECUTION_FACT_H
 #include "catalog/execution/execution_registry.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 #include "foundation/transition_stamp.h"
 #include <optional>
 namespace ayni::work {
@@ -38,7 +38,7 @@ constexpr uint32_t execution_field_fixed_bytes = 16;
 constexpr uint32_t execution_dependency_fixed_bytes = 40;
 uint32_t execution_record_max();
 uint32_t execution_record_size(const ExecutionFact &fact);
-void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer);
-bool read_execution(durability::BodyReader &reader, ExecutionFact &out);
+void write_execution(const ExecutionFact &fact, foundation::BodyWriter &writer);
+bool read_execution(foundation::BodyReader &reader, ExecutionFact &out);
 } // namespace ayni::work
 #endif

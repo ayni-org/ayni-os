@@ -1,11 +1,11 @@
 #include "work/agent/agent_records.h"
 
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::work {
 
 void write_instance_record(const AgentInstance &instance, uint8_t *body) {
-    durability::BodyWriter writer(body, instance_record_size);
+    foundation::BodyWriter writer(body, instance_record_size);
     writer.u64(instance.agent_id);
     writer.u64(instance.instance_id);
     writer.u32(instance.revision);
@@ -13,7 +13,7 @@ void write_instance_record(const AgentInstance &instance, uint8_t *body) {
 }
 
 bool read_instance_record(const uint8_t *body, uint32_t size, InstanceRecord &out) {
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     out.agent_id = reader.u64();
     out.instance_id = reader.u64();
     out.revision = reader.u32();

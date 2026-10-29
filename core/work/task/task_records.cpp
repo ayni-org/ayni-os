@@ -4,7 +4,7 @@ namespace ayni::work {
 
 // Calendar and source markers are current facts, not version-selected extensions.
 void write_task_record(const Task &task, uint8_t *body, bool provenance) {
-    durability::BodyWriter writer(body, task_record_size);
+    foundation::BodyWriter writer(body, task_record_size);
     writer.u64(task.task_id);
     writer.u64(task.goal_id);
     writer.u64(task.owner_instance_id);
@@ -22,7 +22,7 @@ bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
     if (body == nullptr || size != task_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     TaskRecord record{};
     record.task_id = reader.u64();
     record.task.goal_id = reader.u64();
@@ -54,7 +54,7 @@ bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
 
 void write_task_snapshot_record(const Task &task, uint8_t *body, bool provenance) {
     write_task_record(task, body, provenance);
-    durability::BodyWriter writer(body + task_record_size, task_snapshot_tail_size);
+    foundation::BodyWriter writer(body + task_record_size, task_snapshot_tail_size);
     writer.u64(task.created_transition_id);
     writer.u64(task.commit_seq);
     writer.u64(task.steps_seq);
@@ -67,7 +67,7 @@ bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotR
         !read_task_record(body, task_record_size, out.creation)) {
         return false;
     }
-    durability::BodyReader reader(body + task_record_size, task_snapshot_tail_size);
+    foundation::BodyReader reader(body + task_record_size, task_snapshot_tail_size);
     out.stamp = {reader.u64(), reader.u64()};
     out.steps_seq = reader.u64();
     out.checkpoint_seq = reader.u64();
@@ -77,7 +77,7 @@ bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotR
 
 // One full state carries runtime/call/wait facts plus a separate transition proof.
 void write_task_state_record(const Task &task, uint8_t *body, TaskRecordChange change) {
-    durability::BodyWriter writer(body, task_state_record_size);
+    foundation::BodyWriter writer(body, task_state_record_size);
     writer.u64(task.task_id);
     writer.u32(task.lifecycle);
     writer.u32(task.revision);
@@ -104,7 +104,7 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     if (body == nullptr || size != task_state_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     TaskStateRecord record{};
     record.task_id = reader.u64();
     record.state.lifecycle = reader.u32();
@@ -149,7 +149,7 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
 uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range) {
     uint32_t size = task_steps_record_fixed_size;
     for (uint32_t step = range.first; step < range.first + range.count; ++step) {
-        size += durability::string_field_size(tasks.step(index, step).size());
+        size += foundation::string_field_size(tasks.step(index, step).size());
     }
     return size;
 }
@@ -157,7 +157,7 @@ uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStep
 void write_task_steps_record(const TaskTable &tasks, uint32_t index, TaskStepRange range,
                              uint8_t *body) {
     const Task &task = tasks.at(index);
-    durability::BodyWriter writer(body, task_steps_record_size(tasks, index, range));
+    foundation::BodyWriter writer(body, task_steps_record_size(tasks, index, range));
     writer.u64(task.task_id);
     writer.u32(range.first);
     writer.u32(range.count);
@@ -174,7 +174,7 @@ uint32_t task_checkpoint_record_size(const Task &task) {
 
 void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body,
                                   bool provenance) {
-    durability::BodyWriter writer(body, task_checkpoint_record_size(task));
+    foundation::BodyWriter writer(body, task_checkpoint_record_size(task));
     writer.u64(task.task_id);
     writer.u32(task.checkpoint_writer_version);
     writer.bytes(task.checkpoint_writer_id.data(), task.checkpoint_writer_id.size());
@@ -183,7 +183,7 @@ void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t
 }
 
 bool read_task_checkpoint_record(const uint8_t *body, uint32_t size, TaskCheckpointRecord &out) {
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     out.task_id = reader.u64();
     out.writer_version = reader.u32();
     uint32_t id_size = 0;

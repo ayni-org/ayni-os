@@ -28,8 +28,9 @@ constexpr uint32_t call_effect_physical = AYNI_CALL_EFFECT_PHYSICAL;
 constexpr uint32_t call_effect_mask =
     call_effect_egress | call_effect_billing | call_effect_notification | call_effect_physical;
 constexpr uint32_t call_text_limit_max = AYNI_CALL_TEXT_BYTES_MAX;
-constexpr uint32_t call_fields_text_input_format = AYNI_CALL_INPUT_FIELDS_TEXT;
+constexpr uint32_t call_value_input_format = AYNI_CALL_INPUT_VALUE;
 constexpr uint32_t call_text_result_format = AYNI_CALL_RESULT_TEXT;
+constexpr uint32_t call_value_result_format = AYNI_CALL_RESULT_VALUE;
 // Text or typed tool calls; only nonphysical, non-subscription MODEL contracts.
 constexpr uint32_t call_tool_calls_result_format = AYNI_CALL_RESULT_TOOL_CALLS;
 
@@ -59,13 +60,14 @@ struct CallContract {
     CancelMode cancel;           // Software cancellation is not physical stop confirmation.
     uint32_t dedupe_window_ms;   // Zero means no service-side operation-ID deduplication.
     uint32_t timeout_ms;         // Positive duration, never a saved monotonic timestamp.
-    uint32_t input_format;       // First fields/text representation is 1; unknown rejected.
-    uint32_t result_format;      // Text 1 or text/tool calls 2; unknown rejected.
-    uint32_t input_text_limit;   // Bytes, 0..call_text_limit_max; zero permits only empty text.
-    uint32_t result_text_limit;  // Bytes, also of a tool list; failure does not truncate.
-    uint32_t resource_count;     // Valid prefix of resources, 0..resource_group_max.
+    uint32_t input_format;       // VALUE representation 2; old/unknown formats rejected.
+    uint32_t result_format;      // TEXT 1, MODEL text/tool calls 2, structured VALUE 3.
+    uint32_t input_text_limit;  // Whole encoded business value bytes, 0..AYNI_CALL_INPUT_BYTES_MAX.
+    uint32_t result_text_limit; // Bytes, also of a tool list; failure does not truncate.
+    uint32_t resource_count;    // Valid prefix of resources, 0..resource_group_max.
     std::array<CallResource, resource_group_max> resources; // Copied, sorted by ID.
     std::optional<SubscriptionContract> subscription{}; // Present exactly for subscription form.
+    ayni_bytes_v1 business_contract{}; // Complete original proof, borrowed from this fact's owner.
 };
 
 // One exact capability version's behavior, supplementing its authority domain.
@@ -84,15 +86,23 @@ bool same_call_contract(const CallContract &left, const CallContract &right);
 class CallCapabilityRegistry {
   public:
     static constexpr std::size_t storage_alignment = alignof(CallCapability);
-    static constexpr std::size_t storage_size(uint32_t capacity) {
-        return foundation::BoundedArray<CallCapability>::storage_size(capacity);
+    static constexpr std::size_t storage_size(uint32_t capacity, uint32_t business_bytes = 0) {
+        return foundation::BoundedArray<CallCapability>::storage_size(capacity) +
+               static_cast<std::size_t>(capacity) * business_bytes;
     }
     // Aligned caller arena; null only for zero capacity. No runtime removal.
-    CallCapabilityRegistry(void *storage, uint32_t capacity) : entries_(storage, capacity) {}
+    CallCapabilityRegistry(void *storage, uint32_t capacity, uint32_t business_bytes = 0)
+        : entries_(storage, capacity),
+          proofs_(capacity == 0U
+                      ? nullptr
+                      : static_cast<uint8_t *>(storage) +
+                            foundation::BoundedArray<CallCapability>::storage_size(capacity)),
+          proof_bytes_(business_bytes) {}
     // Copies/canonicalizes on success, no mutation for invalid/duplicate/full input.
     ayni_status_t add(const CallCapability &capability);
     // Input was normalized/decoded in this call; no duplicate semantic validation.
-    ayni_status_t add_validated(const CallCapability &capability);
+    ayni_status_t add_validated(const CallCapability &capability,
+                                const ayni_business_contract_v1 *definition = nullptr);
     // Exact ID/version lookup. Failure leaves index untouched.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;
     // Immutable entry at index < size(), valid until registry destruction.
@@ -102,6 +112,9 @@ class CallCapabilityRegistry {
 
   private:
     foundation::BoundedArray<CallCapability> entries_; // Sole owner of copied call semantics.
+    uint8_t *proofs_; // One independent immutable proof slot per capability; no external pointer
+                      // retained.
+    uint32_t proof_bytes_; // Fixed slot bytes; zero disables business definitions.
 };
 } // namespace ayni::catalog
 #endif

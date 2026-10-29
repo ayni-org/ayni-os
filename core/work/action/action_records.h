@@ -3,8 +3,8 @@
 #ifndef AYNI_CORE_WORK_ACTION_ACTION_RECORDS_H
 #define AYNI_CORE_WORK_ACTION_ACTION_RECORDS_H
 
-#include "durability/batch/record_body.h"
 #include "durability/batch/record_types.h"
+#include "foundation/record_body.h"
 #include "work/action/action_record.h"
 
 namespace ayni::work {
@@ -16,8 +16,8 @@ constexpr uint32_t action_state_record_max_size =
     action_state_record_fixed_size + catalog::CatalogId::max_size;
 
 // Shared three-u64 durable stamp layout, used by Action and enclosing Call records.
-void write_action_stamp(ActionStamp stamp, durability::BodyWriter &writer);
-ActionStamp read_action_stamp(durability::BodyReader &reader);
+void write_action_stamp(ActionStamp stamp, foundation::BodyWriter &writer);
+ActionStamp read_action_stamp(foundation::BodyReader &reader);
 
 // Requires a valid fact; the only variable field is the exact binding ID.
 uint32_t action_state_record_size(const ActionFact &fact);

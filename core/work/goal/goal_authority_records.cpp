@@ -1,6 +1,6 @@
 #include "work/goal/goal_authority_records.h"
 
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::work {
 
@@ -9,7 +9,8 @@ uint32_t goal_authority_record_size(const GoalAuthorityRecord &record) {
     for (uint32_t index = 0; index < record.count; ++index) {
         const auto &requirement = record.requirements[index];
         size += goal_requirement_record_fixed_size + requirement.capability_id.size() +
-                requirement.source_domain.size + requirement.scope.size;
+                requirement.source_domain.size + requirement.scope.size +
+                requirement.business_contract.size;
     }
     return size;
 }
@@ -17,7 +18,7 @@ uint32_t goal_authority_record_size(const GoalAuthorityRecord &record) {
 // One layout serves journal and snapshot; stamps remain explicit so replay
 // can distinguish a full snapshot fact from a mismatched transition batch.
 void write_goal_authority_record(const GoalAuthorityRecord &record, uint8_t *body) {
-    durability::BodyWriter writer(body, goal_authority_record_size(record));
+    foundation::BodyWriter writer(body, goal_authority_record_size(record));
     writer.u64(record.goal_id);
     writer.u64(record.stamp.transition_id);
     writer.u64(record.stamp.commit_seq);
@@ -36,12 +37,13 @@ void write_goal_authority_record(const GoalAuthorityRecord &record, uint8_t *bod
         writer.bytes(requirement.scope.data, requirement.scope.size);
         writer.u64(requirement.dependency.grant_id);
         writer.u32(requirement.dependency.revision);
+        writer.bytes(requirement.business_contract.data, requirement.business_contract.size);
     }
 }
 
 namespace {
 
-bool read_requirement(durability::BodyReader &reader, GoalRequirement &out) {
+bool read_requirement(foundation::BodyReader &reader, GoalRequirement &out) {
     out.capability_version = reader.u32();
     uint32_t size = 0;
     const uint8_t *id = reader.bytes(catalog::CatalogId::max_size, size);
@@ -53,6 +55,7 @@ bool read_requirement(durability::BodyReader &reader, GoalRequirement &out) {
     const uint8_t *scope = reader.bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX, size);
     out.scope = {scope, size};
     out.dependency = {reader.u64(), reader.u32()};
+    out.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
     return true;
 }
 
@@ -64,7 +67,7 @@ bool read_goal_authority_record(const uint8_t *body, uint32_t size, GoalAuthorit
     if (body == nullptr || size < goal_authority_record_fixed_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     GoalAuthorityRecord record{};
     record.goal_id = reader.u64();
     record.stamp = {reader.u64(), reader.u64()};

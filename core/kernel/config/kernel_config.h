@@ -53,6 +53,8 @@ struct KernelCapacities {
     uint32_t memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT; // Exact lineage.
     uint32_t observation_source_capacity = 0;  // Static sources and current-boot samples.
     uint32_t observation_ingress_capacity = 0; // Optional fixed Host sample FIFO.
+    uint32_t business_contract_max_bytes =
+        0; // Bytes per original proof; zero with no call catalogs.
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.

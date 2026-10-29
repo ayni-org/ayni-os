@@ -1,5 +1,7 @@
 #include "kernel/service/execution/execution_control.h"
 
+#include "authority/scope/scope.h"
+#include "catalog/capability/business_encoding.h"
 #include "foundation/deadline.h"
 
 namespace ayni::kernel {
@@ -14,12 +16,59 @@ bool valid_nonce(const ayni_executor_nonce_v1 &nonce, uint64_t control_domain_id
 }
 } // namespace
 
+// Projection rows share this one Scene generation. Control envelope fields are
+// proven fixed at catalog close, but other Scene-limited fields can vary per
+// item, and must not borrow authorization from only the first item (ADR-0084).
+ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding &binding,
+                                                ayni_string_v1 capability, uint32_t version,
+                                                ayni_bytes_v1 domain,
+                                                const catalog::CallContract &contract,
+                                                const work::CallInputView &input,
+                                                uint64_t durable_seq, uint32_t &scene) const {
+    if (contract.input_format != catalog::call_value_input_format) {
+        return work_.scenes.authorize(view(binding.scene), binding.scene_version, capability,
+                                      version, input.arguments, durable_seq, scene);
+    }
+    catalog::DecodedBusiness proof;
+    auto status = catalog::decode_business(domain, contract.business_contract, proof);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    const uint32_t count = catalog::projection_rows(proof.view(), input.value.view());
+    if (count == 0U) {
+        return AYNI_DENIED;
+    }
+    uint32_t selected = 0;
+    for (uint32_t at = 0; at < count; ++at) {
+        catalog::ProjectionRow row;
+        status = catalog::project_row(proof.view(), input.value.view(), at, row);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        std::array<uint8_t, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX> actual{};
+        uint32_t size = 0;
+        status = authority::normalize_request(domain, row.view(), actual.data(),
+                                              static_cast<uint32_t>(actual.size()), size);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        status = work_.scenes.authorize(view(binding.scene), binding.scene_version, capability,
+                                        version, {actual.data(), size}, durable_seq, selected);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    scene = selected;
+    return AYNI_OK;
+}
+
 // Save the exact enabled Scene generation and measured prerequisites alongside
 // the canonical call input. No permit or local nonce is issued during admission.
 authority::GrantCheck
 ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::Binding &binding,
-                          ayni_bytes_v1 arguments, uint64_t now_us, uint64_t durable_seq,
-                          uint64_t task_id, std::optional<work::ExecutionFact> &out_fact) const {
+                          ayni_bytes_v1 domain, const work::CallInputView &input, uint64_t now_us,
+                          uint64_t durable_seq, uint64_t task_id,
+                          std::optional<work::ExecutionFact> &out_fact) const {
     if ((contract.effects & catalog::call_effect_physical) == 0U) {
         return {AYNI_OK, AYNI_REASON_NONE};
     }
@@ -31,8 +80,8 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
     const auto &spec = work_.catalogs.execution.binding(mapping);
     uint32_t scene = 0;
     const auto authorized =
-        work_.scenes.authorize(view(spec.scene), spec.scene_version, view(binding.capability),
-                               binding.capability_version, arguments, durable_seq, scene);
+        authorize_input(spec, view(binding.capability), binding.capability_version, domain,
+                        contract, input, durable_seq, scene);
     if (authorized != AYNI_OK) {
         return {authorized, AYNI_REASON_EXECUTION_SCENE};
     }
@@ -61,7 +110,7 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
             return {status, AYNI_REASON_EXECUTION_OBSERVATION};
         }
     }
-    if (!work::valid_execution(fact, arguments)) {
+    if (!work::valid_execution(fact, input.arguments)) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
     }
     out_fact = fact;
@@ -84,14 +133,14 @@ bool ExecutionControl::allowed(uint32_t index, uint64_t now_us, uint64_t durable
     }
     work::CallInputView input{};
     if (work::read_call_input(work_.calls.domain(index), work_.calls.input(index),
-                              work_.calls.contract(index).input_text_limit, input) != AYNI_OK) {
+                              work_.calls.contract(index), input) != AYNI_OK) {
         return false;
     }
     uint32_t scene = 0;
     uint32_t state = 0;
-    if (work_.scenes.authorize(view(fact.binding.scene), fact.binding.scene_version,
-                               view(identity.capability_id), identity.capability_version,
-                               input.arguments, durable_seq, scene) != AYNI_OK ||
+    if (authorize_input(fact.binding, view(identity.capability_id), identity.capability_version,
+                        work_.calls.domain(index), work_.calls.contract(index), input, durable_seq,
+                        scene) != AYNI_OK ||
         !work_.scenes.find_state(view(fact.binding.scene), state) ||
         work_.scenes.state(state).stamp.commit_seq != fact.scene_seq) {
         return false;

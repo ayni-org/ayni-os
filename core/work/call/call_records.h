@@ -7,13 +7,13 @@
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-// One complete current row in journal and snapshot (schema 3).
+// One complete current row in journal and snapshot (schema 4).
 constexpr uint16_t call_record_type = durability::record_type::call;
 constexpr uint16_t call_record_version = 1;
 constexpr uint32_t call_subscription_fixed_bytes = 48;
 // Execution/erasure markers, erasure stamp and result kind are always encoded.
 constexpr uint32_t call_metadata_tail_size = 36;
-constexpr uint32_t call_record_fixed_size = 288 + call_metadata_tail_size;
+constexpr uint32_t call_record_fixed_size = 292 + call_metadata_tail_size;
 constexpr uint32_t call_record_id_count =
     6; // Step, binding, capability, provider, endpoint, destination.
 constexpr uint32_t call_record_resource_fixed_size = 8; // String length and units per resource.

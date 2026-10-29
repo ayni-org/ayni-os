@@ -1,5 +1,6 @@
 #include "work/call/call_table.h"
 
+#include "catalog/capability/value_encoding.h"
 #include "foundation/kernel_id.h"
 
 #include <cstring>
@@ -38,8 +39,25 @@ bool CallTable::valid_result(const CallResult &result) {
 // beside text, and is bounded like text by the contract's result limit.
 ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_string_v1 body,
                                     CallResultKind kind) {
+    if (kind == CallResultKind::unavailable) {
+        return body.size == 0U ? AYNI_OK : AYNI_INVALID_ARGUMENT;
+    }
     if (kind == CallResultKind::text) {
+        if (contract.result_format == catalog::call_value_result_format && body.size != 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
         return check_call_text(body, contract.result_text_limit);
+    }
+    if (kind == CallResultKind::value) {
+        if (contract.result_format != catalog::call_value_result_format ||
+            body.size > contract.result_text_limit) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        catalog::DecodedValue value;
+        const auto decoded =
+            catalog::decode_value({reinterpret_cast<const uint8_t *>(body.data), body.size}, value);
+        return decoded == AYNI_OK && catalog::canonical_value(value.view()) ? AYNI_OK
+                                                                            : AYNI_INVALID_ARGUMENT;
     }
     if (kind != CallResultKind::tool_calls ||
         contract.result_format != catalog::call_tool_calls_result_format) {
@@ -54,11 +72,16 @@ ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_
 }
 
 ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) const {
-    if (!valid_result(result) ||
+    if (!valid_result(result) || result.kind == CallResultKind::unavailable ||
         (result.kind == CallResultKind::tool_calls && result.outcome != AYNI_CALL_COMPLETED)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    return check_body(slots_[index].entry->contract, result.text, result.kind);
+    const auto &contract = slots_[index].entry->contract;
+    if (contract.result_format == catalog::call_value_result_format &&
+        result.outcome == AYNI_CALL_COMPLETED && result.kind != CallResultKind::value) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return check_body(contract, result.text, result.kind);
 }
 
 // Stale evidence cannot yield a usable completed step. Keep measured side effects,
@@ -94,7 +117,8 @@ ayni_status_t finish_action(ActionRecord &action, const CallResult &result, Acti
 
 std::size_t CallTable::storage_size(Limits limits) {
     return static_cast<std::size_t>(limits.capacity) *
-           (sizeof(Slot) + limits.domain_bytes + limits.input_bytes + limits.result_bytes);
+           (sizeof(Slot) + limits.domain_bytes + limits.input_bytes + limits.result_bytes +
+            limits.business_bytes);
 }
 
 CallTable::CallTable(void *storage, Limits limits)
@@ -109,8 +133,8 @@ CallTable::CallTable(void *storage, Limits limits)
 }
 
 uint8_t *CallTable::bytes(uint32_t index) const {
-    const auto stride =
-        static_cast<std::size_t>(limits_.domain_bytes) + limits_.input_bytes + limits_.result_bytes;
+    const auto stride = static_cast<std::size_t>(limits_.domain_bytes) + limits_.input_bytes +
+                        limits_.result_bytes + limits_.business_bytes;
     return bodies_ + index * stride;
 }
 
@@ -148,7 +172,7 @@ ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContr
                                 ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
                                 ActionStamp stamp, uint32_t &index) {
     if (!valid_identity(id, stamp) || domain_body.data == nullptr || input_body.data == nullptr ||
-        domain_body.size == 0U || input_body.size < call_input_header_size ||
+        domain_body.size == 0U || input_body.size < catalog::value_encoding_header_bytes ||
         ((contract.effects & catalog::call_effect_egress) != 0U) != (id.destination.size() != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -165,7 +189,8 @@ ayni_status_t CallTable::place_new(const CallIdentity &id, const catalog::CallCo
     }
     if (!has_room() || domain_body.size > limits_.domain_bytes ||
         input_body.size > limits_.input_bytes ||
-        contract.result_text_limit > limits_.result_bytes) {
+        contract.result_text_limit > limits_.result_bytes ||
+        contract.business_contract.size > limits_.business_bytes) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
@@ -196,6 +221,11 @@ ayni_status_t CallTable::place_new(const CallIdentity &id, const catalog::CallCo
         entry.result_size = 0;
         entry.result_kind = CallResultKind::text;
         copy_bodies(at, domain_body, input_body, {});
+        auto *proof = bytes(at) + limits_.domain_bytes + limits_.input_bytes + limits_.result_bytes;
+        if (contract.business_contract.size != 0U) {
+            std::memcpy(proof, contract.business_contract.data, contract.business_contract.size);
+        }
+        entry.contract.business_contract = {proof, contract.business_contract.size};
         ++size_;
         index = at;
         return AYNI_OK;
@@ -438,6 +468,11 @@ void CallTable::discard_result(uint32_t index) {
     entry.result_kind = CallResultKind::text;
 }
 
+void CallTable::discard_unusable_result(uint32_t index) {
+    discard_result(index);
+    slots_[index].entry->result_kind = CallResultKind::unavailable;
+}
+
 ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
     if (entry.state.content_erased || !advances(entry, stamp)) {
@@ -472,7 +507,7 @@ void CallTable::retire_task(uint64_t task_id) {
         if (entry && entry->identity.task_id == task_id) {
             std::memset(bytes(at), 0,
                         static_cast<std::size_t>(limits_.domain_bytes) + limits_.input_bytes +
-                            limits_.result_bytes);
+                            limits_.result_bytes + limits_.business_bytes);
             entry.reset();
             --size_;
         }
@@ -537,5 +572,12 @@ ayni_bytes_v1 CallTable::tool_calls(uint32_t index) const {
     }
     const auto list = body(index);
     return {reinterpret_cast<const uint8_t *>(list.data), list.size};
+}
+ayni_bytes_v1 CallTable::value_result(uint32_t index) const {
+    if (slots_[index].entry->result_kind != CallResultKind::value) {
+        return {};
+    }
+    const auto value = body(index);
+    return {reinterpret_cast<const uint8_t *>(value.data), value.size};
 }
 } // namespace ayni::work

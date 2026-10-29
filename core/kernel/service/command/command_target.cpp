@@ -1,5 +1,5 @@
 #include "kernel/service/command/command_target.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::kernel {
 ayni_status_t measure_target_command(const TargetCommand &input, uint32_t &size) {
@@ -23,7 +23,7 @@ ayni_status_t encode_target_command(const TargetCommand &input, uint8_t *out, ui
     if (capacity < size) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    durability::BodyWriter writer(out, size);
+    foundation::BodyWriter writer(out, size);
     writer.u32(input.kind);
     writer.u32(input.expected_revision);
     writer.u64(input.target_id);
@@ -35,7 +35,7 @@ bool read_target_command(ayni_bytes_v1 bytes, TargetCommand &out) {
     if (bytes.data == nullptr || bytes.size != target_command_size) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     const auto kind = reader.u32();
     const TargetCommand input{kind, reader.u32(), reader.u64()};
     uint32_t size = 0;

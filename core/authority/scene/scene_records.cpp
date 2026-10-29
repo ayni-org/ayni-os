@@ -1,7 +1,7 @@
 #include "authority/scene/scene_records.h"
 #include "authority/scene/scene_definition.h"
-#include "durability/batch/record_body.h"
 #include "foundation/kernel_id.h"
+#include "foundation/record_body.h"
 namespace ayni::authority {
 uint32_t scene_record_size(const SceneState &state) {
     return scene_record_fixed_bytes + state.scene.size() + state.definition_size;
@@ -11,7 +11,7 @@ uint32_t scene_record_max(uint32_t scope_bytes) {
            Scenes::definition_max_bytes(scope_bytes);
 }
 void write_scene_record(const SceneState &state, ayni_bytes_v1 definition, uint8_t *body) {
-    durability::BodyWriter writer(body, scene_record_size(state));
+    foundation::BodyWriter writer(body, scene_record_size(state));
     writer.u64(state.object_id);
     writer.bytes(state.scene.data(), state.scene.size());
     writer.u32(state.definition_version);
@@ -27,7 +27,7 @@ bool read_scene_record(const uint8_t *body, uint32_t size, SceneRecord &out) {
     if (body == nullptr || size < scene_record_fixed_bytes) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     SceneRecord record{};
     auto &state = record.state;
     state.object_id = reader.u64();

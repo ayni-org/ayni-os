@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 47u
+#define AYNI_ABI_MINOR 48u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -106,7 +106,9 @@ typedef struct ayni_config_v1 {
      * stored them (ADR-0026). Each transition needs room for the largest
      * batch the other capacities allow before it starts, so the buffer must
      * hold at least that; since 0.15, 0 takes three times that. A larger
-     * buffer lets more batches wait for the host. */
+     * buffer lets more batches wait for the host. Since 0.48, large complete
+     * proof budgets can require automatic sizing beyond the explicit input
+     * limit; that does not make an undersized explicit buffer acceptable. */
     uint32_t storage_buffer_bytes;
     /* Since 0.5. The work model (ADR-0017). The last two are limits rather
      * than storage, with the same range and default rules. Since 0.13 a
@@ -192,7 +194,15 @@ typedef struct ayni_config_v1 {
     /* Since 0.42. FIFO Host observation entries: 0 selects 16 when sources
      * are enabled, otherwise disables; explicit 1..256 requires sources. */
     uint32_t observation_ingress_capacity;
+    /* Since 0.48. Bytes per original business/execution proof. Zero selects
+     * BUSINESS_CONTRACT_BYTES_DEFAULT when call catalogs are enabled;
+     * otherwise no proof byte region is allocated. Separate from Scope bytes. */
+    uint32_t business_contract_max_bytes;
 } ayni_config_v1;
+
+/* Original machine schemas and execution/projection proof per fact. Since 0.48. */
+#define AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT 4096u
+#define AYNI_BUSINESS_CONTRACT_BYTES_MAX 69632u
 
 /* Whole-Kernel retained memory bounds. Since 0.40. */
 #define AYNI_MEMORY_CAPACITY_DEFAULT 64u
@@ -672,7 +682,7 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * nothing of it in memory. Since 0.16 a stored owner binding must match
  * the Host configuration before any new recovery write; a mismatch enters
  * RESTRICTED and preserves the validated model for diagnosis. Recovery accepts
- * only schema 3 (ADR-0082); other schemas enter RESTRICTED before new writes,
+ * only schema 4 (ADR-0082); other schemas enter RESTRICTED before new writes,
  * preserving the original directory without migration. Compatible work with
  * complete valid authority continues normally;
  * user/policy/compatibility holds and independent authorization denies remain.

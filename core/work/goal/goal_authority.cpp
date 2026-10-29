@@ -2,6 +2,7 @@
 
 #include "authority/grant/grant_table.h"
 #include "authority/scope/scope.h"
+#include "catalog/capability/business_encoding.h"
 #include "foundation/kernel_id.h"
 
 #include <cstring>
@@ -16,8 +17,9 @@ uint32_t requirement_count(GoalAuthorityTable::Limits limits) {
     return limits.goals * limits.requirements;
 }
 
-std::size_t requirement_bytes(uint32_t scope_bytes) {
-    return static_cast<std::size_t>(goal_requirement_regions) * scope_bytes;
+std::size_t requirement_bytes(GoalAuthorityTable::Limits limits) {
+    return static_cast<std::size_t>(goal_requirement_regions) * limits.scope_bytes +
+           limits.business_bytes;
 }
 
 bool valid_requirement(const GoalRequirement &requirement) {
@@ -26,6 +28,13 @@ bool valid_requirement(const GoalRequirement &requirement) {
         requirement.scope.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
         !valid_authority_reference(requirement.dependency)) {
         return false;
+    }
+    if (requirement.business_contract.size != 0U) {
+        catalog::DecodedBusiness decoded;
+        if (catalog::decode_business(requirement.source_domain, requirement.business_contract,
+                                     decoded) != AYNI_OK) {
+            return false;
+        }
     }
     const auto coverage =
         authority::covers(requirement.source_domain, requirement.source_domain, requirement.scope);
@@ -74,6 +83,10 @@ bool goal_ceiling_covers(const GoalAuthorityRecord &parent, const GoalAuthorityR
                     {need.capability_id.data(), need.capability_id.size()}) ||
                 ceiling.capability_version != need.capability_version ||
                 ceiling.source_domain.size != need.source_domain.size ||
+                ceiling.business_contract.size != need.business_contract.size ||
+                (need.business_contract.size != 0U &&
+                 std::memcmp(ceiling.business_contract.data, need.business_contract.data,
+                             need.business_contract.size) != 0) ||
                 (need.source_domain.size != 0U &&
                  std::memcmp(ceiling.source_domain.data, need.source_domain.data,
                              need.source_domain.size) != 0)) {
@@ -106,7 +119,7 @@ bool goal_references_compatible(const GoalAuthorityRecord &record,
 std::size_t GoalAuthorityTable::storage_size(Limits limits) {
     const std::size_t count = requirement_count(limits);
     return sizeof(Slot) * limits.goals + sizeof(Requirement) * count +
-           (count + limits.requirements) * requirement_bytes(limits.scope_bytes);
+           (count + limits.requirements) * requirement_bytes(limits);
 }
 
 // Both metadata structs contain uint64_t-aligned members; their array sizes
@@ -130,11 +143,15 @@ uint32_t GoalAuthorityTable::requirement_index(uint32_t goal_index, uint32_t req
 }
 
 uint8_t *GoalAuthorityTable::domain_at(uint32_t index) const {
-    return bytes_ + static_cast<std::size_t>(index) * requirement_bytes(limits_.scope_bytes);
+    return bytes_ + static_cast<std::size_t>(index) * requirement_bytes(limits_);
 }
 
 uint8_t *GoalAuthorityTable::scope_at(uint32_t index) const {
     return domain_at(index) + limits_.scope_bytes;
+}
+
+uint8_t *GoalAuthorityTable::business_at(uint32_t index) const {
+    return scope_at(index) + limits_.scope_bytes;
 }
 
 // The caller already validated accepted facts once (ADR-0037 decision 3).
@@ -148,17 +165,23 @@ ayni_status_t GoalAuthorityTable::install_validated(uint32_t goal_index,
     for (uint32_t index = 0; index < record.count; ++index) {
         const auto &input = record.requirements[index];
         if (input.source_domain.size > limits_.scope_bytes ||
-            input.scope.size > limits_.scope_bytes) {
+            input.scope.size > limits_.scope_bytes ||
+            input.business_contract.size > limits_.business_bytes) {
             return AYNI_CAPACITY_EXCEEDED;
         }
     }
     for (uint32_t index = 0; index < record.count; ++index) {
         const auto &input = record.requirements[index];
         const uint32_t at = requirement_index(goal_index, index);
-        requirements_[at] = {input.capability_id, input.capability_version,
-                             input.source_domain.size, input.scope.size, input.dependency};
+        requirements_[at] = {input.capability_id,      input.capability_version,
+                             input.source_domain.size, input.scope.size,
+                             input.dependency,         input.business_contract.size};
         std::memcpy(domain_at(at), input.source_domain.data, input.source_domain.size);
         std::memcpy(scope_at(at), input.scope.data, input.scope.size);
+        if (input.business_contract.size != 0U) {
+            std::memcpy(business_at(at), input.business_contract.data,
+                        input.business_contract.size);
+        }
     }
     slots_[goal_index] = {record.goal_id, record.stamp,   record.phase,
                           record.count,   record.binding, true};
@@ -192,7 +215,8 @@ GoalAuthorityRecord GoalAuthorityTable::at(uint32_t goal_index) const {
                                       saved.capability_version,
                                       {domain_at(at), saved.domain_size},
                                       {scope_at(at), saved.scope_size},
-                                      saved.dependency};
+                                      saved.dependency,
+                                      {business_at(at), saved.business_size}};
     }
     return record;
 }
@@ -216,6 +240,9 @@ bool GoalAuthorityTable::same_ceiling(uint32_t goal_index,
         if (!saved.capability_id.equals({next.capability_id.data(), next.capability_id.size()}) ||
             saved.capability_version != next.capability_version ||
             saved.domain_size != next.source_domain.size || saved.scope_size != next.scope.size ||
+            saved.business_size != next.business_contract.size ||
+            (saved.business_size != 0U &&
+             std::memcmp(business_at(at), next.business_contract.data, saved.business_size) != 0) ||
             std::memcmp(domain_at(at), next.source_domain.data, saved.domain_size) != 0 ||
             std::memcmp(scope_at(at), next.scope.data, saved.scope_size) != 0) {
             return false;
@@ -245,8 +272,10 @@ ayni_status_t GoalAuthorityTable::restore_validated(uint32_t goal_index,
 // The extra byte row is disjoint from every live slot (ADR-0037).
 ayni_status_t GoalAuthorityTable::stage(GoalAuthorityRecord &out,
                                         const catalog::CatalogId &capability, uint32_t version,
-                                        ayni_bytes_v1 domain, const ayni_scope_v1 &scope) {
-    if (out.count >= limits_.requirements || domain.size > limits_.scope_bytes) {
+                                        ayni_bytes_v1 domain, const ayni_scope_v1 &scope,
+                                        ayni_bytes_v1 business) {
+    if (out.count >= limits_.requirements || domain.size > limits_.scope_bytes ||
+        business.size > limits_.business_bytes) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     const uint32_t index = requirement_count(limits_) + out.count;
@@ -257,8 +286,15 @@ ayni_status_t GoalAuthorityTable::stage(GoalAuthorityRecord &out,
         return status == AYNI_BUFFER_TOO_SMALL ? AYNI_CAPACITY_EXCEEDED : status;
     }
     std::memcpy(domain_at(index), domain.data, domain.size);
-    out.requirements[out.count++] = {
-        capability, version, {domain_at(index), domain.size}, {scope_at(index), size}, {}};
+    if (business.size != 0U) {
+        std::memcpy(business_at(index), business.data, business.size);
+    }
+    out.requirements[out.count++] = {capability,
+                                     version,
+                                     {domain_at(index), domain.size},
+                                     {scope_at(index), size},
+                                     {},
+                                     {business_at(index), business.size}};
     return AYNI_OK;
 }
 

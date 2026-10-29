@@ -51,6 +51,9 @@ struct Catalogs {
     catalog::CallCapabilityRegistry call_capabilities; // Execution semantics, not authority.
     catalog::ProviderRegistry providers; // Callback descriptors whose contexts the runtime owns.
     catalog::BindingRegistry bindings;   // Exact selections, with no automatic fallback.
+  private:
+    // Completes authority/business-proof pairing only during configuration close.
+    ayni_status_t link_business();
 };
 
 } // namespace ayni::kernel

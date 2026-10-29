@@ -26,8 +26,17 @@ ayni_add_core_module(catalog
         catalog/execution/execution_registry.cpp
         catalog/capability/capability_registry.cpp
         catalog/capability/call_contract.cpp
+        catalog/capability/call_contract_encoding.cpp
         catalog/capability/field_domain.cpp
         catalog/capability/field_values.cpp
+        catalog/capability/argument_encoding.cpp
+        catalog/capability/argument_mapping.cpp
+        catalog/capability/value_validation.cpp
+        catalog/capability/value_normalization.cpp
+        catalog/capability/value_encoding.cpp
+        catalog/capability/schema_encoding.cpp
+        catalog/capability/authority_projection.cpp
+        catalog/capability/business_encoding.cpp
         catalog/provider/provider_registry.cpp
         catalog/binding/binding_registry.cpp
         catalog/goal_type/goal_type_registry.cpp

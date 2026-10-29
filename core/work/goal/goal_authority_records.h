@@ -20,13 +20,14 @@ constexpr uint16_t goal_authority_record_version = 1;
 // u64 binding/frontier words. Each requirement adds version, three byte-string
 // lengths, Grant ID and selected revision (records.md type 17/v1).
 constexpr uint32_t goal_authority_record_fixed_size = 72;
-constexpr uint32_t goal_requirement_record_fixed_size = 28;
+constexpr uint32_t goal_requirement_record_fixed_size = 32;
 
 // Complete record bounds, using configured requirements and per-region bytes.
-constexpr uint32_t goal_authority_record_max(uint32_t requirements, uint32_t scope_bytes) {
+constexpr uint32_t goal_authority_record_max(uint32_t requirements, uint32_t scope_bytes,
+                                             uint32_t business_bytes = 0) {
     return goal_authority_record_fixed_size +
            requirements * (goal_requirement_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES +
-                           goal_requirement_regions * scope_bytes);
+                           goal_requirement_regions * scope_bytes + business_bytes);
 }
 // Requires valid_goal_authority_record; no mutation or current-catalog lookup.
 uint32_t goal_authority_record_size(const GoalAuthorityRecord &record);

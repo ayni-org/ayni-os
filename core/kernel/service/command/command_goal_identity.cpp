@@ -6,7 +6,7 @@
 
 namespace ayni::kernel {
 namespace {
-ayni_string_v1 read_id(durability::BodyReader &reader) {
+ayni_string_v1 read_id(foundation::BodyReader &reader) {
     uint32_t size = 0;
     const auto *bytes = reader.bytes(AYNI_CATALOG_ID_MAX_BYTES, size);
     return {reinterpret_cast<const char *>(bytes), size};
@@ -24,7 +24,7 @@ bool valid_goal_creation_identity(const GoalCreate &create) {
            work::check_goal_form(create) == AYNI_OK;
 }
 
-void write_goal_creation_identity(const GoalCreate &create, durability::BodyWriter &writer) {
+void write_goal_creation_identity(const GoalCreate &create, foundation::BodyWriter &writer) {
     writer.u64(create.owner_instance_id);
     writer.u64(create.parent_goal_id);
     writer.u32(create.goal_type_version);
@@ -43,7 +43,7 @@ void write_goal_creation_identity(const GoalCreate &create, durability::BodyWrit
     }
 }
 
-GoalCreate read_goal_creation_identity(durability::BodyReader &reader) {
+GoalCreate read_goal_creation_identity(foundation::BodyReader &reader) {
     GoalCreate create{};
     create.owner_instance_id = reader.u64();
     create.parent_goal_id = reader.u64();

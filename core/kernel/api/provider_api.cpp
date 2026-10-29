@@ -1,6 +1,7 @@
 // Trusted registration boundaries decode borrowed layouts; catalogs own typed contracts;
 // Kernel decides lifecycle and later joins them with live work and authority.
 #include "catalog/abi_checks.h"
+#include "catalog/capability/business_encoding.h"
 #include "kernel/api/api_gate.h"
 #include "kernel/runtime/kernel_state.h"
 
@@ -71,10 +72,26 @@ ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallC
     }
     value.version = input.version;
     const auto contract_status = decode_contract(input.contract, value.contract);
-    if (contract_status == AYNI_OK) {
-        out = value;
+    if (contract_status != AYNI_OK) {
+        return contract_status;
     }
-    return contract_status;
+    if ((input.contract.input_format == AYNI_CALL_INPUT_VALUE ||
+         input.contract.result_format == AYNI_CALL_RESULT_VALUE) &&
+        input.business == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (input.business != nullptr) {
+        if (input.contract.input_format != AYNI_CALL_INPUT_VALUE) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        ProjectionShape shape;
+        const auto business = validate_business_definition(*input.business, shape);
+        if (business != AYNI_OK) {
+            return business;
+        }
+    }
+    out = value;
+    return AYNI_OK;
 }
 
 // Validate the whole nested registration first; neither earlier offers nor
@@ -134,7 +151,7 @@ ayni_status_t ayni_register_call_capability(ayni_kernel_t *kernel,
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->configure(decoded);
+    return kernel->configure(decoded, capability->business);
 }
 
 ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_v1 *provider) {
@@ -150,7 +167,11 @@ ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_
         gated != AYNI_OK) {
         return gated;
     }
-    return kernel->configure(decoded);
+    ayni::catalog::ProviderBusinessDefinitions definitions{};
+    for (uint32_t at = 0; at < decoded.count; ++at) {
+        definitions[at] = provider->capabilities[at].business;
+    }
+    return kernel->configure(decoded, definitions);
 }
 
 ayni_status_t ayni_register_binding(ayni_kernel_t *kernel, const ayni_binding_v1 *binding) {

@@ -45,7 +45,9 @@ ayni_status_t create_grant(WorkModel &model, const Intent &intent,
                                     &body.scope,
                                     body.lifetime,
                                     body.duration_us,
-                                    body.flags};
+                                    body.flags,
+                                    0,
+                                    model.catalogs.capabilities.business_view(capability.index)};
     authority::GrantTable::Admission admission{};
     const auto check = model.grants.check_create(
         grant, intent.expected_revision, {model.ids.boot_epoch(), now_us, durable_seq}, admission,

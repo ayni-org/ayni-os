@@ -13,12 +13,13 @@ static_assert(CapabilityRegistry::storage_size(AYNI_CAPABILITY_CAPACITY_MAX,
                   std::numeric_limits<uint32_t>::max(),
               "the configured arena size fits on a 32-bit Host");
 
-CapabilityRegistry::CapabilityRegistry(void *storage, uint32_t capacity, uint32_t scope_max_bytes)
+CapabilityRegistry::CapabilityRegistry(void *storage, uint32_t capacity, uint32_t scope_max_bytes,
+                                       uint32_t business_max_bytes)
     : capabilities_(storage, capacity),
       domains_(capacity == 0U ? nullptr
                               : static_cast<uint8_t *>(storage) +
                                     foundation::BoundedArray<Capability>::storage_size(capacity)),
-      scope_max_bytes_(scope_max_bytes) {}
+      scope_max_bytes_(scope_max_bytes), business_max_bytes_(business_max_bytes) {}
 
 ayni_status_t CapabilityRegistry::validate(const ayni_capability_desc_v1 &input,
                                            DomainEncoding &out) {
@@ -73,7 +74,8 @@ CapabilityRegistry::Lookup CapabilityRegistry::find(ayni_string_v1 id, uint32_t 
 }
 
 uint8_t *CapabilityRegistry::domain_at(uint32_t index) const {
-    return domains_ + static_cast<std::size_t>(index) * scope_max_bytes_;
+    return domains_ + static_cast<std::size_t>(index) *
+                          (static_cast<std::size_t>(scope_max_bytes_) + business_max_bytes_);
 }
 
 ayni_bytes_v1 CapabilityRegistry::domain_view(uint32_t index) const {
@@ -84,6 +86,34 @@ bool CapabilityRegistry::matches_domain(uint32_t index, ayni_bytes_v1 original) 
     const auto current = domain_view(index);
     return original.size == current.size && original.data != nullptr &&
            std::memcmp(original.data, current.data, current.size) == 0;
+}
+
+ayni_bytes_v1 CapabilityRegistry::business_view(uint32_t index) const {
+    return {domain_at(index) + scope_max_bytes_, at(index).business_size};
+}
+
+bool CapabilityRegistry::matches_business(uint32_t index, ayni_bytes_v1 original) const {
+    const auto proof = business_view(index);
+    return proof.size == original.size &&
+           (proof.size == 0U ||
+            (original.data != nullptr && std::memcmp(proof.data, original.data, proof.size) == 0));
+}
+
+ayni_status_t CapabilityRegistry::attach_business(uint32_t index, ayni_bytes_v1 proof) {
+    if (index >= size() || (proof.size != 0U && proof.data == nullptr)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (proof.size > business_max_bytes_) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    if (at(index).business_size != 0U) {
+        return matches_business(index, proof) ? AYNI_OK : AYNI_INVALID_ARGUMENT;
+    }
+    if (proof.size != 0U) {
+        std::memcpy(domain_at(index) + scope_max_bytes_, proof.data, proof.size);
+    }
+    capabilities_[index].business_size = proof.size;
+    return AYNI_OK;
 }
 
 } // namespace ayni::catalog

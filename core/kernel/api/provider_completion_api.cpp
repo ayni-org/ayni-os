@@ -1,9 +1,11 @@
 // Provider posting is the permitted cross-thread boundary. Semantic effects,
 // schemas and query authority are checked by the owner after the mailbox copy.
 #include "catalog/abi_checks.h"
+#include "catalog/capability/value_encoding.h"
 #include "kernel/ports/provider_mailbox.h"
 #include "work/call/tool_calls.h"
 
+#include <cstring>
 #include <optional>
 
 namespace {
@@ -44,6 +46,18 @@ struct MeasuredCalls {
 void write_calls(const void *context, uint8_t *out, uint32_t size) {
     const auto &list = *static_cast<const MeasuredCalls *>(context);
     ayni::work::write_tool_calls(list.calls, list.count, out, size);
+}
+// Structural validation happened before entering the lock; input remains
+// borrowed through this post, and writing uses the same portable value codec.
+void write_value(const void *context, uint8_t *out, uint32_t size) {
+    uint32_t written = 0;
+    const auto status = ayni::catalog::encode_value(*static_cast<const ayni_value_v1 *>(context),
+                                                    out, size, written);
+    // Inputs are immutable through post; a changed producer cannot publish bytes
+    // as a valid value. The owner still applies the saved schema independently.
+    if (status != AYNI_OK || written != size) {
+        std::memset(out, 0, size);
+    }
 }
 } // namespace
 
@@ -89,6 +103,26 @@ extern "C" ayni_status_t ayni_provider_post(ayni_provider_completion_t *completi
         message.payload = {nullptr, size};
         message.body = ayni::work::CallResultKind::tool_calls;
         message.writer = &writer;
+    }
+    const ayni::kernel::PayloadWriter value_writer{&result->value, write_value};
+    if (result->value.node_count != 0U) {
+        if (result->tool_call_count != 0U || result->result.size != 0U ||
+            !ayni::kernel::provider_terminal(*kind) || result->outcome == AYNI_CALL_ABANDONED) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        uint32_t size = 0;
+        const auto measured = ayni::catalog::encode_value(result->value, nullptr, 0, size);
+        if (measured != AYNI_BUFFER_TOO_SMALL) {
+            return measured;
+        }
+        if (size > AYNI_CALL_RESULT_BYTES_MAX) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        message.payload = {nullptr, size};
+        message.body = ayni::work::CallResultKind::value;
+        message.writer = &value_writer;
+    } else if (result->value.nodes != nullptr) {
+        return AYNI_INVALID_ARGUMENT;
     }
     return completion->pool->post({completion->index, result->attempt}, message);
 }

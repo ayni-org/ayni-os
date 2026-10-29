@@ -91,6 +91,7 @@ bool GrantRestore::valid_restored_fact(const GrantTable &table, const GrantRecor
 bool GrantRestore::fits_restored_fact(const GrantTable &table, const GrantRecord &record) {
     return record.depth <= table.limits_.delegation_depth_max &&
            record.grant.source_domain.size <= table.limits_.scope_max_bytes &&
+           record.grant.business_contract.size <= table.limits_.business_bytes &&
            record.scope.size <= table.limits_.scope_max_bytes;
 }
 
@@ -126,6 +127,10 @@ void GrantRestore::install_restored(GrantTable &table, const GrantRecord &record
     const NewGrant &grant = record.grant;
     std::memcpy(table.domain_storage(index), grant.source_domain.data, grant.source_domain.size);
     std::memcpy(table.scope_storage(index), record.scope.data, record.scope.size);
+    if (grant.business_contract.size != 0U) {
+        std::memcpy(table.business_storage(index), grant.business_contract.data,
+                    grant.business_contract.size);
+    }
     Grant value{record.grant_id,
                 grant.subject_instance_id,
                 grant.parent_grant_id,
@@ -147,6 +152,7 @@ void GrantRestore::install_restored(GrantTable &table, const GrantRecord &record
                 no_grant_deadline_us,
                 AYNI_REASON_NONE};
     value.bound_goal_id = grant.bound_goal_id;
+    value.business_contract_size = grant.business_contract.size;
     if (index == table.size()) {
         static_cast<void>(table.grants_.push_back(value));
     } else {

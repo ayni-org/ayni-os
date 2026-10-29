@@ -1,5 +1,5 @@
 #include "kernel/service/command/command_task_limit.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::kernel {
 ayni_status_t measure_task_limit_command(const TaskLimitCommand &input, uint32_t &size) {
@@ -24,7 +24,7 @@ ayni_status_t encode_task_limit_command(const TaskLimitCommand &input, uint8_t *
     if (capacity < size) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    durability::BodyWriter writer(out, size);
+    foundation::BodyWriter writer(out, size);
     writer.u32(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT);
     writer.u32(input.expected_revision);
     writer.u64(input.task_id);
@@ -37,7 +37,7 @@ bool read_task_limit_command(ayni_bytes_v1 bytes, TaskLimitCommand &out) {
     if (bytes.data == nullptr || bytes.size != task_limit_command_size) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     if (reader.u32() != AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {
         return false;
     }

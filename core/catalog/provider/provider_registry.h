@@ -5,6 +5,9 @@
 #include "catalog/capability/call_contract.h"
 
 namespace ayni::catalog {
+// Borrowed same-call definitions, paired by offer index and never retained.
+using ProviderBusinessDefinitions =
+    std::array<const ayni_business_contract_v1 *, AYNI_PROVIDER_CAPABILITY_COUNT_MAX>;
 
 // Fixed copied descriptor. Function/context lifetime remains with runtime;
 // no callback may run until the Kernel has durably authorized its attempt.
@@ -32,13 +35,21 @@ class ProviderRegistry {
   public:
     // Alignment/bytes for caller storage; zero capacity consumes zero bytes.
     static constexpr std::size_t storage_alignment = alignof(Provider);
-    static constexpr std::size_t storage_size(uint32_t capacity) {
-        return foundation::BoundedArray<Provider>::storage_size(capacity);
+    static constexpr std::size_t storage_size(uint32_t capacity, uint32_t business_bytes = 0) {
+        return foundation::BoundedArray<Provider>::storage_size(capacity) +
+               static_cast<std::size_t>(capacity) * AYNI_PROVIDER_CAPABILITY_COUNT_MAX *
+                   business_bytes;
     }
     // Borrows storage for the Kernel lifetime; no ownership of callback contexts.
-    ProviderRegistry(void *storage, uint32_t capacity) : entries_(storage, capacity) {}
+    ProviderRegistry(void *storage, uint32_t capacity, uint32_t business_bytes = 0)
+        : entries_(storage, capacity),
+          proofs_(capacity == 0U ? nullptr
+                                 : static_cast<uint8_t *>(storage) +
+                                       foundation::BoundedArray<Provider>::storage_size(capacity)),
+          proof_bytes_(business_bytes) {}
     // Input came from decode in this synchronous call; duplicate/full preserves entries.
-    ayni_status_t add_validated(const Provider &provider);
+    ayni_status_t add_validated(const Provider &provider,
+                                const ProviderBusinessDefinitions &definitions = {});
     // Exact immutable identity lookup; failure preserves index.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;
     // Returns an exact offer or null; view lasts until registry destruction.
@@ -56,6 +67,8 @@ class ProviderRegistry {
 
   private:
     foundation::BoundedArray<Provider> entries_; // Sole owner of static copied descriptors.
+    uint8_t *proofs_;      // Per-offer copied proofs, following metadata in the caller arena.
+    uint32_t proof_bytes_; // Bytes per offer, independent of resource/Scope bytes.
 };
 
 } // namespace ayni::catalog

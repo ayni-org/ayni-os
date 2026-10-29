@@ -5,9 +5,9 @@
 #include "catalog/abi_checks.h"
 #include "catalog/capability/field_domain.h"
 #include "catalog/catalog_id.h"
-#include "durability/batch/record_body.h"
 #include "foundation/digest.h"
 #include "foundation/little_endian.h"
+#include "foundation/record_body.h"
 
 namespace ayni::kernel {
 namespace {
@@ -252,7 +252,7 @@ ayni_status_t encode_authority_command(const CanonicalCommandView &input, uint8_
         out_size = needed;
         return AYNI_BUFFER_TOO_SMALL;
     }
-    durability::BodyWriter writer(out, fixed_size);
+    foundation::BodyWriter writer(out, fixed_size);
     writer.u32(AYNI_INTENT_GRANT_CREATE);
     writer.u32(input.expected_revision);
     writer.u32(grant.capability_version);
@@ -273,7 +273,7 @@ bool read_authority_command(ayni_bytes_v1 bytes, AuthorityCommandRecord &out) {
         bytes.size > authority_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX)) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     const uint32_t kind = reader.u32();
     AuthorityCommandRecord command{};
     command.expected_revision = reader.u32();

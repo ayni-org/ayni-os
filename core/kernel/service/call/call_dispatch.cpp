@@ -162,13 +162,13 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         return Advance::internal;
     }
     work::CallInputView input{};
-    if (work::read_call_input(work_.calls.domain(index), work_.calls.input(index),
-                              contract.input_text_limit, input) != AYNI_OK) {
+    if (work::read_call_input(work_.calls.domain(index), work_.calls.input(index), contract,
+                              input) != AYNI_OK) {
         return Advance::internal;
     }
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, host_.monotonic_now_us(host_.ctx), durable_seq);
+                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq);
     if (authority.status != AYNI_OK) {
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
@@ -243,13 +243,14 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
         view(id.capability_id),
         view(id.endpoint),
         arguments.view(),
-        input.text,
+        {},
         permit,
         tool_count,
         0,
         tool_count == 0U ? nullptr : this,
         tool_count == 0U ? nullptr : describe_tool,
-        contract.subscription ? &subscription : nullptr};
+        contract.subscription ? &subscription : nullptr,
+        input.value.count == 0U ? ayni_value_v1{} : input.value.view()};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
     offering_ = Offering{task_index, delivery.tools};

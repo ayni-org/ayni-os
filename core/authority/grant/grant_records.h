@@ -22,7 +22,7 @@ constexpr uint16_t grant_revocation_progress_record_type =
     durability::record_type::grant_revocation_progress;
 constexpr uint16_t grant_revocation_progress_record_version = 1;
 // Current creation always includes bound_goal_id; zero explicitly means an ordinary Grant.
-constexpr uint32_t grant_record_fixed_size = 88;
+constexpr uint32_t grant_record_fixed_size = 92; // Includes independent business-proof length.
 // id/revision/lifecycle/revocation root; non-revoked rows require a zero root.
 constexpr uint32_t grant_state_record_size = 24;
 constexpr uint32_t grant_revocation_record_size = 32;
@@ -80,22 +80,24 @@ bool valid_grant_record(const GrantRecord &record);
 // record by its ID. A short/null prefix leaves out_id unchanged.
 bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id);
 
-constexpr uint32_t grant_record_max(uint32_t scope_max_bytes) {
-    return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES + 2U * scope_max_bytes;
+constexpr uint32_t grant_record_max(uint32_t scope_max_bytes, uint32_t business_bytes = 0) {
+    return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES + 2U * scope_max_bytes +
+           business_bytes;
 }
-constexpr uint32_t grant_snapshot_record_max(uint32_t scope_max_bytes) {
-    return grant_record_max(scope_max_bytes) + grant_snapshot_tail_size;
+constexpr uint32_t grant_snapshot_record_max(uint32_t scope_max_bytes,
+                                             uint32_t business_bytes = 0) {
+    return grant_record_max(scope_max_bytes, business_bytes) + grant_snapshot_tail_size;
 }
 uint32_t grant_record_size(const Grant &grant);
 void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
-                        uint8_t *body);
+                        ayni_bytes_v1 business, uint8_t *body);
 bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out);
 void write_grant_state_record(const Grant &grant, uint8_t *body);
 bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecord &out);
 uint32_t grant_snapshot_record_size(const Grant &grant);
 // Complete current history; no fallback or partial legacy tail is written.
 void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
-                                 uint8_t *body);
+                                 ayni_bytes_v1 business, uint8_t *body);
 bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapshotRecord &out);
 void write_grant_revocation_record(const GrantTable::RevokePlan &plan, uint8_t *body);
 bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevocationRecord &out);

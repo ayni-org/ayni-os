@@ -86,7 +86,8 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
         const auto entry = model.catalogs.capabilities.find(
             {need.capability_id.data(), need.capability_id.size()}, need.capability_version);
         if (entry.kind != catalog::CapabilityRegistry::Lookup::Kind::found ||
-            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain)) {
+            !model.catalogs.capabilities.matches_domain(entry.index, need.source_domain) ||
+            !model.catalogs.capabilities.matches_business(entry.index, need.business_contract)) {
             return {AYNI_DENIED, AYNI_REASON_GRANT_CATALOG_CHANGED};
         }
         std::optional<uint32_t> selected;
@@ -94,7 +95,8 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
             const auto &grant = model.grants.at(index);
             if (grant.subject_instance_id != goal.owner_instance_id ||
                 !model.grants.covers_saved_scope(index, need.capability_id, need.capability_version,
-                                                 need.source_domain, need.scope) ||
+                                                 need.source_domain, need.scope,
+                                                 need.business_contract) ||
                 model.check_grant(index, now_us, durable_seq, goal.goal_id).status != AYNI_OK) {
                 continue;
             }

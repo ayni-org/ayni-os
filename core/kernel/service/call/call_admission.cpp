@@ -3,6 +3,7 @@
 
 #include "authority/scope/scope.h"
 #include "catalog/abi_checks.h"
+#include "catalog/capability/business_encoding.h"
 
 #include <cstring>
 
@@ -112,10 +113,13 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         (request.kind == AYNI_POLICY_REQUEST_MODEL)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto status =
-        work::encode_call_input(catalogs_.capabilities.domain_view(proposal.links.capability),
-                                {request.arguments, request.text}, contract.input_text_limit,
-                                staging_, limits_.input_bytes, proposal.input_size);
+    if ((request.arguments.struct_size != 0U || request.arguments.field_count != 0U ||
+         request.arguments.fields != nullptr || request.text.size != 0U)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
+    const auto status = work::encode_business_input(domain, contract, request.value, staging_,
+                                                    limits_.input_bytes, proposal.input_size);
     if (status != AYNI_OK) {
         return status;
     }
@@ -140,7 +144,8 @@ void CallRuntime::stage_intent(const Proposal &proposal) {
 ayni_status_t CallRuntime::stage_subscription_target(const ayni_call_request_v1 &request) {
     if (request.binding_version != 0 || request.binding_id.size != 0 || request.text.size != 0 ||
         request.arguments.struct_size != 0 || request.arguments.field_count != 0 ||
-        request.arguments.fields != nullptr) {
+        request.arguments.fields != nullptr || request.value.node_count != 0U ||
+        request.value.nodes != nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
     Proposal proposal{};
@@ -189,6 +194,9 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
     }
     const auto &calls = runtime.work_.calls;
     const auto &state = calls.state(index);
+    if (calls.record(index).result_kind == work::CallResultKind::unavailable) {
+        return AYNI_EXPIRED;
+    }
     *out = {sizeof(*out),
             state.outcome,
             calls.identity(index).call_id,
@@ -201,7 +209,10 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             work::tool_call_count(calls.tool_calls(index)),
             0,
             static_cast<uint32_t>(calls.effect(index)),
-            0};
+            0,
+            calls.value_result(index),
+            calls.domain(index),
+            calls.contract(index).business_contract};
     return AYNI_OK;
 }
 
@@ -209,28 +220,65 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
 // within one immutable requirement. No union of grants or authority-only shadow input.
 authority::GrantCheck CallRuntime::check_input(uint32_t task_index, const catalog::Binding &binding,
                                                ayni_bytes_v1 domain,
-                                               const work::CallInputView &input, uint64_t now_us,
-                                               uint64_t durable_seq) const {
+                                               const work::CallInputView &input,
+                                               const catalog::CallContract &contract,
+                                               uint64_t now_us, uint64_t durable_seq) const {
     const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
     if (authority.status != AYNI_OK) {
         return authority;
     }
-    if (!routing_matches(binding, input.arguments)) {
-        return {AYNI_DENIED, AYNI_REASON_GRANT_SCOPE};
+    return check_business_input(task_index, binding, domain, input.value.view(), contract);
+}
+
+// Fix one complete requirement before iterating every projected element.
+// Trying the next requirement is permitted only after the whole candidate fails;
+// no list element can switch Grant midway (ADR-0084 decision 5).
+authority::GrantCheck
+CallRuntime::check_business_input(uint32_t task_index, const catalog::Binding &binding,
+                                  ayni_bytes_v1 domain, const ayni_value_v1 &value,
+                                  const catalog::CallContract &contract) const {
+    catalog::DecodedBusiness proof;
+    const auto decoded = catalog::decode_business(domain, contract.business_contract, proof);
+    if (decoded != AYNI_OK) {
+        return {decoded, AYNI_REASON_GRANT_SCOPE};
     }
     const auto &task = work_.tasks.at(task_index);
     const auto ceiling = work_.goal_authority.at(task.goal_index);
+    const uint32_t rows = catalog::projection_rows(proof.view(), value);
+    if (rows == 0U) {
+        return {AYNI_DENIED, AYNI_REASON_GRANT_SCOPE};
+    }
     for (uint32_t at = 0; at < ceiling.count; ++at) {
-        const auto &requirement = ceiling.requirements[at];
-        if (!requirement.capability_id.equals(view(binding.capability)) ||
-            requirement.capability_version != binding.capability_version ||
-            requirement.source_domain.size != domain.size ||
-            std::memcmp(requirement.source_domain.data, domain.data, domain.size) != 0) {
+        const auto &need = ceiling.requirements[at];
+        if (!need.capability_id.equals(view(binding.capability)) ||
+            need.capability_version != binding.capability_version ||
+            need.source_domain.size != domain.size ||
+            std::memcmp(need.source_domain.data, domain.data, domain.size) != 0 ||
+            need.business_contract.size != contract.business_contract.size ||
+            std::memcmp(need.business_contract.data, contract.business_contract.data,
+                        contract.business_contract.size) != 0) {
             continue;
         }
-        const auto coverage =
-            authority::contains_request(domain, requirement.scope, input.arguments);
-        if (coverage.status == AYNI_OK && coverage.covered) {
+        bool covered = true;
+        for (uint32_t row_index = 0; row_index < rows && covered; ++row_index) {
+            catalog::ProjectionRow row;
+            if (catalog::project_row(proof.view(), value, row_index, row) != AYNI_OK) {
+                covered = false;
+                break;
+            }
+            std::array<uint8_t, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX> actual{};
+            uint32_t size = 0;
+            if (authority::normalize_request(domain, row.view(), actual.data(),
+                                             static_cast<uint32_t>(actual.size()),
+                                             size) != AYNI_OK ||
+                !routing_matches(binding, {actual.data(), size})) {
+                covered = false;
+                break;
+            }
+            const auto relation = authority::contains_request(domain, need.scope, row.view());
+            covered = relation.status == AYNI_OK && relation.covered;
+        }
+        if (covered) {
             return {AYNI_OK, AYNI_REASON_NONE};
         }
     }
@@ -330,12 +378,12 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
     }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     work::CallInputView input{};
-    if (work::read_call_input(domain, {staging_, proposal.input_size}, contract.input_text_limit,
-                              input) != AYNI_OK) {
+    if (work::read_call_input(domain, {staging_, proposal.input_size}, contract, input) !=
+        AYNI_OK) {
         return {AYNI_INTERNAL, AYNI_REASON_NONE};
     }
     const auto authority = check_input(task_index, catalogs_.bindings.at(proposal.binding_index),
-                                       domain, input, now_us, durable_seq);
+                                       domain, input, contract, now_us, durable_seq);
     if (authority.status != AYNI_OK) {
         return authority;
     }
@@ -345,9 +393,8 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
     if (exported != AYNI_OK) {
         return {exported, memory_reason(exported)};
     }
-    return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index),
-                            input.arguments, now_us, durable_seq, task.task_id,
-                            proposal_->execution);
+    return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index), domain, input,
+                            now_us, durable_seq, task.task_id, proposal_->execution);
 }
 
 // Exact capacity and identity preflights have succeeded. Any refusal here is an

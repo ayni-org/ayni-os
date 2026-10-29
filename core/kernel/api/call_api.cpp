@@ -62,7 +62,7 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                  state.cancel_cause == ayni::work::CallCancelCause::none ? 0U : 1U,
                  state.cancel_result,
                  calls.input(index).size,
-                 calls.result(index).size,
+                 calls.result(index).size + calls.value_result(index).size,
                  waiting,
                  ayni::work::tool_call_count(calls.tool_calls(index)),
                  waited,
@@ -72,7 +72,9 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                  query.reason,
                  query.conclusion,
                  0,
-                 query.attempt};
+                 query.attempt,
+                 static_cast<uint32_t>(calls.record(index).result_kind),
+                 0};
     return AYNI_OK;
 }
 
@@ -103,13 +105,17 @@ ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logica
         return AYNI_RESULT_UNKNOWN;
     }
     uint32_t task_index = 0;
-    if (state.content_erased ||
+    if (calls.record(index).result_kind == ayni::work::CallResultKind::unavailable ||
+        state.content_erased ||
         !kernel->model().tasks.find(calls.identity(index).task_id, task_index) ||
         !ayni::kernel::task_content_current(
             {kernel->model(), kernel->now_us(), kernel->writer_durable_seq()}, task_index)) {
         return AYNI_EXPIRED;
     }
-    const auto result = calls.result(index);
+    const auto saved = calls.record(index);
+    const auto result = saved.result_kind == ayni::work::CallResultKind::tool_calls
+                            ? ayni_string_v1{}
+                            : saved.result;
     if (capacity < result.size) {
         *out_size = result.size;
         return AYNI_BUFFER_TOO_SMALL;

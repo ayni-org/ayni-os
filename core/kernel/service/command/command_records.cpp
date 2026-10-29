@@ -1,11 +1,11 @@
 #include "kernel/service/command/command_records.h"
 
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::kernel {
 namespace {
 
-void write_fixed(const CommandMapping &mapping, uint64_t floor, durability::BodyWriter &writer) {
+void write_fixed(const CommandMapping &mapping, uint64_t floor, foundation::BodyWriter &writer) {
     writer.u64(mapping.principal_id);
     writer.u64(mapping.command_id);
     writer.u64(mapping.digest);
@@ -16,7 +16,7 @@ void write_fixed(const CommandMapping &mapping, uint64_t floor, durability::Body
     writer.u32(mapping.object.revision);
 }
 
-CommandMapping read_fixed(durability::BodyReader &reader, uint64_t &floor) {
+CommandMapping read_fixed(foundation::BodyReader &reader, uint64_t &floor) {
     CommandMapping mapping{};
     mapping.principal_id = reader.u64();
     mapping.command_id = reader.u64();
@@ -78,7 +78,7 @@ bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_by
         !valid_payload(mapping, canonical, result)) {
         return false;
     }
-    durability::BodyWriter writer(body, size);
+    foundation::BodyWriter writer(body, size);
     write_fixed(mapping, floor, writer);
     writer.u32(static_cast<uint32_t>(mapping.privacy_expired ? CommandContent::erased
                                                              : CommandContent::retained));
@@ -101,7 +101,7 @@ bool read_command_record(const uint8_t *body, uint32_t size, CommandMapping &out
     if (body == nullptr || size < command_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     uint64_t floor = 0;
     CommandMapping mapping = read_fixed(reader, floor);
     const auto content = reader.u32();

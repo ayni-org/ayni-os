@@ -16,7 +16,7 @@ namespace ayni::kernel {
 constexpr uint16_t command_record_type = durability::record_type::command_mapping;
 constexpr uint16_t command_record_version = 1;
 constexpr uint16_t command_snapshot_record_version = 2; // Adds original acceptance sequence.
-// Identity 52 B plus content/effect/format and two byte-string lengths, records.md schema 3.
+// Identity 52 B plus content/effect/format and two byte-string lengths, records.md schema 4.
 constexpr uint32_t command_record_fixed_size = 72;
 constexpr uint32_t command_record_size = command_record_fixed_size + sizeof(uint32_t);
 // Source framing is always present, including its explicit zero-count representation.

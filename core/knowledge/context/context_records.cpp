@@ -1,7 +1,7 @@
 #include "knowledge/context/context_records.h"
 namespace ayni::knowledge {
 void write_context_record(const ContextRecord &r, uint8_t *body) {
-    durability::BodyWriter writer(body, context_record_size(r.dependencies.count));
+    foundation::BodyWriter writer(body, context_record_size(r.dependencies.count));
     writer.u64(r.id);
     writer.u64(r.owner_instance_id);
     writer.u32(r.revision);
@@ -20,7 +20,7 @@ bool read_context_record(const uint8_t *body, uint32_t size, ContextRecord &out)
     if (body == nullptr || size < context_record_size(0)) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     ContextRecord record{};
     record.id = reader.u64();
     record.owner_instance_id = reader.u64();
