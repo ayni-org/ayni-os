@@ -60,6 +60,10 @@ struct CommandMapping {
 // Intrinsic tombstone syntax. Original acceptance metadata survives, private bytes do not.
 bool valid_expired_mapping(const CommandMapping &mapping);
 
+// Ordinary retained payloads have no exact bytes and always report CHANGED
+// (C-STORE-009, ADR-0082); envelope identity is checked by table restoration.
+bool valid_ordinary_mapping(const CommandMapping &mapping);
+
 // Exact mapping syntax, effect/result, accepted flags and digest are checked at each trust
 // boundary by this one owner; no catalog or subject lookup is involved.
 bool valid_exact_mapping(const CommandMapping &mapping, ayni_bytes_v1 canonical,

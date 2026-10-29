@@ -671,8 +671,10 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * RESTRICTED with AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY, and a log recovery cannot replay leaves
  * nothing of it in memory. Since 0.16 a stored owner binding must match
  * the Host configuration before any new recovery write; a mismatch enters
- * RESTRICTED and preserves the validated model for diagnosis. Since 0.27,
- * compatible schema 2 work with complete valid authority continues normally;
+ * RESTRICTED and preserves the validated model for diagnosis. Recovery accepts
+ * only schema 3 (ADR-0082); other schemas enter RESTRICTED before new writes,
+ * preserving the original directory without migration. Compatible work with
+ * complete valid authority continues normally;
  * user/policy/compatibility holds and independent authorization denies remain.
  * Old-boot timed Grants expire without reanchoring. Existing owner-controlled
  * work or commands without a saved binding are refused before new writes;

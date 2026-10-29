@@ -278,6 +278,29 @@ TEST(CommandTable, restore_refuses_a_mapping_it_has_or_cannot_hold) {
     EXPECT_EQ(commands->mapped_in(3)->commit_seq, 3U);
 }
 
+// C-STORE-009 / C-WIRE-003: typed restore cannot publish an impossible first
+// effect or evict a valid receipt while rejecting it; retry keeps the original result.
+TEST(CommandTable, ordinary_restore_rejects_other_effects_without_changing_the_retry_window) {
+    Commands commands(1, 1);
+    ASSERT_EQ(commands->restore_checked(mapping(owner, 5, 3), 1), CommandTable::Restore::restored);
+    for (const auto effect : {AYNI_INTENT_EFFECT_NONE, AYNI_INTENT_EFFECT_NO_CHANGE,
+                              AYNI_INTENT_EFFECT_TARGET_GONE, UINT32_MAX}) {
+        SCOPED_TRACE(effect);
+        auto candidate = mapping(owner, 6, 4);
+        candidate.effect = effect;
+        EXPECT_EQ(commands->restore_checked(candidate, 9), CommandTable::Restore::corrupt);
+        EXPECT_EQ(commands->size(), 1U);
+        EXPECT_EQ(commands->floor(owner), 1U);
+        EXPECT_EQ(commands.find(owner, 6), Lookup::unmapped);
+        EXPECT_EQ(commands->mapped_in(4), nullptr);
+        const CommandMapping *retained = nullptr;
+        ASSERT_EQ(commands->find(owner, 5, digest_of(owner, 5), retained), Lookup::retried);
+        ASSERT_NE(retained, nullptr);
+        EXPECT_EQ(retained->effect, AYNI_INTENT_EFFECT_CHANGED);
+        EXPECT_EQ(retained->commit_seq, 3U);
+    }
+}
+
 // A recovery that failed leaves nothing it replayed: rows, floors and the
 // mapping to journal are gone.
 TEST(CommandTable, clear_empties_every_row) {

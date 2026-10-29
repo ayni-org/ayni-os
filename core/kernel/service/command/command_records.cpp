@@ -44,7 +44,7 @@ bool valid_payload(const CommandMapping &mapping, ayni_bytes_v1 canonical, ayni_
     if (mapping.privacy_expired) {
         return valid_expired_mapping(mapping) && canonical.size == 0 && result.size == 0;
     }
-    return canonical.size == 0 ? result.size == 0 && is_ordinary_command(mapping.kind)
+    return canonical.size == 0 ? valid_ordinary_mapping(mapping)
                                : valid_exact_mapping(mapping, canonical, result);
 }
 } // namespace
