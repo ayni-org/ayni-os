@@ -27,12 +27,11 @@ class TaskCallTest : public ::testing::Test {
         tasks.apply(0, kind, next());
     }
     TaskState saved_state() const {
-        const auto version = task_state_version_for(tasks.at(0));
-        std::vector<uint8_t> body(task_state_size_for(version));
-        write_task_state_record(tasks.at(0), body.data(), version);
+        std::vector<uint8_t> body(task_state_record_size);
+        write_task_state_record(tasks.at(0), body.data());
         TaskStateRecord decoded{};
-        EXPECT_TRUE(read_task_state_record(body.data(), static_cast<uint32_t>(body.size()), decoded,
-                                           version));
+        EXPECT_TRUE(
+            read_task_state_record(body.data(), static_cast<uint32_t>(body.size()), decoded));
         return decoded.state;
     }
     std::vector<uint64_t> storage =
@@ -217,19 +216,16 @@ TEST_F(TaskCallTest, reconciliation_preserves_a_pause_requested_while_the_result
 
 TEST_F(TaskCallTest, selected_call_records_keep_each_existing_pairing_meaning) {
     begin(TaskTable::CallKind::model);
-    const uint16_t bases[]{task_state_record_version, task_state_authority_record_version,
-                           task_state_reauthorization_record_version,
-                           task_state_raise_limit_record_version,
-                           task_state_resume_wait_record_version};
-    for (const auto base : bases) {
-        const auto version = task_state_version_for(tasks.at(0), base);
-        EXPECT_GE(version, task_state_call_record_version);
-        EXPECT_EQ(task_state_base_version(version), base);
-        std::vector<uint8_t> body(task_state_size_for(version));
-        write_task_state_record(tasks.at(0), body.data(), version);
+    const TaskRecordChange changes[]{TaskRecordChange::state, TaskRecordChange::authority,
+                                     TaskRecordChange::reauthorization,
+                                     TaskRecordChange::raise_limit, TaskRecordChange::resume_wait};
+    for (const auto change_kind : changes) {
+        std::vector<uint8_t> body(task_state_record_size);
+        write_task_state_record(tasks.at(0), body.data(), change_kind);
         TaskStateRecord decoded{};
-        ASSERT_TRUE(read_task_state_record(body.data(), static_cast<uint32_t>(body.size()), decoded,
-                                           version));
+        ASSERT_TRUE(
+            read_task_state_record(body.data(), static_cast<uint32_t>(body.size()), decoded));
+        EXPECT_EQ(decoded.change, change_kind);
         EXPECT_EQ(decoded.state.call.id, call_id);
         EXPECT_EQ(decoded.state.model_calls.used, 1U);
         EXPECT_EQ(decoded.state.lifecycle, AYNI_TASK_RUNNING);

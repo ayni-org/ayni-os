@@ -1,3 +1,4 @@
+#include "kernel/service/persistence/work_replay.h"
 // White-box call ownership scenarios, C-CALL-002/008 and ADR-0045.
 // Kernel B2/B4 assembly and Provider I/O are exercised separately.
 #include "work/call/call_records.h"
@@ -95,19 +96,18 @@ TEST_F(CallTableTest, skipped_wait_encodes_non_delivery_and_does_not_allow_a_dis
     ASSERT_EQ(calls.skip_before_dispatch(index, stamp(2)), AYNI_OK);
     const auto saved = calls.record(index);
     ASSERT_TRUE(CallTable::valid_record(saved));
-    const auto version = call_record_version_for(saved);
-    EXPECT_EQ(version, call_skipped_record_version);
     std::vector<uint8_t> bytes(call_record_size(saved));
     write_call_record(saved, bytes.data());
     CallRecord decoded{};
-    ASSERT_TRUE(
-        read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded, version));
+    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.state.outcome, AYNI_CALL_SKIPPED);
     EXPECT_EQ(decoded.state.reason, AYNI_REASON_RESOURCE_WAIT);
     EXPECT_EQ(decoded.state.attempt.request_id, 0U);
     EXPECT_FALSE(decoded.action.has_value());
-    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
-                                  call_record_version));
+    EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(
+                  {call_record_type, static_cast<uint16_t>(call_record_version + 1),
+                   ayni::durability::record_required, 0}),
+              ayni::durability::RecordUse::unknown);
     calls.clear();
     dispatch();
     EXPECT_EQ(calls.skip_before_dispatch(index, stamp(4)), AYNI_INVALID_STATE);
@@ -551,12 +551,11 @@ TEST_F(CallTableTest, erased_completed_call_retains_action_facts_and_restores_wi
     }
     const auto record = calls.record(index);
     ASSERT_TRUE(CallTable::valid_record(record));
-    EXPECT_EQ(call_record_version_for(record), call_erased_record_version);
+    EXPECT_TRUE(record.state.content_erased.has_value());
     std::vector<uint8_t> encoded(call_record_size(record));
     write_call_record(record, encoded.data());
     CallRecord decoded{};
-    ASSERT_TRUE(read_call_record(encoded.data(), static_cast<uint32_t>(encoded.size()), decoded,
-                                 call_erased_record_version));
+    ASSERT_TRUE(read_call_record(encoded.data(), static_cast<uint32_t>(encoded.size()), decoded));
     std::vector<uint64_t> restored_storage(storage.size());
     CallTable restored(restored_storage.data(), limits);
     ASSERT_EQ(restored.restore_validated(decoded), AYNI_OK);
@@ -599,7 +598,7 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
                            {domain.data(), static_cast<uint32_t>(domain.size())},
                            {input_bytes.data(), input_size}, stamp(1), index),
               AYNI_OK);
-    EXPECT_EQ(call_record_version_for(table.record(index)), call_tool_calls_record_version);
+    EXPECT_EQ(table.record(index).contract.result_format, AYNI_CALL_RESULT_TOOL_CALLS);
     ASSERT_EQ(table.prepare(index, stamp(2)), AYNI_OK);
     ASSERT_EQ(table.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
     ASSERT_TRUE(table.claim_dispatch(index, boot, 3));
@@ -638,13 +637,15 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
 
     const auto record = table.record(index);
     EXPECT_EQ(record.result_kind, CallResultKind::tool_calls);
-    ASSERT_EQ(call_record_version_for(record), call_tool_calls_record_version);
+    ASSERT_EQ(record.contract.result_format, AYNI_CALL_RESULT_TOOL_CALLS);
     std::vector<uint8_t> bytes(call_record_size(record));
     write_call_record(record, bytes.data());
     CallRecord decoded{};
-    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
-    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
-                                 call_tool_calls_record_version));
+    EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(
+                  {call_record_type, static_cast<uint16_t>(call_record_version + 1),
+                   ayni::durability::record_required, 0}),
+              ayni::durability::RecordUse::unknown);
+    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.result_kind, CallResultKind::tool_calls);
     std::vector<uint64_t> restored_storage(tool_storage.size());
     CallTable restored{restored_storage.data(), tool_limits};
@@ -654,8 +655,7 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     EXPECT_EQ(tool_call_count(restored.tool_calls(index)), 1U);
     // An invalid kind tail or a list in a text contract is refused, not reinterpreted.
     ayni::foundation::store_le32(bytes.data() + bytes.size() - 4U, 3U);
-    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
-                                  call_tool_calls_record_version));
+    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     auto text_record = record;
     text_record.contract.result_format = AYNI_CALL_RESULT_TEXT;
     text_record.contract.category = ayni::catalog::CallClass::tool;
@@ -663,11 +663,10 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     // ADR-0060: the typed list and its kind are erased, while the real completion remains.
     ASSERT_EQ(table.erase_content(index, stamp(5)), AYNI_OK);
     const auto erased = table.record(index);
-    ASSERT_EQ(call_record_version_for(erased), call_erased_record_version);
+    ASSERT_TRUE(erased.state.content_erased.has_value());
     bytes.resize(call_record_size(erased));
     write_call_record(erased, bytes.data());
-    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
-                                 call_erased_record_version));
+    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.result.size, 0U);
     EXPECT_EQ(decoded.result_kind, CallResultKind::text);
     EXPECT_EQ(decoded.state.outcome, AYNI_CALL_COMPLETED);

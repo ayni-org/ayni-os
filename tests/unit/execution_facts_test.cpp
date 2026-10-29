@@ -190,22 +190,22 @@ TEST(ExecutionFacts, complete_identity_includes_each_original_epoch_and_observat
 }
 
 TEST(ExecutionFacts, record_prefixes_never_form_a_complete_execution_tail) {
-    for (const auto layout : {ObservationRecordLayout::source, ObservationRecordLayout::scoped}) {
+    for (const bool subscription : {false, true}) {
         auto fact = execution_fact();
-        if (layout == ObservationRecordLayout::scoped) {
+        if (subscription) {
             ayni::foundation::IdAllocator ids;
             ids.start(1);
             ASSERT_TRUE(ids.allocate(fact.dependencies[0].subscription_id));
         }
         std::vector<uint8_t> bytes(execution_record_size(fact));
         ayni::durability::BodyWriter writer(bytes.data(), static_cast<uint32_t>(bytes.size()));
-        write_execution(fact, writer, layout);
+        write_execution(fact, writer);
         ASSERT_TRUE(writer.complete());
         for (uint32_t size = 0; size <= bytes.size(); ++size) {
             ayni::durability::BodyReader reader(bytes.data(), size);
             ExecutionFact decoded{};
-            const bool complete = read_execution(reader, decoded, layout) && reader.ok() &&
-                                  valid_execution_metadata(decoded);
+            const bool complete =
+                read_execution(reader, decoded) && reader.ok() && valid_execution_metadata(decoded);
             EXPECT_EQ(complete, size == bytes.size()) << size;
         }
     }

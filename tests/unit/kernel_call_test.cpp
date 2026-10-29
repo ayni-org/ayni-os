@@ -797,12 +797,12 @@ TEST_F(ManagedCall, snapshot_retains_wait_resume_before_and_after_call_completio
                 continue;
             }
             ayni::work::TaskStateRecord state{};
-            ASSERT_TRUE(ayni::work::read_task_state_record(row.body.data(), row.header.length,
-                                                           state, row.header.version));
+            ASSERT_TRUE(
+                ayni::work::read_task_state_record(row.body.data(), row.header.length, state));
             if (state.task_id == task) {
                 ++selected;
                 const auto before = row.body;
-                ayni::work::write_task_state_record(changed, row.body.data(), row.header.version);
+                ayni::work::write_task_state_record(changed, row.body.data(), state.change);
                 ASSERT_NE(row.body, before);
             }
         }
@@ -889,6 +889,28 @@ TEST_F(ManagedCall, journal_replays_wait_resume_identity_and_rejects_broken_atom
         auto log = original;
         log[selected] = write_stored_batch(changed);
         check_recovery(log, false);
+    }
+    // C-STORE-004 / ADR-0082: even optional unknown records at every atomic
+    // partner position must reject before any writer/output and preserve source bytes.
+    for (std::size_t position = 0; position <= batch.records.size(); ++position) {
+        auto changed = batch;
+        changed.records.insert(changed.records.begin() + static_cast<std::ptrdiff_t>(position),
+                               JournalRecord{{UINT16_MAX, 1, 0, 0}, {}});
+        auto log = original;
+        log[selected] = write_stored_batch(changed);
+        Node target;
+        target.config() = work.node().config();
+        target.on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
+        target.sim().log() = log;
+        target.create_and_start();
+        target.recover();
+        EXPECT_EQ(target.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+        EXPECT_TRUE(target.info().restriction == AYNI_RESTRICTION_LOG_UNSUPPORTED ||
+                    target.info().restriction == AYNI_RESTRICTION_LOG_CORRUPT);
+        ASSERT_EQ(target.sim().log().size(), log.size());
+        for (std::size_t index = 0; index < log.size(); ++index) {
+            EXPECT_EQ(target.sim().log()[index].bytes, log[index].bytes);
+        }
     }
     ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
               AYNI_OK);
@@ -997,8 +1019,7 @@ TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_i
     for (const auto &variant : variants) {
         SCOPED_TRACE(variant.name);
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record,
-                                                 row->header.version));
+        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record));
         ASSERT_EQ(record.identity.call_id, call);
         ASSERT_TRUE(record.action.has_value());
         variant.change(record);
@@ -1048,8 +1069,7 @@ TEST_F(ManagedCall, snapshot_retains_requested_and_resolved_query_receipts) {
             continue;
         }
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(row.body.data(), row.header.length, record,
-                                                 row.header.version));
+        ASSERT_TRUE(ayni::work::read_call_record(row.body.data(), row.header.length, record));
         if (record.identity.call_id == call) {
             ++selected;
             ASSERT_TRUE(record.state.query.has_value());

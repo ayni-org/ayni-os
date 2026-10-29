@@ -1,4 +1,4 @@
-// Goal authority record layout, contracts/storage/records.md type 17/v2.
+// Goal authority record layout, contracts/storage/records.md type 17/v1.
 // Journal and snapshot share this codec; the surrounding replay validates
 // owning Goal identity, batch pairing and references to retained Grants.
 #ifndef AYNI_CORE_WORK_GOAL_GOAL_AUTHORITY_RECORDS_H
@@ -12,18 +12,13 @@
 namespace ayni::work {
 
 // E updates one Goal ceiling/reference set per transition; F propagation uses
-// separate bounded transitions. records.md type 17/v2 has no multi-Goal batch.
+// separate bounded transitions. records.md type 17/v1 has no multi-Goal batch.
 constexpr uint32_t goal_authority_records_per_transition = 1;
 constexpr uint16_t goal_authority_record_type = durability::record_type::goal_authority;
-constexpr uint16_t goal_authority_record_version = 2;
-// Same fact body; a journal pause additionally requires its direct Task cohort
-// and the work scan progress/request record in the same batch (records.md).
-constexpr uint16_t goal_authority_pause_record_version = 3;
-// Same body, authorized replacement binding paired with an exact work command.
-constexpr uint16_t goal_authority_reauthorization_record_version = 4;
+constexpr uint16_t goal_authority_record_version = 1;
 // The original 32-byte identity/stamp/phase/count prefix is followed by five
 // u64 binding/frontier words. Each requirement adds version, three byte-string
-// lengths, Grant ID and selected revision (records.md type 17/v2).
+// lengths, Grant ID and selected revision (records.md type 17/v1).
 constexpr uint32_t goal_authority_record_fixed_size = 72;
 constexpr uint32_t goal_requirement_record_fixed_size = 28;
 

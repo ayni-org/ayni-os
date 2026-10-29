@@ -21,79 +21,44 @@ namespace ayni::work {
 
 constexpr uint16_t task_record_type = durability::record_type::task;
 constexpr uint16_t task_record_version = 1;
-// Snapshot Task explicitly requires a source footer, even before its first checkpoint.
-constexpr uint16_t task_provenance_snapshot_version = 2;
-// Calendar creation appends stable civil/UTC occurrence identity (records.md type5).
-constexpr uint16_t task_calendar_record_version = 3;
-constexpr uint16_t task_calendar_provenance_snapshot_version = 4;
+// Snapshot creation adds original history, so its exact body has its own version.
+constexpr uint16_t task_snapshot_record_version = 2;
 constexpr uint16_t task_state_record_type = durability::record_type::task_state;
 constexpr uint16_t task_state_record_version = 1;
-// Same state body, but REQUIRED adjacent Task authority must follow (ADR-0038).
-constexpr uint16_t task_state_authority_record_version = 2;
-// Same body; direct live reauthorization preserves state and advances revision once.
-constexpr uint16_t task_state_reauthorization_record_version = 3;
-// Runtime extension keeps each original pairing meaning (records.md type6).
-constexpr uint16_t task_state_runtime_record_version = 4;
-constexpr uint16_t task_state_runtime_authority_record_version = 5;
-constexpr uint16_t task_state_runtime_reauthorization_record_version = 6;
-constexpr uint16_t task_state_raise_limit_record_version = 7;
-// Selected-call extension preserves ordinary/authority/reauthorization/raise pairing.
-constexpr uint16_t task_state_call_record_version = 8;
-constexpr uint16_t task_state_call_authority_record_version = 9;
-constexpr uint16_t task_state_call_reauthorization_record_version = 10;
-constexpr uint16_t task_state_call_raise_limit_record_version = 11;
-// Explicit owner wait resume; same selected-call body, paired with type9/v8.
-constexpr uint16_t task_state_resume_wait_record_version = 12;
-// Subscription event wait extends the complete selected-call body; same base pairing meanings.
-constexpr uint16_t task_state_subscription_wait_version = 13;
-constexpr uint16_t task_state_subscription_wait_authority_version = 14;
-constexpr uint16_t task_state_subscription_wait_reauthorization_version = 15;
-constexpr uint16_t task_state_subscription_wait_raise_version = 16;
-constexpr uint16_t task_state_version_max = task_state_subscription_wait_raise_version;
+// Schema 3 makes the cross-record proof explicit, independent of field presence.
+enum class TaskRecordChange : uint32_t {
+    state = 1,
+    authority = 2,
+    reauthorization = 3,
+    raise_limit = 4,
+    resume_wait = 5,
+};
 constexpr uint16_t task_steps_record_type = durability::record_type::task_steps;
 constexpr uint16_t task_steps_record_version = 1;
 constexpr uint16_t task_checkpoint_record_type = durability::record_type::task_checkpoint;
 constexpr uint16_t task_checkpoint_record_version = 1;
-// Same checkpoint body with REQUIRED paired content provenance (type 24, ADR-0060).
-constexpr uint16_t task_checkpoint_provenance_version = 2;
-// TASK and snapshot TASK layouts: contracts/storage/records.md.
-constexpr uint32_t task_record_size = 40;
-constexpr uint32_t task_calendar_tail_size = 2 * sizeof(uint64_t);
-constexpr uint32_t task_record_max_size = task_record_size + task_calendar_tail_size;
+// Identity 40 B, civil occurrence 16 B, calendar/source-presence markers 8 B.
+constexpr uint32_t task_record_size = 64;
+constexpr uint32_t task_record_max_size = task_record_size;
 uint32_t task_creation_record_size(const Task &task);
-uint16_t task_creation_version(const Task &task, bool provenance = false);
 // created_transition_id, last commit_seq, steps_seq, checkpoint_seq, steps_before.
 constexpr uint32_t task_snapshot_tail_size = 36;
 constexpr uint32_t task_snapshot_record_size = task_record_size + task_snapshot_tail_size;
-constexpr uint32_t task_state_record_size = 32;
-constexpr uint32_t task_state_runtime_field_count = 3; // used/limit/blocked, records.md type6/v4+.
-constexpr uint32_t task_state_runtime_record_size =
-    task_state_record_size + task_state_runtime_field_count * sizeof(uint32_t);
-// Selected logical call u64 and requested drain end u32; records.md type6/v8+.
-constexpr uint32_t task_state_call_record_size =
-    task_state_runtime_record_size + sizeof(uint64_t) + sizeof(uint32_t);
-// Subscription ID, generation, sequence and phase; no monotonic deadline in durable waits.
-constexpr uint32_t task_state_wait_identity_count = 3; // subscription, generation, sequence.
-constexpr uint32_t task_state_subscription_wait_tail =
-    task_state_wait_identity_count * sizeof(uint64_t) + sizeof(uint32_t);
-constexpr uint32_t task_state_max_size =
-    task_state_call_record_size + task_state_subscription_wait_tail;
-// Legacy defaults need no extension. All other runtime facts require type6/v4+.
-uint16_t task_state_version_for(const Task &task, uint16_t base = task_state_record_version);
-// Fixed body bytes for the selected known version; excludes the record envelope.
-uint32_t task_state_size_for(uint16_t version);
-// Pairing meaning of v4/v5/v6, respectively v1/v2/v3; v7 remains explicit raise.
-uint16_t task_state_base_version(uint16_t version);
+// Complete state: base 32 B, runtime 12 B, selected call 12 B, wait 28 B,
+// explicit change and wait-presence 8 B. No older short body is accepted.
+constexpr uint32_t task_state_record_size = 92;
+constexpr uint32_t task_state_max_size = task_state_record_size;
 // Without its keys.
 constexpr uint32_t task_steps_record_fixed_size = 16;
 // Without the writer's id and the state.
-constexpr uint32_t task_checkpoint_record_fixed_size = 20;
+constexpr uint32_t task_checkpoint_record_fixed_size = 24;
 
 // What a TASK record holds. task.goal_index and task.due_us are left 0.
 struct TaskRecord {
     uint64_t task_id;
     uint64_t replaced_task_id;
     NewTask task;
+    bool provenance_required = false; // True requires a complete source footer.
 };
 
 // A snapshot TASK's creation fields and durable history. Domain validity is
@@ -117,6 +82,8 @@ struct TaskStepRange {
 struct TaskStateRecord {
     uint64_t task_id;
     TaskState state;
+    TaskRecordChange change =
+        TaskRecordChange::state; // Journal partner proof, not cached Task state.
 };
 
 // The views point into the body.
@@ -125,26 +92,24 @@ struct TaskCheckpointRecord {
     uint32_t writer_version;
     ayni_string_v1 writer_id;
     ayni_bytes_v1 state;
+    bool provenance_required = false; // True requires the same transition source footer.
 };
 
-// body has task_creation_record_size(task) bytes; version selects legacy/calendar layout.
-void write_task_record(const Task &task, uint8_t *body);
+// body has the current complete creation size, including absent calendar values.
+void write_task_record(const Task &task, uint8_t *body, bool provenance = false);
 // Returns false for a body of another size.
-bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out,
-                      uint16_t version = task_record_version);
+bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out);
 
 // body has task_creation_record_size(task) + task_snapshot_tail_size bytes. Preserves the frozen
 // Task's original creation/commit/step/checkpoint stamps (ADR-0041).
-void write_task_snapshot_record(const Task &task, uint8_t *body);
+void write_task_snapshot_record(const Task &task, uint8_t *body, bool provenance = false);
 // Reads exactly that snapshot body; no snapshot-global or cross-table checks.
-bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out,
-                               uint16_t version = task_record_version);
+bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out);
 
-// body has task_state_size_for(version) bytes; caller selects matching version.
+// body has task_state_record_size bytes; change states the required batch proof.
 void write_task_state_record(const Task &task, uint8_t *body,
-                             uint16_t version = task_state_record_version);
-bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out,
-                            uint16_t version = task_state_record_version);
+                             TaskRecordChange change = TaskRecordChange::state);
+bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out);
 
 // Caller provides a valid range in task index; size includes each key length.
 uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range);
@@ -169,7 +134,8 @@ constexpr uint32_t task_checkpoint_record_max(uint32_t state_max_bytes) {
 }
 uint32_t task_checkpoint_record_size(const Task &task);
 // body has task_checkpoint_record_size(task) bytes; state is the task's.
-void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body);
+void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body,
+                                  bool provenance = false);
 bool read_task_checkpoint_record(const uint8_t *body, uint32_t size, TaskCheckpointRecord &out);
 
 template <typename OnStep>

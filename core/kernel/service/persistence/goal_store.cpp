@@ -13,7 +13,7 @@ constexpr uint32_t goal_extra = goal_current_seq_at + sizeof(uint64_t);
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
-// Owns this family's encoding in the original schema 2 journal order.
+// Owns this family's encoding in the original schema 3 journal order.
 class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -29,7 +29,7 @@ class Journal {
         return at;
     }
     // Creation facts precede all changed states, including a newly created Goal.
-    // Version selection protects authority, cleanup and content-source partners.
+    // Explicit markers protect authority, cleanup and content-source partners.
     bool goals() {
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {
             const work::Goal &goal = model_.goals.at(index);
@@ -37,15 +37,13 @@ class Journal {
                 goal.created.transition_id != stamp_.transition_id) {
                 continue;
             }
-            const uint16_t version = work::goal_record_version_for(
-                goal, model_.goal_authority.contains(index, goal.goal_id),
-                model_.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
-            uint8_t *at =
-                body(work::goal_record_type, version, work::goal_record_size(goal, version));
+            const work::GoalRecordOptions options{
+                model_.goal_authority.contains(index, goal.goal_id),
+                model_.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr};
+            uint8_t *at = body(work::goal_record_type, work::goal_record_version,
+                               work::goal_record_size(goal));
             if (at != nullptr) {
-                work::write_goal_record(goal, model_.goals.parameters(index), at, version,
-                                        model_.provenance.find(work::ProvenanceKind::goal, index,
-                                                               goal.goal_id) != nullptr);
+                work::write_goal_record(goal, model_.goals.parameters(index), at, options);
             }
         }
         for (uint32_t index = 0; index < model_.goals.size(); ++index) {
@@ -57,18 +55,19 @@ class Journal {
                 model_.goal_authority.contains(index, goal.goal_id) &&
                 model_.goal_authority.at(index).stamp.commit_seq == stamp_.commit_seq &&
                 model_.goal_authority.at(index).phase == work::GoalAuthorityPhase::paused;
-            const uint16_t version = goal_reauthorized_by(command_, goal.goal_id)
-                                         ? work::goal_state_reauthorization_record_version
-                                     : authority_pause ? work::goal_state_authority_record_version
-                                     : !work::GoalTable::is_live(goal.lifecycle) &&
-                                             model_.grants.has_active_goal_grants(goal.goal_id)
-                                         ? work::goal_state_with_cleanup_record_version
-                                     : model_.goal_authority.contains(index, goal.goal_id)
-                                         ? work::goal_state_with_authority_record_version
-                                         : work::goal_state_record_version;
-            uint8_t *at = body(work::goal_state_record_type, version, work::goal_state_record_size);
+            const auto change = goal_reauthorized_by(command_, goal.goal_id)
+                                    ? work::GoalRecordChange::reauthorization
+                                : authority_pause ? work::GoalRecordChange::authority_pause
+                                : !work::GoalTable::is_live(goal.lifecycle) &&
+                                        model_.grants.has_active_goal_grants(goal.goal_id)
+                                    ? work::GoalRecordChange::cleanup
+                                : model_.goal_authority.contains(index, goal.goal_id)
+                                    ? work::GoalRecordChange::authority
+                                    : work::GoalRecordChange::state;
+            uint8_t *at = body(work::goal_state_record_type, work::goal_state_record_version,
+                               work::goal_state_record_size);
             if (at != nullptr) {
-                work::write_goal_state_record(goal, at);
+                work::write_goal_state_record(goal, at, change);
             }
         }
         return ok_;
@@ -87,12 +86,7 @@ class Journal {
                 record.stamp.transition_id != stamp_.transition_id) {
                 return false;
             }
-            const auto version = goal_reauthorized_by(command_, record.goal_id)
-                                     ? work::goal_authority_reauthorization_record_version
-                                 : record.phase == work::GoalAuthorityPhase::paused
-                                     ? work::goal_authority_pause_record_version
-                                     : work::goal_authority_record_version;
-            auto *at = body(work::goal_authority_record_type, version,
+            auto *at = body(work::goal_authority_record_type, work::goal_authority_record_version,
                             work::goal_authority_record_size(record));
             if (at != nullptr) {
                 work::write_goal_authority_record(record, at);
@@ -110,46 +104,18 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     return Journal(model, stamp, writer).encode();
 }
-// Journal and snapshot versions preserve distinct creation-stamp guarantees.
-// Context-specific versions remain unreadable in the other context.
-bool knows_goal_body(uint16_t version, WorkRecordContext context) {
-    return version == work::goal_record_version ||
-           version == work::goal_with_authority_record_version ||
-           version == work::goal_authority_state_record_version ||
-           (context == WorkRecordContext::journal &&
-            (version == work::goal_work_profile_record_version ||
-             version == work::goal_provenance_record_version ||
-             version == work::goal_calendar_record_version ||
-             version == work::goal_calendar_provenance_record_version ||
-             version == work::goal_group_record_version)) ||
-           (context == WorkRecordContext::snapshot &&
-            (version == work::goal_creation_stamp_snapshot_version ||
-             version == work::goal_work_profile_snapshot_version ||
-             version == work::goal_provenance_snapshot_version ||
-             version == work::goal_calendar_snapshot_version ||
-             version == work::goal_calendar_provenance_snapshot_version ||
-             version == work::goal_group_snapshot_version));
-}
+// Schema 3 exposes one creation layout in each storage context and one state body.
 bool knows(uint16_t type, uint16_t version, WorkRecordContext context) {
     if (type == work::goal_record_type) {
-        return knows_goal_body(version, context);
+        return version == (context == WorkRecordContext::journal
+                               ? work::goal_record_version
+                               : work::goal_snapshot_record_version);
     }
     if (type == work::goal_authority_record_type) {
-        return version == work::goal_authority_record_version ||
-               (context == WorkRecordContext::journal &&
-                (version == work::goal_authority_pause_record_version ||
-                 version == work::goal_authority_reauthorization_record_version));
+        return version == work::goal_authority_record_version;
     }
-    // Snapshots carry state inside GOAL; optional journal-only extensions stay skippable.
-    if (context == WorkRecordContext::snapshot) {
-        return false;
-    }
-    return version == work::goal_state_record_version ||
-           version == work::goal_state_with_authority_record_version ||
-           version == work::goal_state_with_cleanup_record_version ||
-           (context == WorkRecordContext::journal &&
-            (version == work::goal_state_authority_record_version ||
-             version == work::goal_state_reauthorization_record_version));
+    return context == WorkRecordContext::journal && type == work::goal_state_record_type &&
+           version == work::goal_state_record_version;
 }
 uint32_t capacity(const KernelCapacities &c) {
     return c.goal_capacity;
@@ -157,7 +123,7 @@ uint32_t capacity(const KernelCapacities &c) {
 // A page holds the larger of creation-with-state and its separate authority row.
 uint32_t record_max(const KernelCapacities &c) {
     const auto goal =
-        work::goal_record_max_fixed_size + 2U * id_max + c.goal_parameter_max_bytes + goal_extra;
+        work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes + goal_extra;
     const auto authority =
         work::goal_authority_record_max(c.goal_requirement_capacity, c.authority_scope_max_bytes);
     return goal > authority ? goal : authority;
@@ -166,26 +132,19 @@ uint32_t record_max(const KernelCapacities &c) {
 // Use complete per-object bounds rather than multiplying the largest single record.
 uint64_t payload_max(const KernelCapacities &c) {
     return uint64_t{c.goal_capacity} *
-           (record_bytes(work::goal_record_max_fixed_size + 2U * id_max +
-                         c.goal_parameter_max_bytes + goal_extra) +
+           (record_bytes(work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes +
+                         goal_extra) +
             record_bytes(work::goal_authority_record_max(c.goal_requirement_capacity,
                                                          c.authority_scope_max_bytes)));
 }
 // A transition creates at most one Goal but may change every retained state.
 // Authority metadata retains its existing one-Goal-per-transition bound.
 uint32_t journal_max(const KernelCapacities &c) {
-    return record_bytes(work::goal_record_max_fixed_size + 2U * id_max +
-                        c.goal_parameter_max_bytes) +
+    return record_bytes(work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes) +
            c.goal_capacity * record_bytes(work::goal_state_record_size) +
            work::goal_authority_records_per_transition *
                record_bytes(work::goal_authority_record_max(c.goal_requirement_capacity,
                                                             c.authority_scope_max_bytes));
-}
-uint16_t goal_snapshot_version(const WorkModel &model, uint32_t index) {
-    const auto &goal = model.goals.at(index);
-    return work::goal_snapshot_version_for(
-        goal, model.goal_authority.contains(index, goal.goal_id),
-        model.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
 }
 // Parent-first traversal survives terminal slot reuse; selection is idempotent.
 bool next(const WorkModel &model, StoreCursor &cursor) {
@@ -198,8 +157,8 @@ StoreRecord shape(const WorkModel &model, const StoreCursor &cursor) {
                 work::goal_authority_record_size(model.goal_authority.at(cursor.index)),
                 work::goal_authority_record_type};
     }
-    const auto version = goal_snapshot_version(model, cursor.index);
-    return {version, work::goal_record_size(model.goals.at(cursor.index), version) + goal_extra};
+    return {work::goal_snapshot_record_version,
+            work::goal_record_size(model.goals.at(cursor.index)) + goal_extra};
 }
 // GOAL snapshots retain original creation stamp and current state sequence.
 // Authority changes cannot replace the evidence of durable original acceptance.
@@ -210,11 +169,11 @@ void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
         return;
     }
     const auto &goal = model.goals.at(index);
-    const auto version = goal_snapshot_version(model, index);
-    const auto base = work::goal_record_size(goal, version);
+    const auto base = work::goal_record_size(goal);
     work::write_goal_record(
-        goal, model.goals.parameters(index), body, version,
-        model.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr);
+        goal, model.goals.parameters(index), body,
+        {model.goal_authority.contains(index, goal.goal_id),
+         model.provenance.find(work::ProvenanceKind::goal, index, goal.goal_id) != nullptr});
     work::write_goal_state_record(goal, body + base);
     write_snapshot_stamp(body + base + work::goal_state_record_size,
                          {goal.created.transition_id, goal.created.commit_seq});
@@ -235,14 +194,8 @@ void advance(const WorkModel &model, StoreCursor &cursor) {
 durability::BatchCheck goal(WorkModel &model, const durability::SnapshotMetadata &metadata,
                             StoreReadCursor &cursor, uint16_t version, const uint8_t *body,
                             uint32_t size) {
-    if (version != work::goal_creation_stamp_snapshot_version &&
-        version != work::goal_work_profile_snapshot_version &&
-        version != work::goal_provenance_snapshot_version &&
-        version != work::goal_calendar_snapshot_version &&
-        version != work::goal_calendar_provenance_snapshot_version &&
-        version != work::goal_group_snapshot_version) {
-        return durability::BatchCheck::unsupported; // No inferred creation sequence for old
-                                                    // snapshots.
+    if (version != work::goal_snapshot_record_version) {
+        return durability::BatchCheck::unsupported;
     }
     if (size < work::goal_record_fixed_size + goal_extra) {
         return durability::BatchCheck::corrupt;
@@ -250,9 +203,10 @@ durability::BatchCheck goal(WorkModel &model, const durability::SnapshotMetadata
     const uint32_t base_size = size - goal_extra;
     work::GoalRecord record{};
     work::GoalStateRecord state{};
-    if (!work::read_goal_record(body, base_size, record, version) ||
+    if (!work::read_goal_record(body, base_size, record) ||
         !work::read_goal_state_record(body + base_size, work::goal_state_record_size, state) ||
-        record.goal_id != state.goal_id ||
+        record.goal_id != state.goal_id || state.change != work::GoalRecordChange::state ||
+        (state.state.lifecycle == AYNI_GOAL_PROPOSED && !record.authority_required) ||
         model.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return durability::BatchCheck::corrupt;
     }
@@ -311,9 +265,7 @@ durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata
                                           : durability::BatchCheck::unsupported;
 }
 const StoreKind kinds[] = {
-    {work::goal_record_type, work::goal_with_authority_record_version},
-    {work::goal_state_record_type, work::goal_state_with_authority_record_version},
-    {work::goal_authority_record_type, always_required}};
+    {work::goal_record_type}, {work::goal_state_record_type}, {work::goal_authority_record_type}};
 
 } // namespace
 const PersistentStore goal_store{work::goal_record_type,

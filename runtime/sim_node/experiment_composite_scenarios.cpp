@@ -2,6 +2,9 @@
 #include "experiment_execution.h"
 #include <cstring>
 namespace ayni::runtime::experiments {
+namespace {
+constexpr uint16_t unsupported_future_schema = UINT16_MAX; // Synthetic unsupported envelope.
+}
 bool Composite::oversized_round() {
     auto &e = world_.evidence;
     if (!world_.grant(1, "mock.tools") || !world_.grant(1, "notify.present")) {
@@ -388,10 +391,10 @@ bool Composite::run(CompositeScenario scenario) {
         completed_ = storage_boundary(VersionFault::schema, 0);
         break;
     case CompositeScenario::unsupported_legacy_schema:
-        completed_ = storage_boundary(VersionFault::schema, 1);
+        completed_ = storage_boundary(VersionFault::schema, 2);
         break;
     case CompositeScenario::rollback_unreadable_state:
-        completed_ = storage_boundary(VersionFault::schema, 3);
+        completed_ = storage_boundary(VersionFault::schema, unsupported_future_schema);
         break;
     case CompositeScenario::unsupported_record_version:
         completed_ = storage_boundary(VersionFault::required_record, UINT16_MAX);

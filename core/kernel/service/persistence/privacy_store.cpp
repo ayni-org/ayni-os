@@ -17,7 +17,7 @@ uint32_t record_max(const KernelCapacities &) {
 uint32_t journal_max(const KernelCapacities &c) {
     return capacity(c) == 0 ? 0 : record_bytes(work::privacy_record_size);
 }
-const StoreKind kinds[] = {{work::privacy_record_type, always_required}};
+const StoreKind kinds[] = {{work::privacy_record_type}};
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     const auto &record = model.privacy.record();

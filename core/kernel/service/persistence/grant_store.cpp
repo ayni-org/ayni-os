@@ -5,41 +5,28 @@
 #include "kernel/service/persistence/persistent_store.h"
 namespace ayni::kernel {
 namespace {
-const StoreKind kinds[] = {{authority::grant_record_type, always_required},
-                           {authority::grant_state_record_type, always_required},
-                           {authority::grant_revocation_record_type, always_required},
-                           {authority::grant_revocation_progress_record_type, always_required}};
-// Type 13/v2 has different journal/snapshot bodies. Keep that context decision
-// separate from the common REQUIRED check and all other record families.
-bool knows_grant_body(uint16_t version, WorkRecordContext context) {
-    return version == authority::grant_record_version ||
-           (context == WorkRecordContext::journal &&
-            version == authority::goal_grant_record_version) ||
-           (context == WorkRecordContext::snapshot &&
-            (version == authority::grant_snapshot_record_version ||
-             version == authority::goal_grant_snapshot_record_version));
-}
+const StoreKind kinds[] = {{authority::grant_record_type},
+                           {authority::grant_state_record_type},
+                           {authority::grant_revocation_record_type},
+                           {authority::grant_revocation_progress_record_type}};
+// Schema 3 separates complete creation and retained snapshot history.
 bool knows(uint16_t type, uint16_t version, WorkRecordContext context) {
     if (type == authority::grant_record_type) {
-        return knows_grant_body(version, context);
+        return version == (context == WorkRecordContext::journal
+                               ? authority::grant_record_version
+                               : authority::grant_snapshot_record_version);
     }
     if (context != WorkRecordContext::journal) {
         return false;
     }
-    switch (type) {
-    case authority::grant_state_record_type:
-        return version == authority::grant_state_record_version ||
-               version == authority::grant_revoked_state_record_version ||
-               version == authority::grant_goal_ended_state_record_version ||
-               version == authority::grant_expired_with_work_record_version;
-    case authority::grant_revocation_record_type:
-        return version == authority::grant_revocation_record_version ||
-               version == authority::grant_revocation_with_work_record_version;
-    case authority::grant_revocation_progress_record_type:
-        return version == authority::grant_revocation_progress_record_version;
-    default:
-        return false;
+    if (type == authority::grant_state_record_type) {
+        return version == authority::grant_state_record_version;
     }
+    if (type == authority::grant_revocation_record_type) {
+        return version == authority::grant_revocation_record_version;
+    }
+    return type == authority::grant_revocation_progress_record_type &&
+           version == authority::grant_revocation_progress_record_version;
 }
 uint32_t capacity(const KernelCapacities &c) {
     return c.grant_capacity;
@@ -58,7 +45,7 @@ uint32_t journal_max(const KernelCapacities &capacities) {
              record_bytes(authority::grant_record_max(capacities.authority_scope_max_bytes));
     bytes += capacities.grant_capacity * record_bytes(authority::grant_state_record_size);
     bytes += record_bytes(authority::grant_revocation_record_size);
-    bytes += record_bytes(authority::grant_revoked_state_record_size);
+    bytes += record_bytes(authority::grant_state_record_size);
     bytes += record_bytes(authority::grant_revocation_progress_record_size);
     return bytes;
 }
@@ -101,7 +88,7 @@ class GrantJournal {
             plan.cleanup_through_grant_id = grant.cleanup_through_grant_id;
         }
         auto *at = body(authority::grant_revocation_record_type,
-                        authority::grant_revocation_with_work_record_version,
+                        authority::grant_revocation_record_version,
                         authority::grant_revocation_record_size);
         if (at != nullptr) {
             authority::write_grant_revocation_record(plan, at);
@@ -121,13 +108,12 @@ class GrantJournal {
                 continue;
             }
             const bool created = grant.created_stamp.commit_seq == stamp_.commit_seq;
-            const uint32_t size = created ? authority::grant_record_size(grant)
-                                          : authority::grant_state_record_size_for(grant);
-            uint8_t *at =
-                body(created ? authority::grant_record_type : authority::grant_state_record_type,
-                     created ? authority::grant_record_version_for(grant)
-                             : authority::grant_state_record_version_for(grant),
-                     size);
+            const uint32_t size =
+                created ? authority::grant_record_size(grant) : authority::grant_state_record_size;
+            uint8_t *at = body(
+                created ? authority::grant_record_type : authority::grant_state_record_type,
+                created ? authority::grant_record_version : authority::grant_state_record_version,
+                size);
             if (at == nullptr) {
                 continue;
             }
@@ -177,22 +163,20 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
 StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
     const auto index = cursor.index;
     const auto &grant = model.grants.at(index);
-    const auto version = authority::grant_snapshot_record_version_for(grant);
-    return {version, authority::grant_snapshot_record_size(grant, version)};
+    return {authority::grant_snapshot_record_version, authority::grant_snapshot_record_size(grant)};
 }
 void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
     const auto index = cursor.index;
     authority::write_grant_snapshot_record(
-        model.grants.at(index), model.grants.source_domain(index), model.grants.scope(index), body,
-        authority::grant_snapshot_record_version_for(model.grants.at(index)));
+        model.grants.at(index), model.grants.source_domain(index), model.grants.scope(index), body);
 }
 
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
                                      StoreReadCursor &) {
     authority::GrantSnapshotRecord record{};
     const auto *binding = model.principals.binding();
-    if (!authority::read_grant_snapshot_record(body, size, record, version) ||
+    if (!authority::read_grant_snapshot_record(body, size, record) ||
         !within_snapshot(record.created_stamp, metadata) ||
         !within_snapshot(record.stamp, metadata) ||
         ((record.cleanup_stamp.transition_id != 0U || record.cleanup_stamp.commit_seq != 0U) &&

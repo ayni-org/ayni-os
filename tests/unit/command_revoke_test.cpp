@@ -107,87 +107,85 @@ TEST(CommandRevoke, complete_reader_rejects_truncation_tail_wrong_kind_and_zero_
 }
 
 // C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
-TEST(CommandRevoke, v3_stores_explicit_effect_and_original_identity_without_retention) {
+TEST(CommandRevoke, current_body_stores_effect_and_original_identity_without_retention) {
     const auto canonical = revoke_bytes();
     for (const auto effect : {AYNI_INTENT_EFFECT_CHANGED, AYNI_INTENT_EFFECT_NO_CHANGE,
                               AYNI_INTENT_EFFECT_TARGET_GONE}) {
         SCOPED_TRACE(effect);
         auto mapping = revoke_mapping(canonical, effect);
         mapping.retention = CommandRetention::accepted_revoke;
-        std::array<uint8_t, 80> body{};
-        ASSERT_TRUE(write_command_record(mapping, 4, view(canonical), body.data(), 80));
-        EXPECT_EQ(command_record_version_for(mapping), 3U);
-        EXPECT_EQ(command_record_size_for(mapping), 80U);
+        std::array<uint8_t, 92> body{};
+        ASSERT_TRUE(write_command_record(mapping, 4, view(canonical), body.data(), 92));
+        EXPECT_EQ(command_record_version, 1U);
+        EXPECT_EQ(command_record_size_for(mapping), 92U);
         // Contract v3 follows the old 52-byte fixed result with effect,
         // canonical format, length, then the complete fixed16 identity.
-        EXPECT_EQ(ayni::foundation::load_le32(body.data() + 52), effect);
+        EXPECT_EQ(ayni::foundation::load_le32(body.data() + 56), effect);
         const std::array<uint8_t, 8> format_and_size{1, 0, 0, 0, 16, 0, 0, 0};
-        EXPECT_EQ(std::memcmp(body.data() + 56, format_and_size.data(), 8), 0);
-        EXPECT_EQ(std::memcmp(body.data() + 64, canonical.data(), 16), 0);
+        EXPECT_EQ(std::memcmp(body.data() + 60, format_and_size.data(), 8), 0);
+        EXPECT_EQ(std::memcmp(body.data() + 68, canonical.data(), 16), 0);
         CommandMapping restored{};
         uint64_t floor = 0;
         ayni_bytes_v1 exact{};
-        ASSERT_TRUE(read_command_record(3, body.data(), 80, restored, floor, exact));
+        ASSERT_TRUE(read_command_record(body.data(), 92, restored, floor, exact));
         EXPECT_EQ(restored.effect, effect);
         EXPECT_EQ(restored.object.revision, mapping.object.revision);
         EXPECT_EQ(restored.commit_seq, 0U);
         EXPECT_EQ(restored.retention, CommandRetention::normal);
         EXPECT_EQ(floor, 4U);
-        EXPECT_EQ(exact.data, body.data() + 64);
+        EXPECT_EQ(exact.data, body.data() + 68);
         EXPECT_EQ(exact.size, 16U);
     }
-    EXPECT_EQ(command_record_max(0), 52U);
-    EXPECT_EQ(command_record_max(16), 80U);
-    EXPECT_EQ(command_record_max(340), 404U);
+    EXPECT_EQ(command_record_max(0), 92U);
+    EXPECT_EQ(command_record_max(16), 92U);
+    EXPECT_EQ(command_record_max(340), 416U);
 }
 
 // C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
-TEST(CommandRevoke, v3_damage_or_cross_version_interpretation_cannot_publish_partial_outputs) {
+TEST(CommandRevoke, damaged_or_short_body_cannot_publish_partial_outputs) {
     const auto canonical = revoke_bytes();
     const auto mapping = revoke_mapping(canonical);
-    std::array<uint8_t, 80> body{};
-    ASSERT_TRUE(write_command_record(mapping, 4, view(canonical), body.data(), 80));
+    std::array<uint8_t, 92> body{};
+    ASSERT_TRUE(write_command_record(mapping, 4, view(canonical), body.data(), 92));
     CommandMapping restored{};
     restored.principal_id = 123;
     uint64_t floor = 456;
     ayni_bytes_v1 exact{body.data(), 789};
-    const auto refuses = [&](const uint8_t *data, uint32_t size, uint16_t version = 3) {
-        EXPECT_FALSE(read_command_record(version, data, size, restored, floor, exact));
+    const auto refuses = [&](const uint8_t *data, uint32_t size) {
+        EXPECT_FALSE(read_command_record(data, size, restored, floor, exact));
         EXPECT_EQ(restored.principal_id, 123U);
         EXPECT_EQ(floor, 456U);
         EXPECT_EQ(exact.data, body.data());
         EXPECT_EQ(exact.size, 789U);
     };
-    for (uint32_t size = 0; size < 80; ++size) {
+    for (uint32_t size = 0; size < 92; ++size) {
         refuses(body.data(), size);
     }
-    for (uint32_t at : {32U, 36U, 40U, 48U, 52U, 56U, 60U, 64U, 68U, 72U}) {
+    for (uint32_t at : {32U, 36U, 40U, 48U, 52U, 56U, 60U, 64U, 68U, 72U, 76U}) {
         auto damaged = body;
         damaged[at] = 0;
-        refuses(damaged.data(), 80);
+        refuses(damaged.data(), 92);
     }
     auto damaged = body;
-    damaged[52] = 4; // Unknown effect.
-    refuses(damaged.data(), 80);
-    refuses(body.data(), 80, 1);
-    refuses(body.data(), 80, 2);
-    refuses(body.data(), 80, 4);
+    damaged[56] = 4; // Unknown effect.
+    refuses(damaged.data(), 92);
+
     const auto old_v2 = [&] {
         std::vector<uint8_t> value(body.begin(), body.end());
         value.erase(value.begin() + 52, value.begin() + 56); // Strip effect like v2.
         return value;
     }();
-    refuses(old_v2.data(), static_cast<uint32_t>(old_v2.size()), 2);
+    refuses(old_v2.data(), static_cast<uint32_t>(old_v2.size()));
 }
 
 // C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
 TEST(CommandRevoke, result_effect_and_target_are_validated_before_writing) {
     const auto canonical = revoke_bytes();
-    std::array<uint8_t, 80> bytes{};
+    std::array<uint8_t, 92> bytes{};
     bytes.fill(0xA5);
     const auto before = bytes;
     const auto refuses = [&](CommandMapping mapping) {
-        EXPECT_FALSE(write_command_record(mapping, 0, view(canonical), bytes.data(), 80));
+        EXPECT_FALSE(write_command_record(mapping, 0, view(canonical), bytes.data(), 92));
         EXPECT_EQ(bytes, before);
     };
     auto mapping = revoke_mapping(canonical);
@@ -216,12 +214,12 @@ TEST(CommandRevoke, accepted_revision_two_can_change_a_restored_active_target_af
     // ACTIVE/revision1; the accepted request retains its original CAS.
     const auto canonical = revoke_bytes(99, 2);
     const auto mapping = revoke_mapping(canonical, AYNI_INTENT_EFFECT_CHANGED);
-    std::array<uint8_t, 80> bytes{};
-    ASSERT_TRUE(write_command_record(mapping, 0, view(canonical), bytes.data(), 80));
+    std::array<uint8_t, 92> bytes{};
+    ASSERT_TRUE(write_command_record(mapping, 0, view(canonical), bytes.data(), 92));
     CommandMapping restored{};
     uint64_t floor = 0;
     ayni_bytes_v1 exact{};
-    ASSERT_TRUE(read_command_record(3, bytes.data(), 80, restored, floor, exact));
+    ASSERT_TRUE(read_command_record(bytes.data(), 92, restored, floor, exact));
     RevokeCommandRecord request{};
     ASSERT_TRUE(read_revoke_command(exact, request));
     EXPECT_EQ(request.expected_revision, 2U);
@@ -246,7 +244,7 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
     ASSERT_TRUE(read_revoke_command(view(invalid_canonical), raw));
     EXPECT_EQ(raw.expected_revision, 999U);
     constexpr uint32_t digest_offset = 2U * sizeof(uint64_t);
-    constexpr uint32_t record_size = revoke_command_record_fixed_size + revoke_command_size;
+    constexpr uint32_t record_size = command_record_size + revoke_command_size;
     const auto valid_canonical = revoke_bytes(99, 2);
     for (const auto effect : {AYNI_INTENT_EFFECT_CHANGED, AYNI_INTENT_EFFECT_NO_CHANGE,
                               AYNI_INTENT_EFFECT_TARGET_GONE}) {
@@ -264,14 +262,12 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
         std::array<uint8_t, record_size> damaged{};
         ASSERT_TRUE(
             write_command_record(valid, 4, view(valid_canonical), damaged.data(), record_size));
-        std::memcpy(damaged.data() + revoke_command_record_fixed_size, invalid_canonical.data(),
-                    revoke_command_size);
+        std::memcpy(damaged.data() + 68, invalid_canonical.data(), revoke_command_size);
         ayni::foundation::store_le64(damaged.data() + digest_offset, invalid.digest);
         CommandMapping decoded = valid;
         uint64_t floor = 123;
         ayni_bytes_v1 exact{output.data(), 456};
-        EXPECT_FALSE(read_command_record(revoke_command_record_version, damaged.data(), record_size,
-                                         decoded, floor, exact));
+        EXPECT_FALSE(read_command_record(damaged.data(), record_size, decoded, floor, exact));
         EXPECT_EQ(decoded.principal_id, valid.principal_id);
         EXPECT_EQ(decoded.command_id, valid.command_id);
         EXPECT_EQ(decoded.digest, valid.digest);
@@ -313,7 +309,7 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
 TEST(CommandRevoke, a_revoke_result_cannot_publish_a_nonfixed_canonical_size) {
     const auto canonical = revoke_bytes();
     auto mapping = revoke_mapping(canonical);
-    constexpr uint32_t record_size = revoke_command_record_fixed_size + revoke_command_size;
+    constexpr uint32_t record_size = command_record_size + revoke_command_size;
     std::array<uint8_t, record_size> bytes{};
     bytes.fill(0xA5);
     const auto before = bytes;

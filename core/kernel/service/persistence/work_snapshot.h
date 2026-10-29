@@ -35,7 +35,7 @@ uint32_t snapshot_record_max(const KernelCapacities &capacities);
 // The largest payload these capacities allow.
 uint64_t snapshot_payload_max(const KernelCapacities &capacities);
 
-// Monotone schema 2 snapshot sections, shared by writer and reader.
+// Monotone schema 3 snapshot sections, shared by writer and reader.
 enum class SnapshotSection {
     owner_binding,
     instances,

@@ -95,31 +95,31 @@ TEST(PersistentStore, family_versions_keep_their_required_and_context_rules) {
                                                 : RecordUse::unknown;
                     EXPECT_EQ(WorkReplay::classify_header(header, context), classified);
                     header.flags = 0;
-                    // ADR-0064 preserves legacy optional envelope acceptance exactly.
-                    const uint16_t first_required =
-                        type == record_type::instance || type == record_type::task_steps ||
-                                type == record_type::command_mapping || type == record_type::goal ||
-                                type == record_type::goal_state
-                            ? 2U
-                        : type == record_type::task ? 2U
-                        : type == record_type::task_state || type == record_type::task_checkpoint
-                            ? 2U
-                            : 0U;
-                    const bool optional_legacy =
-                        type == record_type::instance || type == record_type::task_steps;
-                    const bool required = !optional_legacy && version >= first_required;
-                    EXPECT_EQ(WorkReplay::classify_header(header, context),
-                              required ? RecordUse::corrupt : classified);
+                    EXPECT_EQ(WorkReplay::classify_header(header, context), RecordUse::corrupt);
                 }
                 RecordHeader unknown{type, UINT16_MAX, ayni::durability::record_required, 0};
                 EXPECT_EQ(WorkReplay::classify_header(unknown, context), RecordUse::unknown);
                 unknown.flags = 0;
-                EXPECT_EQ(WorkReplay::classify_header(unknown, context),
-                          type == record_type::instance || type == record_type::task_steps
-                              ? RecordUse::unknown
-                              : RecordUse::corrupt);
+                EXPECT_EQ(WorkReplay::classify_header(unknown, context), RecordUse::corrupt);
             }
         }
+    }
+}
+
+// ADR-0082 / C-STORE-017: different bodies have distinct exact versions even
+// when their leading identity fields match. Neither context can adopt the other.
+TEST(PersistentStore, complete_snapshot_histories_have_distinct_context_versions) {
+    for (const uint16_t type :
+         {record_type::instance, record_type::owner_binding, record_type::goal, record_type::task,
+          record_type::grant, record_type::command_mapping}) {
+        const RecordHeader journal{type, 1, ayni::durability::record_required, 0};
+        const RecordHeader snapshot{type, 2, ayni::durability::record_required, 0};
+        EXPECT_EQ(WorkReplay::classify_header(journal), RecordUse::applied);
+        EXPECT_EQ(WorkReplay::classify_header(snapshot), RecordUse::unknown);
+        EXPECT_EQ(WorkReplay::classify_header(journal, WorkRecordContext::snapshot),
+                  RecordUse::unknown);
+        EXPECT_EQ(WorkReplay::classify_header(snapshot, WorkRecordContext::snapshot),
+                  RecordUse::applied);
     }
 }
 

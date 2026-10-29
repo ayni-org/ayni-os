@@ -10,14 +10,7 @@ namespace ayni::kernel {
 namespace {
 
 bool knows(uint16_t, uint16_t version, WorkRecordContext) {
-    return version == work::call_record_version || version == work::call_skipped_record_version ||
-           version == work::call_execution_record_version ||
-           version == work::call_tool_calls_record_version ||
-           version == work::call_erased_record_version ||
-           version == work::call_subscription_record_version ||
-           version == work::call_erased_subscription_record_version ||
-           version == work::call_scoped_execution_record_version ||
-           version == work::call_erased_scoped_execution_record_version;
+    return version == work::call_record_version;
 }
 uint32_t capacity(const KernelCapacities &capacities) {
     return capacities.call_capacity;
@@ -26,7 +19,7 @@ uint32_t record_max(const KernelCapacities &capacities) {
     return work::call_record_max(call_limits(capacities));
 }
 
-const StoreKind kinds[] = {{work::call_record_type, always_required}};
+const StoreKind kinds[] = {{work::call_record_type}};
 uint32_t journal_max(const KernelCapacities &c) {
     return capacity(c) == 0U ? 0U : record_bytes(record_max(c));
 }
@@ -46,7 +39,7 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
             return false;
         }
         auto *at =
-            writer.add_record_body({work::call_record_type, work::call_record_version_for(record),
+            writer.add_record_body({work::call_record_type, work::call_record_version,
                                     durability::record_required, work::call_record_size(record)});
         if (at == nullptr) {
             return false;
@@ -67,7 +60,7 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
 StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
     const auto index = cursor.index;
     const auto record = model.calls.record(index);
-    return {work::call_record_version_for(record), work::call_record_size(record)};
+    return {work::call_record_version, work::call_record_size(record)};
 }
 void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
     const auto index = cursor.index;
@@ -77,11 +70,11 @@ void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *
 // Snapshot rows are independently bounded by the covered durable prefix.
 // Cross-row references are proved after every section is restored.
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
                                      StoreReadCursor &) {
     work::CallRecord record{};
     uint32_t duplicate = 0;
-    if (!work::read_call_record(body, size, record, version) ||
+    if (!work::read_call_record(body, size, record) ||
         record.state.latest.boot_epoch > metadata.boot_epoch ||
         !within_snapshot(record.state.latest.transition, metadata) ||
         (record.state.content_erased &&
@@ -115,13 +108,13 @@ const PersistentStore call_store{work::call_record_type,
 
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.
-durability::RecordUse WorkReplay::restore_call(uint16_t version, const uint8_t *body, uint32_t size,
+durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t size,
                                                work::ActionStamp stamp) {
     using durability::RecordUse;
     work::CallRecord record{};
     uint32_t task_index = 0;
     uint32_t call_index = 0;
-    if (!work::read_call_record(body, size, record, version) ||
+    if (!work::read_call_record(body, size, record) ||
         record.state.latest.boot_epoch != stamp.boot_epoch ||
         record.state.latest.transition.commit_seq != stamp.transition.commit_seq ||
         record.state.latest.transition.transition_id != stamp.transition.transition_id ||

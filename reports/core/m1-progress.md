@@ -110,6 +110,9 @@
 | [#101](https://github.com/RobotSe7en/ayni/pull/101) | 2026-10-28 | MA-033 完整 E4 | Native/Sim 父子组合、11 个提交边界、依赖/停止、版本矩阵与通知；typed/开发期存储例外见 ADR | ADR-0079 |
 | [#102](https://github.com/RobotSe7en/ayni/pull/102) | 2026-10-28 | 安全覆盖收尾 | 原保守范围补测达到本轮用户接受的 ≥80%；修复订阅新代恢复与回调 ABI 尺寸分类，通用 90% 偏差保留 | ADR-0080 |
 | [#103](https://github.com/RobotSe7en/ayni/pull/103) | 2026-10-28 | Core Alpha Native 报告 | 汇总完整实验、SDK、最终配置和覆盖证据，保留兼容待决与平台边界；本轮结束，M2 暂缓 | ADR-0080 |
+| [#104](https://github.com/RobotSe7en/ayni/pull/104) | 2026-10-29 | 通用 AgentOS 架构规划 | 本机优先的能力、发现和 MCP/MHS/ROS 接入与代码处置计划 | ADR-0081 |
+| [#105](https://github.com/RobotSe7en/ayni/pull/105) | 2026-10-29 | AP-00 入口清理 | 删除已替代草案和旧路径，消费者正式入口；ABI0.46 | ADR-0082 |
+| [#106](https://github.com/RobotSe7en/ayni/pull/106) | 2026-10-29 | AP-00 当前存储统一 | schema3 完整记录、严格未知拒绝及必要恢复验证；ABI不变 | ADR-0082 |
 
 ## 工作包日期
 
@@ -126,14 +129,14 @@
 
 ## 交接状态（2026-10-29）
 
-当前代码基线为 [#102](https://github.com/RobotSe7en/ayni/pull/102)（安全覆盖及恢复/ABI 分类修复，ADR-0080）；单一助理入口见 #94/#95（ADR-0072～0074）；ABI 0.46 / schema 2（本轮清理见 ADR-0082）。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。E2 Native 完整实验已由 #98 验证；完整 E1 Native 证据见 [#99](https://github.com/RobotSe7en/ayni/pull/99)（ADR-0077）；完整 E3 Native 证据见 [#100](https://github.com/RobotSe7en/ayni/pull/100)（ADR-0078）；E4 Native/Sim 组合与版本证据见 [#101](https://github.com/RobotSe7en/ayni/pull/101)（ADR-0079）；[Core Alpha Native 报告](m1-core-alpha.md) 已收齐本轮证据与保留事项；硬件仍未验收。
+当前代码基线为 [#102](https://github.com/RobotSe7en/ayni/pull/102)（安全覆盖及恢复/ABI 分类修复，ADR-0080）；单一助理入口见 #94/#95（ADR-0072～0074）；ABI 0.46 / schema 3（本轮清理见 ADR-0082）。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。E2 Native 完整实验已由 #98 验证；完整 E1 Native 证据见 [#99](https://github.com/RobotSe7en/ayni/pull/99)（ADR-0077）；完整 E3 Native 证据见 [#100](https://github.com/RobotSe7en/ayni/pull/100)（ADR-0078）；E4 Native/Sim 组合与版本证据见 [#101](https://github.com/RobotSe7en/ayni/pull/101)（ADR-0079）；[Core Alpha Native 报告](m1-core-alpha.md) 已收齐本轮证据与保留事项；硬件仍未验收。
 
 - **已交付：** 单一助理 Native CLI（#94 起取代双 Agent 与点名路由；模型可登记待批目标，“停”不经模型）、typed 文本/工具调用与双策略、私有记忆/共享撤销、可信日历提醒、Mock 订阅/场景观察、统一助理/暂停组/安静时段、C++ SDK 和公开示例。结构整改与各功能的契约/验证入口在上方 PR 表及报告。
 - **P6：** 正常 JSON profile/脱敏重放见 #90（ADR-0068）；最大配置及选定满表测量见 #91（ADR-0069）；typed 多节点正常调用/查询与在途关闭见 #92（ADR-0070）。#93 统一覆盖率、配置证据和报告；Core 行覆盖达到目标，通用安全分支 90% 目标仍有差距（ADR-0071），未缩统计范围。
 - **用户已定：** P6 正常 profile 的历史选择是记录完整 step 数并验模型等待不阻塞本地工作，10 步留作性能目标；本次完整 E1 则保留 ≤10 step 硬门槛（用户 2026-10-28 确认）。ADR-0072：单一 ToolLoop 助理、模型目标默认待批、“停”取消回答并暂停自主工作且保留提醒、双 Agent 目录启动前拒绝不迁移（取代 P5 点名优先简单路由）。ADR-0073：发请求时把当前本地时间交给模型（不随消息持久化）；ADR-0074：指令拆成 system 消息（用户要求）；安静时段默认关闭、未校时普通通知等待、自主暂停不补积压/提醒补一次、单组归属并继承祖先限制、通知成功回执持久后下一策略完成 Task，均保持（ADR-0065/0066）。
-- **待确认：** 固定服务 Task 已按推荐项实现、改选再改；用户尚未回复与新增远程 Core 准入 API 的范围选择，不记为已确认。真实模型短文本/工具独立验证沿用 #75；用户本机多轮试用（含模型调用计划工具）仍待完成，未建立长期密钥配置。未知 optional 扩展已由用户选择 schema 3 严格拒绝，存储包实施/验证尚待交付（ADR-0082）。
-- **下一步与未验证：** 本轮 Core Alpha Native 报告及状态同步已完成；完整 E1～E4、安全覆盖（本轮 ≥80%，原口径；通用 90% 偏差见 #102 / ADR-0080）与最终配置证据见报告。按用户决定停止，M2 暂缓；schema 3 严格格式待实施/验证，完整 MA-038、ESP-IDF 存储、硬件与真实模型多轮试用等待后续安排。变异继续暂停。
-- **本轮实施：** 用户批准 AP-00/AP-01 及清理/迁移/局部重构，明确未发布不兼容旧格式；本包移除已替代草案和旧路径（ABI 0.46，schema 2 不变）。后续 schema 3、严格未知记录拒绝和必要恢复验证，再做能力自描述，见[实施清单](../../docs/architecture/ap00-ap01-implementation.md)与 ADR-0082；M2、硬件、变异保持暂停。
+- **待确认：** 固定服务 Task 已按推荐项实现、改选再改；用户尚未回复与新增远程 Core 准入 API 的范围选择，不记为已确认。真实模型短文本/工具独立验证沿用 #75；用户本机多轮试用（含模型调用计划工具）仍待完成，未建立长期密钥配置。未知 optional 扩展随 schema 3 统一严格拒绝，原待决项由 ADR-0082 / #106 关闭。
+- **下一步与未验证：** 本轮 Core Alpha Native 报告及状态同步已完成；完整 E1～E4、安全覆盖（本轮 ≥80%，原口径；通用 90% 偏差见 #102 / ADR-0080）与最终配置证据见报告。按用户决定停止，M2 暂缓；完整 MA-038、ESP-IDF 存储、硬件与真实模型多轮试用等待后续安排。变异继续暂停。
+- **本轮实施：** 用户批准 AP-00/AP-01 及清理/迁移/局部重构，明确未发布不兼容旧格式；已移除已替代草案/旧路径（#105），并统一 schema 3、严格未知记录拒绝与必要恢复验证（#106）；下一包能力自描述，见[实施清单](../../docs/architecture/ap00-ap01-implementation.md)与 ADR-0082；M2、硬件、变异保持暂停。
 - **架构规划补充：** 用户 2026-10-29 授权三方交付[通用能力架构计划](../../docs/architecture/capability-centered-agentos-plan.md)，确认本机优先、远程可选；随后经两方讨论补充[发现、协议与代码处置计划](../../docs/architecture/capability-discovery-and-adapters.md)。分期、代码取舍和待决集中两份计划及 ADR-0081 提议；只交付文档，当前 ABI/schema 和 M2 暂缓保持。
 - **工作流：** 相关正常测试、作者自查、适用独立审查、最终提交 CI 全绿后 merge commit；命令、运行编号和测试数量集中各 PR。最终实现完整配置由 #102 记录，#93 保留历史阶段证据；本轮无新的付费模型调用或真实设备操作。
 

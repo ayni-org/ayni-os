@@ -13,34 +13,22 @@ namespace ayni::authority {
 
 constexpr uint16_t grant_record_type = durability::record_type::grant;
 constexpr uint16_t grant_record_version = 1;
-constexpr uint16_t goal_grant_record_version = 2; // REQUIRED bound Goal tail; records.md type 13.
+constexpr uint16_t grant_snapshot_record_version = 2; // Complete creation plus retained history.
 constexpr uint16_t grant_state_record_type = durability::record_type::grant_state;
 constexpr uint16_t grant_state_record_version = 1;
-constexpr uint16_t grant_revoked_state_record_version = 2;
-// F3 terminal facts also require same-batch work scan evidence (records.md).
-constexpr uint16_t grant_goal_ended_state_record_version = 3;
-constexpr uint16_t grant_expired_with_work_record_version = 4;
 constexpr uint16_t grant_revocation_record_type = durability::record_type::grant_revocation;
 constexpr uint16_t grant_revocation_record_version = 1;
-constexpr uint16_t grant_revocation_with_work_record_version = 2;
 constexpr uint16_t grant_revocation_progress_record_type =
     durability::record_type::grant_revocation_progress;
 constexpr uint16_t grant_revocation_progress_record_version = 1;
-constexpr uint16_t grant_snapshot_record_version = 2;
-constexpr uint16_t goal_grant_snapshot_record_version = 3; // Bound create plus v2 cleanup tail.
-constexpr uint16_t grant_snapshot_legacy_record_version = 1;
-// Fixed overhead excluding variable Capability/domain/scope data, type 13/v1.
-constexpr uint32_t grant_record_fixed_size = 80;
-constexpr uint32_t goal_grant_binding_size = sizeof(uint64_t); // Exact Goal ID after the old body.
-// Type 14/v1 stores id/revision/lifecycle; v2 appends the revocation root.
-constexpr uint32_t grant_state_record_size = 16;
-constexpr uint32_t grant_revoked_state_record_size = 24;
-// Type 15/v1 stores the root outcome and cursor; type 16/v1 stores progress.
+// Current creation always includes bound_goal_id; zero explicitly means an ordinary Grant.
+constexpr uint32_t grant_record_fixed_size = 88;
+// id/revision/lifecycle/revocation root; non-revoked rows require a zero root.
+constexpr uint32_t grant_state_record_size = 24;
 constexpr uint32_t grant_revocation_record_size = 32;
 constexpr uint32_t grant_revocation_progress_record_size = 24;
-// Snapshot type 13 appends stamps and state; v2 also appends cleanup facts.
-constexpr uint32_t grant_snapshot_tail_size = 40;
-constexpr uint32_t grant_revocation_snapshot_tail_size = 80;
+// Both stamps, current lifecycle and all root-cleanup facts are always present.
+constexpr uint32_t grant_snapshot_tail_size = 80;
 
 struct GrantRecord {
     uint64_t grant_id;
@@ -93,33 +81,22 @@ bool valid_grant_record(const GrantRecord &record);
 bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id);
 
 constexpr uint32_t grant_record_max(uint32_t scope_max_bytes) {
-    return grant_record_fixed_size + goal_grant_binding_size + AYNI_CATALOG_ID_MAX_BYTES +
-           2U * scope_max_bytes;
+    return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES + 2U * scope_max_bytes;
 }
 constexpr uint32_t grant_snapshot_record_max(uint32_t scope_max_bytes) {
-    return grant_record_max(scope_max_bytes) + grant_revocation_snapshot_tail_size;
+    return grant_record_max(scope_max_bytes) + grant_snapshot_tail_size;
 }
 uint32_t grant_record_size(const Grant &grant);
-// Generic facts preserve their old envelopes; bound facts require new readers.
-uint16_t grant_record_version_for(const Grant &grant);
-uint16_t grant_snapshot_record_version_for(const Grant &grant);
 void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
                         uint8_t *body);
-bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out,
-                       uint16_t version = grant_record_version);
+bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out);
 void write_grant_state_record(const Grant &grant, uint8_t *body);
-uint16_t grant_state_record_version_for(const Grant &grant);
-uint32_t grant_state_record_size_for(const Grant &grant);
-bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecord &out,
-                             uint16_t version = grant_state_record_version);
-uint32_t grant_snapshot_record_size(const Grant &grant,
-                                    uint16_t version = grant_snapshot_legacy_record_version);
-// Unsupported versions and v1 REVOKED have size zero; their writer is a no-op.
+bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecord &out);
+uint32_t grant_snapshot_record_size(const Grant &grant);
+// Complete current history; no fallback or partial legacy tail is written.
 void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
-                                 uint8_t *body,
-                                 uint16_t version = grant_snapshot_legacy_record_version);
-bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapshotRecord &out,
-                                uint16_t version = grant_snapshot_legacy_record_version);
+                                 uint8_t *body);
+bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapshotRecord &out);
 void write_grant_revocation_record(const GrantTable::RevokePlan &plan, uint8_t *body);
 bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevocationRecord &out);
 void write_grant_revocation_progress_record(const GrantTable::CleanupPlan &plan, uint8_t *body);

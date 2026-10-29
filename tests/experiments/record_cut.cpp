@@ -56,8 +56,7 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
                 break;
             }
             work::CallRecord call{};
-            if (!work::read_call_record(body, header.length, call, header.version) ||
-                !call.action) {
+            if (!work::read_call_record(body, header.length, call) || !call.action) {
                 break;
             }
             if (step && !call.identity.step_key.equals(text(step))) {

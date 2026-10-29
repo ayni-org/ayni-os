@@ -235,8 +235,8 @@ BatchCheck import_model(WorkModel &model, const SnapshotMetadata &meta,
     return reader.complete();
 }
 
-// ADR-0064: an optional journal-only extension remains skippable in a snapshot.
-TEST(WorkSnapshot, optional_goal_state_extensions_preserve_the_normal_snapshot_view) {
+// ADR-0082: an optional journal-only extension is rejected in a snapshot.
+TEST(WorkSnapshot, optional_goal_state_extensions_are_rejected) {
     Model original;
     populate(original.get());
     auto bytes = export_model(original.get());
@@ -248,9 +248,7 @@ TEST(WorkSnapshot, optional_goal_state_extensions_preserve_the_normal_snapshot_v
     ++meta.record_count;
     meta.payload_length = bytes.size();
     Model restored;
-    ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::ok);
-    EXPECT_EQ(restored.get().tasks.at(0).task_id, task_id);
-    EXPECT_EQ(restored.get().tasks.at(0).step_count, 2U);
+    ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::corrupt);
 }
 
 // ADR-0065: normal group preference snapshots retain the exact logical input frontier.
@@ -445,7 +443,7 @@ TEST(WorkSnapshot, unknown_required_records_and_incomplete_tasks_refuse_recovery
     EXPECT_EQ(reader.apply({999, 1, ayni::durability::record_required, 0}, nullptr),
               BatchCheck::unsupported);
     reader.reset(meta);
-    EXPECT_EQ(reader.apply({999, 1, 0, 0}, nullptr), BatchCheck::ok);
+    EXPECT_EQ(reader.apply({999, 1, 0, 0}, nullptr), BatchCheck::unsupported);
     // ADR-0038: an optional unknown record cannot replace the required work
     // cleanup fact, including an explicit idle scan in an otherwise empty snapshot.
     EXPECT_EQ(reader.complete(), BatchCheck::corrupt);
@@ -668,9 +666,13 @@ TEST(SnapshotCodec, newer_schema_is_unsupported_and_crc_continues_between_pages)
     SnapshotMetadata meta{};
     meta.generation = 1;
     meta.writer_epoch = 1;
-    meta.schema = ayni::durability::snapshot_schema + 1U;
     std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
     ayni::durability::write_snapshot_header(meta, header.data());
+    constexpr uint32_t schema_at = 4;
+    constexpr uint32_t crc_at = ayni::durability::snapshot_header_size - sizeof(uint32_t);
+    ayni::foundation::store_le16(header.data() + schema_at, ayni::durability::snapshot_schema + 1U);
+    ayni::foundation::store_le32(header.data() + crc_at,
+                                 ayni::foundation::crc32(header.data(), crc_at));
     SnapshotMetadata read{};
     EXPECT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
               BatchCheck::unsupported);

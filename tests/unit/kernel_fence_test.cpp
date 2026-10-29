@@ -1,3 +1,4 @@
+#include "foundation/crc32.h"
 // C-COMMIT-008/010/011: retries keep batch identity and isolate physical
 // writers before replacing the one mutable work model.
 #include "authority/principal/owner_binding_records.h"
@@ -287,16 +288,12 @@ ayni::hosts::sim::StorageImage image_with_schema(uint16_t schema) {
         ayni::durability::BatchView batch{};
         EXPECT_EQ(ayni::durability::read_batch(stored.bytes.data(), stored.bytes.size(), batch),
                   ayni::durability::BatchCheck::ok);
-        std::vector<uint8_t> bytes(stored.bytes.size());
-        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity, schema);
-        ayni::durability::RecordReader records(batch);
-        ayni::durability::RecordHeader header{};
-        const uint8_t *body = nullptr;
-        while (records.next(header, body) == ayni::durability::RecordReader::Next::record) {
-            EXPECT_TRUE(writer.add_record(header, body));
-        }
-        bytes.resize(writer.finish());
-        stored.bytes = std::move(bytes);
+        // Unsupported envelopes are synthetic CRC-valid bytes; there is no old writer.
+        constexpr uint32_t schema_at = 4;
+        constexpr uint32_t crc_at = ayni::durability::batch_header_size - sizeof(uint32_t);
+        ayni::foundation::store_le16(stored.bytes.data() + schema_at, schema);
+        ayni::foundation::store_le32(stored.bytes.data() + crc_at,
+                                     ayni::foundation::crc32(stored.bytes.data(), crc_at));
     }
     return image;
 }
@@ -304,7 +301,7 @@ ayni::hosts::sim::StorageImage image_with_schema(uint16_t schema) {
 // C-STORE-004/010, ADR-0038: unsupported data is preserved, never reset or migrated.
 TEST(StorageSchemaBoundary, unsupported_schema_never_installs_a_writer_or_mutates_source) {
     for (const uint16_t schema :
-         {uint16_t{0}, uint16_t{1}, uint16_t{ayni::durability::storage_schema + 1U}}) {
+         {uint16_t{0}, uint16_t{1}, uint16_t{2}, uint16_t{ayni::durability::storage_schema + 1U}}) {
         SCOPED_TRACE(schema);
         const auto image = image_with_schema(schema);
         WorkNode work;

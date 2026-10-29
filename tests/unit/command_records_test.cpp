@@ -206,13 +206,13 @@ TEST(CommandRecords, expired_receipt_syntax_rejects_retained_private_or_foreign_
     }
 }
 
-TEST(CommandRecords, ordinary_version_one_bytes_and_original_result_remain_compatible) {
+TEST(CommandRecords, ordinary_current_body_preserves_original_result) {
     const CommandMapping ordinary{1, 2, 3, 9, AYNI_INTENT_GOAL_CREATE, {0, 5, 6, AYNI_OBJECT_GOAL}};
-    std::array<uint8_t, 52> bytes{};
+    std::array<uint8_t, 76> bytes{};
     write_command_record(ordinary, 4, bytes.data());
-    const std::array<uint8_t, 52> expected{1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0,
-                                           0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
-                                           9, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0};
+    const std::array<uint8_t, 76> expected{
+        1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0,
+        0, 0, 1, 0, 0, 0, 9, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
     EXPECT_EQ(bytes, expected);
     CommandMapping restored{};
     uint64_t floor = 0;
@@ -222,22 +222,22 @@ TEST(CommandRecords, ordinary_version_one_bytes_and_original_result_remain_compa
     EXPECT_EQ(restored.canonical_size, 0U);
     EXPECT_EQ(restored.object.id, 5U);
     EXPECT_EQ(floor, 4U);
-    EXPECT_EQ(command_record_version_for(ordinary), 1U);
+    EXPECT_EQ(command_record_version, 1U);
 }
 
-TEST(CommandRecords, auth_version_two_round_trips_full_request_and_borrows_only_the_input_body) {
+TEST(CommandRecords, auth_current_body_round_trips_full_request_and_borrows_only_input) {
     const auto canonical = identity();
     const auto mapping = auth_mapping(canonical);
     std::vector<uint8_t> bytes(command_record_size_for(mapping));
     ASSERT_TRUE(write_command_record(mapping, 1, view(canonical), bytes.data(),
                                      static_cast<uint32_t>(bytes.size())));
-    EXPECT_EQ(bytes.size(), 60U + canonical.size());
-    EXPECT_EQ(command_record_version_for(mapping), 2U);
-    EXPECT_EQ(command_record_max(340), 404U);
+    EXPECT_EQ(bytes.size(), 76U + canonical.size());
+    EXPECT_EQ(command_record_version, 1U);
+    EXPECT_EQ(command_record_max(340), 416U);
     CommandMapping restored{};
     uint64_t floor = 0;
     ayni_bytes_v1 restored_bytes{};
-    ASSERT_TRUE(read_command_record(2, bytes.data(), static_cast<uint32_t>(bytes.size()), restored,
+    ASSERT_TRUE(read_command_record(bytes.data(), static_cast<uint32_t>(bytes.size()), restored,
                                     floor, restored_bytes));
     EXPECT_EQ(restored.digest, mapping.digest);
     EXPECT_EQ(restored.canonical_size, canonical.size());
@@ -247,7 +247,7 @@ TEST(CommandRecords, auth_version_two_round_trips_full_request_and_borrows_only_
     EXPECT_EQ(
         (std::vector<uint8_t>{restored_bytes.data, restored_bytes.data + restored_bytes.size}),
         canonical);
-    EXPECT_EQ(restored_bytes.data, bytes.data() + 60);
+    EXPECT_EQ(restored_bytes.data, bytes.data() + 68);
 }
 
 TEST(CommandRecords, every_truncated_or_altered_auth_identity_is_rejected_without_output_changes) {
@@ -262,26 +262,26 @@ TEST(CommandRecords, every_truncated_or_altered_auth_identity_is_rejected_withou
     const uint8_t sentinel = 0;
     ayni_bytes_v1 result{&sentinel, 99};
     for (uint32_t size = 0; size < bytes.size(); ++size) {
-        EXPECT_FALSE(read_command_record(2, bytes.data(), size, restored, floor, result)) << size;
+        EXPECT_FALSE(read_command_record(bytes.data(), size, restored, floor, result)) << size;
         EXPECT_EQ(restored.principal_id, 77U);
         EXPECT_EQ(floor, 88U);
         EXPECT_EQ(result.data, &sentinel);
         EXPECT_EQ(result.size, 99U);
     }
     auto damaged = bytes;
-    damaged.back() ^= 1; // canonical bytes differ from recorded digest
-    EXPECT_FALSE(read_command_record(2, damaged.data(), static_cast<uint32_t>(damaged.size()),
+    damaged[68] ^= 1; // canonical bytes differ from recorded digest
+    EXPECT_FALSE(read_command_record(damaged.data(), static_cast<uint32_t>(damaged.size()),
                                      restored, floor, result));
     damaged = bytes;
     damaged.push_back(0);
-    EXPECT_FALSE(read_command_record(2, damaged.data(), static_cast<uint32_t>(damaged.size()),
+    EXPECT_FALSE(read_command_record(damaged.data(), static_cast<uint32_t>(damaged.size()),
                                      restored, floor, result));
     damaged = bytes;
-    damaged[52] = 2; // unknown canonical format
-    EXPECT_FALSE(read_command_record(2, damaged.data(), static_cast<uint32_t>(damaged.size()),
+    damaged[60] = 2; // unknown canonical format
+    EXPECT_FALSE(read_command_record(damaged.data(), static_cast<uint32_t>(damaged.size()),
                                      restored, floor, result));
-    EXPECT_FALSE(read_command_record(3, bytes.data(), static_cast<uint32_t>(bytes.size()), restored,
-                                     floor, result));
+    EXPECT_FALSE(read_command_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 1U,
+                                     restored, floor, result));
     EXPECT_EQ(restored.principal_id, 77U);
 }
 
@@ -292,7 +292,7 @@ TEST(CommandRecords,
     std::array<uint8_t, 256> bytes{};
     bytes.fill(0xA5);
     const auto before = bytes;
-    EXPECT_FALSE(write_command_record(mapping, 0, {}, bytes.data(), 52));
+    EXPECT_FALSE(write_command_record(mapping, 0, {}, bytes.data(), command_record_size));
     EXPECT_EQ(bytes, before);
     ++mapping.digest;
     EXPECT_FALSE(write_command_record(mapping, 0, view(canonical), bytes.data(),
@@ -313,7 +313,7 @@ TEST(CommandRecords,
     // White-box input damage: a prior reader could never have written kind9.
     ayni::foundation::store_le32(bytes.data() + 32, AYNI_INTENT_GRANT_CREATE);
     uint64_t floor = 0;
-    EXPECT_FALSE(read_command_record(bytes.data(), 52, ordinary, floor));
+    EXPECT_FALSE(read_command_record(bytes.data(), command_record_size, ordinary, floor));
 }
 
 TEST(CommandRecords, invalid_output_shape_or_ordinary_kind_leaves_the_complete_buffer_untouched) {
@@ -321,7 +321,7 @@ TEST(CommandRecords, invalid_output_shape_or_ordinary_kind_leaves_the_complete_b
     std::array<uint8_t, 256> bytes{};
     bytes.fill(0xA5);
     const auto before = bytes;
-    EXPECT_EQ(command_record_max(0), 52U);
+    EXPECT_EQ(command_record_max(0), 92U);
     EXPECT_FALSE(write_command_record(ordinary, 0, {}, nullptr, 52));
     EXPECT_FALSE(write_command_record(ordinary, 0, {}, bytes.data(), 0));
     EXPECT_FALSE(write_command_record(ordinary, 0, {}, bytes.data(), 51));
@@ -329,7 +329,7 @@ TEST(CommandRecords, invalid_output_shape_or_ordinary_kind_leaves_the_complete_b
     EXPECT_FALSE(write_command_record(ordinary, 0, view(canonical), bytes.data(), 52));
     for (const auto kind : {0U, AYNI_INTENT_INSTANCE_STOP + 1U}) {
         ordinary.kind = kind;
-        EXPECT_FALSE(write_command_record(ordinary, 0, {}, bytes.data(), 52));
+        EXPECT_FALSE(write_command_record(ordinary, 0, {}, bytes.data(), command_record_size));
     }
     auto oversized = auth_mapping(canonical);
     oversized.canonical_size = 84U + 4096U + 1U;
@@ -376,7 +376,7 @@ TEST(CommandRecords, invalid_authority_result_or_identity_is_rejected_atomically
     output.principal_id = 777;
     uint64_t floor = 888;
     ayni_bytes_v1 restored{bytes.data(), 999};
-    EXPECT_FALSE(read_command_record(1, nullptr, 52, output, floor, restored));
+    EXPECT_FALSE(read_command_record(nullptr, 52, output, floor, restored));
     EXPECT_EQ(output.principal_id, 777U);
     EXPECT_EQ(floor, 888U);
     EXPECT_EQ(restored.data, bytes.data());

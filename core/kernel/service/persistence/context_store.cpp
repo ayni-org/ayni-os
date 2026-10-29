@@ -21,7 +21,7 @@ uint32_t record_max(const KernelCapacities &c) {
 uint32_t journal_max(const KernelCapacities &c) {
     return capacity(c) == 0 ? 0 : record_bytes(record_max(c));
 }
-const StoreKind kinds[] = {{knowledge::context_record_type, always_required}};
+const StoreKind kinds[] = {{knowledge::context_record_type}};
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     // Privacy progress is the sole journal effect for derived-source invalidation; emitting

@@ -908,12 +908,12 @@ TEST_F(ManagedExecution, erased_physical_record_preserves_independent_execution_
     ++erased_at.transition.transition_id;
     ASSERT_EQ(copy.erase_content(index, erased_at), AYNI_OK);
     const auto erased = copy.record(index);
-    ASSERT_EQ(ayni::work::call_record_version_for(erased), ayni::work::call_erased_record_version);
+    ASSERT_TRUE(erased.state.content_erased.has_value());
     std::vector<uint8_t> bytes(ayni::work::call_record_size(erased));
     ayni::work::write_call_record(erased, bytes.data());
     ayni::work::CallRecord decoded{};
-    ASSERT_TRUE(ayni::work::read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()),
-                                             decoded, ayni::work::call_erased_record_version));
+    ASSERT_TRUE(
+        ayni::work::read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     ASSERT_TRUE(decoded.state.execution.has_value());
     EXPECT_EQ(decoded.state.execution->phase, before.state.execution->phase);
     EXPECT_EQ(decoded.state.execution->target, before.state.execution->target);

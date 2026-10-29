@@ -22,11 +22,10 @@ bool WorkReplay::allows_reauthorization_record(const durability::RecordHeader &h
     switch (pairing_.reauthorization->stage) {
     case Stage::state:
         return header.type == work::goal_authority_record_type &&
-               header.version == work::goal_authority_reauthorization_record_version;
+               header.version == work::goal_authority_record_version;
     case Stage::metadata:
         return (header.type == work::task_state_record_type &&
-                work::task_state_base_version(header.version) ==
-                    work::task_state_reauthorization_record_version) ||
+                header.version == work::task_state_record_version) ||
                header.type == work::task_authority_record_type ||
                header.type == work::calendar_record_type || header.type == command_record_type;
     case Stage::command:

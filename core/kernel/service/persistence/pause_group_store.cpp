@@ -68,7 +68,7 @@ durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata
                ? durability::BatchCheck::ok
                : durability::BatchCheck::corrupt;
 }
-const StoreKind kinds[] = {{work::pause_group_record_type, always_required}};
+const StoreKind kinds[] = {{work::pause_group_record_type}};
 } // namespace
 const PersistentStore pause_group_store{work::pause_group_record_type,
                                         kinds,

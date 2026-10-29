@@ -7,18 +7,16 @@
 namespace ayni::kernel {
 namespace {
 bool knows(uint16_t, uint16_t version, WorkRecordContext) {
-    return version == work::provenance_record_version ||
-           version == work::context_provenance_record_version;
+    return version == work::provenance_record_version;
 }
 uint32_t capacity(const KernelCapacities &c) {
     const auto limits = provenance_limits(c);
     return limits.goals + limits.tasks;
 }
 uint32_t record_max(const KernelCapacities &c) {
-    return work::provenance_record_size(c.memory_dependency_capacity) +
-           work::provenance_origin_bytes;
+    return work::provenance_record_size(c.memory_dependency_capacity);
 }
-const StoreKind kinds[] = {{work::provenance_record_type, always_required}};
+const StoreKind kinds[] = {{work::provenance_record_type}};
 uint32_t journal_max(const KernelCapacities &c) {
     return capacity(c) == 0 ? 0 : record_bytes(record_max(c));
 }
@@ -38,9 +36,9 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
         if (++count > 1) {
             return false;
         }
-        auto *body = writer.add_record_body(
-            {work::provenance_record_type, work::provenance_record_version_for(r),
-             durability::record_required, work::provenance_record_size(r)});
+        auto *body =
+            writer.add_record_body({work::provenance_record_type, work::provenance_record_version,
+                                    durability::record_required, work::provenance_record_size(r)});
         if (body == nullptr) {
             return false;
         }
@@ -57,7 +55,7 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
 }
 StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
     const auto index = cursor.index;
-    return {work::provenance_record_version_for(model.provenance.at(index)),
+    return {work::provenance_record_version,
             work::provenance_record_size(model.provenance.at(index))};
 }
 void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
@@ -81,12 +79,12 @@ bool work_slot(const WorkModel &model, const work::ProvenanceRecord &record, uin
     return false;
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
                                      StoreReadCursor &) {
     work::ProvenanceRecord record{};
     uint32_t slot = 0;
     uint64_t latest = 0;
-    if (!work::read_provenance_record(body, size, record, version) ||
+    if (!work::read_provenance_record(body, size, record) ||
         !within_snapshot(record.stamp, metadata) || !work_slot(model, record, slot, latest) ||
         (record.content == work::ContentState::available ? record.stamp.commit_seq != latest
                                                          : record.stamp.commit_seq < latest)) {
@@ -122,13 +120,12 @@ const PersistentStore provenance_store{work::provenance_record_type,
 
 // A content-source change is part of that owner's already restored transition, never a
 // free-standing mutation.
-durability::RecordUse WorkReplay::restore_provenance(uint16_t version, const uint8_t *body,
-                                                     uint32_t size,
+durability::RecordUse WorkReplay::restore_provenance(const uint8_t *body, uint32_t size,
                                                      foundation::TransitionStamp stamp) {
     work::ProvenanceRecord record{};
     uint32_t slot = 0;
     uint64_t latest = 0;
-    if (!work::read_provenance_record(body, size, record, version) ||
+    if (!work::read_provenance_record(body, size, record) ||
         record.stamp.commit_seq != stamp.commit_seq ||
         record.content != work::ContentState::available ||
         record.stamp.transition_id != stamp.transition_id ||

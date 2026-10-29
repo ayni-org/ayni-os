@@ -1888,15 +1888,7 @@ TEST(WorkJournal, transition_writes_its_records_in_replay_order) {
     ASSERT_EQ(encoded.headers.size(), sizeof(expected) / sizeof(expected[0]));
     for (std::size_t record = 0; record < encoded.headers.size(); ++record) {
         EXPECT_EQ(encoded.headers[record].type, expected[record].type) << record;
-        EXPECT_EQ(encoded.headers[record].version,
-                  expected[record].type == ayni::work::goal_record_type
-                      ? ayni::work::goal_authority_state_record_version
-                  : expected[record].type == ayni::work::goal_state_record_type
-                      ? ayni::work::goal_state_with_authority_record_version
-                  : expected[record].type == ayni::work::goal_authority_record_type
-                      ? ayni::work::goal_authority_record_version
-                      : 1U)
-            << record;
+        EXPECT_EQ(encoded.headers[record].version, 1U) << record;
         EXPECT_EQ(encoded.headers[record].flags, record_required) << record;
         EXPECT_EQ(id_in(encoded.bodies[record]), expected[record].id) << record;
     }

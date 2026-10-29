@@ -174,8 +174,8 @@ TEST(BatchCodec, header_shorter_than_44_bytes_is_corrupt) {
 }
 
 // A later writer appends header fields before header_crc; this reader
-// accepts the longer header and finds the payload after it.
-TEST(BatchCodec, longer_header_from_a_later_writer_is_accepted) {
+// rejects the longer header after checking its CRC (ADR-0082).
+TEST(BatchCodec, longer_header_from_a_later_writer_is_unsupported) {
     const std::vector<uint8_t> intact = sample_batch();
     std::vector<uint8_t> bytes(intact.begin(), intact.begin() + batch_header_size - 4);
     bytes.insert(bytes.end(), {0xAB, 0xCD, 0xEF, 0x01});
@@ -185,10 +185,7 @@ TEST(BatchCodec, longer_header_from_a_later_writer_is_accepted) {
     reseal(bytes);
 
     BatchView batch{};
-    ASSERT_EQ(read_batch(bytes.data(), bytes.size(), batch), BatchCheck::ok);
-    EXPECT_EQ(batch.encoded_size, bytes.size());
-    EXPECT_EQ(batch.payload, bytes.data() + batch_header_size + 4);
-    EXPECT_EQ(batch.record_count, 2U);
+    EXPECT_EQ(read_batch(bytes.data(), bytes.size(), batch), BatchCheck::unsupported);
 }
 
 // C-STORE-004: another storage_schema or unknown flag bits are a format this

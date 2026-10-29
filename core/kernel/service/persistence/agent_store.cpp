@@ -10,7 +10,7 @@ constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
-// Owns this family's encoding in the original schema 2 journal order.
+// Owns this family's encoding in the original schema 3 journal order.
 class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -47,9 +47,11 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     return Journal(model, stamp, writer).encode();
 }
-// INSTANCE retains its original v1 layout and optional legacy header rule.
-bool knows(uint16_t, uint16_t version, WorkRecordContext) {
-    return version == work::instance_record_version;
+// INSTANCE has one current body; schema 3 requires its REQUIRED marker.
+bool knows(uint16_t, uint16_t version, WorkRecordContext context) {
+    return version == (context == WorkRecordContext::journal
+                           ? work::instance_record_version
+                           : work::instance_snapshot_record_version);
 }
 uint32_t capacity(const KernelCapacities &c) {
     return c.agent_capacity;
@@ -68,7 +70,7 @@ bool next(const WorkModel &model, StoreCursor &cursor) {
     return cursor.index < model.agents.size();
 }
 StoreRecord shape(const WorkModel &, const StoreCursor &) {
-    return {work::instance_record_version, instance_size};
+    return {work::instance_snapshot_record_version, instance_size};
 }
 // Snapshot identity carries the last lifecycle stamp after the journal body.
 void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
@@ -99,7 +101,7 @@ durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata
                             StoreReadCursor &cursor) {
     return instance(model, metadata, cursor, body, size);
 }
-const StoreKind kinds[] = {{work::instance_record_type, never_required}}; // Legacy v1 was optional.
+const StoreKind kinds[] = {{work::instance_record_type}};
 
 } // namespace
 const PersistentStore agent_store{work::instance_record_type,

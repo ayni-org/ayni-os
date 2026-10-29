@@ -64,7 +64,7 @@ bool read_contract(durability::BodyReader &reader, catalog::CallContract &contra
     return true;
 }
 
-// v6/v7 append this one schema; there is no durable monotonic lease deadline.
+// Finite subscription facts never store a monotonic lease deadline.
 void write_subscription(const CallRecord &record, durability::BodyWriter &writer) {
     const auto &spec = *record.contract.subscription;
     const auto &fact = *record.state.subscription;
@@ -97,17 +97,6 @@ bool read_subscription(durability::BodyReader &reader, CallRecord &record) {
     record.contract.subscription = spec;
     record.state.subscription = fact;
     return reader.ok();
-}
-ObservationRecordLayout execution_layout(uint16_t version) {
-    return version == call_scoped_execution_record_version ||
-                   version == call_erased_scoped_execution_record_version
-               ? ObservationRecordLayout::scoped
-               : ObservationRecordLayout::source;
-}
-bool erased_version(uint16_t version) {
-    return version == call_erased_record_version ||
-           version == call_erased_subscription_record_version ||
-           version == call_erased_scoped_execution_record_version;
 }
 void write_state(const CallState &state, durability::BodyWriter &writer) {
     write_action_stamp(state.created, writer);
@@ -169,8 +158,8 @@ uint32_t call_record_max(CallTable::Limits limits) {
            catalog::resource_group_max *
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
-           limits.result_bytes + execution_record_max() + call_erasure_tail_size +
-           call_subscription_fixed_bytes + catalog::CatalogId::max_size;
+           limits.result_bytes + execution_record_max() + call_subscription_fixed_bytes +
+           catalog::CatalogId::max_size;
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -187,11 +176,7 @@ uint32_t call_record_size(const CallRecord &record) {
                 ? call_subscription_fixed_bytes + record.contract.subscription->source.size()
                 : 0) +
            (record.action ? action_state_record_size(*record.action) : 0U) +
-           (record.state.execution ? execution_record_size(*record.state.execution) : 0U) +
-           (record.state.content_erased ? call_erasure_tail_size : 0U) +
-           (call_record_version_for(record) == call_tool_calls_record_version
-                ? call_result_kind_size
-                : 0U);
+           (record.state.execution ? execution_record_size(*record.state.execution) : 0U);
 }
 
 // The enclosing call owns the original action association; the action body uses
@@ -223,54 +208,22 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
         write_action_state_record(*record.action, action.data());
     }
     writer.bytes(action.data(), action_size);
-    if (record.state.content_erased) {
-        writer.u32(record.state.execution ? 1U : 0U);
-        write_action_stamp(*record.state.content_erased, writer);
-    }
+    writer.u32(record.state.execution ? 1U : 0U);
+    writer.u32(record.state.content_erased ? 1U : 0U);
+    write_action_stamp(record.state.content_erased.value_or(ActionStamp{}), writer);
+    writer.u32(static_cast<uint32_t>(record.result_kind));
     if (record.state.execution) {
-        write_execution(*record.state.execution, writer,
-                        execution_layout(call_record_version_for(record)));
+        write_execution(*record.state.execution, writer);
     }
     if (record.state.subscription) {
         write_subscription(record, writer);
     }
-    if (call_record_version_for(record) == call_tool_calls_record_version) {
-        writer.u32(static_cast<uint32_t>(record.result_kind));
-    }
-}
-
-uint16_t call_record_version_for(const CallRecord &record) {
-    if (record.state.subscription) {
-        return record.state.content_erased ? call_erased_subscription_record_version
-                                           : call_subscription_record_version;
-    }
-    if (record.state.execution && has_scoped_dependencies(*record.state.execution)) {
-        return record.state.content_erased ? call_erased_scoped_execution_record_version
-                                           : call_scoped_execution_record_version;
-    }
-    if (record.state.content_erased) {
-        return call_erased_record_version;
-    }
-    if (record.state.execution) {
-        return call_execution_record_version;
-    }
-    if (record.contract.result_format == catalog::call_tool_calls_result_format) {
-        return call_tool_calls_record_version;
-    }
-    return record.state.outcome == AYNI_CALL_SKIPPED ? call_skipped_record_version
-                                                     : call_record_version;
 }
 
 // This reader does not consult this boot's catalog. Old input is interpreted
 // only with its saved domain; replay separately proves Task and stamp relations.
-bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint16_t version) {
-    if (body == nullptr || size < call_record_fixed_size ||
-        (version != call_record_version && version != call_skipped_record_version &&
-         version != call_execution_record_version && version != call_tool_calls_record_version &&
-         version != call_erased_record_version && version != call_subscription_record_version &&
-         version != call_erased_subscription_record_version &&
-         version != call_scoped_execution_record_version &&
-         version != call_erased_scoped_execution_record_version)) {
+bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
+    if (body == nullptr || size < call_record_fixed_size) {
         return false;
     }
     durability::BodyReader reader(body, size);
@@ -303,34 +256,31 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out, uint1
         }
         record.action = fact;
     }
-    uint32_t has_execution =
-        version == call_execution_record_version || version == call_scoped_execution_record_version
-            ? 1U
-            : 0U;
-    if (erased_version(version)) {
-        has_execution = reader.u32();
-        record.state.content_erased = read_action_stamp(reader);
-        if (has_execution > 1U) {
-            return false;
-        }
+    const auto has_execution = reader.u32();
+    const auto erased = reader.u32();
+    const auto erasure_stamp = read_action_stamp(reader);
+    record.result_kind = static_cast<CallResultKind>(reader.u32());
+    if (has_execution > 1 || erased > 1 ||
+        (erased == 0 &&
+         (erasure_stamp.boot_epoch != 0 || erasure_stamp.transition.transition_id != 0 ||
+          erasure_stamp.transition.commit_seq != 0))) {
+        return false;
     }
-    if (has_execution != 0U) {
+    if (erased != 0) {
+        record.state.content_erased = erasure_stamp;
+    }
+    if (has_execution != 0) {
         ExecutionFact execution{};
-        if (!read_execution(reader, execution, execution_layout(version))) {
+        if (!read_execution(reader, execution)) {
             return false;
         }
         record.state.execution = execution;
     }
-    if ((version == call_subscription_record_version ||
-         version == call_erased_subscription_record_version) &&
+    if (record.contract.form == catalog::CallForm::subscription &&
         !read_subscription(reader, record)) {
         return false;
     }
-    if (version == call_tool_calls_record_version) {
-        record.result_kind = static_cast<CallResultKind>(reader.u32());
-    }
-    if (!reader.ok() || version != call_record_version_for(record) ||
-        !CallTable::valid_record(record)) {
+    if (!reader.ok() || !CallTable::valid_record(record)) {
         return false;
     }
     out = record;

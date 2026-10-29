@@ -334,32 +334,29 @@ TEST(KernelLifecycle, log_longer_than_the_buffer_is_read_in_chunks) {
     EXPECT_EQ(appended.batch.identity.transition_id, batches + 2U);
 }
 
-// Optional records the kernel does not know are skipped (C-STORE-004); the
-// appended batch keeps the largest writer_epoch and transition_id seen.
-TEST(KernelLifecycle, unknown_optional_records_are_skipped) {
+// C-STORE-004 / ADR-0082: optional unknown records reject without writing.
+TEST(KernelLifecycle, unknown_optional_records_restrict_without_writing) {
     Node node;
     node.sim().log().push_back(encode({1, 1, 7}, {{{999, 1, 0, 2}, {1, 2}}, boot_epoch_record(5)}));
     node.sim().log().push_back(encode({2, 2, 3}, {{{boot_epoch_record_type, 9, 0, 3}, {0, 0, 0}}}));
     node.create_and_start();
     node.recover();
-    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(node.info().boot_epoch, 6U);
-    const AppendedEpoch appended = decode_boot_batch(node.sim().log().back());
-    EXPECT_EQ(appended.batch.identity.commit_seq, 4U);
-    EXPECT_EQ(appended.batch.identity.writer_epoch, 3U);
-    EXPECT_EQ(appended.batch.identity.transition_id, 9U);
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_LOG_UNSUPPORTED);
+    EXPECT_EQ(node.sim().log().size(), 2U);
 }
 
 // A later version of a type this reader knows is unknown to it too:
-// without REQUIRED it is skipped, not read as the version it knows.
-TEST(KernelLifecycle, an_optional_record_of_a_newer_version_is_skipped) {
+// missing REQUIRED on a known type is corruption, including future versions.
+TEST(KernelLifecycle, an_optional_record_of_a_newer_version_is_rejected) {
     Node node;
     node.sim().log().push_back(encode(
         {1, 1, 7}, {{{ayni::work::instance_record_type, 2, 0, 2}, {1, 2}}, boot_epoch_record(5)}));
     node.create_and_start();
     node.recover();
-    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RUNNING);
-    EXPECT_EQ(node.info().boot_epoch, 6U);
+    EXPECT_EQ(node.lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(node.info().restriction, AYNI_RESTRICTION_LOG_CORRUPT);
+    EXPECT_EQ(node.sim().log().size(), 1U);
 }
 
 struct LogCase {

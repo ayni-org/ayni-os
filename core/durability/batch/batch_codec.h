@@ -17,9 +17,9 @@
 
 namespace ayni::durability {
 
-// Schema 2 is the development boundary (ADR-0038 decision 6). Other schemas
+// Schema 3 is the development boundary (ADR-0082). Other schemas
 // are rejected before recovery can write; no old data is implicitly adopted.
-constexpr uint16_t storage_schema = 2;
+constexpr uint16_t storage_schema = 3;
 // WRITER_FENCE: alone in its batch, the body is the new writer_epoch as a
 // little-endian uint32 equal to the batch header's (C-STORE-005).
 constexpr uint16_t writer_fence_record_type = record_type::writer_fence;
@@ -63,8 +63,7 @@ RecordHeader read_record_header(const uint8_t *bytes);
 // Encodes one batch into caller memory: add the records, then finish().
 class BatchWriter {
   public:
-    BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity,
-                uint16_t schema = storage_schema);
+    BatchWriter(uint8_t *buffer, std::size_t capacity, const BatchIdentity &identity);
 
     // false, with nothing written, when the record and the commit marker
     // after it do not fit. body may be null only when header.length is 0.
@@ -81,7 +80,6 @@ class BatchWriter {
     uint8_t *buffer_;
     std::size_t capacity_;
     BatchIdentity identity_;
-    uint16_t schema_;
     std::size_t end_ = batch_header_size;
     uint32_t record_count_ = 0;
 };
@@ -103,8 +101,8 @@ struct BatchView {
     std::size_t encoded_size;
 };
 
-// Checks the batch at the start of bytes. A header longer than 44 bytes is
-// accepted: fields appended by a later writer sit before header_crc.
+// Checks the batch at the start of bytes. Only the current fixed header is
+// accepted; a valid CRC cannot make an unknown extension readable (ADR-0082).
 BatchCheck read_batch(const uint8_t *bytes, std::size_t size, BatchView &out);
 
 // Walks the records of a checked batch.

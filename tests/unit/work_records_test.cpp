@@ -116,7 +116,13 @@ std::vector<uint8_t> buffer_for(uint32_t size) {
 
 // A fixed-size reader accepts a body of its size and no other.
 template <typename Read> void expect_size_only(uint32_t size, Read read) {
-    const std::vector<uint8_t> body = buffer_for(size);
+    std::vector<uint8_t> body = buffer_for(size);
+    if (size == ayni::work::goal_state_record_size) {
+        ayni::foundation::store_le32(body.data() + 48, 1);
+    } else if (size == ayni::work::task_state_record_size) {
+        ayni::foundation::store_le32(body.data() + 36, 8);
+        ayni::foundation::store_le32(body.data() + 84, 1);
+    }
     EXPECT_TRUE(read(body.data(), size));
     for (uint32_t shorter = 0; shorter < size; ++shorter) {
         EXPECT_FALSE(read(body.data(), shorter)) << shorter;
@@ -155,7 +161,7 @@ Body goal_body(const GoalFields &fields) {
     body.u32(fields.trigger).u64(fields.delay_us).u64(fields.period_us);
     body.text(fields.trigger_source);
     body.u64(900).u64(60);
-    body.text(fields.parameters);
+    body.text(fields.parameters).u32(0).u64(0).u32(0).u32(0).u32(0);
     return body;
 }
 
@@ -187,9 +193,10 @@ Goal goal_of(const GoalFields &fields, uint64_t created_us = 100) {
     return goal;
 }
 
-std::vector<uint8_t> written_goal(const Goal &goal, const std::string &parameters) {
+std::vector<uint8_t> written_goal(const Goal &goal, const std::string &parameters,
+                                  ayni::work::GoalRecordOptions options = {}) {
     std::vector<uint8_t> body(ayni::work::goal_record_size(goal));
-    ayni::work::write_goal_record(goal, bytes_of(parameters), body.data());
+    ayni::work::write_goal_record(goal, bytes_of(parameters), body.data(), options);
     return body;
 }
 
@@ -300,24 +307,19 @@ TEST(WorkRecords, nondefault_goal_profile_has_explicit_journal_and_snapshot_enco
     GoalFields fields;
     fields.period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
     auto goal = goal_of(fields);
-    const auto old_body = written_goal(goal, fields.parameters);
+    const auto ordinary = written_goal(goal, fields.parameters);
     goal.work_profile = {AYNI_WORK_BACKGROUND, AYNI_BACKGROUND_PERIOD_DEFAULT_US};
-    const auto body = written_goal(goal, fields.parameters);
-    ASSERT_EQ(body.size(), old_body.size() + ayni::work::goal_work_profile_size);
-    EXPECT_EQ(std::memcmp(body.data(), old_body.data(), old_body.size()), 0);
-    EXPECT_EQ(load_le32(body.data() + old_body.size()), AYNI_WORK_BACKGROUND);
-    const auto journal = ayni::work::goal_record_version_for(goal, true);
-    const auto snapshot = ayni::work::goal_snapshot_version_for(goal, true);
-    EXPECT_EQ(journal, ayni::work::goal_work_profile_record_version);
-    EXPECT_EQ(snapshot, ayni::work::goal_work_profile_snapshot_version);
-    for (const auto version : {journal, snapshot}) {
-        GoalRecord record{};
-        ASSERT_TRUE(ayni::work::read_goal_record(body.data(), static_cast<uint32_t>(body.size()),
-                                                 record, version));
-        EXPECT_TRUE(record.goal.work_profile == goal.work_profile);
-        EXPECT_EQ(string_of(record.goal.parameters), fields.parameters);
-        EXPECT_TRUE(record.authority_required);
-    }
+    const auto body = written_goal(goal, fields.parameters, {true, false});
+    ASSERT_EQ(body.size(), ordinary.size());
+    constexpr auto tail = ayni::work::goal_work_profile_size + ayni::work::goal_group_tail_size +
+                          ayni::work::goal_options_size;
+    EXPECT_EQ(load_le32(body.data() + body.size() - tail), AYNI_WORK_BACKGROUND);
+    GoalRecord record{};
+    ASSERT_TRUE(
+        ayni::work::read_goal_record(body.data(), static_cast<uint32_t>(body.size()), record));
+    EXPECT_TRUE(record.goal.work_profile == goal.work_profile);
+    EXPECT_EQ(string_of(record.goal.parameters), fields.parameters);
+    EXPECT_TRUE(record.authority_required);
 }
 
 TEST(WorkRecords, goal_record_round_trips_with_its_strings_and_parameters) {
@@ -452,12 +454,14 @@ TEST(WorkRecords, goal_record_parameters_end_the_body) {
     const Body empty = goal_body(fields);
     EXPECT_TRUE(reads_goal(empty));
 
-    // Everything up to the parameters' length, which says 3 where 2 bytes
-    // follow, then 1 where 2 do.
-    const std::vector<uint8_t> head(empty.bytes().begin(), empty.bytes().end() - 4);
-    EXPECT_FALSE(reads_goal(Body().raw(head).u32(3).raw("ab")));
-    EXPECT_FALSE(reads_goal(Body().raw(head).u32(1).raw("ab")));
-    EXPECT_TRUE(reads_goal(Body().raw(head).u32(2).raw("ab")));
+    constexpr uint32_t tail_size = 24;
+    const std::vector<uint8_t> head(empty.bytes().begin(), empty.bytes().end() - tail_size - 4);
+    const auto body = [&](uint32_t size) {
+        return Body().raw(head).u32(size).raw("ab").u32(0).u64(0).u32(0).u32(0).u32(0);
+    };
+    EXPECT_FALSE(reads_goal(body(3)));
+    EXPECT_FALSE(reads_goal(body(1)));
+    EXPECT_TRUE(reads_goal(body(2)));
 }
 
 // GOAL_STATE: what a change left; whether a next occurrence and an expiry
@@ -599,13 +603,14 @@ TEST(WorkRecords, task_snapshot_matches_the_existing_byte_layout) {
     task.steps_seq = 0x3837363534333231ULL;
     task.checkpoint_seq = 0x4847464544434241ULL;
     task.steps_before = 0x54535251U;
-    const std::vector<uint8_t> expected{
-        1,    0,    0,    0,    0,    0,    0,    0,    2,    0,    0,    0,    0,
-        0,    0,    0,    3,    0,    0,    0,    0,    0,    0,    0,    4,    0,
-        0,    0,    0,    0,    0,    0,    5,    0,    0,    0,    6,    0,    0,
-        0,    0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24,
-        0x25, 0x26, 0x27, 0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x41,
-        0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x51, 0x52, 0x53, 0x54};
+    std::vector<uint8_t> expected{1,    0,    0,    0,    0,    0,    0,    0,    2,    0,    0,
+                                  0,    0,    0,    0,    0,    3,    0,    0,    0,    0,    0,
+                                  0,    0,    4,    0,    0,    0,    0,    0,    0,    0,    5,
+                                  0,    0,    0,    6,    0,    0,    0,    0x11, 0x12, 0x13, 0x14,
+                                  0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+                                  0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x41, 0x42,
+                                  0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x51, 0x52, 0x53, 0x54};
+    expected.insert(expected.begin() + 40, 24, 0);
     ASSERT_EQ(expected.size(), ayni::work::task_snapshot_record_size);
     std::vector<uint8_t> body(expected.size());
     ayni::work::write_task_snapshot_record(task, body.data());
@@ -755,7 +760,7 @@ TEST(WorkRecords, task_checkpoint_record_round_trips_writer_and_state) {
         std::vector<uint8_t> body = buffer_for(size);
         ayni::work::write_task_checkpoint_record(task, bytes_of(state), body.data());
         EXPECT_EQ(std::vector<uint8_t>(body.begin(), body.begin() + size),
-                  Body().u64(task_id).u32(3).text(long_id).text(state).bytes());
+                  Body().u64(task_id).u32(3).text(long_id).text(state).u32(0).bytes());
 
         TaskCheckpointRecord record{};
         ASSERT_TRUE(ayni::work::read_task_checkpoint_record(body.data(), size, record));
@@ -769,7 +774,7 @@ TEST(WorkRecords, task_checkpoint_record_round_trips_writer_and_state) {
 // The writer's id fits a catalog id and the state ends the body; whether the
 // id is a valid one is for restore_checkpoint() to say.
 TEST(WorkRecords, task_checkpoint_record_refuses_a_long_writer_id_or_a_cut_state) {
-    expect_whole_body_only(Body().u64(task_id).u32(3).text("plan").text("abcd"),
+    expect_whole_body_only(Body().u64(task_id).u32(3).text("plan").text("abcd").u32(0),
                            [](const uint8_t *body, uint32_t size) {
                                TaskCheckpointRecord record{};
                                return ayni::work::read_task_checkpoint_record(body, size, record);
@@ -778,7 +783,7 @@ TEST(WorkRecords, task_checkpoint_record_refuses_a_long_writer_id_or_a_cut_state
     EXPECT_FALSE(reads_checkpoint(Body().u64(task_id).u32(3).u32(60).raw("plan")));
     EXPECT_FALSE(reads_checkpoint(Body().u64(task_id).u32(3).text("plan").u32(3).raw("ab")));
     EXPECT_FALSE(reads_checkpoint(Body().u64(task_id).u32(3).text("plan").u32(1).raw("ab")));
-    EXPECT_TRUE(reads_checkpoint(Body().u64(task_id).u32(3).text("plan").u32(2).raw("ab")));
+    EXPECT_TRUE(reads_checkpoint(Body().u64(task_id).u32(3).text("plan").u32(2).raw("ab").u32(0)));
 }
 
 // COMMAND_MAPPING (ADR-0026 decision 9): the command accepted, its result
@@ -789,16 +794,23 @@ TEST(WorkRecords, command_record_round_trips_a_mapping_and_its_floor) {
         99,        AYNI_INTENT_GOAL_CANCEL,  {0, goal_id, 4, AYNI_OBJECT_GOAL}};
     std::vector<uint8_t> body = buffer_for(ayni::kernel::command_record_size);
     ayni::kernel::write_command_record(mapping, 0xFFFF'FFFF'FFFF'FF00ULL, body.data());
-    EXPECT_EQ(std::vector<uint8_t>(body.begin(), body.end() - 1), Body()
-                                                                      .u64(principal)
-                                                                      .u64(0xFFFF'FFFF'FFFF'FFF0ULL)
-                                                                      .u64(0x0123'4567'89AB'CDEFULL)
-                                                                      .u64(0xFFFF'FFFF'FFFF'FF00ULL)
-                                                                      .u32(AYNI_INTENT_GOAL_CANCEL)
-                                                                      .u32(AYNI_OBJECT_GOAL)
-                                                                      .u64(goal_id)
-                                                                      .u32(4)
-                                                                      .bytes());
+    EXPECT_EQ(std::vector<uint8_t>(body.begin(), body.end() - 1),
+              Body()
+                  .u64(principal)
+                  .u64(0xFFFF'FFFF'FFFF'FFF0ULL)
+                  .u64(0x0123'4567'89AB'CDEFULL)
+                  .u64(0xFFFF'FFFF'FFFF'FF00ULL)
+                  .u32(AYNI_INTENT_GOAL_CANCEL)
+                  .u32(AYNI_OBJECT_GOAL)
+                  .u64(goal_id)
+                  .u32(4)
+                  .u32(1)
+                  .u32(AYNI_INTENT_EFFECT_CHANGED)
+                  .u32(0)
+                  .u32(0)
+                  .u32(0)
+                  .u32(0)
+                  .bytes());
 
     CommandMapping read{};
     uint64_t floor = 0;
@@ -825,7 +837,13 @@ TEST(WorkRecords, command_record_of_another_size_is_refused) {
                            .u32(AYNI_INTENT_GOAL_CANCEL)
                            .u32(AYNI_OBJECT_GOAL)
                            .u64(4)
-                           .u32(1);
+                           .u32(1)
+                           .u32(1)
+                           .u32(0)
+                           .u32(0)
+                           .u32(0)
+                           .u32(0)
+                           .u32(0);
     expect_whole_body_only(valid, [](const uint8_t *body, uint32_t size) {
         CommandMapping mapping{};
         uint64_t floor = 0;

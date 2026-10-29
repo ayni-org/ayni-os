@@ -15,7 +15,7 @@ using namespace ayni::authority;
 constexpr uint64_t grant_id = UINT64_C(0x100000001);
 constexpr std::array<uint8_t, 4> empty_domain{1, 0, 0, 0};
 // Independent ADR-0030 v1 oracle: the empty-domain root has a one-byte ID.
-constexpr std::array<uint8_t, 89> root_body{
+constexpr std::array<uint8_t, 97> root_body{
     1, 0, 0, 0, 1,   0, 0, 0, // Grant ID
     0, 0, 0, 0, 0,   0, 0, 0, // replaced Grant
     2, 0, 0, 0, 0,   0, 0, 0, // subject
@@ -27,7 +27,8 @@ constexpr std::array<uint8_t, 89> root_body{
     0, 0, 0, 0, 0,   0, 0, 0, // duration
     0, 0, 0, 0,               // depth
     4, 0, 0, 0, 1,   0, 0, 0, // source domain
-    4, 0, 0, 0, 1,   0, 0, 0  // expanded scope
+    4, 0, 0, 0, 1,   0, 0, 0, // expanded scope
+    0, 0, 0, 0, 0,   0, 0, 0  // no Goal binding
 };
 
 Grant root() {
@@ -170,8 +171,8 @@ TEST(GrantRecords, state_has_one_legal_terminal_shape_and_exact_little_endian_by
     auto grant = root();
     grant.lifecycle = AYNI_GRANT_EXPIRED;
     grant.revision = 2;
-    constexpr std::array<uint8_t, 16> expected{1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0};
-    std::array<uint8_t, 16> bytes{};
+    constexpr std::array<uint8_t, 24> expected{1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0};
+    std::array<uint8_t, 24> bytes{};
     write_grant_state_record(grant, bytes.data());
     EXPECT_EQ(bytes, expected);
     GrantStateRecord state{};
@@ -189,15 +190,15 @@ TEST(GrantRecords, state_has_one_legal_terminal_shape_and_exact_little_endian_by
     for (uint32_t size = 0; size < expected.size(); ++size) {
         EXPECT_FALSE(read_grant_state_record(expected.data(), size, state));
     }
-    EXPECT_FALSE(read_grant_state_record(nullptr, 16, state));
+    EXPECT_FALSE(read_grant_state_record(nullptr, 24, state));
 }
 
 // ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
 TEST(GrantRecords, snapshot_adds_original_stamps_revision_and_state_without_a_deadline) {
     auto grant = root();
-    ASSERT_EQ(grant_snapshot_record_size(grant), root_body.size() + 40U);
+    ASSERT_EQ(grant_snapshot_record_size(grant), root_body.size() + 80U);
     std::vector<uint8_t> expected(root_body.begin(), root_body.end());
-    constexpr std::array<uint8_t, 40> tail{11, 0, 0,  0, 0, 0, 0, 0, 12, 0, 0,  0, 0, 0,
+    constexpr std::array<uint8_t, 80> tail{11, 0, 0,  0, 0, 0, 0, 0, 12, 0, 0,  0, 0, 0,
                                            0,  0, 11, 0, 0, 0, 0, 0, 0,  0, 12, 0, 0, 0,
                                            0,  0, 0,  0, 1, 0, 0, 0, 1,  0, 0,  0};
     expected.insert(expected.end(), tail.begin(), tail.end());
@@ -343,40 +344,33 @@ TEST(GrantRecords, syntactically_valid_expanded_scope_outside_registered_domain_
 
 // ADR-0037 decision 18: the binding is an explicit little-endian tail and
 // cannot silently disappear under an older or mismatched envelope.
-TEST(GoalGrantRecords, binding_round_trips_only_under_its_exact_record_versions) {
+TEST(GoalGrantRecords, complete_current_body_round_trips_bound_and_unbound_grants) {
     auto grant = root();
     grant.bound_goal_id = grant_id;
     grant.grant_id = grant_id + 1;
     grant.allow_delegation = false;
     std::vector<uint8_t> bytes(grant_record_size(grant));
     write_grant_record(grant, domain(), domain(), bytes.data());
-    ASSERT_EQ(bytes.size(), root_body.size() + 8);
+    ASSERT_EQ(bytes.size(), root_body.size());
     const std::array<uint8_t, 8> expected{1, 0, 0, 0, 1, 0, 0, 0};
     EXPECT_TRUE(std::equal(expected.begin(), expected.end(), bytes.end() - 8));
     GrantRecord decoded{};
-    ASSERT_TRUE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded,
-                                  goal_grant_record_version));
+    ASSERT_TRUE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.grant.bound_goal_id, grant.bound_goal_id);
     auto unbound = bytes;
     std::fill(unbound.end() - 8, unbound.end(), uint8_t{0});
-    EXPECT_FALSE(read_grant_record(unbound.data(), static_cast<uint32_t>(unbound.size()), decoded,
-                                   goal_grant_record_version));
-    EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
-    EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 8, decoded,
-                                   goal_grant_record_version));
-    EXPECT_EQ(grant_record_version_for(grant), goal_grant_record_version);
-    EXPECT_EQ(grant_snapshot_record_version_for(grant), goal_grant_snapshot_record_version);
-    EXPECT_EQ(grant_snapshot_record_size(grant, grant_snapshot_record_version), 0U);
-    bytes.resize(grant_snapshot_record_size(grant, goal_grant_snapshot_record_version));
-    write_grant_snapshot_record(grant, domain(), domain(), bytes.data(),
-                                goal_grant_snapshot_record_version);
+    EXPECT_TRUE(read_grant_record(unbound.data(), static_cast<uint32_t>(unbound.size()), decoded));
+    EXPECT_EQ(decoded.grant.bound_goal_id, 0U);
+    EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 8, decoded));
+    bytes.resize(grant_snapshot_record_size(grant));
+    write_grant_snapshot_record(grant, domain(), domain(), bytes.data());
     GrantSnapshotRecord saved{};
-    ASSERT_TRUE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), saved,
-                                           goal_grant_snapshot_record_version));
+    ASSERT_TRUE(
+        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), saved));
     EXPECT_EQ(saved.create.grant.bound_goal_id, grant.bound_goal_id);
     EXPECT_EQ(saved.created_stamp.commit_seq, grant.created_stamp.commit_seq);
-    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()),
-                                            saved, grant_snapshot_record_version));
+    EXPECT_FALSE(
+        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 1, saved));
 }
 
 // ADR-0037 decisions 16/18: struct and byte facts share root, delegation and ID rules.
@@ -404,8 +398,7 @@ TEST(GoalGrantRecords, invalid_bound_facts_never_publish_partial_decoded_outputs
         write_grant_record(invalid, domain(), domain(), bytes.data());
         GrantRecord out{};
         out.grant_id = 91;
-        EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out,
-                                       goal_grant_record_version));
+        EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
         EXPECT_EQ(out.grant_id, 91U);
     }
 }
@@ -427,13 +420,11 @@ TEST(GoalGrantRecords, restored_snapshot_preserves_binding_and_revocation_cleanu
             grant.cleanup_through_grant_id = grant.grant_id;
             grant.cleanup_stamp = {22, 23};
         }
-        std::vector<uint8_t> bytes(
-            grant_snapshot_record_size(grant, goal_grant_snapshot_record_version));
-        write_grant_snapshot_record(grant, domain(), domain(), bytes.data(),
-                                    goal_grant_snapshot_record_version);
+        std::vector<uint8_t> bytes(grant_snapshot_record_size(grant));
+        write_grant_snapshot_record(grant, domain(), domain(), bytes.data());
         GrantSnapshotRecord decoded{};
-        ASSERT_TRUE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()),
-                                               decoded, goal_grant_snapshot_record_version));
+        ASSERT_TRUE(
+            read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
         EXPECT_EQ(decoded.revoked_by_root_id, grant.revoked_by_root_id);
         EXPECT_EQ(decoded.cleanup_after_grant_id, grant.cleanup_after_grant_id);
         EXPECT_EQ(decoded.cleanup_through_grant_id, grant.cleanup_through_grant_id);
