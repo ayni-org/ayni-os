@@ -150,7 +150,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 | 偏移 | 长度 | 字段 | 说明 |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | ASCII `AYSN` |
-| 4 | 2 | `storage_schema` | 3 |
+| 4 | 2 | `storage_schema` | 4 |
 | 6 | 2 | `header_length` | 72 |
 | 8 | 8 | `generation` | 从 1 起，每次激活递增 |
 | 16 | 8 | `covers_commit_seq` | 快照包含的最后一个提交 `S`；初始空快照为 0 |

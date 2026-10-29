@@ -17,8 +17,9 @@ constexpr uint32_t goal_authority_records_per_transition = 1;
 constexpr uint16_t goal_authority_record_type = durability::record_type::goal_authority;
 constexpr uint16_t goal_authority_record_version = 1;
 // The original 32-byte identity/stamp/phase/count prefix is followed by five
-// u64 binding/frontier words. Each requirement adds version, three byte-string
-// lengths, Grant ID and selected revision (records.md type 17/v1).
+// u64 binding/frontier words. Each requirement adds version, four byte-string
+// lengths (ID/domain/scope/original business proof), Grant ID and selected
+// revision (records.md type 17/v1).
 constexpr uint32_t goal_authority_record_fixed_size = 72;
 constexpr uint32_t goal_requirement_record_fixed_size = 32;
 
