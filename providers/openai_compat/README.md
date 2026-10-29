@@ -21,9 +21,16 @@ as a system message holding the instructions and a user message holding the rest
 empty instructions send no system message, and any other body is one user message. A malformed frame fails with INVALID_ARGUMENT and
 effect NONE before any HTTP request ([ADR-0074](../../docs/adr/0074-model-instructions-as-system-message.md)).
 
-Functions are named `tool_0`, `tool_1`, etc. within each request. Their description is
-the offered Binding ID; arguments are `field_<id>` and `text`. Integer units/ranges
-and token enums come from that request's authorized view. Responses must contain
+Functions are named `tool_0`, `tool_1`, etc. within each request; arguments are
+`field_<id>` and `text`. Configure a read-only `tool_usage` port for every offered
+tool. It supplies purpose, text grammar, result meaning, examples and explanations
+matched by exact Binding/Capability versions and field IDs. All metadata is copied
+in submit, capped at 4096 UTF-8 bytes per tool and 256 per field; missing/mismatched
+or invalid metadata rejects before HTTP, without truncation or a Binding-ID fallback.
+The port/context must outlive quiesce and must not block or call Core. The worker
+never invokes it. Integer units/ranges, token enums and required fields still come
+from that request's authorized view; descriptions cannot change them. See
+[the usage contract](../../contracts/host/tool_usage.md). Responses must contain
 one finished choice, either final text or tools. Truncation and invalid arguments
 fail with MODEL_OUTPUT; list encoding over the result byte limit also fails and
 returns the completion borrow. A model proposal does not execute the tool.

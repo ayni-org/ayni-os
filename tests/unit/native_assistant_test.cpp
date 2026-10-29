@@ -616,6 +616,14 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     // ADR-0073/0074: the system message holds the instructions and the local time in the
     // configured zone; the conversation alone is the user message.
     const auto first = server.history()[0];
+    // ADR-0082/AP-01: software grammar belongs to the tool schema, separate from
+    // the product system rules. Actual proposal still traverses the normal tool loop.
+    const auto schema = first.find("\"tools\":[");
+    ASSERT_NE(schema, std::string::npos);
+    EXPECT_EQ(first.substr(0, schema).find("YYYY-MM-DDTHH:MM"), std::string::npos);
+    EXPECT_NE(first.substr(schema).find("YYYY-MM-DDTHH:MM"), std::string::npos);
+    EXPECT_NE(first.substr(schema).find("Resolve relative dates"), std::string::npos);
+    EXPECT_NE(first.substr(schema).find("does not run or approve the work"), std::string::npos);
     EXPECT_NE(first.find(
                   R"("messages":[{"role":"system","content":"You are the owner's home assistant.)"),
               std::string::npos);
@@ -684,7 +692,8 @@ TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
     settle();
     ASSERT_EQ(server.requests(), 2U);
     const auto history = server.history();
-    const auto &results = history[1];
+    // Count conversation receipts, excluding usage examples in the tool schema.
+    const auto results = history[1].substr(0, history[1].find("\"tools\":["));
     const auto occurrences = [&](const std::string &needle) {
         size_t count = 0;
         for (auto at = results.find(needle); at != std::string::npos;

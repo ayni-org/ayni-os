@@ -4,9 +4,12 @@
 // C-PROV-002/004/006/008/011 and ADR-0054/0055, through registration and public calls.
 #include "loopback_http.h"
 #include "work_node.h"
+#include <array>
 #include <ayni/providers/mock.h>
 #include <ayni/providers/openai_compat.h>
 #include <cstdlib>
+#include <functional>
+#include <thread>
 
 namespace ayni::test {
 using namespace ayni::test;
@@ -37,10 +40,15 @@ class OpenaiFixture : public ::testing::Test {
         config.request_capacity = 1;
         config.response_max_bytes = response_limit;
         config.timeout_ms = timeout_ms;
+        config.result_format = model_result_format;
         initialize(config);
     }
     void initialize(const Config &config) {
-        ASSERT_EQ(provider.configure(config), AYNI_OK);
+        auto configured = config;
+        if (usage_available) {
+            configured.tool_usage = {sizeof(ayni_tool_usage_port_v1), 0, this, lookup_usage};
+        }
+        ASSERT_EQ(provider.configure(configured), AYNI_OK);
         ASSERT_EQ(provider.describe(descriptor), AYNI_OK);
         ASSERT_EQ(presenter.configure({ayni::providers::mock::Variant::a,
                                        ayni::providers::mock::Service::action, 1, 64}),
@@ -154,6 +162,37 @@ class OpenaiFixture : public ::testing::Test {
             return AYNI_OK;
         };
         ASSERT_EQ(ayni_register_goal_type(kernel, &goal), AYNI_OK);
+    }
+    // ADR-0082/AP-01: a mock device extension describes its declared identity,
+    // rather than copying arbitrary identities from the authoritative input.
+    static ayni_status_t lookup_usage(void *context, const ayni_tool_v1 *tool,
+                                      ayni_tool_usage_v1 *out) {
+        auto &self = *static_cast<OpenaiFixture *>(context);
+        ++self.usage_lookups;
+        EXPECT_EQ(std::this_thread::get_id(), self.owner_thread);
+        if (self.usage_status != AYNI_OK) {
+            return self.usage_status;
+        }
+        EXPECT_EQ(string_of(tool->binding_id), "show");
+        EXPECT_EQ(tool->binding_version, 1U);
+        ayni_tool_usage_v1 usage{
+            sizeof(usage),
+            1,
+            text("show"),
+            1,
+            self.tool_descriptor.capabilities->capability_id,
+            {self.usage_purpose.data(), static_cast<uint32_t>(self.usage_purpose.size())},
+            text("Text to show on the mock display; empty text clears it."),
+            text("Completion confirms simulated display only; no physical device is attached."),
+            text("field_1=7, field_2=calm, text=hello"),
+            2,
+            0,
+            self.usage_fields.data()};
+        if (self.change_usage) {
+            self.change_usage(usage);
+        }
+        *out = usage;
+        return AYNI_OK;
     }
     ayni_status_t decide(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output) {
         ayni_task_call_result_v1 result{};
@@ -289,6 +328,17 @@ class OpenaiFixture : public ::testing::Test {
     std::string prompt = "say hello";
     uint64_t command = 0, last_goal = 0;
     uint32_t model_capacity = 1;
+    uint32_t model_result_format = AYNI_CALL_RESULT_TOOL_CALLS;
+    bool usage_available = true;
+    uint32_t usage_lookups = 0;
+    ayni_status_t usage_status = AYNI_OK;
+    std::thread::id owner_thread = std::this_thread::get_id();
+    std::string usage_purpose = "Show text on the mock device display for a bounded duration.";
+    // Deliberately reverse explanation order: pairing uses IDs, not array positions.
+    std::array<ayni_tool_field_usage_v1, 2> usage_fields{
+        {{sizeof(ayni_tool_field_usage_v1), 2, text("Presentation style of the mock display.")},
+         {sizeof(ayni_tool_field_usage_v1), 1, text("How long to display the text.")}}};
+    std::function<void(ayni_tool_usage_v1 &)> change_usage;
 };
 
 } // namespace ayni::test

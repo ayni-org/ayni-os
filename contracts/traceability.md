@@ -28,10 +28,11 @@
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
 | [host/provider.md](host/provider.md) | 15 | 0 |
+| [host/tool_usage.md](host/tool_usage.md) | 6 | 0 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 405 | 140 |
+| 合计 | 411 | 140 |
 
 ## 计划章节 → 契约文档
 
@@ -108,6 +109,7 @@
 | ADR-0068 | fixtures/normal/README.md |
 | ADR-0072 | host/native_runtime.md |
 | ADR-0075 | fixtures/experiments/README.md |
+| ADR-0082 | host/tool_usage.md |
 
 ## 工作包 → 条款
 
