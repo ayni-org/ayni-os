@@ -236,9 +236,33 @@ class OpenaiFixture : public ::testing::Test {
                                              string_of(field.unit)
                                        : string_of(field.values.tokens.members[0]));
             }
+            if (execute_proposal) {
+                ayni_task_call_result_v1 device{};
+                device.struct_size = sizeof(device);
+                const auto device_status =
+                    snapshot.call_result(snapshot.call_context, text("show"), &device);
+                if (device_status == AYNI_NOT_FOUND) {
+                    const ayni_call_request_v1 request{sizeof(request),
+                                                       AYNI_POLICY_REQUEST_CALL,
+                                                       proposed.call.binding_version,
+                                                       0,
+                                                       text("show"),
+                                                       proposed.call.binding_id,
+                                                       proposed.call.arguments,
+                                                       proposed.call.text};
+                    return output.request_call(output.call_context, &request);
+                }
+                if (device_status != AYNI_OK) {
+                    return device_status;
+                }
+                device_result = device;
+                device_reply = string_of(device.text);
+            }
         }
-        return report(result.outcome == AYNI_CALL_COMPLETED ? AYNI_POLICY_REPORT_COMPLETION
-                                                            : AYNI_POLICY_REPORT_FAILURE,
+        const bool completed = result.outcome == AYNI_CALL_COMPLETED &&
+                               (!execute_proposal || result.tool_call_count == 0 ||
+                                device_result.outcome == AYNI_CALL_COMPLETED);
+        return report(completed ? AYNI_POLICY_REPORT_COMPLETION : AYNI_POLICY_REPORT_FAILURE,
                       snapshot, output);
     }
     uint64_t create() {
@@ -254,6 +278,7 @@ class OpenaiFixture : public ::testing::Test {
                 return;
             }
             work.node().sim().complete_storage();
+            EXPECT_EQ(presenter.advance(), AYNI_OK);
             work.node().sim().advance_us(1000);
             work.node().step();
         }
@@ -268,7 +293,8 @@ class OpenaiFixture : public ::testing::Test {
             const bool ended = task.lifecycle == AYNI_TASK_PAUSED ||
                                task.lifecycle == AYNI_TASK_CANCELLED ||
                                work.node().lifecycle() == AYNI_LIFECYCLE_STOPPED;
-            if (seen_result.outcome || (ended && provider.pending() == 0)) {
+            if ((seen_result.outcome && (!execute_proposal || device_result.outcome)) ||
+                (ended && provider.pending() == 0)) {
                 pump(30);
                 return;
             }
@@ -324,6 +350,9 @@ class OpenaiFixture : public ::testing::Test {
     WorkNode work;
     ayni_provider_v1 descriptor{}, tool_descriptor{};
     ayni_task_call_result_v1 seen_result{};
+    ayni_task_call_result_v1 device_result{};
+    bool execute_proposal = false;
+    std::string device_reply;
     std::string reply, proposal;
     std::string prompt = "say hello";
     uint64_t command = 0, last_goal = 0;

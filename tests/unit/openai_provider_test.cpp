@@ -118,6 +118,21 @@ TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
     EXPECT_EQ(proposal, "show|hello|7second|calm");
     EXPECT_TRUE(reply.empty());
 }
+// C-USAGE-004: the described mock device proposal executes only after policy
+// requests the exact Binding, through normal Core authority/resources/Call.
+TEST_F(OpenaiProvider, described_mock_device_runs_through_the_normal_managed_call) {
+    execute_proposal = true;
+    start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
+    create();
+    wait_done();
+    EXPECT_EQ(device_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(device_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(device_reply, "hello");
+    EXPECT_EQ(presenter.executions(), 1U);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_EQ(usage_lookups, 1U);
+    EXPECT_EQ(proposal, "show|hello|7second|calm");
+}
 
 // ADR-0082/AP-01: no explanatory fallback may expose an unusable or wrong tool.
 TEST_F(OpenaiProvider, tools_without_a_usage_port_are_rejected_before_http) {
@@ -257,9 +272,20 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
     view.capability_id = text("mock.display");
     view.capability_version = 1;
     view.text_limit = 64;
+    ayni_authority_value_set_v1 duration{};
+    duration.struct_size = sizeof(duration);
+    duration.kind = AYNI_AUTHORITY_I64;
+    duration.unit = text("second");
+    duration.values.integer = {1, 2};
+    view.field_count = 1;
+    view.fields[0] = {sizeof(ayni_authority_field_desc_v1), 1, AYNI_AUTHORITY_PARAMETER, 0,
+                      duration};
     Tool copied;
     ASSERT_TRUE(copied.copy(view));
     std::string purpose = "Original mock display usage";
+    std::string field_text = "Original display duration explanation";
+    ayni_tool_field_usage_v1 field{
+        sizeof(field), 1, {field_text.data(), static_cast<uint32_t>(field_text.size())}};
     ayni_tool_usage_v1 usage{sizeof(usage),
                              1,
                              view.binding_id,
@@ -269,11 +295,13 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
                              text("Display the supplied text."),
                              text("Simulated result only."),
                              text("hello"),
+                             1,
                              0,
-                             0,
-                             nullptr};
+                             &field};
     ASSERT_TRUE(copied.copy_usage(usage));
     std::fill(purpose.begin(), purpose.end(), 'x');
+    std::fill(field_text.begin(), field_text.end(), 'x');
+    field.field_id = 99;
     usage.text_usage = text("Changed source view");
     Protocol codec(4096);
     auto buffer = std::make_unique<char[]>(request_json_max);
@@ -285,6 +313,9 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
     const std::string encoded(buffer.get(), size);
     EXPECT_NE(encoded.find("Original mock display usage"), std::string::npos);
     EXPECT_NE(encoded.find("Display the supplied text."), std::string::npos);
+    EXPECT_NE(encoded.find("Original display duration explanation"), std::string::npos);
+    EXPECT_NE(encoded.find("\"field_1\""), std::string::npos);
+    EXPECT_EQ(encoded.find("\"field_99\""), std::string::npos);
     EXPECT_EQ(encoded.find(purpose), std::string::npos);
     EXPECT_EQ(encoded.find("Changed source view"), std::string::npos);
 }
