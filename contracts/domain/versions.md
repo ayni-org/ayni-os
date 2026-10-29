@@ -21,7 +21,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | C-VER-004 | `struct_size` 小于本库接受的布局（主版本 0 为本次版本的布局，主版本 ≥ 1 为该主版本首个发布布局）时返回 `AYNI_INVALID_ARGUMENT`；大于本库所知的布局时返回 `AYNI_UNSUPPORTED_VERSION`（调用方按更新的 minor 编译） | 更长的结构体被静默截断，调用方以为新字段已生效 | M0 已实现：`KernelApi.struct_size_below_this_layout_is_invalid_argument`、`KernelApi.struct_size_from_newer_minor_is_unsupported_version`；M1 回调边界：`ManagedCall.malformed_staged_requests_leave_the_real_decision_available`、`ManagedCall.callback_result_views_reject_bad_arguments_and_preserve_missing_outputs`、`ToolCalls.model_call_is_offered_only_listed_tools_within_the_goal_ceiling` |
 | C-VER-005 | ABI 不跨边界传递 STL 类型、C++ 异常、RTTI 依赖的类型、OS 句柄或第三方 SDK 类型 | 公开函数参数出现 `std::string`、`FILE *` 或 FreeRTOS 任务句柄 | `tests/contract` 头文件以严格 C99 编译；`check_deps` 限制公开头文件只包含 `stddef.h`、`stdint.h` |
 | C-VER-006 | 主版本 0 表示 experimental：允许不兼容变更，但每次变更须递增 `AYNI_ABI_MINOR` 并在 PR 中说明受影响的调用方；因此主版本 0 下不同 minor 互不接受（C-VER-001），每个结构体也只有当前布局（C-VER-003）；唯一例外是 #72 删除旧布局时未递增 0.36（见下文）。主版本 ≥ 1 时 minor 只追加，库接受同一主版本中不高于自身的 minor，届时再引入统一的前缀兼容读取（ADR-0053） | 修改已发布函数的语义而版本号不变 | 评审；`AbiVersion.reports_header_version` 保证运行时报告与头文件一致 |
-| C-VER-007 | 草案头文件（`include/ayni/draft/`）中的声明不属于已发布 ABI，没有符号；转为实现时整体移入正式头文件，并按 C-VER-002 追加 | 在草案头文件中实现函数并让调用方依赖它 | `check_deps`：正式头文件与 Core 不能包含草案；链接失败即暴露误用 ；ABI 0.46 删除被正式入口替代的草案和旧路径，不保留兼容声明；未知值在读取正文前拒绝：`KernelApi.unknown_intents_reject_before_their_bodies_are_read`（ADR-0082） |
+| C-VER-007 | 草案头文件（`include/ayni/draft/`）中的声明不属于已发布 ABI，没有符号；转为实现时整体移入正式头文件，并按 C-VER-002 追加 | 在草案头文件中实现函数并让调用方依赖它 | `check_deps`：正式头文件与 Core 不能包含草案；链接失败即暴露误用 ；ABI 0.46 删除被正式入口替代的草案和旧路径，不保留兼容声明；未知值在读取正文前拒绝：`UnsupportedApi.unknown_intents_reject_before_their_bodies_are_read`（ADR-0082） |
 
 ## 协议
 

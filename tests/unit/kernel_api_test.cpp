@@ -23,7 +23,7 @@ namespace {
 
 // C-VER-007 / ADR-0082: retired draft values and an unrelated unknown kind reject
 // before interpreting a body. The test owns these invalid inputs, not a draft API.
-TEST(KernelApi, unknown_intents_reject_before_their_bodies_are_read) {
+TEST(UnsupportedApi, unknown_intents_reject_before_their_bodies_are_read) {
     ayni::test::Node node;
     node.create();
     constexpr ayni_intent_kind_t retired_memory_write = 0x10001u;
