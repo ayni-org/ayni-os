@@ -114,6 +114,7 @@
 | [#105](https://github.com/RobotSe7en/ayni/pull/105) | 2026-10-29 | AP-00 入口清理 | 删除已替代草案和旧路径，消费者正式入口；ABI0.46 | ADR-0082 |
 | [#106](https://github.com/RobotSe7en/ayni/pull/106) | 2026-10-29 | AP-00 当前存储统一 | schema3 完整记录、严格未知拒绝及必要恢复验证；ABI不变 | ADR-0082 |
 | [#107](https://github.com/RobotSe7en/ayni/pull/107) | 2026-10-29 | AP-01 能力自描述 | C99 说明端口、exact 配对复制、真实模型 codec、本机 schedule 与模拟设备；ABI0.47/schema3 | ADR-0082 |
+| [#108](https://github.com/RobotSe7en/ayni/pull/108) | 2026-10-29 | AP-00/AP-01 审查扫尾 | 同步版本/授权文档，显式记录证明、移除存储残留、前移说明端口形状校验并保留无工具请求；ABI 0.47 / schema 3 不变 | ADR-0082 |
 
 ## 工作包日期
 
@@ -130,7 +131,7 @@
 
 ## 交接状态（2026-10-29）
 
-当前代码基线为 [#107](https://github.com/RobotSe7en/ayni/pull/107)（AP-00/AP-01 三包，ADR-0082）；历史安全覆盖及恢复/ABI 分类修复基线见 #102（ADR-0080）；单一助理入口见 #94/#95（ADR-0072～0074）；ABI 0.47 / schema 3（本轮清理见 ADR-0082）。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。E2 Native 完整实验已由 #98 验证；完整 E1 Native 证据见 [#99](https://github.com/RobotSe7en/ayni/pull/99)（ADR-0077）；完整 E3 Native 证据见 [#100](https://github.com/RobotSe7en/ayni/pull/100)（ADR-0078）；E4 Native/Sim 组合与版本证据见 [#101](https://github.com/RobotSe7en/ayni/pull/101)（ADR-0079）；[Core Alpha Native 报告](m1-core-alpha.md) 已收齐本轮证据与保留事项；硬件仍未验收。
+当前代码基线为 [#108](https://github.com/RobotSe7en/ayni/pull/108)（AP-00/AP-01 审查扫尾）；三包交付见 #105～#107（ADR-0082）；历史安全覆盖及恢复/ABI 分类修复基线见 #102（ADR-0080）；单一助理入口见 #94/#95（ADR-0072～0074）；ABI 0.47 / schema 3（本轮清理见 ADR-0082）。本轮 P0～P6 的 Native 正常实现与证据见 [M1 正常集成报告](m1-normal-integration.md)，详细顺序见 [实施计划](m1-detailed-plan.md)。E2 Native 完整实验已由 #98 验证；完整 E1 Native 证据见 [#99](https://github.com/RobotSe7en/ayni/pull/99)（ADR-0077）；完整 E3 Native 证据见 [#100](https://github.com/RobotSe7en/ayni/pull/100)（ADR-0078）；E4 Native/Sim 组合与版本证据见 [#101](https://github.com/RobotSe7en/ayni/pull/101)（ADR-0079）；[Core Alpha Native 报告](m1-core-alpha.md) 已收齐本轮证据与保留事项；硬件仍未验收。
 
 - **已交付：** 单一助理 Native CLI（#94 起取代双 Agent 与点名路由；模型可登记待批目标，“停”不经模型）、typed 文本/工具调用与双策略、私有记忆/共享撤销、可信日历提醒、Mock 订阅/场景观察、统一助理/暂停组/安静时段、C++ SDK 和公开示例。结构整改与各功能的契约/验证入口在上方 PR 表及报告。
 - **P6：** 正常 JSON profile/脱敏重放见 #90（ADR-0068）；最大配置及选定满表测量见 #91（ADR-0069）；typed 多节点正常调用/查询与在途关闭见 #92（ADR-0070）。#93 统一覆盖率、配置证据和报告；Core 行覆盖达到目标，通用安全分支 90% 目标仍有差距（ADR-0071），未缩统计范围。

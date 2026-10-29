@@ -39,15 +39,12 @@ constexpr uint16_t task_checkpoint_record_type = durability::record_type::task_c
 constexpr uint16_t task_checkpoint_record_version = 1;
 // Identity 40 B, civil occurrence 16 B, calendar/source-presence markers 8 B.
 constexpr uint32_t task_record_size = 64;
-constexpr uint32_t task_record_max_size = task_record_size;
-uint32_t task_creation_record_size(const Task &task);
 // created_transition_id, last commit_seq, steps_seq, checkpoint_seq, steps_before.
 constexpr uint32_t task_snapshot_tail_size = 36;
 constexpr uint32_t task_snapshot_record_size = task_record_size + task_snapshot_tail_size;
 // Complete state: base 32 B, runtime 12 B, selected call 12 B, wait 28 B,
 // explicit change and wait-presence 8 B. No older short body is accepted.
 constexpr uint32_t task_state_record_size = 92;
-constexpr uint32_t task_state_max_size = task_state_record_size;
 // Without its keys.
 constexpr uint32_t task_steps_record_fixed_size = 16;
 // Without the writer's id and the state.
@@ -96,19 +93,19 @@ struct TaskCheckpointRecord {
 };
 
 // body has the current complete creation size, including absent calendar values.
-void write_task_record(const Task &task, uint8_t *body, bool provenance = false);
+// Journal TASK must pass provenance=false; snapshots explicitly select their source proof.
+void write_task_record(const Task &task, uint8_t *body, bool provenance);
 // Returns false for a body of another size.
 bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out);
 
-// body has task_creation_record_size(task) + task_snapshot_tail_size bytes. Preserves the frozen
+// body has task_snapshot_record_size bytes. Preserves the frozen
 // Task's original creation/commit/step/checkpoint stamps (ADR-0041).
-void write_task_snapshot_record(const Task &task, uint8_t *body, bool provenance = false);
+void write_task_snapshot_record(const Task &task, uint8_t *body, bool provenance);
 // Reads exactly that snapshot body; no snapshot-global or cross-table checks.
 bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out);
 
 // body has task_state_record_size bytes; change states the required batch proof.
-void write_task_state_record(const Task &task, uint8_t *body,
-                             TaskRecordChange change = TaskRecordChange::state);
+void write_task_state_record(const Task &task, uint8_t *body, TaskRecordChange change);
 bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out);
 
 // Caller provides a valid range in task index; size includes each key length.
@@ -135,7 +132,7 @@ constexpr uint32_t task_checkpoint_record_max(uint32_t state_max_bytes) {
 uint32_t task_checkpoint_record_size(const Task &task);
 // body has task_checkpoint_record_size(task) bytes; state is the task's.
 void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body,
-                                  bool provenance = false);
+                                  bool provenance);
 bool read_task_checkpoint_record(const uint8_t *body, uint32_t size, TaskCheckpointRecord &out);
 
 template <typename OnStep>

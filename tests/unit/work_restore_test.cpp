@@ -1324,13 +1324,14 @@ Goal created_goal(uint64_t id) {
 std::vector<uint8_t> goal_record(uint64_t id) {
     const Goal goal = created_goal(id);
     std::vector<uint8_t> body(ayni::work::goal_record_size(goal));
-    ayni::work::write_goal_record(goal, {nullptr, 0}, body.data());
+    ayni::work::write_goal_record(goal, {nullptr, 0}, body.data(), ayni::work::GoalRecordOptions{});
     return body;
 }
 
 std::vector<uint8_t> goal_state_record(uint64_t id) {
     std::vector<uint8_t> body(ayni::work::goal_state_record_size);
-    ayni::work::write_goal_state_record(created_goal(id), body.data());
+    ayni::work::write_goal_state_record(created_goal(id), body.data(),
+                                        ayni::work::GoalRecordChange::state);
     return body;
 }
 
@@ -1350,13 +1351,14 @@ Task created_task(uint64_t id, uint64_t goal_of, uint32_t revision = 1) {
 
 std::vector<uint8_t> task_record(uint64_t id, uint64_t goal_of) {
     std::vector<uint8_t> body(ayni::work::task_record_size);
-    ayni::work::write_task_record(created_task(id, goal_of), body.data());
+    ayni::work::write_task_record(created_task(id, goal_of), body.data(), false);
     return body;
 }
 
 std::vector<uint8_t> task_state_record(uint64_t id, uint32_t revision = 1) {
     std::vector<uint8_t> body(ayni::work::task_state_record_size);
-    ayni::work::write_task_state_record(created_task(id, 0, revision), body.data());
+    ayni::work::write_task_state_record(created_task(id, 0, revision), body.data(),
+                                        ayni::work::TaskRecordChange::state);
     return body;
 }
 
@@ -1523,12 +1525,12 @@ TEST(WorkReplay, task_replacement_cannot_hide_a_pending_admission) {
     auto ended = created_task(first_id, replay_goal_id);
     ended.lifecycle = AYNI_TASK_COMPLETED;
     std::vector<uint8_t> state(ayni::work::task_state_record_size);
-    ayni::work::write_task_state_record(ended, state.data());
+    ayni::work::write_task_state_record(ended, state.data(), ayni::work::TaskRecordChange::state);
     ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, state), RecordUse::applied);
     auto replacement = created_task(replacement_id, replay_goal_id);
     replacement.replaced_task_id = first_id;
     std::vector<uint8_t> body(ayni::work::task_record_size);
-    ayni::work::write_task_record(replacement, body.data());
+    ayni::work::write_task_record(replacement, body.data(), false);
     EXPECT_EQ(feed(replay, 2, ayni::work::task_record_type, body), RecordUse::corrupt);
     EXPECT_FALSE(replay.complete());
 }
@@ -1634,7 +1636,7 @@ TEST(WorkReplay, a_completed_admission_does_not_allow_a_second_task_in_the_batch
     auto ended = created_task(first, replay_goal_id);
     ended.lifecycle = AYNI_TASK_COMPLETED;
     std::vector<uint8_t> state(ayni::work::task_state_record_size);
-    ayni::work::write_task_state_record(ended, state.data());
+    ayni::work::write_task_state_record(ended, state.data(), ayni::work::TaskRecordChange::state);
     ASSERT_EQ(feed(replay, 2, ayni::work::task_state_record_type, state), RecordUse::applied);
     admit_zero_task_fixture(replay, *model, first, 2);
     ASSERT_TRUE(replay.complete());
@@ -1674,7 +1676,8 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     cancelled.revision = 2;
     cancelled.cancel_revision = 2;
     std::vector<uint8_t> body(ayni::work::goal_state_record_size);
-    ayni::work::write_goal_state_record(cancelled, body.data());
+    ayni::work::write_goal_state_record(cancelled, body.data(),
+                                        ayni::work::GoalRecordChange::state);
     ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
     EXPECT_TRUE(replay.complete());
     EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
@@ -1682,7 +1685,8 @@ TEST(WorkReplay, live_task_under_an_ended_goal_is_inconsistent) {
     cancelled_task.lifecycle = AYNI_TASK_CANCELLED;
     cancelled_task.cancel_revision = 2;
     std::vector<uint8_t> task_body(ayni::work::task_state_record_size);
-    ayni::work::write_task_state_record(cancelled_task, task_body.data());
+    ayni::work::write_task_state_record(cancelled_task, task_body.data(),
+                                        ayni::work::TaskRecordChange::state);
     ASSERT_EQ(feed(replay, 3, ayni::work::task_state_record_type, task_body), RecordUse::applied);
     EXPECT_TRUE(replay.consistent(WorkReplay::unbounded));
 }
@@ -1704,7 +1708,8 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
         child.parent_goal_id = UINT64_C(0x100000004);
         child.depth = 1;
         std::vector<uint8_t> child_body(ayni::work::goal_record_size(child));
-        ayni::work::write_goal_record(child, {nullptr, 0}, child_body.data());
+        ayni::work::write_goal_record(child, {nullptr, 0}, child_body.data(),
+                                      ayni::work::GoalRecordOptions{});
         ASSERT_EQ(feed(replay, 2, ayni::work::goal_record_type, child_body), RecordUse::applied);
         ASSERT_EQ(feed(replay, 2, ayni::work::goal_state_record_type,
                        goal_state_record(UINT64_C(0x100000005))),
@@ -1717,7 +1722,8 @@ TEST(WorkReplay, live_goal_under_an_ended_parent_or_a_stopped_owner_is_inconsist
         cancelled.revision = 2;
         cancelled.cancel_revision = 2;
         std::vector<uint8_t> body(ayni::work::goal_state_record_size);
-        ayni::work::write_goal_state_record(cancelled, body.data());
+        ayni::work::write_goal_state_record(cancelled, body.data(),
+                                            ayni::work::GoalRecordChange::state);
         ASSERT_EQ(feed(replay, 3, ayni::work::goal_state_record_type, body), RecordUse::applied);
         EXPECT_FALSE(replay.consistent(WorkReplay::unbounded));
     }

@@ -28,7 +28,7 @@ class TaskCallTest : public ::testing::Test {
     }
     TaskState saved_state() const {
         std::vector<uint8_t> body(task_state_record_size);
-        write_task_state_record(tasks.at(0), body.data());
+        write_task_state_record(tasks.at(0), body.data(), ayni::work::TaskRecordChange::state);
         TaskStateRecord decoded{};
         EXPECT_TRUE(
             read_task_state_record(body.data(), static_cast<uint32_t>(body.size()), decoded));

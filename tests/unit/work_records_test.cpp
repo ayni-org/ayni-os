@@ -207,7 +207,7 @@ bool reads_goal(const Body &body) {
 
 std::vector<uint8_t> written_goal_state(const Goal &goal) {
     std::vector<uint8_t> body(ayni::work::goal_state_record_size);
-    ayni::work::write_goal_state_record(goal, body.data());
+    ayni::work::write_goal_state_record(goal, body.data(), ayni::work::GoalRecordChange::state);
     return body;
 }
 
@@ -229,7 +229,7 @@ Task task_of() {
 
 std::vector<uint8_t> written_task(const Task &task) {
     std::vector<uint8_t> body(ayni::work::task_record_size);
-    ayni::work::write_task_record(task, body.data());
+    ayni::work::write_task_record(task, body.data(), false);
     return body;
 }
 
@@ -567,7 +567,7 @@ TEST(WorkRecords, task_state_record_round_trips_a_hold) {
     task.hold_reason = AYNI_REASON_POLICY_NO_PROGRESS;
     task.step_count = 3;
     std::vector<uint8_t> body(ayni::work::task_state_record_size);
-    ayni::work::write_task_state_record(task, body.data());
+    ayni::work::write_task_state_record(task, body.data(), ayni::work::TaskRecordChange::state);
 
     TaskStateRecord record{};
     ASSERT_TRUE(ayni::work::read_task_state_record(body.data(), ayni::work::task_state_record_size,
@@ -613,7 +613,7 @@ TEST(WorkRecords, task_snapshot_matches_the_existing_byte_layout) {
     expected.insert(expected.begin() + 40, 24, 0);
     ASSERT_EQ(expected.size(), ayni::work::task_snapshot_record_size);
     std::vector<uint8_t> body(expected.size());
-    ayni::work::write_task_snapshot_record(task, body.data());
+    ayni::work::write_task_snapshot_record(task, body.data(), false);
     EXPECT_EQ(body, expected);
     ayni::work::TaskSnapshotRecord record{};
     ASSERT_TRUE(ayni::work::read_task_snapshot_record(
@@ -758,7 +758,7 @@ TEST(WorkRecords, task_checkpoint_record_round_trips_writer_and_state) {
         const uint32_t size = ayni::work::task_checkpoint_record_size(task);
         ASSERT_EQ(size, ayni::work::task_checkpoint_record_fixed_size + 32U + task.checkpoint_size);
         std::vector<uint8_t> body = buffer_for(size);
-        ayni::work::write_task_checkpoint_record(task, bytes_of(state), body.data());
+        ayni::work::write_task_checkpoint_record(task, bytes_of(state), body.data(), false);
         EXPECT_EQ(std::vector<uint8_t>(body.begin(), body.begin() + size),
                   Body().u64(task_id).u32(3).text(long_id).text(state).u32(0).bytes());
 

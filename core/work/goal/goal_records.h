@@ -67,14 +67,13 @@ struct GoalStateRecord {
 uint32_t goal_record_size(const Goal &goal);
 // Current complete body; parameters are retained bytes, options name required partners.
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
-                       GoalRecordOptions options = {});
+                       GoalRecordOptions options);
 // Returns false for a body that does not hold a GOAL record: a size that
 // does not match, an invalid goal type id or trigger source.
 bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out);
 
 // body has goal_state_record_size bytes.
-void write_goal_state_record(const Goal &goal, uint8_t *body,
-                             GoalRecordChange change = GoalRecordChange::state);
+void write_goal_state_record(const Goal &goal, uint8_t *body, GoalRecordChange change);
 // Returns false for a body of another size or with unknown flags.
 bool read_goal_state_record(const uint8_t *body, uint32_t size, GoalStateRecord &out);
 

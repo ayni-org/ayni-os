@@ -83,7 +83,6 @@ BatchCheck read_snapshot_header(const uint8_t *bytes, uint32_t size, SnapshotMet
         return BatchCheck::unsupported;
     }
     SnapshotMetadata metadata{};
-    metadata.schema = load_le16(bytes + schema_at);
     metadata.generation = load_le64(bytes + generation_at);
     metadata.covers_commit_seq = load_le64(bytes + covers_commit_seq_at);
     metadata.max_transition_id = load_le64(bytes + max_transition_id_at);

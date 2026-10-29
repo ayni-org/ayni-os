@@ -5,6 +5,10 @@
 #define AYNI_TOOL_USAGE_H
 #include <ayni/calls.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Total UTF-8 bytes across all identity and usage strings per tool. Since 0.47. */
 #define AYNI_TOOL_USAGE_MAX_BYTES 4096u
 /* Maximum UTF-8 explanation bytes for one authoritative field. Since 0.47. */
@@ -55,4 +59,8 @@ typedef struct ayni_tool_usage_port_v1 {
     /* Resolves only an exact pair, with the calling/lifetime rules above. */
     ayni_status_t (*lookup)(void *context, const ayni_tool_v1 *tool, ayni_tool_usage_v1 *out);
 } ayni_tool_usage_port_v1;
+
+#ifdef __cplusplus
+}
+#endif
 #endif

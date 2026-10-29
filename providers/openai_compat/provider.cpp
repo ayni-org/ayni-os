@@ -302,8 +302,8 @@ struct Provider::Impl {
             request->text.size > self.config.text_max_bytes ||
             (request->text.size && !request->text.data) ||
             request->tool_count > AYNI_GOAL_TYPE_TOOL_COUNT_MAX ||
-            (request->tool_count && !request->tool) || request->execution_permit ||
-            self.stopping.load() || self.failure.load() != AYNI_OK) {
+            (request->tool_count && (!request->tool || self.config.tool_usage.struct_size == 0)) ||
+            request->execution_permit || self.stopping.load() || self.failure.load() != AYNI_OK) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         for (uint32_t i = 0; i < self.config.request_capacity; ++i) {
@@ -318,8 +318,7 @@ struct Provider::Impl {
                 usage.struct_size = sizeof(usage);
                 const auto &port = self.config.tool_usage;
                 if (request->tool(request->tool_context, j, &tool) != AYNI_OK ||
-                    !slot.tools[j].copy(tool) || port.struct_size != sizeof(port) ||
-                    port.reserved != 0 || !port.lookup ||
+                    !slot.tools[j].copy(tool) ||
                     port.lookup(port.context, &tool, &usage) != AYNI_OK ||
                     !slot.tools[j].copy_usage(usage)) {
                     return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
@@ -612,7 +611,12 @@ ayni_status_t Provider::configure(const Config &config) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
-    if ((config.result_format != AYNI_CALL_RESULT_TEXT &&
+    // C-USAGE-001: validate the copied immutable port once. Absence stays legal
+    // until a request actually offers tools; per-tool pairing remains in submit.
+    const auto &port = config.tool_usage;
+    if ((port.struct_size != 0 &&
+         (port.struct_size != sizeof(port) || port.reserved != 0 || !port.lookup)) ||
+        (config.result_format != AYNI_CALL_RESULT_TEXT &&
          config.result_format != AYNI_CALL_RESULT_TOOL_CALLS) ||
         !config.request_capacity || config.request_capacity > request_capacity_max ||
         !config.text_max_bytes || config.text_max_bytes > AYNI_CALL_TEXT_BYTES_MAX ||
