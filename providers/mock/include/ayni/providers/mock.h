@@ -14,7 +14,9 @@ enum class Variant { a, b };
 // Tools is a model-class unary of result format TOOL_CALLS (ADR-0054): leading
 // "call:<binding_id>" words of the input become calls of those offered tools,
 // each field at its first offered value and the rest of the text as each body;
-// without such words it echoes. An unoffered tool, a body over a tool's limit
+// Alternatively, a trailing json:<JSON> supplies arbitrary named arguments with
+// exact numeric lexemes; Core resolves them against the offered original Schema.
+// Without such words it echoes. An unoffered tool, a body over a tool's limit
 // or a list over the result limit fails with MODEL_OUTPUT, as undecodable
 // model output would.
 enum class Service { text, action, tools, health };
@@ -28,6 +30,11 @@ struct Config {
     // at configure (at most 512 bytes). Empty preserves echo/tool behavior. Such
     // fixtures accept up to 8192 input bytes; tool proposals still take priority.
     ayni_string_v1 reply_text{};
+    // Optional explicit fixture definition, immutable and borrowed until close.
+    // Action/health consume its root TEXT, or this direct object TEXT field.
+    // Core still copies/adopts and validates the complete schema/projection.
+    const ayni_business_contract_v1 *business = nullptr;
+    uint32_t body_field = 0;
 };
 // Single owner-thread component. Call advance between Kernel steps to deliver
 // completions; callbacks only copy/enqueue. No private Kernel state is accessed.

@@ -59,6 +59,7 @@ static inline ayni_config_v1 ayni_measure_maximum_config(void) {
     c.memory_capacity = AYNI_MEMORY_CAPACITY_MAX;
     c.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_MAX;
     c.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_MAX;
+    c.business_contract_max_bytes = AYNI_BUSINESS_CONTRACT_BYTES_MAX;
     c.observation_ingress_capacity = AYNI_OBSERVATION_INGRESS_CAPACITY_MAX;
     return c;
 }

@@ -11,7 +11,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | 存储 | `storage_schema`、记录版本、迁移版本 | 日志批次、快照、NVS 记录（`storage/`） |
 | 领域语义 | 能力、Scene、GoalType、检查点各自的 `version` | 注册目录与 ActionRecord 绑定的语义 |
 
-当前 Core 存储只接受 schema 3；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0082。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
+当前 Core 存储只接受 schema 4；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
 
 ## ABI
 
@@ -90,3 +90,5 @@ ABI 0.46（ADR-0082）删除 Provider 旧路径转发头及已被替代的 kerne
 Schema 3（ADR-0082）统一所有活动领域变体的完整正文，严格拒绝未知 optional、记录版本、flags 和扩展头；ABI 仍为0.46。旧目录在输出或新写入前拒绝并保留，无迁移器、兼容 reader 或自动清空。
 
 ABI 0.47（ADR-0082/AP-01）新增 tool_usage.h 的模型中立说明及只读端口，ayni.h 新增纯 Unicode scalar UTF-8 validator，复用既有 foundation 算法；既有结构布局未变但真实模型说明准入规则改变，所有0.x消费者仍须重编译，不提供旧说明回退。Core无新增状态，storage schema保持3。
+
+ABI 0.48（ADR-0084）把业务输入/结果升级为有界 Schema/规范值，新增具名无损参数源、完整业务契约证明及 caller-owned C/C++ 访问工具；Call/Grant/Goal 和全部消费者同步升级。Core storage_schema=4；旧 0..3 在写入前拒绝并保留目录，无旧 reader/迁移器，回退使用原二进制与原目录。外层 Native 对话格式本包保持 AYNF v3/AYNC v2，后续 AP-03 单独升级，不由 Core schema 推定兼容。

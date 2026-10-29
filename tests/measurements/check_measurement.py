@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory(prefix="ayni-measure-") as directory:
         samples = result[name]
         assert samples["count"] > 0 and 0 < samples["p99_ns"] <= samples["max_ns"]
     assert result["step_max_items"] == 1 and result["step_max_time_us"] == 1000
+    assert result["explicit_buffer_supported"] is True
     assert result["accepted_buffer_min_bytes"] >= max(
         result["storage_min_bytes"], result["snapshot_record_bound_bytes"]
     )

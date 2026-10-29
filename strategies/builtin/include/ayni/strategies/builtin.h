@@ -7,6 +7,7 @@
 #include <array>
 #include <ayni/calendar.h>
 #include <ayni/calls.h>
+#include <optional>
 
 namespace ayni::strategies {
 inline constexpr uint32_t rule_count_max = 8;
@@ -85,6 +86,8 @@ struct Call {
     uint32_t binding_version = 1;
     ayni_scope_v1 arguments{sizeof(ayni_scope_v1), 0, nullptr};
     ayni_string_v1 text{};
+    std::optional<ayni_value_v1>
+        input{}; // Explicit complete native input; excludes scalar/text templates.
 };
 // Stable name plus semantic version becomes name.vN, at most 32 bytes.
 struct RuleStep {

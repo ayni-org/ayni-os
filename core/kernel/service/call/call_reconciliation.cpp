@@ -42,7 +42,11 @@ CallRuntime::Advance CallRuntime::prepare_query(uint32_t index) {
     if (!attempts_.next(work_.ids.boot_epoch(), attempt)) {
         return Advance::attempt_exhausted;
     }
-    if (mailbox_.reserve(attempt, reservation) != AYNI_OK) {
+    if (mailbox_.reserve(attempt, reservation,
+                         work_.calls.contract(index).result_format ==
+                                 catalog::call_value_result_format
+                             ? work_.calls.contract(index).result_text_limit
+                             : 0U) != AYNI_OK) {
         return Advance::internal;
     }
     if (work_.calls.begin_query(index, attempt,
@@ -165,10 +169,13 @@ bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const Provi
         message.status,
         message.reason,
         static_cast<work::ActionEffect>(message.effect),
-        {reinterpret_cast<const char *>(message.payload.data), message.payload.size}};
+        {reinterpret_cast<const char *>(message.payload.data), message.payload.size},
+        message.body};
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
     // A query reports an operation's outcome, never a fresh model proposal.
-    auto status = message.body == work::CallResultKind::text
+    const bool value_valid = message.body == work::CallResultKind::tool_calls ||
+                             normalize_result(index, message.payload, result) == AYNI_OK;
+    auto status = message.body != work::CallResultKind::tool_calls && value_valid
                       ? work_.calls.reconcile(index, message.query_result, result, action_stamp,
                                               control_.result_dependencies(index))
                       : AYNI_INVALID_ARGUMENT;

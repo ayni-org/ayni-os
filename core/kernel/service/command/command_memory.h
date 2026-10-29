@@ -22,7 +22,7 @@ constexpr uint32_t memory_command_max(uint32_t body_bytes) {
                ? 0
                : memory_command_fixed_bytes + knowledge::memory_value_fixed_bytes + body_bytes +
                      (knowledge::memory_tag_max + knowledge::memory_keyword_max) *
-                         durability::string_field_size(knowledge::memory_label_max_bytes);
+                         foundation::string_field_size(knowledge::memory_label_max_bytes);
 }
 // Decode ABI without retaining caller arrays; body stays borrowed until submission returns.
 ayni_status_t decode_memory_command(const ayni_intent_v1 &raw, MemoryCommand &out);

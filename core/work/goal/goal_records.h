@@ -26,7 +26,7 @@ constexpr uint32_t goal_group_tail_size = sizeof(uint32_t);  // Current immutabl
 constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
 constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;
-// Cross-record proof for this state transition, explicit in schema 3 rather than
+// Cross-record proof for this state transition, explicit in schema 4 rather than
 // encoded in a historical layout version. Snapshot state uses state.
 enum class GoalRecordChange : uint32_t {
     state = 1,
@@ -41,7 +41,7 @@ struct GoalRecordOptions {
     bool provenance = false; // A matching source footer is required; implies authority.
 };
 // A GOAL record without its goal type id, trigger source and parameters.
-constexpr uint32_t goal_record_fixed_size = 132; // Complete schema 3 creation, records.md.
+constexpr uint32_t goal_record_fixed_size = 132; // Complete schema 4 creation, records.md.
 constexpr uint32_t goal_state_record_size =
     48 + sizeof(uint32_t); // Full state then GoalRecordChange.
 

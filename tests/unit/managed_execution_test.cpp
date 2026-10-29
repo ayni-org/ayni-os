@@ -52,16 +52,41 @@ class ManagedExecution : public ::testing::Test {
             if (found != AYNI_NOT_FOUND) {
                 return found;
             }
-            ayni_scope_field_v1 field{};
-            field.struct_size = sizeof(field);
-            field.field_id = 1;
-            field.allowed.struct_size = sizeof(field.allowed);
-            field.allowed.kind = AYNI_AUTHORITY_I64;
-            field.allowed.unit = text("mrad");
-            field.allowed.values.integer = {5, 5};
-            const ayni_call_request_v1 request{
-                sizeof(request),      AYNI_POLICY_REQUEST_CALL,           1, 0, text("turn"),
-                text("turn.binding"), {sizeof(ayni_scope_v1), 1, &field}, {}};
+            ayni_call_request_v1 request{sizeof(request),
+                                         AYNI_POLICY_REQUEST_CALL,
+                                         1,
+                                         0,
+                                         text("turn"),
+                                         text("turn.binding"),
+                                         {},
+                                         {},
+                                         {}};
+            std::array<ayni_value_node_v1, 5> values{};
+            values[0].kind = AYNI_VALUE_OBJECT;
+            values[0].subtree_end = 2;
+            values[1].kind = AYNI_VALUE_I64;
+            values[1].field_id = 1;
+            values[1].subtree_end = 2;
+            values[1].value.integer = 5;
+            request.value = {values.data(), 2};
+            if (typed_scene_list) {
+                values[0].kind = AYNI_VALUE_OBJECT;
+                values[0].subtree_end = 5;
+                values[1].kind = AYNI_VALUE_I64;
+                values[1].field_id = 1;
+                values[1].subtree_end = 2;
+                values[1].value.integer = 5;
+                values[2].kind = AYNI_VALUE_LIST;
+                values[2].field_id = 2;
+                values[2].subtree_end = 5;
+                for (uint32_t at = 3; at < values.size(); ++at) {
+                    values[at].kind = AYNI_VALUE_I64;
+                    values[at].subtree_end = at + 1U;
+                    values[at].value.integer = at == 3U ? 5 : second_scene_item;
+                }
+                request.arguments = {};
+                request.value = {values.data(), static_cast<uint32_t>(values.size())};
+            }
             return output.request_call(output.call_context, &request);
         };
     }
@@ -131,8 +156,11 @@ class ManagedExecution : public ::testing::Test {
         field.domain.kind = AYNI_AUTHORITY_I64;
         field.domain.unit = text("mrad");
         field.domain.values.integer = {-100, 100};
+        std::array<ayni_authority_field_desc_v1, 2> authority_fields{field, field};
+        authority_fields[1].field_id = 2;
         const ayni_capability_desc_v1 capability{
-            sizeof(capability), 1, text("mock.turn"), 1, 0, &field};
+            sizeof(capability),         1, text("mock.turn"),
+            typed_scene_list ? 2U : 1U, 0, authority_fields.data()};
         ASSERT_EQ(ayni_register_capability(kernel, &capability), AYNI_OK);
         const ayni_resource_desc_v1 resource{sizeof(resource),
                                              AYNI_RESOURCE_EXCLUSIVE,
@@ -146,8 +174,55 @@ class ManagedExecution : public ::testing::Test {
         ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
         ASSERT_EQ(ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE),
                   AYNI_OK);
-        ASSERT_EQ(ayni_register_call_capability(kernel, provider.capabilities), AYNI_OK);
-        ASSERT_EQ(ayni_register_provider(kernel, &provider), AYNI_OK);
+        auto call = *provider.capabilities;
+        auto registered_provider = provider;
+        std::array<ayni_schema_node_v1, 4> input_schema{};
+        input_schema[0].kind = AYNI_VALUE_OBJECT;
+        input_schema[0].subtree_end = 4;
+        input_schema[1].kind = AYNI_VALUE_I64;
+        input_schema[1].field_id = 1;
+        input_schema[1].subtree_end = 2;
+        input_schema[1].flags = AYNI_SCHEMA_REQUIRED;
+        input_schema[1].name = text("yaw");
+        input_schema[1].unit = text("mrad");
+        input_schema[1].min_i64 = -100;
+        input_schema[1].max_i64 = 100;
+        input_schema[2].kind = AYNI_VALUE_LIST;
+        input_schema[2].field_id = 2;
+        input_schema[2].subtree_end = 4;
+        input_schema[2].flags = AYNI_SCHEMA_REQUIRED;
+        input_schema[2].name = text("checks");
+        input_schema[2].min_count = 1;
+        input_schema[2].max_count = 2;
+        input_schema[3] = input_schema[1];
+        input_schema[3].field_id = 0;
+        input_schema[3].subtree_end = 4;
+        input_schema[3].flags = 0;
+        input_schema[3].name = {};
+        ayni_schema_node_v1 result_schema{};
+        result_schema.kind = AYNI_VALUE_TEXT;
+        result_schema.subtree_end = 1;
+        result_schema.max_count = 64;
+        std::array<ayni_authority_projection_v1, 2> paths{};
+        paths[0].field_id = 1;
+        paths[0].path_count = 1;
+        paths[0].path[0] = 1;
+        paths[0].unit = text("mrad");
+        paths[1].field_id = 2;
+        paths[1].path_count = 2;
+        paths[1].path[0] = 2;
+        paths[1].path[1] = AYNI_PROJECTION_LIST_ITEM;
+        paths[1].unit = text("mrad");
+        const ayni_business_contract_v1 business{
+            {input_schema.data(), 4}, {&result_schema, 1}, 2, 0, paths.data()};
+        if (typed_scene_list) {
+            call.contract.input_format = AYNI_CALL_INPUT_VALUE;
+            call.contract.input_text_limit = 256;
+            call.business = &business;
+        }
+        registered_provider.capabilities = &call;
+        ASSERT_EQ(ayni_register_call_capability(kernel, &call), AYNI_OK);
+        ASSERT_EQ(ayni_register_provider(kernel, &registered_provider), AYNI_OK);
         const ayni_binding_v1 binding{sizeof(binding),
                                       1,
                                       text("turn.binding"),
@@ -162,8 +237,16 @@ class ManagedExecution : public ::testing::Test {
             sizeof(source), 1,      text("ready"), AYNI_OBSERVATION_BOOL, AYNI_OBSERVATION_MEASURED,
             text("bool"),   5000000};
         ASSERT_EQ(ayni_register_observation_source(kernel, &source), AYNI_OK);
-        const ayni_scene_rule_v1 rule{
-            capability.capability_id, 1, 0, {sizeof(ayni_scope_v1), 0, nullptr}};
+        ayni_scope_field_v1 scene_limit{};
+        scene_limit.struct_size = sizeof(scene_limit);
+        scene_limit.field_id = 2;
+        scene_limit.allowed = field.domain;
+        scene_limit.allowed.values.integer = {-10, 10};
+        const ayni_scene_rule_v1 rule{capability.capability_id,
+                                      1,
+                                      0,
+                                      {sizeof(ayni_scope_v1), typed_scene_list ? 1U : 0U,
+                                       typed_scene_list ? &scene_limit : nullptr}};
         const ayni_observation_condition_v1 condition{text("ready"), 1, 0, 1, 1, 5000000};
         const ayni_scene_desc_v1 scene{sizeof(scene), 1, text("look"), 1, 1, &rule, &condition};
         ASSERT_EQ(ayni_register_scene(kernel, &scene), AYNI_OK);
@@ -279,6 +362,8 @@ class ManagedExecution : public ::testing::Test {
         ASSERT_EQ(work.node().destroy(), AYNI_OK);
         EXPECT_EQ(executor.close(), AYNI_OK);
     }
+    bool typed_scene_list = false;
+    int64_t second_scene_item = 50;
     WorkNode work;
     Executor executor;
     ayni_provider_v1 provider{};
@@ -332,7 +417,8 @@ TEST_F(ManagedExecution, physical_call_record_rejects_changed_permit_identity_an
     }
     // The privacy path has no input projection; it must still validate metadata.
     const ayni::work::CallTable::Limits limits{1, original.domain.size, original.input.size,
-                                               original.contract.result_text_limit};
+                                               original.contract.result_text_limit,
+                                               original.contract.business_contract.size};
     std::vector<uint64_t> arena(ayni::work::CallTable::storage_size(limits) / sizeof(uint64_t) + 1);
     ayni::work::CallTable copy(arena.data(), limits);
     ASSERT_EQ(copy.restore_validated(original), AYNI_OK);
@@ -482,6 +568,30 @@ TEST_F(ManagedExecution, released_lease_lets_the_waiting_goal_derive) {
     EXPECT_EQ(resource().quarantine_id, 0U);
     EXPECT_EQ(work.goal(waiting).occurrences, 1U);
 }
+// ADR-0084: a fixed control envelope does not exempt other Scene-constrained
+// list fields. One later out-of-Scene item rejects the entire physical request.
+TEST_F(ManagedExecution, scene_covers_every_typed_list_item_before_any_permit_or_output) {
+    typed_scene_list = true;
+    start();
+    create();
+    pump(30);
+    EXPECT_EQ(executor.submissions(), 0U);
+    EXPECT_EQ(executor.samples(), 0U);
+    EXPECT_EQ(work.task(task_id).hold_reason, AYNI_REASON_EXECUTION_SCENE);
+}
+
+// ADR-0084: lists remain supported when the same enabled Scene covers all rows
+// and every control envelope source is proven fixed at catalog close.
+TEST_F(ManagedExecution, one_scene_can_admit_all_items_beside_fixed_typed_control_fields) {
+    typed_scene_list = true;
+    second_scene_item = 8;
+    start();
+    create();
+    pump(30);
+    EXPECT_EQ(executor.submissions(), 1U);
+    EXPECT_GT(executor.samples(), 0U);
+}
+
 TEST_F(ManagedExecution, closed_scene_rejects_admission_without_any_executor_output) {
     start();
     change_scene(false);
@@ -897,7 +1007,8 @@ TEST_F(ManagedExecution, erased_physical_record_preserves_independent_execution_
     ASSERT_TRUE(model.calls.find(executor.logical_call(), index));
     const auto before = model.calls.record(index);
     ASSERT_TRUE(before.state.execution.has_value());
-    const ayni::work::CallTable::Limits limits{1, 1024, 1024, 1024};
+    const ayni::work::CallTable::Limits limits{1, 1024, 1024, 1024,
+                                               before.contract.business_contract.size};
     std::vector<uint64_t> storage(ayni::work::CallTable::storage_size(limits) / sizeof(uint64_t) +
                                   1);
     ayni::work::CallTable copy(storage.data(), limits);

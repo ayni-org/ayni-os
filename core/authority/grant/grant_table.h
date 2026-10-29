@@ -63,6 +63,7 @@ struct NewGrant {
     uint64_t duration_us;           // Microseconds; 0 iff PERMANENT, positive for CURRENT_BOOT.
     uint32_t flags;                 // Known request bits; accepted facts use supported bits only.
     uint64_t bound_goal_id = 0; // 0 for generic authority; otherwise exact nondelegable root owner.
+    ayni_bytes_v1 business_contract{}; // Complete original proof; empty explicitly means non-call.
 };
 
 // Current owner-thread observations; none is serialized as a new Grant field.
@@ -110,6 +111,8 @@ struct Grant {
     uint64_t revoked_by_root_id = 0; // 0 unless REVOKED; self for root, ancestor for a descendant.
     uint64_t cleanup_after_grant_id = 0; // Root's inclusive ID cursor; 0 before scanning anything.
     uint64_t cleanup_through_grant_id = 0; // Root's frozen inclusive frontier; 0 for non-roots.
+    uint32_t business_contract_size =
+        0; // Bytes in independent proof region; zero for non-call facts.
     foundation::TransitionStamp cleanup_stamp{}; // Root progress pair; zero for non-roots.
     // Volatile lower bound on reclamation after a work reference was removed.
     // 0 means none. Reload drops/rebuilds rows; only the current writer frontier
@@ -136,14 +139,16 @@ class GrantTable {
         uint32_t capacity;             // Number of retained rows and separately bounded Gates.
         uint32_t scope_max_bytes;      // Bytes in each domain/scope region; never a shared total.
         uint32_t delegation_depth_max; // Maximum parent edges; root depth is 0.
+        uint32_t business_bytes = 0;   // Per-Grant original proof bytes; zero disables call proofs.
     };
     // Alignment and complete caller arena size, including Gates and both byte regions.
     static constexpr std::size_t storage_alignment = alignof(Grant);
     static constexpr std::size_t storage_size(Limits limits) {
         return foundation::BoundedArray<Grant>::storage_size(limits.capacity) +
                RevocationGate::storage_size(limits.capacity) +
-               static_cast<std::size_t>(limits.capacity) * limits.scope_max_bytes *
-                   grant_value_regions;
+               static_cast<std::size_t>(limits.capacity) *
+                   (static_cast<std::size_t>(limits.scope_max_bytes) * grant_value_regions +
+                    limits.business_bytes);
     }
     // Borrows aligned storage_size(limits) bytes for this table's entire lifetime.
     GrantTable(void *storage, Limits limits);
@@ -157,6 +162,8 @@ class GrantTable {
     ayni_bytes_v1 source_domain(uint32_t index) const;
     // Expanded constraint; same lifetime and index precondition as source_domain.
     ayni_bytes_v1 scope(uint32_t index) const;
+    // Independent complete original business proof, same ownership/lifetime as domain/scope.
+    ayni_bytes_v1 business_contract(uint32_t index) const;
 
     // Local checked path, leaf first. check_chain publishes 1..max+1 indices
     // only on success; an empty path in root Admission means no parent chain.
@@ -225,7 +232,8 @@ class GrantTable {
     // Immutable schema/Scope relation only; caller separately checks subject,
     // chosen revision and current chain usability. No catalog reinterpretation.
     bool covers_saved_scope(uint32_t index, const catalog::CatalogId &capability, uint32_t version,
-                            ayni_bytes_v1 original_domain, ayni_bytes_v1 requested_scope) const;
+                            ayni_bytes_v1 original_domain, ayni_bytes_v1 requested_scope,
+                            ayni_bytes_v1 original_business = {}) const;
 
     // Gates are accepted control state, independent of restored Grant slots.
     // Publishing pending+gate and their durable handoff is Kernel-owned.
@@ -350,6 +358,7 @@ class GrantTable {
     bool valid_link(uint32_t child, uint32_t parent) const;
     uint8_t *domain_storage(uint32_t index) const;
     uint8_t *scope_storage(uint32_t index);
+    uint8_t *business_storage(uint32_t index) const;
     foundation::BoundedArray<Grant> grants_;
     RevocationGate gates_; // Owns accepted volatile denies; clear_restored never clears it.
     uint8_t *bytes_;

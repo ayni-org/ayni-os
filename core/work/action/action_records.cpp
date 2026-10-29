@@ -1,16 +1,16 @@
 #include "work/action/action_records.h"
 
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::work {
 // Both preparation and latest transition use this one persistent stamp layout.
-void write_action_stamp(ActionStamp stamp, durability::BodyWriter &writer) {
+void write_action_stamp(ActionStamp stamp, foundation::BodyWriter &writer) {
     writer.u64(stamp.boot_epoch);
     writer.u64(stamp.transition.transition_id);
     writer.u64(stamp.transition.commit_seq);
 }
 
-ActionStamp read_action_stamp(durability::BodyReader &reader) {
+ActionStamp read_action_stamp(foundation::BodyReader &reader) {
     return {reader.u64(), {reader.u64(), reader.u64()}};
 }
 
@@ -19,7 +19,7 @@ uint32_t action_state_record_size(const ActionFact &fact) {
 }
 
 void write_action_state_record(const ActionFact &fact, uint8_t *body) {
-    durability::BodyWriter writer(body, action_state_record_size(fact));
+    foundation::BodyWriter writer(body, action_state_record_size(fact));
     writer.u64(fact.identity.operation_id);
     writer.u64(fact.identity.logical_call_id);
     writer.u32(fact.identity.binding_version);
@@ -38,7 +38,7 @@ bool read_action_state_record(const uint8_t *body, uint32_t size, ActionFact &ou
         size > action_state_record_max_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     ActionFact fact{};
     fact.identity.operation_id = reader.u64();
     fact.identity.logical_call_id = reader.u64();

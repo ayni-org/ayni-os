@@ -552,7 +552,7 @@ TEST_F(NativeAssistant, local_http_tool_loop_and_text_only_summary_use_real_prov
     const std::string answer =
         R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已处理"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"明天提醒我\"}"}}]}}]})";
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"text\":\"明天提醒我\"}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
         return count == 1 ? tool : answer;
     });
@@ -594,7 +594,7 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     const std::string answer =
         R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已登记，等你批准"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"remind once 2030-01-02T09:00 UTC0 喝水\"}"}}]}}]})";
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"local_time\":\"2030-01-02T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
         return count == 1 ? tool : answer;
     });
@@ -632,8 +632,8 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
         first.find(
             R"(\u000aTime zone: CST-8"},{"role":"user","content":"\u000aCurrent user:\u000a明早九点提醒我喝水"}])"),
         std::string::npos);
-    EXPECT_NE(server.history()[1].find("registered goal"), std::string::npos);
-    EXPECT_NE(server.history()[1].find("waiting for owner approval"), std::string::npos);
+    EXPECT_NE(server.history()[1].find("registered"), std::string::npos);
+    EXPECT_NE(server.history()[1].find("waiting_owner"), std::string::npos);
     const auto goals = run(Operation::goals).goals;
     const auto reminder = std::find_if(goals.begin(), goals.end(), [](const auto &goal) {
         return std::string(goal.goal_type_id, goal.goal_type_id_size) == "assistant.reminder";
@@ -672,8 +672,8 @@ TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
     for (uint32_t at = 1; at <= calls; ++at) {
         tool +=
             std::string(at == 1 ? "" : ",") + R"({"id":"fixture)" + std::to_string(at) +
-            R"(","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"remind once 2030-01-0)" +
-            std::to_string(at) + R"(T09:00 UTC0 喝水\"}"}})";
+            R"(","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"local_time\":\"2030-01-0)" +
+            std::to_string(at) + R"(T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}"}})";
     }
     tool += "]}}]}";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
@@ -702,8 +702,7 @@ TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
         }
         return count;
     };
-    EXPECT_EQ(occurrences("; waiting for owner approval"),
-              ayni::applications::assistant::model_goals_waiting_max);
+    EXPECT_EQ(occurrences("waiting_owner"), ayni::applications::assistant::model_goals_waiting_max);
     EXPECT_EQ(occurrences("earlier goals still wait for owner approval"), 1U);
     const auto goals = run(Operation::goals).goals;
     EXPECT_EQ(std::count_if(goals.begin(), goals.end(),
@@ -741,7 +740,7 @@ TEST_F(NativeAssistant, stop_before_the_schedule_tool_decides_registers_nothing)
     const std::string answer =
         R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"不应出现"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"text\":\"remind once 2030-01-02T09:00 UTC0 喝水\"}"}}]}}]})";
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"local_time\":\"2030-01-02T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
         return count == 1 ? tool : answer;
     });

@@ -40,6 +40,8 @@ struct GoalRequirement {
     ayni_bytes_v1 source_domain{};    // Original canonical domain bytes; never empty.
     ayni_bytes_v1 scope{};            // Complete canonical requested ceiling within source_domain.
     GoalGrantReference dependency;    // Missing in a proposal, selected otherwise.
+    ayni_bytes_v1
+        business_contract{}; // Original complete machine/execution proof; empty for non-call.
 };
 
 // Complete saved ceiling and references. Only requirements[0,count) exist;
@@ -80,6 +82,7 @@ class GoalAuthorityTable {
         uint32_t goals;        // Positive Goal slots, matching the accompanying GoalTable capacity.
         uint32_t requirements; // Positive requirements per Goal, bounded by the maximum.
         uint32_t scope_bytes;  // Bytes per domain/scope, within the existing Scope limits.
+        uint32_t business_bytes = 0; // Independent proof bytes per requirement, including staging.
     };
 
     // Whole arena alignment and size; validated limits keep 32-bit sizes bounded.
@@ -94,7 +97,8 @@ class GoalAuthorityTable {
     // out starts empty; sources stay stable through this call. Refusal preserves
     // count and all prior entries. Staging views expire at the next export.
     ayni_status_t stage(GoalAuthorityRecord &out, const catalog::CatalogId &capability,
-                        uint32_t version, ayni_bytes_v1 domain, const ayni_scope_v1 &scope);
+                        uint32_t version, ayni_bytes_v1 domain, const ayni_scope_v1 &scope,
+                        ayni_bytes_v1 business = {});
     // Change only the authorization phase and stamp of a present complete row.
     // User pause and compatibility holds belong to their existing work owners.
     void pause(uint32_t goal_index, foundation::TransitionStamp stamp);
@@ -145,11 +149,13 @@ class GoalAuthorityTable {
         uint32_t domain_size = 0;        // Used bytes in domain, never above scope_bytes.
         uint32_t scope_size = 0;         // Used bytes in scope, never above scope_bytes.
         GoalGrantReference dependency;   // Selected identity or explicit missing pair.
+        uint32_t business_size = 0;      // Bytes in the original proof region; zero for non-call.
     };
     // Flat index and regions share the same stride; only validated indices enter.
     uint32_t requirement_index(uint32_t goal_index, uint32_t requirement) const;
     uint8_t *domain_at(uint32_t index) const;
     uint8_t *scope_at(uint32_t index) const;
+    uint8_t *business_at(uint32_t index) const; // Independent proof region after domain/scope.
     // Compares an existing slot's immutable ceiling, excluding refs/phase/stamp.
     bool same_ceiling(uint32_t goal_index, const GoalAuthorityRecord &record) const;
     Slot *slots_;               // Caller arena; limits.goals constructed Slot objects.

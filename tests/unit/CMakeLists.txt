@@ -1,4 +1,11 @@
 add_executable(ayni_unit_tests
+    kernel_shell_call_test.cpp
+    kernel_business_call_test.cpp
+    business_arguments_test.cpp
+    business_values_test.cpp
+    business_schema_test.cpp
+    business_projection_test.cpp
+    shell_process_test.cpp
     calendar_test.cpp
     kernel_calendar_test.cpp
     kernel_pause_group_test.cpp
@@ -97,7 +104,7 @@ add_executable(ayni_unit_tests
     work_restore_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE
-    ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_control_gate
+    ayni_core ayni_core_internal ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_provider_shell ayni_control_gate
     ayni_warnings GTest::gtest_main)
 # Every test file includes gtest.h, which takes about a second to parse, so the
 # headers most test files share are parsed once per build. Test files still

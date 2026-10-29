@@ -2,6 +2,7 @@
 #include "work_node.h"
 #include <ayni/providers/mock.h>
 #include <ayni/providers/mock/subscription.h>
+#include <ayni/values.hpp>
 
 namespace {
 using namespace ayni::test;
@@ -43,16 +44,26 @@ class MockProvider : public ::testing::TestWithParam<Profile> {
                 return found;
             }
             char input[] = "hello";
-            const ayni_call_request_v1 request{sizeof(request),
-                                               GetParam().service == Service::text
-                                                   ? AYNI_POLICY_REQUEST_MODEL
-                                                   : AYNI_POLICY_REQUEST_CALL,
-                                               1,
-                                               0,
-                                               text("echo"),
-                                               text("mock.selected"),
-                                               {sizeof(ayni_scope_v1), 0, nullptr},
-                                               {input, 5}};
+            ayni::ValueBuilder<2> value;
+            if (GetParam().service == Service::text) {
+                value.object();
+                value.text(AYNI_MODEL_BODY_FIELD_ID, {input, 5});
+                value.end();
+            } else {
+                value.text(0, {input, 5});
+            }
+            ayni_call_request_v1 request{sizeof(request),
+                                         GetParam().service == Service::text
+                                             ? AYNI_POLICY_REQUEST_MODEL
+                                             : AYNI_POLICY_REQUEST_CALL,
+                                         1,
+                                         0,
+                                         text("echo"),
+                                         text("mock.selected"),
+                                         {},
+                                         {},
+                                         {}};
+            EXPECT_EQ(value.finish(request.value), AYNI_OK);
             const auto status = output.request_call(output.call_context, &request);
             input[0] = 'x';
             return status;

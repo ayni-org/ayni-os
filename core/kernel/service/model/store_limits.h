@@ -59,12 +59,12 @@ inline CommandTable::Limits command_limits(const KernelCapacities &capacities) {
 
 inline authority::GrantTable::Limits grant_limits(const KernelCapacities &capacities) {
     return {capacities.grant_capacity, capacities.authority_scope_max_bytes,
-            capacities.grant_delegation_depth_max};
+            capacities.grant_delegation_depth_max, capacities.business_contract_max_bytes};
 }
 
 inline work::GoalAuthorityTable::Limits goal_authority_limits(const KernelCapacities &capacities) {
     return {capacities.goal_capacity, capacities.goal_requirement_capacity,
-            capacities.authority_scope_max_bytes};
+            capacities.authority_scope_max_bytes, capacities.business_contract_max_bytes};
 }
 
 inline work::TaskAuthorityTable::Limits task_authority_limits(const KernelCapacities &capacities) {
@@ -73,7 +73,8 @@ inline work::TaskAuthorityTable::Limits task_authority_limits(const KernelCapaci
 
 inline work::CallTable::Limits call_limits(const KernelCapacities &capacities) {
     return {capacities.call_capacity, capacities.authority_scope_max_bytes,
-            capacities.call_input_max_bytes, capacities.call_result_max_bytes};
+            capacities.call_input_max_bytes, capacities.call_result_max_bytes,
+            capacities.business_contract_max_bytes};
 }
 
 inline authority::Scenes::Limits scene_limits(const KernelCapacities &capacities) {

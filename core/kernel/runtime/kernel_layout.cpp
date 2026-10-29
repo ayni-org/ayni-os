@@ -37,11 +37,12 @@ class Placer {
 
 // Optional call directories allocate only their configured, fixed capacities.
 void place_call_catalogs(Placer &placer, const KernelCapacities &capacities) {
-    placer.place(
-        Store::call_capabilities, catalog::CallCapabilityRegistry::storage_alignment,
-        catalog::CallCapabilityRegistry::storage_size(capacities.call_capability_capacity));
+    placer.place(Store::call_capabilities, catalog::CallCapabilityRegistry::storage_alignment,
+                 catalog::CallCapabilityRegistry::storage_size(
+                     capacities.call_capability_capacity, capacities.business_contract_max_bytes));
     placer.place(Store::providers, catalog::ProviderRegistry::storage_alignment,
-                 catalog::ProviderRegistry::storage_size(capacities.provider_capacity));
+                 catalog::ProviderRegistry::storage_size(capacities.provider_capacity,
+                                                         capacities.business_contract_max_bytes));
     placer.place(Store::bindings, catalog::BindingRegistry::storage_alignment,
                  catalog::BindingRegistry::storage_size(capacities.binding_capacity));
 }
@@ -132,7 +133,8 @@ KernelLayout layout_for(const KernelCapacities &capacities) {
                  CommandTable::storage_size(command_limits(capacities)));
     placer.place(Store::capabilities, catalog::CapabilityRegistry::storage_alignment,
                  catalog::CapabilityRegistry::storage_size(capacities.capability_capacity,
-                                                           capacities.authority_scope_max_bytes));
+                                                           capacities.authority_scope_max_bytes,
+                                                           capacities.business_contract_max_bytes));
     placer.place(Store::grants, authority::GrantTable::storage_alignment,
                  authority::GrantTable::storage_size(grant_limits(capacities)));
     placer.place(Store::goal_authority, work::GoalAuthorityTable::storage_alignment,

@@ -6,15 +6,16 @@
 #include <ayni/applications/assistant.h>
 #include <ayni/calendar.h>
 #include <ayni/tool_usage.h>
+#include <ayni/values.hpp>
 #include <vector>
 namespace ayni::applications::assistant {
 // Longest canonical schedule text, "remind weekly YYYY-MM-DDTHH:MM <zone> <text>", in bytes.
 inline constexpr uint32_t schedule_canonical_max =
     sizeof("remind weekly YYYY-MM-DDTHH:MM  ") - 1 + AYNI_CALENDAR_TZ_MAX_BYTES + text_bytes_max;
-// Bytes. Model input may space the same words more loosely than the canonical form; a result
-// adds the Goal ID and its approval state to the canonical text.
-inline constexpr uint32_t schedule_text_max = 640, schedule_result_max = 768;
-static_assert(schedule_text_max >= schedule_canonical_max, "input must hold any schedule");
+// Portable structured input/result byte budgets, including value framing.
+inline constexpr uint32_t schedule_text_max = 1024, schedule_result_max = 1024;
+inline constexpr uint32_t schedule_input_nodes = 7, schedule_result_nodes = 6;
+inline constexpr uint32_t schedule_default_fields = schedule_input_nodes - 2;
 // Model Goals that may wait for owner approval at once. Chat turns and owner Goals share the
 // Goal table, so a misbehaving model must not be able to fill it.
 inline constexpr uint32_t model_goals_waiting_max = 4;
@@ -37,9 +38,9 @@ ayni_status_t model_goals(const ayni_kernel_t *, uint64_t operation_id, ModelGoa
 // Local TOOL Provider of capability "assistant.schedule" on endpoint "assistant.local". Its
 // callbacks run on the Kernel owner thread and only copy a request into a bounded slot, so it
 // needs no lock. settle() decides each request once, through GoalPort, and posts the receipt:
-//   registered   COMPLETED, "registered goal N: <canonical schedule>; <approval state>"
-//   refused      COMPLETED, "rejected: ...; nothing was registered", so the model can ask the
-//                user and call again. COMPLETED means the tool answered; the text says what.
+//   registered/refused COMPLETED with structured status, nullable Goal ID, state,
+//                canonical schedule and explanation; COMPLETE means the tool answered.
+//                Refusal lets the model correct its request and continue the turn.
 //   turn ended   CANCELLED, effect NONE: the calling Task stopped before the decision
 //   no port, or admission closed   FAILED, effect NONE
 // An operation decided again after its Goal was registered (an error interrupted the decision)
@@ -71,13 +72,24 @@ class ScheduleTool {
         ayni_attempt_ref_v1 attempt{};
         uint64_t call = 0, operation = 0;
         ayni_provider_completion_t *completion = nullptr;
-        uint32_t input_size = 0, result_size = 0;
-        std::array<char, schedule_text_max> input{};
-        std::array<char, schedule_result_max> result{};
-        ayni_provider_result_v1 receipt{}; // Valid once answered; result views the array above.
+        uint32_t input_size = 0;
+        std::array<uint8_t, schedule_text_max> input{};
+        std::array<char, schedule_canonical_max + 1> canonical{};
+        ayni::ValueBuilder<schedule_result_nodes> result{};
+        ayni_provider_result_v1
+            receipt{}; // Valid once answered; value borrows builder/canonical above.
     };
     std::array<Slot, request_capacity> slots_{};
     ayni_call_capability_v1 capability_{};
+    std::array<ayni_schema_node_v1, schedule_input_nodes> input_schema_{};
+    std::array<ayni_schema_node_v1, schedule_result_nodes> result_schema_{};
+    std::array<ayni_value_node_v1, schedule_default_fields> defaults_{};
+    std::array<ayni_value_v1, schedule_default_fields> default_views_{};
+    ayni_business_contract_v1 business_{};
+    void build_input_schema();  // Owns input Schema/default storage.
+    void build_result_schema(); // Owns the structured receipt declaration.
+    ayni_status_t complete(const ayni_kernel_t *, Slot &, uint64_t, const std::string &,
+                           const char *); // Publishes slot-owned structured receipt.
     ayni_status_t answer(const ayni_kernel_t *, GoalPort, Slot &);
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
                                        ayni_provider_completion_t *);

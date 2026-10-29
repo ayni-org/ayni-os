@@ -29,7 +29,21 @@ ayni_status_t request(ayni_policy_output_v1 &out, ayni_policy_intent_kind_t kind
     if (target) {
         call.binding_id = text(target);
         call.binding_version = 1;
-        call.arguments = {sizeof(ayni_scope_v1), 0, nullptr};
+    }
+    if (kind != AYNI_POLICY_REQUEST_CALL && kind != AYNI_POLICY_REQUEST_MODEL) {
+        return out.request_call ? out.request_call(out.call_context, &call) : AYNI_UNSUPPORTED;
+    }
+    ValueBuilder<2> value;
+    if (kind == AYNI_POLICY_REQUEST_MODEL) {
+        value.object();
+        value.text(AYNI_MODEL_BODY_FIELD_ID, ayni_string_v1{});
+        value.end();
+    } else {
+        value.text(0, ayni_string_v1{});
+    }
+    const auto status = value.finish(call.value);
+    if (status != AYNI_OK) {
+        return status;
     }
     return out.request_call(out.call_context, &call);
 }
@@ -71,14 +85,23 @@ ayni_status_t shared_summary(const ayni_task_snapshot_v1 &s, ayni_policy_output_
     auto result = initialized<ayni_task_call_result_v1>();
     status = s.call_result(s.call_context, text("shared.summary.v1"), &result);
     if (status == AYNI_NOT_FOUND) {
-        const ayni_call_request_v1 call{sizeof(call),
-                                        AYNI_POLICY_REQUEST_MODEL,
-                                        1,
-                                        0,
-                                        text("shared.summary.v1"),
-                                        text("model"),
-                                        {sizeof(ayni_scope_v1), 0, nullptr},
-                                        {source.data(), size}};
+        ValueBuilder<2> value;
+        value.object();
+        value.text(AYNI_MODEL_BODY_FIELD_ID, {source.data(), size});
+        value.end();
+        ayni_call_request_v1 call{sizeof(call),
+                                  AYNI_POLICY_REQUEST_MODEL,
+                                  1,
+                                  0,
+                                  text("shared.summary.v1"),
+                                  text("model"),
+                                  {},
+                                  {},
+                                  {}};
+        const auto built = value.finish(call.value);
+        if (built != AYNI_OK) {
+            return built;
+        }
         return out.request_call(out.call_context, &call);
     }
     if (status != AYNI_OK) {

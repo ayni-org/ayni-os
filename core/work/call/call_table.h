@@ -101,9 +101,10 @@ class CallTable {
   public:
     struct Limits {
         uint32_t capacity; // Zero disables calls; fixed entries, no eviction of unresolved work.
-        uint32_t domain_bytes; // Positive original authority domain bytes per entry.
-        uint32_t input_bytes;  // Positive canonical complete input bytes per entry.
-        uint32_t result_bytes; // Positive UTF-8 bytes per entry; <= call_text_limit_max.
+        uint32_t domain_bytes;       // Positive original authority domain bytes per entry.
+        uint32_t input_bytes;        // Positive canonical complete input bytes per entry.
+        uint32_t result_bytes;       // Positive result bytes per entry; bounded by call catalog.
+        uint32_t business_bytes = 0; // Independent immutable proof region per Call.
     };
     static constexpr uint32_t no_index = UINT32_MAX;                    // No retained call slot.
     static constexpr std::size_t storage_alignment = alignof(uint64_t); // Aligns metadata slots.
@@ -200,6 +201,8 @@ class CallTable {
     ayni_status_t erase_content(uint32_t index, ActionStamp stamp);
     // Same result transition, after evidence validation: discard only private result bytes.
     void discard_result(uint32_t index);
+    // Source invalidation omits the result explicitly, preserving outcome/effect and input facts.
+    void discard_unusable_result(uint32_t index);
     // Slots may contain holes; only occupied indices are legal for accessors/mutations.
     bool occupied(uint32_t index) const;
     uint32_t capacity() const { return limits_.capacity; } // Fixed metadata slots, including holes.
@@ -214,6 +217,8 @@ class CallTable {
     ayni_string_v1 result(uint32_t index) const; // Retained terminal text, empty before terminal.
     // Retained tool-call list (tool_calls.h); empty unless the result holds tool calls.
     ayni_bytes_v1 tool_calls(uint32_t index) const;
+    ayni_bytes_v1
+    value_result(uint32_t index) const; // Canonical structured result; empty for other kinds.
 
   private:
     struct Entry {

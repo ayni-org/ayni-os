@@ -1,5 +1,5 @@
-#include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
+#include "foundation/record_body.h"
 #include "kernel/service/persistence/persistent_store.h"
 #include "work/agent/agent_records.h"
 namespace ayni::kernel {
@@ -10,7 +10,7 @@ constexpr uint32_t instance_size = work::instance_record_size + stamp_size;
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
-// Owns this family's encoding in the original schema 3 journal order.
+// Owns this family's encoding in the original schema 4 journal order.
 class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -47,7 +47,7 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     return Journal(model, stamp, writer).encode();
 }
-// INSTANCE has one current body; schema 3 requires its REQUIRED marker.
+// INSTANCE has one current body; schema 4 requires its REQUIRED marker.
 bool knows(uint16_t, uint16_t version, WorkRecordContext context) {
     return version == (context == WorkRecordContext::journal
                            ? work::instance_record_version

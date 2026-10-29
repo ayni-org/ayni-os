@@ -19,8 +19,17 @@ struct Requested {
     std::string key, binding, body;
     uint32_t version = 0;
     static ayni_status_t record(void *ctx, const ayni_call_request_v1 *r) {
+        ayni::ValueReader input;
+        ayni_string_v1 body{};
+        if (input.read(r->value) != AYNI_OK ||
+            !ayni::ValueReader::text(r->kind == AYNI_POLICY_REQUEST_MODEL
+                                         ? input.field(AYNI_MODEL_BODY_FIELD_ID)
+                                         : input.root(),
+                                     body)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
         *static_cast<Requested *>(ctx) = {r->kind, string(r->step_key), string(r->binding_id),
-                                          string(r->text), r->binding_version};
+                                          string(body), r->binding_version};
         return AYNI_OK;
     }
     bool operator==(const Requested &r) const {

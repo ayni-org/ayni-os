@@ -3,12 +3,12 @@
 #include <cstring>
 namespace ayni::work {
 namespace {
-bool read_id(durability::BodyReader &reader, catalog::CatalogId &out) {
+bool read_id(foundation::BodyReader &reader, catalog::CatalogId &out) {
     uint32_t size = 0;
     const auto *bytes = reader.bytes(catalog::CatalogId::max_size, size);
     return out.assign({reinterpret_cast<const char *>(bytes), size});
 }
-void write_id(const catalog::CatalogId &id, durability::BodyWriter &writer) {
+void write_id(const catalog::CatalogId &id, foundation::BodyWriter &writer) {
     writer.bytes(id.data(), id.size());
 }
 bool same_epochs(const ayni_permit_epochs_v1 &a, const ayni_permit_epochs_v1 &b) {
@@ -124,7 +124,7 @@ uint32_t execution_record_size(const ExecutionFact &fact) {
 }
 // Stable declaration first, then local generation and stop facts; parameter values
 // remain in Call's one canonical input, avoiding a second authorization projection.
-void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer) {
+void write_execution(const ExecutionFact &fact, foundation::BodyWriter &writer) {
     const auto &binding = fact.binding;
     write_id(binding.binding, writer);
     writer.u32(binding.binding_version);
@@ -165,7 +165,7 @@ void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer) 
         writer.u64(ref.subscription_id);
     }
 }
-bool read_execution(durability::BodyReader &reader, ExecutionFact &out) {
+bool read_execution(foundation::BodyReader &reader, ExecutionFact &out) {
     ExecutionFact fact{};
     auto &binding = fact.binding;
     if (!read_id(reader, binding.binding)) {

@@ -150,6 +150,8 @@ class ActionService {
     std::array<Borrow, operation_capacity> calls_{}, queries_{};
     std::array<Effect, operation_capacity> effects_{};
     ayni_call_capability_v1 capability_{};
+    ayni_schema_node_v1 input_schema_{}, result_schema_{};
+    ayni_business_contract_v1 business_{};
     ayni_string_v1 provider_id_{}; // Static fixture identity, stable across simulated boots.
     uint64_t submissions_ = 0;     // Accepted deliveries, not effects; survives Kernel loss.
     struct LastReceipt {

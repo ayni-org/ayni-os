@@ -267,3 +267,11 @@ ctest --preset native-debug -R 'ExperimentFixtures|ExperimentEvidence|experiment
 ```
 
 受控动作、资源上限及证据范围见[完整实验 profile](../contracts/fixtures/experiments/README.md)与 ADR-0075。每例输出目录必须为新目录；运行设施通过不代表完整实验或硬件验收通过。
+
+## AP-02 资源边界
+
+ABI 0.48 的 `business_contract_max_bytes` 独立于 Scope 和业务正文，默认 4096 B、最大 69632 B；原证明分别随 Capability/Provider offer、Grant、Goal requirement、Call 保存，不能只在有 Call 后才留历史 Schema。公开 arena 查询包含这些容量，不包含 Host/Provider 堆、线程栈及第三方库内存。Native GCC 13 Debug 的本包前后 arena 对比、编译器栈帧及实际检查集中在 PR；不把最小 arena 数字当作平台总内存要求。
+
+较大的证明上限会使自动 journal buffer 超过显式 `storage_buffer_bytes` 的 1 MiB 输入上限；自动配置按完整批次预算选择，显式小缓冲仍拒绝。`ayni_native_measurements` 的 small smoke 使用默认证明上限；maximum 保留全部容量/证明上限，结果中 `explicit_buffer_supported=false`、`accepted_buffer_min_bytes=0` 表示只可用自动缓冲，不能解释成 0 字节已通过准入。测量 Host 的逻辑介质容量为 4 GiB（不预分配），容纳最大 Schema-4 双快照及日志；该工具不是硬件容量承诺。
+
+规范化/原证明解码仍使用有界栈暂存；本包在 Native 主线程验证，编译器静态单函数帧不是整条调用链峰值。ESP-IDF 栈、持久介质开销及真实 Host 资源支持尚未验证，不因 Native 正常回归推定可用。受限 Host 的配置与栈预算须在平台阶段实测。

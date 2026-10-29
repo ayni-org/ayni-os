@@ -69,6 +69,11 @@ class FakeTransport {
     Query query_{};
     ayni_call_resource_v1 resource_{};
     ayni_call_capability_v1 capability_{};
+    std::array<ayni_schema_node_v1, 2> input_schema_{};
+    ayni_schema_node_v1 result_schema_{};
+    ayni_string_v1 destination_choice_{};
+    ayni_authority_projection_v1 projection_{};
+    ayni_business_contract_v1 business_{};
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
                                        ayni_provider_completion_t *);
     ayni_status_t receive(Entry &);

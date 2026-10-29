@@ -1953,7 +1953,7 @@ TEST(WorkJournal, largest_work_transition_fits_the_conservative_authority_batch_
     KernelCapacities fewer_intents = capacities;
     fewer_intents.policy_intent_capacity = 1;
     EXPECT_EQ(ayni::kernel::transition_batch_max(fewer_intents),
-              batch_max - ayni::durability::string_field_size(CatalogId::max_size));
+              batch_max - ayni::foundation::string_field_size(CatalogId::max_size));
 }
 
 } // namespace

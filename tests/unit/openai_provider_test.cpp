@@ -1,5 +1,7 @@
 // ADR-0055: normal protocol behavior with loopback-only HTTP fixtures.
 #include "../../providers/openai_compat/protocol.h"
+#include "catalog/capability/business_encoding.h"
+#include "catalog/capability/capability_registry.h"
 #include "openai_fixture.h"
 
 namespace {
@@ -39,7 +41,7 @@ TEST_F(OpenaiProvider, text_completes_through_public_abi_and_declares_remote_eff
     EXPECT_NE(request.find("Presentation style of the mock display."), std::string::npos);
     EXPECT_NE(request.find(usage_purpose), std::string::npos);
     EXPECT_NE(request.find("Completion confirms simulated display only"), std::string::npos);
-    EXPECT_NE(request.find("field_1=7, field_2=calm, text=hello"), std::string::npos);
+    EXPECT_NE(request.find("seconds=7, voice=calm, text=hello"), std::string::npos);
     EXPECT_EQ(usage_lookups, 1U);
     EXPECT_NE(request.find("\"enum\":[\"bright\",\"calm\"]"), std::string::npos);
     EXPECT_NE(request.find("Authorization: Bearer fixture-only-key"), std::string::npos);
@@ -110,7 +112,7 @@ INSTANTIATE_TEST_SUITE_P(
                       Frame{"split_inside_a_character", AYNI_MODEL_INSTRUCTIONS_PREFIX "1\n世界"}),
     [](const auto &test) { return std::string(test.param.name); });
 TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
-    start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
+    start(tool_reply(R"({"seconds":7,"voice":"calm","text":"hello"})"));
     create();
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
@@ -122,7 +124,7 @@ TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
 // requests the exact Binding, through normal Core authority/resources/Call.
 TEST_F(OpenaiProvider, described_mock_device_runs_through_the_normal_managed_call) {
     execute_proposal = true;
-    start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
+    start(tool_reply(R"({"seconds":7,"voice":"calm","text":"hello"})"));
     create();
     wait_done();
     EXPECT_EQ(device_result.outcome, AYNI_CALL_COMPLETED);
@@ -292,6 +294,58 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
     view.field_count = 1;
     view.fields[0] = {sizeof(ayni_authority_field_desc_v1), 1, AYNI_AUTHORITY_PARAMETER, 0,
                       duration};
+    std::array<ayni_schema_node_v1, 3> schema{};
+    schema[0].kind = AYNI_VALUE_OBJECT;
+    schema[0].subtree_end = 3;
+    schema[1].kind = AYNI_VALUE_I64;
+    schema[1].field_id = 17;
+    schema[1].subtree_end = 2;
+    schema[1].flags = AYNI_SCHEMA_REQUIRED;
+    schema[1].name = text("seconds");
+    schema[1].unit = text("second");
+    schema[1].min_i64 = 1;
+    schema[1].max_i64 = 10;
+    schema[2].kind = AYNI_VALUE_TEXT;
+    schema[2].field_id = 2;
+    schema[2].subtree_end = 3;
+    schema[2].flags = AYNI_SCHEMA_REQUIRED;
+    schema[2].name = text("text");
+    schema[2].max_count = 64;
+    ayni_schema_node_v1 result{};
+    result.kind = AYNI_VALUE_TEXT;
+    result.subtree_end = 1;
+    result.max_count = 64;
+    ayni_authority_projection_v1 projection{};
+    projection.field_id = 1;
+    projection.path_count = 1;
+    projection.path[0] = 17;
+    projection.unit = text("second");
+    ayni_business_contract_v1 definition{{schema.data(), 3}, {&result, 1}, 1, 0, &projection};
+    std::array<uint8_t, 256> domain{};
+    uint32_t domain_size = 0;
+    auto original_field = view.fields[0];
+    original_field.domain.values.integer.max_inclusive = 10;
+    ASSERT_EQ(
+        ayni::catalog::encode_domain(&original_field, 1, domain.data(), domain.size(), domain_size),
+        AYNI_OK);
+    ayni::catalog::CallContract execution{};
+    execution.form = ayni::catalog::CallForm::unary;
+    execution.category = ayni::catalog::CallClass::tool;
+    execution.idempotency = ayni::catalog::CallIdempotency::idempotent;
+    execution.query = ayni::catalog::QueryAuthority::none;
+    execution.cancel = ayni::catalog::CancelMode::none;
+    execution.timeout_ms = 1000;
+    execution.input_format = AYNI_CALL_INPUT_VALUE;
+    execution.result_format = AYNI_CALL_RESULT_TEXT;
+    execution.input_text_limit = 256;
+    execution.result_text_limit = 64;
+    std::array<uint8_t, 4096> proof{};
+    uint32_t proof_size = 0;
+    ASSERT_EQ(ayni::catalog::encode_business({domain.data(), domain_size}, execution, definition,
+                                             proof.data(), proof.size(), proof_size),
+              AYNI_OK);
+    view.original_domain = {domain.data(), domain_size};
+    view.business_contract = {proof.data(), proof_size};
     Tool copied;
     ASSERT_TRUE(copied.copy(view));
     std::string purpose = "Original mock display usage";
@@ -326,11 +380,106 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
     EXPECT_NE(encoded.find("Original mock display usage"), std::string::npos);
     EXPECT_NE(encoded.find("Display the supplied text."), std::string::npos);
     EXPECT_NE(encoded.find("Original display duration explanation"), std::string::npos);
-    EXPECT_NE(encoded.find("\"field_1\""), std::string::npos);
+    EXPECT_NE(encoded.find("\"seconds\""), std::string::npos);
+    EXPECT_NE(encoded.find("\"minimum\":1,\"maximum\":10"), std::string::npos);
+    EXPECT_NE(
+        encoded.find(
+            "Authority field 1: integer [1, 2] second via business name path [\\\"seconds\\\"]"),
+        std::string::npos);
     EXPECT_EQ(encoded.find("\"field_99\""), std::string::npos);
     EXPECT_EQ(encoded.find(purpose), std::string::npos);
     EXPECT_EQ(encoded.find("Changed source view"), std::string::npos);
 }
+// ADR-0084: machine bounds survive the JSON adapter with exact integer/decimal
+// descriptions and binary64 roundtrip bounds; byte limits are not Unicode lengths.
+TEST(OpenaiSchema, numeric_and_text_bounds_are_exposed_without_precision_loss) {
+    using namespace ayni::providers::openai_compat;
+    std::array<ayni_schema_node_v1, 6> nodes{};
+    nodes[0].kind = AYNI_VALUE_OBJECT;
+    nodes[0].subtree_end = static_cast<uint32_t>(nodes.size());
+    const std::array<ayni_string_v1, 5> names{text("ratio"), text("signed"), text("unsigned"),
+                                              text("price"), text("label")};
+    for (uint32_t at = 1; at < nodes.size(); ++at) {
+        nodes[at].field_id = at;
+        nodes[at].subtree_end = at + 1;
+        nodes[at].name = names[at - 1];
+        nodes[at].flags = AYNI_SCHEMA_REQUIRED;
+    }
+    nodes[1].kind = AYNI_VALUE_FLOAT64;
+    nodes[1].min_float64 = 0.125;
+    nodes[1].max_float64 = 0.875;
+    nodes[2].kind = AYNI_VALUE_I64;
+    nodes[2].min_i64 = INT64_MIN;
+    nodes[2].max_i64 = INT64_MAX;
+    nodes[3].kind = AYNI_VALUE_U64;
+    nodes[3].max_u64 = UINT64_MAX;
+    nodes[4].kind = AYNI_VALUE_DECIMAL;
+    nodes[4].min_i64 = 100;
+    nodes[4].max_i64 = 200;
+    nodes[4].scale = 2;
+    nodes[4].unit = text("dollar");
+    nodes[5].kind = AYNI_VALUE_TEXT;
+    nodes[5].min_count = 3;
+    nodes[5].max_count = 9;
+    ayni_schema_node_v1 result{};
+    result.kind = AYNI_VALUE_TEXT;
+    result.subtree_end = 1;
+    result.max_count = 16;
+    const ayni_business_contract_v1 business{
+        {nodes.data(), static_cast<uint32_t>(nodes.size())}, {&result, 1}, 0, 0, nullptr};
+    const std::array<uint8_t, 4> domain{{1, 0, 0, 0}};
+    ayni::catalog::CallContract execution{};
+    execution.form = ayni::catalog::CallForm::unary;
+    execution.category = ayni::catalog::CallClass::tool;
+    execution.idempotency = ayni::catalog::CallIdempotency::idempotent;
+    execution.query = ayni::catalog::QueryAuthority::none;
+    execution.cancel = ayni::catalog::CancelMode::none;
+    execution.timeout_ms = 1000;
+    execution.input_format = AYNI_CALL_INPUT_VALUE;
+    execution.result_format = AYNI_CALL_RESULT_TEXT;
+    execution.input_text_limit = 512;
+    execution.result_text_limit = 16;
+    std::array<uint8_t, 4096> proof{};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni::catalog::encode_business({domain.data(), domain.size()}, execution, business,
+                                             proof.data(), proof.size(), size),
+              AYNI_OK);
+    ayni_tool_v1 view{};
+    view.struct_size = sizeof(view);
+    view.binding_version = view.capability_version = 1;
+    view.binding_id = view.capability_id = text("typed.bounds");
+    view.text_limit = 512;
+    view.original_domain = {domain.data(), domain.size()};
+    view.business_contract = {proof.data(), size};
+    Tool tool;
+    ASSERT_TRUE(tool.copy(view));
+    ayni_tool_usage_v1 usage{sizeof(usage),
+                             1,
+                             view.binding_id,
+                             1,
+                             view.capability_id,
+                             text("Bounded business inputs."),
+                             text("Use the declared fields."),
+                             text("Text result."),
+                             text("Use exact values."),
+                             0,
+                             0,
+                             nullptr};
+    ASSERT_TRUE(tool.copy_usage(usage));
+    Protocol codec(4096);
+    Config config;
+    config.model = "fixture";
+    auto buffer = std::make_unique<char[]>(request_json_max);
+    size_t written = 0;
+    ASSERT_EQ(codec.encode(config, text("describe"), &tool, 1, buffer.get(), written), AYNI_OK);
+    const std::string encoded(buffer.get(), written);
+    EXPECT_NE(encoded.find("\"minimum\":0.125,\"maximum\":0.875"), std::string::npos);
+    EXPECT_NE(encoded.find("[-9223372036854775808, 9223372036854775807]"), std::string::npos);
+    EXPECT_NE(encoded.find("[0, 18446744073709551615]"), std::string::npos);
+    EXPECT_NE(encoded.find("Scale 2. Exact coefficient range [100, 200]"), std::string::npos);
+    EXPECT_NE(encoded.find("UTF-8 maximum 9 bytes; minimum 3 UTF-8 bytes"), std::string::npos);
+}
+
 TEST_F(OpenaiProvider, malformed_json_is_model_output_failure) {
     start("{broken");
     create();
@@ -410,39 +559,57 @@ INSTANTIATE_TEST_SUITE_P(
 
 class OpenaiArguments : public OpenaiProvider,
                         public ::testing::WithParamInterface<const char *> {};
-TEST_P(OpenaiArguments, invalid_arguments_fail_before_kernel_receipt) {
+TEST_P(OpenaiArguments, invalid_arguments_are_classified_by_the_adapter_or_original_schema_owner) {
     start(tool_reply(GetParam()));
     create();
     wait_done();
-    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(seen_result.status, AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
-    EXPECT_EQ(seen_result.tool_call_count, 0U);
+    const std::string input = GetParam();
+    if (input == "broken" || input.find("\"seconds\":7,\"seconds\":8") != std::string::npos) {
+        EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+        EXPECT_EQ(seen_result.status, AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
+        EXPECT_EQ(seen_result.tool_call_count, 0U);
+    } else {
+        // ADR-0084: post copied valid source syntax and ended the borrow. Only
+        // the owner decides original Schema/authority validity; bad evidence stays UNKNOWN.
+        const auto task = work.task(work.goal(last_goal).last_task_id);
+        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
+        ayni_call_info_v1 call{};
+        call.struct_size = sizeof(call);
+        ASSERT_EQ(ayni_get_call(work.kernel(), task.logical_call_id, &call), AYNI_OK);
+        EXPECT_EQ(call.outcome, AYNI_CALL_ABANDONED);
+        EXPECT_EQ(call.reason, AYNI_REASON_PROVIDER_RESULT);
+        EXPECT_EQ(call.tool_call_count, 0U);
+        EXPECT_EQ(presenter.executions(), 0U);
+    }
 }
 INSTANTIATE_TEST_SUITE_P(
     Arguments, OpenaiArguments,
-    ::testing::Values(R"({"field_1":11,"field_2":"calm","text":"hi"})",
-                      R"({"field_1":7.5,"field_2":"calm","text":"hi"})",
-                      R"({"field_1":18446744073709551615,"field_2":"calm","text":"hi"})",
-                      R"({"field_1":7,"field_2":"other","text":"hi"})",
-                      R"({"field_1":7,"text":"hi"})",
-                      R"({"field_1":7,"field_1":8,"field_2":"calm","text":"hi"})",
-                      R"({"field_1":7,"field_2":"calm","text":"hi","extra":true})",
-                      R"({"field_1":7,"field_2":"calm","text":null})", "{}", "broken"));
+    ::testing::Values(R"({"seconds":11,"voice":"calm","text":"hi"})",
+                      R"({"seconds":7.5,"voice":"calm","text":"hi"})",
+                      R"({"seconds":18446744073709551615,"voice":"calm","text":"hi"})",
+                      R"({"seconds":7,"voice":"other","text":"hi"})",
+                      R"({"seconds":7,"text":"hi"})",
+                      R"({"seconds":7,"seconds":8,"voice":"calm","text":"hi"})",
+                      R"({"seconds":7,"voice":"calm","text":"hi","extra":true})",
+                      R"({"seconds":7,"voice":"calm","text":null})", "{}", "broken"));
 TEST_F(OpenaiProvider, unknown_tool_is_model_output_failure) {
-    start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hi"})", "unknown"));
+    start(tool_reply(R"({"seconds":7,"voice":"calm","text":"hi"})", "unknown"));
     create();
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
     EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
 }
 TEST_F(OpenaiProvider, body_over_tool_limit_is_invalid_argument) {
-    start(tool_reply("{\"field_1\":7,\"field_2\":\"calm\",\"text\":\"" + std::string(65, 'x') +
-                     "\"}"));
+    start(
+        tool_reply("{\"seconds\":7,\"voice\":\"calm\",\"text\":\"" + std::string(65, 'x') + "\"}"));
     create();
     wait_done();
-    EXPECT_EQ(seen_result.status, AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
+    const auto task = work.task(work.goal(last_goal).last_task_id);
+    EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(presenter.executions(), 0U);
 }
 TEST_F(OpenaiProvider, redirect_does_not_send_credentials_to_another_server) {
     LoopbackHttp redirected(text_reply);
@@ -456,7 +623,7 @@ TEST_F(OpenaiProvider, redirect_does_not_send_credentials_to_another_server) {
 // case reaches provider_post, whose refusal must be followed by a FAILED receipt.
 class OpenaiListLimit : public OpenaiProvider, public ::testing::WithParamInterface<unsigned> {};
 TEST_P(OpenaiListLimit, list_limits_return_capacity_and_release_the_borrow) {
-    const auto one = tool_reply(R"({"field_1":7,"field_2":"calm","text":"hi"})");
+    const auto one = tool_reply(R"({"seconds":7,"voice":"calm","text":"hi"})");
     const auto begin = one.find("[{\"id\"") + 1;
     const auto end = one.rfind("]}}]}");
     const auto call = one.substr(begin, end - begin);
@@ -465,7 +632,10 @@ TEST_P(OpenaiListLimit, list_limits_return_capacity_and_release_the_borrow) {
         if (i) {
             response += ',';
         }
-        response += call;
+        auto next = call;
+        const auto identity = next.find("call_1");
+        next.replace(identity, sizeof("call_1") - 1, "call_" + std::to_string(i));
+        response += next;
     }
     response += one.substr(end);
     start(response, 200, 0, 32768);

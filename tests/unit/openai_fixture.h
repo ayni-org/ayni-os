@@ -3,10 +3,12 @@
 #define AYNI_TEST_OPENAI_FIXTURE_H
 // C-PROV-002/004/006/008/011 and ADR-0054/0055, through registration and public calls.
 #include "loopback_http.h"
+#include "mock_display_schema.h"
 #include "work_node.h"
 #include <array>
 #include <ayni/providers/mock.h>
 #include <ayni/providers/openai_compat.h>
+#include <ayni/values.hpp>
 #include <cstdlib>
 #include <functional>
 #include <thread>
@@ -16,7 +18,7 @@ using namespace ayni::test;
 using ayni::providers::openai_compat::Config;
 using ayni::providers::openai_compat::Provider;
 constexpr uint32_t result_limit = 512;
-constexpr uint32_t destination_field = 3;
+constexpr uint32_t destination_field = AYNI_MODEL_DESTINATION_FIELD_ID;
 ayni_authority_value_set_v1 tokens(ayni_authority_value_kind_t kind, const ayni_string_v1 *values,
                                    uint32_t count) {
     ayni_authority_value_set_v1 out{};
@@ -50,8 +52,15 @@ class OpenaiFixture : public ::testing::Test {
         }
         ASSERT_EQ(provider.configure(configured), AYNI_OK);
         ASSERT_EQ(provider.describe(descriptor), AYNI_OK);
+        display.input[1].min_i64 = 5;
+        display.input[1].max_i64 = 10;
         ASSERT_EQ(presenter.configure({ayni::providers::mock::Variant::a,
-                                       ayni::providers::mock::Service::action, 1, 64}),
+                                       ayni::providers::mock::Service::action,
+                                       1,
+                                       64,
+                                       {},
+                                       &display.business,
+                                       MockDisplaySchema::body_field}),
                   AYNI_OK);
         ASSERT_EQ(presenter.describe(tool_descriptor), AYNI_OK);
         auto &c = work.node().config();
@@ -184,7 +193,7 @@ class OpenaiFixture : public ::testing::Test {
             {self.usage_purpose.data(), static_cast<uint32_t>(self.usage_purpose.size())},
             text("Text to show on the mock display; empty text clears it."),
             text("Completion confirms simulated display only; no physical device is attached."),
-            text("field_1=7, field_2=calm, text=hello"),
+            text("seconds=7, voice=calm, text=hello"),
             2,
             0,
             self.usage_fields.data()};
@@ -199,18 +208,23 @@ class OpenaiFixture : public ::testing::Test {
         result.struct_size = sizeof(result);
         const auto read = snapshot.call_result(snapshot.call_context, text("plan"), &result);
         if (read == AYNI_NOT_FOUND) {
-            const auto destination = descriptor.destination_id;
-            const ayni_scope_field_v1 field{sizeof(field), destination_field,
-                                            tokens(AYNI_AUTHORITY_IDENTIFIER, &destination, 1)};
-            const ayni_call_request_v1 request{
-                sizeof(request),
-                AYNI_POLICY_REQUEST_MODEL,
-                1,
-                0,
-                text("plan"),
-                text("plan"),
-                {sizeof(ayni_scope_v1), 1, &field},
-                {prompt.data(), static_cast<uint32_t>(prompt.size())}};
+            ayni::ValueBuilder<2> value;
+            value.object();
+            value.text(AYNI_MODEL_BODY_FIELD_ID,
+                       {prompt.data(), static_cast<uint32_t>(prompt.size())});
+            value.end();
+            ayni_call_request_v1 request{sizeof(request),
+                                         AYNI_POLICY_REQUEST_MODEL,
+                                         1,
+                                         0,
+                                         text("plan"),
+                                         text("plan"),
+                                         {},
+                                         {},
+                                         {}};
+            if (value.finish(request.value) != AYNI_OK) {
+                return AYNI_INVALID_ARGUMENT;
+            }
             const auto status = output.request_call(output.call_context, &request);
             EXPECT_EQ(status, AYNI_OK);
             return status;
@@ -228,14 +242,19 @@ class OpenaiFixture : public ::testing::Test {
             if (status != AYNI_OK) {
                 return status;
             }
-            proposal = string_of(proposed.call.binding_id) + "|" + string_of(proposed.call.text);
-            for (uint32_t i = 0; i < proposed.call.arguments.field_count; ++i) {
-                const auto &field = proposed.call.arguments.fields[i].allowed;
-                proposal += "|" + (field.kind == AYNI_AUTHORITY_I64
-                                       ? std::to_string(field.values.integer.min_inclusive) +
-                                             string_of(field.unit)
-                                       : string_of(field.values.tokens.members[0]));
+            ayni::ValueReader input;
+            if (input.read(proposed.call.input.value) != AYNI_OK) {
+                return AYNI_INVALID_ARGUMENT;
             }
+            const auto *seconds = input.field(1);
+            const auto *voice = input.field(2);
+            const auto *body = input.field(MockDisplaySchema::body_field);
+            if (!seconds || !voice || !body) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            proposal = string_of(proposed.call.binding_id) + "|" + string_of(body->value.text) +
+                       "|" + std::to_string(seconds->value.integer) + "second|" +
+                       string_of(voice->value.text);
             if (execute_proposal) {
                 ayni_task_call_result_v1 device{};
                 device.struct_size = sizeof(device);
@@ -248,8 +267,9 @@ class OpenaiFixture : public ::testing::Test {
                                                        0,
                                                        text("show"),
                                                        proposed.call.binding_id,
-                                                       proposed.call.arguments,
-                                                       proposed.call.text};
+                                                       {},
+                                                       {},
+                                                       proposed.call.input.value};
                     return output.request_call(output.call_context, &request);
                 }
                 if (device_status != AYNI_OK) {
@@ -345,6 +365,7 @@ class OpenaiFixture : public ::testing::Test {
         unsetenv("AYNI_PROTOCOL_FIXTURE_KEY");
     }
     std::unique_ptr<LoopbackHttp> server;
+    MockDisplaySchema display;
     Provider provider;
     ayni::providers::mock::Provider presenter;
     WorkNode work;

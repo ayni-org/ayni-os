@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前批次与快照只读写 `storage_schema=3`（ADR-0082）；其他 schema（包括 0/1/2） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=4`（ADR-0084）；其他 schema（包括 0/1/2/3） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -44,7 +44,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | 4 | `length` | 记录体字节数 |
 | `length` | 记录体 | 由属主模块定义的字段编码 |
 
-schema 3 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
+schema 4 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
 
 ## 记录类型
 
@@ -94,7 +94,7 @@ phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed�
 
 ## 工作记录
 
-schema 3 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
+schema 4 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
 
 | 类型 | 记录 | 当前正文 | 固定长度 |
 |---:|---|---|---:|
@@ -120,7 +120,7 @@ GOAL_STATE flags 位 0=next scheduled，位 1=expiry pending，其余拒绝；ch
 
 ## Grant 与完整授权命令记录
 
-Grant 当前日志 type13/v1 总固定 88 B，加 Capability ID、source domain、scope 的正文。顺序为 grant/replaced/subject/parent/owner（u64），binding_revision/capability_version（u32），Capability ID 长度串，lifetime/delegation（u32），duration u64，depth u32，domain/scope 两个长度串，bound_goal_id u64。绑定 0 表示普通；非零必须早于 Grant ID、根且不可委派。原域必须覆盖保存 Scope，父链只能收窄。
+Grant 当前日志 type13/v1 总固定 92 B，加 Capability ID、source domain、scope 和 business_contract 的正文。顺序为 grant/replaced/subject/parent/owner（u64），binding_revision/capability_version（u32），Capability ID 长度串，lifetime/delegation（u32），duration u64，depth u32，domain/scope 两个长度串，bound_goal_id u64，独立 business_contract 长度串。绑定 0 表示普通；非零必须早于 Grant ID、根且不可委派。原域必须覆盖保存 Scope，父链只能收窄。
 
 GRANT_STATE type14/v1 固定 24 B：id u64、revision/lifecycle u32、revoked_by_root_id u64。后代 REVOKED 必须指向合法的另一根；EXPIRED/GOAL_ENDED 必须 root=0 且同批有工作清理 footer。revision 必须为终态 2。GRANT_REVOCATION type15/v1 固定32 B：id u64、revision/effect u32、after/through u64；GRANT_REVOCATION_PROGRESS type16/v1 固定24 B：root/after/through u64。根撤销与 exact revoke 命令及请求 footer 配对；后代终态与同批根进度配对。固定 through、单调 after；禁止同批未配对身份被下一条替换。
 
@@ -135,7 +135,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 ## 控制记录与读取
 
 - `WRITER_FENCE` 单独成批，新 epoch 必须严格大于前缀现有有效 epoch。其后的完整旧 epoch 帧被忽略，不推进有效 commit、transition 或 boot 基线；其他有效批次仍须连续。
-- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 3；无旧格式 reader、迁移或自动清空。
+- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 4；无旧格式 reader、迁移或自动清空。
 - 恢复使用 Host 物理 cursor，不能用最大已见 commit_seq 翻页；旧 epoch 的高序号帧可能位于合法新批次之前。cursor 在同一日志实例中严格递增，轮转后从 0 重读。
 - 首个完整批次放不下时，Host 以读专用 `READ_BUFFER_TOO_SMALL` 报精确所需长度，映射 `STATE_EXCEEDS_CAPACITY`。真正 I/O 故障、非法大小或 `OK` 越界仍是 `STORAGE_READ_FAILED`。
 
@@ -143,14 +143,14 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 
 快照采用两个槽。维护先冻结新 transition 并排空 journal，得到边界 `S`，再写非当前槽的内容，回读校验版本、长度与 CRC 后独立写槽尾标记。槽尾标记只证明槽内容完整；日志中的 `SNAPSHOT_COMMIT` 是激活新状态的唯一切换提交，持久化后才轮转旧日志。尚未激活的新槽不参与恢复。
 
-### 槽头与槽尾（schema 3）
+### 槽头与槽尾（schema 4）
 
 头部固定为 72 字节：
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | ASCII `AYSN` |
-| 4 | 2 | `storage_schema` | 3 |
+| 4 | 2 | `storage_schema` | 4 |
 | 6 | 2 | `header_length` | 72 |
 | 8 | 8 | `generation` | 从 1 起，每次激活递增 |
 | 16 | 8 | `covers_commit_seq` | 快照包含的最后一个提交 `S`；初始空快照为 0 |
@@ -189,7 +189,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 | 13/v2 GRANT | 完整创建+created/last stamp（各16 B）+revision/lifecycle（u32）+revoker/after/through（u64）+cleanup stamp（16 B） | 创建+80 |
 | 9/v2 COMMAND_MAPPING | 完整日志正文+原 acceptance commit_seq u64 | 日志+8 |
 | 7/8/6/18 v1 | 每条 key、可选检查点、完整 state（change=1）、紧邻准入 | 各属主当前大小 |
-| 17/v1 GOAL_AUTHORITY | 完整原授权事实 | 72+每需求28+ID/域/Scope正文 |
+| 17/v1 GOAL_AUTHORITY | 完整原授权事实 | 72+每需求32+ID/域/Scope/业务证明正文 |
 
 其余允许快照的记录使用与日志相同的完整当前正文；Grant state/root progress、Goal state、BOOT/FENCE/ACTIVATION 不单独导入快照。
 
@@ -235,7 +235,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 
 type17/v1 为完整当前授权元数据。GOAL.authority_required 声明同批/快照相邻伙伴，GOAL_STATE.change 明确授权、暂停或重新授权证明；缺失、孤立、重复或跨批伙伴损坏。公开创建必须有显式元数据，包括 count=0；每 transition 至多一条。
 
-全部整数为小端。固定头 72 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16），再接五个 u64：binding_commit_seq（offset 32）、parent_goal_id（40）、parent_binding_commit_seq（48）、input_incarnation（56）、input_through（64）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32）。每项固定开销 28 B，不包括三段数据；总长必须恰好匹配。
+全部整数为小端。固定头 72 B：Goal ID（u64）、最后 authority transition_id（u64）、commit_seq（u64）、phase（u32，1=proposed、2=authorized、3=paused）、count（u32，0～16），再接五个 u64：binding_commit_seq（offset 32）、parent_goal_id（40）、parent_binding_commit_seq（48）、input_incarnation（56）、input_through（64）。随后按需求顺序重复：Capability version（u32），Capability ID、原域、Scope（三段各带 u32 长度的字节串），Grant ID（u64）、选定 revision（u32），business_contract 长度串。每项固定开销 32 B，不包括四段数据；总长必须恰好匹配。
 
 Goal ID 必须是有效 Kernel ID，stamp 两项非零；Capability ID/版本与原域必须有效，Scope 完整且被原域包含。Grant 引用或是 `{0,0}`（缺项），或是有效 Kernel ID 与非零 revision。proposed 至少缺一项且 binding 全零；authorized/paused 全部引用完整，binding_commit_seq 非零且不晚于 authority commit_seq。父 Goal ID/绑定序号同零或同非零；根为零，子项须与准入时父绑定相等。输入 incarnation=0 时 through 必须为 0；非零 incarnation 可配零水位（无输入），不得超过 boot ID 范围。输入恢复边界由完整重新授权事务证明。显式 count=0 可授权或暂停，缺少整条记录仍是未知元数据，不能当零需求。表的配置容量可以小于记录绝对上限，放入时不足则不改变已有事实。
 
@@ -291,13 +291,13 @@ journal 使用 REQUIRED `GOAL_STATE` 4/v1（change=5）、`GOAL_AUTHORITY` 17/v1
 
 ## 统一调用记录（ABI 0.31，ADR-0045）
 
-schema 3 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 324 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
+schema 4 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 328 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
 
 1. call_id、operation_id、task_id、owner_instance_id（各 u64）；Binding/Capability/Provider version（各 u32）；step_key、Binding ID、Capability ID、Provider ID、endpoint、destination（六个长度串）。
 2. 原 CallContract：form/category/effects/idempotency/query/cancel/dedupe_window_ms/timeout_ms/input_format/result_format/input_text_limit/result_text_limit/resource_count（13 个 u32）；每个资源按规范 ID 顺序写 ID 长度串及 units u32。
 3. created 和 latest stamp（各 boot/transition/commit_seq 三个 u64）；原执行 attempt 两个 u64；progress_sequence u64；cancel_cause、cancel_result、outcome、status、reason（各 u32，status 为有符号值的原位编码）。
 4. 独立查询固定 60 B：generation/phase u32、requested stamp 三个 u64、查询 attempt 两个 u64、status/reason/conclusion u32。未请求查询时全部为零。phase 1/2/3 为 requested/dispatching/finished；generation 从 1 开始，管理 CAS 为 generation+1，无查询时 revision=1。原执行 attempt 不因查询改变。
-5. 原 authority domain、规范 CallInput、UTF-8 结果、ActionState（四个长度串）；ActionState 在资源准备前为空，准备后使用既有 20/v1 codec，不另写 type20 记录。
+5. 原 authority domain、规范 CallInput、结果（由 result kind 决定）、ActionState（四个长度串）；ActionState 在资源准备前为空，准备后使用既有 20/v1 codec，不另写 type20 记录。
 
 完整 TASK_STATE 保存选定 call id/end，end 0/1/2=none/cancel/expire；无调用时同零，RUNNING/CANCELLING 要求选定调用，后者必须 cancel/expire。终态 Call/Task 更新同批；取消后 retained UNKNOWN 可以没有 Task 选定引用。
 
@@ -307,11 +307,24 @@ schema 3 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 324 B�
 
 ## 调用扩展与工具结果
 
-Action 长度串后始终编码 execution_present、erased_present（u32）、content_erased ActionStamp（24 B，缺席全0）、result kind u32。result kind 1=UTF8、2=TOOL_CALLS；实际列表只允许完成结果。随后按 presence 写 ExecutionFact；contract form 为 subscription 时再写订阅事实。跳过、物理、工具、擦除、订阅是当前领域变体，共用 v1，不再选择布局版本。
+Action 长度串后始终编码 execution_present、erased_present（u32）、content_erased ActionStamp（24 B，缺席全0）、result kind u32。result kind 1=UTF8、2=TOOL_CALLS、3=VALUE、4=UNAVAILABLE；最后一种表示正文失效但身份/结果/效果事实保留，不能作为可消费结果，独立于 content_erased；实际列表只允许完成结果。随后按 presence 写 ExecutionFact；contract form 为 subscription 时再写订阅事实；最后始终写 business_contract 长度串。跳过、物理、工具、擦除、订阅是当前领域变体，共用 v1，不再选择布局版本。
 
 ExecutionFact 原固定112 B及各 ID、数值投影仍按属主顺序编码；每个观察引用固定40 B加 source ID，最后的 subscription_id u64 始终存在，0=Host。phase/target/stop、四个 epoch、calibration 和原约束不可倒退；不保存 nonce、deadline、在线占用或 raw media。擦除不能改写已知物理执行结论，UNKNOWN 不自动重试。
 
-工具列表 format1：count u32（1..8），各项 Binding version u32、Binding ID 长度串、field count u32（<=8），各 field 的 id/kind u32、unit 长度串、I64 原位值或 ENUM/IDENTIFIER 取值长度串，最后 text 长度串。field id 非零严格递增，所有正文严格 UTF8、有界且无尾字节；由原 result limit 限制整个列表，不保存模型 JSON。
+工具列表 format2：magic u32=0x32435441（ATC2）、version u32=2、count u32（1..8），各项依次为 Binding version u32、Binding ID 长度串、input kind u32（1=VALUE、2=ARGUMENTS）、opaque protocol ID 长度串、payload 长度串。每项固定开销 20 B，协议 ID 为 1..128 B UTF-8，列表内唯一，与 Ayni operation/attempt 身份分离。生产者暂存可保存两种输入，owner 对原 Schema 规范化后只持久 VALUE；授权失败不把提议交给策略。总大小由原 result limit 及 65536 B 全局上限限制，拒绝旧 format1 和尾字节，不保存原 JSON。
+
+### 业务值、具名源与原契约证明（ABI 0.48 / ADR-0084）
+
+下列 codec 均由 `catalog/capability` 拥有，不使用 ABI padding、指针、宿主句柄或 C++ 内存布局。`source_domain` 保持独立的授权域格式；业务证明不是拼入原域的隐藏后缀。启用 Call 的 Capability、Provider offer、Grant、Goal requirement 及 Call 各自保存独立完整证明，关闭目录时精确比对，不能以本次启动的不同 Schema 重释历史事实。纯授权能力没有 Call 契约时证明为空。
+
+- **VALUE v1**：version/count（u32，头 8 B），随后 preorder 节点各为 kind/field_id/subtree_end（u32，头 12 B）加活动 payload。OBJECT/LIST/NULL 无 payload；BOOL u32；I64/U64/binary64 各 u64；DECIMAL 为 coefficient u64 位模式和 scale u32；TEXT/ENUM/IDENTIFIER 为长度串。规范对象按稳定 field_id 升序、默认值已补齐、列表保留顺序/重复、浮点 -0 规范为 +0；无尾字节。业务 input_limit 计整个编码，不能只计算 text 长度。
+- **ARGUMENTS v1**：version/count u32（8 B），每节点 kind/subtree_end u32、name 长度串，加 BOOL u32 或 NUMBER/STRING 长度串；容器/NULL 无活动 payload。NUMBER 保存原始数值 lexeme，未经过 double。Core 对原 Schema 解析名字与类型；重复/未知键、错误数值表示、越界或容量不足整次拒绝。
+- **Schema v1**：version/count u32，每节点 kind/field_id/规范 subtree_end/flags u32，name/unit 长度串，随后仅该 kind 的边界：I64/U64/binary64 为两个 u64，DECIMAL 再接 scale u32，TEXT/LIST 为 min/max u32，ENUM/IDENTIFIER 为 count u32 和规范排序 choices 长度串，OBJECT/BOOL 无边界。每节点最后为 default VALUE 长度串，0 长表示无默认。对象字段按 ID、choices 按字节排序；每 Schema 最多 32768 B、128 节点，总 choices/default 节点各最多 256。
+- **business_contract v1**：version u32、完整 execution contract（上述 13 个 u32 及资源），subscription presence u32（有时为 source 长度串、source_version/lease_ms u32），input/result 两个 Schema 长度串，projection count u32。每 projection 为 field_id/flags/scale/path_count u32、unit 长度串及 path_count 个 u32；按 authority field_id 升序。最大 69632 B，配置默认 4096 B，独立计入各表、暂存、journal/snapshot 预算。
+
+最大深度 8、值节点 256、单列表 64；decimal coefficient 为 I64、scale 0..18。只有声明 nullable 才接受 NULL。投影只能沿声明路径，至多一个共同非空列表轴；浮点/自由文本不参与权限比较，BOOL 只能显式映射 0/1，decimal 的 scale/单位不可隐式转换。全部列表行由同一完整 requirement/Grant 覆盖，先前不完整候选不阻止尝试后一个完整候选，不把多条授权拼接。
+
+schema 4 在新增写入前拒绝旧 schema 0..3 并保留源目录，无旧 reader/迁移器；回退使用旧二进制及原目录。此规则不是新故障/恢复专项已验证的声明。
 
 Scene type22/v1 完整正文不变：44 B固定部分加原声明。启停与 exact scene command 同批且不混入其他变更；保存原声明，不在恢复时查当前 catalog。Scene mode、条件/规则及物理投影由原属主校验。
 
@@ -337,7 +350,7 @@ Goal/Task/Checkpoint 的 provenance_required 是完整当前正文的一部分�
 
 ## P4 日历记录（ADR-0061，ABI 0.41）
 
-schema 3 中所有日期字段均在完整当前正文内；不认识的格式在写入或执行前拒绝并保留原目录。
+schema 4 中所有日期字段均在完整当前正文内；不认识的格式在写入或执行前拒绝并保留原目录。
 
 - **type 27/v1 CALENDAR**：64 字节固定部分后接 TZ 字节。依次为 `goal_id:u64, transition_id:u64, commit_seq:u64, last_local_s:u64, last_utc_s:u64, taken:u32`，再接规则 `kind:u32, rule_version:u32, first_local_s:u64, timezone_length:u32, timezone_bytes`。未消费的两个 last 字段编码为 UINT64_MAX，其他时刻范围 0～253402300799 秒。TZ 长度 1～128；规则 kind 1/2/3 为单次/每日/每周，rule_version=1。日志和快照共用正文；仅规则创建或消费/跳过时更新 stamp。Goal 槽退役同时清空本行。单调投影、首次容量等待时刻和时钟可信状态均不持久化。
 - **GOAL/TASK**：calendar trigger 要求对应 CALENDAR；GoalState.next_scheduled 对日历恒为0。Task 始终包含 calendar 两时间与 presence，occurrence 计数对应规则本地键；快照保存原历史，不按长度推断布局。

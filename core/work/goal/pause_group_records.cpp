@@ -1,8 +1,8 @@
 #include "work/goal/pause_group_records.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 namespace ayni::work {
 void write_pause_group_record(uint32_t group, const PauseGroup &row, uint8_t *body) {
-    durability::BodyWriter writer(body, pause_group_record_size);
+    foundation::BodyWriter writer(body, pause_group_record_size);
     writer.u32(group);
     writer.u32(row.paused ? 1U : 0U);
     writer.u64(row.object_id);
@@ -17,7 +17,7 @@ bool read_pause_group_record(const uint8_t *body, uint32_t size, PauseGroupRecor
     if (body == nullptr || size != pause_group_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     PauseGroupRecord value{};
     value.group = reader.u32();
     const auto paused = reader.u32();

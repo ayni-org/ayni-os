@@ -1,6 +1,8 @@
 #include "protocol.h"
+#include <ayni/values_json.hpp>
 #include <charconv>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <string_view>
 #include <system_error>
@@ -8,125 +10,160 @@
 
 namespace ayni::providers::openai_compat {
 namespace {
-// Allocation-free JSON writer. Every append checks the remaining fixed buffer.
-class Writer {
-  public:
-    explicit Writer(char *buffer) : data_(buffer) {}
-    void raw(std::string_view value) {
-        if (value.size() > request_json_max - used_) {
-            ok_ = false;
-            return;
+using ::ayni::json::write_schema;
+using ::ayni::json::Writer;
+// Function aliases are a protocol concern; business field names come from Schema.
+void function_name(Writer &out, uint32_t index) {
+    out.raw("\"tool_");
+    out.number(index);
+    out.raw("\"");
+}
+
+// Render stable-ID projection paths with original JSON field names. A quoted
+// property step differs from the [*] list wildcard, including names containing
+// quotes, brackets or slashes; the outer function description is JSON-escaped.
+ayni_status_t describe_path(Writer &out, ayni_schema_v1 schema,
+                            const ayni_authority_projection_v1 &projection) {
+    uint32_t node = 0;
+    constexpr uint32_t escaped_name_bytes = 6U * AYNI_SCHEMA_NAME_BYTES_MAX + 2U;
+    for (uint32_t at = 0; at < projection.path_count; ++at) {
+        if (projection.path[at] == AYNI_PROJECTION_LIST_ITEM) {
+            out.raw("[*]");
+            ++node;
+            continue;
         }
-        std::memcpy(data_ + used_, value.data(), value.size());
-        used_ += value.size();
+        const uint32_t end = schema.nodes[node].subtree_end;
+        uint32_t child = node + 1U;
+        while (child < end && schema.nodes[child].field_id != projection.path[at]) {
+            child = schema.nodes[child].subtree_end;
+        }
+        if (child == end) {
+            return AYNI_INTERNAL;
+        }
+        node = child;
+        std::array<char, escaped_name_bytes> buffer{};
+        Writer name(buffer.data(), buffer.size());
+        name.string(schema.nodes[node].name);
+        size_t size = 0;
+        if (!name.finish(size)) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        out.raw("[");
+        out.escaped({buffer.data(), static_cast<uint32_t>(size)});
+        out.raw("]");
     }
-    void string(ayni_string_v1 value) {
-        raw("\"");
-        escaped(value);
-        raw("\"");
+    return AYNI_OK;
+}
+
+// Keep one complete candidate separate from the original business Schema. A
+// list cannot combine field sets or rows from unrelated authority candidates.
+ayni_status_t authority_description(Writer &out, const Tool &tool,
+                                    const ayni_business_contract_v1 &business) {
+    if (!tool.view.field_count) {
+        return AYNI_OK;
     }
-    // Emit only the escaped body, for a description composed of bounded views.
-    void escaped(ayni_string_v1 value) {
-        constexpr char hex[] = "0123456789abcdef";
-        constexpr unsigned nibble_bits = 4;
-        constexpr unsigned nibble_mask = 15;
-        for (uint32_t at = 0; at < value.size; ++at) {
-            const auto byte = static_cast<unsigned char>(value.data[at]);
-            if (byte == '"' || byte == '\\') {
-                raw("\\");
-                raw({value.data + at, 1});
-            } else if (byte < ' ') {
-                const char escape[] = {
-                    '\\', 'u', '0', '0', hex[byte >> nibble_bits], hex[byte & nibble_mask]};
-                raw({escape, sizeof(escape)});
-            } else {
-                raw({value.data + at, 1});
+    out.raw(
+        "\\nOne complete Task authority candidate; all list rows must fit this same candidate:");
+    for (uint32_t at = 0; at < tool.view.field_count; ++at) {
+        const auto &field = tool.view.fields[at];
+        const auto &domain = field.domain;
+        out.raw("\\nAuthority field ");
+        out.number(field.field_id);
+        out.raw(": ");
+        if (domain.kind == AYNI_AUTHORITY_I64) {
+            out.raw("integer [");
+            out.number(domain.values.integer.min_inclusive);
+            out.raw(", ");
+            out.number(domain.values.integer.max_inclusive);
+            out.raw("] ");
+            out.escaped(domain.unit);
+        } else {
+            out.raw("tokens [");
+            for (uint32_t token = 0; token < domain.values.tokens.member_count; ++token) {
+                if (token) {
+                    out.raw(", ");
+                }
+                out.escaped(domain.values.tokens.members[token]);
+            }
+            out.raw("]");
+        }
+        for (uint32_t path = 0; path < business.projection_count; ++path) {
+            const auto &projection = business.projections[path];
+            if (projection.field_id != field.field_id) {
+                continue;
+            }
+            out.raw(" via business name path ");
+            const auto status = describe_path(out, business.input, projection);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            if (projection.scale) {
+                out.raw("; coefficient scale ");
+                out.number(projection.scale);
+            }
+            if (projection.flags & AYNI_PROJECTION_BOOL_I64) {
+                out.raw("; false=0, true=1");
             }
         }
     }
-    void string(const std::string &value) {
-        string(ayni_string_v1{value.data(), static_cast<uint32_t>(value.size())});
-    }
-    void number(int64_t value) {
-        char buffer[std::numeric_limits<int64_t>::digits10 + 3];
-        const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value);
-        raw({buffer, static_cast<size_t>(written.ptr - buffer)});
-    }
-    void name(const char *prefix, uint32_t value) {
-        raw("\"");
-        raw(prefix);
-        number(value);
-        raw("\"");
-    }
-    bool finish(size_t &size) const {
-        size = used_;
-        return ok_;
-    }
+    return AYNI_OK;
+}
+ayni_status_t tool_schema(Writer &out, const Tool &tool, uint32_t index) {
+    struct Context {
+        Writer &out;
+        const Tool &tool;
+        uint32_t index;
+    } context{out, tool, index};
+    return ayni_business_contract_read(
+        tool.view.original_domain, tool.view.business_contract, &context,
+        [](void *opaque, const ayni_business_contract_v1 *business) -> ayni_status_t {
+            auto &state = *static_cast<Context *>(opaque);
+            auto &writer = state.out;
+            const auto &offered = state.tool;
+            writer.raw("{\"type\":\"function\",\"function\":{\"name\":");
+            function_name(writer, state.index);
+            writer.raw(",\"description\":\"");
+            writer.escaped(offered.usage.purpose);
+            writer.raw("\\nResult: ");
+            writer.escaped(offered.usage.result_usage);
+            writer.raw("\\nExamples: ");
+            writer.escaped(offered.usage.examples);
+            writer.raw("\\nBody: ");
+            writer.escaped(offered.usage.text_usage);
+            for (uint32_t at = 0; at < offered.view.field_count; ++at) {
+                writer.raw("\\n");
+                writer.escaped(offered.field_usage[at].description);
+                if (offered.view.fields[at].domain.unit.size) {
+                    writer.raw("\\nUnit: ");
+                    writer.escaped(offered.view.fields[at].domain.unit);
+                }
+            }
+            const auto status = authority_description(writer, offered, *business);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            writer.raw("\",\"parameters\":");
+            write_schema(writer, business->input, 0);
+            writer.raw("}}");
+            return AYNI_OK;
+        });
+}
 
-  private:
-    char *data_;
-    size_t used_ = 0;
-    bool ok_ = true;
+// JSON DOM strings can include private model input/results. Declare this guard
+// before any Document so all DOM destructors run before either pool is cleared.
+struct EraseScratch {
+    char *first;
+    char *second;
+    size_t bytes;
+    ~EraseScratch() {
+        for (char *pool : {first, second}) {
+            auto *current = reinterpret_cast<volatile unsigned char *>(pool);
+            for (size_t at = 0; at < bytes; ++at) {
+                current[at] = 0;
+            }
+        }
+    }
 };
-
-void field_schema(Writer &out, const ayni_authority_field_desc_v1 &field,
-                  ayni_string_v1 description) {
-    const auto &domain = field.domain;
-    if (domain.kind == AYNI_AUTHORITY_I64) {
-        out.raw("{\"type\":\"integer\",\"description\":");
-        out.raw("\"");
-        out.escaped(description);
-        out.raw("\\nUnit: ");
-        out.escaped(domain.unit);
-        out.raw("\"");
-        out.raw(",\"minimum\":");
-        out.number(domain.values.integer.min_inclusive);
-        out.raw(",\"maximum\":");
-        out.number(domain.values.integer.max_inclusive);
-    } else {
-        out.raw("{\"type\":\"string\",\"enum\":[");
-        for (uint32_t i = 0; i < domain.values.tokens.member_count; ++i) {
-            if (i != 0) {
-                out.raw(",");
-            }
-            out.string(domain.values.tokens.members[i]);
-        }
-        out.raw("],\"description\":");
-        out.string(description);
-    }
-    out.raw("}");
-}
-
-void tool_schema(Writer &out, const Tool &tool, uint32_t index) {
-    const auto &view = tool.view;
-    out.raw("{\"type\":\"function\",\"function\":{\"name\":");
-    out.name("tool_", index);
-    out.raw(",\"description\":");
-    out.raw("\"");
-    out.escaped(tool.usage.purpose);
-    out.raw("\\nResult: ");
-    out.escaped(tool.usage.result_usage);
-    out.raw("\\nExamples: ");
-    out.escaped(tool.usage.examples);
-    out.raw("\"");
-    out.raw(",\"parameters\":{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{");
-    for (uint32_t i = 0; i < view.field_count; ++i) {
-        out.name("field_", view.fields[i].field_id);
-        out.raw(":");
-        field_schema(out, view.fields[i], tool.field_usage[i].description);
-        out.raw(",");
-    }
-    out.raw("\"text\":{\"type\":\"string\",\"description\":\"");
-    out.escaped(tool.usage.text_usage);
-    out.raw("\\nUTF-8 maximum ");
-    out.number(view.text_limit);
-    out.raw(" bytes\"}},\"required\":[");
-    for (uint32_t i = 0; i < view.field_count; ++i) {
-        out.name("field_", view.fields[i].field_id);
-        out.raw(",");
-    }
-    out.raw("\"text\"]}}}");
-}
 
 // ADR-0074: a framed body states the strategy's instructions apart from its data. Core already
 // checked the whole body as UTF-8, so each part is valid when the split starts a character.
@@ -204,7 +241,7 @@ ayni_status_t validate_shape(yyjson_val *value) {
             }
         }
     } else if (yyjson_is_obj(value)) {
-        if (yyjson_obj_size(value) > json_container_max) {
+        if (yyjson_obj_size(value) > AYNI_SCHEMA_NODE_COUNT_MAX) {
             return AYNI_CAPACITY_EXCEEDED;
         }
         size_t i, count;
@@ -223,13 +260,16 @@ ayni_status_t validate_shape(yyjson_val *value) {
     return AYNI_OK;
 }
 using Document = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>;
-Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_status_t &status) {
+Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_status_t &status,
+               bool raw_numbers = false) {
     status = AYNI_INVALID_ARGUMENT;
     yyjson_alc allocator{};
     if (!depth_valid(data, size) || !yyjson_alc_pool_init(&allocator, pool, pool_size)) {
         return {nullptr, yyjson_doc_free};
     }
-    Document doc(yyjson_read_opts(data, size, 0, &allocator, nullptr), yyjson_doc_free);
+    Document doc(yyjson_read_opts(data, size, raw_numbers ? YYJSON_READ_NUMBER_AS_RAW : 0,
+                                  &allocator, nullptr),
+                 yyjson_doc_free);
     if (doc) {
         status = validate_shape(yyjson_doc_get_root(doc.get()));
         if (status != AYNI_OK) {
@@ -247,43 +287,6 @@ bool named(yyjson_val *value, const char *prefix, uint32_t id) {
     const auto number = std::to_chars(name + prefix_size, name + sizeof(name), id);
     return yyjson_equals_strn(value, name, static_cast<size_t>(number.ptr - name));
 }
-yyjson_val *field_value(yyjson_val *object, uint32_t id) {
-    size_t i, count;
-    yyjson_val *key, *value;
-    yyjson_obj_foreach(object, i, count, key, value) {
-        if (named(key, "field_", id)) {
-            return value;
-        }
-    }
-    return nullptr;
-}
-bool decode_field(yyjson_val *value, const ayni_authority_field_desc_v1 &offered,
-                  ayni_scope_field_v1 &field, ayni_string_v1 &token) {
-    field = {sizeof(field), offered.field_id, offered.domain};
-    auto &domain = field.allowed;
-    if (domain.kind == AYNI_AUTHORITY_I64) {
-        if (!yyjson_is_int(value) ||
-            (yyjson_is_uint(value) && yyjson_get_uint(value) > static_cast<uint64_t>(INT64_MAX))) {
-            return false;
-        }
-        const auto integer = yyjson_get_sint(value);
-        if (integer < domain.values.integer.min_inclusive ||
-            integer > domain.values.integer.max_inclusive) {
-            return false;
-        }
-        domain.values.integer = {integer, integer};
-        return true;
-    }
-    for (uint32_t at = 0; at < domain.values.tokens.member_count; ++at) {
-        const auto candidate = domain.values.tokens.members[at];
-        if (yyjson_equals_strn(value, candidate.data, candidate.size)) {
-            token = candidate;
-            domain.values.tokens = {&token, 1, 0};
-            return true;
-        }
-    }
-    return false;
-}
 bool copy_body(yyjson_val *value, uint32_t limit, Answer &answer, ayni_string_v1 &out) {
     if (!yyjson_is_str(value) || yyjson_get_len(value) > limit - answer.used) {
         return false;
@@ -294,11 +297,74 @@ bool copy_body(yyjson_val *value, uint32_t limit, Answer &answer, ayni_string_v1
     answer.used += size;
     return true;
 }
-// Decode one exact offered function; no JSON view survives this helper.
+// Copies every name/string/number lexeme before the arguments DOM is released.
+// The owner maps these nodes against its original Schema, never double-derived integers.
+ayni_status_t decode_arguments(yyjson_val *value, ayni_string_v1 name, Answer &answer,
+                               uint32_t limit,
+                               std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> &nodes,
+                               uint32_t &count) {
+    if (count == nodes.size()) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const uint32_t index = count++;
+    auto &node = nodes[index];
+    node = {};
+    const auto save = [&](const char *data, size_t size, ayni_string_v1 &out) {
+        if (size > limit - answer.used) {
+            return false;
+        }
+        if (size) {
+            std::memcpy(answer.body.get() + answer.used, data, size);
+        }
+        out = {answer.body.get() + answer.used, static_cast<uint32_t>(size)};
+        answer.used += size;
+        return true;
+    };
+    if (!save(name.data, name.size, node.name)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    if (yyjson_is_obj(value)) {
+        node.kind = AYNI_ARGUMENT_OBJECT;
+        size_t i, size;
+        yyjson_val *key, *child;
+        yyjson_obj_foreach(value, i, size, key, child) {
+            const auto status = decode_arguments(
+                child, {yyjson_get_str(key), static_cast<uint32_t>(yyjson_get_len(key))}, answer,
+                limit, nodes, count);
+            if (status != AYNI_OK) {
+                return status;
+            }
+        }
+    } else if (yyjson_is_arr(value)) {
+        node.kind = AYNI_ARGUMENT_LIST;
+        size_t i, size;
+        yyjson_val *child;
+        yyjson_arr_foreach(value, i, size, child) {
+            const auto status = decode_arguments(child, {}, answer, limit, nodes, count);
+            if (status != AYNI_OK) {
+                return status;
+            }
+        }
+    } else if (yyjson_is_bool(value)) {
+        node.kind = AYNI_ARGUMENT_BOOL;
+        node.value.boolean = yyjson_get_bool(value) ? 1U : 0U;
+    } else if (yyjson_is_null(value)) {
+        node.kind = AYNI_ARGUMENT_NULL;
+    } else if (yyjson_is_str(value) || yyjson_is_raw(value)) {
+        node.kind = yyjson_is_str(value) ? AYNI_ARGUMENT_STRING : AYNI_ARGUMENT_NUMBER;
+        if (!save(yyjson_is_str(value) ? yyjson_get_str(value) : yyjson_get_raw(value),
+                  yyjson_get_len(value), node.value.text)) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+    } else {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    node.subtree_end = count;
+    return AYNI_OK;
+}
 ayni_status_t decode_tool(yyjson_val *call, const Tool *tools, uint32_t tool_count,
                           uint32_t result_limit, size_t at, Answer &answer, char *pool,
                           size_t pool_size) {
-    ayni_status_t parsed = AYNI_OK;
     if (!yyjson_equals_str(yyjson_obj_get(call, "type"), "function")) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -314,35 +380,29 @@ ayni_status_t decode_tool(yyjson_val *call, const Tool *tools, uint32_t tool_cou
     if (!tool || !yyjson_is_str(args)) {
         return AYNI_INVALID_ARGUMENT;
     }
+    ayni_status_t parsed = AYNI_OK;
     auto arguments = parse(const_cast<char *>(yyjson_get_str(args)), yyjson_get_len(args), pool,
-                           pool_size, parsed);
+                           pool_size, parsed, true);
     if (!arguments) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    auto *object = yyjson_doc_get_root(arguments.get());
-    const auto &view = tool->view;
-    if (!yyjson_is_obj(object) || yyjson_obj_size(object) != view.field_count + 1U) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    for (uint32_t f = 0; f < view.field_count; ++f) {
-        if (!decode_field(field_value(object, view.fields[f].field_id), view.fields[f],
-                          answer.fields[at][f], answer.tokens[at][f])) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-    }
-    auto *body = yyjson_obj_get(object, "text");
-    if (!yyjson_is_str(body) || yyjson_get_len(body) > view.text_limit) {
-        return AYNI_INVALID_ARGUMENT;
+        return parsed;
     }
     auto &decoded = answer.calls[at];
-    decoded = {sizeof(decoded),
-               view.binding_version,
-               view.binding_id,
-               {sizeof(ayni_scope_v1), view.field_count, answer.fields[at].data()},
-               {}};
-    if (!copy_body(body, result_limit, answer, decoded.text)) {
-        return AYNI_CAPACITY_EXCEEDED;
+    decoded = {};
+    decoded.struct_size = sizeof(decoded);
+    decoded.binding_version = tool->view.binding_version;
+    decoded.binding_id = tool->view.binding_id;
+    decoded.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+    if (!copy_body(yyjson_obj_get(call, "id"), result_limit, answer, decoded.protocol_id) ||
+        decoded.protocol_id.size == 0 || decoded.protocol_id.size > AYNI_MODEL_TOOL_ID_BYTES_MAX) {
+        return AYNI_INVALID_ARGUMENT;
     }
+    uint32_t count = 0;
+    const auto status = decode_arguments(yyjson_doc_get_root(arguments.get()), {}, answer,
+                                         result_limit, answer.arguments[at], count);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    decoded.input.arguments = {answer.arguments[at].data(), count};
     return AYNI_OK;
 }
 } // namespace
@@ -351,7 +411,23 @@ bool Tool::copy(const ayni_tool_v1 &source) {
     if (source.field_count > AYNI_AUTHORITY_FIELD_COUNT_MAX) {
         return false;
     }
+    if (source.original_domain.size > original_domain.size() ||
+        source.business_contract.size > business_contract.size() ||
+        (source.original_domain.size && !source.original_domain.data) ||
+        (source.business_contract.size && !source.business_contract.data)) {
+        return false;
+    }
     view = source;
+    if (source.original_domain.size) {
+        std::memcpy(original_domain.data(), source.original_domain.data,
+                    source.original_domain.size);
+    }
+    if (source.business_contract.size) {
+        std::memcpy(business_contract.data(), source.business_contract.data,
+                    source.business_contract.size);
+    }
+    view.original_domain = {original_domain.data(), source.original_domain.size};
+    view.business_contract = {business_contract.data(), source.business_contract.size};
     size_t used = 0;
     const auto save = [&](ayni_string_v1 value, ayni_string_v1 &out) {
         if (value.size > AYNI_CATALOG_ID_MAX_BYTES || (value.size && !value.data)) {
@@ -476,7 +552,7 @@ ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, const
     if (framed != AYNI_OK) {
         return framed;
     }
-    Writer out(buffer);
+    Writer out(buffer, request_json_max);
     out.raw("{\"model\":");
     out.string(config.model);
     out.raw(",\"max_tokens\":");
@@ -496,7 +572,10 @@ ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, const
             if (i) {
                 out.raw(",");
             }
-            tool_schema(out, tools[i], i);
+            const auto status = tool_schema(out, tools[i], i);
+            if (status != AYNI_OK) {
+                return status;
+            }
         }
         out.raw("]");
     }
@@ -508,6 +587,7 @@ ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, const
 // metadata can be ignored after bounded validation, but arguments must be exact.
 void Protocol::decode(char *buffer, size_t size, const Tool *tools, uint32_t tool_count,
                       uint32_t result_limit, Answer &answer) {
+    EraseScratch erase{outer_pool_.get(), arguments_pool_.get(), pool_size_};
     answer.used = 0;
     answer.fail(AYNI_INVALID_ARGUMENT, AYNI_REASON_MODEL_OUTPUT);
     ayni_status_t parsed = AYNI_OK;

@@ -1,4 +1,5 @@
 #include "kernel/config/catalogs.h"
+#include "catalog/capability/business_encoding.h"
 
 namespace ayni::kernel {
 
@@ -6,7 +7,7 @@ Catalogs::Catalogs(const KernelCapacities &capacities, const KernelStorage &stor
     : goal_types(storage[Store::goal_types], capacities.goal_type_capacity),
       strategies(storage[Store::strategies], capacities.strategy_capacity),
       capabilities(storage[Store::capabilities], capacities.capability_capacity,
-                   capacities.authority_scope_max_bytes),
+                   capacities.authority_scope_max_bytes, capacities.business_contract_max_bytes),
       observation_sources(storage[Store::observation_sources],
                           capacities.observation_source_capacity),
       execution(storage[Store::execution_catalog], capacities.executor_capacity,
@@ -14,8 +15,10 @@ Catalogs::Catalogs(const KernelCapacities &capacities, const KernelStorage &stor
       resources(storage[Store::resource_catalog], capacities.resource_capacity),
       devices(storage[Store::devices], capacities.device_capacity, storage[Store::components],
               capacities.component_capacity),
-      call_capabilities(storage[Store::call_capabilities], capacities.call_capability_capacity),
-      providers(storage[Store::providers], capacities.provider_capacity),
+      call_capabilities(storage[Store::call_capabilities], capacities.call_capability_capacity,
+                        capacities.business_contract_max_bytes),
+      providers(storage[Store::providers], capacities.provider_capacity,
+                capacities.business_contract_max_bytes),
       bindings(storage[Store::bindings], capacities.binding_capacity) {}
 
 // Registration is closed from here on, so each goal type's strategy is
@@ -31,6 +34,10 @@ ayni_status_t Catalogs::close() {
     const auto topology = resources.validate(devices);
     if (topology != AYNI_OK) {
         return topology;
+    }
+    const auto business = link_business();
+    if (business != AYNI_OK) {
+        return business;
     }
     // Subscription source semantics are exact and independent of registration order.
     for (uint32_t at = 0; at < call_capabilities.size(); ++at) {
@@ -76,6 +83,40 @@ ayni_status_t Catalogs::close() {
         out_index = index;
         return AYNI_OK;
     });
+}
+
+// Pair original business proofs after all independent declarations are present,
+// before recovery may consume an old Grant or Goal under this catalog.
+ayni_status_t Catalogs::link_business() {
+    // Definitions were copied without registration-order coupling. Close the
+    // complete authority/schema relationship before recovery may consume it.
+    for (uint32_t at = 0; at < call_capabilities.size(); ++at) {
+        const auto &capability = call_capabilities.at(at);
+        if (capability.contract.business_contract.size == 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        const auto authority =
+            capabilities.find({capability.id.data(), capability.id.size()}, capability.version);
+        if (authority.kind != catalog::CapabilityRegistry::Lookup::Kind::found) {
+            return AYNI_NOT_FOUND;
+        }
+        catalog::DecodedBusiness business;
+        const auto checked =
+            catalog::decode_business(capabilities.domain_view(authority.index),
+                                     capability.contract.business_contract, business);
+        if (checked != AYNI_OK) {
+            return checked;
+        }
+        if (!catalog::same_call_contract(capability.contract, business.execution)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        const auto attached =
+            capabilities.attach_business(authority.index, capability.contract.business_contract);
+        if (attached != AYNI_OK) {
+            return attached;
+        }
+    }
+    return AYNI_OK;
 }
 
 ayni_status_t Catalogs::dispatchable(const catalog::Binding &binding,

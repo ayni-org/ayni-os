@@ -37,6 +37,8 @@ class Counter {
     std::array<Slot, 4> slots_{};
     ayni_call_resource_v1 resource_{};
     ayni_call_capability_v1 capability_{};
+    ayni_schema_node_v1 input_schema_{}, result_schema_{};
+    ayni_business_contract_v1 business_{};
     uint64_t executions_ = 0;
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
                                        ayni_provider_completion_t *);

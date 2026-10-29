@@ -1,3 +1,5 @@
+#include "catalog/capability/business_encoding.h"
+#include "catalog/capability/value_validation.h"
 #include "foundation/attempt_identity.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/memory/memory_access.h"
@@ -46,6 +48,7 @@ ayni_call_outcome_t outcome(ProviderMessageKind kind) {
 // so journal backpressure cannot free a slot or lose a result body (C-CALL-012).
 CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
     const ReceiptScratch scratch{receipt_, limits_.result_bytes};
+    const ReceiptScratch normalized_scratch{normalized_, limits_.result_bytes};
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
@@ -109,7 +112,7 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
     if (applied == AYNI_OK &&
         !task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
                               task_index)) {
-        work_.calls.discard_result(index);
+        work_.calls.discard_unusable_result(index);
     }
     if (applied != AYNI_OK ||
         mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
@@ -119,6 +122,52 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
         release(index, now_us);
     }
     return Advance::applied;
+}
+
+// A successful post released the producer borrow; schema errors are consumed
+// here as invalid evidence. Default expansion uses reserved owner result space.
+ayni_status_t CallRuntime::normalize_result(uint32_t index, ayni_bytes_v1 body,
+                                            work::CallResult &result) {
+    const auto &contract = work_.calls.contract(index);
+    if (result.kind == work::CallResultKind::text) {
+        if (contract.business_contract.size == 0U ||
+            (result.outcome != AYNI_CALL_COMPLETED && result.text.size == 0U)) {
+            return AYNI_OK;
+        }
+        catalog::DecodedBusiness proof;
+        const auto status =
+            catalog::decode_business(work_.calls.domain(index), contract.business_contract, proof);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        ayni_value_node_v1 text{};
+        text.kind = AYNI_VALUE_TEXT;
+        text.subtree_end = 1;
+        text.value.text = result.text;
+        return catalog::scalar_matches(proof.result.nodes[0], text) ? AYNI_OK
+                                                                    : AYNI_INVALID_ARGUMENT;
+    }
+    if (contract.result_format != catalog::call_value_result_format) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    catalog::DecodedBusiness proof;
+    auto status =
+        catalog::decode_business(work_.calls.domain(index), contract.business_contract, proof);
+    catalog::DecodedValue raw, normalized;
+    if (status == AYNI_OK) {
+        status = catalog::decode_value(body, raw);
+    }
+    if (status == AYNI_OK) {
+        status = catalog::normalize_borrowed_value(proof.result.view(), raw.view(), normalized);
+    }
+    uint32_t size = 0;
+    if (status == AYNI_OK) {
+        status = catalog::encode_value(normalized.view(), normalized_, limits_.result_bytes, size);
+    }
+    if (status == AYNI_OK) {
+        result.text = {reinterpret_cast<const char *>(normalized_), size};
+    }
+    return status;
 }
 
 // Domain publication shares one B4 transition with the selected Task. Transport
@@ -162,7 +211,7 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
         applied = work_.calls.cancel_response(index, kind, action_stamp);
     } else {
         terminal = true;
-        const work::CallResult result{
+        work::CallResult result{
             kind,
             message.status,
             message.reason,
@@ -170,10 +219,18 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
             {reinterpret_cast<const char *>(message.payload.data), message.payload.size},
             message.body};
         // The list's shape was checked when posted; its tools and values are checked here.
-        const bool tools =
-            message.body == work::CallResultKind::text ||
-            valid_tool_calls(task_index, slots_[index].active->delivery->tools, message.payload);
-        applied = message.query_result == 0U && tools
+        bool tools = true;
+        if (message.body == work::CallResultKind::tool_calls) {
+            uint32_t size = 0;
+            tools = normalize_tool_calls(task_index, slots_[index].active->delivery->tools,
+                                         message.payload, size) == AYNI_OK;
+            if (tools) {
+                result.text = {reinterpret_cast<const char *>(normalized_), size};
+            }
+        }
+        const bool value_valid = message.body == work::CallResultKind::tool_calls ||
+                                 normalize_result(index, message.payload, result) == AYNI_OK;
+        applied = message.query_result == 0U && tools && value_valid
                       ? work_.calls.finish(index, result, action_stamp,
                                            control_.result_dependencies(index))
                       : AYNI_INVALID_ARGUMENT;

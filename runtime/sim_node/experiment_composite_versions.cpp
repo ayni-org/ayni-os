@@ -34,7 +34,7 @@ bool Composite::registration_boundaries(CompositeScenario scenario) {
                 capability.contract.timeout_ms = 0;
                 break;
             case 2:
-                capability.contract.input_text_limit = AYNI_CALL_TEXT_BYTES_MAX + 1;
+                capability.contract.input_text_limit = AYNI_CALL_INPUT_BYTES_MAX + 1;
                 break;
             case 3:
                 capability.contract.input_format = UINT32_MAX;

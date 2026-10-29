@@ -13,7 +13,7 @@ redirects, ambient proxies, netrc, automatic retries and service fallback are di
 `describe` provides the `openai.chat` call contract. The composition root registers
 an authority descriptor with one IDENTIFIER egress-destination field containing
 `destination_id`, the shared `model.slot` resource (default capacity 1), call capability, Provider and Binding. An authorized request
-must contain that destination as its concrete argument. The descriptor itself does
+uses an OBJECT with a `body` TEXT and a `destination` IDENTIFIER default fixed by trusted configuration. Core derives the destination projection from that normalized object. The descriptor itself does
 not grant permission. Core does not receive the API URL or credential.
 
 A request body framed with `AYNI_MODEL_INSTRUCTIONS_PREFIX` (`<ayni/calls.h>`) is sent
@@ -21,15 +21,13 @@ as a system message holding the instructions and a user message holding the rest
 empty instructions send no system message, and any other body is one user message. A malformed frame fails with INVALID_ARGUMENT and
 effect NONE before any HTTP request ([ADR-0074](../../docs/adr/0074-model-instructions-as-system-message.md)).
 
-Functions are named `tool_0`, `tool_1`, etc. within each request; arguments are
-`field_<id>` and `text`. Configure a read-only `tool_usage` port for every offered
+Functions are named `tool_0`, `tool_1`, etc. within each request; arguments use the original business Schema names and nested structure. Exact decimal and integer Schemas beyond the safe integer range use JSON strings; numeric lexemes never pass through double. Configure a read-only `tool_usage` port for every offered
 tool. It supplies purpose, text grammar, result meaning, examples and explanations
 matched by exact Binding/Capability versions and field IDs. All metadata is copied
 in submit, capped at 4096 UTF-8 bytes per tool and 256 per field; missing/mismatched
 or invalid metadata rejects before HTTP, without truncation or a Binding-ID fallback.
 The port/context must outlive quiesce and must not block or call Core. The worker
-never invokes it. Integer units/ranges, token enums and required fields still come
-from that request's authorized view; descriptions cannot change them. See
+never invokes it. The machine Schema retains original bounds/defaults and names; descriptions separately show one complete authorized candidate, including named projection paths, narrowed ranges/token sets and fixed route. Descriptions cannot expand authority. See
 [the usage contract](../../contracts/host/tool_usage.md). Responses must contain
 one finished choice, either final text or tools. Truncation and invalid arguments
 fail with MODEL_OUTPUT; list encoding over the result byte limit also fails and
@@ -47,7 +45,7 @@ a late cancellation cannot replace an already obtained result.
 The default request/result text limit is 4096 bytes, response JSON limit 128 KiB,
 concurrency 1, timeout 30 seconds, and `max_tokens` 1024. Configure smaller bounds
 as needed; an unsupported server parameter is an error, never silently removed.
-JSON depth is 8, container length is 64, and a tool result holds at most 8 calls.
+JSON depth is 8, array length is 64 (objects follow the 128-node Schema bound), and a tool result holds at most 8 calls.
 The Provider owns fixed protocol buffers; libcurl/TLS retain their own bounded-by-
 concurrency allocations. No streaming, images, remote outcome query, or conversation
 store is implemented here.

@@ -56,11 +56,14 @@ ayni_status_t ayni_kernel::configure(const ayni::catalog::Resource &resource) {
 ayni_status_t ayni_kernel::configure(const ayni::catalog::ObservationSource &source) {
     return catalogs.observation_sources.add_validated(source);
 }
-ayni_status_t ayni_kernel::configure(const ayni::catalog::CallCapability &capability) {
-    return catalogs.call_capabilities.add_validated(capability);
+ayni_status_t ayni_kernel::configure(const ayni::catalog::CallCapability &capability,
+                                     const ayni_business_contract_v1 *definition) {
+    return catalogs.call_capabilities.add_validated(capability, definition);
 }
-ayni_status_t ayni_kernel::configure(const ayni::catalog::Provider &provider) {
-    return catalogs.providers.add_validated(provider);
+ayni_status_t
+ayni_kernel::configure(const ayni::catalog::Provider &provider,
+                       const ayni::catalog::ProviderBusinessDefinitions &definitions) {
+    return catalogs.providers.add_validated(provider, definitions);
 }
 ayni_status_t ayni_kernel::configure(const ayni::catalog::Binding &binding) {
     return catalogs.bindings.add_validated(binding);

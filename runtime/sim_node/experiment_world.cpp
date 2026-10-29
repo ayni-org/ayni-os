@@ -22,14 +22,21 @@ ayni_status_t requirements(void *, ayni_bytes_v1, const ayni_goal_requirement_si
     return sink->emit(sink->ctx, &value);
 }
 ayni_status_t request_increment(ayni_policy_output_v1 &output) {
-    const ayni_call_request_v1 request{sizeof(request),
-                                       AYNI_POLICY_REQUEST_CALL,
-                                       1,
-                                       0,
-                                       text("increment"),
-                                       text("increment"),
-                                       {sizeof(ayni_scope_v1), 0, nullptr},
-                                       {}};
+    ValueBuilder<1> input;
+    input.text(0, {});
+    ayni_call_request_v1 request{sizeof(request),
+                                 AYNI_POLICY_REQUEST_CALL,
+                                 1,
+                                 0,
+                                 text("increment"),
+                                 text("increment"),
+                                 {},
+                                 {},
+                                 {}};
+    const auto built = input.finish(request.value);
+    if (built != AYNI_OK) {
+        return built;
+    }
     return output.request_call(output.call_context, &request);
 }
 ayni_status_t report_action(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output,
@@ -61,14 +68,16 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
     config.strategy_capacity = 2;
     config.call_capacity = operation_capacity;
     config.resource_request_capacity = operation_capacity;
-    config.call_input_max_bytes = config.call_result_max_bytes = body_limit;
+    config.call_input_max_bytes = body_limit + 128;
+    config.call_result_max_bytes = body_limit;
     config.call_capability_capacity = config.provider_capacity = config.binding_capacity =
         catalog_capacity;
     if (deployment == Deployment::replacement) {
         config.resource_capacity = 1;
         config.task_checkpoint_max_bytes = config.goal_parameter_max_bytes =
             strategies::state_bytes_max;
-        config.call_input_max_bytes = config.call_result_max_bytes = 512;
+        config.call_input_max_bytes = 640;
+        config.call_result_max_bytes = 512;
         config.strategy_capacity = 2;
         config.task_model_call_hard_limit = 2;
         replacement = std::make_unique<Replacement>(*this);
@@ -87,7 +96,8 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.task_checkpoint_max_bytes = strategies::state_bytes_max;
         config.resource_capacity = 5;
         config.observation_source_capacity = 1;
-        config.call_input_max_bytes = config.call_result_max_bytes = 512;
+        config.call_input_max_bytes = 640;
+        config.call_result_max_bytes = 512;
         config.task_model_call_hard_limit = 2;
         if (physical) {
             config.resource_capacity = 6;
@@ -101,7 +111,8 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.strategy_capacity = 3;
         config.goal_requirement_capacity = 5;
         config.observation_source_capacity = 2;
-        config.call_input_max_bytes = config.call_result_max_bytes = 512;
+        config.call_input_max_bytes = 640;
+        config.call_result_max_bytes = 512;
         config.task_model_call_hard_limit = 2;
         composite = std::make_unique<Composite>(*this);
     }

@@ -24,6 +24,8 @@ GrantCheck creation_input(const NewGrant &grant, uint32_t expected_parent_revisi
     if (grant.subject_instance_id == 0U || grant.owner_principal_id == 0U ||
         grant.owner_binding_revision == 0U || grant.capability_id.size() == 0U ||
         grant.capability_version == 0U ||
+        grant.business_contract.size > AYNI_BUSINESS_CONTRACT_BYTES_MAX ||
+        (grant.business_contract.size != 0U && grant.business_contract.data == nullptr) ||
         !valid_goal_binding(grant.bound_goal_id, grant.parent_grant_id, grant.flags) ||
         !valid_grant_flags(grant.flags) ||
         !valid_grant_lifetime(grant.lifetime, grant.duration_us) || context.boot_epoch == 0U ||
@@ -132,7 +134,9 @@ GrantTable::GrantTable(void *storage, Limits limits)
       limits_(limits) {}
 
 uint8_t *GrantTable::domain_storage(uint32_t index) const {
-    return bytes_ + static_cast<std::size_t>(index) * limits_.scope_max_bytes * grant_value_regions;
+    return bytes_ + static_cast<std::size_t>(index) *
+                        (static_cast<std::size_t>(limits_.scope_max_bytes) * grant_value_regions +
+                         limits_.business_bytes);
 }
 
 uint8_t *GrantTable::scope_storage(uint32_t index) {
@@ -145,6 +149,14 @@ ayni_bytes_v1 GrantTable::source_domain(uint32_t index) const {
 
 ayni_bytes_v1 GrantTable::scope(uint32_t index) const {
     return {source_domain(index).data + limits_.scope_max_bytes, at(index).scope_size};
+}
+
+uint8_t *GrantTable::business_storage(uint32_t index) const {
+    return domain_storage(index) +
+           static_cast<std::size_t>(limits_.scope_max_bytes) * grant_value_regions;
+}
+ayni_bytes_v1 GrantTable::business_contract(uint32_t index) const {
+    return {business_storage(index), at(index).business_contract_size};
 }
 
 bool GrantTable::find(uint64_t grant_id, uint32_t &out_index) const {
@@ -212,10 +224,12 @@ void GrantTable::release_reference(uint64_t grant_id, uint64_t commit_seq) {
 
 bool GrantTable::covers_saved_scope(uint32_t index, const catalog::CatalogId &capability,
                                     uint32_t version, ayni_bytes_v1 original_domain,
-                                    ayni_bytes_v1 requested_scope) const {
+                                    ayni_bytes_v1 requested_scope,
+                                    ayni_bytes_v1 original_business) const {
     const auto &grant = at(index);
     if (!grant.capability_id.equals({capability.data(), capability.size()}) ||
-        grant.capability_version != version || !same_bytes(source_domain(index), original_domain)) {
+        grant.capability_version != version || !same_bytes(source_domain(index), original_domain) ||
+        !same_bytes(business_contract(index), original_business)) {
         return false;
     }
     const auto covered = covers(original_domain, scope(index), requested_scope);
@@ -353,6 +367,7 @@ GrantCheck GrantTable::check_parent_contract(uint32_t parent_index, const NewGra
         parent.capability_version == child.capability_version &&
         parent.capability_id.equals({child.capability_id.data(), child.capability_id.size()}) &&
         same_bytes(source_domain(parent_index), child.source_domain) &&
+        same_bytes(business_contract(parent_index), child.business_contract) &&
         (parent.lifetime != AYNI_GRANT_CURRENT_BOOT || child.lifetime == AYNI_GRANT_CURRENT_BOOT);
     return compatible ? GrantCheck{AYNI_OK, AYNI_REASON_NONE}
                       : GrantCheck{AYNI_DENIED, AYNI_REASON_GRANT_PARENT};
@@ -363,17 +378,18 @@ GrantCheck GrantTable::check_parent_contract(uint32_t parent_index, const NewGra
 bool GrantTable::valid_link(uint32_t child_index, uint32_t parent_index) const {
     const Grant &child = at(child_index);
     const Grant &parent = at(parent_index);
-    const NewGrant fact{child.subject_instance_id,
-                        child.parent_grant_id,
-                        child.owner_principal_id,
-                        child.owner_binding_revision,
-                        child.capability_id,
-                        child.capability_version,
-                        source_domain(child_index),
-                        nullptr,
-                        child.lifetime,
-                        child.duration_us,
-                        child.allow_delegation ? AYNI_GRANT_ALLOW_DELEGATION : 0U};
+    NewGrant fact{child.subject_instance_id,
+                  child.parent_grant_id,
+                  child.owner_principal_id,
+                  child.owner_binding_revision,
+                  child.capability_id,
+                  child.capability_version,
+                  source_domain(child_index),
+                  nullptr,
+                  child.lifetime,
+                  child.duration_us,
+                  child.allow_delegation ? AYNI_GRANT_ALLOW_DELEGATION : 0U};
+    fact.business_contract = business_contract(child_index);
     if (check_parent_contract(parent_index, fact).status != AYNI_OK ||
         child.depth != parent.depth + 1U || child.depth > limits_.delegation_depth_max) {
         return false;
@@ -527,7 +543,8 @@ GrantCheck GrantTable::check_create(const NewGrant &grant, uint32_t expected_par
         }
     }
     if (scope_size > limits_.scope_max_bytes ||
-        grant.source_domain.size > limits_.scope_max_bytes) {
+        grant.source_domain.size > limits_.scope_max_bytes ||
+        grant.business_contract.size > limits_.business_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
     }
     BatchPlacement placement{excluded, 0};
@@ -587,7 +604,8 @@ GrantCheck GrantTable::check_goal_create(const NewGrant &grant, ayni_bytes_v1 re
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
     }
     if (requested.size > limits_.scope_max_bytes ||
-        grant.source_domain.size > limits_.scope_max_bytes) {
+        grant.source_domain.size > limits_.scope_max_bytes ||
+        grant.business_contract.size > limits_.business_bytes) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GRANT_CAPACITY};
     }
     Admission admitted{
@@ -642,6 +660,10 @@ void GrantTable::publish(const NewGrant &grant, const Admission &admission, uint
                          foundation::TransitionStamp stamp, uint32_t &out_index) {
     std::memcpy(domain_storage(admission.index), grant.source_domain.data,
                 grant.source_domain.size);
+    if (grant.business_contract.size != 0U) {
+        std::memcpy(business_storage(admission.index), grant.business_contract.data,
+                    grant.business_contract.size);
+    }
     Grant value{new_grant_id,
                 grant.subject_instance_id,
                 grant.parent_grant_id,
@@ -663,6 +685,7 @@ void GrantTable::publish(const NewGrant &grant, const Admission &admission, uint
                 admission.deadline_us,
                 AYNI_REASON_NONE};
     value.bound_goal_id = grant.bound_goal_id;
+    value.business_contract_size = grant.business_contract.size;
     if (admission.index == size()) {
         static_cast<void>(grants_.push_back(value));
     } else {
@@ -758,7 +781,8 @@ void GrantTable::resolve_catalog(const catalog::CapabilityRegistry &catalog) {
                           lookup.kind == catalog::CapabilityRegistry::Lookup::Kind::unknown_id
                               ? AYNI_REASON_CAPABILITY_UNKNOWN
                               : AYNI_REASON_CAPABILITY_VERSION);
-        } else if (!catalog.matches_domain(lookup.index, source_domain(index))) {
+        } else if (!catalog.matches_domain(lookup.index, source_domain(index)) ||
+                   !catalog.matches_business(lookup.index, business_contract(index))) {
             hold_restored(index, AYNI_REASON_GRANT_CATALOG_CHANGED);
         }
     }

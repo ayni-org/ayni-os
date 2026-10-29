@@ -1,5 +1,5 @@
 #include "kernel/service/command/command_scene.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 namespace ayni::kernel {
 ayni_status_t measure_scene_command(const authority::SceneChange &input, uint32_t &size) {
     const auto status = authority::validate_scene_change(input);
@@ -21,7 +21,7 @@ ayni_status_t encode_scene_command(const authority::SceneChange &input, uint8_t 
     if (out == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    durability::BodyWriter writer(out, size);
+    foundation::BodyWriter writer(out, size);
     writer.u32(AYNI_INTENT_SCENE_SET_ENABLED);
     writer.u32(input.expected_revision);
     writer.u32(static_cast<uint32_t>(input.mode));
@@ -34,7 +34,7 @@ bool read_scene_command(ayni_bytes_v1 bytes, authority::SceneChange &out) {
     if (bytes.data == nullptr || bytes.size < scene_command_fixed_bytes) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     if (reader.u32() != AYNI_INTENT_SCENE_SET_ENABLED) {
         return false;
     }

@@ -175,9 +175,11 @@ struct ayni_kernel {
     // Copy a trusted source description; no observation is published by registration.
     ayni_status_t configure(const ayni::catalog::ObservationSource &source);
     // Copy the decoded call contract; no capability is granted by registration.
-    ayni_status_t configure(const ayni::catalog::CallCapability &capability);
+    ayni_status_t configure(const ayni::catalog::CallCapability &capability,
+                            const ayni_business_contract_v1 *definition = nullptr);
     // Copy a validated offer; callback contexts remain caller-owned.
-    ayni_status_t configure(const ayni::catalog::Provider &provider);
+    ayni_status_t configure(const ayni::catalog::Provider &provider,
+                            const ayni::catalog::ProviderBusinessDefinitions &definitions = {});
     // Copy a trusted binding; cross-catalog references resolve at startup.
     ayni_status_t configure(const ayni::catalog::Binding &binding);
     // These existing descriptions retain their domain-owned decoders and error order.

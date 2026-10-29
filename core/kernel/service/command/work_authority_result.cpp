@@ -1,8 +1,8 @@
 #include "kernel/service/command/work_authority_result.h"
 
 #include "authority/grant/grant_table.h"
-#include "durability/batch/record_body.h"
 #include "foundation/kernel_id.h"
+#include "foundation/record_body.h"
 
 #include <cstring>
 
@@ -91,7 +91,7 @@ bool valid_work_authority_result(const WorkAuthorityResult &result, uint64_t goa
 }
 
 void write_work_authority_result(const WorkAuthorityResult &result, uint8_t *body) {
-    durability::BodyWriter writer(body, work_authority_result_size(result.count));
+    foundation::BodyWriter writer(body, work_authority_result_size(result.count));
     writer.u64(result.transition_id);
     writer.u64(result.binding.established_seq);
     writer.u64(result.binding.parent.goal_id);
@@ -112,7 +112,7 @@ bool read_work_authority_result(ayni_bytes_v1 bytes, uint64_t goal_id, WorkAutho
         bytes.size > work_authority_result_size(AYNI_GOAL_REQUIREMENT_CAPACITY_MAX)) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     WorkAuthorityResult result{};
     result.transition_id = reader.u64();
     result.binding.established_seq = reader.u64();

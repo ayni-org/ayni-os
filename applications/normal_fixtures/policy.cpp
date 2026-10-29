@@ -61,8 +61,21 @@ ayni_status_t request(ayni_policy_output_v1 &out, ayni_policy_intent_kind_t kind
     if (binding) {
         call.binding_id = text(binding);
         call.binding_version = 1;
-        call.arguments = {sizeof(ayni_scope_v1), 0, nullptr};
-        call.text = body;
+    }
+    if (kind != AYNI_POLICY_REQUEST_CALL && kind != AYNI_POLICY_REQUEST_MODEL) {
+        return out.request_call ? out.request_call(out.call_context, &call) : AYNI_UNSUPPORTED;
+    }
+    ValueBuilder<2> value;
+    if (kind == AYNI_POLICY_REQUEST_MODEL) {
+        value.object();
+        value.text(AYNI_MODEL_BODY_FIELD_ID, body);
+        value.end();
+    } else {
+        value.text(0, body);
+    }
+    const auto status = value.finish(call.value);
+    if (status != AYNI_OK) {
+        return status;
     }
     return out.request_call ? out.request_call(out.call_context, &call) : AYNI_UNSUPPORTED;
 }
@@ -254,13 +267,19 @@ ayni_status_t Policy::decide(void *, const ayni_task_snapshot_v1 *s, ayni_policy
         auto done = initialized<ayni_task_call_result_v1>();
         const auto status = result(*s, "remote.v1", done);
         if (status == AYNI_NOT_FOUND) {
-            const auto field = remote_field();
             auto call = initialized<ayni_call_request_v1>();
             call.kind = AYNI_POLICY_REQUEST_CALL;
             call.step_key = text("remote.v1");
             call.binding_id = text("increment");
             call.binding_version = 1;
-            call.arguments = {sizeof(ayni_scope_v1), 1, &field};
+            ValueBuilder<2> value;
+            value.object();
+            value.identifier(remote_destination_field, text(remote_destination));
+            value.end();
+            const auto built = value.finish(call.value);
+            if (built != AYNI_OK) {
+                return built;
+            }
             return out->request_call(out->call_context, &call);
         }
         return status == AYNI_OK ? report(*s, *out, AYNI_POLICY_REPORT_COMPLETION) : status;

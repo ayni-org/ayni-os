@@ -1,6 +1,7 @@
 #ifndef AYNI_ASSISTANT_POLICY_SUPPORT_H
 #define AYNI_ASSISTANT_POLICY_SUPPORT_H
 #include <ayni/applications/assistant.h>
+#include <ayni/values.hpp>
 #include <cstring>
 #include <string>
 namespace ayni::applications::assistant::detail {
@@ -46,11 +47,40 @@ inline ayni_status_t request(ayni_policy_output_v1 &o, const char *binding, ayni
     if (!o.request_call) {
         return AYNI_UNSUPPORTED;
     }
-    const ayni_call_request_v1 r{
-        sizeof(r), model ? AYNI_POLICY_REQUEST_MODEL : AYNI_POLICY_REQUEST_CALL,
-        1,         0,
-        key,       text(binding),
-        scope,     body};
+    ValueBuilder<3> value;
+    if (model) {
+        value.object();
+        // This built-in model convention has one static destination, never a
+        // caller-supplied parallel authority projection (ADR-0084).
+        if (scope.field_count) {
+            if (scope.field_count != 1 || !scope.fields ||
+                scope.fields[0].field_id != AYNI_MODEL_DESTINATION_FIELD_ID) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            const auto &route = scope.fields[0].allowed;
+            if (route.kind != AYNI_AUTHORITY_IDENTIFIER || route.values.tokens.member_count != 1 ||
+                !route.values.tokens.members) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            value.identifier(AYNI_MODEL_DESTINATION_FIELD_ID, route.values.tokens.members[0]);
+        }
+        value.text(AYNI_MODEL_BODY_FIELD_ID, body);
+        value.end();
+    } else {
+        if (scope.field_count) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        value.text(0, body);
+    }
+    ayni_call_request_v1 r{sizeof(r), model ? AYNI_POLICY_REQUEST_MODEL : AYNI_POLICY_REQUEST_CALL,
+                           1,         0,
+                           key,       text(binding),
+                           {},        {},
+                           {}};
+    const auto status = value.finish(r.value);
+    if (status != AYNI_OK) {
+        return status;
+    }
     return o.request_call(o.call_context, &r);
 }
 // The whole POSIX TZ rule must parse. Converting one day after the epoch validates it without

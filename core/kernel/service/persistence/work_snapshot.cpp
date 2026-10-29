@@ -1,9 +1,9 @@
 #include "kernel/service/persistence/work_snapshot.h"
 
 #include "authority/principal/owner_binding_records.h"
-#include "durability/batch/record_body.h"
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
+#include "foundation/record_body.h"
 #include "kernel/service/persistence/work_replay.h"
 #include "work/authority/authority_cleanup_records.h"
 
@@ -106,7 +106,7 @@ bool WorkSnapshotWriter::next_store_record(StorePosition position, uint16_t &typ
     }
     return false;
 }
-// Sections preserve schema 3 order; each descriptor owns its row/part traversal.
+// Sections preserve schema 4 order; each descriptor owns its row/part traversal.
 bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
     for (;;) {
         if (section_ == Section::owner_binding) {
@@ -235,7 +235,7 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     if (use == durability::RecordUse::corrupt) {
         return BatchCheck::corrupt;
     }
-    // ADR-0082: no optional-extension compatibility path exists in schema 3.
+    // ADR-0082: no optional-extension compatibility path exists in schema 4.
     constexpr auto unknown = BatchCheck::unsupported;
     if (use != durability::RecordUse::applied) {
         return unknown;

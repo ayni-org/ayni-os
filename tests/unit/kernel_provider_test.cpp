@@ -1,6 +1,7 @@
 // Public C ABI catalog/startup scenarios, C-BIND-001/C-PROV-001, ADR-0045.
 // No registration or compatibility check may perform a Provider request.
 #include "kernel_node.h"
+#include "text_business_fixture.h"
 
 #include <ayni/calls.h>
 
@@ -30,6 +31,7 @@ class ProviderApi : public ::testing::Test {
         capability.struct_size = sizeof(capability);
         capability.version = 1;
         capability.capability_id = {"echo", 4};
+        capability.business = &business.definition;
         auto &contract = capability.contract;
         contract.struct_size = sizeof(contract);
         contract.form = AYNI_CALL_UNARY;
@@ -38,7 +40,7 @@ class ProviderApi : public ::testing::Test {
         contract.query = AYNI_CALL_QUERY_NONE;
         contract.cancel = AYNI_CALL_CANCEL_NONE;
         contract.timeout_ms = 30000;
-        contract.input_format = AYNI_CALL_INPUT_FIELDS_TEXT;
+        contract.input_format = AYNI_CALL_INPUT_VALUE;
         contract.result_format = AYNI_CALL_RESULT_TEXT;
         contract.input_text_limit = 1024;
         contract.result_text_limit = 2048;
@@ -74,6 +76,7 @@ class ProviderApi : public ::testing::Test {
         authority();
     }
 
+    ayni::test::TextBusiness business{1024, 2048};
     unsigned submissions = 0;
     Node node;
     ayni_call_capability_v1 capability{};
@@ -177,6 +180,23 @@ TEST_F(ProviderApi, egress_destination_must_belong_to_the_authority_domain) {
     field.domain.struct_size = sizeof(field.domain);
     field.domain.kind = AYNI_AUTHORITY_IDENTIFIER;
     field.domain.values.tokens = {&allowed, 1, 0};
+    std::array<ayni_schema_node_v1, 2> schema{};
+    schema[0].kind = AYNI_VALUE_OBJECT;
+    schema[0].subtree_end = 2;
+    schema[1].kind = AYNI_VALUE_IDENTIFIER;
+    schema[1].field_id = 1;
+    schema[1].subtree_end = 2;
+    schema[1].flags = AYNI_SCHEMA_REQUIRED;
+    schema[1].name = {"destination", 11};
+    schema[1].choice_count = 1;
+    schema[1].choices = &allowed;
+    ayni_authority_projection_v1 path{};
+    path.field_id = 1;
+    path.path_count = 1;
+    path.path[0] = 1;
+    business.definition.input = {schema.data(), 2};
+    business.definition.projection_count = 1;
+    business.definition.projections = &path;
     authority(&field, 1);
     ASSERT_EQ(ayni_register_call_capability(node.kernel(), &capability), AYNI_OK);
     ASSERT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_OK);
@@ -204,7 +224,7 @@ TEST_F(ProviderApi, duplicate_offers_are_atomic_and_unknown_formats_are_not_defa
     offers[1].version = 2;
     offers[1].contract.input_format = 0;
     EXPECT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_UNSUPPORTED_VERSION);
-    offers[1].contract.input_format = AYNI_CALL_INPUT_FIELDS_TEXT;
+    offers[1].contract.input_format = AYNI_CALL_INPUT_VALUE;
     EXPECT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_OK);
     ++provider.version;
     EXPECT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_OK);

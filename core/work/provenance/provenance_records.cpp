@@ -1,7 +1,7 @@
 #include "work/provenance/provenance_records.h"
 namespace ayni::work {
 void write_provenance_record(const ProvenanceRecord &record, uint8_t *body) {
-    durability::BodyWriter writer(body, provenance_record_size(record));
+    foundation::BodyWriter writer(body, provenance_record_size(record));
     writer.u64(record.id);
     writer.u32(static_cast<uint32_t>(record.kind));
     writer.u32(static_cast<uint32_t>(record.content));
@@ -15,7 +15,7 @@ bool read_provenance_record(const uint8_t *body, uint32_t size, ProvenanceRecord
     if (body == nullptr || size < provenance_record_size(0)) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     ProvenanceRecord record{};
     record.id = reader.u64();
     record.kind = static_cast<ProvenanceKind>(reader.u32());

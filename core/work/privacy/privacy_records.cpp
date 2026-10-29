@@ -1,8 +1,8 @@
 #include "work/privacy/privacy_records.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 namespace ayni::work {
 void write_privacy_record(const PrivacyRecord &record, uint8_t *body) {
-    durability::BodyWriter writer(body, privacy_record_size);
+    foundation::BodyWriter writer(body, privacy_record_size);
     writer.u64(record.request_seq);
     writer.u32(static_cast<uint32_t>(record.phase));
     writer.u32(static_cast<uint32_t>(record.effect));
@@ -17,7 +17,7 @@ bool read_privacy_record(const uint8_t *body, uint32_t size, PrivacyRecord &out)
     if (body == nullptr || size != privacy_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     PrivacyRecord record{};
     record.request_seq = reader.u64();
     record.phase = static_cast<PrivacyPhase>(reader.u32());

@@ -1,7 +1,7 @@
 #include "authority/scene/scene_definition.h"
 #include "authority/scope/scope.h"
 #include "catalog/abi_checks.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 #include <cstring>
 
 namespace ayni::authority {
@@ -120,7 +120,7 @@ uint32_t definition_size(const DefinitionInput &input) {
 void write_definition(DefinitionInput &input, uint8_t *bytes) {
     auto &definition = input.definition;
     definition.bytes = definition_size(input);
-    durability::BodyWriter writer(bytes, definition.bytes);
+    foundation::BodyWriter writer(bytes, definition.bytes);
     writer.u32(definition.rule_count);
     writer.u32(definition.condition_count);
     uint32_t offset = scene_definition_header_bytes;
@@ -154,12 +154,12 @@ void write_definition(DefinitionInput &input, uint8_t *bytes) {
         writer.u64(static_cast<uint64_t>(condition.predicate.maximum));
     }
 }
-bool read_id(durability::BodyReader &reader, catalog::CatalogId &id) {
+bool read_id(foundation::BodyReader &reader, catalog::CatalogId &id) {
     uint32_t size = 0;
     const auto *data = reader.bytes(catalog::CatalogId::max_size, size);
     return id.assign({reinterpret_cast<const char *>(data), size});
 }
-bool read_rule(durability::BodyReader &reader, ayni_bytes_v1 bytes, SceneRule &rule) {
+bool read_rule(foundation::BodyReader &reader, ayni_bytes_v1 bytes, SceneRule &rule) {
     if (!read_id(reader, rule.capability)) {
         return false;
     }
@@ -178,7 +178,7 @@ bool read_rule(durability::BodyReader &reader, ayni_bytes_v1 bytes, SceneRule &r
     rule.scope_offset = static_cast<uint32_t>(scope - bytes.data);
     return true;
 }
-bool read_condition(durability::BodyReader &reader, SceneCondition &condition) {
+bool read_condition(foundation::BodyReader &reader, SceneCondition &condition) {
     auto &source = condition.source;
     if (!read_id(reader, source.id)) {
         return false;
@@ -234,7 +234,7 @@ bool read_scene_definition(ayni_bytes_v1 bytes, SceneDefinition &out) {
     if (bytes.data == nullptr || bytes.size < scene_definition_header_bytes) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     SceneDefinition value{};
     value.bytes = bytes.size;
     value.rule_count = reader.u32();

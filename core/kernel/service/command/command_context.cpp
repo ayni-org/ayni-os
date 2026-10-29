@@ -1,7 +1,7 @@
 #include "kernel/service/command/command_context.h"
 #include "catalog/abi_checks.h"
-#include "durability/batch/record_body.h"
 #include "foundation/kernel_id.h"
+#include "foundation/record_body.h"
 namespace ayni::kernel {
 // Shape belongs here for both raw requests and persisted identities; live owner/state checks
 // are performed only after this shared validator and exact retry lookup.
@@ -75,7 +75,7 @@ ayni_status_t encode_context_command(const ContextCommand &c, uint8_t *out, uint
     if (out == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    durability::BodyWriter writer(out, size);
+    foundation::BodyWriter writer(out, size);
     writer.u32(c.kind);
     writer.u32(c.expected_revision);
     writer.u64(c.owner_instance_id);
@@ -92,7 +92,7 @@ bool read_context_command(ayni_bytes_v1 bytes, ContextCommand &out) {
     if (bytes.data == nullptr || bytes.size != context_command_size) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     ContextCommand c{};
     c.kind = reader.u32();
     c.expected_revision = reader.u32();

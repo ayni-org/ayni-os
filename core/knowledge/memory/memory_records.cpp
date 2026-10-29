@@ -5,20 +5,20 @@ template <std::size_t N>
 uint32_t labels_size(const std::array<MemoryLabel, N> &labels, uint32_t count) {
     uint32_t size = 0;
     for (uint32_t i = 0; i < count; ++i) {
-        size += durability::string_field_size(labels[i].size());
+        size += foundation::string_field_size(labels[i].size());
     }
     return size;
 }
 template <std::size_t N>
 void write_labels(const std::array<MemoryLabel, N> &labels, uint32_t count,
-                  durability::BodyWriter &writer) {
+                  foundation::BodyWriter &writer) {
     writer.u32(count);
     for (uint32_t i = 0; i < count; ++i) {
         writer.bytes(labels[i].data(), labels[i].size());
     }
 }
 template <std::size_t N>
-bool read_labels(durability::BodyReader &reader, std::array<MemoryLabel, N> &labels,
+bool read_labels(foundation::BodyReader &reader, std::array<MemoryLabel, N> &labels,
                  uint32_t &count) {
     count = reader.u32();
     if (count > N) {
@@ -34,7 +34,7 @@ bool read_labels(durability::BodyReader &reader, std::array<MemoryLabel, N> &lab
     return true;
 }
 } // namespace
-void write_memory_dependencies(const MemoryDependencies &deps, durability::BodyWriter &writer) {
+void write_memory_dependencies(const MemoryDependencies &deps, foundation::BodyWriter &writer) {
     writer.u32(deps.count);
     for (uint32_t i = 0; i < deps.count; ++i) {
         const auto &d = deps.items[i];
@@ -49,7 +49,7 @@ void write_memory_dependencies(const MemoryDependencies &deps, durability::BodyW
         writer.u32(d.egress.revision);
     }
 }
-bool read_memory_dependencies(durability::BodyReader &reader, MemoryDependencies &deps) {
+bool read_memory_dependencies(foundation::BodyReader &reader, MemoryDependencies &deps) {
     deps.count = reader.u32();
     if (deps.count > memory_dependency_max) {
         return false;
@@ -79,11 +79,11 @@ uint32_t memory_record_size(const MemoryRecord &r) {
 uint32_t memory_record_max(MemoryLimits limits) {
     return memory_record_header_bytes + memory_value_fixed_bytes + limits.body_bytes +
            (memory_tag_max + memory_keyword_max) *
-               durability::string_field_size(memory_label_max_bytes) +
+               foundation::string_field_size(memory_label_max_bytes) +
            limits.dependencies * memory_dependency_bytes;
 }
 // One field order serves saved facts and exact management command identity.
-void write_memory_value(const MemoryValue &v, durability::BodyWriter &w) {
+void write_memory_value(const MemoryValue &v, foundation::BodyWriter &w) {
     w.u32(static_cast<uint32_t>(v.space));
     w.u64(v.namespace_id);
     w.u32(static_cast<uint32_t>(v.source));
@@ -96,7 +96,7 @@ void write_memory_value(const MemoryValue &v, durability::BodyWriter &w) {
     write_memory_dependencies(v.dependencies, w);
 }
 // Count limits precede all array access. Caller checks final framing and shared value rules.
-bool read_memory_value(durability::BodyReader &r, MemoryValue &out) {
+bool read_memory_value(foundation::BodyReader &r, MemoryValue &out) {
     MemoryValue v{};
     v.space = static_cast<MemoryNamespace>(r.u32());
     v.namespace_id = r.u64();
@@ -118,7 +118,7 @@ bool read_memory_value(durability::BodyReader &r, MemoryValue &out) {
     return true;
 }
 void write_memory_record(const MemoryRecord &r, ayni_string_v1 text, uint8_t *out) {
-    durability::BodyWriter w(out, memory_record_size(r));
+    foundation::BodyWriter w(out, memory_record_size(r));
     w.u64(r.id);
     w.u32(r.revision);
     w.u32(static_cast<uint32_t>(r.state));
@@ -131,7 +131,7 @@ bool read_memory_record(const uint8_t *body, uint32_t size, DecodedMemory &out) 
     if (body == nullptr || size < memory_record_header_bytes + memory_value_fixed_bytes) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     DecodedMemory decoded{};
     auto &record = decoded.record;
     record.id = reader.u64();

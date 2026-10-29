@@ -3,6 +3,7 @@
 #define AYNI_TESTS_UNIT_SUBSCRIPTION_FIXTURE_H
 #include "work_node.h"
 #include <ayni/providers/mock/subscription.h>
+#include <ayni/values.hpp>
 namespace ayni::test {
 class SubscriptionFixture : public testing::Test {
   protected:
@@ -213,7 +214,20 @@ class SubscriptionFixture : public testing::Test {
         if (binding) {
             input.binding_id = text(binding);
             input.binding_version = 1;
-            input.arguments = {sizeof(ayni_scope_v1), 0, nullptr};
+        }
+        ayni::ValueBuilder<2> value;
+        if (kind == AYNI_POLICY_REQUEST_CALL || kind == AYNI_POLICY_REQUEST_MODEL) {
+            if (kind == AYNI_POLICY_REQUEST_MODEL) {
+                value.object();
+                value.text(AYNI_MODEL_BODY_FIELD_ID, {});
+                value.end();
+            } else {
+                value.text(0, {});
+            }
+            const auto status = value.finish(input.value);
+            if (status != AYNI_OK) {
+                return status;
+            }
         }
         return output.request_call(output.call_context, &input);
     }

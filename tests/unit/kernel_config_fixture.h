@@ -50,7 +50,10 @@ inline ayni::kernel::KernelCapacities capacities_of(const ayni_config_v1 &config
             config.observation_source_capacity,
             config.observation_ingress_capacity != 0  ? config.observation_ingress_capacity
             : config.observation_source_capacity != 0 ? AYNI_OBSERVATION_INGRESS_CAPACITY_DEFAULT
-                                                      : 0};
+                                                      : 0,
+            config.call_capability_capacity == 0U && config.provider_capacity == 0U ? 0U
+            : config.business_contract_max_bytes != 0U ? config.business_contract_max_bytes
+                                                       : AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT};
 }
 
 // White-box: the smallest storage buffer ayni_create accepts with config's

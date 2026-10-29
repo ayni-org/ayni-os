@@ -2,6 +2,7 @@
 #ifndef AYNI_AYNI_HPP
 #define AYNI_AYNI_HPP
 #include <ayni/ayni.h>
+#include <ayni/values.hpp>
 #include <new>
 #include <optional>
 

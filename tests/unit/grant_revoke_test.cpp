@@ -902,10 +902,10 @@ TEST(GrantRevokeRecords, snapshot_has_complete_independent_eighty_byte_history) 
         0,  0, 4, 0, 0, 0, 1, 0, 0,  0, 30, 0, 0, 0, 0, 0, 0,  0, 30, 0, 0, 0, 0, 0, 0,  0};
     const Grant &root = source.table.at(0);
     EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + 80U);
-    EXPECT_EQ(grant_snapshot_record_max(64), 328U);
-    EXPECT_EQ(grant_snapshot_record_max(4096), 8392U);
+    EXPECT_EQ(grant_snapshot_record_max(64), 332U);
+    EXPECT_EQ(grant_snapshot_record_max(4096), 8396U);
     std::vector<uint8_t> bytes(grant_snapshot_record_size(root));
-    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
+    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0), {},
                                 bytes.data());
     EXPECT_EQ(std::vector<uint8_t>(bytes.end() - 80, bytes.end()),
               std::vector<uint8_t>(tail.begin(), tail.end()));
@@ -922,15 +922,15 @@ TEST(GrantRevokeRecords, snapshot_has_complete_independent_eighty_byte_history) 
     EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + grant_snapshot_tail_size);
     EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + grant_snapshot_tail_size);
     const auto before = bytes;
-    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
+    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0), {},
                                 bytes.data());
     EXPECT_EQ(bytes, before);
-    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
+    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0), {},
                                 bytes.data());
     EXPECT_EQ(bytes, before);
     std::vector<uint8_t> old(grant_snapshot_record_size(source.table.at(1)));
     write_grant_snapshot_record(source.table.at(1), source.table.source_domain(1),
-                                source.table.scope(1), old.data());
+                                source.table.scope(1), {}, old.data());
     ASSERT_TRUE(read_grant_snapshot_record(old.data(), static_cast<uint32_t>(old.size()), decoded));
     EXPECT_EQ(decoded.revoked_by_root_id, 0U);
     EXPECT_EQ(decoded.cleanup_stamp.commit_seq, 0U);
@@ -1039,7 +1039,7 @@ TEST(GrantRevokeRecords, shortened_snapshot_history_is_rejected) {
     ASSERT_TRUE(source.add(1));
     const Grant &grant = source.table.at(0);
     std::vector<uint8_t> bytes(grant_snapshot_record_size(grant));
-    write_grant_snapshot_record(grant, source.table.source_domain(0), source.table.scope(0),
+    write_grant_snapshot_record(grant, source.table.source_domain(0), source.table.scope(0), {},
                                 bytes.data());
     GrantSnapshotRecord decoded{};
     ASSERT_TRUE(

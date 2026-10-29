@@ -22,6 +22,8 @@ struct Button {
     ayni_subscription_contract_v1 collection{sizeof(collection), version, text("example.button"),
                                              lease_ms, 0};
     ayni_call_capability_v1 capability{};
+    ayni_schema_node_v1 input_schema{}, result_schema{};
+    ayni_business_contract_v1 business{};
     uint64_t now = 0;
     uint32_t openings = 0, samples = 0, stops = 0;
     static bool same(ayni_subscription_ref_v1 a, ayni_subscription_ref_v1 b) {
@@ -101,13 +103,17 @@ struct Button {
                                AYNI_CALL_CANCEL_CONFIRMED,
                                0,
                                lease_ms,
-                               AYNI_CALL_INPUT_FIELDS_TEXT,
+                               AYNI_CALL_INPUT_VALUE,
                                AYNI_CALL_RESULT_TEXT,
-                               0,
+                               24,
                                0,
                                1,
                                &resource,
                                &collection};
+        input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
+        input_schema.subtree_end = result_schema.subtree_end = 1;
+        business = {{&input_schema, 1}, {&result_schema, 1}, 0, 0, nullptr};
+        capability.business = &business;
         if (status == AYNI_OK) {
             status = ayni_register_call_capability(kernel, &capability);
         }

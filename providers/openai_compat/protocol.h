@@ -20,6 +20,8 @@ struct Tool {
     static constexpr size_t string_count =
         2 + AYNI_AUTHORITY_FIELD_COUNT_MAX * (1 + AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX);
     std::array<char, string_count * AYNI_CATALOG_ID_MAX_BYTES> strings{};
+    std::array<uint8_t, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX> original_domain{};
+    std::array<uint8_t, AYNI_BUSINESS_CONTRACT_BYTES_MAX> business_contract{};
     ayni_tool_usage_v1 usage{}; // Read-only copied metadata; identity aliases view's owned strings.
     std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> field_usage{};
     std::array<char, AYNI_TOOL_USAGE_MAX_BYTES> usage_strings{};
@@ -31,11 +33,9 @@ struct Tool {
 struct Answer {
     ayni_provider_result_v1 result{};
     std::array<ayni_tool_call_v1, AYNI_CALL_TOOL_COUNT_MAX> calls{};
-    std::array<std::array<ayni_scope_field_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX>,
+    std::array<std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX>,
                AYNI_CALL_TOOL_COUNT_MAX>
-        fields{};
-    std::array<std::array<ayni_string_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX>, AYNI_CALL_TOOL_COUNT_MAX>
-        tokens{};
+        arguments{};
     std::unique_ptr<char[]> body;
     size_t used = 0;
     void fail(ayni_status_t status, ayni_reason_t reason);

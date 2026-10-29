@@ -1,5 +1,5 @@
-#include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
+#include "foundation/record_body.h"
 #include "kernel/service/persistence/persistent_store.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
@@ -13,7 +13,7 @@ constexpr uint32_t goal_extra = goal_current_seq_at + sizeof(uint64_t);
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
-// Owns this family's encoding in the original schema 3 journal order.
+// Owns this family's encoding in the original schema 4 journal order.
 class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -124,8 +124,8 @@ uint32_t capacity(const KernelCapacities &c) {
 uint32_t record_max(const KernelCapacities &c) {
     const auto goal =
         work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes + goal_extra;
-    const auto authority =
-        work::goal_authority_record_max(c.goal_requirement_capacity, c.authority_scope_max_bytes);
+    const auto authority = work::goal_authority_record_max(
+        c.goal_requirement_capacity, c.authority_scope_max_bytes, c.business_contract_max_bytes);
     return goal > authority ? goal : authority;
 }
 // Every retained Goal contributes its own row and optional authority partner.
@@ -135,7 +135,8 @@ uint64_t payload_max(const KernelCapacities &c) {
            (record_bytes(work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes +
                          goal_extra) +
             record_bytes(work::goal_authority_record_max(c.goal_requirement_capacity,
-                                                         c.authority_scope_max_bytes)));
+                                                         c.authority_scope_max_bytes,
+                                                         c.business_contract_max_bytes)));
 }
 // A transition creates at most one Goal but may change every retained state.
 // Authority metadata retains its existing one-Goal-per-transition bound.
@@ -144,7 +145,8 @@ uint32_t journal_max(const KernelCapacities &c) {
            c.goal_capacity * record_bytes(work::goal_state_record_size) +
            work::goal_authority_records_per_transition *
                record_bytes(work::goal_authority_record_max(c.goal_requirement_capacity,
-                                                            c.authority_scope_max_bytes));
+                                                            c.authority_scope_max_bytes,
+                                                            c.business_contract_max_bytes));
 }
 // Parent-first traversal survives terminal slot reuse; selection is idempotent.
 bool next(const WorkModel &model, StoreCursor &cursor) {

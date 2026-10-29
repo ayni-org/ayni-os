@@ -1,6 +1,8 @@
 #include "catalog/capability/call_contract.h"
 
+#include "catalog/capability/business_encoding.h"
 #include "catalog/capability/field_values.h"
+#include <cstring>
 
 namespace ayni::catalog {
 namespace {
@@ -63,14 +65,17 @@ ayni_status_t normalize_call_contract(const CallContract &input, CallContract &o
     if (!known_form(input.form) || !known_class(input.category) ||
         (input.effects & ~call_effect_mask) != 0U || !known_idempotency(input.idempotency) ||
         !known_query(input.query) || !known_cancel(input.cancel) || input.timeout_ms == 0U ||
-        input.input_text_limit > call_text_limit_max ||
+        input.input_text_limit > AYNI_CALL_INPUT_BYTES_MAX ||
         input.result_text_limit > call_text_limit_max ||
-        input.resource_count > resource_group_max) {
+        input.resource_count > resource_group_max ||
+        input.business_contract.size > AYNI_BUSINESS_CONTRACT_BYTES_MAX ||
+        (input.business_contract.size != 0U && input.business_contract.data == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (input.input_format != call_fields_text_input_format ||
+    if (input.input_format != call_value_input_format ||
         (input.result_format != call_text_result_format &&
-         input.result_format != call_tool_calls_result_format)) {
+         input.result_format != call_tool_calls_result_format &&
+         input.result_format != call_value_result_format)) {
         return AYNI_UNSUPPORTED_VERSION;
     }
     // A model proposes tool calls; a tool or an actuator never does (ADR-0054).
@@ -107,7 +112,11 @@ bool same_call_contract(const CallContract &left, const CallContract &right) {
         left.input_text_limit != right.input_text_limit ||
         left.result_text_limit != right.result_text_limit ||
         left.resource_count != right.resource_count ||
-        left.subscription.has_value() != right.subscription.has_value()) {
+        left.subscription.has_value() != right.subscription.has_value() ||
+        left.business_contract.size != right.business_contract.size ||
+        (left.business_contract.size != 0U &&
+         std::memcmp(left.business_contract.data, right.business_contract.data,
+                     left.business_contract.size) != 0)) {
         return false;
     }
     if (left.subscription &&
@@ -137,12 +146,24 @@ ayni_status_t CallCapabilityRegistry::add(const CallCapability &capability) {
     return add_validated(value);
 }
 
-ayni_status_t CallCapabilityRegistry::add_validated(const CallCapability &value) {
+ayni_status_t CallCapabilityRegistry::add_validated(const CallCapability &value,
+                                                    const ayni_business_contract_v1 *definition) {
     uint32_t index = 0;
     if (find(view(value.id), value.version, index)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    return entries_.push_back(value) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    if (entries_.full()) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    CallCapability candidate = value;
+    const auto stored =
+        store_business_contract(value.contract, definition,
+                                proofs_ + static_cast<std::size_t>(entries_.size()) * proof_bytes_,
+                                proof_bytes_, candidate.contract.business_contract);
+    if (stored != AYNI_OK) {
+        return stored;
+    }
+    return entries_.push_back(candidate) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 
 bool CallCapabilityRegistry::find(ayni_string_v1 id, uint32_t version, uint32_t &index) const {

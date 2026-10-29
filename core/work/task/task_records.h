@@ -9,8 +9,8 @@
 #ifndef AYNI_CORE_WORK_TASK_TASK_RECORDS_H
 #define AYNI_CORE_WORK_TASK_TASK_RECORDS_H
 
-#include "durability/batch/record_body.h"
 #include "durability/batch/record_types.h"
+#include "foundation/record_body.h"
 #include "work/task/task_table.h"
 
 #include <ayni/ayni.h>
@@ -116,7 +116,7 @@ void write_task_steps_record(const TaskTable &tasks, uint32_t index, TaskStepRan
 // Largest record for count keys, with count bounded by TaskTable::Limits.
 constexpr uint32_t task_steps_record_max(uint32_t count) {
     return task_steps_record_fixed_size +
-           count * durability::string_field_size(catalog::CatalogId::max_size);
+           count * foundation::string_field_size(catalog::CatalogId::max_size);
 }
 // Passes each key to on_step(position, key), from position first, while it
 // returns true. Returns false when on_step does, or for a body that does
@@ -138,7 +138,7 @@ bool read_task_checkpoint_record(const uint8_t *body, uint32_t size, TaskCheckpo
 template <typename OnStep>
 bool read_task_steps_record(const uint8_t *body, uint32_t size, uint64_t &out_task_id,
                             OnStep on_step) {
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     out_task_id = reader.u64();
     const uint32_t first = reader.u32();
     const uint32_t count = reader.u32();

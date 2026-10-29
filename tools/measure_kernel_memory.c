@@ -96,6 +96,7 @@ int main(void) {
     config.provider_capacity = 2;
     config.binding_capacity = 4;
     config.call_capacity = 16;
+    config.business_contract_max_bytes = AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT;
     config.call_input_max_bytes = 4096;
     config.call_result_max_bytes = 4096;
     failed |= measure("Native two-agent call profile", &config);

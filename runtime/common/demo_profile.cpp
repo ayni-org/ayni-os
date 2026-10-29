@@ -54,7 +54,7 @@ ayni_config_v1 demo_config() {
     c.task_checkpoint_max_bytes = strategies::state_bytes_max;
     c.task_step_capacity = 64;
     c.call_capacity = 64;
-    c.call_input_max_bytes = strategies::prompt_bytes_max;
+    c.call_input_max_bytes = strategies::prompt_bytes_max + 128;
     c.call_result_max_bytes = strategies::prompt_bytes_max;
     c.call_capability_capacity = offer_count;
     c.capability_capacity = offer_count + authority_only_count;

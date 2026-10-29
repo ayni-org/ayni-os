@@ -292,3 +292,62 @@ TEST(CheckpointReaders, registration_rejects_invalid_ranges_and_copies_accepted_
     EXPECT_FALSE(entry.accepts_checkpoint(text("missing"), 1));
 }
 } // namespace
+
+// ADR-0084: nested native proposals pass through ToolLoop unchanged, and the
+// next model round receives named structured results with exact numeric strings.
+class StructuredToolLoop : public ayni::test::StrategiesFixture {
+  protected:
+    void SetUp() override {
+        structured_tool = true;
+        StrategiesFixture::SetUp();
+    }
+};
+TEST_F(StructuredToolLoop, nested_input_and_structured_result_complete_the_same_conversation) {
+    using namespace ayni::test;
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    ayni::ValueBuilder<4> input;
+    input.object();
+    input.list(7);
+    input.object();
+    input.decimal(3, {123, 2, 0});
+    input.end();
+    input.end();
+    input.end();
+    ayni_tool_call_v1 proposal{};
+    proposal.struct_size = sizeof(proposal);
+    proposal.binding_version = 1;
+    proposal.binding_id = text("echo");
+    proposal.input_kind = AYNI_TOOL_INPUT_VALUE;
+    proposal.protocol_id = text("nested_1");
+    ASSERT_EQ(input.finish(proposal.input.value), AYNI_OK);
+    post(0, {}, AYNI_CALL_COMPLETED, AYNI_OK, &proposal, 1);
+    input.clear();
+    pump();
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending[1].text, R"({"items":[{"amount":"1.23"}]})");
+    ayni::ValueBuilder<3> result;
+    result.object();
+    result.unsigned_integer(1, UINT64_MAX);
+    result.decimal(2, {12325, 2, 0});
+    result.end();
+    ayni_provider_result_v1 receipt{};
+    receipt.struct_size = sizeof(receipt);
+    receipt.attempt = pending[1].attempt;
+    receipt.outcome = AYNI_CALL_COMPLETED;
+    receipt.effect = AYNI_CALL_EFFECT_COMPLETE;
+    ASSERT_EQ(result.finish(receipt.value), AYNI_OK);
+    ASSERT_EQ(ayni_provider_post(pending[1].completion, &receipt), AYNI_OK);
+    pending[1].ended = true;
+    result.clear();
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_NE(pending[2].text.find(R"({"items":[{"amount":"1.23"}]})"), std::string::npos);
+    EXPECT_NE(pending[2].text.find(R"({"total":"18446744073709551615","price":"123.25"})"),
+              std::string::npos);
+    EXPECT_NE(pending[2].text.find("nested_1"), std::string::npos);
+    post(2, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    finish(task);
+}

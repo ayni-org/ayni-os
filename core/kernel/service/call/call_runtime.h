@@ -193,7 +193,14 @@ class CallRuntime {
     static ayni_status_t describe_tool(const void *context, uint32_t index, ayni_tool_v1 *out);
     // Every call names an offered tool with values in its ceiling and route and
     // text within its limit. Shape was checked when posted; this adds the catalogs.
-    bool valid_tool_calls(uint32_t task_index, uint32_t positions, ayni_bytes_v1 list) const;
+    ayni_status_t normalize_tool_calls(uint32_t task_index, uint32_t positions, ayni_bytes_v1 list,
+                                       uint32_t &size);
+    // One selected tool's original Schema resolves native or lossless adapter input.
+    ayni_status_t normalize_tool_input(uint32_t task_index, const ToolOffer &offer,
+                                       const work::ToolCallView &call,
+                                       catalog::DecodedValue &out) const;
+    // Normalize a copied structured terminal with this Call's original result schema.
+    ayni_status_t normalize_result(uint32_t index, ayni_bytes_v1 body, work::CallResult &result);
     ayni_status_t stage(const ayni_call_request_v1 &request);
     // Close uses only a Task-local step; it never reauthorizes capture or allocates I/O.
     ayni_status_t stage_subscription_target(const ayni_call_request_v1 &request);
@@ -201,7 +208,12 @@ class CallRuntime {
     void stage_intent(const Proposal &proposal);
     authority::GrantCheck check_input(uint32_t task_index, const catalog::Binding &binding,
                                       ayni_bytes_v1 domain, const work::CallInputView &input,
-                                      uint64_t now_us, uint64_t durable_seq) const;
+                                      const catalog::CallContract &contract, uint64_t now_us,
+                                      uint64_t durable_seq) const;
+    // Typed values require one original requirement to cover every projected row.
+    authority::GrantCheck check_business_input(uint32_t task_index, const catalog::Binding &binding,
+                                               ayni_bytes_v1 domain, const ayni_value_v1 &value,
+                                               const catalog::CallContract &contract) const;
     resources::ResourceRequest resource_request(uint64_t call_id, uint64_t owner,
                                                 const catalog::BindingLinks &links,
                                                 const catalog::CallContract &contract,
@@ -312,11 +324,12 @@ class CallRuntime {
     ProviderMailbox &mailbox_;                // Sole owner of concurrent copied deliveries.
     AttemptSequence &attempts_;               // Shared Host/Provider attempt identity allocator.
     const ayni_host_v1
-        &host_;        // Bounded callback clock/lock/wake services, lifetime held by Kernel.
-    Limits limits_;    // Immutable arena dimensions, shared bounds with CallTable/mailbox.
-    Slot *slots_;      // One optional volatile owner per stable call slot.
-    uint8_t *staging_; // Canonical proposed input, copied while callback views are alive.
-    uint8_t *receipt_; // Owner copy; mailbox retains original until domain publication succeeds.
+        &host_;           // Bounded callback clock/lock/wake services, lifetime held by Kernel.
+    Limits limits_;       // Immutable arena dimensions, shared bounds with CallTable/mailbox.
+    Slot *slots_;         // One optional volatile owner per stable call slot.
+    uint8_t *staging_;    // Canonical proposed input, copied while callback views are alive.
+    uint8_t *receipt_;    // Owner copy; mailbox retains original until domain publication succeeds.
+    uint8_t *normalized_; // Owner-only result normalization bytes, erased after consumption.
     std::optional<Decision> decision_; // Present only during decide; callback capability lease.
     std::optional<Proposal> proposal_; // Copied proposal survives callback until consumed/reset.
     std::optional<Offering> offering_; // Present only while a Provider's submit runs.

@@ -1,4 +1,5 @@
 #include "work/call/call_records.h"
+#include "catalog/capability/call_contract_encoding.h"
 
 #include "work/action/action_records.h"
 
@@ -6,66 +7,18 @@
 
 namespace ayni::work {
 namespace {
-void write_id(const catalog::CatalogId &id, durability::BodyWriter &writer) {
+void write_id(const catalog::CatalogId &id, foundation::BodyWriter &writer) {
     writer.bytes(id.data(), id.size());
 }
 
-bool read_id(durability::BodyReader &reader, catalog::CatalogId &id) {
+bool read_id(foundation::BodyReader &reader, catalog::CatalogId &id) {
     uint32_t size = 0;
     const auto *bytes = reader.bytes(catalog::CatalogId::max_size, size);
     return size == 0U || id.assign({reinterpret_cast<const char *>(bytes), size});
 }
 
-// Contract field order is representation v1, independent of native ABI layout.
-void write_contract(const catalog::CallContract &contract, durability::BodyWriter &writer) {
-    writer.u32(static_cast<uint32_t>(contract.form));
-    writer.u32(static_cast<uint32_t>(contract.category));
-    writer.u32(contract.effects);
-    writer.u32(static_cast<uint32_t>(contract.idempotency));
-    writer.u32(static_cast<uint32_t>(contract.query));
-    writer.u32(static_cast<uint32_t>(contract.cancel));
-    writer.u32(contract.dedupe_window_ms);
-    writer.u32(contract.timeout_ms);
-    writer.u32(contract.input_format);
-    writer.u32(contract.result_format);
-    writer.u32(contract.input_text_limit);
-    writer.u32(contract.result_text_limit);
-    writer.u32(contract.resource_count);
-    for (uint32_t at = 0; at < contract.resource_count; ++at) {
-        write_id(contract.resources[at].id, writer);
-        writer.u32(contract.resources[at].units);
-    }
-}
-
-// Bounds are checked before indexing; semantic validation is shared with registration.
-bool read_contract(durability::BodyReader &reader, catalog::CallContract &contract) {
-    contract.form = static_cast<catalog::CallForm>(reader.u32());
-    contract.category = static_cast<catalog::CallClass>(reader.u32());
-    contract.effects = reader.u32();
-    contract.idempotency = static_cast<catalog::CallIdempotency>(reader.u32());
-    contract.query = static_cast<catalog::QueryAuthority>(reader.u32());
-    contract.cancel = static_cast<catalog::CancelMode>(reader.u32());
-    contract.dedupe_window_ms = reader.u32();
-    contract.timeout_ms = reader.u32();
-    contract.input_format = reader.u32();
-    contract.result_format = reader.u32();
-    contract.input_text_limit = reader.u32();
-    contract.result_text_limit = reader.u32();
-    contract.resource_count = reader.u32();
-    if (contract.resource_count > catalog::resource_group_max) {
-        return false;
-    }
-    for (uint32_t at = 0; at < contract.resource_count; ++at) {
-        if (!read_id(reader, contract.resources[at].id)) {
-            return false;
-        }
-        contract.resources[at].units = reader.u32();
-    }
-    return true;
-}
-
 // Finite subscription facts never store a monotonic lease deadline.
-void write_subscription(const CallRecord &record, durability::BodyWriter &writer) {
+void write_subscription(const CallRecord &record, foundation::BodyWriter &writer) {
     const auto &spec = *record.contract.subscription;
     const auto &fact = *record.state.subscription;
     write_id(spec.source, writer);
@@ -79,7 +32,7 @@ void write_subscription(const CallRecord &record, durability::BodyWriter &writer
     writer.u32(static_cast<uint32_t>(fact.control_status));
     writer.u32(fact.control_reason);
 }
-bool read_subscription(durability::BodyReader &reader, CallRecord &record) {
+bool read_subscription(foundation::BodyReader &reader, CallRecord &record) {
     catalog::SubscriptionContract spec{};
     SubscriptionFact fact{};
     if (!read_id(reader, spec.source)) {
@@ -96,9 +49,9 @@ bool read_subscription(durability::BodyReader &reader, CallRecord &record) {
     fact.control_reason = reader.u32();
     record.contract.subscription = spec;
     record.state.subscription = fact;
-    return reader.ok();
+    return reader.valid();
 }
-void write_state(const CallState &state, durability::BodyWriter &writer) {
+void write_state(const CallState &state, foundation::BodyWriter &writer) {
     write_action_stamp(state.created, writer);
     write_action_stamp(state.latest, writer);
     writer.u64(state.attempt.boot_epoch);
@@ -120,7 +73,7 @@ void write_state(const CallState &state, durability::BodyWriter &writer) {
     writer.u32(query.conclusion);
 }
 
-CallState read_state(durability::BodyReader &reader) {
+CallState read_state(foundation::BodyReader &reader) {
     CallState state{};
     state.created = read_action_stamp(reader);
     state.latest = read_action_stamp(reader);
@@ -158,8 +111,8 @@ uint32_t call_record_max(CallTable::Limits limits) {
            catalog::resource_group_max *
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
-           limits.result_bytes + execution_record_max() + call_subscription_fixed_bytes +
-           catalog::CatalogId::max_size;
+           limits.result_bytes + limits.business_bytes + execution_record_max() +
+           call_subscription_fixed_bytes + catalog::CatalogId::max_size;
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -167,7 +120,7 @@ uint32_t call_record_size(const CallRecord &record) {
     uint32_t size = call_record_fixed_size + id.step_key.size() + id.binding_id.size() +
                     id.capability_id.size() + id.provider_id.size() + id.endpoint.size() +
                     id.destination.size() + record.domain.size + record.input.size +
-                    record.result.size;
+                    record.result.size + record.contract.business_contract.size;
     for (uint32_t at = 0; at < record.contract.resource_count; ++at) {
         size += call_record_resource_fixed_size + record.contract.resources[at].id.size();
     }
@@ -182,7 +135,7 @@ uint32_t call_record_size(const CallRecord &record) {
 // The enclosing call owns the original action association; the action body uses
 // its existing codec, so standalone inspection and embedded storage cannot drift.
 void write_call_record(const CallRecord &record, uint8_t *body) {
-    durability::BodyWriter writer(body, call_record_size(record));
+    foundation::BodyWriter writer(body, call_record_size(record));
     const auto &id = record.identity;
     writer.u64(id.call_id);
     writer.u64(id.operation_id);
@@ -197,7 +150,7 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     write_id(id.provider_id, writer);
     write_id(id.endpoint, writer);
     write_id(id.destination, writer);
-    write_contract(record.contract, writer);
+    catalog::write_execution_contract(record.contract, writer);
     write_state(record.state, writer);
     writer.bytes(record.domain.data, record.domain.size);
     writer.bytes(record.input.data, record.input.size);
@@ -218,6 +171,7 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     if (record.state.subscription) {
         write_subscription(record, writer);
     }
+    writer.bytes(record.contract.business_contract.data, record.contract.business_contract.size);
 }
 
 // This reader does not consult this boot's catalog. Old input is interpreted
@@ -226,7 +180,7 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     if (body == nullptr || size < call_record_fixed_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     CallRecord record{};
     auto &id = record.identity;
     id.call_id = reader.u64();
@@ -239,7 +193,7 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     if (!read_id(reader, id.step_key) || !read_id(reader, id.binding_id) ||
         !read_id(reader, id.capability_id) || !read_id(reader, id.provider_id) ||
         !read_id(reader, id.endpoint) || !read_id(reader, id.destination) ||
-        !read_contract(reader, record.contract)) {
+        !catalog::read_execution_contract(reader, record.contract)) {
         return false;
     }
     record.state = read_state(reader);
@@ -280,6 +234,7 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
         !read_subscription(reader, record)) {
         return false;
     }
+    record.contract.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
     if (!reader.ok() || !CallTable::valid_record(record)) {
         return false;
     }

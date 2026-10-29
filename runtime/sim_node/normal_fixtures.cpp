@@ -49,7 +49,7 @@ ayni_config_v1 configuration(const Config &fixture) {
     c.task_checkpoint_max_bytes = 64;
     c.task_step_capacity = AYNI_TASK_STEP_CAPACITY_MAX;
     c.call_capacity = fixture_call_capacity;
-    c.call_input_max_bytes = 512;
+    c.call_input_max_bytes = 640;
     c.call_result_max_bytes = 512;
     c.call_capability_capacity = 6;
     c.capability_capacity = 7;

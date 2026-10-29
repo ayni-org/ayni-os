@@ -1,4 +1,5 @@
 #include "support.h"
+#include <ayni/values.hpp>
 #include <charconv>
 #include <cstring>
 
@@ -67,6 +68,12 @@ bool valid_text(ayni_string_v1 value) {
     return true;
 }
 bool valid_call(const Call &call) {
+    if (call.input) {
+        return valid_id(call.binding_id) && call.binding_version != 0U &&
+               (call.kind == AYNI_POLICY_REQUEST_CALL || call.kind == AYNI_POLICY_REQUEST_MODEL) &&
+               call.arguments.field_count == 0U && call.text.size == 0U &&
+               ayni_value_validate(&*call.input) == AYNI_OK;
+    }
     return valid_id(call.binding_id) && call.binding_version != 0 &&
            (call.kind == AYNI_POLICY_REQUEST_CALL || call.kind == AYNI_POLICY_REQUEST_MODEL) &&
            call.arguments.struct_size == sizeof(ayni_scope_v1) &&
@@ -126,9 +133,57 @@ ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
     if (!output.request_call) {
         return AYNI_UNSUPPORTED;
     }
-    const ayni_call_request_v1 request{
-        sizeof(request), call.kind, call.binding_version, 0, key, call.binding_id,
-        call.arguments,  text};
+    ayni_call_request_v1 request{};
+    request.struct_size = sizeof(request);
+    request.kind = call.kind;
+    request.binding_version = call.binding_version;
+    request.step_key = key;
+    request.binding_id = call.binding_id;
+    ayni::ValueBuilder<AYNI_AUTHORITY_FIELD_COUNT_MAX + 2U> builder;
+    if (call.input) {
+        request.value = *call.input;
+    } else {
+        if (call.kind == AYNI_POLICY_REQUEST_MODEL || call.arguments.field_count != 0U) {
+            builder.object();
+            for (uint32_t at = 0; at < call.arguments.field_count; ++at) {
+                const auto &field = call.arguments.fields[at];
+                if (field.struct_size != sizeof(field) ||
+                    field.allowed.struct_size != sizeof(field.allowed)) {
+                    return AYNI_INVALID_ARGUMENT;
+                }
+                if (field.allowed.kind == AYNI_AUTHORITY_I64) {
+                    if (field.allowed.values.integer.min_inclusive !=
+                        field.allowed.values.integer.max_inclusive) {
+                        return AYNI_INVALID_ARGUMENT;
+                    }
+                    builder.integer(field.field_id, field.allowed.values.integer.min_inclusive);
+                } else if (field.allowed.kind == AYNI_AUTHORITY_ENUM ||
+                           field.allowed.kind == AYNI_AUTHORITY_IDENTIFIER) {
+                    if (field.allowed.values.tokens.member_count != 1U ||
+                        field.allowed.values.tokens.members == nullptr) {
+                        return AYNI_INVALID_ARGUMENT;
+                    }
+                    if (field.allowed.kind == AYNI_AUTHORITY_ENUM) {
+                        builder.enumeration(field.field_id, field.allowed.values.tokens.members[0]);
+                    } else {
+                        builder.identifier(field.field_id, field.allowed.values.tokens.members[0]);
+                    }
+                } else {
+                    return AYNI_INVALID_ARGUMENT;
+                }
+            }
+            builder.text(call.kind == AYNI_POLICY_REQUEST_MODEL ? AYNI_MODEL_BODY_FIELD_ID
+                                                                : UINT32_MAX,
+                         text);
+            builder.end();
+        } else {
+            builder.text(0, text);
+        }
+        const auto built = builder.finish(request.value);
+        if (built != AYNI_OK) {
+            return built;
+        }
+    }
     return output.request_call(output.call_context, &request);
 }
 ayni_status_t result(const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,

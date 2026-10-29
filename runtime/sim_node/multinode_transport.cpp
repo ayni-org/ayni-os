@@ -11,16 +11,14 @@ ayni_string_v1 text(const char *s) {
 bool same(ayni_string_v1 s, const char *expected) {
     return s.data && s.size == std::strlen(expected) && std::memcmp(s.data, expected, s.size) == 0;
 }
-bool destination(const ayni_scope_v1 &arguments) {
-    using namespace applications::normal_fixtures;
-    if (arguments.field_count != 1 || !arguments.fields) {
+bool destination(ayni_value_v1 value) {
+    ValueReader reader;
+    if (reader.read(value) != AYNI_OK) {
         return false;
     }
-    const auto &field = arguments.fields[0];
-    return field.field_id == remote_destination_field &&
-           field.allowed.kind == AYNI_AUTHORITY_IDENTIFIER &&
-           field.allowed.values.tokens.member_count == 1 && field.allowed.values.tokens.members &&
-           same(field.allowed.values.tokens.members[0], remote_destination);
+    const auto *field = reader.field(applications::normal_fixtures::remote_destination_field);
+    return field && field->kind == AYNI_VALUE_IDENTIFIER &&
+           same(field->value.text, applications::normal_fixtures::remote_destination);
 }
 } // namespace
 FakeTransport::FakeTransport() {
@@ -37,13 +35,31 @@ FakeTransport::FakeTransport() {
                             AYNI_CALL_CANCEL_NONE,
                             0,
                             timeout_ms,
-                            AYNI_CALL_INPUT_FIELDS_TEXT,
+                            AYNI_CALL_INPUT_VALUE,
                             AYNI_CALL_RESULT_TEXT,
                             text_limit,
                             0,
                             1,
                             &resource_,
                             nullptr};
+    input_schema_[0].kind = AYNI_VALUE_OBJECT;
+    input_schema_[0].subtree_end = 2;
+    auto &route = input_schema_[1];
+    route.kind = AYNI_VALUE_IDENTIFIER;
+    route.field_id = applications::normal_fixtures::remote_destination_field;
+    route.subtree_end = 2;
+    route.flags = AYNI_SCHEMA_REQUIRED;
+    route.name = text("destination");
+    destination_choice_ = text(applications::normal_fixtures::remote_destination);
+    route.choice_count = 1;
+    route.choices = &destination_choice_;
+    result_schema_.kind = AYNI_VALUE_TEXT;
+    result_schema_.subtree_end = 1;
+    projection_.field_id = route.field_id;
+    projection_.path_count = 1;
+    projection_.path[0] = route.field_id;
+    business_ = {{input_schema_.data(), 2}, {&result_schema_, 1}, 1, 0, &projection_};
+    capability_.business = &business_;
 }
 ayni_provider_v1 FakeTransport::describe() {
     auto out = initialized<ayni_provider_v1>();
@@ -77,8 +93,8 @@ ayni_submit_result_t FakeTransport::submit(void *context, const ayni_provider_re
     if (!self.connected_ || !r || !completion || r->struct_size != sizeof(*r) ||
         !r->logical_call_id || !r->operation_id || r->capability_version != 1 ||
         !same(r->capability_id, "test.increment") ||
-        !same(r->endpoint_id, applications::normal_fixtures::remote_destination) || r->text.size ||
-        !destination(r->arguments) || r->execution_permit || r->subscription) {
+        !same(r->endpoint_id, applications::normal_fixtures::remote_destination) ||
+        !destination(r->value) || r->execution_permit || r->subscription) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     // Closed runs retain every identity. Repeated submit is refused; this is

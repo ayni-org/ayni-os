@@ -241,13 +241,13 @@ CallRuntime::Advance CallRuntime::renew_subscription(uint32_t index, uint64_t no
     if (!work_.tasks.find(id.task_id, task_index) ||
         !catalogs_.bindings.find({id.binding_id.data(), id.binding_id.size()}, id.binding_version,
                                  binding_index) ||
-        work::read_call_input(work_.calls.domain(index), work_.calls.input(index),
-                              contract.input_text_limit, input) != AYNI_OK) {
+        work::read_call_input(work_.calls.domain(index), work_.calls.input(index), contract,
+                              input) != AYNI_OK) {
         return Advance::internal;
     }
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, host_.monotonic_now_us(host_.ctx), durable_seq);
+                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq);
     if (authority.status != AYNI_OK || !resources_.executable(slots_[index].active->claim)) {
         lease.inhibition = work::CallCancelCause::authority;
         close_subscription_gate(index);

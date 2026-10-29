@@ -1,7 +1,7 @@
 #include "work/goal/goal_records.h"
 #include "work/goal/calendar_table.h"
 
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 
 namespace ayni::work {
 namespace {
@@ -12,7 +12,7 @@ constexpr uint32_t known_flags = next_scheduled_flag | expiry_pending_flag;
 
 // Reads a catalog id field; empty only when may_be_empty. A read past the
 // end shows in BodyReader::ok().
-bool read_id(durability::BodyReader &reader, bool may_be_empty, catalog::CatalogId &out) {
+bool read_id(foundation::BodyReader &reader, bool may_be_empty, catalog::CatalogId &out) {
     uint32_t size = 0;
     const uint8_t *data = reader.bytes(catalog::CatalogId::max_size, size);
     if (size == 0U) {
@@ -31,7 +31,7 @@ uint32_t goal_record_size(const Goal &goal) {
 
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
                        GoalRecordOptions options) {
-    durability::BodyWriter writer(body, goal_record_size(goal));
+    foundation::BodyWriter writer(body, goal_record_size(goal));
     writer.u64(goal.goal_id);
     writer.u64(goal.parent_goal_id);
     writer.u64(goal.owner_instance_id);
@@ -62,7 +62,7 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out) {
     if (body == nullptr || size < goal_record_fixed_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     out = GoalRecord{};
     out.goal_id = reader.u64();
     out.goal.parent_goal_id = reader.u64();
@@ -108,7 +108,7 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out) {
 }
 
 void write_goal_state_record(const Goal &goal, uint8_t *body, GoalRecordChange change) {
-    durability::BodyWriter writer(body, goal_state_record_size);
+    foundation::BodyWriter writer(body, goal_state_record_size);
     writer.u64(goal.goal_id);
     writer.u64(goal.last_task_id);
     writer.u32(goal.lifecycle);
@@ -129,7 +129,7 @@ bool read_goal_state_record(const uint8_t *body, uint32_t size, GoalStateRecord 
     if (body == nullptr || size != goal_state_record_size) {
         return false;
     }
-    durability::BodyReader reader(body, size);
+    foundation::BodyReader reader(body, size);
     out.goal_id = reader.u64();
     out.state.last_task_id = reader.u64();
     out.state.lifecycle = reader.u32();

@@ -81,7 +81,7 @@ ayni_status_t encode_memory_command(const MemoryCommand &c, uint8_t *out, uint32
     if (out == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    durability::BodyWriter writer(out, size);
+    foundation::BodyWriter writer(out, size);
     writer.u32(c.kind);
     writer.u32(c.expected_revision);
     writer.u64(c.target_id);
@@ -95,7 +95,7 @@ bool read_memory_command(ayni_bytes_v1 bytes, MemoryCommand &out) {
     if (bytes.data == nullptr || bytes.size < memory_command_fixed_bytes) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     MemoryCommand c{};
     c.kind = reader.u32();
     c.expected_revision = reader.u32();

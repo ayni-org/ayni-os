@@ -1,5 +1,5 @@
 #include "kernel/service/command/command_pause_group.h"
-#include "durability/batch/record_body.h"
+#include "foundation/record_body.h"
 namespace ayni::kernel {
 ayni_status_t measure_pause_group_command(const work::PauseGroupChange &input, uint32_t &size) {
     if (!work::PauseGroups::valid_group(input.group)) {
@@ -21,7 +21,7 @@ ayni_status_t encode_pause_group_command(const work::PauseGroupChange &input, ui
     if (body == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    durability::BodyWriter writer(body, size);
+    foundation::BodyWriter writer(body, size);
     writer.u32(AYNI_INTENT_PAUSE_GROUP_SET);
     writer.u32(input.expected_revision);
     writer.u32(input.group);
@@ -33,7 +33,7 @@ bool read_pause_group_command(ayni_bytes_v1 bytes, work::PauseGroupChange &out) 
     if (bytes.data == nullptr || bytes.size != pause_group_command_size) {
         return false;
     }
-    durability::BodyReader reader(bytes.data, bytes.size);
+    foundation::BodyReader reader(bytes.data, bytes.size);
     if (reader.u32() != AYNI_INTENT_PAUSE_GROUP_SET) {
         return false;
     }

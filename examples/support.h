@@ -42,8 +42,36 @@ inline ayni_status_t request(ayni_policy_output_v1 &out, ayni_policy_intent_kind
     if (binding) {
         call.binding_id = text(binding);
         call.binding_version = 1;
-        call.arguments = scope;
-        call.text = body;
+    }
+    if (kind != AYNI_POLICY_REQUEST_CALL && kind != AYNI_POLICY_REQUEST_MODEL) {
+        return out.request_call ? out.request_call(out.call_context, &call) : AYNI_UNSUPPORTED;
+    }
+    ValueBuilder<3> value;
+    if (kind == AYNI_POLICY_REQUEST_MODEL) {
+        value.object();
+        if (scope.field_count) {
+            if (scope.field_count != 1 || !scope.fields ||
+                scope.fields[0].field_id != AYNI_MODEL_DESTINATION_FIELD_ID) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            const auto &route = scope.fields[0].allowed;
+            if (route.kind != AYNI_AUTHORITY_IDENTIFIER || route.values.tokens.member_count != 1 ||
+                !route.values.tokens.members) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            value.identifier(AYNI_MODEL_DESTINATION_FIELD_ID, route.values.tokens.members[0]);
+        }
+        value.text(AYNI_MODEL_BODY_FIELD_ID, body);
+        value.end();
+    } else {
+        if (scope.field_count) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        value.text(0, body);
+    }
+    const auto status = value.finish(call.value);
+    if (status != AYNI_OK) {
+        return status;
     }
     return out.request_call(out.call_context, &call);
 }

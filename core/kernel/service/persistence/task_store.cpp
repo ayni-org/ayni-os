@@ -1,5 +1,5 @@
-#include "durability/batch/record_body.h"
 #include "foundation/little_endian.h"
+#include "foundation/record_body.h"
 #include "kernel/service/persistence/persistent_store.h"
 #include "work/task/task_authority_records.h"
 #include "work/task/task_records.h"
@@ -9,7 +9,7 @@ namespace {
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
-// Owns this family's encoding in the original schema 3 journal order.
+// Owns this family's encoding in the original schema 4 journal order.
 class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -25,7 +25,7 @@ class Journal {
         return at;
     }
     // Encode creation, then steps/checkpoint, then final state and its admission.
-    // This order is part of the schema 3 cross-record replay proof.
+    // This order is part of the schema 4 cross-record replay proof.
     bool tasks() {
         const work::TaskTable &tasks = model_.tasks;
         for (uint32_t index = 0; index < tasks.size(); ++index) {

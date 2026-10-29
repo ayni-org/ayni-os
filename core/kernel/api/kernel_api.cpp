@@ -191,6 +191,9 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::call_result_max_bytes,
      {0U, AYNI_CALL_RESULT_BYTES_MAX},
      &KernelCapacities::call_result_max_bytes},
+    {&ayni_config_v1::business_contract_max_bytes,
+     {0U, AYNI_BUSINESS_CONTRACT_BYTES_MAX},
+     &KernelCapacities::business_contract_max_bytes},
 };
 
 // Read each bounded capacity once, then let validate_config resolve storage
@@ -222,6 +225,13 @@ ayni_status_t read_capacities(const ayni_config_v1 *config, KernelCapacities &ca
     }
     if (capacities.call_result_max_bytes == 0U) {
         capacities.call_result_max_bytes = AYNI_CALL_RESULT_BYTES_DEFAULT;
+    }
+    if (capacities.call_capability_capacity != 0U || capacities.provider_capacity != 0U) {
+        if (capacities.business_contract_max_bytes == 0U) {
+            capacities.business_contract_max_bytes = AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT;
+        }
+    } else {
+        capacities.business_contract_max_bytes = 0;
     }
     return AYNI_OK;
 }

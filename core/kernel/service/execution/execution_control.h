@@ -74,8 +74,9 @@ class ExecutionControl {
     // generation and measured prerequisites in out_fact, beside the canonical
     // input; nothing for any other contract. No permit or nonce is issued.
     authority::GrantCheck prepare(const catalog::CallContract &contract,
-                                  const catalog::Binding &binding, ayni_bytes_v1 arguments,
-                                  uint64_t now_us, uint64_t durable_seq, uint64_t task_id,
+                                  const catalog::Binding &binding, ayni_bytes_v1 domain,
+                                  const work::CallInputView &input, uint64_t now_us,
+                                  uint64_t durable_seq, uint64_t task_id,
                                   std::optional<work::ExecutionFact> &out_fact) const;
     // Immediately before dispatch and at every renewal: the saved Scene
     // generation, boot, owner binding and observations still hold.
@@ -121,6 +122,12 @@ class ExecutionControl {
     bool ready(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) const;
 
   private:
+    // One unchanged enabled Scene must cover every row of the canonical input.
+    ayni_status_t authorize_input(const catalog::ExecutionBinding &binding,
+                                  ayni_string_v1 capability, uint32_t version, ayni_bytes_v1 domain,
+                                  const catalog::CallContract &contract,
+                                  const work::CallInputView &input, uint64_t durable_seq,
+                                  uint32_t &scene) const;
     using Advance = RuntimeAdvance;
     using Mode = RuntimeMode;
     // How a lane's request ended when it is taken.

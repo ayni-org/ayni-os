@@ -137,3 +137,5 @@
 | [0083](0083-general-foundation-before-platform-experiments.md) | 通用 AgentOS 基础先于平台实验 | 已接受 | §0、§1、§6、§9～§15、AP-02～AP-11 |
 
 | [0084](0084-typed-capability-values-and-authority-projection.md) | 通用业务值、完整授权投影与开发期升级 | 已接受范围；实现未交付 | §3、§9、§14、AP-02 |
+
+| [0085](0085-stable-capability-tools-and-shell.md) | 固定能力工具、按需说明、连续上下文与显式 Shell | 已接受范围；实施中 | AP-02/AP-03 |
