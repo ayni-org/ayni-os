@@ -2,6 +2,8 @@
 
 - **关联**：ADR-0075～0078；计划 §10；[本轮实施顺序](../../../reports/core/m1-experiment-plan.md)
 
+本页描述已交付的 Native/Sim profile。后续按 [ADR-0083](../../../docs/adr/0083-general-foundation-before-platform-experiments.md)先完成基础通用能力，再独立安排 ESP32-S3、Linux 等所选平台实验；本 profile 的现有结果不代表后续平台、设备或实际 OS 集成已经通过。
+
 `fixture_schema=1` / `profile=m1-experiment` 是独立于 P6 `m1-normal` 的受控故障运行格式。JSON 在构建时校验并编译成顺序 C++ 调用，Core 和运行中的 simulator 不解析外部脚本。原 schema 0 仍是历史完整草案，不直接接受；本 profile 只接受已经实现的闭集动作。
 
 初始六个 `HARNESS.S1.*` 用例验证运行设施：未提交创建丢失、已持久创建保留、UNKNOWN 已存写入重试、外部效果与丢失回执跨重启保留、完成结果持久后不重复执行、缺失记录与权威未执行的区分。它们不代表 E1～E4 任一完整实验通过；另有活动执行端断电后清理的 HARNESS 回归；E2 F0～F14 原清单及附加闭环场景已加入；完整 E1 的场景见 ADR-0077；E3 见 ADR-0078，E4 Native/Sim 组合与版本证据见 ADR-0079；ESP32 仍须单独复核。

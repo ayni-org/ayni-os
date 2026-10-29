@@ -1,5 +1,7 @@
 # 公开 SDK 与接入示例
 
+这些是公开机制的接入与应用样例，不要求每个宿主提供相同设备或业务。基础能力先通过 Native/Sim 与软件实现验证，再按[基础能力与实验计划](../docs/architecture/foundation-and-experiment-plan.md)开展 ESP32-S3、Linux 等实际平台实验；`new_hardware` 示例不表示所有部署都须安装外设。
+
 `ayni/ayni.hpp` 是源码级 C++17 facade：无异常、RTTI，C ABI 仍是接口权威。`initialized<T>()` 初始化 struct_size；`Kernel` 支持自有 aligned arena 或 `create_in` 外部 arena。`submit_raw` 保留 C 的 kind/Body 配对前置条件，不是静态类型映射。
 
 正常收尾是 `drain(正步数, progress)` → `close()`。progress 在 owner 的 step 外推进异步服务；close 在 CONFIGURING/STOPPED 调用创建时提供的 quiesce，确认所有生产者已从最后一次 post 返回，再 destroy/free。hook 必须有界且不抛异常，未就绪返回 BUSY。保留 Host/Provider/context 和外部 arena，直到 close 成功；wrapper 的防御性 arena 保留不能延长它们的生命周期。move 不移动 hook context，也不允许覆盖一个活 Kernel。

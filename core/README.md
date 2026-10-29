@@ -30,6 +30,8 @@ kernel → work → {authority, resources, knowledge} → catalog → durability
 
 模块在有源文件时才建立构建目标，避免空目标给人“已实现”的印象。`foundation` 承载 ID、时间、有界容器等内部类型；对外状态码仍以公开头文件为唯一来源，不在 Core 内复制一份。
 
+后续按[基础能力与实验计划](../docs/architecture/foundation-and-experiment-plan.md)先完成通用机制，再做 ESP32-S3、Linux 等平台实验。Core 不要求宿主提供语音、视觉、运动或物理设备树；已有许可与停止机制约束启用的相应物理执行能力，普通取消/关闭仍属通用生命周期。助理业务保持在应用层，本次不改变 Core 行为或代码。
+
 ## 内存
 
 Core 不自行分配内存（ADR-0014）。调用方先用 `ayni_kernel_memory_requirements` 查询大小与对齐，再把内存块交给 `ayni_create`；Native 组合根从堆分配，ESP32 组合根从内部 RAM 分配。

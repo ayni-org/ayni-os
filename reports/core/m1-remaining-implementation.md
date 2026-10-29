@@ -1,5 +1,7 @@
 # M1 剩余能力实施顺序
 
+> **历史范围说明（2026-10-29）**：本页保留当时工作包、授权和验证证据。当前按[基础能力实施与平台实验计划](../../docs/architecture/foundation-and-experiment-plan.md)先完成通用 AgentOS 基础，再安排 ESP32-S3、Linux 等实验；原阶段设备链不再作为所有部署前置，本说明不改写已有结果。
+
 依据用户 2026-10-25 批准的计划与 [ADR-0042](../../docs/adr/0042-runtime-limits-and-direct-model-access.md)；2026-10-26 用户在 [M1 详细实施计划](m1-detailed-plan.md) 中选定先做文本纵切，顺序按 ADR-0042 决定 11 分为 P0～P6，原第 4～12 行重排如下。当前交接入口仍为 [m1-progress.md](m1-progress.md)。每行是可审查的完整能力，前置清理/编码/API/测试用独立提交组织；不因正常测试通过宣称专项验收完成。
 
 | 顺序 | 阶段 | 能力 | 实施及验收边界 | 状态 |

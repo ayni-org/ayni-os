@@ -1,5 +1,7 @@
 # M1 正常集成报告
 
+> **历史范围说明（2026-10-29）**：本页保留当时工作包、授权和验证证据。当前按[基础能力实施与平台实验计划](../../docs/architecture/foundation-and-experiment-plan.md)先完成通用 AgentOS 基础，再安排 ESP32-S3、Linux 等实验；原阶段设备链不再作为所有部署前置，本说明不改写已有结果。
+
 - **日期**：2026-10-27
 - **范围**：P0～P6 的 Native 正常实现与集成证据；ABI 0.45 / storage schema 2
 - **证据入口**：正常夹具 [#90](https://github.com/RobotSe7en/ayni/pull/90)、Native 测量 [#91](https://github.com/RobotSe7en/ayni/pull/91)、多节点正常子集 [#92](https://github.com/RobotSe7en/ayni/pull/92)、统一收尾 [#93](https://github.com/RobotSe7en/ayni/pull/93)

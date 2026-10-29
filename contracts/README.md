@@ -2,6 +2,8 @@
 
 本目录是 Ayni 领域语义、Host/Provider 接口、线协议与持久化格式的规范来源（计划 §3.1、`MA-017`）。在 IDL 选定之前（ADR-0009），契约以 Markdown 条款加可编译的 C 头文件草案表达（ADR-0013）。
 
+按 [ADR-0083](../docs/adr/0083-general-foundation-before-platform-experiments.md)，Ayni 的基础通用能力先于 ESP32-S3、Linux 等平台实验。各宿主按公开契约选择能力，不要求语音、视觉、运动或助理应用；产品语义约束采用对应应用的部署，物理许可/停止条款约束声明相应执行能力的部署。通用生命周期、授权、私有性、持久与未知结果等不变量保持；启用能力的适用条款不因实验可选而豁免。实施及实验范围见[现行计划](../docs/architecture/foundation-and-experiment-plan.md)。
+
 ## 目录
 
 | 目录 | 内容 | 版本域 |
