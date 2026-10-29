@@ -6,6 +6,8 @@
 
 ## 1 入口清理
 
+首包实现、公共头/版本/未知输入验证和独立审查见 [#105](https://github.com/RobotSe7en/ayni/pull/105)。
+
 删除四份已替代草案与 Provider 旧路径，消费者统一正式接口；未知值测试保留覆盖但不依赖草案常量。Host trace 草案有独立规划用途，继续留在 draft。ABI 0.46，正式结构布局和 schema 2 不变。
 
 ## 2 Core 存储统一
