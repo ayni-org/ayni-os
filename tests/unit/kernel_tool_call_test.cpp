@@ -5,6 +5,7 @@
 #include "work_node.h"
 
 #include <ayni/calls.h>
+#include <ayni/values.hpp>
 
 namespace {
 using namespace ayni::test;
@@ -171,7 +172,7 @@ class ToolCalls : public ::testing::Test {
                                                                         : AYNI_CALL_CANCEL_REQUEST,
                                          0,
                                          30000,
-                                         AYNI_CALL_INPUT_FIELDS_TEXT,
+                                         AYNI_CALL_INPUT_VALUE,
                                          result_format,
                                          input_limit,
                                          result_limit,
@@ -180,17 +181,90 @@ class ToolCalls : public ::testing::Test {
                                          form == AYNI_CALL_SUBSCRIPTION ? &subscription : nullptr};
         };
         // The planner's own result bound is below the 512-byte result lane.
-        const ayni_call_capability_v1 planner{
+        ayni_call_capability_v1 planner{
             sizeof(ayni_call_capability_v1), 1, text("planner"),
-            contract(AYNI_CALL_MODEL, AYNI_CALL_RESULT_TOOL_CALLS, 64, 128)};
-        const ayni_call_capability_v1 offers[] = {
+            contract(AYNI_CALL_MODEL, AYNI_CALL_RESULT_TOOL_CALLS, 88, typed_tool ? 512U : 192U),
+            nullptr};
+        ayni_call_capability_v1 offers[] = {
             {sizeof(ayni_call_capability_v1), 1, text("timer.set"),
-             contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32)},
+             contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32), nullptr},
             {sizeof(ayni_call_capability_v1), 1, text("lamp.off"),
-             contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32)},
+             contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32), nullptr},
             {sizeof(ayni_call_capability_v1), 1, text("lamp.watch"),
-             contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32, AYNI_CALL_SUBSCRIPTION)},
+             contract(AYNI_CALL_TOOL, AYNI_CALL_RESULT_TEXT, 16, 32, AYNI_CALL_SUBSCRIPTION),
+             nullptr},
         };
+        std::array<ayni_schema_node_v1, 5> business_nodes{};
+        business_nodes[0].kind = AYNI_VALUE_OBJECT;
+        business_nodes[0].subtree_end = 5;
+        const std::array<ayni_string_v1, 4> names{text("minutes"), text("mode"), text("target"),
+                                                  text("text")};
+        for (uint32_t at = 1; at < business_nodes.size(); ++at) {
+            business_nodes[at].field_id = at;
+            business_nodes[at].subtree_end = at + 1U;
+            business_nodes[at].flags = AYNI_SCHEMA_REQUIRED;
+            business_nodes[at].name = names[at - 1U];
+        }
+        business_nodes[1].kind = AYNI_VALUE_I64;
+        business_nodes[1].unit = text("minute");
+        business_nodes[1].min_i64 = 1;
+        business_nodes[1].max_i64 = 120;
+        business_nodes[2].kind = AYNI_VALUE_ENUM;
+        business_nodes[2].choice_count = 2;
+        business_nodes[2].choices = modes;
+        business_nodes[3].kind = AYNI_VALUE_IDENTIFIER;
+        business_nodes[3].choice_count = 2;
+        business_nodes[3].choices = targets;
+        business_nodes[4].kind = AYNI_VALUE_TEXT;
+        business_nodes[4].max_count = 16;
+        ayni_value_node_v1 default_node{};
+        default_node.kind = AYNI_VALUE_TEXT;
+        default_node.subtree_end = 1;
+        default_node.value.text = text("tea");
+        const ayni_value_v1 default_value{&default_node, 1};
+        if (default_body) {
+            business_nodes[4].flags = 0;
+            business_nodes[4].default_value = &default_value;
+        }
+        ayni_schema_node_v1 result_node{};
+        result_node.kind = AYNI_VALUE_TEXT;
+        result_node.subtree_end = 1;
+        result_node.max_count = 32;
+        std::array<ayni_authority_projection_v1, 3> paths{};
+        for (uint32_t at = 0; at < paths.size(); ++at) {
+            paths[at].field_id = at + 1U;
+            paths[at].path_count = 1;
+            paths[at].path[0] = at + 1U;
+        }
+        paths[0].unit = text("minute");
+        const ayni_business_contract_v1 business{
+            {business_nodes.data(), 5}, {&result_node, 1}, 3, 0, paths.data()};
+        offers[0].contract.input_text_limit = typed_input_limit;
+        offers[0].business = &business;
+        std::array<ayni_schema_node_v1, 2> planner_schema{};
+        planner_schema[0].kind = planner_schema[1].kind = AYNI_VALUE_TEXT;
+        planner_schema[0].subtree_end = planner_schema[1].subtree_end = 1;
+        planner_schema[0].max_count = 64;
+        planner_schema[1].max_count = planner.contract.result_text_limit;
+        const ayni_business_contract_v1 planner_business{
+            {planner_schema.data(), 1}, {&planner_schema[1], 1}, 0, 0, nullptr};
+        planner.business = &planner_business;
+        std::array<ayni_schema_node_v1, 2> lamp_schema{};
+        lamp_schema[0].kind = lamp_schema[1].kind = AYNI_VALUE_TEXT;
+        lamp_schema[0].subtree_end = lamp_schema[1].subtree_end = 1;
+        lamp_schema[0].max_count = 16;
+        lamp_schema[1].max_count = 32;
+        const ayni_business_contract_v1 lamp_business{
+            {lamp_schema.data(), 1}, {&lamp_schema[1], 1}, 0, 0, nullptr};
+        offers[1].contract.input_text_limit = offers[2].contract.input_text_limit = 40;
+        offers[1].business = offers[2].business = &lamp_business;
+        if (typed_tool) {
+            offers[0].contract.input_format = AYNI_CALL_INPUT_VALUE;
+            offers[0].contract.result_format = AYNI_CALL_RESULT_VALUE;
+            offers[0].contract.input_text_limit = typed_input_limit;
+            offers[0].contract.result_text_limit = 64;
+            offers[0].business = &business;
+        }
         ASSERT_EQ(ayni_register_call_capability(kernel, &planner), AYNI_OK);
         for (const auto &offer : offers) {
             ASSERT_EQ(ayni_register_call_capability(kernel, &offer), AYNI_OK);
@@ -293,6 +367,14 @@ class ToolCalls : public ::testing::Test {
                      {},
                      request->tool_context,
                      request->tool};
+        if (request->value.node_count != 0U) {
+            for (uint32_t at = 1; at < request->value.node_count; ++at) {
+                const auto &node = request->value.nodes[at];
+                if (node.field_id == 4U && node.kind == AYNI_VALUE_TEXT) {
+                    call.text = string_of(node.value.text);
+                }
+            }
+        }
         for (uint32_t at = 0; at < request->arguments.field_count; ++at) {
             const auto &field = request->arguments.fields[at];
             call.fields.push_back(field.field_id);
@@ -372,14 +454,21 @@ class ToolCalls : public ::testing::Test {
         plan.struct_size = sizeof(plan);
         const auto read = snapshot.call_result(snapshot.call_context, text("plan"), &plan);
         if (read == AYNI_NOT_FOUND) {
-            const ayni_call_request_v1 request{sizeof(request),
-                                               AYNI_POLICY_REQUEST_MODEL,
-                                               1,
-                                               0,
-                                               text("plan"),
-                                               text("planner"),
-                                               {sizeof(ayni_scope_v1), 0, nullptr},
-                                               text("set a tea timer")};
+            ayni::ValueBuilder<1> input;
+            input.text(0, text("set a tea timer"));
+            ayni_call_request_v1 request{sizeof(request),
+                                         AYNI_POLICY_REQUEST_MODEL,
+                                         1,
+                                         0,
+                                         text("plan"),
+                                         text("planner"),
+                                         {},
+                                         {},
+                                         {}};
+            const auto built = input.finish(request.value);
+            if (built != AYNI_OK) {
+                return built;
+            }
             return output.request_call(output.call_context, &request);
         }
         if (read != AYNI_OK) {
@@ -396,23 +485,41 @@ class ToolCalls : public ::testing::Test {
         EXPECT_EQ(snapshot.call_tool(snapshot.call_context, text("plan"), plan.tool_call_count,
                                      &proposed),
                   AYNI_NOT_FOUND);
+        if (typed_tool) {
+            // ADR-0084: a successful public read overwrites stale tagged payload fields.
+            proposed.call.input_reserved = 99;
+            proposed.call.arguments.field_count = 1;
+            proposed.call.text = text("old");
+        }
         const auto status = snapshot.call_tool(snapshot.call_context, text("plan"), 0, &proposed);
         if (status != AYNI_OK) {
             return status;
         }
+        if (typed_tool) {
+            EXPECT_EQ(proposed.call.input_reserved, 0U);
+            EXPECT_EQ(proposed.call.arguments.field_count, 0U);
+            EXPECT_EQ(proposed.call.text.size, 0U);
+            uint32_t bytes = 0;
+            EXPECT_EQ(ayni_tool_calls_measure(&proposed.call, 1, &bytes), AYNI_OK);
+        }
         proposal_binding = string_of(proposed.call.binding_id);
-        proposal_fields = proposed.call.arguments.field_count;
+        proposal_fields = proposed.call.input.value.node_count - 1U;
+        proposal_protocol = string_of(proposed.call.protocol_id);
         if (hold_after_plan) {
             return AYNI_UNSUPPORTED; // Holds the Task with its call retained.
         }
-        const ayni_call_request_v1 request{sizeof(request),
-                                           AYNI_POLICY_REQUEST_CALL,
-                                           proposed.call.binding_version,
-                                           0,
-                                           text("act"),
-                                           proposed.call.binding_id,
-                                           proposed.call.arguments,
-                                           proposed.call.text};
+        ayni_call_request_v1 request{sizeof(request),
+                                     AYNI_POLICY_REQUEST_CALL,
+                                     proposed.call.binding_version,
+                                     0,
+                                     text("act"),
+                                     proposed.call.binding_id,
+                                     {},
+                                     {},
+                                     proposed.call.input.value};
+        if (proposed.call.input_kind == AYNI_TOOL_INPUT_VALUE) {
+            request.value = proposed.call.input.value;
+        }
         return output.request_call(output.call_context, &request);
     }
 
@@ -444,21 +551,29 @@ class ToolCalls : public ::testing::Test {
     }
     // One proposal with every timer field; the test adjusts it before posting.
     struct Proposal {
-        ayni_string_v1 mode = text("quiet");
-        ayni_string_v1 target = text("local.timer");
-        std::array<ayni_scope_field_v1, 3> fields{};
+        std::array<ayni_value_node_v1, 5> nodes{};
         ayni_tool_call_v1 call{};
         Proposal() {
-            fields[0] = {sizeof(ayni_scope_field_v1), minutes_field, integers(10, 10)};
-            fields[1] = {sizeof(ayni_scope_field_v1), mode_field,
-                         tokens(AYNI_AUTHORITY_ENUM, &mode, 1)};
-            fields[2] = {sizeof(ayni_scope_field_v1), target_field,
-                         tokens(AYNI_AUTHORITY_IDENTIFIER, &target, 1)};
-            call = {sizeof(call),
-                    1,
-                    text("timer"),
-                    {sizeof(ayni_scope_v1), 3, fields.data()},
-                    text("tea")};
+            nodes[0].kind = AYNI_VALUE_OBJECT;
+            nodes[0].subtree_end = static_cast<uint32_t>(nodes.size());
+            for (uint32_t at = 1; at < nodes.size(); ++at) {
+                nodes[at].field_id = at;
+                nodes[at].subtree_end = at + 1;
+            }
+            nodes[1].kind = AYNI_VALUE_I64;
+            nodes[1].value.integer = 10;
+            nodes[2].kind = AYNI_VALUE_ENUM;
+            nodes[2].value.text = text("quiet");
+            nodes[3].kind = AYNI_VALUE_IDENTIFIER;
+            nodes[3].value.text = text("local.timer");
+            nodes[4].kind = AYNI_VALUE_TEXT;
+            nodes[4].value.text = text("tea");
+            call.struct_size = sizeof(call);
+            call.binding_version = 1;
+            call.binding_id = text("timer");
+            call.input_kind = AYNI_TOOL_INPUT_VALUE;
+            call.protocol_id = text("call_fixture");
+            call.input.value = {nodes.data(), static_cast<uint32_t>(nodes.size())};
         }
     };
     ayni_provider_result_v1 completed(std::size_t at, const ayni_tool_call_v1 *calls,
@@ -480,6 +595,10 @@ class ToolCalls : public ::testing::Test {
         return info;
     }
 
+    bool typed_tool = false;
+    bool default_body = false;
+    uint32_t typed_input_limit = 256;
+    std::string proposal_protocol;
     WorkNode work;
     // The lamp is listed but its Goal never asks for it: it is not offered.
     std::vector<ayni_tool_ref_v1> listed{{text("timer"), 1, 0}, {text("lamp"), 1, 0}};
@@ -492,6 +611,121 @@ class ToolCalls : public ::testing::Test {
     bool hold_after_plan = false;
 };
 
+class NamedToolCalls : public ToolCalls {
+  protected:
+    void SetUp() override {
+        typed_tool = true;
+        ToolCalls::SetUp();
+    }
+    void post_named(ayni_string_v1 number, ayni_string_v1 field) {
+        std::array<ayni_argument_node_v1, 5> nodes{};
+        nodes[0].kind = AYNI_ARGUMENT_OBJECT;
+        nodes[0].subtree_end = 5;
+        for (uint32_t at = 1; at < nodes.size(); ++at) {
+            nodes[at].subtree_end = at + 1U;
+            nodes[at].kind = AYNI_ARGUMENT_STRING;
+        }
+        nodes[1].name = text("target");
+        nodes[1].value.text = text("local.timer");
+        nodes[2].kind = AYNI_ARGUMENT_NUMBER;
+        nodes[2].name = field;
+        nodes[2].value.text = number;
+        nodes[3].name = text("mode");
+        nodes[3].value.text = text("quiet");
+        nodes[4].name = text("text");
+        nodes[4].value.text = text("tea");
+        ayni_tool_call_v1 proposal{};
+        proposal.struct_size = sizeof(proposal);
+        proposal.binding_version = 1;
+        proposal.binding_id = text("timer");
+        proposal.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+        proposal.protocol_id = text("call_Original123");
+        const uint32_t count = default_body ? 4U : static_cast<uint32_t>(nodes.size());
+        nodes[0].subtree_end = count;
+        proposal.input.arguments = {nodes.data(), count};
+        const auto result = completed(0, &proposal, 1);
+        ASSERT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_OK);
+        pending[0].ended = true;
+    }
+};
+
+// ADR-0084/0085: the worker's named tree is copied, then the owner resolves the
+// original Schema before the strategy submits the canonical native value.
+TEST_F(NamedToolCalls, named_receipt_keeps_protocol_id_and_dispatches_the_same_normalized_values) {
+    const auto goal = create();
+    pump(20);
+    ASSERT_EQ(pending.size(), 1U);
+    char number[] = "10";
+    post_named({number, 2}, text("minutes"));
+    number[0] = '9';
+    pump(20);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(proposal_protocol, "call_Original123");
+    EXPECT_EQ(pending[1].integers, std::vector<int64_t>{10});
+    EXPECT_EQ(pending[1].text, "tea");
+    ayni_value_node_v1 node{};
+    node.kind = AYNI_VALUE_TEXT;
+    node.subtree_end = 1;
+    node.value.text = text("set");
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.attempt = pending[1].attempt;
+    result.outcome = AYNI_CALL_COMPLETED;
+    result.effect = AYNI_CALL_EFFECT_COMPLETE;
+    result.value = {&node, 1};
+    ASSERT_EQ(ayni_provider_post(pending[1].completion, &result), AYNI_OK);
+    pending[1].ended = true;
+    pump(20);
+    EXPECT_EQ(work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
+}
+
+// ADR-0084: normalized proposal and direct request share the capability byte
+// budget; omitted defaults still consume the complete portable input size.
+class ToolDefaultLimit : public NamedToolCalls, public ::testing::WithParamInterface<uint32_t> {
+  protected:
+    void SetUp() override {
+        default_body = true;
+        typed_input_limit = GetParam();
+        NamedToolCalls::SetUp();
+    }
+};
+TEST_P(ToolDefaultLimit, default_expansion_obeys_the_tools_own_input_bound) {
+    const auto goal = create();
+    pump(20);
+    ASSERT_EQ(pending.size(), 1U);
+    post_named(text("10"), text("minutes"));
+    pump(20);
+    constexpr uint32_t complete_input_bytes = 107;
+    if (GetParam() == complete_input_bytes) {
+        ASSERT_EQ(pending.size(), 2U);
+        EXPECT_EQ(pending[1].text, "tea");
+        EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
+    } else {
+        EXPECT_EQ(pending.size(), 1U);
+        const auto task = work.task(work.goal(goal).last_task_id);
+        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
+        EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
+        EXPECT_EQ(call_info(task.logical_call_id).reason, AYNI_REASON_PROVIDER_RESULT);
+    }
+}
+INSTANTIATE_TEST_SUITE_P(Bytes, ToolDefaultLimit, ::testing::Values(107U, 106U));
+
+// ADR-0084: a valid source shape is not a valid business input. Schema failure
+// after successful post consumes the released borrow and retains UNKNOWN.
+TEST_F(NamedToolCalls, integer_schema_refuses_exponent_lexeme_without_dispatching_the_tool) {
+    const auto goal = create();
+    pump(20);
+    ASSERT_EQ(pending.size(), 1U);
+    post_named(text("1e1"), text("minutes"));
+    pump(20);
+    EXPECT_EQ(pending.size(), 1U);
+    const auto task = work.task(work.goal(goal).last_task_id);
+    EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
+    const auto info = call_info(task.logical_call_id);
+    EXPECT_EQ(info.outcome, AYNI_CALL_ABANDONED);
+    EXPECT_EQ(info.reason, AYNI_REASON_PROVIDER_RESULT);
+}
+
 TEST_F(ToolCalls, model_call_is_offered_only_listed_tools_within_the_goal_ceiling) {
     create();
     pump(20);
@@ -501,7 +735,7 @@ TEST_F(ToolCalls, model_call_is_offered_only_listed_tools_within_the_goal_ceilin
     const auto &tool = pending[0].tools[0];
     EXPECT_EQ(tool.binding, "timer");
     EXPECT_EQ(tool.capability, "timer.set");
-    EXPECT_EQ(tool.text_limit, 16U);
+    EXPECT_EQ(tool.text_limit, 256U);
     ASSERT_EQ(tool.ids, (std::vector<uint32_t>{minutes_field, mode_field, target_field}));
     EXPECT_EQ(tool.usages[2], AYNI_AUTHORITY_EXECUTION_TARGET);
     EXPECT_EQ(tool.ranges[0], std::make_pair(int64_t{1}, int64_t{30}));
@@ -527,7 +761,7 @@ TEST_F(ToolCalls, strategy_requests_a_proposed_call_through_the_ordinary_checks)
     EXPECT_EQ(planned.tool_call_count, 1U);
     EXPECT_EQ(planned.text.size, 0U);
     EXPECT_EQ(proposal_binding, "timer");
-    EXPECT_EQ(proposal_fields, 3U);
+    EXPECT_EQ(proposal_fields, 4U);
     const auto plan = call_info(planned.logical_call_id);
     EXPECT_EQ(plan.tool_call_count, 1U);
     EXPECT_EQ(plan.result_bytes, 0U);
@@ -575,15 +809,18 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
     result = completed(0, nullptr, 1);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);
     // Two calls fit the lane but not the planner's own result bound.
-    const std::array<ayni_tool_call_v1, 2> two{{proposal.call, proposal.call}};
+    std::array<ayni_tool_call_v1, 2> two{{proposal.call, proposal.call}};
+    two[1].protocol_id = text("call_two");
     result = completed(0, two.data(), 2);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_CAPACITY_EXCEEDED);
-    proposal.fields[0].allowed.values.integer = {10, 20};
+    proposal.nodes[1].kind = AYNI_VALUE_BOOL;
+    proposal.nodes[1].value.boolean = 2;
     result = completed(0, &proposal.call, 1);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);
     pump(5);
     EXPECT_EQ(planned.outcome, 0U);
-    proposal.fields[0].allowed.values.integer = {10, 10};
+    proposal.nodes[1].kind = AYNI_VALUE_I64;
+    proposal.nodes[1].value.integer = 10;
     ASSERT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_OK);
     pending[0].ended = true;
     pump(20);
@@ -595,15 +832,15 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
 // UNKNOWN and the Task is held like any other unknown call.
 TEST_F(ToolCalls, unoffered_tools_and_values_outside_the_offer_end_unknown) {
     const std::vector<std::function<void(Proposal &)>> breaks = {
+        [](Proposal &p) { p.call.binding_id = text("lamp"); },
+        [](Proposal &p) { p.nodes[1].value.integer = 45; },
+        [](Proposal &p) { p.nodes[2].value.text = text("loud"); },
+        [](Proposal &p) { p.nodes[3].value.text = text("other.timer"); },
         [](Proposal &p) {
-            p.call.binding_id = text("lamp");
-            p.call.arguments.field_count = 0;
+            p.call.input.value.node_count = 4;
+            p.nodes[0].subtree_end = 4;
         },
-        [](Proposal &p) { p.fields[0].allowed.values.integer = {45, 45}; },
-        [](Proposal &p) { p.mode = text("loud"); },
-        [](Proposal &p) { p.target = text("other.timer"); },
-        [](Proposal &p) { p.call.arguments.field_count = 2; },
-        [](Proposal &p) { p.call.text = text("seventeen bytes!!"); },
+        [](Proposal &p) { p.nodes[4].value.text = text("seventeen bytes!!"); },
         [](Proposal &p) { p.call.binding_version = 2; },
     };
     for (std::size_t at = 0; at < breaks.size(); ++at) {

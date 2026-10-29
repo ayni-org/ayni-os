@@ -1,5 +1,6 @@
 // ADR-0056: caller-owned, portable values. No external persistence is implied.
 #include <ayni/strategies/builtin.h>
+#include <ayni/values.hpp>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <string>
@@ -146,9 +147,15 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
         output.checkpoint_capacity = state_bytes_max;
         output.call_context = &requests[at];
         output.request_call = [](void *ctx, const ayni_call_request_v1 *request) {
+            ayni::ValueReader value;
+            ayni_string_v1 body{};
+            if (value.read(request->value) != AYNI_OK ||
+                !ayni::ValueReader::text(value.field(AYNI_MODEL_BODY_FIELD_ID), body)) {
+                return AYNI_INVALID_ARGUMENT;
+            }
             *static_cast<std::string *>(ctx) =
                 std::string(request->step_key.data, request->step_key.size) +
-                std::string(request->text.data, request->text.size);
+                std::string(body.data, body.size);
             return AYNI_OK;
         };
         ASSERT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_OK);
@@ -211,7 +218,13 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
         output.checkpoint_capacity = state_bytes_max;
         output.call_context = &body.bytes;
         output.request_call = [](void *ctx, const ayni_call_request_v1 *r) {
-            *static_cast<std::string *>(ctx) = std::string(r->text.data, r->text.size);
+            ayni::ValueReader value;
+            ayni_string_v1 model_body{};
+            if (value.read(r->value) != AYNI_OK ||
+                !ayni::ValueReader::text(value.field(AYNI_MODEL_BODY_FIELD_ID), model_body)) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            *static_cast<std::string *>(ctx) = std::string(model_body.data, model_body.size);
             return AYNI_OK;
         };
         auto descriptor = loop.describe();

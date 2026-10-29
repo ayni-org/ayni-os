@@ -30,7 +30,9 @@ constexpr uint32_t max_owner_steps = 100000;
 constexpr uint32_t step_items = 1;
 constexpr uint32_t step_budget_us = 1000;
 constexpr uint32_t storage_interval_us = 1;
-constexpr uint64_t host_storage_capacity_bytes = UINT64_C(1073741824);
+// Logical storage headroom for the largest schema-4 snapshot reserve; the Host
+// does not preallocate this many bytes. Actual record writes remain measured.
+constexpr uint64_t host_storage_capacity_bytes = UINT64_C(4294967296);
 constexpr uint32_t encoding_samples = 1000;
 constexpr uint32_t quiet_samples = 1000;
 constexpr uint32_t small_goals = 16;
@@ -107,11 +109,12 @@ class Measurement {
             config_.command_capacity = small_goals;
             config_.call_capacity = 1;
             config_.agent_capacity = 1;
+            config_.business_contract_max_bytes = AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT;
         }
         config_.storage_write_interval_us = storage_interval_us;
         // Maximum capacities reserve room for the largest possible snapshot,
         // even though this workload fills only selected tables. This is a
-        // logical Host storage limit, not a preallocated 1 GiB RAM buffer.
+        // logical Host storage limit, not a preallocated RAM buffer.
         state_->host.set_storage_capacity(host_storage_capacity_bytes);
     }
     ~Measurement() {
@@ -396,6 +399,13 @@ class Measurement {
     // Query the public admission boundary instead of copying Core's buffer
     // selection formula. Other configuration fields stay identical.
     void measure_buffer_requirement() {
+        // Automatic sizing may exceed the unchanged explicit 1-MiB input limit
+        // when complete proofs approach their maxima. Zero records that no legal
+        // explicit choice exists; it is not a claimed admission success.
+        if (storage_min_ > AYNI_STORAGE_BUFFER_BYTES_MAX) {
+            accepted_buffer_min_ = 0;
+            return;
+        }
         uint32_t lower = AYNI_STORAGE_BUFFER_BYTES_MIN;
         uint32_t upper = AYNI_STORAGE_BUFFER_BYTES_MAX;
         auto explicit_config = config_;
@@ -476,6 +486,7 @@ class Measurement {
             << ",\"snapshot_record_bound_bytes\":" << snapshot_record_bound_
             << ",\"snapshot_payload_bound_bytes\":" << snapshot_payload_bound_
             << ",\"storage_min_bytes\":" << storage_min_
+            << ",\"explicit_buffer_supported\":" << (accepted_buffer_min_ != 0 ? "true" : "false")
             << ",\"accepted_buffer_min_bytes\":" << accepted_buffer_min_
             << ",\"batch_bound_bytes\":" << batch_bound_
             << ",\"single_encoded_bytes\":" << encoded_bytes_

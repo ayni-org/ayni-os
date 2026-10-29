@@ -191,6 +191,8 @@
   },
   "core_std_headers": [
     "array",
+    "charconv",
+    "system_error",
     "cstddef",
     "cstdint",
     "cstring",
@@ -204,7 +206,15 @@
     "stddef.h",
     "stdint.h"
   ],
-  "public_cpp_headers": ["new", "optional"],
+  "public_cpp_headers": [
+    "new",
+    "optional",
+    "charconv",
+    "cstring",
+    "limits",
+    "string_view",
+    "system_error"
+  ],
   "header_kinds": {
     "ayni/draft/": "draft",
     "ayni/hosts/": "hosts",
@@ -241,7 +251,11 @@
       "own",
       "external"
     ],
-    "applications": ["api", "own", "external"],
+    "applications": [
+      "api",
+      "own",
+      "external"
+    ],
     "targets": [
       "api",
       "runtime",

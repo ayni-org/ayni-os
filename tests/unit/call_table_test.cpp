@@ -1,6 +1,7 @@
 #include "kernel/service/persistence/work_replay.h"
 // White-box call ownership scenarios, C-CALL-002/008 and ADR-0045.
 // Kernel B2/B4 assembly and Provider I/O are exercised separately.
+#include "text_business_fixture.h"
 #include "work/call/call_records.h"
 
 #include "foundation/kernel_id.h"
@@ -50,17 +51,27 @@ class CallTableTest : public ::testing::Test {
         contract.query = ayni::catalog::QueryAuthority::none;
         contract.cancel = ayni::catalog::CancelMode::request;
         contract.timeout_ms = 30000;
-        contract.input_format = AYNI_CALL_INPUT_FIELDS_TEXT;
+        contract.input_format = AYNI_CALL_INPUT_VALUE;
         contract.result_format = AYNI_CALL_RESULT_TEXT;
-        contract.input_text_limit = 16;
+        contract.input_text_limit = 40;
         contract.result_text_limit = 16;
-        const CallInput input{{sizeof(ayni_scope_v1), 0, nullptr}, {"question", 8}};
-        ASSERT_EQ(encode_call_input({domain.data(), static_cast<uint32_t>(domain.size())}, input,
-                                    contract.input_text_limit, input_bytes.data(),
-                                    static_cast<uint32_t>(input_bytes.size()), input_size),
+        compile_contract();
+        const ayni::test::TextValue input({"question", 8});
+        ASSERT_EQ(encode_business_input({domain.data(), static_cast<uint32_t>(domain.size())},
+                                        contract, input.view(), input_bytes.data(),
+                                        static_cast<uint32_t>(input_bytes.size()), input_size),
                   AYNI_OK);
     }
+    void compile_contract() {
+        uint32_t size = 0;
+        ASSERT_EQ(ayni::catalog::encode_business(
+                      {domain.data(), static_cast<uint32_t>(domain.size())}, contract,
+                      business.definition, proof.data(), static_cast<uint32_t>(proof.size()), size),
+                  AYNI_OK);
+        contract.business_contract = {proof.data(), size};
+    }
     void insert() {
+        compile_contract();
         ASSERT_EQ(calls.insert(identity, contract,
                                {domain.data(), static_cast<uint32_t>(domain.size())},
                                {input_bytes.data(), input_size}, stamp(1), index),
@@ -78,7 +89,9 @@ class CallTableTest : public ::testing::Test {
         write_call_record(record, bytes.data());
         return bytes;
     }
-    static constexpr CallTable::Limits limits{1, 32, 64, 16};
+    static constexpr CallTable::Limits limits{1, 32, 64, 16, 4096};
+    ayni::test::TextBusiness business{16, 16};
+    std::array<uint8_t, 4096> proof{};
     std::vector<uint64_t> storage =
         std::vector<uint64_t>(CallTable::storage_size(limits) / sizeof(uint64_t) + 1);
     CallTable calls{storage.data(), limits};
@@ -118,8 +131,10 @@ TEST_F(CallTableTest, accepted_input_is_owned_and_step_identity_cannot_be_accept
     insert();
     input_bytes.fill(0);
     CallInputView view{};
-    ASSERT_EQ(read_call_input(calls.domain(index), calls.input(index), 16, view), AYNI_OK);
-    EXPECT_EQ(std::string(view.text.data, view.text.size), "question");
+    ASSERT_EQ(read_call_input(calls.domain(index), calls.input(index), calls.contract(index), view),
+              AYNI_OK);
+    EXPECT_EQ(std::string(view.value.nodes[0].value.text.data, view.value.nodes[0].value.text.size),
+              "question");
     uint32_t found = CallTable::no_index;
     EXPECT_TRUE(calls.find_step(identity.task_id, {"echo.once", 9}, found));
     EXPECT_EQ(found, index);
@@ -590,8 +605,9 @@ TEST_F(CallTableTest, late_completion_cannot_refill_erased_call_bodies) {
 TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     contract.category = ayni::catalog::CallClass::model;
     contract.result_format = AYNI_CALL_RESULT_TOOL_CALLS;
-    contract.result_text_limit = 64;
-    constexpr CallTable::Limits tool_limits{1, 32, 64, 64};
+    contract.result_text_limit = 128;
+    compile_contract();
+    constexpr CallTable::Limits tool_limits{1, 32, 64, 128, 4096};
     std::vector<uint64_t> tool_storage(CallTable::storage_size(tool_limits) / sizeof(uint64_t) + 1);
     CallTable table{tool_storage.data(), tool_limits};
     ASSERT_EQ(table.insert(identity, contract,
@@ -603,8 +619,14 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     ASSERT_EQ(table.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
     ASSERT_TRUE(table.claim_dispatch(index, boot, 3));
 
-    const ayni_tool_call_v1 call{
-        sizeof(call), 1, {"lamp.off", 8}, {sizeof(ayni_scope_v1), 0, nullptr}, {"now", 3}};
+    const ayni::test::TextValue input({"now", 3});
+    ayni_tool_call_v1 call{};
+    call.struct_size = sizeof(call);
+    call.binding_version = 1;
+    call.binding_id = {"lamp.off", 8};
+    call.input_kind = AYNI_TOOL_INPUT_VALUE;
+    call.protocol_id = {"t1", 2};
+    call.input.value = input.view();
     uint32_t size = 0;
     ASSERT_EQ(measure_tool_calls(&call, 1, size), AYNI_OK);
     std::vector<uint8_t> list(size);
@@ -674,8 +696,14 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
 
 // A text contract never accepts a tool list, nor a list over its result bound.
 TEST_F(CallTableTest, tool_call_list_needs_its_contract_and_fits_its_bound) {
-    const ayni_tool_call_v1 call{
-        sizeof(call), 1, {"lamp.off", 8}, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
+    const ayni::test::TextValue input({nullptr, 0});
+    ayni_tool_call_v1 call{};
+    call.struct_size = sizeof(call);
+    call.binding_version = 1;
+    call.binding_id = {"lamp.off", 8};
+    call.input_kind = AYNI_TOOL_INPUT_VALUE;
+    call.protocol_id = {"t1", 2};
+    call.input.value = input.view();
     uint32_t size = 0;
     ASSERT_EQ(measure_tool_calls(&call, 1, size), AYNI_OK);
     ASSERT_GT(size, contract.result_text_limit);
@@ -1098,6 +1126,13 @@ TEST_F(CallTableTest, replay_rejects_legal_facts_that_retarget_an_existing_call)
         auto candidate = before;
         candidate.state.latest = stamp(3);
         test.change(candidate);
+        std::array<uint8_t, 4096> candidate_proof{};
+        uint32_t proof_size = 0;
+        ASSERT_EQ(ayni::catalog::encode_business(candidate.domain, candidate.contract,
+                                                 business.definition, candidate_proof.data(),
+                                                 candidate_proof.size(), proof_size),
+                  AYNI_OK);
+        candidate.contract.business_contract = {candidate_proof.data(), proof_size};
         ASSERT_TRUE(CallTable::valid_record(candidate));
         EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(calls.identity(index).operation_id, identity.operation_id);
@@ -1108,10 +1143,9 @@ TEST_F(CallTableTest, replay_rejects_legal_facts_that_retarget_an_existing_call)
     candidate.state.latest = stamp(3);
     std::array<uint8_t, 64> replacement{};
     uint32_t replacement_size = 0;
-    ASSERT_EQ(encode_call_input(before.domain,
-                                {{sizeof(ayni_scope_v1), 0, nullptr}, {"changed", 7}},
-                                contract.input_text_limit, replacement.data(), replacement.size(),
-                                replacement_size),
+    const ayni::test::TextValue changed({"changed", 7});
+    ASSERT_EQ(encode_business_input(before.domain, contract, changed.view(), replacement.data(),
+                                    replacement.size(), replacement_size),
               AYNI_OK);
     candidate.input = {replacement.data(), replacement_size};
     ASSERT_TRUE(CallTable::valid_record(candidate));

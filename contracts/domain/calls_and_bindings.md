@@ -31,7 +31,7 @@
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-CALL-001 | 每个 Capability 声明调用形态、输入/结果 Schema、副作用属性、所需资源、时限与恢复属性；统一入口不接受任意字符串代码或无 Schema 的字典 | 能力以 `{"cmd": "..."}` 的自由字符串执行 | E4 步骤 1；`MA-008` |
+| C-CALL-001 | 每个 Capability 声明调用形态、输入/结果 Schema、副作用属性、所需资源、时限与恢复属性；统一入口按已注册 Schema 解释正文；Shell 仅由可信部署显式授权 | 未注册 Schema/权限的 `{"cmd": "..."}` 直接执行 | E4 步骤 1；`MA-008` |
 | C-CALL-002 | 逻辑调用独立于 I/O 尝试：一个 `logical_call_id` 可以有多个 `(boot_epoch, request_id)` 尝试，结果以尝试身份关联 | 每次重试分配新 `logical_call_id`，调用计数与账本各记一次 | E2 F7；E3 步骤 2 |
 | C-CALL-003 | Host/Provider 的 `submit` 返回成功只表示 I/O 已受理，不表示业务成功；结果经事件回送 | 把 submit 返回 OK 当作提醒已呈现 | E1 步骤 11；`MA-008` |
 | C-CALL-004 | 共同检查点保存步骤版本、绑定、输入摘要、结果引用、已提交进度与未知状态；策略私有检查点只保存算法状态；共同检查点不兼容时 Task 暂停 | 新策略改写共同检查点中的完成条件 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
@@ -54,9 +54,9 @@
 
 ## ABI 0.31 的调用消费
 
-策略在 `decide` 回调中使用 `output.request_call` 提交唯一 REQUEST_CALL/REQUEST_MODEL；sink 立即复制参数与文本，回调返回后失效。当前一个决定只接受一个调用，不能混入其他意图；Task 私有 checkpoint 与逻辑调用受理同批提交。`step_key` 在 Task 内唯一，失败/取消调用也占用有界步骤身份，不能借新失败步骤绕过 `task_step_capacity`。
+策略在 `decide` 回调中使用 `output.request_call` 提交唯一 REQUEST_CALL/REQUEST_MODEL；sink 立即复制完整规范业务值，回调返回后失效。当前一个决定只接受一个调用，不能混入其他意图；Task 私有 checkpoint 与逻辑调用受理同批提交。`step_key` 在 Task 内唯一，失败/取消调用也占用有界步骤身份，不能借新失败步骤绕过 `task_step_capacity`。
 
-CallRecord 保存原始有限参数域、规范输入、确切 Capability/Provider/Binding 版本和 operation。资源一次取得后先持久 PREPARED，再持久 DISPATCHING；最后复核 Task、授权、撤销 Gate、参数、资源健康及期限。Provider 回调只借用输入至返回，工作线程只保留自有副本和完成目标。模型次数在受理时增加一次；查询对账不增加执行次数。
+CallRecord 保存原始授权域、完整业务/执行契约证明、规范输入、确切 Capability/Provider/Binding 版本和 operation。资源一次取得后先持久 PREPARED，再持久 DISPATCHING；最后复核 Task、授权、撤销 Gate、参数、资源健康及期限。Provider 回调只借用输入至返回，工作线程只保留自有副本和完成目标。模型次数在受理时增加一次；查询对账不增加执行次数。
 
 终态结果、成功步骤及仍等待的 Task 进度在同一 B4 发布；正文须等结果批次持久后才可由 `ayni_copy_call_result` 对外复制。策略只能读取该 Task 的结果；管理查询为 owner 线程的本机受管 API。查询信息的 `requires_seq` 标出未持久事实，不是呈现许可。UNKNOWN 或未知影响会阻止 Task/Goal/调用记录回收。
 
@@ -81,7 +81,7 @@ GoalType 以 `tools` 声明最多 8 个可提议的工具 Binding（精确 ID �
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
 | C-CALL-014 | 模型调用只能提议本 Task 可用的工具：GoalType 允许列表中已被 Goal 授权需求覆盖的 Binding，取值在该需求的上限内；回执中视图之外的工具、取值、路由或超出工具输入上限的正文是无效证据，调用以 `ABANDONED`/`RESULT_UNKNOWN`/`PROVIDER_RESULT` 结束、Task 按未知调用暂停，不交给策略 | Provider 返回未提供的 `lamp`，或 45 分钟超出 Goal 的 30 分钟上限，策略据此执行 | M1 已实现：`ToolCalls.model_call_is_offered_only_listed_tools_within_the_goal_ceiling`、`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`、`ToolCalls.malformed_lists_are_refused_on_post_and_keep_the_borrow`、`ToolAllowList.registration_checks_each_reference`、`ToolStart.start_needs_each_tool_to_be_an_ordinary_tool_binding`；Mock 模型输出失败：`MockTools.unoffered_tool_fails_as_model_output`、`MockTools.body_over_the_tool_limit_fails_as_model_output`、`MockTools.list_over_the_result_limit_fails_as_model_output` |
-| C-CALL-015 | 提议的工具调用不自动执行：策略以新的 REQUEST_CALL 请求它，与任何请求一样经过 Binding、授权、资源和派发屏障；提议列表随调用记录持久，重启后仍可读取 | 收到模型提议后 Kernel 直接派发，或绕过 Grant 检查 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.decoder_rejects_noncanonical_or_truncated_lists` |
+| C-CALL-015 | 提议的工具调用不自动执行：策略以新的 REQUEST_CALL 请求它，与任何请求一样经过 Binding、授权、资源和派发屏障；提议列表随调用记录持久，重启后仍可读取 | 收到模型提议后 Kernel 直接派发，或绕过 Grant 检查 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.persisted_lists_require_exact_framing_and_supported_source_trees` |
 
 ## ABI 0.43 的 Task 订阅（ADR-0063）
 
@@ -92,3 +92,9 @@ SUBSCRIPTION 仅用于 TOOL、非 PHYSICAL、CONFIRMED 取消契约；静态绑�
 Provider 的 submit/renew/cancel 在 owner 线程同步调用且必须有界、不阻塞；只能 post 完成或样本，不能重入 owner API。工作线程持有自有参数副本及原 opening/attempt，任意非 ISR 线程 post 时复制所有短期视图；全部生产者须在 Kernel 销毁前 join。STARTED/RENEWED 独立可靠，必须回显预先请求的 kind/sequence；迟到或关闭后的 ACK 只排空，不复活 gate。Provider 自身必须在有限 valid_until 停止采集，即使续租/关闭丢失。Core 立即拒绝消费不能撤回已外发数据；媒体读、外发、保留仍分别授权。真实采集/硬件在 M3，新的故障/恢复专项仍未执行。
 
 ABI 0.45：Task-scoped 调用结果视图携带原账本 effect（ADR-0066），与所有者查询共用取值属主。CANCELLED 本身不证明无影响；应用仅在影响已知时中止本 round/occurrence，UNKNOWN 保留待处理。通知完成另要求 COMPLETE 呈现证据。正常取消/新代际继续见 `AssistantApplication.paused_analysis_round_is_retained_and_new_generation_continues`；新增故障专项未验证。
+
+## ABI 0.48 业务契约与 Shell
+
+通用值与数值规则见 [业务值契约](business_values.md)，本包不提供旧 fields+text 业务入口。普通 TEXT 也是显式 Schema；请求的旧 arguments/text 布局槽保留为必须零，Provider arguments 仅为 Core 派生的固定控制投影，执行正文唯一来自 value。协议 ID 独立保存，ToolLoop 用原 Call 证明中的字段名打印嵌套请求/结构结果，不从当前目录推断旧结果。
+
+Native `system.shell` 为显式宽权限 ACTION/TOOL，使用正常 Core 授权、资源、持久屏障和异步完成链。固定 cwd 不构成沙箱；完整脚本/管道继承宿主 OS 权限，声明 EGRESS/BILLING、NOT_IDEMPOTENT、QUERY_NONE、CANCEL_REQUEST，不自动重试。配置约束并发、有限运行时间和 stdout/stderr 合计上限；结果以 base64 无损保存字节、独立 exit/signal/status。超时/输出限额不能虚报无效果，进程组取消不等同任意原生代码隔离。正常链证据：`KernelShell.explicit_authority_controls_real_pipeline_and_structured_result_delivery`、`ShellProcess.executes_pipeline_in_configured_directory_and_preserves_exit_and_streams`、`ShellProcess.binary_output_has_explicit_lossless_encoding`。固定模型入口及 Native 部署开关属 AP-03，不据本 Provider 声称已完成。

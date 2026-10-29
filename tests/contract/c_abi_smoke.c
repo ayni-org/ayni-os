@@ -1,11 +1,13 @@
 /* Uses the implemented ABI from strict C99 with caller-provided memory. */
 
+#include <ayni/arguments.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
 #include <ayni/memory.h>
 #include <ayni/resources.h>
 #include <ayni/storage_format.h>
+#include <ayni/values.h>
 
 #include <stdio.h>
 

@@ -7,6 +7,7 @@
 | 文档 | 条款数 | 已实现 |
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 18 |
+| [domain/business_values.md](domain/business_values.md) | 8 | 0 |
 | [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 23 | 3 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 10 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -32,7 +33,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 411 | 146 |
+| 合计 | 419 | 146 |
 
 ## 计划章节 → 契约文档
 
@@ -110,6 +111,7 @@
 | ADR-0072 | host/native_runtime.md |
 | ADR-0075 | fixtures/experiments/README.md |
 | ADR-0082 | host/tool_usage.md |
+| ADR-0084 | domain/business_values.md |
 
 ## 工作包 → 条款
 
@@ -208,7 +210,7 @@
 | C-AUTH-034 | M1 已实现（本地 C ABI 与持久场景）：`GoalReauthorization.parent_does_not_resume_child_and_child_can_then_bind_new_parent`、`GoalReauthorization.preserves_user_pause_policy_failure_steps_and_checkpoint`、`GoalReauthorization.input_frontier_is_goal_local_and_not_resampled_on_retry`、`GoalReauthorization.interval_resume_skips_all_undeveloped_due_occurrences`、`GoalReauthorization.delayed_and_once_goals_keep_their_original_same_boot_schedule`、`GoalReauthorization.zero_requirement_child_gets_explicit_new_admission`、`GoalReauthorization.ordinary_resume_before_reauthorization_preserves_independent_pause_causes`；ADR-0038 |
 | C-CALL-004 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
 | C-CALL-014 | M1 已实现：`ToolCalls.model_call_is_offered_only_listed_tools_within_the_goal_ceiling`、`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`、`ToolCalls.malformed_lists_are_refused_on_post_and_keep_the_borrow`、`ToolAllowList.registration_checks_each_reference`、`ToolStart.start_needs_each_tool_to_be_an_ordinary_tool_binding`；Mock 模型输出失败：`MockTools.unoffered_tool_fails_as_model_output`、`MockTools.body_over_the_tool_limit_fails_as_model_output`、`MockTools.list_over_the_result_limit_fails_as_model_output` |
-| C-CALL-015 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.decoder_rejects_noncanonical_or_truncated_lists` |
+| C-CALL-015 | M1 已实现：`ToolCalls.strategy_requests_a_proposed_call_through_the_ordinary_checks`、`ToolCalls.proposed_calls_survive_restart_with_the_call_row`、`MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`；记录与编码：`CallTableTest.tool_call_list_result_is_retained_and_round_trips_as_v4`、`ToolCallsTest.persisted_lists_require_exact_framing_and_supported_source_trees` |
 | C-COMMIT-001 | M1 已实现（确认持久、同身份重试）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`StorageRecovery.failed_or_unknown_append_retries_without_duplicate_application`、`HostStorage.repeated_batch_identity_keeps_one_copy_and_refuses_changed_bytes`；Native 在同步成功后才确认；C-HOST-010 |
 | C-COMMIT-002 | M1 已实现（工作模型：恢复按序重放每个已存储批次各一次，追加中断电的批次只在完整写入时计入，ADR-0026）：`WorkRecovery.every_stored_prefix_recovers_the_state_after_its_last_batch`、`WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`、`HostStorage.torn_tail_is_dropped_and_overwritten`；E2 F7、F8 |
 | C-COMMIT-004 | M1 已实现（查询标注：对象带 `commit_seq`，`ayni_get_kernel_info` 报告 `durable_seq`，结果未知的追加不计入）：`KernelLifecycle.durable_seq_follows_the_log_read_and_then_the_boot_batch`、`KernelLifecycle.storage_faults_restrict_with_their_reason`、`WorkModel.created_goal_is_applied_at_once_and_not_yet_durable`；`durable_seq` 推进到 Host 已存储的批次，步骤报告也给出它（ADR-0026）：`WorkJournal.result_is_durable_once_the_host_stores_its_batch`、`KernelLifecycle.step_reports_durable_seq`、`KernelFence.durable_seq_never_falls_while_a_fence_reloads`；对外输出的 `requires_seq` 门控随产生对外输出的包；E2 F6、F9；属性测试：每个已释放输出的 seq ≤ 恢复后的 `durable_seq` |

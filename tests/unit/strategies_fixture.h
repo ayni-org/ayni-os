@@ -3,6 +3,8 @@
 #define AYNI_TEST_STRATEGIES_FIXTURE_H
 #include "work_node.h"
 #include <ayni/strategies/builtin.h>
+#include <ayni/values.hpp>
+#include <ayni/values_json.hpp>
 #include <chrono>
 
 namespace ayni::test {
@@ -41,7 +43,7 @@ class StrategiesFixture : public ::testing::Test {
         c.task_capacity = 8;
         c.strategy_capacity = 2;
         c.call_capacity = 24;
-        c.call_input_max_bytes = policies::prompt_bytes_max;
+        c.call_input_max_bytes = policies::prompt_bytes_max + 36;
         c.call_result_max_bytes = 1024;
         c.call_capability_capacity = 3;
         c.capability_capacity = 3;
@@ -99,13 +101,75 @@ class StrategiesFixture : public ::testing::Test {
                               AYNI_CALL_CANCEL_REQUEST,
                               0,
                               1000000,
-                              AYNI_CALL_INPUT_FIELDS_TEXT,
+                              AYNI_CALL_INPUT_VALUE,
                               at == 0 ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-                              policies::prompt_bytes_max,
+                              policies::prompt_bytes_max + 36,
                               1024,
                               model ? 1U : 0U,
                               model ? &slot : nullptr,
                               nullptr};
+            auto &schema = input_schemas[at];
+            schema[0].kind = model ? AYNI_VALUE_OBJECT : AYNI_VALUE_TEXT;
+            schema[0].subtree_end = model ? 2U : 1U;
+            if (model) {
+                schema[1].kind = AYNI_VALUE_TEXT;
+                schema[1].field_id = AYNI_MODEL_BODY_FIELD_ID;
+                schema[1].subtree_end = 2;
+                schema[1].flags = AYNI_SCHEMA_REQUIRED;
+                schema[1].name = text("body");
+                schema[1].max_count = policies::prompt_bytes_max;
+            } else {
+                schema[0].max_count = policies::prompt_bytes_max;
+            }
+            auto &result_schema = result_schemas[at];
+            result_schema.kind = AYNI_VALUE_TEXT;
+            result_schema.subtree_end = 1;
+            result_schema.max_count = 1024;
+            business[at] = {{schema.data(), model ? 2U : 1U}, {&result_schema, 1}, 0, 0, nullptr};
+            if (!model && structured_tool) {
+                auto &input = input_schemas[at];
+                input = {};
+                input[0].kind = AYNI_VALUE_OBJECT;
+                input[0].subtree_end = 4;
+                input[1].kind = AYNI_VALUE_LIST;
+                input[1].field_id = 7;
+                input[1].subtree_end = 4;
+                input[1].flags = AYNI_SCHEMA_REQUIRED;
+                input[1].name = text("items");
+                input[1].min_count = 1;
+                input[1].max_count = 2;
+                input[2].kind = AYNI_VALUE_OBJECT;
+                input[2].subtree_end = 4;
+                input[3].kind = AYNI_VALUE_DECIMAL;
+                input[3].field_id = 3;
+                input[3].subtree_end = 4;
+                input[3].flags = AYNI_SCHEMA_REQUIRED;
+                input[3].name = text("amount");
+                input[3].unit = text("dollar");
+                input[3].max_i64 = 100000;
+                input[3].scale = 2;
+                auto &output = structured_result_schema;
+                output[0].kind = AYNI_VALUE_OBJECT;
+                output[0].subtree_end = 3;
+                output[1].kind = AYNI_VALUE_U64;
+                output[1].field_id = 1;
+                output[1].subtree_end = 2;
+                output[1].flags = AYNI_SCHEMA_REQUIRED;
+                output[1].name = text("total");
+                output[1].max_u64 = UINT64_MAX;
+                output[2].kind = AYNI_VALUE_DECIMAL;
+                output[2].field_id = 2;
+                output[2].subtree_end = 3;
+                output[2].flags = AYNI_SCHEMA_REQUIRED;
+                output[2].name = text("price");
+                output[2].unit = text("dollar");
+                output[2].max_i64 = 100000;
+                output[2].scale = 2;
+                business[at].input = {input.data(), 4};
+                business[at].result = {output.data(), 3};
+                offer.contract.result_format = AYNI_CALL_RESULT_VALUE;
+            }
+            offer.business = &business[at];
             ASSERT_EQ(ayni_register_call_capability(kernel, &offer), AYNI_OK);
         }
         ayni_provider_v1 provider{};
@@ -119,8 +183,30 @@ class StrategiesFixture : public ::testing::Test {
         provider.submit = [](void *context, const ayni_provider_request_v1 *request,
                              ayni_provider_completion_t *completion) {
             auto &self = *static_cast<StrategiesFixture *>(context);
+            const bool model = string_of(request->capability_id) != "echo";
+            std::string copied;
+            if (!model && self.structured_tool) {
+                std::array<char, 1024> bytes{};
+                ayni::json::Writer json(bytes.data(), bytes.size());
+                const auto status =
+                    ayni::json::write_value(json, self.business[2].input, request->value);
+                size_t size = 0;
+                if (status != AYNI_OK || !json.finish(size)) {
+                    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+                }
+                copied.assign(bytes.data(), size);
+            } else {
+                ValueReader reader;
+                ayni_string_v1 body{};
+                if (reader.read(request->value) != AYNI_OK ||
+                    !ValueReader::text(
+                        model ? reader.field(AYNI_MODEL_BODY_FIELD_ID) : reader.root(), body)) {
+                    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+                }
+                copied = string_of(body);
+            }
             self.pending.push_back({request->attempt, completion, string_of(request->capability_id),
-                                    string_of(request->text), request->operation_id, false});
+                                    copied, request->operation_id, false});
             return AYNI_SUBMIT_ACCEPTED;
         };
         provider.cancel = [](void *context, ayni_attempt_ref_v1 attempt) {
@@ -209,10 +295,22 @@ class StrategiesFixture : public ::testing::Test {
         p.ended = true;
     }
     void propose(uint32_t at, uint32_t count = 2, const char *binding = "echo") {
-        const ayni_tool_call_v1 call{sizeof(call), 1, text(binding), empty_scope(),
-                                     text("tool body")};
+        ValueBuilder<1> value;
+        value.text(0, text("tool body"));
+        ayni_tool_call_v1 call{};
+        call.struct_size = sizeof(call);
+        call.binding_version = 1;
+        call.binding_id = text(binding);
+        call.input_kind = AYNI_TOOL_INPUT_VALUE;
+        ASSERT_EQ(value.finish(call.input.value), AYNI_OK);
         std::array<ayni_tool_call_v1, AYNI_CALL_TOOL_COUNT_MAX> tools{};
-        tools.fill(call);
+        std::array<std::string, AYNI_CALL_TOOL_COUNT_MAX> ids{};
+        for (uint32_t index = 0; index < count; ++index) {
+            ids[index] = "fixture_" + std::to_string(at) + "_" + std::to_string(index);
+            tools[index] = call;
+            tools[index].protocol_id = {ids[index].data(),
+                                        static_cast<uint32_t>(ids[index].size())};
+        }
         post(at, {}, AYNI_CALL_COMPLETED, AYNI_OK, tools.data(), count);
         pump();
     }
@@ -238,6 +336,11 @@ class StrategiesFixture : public ::testing::Test {
         ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
         work.node().drain();
     }
+    std::array<std::array<ayni_schema_node_v1, 4>, 3> input_schemas{};
+    std::array<ayni_schema_node_v1, 3> structured_result_schema{};
+    bool structured_tool = false;
+    std::array<ayni_schema_node_v1, 3> result_schemas{};
+    std::array<ayni_business_contract_v1, 3> business{};
     WorkNode work;
     policies::Rules rules;
     policies::ToolLoop loop;

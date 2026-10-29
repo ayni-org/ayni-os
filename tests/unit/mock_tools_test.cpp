@@ -1,7 +1,10 @@
 // Mock tools service, ADR-0054: a deterministic TOOL_CALLS model whose
 // proposal a strategy requests from a second Mock, through public ABI only.
+#include "mock_display_schema.h"
 #include "work_node.h"
 #include <ayni/providers/mock.h>
+#include <ayni/values.hpp>
+#include <limits>
 
 namespace {
 using namespace ayni::test;
@@ -14,10 +17,18 @@ constexpr uint32_t voice_field = 2;
 
 class MockTools : public ::testing::Test {
   protected:
+    MockDisplaySchema display;
+    std::vector<int64_t> received_amounts;
+    static constexpr uint32_t body_field = MockDisplaySchema::body_field;
+    virtual void extend_schema() {}
+    virtual uint32_t model_budget() const { return 256; }
     void SetUp() override {
-        ASSERT_EQ(planner.configure({Variant::a, Service::tools, 1, 128}), AYNI_OK);
+        extend_schema();
+        ASSERT_EQ(planner.configure({Variant::a, Service::tools, 1, model_budget()}), AYNI_OK);
         ASSERT_EQ(planner.describe(planner_desc), AYNI_OK);
-        ASSERT_EQ(presenter.configure({Variant::b, Service::action, 1, 64}), AYNI_OK);
+        ASSERT_EQ(presenter.configure(
+                      {Variant::b, Service::action, 1, 64, {}, &display.business, body_field}),
+                  AYNI_OK);
         ASSERT_EQ(presenter.describe(presenter_desc), AYNI_OK);
         EXPECT_EQ(string_of(planner_desc.provider_id), "mock.a.tools");
         EXPECT_EQ(planner_desc.capabilities->contract.result_format, AYNI_CALL_RESULT_TOOL_CALLS);
@@ -27,8 +38,8 @@ class MockTools : public ::testing::Test {
         config.call_capability_capacity = 2;
         config.provider_capacity = 2;
         config.binding_capacity = 2;
-        config.call_input_max_bytes = 160; // The 128-byte text and its framing.
-        config.call_result_max_bytes = 128;
+        config.call_input_max_bytes = 384; // The 128-byte text and its framing.
+        config.call_result_max_bytes = model_budget();
         config.resource_capacity = 2;
         config.resource_request_capacity = 4;
         work.node().on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
@@ -187,15 +198,23 @@ class MockTools : public ::testing::Test {
         }
         const auto read = snapshot.call_result(snapshot.call_context, text("plan"), &result);
         if (read == AYNI_NOT_FOUND) {
-            const ayni_call_request_v1 request{
-                sizeof(request),
-                AYNI_POLICY_REQUEST_MODEL,
-                1,
-                0,
-                text("plan"),
-                text("mock.plan"),
-                {sizeof(ayni_scope_v1), 0, nullptr},
-                {prompt.data(), static_cast<uint32_t>(prompt.size())}};
+            ayni::ValueBuilder<2> value;
+            value.object();
+            value.text(AYNI_MODEL_BODY_FIELD_ID,
+                       {prompt.data(), static_cast<uint32_t>(prompt.size())});
+            value.end();
+            ayni_call_request_v1 request{sizeof(request),
+                                         AYNI_POLICY_REQUEST_MODEL,
+                                         1,
+                                         0,
+                                         text("plan"),
+                                         text("mock.plan"),
+                                         {},
+                                         {},
+                                         {}};
+            if (value.finish(request.value) != AYNI_OK) {
+                return AYNI_INVALID_ARGUMENT;
+            }
             return output.request_call(output.call_context, &request);
         }
         if (read != AYNI_OK) {
@@ -215,17 +234,35 @@ class MockTools : public ::testing::Test {
             return status;
         }
         const auto &call = proposed.call;
-        proposal = string_of(call.binding_id) + "|" + string_of(call.text);
-        for (uint32_t at = 0; at < call.arguments.field_count; ++at) {
-            const auto &allowed = call.arguments.fields[at].allowed;
-            proposal += "|" + (allowed.kind == AYNI_AUTHORITY_I64
-                                   ? std::to_string(allowed.values.integer.min_inclusive) +
-                                         string_of(allowed.unit)
-                                   : string_of(allowed.values.tokens.members[0]));
+        ayni::ValueReader input;
+        if (input.read(call.input.value) != AYNI_OK) {
+            return AYNI_INVALID_ARGUMENT;
         }
-        const ayni_call_request_v1 request{
-            sizeof(request), AYNI_POLICY_REQUEST_CALL, call.binding_version, 0,
-            text("act"),     call.binding_id,          call.arguments,       call.text};
+        if (const auto *amounts = input.field(3)) {
+            received_amounts.clear();
+            for (uint32_t at = static_cast<uint32_t>(amounts - call.input.value.nodes) + 1U;
+                 at < amounts->subtree_end; ++at) {
+                received_amounts.push_back(call.input.value.nodes[at].value.decimal.coefficient);
+            }
+        }
+        const auto *seconds = input.field(seconds_field);
+        const auto *voice = input.field(voice_field);
+        const auto *body = input.field(body_field);
+        if (!seconds || !voice || !body) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        proposal = string_of(call.binding_id) + "|" + string_of(body->value.text) + "|" +
+                   std::to_string(seconds->value.integer) + "second|" +
+                   string_of(voice->value.text);
+        const ayni_call_request_v1 request{sizeof(request),
+                                           AYNI_POLICY_REQUEST_CALL,
+                                           call.binding_version,
+                                           0,
+                                           text("act"),
+                                           call.binding_id,
+                                           {},
+                                           {},
+                                           call.input.value};
         return output.request_call(output.call_context, &request);
     }
 
@@ -316,5 +353,40 @@ TEST_F(MockTools, list_over_the_result_limit_fails_as_model_output) {
     EXPECT_EQ(planned.outcome, AYNI_CALL_FAILED);
     EXPECT_EQ(planned.status, AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(planned.reason, AYNI_REASON_MODEL_OUTPUT);
+}
+// ADR-0084: the same deterministic adapter transports named JSON for any original
+// Schema; authority is still checked after normalization by Core.
+TEST_F(MockTools, named_json_arguments_use_original_schema_and_current_authority) {
+    EXPECT_EQ(run(R"(call:mock.show json:{"text":"hello","voice":"calm","seconds":7})"),
+              AYNI_TASK_COMPLETED);
+    EXPECT_EQ(acted, "hello");
+    EXPECT_EQ(presenter.executions(), 1U);
+}
+class NestedMockTools : public MockTools {
+    uint32_t model_budget() const override { return 512; }
+    void extend_schema() override {
+        display.input[0].subtree_end = 6;
+        auto &list = display.input[4];
+        list.kind = AYNI_VALUE_LIST;
+        list.field_id = 3;
+        list.subtree_end = 6;
+        list.flags = AYNI_SCHEMA_REQUIRED;
+        list.name = text("amounts");
+        list.max_count = 4;
+        auto &item = display.input[5];
+        item.kind = AYNI_VALUE_DECIMAL;
+        item.subtree_end = 6;
+        item.scale = 2;
+        item.max_i64 = 100;
+        display.business.input.node_count = 6;
+    }
+};
+TEST_F(NestedMockTools, named_json_keeps_nested_list_order_duplicates_and_exact_decimals) {
+    EXPECT_EQ(
+        run(R"(call:mock.show json:{"seconds":7,"voice":"calm","text":"hello","amounts":["0.10","0.20","0.10"]})"),
+        AYNI_TASK_COMPLETED);
+    EXPECT_EQ(acted, "hello");
+    EXPECT_EQ(received_amounts, (std::vector<int64_t>{10, 20, 10}));
+    EXPECT_EQ(presenter.executions(), 1U);
 }
 } // namespace

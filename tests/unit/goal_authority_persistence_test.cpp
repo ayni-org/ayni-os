@@ -951,7 +951,7 @@ void bind_snapshot_grant(Fixture &source, Snapshot &image, uint64_t goal_id) {
     found->body.resize(found->header.length);
     ayni::authority::write_grant_snapshot_record(
         grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
-        KernelTestProbe::work(source.work.kernel()).grants.scope(0), found->body.data());
+        KernelTestProbe::work(source.work.kernel()).grants.scope(0), {}, found->body.data());
     image.metadata.payload_length += found->header.length - old_size;
 }
 
@@ -1076,7 +1076,8 @@ TEST(GoalApprovalPersistence, missing_partner_or_mismatched_exact_command_restri
             // White-box: valid differing lifetime through the real writer.
             ayni::authority::write_grant_record(
                 grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
-                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), {},
+                record.body.data());
         } else if (fault == 5U) {
             batch.records.push_back(batch.records.front());
         } else {
@@ -1276,11 +1277,11 @@ TEST(GoalApprovalPersistence, wider_same_length_bound_scope_is_not_the_approved_
               AYNI_OK);
     const ayni_bytes_v1 changed{bytes.data(), size};
     ayni::authority::write_grant_record(model.grants.at(0), model.grants.source_domain(0), changed,
-                                        batch.records.front().body.data());
+                                        {}, batch.records.front().body.data());
     for (auto &record : image.records) {
         if (record.header.type == ayni::authority::grant_record_type) {
             ayni::authority::write_grant_snapshot_record(
-                model.grants.at(0), model.grants.source_domain(0), changed, record.body.data());
+                model.grants.at(0), model.grants.source_domain(0), changed, {}, record.body.data());
         }
     }
     Fixture restored;
@@ -1306,7 +1307,8 @@ TEST(GoalApprovalPersistence, snapshot_bound_duration_must_match_original_approv
         if (record.header.type == ayni::authority::grant_record_type) {
             ayni::authority::write_grant_snapshot_record(
                 grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
-                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), {},
+                record.body.data());
         }
     }
     Fixture restored;
@@ -1434,7 +1436,8 @@ TEST(GoalApprovalPersistence, old_dependency_must_have_been_active_at_approval) 
         if (id == generic.result.object.id) {
             ayni::authority::write_grant_snapshot_record(
                 terminal, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
-                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), {},
+                record.body.data());
         }
     }
     Fixture compacted;
@@ -2796,7 +2799,8 @@ TEST(GoalReauthorizationPersistence, replacement_cannot_issue_a_same_batch_dedic
         auto grant = model.grants.at(index);
         grant.created_stamp = grant.stamp = source.saved(id).stamp;
         ayni::authority::write_grant_snapshot_record(grant, model.grants.source_domain(index),
-                                                     model.grants.scope(index), row.body.data());
+                                                     model.grants.scope(index), {},
+                                                     row.body.data());
         altered = true;
         break;
     }

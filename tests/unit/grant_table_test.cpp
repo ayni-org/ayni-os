@@ -1,6 +1,8 @@
 #include "authority/grant/grant_records.h"
 #include "authority/grant/grant_table.h"
 #include "authority/scope/scope.h"
+#include "catalog/capability/business_encoding.h"
+#include "catalog/capability/capability_registry.h"
 #include "catalog/capability/field_domain.h"
 #include "foundation/little_endian.h"
 
@@ -59,9 +61,12 @@ struct Input {
 
 class Grants {
   public:
-    explicit Grants(uint32_t capacity = 8, uint32_t depth = 4, uint32_t bytes = 256)
-        : memory_(GrantTable::storage_size({capacity, bytes, depth}) / sizeof(uint64_t) + 1U),
-          table_(memory_.data(), {capacity, bytes, depth}) {}
+    explicit Grants(uint32_t capacity = 8, uint32_t depth = 4, uint32_t bytes = 256,
+                    uint32_t business_bytes = 0)
+        : memory_(GrantTable::storage_size({capacity, bytes, depth, business_bytes}) /
+                      sizeof(uint64_t) +
+                  1U),
+          table_(memory_.data(), {capacity, bytes, depth, business_bytes}) {}
     GrantTable *operator->() { return &table_; }
     GrantCheck add(const NewGrant &grant, uint32_t sequence, uint64_t stamp,
                    GrantContext context = ready, uint32_t expected = 0) {
@@ -95,6 +100,79 @@ GrantRecord record_of(GrantTable &table, uint32_t index) {
                   grant.duration_us,
                   grant.allow_delegation ? AYNI_GRANT_ALLOW_DELEGATION : 0U};
     return {grant.grant_id, grant.replaced_grant_id, grant.depth, fact, table.scope(index)};
+}
+
+// ADR-0084 / C-VALUE-004: even without a Call, a Grant owns its complete
+// original proof and cannot be reinterpreted by another same-version contract.
+TEST(GrantTable, original_business_proof_is_copied_and_catalog_changes_hold_unused_grants) {
+    using namespace ayni::catalog;
+    Input input(-2, 2);
+    std::array<ayni_schema_node_v1, 2> schema{};
+    schema[0].kind = AYNI_VALUE_OBJECT;
+    schema[0].subtree_end = 2;
+    schema[1].kind = AYNI_VALUE_I64;
+    schema[1].subtree_end = 2;
+    schema[1].field_id = 1;
+    schema[1].flags = AYNI_SCHEMA_REQUIRED;
+    schema[1].name = {"count", 5};
+    schema[1].unit = {"count", 5};
+    schema[1].min_i64 = -10;
+    schema[1].max_i64 = 10;
+    ayni_schema_node_v1 result{};
+    result.kind = AYNI_VALUE_TEXT;
+    result.subtree_end = 1;
+    result.max_count = 1;
+    ayni_authority_projection_v1 projection{};
+    projection.field_id = 1;
+    projection.path_count = 1;
+    projection.path[0] = 1;
+    projection.unit = {"count", 5};
+    const ayni_business_contract_v1 business{{schema.data(), 2}, {&result, 1}, 1, 0, &projection};
+    CallContract execution{};
+    execution.form = CallForm::unary;
+    execution.category = CallClass::tool;
+    execution.idempotency = CallIdempotency::idempotent;
+    execution.query = QueryAuthority::none;
+    execution.cancel = CancelMode::none;
+    execution.timeout_ms = 100;
+    execution.input_format = AYNI_CALL_INPUT_VALUE;
+    execution.result_format = AYNI_CALL_RESULT_TEXT;
+    execution.input_text_limit = 128;
+    execution.result_text_limit = 8;
+    constexpr uint32_t proof_budget = 4096, domain_budget = 256;
+    std::array<uint8_t, proof_budget> proof{};
+    uint32_t size = 0;
+    ASSERT_EQ(encode_business({input.domain.data(), input.domain_size}, execution, business,
+                              proof.data(), proof_budget, size),
+              AYNI_OK);
+    Grants table(1, 1, domain_budget, proof_budget);
+    auto grant = input.request();
+    grant.business_contract = {proof.data(), size};
+    ASSERT_EQ(table.add(grant, 1, 10).status, AYNI_OK);
+    const auto original = table->business_contract(table.last());
+    const std::vector<uint8_t> saved(original.data, original.data + original.size);
+    proof.fill(0);
+    EXPECT_EQ(std::memcmp(original.data, saved.data(), saved.size()), 0);
+    Input original_domain;
+    const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
+                                             original_domain.field.allowed};
+    const ayni_capability_desc_v1 desc{sizeof(desc), 1, {"test.cap", 8}, 1, 0, &field};
+    for (const bool changed : {false, true}) {
+        std::vector<uint64_t> memory(
+            CapabilityRegistry::storage_size(1, domain_budget, proof_budget) / sizeof(uint64_t) +
+            1U);
+        CapabilityRegistry catalog(memory.data(), 1, domain_budget, proof_budget);
+        ASSERT_EQ(catalog.add(desc), AYNI_OK);
+        result.max_count = changed ? 2U : 1U;
+        ASSERT_EQ(encode_business({input.domain.data(), input.domain_size}, execution, business,
+                                  proof.data(), proof_budget, size),
+                  AYNI_OK);
+        ASSERT_EQ(catalog.attach_business(0, {proof.data(), size}), AYNI_OK);
+        table->resolve_catalog(catalog);
+        EXPECT_EQ(table->at(table.last()).hold_reason,
+                  changed ? AYNI_REASON_GRANT_CATALOG_CHANGED : AYNI_REASON_NONE);
+        EXPECT_EQ(std::memcmp(original.data, saved.data(), saved.size()), 0);
+    }
 }
 
 // C-AUTH-019 / ADR-0030 decision 1: trusted bounded admission precedes allocation/publication.

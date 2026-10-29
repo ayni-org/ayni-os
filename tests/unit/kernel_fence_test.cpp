@@ -301,7 +301,8 @@ ayni::hosts::sim::StorageImage image_with_schema(uint16_t schema) {
 // C-STORE-004/010, ADR-0038: unsupported data is preserved, never reset or migrated.
 TEST(StorageSchemaBoundary, unsupported_schema_never_installs_a_writer_or_mutates_source) {
     for (const uint16_t schema :
-         {uint16_t{0}, uint16_t{1}, uint16_t{2}, uint16_t{ayni::durability::storage_schema + 1U}}) {
+         {uint16_t{0}, uint16_t{1}, uint16_t{2}, uint16_t{3},
+          uint16_t{ayni::durability::storage_schema + 1U}}) {
         SCOPED_TRACE(schema);
         const auto image = image_with_schema(schema);
         WorkNode work;

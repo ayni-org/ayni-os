@@ -1,7 +1,10 @@
 // White-box tool-call list codec, ADR-0054 and tool-call list format 1 in
 // contracts/storage/records.md. Shape only; offers and authority are Kernel tests.
+#include "catalog/capability/argument_encoding.h"
+#include "catalog/capability/value_encoding.h"
 #include "foundation/little_endian.h"
 #include "work/call/tool_calls.h"
+#include <ayni/values.hpp>
 
 #include <array>
 #include <cstring>
@@ -23,27 +26,37 @@ std::string string_of(ayni_string_v1 view) {
 class ToolCallsTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        // Fields deliberately out of id order; the encoding sorts them.
-        token = text("quiet");
-        fields[0] = {sizeof(ayni_scope_field_v1), 7, {}};
-        fields[0].allowed.struct_size = sizeof(fields[0].allowed);
-        fields[0].allowed.kind = AYNI_AUTHORITY_ENUM;
-        fields[0].allowed.values.tokens = {&token, 1, 0};
-        fields[1] = {sizeof(ayni_scope_field_v1), 2, {}};
-        fields[1].allowed.struct_size = sizeof(fields[1].allowed);
-        fields[1].allowed.kind = AYNI_AUTHORITY_I64;
-        fields[1].allowed.unit = text("minute");
-        fields[1].allowed.values.integer = {-5, -5};
-        calls[0] = {sizeof(ayni_tool_call_v1),
-                    3,
-                    text("timer.set"),
-                    {sizeof(ayni_scope_v1), 2, fields.data()},
-                    text("早点提醒")};
-        calls[1] = {sizeof(ayni_tool_call_v1),
-                    1,
-                    text("lamp.off"),
-                    {sizeof(ayni_scope_v1), 0, nullptr},
-                    {}};
+        nodes = {};
+        nodes[0].kind = AYNI_VALUE_OBJECT;
+        nodes[0].subtree_end = 4;
+        nodes[1].kind = AYNI_VALUE_ENUM;
+        nodes[1].field_id = 7;
+        nodes[1].subtree_end = 2;
+        nodes[1].value.text = text("quiet");
+        nodes[2].kind = AYNI_VALUE_I64;
+        nodes[2].field_id = 2;
+        nodes[2].subtree_end = 3;
+        nodes[2].value.integer = -5;
+        nodes[3].kind = AYNI_VALUE_TEXT;
+        nodes[3].field_id = 9;
+        nodes[3].subtree_end = 4;
+        nodes[3].value.text = text("早点提醒");
+        empty = {};
+        empty.kind = AYNI_VALUE_TEXT;
+        empty.subtree_end = 1;
+        calls = {};
+        for (auto &call : calls) {
+            call.struct_size = sizeof(call);
+            call.binding_version = 1;
+            call.input_kind = AYNI_TOOL_INPUT_VALUE;
+        }
+        calls[0].binding_version = 3;
+        calls[0].binding_id = text("timer.set");
+        calls[0].protocol_id = text("t1");
+        calls[0].input.value = {nodes.data(), static_cast<uint32_t>(nodes.size())};
+        calls[1].binding_id = text("lamp.off");
+        calls[1].protocol_id = text("t2");
+        calls[1].input.value = {&empty, 1};
     }
     ayni_status_t encode(uint32_t count = 2) {
         uint32_t size = 0;
@@ -55,59 +68,55 @@ class ToolCallsTest : public ::testing::Test {
         return status;
     }
     ayni_bytes_v1 list() const { return {body.data(), static_cast<uint32_t>(body.size())}; }
-
-    ayni_string_v1 token{};
-    std::array<ayni_scope_field_v1, 2> fields{};
+    std::array<ayni_value_node_v1, 4> nodes{};
+    ayni_value_node_v1 empty{};
     std::array<ayni_tool_call_v1, 2> calls{};
     std::vector<uint8_t> body;
 };
 
-TEST_F(ToolCallsTest, round_trip_keeps_typed_values_in_canonical_field_order) {
+// ADR-0084: producer encoding owns source bytes but does not normalize field
+// order. Only the original business Schema owner can fill defaults/canonicalize.
+TEST_F(ToolCallsTest, round_trip_keeps_native_values_without_retaining_source_views) {
     ASSERT_EQ(encode(), AYNI_OK);
-    std::string expected = "早点提醒";
-    calls[0].text = text("changed after the post");
+    nodes[3].value.text = text("changed after the post");
     ASSERT_EQ(tool_call_count(list()), 2U);
     ToolCallView call{};
     ASSERT_TRUE(read_tool_call(list(), 0, call));
     EXPECT_EQ(string_of(call.binding_id), "timer.set");
     EXPECT_EQ(call.binding_version, 3U);
-    ASSERT_EQ(call.field_count, 2U);
-    EXPECT_EQ(call.fields[0].id, 2U);
-    EXPECT_EQ(call.fields[0].kind, AYNI_AUTHORITY_I64);
-    EXPECT_EQ(string_of(call.fields[0].unit), "minute");
-    EXPECT_EQ(call.fields[0].integer, -5);
-    EXPECT_EQ(call.fields[1].id, 7U);
-    EXPECT_EQ(string_of(call.fields[1].token), "quiet");
-    EXPECT_EQ(string_of(call.text), expected);
-
-    std::array<ayni_scope_field_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> scope_fields{};
-    std::array<ayni_string_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> tokens{};
-    const auto scope = call.scope(scope_fields.data(), tokens.data());
-    EXPECT_EQ(scope.struct_size, sizeof(ayni_scope_v1));
-    ASSERT_EQ(scope.field_count, 2U);
-    EXPECT_EQ(scope.fields[0].allowed.values.integer.min_inclusive, -5);
-    EXPECT_EQ(scope.fields[0].allowed.values.integer.max_inclusive, -5);
-    EXPECT_EQ(scope.fields[1].allowed.values.tokens.member_count, 1U);
-    EXPECT_EQ(string_of(scope.fields[1].allowed.values.tokens.members[0]), "quiet");
-
+    EXPECT_EQ(string_of(call.protocol_id), "t1");
+    EXPECT_EQ(call.input_kind, AYNI_TOOL_INPUT_VALUE);
+    ayni::catalog::DecodedValue value;
+    ASSERT_EQ(ayni::catalog::decode_value(call.input, value), AYNI_OK);
+    ASSERT_EQ(value.count, 4U);
+    EXPECT_EQ(value.nodes[1].field_id, 7U);
+    EXPECT_EQ(string_of(value.nodes[1].value.text), "quiet");
+    EXPECT_EQ(value.nodes[2].field_id, 2U);
+    EXPECT_EQ(value.nodes[2].value.integer, -5);
+    EXPECT_EQ(string_of(value.nodes[3].value.text), "早点提醒");
     ASSERT_TRUE(read_tool_call(list(), 1, call));
     EXPECT_EQ(string_of(call.binding_id), "lamp.off");
-    EXPECT_EQ(call.field_count, 0U);
     EXPECT_FALSE(read_tool_call(list(), 2, call));
     EXPECT_EQ(string_of(call.binding_id), "lamp.off");
 }
 
+// C-CALL-014/ADR-0084: invalid tags, identities, native source trees and total
+// bytes fail before post reserves a receipt, preserving the measurement output.
 TEST_F(ToolCallsTest, provider_shape_errors_are_classified_and_measure_nothing) {
     uint32_t size = 9;
     EXPECT_EQ(measure_tool_calls(calls.data(), 0, size), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(measure_tool_calls(nullptr, 1, size), AYNI_INVALID_ARGUMENT);
     std::array<ayni_tool_call_v1, AYNI_CALL_TOOL_COUNT_MAX + 1U> many{};
     many.fill(calls[1]);
-    EXPECT_EQ(measure_tool_calls(many.data(), AYNI_CALL_TOOL_COUNT_MAX + 1U, size),
+    EXPECT_EQ(measure_tool_calls(many.data(), static_cast<uint32_t>(many.size()), size),
               AYNI_INVALID_ARGUMENT);
+    const std::array<ayni_string_v1, AYNI_CALL_TOOL_COUNT_MAX> ids{
+        text("a"), text("b"), text("c"), text("d"), text("e"), text("f"), text("g"), text("h")};
+    for (uint32_t at = 0; at < ids.size(); ++at) {
+        many[at].protocol_id = ids[at];
+    }
     EXPECT_EQ(measure_tool_calls(many.data(), AYNI_CALL_TOOL_COUNT_MAX, size), AYNI_OK);
     size = 9;
-
     auto expect = [&](ayni_status_t status) {
         EXPECT_EQ(measure_tool_calls(calls.data(), 2, size), status);
         EXPECT_EQ(size, 9U);
@@ -121,58 +130,107 @@ TEST_F(ToolCallsTest, provider_shape_errors_are_classified_and_measure_nothing) 
     expect(AYNI_INVALID_ARGUMENT);
     calls[0].binding_id = text("Not.An.Id");
     expect(AYNI_INVALID_ARGUMENT);
-    fields[1].field_id = 7; // Duplicate.
+    nodes[2].field_id = 7;
     expect(AYNI_INVALID_ARGUMENT);
-    fields[1].field_id = 0;
+    nodes[2].field_id = 0;
     expect(AYNI_INVALID_ARGUMENT);
-    fields[1].allowed.values.integer = {1, 2}; // A range, not a value.
+    nodes[2].kind = AYNI_VALUE_BOOL;
+    nodes[2].value.boolean = 2;
     expect(AYNI_INVALID_ARGUMENT);
-    const std::array<ayni_string_v1, 2> two{{text("quiet"), text("loud")}};
-    fields[0].allowed.values.tokens = {two.data(), 2, 0};
+    calls[0].input_reserved = 1;
     expect(AYNI_INVALID_ARGUMENT);
-    fields[0].allowed.unit = text("minute");
+    calls[0].input_kind = 0;
     expect(AYNI_INVALID_ARGUMENT);
-    calls[0].arguments.fields = nullptr;
+    calls[0].input.value.nodes = nullptr;
+    expect(AYNI_INVALID_ARGUMENT);
+    calls[0].protocol_id = {};
+    expect(AYNI_INVALID_ARGUMENT);
+    calls[1].protocol_id = calls[0].protocol_id;
     expect(AYNI_INVALID_ARGUMENT);
     const char invalid_utf8[] = {static_cast<char>(0xC0), static_cast<char>(0x80)};
-    calls[1].text = {invalid_utf8, 2};
+    empty.value.text = {invalid_utf8, 2};
     expect(AYNI_INVALID_ARGUMENT);
-    calls[1].text = {nullptr, 1};
+    empty.value.text = {nullptr, 1};
     expect(AYNI_INVALID_ARGUMENT);
     std::string big(AYNI_CALL_TEXT_BYTES_MAX + 1U, 'a');
-    calls[1].text = {big.data(), static_cast<uint32_t>(big.size())};
+    empty.value.text = {big.data(), static_cast<uint32_t>(big.size())};
     expect(AYNI_CAPACITY_EXCEEDED);
 }
 
-// Persisted lists are read strictly: a row cannot smuggle a second order or a tail.
-TEST_F(ToolCallsTest, decoder_rejects_noncanonical_or_truncated_lists) {
+// Format 2 requires exact framing and a supported nested body. Old-format
+// magic, unknown source kinds, duplicate IDs and trailing bytes are not readers.
+TEST_F(ToolCallsTest, persisted_lists_require_exact_framing_and_supported_source_trees) {
     ASSERT_EQ(encode(1), AYNI_OK);
     const auto valid = body;
-    ToolCallView call{};
-    EXPECT_EQ(tool_call_count({nullptr, 0}), 0U);
+    body.pop_back();
+    EXPECT_EQ(tool_call_count(list()), 0U);
+    body = valid;
     body.push_back(0);
     EXPECT_EQ(tool_call_count(list()), 0U);
     body = valid;
-    body.pop_back();
-    EXPECT_EQ(tool_call_count(list()), 0U);
-    EXPECT_FALSE(read_tool_call(list(), 0, call));
-    body = valid;
-    ayni::foundation::store_le32(body.data(), 0);
-    EXPECT_EQ(tool_call_count(list()), 0U);
-    ayni::foundation::store_le32(body.data(), AYNI_CALL_TOOL_COUNT_MAX + 1U);
+    ayni::foundation::store_le32(body.data(), 1);
     EXPECT_EQ(tool_call_count(list()), 0U);
     body = valid;
-    // Swap the two field ids so they descend: offsets follow the format.
-    const uint32_t first_field = 4 + 4 + 4 + 9 + 4;
-    ASSERT_EQ(ayni::foundation::load_le32(body.data() + first_field), 2U);
-    const uint32_t second_field = first_field + 12 + 6 + 8;
-    ASSERT_EQ(ayni::foundation::load_le32(body.data() + second_field), 7U);
-    ayni::foundation::store_le32(body.data() + second_field, 1U);
-    EXPECT_EQ(tool_call_count(list()), 0U);
-    body = valid;
-    ayni::foundation::store_le32(body.data() + second_field + 4, 9U); // Unknown kind.
+    constexpr uint32_t list_header_bytes = 12, word_bytes = sizeof(uint32_t);
+    EXPECT_EQ(ayni::foundation::load_le32(body.data() + list_header_bytes), 3U);
+    EXPECT_EQ(ayni::foundation::load_le32(body.data() + list_header_bytes + word_bytes), 9U);
+    ToolCallView call{};
+    ASSERT_TRUE(read_tool_call(list(), 0, call));
+    const auto payload_at = static_cast<size_t>(call.input.data - body.data());
+    ayni::foundation::store_le32(body.data() + payload_at, 0);
     EXPECT_EQ(tool_call_count(list()), 0U);
     body = valid;
     EXPECT_EQ(tool_call_count(list()), 1U);
 }
 } // namespace
+
+// ADR-0084/0085: protocol IDs are opaque, retained independently of Kernel IDs;
+// payload tags preserve both native values and lossless untyped adapter numbers.
+TEST(ToolValueCalls, portable_list_preserves_protocol_identity_and_both_input_representations) {
+    ayni::ValueBuilder<2> builder;
+    ASSERT_EQ(builder.object(), AYNI_OK);
+    ASSERT_EQ(builder.integer(7, -5), AYNI_OK);
+    ASSERT_EQ(builder.end(), AYNI_OK);
+    ayni_value_v1 value{};
+    ASSERT_EQ(builder.finish(value), AYNI_OK);
+    std::array<ayni_argument_node_v1, 2> arguments{};
+    arguments[0].kind = AYNI_ARGUMENT_OBJECT;
+    arguments[0].subtree_end = 2;
+    arguments[1].kind = AYNI_ARGUMENT_NUMBER;
+    arguments[1].subtree_end = 2;
+    arguments[1].name = text("count");
+    arguments[1].value.text = text("9007199254740993");
+    std::array<ayni_tool_call_v1, 2> calls{};
+    for (auto &call : calls) {
+        call.struct_size = sizeof(call);
+        call.binding_id = text("tool.binding");
+        call.binding_version = 1;
+    }
+    calls[0].protocol_id = text("CALL-Original_1");
+    calls[0].input_kind = AYNI_TOOL_INPUT_VALUE;
+    calls[0].input.value = value;
+    calls[1].protocol_id = text("call_2");
+    calls[1].input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+    calls[1].input.arguments = {arguments.data(), static_cast<uint32_t>(arguments.size())};
+    uint32_t size = 0;
+    ASSERT_EQ(ayni_tool_calls_measure(calls.data(), static_cast<uint32_t>(calls.size()), &size),
+              AYNI_OK);
+    std::vector<uint8_t> bytes(size);
+    write_tool_calls(calls.data(), static_cast<uint32_t>(calls.size()), bytes.data(), size);
+    ToolCallList decoded;
+    ASSERT_TRUE(read_tool_calls({bytes.data(), size}, decoded));
+    ASSERT_EQ(decoded.count, 2U);
+    EXPECT_EQ(string_of(decoded.calls[0].protocol_id), "CALL-Original_1");
+    ayni::catalog::DecodedValue native;
+    ASSERT_EQ(ayni::catalog::decode_value(decoded.calls[0].input, native), AYNI_OK);
+    EXPECT_EQ(native.nodes[1].value.integer, -5);
+    ayni::catalog::DecodedArguments named;
+    ASSERT_EQ(ayni::catalog::decode_arguments(decoded.calls[1].input, named), AYNI_OK);
+    EXPECT_EQ(string_of(named.nodes[1].value.text), "9007199254740993");
+    calls[1].protocol_id = calls[0].protocol_id;
+    size = 99;
+    EXPECT_EQ(ayni_tool_calls_measure(calls.data(), 2, &size), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(size, 99U);
+    calls[1].protocol_id = {};
+    EXPECT_EQ(ayni_tool_calls_measure(calls.data(), 2, &size), AYNI_INVALID_ARGUMENT);
+}

@@ -1,6 +1,7 @@
 // White-box static call declaration tests, C-CALL-001/C-BIND-001, ADR-0045.
 // Catalog compatibility is not permission, Provider dispatch or resource admission.
 #include "catalog/capability/call_contract.h"
+#include "text_business_fixture.h"
 
 #include <array>
 #include <cstring>
@@ -25,7 +26,7 @@ CallContract contract() {
     value.query = QueryAuthority::none;
     value.cancel = CancelMode::request;
     value.timeout_ms = 30000;
-    value.input_format = call_fields_text_input_format;
+    value.input_format = call_value_input_format;
     value.result_format = call_text_result_format;
     value.input_text_limit = 4096;
     value.result_text_limit = 2048;
@@ -123,7 +124,7 @@ TEST(CallContract, invalid_enum_bounds_and_subscription_declarations_preserve_ou
         +[](CallContract &v) { v.idempotency = static_cast<CallIdempotency>(0); },
         +[](CallContract &v) { v.query = static_cast<QueryAuthority>(0); },
         +[](CallContract &v) { v.cancel = static_cast<CancelMode>(0); },
-        +[](CallContract &v) { v.input_text_limit = call_text_limit_max + 1; },
+        +[](CallContract &v) { v.input_text_limit = AYNI_CALL_INPUT_BYTES_MAX + 1; },
         +[](CallContract &v) { v.resource_count = resource_group_max + 1; },
         +[](CallContract &v) {
             v.resource_count = 1;
@@ -213,7 +214,7 @@ TEST(CallContract, tool_call_results_belong_to_nonphysical_unary_or_action_model
     input.form = CallForm::subscription;
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
     input.form = CallForm::unary;
-    input.result_format = call_tool_calls_result_format + 1U;
+    input.result_format = call_value_result_format + 1U;
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_UNSUPPORTED_VERSION);
     EXPECT_EQ(output.timeout_ms, 0U);
 }
@@ -235,17 +236,18 @@ TEST(CallContract, side_effects_and_retry_properties_are_independent_declaration
 
 TEST(CallContract, registry_copies_exact_versions_and_refuses_duplicates_or_capacity_exhaustion) {
     constexpr uint32_t slots = 2;
-    std::vector<uint64_t> storage(CallCapabilityRegistry::storage_size(slots) / sizeof(uint64_t) +
-                                  1U);
-    CallCapabilityRegistry registry(storage.data(), slots);
+    std::vector<uint64_t> storage(
+        CallCapabilityRegistry::storage_size(slots, 4096) / sizeof(uint64_t) + 1U);
+    CallCapabilityRegistry registry(storage.data(), slots, 4096);
+    ayni::test::TextBusiness business(4096, 2048);
     CallCapability input{id("model.chat"), 1, contract()};
-    ASSERT_EQ(registry.add(input), AYNI_OK);
-    EXPECT_EQ(registry.add(input), AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(registry.add_validated(input, &business.definition), AYNI_OK);
+    EXPECT_EQ(registry.add_validated(input, &business.definition), AYNI_INVALID_ARGUMENT);
     input.version = 2;
     input.contract.result_text_limit = 1;
-    ASSERT_EQ(registry.add(input), AYNI_OK);
+    ASSERT_EQ(registry.add_validated(input, &business.definition), AYNI_OK);
     input.version = 3;
-    EXPECT_EQ(registry.add(input), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(registry.add_validated(input, &business.definition), AYNI_CAPACITY_EXCEEDED);
     uint32_t index = 99;
     EXPECT_TRUE(registry.find({"model.chat", 10}, 1, index));
     EXPECT_EQ(registry.at(index).contract.result_text_limit, 2048U);

@@ -12,6 +12,7 @@ file(GLOB_RECURSE ayni_cxx_headers CONFIGURE_DEPENDS
     "${AYNI_ROOT}/providers/mock/include/*.h"
     "${AYNI_ROOT}/providers/mock_execution/include/*.h"
     "${AYNI_ROOT}/providers/presentation/include/*.h"
+    "${AYNI_ROOT}/providers/shell/include/*.h"
     "${AYNI_ROOT}/applications/assistant/include/*.h"
     "${AYNI_ROOT}/applications/normal_fixtures/include/*.h"
     "${AYNI_ROOT}/strategies/builtin/include/*.h")
@@ -43,9 +44,12 @@ foreach(header IN LISTS ayni_cxx_headers)
     ayni_header_check_source("${header}" cpp)
 endforeach()
 
+ayni_header_check_source("ayni/values.hpp" cpp)
+ayni_header_check_source("ayni/values_json.hpp" cpp)
+
 # abi_layout.c pins the published struct layouts at compile time (C-VER-002).
 add_library(ayni_header_checks OBJECT ${header_check_sources} abi_layout.c)
-target_link_libraries(ayni_header_checks PRIVATE ayni_api ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_runtime_sim_node ayni_runtime_common ayni_runtime_examples ayni_provider_mock ayni_provider_mock_execution ayni_strategies ayni_assistant_application ayni_normal_fixture_policy ayni_provider_presentation ayni_warnings)
+target_link_libraries(ayni_header_checks PRIVATE ayni_api ayni_host_native ayni_host_sim ayni_runtime_native_node ayni_runtime_sim_node ayni_runtime_common ayni_runtime_examples ayni_provider_mock ayni_provider_mock_execution ayni_strategies ayni_assistant_application ayni_normal_fixture_policy ayni_provider_presentation ayni_provider_shell ayni_warnings)
 target_compile_options(ayni_header_checks PRIVATE $<$<COMPILE_LANGUAGE:C>:-pedantic-errors>)
 
 # The implemented ABI is callable and linkable from a plain C99 program.
