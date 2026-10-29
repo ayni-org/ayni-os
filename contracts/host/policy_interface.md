@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.5、§2.7、§3.3「新策略」、§5.3；ADR-0006、ADR-0017、ADR-0018、ADR-0019、ADR-0020、ADR-0021、ADR-0022、ADR-0024、ADR-0026、ADR-0056；`MA-004`、`MA-009`、`MA-010`、`MA-019`；E3 步骤 2–5，E4 步骤 1–2
 - **属主**：`catalog/strategy`、`catalog/goal_type`（注册与版本）；`kernel`（在 `step` 内调用并校验返回的意图）；各实现（`strategies/`、`applications/`）
-- **头文件**：GoalType 与策略的注册、任务快照、私有检查点、报告进度与结束 Task 的意图在 `include/ayni/ayni.h`（已实现）；其余意图种类在 `include/ayni/draft/policy_v1.h`（草案）
+- **头文件**：GoalType 与策略的注册、任务快照、私有检查点、报告进度与结束 Task 的意图在 `include/ayni/ayni.h`（已实现）；未来意图只在计划中描述，已替代的草案声明由 ADR-0082 移除
 
 策略（规则策略、Tool Loop、未来规划器）与 GoalType 都是有界决策函数。这一形态服务于确定性重放与策略替换，**不是安全边界**：进程内原生代码仍可越权访存或执行 I/O（`authority_and_trust.md`）。
 

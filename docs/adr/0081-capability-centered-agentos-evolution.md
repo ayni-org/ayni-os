@@ -25,7 +25,7 @@
 9. 本机能力优先方向由用户确认。本机与远程按实际执行目标区分，在能力视图和绑定中保持明确；本机不可用不隐式改投远端，不改变已接受调用。远程能力按需求后续交付，本机能力的注册、发现、调用与关闭先独立验证。
 10. 原生枚举、MCP 列举与 ROS graph 只生成有界候选，由可信配置流程配对说明、确认身份/共享物理资源及健康报告者，在 CONFIGURING 复用已有注册。运行中新身份不热注册或暗换端点；配置重建保留旧 Call 的绑定和恢复要求。
 11. 本机外部服务、直接远程第三方端点和 Ayni Kernel peer 各有进入门槛，第三方不必实现 Ayni peer；原 Bridge/peer 路线仍保留。协议取消可能没有最终响应，adapter 必须有限本地收口，保持真实 UNKNOWN、借用/ACK/join 及独立停止边界。
-12. 现有代码的保留、迁移、条件替换和最小新增属主见[配套计划](../architecture/capability-discovery-and-adapters.md)。优先补扩展用法、协议/原生 backend 与共享应用边界；不批量删除 Mock、draft bridge、旧格式/parser 或平台骨架，不预建空插件框架。
+12. 现有代码的保留、迁移、条件替换和最小新增属主见[配套计划](../architecture/capability-discovery-and-adapters.md)。优先补扩展用法、协议/原生 backend 与共享应用边界；Mock、有效测试和平台骨架按职责保留；用户随后批准按 ADR-0082 删除已替代草案/bridge、统一存储格式，业务 parser 在实际替代后删除，不预建空插件框架。
 
 ## 后果
 

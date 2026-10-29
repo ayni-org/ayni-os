@@ -172,7 +172,7 @@ ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.
 | [Mock Provider](../../providers/mock/include/ayni/providers/mock.h)、[multinode_transport.h](../../runtime/sim_node/multinode_transport.h)、[new_hardware.cpp](../../examples/new_hardware.cpp)及 [examples 边界](../../examples/README.md) | **保留**确定性回归 oracle、FakeTransport 和公开 ABI 接入示例；生产 profile 选择真实实现，测试仍使用 Mock | 现有 E1～E4、SDK、subscription fixture；网络实现不替换掉历史 Fake 对照 |
 | [media.h](../../include/ayni/media.h)第 8～33 行、[Mock media](../../providers/mock/include/ayni/providers/mock/media.h)及实现 | **保留**现有 65,536 B/JPEG/PCM16 限制与测试 store；真实数据面另按 AP-08 提供 | Observation/订阅/Mock 夹具与 [mock_media_test.cpp](../../tests/unit/mock_media_test.cpp)；更大对象/流先做版本与消费者分析 |
 | [ESP runtime](../../runtime/esp_idf_node/esp_idf_node.cpp)第 46～81 行、[ESP Host](../../hosts/esp_idf/esp_idf_host.cpp)第 77～85 行、[入口](../../targets/esp32_assistant/main/main.cpp) | **增量完善**异步 storage、事件推进/关闭、模型网络、小容量 profile 和板级 manifest；Hello 可保留诊断模式 | AP-07 经用户恢复 M2 后交付；现有 create/destroy 和编译不构成硬件验收 |
-| [draft/provider_v1.h](../../include/ayni/draft/provider_v1.h)第 1～8 行及其他 draft | **逐项保留/转正**；provider 文件已是正式 calls.h 的 include bridge，不是第二 ABI。control/host/policy 等草案各有不同状态，不能整目录删除 | [公共头 smoke](../../tests/contract/CMakeLists.txt)及 [kernel_api_test.cpp](../../tests/unit/kernel_api_test.cpp)；转正/删声明前逐项找调用方、保持 no-symbol 边界 |
+| 已替代的 Provider/kernel/policy/control 草案 | **按用户 2026-10-29 新决定删除**旧路径与无生产消费者的替代前声明；正式调用、执行、内存和订阅入口保留，Host trace 草案仍为独立待实现契约 | 所有消费者改用正式头，未知输入测试自带非法值；公共头 smoke 按现有文件检查，不保留兼容桥（ADR-0082） |
 | [check_deps.py](../../tools/check_deps.py)、`architecture.json`、CMake 分层规则 | **复用扩展**新 target/header kind/依赖规则，不另建平行检查器或放宽 Core 禁 SDK 约束 | [依赖检查夹具](../../tests/tools/test_check_deps.py)、公共头 smoke 和组件链接检查 |
 
 ### 7.2 计划迁移或条件替换
@@ -219,7 +219,7 @@ ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.
 | MCP/MHS/ROS 是否三套运行时 | 原生及各协议共用注册/Tool Loop/Call；MHS 可叠加 MCP | 每个生态单建目录、权限和账本 |
 | 是否必须先 peer 才能外部协议 | 本机、直接远程第三方、Ayni peer 分开规定条件 | 所有网络接口都强制对端运行 Ayni，或发现远端就放开控制 |
 | 同设备多路径是否先改资源 ABI | 现有逻辑 Resource/冲突域先复用，唯一物理健康报告者；通道 readiness 归 backend | 每个 Provider 随意追加不同资源仍称 exact match，或掉一条连接就改物理健康 |
-| 当前代码是否大面积舍弃 | Core/调用/测试/Mock/平台实现在原属主保留；描述、prompt 文法和 Native 应用耦合渐进替换 | 先删 draft、Mock、旧 parser/Hello，再等待新链路补齐 |
+| 当前代码是否大面积舍弃 | Core/调用/测试/Mock/平台实现在原属主保留；已替代草案/转发头按 ADR-0082 删除，描述、prompt 文法和 Native 应用耦合渐进替换 | 先删 draft、Mock、旧 parser/Hello，再等待新链路补齐 |
 | 协议取消后没有响应怎么办 | 本地有界终结跟踪，真实表达 UNKNOWN，按借用/ACK/join 和停止规则清理 | 无限等 terminal、只发 CANCEL_UNKNOWN，或把取消 ACK 当物理停止 |
 | 如何新增模块 | 围绕实际 backend/协议交付，可能一个模块提供候选与 Provider/IPC 端口，提前登记依赖规则 | 为了目录整齐增加空转发层，或把所有 client SDK 强放 Kernel 进程 |
 

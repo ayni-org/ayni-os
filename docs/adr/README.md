@@ -131,3 +131,5 @@
 | [0080](0080-safety-branch-coverage-closeout.md) | 安全范围分支覆盖收尾 | 已接受 | §9 M1、§10.6 |
 
 | [0081](0081-capability-centered-agentos-evolution.md) | 通用能力接入与 AgentOS 架构演进 | 提议 | §2、§3、§6、§8、§9 |
+
+| [0082](0082-prepublication-cleanup-and-capability-delivery.md) | 预发布清理、存储统一与能力自描述交付 | 已接受 | §2、§4、§9、AP-00/AP-01 |

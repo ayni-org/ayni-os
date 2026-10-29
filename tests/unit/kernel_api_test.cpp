@@ -7,7 +7,6 @@
 #include "kernel_test_probe.h"
 
 #include <ayni/ayni.h>
-#include <ayni/draft/kernel_api.h>
 
 #include <gtest/gtest.h>
 
@@ -22,14 +21,20 @@ using ayni::kernel::KernelTestProbe;
 
 namespace {
 
-// C-VER-007 / ADR-0042: unimplemented draft kinds cannot alias implemented
-// authority commands and must reject before interpreting a draft body.
-TEST(DraftApi, intents_are_unsupported_before_their_bodies_are_read) {
+// C-VER-007 / ADR-0082: retired draft values and an unrelated unknown kind reject
+// before interpreting a body. The test owns these invalid inputs, not a draft API.
+TEST(UnsupportedApi, unknown_intents_reject_before_their_bodies_are_read) {
     ayni::test::Node node;
     node.create();
+    constexpr ayni_intent_kind_t retired_memory_write = 0x10001u;
+    constexpr ayni_intent_kind_t retired_subscription_open = 0x10003u;
+    constexpr ayni_intent_kind_t retired_subscription_close = 0x10004u;
+    constexpr ayni_intent_kind_t retired_assistant_pause = 0x10005u;
+    constexpr ayni_intent_kind_t retired_assistant_resume = 0x10006u;
+    constexpr ayni_intent_kind_t unknown_intent = UINT32_MAX;
     for (const auto kind :
-         {AYNI_INTENT_MEMORY_WRITE, AYNI_INTENT_SUBSCRIPTION_OPEN, AYNI_INTENT_SUBSCRIPTION_CLOSE,
-          AYNI_INTENT_ASSISTANT_PAUSE, AYNI_INTENT_ASSISTANT_RESUME}) {
+         {retired_memory_write, retired_subscription_open, retired_subscription_close,
+          retired_assistant_pause, retired_assistant_resume, unknown_intent}) {
         ayni_intent_v1 intent{};
         intent.struct_size = sizeof(intent);
         intent.kind = kind;
