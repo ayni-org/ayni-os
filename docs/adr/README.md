@@ -135,3 +135,5 @@
 | [0082](0082-prepublication-cleanup-and-capability-delivery.md) | 预发布清理、存储统一与能力自描述交付 | 已接受 | §2、§4、§9、AP-00/AP-01 |
 
 | [0083](0083-general-foundation-before-platform-experiments.md) | 通用 AgentOS 基础先于平台实验 | 已接受 | §0、§1、§6、§9～§15、AP-02～AP-11 |
+
+| [0084](0084-typed-capability-values-and-authority-projection.md) | 通用业务值、完整授权投影与开发期升级 | 已接受范围；实现未交付 | §3、§9、§14、AP-02 |
