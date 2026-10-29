@@ -133,3 +133,5 @@
 | [0081](0081-capability-centered-agentos-evolution.md) | 通用能力接入与 AgentOS 架构演进 | 提议 | §2、§3、§6、§8、§9 |
 
 | [0082](0082-prepublication-cleanup-and-capability-delivery.md) | 预发布清理、存储统一与能力自描述交付 | 已接受 | §2、§4、§9、AP-00/AP-01 |
+
+| [0083](0083-general-foundation-before-platform-experiments.md) | 通用 AgentOS 基础先于平台实验 | 已接受 | §0、§1、§6、§9～§15、AP-02～AP-11 |

@@ -32,4 +32,4 @@
 
 已接受的旧 ADR/报告保留历史含义，当前契约、计划、追踪和交接随实际交付更新；新的实现状态和限制在对应 PR 记录。
 
-三部分代码与消费者迁移已交付。后续 AP-02/AP-03 等仍按原计划另行安排，当前没有启动设备热插拔、MCP/MHS/ROS backend 或完整 Native 应用拆分。
+三部分代码与消费者迁移已交付，后续审查修复见 #108/#109。后续统一按[基础能力实施与实验计划](foundation-and-experiment-plan.md)与 [ADR-0083](../adr/0083-general-foundation-before-platform-experiments.md)：先补 AP-02/AP-03/AP-05/AP-06 等基础通用能力及 AP-04 多实例验证，再开展 ESP32-S3、Linux 系统等独立实验。语音、视觉、运动与协议 backend 按需求选用，不规定宿主设备集合；当前没有启动后续代码或平台实验。

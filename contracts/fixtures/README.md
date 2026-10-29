@@ -1,12 +1,12 @@
 # 实验夹具格式
 
-P6 已实现的独立正常闭集见 [normal/README.md](normal/README.md)，使用 `fixture_schema=1` / `profile=m1-normal`。本次受控故障运行设施见 [experiments/README.md](experiments/README.md)，目前仅 HARNESS 自验证。下文是原完整 schema 0 草案，不能直接作为任一已实现 profile 的输入；完整 E1～E4 仍待各阶段交付。
+P6 已实现的独立正常闭集见 [normal/README.md](normal/README.md)，使用 `fixture_schema=1` / `profile=m1-normal`。受控故障运行设施及 HARNESS、E1～E4 的已实现闭集见 [experiments/README.md](experiments/README.md)，Native/Sim 验证索引见 [Core Alpha 报告](../../reports/core/m1-core-alpha.md)。下文保留原完整 schema 0 格式草案，不能直接作为任一已实现 profile 的输入，也不代表未来平台运行器已经交付。
 
-本目录规定 E1–E4 用例的数据格式（计划 §10.1、ADR-0012 第 3 条），并给出 M1 要实现的用例清单 [cases.md](cases.md)。M0 只规定格式，不包含可运行的用例；第一批用例文件与运行器在 M1 随 Kernel 实现加入。格式版本 `fixture_schema` 为 0（experimental），M1 写完第一批用例后收敛为 1，此后只追加字段，已发布字段的含义不变。
+本目录规定 E1–E4 用例的数据格式（计划 §10.1、ADR-0012 第 3 条），原用例清单见 [cases.md](cases.md)。M0 的 schema 0 只规定格式；已实现的 schema 1 分为上面的两个独立 profile，其动作闭集与运行方法以各自 README 为准，不由历史草案推定支持。
 
 ## 为什么用数据而不是测试代码
 
-E1–E4 先在电脑确定性模拟器通过，再在 ESP32 用同一契约复核（计划 §10.1）。如果两边各写一份测试代码，迟早出现“电脑上测的和板子上测的不是同一件事”。因此用例写成数据，两边的运行器执行同一份数据，断言逻辑放在与测试框架无关的 C++ 函数中；GoogleTest（Native）与 Unity（ESP32）只负责调用和报告（ADR-0012）。
+基础开发持续用 Native/Sim 和现有夹具验证 E1–E4 的通用语义。基础完成后，再在独立选择的 ESP32-S3、Linux 等平台实验中复核适用共同契约，顺序见[现行计划](../../docs/architecture/foundation-and-experiment-plan.md)。共享用例数据与断言可避免不同平台悄悄测试不同语义；GoogleTest（Native）和将来的 Unity（选定 ESP32 实验）仅负责调用与报告（ADR-0012）。平台不用具备相同外设；模拟或测试 Provider 的证据不能推定真实设备支持。
 
 ## 文件与命名
 
@@ -43,7 +43,7 @@ contracts/fixtures/
 
 ## 动作
 
-动作是封闭集合，按计划 §10.1 列出的夹具能力分组。新增动作须同时修改本表和两边的运行器；M1 写第一批用例时允许增删，`fixture_schema` 升为 1 后只能追加。
+以下是 schema 0 草案中的动作分类。已实现 profile 的动作以各自规范为准；后续演进须同步受影响的格式、运行器和共同断言，不能把本草案的动作当作已实现输入。
 
 | 夹具能力（计划 §10.1） | 动作 | 含义 |
 |---|---|---|
@@ -83,14 +83,14 @@ contracts/fixtures/
 
 计划 §10.1 要求每次运行保存可复现所需的全部信息。运行器为每个用例写两份文件，编码同样使用受限 JSON 子集：
 
-- `run.json`：用例 ID、`fixture_schema`、代码提交、工具链、ABI/协议/存储版本、配置、种子、宿主（native 或 esp32）、通过与否、第一个失败的断言。
+- `run.json`：用例 ID、`fixture_schema`、代码提交、工具链、ABI/协议/存储版本、配置、种子、实际宿主及 profile、通过与否、第一个失败的断言；具体实现字段以所用 profile 为准。
 - `trace.jsonl`：每行一条记录，字段为序号、`step` 序号、FakeClock 时间、类别（transition、commit、output、side_effect、permit、resource、task_runtime、subscription、fault）、相关 ID（command、transition、`commit_seq`、operation、`(boot_epoch, request_id)`、`logical_call_id`、订阅代际）与内容摘要。私有记忆正文、凭据与媒体内容只写摘要，不写原文。
 
 CTest 运行时写入构建目录；作为验收证据归档时复制到 `reports/`，与代码版本一起提交。
 
-## 生成与运行（M1、M2）
+## 生成与运行（草案与平台复用边界）
 
-- `tools/` 下的生成器读取全部用例文件，检查结构、`case_id` 与文件名一致、`experiment_step` 存在、`clauses` 已定义，然后生成一个 C++ 源文件，把用例编译成只读表。
-- Native 的 GoogleTest 运行器与 ESP32 的 Unity 运行器链接同一个生成文件和同一组断言函数。设备上不解析 JSON，固件也不携带用例文本。
-- 逻辑轨迹在两边必须一致；真实耗时（中断延迟、Flash 写入时间等）另行测量，不与虚拟时间比较（计划 §10.2 确定性基线配置）。
+- 已有 schema 1 生成器按各自 profile 校验并编译用例；具体命令与闭集见对应 README，不实现原 schema 0 的全部动作。
+- 后续平台运行器应复用公开契约、同一场景的断言及确定性数据；Unity/其他适配只有实际交付后才能声明可运行。设备不需要为复用夹具而新增运行时 JSON 解释器。
+- 同一确定性场景的逻辑轨迹和断言须一致；实际 OS/SDK 行为、能力组合及真实耗时另行报告，不将虚拟时间当作中断、Flash 或设备实测。
 - 多节点 FakeTransport（`MA-038`）与 R1 具身用例不在本格式的 M1 范围内，届时扩展动作表。

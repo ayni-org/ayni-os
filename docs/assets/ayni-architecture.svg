@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1585" viewBox="0 0 1680 1585" role="img" aria-labelledby="title desc">
   <title id="title">Ayni planned architecture</title>
-  <desc id="desc">Ayni applications and strategies use typed C99 and C++ interfaces to reach one Kernel state owner per device. The Kernel validates intents, applies transitions in commit order and releases outputs only after the durable prefix covers them. The Kernel is split by invariant owner into nine modules: kernel orchestrates; work owns goals, tasks, calls, the action ledger and sessions; authority, resources, budget and knowledge are independent peers that own grants, leases and execution permits, budgets, and observations and memory respectively; catalog, durability and foundation sit beneath them. Execution permits, control sessions and motion-outcome phases are base contracts; an optional Embodiment Profile adds robot-specific frames, units, clock domains, robot state, trajectory segments and verification evidence, and does not require every device to run a robotics stack. Optional world-model and VLA components only propose bounded goals or action chunks, which execute inside an admitted session after executor permit and envelope checks. Versioned asynchronous ports connect Host services and Providers to the operating system, drivers and hardware, where local controllers check permits. Optional ROS 2 bridges and an MHS adapter run as confined processes outside Core and use managed boundaries; MHS integration is conditional on specification access and conformance validation. The model gateway does not own tasks. An independent local stop path reaches the supervisor, a hardware timeout gate and motor disable without depending on the ordinary Core event queue; stop bounds require measurement. All components are planned, not implemented capabilities.</desc>
+  <desc id="desc">Ayni is a general-purpose native AgentOS with no required peripheral or application set. Applications and strategies use public C99 and C++ interfaces to reach one logical Kernel owner. Eight Core modules own kernel orchestration, work and runtime limits, authority, resources, knowledge, catalog, durability and foundation. Versioned asynchronous ports connect Hosts and capability Providers to software services or optional devices. Complete the general foundation before independent ESP32-S3, Linux system and other platform experiments; Native/Sim development checks continue throughout. Robot profiles and external protocol adapters are optional. When physical execution is enabled, permits, local interlocks and an independent stop path govern that execution; hosts without actuators need no motor stop stack. Implementation and validation status are recorded separately from this architecture overview.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#52677c"/></marker>
     <marker id="stop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#c85b36"/></marker>
@@ -26,20 +26,20 @@
 
   <rect width="1680" height="1585" fill="#f8fafc"/>
   <text x="48" y="56" class="heading">Ayni architecture</text>
-  <text x="48" y="88" class="subtitle">Shared Agent infrastructure · one Kernel per device · asynchronous I/O</text>
+  <text x="48" y="88" class="subtitle">General native AgentOS · software or optional device capabilities · asynchronous I/O</text>
   <rect x="1320" y="28" width="312" height="52" rx="12" fill="#e8eef6" stroke="#c4d1df"/>
-  <text x="1476" y="60" text-anchor="middle" font-size="18" font-weight="650">Planned architecture / 待实现</text>
+  <text x="1476" y="60" text-anchor="middle" font-size="18" font-weight="650">Architecture / 证据另列</text>
 
   <!-- Layer 1: interaction. The orange branch is the independent stop path. -->
   <text x="48" y="160" class="layer-number">01</text>
   <text x="48" y="185" class="layer">INTERACTION</text>
   <rect x="210" y="120" width="1240" height="100" rx="16" fill="#edf5ee" stroke="#bdcebf"/>
   <rect x="230" y="137" width="355" height="66" rx="10" fill="#ffffff" stroke="#cad8cb"/>
-  <text x="407" y="178" text-anchor="middle" class="label">User / unified assistant</text>
+  <text x="407" y="178" text-anchor="middle" class="label">User / applications</text>
   <rect x="605" y="137" width="445" height="66" rx="10" fill="#ffffff" stroke="#cad8cb"/>
   <text x="827" y="178" text-anchor="middle" class="label">Management client / binding</text>
   <rect x="1070" y="137" width="360" height="66" rx="10" fill="#ffffff" stroke="#cad8cb"/>
-  <text x="1250" y="178" text-anchor="middle" class="label">Button / voice / stop input</text>
+  <text x="1250" y="178" text-anchor="middle" class="label">Optional device inputs</text>
   <path d="M 830 220 V 262" class="connector"/>
 
   <!-- Layer 2: product semantics and replaceable behavior are above Core. -->
@@ -80,44 +80,38 @@
   <rect x="234" y="612" width="1192" height="73" rx="10" fill="#d5e2f1" stroke="#a8bdd4"/>
   <text x="830" y="642" text-anchor="middle" class="label">Single state owner + output-gated commit</text>
   <text x="830" y="669" text-anchor="middle" class="detail">kernel: lifecycle · managed entry · orchestration · recovery · output gating after the durable prefix</text>
-  <path d="M 830 685 V 705 M 350 705 H 1310" fill="none" stroke="#839ab3" stroke-width="2"/>
-  <path d="M 350 705 V 724 M 590 705 V 724 M 830 705 V 724 M 1070 705 V 724 M 1310 705 V 724" fill="none" stroke="#839ab3" stroke-width="2"/>
+  <path d="M 830 685 V 705 M 380 705 H 1280" fill="none" stroke="#839ab3" stroke-width="2"/>
+  <path d="M 380 705 V 724 M 680 705 V 724 M 980 705 V 724 M 1280 705 V 724" fill="none" stroke="#839ab3" stroke-width="2"/>
 
-  <rect x="238" y="724" width="224" height="118" rx="11" fill="#ffffff" stroke="#bccbdc"/>
-  <text x="350" y="752" text-anchor="middle" class="service-title">Work</text>
-  <text x="350" y="780" text-anchor="middle" class="service-detail">Agent · Goal · Task</text>
-  <text x="350" y="804" text-anchor="middle" class="service-detail">Call · Action ledger</text>
-  <text x="350" y="828" text-anchor="middle" class="service-detail">Session · Subscription</text>
+  <rect x="238" y="724" width="284" height="118" rx="11" fill="#ffffff" stroke="#bccbdc"/>
+  <text x="380" y="752" text-anchor="middle" class="service-title">Work</text>
+  <text x="380" y="780" text-anchor="middle" class="service-detail">Agent · Goal · Task</text>
+  <text x="380" y="804" text-anchor="middle" class="service-detail">Calls · Actions · Runtime limits</text>
+  <text x="380" y="828" text-anchor="middle" class="service-detail">Session · Subscription</text>
 
-  <rect x="478" y="724" width="224" height="118" rx="11" fill="#fffaf0" stroke="#d9cba9"/>
-  <text x="590" y="752" text-anchor="middle" class="service-title">Authority</text>
-  <text x="590" y="780" text-anchor="middle" class="service-detail">Principals · Grants</text>
-  <text x="590" y="804" text-anchor="middle" class="service-detail">Scenes · Revocation</text>
-  <text x="590" y="828" text-anchor="middle" class="service-detail">Envelope admission</text>
+  <rect x="538" y="724" width="284" height="118" rx="11" fill="#fffaf0" stroke="#d9cba9"/>
+  <text x="680" y="752" text-anchor="middle" class="service-title">Authority</text>
+  <text x="680" y="780" text-anchor="middle" class="service-detail">Principals · Grants</text>
+  <text x="680" y="804" text-anchor="middle" class="service-detail">Scenes · Revocation</text>
+  <text x="680" y="828" text-anchor="middle" class="service-detail">Envelope admission</text>
 
-  <rect x="718" y="724" width="224" height="118" rx="11" fill="#f1f8f4" stroke="#b8d0c0"/>
-  <text x="830" y="752" text-anchor="middle" class="service-title">Resources</text>
-  <text x="830" y="780" text-anchor="middle" class="service-detail">Admission · Leases</text>
-  <text x="830" y="804" text-anchor="middle" class="service-detail">Execution permits</text>
-  <text x="830" y="828" text-anchor="middle" class="service-detail">Quarantine</text>
+  <rect x="838" y="724" width="284" height="118" rx="11" fill="#f1f8f4" stroke="#b8d0c0"/>
+  <text x="980" y="752" text-anchor="middle" class="service-title">Resources</text>
+  <text x="980" y="780" text-anchor="middle" class="service-detail">Admission · Leases</text>
+  <text x="980" y="804" text-anchor="middle" class="service-detail">Execution permits</text>
+  <text x="980" y="828" text-anchor="middle" class="service-detail">Quarantine</text>
 
-  <rect x="958" y="724" width="224" height="118" rx="11" fill="#eef5fb" stroke="#b5cbe0"/>
-  <text x="1070" y="752" text-anchor="middle" class="service-title">Budget</text>
-  <text x="1070" y="780" text-anchor="middle" class="service-detail">Quota hierarchy</text>
-  <text x="1070" y="804" text-anchor="middle" class="service-detail">Reservation</text>
-  <text x="1070" y="828" text-anchor="middle" class="service-detail">Settlement</text>
-
-  <rect x="1198" y="724" width="224" height="118" rx="11" fill="#f4f2fb" stroke="#c9c1de"/>
-  <text x="1310" y="752" text-anchor="middle" class="service-title">Knowledge</text>
-  <text x="1310" y="780" text-anchor="middle" class="service-detail">Observation · Memory</text>
-  <text x="1310" y="804" text-anchor="middle" class="service-detail">Context</text>
-  <text x="1310" y="828" text-anchor="middle" class="service-detail">Lineage · Tombstones</text>
+  <rect x="1138" y="724" width="284" height="118" rx="11" fill="#f4f2fb" stroke="#c9c1de"/>
+  <text x="1280" y="752" text-anchor="middle" class="service-title">Knowledge</text>
+  <text x="1280" y="780" text-anchor="middle" class="service-detail">Observation · Memory</text>
+  <text x="1280" y="804" text-anchor="middle" class="service-detail">Context</text>
+  <text x="1280" y="828" text-anchor="middle" class="service-detail">Lineage · Tombstones</text>
 
   <!-- Lower Core layers in dependency order: catalog -> durability -> foundation. -->
   <rect x="238" y="852" width="389" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
   <text x="432.5" y="875" text-anchor="middle" class="detail">Catalog: descriptions · registration</text>
   <rect x="635" y="852" width="390" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
-  <text x="830" y="875" text-anchor="middle" class="detail">Durability: prefix · snapshot · migration</text>
+  <text x="830" y="875" text-anchor="middle" class="detail">Durability: prefix · journal · snapshot</text>
   <rect x="1033" y="852" width="389" height="34" rx="9" fill="#f3f6fa" stroke="#bccbdc"/>
   <text x="1227.5" y="875" text-anchor="middle" class="detail">Foundation: IDs · time · fences · trace</text>
 
@@ -140,15 +134,15 @@
 
   <rect x="680" y="1060" width="400" height="150" rx="14" fill="#edf5ef" stroke="#b4ccbc"/>
   <text x="880" y="1098" text-anchor="middle" class="label">Providers</text>
-  <text x="880" y="1133" text-anchor="middle" class="small">Inference · Perception · Media · Motion</text>
+  <text x="880" y="1133" text-anchor="middle" class="small">Software · Models · Optional devices</text>
   <text x="880" y="1163" text-anchor="middle" class="small">Kernel-admitted I/O · Typed results</text>
   <text x="880" y="1192" text-anchor="middle" class="detail">Optional world-model / VLA inference*</text>
 
   <path d="M 1082 1135 H 1108" class="duplex"/>
   <rect x="1110" y="1060" width="320" height="150" rx="14" fill="#ffffff" stroke="#b8c6d4" stroke-dasharray="6 4"/>
-  <text x="1270" y="1098" text-anchor="middle" font-size="21" font-weight="650">Model gateway</text>
+  <text x="1270" y="1098" text-anchor="middle" font-size="21" font-weight="650">Optional model service</text>
   <text x="1270" y="1133" text-anchor="middle" class="small">External model APIs</text>
-  <text x="1270" y="1163" text-anchor="middle" class="detail">Credentials / service quota</text>
+  <text x="1270" y="1163" text-anchor="middle" class="detail">Runtime credentials / limits</text>
   <text x="1270" y="1192" text-anchor="middle" class="detail" font-weight="650">Does not own tasks</text>
   <path d="M 440 1210 V 1235" class="connector"/>
   <path d="M 880 1210 V 1235" class="connector"/>
@@ -157,9 +151,9 @@
   <text x="48" y="1287" class="layer-number">06</text>
   <text x="48" y="1312" class="layer">PLATFORM</text>
   <rect x="230" y="1235" width="850" height="100" rx="13" fill="#edf0f3" stroke="#bfc8d1"/>
-  <text x="655" y="1265" text-anchor="middle" class="label">Operating system / Drivers / Local control</text>
+  <text x="655" y="1265" text-anchor="middle" class="label">Operating system / Software / Optional drivers</text>
   <text x="655" y="1292" text-anchor="middle" class="small">ESP-IDF / FreeRTOS · Native OS</text>
-  <text x="655" y="1319" text-anchor="middle" class="small">Local controllers check permits · Optional ROS controllers</text>
+  <text x="655" y="1319" text-anchor="middle" class="small">Physical execution only: local control and permit checks</text>
   <path d="M 655 1335 V 1370" class="connector"/>
 
   <!-- External integrations can only reach managed boundaries; they never enter Core. -->
@@ -170,16 +164,17 @@
   <text x="1270" y="1313" text-anchor="middle" font-size="15" fill="#52677c">MHS adapter*: preview / spec access gated</text>
 
   <text x="48" y="1402" class="layer-number">07</text>
-  <text x="48" y="1427" class="layer">HARDWARE</text>
+  <text x="48" y="1427" class="layer">HOST</text>
   <rect x="230" y="1370" width="1200" height="78" rx="13" fill="#eef1f4" stroke="#bfc8d1"/>
-  <text x="830" y="1403" text-anchor="middle" class="label">Physical device</text>
-  <text x="830" y="1432" text-anchor="middle" class="small">CPU / RAM / Flash · Camera · Audio · Sensors · Actuators</text>
+  <text x="830" y="1403" text-anchor="middle" class="label">Host environment</text>
+  <text x="830" y="1432" text-anchor="middle" class="small">CPU / RAM / Storage · Software services · Optional peripherals</text>
 
   <!-- Stop has its own local path, outside normal admission and event queues. -->
   <path d="M 1432 170 H 1568 V 1078" class="stop-line"/>
   <rect x="1514" y="430" width="108" height="310" rx="15" fill="#fff3ec" stroke="#e4b69f"/>
   <text x="1568" y="468" text-anchor="middle" class="stop-title">LOCAL</text>
   <text x="1568" y="495" text-anchor="middle" class="stop-title">STOP</text>
+  <text x="1568" y="520" text-anchor="middle" class="stop-detail">Actuators only</text>
   <text x="1568" y="545" text-anchor="middle" class="stop-detail">Independent</text>
   <text x="1568" y="570" text-anchor="middle" class="stop-detail">priority path</text>
   <text x="1568" y="622" text-anchor="middle" class="stop-detail">No ordinary</text>
@@ -197,7 +192,7 @@
   <text x="1568" y="1430" text-anchor="middle" class="stop-detail" style="font-size: 14px">Measured stop bound</text>
   <path d="M 1486 1409 H 1432" class="stop-line"/>
 
-  <text x="230" y="1485" class="detail" font-weight="650">Execution permits and motion-outcome phases are base contracts; optional profiles and integrations are not Core prerequisites.</text>
+  <text x="230" y="1485" class="detail" font-weight="650">Physical permits and stopping apply when enabled; no camera, microphone, motor or robotics stack is required by Ayni.</text>
   <text x="230" y="1513" class="detail">* World model / VLA: bounded proposals only; they execute inside an admitted session after executor permit and envelope checks.</text>
   <text x="230" y="1541" class="detail">* MHS: adapter requires preview/spec access and conformance evidence; compatibility is not claimed.</text>
   <text x="48" y="1573" font-size="13" fill="#7a8a9b">Architecture contract only. Platform support, APIs, limits and recovery guarantees require implementation and validation evidence.</text>

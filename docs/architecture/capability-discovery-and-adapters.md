@@ -1,12 +1,14 @@
 # 能力发现 协议适配与现有代码处置计划
 
-- **状态**：架构提议与迁移计划，不是已实现接口或删除清单的执行授权。
+- **状态**：基础能力的发现/接入设计与可选协议实验说明；新接口和迁移仍待实施。
 - **日期**：2026-10-29。
-- **关系**：补充[通用能力架构与实施计划](capability-centered-agentos-plan.md)第 6、11～14 节及 [ADR-0081](../adr/0081-capability-centered-agentos-evolution.md)，沿用其中 AP 工作包和 D 决策编号。
-- **基线**：main `c9f7ad0`，实验性 C ABI 0.45 / storage schema 2；以下源码位置用于核查当前事实。
+- **关系**：补充[通用能力架构与实施计划](capability-centered-agentos-plan.md)第 6、11～14 节，沿用 AP/D 编号；现行次序与验收统一见[基础能力实施与实验计划](foundation-and-experiment-plan.md)及 [ADR-0083](../adr/0083-general-foundation-before-platform-experiments.md)。
+- **基线**：初次讨论为 main `c9f7ad0`（ABI 0.45 / schema 2），旧源码行号保留定位意义；当前 AP-00/AP-01 及 #108/#109 为 ABI 0.47 / schema 3，实施前重新核对消费者。
 - **讨论**：按用户要求，由协议与发现、代码处置两位子智能体分别核查并交叉讨论。共识见第 9 节。本轮只修改文档，不新增或删除生产代码，不启动 M2、硬件或新的测试专项。
 
 2026-10-29 实施补充：AP-00/AP-01 的实际交付范围与验证见[实施清单](ap00-ap01-implementation.md)及 #105/#106/#107；本文件其余发现、typed 协议、长操作与 adapter 分期仍为规划，不据此声称已实现。
+
+2026-10-29 路线修订：用户明确先完成 Ayni 基础通用能力，再开展 ESP32-S3、Linux 系统等实验。摄像头、音频、运动与协议 backend 是按需选择的实例，不规定任何宿主必须具备这些能力；Linux 系统实验不依赖 ESP32-S3、ROS 或轮式产品。Native/Sim 的开发回归继续进行，与后置平台实验分别报告。本轮按用户要求由两位子智能体讨论并同步文档，不执行代码迁移或实验。
 
 ## 1 总体结论与三个边界
 
@@ -18,11 +20,11 @@ Ayni 定义公开的能力描述、可信注册、受管发现和调用契约。
 |---|---|---|
 | 本机实现或外部服务 | 本板驱动、本机库/受管命令、stdio MCP、服务本机设备的 ROS | 本机可信配置、OS 权限、能力与 Provider 契约；不要求第二台 Ayni 或网络网关 |
 | 直接连接远程第三方端点 | 显式配置的远程 MCP HTTP server、远程 ROS 执行端 | 独立冻结端点认证、目标/外发范围、控制权、期限、查询及 UNKNOWN 语义；物理操作另需许可门和执行端本地停止证据。对端不必运行 Ayni |
-| Ayni Kernel peer | 电脑与 ESP 上的两个 Kernel 协作 | 原 [ADR-0009](../adr/0009-idl-and-local-api-encoding.md)、完整 MA-038 和 M5 的 peer 门槛；不能由 typed 仿真推定完成 |
+| Ayni Kernel peer | 所选平台上两个 Kernel 协作，PC/ESP 仅为一种组合 | [ADR-0009](../adr/0009-idl-and-local-api-encoding.md)、完整 MA-038 和独立 peer 协议验收；原 M5 仅作历史索引，不能由 typed 仿真推定完成 |
 
-第二类不一概等待第三类；本次也不批准提前实现它。原计划跨电脑/ESP 的 Ayni Bridge 路线仍保留原阶段条件。本机不可用不隐式改投远程，已接受 Call 不更换目标。
+第二类不一概等待第三类；本次也不批准提前实现它。跨节点支持仍须取得身份、授权、幂等、查询和分区等独立证据；原 MA-038/M5 留作工作项和历史索引，不引入轮式产品发布前置。本机不可用不隐式改投远程，已接受 Call 不更换目标。
 
-## 2 从物理发现到模型使用
+## 2 从候选发现到模型使用
 
 ### 2.1 统一接入流程
 
@@ -55,6 +57,8 @@ flowchart TD
 
 ### 2.2 新增一台摄像头的纵切
 
+本例是基础完成后可选设备实验的设计，用于解释相同接入契约如何应用到物理设备。基础阶段先用软件候选和模拟端点验证采纳、绑定、发现和调用，不要求宿主提供摄像头，也不以真实拍摄通过作为基础完成条件。
+
 1. **系统可见**：Linux/树莓派由已安装的具体摄像头 backend 使用 OS 枚举与 probe；设备节点、格式和访问权限只是原始事实。ESP 板载设备通常由 board manifest 声明总线/引脚，再由可信驱动 probe，不假定存在通用自动枚举。未装 backend、缺驱动或芯片身份未确认时报告不支持/待核验。
 2. **能力有意义**：扩展提供版本化的“列能力/采集/观察”等规范与使用资料，配对设备格式、分辨率、单位、结果和限制。OS 不会自动生成模型的使用方法。已有同语义摄像头只补实例差异，不把每款芯片说明复制进模型 Provider。
 3. **确定对象**：可信配置将候选关联到 Device/Component（确有物理关联时）、同一物理 Resource 和所选 Binding；资源使用共享还是独占模式依实际契约决定。设备身份、外部接口名、Capability ID、endpoint 与模型 alias 分开。`/dev/videoN`、MCP tool name、ROS namespace 或 server 自报名称都不能单独证明稳定物理身份。
@@ -62,7 +66,7 @@ flowchart TD
 5. **模型可发现与调用**：Task 的受约束工具视图给出用途、参数、结果、实际目标和可用性时间。模型提出采集，经正常授权/资源准入及派发屏障执行。若要读取图像、给模型看或上传，分别受 AP-08 的媒体引用、目的地和用途规则约束；发现摄像头不触发自动拍摄或上传。
 6. **运行中插拔**：新身份先作为候选待后续配置采纳；已注册设备拔出只更新健康/通道，不换成另一摄像头。只有可信匹配确认同一实例，才按 probe 证据更新相应健康。重新 ONLINE 不解除执行器隔离，隔离仍按原契约独立解除。路径被复用不能冒充原目标。
 
-首个“候选枚举与可信采纳”夹具可以早于真实图像数据面交付，但只能证明配置/身份/资源关联。它不构成 capture 或视觉能力支持。真实摄像头与音频数据面仍依赖 AP-02/AP-08，ESP 路径还需 M2 恢复和板级核对。
+首个“候选枚举与可信采纳”夹具可以早于真实图像数据面交付，但只能证明配置/身份/资源关联。它不构成 capture 或视觉能力支持。真实摄像头与音频数据面属于基础完成后的 AP-08 可选实验，ESP 路径另需 AP-07 的实际 Host 与板级条件，不能据基础夹具通过开放真实设备。
 
 纯软件能力同样来自可信安装扩展或显式配置；不把所有可执行文件、Shell 命令或开放网络端口自动转换成模型工具。
 
@@ -131,7 +135,7 @@ Full/ROS 沿用 ADR-0003 的独立账户、受限本地 IPC、SROS2 严格模式
 
 ### 6.1 外部协议没有提供的保证
 
-可信扩展/部署必须补齐 Principal/Grant、实际 target/egress、授权字段投影、共享物理资源、deadline、取消及本地终结、幂等/查询/去重证据，以及物理执行许可/独立停止。缺少证据时保守声明 NOT_IDEMPOTENT、dedupe window 为零、QUERY_NONE（有实际证据才声明 BEST_EFFORT 等）、cancel NONE 或 REQUEST；这些是声明原则，不引入新枚举。
+可信扩展/部署必须补齐 Principal/Grant、实际 target/egress、授权字段投影、所用资源、deadline、取消及本地终结、幂等/查询/去重证据；接入物理执行能力时，还须满足对应共享物理资源、执行许可和独立停止约束。缺少证据时保守声明 NOT_IDEMPOTENT、dedupe window 为零、QUERY_NONE（有实际证据才声明 BEST_EFFORT 等）、cancel NONE 或 REQUEST；这些是声明原则，不引入新枚举。
 
 不能用外部自然语言标签、UUID 或可靠 QoS 推断安全保证。缺少当前能力必需的许可门、目标确认或停止证据的物理写操作，不进入可执行支持子集；协议只读接入也须核对媒体读取和外发范围。
 
@@ -151,7 +155,7 @@ Full/ROS 沿用 ADR-0003 的独立账户、受限本地 IPC、SROS2 严格模式
 | `protocol/adapters/mcp/`、`protocol/adapters/ros2/` | 各模块拥有 client、连接、游标、外部请求关联、QoS/goal 状态；可直接提供发现端口与 Provider/IPC 边界，只依赖公开 Ayni 契约 | 不再建 `providers/mcp` 空转发层，不自有业务 Call 状态机 |
 | MHS 映射（位置待规范与复用证据） | 只转换实际获得的硬件语义资料；可复用 MCP 模块的公开协议机制 | 不先造 SDK/factory 或平行执行栈 |
 | AP-08 真实媒体 backend | 拥有媒体 bytes、format、read/retain/release/expiry；Core 只保管受管引用与有效性/依赖 | 不把 Mock store 改名就宣称真实采集、流媒体或授权服务 |
-| `applications/assistant/` 的共用编排 | 对话、Goal 组合和确定性停工产品规则，注入窄内容存储/owner 命令/输出端口 | 不复制 ESP 版 Native 编排，不搬 POSIX 实现进应用 |
+| `applications/assistant/` 的共用编排 | 作为应用样例拥有对话、Goal 组合和确定性停工产品规则，注入窄内容存储/owner 命令/输出端口 | 不强制所有 AgentOS 部署使用助理，不复制 ESP 版 Native 编排或搬 POSIX 实现进应用 |
 | 必要的公开头与 SDK helper | C99 有界数据/生命周期/错误；初期描述 join 保持 model submit 内局部，第二真实消费者后才提 SDK | 不复制 Core validator、不强制统一 IDL/插件框架或先建空目录 |
 
 ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.json](../../tools/architecture.json)及相应 CMake、公共头/组件规则与检查夹具；Core 模块/依赖变化才更新 [AyniLayers.cmake](../../cmake/AyniLayers.cmake)的相关规则，不将外部 adapter 放进 Core 层次。保持 Core 无平台 SDK、私有 adapter include 或依赖环。可信 adapter 代码与外部描述的信任层次不同，不能通过目录划分代替隔离设计。
@@ -173,7 +177,7 @@ ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.
 | Native curl/JSON/异步网络与 [conversation_store.h](../../runtime/native_node/conversation_store.h) | **保留**当前实际平台实现与文件隐私/格式；ESP 另提供所需 transport/系统实现。出现真实第二 backend 后才提取稳定协议部分 | Native Provider/CLI；不把 curl、POSIX 或 Mock 依赖强链入 ESP |
 | [Mock Provider](../../providers/mock/include/ayni/providers/mock.h)、[multinode_transport.h](../../runtime/sim_node/multinode_transport.h)、[new_hardware.cpp](../../examples/new_hardware.cpp)及 [examples 边界](../../examples/README.md) | **保留**确定性回归 oracle、FakeTransport 和公开 ABI 接入示例；生产 profile 选择真实实现，测试仍使用 Mock | 现有 E1～E4、SDK、subscription fixture；网络实现不替换掉历史 Fake 对照 |
 | [media.h](../../include/ayni/media.h)第 8～33 行、[Mock media](../../providers/mock/include/ayni/providers/mock/media.h)及实现 | **保留**现有 65,536 B/JPEG/PCM16 限制与测试 store；真实数据面另按 AP-08 提供 | Observation/订阅/Mock 夹具与 [mock_media_test.cpp](../../tests/unit/mock_media_test.cpp)；更大对象/流先做版本与消费者分析 |
-| [ESP runtime](../../runtime/esp_idf_node/esp_idf_node.cpp)第 46～81 行、[ESP Host](../../hosts/esp_idf/esp_idf_host.cpp)第 77～85 行、[入口](../../targets/esp32_assistant/main/main.cpp) | **增量完善**异步 storage、事件推进/关闭、模型网络、小容量 profile 和板级 manifest；Hello 可保留诊断模式 | AP-07 经用户恢复 M2 后交付；现有 create/destroy 和编译不构成硬件验收 |
+| [ESP runtime](../../runtime/esp_idf_node/esp_idf_node.cpp)第 46～81 行、[ESP Host](../../hosts/esp_idf/esp_idf_host.cpp)第 77～85 行、[入口](../../targets/esp32_assistant/main/main.cpp) | **基础完成后开展平台实验时增量完善**异步 storage、事件推进/关闭、模型网络、小容量 profile 和板级 manifest；Hello 可保留诊断模式 | AP-07 按独立实验范围启动，不要求音频/摄像头/底盘；现有 create/destroy 和编译不构成实机验收 |
 | 已替代的 Provider/kernel/policy/control 草案 | **按用户 2026-10-29 新决定删除**旧路径与无生产消费者的替代前声明；正式调用、执行、内存和订阅入口保留，Host trace 草案仍为独立待实现契约 | 所有消费者改用正式头，未知输入测试自带非法值；公共头 smoke 按现有文件检查，不保留兼容桥（ADR-0082） |
 | [check_deps.py](../../tools/check_deps.py)、`architecture.json`、CMake 分层规则 | **复用扩展**新 target/header kind/依赖规则，不另建平行检查器或放宽 Core 禁 SDK 约束 | [依赖检查夹具](../../tests/tools/test_check_deps.py)、公共头 smoke 和组件链接检查 |
 
@@ -185,7 +189,7 @@ ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.
 | [demo_profile.cpp](../../runtime/common/demo_profile.cpp)第 31～38 行总提示词承载 schedule 工具文法；[schedule_tool.cpp](../../applications/assistant/schedule_tool.cpp)第 107～127、198～224 行有真实契约/解析 | **AP-01 将文法和例子归扩展 Usage**，提示词继续拥有产品对话/批准规则；**AP-02 typed 迁移后才条件删除旧 parser**。仅删提示词会让当前工具失去用法，不能这样迁移 | 应用计划工具、model instructions、记忆/历史/UNKNOWN 处理均保持；新旧输入迁移和实际请求视图验证 |
 | `calls.h` 第 57～113、157～174 行 fields+text 与 [call_contract.cpp](../../core/catalog/capability/call_contract.cpp)第 62 行起的格式限制 | **AP-02 新增有界 typed 业务输入/结果**及授权投影，复用规范化/校验。旧格式淘汰须 D07、所有消费者迁移和旧数据拒绝/迁移/回退证据；不在 MCP importer 私塞 JSON | C ABI、所有 Provider/codec、Call 存储 reader/writer、Scope、SDK 和应用；正常 typed/缺省/未知字段/精度与旧格式规则验证 |
 | [call_tools.cpp](../../core/kernel/service/call/call_tools.cpp)第 90～191 行固定允许集合/8 项 bitmask，submit 作用域描述 | **AP-01 保留**；AP-03 有大目录需求才替换固定结构并定义权限时点/cursor/窗口。不得把回调搬到 decide/worker 或长期持有 | GoalType/工具视图/Provider；[kernel_tool_call_test.cpp](../../tests/unit/kernel_tool_call_test.cpp)保留，新增规模/披露/失效正常夹具。当前是 Goal 保存上限，非 live Grant 重裁 |
-| [assistant_state.h](../../runtime/native_node/assistant_state.h)第 15～18 行与 [assistant_commands.cpp](../../runtime/native_node/assistant_commands.cpp)第 74～105、125～155 行耦合 NativeNode/ConversationStore | **AP-06 将共用对话提交/停工编排迁至 applications/assistant**，注入真实窄端口；NativeNode、POSIX worker 与 runtime 装配保留。Native 行为基线和第二平台共同通过后才删原编排实现/兼容入口 | Native CLI、Sim 与未来 ESP；[native_assistant_test.cpp](../../tests/unit/native_assistant_test.cpp)保留，验证保存/停止/批准/取消既有行为 |
+| [assistant_state.h](../../runtime/native_node/assistant_state.h)第 15～18 行与 [assistant_commands.cpp](../../runtime/native_node/assistant_commands.cpp)第 74～105、125～155 行耦合 NativeNode/ConversationStore | **AP-06 将共用对话提交/停工编排迁至 applications/assistant**，注入窄端口；NativeNode、POSIX worker 与 runtime 装配保留。Native/Sim 两个实际消费者验证替代公开路径后才删原编排实现/兼容入口，不等待后置 ESP 实验才完成基础边界 | Native CLI、Sim 与后续实验；[native_assistant_test.cpp](../../tests/unit/native_assistant_test.cpp)保留，验证保存/停止/批准/取消既有行为；助理规则不成为 OS 固定产品语义 |
 | `demo_profile.cpp` 第 69～79 行聚合 Mock/OpenAI/应用等，`runtime/common` 的 demo target 有独立构建依赖 | **按实际消费拆分组合**；通用应用移出，具体选择仍留 runtime。第二 profile 证明共享边界后再删重复装配，不把 common 名称当平台无关证明 | Native/Sim/SDK fixture；ESP 构建图明确排除不需组件，不强行复用完整 Native demo |
 
 ### 7.3 明确不采用与未来删除门槛
@@ -196,22 +200,27 @@ ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.
 
 ## 8 分期 进入条件与验证计划
 
+基础实施和实验的详细任务、依赖与证据统一见[现行实施与实验计划](foundation-and-experiment-plan.md)。以下只标记本配套计划各项所属层次，避免把示例能力列成 AgentOS 必做路线。
+
 | 独立交付 | 复用主计划工作包 | 前置与完成边界 |
 |---|---|---|
-| 现有本机工具自描述 | AP-01 | D02；保持 fields+text、8 项、非订阅，先软件+模拟设备和本地模型夹具 |
-| 配置期原生候选纵切 | AP-03 中的候选采纳子项；必要资料先 AP-01 | 候选/身份/资源夹具可先于大目录分页独立交付；不声称真实采集。OS 枚举和纯 fixture 的实际范围分别说明 |
-| typed 契约与受管目录 | AP-02、AP-03 分别交付 | D03/D04/D05/D07；MCP 只依赖所需子集，不为协议预造完整 Schema 框架；AP-04 可选 |
-| 应用复用与 ESP 本板文本 | AP-06、AP-07 | Native 行为基线；M2 明确恢复、Host storage 和板级条件；无需 MCP/ROS/peer |
-| 真实摄像/语音与运动 | AP-08、AP-09 | D08/D09/D11 与各自契约；物理输出/停止仍需明确授权，候选发现不替代媒体/硬件证据 |
-| 本机 MCP 子集与同机 ROS 模拟 | AP-10a、AP-10b 独立 | D10 冻结版本、transport、输入/输出类型与正常夹具；ROS 保持原 R1 等门槛。MHS 等可实施资料，不互相阻塞 |
-| 直接远程第三方端点 | 对 AP-10a/b 单列远程支持子项 | D10 决定是否需要及认证/控制权/证据条件；不冒充 peer，也不自动解除原 Bridge 阶段约束 |
-| Ayni peer | AP-11b | 原 MA-038/M5 与独立线协议验收，本机能力不以此为前提 |
+| 已交付自描述 | AP-00/AP-01 | ADR-0082；保持 fields+text、8 项及非订阅的历史限制，不冒充 typed/发现已完成 |
+| 基础 typed 输入/结果 | AP-02 | D04/D07；统一规范化、授权投影、持久记录与执行输入，迁移公开消费者 |
+| 基础可信采纳与受管目录 | AP-03 | 所用 AP-02 输入、D03/D05；先软件候选夹具，再受限分页/说明/工具窗口，不以真实 OS 设备枚举为前置 |
+| 基础多实例验证 | AP-04 | 两软件实例或模拟端点检验精确路由和资源；仅有实证缺口时通过 D06/D07 演进 Binding |
+| 基础长操作与订阅 | AP-05 | AP-02、D09；软件任务和事件流先证明 Task 所属引用、控制、取消和回收，无语音视觉前置 |
+| 基础 SDK 与共用应用边界 | AP-06 | 保持 Native 行为，由 Native/Sim 验证公开接入路径；助理作为样例，不要求后置平台实验先完成 |
+| ESP32-S3 / Linux 等平台实验 | AP-07 / AP-11a | 基础完成后各自选能力范围并启动；ESP 验证板级/受限 Host，Linux 验证实际 OS 权限/生命周期/软件能力；两者互不前置 |
+| 可选真实媒体与运动实验 | AP-08 / AP-09 | 基础完成及所用平台/设备、D08/D11；只对所选能力要求媒体、校准、物理许可和停止证据 |
+| 可选本机 MCP / 同机 ROS 适配 | AP-10a / AP-10b | 基础完成、D10 与各自协议及适用 R1 条件；不要求 ESP 实验或轮式发布，Linux 实验也不强制安装它们 |
+| 可选直接远程第三方端点 | 对 AP-10a/b 单列支持子项 | 基础完成后按 D10 明确认证、目标/外发、查询及适用控制权/停止证据，不冒充 Ayni peer |
+| 可选 Ayni peer | AP-11b | 基础完成、ADR-0009、完整 MA-038 与独立协议验收；不依赖轮式产品试用，不作为本机能力前置 |
 
 未来正常 conformance 应验证：本机无远程配置也完整闭环；候选未注册不进入工具视图；缺 backend/类型/资料/容量明确拒绝；配置期采纳及运行中新身份待处理；同设备多协议争用同资源；唯一物理健康 owner 与独立通道状态；不暗换 endpoint；正确 alias/Schema 修订配对；取消无协议最终响应时仍有限本地收口；保留 UNKNOWN 不自动重发；按既有借用与 shutdown 顺序释放对象。这里列的是未来验证需求，本次没有执行它们。
 
 晚到竞态、掉线/分区、断电恢复和物理停止失效等专项必须在相应工作包明确证据及授权，当前只列未验证要求，不新开专项；已有测试仍保留 CI。主计划的资源预算、覆盖目标与证据等级继续适用。
 
-待用户决定仍集中主计划第 14 节：D01 次序；D02 旧描述兼容；D03 发现披露；D04 类型；D07 兼容；D08 媒体；D09 订阅；D10 首协议/版本/transport/Schema 与结果子集、ROS 范围/QoS、直接远程认证和控制权支持范围。若确需运行中无需重启接入，再独立决定热目录生命周期；无需为每个 driver 类名或 helper 位置增加产品决策。
+决策集中主计划第 14 节：D01 的通用定位/基础先行次序和 D02 的严格自描述已定；D03 发现披露、D04 类型、D05 容量、D06 必要的绑定演进、D07 兼容、D08 媒体、D09 订阅、D10 协议范围以及具体实验组合仍须在相应实施前收敛。若确需运行中无需重启接入，再独立决定热目录生命周期；不为每个 driver 类名或 helper 位置增加产品决策，也不把本轮文档授权当作兼容或真实输出批准。
 
 ## 9 两位子智能体讨论共识
 
@@ -226,3 +235,5 @@ ABI、线协议和 storage 分别版本化。新 target 先登记 [architecture.
 | 如何新增模块 | 围绕实际 backend/协议交付，可能一个模块提供候选与 Provider/IPC 端口，提前登记依赖规则 | 为了目录整齐增加空转发层，或把所有 client SDK 强放 Kernel 进程 |
 
 两位已交叉确认以上技术共识。它们不替代主计划中标记的产品、兼容与验收决定，也不把只读源码核查或本次文档检查当作新能力执行证据。
+
+本轮主计划与架构计划两位子智能体另行交叉确认：基础通用能力先完成，Native/Sim 开发验证持续进行；ESP32-S3、Linux 等实际平台实验随后各自开展，互不前置；摄像头/语音/运动及 MCP/ROS/peer 是可选能力或协议实验。多实例和 action/subscription 的基础验证可使用纯软件与模拟端点，物理执行保证仍在选用相关能力时完整适用。当前只同步文档，不把这些共识记为已实施或实验通过。

@@ -2,6 +2,8 @@
 
 本文记录 M0（`MA-002`）及 M1 实际使用的环境与开发命令。每个 PR 的按需本地验证、适用 CI、独立审查和合并流程以 [`workflow.md`](workflow.md) 第 2、4、7 节为准；实际执行结果记在对应 ADR。开发环境以 Linux 为准；macOS 未经验证，不在此列出步骤。
 
+当前按[基础通用能力实施与实验计划](architecture/foundation-and-experiment-plan.md)先完成基础，再安排 ESP32-S3、Linux 系统等实验。下列 Native/Sim 开发命令与现有 CI 继续使用；它们不等同于后续 Linux 实际 OS 服务集成实验。ESP-IDF 构建是已有实验入口，不要求所有部署具备外设，也不由本次文档修订启动板级操作或新专项。
+
 ## 已验证的版本
 
 | 工具 | 版本 | 用途 |

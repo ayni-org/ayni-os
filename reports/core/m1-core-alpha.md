@@ -1,5 +1,7 @@
 # M1 Core Alpha 报告（Native 功能验收）
 
+> **历史范围说明（2026-10-29）**：本页保留当时工作包、授权和验证证据。当前按[基础能力实施与平台实验计划](../../docs/architecture/foundation-and-experiment-plan.md)先完成通用 AgentOS 基础，再安排 ESP32-S3、Linux 等实验；原阶段设备链不再作为所有部署前置，本说明不改写已有结果。
+
 - **日期**：2026-10-28
 - **功能基线**：安全覆盖交付 [#102](https://github.com/RobotSe7en/ayni/pull/102)，覆盖率冻结提交 `5a9998718421f6ca6198a315e75c2517fce2eed8`；实验性 C ABI 0.45 / storage schema 2
 - **范围决定**：用户 2026-10-28 最新授权先完成安全覆盖、再完成本报告；本轮安全分支门槛接受 ≥80%，通用 ≥90% 偏差保留，M2 暂缓；见 [ADR-0080](../../docs/adr/0080-safety-branch-coverage-closeout.md)

@@ -4,6 +4,8 @@
 - **日期**：2026-10-19
 - **关联**：计划 §4.1、§7.1、§7.3；ADR-0005；[`contracts/domain/permits_and_stop.md`](../../contracts/domain/permits_and_stop.md)（C-STOP-001～009、C-PERMIT-012）；`MA-001`（电路审查）、`MA-026`（分项实测）；引脚分配见 [`reports/hardware/m0/gpio-candidates.md`](../../reports/hardware/m0/gpio-candidates.md)，价格见 [`reports/hardware/m0/bom-candidates.md`](../../reports/hardware/m0/bom-candidates.md)。
 
+**适用范围（ADR-0083）**：本文仅用于选定 ESP32 物理执行器实验时的候选停止电路，不要求所有 Ayni 宿主或 ESP32 基础实验配备电机、急停或额外硬件。通用基础先完成，具体实验另行安排；一旦启用相应执行能力，下述许可/停止保证及实测要求仍完整适用。现行顺序见[基础能力与实验计划](../architecture/foundation-and-experiment-plan.md)。
+
 ## 要做到什么
 
 停止链的四层分工由 ADR-0005 和停止契约规定，本文只回答“用哪些元件、怎么接”：
