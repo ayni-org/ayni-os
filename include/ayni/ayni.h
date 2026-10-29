@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 45u
+#define AYNI_ABI_MINOR 46u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1417,8 +1417,8 @@ typedef struct ayni_task_info_v1 {
 
 /*
  * Intents a principal submits through a session (contracts/domain/
- * primitives.md). The kinds this library implements; the other planned
- * kinds are in include/ayni/draft/kernel_api.h.
+ * primitives.md). Only implemented kinds are declared here; unknown kinds
+ * are rejected before their body is inspected (ADR-0082).
  */
 typedef uint32_t ayni_intent_kind_t;
 
@@ -1741,8 +1741,7 @@ typedef struct ayni_task_snapshot_v1 {
                                               struct ayni_observation_info_v1 *out);
 } ayni_task_snapshot_v1;
 
-/* The intent kinds this library implements; the other planned kinds are in
- * include/ayni/draft/policy_v1.h. REPORT_COMPLETION and REPORT_FAILURE end
+/* The intent kinds this library implements. REPORT_COMPLETION and REPORT_FAILURE end
  * the task; since 0.12, REPORT_PROGRESS commits a step of it. */
 typedef uint32_t ayni_policy_intent_kind_t;
 
@@ -2042,9 +2041,8 @@ ayni_status_t ayni_copy_task_checkpoint(const ayni_kernel_t *kernel, uint64_t ta
  *
  * Events a host posts from its own threads, other than completions of the
  * kernel's requests (ADR-0015, ADR-0021). They wait in a queue of
- * ingress_capacity events until ayni_step takes them. The kinds this library
- * implements; the other planned kinds are in include/ayni/draft/
- * kernel_api.h. Stop and safety state never travel as events (C-STOP-001).
+ * ingress_capacity events until ayni_step takes them. Only implemented kinds
+ * are declared. Stop and safety state never travel as events (C-STOP-001).
  */
 typedef uint32_t ayni_event_kind_t;
 
