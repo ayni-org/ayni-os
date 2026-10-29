@@ -15,12 +15,7 @@ namespace ayni::work {
 // separate bounded transitions. records.md type 17/v2 has no multi-Goal batch.
 constexpr uint32_t goal_authority_records_per_transition = 1;
 constexpr uint16_t goal_authority_record_type = durability::record_type::goal_authority;
-constexpr uint16_t goal_authority_record_version = 2;
-// Same fact body; a journal pause additionally requires its direct Task cohort
-// and the work scan progress/request record in the same batch (records.md).
-constexpr uint16_t goal_authority_pause_record_version = 3;
-// Same body, authorized replacement binding paired with an exact work command.
-constexpr uint16_t goal_authority_reauthorization_record_version = 4;
+constexpr uint16_t goal_authority_record_version = 1;
 // The original 32-byte identity/stamp/phase/count prefix is followed by five
 // u64 binding/frontier words. Each requirement adds version, three byte-string
 // lengths, Grant ID and selected revision (records.md type 17/v2).

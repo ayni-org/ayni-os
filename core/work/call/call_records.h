@@ -7,30 +7,13 @@
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-// REQUIRED; older readers explicitly refuse calls.
+// One complete current row in journal and snapshot (schema 3).
 constexpr uint16_t call_record_type = durability::record_type::call;
 constexpr uint16_t call_record_version = 1;
-constexpr uint16_t call_execution_record_version =
-    3; // Full original execution constraints and local stop facts.
-constexpr uint16_t call_skipped_record_version = 2; // Same layout; adds Core-only SKIPPED outcome.
-// Every row of a TOOL_CALLS contract: the v2 layout and outcomes plus a trailing
-// result kind, so old readers explicitly refuse tool-call lists (ADR-0054).
-constexpr uint16_t call_tool_calls_record_version = 4;
-// Erased request/result bodies plus an explicit privacy stamp and execution-presence tag.
-// Real action/query/execution outcomes retain their original encodings (ADR-0060).
-constexpr uint16_t call_erased_record_version = 5;
-// Finite subscription state, with a second version for erased bodies (ADR-0063).
-constexpr uint16_t call_subscription_record_version = 6;
-constexpr uint16_t call_erased_subscription_record_version = 7;
-// Existing physical layout plus scoped ObservationRef identities; erasure remains explicit.
-constexpr uint16_t call_scoped_execution_record_version = 8;
-constexpr uint16_t call_erased_scoped_execution_record_version = 9;
-constexpr uint32_t call_subscription_fixed_bytes = 48; // Source length, versions, enums, two u64.
-constexpr uint32_t call_erasure_tail_size = 28; // u32 execution-present + 24-byte ActionStamp.
-constexpr uint32_t call_result_kind_size = 4;   // The v4 trailing u32.
-// Normal rows preserve v1; old readers explicitly refuse a background skip.
-uint16_t call_record_version_for(const CallRecord &record);
-constexpr uint32_t call_record_fixed_size = 288; // Fixed fields and ten string/body lengths.
+constexpr uint32_t call_subscription_fixed_bytes = 48;
+// Execution/erasure markers, erasure stamp and result kind are always encoded.
+constexpr uint32_t call_metadata_tail_size = 36;
+constexpr uint32_t call_record_fixed_size = 288 + call_metadata_tail_size;
 constexpr uint32_t call_record_id_count =
     6; // Step, binding, capability, provider, endpoint, destination.
 constexpr uint32_t call_record_resource_fixed_size = 8; // String length and units per resource.
@@ -41,7 +24,6 @@ uint32_t call_record_size(const CallRecord &record);
 void write_call_record(const CallRecord &record, uint8_t *body);
 // Parses once, then applies CallTable's shared intrinsic validator. Failure
 // preserves out; success borrows domain, input and result from body.
-bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out,
-                      uint16_t version = call_record_version);
+bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out);
 } // namespace ayni::work
 #endif

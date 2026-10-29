@@ -47,7 +47,7 @@ struct CommandMapping {
     uint64_t commit_seq;         // of the transition that applied it
     ayni_intent_kind_t kind;     // Accepted operation kind; selects canonical/result rules.
     ayni_object_ref_v1 object;   // the result's
-    uint32_t canonical_size = 0; // 0 only for legacy ordinary commands
+    uint32_t canonical_size = 0; // 0 for ordinary digest identities or erased private content
     ayni_intent_effect_t effect =
         AYNI_INTENT_EFFECT_CHANGED; // First result, even after target changes.
     CommandRetention retention = CommandRetention::normal; // volatile; never persisted

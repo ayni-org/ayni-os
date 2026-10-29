@@ -1,5 +1,7 @@
 // White-box E4 media corruption only; preserve record and batch owners' codecs.
 #include "durability/batch/batch_codec.h"
+#include "foundation/crc32.h"
+#include "foundation/little_endian.h"
 #include "experiment_composite.h"
 namespace ayni::runtime::experiments {
 bool replace_storage_version(World &world, VersionFault fault, uint16_t version) {
@@ -20,8 +22,7 @@ bool replace_storage_version(World &world, VersionFault fault, uint16_t version)
             return false;
         }
         std::vector<uint8_t> bytes(stored.bytes.size());
-        durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity,
-                                       fault == VersionFault::schema ? version : batch.schema);
+        durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity);
         durability::RecordReader records(batch);
         durability::RecordHeader header{};
         const uint8_t *body = nullptr;
@@ -47,6 +48,12 @@ bool replace_storage_version(World &world, VersionFault fault, uint16_t version)
             return false;
         }
         bytes.resize(size);
+        if (fault == VersionFault::schema) {
+            constexpr uint32_t schema_at = 4;
+            constexpr uint32_t crc_at = durability::batch_header_size - sizeof(uint32_t);
+            foundation::store_le16(bytes.data() + schema_at, version);
+            foundation::store_le32(bytes.data() + crc_at, foundation::crc32(bytes.data(), crc_at));
+        }
         stored.bytes = std::move(bytes);
     }
     if (fault == VersionFault::required_record &&

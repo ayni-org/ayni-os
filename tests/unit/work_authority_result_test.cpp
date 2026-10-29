@@ -244,7 +244,7 @@ TEST(WorkAuthorityResult, command_record_round_trip_and_all_truncations_are_atom
     accepted.result_size = static_cast<uint32_t>(evidence.size());
     accepted.digest = authority_command_digest({canonical.data(), input_size});
     const auto size = command_record_size_for(accepted);
-    ASSERT_EQ(command_record_version_for(accepted), work_authority_command_record_version);
+    ASSERT_EQ(accepted.kind, AYNI_INTENT_GOAL_APPROVE);
     std::vector<uint8_t> body(size + 1U);
     ASSERT_TRUE(write_command_record(accepted, 0, {canonical.data(), input_size}, body.data(), size,
                                      {evidence.data(), accepted.result_size}));
@@ -252,8 +252,7 @@ TEST(WorkAuthorityResult, command_record_round_trip_and_all_truncations_are_atom
     uint64_t floor = 99;
     ayni_bytes_v1 input{};
     ayni_bytes_v1 output{};
-    ASSERT_TRUE(read_command_record(work_authority_command_record_version, body.data(), size,
-                                    decoded, floor, input, &output));
+    ASSERT_TRUE(read_command_record(body.data(), size, decoded, floor, input, &output));
     EXPECT_EQ(floor, 0U);
     EXPECT_EQ(decoded.object.id, id(1));
     EXPECT_EQ(decoded.result_size, evidence.size());
@@ -267,16 +266,14 @@ TEST(WorkAuthorityResult, command_record_round_trip_and_all_truncations_are_atom
         uint64_t sentinel_floor = 99;
         ayni_bytes_v1 sentinel_input{canonical.data(), input_size};
         ayni_bytes_v1 sentinel_output{evidence.data(), accepted.result_size};
-        EXPECT_FALSE(read_command_record(work_authority_command_record_version, body.data(), cut,
-                                         untouched, sentinel_floor, sentinel_input,
-                                         &sentinel_output));
+        EXPECT_FALSE(read_command_record(body.data(), cut, untouched, sentinel_floor, sentinel_input, &sentinel_output));
         EXPECT_EQ(untouched.commit_seq, accepted.commit_seq);
         EXPECT_EQ(untouched.result_size, accepted.result_size);
         EXPECT_EQ(sentinel_floor, 99U);
         EXPECT_EQ(sentinel_input.data, canonical.data());
         EXPECT_EQ(sentinel_output.data, evidence.data());
     }
-    const ayni::durability::RecordHeader old{command_record_type, approval_command_record_version,
+    const ayni::durability::RecordHeader old{command_record_type, uint16_t{99},
                                              ayni::durability::record_required, size};
     EXPECT_EQ(WorkReplay::classify_header(old), ayni::durability::RecordUse::unknown);
 }

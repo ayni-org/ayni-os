@@ -10,12 +10,12 @@
 #include "kernel/service/persistence/work_replay.h"
 namespace ayni::kernel {
 namespace {
-const StoreKind kinds[] = {{command_record_type, exact_command_record_version}};
+const StoreKind kinds[] = {{command_record_type}};
 // records.md COMMAND_MAPPING snapshot suffix: original commit_seq, little endian.
 constexpr uint32_t command_tail_size = sizeof(uint64_t);
 bool knows(uint16_t, uint16_t version, WorkRecordContext context) {
-    return knows_command_record(version) &&
-           (version != expired_command_record_version || context == WorkRecordContext::snapshot);
+    return version == (context == WorkRecordContext::journal
+                           ? command_record_version : command_snapshot_record_version);
 }
 uint32_t capacity(const KernelCapacities &c) {
     return authority::PrincipalRegistry::capacity * c.command_capacity;
@@ -35,7 +35,7 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
         return true;
     }
     const auto size = command_record_size_for(*mapping);
-    auto *at = writer.add_record_body({command_record_type, command_record_version_for(*mapping),
+    auto *at = writer.add_record_body({command_record_type, command_record_version,
                                        durability::record_required, size});
     return at != nullptr &&
            write_command_record(*mapping, model.commands.floor(mapping->principal_id),
@@ -59,7 +59,7 @@ bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
 StoreRecord snapshot_record(const WorkModel &model, const StoreCursor &cursor) {
     const auto index = cursor.index;
     const auto &mapping = model.commands.at(index);
-    return {command_record_version_for(mapping),
+    return {command_snapshot_record_version,
             command_record_size_for(mapping) + command_tail_size};
 }
 void snapshot_write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
@@ -210,14 +210,14 @@ durability::BatchCheck restore_expired(WorkModel &model,
     return snapshot_restore_check(model.commands.restore_checked(mapping, floor));
 }
 durability::BatchCheck snapshot_read(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                                     uint16_t version, const uint8_t *body, uint32_t size, uint16_t,
+                                     uint16_t, const uint8_t *body, uint32_t size, uint16_t,
                                      StoreReadCursor &) {
     CommandMapping mapping{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
     ayni_bytes_v1 result_bytes{};
     if (size < command_tail_size ||
-        !read_command_record(version, body, size - command_tail_size, mapping, floor, canonical,
+        !read_command_record(body, size - command_tail_size, mapping, floor, canonical,
                              &result_bytes)) {
         return durability::BatchCheck::corrupt;
     }

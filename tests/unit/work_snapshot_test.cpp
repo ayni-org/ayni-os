@@ -248,9 +248,7 @@ TEST(WorkSnapshot, optional_goal_state_extensions_preserve_the_normal_snapshot_v
     ++meta.record_count;
     meta.payload_length = bytes.size();
     Model restored;
-    ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::ok);
-    EXPECT_EQ(restored.get().tasks.at(0).task_id, task_id);
-    EXPECT_EQ(restored.get().tasks.at(0).step_count, 2U);
+    ASSERT_EQ(import_model(restored.get(), meta, bytes), BatchCheck::corrupt);
 }
 
 // ADR-0065: normal group preference snapshots retain the exact logical input frontier.
@@ -445,7 +443,7 @@ TEST(WorkSnapshot, unknown_required_records_and_incomplete_tasks_refuse_recovery
     EXPECT_EQ(reader.apply({999, 1, ayni::durability::record_required, 0}, nullptr),
               BatchCheck::unsupported);
     reader.reset(meta);
-    EXPECT_EQ(reader.apply({999, 1, 0, 0}, nullptr), BatchCheck::ok);
+    EXPECT_EQ(reader.apply({999, 1, 0, 0}, nullptr), BatchCheck::unsupported);
     // ADR-0038: an optional unknown record cannot replace the required work
     // cleanup fact, including an explicit idle scan in an otherwise empty snapshot.
     EXPECT_EQ(reader.complete(), BatchCheck::corrupt);

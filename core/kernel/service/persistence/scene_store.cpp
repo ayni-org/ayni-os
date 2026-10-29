@@ -27,7 +27,7 @@ uint32_t record_max(const KernelCapacities &capacities) {
     return authority::scene_record_max(capacities.authority_scope_max_bytes);
 }
 
-const StoreKind kinds[] = {{authority::scene_record_type, always_required}};
+const StoreKind kinds[] = {{authority::scene_record_type}};
 uint32_t journal_max(const KernelCapacities &c) {
     return capacity(c) == 0U ? 0U : record_bytes(record_max(c));
 }

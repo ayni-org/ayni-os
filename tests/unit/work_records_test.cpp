@@ -187,9 +187,9 @@ Goal goal_of(const GoalFields &fields, uint64_t created_us = 100) {
     return goal;
 }
 
-std::vector<uint8_t> written_goal(const Goal &goal, const std::string &parameters) {
+std::vector<uint8_t> written_goal(const Goal &goal, const std::string &parameters, ayni::work::GoalRecordOptions options = {}) {
     std::vector<uint8_t> body(ayni::work::goal_record_size(goal));
-    ayni::work::write_goal_record(goal, bytes_of(parameters), body.data());
+    ayni::work::write_goal_record(goal, bytes_of(parameters), body.data(), options);
     return body;
 }
 
@@ -300,24 +300,18 @@ TEST(WorkRecords, nondefault_goal_profile_has_explicit_journal_and_snapshot_enco
     GoalFields fields;
     fields.period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
     auto goal = goal_of(fields);
-    const auto old_body = written_goal(goal, fields.parameters);
+    const auto ordinary = written_goal(goal, fields.parameters);
     goal.work_profile = {AYNI_WORK_BACKGROUND, AYNI_BACKGROUND_PERIOD_DEFAULT_US};
-    const auto body = written_goal(goal, fields.parameters);
-    ASSERT_EQ(body.size(), old_body.size() + ayni::work::goal_work_profile_size);
-    EXPECT_EQ(std::memcmp(body.data(), old_body.data(), old_body.size()), 0);
-    EXPECT_EQ(load_le32(body.data() + old_body.size()), AYNI_WORK_BACKGROUND);
-    const auto journal = ayni::work::goal_record_version_for(goal, true);
-    const auto snapshot = ayni::work::goal_snapshot_version_for(goal, true);
-    EXPECT_EQ(journal, ayni::work::goal_work_profile_record_version);
-    EXPECT_EQ(snapshot, ayni::work::goal_work_profile_snapshot_version);
-    for (const auto version : {journal, snapshot}) {
-        GoalRecord record{};
-        ASSERT_TRUE(ayni::work::read_goal_record(body.data(), static_cast<uint32_t>(body.size()),
-                                                 record, version));
-        EXPECT_TRUE(record.goal.work_profile == goal.work_profile);
-        EXPECT_EQ(string_of(record.goal.parameters), fields.parameters);
-        EXPECT_TRUE(record.authority_required);
-    }
+    const auto body = written_goal(goal, fields.parameters, {true, false});
+    ASSERT_EQ(body.size(), ordinary.size());
+    constexpr auto tail = ayni::work::goal_work_profile_size +
+                          ayni::work::goal_group_tail_size + ayni::work::goal_options_size;
+    EXPECT_EQ(load_le32(body.data() + body.size() - tail), AYNI_WORK_BACKGROUND);
+    GoalRecord record{};
+    ASSERT_TRUE(ayni::work::read_goal_record(body.data(), static_cast<uint32_t>(body.size()), record));
+    EXPECT_TRUE(record.goal.work_profile == goal.work_profile);
+    EXPECT_EQ(string_of(record.goal.parameters), fields.parameters);
+    EXPECT_TRUE(record.authority_required);
 }
 
 TEST(WorkRecords, goal_record_round_trips_with_its_strings_and_parameters) {

@@ -82,7 +82,7 @@ bool record_reader_versions(World &world) {
            resolver && catalogs.providers.at(index).query ? catalogs.providers.at(index).version
                                                           : 0);
     e.fact("reader", "storage", durability::storage_schema);
-    e.fact("reader", "required_task_state_max", work::task_state_version_max);
+    e.fact("reader", "required_task_state_max", work::task_state_record_version);
     // A supported current image can be read with the owner codec. Unsupported
     // schema bytes are instead recorded by the version-injection owner.
     uint16_t record_version = 0;

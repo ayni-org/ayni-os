@@ -228,9 +228,7 @@ TEST(GrantReplay, child_parent_revision_must_match_the_persisted_exact_request) 
             CommandMapping mapping{};
             uint64_t floor = 0;
             ayni_bytes_v1 canonical{};
-            ASSERT_TRUE(ayni::kernel::read_command_record(record.header.version, record.body.data(),
-                                                          record.header.length, mapping, floor,
-                                                          canonical));
+            ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length, mapping, floor, canonical));
             ayni::kernel::AuthorityCommandRecord request{};
             ASSERT_TRUE(ayni::kernel::read_authority_command(canonical, request));
             if (request.parent_grant_id == 0U) {
@@ -413,9 +411,7 @@ TEST(GrantReplay, a_future_boot_grant_id_is_corrupt_even_when_mapping_and_create
                 CommandMapping mapping{};
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{};
-                ASSERT_TRUE(ayni::kernel::read_command_record(
-                    record.header.version, record.body.data(), record.header.length, mapping, floor,
-                    canonical));
+                ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length, mapping, floor, canonical));
                 mapping.object.id += UINT64_C(1) << 32U;
                 std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
                 ASSERT_TRUE(ayni::kernel::write_command_record(
@@ -456,9 +452,7 @@ TEST(GrantReplay, an_earlier_boot_create_is_corrupt_even_when_mapping_and_create
                 CommandMapping mapping{};
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{};
-                ASSERT_TRUE(ayni::kernel::read_command_record(
-                    record.header.version, record.body.data(), record.header.length, mapping, floor,
-                    canonical));
+                ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length, mapping, floor, canonical));
                 mapping.object.id -= UINT64_C(1) << 32U;
                 std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
                 ASSERT_TRUE(ayni::kernel::write_command_record(
@@ -565,7 +559,7 @@ BatchCheck import_snapshot(const Snapshot &snapshot,
 
 bool auth_mapping(const Record &record) {
     return record.header.type == ayni::kernel::command_record_type &&
-           record.header.version == ayni::kernel::exact_command_record_version;
+           record.header.version == ayni::kernel::command_record_version;
 }
 
 void rewrite_auth_request(Record &record, const std::function<void(std::vector<uint8_t> &)> &edit) {
@@ -573,8 +567,7 @@ void rewrite_auth_request(Record &record, const std::function<void(std::vector<u
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
     const uint32_t base = record.header.length - 8U;
-    ASSERT_TRUE(ayni::kernel::read_command_record(record.header.version, record.body.data(), base,
-                                                  mapping, floor, canonical));
+    ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), base, mapping, floor, canonical));
     std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
     edit(bytes);
     const ayni_bytes_v1 view{bytes.data(), static_cast<uint32_t>(bytes.size())};
@@ -966,15 +959,13 @@ TEST(GrantRevokeReplay, mapping_owner_and_object_must_match_the_accepted_root_re
         const auto log = edited_log(original, [&](Batch &batch) {
             for (auto &record : batch.records) {
                 if (record.header.type != ayni::kernel::command_record_type ||
-                    record.header.version != ayni::kernel::revoke_command_record_version) {
+                    record.header.version != ayni::kernel::command_record_version) {
                     continue;
                 }
                 CommandMapping mapping{};
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{};
-                ASSERT_TRUE(ayni::kernel::read_command_record(
-                    record.header.version, record.body.data(), record.header.length, mapping, floor,
-                    canonical));
+                ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length, mapping, floor, canonical));
                 std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
                 if (fault == 0U) {
                     ++mapping.principal_id;
@@ -1005,7 +996,7 @@ TEST(GrantRevokeReplay, descendant_state_and_progress_are_an_atomic_pair) {
                 std::any_of(batch.records.begin(), batch.records.end(), [](const Record &record) {
                     return record.header.type == ayni::authority::grant_state_record_type &&
                            record.header.version ==
-                               ayni::authority::grant_revoked_state_record_version;
+                               ayni::authority::grant_state_record_version;
                 });
             if (!child_state) {
                 return;
@@ -1166,8 +1157,7 @@ TEST(GrantRevokeReplay, snapshot_revoke_effect_must_agree_with_the_retained_targ
             uint64_t floor = 0;
             ayni_bytes_v1 canonical{};
             const auto base = record.header.length - 8U;
-            ASSERT_TRUE(ayni::kernel::read_command_record(3, record.body.data(), base, mapping,
-                                                          floor, canonical));
+            ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), base, mapping, floor, canonical));
             mapping.effect = effect;
             mapping.object.revision = effect == AYNI_INTENT_EFFECT_TARGET_GONE ? 0U : 2U;
             std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
@@ -1217,8 +1207,7 @@ TEST(GrantRevokeReplay, snapshot_revoke_mapping_validates_binding_sequence_and_k
             uint64_t floor = 0;
             ayni_bytes_v1 canonical{};
             const auto base = record.header.length - 8U;
-            ASSERT_TRUE(ayni::kernel::read_command_record(3, record.body.data(), base, mapping,
-                                                          floor, canonical));
+            ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), base, mapping, floor, canonical));
             std::vector<uint8_t> bytes(canonical.data, canonical.data + canonical.size);
             if (fault == 0U) {
                 ++mapping.principal_id;
@@ -1258,7 +1247,7 @@ TEST(GrantReplay, a_foreign_mapping_principal_cannot_adopt_a_valid_grants_owner_
     const auto damaged = edited_log(original, [&](Batch &batch) {
         for (auto &record : batch.records) {
             if (record.header.type == ayni::kernel::command_record_type &&
-                record.header.version == ayni::kernel::exact_command_record_version) {
+                record.header.version == ayni::kernel::command_record_version) {
                 ASSERT_EQ(ayni::foundation::load_le64(record.body.data()), owner_id);
                 // principal is outside the canonical request/digest. All
                 // Grant, binding, result and request bytes remain original;
@@ -1308,8 +1297,7 @@ TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independ
                 continue;
             }
             ayni::authority::GrantSnapshotRecord decoded{};
-            ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(
-                record.body.data(), record.header.length, decoded, record.header.version));
+            ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(record.body.data(), record.header.length, decoded));
             ASSERT_EQ(decoded.lifecycle, AYNI_GRANT_EXPIRED);
             ASSERT_EQ(decoded.revision, 2U);
             ASSERT_GT(decoded.stamp.transition_id, decoded.created_stamp.transition_id);
@@ -1319,7 +1307,7 @@ TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independ
             const auto tail =
                 record.body.size() - (record.header.version == 1U
                                           ? ayni::authority::grant_snapshot_tail_size
-                                          : ayni::authority::grant_revocation_snapshot_tail_size);
+                                          : ayni::authority::grant_snapshot_tail_size);
             const uint32_t offset =
                 corrupt_commit ? terminal_commit_offset : terminal_transition_offset;
             const uint64_t invalid = corrupt_commit ? snapshot.metadata.covers_commit_seq + 1U
@@ -1368,7 +1356,7 @@ TEST(GrantRevokeReplay, accepted_mapping_cannot_claim_an_unreachable_original_re
     const auto log = edited_log(original, [&](Batch &batch) {
         for (auto &record : batch.records) {
             if (record.header.type != ayni::kernel::command_record_type ||
-                record.header.version != ayni::kernel::revoke_command_record_version) {
+                record.header.version != ayni::kernel::command_record_version) {
                 continue;
             }
             // Independent v3 framing oracle: common mapping prefix digest at
@@ -1441,11 +1429,10 @@ TEST(GrantRevokeReplay, record_versions_are_specific_to_journal_and_snapshot_con
         EXPECT_EQ(WorkReplay::classify_header({type, 99, 0, 0}), RecordUse::corrupt);
     }
     const RecordHeader snapshot_grant{ayni::authority::grant_record_type, 2, record_required, 0};
-    // ADR-0037: journal v2 is now a different, Goal-bound creation body.
-    // Header classification cannot infer snapshot semantics without context.
-    EXPECT_EQ(WorkReplay::classify_header(snapshot_grant), RecordUse::applied);
+    // Schema 3 creation bodies differ only between journal and snapshot contexts.
+    EXPECT_EQ(WorkReplay::classify_header(snapshot_grant), RecordUse::unknown);
     const RecordHeader bound_snapshot{ayni::authority::grant_record_type,
-                                      ayni::authority::goal_grant_snapshot_record_version,
+                                      ayni::authority::grant_snapshot_record_version,
                                       record_required, 0};
     EXPECT_EQ(WorkReplay::classify_header(bound_snapshot), RecordUse::unknown);
     EXPECT_EQ(WorkReplay::classify_header(bound_snapshot, WorkRecordContext::snapshot),
@@ -1547,8 +1534,7 @@ TEST(GrantRevokeReplay, matching_syntax_still_requires_the_root_and_mapping_effe
             CommandMapping mapping{};
             uint64_t floor = 0;
             ayni_bytes_v1 canonical{};
-            ASSERT_TRUE(ayni::kernel::read_command_record(
-                3, record.body.data(), record.header.length, mapping, floor, canonical));
+            ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length, mapping, floor, canonical));
             mapping.effect = AYNI_INTENT_EFFECT_NO_CHANGE;
             std::vector<uint8_t> request(canonical.data, canonical.data + canonical.size);
             ASSERT_TRUE(ayni::kernel::write_command_record(
@@ -1581,8 +1567,7 @@ TEST(GrantRevokeReplay, a_later_boot_record_cannot_legitimize_an_earlier_future_
                 CommandMapping mapping{};
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{};
-                ASSERT_TRUE(ayni::kernel::read_command_record(
-                    3, record.body.data(), record.header.length, mapping, floor, canonical));
+                ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length, mapping, floor, canonical));
                 mapping.object.id += UINT64_C(1) << 32U;
                 mapping.object.revision = 0;
                 mapping.effect = AYNI_INTENT_EFFECT_TARGET_GONE;
@@ -1700,8 +1685,7 @@ TEST(GrantRevokeReplay,
         uint64_t floor = 0;
         ayni_bytes_v1 canonical{};
         const auto base = record.header.length - 8U;
-        ASSERT_TRUE(ayni::kernel::read_command_record(3, record.body.data(), base, mapping, floor,
-                                                      canonical));
+        ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), base, mapping, floor, canonical));
         mapping.object.id = child.result.object.id;
         std::vector<uint8_t> request(canonical.data, canonical.data + canonical.size);
         ayni::foundation::store_le64(request.data() + 8U, mapping.object.id);
@@ -1805,8 +1789,8 @@ TEST(GrantRevokeReplay,
                                      ayni::kernel::revoke_command_size,
                                      AYNI_INTENT_EFFECT_CHANGED};
         auto mapped = required(
-            ayni::kernel::command_record_type, ayni::kernel::revoke_command_record_version,
-            ayni::kernel::revoke_command_record_fixed_size + ayni::kernel::revoke_command_size);
+            ayni::kernel::command_record_type, ayni::kernel::command_record_version,
+            ayni::kernel::command_record_size + ayni::kernel::revoke_command_size);
         EXPECT_TRUE(ayni::kernel::write_command_record(mapping, 0, identity, mapped.body.data(),
                                                        mapped.header.length));
         return std::vector<Record>{revoked, mapped};
@@ -1843,8 +1827,8 @@ TEST(GrantRevokeReplay,
     child_fact.revision = 2;
     child_fact.revoked_by_root_id = a;
     auto child_state = required(ayni::authority::grant_state_record_type,
-                                ayni::authority::grant_revoked_state_record_version,
-                                ayni::authority::grant_revoked_state_record_size);
+                                ayni::authority::grant_state_record_version,
+                                ayni::authority::grant_state_record_size);
     ayni::authority::write_grant_state_record(child_fact, child_state.body.data());
 
     // Both histories finish with A/B cursors at X. In the bad history S
@@ -1920,7 +1904,7 @@ TEST(GrantRevokeReplay, a_descendant_state_keeps_replay_incomplete_until_its_pro
                                                       item.record.body.data(), item.boot_epoch),
                   RecordUse::applied);
         if (item.record.header.type == ayni::authority::grant_state_record_type &&
-            item.record.header.version == ayni::authority::grant_revoked_state_record_version) {
+            item.record.header.version == ayni::authority::grant_state_record_version) {
             saw_child = true;
             EXPECT_FALSE(replay.complete());
         }
@@ -2058,8 +2042,7 @@ TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_creat
         }
         ++snapshot_grants;
         ayni::authority::GrantSnapshotRecord decoded{};
-        ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(
-            record.body.data(), record.header.length, decoded, record.header.version));
+        ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(record.body.data(), record.header.length, decoded));
         const auto start = static_cast<std::size_t>(decoded.create.scope.data - record.body.data());
         ASSERT_GT(decoded.create.scope.size, 0U);
         ASSERT_LE(start, record.body.size());
@@ -2090,8 +2073,7 @@ TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_creat
             }
             ++changed_records;
             GrantRecord decoded{};
-            ASSERT_TRUE(ayni::authority::read_grant_record(record.body.data(), record.header.length,
-                                                           decoded, record.header.version));
+            ASSERT_TRUE(ayni::authority::read_grant_record(record.body.data(), record.header.length, decoded));
             const auto start = static_cast<std::size_t>(decoded.scope.data - record.body.data());
             for (std::size_t at = start; at < start + decoded.scope.size; ++at) {
                 for (unsigned bit = 0; bit < bits_per_byte; ++bit) {

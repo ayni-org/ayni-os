@@ -168,8 +168,8 @@ TEST(PrefixScan, unknown_records_follow_the_required_flag) {
         RecordHeader record;
         BatchCheck expected;
     } cases[] = {
-        {{99, 1, 0, 0}, BatchCheck::ok},
-        {{known_type, 2, 0, 0}, BatchCheck::ok},
+        {{99, 1, 0, 0}, BatchCheck::unsupported},
+        {{known_type, 2, 0, 0}, BatchCheck::unsupported},
         {{99, 1, record_required, 0}, BatchCheck::unsupported},
         {{known_type, 2, record_required, 0}, BatchCheck::unsupported},
         {{known_type, 1, 0x4U, 0}, BatchCheck::unsupported},

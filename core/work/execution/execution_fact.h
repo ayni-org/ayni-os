@@ -31,19 +31,14 @@ bool same_execution_identity(const ExecutionFact &left, const ExecutionFact &rig
 bool execution_advances(const std::optional<ExecutionFact> &before,
                         const std::optional<ExecutionFact> &after);
 bool execution_stopped(const ExecutionFact &fact); // STOPPED or proven NOT_STARTED only.
-// CALL_STATE v3 tail layouts in records.md; no native struct bytes or monotonic times.
+// Current CALL_STATE execution tail; no native struct bytes or monotonic times.
 constexpr uint32_t execution_record_fixed_bytes = 112;
 constexpr uint32_t execution_field_fixed_bytes = 16;
-constexpr uint32_t execution_dependency_fixed_bytes = 32;
-constexpr uint32_t execution_scoped_dependency_bytes = sizeof(uint64_t); // v8/v9 subscription ID.
-// Old records omit subscription_id; scoped layouts append it to each dependency.
-enum class ObservationRecordLayout { source, scoped };
-bool has_scoped_dependencies(const ExecutionFact &fact);
+// Every reference includes subscription_id, zero explicitly denotes a Host source.
+constexpr uint32_t execution_dependency_fixed_bytes = 40;
 uint32_t execution_record_max();
 uint32_t execution_record_size(const ExecutionFact &fact);
-void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer,
-                     ObservationRecordLayout layout = ObservationRecordLayout::source);
-bool read_execution(durability::BodyReader &reader, ExecutionFact &out,
-                    ObservationRecordLayout layout = ObservationRecordLayout::source);
+void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer);
+bool read_execution(durability::BodyReader &reader, ExecutionFact &out);
 } // namespace ayni::work
 #endif

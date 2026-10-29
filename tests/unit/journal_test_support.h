@@ -47,8 +47,7 @@ inline hosts::sim::StoredBatch write_stored_batch(const JournalBatch &batch) {
     hosts::sim::StoredBatch stored{};
     stored.commit_seq = batch.identity.commit_seq;
     stored.bytes.resize(durability::batch_size(body_size, batch.records.size()));
-    durability::BatchWriter writer(stored.bytes.data(), stored.bytes.size(), batch.identity,
-                                   batch.schema);
+    durability::BatchWriter writer(stored.bytes.data(), stored.bytes.size(), batch.identity);
     for (const auto &record : batch.records) {
         EXPECT_EQ(record.header.length, record.body.size());
         EXPECT_TRUE(writer.add_record(record.header, record.body.data()));

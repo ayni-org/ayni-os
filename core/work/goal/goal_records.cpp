@@ -10,12 +10,6 @@ constexpr uint32_t next_scheduled_flag = 0x1U;
 constexpr uint32_t expiry_pending_flag = 0x2U;
 constexpr uint32_t known_flags = next_scheduled_flag | expiry_pending_flag;
 
-// Tracked content always carries a profile tail, including the ordinary default value.
-bool has_profile(const Goal &goal, uint16_t version) {
-    return !goal.work_profile.is_default() || version == goal_provenance_record_version ||
-           version == goal_provenance_snapshot_version || version >= goal_calendar_record_version;
-}
-
 // Reads a catalog id field; empty only when may_be_empty. A read past the
 // end shows in BodyReader::ok().
 bool read_id(durability::BodyReader &reader, bool may_be_empty, catalog::CatalogId &out) {
@@ -29,49 +23,15 @@ bool read_id(durability::BodyReader &reader, bool may_be_empty, catalog::Catalog
 
 } // namespace
 
-uint32_t goal_record_size(const Goal &goal, uint16_t version) {
+// Schema 3 keeps all current creation fields; optional facts have explicit markers.
+uint32_t goal_record_size(const Goal &goal) {
     return goal_record_fixed_size + goal.goal_type_id.size() + goal.trigger_source.size() +
-           goal.parameter_size + (has_profile(goal, version) ? goal_work_profile_size : 0U) +
-           (version >= goal_group_record_version ? goal_group_tail_size : 0U);
+           goal.parameter_size + goal_work_profile_size + goal_group_tail_size;
 }
 
-uint16_t goal_record_version_for(const Goal &goal, bool authority_present,
-                                 bool provenance_present) {
-    if (goal.pause_group != 0) {
-        return goal_group_record_version;
-    }
-    if (is_calendar_trigger(goal.trigger.kind)) {
-        return provenance_present ? goal_calendar_provenance_record_version
-                                  : goal_calendar_record_version;
-    }
-    if (provenance_present) {
-        return goal_provenance_record_version;
-    }
-    return !goal.work_profile.is_default() ? goal_work_profile_record_version
-           : authority_present             ? goal_authority_state_record_version
-                                           : goal_record_version;
-}
-uint16_t goal_snapshot_version_for(const Goal &goal, bool authority_present,
-                                   bool provenance_present) {
-    if (goal.pause_group != 0) {
-        return goal_group_snapshot_version;
-    }
-    if (is_calendar_trigger(goal.trigger.kind)) {
-        return provenance_present ? goal_calendar_provenance_snapshot_version
-                                  : goal_calendar_snapshot_version;
-    }
-    if (provenance_present) {
-        return goal_provenance_snapshot_version;
-    }
-    return !goal.work_profile.is_default() ? goal_work_profile_snapshot_version
-           : authority_present             ? goal_creation_stamp_snapshot_version
-                                           : goal_record_version;
-}
-
-// Preserve the original prefix; only non-default creation semantics append a profile.
-void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body, uint16_t version,
-                       bool provenance_present) {
-    durability::BodyWriter writer(body, goal_record_size(goal, version));
+void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
+                       GoalRecordOptions options) {
+    durability::BodyWriter writer(body, goal_record_size(goal));
     writer.u64(goal.goal_id);
     writer.u64(goal.parent_goal_id);
     writer.u64(goal.owner_instance_id);
@@ -90,33 +50,20 @@ void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body
     writer.u64(goal.expiry_after_us);
     writer.u64(goal.occurrence_wait_max_us);
     writer.bytes(parameters.data, parameters.size);
-    if (has_profile(goal, version)) {
-        writer.u32(goal.work_profile.kind);
-        writer.u64(goal.work_profile.background_period_us);
-    }
-    if (version >= goal_group_record_version) {
-        writer.u32(goal.pause_group);
-        writer.u32(provenance_present ? 1U : 0U);
-    }
+    writer.u32(goal.work_profile.kind);
+    writer.u64(goal.work_profile.background_period_us);
+    writer.u32(goal.pause_group);
+    writer.u32(options.authority ? 1U : 0U);
+    writer.u32(options.provenance ? 1U : 0U);
 }
 
-bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint16_t version) {
-    if (version != goal_record_version && version != goal_with_authority_record_version &&
-        version != goal_authority_state_record_version &&
-        version != goal_creation_stamp_snapshot_version &&
-        version != goal_work_profile_record_version &&
-        version != goal_work_profile_snapshot_version &&
-        version != goal_provenance_record_version && version != goal_provenance_snapshot_version &&
-        (version < goal_calendar_record_version || version > goal_group_snapshot_version)) {
+// Parse only the current layout. Partner markers replace old version-based promises.
+bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out) {
+    if (body == nullptr || size < goal_record_max_fixed_size) {
         return false;
     }
     durability::BodyReader reader(body, size);
     out = GoalRecord{};
-    out.authority_required = version >= goal_with_authority_record_version;
-    out.provenance_required = version == goal_provenance_record_version ||
-                              version == goal_provenance_snapshot_version ||
-                              version == goal_calendar_provenance_record_version ||
-                              version == goal_calendar_provenance_snapshot_version;
     out.goal_id = reader.u64();
     out.goal.parent_goal_id = reader.u64();
     out.goal.owner_instance_id = reader.u64();
@@ -143,33 +90,24 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out, uint1
     uint32_t parameter_size = 0;
     const uint8_t *parameters = reader.bytes(size, parameter_size);
     out.goal.parameters = {parameters, parameter_size};
-    if (version == goal_work_profile_record_version ||
-        version == goal_work_profile_snapshot_version || out.provenance_required ||
-        version >= goal_calendar_record_version) {
-        out.goal.work_profile.kind = reader.u32();
-        out.goal.work_profile.background_period_us = reader.u64();
-        if (out.goal.work_profile.is_default() && !out.provenance_required &&
-            version < goal_calendar_record_version) {
-            return false;
-        }
-    }
-    if (version >= goal_group_record_version) {
-        out.goal.pause_group = reader.u32();
-        const auto provenance = reader.u32();
-        if (!PauseGroups::valid_group(out.goal.pause_group) || provenance > 1) {
-            return false;
-        }
-        out.provenance_required = provenance != 0;
-    }
-    if (version < goal_group_record_version &&
-        is_calendar_trigger(out.goal.trigger.kind) != (version >= goal_calendar_record_version)) {
+    out.goal.work_profile.kind = reader.u32();
+    out.goal.work_profile.background_period_us = reader.u64();
+    out.goal.pause_group = reader.u32();
+    if (!PauseGroups::valid_membership(out.goal.pause_group)) {
         return false;
     }
+    const auto authority = reader.u32();
+    const auto provenance = reader.u32();
+    if (authority > 1 || provenance > authority) {
+        return false;
+    }
+    out.authority_required = authority != 0;
+    out.provenance_required = provenance != 0;
     // GoalTable owns trigger/profile validity for both parsed and typed inputs.
     return reader.ok();
 }
 
-void write_goal_state_record(const Goal &goal, uint8_t *body) {
+void write_goal_state_record(const Goal &goal, uint8_t *body, GoalRecordChange change) {
     durability::BodyWriter writer(body, goal_state_record_size);
     writer.u64(goal.goal_id);
     writer.u64(goal.last_task_id);
@@ -184,9 +122,13 @@ void write_goal_state_record(const Goal &goal, uint8_t *body) {
                     ? next_scheduled_flag
                     : 0U) |
                (goal.expires_us != no_time ? expiry_pending_flag : 0U));
+    writer.u32(static_cast<uint32_t>(change));
 }
 
 bool read_goal_state_record(const uint8_t *body, uint32_t size, GoalStateRecord &out) {
+    if (body == nullptr || size != goal_state_record_size) {
+        return false;
+    }
     durability::BodyReader reader(body, size);
     out.goal_id = reader.u64();
     out.state.last_task_id = reader.u64();
@@ -200,6 +142,12 @@ bool read_goal_state_record(const uint8_t *body, uint32_t size, GoalStateRecord 
     const uint32_t flags = reader.u32();
     out.state.next_scheduled = (flags & next_scheduled_flag) != 0U;
     out.state.expiry_pending = (flags & expiry_pending_flag) != 0U;
+    const auto change = reader.u32();
+    if (change < static_cast<uint32_t>(GoalRecordChange::state) ||
+        change > static_cast<uint32_t>(GoalRecordChange::reauthorization)) {
+        return false;
+    }
+    out.change = static_cast<GoalRecordChange>(change);
     return reader.ok() && (flags & ~known_flags) == 0U;
 }
 

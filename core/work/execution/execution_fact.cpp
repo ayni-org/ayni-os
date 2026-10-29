@@ -100,14 +100,6 @@ bool execution_advances(const std::optional<ExecutionFact> &before,
             after->phase == AYNI_EXECUTION_DISPATCHING) ||
            execution_stopped(*after);
 }
-bool has_scoped_dependencies(const ExecutionFact &fact) {
-    for (uint32_t at = 0; at < fact.dependency_count; ++at) {
-        if (fact.dependencies[at].subscription_id != 0) {
-            return true;
-        }
-    }
-    return false;
-}
 uint32_t execution_record_max() {
     constexpr uint32_t identity_count = 3;
     constexpr uint32_t field_identity_count = 2;
@@ -115,7 +107,7 @@ uint32_t execution_record_max() {
            AYNI_CONTROL_FIELD_COUNT_MAX *
                (execution_field_fixed_bytes + field_identity_count * catalog::CatalogId::max_size) +
            AYNI_OBSERVATION_CONDITION_COUNT_MAX *
-               (execution_dependency_fixed_bytes + execution_scoped_dependency_bytes +
+               (execution_dependency_fixed_bytes +
                 catalog::CatalogId::max_size);
 }
 uint32_t execution_record_size(const ExecutionFact &fact) {
@@ -129,14 +121,11 @@ uint32_t execution_record_size(const ExecutionFact &fact) {
     for (uint32_t at = 0; at < fact.dependency_count; ++at) {
         size += execution_dependency_fixed_bytes + fact.dependencies[at].source_id.size;
     }
-    return size + (has_scoped_dependencies(fact)
-                       ? execution_scoped_dependency_bytes * fact.dependency_count
-                       : 0);
+    return size;
 }
 // Stable declaration first, then local generation and stop facts; parameter values
 // remain in Call's one canonical input, avoiding a second authorization projection.
-void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer,
-                     ObservationRecordLayout layout) {
+void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer) {
     const auto &binding = fact.binding;
     write_id(binding.binding, writer);
     writer.u32(binding.binding_version);
@@ -174,13 +163,10 @@ void write_execution(const ExecutionFact &fact, durability::BodyWriter &writer,
         writer.u64(ref.boot_epoch);
         writer.u64(ref.generation);
         writer.u64(ref.sequence);
-        if (layout == ObservationRecordLayout::scoped) {
-            writer.u64(ref.subscription_id);
-        }
+        writer.u64(ref.subscription_id);
     }
 }
-bool read_execution(durability::BodyReader &reader, ExecutionFact &out,
-                    ObservationRecordLayout layout) {
+bool read_execution(durability::BodyReader &reader, ExecutionFact &out) {
     ExecutionFact fact{};
     auto &binding = fact.binding;
     if (!read_id(reader, binding.binding)) {
@@ -236,7 +222,7 @@ bool read_execution(durability::BodyReader &reader, ExecutionFact &out,
         ref.boot_epoch = reader.u64();
         ref.generation = reader.u64();
         ref.sequence = reader.u64();
-        ref.subscription_id = layout == ObservationRecordLayout::scoped ? reader.u64() : 0;
+        ref.subscription_id = reader.u64();
     }
     out = fact;
     return true;

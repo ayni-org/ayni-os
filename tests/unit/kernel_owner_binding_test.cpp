@@ -127,8 +127,7 @@ std::vector<StoredBatch> without_binding(Node &source, uint64_t command_principa
         EXPECT_EQ(ayni::durability::read_batch(stored.bytes.data(), stored.bytes.size(), batch),
                   ayni::durability::BatchCheck::ok);
         std::vector<uint8_t> bytes(stored.bytes.size());
-        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity,
-                                             batch.schema);
+        ayni::durability::BatchWriter writer(bytes.data(), bytes.size(), batch.identity);
         ayni::durability::RecordReader reader(batch);
         ayni::durability::RecordHeader header{};
         const uint8_t *body = nullptr;

@@ -86,18 +86,15 @@ TEST_F(TaskRuntimeLimits, raising_preserves_policy_and_compatibility_holds) {
     EXPECT_EQ(TaskTable::effective_hold_reason(tasks.at(1)), AYNI_REASON_STRATEGY_CHANGED);
 }
 
-TEST_F(TaskRuntimeLimits, runtime_codec_preserves_count_limit_and_hold_and_keeps_legacy_defaults) {
+TEST_F(TaskRuntimeLimits, runtime_codec_preserves_complete_runtime_and_default_facts) {
     exhaust();
     const auto &task = tasks.at(0);
-    std::array<uint8_t, task_state_runtime_record_size> bytes{};
-    const auto version = task_state_version_for(task);
-    EXPECT_EQ(version, task_state_runtime_record_version);
-    write_task_state_record(task, bytes.data(), version);
+    std::array<uint8_t, task_state_record_size> bytes{};
+    write_task_state_record(task, bytes.data());
     TaskStateRecord decoded{};
-    ASSERT_TRUE(read_task_state_record(bytes.data(), bytes.size(), decoded, version));
+    ASSERT_TRUE(read_task_state_record(bytes.data(), bytes.size(), decoded));
     EXPECT_EQ(decoded.state.model_calls, task.model_calls);
     const auto &legacy = tasks.at(1);
-    EXPECT_EQ(task_state_version_for(legacy), task_state_record_version);
     write_task_state_record(legacy, bytes.data());
     ASSERT_TRUE(read_task_state_record(bytes.data(), task_state_record_size, decoded));
     EXPECT_EQ(decoded.state.model_calls, TaskModelCalls{});
@@ -205,15 +202,14 @@ TEST(TaskLimitCommand, codec_binds_task_revision_and_total_limit_to_exact_result
                            {0, input.task_id, input.expected_revision + 1U, AYNI_OBJECT_TASK},
                            written};
     ASSERT_TRUE(valid_exact_mapping(mapping, {bytes.data(), written}));
-    std::array<uint8_t, exact_command_record_fixed_size + task_limit_command_size> record{};
+    std::array<uint8_t, command_record_size + task_limit_command_size> record{};
     ASSERT_TRUE(
         write_command_record(mapping, 0, {bytes.data(), written}, record.data(), record.size()));
     CommandMapping restored{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
-    EXPECT_EQ(command_record_version_for(mapping), task_limit_command_record_version);
-    ASSERT_TRUE(read_command_record(task_limit_command_record_version, record.data(), record.size(),
-                                    restored, floor, canonical));
+    EXPECT_EQ(mapping.kind, AYNI_INTENT_TASK_RAISE_MODEL_LIMIT);
+    ASSERT_TRUE(read_command_record(record.data(), record.size(), restored, floor, canonical));
     EXPECT_EQ(restored.object.revision, mapping.object.revision);
     EXPECT_EQ(restored.digest, mapping.digest);
 }
@@ -262,11 +258,10 @@ TEST(TaskLimitApi, snapshot_raise_receipt_proves_the_same_task_revision_and_ceil
                 continue;
             }
             TaskStateRecord decoded{};
-            ASSERT_TRUE(read_task_state_record(record.body.data(), record.header.length, decoded,
-                                               record.header.version));
+            ASSERT_TRUE(read_task_state_record(record.body.data(), record.header.length, decoded));
             if (decoded.task_id == task_id) {
                 ++selected;
-                write_task_state_record(changed, record.body.data(), record.header.version);
+                write_task_state_record(changed, record.body.data(), decoded.change);
             }
         }
         ASSERT_EQ(selected, 1U);
@@ -315,9 +310,12 @@ TEST(TaskLimitApi, altered_raise_state_cannot_be_repaired_by_a_later_valid_comma
         }
         for (std::size_t row = 0; row < batch.records.size(); ++row) {
             const auto &record = batch.records[row];
-            if (record.header.type != task_state_record_type ||
-                task_state_base_version(record.header.version) !=
-                    task_state_raise_limit_record_version) {
+            if (record.header.type != task_state_record_type) {
+                continue;
+            }
+            TaskStateRecord state_record{};
+            ASSERT_TRUE(read_task_state_record(record.body.data(), record.header.length, state_record));
+            if (state_record.change != TaskRecordChange::raise_limit) {
                 continue;
             }
             ++targets;

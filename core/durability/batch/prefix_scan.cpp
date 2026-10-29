@@ -101,10 +101,8 @@ BatchCheck PrefixScan::scan_records(const BatchView &batch, RecordHandler handle
         case RecordUse::applied:
             break;
         case RecordUse::unknown:
-            if ((header.flags & record_required) != 0U) {
-                return BatchCheck::unsupported;
-            }
-            break;
+            // ADR-0082: unknown optional records cannot bypass atomic partner proofs.
+            return BatchCheck::unsupported;
         case RecordUse::corrupt:
             return BatchCheck::corrupt;
         case RecordUse::no_room:

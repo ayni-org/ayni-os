@@ -47,7 +47,7 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     return Journal(model, stamp, writer).encode();
 }
-// INSTANCE retains its original v1 layout and optional legacy header rule.
+// INSTANCE has one current body; schema 3 requires its REQUIRED marker.
 bool knows(uint16_t, uint16_t version, WorkRecordContext) {
     return version == work::instance_record_version;
 }
@@ -99,7 +99,7 @@ durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata
                             StoreReadCursor &cursor) {
     return instance(model, metadata, cursor, body, size);
 }
-const StoreKind kinds[] = {{work::instance_record_type, never_required}}; // Legacy v1 was optional.
+const StoreKind kinds[] = {{work::instance_record_type}};
 
 } // namespace
 const PersistentStore agent_store{work::instance_record_type,

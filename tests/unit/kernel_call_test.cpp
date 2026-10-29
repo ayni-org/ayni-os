@@ -797,12 +797,11 @@ TEST_F(ManagedCall, snapshot_retains_wait_resume_before_and_after_call_completio
                 continue;
             }
             ayni::work::TaskStateRecord state{};
-            ASSERT_TRUE(ayni::work::read_task_state_record(row.body.data(), row.header.length,
-                                                           state, row.header.version));
+            ASSERT_TRUE(ayni::work::read_task_state_record(row.body.data(), row.header.length, state));
             if (state.task_id == task) {
                 ++selected;
                 const auto before = row.body;
-                ayni::work::write_task_state_record(changed, row.body.data(), row.header.version);
+                ayni::work::write_task_state_record(changed, row.body.data(), state.change);
                 ASSERT_NE(row.body, before);
             }
         }
@@ -997,8 +996,7 @@ TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_i
     for (const auto &variant : variants) {
         SCOPED_TRACE(variant.name);
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record,
-                                                 row->header.version));
+        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record));
         ASSERT_EQ(record.identity.call_id, call);
         ASSERT_TRUE(record.action.has_value());
         variant.change(record);
@@ -1048,8 +1046,7 @@ TEST_F(ManagedCall, snapshot_retains_requested_and_resolved_query_receipts) {
             continue;
         }
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(row.body.data(), row.header.length, record,
-                                                 row.header.version));
+        ASSERT_TRUE(ayni::work::read_call_record(row.body.data(), row.header.length, record));
         if (record.identity.call_id == call) {
             ++selected;
             ASSERT_TRUE(record.state.query.has_value());

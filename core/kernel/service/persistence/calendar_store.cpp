@@ -69,7 +69,7 @@ durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata
                ? durability::BatchCheck::ok
                : durability::BatchCheck::corrupt;
 }
-const StoreKind kinds[] = {{work::calendar_record_type, always_required}};
+const StoreKind kinds[] = {{work::calendar_record_type}};
 } // namespace
 const PersistentStore calendar_store{work::calendar_record_type,
                                      kinds,

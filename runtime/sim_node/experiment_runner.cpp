@@ -6,7 +6,7 @@
 #include <new>
 namespace ayni::runtime::experiments {
 namespace {
-constexpr uint32_t storage_schema = 2; // contracts/storage/records.md, ADR-0038.
+constexpr uint32_t storage_schema = 3; // contracts/storage/records.md, ADR-0038.
 const char *deployment_name(Deployment deployment) {
     switch (deployment) {
     case Deployment::counter:

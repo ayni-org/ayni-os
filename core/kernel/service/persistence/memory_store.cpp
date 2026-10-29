@@ -21,7 +21,7 @@ uint32_t record_max(const KernelCapacities &c) {
 uint32_t journal_max(const KernelCapacities &c) {
     return capacity(c) == 0 ? 0 : record_bytes(record_max(c));
 }
-const StoreKind kinds[] = {{memory_record_type, always_required}};
+const StoreKind kinds[] = {{memory_record_type}};
 // A management or cleanup transition changes one memory row; no hidden bulk updates.
 bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {

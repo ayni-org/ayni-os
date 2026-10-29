@@ -15,63 +15,26 @@ namespace ayni::kernel {
 
 constexpr uint16_t command_record_type = durability::record_type::command_mapping;
 constexpr uint16_t command_record_version = 1;
-constexpr uint32_t command_record_size = 52; // ordinary v1
-constexpr uint16_t exact_command_record_version = 2;
-// REQUIRED type9/v6 uses the v2 envelope for an exact Task model-limit raise.
-constexpr uint16_t task_limit_command_record_version = 6;
-// REQUIRED type9/v7 retains an exact original-operation query command.
-constexpr uint16_t call_query_command_record_version = 7;
-// Exact Task resource-wait resume; same canonical target shape (records.md type9/v8).
-constexpr uint16_t resume_wait_command_record_version = 8;
-// Type9/v9 stores exact Scene commands and their changed/no-change effect.
-constexpr uint16_t scene_command_record_version = 9;
-// REQUIRED type9/v10 retains exact memory save/confirm/delete requests.
-constexpr uint16_t memory_command_record_version = 10;
-// REQUIRED type9/v11 is a snapshot-only privacy-expired identity, without canonical bytes.
-constexpr uint16_t expired_command_record_version = 11;
-// REQUIRED type9/v12 retains exact scalar context management requests, without plaintext.
-constexpr uint16_t context_command_record_version = 12;
-// REQUIRED type9/v13 wraps one prior Goal command body with its complete captured sources.
-constexpr uint16_t sourced_command_record_version = 13;
-// REQUIRED type9/v14 stores exact independent pause-group controls.
-constexpr uint16_t pause_group_command_record_version = 14;
-constexpr uint32_t sourced_command_prefix_size = 2 * sizeof(uint32_t);
-// Shared shape check; these sources explain retained private input, never grant new authority.
+constexpr uint16_t command_snapshot_record_version = 2; // Adds original acceptance sequence.
+// Identity 52 B plus content/effect/format and two byte-string lengths, records.md schema 3.
+constexpr uint32_t command_record_fixed_size = 72;
+constexpr uint32_t command_record_size = command_record_fixed_size + sizeof(uint32_t);
+// Source framing is always present, including its explicit zero-count representation.
 bool valid_command_sources(const CommandMapping &mapping);
-// records.md type 9/v2 adds canonical format and byte length (u32 each).
-constexpr uint32_t exact_command_record_fixed_size = command_record_size + 2U * sizeof(uint32_t);
-constexpr uint16_t revoke_command_record_version = 3;
-// REQUIRED type 9/v4 keeps the v2 envelope but carries full Goal approval identity.
-constexpr uint16_t approval_command_record_version = 4;
-// Type9/v5 retains exact approval/reauthorization input plus its immutable result.
-constexpr uint16_t work_authority_command_record_version = 5;
-constexpr uint32_t work_authority_command_record_fixed_size =
-    exact_command_record_fixed_size + sizeof(uint32_t);
-// Type 9/v3 adds effect before those two canonical fields (u32 each).
-constexpr uint32_t revoke_command_record_fixed_size = command_record_size + 3U * sizeof(uint32_t);
 constexpr uint32_t command_record_max(uint32_t canonical_max_bytes, uint32_t dependency_max = 0) {
-    const uint32_t create_max =
-        canonical_max_bytes == 0U ? command_record_size
-                                  : work_authority_command_record_fixed_size + canonical_max_bytes;
-    constexpr uint32_t revoke_max = revoke_command_record_fixed_size + revoke_command_size;
-    const auto maximum =
-        canonical_max_bytes == 0U || create_max >= revoke_max ? create_max : revoke_max;
-    return dependency_max == 0 ? maximum
-                               : maximum + sourced_command_prefix_size +
-                                     knowledge::memory_dependencies_size(dependency_max);
+    const auto request = canonical_max_bytes > revoke_command_size
+                             ? canonical_max_bytes : revoke_command_size;
+    return command_record_fixed_size + request + knowledge::memory_dependencies_size(dependency_max);
 }
-bool knows_command_record(
-    uint16_t version); // Exact supported body versions; unknown required records refuse.
-uint16_t command_record_version_for(const CommandMapping &mapping);
 uint32_t command_record_size_for(const CommandMapping &mapping);
 
-// v2 create/v3 revoke require complete exact identity, matching digest and effect;
+// Exact commands require complete identity, matching digest and effect;
 // failure changes no output. size is exactly command_record_size_for().
 bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_bytes_v1 canonical,
                           uint8_t *body, uint32_t size, ayni_bytes_v1 result = {});
-// Record version determines syntax. Views borrow body. Failure changes no
+// Only the complete current body is read. Views borrow body. Failure changes no
 // outputs; restored commit_seq remains 0 until the envelope supplies it.
-bool read_command_record(uint16_t version, const uint8_t *body, uint32_t size,
+bool read_command_record(const uint8_t *body, uint32_t size,
                          CommandMapping &out_mapping, uint64_t &out_floor,
                          ayni_bytes_v1 &out_canonical, ayni_bytes_v1 *out_result = nullptr);
 

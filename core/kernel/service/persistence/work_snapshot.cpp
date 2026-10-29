@@ -235,9 +235,8 @@ durability::BatchCheck WorkSnapshotReader::apply(const durability::RecordHeader 
     if (use == durability::RecordUse::corrupt) {
         return BatchCheck::corrupt;
     }
-    const auto unknown = (header.flags & durability::record_required) == 0
-                             ? BatchCheck::ok
-                             : BatchCheck::unsupported;
+    // ADR-0082: no optional-extension compatibility path exists in schema 3.
+    constexpr auto unknown = BatchCheck::unsupported;
     if (use != durability::RecordUse::applied) {
         return unknown;
     }

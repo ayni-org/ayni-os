@@ -2,64 +2,63 @@
 
 namespace ayni::work {
 
-uint32_t task_creation_record_size(const Task &task) {
-    return task_record_size +
-           (task.calendar_local_s == AYNI_CALENDAR_TIME_NONE ? 0 : task_calendar_tail_size);
+uint32_t task_creation_record_size(const Task &) {
+    return task_record_size;
 }
-uint16_t task_creation_version(const Task &task, bool provenance) {
-    return task.calendar_local_s != AYNI_CALENDAR_TIME_NONE
-               ? (provenance ? task_calendar_provenance_snapshot_version
-                             : task_calendar_record_version)
-               : (provenance ? task_provenance_snapshot_version : task_record_version);
-}
-void write_task_record(const Task &task, uint8_t *body) {
-    durability::BodyWriter writer(body, task_creation_record_size(task));
+
+// Calendar and source markers are current facts, not version-selected extensions.
+void write_task_record(const Task &task, uint8_t *body, bool provenance) {
+    durability::BodyWriter writer(body, task_record_size);
     writer.u64(task.task_id);
     writer.u64(task.goal_id);
     writer.u64(task.owner_instance_id);
     writer.u64(task.replaced_task_id);
     writer.u32(task.occurrence);
     writer.u32(task.occurrence_count);
-    if (task.calendar_local_s != AYNI_CALENDAR_TIME_NONE) {
-        writer.u64(static_cast<uint64_t>(task.calendar_local_s));
-        writer.u64(static_cast<uint64_t>(task.calendar_utc_s));
-    }
+    const bool calendar = task.calendar_local_s != AYNI_CALENDAR_TIME_NONE;
+    writer.u64(calendar ? static_cast<uint64_t>(task.calendar_local_s) : 0);
+    writer.u64(calendar ? static_cast<uint64_t>(task.calendar_utc_s) : 0);
+    writer.u32(calendar ? 1U : 0U);
+    writer.u32(provenance ? 1U : 0U);
 }
 
-bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out, uint16_t version) {
-    const auto expected = version == task_calendar_record_version ||
-                                  version == task_calendar_provenance_snapshot_version
-                              ? task_record_max_size
-                              : task_record_size;
-    if (size != expected) {
+bool read_task_record(const uint8_t *body, uint32_t size, TaskRecord &out) {
+    if (body == nullptr || size != task_record_size) {
         return false;
     }
     durability::BodyReader reader(body, size);
-    out = TaskRecord{};
-    out.task_id = reader.u64();
-    out.task.goal_id = reader.u64();
-    out.task.owner_instance_id = reader.u64();
-    out.replaced_task_id = reader.u64();
-    out.task.occurrence = reader.u32();
-    out.task.occurrence_count = reader.u32();
-    if (size == task_record_max_size) {
-        const auto local = reader.u64();
-        const auto utc = reader.u64();
-        if (local > static_cast<uint64_t>(AYNI_CALENDAR_SECONDS_MAX) ||
-            utc > static_cast<uint64_t>(AYNI_CALENDAR_SECONDS_MAX)) {
-            return false;
-        }
-        out.task.calendar_local_s = static_cast<int64_t>(local);
-        out.task.calendar_utc_s = static_cast<int64_t>(utc);
+    TaskRecord record{};
+    record.task_id = reader.u64();
+    record.task.goal_id = reader.u64();
+    record.task.owner_instance_id = reader.u64();
+    record.replaced_task_id = reader.u64();
+    record.task.occurrence = reader.u32();
+    record.task.occurrence_count = reader.u32();
+    const auto local = reader.u64();
+    const auto utc = reader.u64();
+    const auto calendar = reader.u32();
+    const auto provenance = reader.u32();
+    if (calendar > 1 || provenance > 1 ||
+        (calendar == 0 ? local != 0 || utc != 0
+                       : local > static_cast<uint64_t>(AYNI_CALENDAR_SECONDS_MAX) ||
+                             utc > static_cast<uint64_t>(AYNI_CALENDAR_SECONDS_MAX))) {
+        return false;
     }
-    return reader.ok();
+    if (calendar != 0) {
+        record.task.calendar_local_s = static_cast<int64_t>(local);
+        record.task.calendar_utc_s = static_cast<int64_t>(utc);
+    }
+    record.provenance_required = provenance != 0;
+    if (!reader.ok()) {
+        return false;
+    }
+    out = record;
+    return true;
 }
 
-// Snapshot TASK extends the journal creation body with durable history;
-// byte layout belongs here, while restoration policy remains with its owner.
-void write_task_snapshot_record(const Task &task, uint8_t *body) {
-    write_task_record(task, body);
-    durability::BodyWriter writer(body + task_creation_record_size(task), task_snapshot_tail_size);
+void write_task_snapshot_record(const Task &task, uint8_t *body, bool provenance) {
+    write_task_record(task, body, provenance);
+    durability::BodyWriter writer(body + task_record_size, task_snapshot_tail_size);
     writer.u64(task.created_transition_id);
     writer.u64(task.commit_seq);
     writer.u64(task.steps_seq);
@@ -67,14 +66,12 @@ void write_task_snapshot_record(const Task &task, uint8_t *body) {
     writer.u32(task.steps_before);
 }
 
-bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out,
-                               uint16_t version) {
-    if ((size != task_snapshot_record_size &&
-         size != task_snapshot_record_size + task_calendar_tail_size) ||
-        !read_task_record(body, size - task_snapshot_tail_size, out.creation, version)) {
+bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotRecord &out) {
+    if (body == nullptr || size != task_snapshot_record_size ||
+        !read_task_record(body, task_record_size, out.creation)) {
         return false;
     }
-    durability::BodyReader reader(body + size - task_snapshot_tail_size, task_snapshot_tail_size);
+    durability::BodyReader reader(body + task_record_size, task_snapshot_tail_size);
     out.stamp = {reader.u64(), reader.u64()};
     out.steps_seq = reader.u64();
     out.checkpoint_seq = reader.u64();
@@ -82,82 +79,9 @@ bool read_task_snapshot_record(const uint8_t *body, uint32_t size, TaskSnapshotR
     return reader.ok();
 }
 
-uint16_t task_state_version_for(const Task &task, uint16_t base) {
-    if (task.subscription_wait) {
-        switch (base) {
-        case task_state_authority_record_version:
-            return task_state_subscription_wait_authority_version;
-        case task_state_reauthorization_record_version:
-            return task_state_subscription_wait_reauthorization_version;
-        case task_state_raise_limit_record_version:
-            return task_state_subscription_wait_raise_version;
-        default:
-            return task_state_subscription_wait_version;
-        }
-    }
-    if (base == task_state_resume_wait_record_version) {
-        return base;
-    }
-    if (task.call.id != 0U) {
-        switch (base) {
-        case task_state_record_version:
-            return task_state_call_record_version;
-        case task_state_authority_record_version:
-            return task_state_call_authority_record_version;
-        case task_state_reauthorization_record_version:
-            return task_state_call_reauthorization_record_version;
-        default:
-            return task_state_call_raise_limit_record_version;
-        }
-    }
-    if (base == task_state_raise_limit_record_version || task.model_calls == TaskModelCalls{}) {
-        return base;
-    }
-    switch (base) {
-    case task_state_record_version:
-        return task_state_runtime_record_version;
-    case task_state_authority_record_version:
-        return task_state_runtime_authority_record_version;
-    default:
-        return task_state_runtime_reauthorization_record_version;
-    }
-}
-
-uint32_t task_state_size_for(uint16_t version) {
-    if (version >= task_state_subscription_wait_version) {
-        return task_state_max_size;
-    }
-    if (version >= task_state_call_record_version) {
-        return task_state_call_record_size;
-    }
-    return version >= task_state_runtime_record_version ? task_state_runtime_record_size
-                                                        : task_state_record_size;
-}
-
-uint16_t task_state_base_version(uint16_t version) {
-    switch (version) {
-    case task_state_runtime_record_version:
-    case task_state_call_record_version:
-    case task_state_subscription_wait_version:
-        return task_state_record_version;
-    case task_state_runtime_authority_record_version:
-    case task_state_call_authority_record_version:
-    case task_state_subscription_wait_authority_version:
-        return task_state_authority_record_version;
-    case task_state_runtime_reauthorization_record_version:
-    case task_state_call_reauthorization_record_version:
-    case task_state_subscription_wait_reauthorization_version:
-        return task_state_reauthorization_record_version;
-    case task_state_call_raise_limit_record_version:
-    case task_state_subscription_wait_raise_version:
-        return task_state_raise_limit_record_version;
-    default:
-        return version;
-    }
-}
-
-void write_task_state_record(const Task &task, uint8_t *body, uint16_t version) {
-    durability::BodyWriter writer(body, task_state_size_for(version));
+// One full state carries runtime/call/wait facts plus a separate transition proof.
+void write_task_state_record(const Task &task, uint8_t *body, TaskRecordChange change) {
+    durability::BodyWriter writer(body, task_state_record_size);
     writer.u64(task.task_id);
     writer.u32(task.lifecycle);
     writer.u32(task.revision);
@@ -165,64 +89,66 @@ void write_task_state_record(const Task &task, uint8_t *body, uint16_t version) 
     writer.u32(static_cast<uint32_t>(task.hold_status));
     writer.u32(task.hold_reason);
     writer.u32(task.step_count);
-    if (version >= task_state_runtime_record_version) {
-        writer.u32(task.model_calls.used);
-        writer.u32(task.model_calls.limit);
-        writer.u32(task.model_calls.blocked ? 1U : 0U);
-    }
-    if (version >= task_state_call_record_version) {
-        writer.u64(task.call.id);
-        writer.u32(static_cast<uint32_t>(task.call.end));
-    }
-    if (version >= task_state_subscription_wait_version) {
-        const auto &wait = *task.subscription_wait;
-        writer.u64(wait.subscription_id);
-        writer.u64(wait.generation);
-        writer.u64(wait.sequence);
-        writer.u32(static_cast<uint32_t>(wait.phase));
-    }
+    writer.u32(task.model_calls.used);
+    writer.u32(task.model_calls.limit);
+    writer.u32(task.model_calls.blocked ? 1U : 0U);
+    writer.u64(task.call.id);
+    writer.u32(static_cast<uint32_t>(task.call.end));
+    const auto wait = task.subscription_wait.value_or(SubscriptionWait{});
+    writer.u64(wait.subscription_id);
+    writer.u64(wait.generation);
+    writer.u64(wait.sequence);
+    writer.u32(task.subscription_wait ? static_cast<uint32_t>(wait.phase) : 0);
+    writer.u32(static_cast<uint32_t>(change));
+    writer.u32(task.subscription_wait ? 1U : 0U);
 }
 
-bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out,
-                            uint16_t version) {
-    if (version < task_state_record_version || version > task_state_version_max ||
-        size != task_state_size_for(version)) {
+// Validate present and absent states together before publishing the parsed view.
+bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord &out) {
+    if (body == nullptr || size != task_state_record_size) {
         return false;
     }
-    out = {};
     durability::BodyReader reader(body, size);
-    out.task_id = reader.u64();
-    out.state.lifecycle = reader.u32();
-    out.state.revision = reader.u32();
-    out.state.cancel_revision = reader.u32();
-    out.state.hold_status = static_cast<ayni_status_t>(reader.u32());
-    out.state.hold_reason = reader.u32();
-    out.state.step_count = reader.u32();
-    if (version >= task_state_runtime_record_version) {
-        out.state.model_calls.used = reader.u32();
-        out.state.model_calls.limit = reader.u32();
-        const auto blocked = reader.u32();
-        if (blocked > 1U) {
-            return false;
-        }
-        out.state.model_calls.blocked = blocked != 0U;
+    TaskStateRecord record{};
+    record.task_id = reader.u64();
+    record.state.lifecycle = reader.u32();
+    record.state.revision = reader.u32();
+    record.state.cancel_revision = reader.u32();
+    record.state.hold_status = static_cast<ayni_status_t>(reader.u32());
+    record.state.hold_reason = reader.u32();
+    record.state.step_count = reader.u32();
+    record.state.model_calls.used = reader.u32();
+    record.state.model_calls.limit = reader.u32();
+    const auto blocked = reader.u32();
+    record.state.model_calls.blocked = blocked != 0;
+    record.state.call.id = reader.u64();
+    record.state.call.end = static_cast<TaskCall::End>(reader.u32());
+    SubscriptionWait wait{};
+    wait.subscription_id = reader.u64();
+    wait.generation = reader.u64();
+    wait.sequence = reader.u64();
+    wait.phase = static_cast<SubscriptionPhase>(reader.u32());
+    const auto change = reader.u32();
+    const auto present = reader.u32();
+    if (blocked > 1 || present > 1 ||
+        change < static_cast<uint32_t>(TaskRecordChange::state) ||
+        change > static_cast<uint32_t>(TaskRecordChange::resume_wait) ||
+        (present == 0 && (wait.subscription_id != 0 || wait.generation != 0 || wait.sequence != 0 ||
+                          static_cast<uint32_t>(wait.phase) != 0))) {
+        return false;
     }
-    if (version >= task_state_call_record_version) {
-        out.state.call.id = reader.u64();
-        out.state.call.end = static_cast<TaskCall::End>(reader.u32());
+    if (present != 0) {
+        record.state.subscription_wait = wait;
     }
-    if (version >= task_state_subscription_wait_version) {
-        SubscriptionWait wait{};
-        wait.subscription_id = reader.u64();
-        wait.generation = reader.u64();
-        wait.sequence = reader.u64();
-        wait.phase = static_cast<SubscriptionPhase>(reader.u32());
-        out.state.subscription_wait = wait;
+    record.change = static_cast<TaskRecordChange>(change);
+    if (!reader.ok() || !record.state.model_calls.valid() ||
+        !record.state.call.valid(record.state.lifecycle) ||
+        !valid_subscription_wait(record.state.subscription_wait, record.state.lifecycle,
+                                  record.state.call.id)) {
+        return false;
     }
-    return reader.ok() && out.state.model_calls.valid() &&
-           out.state.call.valid(out.state.lifecycle) &&
-           valid_subscription_wait(out.state.subscription_wait, out.state.lifecycle,
-                                   out.state.call.id);
+    out = record;
+    return true;
 }
 
 uint32_t task_steps_record_size(const TaskTable &tasks, uint32_t index, TaskStepRange range) {
@@ -251,12 +177,14 @@ uint32_t task_checkpoint_record_size(const Task &task) {
            task.checkpoint_size;
 }
 
-void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body) {
+void write_task_checkpoint_record(const Task &task, ayni_bytes_v1 state, uint8_t *body,
+                                  bool provenance) {
     durability::BodyWriter writer(body, task_checkpoint_record_size(task));
     writer.u64(task.task_id);
     writer.u32(task.checkpoint_writer_version);
     writer.bytes(task.checkpoint_writer_id.data(), task.checkpoint_writer_id.size());
     writer.bytes(state.data, state.size);
+    writer.u32(provenance ? 1U : 0U);
 }
 
 bool read_task_checkpoint_record(const uint8_t *body, uint32_t size, TaskCheckpointRecord &out) {
@@ -269,7 +197,9 @@ bool read_task_checkpoint_record(const uint8_t *body, uint32_t size, TaskCheckpo
     uint32_t state_size = 0;
     const uint8_t *state = reader.bytes(size, state_size);
     out.state = {state, state_size};
-    return reader.ok();
+    const auto provenance = reader.u32();
+    out.provenance_required = provenance != 0;
+    return reader.ok() && provenance <= 1;
 }
 
 } // namespace ayni::work

@@ -8,8 +8,8 @@
 // entry here. Journal restore stays in WorkReplay, which owns the pairing of
 // a batch's records across stores and commands.
 //
-// REQUIRED versions are stated beside each family; legacy command v1 remains
-// optional (contracts/storage/records.md). Nothing registers at run time.
+// Every current family requires REQUIRED in schema 3 (ADR-0082). Nothing
+// registers at run time.
 
 #ifndef AYNI_CORE_KERNEL_PERSISTENCE_PERSISTENT_STORE_H
 #define AYNI_CORE_KERNEL_PERSISTENCE_PERSISTENT_STORE_H
@@ -67,11 +67,9 @@ struct StoreCursor {
 // command snapshots follow cleanup, while journal commands close before its footer.
 enum class StorePosition { instances, before_work, goals, tasks, after_work, after_cleanup };
 
-// One registered record family; required_from preserves optional legacy command v1.
+// One registered record type. Its current body is selected by storage context.
 struct StoreKind {
-    uint16_t type;          // records.md type identity, never zero.
-    uint16_t required_from; // First REQUIRED version; never_required keeps every legacy envelope
-                            // optional.
+    uint16_t type; // records.md identity, nonzero; schema 3 always requires REQUIRED.
 };
 
 // Owns one compile-time storage adapter; WorkReplay retains cross-store journal proofs.
@@ -116,10 +114,6 @@ inline bool goal_reauthorized_by(const CommandMapping *mapping, uint64_t goal_id
            mapping->object.id == goal_id;
 }
 
-// Known non-command families require the marker even for an unknown version zero.
-inline constexpr uint16_t always_required = 0;
-// Historical Agent/step headers accepted optional envelopes even for unknown versions.
-inline constexpr uint16_t never_required = UINT16_MAX;
 // Snapshot stamp tail (contracts/storage/records.md): two little-endian u64 fields.
 inline constexpr uint32_t snapshot_stamp_sequence_at = 8;
 inline constexpr uint32_t snapshot_stamp_size = 16;
@@ -210,16 +204,6 @@ inline bool find_persistent_store(uint16_t type, uint32_t &out_rank) {
                 out_rank = rank;
                 return true;
             }
-        }
-    }
-    return false;
-}
-// Unknown versions of a known family retain their historical REQUIRED boundary.
-inline bool store_requires_marker(const PersistentStore &store, uint16_t type, uint16_t version) {
-    for (uint32_t kind = 0; kind < store.kind_count; ++kind) {
-        if (store.kinds[kind].type == type) {
-            return store.kinds[kind].required_from != never_required &&
-                   version >= store.kinds[kind].required_from;
         }
     }
     return false;
