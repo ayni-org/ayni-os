@@ -189,10 +189,13 @@ struct DemoProfile::Impl {
     // Binding with extension usage; discovery/authorization remain Core-owned.
     static ayni_status_t lookup_usage(void *context, const ayni_tool_v1 *tool,
                                       ayni_tool_usage_v1 *out) {
-        if (!context || !tool || !out) { return AYNI_INVALID_ARGUMENT; }
+        if (!context || !tool || !out) {
+            return AYNI_INVALID_ARGUMENT;
+        }
         if (out->struct_size != sizeof(*out) || tool->struct_size != sizeof(*tool)) {
             return out->struct_size > sizeof(*out) || tool->struct_size > sizeof(*tool)
-                       ? AYNI_UNSUPPORTED_VERSION : AYNI_INVALID_ARGUMENT;
+                       ? AYNI_UNSUPPORTED_VERSION
+                       : AYNI_INVALID_ARGUMENT;
         }
         const auto &usage = static_cast<Impl *>(context)->schedule_usage;
         const auto same = [](ayni_string_v1 a, ayni_string_v1 b) {

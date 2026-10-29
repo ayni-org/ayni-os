@@ -20,7 +20,7 @@
 
 ## 3 能力自描述
 
-公开 C99 模型中立说明类型和只读访问端口；按精确 Binding/Capability 版本和 field_id 配对。扩展拥有用途、参数解释、text 文法、结果和示例；runtime 配对和管理生命周期，Core 不存长说明。
+实现及独立审查/验证见 [#107](https://github.com/RobotSe7en/ayni/pull/107)，公开契约见 [tool_usage.md](../../contracts/host/tool_usage.md)。ABI 0.47，schema 3 不变。公开 C99 模型中立说明类型和只读访问端口；按精确 Binding/Capability 版本和 field_id 配对。扩展拥有用途、参数解释、text 文法、结果和示例；runtime 配对和管理生命周期，Core 不存长说明。
 
 每工具说明总计至多 4 KiB、每字段说明至多 256 B；工具数/字段数沿用现有上限。超限或必需说明失配拒绝外发，无截断、legacy 开关或 binding ID 回退。模型 Provider 在 submit 内读取、合并并复制到请求槽，worker 不回调 Core/说明来源。
 
@@ -31,3 +31,5 @@
 每包相关本地检查与正常行为测试、独立审查及最终适用 CI。存储包增加已授权的必要故障/恢复验证。构建前按宿主和其他工作预算设置正数并行度/容器限额；容量变化测量，不把历史 Native 数字当 ESP 预算。
 
 已接受的旧 ADR/报告保留历史含义，当前契约、计划、追踪和交接随实际交付更新；新的实现状态和限制在对应 PR 记录。
+
+三部分代码与消费者迁移已交付。后续 AP-02/AP-03 等仍按原计划另行安排，当前没有启动设备热插拔、MCP/MHS/ROS backend 或完整 Native 应用拆分。

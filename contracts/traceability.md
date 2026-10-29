@@ -28,11 +28,11 @@
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
 | [host/provider.md](host/provider.md) | 15 | 0 |
-| [host/tool_usage.md](host/tool_usage.md) | 6 | 0 |
+| [host/tool_usage.md](host/tool_usage.md) | 6 | 6 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 411 | 140 |
+| 合计 | 411 | 146 |
 
 ## 计划章节 → 契约文档
 
@@ -308,6 +308,12 @@
 | C-POLICY-009 | M1 已实现（未知的类型或版本拒绝，参数由 GoalType 校验；GoalType 声明它接受的触发种类，Goal 只能选择其中之一，M1 为 `NONE`、`ONCE`、`DELAY`、`INTERVAL`、`LOCAL_INPUT`，ADR-0018、ADR-0019、ADR-0021；GoalType 声明 occurrence 等待 Task 槽位或 ID 的上限，ADR-0020；会产生 Task 的 GoalType 指定决定其 Task 的策略，完成由策略的决定表达，ADR-0022）：`WorkModel.unknown_goal_type_or_version_is_refused`、`WorkModel.parameters_are_checked_last_by_size_and_by_the_goal_type`、`GoalTypeRegistry.tells_an_unknown_id_from_an_unknown_version`、`GoalTypeRegistry.validator_decides_the_parameters`、`GoalTypeRegistry.type_without_validator_takes_no_parameters`、`GoalTypeRegistry.trigger_kinds_decide_the_accepted_triggers`、`WorkTask.goal_type_must_accept_the_trigger`、`WorkInput.goal_type_must_accept_local_input`、`WorkModel.registration_checks_its_arguments`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.zero_wait_skips_at_once`、`WorkWait.unbounded_wait_never_skips`、`WorkStrategy.goal_type_names_a_strategy_exactly_when_its_goals_may_have_tasks`、`WorkDecision.goal_ends_with_the_last_of_its_tasks`；观察与订阅事件的触发随 `MA-018`，日历规则随 `MA-011`，暂停点与 Task 执行中的等待上限随 `MA-008`、`MA-018`；E4 步骤 5 |
 | C-POLICY-010 | M1 已实现（策略只在 `CONFIGURING` 中注册，同一 ID 同时只有一个版本，ADR-0022）：`WorkStrategy.registration_checks_its_arguments`、`StrategyRegistry.refuses_another_version_of_an_id_and_registrations_beyond_capacity`、`WorkModel.return_values_follow_the_state_table`；M1 已实现（重启后换版本：只有写入检查点的策略在同一版本读取它，否则 Task 停下，ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 2、4 ；ADR-0056：`StrategiesFixture.declared_compatible_replacement_continues_without_redoing_a_step` |
 | C-POLICY-012 | M1 已实现值、Task 来源导出及 Context 文件 ACK（C-MEM-009）：`StrategiesFixture.completed_checkpoint_export_has_a_durable_barrier_and_copy_bounds`、`StrategiesFixture.summary_replaces_old_rounds_only_in_a_successful_candidate`、`StrategiesFixture.unsuccessful_summary_preserves_every_original_round`、`StrategiesFixture.deleting_the_whole_conversation_refuses_a_late_turn`、`Conversation.whole_delete_clears_text_and_lineage_together` |
+| C-USAGE-001 | M1 已实现：`OpenaiProvider.tools_without_a_usage_port_are_rejected_before_http`、`OpenaiProvider.missing_exact_usage_is_rejected_before_http`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation` |
+| C-USAGE-002 | M1 已实现：`OpenaiProvider.exact_tool_and_field_description_budgets_reach_the_http_codec`、`OpenaiProvider.individually_bounded_strings_cannot_exceed_the_total_usage_budget`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation`、`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects` |
+| C-USAGE-003 | M1 已实现：`ToolUsage.copied_usage_survives_source_reuse_and_encodes_the_original_description`；`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects` 的 owner-thread lookup 断言；调用链审查 |
+| C-USAGE-004 | M1 已实现：`OpenaiProvider.offered_function_becomes_exact_typed_values`、`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects`、`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval` |
+| C-USAGE-005 | M1 已实现：`OpenaiProvider.tools_without_a_usage_port_are_rejected_before_http`、`OpenaiProvider.missing_exact_usage_is_rejected_before_http`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation` |
+| C-USAGE-006 | M1 已实现：`ToolUsage.unicode_validation_is_public_pure_and_length_delimited`、`OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation`；既有 `CallInputTest.text_rejects_invalid_utf8_and_accepts_unicode_scalar_boundaries` |
 | C-STORE-001 | M1 已实现（编解码）：`BatchCodec.every_damaged_byte_is_corrupt`、`BatchCodec.every_short_write_is_corrupt`、`BatchCodec.header_shorter_than_44_bytes_is_corrupt`、`BatchCodec.longer_header_from_a_later_writer_is_unsupported`、`BatchCodec.commit_marker_of_another_commit_seq_is_corrupt`；`MA-010` 短写注入；E2 F7 |
 | C-STORE-002 | M1 已实现：Kernel 侧 `BatchCodec.every_short_write_is_corrupt`、`PrefixScan.damaged_batch_stops_the_scan`；Host 丢弃撕裂的尾部 `HostStorage.torn_tail_is_dropped_and_overwritten`、`NativeHost.torn_tail_is_truncated_before_the_next_append`；追加中断电的批次只在完整写入时计入 `WorkRecovery.append_cut_by_power_loss_counts_only_when_whole`；重放受限时丢弃已重放的全部内容 `WorkRecovery.log_beyond_the_capacities_restricts_and_shows_nothing`（ADR-0026）；E2 F0、F7、F8 |
 | C-STORE-003 | M1 已实现（物理读取、连续前缀与栅栏）：`PrefixScan.commit_seq_must_continue_exactly`、`WriterFenceScan.stale_physical_batch_never_moves_the_logical_cursor`、`WriterFenceScan.fence_must_advance_the_writer_and_match_its_header`、`WorkRecovery.every_stored_prefix_recovers_the_state_after_its_last_batch`、`StorageRecovery.automatic_snapshot_rotates_log_and_keeps_current_command_window`；ADR-0027 |

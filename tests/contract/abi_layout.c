@@ -14,6 +14,7 @@
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 #include <ayni/storage_format.h>
+#include <ayni/tool_usage.h>
 
 #include <stddef.h>
 
@@ -24,6 +25,33 @@
 #define AYNI_ROUND8(size) (((size) + 7u) / 8u * 8u)
 
 AYNI_LAYOUT(function_pointer_size, sizeof(void (*)(void)) == AYNI_PTR);
+
+/* C-VER-002 / C-USAGE-001: model-neutral usage is a public C99 layout. */
+AYNI_LAYOUT(tool_field_usage_struct_size, offsetof(ayni_tool_field_usage_v1, struct_size) == 0);
+AYNI_LAYOUT(tool_field_usage_field_id, offsetof(ayni_tool_field_usage_v1, field_id) == 4);
+AYNI_LAYOUT(tool_field_usage_description, offsetof(ayni_tool_field_usage_v1, description) == 8);
+AYNI_LAYOUT(tool_field_usage_size, sizeof(ayni_tool_field_usage_v1) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_struct_size, offsetof(ayni_tool_usage_v1, struct_size) == 0);
+AYNI_LAYOUT(tool_usage_binding_version, offsetof(ayni_tool_usage_v1, binding_version) == 4);
+AYNI_LAYOUT(tool_usage_binding_id, offsetof(ayni_tool_usage_v1, binding_id) == 8);
+AYNI_LAYOUT(tool_usage_capability_version,
+            offsetof(ayni_tool_usage_v1, capability_version) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_capability_id,
+            offsetof(ayni_tool_usage_v1, capability_id) == 8 + 3 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_purpose, offsetof(ayni_tool_usage_v1, purpose) == 8 + 5 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_text_usage, offsetof(ayni_tool_usage_v1, text_usage) == 8 + 7 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_result_usage,
+            offsetof(ayni_tool_usage_v1, result_usage) == 8 + 9 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_examples, offsetof(ayni_tool_usage_v1, examples) == 8 + 11 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_field_count, offsetof(ayni_tool_usage_v1, field_count) == 8 + 13 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_reserved, offsetof(ayni_tool_usage_v1, reserved) == 12 + 13 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_fields, offsetof(ayni_tool_usage_v1, fields) == 16 + 13 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_size, sizeof(ayni_tool_usage_v1) == 16 + 14 * AYNI_PTR);
+AYNI_LAYOUT(tool_usage_port_struct_size, offsetof(ayni_tool_usage_port_v1, struct_size) == 0);
+AYNI_LAYOUT(tool_usage_port_reserved, offsetof(ayni_tool_usage_port_v1, reserved) == 4);
+AYNI_LAYOUT(tool_usage_port_context, offsetof(ayni_tool_usage_port_v1, context) == 8);
+AYNI_LAYOUT(tool_usage_port_lookup, offsetof(ayni_tool_usage_port_v1, lookup) == 8 + AYNI_PTR);
+AYNI_LAYOUT(tool_usage_port_size, sizeof(ayni_tool_usage_port_v1) == 8 + 2 * AYNI_PTR);
 
 AYNI_LAYOUT(config_struct_size, offsetof(ayni_config_v1, struct_size) == 0);
 AYNI_LAYOUT(config_abi_major, offsetof(ayni_config_v1, abi_major) == 4);

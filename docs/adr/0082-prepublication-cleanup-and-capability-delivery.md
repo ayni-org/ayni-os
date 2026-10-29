@@ -28,4 +28,6 @@
 
 ## 验证
 
-首包公共头、正式入口消费者、未知意图拒绝和版本测试通过；独立审查无剩余阻断项，证据见 [#105](https://github.com/RobotSe7en/ayni/pull/105)。格式统一与必要恢复验证见 [#106](https://github.com/RobotSe7en/ayni/pull/106)。第三包提供能力闭环证据，不把规划当执行证据。
+首包公共头、正式入口消费者、未知意图拒绝和版本测试通过；独立审查无剩余阻断项，证据见 [#105](https://github.com/RobotSe7en/ayni/pull/105)。格式统一与必要恢复验证见 [#106](https://github.com/RobotSe7en/ayni/pull/106)。第三包能力闭环见 [#107](https://github.com/RobotSe7en/ayni/pull/107) 与 [用法契约](../../contracts/host/tool_usage.md)，不把规划当执行证据。
+
+AP-01 以 ABI0.47 发布模型中立 C99 描述与只读端口。Provider 通过纯公开 `ayni_validate_utf8` 复用 foundation 的现有规则，避免在边界复制 Unicode 算法；Core 不感知说明结构、不保存长文。增加的固定说明内存只在 Native 模型 Provider 请求槽，不能推定 ESP32 预算。

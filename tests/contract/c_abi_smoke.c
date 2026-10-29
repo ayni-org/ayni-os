@@ -322,6 +322,14 @@ int main(void) {
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");
     failures += expect(ayni_destroy(kernel) == AYNI_OK, "destroy");
     {
+        /* C-USAGE-006: pure UTF-8 also links from C99 without a live Kernel. */
+        const ayni_string_v1 valid = {"\0\xe4\xb8\x96", 4u};
+        const ayni_string_v1 invalid = {"\xed\xa0\x80", 3u};
+        failures += expect(ayni_validate_utf8(valid) == AYNI_OK &&
+                               ayni_validate_utf8(invalid) == AYNI_INVALID_ARGUMENT,
+                           "pure Unicode scalar validation");
+    }
+    {
         /* ABI 0.45: pure civil values also work without a live Kernel. */
         const ayni_string_v1 zone = {"CST-8", 5u};
         ayni_calendar_civil_v1 civil = {0};
