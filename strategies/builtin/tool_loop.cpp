@@ -1,6 +1,7 @@
 #include "support.h"
 #include <ayni/ayni.h>
 #include <ayni/memory.h>
+#include <ayni/values_json.hpp>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -162,31 +163,70 @@ ayni_status_t summarize(Turn &turn, const ToolLoopConfig &config,
     turn.record.round_count = kept_count;
     return AYNI_OK;
 }
-void tool_context(const ayni_task_tool_call_v1 &proposal, const ayni_task_call_result_v1 &result,
-                  ayni_string_v1 key, Writer &prompt) {
+// Render native requests/results against the Call's own immutable proof. A
+// replacement catalog cannot rename fields or change decimal/wide-number meaning.
+ayni_status_t tool_context(const ayni_task_tool_call_v1 &proposal,
+                           const ayni_task_call_result_v1 &result, ayni_string_v1 key,
+                           Writer &prompt) {
+    if (proposal.call.input_kind != AYNI_TOOL_INPUT_VALUE) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     prompt.add("\nCompleted tool ");
     prompt.add(key);
     prompt.add(" binding ");
     prompt.add(proposal.call.binding_id);
     prompt.add(" version ");
     prompt.number(proposal.call.binding_version);
-    for (uint32_t at = 0; at < proposal.call.arguments.field_count; ++at) {
-        const auto &field = proposal.call.arguments.fields[at];
-        prompt.add("\nfield_");
-        prompt.number(field.field_id);
-        prompt.add("=");
-        if (field.allowed.kind == AYNI_AUTHORITY_I64) {
-            prompt.integer(field.allowed.values.integer.min_inclusive);
-            prompt.add(" ");
-            prompt.add(field.allowed.unit);
-        } else {
-            prompt.add(field.allowed.values.tokens.members[0]);
-        }
-    }
-    prompt.add("\nInput data:\n");
-    prompt.add(proposal.call.text);
-    prompt.add("\nResult data:\n");
-    prompt.add(result.text);
+    prompt.add(" protocol ID ");
+    prompt.add(proposal.call.protocol_id);
+    struct Context {
+        const ayni_task_tool_call_v1 &proposal;
+        const ayni_task_call_result_v1 &result;
+        Writer &prompt;
+    } context{proposal, result, prompt};
+    return ayni_business_contract_read(
+        result.original_domain, result.business_contract, &context,
+        [](void *opaque, const ayni_business_contract_v1 *business) -> ayni_status_t {
+            auto &state = *static_cast<Context *>(opaque);
+            std::array<char, prompt_bytes_max> buffer{};
+            ayni::json::Writer input(buffer.data(), buffer.size());
+            auto status =
+                ayni::json::write_value(input, business->input, state.proposal.call.input.value);
+            size_t bytes = 0;
+            if (status != AYNI_OK) {
+                return status;
+            }
+            if (!input.finish(bytes)) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            state.prompt.add("\nInput data:\n");
+            state.prompt.add(ayni_string_v1{buffer.data(), static_cast<uint32_t>(bytes)});
+            std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
+            uint32_t count = 0;
+            if (state.result.encoded_value.size) {
+                status = ayni_value_read(state.result.encoded_value, nodes.data(),
+                                         static_cast<uint32_t>(nodes.size()), &count);
+                if (status != AYNI_OK) {
+                    return status;
+                }
+            } else {
+                count = 1;
+                nodes[0].kind = AYNI_VALUE_TEXT;
+                nodes[0].subtree_end = 1;
+                nodes[0].value.text = state.result.text;
+            }
+            ayni::json::Writer output(buffer.data(), buffer.size());
+            status = ayni::json::write_value(output, business->result, {nodes.data(), count});
+            if (status != AYNI_OK) {
+                return status;
+            }
+            if (!output.finish(bytes)) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            state.prompt.add("\nResult data:\n");
+            state.prompt.add(ayni_string_v1{buffer.data(), static_cast<uint32_t>(bytes)});
+            return state.prompt.ok() ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+        });
 }
 // Preflight the entire typed list before its first effect: bound, readable
 // proposals and enough remaining step slots. Core owns schema/authority checks.
@@ -248,9 +288,12 @@ ayni_status_t tools(const Turn &turn, const ayni_task_snapshot_v1 &snapshot,
             Call request_call;
             request_call.binding_id = proposal.call.binding_id;
             request_call.binding_version = proposal.call.binding_version;
-            request_call.arguments = proposal.call.arguments;
+            if (proposal.call.input_kind != AYNI_TOOL_INPUT_VALUE) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            request_call.input = proposal.call.input.value;
             requested = true;
-            return request(request_call, key, proposal.call.text, output);
+            return request(request_call, key, {}, output);
         }
         if (status != AYNI_OK) {
             return status;
@@ -259,7 +302,10 @@ ayni_status_t tools(const Turn &turn, const ayni_task_snapshot_v1 &snapshot,
         if (end != AYNI_OK) {
             return end;
         }
-        tool_context(proposal, call, key, prompt);
+        const auto rendered = tool_context(proposal, call, key, prompt);
+        if (rendered != AYNI_OK) {
+            return rendered;
+        }
     }
     return AYNI_OK;
 }
@@ -365,7 +411,8 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config) {
     constexpr int64_t zone_check_utc_s = 86400;
     int64_t local = 0;
     if (!valid_identity(config.identity) || !valid_call(config.model) ||
-        !valid_call(config.summary) || config.model.kind != AYNI_POLICY_REQUEST_MODEL ||
+        !valid_call(config.summary) || config.model.input || config.summary.input ||
+        config.model.kind != AYNI_POLICY_REQUEST_MODEL ||
         config.summary.kind != AYNI_POLICY_REQUEST_MODEL ||
         (config.clock.timezone.size &&
          ayni_calendar_local_time(config.clock.timezone, zone_check_utc_s, &local) != AYNI_OK)) {

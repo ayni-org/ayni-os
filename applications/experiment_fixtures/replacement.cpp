@@ -34,9 +34,17 @@ ayni_status_t request(ayni_policy_output_v1 &o, const char *key, const char *bin
     r.step_key = text(key);
     r.binding_id = text(binding);
     r.binding_version = 1;
-    r.arguments = {sizeof(ayni_scope_v1), 0, nullptr};
+    ValueBuilder<2> value;
     if (kind == AYNI_POLICY_REQUEST_MODEL) {
-        r.text = text("ayni-instructions:0\nfixture input");
+        value.object();
+        value.text(AYNI_MODEL_BODY_FIELD_ID, text("ayni-instructions:0\nfixture input"));
+        value.end();
+    } else {
+        value.text(0, {});
+    }
+    const auto status = value.finish(r.value);
+    if (status != AYNI_OK) {
+        return status;
     }
     return o.request_call(o.call_context, &r);
 }

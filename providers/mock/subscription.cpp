@@ -57,6 +57,8 @@ struct SubscriptionProvider::Impl {
     ayni_subscription_contract_v1 subscription{};
     ayni_call_resource_v1 resource{};
     ayni_call_capability_v1 capability{};
+    ayni_schema_node_v1 input_schema{}, result_schema{};
+    ayni_business_contract_v1 business{};
     ayni_provider_v1 provider{};
     uint64_t now() const { return config.now_us(config.clock_context); }
     void descriptors() {
@@ -69,8 +71,13 @@ struct SubscriptionProvider::Impl {
                       text("mock.observe"),
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_SUBSCRIPTION, AYNI_CALL_TOOL, 0,
                        AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_CONFIRMED, 0,
-                       request_timeout_ms, AYNI_CALL_INPUT_FIELDS_TEXT, AYNI_CALL_RESULT_TEXT, 0, 0,
-                       1, &resource, &subscription}};
+                       request_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, 24, 0, 1,
+                       &resource, &subscription},
+                      nullptr};
+        input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
+        input_schema.subtree_end = result_schema.subtree_end = 1;
+        business = {{&input_schema, 1}, {&result_schema, 1}, 0, 0, nullptr};
+        capability.business = &business;
         const bool a = config.variant == Variant::a;
         provider = {sizeof(provider),
                     contract_version,

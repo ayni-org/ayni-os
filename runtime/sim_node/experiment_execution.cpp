@@ -2,6 +2,7 @@
 #include "experiment_support.h"
 #include <algorithm>
 #include <ayni/host_authority.h>
+#include <ayni/values.hpp>
 #include <cstring>
 namespace ayni::runtime::experiments {
 namespace {
@@ -144,15 +145,23 @@ ayni_status_t Physical::decide(void *, const ayni_task_snapshot_v1 *snapshot,
     if (found != AYNI_NOT_FOUND) {
         return found;
     }
-    auto field = initialized<ayni_scope_field_v1>();
-    field.field_id = control_field;
-    field.allowed = initialized<ayni_authority_value_set_v1>();
-    field.allowed.kind = AYNI_AUTHORITY_I64;
-    field.allowed.unit = text("mrad");
-    field.allowed.values.integer = {turn_value, turn_value};
-    const ayni_call_request_v1 request{
-        sizeof(request),      AYNI_POLICY_REQUEST_CALL,           1, 0, text("turn"),
-        text("turn.binding"), {sizeof(ayni_scope_v1), 1, &field}, {}};
+    ValueBuilder<2> value;
+    value.object();
+    value.integer(control_field, turn_value);
+    value.end();
+    ayni_call_request_v1 request{sizeof(request),
+                                 AYNI_POLICY_REQUEST_CALL,
+                                 1,
+                                 0,
+                                 text("turn"),
+                                 text("turn.binding"),
+                                 {},
+                                 {},
+                                 {}};
+    const auto status = value.finish(request.value);
+    if (status != AYNI_OK) {
+        return status;
+    }
     return output->request_call(output->call_context, &request);
 }
 bool Physical::prepare(uint64_t agent) {

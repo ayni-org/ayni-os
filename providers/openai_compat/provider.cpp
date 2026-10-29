@@ -1,6 +1,8 @@
 #include "protocol.h"
+#include <array>
 #include <atomic>
 #include <ayni/providers/openai_compat.h>
+#include <ayni/values.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -169,6 +171,13 @@ struct Provider::Impl {
     std::atomic<ayni_status_t> failure{AYNI_OK};
     ayni_call_resource_v1 resource{}; // model.slot admission remains owned by Core.
     ayni_call_capability_v1 capability{};
+    std::array<ayni_schema_node_v1, 3> input_schema{};
+    ayni_schema_node_v1 result_schema{};
+    ayni_value_node_v1 destination_default_node{};
+    ayni_value_v1 destination_default{};
+    ayni_string_v1 destination_choice{};
+    ayni_authority_projection_v1 projection{};
+    ayni_business_contract_v1 business{};
     ayni_provider_v1 descriptor{};
 
     void record_failure(ayni_status_t status) {
@@ -275,8 +284,43 @@ struct Provider::Impl {
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_MODEL,
                        AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
                        AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, config.timeout_ms,
-                       AYNI_CALL_INPUT_FIELDS_TEXT, config.result_format, config.text_max_bytes,
-                       config.text_max_bytes, 1, &resource, nullptr}};
+                       AYNI_CALL_INPUT_VALUE, config.result_format, config.text_max_bytes + 128,
+                       config.text_max_bytes, 1, &resource, nullptr},
+                      nullptr};
+        input_schema[0].kind = AYNI_VALUE_OBJECT;
+        input_schema[0].subtree_end = static_cast<uint32_t>(input_schema.size());
+        auto &destination = input_schema[1];
+        destination.kind = AYNI_VALUE_IDENTIFIER;
+        destination.field_id = AYNI_MODEL_DESTINATION_FIELD_ID;
+        destination.subtree_end = 2;
+        destination.name = {"destination", 11};
+        destination_choice = text(config.destination_id);
+        destination.choice_count = 1;
+        destination.choices = &destination_choice;
+        destination_default_node.kind = AYNI_VALUE_IDENTIFIER;
+        destination_default_node.subtree_end = 1;
+        destination_default_node.value.text = destination_choice;
+        destination_default = {&destination_default_node, 1};
+        destination.default_value = &destination_default;
+        auto &body = input_schema[2];
+        body.kind = AYNI_VALUE_TEXT;
+        body.field_id = AYNI_MODEL_BODY_FIELD_ID;
+        body.subtree_end = static_cast<uint32_t>(input_schema.size());
+        body.flags = AYNI_SCHEMA_REQUIRED;
+        body.name = {"body", 4};
+        body.max_count = config.text_max_bytes;
+        result_schema.kind = AYNI_VALUE_TEXT;
+        result_schema.subtree_end = 1;
+        result_schema.max_count = config.text_max_bytes;
+        projection.field_id = AYNI_MODEL_DESTINATION_FIELD_ID;
+        projection.path_count = 1;
+        projection.path[0] = AYNI_MODEL_DESTINATION_FIELD_ID;
+        business = {{input_schema.data(), static_cast<uint32_t>(input_schema.size())},
+                    {&result_schema, 1},
+                    1,
+                    0,
+                    &projection};
+        capability.business = &business;
         descriptor = {sizeof(descriptor),
                       contract_version,
                       text(config.provider_id),
@@ -299,11 +343,16 @@ struct Provider::Impl {
             !request->attempt.request_id || !request->logical_call_id || !request->operation_id ||
             !same(request->capability_id, self.capability.capability_id) ||
             !same(request->endpoint_id, self.descriptor.endpoint_id) ||
-            request->text.size > self.config.text_max_bytes ||
-            (request->text.size && !request->text.data) ||
             request->tool_count > AYNI_GOAL_TYPE_TOOL_COUNT_MAX ||
             (request->tool_count && (!request->tool || self.config.tool_usage.struct_size == 0)) ||
             request->execution_permit || self.stopping.load() || self.failure.load() != AYNI_OK) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        ayni::ValueReader input;
+        ayni_string_v1 body{};
+        if (input.read(request->value) != AYNI_OK ||
+            !ayni::ValueReader::text(input.field(AYNI_MODEL_BODY_FIELD_ID), body) ||
+            body.size > self.config.text_max_bytes) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         for (uint32_t i = 0; i < self.config.request_capacity; ++i) {
@@ -324,10 +373,10 @@ struct Provider::Impl {
                     return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
                 }
             }
-            if (request->text.size) {
-                std::memcpy(slot.input.get(), request->text.data, request->text.size);
+            if (body.size) {
+                std::memcpy(slot.input.get(), body.data, body.size);
             }
-            slot.input_size = request->text.size;
+            slot.input_size = body.size;
             slot.tool_count = request->tool_count;
             slot.attempt = request->attempt;
             slot.completion = completion;
@@ -410,6 +459,10 @@ struct Provider::Impl {
             protocol.encode(config, {slot.input.get(), slot.input_size}, slot.tools.data(),
                             slot.tool_count, slot.request.get(), slot.request_size);
         if (encoded != AYNI_OK) {
+            // Encoding can fail after a private prefix was written, before it
+            // published a size; erase the whole reserved lane on this path.
+            wipe(slot.request.get(), request_json_max);
+            slot.request_size = 0;
             slot.answer.fail(encoded, AYNI_REASON_NONE);
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;

@@ -1,5 +1,6 @@
 #include <array>
 #include <ayni/providers/mock_execution.h>
+#include <ayni/values.hpp>
 #include <cstring>
 #include <new>
 #include <optional>
@@ -52,6 +53,11 @@ struct Executor::Impl {
     ayni_execution_permit_v1 permit{};
     ayni_call_resource_v1 resource{text("mock.actuator"), 1, 0};
     ayni_call_capability_v1 capability{};
+    static constexpr uint32_t body_field = UINT32_MAX;
+    std::array<ayni_schema_node_v1, AYNI_CONTROL_FIELD_COUNT_MAX + 2> input_schema{};
+    std::array<ayni_authority_projection_v1, AYNI_CONTROL_FIELD_COUNT_MAX> projections{};
+    ayni_schema_node_v1 result_schema{};
+    ayni_business_contract_v1 business{};
     ayni_provider_v1 provider{};
     ayni_executor_v1 executor{};
     std::optional<Pending> pending;
@@ -69,15 +75,69 @@ struct Executor::Impl {
     uint64_t sequence = 0;
     ayni_execution_target_t target = AYNI_TARGET_UNVERIFIED;
     uint64_t now() const { return config.now_us(config.clock_context); }
-    void describe() {
+    ayni_status_t describe() {
         capability = {sizeof(capability),
                       version,
                       text("mock.turn"),
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_ACTION, AYNI_CALL_TOOL,
                        AYNI_CALL_EFFECT_PHYSICAL, AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE,
-                       AYNI_CALL_CANCEL_REQUEST, 0, config.call_timeout_ms,
-                       AYNI_CALL_INPUT_FIELDS_TEXT, AYNI_CALL_RESULT_TEXT, text_bytes, text_bytes,
-                       1, &resource, nullptr}};
+                       AYNI_CALL_CANCEL_REQUEST, 0, config.call_timeout_ms, AYNI_CALL_INPUT_VALUE,
+                       AYNI_CALL_RESULT_TEXT, text_bytes + 256, text_bytes, 1, &resource, nullptr},
+                      nullptr};
+        const uint32_t count = config.limits.count;
+        input_schema[0].kind = AYNI_VALUE_OBJECT;
+        input_schema[0].subtree_end = count + 2;
+        for (uint32_t at = 0; at < count; ++at) {
+            const auto &limit = config.limits.fields[at];
+            auto &node = input_schema[at + 1];
+            node.kind = AYNI_VALUE_I64;
+            node.field_id = at + 1;
+            node.subtree_end = at + 2;
+            node.flags = AYNI_SCHEMA_REQUIRED;
+            node.name = {limit.field_id.data, limit.field_id.size};
+            node.unit = {limit.unit.data, limit.unit.size};
+            node.min_i64 = limit.minimum;
+            node.max_i64 = limit.maximum;
+            auto &projection = projections[at];
+            projection.field_id = at + 1;
+            projection.path_count = 1;
+            projection.path[0] = at + 1;
+            projection.unit = node.unit;
+        }
+        auto &body = input_schema[count + 1];
+        body.kind = AYNI_VALUE_TEXT;
+        body.field_id = body_field;
+        body.subtree_end = count + 2;
+        body.name = text("body");
+        body.max_count = text_bytes;
+        result_schema.kind = AYNI_VALUE_TEXT;
+        result_schema.subtree_end = 1;
+        result_schema.max_count = text_bytes;
+        business = {{input_schema.data(), count + 2},
+                    {&result_schema, 1},
+                    count,
+                    0,
+                    count ? projections.data() : nullptr};
+        capability.business = &business;
+        ValueBuilder<AYNI_CONTROL_FIELD_COUNT_MAX + 2> maximum;
+        maximum.object();
+        for (uint32_t at = 0; at < count; ++at) {
+            maximum.integer(at + 1, config.limits.fields[at].maximum);
+        }
+        char longest_text[text_bytes]{};
+        maximum.text(body_field, {longest_text, text_bytes});
+        maximum.end();
+        ayni_value_v1 largest{};
+        const auto built = maximum.finish(largest);
+        if (built != AYNI_OK) {
+            return built;
+        }
+        uint32_t required = 0;
+        const auto measured = ayni_value_write(&largest, nullptr, 0, &required);
+        if (measured != AYNI_BUFFER_TOO_SMALL) {
+            return measured;
+        }
+        capability.contract.input_text_limit = required;
         provider = {sizeof(provider),
                     version,
                     text("mock.execution"),
@@ -108,6 +168,7 @@ struct Executor::Impl {
                     request_renew,
                     request_stop,
                     request_status};
+        return AYNI_OK;
     }
     // The trusted Core supplies its new boot at the first challenge. This gate is
     // never recreated or rebound after it has been configured for that generation.
@@ -396,7 +457,8 @@ struct Executor::Impl {
             success ? text("turn complete") : ayni_string_v1{},
             0,
             0,
-            nullptr};
+            nullptr,
+            {}};
         // Kernel power loss ends the borrow, while the independent physical gate
         // continues until its existing lease/interlocks stop it (C-PERMIT-009).
         const auto posted =
@@ -437,7 +499,10 @@ ayni_status_t Executor::configure(const Config &config) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     value->config = config;
-    value->describe();
+    const auto described = value->describe();
+    if (described != AYNI_OK) {
+        return described;
+    }
     impl_ = std::move(value);
     return AYNI_OK;
 }

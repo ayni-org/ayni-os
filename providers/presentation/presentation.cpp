@@ -1,5 +1,6 @@
 #include <array>
 #include <ayni/providers/presentation.h>
+#include <ayni/values.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -34,6 +35,8 @@ struct Provider::Impl {
     std::array<Slot, request_capacity> slots{};
     std::array<ayni_call_resource_v1, 2> resources{};
     ayni_call_capability_v1 capability{};
+    ayni_schema_node_v1 input_schema{}, result_schema{};
+    ayni_business_contract_v1 business{};
     mutable std::mutex mutex;
     std::condition_variable changed;
     std::thread worker;
@@ -55,22 +58,31 @@ struct Provider::Impl {
                                AYNI_CALL_CANCEL_REQUEST,
                                0,
                                notification_timeout_ms,
-                               AYNI_CALL_INPUT_FIELDS_TEXT,
+                               AYNI_CALL_INPUT_VALUE,
                                AYNI_CALL_RESULT_TEXT,
-                               text_bytes_max,
+                               text_bytes_max + 24,
                                0,
                                static_cast<uint32_t>(resources.size()),
                                resources.data(),
                                nullptr};
+        input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
+        input_schema.subtree_end = result_schema.subtree_end = 1;
+        input_schema.max_count = text_bytes_max;
+        business = {{&input_schema, 1}, {&result_schema, 1}, 0, 0, nullptr};
+        capability.business = &business;
     }
     static ayni_submit_result_t submit(void *context, const ayni_provider_request_v1 *r,
                                        ayni_provider_completion_t *completion) {
         auto &self = *static_cast<Impl *>(context);
         if (!r || !completion || r->struct_size != sizeof(*r) || !r->attempt.boot_epoch ||
             !r->attempt.request_id || !same(r->capability_id, self.capability.capability_id) ||
-            r->capability_version != 1 || !same(r->endpoint_id, text("channel.output")) ||
-            r->text.size > text_bytes_max || (r->text.size && !r->text.data) ||
-            r->arguments.field_count) {
+            r->capability_version != 1 || !same(r->endpoint_id, text("channel.output"))) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        ayni::ValueReader input;
+        ayni_string_v1 body{};
+        if (input.read(r->value) != AYNI_OK || !ayni::ValueReader::text(input.root(), body) ||
+            body.size > text_bytes_max) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         std::lock_guard<std::mutex> lock(self.mutex);
@@ -84,9 +96,9 @@ struct Provider::Impl {
             slot.phase = Phase::queued;
             slot.attempt = r->attempt;
             slot.completion = completion;
-            slot.size = r->text.size;
+            slot.size = body.size;
             if (slot.size) {
-                std::memcpy(slot.body.data(), r->text.data, slot.size);
+                std::memcpy(slot.body.data(), body.data, slot.size);
             }
             ++self.active;
             self.changed.notify_one();

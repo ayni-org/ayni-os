@@ -66,13 +66,18 @@ Counter::Counter(const char *capability, Effect effect) {
                             AYNI_CALL_CANCEL_REQUEST,
                             0,
                             request_timeout_ms,
-                            AYNI_CALL_INPUT_FIELDS_TEXT,
+                            AYNI_CALL_INPUT_VALUE,
                             AYNI_CALL_RESULT_TEXT,
-                            text_limit,
+                            text_limit + 24,
                             0,
                             1,
                             &resource_,
                             nullptr};
+    input_schema_.kind = result_schema_.kind = AYNI_VALUE_TEXT;
+    input_schema_.subtree_end = result_schema_.subtree_end = 1;
+    input_schema_.max_count = text_limit;
+    business_ = {{&input_schema_, 1}, {&result_schema_, 1}, 0, 0, nullptr};
+    capability_.business = &business_;
 }
 ayni_provider_v1 Counter::describe() {
     auto out = initialized<ayni_provider_v1>();
@@ -91,8 +96,13 @@ ayni_submit_result_t Counter::submit(void *ctx, const ayni_provider_request_v1 *
     if (!request || !completion || request->struct_size != sizeof(*request) ||
         request->capability_version != 1 ||
         !same(request->capability_id, self.capability_.capability_id) ||
-        !same(request->endpoint_id, self.capability_.capability_id) ||
-        request->arguments.field_count || request->text.size > text_limit) {
+        !same(request->endpoint_id, self.capability_.capability_id)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    ValueReader input;
+    ayni_string_v1 body{};
+    if (input.read(request->value) != AYNI_OK || !ValueReader::text(input.root(), body) ||
+        body.size > text_limit) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     for (auto &slot : self.slots_) {

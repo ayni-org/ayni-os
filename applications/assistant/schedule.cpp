@@ -1,15 +1,17 @@
-// Shared owner/model schedule grammar (ADR-0072). Parsing builds the same Parameters/calendar
+// Owner schedule grammar and structured model arguments (ADR-0084). Both build Parameters/calendar
 // an owner command would; formatting is its exact inverse for owner review of model requests.
 #include "policy_support.h"
+#include "schedule_value.h"
 #include <algorithm>
+#include <ayni/values.hpp>
 #include <charconv>
 #include <cstdio>
 #include <iterator>
 #include <sstream>
 namespace ayni::applications::assistant {
 namespace {
+using detail::seconds_to_us;
 using detail::text;
-constexpr uint64_t microseconds_per_second = 1000000;
 constexpr int64_t seconds_per_minute = 60, seconds_per_hour = 3600, seconds_per_day = 86400;
 // "YYYY-MM-DDTHH:MM": fixed digit positions and separators, minute resolution.
 constexpr size_t civil_bytes = 16, year_at = 0, month_at = 5, day_at = 8, hour_at = 11,
@@ -99,10 +101,10 @@ ayni_status_t check(std::istringstream &input, Schedule &out) {
     uint64_t seconds = 0;
     const auto result = std::from_chars(word.data(), word.data() + word.size(), seconds);
     if (result.ec != std::errc{} || result.ptr != word.data() + word.size() || seconds == 0 ||
-        seconds > UINT64_MAX / microseconds_per_second) {
+        seconds > UINT64_MAX / seconds_to_us) {
         return AYNI_INVALID_ARGUMENT;
     }
-    out.period_us = seconds * microseconds_per_second;
+    out.period_us = seconds * seconds_to_us;
     return AYNI_OK;
 }
 } // namespace
@@ -130,6 +132,69 @@ ayni_status_t parse_schedule(const std::string &line, Schedule &out) {
     out = std::move(next);
     return AYNI_OK;
 }
+ayni_status_t detail::read_schedule(ayni_value_v1 value, Schedule &out) {
+    ayni::ValueReader input;
+    if (input.read(value) != AYNI_OK || input.root()->kind != AYNI_VALUE_OBJECT) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto *kind_node = input.field(kind);
+    const auto *frequency_node = input.field(frequency);
+    const auto *period = input.field(period_seconds);
+    ayni_string_v1 date{}, zone{}, text_body{};
+    if (!kind_node || kind_node->kind != AYNI_VALUE_ENUM || !frequency_node ||
+        frequency_node->kind != AYNI_VALUE_ENUM || !period || period->kind != AYNI_VALUE_U64 ||
+        !ayni::ValueReader::text(input.field(local_time), date) ||
+        !ayni::ValueReader::text(input.field(timezone), zone) ||
+        !ayni::ValueReader::text(input.field(body), text_body)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto matches = [](ayni_string_v1 a, const char *b) {
+        return a.size == std::strlen(b) && std::memcmp(a.data, b, a.size) == 0;
+    };
+    Schedule next;
+    if (matches(kind_node->value.text, "remind")) {
+        auto &rule = next.calendar;
+        if (period->value.unsigned_integer != minimum_period_seconds || !text_body.size ||
+            text_body.size > text_bytes_max || zone.size > AYNI_CALENDAR_TZ_MAX_BYTES ||
+            !civil_time(std::string(date.data, date.size), rule.first_local_s) ||
+            check_timezone(zone) != AYNI_OK) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        for (const auto &entry : calendar_words) {
+            if (matches(frequency_node->value.text, entry.word)) {
+                rule.kind = entry.kind;
+            }
+        }
+        if (!rule.kind) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        rule.struct_size = sizeof(rule);
+        rule.rule_version = 1;
+        rule.timezone_size = zone.size;
+        std::memcpy(rule.timezone, zone.data, zone.size);
+        next.parameters.text.assign(text_body.data, text_body.size);
+    } else {
+        if (date.size || zone.size || text_body.size ||
+            !matches(frequency_node->value.text, "once")) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        if (matches(kind_node->value.text, "check")) {
+            if (period->value.unsigned_integer < minimum_period_seconds ||
+                period->value.unsigned_integer > UINT64_MAX / seconds_to_us) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            next.parameters.kind = GoalKind::device_check;
+            next.period_us = period->value.unsigned_integer * seconds_to_us;
+        } else if (matches(kind_node->value.text, "observe") &&
+                   period->value.unsigned_integer == minimum_period_seconds) {
+            next.parameters.kind = GoalKind::scene_observe;
+        } else {
+            return AYNI_INVALID_ARGUMENT;
+        }
+    }
+    out = std::move(next);
+    return AYNI_OK;
+}
 ayni_status_t format_schedule(const ayni_goal_create_v1 &goal, std::string &out) {
     Parameters p;
     auto status = decode(goal.parameters, p);
@@ -137,11 +202,11 @@ ayni_status_t format_schedule(const ayni_goal_create_v1 &goal, std::string &out)
         return status;
     }
     if (p.kind == GoalKind::device_check) {
-        if (goal.trigger_period_us % microseconds_per_second != 0) {
+        if (goal.trigger_period_us % seconds_to_us != 0) {
             return AYNI_INVALID_ARGUMENT;
         }
-        out = std::string(check_word) + ' ' +
-              std::to_string(goal.trigger_period_us / microseconds_per_second);
+        out =
+            std::string(check_word) + ' ' + std::to_string(goal.trigger_period_us / seconds_to_us);
         return AYNI_OK;
     }
     if (p.kind == GoalKind::scene_observe) {

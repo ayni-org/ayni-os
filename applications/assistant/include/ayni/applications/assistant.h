@@ -35,7 +35,7 @@ const char *goal_type(GoalKind);
 // Encoded storage must outlive submission; Core copies the request synchronously.
 ayni_status_t prepare_goal(const Parameters &, uint64_t owner_instance, uint64_t period_us,
                            const ayni_calendar_rule_v1 *, Encoded &, ayni_goal_create_v1 &);
-// One schedule grammar for owner commands and the model tool (ADR-0072):
+// Schedule grammar for owner commands (the model tool uses structured values):
 //   remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX-TZ> <text>
 //   check [<seconds>]
 //   observe

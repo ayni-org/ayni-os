@@ -79,6 +79,7 @@ inline std::string configuration_json(const ayni_config_v1 &config) {
     AYNI_FIXTURE_CONFIG_FIELD(memory_body_max_bytes);
     AYNI_FIXTURE_CONFIG_FIELD(memory_dependency_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(observation_ingress_capacity);
+    AYNI_FIXTURE_CONFIG_FIELD(business_contract_max_bytes);
 #undef AYNI_FIXTURE_CONFIG_FIELD
     return result + '}';
 }
