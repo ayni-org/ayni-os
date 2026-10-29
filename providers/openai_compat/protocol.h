@@ -11,11 +11,21 @@ constexpr uint32_t json_container_max = 64;
 constexpr size_t request_json_max = 1048576;
 // Owns a submit-time view and every string it references. Never move after copying.
 struct Tool {
+    Tool() = default;
+    Tool(const Tool &) = delete;
+    Tool &operator=(const Tool &) = delete;
+    Tool(Tool &&) = delete;
+    Tool &operator=(Tool &&) = delete;
     ayni_tool_v1 view{};
     static constexpr size_t string_count =
         2 + AYNI_AUTHORITY_FIELD_COUNT_MAX * (1 + AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX);
     std::array<char, string_count * AYNI_CATALOG_ID_MAX_BYTES> strings{};
-    bool copy(const ayni_tool_v1 &source);
+    ayni_tool_usage_v1 usage{}; // Read-only copied metadata; identity aliases view's owned strings.
+    std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> field_usage{};
+    std::array<char, AYNI_TOOL_USAGE_MAX_BYTES> usage_strings{};
+    bool copy(const ayni_tool_v1 &source); // Owner-valid Core view; copies every borrowed string.
+    // Exact pairing, fields, UTF-8 and byte budgets; no allocation or fallback.
+    bool copy_usage(const ayni_tool_usage_v1 &source);
 };
 // Result views borrow only tools and this answer's fixed body storage, never a JSON DOM.
 struct Answer {

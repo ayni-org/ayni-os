@@ -12,7 +12,7 @@ constexpr uint32_t schedule_timeout_ms = 60000;
 constexpr char endpoint[] = "assistant.local";
 // Model-facing texts state the admission limits in words; keep them equal to the constants.
 static_assert(text_bytes_max == 384 && check_period_us == 300000000ULL,
-              "update the grammar refusal and the model prompt");
+              "update the grammar refusal and usage descriptor");
 constexpr char grammar_refusal[] =
     "rejected: expected 'remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX-TZ> <text of at most "
     "384 bytes>', 'check [<seconds, at least 300>]' or 'observe'; nothing was registered";
@@ -139,6 +139,26 @@ ayni_provider_v1 ScheduleTool::describe() {
             submit,
             nullptr,
             nullptr,
+            nullptr};
+}
+ayni_tool_usage_v1 ScheduleTool::usage(ayni_tool_ref_v1 binding) const {
+    return {sizeof(ayni_tool_usage_v1),
+            binding.binding_version,
+            binding.binding_id,
+            capability_.version,
+            capability_.capability_id,
+            text("Register one lasting reminder, device check or scene observation requested by "
+                 "the owner. Resolve relative dates from the supplied current local time and "
+                 "use its timezone unless the user names another; ask if unknown."),
+            text("Exactly one command: 'remind once|daily|weekly YYYY-MM-DDTHH:MM <POSIX-TZ> "
+                 "<text of at most 384 bytes>', 'check [<seconds, at least 300>]' or 'observe'. "
+                 "Timezone is a POSIX rule such as CST-8 or UTC0. Empty text is invalid."),
+            text("'registered goal N: <schedule>; waiting for owner approval' registers a "
+                 "proposal; it does not run or approve the work. 'rejected: ...; nothing was "
+                 "registered' asks for corrected input or capacity/approval resolution."),
+            text("remind once 2026-10-30T09:00 CST-8 喝水; check 300; observe"),
+            0,
+            0,
             nullptr};
 }
 ayni_submit_result_t ScheduleTool::submit(void *context, const ayni_provider_request_v1 *r,

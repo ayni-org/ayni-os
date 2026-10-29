@@ -1,4 +1,5 @@
 // ADR-0055: normal protocol behavior with loopback-only HTTP fixtures.
+#include "../../providers/openai_compat/protocol.h"
 #include "openai_fixture.h"
 
 namespace {
@@ -34,7 +35,12 @@ TEST_F(OpenaiProvider, text_completes_through_public_abi_and_declares_remote_eff
     EXPECT_NE(request.find("POST /chat/completions HTTP/1.1"), std::string::npos);
     EXPECT_NE(request.find("\"stream\":false"), std::string::npos);
     EXPECT_NE(request.find("\"minimum\":5,\"maximum\":10"), std::string::npos);
-    EXPECT_NE(request.find("\"description\":\"second\""), std::string::npos);
+    EXPECT_NE(request.find("How long to display the text.\\nUnit: second"), std::string::npos);
+    EXPECT_NE(request.find("Presentation style of the mock display."), std::string::npos);
+    EXPECT_NE(request.find(usage_purpose), std::string::npos);
+    EXPECT_NE(request.find("Completion confirms simulated display only"), std::string::npos);
+    EXPECT_NE(request.find("field_1=7, field_2=calm, text=hello"), std::string::npos);
+    EXPECT_EQ(usage_lookups, 1U);
     EXPECT_NE(request.find("\"enum\":[\"bright\",\"calm\"]"), std::string::npos);
     EXPECT_NE(request.find("Authorization: Bearer fixture-only-key"), std::string::npos);
     EXPECT_NE(request.find(R"("messages":[{"role":"user","content":"say hello"}])"),
@@ -111,6 +117,207 @@ TEST_F(OpenaiProvider, offered_function_becomes_exact_typed_values) {
     EXPECT_EQ(seen_result.tool_call_count, 1U);
     EXPECT_EQ(proposal, "show|hello|7second|calm");
     EXPECT_TRUE(reply.empty());
+}
+// C-USAGE-004: the described mock device proposal executes only after policy
+// requests the exact Binding, through normal Core authority/resources/Call.
+TEST_F(OpenaiProvider, described_mock_device_runs_through_the_normal_managed_call) {
+    execute_proposal = true;
+    start(tool_reply(R"({"field_1":7,"field_2":"calm","text":"hello"})"));
+    create();
+    wait_done();
+    EXPECT_EQ(device_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(device_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(device_reply, "hello");
+    EXPECT_EQ(presenter.executions(), 1U);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_EQ(usage_lookups, 1U);
+    EXPECT_EQ(proposal, "show|hello|7second|calm");
+}
+
+// ADR-0082/AP-01: no explanatory fallback may expose an unusable or wrong tool.
+TEST_F(OpenaiProvider, tools_without_a_usage_port_are_rejected_before_http) {
+    usage_available = false;
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(server->requests(), 0U);
+    EXPECT_EQ(usage_lookups, 0U);
+}
+TEST_F(OpenaiProvider, text_only_requests_need_no_usage_port) {
+    usage_available = false;
+    model_result_format = AYNI_CALL_RESULT_TEXT;
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_EQ(server->request().find("\"tools\":"), std::string::npos);
+    EXPECT_EQ(usage_lookups, 0U);
+}
+TEST_F(OpenaiProvider, missing_exact_usage_is_rejected_before_http) {
+    usage_status = AYNI_NOT_FOUND;
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(server->requests(), 0U);
+    EXPECT_EQ(usage_lookups, 1U);
+}
+
+struct InvalidUsage {
+    const char *name;
+    void (*change)(ayni_tool_usage_v1 &);
+};
+class OpenaiUsage : public OpenaiProvider, public ::testing::WithParamInterface<InvalidUsage> {};
+TEST_P(OpenaiUsage, invalid_description_is_rejected_before_http_without_truncation) {
+    change_usage = GetParam().change;
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(server->requests(), 0U);
+    EXPECT_EQ(usage_lookups, 1U);
+}
+INSTANTIATE_TEST_SUITE_P(
+    Usage, OpenaiUsage,
+    ::testing::Values(
+        InvalidUsage{"old_layout", [](auto &v) { --v.struct_size; }},
+        InvalidUsage{"future_layout", [](auto &v) { ++v.struct_size; }},
+        InvalidUsage{"binding_id", [](auto &v) { v.binding_id = text("another"); }},
+        InvalidUsage{"binding_version", [](auto &v) { ++v.binding_version; }},
+        InvalidUsage{"capability_id", [](auto &v) { v.capability_id = text("another"); }},
+        InvalidUsage{"capability_version", [](auto &v) { ++v.capability_version; }},
+        InvalidUsage{"reserved", [](auto &v) { v.reserved = 1; }},
+        InvalidUsage{"purpose_missing", [](auto &v) { v.purpose = {}; }},
+        InvalidUsage{"null_text", [](auto &v) { v.text_usage.data = nullptr; }},
+        InvalidUsage{"result_missing", [](auto &v) { v.result_usage = {}; }},
+        InvalidUsage{"examples_missing", [](auto &v) { v.examples = {}; }},
+        InvalidUsage{"invalid_utf8", [](auto &v) { v.purpose = {"\xc0\x80", 2}; }},
+        InvalidUsage{"tool_budget", [](auto &v) { v.purpose.size = AYNI_TOOL_USAGE_MAX_BYTES + 1; }},
+        InvalidUsage{"missing_field", [](auto &v) { --v.field_count; }},
+        InvalidUsage{"extra_field", [](auto &v) { ++v.field_count; }},
+        InvalidUsage{"null_fields", [](auto &v) { v.fields = nullptr; }},
+        InvalidUsage{"field_layout", [](auto &v) {
+            ++const_cast<ayni_tool_field_usage_v1 *>(v.fields)[0].struct_size;
+        }},
+        InvalidUsage{"unknown_field", [](auto &v) {
+            const_cast<ayni_tool_field_usage_v1 *>(v.fields)[0].field_id = 99;
+        }},
+        InvalidUsage{"duplicate_field", [](auto &v) {
+            const_cast<ayni_tool_field_usage_v1 *>(v.fields)[0].field_id = v.fields[1].field_id;
+        }},
+        InvalidUsage{"empty_field_explanation", [](auto &v) {
+            const_cast<ayni_tool_field_usage_v1 *>(v.fields)[0].description = {};
+        }},
+        InvalidUsage{"field_budget", [](auto &v) {
+            const_cast<ayni_tool_field_usage_v1 *>(v.fields)[0].description.size =
+                AYNI_TOOL_FIELD_USAGE_MAX_BYTES + 1;
+        }}),
+    [](const auto &v) { return std::string(v.param.name); });
+
+// Both limits are inclusive and count UTF-8 bytes. Order is by exact field ID.
+TEST_F(OpenaiProvider, exact_tool_and_field_description_budgets_reach_the_http_codec) {
+    start(text_reply);
+    std::string field(AYNI_TOOL_FIELD_USAGE_MAX_BYTES, 'f');
+    usage_fields[0].description = {field.data(), static_cast<uint32_t>(field.size())};
+    ayni_tool_v1 key{};
+    key.binding_id = text("show");
+    key.binding_version = 1;
+    ayni_tool_usage_v1 usage{};
+    ASSERT_EQ(lookup_usage(this, &key, &usage), AYNI_OK);
+    uint32_t other = usage.binding_id.size + usage.capability_id.size + usage.text_usage.size +
+                     usage.result_usage.size + usage.examples.size;
+    for (const auto &entry : usage_fields) {
+        other += entry.description.size;
+    }
+    usage_purpose.assign(AYNI_TOOL_USAGE_MAX_BYTES - other, 'p');
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_NE(server->request().find(usage_purpose), std::string::npos);
+    EXPECT_NE(server->request().find(field), std::string::npos);
+}
+
+// Model usage uses the same pure scalar validator as existing payload owners.
+TEST(ToolUsage, unicode_validation_is_public_pure_and_length_delimited) {
+    EXPECT_EQ(ayni_validate_utf8({nullptr, 0}), AYNI_OK);
+    EXPECT_EQ(ayni_validate_utf8({nullptr, 1}), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_validate_utf8({"\0\xe4\xb8\x96", 4}), AYNI_OK);
+    EXPECT_EQ(ayni_validate_utf8({"\xed\xa0\x80", 3}), AYNI_INVALID_ARGUMENT);
+}
+
+TEST_F(OpenaiProvider, individually_bounded_strings_cannot_exceed_the_total_usage_budget) {
+    usage_purpose.assign(3900, 'p');
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(server->requests(), 0U);
+}
+
+// ADR-0082/AP-01: neither the I/O codec nor later result decoding can borrow
+// extension buffers after submit. A subsequent lookup is allowed to reuse them.
+TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_description) {
+    using namespace ayni::providers::openai_compat;
+    ayni_tool_v1 view{};
+    view.struct_size = sizeof(view);
+    view.binding_id = text("display");
+    view.binding_version = 1;
+    view.capability_id = text("mock.display");
+    view.capability_version = 1;
+    view.text_limit = 64;
+    ayni_authority_value_set_v1 duration{};
+    duration.struct_size = sizeof(duration);
+    duration.kind = AYNI_AUTHORITY_I64;
+    duration.unit = text("second");
+    duration.values.integer = {1, 2};
+    view.field_count = 1;
+    view.fields[0] = {sizeof(ayni_authority_field_desc_v1), 1, AYNI_AUTHORITY_PARAMETER, 0,
+                      duration};
+    Tool copied;
+    ASSERT_TRUE(copied.copy(view));
+    std::string purpose = "Original mock display usage";
+    std::string field_text = "Original display duration explanation";
+    ayni_tool_field_usage_v1 field{
+        sizeof(field), 1, {field_text.data(), static_cast<uint32_t>(field_text.size())}};
+    ayni_tool_usage_v1 usage{sizeof(usage),
+                             1,
+                             view.binding_id,
+                             1,
+                             view.capability_id,
+                             {purpose.data(), static_cast<uint32_t>(purpose.size())},
+                             text("Display the supplied text."),
+                             text("Simulated result only."),
+                             text("hello"),
+                             1,
+                             0,
+                             &field};
+    ASSERT_TRUE(copied.copy_usage(usage));
+    std::fill(purpose.begin(), purpose.end(), 'x');
+    std::fill(field_text.begin(), field_text.end(), 'x');
+    field.field_id = 99;
+    usage.text_usage = text("Changed source view");
+    Protocol codec(4096);
+    auto buffer = std::make_unique<char[]>(request_json_max);
+    size_t size = 0;
+    Config config;
+    config.model = "fixture";
+    ASSERT_EQ(codec.encode(config, text("use the display"), &copied, 1, buffer.get(), size),
+              AYNI_OK);
+    const std::string encoded(buffer.get(), size);
+    EXPECT_NE(encoded.find("Original mock display usage"), std::string::npos);
+    EXPECT_NE(encoded.find("Display the supplied text."), std::string::npos);
+    EXPECT_NE(encoded.find("Original display duration explanation"), std::string::npos);
+    EXPECT_NE(encoded.find("\"field_1\""), std::string::npos);
+    EXPECT_EQ(encoded.find("\"field_99\""), std::string::npos);
+    EXPECT_EQ(encoded.find(purpose), std::string::npos);
+    EXPECT_EQ(encoded.find("Changed source view"), std::string::npos);
 }
 TEST_F(OpenaiProvider, malformed_json_is_model_output_failure) {
     start("{broken");

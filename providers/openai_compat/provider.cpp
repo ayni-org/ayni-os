@@ -314,8 +314,14 @@ struct Provider::Impl {
             for (uint32_t j = 0; j < request->tool_count; ++j) {
                 ayni_tool_v1 tool{};
                 tool.struct_size = sizeof(tool);
+                ayni_tool_usage_v1 usage{};
+                usage.struct_size = sizeof(usage);
+                const auto &port = self.config.tool_usage;
                 if (request->tool(request->tool_context, j, &tool) != AYNI_OK ||
-                    !slot.tools[j].copy(tool)) {
+                    !slot.tools[j].copy(tool) || port.struct_size != sizeof(port) ||
+                    port.reserved != 0 || !port.lookup ||
+                    port.lookup(port.context, &tool, &usage) != AYNI_OK ||
+                    !slot.tools[j].copy_usage(usage)) {
                     return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
                 }
             }

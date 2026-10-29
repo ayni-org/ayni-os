@@ -21,10 +21,15 @@ class Writer {
         used_ += value.size();
     }
     void string(ayni_string_v1 value) {
+        raw("\"");
+        escaped(value);
+        raw("\"");
+    }
+    // Emit only the escaped body, for a description composed of bounded views.
+    void escaped(ayni_string_v1 value) {
         constexpr char hex[] = "0123456789abcdef";
         constexpr unsigned nibble_bits = 4;
         constexpr unsigned nibble_mask = 15;
-        raw("\"");
         for (uint32_t at = 0; at < value.size; ++at) {
             const auto byte = static_cast<unsigned char>(value.data[at]);
             if (byte == '"' || byte == '\\') {
@@ -38,7 +43,6 @@ class Writer {
                 raw({value.data + at, 1});
             }
         }
-        raw("\"");
     }
     void string(const std::string &value) {
         string(ayni_string_v1{value.data(), static_cast<uint32_t>(value.size())});
@@ -65,11 +69,16 @@ class Writer {
     bool ok_ = true;
 };
 
-void field_schema(Writer &out, const ayni_authority_field_desc_v1 &field) {
+void field_schema(Writer &out, const ayni_authority_field_desc_v1 &field,
+                  ayni_string_v1 description) {
     const auto &domain = field.domain;
     if (domain.kind == AYNI_AUTHORITY_I64) {
         out.raw("{\"type\":\"integer\",\"description\":");
-        out.string(domain.unit);
+        out.raw("\"");
+        out.escaped(description);
+        out.raw("\\nUnit: ");
+        out.escaped(domain.unit);
+        out.raw("\"");
         out.raw(",\"minimum\":");
         out.number(domain.values.integer.min_inclusive);
         out.raw(",\"maximum\":");
@@ -82,7 +91,8 @@ void field_schema(Writer &out, const ayni_authority_field_desc_v1 &field) {
             }
             out.string(domain.values.tokens.members[i]);
         }
-        out.raw("]");
+        out.raw("],\"description\":");
+        out.string(description);
     }
     out.raw("}");
 }
@@ -92,15 +102,23 @@ void tool_schema(Writer &out, const Tool &tool, uint32_t index) {
     out.raw("{\"type\":\"function\",\"function\":{\"name\":");
     out.name("tool_", index);
     out.raw(",\"description\":");
-    out.string(view.binding_id);
+    out.raw("\"");
+    out.escaped(tool.usage.purpose);
+    out.raw("\\nResult: ");
+    out.escaped(tool.usage.result_usage);
+    out.raw("\\nExamples: ");
+    out.escaped(tool.usage.examples);
+    out.raw("\"");
     out.raw(",\"parameters\":{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{");
     for (uint32_t i = 0; i < view.field_count; ++i) {
         out.name("field_", view.fields[i].field_id);
         out.raw(":");
-        field_schema(out, view.fields[i]);
+        field_schema(out, view.fields[i], tool.field_usage[i].description);
         out.raw(",");
     }
-    out.raw("\"text\":{\"type\":\"string\",\"description\":\"UTF-8 body; maximum ");
+    out.raw("\"text\":{\"type\":\"string\",\"description\":\"");
+    out.escaped(tool.usage.text_usage);
+    out.raw("\\nUTF-8 maximum ");
     out.number(view.text_limit);
     out.raw(" bytes\"}},\"required\":[");
     for (uint32_t i = 0; i < view.field_count; ++i) {
@@ -369,6 +387,69 @@ bool Tool::copy(const ayni_tool_v1 &source) {
             }
         }
         domain.values.tokens.members = view.tokens[i];
+    }
+    return true;
+}
+
+// Core decides the callable shape; extension usage must explain that exact shape.
+// Copy immediately: later lookups may reuse the source's borrowed views.
+bool Tool::copy_usage(const ayni_tool_usage_v1 &source) {
+    const auto same = [](ayni_string_v1 a, ayni_string_v1 b) {
+        return a.size == b.size && a.data && b.data && std::memcmp(a.data, b.data, a.size) == 0;
+    };
+    if (source.struct_size != sizeof(source) || source.reserved != 0 ||
+        source.binding_version != view.binding_version ||
+        source.capability_version != view.capability_version ||
+        !same(source.binding_id, view.binding_id) ||
+        !same(source.capability_id, view.capability_id) || source.field_count != view.field_count ||
+        (source.field_count == 0 ? source.fields != nullptr : source.fields == nullptr)) {
+        return false;
+    }
+    // Identity bytes count toward the total even though they alias the already copied view.
+    uint32_t total = view.binding_id.size + view.capability_id.size;
+    uint32_t used = 0;
+    const auto save = [&](ayni_string_v1 value, ayni_string_v1 &out, uint32_t maximum) {
+        if (value.size == 0 || value.size > maximum || total > AYNI_TOOL_USAGE_MAX_BYTES ||
+            value.size > AYNI_TOOL_USAGE_MAX_BYTES - total ||
+            ayni_validate_utf8(value) != AYNI_OK) {
+            return false;
+        }
+        std::memcpy(usage_strings.data() + used, value.data, value.size);
+        out = {usage_strings.data() + used, value.size};
+        used += value.size;
+        total += value.size;
+        return true;
+    };
+    usage = source;
+    usage.binding_id = view.binding_id;
+    usage.capability_id = view.capability_id;
+    usage.fields = view.field_count ? field_usage.data() : nullptr;
+    if (!save(source.purpose, usage.purpose, AYNI_TOOL_USAGE_MAX_BYTES) ||
+        !save(source.text_usage, usage.text_usage, AYNI_TOOL_USAGE_MAX_BYTES) ||
+        !save(source.result_usage, usage.result_usage, AYNI_TOOL_USAGE_MAX_BYTES) ||
+        !save(source.examples, usage.examples, AYNI_TOOL_USAGE_MAX_BYTES)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < view.field_count; ++i) {
+        const ayni_tool_field_usage_v1 *found = nullptr;
+        for (uint32_t j = 0; j < source.field_count; ++j) {
+            const auto &candidate = source.fields[j];
+            if (candidate.struct_size != sizeof(candidate)) {
+                return false;
+            }
+            if (candidate.field_id == view.fields[i].field_id) {
+                if (found) {
+                    return false;
+                }
+                found = &candidate;
+            }
+        }
+        auto &field = field_usage[i];
+        field = {sizeof(field), view.fields[i].field_id, {}};
+        if (!found ||
+            !save(found->description, field.description, AYNI_TOOL_FIELD_USAGE_MAX_BYTES)) {
+            return false;
+        }
     }
     return true;
 }

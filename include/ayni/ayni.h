@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 46u
+#define AYNI_ABI_MINOR 47u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -749,6 +749,12 @@ typedef struct ayni_string_v1 {
     const char *data;
     uint32_t size; /* bytes, not characters */
 } ayni_string_v1;
+
+/* Pure Unicode scalar UTF-8 validation, callable on any thread and from callbacks.
+ * Null is valid only for an empty range; U+0000 is ordinary length-delimited text.
+ * No normalization, allocation, I/O or Kernel access. OK or INVALID_ARGUMENT.
+ * Since 0.47. */
+ayni_status_t ayni_validate_utf8(ayni_string_v1 text);
 
 /*
  * A catalog id, such as a goal type id, is 1 to AYNI_CATALOG_ID_MAX_BYTES

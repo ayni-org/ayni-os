@@ -88,3 +88,5 @@ ABI 0.45（ADR-0066）增加纯日历 UTC→本地秒和 Gregorian 字段拆分�
 ABI 0.46（ADR-0082）删除 Provider 旧路径转发头及已被替代的 kernel/policy/control 草案；正式结构布局和运行行为不变。所有仓库消费者改用正式头，测试自身持有非法输入值；不同 minor 仍拒绝，不提供兼容别名。
 
 Schema 3（ADR-0082）统一所有活动领域变体的完整正文，严格拒绝未知 optional、记录版本、flags 和扩展头；ABI 仍为0.46。旧目录在输出或新写入前拒绝并保留，无迁移器、兼容 reader 或自动清空。
+
+ABI 0.47（ADR-0082/AP-01）新增 tool_usage.h 的模型中立说明及只读端口，ayni.h 新增纯 Unicode scalar UTF-8 validator，复用既有 foundation 算法；既有结构布局未变但真实模型说明准入规则改变，所有0.x消费者仍须重编译，不提供旧说明回退。Core无新增状态，storage schema保持3。

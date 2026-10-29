@@ -5,6 +5,7 @@
 #include <array>
 #include <ayni/applications/assistant.h>
 #include <ayni/calendar.h>
+#include <ayni/tool_usage.h>
 #include <vector>
 namespace ayni::applications::assistant {
 // Longest canonical schedule text, "remind weekly YYYY-MM-DDTHH:MM <zone> <text>", in bytes.
@@ -54,6 +55,9 @@ class ScheduleTool {
     ScheduleTool &operator=(const ScheduleTool &) = delete;
     // Borrowed by Core until Kernel destruction; the tool must outlive it.
     ayni_provider_v1 describe();
+    // Runtime supplies its exact Binding identity; strings borrow that identity
+    // and immutable extension text. No registration, I/O or Core lookup.
+    ayni_tool_usage_v1 usage(ayni_tool_ref_v1 binding) const;
     // Owner thread, outside step. Requests the port defers stay queued; a receipt Core cannot
     // take yet (BUSY) is posted again later and never re-executed. Other post failures return.
     ayni_status_t settle(const ayni_kernel_t *, GoalPort);

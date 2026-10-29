@@ -57,6 +57,8 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 
 ## 工具视图与类型化结果（ABI 0.37，ADR-0054）
 
+ABI 0.47 的模型中立用法说明、exact 配对与复制端口见[能力用法自描述](tool_usage.md)。它补充以下权威工具视图，不扩大可见集合或权限。
+
 结果格式为 `TOOL_CALLS` 的模型调用，`ayni_provider_request_v1` 带 `tool_count` 与 `tool(tool_context, index, out)`：Provider 在 `submit` 内按下标读取每个可提议工具的视图（Binding 与 Capability 身份、正文上限、最多 8 个字段的类型、单位与取值），视图写入 Provider 提供的存储。回调只在本次 `submit` 内、在其线程上有效，任何 `submit` 之外返回 `AYNI_INVALID_STATE`；Provider 不保留它，因为在之后另一次 `submit` 期间它描述的是那次调用的工具。哪些工具可提议由 Kernel 决定（C-CALL-014）。
 
 Provider 自己把模型的工具调用映射到这些视图。未知工具、无法解码的参数、视图外的值或超出工具上限的正文，报告 `FAILED` 与 `AYNI_REASON_MODEL_OUTPUT`（状态为 `INVALID_ARGUMENT`，列表超出结果上限为 `CAPACITY_EXCEEDED`），不当作调用列表发表；仍发表的会被 Kernel 当作不合格终态（C-PROV-003）。`COMPLETED` 终态的 `tool_calls` 与 `result` 文本二者择一；Kernel 在 `ayni_provider_post` 内复制并编码列表，post 返回后 Provider 可复用其数组；编码超出该调用的 `result_text_limit` 时 post 返回 `AYNI_CAPACITY_EXCEEDED`，向文本格式调用发表列表返回 `AYNI_INVALID_ARGUMENT`，借用都保持，Provider 应改报 `FAILED`。模型原始 JSON、函数名映射与厂商 API 细节留在 Provider 内，不进入 Core。

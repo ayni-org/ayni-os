@@ -1,4 +1,5 @@
 #include "foundation/utf8.h"
+#include <ayni/ayni.h>
 namespace ayni::foundation {
 namespace {
 constexpr uint8_t ascii_last = 0x7F;
@@ -70,3 +71,7 @@ bool valid_utf8(const char *data, uint32_t size) {
 }
 
 } // namespace ayni::foundation
+
+extern "C" ayni_status_t ayni_validate_utf8(ayni_string_v1 text) {
+    return ayni::foundation::valid_utf8(text.data, text.size) ? AYNI_OK : AYNI_INVALID_ARGUMENT;
+}
