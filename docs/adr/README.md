@@ -129,3 +129,5 @@
 | [0079](0079-e4-composite-and-version-acceptance.md) | E4 组合、订阅依赖与版本拒绝 | 已接受 | §10.5、MA-033 |
 
 | [0080](0080-safety-branch-coverage-closeout.md) | 安全范围分支覆盖收尾 | 已接受 | §9 M1、§10.6 |
+
+| [0081](0081-capability-centered-agentos-evolution.md) | 通用能力接入与 AgentOS 架构演进 | 提议 | §2、§3、§6、§8、§9 |
