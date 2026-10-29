@@ -828,6 +828,7 @@ TEST(WorkRecords, command_record_round_trips_a_mapping_and_its_floor) {
     EXPECT_EQ(floor, 0xFFFF'FFFF'FFFF'FF00ULL);
 }
 
+// C-STORE-009 / ADR-0082: length checks start from a legal ordinary CHANGED receipt.
 TEST(WorkRecords, command_record_of_another_size_is_refused) {
     const Body valid = Body()
                            .u64(1)
@@ -839,7 +840,7 @@ TEST(WorkRecords, command_record_of_another_size_is_refused) {
                            .u64(4)
                            .u32(1)
                            .u32(1)
-                           .u32(0)
+                           .u32(AYNI_INTENT_EFFECT_CHANGED)
                            .u32(0)
                            .u32(0)
                            .u32(0)
