@@ -829,7 +829,7 @@ TEST(GrantRevokeRecords, root_state_and_progress_match_independent_little_endian
     GrantStateRecord child{};
     ASSERT_TRUE(read_grant_state_record(state.data(), 24, child));
     EXPECT_EQ(child.revoked_by_root_id, id(1));
-    EXPECT_FALSE(read_grant_state_record(state.data(), 24, child));
+    EXPECT_FALSE(read_grant_state_record(state.data(), 16, child));
     constexpr std::array<uint8_t, 24> progress{1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0,
                                                1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0};
     std::array<uint8_t, 24> progress_bytes{};
@@ -885,7 +885,7 @@ TEST(GrantRevokeRecords, malformed_versions_shapes_and_all_truncations_preserve_
 }
 
 // ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
-TEST(GrantRevokeRecords, snapshot_v2_has_independent_eighty_byte_tail_and_v1_remains_explicit) {
+TEST(GrantRevokeRecords, snapshot_has_complete_independent_eighty_byte_history) {
     Grants source;
     ASSERT_TRUE(source.add(1, 0, 0, 10));
     ASSERT_TRUE(source.add(2, 0, 0, 11));
@@ -905,7 +905,8 @@ TEST(GrantRevokeRecords, snapshot_v2_has_independent_eighty_byte_tail_and_v1_rem
     EXPECT_EQ(grant_snapshot_record_max(64), 328U);
     EXPECT_EQ(grant_snapshot_record_max(4096), 8392U);
     std::vector<uint8_t> bytes(grant_snapshot_record_size(root));
-    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0), bytes.data());
+    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
+                                bytes.data());
     EXPECT_EQ(std::vector<uint8_t>(bytes.end() - 80, bytes.end()),
               std::vector<uint8_t>(tail.begin(), tail.end()));
     GrantSnapshotRecord decoded{};
@@ -914,21 +915,23 @@ TEST(GrantRevokeRecords, snapshot_v2_has_independent_eighty_byte_tail_and_v1_rem
     EXPECT_EQ(decoded.stamp.commit_seq, 20U);
     EXPECT_EQ(decoded.cleanup_stamp.commit_seq, 30U);
     EXPECT_EQ(decoded.cleanup_after_grant_id, id(2));
-    EXPECT_FALSE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
-    EXPECT_FALSE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
-    EXPECT_EQ(grant_snapshot_record_size(root), 0U);
-    EXPECT_EQ(grant_snapshot_record_size(root), 0U);
+    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 40U,
+                                            decoded));
+    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 40U,
+                                            decoded));
+    EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + grant_snapshot_tail_size);
+    EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + grant_snapshot_tail_size);
     const auto before = bytes;
-    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0), bytes.data());
+    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
+                                bytes.data());
     EXPECT_EQ(bytes, before);
-    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0), bytes.data());
+    write_grant_snapshot_record(root, source.table.source_domain(0), source.table.scope(0),
+                                bytes.data());
     EXPECT_EQ(bytes, before);
     std::vector<uint8_t> old(grant_snapshot_record_size(source.table.at(1)));
-    write_grant_snapshot_record(source.table.at(1), source.table.source_domain(1), source.table.scope(1), old.data());
-    ASSERT_TRUE(
-        read_grant_snapshot_record(old.data(), static_cast<uint32_t>(old.size()), decoded));
+    write_grant_snapshot_record(source.table.at(1), source.table.source_domain(1),
+                                source.table.scope(1), old.data());
+    ASSERT_TRUE(read_grant_snapshot_record(old.data(), static_cast<uint32_t>(old.size()), decoded));
     EXPECT_EQ(decoded.revoked_by_root_id, 0U);
     EXPECT_EQ(decoded.cleanup_stamp.commit_seq, 0U);
 }
@@ -1031,19 +1034,20 @@ TEST(GrantRevokeRecords, progress_rejects_invalid_ids_and_both_ordering_boundari
 }
 
 // ADR-0031 / C-AUTH-026: versioned revocation record shape and failure outputs.
-TEST(GrantRevokeRecords, legacy_snapshot_cannot_encode_revoked_lifecycle_in_its_old_tail) {
+TEST(GrantRevokeRecords, shortened_snapshot_history_is_rejected) {
     Grants source;
     ASSERT_TRUE(source.add(1));
     const Grant &grant = source.table.at(0);
     std::vector<uint8_t> bytes(grant_snapshot_record_size(grant));
-    write_grant_snapshot_record(grant, source.table.source_domain(0), source.table.scope(0), bytes.data());
+    write_grant_snapshot_record(grant, source.table.source_domain(0), source.table.scope(0),
+                                bytes.data());
     GrantSnapshotRecord decoded{};
     ASSERT_TRUE(
         read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     bytes[bytes.size() - 4U] = static_cast<uint8_t>(AYNI_GRANT_REVOKED);
     decoded.create.grant_id = 91;
-    EXPECT_FALSE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 40U,
+                                            decoded));
     EXPECT_EQ(decoded.create.grant_id, 91U);
 }
 } // namespace

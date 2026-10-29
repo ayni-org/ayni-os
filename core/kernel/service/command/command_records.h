@@ -22,9 +22,10 @@ constexpr uint32_t command_record_size = command_record_fixed_size + sizeof(uint
 // Source framing is always present, including its explicit zero-count representation.
 bool valid_command_sources(const CommandMapping &mapping);
 constexpr uint32_t command_record_max(uint32_t canonical_max_bytes, uint32_t dependency_max = 0) {
-    const auto request = canonical_max_bytes > revoke_command_size
-                             ? canonical_max_bytes : revoke_command_size;
-    return command_record_fixed_size + request + knowledge::memory_dependencies_size(dependency_max);
+    const auto request =
+        canonical_max_bytes > revoke_command_size ? canonical_max_bytes : revoke_command_size;
+    return command_record_fixed_size + request +
+           knowledge::memory_dependencies_size(dependency_max);
 }
 uint32_t command_record_size_for(const CommandMapping &mapping);
 
@@ -34,9 +35,9 @@ bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_by
                           uint8_t *body, uint32_t size, ayni_bytes_v1 result = {});
 // Only the complete current body is read. Views borrow body. Failure changes no
 // outputs; restored commit_seq remains 0 until the envelope supplies it.
-bool read_command_record(const uint8_t *body, uint32_t size,
-                         CommandMapping &out_mapping, uint64_t &out_floor,
-                         ayni_bytes_v1 &out_canonical, ayni_bytes_v1 *out_result = nullptr);
+bool read_command_record(const uint8_t *body, uint32_t size, CommandMapping &out_mapping,
+                         uint64_t &out_floor, ayni_bytes_v1 &out_canonical,
+                         ayni_bytes_v1 *out_result = nullptr);
 
 // body has command_record_size bytes.
 void write_command_record(const CommandMapping &mapping, uint64_t floor, uint8_t *body);

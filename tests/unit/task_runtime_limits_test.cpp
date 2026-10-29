@@ -314,7 +314,8 @@ TEST(TaskLimitApi, altered_raise_state_cannot_be_repaired_by_a_later_valid_comma
                 continue;
             }
             TaskStateRecord state_record{};
-            ASSERT_TRUE(read_task_state_record(record.body.data(), record.header.length, state_record));
+            ASSERT_TRUE(
+                read_task_state_record(record.body.data(), record.header.length, state_record));
             if (state_record.change != TaskRecordChange::raise_limit) {
                 continue;
             }

@@ -10,7 +10,7 @@
 // anew each boot, so a goal whose type is gone, a task whose checkpoint its
 // strategy cannot read and an instance whose agent is gone are held or
 // FAULTED in memory only, and the log keeps them as they were for a boot
-// that registers them again. Schema 2 requires complete Goal/Task admission
+// that registers them again. Schema 3 requires complete Goal/Task admission
 // facts. Compatible work resumes through the ordinary authority checks; expiry,
 // revocation and ancestor binding changes still deny consumption. Times are on
 // one boot's clock, so each wait starts again in full when recovery ends.
@@ -63,7 +63,7 @@ class WorkReplay {
                                            const uint8_t *body, uint64_t boot_epoch_limit);
     // applied: a known type/version whose header is accepted; corrupt:
     // an authority or store record lacks REQUIRED (owner binding, Grant
-    // create/state, revocation/progress, command v2+ or any type of
+    // create/state, revocation/progress, exact command or any type of
     // persistent_store.h); unknown: unsupported type/version.
     // Discovery uses the same classification before skipping covered data;
     // applied does not validate the body.
@@ -117,7 +117,7 @@ class WorkReplay {
     bool provenance_consistent(uint64_t boot_epoch_limit) const;
     bool contexts_consistent(uint64_t boot_epoch_limit) const;
     // Content sources accompany the same Goal/Task transition.
-    durability::RecordUse restore_provenance(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_provenance(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     // A source invalidation request or one deterministic bounded privacy cleanup item.
     durability::RecordUse restore_privacy(const uint8_t *body, uint32_t size,
@@ -139,24 +139,23 @@ class WorkReplay {
                                                 foundation::TransitionStamp stamp);
     durability::RecordUse restore_instance(const uint8_t *body, uint32_t size,
                                            foundation::TransitionStamp stamp);
-    durability::RecordUse restore_goal(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_goal(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
-    durability::RecordUse restore_goal_state(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_goal_state(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
-    // Goal v2 must receive complete metadata in the same journal batch.
-    durability::RecordUse restore_goal_authority(uint16_t version, const uint8_t *body,
-                                                 uint32_t size, foundation::TransitionStamp stamp,
+    // Goal with authority marker must receive complete metadata in the same journal batch.
+    durability::RecordUse restore_goal_authority(const uint8_t *body, uint32_t size,
+                                                 foundation::TransitionStamp stamp,
                                                  uint64_t boot_epoch_limit);
     // Complete work scan footer: exact progress/request plus any pause cohort.
     durability::RecordUse restore_authority_cleanup(const uint8_t *body, uint32_t size,
                                                     foundation::TransitionStamp stamp);
-    durability::RecordUse restore_task(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_task(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
                                                  foundation::TransitionStamp stamp);
     // Full row must match this batch and its owning Task; never reissues I/O.
-    durability::RecordUse restore_call(uint16_t version, const uint8_t *body, uint32_t size,
-                                       work::ActionStamp stamp);
+    durability::RecordUse restore_call(const uint8_t *body, uint32_t size, work::ActionStamp stamp);
     // Memory identities share the Kernel ID universe with work and authority facts.
     bool memory_identities_consistent(uint64_t boot_epoch_limit) const;
     // Every retained selected call and terminal outcome agrees with its Task.
@@ -167,20 +166,20 @@ class WorkReplay {
                                  ayni_bytes_v1 canonical); // Closes a ceiling raise.
     bool pair_scene_command(const CommandMapping &mapping,
                             ayni_bytes_v1 canonical); // Closes one preference change.
-    durability::RecordUse restore_task_state(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_task_state(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_steps(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
-    durability::RecordUse restore_task_checkpoint(uint16_t version, const uint8_t *body,
-                                                  uint32_t size, foundation::TransitionStamp stamp);
+    durability::RecordUse restore_task_checkpoint(const uint8_t *body, uint32_t size,
+                                                  foundation::TransitionStamp stamp);
     // A create uses an ID of the epoch preceding it, a revocation one of an
     // epoch no later: a later BOOT_EPOCH must not legitimize a future ID.
-    durability::RecordUse restore_grant(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_grant(const uint8_t *body, uint32_t size,
                                         foundation::TransitionStamp stamp,
                                         uint64_t boot_epoch_limit);
-    durability::RecordUse restore_grant_state(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_grant_state(const uint8_t *body, uint32_t size,
                                               foundation::TransitionStamp stamp);
-    durability::RecordUse restore_revocation(uint16_t version, const uint8_t *body, uint32_t size,
+    durability::RecordUse restore_revocation(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp,
                                              uint64_t boot_epoch_limit);
     durability::RecordUse restore_revocation_progress(const uint8_t *body, uint32_t size,
@@ -189,8 +188,8 @@ class WorkReplay {
                                               foundation::TransitionStamp, uint64_t);
     bool pause_groups_consistent(uint64_t boot_epoch_limit) const;
     bool pair_pause_group_command(const CommandMapping &, ayni_bytes_v1);
-    durability::RecordUse restore_command(uint16_t version, const uint8_t *body, uint32_t size,
-                                          uint64_t commit_seq, uint64_t boot_epoch_limit);
+    durability::RecordUse restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq,
+                                          uint64_t boot_epoch_limit);
     // One approval's ordered relation, independent of record body decoding.
     // Prove the admitted generation and original parent chain at a known sequence.
     enum class BindingEvidence {
@@ -296,7 +295,8 @@ class WorkReplay {
         std::optional<uint64_t> goal; // Nonzero created Goal awaiting its state; empty otherwise.
         std::optional<uint64_t> task_authority; // Exact new Task awaiting its admission record.
         std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.
-        std::optional<uint64_t> goal_authority; // Goal v2 awaiting its explicit ceiling.
+        std::optional<uint64_t>
+            goal_authority; // Goal with authority marker awaiting its explicit ceiling.
         uint64_t goal_authority_seq = 0; // Last type 17 batch; one Goal authority change per batch.
         std::optional<ApprovalPair> approval; // Retains a closed proof until the next batch.
         AuthorityPair authority;              // Exactly one authority alternative or none.

@@ -16,6 +16,7 @@ namespace ayni::work {
 
 constexpr uint16_t instance_record_type = durability::record_type::instance;
 constexpr uint16_t instance_record_version = 1;
+constexpr uint16_t instance_snapshot_record_version = 2; // Adds the original lifecycle stamp.
 constexpr uint32_t instance_record_size = 24;
 
 struct InstanceRecord {

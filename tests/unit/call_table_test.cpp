@@ -99,8 +99,7 @@ TEST_F(CallTableTest, skipped_wait_encodes_non_delivery_and_does_not_allow_a_dis
     std::vector<uint8_t> bytes(call_record_size(saved));
     write_call_record(saved, bytes.data());
     CallRecord decoded{};
-    ASSERT_TRUE(
-        read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.state.outcome, AYNI_CALL_SKIPPED);
     EXPECT_EQ(decoded.state.reason, AYNI_REASON_RESOURCE_WAIT);
     EXPECT_EQ(decoded.state.attempt.request_id, 0U);

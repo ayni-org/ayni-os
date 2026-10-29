@@ -108,12 +108,12 @@ class GrantJournal {
                 continue;
             }
             const bool created = grant.created_stamp.commit_seq == stamp_.commit_seq;
-            const uint32_t size = created ? authority::grant_record_size(grant)
-                                          : authority::grant_state_record_size;
-            uint8_t *at =
-                body(created ? authority::grant_record_type : authority::grant_state_record_type,
-                     created ? authority::grant_record_version : authority::grant_state_record_version,
-                     size);
+            const uint32_t size =
+                created ? authority::grant_record_size(grant) : authority::grant_state_record_size;
+            uint8_t *at = body(
+                created ? authority::grant_record_type : authority::grant_state_record_type,
+                created ? authority::grant_record_version : authority::grant_state_record_version,
+                size);
             if (at == nullptr) {
                 continue;
             }

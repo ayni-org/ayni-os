@@ -22,7 +22,7 @@ constexpr uint16_t goal_record_version = 1;
 // Snapshot adds retained creation/current stamps; it cannot be read as a journal row.
 constexpr uint16_t goal_snapshot_record_version = 2;
 constexpr uint32_t goal_options_size = 2 * sizeof(uint32_t); // authority + provenance markers.
-constexpr uint32_t goal_group_tail_size = sizeof(uint32_t); // Current immutable pause group.
+constexpr uint32_t goal_group_tail_size = sizeof(uint32_t);  // Current immutable pause group.
 constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
 constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;
@@ -37,14 +37,13 @@ enum class GoalRecordChange : uint32_t {
 };
 // Creation partners owned by the surrounding transition; absence is explicit.
 struct GoalRecordOptions {
-    bool authority = false; // A matching authority row is required when true.
+    bool authority = false;  // A matching authority row is required when true.
     bool provenance = false; // A matching source footer is required; implies authority.
 };
 // A GOAL record without its goal type id, trigger source and parameters.
-constexpr uint32_t goal_record_fixed_size = 108 + goal_options_size;
-constexpr uint32_t goal_record_max_fixed_size =
-    goal_record_fixed_size + goal_work_profile_size + goal_group_tail_size;
-constexpr uint32_t goal_state_record_size = 48 + sizeof(uint32_t); // Full state then GoalRecordChange.
+constexpr uint32_t goal_record_fixed_size = 132; // Complete schema 3 creation, records.md.
+constexpr uint32_t goal_state_record_size =
+    48 + sizeof(uint32_t); // Full state then GoalRecordChange.
 
 // What a GOAL record holds. goal.parameters points into the body, and
 // goal.goal_type_index and goal.created_us are left 0.
@@ -53,15 +52,16 @@ struct GoalRecord {
     uint64_t replaced_goal_id;
     uint32_t depth;
     NewGoal goal;
-    bool authority_required = false; // v2+ require a paired ceiling; no Goal field copy.
+    bool authority_required = false; // True requires a paired ceiling; no Goal field copy.
     bool provenance_required =
-        false; // v7/v8 require source metadata before use/replay publication.
+        false; // True requires source metadata before use/replay publication.
 };
 
 struct GoalStateRecord {
     uint64_t goal_id;
     GoalState state;
-    GoalRecordChange change = GoalRecordChange::state; // Required batch proof; no cached Goal field.
+    GoalRecordChange change =
+        GoalRecordChange::state; // Required batch proof; no cached Goal field.
 };
 
 uint32_t goal_record_size(const Goal &goal);

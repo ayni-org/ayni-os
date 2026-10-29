@@ -235,8 +235,8 @@ BatchCheck import_model(WorkModel &model, const SnapshotMetadata &meta,
     return reader.complete();
 }
 
-// ADR-0064: an optional journal-only extension remains skippable in a snapshot.
-TEST(WorkSnapshot, optional_goal_state_extensions_preserve_the_normal_snapshot_view) {
+// ADR-0082: an optional journal-only extension is rejected in a snapshot.
+TEST(WorkSnapshot, optional_goal_state_extensions_are_rejected) {
     Model original;
     populate(original.get());
     auto bytes = export_model(original.get());
@@ -666,9 +666,13 @@ TEST(SnapshotCodec, newer_schema_is_unsupported_and_crc_continues_between_pages)
     SnapshotMetadata meta{};
     meta.generation = 1;
     meta.writer_epoch = 1;
-    meta.schema = ayni::durability::snapshot_schema + 1U;
     std::array<uint8_t, ayni::durability::snapshot_header_size> header{};
     ayni::durability::write_snapshot_header(meta, header.data());
+    constexpr uint32_t schema_at = 4;
+    constexpr uint32_t crc_at = ayni::durability::snapshot_header_size - sizeof(uint32_t);
+    ayni::foundation::store_le16(header.data() + schema_at, ayni::durability::snapshot_schema + 1U);
+    ayni::foundation::store_le32(header.data() + crc_at,
+                                 ayni::foundation::crc32(header.data(), crc_at));
     SnapshotMetadata read{};
     EXPECT_EQ(ayni::durability::read_snapshot_header(header.data(), header.size(), read),
               BatchCheck::unsupported);

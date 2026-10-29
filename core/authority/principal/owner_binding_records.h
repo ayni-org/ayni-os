@@ -13,6 +13,7 @@ namespace ayni::authority {
 
 constexpr uint16_t owner_binding_record_type = durability::record_type::owner_binding;
 constexpr uint16_t owner_binding_record_version = 1;
+constexpr uint16_t owner_binding_snapshot_record_version = 2; // Adds original binding stamp.
 constexpr uint32_t owner_binding_record_size = 16;
 
 struct OwnerBinding;

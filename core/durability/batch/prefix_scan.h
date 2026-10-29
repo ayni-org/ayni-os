@@ -44,9 +44,8 @@ class PrefixScan {
     // Checks every batch in bytes, which holds whole batches only, and passes
     // each record to handler in order. A batch must carry next_commit_seq()
     // and no smaller writer_epoch than the batches before it. Unknown record
-    // flag bits, and unknown records marked REQUIRED, are unsupported; other
-    // unknown records are skipped. Returns at the first problem, after which
-    // the scan is not continued.
+    // flag bits and all unknown types/versions stop recovery (ADR-0082),
+    // regardless of REQUIRED. The scan cannot continue after a problem.
     //
     // A WRITER_FENCE batch takes the place of the next commit_seq and raises
     // the fence: a later batch of an older writer_epoch is one a fenced

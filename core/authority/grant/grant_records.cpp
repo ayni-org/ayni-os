@@ -12,7 +12,7 @@ constexpr uint32_t created_stamp_at = 0;
 constexpr uint32_t last_stamp_at = created_stamp_at + stamp_size;
 constexpr uint32_t revision_at = last_stamp_at + stamp_size;
 constexpr uint32_t lifecycle_at = revision_at + sizeof(uint32_t);
-// records.md: snapshot v2/v3 share the cleanup tail after their creation body.
+// records.md: schema 3 snapshot v2 always includes the complete cleanup tail.
 constexpr uint32_t revoker_at = lifecycle_at + sizeof(uint32_t);
 constexpr uint32_t cleanup_after_at = revoker_at + sizeof(uint64_t);
 constexpr uint32_t cleanup_through_at = cleanup_after_at + sizeof(uint64_t);
@@ -146,9 +146,8 @@ bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecor
         record.revision != grant_terminal_revision ||
         (revoked ? !foundation::is_kernel_id(record.revoked_by_root_id) ||
                        is_revocation_root(record.grant_id, record.revoked_by_root_id)
-                 : record.revoked_by_root_id != 0 ||
-                       (record.lifecycle != AYNI_GRANT_GOAL_ENDED &&
-                        record.lifecycle != AYNI_GRANT_EXPIRED))) {
+                 : record.revoked_by_root_id != 0 || (record.lifecycle != AYNI_GRANT_GOAL_ENDED &&
+                                                      record.lifecycle != AYNI_GRANT_EXPIRED))) {
         return false;
     }
     out = record;

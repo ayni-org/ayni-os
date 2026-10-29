@@ -17,6 +17,8 @@ enum class ContentState : uint32_t {
 struct ContextOrigin {
     uint64_t id = 0;         // Primary context anchor; zero means independent Goal input.
     uint64_t generation = 0; // Exact input file generation, zero is valid for an empty new context.
+    // Absent input has no generation; generation zero is also a valid present file.
+    bool valid() const { return id != 0 || generation == 0; }
 };
 struct ProvenanceRecord {
     uint64_t id = 0;                                // Exact Goal/Task identity; no record iff zero.

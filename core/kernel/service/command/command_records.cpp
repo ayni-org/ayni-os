@@ -32,21 +32,20 @@ CommandMapping read_fixed(durability::BodyReader &reader, uint64_t &floor) {
 // Content state is orthogonal to command kind. A tombstone never carries private bytes.
 enum class CommandContent : uint32_t { retained = 1, erased = 2 };
 constexpr uint32_t canonical_bytes_max =
-    exact_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX,
-                            AYNI_GOAL_PARAMETER_MAX_BYTES_MAX, 0, knowledge::memory_body_max);
+    exact_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX, AYNI_GOAL_PARAMETER_MAX_BYTES_MAX,
+                            0, knowledge::memory_body_max);
 constexpr uint32_t result_bytes_max =
     work_authority_result_size(AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
 
 bool valid_payload(const CommandMapping &mapping, ayni_bytes_v1 canonical, ayni_bytes_v1 result) {
-    if (mapping.canonical_size != canonical.size || mapping.result_size != result.size ||
-        !valid_command_sources(mapping)) {
+    if (mapping.canonical_size != canonical.size || mapping.result_size != result.size) {
         return false;
     }
     if (mapping.privacy_expired) {
         return valid_expired_mapping(mapping) && canonical.size == 0 && result.size == 0;
     }
     return canonical.size == 0 ? result.size == 0 && is_ordinary_command(mapping.kind)
-                                : valid_exact_mapping(mapping, canonical, result);
+                               : valid_exact_mapping(mapping, canonical, result);
 }
 } // namespace
 
@@ -58,8 +57,13 @@ bool valid_command_sources(const CommandMapping &mapping) {
 }
 
 uint32_t command_record_size_for(const CommandMapping &mapping) {
-    if (!valid_command_sources(mapping) || mapping.canonical_size > canonical_bytes_max ||
+    const uint32_t maximum = mapping.kind == AYNI_INTENT_GRANT_CREATE
+                                 ? authority_command_max_bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX)
+                                 : canonical_bytes_max;
+    if (!valid_command_sources(mapping) || mapping.canonical_size > maximum ||
         mapping.result_size > result_bytes_max ||
+        (mapping.kind == AYNI_INTENT_GRANT_REVOKE &&
+         mapping.canonical_size != revoke_command_size) ||
         (mapping.privacy_expired && !valid_expired_mapping(mapping))) {
         return 0;
     }
@@ -77,7 +81,7 @@ bool write_command_record(const CommandMapping &mapping, uint64_t floor, ayni_by
     durability::BodyWriter writer(body, size);
     write_fixed(mapping, floor, writer);
     writer.u32(static_cast<uint32_t>(mapping.privacy_expired ? CommandContent::erased
-                                                           : CommandContent::retained));
+                                                             : CommandContent::retained));
     writer.u32(mapping.effect);
     writer.u32(canonical.size != 0 ? authority_command_format : 0);
     writer.bytes(canonical.data, canonical.size);
@@ -91,9 +95,9 @@ void write_command_record(const CommandMapping &mapping, uint64_t floor, uint8_t
 }
 
 // Parse into borrowed temporary views. The same payload validator owns all intrinsic rules.
-bool read_command_record(const uint8_t *body, uint32_t size,
-                         CommandMapping &out_mapping, uint64_t &out_floor,
-                         ayni_bytes_v1 &out_canonical, ayni_bytes_v1 *out_result) {
+bool read_command_record(const uint8_t *body, uint32_t size, CommandMapping &out_mapping,
+                         uint64_t &out_floor, ayni_bytes_v1 &out_canonical,
+                         ayni_bytes_v1 *out_result) {
     if (body == nullptr || size < command_record_size) {
         return false;
     }
@@ -117,6 +121,7 @@ bool read_command_record(const uint8_t *body, uint32_t size,
     ayni_bytes_v1 result{result_data, result_size};
     mapping.result_size = result_size;
     if (!knowledge::read_memory_dependencies(reader, mapping.sources) || !reader.ok() ||
+        !valid_command_sources(mapping) ||
         format != (canonical_size != 0 ? authority_command_format : 0) ||
         !valid_payload(mapping, canonical, result)) {
         return false;

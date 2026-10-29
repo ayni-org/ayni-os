@@ -332,7 +332,10 @@ TEST(GoalAuthorityPersistence, journal_round_trip_preserves_zero_and_rejects_mis
     missing.records.erase(std::remove_if(missing.records.begin(), missing.records.end(),
                                          [](auto &entry) {
                                              if (entry.header.type == goal_record_type) {
-                                                 ayni::foundation::store_le32(entry.body.data() + entry.body.size() - 2U * sizeof(uint32_t), 0);
+                                                 ayni::foundation::store_le32(
+                                                     entry.body.data() + entry.body.size() -
+                                                         2U * sizeof(uint32_t),
+                                                     0);
                                              }
                                              return entry.header.type == goal_authority_record_type;
                                          }),
@@ -372,7 +375,8 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
         } else if (fault == 3U) {
             for (auto &entry : batch.records) {
                 if (entry.header.type == goal_record_type) {
-                    ayni::foundation::store_le32(entry.body.data() + entry.body.size() - 2U * sizeof(uint32_t), 0);
+                    ayni::foundation::store_le32(
+                        entry.body.data() + entry.body.size() - 2U * sizeof(uint32_t), 0);
                 }
             }
         } else {
@@ -434,9 +438,9 @@ TEST(GoalAuthorityPersistence, proposed_snapshots_require_the_new_state_envelope
         goal->header.version = version;
         Fixture restored;
         restored.run();
-        EXPECT_EQ(import_snapshot(restored, changed),
-                  version == goal_snapshot_record_version ? BatchCheck::ok
-                                                                  : BatchCheck::unsupported);
+        EXPECT_EQ(import_snapshot(restored, changed), version == goal_snapshot_record_version
+                                                          ? BatchCheck::ok
+                                                          : BatchCheck::unsupported);
     }
 }
 
@@ -943,10 +947,11 @@ void bind_snapshot_grant(Fixture &source, Snapshot &image, uint64_t goal_id) {
     ASSERT_NE(found, image.records.end());
     const auto old_size = found->header.length;
     found->header.version = ayni::authority::grant_snapshot_record_version;
-    found->header.length =
-        ayni::authority::grant_snapshot_record_size(grant);
+    found->header.length = ayni::authority::grant_snapshot_record_size(grant);
     found->body.resize(found->header.length);
-    ayni::authority::write_grant_snapshot_record(grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0), KernelTestProbe::work(source.work.kernel()).grants.scope(0), found->body.data());
+    ayni::authority::write_grant_snapshot_record(
+        grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+        KernelTestProbe::work(source.work.kernel()).grants.scope(0), found->body.data());
     image.metadata.payload_length += found->header.length - old_size;
 }
 
@@ -1120,7 +1125,12 @@ TEST(GoalApprovalPersistence, snapshot_command_echo_cannot_disagree_with_retaine
         ayni_bytes_v1 canonical{};
         ayni_bytes_v1 result_bytes{};
         constexpr uint32_t snapshot_tail = sizeof(uint64_t);
-        ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(), record.header.length - snapshot_tail, mapping, floor, canonical, &result_bytes));
+        ASSERT_TRUE(ayni::kernel::read_command_record(record.body.data(),
+                                                      record.header.length - snapshot_tail, mapping,
+                                                      floor, canonical, &result_bytes));
+        if (!ayni::kernel::is_work_authority_command(mapping.kind)) {
+            continue;
+        }
         ayni::kernel::ApprovalCommand echo{};
         ASSERT_TRUE(ayni::kernel::read_approval_command(canonical, echo));
         ++echo.approval.original.expiry_us;
@@ -1167,9 +1177,8 @@ TEST(GoalApprovalPersistence, unpaired_metadata_cannot_change_original_dependenc
                                  stamp.commit_seq, stamp.transition_id};
     const uint64_t boot_epoch = KernelTestProbe::boot(source.work.kernel()).boot_epoch();
     WorkReplay replay(model);
-    const RecordHeader state_header{goal_state_record_type,
-                                    goal_state_record_version, record_required,
-                                    static_cast<uint32_t>(state.size())};
+    const RecordHeader state_header{goal_state_record_type, goal_state_record_version,
+                                    record_required, static_cast<uint32_t>(state.size())};
     ASSERT_EQ(WorkReplay::on_record(&replay, identity, state_header, state.data(), boot_epoch),
               RecordUse::applied);
     const RecordHeader authority_header{goal_authority_record_type, goal_authority_record_version,
@@ -1270,7 +1279,8 @@ TEST(GoalApprovalPersistence, wider_same_length_bound_scope_is_not_the_approved_
                                         batch.records.front().body.data());
     for (auto &record : image.records) {
         if (record.header.type == ayni::authority::grant_record_type) {
-            ayni::authority::write_grant_snapshot_record(model.grants.at(0), model.grants.source_domain(0), changed, record.body.data());
+            ayni::authority::write_grant_snapshot_record(
+                model.grants.at(0), model.grants.source_domain(0), changed, record.body.data());
         }
     }
     Fixture restored;
@@ -1294,7 +1304,9 @@ TEST(GoalApprovalPersistence, snapshot_bound_duration_must_match_original_approv
     ++grant.duration_us;
     for (auto &record : image.records) {
         if (record.header.type == ayni::authority::grant_record_type) {
-            ayni::authority::write_grant_snapshot_record(grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0), KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
+            ayni::authority::write_grant_snapshot_record(
+                grant, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
         }
     }
     Fixture restored;
@@ -1420,7 +1432,9 @@ TEST(GoalApprovalPersistence, old_dependency_must_have_been_active_at_approval) 
         ASSERT_TRUE(
             ayni::authority::read_grant_record_id(record.body.data(), record.header.length, id));
         if (id == generic.result.object.id) {
-            ayni::authority::write_grant_snapshot_record(terminal, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0), KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
+            ayni::authority::write_grant_snapshot_record(
+                terminal, KernelTestProbe::work(source.work.kernel()).grants.source_domain(0),
+                KernelTestProbe::work(source.work.kernel()).grants.scope(0), record.body.data());
         }
     }
     Fixture compacted;
@@ -1811,7 +1825,8 @@ TEST(WorkAuthorityPersistence, ended_grant_cohort_and_footer_are_one_complete_sc
         const auto batch = decode(image.log[at]);
         if (std::any_of(batch.records.begin(), batch.records.end(), [](const auto &record) {
                 return record.header.type == ayni::authority::grant_state_record_type &&
-                       ayni::foundation::load_le32(record.body.data() + 12) == AYNI_GRANT_GOAL_ENDED;
+                       ayni::foundation::load_le32(record.body.data() + 12) ==
+                           AYNI_GRANT_GOAL_ENDED;
             })) {
             selected = at;
             break;
@@ -1991,8 +2006,8 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
             const Record duplicate = *metadata;
             batch.records.insert(metadata, duplicate);
         } else if (fault == 10U) {
-            Record partner{{goal_state_record_type, goal_state_record_version,
-                            record_required, goal_state_record_size},
+            Record partner{{goal_state_record_type, goal_state_record_version, record_required,
+                            goal_state_record_size},
                            std::vector<uint8_t>(goal_state_record_size)};
             write_goal_state_record(
                 KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(other)),
@@ -2003,8 +2018,8 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
             const Record first = batch.records.front();
             batch.records.clear();
             batch.records.push_back(first);
-            Record partner{{goal_state_record_type, goal_state_record_version,
-                            record_required, goal_state_record_size},
+            Record partner{{goal_state_record_type, goal_state_record_version, record_required,
+                            goal_state_record_size},
                            std::vector<uint8_t>(goal_state_record_size)};
             write_goal_state_record(
                 KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(other)),
@@ -2015,9 +2030,9 @@ TEST(WorkAuthorityPersistence, pause_keeps_user_state_and_requires_all_direct_ta
             metadata.stamp = {batch.identity.transition_id, batch.identity.commit_seq};
             ASSERT_TRUE(valid_goal_authority_record(metadata));
             const auto size = goal_authority_record_size(metadata);
-            Record pause{{goal_authority_record_type, goal_authority_record_version,
-                          record_required, size},
-                         std::vector<uint8_t>(size)};
+            Record pause{
+                {goal_authority_record_type, goal_authority_record_version, record_required, size},
+                std::vector<uint8_t>(size)};
             write_goal_authority_record(metadata, pause.body.data());
             batch.records.push_back(std::move(pause));
             // Completing Goal B cannot erase Goal A's still-unpaired state,
@@ -2165,7 +2180,9 @@ TEST(WorkAuthorityPersistence, live_task_and_own_goal_pause_cannot_be_separated)
             if (record.header.type == goal_state_record_type) {
                 GoalStateRecord fact{};
                 ASSERT_TRUE(read_goal_state_record(record.body.data(), record.header.length, fact));
-                ayni::foundation::store_le32(record.body.data() + goal_state_record_size - sizeof(uint32_t), static_cast<uint32_t>(GoalRecordChange::authority));
+                ayni::foundation::store_le32(record.body.data() + goal_state_record_size -
+                                                 sizeof(uint32_t),
+                                             static_cast<uint32_t>(GoalRecordChange::authority));
             } else if (record.header.type == goal_authority_record_type) {
                 record.header.version = goal_authority_record_version;
             } else if (record.header.type == task_state_record_type) {
@@ -2298,7 +2315,8 @@ TEST(GoalReauthorizationPersistence, crc_valid_partner_faults_reject_the_whole_b
     const auto original = decode(storage.log.back());
     ASSERT_EQ(original.records.size(), 6U);
     GoalStateRecord first{};
-    ASSERT_TRUE(read_goal_state_record(original.records.front().body.data(), original.records.front().header.length, first));
+    ASSERT_TRUE(read_goal_state_record(original.records.front().body.data(),
+                                       original.records.front().header.length, first));
     ASSERT_EQ(first.change, GoalRecordChange::reauthorization);
     ASSERT_EQ(original.records.back().header.type, authority_cleanup_record_type);
     for (unsigned fault = 0; fault < original.records.size() + 5U; ++fault) {
@@ -2413,7 +2431,12 @@ TEST(GoalReauthorizationPersistence, historical_result_stamp_boot_and_revision_a
             ayni_bytes_v1 canonical{};
             ayni_bytes_v1 result_bytes{};
             constexpr uint32_t tail = sizeof(uint64_t);
-            ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail, mapping, floor, canonical, &result_bytes));
+            ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail,
+                                                          mapping, floor, canonical,
+                                                          &result_bytes));
+            if (!ayni::kernel::is_work_authority_command(mapping.kind)) {
+                continue;
+            }
             const bool old = mapping.kind == AYNI_INTENT_GOAL_APPROVE;
             if (old != (fault < 3U)) {
                 continue;
@@ -2502,8 +2525,8 @@ TEST(GoalAuthorityPersistence, ordinary_metadata_cannot_clear_a_persisted_deny) 
         Batch forged{{KernelTestProbe::log(source.work.kernel()).writer_epoch(), stamp.commit_seq,
                       stamp.transition_id},
                      {}};
-        Record state{{goal_state_record_type, goal_state_record_version,
-                      record_required, goal_state_record_size},
+        Record state{{goal_state_record_type, goal_state_record_version, record_required,
+                      goal_state_record_size},
                      std::vector<uint8_t>(goal_state_record_size)};
         write_goal_state_record(
             KernelTestProbe::work(source.work.kernel()).goals.at(source.goal_index(id)),
@@ -2606,7 +2629,11 @@ TEST(GoalApprovalPersistence, retained_issued_root_proves_original_result_transi
         ayni_bytes_v1 canonical{};
         ayni_bytes_v1 result_bytes{};
         constexpr uint32_t tail = sizeof(uint64_t);
-        ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail, mapping, floor, canonical, &result_bytes));
+        ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail,
+                                                      mapping, floor, canonical, &result_bytes));
+        if (!ayni::kernel::is_work_authority_command(mapping.kind)) {
+            continue;
+        }
         ayni::kernel::WorkAuthorityResult result{};
         ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
         ++result.transition_id;
@@ -2686,7 +2713,8 @@ TEST(GoalReauthorizationPersistence, later_binding_cannot_hide_a_future_journal_
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{};
                 ayni_bytes_v1 result_bytes{};
-                ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length, mapping, floor, canonical, &result_bytes));
+                ASSERT_TRUE(ayni::kernel::read_command_record(
+                    row.body.data(), row.header.length, mapping, floor, canonical, &result_bytes));
                 ayni::kernel::WorkAuthorityResult result{};
                 ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
                 result.binding.input.incarnation = future;
@@ -2766,7 +2794,8 @@ TEST(GoalReauthorizationPersistence, replacement_cannot_issue_a_same_batch_dedic
         ASSERT_TRUE(model.grants.find(dedicated, index));
         auto grant = model.grants.at(index);
         grant.created_stamp = grant.stamp = source.saved(id).stamp;
-        ayni::authority::write_grant_snapshot_record(grant, model.grants.source_domain(index), model.grants.scope(index), row.body.data());
+        ayni::authority::write_grant_snapshot_record(grant, model.grants.source_domain(index),
+                                                     model.grants.scope(index), row.body.data());
         altered = true;
         break;
     }
@@ -2840,7 +2869,11 @@ TEST(GoalApprovalPersistence, retained_result_cannot_substitute_another_covering
         ayni_bytes_v1 canonical{};
         ayni_bytes_v1 result_bytes{};
         constexpr uint32_t tail = sizeof(uint64_t);
-        ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail, mapping, floor, canonical, &result_bytes));
+        ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail,
+                                                      mapping, floor, canonical, &result_bytes));
+        if (!ayni::kernel::is_work_authority_command(mapping.kind)) {
+            continue;
+        }
         ayni::kernel::WorkAuthorityResult result{};
         ASSERT_TRUE(ayni::kernel::read_work_authority_result(result_bytes, id, result));
         result.references[0].grant_id = other.result.object.id;
@@ -2981,7 +3014,8 @@ TEST(GoalReauthorizationPersistence, replacement_cannot_resume_a_user_paused_goa
     ASSERT_EQ(goal.lifecycle, AYNI_GOAL_PAUSED);
     goal.lifecycle = AYNI_GOAL_ACTIVE;
     ASSERT_EQ(batch.records.front().header.version, goal_state_record_version);
-    write_goal_state_record(goal, batch.records.front().body.data(), GoalRecordChange::reauthorization);
+    write_goal_state_record(goal, batch.records.front().body.data(),
+                            GoalRecordChange::reauthorization);
     image.log.back() = encode(batch);
     Fixture refused;
     refused.work.node().config().grant_capacity = 3;
@@ -3236,7 +3270,12 @@ TEST(WorkAuthorityHistory, every_original_echo_field_is_checked_for_both_command
                 uint64_t floor = 0;
                 ayni_bytes_v1 canonical{}, result_bytes{};
                 constexpr uint32_t tail = sizeof(uint64_t);
-                ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(), row.header.length - tail, mapping, floor, canonical, &result_bytes));
+                ASSERT_TRUE(ayni::kernel::read_command_record(row.body.data(),
+                                                              row.header.length - tail, mapping,
+                                                              floor, canonical, &result_bytes));
+                if (!ayni::kernel::is_work_authority_command(mapping.kind)) {
+                    continue;
+                }
                 if (mapping.kind != kind) {
                     continue;
                 }

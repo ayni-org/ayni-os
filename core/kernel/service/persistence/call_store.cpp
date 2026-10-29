@@ -108,7 +108,7 @@ const PersistentStore call_store{work::call_record_type,
 
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.
-durability::RecordUse WorkReplay::restore_call(uint16_t, const uint8_t *body, uint32_t size,
+durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t size,
                                                work::ActionStamp stamp) {
     using durability::RecordUse;
     work::CallRecord record{};

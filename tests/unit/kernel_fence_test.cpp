@@ -293,7 +293,7 @@ ayni::hosts::sim::StorageImage image_with_schema(uint16_t schema) {
         constexpr uint32_t crc_at = ayni::durability::batch_header_size - sizeof(uint32_t);
         ayni::foundation::store_le16(stored.bytes.data() + schema_at, schema);
         ayni::foundation::store_le32(stored.bytes.data() + crc_at,
-            ayni::foundation::crc32(stored.bytes.data(), crc_at));
+                                     ayni::foundation::crc32(stored.bytes.data(), crc_at));
     }
     return image;
 }

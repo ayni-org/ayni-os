@@ -36,9 +36,9 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
         if (++count > 1) {
             return false;
         }
-        auto *body = writer.add_record_body(
-            {work::provenance_record_type, work::provenance_record_version,
-             durability::record_required, work::provenance_record_size(r)});
+        auto *body =
+            writer.add_record_body({work::provenance_record_type, work::provenance_record_version,
+                                    durability::record_required, work::provenance_record_size(r)});
         if (body == nullptr) {
             return false;
         }
@@ -120,8 +120,7 @@ const PersistentStore provenance_store{work::provenance_record_type,
 
 // A content-source change is part of that owner's already restored transition, never a
 // free-standing mutation.
-durability::RecordUse WorkReplay::restore_provenance(uint16_t, const uint8_t *body,
-                                                     uint32_t size,
+durability::RecordUse WorkReplay::restore_provenance(const uint8_t *body, uint32_t size,
                                                      foundation::TransitionStamp stamp) {
     work::ProvenanceRecord record{};
     uint32_t slot = 0;

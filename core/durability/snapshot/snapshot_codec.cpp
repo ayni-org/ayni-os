@@ -57,7 +57,7 @@ uint32_t snapshot_crc32(const uint8_t *bytes, uint32_t size, uint32_t previous) 
 void write_snapshot_header(const SnapshotMetadata &metadata, uint8_t *out) {
     std::memset(out, 0, snapshot_header_size);
     std::memcpy(out, magic, sizeof(magic));
-    store_le16(out + schema_at, metadata.schema);
+    store_le16(out + schema_at, snapshot_schema);
     store_le16(out + header_length_at, snapshot_header_size);
     store_le64(out + generation_at, metadata.generation);
     store_le64(out + covers_commit_seq_at, metadata.covers_commit_seq);

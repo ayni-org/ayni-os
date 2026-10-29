@@ -1,8 +1,8 @@
 // White-box E4 media corruption only; preserve record and batch owners' codecs.
 #include "durability/batch/batch_codec.h"
+#include "experiment_composite.h"
 #include "foundation/crc32.h"
 #include "foundation/little_endian.h"
-#include "experiment_composite.h"
 namespace ayni::runtime::experiments {
 bool replace_storage_version(World &world, VersionFault fault, uint16_t version) {
     auto &e = world.evidence;

@@ -26,7 +26,7 @@ bool read_id(durability::BodyReader &reader, bool may_be_empty, catalog::Catalog
 // Schema 3 keeps all current creation fields; optional facts have explicit markers.
 uint32_t goal_record_size(const Goal &goal) {
     return goal_record_fixed_size + goal.goal_type_id.size() + goal.trigger_source.size() +
-           goal.parameter_size + goal_work_profile_size + goal_group_tail_size;
+           goal.parameter_size;
 }
 
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
@@ -59,7 +59,7 @@ void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body
 
 // Parse only the current layout. Partner markers replace old version-based promises.
 bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out) {
-    if (body == nullptr || size < goal_record_max_fixed_size) {
+    if (body == nullptr || size < goal_record_fixed_size) {
         return false;
     }
     durability::BodyReader reader(body, size);

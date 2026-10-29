@@ -28,7 +28,7 @@ constexpr std::array<uint8_t, 97> root_body{
     0, 0, 0, 0,               // depth
     4, 0, 0, 0, 1,   0, 0, 0, // source domain
     4, 0, 0, 0, 1,   0, 0, 0, // expanded scope
-    0, 0, 0, 0, 0, 0, 0, 0 // no Goal binding
+    0, 0, 0, 0, 0,   0, 0, 0  // no Goal binding
 };
 
 Grant root() {
@@ -344,7 +344,7 @@ TEST(GrantRecords, syntactically_valid_expanded_scope_outside_registered_domain_
 
 // ADR-0037 decision 18: the binding is an explicit little-endian tail and
 // cannot silently disappear under an older or mismatched envelope.
-TEST(GoalGrantRecords, binding_round_trips_only_under_its_exact_record_versions) {
+TEST(GoalGrantRecords, complete_current_body_round_trips_bound_and_unbound_grants) {
     auto grant = root();
     grant.bound_goal_id = grant_id;
     grant.grant_id = grant_id + 1;
@@ -365,10 +365,12 @@ TEST(GoalGrantRecords, binding_round_trips_only_under_its_exact_record_versions)
     bytes.resize(grant_snapshot_record_size(grant));
     write_grant_snapshot_record(grant, domain(), domain(), bytes.data());
     GrantSnapshotRecord saved{};
-    ASSERT_TRUE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), saved));
+    ASSERT_TRUE(
+        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), saved));
     EXPECT_EQ(saved.create.grant.bound_goal_id, grant.bound_goal_id);
     EXPECT_EQ(saved.created_stamp.commit_seq, grant.created_stamp.commit_seq);
-    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 1, saved));
+    EXPECT_FALSE(
+        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 1, saved));
 }
 
 // ADR-0037 decisions 16/18: struct and byte facts share root, delegation and ID rules.
@@ -418,11 +420,11 @@ TEST(GoalGrantRecords, restored_snapshot_preserves_binding_and_revocation_cleanu
             grant.cleanup_through_grant_id = grant.grant_id;
             grant.cleanup_stamp = {22, 23};
         }
-        std::vector<uint8_t> bytes(
-            grant_snapshot_record_size(grant));
+        std::vector<uint8_t> bytes(grant_snapshot_record_size(grant));
         write_grant_snapshot_record(grant, domain(), domain(), bytes.data());
         GrantSnapshotRecord decoded{};
-        ASSERT_TRUE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+        ASSERT_TRUE(
+            read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
         EXPECT_EQ(decoded.revoked_by_root_id, grant.revoked_by_root_id);
         EXPECT_EQ(decoded.cleanup_after_grant_id, grant.cleanup_after_grant_id);
         EXPECT_EQ(decoded.cleanup_through_grant_id, grant.cleanup_through_grant_id);

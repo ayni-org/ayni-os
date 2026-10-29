@@ -158,8 +158,8 @@ uint32_t call_record_max(CallTable::Limits limits) {
            catalog::resource_group_max *
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
-           limits.result_bytes + execution_record_max() +
-           call_subscription_fixed_bytes + catalog::CatalogId::max_size;
+           limits.result_bytes + execution_record_max() + call_subscription_fixed_bytes +
+           catalog::CatalogId::max_size;
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -261,9 +261,9 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     const auto erasure_stamp = read_action_stamp(reader);
     record.result_kind = static_cast<CallResultKind>(reader.u32());
     if (has_execution > 1 || erased > 1 ||
-        (erased == 0 && (erasure_stamp.boot_epoch != 0 ||
-                         erasure_stamp.transition.transition_id != 0 ||
-                         erasure_stamp.transition.commit_seq != 0))) {
+        (erased == 0 &&
+         (erasure_stamp.boot_epoch != 0 || erasure_stamp.transition.transition_id != 0 ||
+          erasure_stamp.transition.commit_seq != 0))) {
         return false;
     }
     if (erased != 0) {

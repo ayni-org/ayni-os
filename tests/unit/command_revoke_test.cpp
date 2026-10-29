@@ -107,7 +107,7 @@ TEST(CommandRevoke, complete_reader_rejects_truncation_tail_wrong_kind_and_zero_
 }
 
 // C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
-TEST(CommandRevoke, v3_stores_explicit_effect_and_original_identity_without_retention) {
+TEST(CommandRevoke, current_body_stores_effect_and_original_identity_without_retention) {
     const auto canonical = revoke_bytes();
     for (const auto effect : {AYNI_INTENT_EFFECT_CHANGED, AYNI_INTENT_EFFECT_NO_CHANGE,
                               AYNI_INTENT_EFFECT_TARGET_GONE}) {
@@ -142,7 +142,7 @@ TEST(CommandRevoke, v3_stores_explicit_effect_and_original_identity_without_rete
 }
 
 // C-WIRE-017 / ADR-0031: exact revoke identity and versioned first-result encoding.
-TEST(CommandRevoke, v3_damage_or_cross_version_interpretation_cannot_publish_partial_outputs) {
+TEST(CommandRevoke, damaged_or_short_body_cannot_publish_partial_outputs) {
     const auto canonical = revoke_bytes();
     const auto mapping = revoke_mapping(canonical);
     std::array<uint8_t, 92> body{};
@@ -169,9 +169,7 @@ TEST(CommandRevoke, v3_damage_or_cross_version_interpretation_cannot_publish_par
     auto damaged = body;
     damaged[56] = 4; // Unknown effect.
     refuses(damaged.data(), 92);
-    
-    
-    
+
     const auto old_v2 = [&] {
         std::vector<uint8_t> value(body.begin(), body.end());
         value.erase(value.begin() + 52, value.begin() + 56); // Strip effect like v2.
@@ -264,8 +262,7 @@ TEST(CommandRevoke, impossible_accepted_revision_is_rejected_atomically_for_ever
         std::array<uint8_t, record_size> damaged{};
         ASSERT_TRUE(
             write_command_record(valid, 4, view(valid_canonical), damaged.data(), record_size));
-        std::memcpy(damaged.data() + 68, invalid_canonical.data(),
-                    revoke_command_size);
+        std::memcpy(damaged.data() + 68, invalid_canonical.data(), revoke_command_size);
         ayni::foundation::store_le64(damaged.data() + digest_offset, invalid.digest);
         CommandMapping decoded = valid;
         uint64_t floor = 123;

@@ -9,7 +9,7 @@ namespace {
 durability::RecordHeader header(uint16_t type, uint16_t version, uint32_t length) {
     return {type, version, durability::record_required, length};
 }
-// Owns this family's encoding in the original schema 2 journal order.
+// Owns this family's encoding in the original schema 3 journal order.
 class Journal {
   public:
     Journal(const WorkModel &model, foundation::TransitionStamp stamp,
@@ -25,7 +25,7 @@ class Journal {
         return at;
     }
     // Encode creation, then steps/checkpoint, then final state and its admission.
-    // This order is part of the schema 2 cross-record replay proof.
+    // This order is part of the schema 3 cross-record replay proof.
     bool tasks() {
         const work::TaskTable &tasks = model_.tasks;
         for (uint32_t index = 0; index < tasks.size(); ++index) {
@@ -52,11 +52,11 @@ class Journal {
                 }
             }
             if (task.checkpoint_seq == stamp_.commit_seq) {
-                const bool sources = model_.provenance.find(
-                    work::ProvenanceKind::task, task.slot, task.task_id) != nullptr;
-                uint8_t *at = body(work::task_checkpoint_record_type,
-                                   work::task_checkpoint_record_version,
-                                   work::task_checkpoint_record_size(task));
+                const bool sources = model_.provenance.find(work::ProvenanceKind::task, task.slot,
+                                                            task.task_id) != nullptr;
+                uint8_t *at =
+                    body(work::task_checkpoint_record_type, work::task_checkpoint_record_version,
+                         work::task_checkpoint_record_size(task));
                 if (at != nullptr) {
                     work::write_task_checkpoint_record(task, tasks.checkpoint(index), at, sources);
                 }
@@ -69,20 +69,20 @@ class Journal {
             }
             work::TaskAuthorityRecord admission{};
             if (!model_.task_authority.read(task.slot, task.task_id, admission)) {
-                return false; // Schema 2 never infers authorization from absent metadata.
+                return false; // Schema 3 never infers authorization from absent metadata.
             }
             const bool changed = admission.stamp.commit_seq == stamp_.commit_seq;
             const auto *command = command_;
-            const auto change = command != nullptr &&
-                                        command->kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
-                                    ? work::TaskRecordChange::raise_limit
-                                : command != nullptr && command->kind == AYNI_INTENT_TASK_RESUME_WAIT
-                                    ? work::TaskRecordChange::resume_wait
-                                : changed && goal_reauthorized_by(command, task.goal_id)
-                                    ? work::TaskRecordChange::reauthorization
-                                : changed && task.created_transition_id != stamp_.transition_id
-                                    ? work::TaskRecordChange::authority
-                                    : work::TaskRecordChange::state;
+            const auto change =
+                command != nullptr && command->kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT
+                    ? work::TaskRecordChange::raise_limit
+                : command != nullptr && command->kind == AYNI_INTENT_TASK_RESUME_WAIT
+                    ? work::TaskRecordChange::resume_wait
+                : changed && goal_reauthorized_by(command, task.goal_id)
+                    ? work::TaskRecordChange::reauthorization
+                : changed && task.created_transition_id != stamp_.transition_id
+                    ? work::TaskRecordChange::authority
+                    : work::TaskRecordChange::state;
             uint8_t *at = body(work::task_state_record_type, work::task_state_record_version,
                                work::task_state_record_size);
             if (at != nullptr) {
@@ -120,7 +120,8 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
 bool knows(uint16_t type, uint16_t version, WorkRecordContext context) {
     if (type == work::task_record_type) {
         return version == (context == WorkRecordContext::journal
-                               ? work::task_record_version : work::task_snapshot_record_version);
+                               ? work::task_record_version
+                               : work::task_snapshot_record_version);
     }
     if (type == work::task_state_record_type) {
         return version == work::task_state_record_version;
@@ -195,8 +196,8 @@ StoreRecord shape(const WorkModel &model, const StoreCursor &cursor) {
                 work::task_steps_record_size(model.tasks, cursor.index, {cursor.subindex, 1}),
                 work::task_steps_record_type};
     case StorePart::checkpoint:
-        return {work::task_checkpoint_record_version,
-                work::task_checkpoint_record_size(task), work::task_checkpoint_record_type};
+        return {work::task_checkpoint_record_version, work::task_checkpoint_record_size(task),
+                work::task_checkpoint_record_type};
     case StorePart::state: {
         return {work::task_state_record_version, work::task_state_record_size,
                 work::task_state_record_type};
@@ -212,8 +213,8 @@ StoreRecord shape(const WorkModel &model, const StoreCursor &cursor) {
 void write(const WorkModel &model, const StoreCursor &cursor, uint8_t *body) {
     const auto index = cursor.index;
     const auto &task = model.tasks.at(index);
-    const bool sources = model.provenance.find(
-        work::ProvenanceKind::task, task.slot, task.task_id) != nullptr;
+    const bool sources =
+        model.provenance.find(work::ProvenanceKind::task, task.slot, task.task_id) != nullptr;
     switch (cursor.part) {
     case StorePart::row:
         work::write_task_snapshot_record(task, body, sources);
@@ -258,8 +259,7 @@ void advance(const WorkModel &, StoreCursor &cursor) {
 // Restore identity and original progress stamps before any child records.
 // A second creation cannot interrupt an unfinished object.
 durability::BatchCheck task(WorkModel &model, const durability::SnapshotMetadata &metadata,
-                            StoreReadCursor &cursor, uint16_t, const uint8_t *body,
-                            uint32_t size) {
+                            StoreReadCursor &cursor, uint16_t, const uint8_t *body, uint32_t size) {
     work::TaskSnapshotRecord snapshot{};
     if (cursor.index != work::TaskTable::no_index ||
         !work::read_task_snapshot_record(body, size, snapshot)) {
@@ -319,8 +319,8 @@ durability::BatchCheck task_steps(WorkModel &model, const durability::SnapshotMe
 }
 // One optional checkpoint retains the original writer and content-source marker.
 durability::BatchCheck task_checkpoint(WorkModel &model, const durability::SnapshotMetadata &,
-                                       StoreReadCursor &cursor, uint16_t,
-                                       const uint8_t *body, uint32_t size) {
+                                       StoreReadCursor &cursor, uint16_t, const uint8_t *body,
+                                       uint32_t size) {
     work::TaskCheckpointRecord record{};
     if (cursor.index == work::TaskTable::no_index || cursor.checkpoint_seen ||
         !work::read_task_checkpoint_record(body, size, record)) {
@@ -352,8 +352,7 @@ durability::BatchCheck task_state(WorkModel &model, const durability::SnapshotMe
     }
     const work::Task &task = model.tasks.at(cursor.index);
     if (record.change != work::TaskRecordChange::state || record.task_id != task.task_id ||
-        task.steps_before > task.step_count ||
-        (task.steps_seq == 0U) != (task.step_count == 0U) ||
+        task.steps_before > task.step_count || (task.steps_seq == 0U) != (task.step_count == 0U) ||
         (task.checkpoint_seq != 0U) != cursor.checkpoint_seen) {
         return durability::BatchCheck::corrupt;
     }
@@ -407,12 +406,11 @@ durability::BatchCheck read(WorkModel &model, const durability::SnapshotMetadata
         return durability::BatchCheck::unsupported;
     }
 }
-const StoreKind kinds[] = {
-    {work::task_record_type},
-    {work::task_state_record_type},
-    {work::task_steps_record_type},
-    {work::task_checkpoint_record_type},
-    {work::task_authority_record_type}};
+const StoreKind kinds[] = {{work::task_record_type},
+                           {work::task_state_record_type},
+                           {work::task_steps_record_type},
+                           {work::task_checkpoint_record_type},
+                           {work::task_authority_record_type}};
 
 } // namespace
 const PersistentStore task_store{work::task_record_type,

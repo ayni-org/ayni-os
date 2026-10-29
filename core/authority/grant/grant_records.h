@@ -81,8 +81,7 @@ bool valid_grant_record(const GrantRecord &record);
 bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id);
 
 constexpr uint32_t grant_record_max(uint32_t scope_max_bytes) {
-    return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES +
-           2U * scope_max_bytes;
+    return grant_record_fixed_size + AYNI_CATALOG_ID_MAX_BYTES + 2U * scope_max_bytes;
 }
 constexpr uint32_t grant_snapshot_record_max(uint32_t scope_max_bytes) {
     return grant_record_max(scope_max_bytes) + grant_snapshot_tail_size;

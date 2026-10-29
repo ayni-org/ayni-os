@@ -82,7 +82,8 @@ struct TaskStepRange {
 struct TaskStateRecord {
     uint64_t task_id;
     TaskState state;
-    TaskRecordChange change = TaskRecordChange::state; // Journal partner proof, not cached Task state.
+    TaskRecordChange change =
+        TaskRecordChange::state; // Journal partner proof, not cached Task state.
 };
 
 // The views point into the body.

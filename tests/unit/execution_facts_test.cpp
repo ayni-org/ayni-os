@@ -204,8 +204,8 @@ TEST(ExecutionFacts, record_prefixes_never_form_a_complete_execution_tail) {
         for (uint32_t size = 0; size <= bytes.size(); ++size) {
             ayni::durability::BodyReader reader(bytes.data(), size);
             ExecutionFact decoded{};
-            const bool complete = read_execution(reader, decoded) && reader.ok() &&
-                                  valid_execution_metadata(decoded);
+            const bool complete =
+                read_execution(reader, decoded) && reader.ok() && valid_execution_metadata(decoded);
             EXPECT_EQ(complete, size == bytes.size()) << size;
         }
     }

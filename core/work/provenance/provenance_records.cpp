@@ -26,10 +26,7 @@ bool read_provenance_record(const uint8_t *body, uint32_t size, ProvenanceRecord
         return false;
     }
     record.origin = {reader.u64(), reader.u64()};
-    if ((record.origin.id == 0) != (record.origin.generation == 0)) {
-        return false;
-    }
-    if (!reader.ok()) {
+    if (!reader.ok() || !record.origin.valid()) {
         return false;
     }
     out = record;

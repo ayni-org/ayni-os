@@ -266,7 +266,8 @@ TEST(WorkAuthorityResult, command_record_round_trip_and_all_truncations_are_atom
         uint64_t sentinel_floor = 99;
         ayni_bytes_v1 sentinel_input{canonical.data(), input_size};
         ayni_bytes_v1 sentinel_output{evidence.data(), accepted.result_size};
-        EXPECT_FALSE(read_command_record(body.data(), cut, untouched, sentinel_floor, sentinel_input, &sentinel_output));
+        EXPECT_FALSE(read_command_record(body.data(), cut, untouched, sentinel_floor,
+                                         sentinel_input, &sentinel_output));
         EXPECT_EQ(untouched.commit_seq, accepted.commit_seq);
         EXPECT_EQ(untouched.result_size, accepted.result_size);
         EXPECT_EQ(sentinel_floor, 99U);

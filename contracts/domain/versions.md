@@ -11,6 +11,8 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | 存储 | `storage_schema`、记录版本、迁移版本 | 日志批次、快照、NVS 记录（`storage/`） |
 | 领域语义 | 能力、Scene、GoalType、检查点各自的 `version` | 注册目录与 ActionRecord 绑定的语义 |
 
+当前 Core 存储只接受 schema 3；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0082。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
+
 ## ABI
 
 | ID | 规则 | 反例 | 验证 |
@@ -84,3 +86,5 @@ ABI 0.45（ADR-0066）增加纯日历 UTC→本地秒和 Gregorian 字段拆分�
 #95（ADR-0074）在 ABI 0.45 下给 `<ayni/calls.h>` 增加 `AYNI_MODEL_INSTRUCTIONS_PREFIX`。它只是策略与模型 Provider 之间的正文约定：没有结构布局、导出符号或 Kernel 行为变化，Kernel 不读它，按此前 0.45 头文件编译的调用方行为不变，所以不递增 minor。它不属于 C-VER-006 所说的变更，#72 仍是该条唯一的例外。`openai.chat`/`openai.text` 的能力契约版本也不变：没有前缀的旧正文含义不变。
 
 ABI 0.46（ADR-0082）删除 Provider 旧路径转发头及已被替代的 kernel/policy/control 草案；正式结构布局和运行行为不变。所有仓库消费者改用正式头，测试自身持有非法输入值；不同 minor 仍拒绝，不提供兼容别名。
+
+Schema 3（ADR-0082）统一所有活动领域变体的完整正文，严格拒绝未知 optional、记录版本、flags 和扩展头；ABI 仍为0.46。旧目录在输出或新写入前拒绝并保留，无迁移器、兼容 reader 或自动清空。

@@ -44,8 +44,9 @@ enum class StorePart { row, steps, checkpoint, state, authority };
 // only for an active Task; closing the object resets the complete cursor.
 struct StoreReadCursor {
     uint32_t index = work::TaskTable::no_index; // Retained row; no_index between objects.
-    uint64_t paired_id = 0;       // Expected adjacent Goal authority identity; zero means none.
-    uint16_t expected_type = 0;   // Required next record type; zero allows optional extensions.
+    uint64_t paired_id = 0; // Expected adjacent Goal authority identity; zero means none.
+    uint16_t expected_type =
+        0; // Required next record type; zero means no pending adjacent partner.
     bool checkpoint_seen = false; // Current Task has its sole optional checkpoint.
     // A family may change only after every required object partner was consumed.
     bool complete() const {
@@ -79,7 +80,7 @@ struct PersistentStore {
     uint32_t kind_count;    // Positive family length; no runtime registration.
     // Whether this build reads this type/version in the given storage context.
     bool (*knows)(uint16_t type, uint16_t version, WorkRecordContext context);
-    StorePosition position; // Placement relative to work/cleanup, preserving schema 2 order.
+    StorePosition position; // Placement relative to work/cleanup, preserving schema 3 order.
     // Rows these capacities retain; zero disables snapshot rows.
     uint32_t (*capacity)(const KernelCapacities &capacities);
     // Largest snapshot body, excluding the envelope.

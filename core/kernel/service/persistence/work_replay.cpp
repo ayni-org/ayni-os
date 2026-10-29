@@ -55,7 +55,7 @@ bool WorkReplay::binding_matches() const {
     if (model_.principals.binding_known()) {
         return model_.principals.binding_matches();
     }
-    // Schema 2 never adopts existing owner-controlled facts from an unbound
+    // Schema 3 never adopts existing owner-controlled facts from an unbound
     // store. Empty and agent-only stores can still bind their first owner;
     // missing evidence is refused before the boot writes (ADR-0038).
     return model_.goals.size() == 0U && model_.commands.size() == 0U &&
@@ -85,8 +85,11 @@ RecordUse WorkReplay::classify_header(const durability::RecordHeader &header,
         return header.version == work::authority_cleanup_record_version ? RecordUse::applied
                                                                         : RecordUse::unknown;
     case authority::owner_binding_record_type:
-        return header.version == authority::owner_binding_record_version ? RecordUse::applied
-                                                                         : RecordUse::unknown;
+        return header.version == (context == WorkRecordContext::journal
+                                      ? authority::owner_binding_record_version
+                                      : authority::owner_binding_snapshot_record_version)
+                   ? RecordUse::applied
+                   : RecordUse::unknown;
     default:
         return RecordUse::unknown;
     }
@@ -195,7 +198,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     }
     switch (header.type) {
     case work::provenance_record_type:
-        return restore_provenance(header.version, body, size, stamp);
+        return restore_provenance(body, size, stamp);
     case work::privacy_record_type:
         return restore_privacy(body, size, stamp, boot_epoch_limit);
     case knowledge::context_record_type:
@@ -211,37 +214,37 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case authority::owner_binding_record_type:
         return restore_owner_binding(body, size, stamp);
     case authority::grant_record_type:
-        return restore_grant(header.version, body, size, stamp, boot_epoch_limit);
+        return restore_grant(body, size, stamp, boot_epoch_limit);
     case authority::grant_state_record_type:
-        return restore_grant_state(header.version, body, size, stamp);
+        return restore_grant_state(body, size, stamp);
     case authority::grant_revocation_record_type:
-        return restore_revocation(header.version, body, size, stamp, boot_epoch_limit);
+        return restore_revocation(body, size, stamp, boot_epoch_limit);
     case authority::grant_revocation_progress_record_type:
         return restore_revocation_progress(body, size, stamp);
     case work::instance_record_type:
         return restore_instance(body, size, stamp);
     case work::goal_record_type:
-        return restore_goal(header.version, body, size, stamp);
+        return restore_goal(body, size, stamp);
     case work::goal_authority_record_type:
-        return restore_goal_authority(header.version, body, size, stamp, boot_epoch_limit);
+        return restore_goal_authority(body, size, stamp, boot_epoch_limit);
     case work::authority_cleanup_record_type:
         return restore_authority_cleanup(body, size, stamp);
     case work::goal_state_record_type:
-        return restore_goal_state(header.version, body, size, stamp);
+        return restore_goal_state(body, size, stamp);
     case work::task_authority_record_type:
         return restore_task_authority(body, size, {batch.transition_id, batch.commit_seq});
     case work::task_record_type:
-        return restore_task(header.version, body, size, stamp);
+        return restore_task(body, size, stamp);
     case work::call_record_type:
-        return restore_call(header.version, body, size, {boot_epoch_limit, stamp});
+        return restore_call(body, size, {boot_epoch_limit, stamp});
     case work::task_state_record_type:
-        return restore_task_state(header.version, body, size, stamp);
+        return restore_task_state(body, size, stamp);
     case work::task_steps_record_type:
         return restore_task_steps(body, size, stamp);
     case work::task_checkpoint_record_type:
-        return restore_task_checkpoint(header.version, body, size, stamp);
+        return restore_task_checkpoint(body, size, stamp);
     case command_record_type:
-        return restore_command(header.version, body, size, batch.commit_seq, boot_epoch_limit);
+        return restore_command(body, size, batch.commit_seq, boot_epoch_limit);
     default:
         return RecordUse::unknown;
     }
@@ -267,7 +270,7 @@ RecordUse WorkReplay::restore_instance(const uint8_t *body, uint32_t size,
                                         record.lifecycle, stamp));
 }
 
-RecordUse WorkReplay::restore_goal(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::GoalRecord record{};
     // A goal is created for an instance that has started.
@@ -303,7 +306,7 @@ RecordUse WorkReplay::restore_goal(uint16_t, const uint8_t *body, uint32_t size,
     return RecordUse::applied;
 }
 
-RecordUse WorkReplay::restore_goal_state(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal_state(const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp) {
     work::GoalStateRecord record{};
     uint32_t index = 0;
@@ -345,7 +348,7 @@ RecordUse WorkReplay::restore_goal_state(uint16_t, const uint8_t *body, uint32_t
 // A create cannot lose its explicit ceiling or borrow another Goal's metadata.
 // Existing metadata may advance without changing its immutable ceiling;
 // F4 adds a separate paired proof for explicit reauthorization.
-RecordUse WorkReplay::restore_goal_authority(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp,
                                              uint64_t boot_epoch_limit) {
     work::GoalAuthorityRecord record{};
@@ -361,7 +364,7 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t, const uint8_t *body, uint
     }
     const bool reauthorizing = pairing_.reauthorization.has_value();
     if ((record.phase == work::GoalAuthorityPhase::paused) !=
-            (pairing_.work_cleanup.state_goal_id == record.goal_id)) {
+        (pairing_.work_cleanup.state_goal_id == record.goal_id)) {
         return RecordUse::corrupt;
     }
     if (pairing_.goal_authority ? *pairing_.goal_authority != record.goal_id
@@ -371,9 +374,8 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t, const uint8_t *body, uint
     if ((!model_.goal_authority.contains(index, record.goal_id) &&
          record.phase != work::GoalAuthorityPhase::proposed &&
          !matches_goal_binding(index, record, stamp.commit_seq)) ||
-        !(reauthorizing
-              ? pair_reauthorization_metadata(index, record, stamp)
-              : pair_approval_metadata(index, record))) {
+        !(reauthorizing ? pair_reauthorization_metadata(index, record, stamp)
+                        : pair_approval_metadata(index, record))) {
         return RecordUse::corrupt;
     }
     work::GoalAuthorityRecord previous{};
@@ -386,8 +388,7 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t, const uint8_t *body, uint
     if (status != AYNI_OK) {
         return status == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
     }
-    if (reauthorizing &&
-        !goal_authority_consistent(index, boot_epoch_limit)) {
+    if (reauthorizing && !goal_authority_consistent(index, boot_epoch_limit)) {
         return RecordUse::corrupt;
     }
     if (replacing) {
@@ -402,7 +403,7 @@ RecordUse WorkReplay::restore_goal_authority(uint16_t, const uint8_t *body, uint
     return RecordUse::applied;
 }
 
-RecordUse WorkReplay::restore_task(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
                                    foundation::TransitionStamp stamp) {
     work::TaskRecord record{};
     uint32_t goal_index = 0;
@@ -468,7 +469,7 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
     return RecordUse::applied;
 }
 
-RecordUse WorkReplay::restore_task_state(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_task_state(const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp) {
     work::TaskStateRecord record{};
     uint32_t index = 0;
@@ -544,7 +545,7 @@ RecordUse WorkReplay::restore_task_steps(const uint8_t *body, uint32_t size,
     return read ? RecordUse::applied : use_of(failure);
 }
 
-RecordUse WorkReplay::restore_task_checkpoint(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_task_checkpoint(const uint8_t *body, uint32_t size,
                                               foundation::TransitionStamp stamp) {
     work::TaskCheckpointRecord record{};
     uint32_t index = 0;
@@ -568,7 +569,7 @@ RecordUse WorkReplay::restore_task_checkpoint(uint16_t, const uint8_t *body, uin
 
 // C-STORE-015: create and its exact command share this batch. Validate the
 // already durable issuer/subject before publishing a fact awaiting that command.
-RecordUse WorkReplay::restore_grant(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
                                     foundation::TransitionStamp stamp, uint64_t boot_epoch_limit) {
     authority::GrantRecord record{};
     const auto *binding = model_.principals.binding();
@@ -601,7 +602,7 @@ RecordUse WorkReplay::restore_grant(uint16_t, const uint8_t *body, uint32_t size
 
 // Expiry is standalone; descendant revocation must be the only unmatched
 // authority fact and precede its same-batch progress record (ADR-0031).
-RecordUse WorkReplay::restore_grant_state(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_grant_state(const uint8_t *body, uint32_t size,
                                           foundation::TransitionStamp stamp) {
     authority::GrantStateRecord record{};
     if (!authority::read_grant_state_record(body, size, record)) {
@@ -643,7 +644,7 @@ RecordUse WorkReplay::restore_grant_state(uint16_t, const uint8_t *body, uint32_
 
 // C-AUTH-027: replay accepted root control under the saved issuer binding;
 // its effect/revision must be matched by the following exact command record.
-RecordUse WorkReplay::restore_revocation(uint16_t, const uint8_t *body, uint32_t size,
+RecordUse WorkReplay::restore_revocation(const uint8_t *body, uint32_t size,
                                          foundation::TransitionStamp stamp,
                                          uint64_t boot_epoch_limit) {
     authority::GrantRevocationRecord record{};
@@ -764,8 +765,8 @@ bool WorkReplay::pair_domain_command(const CommandMapping &mapping, ayni_bytes_v
 
 // An absent principal's retry window is still durable state. Keeping it
 // prevents compaction from turning an old accepted command into a new one.
-RecordUse WorkReplay::restore_command(uint16_t, const uint8_t *body, uint32_t size,
-                                      uint64_t commit_seq, uint64_t boot_epoch_limit) {
+RecordUse WorkReplay::restore_command(const uint8_t *body, uint32_t size, uint64_t commit_seq,
+                                      uint64_t boot_epoch_limit) {
     CommandMapping mapping{};
     uint64_t floor = 0;
     ayni_bytes_v1 canonical{};
@@ -851,7 +852,7 @@ bool WorkReplay::matches_grant_creation(const CommandMapping &mapping, ayni_byte
 bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const {
     const auto &goal = model_.goals.at(goal_index);
     if (!model_.goal_authority.contains(goal_index, goal.goal_id)) {
-        return false; // Schema 2 never infers authorization from absent evidence.
+        return false; // Schema 3 never infers authorization from absent evidence.
     }
     const auto record = model_.goal_authority.at(goal_index);
     if (record.stamp.commit_seq < goal.created.commit_seq ||

@@ -34,10 +34,8 @@ bool is_store_section(SnapshotSection section) {
            section == SnapshotSection::after_work || section == SnapshotSection::after_cleanup;
 }
 
-// Schema 2 Goals retain full creation stamps in v4 snapshots. Grants use
-// their context-specific versions; exact authority commands retain v5 input
-// and results (contracts/storage/records.md).
-constexpr uint16_t snapshot_record_version = 1;
+// Schema 3 snapshots retain complete original history and exact command results
+// with one current layout per family/context (contracts/storage/records.md).
 constexpr uint32_t record_prefix = static_cast<uint32_t>(durability::record_header_size);
 
 // The tails after the log body (records.md). A stamp is a transition_id,
@@ -108,7 +106,7 @@ bool WorkSnapshotWriter::next_store_record(StorePosition position, uint16_t &typ
     }
     return false;
 }
-// Sections preserve schema 2 order; each descriptor owns its row/part traversal.
+// Sections preserve schema 3 order; each descriptor owns its row/part traversal.
 bool WorkSnapshotWriter::next_record(uint16_t &type, uint32_t &size) {
     for (;;) {
         if (section_ == Section::owner_binding) {
@@ -192,7 +190,9 @@ WorkSnapshotWriter::Page WorkSnapshotWriter::next(uint8_t *buffer, uint32_t capa
         const uint16_t version =
             is_store_section(section_)
                 ? persistent_stores[store_]->snapshot_record(model_, store_cursor_).version
-                : snapshot_record_version;
+            : type == authority::owner_binding_record_type
+                ? authority::owner_binding_snapshot_record_version
+                : work::authority_cleanup_record_version;
         durability::write_record_header({type, version, durability::record_required, size}, at);
         write_record(type, at + record_prefix);
         out_size += record_prefix + size;

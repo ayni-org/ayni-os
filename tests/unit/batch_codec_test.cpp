@@ -174,7 +174,7 @@ TEST(BatchCodec, header_shorter_than_44_bytes_is_corrupt) {
 }
 
 // A later writer appends header fields before header_crc; this reader
-// accepts the longer header and finds the payload after it.
+// rejects the longer header after checking its CRC (ADR-0082).
 TEST(BatchCodec, longer_header_from_a_later_writer_is_unsupported) {
     const std::vector<uint8_t> intact = sample_batch();
     std::vector<uint8_t> bytes(intact.begin(), intact.begin() + batch_header_size - 4);

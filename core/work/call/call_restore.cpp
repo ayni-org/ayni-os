@@ -234,8 +234,8 @@ bool CallTable::valid_record(const CallRecord &record) {
         state.execution.has_value()) {
         return false;
     }
-    // Physical rows retain their original permit constraints; ordinary v1/v2 rows have no tail.
-    // Neither replay nor a new catalog may infer a fresh execution generation.
+    // Physical rows retain their original permit constraints; non-physical rows have no execution
+    // fact. Neither replay nor a new catalog may infer a fresh execution generation.
     if (state.execution) {
         const auto &execution = *state.execution;
         if (!(state.content_erased ? valid_execution_metadata(execution)

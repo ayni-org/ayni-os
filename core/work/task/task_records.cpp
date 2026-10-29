@@ -130,8 +130,7 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     wait.phase = static_cast<SubscriptionPhase>(reader.u32());
     const auto change = reader.u32();
     const auto present = reader.u32();
-    if (blocked > 1 || present > 1 ||
-        change < static_cast<uint32_t>(TaskRecordChange::state) ||
+    if (blocked > 1 || present > 1 || change < static_cast<uint32_t>(TaskRecordChange::state) ||
         change > static_cast<uint32_t>(TaskRecordChange::resume_wait) ||
         (present == 0 && (wait.subscription_id != 0 || wait.generation != 0 || wait.sequence != 0 ||
                           static_cast<uint32_t>(wait.phase) != 0))) {
@@ -144,7 +143,7 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     if (!reader.ok() || !record.state.model_calls.valid() ||
         !record.state.call.valid(record.state.lifecycle) ||
         !valid_subscription_wait(record.state.subscription_wait, record.state.lifecycle,
-                                  record.state.call.id)) {
+                                 record.state.call.id)) {
         return false;
     }
     out = record;

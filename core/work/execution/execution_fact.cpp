@@ -107,8 +107,7 @@ uint32_t execution_record_max() {
            AYNI_CONTROL_FIELD_COUNT_MAX *
                (execution_field_fixed_bytes + field_identity_count * catalog::CatalogId::max_size) +
            AYNI_OBSERVATION_CONDITION_COUNT_MAX *
-               (execution_dependency_fixed_bytes +
-                catalog::CatalogId::max_size);
+               (execution_dependency_fixed_bytes + catalog::CatalogId::max_size);
 }
 uint32_t execution_record_size(const ExecutionFact &fact) {
     const auto &binding = fact.binding;

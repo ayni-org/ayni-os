@@ -80,7 +80,7 @@ ayni_status_t ProvenanceTable::restore(uint32_t slot, const ProvenanceRecord &re
             !present) {
             return AYNI_INVALID_ARGUMENT;
         }
-    } else if (record.origin.generation != 0) {
+    } else if (!record.origin.valid()) {
         return AYNI_INVALID_ARGUMENT;
     }
     if ((record.kind != ProvenanceKind::goal && record.kind != ProvenanceKind::task) ||

@@ -141,7 +141,7 @@ TEST(OwnerBindingSnapshot, paged_round_trip_keeps_the_original_binding_stamp_and
     ASSERT_GE(snapshot.bytes.size(), binding_bytes);
     const auto first = ayni::durability::read_record_header(snapshot.bytes.data());
     EXPECT_EQ(first.type, ayni::authority::owner_binding_record_type);
-    EXPECT_EQ(first.version, ayni::authority::owner_binding_record_version);
+    EXPECT_EQ(first.version, ayni::authority::owner_binding_snapshot_record_version);
     EXPECT_EQ(first.flags, ayni::durability::record_required);
     EXPECT_EQ(first.length, ayni::authority::owner_binding_record_size + snapshot_stamp_size);
     ASSERT_LT(binding.stamp.commit_seq, snapshot.metadata.covers_commit_seq);

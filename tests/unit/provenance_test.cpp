@@ -156,8 +156,7 @@ TEST_F(ProvenanceFacts, context_origins_require_a_matching_goal_source_and_exact
         EXPECT_EQ(decoded.id, 99U);
     }
     decoded.id = 99;
-    EXPECT_FALSE(
-        read_provenance_record(nullptr, static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_FALSE(read_provenance_record(nullptr, static_cast<uint32_t>(bytes.size()), decoded));
     constexpr auto future_version = static_cast<uint16_t>(provenance_record_version + 1);
     EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(
                   {provenance_record_type, future_version, ayni::durability::record_required, 0}),
@@ -165,7 +164,8 @@ TEST_F(ProvenanceFacts, context_origins_require_a_matching_goal_source_and_exact
     // records.md type24/v2: the appended Context origin starts with its u64 ID.
     const auto origin_at = bytes.size() - provenance_origin_bytes;
     std::fill_n(bytes.data() + origin_at, sizeof(uint64_t), 0);
-    EXPECT_FALSE(read_provenance_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_FALSE(
+        read_provenance_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.id, 99U);
 }
 } // namespace
