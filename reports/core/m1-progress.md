@@ -134,7 +134,7 @@
 
 ## 交接状态（2026-10-30）
 
-本包实现 AP-02（ABI 0.48 / schema 4），相关验证与交付索引见 ADR-0084；AP-03 仍在实施，基础通用能力未完成。此前规划/设计见 #110/#111，M1 Native/Sim 与历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表平台实验或硬件验收。
+本包实现 AP-02（ABI 0.48 / schema 4），相关验证与交付见 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084；AP-03 仍在实施，基础通用能力未完成。此前规划/设计见 #110/#111，M1 Native/Sim 与历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表平台实验或硬件验收。
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。
