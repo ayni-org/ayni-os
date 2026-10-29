@@ -1,4 +1,4 @@
-// ADR-0030: ordinary v1 remains readable; auth v2 must carry exact identity.
+// ADR-0082: schema 3 command payloads preserve ordinary and exact receipt semantics.
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
 #include "kernel/service/command/command_memory.h"
@@ -221,8 +221,49 @@ TEST(CommandRecords, ordinary_current_body_preserves_original_result) {
     EXPECT_EQ(restored.commit_seq, 0U);
     EXPECT_EQ(restored.canonical_size, 0U);
     EXPECT_EQ(restored.object.id, 5U);
+    EXPECT_EQ(restored.effect, AYNI_INTENT_EFFECT_CHANGED);
     EXPECT_EQ(floor, 4U);
     EXPECT_EQ(command_record_version, 1U);
+}
+
+// C-STORE-009 / ADR-0082: ordinary receipts retain CHANGED; other effects
+// cannot be written or decoded, and rejection preserves every caller output.
+TEST(CommandRecords, ordinary_effect_rejection_preserves_encoded_and_decoded_outputs) {
+    const CommandMapping ordinary{1, 2, 3, 9, AYNI_INTENT_GOAL_CREATE, {0, 5, 6, AYNI_OBJECT_GOAL}};
+    std::array<uint8_t, command_record_size> valid{};
+    ASSERT_TRUE(write_command_record(ordinary, 4, {}, valid.data(), valid.size()));
+    // White-box byte input: records.md type9 puts effect after the 52-byte
+    // identity and the u32 content marker. No writer manufactures invalid facts.
+    constexpr uint32_t effect_at = 56;
+    for (const auto effect : {AYNI_INTENT_EFFECT_NONE, AYNI_INTENT_EFFECT_NO_CHANGE,
+                              AYNI_INTENT_EFFECT_TARGET_GONE, UINT32_MAX}) {
+        SCOPED_TRACE(effect);
+        auto candidate = ordinary;
+        candidate.effect = effect;
+        std::array<uint8_t, command_record_size> encoded{};
+        encoded.fill(0xA5);
+        const auto before = encoded;
+        EXPECT_FALSE(write_command_record(candidate, 4, {}, encoded.data(), encoded.size()));
+        EXPECT_EQ(encoded, before);
+
+        auto bytes = valid;
+        ayni::foundation::store_le32(bytes.data() + effect_at, effect);
+        CommandMapping decoded = ordinary;
+        decoded.principal_id = 77;
+        uint64_t floor = 88;
+        const uint8_t sentinel = 0;
+        ayni_bytes_v1 canonical{&sentinel, 99};
+        ayni_bytes_v1 result{&sentinel, 100};
+        EXPECT_FALSE(
+            read_command_record(bytes.data(), bytes.size(), decoded, floor, canonical, &result));
+        EXPECT_EQ(decoded.principal_id, 77U);
+        EXPECT_EQ(decoded.effect, AYNI_INTENT_EFFECT_CHANGED);
+        EXPECT_EQ(floor, 88U);
+        EXPECT_EQ(canonical.data, &sentinel);
+        EXPECT_EQ(canonical.size, 99U);
+        EXPECT_EQ(result.data, &sentinel);
+        EXPECT_EQ(result.size, 100U);
+    }
 }
 
 TEST(CommandRecords, auth_current_body_round_trips_full_request_and_borrows_only_input) {

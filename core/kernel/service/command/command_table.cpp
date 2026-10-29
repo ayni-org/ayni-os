@@ -101,6 +101,12 @@ bool valid_expired_mapping(const CommandMapping &m) {
            m.effect == AYNI_INTENT_EFFECT_CHANGED && m.retention == CommandRetention::normal;
 }
 
+bool valid_ordinary_mapping(const CommandMapping &mapping) {
+    return is_ordinary_command(mapping.kind) && !mapping.privacy_expired &&
+           mapping.canonical_size == 0 && mapping.result_size == 0 &&
+           mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
+}
+
 void CommandTable::discard_candidate() {
     std::memset(scratch_, 0, canonical_max_bytes_);
     staged_.reset();
@@ -453,7 +459,7 @@ CommandTable::Restore CommandTable::restore_checked(const CommandMapping &mappin
         if (bytes.size > canonical_max_bytes_ || result.size > canonical_max_bytes_ - bytes.size) {
             return Restore::no_room;
         }
-    } else if (is_exact_command(mapping.kind)) {
+    } else if (!valid_ordinary_mapping(mapping)) {
         return Restore::corrupt;
     }
     if (!can_insert(mapping.principal_id)) {
