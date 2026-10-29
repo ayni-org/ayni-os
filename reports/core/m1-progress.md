@@ -116,6 +116,8 @@
 | [#107](https://github.com/RobotSe7en/ayni/pull/107) | 2026-10-29 | AP-01 能力自描述 | C99 说明端口、exact 配对复制、真实模型 codec、本机 schedule 与模拟设备；ABI0.47/schema3 | ADR-0082 |
 | [#108](https://github.com/RobotSe7en/ayni/pull/108) | 2026-10-29 | AP-00/AP-01 审查扫尾 | 同步版本/授权文档，显式记录证明、移除存储残留、前移说明端口形状校验并保留无工具请求；ABI 0.47 / schema 3 不变 | ADR-0082 |
 | [#109](https://github.com/RobotSe7en/ayni/pull/109) | 2026-10-29 | 普通命令回执修复 | 统一校验 ordinary mapping 的 effect，修正输入边界夹具及当前 schema 注释；ABI 0.47 / schema 3 不变 | ADR-0082 |
+| [#110](https://github.com/RobotSe7en/ayni/pull/110) | 2026-10-29 | 通用基础与实验路线 | 通用 AgentOS 无必备设备集合，基础先于独立平台实验；同步规划、契约适用范围与交接 | ADR-0083 |
+| [#111](https://github.com/RobotSe7en/ayni/pull/111) | 2026-10-29 | AP-02 盘点与设计 | 完成实际消费者、类型/授权/持久设计及独立审查修订；记录用户选择，生产实现尚未开始 | ADR-0084 |
 
 ## 工作包日期
 
@@ -132,11 +134,11 @@
 
 ## 交接状态（2026-10-29）
 
-当前代码基线为 [#109](https://github.com/RobotSe7en/ayni/pull/109)，ABI 0.47 / schema 3；AP-00/AP-01 及审查修复见 #105～#109（ADR-0082）。M1 Native/Sim E1～E4、SDK、最终配置和历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表全部基础通用能力或平台实验已完成。
+当前生产代码基线为 [#109](https://github.com/RobotSe7en/ayni/pull/109)，ABI 0.47 / schema 3；规划与设计交付见 [#110](https://github.com/RobotSe7en/ayni/pull/110)、[#111](https://github.com/RobotSe7en/ayni/pull/111)。AP-00/AP-01 及审查修复见 #105～#109（ADR-0082）。M1 Native/Sim E1～E4、SDK、最终配置和历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表全部基础通用能力或平台实验已完成。
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。
-- **本轮与下一步：** 路线文档已提交 [#110](https://github.com/RobotSe7en/ayni/pull/110)，适用 CI 通过，尚未合并。基础/调用消费者盘点与 [AP-02 设计](../../docs/architecture/ap02-typed-capability-design.md)已形成；下一代码包按设计迁移类型、规范请求/结果、授权、存储与全仓消费者，随后按现行计划推进其他基础包。当前未改生产实现。
+- **本轮与下一步：** 路线文档、基础/调用消费者盘点与 [AP-02 设计](../../docs/architecture/ap02-typed-capability-design.md)已交付，适用检查及独立审查修订见 #110/#111。下一代码包按设计迁移类型、规范请求/结果、授权、存储与全仓消费者，随后按现行计划推进其他基础包。当前未改生产实现。
 - **实验与可选能力：** Native/Sim 日常测试继续；基础门槛通过后再安排 ESP32-S3、Linux 实际 OS 集成及其他平台实验。语音/视觉、运动与硬件停止、MCP/ROS/MHS、peer 和轮式助理试用按需选择；启用的物理执行保证、OTA/硬件/耐久证据不能省略或用模拟替代。
 - **已定与待决：** AP-02 首版含有界嵌套/列表及浮点/精确十进制；列表同一完整授权逐项覆盖、拒空，权限只用精确数值；本包直接升级并拒旧保留目录，无 reader/迁移器（ADR-0084）。其他包的披露/容量/绑定/控制及兼容、平台组合/指标仍分别决定。真实模型多轮试用、长期密钥配置和完整 MA-038 旧待决保留；历史 ≥80% 接受不替代通用 90% 目标。
 - **工作流与边界：** 依相关正常测试、设计自查、适用独立审查及 CI 交付；具体命令、结果与运行编号集中在 PR。本次文档不启动平台/硬件、付费 API 或新专项；变异及新增故障/恢复专项仍按 workflow 现行授权处理。
