@@ -16,7 +16,7 @@
 | 基础范围 | 已有事实与证据入口 | AP-02 的处理 |
 |---|---|---|
 | 生命周期、工作与调度 | M1 的 Kernel、Agent/Goal/Task、触发、检查点与取消；[Core Alpha 报告](../../reports/core/m1-core-alpha.md) | 保留属主和状态机；仅迁移调用接口消费者，不重写调度 |
-| 授权、资源与调用 | 有限 Grant/Scope、审批/撤销、运行限制、资源准入和三类调用；[契约追踪](../../contracts/traceability.md) | 类型系统与授权域分开；实际值产生完整授权投影，不扩大 Grant |
+| 授权、资源与调用 | 有限 Grant/Scope、审批/撤销、运行限制、资源准入和三类调用；[契约追踪](../../contracts/traceability.md) | 类型系统与授权域分开；实际值产生完整授权投影，原业务契约证明随授权来源保留，不扩大 Grant |
 | 持久、恢复与幂等 | 当前 schema 3、原始 Call 事实、派发屏障、UNKNOWN 处理及 Native/Sim E1～E4 | 新格式保存解释旧调用所需的原始业务契约；不通过新目录重释输入 |
 | 记忆与上下文 | 私有空间、来源、删除 lineage、结果依赖与耐久门控 | 新节点表/编码副本纳入擦除和依赖失效，不改成新的记忆系统 |
 | SDK 与应用 | C99/C++17 入口、ToolLoop、助理及示例 | 增加通用值读写便利接口；助理仍为应用样例 |
@@ -49,7 +49,7 @@
 
 拟增加模型中立 C99 值/Schema 头及只读访问、规范化接口，具体符号在实现时按现有命名落定。值采用 caller-owned 的节点表与字节视图，不跨 ABI 传 STL、yyjson/JSON 类型或递归指针：
 
-- 节点显式区分 object、array、bool、i64/u64、enum/identifier、text、float64、decimal 和声明允许的 null；未使用的 union 字段必须为零。
+- 节点显式区分 object、array、bool、i64/u64、enum/identifier、text、float64、decimal 和声明允许的 null；tag 决定唯一有效的 union 分支，只读取该分支。独立 reserved 字段要求为零，不能要求重叠的非活动 union 分支或原生 ABI padding 为零；规范字节编码不复制这些内存。
 - 节点表按前序排列。根与数组项不冒充对象字段；对象子项携带 Schema 稳定字段 ID。子树结束位置是显式的排他索引，标量结束于下一项；根覆盖整个表。对象内重复/未知字段、越界、交叉子树、不可达节点和非法深度均拒绝。
 - Schema 本身也是有界非递归声明：对象字段、数组 item 形状及有限范围，不支持任意 `$ref`、递归类型、正则、任意 union 或回调执行的配置语言。
 - 对象字段按稳定 ID 排序，列表保留顺序与重复项；不能按授权集合规则给业务列表去重。公开实现用有界显式栈，既不保留调用方可变输入，也不依赖无界递归。
@@ -68,7 +68,7 @@
 
 能力明确选择 float64 或 decimal，二者不互相隐式转换。模型协议中精确 decimal 使用带固定 scale 说明、不带指数的十进制字符串；adapter 必须检查原始词法，不能先变成 double 再声称精确。无效尾零可去除，超过 scale 的非零小数位拒绝；规范输出按声明 scale 生成。浮点舍入仅指该已声明近似类型的解析，不把精确输入偷偷降级为近似类型。金融计算、测量算法本身仍由能力实现负责，本包只传递、校验和保持数值语义。
 
-缺失、默认与 null 不混用：required 缺失拒绝；optional 有声明默认值时在授权前填入，否则保持显式缺失；null 只有该字段允许时才合法，不等于缺失。默认值在注册时通过同一 Schema 校验，并属于 exact 契约，不允许 Provider 再施加隐藏默认值。未知/重复业务字段拒绝。未来 wire 信封的可选扩展规则与业务对象的封闭字段规则分别处理。
+缺失、默认与 null 不混用：required 缺失拒绝；optional 有声明默认值时在授权前填入，否则保持显式缺失；null 只有该字段允许时才合法，不等于缺失。默认值在注册时通过同一 Schema 校验，并属于 exact 契约，不允许 Provider 再施加隐藏默认值。默认仅为静态契约常量，不存运行时私有内容或凭据；私有值必须作为本次业务输入提供并受正文擦除管理。未知/重复业务字段拒绝。未来 wire 信封的可选扩展规则与业务对象的封闭字段规则分别处理。
 
 ## 5 一个规范请求贯通授权与执行
 
@@ -86,45 +86,55 @@
 
 机器 Schema 将稳定业务字段路径映射到原授权域的 field_id、kind、unit；最多仍为既有授权维度数。首版路径允许穿过有界嵌套对象的固定标量路径，或同一个列表锚点的元素标量配合列表外固定标量。只有一层列表展开轴，不引入任意表达式、隐式跨列表配对、求和或关系推理；多层嵌套列表仍可作为普通业务数据，不能冒充已支持的多轴授权。
 
+投影路径及其祖先必须在 Schema 默认规范化后保证存在，末端必为非 null 标量；optional 没有可补全默认值、允许 null 或可缺失的祖先若会使这一保证不成立，在注册时拒绝投影，不允许运行时跳过授权维度。此限制只约束参与授权的路径，普通业务字段仍可缺失或显式为空。
+
 精确 decimal 可投影为 I64 系数，但缩放、授权单位、域边界与注册 Schema 必须精确对应；例如“0.01 元的整数单位”不能标成“元”后直接比较 coefficient。不得靠截断、容差或自动单位换算过授权。bool 若需权限维度，须显式映射为已声明的有限 enum 或整数值。float64 的授权路径在注册时拒绝，不能取整后继续执行。
 
 授权域的 IDENTIFIER 仍受现 CatalogId 规则约束。文件路径、URI 等自由文本的权限模型不能由本包自动推导；能力需声明现有机制可以完整表达的目标/root/范围，表达不了时拒绝，不以 text 绕过。
 
 ### 5.2 列表采用同一完整授权逐项覆盖
 
-用户已确认首版沿用完整授权并逐项检查：先固定一个匹配的 Goal/Task requirement 及其已有 Grant 引用，再逐项构造完整 singleton actual，全部满足才允许整次请求。不能对每个元素调用当前会“任选匹配 requirement”的整段 check_input，否则可能让元素分别选不同 Grant，形成拼接。
+用户已确认首版沿用完整授权并逐项检查。先沿用原 Task 授权有效性检查，再按既有声明顺序检查匹配的 Goal/Task requirement 候选：每个候选固定自己的已有 Grant 引用，独立检查整个列表，选首个能完整覆盖全部元素的候选。不能先贪选一个仅覆盖首项的候选后直接拒绝，也不能对每个元素调用当前会“任选匹配 requirement”的整段 check_input，使元素分别选不同 Grant。每次准入与派发复核均遵循整次覆盖规则，原显式重新授权与暂停门控不变。
 
 每项只生成“根标量 + 当前元素叶子”的有限字段视图，复用现有覆盖判定及路由检查。执行目标/外发目的地仍须符合同一 Binding；一个列表不能隐式 fanout 到多个 Binding。此处仅对准入整批允许/拒绝作保证，不承诺 Provider 的批量实际效果具有事务回滚性；部分完成仍用原 effect/UNKNOWN 与结构化结果表达。
 
 作为授权锚点的列表要求 min_items≥1；空列表拒绝，不能因检查循环零次而自动通过。非授权业务列表可按其 Schema 允许为空。多个独立的普通业务列表仍可传递，但只有一个列表可作为该完整授权投影的锚点。元素关系、跨列表关联、整批总量等授权需求首版不支持，注册时明确拒绝；现 Scope 是独立字段区间/集合，不能声称其支持元组关系。
 
+现物理 ExecutionBinding/permit 是单个控制包络，逐项权限覆盖不会自动定义多值控制过程。AP-02 只允许其控制字段来自列表外固定标量；execution control 的 prepare/issue 从同一规范树及原映射读取这些值，形成原合法包络。依赖逐元素不同控制值的执行映射在注册拒绝，不能取首项/末项、求极值或悄悄生成多个 permit。普通不参与控制的业务列表仍可存在，原物理停止和结果保证保持，不由本包启动 AP-09。
+
 ## 6 结果、模型提议与调用生命周期
 
 - 普通工具的完成结果以声明的 result Schema 校验并规范编码，Task/查询提供对应只读或复制视图。文本是显式字符串 Schema，不保留无契约 legacy text 旁路。
 - MODEL 正文可采用显式字符串 Schema，保留现 system/user 分离；模型最终文本与工具提议仍是不同的结果种类。工具提议携带精确 Binding/版本和业务值，不授予权限，不直接执行。
-- 提议在可靠 post 边界检查其 Schema/形状和工具视图，策略回译时保留同一值语义；实际 request 再走同一个规范化/授权入口。权限和数据依赖在派发前仍会复核。
-- Provider 的 FAILED、CANCELLED、ABANDONED 与 effect 分开保留；结构化 payload 不能把未知或失败伪装成完成。成功 payload 不合 Schema 时拒绝其 post，不能悄悄转成功、替换默认值或归还尚欠的终态借用。
+- 任意线程的 post 只做公开节点形状、tag/标量表示、总容量及纯编码检查，不调用仅在 submit/decide 有效的 Schema/工具回调。它把格式检查通过的结果/提议复制到预留邮箱；owner 消费时才用该 attempt 保留的原 Schema、Binding 和工具允许视图做完整语义校验/默认规范化。Provider 自己持有的 submit 副本可用于提前校验，但不成为 Core 信任凭据。
+- owner 所用工具集合需绑定该 model Call 的原允许上限、exact 身份及业务契约证明；可引用其保留的 Goal/Task 来源与冻结目录，但不得改用后来扩大的授权集合或 Provider worker 内存。引用在该 Call/receipt 消费结束前保持存活；不能稳定引用的元数据在接受时作有界副本并计入预算，不能临到消费再调用失效的 submit 回调。
+- 形状或编码错误导致 post 同步失败时，原终态借用仍未归还。终态 post 成功则结束生产者借用，最后一次 post 返回后可释放其输入副本；若 owner 后续发现 Schema/工具语义错误，按现分类错误与 effect/UNKNOWN 事实收口、ACK 消费，不能要求已经交还借用的生产者再 post。owner 的规范结果 scratch 和默认填充最大空间须在受理前预算。
+- Provider 的 FAILED、CANCELLED、ABANDONED 与 effect 分开保留；结构化 payload 不能把未知或失败伪装成完成。语义错误不转成功、不偷偷换默认值或把 effect 伪造为 NONE；相关物理事实和隔离规则继续生效。策略回译提议保留值语义，实际 request 仍走同一规范化/授权入口，派发前复核权限和数据依赖。
 - 本包迁移现有进度/查询/订阅/物理执行对原输入的读取，但不新增 AP-05 的模型订阅控制操作。查询返回仍遵守原 Task/owner、耐久与内容删除门控。
 - 失败/部分完成是否携带业务结果，按声明的可选结果结构与现 outcome/effect 约束实现；ABANDONED/UNKNOWN 不携带可被当作成功使用的普通结果。错误 status/reason 不放任意后端原文或私有值。
 
 ## 7 历史解释、存储与兼容
 
-当前调用记录实际是 CALL_STATE type21/v1，而不是 context/calendar 的记录号。它保存原 contract、authority domain、规范 input、result 及原 Binding；没有通用业务 Schema/投影。新记录必须保存恢复解释所需的有界机器 Schema、投影/精度/默认规则及 exact 版本，和原规范输入/结果一起保留；只有 Schema ID 或当前目录查询不足以证明历史语义。
+当前调用记录实际是 CALL_STATE type21/v1，而不是 context/calendar 的记录号。它保存原 contract、authority domain、规范 input、result 及原 Binding；没有通用业务 Schema/投影。当前授权恢复也只比较有限域（[capability_registry.cpp:83](../../core/catalog/capability/capability_registry.cpp#L83)、[grant_table.cpp:761](../../core/authority/grant/grant_table.cpp#L761)），Goal requirement 保存 source_domain（[goal_authority.h:38](../../core/work/goal/goal_authority.h#L38)）。即使尚无 Call，也不能让旧 Grant/Goal 在相同 I64 域下接受已改变的 scale、默认值或投影路径。
 
-沿原 CallRecord/CallStore 机制扩展，不为类型系统另建持久数据库。注册层的 exact 比较必须包括输入/结果 Schema、默认值、数值精度、授权路径与全部限制；恢复以记录中的原始事实校验，当前目录只有完全相同的契约才可继续未派发工作。已越过屏障的 UNKNOWN 不重演，不改 Provider、Binding 或 operation_id 掩盖未知。
+沿既有“保存原域事实”的机制，为涉及业务调用的 Capability、Grant 和 Goal requirement 增加有界规范业务契约证明，涵盖原输入/结果 Schema、授权投影、精度/默认规则及执行语义；非调用能力显式声明无此部分。Grant/Goal 各自的持久记录保留原证明，Task 沿已有来源关联复核，不再复制一份不受控状态；CallRecord 也保留原证明及规范输入/结果。首版复用各记录属主内联快照及预算，不引入跨模块共享可变证明表。只有 Schema ID、哈希或当前目录查询都不足以替代完整 exact 事实。
+
+沿原 Grant/GoalAuthority/Task 来源和 CallRecord/CallStore 机制扩展，不为类型系统另建持久数据库。根授权创建、委派、审批、重新授权、Task 消费、Call 接受和恢复的 exact 比较均使用同一规范业务契约证明；差异进入原不兼容 hold/拒绝路径，不因新注册自动解除。旧精确命令重试仍可返回原回执，但不能授予新的可消费权限。只有完全相同的原契约才可继续未派发工作。已越过屏障的 UNKNOWN 不重演，不改 Provider、Binding 或 operation_id 掩盖未知。
 
 用户已确认本包开发期直接升级：所有仓库内消费者一起迁移和重编译；若公共布局改变则增加实验 ABI minor，若记录布局改变则统一升级 storage schema。以本基线预计下一 ABI 为 0.48、schema 为 4，但实现前须检查号码是否已被其他交付占用；当前仍为 0.47/3，不能提前声称已发布。
 
 旧目录在新写入前明确拒绝并保留，不读旧记录、不做迁移器、不清空、不回退旧快照。回退使用原二进制与原目录；开发使用新目录。能力语义版本、ABI、Core 存储、工具提议编码和 Native 外层文件各有自己的版本，不能只改一个版本号后推定所有格式兼容。
 
-新增字节布局由记录属主的一套 reader/writer 定义，并同步 contracts/storage/records.md。journal/snapshot 复用同一调用 codec；原子配对、持久屏障、分页、合法 CRC 下的结构检查与首错传播保持。隐私擦除必须覆盖新增规范值、Schema 中可能含业务默认正文的片段、结果、工具提议、暂存和模型请求副本；不因新节点区留下内容副本。
+新增字节布局由记录属主的一套 reader/writer 定义，并同步 contracts/storage/records.md。journal/snapshot 复用各属主 codec；原子配对、持久屏障、分页、合法 CRC 下的结构检查与首错传播保持。规范值、默认填入后的业务正文、结果、工具提议、暂存及模型请求副本均纳入擦除；静态机器 Schema/默认定义不含用户运行时内容，可与原身份、状态及 effect 等非正文事实保留。
+
+存在不可逆 content_erased 时，输入/结果节点与正文清空，恢复沿原已擦除记录分支验证其身份、状态、擦除 stamp 与空正文，不再为该 Call 填默认、重建可消费 payload 或重新派发。保留的 Schema 证明只用于原身份与契约检查，不能成为恢复被删内容的来源。新增 Grant/Goal 证明与 Call 正文的擦除归属分别说明，不能对 active 授权的结构事实随意做局部清空。
 
 ## 8 消费者迁移清单
 
 | 消费者 | 必须迁移的内容 | 保持的行为 |
 |---|---|---|
 | C99 API / C++ SDK / ABI smoke | 请求/结果/提议/工具视图/查询、Schema 注册、caller-owned 值访问及必要窄 helper；重编译所有布局消费者 | 当前 struct_size、owner/借用、无异常/RTTI 和错误规则；不新增 DSL |
-| Catalog/Provider/Binding | 静态 Schema 与投影校验、原契约复制和 exact 匹配 | 不依注册顺序路由、不自动更换端点 |
+| Catalog/Provider/Binding、Grant/Goal/Task 授权来源 | 静态 Schema/投影校验和完整业务契约证明；注册、原授权记录、委派/审批/重新授权/恢复及消费的 exact 匹配 | 没有 Call 的旧 Grant/Goal 也不能被新目录重释；Task 沿原属主关联，不引入共享可变副本 |
 | CallRuntime/CallTable | staging、规范值/原 Schema、准入、固定授权投影、派发复核及结果/查询 | 原 step/logical_call/operation 身份、资源准入和屏障 |
 | 可靠邮箱及完成 API | typed 结果和提议的验证/复制，progress/terminal/control lane 的容量与 ACK | 取消不归还借用；同 attempt、晚到/重复结果处理 |
 | OpenAI-compatible Provider | 通用嵌套 Schema、列表、两种数值和工具别名编解码，submit 内复制及 worker scratch | 不新增逐能力分支，保留 system/user 分离，不自动重试 |
@@ -142,7 +152,7 @@
 现配置为 call_input 默认 4096 B、上限 131072 B，call_result 默认 4096 B、上限 65536 B，见 [ayni.h:207](../../include/ayni/ayni.h#L207)。它们不是新增 Schema、节点或模型 JSON 的免费容量。分别声明并计入：
 
 1. Schema 节点/字段、总声明字节、深度、枚举/默认值；值节点数、单列表长度、总元素、单字符串及总正文、decimal 精度/scale。
-2. 每 Call 的原 authority domain、业务契约证据、规范输入和结果；CallRuntime 的 staging/receipt、ProviderMailbox 的 progress/terminal 两条 payload lane。
+2. 每 Grant/Goal requirement 的原业务契约证明、每 Call 的原 authority domain/业务契约/输入/结果；CallRuntime 的 staging/receipt、ProviderMailbox 的 progress/terminal 两条 payload lane，以及 owner 对未信任 receipt 作完整规范化的 scratch/默认填充预算。
 3. 每模型请求的工具 Schema/说明副本、输入/结果节点及 JSON parser/writer scratch；单个工具及全部提议共享总预算，不能每项单独通过后总量溢出。
 4. CallStore 的精确/最大记录长 → transition_batch_max → snapshot_record_max/payload_max → Host 日志/快照预留；不能只增加 call_input 常量。
 
@@ -158,10 +168,13 @@
 |---|---|
 | 纯软件批量计算 | 同时使用嵌套 options、items 列表、decimal 单价和 float 测量值；C 输入与本地 HTTP 模型 JSON 产生相同规范值和结构化结果 |
 | 单一完整授权 | 固定同一 requirement/Grant；列表中一个资源越界整次不派发；不同 Grant 分别覆盖不同项仍拒绝；空授权列表拒绝 |
+| 候选及必有授权字段 | 首个候选只覆盖首项、后续候选完整覆盖时按规则选后者；被投影字段/祖先可缺失或 null 时在注册拒绝，不跳过维度 |
+| 现物理映射边界 | 列表外固定标量保持原单包络；逐元素控制字段的映射在注册拒绝，不能取首项或隐式聚合；只运行现 Mock/正常边界 |
 | 精度与默认值 | 对象换序、合法数字等价文本和默认填充按规定规范化；decimal 不经 double；float 不转权限整数 |
 | 输入/结果边界 | 重复/未知字段、非法节点区间、深度/数量/总字节、空/非法指针、非有限浮点、超精度/系数溢出均有确定错误，失败保留原输出与调用状态 |
 | 工具完整闭环 | 本地模型夹具 → 嵌套提议 → ToolLoop → 原治理链 → 软件 Provider → 结构化结果 → 下一模型轮；保留精确别名和消息角色 |
-| 正常恢复与拒旧 | 沿用现正常重启及 schema 边界机制，原 Schema/输入/结果/绑定不被新注册重释，旧目录保留无新写 |
+| 异步语义拒绝 | 形状错误 post 保留借用；终态 post 已成功后 owner 发现语义错，分类收口/ACK 且不再要求第二次终态；保留 effect/UNKNOWN |
+| 正常恢复与拒旧 | 沿用现正常重启及 schema 边界机制，包含保留 Grant/Goal 但尚无 Call 时改 scale/路径仍 hold、content_erased 不补默认/不派发，旧目录保留无新写 |
 | 当前行为回归 | 现有生命周期、查询/取消、订阅、通知、私有性/删除、应用待批/停止、公开示例和既有 E1～E4 不被新格式破坏 |
 
 建议一个完整实现 feature PR，以 focused commits 顺序组织：机器 Schema/值与纯 codec → 新请求/原契约/存储预算 → 授权/派发/完成/查询 → 模型与全部消费者 → 相关正常测试、文档、自查与独立审查。只有兼容边界或可审查复杂度确有必要时再拆独立可交付 PR，不先合入无法使用的半套新旧格式。
