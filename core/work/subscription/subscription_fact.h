@@ -15,14 +15,11 @@ enum class SubscriptionPhase : uint32_t {
 };
 // Pause/shutdown closes one generation while preserving the Task's collection intent.
 enum class SubscriptionDesired : uint32_t { open = 1, closed };
-// Only opening admission blocks the Task; a started/preserved subscription is independent.
-enum class SubscriptionAttachment : uint32_t { foreground = 1, background };
 // Owned with its logical Call row; original Task/Agent/source live in that row's identity/contract.
 struct SubscriptionFact {
     SubscriptionPhase phase = SubscriptionPhase::starting; // Explicit generation state.
     SubscriptionDesired desired =
         SubscriptionDesired::open; // Closed only by explicit close/Task end.
-    SubscriptionAttachment attachment = SubscriptionAttachment::foreground; // Task call link rule.
     uint64_t generation =
         1; // Globally unique Kernel ID; changes only after known stop/borrow return.
     ayni_status_t control_status = AYNI_OK;          // OK until a classified start/renew failure.

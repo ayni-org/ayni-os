@@ -12,7 +12,7 @@ extern "C" {
 
 /* Current compiled Core batch/snapshot schema, independent of ABI. Since 0.49.
  * This declaration does not validate media or authorize migration/recovery. */
-#define AYNI_STORAGE_SCHEMA_CURRENT 6u
+#define AYNI_STORAGE_SCHEMA_CURRENT 7u
 
 /* Since 0.28. Bytes through transition_id in contracts/storage/records.md.
  * This is a prefix length, not a complete batch/header length. */
@@ -36,6 +36,14 @@ typedef struct {
  * require independently owned output and immutable input during the call. */
 int ayni_storage_read_batch_identity(const uint8_t *bytes, size_t size,
                                      ayni_storage_batch_identity_v1 *out);
+
+/* Since 0.51. Raw AYJB/AYSN schema preflight for a locked Host directory.
+ * Returns 1 and copies the little-endian schema from a recognized six-byte prefix;
+ * otherwise 0, preserving out. Does not validate CRC, framing or semantic records.
+ * A Host may refuse a different compiled schema before opening outer stores;
+ * Core remains responsible for validating every accepted journal/snapshot. */
+#define AYNI_STORAGE_SCHEMA_PREFIX_BYTES 6u
+int ayni_storage_read_schema(const uint8_t *bytes, size_t size, uint32_t *out);
 
 #ifdef __cplusplus
 }

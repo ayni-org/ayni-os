@@ -26,7 +26,7 @@ bool same_id(const catalog::CatalogId &left, const catalog::CatalogId &right) {
 }
 
 bool same_identity(const CallIdentity &left, const CallIdentity &right) {
-    return left.model_context == right.model_context &&
+    return left.mode == right.mode && left.model_context == right.model_context &&
            left.authorization.grant_id == right.authorization.grant_id &&
            left.authorization.revision == right.authorization.revision &&
            left.call_id == right.call_id && left.operation_id == right.operation_id &&
@@ -225,6 +225,8 @@ bool valid_subscription_record(const CallRecord &record) {
     }
     const auto &fact = *state.subscription;
     if (!valid_subscription(fact) ||
+        (fact.phase == SubscriptionPhase::active &&
+         state.attachment != CallAttachment::background) ||
         foundation::id_boot_epoch(fact.generation) > state.latest.boot_epoch ||
         fact.generation < record.identity.operation_id) {
         return false;
@@ -256,6 +258,13 @@ bool CallTable::valid_record(const CallRecord &record) {
     catalog::CallContract normalized{};
     CallInputView input{};
     if (!valid_identity(record.identity, state.created) ||
+        !valid_mode(record.identity, record.contract) ||
+        (record.identity.mode == AYNI_CALL_MODE_MANAGED &&
+         state.attachment != CallAttachment::background) ||
+        (state.attachment != CallAttachment::foreground &&
+         state.attachment != CallAttachment::background) ||
+        (record.identity.mode == AYNI_CALL_MODE_FOREGROUND && !state.subscription &&
+         state.attachment != CallAttachment::foreground) ||
         !at_or_before(state.created, state.latest) ||
         state.latest.boot_epoch > foundation::max_boot_epoch ||
         !valid_model_usage(state.model_usage) ||
@@ -370,6 +379,8 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
             // not a query of the old operation. Its fresh state has no query.
             (reopening ? after.query.has_value() : !query_advances(before, after)) ||
             !subscriptions_advance(before, after) ||
+            (before.attachment == CallAttachment::background &&
+             after.attachment != before.attachment) ||
             !execution_advances(before.execution, after.execution) ||
             (!reopening && after.progress_sequence < before.progress_sequence) ||
             (!reopening && before.attempt.request_id != 0U &&

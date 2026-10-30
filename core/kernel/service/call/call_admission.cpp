@@ -4,6 +4,7 @@
 #include "authority/scope/business_request.h"
 #include "catalog/abi_checks.h"
 #include "catalog/capability/business_encoding.h"
+#include "foundation/deadline.h"
 
 #include <cstring>
 
@@ -23,7 +24,8 @@ ayni_status_t request_header(const ayni_call_request_v1 &request) {
     if (shape != AYNI_OK) {
         return shape;
     }
-    if (request.reserved != 0U ||
+    if (request.reserved != 0U || request.mode_reserved != 0 ||
+        request.mode > AYNI_CALL_MODE_MANAGED ||
         (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL &&
          request.kind != AYNI_POLICY_CLOSE_SUBSCRIPTION &&
          request.kind != AYNI_POLICY_WAIT_SUBSCRIPTION)) {
@@ -43,6 +45,7 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     decision_ = Decision{task_index, durable_seq, snapshot.now_us, {}, output.intents, &output};
     output.call_context = this;
     output.request_call = stage_request;
+    output.control_operation = stage_operation_control;
     snapshot.call_context = this;
     snapshot.call_result = read_result;
     snapshot.call_tool = read_tool_call;
@@ -51,6 +54,7 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     snapshot.capability_context = capability_context_view;
     snapshot.subscription = read_subscription;
     snapshot.subscription_observation = read_subscription_observation;
+    snapshot.operation = read_operation;
 }
 
 void CallRuntime::end_decision() {
@@ -115,10 +119,11 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         return dispatchable;
     }
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
-    if ((contract.category == catalog::CallClass::model) !=
-        (request.kind == AYNI_POLICY_REQUEST_MODEL)) {
-        return AYNI_INVALID_ARGUMENT;
+    const auto form = check_call_form(task.task_id, request, contract);
+    if (form != AYNI_OK) {
+        return form;
     }
+    proposal.mode = request.mode;
     if ((request.arguments.struct_size != 0U || request.arguments.field_count != 0U ||
          request.arguments.fields != nullptr || request.text.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;
@@ -153,6 +158,23 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     stage_intent(proposal);
     return AYNI_OK;
 }
+// Mode/category and single-action occupancy are one admission rule for every tool route.
+ayni_status_t CallRuntime::check_call_form(uint64_t task_id, const ayni_call_request_v1 &request,
+                                           const catalog::CallContract &contract) const {
+    if (request.mode == AYNI_CALL_MODE_MANAGED && (contract.category != catalog::CallClass::tool ||
+                                                   contract.form == catalog::CallForm::unary)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (contract.category == catalog::CallClass::tool &&
+        contract.form == catalog::CallForm::action && action_occupied(task_id)) {
+        return AYNI_BUSY;
+    }
+    if ((contract.category == catalog::CallClass::model) !=
+        (request.kind == AYNI_POLICY_REQUEST_MODEL)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return AYNI_OK;
+}
 void CallRuntime::stage_intent(const Proposal &proposal) {
     proposal_ = proposal;
     auto &intent = decision_->intents[0];
@@ -167,7 +189,8 @@ void CallRuntime::stage_intent(const Proposal &proposal) {
 // Close and wait refer to an existing Task-owned step, never a new route.
 // Capturing the frontier within decide cannot race with owner sample application.
 ayni_status_t CallRuntime::stage_subscription_target(const ayni_call_request_v1 &request) {
-    if (request.binding_version != 0 || request.binding_id.size != 0 || request.text.size != 0 ||
+    if (request.mode != AYNI_CALL_MODE_FOREGROUND || request.binding_version != 0 ||
+        request.binding_id.size != 0 || request.text.size != 0 ||
         request.arguments.struct_size != 0 || request.arguments.field_count != 0 ||
         request.arguments.fields != nullptr || request.value.node_count != 0U ||
         request.value.nodes != nullptr) {
@@ -237,7 +260,8 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             calls.value_result(index),
             calls.domain(index),
             calls.contract(index).business_contract,
-            state.model_usage};
+            state.model_usage,
+            calls.identity(index).mode};
     if (calls.record(index).result_kind == work::CallResultKind::unavailable ||
         !runtime.retain_model_context(
             runtime.decision_->task_index, calls.identity(index).model_context,
@@ -429,8 +453,16 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT};
     }
     auto &proposal = *proposal_;
+    if (proposal.operation_index) {
+        return (!proposal.wait_basis || work_.tasks.can_wait_with_calls(task)) &&
+                       work_.tasks.has_revisions(task, 1U) &&
+                       work_.accepted_step_count(task_index) < work_.tasks.step_capacity() &&
+                       !work_.step_taken(task_index, view(proposal.step))
+                   ? authority::GrantCheck{AYNI_OK, AYNI_REASON_NONE}
+                   : authority::GrantCheck{AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT};
+    }
     if (proposal.subscription_index) {
-        return !proposal.wait_basis || work::TaskTable::can_wait_subscription(task)
+        return !proposal.wait_basis || work_.tasks.can_wait_with_calls(task)
                    ? authority::GrantCheck{AYNI_OK, AYNI_REASON_NONE}
                    : authority::GrantCheck{AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
     }
@@ -441,36 +473,15 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {AYNI_EXPIRED, AYNI_REASON_NONE};
     }
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
-    if (task.call.id != 0U || work_.step_taken(task_index, view(proposal.step))) {
-        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_STEP_TAKEN};
+    if (contract.category == catalog::CallClass::model && task.commit_seq > durable_seq) {
+        proposal.redecide = true;
+        return {
+            AYNI_BUSY,
+            AYNI_REASON_NONE}; // Handles/controls cannot be externally visible before durability.
     }
-    if (!work::TaskTable::can_begin_call(task)) {
-        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
-    }
-    if (contract.category == catalog::CallClass::model &&
-        task.model_calls.used >= task.model_calls.limit) {
-        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_TASK_MODEL_CALL_LIMIT};
-    }
-    if (work_.accepted_step_count(task_index) >= work_.tasks.step_capacity()) {
-        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_STEP_CAPACITY};
-    }
-    if (!work_.calls.has_room() || !resources_.has_room() ||
-        !work_.ids.available(identities_per_call) ||
-        contract.result_text_limit > limits_.result_bytes) {
-        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT};
-    }
-    if (contract.subscription) {
-        for (uint32_t at = 0; at < work_.calls.capacity(); ++at) {
-            if (!work_.calls.occupied(at) || work_.calls.identity(at).task_id != task.task_id) {
-                continue;
-            }
-            const auto &saved = work_.calls.contract(at).subscription;
-            const auto &state = work_.calls.state(at).subscription;
-            if (saved && state && state->desired == work::SubscriptionDesired::open &&
-                saved->source.equals(view(contract.subscription->source))) {
-                return {AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT};
-            }
-        }
+    const auto capacity = check_call_capacity(task_index, proposal, contract);
+    if (capacity.status != AYNI_OK) {
+        return capacity;
     }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     work::CallInputView input{};
@@ -499,32 +510,55 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
                             now_us, durable_seq, task.task_id, proposal_->execution);
 }
 
+// All bounded storage, lifecycle reserve and unique-source checks precede acceptance.
+authority::GrantCheck
+CallRuntime::check_call_capacity(uint32_t task_index, const Proposal &proposal,
+                                 const catalog::CallContract &contract) const {
+    const auto &task = work_.tasks.at(task_index);
+    if (task.call.id != 0U || work_.step_taken(task_index, view(proposal.step))) {
+        return {AYNI_INVALID_ARGUMENT, AYNI_REASON_STEP_TAKEN};
+    }
+    const bool detaches =
+        proposal.mode == AYNI_CALL_MODE_MANAGED || contract.subscription.has_value();
+    if (detaches ? !work_.tasks.can_begin_background_call(task)
+                 : !work_.tasks.can_begin_with_calls(task)) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
+    }
+    if (contract.category == catalog::CallClass::model &&
+        task.model_calls.used >= task.model_calls.limit) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_TASK_MODEL_CALL_LIMIT};
+    }
+    if (work_.accepted_step_count(task_index) >= work_.tasks.step_capacity()) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_STEP_CAPACITY};
+    }
+    if (!work_.calls.has_room() || !resources_.has_room() ||
+        !work_.ids.available(identities_per_call) ||
+        contract.result_text_limit > limits_.result_bytes) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT};
+    }
+    if (contract.subscription) {
+        for (uint32_t at = 0; at < work_.calls.capacity(); ++at) {
+            if (!work_.calls.occupied(at) || work_.calls.identity(at).task_id != task.task_id) {
+                continue;
+            }
+            const auto &saved = work_.calls.contract(at).subscription;
+            const auto &state = work_.calls.state(at).subscription;
+            if (saved && state && state->desired == work::SubscriptionDesired::open &&
+                saved->source.equals(view(contract.subscription->source))) {
+                return {AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT};
+            }
+        }
+    }
+    return {AYNI_OK, AYNI_REASON_NONE};
+}
+
 // Exact capacity and identity preflights have succeeded. Any refusal here is an
 // internal invariant failure; no callback can intervene between check and apply.
 bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us) {
     const auto &proposal = *proposal_;
-    // Waiting consumes a Task transition and checkpoint, not another call,
-    // resource acquisition, model charge or step identity (C-SUB-005).
-    if (proposal.wait_basis) {
-        work_.tasks.wait_subscription(task_index, *proposal.wait_basis, stamp);
-        proposal_.reset();
-        return true;
+    if (proposal.operation_index || proposal.wait_basis || proposal.subscription_index) {
+        return accept_control(task_index, stamp, now_us);
     }
-    // The producer and cache projections close with the explicit stop fact,
-    // while the original Provider borrow remains owned until terminal receipt.
-    if (proposal.subscription_index) {
-        const auto index = *proposal.subscription_index;
-        if (work_.calls.stop_subscription(index, work::CallCancelCause::user,
-                                          work::SubscriptionDesired::closed,
-                                          {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
-            return false;
-        }
-        close_subscription_gate(index);
-        work_.tasks.progress(task_index, stamp);
-        proposal_.reset();
-        return true;
-    }
-
     const auto &binding = catalogs_.bindings.at(proposal.binding_index);
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     const auto &task = work_.tasks.at(task_index);
@@ -533,6 +567,7 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
         return false;
     }
     identity.authorization = proposal.authorization;
+    identity.mode = proposal.mode;
     identity.model_context = proposal.model_context;
     identity.task_id = task.task_id;
     identity.owner_instance_id = task.owner_instance_id;
@@ -559,16 +594,98 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
         work_.calls.attach_execution(index, *proposal.execution);
     }
     slots_[index].active = Active{identity.call_id, Stage::queued, {}, std::nullopt};
-    work_.tasks.begin_call(task_index, identity.call_id,
-                           contract.category == catalog::CallClass::model
-                               ? work::TaskTable::CallKind::model
-                               : work::TaskTable::CallKind::tool,
-                           stamp);
+    if (identity.mode == AYNI_CALL_MODE_MANAGED) {
+        // The step records acceptance, never business success. The original Call owns its result.
+        if (!work_.tasks.add_step(task_index, view(identity.step_key), stamp)) {
+            return false;
+        }
+        work_.tasks.progress(task_index, stamp);
+    } else {
+        work_.tasks.begin_call(task_index, identity.call_id,
+                               contract.category == catalog::CallClass::model
+                                   ? work::TaskTable::CallKind::model
+                                   : work::TaskTable::CallKind::tool,
+                               stamp);
+    }
     if (identity.authorization.grant_id) {
         work_.task_authority.bind_tool_validated(task.slot,
                                                  {identity.call_id, identity.authorization}, stamp);
     }
     proposal_.reset();
     return true;
+}
+
+// Control changes only existing rows/waits; start allocation remains in accept().
+bool CallRuntime::accept_control(uint32_t task_index, foundation::TransitionStamp stamp,
+                                 uint64_t now_us) {
+    const auto &proposal = *proposal_;
+    if (proposal.operation_index) {
+        const auto index = *proposal.operation_index;
+        if (!work_.tasks.add_step(task_index, view(proposal.step), stamp)) {
+            return false;
+        }
+        if (proposal.wait_basis) {
+            auto wait = *proposal.wait_basis;
+            wait.deadline_us = foundation::deadline(now_us, uint64_t{wait.timeout_ms} *
+                                                                microseconds_per_millisecond);
+            work_.tasks.wait_operation(task_index, wait, stamp);
+        } else {
+            const auto action_stamp = work::ActionStamp{work_.ids.boot_epoch(), stamp};
+            const auto status =
+                proposal.control_kind == AYNI_OPERATION_CLOSE
+                    ? work_.calls.stop_subscription(index, work::CallCancelCause::user,
+                                                    work::SubscriptionDesired::closed, action_stamp)
+                    : work_.calls.request_cancel(index, work::CallCancelCause::user, action_stamp);
+            if (status != AYNI_OK) {
+                return false;
+            }
+            if (proposal.control_kind == AYNI_OPERATION_CLOSE) {
+                close_subscription_gate(index);
+            }
+            work_.tasks.progress(task_index, stamp);
+        }
+        proposal_.reset();
+        return true;
+    }
+    // Waiting consumes a Task transition and checkpoint, not another call,
+    // resource acquisition, model charge or step identity (C-SUB-005).
+    if (proposal.wait_basis) {
+        work_.tasks.wait_operation(task_index, *proposal.wait_basis, stamp);
+        proposal_.reset();
+        return true;
+    }
+    // The producer and cache projections close with the explicit stop fact,
+    // while the original Provider borrow remains owned until terminal receipt.
+    if (proposal.subscription_index) {
+        const auto index = *proposal.subscription_index;
+        if (work_.calls.stop_subscription(index, work::CallCancelCause::user,
+                                          work::SubscriptionDesired::closed,
+                                          {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
+            return false;
+        }
+        close_subscription_gate(index);
+        work_.tasks.progress(task_index, stamp);
+        proposal_.reset();
+        return true;
+    }
+
+    return false; // Caller selected only the three supported existing-operation controls.
+}
+
+// The original ledger and runtime borrow, not a duplicated Task counter, own occupancy.
+bool CallRuntime::action_occupied(uint64_t task_id) const {
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (!work_.calls.occupied(at) || work_.calls.identity(at).task_id != task_id) {
+            continue;
+        }
+        const auto &contract = work_.calls.contract(at);
+        if (contract.category == catalog::CallClass::tool &&
+            contract.form == catalog::CallForm::action &&
+            (work_.calls.state(at).outcome == 0 || work_.calls.unresolved(at) ||
+             slots_[at].active)) {
+            return true;
+        }
+    }
+    return false;
 }
 } // namespace ayni::kernel

@@ -13,6 +13,29 @@ bool bound_management_session(const WorkModel &model, const authority::Session &
            binding->stamp.commit_seq <= durable_seq;
 }
 
+// Call owns execution knowledge; Task owns the resulting overlay/revision budget.
+work::TaskTable::CallConstraints WorkModel::call_constraints(const void *context,
+                                                             const work::Task &task) {
+    const auto &calls = static_cast<const WorkModel *>(context)->calls;
+    work::TaskTable::CallConstraints result{};
+    if (!work::TaskTable::is_live(task.lifecycle)) {
+        return result;
+    }
+    for (uint32_t at = 0; at < calls.capacity(); ++at) {
+        if (!calls.occupied(at) || calls.identity(at).task_id != task.task_id) {
+            continue;
+        }
+        result.queued = result.queued ||
+                        (calls.state(at).outcome == 0 && calls.state(at).attempt.request_id == 0);
+        result.unknown = result.unknown || calls.state(at).outcome == AYNI_CALL_ABANDONED;
+        if (calls.state(at).attachment == work::CallAttachment::background &&
+            (calls.state(at).outcome == 0 || calls.unresolved(at))) {
+            result.revisions = work::TaskTable::background_call_revisions;
+        }
+    }
+    return result;
+}
+
 bool WorkModel::retains_task(const void *context, const work::Task &task) {
     const auto &model = *static_cast<const WorkModel *>(context);
     for (uint32_t index = 0; index < model.contexts.size(); ++index) {

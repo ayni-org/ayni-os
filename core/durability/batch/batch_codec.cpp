@@ -173,3 +173,15 @@ extern "C" int ayni_storage_read_batch_identity(const uint8_t *bytes, size_t siz
             load_le64(bytes + transition_id_at)};
     return 1;
 }
+
+extern "C" int ayni_storage_read_schema(const uint8_t *bytes, size_t size, uint32_t *out) {
+    using namespace ayni::durability;
+    constexpr uint8_t snapshot_magic[] = {'A', 'Y', 'S', 'N'};
+    if (!bytes || !out || size < AYNI_STORAGE_SCHEMA_PREFIX_BYTES ||
+        (std::memcmp(bytes, batch_magic, sizeof(batch_magic)) != 0 &&
+         std::memcmp(bytes, snapshot_magic, sizeof(snapshot_magic)) != 0)) {
+        return 0;
+    }
+    *out = load_le16(bytes + schema_at);
+    return 1;
+}

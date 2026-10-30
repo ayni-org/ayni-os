@@ -26,7 +26,7 @@ namespace ayni::work {
 // strategy must inspect the result and choose a new step before trying
 // again. A task whose end was already requested only ends its call.
 // Returns false, changing nothing, when the task table refuses the step.
-// Detached background subscriptions update their own row without ending or
+// Managed actions and detached background subscriptions update their own row without ending or
 // adding steps to another foreground call owned by the same Task.
 bool end_task_call(const CallTable &calls, TaskTable &tasks, uint32_t call_index,
                    uint32_t task_index, foundation::TransitionStamp stamp);

@@ -14,7 +14,7 @@ authority::GrantCheck WorkModel::check_reauthorization_tasks(uint32_t goal_index
         if (task.goal_id != goal.goal_id || !work::TaskTable::is_live(task.lifecycle)) {
             continue;
         }
-        if (work::TaskTable::at_largest_revision(task)) {
+        if (tasks.at_revision_limit(task)) {
             return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
         }
         work::TaskAuthorityRecord record{};

@@ -234,7 +234,9 @@ class OpenaiFixture : public ::testing::Test {
                                          text("plan"),
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         AYNI_CALL_MODE_FOREGROUND,
+                                         0};
             if (value.finish(request.value) != AYNI_OK) {
                 return AYNI_INVALID_ARGUMENT;
             }
@@ -335,7 +337,9 @@ class OpenaiFixture : public ::testing::Test {
                                                        text("show"),
                                                        {},
                                                        {},
-                                                       {nodes.data(), value.node_count}};
+                                                       {nodes.data(), value.node_count},
+                                                       AYNI_CALL_MODE_FOREGROUND,
+                                                       0};
                     return output.request_call(output.call_context, &request);
                 }
                 if (device_status != AYNI_OK) {

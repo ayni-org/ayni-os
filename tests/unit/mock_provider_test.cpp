@@ -62,7 +62,9 @@ class MockProvider : public ::testing::TestWithParam<Profile> {
                                          text("mock.selected"),
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         AYNI_CALL_MODE_FOREGROUND,
+                                         0};
             EXPECT_EQ(value.finish(request.value), AYNI_OK);
             const auto status = output.request_call(output.call_context, &request);
             input[0] = 'x';

@@ -90,13 +90,21 @@ void write_task_state_record(const Task &task, uint8_t *body, TaskRecordChange c
     writer.u32(task.model_calls.blocked ? 1U : 0U);
     writer.u64(task.call.id);
     writer.u32(static_cast<uint32_t>(task.call.end));
-    const auto wait = task.subscription_wait.value_or(SubscriptionWait{});
-    writer.u64(wait.subscription_id);
+    const auto wait = task.operation_wait.value_or(OperationWait{});
+    writer.u64(wait.call_id);
     writer.u64(wait.generation);
     writer.u64(wait.sequence);
-    writer.u32(task.subscription_wait ? static_cast<uint32_t>(wait.phase) : 0);
+    writer.u32(task.operation_wait ? static_cast<uint32_t>(wait.phase) : 0);
+    writer.u32(task.operation_wait ? wait.form : 0);
+    writer.u64(wait.boot_epoch);
+    writer.u64(wait.gaps);
+    writer.u32(wait.cancel_requested);
+    writer.u32(wait.cancel_result);
+    writer.u32(wait.outcome);
+    writer.u32(wait.timeout_ms);
+    writer.u32(task.call_unknown ? 1U : 0U);
     writer.u32(static_cast<uint32_t>(change));
-    writer.u32(task.subscription_wait ? 1U : 0U);
+    writer.u32(task.operation_wait ? 1U : 0U);
 }
 
 // Validate present and absent states together before publishing the parsed view.
@@ -119,27 +127,41 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     record.state.model_calls.blocked = blocked != 0;
     record.state.call.id = reader.u64();
     record.state.call.end = static_cast<TaskCall::End>(reader.u32());
-    SubscriptionWait wait{};
-    wait.subscription_id = reader.u64();
+    OperationWait wait{};
+    wait.call_id = reader.u64();
     wait.generation = reader.u64();
     wait.sequence = reader.u64();
-    wait.phase = static_cast<SubscriptionPhase>(reader.u32());
+    wait.phase = reader.u32();
+    wait.form = reader.u32();
+    wait.boot_epoch = reader.u64();
+    wait.gaps = reader.u64();
+    wait.cancel_requested = reader.u32();
+    wait.cancel_result = reader.u32();
+    wait.outcome = reader.u32();
+    wait.timeout_ms = reader.u32();
+    const auto call_unknown = reader.u32();
+    record.state.call_unknown = call_unknown != 0;
+    if (call_unknown > 1) {
+        return false;
+    }
     const auto change = reader.u32();
     const auto present = reader.u32();
     if (blocked > 1 || present > 1 || change < static_cast<uint32_t>(TaskRecordChange::state) ||
         change > static_cast<uint32_t>(TaskRecordChange::tool_pause) ||
-        (present == 0 && (wait.subscription_id != 0 || wait.generation != 0 || wait.sequence != 0 ||
-                          static_cast<uint32_t>(wait.phase) != 0))) {
+        (present == 0 &&
+         (wait.call_id != 0 || wait.generation != 0 || wait.sequence != 0 || wait.phase != 0 ||
+          wait.form != 0 || wait.boot_epoch != 0 || wait.gaps != 0 || wait.cancel_requested != 0 ||
+          wait.cancel_result != 0 || wait.outcome != 0 || wait.timeout_ms != 0))) {
         return false;
     }
     if (present != 0) {
-        record.state.subscription_wait = wait;
+        record.state.operation_wait = wait;
     }
     record.change = static_cast<TaskRecordChange>(change);
     if (!reader.ok() || !record.state.model_calls.valid() ||
         !record.state.call.valid(record.state.lifecycle) ||
-        !valid_subscription_wait(record.state.subscription_wait, record.state.lifecycle,
-                                 record.state.call.id)) {
+        !valid_operation_wait(record.state.operation_wait, record.state.lifecycle,
+                              record.state.call.id)) {
         return false;
     }
     out = record;

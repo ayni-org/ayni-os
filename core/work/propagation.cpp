@@ -334,7 +334,7 @@ bool settles_restored(const WorkTables &tables) {
     for (uint32_t index = 0; index < tables.tasks.size(); ++index) {
         const Task &task = tables.tasks.at(index);
         TaskChange change = TaskChange::cancel;
-        if (!TaskTable::at_largest_revision(task) && settles(tables, task, After{}, change)) {
+        if (!tables.tasks.at_revision_limit(task) && settles(tables, task, After{}, change)) {
             return true;
         }
     }
@@ -345,8 +345,8 @@ bool settles_restored(const WorkTables &tables) {
 // (TaskTable::next_ready), and nothing lowers a revision.
 void settle_restored(WorkTables &tables, foundation::TransitionStamp stamp) {
     settle(
-        tables, After{}, [](const Task &task) { return !TaskTable::at_largest_revision(task); },
-        stamp);
+        tables, After{},
+        [&tables](const Task &task) { return !tables.tasks.at_revision_limit(task); }, stamp);
 }
 
 ayni_reason_t derivation_blocker(const TaskTable &tasks, uint32_t goal_index, bool id_left) {

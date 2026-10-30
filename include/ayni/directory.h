@@ -34,6 +34,9 @@ typedef struct ayni_capability_info_v1 {
     uint32_t capability_version;  /* Positive exact Capability version. */
     ayni_tool_role_t role;        /* CAPABILITY or the trusted single SHELL role. */
     ayni_string_v1 summary;       /* Borrowed UTF-8 bytes, 1..SUMMARY_MAX_BYTES. */
+    uint32_t form;                /* Since 0.51. Exact declared UNARY/ACTION/SUBSCRIPTION form. */
+    uint32_t
+        cancel_mode; /* Since 0.51. Exact declared cancellation ability; never stop evidence. */
 } ayni_capability_info_v1;
 /* Caller owns fields; successful inspection rebases usage.fields into this
  * structure. Definition bytes borrow immutable catalogs, with no private data. */
@@ -67,6 +70,14 @@ ayni_status_t ayni_inspect_task_capability(const ayni_kernel_t *kernel, uint64_t
                                            ayni_capability_detail_v1 *out);
 /* One bit per frozen policy position, at most 256. Since 0.50. */
 #define AYNI_CAPABILITY_DISCLOSURE_WORDS 4u
+/* Distinct captured subscription samples in one model context. Since 0.51. */
+#define AYNI_MODEL_SAMPLE_DEPENDENCY_MAX 8u
+/* Copied sample identity; the original Call owns exact source/version/authority. Since 0.51. */
+typedef struct ayni_model_sample_v1 {
+    uint64_t logical_call_id; /* Positive subscription Call owned by sample_task_id. */
+    uint64_t generation;      /* Positive original opening; no implicit latest fallback. */
+    uint64_t sequence;        /* Positive exact sample sequence, never a future frontier. */
+} ayni_model_sample_v1;
 /* Fixed ABI disclosure value, not a Grant or an execution ceiling. A retained
  * conversation may cross Tasks with the same owner and exact GoalType within
  * one boot. Losing any previously visible entry invalidates derived context;
@@ -79,6 +90,13 @@ typedef struct ayni_capability_context_v1 {
     char goal_type_id[AYNI_CATALOG_ID_MAX_BYTES]; /* Exact copied ID; unused bytes zero. */
     uint64_t
         visible[AYNI_CAPABILITY_DISCLOSURE_WORDS]; /* Policy membership; no Grant identities. */
+    uint64_t sample_task_id;  /* Since 0.51. Positive iff sample_count is nonzero; samples cannot
+                                 cross Tasks. */
+    uint32_t sample_count;    /* Since 0.51. Used prefix, <=MODEL_SAMPLE_DEPENDENCY_MAX. */
+    uint32_t sample_reserved; /* Since 0.51. Must be zero. */
+    ayni_model_sample_v1
+        samples[AYNI_MODEL_SAMPLE_DEPENDENCY_MAX]; /* Since 0.51. Copied dependencies; unused output
+                                                      zero. */
 } ayni_capability_context_v1;
 /* Management evidence for one bound optional Call. This query confers no
  * authority and exposes no argument/Scope body. GOAL_REAUTHORIZE operates on

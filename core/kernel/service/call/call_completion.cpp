@@ -250,6 +250,17 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
 
 uint64_t CallRuntime::next_deadline_us() const {
     uint64_t deadline = resources_.next_deadline_us();
+    for (uint32_t at = 0; at < work_.tasks.size(); ++at) {
+        const auto &task = work_.tasks.at(at);
+        if (task.lifecycle == AYNI_TASK_WAITING && task.operation_wait &&
+            task.operation_wait->timeout_ms) {
+            const auto &wait = *task.operation_wait;
+            const auto until = wait.boot_epoch == work_.ids.boot_epoch() ? wait.deadline_us : 0;
+            if (until < deadline) {
+                deadline = until;
+            }
+        }
+    }
     if (control_.next_deadline_us() < deadline) {
         deadline = control_.next_deadline_us();
     }
@@ -336,7 +347,11 @@ bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) 
         }
         const auto &active = slots_[at].active;
         if (!active) {
-            if (task.call.end != work::TaskCall::End::none) {
+            // ADR-0086: detached queued work still drains on pause/end, even under a wait hold.
+            if (!work::TaskTable::is_live(task.lifecycle) ||
+                task.call.end != work::TaskCall::End::none ||
+                (state.attachment == work::CallAttachment::background &&
+                 task.lifecycle == AYNI_TASK_PAUSED)) {
                 return true;
             }
             if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
@@ -352,6 +367,7 @@ bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) 
                               !task_content_current({work_, now_us, durable_seq}, task_index) ||
                               mode != Mode::running || task.call.end != work::TaskCall::End::none ||
                               task.lifecycle == AYNI_TASK_PAUSED ||
+                              !work::TaskTable::is_live(task.lifecycle) ||
                               state.cancel_cause != work::CallCancelCause::none ||
                               (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
                               delivery_expired(at, now_us);

@@ -60,7 +60,9 @@ class ManagedExecution : public ::testing::Test {
                                          text("turn.binding"),
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         AYNI_CALL_MODE_FOREGROUND,
+                                         0};
             std::array<ayni_value_node_v1, 5> values{};
             values[0].kind = AYNI_VALUE_OBJECT;
             values[0].subtree_end = 2;

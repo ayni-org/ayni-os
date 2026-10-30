@@ -89,6 +89,9 @@ class CallRuntime {
     // Trusted owner projection; phase is distinct from the underlying Call action outcome.
     ayni_status_t subscription_info(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                                     ayni_subscription_info_v1 &out) const;
+    // Single diagnostics projection shared by trusted management and Task-scoped reads.
+    void describe_call(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                       ayni_call_info_v1 &out) const;
     // Pure projection of the selected call's pending dependency; never caches it in Task.
     ayni_call_wait_t waiting(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                              uint64_t &waited_us) const;
@@ -156,6 +159,7 @@ class CallRuntime {
         uint32_t binding_index;      // Immutable directory index, resolved during staging.
         catalog::BindingLinks links; // Catalog resolution, not cached authority or availability.
         uint32_t input_size;         // Canonical bytes in staging_, bounded by limits_.input_bytes.
+        uint32_t mode = AYNI_CALL_MODE_FOREGROUND; // Copied explicit Task attachment selection.
         work::ModelContext model_context{}; // Captured visibility, never execution authority.
         bool redecide = false; // Final optional admission expired: discard this decision only.
         work::AuthorityReference
@@ -163,8 +167,10 @@ class CallRuntime {
         std::optional<work::ExecutionFact>
             execution; // Validated original constraints for physical calls only.
         std::optional<uint32_t> subscription_index; // Present only for Task-local close or wait.
-        std::optional<work::SubscriptionWait>
-            wait_basis;                 // Present iff this proposal waits at a copied frontier.
+        std::optional<work::OperationWait>
+            wait_basis; // Present iff this proposal waits at a copied frontier.
+        std::optional<uint32_t> operation_index; // Present only for an admitted Task-local control.
+        uint32_t control_kind = 0;      // Zero for ordinary requests; otherwise OPERATION_*.
         ayni_policy_intent_kind_t kind; // REQUEST_CALL or REQUEST_MODEL, matched at consumption.
     };
     struct Decision {
@@ -191,6 +197,9 @@ class CallRuntime {
     // decide; false hides its body without changing action outcome evidence.
     bool retain_model_context(uint32_t task_index, const work::ModelContext &context,
                               uint64_t now_us, uint64_t durable_seq) const;
+    // A scalar read contributes its exact source to the next model decision, not its raw value.
+    bool retain_sample(uint32_t task_index, const ayni_observation_ref_v1 &sample, uint64_t now_us,
+                       uint64_t durable_seq) const;
     // Captures a full conservative view; no Grant selection or state mutation.
     work::ModelContext model_context(uint32_t task_index, uint64_t now_us,
                                      uint64_t durable_seq) const;
@@ -208,6 +217,18 @@ class CallRuntime {
                             uint64_t durable_seq, uint32_t &binding_index,
                             catalog::BindingLinks &links) const;
     static ayni_status_t stage_request(void *context, const ayni_call_request_v1 *request);
+    // Pure copied-input/clock preflight for an explicit finite wait.
+    static ayni_status_t check_wait_control(const work::OperationWait &,
+                                            const ayni_operation_control_v1 &, uint64_t now_us,
+                                            work::OperationWait &);
+    static ayni_status_t stage_operation_control(void *context,
+                                                 const ayni_operation_control_v1 *control);
+    static ayni_status_t read_operation(const void *context, const ayni_operation_ref_v1 *reference,
+                                        ayni_operation_info_v1 *out);
+    // Resolve only a managed original Call belonging to the current Task decision.
+    ayni_status_t operation_index(const ayni_operation_ref_v1 &reference, uint32_t &index) const;
+    // Copy current progress/sample phase, excluding routine renew ACK changes.
+    work::OperationWait operation_basis(uint32_t index) const;
     // Resolve only within the active Task decision and current content capability.
     ayni_status_t subscription_step(ayni_string_v1 step, uint32_t &index) const;
     // Task-scoped copies, only while the strategy's decision capability is active.
@@ -225,6 +246,16 @@ class CallRuntime {
     // Normalize a copied structured terminal with this Call's original result schema.
     ayni_status_t normalize_result(uint32_t index, ayni_bytes_v1 body, work::CallResult &result);
     ayni_status_t stage(const ayni_call_request_v1 &request);
+    // Preflight category/mode/occupancy without copying request bytes.
+    ayni_status_t check_call_form(uint64_t task_id, const ayni_call_request_v1 &,
+                                  const catalog::CallContract &) const;
+    // Bound all newly accepted Call-owned and Task-owned storage before mutation.
+    authority::GrantCheck check_call_capacity(uint32_t task_index, const Proposal &,
+                                              const catalog::CallContract &) const;
+    // Commit existing-operation controls; never allocates another Call identity.
+    bool accept_control(uint32_t task_index, foundation::TransitionStamp, uint64_t now_us);
+    // ADR-0086: queued, unresolved or borrowed action occupies this Task's single slot.
+    bool action_occupied(uint64_t task_id) const;
     // Close uses only a Task-local step; it never reauthorizes capture or allocates I/O.
     ayni_status_t stage_subscription_target(const ayni_call_request_v1 &request);
     // Install one copied proposal and its matching policy intent in the original output.
@@ -251,7 +282,7 @@ class CallRuntime {
     Advance drain_transport(Mode mode);
     static constexpr uint64_t microseconds_per_millisecond = 1000; // Host request unit conversion.
     // Current latest sample/state frontier, independent of renewal ACK count.
-    work::SubscriptionWait subscription_wait_basis(uint32_t index) const;
+    work::OperationWait subscription_wait_basis(uint32_t index) const;
     // A waiting Task wakes once when its latest frontier changes; no polling decision.
     bool next_subscription_wakeup(uint64_t now_us, uint64_t durable_seq,
                                   uint32_t &task_index) const;

@@ -100,6 +100,12 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
     if (action == resources::WaitAction::wait) {
         return Advance::internal; // An unbounded waiter cannot be an expired queue choice.
     }
+    if (action == resources::WaitAction::pause &&
+        work::TaskTable::waiting_for_resource(work_.tasks.at(task_index))) {
+        release(index,
+                now_us); // One Task overlay covers all queued Calls, without repeat revisions.
+        return Advance::applied;
+    }
     const auto stamp = work_.transitions.next();
     if (action == resources::WaitAction::skip) {
         if (work::skip_queued_call(work_.calls, work_.tasks, index, task_index,
@@ -139,7 +145,7 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     }
     uint32_t waiting_task = 0;
     if (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
-        if (!work_.tasks.wake_subscription(waiting_task, work_.transitions.next())) {
+        if (!work_.tasks.wake_operation(waiting_task, work_.transitions.next())) {
             return Advance::internal;
         }
         work_.forget_due_work();
@@ -213,7 +219,8 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
     const bool user_stop = (active.delivery && active.delivery->inhibition) ||
                            task.call.end != work::TaskCall::End::none ||
-                           task.lifecycle == AYNI_TASK_PAUSED;
+                           task.lifecycle == AYNI_TASK_PAUSED ||
+                           !work::TaskTable::is_live(task.lifecycle);
     const bool expired = delivery_expired(index, now_us);
     const bool denied =
         !content_current || (authority.status != AYNI_OK && authority.status != AYNI_BUSY);

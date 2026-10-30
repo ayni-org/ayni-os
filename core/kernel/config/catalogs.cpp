@@ -76,7 +76,6 @@ ayni_status_t Catalogs::close() {
             return AYNI_INTERNAL; // validate_all resolved every Binding.
         }
         if (call_capabilities.at(links.call).contract.category != catalog::CallClass::tool ||
-            call_capabilities.at(links.call).contract.form == catalog::CallForm::subscription ||
             dispatchable(bindings.at(index), links) != AYNI_OK) {
             return AYNI_INVALID_ARGUMENT;
         }

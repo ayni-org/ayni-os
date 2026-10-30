@@ -21,7 +21,7 @@ ayni_status_t CallTable::confirm_subscription(uint32_t index, uint64_t sequence,
         return status;
     }
     fact.phase = SubscriptionPhase::active;
-    fact.attachment = SubscriptionAttachment::background;
+    entry.state.attachment = CallAttachment::background;
     fact.lease_sequence = sequence;
     entry.state.latest = stamp;
     return AYNI_OK;

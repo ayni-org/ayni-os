@@ -15,6 +15,9 @@
 
 namespace ayni::work {
 
+// One Call owns its Task attachment; subscriptions do not maintain a second copy.
+enum class CallAttachment : uint32_t { foreground = 1, background };
+
 // Immutable identity of a strategy step's accepted logical call. Exact binding
 // and implementation selections survive restart; no latest-version fallback.
 struct CallIdentity {
@@ -33,6 +36,8 @@ struct CallIdentity {
     catalog::CatalogId destination;     // Empty iff this contract has no EGRESS effect.
     AuthorityReference authorization{}; // Original on-demand Grant; zero pair for required tools.
     ModelContext model_context{}; // Immutable metadata source, empty for calls without disclosure.
+    uint32_t mode =
+        AYNI_CALL_MODE_FOREGROUND; // Immutable accepted mode; zero is ordinary blocking.
     // Value projection of the persisted selection; no pointers or mutable catalog index.
     catalog::Binding binding() const;
 };
@@ -56,6 +61,8 @@ constexpr uint32_t initial_query_revision = 1; // No query has yet been requeste
 
 // Facts a durable call owns in addition to its independently validated ledger.
 struct CallState {
+    CallAttachment attachment =
+        CallAttachment::foreground; // Foreground owns Task.call until detach.
     ActionStamp created;            // Acceptance transition, before any possible submission.
     ActionStamp latest;             // Last state/body update, never an I/O timestamp.
     ayni_attempt_ref_v1 attempt{};  // Both zero before dispatch preparation; immutable once set.
@@ -249,6 +256,9 @@ class CallTable {
                             ayni_bytes_v1 domain, ayni_bytes_v1 input, ActionStamp stamp,
                             uint32_t &index);
     // Admission shape excludes schema/authority, already checked by their owners.
+    // One mode rule for live admission and record input; managed mode is TOOL action/subscription
+    // only.
+    static bool valid_mode(const CallIdentity &, const catalog::CallContract &);
     static bool valid_identity(const CallIdentity &identity, ActionStamp stamp);
     static bool advances(const Entry &entry, ActionStamp stamp); // Strict stamp order in this boot.
     ayni_status_t check_result(uint32_t index, const CallResult &result)

@@ -7,22 +7,6 @@
 
 #include <cstring>
 
-namespace {
-ayni_call_phase_t phase(const ayni::work::CallState &state, const ayni::work::ActionFact *action) {
-    using Phase = ayni::work::ActionPhase;
-    if (state.outcome == AYNI_CALL_ABANDONED) {
-        return AYNI_CALL_RESULT_UNKNOWN;
-    }
-    if (state.outcome != 0U) {
-        return AYNI_CALL_FINISHED;
-    }
-    return action == nullptr                     ? AYNI_CALL_QUEUED
-           : action->phase == Phase::prepared    ? AYNI_CALL_PREPARED
-           : action->phase == Phase::in_progress ? AYNI_CALL_IN_PROGRESS
-                                                 : AYNI_CALL_DISPATCHING;
-}
-} // namespace
-
 extern "C" {
 ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_id,
                             ayni_call_info_v1 *out_info) {
@@ -39,43 +23,7 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
     if (!calls.find(logical_call_id, index)) {
         return AYNI_NOT_FOUND;
     }
-    const auto &id = calls.identity(index);
-    const auto &state = calls.state(index);
-    const auto *action = calls.action(index);
-    uint64_t waited = 0;
-    const auto waiting =
-        kernel->call_view().waiting(index, kernel->now_us(), kernel->durable_seq(), waited);
-    const auto query = state.query.value_or(ayni::work::CallQuery{});
-    *out_info = {sizeof(*out_info),
-                 phase(state, action),
-                 id.call_id,
-                 id.task_id,
-                 state.subscription ? state.subscription->generation : id.operation_id,
-                 id.owner_instance_id,
-                 state.attempt,
-                 state.progress_sequence,
-                 state.latest.transition.commit_seq,
-                 state.outcome,
-                 state.status,
-                 state.reason,
-                 static_cast<ayni_call_effect_t>(calls.effect(index)),
-                 state.cancel_cause == ayni::work::CallCancelCause::none ? 0U : 1U,
-                 state.cancel_result,
-                 calls.input(index).size,
-                 calls.result(index).size + calls.value_result(index).size,
-                 waiting,
-                 ayni::work::tool_call_count(calls.tool_calls(index)),
-                 waited,
-                 calls.query_revision(index),
-                 static_cast<ayni_call_query_phase_t>(query.phase),
-                 query.status,
-                 query.reason,
-                 query.conclusion,
-                 0,
-                 query.attempt,
-                 static_cast<uint32_t>(calls.record(index).result_kind),
-                 0,
-                 state.model_usage};
+    kernel->call_view().describe_call(index, kernel->now_us(), kernel->durable_seq(), *out_info);
     return AYNI_OK;
 }
 

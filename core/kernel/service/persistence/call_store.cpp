@@ -149,10 +149,15 @@ durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t siz
     if (!exists &&
         (record.state.created.transition.commit_seq != stamp.transition.commit_seq ||
          (record.state.subscription &&
-          (record.state.subscription->attachment != work::SubscriptionAttachment::foreground ||
-           record.state.subscription->phase != work::SubscriptionPhase::starting ||
+          (record.state.subscription->phase != work::SubscriptionPhase::starting ||
            record.state.subscription->generation != record.identity.operation_id)) ||
-         record.action || record.state.outcome != 0U || task.call.id != record.identity.call_id ||
+         record.action || record.state.outcome != 0U ||
+         (record.state.attachment == work::CallAttachment::foreground
+              ? task.call.id != record.identity.call_id
+              : record.identity.mode != AYNI_CALL_MODE_MANAGED ||
+                    !model_.tasks.has_step(task_index, {record.identity.step_key.data(),
+                                                        record.identity.step_key.size()}) ||
+                    task.steps_seq != stamp.transition.commit_seq) ||
          task.commit_seq != stamp.transition.commit_seq)) {
         return RecordUse::corrupt;
     }
@@ -166,14 +171,12 @@ durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t siz
     const bool resolved = exists && model_.calls.state(call_index).outcome == AYNI_CALL_ABANDONED &&
                           record.state.outcome != AYNI_CALL_ABANDONED;
     const bool cancelled_task = !work::TaskTable::is_live(task.lifecycle);
-    const bool subscription = record.state.subscription.has_value();
-    const bool foreground_before = subscription && exists &&
-                                   model_.calls.state(call_index).subscription &&
-                                   model_.calls.state(call_index).subscription->attachment ==
-                                       work::SubscriptionAttachment::foreground;
-    const bool foreground_after = subscription && record.state.subscription->attachment ==
-                                                      work::SubscriptionAttachment::foreground;
-    if (subscription) {
+    const bool detached_call =
+        record.state.subscription.has_value() || record.identity.mode == AYNI_CALL_MODE_MANAGED;
+    const bool foreground_before =
+        exists && model_.calls.state(call_index).attachment == work::CallAttachment::foreground;
+    const bool foreground_after = record.state.attachment == work::CallAttachment::foreground;
+    if (detached_call) {
         const bool detached = foreground_before && !foreground_after;
         if ((foreground_after && task.call.id != record.identity.call_id) ||
             (detached && (task.commit_seq != stamp.transition.commit_seq ||
@@ -242,16 +245,25 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
         }
         if (id.owner_instance_id != task.owner_instance_id ||
             task.created_transition_id >= state.created.transition.transition_id ||
-            (state.outcome == 0U &&
-             (!state.subscription ||
-              state.subscription->attachment == work::SubscriptionAttachment::foreground) &&
+            (state.outcome == 0U && state.attachment == work::CallAttachment::foreground &&
              task.call.id != id.call_id) ||
-            (state.outcome == 0U && state.subscription &&
-             state.subscription->attachment == work::SubscriptionAttachment::background &&
+            (state.outcome == 0U && state.attachment == work::CallAttachment::background &&
              task.call.id == id.call_id) ||
             (state.outcome != 0U && state.outcome != AYNI_CALL_ABANDONED &&
              task.call.id == id.call_id)) {
             return false;
+        }
+        for (uint32_t at = 0; at < id.model_context.sample_count; ++at) {
+            const auto &sample = id.model_context.samples[at];
+            uint32_t source = 0;
+            if (!model_.calls.find(sample.call_id, source) ||
+                model_.calls.identity(source).task_id != id.task_id ||
+                !model_.calls.state(source).subscription ||
+                model_.calls.state(source).created.transition.commit_seq >=
+                    state.created.transition.commit_seq ||
+                sample.generation > model_.calls.state(source).subscription->generation) {
+                return false;
+            }
         }
         if (id.authorization.grant_id) {
             const auto admission = model_.task_authority.at(task.slot);
@@ -268,21 +280,57 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
         // Both journal and snapshot must retain the actual end of this run.
         // SKIPPED never makes an ordinary/foreground Task ready to decide again.
         if (state.outcome == AYNI_CALL_SKIPPED &&
-            (task.lifecycle != AYNI_TASK_EXPIRED || task.call.id != 0U ||
+            ((task.lifecycle != AYNI_TASK_EXPIRED &&
+              !(task.lifecycle == AYNI_TASK_CANCELLING &&
+                task.call.end == work::TaskCall::End::expire)) ||
              model_.goals.at(task.goal_index).work_profile.kind != AYNI_WORK_BACKGROUND)) {
             return false;
         }
     }
+    return task_calls_consistent();
+}
+
+// Task references and its independent UNKNOWN overlay must resolve to retained original Calls.
+bool WorkReplay::task_calls_consistent() const {
     for (uint32_t index = 0; index < model_.tasks.size(); ++index) {
         const auto &task = model_.tasks.at(index);
         uint32_t call_index = 0;
-        if (task.subscription_wait &&
-            (!model_.calls.find(task.subscription_wait->subscription_id, call_index) ||
+        if (task.operation_wait &&
+            (!model_.calls.find(task.operation_wait->call_id, call_index) ||
              model_.calls.identity(call_index).task_id != task.task_id ||
-             !model_.calls.state(call_index).subscription ||
-             task.subscription_wait->generation >
-                 model_.calls.state(call_index).subscription->generation)) {
+             static_cast<uint32_t>(model_.calls.contract(call_index).form) !=
+                 task.operation_wait->form ||
+             task.operation_wait->generation >
+                 (model_.calls.state(call_index).subscription
+                      ? model_.calls.state(call_index).subscription->generation
+                      : model_.calls.identity(call_index).operation_id))) {
             return false;
+        }
+        if (work::TaskTable::waiting_for_resource(task) &&
+            work::TaskTable::is_live(task.lifecycle) &&
+            task.call.end == work::TaskCall::End::none) {
+            bool queued = false;
+            for (uint32_t at = 0; at < model_.calls.capacity(); ++at) {
+                queued = queued || (model_.calls.occupied(at) &&
+                                    model_.calls.identity(at).task_id == task.task_id &&
+                                    model_.calls.state(at).outcome == 0 &&
+                                    model_.calls.state(at).attempt.request_id == 0);
+            }
+            if (!queued) {
+                return false;
+            }
+        }
+        if (work::TaskTable::is_live(task.lifecycle) &&
+            task.call.end == work::TaskCall::End::none) {
+            bool unknown = false;
+            for (uint32_t at = 0; at < model_.calls.capacity(); ++at) {
+                unknown = unknown || (model_.calls.occupied(at) &&
+                                      model_.calls.identity(at).task_id == task.task_id &&
+                                      model_.calls.state(at).outcome == AYNI_CALL_ABANDONED);
+            }
+            if (task.call_unknown != unknown) {
+                return false;
+            }
         }
         if (task.call.id != 0U && (!model_.calls.find(task.call.id, call_index) ||
                                    model_.calls.identity(call_index).task_id != task.task_id)) {

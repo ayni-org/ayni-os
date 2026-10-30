@@ -194,7 +194,7 @@ CallRuntime::Advance CallRuntime::consume_subscription_control(uint32_t index, u
             lease.inhibition = work::CallCancelCause::authority;
             close_subscription_gate(index);
         } else {
-            const auto attachment = state.subscription->attachment;
+            const auto attachment = state.attachment;
             const auto plan = *lease.pending;
             if (work_.calls.confirm_subscription(index, message.sequence,
                                                  {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
@@ -206,7 +206,7 @@ CallRuntime::Advance CallRuntime::consume_subscription_control(uint32_t index, u
                 !work_.tasks.add_step(task_index, step, stamp)) {
                 return Advance::internal;
             }
-            if (attachment == work::SubscriptionAttachment::foreground) {
+            if (attachment == work::CallAttachment::foreground) {
                 if (work_.tasks.at(task_index).call.id != id.call_id) {
                     return Advance::internal;
                 }

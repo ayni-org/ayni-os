@@ -41,6 +41,35 @@ class TaskCallTest : public ::testing::Test {
     uint64_t call_id = 0;
 };
 
+// ADR-0086: Call uncertainty never replaces policy/resource-owned holds.
+TEST_F(TaskCallTest, background_unknown_release_preserves_an_existing_policy_hold) {
+    tasks.hold(0, AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT, next());
+    tasks.hold_unknown_call(0, next());
+    EXPECT_TRUE(tasks.at(0).call_unknown);
+    tasks.settle_call_holds(0, next());
+    EXPECT_FALSE(tasks.at(0).call_unknown);
+    EXPECT_EQ(tasks.at(0).hold_status, AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(tasks.at(0).hold_reason, AYNI_REASON_POLICY_INTENT);
+    EXPECT_TRUE(tasks.has_held());
+}
+TEST_F(TaskCallTest, foreground_completion_preserves_another_calls_unknown_overlay) {
+    bool unknown = true;
+    tasks.set_call_query(&unknown, [](const void *context, const auto &) {
+        TaskTable::CallConstraints result{};
+        result.unknown = *static_cast<const bool *>(context);
+        return result;
+    });
+    begin(TaskTable::CallKind::model);
+    tasks.hold_unknown_call(0, next());
+    tasks.finish_call(0, next());
+    EXPECT_EQ(tasks.at(0).call.id, 0U);
+    EXPECT_EQ(TaskTable::effective_hold_status(tasks.at(0)), AYNI_RESULT_UNKNOWN);
+    EXPECT_FALSE(tasks.has_ready());
+    unknown = false;
+    tasks.settle_call_holds(0, next());
+    EXPECT_TRUE(tasks.has_ready());
+}
+
 // White-box, C-RUN-002 / ADR-0045: restoring the owner's wait-resume command
 // changes only its wait overlay. Invalid partners cannot rewrite the call/count.
 TEST_F(TaskCallTest, restored_resource_wait_resume_preserves_every_unrelated_task_fact) {
@@ -231,6 +260,16 @@ TEST_F(TaskCallTest, selected_call_records_keep_each_existing_pairing_meaning) {
         EXPECT_EQ(decoded.state.lifecycle, AYNI_TASK_RUNNING);
     }
 }
+// C-OP-001: future detached writes are reserved before a Call exists in the owner ledger.
+TEST_F(TaskCallTest, first_background_admission_preserves_future_lifecycle_revision_capacity) {
+    auto &task = const_cast<Task &>(tasks.at(0));
+    task.revision = UINT32_MAX - 4;
+    ASSERT_TRUE(tasks.can_begin_with_calls(task));
+    EXPECT_FALSE(tasks.can_begin_background_call(task));
+    task.revision = UINT32_MAX - 16;
+    EXPECT_TRUE(tasks.can_begin_background_call(task));
+}
+
 // C-COMMIT-012: reserve the UNKNOWN/cancel/drain path before accepting a call.
 TEST_F(TaskCallTest, public_state_changes_preserve_the_last_revisions_needed_to_drain) {
     auto &task = const_cast<Task &>(tasks.at(0));

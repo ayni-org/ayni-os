@@ -6,9 +6,16 @@ bool end_task_call(const CallTable &calls, TaskTable &tasks, uint32_t call_index
                    uint32_t task_index, foundation::TransitionStamp stamp) {
     const auto &state = calls.state(call_index);
     const auto &task = tasks.at(task_index);
-    // Background subscription receipts own no other foreground call link.
-    if (state.subscription && task.call.id != calls.identity(call_index).call_id) {
-        return state.subscription->attachment == SubscriptionAttachment::background;
+    // ADR-0086: a background receipt never finishes another foreground call.
+    if (state.attachment == CallAttachment::background &&
+        task.call.id != calls.identity(call_index).call_id) {
+        if (state.outcome == AYNI_CALL_ABANDONED && TaskTable::is_live(task.lifecycle) &&
+            task.call.end == TaskCall::End::none) {
+            tasks.hold_unknown_call(task_index, stamp);
+        } else if (state.outcome != AYNI_CALL_ABANDONED) {
+            tasks.settle_call_holds(task_index, stamp);
+        }
+        return true;
     }
     if (state.outcome == AYNI_CALL_ABANDONED && task.call.end == TaskCall::End::none) {
         tasks.hold_unknown_call(task_index, stamp);
@@ -26,6 +33,11 @@ bool end_task_call(const CallTable &calls, TaskTable &tasks, uint32_t call_index
 
 bool reconcile_task_call(const CallTable &calls, TaskTable &tasks, uint32_t call_index,
                          uint32_t task_index, foundation::TransitionStamp stamp) {
+    if (tasks.at(task_index).call.id != calls.identity(call_index).call_id &&
+        calls.state(call_index).outcome != AYNI_CALL_ABANDONED) {
+        tasks.settle_call_holds(task_index, stamp);
+        return true;
+    }
     return calls.state(call_index).outcome == AYNI_CALL_ABANDONED ||
            tasks.at(task_index).call.id != calls.identity(call_index).call_id ||
            end_task_call(calls, tasks, call_index, task_index, stamp);

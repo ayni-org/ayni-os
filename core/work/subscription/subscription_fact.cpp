@@ -14,11 +14,8 @@ bool valid_subscription(const SubscriptionFact &fact) {
            fact.phase >= SubscriptionPhase::starting && fact.phase <= SubscriptionPhase::failed &&
            (fact.desired == SubscriptionDesired::open ||
             fact.desired == SubscriptionDesired::closed) &&
-           (fact.attachment == SubscriptionAttachment::foreground ||
-            fact.attachment == SubscriptionAttachment::background) &&
            (fact.phase != SubscriptionPhase::starting || fact.lease_sequence == 0) &&
-           (fact.phase != SubscriptionPhase::active ||
-            (fact.lease_sequence != 0 && fact.attachment == SubscriptionAttachment::background));
+           (fact.phase != SubscriptionPhase::active || fact.lease_sequence != 0);
 }
 // Restart is a new finite session after confirmed stop, never an ActionRecord
 // RESULT_UNKNOWN retry. Within one generation, terminal phases cannot reopen.
@@ -27,9 +24,7 @@ bool subscription_advances(const SubscriptionFact &before, const SubscriptionFac
         (before.control_status != AYNI_OK && (before.control_status != after.control_status ||
                                               before.control_reason != after.control_reason)) ||
         after.generation < before.generation ||
-        (before.desired == SubscriptionDesired::closed && after.desired != before.desired) ||
-        (before.attachment == SubscriptionAttachment::background &&
-         after.attachment != before.attachment)) {
+        (before.desired == SubscriptionDesired::closed && after.desired != before.desired)) {
         return false;
     }
     if (after.generation != before.generation) {

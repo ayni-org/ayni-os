@@ -422,7 +422,9 @@ class ToolCalls : public ::testing::Test {
                                          text("planner"),
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         AYNI_CALL_MODE_FOREGROUND,
+                                         0};
             const auto built = input.finish(request.value);
             if (built != AYNI_OK) {
                 return built;
@@ -486,7 +488,9 @@ class ToolCalls : public ::testing::Test {
                                                        state.call.function_name,
                                                        {},
                                                        {},
-                                                       {nodes.data(), value.node_count}};
+                                                       {nodes.data(), value.node_count},
+                                                       AYNI_CALL_MODE_FOREGROUND,
+                                                       0};
                     return state.output.request_call(state.output.call_context, &request);
                 });
         }
@@ -916,7 +920,7 @@ struct StartCase {
 
 class ToolStart : public ToolAllowList, public ::testing::WithParamInterface<StartCase> {};
 
-TEST_P(ToolStart, start_needs_each_tool_to_be_an_ordinary_tool_binding) {
+TEST_P(ToolStart, start_accepts_tools_and_subscriptions_but_rejects_models) {
     listed = {{text("timer"), 1, 0}, {text(GetParam().binding), GetParam().version, 0}};
     work.node().create();
     EXPECT_EQ(ayni_start(work.kernel()), GetParam().status);
@@ -929,7 +933,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, ToolStart,
                                            StartCase{"lamp", 2, AYNI_NOT_FOUND},
                                            StartCase{"absent", 1, AYNI_NOT_FOUND},
                                            StartCase{"planner", 1, AYNI_INVALID_ARGUMENT},
-                                           StartCase{"watch", 1, AYNI_INVALID_ARGUMENT}),
+                                           StartCase{"watch", 1, AYNI_OK}),
                          [](const ::testing::TestParamInfo<StartCase> &start_case) {
                              return std::string(start_case.param.binding) + "_v" +
                                     std::to_string(start_case.param.version);

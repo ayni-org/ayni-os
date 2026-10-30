@@ -160,6 +160,8 @@ class WorkReplay {
     // Memory identities share the Kernel ID universe with work and authority facts.
     bool memory_identities_consistent(uint64_t boot_epoch_limit) const;
     // Every retained selected call and terminal outcome agrees with its Task.
+    // Validate Task-owned frontiers/UNKNOWN references after Call rows are available.
+    bool task_calls_consistent() const;
     bool calls_consistent(uint64_t boot_epoch_limit) const;
     // Closes the exact query acceptance with its durable owner's canonical command.
     bool pair_target_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
