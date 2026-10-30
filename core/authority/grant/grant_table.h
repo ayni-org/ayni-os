@@ -121,6 +121,15 @@ struct Grant {
     uint64_t bound_goal_id = 0; // Immutable Goal ID; 0 is generic, nonzero forbids delegation.
 };
 
+// Deterministic choice among already admitted whole Grants: dedicated Goal
+// roots precede generic grants, then the smallest stable ID wins.
+inline bool prefer_admitted_grant(const Grant &candidate, const Grant &current) {
+    if ((candidate.bound_goal_id != 0U) != (current.bound_goal_id != 0U)) {
+        return candidate.bound_goal_id != 0U;
+    }
+    return candidate.grant_id < current.grant_id;
+}
+
 // Persistent terminal classification, independent of current time or catalog hold.
 bool terminal(const Grant &grant);
 

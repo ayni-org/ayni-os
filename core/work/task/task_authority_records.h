@@ -9,13 +9,15 @@ namespace ayni::work {
 constexpr uint16_t task_authority_record_type = durability::record_type::task_authority;
 constexpr uint16_t task_authority_record_version = 1;
 // Five u64 identity/stamp words, then phase/count u32; references are u64/u32.
-constexpr uint32_t task_authority_record_fixed_size = 48;
+constexpr uint32_t task_authority_record_fixed_size = 52;
 constexpr uint32_t task_authority_reference_size = 12;
+constexpr uint32_t task_tool_reference_size = 20; // Source Call u64, Grant u64/revision u32.
 constexpr uint32_t task_authority_phase_at = 40;
 constexpr uint32_t task_authority_count_at = 44;
 // Counts use configured Goal requirements; no C++ struct layout is serialized.
-constexpr uint32_t task_authority_record_max(uint32_t requirements) {
-    return task_authority_record_fixed_size + requirements * task_authority_reference_size;
+constexpr uint32_t task_authority_record_max(uint32_t requirements, uint32_t tools = 0) {
+    return task_authority_record_fixed_size + requirements * task_authority_reference_size +
+           tools * task_tool_reference_size;
 }
 
 // Requires validated facts and exactly record_max(record.count) writable bytes.

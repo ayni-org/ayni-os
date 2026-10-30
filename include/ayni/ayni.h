@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 48u
+#define AYNI_ABI_MINOR 49u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1206,14 +1206,25 @@ typedef struct ayni_work_profile_v1 {
 } ayni_work_profile_v1;
 
 /* Maximum tools one GoalType offers to its model calls. Since 0.37. */
-#define AYNI_GOAL_TYPE_TOOL_COUNT_MAX 8u
+#define AYNI_GOAL_TYPE_TOOL_COUNT_MAX 256u
 
 /* One tool a GoalType allows its model calls to propose: an exact Binding of a
  * TOOL capability. It grants no authority (ADR-0054). Since 0.37. */
+typedef uint32_t ayni_tool_role_t;
+/* Discovered ordinary capability, called through the managed entry. Since 0.49. */
+#define AYNI_TOOL_ROLE_CAPABILITY ((ayni_tool_role_t)0)
+/* Trusted deployment's direct shell Binding; at most one per policy. Since 0.49. */
+#define AYNI_TOOL_ROLE_SHELL ((ayni_tool_role_t)1)
+typedef uint32_t ayni_tool_authorization_t;
+/* Every tool is covered by an existing required Goal ceiling. Since 0.49. */
+#define AYNI_TOOLS_REQUIRED ((ayni_tool_authorization_t)0)
+/* Missing optional tool Grants do not block work; calls bind whole Grants. Since 0.49. */
+#define AYNI_TOOLS_ON_DEMAND ((ayni_tool_authorization_t)1)
+
 typedef struct ayni_tool_ref_v1 {
     ayni_string_v1 binding_id; /* catalog id of a registered Binding */
     uint32_t binding_version;  /* nonzero exact version */
-    uint32_t reserved;         /* must be 0 */
+    ayni_tool_role_t role;     /* Since 0.49. CAPABILITY or the single trusted SHELL role. */
 } ayni_tool_ref_v1;
 
 typedef uint32_t ayni_goal_context_t;
@@ -1251,7 +1262,7 @@ typedef struct ayni_goal_type_v1 {
      * TOOL-class, non-subscription Binding. A model call is offered only the
      * listed tools its Task's Goal is authorized for (ADR-0054). */
     uint32_t tool_count;
-    uint32_t tool_reserved; /* must be 0 */
+    ayni_tool_authorization_t tool_authorization; /* Since 0.49. REQUIRED or ON_DEMAND. */
     const ayni_tool_ref_v1 *tools;
     /* Since 0.40. AGENT accepts ONCE alone and requires an acknowledged content anchor.
      * Kernel captures its complete sources and exact file basis in the creation transition. */
@@ -1708,6 +1719,10 @@ struct ayni_subscription_info_v1;
 struct ayni_observation_info_v1;
 /* Since 0.37. Defined in calls.h. */
 struct ayni_task_tool_call_v1;
+/* Since 0.49. Defined in directory.h; Task-scoped decision leases. */
+struct ayni_capability_cursor_v1;
+struct ayni_capability_info_v1;
+struct ayni_capability_detail_v1;
 /* Since 0.40. Defined in memory.h, leased only to the current Task decision. */
 struct ayni_memory_view_v1;
 
@@ -1757,6 +1772,16 @@ typedef struct ayni_task_snapshot_v1 {
                                   struct ayni_subscription_info_v1 *out);
     ayni_status_t (*subscription_observation)(const void *context, ayni_string_v1 step_key,
                                               struct ayni_observation_info_v1 *out);
+    /* Since 0.49. List/inspect recheck current authority during this decide only.
+     * Borrow call_context, never a generic Provider callback into Kernel. */
+    ayni_status_t (*list_capabilities)(const void *context,
+                                       const struct ayni_capability_cursor_v1 *cursor,
+                                       struct ayni_capability_info_v1 *items, uint32_t capacity,
+                                       uint32_t *out_count,
+                                       struct ayni_capability_cursor_v1 *out_next);
+    ayni_status_t (*inspect_capability)(const void *context, ayni_string_v1 binding_id,
+                                        uint32_t binding_version,
+                                        struct ayni_capability_detail_v1 *out);
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements. REPORT_COMPLETION and REPORT_FAILURE end

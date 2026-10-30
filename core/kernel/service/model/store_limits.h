@@ -68,7 +68,8 @@ inline work::GoalAuthorityTable::Limits goal_authority_limits(const KernelCapaci
 }
 
 inline work::TaskAuthorityTable::Limits task_authority_limits(const KernelCapacities &capacities) {
-    return {capacities.task_capacity, capacities.goal_requirement_capacity};
+    return {capacities.task_capacity, capacities.goal_requirement_capacity,
+            capacities.call_capacity ? capacities.task_step_capacity : 0U};
 }
 
 inline work::CallTable::Limits call_limits(const KernelCapacities &capacities) {

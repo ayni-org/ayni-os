@@ -26,7 +26,8 @@ bool read_id(foundation::BodyReader &reader, bool may_be_empty, catalog::Catalog
 // Schema 3 keeps all current creation fields; optional facts have explicit markers.
 uint32_t goal_record_size(const Goal &goal) {
     return goal_record_fixed_size + goal.goal_type_id.size() + goal.trigger_source.size() +
-           goal.parameter_size;
+           goal.parameter_size + catalog::tool_policy_size(goal.tools) -
+           catalog::tool_policy_header_bytes;
 }
 
 void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body,
@@ -55,6 +56,7 @@ void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body
     writer.u32(goal.pause_group);
     writer.u32(options.authority ? 1U : 0U);
     writer.u32(options.provenance ? 1U : 0U);
+    catalog::write_tool_policy(goal.tools, writer);
 }
 
 // Parse only the current layout. Partner markers replace old version-based promises.
@@ -104,7 +106,7 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out) {
     out.authority_required = authority != 0;
     out.provenance_required = provenance != 0;
     // GoalTable owns trigger/profile validity for both parsed and typed inputs.
-    return reader.ok();
+    return catalog::read_tool_policy(reader, out.goal.tools) && reader.ok();
 }
 
 void write_goal_state_record(const Goal &goal, uint8_t *body, GoalRecordChange change) {

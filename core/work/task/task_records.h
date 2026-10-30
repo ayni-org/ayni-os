@@ -32,6 +32,8 @@ enum class TaskRecordChange : uint32_t {
     reauthorization = 3,
     raise_limit = 4,
     resume_wait = 5,
+    tool_bind = 6,  // Same-batch optional Call and one appended whole-Grant reference.
+    tool_pause = 7, // Task-only authority pause; owning Goal may remain authorized.
 };
 constexpr uint16_t task_steps_record_type = durability::record_type::task_steps;
 constexpr uint16_t task_steps_record_version = 1;

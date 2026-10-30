@@ -1,8 +1,53 @@
 #include "catalog/binding/binding_registry.h"
+#include <cstring>
+#include <new>
 
 #include "catalog/abi_checks.h"
 
 namespace ayni::catalog {
+BindingRegistry::BindingRegistry(void *storage, uint32_t capacity)
+    : descriptions_(
+          storage ? reinterpret_cast<Description *>(static_cast<Binding *>(storage) + capacity)
+                  : nullptr),
+      entries_(storage, capacity) {
+    static_assert(alignof(Description) <= alignof(Binding), "metadata arena preserves alignment");
+    for (uint32_t at = 0; at < capacity; ++at) {
+        new (descriptions_ + at) Description{};
+    }
+}
+ayni_status_t BindingRegistry::describe(uint32_t index, ayni_string_v1 summary,
+                                        const ayni_tool_usage_v1 &usage, const ayni_tool_v1 &tool) {
+    if (index >= entries_.size() || !summary.size ||
+        summary.size > AYNI_CAPABILITY_SUMMARY_MAX_BYTES ||
+        ayni_validate_utf8(summary) != AYNI_OK) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (descriptions_[index].present) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    detail::ToolUsage copied;
+    if (!copied.assign(usage, tool)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    auto &description = descriptions_[index];
+    description.usage = copied;
+    std::memcpy(description.summary.data(), summary.data, summary.size);
+    description.summary_size = summary.size;
+    description.present = true;
+    return AYNI_OK;
+}
+bool BindingRegistry::has_description(uint32_t index) const {
+    return index < entries_.size() && descriptions_[index].present;
+}
+ayni_string_v1 BindingRegistry::summary(uint32_t index) const {
+    return {descriptions_[index].summary.data(), descriptions_[index].summary_size};
+}
+void BindingRegistry::usage(
+    uint32_t index, ayni_tool_usage_v1 &out,
+    std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> &fields) const {
+    descriptions_[index].usage.read(out, fields);
+}
+
 namespace {
 ayni_string_v1 view(const CatalogId &id) {
     return {id.data(), id.size()};

@@ -161,7 +161,7 @@ Body goal_body(const GoalFields &fields) {
     body.u32(fields.trigger).u64(fields.delay_us).u64(fields.period_us);
     body.text(fields.trigger_source);
     body.u64(900).u64(60);
-    body.text(fields.parameters).u32(0).u64(0).u32(0).u32(0).u32(0);
+    body.text(fields.parameters).u32(0).u64(0).u32(0).u32(0).u32(0).u32(AYNI_TOOLS_REQUIRED).u32(0);
     return body;
 }
 
@@ -312,7 +312,7 @@ TEST(WorkRecords, nondefault_goal_profile_has_explicit_journal_and_snapshot_enco
     const auto body = written_goal(goal, fields.parameters, {true, false});
     ASSERT_EQ(body.size(), ordinary.size());
     constexpr auto tail = ayni::work::goal_work_profile_size + ayni::work::goal_group_tail_size +
-                          ayni::work::goal_options_size;
+                          ayni::work::goal_options_size + ayni::catalog::tool_policy_header_bytes;
     EXPECT_EQ(load_le32(body.data() + body.size() - tail), AYNI_WORK_BACKGROUND);
     GoalRecord record{};
     ASSERT_TRUE(
@@ -372,6 +372,27 @@ TEST(WorkRecords, goal_record_round_trips_with_its_strings_and_parameters) {
 
 // C-VER-023: fixed-width little-endian fields in a fixed order, each string
 // after its uint32 length.
+// ADR-0085: the original optional tool policy is a portable Goal fact, not
+// a later lookup into a mutable GoalType registration or an eight-tool window.
+TEST(WorkRecords, goal_record_owns_more_than_eight_exact_optional_tool_references) {
+    GoalFields fields;
+    auto goal = goal_of(fields);
+    goal.tools.authorization = AYNI_TOOLS_ON_DEMAND;
+    goal.tools.count = 24;
+    for (uint32_t at = 0; at < goal.tools.count; ++at) {
+        const auto id = "tool." + std::to_string(at);
+        ASSERT_TRUE(
+            goal.tools.tools[at].binding_id.assign({id.data(), static_cast<uint32_t>(id.size())}));
+        goal.tools.tools[at].binding_version = at + 1U;
+    }
+    goal.tools.tools[0].role = AYNI_TOOL_ROLE_SHELL;
+    const auto body = written_goal(goal, fields.parameters);
+    GoalRecord decoded{};
+    ASSERT_TRUE(
+        ayni::work::read_goal_record(body.data(), static_cast<uint32_t>(body.size()), decoded));
+    EXPECT_TRUE(decoded.goal.tools == goal.tools);
+}
+
 TEST(WorkRecords, goal_record_is_encoded_field_by_field) {
     GoalFields local;
     local.trigger = AYNI_TRIGGER_LOCAL_INPUT;
@@ -454,10 +475,20 @@ TEST(WorkRecords, goal_record_parameters_end_the_body) {
     const Body empty = goal_body(fields);
     EXPECT_TRUE(reads_goal(empty));
 
-    constexpr uint32_t tail_size = 24;
+    constexpr uint32_t tail_size = 24 + ayni::catalog::tool_policy_header_bytes;
     const std::vector<uint8_t> head(empty.bytes().begin(), empty.bytes().end() - tail_size - 4);
     const auto body = [&](uint32_t size) {
-        return Body().raw(head).u32(size).raw("ab").u32(0).u64(0).u32(0).u32(0).u32(0);
+        return Body()
+            .raw(head)
+            .u32(size)
+            .raw("ab")
+            .u32(0)
+            .u64(0)
+            .u32(0)
+            .u32(0)
+            .u32(0)
+            .u32(AYNI_TOOLS_REQUIRED)
+            .u32(0);
     };
     EXPECT_FALSE(reads_goal(body(3)));
     EXPECT_FALSE(reads_goal(body(1)));

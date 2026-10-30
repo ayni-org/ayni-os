@@ -115,6 +115,24 @@ struct WorkModel {
     // Check the Task's own admitted identities against its immutable Goal ceiling.
     authority::GrantCheck check_task_authority(uint32_t task_index, uint64_t now_us,
                                                uint64_t durable_seq) const;
+    // Frozen optional policy restrictions apply through every ancestor, independent of Grants.
+    bool tool_policy_allows(uint32_t goal_index, const catalog::Binding &binding) const;
+    bool child_tool_policy_allowed(uint64_t parent_id, const catalog::ToolPolicy &policy) const;
+    // Resolve the original Call/Grant upper bound without changing either historical owner.
+    bool tool_authority_source(uint64_t task_id, const work::TaskToolReference &reference,
+                               uint32_t &call_index, uint32_t &grant_index) const;
+    authority::GrantCheck check_tool_authority(uint32_t task_index,
+                                               const work::TaskToolReference &reference,
+                                               uint64_t now_us, uint64_t durable_seq) const;
+    // Preflight replacements for the current complete direct-live cohort; no publication here.
+    authority::GrantCheck stage_tool_reauthorization(uint32_t task_index, uint64_t now_us,
+                                                     uint64_t durable_seq);
+    bool has_unusable_tool_authority(uint32_t goal_index, uint64_t now_us,
+                                     uint64_t durable_seq) const;
+    // Current catalog/subject compatibility is a volatile hold, never a persisted deny.
+    bool tool_references_compatible(const work::Task &task) const;
+    // Required failures pause their Goal cohort; optional failures pause only this Task.
+    void pause_task_authority(uint32_t task_index, uint64_t now_us, uint64_t durable_seq);
     // Publish inherited selections after derivation; hand off any replaced Task references.
     bool inherit_task_metadata(uint64_t task_id, foundation::TransitionStamp stamp);
     // Release a Task's selected references at one accepted transition boundary.
@@ -134,6 +152,8 @@ struct WorkModel {
 
     // Build a local mask from current work references. Terminal work stops
     // protecting its rows only after the current writer confirms its last stamp.
+    // Terminal history can release references only after durability and safe Call retirement.
+    bool task_references_releasable(const work::Task &task, uint64_t durable_seq) const;
     authority::GrantReclaimExclusions grant_reclaim_exclusions(uint64_t durable_seq) const;
     // Content owners release selected Grants with the same transition as source replacement.
     void release_content_references(const knowledge::MemoryDependencies &dependencies,

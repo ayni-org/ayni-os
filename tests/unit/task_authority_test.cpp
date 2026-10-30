@@ -37,14 +37,14 @@ TaskAuthorityRecord admitted(uint32_t count = requirements) {
 struct Table {
     std::vector<uint64_t> arena;
     TaskAuthorityTable table;
-    explicit Table(uint32_t count = requirements)
-        : arena((TaskAuthorityTable::storage_size({slots, count}) + sizeof(uint64_t) - 1U) /
+    explicit Table(uint32_t count = requirements, uint32_t tools = 0)
+        : arena((TaskAuthorityTable::storage_size({slots, count, tools}) + sizeof(uint64_t) - 1U) /
                 sizeof(uint64_t)),
-          table(arena.data(), {slots, count}) {}
+          table(arena.data(), {slots, count, tools}) {}
 };
 
 std::vector<uint8_t> encode(const TaskAuthorityRecord &record) {
-    std::vector<uint8_t> bytes(task_authority_record_max(record.count));
+    std::vector<uint8_t> bytes(task_authority_record_max(record.count, record.tool_count));
     write_task_authority_record(record, bytes.data());
     return bytes;
 }
@@ -360,5 +360,33 @@ TEST(TaskAuthorityCodec, every_truncation_trailing_bytes_and_malformed_fact_pres
     ayni::foundation::store_le32(bad.data() + task_authority_count_at,
                                  AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 1U);
     refused(bad.data(), bad.size());
+}
+// ADR-0085 decision 9: a lazy binding updates the stable Task slot; explicit
+// reauthorization replaces selected refs while retaining the immutable source.
+TEST(TaskAuthority, optional_sources_survive_pause_reauthorization_and_portable_encoding) {
+    Table table(requirements, 2);
+    ASSERT_EQ(table.table.install_validated(1, admitted()), AYNI_OK);
+    ASSERT_TRUE(table.table.can_bind_tool(1));
+    constexpr uint64_t source_call = UINT64_C(0x100000040);
+    table.table.bind_tool_validated(1, {source_call, {grant_id, 1}}, {8, 10});
+    EXPECT_EQ(table.table.at(1).tool_count, 1U);
+    EXPECT_TRUE(table.table.pause(1, {9, 11}));
+    std::array<AuthorityReference, AYNI_TASK_STEP_CAPACITY_MAX> selections{};
+    selections[0] = {grant_id + 1U, 1};
+    table.table.stage_tool_references(1, selections);
+    auto rebound = table.table.at(1);
+    table.table.copy_staged_tools(1, rebound);
+    rebound.ceiling.commit_seq = 12;
+    rebound.stamp = {10, 12};
+    rebound.phase = TaskAuthorityPhase::authorized;
+    ASSERT_EQ(table.table.restore_validated(1, rebound), AYNI_OK);
+    const auto bytes = encode(table.table.at(1));
+    TaskAuthorityRecord decoded{};
+    ASSERT_TRUE(
+        read_task_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_EQ(decoded.tool_count, 1U);
+    EXPECT_EQ(decoded.tools[0].source_call_id, source_call);
+    EXPECT_EQ(decoded.tools[0].selected.grant_id, grant_id + 1U);
+    EXPECT_FALSE(table.table.contains(0, task_id));
 }
 } // namespace

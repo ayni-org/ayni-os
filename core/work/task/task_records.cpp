@@ -127,7 +127,7 @@ bool read_task_state_record(const uint8_t *body, uint32_t size, TaskStateRecord 
     const auto change = reader.u32();
     const auto present = reader.u32();
     if (blocked > 1 || present > 1 || change < static_cast<uint32_t>(TaskRecordChange::state) ||
-        change > static_cast<uint32_t>(TaskRecordChange::resume_wait) ||
+        change > static_cast<uint32_t>(TaskRecordChange::tool_pause) ||
         (present == 0 && (wait.subscription_id != 0 || wait.generation != 0 || wait.sequence != 0 ||
                           static_cast<uint32_t>(wait.phase) != 0))) {
         return false;

@@ -109,6 +109,26 @@ ayni_status_t refuse_admission(GoalTable::Admission admission, const Intent &int
     return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_GOAL_CAPACITY, ayni_object_ref_v1{}, failure);
 }
 
+// Parameter bounds and the extension validator decide one admission step;
+// neither can publish work or change frozen tool/authority policy.
+ayni_status_t check_goal_parameters(WorkModel &model, uint32_t type_index, ayni_bytes_v1 parameters,
+                                    IntentFailure &failure) {
+    if (!model.goals.parameters_fit(parameters.size)) {
+        return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
+                      object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
+    }
+    // Validate parameters before exporting their requirements. Both callbacks
+    // are read-only under call_out; all admission finishes before IDs.
+    const bool accepted =
+        model.call_out([&] { return model.catalogs.goal_types.accepts(type_index, parameters); });
+    if (!accepted) {
+        return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
+                      object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
+    }
+
+    return AYNI_OK;
+}
+
 // Resolve immutable catalog/work identities and validate parameters before
 // the exporter runs. None of these checks publishes work or consumes IDs.
 ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
@@ -166,28 +186,19 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
                          goal_type.version,
                          goal_type.work_profile};
     goal.pause_group = create.pause_group;
+    goal.tools = goal_type.tool_policy();
     const GoalTable::Admission admission = model.goals.admit(goal);
     if (admission != GoalTable::Admission::admitted) {
         return refuse_admission(admission, intent, failure);
+    }
+    if (!model.child_tool_policy_allowed(create.parent_goal_id, goal.tools)) {
+        return refuse(AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_PARENT, {}, failure);
     }
     if (!model.ids.available()) {
         return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_ID_EXHAUSTED, ayni_object_ref_v1{},
                       failure);
     }
-    if (!model.goals.parameters_fit(create.parameters.size)) {
-        return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
-                      object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
-    }
-    // Validate parameters before exporting their requirements. Both callbacks
-    // are read-only under call_out; all admission finishes before IDs.
-    const bool accepted = model.call_out(
-        [&] { return model.catalogs.goal_types.accepts(type.index, create.parameters); });
-    if (!accepted) {
-        return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_GOAL_PARAMETERS,
-                      object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
-    }
-
-    return AYNI_OK;
+    return check_goal_parameters(model, type.index, create.parameters, failure);
 }
 
 // Resolve work and callback inputs before allocating an identity or publishing

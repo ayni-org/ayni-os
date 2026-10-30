@@ -26,7 +26,9 @@ bool same_id(const catalog::CatalogId &left, const catalog::CatalogId &right) {
 }
 
 bool same_identity(const CallIdentity &left, const CallIdentity &right) {
-    return left.call_id == right.call_id && left.operation_id == right.operation_id &&
+    return left.authorization.grant_id == right.authorization.grant_id &&
+           left.authorization.revision == right.authorization.revision &&
+           left.call_id == right.call_id && left.operation_id == right.operation_id &&
            left.task_id == right.task_id && left.owner_instance_id == right.owner_instance_id &&
            same_id(left.step_key, right.step_key) &&
            catalog::BindingRegistry::same_selection(left.binding(), right.binding());

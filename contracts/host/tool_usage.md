@@ -1,12 +1,12 @@
 # 能力用法自描述
 
-- **关联**：ADR-0082；AP-01；C-CALL-014、C-PROV-015；ABI 0.47。
+- **关联**：ADR-0082；AP-01；C-CALL-014、C-PROV-015；ABI 0.49（AP-01 原端口保留）。
 - **头文件**：`include/ayni/tool_usage.h`；纯 UTF-8 校验声明在 `ayni.h`。
 - **当前实现**：OpenAI-compatible Provider、runtime 的 schedule 配对、assistant.schedule 软件能力；Mock 呈现设备通过本地 HTTP 夹具验证。配置期注册保持；摄像头热插拔、MCP/MHS/ROS adapter 仍为后续计划。
 
 ## 属主与边界
 
-Core 提供允许列表与当前授权交集中的 `ayni_tool_v1`，拥有可调用身份、字段类型/单位/取值与正文上限。扩展提供 purpose、text_usage、result_usage、examples 及每字段解释；说明不授予权限、不执行示例、不改变类型或解析器。runtime 配对确切 Binding/Capability 及版本，管理说明来源的生命周期。模型 Provider 在 submit 合并并复制；Core 不建立第二份说明目录，不存储或持久化长文本。
+Core 提供允许列表与当前授权交集中的 `ayni_tool_v1`，拥有可调用身份、字段类型/单位/取值与正文上限。扩展提供 purpose、text_usage、result_usage、examples 及每字段解释；说明不授予权限、不执行示例、不改变类型或解析器。runtime 配对确切 Binding/Capability 及版本，管理说明来源的生命周期。模型 Provider 在 submit 合并并复制；AP-03 第一部分新增明确采纳入口，由 catalog 拷贝一份有界说明供 Task 目录使用；不自动从 Provider 查询，不持久化说明。原模型 submit port 传输本部分保持，详见 [Task 目录契约](../domain/capability_directory.md)。
 
 lookup 是只读、同步、非重入且有界的 owner-thread 回调，不能等待网络/设备、调用 Kernel 或抛出异常。异步发现器须先准备可读描述，不能在 lookup 中发现设备。返回视图有效到下一次 lookup 或本次 submit 返回，消费者须在此前复制；port/context 活到模型 Provider quiesce 结束。创建失败、关闭和部分复制失败不接管调用借用，不发布半份说明。异步 worker 只读请求槽，不再访问 Core 或说明来源。
 
@@ -27,6 +27,6 @@ lookup 是只读、同步、非重入且有界的 owner-thread 回调，不能�
 
 ScheduleTool 拥有结构字段及跨字段规则、相对日期/时区用法、结构返回值和示例；DemoProfile 使用其既有 Binding 声明配对只读 port。总提示词保留统一助理、用户意图与批准规则。合法登记仍只是等待所有者批准的 Goal，不因模型读取说明而获得新权限。
 
-新增本机摄像头等能力时，backend/adapter 先按现有配置期注册契约提供 Capability、Provider、Binding 和资源；扩展再提供上述说明，runtime 将来源接入模型 port。长说明无需改 Core，实际数据采集仍须经过原授权/资源/异步调用。协议 adapter 将外部说明归一到这些公开类型；协议发现和热插拔的准入、版本、撤下与寿命仍按后续 AP 包交付，不能把本包 lookup 当发现协议。
+新增本机摄像头等能力时，backend/adapter 先按现有配置期注册契约提供 Capability、Provider、Binding 和资源；扩展再提供上述说明，runtime 将来源接入模型 port。可信配置也可通过 directory.h 的采纳入口拷贝有界说明；实际数据采集仍须经过原授权/资源/异步调用。协议 adapter 将外部说明归一到这些公开类型；协议发现和热插拔的准入、版本、撤下与寿命仍按后续 AP 包交付，不能把本包 lookup 当发现协议。
 
-每工具的4096 B说明槽与最多8工具/8字段都是明确上限；Native 模型 Provider 每个请求槽预留这些字节。它不是 ESP32 模型传输内存验证。AP-01 的说明本身不进入 Core 持久状态；AP-02 另以 ABI 0.48/schema 4 同步机器 Schema、规范值与原契约证明，全部消费者重编译。固定工具及按需详情属 AP-03 后续实现，不能由本包说明端口推定已完成。
+每工具的4096 B说明槽与最多8工具/8字段都是明确上限；Native 模型 Provider 每个请求槽预留这些字节。它不是 ESP32 模型传输内存验证。AP-01 的说明本身不进入 Core 持久状态；AP-02 另以 ABI 0.48/schema 4 同步机器 Schema、规范值与原契约证明，全部消费者重编译。AP-03 第一部分已增加配置期采纳与 Task 目录；固定模型工具、标准消息及上下文仍留给下一部分，不能由说明端口推定已完成。

@@ -91,6 +91,22 @@ bool WorkModel::advance_authority_cleanup(uint64_t now_us, uint64_t durable_seq)
     }
     const auto stamp =
         transitions.next_commit_seq() == before ? transitions.next() : transitions.latest();
+    // Optional dependencies belong to each direct live Task. A healthy Goal
+    // and its other Tasks remain usable; one cleanup item still uses one stamp.
+    if (index != work::GoalTable::no_index && goal_authority.authorized(index, selected.goal_id)) {
+        for (uint32_t at = 0; at < tasks.size(); ++at) {
+            const auto &task = tasks.at(at);
+            if (task.goal_index != index || !work::TaskTable::is_live(task.lifecycle) ||
+                task_authority.at(task.slot).phase != work::TaskAuthorityPhase::authorized) {
+                continue;
+            }
+            const auto check = check_task_authority(at, now_us, durable_seq);
+            if (check.status == AYNI_DENIED && check.reason != AYNI_REASON_GRANT_SUBJECT &&
+                task_authority.pause(task.slot, stamp)) {
+                tasks.authority_changed(at, stamp);
+            }
+        }
+    }
     if (index == work::GoalTable::no_index ||
         !work::GoalTable::is_live(goals.at(index).lifecycle)) {
         grants.end_goal_grants(selected.goal_id, stamp);

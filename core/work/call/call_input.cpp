@@ -47,7 +47,7 @@ ayni_status_t check_business_input_limit(const catalog::CallContract &contract,
 // public normalization. The canonical body is the sole execution input fact.
 ayni_status_t encode_business_input(ayni_bytes_v1 domain, const catalog::CallContract &contract,
                                     const ayni_value_v1 &input, uint8_t *out, uint32_t capacity,
-                                    uint32_t &size) {
+                                    uint32_t &size, catalog::DecodedValue *normalized_out) {
     catalog::DecodedBusiness business;
     auto status = catalog::decode_business(domain, contract.business_contract, business);
     if (status != AYNI_OK) {
@@ -66,7 +66,11 @@ ayni_status_t encode_business_input(ayni_bytes_v1 domain, const catalog::CallCon
     if (status != AYNI_OK) {
         return status;
     }
-    return catalog::encode_admitted_value(normalized.view(), out, capacity, size);
+    status = catalog::encode_admitted_value(normalized.view(), out, capacity, size);
+    if (status == AYNI_OK && normalized_out) {
+        *normalized_out = normalized;
+    }
+    return status;
 }
 
 // Saved business input must already include defaults and canonical ordering;

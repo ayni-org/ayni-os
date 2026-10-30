@@ -21,6 +21,7 @@
 #include "durability/batch/prefix_scan.h"
 #include "kernel/service/model/work_model.h"
 #include "kernel/service/persistence/persistent_store.h"
+#include "work/task/task_records.h"
 
 #include <cstdint>
 #include <optional>
@@ -214,6 +215,11 @@ class WorkReplay {
     bool reauthorized_cohort_complete(uint32_t index, foundation::TransitionStamp stamp) const;
     // Cross-table facts are checked without consulting the new boot catalog.
     bool goal_authority_consistent(uint32_t goal_index, uint64_t boot_epoch_limit) const;
+    // Historical optional references use saved Call/Grant facts, never current catalogs.
+    // Task-first metadata must close with exactly its new source Call's initial Grant.
+    bool pair_tool_acceptance(const work::CallRecord &record);
+    bool task_tools_consistent(uint32_t task_index, const work::TaskAuthorityRecord &record,
+                               uint64_t boot_epoch_limit) const;
     bool task_authority_consistent(uint32_t task_index, uint64_t boot_epoch_limit) const;
     // Retained selections share subject/Scope/history checks; reclaimed rows
     // are allowed only by callers validating terminal or historical evidence.
@@ -293,6 +299,12 @@ class WorkReplay {
         // Task's complete state/admission pair has closed. 0 before any.
         uint64_t task_created_seq = 0;
         std::optional<uint64_t> goal; // Nonzero created Goal awaiting its state; empty otherwise.
+        struct ToolBindPair {
+            uint64_t task_id; // Exact owner awaiting a new source Call in this batch.
+            work::TaskToolReference reference; // Appended source ID and initial selected Grant.
+        };
+        std::optional<ToolBindPair> tool_bind; // Closed only by that initial Call record.
+        work::TaskRecordChange task_authority_change = work::TaskRecordChange::state;
         std::optional<uint64_t> task_authority; // Exact new Task awaiting its admission record.
         std::optional<uint64_t> task; // Nonzero created Task awaiting its state; empty otherwise.
         std::optional<uint64_t>
@@ -359,7 +371,8 @@ class WorkReplay {
                    (!pause_group || pause_group->command_seen) &&
                    (!target_command || target_command->command_seen) &&
                    (!limit_raise || limit_raise->stage == TaskLimitPair::Stage::command) && !goal &&
-                   !task && !task_authority && !goal_authority && !authority.pending() &&
+                   !task && !task_authority && !tool_bind && !goal_authority &&
+                   !authority.pending() &&
                    (!approval || approval->stage == ApprovalPair::Stage::complete) &&
                    (!reauthorization ||
                     reauthorization->stage == ReauthorizationPair::Stage::command);

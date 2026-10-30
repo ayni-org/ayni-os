@@ -659,7 +659,8 @@ TEST(GoalRestore, resolve_types_holds_live_goals_whose_type_this_boot_lacks) {
     goals.cancel(4, 2);
     const auto resolve = [](bool all_known) {
         return [all_known](const CatalogId &id, uint32_t version, ayni_trigger_kind_t,
-                           const ayni::catalog::WorkProfile &, uint32_t &out_index) {
+                           const ayni::catalog::WorkProfile &, const ayni::catalog::ToolPolicy &,
+                           uint32_t &out_index) {
             if (all_known || (id.equals(key("kept")) && version == 1U)) {
                 out_index = 7;
                 return AYNI_REASON_NONE;

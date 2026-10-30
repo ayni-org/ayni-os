@@ -12,7 +12,8 @@ namespace {
 // Typed and decoded creation share the same intrinsic schedule/profile contract.
 bool valid_schedule(const NewGoal &goal) {
     return catalog::GoalTypeRegistry::defines_trigger(goal.trigger.kind) && goal.trigger.fits() &&
-           goal.work_profile.valid() && PauseGroups::valid_membership(goal.pause_group) &&
+           goal.work_profile.valid() && goal.tools.valid() &&
+           PauseGroups::valid_membership(goal.pause_group) &&
            goal.work_profile.accepts(goal.trigger.kind, goal.trigger.period_us) &&
            goal.work_profile.accepts_occurrence_wait(goal.occurrence_wait_max_us);
 }
@@ -96,6 +97,7 @@ Goal GoalTable::created_goal(const NewGoal &goal, uint64_t goal_id, uint64_t rep
         goal.expiry_us == 0U ? no_time : time_after(goal.created_us, goal.expiry_us);
     created.occurrence_wait_max_us = goal.occurrence_wait_max_us;
     created.work_profile = goal.work_profile;
+    created.tools = goal.tools;
     created.pause_group = goal.pause_group;
     created.lifecycle = AYNI_GOAL_ACTIVE;
     if (goal.parent_goal_id != 0U && find(goal.parent_goal_id, created.parent_index)) {

@@ -114,7 +114,8 @@ std::size_t required_size(const ayni_config_v1 &config) {
 // Caller-provided kernel memory, over-sized and over-aligned so tests can
 // also hand out misaligned or short views of it.
 struct KernelMemory {
-    alignas(64) std::array<unsigned char, 98304> bytes{};
+    static constexpr std::size_t arena_bytes = 262144; // ABI 0.49 frozen tool-policy storage.
+    alignas(64) std::array<unsigned char, arena_bytes> bytes{};
     std::size_t size = 0;
     std::size_t align = 0;
 };

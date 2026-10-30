@@ -39,6 +39,7 @@
         "subscription"
       ],
       "call": [
+        "authority",
         "action",
         "execution",
         "subscription"
@@ -207,6 +208,7 @@
     "stdint.h"
   ],
   "public_cpp_headers": [
+    "array",
     "new",
     "optional",
     "charconv",

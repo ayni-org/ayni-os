@@ -168,7 +168,8 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     }
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq);
+                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq,
+                    work_.calls.identity(index).call_id);
     if (authority.status != AYNI_OK) {
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
@@ -224,11 +225,8 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
     // Tools are fixed for this attempt; a receipt may name only these (ADR-0054).
     delivery.tools = contract.result_format == catalog::call_tool_calls_result_format
                          ? offered_tools(task_index)
-                         : 0U;
-    uint32_t tool_count = 0;
-    for (uint32_t bits = delivery.tools; bits != 0U; bits &= bits - 1U) {
-        ++tool_count;
-    }
+                         : ToolSelection{};
+    const uint32_t tool_count = delivery.tools.count;
     ayni_subscription_open_v1 subscription{};
     if (contract.subscription && !prepare_subscription_delivery(index, now_us, subscription)) {
         return Advance::internal;

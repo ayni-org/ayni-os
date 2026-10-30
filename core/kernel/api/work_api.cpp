@@ -36,25 +36,22 @@ bool is_channel(ayni_channel_t channel) {
 // Copies a goal type's tool allow list (ADR-0054). Bindings resolve at start,
 // so only the references' shape and distinct binding ids are checked here.
 bool read_tools(const ayni_goal_type_v1 &input, ayni::catalog::GoalType &type) {
-    if (input.tool_count > AYNI_GOAL_TYPE_TOOL_COUNT_MAX || input.tool_reserved != 0U ||
+    if (input.tool_count > AYNI_GOAL_TYPE_TOOL_COUNT_MAX ||
+        input.tool_authorization > AYNI_TOOLS_ON_DEMAND ||
         (input.tool_count != 0U && input.tools == nullptr)) {
         return false;
     }
     for (uint32_t at = 0; at < input.tool_count; ++at) {
         const ayni_tool_ref_v1 &tool = input.tools[at];
-        if (tool.binding_version == 0U || tool.reserved != 0U ||
-            !type.tools[at].binding_id.assign(tool.binding_id)) {
+        if (!type.tools[at].binding_id.assign(tool.binding_id)) {
             return false;
         }
-        for (uint32_t before = 0; before < at; ++before) {
-            if (type.tools[before].binding_id.equals(tool.binding_id)) {
-                return false;
-            }
-        }
         type.tools[at].binding_version = tool.binding_version;
+        type.tools[at].role = tool.role;
     }
     type.tool_count = input.tool_count;
-    return true;
+    type.tool_authorization = input.tool_authorization;
+    return type.tool_policy().valid();
 }
 
 // ADR-0056: reject ambiguous/invalid declarations before copying a registration.

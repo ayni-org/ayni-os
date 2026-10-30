@@ -49,7 +49,8 @@ ayni_status_t admit_goal(const WorkModel &model, const Intent &intent, uint64_t 
     }
     const auto current = model.check_goal_authority(plan.goal_index, now_us, durable_seq);
     if (plan.previous.phase == work::GoalAuthorityPhase::authorized &&
-        (current.status == AYNI_OK || current.status == AYNI_BUSY)) {
+        (current.status == AYNI_OK || current.status == AYNI_BUSY) &&
+        !model.has_unusable_tool_authority(plan.goal_index, now_us, durable_seq)) {
         return refuse(AYNI_INVALID_STATE, AYNI_REASON_GOAL_STATE, failure);
     }
     if ((goal.trigger.kind == AYNI_TRIGGER_CALENDAR_DAILY ||
@@ -100,10 +101,7 @@ authority::GrantCheck select_references(const WorkModel &model, ReauthorizationP
                 model.check_grant(index, now_us, durable_seq, goal.goal_id).status != AYNI_OK) {
                 continue;
             }
-            if (!selected ||
-                (grant.bound_goal_id != 0U && model.grants.at(*selected).bound_goal_id == 0U) ||
-                ((grant.bound_goal_id != 0U) == (model.grants.at(*selected).bound_goal_id != 0U) &&
-                 grant.grant_id < model.grants.at(*selected).grant_id)) {
+            if (!selected || authority::prefer_admitted_grant(grant, model.grants.at(*selected))) {
                 selected = index;
             }
         }
@@ -154,6 +152,7 @@ bool publish(WorkModel &model, const ReauthorizationPlan &plan, uint64_t now_us,
         record.stamp = stamp;
         record.phase = work::TaskAuthorityPhase::authorized;
         record.references = plan.references;
+        model.task_authority.copy_staged_tools(task.slot, record);
         if (model.task_authority.restore_validated(task.slot, record) != AYNI_OK) {
             return false; // The unchanged fully preflighted cohort cannot refuse publication.
         }
@@ -178,6 +177,18 @@ ayni_status_t reauthorize_goal(WorkModel &model, const Intent &intent, uint64_t 
     auto checked = check_context(model, plan, now_us, durable_seq);
     if (checked.status == AYNI_OK) {
         checked = select_references(model, plan, now_us, durable_seq);
+    }
+    if (checked.status == AYNI_OK) {
+        for (uint32_t at = 0; at < model.tasks.size(); ++at) {
+            const auto &task = model.tasks.at(at);
+            if (task.goal_index != plan.goal_index || !work::TaskTable::is_live(task.lifecycle)) {
+                continue;
+            }
+            checked = model.stage_tool_reauthorization(at, now_us, durable_seq);
+            if (checked.status != AYNI_OK) {
+                break;
+            }
+        }
     }
     if (checked.status != AYNI_OK) {
         return refuse(checked.status, checked.reason, failure);

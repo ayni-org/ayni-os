@@ -141,10 +141,15 @@ uint8_t *CallTable::bytes(uint32_t index) const {
 // The coordinator proves foreign-key ownership. This owner verifies intrinsic
 // identity/stamp shape before reserving a stable slot or touching its byte pool.
 bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp) {
-    return foundation::is_kernel_id(id.call_id) && foundation::is_kernel_id(id.operation_id) &&
-           foundation::is_kernel_id(id.task_id) && foundation::is_kernel_id(id.owner_instance_id) &&
-           id.call_id != id.operation_id && id.call_id != id.task_id &&
-           id.operation_id != id.task_id &&
+    const bool source = id.authorization.grant_id == 0U
+                            ? id.authorization.revision == 0U
+                            : foundation::is_kernel_id(id.authorization.grant_id) &&
+                                  id.authorization.revision != 0U &&
+                                  id.authorization.grant_id < id.call_id;
+    return source && foundation::is_kernel_id(id.call_id) &&
+           foundation::is_kernel_id(id.operation_id) && foundation::is_kernel_id(id.task_id) &&
+           foundation::is_kernel_id(id.owner_instance_id) && id.call_id != id.operation_id &&
+           id.call_id != id.task_id && id.operation_id != id.task_id &&
            foundation::id_boot_epoch(id.call_id) == stamp.boot_epoch &&
            foundation::id_boot_epoch(id.operation_id) == stamp.boot_epoch &&
            foundation::id_boot_epoch(id.task_id) <= stamp.boot_epoch &&

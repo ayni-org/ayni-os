@@ -247,7 +247,8 @@ CallRuntime::Advance CallRuntime::renew_subscription(uint32_t index, uint64_t no
     }
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq);
+                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq,
+                    work_.calls.identity(index).call_id);
     if (authority.status != AYNI_OK || !resources_.executable(slots_[index].active->claim)) {
         lease.inhibition = work::CallCancelCause::authority;
         close_subscription_gate(index);

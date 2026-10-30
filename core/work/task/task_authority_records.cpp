@@ -4,7 +4,7 @@
 namespace ayni::work {
 
 void write_task_authority_record(const TaskAuthorityRecord &record, uint8_t *body) {
-    foundation::BodyWriter writer(body, task_authority_record_max(record.count));
+    foundation::BodyWriter writer(body, task_authority_record_max(record.count, record.tool_count));
     writer.u64(record.task_id);
     writer.u64(record.ceiling.goal_id);
     writer.u64(record.ceiling.commit_seq);
@@ -15,6 +15,12 @@ void write_task_authority_record(const TaskAuthorityRecord &record, uint8_t *bod
     for (uint32_t index = 0; index < record.count; ++index) {
         writer.u64(record.references[index].grant_id);
         writer.u32(record.references[index].revision);
+    }
+    writer.u32(record.tool_count);
+    for (uint32_t at = 0; at < record.tool_count; ++at) {
+        writer.u64(record.tools[at].source_call_id);
+        writer.u64(record.tools[at].selected.grant_id);
+        writer.u32(record.tools[at].selected.revision);
     }
 }
 
@@ -36,6 +42,13 @@ bool read_task_authority_record(const uint8_t *body, uint32_t size, TaskAuthorit
     }
     for (uint32_t index = 0; index < record.count; ++index) {
         record.references[index] = {reader.u64(), reader.u32()};
+    }
+    record.tool_count = reader.u32();
+    if (record.tool_count > record.tools.size()) {
+        return false;
+    }
+    for (uint32_t at = 0; at < record.tool_count; ++at) {
+        record.tools[at] = {reader.u64(), {reader.u64(), reader.u32()}};
     }
     if (!reader.ok() || !valid_task_authority_record(record)) {
         return false;

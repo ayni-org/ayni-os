@@ -5,6 +5,7 @@
 
 #include "catalog/binding/binding_registry.h"
 #include "work/action/action_record.h"
+#include "work/authority/authority_facts.h"
 #include "work/call/call_input.h"
 #include "work/call/tool_calls.h"
 #include "work/execution/execution_fact.h"
@@ -22,12 +23,13 @@ struct CallIdentity {
     catalog::CatalogId step_key;   // Unique within the Task, nonempty.
     catalog::CatalogId binding_id; // Exact trusted selection, nonempty.
     uint32_t binding_version;      // Positive selection version.
-    catalog::CatalogId capability_id; // Exact authority/execution declaration.
-    uint32_t capability_version;      // Positive semantic version.
-    catalog::CatalogId provider_id;   // Exact implementation selected at acceptance.
-    uint32_t provider_version;        // Positive implementation version.
-    catalog::CatalogId endpoint;      // Trusted endpoint token, nonempty.
-    catalog::CatalogId destination;   // Empty iff this contract has no EGRESS effect.
+    catalog::CatalogId capability_id;   // Exact authority/execution declaration.
+    uint32_t capability_version;        // Positive semantic version.
+    catalog::CatalogId provider_id;     // Exact implementation selected at acceptance.
+    uint32_t provider_version;          // Positive implementation version.
+    catalog::CatalogId endpoint;        // Trusted endpoint token, nonempty.
+    catalog::CatalogId destination;     // Empty iff this contract has no EGRESS effect.
+    AuthorityReference authorization{}; // Original on-demand Grant; zero pair for required tools.
     // Value projection of the persisted selection; no pointers or mutable catalog index.
     catalog::Binding binding() const;
 };
