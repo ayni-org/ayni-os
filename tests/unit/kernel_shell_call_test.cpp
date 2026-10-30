@@ -149,7 +149,12 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
             WorkNode::create_body(work.instance(agent_a), 0, "shell", 1, {}, AYNI_TRIGGER_ONCE);
         const auto goal = work.create(create);
         ASSERT_EQ(goal.status, AYNI_OK);
-        for (uint32_t at = 0; at < 500U; ++at) {
+        // ADR-0085: await the real worker's terminal rather than assuming that
+        // 500 simulated advances cover its 1s execution budget under sanitizers.
+        // The bounded harness wait does not change the Provider's timeout or result checks.
+        constexpr auto completion_wait = std::chrono::seconds(5);
+        const auto completion_deadline = std::chrono::steady_clock::now() + completion_wait;
+        while (std::chrono::steady_clock::now() < completion_deadline) {
             work.node().sim().complete_storage();
             work.node().sim().advance_us(1000);
             work.node().step();
