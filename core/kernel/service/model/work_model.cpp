@@ -114,6 +114,11 @@ WorkModel::check_grant_subjects(const authority::GrantTable::CheckedChain &chain
     return {AYNI_OK, AYNI_REASON_NONE};
 }
 
+bool WorkModel::task_references_releasable(const work::Task &task, uint64_t durable_seq) const {
+    return !work::TaskTable::is_live(task.lifecycle) && task.commit_seq <= durable_seq &&
+           calls.can_retire_task(task.task_id, durable_seq);
+}
+
 // Current references are facts owned by work. Authority receives only a local
 // exclusion mask, so its reclaim policy never reads Goal state (ADR-0037).
 authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t durable_seq) const {
@@ -135,8 +140,7 @@ authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t d
     for (uint32_t index = 0; index < tasks.size(); ++index) {
         const auto &task = tasks.at(index);
         work::TaskAuthorityRecord record{};
-        if ((!work::TaskTable::is_live(task.lifecycle) && task.commit_seq <= durable_seq &&
-             calls.can_retire_task(task.task_id, durable_seq)) ||
+        if (task_references_releasable(task, durable_seq) ||
             !task_authority.read(task.slot, task.task_id, record)) {
             continue;
         }
@@ -144,6 +148,16 @@ authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t d
             uint32_t grant_index = 0;
             if (grants.find(record.references[at].grant_id, grant_index)) {
                 excluded.add(grant_index);
+            }
+        }
+        for (uint32_t at = 0; at < record.tool_count; ++at) {
+            uint32_t grant_index = 0, source_call = 0;
+            if (grants.find(record.tools[at].selected.grant_id, grant_index)) {
+                excluded.add(grant_index);
+            }
+            if (calls.find(record.tools[at].source_call_id, source_call) &&
+                grants.find(calls.identity(source_call).authorization.grant_id, grant_index)) {
+                excluded.add(grant_index); // Original ceiling survives later rebindings.
             }
         }
     }

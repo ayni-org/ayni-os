@@ -182,6 +182,8 @@ struct ayni_kernel {
                             const ayni::catalog::ProviderBusinessDefinitions &definitions = {});
     // Copy a trusted binding; cross-catalog references resolve at startup.
     ayni_status_t configure(const ayni::catalog::Binding &binding);
+    // Catalog owns adopted immutable metadata; no backend callback or implicit Grant.
+    ayni_status_t configure_usage(ayni_string_v1 summary, const ayni_tool_usage_v1 &usage);
     // These existing descriptions retain their domain-owned decoders and error order.
     ayni_status_t configure(const ayni_executor_v1 &executor);
     // Register the execution binding with its existing domain validation order.

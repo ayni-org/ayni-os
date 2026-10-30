@@ -15,6 +15,12 @@ namespace ayni::work {
 // Durable authorization phase, independent of user/policy/recovery holds.
 enum class TaskAuthorityPhase : uint32_t { authorized = 1, paused = 2 };
 
+// An on-demand binding borrows its immutable ceiling from the source Call and
+// original Grant; only an explicit reauthorization may replace selected.
+struct TaskToolReference {
+    uint64_t source_call_id = 0; // Positive owning-Task Call; zero only in an unused entry.
+    AuthorityReference selected; // Whole current Grant, never a per-row union.
+};
 // Complete admission facts; references[0,count) match Goal requirement order.
 struct TaskAuthorityRecord {
     uint64_t task_id = 0;                // Exact nonzero Task ID, never a slot index.
@@ -23,6 +29,8 @@ struct TaskAuthorityRecord {
     TaskAuthorityPhase phase = TaskAuthorityPhase::authorized; // No proposed executable Task.
     uint32_t count = 0; // References, bounded by Goal's configured requirement capacity.
     std::array<AuthorityReference, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX> references{};
+    uint32_t tool_count = 0; // Bound source Calls, independent of the optional directory size.
+    std::array<TaskToolReference, AYNI_TASK_STEP_CAPACITY_MAX> tools{}; // Increasing source IDs.
 };
 
 // One shape validator for bytes and struct admission, without live Grant lookup.
@@ -34,6 +42,7 @@ class TaskAuthorityTable {
     struct Limits {
         uint32_t tasks;        // Positive Task capacity, matching TaskTable.
         uint32_t requirements; // Positive references per Task, matching Goal requirement capacity.
+        uint32_t tools = 0;    // On-demand refs per Task, bounded by its logical step capacity.
     };
     // Complete arena bytes/alignment; no Scope storage or allocation.
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
@@ -47,6 +56,15 @@ class TaskAuthorityTable {
     // Same identity/count, monotone stamp/binding; replacement requires clear().
     // Rebinding is proved by the enclosing replay transaction, not this table.
     ayni_status_t restore_validated(uint32_t slot, const TaskAuthorityRecord &record);
+    // Admission preflight: a logical tool Call reserves exactly one additional reference.
+    bool can_bind_tool(uint32_t slot) const;
+    // Same accepted Call transition; caller prevalidated identity, Grant, stamp and capacity.
+    void bind_tool_validated(uint32_t slot, TaskToolReference reference,
+                             foundation::TransitionStamp stamp);
+    // Owner-command scratch. Only selected Grant refs change; original source Calls remain.
+    void stage_tool_references(
+        uint32_t slot, const std::array<AuthorityReference, AYNI_TASK_STEP_CAPACITY_MAX> &selected);
+    void copy_staged_tools(uint32_t slot, TaskAuthorityRecord &record) const;
     // Known present slot in an unchanged Task table: deny without changing
     // selections or a user hold. True only for an authorized-to-paused change.
     // The enclosing transition updates the Task stamp only when changed.
@@ -69,12 +87,16 @@ class TaskAuthorityTable {
         BindingReference ceiling;            // Goal and admitted binding sequence.
         foundation::TransitionStamp stamp{}; // Last update, zero only when absent.
         TaskAuthorityPhase phase = TaskAuthorityPhase::authorized; // Meaningful when present.
-        uint32_t count = 0; // Used reference prefix; zero may be explicit admission.
+        uint32_t count = 0;      // Used reference prefix; zero may be explicit admission.
+        uint32_t tool_count = 0; // Used source-Call prefix; zero has no optional dependencies.
     };
     // Same binding means exact same identities; pause alone cannot reselect.
     bool same_references(uint32_t slot, const TaskAuthorityRecord &record) const;
     // Stable configured region, never a TaskTable row-index lookup.
     AuthorityReference *references_at(uint32_t slot) const;
+    TaskToolReference *tools_at(uint32_t slot) const;  // Live fixed region for that Task slot.
+    TaskToolReference *staged_at(uint32_t slot) const; // Owner-command scratch, not durable state.
+    TaskToolReference *tools_;       // Live regions followed by same-sized staging regions.
     Slot *slots_;                    // Caller arena, limits.tasks constructed slots.
     AuthorityReference *references_; // Caller arena, tasks * requirements constructed references.
     Limits limits_;                  // Immutable arena dimensions, no live Task copy.

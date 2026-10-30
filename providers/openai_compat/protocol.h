@@ -1,6 +1,7 @@
 #ifndef AYNI_OPENAI_COMPAT_PROTOCOL_H
 #define AYNI_OPENAI_COMPAT_PROTOCOL_H
 #include <array>
+#include <ayni/detail/tool_usage.hpp>
 #include <ayni/providers/openai_compat.h>
 #include <cstddef>
 #include <memory>
@@ -22,9 +23,9 @@ struct Tool {
     std::array<char, string_count * AYNI_CATALOG_ID_MAX_BYTES> strings{};
     std::array<uint8_t, AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX> original_domain{};
     std::array<uint8_t, AYNI_BUSINESS_CONTRACT_BYTES_MAX> business_contract{};
-    ayni_tool_usage_v1 usage{}; // Read-only copied metadata; identity aliases view's owned strings.
+    ayni_tool_usage_v1 usage{}; // Read-only view into usage_storage; never a caller-owned string.
     std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> field_usage{};
-    std::array<char, AYNI_TOOL_USAGE_MAX_BYTES> usage_strings{};
+    detail::ToolUsage usage_storage;
     bool copy(const ayni_tool_v1 &source); // Owner-valid Core view; copies every borrowed string.
     // Exact pairing, fields, UTF-8 and byte budgets; no allocation or fallback.
     bool copy_usage(const ayni_tool_usage_v1 &source);

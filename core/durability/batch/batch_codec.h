@@ -17,9 +17,9 @@
 
 namespace ayni::durability {
 
-// Schema 3 is the development boundary (ADR-0082). Other schemas
+// The current schema is the development boundary (ADR-0082). Other schemas
 // are rejected before recovery can write; no old data is implicitly adopted.
-constexpr uint16_t storage_schema = 4;
+constexpr uint16_t storage_schema = AYNI_STORAGE_SCHEMA_CURRENT;
 // WRITER_FENCE: alone in its batch, the body is the new writer_epoch as a
 // little-endian uint32 equal to the batch header's (C-STORE-005).
 constexpr uint16_t writer_fence_record_type = record_type::writer_fence;

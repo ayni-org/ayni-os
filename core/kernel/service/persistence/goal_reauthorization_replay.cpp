@@ -2,6 +2,8 @@
 // Table owners validate their facts; this proof owns only cross-table pairing.
 #include "kernel/service/persistence/work_replay.h"
 
+#include "authority/scope/business_request.h"
+#include "catalog/capability/business_encoding.h"
 #include "foundation/kernel_id.h"
 #include "kernel/service/command/command_records.h"
 #include "work/authority/authority_cleanup_records.h"
@@ -163,6 +165,79 @@ bool WorkReplay::matches_goal_reauthorization(const CommandMapping &mapping,
            saved_references_consistent(index, record, result.references, mapping.commit_seq);
 }
 
+// Source Calls are retained for the Task lifetime. Live Tasks additionally keep
+// both the original whole ceiling and the current selected Grant unreclaimable.
+bool WorkReplay::task_tools_consistent(uint32_t task_index, const work::TaskAuthorityRecord &record,
+                                       uint64_t boot_epoch_limit) const {
+    const auto &task = model_.tasks.at(task_index);
+    const bool retained = !model_.task_references_releasable(task, UINT64_MAX);
+    for (uint32_t at = 0; at < record.tool_count; ++at) {
+        const auto &reference = record.tools[at];
+        uint32_t call_index = 0;
+        if (foundation::id_boot_epoch(reference.source_call_id) > boot_epoch_limit ||
+            foundation::id_boot_epoch(reference.selected.grant_id) > boot_epoch_limit ||
+            reference.selected.revision != authority::grant_active_revision ||
+            !model_.calls.find(reference.source_call_id, call_index)) {
+            return false;
+        }
+        const auto &id = model_.calls.identity(call_index);
+        const auto &contract = model_.calls.contract(call_index);
+        const auto &policy = model_.goals.at(task.goal_index).tools;
+        if (id.task_id != task.task_id || id.owner_instance_id != task.owner_instance_id ||
+            !id.authorization.grant_id ||
+            id.authorization.revision != authority::grant_active_revision ||
+            contract.category != catalog::CallClass::tool ||
+            policy.authorization != AYNI_TOOLS_ON_DEMAND ||
+            !policy.contains({id.binding_id.data(), id.binding_id.size()}, id.binding_version)) {
+            return false;
+        }
+        uint32_t source = 0, selected = 0;
+        const bool has_source = model_.grants.find(id.authorization.grant_id, source);
+        const bool has_selected = model_.grants.find(reference.selected.grant_id, selected);
+        if (retained && (!has_source || !has_selected)) {
+            return false;
+        }
+        if (!has_source && !has_selected) {
+            continue; // Only safely retired terminal history may outlive both Grant rows.
+        }
+        const auto known_scope = model_.grants.scope(has_source ? source : selected);
+        uint32_t ignored = 0;
+        if (has_source && !model_.tool_authority_source(task.task_id, reference, ignored, source)) {
+            return false;
+        }
+        const auto domain = model_.calls.domain(call_index);
+        if (!model_.calls.state(call_index).content_erased) {
+            catalog::DecodedBusiness proof;
+            work::CallInputView input;
+            if (catalog::decode_business(domain, contract.business_contract, proof) != AYNI_OK ||
+                work::read_call_input(domain, model_.calls.input(call_index), contract, input) !=
+                    AYNI_OK) {
+                return false;
+            }
+            const auto original = authority::contains_business_request(
+                id.binding(), domain, proof.view(), input.value.view(), known_scope);
+            if (original.status != AYNI_OK || !original.covered) {
+                return false;
+            }
+        } // Erasure is independently proved by calls_consistent's privacy/provenance checks.
+        if (has_selected) {
+            const auto &grant = model_.grants.at(selected);
+            const auto created = model_.calls.state(call_index).created.transition.commit_seq;
+            const auto admission_seq =
+                created > record.ceiling.commit_seq ? created : record.ceiling.commit_seq;
+            if (grant.subject_instance_id != task.owner_instance_id ||
+                (grant.bound_goal_id && grant.bound_goal_id != task.goal_id) ||
+                !model_.grants.active_at(selected, admission_seq) ||
+                !model_.grants.covers_saved_scope(selected, id.capability_id, id.capability_version,
+                                                  domain, known_scope,
+                                                  contract.business_contract)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // A terminal Task can retain the old generation after the Goal changes its
 // choices. Live Tasks must still match the current ceiling and deny phase.
 bool WorkReplay::task_authority_consistent(uint32_t index, uint64_t boot_epoch_limit) const {
@@ -173,13 +248,16 @@ bool WorkReplay::task_authority_consistent(uint32_t index, uint64_t boot_epoch_l
     if (!model_.task_authority.read(task.slot, task.task_id, admission) ||
         admission.stamp.commit_seq > task.commit_seq ||
         foundation::id_boot_epoch(task.task_id) > boot_epoch_limit ||
-        admission.ceiling.goal_id != task.goal_id || admission.count != ceiling.count) {
+        admission.ceiling.goal_id != task.goal_id || admission.count != ceiling.count ||
+        !task_tools_consistent(index, admission, boot_epoch_limit)) {
         return false;
     }
     if (model_.matches_task_ceiling(admission, task.goal_index)) {
         return !work::TaskTable::is_live(task.lifecycle) ||
-               ((admission.phase == work::TaskAuthorityPhase::paused) ==
-                (ceiling.phase == work::GoalAuthorityPhase::paused));
+               (ceiling.phase == work::GoalAuthorityPhase::paused
+                    ? admission.phase == work::TaskAuthorityPhase::paused
+                    : admission.phase == work::TaskAuthorityPhase::authorized ||
+                          admission.tool_count != 0);
     }
     if (work::TaskTable::is_live(task.lifecycle) ||
         admission.ceiling.commit_seq < goal.created.commit_seq ||

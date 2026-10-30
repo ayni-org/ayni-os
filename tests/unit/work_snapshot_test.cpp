@@ -466,8 +466,9 @@ TEST(WorkSnapshot, writer_reports_a_record_that_does_not_fit_and_reset_is_repeat
     EXPECT_EQ(writer.next(small, sizeof(small), size), WorkSnapshotWriter::Page::no_room);
     EXPECT_EQ(size, 0U);
     writer.reset();
-    std::array<uint8_t, 4096> bytes{};
-    EXPECT_EQ(writer.next(bytes.data(), bytes.size(), size), WorkSnapshotWriter::Page::page);
+    std::vector<uint8_t> bytes(ayni::kernel::snapshot_record_max(capacities()));
+    EXPECT_EQ(writer.next(bytes.data(), static_cast<uint32_t>(bytes.size()), size),
+              WorkSnapshotWriter::Page::page);
     EXPECT_EQ(size, metadata(original.get()).payload_length);
     EXPECT_EQ(ayni::kernel::snapshot_record_max(capacities()) <= bytes.size(), true);
 }

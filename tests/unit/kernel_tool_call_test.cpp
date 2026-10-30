@@ -901,9 +901,10 @@ class ToolAllowList : public ToolCalls {
 TEST_F(ToolAllowList, registration_checks_each_reference) {
     work.node().create();
     ayni_tool_ref_v1 refs[AYNI_GOAL_TYPE_TOOL_COUNT_MAX + 1U] = {};
-    const char *ids[] = {"t.a", "t.b", "t.c", "t.d", "t.e", "t.f", "t.g", "t.h", "t.i"};
+    std::array<std::string, AYNI_GOAL_TYPE_TOOL_COUNT_MAX + 1U> ids;
     for (uint32_t at = 0; at <= AYNI_GOAL_TYPE_TOOL_COUNT_MAX; ++at) {
-        refs[at] = {text(ids[at]), 1, 0};
+        ids[at] = "t." + std::to_string(at);
+        refs[at] = {{ids[at].data(), static_cast<uint32_t>(ids[at].size())}, 1, 0};
     }
     auto type = goal_type_desc("other", 1);
     const auto refused = [&](auto change) {
@@ -915,15 +916,19 @@ TEST_F(ToolAllowList, registration_checks_each_reference) {
         return ayni_register_goal_type(work.kernel(), &copy) == AYNI_INVALID_ARGUMENT;
     };
     EXPECT_TRUE(refused([&](auto &copy, auto *) {
-        copy.tool_count = 9;
+        copy.tool_count = AYNI_GOAL_TYPE_TOOL_COUNT_MAX + 1U;
         copy.tools = refs;
     }));
-    EXPECT_TRUE(refused([](auto &copy, auto *) { copy.tool_reserved = 1; }));
+    EXPECT_TRUE(refused([](auto &copy, auto *) { copy.tool_authorization = UINT32_MAX; }));
     EXPECT_TRUE(refused([](auto &copy, auto *) { copy.tools = nullptr; }));
     EXPECT_TRUE(refused([](auto &, auto *edited) { edited[1].binding_version = 0; }));
-    EXPECT_TRUE(refused([](auto &, auto *edited) { edited[1].reserved = 1; }));
+    EXPECT_TRUE(refused([](auto &, auto *edited) { edited[1].role = UINT32_MAX; }));
+    EXPECT_TRUE(refused([](auto &, auto *edited) {
+        edited[0].role = AYNI_TOOL_ROLE_SHELL;
+        edited[1].role = AYNI_TOOL_ROLE_SHELL;
+    }));
     EXPECT_TRUE(refused([](auto &, auto *edited) { edited[1].binding_id = text("Not.Id"); }));
-    EXPECT_TRUE(refused([](auto &, auto *edited) { edited[1].binding_id = text("t.a"); }));
+    EXPECT_TRUE(refused([](auto &, auto *edited) { edited[1].binding_id = edited[0].binding_id; }));
     // Distinct ids at different versions are the duplicate case too.
     EXPECT_TRUE(refused([](auto &, auto *edited) {
         edited[1] = edited[0];
@@ -931,7 +936,7 @@ TEST_F(ToolAllowList, registration_checks_each_reference) {
     }));
     type.tool_count = AYNI_GOAL_TYPE_TOOL_COUNT_MAX;
     type.tools = refs;
-    type.tool_reserved = 0;
+    type.tool_authorization = 0;
     EXPECT_EQ(ayni_register_goal_type(work.kernel(), &type), AYNI_OK);
     // An empty list needs no array: only the full registry refuses it.
     auto empty = goal_type_desc("assist", 2);

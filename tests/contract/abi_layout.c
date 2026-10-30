@@ -9,6 +9,7 @@
 #include <ayni/calls.h>
 #include <ayni/context.h>
 #include <ayni/control.h>
+#include <ayni/directory.h>
 #include <ayni/execution.h>
 #include <ayni/memory.h>
 #include <ayni/resources.h>
@@ -254,14 +255,14 @@ AYNI_LAYOUT(goal_type_work_profile,
 AYNI_LAYOUT(goal_type_tool_count,
             offsetof(ayni_goal_type_v1, tool_count) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 16);
 AYNI_LAYOUT(goal_type_tool_reserved,
-            offsetof(ayni_goal_type_v1, tool_reserved) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 20);
+            offsetof(ayni_goal_type_v1, tool_authorization) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 20);
 AYNI_LAYOUT(goal_type_tools,
             offsetof(ayni_goal_type_v1, tools) == AYNI_ROUND8(24 + 7 * AYNI_PTR) + 24);
 AYNI_LAYOUT(goal_type_size, sizeof(ayni_goal_type_v1) ==
                                 AYNI_ROUND8(AYNI_ROUND8(24 + 7 * AYNI_PTR) + 32 + AYNI_PTR));
 AYNI_LAYOUT(tool_ref_binding_id, offsetof(ayni_tool_ref_v1, binding_id) == 0);
 AYNI_LAYOUT(tool_ref_binding_version, offsetof(ayni_tool_ref_v1, binding_version) == 2 * AYNI_PTR);
-AYNI_LAYOUT(tool_ref_reserved, offsetof(ayni_tool_ref_v1, reserved) == 4 + 2 * AYNI_PTR);
+AYNI_LAYOUT(tool_ref_reserved, offsetof(ayni_tool_ref_v1, role) == 4 + 2 * AYNI_PTR);
 AYNI_LAYOUT(tool_ref_size, sizeof(ayni_tool_ref_v1) == 8 + 2 * AYNI_PTR);
 
 AYNI_LAYOUT(goal_info_struct_size, offsetof(ayni_goal_info_v1, struct_size) == 0);
@@ -383,7 +384,7 @@ AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_call_tool, offsetof(ayni_task_snapshot_v1, call_tool) == 80 + 11 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 15 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 17 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -936,3 +937,18 @@ AYNI_LAYOUT(create_pause_group, offsetof(ayni_goal_create_v1, pause_group) == 56
 AYNI_LAYOUT(goal_info_pause_group, offsetof(ayni_goal_info_v1, pause_group) == 248);
 AYNI_LAYOUT(pause_group_set_size, sizeof(ayni_pause_group_set_v1) == 16);
 AYNI_LAYOUT(pause_group_info_size, sizeof(ayni_pause_group_info_v1) == 40);
+
+/* ABI 0.49: directory values are fixed layouts, not extensible descriptors. */
+AYNI_LAYOUT(directory_cursor_size, sizeof(ayni_capability_cursor_v1) == 48);
+AYNI_LAYOUT(directory_cursor_position, offsetof(ayni_capability_cursor_v1, position) == 44);
+AYNI_LAYOUT(directory_info_size, sizeof(ayni_capability_info_v1) == (AYNI_PTR == 8 ? 64 : 36));
+AYNI_LAYOUT(directory_detail_info, offsetof(ayni_capability_detail_v1, info) == 8);
+AYNI_LAYOUT(task_tool_authority_size, sizeof(ayni_task_tool_authority_v1) == 56);
+AYNI_LAYOUT(task_tool_authority_source,
+            offsetof(ayni_task_tool_authority_v1, source_call_id) == 16);
+AYNI_LAYOUT(task_tool_authority_stamp,
+            offsetof(ayni_task_tool_authority_v1, authority_commit_seq) == 48);
+AYNI_LAYOUT(snapshot_directory_list,
+            offsetof(ayni_task_snapshot_v1, list_capabilities) == 96 + 15 * AYNI_PTR);
+AYNI_LAYOUT(snapshot_directory_inspect,
+            offsetof(ayni_task_snapshot_v1, inspect_capability) == 96 + 16 * AYNI_PTR);

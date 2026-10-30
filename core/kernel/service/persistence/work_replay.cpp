@@ -135,6 +135,9 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
 
 // Preserve the exact atomic partners while dispatch remains a short list of invariant owners.
 bool WorkReplay::allows_pending_record(const durability::RecordHeader &header) const {
+    if (pairing_.tool_bind && header.type != work::call_record_type) {
+        return false;
+    }
     if (pairing_.context) {
         const auto &pair = *pairing_.context;
         const auto expected = pair.expected.kind == AYNI_INTENT_CONTEXT_FORGET && !pair.privacy_seen
@@ -276,8 +279,12 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     // A goal is created for an instance that has started.
     if (pairing_.goal.has_value() || pairing_.goal_authority.has_value() ||
         !work::read_goal_record(body, size, record) ||
-        model_.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
+        model_.agents.find_instance(record.goal.owner_instance_id) == nullptr ||
+        !model_.child_tool_policy_allowed(record.goal.parent_goal_id, record.goal.tools)) {
         return RecordUse::corrupt;
+    }
+    if (record.goal.tools.count > model_.catalogs.bindings.capacity()) {
+        return RecordUse::no_room;
     }
     record.goal.goal_type_index = work::GoalTable::no_index;
     uint32_t index = 0;
@@ -417,7 +424,6 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
     const work::TaskTable::Restore restore =
         model_.tasks.restore(record.task, record.task_id, record.replaced_task_id, stamp);
     if (restore == work::TaskTable::Restore::restored) {
-        model_.calls.retire_task(record.replaced_task_id);
         uint32_t task_index = 0;
         if (!model_.tasks.find(record.task_id, task_index)) {
             return RecordUse::corrupt;
@@ -449,16 +455,52 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
     const bool created = task.created_transition_id == stamp.transition_id;
     const auto ceiling = model_.goal_authority.at(task.goal_index);
     const bool reauthorizing = pairing_.reauthorization.has_value();
-    if ((created || reauthorizing) ? record.phase != work::TaskAuthorityPhase::authorized
-                                   : record.phase != work::TaskAuthorityPhase::paused ||
-                                         ceiling.phase != work::GoalAuthorityPhase::paused ||
-                                         ceiling.stamp.commit_seq != stamp.commit_seq) {
+    const auto change = pairing_.task_authority_change;
+    const bool tool_bind = change == work::TaskRecordChange::tool_bind;
+    const bool tool_pause = change == work::TaskRecordChange::tool_pause;
+    work::TaskAuthorityRecord previous{};
+    const bool retained = model_.task_authority.read(
+        task.slot, created ? task.replaced_task_id : task.task_id, previous);
+    if (created) {
+        if (record.phase != work::TaskAuthorityPhase::authorized || record.tool_count) {
+            return RecordUse::corrupt;
+        }
+    } else if (tool_bind) {
+        if (!retained || pairing_.tool_bind ||
+            record.phase != work::TaskAuthorityPhase::authorized ||
+            previous.phase != work::TaskAuthorityPhase::authorized ||
+            record.tool_count != previous.tool_count + 1U ||
+            record.tools[previous.tool_count].source_call_id != task.call.id) {
+            return RecordUse::corrupt;
+        }
+        pairing_.tool_bind =
+            BatchPairing::ToolBindPair{task.task_id, record.tools[previous.tool_count]};
+    } else if (tool_pause) {
+        if (!retained || previous.phase != work::TaskAuthorityPhase::authorized ||
+            record.phase != work::TaskAuthorityPhase::paused ||
+            record.tool_count != previous.tool_count || !record.tool_count ||
+            ceiling.phase != work::GoalAuthorityPhase::authorized) {
+            return RecordUse::corrupt;
+        }
+    } else if (reauthorizing) {
+        if (record.phase != work::TaskAuthorityPhase::authorized || !retained ||
+            record.tool_count != previous.tool_count) {
+            return RecordUse::corrupt;
+        }
+    } else if (record.phase != work::TaskAuthorityPhase::paused ||
+               ceiling.phase != work::GoalAuthorityPhase::paused ||
+               ceiling.stamp.commit_seq != stamp.commit_seq || !retained ||
+               record.tool_count != previous.tool_count) {
         return RecordUse::corrupt;
     }
-    work::TaskAuthorityRecord previous{};
-    if (model_.task_authority.read(task.slot, created ? task.replaced_task_id : task.task_id,
-                                   previous)) {
+    if (retained && (created || reauthorizing)) {
         model_.release_task_references(previous, stamp.commit_seq);
+    }
+    if (created) {
+        model_.calls.retire_task(task.replaced_task_id);
+    }
+    if (reauthorizing && !task_tools_consistent(index, record, UINT64_MAX)) {
+        return RecordUse::corrupt;
     }
     const auto result = created ? model_.task_authority.install_validated(task.slot, record)
                                 : model_.task_authority.restore_validated(task.slot, record);
@@ -466,6 +508,7 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
         return result == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
     }
     pairing_.task_authority.reset();
+    pairing_.task_authority_change = work::TaskRecordChange::state;
     return RecordUse::applied;
 }
 
@@ -481,7 +524,21 @@ RecordUse WorkReplay::restore_task_state(const uint8_t *body, uint32_t size,
         return RecordUse::corrupt;
     }
     if (record.task_id == pairing_.task) {
+        if (record.change != work::TaskRecordChange::state) {
+            return RecordUse::corrupt;
+        }
         pairing_.task.reset();
+    }
+    pairing_.task_authority_change = record.change;
+    if (record.change == work::TaskRecordChange::tool_bind ||
+        record.change == work::TaskRecordChange::tool_pause) {
+        if (model_.tasks.at(index).created_transition_id == stamp.transition_id) {
+            return RecordUse::corrupt;
+        }
+        pairing_.task_authority = record.task_id;
+        return use_of(record.change == work::TaskRecordChange::tool_bind
+                          ? model_.tasks.restore_state(index, record.state, stamp)
+                          : model_.tasks.restore_authority_state(index, record.state, stamp));
     }
     if (record.change == work::TaskRecordChange::resume_wait) {
         // Standalone wait resume preserves the original call and requires exact owner identity.
@@ -855,7 +912,8 @@ bool WorkReplay::goal_authority_consistent(uint32_t goal_index, uint64_t boot_ep
         return false; // Schema 3 never infers authorization from absent evidence.
     }
     const auto record = model_.goal_authority.at(goal_index);
-    if (record.stamp.commit_seq < goal.created.commit_seq ||
+    if (!model_.child_tool_policy_allowed(goal.parent_goal_id, goal.tools) ||
+        record.stamp.commit_seq < goal.created.commit_seq ||
         record.stamp.transition_id < goal.created.transition_id) {
         return false;
     }
@@ -1032,12 +1090,14 @@ void WorkReplay::finish(uint64_t now_us) {
     model_.agents.fault_unregistered();
     model_.goals.resolve_types([this](const catalog::CatalogId &id, uint32_t version,
                                       ayni_trigger_kind_t trigger,
-                                      const catalog::WorkProfile &profile, uint32_t &out_index) {
+                                      const catalog::WorkProfile &profile,
+                                      const catalog::ToolPolicy &tools, uint32_t &out_index) {
         const catalog::GoalTypeRegistry::Lookup type =
             model_.catalogs.goal_types.find({id.data(), id.size()}, version);
         switch (type.kind) {
         case catalog::GoalTypeRegistry::Lookup::Kind::found:
-            if (!(model_.catalogs.goal_types.at(type.index).work_profile == profile)) {
+            if (!(model_.catalogs.goal_types.at(type.index).work_profile == profile) ||
+                !(model_.catalogs.goal_types.at(type.index).tool_policy() == tools)) {
                 return AYNI_REASON_GOAL_TYPE_VERSION;
             }
             out_index = type.index;

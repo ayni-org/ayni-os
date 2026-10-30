@@ -1,5 +1,6 @@
 // Composition boundary for already gated ABI operations (ADR-0058). Read-only
 // views never grant mutation; each change invokes the module that owns its fact.
+#include "catalog/capability/field_domain.h"
 #include "kernel/runtime/kernel_state.h"
 
 namespace {
@@ -67,6 +68,37 @@ ayni_kernel::configure(const ayni::catalog::Provider &provider,
 }
 ayni_status_t ayni_kernel::configure(const ayni::catalog::Binding &binding) {
     return catalogs.bindings.add_validated(binding);
+}
+// Exact declarations must already exist. Metadata cannot resolve or replace an
+// implementation, and registration never executes a backend or grants authority.
+ayni_status_t ayni_kernel::configure_usage(ayni_string_v1 summary,
+                                           const ayni_tool_usage_v1 &usage) {
+    uint32_t index = 0;
+    if (!catalogs.bindings.find(usage.binding_id, usage.binding_version, index)) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto &binding = catalogs.bindings.at(index);
+    const auto capability = catalogs.capabilities.find(
+        {binding.capability.data(), binding.capability.size()}, binding.capability_version);
+    if (capability.kind != ayni::catalog::CapabilityRegistry::Lookup::Kind::found) {
+        return AYNI_NOT_FOUND;
+    }
+    // Field identity belongs to the authoritative domain, not explanatory input.
+    ayni_tool_v1 tool{};
+    tool.struct_size = sizeof(tool);
+    tool.binding_id = {binding.id.data(), binding.id.size()};
+    tool.binding_version = binding.version;
+    tool.capability_id = {binding.capability.data(), binding.capability.size()};
+    tool.capability_version = binding.capability_version;
+    ayni::catalog::DomainReader reader(catalogs.capabilities.domain_view(capability.index));
+    ayni::catalog::DomainField field;
+    while (reader.next(field)) {
+        tool.fields[tool.field_count++].field_id = field.id;
+    }
+    if (!reader.ok()) {
+        return AYNI_INTERNAL;
+    }
+    return catalogs.bindings.describe(index, summary, usage, tool);
 }
 ayni_status_t ayni_kernel::configure(const ayni_executor_v1 &executor) {
     return catalogs.execution.add_executor(executor);

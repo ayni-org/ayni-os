@@ -41,7 +41,8 @@ struct GoalRecordOptions {
     bool provenance = false; // A matching source footer is required; implies authority.
 };
 // A GOAL record without its goal type id, trigger source and parameters.
-constexpr uint32_t goal_record_fixed_size = 132; // Complete schema 4 creation, records.md.
+constexpr uint32_t goal_record_fixed_size =
+    132 + catalog::tool_policy_header_bytes; // Complete schema 5 creation, records.md.
 constexpr uint32_t goal_state_record_size =
     48 + sizeof(uint32_t); // Full state then GoalRecordChange.
 

@@ -375,8 +375,10 @@ TEST(GoalAuthorityPersistence, missing_duplicate_or_wrong_batch_metadata_restric
         } else if (fault == 3U) {
             for (auto &entry : batch.records) {
                 if (entry.header.type == goal_record_type) {
-                    ayni::foundation::store_le32(
-                        entry.body.data() + entry.body.size() - 2U * sizeof(uint32_t), 0);
+                    ayni::foundation::store_le32(entry.body.data() + entry.body.size() -
+                                                     ayni::catalog::tool_policy_header_bytes -
+                                                     2U * sizeof(uint32_t),
+                                                 0);
                 }
             }
         } else {

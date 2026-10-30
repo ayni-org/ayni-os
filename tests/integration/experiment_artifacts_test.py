@@ -16,6 +16,9 @@ def verify_compatibility_matrix(matrix, artifacts):
         evidence = [json.loads(line) for line in artifacts[row["case_id"]][1].splitlines()]
         facts = {(item["category"], item["name"]): item["value"] for item in evidence}
         assert isinstance(row["expected"], str) and row["expected"]  # Human-readable description.
+        if "storage" in row["reader"]:
+            # ADR-0085: manifests describe this binary, including injected-old-media cases.
+            assert artifacts[row["case_id"]][0]["storage_schema"] == int(row["reader"]["storage"])
         for side in ("writer", "reader"):
             assert row[side] and set(row[side]) <= version_fields
             for field, expected in row[side].items():

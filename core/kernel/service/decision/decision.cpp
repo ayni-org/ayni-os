@@ -81,9 +81,10 @@ bool admission_ready(const void *context, const work::Task &task) {
     // Catalog/subject recovery holds are static for this boot. Keep their
     // availability out of persistent authorization and policy failures;
     // registration cannot change during a strategy callback (C-LIFE-003/C-POLICY-001).
-    return !query.inspect_compatibility ||
-           query.model.goals.visit_lineage(
-               task.goal_index, [&](uint32_t at) { return query.references_compatible(at); });
+    return query.model.tool_references_compatible(task) &&
+           (!query.inspect_compatibility ||
+            query.model.goals.visit_lineage(
+                task.goal_index, [&](uint32_t at) { return query.references_compatible(at); }));
 }
 
 static_assert(alignof(ayni_policy_intent_v1) <= alignof(ayni_task_step_v1),
@@ -93,7 +94,7 @@ static_assert(alignof(ayni_policy_intent_v1) <= alignof(ayni_task_step_v1),
 // leaves it READY, after committing its steps and private checkpoint either
 // way; or holds it with hold_status and hold_reason.
 struct Verdict {
-    enum class Kind { end, progress, hold, call, memory };
+    enum class Kind { end, progress, hold, call, memory, redecide };
     Kind kind;
     work::TaskChange end;
     ayni_status_t hold_status;
@@ -279,6 +280,9 @@ Verdict judge_proposal(Verdict verdict, const DecisionBuffer &decisions, uint32_
                                                 memory.dependencies());
         if (check.status != AYNI_OK) {
             verdict = hold(check.status, check.reason);
+            if (calls.proposal_needs_redecision()) {
+                verdict.kind = Verdict::Kind::redecide;
+            }
         }
     }
     if (verdict.kind != Verdict::Kind::hold) {
@@ -295,6 +299,9 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
                                 const catalog::Strategy &strategy,
                                 const ayni_policy_output_v1 &output, Verdict verdict,
                                 CallRuntime &calls, OwnerClock clock, MemoryDecision &memory) {
+    if (verdict.kind == Verdict::Kind::redecide) {
+        return DecisionResult::none;
+    }
     work::WorkTables tables = model.tables();
     if (verdict.kind == Verdict::Kind::end && work::task_end_exhausts(tables, index, verdict.end)) {
         verdict = hold(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED);
@@ -304,6 +311,8 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
         memory.publish(stamp);
     }
     switch (verdict.kind) {
+    case Verdict::Kind::redecide:
+        return DecisionResult::internal; // Handled before any transition is allocated.
     case Verdict::Kind::end:
         record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
                stamp);
@@ -397,7 +406,7 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
         if (authority.status == AYNI_BUSY) {
             return DecisionResult::none;
         }
-        model.pause_goal_authority(task.goal_index);
+        model.pause_task_authority(index, clock.now_us(), durable_seq);
         return DecisionResult::applied;
     }
     const uint32_t strategy_index =
@@ -433,7 +442,7 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     // A non-reentrant callback can still run past a Grant deadline. Discard all
     // returned progress/checkpoint output before committing if authority expired.
     if (model.check_task_authority(index, clock.now_us(), durable_seq).status != AYNI_OK) {
-        model.pause_goal_authority(task.goal_index);
+        model.pause_task_authority(index, clock.now_us(), durable_seq);
         decisions.scrub();
         calls.scrub_decision();
         return DecisionResult::applied;

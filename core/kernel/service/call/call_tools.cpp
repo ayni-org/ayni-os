@@ -4,11 +4,12 @@
 // separate decision, checked like any other request.
 #include "kernel/service/call/call_runtime.h"
 
-#include "authority/scope/scope.h"
+#include "authority/scope/business_request.h"
 #include "catalog/abi_checks.h"
 #include "catalog/capability/argument_encoding.h"
 #include "catalog/capability/argument_mapping.h"
 #include "catalog/capability/business_encoding.h"
+#include "catalog/capability/field_domain.h"
 #include "kernel/service/memory/memory_access.h"
 #include "work/call/tool_calls.h"
 
@@ -30,57 +31,22 @@ ayni_string_v1 route(const catalog::Binding &binding, ayni_authority_field_usage
     return view(usage == AYNI_AUTHORITY_EXECUTION_TARGET ? binding.endpoint : binding.destination);
 }
 
-bool same(ayni_string_v1 left, ayni_string_v1 right) {
-    return catalog::compare_tokens(left, right) == 0;
-}
-
-// Whether a ceiling lets this Binding's route through at all.
-bool admits_route(const catalog::Binding &binding, ayni_bytes_v1 ceiling) {
-    catalog::DomainReader reader(ceiling);
-    catalog::DomainField field;
-    while (reader.next(field)) {
-        if (!routed(field.usage)) {
-            continue;
-        }
-        bool found = false;
-        for (uint32_t at = 0; at < field.values.token_count; ++at) {
-            found = found || same(field.values.tokens[at], route(binding, field.usage));
-        }
-        if (!found) {
-            return false;
-        }
-    }
-    return reader.ok();
-}
-
-// Position of the index-th set bit; false when there are not that many.
-bool nth_position(uint32_t positions, uint32_t index, uint32_t &out) {
-    for (uint32_t position = 0; position < AYNI_GOAL_TYPE_TOOL_COUNT_MAX; ++position) {
-        if ((positions & (1U << position)) == 0U) {
-            continue;
-        }
-        if (index == 0U) {
-            out = position;
-            return true;
-        }
-        --index;
-    }
-    return false;
-}
 } // namespace
 
 bool CallRuntime::offer_tool(uint32_t task_index, uint32_t position, ToolOffer &out) const {
     const auto &task = work_.tasks.at(task_index);
-    const auto type_index = work_.goals.at(task.goal_index).goal_type_index;
-    if (type_index == work::GoalTable::no_index) {
+    const auto &policy = work_.goals.at(task.goal_index).tools;
+    if (position >= policy.count) {
         return false;
     }
-    const auto &type = catalogs_.goal_types.at(type_index);
-    if (position >= type.tool_count) {
+    const auto &reference = policy.tools[position];
+    uint32_t binding_index = 0;
+    if (!catalogs_.bindings.find(view(reference.binding_id), reference.binding_version,
+                                 binding_index)) {
         return false;
     }
     ToolOffer offer{};
-    offer.binding = &catalogs_.bindings.at(type.tools[position].binding_index);
+    offer.binding = &catalogs_.bindings.at(binding_index);
     if (catalog::BindingRegistry::resolve(*offer.binding, catalogs_.capabilities,
                                           catalogs_.call_capabilities, catalogs_.providers,
                                           catalogs_.resources, offer.links) != AYNI_OK) {
@@ -96,7 +62,7 @@ bool CallRuntime::offer_tool(uint32_t task_index, uint32_t position, ToolOffer &
             requirement.source_domain.size == offer.domain.size &&
             std::memcmp(requirement.source_domain.data, offer.domain.data, offer.domain.size) ==
                 0 &&
-            admits_route(*offer.binding, requirement.scope)) {
+            authority::binding_route_allowed(*offer.binding, requirement.scope)) {
             offer.ceiling = requirement.scope;
             out = offer;
             return true;
@@ -105,12 +71,12 @@ bool CallRuntime::offer_tool(uint32_t task_index, uint32_t position, ToolOffer &
     return false;
 }
 
-uint32_t CallRuntime::offered_tools(uint32_t task_index) const {
-    uint32_t positions = 0;
+CallRuntime::ToolSelection CallRuntime::offered_tools(uint32_t task_index) const {
+    ToolSelection positions;
     ToolOffer offer{};
     for (uint32_t position = 0; position < AYNI_GOAL_TYPE_TOOL_COUNT_MAX; ++position) {
         if (offer_tool(task_index, position, offer)) {
-            positions |= 1U << position;
+            positions.include(position);
         }
     }
     return positions;
@@ -131,7 +97,7 @@ ayni_status_t CallRuntime::describe_tool(const void *context, uint32_t index, ay
     }
     uint32_t position = 0;
     ToolOffer offer{};
-    if (!nth_position(runtime.offering_->positions, index, position)) {
+    if (!runtime.offering_->positions.nth(index, position)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (!runtime.offer_tool(runtime.offering_->task_index, position, offer)) {
@@ -210,8 +176,8 @@ ayni_status_t CallRuntime::normalize_tool_input(uint32_t task_index, const ToolO
         return status;
     }
     status = work::check_business_input_limit(contract, out.view());
-    return status == AYNI_OK ? check_business_input(task_index, *offer.binding, offer.domain,
-                                                    out.view(), contract)
+    return status == AYNI_OK ? check_business_proof(task_index, *offer.binding, offer.domain,
+                                                    out.view(), contract, proof.view())
                                    .status
                              : status;
 }
@@ -219,7 +185,7 @@ ayni_status_t CallRuntime::normalize_tool_input(uint32_t task_index, const ToolO
 // A model completion retains one canonical typed list, never worker-owned JSON
 // or a borrowed inspection callback. The reserved result buffer also bounds
 // default expansion before any CallTable publication (ADR-0084).
-ayni_status_t CallRuntime::normalize_tool_calls(uint32_t task_index, uint32_t positions,
+ayni_status_t CallRuntime::normalize_tool_calls(uint32_t task_index, const ToolSelection &positions,
                                                 ayni_bytes_v1 list, uint32_t &size) {
     work::ToolCallList decoded;
     if (!work::read_tool_calls(list, decoded)) {
@@ -227,23 +193,23 @@ ayni_status_t CallRuntime::normalize_tool_calls(uint32_t task_index, uint32_t po
     }
     const uint32_t count = decoded.count;
     const auto type_index = work_.goals.at(work_.tasks.at(task_index).goal_index).goal_type_index;
-    if (count == 0U || positions == 0U || type_index == work::GoalTable::no_index) {
+    if (count == 0U || positions.count == 0U || type_index == work::GoalTable::no_index) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto &type = catalogs_.goal_types.at(type_index);
+    const auto &type = work_.goals.at(work_.tasks.at(task_index).goal_index).tools;
     std::array<ayni_tool_call_v1, AYNI_CALL_TOOL_COUNT_MAX> calls{};
     std::array<catalog::DecodedValue, AYNI_CALL_TOOL_COUNT_MAX> values{};
     for (uint32_t at = 0; at < count; ++at) {
         const auto &call = decoded.calls[at];
         uint32_t position = 0;
-        while (position < type.tool_count &&
-               ((positions & (1U << position)) == 0U ||
+        while (position < type.count &&
+               (!positions.contains(position) ||
                 !type.tools[position].binding_id.equals(call.binding_id) ||
                 type.tools[position].binding_version != call.binding_version)) {
             ++position;
         }
         ToolOffer offer{};
-        if (position == type.tool_count || !offer_tool(task_index, position, offer)) {
+        if (position == type.count || !offer_tool(task_index, position, offer)) {
             return AYNI_INVALID_ARGUMENT;
         }
         auto &output = calls[at];

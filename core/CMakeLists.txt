@@ -41,6 +41,7 @@ ayni_add_core_module(catalog
         catalog/binding/binding_registry.cpp
         catalog/goal_type/goal_type_registry.cpp
         catalog/goal_type/work_profile.cpp
+        catalog/goal_type/tool_policy.cpp
         catalog/device/device_catalog.cpp
         catalog/resource/resource_registry.cpp
         catalog/strategy/strategy_registry.cpp
@@ -58,6 +59,7 @@ ayni_add_core_module(authority
         authority/principal/owner_binding_records.cpp
         authority/principal/principal_registry.cpp
         authority/scope/scope.cpp
+        authority/scope/business_request.cpp
     DEPENDS catalog durability foundation)
 
 ayni_add_core_module(resources
@@ -121,6 +123,7 @@ ayni_add_core_module(work
 ayni_add_core_module(kernel
     SOURCES
         kernel/api/call_api.cpp
+        kernel/api/directory_api.cpp
         kernel/api/calendar_api.cpp
         kernel/api/pause_group_api.cpp
         kernel/api/execution_api.cpp
@@ -137,6 +140,7 @@ ayni_add_core_module(kernel
         kernel/api/work_api.cpp
         kernel/runtime/boot/boot_sequence.cpp
         kernel/service/call/call_admission.cpp
+        kernel/service/call/call_directory.cpp
         kernel/service/call/call_completion.cpp
         kernel/service/call/call_dispatch.cpp
         kernel/service/call/call_drain.cpp
@@ -187,6 +191,7 @@ ayni_add_core_module(kernel
         kernel/api/context_api.cpp
         kernel/service/intent/intent_rules.cpp
         kernel/service/model/task_authority.cpp
+        kernel/service/model/tool_authority.cpp
         kernel/service/model/work_authority_cleanup.cpp
         kernel/service/model/work_provenance.cpp
         kernel/service/model/work_model.cpp

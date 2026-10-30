@@ -80,6 +80,12 @@ class Journal {
                     ? work::TaskRecordChange::resume_wait
                 : changed && goal_reauthorized_by(command, task.goal_id)
                     ? work::TaskRecordChange::reauthorization
+                : changed && task.created_transition_id != stamp_.transition_id &&
+                        model_.goal_authority.at(task.goal_index).stamp.commit_seq !=
+                            stamp_.commit_seq
+                    ? (admission.phase == work::TaskAuthorityPhase::authorized
+                           ? work::TaskRecordChange::tool_bind
+                           : work::TaskRecordChange::tool_pause)
                 : changed && task.created_transition_id != stamp_.transition_id
                     ? work::TaskRecordChange::authority
                     : work::TaskRecordChange::state;
@@ -100,7 +106,7 @@ class Journal {
             return false;
         }
         auto *at = body(work::task_authority_record_type, work::task_authority_record_version,
-                        work::task_authority_record_max(record.count));
+                        work::task_authority_record_max(record.count, record.tool_count));
         if (at != nullptr) {
             work::write_task_authority_record(record, at);
         }
@@ -138,9 +144,11 @@ uint32_t capacity(const KernelCapacities &c) {
 // A page must hold every possible part independently, including final state.
 uint32_t record_max(const KernelCapacities &c) {
     uint32_t result = work::task_snapshot_record_size;
-    const uint32_t sizes[] = {work::task_state_record_size, work::task_steps_record_max(1),
-                              work::task_checkpoint_record_max(c.task_checkpoint_max_bytes),
-                              work::task_authority_record_max(c.goal_requirement_capacity)};
+    const uint32_t sizes[] = {
+        work::task_state_record_size, work::task_steps_record_max(1),
+        work::task_checkpoint_record_max(c.task_checkpoint_max_bytes),
+        work::task_authority_record_max(c.goal_requirement_capacity,
+                                        c.call_capacity ? c.task_step_capacity : 0U)};
     for (const auto size : sizes) {
         if (size > result) {
             result = size;
@@ -156,7 +164,8 @@ uint64_t payload_max(const KernelCapacities &c) {
             record_bytes(work::task_state_record_size) +
             uint64_t{c.task_step_capacity} * record_bytes(work::task_steps_record_max(1)) +
             record_bytes(work::task_checkpoint_record_max(c.task_checkpoint_max_bytes)) +
-            record_bytes(work::task_authority_record_max(c.goal_requirement_capacity)));
+            record_bytes(work::task_authority_record_max(
+                c.goal_requirement_capacity, c.call_capacity ? c.task_step_capacity : 0U)));
 }
 // One decision can add at most its output capacity of step keys; lifecycle
 // propagation can update every Task state and its independent authority.
@@ -167,7 +176,8 @@ uint32_t journal_max(const KernelCapacities &c) {
            record_bytes(work::task_checkpoint_record_max(c.task_checkpoint_max_bytes)) +
            c.task_capacity *
                (record_bytes(work::task_state_record_size) +
-                record_bytes(work::task_authority_record_max(c.goal_requirement_capacity)));
+                record_bytes(work::task_authority_record_max(
+                    c.goal_requirement_capacity, c.call_capacity ? c.task_step_capacity : 0U)));
 }
 // Empty steps/checkpoint parts are skipped without consuming a whole record.
 bool next(const WorkModel &model, StoreCursor &cursor) {
@@ -203,7 +213,8 @@ StoreRecord shape(const WorkModel &model, const StoreCursor &cursor) {
     }
     case StorePart::authority:
         return {work::task_authority_record_version,
-                work::task_authority_record_max(model.task_authority.at(task.slot).count),
+                work::task_authority_record_max(model.task_authority.at(task.slot).count,
+                                                model.task_authority.at(task.slot).tool_count),
                 work::task_authority_record_type};
     }
     return {};

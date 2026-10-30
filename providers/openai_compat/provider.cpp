@@ -124,7 +124,7 @@ struct Provider::Impl {
         ayni_provider_completion_t *completion = nullptr;
         Clock::time_point deadline;
         uint32_t tool_count = 0;
-        std::array<Tool, AYNI_GOAL_TYPE_TOOL_COUNT_MAX> tools;
+        std::array<Tool, AYNI_CALL_TOOL_COUNT_MAX> tools;
         std::unique_ptr<char[]> input;
         uint32_t input_size = 0;
         std::unique_ptr<char[]> request;
@@ -343,7 +343,7 @@ struct Provider::Impl {
             !request->attempt.request_id || !request->logical_call_id || !request->operation_id ||
             !same(request->capability_id, self.capability.capability_id) ||
             !same(request->endpoint_id, self.descriptor.endpoint_id) ||
-            request->tool_count > AYNI_GOAL_TYPE_TOOL_COUNT_MAX ||
+            request->tool_count > AYNI_CALL_TOOL_COUNT_MAX ||
             (request->tool_count && (!request->tool || self.config.tool_usage.struct_size == 0)) ||
             request->execution_permit || self.stopping.load() || self.failure.load() != AYNI_OK) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;

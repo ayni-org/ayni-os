@@ -98,3 +98,7 @@ ABI 0.45：Task-scoped 调用结果视图携带原账本 effect（ADR-0066），
 通用值与数值规则见 [业务值契约](business_values.md)，本包不提供旧 fields+text 业务入口。普通 TEXT 也是显式 Schema；请求的旧 arguments/text 布局槽保留为必须零，Provider arguments 仅为 Core 派生的固定控制投影，执行正文唯一来自 value。协议 ID 独立保存，ToolLoop 用原 Call 证明中的字段名打印嵌套请求/结构结果，不从当前目录推断旧结果。
 
 Native `system.shell` 为显式宽权限 ACTION/TOOL，使用正常 Core 授权、资源、持久屏障和异步完成链。固定 cwd 不构成沙箱；完整脚本/管道继承宿主 OS 权限，声明 EGRESS/BILLING、NOT_IDEMPOTENT、QUERY_NONE、CANCEL_REQUEST，不自动重试。配置约束并发、有限运行时间和 stdout/stderr 合计上限；结果以 base64 无损保存字节、独立 exit/signal/status。超时/输出限额不能虚报无效果，进程组取消不等同任意原生代码隔离。正常链证据：`KernelShell.explicit_authority_controls_real_pipeline_and_structured_result_delivery`、`ShellProcess.executes_pipeline_in_configured_directory_and_preserves_exit_and_streams`、`ShellProcess.binary_output_has_explicit_lossless_encoding`。固定模型入口及 Native 部署开关属 AP-03，不据本 Provider 声称已完成。
+
+## ABI 0.49 按需工具绑定
+
+AP-03 第一部分新增 [Task 能力目录与按需授权](capability_directory.md)：可选列表不阻塞缺权 Task，实际请求用一个完整 Grant，与 Call 接受同批绑定；已用 Grant 失效只暂停拥有引用的 Task，显式重授权保留原整份 Scope/精确 Binding。REQUIRED 需求与既有派发屏障/UNKNOWN/隐私保证保持，固定模型工具和 Shell 装配属下一部分。

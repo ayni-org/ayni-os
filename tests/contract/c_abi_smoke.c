@@ -36,8 +36,10 @@ typedef union {
     void (*fn)(void);
 } max_aligned_t;
 
-/* The bounded Goal metadata and its record reserve are included since 0.20. */
-static max_aligned_t kernel_memory[2048];
+/* ABI 0.49 also reserves frozen tool policies; the query below proves this
+ * caller-owned test block suffices, without prescribing a production arena. */
+enum { kernel_memory_units = 4096 };
+static max_aligned_t kernel_memory[kernel_memory_units];
 
 static int expect(int condition, const char *what) {
     if (!condition) {

@@ -1,5 +1,6 @@
 /* Model-neutral tool usage supplied by an extension, Since 0.47.
- * This is descriptive data, never authority, executable code or a Core registry.
+ * This is descriptive data, never authority or executable code. Since 0.49,
+ * trusted configuration may adopt a bounded copy through directory.h.
  */
 #ifndef AYNI_TOOL_USAGE_H
 #define AYNI_TOOL_USAGE_H

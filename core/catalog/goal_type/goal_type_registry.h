@@ -10,6 +10,7 @@
 #define AYNI_CORE_CATALOG_GOAL_TYPE_GOAL_TYPE_REGISTRY_H
 
 #include "catalog/catalog_id.h"
+#include "catalog/goal_type/tool_policy.h"
 #include "catalog/goal_type/work_profile.h"
 #include "catalog/strategy/strategy_registry.h"
 #include "foundation/bounded_array.h"
@@ -24,11 +25,9 @@ namespace ayni::catalog {
 
 // One tool a goal type's model calls may be offered (ADR-0054): an exact
 // Binding, which grants no authority by being listed.
-struct GoalTypeTool {
+struct GoalTypeTool : ToolReference {
     static constexpr uint32_t no_binding = 0xFFFFFFFFU;
 
-    CatalogId binding_id;
-    uint32_t binding_version = 0;
     // In the binding registry, once link_tools() succeeded.
     uint32_t binding_index = no_binding;
 };
@@ -57,6 +56,16 @@ struct GoalType {
     // The allow list in declared order; tools[0, tool_count) are distinct by binding id.
     std::array<GoalTypeTool, AYNI_GOAL_TYPE_TOOL_COUNT_MAX> tools{};
     uint32_t tool_count = 0;
+    ayni_tool_authorization_t tool_authorization = AYNI_TOOLS_REQUIRED; // Trusted admission mode.
+    ToolPolicy tool_policy() const {
+        ToolPolicy policy;
+        policy.authorization = tool_authorization;
+        policy.count = tool_count;
+        for (uint32_t at = 0; at < tool_count; ++at) {
+            policy.tools[at] = tools[at];
+        }
+        return policy;
+    }
     GoalContext context_mode = GoalContext::none; // Agent mode captures its current file sources.
 };
 

@@ -4,6 +4,8 @@
 
 #include "catalog/capability/capability_registry.h"
 #include "catalog/provider/provider_registry.h"
+#include <ayni/detail/tool_usage.hpp>
+#include <ayni/directory.h>
 
 namespace ayni::catalog {
 
@@ -34,14 +36,23 @@ class BindingRegistry {
     // Caller arena layout; zero capacity is a disabled directory.
     static constexpr std::size_t storage_alignment = alignof(Binding);
     static constexpr std::size_t storage_size(uint32_t capacity) {
-        return foundation::BoundedArray<Binding>::storage_size(capacity);
+        return foundation::BoundedArray<Binding>::storage_size(capacity) +
+               sizeof(Description) * capacity;
     }
     // Borrows aligned storage for this registry's lifetime.
-    BindingRegistry(void *storage, uint32_t capacity) : entries_(storage, capacity) {}
+    BindingRegistry(void *storage, uint32_t capacity);
     // Validate ABI/identity only; references may be registered later. Failure preserves out.
     static ayni_status_t decode(const ayni_binding_v1 &input, Binding &out);
     // Already decoded in this call; duplicate/full changes no registration.
     ayni_status_t add_validated(const Binding &binding);
+    // Metadata is adopted separately after exact capability/Binding registration.
+    // Failure preserves the registry; only one description per frozen selection.
+    ayni_status_t describe(uint32_t index, ayni_string_v1 summary, const ayni_tool_usage_v1 &usage,
+                           const ayni_tool_v1 &tool);
+    bool has_description(uint32_t index) const;   // Missing metadata is not discoverable.
+    ayni_string_v1 summary(uint32_t index) const; // Borrowed immutable adopted summary.
+    void usage(uint32_t index, ayni_tool_usage_v1 &out,
+               std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> &fields) const;
     // Exact selection, no fallback to another version; failure preserves index.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;
     // Resolve exact declarations/resources and trusted target/destination membership.
@@ -61,8 +72,19 @@ class BindingRegistry {
     const Binding &at(uint32_t index) const { return entries_[index]; }
     // Occupied entries, not configured capacity.
     uint32_t size() const { return entries_.size(); }
+    uint32_t capacity() const {
+        return entries_.capacity();
+    } // Maximum frozen selections and policy refs.
 
   private:
+    struct Description {
+        bool present = false;      // False until complete exact-pair adoption succeeds.
+        uint32_t summary_size = 0; // Bytes, positive iff present; no truncation.
+        std::array<char, AYNI_CAPABILITY_SUMMARY_MAX_BYTES> summary{}; // Owns UTF-8 bytes.
+        detail::ToolUsage usage; // Owns complete description and per-field explanations.
+    };
+    Description
+        *descriptions_; // Same stable index as entries_; caller arena, never pointers into backend.
     foundation::BoundedArray<Binding> entries_; // Sole owner of immutable selections.
 };
 

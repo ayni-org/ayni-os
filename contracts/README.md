@@ -61,6 +61,7 @@
 | `C-FIX` | [fixtures/normal/README.md](fixtures/normal/README.md) | 正常夹具应用、SimNode 组合与生成器 |
 | `C-EXP` | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 完整实验运行器、模拟故障与证据 |
 | `C-PROV` | [host/provider.md](host/provider.md) | `work`、`catalog` 与各 Provider |
+| `C-DIR` | [domain/capability_directory.md](domain/capability_directory.md) | `catalog`、`authority`、`work` 与 Kernel 协调 |
 | `C-USAGE` | [host/tool_usage.md](host/tool_usage.md) | 各扩展、runtime 与模型 Provider |
 | `C-POLICY` | [host/policy_interface.md](host/policy_interface.md) | `kernel`、`catalog` |
 | `C-WIRE` | [wire/envelope.md](wire/envelope.md) | `kernel`（受管入口）与 `protocol/` |

@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前批次与快照只读写 `storage_schema=4`（ADR-0084）；其他 schema（包括 0/1/2/3） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=5`（ADR-0084）；其他 schema（包括 0/1/2/3/4） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -44,7 +44,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | 4 | `length` | 记录体字节数 |
 | `length` | 记录体 | 由属主模块定义的字段编码 |
 
-schema 4 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
+schema 5 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
 
 ## 记录类型
 
@@ -94,12 +94,12 @@ phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed�
 
 ## 工作记录
 
-schema 4 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
+schema 5 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
 
 | 类型 | 记录 | 当前正文 | 固定长度 |
 |---:|---|---|---:|
 | 2 | INSTANCE | agent_id、instance_id（u64），revision、lifecycle（u32） | 24 |
-| 3 | GOAL | 五个 u64：goal/parent/owner/replaced/origin principal；五个 u32：origin kind/channel/binding revision、depth、GoalType version；GoalType ID 长度串；trigger kind u32、delay/period u64、source 长度串；expiry/wait duration u64；参数长度串；profile kind u32/period u64；pause_group、authority_required、provenance_required（u32） | 132 |
+| 3 | GOAL | 五个 u64：goal/parent/owner/replaced/origin principal；五个 u32：origin kind/channel/binding revision、depth、GoalType version；GoalType ID 长度串；trigger kind u32、delay/period u64、source 长度串；expiry/wait duration u64；参数长度串；profile kind u32/period u64；pause_group、authority_required、provenance_required（u32）；tool mode/count（u32）及 count 项 Binding version/role/ID 长度串 | 140 |
 | 4 | GOAL_STATE | goal/last_task u64；lifecycle/revision/cancel_revision/skipped/skip_reason/taken/waiting/flags（u32）；change u32 | 52 |
 | 5 | TASK | task/goal/owner/replaced（u64），occurrence/count（u32），calendar_local/utc（u64），calendar_present/provenance_required（u32） | 64 |
 | 6 | TASK_STATE | task_id u64；lifecycle/revision/cancel_revision/hold_status/hold_reason/step_count（u32）；model used/limit/blocked（u32）；selected call u64/end u32；wait subscription/generation/sequence（u64）/phase u32；change/wait_present（u32） | 92 |
@@ -135,7 +135,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 ## 控制记录与读取
 
 - `WRITER_FENCE` 单独成批，新 epoch 必须严格大于前缀现有有效 epoch。其后的完整旧 epoch 帧被忽略，不推进有效 commit、transition 或 boot 基线；其他有效批次仍须连续。
-- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 4；无旧格式 reader、迁移或自动清空。
+- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 5；无旧格式 reader、迁移或自动清空。
 - 恢复使用 Host 物理 cursor，不能用最大已见 commit_seq 翻页；旧 epoch 的高序号帧可能位于合法新批次之前。cursor 在同一日志实例中严格递增，轮转后从 0 重读。
 - 首个完整批次放不下时，Host 以读专用 `READ_BUFFER_TOO_SMALL` 报精确所需长度，映射 `STATE_EXCEEDS_CAPACITY`。真正 I/O 故障、非法大小或 `OK` 越界仍是 `STORAGE_READ_FAILED`。
 
@@ -143,14 +143,14 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 
 快照采用两个槽。维护先冻结新 transition 并排空 journal，得到边界 `S`，再写非当前槽的内容，回读校验版本、长度与 CRC 后独立写槽尾标记。槽尾标记只证明槽内容完整；日志中的 `SNAPSHOT_COMMIT` 是激活新状态的唯一切换提交，持久化后才轮转旧日志。尚未激活的新槽不参与恢复。
 
-### 槽头与槽尾（schema 4）
+### 槽头与槽尾（schema 5）
 
 头部固定为 72 字节：
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | ASCII `AYSN` |
-| 4 | 2 | `storage_schema` | 4 |
+| 4 | 2 | `storage_schema` | 5 |
 | 6 | 2 | `header_length` | 72 |
 | 8 | 8 | `generation` | 从 1 起，每次激活递增 |
 | 16 | 8 | `covers_commit_seq` | 快照包含的最后一个提交 `S`；初始空快照为 0 |
@@ -247,7 +247,7 @@ PROPOSED 必须有至少一项缺引用，taken/waiting/next_scheduled/last_task
 
 ADR-0038 决策 2～6：type 18/v1 已接入 arena、journal、snapshot、发现及容量预算，必须 REQUIRED。journal 每批至多派生一个新 Task，按 TASK→TASK_STATE→TASK_AUTHORITY 配对，状态后必须紧接该 Task 的准入，批次结束不能留未配对身份；snapshot 在该 Task 的步骤/检查点/状态后紧接同一准入，可跨页。整批或整份快照拒绝缺项、重复、错 Task/Goal/绑定/引用/stamp、未来 boot 身份及夹带记录。旧 schema 在新写入前拒绝。
 
-全部小端，固定头 48 B：offset 0 task_id u64、8 goal_id u64、16 goal_binding_seq u64、24 transition_id u64、32 commit_seq u64、40 phase u32（1=authorized、2=paused）、44 count u32。随后 count 项，每项 Grant ID u64/revision u32，共 12 B，顺序对应原 Goal 需求。count=0 是明确零需求，不是缺少事实。
+全部小端，原字段头 48 B：offset 0 task_id u64、8 goal_id u64、16 goal_binding_seq u64、24 transition_id u64、32 commit_seq u64、40 phase u32（1=authorized、2=paused）、44 count u32。随后 count 项，每项 Grant ID u64/revision u32，共 12 B，顺序对应原 Goal 需求。count=0 是明确零需求，不是缺少事实。随后 tool_count u32 及每项 source_call_id u64、selected Grant ID u64/revision u32（20 B），来源按 Call ID 严格递增；固定开销共 52 B。源 Call 保存初选 Grant；目录数量不计入必需 count。
 
 Task/Goal 为不同的有效 Kernel ID；binding sequence 正且不晚于记录 commit_seq，transition_id 正；count≤16，每个引用为有效非零 ID/revision。reader 与 struct 共用语义验证；截断、尾字节、非法字段不改输出。表按稳定 Task.slot 和确切 task_id 放置，配置不足不改任何行。相同绑定只能保留同一引用，不能 paused→authorized；新绑定须单调，Task/Goal/需求数不变，stamp 两项严格推进。F2 在消费和重放复用同一 Task/Goal 精确匹配，活及终态 Task 都须保存相同 Goal 绑定、需求数及引用；Scope/父链检查沿用 Goal/Grant 属主。重新授权配对随 F4。
 
@@ -262,7 +262,7 @@ ADR-0038 决策 8：type 19/v1 固定 44 B，全部小端：transition_id u64（
 
 idle 的三个游标全部为零；初始 stamp 两项均零，使用后两项均正。scanning 的 stamp 为正，through 是固定有效 Goal ID，after 是零或小于 through 的有效已访 ID。requested_through 为零或下一轮的有效 Goal ID，即使等于当前 through 也须保留，不能因本轮结束丢失。空范围请求仅更新见证 stamp。稳定查询合并保留 Goal 和专属 Grant 的 Goal ID，包含 Goal 槽位已复用的旧身份；每步恰访最小未访 ID，或证明范围为空后结束，并保留下一轮请求。进度消耗 step item/time 预算，背压/快照冻结时暂停推进，即时消费检查继续拒绝失效权限。
 
-授权暂停使用 GOAL_STATE 4/v1 的 change=4 紧接 GOAL_AUTHORITY 17/v1，只允许既有活 Goal 从 authorized 进入 paused；用户 lifecycle/revision、失效标记和触发游标逐字段保持。直属活 Task 使用 TASK_STATE 6/v1 的 change=2紧接 TASK_AUTHORITY 18/v1，原用户/策略状态、revision、步骤和检查点保持，终态 Task 不得被更新。整批末尾的 type19 证明全部直属活 Task 已暂停，不能跨批补齐、覆盖待配对身份或在 footer 后夹带记录。目录兼容和主体不可用仍是独立 hold，不因后台扫描变成持久授权暂停。 journal 最终一致性与 snapshot 共用校验：每个直属活 Task 的授权 phase 必须与其自身 Goal 同为暂停或同未暂停；不把祖先尚待扫描的 phase 套给子 Goal，也不改写终态 Task 历史。旧暂停 journal 缺少独立 Task deny 时在新写入前拒绝并保留，不以用户 PAUSED 字段推断或补授权事实。
+授权暂停使用 GOAL_STATE 4/v1 的 change=4 紧接 GOAL_AUTHORITY 17/v1，只允许既有活 Goal 从 authorized 进入 paused；用户 lifecycle/revision、失效标记和触发游标逐字段保持。直属活 Task 使用 TASK_STATE 6/v1 的 change=2紧接 TASK_AUTHORITY 18/v1，原用户/策略状态、revision、步骤和检查点保持，终态 Task 不得被更新。整批末尾的 type19 证明全部直属活 Task 已暂停，不能跨批补齐、覆盖待配对身份或在 footer 后夹带记录。目录兼容和主体不可用仍是独立 hold，不因后台扫描变成持久授权暂停。 journal 最终一致性与 snapshot 共用校验：暂停 Goal 的直属活 Task 必须授权暂停；健康 Goal 可以有工具授权独立暂停的 Task（ADR-0085）；不把祖先尚待扫描的 phase 套给子 Goal，也不改写终态 Task 历史。旧暂停 journal 缺少独立 Task deny 时在新写入前拒绝并保留，不以用户 PAUSED 字段推断或补授权事实。
 
 有 ACTIVE 专属 Grant 的 Goal 进入终态时使用 GOAL_STATE 4/v1 的 change=3，同批请求清理。扫描写完整 GRANT_STATE 14/v1，lifecycle 为 GOAL_ENDED（4），只结束本步选中 Goal 的全部 ACTIVE 专属根，不改写既有终态顺序或伪造管理撤销；该 Goal 必须已于更早 transition 终结或已让出槽位。删除一项/全部结束记录、替换成另一 Goal 或仅推进游标均不构成完整一步。到期记录 14/v1 和根撤销 15/v1 要求同批 type19 请求；无旧版本配对分支。
 
@@ -277,7 +277,7 @@ journal 使用 REQUIRED `GOAL_STATE` 4/v1（change=5）、`GOAL_AUTHORITY` 17/v1
 
 重新授权 canonical 固定 84 B 加两个 CatalogId 正文和参数：kind/revision u32、Goal ID/授权事实 CAS u64，再接批准共用的 60 B 原创建 echo；最大 148+goal_parameter_max_bytes，不超过批准输入预算。当前命令正文保存本次不可变结果，input incarnation 为正；新引用必须来自此前已持久的 Grant，禁止批准专属根的同批发放例外。Goal 结束后的专属 Grant、父绑定和旧结果各按其事实属主验证，不能用当前引用反推历史命令。journal 的 change 保护配对证明；snapshot 使用当前完整事实与独立历史命令结果，state change=1。
 
-重放每条 Goal 授权事实时，从 BootSequence 借用该记录之前的已持久 boot 上界，要求 input incarnation 不超过该上界；自动重载可保留更早 ingress 实例，不要求等于当前 boot。后来的有效换绑、Goal 回收或 BOOT_EPOCH 不得追认历史中的未来输入实例。活 Task 必须精确匹配当前自身 Goal 的绑定/phase；终态 Task 可保留旧代的合法历史引用，已安全回收的 Grant 不补造记录。
+重放每条 Goal 授权事实时，从 BootSequence 借用该记录之前的已持久 boot 上界，要求 input incarnation 不超过该上界；自动重载可保留更早 ingress 实例，不要求等于当前 boot。后来的有效换绑、Goal 回收或 BOOT_EPOCH 不得追认历史中的未来输入实例。活 Task 必须精确匹配当前自身 Goal 的绑定；phase 保持原必需暂停规则，同时允许健康 Goal 下的按需工具 Task 独立授权暂停（ADR-0085）；终态 Task 可保留旧代的合法历史引用，已安全回收的 Grant 不补造记录。
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
@@ -291,7 +291,7 @@ journal 使用 REQUIRED `GOAL_STATE` 4/v1（change=5）、`GOAL_AUTHORITY` 17/v1
 
 ## 统一调用记录（ABI 0.31，ADR-0045）
 
-schema 4 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 328 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
+schema 5 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 340 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
 
 1. call_id、operation_id、task_id、owner_instance_id（各 u64）；Binding/Capability/Provider version（各 u32）；step_key、Binding ID、Capability ID、Provider ID、endpoint、destination（六个长度串）。
 2. 原 CallContract：form/category/effects/idempotency/query/cancel/dedupe_window_ms/timeout_ms/input_format/result_format/input_text_limit/result_text_limit/resource_count（13 个 u32）；每个资源按规范 ID 顺序写 ID 长度串及 units u32。
@@ -305,9 +305,17 @@ schema 4 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 328 B�
 
 快照按稳定 call_id 保存全部 Call，正文与 journal 共用。每 transition 至多改一条 Call；UNKNOWN 与未释放借用继续阻止不安全回收。此格式无旧布局读取或迁移器。
 
+### 按需工具来源（schema 5 / ADR-0085）
+
+GOAL 尾部工具策略 mode 为 0=REQUIRED、1=ON_DEMAND；count 0..256，各项依次为 Binding version u32、role u32（0=capability、1=shell，至多一项）、Binding ID 长度串，ID 不重复。预算和恢复容量上限同时受部署 Binding capacity 约束；策略按原顺序持久化，不回查新 GoalType 填充。
+
+TASK_STATE.change=6 表示 tool_bind：原必需引用、旧工具前缀和授权 phase 保持，只追加一项。Task 状态与 TASK_AUTHORITY 后，须在同批出现该 source Call 的首次接受，Task/source ID/原 Grant/当前选择精确配对；不能跨批补齐。change=7 表示 tool_pause：不改变任何引用或用户状态，authorized→paused，而 Goal 可保持健康。显式重新授权仍使用 change=3，原子更新应用时 direct-live cohort，只替换 selected，不替换 source；Goal CAS 不是工具集合快照 CAS。
+
+最终一致性双向核对 Call 与 Task 引用；活或尚不可安全退役的 Task 必须保留原 Grant 与 selected Grant。原 Grant 按 source Call 创建时刻证明，selected 按 max(source created seq, Task Goal binding seq) 证明，不能以当前 Catalog/ACTIVE 状态判断历史合法性。正文已擦除时复用 privacy/provenance 证明，不重建参数。新路径的故障/恢复专项未执行，既有专项回归继续保留。
+
 ## 调用扩展与工具结果
 
-Action 长度串后始终编码 execution_present、erased_present（u32）、content_erased ActionStamp（24 B，缺席全0）、result kind u32。result kind 1=UTF8、2=TOOL_CALLS、3=VALUE、4=UNAVAILABLE；最后一种表示正文失效但身份/结果/效果事实保留，不能作为可消费结果，独立于 content_erased；实际列表只允许完成结果。随后按 presence 写 ExecutionFact；contract form 为 subscription 时再写订阅事实；最后始终写 business_contract 长度串。跳过、物理、工具、擦除、订阅是当前领域变体，共用 v1，不再选择布局版本。
+Action 长度串后始终编码 execution_present、erased_present（u32）、content_erased ActionStamp（24 B，缺席全0）、result kind u32。result kind 1=UTF8、2=TOOL_CALLS、3=VALUE、4=UNAVAILABLE；最后一种表示正文失效但身份/结果/效果事实保留，不能作为可消费结果，独立于 content_erased；实际列表只允许完成结果。随后按 presence 写 ExecutionFact；contract form 为 subscription 时再写订阅事实；最后始终写 business_contract 长度串，再写原可选授权 Grant ID u64/revision u32（必需调用同零；按需 TOOL 初次接受为确切 ACTIVE 引用）。跳过、物理、工具、擦除、订阅是当前领域变体，共用 v1，不再选择布局版本。
 
 ExecutionFact 原固定112 B及各 ID、数值投影仍按属主顺序编码；每个观察引用固定40 B加 source ID，最后的 subscription_id u64 始终存在，0=Host。phase/target/stop、四个 epoch、calibration 和原约束不可倒退；不保存 nonce、deadline、在线占用或 raw media。擦除不能改写已知物理执行结论，UNKNOWN 不自动重试。
 
@@ -324,7 +332,7 @@ ExecutionFact 原固定112 B及各 ID、数值投影仍按属主顺序编码；�
 
 最大深度 8、值节点 256、单列表 64；decimal coefficient 为 I64、scale 0..18。只有声明 nullable 才接受 NULL。投影只能沿声明路径，至多一个共同非空列表轴；浮点/自由文本不参与权限比较，BOOL 只能显式映射 0/1，decimal 的 scale/单位不可隐式转换。全部列表行由同一完整 requirement/Grant 覆盖，先前不完整候选不阻止尝试后一个完整候选，不把多条授权拼接。
 
-schema 4 在新增写入前拒绝旧 schema 0..3 并保留源目录，无旧 reader/迁移器；回退使用旧二进制及原目录。此规则不是新故障/恢复专项已验证的声明。
+schema 5 在新增写入前拒绝旧 schema 0..4 并保留源目录，无旧 reader/迁移器；回退使用旧二进制及原目录。此规则不是新故障/恢复专项已验证的声明。
 
 Scene type22/v1 完整正文不变：44 B固定部分加原声明。启停与 exact scene command 同批且不混入其他变更；保存原声明，不在恢复时查当前 catalog。Scene mode、条件/规则及物理投影由原属主校验。
 
@@ -350,7 +358,7 @@ Goal/Task/Checkpoint 的 provenance_required 是完整当前正文的一部分�
 
 ## P4 日历记录（ADR-0061，ABI 0.41）
 
-schema 4 中所有日期字段均在完整当前正文内；不认识的格式在写入或执行前拒绝并保留原目录。
+schema 5 中所有日期字段均在完整当前正文内；不认识的格式在写入或执行前拒绝并保留原目录。
 
 - **type 27/v1 CALENDAR**：64 字节固定部分后接 TZ 字节。依次为 `goal_id:u64, transition_id:u64, commit_seq:u64, last_local_s:u64, last_utc_s:u64, taken:u32`，再接规则 `kind:u32, rule_version:u32, first_local_s:u64, timezone_length:u32, timezone_bytes`。未消费的两个 last 字段编码为 UINT64_MAX，其他时刻范围 0～253402300799 秒。TZ 长度 1～128；规则 kind 1/2/3 为单次/每日/每周，rule_version=1。日志和快照共用正文；仅规则创建或消费/跳过时更新 stamp。Goal 槽退役同时清空本行。单调投影、首次容量等待时刻和时钟可信状态均不持久化。
 - **GOAL/TASK**：calendar trigger 要求对应 CALENDAR；GoalState.next_scheduled 对日历恒为0。Task 始终包含 calendar 两时间与 presence，occurrence 计数对应规则本地键；快照保存原历史，不按长度推断布局。

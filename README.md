@@ -4,9 +4,9 @@
 
 **通用原生 AgentOS：多个 Agent 共用任务、授权、资源、调用与恢复机制，通过公开契约使用宿主提供的能力。**
 
-> 仓库已交付 M1 的 Native Core、模拟器与 C/C++ SDK（实验性 ABI 0.47、storage schema 3）：单一助理 CLI、文本/工具调用、记忆与日历、授权及恢复，电脑 E1～E4 证据见 [Core Alpha 报告](reports/core/m1-core-alpha.md)。原保守安全分支覆盖达到用户本轮接受的 ≥80%；通用 90% 偏差保留（ADR-0080）；存储兼容待决项已由 schema 3 的严格拒绝规则关闭（ADR-0082、#106）。M2 暂缓；完整 MA-038、ESP32 存储/实机与真实模型多轮试用仍待后续安排。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
+> 仓库已交付 M1 的 Native Core、模拟器与 C/C++ SDK（实验性 ABI 0.49、storage schema 5）：单一助理 CLI、文本/工具调用、记忆与日历、授权及恢复，电脑 E1～E4 证据见 [Core Alpha 报告](reports/core/m1-core-alpha.md)。原保守安全分支覆盖达到用户本轮接受的 ≥80%；通用 90% 偏差保留（ADR-0080）；存储兼容待决项已由 schema 3 的严格拒绝规则关闭（ADR-0082、#106）。M2 暂缓；完整 MA-038、ESP32 存储/实机与真实模型多轮试用仍待后续安排。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
 
-当前路线是先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；宿主无需具备语音、视觉、运动或特定设备。具体工作包、依赖和完成条件见[基础能力实施与实验计划](docs/architecture/foundation-and-experiment-plan.md)，完整设计见 [Ayni 实施计划](docs/ayni_v1.0.md)。统一助理是应用样例，ESP32-S3 及其外设是实验组合。
+AP-02 已交付；AP-03 第一部分新增 Task 能力目录和按需授权来源，固定模型工具、连续上下文与 Native Shell 装配继续实施（ADR-0085）。当前路线是先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；宿主无需具备语音、视觉、运动或特定设备。具体工作包、依赖和完成条件见[基础能力实施与实验计划](docs/architecture/foundation-and-experiment-plan.md)，完整设计见 [Ayni 实施计划](docs/ayni_v1.0.md)。统一助理是应用样例，ESP32-S3 及其外设是实验组合。
 
 ## 架构方向
 
@@ -61,7 +61,7 @@ Kernel 持有 Agent 实例、Goal/Task、授权、动作记录、资源和记忆
 | 管理与设备协议 | 协议主/次版本、能力版本与功能协商；领域语义统一，认证与本机授权逐次校验 |
 | 持久化格式 | Schema、记录与迁移版本；迁移、损坏恢复和固件回滚共同验证 |
 
-三类版本独立演进，以领域契约和一致性用例保持对应；当前实验性 C ABI 为 0.47，storage schema 为 3，功能与验证见 [M1 进度](reports/core/m1-progress.md)；尚未实现的接口保持草案状态。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
+三类版本独立演进，以领域契约和一致性用例保持对应；当前实验性 C ABI 为 0.49，storage schema 为 5，功能与验证见 [M1 进度](reports/core/m1-progress.md)；尚未实现的接口保持草案状态。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
 
 ## 可选具身 Profile 与协议适配
 

@@ -20,8 +20,8 @@ authority::GrantCheck WorkModel::check_reauthorization_tasks(uint32_t goal_index
         work::TaskAuthorityRecord record{};
         if (!task_authority.read(task.slot, task.task_id, record) ||
             !matches_task_ceiling(record, goal_index) ||
-            ((record.phase == work::TaskAuthorityPhase::paused) !=
-             (previous.phase == work::GoalAuthorityPhase::paused))) {
+            (previous.phase == work::GoalAuthorityPhase::paused &&
+             record.phase != work::TaskAuthorityPhase::paused)) {
             return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
         }
     }
@@ -72,8 +72,14 @@ authority::GrantCheck WorkModel::check_task_authority(uint32_t index, uint64_t n
     if (!matches_task_ceiling(saved, task.goal_index)) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
     }
-    // Same immutable references reuse the Goal's successful chain check;
-    // checking every identical Grant again would duplicate admission.
+    // Mandatory references reuse the Goal check; optional bindings have their
+    // own immutable Call/Grant anchors and selected chain (ADR-0085).
+    for (uint32_t at = 0; at < saved.tool_count; ++at) {
+        const auto check = check_tool_authority(index, saved.tools[at], now_us, durable_seq);
+        if (check.status != AYNI_OK) {
+            return check;
+        }
+    }
     return {AYNI_OK, AYNI_REASON_NONE};
 }
 
@@ -85,7 +91,6 @@ bool WorkModel::inherit_task_metadata(uint64_t task_id, foundation::TransitionSt
         return false;
     }
     const auto &task = tasks.at(index);
-    calls.retire_task(task.replaced_task_id);
     clear_content_provenance(work::ProvenanceKind::task, task.slot, task.replaced_task_id,
                              stamp.commit_seq);
     const auto ceiling = goal_authority.at(task.goal_index);
@@ -101,6 +106,7 @@ bool WorkModel::inherit_task_metadata(uint64_t task_id, foundation::TransitionSt
     if (task_authority.read(task.slot, task.replaced_task_id, replaced)) {
         release_task_references(replaced, stamp.commit_seq);
     }
+    calls.retire_task(task.replaced_task_id);
     // Configured Task and Goal requirement bounds are identical. A failure
     // here is an internal defect, never a partially accepted derivation.
     return task_authority.install_validated(task.slot, record) == AYNI_OK;
@@ -111,6 +117,14 @@ void WorkModel::release_task_references(const work::TaskAuthorityRecord &record,
     for (uint32_t at = 0; at < record.count; ++at) {
         grants.release_reference(record.references[at].grant_id, commit_seq);
     }
+    for (uint32_t at = 0; at < record.tool_count; ++at) {
+        grants.release_reference(record.tools[at].selected.grant_id, commit_seq);
+        uint32_t source_call = 0;
+        if (calls.find(record.tools[at].source_call_id, source_call)) {
+            grants.release_reference(calls.identity(source_call).authorization.grant_id,
+                                     commit_seq);
+        }
+    }
 }
 
 void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq) {
@@ -120,11 +134,11 @@ void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_s
         if (task.goal_index != goal_index) {
             continue;
         }
-        calls.retire_task(task.task_id);
         clear_content_provenance(work::ProvenanceKind::task, task.slot, task.task_id, commit_seq);
         if (task_authority.read(task.slot, task.task_id, record)) {
             release_task_references(record, commit_seq);
         }
+        calls.retire_task(task.task_id);
         task_authority.clear(task.slot);
     }
 }

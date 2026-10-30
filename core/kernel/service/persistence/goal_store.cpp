@@ -122,8 +122,9 @@ uint32_t capacity(const KernelCapacities &c) {
 }
 // A page holds the larger of creation-with-state and its separate authority row.
 uint32_t record_max(const KernelCapacities &c) {
-    const auto goal =
-        work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes + goal_extra;
+    const auto goal = work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes +
+                      catalog::tool_policy_capacity_bytes(c.binding_capacity) -
+                      catalog::tool_policy_header_bytes + goal_extra;
     const auto authority = work::goal_authority_record_max(
         c.goal_requirement_capacity, c.authority_scope_max_bytes, c.business_contract_max_bytes);
     return goal > authority ? goal : authority;
@@ -133,7 +134,8 @@ uint32_t record_max(const KernelCapacities &c) {
 uint64_t payload_max(const KernelCapacities &c) {
     return uint64_t{c.goal_capacity} *
            (record_bytes(work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes +
-                         goal_extra) +
+                         catalog::tool_policy_capacity_bytes(c.binding_capacity) -
+                         catalog::tool_policy_header_bytes + goal_extra) +
             record_bytes(work::goal_authority_record_max(c.goal_requirement_capacity,
                                                          c.authority_scope_max_bytes,
                                                          c.business_contract_max_bytes)));
@@ -141,7 +143,9 @@ uint64_t payload_max(const KernelCapacities &c) {
 // A transition creates at most one Goal but may change every retained state.
 // Authority metadata retains its existing one-Goal-per-transition bound.
 uint32_t journal_max(const KernelCapacities &c) {
-    return record_bytes(work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes) +
+    return record_bytes(work::goal_record_fixed_size + 2U * id_max + c.goal_parameter_max_bytes +
+                        catalog::tool_policy_capacity_bytes(c.binding_capacity) -
+                        catalog::tool_policy_header_bytes) +
            c.goal_capacity * record_bytes(work::goal_state_record_size) +
            work::goal_authority_records_per_transition *
                record_bytes(work::goal_authority_record_max(c.goal_requirement_capacity,
@@ -211,6 +215,9 @@ durability::BatchCheck goal(WorkModel &model, const durability::SnapshotMetadata
         (state.state.lifecycle == AYNI_GOAL_PROPOSED && !record.authority_required) ||
         model.agents.find_instance(record.goal.owner_instance_id) == nullptr) {
         return durability::BatchCheck::corrupt;
+    }
+    if (record.goal.tools.count > model.catalogs.bindings.capacity()) {
+        return durability::BatchCheck::no_room;
     }
     const foundation::TransitionStamp stamp =
         read_snapshot_stamp(body + base_size + work::goal_state_record_size);

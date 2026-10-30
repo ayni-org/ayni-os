@@ -470,63 +470,10 @@ bool Tool::copy(const ayni_tool_v1 &source) {
 // Core decides the callable shape; extension usage must explain that exact shape.
 // Copy immediately: later lookups may reuse the source's borrowed views.
 bool Tool::copy_usage(const ayni_tool_usage_v1 &source) {
-    const auto same = [](ayni_string_v1 a, ayni_string_v1 b) {
-        return a.size == b.size && a.data && b.data && std::memcmp(a.data, b.data, a.size) == 0;
-    };
-    if (source.struct_size != sizeof(source) || source.reserved != 0 ||
-        source.binding_version != view.binding_version ||
-        source.capability_version != view.capability_version ||
-        !same(source.binding_id, view.binding_id) ||
-        !same(source.capability_id, view.capability_id) || source.field_count != view.field_count ||
-        (source.field_count == 0 ? source.fields != nullptr : source.fields == nullptr)) {
+    if (!usage_storage.assign(source, view)) {
         return false;
     }
-    // Identity bytes count toward the total even though they alias the already copied view.
-    uint32_t total = view.binding_id.size + view.capability_id.size;
-    uint32_t used = 0;
-    const auto save = [&](ayni_string_v1 value, ayni_string_v1 &out, uint32_t maximum) {
-        if (value.size == 0 || value.size > maximum || total > AYNI_TOOL_USAGE_MAX_BYTES ||
-            value.size > AYNI_TOOL_USAGE_MAX_BYTES - total ||
-            ayni_validate_utf8(value) != AYNI_OK) {
-            return false;
-        }
-        std::memcpy(usage_strings.data() + used, value.data, value.size);
-        out = {usage_strings.data() + used, value.size};
-        used += value.size;
-        total += value.size;
-        return true;
-    };
-    usage = source;
-    usage.binding_id = view.binding_id;
-    usage.capability_id = view.capability_id;
-    usage.fields = view.field_count ? field_usage.data() : nullptr;
-    if (!save(source.purpose, usage.purpose, AYNI_TOOL_USAGE_MAX_BYTES) ||
-        !save(source.text_usage, usage.text_usage, AYNI_TOOL_USAGE_MAX_BYTES) ||
-        !save(source.result_usage, usage.result_usage, AYNI_TOOL_USAGE_MAX_BYTES) ||
-        !save(source.examples, usage.examples, AYNI_TOOL_USAGE_MAX_BYTES)) {
-        return false;
-    }
-    for (uint32_t i = 0; i < view.field_count; ++i) {
-        const ayni_tool_field_usage_v1 *found = nullptr;
-        for (uint32_t j = 0; j < source.field_count; ++j) {
-            const auto &candidate = source.fields[j];
-            if (candidate.struct_size != sizeof(candidate)) {
-                return false;
-            }
-            if (candidate.field_id == view.fields[i].field_id) {
-                if (found) {
-                    return false;
-                }
-                found = &candidate;
-            }
-        }
-        auto &field = field_usage[i];
-        field = {sizeof(field), view.fields[i].field_id, {}};
-        if (!found ||
-            !save(found->description, field.description, AYNI_TOOL_FIELD_USAGE_MAX_BYTES)) {
-            return false;
-        }
-    }
+    usage_storage.read(usage, field_usage);
     return true;
 }
 

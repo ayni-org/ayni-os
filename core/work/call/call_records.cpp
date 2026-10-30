@@ -172,6 +172,8 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
         write_subscription(record, writer);
     }
     writer.bytes(record.contract.business_contract.data, record.contract.business_contract.size);
+    writer.u64(record.identity.authorization.grant_id);
+    writer.u32(record.identity.authorization.revision);
 }
 
 // This reader does not consult this boot's catalog. Old input is interpreted
@@ -235,6 +237,7 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
         return false;
     }
     record.contract.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
+    record.identity.authorization = {reader.u64(), reader.u32()};
     if (!reader.ok() || !CallTable::valid_record(record)) {
         return false;
     }

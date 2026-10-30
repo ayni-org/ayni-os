@@ -141,10 +141,16 @@ TEST(PersistentStore, an_enabled_store_adds_exactly_its_share_to_each_bound) {
         }
         ASSERT_EQ(store.capacity(enabled), 3U) << rank;
         const uint32_t record = envelope + store.record_max(enabled);
+        // ADR-0085: enabling Calls also reserves Task-owned optional source refs.
+        const auto task_journal = ayni::kernel::task_store.journal_max(enabled) -
+                                  ayni::kernel::task_store.journal_max(none);
+        const auto task_payload = ayni::kernel::task_store.snapshot_max(enabled) -
+                                  ayni::kernel::task_store.snapshot_max(none);
         EXPECT_EQ(ayni::kernel::transition_batch_max(enabled),
-                  ayni::kernel::transition_batch_max(none) + store.journal_max(enabled));
+                  ayni::kernel::transition_batch_max(none) + store.journal_max(enabled) +
+                      task_journal);
         EXPECT_EQ(ayni::kernel::snapshot_payload_max(enabled),
-                  ayni::kernel::snapshot_payload_max(none) + uint64_t{3} * record);
+                  ayni::kernel::snapshot_payload_max(none) + uint64_t{3} * record + task_payload);
         EXPECT_GE(ayni::kernel::snapshot_record_max(enabled), record);
     }
 }

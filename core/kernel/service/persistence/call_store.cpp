@@ -106,6 +106,25 @@ const PersistentStore call_store{work::call_record_type,
                                  advance_store_index,
                                  snapshot_read};
 
+// The new Call closes the Task-owned optional source pair in this same batch.
+// Updates to an existing Call cannot replace or supply an initial binding.
+bool WorkReplay::pair_tool_acceptance(const work::CallRecord &record) {
+    const auto &original = record.identity.authorization;
+    if (original.grant_id) {
+        if (!pairing_.tool_bind || pairing_.tool_bind->task_id != record.identity.task_id ||
+            pairing_.tool_bind->reference.source_call_id != record.identity.call_id ||
+            pairing_.tool_bind->reference.selected.grant_id != original.grant_id ||
+            pairing_.tool_bind->reference.selected.revision != original.revision ||
+            record.contract.category != catalog::CallClass::tool) {
+            return false;
+        }
+        pairing_.tool_bind.reset();
+    } else if (pairing_.tool_bind) {
+        return false;
+    }
+    return true;
+}
+
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.
 durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t size,
@@ -135,6 +154,9 @@ durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t siz
            record.state.subscription->generation != record.identity.operation_id)) ||
          record.action || record.state.outcome != 0U || task.call.id != record.identity.call_id ||
          task.commit_seq != stamp.transition.commit_seq)) {
+        return RecordUse::corrupt;
+    }
+    if (!exists && !pair_tool_acceptance(record)) {
         return RecordUse::corrupt;
     }
     // Initial foreground admission and detachment pair with Task progress. Once
@@ -230,6 +252,18 @@ bool WorkReplay::calls_consistent(uint64_t boot_epoch_limit) const {
             (state.outcome != 0U && state.outcome != AYNI_CALL_ABANDONED &&
              task.call.id == id.call_id)) {
             return false;
+        }
+        if (id.authorization.grant_id) {
+            const auto admission = model_.task_authority.at(task.slot);
+            uint32_t matches = 0;
+            for (uint32_t at = 0; at < admission.tool_count; ++at) {
+                if (admission.tools[at].source_call_id == id.call_id) {
+                    ++matches;
+                }
+            }
+            if (matches != 1U) {
+                return false;
+            }
         }
         // Both journal and snapshot must retain the actual end of this run.
         // SKIPPED never makes an ordinary/foreground Task ready to decide again.

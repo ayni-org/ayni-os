@@ -55,8 +55,17 @@ class CallRuntime {
                                          knowledge::MemoryDependencies &dependencies);
     // Preflight succeeded unchanged on the owner thread; accepts original identity,
     // canonical body, resource wait and Task state in this one transition.
+    bool proposal_needs_redecision() const { return proposal_ && proposal_->redecide; }
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us);
 
+    // Task-scoped borrowed directory; no Provider callback or authority mutation.
+    ayni_status_t list_capabilities(uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
+                                    const ayni_capability_cursor_v1 &cursor,
+                                    ayni_capability_info_v1 *items, uint32_t capacity,
+                                    uint32_t &count, ayni_capability_cursor_v1 &next) const;
+    ayni_status_t inspect_capability(uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
+                                     ayni_string_v1 binding_id, uint32_t version,
+                                     ayni_capability_detail_v1 &out) const;
     using Mode = RuntimeMode;
     using Advance = RuntimeAdvance;
     Advance advance(uint64_t now_us, uint64_t durable_seq, Mode mode);
@@ -116,6 +125,35 @@ class CallRuntime {
             inhibition{};                    // Sticky refusal before its journal row fits.
         std::optional<LeaseRequest> pending; // None when no requested ACK is outstanding.
     };
+    // Saved positions from one immutable Goal policy. Membership/count share one owner;
+    // no machine-word mask limits a directory to 8/16/32 business tools.
+    struct ToolSelection {
+        std::array<uint8_t, AYNI_GOAL_TYPE_TOOL_COUNT_MAX> positions{}; // Zero/one membership.
+        uint32_t count = 0; // Number of included positions, zero is explicitly empty.
+        // Include one valid frozen position once, keeping count equal to membership.
+        void include(uint32_t position) {
+            if (!positions[position]) {
+                positions[position] = 1;
+                ++count;
+            }
+        }
+        // Whether this valid frozen position belongs to the saved selection.
+        bool contains(uint32_t position) const { return positions[position] != 0; }
+        // Index-th included position; false preserves out when there are fewer.
+        bool nth(uint32_t index, uint32_t &out) const {
+            for (uint32_t position = 0; position < positions.size(); ++position) {
+                if (!contains(position)) {
+                    continue;
+                }
+                if (!index) {
+                    out = position;
+                    return true;
+                }
+                --index;
+            }
+            return false;
+        }
+    };
     struct Delivery {
         ProviderReservation reservation; // Mailbox-owned exact incarnation, borrowed until ack.
         const catalog::Provider *provider =
@@ -126,7 +164,7 @@ class CallRuntime {
             execution,
             query
         } purpose = Purpose::execution; // Exact attempt protocol.
-        uint32_t tools = 0; // GoalType tool positions offered at submit, as bits (ADR-0054).
+        ToolSelection tools{};          // Exact Goal policy positions offered at submit.
         std::optional<work::CallCancelCause> inhibition{}; // Sticky user stop for this execution
                                                            // attempt until budgeted cancellation.
     };
@@ -148,6 +186,9 @@ class CallRuntime {
         uint32_t binding_index;      // Immutable directory index, resolved during staging.
         catalog::BindingLinks links; // Catalog resolution, not cached authority or availability.
         uint32_t input_size;         // Canonical bytes in staging_, bounded by limits_.input_bytes.
+        bool redecide = false; // Final optional admission expired: discard this decision only.
+        work::AuthorityReference
+            authorization{}; // Optional tool's whole initial Grant, zero for required.
         std::optional<work::ExecutionFact>
             execution; // Validated original constraints for physical calls only.
         std::optional<uint32_t> subscription_index; // Present only for Task-local close or wait.
@@ -158,6 +199,7 @@ class CallRuntime {
     struct Decision {
         uint32_t task_index;  // Stable during the synchronous callback only.
         uint64_t durable_seq; // Acknowledged prefix shared with the memory decision lease.
+        uint64_t now_us; // Decision clock sample; final admission checks again before publication.
         ayni_policy_intent_v1
             *intents; // Original Kernel buffer, never trust a replaced output pointer.
         ayni_policy_output_v1 *output; // Kernel's actual stack output, not a replacement pointer.
@@ -171,9 +213,19 @@ class CallRuntime {
     };
     // The submit in progress, for the Provider's tool callback only.
     struct Offering {
-        uint32_t task_index; // Stable during the synchronous submit.
-        uint32_t positions;  // Offered GoalType tool positions, as bits.
+        uint32_t task_index;     // Stable during the synchronous submit.
+        ToolSelection positions; // Frozen positions in the owning Goal policy.
     };
+    // Directory callback leases close with decide, like retained Call reads.
+    static ayni_status_t list_capabilities_view(const void *context,
+                                                const ayni_capability_cursor_v1 *cursor,
+                                                ayni_capability_info_v1 *items, uint32_t capacity,
+                                                uint32_t *count, ayni_capability_cursor_v1 *next);
+    static ayni_status_t inspect_capability_view(const void *context, ayni_string_v1 binding_id,
+                                                 uint32_t version, ayni_capability_detail_v1 *out);
+    bool visible_capability(uint32_t task_index, uint32_t position, uint64_t now_us,
+                            uint64_t durable_seq, uint32_t &binding_index,
+                            catalog::BindingLinks &links) const;
     static ayni_status_t stage_request(void *context, const ayni_call_request_v1 *request);
     // Resolve only within the active Task decision and current content capability.
     ayni_status_t subscription_step(ayni_string_v1 step, uint32_t &index) const;
@@ -189,12 +241,12 @@ class CallRuntime {
     // Listed tool at position, if this Task's immutable Goal ceiling covers
     // its capability and admits the Binding's route; no Grant liveness check.
     bool offer_tool(uint32_t task_index, uint32_t position, ToolOffer &out) const;
-    uint32_t offered_tools(uint32_t task_index) const; // Positions, as bits.
+    ToolSelection offered_tools(uint32_t task_index) const; // Finite frozen policy positions.
     static ayni_status_t describe_tool(const void *context, uint32_t index, ayni_tool_v1 *out);
     // Every call names an offered tool with values in its ceiling and route and
     // text within its limit. Shape was checked when posted; this adds the catalogs.
-    ayni_status_t normalize_tool_calls(uint32_t task_index, uint32_t positions, ayni_bytes_v1 list,
-                                       uint32_t &size);
+    ayni_status_t normalize_tool_calls(uint32_t task_index, const ToolSelection &positions,
+                                       ayni_bytes_v1 list, uint32_t &size);
     // One selected tool's original Schema resolves native or lossless adapter input.
     ayni_status_t normalize_tool_input(uint32_t task_index, const ToolOffer &offer,
                                        const work::ToolCallView &call,
@@ -209,11 +261,16 @@ class CallRuntime {
     authority::GrantCheck check_input(uint32_t task_index, const catalog::Binding &binding,
                                       ayni_bytes_v1 domain, const work::CallInputView &input,
                                       const catalog::CallContract &contract, uint64_t now_us,
-                                      uint64_t durable_seq) const;
+                                      uint64_t durable_seq, uint64_t source_call_id = 0,
+                                      work::AuthorityReference *selected = nullptr) const;
+    // Optional directory membership does not replace an existing required ceiling.
+    bool on_demand_tool(uint32_t task_index, const catalog::Binding &binding,
+                        const catalog::CallContract &contract) const;
     // Typed values require one original requirement to cover every projected row.
-    authority::GrantCheck check_business_input(uint32_t task_index, const catalog::Binding &binding,
+    authority::GrantCheck check_business_proof(uint32_t task_index, const catalog::Binding &binding,
                                                ayni_bytes_v1 domain, const ayni_value_v1 &value,
-                                               const catalog::CallContract &contract) const;
+                                               const catalog::CallContract &contract,
+                                               const ayni_business_contract_v1 &proof) const;
     resources::ResourceRequest resource_request(uint64_t call_id, uint64_t owner,
                                                 const catalog::BindingLinks &links,
                                                 const catalog::CallContract &contract,
