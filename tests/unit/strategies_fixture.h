@@ -67,7 +67,11 @@ class StrategiesFixture : public ::testing::Test {
                 AYNI_GRANT_PERMANENT, 0, 0,        empty_scope()};
             auto intent = work.intent(AYNI_INTENT_GRANT_CREATE, &grant);
             intent.command_id = ++command;
-            ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+            const auto accepted = work.submit(intent);
+            ASSERT_EQ(accepted.status, AYNI_OK);
+            if (std::strcmp(id, "echo") == 0) {
+                echo_grant = accepted.result.object.id;
+            }
         }
         pump();
         conversation.id = 1;
@@ -430,6 +434,7 @@ class StrategiesFixture : public ::testing::Test {
     std::vector<Pending> pending;
     policies::ConversationRecord conversation;
     uint64_t command = 600;
+    uint64_t echo_grant = 0;
 };
 } // namespace ayni::test
 #endif

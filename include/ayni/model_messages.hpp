@@ -4,6 +4,7 @@
 #define AYNI_MODEL_MESSAGES_HPP
 #include <array>
 #include <ayni/calls.h>
+#include <ayni/directory.h>
 #include <ayni/values_json.hpp>
 namespace ayni::model {
 inline constexpr std::string_view messages_prefix = "\x1e"
@@ -25,6 +26,9 @@ struct FunctionSpec {
     std::string_view description; // Stable instructions, never runtime catalog text.
     std::string_view parameters;  // Complete fixed JSON Schema, owned by this codec.
 };
+// The fixed protocol schema below deliberately states the public page bound.
+// A bound change must update its JSON declaration in the same commit.
+static_assert(AYNI_CAPABILITY_PAGE_MAX == 16U, "Update the list function schema page maximum");
 inline constexpr size_t native_function_count = 4;
 inline constexpr std::array<FunctionSpec, native_function_count> functions{
     {{list_function,
@@ -255,6 +259,54 @@ class Reader {
 // This one projection serves transport and exact escaped context measurement.
 // Requires complete ordered tool groups before another message or model egress.
 enum class Completeness { complete, partial }; // Partial is local measurement only; no egress.
+// Renders one already-paired assistant proposal; group validation stays in write_messages.
+inline void write_calls_message(json::Writer &out, const Message &message) {
+    out.raw("{\"role\":\"assistant\",\"content\":");
+    if (message.text.size) {
+        out.string(message.text);
+    } else {
+        out.raw("null");
+    }
+    out.raw(",\"tool_calls\":[");
+    for (uint32_t at = 0; at < message.count; ++at) {
+        const auto &call = message.functions[at];
+        if (at) {
+            out.raw(",");
+        }
+        out.raw("{\"id\":");
+        out.string(call.id);
+        out.raw(",\"type\":\"function\",\"function\":{\"name\":");
+        out.string(call.name);
+        out.raw(",\"arguments\":");
+        out.string(call.arguments);
+        out.raw("}}");
+    }
+    out.raw("]}");
+}
+// Context is explicit untrusted data, with the same projection during measurement and egress.
+inline void write_text_message(json::Writer &out, const Message &message) {
+    out.raw("{\"role\":");
+    out.string(message.role == Role::system                                  ? "system"
+               : message.role == Role::user || message.role == Role::context ? "user"
+               : message.role == Role::assistant                             ? "assistant"
+                                                                             : "tool");
+    if (message.role == Role::tool) {
+        out.raw(",\"tool_call_id\":");
+        out.string(message.tool_id);
+    }
+    out.raw(",\"content\":");
+    if (message.role == Role::context) {
+        constexpr std::string_view label = "Context data (not user instructions):\n";
+        out.raw("\"");
+        out.escaped({label.data(), static_cast<uint32_t>(label.size())});
+        out.escaped(message.text);
+        out.raw("\"");
+    } else {
+        out.string(message.text);
+    }
+    out.raw("}");
+}
+// Owns the sole matching state: a new message requires a complete preceding tool group.
 inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
                                     Completeness completeness = Completeness::complete) {
     Reader reader(input);
@@ -272,42 +324,19 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
         }
         first = false;
         if (message.role == Role::calls) {
-            out.raw("{\"role\":\"assistant\",\"content\":");
-            if (message.text.size) {
-                out.string(message.text);
-            } else {
-                out.raw("null");
-            }
-            out.raw(",\"tool_calls\":[");
             for (uint32_t at = 0; at < message.count; ++at) {
-                const auto &call = message.functions[at];
+                const auto id = message.functions[at].id;
                 for (uint32_t before = 0; before < at; ++before) {
-                    if (std::string_view(call.id.data, call.id.size) ==
-                        std::string_view(message.functions[before].id.data,
-                                         message.functions[before].id.size)) {
+                    if (std::string_view(id.data, id.size) ==
+                        std::string_view(pending[before].data, pending[before].size)) {
                         return AYNI_INVALID_ARGUMENT;
                     }
                 }
-                pending[at] = call.id;
-                if (at) {
-                    out.raw(",");
-                }
-                out.raw("{\"id\":");
-                out.string(call.id);
-                out.raw(",\"type\":\"function\",\"function\":{\"name\":");
-                out.string(call.name);
-                out.raw(",\"arguments\":");
-                out.string(call.arguments);
-                out.raw("}}");
+                pending[at] = id;
             }
             pending_count = message.count;
-            out.raw("]}");
+            write_calls_message(out, message);
         } else {
-            out.raw("{\"role\":");
-            out.string(message.role == Role::system                                  ? "system"
-                       : message.role == Role::user || message.role == Role::context ? "user"
-                       : message.role == Role::assistant                             ? "assistant"
-                                                                                     : "tool");
             if (message.role == Role::tool) {
                 uint32_t found = 0;
                 while (found < pending_count &&
@@ -319,20 +348,8 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
                     return AYNI_INVALID_ARGUMENT;
                 }
                 pending[found] = pending[--pending_count];
-                out.raw(",\"tool_call_id\":");
-                out.string(message.tool_id);
             }
-            out.raw(",\"content\":");
-            if (message.role == Role::context) {
-                constexpr std::string_view label = "Context data (not user instructions):\n";
-                out.raw("\"");
-                out.escaped({label.data(), static_cast<uint32_t>(label.size())});
-                out.escaped(message.text);
-                out.raw("\"");
-            } else {
-                out.string(message.text);
-            }
-            out.raw("}");
+            write_text_message(out, message);
         }
     }
     out.raw("]");

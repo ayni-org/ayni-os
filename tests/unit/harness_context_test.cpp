@@ -221,6 +221,77 @@ TEST_F(ContextHarness, declared_summary_failure_pauses_without_changing_the_exec
                             [](const auto &p) { return p.capability == "echo"; }),
               1);
 }
+// ADR-0085: browsing metadata never binds a Grant; queued egress rechecks its source.
+TEST_F(StrategiesFixture, unused_metadata_revocation_cancels_queued_model_egress) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_OFFLINE),
+              AYNI_OK);
+    std::array<ayni_argument_node_v1, 3> arguments{};
+    arguments[0].kind = AYNI_ARGUMENT_OBJECT;
+    arguments[0].subtree_end = 3;
+    arguments[1].kind = AYNI_ARGUMENT_STRING;
+    arguments[1].name = text("binding_id");
+    arguments[1].subtree_end = 2;
+    arguments[1].value.text = text("echo");
+    arguments[2].kind = AYNI_ARGUMENT_NUMBER;
+    arguments[2].name = text("binding_version");
+    arguments[2].subtree_end = 3;
+    arguments[2].value.text = text("1");
+    ayni_tool_call_v1 inspect{};
+    inspect.struct_size = sizeof(inspect);
+    inspect.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+    inspect.function_name = text("ayni_inspect_capability");
+    inspect.protocol_id = text("inspect-echo");
+    inspect.input.arguments = {arguments.data(), static_cast<uint32_t>(arguments.size())};
+    post(0, {}, AYNI_CALL_COMPLETED, AYNI_OK, &inspect, 1);
+    pump();
+    ASSERT_EQ(pending.size(), 1U); // The metadata-bearing next Model Call is resource-queued.
+    std::array<uint64_t, 24> calls{};
+    uint32_t count = 0;
+    ASSERT_EQ(
+        ayni_list_objects(work.kernel(), AYNI_OBJECT_CALL, calls.data(), calls.size(), &count),
+        AYNI_OK);
+    ASSERT_EQ(count, 2U);
+    uint64_t queued = 0;
+    for (uint32_t at = 0; at < count; ++at) {
+        ayni_call_info_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_call(work.kernel(), calls[at], &info), AYNI_OK);
+        if (!info.outcome) {
+            queued = calls[at];
+            EXPECT_EQ(info.attempt.request_id, 0U);
+        }
+    }
+    ASSERT_NE(queued, 0U);
+    ayni_task_tool_authority_v1 bound{};
+    bound.struct_size = sizeof(bound);
+    EXPECT_EQ(ayni_get_task_tool_authority(work.kernel(), task, 0, &bound), AYNI_NOT_FOUND);
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, echo_grant};
+    auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    pump();
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    pump();
+    ayni_call_info_v1 cancelled{};
+    cancelled.struct_size = sizeof(cancelled);
+    ASSERT_EQ(ayni_get_call(work.kernel(), queued, &cancelled), AYNI_OK);
+    EXPECT_EQ(cancelled.outcome, AYNI_CALL_CANCELLED);
+    EXPECT_EQ(cancelled.effect, AYNI_CALL_EFFECT_NONE);
+    // Local cancellation records its own bookkeeping attempt. Provider observations,
+    // rather than a terminal attempt field, prove that the original never left Core.
+    for (const auto &submitted : pending) {
+        EXPECT_NE(submitted.operation, cancelled.operation_id);
+    }
+    EXPECT_EQ(ayni_get_task_tool_authority(work.kernel(), task, 0, &bound), AYNI_NOT_FOUND);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending[1].text.find("Echo input."), std::string::npos);
+    post(1, text("Current directory rebuilt."));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
 TEST_F(StrategiesFixture, absent_service_usage_uses_a_labelled_character_estimate) {
     service_usage = {};
     const auto task = start("chat", "你好 abc");

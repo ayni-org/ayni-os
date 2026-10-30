@@ -37,3 +37,5 @@ Owner C API 在 RUNNING 使用，非重入；管理引用查询是 owner 诊断�
 `capability_context` 捕获本 Task 冻结工具策略中当前可见的完整集合，并合并本次 decide 的目录读取；实际 Model 请求接受时复制 boot+256位来源。跨 Task 的外层 token 还保存 owner 与 exact GoalType/version。新增可见项不使旧来源失效，失去旧可见项或启动变化使之 EXPIRED。Model 接受、派发、晚结果与 snapshot 读取均复核；晚已知结果保留真实 outcome/effect/usage，但正文不可消费。harness 清除派生上下文并使用新的模型步骤，已接受业务操作事实仍由 Core 保留，不因重建重执行。
 
 实际业务 Call 不继承 Model 的整份目录来源，只接受自己的原 Schema、单一完整 Grant 和稳定来源身份。目录/inspect 不是执行授权，撤销已用来源仍保持 AP-03A 的 Task 暂停与显式重新授权规则。
+
+正常来源验证：`StrategiesFixture.unused_metadata_revocation_cancels_queued_model_egress` 先 inspect 可选能力，再阻塞下轮模型资源并撤销未用 Grant；独立 Provider 提交记录证明旧 operation 从未外发，旧 Call 保留 CANCELLED/NONE，浏览没有建立工具绑定，随后从当前目录重建并完成。终态本地记账 attempt 不作为是否外发的证据。

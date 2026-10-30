@@ -1,6 +1,5 @@
-// Typed tool calls through the public ABI, ADR-0054: the GoalType allow list
-// cut to the Task's authority, the tool view given at submit, receipt checks
-// and a strategy requesting a proposed call like any other. Normal scenarios
+// Native proposals through the public ABI, ADR-0085: Task-scoped metadata,
+// lossless receipt shapes, and later ordinary authorized business Calls. Normal scenarios
 // with explicit sim storage timing; no fault injection.
 #include "work_node.h"
 
@@ -793,9 +792,8 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
     EXPECT_EQ(planned.tool_call_count, 1U);
 }
 
-// The Provider was told what it may propose; anything else is invalid evidence,
-// not a model failure the strategy could take for a decision: the call ends
-// UNKNOWN and the Task is held like any other unknown call.
+// ADR-0085: a known Model completion with invalid business suggestions does not
+// imply that any business operation ran or acquired an unknown effect.
 TEST_F(ToolCalls, unknown_functions_and_invalid_business_inputs_do_not_forge_unknown_actions) {
     const std::vector<std::function<void(Proposal &)>> breaks = {
         [](Proposal &p) { p.call.function_name = text("lamp"); },
