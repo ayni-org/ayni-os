@@ -80,7 +80,10 @@ bool Composite::registration_boundaries(CompositeScenario scenario) {
                                     1,
                                     provider.provider_id,
                                     provider.endpoint_id,
-                                    {}};
+                                    {},
+                                    0,
+                                    0,
+                                    nullptr};
             ayni_status_t expected = AYNI_INVALID_ARGUMENT;
             switch (variant) {
             case 0:

@@ -104,7 +104,8 @@ bool action_matches(const CallRecord &record) {
     return has_attempt || (action.phase == ActionPhase::cancelled &&
                            action.evidence == ActionEvidence::local_non_delivery);
 }
-// Saved business interpretation includes exact execution, normalized defaults
+// Saved business interpretation includes original semantics and a unit-preserving resource
+// substitution (ADR-0087), normalized defaults
 // and a present typed result unless its body was explicitly made unavailable.
 bool valid_business_content(const CallRecord &record) {
     const auto &state = record.state;
@@ -117,7 +118,7 @@ bool valid_business_content(const CallRecord &record) {
         catalog::DecodedBusiness proof;
         if (catalog::decode_business(record.domain, record.contract.business_contract, proof) !=
                 AYNI_OK ||
-            !catalog::same_call_contract(record.contract, proof.execution)) {
+            !catalog::bound_call_contract(proof.execution, record.contract)) {
             return false;
         }
         if (!state.content_erased && record.result_kind == CallResultKind::text &&

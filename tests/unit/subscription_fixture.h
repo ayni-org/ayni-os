@@ -191,7 +191,10 @@ class SubscriptionFixture : public testing::Test {
                                           1,
                                           capture.provider_id,
                                           capture.endpoint_id,
-                                          {}},
+                                          {},
+                                          0,
+                                          0,
+                                          nullptr},
                                          {sizeof(ayni_binding_v1),
                                           1,
                                           text("model"),
@@ -200,7 +203,10 @@ class SubscriptionFixture : public testing::Test {
                                           1,
                                           chat.provider_id,
                                           chat.endpoint_id,
-                                          {}}};
+                                          {},
+                                          0,
+                                          0,
+                                          nullptr}};
         for (const auto &binding : bindings) {
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }

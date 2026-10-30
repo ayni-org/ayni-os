@@ -103,7 +103,8 @@ ayni_status_t normalize_call_contract(const CallContract &input, CallContract &o
 
 // Exact semantics, not a permissive subset comparison: changing a timeout,
 // destination-related field, effect or size bound requires deliberate rebinding.
-bool same_call_contract(const CallContract &left, const CallContract &right) {
+namespace {
+bool same_call_semantics(const CallContract &left, const CallContract &right) {
     if (left.form != right.form || left.category != right.category ||
         left.effects != right.effects || left.idempotency != right.idempotency ||
         left.query != right.query || left.cancel != right.cancel ||
@@ -125,9 +126,42 @@ bool same_call_contract(const CallContract &left, const CallContract &right) {
          left.subscription->lease_ms != right.subscription->lease_ms)) {
         return false;
     }
+    return true;
+}
+} // namespace
+
+bool same_call_contract(const CallContract &left, const CallContract &right) {
+    if (!same_call_semantics(left, right)) {
+        return false;
+    }
     for (uint32_t index = 0; index < left.resource_count; ++index) {
         if (!left.resources[index].id.equals(view(right.resources[index].id)) ||
             left.resources[index].units != right.resources[index].units) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ADR-0087: the saved logical proof and effective group have an allowed bijection.
+// Resource order is canonical independently on each side; units cannot disappear,
+// merge or change. Exact current Binding compatibility is checked before dispatch.
+bool bound_call_contract(const CallContract &logical, const CallContract &effective) {
+    if (!same_call_semantics(logical, effective)) {
+        return false;
+    }
+    std::array<bool, resource_group_max> matched{};
+    for (uint32_t logical_at = 0; logical_at < logical.resource_count; ++logical_at) {
+        bool found = false;
+        for (uint32_t actual = 0; actual < effective.resource_count; ++actual) {
+            if (!matched[actual] &&
+                logical.resources[logical_at].units == effective.resources[actual].units) {
+                matched[actual] = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
             return false;
         }
     }

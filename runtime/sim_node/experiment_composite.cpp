@@ -89,7 +89,10 @@ bool Composite::register_profile(ayni_kernel_t *kernel) {
                                       1,
                                       offer.provider_id,
                                       offer.endpoint_id,
-                                      {}};
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
         if (!e.status("register composite authority",
                       ayni_register_capability(kernel, &authority)) ||
             !e.status("register composite call",

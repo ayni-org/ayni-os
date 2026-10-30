@@ -79,7 +79,10 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
                                           1,
                                           provider.provider_id,
                                           provider.endpoint_id,
-                                          provider.destination_id};
+                                          provider.destination_id,
+                                          0,
+                                          0,
+                                          nullptr};
             EXPECT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         });
         std::string output, error, encoding;

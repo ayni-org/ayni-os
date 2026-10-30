@@ -146,7 +146,10 @@ class OpenaiFixture : public ::testing::Test {
                                           1,
                                           desc->provider_id,
                                           desc->endpoint_id,
-                                          desc->destination_id};
+                                          desc->destination_id,
+                                          0,
+                                          0,
+                                          nullptr};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }
         if (usage_available) {

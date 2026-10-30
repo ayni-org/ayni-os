@@ -202,9 +202,18 @@ bool World::register_profile() {
     auto provider = service.describe();
     provider.version = counter_version;
     provider.capabilities = &capability;
-    const ayni_binding_v1 binding{sizeof(binding),          counter_version,      text("increment"),
-                                  capability.capability_id, counter_version,      counter_version,
-                                  provider.provider_id,     provider.endpoint_id, {}};
+    const ayni_binding_v1 binding{sizeof(binding),
+                                  counter_version,
+                                  text("increment"),
+                                  capability.capability_id,
+                                  counter_version,
+                                  counter_version,
+                                  provider.provider_id,
+                                  provider.endpoint_id,
+                                  {},
+                                  0,
+                                  0,
+                                  nullptr};
     if (counter_profile == CounterProfile::v2_with_v1_query) {
         auto old_capability = service.capability();
         auto resolver = service.describe();

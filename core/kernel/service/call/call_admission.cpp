@@ -118,7 +118,7 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     if (dispatchable != AYNI_OK) {
         return dispatchable;
     }
-    const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
+    const auto &contract = proposal.links.contract;
     const auto form = check_call_form(task.task_id, request, contract);
     if (form != AYNI_OK) {
         return form;
@@ -472,7 +472,7 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         proposal.redecide = true;
         return {AYNI_EXPIRED, AYNI_REASON_NONE};
     }
-    const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
+    const auto &contract = proposal.links.contract;
     if (contract.category == catalog::CallClass::model && task.commit_seq > durable_seq) {
         proposal.redecide = true;
         return {
@@ -560,7 +560,7 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
         return accept_control(task_index, stamp, now_us);
     }
     const auto &binding = catalogs_.bindings.at(proposal.binding_index);
-    const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
+    const auto &contract = proposal.links.contract;
     const auto &task = work_.tasks.at(task_index);
     work::CallIdentity identity{};
     if (!work_.ids.allocate(identity.call_id) || !work_.ids.allocate(identity.operation_id)) {

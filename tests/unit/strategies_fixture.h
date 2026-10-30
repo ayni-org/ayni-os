@@ -257,7 +257,10 @@ class StrategiesFixture : public ::testing::Test {
                                           1,
                                           provider.provider_id,
                                           provider.endpoint_id,
-                                          {}};
+                                          {},
+                                          0,
+                                          0,
+                                          nullptr};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }
         const ayni_tool_usage_v1 usage{sizeof(usage),
@@ -281,9 +284,18 @@ class StrategiesFixture : public ::testing::Test {
         }
         for (const auto &alias : aliases) {
             const ayni_string_v1 id{alias.data(), static_cast<uint32_t>(alias.size())};
-            const ayni_binding_v1 binding{
-                sizeof(binding),      1, id, text("echo"), 1, 1, provider.provider_id,
-                provider.endpoint_id, {}};
+            const ayni_binding_v1 binding{sizeof(binding),
+                                          1,
+                                          id,
+                                          text("echo"),
+                                          1,
+                                          1,
+                                          provider.provider_id,
+                                          provider.endpoint_id,
+                                          {},
+                                          0,
+                                          0,
+                                          nullptr};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
             auto adopted = usage;
             adopted.binding_id = id;
@@ -348,7 +360,8 @@ class StrategiesFixture : public ::testing::Test {
         for (uint32_t at = 0; at < provider.capability_count; ++at) {
             const auto id = provider.capabilities[at].capability_id;
             const ayni_binding_v1 binding{
-                sizeof(binding), 1, id, id, 1, 1, provider.provider_id, provider.endpoint_id, {}};
+                sizeof(binding),      1,  id, id, 1,      1, provider.provider_id,
+                provider.endpoint_id, {}, 0,  0,  nullptr};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
             const ayni_tool_usage_v1 usage{sizeof(usage),
                                            1,

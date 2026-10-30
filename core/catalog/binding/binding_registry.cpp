@@ -86,6 +86,8 @@ bool domain_matches(ayni_bytes_v1 domain, const Binding &binding, const CallCont
 
 } // namespace
 
+// Configuration copies identities and validates map shape independently of registration
+// order. Logical demand membership belongs to the startup resolver (C-BIND-004).
 ayni_status_t BindingRegistry::decode(const ayni_binding_v1 &input, Binding &out) {
     const auto status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
     if (status != AYNI_OK) {
@@ -101,6 +103,23 @@ ayni_status_t BindingRegistry::decode(const ayni_binding_v1 &input, Binding &out
     value.version = input.version;
     value.capability_version = input.capability_version;
     value.provider_version = input.provider_version;
+    if (input.resource_reserved != 0 || input.resource_count > resource_group_max ||
+        (input.resource_count == 0) != (input.resources == nullptr)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    value.resource_count = input.resource_count;
+    for (uint32_t at = 0; at < input.resource_count; ++at) {
+        auto &mapping = value.resources[at];
+        if (!mapping.logical.assign(input.resources[at].logical_id) ||
+            !mapping.concrete.assign(input.resources[at].resource_id)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        for (uint32_t before = 0; before < at; ++before) {
+            if (mapping.logical.equals(view(value.resources[before].logical))) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+        }
+    }
     out = value;
     return AYNI_OK;
 }
@@ -123,6 +142,31 @@ bool BindingRegistry::find(ayni_string_v1 id, uint32_t version, uint32_t &index)
     return false;
 }
 
+// ADR-0087: map against the original group, then use its one canonical validator.
+// Substitution is simultaneous (not recursive) and cannot merge resource demands.
+ayni_status_t BindingRegistry::resolve_contract(const Binding &binding, const CallContract &logical,
+                                                CallContract &out) {
+    if (binding.resource_count == 0) {
+        out = logical; // Already normalized by its owner; no new resource value to check.
+        return AYNI_OK;
+    }
+    auto mapped = logical;
+    for (uint32_t at = 0; at < binding.resource_count; ++at) {
+        const auto &mapping = binding.resources[at];
+        bool found = false;
+        for (uint32_t demand = 0; demand < logical.resource_count; ++demand) {
+            if (mapping.logical.equals(view(logical.resources[demand].id))) {
+                mapped.resources[demand].id = mapping.concrete;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+    }
+    return normalize_call_contract(mapped, out);
+}
 // All checks use immutable registrations and publish links only on success.
 // Resource health belongs to runtime admission, so OFFLINE is not a link error.
 ayni_status_t BindingRegistry::resolve(const Binding &binding,
@@ -145,8 +189,12 @@ ayni_status_t BindingRegistry::resolve(const Binding &binding,
         !domain_matches(capabilities.domain_view(links.capability), binding, call.contract)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    for (uint32_t at = 0; at < call.contract.resource_count; ++at) {
-        const auto &required = call.contract.resources[at];
+    const auto status = resolve_contract(binding, call.contract, links.contract);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    for (uint32_t at = 0; at < links.contract.resource_count; ++at) {
+        const auto &required = links.contract.resources[at];
         if (!resources.find(view(required.id), links.resources[at])) {
             return AYNI_NOT_FOUND;
         }
@@ -154,7 +202,7 @@ ayni_status_t BindingRegistry::resolve(const Binding &binding,
             return AYNI_CAPACITY_EXCEEDED;
         }
     }
-    if (!resources.compatible_group(links.resources.data(), call.contract.resource_count)) {
+    if (!resources.compatible_group(links.resources.data(), links.contract.resource_count)) {
         return AYNI_INVALID_ARGUMENT;
     }
     out = links;

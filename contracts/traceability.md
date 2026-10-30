@@ -8,7 +8,7 @@
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 18 |
 | [domain/business_values.md](domain/business_values.md) | 8 | 0 |
-| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 27 | 2 |
+| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 28 | 2 |
 | [domain/capability_directory.md](domain/capability_directory.md) | 7 | 0 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 10 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -25,7 +25,7 @@
 | [domain/versions.md](domain/versions.md) | 17 | 6 |
 | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 5 | 0 |
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
-| [host/cpp_sdk.md](host/cpp_sdk.md) | 5 | 0 |
+| [host/cpp_sdk.md](host/cpp_sdk.md) | 6 | 0 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
@@ -34,7 +34,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 430 | 141 |
+| 合计 | 432 | 141 |
 
 ## 计划章节 → 契约文档
 

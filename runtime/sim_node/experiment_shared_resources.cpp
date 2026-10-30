@@ -70,7 +70,10 @@ bool SharedServices::register_resources(ayni_kernel_t *kernel) {
                                       1,
                                       offer.provider_id,
                                       offer.endpoint_id,
-                                      {}};
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
         if (!e.status("register service authority", ayni_register_capability(kernel, &authority)) ||
             !e.status("register service contract",
                       ayni_register_call_capability(kernel, offer.capabilities)) ||

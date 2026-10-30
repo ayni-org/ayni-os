@@ -68,6 +68,27 @@ TEST(CallContract, duplicate_resources_or_invalid_units_preserve_the_output) {
     EXPECT_EQ(output.resource_count, 0U);
 }
 
+// ADR-0087: saved logical proof permits only a bijection of unchanged demand units.
+TEST(CallContract, binding_resource_substitution_keeps_semantics_and_unit_multiplicity) {
+    auto logical = contract();
+    logical.resource_count = 2;
+    logical.resources[0] = {id("logical.a"), 1};
+    logical.resources[1] = {id("logical.b"), 2};
+    auto effective = logical;
+    effective.resources[0] = {id("actual.a"), 2};
+    effective.resources[1] = {id("actual.b"), 1};
+    EXPECT_TRUE(bound_call_contract(logical, effective));
+    EXPECT_FALSE(same_call_contract(logical, effective));
+    effective.resources[1].units = 2;
+    EXPECT_FALSE(bound_call_contract(logical, effective));
+    effective = logical;
+    --effective.resource_count;
+    EXPECT_FALSE(bound_call_contract(logical, effective));
+    effective = logical;
+    ++effective.timeout_ms;
+    EXPECT_FALSE(bound_call_contract(logical, effective));
+}
+
 TEST(CallContract, each_semantic_change_prevents_exact_provider_compatibility) {
     const auto original = contract();
     using Change = void (*)(CallContract &);

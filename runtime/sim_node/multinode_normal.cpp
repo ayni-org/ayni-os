@@ -123,7 +123,10 @@ class Node {
                                       1,
                                       offer.provider_id,
                                       offer.endpoint_id,
-                                      offer.destination_id};
+                                      offer.destination_id,
+                                      0,
+                                      0,
+                                      nullptr};
         check(ayni_register_binding(sim.kernel(), &binding), "binding");
         check(policy.register_all(sim.kernel(), applications::normal_fixtures::PolicyRevision::v1),
               "policy");

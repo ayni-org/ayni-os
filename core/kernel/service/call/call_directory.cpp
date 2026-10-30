@@ -52,7 +52,7 @@ bool CallRuntime::visible_capability(uint32_t task_index, uint32_t position, uin
                                           catalogs_.resources, links) != AYNI_OK) {
         return false;
     }
-    const auto &contract = catalogs_.call_capabilities.at(links.call).contract;
+    const auto &contract = links.contract;
     if (contract.category != catalog::CallClass::tool) {
         return false;
     }
@@ -126,8 +126,8 @@ ayni_status_t CallRuntime::list_capabilities(uint32_t task_index, uint64_t now_u
         if (used == capacity) {
             break;
         }
-        page[used++] = info(catalogs_.bindings, binding, policy.tools[position].role,
-                            catalogs_.call_capabilities.at(links.call).contract);
+        page[used++] =
+            info(catalogs_.bindings, binding, policy.tools[position].role, links.contract);
     }
     const ayni_capability_cursor_v1 following =
         position == policy.count
@@ -180,11 +180,9 @@ ayni_status_t CallRuntime::inspect_capability(uint32_t task_index, uint64_t now_
         catalogs_.bindings.usage(binding, usage, fields);
         out = {};
         out.struct_size = sizeof(out);
-        out.info = info(catalogs_.bindings, binding, reference.role,
-                        catalogs_.call_capabilities.at(links.call).contract);
+        out.info = info(catalogs_.bindings, binding, reference.role, links.contract);
         out.original_domain = catalogs_.capabilities.domain_view(links.capability);
-        out.business_contract =
-            catalogs_.call_capabilities.at(links.call).contract.business_contract;
+        out.business_contract = links.contract.business_contract;
         out.usage = usage;
         for (uint32_t field = 0; field < usage.field_count; ++field) {
             out.fields[field] = fields[field];

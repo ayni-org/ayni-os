@@ -141,7 +141,10 @@ struct Button {
                                       version,
                                       provider.provider_id,
                                       provider.endpoint_id,
-                                      {}};
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
         return status == AYNI_OK ? ayni_register_binding(kernel, &binding) : status;
     }
     ayni_status_t advance(uint64_t clock) {

@@ -233,7 +233,10 @@ class ManagedExecution : public ::testing::Test {
                                       1,
                                       provider.provider_id,
                                       provider.endpoint_id,
-                                      {}};
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
         ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         const ayni_observation_source_v1 source{
             sizeof(source), 1,      text("ready"), AYNI_OBSERVATION_BOOL, AYNI_OBSERVATION_MEASURED,

@@ -6,7 +6,7 @@
 
 正常收尾是 `drain(正步数, progress)` → `close()`。progress 在 owner 的 step 外推进异步服务；close 在 CONFIGURING/STOPPED 调用创建时提供的 quiesce，确认所有生产者已从最后一次 post 返回，再 destroy/free。hook 必须有界且不抛异常，未就绪返回 BUSY。保留 Host/Provider/context 和外部 arena，直到 close 成功；wrapper 的防御性 arena 保留不能延长它们的生命周期。move 不移动 hook context，也不允许覆盖一个活 Kernel。
 
-五个 main 仅依赖公开头文件。`runtime/examples` 选择具体平台和服务，示例通过公开注册/推进/排空端口接入自己的代码：
+五个 main 仅依赖公开头文件。AP-06 的受管操作工作流位于 `applications/software_workflow`，由 runtime 选择并注册，两个 Host 使用同一应用；一字节 Task checkpoint 保存观察证据，求和检查真实结构结果。`runtime/examples` 选择具体平台和服务，示例通过公开注册/推进/排空端口接入自己的代码：
 
 | 可执行目标 | 新增代码 | 实际证明 |
 |---|---|---|
@@ -33,3 +33,7 @@ CI 编译并运行五个示例和脚本；阶段完整验证另按工作流运�
 
 
 `providers/software` 是平台无关的协作式示例 Provider：每次 `advance()` 每槽最多256次加法或一次事件/控制/终态投递，必须在 Kernel step 外推进。无 worker、设备或网络；configure 一次性有界分配，接受后复制请求，成功 terminal post 后归还借用，close 在 pending 非零时返回 BUSY。事件保留原采集时刻，满队列不伪造新鲜值。
+
+AP-06 当前 ABI 0.52 / Core schema 8。`ayni_example_managed_operations` 无参数运行 Sim；传入已经存在的私有空目录运行 Native 异步文件存储。`Examples.managed_operations_native` 自动创建临时目录、核对成功及实际日志，成功关闭后清理。两者不使用真实模型或设备，不代表后续 Linux 系统集成实验。扩展 `advance` 接收所选 Host 的同一单调时钟域。
+
+同能力的多实例通过 Binding 精确选择；`ayni_binding_resource_v1` 将逻辑需求映射为各实例实际资源（省略为恒等），不改变单位/其他执行语义，不能合并需求。完整示例及验证见 `tests/unit/binding_instances_test.cpp` 和 [本包设计](../docs/architecture/ap06-ap04-foundation-design.md)。定义、说明、实现和部署配置分别归现有接口，不增加模型 codec 的业务分支。

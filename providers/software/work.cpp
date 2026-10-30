@@ -336,6 +336,40 @@ ayni_status_t WorkProvider::describe_source(ayni_observation_source_v1 &out) con
            impl_->config.sample_ttl_us};
     return AYNI_OK;
 }
+
+ayni_status_t WorkProvider::usage(ayni_string_v1 capability, const ayni_tool_ref_v1 &binding,
+                                  ayni_tool_usage_v1 &out) const {
+    if (!impl_) {
+        return AYNI_INVALID_STATE;
+    }
+    if (!capability.data || !binding.binding_id.data || !binding.binding_id.size ||
+        !binding.binding_version || binding.role != AYNI_TOOL_ROLE_CAPABILITY) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const std::string_view id(capability.data, capability.size);
+    if (id != "software.sum" && id != "software.events") {
+        return AYNI_NOT_FOUND;
+    }
+    const bool sum = id == "software.sum";
+    out = {
+        sizeof(out),
+        binding.binding_version,
+        binding.binding_id,
+        version,
+        capability,
+        text(sum ? "Compute an exact bounded sum without devices or network."
+                 : "Observe a finite-lease software counter stream."),
+        text(sum ? "Input is the positive integer item count from the Schema."
+                 : "Input is empty text; read samples through the Task-owned operation."),
+        text(sum ? "Exact I64 sum of integers from one through the input; progress is not a result."
+                 : "Fresh measured I64 counter samples; close returns a cancellation terminal."),
+        text(sum ? "Input 512 returns 131328 after completion."
+                 : "Start with empty text, wait for a usable sample, then close."),
+        0,
+        0,
+        nullptr};
+    return AYNI_OK;
+}
 ayni_status_t WorkProvider::advance() {
     if (!impl_) {
         return AYNI_INVALID_STATE;

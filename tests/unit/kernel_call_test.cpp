@@ -258,7 +258,10 @@ class ManagedCall : public ::testing::Test {
                                       1,
                                       provider.provider_id,
                                       provider.endpoint_id,
-                                      {nullptr, 0}};
+                                      {nullptr, 0},
+                                      0,
+                                      0,
+                                      nullptr};
         ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
     }
     uint64_t create(uint64_t agent = agent_a, uint32_t pause_group = 0) {

@@ -144,7 +144,10 @@ class MockTools : public ::testing::Test {
              1,
              planner_desc.provider_id,
              planner_desc.endpoint_id,
-             {}},
+             {},
+             0,
+             0,
+             nullptr},
             {sizeof(ayni_binding_v1),
              1,
              text("mock.show"),
@@ -153,7 +156,10 @@ class MockTools : public ::testing::Test {
              1,
              presenter_desc.provider_id,
              presenter_desc.endpoint_id,
-             {}},
+             {},
+             0,
+             0,
+             nullptr},
         };
         for (const auto &binding : bindings) {
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
