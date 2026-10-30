@@ -73,6 +73,12 @@ bool admission_ready(const void *context, const work::Task &task) {
         return false;
     }
     const auto &goal = query.model.goals.at(task.goal_index);
+    const auto &strategy = query.model.catalogs.strategies.at(
+        query.model.catalogs.goal_types.at(goal.goal_type_index).strategy_index);
+    if (strategy.ready &&
+        query.model.call_out([&] { return strategy.ready(strategy.ctx, task.task_id); }) != 1U) {
+        return false;
+    }
     if (query.model.goal_authority.contains(task.goal_index, goal.goal_id) &&
         work::replacement_binding_pending(query.model.goal_authority.at(task.goal_index).binding,
                                           goal.created.commit_seq, query.durable_seq)) {
@@ -132,8 +138,10 @@ bool commits_earlier(const DecisionBuffer &decisions, uint32_t index, ayni_strin
 
 // The checks of ayni_decide_fn on what decide returned and the sizes it
 // set, in its order, against the kernel's copy of the strategy's limits.
-Verdict judge_output(ayni_status_t status, uint32_t intent_count, uint32_t checkpoint_size,
+Verdict judge_output(ayni_status_t status, const ayni_policy_output_v1 &output,
                      const catalog::Strategy &strategy) {
+    const auto intent_count = output.intent_count;
+    const auto checkpoint_size = output.checkpoint_size;
     if (status == AYNI_CAPACITY_EXCEEDED) {
         return hold(status, AYNI_REASON_POLICY_OUTPUT_LIMIT);
     }
@@ -148,6 +156,14 @@ Verdict judge_output(ayni_status_t status, uint32_t intent_count, uint32_t check
     if (intent_count > strategy.max_intents_per_call ||
         checkpoint_size > strategy.max_checkpoint_bytes) {
         return hold(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_POLICY_OUTPUT_LIMIT);
+    }
+    // Explicit DEFER is separate from service NOT_READY failures. A worker may
+    // already have completed, so readiness is not sampled again to infer intent.
+    if (output.disposition == AYNI_POLICY_OUTPUT_DEFER && strategy.ready && intent_count == 0) {
+        return {Verdict::Kind::redecide, work::TaskChange::complete, AYNI_OK, AYNI_REASON_NONE};
+    }
+    if (output.disposition != AYNI_POLICY_OUTPUT_PROGRESS) {
+        return hold(AYNI_INVALID_ARGUMENT, AYNI_REASON_NONE);
     }
     if (intent_count == 0U) {
         return hold(AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_NO_PROGRESS);
@@ -447,9 +463,15 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
         calls.scrub_decision();
         return DecisionResult::applied;
     }
-    Verdict verdict = judge_output(status, output.intent_count, output.checkpoint_size, strategy);
-    if (const auto source = memory.validate(); source != AYNI_OK) {
+    const auto source = memory.validate();
+    Verdict verdict = judge_output(status, output, strategy);
+    if (source != AYNI_OK) {
         verdict = hold(source, memory_reason(source));
+    }
+    if (verdict.kind == Verdict::Kind::redecide) {
+        decisions.scrub();
+        calls.scrub_decision();
+        return DecisionResult::none;
     }
     if (verdict.kind != Verdict::Kind::hold) {
         verdict = judge_intents(decisions, output.intent_count, model, index);

@@ -42,25 +42,6 @@ typedef struct ayni_tool_usage_v1 {
         *fields; /* One explanation per exact field_id; null iff count=0. */
 } ayni_tool_usage_v1;
 
-/* Read-only composition port, borrowed until the model Provider has quiesced.
- * Called synchronously on the submit owner thread, not by the I/O worker.
- * Lookup must be bounded, nonblocking and nonreentrant, without I/O or Kernel
- * calls. Input borrows submit storage. Caller sets out->struct_size. On OK,
- * returned views remain valid until the next lookup or submit returns, whichever
- * occurs first; the consumer must copy them before either. Failure leaves out
- * unchanged: NOT_FOUND for no exact pair, UNSUPPORTED_VERSION for unknown layout,
- * INVALID_ARGUMENT for malformed arguments, or CAPACITY_EXCEEDED for limits.
- * Runtime owns pairing/lifetime. Missing, mismatched or invalid required usage
- * rejects submission before HTTP; there is no legacy or Binding-ID description.
- */
-typedef struct ayni_tool_usage_port_v1 {
-    uint32_t struct_size; /* Exact sizeof this minor's layout; zero is an absent port. */
-    uint32_t reserved;    /* Must be zero. */
-    void *context;        /* Owner-owned lookup context; no global mutable registry. */
-    /* Resolves only an exact pair, with the calling/lifetime rules above. */
-    ayni_status_t (*lookup)(void *context, const ayni_tool_v1 *tool, ayni_tool_usage_v1 *out);
-} ayni_tool_usage_port_v1;
-
 #ifdef __cplusplus
 }
 #endif

@@ -170,7 +170,8 @@ bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const Provi
         message.reason,
         static_cast<work::ActionEffect>(message.effect),
         {reinterpret_cast<const char *>(message.payload.data), message.payload.size},
-        message.body};
+        message.body,
+        message.model_usage};
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
     // A query reports an operation's outcome, never a fresh model proposal.
     const bool value_valid = message.body == work::CallResultKind::tool_calls ||

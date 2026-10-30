@@ -119,24 +119,37 @@ typedef struct ayni_call_request_v1 {
 /* Opaque external protocol identity, separate from Ayni Call/operation/attempt. Since 0.48. */
 #define AYNI_MODEL_TOOL_ID_BYTES_MAX 128u
 
-/* Since 0.37. One call a model proposes: an offered tool's exact Binding,
- * every authority field with one concrete value, and an optional body for
- * that tool's input text. A proposal only: the strategy decides whether to
- * request it, and the request is checked like any other (ADR-0054). */
+/* Malformed function.arguments source; a normal harness error, not a business
+ * action with unknown outcome. Since 0.50. */
+#define AYNI_TOOL_INPUT_INVALID_ARGUMENTS 3u
+/* Since 0.50. One native function proposal. Receipt checks only its lossless
+ * shape. The harness handles names/arguments; Core checks any actual Call. */
 typedef struct ayni_tool_call_v1 {
-    uint32_t struct_size;
-    uint32_t binding_version;  /* Nonzero exact version. */
-    ayni_string_v1 binding_id; /* Catalog id of an offered tool. */
-    ayni_scope_v1 arguments;   /* Reserved since 0.48; every member must be zero. */
-    ayni_string_v1 text;       /* Reserved since 0.48; must be empty. */
-    uint32_t input_kind;     /* Since 0.48. VALUE or ARGUMENTS; chooses the active input member. */
-    uint32_t input_reserved; /* Since 0.48. Must be zero. */
-    ayni_string_v1 protocol_id; /* Since 0.48. Original nonempty tool_call.id; never normalized. */
+    uint32_t struct_size; /* Exact ABI layout. */
+    uint32_t input_kind;  /* ARGUMENTS or INVALID_ARGUMENTS; selects the input member. */
+    ayni_string_v1
+        function_name;          /* Nonempty proposed name <=CATALOG_ID_MAX_BYTES, not a Binding. */
+    ayni_string_v1 protocol_id; /* Original nonempty tool_call.id; never an Ayni identity. */
     union {
-        ayni_value_v1 value; /* VALUE: native tree. Owner normalizes against original Schema. */
-        ayni_arguments_v1 arguments; /* ARGUMENTS: names and number lexemes retained losslessly. */
+        ayni_arguments_v1 arguments;      /* Lossless named tree; no Schema admission at receipt. */
+        ayni_string_v1 invalid_arguments; /* Complete malformed UTF-8 JSON source for tool error. */
     } input;
 } ayni_tool_call_v1;
+
+/* No service token statistics were supplied. Since 0.50. */
+#define AYNI_MODEL_USAGE_NONE 0u
+/* Service-reported counts for this request, independent of bytes. Since 0.50. */
+#define AYNI_MODEL_USAGE_REPORTED 1u
+/* Present statistics were malformed; the known model output is unchanged. Since 0.50. */
+#define AYNI_MODEL_USAGE_INVALID 2u
+/* Fixed ABI value; future fields require a new value type. Since 0.50. */
+typedef struct ayni_model_usage_v1 {
+    uint32_t kind;         /* NONE, REPORTED or INVALID; selects whether counters are meaningful. */
+    uint32_t reserved;     /* Must be zero. */
+    uint64_t input_tokens; /* Prompt tokens including the service's message/tool formatting. */
+    uint64_t output_tokens; /* Completion tokens, including reasoning if the service counts it. */
+    uint64_t total_tokens; /* REPORTED: input+output without overflow; otherwise all counts zero. */
+} ayni_model_usage_v1;
 
 /* Since 0.31. A strategy sees only its Task's original call and result. A nonzero
  * requires_seq must be covered by the snapshot's durable prefix before its body
@@ -161,21 +174,17 @@ typedef struct ayni_task_call_result_v1 {
         original_domain; /* Since 0.48. Original authority definition; borrowed through decide. */
     ayni_bytes_v1
         business_contract; /* Since 0.48. Original complete proof; not the current catalog. */
+    ayni_model_usage_v1
+        model_usage; /* Since 0.50. Actual service statistics, never byte estimates. */
 } ayni_task_call_result_v1;
 
-/* Since 0.37. Caller storage for one decoded tool call. call.arguments.fields
- * points into fields and each token set into tokens, so use out in place
- * (copying the struct keeps pointers to the original); strings borrow Core
- * memory until decide returns. To run it, a strategy copies call's binding,
- * arguments and text into an ayni_call_request_v1 of kind REQUEST_CALL. */
+/* Since 0.50. Caller-owned proposal view. Nodes point into this output; all
+ * strings borrow the original immutable model result through decide only. */
 typedef struct ayni_task_tool_call_v1 {
-    uint32_t struct_size;
-    uint32_t reserved; /* Written zero. */
-    ayni_tool_call_v1 call;
-    ayni_scope_field_v1 fields[AYNI_AUTHORITY_FIELD_COUNT_MAX];
-    ayni_string_v1 tokens[AYNI_AUTHORITY_FIELD_COUNT_MAX];
-    ayni_value_node_v1
-        nodes[AYNI_VALUE_NODE_COUNT_MAX]; /* Since 0.48. Decoded typed proposal nodes. */
+    uint32_t struct_size;                                   /* Exact ABI layout. */
+    uint32_t reserved;                                      /* Written zero. */
+    ayni_tool_call_v1 call;                                 /* Decoded native function proposal. */
+    ayni_argument_node_v1 nodes[AYNI_VALUE_NODE_COUNT_MAX]; /* ARGUMENTS storage only. */
 } ayni_task_tool_call_v1;
 
 typedef struct ayni_call_resource_v1 {
@@ -276,9 +285,9 @@ typedef struct ayni_call_query_result_v1 {
  * contain only public codes; result is business data, never an error log.
  * Since 0.37 a COMPLETED result of a TOOL_CALLS call holds either text or
  * 1..CALL_TOOL_COUNT_MAX tool calls with empty text, never both; every other
- * outcome has none. A list must name only tools offered with the request and
- * values inside their offered sets, otherwise the receipt is invalid Provider
- * evidence. Report undecodable model output as FAILED with reason
+ * outcome has none. Since 0.50, proposals retain native names and lossless
+ * arguments without business admission. COMPLETED plus tool_call_count may
+ * carry optional assistant content in result. Report broken outer output as FAILED with reason
  * MODEL_OUTPUT instead, as when post refuses a list over result_text_limit.
  */
 typedef struct ayni_provider_result_v1 {
@@ -296,6 +305,8 @@ typedef struct ayni_provider_result_v1 {
     const ayni_tool_call_v1 *tool_calls; /* Since 0.37. Null only when tool_call_count is 0. */
     ayni_value_v1
         value; /* Since 0.48. Structured payload; empty iff absent, exclusive with text/tools. */
+    ayni_model_usage_v1
+        model_usage; /* Since 0.50. Terminal MODEL only; NONE for other deliveries. */
 } ayni_provider_result_v1;
 
 /* Pure producer sizing of a complete proposal list; no Schema or Kernel access.
@@ -360,16 +371,6 @@ typedef struct ayni_provider_request_v1 {
      * status read answered NOT_FOUND for it first (ADR-0052). Workers only issue
      * samples under that gate. Copy before retention, never accept it later. */
     const ayni_execution_permit_v1 *execution_permit;
-    /* Since 0.37. Tools offered to a TOOL_CALLS call, zero otherwise. During
-     * this submit only, on its thread, tool(tool_context, index, out) fills
-     * caller storage whose struct_size is set, for index below tool_count; its
-     * views borrow Core storage until submit returns. Outside any submit it
-     * returns INVALID_STATE; a Provider never keeps it, since during a later
-     * submit it would describe that call's tools. Null when tool_count is 0. */
-    uint32_t tool_count;
-    uint32_t tool_reserved; /* Written zero. */
-    const void *tool_context;
-    ayni_status_t (*tool)(const void *context, uint32_t index, ayni_tool_v1 *out);
     /* Since 0.43. Non-null only for a subscription; copy during submit. */
     const ayni_subscription_open_v1 *subscription;
     ayni_value_v1 value; /* Since 0.48. Normalized business tree borrowed through submit. */
@@ -506,6 +507,7 @@ typedef struct ayni_call_info_v1 {
     ayni_attempt_ref_v1 query_attempt; /* Distinct from original execution; zero before prepared. */
     uint32_t result_kind;     /* Since 0.48. Actual TEXT, TOOL_CALLS, VALUE or UNAVAILABLE. */
     uint32_t result_reserved; /* Since 0.48. Written zero. */
+    ayni_model_usage_v1 model_usage; /* Since 0.50. Retained reported counts or explicit absence. */
 } ayni_call_info_v1;
 
 /* Owner thread, outside callbacks. Fixed copied info may describe volatile facts;

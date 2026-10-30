@@ -458,6 +458,7 @@ struct Executor::Impl {
             0,
             0,
             nullptr,
+            {},
             {}};
         // Kernel power loss ends the borrow, while the independent physical gate
         // continues until its existing lease/interlocks stop it (C-PERMIT-009).

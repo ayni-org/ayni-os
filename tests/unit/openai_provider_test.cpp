@@ -3,15 +3,19 @@
 #include "catalog/capability/business_encoding.h"
 #include "catalog/capability/capability_registry.h"
 #include "openai_fixture.h"
+#include <ayni/detail/tool_usage.hpp>
 
 namespace {
 using namespace ayni::test;
 using OpenaiProvider = OpenaiFixture;
 const char *text_reply =
     R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"hello 世界"}}]})";
-std::string tool_reply(const std::string &arguments, const std::string &name = "tool_0") {
+std::string tool_reply(const std::string &arguments,
+                       const std::string &name = "ayni_call_capability") {
     std::string escaped;
-    for (char c : arguments) {
+    const auto native_arguments =
+        std::string(R"({"binding_id":"show","binding_version":1,"arguments":)") + arguments + "}";
+    for (char c : native_arguments) {
         if (c == '"' || c == '\\') {
             escaped += '\\';
         }
@@ -36,17 +40,65 @@ TEST_F(OpenaiProvider, text_completes_through_public_abi_and_declares_remote_eff
     const auto request = server->request();
     EXPECT_NE(request.find("POST /chat/completions HTTP/1.1"), std::string::npos);
     EXPECT_NE(request.find("\"stream\":false"), std::string::npos);
-    EXPECT_NE(request.find("\"minimum\":5,\"maximum\":10"), std::string::npos);
-    EXPECT_NE(request.find("How long to display the text.\\nUnit: second"), std::string::npos);
-    EXPECT_NE(request.find("Presentation style of the mock display."), std::string::npos);
-    EXPECT_NE(request.find(usage_purpose), std::string::npos);
-    EXPECT_NE(request.find("Completion confirms simulated display only"), std::string::npos);
-    EXPECT_NE(request.find("seconds=7, voice=calm, text=hello"), std::string::npos);
-    EXPECT_EQ(usage_lookups, 1U);
-    EXPECT_NE(request.find("\"enum\":[\"bright\",\"calm\"]"), std::string::npos);
+    for (auto name : {"ayni_list_capabilities", "ayni_inspect_capability", "ayni_call_capability",
+                      "ayni_shell"}) {
+        EXPECT_NE(request.find(name), std::string::npos);
+    }
+    EXPECT_EQ(request.find(usage_purpose), std::string::npos);
+    EXPECT_EQ(request.find("How long to display the text."), std::string::npos);
+    EXPECT_EQ(usage_lookups, 1U); // Trusted startup adoption, never a submit callback.
     EXPECT_NE(request.find("Authorization: Bearer fixture-only-key"), std::string::npos);
     EXPECT_NE(request.find(R"("messages":[{"role":"user","content":"say hello"}])"),
               std::string::npos);
+}
+// ADR-0085: token counts come from the serving model, including its formatting.
+TEST_F(OpenaiProvider, service_token_usage_reaches_task_and_owner_views) {
+    start(
+        R"({"usage":{"prompt_tokens":1234,"completion_tokens":56,"total_tokens":1290},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"done"}}]})");
+    create();
+    wait_done();
+    ASSERT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    const auto &usage = seen_result.model_usage;
+    EXPECT_EQ(usage.kind, AYNI_MODEL_USAGE_REPORTED);
+    EXPECT_EQ(usage.input_tokens, 1234U);
+    EXPECT_EQ(usage.output_tokens, 56U);
+    EXPECT_EQ(usage.total_tokens, 1290U);
+    ayni_call_info_v1 info{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_call(work.kernel(), seen_result.logical_call_id, &info), AYNI_OK);
+    EXPECT_EQ(info.model_usage.kind, usage.kind);
+    EXPECT_EQ(info.model_usage.total_tokens, usage.total_tokens);
+}
+TEST_F(OpenaiProvider, omitted_usage_is_explicitly_unavailable) {
+    start(text_reply);
+    create();
+    wait_done();
+    ASSERT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(seen_result.model_usage.kind, AYNI_MODEL_USAGE_NONE);
+    EXPECT_EQ(seen_result.model_usage.total_tokens, 0U);
+}
+TEST_F(OpenaiProvider, invalid_optional_statistics_preserve_known_model_output) {
+    start(
+        R"({"usage":{"prompt_tokens":50,"completion_tokens":10,"total_tokens":59},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"done"}}]})");
+    create();
+    wait_done();
+    ASSERT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(reply, "done");
+    EXPECT_EQ(seen_result.model_usage.kind, AYNI_MODEL_USAGE_INVALID);
+    EXPECT_EQ(seen_result.model_usage.total_tokens, 0U);
+    EXPECT_EQ(server->requests(), 1U);
+}
+TEST_F(OpenaiProvider, ambiguous_optional_usage_does_not_erase_the_completion) {
+    start(
+        R"({"usage":{"prompt_tokens":1,"prompt_tokens":2,"completion_tokens":3,"total_tokens":5},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"done"}}]})");
+    create();
+    wait_done();
+    ASSERT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(reply, "done");
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(seen_result.model_usage.kind, AYNI_MODEL_USAGE_INVALID);
+    EXPECT_EQ(server->requests(), 1U);
 }
 // ADR-0074: framed instructions become the system message, and the data alone the user message.
 TEST_F(OpenaiProvider, framed_instructions_become_the_system_message) {
@@ -137,14 +189,14 @@ TEST_F(OpenaiProvider, described_mock_device_runs_through_the_normal_managed_cal
 }
 
 // ADR-0082/AP-01: no explanatory fallback may expose an unusable or wrong tool.
-TEST_F(OpenaiProvider, tools_without_a_usage_port_are_rejected_before_http) {
+TEST_F(OpenaiProvider, fixed_functions_need_no_catalog_usage_at_submit) {
     usage_available = false;
     start(text_reply);
     create();
     wait_done();
-    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
-    EXPECT_EQ(server->requests(), 0U);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(server->requests(), 1U);
     EXPECT_EQ(usage_lookups, 0U);
 }
 TEST_F(OpenaiProvider, text_only_requests_need_no_usage_port) {
@@ -159,7 +211,7 @@ TEST_F(OpenaiProvider, text_only_requests_need_no_usage_port) {
     EXPECT_EQ(usage_lookups, 0U);
 }
 // C-USAGE-001: absence depends on the actual tool view, not the result format.
-TEST_F(OpenaiProvider, tool_capable_requests_without_tools_need_no_usage_port) {
+TEST_F(OpenaiProvider, empty_business_policy_still_uses_the_fixed_native_functions) {
     usage_available = false;
     offer_tools = false;
     start(text_reply);
@@ -167,18 +219,19 @@ TEST_F(OpenaiProvider, tool_capable_requests_without_tools_need_no_usage_port) {
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(server->requests(), 1U);
-    EXPECT_EQ(server->request().find("\"tools\":"), std::string::npos);
+    EXPECT_NE(server->request().find("\"tools\":"), std::string::npos);
     EXPECT_EQ(usage_lookups, 0U);
 }
-TEST_F(OpenaiProvider, missing_exact_usage_is_rejected_before_http) {
+TEST_F(OpenaiProvider, missing_candidate_usage_is_not_adopted_or_sent_to_model) {
     usage_status = AYNI_NOT_FOUND;
     start(text_reply);
     create();
     wait_done();
-    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
-    EXPECT_EQ(server->requests(), 0U);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(server->requests(), 1U);
     EXPECT_EQ(usage_lookups, 1U);
+    EXPECT_EQ(adoption_status, AYNI_NOT_FOUND);
 }
 
 struct InvalidUsage {
@@ -186,15 +239,16 @@ struct InvalidUsage {
     void (*change)(ayni_tool_usage_v1 &);
 };
 class OpenaiUsage : public OpenaiProvider, public ::testing::WithParamInterface<InvalidUsage> {};
-TEST_P(OpenaiUsage, invalid_description_is_rejected_before_http_without_truncation) {
+TEST_P(OpenaiUsage, invalid_description_is_rejected_during_trusted_adoption) {
     change_usage = GetParam().change;
     start(text_reply);
+    EXPECT_NE(adoption_status, AYNI_OK);
+    EXPECT_EQ(usage_lookups, 1U);
     create();
     wait_done();
-    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
-    EXPECT_EQ(server->requests(), 0U);
-    EXPECT_EQ(usage_lookups, 1U);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(server->requests(), 1U); // Fixed function metadata needs no catalog description.
+    EXPECT_EQ(usage_lookups, 1U);      // No worker/submit lookup.
 }
 INSTANTIATE_TEST_SUITE_P(
     Usage, OpenaiUsage,
@@ -234,27 +288,37 @@ INSTANTIATE_TEST_SUITE_P(
     [](const auto &v) { return std::string(v.param.name); });
 
 // Both limits are inclusive and count UTF-8 bytes. Order is by exact field ID.
-TEST_F(OpenaiProvider, exact_tool_and_field_description_budgets_reach_the_http_codec) {
-    start(text_reply);
+TEST_F(OpenaiProvider, exact_tool_and_field_description_budgets_are_copied_during_adoption) {
     std::string field(AYNI_TOOL_FIELD_USAGE_MAX_BYTES, 'f');
-    usage_fields[0].description = {field.data(), static_cast<uint32_t>(field.size())};
-    ayni_tool_v1 key{};
-    key.binding_id = text("show");
-    key.binding_version = 1;
-    ayni_tool_usage_v1 usage{};
-    ASSERT_EQ(lookup_usage(this, &key, &usage), AYNI_OK);
-    uint32_t other = usage.binding_id.size + usage.capability_id.size + usage.text_usage.size +
-                     usage.result_usage.size + usage.examples.size;
-    for (const auto &entry : usage_fields) {
-        other += entry.description.size;
-    }
-    usage_purpose.assign(AYNI_TOOL_USAGE_MAX_BYTES - other, 'p');
-    create();
+    change_usage = [&](auto &usage) {
+        const_cast<ayni_tool_field_usage_v1 *>(usage.fields)[0].description = {
+            field.data(), static_cast<uint32_t>(field.size())};
+        uint32_t other = usage.binding_id.size + usage.capability_id.size + usage.text_usage.size +
+                         usage.result_usage.size + usage.examples.size;
+        for (uint32_t at = 0; at < usage.field_count; ++at) {
+            other += usage.fields[at].description.size;
+        }
+        usage_purpose.assign(AYNI_TOOL_USAGE_MAX_BYTES - other, 'p');
+        usage.purpose = {usage_purpose.data(), static_cast<uint32_t>(usage_purpose.size())};
+    };
+    start(text_reply);
+    ASSERT_EQ(adoption_status, AYNI_OK);
+    const auto goal = create();
+    wait_request();
+    ayni_capability_detail_v1 detail{};
+    detail.struct_size = sizeof(detail);
+    ASSERT_EQ(ayni_inspect_task_capability(work.kernel(), work.goal(goal).last_task_id,
+                                           text("show"), 1, &detail),
+              AYNI_OK);
+    EXPECT_EQ(string_of(detail.usage.purpose), usage_purpose);
+    EXPECT_EQ(detail.usage.fields[1].field_id, 2U);
+    EXPECT_EQ(string_of(detail.usage.fields[1].description), field);
+    std::fill(field.begin(), field.end(), 'x');
+    EXPECT_EQ(string_of(detail.usage.fields[1].description),
+              std::string(AYNI_TOOL_FIELD_USAGE_MAX_BYTES, 'f'));
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
-    EXPECT_EQ(server->requests(), 1U);
-    EXPECT_NE(server->request().find(usage_purpose), std::string::npos);
-    EXPECT_NE(server->request().find(field), std::string::npos);
+    EXPECT_EQ(server->request().find(usage_purpose), std::string::npos);
 }
 
 // Model usage uses the same pure scalar validator as existing payload owners.
@@ -270,9 +334,10 @@ TEST_F(OpenaiProvider, individually_bounded_strings_cannot_exceed_the_total_usag
     start(text_reply);
     create();
     wait_done();
-    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
-    EXPECT_EQ(server->requests(), 0U);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_NE(adoption_status, AYNI_OK);
 }
 
 // ADR-0082/AP-01: neither the I/O codec nor later result decoding can borrow
@@ -346,8 +411,7 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
               AYNI_OK);
     view.original_domain = {domain.data(), domain_size};
     view.business_contract = {proof.data(), proof_size};
-    Tool copied;
-    ASSERT_TRUE(copied.copy(view));
+    ayni::detail::ToolUsage copied;
     std::string purpose = "Original mock display usage";
     std::string field_text = "Original display duration explanation";
     ayni_tool_field_usage_v1 field{
@@ -364,31 +428,26 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
                              1,
                              0,
                              &field};
-    ASSERT_TRUE(copied.copy_usage(usage));
+    ASSERT_TRUE(copied.assign(usage, view));
     std::fill(purpose.begin(), purpose.end(), 'x');
     std::fill(field_text.begin(), field_text.end(), 'x');
     field.field_id = 99;
     usage.text_usage = text("Changed source view");
-    Protocol codec(4096);
-    auto buffer = std::make_unique<char[]>(request_json_max);
+    ayni_tool_usage_v1 retained{};
+    std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> fields{};
+    copied.read(retained, fields);
+    EXPECT_EQ(string_of(retained.purpose), "Original mock display usage");
+    EXPECT_EQ(string_of(retained.text_usage), "Display the supplied text.");
+    EXPECT_EQ(string_of(retained.fields[0].description), "Original display duration explanation");
+    EXPECT_EQ(retained.fields[0].field_id, 1U);
+    std::array<char, 4096> buffer{};
+    ayni::json::Writer writer(buffer.data(), buffer.size());
+    ayni::json::write_schema(writer, definition.input);
     size_t size = 0;
-    Config config;
-    config.model = "fixture";
-    ASSERT_EQ(codec.encode(config, text("use the display"), &copied, 1, buffer.get(), size),
-              AYNI_OK);
-    const std::string encoded(buffer.get(), size);
-    EXPECT_NE(encoded.find("Original mock display usage"), std::string::npos);
-    EXPECT_NE(encoded.find("Display the supplied text."), std::string::npos);
-    EXPECT_NE(encoded.find("Original display duration explanation"), std::string::npos);
+    ASSERT_TRUE(writer.finish(size));
+    const std::string encoded(buffer.data(), size);
     EXPECT_NE(encoded.find("\"seconds\""), std::string::npos);
     EXPECT_NE(encoded.find("\"minimum\":1,\"maximum\":10"), std::string::npos);
-    EXPECT_NE(
-        encoded.find(
-            "Authority field 1: integer [1, 2] second via business name path [\\\"seconds\\\"]"),
-        std::string::npos);
-    EXPECT_EQ(encoded.find("\"field_99\""), std::string::npos);
-    EXPECT_EQ(encoded.find(purpose), std::string::npos);
-    EXPECT_EQ(encoded.find("Changed source view"), std::string::npos);
 }
 // ADR-0084: machine bounds survive the JSON adapter with exact integer/decimal
 // descriptions and binary64 roundtrip bounds; byte limits are not Unicode lengths.
@@ -451,28 +510,12 @@ TEST(OpenaiSchema, numeric_and_text_bounds_are_exposed_without_precision_loss) {
     view.text_limit = 512;
     view.original_domain = {domain.data(), domain.size()};
     view.business_contract = {proof.data(), size};
-    Tool tool;
-    ASSERT_TRUE(tool.copy(view));
-    ayni_tool_usage_v1 usage{sizeof(usage),
-                             1,
-                             view.binding_id,
-                             1,
-                             view.capability_id,
-                             text("Bounded business inputs."),
-                             text("Use the declared fields."),
-                             text("Text result."),
-                             text("Use exact values."),
-                             0,
-                             0,
-                             nullptr};
-    ASSERT_TRUE(tool.copy_usage(usage));
-    Protocol codec(4096);
-    Config config;
-    config.model = "fixture";
-    auto buffer = std::make_unique<char[]>(request_json_max);
+    std::array<char, 4096> buffer{};
+    ayni::json::Writer writer(buffer.data(), buffer.size());
+    ayni::json::write_schema(writer, business.input);
     size_t written = 0;
-    ASSERT_EQ(codec.encode(config, text("describe"), &tool, 1, buffer.get(), written), AYNI_OK);
-    const std::string encoded(buffer.get(), written);
+    ASSERT_TRUE(writer.finish(written));
+    const std::string encoded(buffer.data(), written);
     EXPECT_NE(encoded.find("\"minimum\":0.125,\"maximum\":0.875"), std::string::npos);
     EXPECT_NE(encoded.find("[-9223372036854775808, 9223372036854775807]"), std::string::npos);
     EXPECT_NE(encoded.find("[0, 18446744073709551615]"), std::string::npos);
@@ -559,30 +602,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 class OpenaiArguments : public OpenaiProvider,
                         public ::testing::WithParamInterface<const char *> {};
-TEST_P(OpenaiArguments, invalid_arguments_are_classified_by_the_adapter_or_original_schema_owner) {
+TEST_P(OpenaiArguments,
+       invalid_arguments_return_normal_tool_refusals_after_known_model_completion) {
     start(tool_reply(GetParam()));
     create();
     wait_done();
-    const std::string input = GetParam();
-    if (input == "broken" || input.find("\"seconds\":7,\"seconds\":8") != std::string::npos) {
-        EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-        EXPECT_EQ(seen_result.status, AYNI_INVALID_ARGUMENT);
-        EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
-        EXPECT_EQ(seen_result.tool_call_count, 0U);
-    } else {
-        // ADR-0084: post copied valid source syntax and ended the borrow. Only
-        // the owner decides original Schema/authority validity; bad evidence stays UNKNOWN.
-        const auto task = work.task(work.goal(last_goal).last_task_id);
-        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-        EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
-        ayni_call_info_v1 call{};
-        call.struct_size = sizeof(call);
-        ASSERT_EQ(ayni_get_call(work.kernel(), task.logical_call_id, &call), AYNI_OK);
-        EXPECT_EQ(call.outcome, AYNI_CALL_ABANDONED);
-        EXPECT_EQ(call.reason, AYNI_REASON_PROVIDER_RESULT);
-        EXPECT_EQ(call.tool_call_count, 0U);
-        EXPECT_EQ(presenter.executions(), 0U);
-    }
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(seen_result.status, AYNI_OK);
+    EXPECT_EQ(seen_result.tool_call_count, 1U);
+    EXPECT_NE(proposal_error, AYNI_OK);
+    EXPECT_EQ(presenter.executions(), 0U);
+    EXPECT_EQ(work.task(work.goal(last_goal).last_task_id).lifecycle, AYNI_TASK_COMPLETED);
 }
 INSTANTIATE_TEST_SUITE_P(
     Arguments, OpenaiArguments,
@@ -594,12 +624,13 @@ INSTANTIATE_TEST_SUITE_P(
                       R"({"seconds":7,"seconds":8,"voice":"calm","text":"hi"})",
                       R"({"seconds":7,"voice":"calm","text":"hi","extra":true})",
                       R"({"seconds":7,"voice":"calm","text":null})", "{}", "broken"));
-TEST_F(OpenaiProvider, unknown_tool_is_model_output_failure) {
+TEST_F(OpenaiProvider, unknown_function_is_a_normal_refusal_after_known_model_completion) {
     start(tool_reply(R"({"seconds":7,"voice":"calm","text":"hi"})", "unknown"));
     create();
     wait_done();
-    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(proposal_error, AYNI_NOT_FOUND);
+    EXPECT_EQ(presenter.executions(), 0U);
 }
 TEST_F(OpenaiProvider, body_over_tool_limit_is_invalid_argument) {
     start(
@@ -607,8 +638,9 @@ TEST_F(OpenaiProvider, body_over_tool_limit_is_invalid_argument) {
     create();
     wait_done();
     const auto task = work.task(work.goal(last_goal).last_task_id);
-    EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(task.lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(proposal_error, AYNI_OK);
     EXPECT_EQ(presenter.executions(), 0U);
 }
 TEST_F(OpenaiProvider, redirect_does_not_send_credentials_to_another_server) {
@@ -704,29 +736,26 @@ TEST_F(OpenaiProvider, full_provider_queue_preserves_the_accepted_request) {
     EXPECT_EQ(work.task(work.goal(first).last_task_id).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(server->requests(), 1U);
 }
-// C-USAGE-001: malformed supplied ports fail at configure, before key lookup or I/O.
-TEST(OpenaiConfiguration, rejects_malformed_present_usage_ports_before_initialization) {
+// ADR-0085: transport functions stay fixed independently of catalog size/input.
+TEST(OpenaiConfiguration, native_functions_have_one_stable_transport_definition) {
+    using namespace ayni::providers::openai_compat;
+    Protocol codec(4096);
     Config config;
-    config.base_url = "https://example.com";
     config.model = "fixture";
-    config.key_environment = "AYNI_PROTOCOL_MISSING_KEY";
-    const auto lookup =
-        +[](void *, const ayni_tool_v1 *, ayni_tool_usage_v1 *) { return AYNI_NOT_FOUND; };
-    const ayni_tool_usage_port_v1 ports[] = {
-        {sizeof(ayni_tool_usage_port_v1) - 1, 0, nullptr, lookup},
-        {sizeof(ayni_tool_usage_port_v1) + 1, 0, nullptr, lookup},
-        {sizeof(ayni_tool_usage_port_v1), 1, nullptr, lookup},
-        {sizeof(ayni_tool_usage_port_v1), 0, nullptr, nullptr},
-    };
-    Provider provider;
-    for (const auto &port : ports) {
-        config.tool_usage = port;
-        EXPECT_EQ(provider.configure(config), AYNI_INVALID_ARGUMENT);
-        EXPECT_EQ(provider.pending(), 0U);
+    auto buffer = std::make_unique<char[]>(request_json_max);
+    size_t size = 0;
+    ASSERT_EQ(codec.encode(config, text("first input"), buffer.get(), size), AYNI_OK);
+    const std::string first(buffer.get(), size);
+    ASSERT_EQ(codec.encode(config, text("second input"), buffer.get(), size), AYNI_OK);
+    const std::string second(buffer.get(), size);
+    const auto start = first.find("\"tools\":");
+    ASSERT_NE(start, std::string::npos);
+    EXPECT_EQ(first.substr(start), second.substr(second.find("\"tools\":")));
+    for (auto name : {"ayni_list_capabilities", "ayni_inspect_capability", "ayni_call_capability",
+                      "ayni_shell"}) {
+        EXPECT_NE(first.find(name), std::string::npos);
     }
-    // An absent port is valid configuration; the missing key is then reported.
-    config.tool_usage = {};
-    EXPECT_EQ(provider.configure(config), AYNI_NOT_READY);
+    EXPECT_EQ(first.find("tool_0"), std::string::npos);
 }
 TEST(OpenaiConfiguration, rejects_unsafe_urls_and_missing_key_without_starting_io) {
     Config config;

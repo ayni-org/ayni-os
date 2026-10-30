@@ -123,8 +123,6 @@ struct Provider::Impl {
         ayni_attempt_ref_v1 attempt{};
         ayni_provider_completion_t *completion = nullptr;
         Clock::time_point deadline;
-        uint32_t tool_count = 0;
-        std::array<Tool, AYNI_CALL_TOOL_COUNT_MAX> tools;
         std::unique_ptr<char[]> input;
         uint32_t input_size = 0;
         std::unique_ptr<char[]> request;
@@ -342,10 +340,8 @@ struct Provider::Impl {
             request->capability_version != contract_version || !request->attempt.boot_epoch ||
             !request->attempt.request_id || !request->logical_call_id || !request->operation_id ||
             !same(request->capability_id, self.capability.capability_id) ||
-            !same(request->endpoint_id, self.descriptor.endpoint_id) ||
-            request->tool_count > AYNI_CALL_TOOL_COUNT_MAX ||
-            (request->tool_count && (!request->tool || self.config.tool_usage.struct_size == 0)) ||
-            request->execution_permit || self.stopping.load() || self.failure.load() != AYNI_OK) {
+            !same(request->endpoint_id, self.descriptor.endpoint_id) || request->execution_permit ||
+            self.stopping.load() || self.failure.load() != AYNI_OK) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         ayni::ValueReader input;
@@ -360,24 +356,10 @@ struct Provider::Impl {
             if (slot.phase.load(std::memory_order_acquire) != Phase::empty) {
                 continue;
             }
-            for (uint32_t j = 0; j < request->tool_count; ++j) {
-                ayni_tool_v1 tool{};
-                tool.struct_size = sizeof(tool);
-                ayni_tool_usage_v1 usage{};
-                usage.struct_size = sizeof(usage);
-                const auto &port = self.config.tool_usage;
-                if (request->tool(request->tool_context, j, &tool) != AYNI_OK ||
-                    !slot.tools[j].copy(tool) ||
-                    port.lookup(port.context, &tool, &usage) != AYNI_OK ||
-                    !slot.tools[j].copy_usage(usage)) {
-                    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-                }
-            }
             if (body.size) {
                 std::memcpy(slot.input.get(), body.data, body.size);
             }
             slot.input_size = body.size;
-            slot.tool_count = request->tool_count;
             slot.attempt = request->attempt;
             slot.completion = completion;
             slot.deadline = Clock::now() + std::chrono::milliseconds(self.config.timeout_ms);
@@ -455,9 +437,8 @@ struct Provider::Impl {
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;
         }
-        const auto encoded =
-            protocol.encode(config, {slot.input.get(), slot.input_size}, slot.tools.data(),
-                            slot.tool_count, slot.request.get(), slot.request_size);
+        const auto encoded = protocol.encode(config, {slot.input.get(), slot.input_size},
+                                             slot.request.get(), slot.request_size);
         if (encoded != AYNI_OK) {
             // Encoding can fail after a private prefix was written, before it
             // published a size; erase the whole reserved lane on this path.
@@ -519,8 +500,8 @@ struct Provider::Impl {
                        http_forbidden = 403, http_not_found = 404, http_timeout = 408,
                        http_rate_limit = 429, http_server_error = 500;
         if (http == http_ok) {
-            protocol.decode(slot.response.get(), slot.response_size, slot.tools.data(),
-                            slot.tool_count, config.text_max_bytes, slot.answer);
+            protocol.decode(slot.response.get(), slot.response_size, config.text_max_bytes,
+                            slot.answer);
         } else {
             const auto status = http == http_bad_request ? AYNI_INVALID_ARGUMENT
                                 : http == http_unauthorized || http == http_forbidden ? AYNI_DENIED
@@ -664,12 +645,7 @@ ayni_status_t Provider::configure(const Config &config) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
-    // C-USAGE-001: validate the copied immutable port once. Absence stays legal
-    // until a request actually offers tools; per-tool pairing remains in submit.
-    const auto &port = config.tool_usage;
-    if ((port.struct_size != 0 &&
-         (port.struct_size != sizeof(port) || port.reserved != 0 || !port.lookup)) ||
-        (config.result_format != AYNI_CALL_RESULT_TEXT &&
+    if ((config.result_format != AYNI_CALL_RESULT_TEXT &&
          config.result_format != AYNI_CALL_RESULT_TOOL_CALLS) ||
         !config.request_capacity || config.request_capacity > request_capacity_max ||
         !config.text_max_bytes || config.text_max_bytes > AYNI_CALL_TEXT_BYTES_MAX ||

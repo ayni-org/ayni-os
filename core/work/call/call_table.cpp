@@ -72,7 +72,10 @@ ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_
 }
 
 ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) const {
-    if (!valid_result(result) || result.kind == CallResultKind::unavailable ||
+    if (!valid_result(result) || !valid_model_usage(result.model_usage) ||
+        (result.model_usage.kind != AYNI_MODEL_USAGE_NONE &&
+         slots_[index].entry->contract.category != catalog::CallClass::model) ||
+        result.kind == CallResultKind::unavailable ||
         (result.kind == CallResultKind::tool_calls && result.outcome != AYNI_CALL_COMPLETED)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -87,13 +90,15 @@ ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) 
 // Stale evidence cannot yield a usable completed step. Keep measured side effects,
 // but only after the original Provider shape/text have passed the shared validator.
 CallResult CallTable::usable_result(const CallResult &validated, ResultDependencies dependencies) {
-    return dependencies == ResultDependencies::stale && validated.outcome == AYNI_CALL_COMPLETED
-               ? CallResult{AYNI_CALL_FAILED,
-                            AYNI_STALE,
-                            AYNI_REASON_EXECUTION_OBSERVATION,
-                            validated.effect,
-                            {}}
-               : validated;
+    auto result = validated;
+    if (dependencies == ResultDependencies::stale && validated.outcome == AYNI_CALL_COMPLETED) {
+        result.outcome = AYNI_CALL_FAILED;
+        result.status = AYNI_STALE;
+        result.reason = AYNI_REASON_EXECUTION_OBSERVATION;
+        result.text = {};
+        result.kind = CallResultKind::text;
+    }
+    return result;
 }
 
 namespace {
@@ -146,7 +151,17 @@ bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp) {
                             : foundation::is_kernel_id(id.authorization.grant_id) &&
                                   id.authorization.revision != 0U &&
                                   id.authorization.grant_id < id.call_id;
-    return source && foundation::is_kernel_id(id.call_id) &&
+    bool disclosure = id.model_context.boot_epoch == stamp.boot_epoch;
+    if (!id.model_context.boot_epoch) {
+        disclosure = true;
+        for (const auto word : id.model_context.visible) {
+            if (word) {
+                disclosure = false;
+                break;
+            }
+        }
+    }
+    return source && disclosure && foundation::is_kernel_id(id.call_id) &&
            foundation::is_kernel_id(id.operation_id) && foundation::is_kernel_id(id.task_id) &&
            foundation::is_kernel_id(id.owner_instance_id) && id.call_id != id.operation_id &&
            id.call_id != id.task_id && id.operation_id != id.task_id &&
@@ -313,6 +328,7 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     entry.state.outcome = result.outcome;
     entry.state.status = result.status;
     entry.state.reason = result.reason;
+    entry.state.model_usage = result.model_usage;
     entry.result_size = result.text.size;
     entry.result_kind = result.kind;
     if (entry.state.subscription) {

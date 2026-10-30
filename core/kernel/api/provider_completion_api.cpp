@@ -3,6 +3,7 @@
 #include "catalog/abi_checks.h"
 #include "catalog/capability/value_encoding.h"
 #include "kernel/ports/provider_mailbox.h"
+#include "work/call/model_usage.h"
 #include "work/call/tool_calls.h"
 
 #include <cstring>
@@ -40,12 +41,13 @@ std::optional<ayni::kernel::ProviderMessageKind> kind_of(ayni_call_outcome_t out
 struct MeasuredCalls {
     const ayni_tool_call_v1 *calls;
     uint32_t count;
+    ayni_string_v1 assistant_text; // Optional content stored in the same complete result body.
 };
 
 // Runs under the mailbox lock, during the caller's post.
 void write_calls(const void *context, uint8_t *out, uint32_t size) {
     const auto &list = *static_cast<const MeasuredCalls *>(context);
-    ayni::work::write_tool_calls(list.calls, list.count, out, size);
+    ayni::work::write_tool_calls(list.calls, list.count, out, size, list.assistant_text);
 }
 // Structural validation happened before entering the lock; input remains
 // borrowed through this post, and writing uses the same portable value codec.
@@ -75,7 +77,10 @@ extern "C" ayni_status_t ayni_provider_post(ayni_provider_completion_t *completi
         return status;
     }
     const auto kind = kind_of(result->outcome);
-    if (!kind || result->tool_reserved != 0U) {
+    if (!kind || result->tool_reserved != 0U ||
+        !ayni::work::valid_model_usage(result->model_usage) ||
+        (result->model_usage.kind != AYNI_MODEL_USAGE_NONE &&
+         !ayni::kernel::provider_terminal(*kind))) {
         return AYNI_INVALID_ARGUMENT;
     }
     ayni::kernel::ProviderMessage message{
@@ -86,17 +91,18 @@ extern "C" ayni_status_t ayni_provider_post(ayni_provider_completion_t *completi
         {reinterpret_cast<const uint8_t *>(result->result.data), result->result.size},
         result->effect,
         result->query_result};
-    // Shape is checked on this thread; whether each tool was offered and its
-    // values allowed is checked by the owner against its catalogs (ADR-0054).
-    const MeasuredCalls measured_calls{result->tool_calls, result->tool_call_count};
+    message.model_usage = result->model_usage;
+    // This thread checks native proposal framing only. The harness handles
+    // business arguments through a later ordinary authorized Call (ADR-0085).
+    const MeasuredCalls measured_calls{result->tool_calls, result->tool_call_count, result->result};
     const ayni::kernel::PayloadWriter writer{&measured_calls, write_calls};
     if (result->tool_call_count != 0U) {
         uint32_t size = 0;
-        if (result->outcome != AYNI_CALL_COMPLETED || result->result.size != 0U) {
+        if (result->outcome != AYNI_CALL_COMPLETED) {
             return AYNI_INVALID_ARGUMENT;
         }
-        const auto measured =
-            ayni::work::measure_tool_calls(result->tool_calls, result->tool_call_count, size);
+        const auto measured = ayni::work::measure_tool_calls(
+            result->tool_calls, result->tool_call_count, size, result->result);
         if (measured != AYNI_OK) {
             return measured;
         }

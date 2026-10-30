@@ -65,6 +65,21 @@ ayni_status_t ayni_list_task_capabilities(const ayni_kernel_t *kernel, uint64_t 
 ayni_status_t ayni_inspect_task_capability(const ayni_kernel_t *kernel, uint64_t task_id,
                                            ayni_string_v1 binding_id, uint32_t binding_version,
                                            ayni_capability_detail_v1 *out);
+/* One bit per frozen policy position, at most 256. Since 0.50. */
+#define AYNI_CAPABILITY_DISCLOSURE_WORDS 4u
+/* Fixed ABI disclosure value, not a Grant or an execution ceiling. A retained
+ * conversation may cross Tasks with the same owner and exact GoalType within
+ * one boot. Losing any previously visible entry invalidates derived context;
+ * gaining entries does not. Since 0.50. */
+typedef struct ayni_capability_context_v1 {
+    uint64_t boot_epoch;        /* Positive disclosure boot; zero only for an empty input token. */
+    uint64_t owner_instance_id; /* Positive owner; never another owner's metadata context. */
+    uint32_t goal_type_version; /* Positive frozen type version, zero in empty token. */
+    uint32_t goal_type_size;    /* Used UTF-8 ID prefix, <=CATALOG_ID_MAX_BYTES. */
+    char goal_type_id[AYNI_CATALOG_ID_MAX_BYTES]; /* Exact copied ID; unused bytes zero. */
+    uint64_t
+        visible[AYNI_CAPABILITY_DISCLOSURE_WORDS]; /* Policy membership; no Grant identities. */
+} ayni_capability_context_v1;
 /* Management evidence for one bound optional Call. This query confers no
  * authority and exposes no argument/Scope body. GOAL_REAUTHORIZE operates on
  * the entire direct-live cohort present at application, not a tool-set CAS. */

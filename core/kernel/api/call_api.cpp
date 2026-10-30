@@ -74,7 +74,8 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
                  0,
                  query.attempt,
                  static_cast<uint32_t>(calls.record(index).result_kind),
-                 0};
+                 0,
+                 state.model_usage};
     return AYNI_OK;
 }
 

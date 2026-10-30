@@ -15,6 +15,8 @@ class Writer {
   public:
     // Capacity is bytes; null is valid only for a lane that cannot accept bytes.
     Writer(char *buffer, size_t capacity) : data_(buffer), capacity_(capacity) {}
+    // Count the exact escaped encoding without an output lane. Since 0.50.
+    static Writer measuring() { return Writer(Measure{}); }
     // One cursor owns the append position; cloning it would share mutable state.
     Writer(const Writer &) = delete;
     // Same exclusivity rule as construction.
@@ -24,15 +26,23 @@ class Writer {
         if (!ok_) {
             return;
         }
-        if (value.size() > capacity_ - used_ || (value.size() && !data_)) {
+        if (value.size() > capacity_ - used_ || (value.size() && !data_ && !measuring_)) {
             ok_ = false;
             return;
         }
-        if (value.size()) {
+        if (value.size() && data_) {
             std::memcpy(data_ + used_, value.data(), value.size());
         }
         used_ += value.size();
+        constexpr unsigned continuation_mask = 0xc0, continuation_bits = 0x80;
+        for (size_t at = 0; at < value.size(); ++at) {
+            if ((static_cast<unsigned char>(value[at]) & continuation_mask) != continuation_bits) {
+                ++characters_;
+            }
+        }
     }
+    // Unicode code points in the emitted JSON representation, including syntax and escapes.
+    size_t characters() const { return characters_; }
     // Quote a borrowed UTF-8 string, including embedded zero bytes.
     void string(ayni_string_v1 value) {
         if (value.size && !value.data) {
@@ -119,12 +129,65 @@ class Writer {
     }
 
   private:
+    struct Measure {};
+    explicit Writer(Measure) : data_(nullptr), capacity_(SIZE_MAX), measuring_(true) {}
     static constexpr size_t integer_format_bytes = sizeof("-18446744073709551615") - 1;
-    char *data_;      // Caller-owned output, borrowed until the last append.
-    size_t capacity_; // Byte capacity; used_ never exceeds it.
-    size_t used_ = 0; // Written prefix bytes; zero before the first append.
-    bool ok_ = true;  // Sticky formatting/capacity status; no bytes append after failure.
+    char *data_;             // Caller-owned output, borrowed until the last append.
+    size_t capacity_;        // Byte capacity; used_ never exceeds it.
+    size_t used_ = 0;        // Written prefix bytes; zero before the first append.
+    size_t characters_ = 0;  // Serialized Unicode characters; <=used_, not a model token count.
+    bool ok_ = true;         // Sticky formatting/capacity status; no bytes append after failure.
+    bool measuring_ = false; // Explicit counting sink; never a writable output lane.
 };
+
+namespace detail {
+inline void argument(Writer &out, ayni_arguments_v1 input, uint32_t at) {
+    const auto &node = input.nodes[at];
+    switch (node.kind) {
+    case AYNI_ARGUMENT_NULL:
+        out.raw("null");
+        break;
+    case AYNI_ARGUMENT_BOOL:
+        out.raw(node.value.boolean ? "true" : "false");
+        break;
+    case AYNI_ARGUMENT_NUMBER:
+        out.raw({node.value.text.data, node.value.text.size});
+        break;
+    case AYNI_ARGUMENT_STRING:
+        out.string(node.value.text);
+        break;
+    case AYNI_ARGUMENT_OBJECT:
+    case AYNI_ARGUMENT_LIST: {
+        const bool object = node.kind == AYNI_ARGUMENT_OBJECT;
+        out.raw(object ? "{" : "[");
+        bool first = true;
+        for (uint32_t child = at + 1U; child < node.subtree_end;
+             child = input.nodes[child].subtree_end) {
+            if (!first) {
+                out.raw(",");
+            }
+            first = false;
+            if (object) {
+                out.string(input.nodes[child].name);
+                out.raw(":");
+            }
+            argument(out, input, child);
+        }
+        out.raw(object ? "}" : "]");
+        break;
+    }
+    }
+}
+} // namespace detail
+// Lossless adapter tree to canonical JSON; number lexemes are never rounded.
+// Shape admission is shared with the portable source owner. Since 0.50.
+inline ayni_status_t write_arguments(Writer &out, ayni_arguments_v1 input) {
+    const auto status = ayni_arguments_validate(&input);
+    if (status == AYNI_OK) {
+        detail::argument(out, input, 0);
+    }
+    return status;
+}
 
 // The caller supplies immutable Schema/value trees already matched and
 // normalized under that same original definition; at is a valid Schema index.

@@ -428,6 +428,7 @@ ayni_status_t ayni_register_strategy(ayni_kernel_t *kernel, const ayni_strategy_
     entry.version = strategy->version;
     entry.ctx = strategy->ctx;
     entry.decide = strategy->decide;
+    entry.ready = strategy->ready;
     entry.max_intents_per_call = strategy->max_intents_per_call;
     entry.max_checkpoint_bytes = strategy->max_checkpoint_bytes;
     return kernel->configure(entry);

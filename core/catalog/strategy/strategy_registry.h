@@ -36,6 +36,7 @@ struct Strategy {
     uint32_t max_checkpoint_bytes = 0; // its private checkpoints' largest size
     uint32_t reader_count = 0;         // Used prefix of readers; zero accepts only exact self.
     std::array<CheckpointReader, AYNI_CHECKPOINT_READER_COUNT_MAX> readers{};
+    uint32_t (*ready)(void *, uint64_t) = nullptr; // Optional bounded external readiness query.
 
     // Whether this implementation promises to read this nonempty old writer.
     bool accepts_checkpoint(ayni_string_v1 writer, uint32_t writer_version) const;

@@ -1,7 +1,7 @@
 // Native non-streaming Chat Completions adapter (ADR-0055). No Core-private dependency.
 #ifndef AYNI_PROVIDERS_OPENAI_COMPAT_H
 #define AYNI_PROVIDERS_OPENAI_COMPAT_H
-#include <ayni/tool_usage.h>
+#include <ayni/calls.h>
 #include <memory>
 #include <string>
 
@@ -22,10 +22,6 @@ struct Config {
     // TEXT declares openai.text and offers no tools (conversation summaries);
     // TOOL_CALLS preserves openai.chat. Other formats are rejected.
     uint32_t result_format = AYNI_CALL_RESULT_TOOL_CALLS;
-    // Required for each offered tool. Copied port; runtime owns context through quiesce.
-    // A supplied port's shape is checked at configure; absence rejects only requests
-    // that offer tools. No tools (e.g. TEXT summaries) need no port. Worker never invokes it.
-    ayni_tool_usage_port_v1 tool_usage{};
 };
 // Owner-thread configure/describe/close and callbacks; one internal I/O worker.
 // submit copies views without I/O, allocation or waiting. Worker calls only provider_post.

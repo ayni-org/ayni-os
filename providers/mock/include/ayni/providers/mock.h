@@ -11,14 +11,11 @@ namespace ayni::providers::mock {
 enum class Variant { a, b };
 // Text is a model-class unary echo; action simulates local presentation with progress.
 // Typed arguments Core already checked are accepted and ignored.
-// Tools is a model-class unary of result format TOOL_CALLS (ADR-0054): leading
-// "call:<binding_id>" words of the input become calls of those offered tools,
-// each field at its first offered value and the rest of the text as each body;
-// Alternatively, a trailing json:<JSON> supplies arbitrary named arguments with
-// exact numeric lexemes; Core resolves them against the offered original Schema.
-// Without such words it echoes. An unoffered tool, a body over a tool's limit
-// or a list over the result limit fails with MODEL_OUTPUT, as undecodable
-// model output would.
+// Tools produces native function proposals: function:<name> json:<arguments>, or
+// call:<binding_id> json:<business arguments> as a fixture shorthand. Unknown
+// names and invalid business input reach the normal harness refusal; malformed
+// outer lists and capacity failures remain MODEL_OUTPUT. Framed messages select
+// only the latest genuine user instruction, preserving numeric source lexemes.
 enum class Service { text, action, tools, health };
 // Startup bounds; no allocation occurs in submit/cancel/advance.
 struct Config {
@@ -28,7 +25,7 @@ struct Config {
     uint32_t text_max_bytes = 512; // Copied input/result bytes per slot, 1..4096.
     // Optional deterministic final text for conversation/summary fixtures, copied
     // at configure (at most 512 bytes). Empty preserves echo/tool behavior. Such
-    // fixtures accept up to 8192 input bytes; tool proposals still take priority.
+    // fixtures accept up to 32768 input bytes; tool proposals still take priority.
     ayni_string_v1 reply_text{};
     // Optional explicit fixture definition, immutable and borrowed until close.
     // Action/health consume its root TEXT, or this direct object TEXT field.

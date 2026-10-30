@@ -21,7 +21,7 @@ class MockTools : public ::testing::Test {
     std::vector<int64_t> received_amounts;
     static constexpr uint32_t body_field = MockDisplaySchema::body_field;
     virtual void extend_schema() {}
-    virtual uint32_t model_budget() const { return 256; }
+    virtual uint32_t model_budget() const { return 512; }
     void SetUp() override {
         extend_schema();
         ASSERT_EQ(planner.configure({Variant::a, Service::tools, 1, model_budget()}), AYNI_OK);
@@ -234,15 +234,53 @@ class MockTools : public ::testing::Test {
             return status;
         }
         const auto &call = proposed.call;
+        std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
+        std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
+        std::array<char, 4096> bytes{};
+        ayni_value_buffer_v1 value{nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
+                                   bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
+        proposal_error = AYNI_NOT_FOUND;
+        if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS &&
+            string_of(call.function_name) == "ayni_call_capability") {
+            const auto tree = call.input.arguments;
+            uint32_t argument = UINT32_MAX;
+            bool binding = false;
+            if (tree.nodes[0].kind == AYNI_ARGUMENT_OBJECT) {
+                for (uint32_t at = 1; at < tree.node_count; at = tree.nodes[at].subtree_end) {
+                    const auto &node = tree.nodes[at];
+                    if (string_of(node.name) == "binding_id") {
+                        binding = node.kind == AYNI_ARGUMENT_STRING &&
+                                  string_of(node.value.text) == "mock.show";
+                    }
+                    if (string_of(node.name) == "arguments") {
+                        argument = at;
+                    }
+                }
+            }
+            if (binding && argument != UINT32_MAX) {
+                const auto count = tree.nodes[argument].subtree_end - argument;
+                for (uint32_t at = 0; at < count; ++at) {
+                    source[at] = tree.nodes[argument + at];
+                    source[at].subtree_end -= argument;
+                }
+                source[0].name = {};
+                const ayni_arguments_v1 args{source.data(), count};
+                proposal_error = ayni_arguments_normalize(&display.business.input, &args, &value);
+            }
+        }
+        if (proposal_error != AYNI_OK) {
+            return report(AYNI_POLICY_REPORT_COMPLETION, snapshot, output);
+        }
+        ayni_value_v1 normalized{nodes.data(), value.node_count};
         ayni::ValueReader input;
-        if (input.read(call.input.value) != AYNI_OK) {
+        if (input.read(normalized) != AYNI_OK) {
             return AYNI_INVALID_ARGUMENT;
         }
         if (const auto *amounts = input.field(3)) {
             received_amounts.clear();
-            for (uint32_t at = static_cast<uint32_t>(amounts - call.input.value.nodes) + 1U;
+            for (uint32_t at = static_cast<uint32_t>(amounts - normalized.nodes) + 1U;
                  at < amounts->subtree_end; ++at) {
-                received_amounts.push_back(call.input.value.nodes[at].value.decimal.coefficient);
+                received_amounts.push_back(normalized.nodes[at].value.decimal.coefficient);
             }
         }
         const auto *seconds = input.field(seconds_field);
@@ -251,18 +289,12 @@ class MockTools : public ::testing::Test {
         if (!seconds || !voice || !body) {
             return AYNI_INVALID_ARGUMENT;
         }
-        proposal = string_of(call.binding_id) + "|" + string_of(body->value.text) + "|" +
+        proposal = std::string("mock.show|") + string_of(body->value.text) + "|" +
                    std::to_string(seconds->value.integer) + "second|" +
                    string_of(voice->value.text);
-        const ayni_call_request_v1 request{sizeof(request),
-                                           AYNI_POLICY_REQUEST_CALL,
-                                           call.binding_version,
-                                           0,
-                                           text("act"),
-                                           call.binding_id,
-                                           {},
-                                           {},
-                                           call.input.value};
+        const ayni_call_request_v1 request{sizeof(request), AYNI_POLICY_REQUEST_CALL, 1,  0,
+                                           text("act"),     text("mock.show"),        {}, {},
+                                           normalized};
         return output.request_call(output.call_context, &request);
     }
 
@@ -302,17 +334,19 @@ class MockTools : public ::testing::Test {
     uint64_t command = 0;
     std::string prompt;
     ayni_task_call_result_v1 planned{};
+    ayni_status_t proposal_error = AYNI_OK;
     std::string planned_text;
     std::string proposal;
     std::string acted;
 };
 
-TEST_F(MockTools, proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs) {
-    EXPECT_EQ(run("call:mock.show hello"), AYNI_TASK_COMPLETED);
+TEST_F(MockTools, generic_function_arguments_run_through_original_schema_and_authority) {
+    EXPECT_EQ(run(R"(call:mock.show json:{"text":"hello","voice":"calm","seconds":5})"),
+              AYNI_TASK_COMPLETED);
     EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(planned.tool_call_count, 1U);
     EXPECT_EQ(planned_text, "");
-    // The Goal's ceiling, not the Capability's domain, gave the first values.
+    // ADR-0085: deterministic source values still pass the ordinary whole-Grant boundary.
     EXPECT_EQ(proposal, "mock.show|hello|5second|calm");
     EXPECT_EQ(acted, "hello");
     EXPECT_EQ(planner.executions(), 1U);
@@ -328,20 +362,20 @@ TEST_F(MockTools, input_without_call_words_is_echoed_as_text) {
     EXPECT_EQ(presenter.executions(), 0U);
 }
 
-TEST_F(MockTools, unoffered_tool_fails_as_model_output) {
-    EXPECT_EQ(run("call:mock.plan hello"), AYNI_TASK_FAILED);
-    EXPECT_EQ(planned.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(planned.status, AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(planned.reason, AYNI_REASON_MODEL_OUTPUT);
-    EXPECT_EQ(planned.tool_call_count, 0U);
+TEST_F(MockTools, unknown_binding_is_a_normal_function_refusal_without_business_execution) {
+    EXPECT_EQ(run("call:mock.plan hello"), AYNI_TASK_COMPLETED);
+    EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(planned.tool_call_count, 1U);
+    EXPECT_EQ(proposal_error, AYNI_NOT_FOUND);
     EXPECT_EQ(presenter.executions(), 0U);
 }
-
-TEST_F(MockTools, body_over_the_tool_limit_fails_as_model_output) {
-    EXPECT_EQ(run("call:mock.show " + std::string(65, 'a')), AYNI_TASK_FAILED);
-    EXPECT_EQ(planned.outcome, AYNI_CALL_FAILED);
-    EXPECT_EQ(planned.status, AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(planned.reason, AYNI_REASON_MODEL_OUTPUT);
+TEST_F(MockTools, body_over_the_tool_limit_is_refused_after_known_model_completion) {
+    const auto input = std::string(R"(call:mock.show json:{"text":")") + std::string(65, 'a') +
+                       R"(","voice":"calm","seconds":5})";
+    EXPECT_EQ(run(input), AYNI_TASK_COMPLETED);
+    EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(proposal_error, AYNI_OK);
+    EXPECT_EQ(presenter.executions(), 0U);
 }
 
 TEST_F(MockTools, list_over_the_result_limit_fails_as_model_output) {

@@ -13,7 +13,7 @@ namespace ayni::providers::mock {
 namespace {
 constexpr uint32_t request_capacity_max = 64;
 constexpr uint32_t text_bytes_max = 4096;
-constexpr uint32_t fixture_input_max = 8192;
+constexpr uint32_t fixture_input_max = 32768;
 constexpr uint32_t fixture_reply_max = 512;
 constexpr uint32_t model_envelope_bytes = 36;
 constexpr uint32_t text_envelope_bytes = 24;
@@ -216,6 +216,7 @@ struct Provider::Impl {
                                                        0,
                                                        0,
                                                        nullptr,
+                                                       {},
                                                        {}};
                 const auto status = ayni_provider_post(slot.completion, &progress);
                 if (status == AYNI_OK) {
@@ -246,6 +247,7 @@ struct Provider::Impl {
                                        0,
                                        0,
                                        nullptr,
+                                       {},
                                        {}};
         if (tool_answer && answer.status != AYNI_OK) {
             // The model ran; its output could not become a typed answer.

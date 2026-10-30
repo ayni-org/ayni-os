@@ -3,6 +3,8 @@
 #include "authority/scope/business_request.h"
 #include "catalog/abi_checks.h"
 #include "kernel/service/call/call_runtime.h"
+#include <cstring>
+#include <limits>
 
 namespace ayni::kernel {
 namespace {
@@ -189,6 +191,115 @@ ayni_status_t CallRuntime::inspect_capability(uint32_t task_index, uint64_t now_
     return AYNI_NOT_FOUND;
 }
 
+work::ModelContext CallRuntime::model_context(uint32_t task_index, uint64_t now_us,
+                                              uint64_t durable_seq) const {
+    work::ModelContext context;
+    context.boot_epoch = work_.ids.boot_epoch();
+    const auto &task = work_.tasks.at(task_index);
+    const auto &policy = work_.goals.at(task.goal_index).tools;
+    constexpr uint32_t word_bits = std::numeric_limits<uint64_t>::digits;
+    for (uint32_t at = 0; at < policy.count; ++at) {
+        uint32_t binding = 0;
+        catalog::BindingLinks links{};
+        if (visible_capability(task_index, at, now_us, durable_seq, binding, links)) {
+            context.visible[at / word_bits] |= uint64_t{1} << (at % word_bits);
+        }
+    }
+    return context;
+}
+
+// A disclosure depends on membership, not on the Grant that happened to make
+// metadata visible. Revocation followed by an independent whole Grant may
+// preserve browsing, without replacing a previously bound execution Grant.
+bool CallRuntime::model_context_current(uint32_t task_index, const work::ModelContext &context,
+                                        uint64_t now_us, uint64_t durable_seq) const {
+    if (!context.boot_epoch) {
+        return true;
+    }
+    if (context.boot_epoch != work_.ids.boot_epoch()) {
+        return false;
+    }
+    constexpr uint32_t word_bits = std::numeric_limits<uint64_t>::digits;
+    for (uint32_t word = 0; word < context.visible.size(); ++word) {
+        for (uint32_t bit = 0; bit < word_bits; ++bit) {
+            if (!(context.visible[word] & (uint64_t{1} << bit))) {
+                continue;
+            }
+            uint32_t binding = 0;
+            catalog::BindingLinks links{};
+            if (!visible_capability(task_index, word * word_bits + bit, now_us, durable_seq,
+                                    binding, links)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool CallRuntime::retain_model_context(uint32_t task_index, const work::ModelContext &context,
+                                       uint64_t now_us, uint64_t durable_seq) const {
+    if (!model_context_current(task_index, context, now_us, durable_seq)) {
+        return false;
+    }
+    if (context.boot_epoch && decision_ && decision_->task_index == task_index) {
+        auto &captured = decision_->model_context;
+        captured.boot_epoch = context.boot_epoch;
+        for (uint32_t word = 0; word < context.visible.size(); ++word) {
+            captured.visible[word] |= context.visible[word];
+        }
+    }
+    return true;
+}
+
+ayni_status_t CallRuntime::capability_context_view(const void *context,
+                                                   const ayni_capability_context_v1 *previous,
+                                                   ayni_capability_context_v1 *out) {
+    if (!context || !out) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto &runtime = *static_cast<const CallRuntime *>(context);
+    if (!runtime.decision_ || !runtime.work_.calling_out()) {
+        return AYNI_INVALID_STATE;
+    }
+    const auto task_index = runtime.decision_->task_index;
+    const auto &task = runtime.work_.tasks.at(task_index);
+    const auto &goal = runtime.work_.goals.at(task.goal_index);
+    const auto &type = runtime.catalogs_.goal_types.at(goal.goal_type_index);
+    const auto now = runtime.host_.monotonic_now_us(runtime.host_.ctx);
+    const auto durable = runtime.decision_->durable_seq;
+    const auto authority = runtime.work_.check_task_authority(task_index, now, durable);
+    if (authority.status != AYNI_OK) {
+        return authority.status;
+    }
+    if (previous) {
+        work::ModelContext saved;
+        saved.boot_epoch = previous->boot_epoch;
+        for (uint32_t word = 0; word < saved.visible.size(); ++word) {
+            saved.visible[word] = previous->visible[word];
+        }
+        if (!saved.boot_epoch || previous->owner_instance_id != task.owner_instance_id ||
+            previous->goal_type_version != type.version ||
+            !type.id.equals({previous->goal_type_id, previous->goal_type_size}) ||
+            !runtime.model_context_current(task_index, saved, now, durable)) {
+            return AYNI_EXPIRED;
+        }
+    }
+    const auto current = runtime.model_context(task_index, now, durable);
+    ayni_capability_context_v1 result{};
+    result.boot_epoch = current.boot_epoch;
+    result.owner_instance_id = task.owner_instance_id;
+    result.goal_type_version = type.version;
+    result.goal_type_size = type.id.size();
+    std::memcpy(result.goal_type_id, type.id.data(), type.id.size());
+    for (uint32_t word = 0; word < current.visible.size(); ++word) {
+        result.visible[word] = current.visible[word];
+    }
+    // Current was sampled immediately above; final preflight rechecks expiry.
+    runtime.retain_model_context(task_index, current, now, durable);
+    *out = result;
+    return AYNI_OK;
+}
+
 ayni_status_t CallRuntime::list_capabilities_view(const void *context,
                                                   const ayni_capability_cursor_v1 *cursor,
                                                   ayni_capability_info_v1 *items, uint32_t capacity,
@@ -200,6 +311,13 @@ ayni_status_t CallRuntime::list_capabilities_view(const void *context,
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.decision_ || !runtime.work_.calling_out()) {
         return AYNI_INVALID_STATE;
+    }
+    // Capture before reading: expiry during the query must not narrow away a
+    // descriptor already observed by this decision (ADR-0085).
+    ayni_capability_context_v1 disclosure{};
+    const auto capture = capability_context_view(context, nullptr, &disclosure);
+    if (capture != AYNI_OK) {
+        return capture;
     }
     return runtime.list_capabilities(
         runtime.decision_->task_index, runtime.host_.monotonic_now_us(runtime.host_.ctx),
@@ -214,6 +332,11 @@ ayni_status_t CallRuntime::inspect_capability_view(const void *context, ayni_str
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     if (!runtime.decision_ || !runtime.work_.calling_out()) {
         return AYNI_INVALID_STATE;
+    }
+    ayni_capability_context_v1 disclosure{};
+    const auto capture = capability_context_view(context, nullptr, &disclosure);
+    if (capture != AYNI_OK) {
+        return capture;
     }
     return runtime.inspect_capability(runtime.decision_->task_index,
                                       runtime.host_.monotonic_now_us(runtime.host_.ctx),

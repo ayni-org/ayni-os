@@ -12,7 +12,7 @@ extern "C" {
 
 /* Current compiled Core batch/snapshot schema, independent of ABI. Since 0.49.
  * This declaration does not validate media or authorize migration/recovery. */
-#define AYNI_STORAGE_SCHEMA_CURRENT 5u
+#define AYNI_STORAGE_SCHEMA_CURRENT 6u
 
 /* Since 0.28. Bytes through transition_id in contracts/storage/records.md.
  * This is a prefix length, not a complete batch/header length. */

@@ -107,11 +107,13 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
     bool terminal = false;
     const auto applied =
         apply_receipt(index, task_index, message, work_.transitions.next(), terminal);
-    // Validate the original Provider evidence first, including UTF-8 and offered tools.
+    // Validate the original Provider evidence first, including UTF-8 and proposal shape.
     // Privacy may discard a valid late body; it must never turn malformed evidence into success.
-    if (applied == AYNI_OK &&
-        !task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
-                              task_index)) {
+    if (applied == AYNI_OK && terminal && work_.calls.state(index).outcome != 0U &&
+        (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
+                               task_index) ||
+         !model_context_current(task_index, work_.calls.identity(index).model_context,
+                                host_.monotonic_now_us(host_.ctx), durable_seq))) {
         work_.calls.discard_unusable_result(index);
     }
     if (applied != AYNI_OK ||
@@ -217,20 +219,13 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
             message.reason,
             static_cast<work::ActionEffect>(message.effect),
             {reinterpret_cast<const char *>(message.payload.data), message.payload.size},
-            message.body};
-        // The list's shape was checked when posted; its tools and values are checked here.
-        bool tools = true;
-        if (message.body == work::CallResultKind::tool_calls) {
-            uint32_t size = 0;
-            tools = normalize_tool_calls(task_index, slots_[index].active->delivery->tools,
-                                         message.payload, size) == AYNI_OK;
-            if (tools) {
-                result.text = {reinterpret_cast<const char *>(normalized_), size};
-            }
-        }
+            message.body,
+            message.model_usage};
+        // The producer admitted the proposal shape. Names and arguments can be
+        // handled as ordinary tool errors; they are not business outcome evidence.
         const bool value_valid = message.body == work::CallResultKind::tool_calls ||
                                  normalize_result(index, message.payload, result) == AYNI_OK;
-        applied = message.query_result == 0U && tools && value_valid
+        applied = message.query_result == 0U && value_valid
                       ? work_.calls.finish(index, result, action_stamp,
                                            control_.result_dependencies(index))
                       : AYNI_INVALID_ARGUMENT;

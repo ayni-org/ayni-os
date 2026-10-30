@@ -5,6 +5,7 @@
 #include "work_node.h"
 
 #include <ayni/calls.h>
+#include <ayni/directory.h>
 #include <ayni/values.hpp>
 
 namespace {
@@ -14,17 +15,6 @@ constexpr uint32_t minutes_field = 1;
 constexpr uint32_t mode_field = 2;
 constexpr uint32_t target_field = 3;
 
-// What a Provider saw of one offered tool, copied before submit returned.
-struct ToolSeen {
-    std::string binding;
-    std::string capability;
-    uint32_t text_limit = 0;
-    std::vector<uint32_t> ids;
-    std::vector<uint32_t> usages;
-    std::vector<std::pair<int64_t, int64_t>> ranges;
-    std::vector<std::vector<std::string>> tokens;
-};
-
 class ToolCalls : public ::testing::Test {
   protected:
     struct Pending {
@@ -32,12 +22,9 @@ class ToolCalls : public ::testing::Test {
         ayni_provider_completion_t *completion;
         std::string endpoint;
         std::string text;
-        std::vector<ToolSeen> tools;
         std::vector<uint32_t> fields;   // Field ids of the delivered arguments.
         std::vector<int64_t> integers;  // I64 values in field order.
         std::vector<std::string> words; // Token values in field order.
-        const void *tool_context;
-        ayni_status_t (*tool)(const void *, uint32_t, ayni_tool_v1 *);
         bool ended = false;
     };
 
@@ -330,6 +317,23 @@ class ToolCalls : public ::testing::Test {
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }
 
+        const std::array<ayni_tool_field_usage_v1, 3> usage_fields{
+            {{sizeof(ayni_tool_field_usage_v1), minutes_field, text("Minutes until timer fires.")},
+             {sizeof(ayni_tool_field_usage_v1), mode_field, text("Notification mode.")},
+             {sizeof(ayni_tool_field_usage_v1), target_field, text("Trusted timer endpoint.")}}};
+        const ayni_tool_usage_v1 usage{sizeof(usage),
+                                       1,
+                                       text("timer"),
+                                       1,
+                                       text("timer.set"),
+                                       text("Set a timer."),
+                                       text("Complete timer input."),
+                                       text("Timer completion."),
+                                       text("Ten quiet minutes."),
+                                       static_cast<uint32_t>(usage_fields.size()),
+                                       0,
+                                       usage_fields.data()};
+        ASSERT_EQ(ayni_register_capability_usage(kernel, text("Timer."), &usage), AYNI_OK);
         auto goal_type = goal_type_desc("assist", 1);
         goal_type.tool_count = static_cast<uint32_t>(listed.size());
         goal_type.tools = listed.data();
@@ -363,10 +367,7 @@ class ToolCalls : public ::testing::Test {
                      string_of(request->text),
                      {},
                      {},
-                     {},
-                     {},
-                     request->tool_context,
-                     request->tool};
+                     {}};
         if (request->value.node_count != 0U) {
             for (uint32_t at = 1; at < request->value.node_count; ++at) {
                 const auto &node = request->value.nodes[at];
@@ -383,48 +384,6 @@ class ToolCalls : public ::testing::Test {
             } else {
                 call.words.push_back(string_of(field.allowed.values.tokens.members[0]));
             }
-        }
-        for (uint32_t index = 0; index < request->tool_count; ++index) {
-            ayni_tool_v1 view{};
-            // C-VER-004: submit-time tool views share the public ABI size
-            // rule; malformed headers cannot partially publish offered metadata.
-            view.struct_size = 0;
-            view.text_limit = 99;
-            EXPECT_EQ(request->tool(request->tool_context, index, &view), AYNI_INVALID_ARGUMENT);
-            EXPECT_EQ(view.text_limit, 99U);
-            view.struct_size = sizeof(view) + 1;
-            EXPECT_EQ(request->tool(request->tool_context, index, &view), AYNI_UNSUPPORTED_VERSION);
-            EXPECT_EQ(view.text_limit, 99U);
-            EXPECT_EQ(request->tool(nullptr, index, &view), AYNI_INVALID_ARGUMENT);
-            EXPECT_EQ(request->tool(request->tool_context, index, nullptr), AYNI_INVALID_ARGUMENT);
-            view.struct_size = sizeof(view);
-            EXPECT_EQ(request->tool(request->tool_context, index, &view), AYNI_OK);
-            ToolSeen seen;
-            seen.binding = string_of(view.binding_id);
-            seen.capability = string_of(view.capability_id);
-            seen.text_limit = view.text_limit;
-            for (uint32_t at = 0; at < view.field_count; ++at) {
-                const auto &field = view.fields[at];
-                seen.ids.push_back(field.field_id);
-                seen.usages.push_back(field.usage);
-                seen.ranges.emplace_back(field.domain.values.integer.min_inclusive,
-                                         field.domain.values.integer.max_inclusive);
-                std::vector<std::string> words;
-                if (field.domain.kind != AYNI_AUTHORITY_I64) {
-                    for (uint32_t member = 0; member < field.domain.values.tokens.member_count;
-                         ++member) {
-                        words.push_back(string_of(field.domain.values.tokens.members[member]));
-                    }
-                }
-                seen.tokens.push_back(words);
-            }
-            call.tools.push_back(seen);
-        }
-        if (request->tool_count != 0U) {
-            ayni_tool_v1 view{};
-            view.struct_size = sizeof(view);
-            EXPECT_EQ(request->tool(request->tool_context, request->tool_count, &view),
-                      AYNI_INVALID_ARGUMENT);
         }
         self.pending.push_back(call);
         return AYNI_SUBMIT_ACCEPTED;
@@ -485,42 +444,55 @@ class ToolCalls : public ::testing::Test {
         EXPECT_EQ(snapshot.call_tool(snapshot.call_context, text("plan"), plan.tool_call_count,
                                      &proposed),
                   AYNI_NOT_FOUND);
-        if (typed_tool) {
-            // ADR-0084: a successful public read overwrites stale tagged payload fields.
-            proposed.call.input_reserved = 99;
-            proposed.call.arguments.field_count = 1;
-            proposed.call.text = text("old");
-        }
+        proposed.call.input_kind = 99; // Successful public read overwrites an old tagged view.
         const auto status = snapshot.call_tool(snapshot.call_context, text("plan"), 0, &proposed);
         if (status != AYNI_OK) {
             return status;
         }
-        if (typed_tool) {
-            EXPECT_EQ(proposed.call.input_reserved, 0U);
-            EXPECT_EQ(proposed.call.arguments.field_count, 0U);
-            EXPECT_EQ(proposed.call.text.size, 0U);
-            uint32_t bytes = 0;
-            EXPECT_EQ(ayni_tool_calls_measure(&proposed.call, 1, &bytes), AYNI_OK);
-        }
-        proposal_binding = string_of(proposed.call.binding_id);
-        proposal_fields = proposed.call.input.value.node_count - 1U;
+        EXPECT_EQ(proposed.call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
+        proposal_binding = string_of(proposed.call.function_name);
+        proposal_fields = proposed.call.input.arguments.node_count - 1U;
         proposal_protocol = string_of(proposed.call.protocol_id);
         if (hold_after_plan) {
             return AYNI_UNSUPPORTED; // Holds the Task with its call retained.
         }
-        ayni_call_request_v1 request{sizeof(request),
-                                     AYNI_POLICY_REQUEST_CALL,
-                                     proposed.call.binding_version,
-                                     0,
-                                     text("act"),
-                                     proposed.call.binding_id,
-                                     {},
-                                     {},
-                                     proposed.call.input.value};
-        if (proposed.call.input_kind == AYNI_TOOL_INPUT_VALUE) {
-            request.value = proposed.call.input.value;
+        ayni_capability_detail_v1 detail{};
+        detail.struct_size = sizeof(detail);
+        proposal_error = snapshot.inspect_capability(snapshot.call_context,
+                                                     proposed.call.function_name, 1, &detail);
+        if (proposal_error == AYNI_OK) {
+            struct State {
+                const ayni_tool_call_v1 &call;
+                ayni_policy_output_v1 &output;
+            } inspection{proposed.call, output};
+            proposal_error = ayni_business_contract_read(
+                detail.original_domain, detail.business_contract, &inspection,
+                [](void *opaque, const ayni_business_contract_v1 *business) {
+                    auto &state = *static_cast<State *>(opaque);
+                    std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
+                    std::array<char, 4096> bytes{};
+                    ayni_value_buffer_v1 value{
+                        nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
+                        bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
+                    const auto normalized = ayni_arguments_normalize(
+                        &business->input, &state.call.input.arguments, &value);
+                    if (normalized != AYNI_OK) {
+                        return normalized;
+                    }
+                    const ayni_call_request_v1 request{sizeof(request),
+                                                       AYNI_POLICY_REQUEST_CALL,
+                                                       1,
+                                                       0,
+                                                       text("act"),
+                                                       state.call.function_name,
+                                                       {},
+                                                       {},
+                                                       {nodes.data(), value.node_count}};
+                    return state.output.request_call(state.output.call_context, &request);
+                });
         }
-        return output.request_call(output.call_context, &request);
+        return proposal_error == AYNI_OK ? AYNI_OK
+                                         : report(AYNI_POLICY_REPORT_COMPLETION, snapshot, output);
     }
 
     uint64_t create() {
@@ -551,29 +523,29 @@ class ToolCalls : public ::testing::Test {
     }
     // One proposal with every timer field; the test adjusts it before posting.
     struct Proposal {
-        std::array<ayni_value_node_v1, 5> nodes{};
+        std::array<ayni_argument_node_v1, 5> nodes{};
         ayni_tool_call_v1 call{};
         Proposal() {
-            nodes[0].kind = AYNI_VALUE_OBJECT;
+            nodes[0].kind = AYNI_ARGUMENT_OBJECT;
             nodes[0].subtree_end = static_cast<uint32_t>(nodes.size());
             for (uint32_t at = 1; at < nodes.size(); ++at) {
-                nodes[at].field_id = at;
+                constexpr const char *names[] = {"", "minutes", "mode", "target", "text"};
+                nodes[at].name = text(names[at]);
                 nodes[at].subtree_end = at + 1;
             }
-            nodes[1].kind = AYNI_VALUE_I64;
-            nodes[1].value.integer = 10;
-            nodes[2].kind = AYNI_VALUE_ENUM;
+            nodes[1].kind = AYNI_ARGUMENT_NUMBER;
+            nodes[1].value.text = text("10");
+            nodes[2].kind = AYNI_ARGUMENT_STRING;
             nodes[2].value.text = text("quiet");
-            nodes[3].kind = AYNI_VALUE_IDENTIFIER;
+            nodes[3].kind = AYNI_ARGUMENT_STRING;
             nodes[3].value.text = text("local.timer");
-            nodes[4].kind = AYNI_VALUE_TEXT;
+            nodes[4].kind = AYNI_ARGUMENT_STRING;
             nodes[4].value.text = text("tea");
             call.struct_size = sizeof(call);
-            call.binding_version = 1;
-            call.binding_id = text("timer");
-            call.input_kind = AYNI_TOOL_INPUT_VALUE;
+            call.function_name = text("timer");
+            call.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
             call.protocol_id = text("call_fixture");
-            call.input.value = {nodes.data(), static_cast<uint32_t>(nodes.size())};
+            call.input.arguments = {nodes.data(), static_cast<uint32_t>(nodes.size())};
         }
     };
     ayni_provider_result_v1 completed(std::size_t at, const ayni_tool_call_v1 *calls,
@@ -605,6 +577,7 @@ class ToolCalls : public ::testing::Test {
     std::vector<Pending> pending;
     uint64_t command = 0;
     ayni_task_call_result_v1 planned{};
+    ayni_status_t proposal_error = AYNI_OK;
     std::string proposal_binding;
     uint32_t proposal_fields = 0;
     std::string acted;
@@ -636,8 +609,7 @@ class NamedToolCalls : public ToolCalls {
         nodes[4].value.text = text("tea");
         ayni_tool_call_v1 proposal{};
         proposal.struct_size = sizeof(proposal);
-        proposal.binding_version = 1;
-        proposal.binding_id = text("timer");
+        proposal.function_name = text("timer");
         proposal.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
         proposal.protocol_id = text("call_Original123");
         const uint32_t count = default_body ? 4U : static_cast<uint32_t>(nodes.size());
@@ -702,10 +674,9 @@ TEST_P(ToolDefaultLimit, default_expansion_obeys_the_tools_own_input_bound) {
         EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
     } else {
         EXPECT_EQ(pending.size(), 1U);
-        const auto task = work.task(work.goal(goal).last_task_id);
-        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-        EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
-        EXPECT_EQ(call_info(task.logical_call_id).reason, AYNI_REASON_PROVIDER_RESULT);
+        EXPECT_EQ(work.task(work.goal(goal).last_task_id).lifecycle, AYNI_TASK_COMPLETED);
+        EXPECT_EQ(proposal_error, AYNI_CAPACITY_EXCEEDED);
+        EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
     }
 }
 INSTANTIATE_TEST_SUITE_P(Bytes, ToolDefaultLimit, ::testing::Values(107U, 106U));
@@ -720,31 +691,27 @@ TEST_F(NamedToolCalls, integer_schema_refuses_exponent_lexeme_without_dispatchin
     pump(20);
     EXPECT_EQ(pending.size(), 1U);
     const auto task = work.task(work.goal(goal).last_task_id);
-    EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
-    const auto info = call_info(task.logical_call_id);
-    EXPECT_EQ(info.outcome, AYNI_CALL_ABANDONED);
-    EXPECT_EQ(info.reason, AYNI_REASON_PROVIDER_RESULT);
+    EXPECT_EQ(task.lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(proposal_error, AYNI_INVALID_ARGUMENT);
 }
 
-TEST_F(ToolCalls, model_call_is_offered_only_listed_tools_within_the_goal_ceiling) {
-    create();
+// ADR-0085: metadata is Task-scoped directory data, never a submit callback.
+TEST_F(ToolCalls, task_directory_exposes_currently_authorized_adopted_metadata) {
+    const auto goal = create();
     pump(20);
     ASSERT_EQ(pending.size(), 1U);
-    ASSERT_EQ(pending[0].endpoint, "planner");
-    ASSERT_EQ(pending[0].tools.size(), 1U);
-    const auto &tool = pending[0].tools[0];
-    EXPECT_EQ(tool.binding, "timer");
-    EXPECT_EQ(tool.capability, "timer.set");
-    EXPECT_EQ(tool.text_limit, 256U);
-    ASSERT_EQ(tool.ids, (std::vector<uint32_t>{minutes_field, mode_field, target_field}));
-    EXPECT_EQ(tool.usages[2], AYNI_AUTHORITY_EXECUTION_TARGET);
-    EXPECT_EQ(tool.ranges[0], std::make_pair(int64_t{1}, int64_t{30}));
-    EXPECT_EQ(tool.tokens[1], std::vector<std::string>{"quiet"});
-    EXPECT_EQ(tool.tokens[2], std::vector<std::string>{"local.timer"});
-    // The view is a submit-time borrow; afterwards the callback refuses.
-    ayni_tool_v1 late{};
-    late.struct_size = sizeof(late);
-    EXPECT_EQ(pending[0].tool(pending[0].tool_context, 0, &late), AYNI_INVALID_STATE);
+    EXPECT_EQ(pending[0].endpoint, "planner");
+    ayni_capability_detail_v1 detail{};
+    detail.struct_size = sizeof(detail);
+    const auto task = work.goal(goal).last_task_id;
+    ASSERT_EQ(ayni_inspect_task_capability(work.kernel(), task, text("timer"), 1, &detail),
+              AYNI_OK);
+    EXPECT_EQ(string_of(detail.info.binding_id), "timer");
+    EXPECT_EQ(string_of(detail.info.summary), "Timer.");
+    EXPECT_EQ(detail.usage.field_count, 3U);
+    EXPECT_EQ(ayni_inspect_task_capability(work.kernel(), task, text("lamp"), 1, &detail),
+              AYNI_NOT_FOUND);
 }
 
 TEST_F(ToolCalls, strategy_requests_a_proposed_call_through_the_ordinary_checks) {
@@ -755,7 +722,7 @@ TEST_F(ToolCalls, strategy_requests_a_proposed_call_through_the_ordinary_checks)
     const auto result = completed(0, &proposal.call, 1);
     ASSERT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_OK);
     pending[0].ended = true;
-    proposal.call.binding_id = text("lamp"); // Copied by the post already.
+    proposal.call.function_name = text("lamp"); // Copied by the post already.
     pump(20);
     EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(planned.tool_call_count, 1U);
@@ -773,7 +740,6 @@ TEST_F(ToolCalls, strategy_requests_a_proposed_call_through_the_ordinary_checks)
     ASSERT_EQ(pending.size(), 2U);
     EXPECT_EQ(pending[1].endpoint, "local.timer");
     EXPECT_EQ(pending[1].text, "tea");
-    EXPECT_TRUE(pending[1].tools.empty());
     EXPECT_EQ(pending[1].fields, (std::vector<uint32_t>{minutes_field, mode_field, target_field}));
     EXPECT_EQ(pending[1].integers, std::vector<int64_t>{10});
     EXPECT_EQ(pending[1].words, (std::vector<std::string>{"quiet", "local.timer"}));
@@ -793,7 +759,7 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
     ASSERT_EQ(pending.size(), 1U);
     Proposal proposal;
     auto result = completed(0, &proposal.call, 1);
-    result.result = text("and text");
+    result.result = {nullptr, 1};
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);
     result = completed(0, &proposal.call, 1);
     result.outcome = AYNI_CALL_FAILED;
@@ -813,14 +779,14 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
     two[1].protocol_id = text("call_two");
     result = completed(0, two.data(), 2);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_CAPACITY_EXCEEDED);
-    proposal.nodes[1].kind = AYNI_VALUE_BOOL;
+    proposal.nodes[1].kind = AYNI_ARGUMENT_BOOL;
     proposal.nodes[1].value.boolean = 2;
     result = completed(0, &proposal.call, 1);
     EXPECT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_INVALID_ARGUMENT);
     pump(5);
     EXPECT_EQ(planned.outcome, 0U);
-    proposal.nodes[1].kind = AYNI_VALUE_I64;
-    proposal.nodes[1].value.integer = 10;
+    proposal.nodes[1].kind = AYNI_ARGUMENT_NUMBER;
+    proposal.nodes[1].value.text = text("10");
     ASSERT_EQ(ayni_provider_post(pending[0].completion, &result), AYNI_OK);
     pending[0].ended = true;
     pump(20);
@@ -830,18 +796,18 @@ TEST_F(ToolCalls, malformed_lists_are_refused_on_post_and_keep_the_borrow) {
 // The Provider was told what it may propose; anything else is invalid evidence,
 // not a model failure the strategy could take for a decision: the call ends
 // UNKNOWN and the Task is held like any other unknown call.
-TEST_F(ToolCalls, unoffered_tools_and_values_outside_the_offer_end_unknown) {
+TEST_F(ToolCalls, unknown_functions_and_invalid_business_inputs_do_not_forge_unknown_actions) {
     const std::vector<std::function<void(Proposal &)>> breaks = {
-        [](Proposal &p) { p.call.binding_id = text("lamp"); },
-        [](Proposal &p) { p.nodes[1].value.integer = 45; },
+        [](Proposal &p) { p.call.function_name = text("lamp"); },
+        [](Proposal &p) { p.nodes[1].value.text = text("45"); },
         [](Proposal &p) { p.nodes[2].value.text = text("loud"); },
         [](Proposal &p) { p.nodes[3].value.text = text("other.timer"); },
         [](Proposal &p) {
-            p.call.input.value.node_count = 4;
+            p.call.input.arguments.node_count = 4;
             p.nodes[0].subtree_end = 4;
         },
         [](Proposal &p) { p.nodes[4].value.text = text("seventeen bytes!!"); },
-        [](Proposal &p) { p.call.binding_version = 2; },
+        [](Proposal &p) { p.call.function_name = text("timer.future"); },
     };
     for (std::size_t at = 0; at < breaks.size(); ++at) {
         SCOPED_TRACE(at);
@@ -854,15 +820,15 @@ TEST_F(ToolCalls, unoffered_tools_and_values_outside_the_offer_end_unknown) {
         ASSERT_EQ(ayni_provider_post(pending[at].completion, &result), AYNI_OK);
         pending[at].ended = true;
         pump(20);
-        EXPECT_EQ(planned.outcome, 0U);
+        EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
         const auto task = work.task(work.goal(goal).last_task_id);
-        EXPECT_EQ(task.lifecycle, AYNI_TASK_PAUSED);
-        EXPECT_EQ(task.hold_status, AYNI_RESULT_UNKNOWN);
-        const auto plan = call_info(task.logical_call_id);
-        EXPECT_EQ(plan.outcome, AYNI_CALL_ABANDONED);
-        EXPECT_EQ(plan.status, AYNI_RESULT_UNKNOWN);
-        EXPECT_EQ(plan.reason, AYNI_REASON_PROVIDER_RESULT);
-        EXPECT_EQ(plan.tool_call_count, 0U);
+        EXPECT_EQ(task.lifecycle, AYNI_TASK_COMPLETED);
+        EXPECT_NE(proposal_error, AYNI_OK);
+        const auto plan = call_info(planned.logical_call_id);
+        EXPECT_EQ(plan.outcome, AYNI_CALL_COMPLETED);
+        EXPECT_EQ(plan.status, AYNI_OK);
+        EXPECT_EQ(plan.reason, AYNI_REASON_NONE);
+        EXPECT_EQ(plan.tool_call_count, 1U);
     }
 }
 

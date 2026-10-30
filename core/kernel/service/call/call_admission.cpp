@@ -16,6 +16,22 @@ ayni_string_v1 view(const catalog::CatalogId &id) {
     return {id.data(), id.size()};
 }
 
+// Validate the ABI header before selecting a subscription or ordinary Call path.
+ayni_status_t request_header(const ayni_call_request_v1 &request) {
+    const auto shape =
+        catalog::check_struct_size(request.struct_size, sizeof(request), sizeof(request));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    if (request.reserved != 0U ||
+        (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL &&
+         request.kind != AYNI_POLICY_CLOSE_SUBSCRIPTION &&
+         request.kind != AYNI_POLICY_WAIT_SUBSCRIPTION)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return AYNI_OK;
+}
+
 } // namespace
 
 void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &snapshot,
@@ -24,7 +40,7 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     if (limits_.capacity == 0U) {
         return;
     }
-    decision_ = Decision{task_index, durable_seq, snapshot.now_us, output.intents, &output};
+    decision_ = Decision{task_index, durable_seq, snapshot.now_us, {}, output.intents, &output};
     output.call_context = this;
     output.request_call = stage_request;
     snapshot.call_context = this;
@@ -32,11 +48,17 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     snapshot.call_tool = read_tool_call;
     snapshot.list_capabilities = list_capabilities_view;
     snapshot.inspect_capability = inspect_capability_view;
+    snapshot.capability_context = capability_context_view;
     snapshot.subscription = read_subscription;
     snapshot.subscription_observation = read_subscription_observation;
 }
 
 void CallRuntime::end_decision() {
+    // Reads after request_call still contribute to this decision's egress proof.
+    // Business execution authority stays independent of metadata disclosure.
+    if (proposal_ && proposal_->kind == AYNI_POLICY_REQUEST_MODEL && decision_) {
+        proposal_->model_context = decision_->model_context;
+    }
     decision_.reset();
 }
 
@@ -58,16 +80,9 @@ ayni_status_t CallRuntime::stage_request(void *context, const ayni_call_request_
 // Copy while every nested argument view is still live. A proposal is not a
 // domain mutation and does not consume a step, call count, resource or identity.
 ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
-    const auto shape =
-        catalog::check_struct_size(request.struct_size, sizeof(request), sizeof(request));
-    if (shape != AYNI_OK) {
-        return shape;
-    }
-    if (request.reserved != 0U ||
-        (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL &&
-         request.kind != AYNI_POLICY_CLOSE_SUBSCRIPTION &&
-         request.kind != AYNI_POLICY_WAIT_SUBSCRIPTION)) {
-        return AYNI_INVALID_ARGUMENT;
+    const auto header = request_header(request);
+    if (header != AYNI_OK) {
+        return header;
     }
     if (proposal_) {
         return AYNI_CAPACITY_EXCEEDED;
@@ -116,10 +131,13 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     if (status != AYNI_OK) {
         return status;
     }
-    if (on_demand_tool(decision_->task_index, binding, contract)) {
-        if (!work_.task_authority.can_bind_tool(task.slot)) {
+    if (contract.category == catalog::CallClass::tool) {
+        if (on_demand_tool(decision_->task_index, binding, contract) &&
+            !work_.task_authority.can_bind_tool(task.slot)) {
             return AYNI_CAPACITY_EXCEEDED;
         }
+        // A complete model proposal can receive a normal tool refusal before
+        // the sink is consumed. Final preflight still rechecks live authority.
         const auto checked =
             check_input(decision_->task_index, binding, domain, input, contract, decision_->now_us,
                         decision_->durable_seq, 0, &proposal.authorization);
@@ -129,6 +147,9 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     }
     proposal.task_id = work_.tasks.at(decision_->task_index).task_id;
     proposal.kind = request.kind;
+    if (request.kind == AYNI_POLICY_REQUEST_MODEL) {
+        proposal.model_context = decision_->model_context;
+    }
     stage_intent(proposal);
     return AYNI_OK;
 }
@@ -198,9 +219,8 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
     }
     const auto &calls = runtime.work_.calls;
     const auto &state = calls.state(index);
-    if (calls.record(index).result_kind == work::CallResultKind::unavailable) {
-        return AYNI_EXPIRED;
-    }
+    work::ToolCallList model_output;
+    const bool has_functions = work::read_tool_calls(calls.tool_calls(index), model_output);
     *out = {sizeof(*out),
             state.outcome,
             calls.identity(index).call_id,
@@ -209,14 +229,25 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             state.outcome == 0U ? 0U : state.latest.transition.commit_seq,
             state.status,
             state.reason,
-            calls.result(index),
-            work::tool_call_count(calls.tool_calls(index)),
+            has_functions ? model_output.assistant_text : calls.result(index),
+            has_functions ? model_output.count : 0U,
             0,
             static_cast<uint32_t>(calls.effect(index)),
             0,
             calls.value_result(index),
             calls.domain(index),
-            calls.contract(index).business_contract};
+            calls.contract(index).business_contract,
+            state.model_usage};
+    if (calls.record(index).result_kind == work::CallResultKind::unavailable ||
+        !runtime.retain_model_context(
+            runtime.decision_->task_index, calls.identity(index).model_context,
+            runtime.host_.monotonic_now_us(runtime.host_.ctx), runtime.decision_->durable_seq)) {
+        // ABI 0.50: preserve known identities/outcome/effect while withholding body.
+        out->text = {};
+        out->encoded_value = {};
+        out->tool_call_count = 0;
+        return AYNI_EXPIRED;
+    }
     return AYNI_OK;
 }
 
@@ -404,6 +435,11 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
                    : authority::GrantCheck{AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
     }
 
+    if (!model_context_current(task_index, proposal.model_context, now_us, durable_seq)) {
+        // Metadata expired during decide. Rebuild before accepting input or checkpoint.
+        proposal.redecide = true;
+        return {AYNI_EXPIRED, AYNI_REASON_NONE};
+    }
     const auto &contract = catalogs_.call_capabilities.at(proposal.links.call).contract;
     if (task.call.id != 0U || work_.step_taken(task_index, view(proposal.step))) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_STEP_TAKEN};
@@ -497,6 +533,7 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
         return false;
     }
     identity.authorization = proposal.authorization;
+    identity.model_context = proposal.model_context;
     identity.task_id = task.task_id;
     identity.owner_instance_id = task.owner_instance_id;
     identity.step_key = proposal.step;

@@ -125,35 +125,6 @@ class CallRuntime {
             inhibition{};                    // Sticky refusal before its journal row fits.
         std::optional<LeaseRequest> pending; // None when no requested ACK is outstanding.
     };
-    // Saved positions from one immutable Goal policy. Membership/count share one owner;
-    // no machine-word mask limits a directory to 8/16/32 business tools.
-    struct ToolSelection {
-        std::array<uint8_t, AYNI_GOAL_TYPE_TOOL_COUNT_MAX> positions{}; // Zero/one membership.
-        uint32_t count = 0; // Number of included positions, zero is explicitly empty.
-        // Include one valid frozen position once, keeping count equal to membership.
-        void include(uint32_t position) {
-            if (!positions[position]) {
-                positions[position] = 1;
-                ++count;
-            }
-        }
-        // Whether this valid frozen position belongs to the saved selection.
-        bool contains(uint32_t position) const { return positions[position] != 0; }
-        // Index-th included position; false preserves out when there are fewer.
-        bool nth(uint32_t index, uint32_t &out) const {
-            for (uint32_t position = 0; position < positions.size(); ++position) {
-                if (!contains(position)) {
-                    continue;
-                }
-                if (!index) {
-                    out = position;
-                    return true;
-                }
-                --index;
-            }
-            return false;
-        }
-    };
     struct Delivery {
         ProviderReservation reservation; // Mailbox-owned exact incarnation, borrowed until ack.
         const catalog::Provider *provider =
@@ -163,8 +134,7 @@ class CallRuntime {
         enum class Purpose {
             execution,
             query
-        } purpose = Purpose::execution; // Exact attempt protocol.
-        ToolSelection tools{};          // Exact Goal policy positions offered at submit.
+        } purpose = Purpose::execution;                    // Exact attempt protocol.
         std::optional<work::CallCancelCause> inhibition{}; // Sticky user stop for this execution
                                                            // attempt until budgeted cancellation.
     };
@@ -186,6 +156,7 @@ class CallRuntime {
         uint32_t binding_index;      // Immutable directory index, resolved during staging.
         catalog::BindingLinks links; // Catalog resolution, not cached authority or availability.
         uint32_t input_size;         // Canonical bytes in staging_, bounded by limits_.input_bytes.
+        work::ModelContext model_context{}; // Captured visibility, never execution authority.
         bool redecide = false; // Final optional admission expired: discard this decision only.
         work::AuthorityReference
             authorization{}; // Optional tool's whole initial Grant, zero for required.
@@ -200,6 +171,8 @@ class CallRuntime {
         uint32_t task_index;  // Stable during the synchronous callback only.
         uint64_t durable_seq; // Acknowledged prefix shared with the memory decision lease.
         uint64_t now_us; // Decision clock sample; final admission checks again before publication.
+        mutable work::ModelContext
+            model_context{}; // Conservative current disclosure for this lease.
         ayni_policy_intent_v1
             *intents; // Original Kernel buffer, never trust a replaced output pointer.
         ayni_policy_output_v1 *output; // Kernel's actual stack output, not a replacement pointer.
@@ -211,11 +184,19 @@ class CallRuntime {
         ayni_bytes_v1 domain;            // The capability's registered domain.
         ayni_bytes_v1 ceiling;           // The Goal requirement scope that admits its route.
     };
-    // The submit in progress, for the Provider's tool callback only.
-    struct Offering {
-        uint32_t task_index;     // Stable during the synchronous submit.
-        ToolSelection positions; // Frozen positions in the owning Goal policy.
-    };
+    // Same frozen policy/boot, with every disclosed position still visible now.
+    bool model_context_current(uint32_t task_index, const work::ModelContext &context,
+                               uint64_t now_us, uint64_t durable_seq) const;
+    // A borrowed source contributes its original metadata dependency to this
+    // decide; false hides its body without changing action outcome evidence.
+    bool retain_model_context(uint32_t task_index, const work::ModelContext &context,
+                              uint64_t now_us, uint64_t durable_seq) const;
+    // Captures a full conservative view; no Grant selection or state mutation.
+    work::ModelContext model_context(uint32_t task_index, uint64_t now_us,
+                                     uint64_t durable_seq) const;
+    static ayni_status_t capability_context_view(const void *context,
+                                                 const ayni_capability_context_v1 *previous,
+                                                 ayni_capability_context_v1 *out);
     // Directory callback leases close with decide, like retained Call reads.
     static ayni_status_t list_capabilities_view(const void *context,
                                                 const ayni_capability_cursor_v1 *cursor,
@@ -241,16 +222,6 @@ class CallRuntime {
     // Listed tool at position, if this Task's immutable Goal ceiling covers
     // its capability and admits the Binding's route; no Grant liveness check.
     bool offer_tool(uint32_t task_index, uint32_t position, ToolOffer &out) const;
-    ToolSelection offered_tools(uint32_t task_index) const; // Finite frozen policy positions.
-    static ayni_status_t describe_tool(const void *context, uint32_t index, ayni_tool_v1 *out);
-    // Every call names an offered tool with values in its ceiling and route and
-    // text within its limit. Shape was checked when posted; this adds the catalogs.
-    ayni_status_t normalize_tool_calls(uint32_t task_index, const ToolSelection &positions,
-                                       ayni_bytes_v1 list, uint32_t &size);
-    // One selected tool's original Schema resolves native or lossless adapter input.
-    ayni_status_t normalize_tool_input(uint32_t task_index, const ToolOffer &offer,
-                                       const work::ToolCallView &call,
-                                       catalog::DecodedValue &out) const;
     // Normalize a copied structured terminal with this Call's original result schema.
     ayni_status_t normalize_result(uint32_t index, ayni_bytes_v1 body, work::CallResult &result);
     ayni_status_t stage(const ayni_call_request_v1 &request);
@@ -389,7 +360,6 @@ class CallRuntime {
     uint8_t *normalized_; // Owner-only result normalization bytes, erased after consumption.
     std::optional<Decision> decision_; // Present only during decide; callback capability lease.
     std::optional<Proposal> proposal_; // Copied proposal survives callback until consumed/reset.
-    std::optional<Offering> offering_; // Present only while a Provider's submit runs.
     enum class NextLane {
         control,
         work
