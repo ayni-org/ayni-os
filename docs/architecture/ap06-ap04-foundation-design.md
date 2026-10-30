@@ -2,7 +2,7 @@
 
 - **基线**：AP-05 #116；实验性 ABI 0.51、Core schema 7。
 - **本包**：用户 2026-10-30 授权盘点、设计、双实例验收及基础验收；选择 Binding 资源映射、开发期直接升级，无旧格式兼容层。见 [ADR-0087](../adr/0087-binding-resource-mapping-and-foundation-acceptance.md)。
-- **状态**：实现、当前完整软件回归及独立审查已完成，基础验收进行中。最终验收及未验证范围集中在[基础报告](../../reports/core/foundation-acceptance.md)，本设计不把源码盘点当执行结果。
+- **状态**：实现、当前完整软件回归、最小正常重开及独立审查已完成，基础报告已具备交付证据；最终提交 CI 与交付状态见 #117。最终验收及未验证范围集中在[基础报告](../../reports/core/foundation-acceptance.md)，本设计不把源码盘点当执行结果。
 
 ## 1 实际消费者与缺口
 
@@ -51,6 +51,7 @@ runtime 选择 Sim 或 Native、软件 Provider 与样例应用；客户端仍�
 | 映射复制与边界 | 栈上 ID 修改不影响结果；非法 count/pointer/reserved、重复键、未知需求及合并拒绝 | `BindingInstances`、`ProviderApi.binding_*` |
 | 原证明与实际组 | 保持单位多重性；改单位/数量/超时等不构成合法资源置换 | `CallContract.binding_resource_substitution_keeps_semantics_and_unit_multiplicity` |
 | 同应用跨 Host | 精确分块求和、有效事件样本、有限等待与关闭，Native 实际写出日志 | `Examples.managed_operations`、`Examples.managed_operations_native` |
+| 最小正常重开 | 旧调用/真实结果保持；新代订阅保留原实际组，改变映射后原 Task 暂停且无新开启 | `BindingInstances.orderly_reopen_retains_mapped_call_and_exact_result`、`MappedSubscription.orderly_reopen_keeps_original_actual_resource_group`、`MappedSubscription.changed_actual_group_holds_original_call_without_new_opening` |
 | 既有通用能力 | typed/授权/目录/模型工具/管理操作及历史 E1～E4 回归保持 | 最终完整 CTest、适用 CI 和审查；命令、数量及运行链接集中 PR |
 
-新增故障/恢复及变异专项仍暂停；历史回归保留。新映射的目录变化/重启专项和 schema 8 恢复证据不能从正常场景推定通过。基础报告逐条核对当前计划六项门槛，缺失的必要证据或覆盖偏差须明确决定，不能为交付目标自行降低标准。
+用户2026-10-31明确允许仅本包最小正常重开/目录映射不兼容验证，已执行；其他新增故障/恢复、断电及变异专项仍暂停，历史回归保留。该证据不扩为 schema 8 全部故障/恢复通过。基础报告逐条核对当前计划六项门槛，缺失的必要证据或覆盖偏差须明确决定，不能为交付目标自行降低标准。

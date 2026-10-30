@@ -1,5 +1,6 @@
 // ADR-0087 / C-BIND-004: same capability, two exact software endpoints and resource groups.
-// Public C ABI scenarios; no restart, fault injection or private Core state assertions.
+// Public C ABI scenarios; the normal-reopen case is explicitly authorized under ADR-0087.
+// No power-cut injection or private Core state assertions.
 #include "text_business_fixture.h"
 #include "work_node.h"
 #include <array>
@@ -241,5 +242,30 @@ TEST_F(BindingInstances, shared_resource_queues_second_instance_until_release) {
     second.finish();
     pump();
     EXPECT_EQ(work.task(task.task_id).lifecycle, AYNI_TASK_COMPLETED);
+}
+
+// ADR-0087: user 2026-10-31 authorized only the package's minimal normal reopen evidence.
+TEST_F(BindingInstances, orderly_reopen_retains_mapped_call_and_exact_result) {
+    start("slot.b");
+    create(agent_a);
+    ASSERT_EQ(first.submitted, 1U);
+    const auto original = first.call;
+    first.finish();
+    pump();
+    work.node().reboot();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    pump();
+    auto info = ayni_call_info_v1{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_call(work.kernel(), original, &info), AYNI_OK);
+    EXPECT_EQ(info.outcome, AYNI_CALL_COMPLETED);
+    char result[64]{};
+    uint32_t bytes = 0;
+    ASSERT_EQ(ayni_copy_call_result(work.kernel(), original, result, sizeof(result), &bytes),
+              AYNI_OK);
+    EXPECT_EQ(std::string(result, bytes), first.id);
+    EXPECT_EQ(first.submitted, 1U);
+    EXPECT_EQ(second.submitted, 0U);
 }
 } // namespace

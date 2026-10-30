@@ -4,7 +4,7 @@
 
 **通用原生 AgentOS：多个 Agent 共用任务、授权、资源、调用与恢复机制，通过公开契约使用宿主提供的能力。**
 
-> 仓库已交付 M1 的 Native Core、模拟器与 C/C++ SDK（实验性 ABI 0.52、storage schema 8）：单一助理 CLI、文本/工具调用、记忆与日历、授权及恢复，电脑 E1～E4 证据见 [Core Alpha 报告](reports/core/m1-core-alpha.md)。安全关键分支现行目标统一为 ≥80%（ADR-0088），历史测量事实保留；存储兼容待决项已由 schema 3 的严格拒绝规则关闭（ADR-0082、#106）。M2 暂缓；完整 MA-038、ESP32 存储/实机与真实模型多轮试用仍待后续安排。AP-04/AP-06 资源映射与共用软件应用正在基础验收，见[当前报告](reports/core/foundation-acceptance.md)。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
+> 仓库已交付 M1 的 Native Core、模拟器与 C/C++ SDK（实验性 ABI 0.52、storage schema 8）：单一助理 CLI、文本/工具调用、记忆与日历、授权及恢复，电脑 E1～E4 证据见 [Core Alpha 报告](reports/core/m1-core-alpha.md)。安全关键分支现行目标统一为 ≥80%（ADR-0088），历史测量事实保留；存储兼容待决项已由 schema 3 的严格拒绝规则关闭（ADR-0082、#106）。M2 暂缓；完整 MA-038、ESP32 存储/实机与真实模型多轮试用仍待后续安排。AP-04/AP-06 资源映射与共用软件应用已具备软件基础验收证据，最终提交 CI 与交付状态见 #117 及[当前报告](reports/core/foundation-acceptance.md)。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
 
 AP-02/AP-03 已交付；AP-05 实现固定四工具内的同 Task 长操作/订阅控制、软件 Provider 和样本来源校验，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)（ADR-0086）。当前路线是先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；宿主无需具备语音、视觉、运动或特定设备。具体工作包、依赖和完成条件见[基础能力实施与实验计划](docs/architecture/foundation-and-experiment-plan.md)，完整设计见 [Ayni 实施计划](docs/ayni_v1.0.md)。统一助理是应用样例，ESP32-S3 及其外设是实验组合。
 

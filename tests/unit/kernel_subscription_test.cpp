@@ -3,6 +3,62 @@
 namespace {
 using namespace ayni::test;
 
+// ADR-0087: only normal close/reopen and exact mapped-contract compatibility,
+// explicitly authorized by the user on 2026-10-31; no power-cut/record mutation.
+class MappedSubscription : public SubscriptionFixture {
+  protected:
+    void SetUp() override {
+        mapped_camera_resource = "camera.a";
+        SubscriptionFixture::SetUp();
+    }
+    void reopen() {
+        ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+        work.node().create_and_start();
+        work.node().recover();
+        ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+        work.reopen_session();
+        pump(25);
+    }
+};
+
+TEST_F(MappedSubscription, orderly_reopen_keeps_original_actual_resource_group) {
+    const auto goal = create();
+    pump(20);
+    const auto original = subscription();
+    shutdown();
+    reopen();
+    EXPECT_EQ(work.goal(goal).last_task_id, original.task_id);
+    EXPECT_EQ(subscription().subscription.subscription_id, original.subscription.subscription_id);
+    EXPECT_EQ(subscription().phase, AYNI_SUBSCRIPTION_ACTIVE);
+    EXPECT_GT(subscription().subscription.generation, original.subscription.generation);
+    auto actual = ayni_resource_info_v1{};
+    actual.struct_size = sizeof(actual);
+    ASSERT_EQ(ayni_get_resource(work.kernel(), text("camera.a"), &actual), AYNI_OK);
+    EXPECT_EQ(actual.used, 1U);
+    EXPECT_EQ(camera_resource().used, 0U);
+}
+
+TEST_F(MappedSubscription, changed_actual_group_holds_original_call_without_new_opening) {
+    const auto goal = create();
+    pump(20);
+    const auto original = subscription();
+    shutdown();
+    const auto accepted = openings.size();
+    mapped_camera_resource = "camera.b";
+    reopen();
+    const auto held = work.task(task(goal));
+    EXPECT_EQ(held.task_id, original.task_id);
+    EXPECT_EQ(held.lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(held.hold_status, AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(subscription().subscription.subscription_id, original.subscription.subscription_id);
+    EXPECT_EQ(openings.size(), accepted);
+    EXPECT_EQ(camera.pending(), 0U);
+    auto actual = ayni_resource_info_v1{};
+    actual.struct_size = sizeof(actual);
+    ASSERT_EQ(ayni_get_resource(work.kernel(), text("camera.b"), &actual), AYNI_OK);
+    EXPECT_EQ(actual.used, 0U);
+}
+
 // ADR-0063 / C-SUB-001/003: the Mock owner receives an actual Kernel borrow
 // and sink. Rejected startup/renew inputs must neither retain it nor alter lease state.
 TEST_F(SubscriptionFixture, mock_capture_rejects_invalid_openings_and_renewals_atomically) {
