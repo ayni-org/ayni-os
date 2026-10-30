@@ -2,7 +2,7 @@
 
 - **状态**：用户 2026-10-29 明确定位与先后顺序；工作包中的接口、兼容和容量选择仍按各包决策。AP-02/AP-03 已获用户实施授权；平台或硬件实验仍另行决定。
 - **依据**：[ADR-0083](../adr/0083-general-foundation-before-platform-experiments.md)、[主计划](../ayni_v1.0.md)、[能力契约设计](capability-centered-agentos-plan.md)、[发现与适配细化](capability-discovery-and-adapters.md)。
-- **当前基线**：[#113](https://github.com/RobotSe7en/ayni/pull/113)；实验性 ABI 0.49 / schema 5。AP-00/AP-01/AP-02 及 AP-03 目录/按需绑定已交付；基础通用能力尚未整体完成，平台实验尚未启动。
+- **当前实现**：[#114](https://github.com/RobotSe7en/ayni/pull/114)；实验性 ABI 0.50 / schema 6。AP-00/AP-01/AP-02 及 AP-03 目录、按需绑定和 Native harness 的实现/验证记录见关联 PR；基础通用能力尚未整体完成，平台实验尚未启动。
 - **规划归属**：本文统一规定当前实施范围、依赖、完成条件和实验次序。AP/MA 编号继续用于追踪；历史 M0/M1 与已交付报告保留其事实，不再从原 M2～M6 轮式产品顺序推导通用 AgentOS 的必需功能。
 
 ## 1 目标与边界

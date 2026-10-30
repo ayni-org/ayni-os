@@ -120,6 +120,7 @@
 | [#111](https://github.com/RobotSe7en/ayni/pull/111) | 2026-10-29 | AP-02 盘点与设计 | 完成实际消费者、类型/授权/持久设计及独立审查修订；记录用户选择，生产实现尚未开始 | ADR-0084 |
 | [#112](https://github.com/RobotSe7en/ayni/pull/112) | 2026-10-30 | AP-02 业务契约与原证明 | 统一有界 Schema/规范值、完整授权证明、结构结果和全仓消费者；Shell Provider；ABI0.48/schema4 | ADR-0084 |
 | [#113](https://github.com/RobotSe7en/ayni/pull/113) | 2026-10-30 | AP-03 按需绑定与目录 | 配置期说明采纳、Task 分页目录、首次完整 Grant 绑定、独立暂停及显式重授权；ABI0.49/schema5 | ADR-0085 |
+| [#114](https://github.com/RobotSe7en/ayni/pull/114) | 2026-10-30 | AP-03 Native harness | 固定四工具、标准消息、披露来源、token 控制、SQLite 历史/原始结果及显式 Shell；ABI0.50/schema6 | ADR-0085 |
 
 ## 工作包日期
 

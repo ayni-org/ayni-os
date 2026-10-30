@@ -280,8 +280,8 @@ TEST_F(StrategiesFixture, unused_metadata_revocation_cancels_queued_model_egress
     ASSERT_EQ(ayni_get_call(work.kernel(), queued, &cancelled), AYNI_OK);
     EXPECT_EQ(cancelled.outcome, AYNI_CALL_CANCELLED);
     EXPECT_EQ(cancelled.effect, AYNI_CALL_EFFECT_NONE);
-    // Local cancellation records its own bookkeeping attempt. Provider observations,
-    // rather than a terminal attempt field, prove that the original never left Core.
+    // Core can reserve a bookkeeping attempt before Provider submit. Observed
+    // operations, rather than a terminal attempt field, prove no original egress.
     for (const auto &submitted : pending) {
         EXPECT_NE(submitted.operation, cancelled.operation_id);
     }
