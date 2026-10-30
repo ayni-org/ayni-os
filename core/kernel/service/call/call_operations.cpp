@@ -1,4 +1,5 @@
 // ADR-0086: operation handles select original Task-owned facts, never Provider callbacks.
+#include "catalog/abi_checks.h"
 #include "foundation/deadline.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/memory/memory_access.h"
@@ -112,8 +113,12 @@ work::OperationWait CallRuntime::operation_basis(uint32_t index) const {
 ayni_status_t CallRuntime::read_operation(const void *context,
                                           const ayni_operation_ref_v1 *reference,
                                           ayni_operation_info_v1 *out) {
-    if (!context || !reference || !out || out->struct_size != sizeof(*out)) {
+    if (!context || !reference || !out) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape = catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
+    if (shape != AYNI_OK) {
+        return shape;
     }
     const auto &runtime = *static_cast<const CallRuntime *>(context);
     uint32_t index = 0;
@@ -159,8 +164,16 @@ ayni_status_t CallRuntime::read_operation(const void *context,
 // Validate/copy a sole control before any domain state or output is consumed.
 ayni_status_t CallRuntime::stage_operation_control(void *context,
                                                    const ayni_operation_control_v1 *control) {
-    if (!context || !control || control->struct_size != sizeof(*control) || control->reserved ||
-        control->kind < AYNI_OPERATION_WAIT || control->kind > AYNI_OPERATION_CLOSE) {
+    if (!context || !control) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        catalog::check_struct_size(control->struct_size, sizeof(*control), sizeof(*control));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    if (control->reserved || control->kind < AYNI_OPERATION_WAIT ||
+        control->kind > AYNI_OPERATION_CLOSE) {
         return AYNI_INVALID_ARGUMENT;
     }
     auto &runtime = *static_cast<CallRuntime *>(context);

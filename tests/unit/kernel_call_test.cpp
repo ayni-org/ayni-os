@@ -663,6 +663,22 @@ TEST_F(ManagedCall, callback_result_views_reject_bad_arguments_and_preserve_miss
             },
             subscription, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(subscription.phase, 99U);
+        // C-VER-004 / C-OP-002: new operation views/controls share the standard ABI shape rule.
+        const ayni_operation_ref_v1 reference{snapshot.task_id, snapshot.task_id, snapshot.task_id};
+        ayni_operation_info_v1 operation{};
+        operation.struct_size = sizeof(operation);
+        operation.form = 99;
+        check(
+            [&](const void *context, ayni_operation_info_v1 *out) {
+                return snapshot.operation(context, &reference, out);
+            },
+            operation, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(operation.form, 99U);
+        ayni_operation_control_v1 control{};
+        EXPECT_EQ(output.control_operation(output.call_context, &control), AYNI_INVALID_ARGUMENT);
+        control.struct_size = sizeof(control) + 1;
+        EXPECT_EQ(output.control_operation(output.call_context, &control),
+                  AYNI_UNSUPPORTED_VERSION);
         ayni_observation_info_v1 observation{};
         observation.struct_size = sizeof(observation);
         observation.usable = 99;
