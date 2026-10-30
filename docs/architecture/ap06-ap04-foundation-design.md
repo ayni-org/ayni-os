@@ -34,6 +34,8 @@ Call 原身份继续保存确切 Binding/Provider/端点/版本；既有契约�
 
 ABI 0.52、Core schema 8 分别升级。Binding 配置布局变化；Call 记录字节布局不变而资源含义改变，故仍升级 schema。策略格式 4、SQLite user_version 2 没有新变化。本包全仓重编译；旧目录拒绝并保留，不加入旧 reader、迁移或自动清空。回退须使用原二进制及原目录。
 
+所有者对原 operation 的只读查询不重新获取执行资源，也不要求新目录能执行旧调用。它按原 Provider/端点/版本和原逻辑业务证明匹配，接受 Call 中已经验证的单位保持实际组；普通 Binding 注册仍要求逻辑契约精确匹配。静态边界用例验证此区别，既有查询回归保持，不新增 UNKNOWN 注入活动。
+
 ## 4 AP-06 应用、SDK 与生命周期边界
 
 应用仅注册策略/GoalType、提出业务请求及解释结果，不选 Host、Provider 或存储路径。软件 Provider 通过公开 usage 数据描述自身语义，可信 runtime 经原注册端口采纳，应用首次工作从 Task 目录 inspect 精确版本和原业务证明。工作流用 Task 私有一字节 checkpoint 记录已观察样本，避免多个 Task 共用实例标记。求和值按公开 `ayni_value_read` 解码并精确检查；UNKNOWN/失败不得作为业务成功。
