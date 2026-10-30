@@ -411,9 +411,9 @@ typedef struct ayni_provider_v1 {
     ayni_submit_result_t (*renew)(void *ctx, const ayni_subscription_renew_v1 *request);
 } ayni_provider_v1;
 
-/* Since 0.52. One logical demand keeps its units but selects a concrete resource.
- * Unmapped demands keep their original ID. Duplicate sources or resolved IDs
- * are invalid; mappings cannot add, remove or merge demands. */
+/* Since 0.52. Fixed-layout resource mapping; layout changes require a new type.
+ * Logical demands keep units; omitted IDs are unchanged. Duplicate source or
+ * resolved IDs are invalid; mappings cannot add, remove or merge demands. */
 typedef struct ayni_binding_resource_v1 {
     ayni_string_v1 logical_id;  /* Nonempty ID present in the capability resource group. */
     ayni_string_v1 resource_id; /* Nonempty concrete resource ID, registered before start. */
