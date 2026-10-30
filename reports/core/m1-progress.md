@@ -119,6 +119,9 @@
 | [#110](https://github.com/RobotSe7en/ayni/pull/110) | 2026-10-29 | 通用基础与实验路线 | 通用 AgentOS 无必备设备集合，基础先于独立平台实验；同步规划、契约适用范围与交接 | ADR-0083 |
 | [#111](https://github.com/RobotSe7en/ayni/pull/111) | 2026-10-29 | AP-02 盘点与设计 | 完成实际消费者、类型/授权/持久设计及独立审查修订；记录用户选择，生产实现尚未开始 | ADR-0084 |
 
+| [#112](https://github.com/RobotSe7en/ayni/pull/112) | 2026-10-30 | AP-02 业务契约与原证明 | 统一有界 Schema/规范值、完整授权证明、结构结果和全仓消费者；Shell Provider；ABI0.48/schema4 | ADR-0084 |
+| [#113](https://github.com/RobotSe7en/ayni/pull/113) | 2026-10-30 | AP-03 按需绑定与目录 | 配置期说明采纳、Task 分页目录、首次完整 Grant 绑定、独立暂停及显式重授权；ABI0.49/schema5 | ADR-0085 |
+
 ## 工作包日期
 
 | 工作包 | 开始 | 结束 |
@@ -134,7 +137,7 @@
 
 ## 交接状态（2026-10-30）
 
-本包实现 AP-02（ABI 0.48 / schema 4），相关验证与交付见 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084；AP-03 第一部分实现配置期说明采纳、Task 目录/按需绑定（ABI 0.49/schema 5，ADR-0085），固定模型工具与连续上下文继续实施，基础通用能力未完成。此前规划/设计见 #110/#111，M1 Native/Sim 与历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表平台实验或硬件验收。
+AP-02 已由 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084 交付（ABI 0.48/schema 4）；AP-03 第一部分由 [#113](https://github.com/RobotSe7en/ayni/pull/113)、ADR-0085 交付配置期说明采纳、Task 目录/按需绑定（ABI 0.49/schema 5），固定模型工具与连续上下文继续实施，基础通用能力未完成。此前规划/设计见 #110/#111，M1 Native/Sim 与历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表平台实验或硬件验收。
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。

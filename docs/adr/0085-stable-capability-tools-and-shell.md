@@ -1,6 +1,6 @@
 # ADR-0085：固定能力工具、按需说明、连续上下文与显式 Shell
 
-- **状态**：已接受范围（用户 2026-10-29）；AP-02 实现与 Shell Provider 见 [#112](https://github.com/RobotSe7en/ayni/pull/112)；AP-03 分两部分实施：按需绑定/目录，以及固定模型工具/连续上下文/部署；验证见下文。
+- **状态**：已接受范围（用户 2026-10-29）；AP-02 实现与 Shell Provider 见 [#112](https://github.com/RobotSe7en/ayni/pull/112)；AP-03 目录/按需绑定见 [#113](https://github.com/RobotSe7en/ayni/pull/113)；固定模型工具/连续上下文/部署继续实施，验证见下文。
 - **日期**：2026-10-29。
 - **关联**：ADR-0073、0074、0083、0084；AP-02/AP-03；[基础计划](../architecture/foundation-and-experiment-plan.md)、[AP-02 设计](../architecture/ap02-typed-capability-design.md)。
 
@@ -37,4 +37,4 @@
 
 ## 验证
 
-AP-02 的类型/授权/消费者及 Shell Provider 实现、正常验证、独立复审和 CI 证据见 [#112](https://github.com/RobotSe7en/ayni/pull/112)；AP-03 第一部分实现配置期说明采纳、Task 目录与按需授权来源；相关正常功能/原有回归、独立审查及 CI 记录集中于本部分 PR。固定模型工具、标准消息/上下文和 Native Shell 装配仍属第二部分。新增路径的故障/恢复专项未执行。不得据此宣称真实模型缓存命中、完整基础或平台实验通过。
+AP-02 的类型/授权/消费者及 Shell Provider 实现、正常验证、独立复审和 CI 证据见 [#112](https://github.com/RobotSe7en/ayni/pull/112)；AP-03 第一部分实现配置期说明采纳、Task 目录与按需授权来源；相关正常功能/原有回归、独立审查修订及 CI 记录见 [#113](https://github.com/RobotSe7en/ayni/pull/113)。固定模型工具、标准消息/上下文和 Native Shell 装配仍属第二部分。新增路径的故障/恢复专项未执行。不得据此宣称真实模型缓存命中、完整基础或平台实验通过。
