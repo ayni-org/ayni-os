@@ -17,6 +17,9 @@ namespace ayni::runtime::examples {
 namespace {
 constexpr uint32_t step_units = 64, step_max_us = 10000, drain_steps = 1024;
 constexpr uint64_t tick_us = 100;
+// Fixture sampling need not model a wall-clock second. One event takes 100
+// simulated advances, keeping the same wait/freshness semantics under sanitizers.
+constexpr uint64_t software_event_interval_us = 10000;
 constexpr int64_t fixture_utc_s = 86400;
 constexpr auto wait_timeout = std::chrono::seconds(15);
 constexpr auto owner_yield = std::chrono::microseconds(50);
@@ -186,6 +189,7 @@ struct Fixture::Impl {
         providers::software::WorkConfig config;
         config.clock_context = this;
         config.now_us = now;
+        config.event_interval_us = software_event_interval_us;
         auto status = software.configure(config);
         auto *handle = kernel.get();
         const ayni_resource_desc_v1 resource{sizeof(resource),

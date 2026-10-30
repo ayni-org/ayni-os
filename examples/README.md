@@ -37,3 +37,5 @@ CI 编译并运行五个示例和脚本；阶段完整验证另按工作流运�
 AP-06 当前 ABI 0.52 / Core schema 8。`ayni_example_managed_operations` 无参数运行 Sim；传入已经存在的私有空目录运行 Native 异步文件存储。`Examples.managed_operations_native` 自动创建临时目录、核对成功及实际日志，成功关闭后清理。两者不使用真实模型或设备，不代表后续 Linux 系统集成实验。扩展 `advance` 接收所选 Host 的同一单调时钟域。
 
 同能力的多实例通过 Binding 精确选择；`ayni_binding_resource_v1` 将逻辑需求映射为各实例实际资源（省略为恒等），不改变单位/其他执行语义，不能合并需求。完整示例及验证见 `tests/unit/binding_instances_test.cpp` 和 [本包设计](../docs/architecture/ap06-ap04-foundation-design.md)。定义、说明、实现和部署配置分别归现有接口，不增加模型 codec 的业务分支。
+
+本包软件示例使用 10 ms 事件采样配置，保持 Provider 公共默认 1 s、TTL 2 s 与原等待预算。Sim 每次推进100 µs，首个事件从10,000次推进降为100次，避免 sanitizer/共享负载下示例先触及15秒夹具期限。有效样本、真实结构结果和关闭条件保持；实际验证见 #117。该调整不修改 Core 或保守安全覆盖范围代码，覆盖结果仍对应已冻结的同一 Core。
