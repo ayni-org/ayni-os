@@ -1,5 +1,5 @@
 #include "protocol.h"
-#include <ayni/values_json.hpp>
+#include <ayni/model_messages.hpp>
 #include <charconv>
 #include <cstring>
 #include <initializer_list>
@@ -10,145 +10,7 @@
 
 namespace ayni::providers::openai_compat {
 namespace {
-using ::ayni::json::write_schema;
 using ::ayni::json::Writer;
-// Function aliases are a protocol concern; business field names come from Schema.
-void function_name(Writer &out, uint32_t index) {
-    out.raw("\"tool_");
-    out.number(index);
-    out.raw("\"");
-}
-
-// Render stable-ID projection paths with original JSON field names. A quoted
-// property step differs from the [*] list wildcard, including names containing
-// quotes, brackets or slashes; the outer function description is JSON-escaped.
-ayni_status_t describe_path(Writer &out, ayni_schema_v1 schema,
-                            const ayni_authority_projection_v1 &projection) {
-    uint32_t node = 0;
-    constexpr uint32_t escaped_name_bytes = 6U * AYNI_SCHEMA_NAME_BYTES_MAX + 2U;
-    for (uint32_t at = 0; at < projection.path_count; ++at) {
-        if (projection.path[at] == AYNI_PROJECTION_LIST_ITEM) {
-            out.raw("[*]");
-            ++node;
-            continue;
-        }
-        const uint32_t end = schema.nodes[node].subtree_end;
-        uint32_t child = node + 1U;
-        while (child < end && schema.nodes[child].field_id != projection.path[at]) {
-            child = schema.nodes[child].subtree_end;
-        }
-        if (child == end) {
-            return AYNI_INTERNAL;
-        }
-        node = child;
-        std::array<char, escaped_name_bytes> buffer{};
-        Writer name(buffer.data(), buffer.size());
-        name.string(schema.nodes[node].name);
-        size_t size = 0;
-        if (!name.finish(size)) {
-            return AYNI_CAPACITY_EXCEEDED;
-        }
-        out.raw("[");
-        out.escaped({buffer.data(), static_cast<uint32_t>(size)});
-        out.raw("]");
-    }
-    return AYNI_OK;
-}
-
-// Keep one complete candidate separate from the original business Schema. A
-// list cannot combine field sets or rows from unrelated authority candidates.
-ayni_status_t authority_description(Writer &out, const Tool &tool,
-                                    const ayni_business_contract_v1 &business) {
-    if (!tool.view.field_count) {
-        return AYNI_OK;
-    }
-    out.raw(
-        "\\nOne complete Task authority candidate; all list rows must fit this same candidate:");
-    for (uint32_t at = 0; at < tool.view.field_count; ++at) {
-        const auto &field = tool.view.fields[at];
-        const auto &domain = field.domain;
-        out.raw("\\nAuthority field ");
-        out.number(field.field_id);
-        out.raw(": ");
-        if (domain.kind == AYNI_AUTHORITY_I64) {
-            out.raw("integer [");
-            out.number(domain.values.integer.min_inclusive);
-            out.raw(", ");
-            out.number(domain.values.integer.max_inclusive);
-            out.raw("] ");
-            out.escaped(domain.unit);
-        } else {
-            out.raw("tokens [");
-            for (uint32_t token = 0; token < domain.values.tokens.member_count; ++token) {
-                if (token) {
-                    out.raw(", ");
-                }
-                out.escaped(domain.values.tokens.members[token]);
-            }
-            out.raw("]");
-        }
-        for (uint32_t path = 0; path < business.projection_count; ++path) {
-            const auto &projection = business.projections[path];
-            if (projection.field_id != field.field_id) {
-                continue;
-            }
-            out.raw(" via business name path ");
-            const auto status = describe_path(out, business.input, projection);
-            if (status != AYNI_OK) {
-                return status;
-            }
-            if (projection.scale) {
-                out.raw("; coefficient scale ");
-                out.number(projection.scale);
-            }
-            if (projection.flags & AYNI_PROJECTION_BOOL_I64) {
-                out.raw("; false=0, true=1");
-            }
-        }
-    }
-    return AYNI_OK;
-}
-ayni_status_t tool_schema(Writer &out, const Tool &tool, uint32_t index) {
-    struct Context {
-        Writer &out;
-        const Tool &tool;
-        uint32_t index;
-    } context{out, tool, index};
-    return ayni_business_contract_read(
-        tool.view.original_domain, tool.view.business_contract, &context,
-        [](void *opaque, const ayni_business_contract_v1 *business) -> ayni_status_t {
-            auto &state = *static_cast<Context *>(opaque);
-            auto &writer = state.out;
-            const auto &offered = state.tool;
-            writer.raw("{\"type\":\"function\",\"function\":{\"name\":");
-            function_name(writer, state.index);
-            writer.raw(",\"description\":\"");
-            writer.escaped(offered.usage.purpose);
-            writer.raw("\\nResult: ");
-            writer.escaped(offered.usage.result_usage);
-            writer.raw("\\nExamples: ");
-            writer.escaped(offered.usage.examples);
-            writer.raw("\\nBody: ");
-            writer.escaped(offered.usage.text_usage);
-            for (uint32_t at = 0; at < offered.view.field_count; ++at) {
-                writer.raw("\\n");
-                writer.escaped(offered.field_usage[at].description);
-                if (offered.view.fields[at].domain.unit.size) {
-                    writer.raw("\\nUnit: ");
-                    writer.escaped(offered.view.fields[at].domain.unit);
-                }
-            }
-            const auto status = authority_description(writer, offered, *business);
-            if (status != AYNI_OK) {
-                return status;
-            }
-            writer.raw("\",\"parameters\":");
-            write_schema(writer, business->input, 0);
-            writer.raw("}}");
-            return AYNI_OK;
-        });
-}
-
 // JSON DOM strings can include private model input/results. Declare this guard
 // before any Document so all DOM destructors run before either pool is cleared.
 struct EraseScratch {
@@ -227,7 +89,8 @@ bool depth_valid(const char *data, size_t size) {
     return depth == 0 && !quoted;
 }
 
-ayni_status_t validate_shape(yyjson_val *value) {
+enum class ShapeRegion { body, response, usage };
+ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invalid_usage) {
     if (yyjson_is_arr(value)) {
         if (yyjson_arr_size(value) > json_container_max) {
             return AYNI_CAPACITY_EXCEEDED;
@@ -235,7 +98,9 @@ ayni_status_t validate_shape(yyjson_val *value) {
         size_t i, count;
         yyjson_val *child;
         yyjson_arr_foreach(value, i, count, child) {
-            const auto status = validate_shape(child);
+            const auto status = validate_shape(
+                child, region == ShapeRegion::usage ? ShapeRegion::usage : ShapeRegion::body,
+                invalid_usage);
             if (status != AYNI_OK) {
                 return status;
             }
@@ -247,11 +112,20 @@ ayni_status_t validate_shape(yyjson_val *value) {
         size_t i, count;
         yyjson_val *key, *child;
         yyjson_obj_foreach(value, i, count, key, child) {
-            // Duplicate object names are ambiguous, including inside ignored metadata.
+            const auto child_region =
+                region == ShapeRegion::usage ||
+                        (region == ShapeRegion::response && yyjson_equals_str(key, "usage"))
+                    ? ShapeRegion::usage
+                    : ShapeRegion::body;
+            // Ambiguity in optional usage is local to accounting. Response and
+            // argument identities remain strict; capacity checks still walk all data.
             if (yyjson_obj_getn(value, yyjson_get_str(key), yyjson_get_len(key)) != child) {
-                return AYNI_INVALID_ARGUMENT;
+                if (child_region != ShapeRegion::usage) {
+                    return AYNI_INVALID_ARGUMENT;
+                }
+                invalid_usage = true;
             }
-            const auto status = validate_shape(child);
+            const auto status = validate_shape(child, child_region, invalid_usage);
             if (status != AYNI_OK) {
                 return status;
             }
@@ -260,8 +134,30 @@ ayni_status_t validate_shape(yyjson_val *value) {
     return AYNI_OK;
 }
 using Document = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>;
+// Statistics describe the serving model, not a local approximation. A malformed
+// optional usage object cannot erase an otherwise known model completion.
+ayni_model_usage_v1 decode_usage(yyjson_val *root) {
+    auto *usage = yyjson_obj_get(root, "usage");
+    if (!usage || yyjson_is_null(usage)) {
+        return {};
+    }
+    const ayni_model_usage_v1 invalid{AYNI_MODEL_USAGE_INVALID, 0, 0, 0, 0};
+    auto *input = yyjson_obj_get(usage, "prompt_tokens");
+    auto *output = yyjson_obj_get(usage, "completion_tokens");
+    auto *total = yyjson_obj_get(usage, "total_tokens");
+    if (!yyjson_is_uint(input) || !yyjson_is_uint(output) || !yyjson_is_uint(total)) {
+        return invalid;
+    }
+    const auto in = yyjson_get_uint(input);
+    const auto out = yyjson_get_uint(output);
+    const auto sum = yyjson_get_uint(total);
+    if (in > UINT64_MAX - out || in + out != sum) {
+        return invalid;
+    }
+    return {AYNI_MODEL_USAGE_REPORTED, 0, in, out, sum};
+}
 Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_status_t &status,
-               bool raw_numbers = false) {
+               bool raw_numbers = false, bool *invalid_usage = nullptr) {
     status = AYNI_INVALID_ARGUMENT;
     yyjson_alc allocator{};
     if (!depth_valid(data, size) || !yyjson_alc_pool_init(&allocator, pool, pool_size)) {
@@ -271,7 +167,10 @@ Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_statu
                                   &allocator, nullptr),
                  yyjson_doc_free);
     if (doc) {
-        status = validate_shape(yyjson_doc_get_root(doc.get()));
+        bool ignored = false;
+        status = validate_shape(yyjson_doc_get_root(doc.get()),
+                                invalid_usage ? ShapeRegion::response : ShapeRegion::body,
+                                invalid_usage ? *invalid_usage : ignored);
         if (status != AYNI_OK) {
             doc.reset();
         }
@@ -279,14 +178,6 @@ Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_statu
     return doc;
 }
 
-bool named(yyjson_val *value, const char *prefix, uint32_t id) {
-    constexpr size_t name_capacity = 32;
-    char name[name_capacity];
-    const auto prefix_size = std::strlen(prefix);
-    std::memcpy(name, prefix, prefix_size);
-    const auto number = std::to_chars(name + prefix_size, name + sizeof(name), id);
-    return yyjson_equals_strn(value, name, static_cast<size_t>(number.ptr - name));
-}
 bool copy_body(yyjson_val *value, uint32_t limit, Answer &answer, ayni_string_v1 &out) {
     if (!yyjson_is_str(value) || yyjson_get_len(value) > limit - answer.used) {
         return false;
@@ -362,120 +253,49 @@ ayni_status_t decode_arguments(yyjson_val *value, ayni_string_v1 name, Answer &a
     node.subtree_end = count;
     return AYNI_OK;
 }
-ayni_status_t decode_tool(yyjson_val *call, const Tool *tools, uint32_t tool_count,
-                          uint32_t result_limit, size_t at, Answer &answer, char *pool,
-                          size_t pool_size) {
+ayni_status_t decode_tool(yyjson_val *call, uint32_t result_limit, size_t at, Answer &answer,
+                          char *pool, size_t pool_size) {
     if (!yyjson_equals_str(yyjson_obj_get(call, "type"), "function")) {
         return AYNI_INVALID_ARGUMENT;
     }
     auto *function = yyjson_obj_get(call, "function");
-    const Tool *tool = nullptr;
-    for (uint32_t i = 0; i < tool_count; ++i) {
-        if (named(yyjson_obj_get(function, "name"), "tool_", i)) {
-            tool = &tools[i];
-            break;
-        }
-    }
     auto *args = yyjson_obj_get(function, "arguments");
-    if (!tool || !yyjson_is_str(args)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    ayni_status_t parsed = AYNI_OK;
-    auto arguments = parse(const_cast<char *>(yyjson_get_str(args)), yyjson_get_len(args), pool,
-                           pool_size, parsed, true);
-    if (!arguments) {
-        return parsed;
-    }
     auto &decoded = answer.calls[at];
     decoded = {};
     decoded.struct_size = sizeof(decoded);
-    decoded.binding_version = tool->view.binding_version;
-    decoded.binding_id = tool->view.binding_id;
-    decoded.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
     if (!copy_body(yyjson_obj_get(call, "id"), result_limit, answer, decoded.protocol_id) ||
-        decoded.protocol_id.size == 0 || decoded.protocol_id.size > AYNI_MODEL_TOOL_ID_BYTES_MAX) {
+        decoded.protocol_id.size == 0 || decoded.protocol_id.size > AYNI_MODEL_TOOL_ID_BYTES_MAX ||
+        !copy_body(yyjson_obj_get(function, "name"), result_limit, answer, decoded.function_name) ||
+        decoded.function_name.size == 0 || decoded.function_name.size > AYNI_CATALOG_ID_MAX_BYTES ||
+        !yyjson_is_str(args)) {
         return AYNI_INVALID_ARGUMENT;
     }
+    const auto source_begin = answer.used;
+    ayni_status_t parsed = AYNI_OK;
+    auto arguments = parse(const_cast<char *>(yyjson_get_str(args)), yyjson_get_len(args), pool,
+                           pool_size, parsed, true);
     uint32_t count = 0;
-    const auto status = decode_arguments(yyjson_doc_get_root(arguments.get()), {}, answer,
-                                         result_limit, answer.arguments[at], count);
-    if (status != AYNI_OK) {
-        return status;
+    if (arguments) {
+        parsed = decode_arguments(yyjson_doc_get_root(arguments.get()), {}, answer, result_limit,
+                                  answer.arguments[at], count);
+        if (parsed == AYNI_OK) {
+            decoded.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+            decoded.input.arguments = {answer.arguments[at].data(), count};
+            parsed = ayni_arguments_validate(&decoded.input.arguments);
+        }
     }
-    decoded.input.arguments = {answer.arguments[at].data(), count};
+    if (parsed != AYNI_OK) {
+        // Keep source identity and complete raw arguments for a matching tool error.
+        // Reclaim a partial tree's string lane; no second execution representation survives.
+        answer.used = source_begin;
+        decoded.input_kind = AYNI_TOOL_INPUT_INVALID_ARGUMENTS;
+        if (!copy_body(args, result_limit, answer, decoded.input.invalid_arguments)) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+    }
     return AYNI_OK;
 }
 } // namespace
-
-bool Tool::copy(const ayni_tool_v1 &source) {
-    if (source.field_count > AYNI_AUTHORITY_FIELD_COUNT_MAX) {
-        return false;
-    }
-    if (source.original_domain.size > original_domain.size() ||
-        source.business_contract.size > business_contract.size() ||
-        (source.original_domain.size && !source.original_domain.data) ||
-        (source.business_contract.size && !source.business_contract.data)) {
-        return false;
-    }
-    view = source;
-    if (source.original_domain.size) {
-        std::memcpy(original_domain.data(), source.original_domain.data,
-                    source.original_domain.size);
-    }
-    if (source.business_contract.size) {
-        std::memcpy(business_contract.data(), source.business_contract.data,
-                    source.business_contract.size);
-    }
-    view.original_domain = {original_domain.data(), source.original_domain.size};
-    view.business_contract = {business_contract.data(), source.business_contract.size};
-    size_t used = 0;
-    const auto save = [&](ayni_string_v1 value, ayni_string_v1 &out) {
-        if (value.size > AYNI_CATALOG_ID_MAX_BYTES || (value.size && !value.data)) {
-            return false;
-        }
-        if (value.size) {
-            std::memcpy(strings.data() + used, value.data, value.size);
-        }
-        out = {strings.data() + used, value.size};
-        used += value.size;
-        return true;
-    };
-    if (!save(source.binding_id, view.binding_id) ||
-        !save(source.capability_id, view.capability_id)) {
-        return false;
-    }
-    for (uint32_t i = 0; i < view.field_count; ++i) {
-        auto &domain = view.fields[i].domain;
-        if (!save(domain.unit, domain.unit)) {
-            return false;
-        }
-        if (domain.kind == AYNI_AUTHORITY_I64) {
-            continue;
-        }
-        if ((domain.kind != AYNI_AUTHORITY_ENUM && domain.kind != AYNI_AUTHORITY_IDENTIFIER) ||
-            !domain.values.tokens.members || domain.values.tokens.member_count == 0 ||
-            domain.values.tokens.member_count > AYNI_AUTHORITY_SET_MEMBER_COUNT_MAX) {
-            return false;
-        }
-        for (uint32_t j = 0; j < domain.values.tokens.member_count; ++j) {
-            if (!save(domain.values.tokens.members[j], view.tokens[i][j])) {
-                return false;
-            }
-        }
-        domain.values.tokens.members = view.tokens[i];
-    }
-    return true;
-}
-
-// Core decides the callable shape; extension usage must explain that exact shape.
-// Copy immediately: later lookups may reuse the source's borrowed views.
-bool Tool::copy_usage(const ayni_tool_usage_v1 &source) {
-    if (!usage_storage.assign(source, view)) {
-        return false;
-    }
-    usage_storage.read(usage, field_usage);
-    return true;
-}
 
 void Answer::fail(ayni_status_t status, ayni_reason_t reason) {
     result.outcome = AYNI_CALL_FAILED;
@@ -491,40 +311,42 @@ Protocol::Protocol(size_t response_limit)
     : pool_size_(yyjson_read_max_memory_usage(response_limit, 0)),
       outer_pool_(new char[pool_size_]), arguments_pool_(new char[pool_size_]) {}
 
-ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, const Tool *tools,
-                               uint32_t tool_count, char *buffer, size_t &size) const {
-    ayni_string_v1 instructions{};
-    ayni_string_v1 data{};
-    const auto framed = split(input, instructions, data);
-    if (framed != AYNI_OK) {
-        return framed;
-    }
+ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, char *buffer,
+                               size_t &size) const {
     Writer out(buffer, request_json_max);
     out.raw("{\"model\":");
     out.string(config.model);
     out.raw(",\"max_tokens\":");
     out.number(config.max_output_tokens);
-    out.raw(",\"stream\":false,\"messages\":[");
-    if (instructions.size) {
-        out.raw("{\"role\":\"system\",\"content\":");
-        out.string(instructions);
-        out.raw("},");
-    }
-    out.raw("{\"role\":\"user\",\"content\":");
-    out.string(data);
-    out.raw("}]");
-    if (tool_count) {
-        out.raw(",\"tools\":[");
-        for (uint32_t i = 0; i < tool_count; ++i) {
-            if (i) {
-                out.raw(",");
-            }
-            const auto status = tool_schema(out, tools[i], i);
-            if (status != AYNI_OK) {
-                return status;
-            }
+    out.raw(",\"stream\":false,");
+    if (std::string_view(input.data, input.size).substr(0, model::messages_prefix.size()) ==
+        model::messages_prefix) {
+        const auto status = model::write_context(out, input,
+                                                 config.result_format == AYNI_CALL_RESULT_TOOL_CALLS
+                                                     ? model::Mode::assistant
+                                                     : model::Mode::text);
+        if (status != AYNI_OK) {
+            return status;
         }
-        out.raw("]");
+    } else {
+        ayni_string_v1 instructions{}, data{};
+        const auto status = split(input, instructions, data);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        out.raw("\"messages\":[");
+        if (instructions.size) {
+            out.raw("{\"role\":\"system\",\"content\":");
+            out.string(instructions);
+            out.raw("},");
+        }
+        out.raw("{\"role\":\"user\",\"content\":");
+        out.string(data);
+        out.raw("}]");
+        if (config.result_format == AYNI_CALL_RESULT_TOOL_CALLS) {
+            out.raw(",\"tools\":");
+            model::write_functions(out);
+        }
     }
     out.raw("}");
     return out.finish(size) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
@@ -532,18 +354,23 @@ ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, const
 
 // Only an explicitly finished singleton choice is business evidence. Protocol
 // metadata can be ignored after bounded validation, but arguments must be exact.
-void Protocol::decode(char *buffer, size_t size, const Tool *tools, uint32_t tool_count,
-                      uint32_t result_limit, Answer &answer) {
+void Protocol::decode(char *buffer, size_t size, uint32_t result_limit, Answer &answer) {
     EraseScratch erase{outer_pool_.get(), arguments_pool_.get(), pool_size_};
     answer.used = 0;
+    answer.result.model_usage = {};
     answer.fail(AYNI_INVALID_ARGUMENT, AYNI_REASON_MODEL_OUTPUT);
     ayni_status_t parsed = AYNI_OK;
-    auto doc = parse(buffer, size, outer_pool_.get(), pool_size_, parsed);
+    bool invalid_usage = false;
+    auto doc = parse(buffer, size, outer_pool_.get(), pool_size_, parsed, false, &invalid_usage);
     if (!doc) {
         answer.fail(parsed, AYNI_REASON_MODEL_OUTPUT);
         return;
     }
-    auto *choices = yyjson_obj_get(yyjson_doc_get_root(doc.get()), "choices");
+    auto *root = yyjson_doc_get_root(doc.get());
+    answer.result.model_usage = invalid_usage
+                                    ? ayni_model_usage_v1{AYNI_MODEL_USAGE_INVALID, 0, 0, 0, 0}
+                                    : decode_usage(root);
+    auto *choices = yyjson_obj_get(root, "choices");
     if (!yyjson_is_arr(choices) || yyjson_arr_size(choices) != 1) {
         return;
     }
@@ -565,8 +392,11 @@ void Protocol::decode(char *buffer, size_t size, const Tool *tools, uint32_t too
             return;
         }
     } else {
-        if (!yyjson_equals_str(finish, "tool_calls") ||
-            (content && !yyjson_is_null(content) && !yyjson_equals_str(content, ""))) {
+        if (!yyjson_equals_str(finish, "tool_calls")) {
+            return;
+        }
+        if (content && !yyjson_is_null(content) &&
+            !copy_body(content, result_limit, answer, answer.result.result)) {
             return;
         }
         if (count > AYNI_CALL_TOOL_COUNT_MAX) {
@@ -574,9 +404,8 @@ void Protocol::decode(char *buffer, size_t size, const Tool *tools, uint32_t too
             return;
         }
         for (size_t at = 0; at < count; ++at) {
-            const auto status =
-                decode_tool(yyjson_arr_get(calls, at), tools, tool_count, result_limit, at, answer,
-                            arguments_pool_.get(), pool_size_);
+            const auto status = decode_tool(yyjson_arr_get(calls, at), result_limit, at, answer,
+                                            arguments_pool_.get(), pool_size_);
             if (status != AYNI_OK) {
                 answer.fail(status, AYNI_REASON_MODEL_OUTPUT);
                 return;

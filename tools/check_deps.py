@@ -243,7 +243,7 @@ def check_public_header(arch: Architecture, source: PurePosixPath, include: Incl
         return None
     if target.kind == "external" and not include.quoted and include.path in arch.public_c_headers:
         return None
-    if source.as_posix() in {"include/ayni/ayni.hpp", "include/ayni/values.hpp", "include/ayni/values_json.hpp", "include/ayni/detail/tool_usage.hpp"} and target.kind == "external" and not include.quoted and include.path in arch.public_cpp_headers:
+    if source.as_posix() in {"include/ayni/ayni.hpp", "include/ayni/values.hpp", "include/ayni/values_json.hpp", "include/ayni/model_messages.hpp", "include/ayni/detail/tool_usage.hpp"} and target.kind == "external" and not include.quoted and include.path in arch.public_cpp_headers:
         return None
     which = "draft" if is_draft else "implemented public"
     return f"{which} header may not include {describe(include, target)}"

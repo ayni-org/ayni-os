@@ -26,7 +26,8 @@ bool same_id(const catalog::CatalogId &left, const catalog::CatalogId &right) {
 }
 
 bool same_identity(const CallIdentity &left, const CallIdentity &right) {
-    return left.authorization.grant_id == right.authorization.grant_id &&
+    return left.model_context == right.model_context &&
+           left.authorization.grant_id == right.authorization.grant_id &&
            left.authorization.revision == right.authorization.revision &&
            left.call_id == right.call_id && left.operation_id == right.operation_id &&
            left.task_id == right.task_id && left.owner_instance_id == right.owner_instance_id &&
@@ -257,6 +258,9 @@ bool CallTable::valid_record(const CallRecord &record) {
     if (!valid_identity(record.identity, state.created) ||
         !at_or_before(state.created, state.latest) ||
         state.latest.boot_epoch > foundation::max_boot_epoch ||
+        !valid_model_usage(state.model_usage) ||
+        (state.model_usage.kind != AYNI_MODEL_USAGE_NONE &&
+         (record.contract.category != catalog::CallClass::model || state.outcome == 0)) ||
         ((record.contract.effects & catalog::call_effect_egress) != 0U) !=
             (record.identity.destination.size() != 0U) ||
         catalog::normalize_call_contract(record.contract, normalized) != AYNI_OK ||

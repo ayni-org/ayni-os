@@ -66,7 +66,7 @@ class NativeCli(unittest.TestCase):
         return subprocess.run([BINARY, '--mock', *args], input='\n'.join(commands) + '\n',
                               text=True, capture_output=True, timeout=25, env=env)
 
-    def test_single_assistant_summary_and_reopen(self):
+    def test_single_assistant_short_history_and_reopen(self):
         # ADR-0072: every plain line, including "check", is a turn of the one ToolLoop assistant.
         with tempfile.TemporaryDirectory() as directory:
             commands = []
@@ -81,7 +81,7 @@ class NativeCli(unittest.TestCase):
             goals = [line for line in first.stdout.splitlines() if line.startswith('Goal ')]
             self.assertEqual(len(goals), 4, first.stdout)
             self.assertTrue(all('已完成' in line for line in goals), first.stdout)
-            self.assertIn('未确认摘要', first.stdout)
+            self.assertNotIn('未确认摘要', first.stdout)
             self.assertIn('中文第4轮', first.stdout)
             self.assertIn('Call ', first.stdout)
             second = self.session(directory, ['/conversation', '重开后的第五轮', '/wait', '/diagnostics', '/quit'])
@@ -91,7 +91,7 @@ class NativeCli(unittest.TestCase):
             self.assertIn('boot=2', second.stdout)
             state = pathlib.Path(directory) / 'data' / 'ayni'
             self.assertEqual(state.stat().st_mode & 0o777, 0o700)
-            self.assertEqual((state / 'conversation.bin').stat().st_mode & 0o777, 0o600)
+            self.assertEqual((state / 'conversation.sqlite3').stat().st_mode & 0o777, 0o600)
 
     def test_stop_phrase_pauses_background_work_without_the_model(self):
         # ADR-0072: the phrase is handled before any grant or model call exists.
@@ -112,7 +112,7 @@ class NativeCli(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
             state = pathlib.Path(directory) / 'data' / 'ayni'
             conversation = state / 'conversation.bin'
-            legacy = bytearray(conversation.read_bytes())
+            legacy = bytearray(b'AYNF\x02\x00\x00\x00legacy-directory')
             legacy[FORMAT_VERSION_OFFSET] = 2  # AYNF v2, written by the dual-Agent version.
             conversation.write_bytes(legacy)
             before = {path.relative_to(state): path.read_bytes() for path in state.rglob('*') if path.is_file()}

@@ -71,6 +71,11 @@ void write_state(const CallState &state, foundation::BodyWriter &writer) {
     writer.u32(static_cast<uint32_t>(query.status));
     writer.u32(query.reason);
     writer.u32(query.conclusion);
+    writer.u32(state.model_usage.kind);
+    writer.u32(state.model_usage.reserved);
+    writer.u64(state.model_usage.input_tokens);
+    writer.u64(state.model_usage.output_tokens);
+    writer.u64(state.model_usage.total_tokens);
 }
 
 CallState read_state(foundation::BodyReader &reader) {
@@ -93,6 +98,7 @@ CallState read_state(foundation::BodyReader &reader) {
     query.status = static_cast<ayni_status_t>(reader.u32());
     query.reason = reader.u32();
     query.conclusion = reader.u32();
+    state.model_usage = {reader.u32(), reader.u32(), reader.u64(), reader.u64(), reader.u64()};
     // Absent optional values have one all-zero encoding; noncanonical tails
     // become an invalid present value for the shared intrinsic validator.
     if (query.generation != 0U || static_cast<uint32_t>(query.phase) != 0U ||
@@ -174,6 +180,10 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     writer.bytes(record.contract.business_contract.data, record.contract.business_contract.size);
     writer.u64(record.identity.authorization.grant_id);
     writer.u32(record.identity.authorization.revision);
+    writer.u64(record.identity.model_context.boot_epoch);
+    for (const auto word : record.identity.model_context.visible) {
+        writer.u64(word);
+    }
 }
 
 // This reader does not consult this boot's catalog. Old input is interpreted
@@ -238,6 +248,10 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     }
     record.contract.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
     record.identity.authorization = {reader.u64(), reader.u32()};
+    record.identity.model_context.boot_epoch = reader.u64();
+    for (auto &word : record.identity.model_context.visible) {
+        word = reader.u64();
+    }
     if (!reader.ok() || !CallTable::valid_record(record)) {
         return false;
     }

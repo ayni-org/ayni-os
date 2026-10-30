@@ -96,7 +96,7 @@ const char *help() {
            "/notifications /status    通知呈现状态 / 助理状态\n"
            "/diagnostics              Kernel、存储与对话诊断\n"
            "/status /goals /tasks /calls /grants /conversation\n"
-           "/grant model|summary|schedule|notify|health|observe  创建长期授权\n"
+           "/grant model|summary|schedule|notify|health|observe|shell  创建长期授权\n"
            "/revoke <grant-id>         撤销授权\n"
            "/approve <goal-id>         批准该目标所有缺少的权限\n"
            "/reauthorize <goal-id>     用已有授权重新准入原目标\n"

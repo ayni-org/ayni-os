@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 49u
+#define AYNI_ABI_MINOR 50u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -265,7 +265,7 @@ typedef struct ayni_config_v1 {
 #define AYNI_GOAL_CAPACITY_MAX 1024u
 #define AYNI_GOAL_PARAMETER_MAX_BYTES_DEFAULT 128u
 #define AYNI_GOAL_PARAMETER_MAX_BYTES_MIN 0u
-#define AYNI_GOAL_PARAMETER_MAX_BYTES_MAX 4096u
+#define AYNI_GOAL_PARAMETER_MAX_BYTES_MAX 65536u
 #define AYNI_SESSION_CAPACITY_DEFAULT 4u
 #define AYNI_SESSION_CAPACITY_MAX 64u
 #define AYNI_GOAL_DEPTH_MAX_DEFAULT 2u
@@ -284,7 +284,7 @@ typedef struct ayni_config_v1 {
 #define AYNI_TASK_STEP_CAPACITY_MAX 64u
 #define AYNI_TASK_CHECKPOINT_MAX_BYTES_DEFAULT 64u
 #define AYNI_TASK_CHECKPOINT_MAX_BYTES_MIN 0u
-#define AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX 4096u
+#define AYNI_TASK_CHECKPOINT_MAX_BYTES_MAX 65536u
 #define AYNI_COMMAND_CAPACITY_DEFAULT 32u
 #define AYNI_COMMAND_CAPACITY_MAX 1024u
 #define AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT 10000u
@@ -1723,6 +1723,7 @@ struct ayni_task_tool_call_v1;
 struct ayni_capability_cursor_v1;
 struct ayni_capability_info_v1;
 struct ayni_capability_detail_v1;
+struct ayni_capability_context_v1;
 /* Since 0.40. Defined in memory.h, leased only to the current Task decision. */
 struct ayni_memory_view_v1;
 
@@ -1782,6 +1783,14 @@ typedef struct ayni_task_snapshot_v1 {
     ayni_status_t (*inspect_capability)(const void *context, ayni_string_v1 binding_id,
                                         uint32_t binding_version,
                                         struct ayni_capability_detail_v1 *out);
+    /* Since 0.50. Retain/revalidate a conversation's metadata disclosure.
+     * Null previous starts a context. EXPIRED preserves out; caller clears
+     * derived history before starting anew. Success captures current visibility
+     * as a conservative dependency of a MODEL request in this decision. No Grant
+     * is bound by browsing. Lease borrows call_context through decide only. */
+    ayni_status_t (*capability_context)(const void *context,
+                                        const struct ayni_capability_context_v1 *previous,
+                                        struct ayni_capability_context_v1 *out);
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements. REPORT_COMPLETION and REPORT_FAILURE end
@@ -1819,12 +1828,16 @@ typedef struct ayni_policy_intent_v1 {
  * strategy's max_checkpoint_bytes), holding a copy of the task's private
  * checkpoint, and sets checkpoint_size to its size: decide may leave both
  * or write the private checkpoint the decision returns there. The kernel
- * reads back only intent_count, checkpoint_size and its own buffers. */
+ * reads back only intent_count, checkpoint_size, disposition and its own buffers. */
+/* Ordinary policy output is validated and committed. Since 0.50. */
+#define AYNI_POLICY_OUTPUT_PROGRESS 0u
+/* Discard this decision while asynchronous preparation completes. Since 0.50. */
+#define AYNI_POLICY_OUTPUT_DEFER 1u
 typedef struct ayni_policy_output_v1 {
     uint32_t struct_size;
     uint32_t intent_capacity;
     uint32_t intent_count;
-    uint32_t reserved; /* written as 0 */
+    uint32_t disposition; /* Since 0.50. PROGRESS or DEFER; replaces the reserved word. */
     ayni_policy_intent_v1 *intents;
     uint32_t checkpoint_capacity; /* since 0.12 */
     uint32_t checkpoint_size;     /* since 0.12 */
@@ -1910,6 +1923,12 @@ typedef struct ayni_strategy_v1 {
     uint32_t reader_count;
     uint32_t reader_reserved; /* Since 0.38. Must be zero. */
     const ayni_checkpoint_reader_v1 *readers;
+    /* Since 0.50. Optional nonblocking owner-thread readiness query: 0 waits,
+     * 1 permits decide. No Core calls or I/O; ctx has the strategy lifetime.
+     * With this callback, decide may return OK with disposition DEFER and zero
+     * intents to wait without changing Task/checkpoint. The Host wakes or polls after
+     * external preparation completes. Other errors retain ordinary semantics. */
+    uint32_t (*ready)(void *ctx, uint64_t task_id);
 } ayni_strategy_v1;
 
 /*

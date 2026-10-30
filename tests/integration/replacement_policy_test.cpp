@@ -2,6 +2,7 @@
 // twice through each concrete strategy, with a recording call sink and no I/O.
 #include <ayni/applications/experiment_fixtures.h>
 #include <ayni/ayni.hpp>
+#include <ayni/model_messages.hpp>
 #include <ayni/strategies/builtin.h>
 #include <cstring>
 #include <gtest/gtest.h>
@@ -61,6 +62,17 @@ TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_dec
     snapshot.goal_type_id = text("replacement.workflow");
     snapshot.goal_type_version = 1;
     snapshot.owner_instance_id = conversation.owner_instance_id;
+    // ADR-0085: this isolated snapshot has an empty authorized directory.
+    snapshot.capability_context = [](const void *, const ayni_capability_context_v1 *,
+                                     ayni_capability_context_v1 *current) {
+        *current = {};
+        current->boot_epoch = 1;
+        current->owner_instance_id = 22;
+        current->goal_type_version = 1;
+        current->goal_type_size = 1;
+        current->goal_type_id[0] = 'x';
+        return AYNI_OK;
+    };
     snapshot.goal_parameters = parameters.view();
     snapshot.checkpoint.strategy_id = text("replacement.rules");
     snapshot.checkpoint.strategy_version = 1;
@@ -91,7 +103,7 @@ TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_dec
             output.call_context = &requests[at];
             output.request_call = Requested::record;
             ASSERT_EQ(strategy.decide(strategy.ctx, &snapshot, &output), AYNI_OK);
-            EXPECT_EQ(requests[at].key, "round.0.model.v1");
+            EXPECT_EQ(requests[at].key, "model.0");
             EXPECT_EQ(requests[at].binding, "model");
             EXPECT_EQ(requests[at].kind, AYNI_POLICY_REQUEST_MODEL);
             checkpoints[at].assign(checkpoint.begin(), checkpoint.begin() + output.checkpoint_size);

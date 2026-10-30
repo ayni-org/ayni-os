@@ -7,6 +7,8 @@
 #include "work/action/action_record.h"
 #include "work/authority/authority_facts.h"
 #include "work/call/call_input.h"
+#include "work/call/model_context.h"
+#include "work/call/model_usage.h"
 #include "work/call/tool_calls.h"
 #include "work/execution/execution_fact.h"
 #include "work/subscription/subscription_fact.h"
@@ -30,6 +32,7 @@ struct CallIdentity {
     catalog::CatalogId endpoint;        // Trusted endpoint token, nonempty.
     catalog::CatalogId destination;     // Empty iff this contract has no EGRESS effect.
     AuthorityReference authorization{}; // Original on-demand Grant; zero pair for required tools.
+    ModelContext model_context{}; // Immutable metadata source, empty for calls without disclosure.
     // Value projection of the persisted selection; no pointers or mutable catalog index.
     catalog::Binding binding() const;
 };
@@ -66,6 +69,7 @@ struct CallState {
         execution; // Physical constraints and independent stop; absent for ordinary I/O.
     std::optional<SubscriptionFact> subscription; // Sole durable lease intent/generation facts.
     std::optional<CallQuery> query; // Absent before owner reconciliation; never an execution retry.
+    ayni_model_usage_v1 model_usage{}; // Actual terminal MODEL statistics, NONE before completion.
     std::optional<ActionStamp> content_erased; // None retains bodies; otherwise irreversible
                                                // privacy stamp, independent of outcome.
 };
@@ -79,6 +83,7 @@ struct CallResult {
     ayni_string_v1 text;         // Copied bounded body as kind says; empty for ABANDONED.
     // UTF-8 text, or a tool-call list only in a TOOL_CALLS contract's completion.
     CallResultKind kind = CallResultKind::text;
+    ayni_model_usage_v1 model_usage{}; // Optional reported counts, not a generated text body.
 };
 
 // Whether exact input evidence still permits a result to advance dependent work.

@@ -266,6 +266,7 @@ class ManagedCall : public ::testing::Test {
                                              0,
                                              0,
                                              nullptr,
+                                             {},
                                              {}};
         EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_OK);
         call.ended = true;
@@ -287,6 +288,7 @@ class ManagedCall : public ::testing::Test {
                                              0,
                                              0,
                                              nullptr,
+                                             {},
                                              {}};
         EXPECT_EQ(ayni_provider_post(query.completion, &result), AYNI_OK);
         query.ended = true;
@@ -1393,6 +1395,7 @@ TEST_F(ManagedCall, progress_is_monotonic_and_duplicate_terminal_is_rejected) {
                                      0,
                                      0,
                                      nullptr,
+                                     {},
                                      {}};
     ASSERT_EQ(ayni_provider_post(call.completion, &progress), AYNI_OK);
     progress.sequence = 1;
@@ -1412,6 +1415,7 @@ TEST_F(ManagedCall, progress_is_monotonic_and_duplicate_terminal_is_rejected) {
                                             0,
                                             0,
                                             nullptr,
+                                            {},
                                             {}};
     EXPECT_EQ(ayni_provider_post(call.completion, &duplicate), AYNI_INVALID_STATE);
     pump(12);
@@ -1683,6 +1687,7 @@ TEST_F(ManagedCall, provider_cannot_report_the_core_only_skipped_outcome) {
                                          0,
                                          0,
                                          nullptr,
+                                         {},
                                          {}};
     EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(call_info(call.call).outcome, 0U);

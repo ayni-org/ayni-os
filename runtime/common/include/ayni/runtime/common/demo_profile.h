@@ -8,6 +8,7 @@
 #include <ayni/ayni.h>
 #include <ayni/providers/presentation.h>
 #include <ayni/runtime/common/clock.h>
+#include <ayni/strategies/builtin.h>
 #include <memory>
 #include <string>
 namespace ayni::runtime {
@@ -24,6 +25,11 @@ struct ModelConfig {
     // POSIX TZ rule, such as CST-8, in which each model request states the current local time
     // (ADR-0073). Empty tells the model the time is unknown; an invalid rule fails assembly.
     std::string timezone;
+    // Explicit trusted Native opt-in. Still requires a separate owner Shell Grant.
+    // Existing absolute directory; start location, not a sandbox. Empty disables Shell.
+    std::string shell_working_directory;
+    uint64_t context_window_tokens = 0; // Required for remote; deployment states the actual window.
+    uint32_t output_reserve_tokens = 128; // Also sent as the model output limit.
 };
 // Runtime owns concrete wiring. An explicit sink is required for notification evidence;
 // tests/Sim may supply a deterministic sink, while the CLI supplies checked write+flush.
@@ -33,6 +39,7 @@ struct AssistantPorts {
     providers::presentation::Output output;
     applications::assistant::QuietHours quiet;
     applications::assistant::GoalPort goals;
+    strategies::HistoryPort history{};
 };
 ayni_config_v1 demo_config();
 class DemoProfile {

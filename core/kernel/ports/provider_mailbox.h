@@ -72,6 +72,7 @@ struct ProviderMessage {
     work::CallResultKind body = work::CallResultKind::text;
     // Present only for a terminal with no payload.data: fills payload.size bytes.
     const PayloadWriter *writer = nullptr;
+    ayni_model_usage_v1 model_usage{}; // Copied terminal service counts; NONE for controls.
 };
 
 // Identity of one reserved slot/attempt, scoped to this mailbox's lifetime.
@@ -164,6 +165,7 @@ class ProviderMailbox {
         ayni_call_effect_t effect; // Copied assertion; domain validates result/effect pairing.
         uint32_t query_result;     // Copied query classification; zero for submit.
         work::CallResultKind body = work::CallResultKind::text; // Domain validates it.
+        ayni_model_usage_v1 model_usage{}; // Copied terminal statistics; no payload pointers.
     };
     // Keep acknowledged cancellation identity until terminal so duplicate control
     // cannot be accepted again. Separate stages do not overload payload length.

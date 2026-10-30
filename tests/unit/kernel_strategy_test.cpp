@@ -259,7 +259,7 @@ TEST(WorkDecision, task_is_decided_in_the_step_after_it_became_ready) {
     EXPECT_EQ(output.struct_size, sizeof(output));
     EXPECT_EQ(output.intent_capacity, 1U); // the strategy's, not policy_intent_capacity
     EXPECT_EQ(output.intent_count, 0U);
-    EXPECT_EQ(output.reserved, 0U);
+    EXPECT_EQ(output.disposition, AYNI_POLICY_OUTPUT_PROGRESS);
     EXPECT_NE(output.intents, nullptr);
     // ADR-0024: no steps yet, and a strategy without a private checkpoint
     // gets an empty one.

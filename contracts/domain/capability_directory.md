@@ -1,8 +1,8 @@
 # Task 能力目录与按需授权
 
-- **关联**：ADR-0085 决策 1、7、9；AP-03 第一部分；ABI 0.49 / storage schema 5。
+- **关联**：ADR-0085 决策 1、7、9；AP-03；ABI 0.50 / storage schema 6。
 - **头文件**：`include/ayni/directory.h`、`ayni.h`、`calls.h`。
-- **范围**：公开配置期说明采纳、Task 目录/决策租约和普通 Call 按需绑定。模型四个固定工具、标准消息、上下文压缩与 Native Shell 装配属于下一部分，不能由目录 API 推定已完成。
+- **范围**：公开配置期说明采纳、Task 目录/决策租约和普通 Call 按需绑定。模型固定工具与标准消息由 Provider/harness 使用这些目录接口；不通过 Provider 回调 Core。上下文来源失效的处理见下文。
 
 ## 所有权与生命周期
 
@@ -16,7 +16,7 @@ Task 保存已用工具的 `source_call_id` 和当前整份 Grant 引用；Call 
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|
-| C-DIR-001 | 采纳只发生在可信配置期；摘要非空 UTF-8、至多 256 B，身份/用法总计至多 4096 B，字段说明按原域精确配对；完整拷贝后发布，重复/失配拒绝，不借用 backend 存储 | 发现即信任；说明建立 Grant；返回后源缓冲变化改写目录 | `CapabilityDirectory.copied_metadata_is_paginated_and_inspected_without_execution`；既有 `ToolUsage.copied_usage_survives_source_reuse_and_encodes_the_original_description` 与 `OpenaiUsage.invalid_description_is_rejected_before_http_without_truncation` 共用说明值校验 |
+| C-DIR-001 | 采纳只发生在可信配置期；摘要非空 UTF-8、至多 256 B，身份/用法总计至多 4096 B，字段说明按原域精确配对；完整拷贝后发布，重复/失配拒绝，不借用 backend 存储 | 发现即信任；说明建立 Grant；返回后源缓冲变化改写目录 | `CapabilityDirectory.copied_metadata_is_paginated_and_inspected_without_execution`；既有 `ToolUsage.copied_usage_survives_source_reuse_and_encodes_the_original_description` 与 `OpenaiUsage.invalid_description_is_rejected_during_trusted_adoption` 共用说明值校验 |
 | C-DIR-002 | list/inspect 只披露原 Task 策略允许、元数据完整、当前有确切契约/路由的完整可用 Grant 链的 TOOL；不存在、未列举、缺说明及未授权查询均为 NOT_FOUND；调用另验实际参数、原需求与祖先，目录不是接受保证 | 缓存 inspect 结果绕过撤权；披露未授权工具名 | `CapabilityDirectory.unused_revocation_invalidates_cursor_and_hides_all_ungranted_entries`；`OnDemandBusinessCall.separate_grants_cannot_be_combined_for_one_optional_list` |
 | C-DIR-003 | 目录按原策略顺序分页，最多 256 项且不超过部署 Binding 容量；单页 1..16 项；游标绑定 boot、Task、工作/持久前缀、待撤销 Gate 数量和最近有限 Grant 到期。可用 Task 的游标失配返回 REVISION_CONFLICT；当前 Task 授权拒绝优先。失败不发布部分输出 | 第九项不可达；旧游标跨 Task/重启继续；撤权后沿旧页输出 | `CapabilityDirectory.copied_metadata_is_paginated_and_inspected_without_execution`、`CapabilityDirectory.unused_revocation_invalidates_cursor_and_hides_all_ungranted_entries` |
 | C-DIR-004 | snapshot 的 list/inspect 只在当前 decide owner 线程、call_context 租约内有效；普通 Provider、worker 和 decide 返回后不能通过回调查询 Core | worker 回调已结束的目录租约；普通 Provider 回调 Core 执行业务 | `CapabilityDirectory.directory_decision_callbacks_close_with_the_policy_lease`；调用链审查 |
@@ -31,3 +31,11 @@ Owner C API 在 RUNNING 使用，非重入；管理引用查询是 owner 诊断�
 每个 Binding 预留有界说明槽；每个 Goal/GoalType 拥有有界策略值，每 Task 的 live/staging 引用区随 Call/step 容量预留。记录预算按配置 Binding 容量推导；恢复记录中的策略数超过新配置容量为容量不足，保留旧目录。Native 内存数字见交付 PR，不外推 ESP32 栈/内存验收。
 
 本包继续使用原模型业务工具传输，单响应仍至多 8 项；这不限制新目录容量。固定 list/inspect/call/shell、模型元数据外发、标准消息及预算压缩尚未由这一部分实现。新增格式按 ADR-0085 拒旧保留目录；本包没有启动新的故障/恢复、变异或平台专项，新增路径的故障证据仍未验证。
+
+## 模型披露来源（ABI 0.50）
+
+`capability_context` 捕获本 Task 冻结工具策略中当前可见的完整集合，并合并本次 decide 的目录读取；实际 Model 请求接受时复制 boot+256位来源。跨 Task 的外层 token 还保存 owner 与 exact GoalType/version。新增可见项不使旧来源失效，失去旧可见项或启动变化使之 EXPIRED。Model 接受、派发、晚结果与 snapshot 读取均复核；晚已知结果保留真实 outcome/effect/usage，但正文不可消费。harness 清除派生上下文并使用新的模型步骤，已接受业务操作事实仍由 Core 保留，不因重建重执行。
+
+实际业务 Call 不继承 Model 的整份目录来源，只接受自己的原 Schema、单一完整 Grant 和稳定来源身份。目录/inspect 不是执行授权，撤销已用来源仍保持 AP-03A 的 Task 暂停与显式重新授权规则。
+
+正常来源验证：`StrategiesFixture.unused_metadata_revocation_cancels_queued_model_egress` 先 inspect 可选能力，再阻塞下轮模型资源并撤销未用 Grant；独立 Provider 提交记录证明旧 operation 从未外发，旧 Call 保留 CANCELLED/NONE，浏览没有建立工具绑定，随后从当前目录重建并完成。终态本地记账 attempt 不作为是否外发的证据。

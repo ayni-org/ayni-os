@@ -1,0 +1,322 @@
+// ADR-0085: normal context-budget fallback and chunked result handling.
+#include "strategies_fixture.h"
+#include <ayni/call_result_json.hpp>
+#include <memory>
+namespace {
+using namespace ayni::test;
+using History = policies::Text<policies::history_bytes_max>;
+// A bounded synchronous Host fixture. SQLite append/erasure is tested separately;
+// this lane verifies real Core Calls and policy sequencing without external I/O.
+struct ContextMemory {
+    struct View {
+        History history;
+        uint64_t owner = 0, conversation = 0, generation = 0;
+    };
+    struct Result {
+        static constexpr uint32_t capacity = 1048576;
+        std::array<char, capacity> json{};
+        uint64_t call = 0, sequence = 0;
+        uint32_t size = 0, outcome = 0, effect = 0;
+    };
+    std::array<View, 16> views{};
+    std::array<Result, 8> results{};
+    uint32_t view_count = 0, result_count = 0;
+    bool defer_completed_save_once = true;
+    policies::HistoryPort port() { return {this, ready, load, save, archive, chunk}; }
+    static uint32_t ready(void *, uint64_t) {
+        return 1;
+    } // Simulates completion before Core checks ready.
+    static bool same(const History &a, const History &b) {
+        return a.size == b.size &&
+               (!a.size || !std::memcmp(a.bytes.data(), b.bytes.data(), a.size));
+    }
+    static ayni_status_t load(void *context, uint64_t, const policies::ConversationRecord &record,
+                              History &out) {
+        auto &self = *static_cast<ContextMemory *>(context);
+        if (!record.history_ref || record.history_ref > self.view_count) {
+            return AYNI_NOT_FOUND;
+        }
+        const auto &view = self.views[record.history_ref - 1];
+        if (view.owner != record.owner_instance_id || view.conversation != record.id ||
+            view.generation != record.generation) {
+            return AYNI_DENIED;
+        }
+        out = view.history;
+        return AYNI_OK;
+    }
+    static ayni_status_t save(void *context, uint64_t, uint64_t,
+                              const policies::ConversationRecord &record, uint64_t &reference) {
+        auto &self = *static_cast<ContextMemory *>(context);
+        for (uint32_t at = 0; at < self.view_count; ++at) {
+            const auto &view = self.views[at];
+            if (view.owner == record.owner_instance_id && view.conversation == record.id &&
+                view.generation == record.generation && same(view.history, record.history)) {
+                reference = at + 1U;
+                return AYNI_OK;
+            }
+        }
+        if (self.view_count == self.views.size()) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        auto &view = self.views[self.view_count++];
+        view = {record.history, record.owner_instance_id, record.id, record.generation};
+        reference = self.view_count;
+        if (self.defer_completed_save_once) {
+            self.defer_completed_save_once = false;
+            return AYNI_NOT_READY;
+        }
+        return AYNI_OK;
+    }
+    static ayni_status_t archive(void *context, uint64_t, const policies::ConversationRecord &,
+                                 const ayni_task_call_result_v1 &call,
+                                 policies::ArchivedResult &out) {
+        auto &self = *static_cast<ContextMemory *>(context);
+        for (uint32_t at = 0; at < self.result_count; ++at) {
+            if (self.results[at].call == call.logical_call_id &&
+                self.results[at].sequence == call.requires_seq) {
+                out = {at + 1U, self.results[at].size};
+                return AYNI_OK;
+            }
+        }
+        if (self.result_count == self.results.size()) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        auto &result = self.results[self.result_count];
+        const uint64_t reference = self.result_count + 1U;
+        ayni::json::Writer writer(result.json.data(), static_cast<uint32_t>(result.json.size()));
+        const auto status = ayni::json::write_call_result(writer, call, reference);
+        size_t size = 0;
+        if (status != AYNI_OK || !writer.finish(size)) {
+            return status != AYNI_OK ? status : AYNI_CAPACITY_EXCEEDED;
+        }
+        result.call = call.logical_call_id;
+        result.sequence = call.requires_seq;
+        result.size = static_cast<uint32_t>(size);
+        result.outcome = call.outcome;
+        result.effect = call.effect;
+        ++self.result_count;
+        out = {reference, result.size};
+        return AYNI_OK;
+    }
+    static ayni_status_t chunk(void *context, uint64_t, uint64_t reference, uint32_t offset,
+                               policies::Text<policies::prompt_bytes_max> &out, uint32_t maximum) {
+        auto &self = *static_cast<ContextMemory *>(context);
+        if (!reference || reference > self.result_count) {
+            return AYNI_NOT_FOUND;
+        }
+        const auto &source = self.results[reference - 1];
+        if (offset > source.size) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        out = {};
+        out.size = std::min({maximum, source.size - offset, policies::prompt_bytes_max});
+        while (out.size && offset + out.size < source.size &&
+               (static_cast<unsigned char>(source.json[offset + out.size]) & 0xc0U) == 0x80U) {
+            --out.size;
+        }
+        std::memcpy(out.bytes.data(), source.json.data() + offset, out.size);
+        return AYNI_OK;
+    }
+};
+// ADR-0085: archive and chunk access form one Host-owned lifecycle.
+TEST(ContextConfiguration, rejects_incomplete_archive_callbacks_and_history_lifecycle) {
+    const auto memory = std::make_unique<ContextMemory>();
+    policies::ToolLoopConfig config;
+    config.identity = {text("loop"), 1, nullptr, 0};
+    config.model = {AYNI_POLICY_REQUEST_MODEL,
+                    text("model"),
+                    1,
+                    {sizeof(ayni_scope_v1), 0, nullptr},
+                    text("Use tools.")};
+    config.summary = {
+        AYNI_POLICY_REQUEST_MODEL, text("summary"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
+    const auto full = memory->port();
+    auto rejects = [&](policies::HistoryPort incomplete) {
+        config.history = incomplete;
+        policies::ToolLoop loop;
+        EXPECT_EQ(loop.configure(config), AYNI_INVALID_ARGUMENT);
+    };
+    auto incomplete = full;
+    incomplete.result_chunk = nullptr;
+    rejects(incomplete);
+    incomplete = full;
+    incomplete.archive = nullptr;
+    rejects(incomplete);
+    incomplete = full;
+    incomplete.ready = nullptr;
+    rejects(incomplete);
+    incomplete = full;
+    incomplete.load = nullptr;
+    rejects(incomplete);
+    incomplete = full;
+    incomplete.save = nullptr;
+    rejects(incomplete);
+    config.history = full;
+    policies::ToolLoop loop;
+    EXPECT_EQ(loop.configure(config), AYNI_OK);
+}
+class ContextHarness : public StrategiesFixture {
+  protected:
+    ContextHarness() { history_port = storage.port(); }
+    void TearDown() override {
+        StrategiesFixture::TearDown();
+        EXPECT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+    }
+    ContextMemory storage;
+};
+TEST_F(ContextHarness, completed_save_race_does_not_pause_or_repeat_a_model_call) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, text("done"));
+    pump();
+    finish(task);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(pending.size(), 1U);
+    EXPECT_NE(conversation.history_ref, 0U);
+}
+TEST_F(ContextHarness, oversized_executed_result_uses_chunk_summaries_and_keeps_known_facts) {
+    const auto task = start("chat", "one operation", 32);
+    propose(0, 1);
+    const std::string original(4000, '\x01');
+    post(1, {original.data(), static_cast<uint32_t>(original.size())});
+    pump();
+    uint32_t summaries = 0;
+    while (pending.back().capability == "summary") {
+        ASSERT_LT(summaries++, 24U);
+        post(static_cast<uint32_t>(pending.size() - 1), text("tentative result summary"));
+        pump();
+    }
+    EXPECT_GT(summaries, 1U);
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_NE(pending.back().text.find("unconfirmed_summary"), std::string::npos);
+    EXPECT_NE(pending.back().text.find("result_ref"), std::string::npos);
+    EXPECT_EQ(std::count_if(pending.begin(), pending.end(),
+                            [](const auto &p) { return p.capability == "echo"; }),
+              1);
+    ASSERT_GE(storage.result_count, 2U);
+    EXPECT_EQ(storage.results[1].outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(storage.results[1].effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_GT(storage.results[1].size, original.size());
+    post(static_cast<uint32_t>(pending.size() - 1), text("done"));
+    pump();
+    finish(task);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+TEST_F(ContextHarness, declared_summary_failure_pauses_without_changing_the_executed_result) {
+    const auto task = start("chat", "one operation", 32);
+    propose(0, 1);
+    const std::string original(4000, '\x01');
+    post(1, {original.data(), static_cast<uint32_t>(original.size())});
+    pump();
+    ASSERT_EQ(pending.back().capability, "summary");
+    post(static_cast<uint32_t>(pending.size() - 1), {}, AYNI_CALL_FAILED, AYNI_NOT_READY);
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_PAUSED);
+    EXPECT_EQ(work.task(task).hold_status, AYNI_NOT_READY);
+    ASSERT_GE(storage.result_count, 2U);
+    EXPECT_EQ(storage.results[1].outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(storage.results[1].effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_GT(storage.results[1].size, original.size());
+    EXPECT_EQ(std::count_if(pending.begin(), pending.end(),
+                            [](const auto &p) { return p.capability == "echo"; }),
+              1);
+}
+// ADR-0085: browsing metadata never binds a Grant; queued egress rechecks its source.
+TEST_F(StrategiesFixture, unused_metadata_revocation_cancels_queued_model_egress) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_OFFLINE),
+              AYNI_OK);
+    std::array<ayni_argument_node_v1, 3> arguments{};
+    arguments[0].kind = AYNI_ARGUMENT_OBJECT;
+    arguments[0].subtree_end = 3;
+    arguments[1].kind = AYNI_ARGUMENT_STRING;
+    arguments[1].name = text("binding_id");
+    arguments[1].subtree_end = 2;
+    arguments[1].value.text = text("echo");
+    arguments[2].kind = AYNI_ARGUMENT_NUMBER;
+    arguments[2].name = text("binding_version");
+    arguments[2].subtree_end = 3;
+    arguments[2].value.text = text("1");
+    ayni_tool_call_v1 inspect{};
+    inspect.struct_size = sizeof(inspect);
+    inspect.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+    inspect.function_name = text("ayni_inspect_capability");
+    inspect.protocol_id = text("inspect-echo");
+    inspect.input.arguments = {arguments.data(), static_cast<uint32_t>(arguments.size())};
+    post(0, {}, AYNI_CALL_COMPLETED, AYNI_OK, &inspect, 1);
+    pump();
+    ASSERT_EQ(pending.size(), 1U); // The metadata-bearing next Model Call is resource-queued.
+    std::array<uint64_t, 24> calls{};
+    uint32_t count = 0;
+    ASSERT_EQ(
+        ayni_list_objects(work.kernel(), AYNI_OBJECT_CALL, calls.data(), calls.size(), &count),
+        AYNI_OK);
+    ASSERT_EQ(count, 2U);
+    uint64_t queued = 0;
+    for (uint32_t at = 0; at < count; ++at) {
+        ayni_call_info_v1 info{};
+        info.struct_size = sizeof(info);
+        ASSERT_EQ(ayni_get_call(work.kernel(), calls[at], &info), AYNI_OK);
+        if (!info.outcome) {
+            queued = calls[at];
+            EXPECT_EQ(info.attempt.request_id, 0U);
+        }
+    }
+    ASSERT_NE(queued, 0U);
+    ayni_task_tool_authority_v1 bound{};
+    bound.struct_size = sizeof(bound);
+    EXPECT_EQ(ayni_get_task_tool_authority(work.kernel(), task, 0, &bound), AYNI_NOT_FOUND);
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, echo_grant};
+    auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    pump();
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    pump();
+    ayni_call_info_v1 cancelled{};
+    cancelled.struct_size = sizeof(cancelled);
+    ASSERT_EQ(ayni_get_call(work.kernel(), queued, &cancelled), AYNI_OK);
+    EXPECT_EQ(cancelled.outcome, AYNI_CALL_CANCELLED);
+    EXPECT_EQ(cancelled.effect, AYNI_CALL_EFFECT_NONE);
+    // Core can reserve a bookkeeping attempt before Provider submit. Observed
+    // operations, rather than a terminal attempt field, prove no original egress.
+    for (const auto &submitted : pending) {
+        EXPECT_NE(submitted.operation, cancelled.operation_id);
+    }
+    EXPECT_EQ(ayni_get_task_tool_authority(work.kernel(), task, 0, &bound), AYNI_NOT_FOUND);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending[1].text.find("Echo input."), std::string::npos);
+    post(1, text("Current directory rebuilt."));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+TEST_F(StrategiesFixture, absent_service_usage_uses_a_labelled_character_estimate) {
+    service_usage = {};
+    const auto task = start("chat", "你好 abc");
+    post(0, text("done"));
+    pump();
+    finish(task);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(conversation.last_usage.kind, AYNI_MODEL_USAGE_NONE);
+    EXPECT_GT(conversation.last_request_characters, 0U);
+    EXPECT_EQ(conversation.last_input_estimate,
+              ayni::model::estimate_tokens(conversation.last_request_characters));
+}
+TEST(ContextEstimate, counts_unicode_characters_and_rounds_the_selected_ratio_up) {
+    EXPECT_EQ(ayni::model::estimate_tokens(4), 3U);
+    EXPECT_EQ(ayni::model::estimate_tokens(5), 4U);
+    char frame[256];
+    ayni::model::Writer messages(frame, sizeof(frame));
+    messages.prefix();
+    messages.text(ayni::model::Role::user, {"中文😀", 10});
+    ayni_string_v1 body{};
+    ASSERT_TRUE(messages.finish(body));
+    auto projected = ayni::json::Writer::measuring();
+    ASSERT_EQ(ayni::model::write_context(projected, body, ayni::model::Mode::text), AYNI_OK);
+    size_t bytes = 0;
+    ASSERT_TRUE(projected.finish(bytes));
+    EXPECT_EQ(bytes - projected.characters(), 7U); // Two three-byte and one four-byte code points.
+}
+} // namespace

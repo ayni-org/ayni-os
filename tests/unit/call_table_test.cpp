@@ -622,11 +622,10 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     const ayni::test::TextValue input({"now", 3});
     ayni_tool_call_v1 call{};
     call.struct_size = sizeof(call);
-    call.binding_version = 1;
-    call.binding_id = {"lamp.off", 8};
-    call.input_kind = AYNI_TOOL_INPUT_VALUE;
+    call.function_name = {"lamp.off", 8};
+    call.input_kind = AYNI_TOOL_INPUT_INVALID_ARGUMENTS;
     call.protocol_id = {"t1", 2};
-    call.input.value = input.view();
+    call.input.invalid_arguments = input.view().nodes[0].value.text;
     uint32_t size = 0;
     ASSERT_EQ(measure_tool_calls(&call, 1, size), AYNI_OK);
     std::vector<uint8_t> list(size);
@@ -649,8 +648,13 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
               AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(table.state(index).outcome, 0U);
     ASSERT_EQ(table.finish(index,
-                           {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete,
-                            body, CallResultKind::tool_calls},
+                           {AYNI_CALL_COMPLETED,
+                            AYNI_OK,
+                            AYNI_REASON_NONE,
+                            ActionEffect::complete,
+                            body,
+                            CallResultKind::tool_calls,
+                            {AYNI_MODEL_USAGE_REPORTED, 0, 320, 40, 360}},
                            stamp(4)),
               AYNI_OK);
     EXPECT_EQ(table.result(index).size, 0U);
@@ -669,12 +673,18 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
               ayni::durability::RecordUse::unknown);
     ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.result_kind, CallResultKind::tool_calls);
+    // ADR-0085: portable records preserve service statistics beside the model body.
+    EXPECT_EQ(decoded.state.model_usage.kind, AYNI_MODEL_USAGE_REPORTED);
+    EXPECT_EQ(decoded.state.model_usage.input_tokens, 320U);
+    EXPECT_EQ(decoded.state.model_usage.output_tokens, 40U);
+    EXPECT_EQ(decoded.state.model_usage.total_tokens, 360U);
     std::vector<uint64_t> restored_storage(tool_storage.size());
     CallTable restored{restored_storage.data(), tool_limits};
     ASSERT_EQ(restored.restore_validated(decoded), AYNI_OK);
     ASSERT_TRUE(restored.find(identity.call_id, index));
     EXPECT_EQ(restored.result(index).size, 0U);
     EXPECT_EQ(tool_call_count(restored.tool_calls(index)), 1U);
+    EXPECT_EQ(restored.state(index).model_usage.total_tokens, 360U);
     // An invalid kind tail or a list in a text contract is refused, not reinterpreted.
     ayni::foundation::store_le32(bytes.data() + bytes.size() - 4U, 3U);
     EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
@@ -699,11 +709,10 @@ TEST_F(CallTableTest, tool_call_list_needs_its_contract_and_fits_its_bound) {
     const ayni::test::TextValue input({nullptr, 0});
     ayni_tool_call_v1 call{};
     call.struct_size = sizeof(call);
-    call.binding_version = 1;
-    call.binding_id = {"lamp.off", 8};
-    call.input_kind = AYNI_TOOL_INPUT_VALUE;
+    call.function_name = {"lamp.off", 8};
+    call.input_kind = AYNI_TOOL_INPUT_INVALID_ARGUMENTS;
     call.protocol_id = {"t1", 2};
-    call.input.value = input.view();
+    call.input.invalid_arguments = input.view().nodes[0].value.text;
     uint32_t size = 0;
     ASSERT_EQ(measure_tool_calls(&call, 1, size), AYNI_OK);
     ASSERT_GT(size, contract.result_text_limit);

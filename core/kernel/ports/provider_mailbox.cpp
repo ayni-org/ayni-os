@@ -101,9 +101,9 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
         if (message.writer != nullptr && message.payload.size > attempt->written_limit) {
             return attempt->written_limit == 0U ? AYNI_INVALID_ARGUMENT : AYNI_CAPACITY_EXCEEDED;
         }
-        const Result result{message.kind,         message.status, message.reason,
-                            message.payload.size, message.effect, message.query_result,
-                            message.body};
+        const Result result{message.kind,         message.status,     message.reason,
+                            message.payload.size, message.effect,     message.query_result,
+                            message.body,         message.model_usage};
         if (provider_subscription_control(message.kind)) {
             auto &control = attempt->lease_control;
             if (!control || control->result || control->sequence != message.sequence ||
@@ -212,6 +212,7 @@ ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, ui
                result->effect,
                result->query_result,
                result->body};
+        out.model_usage = result->model_usage;
         receipt = {{index, slot.attempt->identity}, result->kind, sequence};
         required = result->size;
         cursor_ = (index + 1U) % capacity_;

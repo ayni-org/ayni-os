@@ -222,7 +222,7 @@ struct WorkModel {
     // executor port), with calling_out() true and returns call's result.
     // The value before the call is restored after it, so a nested callout
     // leaves the enclosing one marked (ADR-0051).
-    template <typename Call> auto call_out(Call &&call) -> decltype(call()) {
+    template <typename Call> auto call_out(Call &&call) const -> decltype(call()) {
         return callbacks_.invoke(call);
     }
     // True while caller code runs inside call_out. Caller code must not call

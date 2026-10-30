@@ -68,6 +68,13 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
     // UNKNOWN above even after its source or authority was invalidated. Only
     // known unsubmitted work may take the local non-delivery cancellation path.
     const auto &task = work_.tasks.at(task_index);
+    if (!model_context_current(task_index, id.model_context, now_us, durable_seq)) {
+        const auto result = cancel_local(index, task_index);
+        if (result == Advance::applied) {
+            work_.calls.discard_unusable_result(index);
+        }
+        return result;
+    }
     if (!task_content_current({work_, now_us, durable_seq}, task_index) ||
         task.call.end != work::TaskCall::End::none) {
         return cancel_local(index, task_index);
@@ -198,6 +205,14 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
                              catalogs_.bindings.at(binding_index))) {
         return cancel_local(index, task_index);
     }
+    if (!model_context_current(task_index, id.model_context, host_.monotonic_now_us(host_.ctx),
+                               durable_seq)) {
+        const auto result = cancel_local(index, task_index);
+        if (result == Advance::applied) {
+            work_.calls.discard_unusable_result(index);
+        }
+        return result;
+    }
     if (!work_.calls.claim_dispatch(index, work_.ids.boot_epoch(), durable_seq)) {
         return Advance::internal;
     }
@@ -222,11 +237,6 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
         foundation::deadline(now_us, uint64_t{contract.timeout_ms} * microseconds_per_millisecond);
     active.stage = Stage::submitted;
     const auto *permit = control_.permit(id.call_id);
-    // Tools are fixed for this attempt; a receipt may name only these (ADR-0054).
-    delivery.tools = contract.result_format == catalog::call_tool_calls_result_format
-                         ? offered_tools(task_index)
-                         : ToolSelection{};
-    const uint32_t tool_count = delivery.tools.count;
     ayni_subscription_open_v1 subscription{};
     if (contract.subscription && !prepare_subscription_delivery(index, now_us, subscription)) {
         return Advance::internal;
@@ -243,20 +253,14 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
         arguments.view(),
         {},
         permit,
-        tool_count,
-        0,
-        tool_count == 0U ? nullptr : this,
-        tool_count == 0U ? nullptr : describe_tool,
         contract.subscription ? &subscription : nullptr,
         input.value.count == 0U ? ayni_value_v1{} : input.value.view()};
     const auto &provider = catalogs_.providers.at(provider_index);
     delivery.provider = &provider;
-    offering_ = Offering{task_index, delivery.tools};
     const auto submitted = work_.call_out([&] {
         return provider.submit(provider.context, &request,
                                mailbox_.completion(delivery.reservation));
     });
-    offering_.reset();
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && permit != nullptr) {
         // Publish into the reserved reliable lane; absence still needs exact local gate evidence.
         const ProviderMessage rejected{

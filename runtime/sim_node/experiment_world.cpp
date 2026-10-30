@@ -76,7 +76,7 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.resource_capacity = 1;
         config.task_checkpoint_max_bytes = config.goal_parameter_max_bytes =
             strategies::state_bytes_max;
-        config.call_input_max_bytes = 640;
+        config.call_input_max_bytes = strategies::prompt_bytes_max + 36;
         config.call_result_max_bytes = 512;
         config.strategy_capacity = 2;
         config.task_model_call_hard_limit = 2;
@@ -96,7 +96,7 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.task_checkpoint_max_bytes = strategies::state_bytes_max;
         config.resource_capacity = 5;
         config.observation_source_capacity = 1;
-        config.call_input_max_bytes = 640;
+        config.call_input_max_bytes = strategies::prompt_bytes_max + 36;
         config.call_result_max_bytes = 512;
         config.task_model_call_hard_limit = 2;
         if (physical) {
@@ -111,7 +111,7 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.strategy_capacity = 3;
         config.goal_requirement_capacity = 5;
         config.observation_source_capacity = 2;
-        config.call_input_max_bytes = 640;
+        config.call_input_max_bytes = strategies::prompt_bytes_max + 36;
         config.call_result_max_bytes = 512;
         config.task_model_call_hard_limit = 2;
         composite = std::make_unique<Composite>(*this);

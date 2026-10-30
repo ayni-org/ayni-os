@@ -6,6 +6,8 @@
 #include "mock_display_schema.h"
 #include "work_node.h"
 #include <array>
+#include <ayni/directory.h>
+#include <ayni/model_messages.hpp>
 #include <ayni/providers/mock.h>
 #include <ayni/providers/openai_compat.h>
 #include <ayni/values.hpp>
@@ -46,11 +48,7 @@ class OpenaiFixture : public ::testing::Test {
         initialize(config);
     }
     void initialize(const Config &config) {
-        auto configured = config;
-        if (usage_available) {
-            configured.tool_usage = {sizeof(ayni_tool_usage_port_v1), 0, this, lookup_usage};
-        }
-        ASSERT_EQ(provider.configure(configured), AYNI_OK);
+        ASSERT_EQ(provider.configure(config), AYNI_OK);
         ASSERT_EQ(provider.describe(descriptor), AYNI_OK);
         display.input[1].min_i64 = 5;
         display.input[1].max_i64 = 10;
@@ -151,6 +149,21 @@ class OpenaiFixture : public ::testing::Test {
                                           desc->destination_id};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }
+        if (usage_available) {
+            ayni_tool_v1 key{};
+            key.struct_size = sizeof(key);
+            key.binding_id = text("show");
+            key.binding_version = 1;
+            key.capability_id = tool_descriptor.capabilities->capability_id;
+            key.capability_version = 1;
+            ayni_tool_usage_v1 usage{};
+            usage.struct_size = sizeof(usage);
+            adoption_status = lookup_usage(this, &key, &usage);
+            if (adoption_status == AYNI_OK) {
+                adoption_status =
+                    ayni_register_capability_usage(kernel, text("Fixture display."), &usage);
+            }
+        }
         static const ayni_tool_ref_v1 tools[] = {{text("show"), 1, 0}};
         auto goal = goal_type_desc("assist", 1, nullptr, this);
         goal.tool_count = offer_tools ? 1U : 0U;
@@ -242,8 +255,61 @@ class OpenaiFixture : public ::testing::Test {
             if (status != AYNI_OK) {
                 return status;
             }
+            std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
+            std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
+            std::array<char, 4096> bytes{};
+            ayni_value_buffer_v1 value{nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
+                                       bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
+            auto &native = proposed.call;
+            proposal_error = AYNI_INVALID_ARGUMENT;
+            if (native.input_kind == AYNI_TOOL_INPUT_ARGUMENTS &&
+                std::string_view(native.function_name.data, native.function_name.size) ==
+                    model::call_function) {
+                const auto tree = native.input.arguments;
+                uint32_t argument = UINT32_MAX;
+                bool binding = false, version = false;
+                if (tree.nodes[0].kind == AYNI_ARGUMENT_OBJECT) {
+                    for (uint32_t at = 1; at < tree.node_count; at = tree.nodes[at].subtree_end) {
+                        const auto &node = tree.nodes[at];
+                        const std::string_view name(node.name.data, node.name.size);
+                        if (name == "binding_id") {
+                            binding = node.kind == AYNI_ARGUMENT_STRING &&
+                                      string_of(node.value.text) == "show";
+                        }
+                        if (name == "binding_version") {
+                            version = node.kind == AYNI_ARGUMENT_NUMBER &&
+                                      string_of(node.value.text) == "1";
+                        }
+                        if (name == "arguments") {
+                            argument = at;
+                        }
+                    }
+                }
+                if (binding && version && argument != UINT32_MAX) {
+                    const uint32_t count = tree.nodes[argument].subtree_end - argument;
+                    for (uint32_t at = 0; at < count; ++at) {
+                        source[at] = tree.nodes[argument + at];
+                        source[at].subtree_end -= argument;
+                    }
+                    source[0].name = {};
+                    const ayni_arguments_v1 args{source.data(), count};
+                    proposal_error =
+                        ayni_arguments_normalize(&display.business.input, &args, &value);
+                }
+            } else if (native.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
+                proposal_error = AYNI_NOT_FOUND;
+            }
+            if (proposal_error != AYNI_OK) {
+                auto &intent = output.intents[0];
+                intent = {};
+                intent.struct_size = sizeof(intent);
+                intent.kind = AYNI_POLICY_REPORT_COMPLETION;
+                intent.expected_revision = snapshot.revision;
+                output.intent_count = 1;
+                return AYNI_OK;
+            }
             ayni::ValueReader input;
-            if (input.read(proposed.call.input.value) != AYNI_OK) {
+            if (input.read({nodes.data(), value.node_count}) != AYNI_OK) {
                 return AYNI_INVALID_ARGUMENT;
             }
             const auto *seconds = input.field(1);
@@ -252,8 +318,8 @@ class OpenaiFixture : public ::testing::Test {
             if (!seconds || !voice || !body) {
                 return AYNI_INVALID_ARGUMENT;
             }
-            proposal = string_of(proposed.call.binding_id) + "|" + string_of(body->value.text) +
-                       "|" + std::to_string(seconds->value.integer) + "second|" +
+            proposal = std::string("show|") + string_of(body->value.text) + "|" +
+                       std::to_string(seconds->value.integer) + "second|" +
                        string_of(voice->value.text);
             if (execute_proposal) {
                 ayni_task_call_result_v1 device{};
@@ -263,13 +329,13 @@ class OpenaiFixture : public ::testing::Test {
                 if (device_status == AYNI_NOT_FOUND) {
                     const ayni_call_request_v1 request{sizeof(request),
                                                        AYNI_POLICY_REQUEST_CALL,
-                                                       proposed.call.binding_version,
+                                                       1,
                                                        0,
                                                        text("show"),
-                                                       proposed.call.binding_id,
+                                                       text("show"),
                                                        {},
                                                        {},
-                                                       proposed.call.input.value};
+                                                       {nodes.data(), value.node_count}};
                     return output.request_call(output.call_context, &request);
                 }
                 if (device_status != AYNI_OK) {
@@ -389,6 +455,8 @@ class OpenaiFixture : public ::testing::Test {
     std::array<ayni_tool_field_usage_v1, 2> usage_fields{
         {{sizeof(ayni_tool_field_usage_v1), 2, text("Presentation style of the mock display.")},
          {sizeof(ayni_tool_field_usage_v1), 1, text("How long to display the text.")}}};
+    ayni_status_t adoption_status = AYNI_NOT_FOUND;
+    ayni_status_t proposal_error = AYNI_OK;
     std::function<void(ayni_tool_usage_v1 &)> change_usage;
 };
 

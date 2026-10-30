@@ -71,8 +71,9 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (!output.write) {
         output.write = unavailable_channel;
     }
-    status = profile.assemble(node.kernel(), config,
-                              {node.clock(), output, std::move(quiet), {this, propose}});
+    status = profile.assemble(
+        node.kernel(), config,
+        {node.clock(), output, std::move(quiet), {this, propose}, store.history_port()});
     if (status != AYNI_OK) {
         return status;
     }
@@ -165,11 +166,12 @@ ayni_status_t Assistant::Impl::ids(ayni_object_kind_t kind, std::vector<uint64_t
     out.resize(count);
     return ayni_list_objects(node.kernel(), kind, out.data(), count, &count);
 }
-ayni_status_t Assistant::Impl::persist(SavedConversation candidate, Notice notice) {
+ayni_status_t Assistant::Impl::persist(SavedConversation candidate, Notice notice,
+                                       ConversationStore::Erasure erasure, uint64_t turn) {
     if (saving) {
         return AYNI_BUSY;
     }
-    const auto status = store.save(candidate);
+    const auto status = store.save(candidate, erasure, turn);
     if (status == AYNI_OK) {
         saving = Saving{std::move(candidate), std::move(notice)};
     } else {

@@ -2,7 +2,7 @@
 
 `ayni::providers::openai_compat::Provider` implements non-streaming text and typed
 function proposals through the public C ABI. It has one libcurl multi worker;
-only `submit` reads the tool-view callback. See [ADR-0055](../../docs/adr/0055-openai-compatible-provider.md).
+the worker never queries Core. See [ADR-0055](../../docs/adr/0055-openai-compatible-provider.md).
 
 Configure `base_url`, `model`, `key_environment` (the environment variable name,
 never its value), and trusted Provider/endpoint/destination IDs before registering.
@@ -21,17 +21,33 @@ as a system message holding the instructions and a user message holding the rest
 empty instructions send no system message, and any other body is one user message. A malformed frame fails with INVALID_ARGUMENT and
 effect NONE before any HTTP request ([ADR-0074](../../docs/adr/0074-model-instructions-as-system-message.md)).
 
-Functions are named `tool_0`, `tool_1`, etc. within each request; arguments use the original business Schema names and nested structure. Exact decimal and integer Schemas beyond the safe integer range use JSON strings; numeric lexemes never pass through double. Configure a read-only `tool_usage` port for every offered
-tool. It supplies purpose, text grammar, result meaning, examples and explanations
-matched by exact Binding/Capability versions and field IDs. All metadata is copied
-in submit, capped at 4096 UTF-8 bytes per tool and 256 per field; missing/mismatched
-or invalid metadata rejects before HTTP, without truncation or a Binding-ID fallback.
-The port/context must outlive quiesce and must not block or call Core. The worker
-never invokes it. The machine Schema retains original bounds/defaults and names; descriptions separately show one complete authorized candidate, including named projection paths, narrowed ranges/token sets and fixed route. Descriptions cannot expand authority. See
-[the usage contract](../../contracts/host/tool_usage.md). Responses must contain
-one finished choice, either final text or tools. Truncation and invalid arguments
-fail with MODEL_OUTPUT; list encoding over the result byte limit also fails and
-returns the completion borrow. A model proposal does not execute the tool.
+TOOL_CALLS requests use four stable function definitions: `ayni_list_capabilities`,
+`ayni_inspect_capability`, `ayni_call_capability` and `ayni_shell`. The strategy
+owns directory reads and maps a proposal to an ordinary authorized Core Call;
+the Provider only transports function names, opaque protocol IDs and lossless
+arguments. Malformed inner arguments remain a proposal for a matching tool error.
+Missing IDs, malformed outer responses and list capacity errors remain classified
+MODEL_OUTPUT failures. A model proposal does not execute a tool. Capability usage
+is adopted by trusted configuration before calls, never looked up from the worker.
+See [ADR-0085](../../docs/adr/0085-stable-capability-tools-and-shell.md).
+
+Standard-message frames from `<ayni/model_messages.hpp>` preserve assistant
+`tool_calls`, matching tool replies, and optional assistant text in a tool round.
+The shared projection validates complete groups before sending. Protocol IDs are
+separate from Ayni operation/attempt identities.
+
+Optional response `usage` is copied into `model_usage`: `prompt_tokens` becomes
+`input_tokens`, `completion_tokens` becomes `output_tokens`, and `total_tokens`
+remains the service's total. Missing/null statistics produce NONE; non-integer,
+negative, overflowing or inconsistent counts produce INVALID with zero counters.
+Invalid optional statistics do not invalidate a known completion or retry it.
+Counts describe the model that served the request; they are post-request statistics,
+not a preflight count for the next request. No local tokenizer is used, and this
+adapter does not call the separate Responses input-token endpoint. The harness prefers reported usage; preflight and missing statistics use a
+labelled estimate of ceil(Unicode characters × 0.75), including message/tool
+JSON structure. It does not claim exact tokenizer matching. See the
+[Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+and [token counting guide](https://developers.openai.com/api/docs/guides/token-counting).
 
 All public methods and callbacks are owner-thread only. Call `ayni_begin_shutdown`,
 drive the Kernel until it stops, call `quiesce()` until its outstanding post has returned

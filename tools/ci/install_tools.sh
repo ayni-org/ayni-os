@@ -7,7 +7,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates git python3 cmake ninja-build ccache g++ \
-    clang-18 clang-format-18 clang-tidy-18 libcurl4-openssl-dev
+    clang-18 clang-format-18 clang-tidy-18 libcurl4-openssl-dev libsqlite3-dev
 # Keep the compiler names used by the existing presets and workflow.
 ln -s /usr/bin/clang-18 /usr/local/bin/clang
 ln -s /usr/bin/clang++-18 /usr/local/bin/clang++

@@ -1,6 +1,7 @@
 // Public ABI integration for ADR-0056, with deterministic local Provider receipts.
 #ifndef AYNI_TEST_STRATEGIES_FIXTURE_H
 #define AYNI_TEST_STRATEGIES_FIXTURE_H
+#include "function_proposal.h"
 #include "work_node.h"
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
@@ -19,6 +20,9 @@ class StrategiesFixture : public ::testing::Test {
         uint64_t operation;
         bool ended = false;
     };
+    uint32_t tool_alias_count = 0;
+    policies::HistoryPort history_port{};
+    ayni_model_usage_v1 service_usage{AYNI_MODEL_USAGE_REPORTED, 0, 100, 10, 110};
     void SetUp() override {
         steps[0] = {text("inspect"),
                     1,
@@ -34,6 +38,9 @@ class StrategiesFixture : public ::testing::Test {
         cfg.model = {AYNI_POLICY_REQUEST_MODEL, text("model"), 1, empty_scope(),
                      text("Use tools if needed.")};
         cfg.summary = {AYNI_POLICY_REQUEST_MODEL, text("summary"), 1, empty_scope(), {}};
+        cfg.context_window_tokens = 5000;
+        cfg.output_reserve_tokens = 1000;
+        cfg.history = history_port;
         ASSERT_EQ(loop.configure(cfg), AYNI_OK);
         auto &c = work.node().config();
         c.storage_buffer_bytes = 0;
@@ -44,11 +51,11 @@ class StrategiesFixture : public ::testing::Test {
         c.strategy_capacity = 2;
         c.call_capacity = 24;
         c.call_input_max_bytes = policies::prompt_bytes_max + 36;
-        c.call_result_max_bytes = 1024;
+        c.call_result_max_bytes = 4096;
         c.call_capability_capacity = 3;
         c.capability_capacity = 3;
         c.provider_capacity = 1;
-        c.binding_capacity = 3;
+        c.binding_capacity = 3 + tool_alias_count;
         c.goal_type_capacity = 2;
         c.resource_capacity = 1;
         c.resource_request_capacity = 4;
@@ -60,7 +67,11 @@ class StrategiesFixture : public ::testing::Test {
                 AYNI_GRANT_PERMANENT, 0, 0,        empty_scope()};
             auto intent = work.intent(AYNI_INTENT_GRANT_CREATE, &grant);
             intent.command_id = ++command;
-            ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+            const auto accepted = work.submit(intent);
+            ASSERT_EQ(accepted.status, AYNI_OK);
+            if (std::strcmp(id, "echo") == 0) {
+                echo_grant = accepted.result.object.id;
+            }
         }
         pump();
         conversation.id = 1;
@@ -104,7 +115,7 @@ class StrategiesFixture : public ::testing::Test {
                               AYNI_CALL_INPUT_VALUE,
                               at == 0 ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
                               policies::prompt_bytes_max + 36,
-                              1024,
+                              4096,
                               model ? 1U : 0U,
                               model ? &slot : nullptr,
                               nullptr};
@@ -124,7 +135,7 @@ class StrategiesFixture : public ::testing::Test {
             auto &result_schema = result_schemas[at];
             result_schema.kind = AYNI_VALUE_TEXT;
             result_schema.subtree_end = 1;
-            result_schema.max_count = 1024;
+            result_schema.max_count = 4096;
             business[at] = {{schema.data(), model ? 2U : 1U}, {&result_schema, 1}, 0, 0, nullptr};
             if (!model && structured_tool) {
                 auto &input = input_schemas[at];
@@ -186,7 +197,7 @@ class StrategiesFixture : public ::testing::Test {
             const bool model = string_of(request->capability_id) != "echo";
             std::string copied;
             if (!model && self.structured_tool) {
-                std::array<char, 1024> bytes{};
+                std::array<char, 4096> bytes{};
                 ayni::json::Writer json(bytes.data(), bytes.size());
                 const auto status =
                     ayni::json::write_value(json, self.business[2].input, request->value);
@@ -233,17 +244,55 @@ class StrategiesFixture : public ::testing::Test {
                                           {}};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }
-        const ayni_tool_ref_v1 allowed{text("echo"), 1, 0};
+        const ayni_tool_usage_v1 usage{sizeof(usage),
+                                       1,
+                                       text("echo"),
+                                       1,
+                                       text("echo"),
+                                       text("Echo input."),
+                                       text("Native input."),
+                                       text("Echo output."),
+                                       text("Echo hello."),
+                                       0,
+                                       0,
+                                       nullptr};
+        ASSERT_EQ(ayni_register_capability_usage(kernel, text("Echo."), &usage), AYNI_OK);
+        std::vector<std::string> aliases;
+        std::vector<ayni_tool_ref_v1> allowed;
+        aliases.reserve(tool_alias_count);
+        for (uint32_t at = 0; at < tool_alias_count; ++at) {
+            aliases.push_back("tool." + std::to_string(at));
+        }
+        for (const auto &alias : aliases) {
+            const ayni_string_v1 id{alias.data(), static_cast<uint32_t>(alias.size())};
+            const ayni_binding_v1 binding{
+                sizeof(binding),      1, id, text("echo"), 1, 1, provider.provider_id,
+                provider.endpoint_id, {}};
+            ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
+            auto adopted = usage;
+            adopted.binding_id = id;
+            ASSERT_EQ(ayni_register_capability_usage(kernel, text("Echo alias."), &adopted),
+                      AYNI_OK);
+            allowed.push_back({id, 1, AYNI_TOOL_ROLE_CAPABILITY});
+        }
+        if (allowed.empty()) {
+            allowed.push_back({text("echo"), 1, AYNI_TOOL_ROLE_CAPABILITY});
+        }
         for (const char *type : {"routine", "chat"}) {
             const bool chat = std::strcmp(type, "chat") == 0;
             auto goal =
                 goal_type_desc(type, 1, chat ? policies::Conversation::validate_turn : nullptr);
             goal.strategy_id = chat ? model_strategy.strategy_id : rules_desc.strategy_id;
-            goal.tool_count = chat ? 1U : 0U;
-            goal.tools = chat ? &allowed : nullptr;
-            goal.export_requirements = [](void *, ayni_bytes_v1,
+            goal.ctx = chat ? this : nullptr;
+            goal.tool_authorization = chat ? AYNI_TOOLS_ON_DEMAND : AYNI_TOOLS_REQUIRED;
+            goal.tool_count = chat ? static_cast<uint32_t>(allowed.size()) : 0U;
+            goal.tools = chat ? allowed.data() : nullptr;
+            goal.export_requirements = [](void *context, ayni_bytes_v1,
                                           const ayni_goal_requirement_sink_v1 *sink) {
                 for (const char *id : {"model", "summary", "echo"}) {
+                    if (context && std::strcmp(id, "echo") == 0) {
+                        continue;
+                    }
                     const ayni_goal_requirement_v1 req{sizeof(req), 1, text(id), empty_scope()};
                     const auto status = sink->emit(sink->ctx, &req);
                     if (status != AYNI_OK) {
@@ -262,18 +311,28 @@ class StrategiesFixture : public ::testing::Test {
             work.node().sim().advance_us(1000);
         }
     }
-    uint64_t start(const char *type = "chat", const char *input = "hello") {
+    uint64_t start(const char *type = "chat", const char *input = "hello",
+                   uint32_t model_limit = AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT) {
         policies::Encoded parameters;
         if (std::strcmp(type, "chat") == 0) {
             EXPECT_EQ(policies::Conversation::begin(conversation, text(input), parameters),
                       AYNI_OK);
         }
-        const auto body = WorkNode::create_body(work.instance(agent_a), 0, type, 1,
-                                                parameters.view(), AYNI_TRIGGER_ONCE);
+        auto body = WorkNode::create_body(work.instance(agent_a), 0, type, 1, parameters.view(),
+                                          AYNI_TRIGGER_ONCE);
         const auto made = work.create(body);
         EXPECT_EQ(made.status, AYNI_OK);
         pump();
-        return work.goal(made.result.object.id).last_task_id;
+        const auto task = work.goal(made.result.object.id).last_task_id;
+        if (model_limit > AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT) {
+            const ayni_task_raise_model_limit_v1 raise{sizeof(raise), model_limit, task};
+            auto intent =
+                work.intent(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &raise, work.task(task).revision);
+            intent.command_id = ++command;
+            EXPECT_EQ(work.submit(intent).status, AYNI_OK);
+            pump();
+        }
+        return task;
     }
     void post(uint32_t index, ayni_string_v1 text_result = {},
               ayni_call_outcome_t outcome = AYNI_CALL_COMPLETED, ayni_status_t status = AYNI_OK,
@@ -285,6 +344,9 @@ class StrategiesFixture : public ::testing::Test {
         result.attempt = p.attempt;
         result.outcome = outcome;
         result.status = status;
+        if (p.capability == "model" || p.capability == "summary") {
+            result.model_usage = service_usage;
+        }
         result.effect = outcome == AYNI_CALL_ABANDONED   ? AYNI_CALL_EFFECT_UNKNOWN
                         : outcome == AYNI_CALL_COMPLETED ? AYNI_CALL_EFFECT_COMPLETE
                                                          : AYNI_CALL_EFFECT_NONE;
@@ -295,14 +357,12 @@ class StrategiesFixture : public ::testing::Test {
         p.ended = true;
     }
     void propose(uint32_t at, uint32_t count = 2, const char *binding = "echo") {
-        ValueBuilder<1> value;
-        value.text(0, text("tool body"));
-        ayni_tool_call_v1 call{};
-        call.struct_size = sizeof(call);
-        call.binding_version = 1;
-        call.binding_id = text(binding);
-        call.input_kind = AYNI_TOOL_INPUT_VALUE;
-        ASSERT_EQ(value.finish(call.input.value), AYNI_OK);
+        ayni_argument_node_v1 argument{};
+        argument.kind = AYNI_ARGUMENT_STRING;
+        argument.subtree_end = 1;
+        argument.value.text = text("tool body");
+        FunctionProposal proposal(text(binding), {&argument, 1});
+        auto call = proposal.call();
         std::array<ayni_tool_call_v1, AYNI_CALL_TOOL_COUNT_MAX> tools{};
         std::array<std::string, AYNI_CALL_TOOL_COUNT_MAX> ids{};
         for (uint32_t index = 0; index < count; ++index) {
@@ -313,6 +373,30 @@ class StrategiesFixture : public ::testing::Test {
         }
         post(at, {}, AYNI_CALL_COMPLETED, AYNI_OK, tools.data(), count);
         pump();
+    }
+    uint64_t start_until_budget_summary() {
+        // ADR-0085: short histories do not compact at a fixed round count.
+        const std::string question(policies::turn_text_max, 'q');
+        const std::string answer(policies::turn_text_max, 'a');
+        constexpr uint32_t search_turns = 8;
+        for (uint32_t at = 0; at < search_turns; ++at) {
+            if (at == policies::retained_rounds_max) {
+                conversation.last_usage = {AYNI_MODEL_USAGE_REPORTED, 0, 3100, 20, 3120};
+            }
+            const auto task = start("chat", question.c_str());
+            if (pending.empty()) {
+                return 0;
+            }
+            const auto call = static_cast<uint32_t>(pending.size() - 1U);
+            if (pending[call].capability == "summary") {
+                return task;
+            }
+            EXPECT_EQ(pending[call].capability, "model");
+            post(call, {answer.data(), static_cast<uint32_t>(answer.size())});
+            pump();
+            finish(task);
+        }
+        return 0;
     }
     void finish(uint64_t task) {
         policies::Encoded state;
@@ -350,6 +434,7 @@ class StrategiesFixture : public ::testing::Test {
     std::vector<Pending> pending;
     policies::ConversationRecord conversation;
     uint64_t command = 600;
+    uint64_t echo_grant = 0;
 };
 } // namespace ayni::test
 #endif

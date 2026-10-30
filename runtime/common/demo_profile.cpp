@@ -1,9 +1,11 @@
 #include <array>
+#include <ayni/directory.h>
 #include <ayni/host_authority.h>
 #include <ayni/memory.h>
 #include <ayni/providers/mock.h>
 #include <ayni/providers/mock/subscription.h>
 #include <ayni/providers/openai_compat.h>
+#include <ayni/providers/shell.h>
 #include <ayni/resources.h>
 #include <ayni/runtime/common/default_config.h>
 #include <ayni/runtime/common/demo_profile.h>
@@ -16,7 +18,7 @@ namespace ayni::runtime {
 namespace {
 constexpr uint32_t model_index = 0, summary_index = 1, schedule_index = 2;
 constexpr uint32_t notify_index = 3, health_index = 4, observe_index = 5;
-constexpr uint32_t offer_count = 6, chat_offer_count = 3, destination_field = 1;
+constexpr uint32_t offer_count = 6, chat_offer_count = 2, destination_field = 1;
 constexpr uint32_t binding_version = 1; // Shared by registration, tool refs and usage pairing.
 constexpr const char *bindings[] = {"model", "summary", "schedule", "notify", "health", "observe"};
 // Authority-only capabilities with no Provider: memory read/egress and model-Goal consent.
@@ -56,11 +58,11 @@ ayni_config_v1 demo_config() {
     c.call_capacity = 64;
     c.call_input_max_bytes = strategies::prompt_bytes_max + 128;
     c.call_result_max_bytes = strategies::prompt_bytes_max;
-    c.call_capability_capacity = offer_count;
-    c.capability_capacity = offer_count + authority_only_count;
-    c.provider_capacity = offer_count;
-    c.binding_capacity = offer_count;
-    c.resource_capacity = static_cast<uint32_t>(std::size(resource_ids));
+    c.call_capability_capacity = offer_count + 1;
+    c.capability_capacity = offer_count + authority_only_count + 1;
+    c.provider_capacity = offer_count + 1;
+    c.binding_capacity = offer_count + 1;
+    c.resource_capacity = static_cast<uint32_t>(std::size(resource_ids)) + 1;
     c.observation_source_capacity = 1;
     c.resource_request_capacity = 16;
     return c;
@@ -70,6 +72,11 @@ struct DemoProfile::Impl {
     std::string timezone; // Borrowed by the ToolLoop clock until close.
     std::array<providers::mock::Provider, offer_count> mocks;
     providers::openai_compat::Provider remote, summary;
+    providers::shell::Provider shell;
+    bool shell_enabled = false; // True only after explicit trusted configuration succeeded.
+    ayni_provider_v1 shell_offer{};
+    ayni_scope_field_v1 shell_destination{}; // Owner Grant covers shell.unrestricted as one scope.
+    ayni_tool_field_usage_v1 shell_field_usage{};
     std::array<ayni_provider_v1, offer_count> offers{};
     strategies::ToolLoop loop;
     applications::assistant::Goals assistant_goals;
@@ -78,6 +85,8 @@ struct DemoProfile::Impl {
     providers::presentation::Provider presenter;
     providers::mock::SubscriptionProvider camera;
     AssistantPorts ports;
+    uint64_t context_window_tokens = 0;
+    uint32_t output_reserve_tokens = 0;
     ayni_kernel_t *owner_kernel = nullptr;
     ayni_scope_field_v1 destination{};
     ayni_scope_v1 model_scope = empty_scope();
@@ -137,6 +146,27 @@ struct DemoProfile::Impl {
     }
 
     ayni_status_t configure(const ModelConfig &config) {
+        context_window_tokens = config.context_window_tokens;
+        output_reserve_tokens = config.context_window_tokens ? config.output_reserve_tokens : 0;
+        if (!config.shell_working_directory.empty()) {
+            providers::shell::Config shell_config;
+            shell_config.working_directory = config.shell_working_directory;
+            auto shell_status = shell.configure(shell_config);
+            if (shell_status != AYNI_OK) {
+                return shell_status;
+            }
+            shell_status = shell.describe(shell_offer);
+            if (shell_status != AYNI_OK) {
+                return shell_status;
+            }
+            shell_enabled = true;
+            shell_destination.struct_size = sizeof(shell_destination);
+            shell_destination.field_id = destination_field;
+            shell_destination.allowed.struct_size = sizeof(shell_destination.allowed);
+            shell_destination.allowed.kind = AYNI_AUTHORITY_IDENTIFIER;
+            shell_destination.allowed.values.tokens = {&shell_offer.destination_id, 1, 0};
+        }
+        schedule_usage = schedule.usage({text(bindings[schedule_index]), binding_version, 0});
         model = config.model;
         timezone = config.timezone;
         if (model != Model::mock && model != Model::remote) {
@@ -161,13 +191,15 @@ struct DemoProfile::Impl {
                                      : status;
         }
         providers::openai_compat::Config c;
-        schedule_usage = schedule.usage({text(bindings[schedule_index]), binding_version, 0});
-        c.tool_usage = {sizeof(ayni_tool_usage_port_v1), 0, this, lookup_usage};
+        if (!config.context_window_tokens || !config.output_reserve_tokens ||
+            config.output_reserve_tokens >= config.context_window_tokens) {
+            return AYNI_INVALID_ARGUMENT;
+        }
         c.base_url = config.base_url;
         c.model = config.model_name;
         c.key_environment = config.key_environment;
         c.text_max_bytes = strategies::prompt_bytes_max;
-        c.max_output_tokens = 128;
+        c.max_output_tokens = config.output_reserve_tokens;
         status = remote.configure(c);
         if (status == AYNI_OK) {
             status = remote.describe(offers[model_index]);
@@ -178,38 +210,11 @@ struct DemoProfile::Impl {
         c.provider_id = "openai.summary";
         c.endpoint_id = "openai.summary";
         c.result_format = AYNI_CALL_RESULT_TEXT;
-        c.tool_usage = {}; // Summary requests have no tools or description lookup.
         status = summary.configure(c);
         if (status == AYNI_OK) {
             status = summary.describe(offers[summary_index]);
         }
         return status;
-    }
-
-    // The profile offers exactly one model tool. Pair the assembly's immutable
-    // Binding with extension usage; discovery/authorization remain Core-owned.
-    static ayni_status_t lookup_usage(void *context, const ayni_tool_v1 *tool,
-                                      ayni_tool_usage_v1 *out) {
-        if (!context || !tool || !out) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        if (out->struct_size != sizeof(*out) || tool->struct_size != sizeof(*tool)) {
-            return out->struct_size > sizeof(*out) || tool->struct_size > sizeof(*tool)
-                       ? AYNI_UNSUPPORTED_VERSION
-                       : AYNI_INVALID_ARGUMENT;
-        }
-        const auto &usage = static_cast<Impl *>(context)->schedule_usage;
-        const auto same = [](ayni_string_v1 a, ayni_string_v1 b) {
-            return a.size == b.size && a.data && b.data && std::memcmp(a.data, b.data, a.size) == 0;
-        };
-        if (tool->binding_version != usage.binding_version ||
-            tool->capability_version != usage.capability_version ||
-            !same(tool->binding_id, usage.binding_id) ||
-            !same(tool->capability_id, usage.capability_id)) {
-            return AYNI_NOT_FOUND;
-        }
-        *out = usage;
-        return AYNI_OK;
     }
 
     ayni_status_t register_offer(ayni_kernel_t *kernel, uint32_t at) {
@@ -241,7 +246,7 @@ struct DemoProfile::Impl {
         return ayni_register_binding(kernel, &binding);
     }
 
-    // Chat needs the model, its summary and the schedule tool it may propose (ADR-0072).
+    // Chat requires model and summary only; optional tools bind when actually called (ADR-0085).
     static ayni_status_t requirements(void *ctx, ayni_bytes_v1,
                                       const ayni_goal_requirement_sink_v1 *sink) {
         const auto &self = *static_cast<Impl *>(ctx);
@@ -267,7 +272,13 @@ struct DemoProfile::Impl {
             model_scope = {sizeof(model_scope), 1, &destination};
         }
         strategies::ToolLoopConfig config;
-        config.identity = {text("demo.loop"), 1, nullptr, 0};
+        config.history = ports.history;
+        config.context_window_tokens = context_window_tokens;
+        config.output_reserve_tokens = output_reserve_tokens;
+        config.identity = {text("demo.loop"), 2, nullptr, 0};
+        if (shell_enabled) {
+            config.shell.binding_id = text("shell");
+        }
         config.model = {AYNI_POLICY_REQUEST_MODEL, text("model"), binding_version, model_scope,
                         text(prompt)};
         config.clock = {ports.clock.context,
@@ -291,14 +302,17 @@ struct DemoProfile::Impl {
         type.ctx = this;
         type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
         type.occurrence_wait_max_us = chat_wait_max_us;
-        const ayni_tool_ref_v1 tool{text(bindings[schedule_index]), binding_version, 0};
+        const std::array<ayni_tool_ref_v1, 2> tools{
+            {{text(bindings[schedule_index]), binding_version, AYNI_TOOL_ROLE_CAPABILITY},
+             {text("shell"), binding_version, AYNI_TOOL_ROLE_SHELL}}};
         type.goal_type_id = text("chat");
         type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
         type.strategy_id = strategy.strategy_id;
         type.validate = strategies::Conversation::validate_turn;
         type.export_requirements = requirements;
-        type.tool_count = 1;
-        type.tools = &tool;
+        type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
+        type.tool_count = shell_enabled ? static_cast<uint32_t>(tools.size()) : 1U;
+        type.tools = tools.data();
         status = ayni_register_goal_type(kernel, &type);
         if (status != AYNI_OK) {
             return status;
@@ -340,6 +354,64 @@ struct DemoProfile::Impl {
         cap.capability_id = text("memory.egress");
         return ayni_register_capability(kernel, &cap);
     }
+    ayni_status_t register_shell(ayni_kernel_t *kernel) {
+        if (!shell_enabled) {
+            return AYNI_OK;
+        }
+        const ayni_resource_desc_v1 resource{
+            sizeof(resource), AYNI_RESOURCE_SHARED, text("shell.slot"), 1, 0, 0, 0, nullptr, {}};
+        auto status = ayni_register_resource(kernel, &resource);
+        if (status == AYNI_OK) {
+            status = ayni_set_resource_health(kernel, text("shell.slot"), AYNI_RESOURCE_ONLINE);
+        }
+        ayni_capability_desc_v1 authority{};
+        if (status == AYNI_OK) {
+            status = shell.describe_authority(authority);
+        }
+        if (status == AYNI_OK) {
+            status = ayni_register_capability(kernel, &authority);
+        }
+        if (status == AYNI_OK) {
+            status = ayni_register_call_capability(kernel, shell_offer.capabilities);
+        }
+        if (status == AYNI_OK) {
+            status = ayni_register_provider(kernel, &shell_offer);
+        }
+        const ayni_binding_v1 binding{sizeof(binding),
+                                      binding_version,
+                                      text("shell"),
+                                      shell_offer.capabilities->capability_id,
+                                      shell_offer.capabilities->version,
+                                      shell_offer.version,
+                                      shell_offer.provider_id,
+                                      shell_offer.endpoint_id,
+                                      shell_offer.destination_id};
+        if (status == AYNI_OK) {
+            status = ayni_register_binding(kernel, &binding);
+        }
+        shell_field_usage = {sizeof(shell_field_usage), destination_field,
+                             text("Explicit unrestricted host authority; scripts can access files, "
+                                  "network and credentials available to the host user.")};
+        const ayni_tool_usage_v1 usage{
+            sizeof(usage),
+            binding_version,
+            text("shell"),
+            shell_offer.capabilities->version,
+            shell_offer.capabilities->capability_id,
+            text("Execute /bin/sh -c scripts and pipelines with explicit owner authority."),
+            text("command is UTF-8 shell source; cwd is a start directory, not a sandbox."),
+            text("Known outcome, exit status and bounded combined stdout/stderr in base64. UNKNOWN "
+                 "must not be retried."),
+            text("{\"command\":\"pwd\"}"),
+            1,
+            0,
+            &shell_field_usage};
+        if (status == AYNI_OK) {
+            status = ayni_register_capability_usage(
+                kernel, text("Explicitly authorized full host shell."), &usage);
+        }
+        return status;
+    }
     ayni_status_t register_all(ayni_kernel_t *kernel) {
         const ayni_principal_desc_v1 principal{sizeof(principal), AYNI_PRINCIPAL_OWNER, demo_owner,
                                                demo_binding_revision, 0};
@@ -368,6 +440,16 @@ struct DemoProfile::Impl {
             if (status != AYNI_OK) {
                 return status;
             }
+        }
+        status = ayni_register_capability_usage(
+            kernel,
+            text("Register lasting assistant work; owner approval is required before it runs."),
+            &schedule_usage);
+        if (status == AYNI_OK) {
+            status = register_shell(kernel);
+        }
+        if (status != AYNI_OK) {
+            return status;
         }
         ayni_observation_source_v1 source{};
         status = camera.describe_source(source);
@@ -443,6 +525,9 @@ ayni_status_t DemoProfile::advance() {
             }
         }
     }
+    if (impl_->shell_enabled && impl_->shell.status() != AYNI_OK) {
+        return impl_->shell.status();
+    }
     if (impl_->model == Model::remote) {
         const auto status = impl_->remote.status();
         return status == AYNI_OK ? impl_->summary.status() : status;
@@ -453,7 +538,7 @@ ayni_status_t DemoProfile::close() {
     if (!impl_) {
         return AYNI_OK;
     }
-    if (impl_->remote.pending() || impl_->summary.pending()) {
+    if (impl_->remote.pending() || impl_->summary.pending() || impl_->shell.pending()) {
         return AYNI_BUSY;
     }
     if (impl_->presenter.pending() || impl_->camera.pending() || impl_->schedule.pending()) {
@@ -470,6 +555,12 @@ ayni_status_t DemoProfile::close() {
 ayni_status_t DemoProfile::quiesce() {
     if (!impl_) {
         return AYNI_OK;
+    }
+    if (impl_->shell_enabled) {
+        const auto status = impl_->shell.quiesce();
+        if (status != AYNI_OK) {
+            return status;
+        }
     }
     const auto presented = impl_->presenter.quiesce();
     if (presented != AYNI_OK) {
@@ -489,6 +580,10 @@ ayni_string_v1 DemoProfile::capability(const std::string &alias) const {
     if (!impl_) {
         return {};
     }
+    if (alias == "shell") {
+        return impl_->shell_enabled ? impl_->shell_offer.capabilities->capability_id
+                                    : ayni_string_v1{};
+    }
     const auto at = alias == "model"      ? model_index
                     : alias == "summary"  ? summary_index
                     : alias == "schedule" ? schedule_index
@@ -504,6 +599,9 @@ ayni_string_v1 DemoProfile::destination() const {
     return impl_ ? impl_->offers[model_index].destination_id : ayni_string_v1{};
 }
 ayni_scope_v1 DemoProfile::scope(const std::string &alias) const {
+    if (impl_ && alias == "shell" && impl_->shell_enabled) {
+        return {sizeof(ayni_scope_v1), 1, &impl_->shell_destination};
+    }
     return impl_ && (alias == "model" || alias == "summary") ? impl_->model_scope : empty_scope();
 }
 } // namespace ayni::runtime
