@@ -11,7 +11,7 @@ constexpr uint32_t record_magic = 0x434E5941U; // AYNC, little endian.
 constexpr uint32_t turn_magic = 0x544E5941U;   // AYNT.
 constexpr uint32_t bits_per_byte = 8;
 constexpr uint32_t conversation_format =
-    3; // Standard message history, disclosure and budget controller.
+    4; // Task-scoped sample dependencies and managed operation controls.
 constexpr uint32_t word_bytes = 4;
 constexpr uint32_t wide_bytes = 8;
 
@@ -113,6 +113,14 @@ template <typename Archive, typename Context> void context_fields(Archive &a, Co
     for (auto &word : c.visible) {
         a.u64(word);
     }
+    a.u64(c.sample_task_id);
+    a.u32(c.sample_count);
+    a.u32(c.sample_reserved);
+    for (auto &sample : c.samples) {
+        a.u64(sample.logical_call_id);
+        a.u64(sample.generation);
+        a.u64(sample.sequence);
+    }
 }
 template <typename Archive, typename State> void controller_fields(Archive &a, State &s) {
     a.u32(s.model_round);
@@ -163,6 +171,12 @@ template <typename Archive, typename Record> void fields(Archive &a, Record &r) 
     }
 }
 bool valid(const ConversationRecord &r) {
+    if (r.disclosure.sample_reserved ||
+        r.disclosure.sample_count > AYNI_MODEL_SAMPLE_DEPENDENCY_MAX ||
+        (r.disclosure.sample_count ? !r.disclosure.sample_task_id
+                                   : r.disclosure.sample_task_id != 0)) {
+        return false;
+    }
     if (!r.id || !r.owner_instance_id || !r.generation ||
         !::ayni::detail::valid_model_usage(r.last_usage) || r.round_count > retained_rounds_max ||
         r.summary.size > summary_text_max || !valid_text(r.summary.view()) ||

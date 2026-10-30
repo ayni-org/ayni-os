@@ -9,62 +9,6 @@ namespace {
 bool named(ayni_string_v1 text, std::string_view name) {
     return equal(text, view(name));
 }
-// Native objects are closed, including duplicate keys. Business arguments retain
-// their own names until the selected original Schema resolves them.
-struct Arguments {
-    ayni_arguments_v1 tree{};
-    std::array<uint32_t, 3> positions{};
-    uint32_t count = 0;
-    bool read(const ayni_tool_call_v1 &call, std::initializer_list<std::string_view> names) {
-        if (call.input_kind != AYNI_TOOL_INPUT_ARGUMENTS) {
-            return false;
-        }
-        tree = call.input.arguments;
-        if (ayni_arguments_validate(&tree) != AYNI_OK ||
-            tree.nodes[0].kind != AYNI_ARGUMENT_OBJECT) {
-            return false;
-        }
-        positions.fill(UINT32_MAX);
-        for (uint32_t at = 1; at < tree.node_count; at = tree.nodes[at].subtree_end) {
-            uint32_t index = 0;
-            for (auto name : names) {
-                if (named(tree.nodes[at].name, name)) {
-                    break;
-                }
-                ++index;
-            }
-            if (index == names.size() || positions[index] != UINT32_MAX) {
-                return false;
-            }
-            positions[index] = at;
-            ++count;
-        }
-        return true;
-    }
-    bool string(uint32_t field, ayni_string_v1 &out) const {
-        if (positions[field] == UINT32_MAX) {
-            return false;
-        }
-        const auto &node = tree.nodes[positions[field]];
-        if (node.kind != AYNI_ARGUMENT_STRING) {
-            return false;
-        }
-        out = node.value.text;
-        return true;
-    }
-    bool integer(uint32_t field, uint32_t &out) const {
-        if (positions[field] == UINT32_MAX) {
-            return false;
-        }
-        const auto &node = tree.nodes[positions[field]];
-        if (node.kind != AYNI_ARGUMENT_NUMBER || !node.value.text.size) {
-            return false;
-        }
-        auto text = node.value.text;
-        auto parsed = std::from_chars(text.data, text.data + text.size, out);
-        return parsed.ec == std::errc{} && parsed.ptr == text.data + text.size;
-    }
-};
 bool done(json::Writer &out, char *buffer, ayni_string_v1 &response) {
     size_t size = 0;
     if (!out.finish(size) || size > UINT32_MAX) {
@@ -163,8 +107,9 @@ struct Cursor {
         out.string(std::string_view(bytes, static_cast<size_t>(at - bytes)));
     }
 };
-ayni_status_t list(const Arguments &args, const ayni_task_snapshot_v1 &snapshot, const Turn &turn,
-                   char *buffer, uint32_t capacity, ToolBudget budget, ayni_string_v1 &response) {
+ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &snapshot,
+                   const Turn &turn, char *buffer, uint32_t capacity, ToolBudget budget,
+                   ayni_string_v1 &response) {
     if (!snapshot.list_capabilities || !snapshot.capability_context) {
         return AYNI_UNSUPPORTED;
     }
@@ -243,6 +188,10 @@ ayni_status_t list(const Arguments &args, const ayni_task_snapshot_v1 &snapshot,
             writer.string(item.capability_id);
             writer.raw(",\"capability_version\":");
             writer.unsigned_number(item.capability_version);
+            writer.raw(",\"form\":");
+            writer.number(item.form);
+            writer.raw(",\"cancel_mode\":");
+            writer.number(item.cancel_mode);
             writer.raw(",\"role\":");
             writer.string(item.role == AYNI_TOOL_ROLE_SHELL ? "shell" : "capability");
             writer.raw(",\"summary\":");
@@ -279,6 +228,10 @@ ayni_status_t inspect(const ayni_capability_detail_v1 &detail, json::Writer &out
     out.string(detail.info.binding_id);
     out.raw(",\"binding_version\":");
     out.unsigned_number(detail.info.binding_version);
+    out.raw(",\"form\":");
+    out.number(detail.info.form);
+    out.raw(",\"cancel_mode\":");
+    out.number(detail.info.cancel_mode);
     out.raw(",\"summary\":");
     out.string(detail.info.summary);
     out.raw(",\"purpose\":");
@@ -303,10 +256,10 @@ ayni_status_t inspect(const ayni_capability_detail_v1 &detail, json::Writer &out
 // Copy/rebase the selected source subtree. The same original Schema normalizer
 // admits defaults, numbers and object closure before the ordinary Call boundary.
 enum class ResultRetention { inline_context, external_archive };
-ayni_status_t invoke(const Arguments &args, uint32_t argument,
+ayni_status_t invoke(const NativeArguments &args, uint32_t argument,
                      const ayni_capability_detail_v1 &detail, ayni_string_v1 step,
                      ayni_policy_output_v1 &output, uint32_t result_capacity,
-                     ResultRetention retention) {
+                     ResultRetention retention, uint32_t mode) {
     std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
     const uint32_t begin = args.positions[argument];
     const uint32_t count = args.tree.nodes[begin].subtree_end - begin;
@@ -322,11 +275,17 @@ ayni_status_t invoke(const Arguments &args, uint32_t argument,
         ayni_policy_output_v1 &output;
         uint32_t capacity;
         ResultRetention retention;
-    } inspection{{source.data(), count}, detail, step, output, result_capacity, retention};
+        uint32_t mode;
+    } inspection{{source.data(), count}, detail, step, output, result_capacity, retention, mode};
     return ayni_business_contract_read(
         detail.original_domain, detail.business_contract, &inspection,
         [](void *opaque, const ayni_business_contract_v1 *business) {
             auto &state = *static_cast<State *>(opaque);
+            if (state.mode == AYNI_CALL_MODE_FOREGROUND &&
+                state.detail.info.form == AYNI_CALL_SUBSCRIPTION) {
+                return AYNI_INVALID_ARGUMENT; // Subscription requires an explicit model-managed
+                                              // start.
+            }
             constexpr uint32_t result_envelope_max = 512;
             if (state.retention == ResultRetention::inline_context &&
                 (state.capacity < result_envelope_max ||
@@ -343,6 +302,7 @@ ayni_status_t invoke(const Arguments &args, uint32_t argument,
                 return status;
             }
             Call call;
+            call.mode = state.mode;
             call.binding_id = state.detail.info.binding_id;
             call.binding_version = state.detail.info.binding_version;
             call.input = ayni_value_v1{nodes.data(), value.node_count};
@@ -361,12 +321,19 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, char 
     return done(out, buffer, response) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopConfig &config,
-                              const ayni_task_snapshot_v1 &snapshot, const Turn &turn,
+                              const ayni_task_snapshot_v1 &snapshot, Turn &turn,
                               ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
                               uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
                               bool &requested) {
     requested = false;
-    Arguments args;
+    bool handled = false;
+    const auto operation_status =
+        native_operation(proposal, config, snapshot, turn, step, output, buffer, capacity, budget,
+                         response, requested, handled);
+    if (handled) {
+        return operation_status;
+    }
+    NativeArguments args;
     json::Writer out(buffer, capacity);
     ayni_status_t status = AYNI_NOT_FOUND;
     if (named(proposal.function_name, model::list_function)) {
@@ -383,15 +350,28 @@ ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopC
         const bool call = named(proposal.function_name, model::call_function) || shell;
         ayni_string_v1 binding{};
         uint32_t version = 0;
+        constexpr uint32_t operation_field = 3;
         bool valid = shell ? args.read(proposal, {"command"})
-                           : args.read(proposal, {"binding_id", "binding_version", "arguments"});
+                           : args.read(proposal,
+                                       {"binding_id", "binding_version", "arguments", "operation"});
+        uint32_t mode = AYNI_CALL_MODE_FOREGROUND;
         if (shell) {
             binding = config.shell.binding_id;
             version = config.shell.binding_version;
             valid = valid && args.count == 1U;
         } else {
+            const bool explicit_operation = args.positions[operation_field] != UINT32_MAX;
+            ayni_string_v1 operation{};
+            if (explicit_operation) {
+                valid = valid && call && args.string(operation_field, operation) &&
+                        (named(operation, "invoke") || named(operation, "start"));
+                if (named(operation, "start")) {
+                    mode = AYNI_CALL_MODE_MANAGED;
+                }
+            }
             valid = valid && args.string(0, binding) && valid_id(binding) &&
-                    args.integer(1, version) && version && args.count == (call ? 3U : 2U);
+                    args.integer(1, version) && version &&
+                    args.count == (call ? 3U : 2U) + (explicit_operation ? 1U : 0U);
         }
         ayni_capability_detail_v1 detail{};
         detail.struct_size = sizeof(detail);
@@ -413,7 +393,8 @@ ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopC
             }
             status = invoke(args, shell ? 0U : 2U, detail, step, output, capacity,
                             config.history.archive ? ResultRetention::external_archive
-                                                   : ResultRetention::inline_context);
+                                                   : ResultRetention::inline_context,
+                            mode);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;

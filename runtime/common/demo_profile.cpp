@@ -275,7 +275,7 @@ struct DemoProfile::Impl {
         config.history = ports.history;
         config.context_window_tokens = context_window_tokens;
         config.output_reserve_tokens = output_reserve_tokens;
-        config.identity = {text("demo.loop"), 2, nullptr, 0};
+        config.identity = {text("demo.loop"), 3, nullptr, 0};
         if (shell_enabled) {
             config.shell.binding_id = text("shell");
         }

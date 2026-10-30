@@ -202,6 +202,73 @@ TEST_F(ContextHarness, oversized_executed_result_uses_chunk_summaries_and_keeps_
     finish(task);
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
 }
+// C-OP-001/004: managed read archives/summarizes the original business result exactly once.
+class ManagedResultHarness : public ContextHarness {
+  protected:
+    void SetUp() override {
+        action_tool = true;
+        ContextHarness::SetUp();
+    }
+    void function(uint32_t model,
+                  std::initializer_list<std::pair<const char *, std::string>> fields) {
+        std::array<ayni_argument_node_v1, 8> nodes{};
+        nodes[0].kind = AYNI_ARGUMENT_OBJECT;
+        nodes[0].subtree_end = static_cast<uint32_t>(fields.size()) + 1;
+        uint32_t at = 1;
+        for (const auto &field : fields) {
+            auto &node = nodes[at];
+            node.name = text(field.first);
+            node.kind = std::strcmp(field.first, "binding_version") == 0 ? AYNI_ARGUMENT_NUMBER
+                                                                         : AYNI_ARGUMENT_STRING;
+            node.subtree_end = ++at;
+            node.value.text = {field.second.data(), static_cast<uint32_t>(field.second.size())};
+        }
+        ayni_tool_call_v1 call{};
+        call.struct_size = sizeof(call);
+        call.protocol_id = text("managed_result");
+        call.function_name = text("ayni_call_capability");
+        call.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+        call.input.arguments = {nodes.data(), at};
+        post(model, {}, AYNI_CALL_COMPLETED, AYNI_OK, &call, 1);
+        pump();
+    }
+};
+TEST_F(ManagedResultHarness,
+       managed_read_preserves_reference_and_original_large_result_through_summary) {
+    const auto task = start("chat", "one managed operation", 32);
+    function(0, {{"operation", "start"},
+                 {"binding_id", "echo"},
+                 {"binding_version", "1"},
+                 {"arguments", "body"}});
+    ASSERT_EQ(pending.size(), 3U);
+    ASSERT_EQ(pending[1].capability, "echo");
+    ASSERT_EQ(pending[2].capability, "model");
+    const auto begin = pending[2].text.find("o1:");
+    ASSERT_NE(begin, std::string::npos);
+    const auto end = pending[2].text.find_first_not_of("o:0123456789", begin);
+    const auto reference = pending[2].text.substr(begin, end - begin);
+    const std::string original(4000, '\x01');
+    post(1, {original.data(), static_cast<uint32_t>(original.size())});
+    pump();
+    function(2, {{"operation", "read"}, {"operation_ref", reference}});
+    uint32_t summaries = 0;
+    while (pending.back().capability == "summary") {
+        ASSERT_LT(summaries++, 24U);
+        post(static_cast<uint32_t>(pending.size() - 1), text("tentative managed result summary"));
+        pump();
+    }
+    EXPECT_GT(summaries, 1U);
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_NE(pending.back().text.find(reference), std::string::npos);
+    EXPECT_NE(pending.back().text.find("result_ref"), std::string::npos);
+    EXPECT_EQ(std::count_if(pending.begin(), pending.end(),
+                            [](const auto &call) { return call.capability == "echo"; }),
+              1);
+    post(static_cast<uint32_t>(pending.size() - 1), text("Done."));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+
 TEST_F(ContextHarness, declared_summary_failure_pauses_without_changing_the_executed_result) {
     const auto task = start("chat", "one operation", 32);
     propose(0, 1);

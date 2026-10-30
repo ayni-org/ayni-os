@@ -12,7 +12,7 @@ namespace ayni::runtime {
 namespace {
 constexpr char filename[] = "conversation.sqlite3";
 constexpr int application_id = 0x41594E49;
-constexpr int database_version = 1;
+constexpr int database_version = 2; // Conversation format 4 includes Task-scoped sample provenance.
 using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 Statement statement(sqlite3 *db, const char *sql) {
     sqlite3_stmt *out = nullptr;
@@ -115,7 +115,7 @@ ayni_status_t ConversationStore::open(const char *directory, SavedConversation &
         "input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,total_tokens INTEGER NOT "
         "NULL,"
         "UNIQUE(conversation,owner,generation,call,sequence));"
-        "PRAGMA application_id=1096371785; PRAGMA user_version=1; COMMIT;";
+        "PRAGMA application_id=1096371785; PRAGMA user_version=2; COMMIT;";
     // The application id is independent from Core journal/schema and message-frame versions.
     if (!sql(database_, schema)) {
         close();

@@ -4,7 +4,71 @@
 #include "support.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
+#include <ayni/operation_json.hpp>
+#include <charconv>
 namespace ayni::strategies::detail {
+inline constexpr uint32_t native_argument_capacity = 7; // All fixed operation-envelope fields.
+// Native objects are closed, including duplicate keys. Business arguments retain
+// their own names until the selected original Schema resolves them.
+struct NativeArguments {
+    ayni_arguments_v1 tree{};
+    std::array<uint32_t, native_argument_capacity> positions{};
+    uint32_t count = 0;
+    bool read(const ayni_tool_call_v1 &call, std::initializer_list<std::string_view> names) {
+        if (call.input_kind != AYNI_TOOL_INPUT_ARGUMENTS) {
+            return false;
+        }
+        count = 0;
+        if (names.size() > positions.size()) {
+            return false;
+        }
+        tree = call.input.arguments;
+        if (ayni_arguments_validate(&tree) != AYNI_OK ||
+            tree.nodes[0].kind != AYNI_ARGUMENT_OBJECT) {
+            return false;
+        }
+        positions.fill(UINT32_MAX);
+        for (uint32_t at = 1; at < tree.node_count; at = tree.nodes[at].subtree_end) {
+            uint32_t index = 0;
+            for (auto name : names) {
+                if (equal(tree.nodes[at].name, view(name))) {
+                    break;
+                }
+                ++index;
+            }
+            if (index == names.size() || positions[index] != UINT32_MAX) {
+                return false;
+            }
+            positions[index] = at;
+            ++count;
+        }
+        return true;
+    }
+    bool string(uint32_t field, ayni_string_v1 &out) const {
+        if (positions[field] == UINT32_MAX) {
+            return false;
+        }
+        const auto &node = tree.nodes[positions[field]];
+        if (node.kind != AYNI_ARGUMENT_STRING) {
+            return false;
+        }
+        out = node.value.text;
+        return true;
+    }
+    bool integer(uint32_t field, uint32_t &out) const {
+        if (positions[field] == UINT32_MAX) {
+            return false;
+        }
+        const auto &node = tree.nodes[positions[field]];
+        if (node.kind != AYNI_ARGUMENT_NUMBER || !node.value.text.size) {
+            return false;
+        }
+        auto text = node.value.text;
+        auto parsed = std::from_chars(text.data, text.data + text.size, out);
+        return parsed.ec == std::errc{} && parsed.ptr == text.data + text.size;
+    }
+};
+
 struct ToolBudget {
     uint64_t tokens = UINT64_MAX; // Estimated remaining input tokens; MAX disables token limiting.
     ayni_string_v1 protocol_id{}; // Current opaque ID, counted with the matching reply envelope.
@@ -42,10 +106,25 @@ ayni_status_t fit_summary_prefix(ayni_string_v1 source, Make make, uint32_t &cho
 // Local errors are matching tool responses. A successful requested=true means
 // Core copied a concrete business Call; no local response may then be fabricated.
 ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopConfig &config,
-                              const ayni_task_snapshot_v1 &snapshot, const Turn &turn,
+                              const ayni_task_snapshot_v1 &snapshot, Turn &turn,
                               ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
                               uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
                               bool &requested);
+// Handles read/wait/cancel/close; start/invoke remain ordinary normalized business admission.
+ayni_status_t native_operation(const ayni_tool_call_v1 &, const ToolLoopConfig &,
+                               const ayni_task_snapshot_v1 &, Turn &, ayni_string_v1,
+                               ayni_policy_output_v1 &, char *, uint32_t, ToolBudget,
+                               ayni_string_v1 &, bool &, bool &);
+// Render an original operation and optionally its known terminal result.
+ayni_status_t operation_result(const ayni_operation_info_v1 &, const ToolLoopConfig &,
+                               const ayni_task_snapshot_v1 &, Turn &, ayni_policy_output_v1 &,
+                               char *, uint32_t, ToolBudget, ayni_string_v1 &,
+                               ayni_status_t = AYNI_OK);
+// Stable tool processing steps are distinct from the target's business completion.
+bool step_committed(const ayni_task_snapshot_v1 &, ayni_string_v1);
+// A control proposal's original target supplies its terminal body for the common summary path.
+ayni_status_t operation_source(const ayni_tool_call_v1 &, const ayni_task_snapshot_v1 &,
+                               ayni_task_call_result_v1 &);
 // Serialize original known result proof and outcome, retaining UNKNOWN as a hold.
 ayni_status_t native_result(const ayni_task_call_result_v1 &result, char *buffer, uint32_t capacity,
                             ayni_string_v1 &response);

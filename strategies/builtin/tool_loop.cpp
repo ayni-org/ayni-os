@@ -71,6 +71,20 @@ ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
 ayni_status_t save(const Turn &turn, ayni_policy_output_v1 &output) {
     return write_turn(turn, output.checkpoint, output.checkpoint_capacity, output.checkpoint_size);
 }
+// Preserve every source actually read into this decision's future message history.
+ayni_status_t capture_disclosure(Turn &turn, const ayni_task_snapshot_v1 &snapshot) {
+    if (!snapshot.capability_context) {
+        return AYNI_UNSUPPORTED;
+    }
+    ayni_capability_context_v1 current{};
+    const auto status = snapshot.capability_context(
+        snapshot.call_context,
+        turn.record.disclosure.boot_epoch ? &turn.record.disclosure : nullptr, &current);
+    if (status == AYNI_OK) {
+        turn.record.disclosure = current;
+    }
+    return status;
+}
 // Appends retain complete frames; a failed candidate is never published.
 template <typename Append> ayni_status_t append_history(Turn &turn, Append append) {
     auto &history = turn.record.history;
@@ -228,6 +242,26 @@ ayni_status_t known_operations(Turn &turn, const ayni_task_snapshot_v1 &snapshot
         facts.add(" effect ");
         facts.number(call.effect);
         facts.add("\n");
+        if (snapshot.operation) {
+            const ayni_operation_ref_v1 reference{snapshot.task_id, call.logical_call_id,
+                                                  call.operation_id};
+            ayni_operation_info_v1 operation{};
+            operation.struct_size = sizeof(operation);
+            const auto read = snapshot.operation(snapshot.call_context, &reference, &operation);
+            if (read == AYNI_OK) {
+                char encoded[2048];
+                json::Writer json(encoded, sizeof(encoded));
+                operations::write(json, operation);
+                size_t size = 0;
+                if (!json.finish(size)) {
+                    return AYNI_CAPACITY_EXCEEDED;
+                }
+                facts.add(ayni_string_v1{encoded, static_cast<uint32_t>(size)});
+                facts.add("\n");
+            } else if (read != AYNI_UNSUPPORTED && read != AYNI_NOT_FOUND) {
+                return read;
+            }
+        }
     }
     if (!facts.ok()) {
         return AYNI_CAPACITY_EXCEEDED;
@@ -566,7 +600,19 @@ ayni_status_t tools(Turn &turn, const ToolLoopConfig &config, const ayni_task_sn
             return saved;
         }
     } else if (call_status == AYNI_OK) {
-        if (config.history.archive) {
+        if (call.mode == AYNI_CALL_MODE_MANAGED) {
+            const ayni_operation_ref_v1 reference{snapshot.task_id, call.logical_call_id,
+                                                  call.operation_id};
+            ayni_operation_info_v1 info{};
+            info.struct_size = sizeof(info);
+            status = snapshot.operation
+                         ? snapshot.operation(snapshot.call_context, &reference, &info)
+                         : AYNI_UNSUPPORTED;
+            if (status == AYNI_OK) {
+                status = operation_result(info, config, snapshot, turn, output, scratch, capacity,
+                                          budget, response);
+            }
+        } else if (config.history.archive) {
             ArchivedResult archived;
             status = archive_result(config, snapshot, turn.record, call, archived, output);
             if (status != AYNI_OK) {
@@ -615,6 +661,13 @@ ayni_status_t tools(Turn &turn, const ToolLoopConfig &config, const ayni_task_sn
     if (status != AYNI_OK) {
         return status;
     }
+    if (turn.phase == TurnPhase::result_summary) {
+        return AYNI_OK; // The common archive/summary path owns this same pending tool reply.
+    }
+    status = capture_disclosure(turn, snapshot);
+    if (status != AYNI_OK) {
+        return status;
+    }
     if (!budget.fits(response)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
@@ -625,7 +678,7 @@ ayni_status_t tools(Turn &turn, const ToolLoopConfig &config, const ayni_task_sn
     }
     ++turn.tool_index;
     // A local response has no Call row. Its matching progress and checkpoint are one batch.
-    if (!call.logical_call_id) {
+    if (!call.logical_call_id && !step_committed(snapshot, key)) {
         requested = true;
         return progress(turn, snapshot, key, output);
     }
@@ -779,6 +832,10 @@ ayni_status_t run(Turn &turn, const ToolLoopConfig &config, const ayni_task_snap
             if (status == AYNI_OK && config.context_window_tokens && cost > input_budget) {
                 return AYNI_CAPACITY_EXCEEDED;
             }
+            if (status != AYNI_OK) {
+                return status;
+            }
+            status = capture_disclosure(turn, snapshot);
             if (status != AYNI_OK) {
                 return status;
             }

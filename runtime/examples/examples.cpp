@@ -3,6 +3,7 @@
 #include <ayni/hosts/sim.h>
 #include <ayni/providers/openai_compat.h>
 #include <ayni/providers/openai_compat/loopback.h>
+#include <ayni/providers/software/work.h>
 #include <ayni/runtime/common/demo_profile.h>
 #include <ayni/runtime/examples.h>
 #include <chrono>
@@ -32,6 +33,8 @@ struct Fixture::Impl {
     std::optional<ayni_provider_v1> alternate_offer;
     ayni_scope_field_v1 destination{};
     Extension extension;
+    providers::software::WorkProvider software;
+    bool software_enabled = false; // Concrete composition choice, fixed before Kernel creation.
     std::atomic<uint64_t> clock_us{0};
     std::atomic<uint32_t> writes{0};
     uint64_t session = 0, command = 0;
@@ -53,6 +56,9 @@ struct Fixture::Impl {
         auto status = self.profile.advance();
         if (status == AYNI_OK && self.alternate_offer) {
             status = self.alternate.status();
+        }
+        if (status == AYNI_OK && self.software_enabled) {
+            status = self.software.advance();
         }
         if (status == AYNI_OK && self.extension.advance) {
             status = self.extension.advance(self.extension.context, self.host.now_us());
@@ -133,7 +139,60 @@ struct Fixture::Impl {
         destination.allowed = domain;
         return status;
     }
-    ayni_status_t open(Extension ports, Model model) {
+    ayni_status_t register_software() {
+        providers::software::WorkConfig config;
+        config.clock_context = this;
+        config.now_us = now;
+        auto status = software.configure(config);
+        auto *handle = kernel.get();
+        const ayni_resource_desc_v1 resource{sizeof(resource),
+                                             AYNI_RESOURCE_SHARED,
+                                             text("software.slot"),
+                                             config.capacity,
+                                             0,
+                                             0,
+                                             0,
+                                             nullptr,
+                                             {}};
+        if (status == AYNI_OK) {
+            status = ayni_register_resource(handle, &resource);
+        }
+        if (status == AYNI_OK) {
+            status = ayni_set_resource_health(handle, resource.resource_id, AYNI_RESOURCE_ONLINE);
+        }
+        ayni_observation_source_v1 source{};
+        if (status == AYNI_OK) {
+            status = software.describe_source(source);
+        }
+        if (status == AYNI_OK) {
+            status = ayni_register_observation_source(handle, &source);
+        }
+        ayni_provider_v1 provider{};
+        if (status == AYNI_OK) {
+            status = software.describe(provider);
+        }
+        for (uint32_t at = 0; status == AYNI_OK && at < provider.capability_count; ++at) {
+            const auto &offer = provider.capabilities[at];
+            const ayni_capability_desc_v1 capability{
+                sizeof(capability), 1, offer.capability_id, 0, 0, nullptr};
+            status = ayni_register_capability(handle, &capability);
+            if (status == AYNI_OK) {
+                status = ayni_register_call_capability(handle, &offer);
+            }
+        }
+        if (status == AYNI_OK) {
+            status = ayni_register_provider(handle, &provider);
+        }
+        for (uint32_t at = 0; status == AYNI_OK && at < provider.capability_count; ++at) {
+            const auto id = provider.capabilities[at].capability_id;
+            const ayni_binding_v1 binding{
+                sizeof(binding), 1, id, id, 1, 1, provider.provider_id, provider.endpoint_id, {}};
+            status = ayni_register_binding(handle, &binding);
+        }
+        return status;
+    }
+    ayni_status_t open(Extension ports, Model model, Software selection) {
+        software_enabled = selection == Software::work;
         extension = ports;
         auto config = demo_config();
         config.goal_type_capacity += 2;
@@ -144,6 +203,14 @@ struct Fixture::Impl {
         config.binding_capacity += 2;
         config.resource_capacity += 1;
         config.observation_source_capacity += 1;
+        if (software_enabled) {
+            config.call_capability_capacity += 2;
+            config.capability_capacity += 2;
+            config.provider_capacity += 1;
+            config.binding_capacity += 2;
+            config.resource_capacity += 1;
+            config.observation_source_capacity += 1;
+        }
         host.set_utc(fixture_utc_s);
         const auto table = host.table();
         auto status = kernel.create(config, table, {this, quiesce});
@@ -153,6 +220,9 @@ struct Fixture::Impl {
         status = profile.assemble(kernel.get(), {}, {{this, now, utc}, {this, present}, {}, {}});
         if (status == AYNI_OK && model == Model::alternate_loopback) {
             status = register_alternate();
+        }
+        if (status == AYNI_OK && software_enabled) {
+            status = register_software();
         }
         if (status == AYNI_OK && extension.configure) {
             status = extension.configure(extension.context, kernel.get());
@@ -226,16 +296,17 @@ Fixture::~Fixture() {
         static_cast<void>(impl_.release());
     }
 }
-ayni_status_t Fixture::open(Extension extension, Model model) {
+ayni_status_t Fixture::open(Extension extension, Model model, Software selection) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
-    if (model != Model::mock && model != Model::alternate_loopback) {
+    if ((model != Model::mock && model != Model::alternate_loopback) ||
+        (selection != Software::none && selection != Software::work)) {
         return AYNI_INVALID_ARGUMENT;
     }
     try {
         impl_ = std::make_unique<Impl>();
-        return impl_->open(extension, model);
+        return impl_->open(extension, model, selection);
     } catch (const std::bad_alloc &) {
         return AYNI_CAPACITY_EXCEEDED;
     } catch (const std::exception &) {
@@ -364,6 +435,9 @@ ayni_status_t Fixture::close() {
     auto status = impl_->profile.close();
     if (status == AYNI_OK && impl_->alternate_offer) {
         status = impl_->alternate.close();
+    }
+    if (status == AYNI_OK && impl_->software_enabled) {
+        status = impl_->software.close();
     }
     if (status != AYNI_OK) {
         return status;

@@ -101,6 +101,8 @@ struct Call {
     ayni_string_v1 text{};
     std::optional<ayni_value_v1>
         input{}; // Explicit complete native input; excludes scalar/text templates.
+    uint32_t mode =
+        AYNI_CALL_MODE_FOREGROUND; // Explicit managed start; normal calls retain terminal waiting.
 };
 // Stable name plus semantic version becomes name.vN, at most 32 bytes.
 struct RuleStep {
