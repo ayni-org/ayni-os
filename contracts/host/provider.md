@@ -35,7 +35,7 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 |---|---|---|---|
 | C-PROV-001 | Provider 只在 `CONFIGURING` 注册；函数表与能力声明在注册时复制并校验限额；`ctx` 由调用方保持有效至 `ayni_destroy` 返回 `AYNI_OK` | 运行中注册新 Provider，或注册后修改能力声明使其与 Binding 不一致 | `MA-005`；C-LIFE-003 |
 | C-PROV-002 | `submit` 非阻塞，同步返回遵守 C-HOST-004 的三种结果；业务结果只经事件回送 | 模型 Provider 在 `submit` 内同步等待 HTTP 响应 | `MA-008`；C-CALL-003 |
-| C-PROV-003 | 终态携带与能力结果 Schema 一致的结构化结果；Kernel 先做 Schema 校验再做语义校验，不合格终态结束本机借用，但保留 RESULT_UNKNOWN 并记录 PROVIDER_RESULT 原因，不伪造未执行 | 模型返回自由文本“已完成”，Kernel 直接把 Task 标为完成 | `MA-008`；E1 步骤 9；C-TRUST-001；工具调用列表的语义复核：`ToolCalls.unoffered_tools_and_values_outside_the_offer_end_unknown`（C-CALL-014） |
+| C-PROV-003 | 终态携带与能力结果 Schema 一致的结构化结果；Kernel 先做 Schema 校验再做语义校验，不合格终态结束本机借用，但保留 RESULT_UNKNOWN 并记录 PROVIDER_RESULT 原因，不伪造未执行 | 模型返回自由文本“已完成”，Kernel 直接把 Task 标为完成 | `MA-008`；E1 步骤 9；C-TRUST-001；原生提议形状与后续业务校验：`ToolCalls.unknown_functions_and_invalid_business_inputs_do_not_forge_unknown_actions`（C-CALL-014） |
 | C-PROV-004 | 厂商错误映射为状态码与原因码；厂商原始错误文本、凭据与请求正文不进入 `ayni_error_v1`、日志或用户可见文案 | 错误详情中包含带 API Key 的请求 URL | 评审；C-STATUS-006 |
 | C-PROV-005 | 只有声明 `AUTHORITATIVE` 查询且保证记录完整的 Provider 才能返回 `NOT_ACCEPTED`；其余 Provider 查不到记录时返回 `UNKNOWN` | 不保存历史的 Provider 对未知请求返回 `NOT_ACCEPTED`，Kernel 据此重新派发 | E2 查询夹具；C-CALL-010 |
 | C-PROV-006 | 取消以事件报告 `CANCELLED`、`CANNOT_CANCEL` 或 `UNKNOWN`；取消结果在被应用前不被后到的进度覆盖；`CANCELLED` 不表示未计费或未外发 | 本地连接取消后，Provider 把远端已执行的可能性报告为从未接受；或 `CANNOT_CANCEL` 之后紧跟一条进度，Kernel 只看到进度，Task 一直停在 `CANCELLING` | 内部交接部分已实现：`ProviderMailboxTest.retains_cancel_and_terminal_until_the_owner_can_commit_each`、`ProviderMailboxTest.terminal_supersedes_progress_without_overwriting_accepted_cancel_control`、`ProviderMailboxTest.concurrent_progress_and_control_posts_preserve_both_channels`；公开取消/关闭：`ManagedCall.cancellation_waits_for_terminal_and_late_success_does_not_reopen_task`、`ManagedCall.normal_shutdown_requests_cancel_and_waits_for_returned_borrow`；E1 步骤 4；C-CALL-009 |
@@ -47,7 +47,7 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 | C-PROV-012 | 测试用 Mock A / Mock B 是确定性的：相同输入、夹具种子与 FakeClock 轨迹下产生相同结果与完成时刻 | Mock 使用真实时间与随机数，E3 轨迹无法复现 | 正常实现：`MockProvider.deferred_completion_copies_text_and_reports_action_progress`；固定推进顺序、A/B 一/两次推进延迟（ADR-0048）；完整 E1/E3 尚未验收 |
 | C-PROV-013 | 执行物理动作的 Provider 把指令交给执行端许可门，不直接写 PWM 或驱动寄存器；许可校验由执行端完成（C-PERMIT-007） | 运动 Provider 收到准入结果后直接设置 PWM 占空比 | `MA-015`；R1 B5 |
 | C-PROV-014 | Provider 的输入只含 Kernel 按上下文规则过滤后的数据；媒体以受控引用传入（C-PRIM-005），不传任意 URL 或文件路径 | Provider 收到 `file:///data/photos/` 路径并读取全部照片 | `MA-015`；C-WIRE-011 |
-| C-PROV-015 | 模型请求正文可用 `AYNI_MODEL_INSTRUCTIONS_PREFIX`、无前导零的十进制字节数与换行把策略指令和数据分开，Kernel 不解读；支持消息角色的 Provider 把指令作为 system 消息、其余作为 user 消息，没有前缀的正文整体是数据；这类 Provider 在前缀后的字节数、换行或 UTF-8 切分不合法时以 `FAILED`/`INVALID_ARGUMENT`、effect `NONE` 结束，不外发；Mock 不区分角色，不解析分帧（ADR-0074） | 策略把不可信的用户输入放在正文开头，被当成 system 指令；或 Provider 把格式错误的正文仍发出 | 正常实现：`OpenaiProvider.framed_instructions_become_the_system_message`、`OpenaiProvider.empty_framed_instructions_send_only_the_user_message`、`OpenaiProvider.prefix_after_the_start_is_data`、`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects`（无前缀）、`OpenaiFrame.malformed_instructions_frame_fails_without_egress`；策略侧 `BuiltinLoop.model_request_instructions_state_the_local_time`、`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval`；“正文开头不放不可信文本”由策略评审保证 |
+| C-PROV-015 | 模型请求正文可用 `AYNI_MODEL_INSTRUCTIONS_PREFIX`、无前导零的十进制字节数与换行把策略指令和数据分开，Kernel 不解读；支持消息角色的 Provider 把指令作为 system 消息、其余作为 user 消息，没有前缀的正文整体是数据；这类 Provider 在前缀后的字节数、换行或 UTF-8 切分不合法时以 `FAILED`/`INVALID_ARGUMENT`、effect `NONE` 结束，不外发；标准消息分帧另由 model_messages.hpp 解析，Mock 同样尊重消息角色（ADR-0074） | 策略把不可信的用户输入放在正文开头，被当成 system 指令；或 Provider 把格式错误的正文仍发出 | 正常实现：`OpenaiProvider.framed_instructions_become_the_system_message`、`OpenaiProvider.empty_framed_instructions_send_only_the_user_message`、`OpenaiProvider.prefix_after_the_start_is_data`、`OpenaiProvider.text_completes_through_public_abi_and_declares_remote_effects`（无前缀）、`OpenaiFrame.malformed_instructions_frame_fails_without_egress`；策略侧 `BuiltinLoop.model_request_instructions_state_the_local_time`、`NativeAssistant.model_schedule_tool_registers_a_goal_that_waits_for_owner_approval`；“正文开头不放不可信文本”由策略评审保证 |
 
 ## 查询与退出边界
 
@@ -55,17 +55,17 @@ Provider 实现 Capability：外部模型 API、感知、媒体、检索、动�
 
 `ayni_begin_shutdown` 停止新准入，请求在途取消并等待每项借用终态。取消端口返回 REJECTED_NOT_RETAINED 仅表示本次取消未被接受，不能释放原请求。正常可写退出持久保存事实；已受限且存储不可写时仅排空易失交接，不声称结果已提交。自动重载保留未归还的 transport/完成槽；旧 boot 的结果不直接改变新工作事实，后续需新管理查询。故障、重载及传播竞态仍属暂停的专项证据。
 
-## 工具视图与类型化结果（ABI 0.37，ADR-0054）
+## 固定 function 提议与统计（ABI 0.50，ADR-0085）
 
-ABI 0.47 的模型中立用法说明、exact 配对与复制端口见[能力用法自描述](tool_usage.md)。它补充以下权威工具视图，不扩大可见集合或权限。
+`TOOL_CALLS` 模型请求不带业务工具查询回调；OpenAI-compatible Provider 固定发送四个 `ayni_` function 定义。详情和当前授权候选由策略通过 Task 目录按需读取并追加消息。Provider 只解码协议形状，保留 function_name、opaque protocol_id、无损 ARGUMENTS；内层非法 JSON 参数保留 INVALID_ARGUMENTS 原文，交由 harness 返回匹配 tool 错误。未知 function、Binding 或业务参数不把已完成的模型请求改成业务 UNKNOWN。外层协议损坏或容量超限仍报告 MODEL_OUTPUT。
 
-结果格式为 `TOOL_CALLS` 的模型调用，`ayni_provider_request_v1` 带 `tool_count` 与 `tool(tool_context, index, out)`：Provider 在 `submit` 内按下标读取每个可提议工具的视图（Binding 与 Capability 身份、正文上限、最多 8 个字段的类型、单位与取值），视图写入 Provider 提供的存储。回调只在本次 `submit` 内、在其线程上有效，任何 `submit` 之外返回 `AYNI_INVALID_STATE`；Provider 不保留它，因为在之后另一次 `submit` 期间它描述的是那次调用的工具。哪些工具可提议由 Kernel 决定（C-CALL-014）。
+同一 assistant 消息可以同时有文本和提议。Core 在 `ayni_provider_post` 返回前复制列表；Provider 不保留 Core 借用，不查询 Catalog。后续 REQUEST_CALL 才按原 Schema 规范化、选择完整 Grant 并经原派发屏障执行。协议 ID 只配对消息，步骤身份由 source Model Call 与提议序号决定。
 
-Provider 自己把模型的工具调用映射到这些视图。未知工具、无法解码的参数、视图外的值或超出工具上限的正文，报告 `FAILED` 与 `AYNI_REASON_MODEL_OUTPUT`（状态为 `INVALID_ARGUMENT`，列表超出结果上限为 `CAPACITY_EXCEEDED`），不当作调用列表发表；仍发表的会被 Kernel 当作不合格终态（C-PROV-003）。`COMPLETED` 终态的 `tool_calls` 与 `result` 文本二者择一；Kernel 在 `ayni_provider_post` 内复制并编码列表，post 返回后 Provider 可复用其数组；编码超出该调用的 `result_text_limit` 时 post 返回 `AYNI_CAPACITY_EXCEEDED`，向文本格式调用发表列表返回 `AYNI_INVALID_ARGUMENT`，借用都保持，Provider 应改报 `FAILED`。模型原始 JSON、函数名映射与厂商 API 细节留在 Provider 内，不进入 Core。
+可选 `model_usage` 为固定值：NONE=0、REPORTED=1、INVALID=2；后两种非 reported 的计数全零；reported 要求 input+output=total 且不溢出。只有 Model 可以携带。Chat 的 prompt/completion/total 映射到这些字段；缺失/无效统计不会抹掉已知回答或效果。策略独立估算预算，不伪造服务统计，也不据此形成费用账本。
 
 ## 可复用 Mock 的当前边界
 
-`providers/mock` 提供 A/B 文本回显与模拟呈现，启动分配固定槽，调用线程只复制输入。组合根在 Kernel 步进之间显式推进；终态成功发表后清空局部正文，`close` 对在途借用返回 `BUSY`。上下文在 Kernel 成功销毁后才能释放。取消、容量和正常排空分别由 `MockProvider.cancellation_drains_the_borrow_and_close_refuses_while_pending`、`MockProvider.full_provider_queue_rejects_without_discarding_the_first_request`、`MockProvider.normal_shutdown_cancels_pending_work_and_returns_every_borrow` 验证。`tools` 服务是结果格式为 `TOOL_CALLS` 的确定性模型：输入开头的 `call:<binding_id>` 词各成为一个已提供工具的调用，字段取视图中的第一个值，其余文本为每个调用的正文；没有这类词时回显文本。未提供的工具、正文超出工具上限或列表超出结果上限都报告 `MODEL_OUTPUT`，由 `MockTools.proposes_the_offered_tool_at_its_first_values_and_the_proposal_runs`、`MockTools.input_without_call_words_is_echoed_as_text`、`MockTools.unoffered_tool_fails_as_model_output` 验证。Mock 接受 Core 已检查过的类型化参数但不使用它们。Mock 不执行网络或真实音频/动作，也不宣称物理停止。
+`providers/mock` 提供 A/B 文本回显与模拟呈现，启动分配固定槽，调用线程只复制输入。组合根在 Kernel 步进之间显式推进；终态成功发表后清空局部正文，`close` 对在途借用返回 `BUSY`。上下文在 Kernel 成功销毁后才能释放。取消、容量和正常排空分别由 `MockProvider.cancellation_drains_the_borrow_and_close_refuses_while_pending`、`MockProvider.full_provider_queue_rejects_without_discarding_the_first_request`、`MockProvider.normal_shutdown_cancels_pending_work_and_returns_every_borrow` 验证。`tools` 服务是确定性的模型夹具：`function:<name> json:<args>` 产生原生提议，`call:<binding_id> json:<args>` 是通用调用的测试简写；无提议时回显文本。Mock 从标准分帧中选择最新真实 user 消息，不把 context 数据或已处理的工具结果当新指令。业务拒绝沿用普通 harness 路径。Mock 不执行网络或真实音频/动作，也不宣称物理停止。
 
 ## Native Chat Completions（ADR-0055）
 
