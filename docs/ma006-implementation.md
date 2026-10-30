@@ -1,5 +1,7 @@
 # MA-006 整理与 E/F 实施计划
 
+> **现行覆盖目标（2026-10-30）**：Core 行 ≥75%、安全关键分支 ≥80%，见 [ADR-0088](adr/0088-safety-branch-coverage-target.md)；原90%目标弃用。下文保留历史阶段当时的门槛与测量事实。
+
 - **状态**：R1～R4、E 及 F1～F5 授权机制与模拟消费者已交付。F4 按生产增删门槛分为内部证明和完整公开事务；统一收尾与本轮覆盖率门槛见 [ADR-0038](adr/0038-work-authority-and-explicit-reauthorization.md)。实际进度及后续包边界见 [M1 交接状态](../reports/core/m1-progress.md)。
 - **日期**：2026-10-23；三项产品选择由用户于 2026-10-22 确认。
 - **依据**：[主计划](ayni_v1.0.md) §9.1、§14.1；[复查清单](../reports/core/ma006-a-d-review.md)；[开发流程](workflow.md)；ADR-0028～0031。

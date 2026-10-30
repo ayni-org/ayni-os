@@ -2,7 +2,7 @@
 
 - **基线**：AP-05 #116；实验性 ABI 0.51、Core schema 7。
 - **本包**：用户 2026-10-30 授权盘点、设计、双实例验收及基础验收；选择 Binding 资源映射、开发期直接升级，无旧格式兼容层。见 [ADR-0087](../adr/0087-binding-resource-mapping-and-foundation-acceptance.md)。
-- **状态**：实施与验证中。最终验收及未验证范围集中在[基础报告](../../reports/core/foundation-acceptance.md)，本设计不把源码盘点当执行结果。
+- **状态**：实现、当前完整软件回归及独立审查已完成，基础验收进行中。最终验收及未验证范围集中在[基础报告](../../reports/core/foundation-acceptance.md)，本设计不把源码盘点当执行结果。
 
 ## 1 实际消费者与缺口
 
@@ -36,7 +36,7 @@ ABI 0.52、Core schema 8 分别升级。Binding 配置布局变化；Call 记录
 
 ## 4 AP-06 应用、SDK 与生命周期边界
 
-应用仅注册策略/GoalType、提出业务请求及解释结果，不选 Host、Provider 或存储路径。工作流用 Task 私有一字节 checkpoint 记录已观察样本，避免多个 Task 共用实例标记。求和值按公开 `ayni_value_read` 解码并精确检查；UNKNOWN/失败不得作为业务成功。
+应用仅注册策略/GoalType、提出业务请求及解释结果，不选 Host、Provider 或存储路径。软件 Provider 通过公开 usage 数据描述自身语义，可信 runtime 经原注册端口采纳，应用首次工作从 Task 目录 inspect 精确版本和原业务证明。工作流用 Task 私有一字节 checkpoint 记录已观察样本，避免多个 Task 共用实例标记。求和值按公开 `ayni_value_read` 解码并精确检查；UNKNOWN/失败不得作为业务成功。
 
 runtime 选择 Sim 或 Native、软件 Provider 与样例应用；客户端仍仅包含公开 API/runtime 头。Native 示例目录由测试创建并在显式 close 后清理，使用真实单调时间和异步文件存储；Sim 使用显式时间与完成推进。二者共用应用、规范输入、Grant、结果与关闭规则。
 

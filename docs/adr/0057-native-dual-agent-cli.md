@@ -1,5 +1,7 @@
 # ADR-0057：双 Agent Native runtime、对话文件与 CLI
 
+> **现行目标补充（2026-10-30）**：安全关键分支目标已由 [ADR-0088](0088-safety-branch-coverage-target.md) 统一为 ≥80%，原90%目标弃用。以下保留本 ADR 当时的决定、测量及验证事实。
+
 - **状态**：已接受，P2 实现与本地正常验证完成；双 Agent 装配与 `@a/@b` 点名已由 [ADR-0072](0072-single-assistant-schedule-tool-and-stop.md) 取代
 - **日期**：2026-10-26
 - **关联**：MA-020 前半；ADR-0010、0042 决定 13、0053 F16、0056；C-LIFE-030、C-NATIVE-001～006
