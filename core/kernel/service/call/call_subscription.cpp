@@ -65,7 +65,8 @@ bool CallRuntime::refresh_live_gates(uint64_t now_us, uint64_t durable_seq, Mode
         const auto &task = work_.tasks.at(task_index);
         if (!active->collection && submitted(active->stage) &&
             active->delivery->purpose == Delivery::Purpose::execution &&
-            (task.lifecycle == AYNI_TASK_PAUSED || task.call.end != work::TaskCall::End::none)) {
+            (task.lifecycle == AYNI_TASK_PAUSED || !work::TaskTable::is_live(task.lifecycle) ||
+             task.call.end != work::TaskCall::End::none)) {
             active->delivery->inhibition = work::CallCancelCause::user;
         }
         if (!active->collection) {
@@ -189,17 +190,12 @@ ayni_status_t CallRuntime::read_subscription_observation(const void *context, ay
 }
 // The sequence survives cache expiry, so expiry alone never fabricates new input.
 // A new generation with no sample uses zero; its identity already changes the frontier.
-work::SubscriptionWait CallRuntime::subscription_wait_basis(uint32_t index) const {
-    const auto &fact = *work_.calls.state(index).subscription;
-    work::SubscriptionWait basis{work_.calls.identity(index).call_id, fact.generation, 0,
-                                 fact.phase};
-    ayni_observation_info_v1 info{};
-    info.struct_size = sizeof(info);
-    if (observations_.subscription_info(basis.subscription_id, host_.monotonic_now_us(host_.ctx),
-                                        info) == AYNI_OK &&
-        info.reference.generation == basis.generation) {
-        basis.sequence = info.reference.sequence;
-    }
+work::OperationWait CallRuntime::subscription_wait_basis(uint32_t index) const {
+    auto basis = operation_basis(index);
+    // Native WAIT_SUBSCRIPTION keeps its original phase/sample frontier, without a timer.
+    basis.boot_epoch = 0;
+    basis.gaps = 0;
+    basis.cancel_requested = basis.cancel_result = basis.outcome = 0;
     return basis;
 }
 // WAITING keeps authority/privacy holds independent. Renewals do not count as
@@ -208,17 +204,27 @@ bool CallRuntime::next_subscription_wakeup(uint64_t now_us, uint64_t durable_seq
                                            uint32_t &task_index) const {
     for (uint32_t at = 0; at < work_.tasks.size(); ++at) {
         const auto &task = work_.tasks.at(at);
-        if (task.lifecycle != AYNI_TASK_WAITING || !task.subscription_wait ||
+        if (task.lifecycle != AYNI_TASK_WAITING || !task.operation_wait ||
             work::TaskTable::is_held(task) ||
             work_.check_task_authority(at, now_us, durable_seq).status != AYNI_OK ||
             !task_content_current({work_, now_us, durable_seq}, at)) {
             continue;
         }
         uint32_t call_index = 0;
-        if (work_.calls.find(task.subscription_wait->subscription_id, call_index) &&
-            subscription_wait_basis(call_index) != *task.subscription_wait) {
+        const auto &wait = *task.operation_wait;
+        if (wait.timeout_ms && (wait.boot_epoch != work_.ids.boot_epoch() || !wait.deadline_us ||
+                                now_us >= wait.deadline_us)) {
             task_index = at;
             return true;
+        }
+        if (work_.calls.find(wait.call_id, call_index)) {
+            auto current =
+                wait.timeout_ms ? operation_basis(call_index) : subscription_wait_basis(call_index);
+            current.timeout_ms = wait.timeout_ms;
+            if (current != wait) {
+                task_index = at;
+                return true;
+            }
         }
     }
     return false;

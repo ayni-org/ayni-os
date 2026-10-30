@@ -6,7 +6,7 @@
 
 正常收尾是 `drain(正步数, progress)` → `close()`。progress 在 owner 的 step 外推进异步服务；close 在 CONFIGURING/STOPPED 调用创建时提供的 quiesce，确认所有生产者已从最后一次 post 返回，再 destroy/free。hook 必须有界且不抛异常，未就绪返回 BUSY。保留 Host/Provider/context 和外部 arena，直到 close 成功；wrapper 的防御性 arena 保留不能延长它们的生命周期。move 不移动 hook context，也不允许覆盖一个活 Kernel。
 
-四个 main 仅依赖公开头文件。`runtime/examples` 选择具体平台和服务，示例通过公开注册/推进/排空端口接入自己的代码：
+五个 main 仅依赖公开头文件。`runtime/examples` 选择具体平台和服务，示例通过公开注册/推进/排空端口接入自己的代码：
 
 | 可执行目标 | 新增代码 | 实际证明 |
 |---|---|---|
@@ -14,6 +14,8 @@
 | `ayni_example_new_model` | 第二模型的消费者策略 | 实际 OpenAI-compatible loopback HTTP，独立 binding/destination、显式 Grant、精确回复和一次请求 |
 | `ayni_example_new_strategy` | LocalInput 事件规则 | 注册策略/目标、复制输入、一个 durable Task 完成，不修改 Core |
 | `ayni_example_composite_workflow` | 捕获→模型→停止→呈现 | prompt 携带实际 Mock scalar 和来源身份；历史推断不作当前动作证据，停止与通知完成分别核实 |
+
+| `ayni_example_managed_operations` | 可取消分块求和与 I64 软件流 | 同 Task action/订阅并存，读取当前前沿、有限等待、真实结果与 close 终态；只用公开接口 |
 
 ```sh
 # 按 docs/development.md 先设置资源预算和显式构建/测试并行度。
@@ -27,4 +29,7 @@ bash examples/assistant_demo.sh build/native/targets/native_cli/ayni
 
 `new_model` 只使用 numeric-loopback 和进程内 fixture-only key，不读取真实凭据或访问外部模型。可复用协议 helper 在 Provider test_support，产品 CLI 不链接 fixture。独立示例若无法成功 close，会明确失败退出并保留借用至进程结束；这不作为正常关闭证据，也不是 SDK 库的通用退出策略。
 
-CI 编译并运行四个示例和脚本；阶段完整验证另按工作流运行。正常示例不替代完整 E1–E4、故障恢复、真实媒体、硬件停止时限或 Core Alpha。
+CI 编译并运行五个示例和脚本；阶段完整验证另按工作流运行。正常示例不替代完整 E1–E4、故障恢复、真实媒体、硬件停止时限或 Core Alpha。
+
+
+`providers/software` 是平台无关的协作式示例 Provider：每次 `advance()` 每槽最多256次加法或一次事件/控制/终态投递，必须在 Kernel step 外推进。无 worker、设备或网络；configure 一次性有界分配，接受后复制请求，成功 terminal post 后归还借用，close 在 pending 非零时返回 BUSY。事件保留原采集时刻，满队列不伪造新鲜值。

@@ -118,6 +118,8 @@ class FileLog {
 
     // The functions below that take int &error, or return an int, report
     // the errno of a failed file call there, and 0 otherwise.
+    // Read-only schema refusal under the directory lock, before creating any new data file.
+    Opened check_snapshot_schemas() const;
     Opened check_file_header(bool &initialized);
     Opened scan();
     FrameCheck check_frame(uint64_t at, Frame &frame, int &error) const;

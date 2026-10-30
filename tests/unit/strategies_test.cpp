@@ -139,7 +139,15 @@ TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_
               AYNI_OK);
     size_t cost = 0;
     ASSERT_TRUE(measured.finish(cost));
-    EXPECT_LT(cost, old_history.size());
+    auto baseline = ayni::json::Writer::measuring();
+    ASSERT_EQ(ayni::model::write_context(
+                  baseline, {old_history.data(), static_cast<uint32_t>(old_history.size())},
+                  ayni::model::Mode::assistant),
+              AYNI_OK);
+    size_t previous_cost = 0;
+    ASSERT_TRUE(baseline.finish(previous_cost));
+    EXPECT_LT(cost,
+              previous_cost); // Compare the same wire encoding, including fixed tool definitions.
     post(static_cast<uint32_t>(pending.size() - 1U), text("current answer"));
     pump();
     finish(task);

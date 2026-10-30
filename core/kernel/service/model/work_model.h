@@ -69,6 +69,7 @@ struct WorkModel {
           provenance(storage[Store::provenance], provenance_limits(capacities)),
           callbacks_(callbacks) {
         tasks.set_retention({this, retains_task});
+        tasks.set_call_query(this, call_constraints);
         goals.set_retention({this, retains_goal});
     }
 
@@ -260,6 +261,7 @@ struct WorkModel {
     bool due_search_with_id_ = true;            // Whether an id was left at the search.
     CallbackGate &callbacks_; // Borrowed Kernel boundary; outlives all model callbacks.
     // Cross-table retention reads owner facts; no duplicated reference counters.
+    static work::TaskTable::CallConstraints call_constraints(const void *, const work::Task &);
     static bool retains_task(const void *context, const work::Task &task);
     static bool retains_goal(const void *context, const work::Goal &goal);
 };

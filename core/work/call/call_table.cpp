@@ -161,10 +161,11 @@ bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp) {
             }
         }
     }
-    return source && disclosure && foundation::is_kernel_id(id.call_id) &&
-           foundation::is_kernel_id(id.operation_id) && foundation::is_kernel_id(id.task_id) &&
-           foundation::is_kernel_id(id.owner_instance_id) && id.call_id != id.operation_id &&
-           id.call_id != id.task_id && id.operation_id != id.task_id &&
+    return source && disclosure && id.model_context.valid() &&
+           foundation::is_kernel_id(id.call_id) && foundation::is_kernel_id(id.operation_id) &&
+           foundation::is_kernel_id(id.task_id) && foundation::is_kernel_id(id.owner_instance_id) &&
+           id.call_id != id.operation_id && id.call_id != id.task_id &&
+           id.operation_id != id.task_id &&
            foundation::id_boot_epoch(id.call_id) == stamp.boot_epoch &&
            foundation::id_boot_epoch(id.operation_id) == stamp.boot_epoch &&
            foundation::id_boot_epoch(id.task_id) <= stamp.boot_epoch &&
@@ -188,11 +189,19 @@ bool CallTable::pending(const Entry &entry) {
 
 // Admission already validated the canonical input against this exact domain
 // and contract. Capacity/duplicate refusal changes neither metadata nor bytes.
+bool CallTable::valid_mode(const CallIdentity &id, const catalog::CallContract &contract) {
+    return id.mode == AYNI_CALL_MODE_FOREGROUND ||
+           (id.mode == AYNI_CALL_MODE_MANAGED && contract.category == catalog::CallClass::tool &&
+            (contract.form == catalog::CallForm::action ||
+             contract.form == catalog::CallForm::subscription));
+}
+
 ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContract &contract,
                                 ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
                                 ActionStamp stamp, uint32_t &index) {
-    if (!valid_identity(id, stamp) || domain_body.data == nullptr || input_body.data == nullptr ||
-        domain_body.size == 0U || input_body.size < catalog::value_encoding_header_bytes ||
+    if (!valid_identity(id, stamp) || !valid_mode(id, contract) || domain_body.data == nullptr ||
+        input_body.data == nullptr || domain_body.size == 0U ||
+        input_body.size < catalog::value_encoding_header_bytes ||
         ((contract.effects & catalog::call_effect_egress) != 0U) != (id.destination.size() != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -231,6 +240,8 @@ ayni_status_t CallTable::place_new(const CallIdentity &id, const catalog::CallCo
         entry.contract = contract;
         entry.state.created = stamp;
         entry.state.latest = stamp;
+        entry.state.attachment = id.mode == AYNI_CALL_MODE_MANAGED ? CallAttachment::background
+                                                                   : CallAttachment::foreground;
         if (contract.subscription) {
             entry.state.subscription = SubscriptionFact{};
             entry.state.subscription->generation =
@@ -333,7 +344,7 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     entry.result_kind = result.kind;
     if (entry.state.subscription) {
         auto &subscription = *entry.state.subscription;
-        subscription.attachment = SubscriptionAttachment::background;
+        entry.state.attachment = CallAttachment::background;
         if (subscription.control_status != AYNI_OK) {
             subscription.phase = SubscriptionPhase::failed;
         } else if (subscription.phase == SubscriptionPhase::expired ||

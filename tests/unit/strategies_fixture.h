@@ -3,6 +3,7 @@
 #define AYNI_TEST_STRATEGIES_FIXTURE_H
 #include "function_proposal.h"
 #include "work_node.h"
+#include <ayni/providers/software/work.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
 #include <ayni/values_json.hpp>
@@ -20,6 +21,9 @@ class StrategiesFixture : public ::testing::Test {
         uint64_t operation;
         bool ended = false;
     };
+    bool action_tool = false;
+    bool software_tools = false;
+    ayni::providers::software::WorkProvider software;
     uint32_t tool_alias_count = 0;
     policies::HistoryPort history_port{};
     ayni_model_usage_v1 service_usage{AYNI_MODEL_USAGE_REPORTED, 0, 100, 10, 110};
@@ -52,16 +56,28 @@ class StrategiesFixture : public ::testing::Test {
         c.call_capacity = 24;
         c.call_input_max_bytes = policies::prompt_bytes_max + 36;
         c.call_result_max_bytes = 4096;
-        c.call_capability_capacity = 3;
-        c.capability_capacity = 3;
-        c.provider_capacity = 1;
-        c.binding_capacity = 3 + tool_alias_count;
+        c.call_capability_capacity = software_tools ? 5 : 3;
+        c.capability_capacity = software_tools ? 5 : 3;
+        c.provider_capacity = software_tools ? 2 : 1;
+        c.binding_capacity = (software_tools ? 5 : 3) + tool_alias_count;
         c.goal_type_capacity = 2;
-        c.resource_capacity = 1;
+        c.resource_capacity = software_tools ? 2 : 1;
+        if (software_tools) {
+            c.observation_source_capacity = 1;
+            ayni::providers::software::WorkConfig config;
+            config.clock_context = this;
+            config.now_us = [](void *context) {
+                return static_cast<StrategiesFixture *>(context)->work.node().sim().now_us();
+            };
+            ASSERT_EQ(software.configure(config), AYNI_OK);
+        }
         c.resource_request_capacity = 4;
         work.node().on_create([this](ayni_kernel_t *kernel) { profile(kernel); });
         work.run();
-        for (const char *id : {"model", "summary", "echo"}) {
+        for (const char *id : {"model", "summary", "echo", "software.sum", "software.events"}) {
+            if (!software_tools && std::strncmp(id, "software.", 9) == 0) {
+                continue;
+            }
             const ayni_grant_create_v1 grant{
                 sizeof(grant),        1, text(id), work.instance(agent_a), 0,
                 AYNI_GRANT_PERMANENT, 0, 0,        empty_scope()};
@@ -104,7 +120,7 @@ class StrategiesFixture : public ::testing::Test {
             offer.capability_id = id;
             const bool model = at != 2;
             offer.contract = {sizeof(ayni_call_contract_v1),
-                              AYNI_CALL_UNARY,
+                              !model && action_tool ? AYNI_CALL_ACTION : AYNI_CALL_UNARY,
                               model ? AYNI_CALL_MODEL : AYNI_CALL_TOOL,
                               0,
                               AYNI_CALL_IDEMPOTENT,
@@ -275,6 +291,11 @@ class StrategiesFixture : public ::testing::Test {
                       AYNI_OK);
             allowed.push_back({id, 1, AYNI_TOOL_ROLE_CAPABILITY});
         }
+        if (software_tools) {
+            register_software(kernel);
+            allowed.push_back({text("software.sum"), 1, AYNI_TOOL_ROLE_CAPABILITY});
+            allowed.push_back({text("software.events"), 1, AYNI_TOOL_ROLE_CAPABILITY});
+        }
         if (allowed.empty()) {
             allowed.push_back({text("echo"), 1, AYNI_TOOL_ROLE_CAPABILITY});
         }
@@ -302,6 +323,47 @@ class StrategiesFixture : public ::testing::Test {
                 return AYNI_OK;
             };
             ASSERT_EQ(ayni_register_goal_type(kernel, &goal), AYNI_OK);
+        }
+    }
+    // ADR-0086: an actual cooperative software backend uses only public registration ports.
+    void register_software(ayni_kernel_t *kernel) {
+        const ayni_resource_desc_v1 resource{
+            sizeof(resource), AYNI_RESOURCE_SHARED, text("software.slot"), 4, 0, 0, 0, nullptr, {}};
+        ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
+        ASSERT_EQ(ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE),
+                  AYNI_OK);
+        ayni_observation_source_v1 source{};
+        ASSERT_EQ(software.describe_source(source), AYNI_OK);
+        ASSERT_EQ(ayni_register_observation_source(kernel, &source), AYNI_OK);
+        ayni_provider_v1 provider{};
+        ASSERT_EQ(software.describe(provider), AYNI_OK);
+        for (uint32_t at = 0; at < provider.capability_count; ++at) {
+            const auto &offer = provider.capabilities[at];
+            const ayni_capability_desc_v1 capability{
+                sizeof(capability), 1, offer.capability_id, 0, 0, nullptr};
+            ASSERT_EQ(ayni_register_capability(kernel, &capability), AYNI_OK);
+            ASSERT_EQ(ayni_register_call_capability(kernel, &offer), AYNI_OK);
+        }
+        ASSERT_EQ(ayni_register_provider(kernel, &provider), AYNI_OK);
+        for (uint32_t at = 0; at < provider.capability_count; ++at) {
+            const auto id = provider.capabilities[at].capability_id;
+            const ayni_binding_v1 binding{
+                sizeof(binding), 1, id, id, 1, 1, provider.provider_id, provider.endpoint_id, {}};
+            ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
+            const ayni_tool_usage_v1 usage{sizeof(usage),
+                                           1,
+                                           id,
+                                           1,
+                                           id,
+                                           text("Software work."),
+                                           text("Native input."),
+                                           text("Native result."),
+                                           text("Start or invoke with Schema input."),
+                                           0,
+                                           0,
+                                           nullptr};
+            ASSERT_EQ(ayni_register_capability_usage(kernel, text("Cooperative software."), &usage),
+                      AYNI_OK);
         }
     }
     void pump(uint32_t count = 160) {
@@ -418,6 +480,13 @@ class StrategiesFixture : public ::testing::Test {
             }
         }
         ASSERT_EQ(ayni_begin_shutdown(work.kernel()), AYNI_OK);
+        if (software_tools) {
+            for (uint32_t at = 0; at < 160 && software.pending(); ++at) {
+                pump(1);
+                ASSERT_EQ(software.advance(), AYNI_OK);
+            }
+            ASSERT_EQ(software.pending(), 0U);
+        }
         work.node().drain();
     }
     std::array<std::array<ayni_schema_node_v1, 4>, 3> input_schemas{};

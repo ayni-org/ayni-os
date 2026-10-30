@@ -298,10 +298,11 @@ TEST_F(SubscriptionFixture, waiting_task_wakes_once_for_the_latest_sample_and_su
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal).status, AYNI_OK);
     pump(8);
     EXPECT_EQ(work.task(task(goal)).lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_NE(work.task(task(goal)).wait_subscription_id, 0U);
+    EXPECT_NE(work.task(task(goal)).wait_logical_call_id, 0U);
     ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal).status, AYNI_OK);
     pump(20);
     EXPECT_GT(subscription().subscription.generation, first_generation);
+    pump(6, 0, false); // Observe the durable wait after draining this finite sample burst.
     EXPECT_EQ(work.task(task(goal)).lifecycle, AYNI_TASK_WAITING);
     EXPECT_EQ(work.task(task(goal)).wait_generation, subscription().subscription.generation);
 }
@@ -369,7 +370,7 @@ TEST_F(SubscriptionFixture,
     const auto decided = decisions;
     pump(20);
     EXPECT_EQ(work.task(task(goal)).lifecycle, AYNI_TASK_WAITING);
-    EXPECT_EQ(work.task(task(goal)).wait_subscription_id, before.wait_subscription_id);
+    EXPECT_EQ(work.task(task(goal)).wait_logical_call_id, before.wait_logical_call_id);
     EXPECT_GT(work.task(task(goal)).wait_generation, before.wait_generation);
     EXPECT_GT(decisions, decided);
 }

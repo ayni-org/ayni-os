@@ -45,8 +45,10 @@ constexpr uint32_t task_record_size = 64;
 constexpr uint32_t task_snapshot_tail_size = 36;
 constexpr uint32_t task_snapshot_record_size = task_record_size + task_snapshot_tail_size;
 // Complete state: base 32 B, runtime 12 B, selected call 12 B, wait 28 B,
-// explicit change and wait-presence 8 B. No older short body is accepted.
-constexpr uint32_t task_state_record_size = 92;
+// Generic wait adds form/boot/gap/cancellation/outcome/timeout (36 B) in schema 7.
+// The independent Call UNKNOWN overlay adds 4 B; change/presence remain 8 B.
+// The monotonic deadline is never encoded; no older short body is accepted.
+constexpr uint32_t task_state_record_size = 132;
 // Without its keys.
 constexpr uint32_t task_steps_record_fixed_size = 16;
 // Without the writer's id and the state.

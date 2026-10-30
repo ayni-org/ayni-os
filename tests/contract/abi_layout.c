@@ -12,6 +12,7 @@
 #include <ayni/directory.h>
 #include <ayni/execution.h>
 #include <ayni/memory.h>
+#include <ayni/operations.h>
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 #include <ayni/storage_format.h>
@@ -344,7 +345,7 @@ AYNI_LAYOUT(task_info_hold_status, offsetof(ayni_task_info_v1, hold_status) == 7
 AYNI_LAYOUT(task_info_hold_reason, offsetof(ayni_task_info_v1, hold_reason) == 76);
 AYNI_LAYOUT(task_info_step_count, offsetof(ayni_task_info_v1, step_count) == 80);
 AYNI_LAYOUT(task_info_reserved, offsetof(ayni_task_info_v1, reserved) == 84);
-AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 160);
+AYNI_LAYOUT(task_info_size, sizeof(ayni_task_info_v1) == 168);
 AYNI_LAYOUT(task_call_id, offsetof(ayni_task_info_v1, logical_call_id) == 104);
 
 AYNI_LAYOUT(private_checkpoint_strategy_id, offsetof(ayni_private_checkpoint_v1, strategy_id) == 0);
@@ -379,7 +380,7 @@ AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_call_tool, offsetof(ayni_task_snapshot_v1, call_tool) == 80 + 11 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 18 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 19 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -399,7 +400,7 @@ AYNI_LAYOUT(policy_output_checkpoint_capacity,
 AYNI_LAYOUT(policy_output_checkpoint_size,
             offsetof(ayni_policy_output_v1, checkpoint_size) == 20 + AYNI_PTR);
 AYNI_LAYOUT(policy_output_checkpoint, offsetof(ayni_policy_output_v1, checkpoint) == 24 + AYNI_PTR);
-AYNI_LAYOUT(policy_output_size, sizeof(ayni_policy_output_v1) == 24 + 4 * AYNI_PTR);
+AYNI_LAYOUT(policy_output_size, sizeof(ayni_policy_output_v1) == 24 + 5 * AYNI_PTR);
 
 AYNI_LAYOUT(strategy_struct_size, offsetof(ayni_strategy_v1, struct_size) == 0);
 AYNI_LAYOUT(strategy_version, offsetof(ayni_strategy_v1, version) == 4);
@@ -760,7 +761,7 @@ AYNI_LAYOUT(ayni_call_request_v1_binding_id,
 AYNI_LAYOUT(ayni_call_request_v1_arguments,
             offsetof(ayni_call_request_v1, arguments) == 16 + 4 * AYNI_PTR);
 AYNI_LAYOUT(ayni_call_request_v1_text, offsetof(ayni_call_request_v1, text) == 24 + 5 * AYNI_PTR);
-AYNI_LAYOUT(ayni_call_request_v1_size, sizeof(ayni_call_request_v1) == 24 + 9 * AYNI_PTR);
+AYNI_LAYOUT(ayni_call_request_v1_size, sizeof(ayni_call_request_v1) == 32 + 9 * AYNI_PTR);
 
 AYNI_LAYOUT(ayni_task_call_result_v1_struct_size,
             offsetof(ayni_task_call_result_v1, struct_size) == 0);
@@ -779,7 +780,7 @@ AYNI_LAYOUT(ayni_task_call_result_v1_tool_call_count,
 AYNI_LAYOUT(ayni_task_call_result_v1_reserved,
             offsetof(ayni_task_call_result_v1, reserved) == 44 + 2 * AYNI_PTR);
 AYNI_LAYOUT(ayni_task_call_result_v1_size,
-            sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(56 + 8 * AYNI_PTR) + 32);
+            sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(56 + 8 * AYNI_PTR) + 40);
 AYNI_LAYOUT(ayni_task_call_result_model_usage,
             offsetof(ayni_task_call_result_v1, model_usage) == AYNI_ROUND8(56 + 8 * AYNI_PTR));
 AYNI_LAYOUT(ayni_task_call_result_v1_effect,
@@ -927,7 +928,7 @@ AYNI_LAYOUT(subscription_contract_size,
             sizeof(ayni_subscription_contract_v1) == 16 + 2 * sizeof(void *));
 AYNI_LAYOUT(subscription_renew_size, sizeof(ayni_subscription_renew_v1) == 48);
 AYNI_LAYOUT(subscription_info_size, sizeof(ayni_subscription_info_v1) == 72);
-AYNI_LAYOUT(task_wait_subscription, offsetof(ayni_task_info_v1, wait_subscription_id) == 128);
+AYNI_LAYOUT(task_wait_subscription, offsetof(ayni_task_info_v1, wait_logical_call_id) == 128);
 AYNI_LAYOUT(task_wait_phase, offsetof(ayni_task_info_v1, wait_phase) == 152);
 
 /* ADR-0065: append immutable membership and copy group diagnostics. */
@@ -939,7 +940,7 @@ AYNI_LAYOUT(pause_group_info_size, sizeof(ayni_pause_group_info_v1) == 40);
 /* ABI 0.49: directory values are fixed layouts, not extensible descriptors. */
 AYNI_LAYOUT(directory_cursor_size, sizeof(ayni_capability_cursor_v1) == 48);
 AYNI_LAYOUT(directory_cursor_position, offsetof(ayni_capability_cursor_v1, position) == 44);
-AYNI_LAYOUT(directory_info_size, sizeof(ayni_capability_info_v1) == (AYNI_PTR == 8 ? 64 : 36));
+AYNI_LAYOUT(directory_info_size, sizeof(ayni_capability_info_v1) == (AYNI_PTR == 8 ? 72 : 44));
 AYNI_LAYOUT(directory_detail_info, offsetof(ayni_capability_detail_v1, info) == 8);
 AYNI_LAYOUT(task_tool_authority_size, sizeof(ayni_task_tool_authority_v1) == 56);
 AYNI_LAYOUT(task_tool_authority_source,
@@ -953,3 +954,16 @@ AYNI_LAYOUT(snapshot_directory_inspect,
 
 AYNI_LAYOUT(snapshot_capability_context,
             offsetof(ayni_task_snapshot_v1, capability_context) == 96 + 17 * AYNI_PTR);
+
+/* ABI 0.51: exact scalar operation identities and staged controls remain C99. */
+AYNI_LAYOUT(operation_ref_size, sizeof(ayni_operation_ref_v1) == 24);
+AYNI_LAYOUT(operation_frontier_size, sizeof(ayni_operation_frontier_v1) == 40);
+AYNI_LAYOUT(operation_control_size, sizeof(ayni_operation_control_v1) == 80 + 2 * AYNI_PTR);
+AYNI_LAYOUT(operation_control_reference,
+            offsetof(ayni_operation_control_v1, reference) == 8 + 2 * AYNI_PTR);
+AYNI_LAYOUT(snapshot_operation, offsetof(ayni_task_snapshot_v1, operation) == 96 + 18 * AYNI_PTR);
+AYNI_LAYOUT(policy_operation_control,
+            offsetof(ayni_policy_output_v1, control_operation) == 24 + 4 * AYNI_PTR);
+AYNI_LAYOUT(sample_identity_size, sizeof(ayni_model_sample_v1) == 24);
+AYNI_LAYOUT(capability_context_size, sizeof(ayni_capability_context_v1) == 296);
+AYNI_LAYOUT(task_wait_form, offsetof(ayni_task_info_v1, wait_form) == 156);

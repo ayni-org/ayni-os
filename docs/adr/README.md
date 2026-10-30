@@ -139,3 +139,5 @@
 | [0084](0084-typed-capability-values-and-authority-projection.md) | 通用业务值、完整授权投影与开发期升级 | 已接受范围；实现未交付 | §3、§9、§14、AP-02 |
 
 | [0085](0085-stable-capability-tools-and-shell.md) | 固定能力工具、按需说明、连续上下文与显式 Shell | 已接受范围；实施中 | AP-02/AP-03 |
+
+| [0086](0086-task-owned-managed-operation-controls.md) | Task 所有长操作与订阅的模型控制 | 已接受产品选择；实施设计 | §2、§3、§9、§14、AP-05 |

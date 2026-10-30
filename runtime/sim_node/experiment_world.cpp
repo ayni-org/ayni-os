@@ -32,7 +32,9 @@ ayni_status_t request_increment(ayni_policy_output_v1 &output) {
                                  text("increment"),
                                  {},
                                  {},
-                                 {}};
+                                 {},
+                                 AYNI_CALL_MODE_FOREGROUND,
+                                 0};
     const auto built = input.finish(request.value);
     if (built != AYNI_OK) {
         return built;

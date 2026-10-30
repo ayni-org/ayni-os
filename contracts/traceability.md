@@ -8,7 +8,7 @@
 |---|---:|---:|
 | [domain/authority_and_trust.md](domain/authority_and_trust.md) | 39 | 18 |
 | [domain/business_values.md](domain/business_values.md) | 8 | 0 |
-| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 23 | 2 |
+| [domain/calls_and_bindings.md](domain/calls_and_bindings.md) | 27 | 2 |
 | [domain/capability_directory.md](domain/capability_directory.md) | 7 | 0 |
 | [domain/commit_and_output.md](domain/commit_and_output.md) | 20 | 10 |
 | [domain/ids_and_time.md](domain/ids_and_time.md) | 18 | 7 |
@@ -34,7 +34,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 426 | 141 |
+| 合计 | 430 | 141 |
 
 ## 计划章节 → 契约文档
 

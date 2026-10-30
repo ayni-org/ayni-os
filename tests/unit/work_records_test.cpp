@@ -120,8 +120,10 @@ template <typename Read> void expect_size_only(uint32_t size, Read read) {
     if (size == ayni::work::goal_state_record_size) {
         ayni::foundation::store_le32(body.data() + 48, 1);
     } else if (size == ayni::work::task_state_record_size) {
-        ayni::foundation::store_le32(body.data() + 36, 8);
-        ayni::foundation::store_le32(body.data() + 84, 1);
+        Task state{};
+        state.lifecycle = AYNI_TASK_READY;
+        ayni::work::write_task_state_record(state, body.data(),
+                                            ayni::work::TaskRecordChange::state);
     }
     EXPECT_TRUE(read(body.data(), size));
     for (uint32_t shorter = 0; shorter < size; ++shorter) {

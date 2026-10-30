@@ -76,7 +76,8 @@ inline ayni_status_t request(ayni_policy_output_v1 &o, const char *binding, ayni
                            1,         0,
                            key,       text(binding),
                            {},        {},
-                           {}};
+                           {},        AYNI_CALL_MODE_FOREGROUND,
+                           0};
     const auto status = value.finish(r.value);
     if (status != AYNI_OK) {
         return status;

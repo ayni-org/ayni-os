@@ -97,7 +97,9 @@ ayni_status_t shared_summary(const ayni_task_snapshot_v1 &s, ayni_policy_output_
                                   text("model"),
                                   {},
                                   {},
-                                  {}};
+                                  {},
+                                  AYNI_CALL_MODE_FOREGROUND,
+                                  0};
         const auto built = value.finish(call.value);
         if (built != AYNI_OK) {
             return built;

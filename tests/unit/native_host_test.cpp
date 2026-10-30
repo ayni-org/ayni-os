@@ -60,6 +60,25 @@ using ayni::test::TempDirectory;
 using ayni::test::test_batch;
 
 // A failed observation is distinct from a valid zero-byte observation.
+// ADR-0086 / C-STORE-004: reject an old native prefix before new outer-store creation.
+TEST(NativeHost, unsupported_snapshot_schema_is_preserved_before_log_creation) {
+    const TempDirectory directory;
+    const std::array<uint8_t, AYNI_STORAGE_SCHEMA_PREFIX_BYTES> old{
+        {'A', 'Y', 'S', 'N', AYNI_STORAGE_SCHEMA_CURRENT - 1, 0}};
+    const auto path = directory.file("snapshot_0");
+    {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(old.data()),
+                   static_cast<std::streamsize>(old.size()));
+    }
+    Host host;
+    EXPECT_EQ(host.open_storage(directory.path().c_str(), 1).status, StorageStatus::not_a_log);
+    EXPECT_FALSE(std::filesystem::exists(directory.file(Host::log_file_name)));
+    std::ifstream file(path, std::ios::binary);
+    const Bytes after{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(after, Bytes(old.begin(), old.end()));
+}
+
 struct SpaceProbe {
     std::atomic<uint64_t> available{0};
     std::atomic<unsigned> samples{0};

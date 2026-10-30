@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 50u
+#define AYNI_ABI_MINOR 51u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1436,12 +1436,15 @@ typedef struct ayni_task_info_v1 {
      * -1 for non-calendar Tasks. Stable across restart. Since 0.41. */
     int64_t calendar_local_s;
     int64_t calendar_utc_s;
-    /* Since 0.43. Durable wait frontier; all zero when no subscription wait. */
-    uint64_t wait_subscription_id;
+    /* Since 0.51. Tagged durable operation frontier; all zero when not waiting.
+     * Generation is the action operation ID or subscription opening ID. */
+    uint64_t wait_logical_call_id;
     uint64_t wait_generation;
     uint64_t wait_sequence;
     uint32_t wait_phase;
-    uint32_t wait_reserved; /* Written zero. */
+    uint32_t wait_form;       /* ACTION or SUBSCRIPTION; zero with no wait. */
+    uint32_t wait_timeout_ms; /* Zero for native unbounded subscription waits. */
+    uint32_t wait_reserved;   /* Written zero. */
 } ayni_task_info_v1;
 
 /*
@@ -1724,6 +1727,9 @@ struct ayni_capability_cursor_v1;
 struct ayni_capability_info_v1;
 struct ayni_capability_detail_v1;
 struct ayni_capability_context_v1;
+struct ayni_operation_ref_v1;
+struct ayni_operation_info_v1;
+struct ayni_operation_control_v1;
 /* Since 0.40. Defined in memory.h, leased only to the current Task decision. */
 struct ayni_memory_view_v1;
 
@@ -1791,6 +1797,10 @@ typedef struct ayni_task_snapshot_v1 {
     ayni_status_t (*capability_context)(const void *context,
                                         const struct ayni_capability_context_v1 *previous,
                                         struct ayni_capability_context_v1 *out);
+    /* Since 0.51. Task-owned read during decide only; no remote query. A prior
+     * opening may be read to learn the current generation but cannot control it. */
+    ayni_status_t (*operation)(const void *context, const struct ayni_operation_ref_v1 *reference,
+                               struct ayni_operation_info_v1 *out);
 } ayni_task_snapshot_v1;
 
 /* The intent kinds this library implements. REPORT_COMPLETION and REPORT_FAILURE end
@@ -1810,6 +1820,8 @@ typedef uint32_t ayni_policy_intent_kind_t;
 #define AYNI_POLICY_CLOSE_SUBSCRIPTION ((ayni_policy_intent_kind_t)8)
 /* Wait for new data/state of this Task's subscription step, retaining its lease. Since 0.43. */
 #define AYNI_POLICY_WAIT_SUBSCRIPTION ((ayni_policy_intent_kind_t)9)
+/* Stage one Task-owned wait/cancel/close through control_operation. Since 0.51. */
+#define AYNI_POLICY_CONTROL_OPERATION ((ayni_policy_intent_kind_t)10)
 
 typedef struct ayni_policy_intent_v1 {
     uint32_t struct_size;
@@ -1848,6 +1860,10 @@ typedef struct ayni_policy_output_v1 {
      * validated. Context/callback may be used only within this decide call. */
     void *call_context;
     ayni_status_t (*request_call)(void *context, const struct ayni_call_request_v1 *request);
+    /* Since 0.51. Copies one control and installs the sole matching intent;
+     * borrowed only within decide. Failure leaves output and domain facts unchanged. */
+    ayni_status_t (*control_operation)(void *context,
+                                       const struct ayni_operation_control_v1 *control);
 } ayni_policy_output_v1;
 
 /*

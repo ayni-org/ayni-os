@@ -97,6 +97,10 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_BINDING_CAPACITY_MAX 256u
 
 /* Immutable resource demand; names resolve at start, never by registry order. */
+/* Wait for the terminal before another Task decision. Since 0.51. */
+#define AYNI_CALL_MODE_FOREGROUND 0u
+/* Explicit Task-owned action/subscription, permitting further decisions. Since 0.51. */
+#define AYNI_CALL_MODE_MANAGED 1u
 /* Since 0.31. Explicit trusted Binding selection and concrete typed arguments.
  * All views are copied by output.request_call before it returns. The model may
  * propose values, but cannot register a new Binding or endpoint. */
@@ -110,6 +114,9 @@ typedef struct ayni_call_request_v1 {
     ayni_scope_v1 arguments;        /* Reserved since 0.48; every member must be zero. */
     ayni_string_v1 text; /* Reserved since 0.48; must be empty. Business input is value alone. */
     ayni_value_v1 value; /* Since 0.48. VALUE input; legacy arguments/text must be empty. */
+    uint32_t
+        mode; /* Since 0.51. FOREGROUND by default; MANAGED only for TOOL action/subscription. */
+    uint32_t mode_reserved; /* Since 0.51. Must be zero. */
 } ayni_call_request_v1;
 
 /* Native typed business input. Since 0.48. */
@@ -176,6 +183,7 @@ typedef struct ayni_task_call_result_v1 {
         business_contract; /* Since 0.48. Original complete proof; not the current catalog. */
     ayni_model_usage_v1
         model_usage; /* Since 0.50. Actual service statistics, never byte estimates. */
+    uint32_t mode;   /* Since 0.51. Original accepted FOREGROUND or MANAGED mode. */
 } ayni_task_call_result_v1;
 
 /* Since 0.50. Caller-owned proposal view. Nodes point into this output; all

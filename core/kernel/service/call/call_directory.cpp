@@ -16,14 +16,16 @@ bool first_page(const ayni_capability_cursor_v1 &cursor) {
            !cursor.valid_until_us && !cursor.gate_count && !cursor.position;
 }
 ayni_capability_info_v1 info(const catalog::BindingRegistry &bindings, uint32_t index,
-                             ayni_tool_role_t role) {
+                             ayni_tool_role_t role, const catalog::CallContract &contract) {
     const auto &binding = bindings.at(index);
     return {view(binding.id),
             binding.version,
             view(binding.capability),
             binding.capability_version,
             role,
-            bindings.summary(index)};
+            bindings.summary(index),
+            static_cast<uint32_t>(contract.form),
+            static_cast<uint32_t>(contract.cancel)};
 }
 } // namespace
 
@@ -124,7 +126,8 @@ ayni_status_t CallRuntime::list_capabilities(uint32_t task_index, uint64_t now_u
         if (used == capacity) {
             break;
         }
-        page[used++] = info(catalogs_.bindings, binding, policy.tools[position].role);
+        page[used++] = info(catalogs_.bindings, binding, policy.tools[position].role,
+                            catalogs_.call_capabilities.at(links.call).contract);
     }
     const ayni_capability_cursor_v1 following =
         position == policy.count
@@ -177,7 +180,8 @@ ayni_status_t CallRuntime::inspect_capability(uint32_t task_index, uint64_t now_
         catalogs_.bindings.usage(binding, usage, fields);
         out = {};
         out.struct_size = sizeof(out);
-        out.info = info(catalogs_.bindings, binding, reference.role);
+        out.info = info(catalogs_.bindings, binding, reference.role,
+                        catalogs_.call_capabilities.at(links.call).contract);
         out.original_domain = catalogs_.capabilities.domain_view(links.capability);
         out.business_contract =
             catalogs_.call_capabilities.at(links.call).contract.business_contract;
@@ -213,11 +217,35 @@ work::ModelContext CallRuntime::model_context(uint32_t task_index, uint64_t now_
 // preserve browsing, without replacing a previously bound execution Grant.
 bool CallRuntime::model_context_current(uint32_t task_index, const work::ModelContext &context,
                                         uint64_t now_us, uint64_t durable_seq) const {
+    if (!context.valid()) {
+        return false;
+    }
     if (!context.boot_epoch) {
         return true;
     }
     if (context.boot_epoch != work_.ids.boot_epoch()) {
         return false;
+    }
+    // Exact sample identity pins source/version/Grant through the original Call.
+    // Same-Task ownership is checked again at every egress/consume boundary.
+    for (uint32_t at = 0; at < context.sample_count; ++at) {
+        const auto &sample = context.samples[at];
+        uint32_t index = 0;
+        if (!work_.calls.find(sample.call_id, index) ||
+            work_.calls.identity(index).task_id != work_.tasks.at(task_index).task_id ||
+            !subscription_usable(index, now_us, durable_seq)) {
+            return false;
+        }
+        const auto &contract = work_.calls.contract(index).subscription;
+        if (!contract) {
+            return false;
+        }
+        const ayni_observation_ref_v1 reference{
+            contract->source.snapshot(), contract->source_version, context.boot_epoch,
+            sample.generation,           sample.sequence,          sample.call_id};
+        if (!observations_.current(reference, now_us)) {
+            return false;
+        }
     }
     constexpr uint32_t word_bits = std::numeric_limits<uint64_t>::digits;
     for (uint32_t word = 0; word < context.visible.size(); ++word) {
@@ -243,12 +271,38 @@ bool CallRuntime::retain_model_context(uint32_t task_index, const work::ModelCon
     }
     if (context.boot_epoch && decision_ && decision_->task_index == task_index) {
         auto &captured = decision_->model_context;
+        // Preflight the union before changing the active lease's evidence.
+        auto merged = captured;
+        for (uint32_t at = 0; at < context.sample_count; ++at) {
+            const auto &sample = context.samples[at];
+            bool found = false;
+            for (uint32_t previous = 0; previous < merged.sample_count; ++previous) {
+                found = found || merged.samples[previous] == sample;
+            }
+            if (!found) {
+                if (merged.sample_count == merged.samples.size()) {
+                    return false;
+                }
+                merged.samples[merged.sample_count++] = sample;
+            }
+        }
+        captured = merged;
         captured.boot_epoch = context.boot_epoch;
         for (uint32_t word = 0; word < context.visible.size(); ++word) {
             captured.visible[word] |= context.visible[word];
         }
     }
     return true;
+}
+
+// The original subscription Call supplies exact source/version and authority on every use.
+bool CallRuntime::retain_sample(uint32_t task_index, const ayni_observation_ref_v1 &sample,
+                                uint64_t now_us, uint64_t durable_seq) const {
+    work::ModelContext source;
+    source.boot_epoch = sample.boot_epoch;
+    source.sample_count = 1;
+    source.samples[0] = {sample.subscription_id, sample.generation, sample.sequence};
+    return retain_model_context(task_index, source, now_us, durable_seq);
 }
 
 ayni_status_t CallRuntime::capability_context_view(const void *context,
@@ -273,15 +327,28 @@ ayni_status_t CallRuntime::capability_context_view(const void *context,
     }
     if (previous) {
         work::ModelContext saved;
+        if (previous->sample_reserved || previous->sample_count > saved.samples.size() ||
+            (previous->sample_count ? previous->sample_task_id != task.task_id
+                                    : previous->sample_task_id != 0)) {
+            return AYNI_EXPIRED;
+        }
         saved.boot_epoch = previous->boot_epoch;
         for (uint32_t word = 0; word < saved.visible.size(); ++word) {
             saved.visible[word] = previous->visible[word];
+        }
+        saved.sample_count = previous->sample_count;
+        for (uint32_t at = 0; at < saved.sample_count; ++at) {
+            const auto &sample = previous->samples[at];
+            saved.samples[at] = {sample.logical_call_id, sample.generation, sample.sequence};
         }
         if (!saved.boot_epoch || previous->owner_instance_id != task.owner_instance_id ||
             previous->goal_type_version != type.version ||
             !type.id.equals({previous->goal_type_id, previous->goal_type_size}) ||
             !runtime.model_context_current(task_index, saved, now, durable)) {
             return AYNI_EXPIRED;
+        }
+        if (!runtime.retain_model_context(task_index, saved, now, durable)) {
+            return AYNI_CAPACITY_EXCEEDED;
         }
     }
     const auto current = runtime.model_context(task_index, now, durable);
@@ -295,7 +362,16 @@ ayni_status_t CallRuntime::capability_context_view(const void *context,
         result.visible[word] = current.visible[word];
     }
     // Current was sampled immediately above; final preflight rechecks expiry.
-    runtime.retain_model_context(task_index, current, now, durable);
+    if (!runtime.retain_model_context(task_index, current, now, durable)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const auto &captured = runtime.decision_->model_context;
+    result.sample_count = captured.sample_count;
+    result.sample_task_id = result.sample_count ? task.task_id : 0;
+    for (uint32_t at = 0; at < captured.sample_count; ++at) {
+        const auto &sample = captured.samples[at];
+        result.samples[at] = {sample.call_id, sample.generation, sample.sequence};
+    }
     *out = result;
     return AYNI_OK;
 }

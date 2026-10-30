@@ -26,7 +26,6 @@ void write_subscription(const CallRecord &record, foundation::BodyWriter &writer
     writer.u32(spec.lease_ms);
     writer.u32(static_cast<uint32_t>(fact.phase));
     writer.u32(static_cast<uint32_t>(fact.desired));
-    writer.u32(static_cast<uint32_t>(fact.attachment));
     writer.u64(fact.generation);
     writer.u64(fact.lease_sequence);
     writer.u32(static_cast<uint32_t>(fact.control_status));
@@ -42,7 +41,6 @@ bool read_subscription(foundation::BodyReader &reader, CallRecord &record) {
     spec.lease_ms = reader.u32();
     fact.phase = static_cast<SubscriptionPhase>(reader.u32());
     fact.desired = static_cast<SubscriptionDesired>(reader.u32());
-    fact.attachment = static_cast<SubscriptionAttachment>(reader.u32());
     fact.generation = reader.u64();
     fact.lease_sequence = reader.u64();
     fact.control_status = static_cast<ayni_status_t>(reader.u32());
@@ -52,6 +50,7 @@ bool read_subscription(foundation::BodyReader &reader, CallRecord &record) {
     return reader.valid();
 }
 void write_state(const CallState &state, foundation::BodyWriter &writer) {
+    writer.u32(static_cast<uint32_t>(state.attachment));
     write_action_stamp(state.created, writer);
     write_action_stamp(state.latest, writer);
     writer.u64(state.attempt.boot_epoch);
@@ -80,6 +79,7 @@ void write_state(const CallState &state, foundation::BodyWriter &writer) {
 
 CallState read_state(foundation::BodyReader &reader) {
     CallState state{};
+    state.attachment = static_cast<CallAttachment>(reader.u32());
     state.created = read_action_stamp(reader);
     state.latest = read_action_stamp(reader);
     state.attempt.boot_epoch = reader.u64();
@@ -118,7 +118,8 @@ uint32_t call_record_max(CallTable::Limits limits) {
                (call_record_resource_fixed_size + catalog::CatalogId::max_size) +
            action_state_record_max_size + limits.domain_bytes + limits.input_bytes +
            limits.result_bytes + limits.business_bytes + execution_record_max() +
-           call_subscription_fixed_bytes + catalog::CatalogId::max_size;
+           call_subscription_fixed_bytes + catalog::CatalogId::max_size +
+           AYNI_MODEL_SAMPLE_DEPENDENCY_MAX * model_sample_record_bytes;
 }
 
 uint32_t call_record_size(const CallRecord &record) {
@@ -126,7 +127,8 @@ uint32_t call_record_size(const CallRecord &record) {
     uint32_t size = call_record_fixed_size + id.step_key.size() + id.binding_id.size() +
                     id.capability_id.size() + id.provider_id.size() + id.endpoint.size() +
                     id.destination.size() + record.domain.size + record.input.size +
-                    record.result.size + record.contract.business_contract.size;
+                    record.result.size + record.contract.business_contract.size +
+                    id.model_context.sample_count * model_sample_record_bytes;
     for (uint32_t at = 0; at < record.contract.resource_count; ++at) {
         size += call_record_resource_fixed_size + record.contract.resources[at].id.size();
     }
@@ -150,6 +152,7 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     writer.u32(id.binding_version);
     writer.u32(id.capability_version);
     writer.u32(id.provider_version);
+    writer.u32(id.mode);
     write_id(id.step_key, writer);
     write_id(id.binding_id, writer);
     write_id(id.capability_id, writer);
@@ -184,6 +187,13 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     for (const auto word : record.identity.model_context.visible) {
         writer.u64(word);
     }
+    writer.u32(id.model_context.sample_count);
+    for (uint32_t at = 0; at < id.model_context.sample_count; ++at) {
+        const auto &sample = id.model_context.samples[at];
+        writer.u64(sample.call_id);
+        writer.u64(sample.generation);
+        writer.u64(sample.sequence);
+    }
 }
 
 // This reader does not consult this boot's catalog. Old input is interpreted
@@ -202,6 +212,7 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     id.binding_version = reader.u32();
     id.capability_version = reader.u32();
     id.provider_version = reader.u32();
+    id.mode = reader.u32();
     if (!read_id(reader, id.step_key) || !read_id(reader, id.binding_id) ||
         !read_id(reader, id.capability_id) || !read_id(reader, id.provider_id) ||
         !read_id(reader, id.endpoint) || !read_id(reader, id.destination) ||
@@ -251,6 +262,14 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     record.identity.model_context.boot_epoch = reader.u64();
     for (auto &word : record.identity.model_context.visible) {
         word = reader.u64();
+    }
+    auto &context = record.identity.model_context;
+    context.sample_count = reader.u32();
+    if (context.sample_count > context.samples.size()) {
+        return false;
+    }
+    for (uint32_t at = 0; at < context.sample_count; ++at) {
+        context.samples[at] = {reader.u64(), reader.u64(), reader.u64()};
     }
     if (!reader.ok() || !CallTable::valid_record(record)) {
         return false;

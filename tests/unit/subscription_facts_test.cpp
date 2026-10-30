@@ -11,7 +11,6 @@ using namespace ayni::work;
 SubscriptionFact lease_fact(SubscriptionPhase phase) {
     SubscriptionFact fact{};
     fact.phase = phase;
-    fact.attachment = SubscriptionAttachment::background;
     fact.lease_sequence = phase == SubscriptionPhase::starting ? 0 : 1;
     ayni::foundation::IdAllocator ids;
     ids.start(1);
@@ -51,9 +50,7 @@ TEST(SubscriptionFacts, invalid_lease_fields_are_rejected_before_any_transition)
         +[](SubscriptionFact &f) { f.phase = static_cast<SubscriptionPhase>(0); },
         +[](SubscriptionFact &f) { f.phase = static_cast<SubscriptionPhase>(UINT32_MAX); },
         +[](SubscriptionFact &f) { f.desired = static_cast<SubscriptionDesired>(0); },
-        +[](SubscriptionFact &f) { f.attachment = static_cast<SubscriptionAttachment>(0); },
         +[](SubscriptionFact &f) { f.lease_sequence = 0; },
-        +[](SubscriptionFact &f) { f.attachment = SubscriptionAttachment::foreground; },
         +[](SubscriptionFact &f) { f.phase = SubscriptionPhase::starting; },
         +[](SubscriptionFact &f) { f.control_status = AYNI_NOT_READY; },
     };
@@ -88,9 +85,6 @@ TEST(SubscriptionFacts, new_generation_requires_open_intent_and_confirmed_stop) 
     changed = next;
     changed.phase = SubscriptionPhase::active;
     changed.lease_sequence = 1;
-    EXPECT_FALSE(subscription_advances(stopped, changed));
-    changed = next;
-    changed.attachment = SubscriptionAttachment::foreground;
     EXPECT_FALSE(subscription_advances(stopped, changed));
 }
 

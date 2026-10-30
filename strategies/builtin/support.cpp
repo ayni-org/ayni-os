@@ -83,6 +83,10 @@ bool valid_text(ayni_string_v1 value) {
     return true;
 }
 bool valid_call(const Call &call) {
+    if (call.mode > AYNI_CALL_MODE_MANAGED ||
+        (call.kind == AYNI_POLICY_REQUEST_MODEL && call.mode != AYNI_CALL_MODE_FOREGROUND)) {
+        return false;
+    }
     if (call.input) {
         return valid_id(call.binding_id) && call.binding_version != 0U &&
                (call.kind == AYNI_POLICY_REQUEST_CALL || call.kind == AYNI_POLICY_REQUEST_MODEL) &&
@@ -153,6 +157,7 @@ ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
     request.kind = call.kind;
     request.binding_version = call.binding_version;
     request.step_key = key;
+    request.mode = call.mode;
     request.binding_id = call.binding_id;
     ayni::ValueBuilder<AYNI_AUTHORITY_FIELD_COUNT_MAX + 2U> builder;
     if (call.input) {

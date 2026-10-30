@@ -140,6 +140,7 @@ ayni_add_core_module(kernel
         kernel/api/work_api.cpp
         kernel/runtime/boot/boot_sequence.cpp
         kernel/service/call/call_admission.cpp
+        kernel/service/call/call_operations.cpp
         kernel/service/call/call_directory.cpp
         kernel/service/call/call_completion.cpp
         kernel/service/call/call_dispatch.cpp

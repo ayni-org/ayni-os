@@ -224,11 +224,13 @@ void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v
     info.model_call_hard_limit = kernel.model().tasks.model_call_hard_limit();
     info.model_call_limit_reached = task.model_calls.blocked ? 1U : 0U;
     info.logical_call_id = task.call.id;
-    if (task.subscription_wait) {
-        info.wait_subscription_id = task.subscription_wait->subscription_id;
-        info.wait_generation = task.subscription_wait->generation;
-        info.wait_sequence = task.subscription_wait->sequence;
-        info.wait_phase = static_cast<uint32_t>(task.subscription_wait->phase);
+    if (task.operation_wait) {
+        info.wait_logical_call_id = task.operation_wait->call_id;
+        info.wait_generation = task.operation_wait->generation;
+        info.wait_sequence = task.operation_wait->sequence;
+        info.wait_form = task.operation_wait->form;
+        info.wait_timeout_ms = task.operation_wait->timeout_ms;
+        info.wait_phase = static_cast<uint32_t>(task.operation_wait->phase);
     }
     if (ayni::work::TaskTable::is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
         info.hold_status == AYNI_OK) {

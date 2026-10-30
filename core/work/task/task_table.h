@@ -26,7 +26,7 @@
 #include "foundation/bounded_array.h"
 #include "foundation/kernel_id.h"
 #include "foundation/transition_stamp.h"
-#include "work/subscription/subscription_wait.h"
+#include "work/task/operation_wait.h"
 
 #include <ayni/ayni.h>
 
@@ -123,11 +123,13 @@ struct Task {
     uint32_t checkpoint_size;
     uint32_t checkpoint_writer_version;
     catalog::CatalogId checkpoint_writer_id;
+    bool call_unknown =
+        false; // Task-owned independent hold; only same-batch Call propagation changes it.
     TaskModelCalls model_calls{}; // This Task owns its consumption and independent durable hold.
     TaskCall call{}; // Persisted selected logical call and requested end, never a mailbox slot.
-    std::optional<SubscriptionWait>
-        subscription_wait{}; // Present only in WAITING or its user PAUSED overlay.
-    uint32_t slot;           // the table's own: which blocks hold them
+    std::optional<OperationWait>
+        operation_wait{}; // Present only in WAITING or its user PAUSED overlay.
+    uint32_t slot;        // the table's own: which blocks hold them
     // This boot cannot serve an otherwise recoverable task. Kept apart
     // from the durable state so compaction cannot make the hold permanent.
     ayni_status_t recovery_hold_status;
@@ -144,13 +146,15 @@ struct TaskState {
     uint32_t step_count;
     TaskModelCalls model_calls{}; // Preserved across lifecycle/authorization changes.
     TaskCall call{}; // Preserved across authorization; only the call coordinator may clear it.
-    std::optional<SubscriptionWait>
-        subscription_wait{}; // Present only in WAITING or its user PAUSED overlay.
+    std::optional<OperationWait>
+        operation_wait{}; // Present only in WAITING or its user PAUSED overlay.
+    bool call_unknown =
+        false; // Task-owned independent hold; only same-batch Call propagation changes it.
 };
 
 // A wait owns no foreground call. User pause preserves its exact frontier.
-inline bool valid_subscription_wait(const std::optional<SubscriptionWait> &wait,
-                                    ayni_task_lifecycle_t lifecycle, uint64_t call_id) {
+inline bool valid_operation_wait(const std::optional<OperationWait> &wait,
+                                 ayni_task_lifecycle_t lifecycle, uint64_t call_id) {
     return wait ? wait->valid() && call_id == 0 &&
                       (lifecycle == AYNI_TASK_WAITING || lifecycle == AYNI_TASK_PAUSED)
                 : lifecycle != AYNI_TASK_WAITING;
@@ -167,6 +171,8 @@ enum class TaskChange { pause, resume, cancel, expire, complete, fail };
 
 class TaskTable {
   public:
+    // Resource hold/release, UNKNOWN hold/release and final end may still be required after detach.
+    static constexpr uint32_t background_call_revisions = 5;
     static constexpr uint32_t no_index = 0xFFFFFFFFU; // no task's index
 
     struct Limits {
@@ -209,6 +215,24 @@ class TaskTable {
         const void *context = nullptr; // Coordinator outlives this table; null when disabled.
         bool (*retains)(const void *, const Task &) = nullptr; // Pure owner-thread query, no I/O.
     };
+    // Owner projection, never cached: background Calls reserve UNKNOWN hold/release writes.
+    struct CallConstraints {
+        uint32_t revisions =
+            0;                // Additional mandatory writes; zero with no pending background Call.
+        bool queued = false;  // True iff an actual Task-owned Call has not dispatched.
+        bool unknown = false; // True while any original execution remains ABANDONED.
+    };
+    using CallQuery = CallConstraints (*)(const void *, const Task &);
+    void set_call_query(const void *context, CallQuery query) {
+        call_context_ = context;
+        call_query_ = query;
+    }
+    // Include cross-Call mandatory writes in ordinary mutation admission.
+    bool has_revisions(const Task &task, uint32_t required, uint32_t prospective_reserve = 0) const;
+    bool at_revision_limit(const Task &task) const;
+    // Clear independent UNKNOWN/resource overlays only when the Call owner proves no source
+    // remains.
+    void settle_call_holds(uint32_t index, foundation::TransitionStamp stamp);
     void set_retention(Retention retention) { retention_ = retention; } // Before live work starts.
 
     // Whether insert() would succeed: a free place, or an ended task to give
@@ -290,13 +314,13 @@ class TaskTable {
               foundation::TransitionStamp stamp);
 
     // Reserve wait, wake and terminal revisions before entering an event wait.
-    static bool can_wait_subscription(const Task &task);
+    static bool can_wait_operation(const Task &task);
     // Prevalidated READY decision retains its checkpoint without taking another step key.
-    void wait_subscription(uint32_t index, const SubscriptionWait &basis,
-                           foundation::TransitionStamp stamp);
+    void wait_operation(uint32_t index, const OperationWait &basis,
+                        foundation::TransitionStamp stamp);
     // Latest data/state changed; ready exactly once, with a final revision reserved for
     // cancellation.
-    bool wake_subscription(uint32_t index, foundation::TransitionStamp stamp);
+    bool wake_operation(uint32_t index, foundation::TransitionStamp stamp);
     // The steps and private checkpoint a decision of the READY task index
     // commits, in the transition stamp that then applies the decision by
     // progress() or work::end_task() (ADR-0024). add_step appends key and
@@ -331,24 +355,31 @@ class TaskTable {
     // Reserve acceptance, UNKNOWN hold, cancellation and final drain revisions.
     // These bounds prevent user changes from consuming completion's last revision.
     static bool can_begin_call(const Task &task);
+    // Include live background Call reserves without copying Call state into Task.
+    bool can_begin_with_calls(const Task &task) const;
+    // Admission also reserves future detach writes before the new background Call exists.
+    bool can_begin_background_call(const Task &task) const;
+    bool can_wait_with_calls(const Task &task) const;
     // Diagnostic precedence: policy, compatibility, then model-limit hold.
     // still_held() only counts live tasks; terminal diagnostics remain visible.
     static ayni_status_t effective_hold_status(const Task &task) {
         return task.hold_status != AYNI_OK            ? task.hold_status
                : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_status
+               : task.call_unknown                    ? AYNI_RESULT_UNKNOWN
                : task.model_calls.blocked             ? AYNI_CAPACITY_EXCEEDED
                                                       : AYNI_OK;
     }
     static ayni_reason_t effective_hold_reason(const Task &task) {
         return task.hold_status != AYNI_OK            ? task.hold_reason
                : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_reason
+               : task.call_unknown                    ? AYNI_REASON_NONE
                : task.model_calls.blocked             ? AYNI_REASON_TASK_MODEL_CALL_LIMIT
                                                       : AYNI_REASON_NONE;
     }
     static ayni_task_lifecycle_t effective_lifecycle(const Task &task) {
         return is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
                        (task.hold_status != AYNI_OK || task.recovery_hold_status != AYNI_OK ||
-                        task.model_calls.blocked)
+                        task.model_calls.blocked || task.call_unknown)
                    ? AYNI_TASK_PAUSED
                    : task.lifecycle;
     }
@@ -434,6 +465,8 @@ class TaskTable {
   private:
     // The lowest slot no task holds; only when the table is not full.
     uint32_t free_slot() const;
+    // Clear only Call-owned holds whose last source has ended; no revision/count change here.
+    bool clear_settled_call_holds(Task &task);
     // The ended task that gives way to the next insert(): the one that
     // ended first, by commit_seq and then task id; no_index when none has.
     uint32_t giving_way() const;
@@ -447,9 +480,11 @@ class TaskTable {
     uint8_t *checkpoints_;
     uint32_t step_capacity_;
     uint32_t checkpoint_max_bytes_;
-    uint32_t model_call_hard_limit_; // Fixed this boot; independent of steps and concurrency.
-    uint32_t held_count_ = 0;        // still_held() tasks
-    Retention retention_{};          // External references, not a cached call/knowledge count.
+    uint32_t model_call_hard_limit_;     // Fixed this boot; independent of steps and concurrency.
+    uint32_t held_count_ = 0;            // still_held() tasks
+    const void *call_context_ = nullptr; // Borrowed coordinator for the table lifetime.
+    CallQuery call_query_ = nullptr;     // Pure owner-thread projection; null in standalone tables.
+    Retention retention_{};              // External references, not a cached call/knowledge count.
 };
 
 } // namespace ayni::work

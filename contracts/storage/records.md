@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前批次与快照只读写 `storage_schema=6`（ADR-0084）；其他 schema（包括 0/1/2/3/4/5） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=7`（ADR-0086）；其他 schema（包括 0/1/2/3/4/5/6） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -32,7 +32,7 @@
 
 Host 通过 `include/ayni/storage_format.h` 的 `ayni_storage_read_batch_identity`
 提取前 32 字节的身份（ABI 0.28，ADR-0040）；该纯函数不校验 schema、CRC、
-marker 或身份语义，不能替代 Core 的完整批次校验。失败不修改输出。
+marker 或身份语义，不能替代 Core 的完整批次校验。失败不修改输出。ABI 0.51 的 `ayni_storage_read_schema` 只读取 AYJB/AYSN 六字节前缀的原始 schema，不校验 CRC/激活关系。Native 在目录锁内先只读检查已有 log 与两个 snapshot，拒绝异版后才允许外层 SQLite 创建；完整记录与恢复合法性仍由 Core 验证。
 
 每条记录：
 
@@ -44,7 +44,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | 4 | `length` | 记录体字节数 |
 | `length` | 记录体 | 由属主模块定义的字段编码 |
 
-schema 6 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
+schema 7 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
 
 ## 记录类型
 
@@ -94,7 +94,7 @@ phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed�
 
 ## 工作记录
 
-schema 6 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
+schema 7 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
 
 | 类型 | 记录 | 当前正文 | 固定长度 |
 |---:|---|---|---:|
@@ -102,14 +102,14 @@ schema 6 每个类型/上下文只有一个当前正文。下表为日志 v1；�
 | 3 | GOAL | 五个 u64：goal/parent/owner/replaced/origin principal；五个 u32：origin kind/channel/binding revision、depth、GoalType version；GoalType ID 长度串；trigger kind u32、delay/period u64、source 长度串；expiry/wait duration u64；参数长度串；profile kind u32/period u64；pause_group、authority_required、provenance_required（u32）；tool mode/count（u32）及 count 项 Binding version/role/ID 长度串 | 140 |
 | 4 | GOAL_STATE | goal/last_task u64；lifecycle/revision/cancel_revision/skipped/skip_reason/taken/waiting/flags（u32）；change u32 | 52 |
 | 5 | TASK | task/goal/owner/replaced（u64），occurrence/count（u32），calendar_local/utc（u64），calendar_present/provenance_required（u32） | 64 |
-| 6 | TASK_STATE | task_id u64；lifecycle/revision/cancel_revision/hold_status/hold_reason/step_count（u32）；model used/limit/blocked（u32）；selected call u64/end u32；wait subscription/generation/sequence（u64）/phase u32；change/wait_present（u32） | 92 |
+| 6 | TASK_STATE | task_id u64；lifecycle/revision/cancel_revision/hold_status/hold_reason/step_count（u32）；model used/limit/blocked（u32）；selected call u64/end u32；wait call/generation/sequence（u64）/phase/form（u32）、boot/gaps（u64）、cancel_requested/cancel_result/outcome/timeout_ms（u32）；call_unknown/change/wait_present（u32） | 132 |
 | 7 | TASK_STEPS | task_id u64、first/count（u32）、count 个 key 长度串 | 16 |
 | 8 | TASK_CHECKPOINT | task_id u64、writer version u32、writer ID 和状态长度串、provenance_required u32 | 24 |
 | 9 | COMMAND_MAPPING | principal/command/digest/floor（u64），intent/object kind（u32），object id u64/revision u32；content/effect/canonical_format（u32），canonical/result 两个长度串，来源列表 | 76（空来源） |
 
 GOAL_STATE flags 位 0=next scheduled，位 1=expiry pending，其余拒绝；change 依次 1=普通、2=授权、3=清理、4=授权暂停、5=重新授权。TASK_STATE.change 依次 1=普通、2=授权、3=重新授权、4=提高模型上限、5=恢复等待。change 表示必须验证的事务证明，不能通过改成普通标记绕过完整配对。快照状态的 change 必须为 1。
 
-布尔标记仅允许 0/1。Goal 来源要求授权伙伴；pause_group=0 表示无组，其他值按固定范围验证。没有 calendar 的 Task 两个时间必须为 0，解码为 TIME_NONE。没有 wait 的 Task 四个 wait 值必须全零。有 wait 的生命周期只能 WAITING 或其用户 PAUSED；selected call/end 为零，跨表核对同 Task 的订阅及代际/前沿。
+布尔标记仅允许 0/1。Goal 来源要求授权伙伴；pause_group=0 表示无组，其他值按固定范围验证。没有 calendar 的 Task 两个时间必须为 0，解码为 TIME_NONE。没有 wait 的 Task 全部 wait 字段必须为零。有 wait 的生命周期只能 WAITING 或其用户 PAUSED；selected call/end 为零，跨表核对同 Task 的 action/订阅、形态及代际/前沿；deadline_us 不编码。call_unknown 是独立的 Task 阻塞，不能覆盖策略/资源暂停；同批 Call 设置、最后一项 UNKNOWN 对账解除，前台完成不得解除其他来源。
 
 日志 `TASK.provenance_required` 必须为 0，置 1 按损坏处理；快照 TASK 则按保留来源设置此位，置 1 要求完整的来源 footer。两种上下文共用创建字段 codec，约束由各自的恢复入口执行。
 
@@ -135,7 +135,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 ## 控制记录与读取
 
 - `WRITER_FENCE` 单独成批，新 epoch 必须严格大于前缀现有有效 epoch。其后的完整旧 epoch 帧被忽略，不推进有效 commit、transition 或 boot 基线；其他有效批次仍须连续。
-- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 6；无旧格式 reader、迁移或自动清空。
+- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 7；无旧格式 reader、迁移或自动清空。
 - 恢复使用 Host 物理 cursor，不能用最大已见 commit_seq 翻页；旧 epoch 的高序号帧可能位于合法新批次之前。cursor 在同一日志实例中严格递增，轮转后从 0 重读。
 - 首个完整批次放不下时，Host 以读专用 `READ_BUFFER_TOO_SMALL` 报精确所需长度，映射 `STATE_EXCEEDS_CAPACITY`。真正 I/O 故障、非法大小或 `OK` 越界仍是 `STORAGE_READ_FAILED`。
 
@@ -143,7 +143,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 
 快照采用两个槽。维护先冻结新 transition 并排空 journal，得到边界 `S`，再写非当前槽的内容，回读校验版本、长度与 CRC 后独立写槽尾标记。槽尾标记只证明槽内容完整；日志中的 `SNAPSHOT_COMMIT` 是激活新状态的唯一切换提交，持久化后才轮转旧日志。尚未激活的新槽不参与恢复。
 
-### 槽头与槽尾（schema 6）
+### 槽头与槽尾（schema 7）
 
 头部固定为 72 字节：
 
@@ -291,22 +291,22 @@ journal 使用 REQUIRED `GOAL_STATE` 4/v1（change=5）、`GOAL_AUTHORITY` 17/v1
 
 ## 统一调用记录（ABI 0.31，ADR-0045）
 
-schema 6 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 412 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
+schema 7 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 424 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
 
-1. call_id、operation_id、task_id、owner_instance_id（各 u64）；Binding/Capability/Provider version（各 u32）；step_key、Binding ID、Capability ID、Provider ID、endpoint、destination（六个长度串）。
+1. call_id、operation_id、task_id、owner_instance_id（各 u64）；Binding/Capability/Provider version（各 u32）；mode u32（0=foreground、1=managed）；step_key、Binding ID、Capability ID、Provider ID、endpoint、destination（六个长度串）。
 2. 原 CallContract：form/category/effects/idempotency/query/cancel/dedupe_window_ms/timeout_ms/input_format/result_format/input_text_limit/result_text_limit/resource_count（13 个 u32）；每个资源按规范 ID 顺序写 ID 长度串及 units u32。
-3. created 和 latest stamp（各 boot/transition/commit_seq 三个 u64）；原执行 attempt 两个 u64；progress_sequence u64；cancel_cause、cancel_result、outcome、status、reason（各 u32，status 为有符号值的原位编码）。
+3. attachment u32（1=foreground、2=background）；created 和 latest stamp（各 boot/transition/commit_seq 三个 u64）；原执行 attempt 两个 u64；progress_sequence u64；cancel_cause、cancel_result、outcome、status、reason（各 u32，status 为有符号值的原位编码）。
 4. 独立查询固定 60 B：generation/phase u32、requested stamp 三个 u64、查询 attempt 两个 u64、status/reason/conclusion u32。未请求查询时全部为零。phase 1/2/3 为 requested/dispatching/finished；generation 从 1 开始，管理 CAS 为 generation+1，无查询时 revision=1。原执行 attempt 不因查询改变。
 5. 模型统计固定 32 B：kind/reserved u32、input/output/total u64；NONE/INVALID 的计数全零，REPORTED 要求无溢出的 input+output=total。业务调用必须为 NONE；正文失效或擦除仍保留已知统计。
 6. 原 authority domain、规范 CallInput、结果（由 result kind 决定）、ActionState（四个长度串）；ActionState 在资源准备前为空，准备后使用既有 20/v1 codec，不另写 type20 记录。
 
-完整 TASK_STATE 保存选定 call id/end，end 0/1/2=none/cancel/expire；无调用时同零，RUNNING/CANCELLING 要求选定调用，后者必须 cancel/expire。终态 Call/Task 更新同批；取消后 retained UNKNOWN 可以没有 Task 选定引用。
+完整 TASK_STATE 保存选定 call id/end，end 0/1/2=none/cancel/expire；无调用时同零，RUNNING/CANCELLING 要求选定调用，后者必须 cancel/expire。前台终态 Call/Task 更新同批；受管接受与 Task 步骤/检查点同批，后续后台完成不结束另一前台。取消后 retained UNKNOWN 可以没有 Task 选定引用。
 
 查询 kind14 与恢复资源等待 kind15 的 canonical 均16 B：kind/原 revision（u32）、target u64。查询的 Call/命令同批相邻；保存请求 stamp，不因完成改变。恢复等待 TASK_STATE.change=5 只清除 EXPIRED/RESOURCE_WAIT、revision+1，其他状态和模型计数保持，紧随 exact command 且无其他记录。
 
 快照按稳定 call_id 保存全部 Call，正文与 journal 共用。每 transition 至多改一条 Call；UNKNOWN 与未释放借用继续阻止不安全回收。此格式无旧布局读取或迁移器。
 
-### 按需工具来源（schema 6 / ADR-0085）
+### 按需工具来源（自 schema 6，当前 schema 7 / ADR-0085）
 
 GOAL 尾部工具策略 mode 为 0=REQUIRED、1=ON_DEMAND；count 0..256，各项依次为 Binding version u32、role u32（0=capability、1=shell，至多一项）、Binding ID 长度串，ID 不重复。预算和恢复容量上限同时受部署 Binding capacity 约束；策略按原顺序持久化，不回查新 GoalType 填充。
 
@@ -316,7 +316,7 @@ TASK_STATE.change=6 表示 tool_bind：原必需引用、旧工具前缀和授�
 
 ## 调用扩展与工具结果
 
-Action 长度串后始终编码 execution_present、erased_present（u32）、content_erased ActionStamp（24 B，缺席全0）、result kind u32。result kind 1=UTF8、2=TOOL_CALLS、3=VALUE、4=UNAVAILABLE；最后一种表示正文失效但身份/结果/效果事实保留，不能作为可消费结果，独立于 content_erased；实际列表只允许完成结果。随后按 presence 写 ExecutionFact；contract form 为 subscription 时再写订阅事实；最后始终写 business_contract 长度串，再写原可选授权 Grant ID u64/revision u32（必需调用同零；按需 TOOL 初次接受为确切 ACTIVE 引用），再写 ModelContext 40 B：boot_epoch u64 和 4 个 visible u64（256 位按原 Goal 策略顺序标记）。无来源时全零；模型提议继承原模型目录披露来源，实际业务 Call 不继承。派发与读取均复核，旧启动来源不能作为当前可消费正文。跳过、物理、工具、擦除、订阅是当前领域变体，共用 v1，不再选择布局版本。
+Action 长度串后始终编码 execution_present、erased_present（u32）、content_erased ActionStamp（24 B，缺席全0）、result kind u32。result kind 1=UTF8、2=TOOL_CALLS、3=VALUE、4=UNAVAILABLE；最后一种表示正文失效但身份/结果/效果事实保留，不能作为可消费结果，独立于 content_erased；实际列表只允许完成结果。随后按 presence 写 ExecutionFact；contract form 为 subscription 时再写订阅事实；最后始终写 business_contract 长度串，再写原可选授权 Grant ID u64/revision u32（必需调用同零；按需 TOOL 初次接受为确切 ACTIVE 引用），再写 ModelContext 固定44 B：boot_epoch u64、4 个 visible u64（256 位按原 Goal 策略顺序标记）及 sample_count u32；随后每项 sample 为 source Call ID/generation/sequence 三个 u64（24 B），最多8项。原 Call 拥有 source/version/Grant，跨行验证同 Task 且源先于派生调用；运行时按原 ObservationRef 复核 TTL/gap/关闭/代际。无来源时全零；模型提议继承原模型目录披露来源，实际业务 Call 不继承。派发与读取均复核，旧启动来源不能作为当前可消费正文。跳过、物理、工具、擦除、订阅是当前领域变体，共用 v1，不再选择布局版本。
 
 ExecutionFact 原固定112 B及各 ID、数值投影仍按属主顺序编码；每个观察引用固定40 B加 source ID，最后的 subscription_id u64 始终存在，0=Host。phase/target/stop、四个 epoch、calibration 和原约束不可倒退；不保存 nonce、deadline、在线占用或 raw media。擦除不能改写已知物理执行结论，UNKNOWN 不自动重试。
 
@@ -369,7 +369,7 @@ schema 6 中所有日期字段均在完整当前正文内；不认识的格式�
 
 ## Task 订阅与等待（ABI 0.43，ADR-0063）
 
-CALL_STATE 的订阅尾由 contract form 决定：source 长度串，source_version/lease_ms/phase/desired/attachment（u32），generation/lease_sequence（u64），control_status/control_reason（u32），固定48 B加 source。generation 是 Kernel ID，等于本代 action.operation；只在已知停止且旧借用归还后换代。
+CALL_STATE 的订阅尾由 contract form 决定：source 长度串，source_version/lease_ms/phase/desired（u32），generation/lease_sequence（u64），control_status/control_reason（u32），固定44 B加 source。generation 是 Kernel ID，等于本代 action.operation；只在已知停止且旧借用归还后换代。
 
 STARTED 的前台转后台、步骤完成、Task 前台释放同批；后台回执不要求更新 Task.current_call。完整 TASK_STATE 始终保存 wait presence 和前沿；唤醒/终态清除，其他元数据更新保留。跨表校验所属 Task、订阅、前后台外键和代际，UNKNOWN 阻止不安全回收。正常重开及本次必要恢复验证各自提供证据，不能推及未执行的专项。
 

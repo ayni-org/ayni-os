@@ -25,9 +25,10 @@ TEST(Conversation, portable_record_round_trip_and_strict_version) {
     ASSERT_EQ(Conversation::decode(encoded.view(), restored), AYNI_OK);
     EXPECT_EQ(restored.id, 11U);
     EXPECT_EQ(restored.owner_instance_id, 22U);
-    encoded.bytes[4] = 4; // Portable header: version at byte 4.
+    const auto version = encoded.bytes[4];
+    encoded.bytes[4] = version - 1; // Portable header: version at byte 4.
     EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_UNSUPPORTED_VERSION);
-    encoded.bytes[4] = 3;
+    encoded.bytes[4] = version;
     --encoded.size;
     EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_INVALID_ARGUMENT);
 }

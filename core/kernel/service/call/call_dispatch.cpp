@@ -76,7 +76,9 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
         return result;
     }
     if (!task_content_current({work_, now_us, durable_seq}, task_index) ||
-        task.call.end != work::TaskCall::End::none) {
+        task.call.end != work::TaskCall::End::none || !work::TaskTable::is_live(task.lifecycle) ||
+        (work_.calls.state(index).attachment == work::CallAttachment::background &&
+         task.lifecycle == AYNI_TASK_PAUSED)) {
         return cancel_local(index, task_index);
     }
     // Expired waits persist through shutdown. User pause is independent and

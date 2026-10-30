@@ -162,6 +162,11 @@ FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
         close();
         return {error == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, error};
     }
+    const auto compatible = check_snapshot_schemas();
+    if (compatible.status != OpenStatus::ok) {
+        close();
+        return compatible;
+    }
     fd_ = ::openat(directory_fd_, file_name, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     bool initialized = false;
     Opened opened =
@@ -204,6 +209,38 @@ void FileLog::close() {
     uncertain_start_ = UINT64_MAX;
     read_from_ = 0;
     read_max_seq_ = 0;
+}
+
+// The two retained slots may contain the only Core prefix after log trimming.
+// Probe only compatibility; full activation/CRC/semantic validation stays in Core.
+FileLog::Opened FileLog::check_snapshot_schemas() const {
+    constexpr uint32_t snapshot_slots = 2;
+    for (uint32_t slot = 0; slot < snapshot_slots; ++slot) {
+        const int snapshot =
+            ::openat(directory_fd_, snapshot_name(slot), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (snapshot < 0) {
+            if (errno == ENOENT) {
+                continue;
+            }
+            return {OpenStatus::file_error, errno};
+        }
+        std::array<uint8_t, AYNI_STORAGE_SCHEMA_PREFIX_BYTES> prefix{};
+        ssize_t size = 0;
+        do {
+            size = ::pread(snapshot, prefix.data(), prefix.size(), 0);
+        } while (size < 0 && errno == EINTR);
+        const int error = errno;
+        ::close(snapshot);
+        if (size < 0) {
+            return {OpenStatus::file_error, error};
+        }
+        uint32_t schema = 0;
+        if (ayni_storage_read_schema(prefix.data(), static_cast<size_t>(size), &schema) &&
+            schema != AYNI_STORAGE_SCHEMA_CURRENT) {
+            return {OpenStatus::not_a_log, 0};
+        }
+    }
+    return {OpenStatus::ok, 0};
 }
 
 FileLog::Opened FileLog::check_file_header(bool &initialized) {
@@ -268,6 +305,12 @@ FileLog::Opened FileLog::scan() {
                 error = read_exact(fd_, frame.payload_at, header.data(), header.size());
                 if (error != 0) {
                     return {OpenStatus::file_error, error};
+                }
+                uint32_t schema = 0;
+                if (ayni_storage_read_schema(header.data(), header.size(), &schema) &&
+                    schema != AYNI_STORAGE_SCHEMA_CURRENT) {
+                    return {OpenStatus::not_a_log,
+                            0}; // ADR-0086: refuse old directory before outer-store creation.
                 }
                 ayni_storage_batch_identity_v1 identity{};
                 if (ayni_storage_read_batch_identity(header.data(), header.size(), &identity)) {

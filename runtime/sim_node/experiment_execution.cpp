@@ -157,7 +157,9 @@ ayni_status_t Physical::decide(void *, const ayni_task_snapshot_v1 *snapshot,
                                  text("turn.binding"),
                                  {},
                                  {},
-                                 {}};
+                                 {},
+                                 AYNI_CALL_MODE_FOREGROUND,
+                                 0};
     const auto status = value.finish(request.value);
     if (status != AYNI_OK) {
         return status;

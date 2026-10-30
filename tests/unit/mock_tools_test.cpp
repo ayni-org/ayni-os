@@ -211,7 +211,9 @@ class MockTools : public ::testing::Test {
                                          text("mock.plan"),
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         AYNI_CALL_MODE_FOREGROUND,
+                                         0};
             if (value.finish(request.value) != AYNI_OK) {
                 return AYNI_INVALID_ARGUMENT;
             }
@@ -292,9 +294,9 @@ class MockTools : public ::testing::Test {
         proposal = std::string("mock.show|") + string_of(body->value.text) + "|" +
                    std::to_string(seconds->value.integer) + "second|" +
                    string_of(voice->value.text);
-        const ayni_call_request_v1 request{sizeof(request), AYNI_POLICY_REQUEST_CALL, 1,  0,
-                                           text("act"),     text("mock.show"),        {}, {},
-                                           normalized};
+        const ayni_call_request_v1 request{sizeof(request), AYNI_POLICY_REQUEST_CALL,  1,  0,
+                                           text("act"),     text("mock.show"),         {}, {},
+                                           normalized,      AYNI_CALL_MODE_FOREGROUND, 0};
         return output.request_call(output.call_context, &request);
     }
 

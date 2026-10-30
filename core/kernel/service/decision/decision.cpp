@@ -64,7 +64,8 @@ bool admission_ready(const void *context, const work::Task &task) {
     const auto &query = *static_cast<const DecisionAdmission *>(context);
     // Memory-capable decisions may consume their preceding call result or saved record.
     // Wait for that Task transition's durable prefix instead of holding a normal I/O wait.
-    if (query.model.memories.capacity() != 0 && task.commit_seq > query.durable_seq) {
+    if ((query.model.memories.capacity() != 0 || query.model.calls.capacity() != 0) &&
+        task.commit_seq > query.durable_seq) {
         return false;
     }
     const auto &authority = query.model.task_authority;
@@ -115,7 +116,8 @@ bool is_implemented(ayni_policy_intent_kind_t kind) {
     return kind == AYNI_POLICY_REPORT_PROGRESS || kind == AYNI_POLICY_REPORT_COMPLETION ||
            kind == AYNI_POLICY_REPORT_FAILURE || kind == AYNI_POLICY_REQUEST_CALL ||
            kind == AYNI_POLICY_REQUEST_MODEL || kind == AYNI_POLICY_WRITE_MEMORY ||
-           kind == AYNI_POLICY_CLOSE_SUBSCRIPTION || kind == AYNI_POLICY_WAIT_SUBSCRIPTION;
+           kind == AYNI_POLICY_CLOSE_SUBSCRIPTION || kind == AYNI_POLICY_WAIT_SUBSCRIPTION ||
+           kind == AYNI_POLICY_CONTROL_OPERATION;
 }
 
 // A view of at most step_key_size bytes, so CatalogId::is_valid rejects a
@@ -194,6 +196,7 @@ Verdict judge_intents(const DecisionBuffer &decisions, uint32_t intent_count,
         if (intent.kind == AYNI_POLICY_REQUEST_CALL || intent.kind == AYNI_POLICY_REQUEST_MODEL ||
             intent.kind == AYNI_POLICY_CLOSE_SUBSCRIPTION ||
             intent.kind == AYNI_POLICY_WAIT_SUBSCRIPTION ||
+            intent.kind == AYNI_POLICY_CONTROL_OPERATION ||
             intent.kind == AYNI_POLICY_WRITE_MEMORY) {
             if (intent_count != 1U || !catalog::CatalogId::is_valid(step_key_of(intent))) {
                 return hold(AYNI_INVALID_ARGUMENT, AYNI_REASON_POLICY_INTENT);

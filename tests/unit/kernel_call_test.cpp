@@ -10,6 +10,8 @@
 
 #include <ayni/calls.h>
 #include <ayni/memory.h>
+#include <ayni/operations.h>
+#include <cstdio>
 #include <functional>
 #include <thread>
 
@@ -46,10 +48,36 @@ class ManagedCall : public ::testing::Test {
             result.struct_size = sizeof(result);
             const auto read = snapshot.call_result(snapshot.call_context, text("ask"), &result);
             if (read == AYNI_OK) {
+                if (background_action && !result.outcome) {
+                    const ayni_operation_ref_v1 reference{snapshot.task_id, result.logical_call_id,
+                                                          result.operation_id};
+                    ayni_operation_info_v1 info{};
+                    info.struct_size = sizeof(info);
+                    const auto status =
+                        snapshot.operation(snapshot.call_context, &reference, &info);
+                    if (status != AYNI_OK) {
+                        return status;
+                    }
+                    char key[AYNI_CATALOG_ID_MAX_BYTES];
+                    const auto size = std::snprintf(key, sizeof(key), "wait.%u", snapshot.revision);
+                    if (size < 1 || static_cast<size_t>(size) >= sizeof(key)) {
+                        return AYNI_CAPACITY_EXCEEDED;
+                    }
+                    ayni_operation_control_v1 control{};
+                    control.struct_size = sizeof(control);
+                    control.kind = AYNI_OPERATION_WAIT;
+                    control.step_key = {key, static_cast<uint32_t>(size)};
+                    control.reference = reference;
+                    control.after = info.frontier;
+                    control.timeout_ms = AYNI_OPERATION_WAIT_MS_MAX;
+                    return output.control_operation(output.call_context, &control);
+                }
                 seen_result = string_of(result.text);
                 seen_call = result.logical_call_id;
-                return report(result.outcome == AYNI_CALL_COMPLETED ? AYNI_POLICY_REPORT_COMPLETION
-                                                                    : AYNI_POLICY_REPORT_FAILURE,
+                return report((result.outcome == AYNI_CALL_COMPLETED ||
+                               (background_action && result.outcome == AYNI_CALL_CANCELLED))
+                                  ? AYNI_POLICY_REPORT_COMPLETION
+                                  : AYNI_POLICY_REPORT_FAILURE,
                               snapshot, output);
             }
             if (read != AYNI_NOT_FOUND) {
@@ -57,9 +85,18 @@ class ManagedCall : public ::testing::Test {
             }
             char body[] = "hello";
             TextValue input({body, 5});
-            const ayni_call_request_v1 request{sizeof(request), AYNI_POLICY_REQUEST_MODEL, 1,  0,
-                                               text("ask"),     text("mock.echo"),         {}, {},
-                                               input.view()};
+            const ayni_call_request_v1 request{
+                sizeof(request),
+                background_action ? AYNI_POLICY_REQUEST_CALL : AYNI_POLICY_REQUEST_MODEL,
+                1,
+                0,
+                text("ask"),
+                text("mock.echo"),
+                {},
+                {},
+                input.view(),
+                background_action ? AYNI_CALL_MODE_MANAGED : AYNI_CALL_MODE_FOREGROUND,
+                0};
             const auto status = output.request_call(output.call_context, &request);
             body[0] = 'x'; // Immediate copy must outlive these callback-local bytes.
             return status;
@@ -148,8 +185,8 @@ class ManagedCall : public ::testing::Test {
         capability.version = 1;
         capability.capability_id = text("echo");
         capability.contract = {sizeof(capability.contract),
-                               AYNI_CALL_UNARY,
-                               AYNI_CALL_MODEL,
+                               background_action ? AYNI_CALL_ACTION : AYNI_CALL_UNARY,
+                               background_action ? AYNI_CALL_TOOL : AYNI_CALL_MODEL,
                                0,
                                AYNI_CALL_IDEMPOTENT,
                                query_authority,
@@ -358,6 +395,7 @@ class ManagedCall : public ::testing::Test {
     std::vector<uint64_t> grants;
     uint32_t step_limit = 8;
     uint32_t call_limit = 4;
+    bool background_action = false;
     bool mixed_offers = false;
     ayni_call_query_authority_t query_authority = AYNI_CALL_QUERY_AUTHORITATIVE;
     std::vector<Pending> pending;
@@ -368,6 +406,43 @@ class ManagedCall : public ::testing::Test {
     unsigned cancellations = 0;
     bool cancel_posts_terminal = false;
 };
+
+// C-OP-001/003: native policies can wait/read while model I/O obeys the same-Agent FIFO.
+class BackgroundAction : public ManagedCall {
+  protected:
+    void SetUp() override {
+        background_action = true;
+        ManagedCall::SetUp();
+    }
+};
+TEST_F(BackgroundAction, resource_resume_readmits_the_same_call_without_a_foreground_link) {
+    const auto goal = expire_resource_wait();
+    const auto task = work.goal(goal).last_task_id;
+    ASSERT_EQ(work.task(task).hold_reason, AYNI_REASON_RESOURCE_WAIT);
+    EXPECT_EQ(work.task(task).logical_call_id, 0U);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), text("model.slot"), AYNI_RESOURCE_ONLINE),
+              AYNI_OK);
+    ASSERT_EQ(resume_wait(task, ++command, work.task(task).revision).status, AYNI_OK);
+    pump(16);
+    ASSERT_EQ(pending.size(), 1U);
+    post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));
+    pump(12);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(work.task(task).model_calls_used, 0U);
+}
+TEST_F(BackgroundAction, pause_cancels_the_queued_call_and_clears_only_its_resource_overlay) {
+    const auto goal = expire_resource_wait();
+    const auto task = work.goal(goal).last_task_id;
+    ASSERT_EQ(work.task(task).hold_reason, AYNI_REASON_RESOURCE_WAIT);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_PAUSE, goal).status, AYNI_OK);
+    pump(12);
+    EXPECT_EQ(work.task(task).hold_status, AYNI_OK);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_PAUSED);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_RESUME, goal).status, AYNI_OK);
+    pump(12);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_TRUE(pending.empty());
+}
 
 struct MalformedTerminal {
     const char *name;
@@ -472,7 +547,7 @@ TEST_F(ManagedCall, malformed_staged_requests_leave_the_real_decision_available)
         TextValue input(text("hello"));
         const ayni_call_request_v1 valid{sizeof(valid), AYNI_POLICY_REQUEST_MODEL, 1,  0,
                                          text("ask"),   text("mock.echo"),         {}, {},
-                                         input.view()};
+                                         input.view(),  AYNI_CALL_MODE_FOREGROUND, 0};
         EXPECT_EQ(output.request_call(nullptr, &valid), AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(output.request_call(output.call_context, nullptr), AYNI_INVALID_ARGUMENT);
         struct Invalid {
@@ -588,6 +663,22 @@ TEST_F(ManagedCall, callback_result_views_reject_bad_arguments_and_preserve_miss
             },
             subscription, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(subscription.phase, 99U);
+        // C-VER-004 / C-OP-002: new operation views/controls share the standard ABI shape rule.
+        const ayni_operation_ref_v1 reference{snapshot.task_id, snapshot.task_id, snapshot.task_id};
+        ayni_operation_info_v1 operation{};
+        operation.struct_size = sizeof(operation);
+        operation.form = 99;
+        check(
+            [&](const void *context, ayni_operation_info_v1 *out) {
+                return snapshot.operation(context, &reference, out);
+            },
+            operation, AYNI_UNSUPPORTED_VERSION);
+        EXPECT_EQ(operation.form, 99U);
+        ayni_operation_control_v1 control{};
+        EXPECT_EQ(output.control_operation(output.call_context, &control), AYNI_INVALID_ARGUMENT);
+        control.struct_size = sizeof(control) + 1;
+        EXPECT_EQ(output.control_operation(output.call_context, &control),
+                  AYNI_UNSUPPORTED_VERSION);
         ayni_observation_info_v1 observation{};
         observation.struct_size = sizeof(observation);
         observation.usable = 99;
@@ -1303,7 +1394,9 @@ TEST_F(ShortCallWorkflow, failed_calls_still_consume_the_task_step_capacity) {
                                            text("mock.echo"),
                                            {},
                                            {},
-                                           input.view()};
+                                           input.view(),
+                                           AYNI_CALL_MODE_FOREGROUND,
+                                           0};
         return output.request_call(output.call_context, &request);
     };
     const auto goal = create();
@@ -1463,7 +1556,9 @@ TEST_F(ModelCallLimit, eight_model_calls_pause_until_owner_raises_the_same_task_
                                            text("mock.echo"),
                                            {},
                                            {},
-                                           input.view()};
+                                           input.view(),
+                                           AYNI_CALL_MODE_FOREGROUND,
+                                           0};
         return output.request_call(output.call_context, &request);
     };
     const auto goal = create();

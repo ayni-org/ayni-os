@@ -36,7 +36,7 @@
 | C-CALL-003 | Host/Provider 的 `submit` 返回成功只表示 I/O 已受理，不表示业务成功；结果经事件回送 | 把 submit 返回 OK 当作提醒已呈现 | E1 步骤 11；`MA-008` |
 | C-CALL-004 | 共同检查点保存步骤版本、绑定、输入摘要、结果引用、已提交进度与未知状态；策略私有检查点只保存算法状态；共同检查点不兼容时 Task 暂停 | 新策略改写共同检查点中的完成条件 | M1 已实现（已提交进度：步骤由 Kernel 保存，策略只能以 `REPORT_PROGRESS` 追加；私有检查点与步骤分开，只保存策略返回的状态，ADR-0024）：`WorkCheckpoint.progress_commits_steps_and_leaves_the_task_ready`、`WorkCheckpoint.private_checkpoint_comes_back_with_the_next_decision`、`TaskTable.decisions_commit_steps_checkpoints_and_progress`；步骤版本、绑定、输入摘要、结果引用与未知状态随 `MA-008`，共同检查点的版本不兼容时暂停也随之；重启后私有检查点不兼容的 Task 停下，步骤保留（ADR-0026 决策 7）：`WorkRecovery.task_its_strategy_cannot_serve_is_held`；E3 步骤 4–5；E4 步骤 2 |
 | C-CALL-005 | 有副作用（任一非 `NONE` 类别达到门槛）的调用使用 ActionRecord、`operation_id` 与派发屏障；纯计算不需要动作账本，但计费模型请求与媒体上传仍持久绑定调用、Task 调用计数与外发证据 | 计费的模型请求没有持久记录，重启后重发导致双重计费 | E2；E1 步骤 9 |
-| C-CALL-006 | 首版只支持有界顺序组合：单轮最多 8 个调用；组合不持有父级资源等待子调用；未知步骤阻止依赖它的后续步骤 | 转向结果未知时继续拍照并据此分析 | E4 步骤 3；C-LIMIT-006 |
+| C-CALL-006 | 首版工具提议按有界顺序处理：单轮最多 8 个调用；每 Task 同时至多一个 TOOL action（排队/取消/UNKNOWN/借用隔离均占用），可与模型及订阅并存；组合不持有父级资源等待子调用；未知步骤阻止依赖它的后续步骤 | 转向结果未知时继续拍照并据此分析 | E4 步骤 3；C-LIMIT-006 |
 | C-CALL-007 | 已完成步骤不重做，未派发步骤重新准入，补偿作为新调用单独授权 | 恢复后重新执行已完成的转向 | E4 步骤 2 |
 | C-CALL-008 | 越过派发屏障后禁止静默切换实现；未知结果不能通过更换 Provider 或 `operation_id` 绕开；换绑定须先取得权威未执行结论并封禁旧 ID，再以新 `operation_id` 重新准备与授权 | 原 Provider 超时后改用备用 Provider 立即重发 | E3 步骤 2；E4 步骤 3 |
 | C-CALL-009 | 取消请求携带目标操作及版本；Provider 报告“取消成功”“无法取消”或“结果未知”；资源在确认释放或隔离后才处理 | 取消请求发出即释放执行器资源 | E1 步骤 4；E4 步骤 3 |
@@ -46,7 +46,7 @@
 | C-BIND-001 | 注册时核对 Binding 与 Capability 的类型、Schema/语义版本、调用形态、模态、资源与取消/查询特性；不匹配的 Binding 在 `ayni_start` 时拒绝 | 视觉分析能力绑定到只支持文本的 Provider | E4 步骤 1 |
 | C-BIND-002 | 同名能力可以有多个 Binding；应用提供选择约束，Kernel 只在满足权限、外发与运行限制约束的候选中准入 | Kernel 选了未获外发授权的云端 Provider | `MA-008` |
 | C-BIND-003 | 准备记录保存具体 Binding 及版本；改变已批准服务或数据目的地的 fallback 必须重新授权 | 主 Provider 失败后自动改用更贵的服务 | `MA-008`；C-RUN-005 |
-| C-SUB-001 | 订阅归一个 Task；Provider 的可靠 STARTED 确认前 gate 关闭，确认与 Task 前台释放同批，ACTIVE 后可继续模型分析 | 请求刚发出就写上下文，或连续观察阻止 Task 分析 | 正常公开验证：`SubscriptionFixture.start_ack_precedes_samples_and_active_collection_allows_model_call`；完整 E1 未验证 |
+| C-SUB-001 | 订阅归一个 Task；Provider 的可靠 STARTED 确认前 gate 关闭，普通前台确认与释放同批，受管订阅受理即可解除前台、但 gate 仍等可靠确认，ACTIVE 后可继续模型分析 | 请求刚发出就写上下文，或连续观察阻止 Task 分析 | 正常公开验证：`SubscriptionFixture.start_ack_precedes_samples_and_active_collection_allows_model_call`；完整 E1 未验证 |
 | C-SUB-002 | 样本/媒体按 subscription、boot、全局不复用 generation、递增 sequence 校验；不同 Task 同源隔离；关闭立即使缓存与 Scene 旧引用不可用，正常重开原意图以新代际准入 | 旧帧触发分析，或关闭 A 的媒体清理 B | 正常公开验证：`SubscriptionFixture.task_pause_invalidates_cache_and_resume_opens_a_new_generation`、`SubscriptionFixture.two_tasks_share_capacity_but_keep_samples_media_and_close_isolated`、`SubscriptionFixture.orderly_restart_preserves_intent_and_rechecks_a_fresh_opening`；完整竞态/恢复专项未验证 |
 | C-SUB-003 | 默认30秒、半租期由 Kernel 重查完整授权/运行限制/资源后续租；ACK 只确认请求的绝对截止。拒绝/暂停/结束立即关闭采样 gate、停止续租并请求关闭；UNKNOWN 归还 transport 后资源仍保留至最长已请求租期 | 延迟 ACK 从到达时重新计租；UNKNOWN 提前释放仍在采集的资源 | 正常公开验证：`SubscriptionFixture.half_lease_renewal_confirms_the_requested_absolute_deadline`、`SubscriptionFixture.explicit_strategy_close_releases_its_own_subscription_after_terminal`、`SubscriptionQueryFixture.unknown_retains_units_and_query_waits_until_the_longest_requested_lease`、`SubscriptionBackpressureFixture.one_completion_item_reports_the_stop_still_ready_after_cancel_was_sent`；完整 E1 未验证 |
 | C-SUB-004 | 遥测传输 FIFO 满拒绝、不合并/淘汰；每 Host 源和订阅有可靠 gap 前沿。STARTED/RENEWED 与取消/终态独立可靠，不使用遥测策略 | 满队列丢弃租期确认，或 gap 丢失后继续动作 | 正常验证：`ObservationIngress.full_fifo_refuses_samples_but_preserves_gap_and_local_input`、`ProviderMailboxTest.exact_lease_ack_is_retained_independently_until_owner_commit`、`ProviderMailboxTest.renew_controls_require_the_next_explicit_request_and_keep_cancel_receipt`；完整并发专项未验证 |
@@ -100,3 +100,17 @@ Native `system.shell` 为显式宽权限 ACTION/TOOL，使用正常 Core 授权�
 ## ABI 0.49 按需工具绑定
 
 AP-03 第一部分新增 [Task 能力目录与按需授权](capability_directory.md)：可选列表不阻塞缺权 Task，实际请求用一个完整 Grant，与 Call 接受同批绑定；已用 Grant 失效只暂停拥有引用的 Task，显式重授权保留原整份 Scope/精确 Binding。REQUIRED 需求与既有派发屏障/UNKNOWN/隐私保证保持，固定模型工具和 Shell 装配属下一部分。
+
+
+## Task 所有的受管控制（ABI 0.51 / ADR-0086）
+
+公开 `operations.h` 在策略回调内只读原 Call，控制通过唯一 policy intent 暂存；不建立另一操作表。模型保留四个函数，`ayni_call_capability` 的 start/read/wait/cancel/close 与普通 invoke 分支严格检查各自封套，引用是精确十进制字符串，不能当权限。见[接口与消费者设计](../../docs/architecture/ap05-managed-operations-design.md)。
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-OP-001 | managed 只接受 TOOL action/subscription；受理步骤、原 Call/Grant/输入与检查点同批，受理不是成功。共同 attachment 归 Call，后台完成不触动其他前台；所有 action 入口共用占用准入 | start 偷换成另一次调用；普通 invoke 绕过已有 action；后台完成结束模型 | 正常软件公开路径：`ManagedOperations.action_progress_wait_and_original_typed_result`、`ManagedOperations.action_and_subscription_progress_do_not_end_the_foreground_model`、`ManagedOperations.queued_action_preserves_agent_fifo_and_owner_can_cancel_the_task`；新故障/恢复专项未验证 |
+| C-OP-002 | 引用只对原 Task 生效；read 可刷新旧 opening，控制只认确切 opening。read 不执行远程查询；cancel/close 不证明终态，close 即刻禁用样本并永久收紧 desired；UNKNOWN 不重试 | 下一 Task 继续关闭上一 Task；CANNOT_CANCEL 被写成已停止 | `ManagedOperations.final_text_closes_original_task_operations_and_reference_is_scoped`、`ManagedOperations.finite_wait_times_out_without_cancelling_then_explicit_cancel`、`OperationTokens.exact_round_trip_rejects_overflow_leading_zeros_and_malformed_null_view` |
+| C-OP-003 | wait 原子比较显式 after，过去变化立即返回，未来 boot/sequence/gap 或非法形状拒绝。未变才进 WAITING；同状态 renew 不唤醒；正数时长最多30000ms，到期只结束本次wait。有限deadline不饱和；恢复后旧deadline不复用 | read与wait之间的进度丢失；超时偷偷取消；续租驱动模型忙转 | `ManagedOperations.progress_before_wait_returns_immediately_and_future_frontier_is_refused`、`ManagedOperations.finite_wait_times_out_without_cancelling_then_explicit_cancel`、`BackgroundAction.resource_resume_readmits_the_same_call_without_a_foreground_link`、`BackgroundAction.pause_cancels_the_queued_call_and_clears_only_its_resource_overlay`、既有 `SubscriptionFixture.waiting_task_wakes_once_for_the_latest_sample_and_subscription_state`；新恢复专项未验证 |
+| C-OP-004 | 样本正文限有效 BOOL/I64、完整来源/时间/质量/单位；无媒体。进入工具历史/模型/摘要时保存确切来源，接受、派发和消费复核；失效重建完整协议组及原操作事实，不重做已受理控制。最终文字完成 Task 并停止名下操作，借用仍待真实终态 | 把历史样本或派生答案交给下一 Task；最终答复后继续采集；来源重建丢失原操作引用 | `ManagedOperations.sample_wait_rebuild_keeps_current_reference_and_next_task_discards_sample_history`、`ManagedOperations.software_subscription_sample_is_readable_then_close_invalidates_context`、`TaskCallTest.background_unknown_release_preserves_an_existing_policy_hold`、`TaskCallTest.foreground_completion_preserves_another_calls_unknown_overlay`、`ManagedResultHarness.managed_read_preserves_reference_and_original_large_result_through_summary` |
+
+Task.call_unknown 独立于策略、资源等待、兼容及模型上限；Call 协调层维护其同批关系，诊断优先策略/资源、兼容、UNKNOWN、模型上限。revision 准入从 Call 属主查询额外的 UNKNOWN/解除/结束预留，不复制后台操作列表。资源等待覆盖 Task，恢复时须有原 Task 的真实未派发 Call，另一前台模型不能作为替代证明。普通 invoke 的业务结果处理保持，所有启用 Call 的 Task 决策先等其前一提交持久，避免策略回调副作用后再因同一持久屏障拒收。

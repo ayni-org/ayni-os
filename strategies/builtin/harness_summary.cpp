@@ -38,7 +38,8 @@ ayni_status_t source_result(const Turn &turn, const ayni_task_snapshot_v1 &snaps
     if (status != AYNI_OK) {
         return status;
     }
-    return result(snapshot, function_key(model.logical_call_id, turn.tool_index, key), call);
+    status = result(snapshot, function_key(model.logical_call_id, turn.tool_index, key), call);
+    return status == AYNI_NOT_FOUND ? operation_source(proposal.call, snapshot, call) : status;
 }
 ayni_status_t request_chunk(Turn &turn, const ToolLoopConfig &config,
                             const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 step,
@@ -103,10 +104,29 @@ ayni_status_t request_chunk(Turn &turn, const ToolLoopConfig &config,
     return status == AYNI_OK ? request(config.summary, step, body, output) : status;
 }
 ayni_status_t append_summary(Turn &turn, const ayni_task_call_result_v1 &call,
-                             const ayni_tool_call_v1 &proposal, char *scratch) {
+                             const ayni_tool_call_v1 &proposal,
+                             const ayni_task_snapshot_v1 &snapshot, char *scratch) {
     json::Writer json(scratch, prompt_bytes_max);
+    if (call.mode == AYNI_CALL_MODE_MANAGED) {
+        const ayni_operation_ref_v1 reference{snapshot.task_id, call.logical_call_id,
+                                              call.operation_id};
+        ayni_operation_info_v1 info{};
+        info.struct_size = sizeof(info);
+        const auto status = snapshot.operation
+                                ? snapshot.operation(snapshot.call_context, &reference, &info)
+                                : AYNI_UNSUPPORTED;
+        if (status != AYNI_OK) {
+            return status;
+        }
+        json.raw("{\"operation\":");
+        operations::write(json, info);
+        json.raw(",\"result\":");
+    }
     json::write_call_summary(json, call, turn.archived_result.reference,
                              turn.result_summary.text.view());
+    if (call.mode == AYNI_CALL_MODE_MANAGED) {
+        json.raw("}");
+    }
     size_t size = 0;
     if (!json.finish(size)) {
         return AYNI_CAPACITY_EXCEEDED;
@@ -184,7 +204,7 @@ ayni_status_t summarize_result(Turn &turn, const ToolLoopConfig &config,
     }
     ++turn.result_summary.chunk;
     return turn.result_summary.offset == archived.json_bytes
-               ? append_summary(turn, original, proposal.call, scratch)
+               ? append_summary(turn, original, proposal.call, snapshot, scratch)
                : AYNI_OK;
 }
 } // namespace ayni::strategies::detail

@@ -6,6 +6,8 @@
 #include <memory>
 namespace ayni::runtime::examples {
 enum class Model { mock, alternate_loopback };
+// Select optional deterministic software capabilities in the fixture composition.
+enum class Software { none, work };
 // Example adapter/policy lifecycle; every callback is owner-thread and nonthrowing.
 struct Extension {
     void *context = nullptr;
@@ -22,7 +24,8 @@ class Fixture {
     ~Fixture(); // Failed close retains the complete composition/borrow contexts.
     Fixture(const Fixture &) = delete;
     Fixture &operator=(const Fixture &) = delete;
-    ayni_status_t open(Extension extension, Model model = Model::mock);
+    ayni_status_t open(Extension extension, Model model = Model::mock,
+                       Software software = Software::none);
     uint64_t instance() const; // Registered assistant instance; zero before open.
     uint64_t now_us() const;   // Same monotonic domain as the example Host.
     ayni_string_v1 capability(const char *alias) const; // Borrowed through close.
