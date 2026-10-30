@@ -141,7 +141,7 @@ AP-02 已由 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084 交�
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。
-- **本轮与下一步：** AP-05 消费者盘点与实施设计见 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086、[#115](https://github.com/RobotSe7en/ayni/pull/115)；下一步按设计实现受管软件长任务/事件流，再完成 AP-06、AP-04 证据及基础收尾。当前生产 ABI 0.50/schema 6，AP-05 尚未实现；命令与验证记录集中在对应 PR。
+- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。下一步 AP-06/AP-04 与基础收尾，不自动启动平台实验。
 - **实验与可选能力：** Native/Sim 日常测试继续；基础门槛通过后再安排 ESP32-S3、Linux 实际 OS 集成及其他平台实验。语音/视觉、运动与硬件停止、MCP/ROS/MHS、peer 和轮式助理试用按需选择；启用的物理执行保证、OTA/硬件/耐久证据不能省略或用模拟替代。
 - **已定与待决：** AP-02/AP-03 选择见 ADR-0084/0085。AP-05 已选定四工具内同 Task 的受管控制、本包直接升级并拒旧保留目录、最终答复收尾、每 Task 同时一个 action 且可并存模型和订阅（用户 2026-10-30，ADR-0086）。后续包兼容和平台指标仍分别决定；真实模型多轮试用、长期密钥配置和完整 MA-038 旧待决保留；历史 ≥80% 接受不替代通用 90% 目标。
 - **工作流与边界：** 依相关正常测试、设计自查、适用独立审查及 CI 交付；具体命令、结果与运行编号集中在 PR。本包不启动平台/硬件、付费 API 或新专项；变异及新增故障/恢复专项仍按 workflow 现行授权处理。

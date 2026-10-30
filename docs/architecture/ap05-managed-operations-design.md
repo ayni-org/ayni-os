@@ -1,6 +1,6 @@
 # AP-05 长操作与订阅的受管模型控制设计
 
-- **状态**：消费者盘点与实施设计；生产实现仍为 #114、实验性 ABI 0.50 / Core schema 6。本文的新增接口和行为尚未实现。
+- **状态**：AP-05 已实现，ABI 0.51 / Core schema 7；正常软件/SDK验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。本文件保留设计基线盘点，§11记录实际映射与限制。
 - **决定**：用户 2026-10-30 选择保留四个固定工具、在 `ayni_call_capability` 中扩展受管操作；引用限原 Task；本包直接升级、拒旧保留目录；最终文字答复结束 Task 并收尾；首版每 Task 同时一个 action，可与模型和订阅并存。见 [ADR-0086](../adr/0086-task-owned-managed-operation-controls.md)。
 - **依据**：[基础实施计划](foundation-and-experiment-plan.md)、[能力架构 §8](capability-centered-agentos-plan.md#8-能力调用协议)、[调用与订阅契约](../../contracts/domain/calls_and_bindings.md)、ADR-0045/0063/0084/0085。
 - **范围**：以可取消的软件长任务和 BOOL/I64 软件事件源贯通模型、公开策略接口与既有 Core 生命周期；不扩展媒体类型、平台或远程协议。
@@ -180,3 +180,18 @@ Core schema、能力语义版本、固定工具协议、消息分帧、策略 ch
 实施前检查主机资源，再显式选择构建/测试并行度。按影响运行本地正常与输入边界测试，最终适用 CI、设计自查和 Core 独立审查；公共布局/容量改变时量测 arena 默认/最小/双 Agent 配置，记录实际结果。新增调用关联与有界扫描的开销先量测，不据 Native 数字宣称 MCU 或硬实时支持。
 
 本轮文档交付检查为 diff、契约追踪与链接/计划一致性；不将源码盘点列为测试通过。AP-05 实现完成后才更新支持状态，随后 AP-06 和 AP-04 多实例证据收尾，再进入基础验收。
+
+
+## 11 实现映射与当前限制
+
+公开实现为 `operations.h` 的复制引用/前沿/读视图和 `policy_output.control_operation`；`calls.h` 的 mode 默认 FOREGROUND，MANAGED 只适用 TOOL action/subscription。Task 诊断用 wait_logical_call_id/form/generation/sequence/phase/timeout_ms，原订阅专用字段名同步升级。SDK 示例见 `examples/managed_operations.cpp`，实际模型往返见 `ManagedOperations` 正常用例；无硬件、媒体、远程服务或付费模型。
+
+引用编码为 `o1:<Task>:<Call>:<operation>`，前沿为 `f1:<boot>:<sequence>:<gaps>:<phase>:<cancel_requested>:<cancel_result>:<outcome>`，所有数值保留精确十进制，无前导零。单次 wait 当前实施上限30000ms，是暂用默认值，未把待答的时长选择记成新增用户确认。到期返回独立 wait_status=EXPIRED；操作仍继续。对不可用样本只返回 sample=null，执行身份/outcome/effect 保留。
+
+CallState 独占共同 attachment；Task 独占 tagged wait 和独立 call_unknown overlay。Task 不复制后台列表，额外 revision/queued 证明通过协调层读取原 Call。Core schema7 的 CALL_STATE 固定424 B，TASK_STATE132 B；deadline 不编码，有限wait在新boot中断后回读。策略格式4、Native内置策略版本3、SQLite user_version2 分别升级。Native目录锁内先检查已有 log/snapshot 的原始 schema，再允许外层数据库创建；Core仍做完整CRC/语义检查。直接升级、不迁移，回退保留原二进制与原目录。
+
+样本来源由原 Call/knowledge 的精确引用维护，Call ModelContext 与持久对话记录均保留最多8项来源；模型接受、派发和结果消费重新检查。失效时移除整个旧协议组及派生正文，从原账本重建当前操作引用/事实，并为实际新样本重新捕获来源；已提交控制不重放。新模型请求不携带孤立旧tool消息。新增扫描均有配置容量界，软件Provider每槽每advance至多256次加法或一次投递；不据此声明MCU或硬实时能力。
+
+新格式故障/恢复专项、变异、真实模型、硬件和平台实验仍未验证；既有回归继续保留。AP-06/AP-04 与基础验收不由本实现自动完成。
+
+资源准入沿用同优先级 Agent 实例内FIFO（C-RES-004），受管模式不暗改优先级或插队：若更早的 action 尚未取得资源，后续同Agent的MODEL可暂时排队，期间可从owner管理入口取消Task；action已准入运行后模型/订阅可按各自资源并存。原生策略的本地read/wait不需要MODEL槽，资源超时后仍能显式恢复同一调用。
