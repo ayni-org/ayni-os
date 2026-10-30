@@ -1,12 +1,13 @@
 #include "experiment_support.h"
 #include "fixture_json.h"
 #include <ayni/runtime/sim_node/experiments.h>
+#include <ayni/storage_format.h>
 #include <filesystem>
 #include <fstream>
 #include <new>
 namespace ayni::runtime::experiments {
 namespace {
-constexpr uint32_t storage_schema = 3; // contracts/storage/records.md, ADR-0038.
+constexpr uint32_t storage_schema = AYNI_STORAGE_SCHEMA_CURRENT; // Actual compiled codec version.
 const char *deployment_name(Deployment deployment) {
     switch (deployment) {
     case Deployment::counter:

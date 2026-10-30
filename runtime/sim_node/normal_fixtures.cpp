@@ -8,6 +8,7 @@
 #include <ayni/resources.h>
 #include <ayni/runtime/common/default_config.h>
 #include <ayni/runtime/sim_node.h>
+#include <ayni/storage_format.h>
 #include <ayni/subscriptions.h>
 #include <cstring>
 #include <filesystem>
@@ -23,7 +24,8 @@ constexpr uint32_t step_budget_us = 100000;
 constexpr uint32_t fixture_goal_capacity = 32, fixture_call_capacity = 64;
 constexpr uint32_t trace_limit = 20000;
 constexpr int64_t initial_utc_s = 86400;
-constexpr uint32_t fixture_storage_schema = 3; // contracts/storage/records.md.
+constexpr uint32_t fixture_storage_schema =
+    AYNI_STORAGE_SCHEMA_CURRENT; // Actual compiled codec version.
 ayni_string_v1 text(const char *s) {
     return {s, static_cast<uint32_t>(std::strlen(s))};
 }

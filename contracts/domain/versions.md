@@ -11,7 +11,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | 存储 | `storage_schema`、记录版本、迁移版本 | 日志批次、快照、NVS 记录（`storage/`） |
 | 领域语义 | 能力、Scene、GoalType、检查点各自的 `version` | 注册目录与 ActionRecord 绑定的语义 |
 
-当前 Core 存储只接受 schema 5；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
+当前 Core 存储只接受 schema 5；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
 
 ## ABI
 

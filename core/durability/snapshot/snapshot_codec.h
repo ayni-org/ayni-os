@@ -15,7 +15,7 @@
 
 namespace ayni::durability {
 
-constexpr uint16_t snapshot_schema = 5;
+constexpr uint16_t snapshot_schema = AYNI_STORAGE_SCHEMA_CURRENT;
 constexpr uint32_t snapshot_header_size = 72;
 constexpr uint32_t snapshot_marker_size = 24;
 
