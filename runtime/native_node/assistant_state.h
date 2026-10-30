@@ -53,7 +53,9 @@ struct Assistant::Impl {
     ayni_status_t publish_context(const ayni_context_info_v1 &);
     ayni_status_t erase_context(const ayni_context_info_v1 &);
     ayni_status_t collect_receipts();
-    ayni_status_t persist(SavedConversation, Notice notice = {});
+    ayni_status_t persist(SavedConversation, Notice notice = {},
+                          ConversationStore::Erasure erasure = ConversationStore::Erasure::none,
+                          uint64_t turn = 0);
     ayni_status_t announce(std::vector<Notice> &);
     static ayni_status_t propose(void *, const ayni_goal_create_v1 *, uint64_t *);
     ayni_status_t stop();

@@ -7,18 +7,21 @@
 #include <array>
 #include <ayni/calendar.h>
 #include <ayni/calls.h>
+#include <ayni/directory.h>
 #include <optional>
 
 namespace ayni::strategies {
 inline constexpr uint32_t rule_count_max = 8;
 inline constexpr uint32_t rule_steps_max = 16;
-inline constexpr uint32_t recent_rounds_max = 3;
-inline constexpr uint32_t retained_rounds_max =
-    recent_rounds_max + 1; // Superseded user publication.
+inline constexpr uint32_t retained_rounds_max = 4; // Independently retained user inputs.
 inline constexpr uint32_t turn_text_max = 384;
 inline constexpr uint32_t summary_text_max = 512;
-inline constexpr uint32_t state_bytes_max = 4096;
-inline constexpr uint32_t prompt_bytes_max = 8192;
+inline constexpr uint32_t history_bytes_max = 49152; // Complete groups retained through compaction.
+inline constexpr uint32_t state_bytes_max = 65536;   // Portable record/controller upper bound.
+inline constexpr uint32_t prompt_bytes_max =
+    32768; // Hard framed request bound, independent of budget.
+inline constexpr uint32_t context_trigger_percent = 75;
+inline constexpr uint32_t context_target_percent = 50;
 
 // Fixed text, size bytes used, no terminator; empty is a valid answer.
 template <uint32_t Capacity> struct Text {
@@ -49,6 +52,16 @@ struct ConversationRecord {
     uint64_t summary_first = 0;
     uint64_t summary_last = 0;
     Text<summary_text_max> summary;
+    Text<history_bytes_max>
+        history;              // Complete standard messages, without fixed system instructions.
+    uint64_t history_ref = 0; // Immutable external view; nonzero excludes history from the codec.
+    ayni_model_usage_v1 last_usage{}; // Last serving-model observation; NONE after context reset.
+    uint64_t last_request_characters = 0; // Unicode characters in the last sent messages/tools.
+    uint64_t last_input_estimate =
+        0; // Estimated input tokens for that request; never service usage.
+    ayni_capability_context_v1
+        disclosure{};             // Conservative retained metadata visibility, zero before use.
+    uint64_t context_version = 1; // Positive generation; changes when derived context is rebuilt.
     // Independent accepted input survives invalidation before publication.
     Text<turn_text_max> draft;
     uint32_t round_count = 0;
@@ -137,11 +150,37 @@ struct LocalClock {
 // Both calls are MODEL class; summary binding must have a text result contract.
 // model.text and summary.text are trusted instructions, framed apart from the conversation data
 // (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
+// Optional Host-owned long history boundary. Calls copy/return bounded data and
+// never perform I/O on the strategy thread. NOT_READY retains no policy output;
+// ready becomes true after a worker completes. Views are owner/conversation/generation scoped.
+struct ArchivedResult {
+    uint64_t reference = 0;  // Immutable SQLite result version, positive after archive commits.
+    uint32_t json_bytes = 0; // Complete rendered UTF-8 bytes; independent of token statistics.
+};
+struct HistoryPort {
+    void *context = nullptr;
+    uint32_t (*ready)(void *, uint64_t) = nullptr;
+    ayni_status_t (*load)(void *, uint64_t task, const ConversationRecord &,
+                          Text<history_bytes_max> &) = nullptr;
+    ayni_status_t (*save)(void *, uint64_t task, uint64_t turn, const ConversationRecord &,
+                          uint64_t &reference) = nullptr;
+    // Complete raw facts/proofs are copied before returning NOT_READY. A successful
+    // archive makes immutable rendered chunks available until the next archive.
+    ayni_status_t (*archive)(void *, uint64_t task, const ConversationRecord &,
+                             const ayni_task_call_result_v1 &, ArchivedResult &) = nullptr;
+    ayni_status_t (*result_chunk)(void *, uint64_t task, uint64_t call, uint32_t offset,
+                                  Text<prompt_bytes_max> &, uint32_t maximum) = nullptr;
+};
 struct ToolLoopConfig {
     Identity identity;
     Call model;
     Call summary;
     LocalClock clock;
+    Call shell; // Optional trusted exact Shell selection; empty Binding means unavailable.
+    uint64_t context_window_tokens =
+        0; // Explicit model window; zero disables automatic compression.
+    uint64_t output_reserve_tokens = 0; // Positive and below window when compression is enabled.
+    HistoryPort history{};
 };
 class ToolLoop {
   public:
@@ -150,9 +189,11 @@ class ToolLoop {
 
   private:
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);
+    static uint32_t ready(void *, uint64_t);
     ToolLoopConfig config_{};
     bool configured_ = false;
     std::array<char, prompt_bytes_max> prompt_{};
+    std::array<char, history_bytes_max> tool_{}; // Bounded local function/result rendering scratch.
 };
 } // namespace ayni::strategies
 #endif

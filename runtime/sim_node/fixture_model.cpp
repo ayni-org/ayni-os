@@ -3,8 +3,12 @@
 #include <ayni/ayni.hpp>
 namespace ayni::runtime::fixtures {
 namespace {
-constexpr uint32_t text_limit = 512;
-}
+// AP-03 messages include fixed instructions and complete tool groups. The
+// synthetic answer stays short instead of echoing an entire framed request.
+constexpr uint32_t text_limit = 32768;
+constexpr uint32_t result_limit = 512;
+constexpr char synthetic_reply[] = "Deterministic model fixture reply.";
+} // namespace
 ayni_status_t ModelProbe::configure(providers::mock::Variant variant, uint64_t delay_us,
                                     Clock clock, std::optional<uint32_t> timeout_ms,
                                     providers::mock::Service service) {
@@ -13,7 +17,8 @@ ayni_status_t ModelProbe::configure(providers::mock::Variant variant, uint64_t d
         return AYNI_INVALID_ARGUMENT;
     }
     delay_us_ = delay_us;
-    const auto status = provider_.configure({variant, service, 1, text_limit, {}});
+    const auto status = provider_.configure(
+        {variant, service, 1, text_limit, {synthetic_reply, sizeof(synthetic_reply) - 1}});
     if (status != AYNI_OK) {
         return status;
     }
@@ -26,6 +31,9 @@ ayni_status_t ModelProbe::configure(providers::mock::Variant variant, uint64_t d
         }
         original_ = offer;
         declaration_ = *offer.capabilities;
+        // This adapter emits only its fixed short fixture reply. Preserve the
+        // existing result lane while admitting larger framed model input.
+        declaration_.contract.result_text_limit = result_limit;
         if (timeout_ms) {
             declaration_.contract.timeout_ms = *timeout_ms;
         }

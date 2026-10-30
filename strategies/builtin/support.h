@@ -6,20 +6,37 @@
 #include <string_view>
 
 namespace ayni::strategies::detail {
-inline constexpr uint32_t checkpoint_format = 1;
-inline constexpr uint32_t summary_drop_count = 2;
 inline constexpr uint32_t max_model_rounds = AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX;
-inline constexpr std::string_view summary_step = "dialog.summary.v1";
 
 // The checkpoint carries the immutable base revision and a candidate context.
 // done means the final answer was appended; never accepted as input parameters.
+enum class TurnPhase : uint32_t { initial, ready, model, tools, summary, result_summary };
+struct SummaryProgress {
+    uint32_t offset = 0;         // Bytes already covered by the last successful chunk.
+    uint32_t next = 0;           // End of the outstanding chunk; offset<=next<=original length.
+    uint32_t chunk = 0;          // Monotone summary Call ordinal within its source.
+    Text<summary_text_max> text; // Unconfirmed candidate; originals remain in SQLite/history.
+};
 struct Turn {
     ConversationRecord record;
     uint64_t base_revision = 0;
     uint64_t memory_id = 0; // Optional explicit source selected for this turn; zero selects none.
     Text<turn_text_max> input;
+    TurnPhase phase = TurnPhase::initial; // Sole owner of current model/group/compaction progress.
+    uint32_t model_round = 0;    // Monotone main Call ordinal, never reset on context invalidation.
+    uint32_t tool_index = 0;     // Next proposal in the current durable model result.
+    uint32_t group_start = 0;    // History byte boundary before pending assistant/tool group.
+    uint32_t compact_prefix = 0; // Completed prefix selected for compaction; zero when inactive.
+    SummaryProgress history_summary;
+    uint32_t compact_generation = 0; // Monotone summary operation generation within this Task.
+    TurnPhase compact_resume = TurnPhase::ready; // Controller to resume after atomic replacement.
+    SummaryProgress result_summary;
+    ArchivedResult archived_result; // Active only in result_summary; exact immutable original.
+
     bool done = false;
 };
+ayni_string_v1 model_key(uint32_t round, char *buffer);
+ayni_string_v1 function_key(uint64_t source, uint32_t index, char *buffer);
 ayni_status_t read_turn(ayni_bytes_v1 bytes, Turn &out);
 ayni_status_t write_turn(const Turn &turn, uint8_t *data, uint32_t capacity, uint32_t &size);
 bool valid_text(ayni_string_v1 value);

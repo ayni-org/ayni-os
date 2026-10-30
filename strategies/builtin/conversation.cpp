@@ -1,4 +1,6 @@
 #include "support.h"
+#include <ayni/detail/model_usage.hpp>
+#include <ayni/model_messages.hpp>
 #include <cstring>
 #include <limits>
 
@@ -9,7 +11,7 @@ constexpr uint32_t record_magic = 0x434E5941U; // AYNC, little endian.
 constexpr uint32_t turn_magic = 0x544E5941U;   // AYNT.
 constexpr uint32_t bits_per_byte = 8;
 constexpr uint32_t conversation_format =
-    2; // Sparse retained turns and monotone deletion high-water.
+    3; // Standard message history, disclosure and budget controller.
 constexpr uint32_t word_bytes = 4;
 constexpr uint32_t wide_bytes = 8;
 
@@ -29,6 +31,14 @@ class Encoder {
             std::memcpy(data_ + size_, value.bytes.data(), value.size);
         }
         size_ += value.size;
+    }
+    void fixed(const char *value, uint32_t bytes) {
+        if (!ok_ || bytes > capacity_ - size_) {
+            ok_ = false;
+            return;
+        }
+        std::memcpy(data_ + size_, value, bytes);
+        size_ += bytes;
     }
     bool ok() const { return ok_; }
     uint32_t size() const { return size_; }
@@ -68,6 +78,14 @@ class Decoder {
         position_ += value.size;
         ok_ = valid_text(value.view());
     }
+    void fixed(char *value, uint32_t bytes) {
+        if (!ok_ || bytes > bytes_.size - position_) {
+            ok_ = false;
+            return;
+        }
+        std::memcpy(value, bytes_.data + position_, bytes);
+        position_ += bytes;
+    }
     bool complete() const { return ok_ && position_ == bytes_.size; }
 
   private:
@@ -86,6 +104,33 @@ class Decoder {
     uint32_t position_ = 0;
     bool ok_ = true;
 };
+template <typename Archive, typename Context> void context_fields(Archive &a, Context &c) {
+    a.u64(c.boot_epoch);
+    a.u64(c.owner_instance_id);
+    a.u32(c.goal_type_version);
+    a.u32(c.goal_type_size);
+    a.fixed(c.goal_type_id, AYNI_CATALOG_ID_MAX_BYTES);
+    for (auto &word : c.visible) {
+        a.u64(word);
+    }
+}
+template <typename Archive, typename State> void controller_fields(Archive &a, State &s) {
+    a.u32(s.model_round);
+    a.u32(s.tool_index);
+    a.u32(s.group_start);
+    a.u32(s.compact_prefix);
+    a.u32(s.history_summary.offset);
+    a.u32(s.history_summary.chunk);
+    a.u32(s.history_summary.next);
+    a.u32(s.compact_generation);
+    a.text(s.history_summary.text);
+    a.u64(s.archived_result.reference);
+    a.u32(s.archived_result.json_bytes);
+    a.u32(s.result_summary.offset);
+    a.u32(s.result_summary.next);
+    a.u32(s.result_summary.chunk);
+    a.text(s.result_summary.text);
+}
 template <typename Archive, typename Record> void fields(Archive &a, Record &r) {
     a.u64(r.id);
     a.u64(r.owner_instance_id);
@@ -96,6 +141,19 @@ template <typename Archive, typename Record> void fields(Archive &a, Record &r) 
     a.u64(r.summary_last);
     a.text(r.summary);
     a.text(r.draft);
+    a.u64(r.history_ref);
+    if (!r.history_ref) {
+        a.text(r.history);
+    }
+    a.u32(r.last_usage.kind);
+    a.u32(r.last_usage.reserved);
+    a.u64(r.last_usage.input_tokens);
+    a.u64(r.last_usage.output_tokens);
+    a.u64(r.last_usage.total_tokens);
+    a.u64(r.last_request_characters);
+    a.u64(r.last_input_estimate);
+    context_fields(a, r.disclosure);
+    a.u64(r.context_version);
     a.u32(r.round_count);
     for (uint32_t at = 0; at < r.round_count && at < retained_rounds_max; ++at) {
         auto &round = r.rounds[at];
@@ -105,7 +163,8 @@ template <typename Archive, typename Record> void fields(Archive &a, Record &r) 
     }
 }
 bool valid(const ConversationRecord &r) {
-    if (!r.id || !r.owner_instance_id || !r.generation || r.round_count > retained_rounds_max ||
+    if (!r.id || !r.owner_instance_id || !r.generation ||
+        !::ayni::detail::valid_model_usage(r.last_usage) || r.round_count > retained_rounds_max ||
         r.summary.size > summary_text_max || !valid_text(r.summary.view()) ||
         r.draft.size > turn_text_max || !valid_text(r.draft.view())) {
         return false;
@@ -115,16 +174,36 @@ bool valid(const ConversationRecord &r) {
             return false;
         }
     } else if (r.summary_first == 0 || r.summary_first > r.summary_last ||
-               r.summary_last > r.last_round || !r.summary.size) {
+               r.summary_last > r.last_round + (r.last_round != UINT64_MAX ? 1U : 0U) ||
+               !r.summary.size) {
         return false;
     }
-    if (r.last_round < r.summary_last ||
-        (r.generation == 1 && r.last_round - r.summary_last != r.round_count)) {
+    if (r.generation == 1U && r.context_version == 1U && !r.history.size && !r.history_ref &&
+        r.last_round >= r.summary_last && r.last_round - r.summary_last != r.round_count) {
+        return false;
+    }
+    if (!r.context_version || r.history.size > history_bytes_max) {
+        return false;
+    }
+    if (r.history.size) {
+        model::Reader history(r.history.view());
+        model::Message message;
+        while (history.next(message)) {
+        }
+        if (!history.finished()) {
+            return false;
+        }
+    }
+    if (r.disclosure.goal_type_size > AYNI_CATALOG_ID_MAX_BYTES ||
+        (r.disclosure.boot_epoch &&
+         (!r.disclosure.owner_instance_id || !r.disclosure.goal_type_version ||
+          !r.disclosure.goal_type_size ||
+          !valid_text({r.disclosure.goal_type_id, r.disclosure.goal_type_size})))) {
         return false;
     }
     for (uint32_t at = 0; at < r.round_count; ++at) {
         const auto &round = r.rounds[at];
-        const auto previous = at == 0 ? r.summary_last : r.rounds[at - 1].number;
+        const auto previous = at == 0 ? 0U : r.rounds[at - 1].number;
         if (round.number <= previous || round.number > r.last_round || round.user.size == 0 ||
             round.user.size > turn_text_max || round.answer.size > turn_text_max ||
             !valid_text(round.user.view()) || !valid_text(round.answer.view())) {
@@ -158,6 +237,25 @@ ayni_status_t read_turn(ayni_bytes_v1 bytes, Turn &out) {
     reader.u64(parsed.memory_id);
     fields(reader, parsed.record);
     reader.text(parsed.input);
+    uint32_t phase = 0, resume = 0;
+    reader.u32(phase);
+    reader.u32(resume);
+    controller_fields(reader, parsed);
+    if (phase > static_cast<uint32_t>(TurnPhase::result_summary) ||
+        resume > static_cast<uint32_t>(TurnPhase::result_summary) ||
+        parsed.model_round > max_model_rounds || parsed.tool_index > AYNI_CALL_TOOL_COUNT_MAX ||
+        parsed.group_start >
+            (parsed.record.history_ref ? history_bytes_max : parsed.record.history.size) ||
+        parsed.compact_prefix >
+            (parsed.record.history_ref ? history_bytes_max : parsed.record.history.size) ||
+        parsed.history_summary.offset > parsed.history_summary.next ||
+        parsed.history_summary.next > parsed.compact_prefix ||
+        parsed.result_summary.offset > parsed.result_summary.next ||
+        parsed.result_summary.next > parsed.archived_result.json_bytes) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    parsed.phase = static_cast<TurnPhase>(phase);
+    parsed.compact_resume = static_cast<TurnPhase>(resume);
     if (!reader.complete() || done > 1 || !valid(parsed.record) || parsed.input.size == 0 ||
         parsed.base_revision == UINT64_MAX ||
         parsed.record.revision != parsed.base_revision + done) {
@@ -183,6 +281,9 @@ ayni_status_t write_turn(const Turn &turn, uint8_t *data, uint32_t capacity, uin
     writer.u64(turn.memory_id);
     fields(writer, turn.record);
     writer.text(turn.input);
+    writer.u32(static_cast<uint32_t>(turn.phase));
+    writer.u32(static_cast<uint32_t>(turn.compact_resume));
+    controller_fields(writer, turn);
     if (!writer.ok()) {
         return AYNI_CAPACITY_EXCEEDED;
     }
@@ -197,7 +298,7 @@ ayni_status_t Conversation::begin(const ConversationRecord &record, ayni_string_
         return AYNI_INVALID_ARGUMENT;
     }
     if (user.size > turn_text_max || record.revision == UINT64_MAX ||
-        record.last_round == UINT64_MAX || record.round_count >= retained_rounds_max) {
+        record.last_round == UINT64_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     if (!valid_text(user)) {
@@ -263,10 +364,13 @@ ayni_status_t Conversation::retain_published_input(const ConversationRecord &cur
         !current.draft.size) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (current.round_count == retained_rounds_max) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
     auto next = current;
+    if (next.round_count == retained_rounds_max) {
+        for (uint32_t at = 1; at < next.round_count; ++at) {
+            next.rounds[at - 1U] = next.rounds[at];
+        }
+        --next.round_count;
+    }
     next.rounds[next.round_count++] = {round, current.draft, {}};
     next.last_round = round;
     next.draft = {};

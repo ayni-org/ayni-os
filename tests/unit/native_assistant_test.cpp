@@ -12,6 +12,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <map>
+#include <sqlite3.h>
 #include <string>
 #include <vector>
 namespace {
@@ -117,6 +118,48 @@ TEST_F(NativeAssistant, check_text_is_an_ordinary_turn_of_the_single_assistant) 
     EXPECT_EQ(notices.front().kind, NoticeKind::answer);
     EXPECT_FALSE(run(Operation::calls).calls.empty());
 }
+// ADR-0085: Native composition exposes Shell only with explicit owner authority;
+// a normal pipeline uses the ordinary Call path and retains its original result.
+TEST_F(NativeAssistant, shell_pipeline_requires_a_grant_and_archives_its_typed_result) {
+    ASSERT_EQ(app.close(), AYNI_OK);
+    ModelConfig config;
+    config.shell_working_directory = directory.path();
+    ASSERT_EQ(app.open(directory.path(), config), AYNI_OK);
+    settle();
+    allow_chat();
+    const std::string command =
+        R"(function:ayni_shell json:{"command":"printf hello | tr a-z A-Z"})";
+    ASSERT_EQ(run(Operation::say, 0, command).status, AYNI_OK);
+    settle();
+    auto calls = run(Operation::calls).calls;
+    const auto first = calls.size();
+    EXPECT_EQ(first, 2U); // Two Model Calls surround the local refusal.
+    allow("shell");
+    ASSERT_EQ(run(Operation::say, 0, command).status, AYNI_OK);
+    settle();
+    calls = run(Operation::calls).calls;
+    EXPECT_EQ(calls.size(), first + 3U);
+    sqlite3 *db = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(directory.file("conversation.sqlite3").c_str(), &db,
+                              SQLITE_OPEN_READONLY, nullptr),
+              SQLITE_OK);
+    sqlite3_stmt *query = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db,
+                                 "SELECT outcome,effect,json FROM results WHERE length(value)>0",
+                                 -1, &query, nullptr),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(query, 0), AYNI_CALL_COMPLETED);
+    EXPECT_EQ(sqlite3_column_int(query, 1), AYNI_CALL_EFFECT_COMPLETE);
+    const std::string result(static_cast<const char *>(sqlite3_column_blob(query, 2)),
+                             static_cast<size_t>(sqlite3_column_bytes(query, 2)));
+    EXPECT_NE(result.find("SEVMTE8="),
+              std::string::npos); // HELLO, exactly as the Shell schema declares.
+    EXPECT_NE(result.find("result_ref"), std::string::npos);
+    EXPECT_EQ(sqlite3_step(query), SQLITE_DONE);
+    sqlite3_finalize(query);
+    sqlite3_close(db);
+}
 // ADR-0066: grouped autonomous Goal echoes retain immutable membership during approval.
 TEST_F(NativeAssistant, autonomous_goals_reopen_and_approve_through_the_public_application) {
     Command check;
@@ -141,15 +184,15 @@ TEST_F(NativeAssistant, autonomous_goals_reopen_and_approve_through_the_public_a
     EXPECT_EQ(found->pause_group, ayni::applications::assistant::autonomous_group);
     EXPECT_EQ(found->lifecycle, AYNI_GOAL_ACTIVE);
 }
-TEST_F(NativeAssistant, summary_and_conversation_survive_clean_close_and_reopen) {
+TEST_F(NativeAssistant, short_history_and_conversation_survive_clean_close_and_reopen) {
     allow_chat();
     for (const auto input : {"第一轮", "第二轮", "第三轮", "第四轮"}) {
         ASSERT_EQ(run(Operation::say, 0, input).status, AYNI_OK);
         settle();
     }
     const auto before = conversation();
-    EXPECT_FALSE(run(Operation::conversation).conversation.summary.empty());
-    EXPECT_EQ(before.find("第一轮"), std::string::npos);
+    EXPECT_TRUE(run(Operation::conversation).conversation.summary.empty());
+    EXPECT_NE(before.find("第一轮"), std::string::npos);
     EXPECT_NE(before.find("第四轮"), std::string::npos);
     ASSERT_EQ(app.close(), AYNI_OK);
     ASSERT_EQ(app.open(directory.path(), {}), AYNI_OK);
@@ -248,7 +291,7 @@ TEST_F(NativeAssistant, whole_context_delete_erases_content_and_preserves_actual
 // ADR-0060: deletion leaves sparse user turns, destroys derived answers/summary, and never reuses
 // IDs.
 TEST_F(NativeAssistant,
-       deleting_one_turn_preserves_other_users_and_rebuilds_summary_from_valid_inputs) {
+       deleting_one_turn_preserves_other_users_and_rebuilds_history_from_valid_inputs) {
     allow_chat();
     for (const auto input : {"留第一轮", "删第二轮", "留第三轮"}) {
         ASSERT_EQ(run(Operation::say, 0, input).status, AYNI_OK);
@@ -274,7 +317,9 @@ TEST_F(NativeAssistant,
         settle();
     }
     view = run(Operation::conversation).conversation;
-    EXPECT_FALSE(view.summary.empty());
+    EXPECT_TRUE(view.summary.empty()); // Short history remains below the token trigger.
+    EXPECT_NE(conversation().find("留第一轮"), std::string::npos);
+    EXPECT_NE(conversation().find("留第三轮"), std::string::npos);
     EXPECT_EQ(run(Operation::status).last_round, 5U);
     EXPECT_EQ(conversation().find("删第二轮"), std::string::npos);
 }
@@ -418,13 +463,9 @@ TEST_F(NativeAssistant, sharing_profile_memory_then_revoking_blocks_reads_and_ol
 // ADR-0060: a legacy file has no Kernel source evidence; refusal precedes every boot write.
 TEST_F(NativeAssistant, legacy_conversation_refusal_preserves_the_entire_kernel_directory) {
     ASSERT_EQ(app.close(), AYNI_OK);
-    std::ifstream input(conversation_file(), std::ios::binary);
-    std::string legacy((std::istreambuf_iterator<char>(input)), {});
-    input.close();
-    ASSERT_GT(legacy.size(), 40U);
-    legacy[format_version_offset] = 1; // AYNF v1: no context ID at bytes 24..31.
-    legacy.erase(24, 8);
-    legacy[28] = 1; // AYNC v1 record version after the old 24-byte outer header.
+    std::string legacy("AYNF");
+    legacy.resize(64, '\0');
+    legacy[format_version_offset] = 1;
     {
         std::ofstream output(conversation_file(), std::ios::binary | std::ios::trunc);
         output.write(legacy.data(), static_cast<std::streamsize>(legacy.size()));
@@ -434,9 +475,9 @@ TEST_F(NativeAssistant, legacy_conversation_refusal_preserves_the_entire_kernel_
 // ADR-0072: a dual-Agent directory (AYNF v2) is refused before boot, never migrated.
 TEST_F(NativeAssistant, dual_agent_conversation_file_is_refused_before_any_boot_write) {
     ASSERT_EQ(app.close(), AYNI_OK);
-    std::fstream file(conversation_file(), std::ios::binary | std::ios::in | std::ios::out);
-    file.seekp(format_version_offset);
-    file.put(2); // AYNF v2, written by the dual-Agent version.
+    std::ofstream file(conversation_file(), std::ios::binary);
+    file.write("AYNF", 4);
+    file.put(2);
     file.close();
     expect_refused_without_writes();
 }
@@ -485,11 +526,13 @@ TEST_F(NativeAssistant,
 TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before_http_submission) {
     ASSERT_EQ(app.close(), AYNI_OK);
     const std::string answer =
-        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已处理"}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已处理"}}]})";
     ayni::test::LoopbackHttp server(answer);
     ASSERT_EQ(setenv("AYNI_P3_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
+    config.context_window_tokens = 5000;
+    config.output_reserve_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P3_FIXTURE_KEY";
@@ -550,15 +593,28 @@ TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before
 TEST_F(NativeAssistant, local_http_tool_loop_and_text_only_summary_use_real_provider_wiring) {
     ASSERT_EQ(app.close(), AYNI_OK);
     const std::string answer =
-        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已处理"}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已处理"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"text\":\"明天提醒我\"}"}}]}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"schedule\",\"binding_version\":1,\"arguments\":{\"kind\":\"remind\",\"text\":\"明天提醒我\"}}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
-        return count == 1 ? tool : answer;
+        if (count == 1) {
+            return tool;
+        }
+        if (count == 4) {
+            auto high = answer;
+            high.replace(high.find("\"prompt_tokens\":100"),
+                         std::string("\"prompt_tokens\":100").size(), "\"prompt_tokens\":3100");
+            high.replace(high.find("\"total_tokens\":110"),
+                         std::string("\"total_tokens\":110").size(), "\"total_tokens\":3110");
+            return high;
+        }
+        return answer;
     });
     ASSERT_EQ(setenv("AYNI_P2_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
+    config.context_window_tokens = 5000;
+    config.output_reserve_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P2_FIXTURE_KEY";
@@ -592,15 +648,19 @@ TEST_F(NativeAssistant, local_http_tool_loop_and_text_only_summary_use_real_prov
 TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owner_approval) {
     ASSERT_EQ(app.close(), AYNI_OK);
     const std::string answer =
-        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已登记，等你批准"}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"已登记，等你批准"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"local_time\":\"2030-01-02T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}"}}]}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"schedule\",\"binding_version\":1,\"arguments\":{\"kind\":\"remind\",\"local_time\":\"2030-01-02T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}}"}}]}}]})";
+    const std::string inspect =
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"inspect-schedule","type":"function","function":{"name":"ayni_inspect_capability","arguments":"{\"binding_id\":\"schedule\",\"binding_version\":1}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
-        return count == 1 ? tool : answer;
+        return count == 1 ? inspect : count == 2 ? tool : answer;
     });
     ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
+    config.context_window_tokens = 32000;
+    config.output_reserve_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
@@ -612,28 +672,24 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     const auto turn = run(Operation::say, 0, "明早九点提醒我喝水");
     ASSERT_EQ(turn.status, AYNI_OK);
     settle();
-    ASSERT_EQ(server.requests(), 2U);
-    // ADR-0073/0074: the system message holds the instructions and the local time in the
-    // configured zone; the conversation alone is the user message.
-    const auto first = server.history()[0];
-    // ADR-0082/AP-01: software grammar belongs to the tool schema, separate from
-    // the product system rules. Actual proposal still traverses the normal tool loop.
-    const auto schema = first.find("\"tools\":[");
-    ASSERT_NE(schema, std::string::npos);
-    EXPECT_EQ(first.substr(0, schema).find("YYYY-MM-DDTHH:MM"), std::string::npos);
-    EXPECT_NE(first.substr(schema).find("YYYY-MM-DDTHH:MM"), std::string::npos);
-    EXPECT_NE(first.substr(schema).find("Resolve relative dates"), std::string::npos);
-    EXPECT_NE(first.substr(schema).find("does not run or approve the work"), std::string::npos);
+    ASSERT_EQ(server.requests(), 3U);
+    // ADR-0085: stable function definitions precede on-demand business details.
+    const auto requests = server.history();
+    const auto &first = requests[0];
+    ASSERT_NE(first.find("\"tools\":["), std::string::npos);
+    EXPECT_NE(first.find("ayni_list_capabilities"), std::string::npos);
+    EXPECT_EQ(first.find("YYYY-MM-DDTHH:MM"), std::string::npos);
+    EXPECT_NE(requests[1].find("YYYY-MM-DDTHH:MM"), std::string::npos);
+    EXPECT_NE(requests[1].find("Resolve relative dates"), std::string::npos);
+    EXPECT_NE(requests[1].find("does not run or approve the work"), std::string::npos);
     EXPECT_NE(first.find(
                   R"("messages":[{"role":"system","content":"You are the owner's home assistant.)"),
               std::string::npos);
     EXPECT_NE(first.find("Current local time: "), std::string::npos);
-    EXPECT_NE(
-        first.find(
-            R"(\u000aTime zone: CST-8"},{"role":"user","content":"\u000aCurrent user:\u000a明早九点提醒我喝水"}])"),
-        std::string::npos);
-    EXPECT_NE(server.history()[1].find("registered"), std::string::npos);
-    EXPECT_NE(server.history()[1].find("waiting_owner"), std::string::npos);
+    EXPECT_NE(first.find("Time zone: CST-8"), std::string::npos);
+    EXPECT_NE(first.find(R"({"role":"user","content":"明早九点提醒我喝水"})"), std::string::npos);
+    EXPECT_NE(requests[2].find("registered"), std::string::npos);
+    EXPECT_NE(requests[2].find("waiting_owner"), std::string::npos);
     const auto goals = run(Operation::goals).goals;
     const auto reminder = std::find_if(goals.begin(), goals.end(), [](const auto &goal) {
         return std::string(goal.goal_type_id, goal.goal_type_id_size) == "assistant.reminder";
@@ -665,15 +721,15 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
 TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
     ASSERT_EQ(app.close(), AYNI_OK);
     const std::string answer =
-        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"有一个没登记上"}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"有一个没登记上"}}]})";
     std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[)";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[)";
     constexpr uint32_t calls = ayni::applications::assistant::model_goals_waiting_max + 1;
     for (uint32_t at = 1; at <= calls; ++at) {
         tool +=
             std::string(at == 1 ? "" : ",") + R"({"id":"fixture)" + std::to_string(at) +
-            R"(","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"local_time\":\"2030-01-0)" +
-            std::to_string(at) + R"(T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}"}})";
+            R"(","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"schedule\",\"binding_version\":1,\"arguments\":{\"kind\":\"remind\",\"local_time\":\"2030-01-0)" +
+            std::to_string(at) + R"(T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}}"}})";
     }
     tool += "]}}]}";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
@@ -682,6 +738,8 @@ TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
     ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
+    config.context_window_tokens = 5000;
+    config.output_reserve_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
@@ -738,15 +796,17 @@ TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
 TEST_F(NativeAssistant, stop_before_the_schedule_tool_decides_registers_nothing) {
     ASSERT_EQ(app.close(), AYNI_OK);
     const std::string answer =
-        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"不应出现"}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"不应出现"}}]})";
     const std::string tool =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"tool_0","arguments":"{\"kind\":\"remind\",\"local_time\":\"2030-01-02T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}"}}]}}]})";
+        R"({"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110},"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"schedule\",\"binding_version\":1,\"arguments\":{\"kind\":\"remind\",\"local_time\":\"2030-01-02T09:00\",\"timezone\":\"UTC0\",\"text\":\"喝水\"}}"}}]}}]})";
     ayni::test::LoopbackHttp server(answer, 200, 0, {}, [&](const std::string &, unsigned count) {
         return count == 1 ? tool : answer;
     });
     ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
+    config.context_window_tokens = 5000;
+    config.output_reserve_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";

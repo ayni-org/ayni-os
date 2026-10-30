@@ -1,0 +1,451 @@
+#include "harness.h"
+#include <algorithm>
+#include <ayni/call_result_json.hpp>
+#include <ayni/values.hpp>
+#include <charconv>
+#include <limits>
+namespace ayni::strategies::detail {
+namespace {
+bool named(ayni_string_v1 text, std::string_view name) {
+    return equal(text, view(name));
+}
+// Native objects are closed, including duplicate keys. Business arguments retain
+// their own names until the selected original Schema resolves them.
+struct Arguments {
+    ayni_arguments_v1 tree{};
+    std::array<uint32_t, 3> positions{};
+    uint32_t count = 0;
+    bool read(const ayni_tool_call_v1 &call, std::initializer_list<std::string_view> names) {
+        if (call.input_kind != AYNI_TOOL_INPUT_ARGUMENTS) {
+            return false;
+        }
+        tree = call.input.arguments;
+        if (ayni_arguments_validate(&tree) != AYNI_OK ||
+            tree.nodes[0].kind != AYNI_ARGUMENT_OBJECT) {
+            return false;
+        }
+        positions.fill(UINT32_MAX);
+        for (uint32_t at = 1; at < tree.node_count; at = tree.nodes[at].subtree_end) {
+            uint32_t index = 0;
+            for (auto name : names) {
+                if (named(tree.nodes[at].name, name)) {
+                    break;
+                }
+                ++index;
+            }
+            if (index == names.size() || positions[index] != UINT32_MAX) {
+                return false;
+            }
+            positions[index] = at;
+            ++count;
+        }
+        return true;
+    }
+    bool string(uint32_t field, ayni_string_v1 &out) const {
+        if (positions[field] == UINT32_MAX) {
+            return false;
+        }
+        const auto &node = tree.nodes[positions[field]];
+        if (node.kind != AYNI_ARGUMENT_STRING) {
+            return false;
+        }
+        out = node.value.text;
+        return true;
+    }
+    bool integer(uint32_t field, uint32_t &out) const {
+        if (positions[field] == UINT32_MAX) {
+            return false;
+        }
+        const auto &node = tree.nodes[positions[field]];
+        if (node.kind != AYNI_ARGUMENT_NUMBER || !node.value.text.size) {
+            return false;
+        }
+        auto text = node.value.text;
+        auto parsed = std::from_chars(text.data, text.data + text.size, out);
+        return parsed.ec == std::errc{} && parsed.ptr == text.data + text.size;
+    }
+};
+bool done(json::Writer &out, char *buffer, ayni_string_v1 &response) {
+    size_t size = 0;
+    if (!out.finish(size) || size > UINT32_MAX) {
+        return false;
+    }
+    response = {buffer, static_cast<uint32_t>(size)};
+    return true;
+}
+// Conservative maximum result encoding, saturated at the available lane. This
+// bounds output before an effect; an oversized known result is never called failure.
+uint64_t result_bound(ayni_schema_v1 schema, uint32_t at, uint32_t limit) {
+    constexpr uint64_t json_escape = 6;
+    constexpr uint64_t scalar_number_max = 64;
+    const auto &node = schema.nodes[at];
+    uint64_t size = 0;
+    switch (node.kind) {
+    case AYNI_VALUE_OBJECT:
+        size = 2;
+        for (uint32_t child = at + 1U; child < node.subtree_end;
+             child = schema.nodes[child].subtree_end) {
+            auto name = json::Writer::measuring();
+            name.string(schema.nodes[child].name);
+            size_t bytes = 0;
+            if (!name.finish(bytes)) {
+                return uint64_t{limit} + 1U;
+            }
+            size += bytes + 2U + result_bound(schema, child, limit);
+            if (size > limit) {
+                return uint64_t{limit} + 1U;
+            }
+        }
+        break;
+    case AYNI_VALUE_LIST:
+        size = 2U + uint64_t{node.max_count} * (result_bound(schema, at + 1U, limit) + 1U);
+        break;
+    case AYNI_VALUE_TEXT:
+        size = 2U + json_escape * node.max_count;
+        break;
+    case AYNI_VALUE_IDENTIFIER:
+    case AYNI_VALUE_ENUM:
+        if (!node.choice_count) {
+            size = 2U + json_escape * AYNI_CATALOG_ID_MAX_BYTES;
+        }
+        for (uint32_t i = 0; i < node.choice_count; ++i) {
+            auto text = json::Writer::measuring();
+            text.string(node.choices[i]);
+            size_t bytes = 0;
+            if (!text.finish(bytes)) {
+                return uint64_t{limit} + 1U;
+            }
+            size = std::max(size, static_cast<uint64_t>(bytes));
+        }
+        break;
+    case AYNI_VALUE_BOOL:
+        size = sizeof("false") - 1U;
+        break;
+    default:
+        size = scalar_number_max;
+        break;
+    }
+    constexpr uint64_t null_bytes = sizeof("null") - 1U;
+    return std::min(std::max(size, null_bytes), uint64_t{limit} + 1U);
+}
+// Model cursors survive ordinary work commits. Exact current visibility and
+// context version are rechecked; the offset itself confers no authority.
+struct Cursor {
+    static constexpr uint32_t word_count = 5U + AYNI_CAPABILITY_DISCLOSURE_WORDS;
+    std::array<uint64_t, word_count> words{};
+    bool read(ayni_string_v1 text) {
+        const char *at = text.data, *end = text.data + text.size;
+        for (auto &word : words) {
+            const auto parsed = std::from_chars(at, end, word, 16);
+            if (parsed.ec != std::errc{} || parsed.ptr == at) {
+                return false;
+            }
+            at = parsed.ptr;
+            if (&word != &words.back()) {
+                if (at == end || *at++ != '.') {
+                    return false;
+                }
+            }
+        }
+        return at == end;
+    }
+    void write(json::Writer &out) const {
+        constexpr uint32_t hex_digits = 16;
+        char bytes[word_count * (hex_digits + 1U)];
+        char *at = bytes;
+        for (uint32_t i = 0; i < words.size(); ++i) {
+            if (i) {
+                *at++ = '.';
+            }
+            const auto result = std::to_chars(at, bytes + sizeof(bytes), words[i], 16);
+            at = result.ptr;
+        }
+        out.string(std::string_view(bytes, static_cast<size_t>(at - bytes)));
+    }
+};
+ayni_status_t list(const Arguments &args, const ayni_task_snapshot_v1 &snapshot, const Turn &turn,
+                   char *buffer, uint32_t capacity, ToolBudget budget, ayni_string_v1 &response) {
+    if (!snapshot.list_capabilities || !snapshot.capability_context) {
+        return AYNI_UNSUPPORTED;
+    }
+    uint32_t limit = AYNI_CAPABILITY_PAGE_MAX;
+    if (args.positions[1] != UINT32_MAX &&
+        (!args.integer(1, limit) || !limit || limit > AYNI_CAPABILITY_PAGE_MAX)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    ayni_capability_context_v1 context{};
+    auto status = snapshot.capability_context(snapshot.call_context, nullptr, &context);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    Cursor expected;
+    expected.words[0] = 1;
+    expected.words[1] = context.boot_epoch;
+    expected.words[2] = snapshot.task_id;
+    expected.words[3] = turn.record.context_version;
+    for (uint32_t i = 0; i < AYNI_CAPABILITY_DISCLOSURE_WORDS; ++i) {
+        expected.words[5U + i] = context.visible[i];
+    }
+    uint32_t offset = 0;
+    if (args.positions[0] != UINT32_MAX) {
+        ayni_string_v1 token{};
+        Cursor previous;
+        if (!args.string(0, token)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        if (token.size) {
+            if (!previous.read(token) || previous.words[4] > AYNI_GOAL_TYPE_TOOL_COUNT_MAX) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+            offset = static_cast<uint32_t>(previous.words[4]);
+            previous.words[4] = 0;
+            if (previous.words != expected.words) {
+                return AYNI_REVISION_CONFLICT;
+            }
+        }
+    }
+    ayni_capability_cursor_v1 cursor{}, next{};
+    std::array<ayni_capability_info_v1, AYNI_CAPABILITY_PAGE_MAX> items{};
+    uint32_t count = 0, skipped = 0;
+    while (skipped < offset) {
+        const uint32_t take = std::min(offset - skipped, AYNI_CAPABILITY_PAGE_MAX);
+        status = snapshot.list_capabilities(snapshot.call_context, &cursor, items.data(), take,
+                                            &count, &next);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        if (count != take || (!next.boot_epoch && skipped + count < offset)) {
+            return AYNI_REVISION_CONFLICT;
+        }
+        skipped += count;
+        cursor = next;
+        if (!cursor.boot_epoch) {
+            return AYNI_REVISION_CONFLICT;
+        }
+    }
+    status = snapshot.list_capabilities(snapshot.call_context, &cursor, items.data(), limit, &count,
+                                        &next);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    const auto emit = [&](json::Writer &writer, uint32_t take) {
+        writer.raw("{\"capabilities\":[");
+        for (uint32_t i = 0; i < take; ++i) {
+            if (i) {
+                writer.raw(",");
+            }
+            const auto &item = items[i];
+            writer.raw("{\"binding_id\":");
+            writer.string(item.binding_id);
+            writer.raw(",\"binding_version\":");
+            writer.unsigned_number(item.binding_version);
+            writer.raw(",\"capability_id\":");
+            writer.string(item.capability_id);
+            writer.raw(",\"capability_version\":");
+            writer.unsigned_number(item.capability_version);
+            writer.raw(",\"role\":");
+            writer.string(item.role == AYNI_TOOL_ROLE_SHELL ? "shell" : "capability");
+            writer.raw(",\"summary\":");
+            writer.string(item.summary);
+            writer.raw("}");
+        }
+        writer.raw("],\"next_cursor\":");
+        if (take < count || next.boot_epoch) {
+            expected.words[4] = offset + take;
+            expected.write(writer);
+        } else {
+            writer.raw("null");
+        }
+        writer.raw("}");
+    };
+    uint32_t chosen = count;
+    for (;;) {
+        json::Writer candidate(buffer, capacity);
+        emit(candidate, chosen);
+        if (done(candidate, buffer, response) && budget.fits(response)) {
+            return AYNI_OK;
+        }
+        if (!chosen) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        --chosen;
+        if (!chosen && count) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+    }
+}
+ayni_status_t inspect(const ayni_capability_detail_v1 &detail, json::Writer &out) {
+    out.raw("{\"binding_id\":");
+    out.string(detail.info.binding_id);
+    out.raw(",\"binding_version\":");
+    out.unsigned_number(detail.info.binding_version);
+    out.raw(",\"summary\":");
+    out.string(detail.info.summary);
+    out.raw(",\"purpose\":");
+    out.string(detail.usage.purpose);
+    out.raw(",\"input_usage\":");
+    out.string(detail.usage.text_usage);
+    out.raw(",\"result_usage\":");
+    out.string(detail.usage.result_usage);
+    out.raw(",\"examples\":");
+    out.string(detail.usage.examples);
+    return ayni_business_contract_read(detail.original_domain, detail.business_contract, &out,
+                                       [](void *opaque, const ayni_business_contract_v1 *business) {
+                                           auto &writer = *static_cast<json::Writer *>(opaque);
+                                           writer.raw(",\"input_schema\":");
+                                           json::write_schema(writer, business->input);
+                                           writer.raw(",\"result_schema\":");
+                                           json::write_schema(writer, business->result);
+                                           writer.raw("}");
+                                           return AYNI_OK;
+                                       });
+}
+// Copy/rebase the selected source subtree. The same original Schema normalizer
+// admits defaults, numbers and object closure before the ordinary Call boundary.
+enum class ResultRetention { inline_context, external_archive };
+ayni_status_t invoke(const Arguments &args, uint32_t argument,
+                     const ayni_capability_detail_v1 &detail, ayni_string_v1 step,
+                     ayni_policy_output_v1 &output, uint32_t result_capacity,
+                     ResultRetention retention) {
+    std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
+    const uint32_t begin = args.positions[argument];
+    const uint32_t count = args.tree.nodes[begin].subtree_end - begin;
+    for (uint32_t i = 0; i < count; ++i) {
+        source[i] = args.tree.nodes[begin + i];
+        source[i].subtree_end -= begin;
+    }
+    source[0].name = {};
+    struct State {
+        ayni_arguments_v1 source;
+        const ayni_capability_detail_v1 &detail;
+        ayni_string_v1 step;
+        ayni_policy_output_v1 &output;
+        uint32_t capacity;
+        ResultRetention retention;
+    } inspection{{source.data(), count}, detail, step, output, result_capacity, retention};
+    return ayni_business_contract_read(
+        detail.original_domain, detail.business_contract, &inspection,
+        [](void *opaque, const ayni_business_contract_v1 *business) {
+            auto &state = *static_cast<State *>(opaque);
+            constexpr uint32_t result_envelope_max = 512;
+            if (state.retention == ResultRetention::inline_context &&
+                (state.capacity < result_envelope_max ||
+                 result_bound(business->result, 0, state.capacity) >
+                     state.capacity - result_envelope_max)) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
+            std::array<char, AYNI_VALUE_BYTES_MAX> bytes{};
+            ayni_value_buffer_v1 value{nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
+                                       bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
+            const auto status = ayni_arguments_normalize(&business->input, &state.source, &value);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            Call call;
+            call.binding_id = state.detail.info.binding_id;
+            call.binding_version = state.detail.info.binding_version;
+            call.input = ayni_value_v1{nodes.data(), value.node_count};
+            return request(call, state.step, {}, state.output);
+        });
+}
+} // namespace
+ayni_status_t native_error(ayni_status_t status, std::string_view message, char *buffer,
+                           uint32_t capacity, ayni_string_v1 &response) {
+    json::Writer out(buffer, capacity);
+    out.raw("{\"error\":{\"status\":");
+    out.number(status);
+    out.raw(",\"message\":");
+    out.string(message);
+    out.raw("}}");
+    return done(out, buffer, response) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+}
+ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopConfig &config,
+                              const ayni_task_snapshot_v1 &snapshot, const Turn &turn,
+                              ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
+                              uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
+                              bool &requested) {
+    requested = false;
+    Arguments args;
+    json::Writer out(buffer, capacity);
+    ayni_status_t status = AYNI_NOT_FOUND;
+    if (named(proposal.function_name, model::list_function)) {
+        status = args.read(proposal, {"cursor", "limit"})
+                     ? list(args, snapshot, turn, buffer, capacity, budget, response)
+                     : AYNI_INVALID_ARGUMENT;
+        if (status == AYNI_OK) {
+            return AYNI_OK;
+        }
+    } else if (named(proposal.function_name, model::inspect_function) ||
+               named(proposal.function_name, model::call_function) ||
+               named(proposal.function_name, model::shell_function)) {
+        const bool shell = named(proposal.function_name, model::shell_function);
+        const bool call = named(proposal.function_name, model::call_function) || shell;
+        ayni_string_v1 binding{};
+        uint32_t version = 0;
+        bool valid = shell ? args.read(proposal, {"command"})
+                           : args.read(proposal, {"binding_id", "binding_version", "arguments"});
+        if (shell) {
+            binding = config.shell.binding_id;
+            version = config.shell.binding_version;
+            valid = valid && args.count == 1U;
+        } else {
+            valid = valid && args.string(0, binding) && valid_id(binding) &&
+                    args.integer(1, version) && version && args.count == (call ? 3U : 2U);
+        }
+        ayni_capability_detail_v1 detail{};
+        detail.struct_size = sizeof(detail);
+        status = shell && !binding.size ? AYNI_NOT_FOUND
+                 : valid                ? (snapshot.inspect_capability
+                                               ? snapshot.inspect_capability(snapshot.call_context, binding,
+                                                                             version, &detail)
+                                               : AYNI_UNSUPPORTED)
+                                        : AYNI_INVALID_ARGUMENT;
+        if (status == AYNI_OK && shell && detail.info.role != AYNI_TOOL_ROLE_SHELL) {
+            status = AYNI_NOT_FOUND;
+        }
+        if (status == AYNI_OK && !call) {
+            status = inspect(detail, out);
+        } else if (status == AYNI_OK) {
+            // Shell's complete command object is itself the business input.
+            if (shell) {
+                args.positions[0] = 0;
+            }
+            status = invoke(args, shell ? 0U : 2U, detail, step, output, capacity,
+                            config.history.archive ? ResultRetention::external_archive
+                                                   : ResultRetention::inline_context);
+            if (status == AYNI_OK) {
+                requested = true;
+                return AYNI_OK;
+            }
+        }
+    }
+    if (status == AYNI_OK && done(out, buffer, response) && budget.fits(response)) {
+        return AYNI_OK;
+    }
+    if (status == AYNI_OK) {
+        status = AYNI_CAPACITY_EXCEEDED;
+    }
+    return native_error(status,
+                        "Function unavailable, invalid arguments, stale cursor, or explicit "
+                        "resource limit. No business Call was accepted.",
+                        buffer, capacity, response);
+}
+ayni_status_t native_result(const ayni_task_call_result_v1 &result, char *buffer, uint32_t capacity,
+                            ayni_string_v1 &response) {
+    if (!result.outcome) {
+        return AYNI_BUSY;
+    }
+    if (result.outcome == AYNI_CALL_ABANDONED || result.status == AYNI_RESULT_UNKNOWN ||
+        result.effect == AYNI_CALL_EFFECT_UNKNOWN) {
+        return AYNI_RESULT_UNKNOWN;
+    }
+    json::Writer out(buffer, capacity);
+    const auto status = json::write_call_result(out, result);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    return done(out, buffer, response) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+}
+
+} // namespace ayni::strategies::detail

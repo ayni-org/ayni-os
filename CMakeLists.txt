@@ -27,6 +27,7 @@ if(AYNI_SANITIZE)
 endif()
 
 include(cmake/AyniCommon.cmake)
+find_package(SQLite3 3.31 REQUIRED) # Native composition/history only; Core never links SQLite.
 
 add_subdirectory(core)
 add_subdirectory(hosts/native)

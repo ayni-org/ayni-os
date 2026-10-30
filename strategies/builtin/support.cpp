@@ -4,6 +4,21 @@
 #include <cstring>
 
 namespace ayni::strategies::detail {
+ayni_string_v1 model_key(uint32_t round, char *buffer) {
+    Writer out(buffer, AYNI_CATALOG_ID_MAX_BYTES);
+    out.add("model.");
+    out.number(round);
+    return out.text();
+}
+ayni_string_v1 function_key(uint64_t source, uint32_t index, char *buffer) {
+    Writer out(buffer, AYNI_CATALOG_ID_MAX_BYTES);
+    out.add("fn.");
+    out.number(source);
+    out.add(".");
+    out.number(index);
+    return out.text();
+}
+
 ayni_string_v1 view(std::string_view text) {
     return {text.data(), static_cast<uint32_t>(text.size())};
 }

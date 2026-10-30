@@ -144,6 +144,20 @@ bool load(const std::string &path, bool required, Options &options, std::string 
                 return false;
             }
             model.timezone = value;
+        } else if (key == "shell_working_directory") {
+            model.shell_working_directory = value;
+        } else if (key == "context_window_tokens" || key == "output_reserve_tokens") {
+            uint32_t tokens = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), tokens);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !tokens) {
+                error = "token 配置须为正整数。";
+                return false;
+            }
+            if (key == "context_window_tokens") {
+                model.context_window_tokens = tokens;
+            } else {
+                model.output_reserve_tokens = tokens;
+            }
         } else if (key == "quiet_timezone") {
             options.quiet.timezone = value;
         } else if (key == "quiet_hours") {
@@ -217,6 +231,7 @@ bool read_options(int argc, char **argv, Options &out, std::string &error) {
     if (mock) {
         runtime::ModelConfig local;
         local.timezone = out.model.timezone; // The local Mock is told the same time.
+        local.shell_working_directory = out.model.shell_working_directory;
         out.model = local;
     }
     if (out.quiet.validate() != AYNI_OK) {

@@ -1,4 +1,5 @@
 // ADR-0056: caller-owned, portable values. No external persistence is implied.
+#include <ayni/model_messages.hpp>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
 #include <cstring>
@@ -24,9 +25,9 @@ TEST(Conversation, portable_record_round_trip_and_strict_version) {
     ASSERT_EQ(Conversation::decode(encoded.view(), restored), AYNI_OK);
     EXPECT_EQ(restored.id, 11U);
     EXPECT_EQ(restored.owner_instance_id, 22U);
-    encoded.bytes[4] = 3; // Portable header: version at byte 4.
+    encoded.bytes[4] = 4; // Portable header: version at byte 4.
     EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_UNSUPPORTED_VERSION);
-    encoded.bytes[4] = 2;
+    encoded.bytes[4] = 3;
     --encoded.size;
     EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_INVALID_ARGUMENT);
 }
@@ -109,8 +110,8 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     record.summary_last = 2;
     record.summary.size = summary_text_max;
     record.summary.bytes.fill('s');
-    record.round_count = recent_rounds_max;
-    for (uint32_t at = 0; at < recent_rounds_max; ++at) {
+    record.round_count = retained_rounds_max - 1U;
+    for (uint32_t at = 0; at < retained_rounds_max - 1U; ++at) {
         auto &round = record.rounds[at];
         round.number = at + 3U;
         round.user.size = turn_text_max;
@@ -134,6 +135,17 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     ayni_task_snapshot_v1 snapshot{};
     snapshot.struct_size = sizeof(snapshot);
     snapshot.owner_instance_id = record.owner_instance_id;
+    // ADR-0085: this isolated snapshot has an empty authorized directory.
+    snapshot.capability_context = [](const void *, const ayni_capability_context_v1 *,
+                                     ayni_capability_context_v1 *current) {
+        *current = {};
+        current->boot_epoch = 1;
+        current->owner_instance_id = 22;
+        current->goal_type_version = 1;
+        current->goal_type_size = 1;
+        current->goal_type_id[0] = 'x';
+        return AYNI_OK;
+    };
     snapshot.goal_parameters = parameters.view();
     snapshot.call_result = [](const void *, ayni_string_v1, ayni_task_call_result_v1 *) {
         return AYNI_NOT_FOUND;
@@ -163,13 +175,10 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     }
     EXPECT_EQ(requests[0], requests[1]);
     EXPECT_EQ(checkpoints[0].bytes, checkpoints[1].bytes);
-    // The summary request frames its instructions apart from the conversation data (ADR-0074).
-    const std::string instructions =
-        "\nSummarize the following conversation data. Preserve uncertainty. Do not call tools.";
-    const auto framed = std::string("dialog.summary.v1" AYNI_MODEL_INSTRUCTIONS_PREFIX) +
-                        std::to_string(instructions.size()) + "\n" + instructions +
-                        "\nUnconfirmed model summary";
-    EXPECT_EQ(requests[0].rfind(framed, 0), 0U);
+    // ADR-0085: history size alone no longer forces a fixed-round summary.
+    EXPECT_EQ(requests[0].rfind("model.0", 0), 0U);
+    EXPECT_NE(requests[0].find(ayni::model::system_instructions), std::string::npos);
+    EXPECT_NE(requests[0].find(user), std::string::npos);
     std::cout << "ConversationRecord=" << sizeof(ConversationRecord)
               << " ToolLoop=" << sizeof(ToolLoop) << " max_turn_encoding=" << parameters.size
               << " bytes\n";
@@ -206,6 +215,17 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
         ayni_task_snapshot_v1 snapshot{};
         snapshot.struct_size = sizeof(snapshot);
         snapshot.owner_instance_id = empty().owner_instance_id;
+        // ADR-0085: this isolated snapshot has an empty authorized directory.
+        snapshot.capability_context = [](const void *, const ayni_capability_context_v1 *,
+                                         ayni_capability_context_v1 *current) {
+            *current = {};
+            current->boot_epoch = 1;
+            current->owner_instance_id = 22;
+            current->goal_type_version = 1;
+            current->goal_type_size = 1;
+            current->goal_type_id[0] = 'x';
+            return AYNI_OK;
+        };
         snapshot.goal_parameters = parameters.view();
         snapshot.call_result = [](const void *, ayni_string_v1, ayni_task_call_result_v1 *) {
             return AYNI_NOT_FOUND;
@@ -229,18 +249,26 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
         };
         auto descriptor = loop.describe();
         EXPECT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_OK);
-        const std::string prefix = AYNI_MODEL_INSTRUCTIONS_PREFIX;
-        EXPECT_EQ(body.bytes.rfind(prefix, 0), 0U) << body.bytes;
-        const auto newline = body.bytes.find('\n');
-        const auto size = std::stoul(body.bytes.substr(prefix.size(), newline - prefix.size()));
-        body.instructions = body.bytes.substr(newline + 1, size);
-        body.data = body.bytes.substr(newline + 1 + size);
+        ayni::model::Reader messages({body.bytes.data(), static_cast<uint32_t>(body.bytes.size())});
+        ayni::model::Message message;
+        while (messages.next(message)) {
+            const std::string content(message.text.data, message.text.size);
+            if (message.role == ayni::model::Role::system && body.instructions.empty()) {
+                body.instructions = content;
+            } else if (message.role == ayni::model::Role::context &&
+                       content.find("Current local time:") != std::string::npos) {
+                body.instructions += content;
+            } else if (message.role == ayni::model::Role::user) {
+                body.data = content;
+            }
+        }
+        EXPECT_TRUE(messages.finished());
         return body;
     };
     const auto shanghai = request("CST-8");
     EXPECT_EQ(shanghai.instructions, "prefix\nCurrent local time: 2026-10-28 09:05, Wednesday.\n"
                                      "Time zone: CST-8");
-    EXPECT_EQ(shanghai.data, "\nCurrent user:\n明天提醒我");
+    EXPECT_EQ(shanghai.data, "明天提醒我");
     EXPECT_EQ(request("CST-8").bytes, shanghai.bytes);
     EXPECT_EQ(request("EST5").instructions,
               "prefix\nCurrent local time: 2026-10-27 20:05, Tuesday.\nTime zone: EST5");
@@ -281,6 +309,17 @@ TEST(BuiltinLoop, foreign_conversation_owner_is_rejected_before_any_request) {
     ayni_policy_output_v1 output{};
     snapshot.goal_parameters = parameters.view();
     snapshot.owner_instance_id = 23;
+    // ADR-0085: this isolated snapshot has an empty authorized directory.
+    snapshot.capability_context = [](const void *, const ayni_capability_context_v1 *,
+                                     ayni_capability_context_v1 *current) {
+        *current = {};
+        current->boot_epoch = 1;
+        current->owner_instance_id = 22;
+        current->goal_type_version = 1;
+        current->goal_type_size = 1;
+        current->goal_type_id[0] = 'x';
+        return AYNI_OK;
+    };
     EXPECT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_DENIED);
 }
 } // namespace
@@ -300,15 +339,18 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
     ASSERT_EQ(Conversation::begin(empty(), text("x"), seed), AYNI_OK);
     constexpr uint32_t record_header_bytes = 8; // AYNC + version.
     constexpr uint32_t turn_header_bytes = 28; // AYNT + version + done + base_revision + memory_id.
-    constexpr uint32_t input_bytes = 5;        // u32 size and one UTF-8 byte.
+    Encoded empty_record;
+    ASSERT_EQ(Conversation::encode(empty(), empty_record), AYNI_OK);
+    const uint32_t seed_tail =
+        seed.size - turn_header_bytes - (empty_record.size - record_header_bytes);
     Encoded raw;
     std::memcpy(raw.bytes.data(), seed.bytes.data(), turn_header_bytes);
     const auto record_body = record_bytes.size - record_header_bytes;
     std::memcpy(raw.bytes.data() + turn_header_bytes,
                 record_bytes.bytes.data() + record_header_bytes, record_body);
     std::memcpy(raw.bytes.data() + turn_header_bytes + record_body,
-                seed.bytes.data() + seed.size - input_bytes, input_bytes);
-    raw.size = turn_header_bytes + record_body + input_bytes;
+                seed.bytes.data() + seed.size - seed_tail, seed_tail);
+    raw.size = turn_header_bytes + record_body + seed_tail;
     EXPECT_EQ(Conversation::validate_turn(nullptr, raw.view()), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(Conversation::begin(record, text("x"), seed), AYNI_CAPACITY_EXCEEDED);
 }
@@ -353,7 +395,7 @@ TEST(Conversation, superseded_publication_keeps_original_turn_identity_and_reser
         retained = erased;
     }
     Encoded encoded;
-    EXPECT_EQ(Conversation::begin(retained, text("next"), encoded), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(Conversation::begin(retained, text("next"), encoded), AYNI_OK);
     ASSERT_EQ(Conversation::erase_round(retained, 1, erased), AYNI_OK);
     EXPECT_EQ(Conversation::begin(erased, text("next"), encoded), AYNI_OK);
 }

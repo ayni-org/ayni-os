@@ -71,12 +71,15 @@ TEST_F(StrategiesFixture, unknown_first_tool_blocks_later_tools_and_models) {
     EXPECT_EQ(work.task(task).hold_status, AYNI_RESULT_UNKNOWN);
     EXPECT_EQ(conversation.round_count, 0U);
 }
-TEST_F(StrategiesFixture, kernel_rejects_a_proposal_outside_the_goal_allow_list) {
+TEST_F(StrategiesFixture, unlisted_binding_returns_matching_tool_error_without_business_call) {
     const auto task = start();
     propose(0, 1, "summary");
-    EXPECT_EQ(pending.size(), 1U);
-    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(work.task(task).hold_status, AYNI_RESULT_UNKNOWN);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending[1].capability, "model");
+    EXPECT_NE(pending[1].text.find("No business Call was accepted"), std::string::npos);
+    post(1, text("refused"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
 }
 TEST_F(StrategiesFixture, default_eight_model_calls_pause_before_the_ninth) {
     const auto task = start();
@@ -107,54 +110,56 @@ TEST_F(StrategiesFixture, eight_tools_are_executed_sequentially) {
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
 }
-TEST_F(StrategiesFixture, summary_replaces_old_rounds_only_in_a_successful_candidate) {
-    for (uint32_t at = 0; at < policies::recent_rounds_max; ++at) {
-        const auto task = start("chat", "past question");
-        post(at, text("past answer"));
+// ADR-0085: serving-model token observations trigger compression of older groups.
+TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_succeed) {
+    const auto task = start_until_budget_summary();
+    ASSERT_NE(task, 0U);
+    const auto old_round = conversation.last_round;
+    const auto old_history =
+        std::string(conversation.history.bytes.data(), conversation.history.size);
+    uint32_t summaries = 0;
+    while (pending.back().capability == "summary") {
+        ++summaries;
+        ASSERT_LT(summaries, AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT);
+        EXPECT_EQ(conversation.summary.size, 0U);
+        EXPECT_EQ(conversation.last_round, old_round);
+        EXPECT_EQ(std::string(conversation.history.bytes.data(), conversation.history.size),
+                  old_history);
+        post(static_cast<uint32_t>(pending.size() - 1U), text("tentative summary"));
         pump();
-        finish(task);
     }
-    const auto task = start("chat", "current question");
-    ASSERT_EQ(pending.size(), 4U);
-    EXPECT_EQ(pending[3].capability, "summary");
-    EXPECT_EQ(conversation.round_count, 3U);
-    EXPECT_EQ(conversation.summary.size, 0U);
-    post(3, text("tentative summary"));
-    pump();
-    ASSERT_EQ(pending.size(), 5U);
-    EXPECT_EQ(pending[4].capability, "model");
-    EXPECT_NE(pending[4].text.find("Unconfirmed model summary"), std::string::npos);
-    EXPECT_NE(pending[4].text.find("turns 1..2"), std::string::npos);
-    EXPECT_EQ(conversation.round_count,
-              3U); // Even a successful summary has not committed externally.
-    post(4, text("current answer"));
+    EXPECT_GT(summaries, 0U);
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_NE(pending.back().text.find("Unconfirmed model summary"), std::string::npos);
+    auto measured = ayni::json::Writer::measuring();
+    const auto &body = pending.back().text;
+    ASSERT_EQ(ayni::model::write_context(measured,
+                                         {body.data(), static_cast<uint32_t>(body.size())},
+                                         ayni::model::Mode::assistant),
+              AYNI_OK);
+    size_t cost = 0;
+    ASSERT_TRUE(measured.finish(cost));
+    EXPECT_LT(cost, old_history.size());
+    post(static_cast<uint32_t>(pending.size() - 1U), text("current answer"));
     pump();
     finish(task);
-    EXPECT_EQ(work.task(task).model_calls_used, 2U);
-    EXPECT_EQ(conversation.round_count, 2U);
+    EXPECT_EQ(conversation.last_round, old_round + 1U);
+    EXPECT_EQ(conversation.round_count, policies::retained_rounds_max);
     EXPECT_EQ(conversation.summary_first, 1U);
-    EXPECT_EQ(conversation.summary_last, 2U);
-    EXPECT_EQ(conversation.rounds[0].number, 3U);
-    EXPECT_EQ(conversation.rounds[1].number, 4U);
+    EXPECT_EQ(conversation.summary_last, old_round);
+    EXPECT_GT(conversation.context_version, 1U);
 }
-TEST_F(StrategiesFixture, unsuccessful_summary_preserves_every_original_round) {
-    for (uint32_t at = 0; at < policies::recent_rounds_max; ++at) {
-        const auto task = start();
-        post(at, text("past answer"));
-        pump();
-        finish(task);
-    }
-    const auto task = start();
-    post(3, {}, AYNI_CALL_FAILED, AYNI_NOT_READY);
+TEST_F(StrategiesFixture, unsuccessful_summary_preserves_every_original_message) {
+    const auto task = start_until_budget_summary();
+    ASSERT_NE(task, 0U);
+    const auto old = std::string(conversation.history.bytes.data(), conversation.history.size);
+    const auto old_round = conversation.last_round;
+    post(static_cast<uint32_t>(pending.size() - 1U), {}, AYNI_CALL_FAILED, AYNI_NOT_READY);
     pump();
-    EXPECT_EQ(pending.size(), 4U);
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(conversation.round_count, 3U);
+    EXPECT_EQ(conversation.last_round, old_round);
     EXPECT_EQ(conversation.summary.size, 0U);
-    policies::Encoded state;
-    EXPECT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, state.bytes.data(),
-                                        policies::state_bytes_max, &state.size),
-              AYNI_BUSY);
+    EXPECT_EQ(std::string(conversation.history.bytes.data(), conversation.history.size), old);
 }
 TEST_F(StrategiesFixture, deleting_the_whole_conversation_refuses_a_late_turn) {
     const auto task = start();
@@ -314,13 +319,22 @@ TEST_F(StructuredToolLoop, nested_input_and_structured_result_complete_the_same_
     input.end();
     input.end();
     input.end();
-    ayni_tool_call_v1 proposal{};
-    proposal.struct_size = sizeof(proposal);
-    proposal.binding_version = 1;
-    proposal.binding_id = text("echo");
-    proposal.input_kind = AYNI_TOOL_INPUT_VALUE;
-    proposal.protocol_id = text("nested_1");
-    ASSERT_EQ(input.finish(proposal.input.value), AYNI_OK);
+    std::array<ayni_argument_node_v1, 4> arguments{};
+    arguments[0].kind = AYNI_ARGUMENT_OBJECT;
+    arguments[0].subtree_end = 4;
+    arguments[1].kind = AYNI_ARGUMENT_LIST;
+    arguments[1].subtree_end = 4;
+    arguments[1].name = text("items");
+    arguments[2].kind = AYNI_ARGUMENT_OBJECT;
+    arguments[2].subtree_end = 4;
+    arguments[3].kind = AYNI_ARGUMENT_STRING;
+    arguments[3].subtree_end = 4;
+    arguments[3].name = text("amount");
+    arguments[3].value.text = text("1.23");
+    FunctionProposal source(text("echo"),
+                            {arguments.data(), static_cast<uint32_t>(arguments.size())},
+                            text("nested_1"));
+    auto proposal = source.call();
     post(0, {}, AYNI_CALL_COMPLETED, AYNI_OK, &proposal, 1);
     input.clear();
     pump();
@@ -351,3 +365,131 @@ TEST_F(StructuredToolLoop, nested_input_and_structured_result_complete_the_same_
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     finish(task);
 }
+
+namespace {
+// ADR-0085: model-visible pagination survives its own model/progress commits.
+class ManyCapabilities : public ayni::test::StrategiesFixture {
+    void SetUp() override {
+        tool_alias_count = 24;
+        StrategiesFixture::SetUp();
+    }
+};
+TEST_F(ManyCapabilities, native_list_inspect_and_generic_call_bind_only_at_execution) {
+    using namespace ayni::test;
+    const auto task = start();
+    const auto propose_function = [&](uint32_t at, const char *name, ayni_arguments_v1 arguments,
+                                      const char *id) {
+        ayni_tool_call_v1 call{};
+        call.struct_size = sizeof(call);
+        call.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+        call.function_name = text(name);
+        call.protocol_id = text(id);
+        call.input.arguments = arguments;
+        post(at, {}, AYNI_CALL_COMPLETED, AYNI_OK, &call, 1);
+        pump();
+    };
+    const auto latest_tool = [&]() {
+        const auto &body = pending.back().text;
+        ayni::model::Reader reader({body.data(), static_cast<uint32_t>(body.size())});
+        ayni::model::Message message;
+        std::string answer;
+        while (reader.next(message)) {
+            if (message.role == ayni::model::Role::tool) {
+                answer = string_of(message.text);
+            }
+        }
+        EXPECT_TRUE(reader.finished());
+        return answer;
+    };
+    ayni_argument_node_v1 empty{};
+    empty.kind = AYNI_ARGUMENT_OBJECT;
+    empty.subtree_end = 1;
+    propose_function(0, "ayni_list_capabilities", {&empty, 1}, "list_original");
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending.back().capability, "model");
+    const auto first = latest_tool();
+    EXPECT_NE(first.find("tool.15"), std::string::npos);
+    EXPECT_EQ(first.find("tool.16"), std::string::npos);
+    const std::string marker = "\"next_cursor\":\"";
+    const auto start = first.find(marker);
+    ASSERT_NE(start, std::string::npos);
+    const auto begin = start + marker.size();
+    const auto end = first.find('"', begin);
+    ASSERT_NE(end, std::string::npos);
+    const auto cursor = first.substr(begin, end - begin);
+    std::array<ayni_argument_node_v1, 2> next{};
+    next[0].kind = AYNI_ARGUMENT_OBJECT;
+    next[0].subtree_end = 2;
+    next[1].kind = AYNI_ARGUMENT_STRING;
+    next[1].subtree_end = 2;
+    next[1].name = text("cursor");
+    next[1].value.text = {cursor.data(), static_cast<uint32_t>(cursor.size())};
+    propose_function(1, "ayni_list_capabilities", {next.data(), 2}, "list_next");
+    ASSERT_EQ(pending.size(), 3U);
+    const auto second = latest_tool();
+    EXPECT_NE(second.find("tool.16"), std::string::npos);
+    EXPECT_NE(second.find("tool.23"), std::string::npos);
+    EXPECT_NE(second.find("\"next_cursor\":null"), std::string::npos);
+    std::array<ayni_argument_node_v1, 3> selected{};
+    selected[0].kind = AYNI_ARGUMENT_OBJECT;
+    selected[0].subtree_end = 3;
+    selected[1].kind = AYNI_ARGUMENT_STRING;
+    selected[1].subtree_end = 2;
+    selected[1].name = text("binding_id");
+    selected[1].value.text = text("tool.23");
+    selected[2].kind = AYNI_ARGUMENT_NUMBER;
+    selected[2].subtree_end = 3;
+    selected[2].name = text("binding_version");
+    selected[2].value.text = text("1");
+    propose_function(2, "ayni_inspect_capability", {selected.data(), 3}, "inspect_original");
+    ASSERT_EQ(pending.size(), 4U);
+    EXPECT_NE(latest_tool().find("\"input_schema\""), std::string::npos);
+    EXPECT_NE(latest_tool().find("Echo input."), std::string::npos);
+    ayni_task_tool_authority_v1 authority{};
+    authority.struct_size = sizeof(authority);
+    EXPECT_EQ(ayni_get_task_tool_authority(work.kernel(), task, 0, &authority), AYNI_NOT_FOUND);
+    ayni_argument_node_v1 argument{};
+    argument.kind = AYNI_ARGUMENT_STRING;
+    argument.subtree_end = 1;
+    argument.value.text = text("native result");
+    FunctionProposal invocation(text("tool.23"), {&argument, 1}, text("invoke_original"));
+    post(3, {}, AYNI_CALL_COMPLETED, AYNI_OK, &invocation.call(), 1);
+    pump();
+    ASSERT_EQ(pending.size(), 5U);
+    EXPECT_EQ(pending.back().capability, "echo");
+    ASSERT_EQ(ayni_get_task_tool_authority(work.kernel(), task, 0, &authority), AYNI_OK);
+    EXPECT_NE(authority.original_grant_id, 0U);
+    post(4, text("native result"));
+    pump();
+    ASSERT_EQ(pending.size(), 6U);
+    EXPECT_EQ(pending.back().capability, "model");
+    EXPECT_NE(pending.back().text.find("invoke_original"), std::string::npos);
+    post(5, text("done"));
+    pump();
+    finish(task);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+// ADR-0085: the model must first consume the latest complete tool round.
+TEST_F(StrategiesFixture, latest_completed_tool_group_is_preserved_for_the_next_model) {
+    const auto task = start();
+    propose(0, 2);
+    const std::string result(1024, 'x');
+    post(1, {result.data(), static_cast<uint32_t>(result.size())});
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    post(2, {result.data(), static_cast<uint32_t>(result.size())});
+    pump();
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_NE(pending.back().text.find(result), std::string::npos);
+    auto measured = ayni::json::Writer::measuring();
+    const auto &frame = pending.back().text;
+    ASSERT_EQ(ayni::model::write_context(measured,
+                                         {frame.data(), static_cast<uint32_t>(frame.size())},
+                                         ayni::model::Mode::assistant),
+              AYNI_OK);
+    post(static_cast<uint32_t>(pending.size() - 1U), text("done"));
+    pump();
+    finish(task);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+} // namespace

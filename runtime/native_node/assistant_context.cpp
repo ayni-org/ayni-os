@@ -189,7 +189,11 @@ ayni_status_t Assistant::Impl::erase_context(const ayni_context_info_v1 &context
     candidate.record.generation = context.revision;
     candidate.record.revision = context.generation;
     candidate.pending_goal = 0;
-    return persist(candidate, {NoticeKind::context_erased, {}});
+    const auto erasure =
+        context.pending_action == AYNI_CONTEXT_ERASE_ALL     ? ConversationStore::Erasure::all
+        : context.pending_action == AYNI_CONTEXT_ERASE_ROUND ? ConversationStore::Erasure::turn
+                                                             : ConversationStore::Erasure::derived;
+    return persist(candidate, {NoticeKind::context_erased, {}}, erasure, context.pending_turn_id);
 }
 // One step advances at most one outer save or Kernel intent. All I/O remains on the store worker.
 ayni_status_t Assistant::Impl::collect(std::vector<Notice> &notices) {

@@ -96,9 +96,9 @@ ayni_status_t rules(void *, const ayni_task_snapshot_v1 *s, ayni_policy_output_v
     if (handled || status != AYNI_OK) {
         return status;
     }
-    status = result(*s, "round.0.model.v1");
+    status = result(*s, "model.0");
     if (status == AYNI_NOT_FOUND) {
-        return request(*o, "round.0.model.v1", "model", AYNI_POLICY_REQUEST_MODEL);
+        return request(*o, "model.0", "model", AYNI_POLICY_REQUEST_MODEL);
     }
     return status == AYNI_OK ? report(*s, *o) : status;
 }
