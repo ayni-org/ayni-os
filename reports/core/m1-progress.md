@@ -118,7 +118,6 @@
 | [#109](https://github.com/RobotSe7en/ayni/pull/109) | 2026-10-29 | 普通命令回执修复 | 统一校验 ordinary mapping 的 effect，修正输入边界夹具及当前 schema 注释；ABI 0.47 / schema 3 不变 | ADR-0082 |
 | [#110](https://github.com/RobotSe7en/ayni/pull/110) | 2026-10-29 | 通用基础与实验路线 | 通用 AgentOS 无必备设备集合，基础先于独立平台实验；同步规划、契约适用范围与交接 | ADR-0083 |
 | [#111](https://github.com/RobotSe7en/ayni/pull/111) | 2026-10-29 | AP-02 盘点与设计 | 完成实际消费者、类型/授权/持久设计及独立审查修订；记录用户选择，生产实现尚未开始 | ADR-0084 |
-
 | [#112](https://github.com/RobotSe7en/ayni/pull/112) | 2026-10-30 | AP-02 业务契约与原证明 | 统一有界 Schema/规范值、完整授权证明、结构结果和全仓消费者；Shell Provider；ABI0.48/schema4 | ADR-0084 |
 | [#113](https://github.com/RobotSe7en/ayni/pull/113) | 2026-10-30 | AP-03 按需绑定与目录 | 配置期说明采纳、Task 分页目录、首次完整 Grant 绑定、独立暂停及显式重授权；ABI0.49/schema5 | ADR-0085 |
 
