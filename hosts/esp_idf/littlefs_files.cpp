@@ -296,7 +296,7 @@ int LittleFiles::rename(const char *from, const char *to) {
         return ENAMETOOLONG;
     }
     if (std::strcmp(from, to) == 0) {
-        return cause(lfs_rename(&filesystem_, from, to));
+        return namespace_result(lfs_rename(&filesystem_, from, to));
     }
     for (auto &entry : slots_) {
         if (entry.state == State::open && std::strcmp(entry.name.data(), from) == 0) {
@@ -306,9 +306,9 @@ int LittleFiles::rename(const char *from, const char *to) {
             }
         }
     }
-    const int renamed = lfs_rename(&filesystem_, from, to);
+    const int renamed = namespace_result(lfs_rename(&filesystem_, from, to));
     if (renamed != 0) {
-        return cause(renamed);
+        return renamed;
     }
     detach_name(to);
     for (auto &entry : slots_) {
@@ -335,6 +335,12 @@ int LittleFiles::rename(const char *from, const char *to) {
     }
     return 0;
 }
+// A raw metadata error can follow a committed directory change (e.g. readback
+// or orphan cleanup). No continued token association is proven after that error.
+int LittleFiles::namespace_result(int status) {
+    if (status != 0) { volume_state_ = VolumeState::poisoned; }
+    return cause(status);
+}
 void LittleFiles::detach_name(const char *name) {
     for (auto &entry : slots_) {
         if (entry.state == State::open && std::strcmp(entry.name.data(), name) == 0) {
@@ -346,11 +352,11 @@ int LittleFiles::remove(const char *name) {
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
     }
-    const int removed = lfs_remove(&filesystem_, name);
+    const int removed = namespace_result(lfs_remove(&filesystem_, name));
     if (removed == 0) {
         detach_name(name);
     }
-    return cause(removed);
+    return removed;
 }
 int LittleFiles::free_bytes(uint64_t &bytes) const {
     if (volume_state_ != VolumeState::mounted) {

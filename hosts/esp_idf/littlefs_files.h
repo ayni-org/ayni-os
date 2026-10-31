@@ -57,6 +57,7 @@ class LittleFiles final : public storage::Files {
     int check_blank(bool &blank) const;
     Slot *slot(int handle) const;
     void detach_name(const char *name);
+    int namespace_result(int status);
     // These structures and caches live in internal RAM with the owning Storage.
     mutable lfs_t filesystem_{};
     lfs_config config_{};
