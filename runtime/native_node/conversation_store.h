@@ -4,6 +4,7 @@
 #define AYNI_RUNTIME_CONVERSATION_STORE_H
 #include <array>
 #include <ayni/strategies/builtin.h>
+#include <ayni/workspace.hpp>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -80,6 +81,9 @@ class ConversationStore {
     static ayni_status_t result_chunk(void *, uint64_t, uint64_t, uint32_t,
                                       strategies::Text<strategies::prompt_bytes_max> &, uint32_t);
     ayni_status_t write_result();
+    ayni::Workspace owner_workspace_;  // Save encoder: owner thread only.
+    ayni::Workspace worker_workspace_; // Startup read, then SQLite worker only.
+    ayni::Workspace result_workspace_; // Result rendering: SQLite worker only.
     Buffer bytes_{};
     uint32_t size_ = 0;
     std::mutex mutex_;

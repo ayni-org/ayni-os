@@ -11,7 +11,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | 存储 | `storage_schema`、记录版本、迁移版本 | 日志批次、快照、NVS 记录（`storage/`） |
 | 领域语义 | 能力、Scene、GoalType、检查点各自的 `version` | 注册目录与 ActionRecord 绑定的语义 |
 
-当前 Core 存储只接受 schema 6；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
+当前 Core 存储只接受 schema 8（ADR-0087）；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
 
 ## ABI
 
@@ -96,3 +96,5 @@ ABI 0.48（ADR-0084）把业务输入/结果升级为有界 Schema/规范值，�
 ABI 0.49（ADR-0085，AP-03 第一部分）新增 Task 能力目录及配置期说明采纳、Goal 冻结工具策略、按需 Call/Task 授权引用与独立暂停；原保留字段用于 tool role/authorization mode，snapshot 追加目录租约回调，全部消费者重编译。Core schema 5 拒绝旧 0..4、保留目录，无旧 reader/迁移器；外层对话格式仍为 AYNF v3/AYNC v2，固定模型工具及消息/上下文升级留给第二部分。cursor/info 明确为固定 ABI 值类型，扩展使用新类型，不因无 struct_size 放宽布局兼容。
 
 ABI 0.50（ADR-0085，AP-03 第二部分）将模型提议改为固定 function_name/opaque protocol_id/无损参数或非法参数原文，移除 submit 业务工具回调；模型统计追加到 Provider 完成、Call/Task 结果视图并持久。策略追加非阻塞 ready；policy_output 原 reserved 采用具名 disposition，DEFER 只能在零意图 OK 时使用。Core schema 6 直接拒绝旧 0..5，CALL_STATE 增加 ModelContext 与统计，模型列表改 ATC3；全部消费者重编译。Native 不再读取 conversation.bin，SQLite application_id=0x41594E49/user_version=1、内部会话 codec3 与消息 frame1 独立于 Core schema；旧目录在写前拒绝，回退使用原二进制和原目录，不提供旧 reader/迁移器。
+
+ABI 0.53（ADR-0090）为Schema验证、值/参数规范化、值读取和业务证明检查增加调用方工作区，新增独立容量/对齐查询；Kernel arena计入owner暂存。C++ ToolLoop、Conversation及结果JSON接口借用查询工作区，所有消费者直接重编译升级。Core schema8、原业务证明、策略codec4、SQLite user_version2保持原格式；只改变临时内存与源码接口，不加旧大栈入口或迁移器。

@@ -1,3 +1,4 @@
+#include "strategy_workspace_fixture.h"
 // ADR-0056 / C-POLICY-005..012: real registered policies, local protocol only.
 #include "strategies_fixture.h"
 
@@ -172,7 +173,9 @@ TEST_F(StrategiesFixture, unsuccessful_summary_preserves_every_original_message)
 TEST_F(StrategiesFixture, deleting_the_whole_conversation_refuses_a_late_turn) {
     const auto task = start();
     policies::ConversationRecord erased;
-    ASSERT_EQ(policies::Conversation::erase(conversation, erased), AYNI_OK);
+    ASSERT_EQ(
+        policies::Conversation::erase(::ayni::test::conversation_workspace(), conversation, erased),
+        AYNI_OK);
     post(0, text("late answer"));
     pump();
     policies::Encoded state;
@@ -180,7 +183,8 @@ TEST_F(StrategiesFixture, deleting_the_whole_conversation_refuses_a_late_turn) {
                                         policies::state_bytes_max, &state.size),
               AYNI_OK);
     policies::ConversationRecord candidate;
-    EXPECT_EQ(policies::Conversation::finish(erased, state.view(), candidate),
+    EXPECT_EQ(policies::Conversation::finish(::ayni::test::conversation_workspace(), erased,
+                                             state.view(), candidate),
               AYNI_REVISION_CONFLICT);
     EXPECT_EQ(erased.round_count, 0U);
     EXPECT_EQ(erased.summary.size, 0U);

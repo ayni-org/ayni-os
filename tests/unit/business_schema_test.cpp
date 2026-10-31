@@ -1,6 +1,7 @@
 #include "catalog/capability/business_encoding.h"
 #include "catalog/capability/capability_registry.h"
 #include "catalog/capability/schema_encoding.h"
+#include "workspace_fixture.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -35,7 +36,7 @@ TEST(BusinessSchema, canonical_proof_sorts_declarations_and_retains_exact_decima
     ayni_schema_v1 schema{nodes.data(), static_cast<uint32_t>(nodes.size())};
     std::array<uint8_t, 1024> bytes{};
     uint32_t size = 0;
-    ASSERT_EQ(ayni::catalog::encode_schema(schema, bytes.data(),
+    ASSERT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), schema, bytes.data(),
                                            static_cast<uint32_t>(bytes.size()), size),
               AYNI_OK);
     auto reordered = nodes;
@@ -46,13 +47,15 @@ TEST(BusinessSchema, canonical_proof_sorts_declarations_and_retains_exact_decima
     const ayni_schema_v1 same{reordered.data(), static_cast<uint32_t>(reordered.size())};
     std::array<uint8_t, 1024> other{};
     uint32_t other_size = 0;
-    ASSERT_EQ(ayni::catalog::encode_schema(same, other.data(), static_cast<uint32_t>(other.size()),
-                                           other_size),
+    ASSERT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), same, other.data(),
+                                           static_cast<uint32_t>(other.size()), other_size),
               AYNI_OK);
     ASSERT_EQ(size, other_size);
     EXPECT_EQ(std::memcmp(bytes.data(), other.data(), size), 0);
     ayni::catalog::DecodedSchema decoded;
-    ASSERT_EQ(ayni::catalog::decode_schema({bytes.data(), size}, decoded), AYNI_OK);
+    ASSERT_EQ(ayni::catalog::decode_schema(::ayni::test::codec_workspace(), {bytes.data(), size},
+                                           decoded),
+              AYNI_OK);
     ASSERT_EQ(decoded.count, 3U);
     EXPECT_EQ(decoded.nodes[1].field_id, 1U);
     ASSERT_NE(decoded.nodes[1].default_value, nullptr);
@@ -62,7 +65,7 @@ TEST(BusinessSchema, canonical_proof_sorts_declarations_and_retains_exact_decima
     EXPECT_NE(copy.nodes[1].default_value->nodes, decoded.nodes[1].default_value->nodes);
     EXPECT_EQ(copy.nodes[1].default_value->nodes[0].value.text.size, 7U);
     nodes[1].scale = 3;
-    ASSERT_EQ(ayni::catalog::encode_schema(schema, other.data(),
+    ASSERT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), schema, other.data(),
                                            static_cast<uint32_t>(other.size()), other_size),
               AYNI_OK);
     EXPECT_NE(std::memcmp(bytes.data(), other.data(), size), 0);
@@ -80,20 +83,25 @@ TEST(BusinessSchema, truncated_proof_and_small_output_preserve_previous_storage)
     std::array<uint8_t, 128> bytes{};
     bytes.fill(91);
     uint32_t size = 19;
-    EXPECT_EQ(ayni::catalog::encode_schema(schema, bytes.data(), 1, size), AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), schema, bytes.data(), 1,
+                                           size),
+              AYNI_BUFFER_TOO_SMALL);
     EXPECT_EQ(bytes[0], 91U);
-    ASSERT_EQ(ayni::catalog::encode_schema(schema, bytes.data(),
+    ASSERT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), schema, bytes.data(),
                                            static_cast<uint32_t>(bytes.size()), size),
               AYNI_OK);
     ayni::catalog::DecodedSchema decoded;
     for (uint32_t length = 0; length < size; ++length) {
         SCOPED_TRACE(length);
         decoded.count = 91;
-        EXPECT_EQ(ayni::catalog::decode_schema({bytes.data(), length}, decoded),
+        EXPECT_EQ(ayni::catalog::decode_schema(::ayni::test::codec_workspace(),
+                                               {bytes.data(), length}, decoded),
                   AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(decoded.count, 91U);
     }
-    ASSERT_EQ(ayni::catalog::decode_schema({bytes.data(), size}, decoded), AYNI_OK);
+    ASSERT_EQ(ayni::catalog::decode_schema(::ayni::test::codec_workspace(), {bytes.data(), size},
+                                           decoded),
+              AYNI_OK);
     EXPECT_EQ(decoded.nodes[0].min_i64, -7);
     EXPECT_EQ(decoded.nodes[0].max_i64, 12);
 }
@@ -151,12 +159,13 @@ TEST(BusinessContract, complete_proof_round_trips_empty_and_nonempty_projection_
         execution.result_text_limit = 512;
         std::array<uint8_t, 4096> bytes{};
         uint32_t size = 0;
-        ASSERT_EQ(ayni::catalog::encode_business({domain.data(), domain_size}, execution, business,
-                                                 bytes.data(), static_cast<uint32_t>(bytes.size()),
-                                                 size),
+        ASSERT_EQ(ayni::catalog::encode_business(
+                      ::ayni::test::codec_workspace(), {domain.data(), domain_size}, execution,
+                      business, bytes.data(), static_cast<uint32_t>(bytes.size()), size),
                   AYNI_OK);
         ayni::catalog::DecodedBusiness decoded;
-        ASSERT_EQ(ayni::catalog::decode_business({domain.data(), domain_size}, {bytes.data(), size},
+        ASSERT_EQ(ayni::catalog::decode_business(::ayni::test::codec_workspace(),
+                                                 {domain.data(), domain_size}, {bytes.data(), size},
                                                  decoded),
                   AYNI_OK);
         EXPECT_EQ(decoded.count, count);
@@ -169,7 +178,8 @@ TEST(BusinessContract, complete_proof_round_trips_empty_and_nonempty_projection_
         for (uint32_t end = 0; end < size; ++end) {
             ayni::catalog::DecodedBusiness refused;
             refused.count = 99;
-            EXPECT_NE(ayni::catalog::decode_business({domain.data(), domain_size},
+            EXPECT_NE(ayni::catalog::decode_business(::ayni::test::codec_workspace(),
+                                                     {domain.data(), domain_size},
                                                      {bytes.data(), end}, refused),
                       AYNI_OK)
                 << end;

@@ -1,5 +1,6 @@
 // The call store (persistent_store.h). Journal pairing of a reconciliation
 // with its owner command stays in WorkReplay.
+#include "foundation/workspace.h"
 #include "kernel/service/model/store_limits.h"
 #include "kernel/service/persistence/persistent_store.h"
 #include "kernel/service/persistence/work_replay.h"
@@ -74,7 +75,7 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
                                      StoreReadCursor &) {
     work::CallRecord record{};
     uint32_t duplicate = 0;
-    if (!work::read_call_record(body, size, record) ||
+    if (!work::read_call_record(model.workspace, body, size, record) ||
         record.state.latest.boot_epoch > metadata.boot_epoch ||
         !within_snapshot(record.state.latest.transition, metadata) ||
         (record.state.content_erased &&
@@ -133,7 +134,7 @@ durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t siz
     work::CallRecord record{};
     uint32_t task_index = 0;
     uint32_t call_index = 0;
-    if (!work::read_call_record(body, size, record) ||
+    if (!work::read_call_record(model_.workspace, body, size, record) ||
         record.state.latest.boot_epoch != stamp.boot_epoch ||
         record.state.latest.transition.commit_seq != stamp.transition.commit_seq ||
         record.state.latest.transition.transition_id != stamp.transition.transition_id ||

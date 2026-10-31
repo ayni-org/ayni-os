@@ -1,4 +1,5 @@
 #include "work/call/tool_calls.h"
+#include "foundation/workspace.h"
 
 #include "catalog/abi_checks.h"
 #include "catalog/capability/argument_encoding.h"
@@ -117,7 +118,8 @@ bool write_call(const CallValues &values, foundation::BodyWriter &writer) {
     return status == AYNI_OK && written == values.payload_size;
 }
 
-bool read_encoded(foundation::BodyReader &reader, ToolCallView &out) {
+bool read_encoded(ayni::foundation::Workspace &workspace, foundation::BodyReader &reader,
+                  ToolCallView &out) {
     ToolCallView call{};
     call.function_name = reader.text(AYNI_CATALOG_ID_MAX_BYTES);
     call.input_kind = reader.u32();
@@ -129,8 +131,12 @@ bool read_encoded(foundation::BodyReader &reader, ToolCallView &out) {
         return false;
     }
     if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
-        catalog::DecodedArguments value;
-        if (catalog::decode_arguments(call.input, value) != AYNI_OK) {
+        auto value_lease = workspace.make<catalog::DecodedArguments>();
+        if (!value_lease) {
+            return false;
+        }
+        auto &value = *value_lease;
+        if (catalog::decode_arguments(workspace, call.input, value) != AYNI_OK) {
             return false;
         }
     } else if (call.input_kind == AYNI_TOOL_INPUT_INVALID_ARGUMENTS) {
@@ -147,7 +153,7 @@ bool read_encoded(foundation::BodyReader &reader, ToolCallView &out) {
 
 // Decode once for consumers that need the complete list. No output publishes
 // until every source tree, protocol identity and exact end position was admitted.
-bool decode(ayni_bytes_v1 body, ToolCallList &out) {
+bool decode(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, ToolCallList &out) {
     if (body.data == nullptr || body.size < list_header_size ||
         body.size > AYNI_CALL_RESULT_BYTES_MAX) {
         return false;
@@ -167,7 +173,7 @@ bool decode(ayni_bytes_v1 body, ToolCallList &out) {
         return false;
     }
     for (uint32_t at = 0; at < count; ++at) {
-        if (!read_encoded(reader, candidate.calls[at])) {
+        if (!read_encoded(workspace, reader, candidate.calls[at])) {
             return false;
         }
         for (uint32_t before = 0; before < at; ++before) {
@@ -220,16 +226,18 @@ void write_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint8_t *o
     }
 }
 
-bool read_tool_calls(ayni_bytes_v1 body, ToolCallList &out) {
-    return decode(body, out);
+bool read_tool_calls(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                     ToolCallList &out) {
+    return decode(workspace, body, out);
 }
-uint32_t tool_call_count(ayni_bytes_v1 body) {
+uint32_t tool_call_count(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body) {
     ToolCallList decoded;
-    return decode(body, decoded) ? decoded.count : 0U;
+    return decode(workspace, body, decoded) ? decoded.count : 0U;
 }
-bool read_tool_call(ayni_bytes_v1 body, uint32_t index, ToolCallView &out) {
+bool read_tool_call(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, uint32_t index,
+                    ToolCallView &out) {
     ToolCallList decoded;
-    if (!decode(body, decoded) || index >= decoded.count) {
+    if (!decode(workspace, body, decoded) || index >= decoded.count) {
         return false;
     }
     out = decoded.calls[index];

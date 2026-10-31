@@ -78,10 +78,12 @@ Reply Assistant::Impl::say(const Command &command) {
     }
     strategies::Encoded parameters;
     strategies::Text<strategies::turn_text_max> input;
-    auto status = strategies::Conversation::begin(current.record, runtime_text(command.text),
-                                                  parameters, command.id);
+    auto status =
+        strategies::Conversation::begin(conversation_workspace.get(), current.record,
+                                        runtime_text(command.text), parameters, command.id);
     if (status == AYNI_OK) {
-        status = strategies::Conversation::input(parameters.view(), input);
+        status =
+            strategies::Conversation::input(conversation_workspace.get(), parameters.view(), input);
     }
     if (status != AYNI_OK) {
         return failure(status);

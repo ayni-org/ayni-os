@@ -223,7 +223,8 @@ ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &sna
         }
     }
 }
-ayni_status_t inspect(const ayni_capability_detail_v1 &detail, json::Writer &out) {
+ayni_status_t inspect(Workspace &workspace, const ayni_capability_detail_v1 &detail,
+                      json::Writer &out) {
     out.raw("{\"binding_id\":");
     out.string(detail.info.binding_id);
     out.raw(",\"binding_version\":");
@@ -242,25 +243,34 @@ ayni_status_t inspect(const ayni_capability_detail_v1 &detail, json::Writer &out
     out.string(detail.usage.result_usage);
     out.raw(",\"examples\":");
     out.string(detail.usage.examples);
-    return ayni_business_contract_read(detail.original_domain, detail.business_contract, &out,
-                                       [](void *opaque, const ayni_business_contract_v1 *business) {
-                                           auto &writer = *static_cast<json::Writer *>(opaque);
-                                           writer.raw(",\"input_schema\":");
-                                           json::write_schema(writer, business->input);
-                                           writer.raw(",\"result_schema\":");
-                                           json::write_schema(writer, business->result);
-                                           writer.raw("}");
-                                           return AYNI_OK;
-                                       });
+    return ::ayni::detail::with_workspace(
+        workspace, ayni_business_workspace_requirements, [&](const ayni_workspace_v1 *region) {
+            return ayni_business_contract_read(
+                region, detail.original_domain, detail.business_contract, &out,
+                [](void *opaque, const ayni_business_contract_v1 *business) {
+                    auto &writer = *static_cast<json::Writer *>(opaque);
+                    writer.raw(",\"input_schema\":");
+                    json::write_schema(writer, business->input);
+                    writer.raw(",\"result_schema\":");
+                    json::write_schema(writer, business->result);
+                    writer.raw("}");
+                    return AYNI_OK;
+                });
+        });
 }
 // Copy/rebase the selected source subtree. The same original Schema normalizer
 // admits defaults, numbers and object closure before the ordinary Call boundary.
 enum class ResultRetention { inline_context, external_archive };
-ayni_status_t invoke(const NativeArguments &args, uint32_t argument,
+ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t argument,
                      const ayni_capability_detail_v1 &detail, ayni_string_v1 step,
                      ayni_policy_output_v1 &output, uint32_t result_capacity,
                      ResultRetention retention, uint32_t mode) {
-    std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
+    auto source_lease =
+        workspace.make<std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX>>();
+    if (!source_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &source = *source_lease;
     const uint32_t begin = args.positions[argument];
     const uint32_t count = args.tree.nodes[begin].subtree_end - begin;
     for (uint32_t i = 0; i < count; ++i) {
@@ -276,37 +286,59 @@ ayni_status_t invoke(const NativeArguments &args, uint32_t argument,
         uint32_t capacity;
         ResultRetention retention;
         uint32_t mode;
-    } inspection{{source.data(), count}, detail, step, output, result_capacity, retention, mode};
-    return ayni_business_contract_read(
-        detail.original_domain, detail.business_contract, &inspection,
-        [](void *opaque, const ayni_business_contract_v1 *business) {
-            auto &state = *static_cast<State *>(opaque);
-            if (state.mode == AYNI_CALL_MODE_FOREGROUND &&
-                state.detail.info.form == AYNI_CALL_SUBSCRIPTION) {
-                return AYNI_INVALID_ARGUMENT; // Subscription requires an explicit model-managed
-                                              // start.
-            }
-            constexpr uint32_t result_envelope_max = 512;
-            if (state.retention == ResultRetention::inline_context &&
-                (state.capacity < result_envelope_max ||
-                 result_bound(business->result, 0, state.capacity) >
-                     state.capacity - result_envelope_max)) {
-                return AYNI_CAPACITY_EXCEEDED;
-            }
-            std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
-            std::array<char, AYNI_VALUE_BYTES_MAX> bytes{};
-            ayni_value_buffer_v1 value{nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
-                                       bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
-            const auto status = ayni_arguments_normalize(&business->input, &state.source, &value);
-            if (status != AYNI_OK) {
-                return status;
-            }
-            Call call;
-            call.mode = state.mode;
-            call.binding_id = state.detail.info.binding_id;
-            call.binding_version = state.detail.info.binding_version;
-            call.input = ayni_value_v1{nodes.data(), value.node_count};
-            return request(call, state.step, {}, state.output);
+        Workspace &workspace;
+    } inspection{{source.data(), count}, detail,    step, output,
+                 result_capacity,        retention, mode, workspace};
+    return ::ayni::detail::with_workspace(
+        workspace, ayni_business_workspace_requirements, [&](const ayni_workspace_v1 *region) {
+            return ayni_business_contract_read(
+                region, detail.original_domain, detail.business_contract, &inspection,
+                [](void *opaque, const ayni_business_contract_v1 *business) {
+                    auto &state = *static_cast<State *>(opaque);
+                    if (state.mode == AYNI_CALL_MODE_FOREGROUND &&
+                        state.detail.info.form == AYNI_CALL_SUBSCRIPTION) {
+                        return AYNI_INVALID_ARGUMENT; // Subscription requires an explicit
+                                                      // model-managed start.
+                    }
+                    constexpr uint32_t result_envelope_max = 512;
+                    if (state.retention == ResultRetention::inline_context &&
+                        (state.capacity < result_envelope_max ||
+                         result_bound(business->result, 0, state.capacity) >
+                             state.capacity - result_envelope_max)) {
+                        return AYNI_CAPACITY_EXCEEDED;
+                    }
+                    auto nodes_lease =
+                        state.workspace
+                            .make<std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX>>();
+                    if (!nodes_lease) {
+                        return AYNI_CAPACITY_EXCEEDED;
+                    }
+                    auto &nodes = *nodes_lease;
+                    auto bytes_lease =
+                        state.workspace.make<std::array<char, AYNI_VALUE_BYTES_MAX>>();
+                    if (!bytes_lease) {
+                        return AYNI_CAPACITY_EXCEEDED;
+                    }
+                    auto &bytes = *bytes_lease;
+                    ayni_value_buffer_v1 value{
+                        nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
+                        bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
+                    const auto status = ::ayni::detail::with_workspace(
+                        state.workspace, ayni_value_workspace_requirements,
+                        [&](const ayni_workspace_v1 *value_region) {
+                            return ayni_arguments_normalize(value_region, &business->input,
+                                                            &state.source, &value);
+                        });
+                    if (status != AYNI_OK) {
+                        return status;
+                    }
+                    Call call;
+                    call.mode = state.mode;
+                    call.binding_id = state.detail.info.binding_id;
+                    call.binding_version = state.detail.info.binding_version;
+                    call.input = ayni_value_v1{nodes.data(), value.node_count};
+                    return request(call, state.step, {}, state.output);
+                });
         });
 }
 } // namespace
@@ -320,16 +352,16 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, char 
     out.raw("}}");
     return done(out, buffer, response) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
-ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopConfig &config,
-                              const ayni_task_snapshot_v1 &snapshot, Turn &turn,
-                              ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
-                              uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
-                              bool &requested) {
+ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
+                              const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
+                              Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
+                              char *buffer, uint32_t capacity, ToolBudget budget,
+                              ayni_string_v1 &response, bool &requested) {
     requested = false;
     bool handled = false;
     const auto operation_status =
-        native_operation(proposal, config, snapshot, turn, step, output, buffer, capacity, budget,
-                         response, requested, handled);
+        native_operation(workspace, proposal, config, snapshot, turn, step, output, buffer,
+                         capacity, budget, response, requested, handled);
     if (handled) {
         return operation_status;
     }
@@ -385,13 +417,13 @@ ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopC
             status = AYNI_NOT_FOUND;
         }
         if (status == AYNI_OK && !call) {
-            status = inspect(detail, out);
+            status = inspect(workspace, detail, out);
         } else if (status == AYNI_OK) {
             // Shell's complete command object is itself the business input.
             if (shell) {
                 args.positions[0] = 0;
             }
-            status = invoke(args, shell ? 0U : 2U, detail, step, output, capacity,
+            status = invoke(workspace, args, shell ? 0U : 2U, detail, step, output, capacity,
                             config.history.archive ? ResultRetention::external_archive
                                                    : ResultRetention::inline_context,
                             mode);
@@ -412,8 +444,8 @@ ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopC
                         "resource limit. No business Call was accepted.",
                         buffer, capacity, response);
 }
-ayni_status_t native_result(const ayni_task_call_result_v1 &result, char *buffer, uint32_t capacity,
-                            ayni_string_v1 &response) {
+ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1 &result,
+                            char *buffer, uint32_t capacity, ayni_string_v1 &response) {
     if (!result.outcome) {
         return AYNI_BUSY;
     }
@@ -422,7 +454,10 @@ ayni_status_t native_result(const ayni_task_call_result_v1 &result, char *buffer
         return AYNI_RESULT_UNKNOWN;
     }
     json::Writer out(buffer, capacity);
-    const auto status = json::write_call_result(out, result);
+    const auto status = ::ayni::detail::with_workspace(
+        workspace, json::call_result_workspace_requirements, [&](const ayni_workspace_v1 *region) {
+            return json::write_call_result(region, out, result);
+        });
     if (status != AYNI_OK) {
         return status;
     }

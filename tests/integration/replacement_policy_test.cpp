@@ -4,6 +4,7 @@
 #include <ayni/ayni.hpp>
 #include <ayni/model_messages.hpp>
 #include <ayni/strategies/builtin.h>
+#include <ayni/workspace.hpp>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <string>
@@ -41,11 +42,15 @@ struct Requested {
 TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_decision) {
     namespace strategies = ayni::strategies;
     using ayni::initialized;
+    ayni::Workspace codec_workspace, loop_workspace;
+    ASSERT_EQ(codec_workspace.create(strategies::Conversation::workspace_requirements), AYNI_OK);
+    ASSERT_EQ(loop_workspace.create(strategies::ToolLoop::workspace_requirements), AYNI_OK);
     strategies::ConversationRecord conversation;
     conversation.id = 1;
     conversation.owner_instance_id = 1;
     strategies::Encoded parameters;
-    ASSERT_EQ(strategies::Conversation::begin(conversation, text("fixture input"), parameters),
+    ASSERT_EQ(strategies::Conversation::begin(codec_workspace.get(), conversation,
+                                              text("fixture input"), parameters),
               AYNI_OK);
     strategies::ToolLoop loop;
     strategies::ToolLoopConfig config;
@@ -56,7 +61,7 @@ TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_dec
                     {sizeof(ayni_scope_v1), 0, nullptr},
                     text("Reply briefly.")};
     config.summary = config.model;
-    ASSERT_EQ(loop.configure(config), AYNI_OK);
+    ASSERT_EQ(loop.configure(config, loop_workspace.get()), AYNI_OK);
     const ayni_task_step_v1 steps[] = {{text("increment")}, {text("checkpoint.ready")}};
     auto snapshot = initialized<ayni_task_snapshot_v1>();
     snapshot.goal_type_id = text("replacement.workflow");

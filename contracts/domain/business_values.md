@@ -3,6 +3,8 @@
 - **关联**：AP-02、ADR-0084；ABI 0.48；[调用契约](calls_and_bindings.md)、[记录格式](../storage/records.md)。
 - **属主**：catalog 拥有静态 Schema/投影；authority 拥有完整授权候选；work 拥有规范请求和结果；适配器只处理语法及副本。
 
+ABI0.53起，纯Schema/规范化/读取函数按 `ayni/workspace.h` 借用调用方暂存；容量和独立并发约定见 C-SDK-007/ADR-0090。
+
 Schema/value 是有界 preorder 表。支持 OBJECT、LIST、BOOL、I64、U64、有限 binary64、固定 scale/I64 coefficient 的 DECIMAL、ENUM、IDENTIFIER、TEXT，以及显式 nullable。对象字段 ID 稳定，JSON 名字来自原 Schema；Core 不解析 JSON。默认值为注册时复制的静态定义，在授权前只填一次。运行时来源正文与规范值属于可擦除内容，静态 Schema/投影和原身份保留不能重建已擦除正文。
 
 | ID | 规则 | 反例 | 验证 |

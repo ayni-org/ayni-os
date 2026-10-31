@@ -2,6 +2,7 @@ add_executable(ayni_unit_tests
     binding_instances_test.cpp
     kernel_shell_call_test.cpp
     kernel_business_call_test.cpp
+    workspace_test.cpp
     business_arguments_test.cpp
     business_values_test.cpp
     business_schema_test.cpp

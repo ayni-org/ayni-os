@@ -23,6 +23,14 @@ bool Replacement::register_profile(ayni_kernel_t *kernel) {
         offers_ = Offers{a_.describe(), b_.describe()};
     }
     if (!configured_) {
+        auto memory = loop_workspace_.create(strategies::ToolLoop::workspace_requirements);
+        if (memory == AYNI_OK) {
+            memory =
+                conversation_workspace_.create(strategies::Conversation::workspace_requirements);
+        }
+        if (!e.status("allocate bounded policy workspace", memory)) {
+            return false;
+        }
         strategies::ToolLoopConfig config;
         config.identity = {text("replacement.loop"), 1, &rule_reader, 1};
         config.model = {AYNI_POLICY_REQUEST_MODEL,
@@ -31,7 +39,8 @@ bool Replacement::register_profile(ayni_kernel_t *kernel) {
                         {sizeof(ayni_scope_v1), 0, nullptr},
                         text("Reply briefly.")};
         config.summary = config.model;
-        if (!e.status("configure replacement ToolLoop", loop_.configure(config))) {
+        if (!e.status("configure replacement ToolLoop",
+                      loop_.configure(config, loop_workspace_.get()))) {
             return false;
         }
         configured_ = true;
@@ -78,7 +87,8 @@ bool Replacement::register_profile(ayni_kernel_t *kernel) {
            e.status("register replacement strategy", ayni_register_strategy(kernel, &strategy)) &&
            e.status("register replacement goals",
                     applications::experiment_fixtures::replacement::register_goals(
-                        kernel, strategy.strategy_id, strategies::Conversation::validate_turn));
+                        kernel, strategy.strategy_id, strategies::Conversation::validate_turn,
+                        const_cast<ayni_workspace_v1 *>(conversation_workspace_.get())));
 }
 ayni_status_t Replacement::loop(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                                 ayni_policy_output_v1 *output) {
@@ -119,9 +129,10 @@ uint64_t Replacement::create(const char *type) {
     record.id = world_.last_command() + 1;
     record.owner_instance_id = world_.instance(1);
     strategies::Encoded parameters;
-    if (!world_.evidence.status(
-            "replacement conversation",
-            strategies::Conversation::begin(record, text("fixture input"), parameters))) {
+    if (!world_.evidence.status("replacement conversation",
+                                strategies::Conversation::begin(conversation_workspace_.get(),
+                                                                record, text("fixture input"),
+                                                                parameters))) {
         return 0;
     }
     auto goal = initialized<ayni_goal_create_v1>();

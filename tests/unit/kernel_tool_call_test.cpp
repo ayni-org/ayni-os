@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Native proposals through the public ABI, ADR-0085: Task-scoped metadata,
 // lossless receipt shapes, and later ordinary authorized business Calls. Normal scenarios
 // with explicit sim storage timing; no fault injection.
@@ -479,7 +480,8 @@ class ToolCalls : public ::testing::Test {
                 ayni_policy_output_v1 &output;
             } inspection{proposed.call, output};
             proposal_error = ayni_business_contract_read(
-                detail.original_domain, detail.business_contract, &inspection,
+                ::ayni::test::business_workspace(), detail.original_domain,
+                detail.business_contract, &inspection,
                 [](void *opaque, const ayni_business_contract_v1 *business) {
                     auto &state = *static_cast<State *>(opaque);
                     std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
@@ -487,8 +489,9 @@ class ToolCalls : public ::testing::Test {
                     ayni_value_buffer_v1 value{
                         nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
                         bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
-                    const auto normalized = ayni_arguments_normalize(
-                        &business->input, &state.call.input.arguments, &value);
+                    const auto normalized =
+                        ayni_arguments_normalize(::ayni::test::value_workspace(), &business->input,
+                                                 &state.call.input.arguments, &value);
                     if (normalized != AYNI_OK) {
                         return normalized;
                     }

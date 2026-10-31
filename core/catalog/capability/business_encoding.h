@@ -5,6 +5,7 @@
 #include "catalog/capability/authority_projection.h"
 #include "catalog/capability/call_contract_encoding.h"
 #include "catalog/capability/schema_encoding.h"
+#include "foundation/workspace.h"
 
 namespace ayni::catalog {
 constexpr uint32_t business_encoding_version = 1;
@@ -27,20 +28,24 @@ struct DecodedBusiness {
 
 // Execution was normalized in this boundary. Validates schemas/projection once,
 // then compiles the full proof; capacity failure publishes only required size.
-ayni_status_t encode_business(ayni_bytes_v1 domain, const CallContract &execution,
+ayni_status_t encode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              const CallContract &execution,
                               const ayni_business_contract_v1 &business, uint8_t *out,
                               uint32_t capacity, uint32_t &size);
 // Registration already admitted execution and definition in this same call;
 // finite authority cross references may be registered later and close before start.
-ayni_status_t encode_admitted_business(const CallContract &execution,
+ayni_status_t encode_admitted_business(ayni::foundation::Workspace &workspace,
+                                       const CallContract &execution,
                                        const ayni_business_contract_v1 &business, uint8_t *out,
                                        uint32_t capacity, uint32_t &size);
 // Complete canonical machine proof, paired with its original authority domain.
 // Failure preserves out; all decoded text borrows body until that body changes.
-ayni_status_t decode_business(ayni_bytes_v1 domain, ayni_bytes_v1 body, DecodedBusiness &out);
+ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, DecodedBusiness &out);
 // Copies an already canonical proof or compiles the same-call admitted definition
 // into the receiving owner's unused slot. Nothing is published on failure.
-ayni_status_t store_business_contract(const CallContract &execution,
+ayni_status_t store_business_contract(ayni::foundation::Workspace &workspace,
+                                      const CallContract &execution,
                                       const ayni_business_contract_v1 *definition, uint8_t *out,
                                       uint32_t capacity, ayni_bytes_v1 &stored);
 } // namespace ayni::catalog

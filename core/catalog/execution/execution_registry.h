@@ -2,6 +2,7 @@
 #ifndef AYNI_CORE_CATALOG_EXECUTION_REGISTRY_H
 #define AYNI_CORE_CATALOG_EXECUTION_REGISTRY_H
 #include "catalog/binding/binding_registry.h"
+#include "foundation/workspace.h"
 #include <ayni/execution.h>
 namespace ayni::catalog {
 // Numeric projection is read from the same canonical Scope used by authorization.
@@ -56,7 +57,8 @@ class ExecutionRegistry {
     uint32_t binding_count() const { return bindings_.size(); } // Configured occupied prefix.
     // Startup consistency; physical actions must own an exclusive actuator and one
     // declared executor, while nonphysical bindings cannot obtain an execution permit.
-    ayni_status_t validate_all(const BindingRegistry &bindings,
+    ayni_status_t validate_all(ayni::foundation::Workspace &workspace,
+                               const BindingRegistry &bindings,
                                const CapabilityRegistry &capabilities,
                                const CallCapabilityRegistry &calls,
                                const ResourceRegistry &resources) const;

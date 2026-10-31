@@ -1,4 +1,5 @@
 #include "catalog/capability/argument_mapping.h"
+#include "catalog/capability/workspace.h"
 #include "catalog/catalog_id.h"
 #include "foundation/utf8.h"
 
@@ -98,11 +99,20 @@ bool copy_source_node(const ayni_argument_node_v1 &source, uint32_t at, ayni_val
 
 // Reuse the value owner's sole structural walk. Temporary object IDs are local
 // positions; semantic field IDs are assigned only after this shape is admitted.
-ayni_status_t source_shape(const ayni_arguments_v1 &input, DecodedValue &shape) {
-    if (input.nodes == nullptr || input.node_count == 0U || input.node_count > shape.nodes.size()) {
+ayni_value_node_v1 projected_node(const void *context, uint32_t index) {
+    const auto *nodes = static_cast<const ayni_argument_node_v1 *>(context);
+    ayni_value_node_v1 node{};
+    if (!copy_source_node(nodes[index], index, node)) {
+        node.kind = UINT32_MAX; // The common shape validator rejects unsupported source tags.
+    }
+    return node;
+}
+
+ayni_status_t validate_source(const ayni_arguments_v1 &input) {
+    if (input.nodes == nullptr || input.node_count == 0U ||
+        input.node_count > AYNI_VALUE_NODE_COUNT_MAX) {
         return AYNI_INVALID_ARGUMENT;
     }
-    shape.count = input.node_count;
     uint32_t bytes = 0;
     for (uint32_t at = 0; at < input.node_count; ++at) {
         const auto &source = input.nodes[at];
@@ -122,11 +132,19 @@ ayni_status_t source_shape(const ayni_arguments_v1 &input, DecodedValue &shape) 
         if (source.kind == AYNI_ARGUMENT_NUMBER && !numeric_lexeme(source.value.text)) {
             return AYNI_INVALID_ARGUMENT;
         }
-        if (!copy_source_node(source, at, shape.nodes[at])) {
-            return AYNI_INVALID_ARGUMENT;
+    }
+    return validate_value_nodes({input.nodes, input.node_count, projected_node});
+}
+
+ayni_status_t source_shape(const ayni_arguments_v1 &input, DecodedValue &shape) {
+    const auto status = validate_source(input);
+    if (status == AYNI_OK) {
+        shape.count = input.node_count;
+        for (uint32_t at = 0; at < input.node_count; ++at) {
+            shape.nodes[at] = projected_node(input.nodes, at);
         }
     }
-    return validate_value(shape.view());
+    return status;
 }
 
 bool integer_spelling(ayni_string_v1 text) {
@@ -294,13 +312,16 @@ ayni_status_t resolve_names(const ayni_schema_v1 &schema, const ayni_arguments_v
 } // namespace
 
 ayni_status_t validate_arguments(const ayni_arguments_v1 &input) {
-    DecodedValue shape;
-    return source_shape(input, shape);
+    return validate_source(input);
 }
 
-ayni_status_t map_arguments(const ayni_schema_v1 &schema, const ayni_arguments_v1 &input,
-                            DecodedValue &out) {
-    DecodedValue candidate;
+ayni_status_t map_arguments(ayni::foundation::Workspace &workspace, const ayni_schema_v1 &schema,
+                            const ayni_arguments_v1 &input, DecodedValue &out) {
+    auto candidate_lease = workspace.make<DecodedValue>();
+    if (!candidate_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &candidate = *candidate_lease;
     const auto shape = source_shape(input, candidate);
     if (shape != AYNI_OK) {
         return shape;
@@ -311,9 +332,14 @@ ayni_status_t map_arguments(const ayni_schema_v1 &schema, const ayni_arguments_v
     }
     return resolved;
 }
-ayni_status_t map_admitted_arguments(const ayni_schema_v1 &schema, const ayni_arguments_v1 &input,
+ayni_status_t map_admitted_arguments(ayni::foundation::Workspace &workspace,
+                                     const ayni_schema_v1 &schema, const ayni_arguments_v1 &input,
                                      DecodedValue &out) {
-    DecodedValue candidate;
+    auto candidate_lease = workspace.make<DecodedValue>();
+    if (!candidate_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &candidate = *candidate_lease;
     candidate.count = input.node_count;
     for (uint32_t at = 0; at < input.node_count; ++at) {
         if (!copy_source_node(input.nodes[at], at, candidate.nodes[at])) {
@@ -333,18 +359,31 @@ extern "C" ayni_status_t ayni_arguments_validate(const ayni_arguments_v1 *input)
     return input == nullptr ? AYNI_INVALID_ARGUMENT : ayni::catalog::validate_arguments(*input);
 }
 
-extern "C" ayni_status_t ayni_arguments_normalize(const ayni_schema_v1 *schema,
+extern "C" ayni_status_t ayni_arguments_normalize(const ayni_workspace_v1 *region,
+                                                  const ayni_schema_v1 *schema,
                                                   const ayni_arguments_v1 *input,
                                                   ayni_value_buffer_v1 *output) {
+    const auto workspace_status =
+        ayni::foundation::Workspace::check(region, ayni::catalog::value_workspace_size());
+    if (workspace_status != AYNI_OK) {
+        return workspace_status;
+    }
+    ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
+
     if (schema == nullptr || input == nullptr || output == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto status = ayni::catalog::validate_schema(*schema);
+    auto status = ayni::catalog::validate_schema(workspace, *schema);
     if (status != AYNI_OK) {
         return status;
     }
-    ayni::catalog::DecodedValue mapped;
-    status = ayni::catalog::map_arguments(*schema, *input, mapped);
-    return status == AYNI_OK ? ayni::catalog::normalize_value(*schema, mapped.view(), *output)
-                             : status;
+    auto mapped_lease = workspace.make<ayni::catalog::DecodedValue>();
+    if (!mapped_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &mapped = *mapped_lease;
+    status = ayni::catalog::map_arguments(workspace, *schema, *input, mapped);
+    return status == AYNI_OK
+               ? ayni::catalog::normalize_value(workspace, *schema, mapped.view(), *output)
+               : status;
 }

@@ -8,6 +8,7 @@
 #include <ayni/calendar.h>
 #include <ayni/calls.h>
 #include <ayni/directory.h>
+#include <ayni/workspace.h>
 #include <optional>
 
 namespace ayni::strategies {
@@ -74,21 +75,33 @@ struct ConversationRecord {
 // Kernel context intents own the cross-store deletion barrier (ADR-0060).
 class Conversation {
   public:
-    static ayni_status_t begin(const ConversationRecord &record, ayni_string_v1 user,
-                               Encoded &parameters, uint64_t memory_id = 0);
+    // Since 0.53: every synchronous codec call borrows a queried exclusive region.
+    static ayni_status_t workspace_requirements(size_t *bytes, size_t *alignment);
+    static ayni_status_t begin(const ayni_workspace_v1 *workspace, const ConversationRecord &record,
+                               ayni_string_v1 user, Encoded &parameters, uint64_t memory_id = 0);
     // Extract independent user input from a validated turn, without exposing the wire layout.
-    static ayni_status_t input(ayni_bytes_v1 parameters, Text<turn_text_max> &out);
-    static ayni_status_t finish(const ConversationRecord &current, ayni_bytes_v1 checkpoint,
+    static ayni_status_t input(const ayni_workspace_v1 *workspace, ayni_bytes_v1 parameters,
+                               Text<turn_text_max> &out);
+    static ayni_status_t finish(const ayni_workspace_v1 *workspace,
+                                const ConversationRecord &current, ayni_bytes_v1 checkpoint,
                                 ConversationRecord &candidate);
     // Preserve a superseded publication under its original turn identity, without its answer.
-    static ayni_status_t retain_published_input(const ConversationRecord &, uint64_t,
+    static ayni_status_t retain_published_input(const ayni_workspace_v1 *workspace,
+                                                const ConversationRecord &, uint64_t,
                                                 ConversationRecord &);
-    static ayni_status_t erase(const ConversationRecord &current, ConversationRecord &candidate);
+    static ayni_status_t erase(const ayni_workspace_v1 *workspace,
+                               const ConversationRecord &current, ConversationRecord &candidate);
     // Single/historical turn deletion clears generated text and preserves other retained users.
-    static ayni_status_t erase_round(const ConversationRecord &, uint64_t, ConversationRecord &);
-    static ayni_status_t erase_derived(const ConversationRecord &, ConversationRecord &);
-    static ayni_status_t encode(const ConversationRecord &record, Encoded &out);
-    static ayni_status_t decode(ayni_bytes_v1 bytes, ConversationRecord &out);
+    static ayni_status_t erase_round(const ayni_workspace_v1 *workspace, const ConversationRecord &,
+                                     uint64_t, ConversationRecord &);
+    static ayni_status_t erase_derived(const ayni_workspace_v1 *workspace,
+                                       const ConversationRecord &, ConversationRecord &);
+    static ayni_status_t encode(const ayni_workspace_v1 *workspace,
+                                const ConversationRecord &record, Encoded &out);
+    static ayni_status_t decode(const ayni_workspace_v1 *workspace, ayni_bytes_v1 bytes,
+                                ConversationRecord &out);
+    // GoalType validator context is a borrowed ayni_workspace_v1 descriptor.
+    // Use a wrapper when other GoalType callbacks require a different context.
     static ayni_status_t validate_turn(void *, ayni_bytes_v1 parameters);
 };
 
@@ -186,7 +199,9 @@ struct ToolLoopConfig {
 };
 class ToolLoop {
   public:
-    ayni_status_t configure(const ToolLoopConfig &config);
+    // Since 0.53: queried scratch is exclusive to this owner through Kernel destruction.
+    static ayni_status_t workspace_requirements(size_t *bytes, size_t *alignment);
+    ayni_status_t configure(const ToolLoopConfig &config, const ayni_workspace_v1 *workspace);
     ayni_strategy_v1 describe();
 
   private:
@@ -194,8 +209,7 @@ class ToolLoop {
     static uint32_t ready(void *, uint64_t);
     ToolLoopConfig config_{};
     bool configured_ = false;
-    std::array<char, prompt_bytes_max> prompt_{};
-    std::array<char, history_bytes_max> tool_{}; // Bounded local function/result rendering scratch.
+    ayni_workspace_v1 workspace_{}; // Borrowed bytes; present only after successful configure.
 };
 } // namespace ayni::strategies
 #endif

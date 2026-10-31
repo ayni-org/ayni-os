@@ -9,6 +9,7 @@
 #include "catalog/capability/capability_registry.h"
 #include "foundation/bounded_array.h"
 #include "foundation/transition_stamp.h"
+#include "foundation/workspace.h"
 
 #include <ayni/authority.h>
 
@@ -310,12 +311,14 @@ class GrantTable {
     // Record restore outcome; rejected records never partially publish a row.
     enum class Restore { restored, corrupt, no_room };
     // Replay a creation into its recorded append/replacement slot.
-    Restore restore_create(const GrantRecord &record, foundation::TransitionStamp stamp,
+    Restore restore_create(ayni::foundation::Workspace &workspace, const GrantRecord &record,
+                           foundation::TransitionStamp stamp,
                            const GrantReclaimExclusions &excluded = {});
     // Replay the one terminal transition, checking parent/root ordering.
     Restore restore_state(const GrantStateRecord &record, foundation::TransitionStamp stamp);
     // Append one retained fact after its parent, accepting later terminal ancestors.
-    Restore restore_snapshot(const GrantSnapshotRecord &record);
+    Restore restore_snapshot(ayni::foundation::Workspace &workspace,
+                             const GrantSnapshotRecord &record);
     // Replay accepted root control; never recheck the original session/CAS.
     Restore restore_revocation(const GrantRevocationRecord &record,
                                foundation::TransitionStamp stamp);

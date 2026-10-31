@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // White-box canonical payload tests, C-CALL-001/C-AUTH-017 and ADR-0045.
 // These exercise bounded business data, not actual persistence or model APIs.
 #include "authority/scope/scope.h"
@@ -80,16 +81,19 @@ class CallInputTest : public ::testing::Test {
     ayni_bytes_v1 domain() const { return {domain_storage.data(), domain_size}; }
     void compile_contract() {
         uint32_t bytes = 0;
-        ASSERT_EQ(ayni::catalog::encode_business(domain(), contract, business, proof.data(),
+        ASSERT_EQ(ayni::catalog::encode_business(::ayni::test::codec_workspace(), domain(),
+                                                 contract, business, proof.data(),
                                                  static_cast<uint32_t>(proof.size()), bytes),
                   AYNI_OK);
         contract.business_contract = {proof.data(), bytes};
     }
     ayni_status_t encode() {
-        return encode_business_input(domain(), contract, input, body.data(), capacity, size);
+        return encode_business_input(::ayni::test::codec_workspace(), domain(), contract, input,
+                                     body.data(), capacity, size);
     }
     ayni_status_t read(CallInputView &out) {
-        return read_call_input(domain(), {body.data(), size}, contract, out);
+        return read_call_input(::ayni::test::codec_workspace(), domain(), {body.data(), size},
+                               contract, out);
     }
     static ayni_string_v1 body_text(const CallInputView &view) {
         return view.value.nodes[2].value.text;
@@ -134,11 +138,13 @@ TEST_F(CallInputTest, empty_text_and_embedded_zero_are_length_delimited) {
 TEST_F(CallInputTest, limits_and_small_buffers_never_publish_partial_input) {
     nodes[2].value.text = {"hello", 5};
     uint32_t required = 0;
-    ASSERT_EQ(encode_business_input(domain(), contract, input, nullptr, 0, required),
+    ASSERT_EQ(encode_business_input(::ayni::test::codec_workspace(), domain(), contract, input,
+                                    nullptr, 0, required),
               AYNI_BUFFER_TOO_SMALL);
     body.fill(0xA5);
     size = 99;
-    EXPECT_EQ(encode_business_input(domain(), contract, input, body.data(), required - 1U, size),
+    EXPECT_EQ(encode_business_input(::ayni::test::codec_workspace(), domain(), contract, input,
+                                    body.data(), required - 1U, size),
               AYNI_BUFFER_TOO_SMALL);
     EXPECT_EQ(size, required);
     for (const auto byte : body) {
@@ -147,13 +153,15 @@ TEST_F(CallInputTest, limits_and_small_buffers_never_publish_partial_input) {
     size = 99;
     auto limited = contract;
     limited.input_text_limit = required - 1U;
-    EXPECT_EQ(encode_business_input(domain(), limited, input, body.data(), capacity, size),
+    EXPECT_EQ(encode_business_input(::ayni::test::codec_workspace(), domain(), limited, input,
+                                    body.data(), capacity, size),
               AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(size, 99U);
     EXPECT_EQ(body[0], 0xA5U);
     ASSERT_EQ(encode(), AYNI_OK);
     CallInputView view{};
-    EXPECT_EQ(read_call_input(domain(), {body.data(), size}, limited, view),
+    EXPECT_EQ(read_call_input(::ayni::test::codec_workspace(), domain(), {body.data(), size},
+                              limited, view),
               AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(view.value.count, 0U);
 }
@@ -204,7 +212,8 @@ TEST_F(CallInputTest, reader_requires_exact_framing_and_preserves_previous_views
     CallInputView original{};
     ASSERT_EQ(read(original), AYNI_OK);
     auto output = original;
-    EXPECT_EQ(read_call_input(domain(), {body.data(), size - 1U}, contract, output),
+    EXPECT_EQ(read_call_input(::ayni::test::codec_workspace(), domain(), {body.data(), size - 1U},
+                              contract, output),
               AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(body_text(output).data, body_text(original).data);
     EXPECT_EQ(body_text(output).size, body_text(original).size);

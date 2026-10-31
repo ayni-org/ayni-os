@@ -210,6 +210,19 @@ target_link_libraries(my_application PRIVATE Ayni::Core Ayni::Strategies)
 
 不传组件时默认Core/Strategies。可选组件为`api`、`software_provider`、`permit_gate`、`assistant`、`software_workflow`、`mock_provider`、`mock_execution`，公开目标分别为`Ayni::Api`、`SoftwareProvider`、`PermitGate`、`Assistant`、`SoftwareWorkflow`、`MockProvider`、`MockExecution`（后六项同样带`Ayni::`）。Api仅提供头文件。平台Host及runtime由部署另行组装；基础SDK不查找SQLite、CURL或Threads，Mock显式选择后才引入yyjson。
 
+ABI0.53的临时内存按显式查询预分配；C调用方提供 `ayni_workspace_v1`，C++ 可使用 `ayni::Workspace`（`ayni/workspace.hpp`）。例如策略启动前：
+
+```cpp
+ayni::Workspace scratch;
+auto status = scratch.create(ayni::strategies::ToolLoop::workspace_requirements);
+if (status == AYNI_OK) {
+    status = loop.configure(config, scratch.get());
+}
+```
+
+`scratch` 先于策略/Kernel构造、晚于成功关闭销毁；ESP runtime可用 `create_in` 借用平台分配区域。Conversation查询自己的区域，每次静态操作传入描述符；`validate_turn` 的context为该描述符，若GoalType另有context则由runtime显式转接。纯值操作和原证明读取使用各自查询；证明回调尚未返回时不得复用它的区域。Native SQLite的owner保存与后台解析使用独立区域。上述均不改变持久格式，见ADR-0090。
+
+
 同源可重复导入和增补组件；同一构建不能混用不同源码来源。源码、平台上下文和arena的生命周期仍按公开契约处理。独立隔离验证位于`tests/portability/`，完整接入阶段见[实施计划](architecture/independent-consumption-plan.md)，编译结果不代表ESP实机通过。
 
 P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.52、Core schema 8；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。

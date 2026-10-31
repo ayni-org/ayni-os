@@ -4,6 +4,7 @@
 #ifndef AYNI_CORE_KERNEL_KERNEL_STATE_H
 #define AYNI_CORE_KERNEL_KERNEL_STATE_H
 
+#include "catalog/capability/workspace.h"
 #include "kernel/config/catalogs.h"
 #include "kernel/config/kernel_config.h"
 #include "kernel/ports/completion_pool.h"
@@ -49,13 +50,14 @@ struct ayni_kernel {
     ayni_kernel(const ayni_host_v1 &host_table, const ayni::kernel::KernelCapacities &capacities,
                 const ayni::kernel::KernelLimits &limits,
                 const ayni::kernel::KernelStorage &storage)
-        : host(host_table),
+        : workspace(storage[ayni::kernel::Store::workspace], ayni::kernel::owner_workspace_size()),
+          host(host_table),
           ingress(storage[ayni::kernel::Store::ingress], capacities.ingress_capacity,
                   capacities.event_body_max_bytes, host),
           completions(storage[ayni::kernel::Store::completions], capacities.completion_slot_count,
                       host, attempts),
-          writes(limits.storage_write_interval_us), catalogs(capacities, storage),
-          work(catalogs, capacities, limits, storage, callbacks), replay(work),
+          writes(limits.storage_write_interval_us), catalogs(capacities, storage, workspace),
+          work(catalogs, capacities, limits, storage, callbacks, workspace), replay(work),
           boot(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
                capacities.storage_buffer_bytes, work, replay, writes),
           log(host, completions, storage.bytes(ayni::kernel::Store::storage_buffer),
@@ -114,6 +116,10 @@ struct ayni_kernel {
     // Caller code runs inside the kernel: functions that change the kernel
     // return AYNI_INVALID_STATE (ayni.h).
     bool in_callback() const { return callbacks.active(); }
+
+    // Owner-thread temporary memory; const queries may borrow it synchronously.
+    // This access changes no catalog, Task, Grant or other domain fact.
+    ayni::foundation::Workspace &scratch_workspace() const { return workspace; }
 
     // Owner-thread read-only views, valid until the next mutation on this Kernel.
     const ayni::kernel::WorkModel &model() const { return work; }
@@ -211,6 +217,9 @@ struct ayni_kernel {
   private:
     friend class ayni::kernel::KernelTestProbe;
 
+    // Sole owner of arena-backed temporary leases. Views in model/catalogs borrow
+    // this object; producers never access it and no lease crosses an API return.
+    mutable ayni::foundation::Workspace workspace;
     // Copy of the caller's table, with fields an older caller lacks left
     // zeroed. ctx and the functions stay caller-owned (see ayni_host_v1).
     ayni_host_v1 host;

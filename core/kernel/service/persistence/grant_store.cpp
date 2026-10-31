@@ -2,6 +2,7 @@
 // Cross-store command/revocation pairing stays with WorkReplay (ADR-0059).
 #include "authority/grant/grant_records.h"
 #include "foundation/kernel_id.h"
+#include "foundation/workspace.h"
 #include "kernel/service/persistence/persistent_store.h"
 namespace ayni::kernel {
 namespace {
@@ -180,7 +181,7 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
                                      StoreReadCursor &) {
     authority::GrantSnapshotRecord record{};
     const auto *binding = model.principals.binding();
-    if (!authority::read_grant_snapshot_record(body, size, record) ||
+    if (!authority::read_grant_snapshot_record(model.workspace, body, size, record) ||
         !within_snapshot(record.created_stamp, metadata) ||
         !within_snapshot(record.stamp, metadata) ||
         ((record.cleanup_stamp.transition_id != 0U || record.cleanup_stamp.commit_seq != 0U) &&
@@ -192,7 +193,7 @@ durability::BatchCheck snapshot_read(WorkModel &model, const durability::Snapsho
         model.agents.find_instance(record.create.grant.subject_instance_id) == nullptr) {
         return durability::BatchCheck::corrupt;
     }
-    return snapshot_restore_check(model.grants.restore_snapshot(record));
+    return snapshot_restore_check(model.grants.restore_snapshot(model.workspace, record));
 }
 } // namespace
 const PersistentStore grant_store{authority::grant_record_type,

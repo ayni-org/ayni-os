@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // White-box tool-call list codec, ADR-0054 and tool-call list format 1 in
 // contracts/storage/records.md. Shape only; offers and authority are Kernel tests.
 #include "catalog/capability/argument_encoding.h"
@@ -77,23 +78,24 @@ class ToolCallsTest : public ::testing::Test {
 TEST_F(ToolCallsTest, round_trip_keeps_named_arguments_without_retaining_source_views) {
     ASSERT_EQ(encode(), AYNI_OK);
     nodes[3].value.text = text("changed after the post");
-    ASSERT_EQ(tool_call_count(list()), 2U);
+    ASSERT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 2U);
     ToolCallView call{};
-    ASSERT_TRUE(read_tool_call(list(), 0, call));
+    ASSERT_TRUE(read_tool_call(::ayni::test::codec_workspace(), list(), 0, call));
     EXPECT_EQ(string_of(call.function_name), "timer.set");
     EXPECT_EQ(string_of(call.protocol_id), "t1");
     EXPECT_EQ(call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
     ayni::catalog::DecodedArguments value;
-    ASSERT_EQ(ayni::catalog::decode_arguments(call.input, value), AYNI_OK);
+    ASSERT_EQ(ayni::catalog::decode_arguments(::ayni::test::codec_workspace(), call.input, value),
+              AYNI_OK);
     ASSERT_EQ(value.count, 4U);
     EXPECT_EQ(string_of(value.nodes[1].name), "mode");
     EXPECT_EQ(string_of(value.nodes[1].value.text), "quiet");
     EXPECT_EQ(string_of(value.nodes[2].name), "count");
     EXPECT_EQ(string_of(value.nodes[2].value.text), "-5");
     EXPECT_EQ(string_of(value.nodes[3].value.text), "早点提醒");
-    ASSERT_TRUE(read_tool_call(list(), 1, call));
+    ASSERT_TRUE(read_tool_call(::ayni::test::codec_workspace(), list(), 1, call));
     EXPECT_EQ(string_of(call.function_name), "lamp.off");
-    EXPECT_FALSE(read_tool_call(list(), 2, call));
+    EXPECT_FALSE(read_tool_call(::ayni::test::codec_workspace(), list(), 2, call));
     EXPECT_EQ(string_of(call.function_name), "lamp.off");
 }
 
@@ -160,23 +162,23 @@ TEST_F(ToolCallsTest, persisted_lists_require_exact_framing_and_supported_source
     ASSERT_EQ(encode(1), AYNI_OK);
     const auto valid = body;
     body.pop_back();
-    EXPECT_EQ(tool_call_count(list()), 0U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 0U);
     body = valid;
     body.push_back(0);
-    EXPECT_EQ(tool_call_count(list()), 0U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 0U);
     body = valid;
     ayni::foundation::store_le32(body.data(), 1);
-    EXPECT_EQ(tool_call_count(list()), 0U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 0U);
     body = valid;
     constexpr uint32_t list_header_bytes = 16;
     EXPECT_EQ(ayni::foundation::load_le32(body.data() + list_header_bytes), 9U);
     ToolCallView call{};
-    ASSERT_TRUE(read_tool_call(list(), 0, call));
+    ASSERT_TRUE(read_tool_call(::ayni::test::codec_workspace(), list(), 0, call));
     const auto payload_at = static_cast<size_t>(call.input.data - body.data());
     ayni::foundation::store_le32(body.data() + payload_at, 0);
-    EXPECT_EQ(tool_call_count(list()), 0U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 0U);
     body = valid;
-    EXPECT_EQ(tool_call_count(list()), 1U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 1U);
 }
 } // namespace
 
@@ -207,14 +209,16 @@ TEST(ToolValueCalls, portable_list_preserves_protocol_identity_raw_errors_and_nu
     std::vector<uint8_t> bytes(size);
     write_tool_calls(calls.data(), 2, bytes.data(), size);
     ToolCallList decoded;
-    ASSERT_TRUE(read_tool_calls({bytes.data(), size}, decoded));
+    ASSERT_TRUE(read_tool_calls(::ayni::test::codec_workspace(), {bytes.data(), size}, decoded));
     ASSERT_EQ(decoded.count, 2U);
     EXPECT_EQ(string_of(decoded.calls[0].protocol_id), "CALL-Original_1");
     EXPECT_EQ(std::string(reinterpret_cast<const char *>(decoded.calls[0].input.data),
                           decoded.calls[0].input.size),
               "{broken JSON");
     ayni::catalog::DecodedArguments named;
-    ASSERT_EQ(ayni::catalog::decode_arguments(decoded.calls[1].input, named), AYNI_OK);
+    ASSERT_EQ(ayni::catalog::decode_arguments(::ayni::test::codec_workspace(),
+                                              decoded.calls[1].input, named),
+              AYNI_OK);
     EXPECT_EQ(string_of(named.nodes[1].value.text), "9007199254740993");
     calls[1].protocol_id = calls[0].protocol_id;
     size = 99;

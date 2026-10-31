@@ -1,4 +1,5 @@
 #include "work/authority/authority_cleanup_records.h"
+#include "workspace_fixture.h"
 // Faults below are complete, CRC-valid batches or framed snapshot records.
 // They exercise semantic recovery checks rather than checksum rejection.
 #include "authority/grant/grant_records.h"
@@ -201,14 +202,16 @@ TEST(GrantReplay, a_valid_but_expanded_create_scope_cannot_disagree_with_its_exa
                 continue;
             }
             GrantRecord decoded{};
-            ASSERT_TRUE(ayni::authority::read_grant_record(record.body.data(), record.header.length,
+            ASSERT_TRUE(ayni::authority::read_grant_record(::ayni::test::codec_workspace(),
+                                                           record.body.data(), record.header.length,
                                                            decoded));
             const auto scope_at = static_cast<std::size_t>(decoded.scope.data - record.body.data());
             // Independent B format-1 offsets: 4-byte domain header,
             // 8-byte field header, five-byte "count", then two i64 values.
             ayni::foundation::store_le64(record.body.data() + scope_at + 17U, 0);
             ayni::foundation::store_le64(record.body.data() + scope_at + 25U, 100);
-            ASSERT_TRUE(ayni::authority::read_grant_record(record.body.data(), record.header.length,
+            ASSERT_TRUE(ayni::authority::read_grant_record(::ayni::test::codec_workspace(),
+                                                           record.body.data(), record.header.length,
                                                            decoded));
             changed = true;
         }
@@ -1305,7 +1308,8 @@ TEST(GrantReplay, expired_snapshot_bounds_each_terminal_stamp_component_independ
                 continue;
             }
             ayni::authority::GrantSnapshotRecord decoded{};
-            ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(record.body.data(),
+            ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(::ayni::test::codec_workspace(),
+                                                                    record.body.data(),
                                                                     record.header.length, decoded));
             ASSERT_EQ(decoded.lifecycle, AYNI_GRANT_EXPIRED);
             ASSERT_EQ(decoded.revision, 2U);
@@ -2054,8 +2058,8 @@ TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_creat
         }
         ++snapshot_grants;
         ayni::authority::GrantSnapshotRecord decoded{};
-        ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(record.body.data(),
-                                                                record.header.length, decoded));
+        ASSERT_TRUE(ayni::authority::read_grant_snapshot_record(
+            ::ayni::test::codec_workspace(), record.body.data(), record.header.length, decoded));
         const auto start = static_cast<std::size_t>(decoded.create.scope.data - record.body.data());
         ASSERT_GT(decoded.create.scope.size, 0U);
         ASSERT_LE(start, record.body.size());
@@ -2086,7 +2090,8 @@ TEST(GrantReplay, every_changed_current_scope_bit_disagrees_with_the_exact_creat
             }
             ++changed_records;
             GrantRecord decoded{};
-            ASSERT_TRUE(ayni::authority::read_grant_record(record.body.data(), record.header.length,
+            ASSERT_TRUE(ayni::authority::read_grant_record(::ayni::test::codec_workspace(),
+                                                           record.body.data(), record.header.length,
                                                            decoded));
             const auto start = static_cast<std::size_t>(decoded.scope.data - record.body.data());
             for (std::size_t at = start; at < start + decoded.scope.size; ++at) {

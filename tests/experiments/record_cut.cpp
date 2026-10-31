@@ -5,6 +5,7 @@
 #include "durability/batch/batch_codec.h"
 #include "experiment_support.h"
 #include "work/call/call_records.h"
+#include <ayni/workspace.hpp>
 namespace ayni::runtime::experiments {
 namespace {
 std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPoint point,
@@ -55,8 +56,13 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
             if (header.type != work::call_record_type) {
                 break;
             }
+            ayni::Workspace memory;
+            if (memory.create(ayni::Workspace::Purpose::business) != AYNI_OK) {
+                return std::nullopt;
+            }
+            foundation::Workspace workspace(memory.get()->data, memory.get()->byte_capacity);
             work::CallRecord call{};
-            if (!work::read_call_record(body, header.length, call) || !call.action) {
+            if (!work::read_call_record(workspace, body, header.length, call) || !call.action) {
                 break;
             }
             if (step && !call.identity.step_key.equals(text(step))) {

@@ -5,6 +5,7 @@
 #include "authority/grant/grant_state.h"
 #include "authority/scope/scope.h"
 #include "foundation/kernel_id.h"
+#include "foundation/workspace.h"
 #include <cstring>
 namespace ayni::authority {
 using foundation::id_boot_epoch;
@@ -57,9 +58,10 @@ bool GrantRestore::active_at(const GrantTable &table, uint32_t index, uint64_t c
 
 // The record owns byte shape; this owner validates lifecycle and parent
 // relationships before any capacity choice. out_parent is used only for a child.
-bool GrantRestore::valid_restored_fact(const GrantTable &table, const GrantRecord &record,
+bool GrantRestore::valid_restored_fact(ayni::foundation::Workspace &workspace,
+                                       const GrantTable &table, const GrantRecord &record,
                                        const RestoredState &state, uint32_t &out_parent) {
-    if (!valid_grant_record(record) ||
+    if (!valid_grant_record(workspace, record) ||
         !lifecycle_state(record, state.created, state.stamp, state.revision, state.lifecycle)) {
         return false;
     }
@@ -162,12 +164,13 @@ void GrantRestore::install_restored(GrantTable &table, const GrantRecord &record
 
 // A journal create observes active ancestors, then consumes its recorded slot.
 // All rejection paths precede byte/row publication; classifications stay ordered.
-GrantTable::Restore GrantRestore::restore_create(GrantTable &table, const GrantRecord &record,
+GrantTable::Restore GrantRestore::restore_create(ayni::foundation::Workspace &workspace,
+                                                 GrantTable &table, const GrantRecord &record,
                                                  foundation::TransitionStamp stamp,
                                                  const GrantReclaimExclusions &excluded) {
     const RestoredState state{stamp, stamp, grant_active_revision, AYNI_GRANT_ACTIVE};
     uint32_t parent = 0;
-    if (!valid_restored_fact(table, record, state, parent) ||
+    if (!valid_restored_fact(workspace, table, record, state, parent) ||
         (record.grant.parent_grant_id != 0U &&
          history_at(table, parent, stamp.commit_seq, stamp.transition_id) !=
              AncestorHistory::active)) {
@@ -286,7 +289,8 @@ bool GrantRestore::valid_revocation_metadata(const GrantTable &table, uint64_t g
 
 // Retained snapshots have different placement/history rules from journal
 // creates: parent-first append, absent predecessors and possibly later terminal ancestors.
-GrantTable::Restore GrantRestore::restore_snapshot(GrantTable &table,
+GrantTable::Restore GrantRestore::restore_snapshot(ayni::foundation::Workspace &workspace,
+                                                   GrantTable &table,
                                                    const GrantSnapshotRecord &record) {
     if (!valid_revocation_metadata(
             table, record.create.grant_id, record.create.grant.parent_grant_id, record.lifecycle,
@@ -297,7 +301,7 @@ GrantTable::Restore GrantRestore::restore_snapshot(GrantTable &table,
     const RestoredState state{record.created_stamp, record.stamp, record.revision,
                               record.lifecycle};
     uint32_t parent = 0;
-    if (!valid_restored_fact(table, record.create, state, parent) ||
+    if (!valid_restored_fact(workspace, table, record.create, state, parent) ||
         (record.create.grant.parent_grant_id != 0U &&
          history_at(table, parent, state.created.commit_seq, state.created.transition_id) ==
              AncestorHistory::invalid)) {

@@ -125,7 +125,8 @@ ayni_strategy_v1 rule_strategy() {
     return strategy;
 }
 ayni_status_t register_goals(ayni_kernel_t *k, ayni_string_v1 strategy_id,
-                             ayni_status_t (*validate)(void *, ayni_bytes_v1)) {
+                             ayni_status_t (*validate)(void *, ayni_bytes_v1),
+                             void *validation_context) {
     auto status = AYNI_OK;
     for (const char *id : {workflow_id, model_id}) {
         if (status != AYNI_OK) {
@@ -137,6 +138,7 @@ ayni_status_t register_goals(ayni_kernel_t *k, ayni_string_v1 strategy_id,
         goal.strategy_id = strategy_id;
         goal.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
         goal.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+        goal.ctx = validation_context;
         goal.validate = validate;
         goal.export_requirements = requirements;
         status = ayni_register_goal_type(k, &goal);

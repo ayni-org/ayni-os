@@ -14,6 +14,8 @@
 #include <cstddef>
 
 namespace ayni::kernel {
+// Owner admission holds Call views and a Goal candidate while catalog codecs validate them.
+std::size_t owner_workspace_size();
 
 // One store's bytes in the caller's memory block: size bytes from offset,
 // which is a multiple of alignment, a power of two. A store at zero capacity

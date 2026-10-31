@@ -2,6 +2,7 @@
 #include <array>
 #include <ayni/providers/mock.h>
 #include <ayni/values.hpp>
+#include <ayni/workspace.hpp>
 
 #include <algorithm>
 #include <cstdio>
@@ -301,10 +302,15 @@ ayni_status_t Provider::configure(Config config) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (config.business) {
+        ayni::Workspace workspace;
+        const auto memory = workspace.create(ayni::Workspace::Purpose::value);
+        if (memory != AYNI_OK) {
+            return memory;
+        }
         const auto &business = *config.business;
-        if (ayni_schema_validate(&business.input) != AYNI_OK ||
-            ayni_schema_validate(&business.result) != AYNI_OK || business.reserved ||
-            business.projection_count > AYNI_AUTHORITY_FIELD_COUNT_MAX ||
+        if (ayni_schema_validate(workspace.get(), &business.input) != AYNI_OK ||
+            ayni_schema_validate(workspace.get(), &business.result) != AYNI_OK ||
+            business.reserved || business.projection_count > AYNI_AUTHORITY_FIELD_COUNT_MAX ||
             ((business.projection_count != 0) != (business.projections != nullptr))) {
             return AYNI_INVALID_ARGUMENT;
         }

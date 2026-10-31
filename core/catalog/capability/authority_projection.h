@@ -3,6 +3,7 @@
 #ifndef AYNI_CORE_CATALOG_CAPABILITY_AUTHORITY_PROJECTION_H
 #define AYNI_CORE_CATALOG_CAPABILITY_AUTHORITY_PROJECTION_H
 #include "catalog/capability/field_domain.h"
+#include "foundation/workspace.h"
 #include <ayni/capability_values.h>
 #include <optional>
 
@@ -13,13 +14,14 @@ struct ProjectionShape {
 };
 // Complete static definition independent of registration order. Finite-domain
 // cross references are checked when the catalog is closed, before recovery/I/O.
-ayni_status_t validate_business_definition(const ayni_business_contract_v1 &business,
+ayni_status_t validate_business_definition(ayni::foundation::Workspace &workspace,
+                                           const ayni_business_contract_v1 &business,
                                            ProjectionShape &out);
 
 // Admitted business schema and complete authority domain; errors preserve out.
 // Rejects optional/null paths, floats, multi-axis lists and implicit unit/scale changes.
-ayni_status_t validate_projection(ayni_bytes_v1 domain, const ayni_business_contract_v1 &business,
-                                  ProjectionShape &out);
+ayni_status_t validate_projection(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                                  const ayni_business_contract_v1 &business, ProjectionShape &out);
 // Schema decoders already admitted both unchanged schemas at this boundary.
 ayni_status_t validate_projection_schemas_admitted(ayni_bytes_v1 domain,
                                                    const ayni_business_contract_v1 &business,

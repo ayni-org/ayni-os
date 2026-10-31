@@ -154,6 +154,7 @@ class BootSequence {
 
     const ayni_host_v1 &host_;
     CompletionPool &completions_;
+    foundation::Workspace &workspace_; // Borrowed model/Kernel owner; only synchronous replay.
     uint8_t *buffer_;
     uint32_t buffer_size_;
     WorkReplay &replay_;

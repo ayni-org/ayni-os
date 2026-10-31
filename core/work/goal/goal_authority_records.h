@@ -5,6 +5,7 @@
 #define AYNI_CORE_WORK_GOAL_GOAL_AUTHORITY_RECORDS_H
 
 #include "durability/batch/record_types.h"
+#include "foundation/workspace.h"
 #include "work/goal/goal_authority.h"
 
 #include <cstdint>
@@ -37,7 +38,8 @@ uint32_t goal_authority_record_size(const GoalAuthorityRecord &record);
 void write_goal_authority_record(const GoalAuthorityRecord &record, uint8_t *body);
 // Parses into temporary borrowed views and uses the shared semantic validator.
 // Truncation, trailing bytes or illegal facts preserve out entirely.
-bool read_goal_authority_record(const uint8_t *body, uint32_t size, GoalAuthorityRecord &out);
+bool read_goal_authority_record(ayni::foundation::Workspace &workspace, const uint8_t *body,
+                                uint32_t size, GoalAuthorityRecord &out);
 
 } // namespace ayni::work
 #endif // AYNI_CORE_WORK_GOAL_GOAL_AUTHORITY_RECORDS_H

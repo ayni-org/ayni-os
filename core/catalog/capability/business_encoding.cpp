@@ -1,4 +1,5 @@
 #include "catalog/capability/business_encoding.h"
+#include "catalog/capability/workspace.h"
 
 #include <cstring>
 
@@ -86,21 +87,23 @@ bool read_projections(foundation::BodyReader &reader, DecodedBusiness &out) {
 
 // Compile complete immutable semantics before touching the caller's output.
 // A canonical schema proof is produced once per definition, not per list row.
-ayni_status_t encode_business(ayni_bytes_v1 domain, const CallContract &execution,
+ayni_status_t encode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              const CallContract &execution,
                               const ayni_business_contract_v1 &business, uint8_t *out,
                               uint32_t capacity, uint32_t &size) {
     if (out == nullptr && capacity != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     ProjectionShape shape;
-    const auto admitted = validate_projection(domain, business, shape);
+    const auto admitted = validate_projection(workspace, domain, business, shape);
     if (admitted != AYNI_OK) {
         return admitted;
     }
-    return encode_admitted_business(execution, business, out, capacity, size);
+    return encode_admitted_business(workspace, execution, business, out, capacity, size);
 }
 
-ayni_status_t encode_admitted_business(const CallContract &execution,
+ayni_status_t encode_admitted_business(ayni::foundation::Workspace &workspace,
+                                       const CallContract &execution,
                                        const ayni_business_contract_v1 &business, uint8_t *out,
                                        uint32_t capacity, uint32_t &size) {
     if ((execution.result_format == call_text_result_format ||
@@ -108,15 +111,23 @@ ayni_status_t encode_admitted_business(const CallContract &execution,
         business.result.nodes[0].kind != AYNI_VALUE_TEXT) {
         return AYNI_INVALID_ARGUMENT;
     }
-    std::array<uint8_t, business_encoding_bytes_max> proof{};
-    std::array<uint8_t, schema_encoding_bytes_max> schema{};
+    auto proof_lease = workspace.make<std::array<uint8_t, business_encoding_bytes_max>>();
+    if (!proof_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &proof = *proof_lease;
+    auto schema_lease = workspace.make<std::array<uint8_t, schema_encoding_bytes_max>>();
+    if (!schema_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &schema = *schema_lease;
     foundation::BodyWriter writer(proof.data(), static_cast<uint32_t>(proof.size()));
     writer.u32(business_encoding_version);
     write_execution_contract(execution, writer);
     write_subscription(execution, writer);
     for (const auto *definition : {&business.input, &business.result}) {
         uint32_t bytes = 0;
-        const auto encoded = encode_validated_schema(*definition, schema.data(),
+        const auto encoded = encode_validated_schema(workspace, *definition, schema.data(),
                                                      static_cast<uint32_t>(schema.size()), bytes);
         if (encoded != AYNI_OK) {
             return encoded;
@@ -139,7 +150,8 @@ ayni_status_t encode_admitted_business(const CallContract &execution,
     return AYNI_OK;
 }
 
-ayni_status_t decode_business(ayni_bytes_v1 domain, ayni_bytes_v1 body, DecodedBusiness &out) {
+ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, DecodedBusiness &out) {
     if (body.data == nullptr || body.size < sizeof(uint32_t) ||
         body.size > business_encoding_bytes_max) {
         return AYNI_INVALID_ARGUMENT;
@@ -148,7 +160,11 @@ ayni_status_t decode_business(ayni_bytes_v1 domain, ayni_bytes_v1 body, DecodedB
     if (reader.u32() != business_encoding_version) {
         return AYNI_UNSUPPORTED_VERSION;
     }
-    DecodedBusiness value;
+    auto value_lease = workspace.make<DecodedBusiness>();
+    if (!value_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &value = *value_lease;
     if (!read_execution_contract(reader, value.execution) ||
         !read_subscription(reader, value.execution)) {
         return AYNI_INVALID_ARGUMENT;
@@ -163,7 +179,7 @@ ayni_status_t decode_business(ayni_bytes_v1 domain, ayni_bytes_v1 body, DecodedB
         if (!reader.valid()) {
             return AYNI_INVALID_ARGUMENT;
         }
-        const auto decoded = decode_schema(bytes, *schema);
+        const auto decoded = decode_schema(workspace, bytes, *schema);
         if (decoded != AYNI_OK) {
             return decoded;
         }
@@ -186,7 +202,8 @@ ayni_status_t decode_business(ayni_bytes_v1 domain, ayni_bytes_v1 body, DecodedB
     return AYNI_OK;
 }
 
-ayni_status_t store_business_contract(const CallContract &execution,
+ayni_status_t store_business_contract(ayni::foundation::Workspace &workspace,
+                                      const CallContract &execution,
                                       const ayni_business_contract_v1 *definition, uint8_t *out,
                                       uint32_t capacity, ayni_bytes_v1 &stored) {
     if (definition != nullptr) {
@@ -194,7 +211,8 @@ ayni_status_t store_business_contract(const CallContract &execution,
             return AYNI_INVALID_ARGUMENT;
         }
         uint32_t size = 0;
-        const auto status = encode_admitted_business(execution, *definition, out, capacity, size);
+        const auto status =
+            encode_admitted_business(workspace, execution, *definition, out, capacity, size);
         if (status != AYNI_OK) {
             return status == AYNI_BUFFER_TOO_SMALL ? AYNI_CAPACITY_EXCEEDED : status;
         }
@@ -218,14 +236,26 @@ ayni_status_t store_business_contract(const CallContract &execution,
 } // namespace ayni::catalog
 
 extern "C" ayni_status_t
-ayni_business_contract_read(ayni_bytes_v1 original_domain, ayni_bytes_v1 original_proof,
-                            void *context,
+ayni_business_contract_read(const ayni_workspace_v1 *region, ayni_bytes_v1 original_domain,
+                            ayni_bytes_v1 original_proof, void *context,
                             ayni_status_t (*receive)(void *, const ayni_business_contract_v1 *)) {
+    const auto workspace_status =
+        ayni::foundation::Workspace::check(region, ayni::catalog::business_workspace_size());
+    if (workspace_status != AYNI_OK) {
+        return workspace_status;
+    }
+    ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
+
     if (receive == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    ayni::catalog::DecodedBusiness decoded;
-    const auto status = ayni::catalog::decode_business(original_domain, original_proof, decoded);
+    auto decoded_lease = workspace.make<ayni::catalog::DecodedBusiness>();
+    if (!decoded_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &decoded = *decoded_lease;
+    const auto status =
+        ayni::catalog::decode_business(workspace, original_domain, original_proof, decoded);
     if (status != AYNI_OK) {
         return status;
     }

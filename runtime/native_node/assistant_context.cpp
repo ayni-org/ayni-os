@@ -148,8 +148,8 @@ ayni_status_t Assistant::Impl::publish_context(const ayni_context_info_v1 &conte
         return copied;
     }
     auto candidate = current;
-    const auto status =
-        strategies::Conversation::finish(current.record, encoded.view(), candidate.record);
+    const auto status = strategies::Conversation::finish(
+        conversation_workspace.get(), current.record, encoded.view(), candidate.record);
     if (status != AYNI_OK) {
         return status;
     }
@@ -172,17 +172,19 @@ ayni_status_t Assistant::Impl::erase_context(const ayni_context_info_v1 &context
     // a subsequent single-turn delete. begin reserves this one bounded retention slot.
     if (context.last_turn_id > base.last_round) {
         const auto retained = strategies::Conversation::retain_published_input(
-            current.record, context.last_turn_id, base);
+            conversation_workspace.get(), current.record, context.last_turn_id, base);
         if (retained != AYNI_OK) {
             return retained;
         }
     }
     const auto status =
         context.pending_action == AYNI_CONTEXT_ERASE_ALL
-            ? strategies::Conversation::erase(base, candidate.record)
+            ? strategies::Conversation::erase(conversation_workspace.get(), base, candidate.record)
         : context.pending_action == AYNI_CONTEXT_ERASE_ROUND
-            ? strategies::Conversation::erase_round(base, context.pending_turn_id, candidate.record)
-            : strategies::Conversation::erase_derived(base, candidate.record);
+            ? strategies::Conversation::erase_round(conversation_workspace.get(), base,
+                                                    context.pending_turn_id, candidate.record)
+            : strategies::Conversation::erase_derived(conversation_workspace.get(), base,
+                                                      candidate.record);
     if (status != AYNI_OK) {
         return status;
     }

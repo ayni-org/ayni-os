@@ -1,3 +1,4 @@
+#include "strategy_workspace_fixture.h"
 // Public ABI integration for ADR-0056, with deterministic local Provider receipts.
 #ifndef AYNI_TEST_STRATEGIES_FIXTURE_H
 #define AYNI_TEST_STRATEGIES_FIXTURE_H
@@ -45,7 +46,7 @@ class StrategiesFixture : public ::testing::Test {
         cfg.context_window_tokens = 5000;
         cfg.output_reserve_tokens = 1000;
         cfg.history = history_port;
-        ASSERT_EQ(loop.configure(cfg), AYNI_OK);
+        ASSERT_EQ(loop.configure(cfg, ::ayni::test::loop_workspace()), AYNI_OK);
         auto &c = work.node().config();
         c.storage_buffer_bytes = 0;
         c.goal_parameter_max_bytes = policies::state_bytes_max;
@@ -314,7 +315,10 @@ class StrategiesFixture : public ::testing::Test {
         for (const char *type : {"routine", "chat"}) {
             const bool chat = std::strcmp(type, "chat") == 0;
             auto goal =
-                goal_type_desc(type, 1, chat ? policies::Conversation::validate_turn : nullptr);
+                goal_type_desc(type, 1, chat ? +[](void *, ayni_bytes_v1 parameters) {
+                    return policies::Conversation::validate_turn(
+                        const_cast<ayni_workspace_v1 *>(::ayni::test::conversation_workspace()), parameters);
+                } : nullptr);
             goal.strategy_id = chat ? model_strategy.strategy_id : rules_desc.strategy_id;
             goal.ctx = chat ? this : nullptr;
             goal.tool_authorization = chat ? AYNI_TOOLS_ON_DEMAND : AYNI_TOOLS_REQUIRED;
@@ -390,7 +394,8 @@ class StrategiesFixture : public ::testing::Test {
                    uint32_t model_limit = AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT) {
         policies::Encoded parameters;
         if (std::strcmp(type, "chat") == 0) {
-            EXPECT_EQ(policies::Conversation::begin(conversation, text(input), parameters),
+            EXPECT_EQ(policies::Conversation::begin(::ayni::test::conversation_workspace(),
+                                                    conversation, text(input), parameters),
                       AYNI_OK);
         }
         auto body = WorkNode::create_body(work.instance(agent_a), 0, type, 1, parameters.view(),
@@ -479,7 +484,9 @@ class StrategiesFixture : public ::testing::Test {
                                             policies::state_bytes_max, &state.size),
                   AYNI_OK);
         policies::ConversationRecord candidate;
-        ASSERT_EQ(policies::Conversation::finish(conversation, state.view(), candidate), AYNI_OK);
+        ASSERT_EQ(policies::Conversation::finish(::ayni::test::conversation_workspace(),
+                                                 conversation, state.view(), candidate),
+                  AYNI_OK);
         // Simulated successful outer-store commit; until here originals remain.
         conversation = candidate;
     }

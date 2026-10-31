@@ -1,4 +1,5 @@
 #include "catalog/capability/value_validation.h"
+#include "catalog/capability/workspace.h"
 
 #include <array>
 #include <cstring>
@@ -243,7 +244,12 @@ ayni_status_t Plan::publish(ayni_value_buffer_v1 &out) const {
 }
 } // namespace
 
-ayni_status_t validate_schema_defaults(const ayni_schema_v1 &schema) {
+std::size_t normalization_workspace_size() {
+    return sizeof(Plan);
+}
+
+ayni_status_t validate_schema_defaults(ayni::foundation::Workspace &workspace,
+                                       const ayni_schema_v1 &schema) {
     // Admit every default's shape before any plan can reach a nested default.
     for (uint32_t at = 0; at < schema.node_count; ++at) {
         const auto *value = schema.nodes[at].default_value;
@@ -257,7 +263,11 @@ ayni_status_t validate_schema_defaults(const ayni_schema_v1 &schema) {
     for (uint32_t at = 0; at < schema.node_count; ++at) {
         const auto *value = schema.nodes[at].default_value;
         if (value != nullptr) {
-            Plan plan(schema);
+            auto plan_lease = workspace.make<Plan>(schema);
+            if (!plan_lease) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            auto &plan = *plan_lease;
             const auto normalized = plan.build(*value, at);
             if (normalized != AYNI_OK) {
                 return normalized;
@@ -267,16 +277,25 @@ ayni_status_t validate_schema_defaults(const ayni_schema_v1 &schema) {
     return AYNI_OK;
 }
 
-ayni_status_t normalize_value(const ayni_schema_v1 &schema, const ayni_value_v1 &input,
-                              ayni_value_buffer_v1 &output) {
-    Plan plan(schema);
+ayni_status_t normalize_value(ayni::foundation::Workspace &workspace, const ayni_schema_v1 &schema,
+                              const ayni_value_v1 &input, ayni_value_buffer_v1 &output) {
+    auto plan_lease = workspace.make<Plan>(schema);
+    if (!plan_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &plan = *plan_lease;
     const auto status = plan.build(input, 0);
     return status == AYNI_OK ? plan.publish(output) : status;
 }
 
-ayni_status_t normalize_borrowed_value(const ayni_schema_v1 &schema, const ayni_value_v1 &input,
+ayni_status_t normalize_borrowed_value(ayni::foundation::Workspace &workspace,
+                                       const ayni_schema_v1 &schema, const ayni_value_v1 &input,
                                        DecodedValue &output) {
-    Plan plan(schema);
+    auto plan_lease = workspace.make<Plan>(schema);
+    if (!plan_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &plan = *plan_lease;
     const auto status = plan.build(input, 0);
     if (status == AYNI_OK) {
         plan.borrow(output);
@@ -284,15 +303,24 @@ ayni_status_t normalize_borrowed_value(const ayni_schema_v1 &schema, const ayni_
     return status;
 }
 
-ayni_status_t read_normalized_value(const ayni_schema_v1 &schema, ayni_bytes_v1 body,
+ayni_status_t read_normalized_value(ayni::foundation::Workspace &workspace,
+                                    const ayni_schema_v1 &schema, ayni_bytes_v1 body,
                                     DecodedValue &out) {
-    DecodedValue candidate;
-    const auto decoded = decode_value(body, candidate);
+    auto candidate_lease = workspace.make<DecodedValue>();
+    if (!candidate_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &candidate = *candidate_lease;
+    const auto decoded = decode_value(workspace, body, candidate);
     if (decoded != AYNI_OK) {
         return decoded;
     }
-    DecodedValue normalized;
-    const auto status = normalize_borrowed_value(schema, candidate.view(), normalized);
+    auto normalized_lease = workspace.make<DecodedValue>();
+    if (!normalized_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &normalized = *normalized_lease;
+    const auto status = normalize_borrowed_value(workspace, schema, candidate.view(), normalized);
     if (status != AYNI_OK) {
         return status;
     }
@@ -303,28 +331,42 @@ ayni_status_t read_normalized_value(const ayni_schema_v1 &schema, ayni_bytes_v1 
     return AYNI_OK;
 }
 
-ayni_status_t normalize_schema_default(const ayni_schema_v1 &schema, uint32_t field,
+ayni_status_t normalize_schema_default(ayni::foundation::Workspace &workspace,
+                                       const ayni_schema_v1 &schema, uint32_t field,
                                        ayni_value_buffer_v1 &output) {
     const auto *value = schema.nodes[field].default_value;
     if (value == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    Plan plan(schema);
+    auto plan_lease = workspace.make<Plan>(schema);
+    if (!plan_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &plan = *plan_lease;
     const auto status = plan.build(*value, field);
     return status == AYNI_OK ? plan.publish(output) : status;
 }
 } // namespace ayni::catalog
 
-extern "C" ayni_status_t ayni_value_normalize(const ayni_schema_v1 *schema,
+extern "C" ayni_status_t ayni_value_normalize(const ayni_workspace_v1 *region,
+                                              const ayni_schema_v1 *schema,
                                               const ayni_value_v1 *input,
                                               ayni_value_buffer_v1 *output) {
+    const auto workspace_status =
+        ayni::foundation::Workspace::check(region, ayni::catalog::value_workspace_size());
+    if (workspace_status != AYNI_OK) {
+        return workspace_status;
+    }
+    ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
+
     if (schema == nullptr || input == nullptr || output == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto status = ayni::catalog::validate_schema(*schema);
+    auto status = ayni::catalog::validate_schema(workspace, *schema);
     if (status != AYNI_OK) {
         return status;
     }
     status = ayni::catalog::validate_value(*input);
-    return status == AYNI_OK ? ayni::catalog::normalize_value(*schema, *input, *output) : status;
+    return status == AYNI_OK ? ayni::catalog::normalize_value(workspace, *schema, *input, *output)
+                             : status;
 }

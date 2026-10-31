@@ -6,6 +6,7 @@
 
 #include "catalog/capability/call_contract.h"
 #include "catalog/capability/value_encoding.h"
+#include "foundation/workspace.h"
 #include <ayni/authority.h>
 #include <cstdint>
 
@@ -30,14 +31,16 @@ ayni_status_t check_call_text(ayni_string_v1 text, uint32_t limit);
 ayni_status_t check_business_input_limit(const catalog::CallContract &contract,
                                          const ayni_value_v1 &normalized);
 // Schema-normalized business input; output holds only value bytes, no caller-supplied authority.
-ayni_status_t encode_business_input(ayni_bytes_v1 domain, const catalog::CallContract &contract,
+ayni_status_t encode_business_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                                    const catalog::CallContract &contract,
                                     const ayni_value_v1 &input, uint8_t *out, uint32_t capacity,
                                     uint32_t &size,
                                     catalog::DecodedValue *normalized_out = nullptr);
 // Optional normalized_out borrows input/proof text through the synchronous admission only.
 // Original proof interprets saved values. First-row control view is reconstructed,
 // while authorization independently proves every row under one saved requirement.
-ayni_status_t read_call_input(ayni_bytes_v1 domain, ayni_bytes_v1 body,
-                              const catalog::CallContract &contract, CallInputView &out);
+ayni_status_t read_call_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, const catalog::CallContract &contract,
+                              CallInputView &out);
 } // namespace ayni::work
 #endif

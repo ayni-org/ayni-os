@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // White-box static call declaration tests, C-CALL-001/C-BIND-001, ADR-0045.
 // Catalog compatibility is not permission, Provider dispatch or resource admission.
 #include "catalog/capability/call_contract.h"
@@ -294,13 +295,17 @@ TEST(CallContract, registry_copies_exact_versions_and_refuses_duplicates_or_capa
     CallCapabilityRegistry registry(storage.data(), slots, 4096);
     ayni::test::TextBusiness business(4096, 2048);
     CallCapability input{id("model.chat"), 1, contract()};
-    ASSERT_EQ(registry.add_validated(input, &business.definition), AYNI_OK);
-    EXPECT_EQ(registry.add_validated(input, &business.definition), AYNI_INVALID_ARGUMENT);
+    ASSERT_EQ(registry.add_validated(::ayni::test::codec_workspace(), input, &business.definition),
+              AYNI_OK);
+    EXPECT_EQ(registry.add_validated(::ayni::test::codec_workspace(), input, &business.definition),
+              AYNI_INVALID_ARGUMENT);
     input.version = 2;
     input.contract.result_text_limit = 1;
-    ASSERT_EQ(registry.add_validated(input, &business.definition), AYNI_OK);
+    ASSERT_EQ(registry.add_validated(::ayni::test::codec_workspace(), input, &business.definition),
+              AYNI_OK);
     input.version = 3;
-    EXPECT_EQ(registry.add_validated(input, &business.definition), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(registry.add_validated(::ayni::test::codec_workspace(), input, &business.definition),
+              AYNI_CAPACITY_EXCEEDED);
     uint32_t index = 99;
     EXPECT_TRUE(registry.find({"model.chat", 10}, 1, index));
     EXPECT_EQ(registry.at(index).contract.result_text_limit, 2048U);
@@ -312,7 +317,8 @@ TEST(CallContract, registry_copies_exact_versions_and_refuses_duplicates_or_capa
 
 TEST(CallContract, disabled_registry_accepts_no_entries) {
     CallCapabilityRegistry registry(nullptr, 0);
-    EXPECT_EQ(registry.add({id("model.chat"), 1, contract()}), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(registry.add(::ayni::test::codec_workspace(), {id("model.chat"), 1, contract()}),
+              AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(registry.size(), 0U);
 }
 } // namespace

@@ -1,4 +1,5 @@
 #include "work/goal/goal_authority_records.h"
+#include "workspace_fixture.h"
 
 #include "authority/scope/scope.h"
 #include "catalog/capability/field_domain.h"
@@ -56,7 +57,7 @@ struct Input {
         requirement.source_domain = {domain.data(), domain_size};
         requirement.scope = {scope.data(), scope_size};
         requirement.dependency = {grant_id, 1};
-        EXPECT_TRUE(valid_goal_authority_record(record));
+        EXPECT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), record));
     }
 
     std::vector<uint8_t> encode() const {
@@ -85,7 +86,7 @@ TEST(GoalAuthority, an_explicit_empty_ceiling_is_distinct_from_absent_metadata) 
     EXPECT_EQ(out.goal_id, another_goal_id);
     Input input;
     input.record.count = 0;
-    ASSERT_TRUE(valid_goal_authority_record(input.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     ASSERT_EQ(table.table.install_validated(0, input.record), AYNI_OK);
     ASSERT_TRUE(table.table.read(0, goal_id, out));
     EXPECT_EQ(out.count, 0U);
@@ -100,21 +101,21 @@ TEST(GoalAuthority, proposals_need_a_missing_dependency_and_other_phases_keep_co
     Input input;
     input.record.phase = GoalAuthorityPhase::proposed;
     input.record.binding = {};
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.requirements[0].dependency = {};
-    EXPECT_TRUE(valid_goal_authority_record(input.record));
+    EXPECT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.phase = GoalAuthorityPhase::authorized;
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.phase = GoalAuthorityPhase::paused;
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.requirements[0].dependency = {grant_id, 1};
     input.record.binding.established_seq = input.record.stamp.commit_seq;
-    EXPECT_TRUE(valid_goal_authority_record(input.record));
+    EXPECT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.count = 0;
-    EXPECT_TRUE(valid_goal_authority_record(input.record));
+    EXPECT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.phase = GoalAuthorityPhase::proposed;
     input.record.binding = {};
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
 }
 
 // ADR-0037 decision 3: struct admission checks identities and exact domain facts.
@@ -122,7 +123,7 @@ TEST(GoalAuthority, malformed_identity_stamp_capability_or_reference_is_refused)
     Input input;
     const auto good = input.record;
     const auto rejected = [&](const GoalAuthorityRecord &record) {
-        EXPECT_FALSE(valid_goal_authority_record(record));
+        EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), record));
     };
     for (uint64_t invalid : {UINT64_C(0), UINT64_C(1), UINT64_C(0x100000000)}) {
         auto record = good;
@@ -165,16 +166,16 @@ TEST(GoalAuthority, the_last_requirement_at_the_absolute_limit_is_validated) {
     for (auto &requirement : input.record.requirements) {
         requirement = input.record.requirements[0];
     }
-    ASSERT_TRUE(valid_goal_authority_record(input.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     const auto bytes = input.encode();
     GoalAuthorityRecord decoded{};
-    ASSERT_TRUE(
-        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_goal_authority_record(::ayni::test::codec_workspace(), bytes.data(),
+                                           static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.count, AYNI_GOAL_REQUIREMENT_CAPACITY_MAX);
     input.record.requirements.back().capability_version = 0;
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.count = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 1U;
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
 }
 
 // records.md type 17/v1: exact round trip, including a partial proposal's refs.
@@ -185,11 +186,11 @@ TEST(GoalAuthorityRecord, original_domain_scope_and_selected_identities_round_tr
     input.record.requirements[1].dependency = {};
     input.record.phase = GoalAuthorityPhase::proposed;
     input.record.binding = {};
-    ASSERT_TRUE(valid_goal_authority_record(input.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     const auto bytes = input.encode();
     GoalAuthorityRecord decoded{};
-    ASSERT_TRUE(
-        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_goal_authority_record(::ayni::test::codec_workspace(), bytes.data(),
+                                           static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.goal_id, goal_id);
     EXPECT_EQ(decoded.phase, GoalAuthorityPhase::proposed);
     EXPECT_EQ(decoded.stamp.transition_id, 7U);
@@ -210,19 +211,21 @@ TEST(GoalAuthorityRecord, every_truncation_trailing_byte_and_bad_count_preserves
     GoalAuthorityRecord out{};
     out.goal_id = another_goal_id;
     for (uint32_t size = 0; size < bytes.size(); ++size) {
-        EXPECT_FALSE(read_goal_authority_record(bytes.data(), size, out));
+        EXPECT_FALSE(
+            read_goal_authority_record(::ayni::test::codec_workspace(), bytes.data(), size, out));
         EXPECT_EQ(out.goal_id, another_goal_id);
     }
-    EXPECT_FALSE(read_goal_authority_record(nullptr, static_cast<uint32_t>(bytes.size()), out));
+    EXPECT_FALSE(read_goal_authority_record(::ayni::test::codec_workspace(), nullptr,
+                                            static_cast<uint32_t>(bytes.size()), out));
     bytes.push_back(0);
-    EXPECT_FALSE(
-        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
+    EXPECT_FALSE(read_goal_authority_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()), out));
     bytes.pop_back();
     // White-box: final u32 of the fixed header is the declared count.
     ayni::foundation::store_le32(bytes.data() + goal_authority_record_fixed_size - sizeof(uint32_t),
                                  AYNI_GOAL_REQUIREMENT_CAPACITY_MAX + 1U);
-    EXPECT_FALSE(
-        read_goal_authority_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
+    EXPECT_FALSE(read_goal_authority_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()), out));
     EXPECT_EQ(out.goal_id, another_goal_id);
 }
 
@@ -237,7 +240,7 @@ TEST(GoalAuthority, installed_regions_are_owned_and_slot_reuse_requires_the_exac
     input.scope.fill(0);
     GoalAuthorityRecord saved{};
     ASSERT_TRUE(table.table.read(0, goal_id, saved));
-    ASSERT_TRUE(valid_goal_authority_record(saved));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), saved));
     std::vector<uint8_t> actual(goal_authority_record_size(saved));
     write_goal_authority_record(saved, actual.data());
     EXPECT_EQ(actual, expected);
@@ -258,7 +261,7 @@ TEST(GoalAuthority, configured_requirement_and_byte_limits_refuse_without_overwr
     auto too_many = input.record;
     too_many.count = 2;
     too_many.requirements[1] = too_many.requirements[0];
-    ASSERT_TRUE(valid_goal_authority_record(too_many));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), too_many));
     EXPECT_EQ(table.table.install_validated(0, too_many), AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(table.table.install_validated(slots, input.record), AYNI_CAPACITY_EXCEEDED);
     Input too_large(4);
@@ -286,9 +289,9 @@ TEST(GoalAuthority, a_proposal_rejects_half_of_a_missing_grant_identity) {
     input.record.phase = GoalAuthorityPhase::proposed;
     input.record.binding = {};
     input.record.requirements[0].dependency = {0, 1};
-    EXPECT_FALSE(valid_goal_authority_record(input.record));
+    EXPECT_FALSE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
     input.record.requirements[0].dependency.revision = 0;
-    EXPECT_TRUE(valid_goal_authority_record(input.record));
+    EXPECT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
 }
 
 // Builds a large original IDENTIFIER domain with one narrow allowed target.
@@ -315,7 +318,7 @@ void use_narrow_target(Input &input) {
                                                input.scope.data(), bytes_capacity, size),
               AYNI_OK);
     input.record.requirements[0].scope = {input.scope.data(), size};
-    ASSERT_TRUE(valid_goal_authority_record(input.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), input.record));
 }
 
 // ADR-0037 decision 3: each region has its own limit, not a combined limit.
@@ -345,7 +348,7 @@ TEST(GoalAuthority, late_capacity_refusal_keeps_the_original_identity_phase_and_
     replacement.record.count = 2;
     replacement.record.requirements[0].dependency.grant_id = grant_id + 1U;
     replacement.record.requirements[1] = large.record.requirements[0];
-    ASSERT_TRUE(valid_goal_authority_record(replacement.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), replacement.record));
     EXPECT_EQ(table.table.install_validated(0, replacement.record), AYNI_CAPACITY_EXCEEDED);
     GoalAuthorityRecord saved{};
     ASSERT_TRUE(table.table.read(0, goal_id, saved));
@@ -373,8 +376,8 @@ TEST(GoalAuthority, neighboring_full_goal_slots_keep_their_own_requirements) {
     second.record.requirements[1] = second.record.requirements[0];
     second.record.requirements[0].dependency.grant_id = grant_id + 2U;
     second.record.requirements[1].dependency.grant_id = grant_id + 3U;
-    ASSERT_TRUE(valid_goal_authority_record(first.record));
-    ASSERT_TRUE(valid_goal_authority_record(second.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), first.record));
+    ASSERT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), second.record));
     ASSERT_EQ(table.table.install_validated(0, first.record), AYNI_OK);
     ASSERT_EQ(table.table.install_validated(1, second.record), AYNI_OK);
     for (uint32_t index = 0; index < slots; ++index) {
@@ -397,7 +400,7 @@ TEST(GoalAuthority, storing_a_narrow_scope_preserves_the_original_broader_domain
     ASSERT_EQ(table.table.install_validated(0, input.record), AYNI_OK);
     GoalAuthorityRecord saved{};
     ASSERT_TRUE(table.table.read(0, goal_id, saved));
-    EXPECT_TRUE(valid_goal_authority_record(saved));
+    EXPECT_TRUE(valid_goal_authority_record(::ayni::test::codec_workspace(), saved));
     ASSERT_NE(saved.requirements[0].source_domain.data, saved.requirements[0].scope.data);
     std::vector<uint8_t> actual(goal_authority_record_size(saved));
     write_goal_authority_record(saved, actual.data());

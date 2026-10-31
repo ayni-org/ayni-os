@@ -1,3 +1,4 @@
+#include <ayni/workspace.hpp>
 // Full shared-service experiments assemble public reusable components. Scenario
 // assertions are external observations; Core remains the owner of all work facts.
 #ifndef AYNI_EXPERIMENT_SHARED_H
@@ -62,6 +63,7 @@ class SharedServices {
     World &world_;
     fixtures::ModelProbe model_a_, model_b_;
     applications::normal_fixtures::Policy policy_;
+    ayni::Workspace loop_workspace_, conversation_workspace_; // Distinct owner/validator regions.
     strategies::ToolLoop tool_loop_;
     applications::experiment_fixtures::Services services_policy_;
     providers::mock::SubscriptionProvider camera_;

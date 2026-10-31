@@ -1,3 +1,4 @@
+#include "foundation/workspace.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/memory/memory_permissions.h"
 
@@ -129,10 +130,14 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
-    work::CallInputView input{};
+    auto input_lease = work_.workspace.make<work::CallInputView>();
+    if (!input_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &input = *input_lease;
     const auto status =
-        work::encode_business_input(domain, contract, request.value, staging_, limits_.input_bytes,
-                                    proposal.input_size, &input.value);
+        work::encode_business_input(work_.workspace, domain, contract, request.value, staging_,
+                                    limits_.input_bytes, proposal.input_size, &input.value);
     if (status != AYNI_OK) {
         return status;
     }
@@ -243,7 +248,8 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
     const auto &calls = runtime.work_.calls;
     const auto &state = calls.state(index);
     work::ToolCallList model_output;
-    const bool has_functions = work::read_tool_calls(calls.tool_calls(index), model_output);
+    const bool has_functions =
+        work::read_tool_calls(runtime.work_.workspace, calls.tool_calls(index), model_output);
     *out = {sizeof(*out),
             state.outcome,
             calls.identity(index).call_id,
@@ -306,8 +312,13 @@ CallRuntime::check_input(uint32_t task_index, const catalog::Binding &binding, a
     if (authority.status != AYNI_OK) {
         return authority;
     }
-    catalog::DecodedBusiness proof;
-    const auto decoded = catalog::decode_business(domain, contract.business_contract, proof);
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!proof_lease) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE};
+    }
+    auto &proof = *proof_lease;
+    const auto decoded =
+        catalog::decode_business(work_.workspace, domain, contract.business_contract, proof);
     if (decoded != AYNI_OK) {
         return {decoded, AYNI_REASON_GRANT_SCOPE};
     }
@@ -484,9 +495,13 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return capacity;
     }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
-    work::CallInputView input{};
-    if (work::read_call_input(domain, {staging_, proposal.input_size}, contract, input) !=
-        AYNI_OK) {
+    auto input_lease = work_.workspace.make<work::CallInputView>();
+    if (!input_lease) {
+        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE};
+    }
+    auto &input = *input_lease;
+    if (work::read_call_input(work_.workspace, domain, {staging_, proposal.input_size}, contract,
+                              input) != AYNI_OK) {
         return {AYNI_INTERNAL, AYNI_REASON_NONE};
     }
     const auto authority =

@@ -1,6 +1,7 @@
 #include "catalog/execution/execution_registry.h"
 #include "catalog/abi_checks.h"
 #include "catalog/capability/business_encoding.h"
+#include "foundation/workspace.h"
 #include <cstring>
 namespace ayni::catalog {
 namespace {
@@ -228,7 +229,8 @@ bool ExecutionRegistry::find_binding(ayni_string_v1 id, uint32_t version, uint32
 }
 // Catalog validation checks typed parameter sources and finite executor limits.
 // Authority owns Scene predicates/enabling, so that relation is checked by Kernel.
-ayni_status_t ExecutionRegistry::validate_all(const BindingRegistry &bindings,
+ayni_status_t ExecutionRegistry::validate_all(ayni::foundation::Workspace &workspace,
+                                              const BindingRegistry &bindings,
                                               const CapabilityRegistry &capabilities,
                                               const CallCapabilityRegistry &calls,
                                               const ResourceRegistry &resources) const {
@@ -264,9 +266,14 @@ ayni_status_t ExecutionRegistry::validate_all(const BindingRegistry &bindings,
             return AYNI_INVALID_ARGUMENT;
         }
         if (contract.business_contract.size != 0U) {
-            DecodedBusiness proof;
-            const auto checked = decode_business(capabilities.domain_view(capability.index),
-                                                 contract.business_contract, proof);
+            auto proof_lease = workspace.make<DecodedBusiness>();
+            if (!proof_lease) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            auto &proof = *proof_lease;
+            const auto checked =
+                decode_business(workspace, capabilities.domain_view(capability.index),
+                                contract.business_contract, proof);
             if (checked != AYNI_OK) {
                 return checked;
             }

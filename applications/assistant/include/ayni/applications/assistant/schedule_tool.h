@@ -54,6 +54,8 @@ class ScheduleTool {
     ScheduleTool();
     ScheduleTool(const ScheduleTool &) = delete;
     ScheduleTool &operator=(const ScheduleTool &) = delete;
+    // Since 0.53: borrow a queried value workspace before describing/registering.
+    ayni_status_t configure_workspace(const ayni_workspace_v1 *workspace);
     // Borrowed by Core until Kernel destruction; the tool must outlive it.
     ayni_provider_v1 describe();
     // Runtime supplies its exact Binding identity; strings borrow that identity
@@ -79,6 +81,7 @@ class ScheduleTool {
         ayni_provider_result_v1
             receipt{}; // Valid once answered; value borrows builder/canonical above.
     };
+    ayni_workspace_v1 workspace_{}; // Exclusive value-codec bytes; null until configuration.
     std::array<Slot, request_capacity> slots_{};
     ayni_call_capability_v1 capability_{};
     std::array<ayni_schema_node_v1, schedule_input_nodes> input_schema_{};

@@ -172,19 +172,21 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
         return refuse(AYNI_INVALID_ARGUMENT, AYNI_REASON_BACKGROUND_FREQUENCY,
                       object_ref(AYNI_OBJECT_GOAL_TYPE, 0), failure);
     }
-    goal = work::NewGoal{create.owner_instance_id,
-                         create.parent_goal_id,
-                         type.index,
-                         origin,
-                         create.parameters,
-                         create.trigger,
-                         trigger_source,
-                         now_us,
-                         create.expiry_us,
-                         goal_type.occurrence_wait_max_us,
-                         goal_type.id,
-                         goal_type.version,
-                         goal_type.work_profile};
+    // Fill the already private candidate in place; an aggregate assignment
+    // would create a second full tool-policy array on the task stack.
+    goal.owner_instance_id = create.owner_instance_id;
+    goal.parent_goal_id = create.parent_goal_id;
+    goal.goal_type_index = type.index;
+    goal.origin = origin;
+    goal.parameters = create.parameters;
+    goal.trigger = create.trigger;
+    goal.trigger_source = trigger_source;
+    goal.created_us = now_us;
+    goal.expiry_us = create.expiry_us;
+    goal.occurrence_wait_max_us = goal_type.occurrence_wait_max_us;
+    goal.goal_type_id = goal_type.id;
+    goal.goal_type_version = goal_type.version;
+    goal.work_profile = goal_type.work_profile;
     goal.pause_group = create.pause_group;
     goal.tools = goal_type.tool_policy();
     const GoalTable::Admission admission = model.goals.admit(goal);
@@ -206,7 +208,11 @@ ayni_status_t check_goal_creation(WorkModel &model, const Intent &intent,
 ayni_status_t create_goal(WorkModel &model, const Intent &intent, const work::GoalOrigin &origin,
                           uint64_t now_us, uint64_t durable_seq, IntentOutcome &outcome,
                           IntentFailure &failure, OwnerClock clock) {
-    work::NewGoal goal{};
+    auto goal_lease = model.workspace.make<work::NewGoal>();
+    if (!goal_lease) {
+        return refuse(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE, {}, failure);
+    }
+    auto &goal = *goal_lease;
     const auto status = check_goal_creation(model, intent, origin, now_us, goal, failure);
     if (status != AYNI_OK) {
         return status;

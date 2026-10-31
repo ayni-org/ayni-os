@@ -6,6 +6,7 @@
 #ifndef AYNI_CORE_WORK_CALL_TOOL_CALLS_H
 #define AYNI_CORE_WORK_CALL_TOOL_CALLS_H
 
+#include "foundation/workspace.h"
 #include <array>
 #include <ayni/calls.h>
 #include <cstdint>
@@ -32,7 +33,7 @@ struct ToolCallList {
     ayni_string_v1 assistant_text{}; // Optional content beside proposals, borrowing this body.
     uint32_t count = 0;              // Complete valid prefix after successful read; never partial.
 };
-bool read_tool_calls(ayni_bytes_v1 body, ToolCallList &out);
+bool read_tool_calls(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, ToolCallList &out);
 
 // Validates a Provider's list and measures its encoding: 1..CALL_TOOL_COUNT_MAX
 // exact-size calls, catalog ids, unique opaque protocol IDs and valid source trees.
@@ -47,9 +48,10 @@ void write_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint8_t *o
                       ayni_string_v1 assistant_text = {});
 // Strict decode of a whole list, with the measure rules and unique protocol
 // identities; its call count, or 0 when the body is not a valid list.
-uint32_t tool_call_count(ayni_bytes_v1 body);
+uint32_t tool_call_count(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body);
 // Call index of a valid list; false, preserving out, past its end.
-bool read_tool_call(ayni_bytes_v1 body, uint32_t index, ToolCallView &out);
+bool read_tool_call(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, uint32_t index,
+                    ToolCallView &out);
 
 } // namespace ayni::work
 #endif

@@ -1,3 +1,4 @@
+#include <ayni/workspace.hpp>
 // E3 composition and evidence. Policies own decisions, Providers own deliveries,
 // and Core owns every durable identity and checkpoint.
 #ifndef AYNI_EXPERIMENT_REPLACEMENT_H
@@ -32,6 +33,7 @@ class Replacement {
   private:
     enum class Policy { rules, tool_loop, incompatible, unknown_version };
     World &world_;
+    ayni::Workspace loop_workspace_, conversation_workspace_; // Distinct owner/validator regions.
     strategies::ToolLoop loop_;
     bool configured_ = false; // Immutable concrete strategy configuration installed once.
     static ayni_status_t loop(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);

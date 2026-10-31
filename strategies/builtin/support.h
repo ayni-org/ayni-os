@@ -1,11 +1,13 @@
 // Local policy helpers and the versioned turn state, shared by both policies.
 #ifndef AYNI_STRATEGIES_SUPPORT_H
 #define AYNI_STRATEGIES_SUPPORT_H
+#include <ayni/detail/workspace.hpp>
 #include <ayni/strategies/builtin.h>
 #include <initializer_list>
 #include <string_view>
 
 namespace ayni::strategies::detail {
+using Workspace = ::ayni::detail::Workspace;
 inline constexpr uint32_t max_model_rounds = AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX;
 
 // The checkpoint carries the immutable base revision and a candidate context.
@@ -37,7 +39,7 @@ struct Turn {
 };
 ayni_string_v1 model_key(uint32_t round, char *buffer);
 ayni_string_v1 function_key(uint64_t source, uint32_t index, char *buffer);
-ayni_status_t read_turn(ayni_bytes_v1 bytes, Turn &out);
+ayni_status_t read_turn(Workspace &workspace, ayni_bytes_v1 bytes, Turn &out);
 ayni_status_t write_turn(const Turn &turn, uint8_t *data, uint32_t capacity, uint32_t &size);
 bool valid_text(ayni_string_v1 value);
 bool valid_id(ayni_string_v1 value);

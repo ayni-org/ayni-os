@@ -1,4 +1,5 @@
 #include "conversation_store.h"
+#include <ayni/call_result_json.hpp>
 #include <ayni/model_messages.hpp>
 #include <cerrno>
 #include <cstring>
@@ -42,6 +43,21 @@ ConversationStore::~ConversationStore() {
 ayni_status_t ConversationStore::open(const char *directory, SavedConversation &state) {
     if (directory_ >= 0) {
         return AYNI_INVALID_STATE;
+    }
+    if (!owner_workspace_.get()) {
+        auto status = owner_workspace_.create(strategies::Conversation::workspace_requirements);
+        if (status == AYNI_OK) {
+            status = worker_workspace_.create(strategies::Conversation::workspace_requirements);
+        }
+        if (status == AYNI_OK) {
+            status = result_workspace_.create(json::call_result_workspace_requirements);
+        }
+        if (status != AYNI_OK) {
+            owner_workspace_.close();
+            worker_workspace_.close();
+            result_workspace_.close();
+            return status;
+        }
     }
     directory_ = ::open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (directory_ < 0) {
@@ -159,6 +175,7 @@ ayni_status_t ConversationStore::read(SavedConversation &state) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto status = strategies::Conversation::decode(
+        worker_workspace_.get(),
         {static_cast<const uint8_t *>(sqlite3_column_blob(query.get(), 2)),
          static_cast<uint32_t>(bytes)},
         candidate.record);
@@ -173,7 +190,8 @@ ayni_status_t ConversationStore::save(const SavedConversation &state, Erasure er
         return AYNI_INVALID_ARGUMENT;
     }
     strategies::Encoded encoded;
-    const auto status = strategies::Conversation::encode(state.record, encoded);
+    const auto status =
+        strategies::Conversation::encode(owner_workspace_.get(), state.record, encoded);
     if (status != AYNI_OK) {
         return status;
     }

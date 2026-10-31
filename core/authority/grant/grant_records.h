@@ -6,6 +6,7 @@
 
 #include "authority/grant/grant_table.h"
 #include "durability/batch/record_types.h"
+#include "foundation/workspace.h"
 
 #include <cstdint>
 
@@ -72,7 +73,7 @@ struct GrantRevocationProgressRecord {
 };
 
 // Representation-independent record facts; current catalog is not consulted.
-bool valid_grant_record(const GrantRecord &record);
+bool valid_grant_record(ayni::foundation::Workspace &workspace, const GrantRecord &record);
 
 // Read only the leading ID of an already classified create/revocation body;
 // the full reader validates the rest. Replay checks the ID's boot epoch on
@@ -91,14 +92,16 @@ constexpr uint32_t grant_snapshot_record_max(uint32_t scope_max_bytes,
 uint32_t grant_record_size(const Grant &grant);
 void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
                         ayni_bytes_v1 business, uint8_t *body);
-bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out);
+bool read_grant_record(ayni::foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
+                       GrantRecord &out);
 void write_grant_state_record(const Grant &grant, uint8_t *body);
 bool read_grant_state_record(const uint8_t *body, uint32_t size, GrantStateRecord &out);
 uint32_t grant_snapshot_record_size(const Grant &grant);
 // Complete current history; no fallback or partial legacy tail is written.
 void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 scope,
                                  ayni_bytes_v1 business, uint8_t *body);
-bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapshotRecord &out);
+bool read_grant_snapshot_record(ayni::foundation::Workspace &workspace, const uint8_t *body,
+                                uint32_t size, GrantSnapshotRecord &out);
 void write_grant_revocation_record(const GrantTable::RevokePlan &plan, uint8_t *body);
 bool read_grant_revocation_record(const uint8_t *body, uint32_t size, GrantRevocationRecord &out);
 void write_grant_revocation_progress_record(const GrantTable::CleanupPlan &plan, uint8_t *body);

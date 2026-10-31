@@ -25,8 +25,8 @@ static_assert(durability::batch_size(append_body_max, 1) <= AYNI_STORAGE_BUFFER_
 BootSequence::BootSequence(const ayni_host_v1 &host, CompletionPool &completions, uint8_t *buffer,
                            uint32_t buffer_size, WorkModel &model, WorkReplay &replay,
                            WriteSchedule &writes)
-    : host_(host), completions_(completions), buffer_(buffer), buffer_size_(buffer_size),
-      replay_(replay), writes_(writes), reader_(model, {}) {}
+    : host_(host), completions_(completions), workspace_(model.workspace), buffer_(buffer),
+      buffer_size_(buffer_size), replay_(replay), writes_(writes), reader_(model, {}) {}
 
 void BootSequence::reset(uint32_t isolated_epoch) {
     phase_ = Phase::discover;

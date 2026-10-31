@@ -1,4 +1,5 @@
 #include "catalog/capability/call_contract.h"
+#include "foundation/workspace.h"
 
 #include "catalog/capability/business_encoding.h"
 #include "catalog/capability/field_values.h"
@@ -168,7 +169,8 @@ bool bound_call_contract(const CallContract &logical, const CallContract &effect
     return true;
 }
 
-ayni_status_t CallCapabilityRegistry::add(const CallCapability &capability) {
+ayni_status_t CallCapabilityRegistry::add(ayni::foundation::Workspace &workspace,
+                                          const CallCapability &capability) {
     if (capability.id.size() == 0U || capability.version == 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -177,10 +179,11 @@ ayni_status_t CallCapabilityRegistry::add(const CallCapability &capability) {
     if (status != AYNI_OK) {
         return status;
     }
-    return add_validated(value);
+    return add_validated(workspace, value);
 }
 
-ayni_status_t CallCapabilityRegistry::add_validated(const CallCapability &value,
+ayni_status_t CallCapabilityRegistry::add_validated(ayni::foundation::Workspace &workspace,
+                                                    const CallCapability &value,
                                                     const ayni_business_contract_v1 *definition) {
     uint32_t index = 0;
     if (find(view(value.id), value.version, index)) {
@@ -191,7 +194,7 @@ ayni_status_t CallCapabilityRegistry::add_validated(const CallCapability &value,
     }
     CallCapability candidate = value;
     const auto stored =
-        store_business_contract(value.contract, definition,
+        store_business_contract(workspace, value.contract, definition,
                                 proofs_ + static_cast<std::size_t>(entries_.size()) * proof_bytes_,
                                 proof_bytes_, candidate.contract.business_contract);
     if (stored != AYNI_OK) {

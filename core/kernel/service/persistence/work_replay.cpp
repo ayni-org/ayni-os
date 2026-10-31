@@ -1,4 +1,5 @@
 #include "kernel/service/persistence/work_replay.h"
+#include "foundation/workspace.h"
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
@@ -361,7 +362,7 @@ RecordUse WorkReplay::restore_goal_authority(const uint8_t *body, uint32_t size,
     work::GoalAuthorityRecord record{};
     uint32_t index = 0;
     if (pairing_.goal_authority_seq == stamp.commit_seq ||
-        !work::read_goal_authority_record(body, size, record) ||
+        !work::read_goal_authority_record(model_.workspace, body, size, record) ||
         !model_.goals.find(record.goal_id, index) ||
         record.binding.input.incarnation > boot_epoch_limit ||
         record.stamp.commit_seq != stamp.commit_seq ||
@@ -630,7 +631,7 @@ RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
                                     foundation::TransitionStamp stamp, uint64_t boot_epoch_limit) {
     authority::GrantRecord record{};
     const auto *binding = model_.principals.binding();
-    if (!authority::read_grant_record(body, size, record) ||
+    if (!authority::read_grant_record(model_.workspace, body, size, record) ||
         foundation::id_boot_epoch(record.grant_id) != boot_epoch_limit) {
         return RecordUse::corrupt;
     }
@@ -650,7 +651,7 @@ RecordUse WorkReplay::restore_grant(const uint8_t *body, uint32_t size,
         return RecordUse::corrupt;
     }
     const auto restored = model_.grants.restore_create(
-        record, stamp, model_.grant_reclaim_exclusions(stamp.commit_seq - 1U));
+        model_.workspace, record, stamp, model_.grant_reclaim_exclusions(stamp.commit_seq - 1U));
     if (restored == authority::GrantTable::Restore::restored && record.grant.bound_goal_id == 0U) {
         pairing_.authority = {AuthorityPairKind::create, record.grant_id};
     }

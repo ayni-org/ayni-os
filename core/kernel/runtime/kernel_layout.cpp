@@ -1,4 +1,5 @@
 #include "kernel/runtime/kernel_layout.h"
+#include "catalog/capability/workspace.h"
 
 #include "kernel/runtime/kernel_state.h"
 
@@ -102,9 +103,18 @@ void place_execution_context(Placer &placer, const KernelCapacities &capacities)
 
 } // namespace
 
+std::size_t owner_workspace_size() {
+    constexpr std::size_t live_call_views = 2;
+    constexpr std::size_t view_alignment_slots = 2;
+    return catalog::business_workspace_size() + live_call_views * sizeof(work::CallInputView) +
+           sizeof(work::NewGoal) + sizeof(catalog::GoalType) +
+           view_alignment_slots * foundation::Workspace::alignment;
+}
+
 KernelLayout layout_for(const KernelCapacities &capacities) {
     KernelLayout layout{};
     Placer placer(layout);
+    placer.place(Store::workspace, foundation::Workspace::alignment, owner_workspace_size());
     placer.place(
         Store::ingress, EventIngress::storage_alignment,
         EventIngress::storage_size(capacities.ingress_capacity, capacities.event_body_max_bytes));

@@ -13,6 +13,7 @@ namespace ayni::runtime {
 // Contexts precede the node so normal destruction releases the Kernel first.
 // An unsuccessful explicit close causes Assistant to retain the whole Impl.
 struct Assistant::Impl {
+    ayni::Workspace conversation_workspace; // Owner-only pure conversation operations.
     DemoProfile profile;
     NativeNode node;
     ConversationStore store;

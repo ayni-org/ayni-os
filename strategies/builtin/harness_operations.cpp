@@ -30,15 +30,19 @@ ayni_status_t target(const NativeArguments &args, const ayni_task_snapshot_v1 &s
                               : AYNI_UNSUPPORTED;
 }
 // Format only true metadata plus an original known terminal body, preserving outcome/effect.
-ayni_status_t render(const ayni_operation_info_v1 &info, const ayni_task_call_result_v1 *call,
-                     ayni_status_t wait_status, char *buffer, uint32_t capacity,
-                     ayni_string_v1 &response) {
+ayni_status_t render(Workspace &workspace, const ayni_operation_info_v1 &info,
+                     const ayni_task_call_result_v1 *call, ayni_status_t wait_status, char *buffer,
+                     uint32_t capacity, ayni_string_v1 &response) {
     json::Writer json(buffer, capacity);
     json.raw("{\"operation\":");
     operations::write(json, info, wait_status);
     json.raw(",\"result\":");
     if (call) {
-        const auto status = json::write_call_result(json, *call);
+        const auto status =
+            ::ayni::detail::with_workspace(workspace, json::call_result_workspace_requirements,
+                                           [&](const ayni_workspace_v1 *region) {
+                                               return json::write_call_result(region, json, *call);
+                                           });
         if (status != AYNI_OK) {
             return status;
         }
@@ -80,10 +84,10 @@ ayni_status_t operation_source(const ayni_tool_call_v1 &proposal,
 
 // The raw result is archived through the existing store before any chunking; no second result
 // ledger.
-ayni_status_t operation_result(const ayni_operation_info_v1 &info, const ToolLoopConfig &config,
-                               const ayni_task_snapshot_v1 &snapshot, Turn &turn,
-                               ayni_policy_output_v1 &output, char *buffer, uint32_t capacity,
-                               ToolBudget budget, ayni_string_v1 &response,
+ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &info,
+                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
+                               Turn &turn, ayni_policy_output_v1 &output, char *buffer,
+                               uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
                                ayni_status_t wait_status) {
     ayni_task_call_result_v1 original{};
     const ayni_task_call_result_v1 *body = nullptr;
@@ -105,7 +109,7 @@ ayni_status_t operation_result(const ayni_operation_info_v1 &info, const ToolLoo
             }
         }
     }
-    const auto status = render(info, body, wait_status, buffer, capacity, response);
+    const auto status = render(workspace, info, body, wait_status, buffer, capacity, response);
     if (status == AYNI_OK && budget.fits(response)) {
         return AYNI_OK;
     }
@@ -121,11 +125,11 @@ ayni_status_t operation_result(const ayni_operation_info_v1 &info, const ToolLoo
 
 // Controls stage one intent; a committed control only reads back, so retries cannot
 // reopen/re-cancel.
-ayni_status_t native_operation(const ayni_tool_call_v1 &proposal, const ToolLoopConfig &config,
-                               const ayni_task_snapshot_v1 &snapshot, Turn &turn,
-                               ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
-                               uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
-                               bool &requested, bool &handled) {
+ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &proposal,
+                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
+                               Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
+                               char *buffer, uint32_t capacity, ToolBudget budget,
+                               ayni_string_v1 &response, bool &requested, bool &handled) {
     handled = false;
     if (!name(proposal.function_name, model::call_function)) {
         return AYNI_OK;
@@ -189,7 +193,7 @@ ayni_status_t native_operation(const ayni_tool_call_v1 &proposal, const ToolLoop
         wait && !info.call.outcome && ayni_operation_frontier_equal(&info.frontier, &control.after)
             ? AYNI_EXPIRED
             : AYNI_OK;
-    return operation_result(info, config, snapshot, turn, output, buffer, capacity, budget,
-                            response, waited);
+    return operation_result(workspace, info, config, snapshot, turn, output, buffer, capacity,
+                            budget, response, waited);
 }
 } // namespace ayni::strategies::detail

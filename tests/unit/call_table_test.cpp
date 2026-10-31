@@ -1,4 +1,5 @@
 #include "kernel/service/persistence/work_replay.h"
+#include "workspace_fixture.h"
 // White-box call ownership scenarios, C-CALL-002/008 and ADR-0045.
 // Kernel B2/B4 assembly and Provider I/O are exercised separately.
 #include "text_business_fixture.h"
@@ -57,7 +58,8 @@ class CallTableTest : public ::testing::Test {
         contract.result_text_limit = 16;
         compile_contract();
         const ayni::test::TextValue input({"question", 8});
-        ASSERT_EQ(encode_business_input({domain.data(), static_cast<uint32_t>(domain.size())},
+        ASSERT_EQ(encode_business_input(::ayni::test::codec_workspace(),
+                                        {domain.data(), static_cast<uint32_t>(domain.size())},
                                         contract, input.view(), input_bytes.data(),
                                         static_cast<uint32_t>(input_bytes.size()), input_size),
                   AYNI_OK);
@@ -65,6 +67,7 @@ class CallTableTest : public ::testing::Test {
     void compile_contract() {
         uint32_t size = 0;
         ASSERT_EQ(ayni::catalog::encode_business(
+                      ::ayni::test::codec_workspace(),
                       {domain.data(), static_cast<uint32_t>(domain.size())}, contract,
                       business.definition, proof.data(), static_cast<uint32_t>(proof.size()), size),
                   AYNI_OK);
@@ -108,11 +111,12 @@ TEST_F(CallTableTest, skipped_wait_encodes_non_delivery_and_does_not_allow_a_dis
     insert();
     ASSERT_EQ(calls.skip_before_dispatch(index, stamp(2)), AYNI_OK);
     const auto saved = calls.record(index);
-    ASSERT_TRUE(CallTable::valid_record(saved));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), saved));
     std::vector<uint8_t> bytes(call_record_size(saved));
     write_call_record(saved, bytes.data());
     CallRecord decoded{};
-    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                 static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.state.outcome, AYNI_CALL_SKIPPED);
     EXPECT_EQ(decoded.state.reason, AYNI_REASON_RESOURCE_WAIT);
     EXPECT_EQ(decoded.state.attempt.request_id, 0U);
@@ -131,7 +135,8 @@ TEST_F(CallTableTest, accepted_input_is_owned_and_step_identity_cannot_be_accept
     insert();
     input_bytes.fill(0);
     CallInputView view{};
-    ASSERT_EQ(read_call_input(calls.domain(index), calls.input(index), calls.contract(index), view),
+    ASSERT_EQ(read_call_input(::ayni::test::codec_workspace(), calls.domain(index),
+                              calls.input(index), calls.contract(index), view),
               AYNI_OK);
     EXPECT_EQ(std::string(view.value.nodes[0].value.text.data, view.value.nodes[0].value.text.size),
               "question");
@@ -222,13 +227,14 @@ TEST_F(CallTableTest, result_and_step_facts_wait_for_durability_before_retiremen
     char text[] = "answer";
     const CallResult completed{
         AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {text, 6}};
-    ASSERT_EQ(calls.finish(index, completed, stamp(5)), AYNI_OK);
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, completed, stamp(5)), AYNI_OK);
     text[0] = 'x';
     EXPECT_EQ(std::string(calls.result(index).data, calls.result(index).size), "answer");
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::completed);
     EXPECT_FALSE(calls.can_retire_task(identity.task_id, 4));
     EXPECT_TRUE(calls.can_retire_task(identity.task_id, 5));
-    EXPECT_EQ(calls.finish(index, completed, stamp(6)), AYNI_INVALID_STATE);
+    EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, completed, stamp(6)),
+              AYNI_INVALID_STATE);
     calls.retire_task(identity.task_id);
     EXPECT_EQ(calls.size(), 0U);
     EXPECT_TRUE(calls.has_room());
@@ -241,7 +247,7 @@ TEST_F(CallTableTest, cancellation_control_does_not_replace_terminal_effect_evid
     EXPECT_EQ(calls.state(index).outcome, 0U);
     const CallResult cancelled{
         AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::partial, {nullptr, 0}};
-    ASSERT_EQ(calls.finish(index, cancelled, stamp(6)), AYNI_OK);
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, cancelled, stamp(6)), AYNI_OK);
     EXPECT_EQ(calls.state(index).cancel_result, AYNI_CALL_CANCEL_UNKNOWN);
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::cancelled);
     EXPECT_EQ(calls.action(index)->effect, ActionEffect::partial);
@@ -264,7 +270,7 @@ TEST_F(CallTableTest, abandoned_outcome_retains_identity_and_cannot_be_retried_o
                              AYNI_REASON_NONE,
                              ActionEffect::unknown,
                              {nullptr, 0}};
-    ASSERT_EQ(calls.finish(index, unknown, stamp(4)), AYNI_OK);
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, unknown, stamp(4)), AYNI_OK);
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::result_unknown);
     EXPECT_FALSE(calls.can_retire_task(identity.task_id, UINT64_MAX));
     EXPECT_EQ(calls.begin_dispatch(index, {boot, 6}, stamp(5), 4), AYNI_INVALID_STATE);
@@ -279,13 +285,15 @@ TEST_F(CallTableTest, invalid_or_oversized_result_preserves_pending_call_and_act
                       AYNI_REASON_NONE,
                       ActionEffect::complete,
                       {"a result longer than sixteen bytes", 20}};
-    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, result, stamp(4)),
+              AYNI_CAPACITY_EXCEEDED);
     result.text = {"\xff", 1};
-    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, result, stamp(4)),
+              AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(calls.state(index).outcome, 0U);
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::dispatching);
     result.text = {nullptr, 0};
-    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_OK);
+    EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, result, stamp(4)), AYNI_OK);
 }
 
 // C-CALL-008: a terminal's outcome/status/effect/body form one fact. Reject
@@ -331,10 +339,11 @@ TEST_F(CallTableTest, inconsistent_terminal_results_preserve_the_complete_pendin
     for (const auto &result : invalid) {
         SCOPED_TRACE(::testing::Message() << result.outcome << '/' << result.status << '/'
                                           << static_cast<uint32_t>(result.effect));
-        EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, result, stamp(4)),
+                  AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(encoded(), before);
     }
-    ASSERT_EQ(calls.finish(index, valid, stamp(4)), AYNI_OK);
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, valid, stamp(4)), AYNI_OK);
     EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
 }
 
@@ -381,7 +390,7 @@ TEST_F(CallTableTest, rejected_lifecycle_operations_preserve_acceptance_and_acti
     reject([&] { return calls.progress(index, 1, stamp(7)); });
     const CallResult terminal{
         AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}};
-    ASSERT_EQ(calls.finish(index, terminal, stamp(7)), AYNI_OK);
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, terminal, stamp(7)), AYNI_OK);
     reject([&] { return calls.progress(index, 2, stamp(8)); });
     reject([&] { return calls.request_cancel(index, CallCancelCause::user, stamp(8)); });
     reject([&] { return calls.cancel_response(index, AYNI_CALL_CANCEL_UNKNOWN, stamp(8)); });
@@ -399,7 +408,8 @@ TEST_F(CallTableTest, full_record_codec_roundtrips_acceptance_barrier_and_termin
         std::vector<uint8_t> bytes(call_record_size(record));
         write_call_record(record, bytes.data());
         CallRecord decoded{};
-        EXPECT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+        EXPECT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                     static_cast<uint32_t>(bytes.size()), decoded));
         EXPECT_EQ(decoded.identity.call_id, identity.call_id);
         EXPECT_EQ(decoded.state.latest.transition.commit_seq,
                   record.state.latest.transition.commit_seq);
@@ -416,7 +426,7 @@ TEST_F(CallTableTest, full_record_codec_roundtrips_acceptance_barrier_and_termin
     ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"answer", 6}},
             stamp(4)),
         AYNI_OK);
@@ -427,7 +437,7 @@ TEST_F(CallTableTest, full_record_codec_roundtrips_acceptance_barrier_and_termin
 TEST_F(CallTableTest, failed_attempt_with_unknown_effect_retains_its_ledger) {
     dispatch();
     ASSERT_EQ(calls.finish(
-                  index,
+                  ::ayni::test::codec_workspace(), index,
                   {AYNI_CALL_FAILED, AYNI_NOT_READY, AYNI_REASON_NONE, ActionEffect::unknown, {}},
                   stamp(4)),
               AYNI_OK);
@@ -442,8 +452,10 @@ TEST_F(CallTableTest, short_or_trailing_record_bytes_preserve_output) {
     write_call_record(record, bytes.data());
     CallRecord decoded{};
     decoded.identity.call_id = 42;
-    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
-    EXPECT_FALSE(read_call_record(bytes.data(), call_record_fixed_size - 1, decoded));
+    EXPECT_FALSE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                  static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_FALSE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                  call_record_fixed_size - 1, decoded));
     EXPECT_EQ(decoded.identity.call_id, 42U);
 }
 
@@ -455,7 +467,7 @@ TEST_F(CallTableTest,
     dispatch();
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
             stamp(4)),
         AYNI_OK);
@@ -464,7 +476,8 @@ TEST_F(CallTableTest,
         std::vector<uint8_t> bytes(call_record_size(record));
         write_call_record(record, bytes.data());
         CallRecord decoded{};
-        ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+        ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                     static_cast<uint32_t>(bytes.size()), decoded));
         ASSERT_TRUE(decoded.state.query);
         EXPECT_EQ(decoded.state.attempt.request_id, 5U);
         EXPECT_EQ(decoded.identity.operation_id, identity.operation_id);
@@ -479,7 +492,7 @@ TEST_F(CallTableTest,
     roundtrip();
     ASSERT_EQ(
         calls.reconcile(
-            index, AYNI_QUERY_RESULT_FOUND,
+            ::ayni::test::codec_workspace(), index, AYNI_QUERY_RESULT_FOUND,
             {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"answer", 6}},
             stamp(7)),
         AYNI_OK);
@@ -517,7 +530,7 @@ TEST_F(CallTableTest, stale_query_preserves_effect_but_rejects_invalid_evidence_
     dispatch();
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
             stamp(4)),
         AYNI_OK);
@@ -525,24 +538,24 @@ TEST_F(CallTableTest, stale_query_preserves_effect_but_rejects_invalid_evidence_
     ASSERT_EQ(calls.begin_query(index, {boot, 6}, stamp(6)), AYNI_OK);
     CallResult result{
         AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {"old", 3}};
-    EXPECT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND, result, stamp(7),
-                              ResultDependencies::stale),
+    EXPECT_EQ(calls.reconcile(::ayni::test::codec_workspace(), index, AYNI_QUERY_RESULT_FOUND,
+                              result, stamp(7), ResultDependencies::stale),
               AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_ABANDONED);
     result.effect = ActionEffect::complete;
     result.text = {"\xff", 1};
-    EXPECT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND, result, stamp(7),
-                              ResultDependencies::stale),
+    EXPECT_EQ(calls.reconcile(::ayni::test::codec_workspace(), index, AYNI_QUERY_RESULT_FOUND,
+                              result, stamp(7), ResultDependencies::stale),
               AYNI_INVALID_ARGUMENT);
     result.text = {"old", 3};
-    ASSERT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND, result, stamp(7),
-                              ResultDependencies::stale),
+    ASSERT_EQ(calls.reconcile(::ayni::test::codec_workspace(), index, AYNI_QUERY_RESULT_FOUND,
+                              result, stamp(7), ResultDependencies::stale),
               AYNI_OK);
     EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_FAILED);
     EXPECT_EQ(calls.state(index).status, AYNI_STALE);
     EXPECT_EQ(calls.action(index)->effect, ActionEffect::complete);
     EXPECT_EQ(calls.result(index).size, 0U);
-    EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
+    EXPECT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), calls.record(index)));
 }
 
 // ADR-0060: erasure is independent of execution outcome and has an explicit REQUIRED codec.
@@ -550,7 +563,7 @@ TEST_F(CallTableTest, erased_completed_call_retains_action_facts_and_restores_wi
     dispatch();
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"answer", 6}},
             stamp(4)),
         AYNI_OK);
@@ -565,12 +578,13 @@ TEST_F(CallTableTest, erased_completed_call_retains_action_facts_and_restores_wi
         EXPECT_EQ(std::search(begin, end, marker.begin(), marker.end()), end);
     }
     const auto record = calls.record(index);
-    ASSERT_TRUE(CallTable::valid_record(record));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), record));
     EXPECT_TRUE(record.state.content_erased.has_value());
     std::vector<uint8_t> encoded(call_record_size(record));
     write_call_record(record, encoded.data());
     CallRecord decoded{};
-    ASSERT_TRUE(read_call_record(encoded.data(), static_cast<uint32_t>(encoded.size()), decoded));
+    ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), encoded.data(),
+                                 static_cast<uint32_t>(encoded.size()), decoded));
     std::vector<uint64_t> restored_storage(storage.size());
     CallTable restored(restored_storage.data(), limits);
     ASSERT_EQ(restored.restore_validated(decoded), AYNI_OK);
@@ -585,7 +599,7 @@ TEST_F(CallTableTest, erased_completed_call_retains_action_facts_and_restores_wi
 TEST_F(CallTableTest, late_completion_cannot_refill_erased_call_bodies) {
     dispatch();
     ASSERT_EQ(calls.erase_content(index, stamp(4)), AYNI_OK);
-    ASSERT_EQ(calls.finish(index,
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index,
                            {AYNI_CALL_COMPLETED,
                             AYNI_OK,
                             AYNI_REASON_NONE,
@@ -596,7 +610,7 @@ TEST_F(CallTableTest, late_completion_cannot_refill_erased_call_bodies) {
     EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(calls.result(index).size, 0U);
     EXPECT_EQ(calls.input(index).size, 0U);
-    EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
+    EXPECT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), calls.record(index)));
 }
 } // namespace
 
@@ -631,13 +645,13 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     std::vector<uint8_t> list(size);
     write_tool_calls(&call, 1, list.data(), size);
     const ayni_string_v1 body{reinterpret_cast<const char *>(list.data()), size};
-    EXPECT_EQ(table.finish(index,
+    EXPECT_EQ(table.finish(::ayni::test::codec_workspace(), index,
                            {AYNI_CALL_FAILED, AYNI_INVALID_ARGUMENT, AYNI_REASON_MODEL_OUTPUT,
                             ActionEffect::none, body, CallResultKind::tool_calls},
                            stamp(4)),
               AYNI_INVALID_ARGUMENT);
     const std::vector<uint8_t> broken(list.begin(), list.end() - 1);
-    EXPECT_EQ(table.finish(index,
+    EXPECT_EQ(table.finish(::ayni::test::codec_workspace(), index,
                            {AYNI_CALL_COMPLETED,
                             AYNI_OK,
                             AYNI_REASON_NONE,
@@ -647,7 +661,7 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
                            stamp(4)),
               AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(table.state(index).outcome, 0U);
-    ASSERT_EQ(table.finish(index,
+    ASSERT_EQ(table.finish(::ayni::test::codec_workspace(), index,
                            {AYNI_CALL_COMPLETED,
                             AYNI_OK,
                             AYNI_REASON_NONE,
@@ -659,7 +673,7 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
               AYNI_OK);
     EXPECT_EQ(table.result(index).size, 0U);
     ASSERT_EQ(table.tool_calls(index).size, size);
-    EXPECT_EQ(tool_call_count(table.tool_calls(index)), 1U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), table.tool_calls(index)), 1U);
 
     const auto record = table.record(index);
     EXPECT_EQ(record.result_kind, CallResultKind::tool_calls);
@@ -671,7 +685,8 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
                   {call_record_type, static_cast<uint16_t>(call_record_version + 1),
                    ayni::durability::record_required, 0}),
               ayni::durability::RecordUse::unknown);
-    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                 static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.result_kind, CallResultKind::tool_calls);
     // ADR-0085: portable records preserve service statistics beside the model body.
     EXPECT_EQ(decoded.state.model_usage.kind, AYNI_MODEL_USAGE_REPORTED);
@@ -683,22 +698,24 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     ASSERT_EQ(restored.restore_validated(decoded), AYNI_OK);
     ASSERT_TRUE(restored.find(identity.call_id, index));
     EXPECT_EQ(restored.result(index).size, 0U);
-    EXPECT_EQ(tool_call_count(restored.tool_calls(index)), 1U);
+    EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), restored.tool_calls(index)), 1U);
     EXPECT_EQ(restored.state(index).model_usage.total_tokens, 360U);
     // An invalid kind tail or a list in a text contract is refused, not reinterpreted.
     ayni::foundation::store_le32(bytes.data() + bytes.size() - 4U, 3U);
-    EXPECT_FALSE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_FALSE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                  static_cast<uint32_t>(bytes.size()), decoded));
     auto text_record = record;
     text_record.contract.result_format = AYNI_CALL_RESULT_TEXT;
     text_record.contract.category = ayni::catalog::CallClass::tool;
-    EXPECT_FALSE(CallTable::valid_record(text_record));
+    EXPECT_FALSE(CallTable::valid_record(::ayni::test::codec_workspace(), text_record));
     // ADR-0060: the typed list and its kind are erased, while the real completion remains.
     ASSERT_EQ(table.erase_content(index, stamp(5)), AYNI_OK);
     const auto erased = table.record(index);
     ASSERT_TRUE(erased.state.content_erased.has_value());
     bytes.resize(call_record_size(erased));
     write_call_record(erased, bytes.data());
-    ASSERT_TRUE(read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                 static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.result.size, 0U);
     EXPECT_EQ(decoded.result_kind, CallResultKind::text);
     EXPECT_EQ(decoded.state.outcome, AYNI_CALL_COMPLETED);
@@ -725,12 +742,14 @@ TEST_F(CallTableTest, tool_call_list_needs_its_contract_and_fits_its_bound) {
                             {reinterpret_cast<const char *>(list.data()), size},
                             CallResultKind::tool_calls};
     dispatch();
-    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, result, stamp(4)),
+              AYNI_INVALID_ARGUMENT);
     calls.clear();
     contract.category = ayni::catalog::CallClass::model;
     contract.result_format = AYNI_CALL_RESULT_TOOL_CALLS;
     dispatch();
-    EXPECT_EQ(calls.finish(index, result, stamp(4)), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, result, stamp(4)),
+              AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(calls.state(index).outcome, 0U);
 }
 
@@ -740,14 +759,14 @@ TEST_F(CallTableTest, authoritative_query_after_erasure_keeps_outcome_without_re
     dispatch();
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
             stamp(4)),
         AYNI_OK);
     ASSERT_EQ(calls.request_query(index, stamp(5)), AYNI_OK);
     ASSERT_EQ(calls.begin_query(index, {boot, 6}, stamp(6)), AYNI_OK);
     ASSERT_EQ(calls.erase_content(index, stamp(7)), AYNI_OK);
-    ASSERT_EQ(calls.reconcile(index, AYNI_QUERY_RESULT_FOUND,
+    ASSERT_EQ(calls.reconcile(::ayni::test::codec_workspace(), index, AYNI_QUERY_RESULT_FOUND,
                               {AYNI_CALL_COMPLETED,
                                AYNI_OK,
                                AYNI_REASON_NONE,
@@ -758,7 +777,7 @@ TEST_F(CallTableTest, authoritative_query_after_erasure_keeps_outcome_without_re
     EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(calls.result(index).size, 0U);
     EXPECT_EQ(calls.input(index).size, 0U);
-    EXPECT_TRUE(CallTable::valid_record(calls.record(index)));
+    EXPECT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), calls.record(index)));
 }
 
 namespace {
@@ -771,12 +790,12 @@ struct InvalidCallFact {
 };
 void expect_invalid_call_facts(const CallRecord &valid,
                                std::initializer_list<InvalidCallFact> cases) {
-    ASSERT_TRUE(CallTable::valid_record(valid));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), valid));
     for (const auto &test : cases) {
         SCOPED_TRACE(test.scenario);
         auto candidate = valid;
         test.change(candidate);
-        EXPECT_FALSE(CallTable::valid_record(candidate));
+        EXPECT_FALSE(CallTable::valid_record(::ayni::test::codec_workspace(), candidate));
     }
 }
 uint64_t first_id_in_boot(uint64_t epoch) {
@@ -902,7 +921,7 @@ TEST_F(CallTableTest, completed_record_requires_success_and_terminal_action_proo
     dispatch();
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"done", 4}},
             stamp(4)),
         AYNI_OK);
@@ -966,7 +985,7 @@ TEST_F(CallTableTest, restored_queries_require_separate_attempts_and_ordered_com
     dispatch();
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
             stamp(4)),
         AYNI_OK);
@@ -1037,7 +1056,7 @@ TEST_F(CallTableTest, restored_queries_require_separate_attempts_and_ordered_com
     ASSERT_EQ(calls.request_query(index, stamp(8)), AYNI_OK);
     ASSERT_EQ(calls.begin_query(index, {boot, 7}, stamp(9)), AYNI_OK);
     ASSERT_EQ(calls.reconcile(
-                  index, AYNI_QUERY_RESULT_FOUND,
+                  ::ayni::test::codec_workspace(), index, AYNI_QUERY_RESULT_FOUND,
                   {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {}},
                   stamp(10)),
               AYNI_OK);
@@ -1137,12 +1156,13 @@ TEST_F(CallTableTest, replay_rejects_legal_facts_that_retarget_an_existing_call)
         test.change(candidate);
         std::array<uint8_t, 4096> candidate_proof{};
         uint32_t proof_size = 0;
-        ASSERT_EQ(ayni::catalog::encode_business(candidate.domain, candidate.contract,
-                                                 business.definition, candidate_proof.data(),
-                                                 candidate_proof.size(), proof_size),
+        ASSERT_EQ(ayni::catalog::encode_business(::ayni::test::codec_workspace(), candidate.domain,
+                                                 candidate.contract, business.definition,
+                                                 candidate_proof.data(), candidate_proof.size(),
+                                                 proof_size),
                   AYNI_OK);
         candidate.contract.business_contract = {candidate_proof.data(), proof_size};
-        ASSERT_TRUE(CallTable::valid_record(candidate));
+        ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), candidate));
         EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(calls.identity(index).operation_id, identity.operation_id);
         EXPECT_EQ(calls.state(index).latest.transition.commit_seq, 1U);
@@ -1153,18 +1173,19 @@ TEST_F(CallTableTest, replay_rejects_legal_facts_that_retarget_an_existing_call)
     std::array<uint8_t, 64> replacement{};
     uint32_t replacement_size = 0;
     const ayni::test::TextValue changed({"changed", 7});
-    ASSERT_EQ(encode_business_input(before.domain, contract, changed.view(), replacement.data(),
-                                    replacement.size(), replacement_size),
+    ASSERT_EQ(encode_business_input(::ayni::test::codec_workspace(), before.domain, contract,
+                                    changed.view(), replacement.data(), replacement.size(),
+                                    replacement_size),
               AYNI_OK);
     candidate.input = {replacement.data(), replacement_size};
-    ASSERT_TRUE(CallTable::valid_record(candidate));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), candidate));
     EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(calls.state(index).latest.transition.commit_seq, 1U);
     EXPECT_EQ(calls.restore_validated(before), AYNI_INVALID_ARGUMENT);
     // A valid strictly later row with the original identity/input is installable.
     candidate = before;
     candidate.state.latest = stamp(2);
-    ASSERT_TRUE(CallTable::valid_record(candidate));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), candidate));
     EXPECT_EQ(calls.restore_validated(candidate), AYNI_OK);
 }
 
@@ -1179,12 +1200,12 @@ TEST_F(CallTableTest, replay_preserves_known_subscription_result_until_a_new_gen
     ASSERT_EQ(calls.stop_subscription(index, CallCancelCause::shutdown, SubscriptionDesired::open,
                                       stamp(5)),
               AYNI_OK);
-    ASSERT_EQ(calls.finish(index,
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index,
                            {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
                            stamp(6)),
               AYNI_OK);
     const auto stopped = calls.record(index);
-    ASSERT_TRUE(CallTable::valid_record(stopped));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), stopped));
     const InvalidCallFact changes[] = {
         {"different progress", [](auto &r) { ++r.state.progress_sequence; }},
         {"different result body", [](auto &r) { r.result = {"changed", 7}; }},
@@ -1200,7 +1221,7 @@ TEST_F(CallTableTest, replay_preserves_known_subscription_result_until_a_new_gen
         auto candidate = stopped;
         candidate.state.latest = stamp(7);
         test.change(candidate);
-        ASSERT_TRUE(CallTable::valid_record(candidate));
+        ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), candidate));
         EXPECT_EQ(calls.restore_validated(candidate), AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(calls.state(index).latest.transition.commit_seq, 6U);
         EXPECT_EQ(calls.state(index).subscription->lease_sequence, 1U);
@@ -1212,7 +1233,7 @@ TEST_F(CallTableTest, replay_preserves_known_subscription_result_until_a_new_gen
     const auto generation = identity.operation_id + 1;
     ASSERT_EQ(calls.restart_subscription(index, generation, stamp(7)), AYNI_OK);
     const auto reopened = calls.record(index);
-    ASSERT_TRUE(CallTable::valid_record(reopened));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), reopened));
     EXPECT_EQ(restored.restore_validated(reopened), AYNI_OK);
     EXPECT_EQ(restored.state(index).subscription->generation, generation);
     EXPECT_EQ(restored.state(index).outcome, 0U);
@@ -1220,7 +1241,7 @@ TEST_F(CallTableTest, replay_preserves_known_subscription_result_until_a_new_gen
     auto queried_generation = reopened;
     queried_generation.state.query =
         CallQuery{1, CallQuery::Phase::requested, queried_generation.state.latest};
-    EXPECT_FALSE(CallTable::valid_record(queried_generation));
+    EXPECT_FALSE(CallTable::valid_record(::ayni::test::codec_workspace(), queried_generation));
 }
 
 // White-box, C-CALL-008 / ADR-0063: a legal new-generation row from a known
@@ -1231,18 +1252,18 @@ TEST_F(CallTableTest, replay_cannot_reopen_an_unknown_subscription_with_a_legal_
     contract.subscription = ayni::catalog::SubscriptionContract{id("sample"), 1, 30000};
     insert();
     const auto accepted = calls.record(index);
-    ASSERT_TRUE(CallTable::valid_record(accepted));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), accepted));
     ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
     ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
     ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     ASSERT_EQ(
         calls.finish(
-            index,
+            ::ayni::test::codec_workspace(), index,
             {AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, ActionEffect::unknown, {}},
             stamp(4)),
         AYNI_OK);
     const auto unknown = calls.record(index);
-    ASSERT_TRUE(CallTable::valid_record(unknown));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), unknown));
     ASSERT_TRUE(calls.unresolved(index));
     const auto generation = identity.operation_id + 1;
     EXPECT_EQ(calls.restart_subscription(index, generation, stamp(5)), AYNI_INVALID_STATE);
@@ -1256,13 +1277,14 @@ TEST_F(CallTableTest, replay_cannot_reopen_an_unknown_subscription_with_a_legal_
     ASSERT_EQ(alternate.stop_subscription(index, CallCancelCause::shutdown,
                                           SubscriptionDesired::open, stamp(4)),
               AYNI_OK);
-    ASSERT_EQ(alternate.finish(
-                  index, {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
-                  stamp(5)),
-              AYNI_OK);
+    ASSERT_EQ(
+        alternate.finish(::ayni::test::codec_workspace(), index,
+                         {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}},
+                         stamp(5)),
+        AYNI_OK);
     ASSERT_EQ(alternate.restart_subscription(index, generation, stamp(6)), AYNI_OK);
     const auto reopened = alternate.record(index);
-    ASSERT_TRUE(CallTable::valid_record(reopened));
+    ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), reopened));
     EXPECT_EQ(calls.restore_validated(reopened), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(calls.state(index).outcome, AYNI_CALL_ABANDONED);
     EXPECT_EQ(calls.state(index).latest.transition.commit_seq,

@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 52u
+#define AYNI_ABI_MINOR 53u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative

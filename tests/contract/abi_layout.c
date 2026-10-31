@@ -17,6 +17,7 @@
 #include <ayni/scenes.h>
 #include <ayni/storage_format.h>
 #include <ayni/tool_usage.h>
+#include <ayni/workspace.h>
 
 #include <stddef.h>
 
@@ -25,6 +26,13 @@
 /* A struct with a uint64_t field ends at a multiple of 8: every target
  * aligns uint64_t to 8 bytes. */
 #define AYNI_ROUND8(size) (((size) + 7u) / 8u * 8u)
+
+/* C-VER-002 / ADR-0090: caller-owned scratch is pointer-width portable. */
+AYNI_LAYOUT(workspace_struct_size, offsetof(ayni_workspace_v1, struct_size) == 0);
+AYNI_LAYOUT(workspace_reserved, offsetof(ayni_workspace_v1, reserved) == 4);
+AYNI_LAYOUT(workspace_data, offsetof(ayni_workspace_v1, data) == 8);
+AYNI_LAYOUT(workspace_capacity, offsetof(ayni_workspace_v1, byte_capacity) == 8 + AYNI_PTR);
+AYNI_LAYOUT(workspace_size, sizeof(ayni_workspace_v1) == 8 + 2 * AYNI_PTR);
 
 AYNI_LAYOUT(function_pointer_size, sizeof(void (*)(void)) == AYNI_PTR);
 

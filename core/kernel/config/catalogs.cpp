@@ -1,9 +1,11 @@
 #include "kernel/config/catalogs.h"
 #include "catalog/capability/business_encoding.h"
+#include "foundation/workspace.h"
 
 namespace ayni::kernel {
 
-Catalogs::Catalogs(const KernelCapacities &capacities, const KernelStorage &storage)
+Catalogs::Catalogs(const KernelCapacities &capacities, const KernelStorage &storage,
+                   foundation::Workspace &workspace)
     : goal_types(storage[Store::goal_types], capacities.goal_type_capacity),
       strategies(storage[Store::strategies], capacities.strategy_capacity),
       capabilities(storage[Store::capabilities], capacities.capability_capacity,
@@ -19,7 +21,7 @@ Catalogs::Catalogs(const KernelCapacities &capacities, const KernelStorage &stor
                         capacities.business_contract_max_bytes),
       providers(storage[Store::providers], capacities.provider_capacity,
                 capacities.business_contract_max_bytes),
-      bindings(storage[Store::bindings], capacities.binding_capacity) {}
+      bindings(storage[Store::bindings], capacities.binding_capacity), workspace_(workspace) {}
 
 // Registration is closed from here on, so each goal type's strategy is
 // resolved once and its index stays valid (C-LIFE-003).
@@ -59,12 +61,12 @@ ayni_status_t Catalogs::close() {
         return linked;
     }
     const auto executable =
-        execution.validate_all(bindings, capabilities, call_capabilities, resources);
+        execution.validate_all(workspace_, bindings, capabilities, call_capabilities, resources);
     if (executable != AYNI_OK) {
         return executable;
     }
     // A model may propose only tools a strategy could request (ADR-0054).
-    return goal_types.link_tools([&](const catalog::GoalTypeTool &tool, uint32_t &out_index) {
+    return goal_types.validate_tools([&](const catalog::ToolReference &tool) {
         uint32_t index = 0;
         catalog::BindingLinks links{};
         if (!bindings.find({tool.binding_id.data(), tool.binding_id.size()}, tool.binding_version,
@@ -79,7 +81,6 @@ ayni_status_t Catalogs::close() {
             dispatchable(bindings.at(index), links) != AYNI_OK) {
             return AYNI_INVALID_ARGUMENT;
         }
-        out_index = index;
         return AYNI_OK;
     });
 }
@@ -99,9 +100,13 @@ ayni_status_t Catalogs::link_business() {
         if (authority.kind != catalog::CapabilityRegistry::Lookup::Kind::found) {
             return AYNI_NOT_FOUND;
         }
-        catalog::DecodedBusiness business;
+        auto business_lease = workspace_.make<catalog::DecodedBusiness>();
+        if (!business_lease) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        auto &business = *business_lease;
         const auto checked =
-            catalog::decode_business(capabilities.domain_view(authority.index),
+            catalog::decode_business(workspace_, capabilities.domain_view(authority.index),
                                      capability.contract.business_contract, business);
         if (checked != AYNI_OK) {
             return checked;

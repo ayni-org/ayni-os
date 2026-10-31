@@ -1,5 +1,6 @@
 #include "authority/scope/scope.h"
 #include "catalog/capability/authority_projection.h"
+#include "workspace_fixture.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -72,7 +73,8 @@ TEST(BusinessProjection, exact_decimal_rows_keep_one_route_and_copy_token_storag
                                            static_cast<uint32_t>(domain.size()), domain_size),
               AYNI_OK);
     ayni::catalog::ProjectionShape shape;
-    ASSERT_EQ(ayni::catalog::validate_projection({domain.data(), domain_size}, business, shape),
+    ASSERT_EQ(ayni::catalog::validate_projection(::ayni::test::codec_workspace(),
+                                                 {domain.data(), domain_size}, business, shape),
               AYNI_OK);
     ASSERT_TRUE(shape.list_node);
     EXPECT_EQ(*shape.list_node, 1U);
@@ -111,22 +113,26 @@ TEST(BusinessProjection, exact_decimal_rows_keep_one_route_and_copy_token_storag
               first.fields[1].allowed.values.tokens.members);
     EXPECT_EQ(ayni::catalog::project_row(business, value, 2, second), AYNI_INVALID_ARGUMENT);
     schema[1].min_count = 0;
-    EXPECT_EQ(ayni::catalog::validate_projection({domain.data(), domain_size}, business, shape),
+    EXPECT_EQ(ayni::catalog::validate_projection(::ayni::test::codec_workspace(),
+                                                 {domain.data(), domain_size}, business, shape),
               AYNI_UNSUPPORTED);
     schema[1].min_count = 1;
     // ADR-0084: scale zero carries the same unit, with no implicit conversion.
     schema[3].scale = 0;
     paths[0].scale = 0;
-    EXPECT_EQ(ayni::catalog::validate_projection({domain.data(), domain_size}, business, shape),
+    EXPECT_EQ(ayni::catalog::validate_projection(::ayni::test::codec_workspace(),
+                                                 {domain.data(), domain_size}, business, shape),
               AYNI_INVALID_ARGUMENT);
     schema[3].unit = paths[0].unit;
-    EXPECT_EQ(ayni::catalog::validate_projection({domain.data(), domain_size}, business, shape),
+    EXPECT_EQ(ayni::catalog::validate_projection(::ayni::test::codec_workspace(),
+                                                 {domain.data(), domain_size}, business, shape),
               AYNI_OK);
     schema[3].scale = 2;
     paths[0].scale = 2;
     schema[3].unit = {"yuan", 4};
     schema[3].flags |= AYNI_SCHEMA_NULLABLE;
-    EXPECT_EQ(ayni::catalog::validate_projection({domain.data(), domain_size}, business, shape),
+    EXPECT_EQ(ayni::catalog::validate_projection(::ayni::test::codec_workspace(),
+                                                 {domain.data(), domain_size}, business, shape),
               AYNI_UNSUPPORTED);
 }
 } // namespace

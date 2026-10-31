@@ -1,4 +1,5 @@
 #include "work/call/call_table.h"
+#include "foundation/workspace.h"
 
 #include "catalog/capability/value_encoding.h"
 #include "foundation/kernel_id.h"
@@ -37,7 +38,8 @@ bool CallTable::valid_result(const CallResult &result) {
 
 // A tool-call list is the whole of a TOOL_CALLS completion's body, never
 // beside text, and is bounded like text by the contract's result limit.
-ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_string_v1 body,
+ayni_status_t CallTable::check_body(ayni::foundation::Workspace &workspace,
+                                    const catalog::CallContract &contract, ayni_string_v1 body,
                                     CallResultKind kind) {
     if (kind == CallResultKind::unavailable) {
         return body.size == 0U ? AYNI_OK : AYNI_INVALID_ARGUMENT;
@@ -53,9 +55,13 @@ ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_
             body.size > contract.result_text_limit) {
             return AYNI_INVALID_ARGUMENT;
         }
-        catalog::DecodedValue value;
-        const auto decoded =
-            catalog::decode_value({reinterpret_cast<const uint8_t *>(body.data), body.size}, value);
+        auto value_lease = workspace.make<catalog::DecodedValue>();
+        if (!value_lease) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        auto &value = *value_lease;
+        const auto decoded = catalog::decode_value(
+            workspace, {reinterpret_cast<const uint8_t *>(body.data), body.size}, value);
         return decoded == AYNI_OK && catalog::canonical_value(value.view()) ? AYNI_OK
                                                                             : AYNI_INVALID_ARGUMENT;
     }
@@ -66,12 +72,14 @@ ayni_status_t CallTable::check_body(const catalog::CallContract &contract, ayni_
     if (body.size > contract.result_text_limit) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    return tool_call_count({reinterpret_cast<const uint8_t *>(body.data), body.size}) != 0U
+    return tool_call_count(workspace, {reinterpret_cast<const uint8_t *>(body.data), body.size}) !=
+                   0U
                ? AYNI_OK
                : AYNI_INVALID_ARGUMENT;
 }
 
-ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) const {
+ayni_status_t CallTable::check_result(ayni::foundation::Workspace &workspace, uint32_t index,
+                                      const CallResult &result) const {
     if (!valid_result(result) || !valid_model_usage(result.model_usage) ||
         (result.model_usage.kind != AYNI_MODEL_USAGE_NONE &&
          slots_[index].entry->contract.category != catalog::CallClass::model) ||
@@ -84,7 +92,7 @@ ayni_status_t CallTable::check_result(uint32_t index, const CallResult &result) 
         result.outcome == AYNI_CALL_COMPLETED && result.kind != CallResultKind::value) {
         return AYNI_INVALID_ARGUMENT;
     }
-    return check_body(contract, result.text, result.kind);
+    return check_body(workspace, contract, result.text, result.kind);
 }
 
 // Stale evidence cannot yield a usable completed step. Keep measured side effects,
@@ -463,10 +471,11 @@ ayni_status_t CallTable::progress(uint32_t index, uint64_t sequence, ActionStamp
 
 // Text/shape validation precedes the ledger's only transition check. Once
 // that succeeds, copying the result and publishing call state cannot fail.
-ayni_status_t CallTable::finish(uint32_t index, const CallResult &input, ActionStamp stamp,
+ayni_status_t CallTable::finish(ayni::foundation::Workspace &workspace, uint32_t index,
+                                const CallResult &input, ActionStamp stamp,
                                 ResultDependencies dependencies) {
     auto &entry = *slots_[index].entry;
-    const auto checked = check_result(index, input);
+    const auto checked = check_result(workspace, index, input);
     if (checked != AYNI_OK) {
         return checked;
     }

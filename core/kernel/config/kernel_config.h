@@ -75,6 +75,7 @@ struct KernelLimits {
 // entry here, so a new store is added once and layout_for, storage_at and the
 // arena test reach it by name (ADR-0051).
 enum class Store : uint32_t {
+    workspace,            // Kernel-owned synchronous codec candidates, never persisted.
     ingress,              // EventIngress: queued events and their bodies.
     completions,          // CompletionPool: Host completion slots.
     storage_buffer,       // Bytes of the storage I/O; needs no alignment.

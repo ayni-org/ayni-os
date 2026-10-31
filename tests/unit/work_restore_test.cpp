@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Recovery of the work model from the log (ADR-0026): the restore functions
 // of the agent, goal and task tables accept what a committed transition
 // left and refuse, changing nothing, what no transition writes (corrupt) or
@@ -1232,8 +1233,9 @@ class Model {
               ayni::kernel::goal_authority_limits(capacities))),
           task_authority_(ayni::work::TaskAuthorityTable::storage_size(
               ayni::kernel::task_authority_limits(capacities))),
-          storage_(storage()), catalogs_(capacities, storage_),
-          work_(catalogs_, capacities, {2, 4}, storage_, callbacks_) {
+          storage_(storage()), catalogs_(capacities, storage_, ::ayni::test::codec_workspace()),
+          work_(catalogs_, capacities, {2, 4}, storage_, callbacks_,
+                ::ayni::test::codec_workspace()) {
         EXPECT_TRUE(work_.principals.add_owner({principal, 1, AYNI_PRINCIPAL_OWNER}));
         if (with_owner) {
             EXPECT_EQ(work_.agents.restore(owner_agent, owner, 1, AYNI_AGENT_RUNNING, {1, 1}),
@@ -1377,7 +1379,7 @@ void admit_zero_goal_fixture(WorkModel &model, uint64_t replay_goal_id, uint64_t
         record.binding.parent = {model.goals.at(parent).goal_id,
                                  model.goal_authority.at(parent).binding.established_seq};
     }
-    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(::ayni::test::codec_workspace(), record));
     ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
 }
 
@@ -1754,7 +1756,7 @@ void admit_journal_goal(WorkModel &work, uint32_t index, TransitionStamp stamp) 
     record.goal_id = work.goals.at(index).goal_id;
     record.stamp = stamp;
     record.binding.established_seq = stamp.commit_seq;
-    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(::ayni::test::codec_workspace(), record));
     ASSERT_EQ(work.goal_authority.install_validated(index, record), AYNI_OK);
 }
 

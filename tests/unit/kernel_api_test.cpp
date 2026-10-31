@@ -63,7 +63,7 @@ ayni_submit_result_t reject_read(void * /*ctx*/, uint64_t /*from_commit_seq*/, u
     return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
 }
 
-// Small capacities keep the kernel inside KernelMemory.
+// Bounded capacities exercise the complete current query without a frozen arena size.
 ayni_config_v1 valid_config() {
     ayni_config_v1 config{};
     config.struct_size = sizeof(config);
@@ -111,11 +111,10 @@ std::size_t required_size(const ayni_config_v1 &config) {
     return size;
 }
 
-// Caller-provided kernel memory, over-sized and over-aligned so tests can
-// also hand out misaligned or short views of it.
+// Caller-provided kernel memory, sized from the current ABI query with one
+// alignment unit of slack for misaligned and short-view boundary checks.
 struct KernelMemory {
-    static constexpr std::size_t arena_bytes = 262144; // ABI 0.49 frozen tool-policy storage.
-    alignas(64) std::array<unsigned char, arena_bytes> bytes{};
+    std::vector<unsigned char> bytes; // Caller allocation follows the current ABI query.
     std::size_t size = 0;
     std::size_t align = 0;
 };
@@ -125,8 +124,9 @@ class KernelApi : public ::testing::Test {
     void SetUp() override {
         const ayni_config_v1 config = valid_config();
         ASSERT_EQ(ayni_kernel_memory_requirements(&config, &memory_.size, &memory_.align), AYNI_OK);
+        memory_.bytes.resize(memory_.size + memory_.align);
         ASSERT_LE(memory_.size, memory_.bytes.size());
-        ASSERT_LE(memory_.align, std::size_t{64});
+        ASSERT_EQ(reinterpret_cast<std::uintptr_t>(memory_.bytes.data()) % memory_.align, 0U);
     }
 
     ayni_status_t create(const ayni_config_v1 *config, const ayni_host_v1 *host,

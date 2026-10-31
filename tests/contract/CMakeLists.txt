@@ -50,6 +50,9 @@ ayni_header_check_source("ayni/values_json.hpp" cpp)
 ayni_header_check_source("ayni/model_messages.hpp" cpp)
 ayni_header_check_source("ayni/operation_json.hpp" cpp)
 ayni_header_check_source("ayni/detail/tool_usage.hpp" cpp)
+ayni_header_check_source("ayni/workspace.hpp" cpp)
+ayni_header_check_source("ayni/detail/workspace.hpp" cpp)
+ayni_header_check_source("ayni/call_result_json.hpp" cpp)
 
 # abi_layout.c pins the published struct layouts at compile time (C-VER-002).
 add_library(ayni_header_checks OBJECT ${header_check_sources} abi_layout.c)

@@ -1,3 +1,4 @@
+#include "strategy_workspace_fixture.h"
 // ADR-0085: normal context-budget fallback and chunked result handling.
 #include "strategies_fixture.h"
 #include <ayni/call_result_json.hpp>
@@ -84,7 +85,8 @@ struct ContextMemory {
         auto &result = self.results[self.result_count];
         const uint64_t reference = self.result_count + 1U;
         ayni::json::Writer writer(result.json.data(), static_cast<uint32_t>(result.json.size()));
-        const auto status = ayni::json::write_call_result(writer, call, reference);
+        const auto status = ayni::json::write_call_result(::ayni::test::result_workspace(), writer,
+                                                          call, reference);
         size_t size = 0;
         if (status != AYNI_OK || !writer.finish(size)) {
             return status != AYNI_OK ? status : AYNI_CAPACITY_EXCEEDED;
@@ -134,7 +136,7 @@ TEST(ContextConfiguration, rejects_incomplete_archive_callbacks_and_history_life
     auto rejects = [&](policies::HistoryPort incomplete) {
         config.history = incomplete;
         policies::ToolLoop loop;
-        EXPECT_EQ(loop.configure(config), AYNI_INVALID_ARGUMENT);
+        EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_INVALID_ARGUMENT);
     };
     auto incomplete = full;
     incomplete.result_chunk = nullptr;
@@ -153,7 +155,7 @@ TEST(ContextConfiguration, rejects_incomplete_archive_callbacks_and_history_life
     rejects(incomplete);
     config.history = full;
     policies::ToolLoop loop;
-    EXPECT_EQ(loop.configure(config), AYNI_OK);
+    EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
 }
 class ContextHarness : public StrategiesFixture {
   protected:

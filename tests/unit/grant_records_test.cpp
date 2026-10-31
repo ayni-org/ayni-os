@@ -1,6 +1,7 @@
 #include "authority/grant/grant_records.h"
 #include "authority/scope/scope.h"
 #include "catalog/capability/field_domain.h"
+#include "workspace_fixture.h"
 
 #include <gtest/gtest.h>
 
@@ -92,8 +93,8 @@ TEST(GrantRecords, create_encoding_matches_independent_literal_and_borrows_only_
     write_grant_record(grant, domain(), domain(), {}, bytes.data());
     EXPECT_EQ(bytes, root_body);
     GrantRecord record{};
-    ASSERT_TRUE(
-        read_grant_record(root_body.data(), static_cast<uint32_t>(root_body.size()), record));
+    ASSERT_TRUE(read_grant_record(::ayni::test::codec_workspace(), root_body.data(),
+                                  static_cast<uint32_t>(root_body.size()), record));
     EXPECT_EQ(record.grant_id, grant_id);
     EXPECT_EQ(record.grant.subject_instance_id, 2U);
     EXPECT_EQ(record.grant.owner_principal_id, 3U);
@@ -104,7 +105,7 @@ TEST(GrantRecords, create_encoding_matches_independent_literal_and_borrows_only_
     EXPECT_EQ(record.grant.scope, nullptr);
     EXPECT_EQ(record.grant.source_domain.data, root_body.data() + 77U);
     EXPECT_EQ(record.scope.data, root_body.data() + 85U);
-    EXPECT_TRUE(valid_grant_record(record));
+    EXPECT_TRUE(valid_grant_record(::ayni::test::codec_workspace(), record));
 }
 
 // ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
@@ -112,14 +113,18 @@ TEST(GrantRecords, every_truncation_and_trailing_byte_is_rejected_without_publis
     for (uint32_t size = 0; size < root_body.size(); ++size) {
         GrantRecord record{};
         record.grant_id = 91;
-        EXPECT_FALSE(read_grant_record(root_body.data(), size, record)) << size;
+        EXPECT_FALSE(
+            read_grant_record(::ayni::test::codec_workspace(), root_body.data(), size, record))
+            << size;
         EXPECT_EQ(record.grant_id, 91U) << size;
     }
     std::vector<uint8_t> bytes(root_body.begin(), root_body.end());
     bytes.push_back(0);
     GrantRecord record{};
-    EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), record));
-    EXPECT_FALSE(read_grant_record(nullptr, static_cast<uint32_t>(root_body.size()), record));
+    EXPECT_FALSE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                   static_cast<uint32_t>(bytes.size()), record));
+    EXPECT_FALSE(read_grant_record(::ayni::test::codec_workspace(), nullptr,
+                                   static_cast<uint32_t>(root_body.size()), record));
 }
 
 // ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
@@ -134,7 +139,8 @@ TEST(GrantRecords, malformed_id_flags_lifetime_depth_and_canonical_domains_are_r
             bytes[offset] = ' ';
         }
         GrantRecord record{};
-        EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), record))
+        EXPECT_FALSE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                       static_cast<uint32_t>(bytes.size()), record))
             << offset;
     }
 }
@@ -163,7 +169,8 @@ TEST(GrantRecords, duration_is_persistent_while_deadline_hold_and_transition_sta
     write_grant_record(grant, domain(), domain(), {}, bytes.data());
     EXPECT_EQ(bytes, expected);
     GrantRecord decoded{};
-    ASSERT_TRUE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                  static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.grant.duration_us, UINT64_C(0x0102030405060708));
 }
 
@@ -209,8 +216,8 @@ TEST(GrantRecords, snapshot_adds_original_stamps_revision_and_state_without_a_de
     write_grant_snapshot_record(grant, domain(), domain(), {}, bytes.data());
     EXPECT_EQ(bytes, expected);
     GrantSnapshotRecord record{};
-    ASSERT_TRUE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), record));
+    ASSERT_TRUE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                           static_cast<uint32_t>(bytes.size()), record));
     EXPECT_EQ(record.created_stamp.transition_id, 11U);
     EXPECT_EQ(record.created_stamp.commit_seq, 12U);
     EXPECT_EQ(record.stamp.transition_id, 11U);
@@ -219,12 +226,14 @@ TEST(GrantRecords, snapshot_adds_original_stamps_revision_and_state_without_a_de
     EXPECT_EQ(record.lifecycle, AYNI_GRANT_ACTIVE);
     for (uint32_t size = 0; size < expected.size(); ++size) {
         record.revision = 91;
-        EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), size, record)) << size;
+        EXPECT_FALSE(
+            read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(), size, record))
+            << size;
         EXPECT_EQ(record.revision, 91U);
     }
     bytes.push_back(0);
-    EXPECT_FALSE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), record));
+    EXPECT_FALSE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()), record));
 }
 
 // ADR-0030 decision 8 / C-STORE-014: exact versioned Grant facts and atomic decode outputs.
@@ -243,8 +252,8 @@ TEST(GrantRecords, fixed_budget_includes_all_four_length_prefixes_and_snapshot_t
 TEST(GrantRecords, restored_facts_validate_identity_lifetime_depth_and_both_canonical_budgets) {
     for (uint32_t fault = 0; fault < 16; ++fault) {
         GrantRecord record{};
-        ASSERT_TRUE(
-            read_grant_record(root_body.data(), static_cast<uint32_t>(root_body.size()), record));
+        ASSERT_TRUE(read_grant_record(::ayni::test::codec_workspace(), root_body.data(),
+                                      static_cast<uint32_t>(root_body.size()), record));
         switch (fault) {
         case 0:
             record.grant.owner_binding_revision = 0;
@@ -296,11 +305,12 @@ TEST(GrantRecords, restored_facts_validate_identity_lifetime_depth_and_both_cano
             record.grant_id = 1;
             break;
         }
-        EXPECT_FALSE(valid_grant_record(record)) << fault;
+        EXPECT_FALSE(valid_grant_record(::ayni::test::codec_workspace(), record)) << fault;
     }
     GrantSnapshotRecord snapshot{};
     snapshot.revision = 91;
-    EXPECT_FALSE(read_grant_snapshot_record(nullptr, 1000, snapshot));
+    EXPECT_FALSE(
+        read_grant_snapshot_record(::ayni::test::codec_workspace(), nullptr, 1000, snapshot));
     EXPECT_EQ(snapshot.revision, 91U);
 }
 
@@ -330,17 +340,19 @@ TEST(GrantRecords, syntactically_valid_expanded_scope_outside_registered_domain_
     write_grant_record(grant, registered, expanded, {}, bytes.data());
     GrantRecord decoded{};
     decoded.grant_id = 91;
-    EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_FALSE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                   static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.grant_id, 91U);
-    ASSERT_TRUE(
-        read_grant_record(root_body.data(), static_cast<uint32_t>(root_body.size()), decoded));
+    ASSERT_TRUE(read_grant_record(::ayni::test::codec_workspace(), root_body.data(),
+                                  static_cast<uint32_t>(root_body.size()), decoded));
     decoded.grant.source_domain = registered;
     decoded.scope = expanded;
-    EXPECT_FALSE(valid_grant_record(decoded));
+    EXPECT_FALSE(valid_grant_record(::ayni::test::codec_workspace(), decoded));
     outside[25] = 10; // [1,10] is a valid nonempty narrowing.
-    EXPECT_TRUE(valid_grant_record(decoded));
+    EXPECT_TRUE(valid_grant_record(::ayni::test::codec_workspace(), decoded));
     write_grant_record(grant, registered, expanded, {}, bytes.data());
-    EXPECT_TRUE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_TRUE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                  static_cast<uint32_t>(bytes.size()), decoded));
 }
 
 // ADR-0037 decision 18: the binding is an explicit little-endian tail and
@@ -356,22 +368,25 @@ TEST(GoalGrantRecords, complete_current_body_round_trips_bound_and_unbound_grant
     const std::array<uint8_t, 8> expected{1, 0, 0, 0, 1, 0, 0, 0};
     EXPECT_TRUE(std::equal(expected.begin(), expected.end(), bytes.end() - 12));
     GrantRecord decoded{};
-    ASSERT_TRUE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                  static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.grant.bound_goal_id, grant.bound_goal_id);
     auto unbound = bytes;
     std::fill(unbound.end() - 12, unbound.end() - 4, uint8_t{0});
-    EXPECT_TRUE(read_grant_record(unbound.data(), static_cast<uint32_t>(unbound.size()), decoded));
+    EXPECT_TRUE(read_grant_record(::ayni::test::codec_workspace(), unbound.data(),
+                                  static_cast<uint32_t>(unbound.size()), decoded));
     EXPECT_EQ(decoded.grant.bound_goal_id, 0U);
-    EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 8, decoded));
+    EXPECT_FALSE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                   static_cast<uint32_t>(bytes.size()) - 8, decoded));
     bytes.resize(grant_snapshot_record_size(grant));
     write_grant_snapshot_record(grant, domain(), domain(), {}, bytes.data());
     GrantSnapshotRecord saved{};
-    ASSERT_TRUE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), saved));
+    ASSERT_TRUE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                           static_cast<uint32_t>(bytes.size()), saved));
     EXPECT_EQ(saved.create.grant.bound_goal_id, grant.bound_goal_id);
     EXPECT_EQ(saved.created_stamp.commit_seq, grant.created_stamp.commit_seq);
-    EXPECT_FALSE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 1, saved));
+    EXPECT_FALSE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()) - 1, saved));
 }
 
 // ADR-0037 decisions 16/18: struct and byte facts share root, delegation and ID rules.
@@ -399,7 +414,8 @@ TEST(GoalGrantRecords, invalid_bound_facts_never_publish_partial_decoded_outputs
         write_grant_record(invalid, domain(), domain(), {}, bytes.data());
         GrantRecord out{};
         out.grant_id = 91;
-        EXPECT_FALSE(read_grant_record(bytes.data(), static_cast<uint32_t>(bytes.size()), out));
+        EXPECT_FALSE(read_grant_record(::ayni::test::codec_workspace(), bytes.data(),
+                                       static_cast<uint32_t>(bytes.size()), out));
         EXPECT_EQ(out.grant_id, 91U);
     }
 }
@@ -424,8 +440,8 @@ TEST(GoalGrantRecords, restored_snapshot_preserves_binding_and_revocation_cleanu
         std::vector<uint8_t> bytes(grant_snapshot_record_size(grant));
         write_grant_snapshot_record(grant, domain(), domain(), {}, bytes.data());
         GrantSnapshotRecord decoded{};
-        ASSERT_TRUE(
-            read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+        ASSERT_TRUE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                               static_cast<uint32_t>(bytes.size()), decoded));
         EXPECT_EQ(decoded.revoked_by_root_id, grant.revoked_by_root_id);
         EXPECT_EQ(decoded.cleanup_after_grant_id, grant.cleanup_after_grant_id);
         EXPECT_EQ(decoded.cleanup_through_grant_id, grant.cleanup_through_grant_id);
@@ -433,7 +449,8 @@ TEST(GoalGrantRecords, restored_snapshot_preserves_binding_and_revocation_cleanu
         const GrantTable::Limits limits{1, 64, 1};
         std::vector<uint64_t> arena(GrantTable::storage_size(limits) / sizeof(uint64_t) + 1);
         GrantTable restored(arena.data(), limits);
-        ASSERT_EQ(restored.restore_snapshot(decoded), GrantTable::Restore::restored);
+        ASSERT_EQ(restored.restore_snapshot(::ayni::test::codec_workspace(), decoded),
+                  GrantTable::Restore::restored);
         EXPECT_EQ(restored.at(0).bound_goal_id, grant.bound_goal_id);
         EXPECT_EQ(restored.check_chain(0, {2, 100, 100}).reason, AYNI_REASON_GRANT_GOAL);
     }

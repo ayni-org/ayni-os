@@ -238,13 +238,17 @@ ayni_status_t header(Decoder &reader, uint32_t expected) {
 } // namespace
 
 namespace detail {
-ayni_status_t read_turn(ayni_bytes_v1 bytes, Turn &out) {
+ayni_status_t read_turn(Workspace &workspace, ayni_bytes_v1 bytes, Turn &out) {
     Decoder reader(bytes);
     const auto status = header(reader, turn_magic);
     if (status != AYNI_OK) {
         return status;
     }
-    Turn parsed;
+    auto parsed_lease = workspace.make<Turn>();
+    if (!parsed_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &parsed = *parsed_lease;
     uint32_t done = 0;
     reader.u32(done);
     reader.u64(parsed.base_revision);
@@ -306,8 +310,19 @@ ayni_status_t write_turn(const Turn &turn, uint8_t *data, uint32_t capacity, uin
 }
 } // namespace detail
 
-ayni_status_t Conversation::begin(const ConversationRecord &record, ayni_string_v1 user,
-                                  Encoded &parameters, uint64_t memory_id) {
+namespace {
+constexpr size_t conversation_turn_candidates = 2;
+constexpr size_t conversation_record_candidates = 2;
+constexpr size_t conversation_alignment_slots = 8;
+constexpr size_t conversation_workspace_bytes =
+    conversation_turn_candidates * sizeof(Turn) +
+    conversation_record_candidates * sizeof(ConversationRecord) + sizeof(Encoded) +
+    conversation_alignment_slots * Workspace::alignment;
+} // namespace
+
+static ayni_status_t conversation_begin(Workspace &workspace, const ConversationRecord &record,
+                                        ayni_string_v1 user, Encoded &parameters,
+                                        uint64_t memory_id) {
     if (!valid(record) || !user.data || user.size == 0) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -322,7 +337,11 @@ ayni_status_t Conversation::begin(const ConversationRecord &record, ayni_string_
     if (user.size + record.draft.size + separator > turn_text_max) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    Turn turn;
+    auto turn_lease = workspace.make<Turn>();
+    if (!turn_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &turn = *turn_lease;
     turn.record = record;
     turn.record.draft = {};
     turn.base_revision = record.revision;
@@ -333,28 +352,41 @@ ayni_status_t Conversation::begin(const ConversationRecord &record, ayni_string_
     }
     std::memcpy(turn.input.bytes.data() + turn.input.size, user.data, user.size);
     turn.input.size += user.size;
-    Encoded next;
+    auto next_lease = workspace.make<Encoded>();
+    if (!next_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &next = *next_lease;
     const auto status = write_turn(turn, next.bytes.data(), state_bytes_max, next.size);
     if (status == AYNI_OK) {
         parameters = next;
     }
     return status;
 }
-ayni_status_t Conversation::input(ayni_bytes_v1 parameters, Text<turn_text_max> &out) {
-    Turn turn;
-    const auto status = read_turn(parameters, turn);
+static ayni_status_t conversation_input(Workspace &workspace, ayni_bytes_v1 parameters,
+                                        Text<turn_text_max> &out) {
+    auto turn_lease = workspace.make<Turn>();
+    if (!turn_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &turn = *turn_lease;
+    const auto status = read_turn(workspace, parameters, turn);
     if (status == AYNI_OK) {
         out = turn.input;
     }
     return status;
 }
-ayni_status_t Conversation::finish(const ConversationRecord &current, ayni_bytes_v1 checkpoint,
-                                   ConversationRecord &candidate) {
+static ayni_status_t conversation_finish(Workspace &workspace, const ConversationRecord &current,
+                                         ayni_bytes_v1 checkpoint, ConversationRecord &candidate) {
     if (!valid(current)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    Turn turn;
-    const auto status = read_turn(checkpoint, turn);
+    auto turn_lease = workspace.make<Turn>();
+    if (!turn_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &turn = *turn_lease;
+    const auto status = read_turn(workspace, checkpoint, turn);
     if (status != AYNI_OK) {
         return status;
     }
@@ -372,13 +404,18 @@ ayni_status_t Conversation::finish(const ConversationRecord &current, ayni_bytes
     candidate = turn.record;
     return AYNI_OK;
 }
-ayni_status_t Conversation::retain_published_input(const ConversationRecord &current,
-                                                   uint64_t round, ConversationRecord &out) {
+static ayni_status_t conversation_retain_published_input(Workspace &workspace,
+                                                         const ConversationRecord &current,
+                                                         uint64_t round, ConversationRecord &out) {
     if (!valid(current) || current.last_round == UINT64_MAX || round != current.last_round + 1 ||
         !current.draft.size) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto next = current;
+    auto next_lease = workspace.make<ConversationRecord>(current);
+    if (!next_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &next = *next_lease;
     if (next.round_count == retained_rounds_max) {
         for (uint32_t at = 1; at < next.round_count; ++at) {
             next.rounds[at - 1U] = next.rounds[at];
@@ -391,15 +428,19 @@ ayni_status_t Conversation::retain_published_input(const ConversationRecord &cur
     out = next;
     return AYNI_OK;
 }
-ayni_status_t Conversation::erase(const ConversationRecord &current,
-                                  ConversationRecord &candidate) {
+static ayni_status_t conversation_erase(Workspace &workspace, const ConversationRecord &current,
+                                        ConversationRecord &candidate) {
     if (!valid(current)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (current.generation == UINT64_MAX || current.revision == UINT64_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    ConversationRecord next;
+    auto next_lease = workspace.make<ConversationRecord>();
+    if (!next_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &next = *next_lease;
     next.id = current.id;
     next.owner_instance_id = current.owner_instance_id;
     next.generation = current.generation + 1U;
@@ -410,9 +451,10 @@ ayni_status_t Conversation::erase(const ConversationRecord &current,
 }
 // Forgetting any source invalidates the whole generated summary and all answers. Only retained
 // user inputs survive; compacted raw turns were already replaced by their now-invalid summary.
-ayni_status_t Conversation::erase_derived(const ConversationRecord &current,
-                                          ConversationRecord &candidate) {
-    auto status = erase(current, candidate);
+static ayni_status_t conversation_erase_derived(Workspace &workspace,
+                                                const ConversationRecord &current,
+                                                ConversationRecord &candidate) {
+    auto status = conversation_erase(workspace, current, candidate);
     if (status != AYNI_OK) {
         return status;
     }
@@ -424,13 +466,18 @@ ayni_status_t Conversation::erase_derived(const ConversationRecord &current,
     }
     return AYNI_OK;
 }
-ayni_status_t Conversation::erase_round(const ConversationRecord &current, uint64_t round,
-                                        ConversationRecord &candidate) {
+static ayni_status_t conversation_erase_round(Workspace &workspace,
+                                              const ConversationRecord &current, uint64_t round,
+                                              ConversationRecord &candidate) {
     if (round == 0 || round > current.last_round) {
         return AYNI_NOT_FOUND;
     }
-    ConversationRecord next;
-    const auto status = erase_derived(current, next);
+    auto next_lease = workspace.make<ConversationRecord>();
+    if (!next_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &next = *next_lease;
+    const auto status = conversation_erase_derived(workspace, current, next);
     if (status != AYNI_OK) {
         return status;
     }
@@ -447,11 +494,16 @@ ayni_status_t Conversation::erase_round(const ConversationRecord &current, uint6
     candidate = next;
     return AYNI_OK;
 }
-ayni_status_t Conversation::encode(const ConversationRecord &record, Encoded &out) {
+static ayni_status_t conversation_encode(Workspace &workspace, const ConversationRecord &record,
+                                         Encoded &out) {
     if (!valid(record)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    Encoded next;
+    auto next_lease = workspace.make<Encoded>();
+    if (!next_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &next = *next_lease;
     Encoder writer(next.bytes.data(), state_bytes_max);
     writer.u32(record_magic);
     writer.u32(conversation_format);
@@ -463,13 +515,18 @@ ayni_status_t Conversation::encode(const ConversationRecord &record, Encoded &ou
     out = next;
     return AYNI_OK;
 }
-ayni_status_t Conversation::decode(ayni_bytes_v1 bytes, ConversationRecord &out) {
+static ayni_status_t conversation_decode(Workspace &workspace, ayni_bytes_v1 bytes,
+                                         ConversationRecord &out) {
     Decoder reader(bytes);
     const auto status = header(reader, record_magic);
     if (status != AYNI_OK) {
         return status;
     }
-    ConversationRecord parsed;
+    auto parsed_lease = workspace.make<ConversationRecord>();
+    if (!parsed_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &parsed = *parsed_lease;
     fields(reader, parsed);
     if (!reader.complete() || !valid(parsed)) {
         return AYNI_INVALID_ARGUMENT;
@@ -477,9 +534,127 @@ ayni_status_t Conversation::decode(ayni_bytes_v1 bytes, ConversationRecord &out)
     out = parsed;
     return AYNI_OK;
 }
-ayni_status_t Conversation::validate_turn(void *, ayni_bytes_v1 parameters) {
-    Turn turn;
-    const auto status = read_turn(parameters, turn);
+static ayni_status_t conversation_validate_turn(Workspace &workspace, ayni_bytes_v1 parameters) {
+    auto turn_lease = workspace.make<Turn>();
+    if (!turn_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &turn = *turn_lease;
+    const auto status = read_turn(workspace, parameters, turn);
     return status != AYNI_OK ? status : turn.done ? AYNI_INVALID_ARGUMENT : AYNI_OK;
+}
+
+ayni_status_t Conversation::workspace_requirements(size_t *bytes, size_t *alignment) {
+    if (!bytes || !alignment) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    *bytes = conversation_workspace_bytes;
+    *alignment = Workspace::alignment;
+    return AYNI_OK;
+}
+
+ayni_status_t Conversation::begin(const ayni_workspace_v1 *region, const ConversationRecord &record,
+                                  ayni_string_v1 user, Encoded &parameters, uint64_t memory_id) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_begin(workspace, record, user, parameters, memory_id);
+}
+
+ayni_status_t Conversation::input(const ayni_workspace_v1 *region, ayni_bytes_v1 parameters,
+                                  Text<turn_text_max> &out) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_input(workspace, parameters, out);
+}
+
+ayni_status_t Conversation::finish(const ayni_workspace_v1 *region,
+                                   const ConversationRecord &current, ayni_bytes_v1 checkpoint,
+                                   ConversationRecord &candidate) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_finish(workspace, current, checkpoint, candidate);
+}
+
+ayni_status_t Conversation::retain_published_input(const ayni_workspace_v1 *region,
+                                                   const ConversationRecord &current,
+                                                   uint64_t round, ConversationRecord &out) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_retain_published_input(workspace, current, round, out);
+}
+
+ayni_status_t Conversation::erase(const ayni_workspace_v1 *region,
+                                  const ConversationRecord &current,
+                                  ConversationRecord &candidate) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_erase(workspace, current, candidate);
+}
+
+ayni_status_t Conversation::erase_round(const ayni_workspace_v1 *region,
+                                        const ConversationRecord &current, uint64_t round,
+                                        ConversationRecord &candidate) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_erase_round(workspace, current, round, candidate);
+}
+
+ayni_status_t Conversation::erase_derived(const ayni_workspace_v1 *region,
+                                          const ConversationRecord &current,
+                                          ConversationRecord &candidate) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_erase_derived(workspace, current, candidate);
+}
+
+ayni_status_t Conversation::encode(const ayni_workspace_v1 *region,
+                                   const ConversationRecord &record, Encoded &out) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_encode(workspace, record, out);
+}
+
+ayni_status_t Conversation::decode(const ayni_workspace_v1 *region, ayni_bytes_v1 bytes,
+                                   ConversationRecord &out) {
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_decode(workspace, bytes, out);
+}
+
+ayni_status_t Conversation::validate_turn(void *context, ayni_bytes_v1 parameters) {
+    const auto *region = static_cast<const ayni_workspace_v1 *>(context);
+    const auto checked = Workspace::check(region, conversation_workspace_bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
+    Workspace workspace(region->data, region->byte_capacity);
+    return conversation_validate_turn(workspace, parameters);
 }
 } // namespace ayni::strategies

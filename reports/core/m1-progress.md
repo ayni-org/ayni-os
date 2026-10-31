@@ -124,6 +124,9 @@
 
 | [#116](https://github.com/RobotSe7en/ayni/pull/116) | 2026-10-30 | AP-05 受管操作 | 同 Task 长操作/订阅、固定工具、样本来源与软件 SDK，ABI0.51/schema7 | ADR-0086 |
 
+| [#117](https://github.com/RobotSe7en/ayni/pull/117) | 2026-10-31 | AP-04/AP-06 基础验收 | Binding资源映射、双实例共用软件应用及基础报告，ABI0.52/schema8 | ADR-0087、ADR-0088 |
+| [#118](https://github.com/RobotSe7en/ayni/pull/118) | 2026-10-31 | 独立源码 SDK | 按需组件、只读隔离消费者、Native/ESP共用定义；独立复审与完整CI通过 | ADR-0089 |
+
 ## 工作包日期
 
 | 工作包 | 开始 | 结束 |
@@ -137,13 +140,13 @@
 | `MA-009` | 2026-10-26 | 2026-10-26（正常双策略/对话值；文件存储随 P2） |
 | `MA-019`、`MA-020` | 2026-10-27 | 2026-10-27（P5 正常功能；完整实验另行验收） |
 
-## 交接状态（2026-10-30）
+## 交接状态（2026-10-31）
 
 AP-02 已由 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084 交付（ABI 0.48/schema 4）；AP-03 第一部分由 [#113](https://github.com/RobotSe7en/ayni/pull/113)、ADR-0085 交付配置期说明采纳、Task 目录/按需绑定（ABI 0.49/schema 5），第二部分已实现固定模型工具、连续上下文、SQLite 和显式 Shell（ABI 0.50/schema 6），正常验证与独立复审见 [#114](https://github.com/RobotSe7en/ayni/pull/114)，基础通用能力未完成。此前规划/设计见 #110/#111，M1 Native/Sim 与历史覆盖偏差见 [Core Alpha Native 报告](m1-core-alpha.md)，不代表平台实验或硬件验收。
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。
-- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。本轮 AP-06/AP-04 已补资源映射与 Native/Sim 共用应用，ABI0.52/schema8；[设计](../../docs/architecture/ap06-ap04-foundation-design.md)及[基础报告](foundation-acceptance.md)记录本轮完整软件验收证据，#117 已合并。当前按用户2026-10-31指示实施独立源码SDK、通用工作区、平台适配及验收代码，见[独立接入计划](../../docs/architecture/independent-consumption-plan.md)；实机与付费模型尚未启动。
+- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。本轮 AP-06/AP-04 已补资源映射与 Native/Sim 共用应用，ABI0.52/schema8；[设计](../../docs/architecture/ap06-ap04-foundation-design.md)及[基础报告](foundation-acceptance.md)记录本轮完整软件验收证据，#117 已合并。独立源码 SDK 首包 #118 已独立复审并合并。当前按用户2026-10-31指示实施通用工作区、平台适配及验收代码，见[独立接入计划](../../docs/architecture/independent-consumption-plan.md)；实机与付费模型尚未启动。
 - **实验与可选能力：** Native/Sim 日常测试继续；基础门槛通过后再安排 ESP32-S3、Linux 实际 OS 集成及其他平台实验。语音/视觉、运动与硬件停止、MCP/ROS/MHS、peer 和轮式助理试用按需选择；启用的物理执行保证、OTA/硬件/耐久证据不能省略或用模拟替代。
 - **已定与待决：** AP-02/AP-03 选择见 ADR-0084/0085。AP-05 已选定四工具内同 Task 的受管控制、本包直接升级并拒旧保留目录、最终答复收尾、每 Task 同时一个 action 且可并存模型和订阅（用户 2026-10-30，ADR-0086）。AP-04/AP-06 已选 Binding 资源映射及本包直接升级、不用兼容；用户2026-10-31允许的最小正常重开/映射不兼容验证已通过；基础报告已齐备，最终提交 CI 和交付状态由 #117 提供。后续包兼容和平台指标仍分别决定；真实模型多轮试用、长期密钥配置和完整 MA-038 旧待决保留；用户现已统一安全关键分支目标为 ≥80%（ADR-0088）；本轮覆盖达到该目标，Core 行目标仍为 ≥75%。
 - **工作流与边界：** 依相关正常测试、设计自查、适用独立审查及 CI 交付；具体命令、结果与运行编号集中在 PR。本包不启动平台/硬件、付费 API 或新专项；变异及新增故障/恢复专项仍按 workflow 现行授权处理。

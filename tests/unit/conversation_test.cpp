@@ -1,3 +1,4 @@
+#include "strategy_workspace_fixture.h"
 // ADR-0056: caller-owned, portable values. No external persistence is implied.
 #include <ayni/model_messages.hpp>
 #include <ayni/strategies/builtin.h>
@@ -20,28 +21,42 @@ ConversationRecord empty() {
 TEST(Conversation, portable_record_round_trip_and_strict_version) {
     auto record = empty();
     Encoded encoded;
-    ASSERT_EQ(Conversation::encode(record, encoded), AYNI_OK);
+    ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, encoded),
+              AYNI_OK);
     ConversationRecord restored;
-    ASSERT_EQ(Conversation::decode(encoded.view(), restored), AYNI_OK);
+    ASSERT_EQ(
+        Conversation::decode(::ayni::test::conversation_workspace(), encoded.view(), restored),
+        AYNI_OK);
     EXPECT_EQ(restored.id, 11U);
     EXPECT_EQ(restored.owner_instance_id, 22U);
     const auto version = encoded.bytes[4];
     encoded.bytes[4] = version - 1; // Portable header: version at byte 4.
-    EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(
+        Conversation::decode(::ayni::test::conversation_workspace(), encoded.view(), restored),
+        AYNI_UNSUPPORTED_VERSION);
     encoded.bytes[4] = version;
     --encoded.size;
-    EXPECT_EQ(Conversation::decode(encoded.view(), restored), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        Conversation::decode(::ayni::test::conversation_workspace(), encoded.view(), restored),
+        AYNI_INVALID_ARGUMENT);
 }
 TEST(Conversation, new_turn_is_deterministic_and_retains_the_original) {
     const auto record = empty();
     Encoded a, b;
-    ASSERT_EQ(Conversation::begin(record, text("你好"), a), AYNI_OK);
-    ASSERT_EQ(Conversation::begin(record, text("你好"), b), AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record, text("你好"), a),
+              AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record, text("你好"), b),
+              AYNI_OK);
     EXPECT_EQ(a.size, b.size);
     EXPECT_EQ(a.bytes, b.bytes);
-    EXPECT_EQ(Conversation::validate_turn(nullptr, a.view()), AYNI_OK);
+    EXPECT_EQ(
+        Conversation::validate_turn(
+            const_cast<ayni_workspace_v1 *>(::ayni::test::conversation_workspace()), a.view()),
+        AYNI_OK);
     ConversationRecord candidate;
-    EXPECT_EQ(Conversation::finish(record, a.view(), candidate), AYNI_BUSY);
+    EXPECT_EQ(
+        Conversation::finish(::ayni::test::conversation_workspace(), record, a.view(), candidate),
+        AYNI_BUSY);
     EXPECT_EQ(record.revision, 0U);
 }
 TEST(Conversation, bounded_input_rejects_invalid_utf8_and_oversize_without_changing_output) {
@@ -49,11 +64,16 @@ TEST(Conversation, bounded_input_rejects_invalid_utf8_and_oversize_without_chang
     Encoded encoded;
     encoded.size = 71;
     const std::string long_text(turn_text_max + 1U, 'a');
-    EXPECT_EQ(Conversation::begin(
-                  record, {long_text.data(), static_cast<uint32_t>(long_text.size())}, encoded),
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record,
+                                  {long_text.data(), static_cast<uint32_t>(long_text.size())},
+                                  encoded),
               AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(Conversation::begin(record, {"\xED\xA0\x80", 3}, encoded), AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(Conversation::begin(record, {nullptr, 1}, encoded), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record,
+                                  {"\xED\xA0\x80", 3}, encoded),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        Conversation::begin(::ayni::test::conversation_workspace(), record, {nullptr, 1}, encoded),
+        AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(encoded.size, 71U);
 }
 TEST(Conversation, whole_delete_clears_text_and_lineage_together) {
@@ -65,7 +85,8 @@ TEST(Conversation, whole_delete_clears_text_and_lineage_together) {
     std::memcpy(record.summary.bytes.data(), "inferred", 8);
     record.summary.size = 8;
     ConversationRecord candidate;
-    ASSERT_EQ(Conversation::erase(record, candidate), AYNI_OK);
+    ASSERT_EQ(Conversation::erase(::ayni::test::conversation_workspace(), record, candidate),
+              AYNI_OK);
     EXPECT_EQ(candidate.summary.size, 0U);
     EXPECT_EQ(candidate.summary_first, 0U);
     EXPECT_EQ(candidate.summary_last, 0U);
@@ -78,11 +99,13 @@ TEST(Conversation, inconsistent_lineage_and_exhausted_generation_are_rejected) {
     auto record = empty();
     record.last_round = 1;
     Encoded encoded;
-    EXPECT_EQ(Conversation::encode(record, encoded), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, encoded),
+              AYNI_INVALID_ARGUMENT);
     record = empty();
     record.generation = UINT64_MAX;
     ConversationRecord candidate;
-    EXPECT_EQ(Conversation::erase(record, candidate), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(Conversation::erase(::ayni::test::conversation_workspace(), record, candidate),
+              AYNI_CAPACITY_EXCEEDED);
 }
 TEST(BuiltinRules, invalid_and_duplicate_configuration_is_rejected) {
     Rules rules;
@@ -122,7 +145,9 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     }
     std::string user(turn_text_max, 'n');
     Encoded parameters;
-    ASSERT_EQ(Conversation::begin(record, {user.data(), turn_text_max}, parameters), AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record,
+                                  {user.data(), turn_text_max}, parameters),
+              AYNI_OK);
     EXPECT_LE(parameters.size, state_bytes_max);
     ToolLoop loop;
     ToolLoopConfig config;
@@ -131,7 +156,7 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
         AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
     config.summary = config.model;
     config.summary.binding_id = text("summary");
-    ASSERT_EQ(loop.configure(config), AYNI_OK);
+    ASSERT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
     auto descriptor = loop.describe();
     ayni_task_snapshot_v1 snapshot{};
     snapshot.struct_size = sizeof(snapshot);
@@ -210,9 +235,11 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
                         text("prefix")};
         config.summary = config.model;
         config.clock = {&clock, port ? FakeClock::now : nullptr, text(zone)};
-        EXPECT_EQ(loop.configure(config), AYNI_OK);
+        EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
         Encoded parameters;
-        EXPECT_EQ(Conversation::begin(empty(), text("明天提醒我"), parameters), AYNI_OK);
+        EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), empty(),
+                                      text("明天提醒我"), parameters),
+                  AYNI_OK);
         ayni_task_snapshot_v1 snapshot{};
         snapshot.struct_size = sizeof(snapshot);
         snapshot.owner_instance_id = empty().owner_instance_id;
@@ -293,18 +320,20 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
         AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
     config.summary = config.model;
     config.clock = {&clock, FakeClock::now, text("Asia/Shanghai")};
-    EXPECT_EQ(loop.configure(config), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_INVALID_ARGUMENT);
 }
 TEST(BuiltinLoop, foreign_conversation_owner_is_rejected_before_any_request) {
     Encoded parameters;
-    ASSERT_EQ(Conversation::begin(empty(), text("hello"), parameters), AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), empty(), text("hello"),
+                                  parameters),
+              AYNI_OK);
     ToolLoop loop;
     ToolLoopConfig config;
     config.identity.id = text("loop");
     config.model = {
         AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
     config.summary = config.model;
-    ASSERT_EQ(loop.configure(config), AYNI_OK);
+    ASSERT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
     auto descriptor = loop.describe();
     ayni_task_snapshot_v1 snapshot{};
     ayni_policy_output_v1 output{};
@@ -336,12 +365,15 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
     record.summary.size = 1;
     record.summary.bytes[0] = 's';
     Encoded record_bytes, seed;
-    ASSERT_EQ(Conversation::encode(record, record_bytes), AYNI_OK);
-    ASSERT_EQ(Conversation::begin(empty(), text("x"), seed), AYNI_OK);
+    ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, record_bytes),
+              AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), empty(), text("x"), seed),
+              AYNI_OK);
     constexpr uint32_t record_header_bytes = 8; // AYNC + version.
     constexpr uint32_t turn_header_bytes = 28; // AYNT + version + done + base_revision + memory_id.
     Encoded empty_record;
-    ASSERT_EQ(Conversation::encode(empty(), empty_record), AYNI_OK);
+    ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), empty(), empty_record),
+              AYNI_OK);
     const uint32_t seed_tail =
         seed.size - turn_header_bytes - (empty_record.size - record_header_bytes);
     Encoded raw;
@@ -352,8 +384,12 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
     std::memcpy(raw.bytes.data() + turn_header_bytes + record_body,
                 seed.bytes.data() + seed.size - seed_tail, seed_tail);
     raw.size = turn_header_bytes + record_body + seed_tail;
-    EXPECT_EQ(Conversation::validate_turn(nullptr, raw.view()), AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(Conversation::begin(record, text("x"), seed), AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(
+        Conversation::validate_turn(
+            const_cast<ayni_workspace_v1 *>(::ayni::test::conversation_workspace()), raw.view()),
+        AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record, text("x"), seed),
+              AYNI_CAPACITY_EXCEEDED);
 }
 } // namespace
 
@@ -364,19 +400,28 @@ TEST(Conversation, unpublished_input_survives_derived_erasure_and_is_bounded_whe
     record.draft.size = 5;
     std::memcpy(record.draft.bytes.data(), "first", record.draft.size);
     Encoded stored, parameters;
-    ASSERT_EQ(Conversation::encode(record, stored), AYNI_OK);
+    ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, stored),
+              AYNI_OK);
     ConversationRecord restored, erased;
-    ASSERT_EQ(Conversation::decode(stored.view(), restored), AYNI_OK);
-    ASSERT_EQ(Conversation::erase_derived(restored, erased), AYNI_OK);
+    ASSERT_EQ(Conversation::decode(::ayni::test::conversation_workspace(), stored.view(), restored),
+              AYNI_OK);
+    ASSERT_EQ(Conversation::erase_derived(::ayni::test::conversation_workspace(), restored, erased),
+              AYNI_OK);
     EXPECT_EQ(erased.draft.size, 5U);
-    ASSERT_EQ(Conversation::begin(erased, text("next"), parameters), AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), erased, text("next"),
+                                  parameters),
+              AYNI_OK);
     Text<turn_text_max> input;
-    ASSERT_EQ(Conversation::input(parameters.view(), input), AYNI_OK);
+    ASSERT_EQ(Conversation::input(::ayni::test::conversation_workspace(), parameters.view(), input),
+              AYNI_OK);
     EXPECT_EQ(std::string(input.bytes.data(), input.size), "first\nnext");
     erased.draft.size = turn_text_max;
     erased.draft.bytes.fill('u');
-    EXPECT_EQ(Conversation::begin(erased, text("x"), parameters), AYNI_CAPACITY_EXCEEDED);
-    ASSERT_EQ(Conversation::erase(erased, restored), AYNI_OK);
+    EXPECT_EQ(
+        Conversation::begin(::ayni::test::conversation_workspace(), erased, text("x"), parameters),
+        AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(Conversation::erase(::ayni::test::conversation_workspace(), erased, restored),
+              AYNI_OK);
     EXPECT_EQ(restored.draft.size, 0U);
 }
 TEST(Conversation, superseded_publication_keeps_original_turn_identity_and_reserves_capacity) {
@@ -384,20 +429,70 @@ TEST(Conversation, superseded_publication_keeps_original_turn_identity_and_reser
     record.draft.size = 1;
     record.draft.bytes[0] = 'u';
     ConversationRecord retained, erased;
-    ASSERT_EQ(Conversation::retain_published_input(record, 1, retained), AYNI_OK);
+    ASSERT_EQ(Conversation::retain_published_input(::ayni::test::conversation_workspace(), record,
+                                                   1, retained),
+              AYNI_OK);
     ASSERT_EQ(retained.round_count, 1U);
     EXPECT_EQ(retained.rounds[0].number, 1U);
-    ASSERT_EQ(Conversation::erase_round(retained, 1, erased), AYNI_OK);
+    ASSERT_EQ(
+        Conversation::erase_round(::ayni::test::conversation_workspace(), retained, 1, erased),
+        AYNI_OK);
     EXPECT_EQ(erased.round_count, 0U);
     EXPECT_EQ(erased.draft.size, 0U);
     for (uint64_t turn = 2; turn <= retained_rounds_max; ++turn) {
         retained.draft = record.draft;
-        ASSERT_EQ(Conversation::retain_published_input(retained, turn, erased), AYNI_OK);
+        ASSERT_EQ(Conversation::retain_published_input(::ayni::test::conversation_workspace(),
+                                                       retained, turn, erased),
+                  AYNI_OK);
         retained = erased;
     }
     Encoded encoded;
-    EXPECT_EQ(Conversation::begin(retained, text("next"), encoded), AYNI_OK);
-    ASSERT_EQ(Conversation::erase_round(retained, 1, erased), AYNI_OK);
-    EXPECT_EQ(Conversation::begin(erased, text("next"), encoded), AYNI_OK);
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), retained, text("next"),
+                                  encoded),
+              AYNI_OK);
+    ASSERT_EQ(
+        Conversation::erase_round(::ayni::test::conversation_workspace(), retained, 1, erased),
+        AYNI_OK);
+    EXPECT_EQ(
+        Conversation::begin(::ayni::test::conversation_workspace(), erased, text("next"), encoded),
+        AYNI_OK);
 }
 } // namespace
+
+// ADR-0090 / C-SDK-007: codecs admit scratch before publishing parameters;
+// the GoalType validator borrows its explicit descriptor as callback context.
+TEST(Conversation, short_workspace_preserves_parameters_and_valid_region_supports_callback) {
+    ayni::Workspace memory;
+    ASSERT_EQ(memory.create(Conversation::workspace_requirements), AYNI_OK);
+    Encoded parameters;
+    parameters.size = 7;
+    parameters.bytes.front() = 91;
+    auto short_region = *memory.get();
+    --short_region.byte_capacity;
+    EXPECT_EQ(Conversation::begin(&short_region, empty(), text("hello"), parameters),
+              AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(parameters.size, 7U);
+    EXPECT_EQ(parameters.bytes.front(), 91U);
+    ASSERT_EQ(Conversation::begin(memory.get(), empty(), text("hello"), parameters), AYNI_OK);
+    EXPECT_EQ(Conversation::validate_turn(nullptr, parameters.view()), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(Conversation::validate_turn(const_cast<ayni_workspace_v1 *>(memory.get()),
+                                          parameters.view()),
+              AYNI_OK);
+}
+
+// ADR-0090: strategy allocation belongs to the caller before registration/dispatch.
+TEST(ToolLoop, short_workspace_refuses_configuration_without_consuming_the_instance) {
+    ayni::Workspace memory;
+    ASSERT_EQ(memory.create(ToolLoop::workspace_requirements), AYNI_OK);
+    ToolLoopConfig config;
+    config.identity.id = text("bounded.loop");
+    config.model.kind = AYNI_POLICY_REQUEST_MODEL;
+    config.model.binding_id = text("model");
+    config.summary = config.model;
+    ToolLoop loop;
+    auto short_region = *memory.get();
+    --short_region.byte_capacity;
+    EXPECT_EQ(loop.configure(config, &short_region), AYNI_BUFFER_TOO_SMALL);
+    EXPECT_EQ(loop.configure(config, memory.get()), AYNI_OK);
+    EXPECT_EQ(loop.configure(config, memory.get()), AYNI_INVALID_STATE);
+}

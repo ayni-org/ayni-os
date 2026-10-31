@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Mock tools service, ADR-0054: a deterministic TOOL_CALLS model whose
 // proposal a strategy requests from a second Mock, through public ABI only.
 #include "mock_display_schema.h"
@@ -273,7 +274,8 @@ class MockTools : public ::testing::Test {
                 }
                 source[0].name = {};
                 const ayni_arguments_v1 args{source.data(), count};
-                proposal_error = ayni_arguments_normalize(&display.business.input, &args, &value);
+                proposal_error = ayni_arguments_normalize(::ayni::test::value_workspace(),
+                                                          &display.business.input, &args, &value);
             }
         }
         if (proposal_error != AYNI_OK) {

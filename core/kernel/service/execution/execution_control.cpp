@@ -1,4 +1,5 @@
 #include "kernel/service/execution/execution_control.h"
+#include "foundation/workspace.h"
 
 #include "authority/scope/scope.h"
 #include "catalog/capability/business_encoding.h"
@@ -29,8 +30,13 @@ ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding 
         return work_.scenes.authorize(view(binding.scene), binding.scene_version, capability,
                                       version, input.arguments, durable_seq, scene);
     }
-    catalog::DecodedBusiness proof;
-    auto status = catalog::decode_business(domain, contract.business_contract, proof);
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!proof_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &proof = *proof_lease;
+    auto status =
+        catalog::decode_business(work_.workspace, domain, contract.business_contract, proof);
     if (status != AYNI_OK) {
         return status;
     }
@@ -131,8 +137,12 @@ bool ExecutionControl::allowed(uint32_t index, uint64_t now_us, uint64_t durable
         owner == nullptr || fact.epochs.authority_epoch != owner->binding_revision) {
         return false;
     }
-    work::CallInputView input{};
-    if (work::read_call_input(work_.calls.domain(index), work_.calls.input(index),
+    auto input_lease = work_.workspace.make<work::CallInputView>();
+    if (!input_lease) {
+        return false;
+    }
+    auto &input = *input_lease;
+    if (work::read_call_input(work_.workspace, work_.calls.domain(index), work_.calls.input(index),
                               work_.calls.contract(index), input) != AYNI_OK) {
         return false;
     }

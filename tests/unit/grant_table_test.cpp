@@ -5,6 +5,7 @@
 #include "catalog/capability/capability_registry.h"
 #include "catalog/capability/field_domain.h"
 #include "foundation/little_endian.h"
+#include "workspace_fixture.h"
 
 #include <gtest/gtest.h>
 
@@ -142,7 +143,8 @@ TEST(GrantTable, original_business_proof_is_copied_and_catalog_changes_hold_unus
     constexpr uint32_t proof_budget = 4096, domain_budget = 256;
     std::array<uint8_t, proof_budget> proof{};
     uint32_t size = 0;
-    ASSERT_EQ(encode_business({input.domain.data(), input.domain_size}, execution, business,
+    ASSERT_EQ(encode_business(::ayni::test::codec_workspace(),
+                              {input.domain.data(), input.domain_size}, execution, business,
                               proof.data(), proof_budget, size),
               AYNI_OK);
     Grants table(1, 1, domain_budget, proof_budget);
@@ -164,7 +166,8 @@ TEST(GrantTable, original_business_proof_is_copied_and_catalog_changes_hold_unus
         CapabilityRegistry catalog(memory.data(), 1, domain_budget, proof_budget);
         ASSERT_EQ(catalog.add(desc), AYNI_OK);
         result.max_count = changed ? 2U : 1U;
-        ASSERT_EQ(encode_business({input.domain.data(), input.domain_size}, execution, business,
+        ASSERT_EQ(encode_business(::ayni::test::codec_workspace(),
+                                  {input.domain.data(), input.domain_size}, execution, business,
                                   proof.data(), proof_budget, size),
                   AYNI_OK);
         ASSERT_EQ(catalog.attach_business(0, {proof.data(), size}), AYNI_OK);
@@ -441,7 +444,8 @@ TEST(GrantTable, next_expiry_is_ordered_and_restored_finite_grants_never_reancho
     EXPECT_EQ(index, 1U);
     EXPECT_EQ(deadline, 120U);
     Grants restored;
-    ASSERT_EQ(restored->restore_create(record_of(*original.operator->(), 0), {1, 1}),
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(),
+                                       record_of(*original.operator->(), 0), {1, 1}),
               GrantTable::Restore::restored);
     EXPECT_EQ(restored->at(0).deadline_us, 0U);
     EXPECT_EQ(restored->check_chain(0, ready).reason, AYNI_REASON_GRANT_EXPIRED);
@@ -462,13 +466,16 @@ TEST(GrantTable, restore_rejects_orphan_expansion_cycles_and_wrong_expiry_states
     ASSERT_EQ(source.add(input.request(0, AYNI_GRANT_ALLOW_DELEGATION), 1, 1).status, AYNI_OK);
     ASSERT_EQ(source.add(input.request(id(1)), 2, 2, ready, 1).status, AYNI_OK);
     Grants restored;
-    EXPECT_EQ(restored->restore_create(record_of(*source.operator->(), 1), {2, 2}),
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(),
+                                       record_of(*source.operator->(), 1), {2, 2}),
               GrantTable::Restore::corrupt);
-    ASSERT_EQ(restored->restore_create(record_of(*source.operator->(), 0), {1, 1}),
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(),
+                                       record_of(*source.operator->(), 0), {1, 1}),
               GrantTable::Restore::restored);
     auto child = record_of(*source.operator->(), 1);
     child.grant.parent_grant_id = child.grant_id;
-    EXPECT_EQ(restored->restore_create(child, {2, 2}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), child, {2, 2}),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(restored->restore_state({id(1), 2, AYNI_GRANT_EXPIRED}, {3, 3}),
               GrantTable::Restore::corrupt);
     EXPECT_EQ(restored->size(), 1U);
@@ -484,8 +491,10 @@ TEST(GrantTable, exact_replacement_replays_without_reselecting_another_safe_cand
     const auto first = record_of(*source.operator->(), 0);
     const auto second = record_of(*source.operator->(), 1);
     Grants replay(2);
-    ASSERT_EQ(replay->restore_create(first, {1, 1}), GrantTable::Restore::restored);
-    ASSERT_EQ(replay->restore_create(second, {2, 2}), GrantTable::Restore::restored);
+    ASSERT_EQ(replay->restore_create(::ayni::test::codec_workspace(), first, {1, 1}),
+              GrantTable::Restore::restored);
+    ASSERT_EQ(replay->restore_create(::ayni::test::codec_workspace(), second, {2, 2}),
+              GrantTable::Restore::restored);
     ASSERT_EQ(replay->restore_state({id(1), 2, AYNI_GRANT_EXPIRED}, {20, 20}),
               GrantTable::Restore::restored);
     ASSERT_EQ(replay->restore_state({id(2), 2, AYNI_GRANT_EXPIRED}, {10, 10}),
@@ -495,7 +504,8 @@ TEST(GrantTable, exact_replacement_replays_without_reselecting_another_safe_cand
     replacement.replaced_grant_id = id(1); // deliberately not the earliest safe leaf
     replacement.grant.lifetime = AYNI_GRANT_PERMANENT;
     replacement.grant.duration_us = 0;
-    ASSERT_EQ(replay->restore_create(replacement, {30, 30}), GrantTable::Restore::restored);
+    ASSERT_EQ(replay->restore_create(::ayni::test::codec_workspace(), replacement, {30, 30}),
+              GrantTable::Restore::restored);
     uint32_t index = 0;
     EXPECT_FALSE(replay->find(id(1), index));
     EXPECT_TRUE(replay->find(id(2), index));
@@ -512,14 +522,16 @@ TEST(GrantTable, snapshot_keeps_original_stamps_and_allows_an_already_removed_pr
     const GrantSnapshotRecord snapshot{
         record_of(*source.operator->(), 0), {3, 3}, {3, 3}, 1, AYNI_GRANT_ACTIVE};
     Grants restored(1);
-    ASSERT_EQ(restored->restore_snapshot(snapshot), GrantTable::Restore::restored);
+    ASSERT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), snapshot),
+              GrantTable::Restore::restored);
     EXPECT_EQ(restored->at(0).replaced_grant_id, id(1));
     EXPECT_EQ(restored->at(0).created_stamp.commit_seq, 3U);
     EXPECT_EQ(restored->check_chain(0, ready).status, AYNI_OK);
     auto invalid = snapshot;
     invalid.revision = 2;
     Grants other;
-    EXPECT_EQ(other->restore_snapshot(invalid), GrantTable::Restore::corrupt);
+    EXPECT_EQ(other->restore_snapshot(::ayni::test::codec_workspace(), invalid),
+              GrantTable::Restore::corrupt);
 }
 
 // ADR-0030 decision 8: recovery validates complete related facts before publication.
@@ -532,18 +544,23 @@ TEST(GrantTable,
     const auto parent = record_of(*source.operator->(), 0);
     const auto child = record_of(*source.operator->(), 1);
     Grants empty(0);
-    EXPECT_EQ(empty->restore_create(parent, {1, 1}), GrantTable::Restore::no_room);
+    EXPECT_EQ(empty->restore_create(::ayni::test::codec_workspace(), parent, {1, 1}),
+              GrantTable::Restore::no_room);
     EXPECT_EQ(empty->size(), 0U);
     Grants undersized(1, 4, 4);
-    EXPECT_EQ(undersized->restore_create(parent, {1, 1}), GrantTable::Restore::no_room);
+    EXPECT_EQ(undersized->restore_create(::ayni::test::codec_workspace(), parent, {1, 1}),
+              GrantTable::Restore::no_room);
     EXPECT_EQ(undersized->size(), 0U);
     Grants shallow(2, 0);
-    ASSERT_EQ(shallow->restore_create(parent, {1, 1}), GrantTable::Restore::restored);
-    EXPECT_EQ(shallow->restore_create(child, {2, 2}), GrantTable::Restore::no_room);
+    ASSERT_EQ(shallow->restore_create(::ayni::test::codec_workspace(), parent, {1, 1}),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(shallow->restore_create(::ayni::test::codec_workspace(), child, {2, 2}),
+              GrantTable::Restore::no_room);
     EXPECT_EQ(shallow->size(), 1U);
     auto broken = parent;
     broken.scope.size = 1;
-    EXPECT_EQ(empty->restore_create(broken, {1, 1}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(empty->restore_create(::ayni::test::codec_workspace(), broken, {1, 1}),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(empty->size(), 0U);
 }
 
@@ -559,11 +576,15 @@ TEST(GrantTable, snapshot_cannot_reintroduce_a_replaced_predecessor_in_either_re
         record_of(*source.operator->(), 1), {2, 2}, {2, 2}, 1, AYNI_GRANT_ACTIVE};
     second.create.replaced_grant_id = id(1);
     Grants predecessor_first;
-    ASSERT_EQ(predecessor_first->restore_snapshot(first), GrantTable::Restore::restored);
-    EXPECT_EQ(predecessor_first->restore_snapshot(second), GrantTable::Restore::corrupt);
+    ASSERT_EQ(predecessor_first->restore_snapshot(::ayni::test::codec_workspace(), first),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(predecessor_first->restore_snapshot(::ayni::test::codec_workspace(), second),
+              GrantTable::Restore::corrupt);
     Grants replacement_first;
-    ASSERT_EQ(replacement_first->restore_snapshot(second), GrantTable::Restore::restored);
-    ASSERT_EQ(replacement_first->restore_snapshot(first), GrantTable::Restore::restored);
+    ASSERT_EQ(replacement_first->restore_snapshot(::ayni::test::codec_workspace(), second),
+              GrantTable::Restore::restored);
+    ASSERT_EQ(replacement_first->restore_snapshot(::ayni::test::codec_workspace(), first),
+              GrantTable::Restore::restored);
     EXPECT_FALSE(replacement_first->consistent());
 }
 
@@ -814,12 +835,15 @@ TEST(GrantTable, snapshot_lifecycle_and_both_original_stamps_are_checked_indepen
             break;
         }
         Grants restored;
-        EXPECT_EQ(restored->restore_snapshot(snapshot), GrantTable::Restore::corrupt) << fault;
+        EXPECT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), snapshot),
+                  GrantTable::Restore::corrupt)
+            << fault;
         EXPECT_EQ(restored->size(), 0U);
     }
     const GrantSnapshotRecord expired{fact, {10, 10}, {11, 11}, 2, AYNI_GRANT_EXPIRED};
     Grants restored;
-    ASSERT_EQ(restored->restore_snapshot(expired), GrantTable::Restore::restored);
+    ASSERT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), expired),
+              GrantTable::Restore::restored);
     EXPECT_EQ(restored->at(0).lifecycle, AYNI_GRANT_EXPIRED);
     EXPECT_EQ(restored->at(0).deadline_us, 0U);
 }
@@ -885,19 +909,28 @@ TEST(GrantTable, restore_rejects_expansion_or_issuer_schema_depth_and_lifetime_d
             break;
         }
         Grants restored;
-        ASSERT_EQ(restored->restore_create(parent_record, {10, 10}), GrantTable::Restore::restored);
-        EXPECT_EQ(restored->restore_create(record, stamp), GrantTable::Restore::corrupt) << fault;
+        ASSERT_EQ(
+            restored->restore_create(::ayni::test::codec_workspace(), parent_record, {10, 10}),
+            GrantTable::Restore::restored);
+        EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), record, stamp),
+                  GrantTable::Restore::corrupt)
+            << fault;
         EXPECT_EQ(restored->size(), 1U);
     }
     Grants expired_parent;
-    ASSERT_EQ(expired_parent->restore_create(parent_fact, {10, 10}), GrantTable::Restore::restored);
+    ASSERT_EQ(
+        expired_parent->restore_create(::ayni::test::codec_workspace(), parent_fact, {10, 10}),
+        GrantTable::Restore::restored);
     ASSERT_EQ(expired_parent->restore_state({id(1), 2, AYNI_GRANT_EXPIRED}, {20, 20}),
               GrantTable::Restore::restored);
-    EXPECT_EQ(expired_parent->restore_create(child_fact, {21, 21}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(expired_parent->restore_create(::ayni::test::codec_workspace(), child_fact, {21, 21}),
+              GrantTable::Restore::corrupt);
     GrantSnapshotRecord late_child{child_fact, {21, 21}, {21, 21}, 1, AYNI_GRANT_ACTIVE};
-    EXPECT_EQ(expired_parent->restore_snapshot(late_child), GrantTable::Restore::corrupt);
+    EXPECT_EQ(expired_parent->restore_snapshot(::ayni::test::codec_workspace(), late_child),
+              GrantTable::Restore::corrupt);
     late_child.created_stamp = late_child.stamp = {11, 11};
-    EXPECT_EQ(expired_parent->restore_snapshot(late_child), GrantTable::Restore::restored);
+    EXPECT_EQ(expired_parent->restore_snapshot(::ayni::test::codec_workspace(), late_child),
+              GrantTable::Restore::restored);
 }
 
 // C-AUTH-022 / ADR-0030 decision 8: creation chronology holds even in terminal snapshots.
@@ -909,15 +942,18 @@ TEST(GrantTable, expired_child_creation_must_follow_parent_creation_even_when_te
     const auto parent_fact = record_of(*source.operator->(), 0);
     const auto child_fact = record_of(*source.operator->(), 1);
     Grants restored;
-    ASSERT_EQ(restored->restore_create(parent_fact, {10, 10}), GrantTable::Restore::restored);
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(), parent_fact, {10, 10}),
+              GrantTable::Restore::restored);
     const GrantSnapshotRecord impossible{child_fact, {9, 9}, {20, 20}, 2, AYNI_GRANT_EXPIRED};
-    EXPECT_EQ(restored->restore_snapshot(impossible), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), impossible),
+              GrantTable::Restore::corrupt);
     ASSERT_EQ(restored->size(), 1U);
     EXPECT_EQ(restored->at(0).grant_id, id(1));
     EXPECT_EQ(restored->at(0).revision, 1U);
     EXPECT_EQ(restored->at(0).stamp.commit_seq, 10U);
     const GrantSnapshotRecord legal{child_fact, {11, 11}, {20, 20}, 2, AYNI_GRANT_EXPIRED};
-    ASSERT_EQ(restored->restore_snapshot(legal), GrantTable::Restore::restored);
+    ASSERT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), legal),
+              GrantTable::Restore::restored);
     EXPECT_EQ(restored->size(), 2U);
     EXPECT_EQ(restored->at(1).created_stamp.commit_seq, 11U);
     EXPECT_EQ(restored->at(1).stamp.commit_seq, 20U);
@@ -931,8 +967,10 @@ TEST(GrantTable, restore_state_and_replacement_validate_exact_old_facts_without_
     ASSERT_EQ(source.add(input.request(0, AYNI_GRANT_ALLOW_DELEGATION, 10), 1, 1).status, AYNI_OK);
     const auto first = record_of(*source.operator->(), 0);
     Grants restored;
-    ASSERT_EQ(restored->restore_create(first, {1, 1}), GrantTable::Restore::restored);
-    EXPECT_EQ(restored->restore_create(first, {2, 2}), GrantTable::Restore::corrupt);
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(), first, {1, 1}),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), first, {2, 2}),
+              GrantTable::Restore::corrupt);
     for (uint32_t fault = 0; fault < 7; ++fault) {
         GrantStateRecord state{id(1), 2, AYNI_GRANT_EXPIRED};
         ayni::foundation::TransitionStamp stamp{2, 2};
@@ -965,15 +1003,19 @@ TEST(GrantTable, restore_state_and_replacement_validate_exact_old_facts_without_
     auto replacement = first;
     replacement.grant_id = id(2);
     replacement.replaced_grant_id = id(99);
-    EXPECT_EQ(restored->restore_create(replacement, {3, 3}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), replacement, {3, 3}),
+              GrantTable::Restore::corrupt);
     replacement.replaced_grant_id = id(1);
-    EXPECT_EQ(restored->restore_create(replacement, {3, 3}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), replacement, {3, 3}),
+              GrantTable::Restore::corrupt);
     ASSERT_EQ(restored->restore_state({id(1), 2, AYNI_GRANT_EXPIRED}, {2, 2}),
               GrantTable::Restore::restored);
     EXPECT_EQ(restored->restore_state({id(1), 2, AYNI_GRANT_EXPIRED}, {3, 3}),
               GrantTable::Restore::corrupt);
-    EXPECT_EQ(restored->restore_create(replacement, {2, 2}), GrantTable::Restore::corrupt);
-    ASSERT_EQ(restored->restore_create(replacement, {3, 3}), GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), replacement, {2, 2}),
+              GrantTable::Restore::corrupt);
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(), replacement, {3, 3}),
+              GrantTable::Restore::restored);
     restored->clear();
     uint32_t index = 91;
     EXPECT_FALSE(restored->find(0, index));
@@ -993,9 +1035,11 @@ TEST(GrantTable, all_old_boot_expiry_is_atomic_and_equal_deadlines_use_id_order)
     ASSERT_TRUE(source->next_expiry(ready, selected, deadline));
     EXPECT_EQ(source->at(selected).grant_id, id(1));
     Grants restored;
-    ASSERT_EQ(restored->restore_create(record_of(*source.operator->(), 0), {10, 10}),
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(),
+                                       record_of(*source.operator->(), 0), {10, 10}),
               GrantTable::Restore::restored);
-    ASSERT_EQ(restored->restore_create(record_of(*source.operator->(), 1), {20, 20}),
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(),
+                                       record_of(*source.operator->(), 1), {20, 20}),
               GrantTable::Restore::restored);
     restored->expire_old_boot(2, {0, 21});
     restored->expire_old_boot(2, {21, 0});
@@ -1165,14 +1209,18 @@ TEST(GrantTable, equal_parent_creation_stamp_is_rejected_by_journal_and_snapshot
     const auto parent = record_of(*source.operator->(), 0);
     const auto child = record_of(*source.operator->(), 1);
     Grants restored;
-    ASSERT_EQ(restored->restore_create(parent, {10, 10}), GrantTable::Restore::restored);
-    EXPECT_EQ(restored->restore_create(child, {10, 10}), GrantTable::Restore::corrupt);
+    ASSERT_EQ(restored->restore_create(::ayni::test::codec_workspace(), parent, {10, 10}),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), child, {10, 10}),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(restored->size(), 1U);
     const GrantSnapshotRecord snapshot{child, {10, 10}, {10, 10}, 1, AYNI_GRANT_ACTIVE};
-    EXPECT_EQ(restored->restore_snapshot(snapshot), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), snapshot),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(restored->size(), 1U);
     EXPECT_EQ(restored->at(0).grant_id, parent.grant_id);
-    EXPECT_EQ(restored->restore_create(child, {11, 11}), GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), child, {11, 11}),
+              GrantTable::Restore::restored);
 }
 
 // ADR-0030 decision 8: a later terminal ancestor is valid retained history only in snapshots.
@@ -1186,11 +1234,14 @@ TEST(GrantTable, only_snapshot_accepts_child_history_beneath_a_later_terminal_pa
     const auto child = record_of(*source.operator->(), 1);
     Grants restored;
     const GrantSnapshotRecord expired{parent, {10, 10}, {12, 12}, 2, AYNI_GRANT_EXPIRED};
-    ASSERT_EQ(restored->restore_snapshot(expired), GrantTable::Restore::restored);
-    EXPECT_EQ(restored->restore_create(child, {11, 11}), GrantTable::Restore::corrupt);
+    ASSERT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), expired),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_create(::ayni::test::codec_workspace(), child, {11, 11}),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(restored->size(), 1U);
     const GrantSnapshotRecord retained{child, {11, 11}, {11, 11}, 1, AYNI_GRANT_ACTIVE};
-    EXPECT_EQ(restored->restore_snapshot(retained), GrantTable::Restore::restored);
+    EXPECT_EQ(restored->restore_snapshot(::ayni::test::codec_workspace(), retained),
+              GrantTable::Restore::restored);
     EXPECT_EQ(restored->size(), 2U);
     EXPECT_EQ(restored->at(0).lifecycle, AYNI_GRANT_EXPIRED);
 }
@@ -1205,12 +1256,14 @@ TEST(GrantTable, replay_cannot_replace_a_terminal_parent_with_active_or_terminal
     replacement.grant_id = id(3);
     replacement.replaced_grant_id = id(1);
     table->expire(0, {12, 12});
-    EXPECT_EQ(table->restore_create(replacement, {13, 13}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(table->restore_create(::ayni::test::codec_workspace(), replacement, {13, 13}),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(table->size(), 2U);
     EXPECT_EQ(table->at(0).grant_id, id(1));
     EXPECT_EQ(table->at(1).parent_grant_id, id(1));
     table->expire(1, {14, 14});
-    EXPECT_EQ(table->restore_create(replacement, {15, 15}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(table->restore_create(::ayni::test::codec_workspace(), replacement, {15, 15}),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(table->size(), 2U);
     EXPECT_EQ(table->at(0).grant_id, id(1));
     EXPECT_EQ(table->at(1).lifecycle, AYNI_GRANT_EXPIRED);

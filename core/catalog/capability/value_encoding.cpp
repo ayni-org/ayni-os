@@ -1,5 +1,6 @@
 #include "catalog/capability/value_encoding.h"
 #include "catalog/capability/value_validation.h"
+#include "catalog/capability/workspace.h"
 #include "foundation/little_endian.h"
 
 #include <cstring>
@@ -184,12 +185,17 @@ ayni_status_t encode_admitted_value(const ayni_value_v1 &value, uint8_t *out, ui
     return AYNI_OK;
 }
 
-ayni_status_t decode_value(ayni_bytes_v1 body, DecodedValue &out) {
+ayni_status_t decode_value(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                           DecodedValue &out) {
     if (body.data == nullptr || body.size < value_encoding_header_bytes ||
         foundation::load_le32(body.data) != value_encoding_version) {
         return AYNI_INVALID_ARGUMENT;
     }
-    DecodedValue decoded;
+    auto decoded_lease = workspace.make<DecodedValue>();
+    if (!decoded_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &decoded = *decoded_lease;
     decoded.count = foundation::load_le32(body.data + word_bytes);
     if (decoded.count == 0U || decoded.count > decoded.nodes.size()) {
         return AYNI_INVALID_ARGUMENT;
@@ -299,13 +305,25 @@ extern "C" ayni_status_t ayni_value_write(const ayni_value_v1 *value, uint8_t *o
     return ayni::catalog::encode_value(*value, out, capacity, *out_size);
 }
 
-extern "C" ayni_status_t ayni_value_read(ayni_bytes_v1 body, ayni_value_node_v1 *nodes,
-                                         uint32_t capacity, uint32_t *out_count) {
+extern "C" ayni_status_t ayni_value_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
+                                         ayni_value_node_v1 *nodes, uint32_t capacity,
+                                         uint32_t *out_count) {
+    const auto workspace_status =
+        ayni::foundation::Workspace::check(region, ayni::catalog::value_workspace_size());
+    if (workspace_status != AYNI_OK) {
+        return workspace_status;
+    }
+    ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
+
     if (out_count == nullptr || (capacity != 0U && nodes == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    ayni::catalog::DecodedValue decoded;
-    const auto status = ayni::catalog::decode_value(body, decoded);
+    auto decoded_lease = workspace.make<ayni::catalog::DecodedValue>();
+    if (!decoded_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &decoded = *decoded_lease;
+    const auto status = ayni::catalog::decode_value(workspace, body, decoded);
     if (status != AYNI_OK) {
         return status;
     }

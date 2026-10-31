@@ -1,5 +1,6 @@
 // A replacement is one sealed Goal/direct-live-Task/command/footer batch.
 // Table owners validate their facts; this proof owns only cross-table pairing.
+#include "foundation/workspace.h"
 #include "kernel/service/persistence/work_replay.h"
 
 #include "authority/scope/business_request.h"
@@ -207,11 +208,20 @@ bool WorkReplay::task_tools_consistent(uint32_t task_index, const work::TaskAuth
         }
         const auto domain = model_.calls.domain(call_index);
         if (!model_.calls.state(call_index).content_erased) {
-            catalog::DecodedBusiness proof;
-            work::CallInputView input;
-            if (catalog::decode_business(domain, contract.business_contract, proof) != AYNI_OK ||
-                work::read_call_input(domain, model_.calls.input(call_index), contract, input) !=
-                    AYNI_OK) {
+            auto proof_lease = model_.workspace.make<catalog::DecodedBusiness>();
+            if (!proof_lease) {
+                return false;
+            }
+            auto &proof = *proof_lease;
+            auto input_lease = model_.workspace.make<work::CallInputView>();
+            if (!input_lease) {
+                return false;
+            }
+            auto &input = *input_lease;
+            if (catalog::decode_business(model_.workspace, domain, contract.business_contract,
+                                         proof) != AYNI_OK ||
+                work::read_call_input(model_.workspace, domain, model_.calls.input(call_index),
+                                      contract, input) != AYNI_OK) {
                 return false;
             }
             const auto original = authority::contains_business_request(
