@@ -1,0 +1,7 @@
+# Preserve the known application address and private demo_cfg contents.
+# The new 8 MiB volume must be confirmed blank before the first deployment.
+# Name, Type, SubType, Offset, Size, Flags
+audio, data, 0x40, 0x100000, 0x300000,
+demo_cfg, data, nvs, 0x400000, 0x6000,
+factory, app, factory, 0x410000, 0x200000,
+ayni, data, littlefs, 0x800000, 0x800000,

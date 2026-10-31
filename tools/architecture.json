@@ -276,6 +276,11 @@
       "api",
       "external"
     ],
+    "experiments": [
+      "api",
+      "hosts:esp_idf",
+      "external"
+    ],
     "examples": [
       "api",
       "runtime:examples",
