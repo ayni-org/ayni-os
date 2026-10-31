@@ -9,7 +9,7 @@
 | 目录 | 内容 | 版本域 |
 |---|---|---|
 | [`domain/`](domain/) | ID、时间、状态码、原语最小字段、生命周期、调用与绑定、提交与输出门控、授权与信任、资源与运行限制、执行许可与停止、五项产品语义、容量限额 | 领域语义（随能力/Scene/GoalType 版本） |
-| [`host/`](host/) | Host 端口、Provider 接口、策略与 GoalType 接口 | ABI（`abi_major/minor`） |
+| [`host/`](host/) | Host 端口、Provider 接口、策略与 GoalType 接口 | C ABI（`abi_major/minor`）及C++源码契约 |
 | [`wire/`](wire/) | 消息信封、受限 JSON 子集 | 协议（`protocol_major/minor`） |
 | [`storage/`](storage/) | 日志批次、快照与记录版本 | 存储（`storage_schema`） |
 | [`fixtures/`](fixtures/) | E1–E4 实验的场景格式与用例清单 | 随契约版本 |
@@ -55,6 +55,7 @@
 | `C-PROD` | [domain/product_semantics.md](domain/product_semantics.md) | 应用层 + `work`、`knowledge` |
 | `C-MEM` | [domain/memory.md](domain/memory.md) | `knowledge`、`work/provenance`、`work/privacy`、`kernel` |
 | `C-LIMIT` | [domain/limits.md](domain/limits.md) | `kernel`（配置） |
+| `C-HVAL` | [host/file_values.md](host/file_values.md) | HostStorage、Native/ESP Host |
 | `C-HOST` | [host/host_ports.md](host/host_ports.md) | `kernel` 与各 Host |
 | `C-NATIVE` | [host/native_runtime.md](host/native_runtime.md) | `runtime/` |
 | `C-SDK` | [host/cpp_sdk.md](host/cpp_sdk.md) | 公开 C++ facade、`runtime/examples`、`examples/` |

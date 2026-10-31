@@ -1,11 +1,12 @@
 #include "littlefs_files.h"
 #include <ayni/hosts/esp_idf.h>
-#include <ayni/hosts/storage/request.h>
+#include <ayni/hosts/storage/work_item.h>
 #include <ayni/storage_format.h>
 #include <esp_heap_caps.h>
 #include <new>
 namespace ayni::hosts::esp_idf {
 using storage::Request;
+using storage::WorkItem;
 namespace {
 constexpr TickType_t space_refresh_ticks = pdMS_TO_TICKS(1000);
 constexpr UBaseType_t worker_priority = 1;
@@ -24,7 +25,11 @@ class Host::Storage {
         vSemaphoreDelete(done_);
     }
     StorageOpen open(const char *label, uint32_t capacity);
-    ayni_submit_result_t submit(const Request &request);
+    ayni_submit_result_t submit(const Request &request) { return enqueue(WorkItem{request}); }
+    ayni_submit_result_t submit_value(const storage::FileValueRequest &request) {
+        return storage::valid_file_value_request(request) ? enqueue(WorkItem{request})
+                                                          : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
     void stop();
     ayni_status_t free_bytes(uint64_t *out);
     uint32_t stack_free_bytes() const {
@@ -32,13 +37,14 @@ class Host::Storage {
     }
 
   private:
+    ayni_submit_result_t enqueue(const WorkItem &request);
     static void run(void *ctx);
     void serve_queue();
     bool refresh_space(uint64_t completed_reservation);
     Host &owner_;
     LittleFiles files_;
     storage::FileLog log_;
-    std::array<Request, Host::request_capacity_limit> requests_{};
+    std::array<WorkItem, Host::request_capacity_limit> requests_{};
     uint32_t capacity_ = 0, head_ = 0, count_ = 0;
     enum class State { closed, running, draining };
     State state_ = State::closed;
@@ -76,13 +82,13 @@ StorageOpen Host::Storage::open(const char *label, uint32_t capacity) {
     }
     return {StorageStatus::ok, 0};
 }
-ayni_submit_result_t Host::Storage::submit(const Request &request) {
+ayni_submit_result_t Host::Storage::enqueue(const WorkItem &request) {
     bool accepted = false;
     portENTER_CRITICAL(&mutex_);
     if (state_ == State::running && count_ < capacity_) {
         requests_[(head_ + count_) % capacity_] = request;
         ++count_;
-        reserved_ += storage::request_reservation(request);
+        reserved_ += storage::work_reservation(request);
         accepted = true;
     }
     portEXIT_CRITICAL(&mutex_);
@@ -122,7 +128,7 @@ void Host::Storage::run(void *ctx) {
 }
 void Host::Storage::serve_queue() {
     for (;;) {
-        Request request{};
+        WorkItem request{};
         bool has_request = false, finished = false;
         portENTER_CRITICAL(&mutex_);
         has_request = count_ != 0;
@@ -143,9 +149,11 @@ void Host::Storage::serve_queue() {
             ulTaskNotifyTake(pdTRUE, space_refresh_ticks);
             continue;
         }
-        const auto result = storage::serve_request(log_, request);
-        static_cast<void>(refresh_space(storage::request_reservation(request)));
-        static_cast<void>(ayni_completion_post(request.completion, &result));
+        const auto result = storage::serve_work(log_, files_, request);
+        static_cast<void>(refresh_space(storage::work_reservation(request)));
+        if (result.post()) {
+            Host::wake(&owner_);
+        }
     }
 }
 void Host::Storage::stop() {
@@ -191,6 +199,13 @@ StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initia
         heap_caps_free(memory);
     }
     return opened;
+}
+storage::FileValuePort Host::value_store() {
+    return storage_ ? storage::FileValuePort{this, &Host::submit_value} : storage::FileValuePort{};
+}
+ayni_submit_result_t Host::submit_value(void *context, const storage::FileValueRequest *request) {
+    auto *storage = static_cast<Host *>(context)->storage_;
+    return storage && request ? storage->submit_value(*request) : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
 }
 void Host::close_storage() {
     if (storage_) {

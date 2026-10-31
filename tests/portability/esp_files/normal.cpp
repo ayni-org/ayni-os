@@ -4,6 +4,7 @@
 #include <array>
 #include <ayni/ayni.h>
 #include <ayni/hosts/storage/file_log.h>
+#include <ayni/hosts/storage/file_value.h>
 #include <ayni/storage_format.h>
 #include <cerrno>
 #include <cstdio>
@@ -151,6 +152,39 @@ int main() {
         CHECK(log.read_log(0, out.data(), out.size()).value == out.size());
         CHECK(std::memcmp(out.data(), activation.data(), activation.size()) == 0);
         CHECK(std::memcmp(out.data() + activation.size(), payload.data(), payload.size()) == 0);
+    }
+    // The outer store shares the same leased Files and serialized worker as Core I/O.
+    using namespace ayni::hosts::storage;
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "commit_log").status == FileLog::OpenStatus::ok);
+        FileValueRequest request;
+        request.kind = FileValueRequest::Kind::write;
+        request.key = {1, 2};
+        request.generation = 1;
+        request.data = payload.data();
+        request.size = payload.size();
+        request.complete = [](void *, const FileValueResult &) noexcept {};
+        CHECK(serve_file_value(files, request).status == AYNI_OK);
+        CHECK(serve_file_value(files, request).status == AYNI_OK);
+        CHECK(log.append(4, payload.data(), payload.size()).outcome == AYNI_WRITE_OK);
+    }
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "commit_log").status == FileLog::OpenStatus::ok);
+        std::array<uint8_t, payload.size()> out{};
+        FileValueRequest request;
+        request.key = {1, 2};
+        request.buffer = out.data();
+        request.size = out.size();
+        request.complete = [](void *, const FileValueResult &) noexcept {};
+        const auto found = serve_file_value(files, request);
+        CHECK(found.status == AYNI_OK && found.generation == 1 && out == payload);
+        std::array<uint8_t, payload.size()> journal{};
+        CHECK(log.read_prefix(4, journal.data(), journal.size()).value == journal.size());
+        CHECK(journal == payload);
     }
     std::puts("ESP Files normal emulated medium passed; not ESP hardware evidence");
     return 0;

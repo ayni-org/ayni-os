@@ -18,6 +18,7 @@
 #define AYNI_HOSTS_NATIVE_H
 
 #include <ayni/ayni.h>
+#include <ayni/hosts/storage/file_value.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -84,6 +85,9 @@ class Host {
     // from its last ayni_completion_post (C-HOST-018). Does nothing when the
     // storage is not open.
     void close_storage();
+    // Owner-only outer data port, shares the storage queue/space budget and close barrier.
+    // Empty while closed; old captured ports reject submissions after close.
+    storage::FileValuePort value_store();
 
   private:
     // Internal file-space boundary, overridden by the test peer for deterministic
@@ -96,6 +100,7 @@ class Host {
     StorageOpen open_storage(const char *directory, uint32_t request_capacity, SpaceQuery query);
     class Storage;
 
+    static ayni_submit_result_t submit_value(void *, const storage::FileValueRequest *);
     static void wake(void *ctx);
     static void ingress_lock(void *ctx);
     static void ingress_unlock(void *ctx);

@@ -26,6 +26,7 @@
 | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 5 | 0 |
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 7 | 0 |
+| [host/file_values.md](host/file_values.md) | 3 | 3 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
@@ -34,7 +35,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 433 | 141 |
+| 合计 | 436 | 144 |
 
 ## 计划章节 → 契约文档
 
@@ -114,6 +115,7 @@
 | ADR-0082 | host/tool_usage.md |
 | ADR-0084 | domain/business_values.md |
 | ADR-0085 | domain/capability_directory.md |
+| ADR-0093 | host/file_values.md |
 
 ## 工作包 → 条款
 
@@ -280,6 +282,9 @@
 | C-VER-004 | M0 已实现：`KernelApi.struct_size_below_this_layout_is_invalid_argument`、`KernelApi.struct_size_from_newer_minor_is_unsupported_version`；M1 回调边界：`ManagedCall.malformed_staged_requests_leave_the_real_decision_available`、`ManagedCall.callback_result_views_reject_bad_arguments_and_preserve_missing_outputs`、`ToolCalls.task_directory_exposes_currently_authorized_adopted_metadata` |
 | C-VER-020 | M1 已实现（日志、快照版本拒绝）：`KernelLifecycle.untrusted_or_unknown_log_restricts_without_writing`、`SnapshotCodec.newer_schema_is_unsupported_and_crc_continues_between_pages`；E4 步骤 6 |
 | C-VER-023 | M1 已实现（定长小端编解码与分页）：`BatchCodec.round_trip_keeps_identity_and_records`、`WorkSnapshot.paged_round_trip_keeps_the_original_stamps_and_checkpoint`；GCC/Clang 共用固定格式测试；评审 |
+| C-HVAL-001 | M1 已实现（正常生命周期）；`FileValues.close_answers_an_accepted_value_and_old_ports_refuse_new_borrows`、既有HostStorage/NativeHost回归 |
+| C-HVAL-002 | M1 已实现（正常CAS与重开）；`FileValues.durable_generation_write_retry_and_normal_reopen_preserve_exact_bytes`、`esp_files_emulated_normal_medium`（RAM介质） |
+| C-HVAL-003 | M1 已实现（正常key与容量）；`FileValues.owner_object_keys_and_required_read_capacity_remain_explicit`；未知/损坏与介质故障拒绝路径已实现但未新增专项执行 |
 | C-HOST-001 | M0 已实现：`KernelApi.create_copies_host_table_before_return` |
 | C-HOST-004 | M1 已实现（Kernel 侧）：`CompletionPoolTest.rejected_request_frees_the_slot_and_runs_no_handler`、`CompletionPoolTest.accept_unknown_waits_for_the_post`、`CompletionPoolTest.undefined_submit_result_counts_as_in_flight`、`CompletionPoolTest.post_before_a_rejection_is_still_applied`；E2 F10；C-OUT-003 |
 | C-HOST-006 | M1 已实现（完成槽部分）：`CompletionPoolTest.exhausted_slots_return_busy_without_calling_the_port`、`CompletionPoolTest.result_is_applied_once`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`、`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.stale_posts_racing_slot_reuse_are_ignored`、`CompletionPoolTest.concurrent_posts_apply_each_result_exactly_once`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；遥测合并见 C-LIMIT-008，订阅的 gap 报告随订阅实现；E1 步骤 10；`MA-003` |

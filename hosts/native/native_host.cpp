@@ -44,7 +44,8 @@ void utc_now(void *, ayni_utc_sample_v1 *out) {
 }
 
 using storage::Request;
-using storage::request_reservation;
+using storage::work_reservation;
+using storage::WorkItem;
 
 } // namespace
 
@@ -59,7 +60,11 @@ class Host::Storage {
     Storage &operator=(const Storage &) = delete;
 
     StorageOpen open(const char *directory, uint32_t capacity);
-    ayni_submit_result_t submit(const Request &request);
+    ayni_submit_result_t submit(const Request &request) { return enqueue(WorkItem{request}); }
+    ayni_submit_result_t submit_value(const storage::FileValueRequest &request) {
+        return storage::valid_file_value_request(request) ? enqueue(WorkItem{request})
+                                                          : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
     // Lets the thread finish every queued request, joins it and closes the
     // log; later submits are rejected.
     void stop();
@@ -71,6 +76,7 @@ class Host::Storage {
     }
 
   private:
+    ayni_submit_result_t enqueue(const WorkItem &request);
     static void *run(void *context);
     void serve_queue();
     bool read_space(uint64_t &available) const;
@@ -81,7 +87,7 @@ class Host::Storage {
     Host &owner_;            // Outlives this worker, including its final wake and join.
     SpaceQuery space_query_; // Immutable borrowed file-space probe; default reads FileLog.
     FileLog log_;
-    std::unique_ptr<Request[]> queue_; // a ring of capacity_ requests
+    std::unique_ptr<WorkItem[]> queue_; // a ring of capacity_ requests
     uint32_t capacity_ = 0;
     uint32_t head_ = 0;
     uint32_t count_ = 0;
@@ -97,7 +103,7 @@ class Host::Storage {
 };
 
 StorageOpen Host::Storage::open(const char *directory, uint32_t capacity) {
-    queue_.reset(new (std::nothrow) Request[capacity]);
+    queue_.reset(new (std::nothrow) WorkItem[capacity]);
     if (queue_ == nullptr) {
         return {StorageStatus::no_memory, 0};
     }
@@ -124,7 +130,7 @@ StorageOpen Host::Storage::open(const char *directory, uint32_t capacity) {
     return {StorageStatus::ok, 0};
 }
 
-ayni_submit_result_t Host::Storage::submit(const Request &request) {
+ayni_submit_result_t Host::Storage::enqueue(const WorkItem &request) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (stopping_ || count_ == capacity_) {
@@ -132,7 +138,7 @@ ayni_submit_result_t Host::Storage::submit(const Request &request) {
         }
         queue_[(head_ + count_) % capacity_] = request;
         ++count_;
-        reserved_bytes_ += request_reservation(request);
+        reserved_bytes_ += work_reservation(request);
     }
     signal_.notify_one();
     return AYNI_SUBMIT_ACCEPTED;
@@ -158,7 +164,7 @@ void *Host::Storage::run(void *context) {
 
 void Host::Storage::serve_queue() {
     for (;;) {
-        Request request{};
+        WorkItem request{};
         bool has_request = false;
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -182,11 +188,13 @@ void Host::Storage::serve_queue() {
             }
             continue;
         }
-        const ayni_completion_result_v1 result = log_.serve(request);
-        static_cast<void>(refresh_space(request_reservation(request)));
+        const auto result = log_.serve(request);
+        static_cast<void>(refresh_space(work_reservation(request)));
         // A refused post means the slot was not waiting for this attempt; the
         // kernel counts that, and the Host has nothing else to tell it.
-        static_cast<void>(ayni_completion_post(request.completion, &result));
+        if (result.post()) {
+            Host::wake(&owner_);
+        }
     }
 }
 
@@ -261,6 +269,14 @@ StorageOpen Host::open_storage(const char *directory, uint32_t request_capacity,
         storage_ = std::move(storage);
     }
     return opened;
+}
+
+storage::FileValuePort Host::value_store() {
+    return storage_ ? storage::FileValuePort{this, &Host::submit_value} : storage::FileValuePort{};
+}
+ayni_submit_result_t Host::submit_value(void *context, const storage::FileValueRequest *request) {
+    auto *storage = static_cast<Host *>(context)->storage_.get();
+    return storage && request ? storage->submit_value(*request) : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
 }
 
 void Host::close_storage() {

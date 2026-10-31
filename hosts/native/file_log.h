@@ -5,7 +5,7 @@
 #define AYNI_HOSTS_NATIVE_FILE_LOG_H
 #include "posix_files.h"
 #include <ayni/hosts/storage/file_log.h>
-#include <ayni/hosts/storage/request.h>
+#include <ayni/hosts/storage/work_item.h>
 namespace ayni::hosts::native {
 class FileLog {
   public:
@@ -41,8 +41,8 @@ class FileLog {
     }
     bool free_bytes(uint64_t &bytes) const { return log_.free_bytes(bytes); }
     // Preserve the composition owner while executing the same request mechanism as ESP.
-    ayni_completion_result_v1 serve(const storage::Request &request) {
-        return storage::serve_request(log_, request);
+    storage::WorkResult serve(const storage::WorkItem &request) {
+        return storage::serve_work(log_, files_, request);
     }
     uint32_t writer_epoch() const { return log_.writer_epoch(); }
     void observe_writer(uint32_t epoch) { log_.observe_writer(epoch); }

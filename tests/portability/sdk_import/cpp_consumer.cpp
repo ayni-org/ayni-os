@@ -6,6 +6,7 @@
 #include <cstdio>
 #ifdef PROBE_STORAGE
 #include <ayni/hosts/storage/file_log.h>
+#include <ayni/hosts/storage/file_value.h>
 #endif
 #ifdef PROBE_NATIVE_HOST
 #include <ayni/hosts/native.h>
@@ -95,7 +96,8 @@ int main() {
     }
 #endif
 #ifdef PROBE_STORAGE
-    if (ayni::hosts::storage::FileLog::append_bytes(1) <= 1) {
+    if (ayni::hosts::storage::valid_file_value_request({}) ||
+        ayni::hosts::storage::FileLog::append_bytes(1) <= 1) {
         return 1;
     }
 #endif
@@ -110,10 +112,11 @@ int main() {
         if (host.open_storage(directory, 2).status == ayni::hosts::native::StorageStatus::ok) {
             auto ports = host.table();
             uint64_t available = 0;
-            storage_ok = ports.storage_append && ports.storage_read_prefix &&
-                         ports.storage_read_log && ports.storage_fence_writers &&
-                         ports.storage_write_snapshot && ports.storage_read_snapshot &&
-                         ports.storage_trim_prefix && ports.storage_free_bytes &&
+            storage_ok = host.value_store().submit && ports.storage_append &&
+                         ports.storage_read_prefix && ports.storage_read_log &&
+                         ports.storage_fence_writers && ports.storage_write_snapshot &&
+                         ports.storage_read_snapshot && ports.storage_trim_prefix &&
+                         ports.storage_free_bytes &&
                          ports.storage_free_bytes(ports.ctx, &available) == AYNI_OK && available;
         }
         host.close_storage();

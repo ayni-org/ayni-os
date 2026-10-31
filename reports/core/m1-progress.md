@@ -131,6 +131,8 @@
 
 | [#120](https://github.com/RobotSe7en/ayni/pull/120) | 2026-10-31 | 共用Host存储 | 同一文件引擎、Linux端口及独立Host导入；独立审查修复、ASan/UBSan CI通过 | ADR-0091 |
 
+| [#121](https://github.com/RobotSe7en/ayni/pull/121) | 2026-10-31 | ESP Host | 完整异步存储端口、LittleFS原生适配及正常关闭；独立审查修复与完整CI通过，实机仍待验证 | ADR-0092 |
+
 ## 工作包日期
 
 | 工作包 | 开始 | 结束 |
@@ -150,7 +152,7 @@ AP-02 已由 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084 交�
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。
-- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。本轮 AP-06/AP-04 已补资源映射与 Native/Sim 共用应用，ABI0.52/schema8；[设计](../../docs/architecture/ap06-ap04-foundation-design.md)及[基础报告](foundation-acceptance.md)记录本轮完整软件验收证据，#117 已合并。独立源码 SDK 首包 #118 已独立复审并合并。通用有界工作区及全仓消费者升级已随 #119 合并（ABI0.53/schema8）。共用文件存储与Linux端口 #120 已合并；ESP异步Host/LittleFS端口编译及RAM介质验证见 #121，FreeRTOS和实机尚未执行。下一步按用户2026-10-31指示完成共同独立场景及平台profile，见[独立接入计划](../../docs/architecture/independent-consumption-plan.md)；实机与付费模型尚未启动。
+- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。本轮 AP-06/AP-04 已补资源映射与 Native/Sim 共用应用，ABI0.52/schema8；[设计](../../docs/architecture/ap06-ap04-foundation-design.md)及[基础报告](foundation-acceptance.md)记录本轮完整软件验收证据，#117 已合并。独立源码 SDK 首包 #118 已独立复审并合并。通用有界工作区及全仓消费者升级已随 #119 合并（ABI0.53/schema8）。共用文件存储与Linux端口 #120 已合并；ESP异步Host/LittleFS端口已独立复查并随 #121 合并，FreeRTOS和实机尚未执行。为上下文文件ACK补齐的共同文件值机制见 #122；下一步按用户2026-10-31指示完成共同独立场景及平台profile，见[独立接入计划](../../docs/architecture/independent-consumption-plan.md)；实机与付费模型尚未启动。
 - **实验与可选能力：** Native/Sim 日常测试继续；基础门槛通过后再安排 ESP32-S3、Linux 实际 OS 集成及其他平台实验。语音/视觉、运动与硬件停止、MCP/ROS/MHS、peer 和轮式助理试用按需选择；启用的物理执行保证、OTA/硬件/耐久证据不能省略或用模拟替代。
 - **已定与待决：** AP-02/AP-03 选择见 ADR-0084/0085。AP-05 已选定四工具内同 Task 的受管控制、本包直接升级并拒旧保留目录、最终答复收尾、每 Task 同时一个 action 且可并存模型和订阅（用户 2026-10-30，ADR-0086）。AP-04/AP-06 已选 Binding 资源映射及本包直接升级、不用兼容；用户2026-10-31允许的最小正常重开/映射不兼容验证已通过；基础报告已齐备，最终提交 CI 和交付状态由 #117 提供。后续包兼容和平台指标仍分别决定；真实模型多轮试用、长期密钥配置和完整 MA-038 旧待决保留；用户现已统一安全关键分支目标为 ≥80%（ADR-0088）；本轮覆盖达到该目标，Core 行目标仍为 ≥75%。
 - **工作流与边界：** 依相关正常测试、设计自查、适用独立审查及 CI 交付；具体命令、结果与运行编号集中在 PR。本包不启动平台/硬件、付费 API 或新专项；变异及新增故障/恢复专项仍按 workflow 现行授权处理。
