@@ -182,7 +182,7 @@ void Host::Storage::serve_queue() {
             }
             continue;
         }
-        const ayni_completion_result_v1 result = storage::serve_request(log_, request);
+        const ayni_completion_result_v1 result = log_.serve(request);
         static_cast<void>(refresh_space(request_reservation(request)));
         // A refused post means the slot was not waiting for this attempt; the
         // kernel counts that, and the Host has nothing else to tell it.
