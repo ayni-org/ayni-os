@@ -166,7 +166,8 @@ ayni_status_t ConversationStore::write_result() {
         }
         const auto reference = static_cast<uint64_t>(sqlite3_column_int64(prior.get(), 0));
         json::Writer writer(job.json.data(), static_cast<uint32_t>(job.json.size()));
-        const auto rendered = json::write_call_result(writer, job.result, reference);
+        const auto rendered =
+            json::write_call_result(result_workspace_.get(), writer, job.result, reference);
         size_t written = 0;
         if (rendered != AYNI_OK || !writer.finish(written) ||
             written != static_cast<size_t>(size) ||
@@ -222,7 +223,8 @@ ayni_status_t ConversationStore::write_result() {
     }
     const auto reference = static_cast<uint64_t>(sqlite3_last_insert_rowid(database_));
     json::Writer writer(job.json.data(), static_cast<uint32_t>(job.json.size()));
-    const auto rendered = json::write_call_result(writer, job.result, reference);
+    const auto rendered =
+        json::write_call_result(result_workspace_.get(), writer, job.result, reference);
     size_t size = 0;
     if (rendered != AYNI_OK || !writer.finish(size)) {
         sqlite3_exec(database_, "ROLLBACK", nullptr, nullptr, nullptr);

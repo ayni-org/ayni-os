@@ -4,6 +4,7 @@
 #define AYNI_CORE_WORK_CALL_CALL_RECORDS_H
 
 #include "durability/batch/record_types.h"
+#include "foundation/workspace.h"
 #include "work/call/call_table.h"
 
 namespace ayni::work {
@@ -29,6 +30,7 @@ uint32_t call_record_size(const CallRecord &record);
 void write_call_record(const CallRecord &record, uint8_t *body);
 // Parses once, then applies CallTable's shared intrinsic validator. Failure
 // preserves out; success borrows domain, input and result from body.
-bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out);
+bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
+                      CallRecord &out);
 } // namespace ayni::work
 #endif

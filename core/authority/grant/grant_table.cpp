@@ -1,4 +1,5 @@
 #include "authority/grant/grant_table.h"
+#include "foundation/workspace.h"
 
 #include "authority/grant/grant_restore.h"
 #include "authority/grant/grant_state.h"
@@ -795,17 +796,19 @@ bool GrantTable::active_at(uint32_t index, uint64_t commit_seq) const {
 bool GrantTable::consistent() const {
     return GrantRestore::consistent(*this);
 }
-GrantTable::Restore GrantTable::restore_create(const GrantRecord &record,
+GrantTable::Restore GrantTable::restore_create(ayni::foundation::Workspace &workspace,
+                                               const GrantRecord &record,
                                                foundation::TransitionStamp stamp,
                                                const GrantReclaimExclusions &excluded) {
-    return GrantRestore::restore_create(*this, record, stamp, excluded);
+    return GrantRestore::restore_create(workspace, *this, record, stamp, excluded);
 }
 GrantTable::Restore GrantTable::restore_state(const GrantStateRecord &record,
                                               foundation::TransitionStamp stamp) {
     return GrantRestore::restore_state(*this, record, stamp);
 }
-GrantTable::Restore GrantTable::restore_snapshot(const GrantSnapshotRecord &record) {
-    return GrantRestore::restore_snapshot(*this, record);
+GrantTable::Restore GrantTable::restore_snapshot(ayni::foundation::Workspace &workspace,
+                                                 const GrantSnapshotRecord &record) {
+    return GrantRestore::restore_snapshot(workspace, *this, record);
 }
 GrantTable::Restore GrantTable::restore_revocation(const GrantRevocationRecord &record,
                                                    foundation::TransitionStamp stamp) {

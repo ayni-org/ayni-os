@@ -1,6 +1,7 @@
 #include "catalog/capability/authority_projection.h"
 #include "catalog/capability/value_validation.h"
 #include "catalog/catalog_id.h"
+#include "foundation/workspace.h"
 
 #include <cstring>
 #include <limits>
@@ -185,17 +186,18 @@ void fill_operand(const ayni_value_node_v1 &node, const ayni_authority_projectio
 }
 } // namespace
 
-ayni_status_t validate_business_definition(const ayni_business_contract_v1 &business,
+ayni_status_t validate_business_definition(ayni::foundation::Workspace &workspace,
+                                           const ayni_business_contract_v1 &business,
                                            ProjectionShape &out) {
     if (business.reserved != 0U || business.projection_count > AYNI_AUTHORITY_FIELD_COUNT_MAX ||
         ((business.projection_count != 0U) != (business.projections != nullptr))) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto status = validate_schema(business.input);
+    auto status = validate_schema(workspace, business.input);
     if (status != AYNI_OK) {
         return status;
     }
-    status = validate_schema(business.result);
+    status = validate_schema(workspace, business.result);
     if (status != AYNI_OK) {
         return status;
     }
@@ -223,13 +225,13 @@ ayni_status_t validate_business_definition(const ayni_business_contract_v1 &busi
     return AYNI_OK;
 }
 
-ayni_status_t validate_projection(ayni_bytes_v1 domain, const ayni_business_contract_v1 &business,
-                                  ProjectionShape &out) {
-    const auto input = validate_schema(business.input);
+ayni_status_t validate_projection(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                                  const ayni_business_contract_v1 &business, ProjectionShape &out) {
+    const auto input = validate_schema(workspace, business.input);
     if (input != AYNI_OK) {
         return input;
     }
-    const auto result = validate_schema(business.result);
+    const auto result = validate_schema(workspace, business.result);
     return result == AYNI_OK ? validate_projection_schemas_admitted(domain, business, out) : result;
 }
 

@@ -1,3 +1,4 @@
+#include "foundation/workspace.h"
 #include "work/call/call_table.h"
 
 #include "catalog/capability/business_encoding.h"
@@ -107,7 +108,7 @@ bool action_matches(const CallRecord &record) {
 // Saved business interpretation includes original semantics and a unit-preserving resource
 // substitution (ADR-0087), normalized defaults
 // and a present typed result unless its body was explicitly made unavailable.
-bool valid_business_content(const CallRecord &record) {
+bool valid_business_content(ayni::foundation::Workspace &workspace, const CallRecord &record) {
     const auto &state = record.state;
     if ((record.contract.input_format == catalog::call_value_input_format ||
          record.contract.result_format == catalog::call_value_result_format) &&
@@ -115,9 +116,13 @@ bool valid_business_content(const CallRecord &record) {
         return false;
     }
     if (record.contract.business_contract.size != 0U) {
-        catalog::DecodedBusiness proof;
-        if (catalog::decode_business(record.domain, record.contract.business_contract, proof) !=
-                AYNI_OK ||
+        auto proof_lease = workspace.make<catalog::DecodedBusiness>();
+        if (!proof_lease) {
+            return false;
+        }
+        auto &proof = *proof_lease;
+        if (catalog::decode_business(workspace, record.domain, record.contract.business_contract,
+                                     proof) != AYNI_OK ||
             !catalog::bound_call_contract(proof.execution, record.contract)) {
             return false;
         }
@@ -132,9 +137,13 @@ bool valid_business_content(const CallRecord &record) {
             }
         }
         if (record.result_kind == CallResultKind::value) {
-            catalog::DecodedValue result;
+            auto result_lease = workspace.make<catalog::DecodedValue>();
+            if (!result_lease) {
+                return false;
+            }
+            auto &result = *result_lease;
             if (catalog::read_normalized_value(
-                    proof.result.view(),
+                    workspace, proof.result.view(),
                     {reinterpret_cast<const uint8_t *>(record.result.data), record.result.size},
                     result) != AYNI_OK) {
                 return false;
@@ -152,9 +161,11 @@ bool valid_business_content(const CallRecord &record) {
 
 // An explicit privacy record removes input validation material; it must contain no body and
 // retains only independently valid schema/execution facts. Old readers refuse this record version.
-bool valid_content(const CallRecord &record, CallInputView &input) {
+bool valid_content(ayni::foundation::Workspace &workspace, const CallRecord &record,
+                   CallInputView &input) {
     if (!record.state.content_erased) {
-        return read_call_input(record.domain, record.input, record.contract, input) == AYNI_OK;
+        return read_call_input(workspace, record.domain, record.input, record.contract, input) ==
+               AYNI_OK;
     }
     const auto &erased = *record.state.content_erased;
     if (record.input.size != 0 || record.result.size != 0 ||
@@ -254,10 +265,14 @@ bool valid_subscription_record(const CallRecord &record) {
 
 // Decode and live admission share the canonical input validator and contract
 // normalizer. Original schemas are never substituted by this boot's registration.
-bool CallTable::valid_record(const CallRecord &record) {
+bool CallTable::valid_record(ayni::foundation::Workspace &workspace, const CallRecord &record) {
     const auto &state = record.state;
     catalog::CallContract normalized{};
-    CallInputView input{};
+    auto input_lease = workspace.make<CallInputView>();
+    if (!input_lease) {
+        return false;
+    }
+    auto &input = *input_lease;
     if (!valid_identity(record.identity, state.created) ||
         !valid_mode(record.identity, record.contract) ||
         (record.identity.mode == AYNI_CALL_MODE_MANAGED &&
@@ -275,8 +290,8 @@ bool CallTable::valid_record(const CallRecord &record) {
             (record.identity.destination.size() != 0U) ||
         catalog::normalize_call_contract(record.contract, normalized) != AYNI_OK ||
         !catalog::same_call_contract(record.contract, normalized) ||
-        !valid_business_content(record) || !valid_content(record, input) ||
-        check_body(record.contract, record.result, record.result_kind) != AYNI_OK ||
+        !valid_business_content(workspace, record) || !valid_content(workspace, record, input) ||
+        check_body(workspace, record.contract, record.result, record.result_kind) != AYNI_OK ||
         (record.result_kind == CallResultKind::tool_calls &&
          state.outcome != AYNI_CALL_COMPLETED) ||
         (state.attempt.boot_epoch == 0U) != (state.attempt.request_id == 0U) ||

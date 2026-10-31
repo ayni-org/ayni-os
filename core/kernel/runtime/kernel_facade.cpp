@@ -1,6 +1,7 @@
 // Composition boundary for already gated ABI operations (ADR-0058). Read-only
 // views never grant mutation; each change invokes the module that owns its fact.
 #include "catalog/capability/field_domain.h"
+#include "foundation/workspace.h"
 #include "kernel/runtime/kernel_state.h"
 
 namespace {
@@ -59,12 +60,12 @@ ayni_status_t ayni_kernel::configure(const ayni::catalog::ObservationSource &sou
 }
 ayni_status_t ayni_kernel::configure(const ayni::catalog::CallCapability &capability,
                                      const ayni_business_contract_v1 *definition) {
-    return catalogs.call_capabilities.add_validated(capability, definition);
+    return catalogs.call_capabilities.add_validated(workspace, capability, definition);
 }
 ayni_status_t
 ayni_kernel::configure(const ayni::catalog::Provider &provider,
                        const ayni::catalog::ProviderBusinessDefinitions &definitions) {
-    return catalogs.providers.add_validated(provider, definitions);
+    return catalogs.providers.add_validated(workspace, provider, definitions);
 }
 ayni_status_t ayni_kernel::configure(const ayni::catalog::Binding &binding) {
     return catalogs.bindings.add_validated(binding);

@@ -1,5 +1,6 @@
 #include "catalog/provider/provider_registry.h"
 #include "catalog/capability/business_encoding.h"
+#include "foundation/workspace.h"
 
 namespace ayni::catalog {
 // The aggregate descriptor must make supported operations unambiguous. A
@@ -20,7 +21,8 @@ bool valid_provider_callbacks(const Provider &value) {
            egress == (value.destination.size() != 0U) && subscription == (value.renew != nullptr);
 }
 
-ayni_status_t ProviderRegistry::add_validated(const Provider &provider,
+ayni_status_t ProviderRegistry::add_validated(ayni::foundation::Workspace &workspace,
+                                              const Provider &provider,
                                               const ProviderBusinessDefinitions &definitions) {
     uint32_t index = 0;
     if (find({provider.id.data(), provider.id.size()}, provider.version, index)) {
@@ -36,7 +38,7 @@ ayni_status_t ProviderRegistry::add_validated(const Provider &provider,
             (static_cast<std::size_t>(entries_.size()) * AYNI_PROVIDER_CAPABILITY_COUNT_MAX + at) *
                 proof_bytes_;
         const auto stored =
-            store_business_contract(provider.offers[at].contract, definitions[at], slot,
+            store_business_contract(workspace, provider.offers[at].contract, definitions[at], slot,
                                     proof_bytes_, candidate.offers[at].contract.business_contract);
         if (stored != AYNI_OK) {
             return stored;

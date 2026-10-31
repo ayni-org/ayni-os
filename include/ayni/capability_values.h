@@ -5,6 +5,7 @@
 #define AYNI_CAPABILITY_VALUES_H
 #include <ayni/authority.h>
 #include <ayni/values.h>
+#include <ayni/workspace.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,8 +42,11 @@ typedef struct ayni_business_contract_v1 {
  * views expire when receive returns. No Kernel lookup or authority is implied.
  * The receiver must not throw; its nonpositive status is returned unchanged.
  * Copied proof/domain bytes may be inspected on an independent worker. Since 0.48. */
+/* Since 0.53: explicit region follows ayni_business_workspace_requirements;
+ * nested codec calls need a separate region until receive returns. */
 ayni_status_t ayni_business_contract_read(
-    ayni_bytes_v1 original_domain, ayni_bytes_v1 original_proof, void *context,
+    const ayni_workspace_v1 *region, ayni_bytes_v1 original_domain, ayni_bytes_v1 original_proof,
+    void *context,
     ayni_status_t (*receive)(void *context, const ayni_business_contract_v1 *business));
 #ifdef __cplusplus
 }

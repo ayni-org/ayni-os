@@ -1,3 +1,4 @@
+#include "strategy_workspace_fixture.h"
 // ADR-0085: normal Native SQLite append, paging, references and privacy replacement.
 #include "../../runtime/native_node/conversation_store.h"
 #include "temp_directory.h"
@@ -94,7 +95,9 @@ TEST_F(ConversationDatabase, appends_messages_once_and_reads_views_across_sql_pa
     EXPECT_EQ(std::string(loaded.bytes.data(), loaded.size),
               std::string(state.record.history.bytes.data(), state.record.history.size));
     ayni::strategies::Encoded encoded;
-    ASSERT_EQ(ayni::strategies::Conversation::begin(state.record, {"next", 4}, encoded), AYNI_OK);
+    ASSERT_EQ(ayni::strategies::Conversation::begin(::ayni::test::conversation_workspace(),
+                                                    state.record, {"next", 4}, encoded),
+              AYNI_OK);
     EXPECT_LT(encoded.size, 1024U); // The external reference excludes complete message history.
     commit();
 }
@@ -104,7 +107,9 @@ TEST_F(ConversationDatabase, generation_erasure_rejects_old_cache_reads_and_late
     const auto old = state.record;
     History loaded;
     ASSERT_EQ(await([&] { return port.load(port.context, 4, old, loaded); }), AYNI_OK);
-    ASSERT_EQ(ayni::strategies::Conversation::erase(state.record, state.record), AYNI_OK);
+    ASSERT_EQ(ayni::strategies::Conversation::erase(::ayni::test::conversation_workspace(),
+                                                    state.record, state.record),
+              AYNI_OK);
     commit(ConversationStore::Erasure::all);
     EXPECT_EQ(port.load(port.context, 4, old, loaded), AYNI_EXPIRED);
     uint64_t reference = 0;
@@ -118,7 +123,9 @@ TEST_F(ConversationDatabase, deleting_one_turn_preserves_other_independent_user_
     save_history(1);
     append(state.record.history, "forget-user");
     save_history(2);
-    ASSERT_EQ(ayni::strategies::Conversation::erase(state.record, state.record), AYNI_OK);
+    ASSERT_EQ(ayni::strategies::Conversation::erase(::ayni::test::conversation_workspace(),
+                                                    state.record, state.record),
+              AYNI_OK);
     commit(ConversationStore::Erasure::turn, 2);
     EXPECT_EQ(count("messages"), 1);
     EXPECT_EQ(count("views"), 0);

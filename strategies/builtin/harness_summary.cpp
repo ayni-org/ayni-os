@@ -41,13 +41,17 @@ ayni_status_t source_result(const Turn &turn, const ayni_task_snapshot_v1 &snaps
     status = result(snapshot, function_key(model.logical_call_id, turn.tool_index, key), call);
     return status == AYNI_NOT_FOUND ? operation_source(proposal.call, snapshot, call) : status;
 }
-ayni_status_t request_chunk(Turn &turn, const ToolLoopConfig &config,
+ayni_status_t request_chunk(Workspace &workspace, Turn &turn, const ToolLoopConfig &config,
                             const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 step,
                             ayni_policy_output_v1 &output, char *scratch) {
     // This is an I/O buffer bound, never a tokenizer estimate. The service's
     // post-request statistics cannot guarantee a future request will fit.
     constexpr uint32_t chunk_bytes = prompt_bytes_max / 2;
-    Text<prompt_bytes_max> chunk;
+    auto chunk_lease = workspace.make<Text<prompt_bytes_max>>();
+    if (!chunk_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &chunk = *chunk_lease;
     auto status = config.history.result_chunk(config.history.context, snapshot.task_id,
                                               turn.archived_result.reference,
                                               turn.result_summary.offset, chunk, chunk_bytes);
@@ -148,7 +152,7 @@ ayni_status_t append_summary(Turn &turn, const ayni_task_call_result_v1 &call,
 } // namespace
 // Every chunk is a normal authorized MODEL Call. Failures preserve the original
 // SQLite result and the business Call's outcome/effect; no execution is retried.
-ayni_status_t summarize_result(Turn &turn, const ToolLoopConfig &config,
+ayni_status_t summarize_result(Workspace &workspace, Turn &turn, const ToolLoopConfig &config,
                                const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output,
                                char *scratch, bool &requested) {
     requested = false;
@@ -156,7 +160,11 @@ ayni_status_t summarize_result(Turn &turn, const ToolLoopConfig &config,
         return AYNI_UNSUPPORTED;
     }
     ayni_task_call_result_v1 original{};
-    ayni_task_tool_call_v1 proposal{};
+    auto proposal_lease = workspace.make<ayni_task_tool_call_v1>();
+    if (!proposal_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &proposal = *proposal_lease;
     auto status = source_result(turn, snapshot, original, proposal);
     if (status != AYNI_OK) {
         return status;
@@ -179,7 +187,7 @@ ayni_status_t summarize_result(Turn &turn, const ToolLoopConfig &config,
     ayni_task_call_result_v1 summary{};
     status = result(snapshot, step, summary);
     if (status == AYNI_NOT_FOUND) {
-        status = request_chunk(turn, config, snapshot, step, output, scratch);
+        status = request_chunk(workspace, turn, config, snapshot, step, output, scratch);
         requested = status == AYNI_OK;
         return status;
     }

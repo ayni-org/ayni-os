@@ -1,3 +1,4 @@
+#include "foundation/workspace.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/memory/memory_permissions.h"
 #include "work/call_propagation.h"
@@ -52,7 +53,7 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
     if (action != nullptr && (action->phase == work::ActionPhase::dispatching ||
                               action->phase == work::ActionPhase::in_progress)) {
         const auto stamp = work_.transitions.next();
-        if (work_.calls.finish(index,
+        if (work_.calls.finish(work_.workspace, index,
                                {AYNI_CALL_ABANDONED,
                                 AYNI_RESULT_UNKNOWN,
                                 AYNI_REASON_NONE,
@@ -169,9 +170,13 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         !catalogs_.providers.find(view(id.provider_id), id.provider_version, provider_index)) {
         return Advance::internal;
     }
-    work::CallInputView input{};
-    if (work::read_call_input(work_.calls.domain(index), work_.calls.input(index), contract,
-                              input) != AYNI_OK) {
+    auto input_lease = work_.workspace.make<work::CallInputView>();
+    if (!input_lease) {
+        return Advance::internal;
+    }
+    auto &input = *input_lease;
+    if (work::read_call_input(work_.workspace, work_.calls.domain(index), work_.calls.input(index),
+                              contract, input) != AYNI_OK) {
         return Advance::internal;
     }
     const auto authority =

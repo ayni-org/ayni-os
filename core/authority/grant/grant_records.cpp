@@ -1,4 +1,5 @@
 #include "authority/grant/grant_records.h"
+#include "foundation/workspace.h"
 
 #include "authority/scope/scope.h"
 #include "catalog/capability/business_encoding.h"
@@ -40,7 +41,7 @@ bool read_grant_record_id(const uint8_t *body, uint32_t size, uint64_t &out_id) 
 
 // Byte and struct readers share the accepted-fact rules. Deferred request
 // flags cannot appear in storage, and the saved domain must cover the full scope.
-bool valid_grant_record(const GrantRecord &record) {
+bool valid_grant_record(ayni::foundation::Workspace &workspace, const GrantRecord &record) {
     const NewGrant &grant = record.grant;
     if (!foundation::is_kernel_id(record.grant_id) || grant.subject_instance_id == 0U ||
         grant.owner_principal_id == 0U || grant.owner_binding_revision == 0U ||
@@ -66,9 +67,13 @@ bool valid_grant_record(const GrantRecord &record) {
         return false;
     }
     if (grant.business_contract.size != 0U) {
-        catalog::DecodedBusiness proof;
-        return catalog::decode_business(grant.source_domain, grant.business_contract, proof) ==
-               AYNI_OK;
+        auto proof_lease = workspace.make<catalog::DecodedBusiness>();
+        if (!proof_lease) {
+            return false;
+        }
+        auto &proof = *proof_lease;
+        return catalog::decode_business(workspace, grant.source_domain, grant.business_contract,
+                                        proof) == AYNI_OK;
     }
     return true;
 }
@@ -100,7 +105,8 @@ void write_grant_record(const Grant &grant, ayni_bytes_v1 domain, ayni_bytes_v1 
 }
 
 // Current creation has one complete body for ordinary and Goal-bound facts.
-bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
+bool read_grant_record(ayni::foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
+                       GrantRecord &out) {
     if (body == nullptr || size < grant_record_fixed_size) {
         return false;
     }
@@ -131,7 +137,7 @@ bool read_grant_record(const uint8_t *body, uint32_t size, GrantRecord &out) {
     record.scope = {scope, scope_size};
     record.grant.bound_goal_id = reader.u64();
     record.grant.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
-    if (!reader.ok() || delegation > 1U || !valid_grant_record(record)) {
+    if (!reader.ok() || delegation > 1U || !valid_grant_record(workspace, record)) {
         return false;
     }
     out = record;
@@ -186,13 +192,14 @@ void write_grant_snapshot_record(const Grant &grant, ayni_bytes_v1 domain, ayni_
 }
 
 // The complete snapshot tail always preserves original stamps and cleanup facts.
-bool read_grant_snapshot_record(const uint8_t *body, uint32_t size, GrantSnapshotRecord &out) {
+bool read_grant_snapshot_record(ayni::foundation::Workspace &workspace, const uint8_t *body,
+                                uint32_t size, GrantSnapshotRecord &out) {
     if (body == nullptr || size < grant_record_fixed_size + grant_snapshot_tail_size) {
         return false;
     }
     const uint32_t create_size = size - grant_snapshot_tail_size;
     GrantSnapshotRecord record{};
-    if (!read_grant_record(body, create_size, record.create)) {
+    if (!read_grant_record(workspace, body, create_size, record.create)) {
         return false;
     }
     const uint8_t *tail = body + create_size;

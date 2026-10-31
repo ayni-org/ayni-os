@@ -1,6 +1,8 @@
 // ADR-0089: public strategies and optional components link outside the root project.
 #include <ayni/ayni.hpp>
+#include <ayni/call_result_json.hpp>
 #include <ayni/strategies/builtin.h>
+#include <ayni/workspace.hpp>
 #include <cstdio>
 #ifdef PROBE_SOFTWARE
 #include <ayni/providers/software/work.h>
@@ -27,13 +29,17 @@ int main() {
         std::puts("consumer: kernel close");
         return 1;
     }
+    ayni::Workspace workspace;
+    if (workspace.create(ayni::strategies::ToolLoop::workspace_requirements) != AYNI_OK) {
+        return 1;
+    }
     ayni::strategies::ToolLoop loop;
     ayni::strategies::ToolLoopConfig config;
     config.identity.id = {"consumer.loop", sizeof("consumer.loop") - 1};
     config.model.kind = AYNI_POLICY_REQUEST_MODEL;
     config.model.binding_id = {"consumer.model", sizeof("consumer.model") - 1};
     config.summary = config.model;
-    if (loop.configure(config) != AYNI_OK || loop.describe().ctx == nullptr) {
+    if (loop.configure(config, workspace.get()) != AYNI_OK || loop.describe().ctx == nullptr) {
         std::puts("consumer: ToolLoop configure");
         return 1;
     }

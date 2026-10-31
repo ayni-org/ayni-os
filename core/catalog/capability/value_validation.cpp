@@ -1,4 +1,5 @@
 #include "catalog/capability/value_validation.h"
+#include "catalog/capability/workspace.h"
 #include "catalog/catalog_id.h"
 #include "foundation/utf8.h"
 
@@ -27,8 +28,8 @@ bool same_text(ayni_string_v1 left, ayni_string_v1 right) {
 
 // Both public trees use this one structural walk. Explicit parents prove
 // reachability, noncrossing intervals and the depth bound before semantic use.
-template <typename Node> bool tree_shape(const Node *nodes, uint32_t count, uint32_t limit) {
-    if (nodes == nullptr || count == 0U || count > limit || nodes[0].field_id != 0U ||
+template <typename Nodes> bool tree_shape(const Nodes &nodes, uint32_t count, uint32_t limit) {
+    if (!nodes || count == 0U || count > limit || nodes[0].field_id != 0U ||
         nodes[0].subtree_end != count) {
         return false;
     }
@@ -153,13 +154,13 @@ bool value_container(ayni_value_kind_t kind) {
 
 // Shape validation never reads inactive union storage (ADR-0084). Container
 // counts are independent of child subtree lengths; null has no active payload.
-ayni_status_t validate_value(const ayni_value_v1 &value) {
-    if (!tree_shape(value.nodes, value.node_count, AYNI_VALUE_NODE_COUNT_MAX)) {
+ayni_status_t validate_value_nodes(const ValueNodes &nodes) {
+    if (!tree_shape(nodes, nodes.count, AYNI_VALUE_NODE_COUNT_MAX)) {
         return AYNI_INVALID_ARGUMENT;
     }
     uint32_t bytes = 0;
-    for (uint32_t at = 0; at < value.node_count; ++at) {
-        const auto &node = value.nodes[at];
+    for (uint32_t at = 0; at < nodes.count; ++at) {
+        const auto node = nodes[at];
         if (node.reserved != 0U || (node.kind == AYNI_VALUE_BOOL && node.value.boolean > 1U) ||
             (node.kind == AYNI_VALUE_FLOAT64 && !finite_real(node.value.approximate)) ||
             (node.kind == AYNI_VALUE_DECIMAL &&
@@ -182,7 +183,7 @@ ayni_status_t validate_value(const ayni_value_v1 &value) {
         if (node.kind == AYNI_VALUE_LIST) {
             uint32_t count = 0;
             for (uint32_t child = at + 1U; child < node.subtree_end;
-                 child = value.nodes[child].subtree_end) {
+                 child = nodes[child].subtree_end) {
                 ++count;
             }
             if (count > AYNI_VALUE_LIST_COUNT_MAX) {
@@ -191,6 +192,13 @@ ayni_status_t validate_value(const ayni_value_v1 &value) {
         }
     }
     return AYNI_OK;
+}
+
+ayni_status_t validate_value(const ayni_value_v1 &value) {
+    const ValueNodes nodes{value.nodes, value.node_count, [](const void *context, uint32_t index) {
+                               return static_cast<const ayni_value_node_v1 *>(context)[index];
+                           }};
+    return validate_value_nodes(nodes);
 }
 
 bool scalar_matches(const ayni_schema_node_v1 &schema, const ayni_value_node_v1 &value) {
@@ -231,7 +239,8 @@ bool scalar_matches(const ayni_schema_node_v1 &schema, const ayni_value_node_v1 
     }
 }
 
-ayni_status_t validate_schema(const ayni_schema_v1 &schema) {
+ayni_status_t validate_schema(ayni::foundation::Workspace &workspace,
+                              const ayni_schema_v1 &schema) {
     if (!tree_shape(schema.nodes, schema.node_count, AYNI_SCHEMA_NODE_COUNT_MAX)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -240,7 +249,7 @@ ayni_status_t validate_schema(const ayni_schema_v1 &schema) {
             return AYNI_INVALID_ARGUMENT;
         }
     }
-    return validate_schema_defaults(schema);
+    return validate_schema_defaults(workspace, schema);
 }
 } // namespace ayni::catalog
 
@@ -248,8 +257,16 @@ extern "C" {
 ayni_status_t ayni_value_validate(const ayni_value_v1 *value) {
     return value == nullptr ? AYNI_INVALID_ARGUMENT : ayni::catalog::validate_value(*value);
 }
-ayni_status_t ayni_schema_validate(const ayni_schema_v1 *schema) {
-    return schema == nullptr ? AYNI_INVALID_ARGUMENT : ayni::catalog::validate_schema(*schema);
+ayni_status_t ayni_schema_validate(const ayni_workspace_v1 *region, const ayni_schema_v1 *schema) {
+    const auto workspace_status =
+        ayni::foundation::Workspace::check(region, ayni::catalog::value_workspace_size());
+    if (workspace_status != AYNI_OK) {
+        return workspace_status;
+    }
+    ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
+
+    return schema == nullptr ? AYNI_INVALID_ARGUMENT
+                             : ayni::catalog::validate_schema(workspace, *schema);
 }
 
 // Accumulate magnitude against the final sign-specific bound so INT64_MIN is

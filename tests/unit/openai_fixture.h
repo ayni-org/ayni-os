@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Shared public-call harness for offline protocol tests and the opt-in live probe.
 #ifndef AYNI_TEST_OPENAI_FIXTURE_H
 #define AYNI_TEST_OPENAI_FIXTURE_H
@@ -298,8 +299,8 @@ class OpenaiFixture : public ::testing::Test {
                     }
                     source[0].name = {};
                     const ayni_arguments_v1 args{source.data(), count};
-                    proposal_error =
-                        ayni_arguments_normalize(&display.business.input, &args, &value);
+                    proposal_error = ayni_arguments_normalize(
+                        ::ayni::test::value_workspace(), &display.business.input, &args, &value);
                 }
             } else if (native.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
                 proposal_error = AYNI_NOT_FOUND;

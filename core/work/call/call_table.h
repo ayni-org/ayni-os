@@ -4,6 +4,7 @@
 #define AYNI_CORE_WORK_CALL_CALL_TABLE_H
 
 #include "catalog/binding/binding_registry.h"
+#include "foundation/workspace.h"
 #include "work/action/action_record.h"
 #include "work/authority/authority_facts.h"
 #include "work/call/call_input.h"
@@ -173,7 +174,8 @@ class CallTable {
     // Applied progress sequence must increase; no progress body is persisted as a final result.
     ayni_status_t progress(uint32_t index, uint64_t sequence, ActionStamp stamp);
     // Validate all scalar/body semantics before mutating action, call or result bytes.
-    ayni_status_t finish(uint32_t index, const CallResult &result, ActionStamp stamp,
+    ayni_status_t finish(ayni::foundation::Workspace &workspace, uint32_t index,
+                         const CallResult &result, ActionStamp stamp,
                          ResultDependencies dependencies = ResultDependencies::current);
     // Owner management CAS, independent of the revoked execution Grant.
     ayni_status_t check_query(uint32_t index, uint32_t expected_revision) const;
@@ -188,8 +190,8 @@ class CallTable {
     ayni_status_t end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason,
                             ActionStamp stamp);
     // Exact operation evidence; best-effort absence cannot resolve an execution.
-    ayni_status_t reconcile(uint32_t index, uint32_t conclusion, const CallResult &result,
-                            ActionStamp stamp,
+    ayni_status_t reconcile(ayni::foundation::Workspace &workspace, uint32_t index,
+                            uint32_t conclusion, const CallResult &result, ActionStamp stamp,
                             ResultDependencies dependencies = ResultDependencies::current);
     // Shared persisted query shape/history rules, including command generation changes.
     static bool valid_query(const CallRecord &record);
@@ -203,7 +205,7 @@ class CallTable {
     // Export a row for record writing; views last until the next owner mutation.
     CallRecord record(uint32_t index) const;
     // Shared intrinsic validator for decoded records; cross-table proof belongs to Kernel.
-    static bool valid_record(const CallRecord &record);
+    static bool valid_record(ayni::foundation::Workspace &workspace, const CallRecord &record);
     // Replay-only: input passed valid_record; verify immutable history and capacity,
     // then install. Restored dispatch claims are sealed against repeat submission.
     ayni_status_t restore_validated(const CallRecord &record);
@@ -261,14 +263,16 @@ class CallTable {
     static bool valid_mode(const CallIdentity &, const catalog::CallContract &);
     static bool valid_identity(const CallIdentity &identity, ActionStamp stamp);
     static bool advances(const Entry &entry, ActionStamp stamp); // Strict stamp order in this boot.
-    ayni_status_t check_result(uint32_t index, const CallResult &result)
+    ayni_status_t check_result(ayni::foundation::Workspace &workspace, uint32_t index,
+                               const CallResult &result)
         const; // Original shape and UTF-8 before any dependency filtering.
     static CallResult
     usable_result(const CallResult &validated,
                   ResultDependencies dependencies); // Never normalizes invalid Provider evidence.
     static bool valid_result(const CallResult &result); // Shared execution/query result shape.
     // Body of either kind within this contract's result bound, before any mutation.
-    static ayni_status_t check_body(const catalog::CallContract &contract, ayni_string_v1 body,
+    static ayni_status_t check_body(ayni::foundation::Workspace &workspace,
+                                    const catalog::CallContract &contract, ayni_string_v1 body,
                                     CallResultKind kind);
     ayni_string_v1 body(uint32_t index) const; // Retained result bytes of either kind.
     static bool pending(const Entry &entry);   // No terminal call result has been committed.

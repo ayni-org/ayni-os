@@ -2,6 +2,7 @@
 #include "schedule_value.h"
 #include <algorithm>
 #include <ayni/applications/assistant/schedule_tool.h>
+#include <ayni/detail/workspace.hpp>
 #include <ayni/values.hpp>
 #include <cinttypes>
 #include <cstdio>
@@ -200,6 +201,21 @@ void ScheduleTool::build_result_schema() {
     result_schema_[result_canonical].max_count = schedule_canonical_max;
     result_schema_[result_message].max_count = message_bytes_max;
 }
+ayni_status_t ScheduleTool::configure_workspace(const ayni_workspace_v1 *workspace) {
+    if (workspace_.data) {
+        return AYNI_INVALID_STATE;
+    }
+    size_t bytes = 0, alignment = 0;
+    const auto query = ayni_value_workspace_requirements(&bytes, &alignment);
+    if (query != AYNI_OK) {
+        return query;
+    }
+    const auto checked = ::ayni::detail::Workspace::check(workspace, bytes);
+    if (checked == AYNI_OK) {
+        workspace_ = *workspace;
+    }
+    return checked;
+}
 ayni_provider_v1 ScheduleTool::describe() {
     return {sizeof(ayni_provider_v1),
             1,
@@ -241,10 +257,10 @@ ayni_tool_usage_v1 ScheduleTool::usage(ayni_tool_ref_v1 binding) const {
 ayni_submit_result_t ScheduleTool::submit(void *context, const ayni_provider_request_v1 *r,
                                           ayni_provider_completion_t *completion) {
     auto &self = *static_cast<ScheduleTool *>(context);
-    if (!r || !completion || r->struct_size != sizeof(*r) || !r->attempt.boot_epoch ||
-        !r->attempt.request_id || !r->logical_call_id || !r->operation_id ||
-        !same(r->capability_id, self.capability_.capability_id) || r->capability_version != 1 ||
-        !same(r->endpoint_id, text(endpoint))) {
+    if (!self.workspace_.data || !r || !completion || r->struct_size != sizeof(*r) ||
+        !r->attempt.boot_epoch || !r->attempt.request_id || !r->logical_call_id ||
+        !r->operation_id || !same(r->capability_id, self.capability_.capability_id) ||
+        r->capability_version != 1 || !same(r->endpoint_id, text(endpoint))) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     if (ayni_value_validate(&r->value) != AYNI_OK || r->value.nodes[0].kind != AYNI_VALUE_OBJECT) {
@@ -299,8 +315,8 @@ ayni_status_t ScheduleTool::answer(const ayni_kernel_t *kernel, GoalPort port, S
     try {
         std::array<ayni_value_node_v1, schedule_input_nodes> nodes{};
         uint32_t count = 0;
-        status = ayni_value_read({slot.input.data(), slot.input_size}, nodes.data(), nodes.size(),
-                                 &count);
+        status = ayni_value_read(&workspace_, {slot.input.data(), slot.input_size}, nodes.data(),
+                                 nodes.size(), &count);
         if (status == AYNI_OK) {
             status = build({nodes.data(), count}, call.owner_instance_id, slot.operation, request);
         }

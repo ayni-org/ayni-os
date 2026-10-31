@@ -3,6 +3,7 @@
 #ifndef AYNI_CORE_AUTHORITY_GRANT_GRANT_RESTORE_H
 #define AYNI_CORE_AUTHORITY_GRANT_GRANT_RESTORE_H
 #include "authority/grant/grant_table.h"
+#include "foundation/workspace.h"
 #include <optional>
 namespace ayni::authority {
 class GrantRestore {
@@ -13,14 +14,15 @@ class GrantRestore {
     // All retained parent, replacement and revocation relationships agree.
     static bool consistent(const GrantTable &table);
     // Replay a creation into its recorded slot after complete validation.
-    static Restore restore_create(GrantTable &table, const GrantRecord &record,
-                                  foundation::TransitionStamp stamp,
+    static Restore restore_create(ayni::foundation::Workspace &workspace, GrantTable &table,
+                                  const GrantRecord &record, foundation::TransitionStamp stamp,
                                   const GrantReclaimExclusions &excluded);
     // Apply the first terminal fact, including ordered descendant cleanup.
     static Restore restore_state(GrantTable &table, const GrantStateRecord &record,
                                  foundation::TransitionStamp stamp);
     // Append a retained snapshot row after its parent, permitting later terminal ancestors.
-    static Restore restore_snapshot(GrantTable &table, const GrantSnapshotRecord &record);
+    static Restore restore_snapshot(ayni::foundation::Workspace &workspace, GrantTable &table,
+                                    const GrantSnapshotRecord &record);
     // Apply accepted root control without rechecking its original session/CAS.
     static Restore restore_revocation(GrantTable &table, const GrantRevocationRecord &record,
                                       foundation::TransitionStamp stamp);
@@ -50,8 +52,9 @@ class GrantRestore {
         uint32_t revision;                   // grant_active_revision or grant_terminal_revision.
         ayni_grant_lifecycle_t lifecycle;    // ACTIVE, EXPIRED or REVOKED, never an effective hold.
     };
-    static bool valid_restored_fact(const GrantTable &table, const GrantRecord &record,
-                                    const RestoredState &state, uint32_t &out_parent);
+    static bool valid_restored_fact(ayni::foundation::Workspace &workspace, const GrantTable &table,
+                                    const GrantRecord &record, const RestoredState &state,
+                                    uint32_t &out_parent);
     static bool fits_restored_fact(const GrantTable &table, const GrantRecord &record);
     static Restore replay_placement(const GrantTable &table, const GrantRecord &record,
                                     foundation::TransitionStamp created,

@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // ADR-0037: public requirement export, proposals and fixed dependency consumption.
 // White-box table/count/stamp assertions below supplement public observations to
 // prove refusal leaves no hidden allocation or partial transition behind.
@@ -760,7 +761,7 @@ TEST(GoalRequirements, parent_generation_change_immediately_denies_child_consump
     // White-box generation change: F4 will own the complete public transaction.
     record.stamp = model.transitions.next();
     record.binding.established_seq = record.stamp.commit_seq;
-    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(::ayni::test::codec_workspace(), record));
     ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
     EXPECT_EQ(node.authority(child.result.object.id).effective_reason,
               AYNI_REASON_GOAL_AUTHORITY_PARENT);

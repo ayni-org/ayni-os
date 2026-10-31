@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Public normal typed-call scenarios, ADR-0084: one normalized input, exact
 // decimal operands, one complete saved authority and copied structured results.
 #include "goal_reauthorization_request.h"
@@ -36,8 +37,9 @@ class BusinessCall : public ::testing::Test {
                 if (result.encoded_value.size != 0U) {
                     std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
                     uint32_t count = 0;
-                    EXPECT_EQ(ayni_value_read(result.encoded_value, nodes.data(),
-                                              static_cast<uint32_t>(nodes.size()), &count),
+                    EXPECT_EQ(ayni_value_read(::ayni::test::value_workspace(), result.encoded_value,
+                                              nodes.data(), static_cast<uint32_t>(nodes.size()),
+                                              &count),
                               AYNI_OK);
                     if (count == 3U) {
                         result_label = string_of(nodes[2].value.text);
@@ -353,7 +355,7 @@ TEST_F(BusinessCall, unavailable_structured_body_keeps_a_valid_original_call_fac
     const auto call_id = calls.identity(index).call_id;
     calls.discard_unusable_result(index);
     const auto saved = calls.record(index);
-    ASSERT_TRUE(ayni::work::CallTable::valid_record(saved));
+    ASSERT_TRUE(ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), saved));
     EXPECT_EQ(saved.result_kind, ayni::work::CallResultKind::unavailable);
     EXPECT_EQ(saved.state.outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(calls.effect(index), ayni::work::ActionEffect::complete);
@@ -362,8 +364,8 @@ TEST_F(BusinessCall, unavailable_structured_body_keeps_a_valid_original_call_fac
     std::vector<uint8_t> body(ayni::work::call_record_size(saved));
     ayni::work::write_call_record(saved, body.data());
     ayni::work::CallRecord decoded{};
-    ASSERT_TRUE(
-        ayni::work::read_call_record(body.data(), static_cast<uint32_t>(body.size()), decoded));
+    ASSERT_TRUE(ayni::work::read_call_record(::ayni::test::codec_workspace(), body.data(),
+                                             static_cast<uint32_t>(body.size()), decoded));
     const ayni::work::CallTable::Limits limits{1, 512, 512, 512, 4096};
     std::vector<uint64_t> arena(ayni::work::CallTable::storage_size(limits) / sizeof(uint64_t) +
                                 1U);

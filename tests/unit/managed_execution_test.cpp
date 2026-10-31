@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // ADR-0050 / C-PERMIT-002/005 / C-STOP-006: public normal execution and declared boundaries.
 // ADR-0052: executor answers held, lost or late through the Mock's link. No
 // power loss, Provider transport failure or restart campaign.
@@ -391,7 +392,7 @@ TEST_F(ManagedExecution, physical_call_record_rejects_changed_permit_identity_an
     uint32_t index = 0;
     ASSERT_TRUE(calls.find(executor.logical_call(), index));
     const auto original = calls.record(index);
-    ASSERT_TRUE(ayni::work::CallTable::valid_record(original));
+    ASSERT_TRUE(ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), original));
     ASSERT_TRUE(original.state.execution.has_value());
     const auto changes = {
         +[](ayni::work::CallRecord &r) { r.state.execution.reset(); },
@@ -418,7 +419,8 @@ TEST_F(ManagedExecution, physical_call_record_rejects_changed_permit_identity_an
     for (const auto change : changes) {
         auto candidate = original;
         change(candidate);
-        EXPECT_FALSE(ayni::work::CallTable::valid_record(candidate));
+        EXPECT_FALSE(
+            ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), candidate));
     }
     // The privacy path has no input projection; it must still validate metadata.
     const ayni::work::CallTable::Limits limits{1, original.domain.size, original.input.size,
@@ -432,9 +434,9 @@ TEST_F(ManagedExecution, physical_call_record_rejects_changed_permit_identity_an
     ++stamp.transition.commit_seq;
     ASSERT_EQ(copy.erase_content(0, stamp), AYNI_OK);
     auto erased = copy.record(0);
-    ASSERT_TRUE(ayni::work::CallTable::valid_record(erased));
+    ASSERT_TRUE(ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), erased));
     erased.state.execution->control_domain = 0;
-    EXPECT_FALSE(ayni::work::CallTable::valid_record(erased));
+    EXPECT_FALSE(ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), erased));
 }
 TEST_F(ManagedExecution, procedure_finishes_only_with_independent_stop_and_releases_actuator) {
     start();
@@ -1028,8 +1030,8 @@ TEST_F(ManagedExecution, erased_physical_record_preserves_independent_execution_
     std::vector<uint8_t> bytes(ayni::work::call_record_size(erased));
     ayni::work::write_call_record(erased, bytes.data());
     ayni::work::CallRecord decoded{};
-    ASSERT_TRUE(
-        ayni::work::read_call_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(ayni::work::read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                             static_cast<uint32_t>(bytes.size()), decoded));
     ASSERT_TRUE(decoded.state.execution.has_value());
     EXPECT_EQ(decoded.state.execution->phase, before.state.execution->phase);
     EXPECT_EQ(decoded.state.execution->target, before.state.execution->target);

@@ -6,6 +6,7 @@
 #include "catalog/catalog_id.h"
 #include "catalog/resource/resource_registry.h"
 #include "foundation/bounded_array.h"
+#include "foundation/workspace.h"
 
 #include <array>
 #include <ayni/calls.h>
@@ -103,9 +104,10 @@ class CallCapabilityRegistry {
                             foundation::BoundedArray<CallCapability>::storage_size(capacity)),
           proof_bytes_(business_bytes) {}
     // Copies/canonicalizes on success, no mutation for invalid/duplicate/full input.
-    ayni_status_t add(const CallCapability &capability);
+    ayni_status_t add(ayni::foundation::Workspace &workspace, const CallCapability &capability);
     // Input was normalized/decoded in this call; no duplicate semantic validation.
-    ayni_status_t add_validated(const CallCapability &capability,
+    ayni_status_t add_validated(ayni::foundation::Workspace &workspace,
+                                const CallCapability &capability,
                                 const ayni_business_contract_v1 *definition = nullptr);
     // Exact ID/version lookup. Failure leaves index untouched.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;

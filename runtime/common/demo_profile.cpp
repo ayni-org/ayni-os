@@ -11,6 +11,7 @@
 #include <ayni/runtime/common/demo_profile.h>
 #include <ayni/runtime/common/memory_capability.h>
 #include <ayni/strategies/builtin.h>
+#include <ayni/workspace.hpp>
 #include <cstring>
 #include <iterator>
 #include <new>
@@ -78,6 +79,7 @@ struct DemoProfile::Impl {
     ayni_scope_field_v1 shell_destination{}; // Owner Grant covers shell.unrestricted as one scope.
     ayni_tool_field_usage_v1 shell_field_usage{};
     std::array<ayni_provider_v1, offer_count> offers{};
+    ayni::Workspace loop_workspace, conversation_workspace, value_workspace;
     strategies::ToolLoop loop;
     applications::assistant::Goals assistant_goals;
     applications::assistant::ScheduleTool schedule;
@@ -104,6 +106,13 @@ struct DemoProfile::Impl {
             return status;
         }
         offers[notify_index] = presenter.describe();
+        status = value_workspace.create(ayni::Workspace::Purpose::value);
+        if (status == AYNI_OK) {
+            status = schedule.configure_workspace(value_workspace.get());
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
         offers[schedule_index] = schedule.describe();
         providers::mock::SubscriptionConfig subscription;
         subscription.clock_context = ports.clock.context;
@@ -296,7 +305,14 @@ struct DemoProfile::Impl {
         config.summary = {
             AYNI_POLICY_REQUEST_MODEL, text("summary"), binding_version, model_scope,
             text("Summarize in fewer than 140 Chinese characters and 512 UTF-8 bytes.")};
-        auto status = loop.configure(config);
+        auto status = loop_workspace.create(strategies::ToolLoop::workspace_requirements);
+        if (status == AYNI_OK) {
+            status =
+                conversation_workspace.create(strategies::Conversation::workspace_requirements);
+        }
+        if (status == AYNI_OK) {
+            status = loop.configure(config, loop_workspace.get());
+        }
         if (status != AYNI_OK) {
             return status;
         }
@@ -317,7 +333,11 @@ struct DemoProfile::Impl {
         type.goal_type_id = text("chat");
         type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
         type.strategy_id = strategy.strategy_id;
-        type.validate = strategies::Conversation::validate_turn;
+        type.validate = [](void *context, ayni_bytes_v1 parameters) {
+            auto &self = *static_cast<Impl *>(context);
+            return strategies::Conversation::validate_turn(
+                const_cast<ayni_workspace_v1 *>(self.conversation_workspace.get()), parameters);
+        };
         type.export_requirements = requirements;
         type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
         type.tool_count = shell_enabled ? static_cast<uint32_t>(tools.size()) : 1U;

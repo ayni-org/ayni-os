@@ -1,4 +1,5 @@
 #include "work/goal/goal_authority_records.h"
+#include "foundation/workspace.h"
 
 #include "foundation/record_body.h"
 
@@ -63,7 +64,8 @@ bool read_requirement(foundation::BodyReader &reader, GoalRequirement &out) {
 
 // Decode locally before validation: a malformed later requirement must not
 // publish the valid prefix. Struct and byte inputs share every domain rule.
-bool read_goal_authority_record(const uint8_t *body, uint32_t size, GoalAuthorityRecord &out) {
+bool read_goal_authority_record(ayni::foundation::Workspace &workspace, const uint8_t *body,
+                                uint32_t size, GoalAuthorityRecord &out) {
     if (body == nullptr || size < goal_authority_record_fixed_size) {
         return false;
     }
@@ -84,7 +86,7 @@ bool read_goal_authority_record(const uint8_t *body, uint32_t size, GoalAuthorit
             return false;
         }
     }
-    if (!reader.ok() || !valid_goal_authority_record(record)) {
+    if (!reader.ok() || !valid_goal_authority_record(workspace, record)) {
         return false;
     }
     out = record;

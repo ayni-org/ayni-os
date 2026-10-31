@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // ADR-0084: adapters preserve names and numeric lexemes until the original
 // Schema resolves them; the native normalization/default owner remains shared.
 #include "catalog/capability/argument_encoding.h"
@@ -37,22 +38,32 @@ TEST(BusinessArguments, wide_integers_and_exact_decimals_never_pass_through_bina
     source.value.text = spelling("18446744073709551615");
     const ayni_arguments_v1 input{&source, 1};
     Output output;
-    ASSERT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_OK);
+    ASSERT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_OK);
     EXPECT_EQ(output.nodes[0].value.unsigned_integer, std::numeric_limits<uint64_t>::max());
     source.kind = AYNI_ARGUMENT_NUMBER;
-    EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_INVALID_ARGUMENT);
     schema.kind = AYNI_VALUE_DECIMAL;
     schema.scale = 2;
     schema.min_i64 = -500;
     schema.max_i64 = 500;
     source.kind = AYNI_ARGUMENT_STRING;
     source.value.text = spelling("1.2300");
-    ASSERT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_OK);
+    ASSERT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_OK);
     EXPECT_EQ(output.nodes[0].value.decimal.coefficient, 123);
     source.value.text = spelling("1.231");
-    EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_INVALID_ARGUMENT);
     source.value.text = spelling("1e0");
-    EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_INVALID_ARGUMENT);
 }
 
 // ADR-0084 approximate-number representation: finite subnormals survive; an
@@ -70,16 +81,21 @@ TEST(BusinessArguments, approximate_numbers_round_once_and_keep_legal_subnormals
     source.value.text = spelling("5e-324");
     const ayni_arguments_v1 input{&source, 1};
     Output output;
-    ASSERT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_OK);
+    ASSERT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_OK);
     EXPECT_EQ(output.nodes[0].value.approximate, std::numeric_limits<double>::denorm_min());
     source.value.text = spelling("-0.0");
-    ASSERT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_OK);
+    ASSERT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_OK);
     EXPECT_FALSE(std::signbit(output.nodes[0].value.approximate));
     for (const char *invalid : {"1e-400", "1e400", "NaN", "+1", "01", "1.", "1e"}) {
         SCOPED_TRACE(invalid);
         source.value.text = spelling(invalid);
         output.view.node_count = 99;
-        EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view),
+        EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                           &output.view),
                   AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(output.view.node_count, 99U);
     }
@@ -118,7 +134,9 @@ TEST(BusinessArguments, named_fields_share_native_defaults_and_reject_duplicate_
     source[1].value.text = spelling("7");
     ayni_arguments_v1 input{source.data(), 2};
     Output output;
-    ASSERT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_OK);
+    ASSERT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_OK);
     ASSERT_EQ(output.view.node_count, 3U);
     EXPECT_EQ(output.nodes[1].field_id, 10U);
     EXPECT_EQ(output.nodes[2].field_id, 20U);
@@ -130,7 +148,9 @@ TEST(BusinessArguments, named_fields_share_native_defaults_and_reject_duplicate_
     ayni_value_v1 native{};
     ASSERT_EQ(builder.finish(native), AYNI_OK);
     Output native_output;
-    ASSERT_EQ(ayni_value_normalize(&definition, &native, &native_output.view), AYNI_OK);
+    ASSERT_EQ(ayni_value_normalize(::ayni::test::value_workspace(), &definition, &native,
+                                   &native_output.view),
+              AYNI_OK);
     const ayni_value_v1 named_value{output.nodes.data(), output.view.node_count};
     const ayni_value_v1 native_value{native_output.nodes.data(), native_output.view.node_count};
     std::array<uint8_t, 256> named_bytes{}, native_bytes{};
@@ -148,16 +168,22 @@ TEST(BusinessArguments, named_fields_share_native_defaults_and_reject_duplicate_
     source[2].subtree_end = 3;
     input.node_count = 3;
     output.view.node_count = 99;
-    EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(output.view.node_count, 99U);
     source[0].subtree_end = 2;
     input.node_count = 2;
     source[1].name = spelling("unknown");
-    EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_INVALID_ARGUMENT);
     source[1].name = spelling("count");
     source[1].kind = AYNI_ARGUMENT_BOOL;
     source[1].value.boolean = 1;
-    EXPECT_EQ(ayni_arguments_normalize(&definition, &input, &output.view), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_arguments_normalize(::ayni::test::value_workspace(), &definition, &input,
+                                       &output.view),
+              AYNI_INVALID_ARGUMENT);
 }
 } // namespace
 
@@ -181,13 +207,18 @@ TEST(BusinessArguments, portable_named_body_retains_numeric_lexemes_and_is_atomi
                                               static_cast<uint32_t>(body.size()), size),
               AYNI_OK);
     ayni::catalog::DecodedArguments decoded;
-    ASSERT_EQ(ayni::catalog::decode_arguments({body.data(), size}, decoded), AYNI_OK);
+    ASSERT_EQ(ayni::catalog::decode_arguments(::ayni::test::codec_workspace(), {body.data(), size},
+                                              decoded),
+              AYNI_OK);
     EXPECT_EQ(decoded.nodes[1].kind, AYNI_ARGUMENT_NUMBER);
     EXPECT_EQ(std::string(decoded.nodes[1].value.text.data, decoded.nodes[1].value.text.size),
               "0.1000000000000000000000001");
     for (uint32_t end = 0; end < size; ++end) {
         decoded.count = 99;
-        EXPECT_NE(ayni::catalog::decode_arguments({body.data(), end}, decoded), AYNI_OK) << end;
+        EXPECT_NE(ayni::catalog::decode_arguments(::ayni::test::codec_workspace(),
+                                                  {body.data(), end}, decoded),
+                  AYNI_OK)
+            << end;
         EXPECT_EQ(decoded.count, 99U);
     }
 }
@@ -242,7 +273,9 @@ TEST(BusinessValues, json_sdk_keeps_decimal_extremes_and_explicit_capacity_failu
         ASSERT_EQ(builder.finish(input), AYNI_OK);
         ayni_value_node_v1 normalized_node{};
         ayni_value_buffer_v1 normalized{&normalized_node, 1, 0, nullptr, 0, 0};
-        ASSERT_EQ(ayni_value_normalize(&schema, &input, &normalized), AYNI_OK);
+        ASSERT_EQ(
+            ayni_value_normalize(::ayni::test::value_workspace(), &schema, &input, &normalized),
+            AYNI_OK);
         const ayni_value_v1 value{&normalized_node, 1};
         std::array<char, 64> bytes{};
         ayni::json::Writer output(bytes.data(), bytes.size());
@@ -271,7 +304,7 @@ TEST(BusinessValues, json_schema_ignores_unrelated_choice_metadata) {
         node.choice_count = UINT32_MAX;
         node.choices = nullptr;
         const ayni_schema_v1 schema{&node, 1};
-        ASSERT_EQ(ayni_schema_validate(&schema), AYNI_OK);
+        ASSERT_EQ(ayni_schema_validate(::ayni::test::value_workspace(), &schema), AYNI_OK);
         std::array<char, 256> bytes{};
         ayni::json::Writer output(bytes.data(), bytes.size());
         ayni::json::write_schema(output, schema);

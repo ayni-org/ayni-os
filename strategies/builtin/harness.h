@@ -105,35 +105,36 @@ ayni_status_t fit_summary_prefix(ayni_string_v1 source, Make make, uint32_t &cho
 }
 // Local errors are matching tool responses. A successful requested=true means
 // Core copied a concrete business Call; no local response may then be fabricated.
-ayni_status_t native_function(const ayni_tool_call_v1 &proposal, const ToolLoopConfig &config,
-                              const ayni_task_snapshot_v1 &snapshot, Turn &turn,
-                              ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
-                              uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
-                              bool &requested);
+ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
+                              const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
+                              Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
+                              char *buffer, uint32_t capacity, ToolBudget budget,
+                              ayni_string_v1 &response, bool &requested);
 // Handles read/wait/cancel/close; start/invoke remain ordinary normalized business admission.
-ayni_status_t native_operation(const ayni_tool_call_v1 &, const ToolLoopConfig &,
-                               const ayni_task_snapshot_v1 &, Turn &, ayni_string_v1,
-                               ayni_policy_output_v1 &, char *, uint32_t, ToolBudget,
-                               ayni_string_v1 &, bool &, bool &);
+ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &,
+                               const ToolLoopConfig &, const ayni_task_snapshot_v1 &, Turn &,
+                               ayni_string_v1, ayni_policy_output_v1 &, char *, uint32_t,
+                               ToolBudget, ayni_string_v1 &, bool &, bool &);
 // Render an original operation and optionally its known terminal result.
-ayni_status_t operation_result(const ayni_operation_info_v1 &, const ToolLoopConfig &,
-                               const ayni_task_snapshot_v1 &, Turn &, ayni_policy_output_v1 &,
-                               char *, uint32_t, ToolBudget, ayni_string_v1 &,
-                               ayni_status_t = AYNI_OK);
+ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &,
+                               const ToolLoopConfig &, const ayni_task_snapshot_v1 &, Turn &,
+                               ayni_policy_output_v1 &, char *, uint32_t, ToolBudget,
+                               ayni_string_v1 &, ayni_status_t = AYNI_OK);
 // Stable tool processing steps are distinct from the target's business completion.
 bool step_committed(const ayni_task_snapshot_v1 &, ayni_string_v1);
 // A control proposal's original target supplies its terminal body for the common summary path.
 ayni_status_t operation_source(const ayni_tool_call_v1 &, const ayni_task_snapshot_v1 &,
                                ayni_task_call_result_v1 &);
 // Serialize original known result proof and outcome, retaining UNKNOWN as a hold.
-ayni_status_t native_result(const ayni_task_call_result_v1 &result, char *buffer, uint32_t capacity,
-                            ayni_string_v1 &response);
+ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1 &result,
+                            char *buffer, uint32_t capacity, ayni_string_v1 &response);
 // Normal harness errors never claim a failed or unknown business action.
 ayni_status_t native_error(ayni_status_t status, std::string_view message, char *buffer,
                            uint32_t capacity, ayni_string_v1 &response);
 // Chunk only the result body; the final reply keeps the original action facts.
-ayni_status_t summarize_result(Turn &, const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
-                               ayni_policy_output_v1 &, char *, bool &requested);
+ayni_status_t summarize_result(Workspace &workspace, Turn &, const ToolLoopConfig &,
+                               const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &, char *,
+                               bool &requested);
 // Only an asynchronous archive wait marks DEFER; service failure statuses remain failures.
 ayni_status_t archive_result(const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
                              const ConversationRecord &, const ayni_task_call_result_v1 &,

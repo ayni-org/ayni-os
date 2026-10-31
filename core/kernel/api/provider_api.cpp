@@ -61,7 +61,8 @@ ayni_status_t decode_contract(const ayni_call_contract_v1 &input, CallContract &
     return normalize_call_contract(value, out);
 }
 
-ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallCapability &out) {
+ayni_status_t decode_call_capability(ayni::foundation::Workspace &workspace,
+                                     const ayni_call_capability_v1 &input, CallCapability &out) {
     const auto status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
     if (status != AYNI_OK) {
         return status;
@@ -85,7 +86,7 @@ ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallC
             return AYNI_INVALID_ARGUMENT;
         }
         ProjectionShape shape;
-        const auto business = validate_business_definition(*input.business, shape);
+        const auto business = validate_business_definition(workspace, *input.business, shape);
         if (business != AYNI_OK) {
             return business;
         }
@@ -96,7 +97,8 @@ ayni_status_t decode_call_capability(const ayni_call_capability_v1 &input, CallC
 
 // Validate the whole nested registration first; neither earlier offers nor
 // borrowed views survive failure, including duplicate identity or oversized ABI.
-ayni_status_t decode_provider(const ayni_provider_v1 &input, Provider &out) {
+ayni_status_t decode_provider(ayni::foundation::Workspace &workspace, const ayni_provider_v1 &input,
+                              Provider &out) {
     const auto status = check_struct_size(input.struct_size, sizeof(input), sizeof(input));
     if (status != AYNI_OK) {
         return status;
@@ -117,7 +119,7 @@ ayni_status_t decode_provider(const ayni_provider_v1 &input, Provider &out) {
     value.renew = input.renew;
     for (uint32_t at = 0; at < input.capability_count; ++at) {
         auto &next = value.offers[at];
-        const auto decoded = decode_call_capability(input.capabilities[at], next);
+        const auto decoded = decode_call_capability(workspace, input.capabilities[at], next);
         if (decoded != AYNI_OK) {
             return decoded;
         }
@@ -143,7 +145,7 @@ ayni_status_t ayni_register_call_capability(ayni_kernel_t *kernel,
         return AYNI_INVALID_ARGUMENT;
     }
     ayni::catalog::CallCapability decoded{};
-    const auto status = decode_call_capability(*capability, decoded);
+    const auto status = decode_call_capability(kernel->scratch_workspace(), *capability, decoded);
     if (status != AYNI_OK) {
         return status;
     }
@@ -159,7 +161,7 @@ ayni_status_t ayni_register_provider(ayni_kernel_t *kernel, const ayni_provider_
         return AYNI_INVALID_ARGUMENT;
     }
     ayni::catalog::Provider decoded{};
-    const auto status = decode_provider(*provider, decoded);
+    const auto status = decode_provider(kernel->scratch_workspace(), *provider, decoded);
     if (status != AYNI_OK) {
         return status;
     }

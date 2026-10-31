@@ -3,6 +3,7 @@
 #include "catalog/capability/value_validation.h"
 #include "catalog/catalog_id.h"
 #include "foundation/record_body.h"
+#include "foundation/workspace.h"
 
 #include <cstring>
 
@@ -105,17 +106,25 @@ void write_bounds(const ayni_schema_node_v1 &node, Output &out) {
     }
 }
 
-ayni_status_t write_default(const ayni_schema_v1 &schema, uint32_t field, Output &out,
-                            uint32_t &default_nodes) {
+ayni_status_t write_default(ayni::foundation::Workspace &workspace, const ayni_schema_v1 &schema,
+                            uint32_t field, Output &out, uint32_t &default_nodes) {
     if (schema.nodes[field].default_value == nullptr) {
         out.u32(0);
         return AYNI_OK;
     }
-    std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
-    std::array<char, schema_encoding_bytes_max> bytes{};
+    auto nodes_lease = workspace.make<std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX>>();
+    if (!nodes_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &nodes = *nodes_lease;
+    auto bytes_lease = workspace.make<std::array<char, schema_encoding_bytes_max>>();
+    if (!bytes_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &bytes = *bytes_lease;
     ayni_value_buffer_v1 buffer{nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
                                 bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
-    const auto normalized = normalize_schema_default(schema, field, buffer);
+    const auto normalized = normalize_schema_default(workspace, schema, field, buffer);
     if (normalized != AYNI_OK) {
         return normalized == AYNI_BUFFER_TOO_SMALL ? AYNI_CAPACITY_EXCEEDED : normalized;
     }
@@ -123,7 +132,11 @@ ayni_status_t write_default(const ayni_schema_v1 &schema, uint32_t field, Output
         return AYNI_CAPACITY_EXCEEDED;
     }
     default_nodes += buffer.node_count;
-    std::array<uint8_t, schema_encoding_bytes_max> encoded{};
+    auto encoded_lease = workspace.make<std::array<uint8_t, schema_encoding_bytes_max>>();
+    if (!encoded_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &encoded = *encoded_lease;
     uint32_t size = 0;
     const ayni_value_v1 value{buffer.nodes, buffer.node_count};
     const auto status =
@@ -188,7 +201,8 @@ bool read_bounds(Input &input, ayni_schema_node_v1 &node, DecodedSchema &schema)
     return input.valid();
 }
 
-bool read_default(Input &input, uint32_t field, DecodedSchema &schema) {
+bool read_default(ayni::foundation::Workspace &workspace, Input &input, uint32_t field,
+                  DecodedSchema &schema) {
     const auto body = input.bytes(schema_encoding_bytes_max);
     if (!input.valid()) {
         return false;
@@ -196,8 +210,12 @@ bool read_default(Input &input, uint32_t field, DecodedSchema &schema) {
     if (body.size == 0U) {
         return true;
     }
-    DecodedValue value;
-    if (decode_value(body, value) != AYNI_OK || !canonical_value(value.view()) ||
+    auto value_lease = workspace.make<DecodedValue>();
+    if (!value_lease) {
+        return false;
+    }
+    auto &value = *value_lease;
+    if (decode_value(workspace, body, value) != AYNI_OK || !canonical_value(value.view()) ||
         value.count > schema.default_nodes.size() - schema.default_count) {
         return false;
     }
@@ -239,21 +257,26 @@ DecodedSchema &DecodedSchema::operator=(const DecodedSchema &source) {
     return *this;
 }
 
-ayni_status_t encode_schema(const ayni_schema_v1 &schema, uint8_t *out, uint32_t capacity,
-                            uint32_t &size) {
+ayni_status_t encode_schema(ayni::foundation::Workspace &workspace, const ayni_schema_v1 &schema,
+                            uint8_t *out, uint32_t capacity, uint32_t &size) {
     if (out == nullptr && capacity != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto checked = validate_schema(schema);
+    const auto checked = validate_schema(workspace, schema);
     if (checked != AYNI_OK) {
         return checked;
     }
-    return encode_validated_schema(schema, out, capacity, size);
+    return encode_validated_schema(workspace, schema, out, capacity, size);
 }
 
-ayni_status_t encode_validated_schema(const ayni_schema_v1 &schema, uint8_t *out, uint32_t capacity,
+ayni_status_t encode_validated_schema(ayni::foundation::Workspace &workspace,
+                                      const ayni_schema_v1 &schema, uint8_t *out, uint32_t capacity,
                                       uint32_t &size) {
-    std::array<uint8_t, schema_encoding_bytes_max> bytes{};
+    auto bytes_lease = workspace.make<std::array<uint8_t, schema_encoding_bytes_max>>();
+    if (!bytes_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &bytes = *bytes_lease;
     Output writer(bytes.data(), static_cast<uint32_t>(bytes.size()));
     writer.u32(schema_encoding_version);
     writer.u32(schema.node_count);
@@ -269,7 +292,7 @@ ayni_status_t encode_validated_schema(const ayni_schema_v1 &schema, uint8_t *out
         writer.text(node.name);
         writer.text(node.unit);
         write_bounds(node, writer);
-        const auto status = write_default(schema, old, writer, defaults);
+        const auto status = write_default(workspace, schema, old, writer, defaults);
         if (status != AYNI_OK) {
             return status;
         }
@@ -290,7 +313,8 @@ ayni_status_t encode_validated_schema(const ayni_schema_v1 &schema, uint8_t *out
     return AYNI_OK;
 }
 
-ayni_status_t decode_schema(ayni_bytes_v1 body, DecodedSchema &out) {
+ayni_status_t decode_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                            DecodedSchema &out) {
     if (body.data == nullptr || body.size < schema_header_bytes ||
         body.size > schema_encoding_bytes_max) {
         return AYNI_INVALID_ARGUMENT;
@@ -299,7 +323,11 @@ ayni_status_t decode_schema(ayni_bytes_v1 body, DecodedSchema &out) {
     if (input.u32() != schema_encoding_version) {
         return AYNI_UNSUPPORTED_VERSION;
     }
-    DecodedSchema schema;
+    auto schema_lease = workspace.make<DecodedSchema>();
+    if (!schema_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &schema = *schema_lease;
     schema.count = input.u32();
     if (schema.count == 0U || schema.count > schema.nodes.size()) {
         return AYNI_INVALID_ARGUMENT;
@@ -312,20 +340,24 @@ ayni_status_t decode_schema(ayni_bytes_v1 body, DecodedSchema &out) {
         node.flags = input.u32();
         node.name = input.text(AYNI_SCHEMA_NAME_BYTES_MAX);
         node.unit = input.text(AYNI_CATALOG_ID_MAX_BYTES);
-        if (!read_bounds(input, node, schema) || !read_default(input, at, schema)) {
+        if (!read_bounds(input, node, schema) || !read_default(workspace, input, at, schema)) {
             return AYNI_INVALID_ARGUMENT;
         }
     }
     if (!input.ok()) {
         return AYNI_INVALID_ARGUMENT;
     }
-    const auto checked = validate_schema(schema.view());
+    const auto checked = validate_schema(workspace, schema.view());
     if (checked != AYNI_OK) {
         return checked;
     }
-    std::array<uint8_t, schema_encoding_bytes_max> canonical{};
+    auto canonical_lease = workspace.make<std::array<uint8_t, schema_encoding_bytes_max>>();
+    if (!canonical_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &canonical = *canonical_lease;
     uint32_t size = 0;
-    const auto encoded = encode_validated_schema(schema.view(), canonical.data(),
+    const auto encoded = encode_validated_schema(workspace, schema.view(), canonical.data(),
                                                  static_cast<uint32_t>(canonical.size()), size);
     if (encoded != AYNI_OK || size != body.size ||
         std::memcmp(body.data, canonical.data(), size) != 0) {

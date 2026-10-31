@@ -2,6 +2,7 @@
 // of external model JSON and of the native-value representation.
 #ifndef AYNI_CORE_CATALOG_CAPABILITY_ARGUMENT_ENCODING_H
 #define AYNI_CORE_CATALOG_CAPABILITY_ARGUMENT_ENCODING_H
+#include "foundation/workspace.h"
 #include <array>
 #include <ayni/arguments.h>
 namespace ayni::catalog {
@@ -16,6 +17,7 @@ struct DecodedArguments {
 ayni_status_t encode_arguments(const ayni_arguments_v1 &input, uint8_t *out, uint32_t capacity,
                                uint32_t &size);
 // Complete shape reader; Schema resolution remains map_arguments' responsibility.
-ayni_status_t decode_arguments(ayni_bytes_v1 body, DecodedArguments &out);
+ayni_status_t decode_arguments(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                               DecodedArguments &out);
 } // namespace ayni::catalog
 #endif

@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Public normal shell lifecycle, ADR-0085: explicit Grant, canonical input,
 // real bounded worker execution, structured post and joined shutdown.
 #include "work_node.h"
@@ -27,8 +28,12 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
         ASSERT_EQ(shell.describe(provider), AYNI_OK);
         ASSERT_EQ(shell.describe_authority(authority), AYNI_OK);
         ASSERT_NE(provider.capabilities[0].business, nullptr);
-        ASSERT_EQ(ayni_schema_validate(&provider.capabilities[0].business->input), AYNI_OK);
-        ASSERT_EQ(ayni_schema_validate(&provider.capabilities[0].business->result), AYNI_OK);
+        ASSERT_EQ(ayni_schema_validate(::ayni::test::value_workspace(),
+                                       &provider.capabilities[0].business->input),
+                  AYNI_OK);
+        ASSERT_EQ(ayni_schema_validate(::ayni::test::value_workspace(),
+                                       &provider.capabilities[0].business->result),
+                  AYNI_OK);
         WorkNode work;
         auto &config = work.node().config();
         config.call_capacity = 4;
@@ -95,8 +100,9 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
             if (read == AYNI_OK) {
                 std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
                 uint32_t count = 0;
-                EXPECT_EQ(ayni_value_read(result.encoded_value, nodes.data(),
-                                          static_cast<uint32_t>(nodes.size()), &count),
+                EXPECT_EQ(ayni_value_read(::ayni::test::value_workspace(), result.encoded_value,
+                                          nodes.data(), static_cast<uint32_t>(nodes.size()),
+                                          &count),
                           AYNI_OK);
                 if (count == 7U) {
                     exit_code = nodes[2].value.integer;

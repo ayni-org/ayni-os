@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // White-box module tests: snapshot round trips preserve durable ownership,
 // stamps and selection order without persisting boot compatibility holds.
 
@@ -81,8 +82,9 @@ class Model {
               ayni::kernel::goal_authority_limits(config)))),
           task_authority_(store(ayni::work::TaskAuthorityTable::storage_size(
               ayni::kernel::task_authority_limits(config)))),
-          storage_(storage()), catalogs_(capacities_, storage_),
-          model_(catalogs_, capacities_, limits, storage_, callbacks_) {}
+          storage_(storage()), catalogs_(capacities_, storage_, ::ayni::test::codec_workspace()),
+          model_(catalogs_, capacities_, limits, storage_, callbacks_,
+                 ::ayni::test::codec_workspace()) {}
 
     WorkModel &get() { return model_; }
 
@@ -143,7 +145,8 @@ void admit_fixture_work(WorkModel &model) {
             record.binding.parent = {
                 parent.goal_id, model.goal_authority.at(goal.parent_index).binding.established_seq};
         }
-        ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+        ASSERT_TRUE(
+            ayni::work::valid_goal_authority_record(::ayni::test::codec_workspace(), record));
         ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
     }
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {

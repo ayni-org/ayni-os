@@ -1,4 +1,5 @@
 #include "catalog/capability/value_encoding.h"
+#include "workspace_fixture.h"
 #include <ayni/values.h>
 #include <gtest/gtest.h>
 
@@ -64,7 +65,8 @@ TEST(BusinessValues, object_fields_sort_by_id_and_static_defaults_fill_missing_v
     std::array<ayni_value_node_v1, 4> nodes{};
     ayni_value_buffer_v1 output{
         nodes.data(), static_cast<uint32_t>(nodes.size()), 0, nullptr, 0, 0};
-    ASSERT_EQ(ayni_value_normalize(&declaration, &value, &output), AYNI_OK);
+    ASSERT_EQ(ayni_value_normalize(::ayni::test::value_workspace(), &declaration, &value, &output),
+              AYNI_OK);
     EXPECT_EQ(output.node_count, 3U);
     EXPECT_EQ(nodes[0].subtree_end, 3U);
     EXPECT_EQ(nodes[1].field_id, 1U);
@@ -72,7 +74,8 @@ TEST(BusinessValues, object_fields_sort_by_id_and_static_defaults_fill_missing_v
     EXPECT_EQ(nodes[2].field_id, 2U);
     EXPECT_EQ(nodes[2].value.integer, 4);
     default_node.value.integer = 11;
-    EXPECT_EQ(ayni_schema_validate(&declaration), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_schema_validate(::ayni::test::value_workspace(), &declaration),
+              AYNI_INVALID_ARGUMENT);
 }
 
 // ADR-0084: capacity preflight reports complete defaults without publishing
@@ -91,7 +94,8 @@ TEST(BusinessValues, small_output_reports_requirements_without_touching_buffers)
     ayni_value_node_v1 sentinel = integer(99, 1, 91);
     std::array<char, 4> bytes{'k', 'e', 'e', 'p'};
     ayni_value_buffer_v1 output{&sentinel, 1, 19, bytes.data(), 4, 23};
-    ASSERT_EQ(ayni_value_normalize(&schema, &value, &output), AYNI_BUFFER_TOO_SMALL);
+    ASSERT_EQ(ayni_value_normalize(::ayni::test::value_workspace(), &schema, &value, &output),
+              AYNI_BUFFER_TOO_SMALL);
     EXPECT_EQ(output.node_count, 1U);
     EXPECT_EQ(output.byte_count, 5U);
     EXPECT_EQ(sentinel.value.integer, 91);
@@ -99,7 +103,8 @@ TEST(BusinessValues, small_output_reports_requirements_without_touching_buffers)
     field.max_count = 2;
     output.node_count = 19;
     output.byte_count = 23;
-    EXPECT_EQ(ayni_value_normalize(&schema, &value, &output), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_value_normalize(::ayni::test::value_workspace(), &schema, &value, &output),
+              AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(output.node_count, 19U);
     EXPECT_EQ(output.byte_count, 23U);
 }
@@ -128,7 +133,8 @@ TEST(BusinessValues, lists_preserve_order_duplicates_and_canonicalize_negative_z
     std::array<ayni_value_node_v1, 4> result{};
     ayni_value_buffer_v1 output{
         result.data(), static_cast<uint32_t>(result.size()), 0, nullptr, 0, 0};
-    ASSERT_EQ(ayni_value_normalize(&schema, &value, &output), AYNI_OK);
+    ASSERT_EQ(ayni_value_normalize(::ayni::test::value_workspace(), &schema, &value, &output),
+              AYNI_OK);
     EXPECT_FALSE(std::signbit(result[1].value.approximate));
     EXPECT_DOUBLE_EQ(result[2].value.approximate, 0.5);
     EXPECT_DOUBLE_EQ(result[3].value.approximate, 0.5);
@@ -173,7 +179,9 @@ TEST(BusinessValues, portable_value_encoding_round_trips_and_rejects_trailing_or
         ayni::catalog::encode_value(value, bytes.data(), static_cast<uint32_t>(bytes.size()), used),
         AYNI_OK);
     ayni::catalog::DecodedValue decoded;
-    ASSERT_EQ(ayni::catalog::decode_value({bytes.data(), used}, decoded), AYNI_OK);
+    ASSERT_EQ(
+        ayni::catalog::decode_value(::ayni::test::codec_workspace(), {bytes.data(), used}, decoded),
+        AYNI_OK);
     EXPECT_TRUE(ayni::catalog::canonical_value(decoded.view()));
     EXPECT_EQ(decoded.nodes[1].value.integer, std::numeric_limits<int64_t>::min());
     EXPECT_EQ(std::string(decoded.nodes[2].value.text.data, decoded.nodes[2].value.text.size),
@@ -181,11 +189,13 @@ TEST(BusinessValues, portable_value_encoding_round_trips_and_rejects_trailing_or
     for (uint32_t size = 0; size < used; ++size) {
         SCOPED_TRACE(size);
         decoded.count = 91;
-        EXPECT_EQ(ayni::catalog::decode_value({bytes.data(), size}, decoded),
+        EXPECT_EQ(ayni::catalog::decode_value(::ayni::test::codec_workspace(), {bytes.data(), size},
+                                              decoded),
                   AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(decoded.count, 91U);
     }
-    EXPECT_EQ(ayni::catalog::decode_value({bytes.data(), used + 1U}, decoded),
+    EXPECT_EQ(ayni::catalog::decode_value(::ayni::test::codec_workspace(),
+                                          {bytes.data(), used + 1U}, decoded),
               AYNI_INVALID_ARGUMENT);
 }
 } // namespace

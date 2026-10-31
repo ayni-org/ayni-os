@@ -1,6 +1,7 @@
 #include "catalog/capability/business_encoding.h"
 #include "catalog/capability/value_validation.h"
 #include "foundation/attempt_identity.h"
+#include "foundation/workspace.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/memory/memory_access.h"
 #include "work/call_propagation.h"
@@ -136,9 +137,13 @@ ayni_status_t CallRuntime::normalize_result(uint32_t index, ayni_bytes_v1 body,
             (result.outcome != AYNI_CALL_COMPLETED && result.text.size == 0U)) {
             return AYNI_OK;
         }
-        catalog::DecodedBusiness proof;
-        const auto status =
-            catalog::decode_business(work_.calls.domain(index), contract.business_contract, proof);
+        auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+        if (!proof_lease) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        auto &proof = *proof_lease;
+        const auto status = catalog::decode_business(work_.workspace, work_.calls.domain(index),
+                                                     contract.business_contract, proof);
         if (status != AYNI_OK) {
             return status;
         }
@@ -152,15 +157,29 @@ ayni_status_t CallRuntime::normalize_result(uint32_t index, ayni_bytes_v1 body,
     if (contract.result_format != catalog::call_value_result_format) {
         return AYNI_INVALID_ARGUMENT;
     }
-    catalog::DecodedBusiness proof;
-    auto status =
-        catalog::decode_business(work_.calls.domain(index), contract.business_contract, proof);
-    catalog::DecodedValue raw, normalized;
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!proof_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &proof = *proof_lease;
+    auto status = catalog::decode_business(work_.workspace, work_.calls.domain(index),
+                                           contract.business_contract, proof);
+    auto raw_lease = work_.workspace.make<catalog::DecodedValue>();
+    if (!raw_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &raw = *raw_lease;
+    auto normalized_lease = work_.workspace.make<catalog::DecodedValue>();
+    if (!normalized_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &normalized = *normalized_lease;
     if (status == AYNI_OK) {
-        status = catalog::decode_value(body, raw);
+        status = catalog::decode_value(work_.workspace, body, raw);
     }
     if (status == AYNI_OK) {
-        status = catalog::normalize_borrowed_value(proof.result.view(), raw.view(), normalized);
+        status = catalog::normalize_borrowed_value(work_.workspace, proof.result.view(), raw.view(),
+                                                   normalized);
     }
     uint32_t size = 0;
     if (status == AYNI_OK) {
@@ -189,7 +208,7 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
             return work_.calls.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE,
                                          action_stamp);
         }
-        const auto status = work_.calls.finish(index,
+        const auto status = work_.calls.finish(work_.workspace, index,
                                                {AYNI_CALL_ABANDONED,
                                                 AYNI_RESULT_UNKNOWN,
                                                 AYNI_REASON_NONE,
@@ -226,13 +245,13 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
         const bool value_valid = message.body == work::CallResultKind::tool_calls ||
                                  normalize_result(index, message.payload, result) == AYNI_OK;
         applied = message.query_result == 0U && value_valid
-                      ? work_.calls.finish(index, result, action_stamp,
+                      ? work_.calls.finish(work_.workspace, index, result, action_stamp,
                                            control_.result_dependencies(index))
                       : AYNI_INVALID_ARGUMENT;
         if (applied == AYNI_INVALID_ARGUMENT || applied == AYNI_CAPACITY_EXCEEDED) {
             // A terminal has ended the local borrow but malformed evidence cannot
             // prove success/failure. Preserve UNKNOWN with an explicit diagnostic.
-            applied = work_.calls.finish(index,
+            applied = work_.calls.finish(work_.workspace, index,
                                          {AYNI_CALL_ABANDONED,
                                           AYNI_RESULT_UNKNOWN,
                                           AYNI_REASON_PROVIDER_RESULT,

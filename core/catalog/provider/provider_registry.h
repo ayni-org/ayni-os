@@ -3,6 +3,7 @@
 #define AYNI_CORE_CATALOG_PROVIDER_PROVIDER_REGISTRY_H
 
 #include "catalog/capability/call_contract.h"
+#include "foundation/workspace.h"
 
 namespace ayni::catalog {
 // Borrowed same-call definitions, paired by offer index and never retained.
@@ -48,7 +49,7 @@ class ProviderRegistry {
                                        foundation::BoundedArray<Provider>::storage_size(capacity)),
           proof_bytes_(business_bytes) {}
     // Input came from decode in this synchronous call; duplicate/full preserves entries.
-    ayni_status_t add_validated(const Provider &provider,
+    ayni_status_t add_validated(ayni::foundation::Workspace &workspace, const Provider &provider,
                                 const ProviderBusinessDefinitions &definitions = {});
     // Exact immutable identity lookup; failure preserves index.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;

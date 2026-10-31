@@ -1,5 +1,6 @@
 #include "foundation/little_endian.h"
 #include "foundation/record_body.h"
+#include "foundation/workspace.h"
 #include "kernel/service/persistence/persistent_store.h"
 #include "work/goal/goal_authority_records.h"
 #include "work/goal/goal_records.h"
@@ -248,7 +249,8 @@ durability::BatchCheck goal_authority(WorkModel &model,
                                       StoreReadCursor &cursor, const uint8_t *body, uint32_t size) {
     work::GoalAuthorityRecord record{};
     uint32_t index = 0;
-    if (!cursor.paired_id || !work::read_goal_authority_record(body, size, record) ||
+    if (!cursor.paired_id ||
+        !work::read_goal_authority_record(model.workspace, body, size, record) ||
         record.goal_id != cursor.paired_id || !model.goals.find(record.goal_id, index) ||
         !within_snapshot(record.stamp, metadata) ||
         record.stamp.commit_seq > model.goals.at(index).commit_seq ||

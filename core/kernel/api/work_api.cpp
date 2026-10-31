@@ -43,14 +43,14 @@ bool read_tools(const ayni_goal_type_v1 &input, ayni::catalog::GoalType &type) {
     }
     for (uint32_t at = 0; at < input.tool_count; ++at) {
         const ayni_tool_ref_v1 &tool = input.tools[at];
-        if (!type.tools[at].binding_id.assign(tool.binding_id)) {
+        if (!type.policy.tools[at].binding_id.assign(tool.binding_id)) {
             return false;
         }
-        type.tools[at].binding_version = tool.binding_version;
-        type.tools[at].role = tool.role;
+        type.policy.tools[at].binding_version = tool.binding_version;
+        type.policy.tools[at].role = tool.role;
     }
-    type.tool_count = input.tool_count;
-    type.tool_authorization = input.tool_authorization;
+    type.policy.count = input.tool_count;
+    type.policy.authorization = input.tool_authorization;
     return type.tool_policy().valid();
 }
 
@@ -368,7 +368,11 @@ ayni_status_t ayni_register_goal_type(ayni_kernel_t *kernel, const ayni_goal_typ
         return status;
     }
     using ayni::catalog::GoalTypeRegistry;
-    ayni::catalog::GoalType type{};
+    auto type_lease = kernel->scratch_workspace().make<ayni::catalog::GoalType>();
+    if (!type_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &type = *type_lease;
     // Goals that may only have no trigger have no tasks to decide.
     const bool has_tasks = goal_type->trigger_kinds != AYNI_TRIGGER_BIT(AYNI_TRIGGER_NONE);
     if (goal_type->version == 0U || !type.id.assign(goal_type->goal_type_id) ||

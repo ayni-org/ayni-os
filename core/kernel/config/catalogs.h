@@ -25,7 +25,8 @@ namespace ayni::kernel {
 
 struct Catalogs {
     // Each registry over its store in storage, sized by capacities.
-    Catalogs(const KernelCapacities &capacities, const KernelStorage &storage);
+    Catalogs(const KernelCapacities &capacities, const KernelStorage &storage,
+             foundation::Workspace &workspace);
     Catalogs(const Catalogs &) = delete;
     Catalogs &operator=(const Catalogs &) = delete;
 
@@ -54,6 +55,7 @@ struct Catalogs {
   private:
     // Completes authority/business-proof pairing only during configuration close.
     ayni_status_t link_business();
+    foundation::Workspace &workspace_; // Borrowed Kernel temporary owner, not catalog state.
 };
 
 } // namespace ayni::kernel

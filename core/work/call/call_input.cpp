@@ -1,4 +1,5 @@
 #include "work/call/call_input.h"
+#include "foundation/workspace.h"
 
 #include "authority/scope/scope.h"
 #include "catalog/capability/business_encoding.h"
@@ -45,11 +46,16 @@ ayni_status_t check_business_input_limit(const catalog::CallContract &contract,
 }
 // Admission validates shape once, then shares the default/order plan used by
 // public normalization. The canonical body is the sole execution input fact.
-ayni_status_t encode_business_input(ayni_bytes_v1 domain, const catalog::CallContract &contract,
+ayni_status_t encode_business_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                                    const catalog::CallContract &contract,
                                     const ayni_value_v1 &input, uint8_t *out, uint32_t capacity,
                                     uint32_t &size, catalog::DecodedValue *normalized_out) {
-    catalog::DecodedBusiness business;
-    auto status = catalog::decode_business(domain, contract.business_contract, business);
+    auto business_lease = workspace.make<catalog::DecodedBusiness>();
+    if (!business_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &business = *business_lease;
+    auto status = catalog::decode_business(workspace, domain, contract.business_contract, business);
     if (status != AYNI_OK) {
         return status;
     }
@@ -57,8 +63,12 @@ ayni_status_t encode_business_input(ayni_bytes_v1 domain, const catalog::CallCon
     if (status != AYNI_OK) {
         return status;
     }
-    catalog::DecodedValue normalized;
-    status = catalog::normalize_borrowed_value(business.input.view(), input, normalized);
+    auto normalized_lease = workspace.make<catalog::DecodedValue>();
+    if (!normalized_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &normalized = *normalized_lease;
+    status = catalog::normalize_borrowed_value(workspace, business.input.view(), input, normalized);
     if (status != AYNI_OK) {
         return status;
     }
@@ -75,21 +85,31 @@ ayni_status_t encode_business_input(ayni_bytes_v1 domain, const catalog::CallCon
 
 // Saved business input must already include defaults and canonical ordering;
 // restart may validate it, but may never reinterpret or fill a new default.
-ayni_status_t read_call_input(ayni_bytes_v1 domain, ayni_bytes_v1 body,
-                              const catalog::CallContract &contract, CallInputView &out) {
+ayni_status_t read_call_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, const catalog::CallContract &contract,
+                              CallInputView &out) {
     if (contract.input_format != catalog::call_value_input_format) {
         return AYNI_UNSUPPORTED_VERSION;
     }
     if (body.size > contract.input_text_limit) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    catalog::DecodedBusiness business;
-    auto status = catalog::decode_business(domain, contract.business_contract, business);
+    auto business_lease = workspace.make<catalog::DecodedBusiness>();
+    if (!business_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &business = *business_lease;
+    auto status = catalog::decode_business(workspace, domain, contract.business_contract, business);
     if (status != AYNI_OK) {
         return status;
     }
-    CallInputView candidate{};
-    status = catalog::read_normalized_value(business.input.view(), body, candidate.value);
+    auto candidate_lease = workspace.make<CallInputView>();
+    if (!candidate_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &candidate = *candidate_lease;
+    status =
+        catalog::read_normalized_value(workspace, business.input.view(), body, candidate.value);
     if (status != AYNI_OK) {
         return status;
     }

@@ -1,6 +1,7 @@
 // What a call waits for, projected from its owners on demand (ayni_get_call);
 // nothing here is cached in the Task.
 
+#include "foundation/workspace.h"
 #include "kernel/service/call/call_runtime.h"
 
 namespace ayni::kernel {
@@ -48,7 +49,7 @@ void CallRuntime::describe_call(uint32_t index, uint64_t now_us, uint64_t durabl
            calls.input(index).size,
            calls.result(index).size + calls.value_result(index).size,
            wait_reason,
-           ayni::work::tool_call_count(calls.tool_calls(index)),
+           ayni::work::tool_call_count(work_.workspace, calls.tool_calls(index)),
            waited,
            calls.query_revision(index),
            static_cast<ayni_call_query_phase_t>(query.phase),

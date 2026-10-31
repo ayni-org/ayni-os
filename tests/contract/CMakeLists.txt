@@ -50,6 +50,9 @@ ayni_header_check_source("ayni/values_json.hpp" cpp)
 ayni_header_check_source("ayni/model_messages.hpp" cpp)
 ayni_header_check_source("ayni/operation_json.hpp" cpp)
 ayni_header_check_source("ayni/detail/tool_usage.hpp" cpp)
+ayni_header_check_source("ayni/workspace.hpp" cpp)
+ayni_header_check_source("ayni/detail/workspace.hpp" cpp)
+ayni_header_check_source("ayni/call_result_json.hpp" cpp)
 
 # abi_layout.c pins the published struct layouts at compile time (C-VER-002).
 add_library(ayni_header_checks OBJECT ${header_check_sources} abi_layout.c)
@@ -103,3 +106,13 @@ add_test(NAME control_gate_from_c99_without_core COMMAND ayni_control_c_abi_smok
 add_test(NAME control_gate_does_not_reference_heap_allocator
     COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "-DARCHIVES=$<TARGET_FILE:ayni_control_gate>"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_heap.cmake")
+
+# Observe cleanup of dead local bytes under optimization. This ELF linker seam
+# delegates to real memset; it injects no fault and needs no Core archive.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(ayni_workspace_erase workspace_erase.cpp)
+    target_link_libraries(ayni_workspace_erase PRIVATE ayni_api ayni_core_options)
+    target_compile_options(ayni_workspace_erase PRIVATE -O3)
+    target_link_options(ayni_workspace_erase PRIVATE -Wl,--wrap=memset)
+    add_test(NAME workspace_erasure_survives_optimized_dead_storage COMMAND ayni_workspace_erase)
+endif()

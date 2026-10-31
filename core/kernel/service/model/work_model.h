@@ -49,8 +49,10 @@ struct AuthorityCleanupGoal {
 struct WorkModel {
     // catalogs outlives the model.
     WorkModel(const Catalogs &registered, const KernelCapacities &capacities,
-              const KernelLimits &limits, const KernelStorage &storage, CallbackGate &callbacks)
-        : catalogs(registered), sessions(storage[Store::sessions], capacities.session_capacity),
+              const KernelLimits &limits, const KernelStorage &storage, CallbackGate &callbacks,
+              foundation::Workspace &owner_workspace)
+        : workspace(owner_workspace), catalogs(registered),
+          sessions(storage[Store::sessions], capacities.session_capacity),
           agents(storage[Store::agents], capacities.agent_capacity),
           goals(storage[Store::goals],
                 {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
@@ -186,6 +188,7 @@ struct WorkModel {
 
     // Goal types, strategies, capability schemas, observation sources and
     // executors the rules read; closed before the model starts.
+    foundation::Workspace &workspace; // Kernel-owned temporary region; no copied domain state.
     const Catalogs &catalogs;
     // Registration fills principals, agents and Scene declarations in
     // CONFIGURING; the rest changes only in RUNNING.

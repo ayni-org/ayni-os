@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Normal public ABI call scenarios, C-CALL-002/012, C-COMMIT-007 and ADR-0045.
 // Sim storage timing is explicit; no fault injection or restart campaign.
 #include "journal_test_support.h"
@@ -1121,11 +1122,12 @@ TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_i
     for (const auto &variant : variants) {
         SCOPED_TRACE(variant.name);
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(row->body.data(), row->header.length, record));
+        ASSERT_TRUE(ayni::work::read_call_record(::ayni::test::codec_workspace(), row->body.data(),
+                                                 row->header.length, record));
         ASSERT_EQ(record.identity.call_id, call);
         ASSERT_TRUE(record.action.has_value());
         variant.change(record);
-        ASSERT_TRUE(ayni::work::CallTable::valid_record(record));
+        ASSERT_TRUE(ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), record));
         auto changed = original;
         std::vector<uint8_t> bytes(ayni::work::call_record_size(record));
         ayni::work::write_call_record(record, bytes.data());
@@ -1171,12 +1173,14 @@ TEST_F(ManagedCall, snapshot_retains_requested_and_resolved_query_receipts) {
             continue;
         }
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(row.body.data(), row.header.length, record));
+        ASSERT_TRUE(ayni::work::read_call_record(::ayni::test::codec_workspace(), row.body.data(),
+                                                 row.header.length, record));
         if (record.identity.call_id == call) {
             ++selected;
             ASSERT_TRUE(record.state.query.has_value());
             ++record.state.query->generation;
-            ASSERT_TRUE(ayni::work::CallTable::valid_record(record));
+            ASSERT_TRUE(
+                ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), record));
             std::vector<uint8_t> bytes(ayni::work::call_record_size(record));
             ayni::work::write_call_record(record, bytes.data());
             row.body = std::move(bytes);

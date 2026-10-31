@@ -1,6 +1,7 @@
 #include "catalog/capability/argument_encoding.h"
 #include "catalog/capability/argument_mapping.h"
 #include "foundation/record_body.h"
+#include "foundation/workspace.h"
 
 namespace ayni::catalog {
 namespace {
@@ -58,7 +59,8 @@ ayni_status_t encode_arguments(const ayni_arguments_v1 &input, uint8_t *out, uin
 
 // Decode unpublished nodes, then reuse the struct validator. Number spellings
 // remain text until the original business Schema decides their precise type.
-ayni_status_t decode_arguments(ayni_bytes_v1 body, DecodedArguments &out) {
+ayni_status_t decode_arguments(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                               DecodedArguments &out) {
     if (body.data == nullptr || body.size < header_bytes) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -66,7 +68,11 @@ ayni_status_t decode_arguments(ayni_bytes_v1 body, DecodedArguments &out) {
     if (reader.u32() != argument_encoding_version) {
         return AYNI_UNSUPPORTED_VERSION;
     }
-    DecodedArguments candidate;
+    auto candidate_lease = workspace.make<DecodedArguments>();
+    if (!candidate_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &candidate = *candidate_lease;
     candidate.count = reader.u32();
     if (candidate.count == 0U || candidate.count > candidate.nodes.size()) {
         return AYNI_INVALID_ARGUMENT;

@@ -1,5 +1,6 @@
 #include "authority/grant/grant_records.h"
 #include "authority/grant/grant_table.h"
+#include "workspace_fixture.h"
 
 #include <gtest/gtest.h>
 
@@ -122,7 +123,8 @@ TEST(GrantRevoke, gate_denies_every_ancestor_before_other_facts_and_survives_res
     grants.table.clear_restored();
     EXPECT_EQ(grants.table.size(), 0U);
     EXPECT_TRUE(grants.table.gated(id(1)));
-    ASSERT_EQ(grants.table.restore_create(parent, {1, 1}), GrantTable::Restore::restored);
+    ASSERT_EQ(grants.table.restore_create(::ayni::test::codec_workspace(), parent, {1, 1}),
+              GrantTable::Restore::restored);
     EXPECT_EQ(grants.table.check_chain(0, ready).reason, AYNI_REASON_GRANT_REVOKED);
     ASSERT_TRUE(grants.table.release_gate(id(1)));
     EXPECT_EQ(grants.table.check_chain(0, ready).status, AYNI_OK);
@@ -405,10 +407,12 @@ TEST(GrantRevoke, journal_replays_root_then_atomic_descendant_state_and_progress
     ASSERT_TRUE(source.add(1));
     ASSERT_TRUE(source.add(2, id(1)));
     Grants restored;
-    ASSERT_EQ(restored.table.restore_create(source.record(0), {1, 1}),
-              GrantTable::Restore::restored);
-    ASSERT_EQ(restored.table.restore_create(source.record(1), {2, 2}),
-              GrantTable::Restore::restored);
+    ASSERT_EQ(
+        restored.table.restore_create(::ayni::test::codec_workspace(), source.record(0), {1, 1}),
+        GrantTable::Restore::restored);
+    ASSERT_EQ(
+        restored.table.restore_create(::ayni::test::codec_workspace(), source.record(1), {2, 2}),
+        GrantTable::Restore::restored);
     const GrantRevocationRecord root{id(1), 2, AYNI_INTENT_EFFECT_CHANGED, 0, id(2)};
     ASSERT_EQ(restored.table.restore_revocation(root, {10, 10}), GrantTable::Restore::restored);
     const GrantStateRecord child{id(2), 2, AYNI_GRANT_REVOKED, id(1)};
@@ -484,8 +488,9 @@ TEST(GrantRevoke, snapshot_keeps_terminal_and_cleanup_stamps_and_can_resume_afte
     ASSERT_TRUE(source.table.apply_cleanup(step, {12, 12}));
     Grants restored;
     for (uint32_t row = 0; row < source.table.size(); ++row) {
-        ASSERT_EQ(restored.table.restore_snapshot(source.snapshot(row)),
-                  GrantTable::Restore::restored);
+        ASSERT_EQ(
+            restored.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(row)),
+            GrantTable::Restore::restored);
     }
     EXPECT_TRUE(restored.table.consistent());
     EXPECT_EQ(restored.table.at(0).stamp.commit_seq, 10U);
@@ -532,22 +537,27 @@ TEST(GrantRevoke, snapshot_rejects_non_ancestor_revoker_and_malformed_cursor_or_
             break;
         }
         Grants restored;
-        EXPECT_EQ(restored.table.restore_snapshot(bad), GrantTable::Restore::corrupt);
+        EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), bad),
+                  GrantTable::Restore::corrupt);
         EXPECT_EQ(restored.table.size(), 0U);
     }
     Grants restored;
-    ASSERT_EQ(restored.table.restore_snapshot(root), GrantTable::Restore::restored);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), root),
+              GrantTable::Restore::restored);
     auto child = source.snapshot(1);
     child.lifecycle = AYNI_GRANT_REVOKED;
     child.revision = 2;
     child.stamp = {12, 12};
     child.revoked_by_root_id = id(9);
-    EXPECT_EQ(restored.table.restore_snapshot(child), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), child),
+              GrantTable::Restore::corrupt);
     child.revoked_by_root_id = id(1);
     child.cleanup_after_grant_id = id(1);
-    EXPECT_EQ(restored.table.restore_snapshot(child), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), child),
+              GrantTable::Restore::corrupt);
     child.cleanup_after_grant_id = 0;
-    ASSERT_EQ(restored.table.restore_snapshot(child), GrantTable::Restore::restored);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), child),
+              GrantTable::Restore::restored);
     EXPECT_TRUE(restored.table.consistent());
 }
 
@@ -569,12 +579,15 @@ TEST(GrantRevoke, snapshot_child_cannot_claim_cleanup_beyond_its_roots_cursor_or
             bad_root.cleanup_stamp = {11, 11};
         }
         Grants restored;
-        ASSERT_EQ(restored.table.restore_snapshot(bad_root), GrantTable::Restore::restored);
-        EXPECT_EQ(restored.table.restore_snapshot(child), GrantTable::Restore::corrupt);
+        ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), bad_root),
+                  GrantTable::Restore::restored);
+        EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), child),
+                  GrantTable::Restore::corrupt);
         EXPECT_EQ(restored.table.size(), 1U);
     }
     Grants none(0);
-    EXPECT_EQ(none.table.restore_snapshot(root), GrantTable::Restore::no_room);
+    EXPECT_EQ(none.table.restore_snapshot(::ayni::test::codec_workspace(), root),
+              GrantTable::Restore::no_room);
     EXPECT_EQ(none.table.size(), 0U);
 }
 
@@ -595,15 +608,19 @@ TEST(GrantRevoke, snapshot_frontier_covers_active_and_terminal_descendants_atomi
         ASSERT_EQ(root.cleanup_through_grant_id, id(2));
 
         Grants valid;
-        ASSERT_EQ(valid.table.restore_snapshot(root), GrantTable::Restore::restored);
-        ASSERT_EQ(valid.table.restore_snapshot(child), GrantTable::Restore::restored);
+        ASSERT_EQ(valid.table.restore_snapshot(::ayni::test::codec_workspace(), root),
+                  GrantTable::Restore::restored);
+        ASSERT_EQ(valid.table.restore_snapshot(::ayni::test::codec_workspace(), child),
+                  GrantTable::Restore::restored);
         EXPECT_TRUE(valid.table.consistent());
 
         auto shortened = root;
         shortened.cleanup_through_grant_id = id(1);
         Grants restored;
-        ASSERT_EQ(restored.table.restore_snapshot(shortened), GrantTable::Restore::restored);
-        EXPECT_EQ(restored.table.restore_snapshot(child), GrantTable::Restore::corrupt);
+        ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), shortened),
+                  GrantTable::Restore::restored);
+        EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), child),
+                  GrantTable::Restore::corrupt);
         EXPECT_EQ(restored.table.size(), 1U);
         EXPECT_EQ(restored.table.at(0).cleanup_through_grant_id, id(1));
         EXPECT_TRUE(restored.table.consistent());
@@ -639,7 +656,8 @@ TEST(GrantRevoke, non_revoked_snapshots_reject_each_revocation_metadata_field_at
                 break;
             }
             Grants restored;
-            EXPECT_EQ(restored.table.restore_snapshot(bad), GrantTable::Restore::corrupt);
+            EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), bad),
+                      GrantTable::Restore::corrupt);
             EXPECT_EQ(restored.table.size(), 0U);
         }
     }
@@ -656,8 +674,9 @@ TEST(GrantRevoke, descendant_snapshots_reject_private_cursor_fields_and_out_of_o
     const auto child = source.snapshot(1);
     for (uint32_t field = 0; field < 7; ++field) {
         Grants restored;
-        ASSERT_EQ(restored.table.restore_snapshot(source.snapshot(0)),
-                  GrantTable::Restore::restored);
+        ASSERT_EQ(
+            restored.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(0)),
+            GrantTable::Restore::restored);
         auto bad = child;
         switch (field) {
         case 0:
@@ -682,7 +701,8 @@ TEST(GrantRevoke, descendant_snapshots_reject_private_cursor_fields_and_out_of_o
             bad.stamp = {13, 13};
             break;
         }
-        EXPECT_EQ(restored.table.restore_snapshot(bad), GrantTable::Restore::corrupt);
+        EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), bad),
+                  GrantTable::Restore::corrupt);
         EXPECT_EQ(restored.table.size(), 1U);
         EXPECT_TRUE(restored.table.consistent());
     }
@@ -735,16 +755,20 @@ TEST(GrantRevoke, snapshot_frontier_covers_indirect_descendants_of_each_revoked_
     auto shortened = source.snapshot(0);
     shortened.cleanup_through_grant_id = id(2);
     Grants restored;
-    ASSERT_EQ(restored.table.restore_snapshot(shortened), GrantTable::Restore::restored);
-    ASSERT_EQ(restored.table.restore_snapshot(source.snapshot(1)), GrantTable::Restore::restored);
-    EXPECT_EQ(restored.table.restore_snapshot(source.snapshot(2)), GrantTable::Restore::corrupt);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), shortened),
+              GrantTable::Restore::restored);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(1)),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(2)),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(restored.table.size(), 2U);
     EXPECT_TRUE(restored.table.consistent());
 
     Grants valid;
     for (uint32_t row = 0; row < source.table.size(); ++row) {
-        ASSERT_EQ(valid.table.restore_snapshot(source.snapshot(row)),
-                  GrantTable::Restore::restored);
+        ASSERT_EQ(
+            valid.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(row)),
+            GrantTable::Restore::restored);
     }
     EXPECT_TRUE(valid.table.consistent());
     uint64_t sequence = 10;
@@ -762,15 +786,19 @@ TEST(GrantRevoke, replay_replacement_requires_completed_durable_order_but_does_n
     auto replacement = source.record(0);
     replacement.grant_id = id(2);
     replacement.replaced_grant_id = id(1);
-    EXPECT_EQ(source.table.restore_create(replacement, {11, 11}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(source.table.restore_create(::ayni::test::codec_workspace(), replacement, {11, 11}),
+              GrantTable::Restore::corrupt);
     uint64_t seq = 10;
     source.clean(seq);
     const auto root = source.snapshot(0);
     Grants restored(1);
     ASSERT_TRUE(restored.table.install_gate(id(1)));
-    ASSERT_EQ(restored.table.restore_snapshot(root), GrantTable::Restore::restored);
-    EXPECT_EQ(restored.table.restore_create(replacement, {11, 11}), GrantTable::Restore::corrupt);
-    ASSERT_EQ(restored.table.restore_create(replacement, {12, 12}), GrantTable::Restore::restored);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), root),
+              GrantTable::Restore::restored);
+    EXPECT_EQ(restored.table.restore_create(::ayni::test::codec_workspace(), replacement, {11, 11}),
+              GrantTable::Restore::corrupt);
+    ASSERT_EQ(restored.table.restore_create(::ayni::test::codec_workspace(), replacement, {12, 12}),
+              GrantTable::Restore::restored);
     EXPECT_EQ(restored.table.at(0).grant_id, id(2));
     EXPECT_TRUE(restored.table.gated(id(1)));
     const auto gone = restored.table.plan_accepted_revoke(id(1));
@@ -791,15 +819,20 @@ TEST(GrantRevoke, restored_creation_cannot_cross_a_revoked_grandparent_with_an_a
     const auto child = source.record(2);
     source.revoke(id(1), 10);
     Grants restored;
-    ASSERT_EQ(restored.table.restore_snapshot(source.snapshot(0)), GrantTable::Restore::restored);
-    ASSERT_EQ(restored.table.restore_snapshot(source.snapshot(1)), GrantTable::Restore::restored);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(0)),
+              GrantTable::Restore::restored);
+    ASSERT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), source.snapshot(1)),
+              GrantTable::Restore::restored);
     EXPECT_EQ(restored.table.at(1).lifecycle, AYNI_GRANT_ACTIVE);
-    EXPECT_EQ(restored.table.restore_create(child, {11, 11}), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored.table.restore_create(::ayni::test::codec_workspace(), child, {11, 11}),
+              GrantTable::Restore::corrupt);
     const GrantSnapshotRecord late{child, {11, 11}, {11, 11}, 1, AYNI_GRANT_ACTIVE};
-    EXPECT_EQ(restored.table.restore_snapshot(late), GrantTable::Restore::corrupt);
+    EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), late),
+              GrantTable::Restore::corrupt);
     EXPECT_EQ(restored.table.size(), 2U);
     const GrantSnapshotRecord old{child, {3, 3}, {3, 3}, 1, AYNI_GRANT_ACTIVE};
-    EXPECT_EQ(restored.table.restore_snapshot(old), GrantTable::Restore::restored);
+    EXPECT_EQ(restored.table.restore_snapshot(::ayni::test::codec_workspace(), old),
+              GrantTable::Restore::restored);
     EXPECT_TRUE(restored.table.consistent());
 }
 
@@ -910,15 +943,15 @@ TEST(GrantRevokeRecords, snapshot_has_complete_independent_eighty_byte_history) 
     EXPECT_EQ(std::vector<uint8_t>(bytes.end() - 80, bytes.end()),
               std::vector<uint8_t>(tail.begin(), tail.end()));
     GrantSnapshotRecord decoded{};
-    ASSERT_TRUE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                           static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.stamp.commit_seq, 20U);
     EXPECT_EQ(decoded.cleanup_stamp.commit_seq, 30U);
     EXPECT_EQ(decoded.cleanup_after_grant_id, id(2));
-    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 40U,
-                                            decoded));
-    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 40U,
-                                            decoded));
+    EXPECT_FALSE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()) - 40U, decoded));
+    EXPECT_FALSE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()) - 40U, decoded));
     EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + grant_snapshot_tail_size);
     EXPECT_EQ(grant_snapshot_record_size(root), grant_record_size(root) + grant_snapshot_tail_size);
     const auto before = bytes;
@@ -931,7 +964,8 @@ TEST(GrantRevokeRecords, snapshot_has_complete_independent_eighty_byte_history) 
     std::vector<uint8_t> old(grant_snapshot_record_size(source.table.at(1)));
     write_grant_snapshot_record(source.table.at(1), source.table.source_domain(1),
                                 source.table.scope(1), {}, old.data());
-    ASSERT_TRUE(read_grant_snapshot_record(old.data(), static_cast<uint32_t>(old.size()), decoded));
+    ASSERT_TRUE(read_grant_snapshot_record(::ayni::test::codec_workspace(), old.data(),
+                                           static_cast<uint32_t>(old.size()), decoded));
     EXPECT_EQ(decoded.revoked_by_root_id, 0U);
     EXPECT_EQ(decoded.cleanup_stamp.commit_seq, 0U);
 }
@@ -1042,12 +1076,12 @@ TEST(GrantRevokeRecords, shortened_snapshot_history_is_rejected) {
     write_grant_snapshot_record(grant, source.table.source_domain(0), source.table.scope(0), {},
                                 bytes.data());
     GrantSnapshotRecord decoded{};
-    ASSERT_TRUE(
-        read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                           static_cast<uint32_t>(bytes.size()), decoded));
     bytes[bytes.size() - 4U] = static_cast<uint8_t>(AYNI_GRANT_REVOKED);
     decoded.create.grant_id = 91;
-    EXPECT_FALSE(read_grant_snapshot_record(bytes.data(), static_cast<uint32_t>(bytes.size()) - 40U,
-                                            decoded));
+    EXPECT_FALSE(read_grant_snapshot_record(::ayni::test::codec_workspace(), bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()) - 40U, decoded));
     EXPECT_EQ(decoded.create.grant_id, 91U);
 }
 } // namespace

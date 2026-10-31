@@ -2,6 +2,7 @@
 // Local record encoding is separate from ABI layout and any future wire IDL.
 #ifndef AYNI_CORE_CATALOG_CAPABILITY_VALUE_ENCODING_H
 #define AYNI_CORE_CATALOG_CAPABILITY_VALUE_ENCODING_H
+#include "foundation/workspace.h"
 #include <array>
 #include <ayni/values.h>
 
@@ -27,7 +28,8 @@ ayni_status_t measure_admitted_value(const ayni_value_v1 &value, uint32_t &size)
 ayni_status_t encode_admitted_value(const ayni_value_v1 &value, uint8_t *out, uint32_t capacity,
                                     uint32_t &size);
 // Complete shape decoder. Failure preserves out, with no partial published tree.
-ayni_status_t decode_value(ayni_bytes_v1 body, DecodedValue &out);
+ayni_status_t decode_value(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                           DecodedValue &out);
 // Exact normalized trees, with only active fields compared and text compared by bytes.
 bool same_value(const ayni_value_v1 &left, const ayni_value_v1 &right);
 // Stronger persisted-value admission: object order and floating zero are canonical.

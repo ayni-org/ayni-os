@@ -23,6 +23,14 @@ bool SharedServices::register_profile(ayni_kernel_t *kernel) {
                                          model_timeout_ms))) {
             return false;
         }
+        auto memory = loop_workspace_.create(strategies::ToolLoop::workspace_requirements);
+        if (memory == AYNI_OK) {
+            memory =
+                conversation_workspace_.create(strategies::Conversation::workspace_requirements);
+        }
+        if (!e.status("allocate bounded policy workspace", memory)) {
+            return false;
+        }
         strategies::ToolLoopConfig loop;
         loop.identity = {text("shared.tool_loop"), 1, nullptr, 0};
         loop.model = {AYNI_POLICY_REQUEST_MODEL,
@@ -31,7 +39,8 @@ bool SharedServices::register_profile(ayni_kernel_t *kernel) {
                       {sizeof(ayni_scope_v1), 0, nullptr},
                       text("Reply briefly.")};
         loop.summary = loop.model;
-        if (!e.status("configure actual ToolLoop", tool_loop_.configure(loop))) {
+        if (!e.status("configure actual ToolLoop",
+                      tool_loop_.configure(loop, loop_workspace_.get()))) {
             return false;
         }
         offers_ = Offers{model_a_.describe(), model_b_.describe()};
@@ -67,6 +76,7 @@ bool SharedServices::register_profile(ayni_kernel_t *kernel) {
     chat.strategy_id = loop_strategy.strategy_id;
     chat.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     chat.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    chat.ctx = const_cast<ayni_workspace_v1 *>(conversation_workspace_.get());
     chat.validate = strategies::Conversation::validate_turn;
     chat.export_requirements = [](void *, ayni_bytes_v1,
                                   const ayni_goal_requirement_sink_v1 *sink) {
@@ -150,9 +160,10 @@ uint64_t SharedServices::create_chat(uint64_t agent) {
     conversation.id = 1;
     conversation.owner_instance_id = world_.instance(agent);
     strategies::Encoded parameters;
-    if (!world_.evidence.status("encode ToolLoop turn",
-                                strategies::Conversation::begin(
-                                    conversation, text("synthetic question"), parameters))) {
+    if (!world_.evidence.status(
+            "encode ToolLoop turn",
+            strategies::Conversation::begin(conversation_workspace_.get(), conversation,
+                                            text("synthetic question"), parameters))) {
         return 0;
     }
     auto body = initialized<ayni_goal_create_v1>();

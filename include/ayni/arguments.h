@@ -4,6 +4,7 @@
 #ifndef AYNI_ARGUMENTS_H
 #define AYNI_ARGUMENTS_H
 #include <ayni/values.h>
+#include <ayni/workspace.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,7 +55,9 @@ ayni_status_t ayni_arguments_validate(const ayni_arguments_v1 *input);
  * must not overlap output nodes/bytes; sources remain immutable through return.
  * Independent calls may use independent storage concurrently. Refusals preserve
  * output as ayni_value_normalize does. Since 0.48. */
-ayni_status_t ayni_arguments_normalize(const ayni_schema_v1 *schema, const ayni_arguments_v1 *input,
+/* Since 0.53: explicit region follows ayni_value_workspace_requirements. */
+ayni_status_t ayni_arguments_normalize(const ayni_workspace_v1 *region,
+                                       const ayni_schema_v1 *schema, const ayni_arguments_v1 *input,
                                        ayni_value_buffer_v1 *output);
 #ifdef __cplusplus
 }

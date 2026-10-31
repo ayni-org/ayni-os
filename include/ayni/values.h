@@ -4,6 +4,7 @@
 #ifndef AYNI_VALUES_H
 #define AYNI_VALUES_H
 #include <ayni/ayni.h>
+#include <ayni/workspace.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -119,22 +120,25 @@ typedef struct ayni_value_buffer_v1 {
 } ayni_value_buffer_v1;
 
 /* Pure schema admission, including defaults and exact static bounds. Since 0.48. */
-ayni_status_t ayni_schema_validate(const ayni_schema_v1 *schema);
+/* Since 0.53: explicit region follows ayni_value_workspace_requirements. */
+ayni_status_t ayni_schema_validate(const ayni_workspace_v1 *region, const ayni_schema_v1 *schema);
 /* Pure tree/representation admission, independent of a schema. Since 0.48. */
 ayni_status_t ayni_value_validate(const ayni_value_v1 *value);
 /* Shared semantic validator/default filler; normalizes object order and zero.
  * Inputs/output/scratch must not overlap. Concurrent calls may use independent
  * storage; this does not make Kernel or callback entrypoints reentrant. Since 0.48. */
-ayni_status_t ayni_value_normalize(const ayni_schema_v1 *schema, const ayni_value_v1 *input,
-                                   ayni_value_buffer_v1 *output);
+/* Since 0.53: explicit region follows ayni_value_workspace_requirements. */
+ayni_status_t ayni_value_normalize(const ayni_workspace_v1 *region, const ayni_schema_v1 *schema,
+                                   const ayni_value_v1 *input, ayni_value_buffer_v1 *output);
 /* Portable value encoding, independent of native struct padding. Writes only
  * after full shape/capacity admission; BUFFER_TOO_SMALL sets out_size. Since 0.48. */
 ayni_status_t ayni_value_write(const ayni_value_v1 *value, uint8_t *out, uint32_t capacity,
                                uint32_t *out_size);
 /* Decode into caller node storage. Text borrows body until it changes. Too-small
  * sets out_count only; other failures preserve every output. Since 0.48. */
-ayni_status_t ayni_value_read(ayni_bytes_v1 body, ayni_value_node_v1 *nodes, uint32_t capacity,
-                              uint32_t *out_count);
+/* Since 0.53: explicit region follows ayni_value_workspace_requirements. */
+ayni_status_t ayni_value_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
+                              ayni_value_node_v1 *nodes, uint32_t capacity, uint32_t *out_count);
 /* Parses exact no-exponent decimal text without passing through double.
  * Extra fractional zeroes are accepted; no rounding. Failure preserves out. Since 0.48. */
 ayni_status_t ayni_decimal_parse(ayni_string_v1 text, uint32_t scale, ayni_decimal_v1 *out);

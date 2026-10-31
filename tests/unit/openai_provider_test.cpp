@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // ADR-0055: normal protocol behavior with loopback-only HTTP fixtures.
 #include "../../providers/openai_compat/protocol.h"
 #include "catalog/capability/business_encoding.h"
@@ -406,7 +407,8 @@ TEST(ToolUsage, copied_usage_survives_source_reuse_and_encodes_the_original_desc
     execution.result_text_limit = 64;
     std::array<uint8_t, 4096> proof{};
     uint32_t proof_size = 0;
-    ASSERT_EQ(ayni::catalog::encode_business({domain.data(), domain_size}, execution, definition,
+    ASSERT_EQ(ayni::catalog::encode_business(::ayni::test::codec_workspace(),
+                                             {domain.data(), domain_size}, execution, definition,
                                              proof.data(), proof.size(), proof_size),
               AYNI_OK);
     view.original_domain = {domain.data(), domain_size};
@@ -500,7 +502,8 @@ TEST(OpenaiSchema, numeric_and_text_bounds_are_exposed_without_precision_loss) {
     execution.result_text_limit = 16;
     std::array<uint8_t, 4096> proof{};
     uint32_t size = 0;
-    ASSERT_EQ(ayni::catalog::encode_business({domain.data(), domain.size()}, execution, business,
+    ASSERT_EQ(ayni::catalog::encode_business(::ayni::test::codec_workspace(),
+                                             {domain.data(), domain.size()}, execution, business,
                                              proof.data(), proof.size(), size),
               AYNI_OK);
     ayni_tool_v1 view{};

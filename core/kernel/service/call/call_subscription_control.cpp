@@ -1,4 +1,5 @@
 #include "foundation/deadline.h"
+#include "foundation/workspace.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/memory/memory_access.h"
 namespace ayni::kernel {
@@ -237,12 +238,16 @@ CallRuntime::Advance CallRuntime::renew_subscription(uint32_t index, uint64_t no
     auto &delivery = *slots_[index].active->delivery;
     auto &lease = *slots_[index].active->collection;
     uint32_t task_index = 0, binding_index = 0;
-    work::CallInputView input{};
+    auto input_lease = work_.workspace.make<work::CallInputView>();
+    if (!input_lease) {
+        return Advance::internal;
+    }
+    auto &input = *input_lease;
     if (!work_.tasks.find(id.task_id, task_index) ||
         !catalogs_.bindings.find({id.binding_id.data(), id.binding_id.size()}, id.binding_version,
                                  binding_index) ||
-        work::read_call_input(work_.calls.domain(index), work_.calls.input(index), contract,
-                              input) != AYNI_OK) {
+        work::read_call_input(work_.workspace, work_.calls.domain(index), work_.calls.input(index),
+                              contract, input) != AYNI_OK) {
         return Advance::internal;
     }
     const auto authority =

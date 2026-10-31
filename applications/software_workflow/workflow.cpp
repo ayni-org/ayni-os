@@ -1,6 +1,7 @@
 // Portable sample application: Task-owned sum and event stream (ADR-0086/0087).
 #include <ayni/applications/software_workflow.h>
 #include <ayni/ayni.hpp>
+#include <ayni/detail/workspace.hpp>
 #include <ayni/directory.h>
 #include <ayni/operations.h>
 #include <cstdio>
@@ -75,13 +76,15 @@ struct Example {
         }
         return AYNI_OK;
     }
-    static bool correct_sum(const ayni_task_call_result_v1 &job) {
+    static bool correct_sum(const ayni_workspace_v1 *workspace,
+                            const ayni_task_call_result_v1 &job) {
         ayni_value_node_v1 result{};
         uint32_t count = 0;
-        return ayni_value_read(job.encoded_value, &result, 1, &count) == AYNI_OK && count == 1 &&
-               result.kind == AYNI_VALUE_I64 && result.value.integer == items * (items + 1) / 2;
+        return ayni_value_read(workspace, job.encoded_value, &result, 1, &count) == AYNI_OK &&
+               count == 1 && result.kind == AYNI_VALUE_I64 &&
+               result.value.integer == items * (items + 1) / 2;
     }
-    static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *snapshot,
+    static ayni_status_t decide(void *context, const ayni_task_snapshot_v1 *snapshot,
                                 ayni_policy_output_v1 *out) {
         auto job = ayni::initialized<ayni_task_call_result_v1>();
         auto stream = ayni::initialized<ayni_task_call_result_v1>();
@@ -114,7 +117,7 @@ struct Example {
         if (job.outcome && job.outcome != AYNI_CALL_COMPLETED) {
             return AYNI_INVALID_STATE;
         }
-        if (job.outcome && !correct_sum(job)) {
+        if (job.outcome && !correct_sum(static_cast<const ayni_workspace_v1 *>(context), job)) {
             return AYNI_INVALID_STATE;
         }
         if (stream.outcome) {
@@ -149,10 +152,24 @@ struct Example {
     }
 };
 } // namespace
-ayni_status_t configure(void *, ayni_kernel_t *kernel) {
+ayni_status_t configure(void *context, ayni_kernel_t *kernel) {
+    if (!kernel || !context) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    size_t bytes = 0, alignment = 0;
+    const auto query = ayni_value_workspace_requirements(&bytes, &alignment);
+    if (query != AYNI_OK) {
+        return query;
+    }
+    const auto checked =
+        ::ayni::detail::Workspace::check(static_cast<const ayni_workspace_v1 *>(context), bytes);
+    if (checked != AYNI_OK) {
+        return checked;
+    }
     auto strategy = initialized<ayni_strategy_v1>();
     strategy.version = 1;
     strategy.strategy_id = text("example.operations");
+    strategy.ctx = context;
     strategy.decide = Example::decide;
     strategy.max_intents_per_call = 1;
     strategy.max_checkpoint_bytes = Example::checkpoint_bytes;

@@ -1,4 +1,5 @@
 #include "work/goal/goal_authority.h"
+#include "foundation/workspace.h"
 
 #include "authority/grant/grant_table.h"
 #include "authority/scope/scope.h"
@@ -22,7 +23,7 @@ std::size_t requirement_bytes(GoalAuthorityTable::Limits limits) {
            limits.business_bytes;
 }
 
-bool valid_requirement(const GoalRequirement &requirement) {
+bool valid_requirement(ayni::foundation::Workspace &workspace, const GoalRequirement &requirement) {
     if (requirement.capability_id.size() == 0U || requirement.capability_version == 0U ||
         requirement.source_domain.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
         requirement.scope.size > AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX ||
@@ -30,9 +31,13 @@ bool valid_requirement(const GoalRequirement &requirement) {
         return false;
     }
     if (requirement.business_contract.size != 0U) {
-        catalog::DecodedBusiness decoded;
-        if (catalog::decode_business(requirement.source_domain, requirement.business_contract,
-                                     decoded) != AYNI_OK) {
+        auto decoded_lease = workspace.make<catalog::DecodedBusiness>();
+        if (!decoded_lease) {
+            return false;
+        }
+        auto &decoded = *decoded_lease;
+        if (catalog::decode_business(workspace, requirement.source_domain,
+                                     requirement.business_contract, decoded) != AYNI_OK) {
             return false;
         }
     }
@@ -46,7 +51,8 @@ bool valid_requirement(const GoalRequirement &requirement) {
 // The stored phase determines completeness, not current Grant validity.
 // Proposed needs at least one missing dependency; both other phases retain
 // complete selections, even after revocation makes those selections unusable.
-bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
+bool valid_goal_authority_record(ayni::foundation::Workspace &workspace,
+                                 const GoalAuthorityRecord &record) {
     if (!foundation::is_kernel_id(record.goal_id) || record.stamp.transition_id == 0U ||
         record.stamp.commit_seq == 0U || record.count > AYNI_GOAL_REQUIREMENT_CAPACITY_MAX ||
         (record.phase != GoalAuthorityPhase::proposed &&
@@ -56,7 +62,7 @@ bool valid_goal_authority_record(const GoalAuthorityRecord &record) {
     }
     bool missing = false;
     for (uint32_t index = 0; index < record.count; ++index) {
-        if (!valid_requirement(record.requirements[index])) {
+        if (!valid_requirement(workspace, record.requirements[index])) {
             return false;
         }
         missing = missing || record.requirements[index].dependency.grant_id == 0U;

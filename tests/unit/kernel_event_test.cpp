@@ -1,3 +1,4 @@
+#include "workspace_fixture.h"
 // Events through the C ABI (ADR-0021): which lifecycle states take a local
 // input and what each does with it, the order of ayni_post_event's checks, a
 // full queue, the step's budgets, posts from Host threads, and goals whose
@@ -777,7 +778,7 @@ TEST(WorkInput, resume_boundary_skips_old_input_only_for_its_own_goal) {
     ASSERT_TRUE(model.goals.find(resumed, index));
     auto record = model.goal_authority.at(index);
     record.binding.input = KernelTestProbe::ingress(work.kernel()).resume_boundary();
-    ASSERT_TRUE(ayni::work::valid_goal_authority_record(record));
+    ASSERT_TRUE(ayni::work::valid_goal_authority_record(::ayni::test::codec_workspace(), record));
     ASSERT_EQ(model.goal_authority.install_validated(index, record), AYNI_OK);
     ASSERT_EQ(post(work), AYNI_OK);
     work.node().step();

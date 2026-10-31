@@ -33,6 +33,7 @@ ayni_add_core_module(catalog
         catalog/capability/argument_mapping.cpp
         catalog/capability/value_validation.cpp
         catalog/capability/value_normalization.cpp
+        catalog/capability/workspace.cpp
         catalog/capability/value_encoding.cpp
         catalog/capability/schema_encoding.cpp
         catalog/capability/authority_projection.cpp

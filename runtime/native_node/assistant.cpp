@@ -56,7 +56,11 @@ ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &c
 ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelConfig &config,
                                      providers::presentation::Output output,
                                      applications::assistant::QuietHours quiet) {
-    auto status = private_directory(directory);
+    auto status = conversation_workspace.create(strategies::Conversation::workspace_requirements);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    status = private_directory(directory);
     if (status != AYNI_OK) {
         return status;
     }

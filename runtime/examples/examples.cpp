@@ -8,6 +8,7 @@
 #include <ayni/providers/software/work.h>
 #include <ayni/runtime/common/demo_profile.h>
 #include <ayni/runtime/examples.h>
+#include <ayni/workspace.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -40,6 +41,7 @@ struct Fixture::Impl {
     std::optional<ayni_provider_v1> alternate_offer;
     ayni_scope_field_v1 destination{};
     Extension extension;
+    ayni::Workspace software_workspace; // Borrowed by the software-workflow strategy.
     providers::software::WorkProvider software;
     bool software_enabled = false; // Concrete composition choice, fixed before Kernel creation.
     std::atomic<uint64_t> clock_us{0};
@@ -282,7 +284,11 @@ struct Fixture::Impl {
             status = register_software();
         }
         if (status == AYNI_OK && software_enabled) {
-            status = applications::software_workflow::configure(nullptr, kernel.get());
+            status = software_workspace.create(ayni::Workspace::Purpose::value);
+            if (status == AYNI_OK) {
+                status = applications::software_workflow::configure(
+                    const_cast<ayni_workspace_v1 *>(software_workspace.get()), kernel.get());
+            }
         }
         if (status == AYNI_OK && extension.configure) {
             status = extension.configure(extension.context, kernel.get());

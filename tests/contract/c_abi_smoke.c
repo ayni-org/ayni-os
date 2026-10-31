@@ -36,9 +36,9 @@ typedef union {
     void (*fn)(void);
 } max_aligned_t;
 
-/* ABI 0.49 also reserves frozen tool policies; the query below proves this
+/* ABI 0.53 reserves owner-thread codec scratch; the query below proves this
  * caller-owned test block suffices, without prescribing a production arena. */
-enum { kernel_memory_units = 4096 };
+enum { kernel_memory_units = 65536 };
 static max_aligned_t kernel_memory[kernel_memory_units];
 
 static int expect(int condition, const char *what) {

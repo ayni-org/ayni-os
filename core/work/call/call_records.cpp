@@ -1,5 +1,6 @@
 #include "work/call/call_records.h"
 #include "catalog/capability/call_contract_encoding.h"
+#include "foundation/workspace.h"
 
 #include "work/action/action_records.h"
 
@@ -198,7 +199,8 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
 
 // This reader does not consult this boot's catalog. Old input is interpreted
 // only with its saved domain; replay separately proves Task and stamp relations.
-bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
+bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
+                      CallRecord &out) {
     if (body == nullptr || size < call_record_fixed_size) {
         return false;
     }
@@ -271,7 +273,7 @@ bool read_call_record(const uint8_t *body, uint32_t size, CallRecord &out) {
     for (uint32_t at = 0; at < context.sample_count; ++at) {
         context.samples[at] = {reader.u64(), reader.u64(), reader.u64()};
     }
-    if (!reader.ok() || !CallTable::valid_record(record)) {
+    if (!reader.ok() || !CallTable::valid_record(workspace, record)) {
         return false;
     }
     out = record;

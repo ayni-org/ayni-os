@@ -6,6 +6,7 @@
 
 #include "catalog/catalog_id.h"
 #include "foundation/transition_stamp.h"
+#include "foundation/workspace.h"
 #include "work/authority/authority_facts.h"
 
 #include <ayni/authority.h>
@@ -57,7 +58,8 @@ struct GoalAuthorityRecord {
 
 // One semantic validator for borrowed struct facts and decoded bytes. Does
 // not consult today's catalog or claim that any selected Grant is usable.
-bool valid_goal_authority_record(const GoalAuthorityRecord &record);
+bool valid_goal_authority_record(ayni::foundation::Workspace &workspace,
+                                 const GoalAuthorityRecord &record);
 
 // Compare normalized immutable requirement views, independent of phase,
 // current catalog or selected Grants. Each child item needs one complete

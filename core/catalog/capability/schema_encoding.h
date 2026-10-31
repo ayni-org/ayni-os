@@ -3,6 +3,7 @@
 #ifndef AYNI_CORE_CATALOG_CAPABILITY_SCHEMA_ENCODING_H
 #define AYNI_CORE_CATALOG_CAPABILITY_SCHEMA_ENCODING_H
 #include "catalog/capability/value_encoding.h"
+#include "foundation/workspace.h"
 
 namespace ayni::catalog {
 constexpr uint32_t schema_encoding_version = 1;
@@ -28,14 +29,16 @@ struct DecodedSchema {
 
 // Canonicalizes object declaration order, enum sets and default values before
 // producing a portable complete proof. Failure never writes partial bytes.
-ayni_status_t encode_schema(const ayni_schema_v1 &schema, uint8_t *out, uint32_t capacity,
-                            uint32_t &size);
+ayni_status_t encode_schema(ayni::foundation::Workspace &workspace, const ayni_schema_v1 &schema,
+                            uint8_t *out, uint32_t capacity, uint32_t &size);
 // The definition was admitted in this call and remains unchanged; no second
 // schema validation at the business-contract composition boundary.
-ayni_status_t encode_validated_schema(const ayni_schema_v1 &schema, uint8_t *out, uint32_t capacity,
+ayni_status_t encode_validated_schema(ayni::foundation::Workspace &workspace,
+                                      const ayni_schema_v1 &schema, uint8_t *out, uint32_t capacity,
                                       uint32_t &size);
 // Only this version's complete canonical body, including every default/schema
 // bound. Failure preserves the caller's scratch and all its internal pointers.
-ayni_status_t decode_schema(ayni_bytes_v1 body, DecodedSchema &out);
+ayni_status_t decode_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                            DecodedSchema &out);
 } // namespace ayni::catalog
 #endif

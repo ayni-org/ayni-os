@@ -1,5 +1,6 @@
 // Required-policy directory projection and Task-owned native model proposals.
 // Model receipt never normalizes or authorizes business execution (ADR-0085).
+#include "foundation/workspace.h"
 #include "kernel/service/call/call_runtime.h"
 
 #include "authority/scope/business_request.h"
@@ -79,7 +80,8 @@ ayni_status_t CallRuntime::read_tool_call(const void *context, ayni_string_v1 st
     uint32_t call_index = 0;
     work::ToolCallView call{};
     if (!runtime.work_.calls.find_step(task.task_id, step, call_index) ||
-        !work::read_tool_call(runtime.work_.calls.tool_calls(call_index), index, call)) {
+        !work::read_tool_call(runtime.work_.workspace, runtime.work_.calls.tool_calls(call_index),
+                              index, call)) {
         return AYNI_NOT_FOUND;
     }
     if (!runtime.retain_model_context(
@@ -94,8 +96,13 @@ ayni_status_t CallRuntime::read_tool_call(const void *context, ayni_string_v1 st
     out->call.protocol_id = call.protocol_id;
     out->call.input_kind = call.input_kind;
     if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
-        catalog::DecodedArguments arguments;
-        const auto status = catalog::decode_arguments(call.input, arguments);
+        auto arguments_lease = runtime.work_.workspace.make<catalog::DecodedArguments>();
+        if (!arguments_lease) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        auto &arguments = *arguments_lease;
+        const auto status =
+            catalog::decode_arguments(runtime.work_.workspace, call.input, arguments);
         if (status != AYNI_OK) {
             return status;
         }
