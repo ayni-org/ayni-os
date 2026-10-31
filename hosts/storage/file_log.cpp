@@ -106,7 +106,7 @@ FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
     if (excluded != 0) {
         return {excluded == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, excluded};
     }
-    opened_.emplace();
+    opened_.emplace(OpenFiles{Files::invalid_handle});
     std::memcpy(file_name_.data(), file_name, std::strlen(file_name) + 1U);
     const auto compatible = check_snapshot_schemas();
     if (compatible.status != OpenStatus::ok) {
