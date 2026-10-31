@@ -9,3 +9,5 @@ idf_component_register(
 include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/AyniSDK.cmake")
 ayni_add_sdk(COMPONENTS core)
 target_link_libraries(${COMPONENT_LIB} PUBLIC ayni_api PRIVATE ayni_core ayni_platform_warnings)
+
+target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)

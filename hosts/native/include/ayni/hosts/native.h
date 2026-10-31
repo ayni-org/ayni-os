@@ -18,6 +18,7 @@
 #define AYNI_HOSTS_NATIVE_H
 
 #include <ayni/ayni.h>
+#include <ayni/host_clock.hpp>
 #include <ayni/hosts/storage/file_value.h>
 
 #include <chrono>
@@ -52,6 +53,8 @@ class Host {
     static constexpr const char *log_file_name = "commit_log";
 
     Host();
+    // Owner-thread clock override; source/context remain valid through Host destruction.
+    explicit Host(UtcSource utc);
     // Closes the storage first.
     ~Host();
     Host(const Host &) = delete;
@@ -99,8 +102,10 @@ class Host {
     friend class HostTestPeer;
     StorageOpen open_storage(const char *directory, uint32_t request_capacity, SpaceQuery query);
     class Storage;
+    UtcSource utc_{}; // Immutable borrowed override; null sample uses the platform default.
 
     static ayni_submit_result_t submit_value(void *, const storage::FileValueRequest *);
+    static void utc_now(void *ctx, ayni_utc_sample_v1 *out);
     static void wake(void *ctx);
     static void ingress_lock(void *ctx);
     static void ingress_unlock(void *ctx);

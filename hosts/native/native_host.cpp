@@ -29,7 +29,7 @@ uint64_t monotonic_now_us(void * /*ctx*/) {
 
 // Linux clock discipline supplies trust; a merely plausible wall-clock date
 // cannot authorize calendar triggers. Both calls are local nonblocking reads.
-void utc_now(void *, ayni_utc_sample_v1 *out) {
+void system_utc_now(ayni_utc_sample_v1 *out) {
     *out = {sizeof(*out), AYNI_UTC_UNAVAILABLE, 0};
     struct timespec wall {};
     if (::clock_gettime(CLOCK_REALTIME, &wall) != 0) {
@@ -217,6 +217,15 @@ bool Host::Storage::refresh_space(uint64_t completed_reservation) {
 }
 
 Host::Host() = default;
+Host::Host(UtcSource utc) : utc_(utc) {}
+void Host::utc_now(void *context, ayni_utc_sample_v1 *out) {
+    const auto &source = static_cast<Host *>(context)->utc_;
+    if (source.sample) {
+        source.sample(source.context, out);
+    } else {
+        system_utc_now(out);
+    }
+}
 
 Host::~Host() = default;
 
@@ -225,7 +234,7 @@ ayni_host_v1 Host::table() {
     host.struct_size = sizeof(ayni_host_v1);
     host.ctx = this;
     host.monotonic_now_us = &monotonic_now_us;
-    host.utc_now = &utc_now;
+    host.utc_now = &Host::utc_now;
     host.wake = &Host::wake;
     host.ingress_lock = &Host::ingress_lock;
     host.ingress_unlock = &Host::ingress_unlock;

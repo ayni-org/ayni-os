@@ -1,0 +1,3 @@
+add_library(ayni_provider_fixture_model STATIC model.cpp)
+target_include_directories(ayni_provider_fixture_model PUBLIC include)
+target_link_libraries(ayni_provider_fixture_model PUBLIC ayni_api PRIVATE ayni_core ayni_core_options)

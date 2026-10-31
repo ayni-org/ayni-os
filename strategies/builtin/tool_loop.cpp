@@ -54,8 +54,9 @@ ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
         char minute[sizeof("YYYY-MM-DD HH:MM")];
         // Civil fields are range-bounded (years 1970..9999), so this always fills the buffer.
         static_cast<void>(std::snprintf(minute, sizeof(minute), "%04d-%02d-%02d %02d:%02d",
-                                        civil.year, civil.month, civil.day, civil.hour,
-                                        civil.minute));
+                                        static_cast<int>(civil.year), static_cast<int>(civil.month),
+                                        static_cast<int>(civil.day), static_cast<int>(civil.hour),
+                                        static_cast<int>(civil.minute)));
         lines.add(minute);
         lines.add(", ");
         lines.add(weekdays[local / seconds_per_day % week]);

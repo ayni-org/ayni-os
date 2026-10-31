@@ -28,7 +28,7 @@ endif()
 
 include(cmake/AyniSDK.cmake)
 ayni_add_sdk(COMPONENTS core strategies software_provider permit_gate assistant
-    software_workflow mock_provider mock_execution native_host)
+    software_workflow mock_provider mock_execution native_host fixture_model portable_profile)
 find_package(SQLite3 3.31 REQUIRED) # Native composition/history only; Core never links SQLite.
 
 add_subdirectory(hosts/sim)

@@ -1,0 +1,22 @@
+idf_component_register(SRCS "main.cpp" "runtime.cpp" "../../common/suite.cpp"
+    INCLUDE_DIRS "." "../../common"
+    PRIV_REQUIRES esp_idf esp_timer heap esp_psram spi_flash log freertos)
+if(NOT CONFIG_IDF_TARGET_ESP32S3 OR NOT CONFIG_SPIRAM_XIP_FROM_PSRAM)
+    message(FATAL_ERROR "The N16R8 profile needs ESP32-S3 and PSRAM XiP during asynchronous flash I/O")
+endif()
+if(NOT CONFIG_SPI_FLASH_ENABLE_COUNTERS)
+    message(FATAL_ERROR "Enable Flash counters for the independent normal profile")
+endif()
+include("${AYNI_SOURCE_DIR}/cmake/AyniSDK.cmake")
+ayni_add_sdk(COMPONENTS portable_profile)
+target_link_libraries(${COMPONENT_LIB} PRIVATE Ayni::PortableProfile)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror -std=c++17 -fno-exceptions -fno-rtti)
+target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
+
+if(NOT AYNI_SOURCE_REVISION)
+    set(AYNI_SOURCE_REVISION "unversioned")
+endif()
+if(NOT AYNI_SOURCE_REVISION MATCHES "^[a-zA-Z0-9_.-]+$")
+    message(FATAL_ERROR "AYNI_SOURCE_REVISION must be an opaque revision label")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE AYNI_SOURCE_REVISION="${AYNI_SOURCE_REVISION}")
