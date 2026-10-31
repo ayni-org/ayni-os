@@ -18,7 +18,8 @@ class Files {
     virtual int begin(const char *name) = 0;
     // Closes namespace resources after every file handle is closed; idempotent.
     virtual void end() = 0;
-    // Names are flat relative names. Success publishes one live handle only.
+    // Names are flat relative names. Adapter-reserved names are refused by all file
+    // mutations/opens (e.g. a namespace lock file). Success publishes one live handle only.
     virtual int open(const char *name, Mode mode, int &handle) = 0;
     virtual void close(int handle) = 0;
     // Excludes legacy writers that lock individual files. A namespace-exclusive

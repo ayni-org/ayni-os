@@ -1,6 +1,7 @@
 #include "posix_files.h"
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -8,6 +9,12 @@
 #include <unistd.h>
 
 namespace ayni::hosts::native {
+namespace {
+constexpr char namespace_lock_name[] = ".ayni_storage_lock";
+bool is_reserved(const char *name) {
+    return std::strcmp(name, namespace_lock_name) == 0;
+}
+} // namespace
 int PosixFiles::begin(const char *name) {
     if (directory_ != invalid_handle) {
         return EBUSY;
@@ -16,7 +23,7 @@ int PosixFiles::begin(const char *name) {
     if (directory_ < 0) {
         return errno;
     }
-    lock_ = ::openat(directory_, ".ayni_storage_lock", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    lock_ = ::openat(directory_, namespace_lock_name, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (lock_ < 0 || ::flock(lock_, LOCK_EX | LOCK_NB) != 0) {
         const auto error = errno;
         end();
@@ -34,6 +41,9 @@ void PosixFiles::end() {
     lock_ = directory_ = invalid_handle;
 }
 int PosixFiles::open(const char *name, Mode mode, int &handle) {
+    if (is_reserved(name)) {
+        return EINVAL;
+    }
     int flags = O_CLOEXEC;
     switch (mode) {
     case Mode::read_existing:
@@ -132,9 +142,16 @@ int PosixFiles::sync_namespace() {
                               : (::fsync(directory_) == 0 ? 0 : errno);
 }
 int PosixFiles::rename(const char *from, const char *to) {
+    // Renaming the lock would let another Host lock a new inode in this namespace.
+    if (is_reserved(from) || is_reserved(to)) {
+        return EINVAL;
+    }
     return ::renameat(directory_, from, directory_, to) == 0 ? 0 : errno;
 }
 int PosixFiles::remove(const char *name) {
+    if (is_reserved(name)) {
+        return EINVAL;
+    }
     return ::unlinkat(directory_, name, 0) == 0 ? 0 : errno;
 }
 int PosixFiles::free_bytes(uint64_t &bytes) const {

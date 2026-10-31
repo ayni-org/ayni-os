@@ -63,12 +63,19 @@ TEST(SharedStorage, closed_engine_cannot_confirm_a_fence_or_write) {
     EXPECT_EQ(available, 0U);
 }
 
-TEST(SharedStorage, non_flat_name_refusal_does_not_consume_the_namespace) {
+TEST(SharedStorage, non_flat_or_reserved_name_refusal_does_not_consume_the_namespace) {
     const TempDirectory directory;
     PosixFiles files;
     FileLog log(files);
-    EXPECT_EQ(log.open(directory.path().c_str(), "../outside").status,
-              FileLog::OpenStatus::file_error);
+    for (const char *name : {"../outside", "snapshot_0", "snapshot_1", ".ayni_storage_lock"}) {
+        EXPECT_EQ(log.open(directory.path().c_str(), name).status, FileLog::OpenStatus::file_error);
+    }
     EXPECT_EQ(log.open(directory.path().c_str(), "commit_log").status, FileLog::OpenStatus::ok);
+    EXPECT_NE(files.rename("commit_log", ".ayni_storage_lock"), 0);
+    EXPECT_NE(files.rename(".ayni_storage_lock", "moved"), 0);
+    EXPECT_NE(files.remove(".ayni_storage_lock"), 0);
+    const auto payload = ayni::test::test_batch(1, 128);
+    EXPECT_EQ(log.append(1, payload.data(), static_cast<uint32_t>(payload.size())).outcome,
+              AYNI_WRITE_OK);
 }
 } // namespace

@@ -88,9 +88,12 @@ uint64_t FileLog::append_bytes(uint32_t payload_bytes) {
 }
 
 // Files owns platform namespace exclusion; the log owns format admission and scan.
+// Snapshot names cannot alias the main log: a normal snapshot replaces their bytes.
 FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
     if (!directory || !file_name || !file_name[0] || std::strchr(file_name, '/') ||
-        std::strcmp(file_name, ".") == 0 || std::strcmp(file_name, "..") == 0) {
+        std::strcmp(file_name, ".") == 0 || std::strcmp(file_name, "..") == 0 ||
+        std::strcmp(file_name, snapshot_name(0)) == 0 ||
+        std::strcmp(file_name, snapshot_name(1)) == 0) {
         return {OpenStatus::file_error, EINVAL};
     }
     if (opened_) {

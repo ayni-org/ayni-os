@@ -70,7 +70,8 @@ class FileLog {
     // Opens directory/file_name, creating it when missing, locks it against
     // every other open log and checks every frame. Existing bytes are
     // re-confirmed before the first mutation, without writing during reads.
-    // Only while closed.
+    // Only while closed. file_name must be flat and cannot be snapshot_0/snapshot_1
+    // or an adapter-reserved name; reserved names are refused without data mutation.
     Opened open(const char *directory, const char *file_name);
     void close();
 
