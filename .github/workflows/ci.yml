@@ -140,6 +140,7 @@ jobs:
     # Ubuntu's, and the firmware needs a smaller limit.
     container:
       image: espressif/idf:v6.0.3
+      options: --cpus 6 --memory 3g --memory-swap 3g
       volumes:
         - ayni-ccache-esp-idf:/ccache
     steps:
@@ -159,6 +160,7 @@ jobs:
       - name: Check LittleFS file adapter on an emulated normal medium
         shell: bash
         run: |
+          . "$IDF_PATH/export.sh"
           cmake -S tests/portability/esp_files -B build/esp-files \
             -DAYNI_SOURCE_DIR="$GITHUB_WORKSPACE" \
             -DLITTLEFS_COMPONENT_DIR="$GITHUB_WORKSPACE/targets/esp32_assistant/managed_components/joltwallet__littlefs"
