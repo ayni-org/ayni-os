@@ -30,11 +30,23 @@ bool SharedServices::register_assistant(ayni_kernel_t *kernel) {
                                   1,
                                   provider.provider_id,
                                   provider.endpoint_id,
-                                  {}};
+                                  {},
+                                  0,
+                                  0,
+                                  nullptr};
     const auto model = offers_->a;
-    const ayni_binding_v1 summary{
-        sizeof(summary),   1, text("summary"), text("mock.text"), 1, 1, model.provider_id,
-        model.endpoint_id, {}};
+    const ayni_binding_v1 summary{sizeof(summary),
+                                  1,
+                                  text("summary"),
+                                  text("mock.text"),
+                                  1,
+                                  1,
+                                  model.provider_id,
+                                  model.endpoint_id,
+                                  {},
+                                  0,
+                                  0,
+                                  nullptr};
     assistant_.emplace();
     applications::assistant::PolicyConfig config;
     config.model_capability = text("mock.text");

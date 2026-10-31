@@ -82,6 +82,10 @@ struct CallCapability {
 ayni_status_t normalize_call_contract(const CallContract &input, CallContract &out);
 // Compares already normalized contracts, including limits and every resource.
 bool same_call_contract(const CallContract &left, const CallContract &right);
+// Intrinsic saved-proof check: exact nonresource semantics plus a bijection preserving
+// demand units/count. Concrete IDs come from acceptance, not from a future directory.
+// Both inputs are normalized; current Binding compatibility remains an exact check.
+bool bound_call_contract(const CallContract &logical, const CallContract &effective);
 // Bounded static directory. No registered pointer or concrete Provider escapes.
 class CallCapabilityRegistry {
   public:

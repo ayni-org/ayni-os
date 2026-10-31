@@ -691,6 +691,9 @@ AYNI_LAYOUT(provider_cancel, offsetof(ayni_provider_v1, cancel) == 16 + 9 * AYNI
 AYNI_LAYOUT(provider_query, offsetof(ayni_provider_v1, query) == 16 + 10 * AYNI_PTR);
 AYNI_LAYOUT(provider_size, sizeof(ayni_provider_v1) == 16 + 12 * AYNI_PTR);
 AYNI_LAYOUT(binding_struct_size, offsetof(ayni_binding_v1, struct_size) == 0);
+AYNI_LAYOUT(binding_resource_size, sizeof(ayni_binding_resource_v1) == 4 * AYNI_PTR);
+AYNI_LAYOUT(binding_resource_target,
+            offsetof(ayni_binding_resource_v1, resource_id) == 2 * AYNI_PTR);
 AYNI_LAYOUT(binding_version, offsetof(ayni_binding_v1, version) == 4);
 AYNI_LAYOUT(binding_binding_id, offsetof(ayni_binding_v1, binding_id) == 8);
 AYNI_LAYOUT(binding_capability_id, offsetof(ayni_binding_v1, capability_id) == 8 + 2 * AYNI_PTR);
@@ -701,7 +704,10 @@ AYNI_LAYOUT(binding_provider_version,
 AYNI_LAYOUT(binding_provider_id, offsetof(ayni_binding_v1, provider_id) == 16 + 4 * AYNI_PTR);
 AYNI_LAYOUT(binding_endpoint_id, offsetof(ayni_binding_v1, endpoint_id) == 16 + 6 * AYNI_PTR);
 AYNI_LAYOUT(binding_destination_id, offsetof(ayni_binding_v1, destination_id) == 16 + 8 * AYNI_PTR);
-AYNI_LAYOUT(binding_size, sizeof(ayni_binding_v1) == 16 + 10 * AYNI_PTR);
+AYNI_LAYOUT(binding_resource_count,
+            offsetof(ayni_binding_v1, resource_count) == 16 + 10 * AYNI_PTR);
+AYNI_LAYOUT(binding_resources, offsetof(ayni_binding_v1, resources) == 24 + 10 * AYNI_PTR);
+AYNI_LAYOUT(binding_size, sizeof(ayni_binding_v1) == 24 + 11 * AYNI_PTR);
 AYNI_LAYOUT(provider_result_struct_size, offsetof(ayni_provider_result_v1, struct_size) == 0);
 AYNI_LAYOUT(provider_result_outcome, offsetof(ayni_provider_result_v1, outcome) == 4);
 AYNI_LAYOUT(provider_result_attempt, offsetof(ayni_provider_result_v1, attempt) == 8);

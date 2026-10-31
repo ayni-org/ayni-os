@@ -1,6 +1,7 @@
 // White-box static call declaration tests, C-CALL-001/C-BIND-001, ADR-0045.
 // Catalog compatibility is not permission, Provider dispatch or resource admission.
 #include "catalog/capability/call_contract.h"
+#include "catalog/provider/provider_registry.h"
 #include "text_business_fixture.h"
 
 #include <array>
@@ -66,6 +67,58 @@ TEST(CallContract, duplicate_resources_or_invalid_units_preserve_the_output) {
     input.resources[0].units = 0;
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(output.resource_count, 0U);
+}
+
+// ADR-0087: saved logical proof permits only a bijection of unchanged demand units.
+TEST(CallContract, binding_resource_substitution_keeps_semantics_and_unit_multiplicity) {
+    auto logical = contract();
+    logical.resource_count = 2;
+    logical.resources[0] = {id("logical.a"), 1};
+    logical.resources[1] = {id("logical.b"), 2};
+    auto effective = logical;
+    effective.resources[0] = {id("actual.a"), 2};
+    effective.resources[1] = {id("actual.b"), 1};
+    EXPECT_TRUE(bound_call_contract(logical, effective));
+    EXPECT_FALSE(same_call_contract(logical, effective));
+    effective.resources[1].units = 2;
+    EXPECT_FALSE(bound_call_contract(logical, effective));
+    effective = logical;
+    --effective.resource_count;
+    EXPECT_FALSE(bound_call_contract(logical, effective));
+    effective = logical;
+    ++effective.timeout_ms;
+    EXPECT_FALSE(bound_call_contract(logical, effective));
+}
+
+// C-BIND-004 / ADR-0087: static, already admitted contract matching; no query I/O,
+// UNKNOWN injection or new recovery campaign. The original proof remains authoritative.
+TEST(CallContract, saved_query_matches_logical_proof_and_route_with_actual_resources) {
+    auto logical = contract();
+    logical.resource_count = 1;
+    logical.resources[0] = {id("logical"), 1};
+    const std::array<uint8_t, 1> proof{{1}}, changed_proof{{0}};
+    logical.business_contract = {proof.data(), static_cast<uint32_t>(proof.size())};
+    Provider provider{};
+    provider.endpoint = id("endpoint");
+    provider.destination = id("cloud");
+    provider.count = 1;
+    provider.offers[0] = {id("model.chat"), 1, logical};
+    auto actual = logical;
+    actual.resources[0].id = id("actual");
+    const auto matches = [&](const auto &value, ayni_string_v1 endpoint = {"endpoint", 8}) {
+        return ProviderRegistry::matches_saved_call(provider, {"model.chat", 10}, 1, value,
+                                                    endpoint, {"cloud", 5});
+    };
+    EXPECT_TRUE(matches(actual));
+    EXPECT_FALSE(ProviderRegistry::matches(provider, {"model.chat", 10}, 1, actual, {"endpoint", 8},
+                                           {"cloud", 5}));
+    EXPECT_FALSE(matches(actual, {"changed", 7}));
+    auto changed = actual;
+    changed.resources[0].units = 2;
+    EXPECT_FALSE(matches(changed));
+    changed = actual;
+    changed.business_contract = {changed_proof.data(), static_cast<uint32_t>(changed_proof.size())};
+    EXPECT_FALSE(matches(changed));
 }
 
 TEST(CallContract, each_semantic_change_prevents_exact_provider_compatibility) {

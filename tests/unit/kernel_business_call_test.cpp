@@ -269,7 +269,10 @@ class BusinessCall : public ::testing::Test {
                                 1,
                                 provider.provider_id,
                                 provider.endpoint_id,
-                                {}};
+                                {},
+                                0,
+                                0,
+                                nullptr};
         for (const auto &name : names) {
             binding.binding_id = {name.data(), static_cast<uint32_t>(name.size())};
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);

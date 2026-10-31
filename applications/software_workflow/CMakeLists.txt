@@ -1,0 +1,3 @@
+add_library(ayni_software_workflow STATIC workflow.cpp)
+target_include_directories(ayni_software_workflow PUBLIC include)
+target_link_libraries(ayni_software_workflow PUBLIC ayni_api PRIVATE ayni_core_options ayni_warnings)

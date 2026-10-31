@@ -65,6 +65,15 @@ const CallCapability *ProviderRegistry::offer(const Provider &provider, ayni_str
     }
     return nullptr;
 }
+namespace {
+bool matches_route(const Provider &provider, const CallContract &contract, ayni_string_v1 endpoint,
+                   ayni_string_v1 destination) {
+    return provider.endpoint.equals(endpoint) &&
+           ((contract.effects & call_effect_egress) != 0U ? provider.destination.equals(destination)
+                                                          : destination.size == 0U);
+}
+} // namespace
+
 // C-BIND-001: selection cannot strengthen an offer by changing its contract
 // or target. Only egress offers bind the Provider's external destination.
 bool ProviderRegistry::matches(const Provider &provider, ayni_string_v1 capability,
@@ -72,8 +81,14 @@ bool ProviderRegistry::matches(const Provider &provider, ayni_string_v1 capabili
                                ayni_string_v1 endpoint, ayni_string_v1 destination) {
     const auto *offered = offer(provider, capability, version);
     return offered != nullptr && same_call_contract(contract, offered->contract) &&
-           provider.endpoint.equals(endpoint) &&
-           ((contract.effects & call_effect_egress) != 0U ? provider.destination.equals(destination)
-                                                          : destination.size == 0U);
+           matches_route(provider, contract, endpoint, destination);
+}
+
+bool ProviderRegistry::matches_saved_call(const Provider &provider, ayni_string_v1 capability,
+                                          uint32_t version, const CallContract &effective,
+                                          ayni_string_v1 endpoint, ayni_string_v1 destination) {
+    const auto *offered = offer(provider, capability, version);
+    return offered != nullptr && bound_call_contract(offered->contract, effective) &&
+           matches_route(provider, effective, endpoint, destination);
 }
 } // namespace ayni::catalog

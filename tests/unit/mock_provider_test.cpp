@@ -153,7 +153,10 @@ class MockProvider : public ::testing::TestWithParam<Profile> {
                                       1,
                                       descriptor.provider_id,
                                       descriptor.endpoint_id,
-                                      {}};
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
         ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
     }
     void pump_kernel(unsigned turns) {

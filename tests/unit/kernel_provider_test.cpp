@@ -61,7 +61,10 @@ class ProviderApi : public ::testing::Test {
                    1,
                    provider.provider_id,
                    provider.endpoint_id,
-                   {nullptr, 0}};
+                   {nullptr, 0},
+                   0,
+                   0,
+                   nullptr};
     }
 
     void authority(const ayni_authority_field_desc_v1 *fields = nullptr, uint32_t count = 0) {
@@ -98,6 +101,65 @@ TEST_F(ProviderApi, copied_registration_resolves_in_any_order_without_invoking_c
     EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_INVALID_STATE);
     EXPECT_EQ(ayni_register_provider(node.kernel(), &provider), AYNI_INVALID_STATE);
     EXPECT_EQ(ayni_register_call_capability(node.kernel(), &capability), AYNI_INVALID_STATE);
+}
+
+// ADR-0087 / C-BIND-004: copied maps preserve logical units and reject ambiguous groups.
+TEST_F(ProviderApi, binding_resource_map_rejects_bad_shapes_before_registration) {
+    const ayni_binding_resource_v1 mappings[] = {{{"slot", 4}, {"a", 1}}, {{"slot", 4}, {"b", 1}}};
+    binding.resource_count = 1;
+    EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_INVALID_ARGUMENT);
+    binding.resources = mappings;
+    binding.resource_reserved = 1;
+    EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_INVALID_ARGUMENT);
+    binding.resource_reserved = 0;
+    binding.resource_count = 2;
+    EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_INVALID_ARGUMENT);
+    binding.resource_count = AYNI_CALL_RESOURCE_COUNT_MAX + 1;
+    EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_INVALID_ARGUMENT);
+    binding.resource_count = 0;
+    EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_INVALID_ARGUMENT);
+    binding.resources = nullptr;
+    EXPECT_EQ(ayni_register_binding(node.kernel(), &binding), AYNI_OK);
+}
+
+TEST_F(ProviderApi, binding_map_requires_a_declared_logical_demand) {
+    const ayni_binding_resource_v1 mapping{{"absent", 6}, {"actual", 6}};
+    binding.resource_count = 1;
+    binding.resources = &mapping;
+    register_all();
+    EXPECT_EQ(ayni_start(node.kernel()), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(submissions, 0U);
+}
+
+TEST_F(ProviderApi, binding_map_cannot_merge_two_logical_demands) {
+    const ayni_call_resource_v1 demands[] = {{{"one", 3}, 1, 0}, {{"two", 3}, 1, 0}};
+    const ayni_binding_resource_v1 mappings[] = {{demands[0].resource_id, {"actual", 6}},
+                                                 {demands[1].resource_id, {"actual", 6}}};
+    capability.contract.resource_count = 2;
+    capability.contract.resources = demands;
+    binding.resource_count = 2;
+    binding.resources = mappings;
+    register_all();
+    EXPECT_EQ(ayni_start(node.kernel()), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(submissions, 0U);
+}
+
+TEST_F(ProviderApi, resource_mapping_is_simultaneous_and_preserves_units_after_sorting) {
+    const ayni_call_resource_v1 demands[] = {{{"one", 3}, 1, 0}, {{"two", 3}, 2, 0}};
+    const ayni_binding_resource_v1 mappings[] = {{demands[0].resource_id, {"two", 3}},
+                                                 {demands[1].resource_id, {"one", 3}}};
+    capability.contract.resource_count = 2;
+    capability.contract.resources = demands;
+    binding.resource_count = 2;
+    binding.resources = mappings;
+    register_all();
+    for (const auto &demand : demands) {
+        const ayni_resource_desc_v1 resource{
+            sizeof(resource), AYNI_RESOURCE_SHARED, demand.resource_id, 2, 0, 0, 0, nullptr, {}};
+        ASSERT_EQ(ayni_register_resource(node.kernel(), &resource), AYNI_OK);
+    }
+    EXPECT_EQ(ayni_start(node.kernel()), AYNI_OK);
+    EXPECT_EQ(submissions, 0U);
 }
 
 TEST_F(ProviderApi, missing_reference_keeps_configuring_and_can_be_supplied_before_retry) {

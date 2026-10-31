@@ -240,9 +240,18 @@ struct DemoProfile::Impl {
         if (status != AYNI_OK) {
             return status;
         }
-        const ayni_binding_v1 binding{
-            sizeof(binding),   binding_version,   text(bindings[at]),  cap.capability_id, 1, 1,
-            offer.provider_id, offer.endpoint_id, offer.destination_id};
+        const ayni_binding_v1 binding{sizeof(binding),
+                                      binding_version,
+                                      text(bindings[at]),
+                                      cap.capability_id,
+                                      1,
+                                      1,
+                                      offer.provider_id,
+                                      offer.endpoint_id,
+                                      offer.destination_id,
+                                      0,
+                                      0,
+                                      nullptr};
         return ayni_register_binding(kernel, &binding);
     }
 
@@ -385,7 +394,10 @@ struct DemoProfile::Impl {
                                       shell_offer.version,
                                       shell_offer.provider_id,
                                       shell_offer.endpoint_id,
-                                      shell_offer.destination_id};
+                                      shell_offer.destination_id,
+                                      0,
+                                      0,
+                                      nullptr};
         if (status == AYNI_OK) {
             status = ayni_register_binding(kernel, &binding);
         }

@@ -27,6 +27,7 @@ class SubscriptionFixture : public testing::Test {
     bool minimal_journal = false;
     bool manual_camera = false;
     bool query_contract = false;
+    const char *mapped_camera_resource = nullptr; // Optional AP-04 actual resource; fixed per boot.
     std::vector<Opening> openings;
     std::vector<ayni_subscription_renew_v1> renewals;
     // Optional inspection inside the real submit borrow; no request view escapes this callback.
@@ -45,6 +46,9 @@ class SubscriptionFixture : public testing::Test {
         config.provider_capacity = 2;
         config.binding_capacity = 2;
         config.resource_capacity = 2;
+        if (mapped_camera_resource) {
+            ++config.resource_capacity;
+        }
         config.resource_request_capacity = 8;
         config.observation_source_capacity = 1;
         config.observation_ingress_capacity = 4;
@@ -138,6 +142,20 @@ class SubscriptionFixture : public testing::Test {
             ASSERT_EQ(ayni_set_resource_health(kernel, text(resource), AYNI_RESOURCE_ONLINE),
                       AYNI_OK);
         }
+        if (mapped_camera_resource) {
+            const ayni_resource_desc_v1 resource{sizeof(resource),
+                                                 AYNI_RESOURCE_SHARED,
+                                                 text(mapped_camera_resource),
+                                                 2,
+                                                 0,
+                                                 0,
+                                                 0,
+                                                 nullptr,
+                                                 {}};
+            ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
+            ASSERT_EQ(ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE),
+                      AYNI_OK);
+        }
         ayni_observation_source_v1 source{};
         ASSERT_EQ(camera.describe_source(source), AYNI_OK);
         ASSERT_EQ(ayni_register_observation_source(kernel, &source), AYNI_OK);
@@ -183,24 +201,37 @@ class SubscriptionFixture : public testing::Test {
             ASSERT_EQ(ayni_register_call_capability(kernel, provider->capabilities), AYNI_OK);
             ASSERT_EQ(ayni_register_provider(kernel, provider), AYNI_OK);
         }
-        const ayni_binding_v1 bindings[]{{sizeof(ayni_binding_v1),
-                                          1,
-                                          text("camera"),
-                                          text("mock.observe"),
-                                          1,
-                                          1,
-                                          capture.provider_id,
-                                          capture.endpoint_id,
-                                          {}},
-                                         {sizeof(ayni_binding_v1),
-                                          1,
-                                          text("model"),
-                                          text("mock.text"),
-                                          1,
-                                          1,
-                                          chat.provider_id,
-                                          chat.endpoint_id,
-                                          {}}};
+        ayni_binding_v1 bindings[]{{sizeof(ayni_binding_v1),
+                                    1,
+                                    text("camera"),
+                                    text("mock.observe"),
+                                    1,
+                                    1,
+                                    capture.provider_id,
+                                    capture.endpoint_id,
+                                    {},
+                                    0,
+                                    0,
+                                    nullptr},
+                                   {sizeof(ayni_binding_v1),
+                                    1,
+                                    text("model"),
+                                    text("mock.text"),
+                                    1,
+                                    1,
+                                    chat.provider_id,
+                                    chat.endpoint_id,
+                                    {},
+                                    0,
+                                    0,
+                                    nullptr}};
+        const ayni_binding_resource_v1 mapping{
+            camera_capability.contract.resources[0].resource_id,
+            text(mapped_camera_resource ? mapped_camera_resource : "camera.slot")};
+        if (mapped_camera_resource) {
+            bindings[0].resource_count = 1;
+            bindings[0].resources = &mapping;
+        }
         for (const auto &binding : bindings) {
             ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
         }

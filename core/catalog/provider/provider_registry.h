@@ -55,11 +55,17 @@ class ProviderRegistry {
     // Returns an exact offer or null; view lasts until registry destruction.
     static const CallCapability *offer(const Provider &provider, ayni_string_v1 capability,
                                        uint32_t version);
-    // Same offer/target rule for initial Binding and saved-operation queries.
+    // Initial Binding requires the exact logical offer, before resource substitution.
     // A mixed Provider's egress token does not belong to its local-only offers.
     static bool matches(const Provider &provider, ayni_string_v1 capability, uint32_t version,
                         const CallContract &contract, ayni_string_v1 endpoint,
                         ayni_string_v1 destination);
+    // A read-only outcome query matches the saved logical proof and original route,
+    // allowing its admitted unit-preserving actual resource group (ADR-0087).
+    // It does not consult a new Binding or acquire/re-execute the saved resources.
+    static bool matches_saved_call(const Provider &provider, ayni_string_v1 capability,
+                                   uint32_t version, const CallContract &effective,
+                                   ayni_string_v1 endpoint, ayni_string_v1 destination);
     // Immutable occupied entry, index < size().
     const Provider &at(uint32_t index) const { return entries_[index]; }
     // Number of registered Providers, not arena capacity.

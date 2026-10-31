@@ -86,7 +86,10 @@ bool Physical::register_profile(ayni_kernel_t *kernel) {
                                   1,
                                   provider.provider_id,
                                   provider.endpoint_id,
-                                  {}};
+                                  {},
+                                  0,
+                                  0,
+                                  nullptr};
     const ayni_observation_source_v1 source{sizeof(source),
                                             1,
                                             text("ready"),

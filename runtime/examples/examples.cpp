@@ -1,5 +1,7 @@
 #include <atomic>
+#include <ayni/applications/software_workflow.h>
 #include <ayni/host_authority.h>
+#include <ayni/hosts/native.h>
 #include <ayni/hosts/sim.h>
 #include <ayni/providers/openai_compat.h>
 #include <ayni/providers/openai_compat/loopback.h>
@@ -15,6 +17,9 @@ namespace ayni::runtime::examples {
 namespace {
 constexpr uint32_t step_units = 64, step_max_us = 10000, drain_steps = 1024;
 constexpr uint64_t tick_us = 100;
+// Fixture sampling need not model a wall-clock second. One event takes 100
+// simulated advances, keeping the same wait/freshness semantics under sanitizers.
+constexpr uint64_t software_event_interval_us = 10000;
 constexpr int64_t fixture_utc_s = 86400;
 constexpr auto wait_timeout = std::chrono::seconds(15);
 constexpr auto owner_yield = std::chrono::microseconds(50);
@@ -27,6 +32,8 @@ ayni_scope_v1 empty_scope() {
 } // namespace
 struct Fixture::Impl {
     hosts::sim::Host host;
+    std::unique_ptr<hosts::native::Host> native_host; // Present only for the native profile.
+    ayni_host_v1 host_ports{}; // Borrowed from the selected Host through successful close.
     DemoProfile profile;
     providers::openai_compat::Provider alternate;
     std::unique_ptr<providers::openai_compat::fixtures::LoopbackHttp> server;
@@ -50,9 +57,11 @@ struct Fixture::Impl {
     }
     static ayni_status_t progress(void *ctx) {
         auto &self = *static_cast<Impl *>(ctx);
-        self.host.advance_us(tick_us);
-        self.clock_us.store(self.host.now_us());
-        self.host.complete_storage();
+        if (!self.native_host) {
+            self.host.advance_us(tick_us);
+            self.host.complete_storage();
+        }
+        self.clock_us.store(self.host_ports.monotonic_now_us(self.host_ports.ctx));
         auto status = self.profile.advance();
         if (status == AYNI_OK && self.alternate_offer) {
             status = self.alternate.status();
@@ -61,7 +70,7 @@ struct Fixture::Impl {
             status = self.software.advance();
         }
         if (status == AYNI_OK && self.extension.advance) {
-            status = self.extension.advance(self.extension.context, self.host.now_us());
+            status = self.extension.advance(self.extension.context, self.clock_us.load());
         }
         std::this_thread::sleep_for(owner_yield); // Yield to real protocol/presentation workers.
         return status;
@@ -75,7 +84,41 @@ struct Fixture::Impl {
         if (status == AYNI_OK && self.extension.quiesce) {
             status = self.extension.quiesce(self.extension.context);
         }
+        if (status == AYNI_OK && self.native_host) {
+            // C-HOST-018: the SDK calls this only in CONFIGURING/STOPPED, before destroy.
+            self.native_host->close_storage();
+        }
         return status;
+    }
+    ayni_status_t select_host(HostConfig selection, uint32_t completion_slots) {
+        if (selection.kind == HostConfig::Kind::sim) {
+            host.set_utc(fixture_utc_s);
+            host_ports = host.table();
+            return AYNI_OK;
+        }
+        native_host = std::make_unique<hosts::native::Host>();
+        const auto opened = native_host->open_storage(selection.state_directory, completion_slots);
+        using Status = hosts::native::StorageStatus;
+        switch (opened.status) {
+        case Status::ok:
+            host_ports = native_host->table();
+            clock_us.store(host_ports.monotonic_now_us(host_ports.ctx));
+            return AYNI_OK;
+        case Status::invalid_argument:
+            return AYNI_INVALID_ARGUMENT;
+        case Status::already_open:
+            return AYNI_INVALID_STATE;
+        case Status::no_memory:
+        case Status::thread_error:
+            return AYNI_CAPACITY_EXCEEDED;
+        case Status::in_use:
+            return AYNI_BUSY;
+        case Status::not_a_log:
+            return AYNI_UNSUPPORTED_VERSION;
+        case Status::file_error:
+            return AYNI_STORAGE_FAILED;
+        }
+        return AYNI_INTERNAL;
     }
     ayni_status_t register_alternate() {
         server = std::make_unique<providers::openai_compat::fixtures::LoopbackHttp>(
@@ -129,7 +172,10 @@ struct Fixture::Impl {
                                       1,
                                       saved.provider_id,
                                       saved.endpoint_id,
-                                      saved.destination_id};
+                                      saved.destination_id,
+                                      0,
+                                      0,
+                                      nullptr};
         if (status == AYNI_OK) {
             status = ayni_register_binding(kernel.get(), &binding);
         }
@@ -143,6 +189,7 @@ struct Fixture::Impl {
         providers::software::WorkConfig config;
         config.clock_context = this;
         config.now_us = now;
+        config.event_interval_us = software_event_interval_us;
         auto status = software.configure(config);
         auto *handle = kernel.get();
         const ayni_resource_desc_v1 resource{sizeof(resource),
@@ -186,12 +233,21 @@ struct Fixture::Impl {
         for (uint32_t at = 0; status == AYNI_OK && at < provider.capability_count; ++at) {
             const auto id = provider.capabilities[at].capability_id;
             const ayni_binding_v1 binding{
-                sizeof(binding), 1, id, id, 1, 1, provider.provider_id, provider.endpoint_id, {}};
+                sizeof(binding),      1,  id, id, 1,      1, provider.provider_id,
+                provider.endpoint_id, {}, 0,  0,  nullptr};
             status = ayni_register_binding(handle, &binding);
+            ayni_tool_usage_v1 usage{};
+            if (status == AYNI_OK) {
+                status = software.usage(id, {id, binding.version, 0}, usage);
+            }
+            if (status == AYNI_OK) {
+                status = ayni_register_capability_usage(handle, usage.purpose, &usage);
+            }
         }
         return status;
     }
-    ayni_status_t open(Extension ports, Model model, Software selection) {
+    ayni_status_t open(Extension ports, Model model, Software selection,
+                       HostConfig host_selection) {
         software_enabled = selection == Software::work;
         extension = ports;
         auto config = demo_config();
@@ -211,9 +267,10 @@ struct Fixture::Impl {
             config.resource_capacity += 1;
             config.observation_source_capacity += 1;
         }
-        host.set_utc(fixture_utc_s);
-        const auto table = host.table();
-        auto status = kernel.create(config, table, {this, quiesce});
+        auto status = select_host(host_selection, config.completion_slot_count);
+        if (status == AYNI_OK) {
+            status = kernel.create(config, host_ports, {this, quiesce});
+        }
         if (status != AYNI_OK) {
             return status;
         }
@@ -223,6 +280,9 @@ struct Fixture::Impl {
         }
         if (status == AYNI_OK && software_enabled) {
             status = register_software();
+        }
+        if (status == AYNI_OK && software_enabled) {
+            status = applications::software_workflow::configure(nullptr, kernel.get());
         }
         if (status == AYNI_OK && extension.configure) {
             status = extension.configure(extension.context, kernel.get());
@@ -296,17 +356,21 @@ Fixture::~Fixture() {
         static_cast<void>(impl_.release());
     }
 }
-ayni_status_t Fixture::open(Extension extension, Model model, Software selection) {
+ayni_status_t Fixture::open(Extension extension, Model model, Software selection, HostConfig host) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
     if ((model != Model::mock && model != Model::alternate_loopback) ||
-        (selection != Software::none && selection != Software::work)) {
+        (selection != Software::none && selection != Software::work) ||
+        (host.kind != HostConfig::Kind::sim && host.kind != HostConfig::Kind::native) ||
+        (host.kind == HostConfig::Kind::sim && host.state_directory) ||
+        (host.kind == HostConfig::Kind::native &&
+         (!host.state_directory || !host.state_directory[0]))) {
         return AYNI_INVALID_ARGUMENT;
     }
     try {
         impl_ = std::make_unique<Impl>();
-        return impl_->open(extension, model, selection);
+        return impl_->open(extension, model, selection, host);
     } catch (const std::bad_alloc &) {
         return AYNI_CAPACITY_EXCEEDED;
     } catch (const std::exception &) {
@@ -322,7 +386,7 @@ uint64_t Fixture::instance() const {
                                                                                  : 0;
 }
 uint64_t Fixture::now_us() const {
-    return impl_ ? impl_->host.now_us() : 0;
+    return impl_ ? impl_->clock_us.load() : 0;
 }
 ayni_string_v1 Fixture::capability(const char *alias) const {
     if (!impl_ || !alias) {

@@ -122,6 +122,8 @@
 | [#113](https://github.com/RobotSe7en/ayni/pull/113) | 2026-10-30 | AP-03 按需绑定与目录 | 配置期说明采纳、Task 分页目录、首次完整 Grant 绑定、独立暂停及显式重授权；ABI0.49/schema5 | ADR-0085 |
 | [#114](https://github.com/RobotSe7en/ayni/pull/114) | 2026-10-30 | AP-03 Native harness | 固定四工具、标准消息、披露来源、token 控制、SQLite 历史/原始结果及显式 Shell；ABI0.50/schema6 | ADR-0085 |
 
+| [#116](https://github.com/RobotSe7en/ayni/pull/116) | 2026-10-30 | AP-05 受管操作 | 同 Task 长操作/订阅、固定工具、样本来源与软件 SDK，ABI0.51/schema7 | ADR-0086 |
+
 ## 工作包日期
 
 | 工作包 | 开始 | 结束 |
@@ -141,9 +143,9 @@ AP-02 已由 [#112](https://github.com/RobotSe7en/ayni/pull/112)、ADR-0084 交�
 
 - **已交付：** Native/Sim 的生命周期、工作、授权、资源、调用、记忆/日历、助理应用、SDK 和能力自描述；完整 MA-038 仅有 typed 正常子集，ESP-IDF 存储和实机仍未验证。各包范围及证据见上方 PR 表。
 - **用户最新决定：** Ayni 是通用原生 AgentOS，宿主不要求语音、视觉、运动或特定设备。先完成基础通用能力，再独立开展 ESP32-S3、Linux 系统等实验；两平台不互为前置。详见 [当前实施与实验计划](../../docs/architecture/foundation-and-experiment-plan.md)及 ADR-0083；原 M2～M6 设备产品链不再作为所有部署的必经路线。
-- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。下一步 AP-06/AP-04 与基础收尾，不自动启动平台实验。
+- **本轮与下一步：** AP-05 已按 [设计](../../docs/architecture/ap05-managed-operations-design.md)、ADR-0086 完成同 Task 受管控制、软件作业/订阅、样本来源和SDK示例；ABI0.51/schema7，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)。本轮 AP-06/AP-04 已补资源映射与 Native/Sim 共用应用，ABI0.52/schema8；[设计](../../docs/architecture/ap06-ap04-foundation-design.md)及[基础报告](foundation-acceptance.md)记录本轮完整软件验收证据，待 #117 最终 CI 及合并后进入 main；平台仍后置。
 - **实验与可选能力：** Native/Sim 日常测试继续；基础门槛通过后再安排 ESP32-S3、Linux 实际 OS 集成及其他平台实验。语音/视觉、运动与硬件停止、MCP/ROS/MHS、peer 和轮式助理试用按需选择；启用的物理执行保证、OTA/硬件/耐久证据不能省略或用模拟替代。
-- **已定与待决：** AP-02/AP-03 选择见 ADR-0084/0085。AP-05 已选定四工具内同 Task 的受管控制、本包直接升级并拒旧保留目录、最终答复收尾、每 Task 同时一个 action 且可并存模型和订阅（用户 2026-10-30，ADR-0086）。后续包兼容和平台指标仍分别决定；真实模型多轮试用、长期密钥配置和完整 MA-038 旧待决保留；历史 ≥80% 接受不替代通用 90% 目标。
+- **已定与待决：** AP-02/AP-03 选择见 ADR-0084/0085。AP-05 已选定四工具内同 Task 的受管控制、本包直接升级并拒旧保留目录、最终答复收尾、每 Task 同时一个 action 且可并存模型和订阅（用户 2026-10-30，ADR-0086）。AP-04/AP-06 已选 Binding 资源映射及本包直接升级、不用兼容；用户2026-10-31允许的最小正常重开/映射不兼容验证已通过；基础报告已齐备，最终提交 CI 和交付状态由 #117 提供。后续包兼容和平台指标仍分别决定；真实模型多轮试用、长期密钥配置和完整 MA-038 旧待决保留；用户现已统一安全关键分支目标为 ≥80%（ADR-0088）；本轮覆盖达到该目标，Core 行目标仍为 ≥75%。
 - **工作流与边界：** 依相关正常测试、设计自查、适用独立审查及 CI 交付；具体命令、结果与运行编号集中在 PR。本包不启动平台/硬件、付费 API 或新专项；变异及新增故障/恢复专项仍按 workflow 现行授权处理。
 
 ## 剩余工作

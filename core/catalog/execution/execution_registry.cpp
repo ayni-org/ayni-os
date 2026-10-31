@@ -248,7 +248,12 @@ ayni_status_t ExecutionRegistry::validate_all(const BindingRegistry &bindings,
             !calls.find(view(selection.capability), selection.capability_version, call_index)) {
             return AYNI_NOT_FOUND;
         }
-        const auto &contract = calls.at(call_index).contract;
+        CallContract contract{};
+        const auto resolved =
+            BindingRegistry::resolve_contract(selection, calls.at(call_index).contract, contract);
+        if (resolved != AYNI_OK) {
+            return resolved;
+        }
         const auto &executor = executors_[executor_index].ports;
         if (contract.form != CallForm::action || contract.category != CallClass::tool ||
             (contract.effects & call_effect_physical) == 0 || !actuator(contract, resources) ||
@@ -307,7 +312,12 @@ ayni_status_t ExecutionRegistry::validate_ownership(const BindingRegistry &bindi
         if (!calls.find(view(selection.capability), selection.capability_version, call)) {
             return AYNI_NOT_FOUND;
         }
-        const auto &contract = calls.at(call).contract;
+        CallContract contract{};
+        const auto resolved =
+            BindingRegistry::resolve_contract(selection, calls.at(call).contract, contract);
+        if (resolved != AYNI_OK) {
+            return resolved;
+        }
         if ((contract.effects & call_effect_physical) == 0) {
             continue;
         }

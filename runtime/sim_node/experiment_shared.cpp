@@ -56,7 +56,10 @@ bool SharedServices::register_profile(ayni_kernel_t *kernel) {
                                   1,
                                   a.provider_id,
                                   a.endpoint_id,
-                                  a.destination_id};
+                                  a.destination_id,
+                                  0,
+                                  0,
+                                  nullptr};
     const auto loop_strategy = tool_loop_.describe();
     auto chat = initialized<ayni_goal_type_v1>();
     chat.goal_type_id = text("shared.chat");

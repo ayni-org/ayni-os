@@ -75,7 +75,7 @@ ayni_status_t Catalogs::close() {
                                               providers, resources, links) != AYNI_OK) {
             return AYNI_INTERNAL; // validate_all resolved every Binding.
         }
-        if (call_capabilities.at(links.call).contract.category != catalog::CallClass::tool ||
+        if (links.contract.category != catalog::CallClass::tool ||
             dispatchable(bindings.at(index), links) != AYNI_OK) {
             return AYNI_INVALID_ARGUMENT;
         }
@@ -120,7 +120,7 @@ ayni_status_t Catalogs::link_business() {
 
 ayni_status_t Catalogs::dispatchable(const catalog::Binding &binding,
                                      const catalog::BindingLinks &links) const {
-    const auto &contract = call_capabilities.at(links.call).contract;
+    const auto &contract = links.contract;
     const bool physical = (contract.effects & catalog::call_effect_physical) != 0U;
     uint32_t execution_index = 0;
     if (physical && !execution.find_binding({binding.id.data(), binding.id.size()}, binding.version,

@@ -51,9 +51,18 @@ bool Replacement::register_profile(ayni_kernel_t *kernel) {
         sizeof(slot), AYNI_RESOURCE_SHARED, text("model.slot"), 1, 0, 0, 0, nullptr, {}};
     const ayni_capability_desc_v1 capability{
         sizeof(capability), 1, text("mock.text"), 0, 0, nullptr};
-    const ayni_binding_v1 binding{
-        sizeof(binding),   1, text("model"), text("mock.text"), 1, 1, offer.provider_id,
-        offer.endpoint_id, {}};
+    const ayni_binding_v1 binding{sizeof(binding),
+                                  1,
+                                  text("model"),
+                                  text("mock.text"),
+                                  1,
+                                  1,
+                                  offer.provider_id,
+                                  offer.endpoint_id,
+                                  {},
+                                  0,
+                                  0,
+                                  nullptr};
     e.fact("replacement", "provider_variant", static_cast<uint64_t>(provider_));
     e.fact("replacement", "policy", static_cast<uint64_t>(selected_));
     return e.status("register replacement slot", ayni_register_resource(kernel, &slot)) &&

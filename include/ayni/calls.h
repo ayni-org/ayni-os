@@ -411,6 +411,14 @@ typedef struct ayni_provider_v1 {
     ayni_submit_result_t (*renew)(void *ctx, const ayni_subscription_renew_v1 *request);
 } ayni_provider_v1;
 
+/* Since 0.52. Fixed-layout resource mapping; layout changes require a new type.
+ * Logical demands keep units; omitted IDs are unchanged. Duplicate source or
+ * resolved IDs are invalid; mappings cannot add, remove or merge demands. */
+typedef struct ayni_binding_resource_v1 {
+    ayni_string_v1 logical_id;  /* Nonempty ID present in the capability resource group. */
+    ayni_string_v1 resource_id; /* Nonempty concrete resource ID, registered before start. */
+} ayni_binding_resource_v1;
+
 /* Explicit immutable binding, checked as a whole before start. Changing a
  * Provider never silently retargets an accepted logical call or operation.
  */
@@ -424,6 +432,10 @@ typedef struct ayni_binding_v1 {
     ayni_string_v1 provider_id;    /* Exact selected Provider identity. */
     ayni_string_v1 endpoint_id;    /* Must equal that Provider's endpoint token. */
     ayni_string_v1 destination_id; /* Must equal its egress token; empty for local. */
+    uint32_t
+        resource_count; /* Since 0.52. 0..CALL_RESOURCE_COUNT_MAX mappings; zero is identity. */
+    uint32_t resource_reserved;                /* Since 0.52. Must be zero. */
+    const ayni_binding_resource_v1 *resources; /* Since 0.52. Copied; null iff count is zero. */
 } ayni_binding_v1;
 
 /* Trusted owner thread, CONFIGURING only. Descriptors are copied; invalid,

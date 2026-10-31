@@ -9,6 +9,12 @@
 
 namespace ayni::catalog {
 
+// Configuration owns a logical-to-concrete resource substitution, never occupancy.
+struct BindingResource {
+    CatalogId logical;  // Nonempty source in the capability's immutable demand group.
+    CatalogId concrete; // Nonempty destination; units stay with the logical demand.
+};
+
 // Copied declarative selection; resolution never replaces these identities.
 struct Binding {
     CatalogId id;                // Nonempty exact Binding identity.
@@ -19,15 +25,18 @@ struct Binding {
     uint32_t provider_version;   // Positive exact implementation version.
     CatalogId endpoint;          // Must match that Provider's endpoint.
     CatalogId destination;       // Empty for local calls; matches Provider for EGRESS.
+    uint32_t resource_count = 0; // Valid mapping prefix; zero preserves all logical IDs.
+    std::array<BindingResource, resource_group_max> resources{}; // Owned, unique source IDs.
 };
 
 // Local resolution result, not another owner of catalog state. Indices stay
 // valid after start closes registration; resources retain normalized ID order.
 struct BindingLinks {
-    uint32_t capability; // Index in CapabilityRegistry (authority fields).
-    uint32_t call;       // Index in CallCapabilityRegistry (execution contract).
-    uint32_t provider;   // Index in ProviderRegistry (runtime-owned callback context).
-    std::array<uint32_t, resource_group_max> resources; // Prefix length from call contract.
+    uint32_t capability;   // Index in CapabilityRegistry (authority fields).
+    uint32_t call;         // Index in CallCapabilityRegistry (execution contract).
+    uint32_t provider;     // Index in ProviderRegistry (runtime-owned callback context).
+    CallContract contract; // Resolved execution value; only resource IDs differ from capability.
+    std::array<uint32_t, resource_group_max> resources; // Same sorted prefix as contract resources.
 };
 
 // Bounded immutable directory; lookup and validation never execute callbacks.
@@ -55,13 +64,18 @@ class BindingRegistry {
                std::array<ayni_tool_field_usage_v1, AYNI_AUTHORITY_FIELD_COUNT_MAX> &fields) const;
     // Exact selection, no fallback to another version; failure preserves index.
     bool find(ayni_string_v1 id, uint32_t version, uint32_t &index) const;
+    // Apply a validated map to a normalized logical contract. Shared by execution
+    // ownership and ordinary resolution; failure preserves out.
+    static ayni_status_t resolve_contract(const Binding &binding, const CallContract &logical,
+                                          CallContract &out);
     // Resolve exact declarations/resources and trusted target/destination membership.
     // Does not check Grant, health or occupancy. Any error preserves out.
     static ayni_status_t resolve(const Binding &binding, const CapabilityRegistry &capabilities,
                                  const CallCapabilityRegistry &calls,
                                  const ProviderRegistry &providers,
                                  const ResourceRegistry &resources, BindingLinks &out);
-    // Exact immutable selection equality, independent of current directory availability.
+    // Compare route identities. The caller separately compares the saved effective contract,
+    // including resolved resources; CallIdentity deliberately does not copy configuration maps.
     static bool same_selection(const Binding &left, const Binding &right);
     // Pure startup cross-reference validation; failure keeps CONFIGURING usable.
     ayni_status_t validate_all(const CapabilityRegistry &capabilities,

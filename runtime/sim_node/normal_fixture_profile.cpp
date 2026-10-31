@@ -36,7 +36,10 @@ ayni_status_t register_offer(ayni_kernel_t *kernel, const ayni_provider_v1 &offe
                                     1,
                                     offer.provider_id,
                                     offer.endpoint_id,
-                                    offer.destination_id};
+                                    offer.destination_id,
+                                    0,
+                                    0,
+                                    nullptr};
         status = ayni_register_binding(kernel, &value);
     }
     return status;

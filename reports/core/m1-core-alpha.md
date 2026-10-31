@@ -1,5 +1,7 @@
 # M1 Core Alpha 报告（Native 功能验收）
 
+> **现行覆盖目标（2026-10-30）**：Core 行 ≥75%、安全关键分支 ≥80%，见 [ADR-0088](../../docs/adr/0088-safety-branch-coverage-target.md)；原90%目标弃用。下文保留历史阶段当时的门槛与测量事实。
+
 > **历史范围说明（2026-10-29）**：本页保留当时工作包、授权和验证证据。当前按[基础能力实施与平台实验计划](../../docs/architecture/foundation-and-experiment-plan.md)先完成通用 AgentOS 基础，再安排 ESP32-S3、Linux 等实验；原阶段设备链不再作为所有部署前置，本说明不改写已有结果。
 
 - **日期**：2026-10-28

@@ -119,8 +119,7 @@ bool CallRuntime::compatible_call(uint32_t index, catalog::BindingLinks &links) 
            catalog::BindingRegistry::resolve(catalogs_.bindings.at(binding), catalogs_.capabilities,
                                              catalogs_.call_capabilities, catalogs_.providers,
                                              catalogs_.resources, links) == AYNI_OK &&
-           catalog::same_call_contract(work_.calls.contract(index),
-                                       catalogs_.call_capabilities.at(links.call).contract) &&
+           catalog::same_call_contract(work_.calls.contract(index), links.contract) &&
            catalogs_.capabilities.matches_domain(links.capability, work_.calls.domain(index));
 }
 

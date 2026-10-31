@@ -32,9 +32,9 @@ CallRuntime::Advance CallRuntime::prepare_query(uint32_t index) {
     }
     const auto &provider = catalogs_.providers.at(provider_index);
     if (provider.query == nullptr ||
-        !catalog::ProviderRegistry::matches(provider, view(id.capability_id), id.capability_version,
-                                            work_.calls.contract(index), view(id.endpoint),
-                                            view(id.destination))) {
+        !catalog::ProviderRegistry::matches_saved_call(
+            provider, view(id.capability_id), id.capability_version, work_.calls.contract(index),
+            view(id.endpoint), view(id.destination))) {
         return end_query(index, AYNI_UNSUPPORTED_VERSION, AYNI_REASON_NONE);
     }
     ayni_attempt_ref_v1 attempt{};
