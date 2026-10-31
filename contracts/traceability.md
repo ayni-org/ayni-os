@@ -26,6 +26,7 @@
 | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 5 | 0 |
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 7 | 0 |
+| [host/file_values.md](host/file_values.md) | 3 | 0 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
@@ -34,7 +35,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 433 | 141 |
+| 合计 | 436 | 141 |
 
 ## 计划章节 → 契约文档
 
@@ -114,6 +115,7 @@
 | ADR-0082 | host/tool_usage.md |
 | ADR-0084 | domain/business_values.md |
 | ADR-0085 | domain/capability_directory.md |
+| ADR-0093 | host/file_values.md |
 
 ## 工作包 → 条款
 

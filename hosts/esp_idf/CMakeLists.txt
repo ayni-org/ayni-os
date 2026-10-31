@@ -12,7 +12,7 @@ idf_component_register(
 
 include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/AyniSDK.cmake")
 ayni_add_sdk(COMPONENTS host_storage)
-target_link_libraries(${COMPONENT_LIB} PUBLIC ayni_api PRIVATE ayni_host_storage ayni_platform_warnings)
+target_link_libraries(${COMPONENT_LIB} PUBLIC ayni_api ayni_host_storage PRIVATE ayni_platform_warnings)
 
 # Vendor raw headers contain inline conversions outside Ayni's warnings policy.
 # Keep strict diagnostics for our adapter while treating the dependency as system headers.

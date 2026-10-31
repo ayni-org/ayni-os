@@ -8,6 +8,7 @@
 #define AYNI_HOSTS_ESP_IDF_H
 
 #include <ayni/ayni.h>
+#include <ayni/hosts/storage/file_value.h>
 #include <cstddef>
 
 #include <freertos/FreeRTOS.h>
@@ -59,6 +60,9 @@ class Host {
     // Owner after STOPPED/before destroy. Drains accepted work, joins/deletes the parked
     // worker, then unmounts. May block on flash I/O. Captured old ports reject after close.
     void close_storage();
+    // Owner-only outer data, same bounded queue/space budget and close barrier as Core storage.
+    // Empty while closed; captured ports reject submissions after close.
+    storage::FileValuePort value_store();
     // Owner wake uses notification index0; timeout is microseconds, rounded up to ticks.
     bool wait_for_wake(uint64_t timeout_us);
     // Last completed worker or current worker high-water free bytes; 0 before a worker ran.
@@ -70,6 +74,7 @@ class Host {
 
   private:
     class Storage;
+    static ayni_submit_result_t submit_value(void *, const storage::FileValueRequest *);
     static ayni_submit_result_t storage_append(void *ctx, const ayni_storage_batch_v1 *batch,
                                                ayni_attempt_ref_v1 attempt,
                                                ayni_completion_t *completion);

@@ -67,7 +67,8 @@ TEST(SharedStorage, non_flat_or_reserved_name_refusal_does_not_consume_the_names
     const TempDirectory directory;
     PosixFiles files;
     FileLog log(files);
-    for (const char *name : {"../outside", "snapshot_0", "snapshot_1", ".ayni_storage_lock"}) {
+    for (const char *name : {"../outside", "snapshot_0", "snapshot_1", ".ayni_storage_lock",
+                             "value-1", "value-1.candidate"}) {
         EXPECT_EQ(log.open(directory.path().c_str(), name).status, FileLog::OpenStatus::file_error);
     }
     EXPECT_EQ(log.open(directory.path().c_str(), "commit_log").status, FileLog::OpenStatus::ok);

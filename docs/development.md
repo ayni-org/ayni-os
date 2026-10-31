@@ -212,6 +212,8 @@ target_link_libraries(my_application PRIVATE Ayni::Core Ayni::Strategies)
 
 共用Host存储机制位于`hosts/storage/`，其`Files`接口隔离阻塞文件操作；Linux适配位于`hosts/native/`。日志、快照及轮转共用同一实现和AYNL v1格式，C ABI与Core schema不变；ESP端口与介质保证仍待验证。独立导入测试分别检查默认无Host、共用存储及Linux Host三个组件组合（ADR-0091）。
 
+Native/ESP Host的`value_store()`提供外层文件值端口（ADR-0093）。它与Core存储共用后台队列，按owner/object及generation保存不透明字节，不能从仅受理或未知结果推断上下文文件已经持久。回调在worker执行，复制结果后由owner发出匹配的Core上下文ACK；关闭join前保持context存活。文件值格式1独立于Core schema及SQLite应用数据库，默认SDK仍不引入具体Host。
+
 ABI0.53的临时内存按显式查询预分配；C调用方提供 `ayni_workspace_v1`，C++ 可使用 `ayni::Workspace`（`ayni/workspace.hpp`）。例如策略启动前：
 
 ```cpp

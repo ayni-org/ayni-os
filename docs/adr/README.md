@@ -147,3 +147,4 @@
 | [0090](0090-bounded-portable-workspaces.md) | 通用有界工作区与低栈接口 | 已接受；实现与验证见 #119 | ABI0.53、独立接入 |
 | [0091](0091-shared-host-file-storage.md) | 共用Host文件存储与平台文件端口 | 已接受；实现与验证见 #120 | 独立接入、C-HOST-009～019 |
 | [0092](0092-esp-idf-littlefs-host.md) | FreeRTOS异步Host与专用LittleFS卷 | 已接受；实现与验证见 #121 | 独立接入、C-HOST |
+| [0093](0093-host-outer-file-values.md) | 外层文件值与共同Host队列 | 已接受；实现与验证见 #122 | C-HVAL、独立接入 |

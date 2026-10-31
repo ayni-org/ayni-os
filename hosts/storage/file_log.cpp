@@ -1,3 +1,6 @@
+#include "file_codec.h"
+#include "file_io.h"
+#include "file_names.h"
 #include <ayni/hosts/storage/file_log.h>
 
 #include <ayni/storage_format.h>
@@ -23,56 +26,11 @@ constexpr std::size_t frame_trailer_size = 4;
 // Payloads are checked through a buffer of this size on the stack.
 constexpr std::size_t chunk_size = 4096;
 
-constexpr std::array<uint32_t, 256> make_crc_table() {
-    std::array<uint32_t, 256> table{};
-    for (uint32_t index = 0; index < table.size(); ++index) {
-        uint32_t crc = index;
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc & 1U) != 0U ? 0xEDB88320U ^ (crc >> 1U) : crc >> 1U;
-        }
-        table[index] = crc;
-    }
-    return table;
-}
-
-constexpr std::array<uint32_t, 256> crc_table = make_crc_table();
-
-// CRC-32/ISO-HDLC; passing a previous result continues it over more bytes.
-uint32_t crc32(const uint8_t *data, std::size_t size, uint32_t previous = 0) {
-    uint32_t crc = ~previous;
-    for (std::size_t index = 0; index < size; ++index) {
-        crc = crc_table[(crc ^ data[index]) & 0xFFU] ^ (crc >> 8U);
-    }
-    return ~crc;
-}
-
-void store_le32(uint8_t *out, uint32_t value) {
-    for (std::size_t index = 0; index < 4U; ++index) {
-        out[index] = static_cast<uint8_t>(value >> (8U * index));
-    }
-}
-
-void store_le64(uint8_t *out, uint64_t value) {
-    for (std::size_t index = 0; index < 8U; ++index) {
-        out[index] = static_cast<uint8_t>(value >> (8U * index));
-    }
-}
-
-uint32_t load_le32(const uint8_t *in) {
-    uint32_t value = 0;
-    for (std::size_t index = 0; index < 4U; ++index) {
-        value |= static_cast<uint32_t>(in[index]) << (8U * index);
-    }
-    return value;
-}
-
-uint64_t load_le64(const uint8_t *in) {
-    uint64_t value = 0;
-    for (std::size_t index = 0; index < 8U; ++index) {
-        value |= static_cast<uint64_t>(in[index]) << (8U * index);
-    }
-    return value;
-}
+using codec::crc32;
+using codec::load_le32;
+using codec::load_le64;
+using codec::store_le32;
+using codec::store_le64;
 
 std::array<uint8_t, file_header_size> file_header() {
     std::array<uint8_t, file_header_size> header{};
@@ -93,7 +51,7 @@ FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
     if (!directory || !file_name || !file_name[0] || std::strchr(file_name, '/') ||
         std::strcmp(file_name, ".") == 0 || std::strcmp(file_name, "..") == 0 ||
         std::strcmp(file_name, snapshot_name(0)) == 0 ||
-        std::strcmp(file_name, snapshot_name(1)) == 0) {
+        std::strcmp(file_name, snapshot_name(1)) == 0 || is_file_value_name(file_name)) {
         return {OpenStatus::file_error, EINVAL};
     }
     if (opened_) {
@@ -106,7 +64,7 @@ FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
     if (excluded != 0) {
         return {excluded == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, excluded};
     }
-    opened_.emplace();
+    opened_.emplace(OpenFiles{Files::invalid_handle});
     std::memcpy(file_name_.data(), file_name, std::strlen(file_name) + 1U);
     const auto compatible = check_snapshot_schemas();
     if (compatible.status != OpenStatus::ok) {
@@ -151,32 +109,12 @@ void FileLog::close() {
     read_max_seq_ = 0;
 }
 
-// Positive short reads are normal file-port behavior, not an end-of-file proof.
 int FileLog::read_up_to(int handle, uint64_t at, uint8_t *out, std::size_t size,
                         std::size_t &total) const {
-    total = 0;
-    while (total < size) {
-        std::size_t count = 0;
-        const auto error = files_.read(handle, at + total, out + total, size - total, count);
-        if (error != 0) {
-            return error;
-        }
-        if (count > size - total) {
-            return EIO;
-        }
-        if (count == 0) {
-            break;
-        }
-        total += count;
-    }
-    return 0;
+    return io::read_up_to(files_, handle, at, out, size, total);
 }
-
-// A checked frame promises all requested bytes; an early EOF is an I/O error.
 int FileLog::read_exact(int handle, uint64_t at, uint8_t *out, std::size_t size) const {
-    std::size_t count = 0;
-    const auto error = read_up_to(handle, at, out, size, count);
-    return error != 0 ? error : count == size ? 0 : EIO;
+    return io::read_exact(files_, handle, at, out, size);
 }
 
 // The two retained slots may contain the only Core prefix after log trimming.
