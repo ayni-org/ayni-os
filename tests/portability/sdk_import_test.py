@@ -19,6 +19,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=pathlib.Path, required=True)
     parser.add_argument("--optional", action="store_true")
+    parser.add_argument("--host-storage", action="store_true")
+    parser.add_argument("--native-host", action="store_true")
     parser.add_argument("--download-dir", default="")
     parser.add_argument("--sanitize", default="")
     parser.add_argument("--generator", default="Ninja")
@@ -30,6 +32,10 @@ def main():
                          "providers/mock", "providers/mock_execution", "control/permit_gate",
                          "applications/assistant", "applications/software_workflow"):
             shutil.copytree(args.source / relative, sdk / relative)
+        if args.host_storage or args.native_host:
+            shutil.copytree(args.source / "hosts/storage", sdk / "hosts/storage")
+        if args.native_host:
+            shutil.copytree(args.source / "hosts/native", sdk / "hosts/native")
         (sdk / "tools").mkdir()
         shutil.copy2(args.source / "tools/architecture.json", sdk / "tools/architecture.json")
         consumer = root / "consumer"
@@ -40,17 +46,25 @@ def main():
         try:
             configure = ["cmake", "-G", args.generator, "-S", str(consumer), "-B", str(root / "build"),
                          f"-DAYNI_SOURCE_DIR={sdk}", "-DCMAKE_DISABLE_FIND_PACKAGE_CURL=TRUE",
-                         "-DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=TRUE",
-                         "-DCMAKE_DISABLE_FIND_PACKAGE_Threads=TRUE"]
+                         "-DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=TRUE"]
+            if not args.native_host:
+                configure.append("-DCMAKE_DISABLE_FIND_PACKAGE_Threads=TRUE")
             if args.download_dir:
                 configure.append(f"-DAYNI_DOWNLOAD_DIR={args.download_dir}")
             if args.sanitize:
                 flags = f"-fsanitize={args.sanitize} -fno-omit-frame-pointer -fno-sanitize-recover=all"
                 configure.extend([f"-DCMAKE_C_FLAGS={flags}", f"-DCMAKE_CXX_FLAGS={flags}",
                                   f"-DCMAKE_EXE_LINKER_FLAGS={flags}"])
+            components = []
             if args.optional:
-                configure.append("-DPROBE_COMPONENTS=software_provider;permit_gate;assistant;"
-                                 "software_workflow;mock_provider;mock_execution")
+                components.extend(["software_provider", "permit_gate", "assistant",
+                                   "software_workflow", "mock_provider", "mock_execution"])
+            if args.host_storage:
+                components.append("host_storage")
+            if args.native_host:
+                components.append("native_host")
+            if components:
+                configure.append("-DPROBE_COMPONENTS=" + ";".join(components))
             run(configure)
             run(["cmake", "--build", str(root / "build"), "--parallel",
                  os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "2")])

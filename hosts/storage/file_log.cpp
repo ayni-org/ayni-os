@@ -1,4 +1,4 @@
-#include "file_log.h"
+#include <ayni/hosts/storage/file_log.h>
 
 #include <ayni/storage_format.h>
 
@@ -10,13 +10,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <unistd.h>
-
-namespace ayni::hosts::native {
+namespace ayni::hosts::storage {
 namespace {
 
 constexpr std::array<uint8_t, 4> file_magic{{'A', 'Y', 'N', 'L'}};
@@ -87,96 +81,44 @@ std::array<uint8_t, file_header_size> file_header() {
     return header;
 }
 
-// The system calls below return 0 or the errno of the call that failed.
-
-int read_exact(int fd, uint64_t at, uint8_t *out, std::size_t size) {
-    while (size > 0U) {
-        const ssize_t got = ::pread(fd, out, size, static_cast<off_t>(at));
-        if (got < 0 && errno == EINTR) {
-            continue;
-        }
-        if (got < 0) {
-            return errno;
-        }
-        if (got == 0) {
-            return EIO; // the file ends before the bytes it was checked to hold
-        }
-        const auto count = static_cast<std::size_t>(got);
-        out += count;
-        at += count;
-        size -= count;
-    }
-    return 0;
-}
-
-int write_all(int fd, uint64_t at, const uint8_t *data, std::size_t size) {
-    while (size > 0U) {
-        const ssize_t put = ::pwrite(fd, data, size, static_cast<off_t>(at));
-        if (put < 0 && errno == EINTR) {
-            continue;
-        }
-        if (put < 0) {
-            return errno;
-        }
-        if (put == 0) {
-            return EIO;
-        }
-        const auto count = static_cast<std::size_t>(put);
-        data += count;
-        at += count;
-        size -= count;
-    }
-    return 0;
-}
-
-// The file's data, and the size that reaches it, on the device (C-HOST-010).
-// On macOS fsync stops at the drive's cache and F_FULLFSYNC does not; that
-// branch is not yet built or tested on macOS.
-int sync_file(int fd) {
-#if defined(__APPLE__)
-    return ::fcntl(fd, F_FULLFSYNC) == 0 ? 0 : errno;
-#else
-    while (::fdatasync(fd) != 0) {
-        if (errno != EINTR) {
-            return errno;
-        }
-    }
-    return 0;
-#endif
-}
-
 } // namespace
 
+uint64_t FileLog::append_bytes(uint32_t payload_bytes) {
+    return static_cast<uint64_t>(payload_bytes) + frame_header_size + frame_trailer_size;
+}
+
+// Files owns platform namespace exclusion; the log owns format admission and scan.
 FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
+    if (!directory || !file_name || !file_name[0] || std::strchr(file_name, '/') ||
+        std::strcmp(file_name, ".") == 0 || std::strcmp(file_name, "..") == 0) {
+        return {OpenStatus::file_error, EINVAL};
+    }
+    if (opened_) {
+        return {OpenStatus::file_error, EBUSY};
+    }
     if (std::strlen(file_name) >= file_name_.size()) {
         return {OpenStatus::file_error, ENAMETOOLONG};
     }
-    directory_fd_ = ::open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (directory_fd_ < 0) {
-        return {OpenStatus::file_error, errno};
+    const auto excluded = files_.begin(directory);
+    if (excluded != 0) {
+        return {excluded == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, excluded};
     }
+    opened_.emplace();
     std::memcpy(file_name_.data(), file_name, std::strlen(file_name) + 1U);
-    lock_fd_ = ::openat(directory_fd_, ".ayni_storage_lock", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (lock_fd_ < 0 || ::flock(lock_fd_, LOCK_EX | LOCK_NB) != 0) {
-        const int error = errno;
-        close();
-        return {error == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, error};
-    }
     const auto compatible = check_snapshot_schemas();
     if (compatible.status != OpenStatus::ok) {
         close();
         return compatible;
     }
-    fd_ = ::openat(directory_fd_, file_name, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    const auto error = files_.open(file_name, Files::Mode::read_write_create, opened_->log);
     bool initialized = false;
     Opened opened =
-        fd_ < 0 ? Opened{OpenStatus::file_error, errno} : check_file_header(initialized);
+        error != 0 ? Opened{OpenStatus::file_error, error} : check_file_header(initialized);
     if (opened.status == OpenStatus::ok) {
         opened = scan();
         if (opened.status == OpenStatus::ok && !initialized && !damaged_) {
-            // A prior process may have seen EIO while these cached bytes
-            // remained readable. Reads stay read-only; the first mutation
-            // must redirty and synchronize the whole inherited prefix.
+            // A readable inherited prefix is not proof of prior synchronization.
+            // Reads stay read-only; confirm every inherited byte before mutation.
             sync_failed_ = true;
             uncertain_start_ = 0;
         }
@@ -188,18 +130,13 @@ FileLog::Opened FileLog::open(const char *directory, const char *file_name) {
 }
 
 void FileLog::close() {
-    if (fd_ >= 0) {
-        ::close(fd_); // also releases the lock
+    if (log_handle() != Files::invalid_handle) {
+        files_.close(log_handle());
     }
-    fd_ = -1;
-    if (lock_fd_ >= 0) {
-        ::close(lock_fd_);
+    if (opened_) {
+        files_.end();
+        opened_.reset();
     }
-    if (directory_fd_ >= 0) {
-        ::close(directory_fd_);
-    }
-    directory_fd_ = -1;
-    lock_fd_ = -1;
     writer_epoch_ = 1;
     file_size_ = 0;
     end_ = 0;
@@ -211,31 +148,57 @@ void FileLog::close() {
     read_max_seq_ = 0;
 }
 
+// Positive short reads are normal file-port behavior, not an end-of-file proof.
+int FileLog::read_up_to(int handle, uint64_t at, uint8_t *out, std::size_t size,
+                        std::size_t &total) const {
+    total = 0;
+    while (total < size) {
+        std::size_t count = 0;
+        const auto error = files_.read(handle, at + total, out + total, size - total, count);
+        if (error != 0) {
+            return error;
+        }
+        if (count > size - total) {
+            return EIO;
+        }
+        if (count == 0) {
+            break;
+        }
+        total += count;
+    }
+    return 0;
+}
+
+// A checked frame promises all requested bytes; an early EOF is an I/O error.
+int FileLog::read_exact(int handle, uint64_t at, uint8_t *out, std::size_t size) const {
+    std::size_t count = 0;
+    const auto error = read_up_to(handle, at, out, size, count);
+    return error != 0 ? error : count == size ? 0 : EIO;
+}
+
 // The two retained slots may contain the only Core prefix after log trimming.
 // Probe only compatibility; full activation/CRC/semantic validation stays in Core.
 FileLog::Opened FileLog::check_snapshot_schemas() const {
     constexpr uint32_t snapshot_slots = 2;
     for (uint32_t slot = 0; slot < snapshot_slots; ++slot) {
-        const int snapshot =
-            ::openat(directory_fd_, snapshot_name(slot), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        if (snapshot < 0) {
-            if (errno == ENOENT) {
+        int snapshot = Files::invalid_handle;
+        const auto opened =
+            files_.open(snapshot_name(slot), Files::Mode::read_existing_no_follow, snapshot);
+        if (opened != 0) {
+            if (opened == ENOENT) {
                 continue;
             }
-            return {OpenStatus::file_error, errno};
+            return {OpenStatus::file_error, opened};
         }
         std::array<uint8_t, AYNI_STORAGE_SCHEMA_PREFIX_BYTES> prefix{};
-        ssize_t size = 0;
-        do {
-            size = ::pread(snapshot, prefix.data(), prefix.size(), 0);
-        } while (size < 0 && errno == EINTR);
-        const int error = errno;
-        ::close(snapshot);
-        if (size < 0) {
+        std::size_t size = 0;
+        const auto error = read_up_to(snapshot, 0, prefix.data(), prefix.size(), size);
+        files_.close(snapshot);
+        if (error != 0) {
             return {OpenStatus::file_error, error};
         }
         uint32_t schema = 0;
-        if (ayni_storage_read_schema(prefix.data(), static_cast<size_t>(size), &schema) &&
+        if (ayni_storage_read_schema(prefix.data(), size, &schema) &&
             schema != AYNI_STORAGE_SCHEMA_CURRENT) {
             return {OpenStatus::not_a_log, 0};
         }
@@ -245,22 +208,21 @@ FileLog::Opened FileLog::check_snapshot_schemas() const {
 
 FileLog::Opened FileLog::check_file_header(bool &initialized) {
     initialized = false;
-    // One writer per file, or two Hosts would interleave their appends.
-    if (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
-        const int error = errno;
-        return {error == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, error};
+    // Preserve file-level exclusion for adapters with legacy file-only writers.
+    const auto locked = files_.lock(log_handle());
+    if (locked != 0) {
+        return {locked == EWOULDBLOCK ? OpenStatus::in_use : OpenStatus::file_error, locked};
     }
-    struct stat file_status {};
-    if (::fstat(fd_, &file_status) != 0) {
-        return {OpenStatus::file_error, errno};
+    const auto stat_error = files_.size(log_handle(), file_size_);
+    if (stat_error != 0) {
+        return {OpenStatus::file_error, stat_error};
     }
-    file_size_ = static_cast<uint64_t>(file_status.st_size);
 
     const std::array<uint8_t, file_header_size> expected = file_header();
     std::array<uint8_t, file_header_size> found{};
     const std::size_t present =
         static_cast<std::size_t>(std::min<uint64_t>(file_size_, found.size()));
-    int error = read_exact(fd_, 0, found.data(), present);
+    int error = read_exact(log_handle(), 0, found.data(), present);
     if (error != 0) {
         return {OpenStatus::file_error, error};
     }
@@ -278,12 +240,12 @@ FileLog::Opened FileLog::check_file_header(bool &initialized) {
     }
     // A new file, or one whose creation a power cut tore: nothing is appended
     // before the header is synced, so it holds no batch.
-    error = write_bytes(fd_, 0, expected.data(), expected.size());
+    error = files_.write(log_handle(), 0, expected.data(), expected.size());
     if (error == 0) {
-        error = sync_fd(fd_);
+        error = files_.sync_file(log_handle());
     }
     if (error == 0) {
-        error = sync_directory(); // the new directory entry
+        error = files_.sync_namespace(); // the new directory entry
     }
     if (error != 0) {
         return {OpenStatus::file_error, error};
@@ -302,7 +264,7 @@ FileLog::Opened FileLog::scan() {
         if (check == FrameCheck::whole) {
             if (frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES) {
                 std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> header{};
-                error = read_exact(fd_, frame.payload_at, header.data(), header.size());
+                error = read_exact(log_handle(), frame.payload_at, header.data(), header.size());
                 if (error != 0) {
                     return {OpenStatus::file_error, error};
                 }
@@ -367,7 +329,7 @@ int FileLog::find_later_header(uint64_t at, bool &found) const {
     while (file_size_ - from >= frame_header_size) {
         const auto size =
             static_cast<std::size_t>(std::min<uint64_t>(chunk.size(), file_size_ - from));
-        int error = read_exact(fd_, from, chunk.data(), size);
+        int error = read_exact(log_handle(), from, chunk.data(), size);
         if (error != 0) {
             return error;
         }
@@ -395,7 +357,7 @@ int FileLog::find_later_header(uint64_t at, bool &found) const {
 
 bool FileLog::read_header(uint64_t at, Frame &frame, int &error) const {
     std::array<uint8_t, frame_header_size> header{};
-    error = read_exact(fd_, at, header.data(), header.size());
+    error = read_exact(log_handle(), at, header.data(), header.size());
     if (error != 0 || std::memcmp(header.data(), frame_magic.data(), frame_magic.size()) != 0 ||
         load_le32(header.data() + frame_header_crc_at) !=
             crc32(header.data(), frame_header_crc_at)) {
@@ -417,7 +379,7 @@ bool FileLog::check_payload(const Frame &frame, uint8_t *out, int &error) const 
         const uint32_t size = out != nullptr
                                   ? frame.payload_size
                                   : std::min<uint32_t>(chunk_size, frame.payload_size - done);
-        error = read_exact(fd_, frame.payload_at + done, into, size);
+        error = read_exact(log_handle(), frame.payload_at + done, into, size);
         if (error != 0) {
             return false;
         }
@@ -425,11 +387,15 @@ bool FileLog::check_payload(const Frame &frame, uint8_t *out, int &error) const 
         done += size;
     }
     std::array<uint8_t, frame_trailer_size> trailer{};
-    error = read_exact(fd_, frame.end - frame_trailer_size, trailer.data(), trailer.size());
+    error =
+        read_exact(log_handle(), frame.end - frame_trailer_size, trailer.data(), trailer.size());
     return error == 0 && load_le32(trailer.data()) == crc;
 }
 
 FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32_t size) {
+    if (!is_open()) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
     if (sync_failed_ && !rescan_after_unknown()) {
         return {AYNI_WRITE_UNKNOWN, 0};
     }
@@ -450,7 +416,7 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
             if (frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES &&
                 ayni_storage_read_batch_identity(data, size, &requested)) {
                 std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> found{};
-                if (read_exact(fd_, frame.payload_at, found.data(), found.size()) != 0) {
+                if (read_exact(log_handle(), frame.payload_at, found.data(), found.size()) != 0) {
                     return {AYNI_WRITE_FAILED, 0};
                 }
                 ayni_storage_batch_identity_v1 stored{};
@@ -477,9 +443,9 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
     store_le32(trailer.data(), crc32(data, size));
 
     const uint64_t payload_at = end_ + frame_header_size;
-    if (write_bytes(fd_, end_, header.data(), header.size()) != 0 ||
-        write_bytes(fd_, payload_at, data, size) != 0 ||
-        write_bytes(fd_, payload_at + size, trailer.data(), trailer.size()) != 0) {
+    if (files_.write(log_handle(), end_, header.data(), header.size()) != 0 ||
+        files_.write(log_handle(), payload_at, data, size) != 0 ||
+        files_.write(log_handle(), payload_at + size, trailer.data(), trailer.size()) != 0) {
         // What reached the file is an incomplete frame past end_: never read,
         // and truncated before the next append.
         tail_dirty_ = true;
@@ -496,6 +462,9 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
 }
 
 FileLog::Result FileLog::read_prefix(uint64_t from_commit_seq, uint8_t *buffer, uint32_t size) {
+    if (!is_open()) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
     uint64_t at = file_header_size;
     uint64_t max_seq = 0;
     if (from_commit_seq > read_max_seq_) {
@@ -537,6 +506,9 @@ FileLog::Result FileLog::read_prefix(uint64_t from_commit_seq, uint8_t *buffer, 
 }
 
 FileLog::Result FileLog::read_log(uint64_t cursor, uint8_t *buffer, uint32_t size) {
+    if (!is_open()) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
     uint64_t at = cursor == 0U ? file_header_size : cursor - 1U;
     if (at < file_header_size || at > end_) {
         return {AYNI_WRITE_FAILED, 0};
@@ -574,7 +546,7 @@ bool FileLog::same_payload(const Frame &frame, const uint8_t *data, uint32_t siz
     std::array<uint8_t, chunk_size> chunk{};
     for (uint32_t done = 0; done < size;) {
         const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(chunk.size()), size - done);
-        error = read_exact(fd_, frame.payload_at + done, chunk.data(), count);
+        error = read_exact(log_handle(), frame.payload_at + done, chunk.data(), count);
         if (error != 0 || std::memcmp(chunk.data(), data + done, count) != 0) {
             return false;
         }
@@ -602,21 +574,21 @@ bool FileLog::rescan_after_unknown() {
     if (opened.status != OpenStatus::ok || scan().status != OpenStatus::ok || damaged_) {
         return keep_uncertain_prefix();
     }
-    if (tail_dirty_ && ::ftruncate(fd_, static_cast<off_t>(end_)) != 0) {
+    if (tail_dirty_ && files_.truncate(log_handle(), end_) != 0) {
         return keep_uncertain_prefix();
     }
     std::array<uint8_t, chunk_size> chunk{};
     for (uint64_t at = std::min(rewrite_from, end_); at < end_;) {
         const auto count = static_cast<std::size_t>(std::min<uint64_t>(chunk.size(), end_ - at));
-        if (read_exact(fd_, at, chunk.data(), count) != 0 ||
-            write_bytes(fd_, at, chunk.data(), count) != 0) {
+        if (read_exact(log_handle(), at, chunk.data(), count) != 0 ||
+            files_.write(log_handle(), at, chunk.data(), count) != 0) {
             return keep_uncertain_prefix();
         }
         at += count;
     }
     // A readable replacement inode does not prove that rename, or the
     // original creation, survives power loss. Confirm its binding too.
-    if (sync_fd(fd_) != 0 || sync_directory() != 0) {
+    if (files_.sync_file(log_handle()) != 0 || files_.sync_namespace() != 0) {
         return keep_uncertain_prefix();
     }
     tail_dirty_ = false;
@@ -626,6 +598,9 @@ bool FileLog::rescan_after_unknown() {
 }
 
 FileLog::Result FileLog::fence(uint32_t minimum_epoch) {
+    if (!is_open()) {
+        return {AYNI_FENCE_UNAVAILABLE, 0};
+    }
     if (writer_epoch_ == UINT32_MAX || minimum_epoch == 0U ||
         (sync_failed_ && !rescan_after_unknown()) || damaged_) {
         return {AYNI_FENCE_UNAVAILABLE, 0};
@@ -642,6 +617,9 @@ const char *FileLog::snapshot_name(uint32_t slot) const {
 
 FileLog::Result FileLog::write_snapshot(uint32_t slot, uint32_t writer_epoch, uint64_t offset,
                                         const uint8_t *data, uint32_t size) {
+    if (!is_open()) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
     constexpr uint64_t snapshot_limit = 8U * 1024U * 1024U;
     if (slot > 1U || writer_epoch < writer_epoch_ || damaged_ || offset > snapshot_limit ||
         size > snapshot_limit - offset) {
@@ -650,14 +628,12 @@ FileLog::Result FileLog::write_snapshot(uint32_t slot, uint32_t writer_epoch, ui
     if (sync_failed_ && !rescan_after_unknown()) {
         return {AYNI_WRITE_UNKNOWN, 0};
     }
-    const int snapshot =
-        ::openat(directory_fd_, snapshot_name(slot), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (snapshot < 0) {
+    int snapshot = Files::invalid_handle;
+    if (files_.open(snapshot_name(slot), Files::Mode::read_write_create, snapshot) != 0) {
         return {AYNI_WRITE_FAILED, 0};
     }
-    struct stat status {};
-    int error = ::fstat(snapshot, &status) == 0 ? 0 : errno;
-    const uint64_t present = error == 0 ? static_cast<uint64_t>(status.st_size) : 0U;
+    uint64_t present = 0;
+    int error = files_.size(snapshot, present);
     bool same = error == 0 && offset <= present && size <= present - offset;
     std::array<uint8_t, chunk_size> chunk{};
     for (uint32_t done = 0; same && done < size;) {
@@ -668,9 +644,7 @@ FileLog::Result FileLog::write_snapshot(uint32_t slot, uint32_t writer_epoch, ui
     }
     if (error == 0 && !same) {
         if (offset == 0U) {
-            if (::ftruncate(snapshot, 0) != 0) {
-                error = errno;
-            }
+            error = files_.truncate(snapshot, 0);
         } else if (offset > present || offset + size < present) {
             error = EINVAL;
         } else if (offset < present) {
@@ -687,41 +661,47 @@ FileLog::Result FileLog::write_snapshot(uint32_t slot, uint32_t writer_epoch, ui
         }
     }
     if (error == 0) {
-        error = write_bytes(snapshot, offset, data, size);
+        error = files_.write(snapshot, offset, data, size);
     }
     if (error != 0) {
-        ::close(snapshot);
+        files_.close(snapshot);
         return {error == EINVAL ? AYNI_WRITE_FAILED : AYNI_WRITE_UNKNOWN, 0};
     }
-    const bool durable = sync_fd(snapshot) == 0 && sync_directory() == 0;
-    ::close(snapshot);
+    const bool durable = files_.sync_file(snapshot) == 0 && files_.sync_namespace() == 0;
+    files_.close(snapshot);
     return {durable ? AYNI_WRITE_OK : AYNI_WRITE_UNKNOWN, 0};
 }
 
 FileLog::Result FileLog::read_snapshot(uint32_t slot, uint64_t offset, uint8_t *buffer,
                                        uint32_t size) {
+    if (!is_open()) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
     if (slot > 1U) {
         return {AYNI_WRITE_FAILED, 0};
     }
-    const int snapshot = ::openat(directory_fd_, snapshot_name(slot), O_RDONLY | O_CLOEXEC);
-    if (snapshot < 0) {
-        return {errno == ENOENT ? AYNI_WRITE_OK : AYNI_WRITE_FAILED, 0};
+    int snapshot = Files::invalid_handle;
+    const auto opened = files_.open(snapshot_name(slot), Files::Mode::read_existing, snapshot);
+    if (opened != 0) {
+        return {opened == ENOENT ? AYNI_WRITE_OK : AYNI_WRITE_FAILED, 0};
     }
-    struct stat status {};
-    if (::fstat(snapshot, &status) != 0) {
-        ::close(snapshot);
+    uint64_t present = 0;
+    if (files_.size(snapshot, present) != 0) {
+        files_.close(snapshot);
         return {AYNI_WRITE_FAILED, 0};
     }
-    const uint64_t present = static_cast<uint64_t>(status.st_size);
     const uint32_t count =
         offset >= present ? 0U : static_cast<uint32_t>(std::min<uint64_t>(present - offset, size));
     const int error = read_exact(snapshot, offset, buffer, count);
-    ::close(snapshot);
+    files_.close(snapshot);
     return {error == 0 ? AYNI_WRITE_OK : AYNI_WRITE_FAILED, error == 0 ? count : 0U};
 }
 
 FileLog::Result FileLog::trim_prefix(uint32_t writer_epoch, uint64_t commit_seq,
                                      uint64_t transition_id) {
+    if (!is_open()) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
     if (writer_epoch < writer_epoch_ || damaged_) {
         return {AYNI_WRITE_FAILED, 0};
     }
@@ -738,7 +718,7 @@ FileLog::Result FileLog::trim_prefix(uint32_t writer_epoch, uint64_t commit_seq,
         if (frame.commit_seq == commit_seq &&
             frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES) {
             std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> header{};
-            if (read_exact(fd_, frame.payload_at, header.data(), header.size()) != 0) {
+            if (read_exact(log_handle(), frame.payload_at, header.data(), header.size()) != 0) {
                 return {AYNI_WRITE_FAILED, 0};
             }
             ayni_storage_batch_identity_v1 identity{};
@@ -760,42 +740,40 @@ FileLog::Result FileLog::trim_prefix(uint32_t writer_epoch, uint64_t commit_seq,
     std::array<char, 80> replacement{};
     static_cast<void>(
         std::snprintf(replacement.data(), replacement.size(), "%s.rotation", file_name_.data()));
-    const int next =
-        ::openat(directory_fd_, replacement.data(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (next < 0) {
+    int next = Files::invalid_handle;
+    if (files_.open(replacement.data(), Files::Mode::replace, next) != 0) {
         return {AYNI_WRITE_FAILED, 0};
     }
-    int error = ::flock(next, LOCK_EX | LOCK_NB) == 0 ? 0 : errno;
+    int error = files_.lock(next);
     const auto header = file_header();
     if (error == 0) {
-        error = write_bytes(next, 0, header.data(), header.size());
+        error = files_.write(next, 0, header.data(), header.size());
     }
     std::array<uint8_t, chunk_size> chunk{};
     for (uint64_t done = 0; error == 0 && done < end_ - retained;) {
         const std::size_t count =
             static_cast<std::size_t>(std::min<uint64_t>(chunk.size(), end_ - retained - done));
-        error = read_exact(fd_, retained + done, chunk.data(), count);
+        error = read_exact(log_handle(), retained + done, chunk.data(), count);
         if (error == 0) {
-            error = write_bytes(next, file_header_size + done, chunk.data(), count);
+            error = files_.write(next, file_header_size + done, chunk.data(), count);
         }
         done += count;
     }
     if (error == 0) {
-        error = sync_fd(next);
+        error = files_.sync_file(next);
     }
-    if (error == 0 &&
-        ::renameat(directory_fd_, replacement.data(), directory_fd_, file_name_.data()) != 0) {
-        error = errno;
+    if (error == 0) {
+        error = files_.rename(replacement.data(), file_name_.data());
     }
     if (error != 0) {
-        ::close(next);
-        static_cast<void>(::unlinkat(directory_fd_, replacement.data(), 0));
+        files_.close(next);
+        static_cast<void>(files_.remove(replacement.data()));
         return {AYNI_WRITE_FAILED, 0};
     }
-    // Both the old inode and the replacement are locked across rename;
-    // an older Host that knows only the log-file lock cannot enter here.
-    ::close(fd_);
-    fd_ = next;
+    // Both file objects remain excluded across replacement. Native keeps the
+    // old and new inode locks so legacy file-only writers cannot enter here.
+    files_.close(log_handle());
+    opened_->log = next;
     end_ = file_header_size + end_ - retained;
     file_size_ = end_;
     read_from_ = file_header_size;
@@ -805,7 +783,7 @@ FileLog::Result FileLog::trim_prefix(uint32_t writer_epoch, uint64_t commit_seq,
 }
 
 FileLog::Result FileLog::finish_trim() {
-    if (sync_directory() != 0) {
+    if (files_.sync_namespace() != 0) {
         // The new inode may still have only a cached directory binding.
         // Every subsequent mutating port, including fencing, must confirm
         // the complete prefix and its binding before admitting new work.
@@ -817,46 +795,30 @@ FileLog::Result FileLog::finish_trim() {
 }
 
 bool FileLog::free_bytes(uint64_t &available) const {
-    struct statvfs status {};
-    if (::fstatvfs(directory_fd_, &status) != 0) {
+    if (!is_open()) {
+        available = 0;
+        return false;
+    }
+    uint64_t actual = 0;
+    if (files_.free_bytes(actual) != 0) {
         available = 0;
         return false;
     }
     constexpr uint64_t usable_limit = 64U * 1024U * 1024U;
-    const uint64_t unit = status.f_frsize;
-    const uint64_t actual = unit != 0U && status.f_bavail > UINT64_MAX / unit
-                                ? UINT64_MAX
-                                : static_cast<uint64_t>(status.f_bavail) * unit;
     available = std::min(usable_limit, actual);
     return true;
 }
 
 bool FileLog::truncate_tail() {
-    if (::ftruncate(fd_, static_cast<off_t>(end_)) != 0 || !sync()) {
+    if (files_.truncate(log_handle(), end_) != 0 || !sync()) {
         return false;
     }
     tail_dirty_ = false;
     return true;
 }
 
-int FileLog::write_bytes(int fd, uint64_t at, const uint8_t *data, std::size_t size) {
-    return io_.write == nullptr ? write_all(fd, at, data, size)
-                                : io_.write(io_.context, fd, at, data, size);
-}
-
-int FileLog::sync_fd(int fd) {
-    return io_.sync_file == nullptr ? sync_file(fd) : io_.sync_file(io_.context, fd);
-}
-
-int FileLog::sync_directory() {
-    if (io_.sync_directory != nullptr) {
-        return io_.sync_directory(io_.context, directory_fd_);
-    }
-    return ::fsync(directory_fd_) == 0 ? 0 : errno;
-}
-
 bool FileLog::sync() {
-    if (sync_fd(fd_) != 0) {
+    if (files_.sync_file(log_handle()) != 0) {
         sync_failed_ = true;
         uncertain_start_ = std::min(uncertain_start_, end_);
         return false;
@@ -866,4 +828,4 @@ bool FileLog::sync() {
     return true;
 }
 
-} // namespace ayni::hosts::native
+} // namespace ayni::hosts::storage

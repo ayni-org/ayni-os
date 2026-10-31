@@ -4,6 +4,14 @@ add_test(NAME SdkImport.isolated_consumer
         --source "${AYNI_ROOT}" --optional --download-dir "${AYNI_DOWNLOAD_DIR}"
         --sanitize "${AYNI_SANITIZE}" --generator "${CMAKE_GENERATOR}")
 set_tests_properties(SdkImport.isolated_consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 600)
+foreach(kind IN ITEMS host-storage native-host)
+    string(REPLACE "-" "_" probe "${kind}")
+    add_test(NAME SdkImport.${probe}
+        COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tests/portability/sdk_import_test.py"
+            --source "${AYNI_ROOT}" --${kind} --download-dir "${AYNI_DOWNLOAD_DIR}"
+            --sanitize "${AYNI_SANITIZE}" --generator "${CMAKE_GENERATOR}")
+    set_tests_properties(SdkImport.${probe} PROPERTIES RUN_SERIAL TRUE TIMEOUT 600)
+endforeach()
 add_test(NAME NativeCli.scripted_sessions COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/native_cli_test.py $<TARGET_FILE:ayni>)
 set_tests_properties(NativeCli.scripted_sessions PROPERTIES TIMEOUT 90)
