@@ -10,7 +10,7 @@
 
 ## 决策
 
-平台代码留在`hosts/esp_idf/`，通过同一源码SDK链接Core及HostStorage。FreeRTOS单worker服务有界队列，owner只入队和读取容量缓存；Core继续拥有逻辑调度、ToolLoop、持久提交与恢复。Native/ESP共享请求执行、epoch及预留计算，不复制文件机制。Host启动前分配内部Storage，关闭时排空队列、确认worker停放并删除任务，随后关闭文件，再允许Kernel销毁。
+平台代码留在`hosts/esp_idf/`，通过同一源码SDK链接Core及HostStorage。FreeRTOS单worker服务有界队列，owner只入队和读取容量缓存；Core继续拥有逻辑调度、ToolLoop、持久提交与恢复。Native/ESP共享请求执行、epoch及预留计算，不复制文件机制。Host启动前分配内部Storage，关闭时排空队列、确认worker停放并删除任务，随后关闭文件，再允许Kernel销毁。静态任务回收限定IDF6.0.3默认legacy双核内核（CONFIG_FREERTOS_SMP=n），其状态查询先排除仍在任一CPU运行的任务；可选上游SMP内核的状态顺序不同，构建明确拒绝，需以后另行实现和验证join。
 
 LittleFS固定joltwallet组件1.23.1，使用其公开raw API，固定内部缓存和同步ESP分区回调。VFS不支持已打开源/目标的rename，而共用引擎要求保持文件令牌跨替换存活，因此不使用VFS文件包装或复制日志。依据见[锁版VFS实现](https://github.com/joltwallet/esp_littlefs/blob/v1.23.1/src/esp_littlefs.c)、[公开raw入口](https://github.com/joltwallet/esp_littlefs/blob/v1.23.1/include/lfs.h)及其[正常交换测试](https://github.com/joltwallet/esp_littlefs/blob/v1.23.1/test/test_littlefs_raw_api.c)。目录操作的同步确认来自LittleFS提交与ESP同步分区调用；硬件耐久仍待独立证据。
 

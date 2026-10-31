@@ -1,3 +1,8 @@
+# Static worker reclamation is proven against IDF6's default legacy dual-core
+# kernel. The optional upstream SMP kernel has different suspended-state semantics.
+if(CONFIG_FREERTOS_SMP)
+    message(FATAL_ERROR "Ayni ESP Host requires CONFIG_FREERTOS_SMP=n; upstream SMP join is not supported")
+endif()
 # ESP-IDF component. ESP-IDF names components after their directory, so this
 # one is "esp_idf"; runtime/esp_idf_node requires it under that name.
 idf_component_register(

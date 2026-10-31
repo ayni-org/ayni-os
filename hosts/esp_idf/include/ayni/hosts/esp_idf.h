@@ -1,4 +1,6 @@
-// ESP-IDF Host: the platform services the Kernel uses to maintain its own
+// ESP-IDF6.0.3 default legacy dual-core kernel (CONFIG_FREERTOS_SMP=n) Host.
+// The optional upstream SMP kernel is explicitly refused until its join is validated.
+// The platform services the Kernel uses to maintain its own
 // invariants (ADR-0006): clock, wake and the ingress lock (ADR-0015), plus
 // the boot-time platform report required by MA-001 and plan section 4.2.
 

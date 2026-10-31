@@ -1,6 +1,6 @@
 # ESP-IDF Host
 
-`hosts/esp_idf/`提供ESP32-S3 / ESP-IDF 6.0.3的Host源码组件，当前编译与文件端口RAM介质验证通过；FreeRTOS实际运行、Flash耐久和ESP实机尚未验证。Core、ToolLoop和调度机制仍使用通用SDK原实现。
+`hosts/esp_idf/`提供ESP32-S3 / ESP-IDF 6.0.3的Host源码组件，限定默认legacy双核内核（`CONFIG_FREERTOS_SMP=n`），可选上游SMP配置在构建时明确拒绝；当前编译与文件端口RAM介质验证通过；FreeRTOS实际运行、Flash耐久和ESP实机尚未验证。Core、ToolLoop和调度机制仍使用通用SDK原实现。
 
 独立ESP-IDF工程将此目录加入`EXTRA_COMPONENT_DIRS`，组件依赖`esp_idf`；组件内部调用同一`cmake/AyniSDK.cmake`，选择HostStorage。LittleFS通过`idf_component.yml`固定`joltwallet/littlefs==1.23.1`，部署提交自己的`dependencies.lock`。不需要引入根Native工程、SQLite、CURL或测试fixture。
 
@@ -12,7 +12,7 @@ Host在Kernel owner任务中构造，必须放在内部RAM，生命周期覆盖K
 
 worker使用24 KiB内部静态任务栈、内部队列及文件缓存。`storage_memory_requirements`报告这些Storage结构的总字节/对齐；Host自身、Kernel arena及策略区域另行计账。Core/策略是否放PSRAM由runtime决定；闪存操作期间的cache/PSRAM可用性必须由具体sdkconfig及实际运行确认，不把Core放进硬件停止链。
 
-Kernel STOPPED后、destroy之前调用`close_storage`：停止接收、完成已受理队列，worker发出完成信号并停放；owner等待其确实离开运行状态后删除任务，再关闭文件和释放内部内存。保留退出时的栈水位，`worker_stack_free_bytes`在close后仍可读取。不能只凭退出信号释放仍在另一CPU运行的静态栈。关闭前不允许其他任务并发调用Host的配置/关闭函数；外部不能恢复或删除该worker。
+Kernel STOPPED后、destroy之前调用`close_storage`：停止接收、完成已受理队列，worker发出完成信号并停放；owner等待其确实离开运行状态后删除任务，再关闭文件和释放内部内存。保留退出时的栈水位，`worker_stack_free_bytes`在close后仍可读取。不能只凭退出信号释放仍在另一CPU运行的静态栈。该确认依据锁版legacy内核的`eTaskGetState`先检查两CPU运行任务；上游SMP内核的查询顺序不同，不能沿用此证明。关闭前不允许其他任务并发调用Host的配置/关闭函数；外部不能恢复或删除该worker。
 
 ## 分区和文件
 
