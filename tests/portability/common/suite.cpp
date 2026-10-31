@@ -131,6 +131,10 @@ static ayni_status_t memory_needs(void *, ayni_bytes_v1,
     return sink->emit(sink->ctx, &req);
 }
 ayni_status_t configure(Profile &p, Policies &policies) {
+    // C-SDK-009: unconfigured input is a lifecycle refusal, not retryable BUSY.
+    if (p.conversation(0)->begin(text("sum")) != AYNI_INVALID_STATE) {
+        return AYNI_INVALID_STATE;
+    }
     const ayni_capability_desc_v1 cap{sizeof(cap), 1, text("portable.approval"), 0, 0, nullptr};
     auto status = ayni_register_capability(p.kernel(), &cap);
     auto strategy = initialized<ayni_strategy_v1>();

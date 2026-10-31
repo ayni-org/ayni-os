@@ -159,8 +159,10 @@ ayni_status_t Session::saved(const ayni_context_info_v1 &anchor) {
     return AYNI_OK;
 }
 ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
-    if (!ready()) {
-        return AYNI_BUSY;
+    auto anchor = initialized<ayni_context_info_v1>();
+    const auto available = intake(anchor);
+    if (available != AYNI_OK) {
+        return available;
     }
     const auto status =
         Conversation::begin(config_.workspace, current_, user, parameters_, memory_id);
