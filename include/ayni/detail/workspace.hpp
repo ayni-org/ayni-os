@@ -6,6 +6,7 @@
 #include <ayni/workspace.h>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <utility>
 
@@ -115,12 +116,13 @@ class Workspace {
     }
 
   private:
-    // Erase private intermediate values even if an optimizer proves them dead.
+    // Erase private bytes before reuse. A volatile function-pointer load keeps
+    // the call observable to optimizers without instrumenting each byte store.
+    // Every successful lease owns at least one byte; no null/empty memset occurs.
     void release(std::size_t mark) {
-        auto *bytes = static_cast<volatile uint8_t *>(data_);
-        for (auto at = mark; at < used_; ++at) {
-            bytes[at] = 0;
-        }
+        using Erase = void *(*)(void *, int, std::size_t);
+        Erase volatile erase = &std::memset;
+        erase(data_ + mark, 0, used_ - mark);
         used_ = mark;
     }
 

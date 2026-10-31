@@ -1,5 +1,6 @@
 // ADR-0090 / C-SDK-007: temporary-memory admission preserves public outputs,
 // independent owners can run concurrently, and rejected callbacks release private bytes.
+#include <algorithm>
 #include <array>
 #include <ayni/arguments.h>
 #include <ayni/detail/workspace.hpp>
@@ -106,23 +107,21 @@ TEST(Workspace, move_transfers_ownership_and_borrowed_storage_survives_close) {
     EXPECT_EQ(bytes.back(), 1U);
 }
 TEST(Workspace, callback_refusal_erases_its_lane_and_allows_immediate_reuse) {
-    alignas(uint64_t) std::array<uint8_t, 32> bytes{};
+    alignas(uint64_t) std::array<uint8_t, 37> bytes{};
     ayni::detail::Workspace workspace(bytes.data(), bytes.size());
     const auto query = +[](size_t *size, size_t *alignment) {
-        *size = 32;
+        *size = 37;
         *alignment = alignof(uint64_t);
         return AYNI_OK;
     };
     const auto status =
         ayni::detail::with_workspace(workspace, query, [](const ayni_workspace_v1 *region) {
             auto *data = static_cast<uint8_t *>(region->data);
-            data[0] = 73;
-            data[region->byte_capacity - 1] = 91;
+            std::fill_n(data, region->byte_capacity, uint8_t{73});
             return AYNI_DENIED;
         });
     EXPECT_EQ(status, AYNI_DENIED);
-    EXPECT_EQ(bytes.front(), 0U);
-    EXPECT_EQ(bytes.back(), 0U);
+    EXPECT_TRUE(std::all_of(bytes.begin(), bytes.end(), [](uint8_t byte) { return byte == 0; }));
     auto lane = workspace.take(bytes.size());
     EXPECT_TRUE(lane);
 }
