@@ -153,7 +153,7 @@ ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &sna
     std::array<ayni_capability_info_v1, AYNI_CAPABILITY_PAGE_MAX> items{};
     uint32_t count = 0, skipped = 0;
     while (skipped < offset) {
-        const uint32_t take = std::min(offset - skipped, AYNI_CAPABILITY_PAGE_MAX);
+        const uint32_t take = std::min<uint32_t>(offset - skipped, AYNI_CAPABILITY_PAGE_MAX);
         status = snapshot.list_capabilities(snapshot.call_context, &cursor, items.data(), take,
                                             &count, &next);
         if (status != AYNI_OK) {

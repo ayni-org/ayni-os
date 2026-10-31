@@ -18,3 +18,5 @@ target_link_libraries(${COMPONENT_LIB} PUBLIC ayni_api ayni_host_storage PRIVATE
 # Keep strict diagnostics for our adapter while treating the dependency as system headers.
 idf_component_get_property(littlefs_dir joltwallet__littlefs COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} SYSTEM PRIVATE "${littlefs_dir}/include")
+
+target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)

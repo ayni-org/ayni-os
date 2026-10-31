@@ -27,36 +27,6 @@ struct EraseScratch {
     }
 };
 
-// ADR-0074: a framed body states the strategy's instructions apart from its data. Core already
-// checked the whole body as UTF-8, so each part is valid when the split starts a character.
-ayni_status_t split(ayni_string_v1 body, ayni_string_v1 &instructions, ayni_string_v1 &data) {
-    constexpr std::string_view prefix = AYNI_MODEL_INSTRUCTIONS_PREFIX;
-    constexpr unsigned continuation_mask = 0xC0;
-    constexpr unsigned continuation = 0x80;
-    instructions = {};
-    data = body;
-    if (body.size < prefix.size() || std::memcmp(body.data, prefix.data(), prefix.size()) != 0) {
-        return AYNI_OK;
-    }
-    const char *const count_at = body.data + prefix.size();
-    const char *const end = body.data + body.size;
-    uint32_t count = 0;
-    const auto parsed = std::from_chars(count_at, end, count);
-    if (parsed.ec != std::errc{} || (*count_at == '0' && parsed.ptr - count_at > 1) ||
-        parsed.ptr == end || *parsed.ptr != '\n' ||
-        count > static_cast<size_t>(end - parsed.ptr - 1)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    const char *const data_at = parsed.ptr + 1 + count;
-    if (data_at != end &&
-        (static_cast<unsigned char>(*data_at) & continuation_mask) == continuation) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    instructions = {parsed.ptr + 1, count};
-    data = {data_at, static_cast<uint32_t>(end - data_at)};
-    return AYNI_OK;
-}
-
 // Check depth before the parser creates a DOM. yyjson remains the syntax/UTF-8
 // validator; braces inside escaped strings cannot increase the structural depth.
 bool depth_valid(const char *data, size_t size) {
@@ -330,7 +300,7 @@ ayni_status_t Protocol::encode(const Config &config, ayni_string_v1 input, char 
         }
     } else {
         ayni_string_v1 instructions{}, data{};
-        const auto status = split(input, instructions, data);
+        const auto status = model::split_instructions(input, instructions, data);
         if (status != AYNI_OK) {
             return status;
         }

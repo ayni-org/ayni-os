@@ -8,6 +8,7 @@
 #define AYNI_HOSTS_ESP_IDF_H
 
 #include <ayni/ayni.h>
+#include <ayni/host_clock.hpp>
 #include <ayni/hosts/storage/file_value.h>
 #include <cstddef>
 
@@ -41,6 +42,8 @@ struct StorageOpen {
 class Host {
   public:
     Host();
+    // Owner-thread clock override; source/context remain valid through Host destruction.
+    explicit Host(UtcSource utc);
     ~Host();
     Host(const Host &) = delete;
     Host &operator=(const Host &) = delete;
@@ -74,6 +77,7 @@ class Host {
 
   private:
     class Storage;
+    UtcSource utc_{}; // Immutable borrowed override; null sample uses the platform default.
     static ayni_submit_result_t submit_value(void *, const storage::FileValueRequest *);
     static ayni_submit_result_t storage_append(void *ctx, const ayni_storage_batch_v1 *batch,
                                                ayni_attempt_ref_v1 attempt,
@@ -103,6 +107,7 @@ class Host {
                                                     ayni_completion_t *completion);
     static ayni_status_t storage_free_bytes(void *ctx, uint64_t *out_free_bytes);
 
+    static void utc_now(void *ctx, ayni_utc_sample_v1 *out);
     static void wake(void *ctx);
     static void ingress_lock(void *ctx);
     static void ingress_unlock(void *ctx);

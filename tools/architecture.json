@@ -245,6 +245,7 @@
       "applications",
       "own",
       "runtime:common",
+      "runtime:conversation",
       "external"
     ],
     "providers": [

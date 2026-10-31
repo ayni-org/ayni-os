@@ -35,7 +35,9 @@ target_link_libraries(ayni_warnings INTERFACE ayni_platform_warnings)
 add_library(ayni_core_options INTERFACE)
 target_compile_features(ayni_core_options INTERFACE cxx_std_17)
 target_compile_options(ayni_core_options INTERFACE
-    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+    # ESP-IDF's directory defaults can append -std=gnu++26 after CMake's
+    # standard flag. Keep Ayni implementation sources on the promised C++17.
+    $<$<COMPILE_LANGUAGE:CXX>:-std=c++17 -fno-exceptions -fno-rtti>)
 target_link_libraries(ayni_core_options INTERFACE ayni_warnings)
 
 # The implemented public C ABI (include/ayni/ayni.h) and the draft headers.

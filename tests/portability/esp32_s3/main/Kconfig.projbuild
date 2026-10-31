@@ -1,0 +1,8 @@
+menu "Ayni independent normal verification"
+config AYNI_INITIALIZE_BLANK
+    bool "Initialize an entirely erased Ayni partition"
+    default n
+    help
+        Explicit first-use option. Never formats unknown nonblank media.
+        Build/run/flash authorization is handled outside this firmware.
+endmenu

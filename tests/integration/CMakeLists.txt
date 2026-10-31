@@ -37,3 +37,16 @@ gtest_discover_tests(ayni_experiment_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 3
 add_test(NAME ExperimentFixtures.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/experiment_artifacts_test.py" $<TARGET_FILE:ayni-sim>)
 set_tests_properties(ExperimentFixtures.artifacts_replay PROPERTIES TIMEOUT 120)
+
+# Same public application and real Native storage as the independent ESP consumer.
+execute_process(COMMAND git -C "${AYNI_ROOT}" rev-parse HEAD
+    OUTPUT_VARIABLE portable_revision OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT portable_revision)
+    set(portable_revision "unversioned")
+endif()
+add_test(NAME portable_independent_normal
+    COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tests/portability/run_native.py"
+        --source "${AYNI_ROOT}" --sanitize "${AYNI_SANITIZE}"
+        --build-type "${CMAKE_BUILD_TYPE}" --generator "${CMAKE_GENERATOR}"
+        --source-revision "${portable_revision}")
+set_tests_properties(portable_independent_normal PROPERTIES RUN_SERIAL TRUE TIMEOUT 600)

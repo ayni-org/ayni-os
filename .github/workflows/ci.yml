@@ -130,12 +130,15 @@ jobs:
         run: tools/ci/run_tools.sh run run-clang-tidy-18 -j "$CMAKE_BUILD_PARALLEL_LEVEL" -p build/native -quiet 'core/|hosts/|runtime/|targets/'
 
   esp-idf:
-    name: ESP32-S3 hello firmware (ESP-IDF v6.0.3)
+    name: ESP32-S3 independent normal program (ESP-IDF v6.0.3)
     needs: checks
     if: needs.checks.outputs.esp_idf == 'true'
     runs-on: [self-hosted, linux]
     # The first run on a machine also pulls the 5.5 GB image.
     timeout-minutes: 40
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      CTEST_PARALLEL_LEVEL: 4
     # Its own cache volume: the image's ccache is a different version from
     # Ubuntu's, and the firmware needs a smaller limit.
     container:
@@ -153,17 +156,16 @@ jobs:
           # ccache hashes its modification time unless told to hash content.
           export CCACHE_DIR=/ccache CCACHE_MAXSIZE=200M CCACHE_COMPILERCHECK=content
           ccache --zero-stats
-          cd targets/esp32_assistant
-          idf.py --ccache build
+          python3 tests/portability/build_esp.py --source "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/ayni-independent-esp" --source-revision "$(git rev-parse HEAD)"
           ccache --show-stats
-          idf.py size
       - name: Check LittleFS file adapter on an emulated normal medium
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
           cmake -S tests/portability/esp_files -B build/esp-files \
             -DAYNI_SOURCE_DIR="$GITHUB_WORKSPACE" \
-            -DLITTLEFS_COMPONENT_DIR="$GITHUB_WORKSPACE/targets/esp32_assistant/managed_components/joltwallet__littlefs"
+            -DLITTLEFS_COMPONENT_DIR="$RUNNER_TEMP/ayni-independent-esp/consumer/esp32_s3/managed_components/joltwallet__littlefs"
           cmake --build build/esp-files
           ctest --test-dir build/esp-files --output-on-failure
       - name: Return files to the runner's user

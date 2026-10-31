@@ -199,7 +199,10 @@ struct ToolLoopConfig {
 };
 class ToolLoop {
   public:
-    // Since 0.53: queried scratch is exclusive to this owner through Kernel destruction.
+    // Since 0.53: the region remains alive through Kernel destruction. Its scratch
+    // borrow lasts only for configure/decide. One logical owner may reuse the same
+    // region for other strategies/codecs whose synchronous calls cannot overlap;
+    // callbacks running inside a decide need separate scratch (workspace.h).
     static ayni_status_t workspace_requirements(size_t *bytes, size_t *alignment);
     ayni_status_t configure(const ToolLoopConfig &config, const ayni_workspace_v1 *workspace);
     ayni_strategy_v1 describe();

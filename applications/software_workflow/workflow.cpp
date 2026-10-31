@@ -128,7 +128,8 @@ struct Example {
                        : AYNI_INVALID_STATE;
         }
         char key[AYNI_CATALOG_ID_MAX_BYTES];
-        const auto size = std::snprintf(key, sizeof(key), "control.%u", snapshot->revision);
+        const auto size = std::snprintf(key, sizeof(key), "control.%u",
+                                        static_cast<unsigned>(snapshot->revision));
         if (size <= 0 || static_cast<size_t>(size) >= sizeof(key)) {
             return AYNI_CAPACITY_EXCEEDED;
         }

@@ -1,0 +1,4 @@
+add_library(ayni_runtime_portable STATIC profile.cpp)
+target_include_directories(ayni_runtime_portable PUBLIC include PRIVATE ../common/include)
+target_link_libraries(ayni_runtime_portable PUBLIC ayni_runtime_conversation PRIVATE
+    ayni_provider_fixture_model ayni_provider_software ayni_provider_mock_execution ayni_software_workflow ayni_core_options)

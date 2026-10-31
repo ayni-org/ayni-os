@@ -168,7 +168,9 @@ ESP-IDF v6.0.3 的 `idf.py` 通过 `IDF_PY_BUILD_JOBS` 将该预算传给 Ninja�
 idf.py -p <SERIAL_PORT> flash monitor
 ```
 
-Hello 固件启动后打印芯片型号与版本、ESP-IDF 版本、复位原因、实测 Flash 与 PSRAM 容量、内部 RAM / DMA / PSRAM 堆基线和任务栈水位，然后在内部 RAM 中创建并销毁一个空 Kernel。它不驱动任何电机或 GPIO。这些日志是 `MA-001` 板级报告（[`reports/hardware/m0/board-feasibility.md`](../reports/hardware/m0/board-feasibility.md)）的输入，到板后的完整自检步骤也在该报告中。
+Hello 固件启动后打印芯片型号与版本、ESP-IDF 版本、复位原因、实测 Flash 与 PSRAM 容量、内部 RAM / DMA / PSRAM 堆基线和任务栈水位，随后只报告默认Kernel的arena query，不分配或启动Kernel。它不驱动任何电机或 GPIO。这些日志是 `MA-001` 板级报告（[`reports/hardware/m0/board-feasibility.md`](../reports/hardware/m0/board-feasibility.md)）的输入，到板后的完整自检步骤也在该报告中。
+
+完整独立程序位于[`tests/portability/esp32_s3`](../tests/portability/esp32_s3)，复现命令与只读源码运行器见[独立验证说明](../tests/portability/README.md)。它编译相同Core/ToolLoop/共同场景，使用专用LittleFS和PSRAM；Hello诊断不替代它。代码与编译、实际FreeRTOS运行和硬件验收分别记录。构建运行器通过`cmake --build --parallel`明确限制实际任务数。
 
 **不得烧写 `EFUSE_STRAP_JTAG_SEL`。** GPIO3 用作急停检测输入并有外部上拉，烧写该 eFuse 后 GPIO3 会改变 JTAG 信号源（[`reports/hardware/m0/gpio-candidates.md`](../reports/hardware/m0/gpio-candidates.md)）。查看 eFuse 只用只读的 summary 命令。
 

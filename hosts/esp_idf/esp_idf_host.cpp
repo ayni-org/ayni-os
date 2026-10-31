@@ -66,8 +66,9 @@ void log_heap(const char *name, uint32_t caps) {
 
 } // namespace
 
-Host::Host()
-    : ingress_(xSemaphoreCreateMutexStatic(&ingress_storage_)),
+Host::Host() : Host(UtcSource{}) {}
+Host::Host(UtcSource utc)
+    : utc_(utc), ingress_(xSemaphoreCreateMutexStatic(&ingress_storage_)),
       owner_(xTaskGetCurrentTaskHandle()) {}
 
 Host::~Host() {
@@ -80,6 +81,7 @@ ayni_host_v1 Host::table() {
     host.struct_size = sizeof(ayni_host_v1);
     host.ctx = this;
     host.monotonic_now_us = &monotonic_now_us;
+    host.utc_now = utc_.sample ? &Host::utc_now : nullptr;
     host.wake = &Host::wake;
     host.ingress_lock = &Host::ingress_lock;
     host.ingress_unlock = &Host::ingress_unlock;
@@ -102,6 +104,11 @@ bool Host::wait_for_wake(uint64_t timeout_us) {
     const TickType_t ticks =
         rounded >= portMAX_DELAY ? portMAX_DELAY - 1 : static_cast<TickType_t>(rounded);
     return ulTaskNotifyTake(pdTRUE, ticks) != 0;
+}
+
+void Host::utc_now(void *context, ayni_utc_sample_v1 *out) {
+    const auto &source = static_cast<Host *>(context)->utc_;
+    source.sample(source.context, out);
 }
 
 void Host::wake(void *ctx) {
