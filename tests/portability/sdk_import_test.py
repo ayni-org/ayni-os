@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--optional", action="store_true")
     parser.add_argument("--download-dir", default="")
     parser.add_argument("--sanitize", default="")
+    parser.add_argument("--generator", default="Ninja")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="ayni-consumer-") as temporary:
         root = pathlib.Path(temporary)
@@ -37,7 +38,7 @@ def main():
             path.chmod(0o555 if path.is_dir() else 0o444)
         sdk.chmod(0o555)
         try:
-            configure = ["cmake", "-S", str(consumer), "-B", str(root / "build"),
+            configure = ["cmake", "-G", args.generator, "-S", str(consumer), "-B", str(root / "build"),
                          f"-DAYNI_SOURCE_DIR={sdk}", "-DCMAKE_DISABLE_FIND_PACKAGE_CURL=TRUE",
                          "-DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=TRUE",
                          "-DCMAKE_DISABLE_FIND_PACKAGE_Threads=TRUE"]
