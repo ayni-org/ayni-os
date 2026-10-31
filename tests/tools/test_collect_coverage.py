@@ -80,6 +80,51 @@ class CoverageAggregation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "atomic counters"):
             TOOL.current_notes(build)
 
+    def test_makefiles_and_ninja_output_fields_use_the_actual_compiler_output(self):
+        build = self.root / "build"
+        directory = build / "ayni-sdk/core"
+        objects = directory / "CMakeFiles/core.dir"
+        objects.mkdir(parents=True)
+        note = objects / "example.cpp.gcno"
+        note.touch()
+        relative = "CMakeFiles/core.dir/example.cpp.o"
+        for output in ("ayni-sdk/core/" + relative, relative, str(note.with_suffix(".o"))):
+            with self.subTest(output=output):
+                units = [{"directory": str(directory), "output": output,
+                          "file": "example.cpp", "command":
+                          "c++ --coverage -fprofile-update=atomic -o " + relative +
+                          " -c example.cpp"}]
+                (build / "compile_commands.json").write_text(json.dumps(units), encoding="utf-8")
+                self.assertEqual(TOOL.current_notes(build), ([note], [], 0))
+
+    def test_compiler_output_cannot_escape_the_selected_build(self):
+        build = self.root / "build"
+        build.mkdir()
+        (self.root / "outside.gcno").touch()
+        units = [{"directory": str(build), "output": "inside.o", "file": "example.cpp",
+                  "command": "c++ --coverage -fprofile-update=atomic -o ../outside.o"}]
+        (build / "compile_commands.json").write_text(json.dumps(units), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            TOOL.current_notes(build)
+
+    def test_missing_compiler_output_does_not_fall_back_to_an_old_output_field(self):
+        build = self.root / "build"
+        build.mkdir()
+        (build / "old.gcno").touch()
+        units = [{"directory": str(build), "output": "old.o", "file": "example.cpp",
+                  "command": "c++ --coverage -fprofile-update=atomic -o absent.o"}]
+        (build / "compile_commands.json").write_text(json.dumps(units), encoding="utf-8")
+        self.assertEqual(TOOL.current_notes(build), ([], ["example.cpp"], 1))
+
+    def test_missing_compiler_output_argument_is_rejected(self):
+        build = self.root / "build"
+        build.mkdir()
+        units = [{"directory": str(build), "output": "old.o", "file": "example.cpp",
+                  "command": "c++ --coverage -fprofile-update=atomic -o"}]
+        (build / "compile_commands.json").write_text(json.dumps(units), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "output argument is missing"):
+            TOOL.current_notes(build)
+
     def test_missing_safety_c_or_cpp_source_is_a_gap_even_when_core_is_present(self):
         self.add([self.line(1, [])], "core/example.cpp")
         (self.root / "core").mkdir()

@@ -98,6 +98,13 @@ def current_notes(build: Path) -> tuple[list[Path], list[str], int]:
                     and flag not in allowed):
                 raise ValueError("conflicting profiling or sanitizer compilation argument")
         output = Path(unit["output"])
+        # Makefiles may report output relative to the build root, while Ninja
+        # uses the command directory. The compiler's -o uses directory on both.
+        if "-o" in flags:
+            output_index = flags.index("-o") + 1
+            if output_index == len(flags):
+                raise ValueError("compiler output argument is missing")
+            output = Path(flags[output_index])
         if not output.is_absolute():
             output = Path(unit["directory"]) / output
         note = output.with_suffix(".gcno").resolve()
