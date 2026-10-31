@@ -3,6 +3,7 @@
 #include <ayni/hosts/native.h>
 
 #include "file_log.h"
+#include <ayni/hosts/storage/request.h>
 
 #include <cstdint>
 #include <cstring>
@@ -42,27 +43,8 @@ void utc_now(void *, ayni_utc_sample_v1 *out) {
                      : AYNI_UTC_UNTRUSTED;
 }
 
-// One accepted storage call, as the I/O thread needs it once the port has
-// returned. data and buffer are the kernel's until the post.
-struct Request {
-    enum class Port { append, read_prefix, read_log, fence, write_snapshot, read_snapshot, trim };
-    Port port;
-    ayni_attempt_ref_v1 attempt;
-    ayni_completion_t *completion;
-    uint64_t commit_seq; // append: the batch's; read: from_commit_seq
-    const uint8_t *data; // append: the encoded batch
-    uint8_t *buffer;     // read: the kernel's buffer
-    uint32_t size;       // encoded size, or buffer size
-    uint32_t writer_epoch = 0;
-    uint64_t transition_id = 0;
-    uint32_t slot = 0;
-};
-
-uint64_t request_reservation(const Request &request) {
-    return request.port == Request::Port::append ? storage::FileLog::append_bytes(request.size)
-           : request.port == Request::Port::write_snapshot ? request.size
-                                                           : 0U;
-}
+using storage::Request;
+using storage::request_reservation;
 
 } // namespace
 
@@ -91,7 +73,6 @@ class Host::Storage {
   private:
     static void *run(void *context);
     void serve_queue();
-    ayni_completion_result_v1 serve(const Request &request);
     bool read_space(uint64_t &available) const;
     // Release only the completed request's reservation and publish one sample.
     // Returns whether the observable cache changed; no Host call under mutex_.
@@ -201,7 +182,7 @@ void Host::Storage::serve_queue() {
             }
             continue;
         }
-        const ayni_completion_result_v1 result = serve(request);
+        const ayni_completion_result_v1 result = log_.serve(request);
         static_cast<void>(refresh_space(request_reservation(request)));
         // A refused post means the slot was not waiting for this attempt; the
         // kernel counts that, and the Host has nothing else to tell it.
@@ -225,51 +206,6 @@ bool Host::Storage::refresh_space(uint64_t completed_reservation) {
     free_bytes_valid_ = valid;
     reserved_bytes_ -= completed_reservation;
     return changed;
-}
-
-ayni_completion_result_v1 Host::Storage::serve(const Request &request) {
-    FileLog::Result done{AYNI_WRITE_FAILED, 0};
-    const bool mutation = request.port == Request::Port::append ||
-                          request.port == Request::Port::write_snapshot ||
-                          request.port == Request::Port::trim;
-    if (!mutation || request.writer_epoch >= log_.writer_epoch()) {
-        if (mutation) {
-            log_.observe_writer(request.writer_epoch);
-        }
-        switch (request.port) {
-        case Request::Port::append:
-            done = log_.append(request.commit_seq, request.data, request.size);
-            break;
-        case Request::Port::read_prefix:
-            done = log_.read_prefix(request.commit_seq, request.buffer, request.size);
-            break;
-        case Request::Port::read_log:
-            done = log_.read_log(request.commit_seq, request.buffer, request.size);
-            break;
-        case Request::Port::fence:
-            done = log_.fence(request.writer_epoch);
-            break;
-        case Request::Port::write_snapshot:
-            done = log_.write_snapshot(request.slot, request.writer_epoch, request.commit_seq,
-                                       request.data, request.size);
-            break;
-        case Request::Port::read_snapshot:
-            done =
-                log_.read_snapshot(request.slot, request.commit_seq, request.buffer, request.size);
-            break;
-        case Request::Port::trim:
-            done =
-                log_.trim_prefix(request.writer_epoch, request.commit_seq, request.transition_id);
-            break;
-        }
-    }
-    ayni_completion_result_v1 result{};
-    result.struct_size = sizeof(result);
-    result.outcome = done.outcome;
-    result.attempt = request.attempt;
-    result.value = done.value;
-    result.next_cursor = done.cursor;
-    return result;
 }
 
 Host::Host() = default;

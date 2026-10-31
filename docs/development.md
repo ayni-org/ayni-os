@@ -132,6 +132,8 @@ git diff --check
 
 `python3 tools/check_readability.py --list` 列出现存问题。`tools/readability_baseline.json` 按规则、路径、声明或表达式记录历史债务，不依赖行号；问题消除后须同时删除对应项。非 Kernel ID 的位运算只能用带理由、精确表达式和次数上限的例外排除。CI 不生成基线；`--write-baseline` 仅供显式记录现状，并须逐项审查 diff，不能用来绕过新违例。
 
+GoogleTest测试列表统一在CTest开始阶段发现（`PRE_TEST`），避免并行链接时同时启动多个sanitizer进程。默认5秒发现时限及各用例运行时限不变；实际测试仍由可执行程序枚举，保留参数化用例（[CMake3.28文档](https://cmake.org/cmake/help/v3.28/module/GoogleTest.html#command:gtest_discover_tests)）。
+
 ## ESP32-S3 固件
 
 当前 Hello 编译仍带入共享 Core，可检查目标平台编译与链接。日常 PR 不自动触发编译；按用户 2026-10-25 决定，仅随周期或显式完整验证运行。镜像和 ccache 继续复用。
