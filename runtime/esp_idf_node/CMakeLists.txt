@@ -6,5 +6,6 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "../common/include"
     PRIV_REQUIRES esp_idf heap log)
 
-add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../core" "${CMAKE_CURRENT_BINARY_DIR}/ayni_core")
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/AyniSDK.cmake")
+ayni_add_sdk(COMPONENTS core)
 target_link_libraries(${COMPONENT_LIB} PUBLIC ayni_api PRIVATE ayni_core ayni_platform_warnings)

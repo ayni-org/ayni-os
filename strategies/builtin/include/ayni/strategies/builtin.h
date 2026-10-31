@@ -156,7 +156,7 @@ struct LocalClock {
 // never perform I/O on the strategy thread. NOT_READY retains no policy output;
 // ready becomes true after a worker completes. Views are owner/conversation/generation scoped.
 struct ArchivedResult {
-    uint64_t reference = 0;  // Immutable SQLite result version, positive after archive commits.
+    uint64_t reference = 0;  // Immutable backend result version, positive after archive commits.
     uint32_t json_bytes = 0; // Complete rendered UTF-8 bytes; independent of token statistics.
 };
 struct HistoryPort {

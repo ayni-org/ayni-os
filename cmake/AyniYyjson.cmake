@@ -1,4 +1,4 @@
-# Native Provider parser only; never included by the ESP-IDF composition root.
+# Optional JSON boundary support; Core and the basic SDK do not require it.
 include_guard(GLOBAL)
 include(FetchContent)
 set(AYNI_DOWNLOAD_DIR "" CACHE PATH "Directory that keeps downloaded third-party archives")

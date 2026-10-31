@@ -1,4 +1,9 @@
 find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)
+add_test(NAME SdkImport.isolated_consumer
+    COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tests/portability/sdk_import_test.py"
+        --source "${AYNI_ROOT}" --optional --download-dir "${AYNI_DOWNLOAD_DIR}"
+        --sanitize "${AYNI_SANITIZE}" --generator "${CMAKE_GENERATOR}")
+set_tests_properties(SdkImport.isolated_consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 600)
 add_test(NAME NativeCli.scripted_sessions COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/native_cli_test.py $<TARGET_FILE:ayni>)
 set_tests_properties(NativeCli.scripted_sessions PROPERTIES TIMEOUT 90)
