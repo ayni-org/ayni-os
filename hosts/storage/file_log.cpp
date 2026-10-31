@@ -518,14 +518,28 @@ bool FileLog::rescan_after_unknown() {
     if (tail_dirty_ && files_.truncate(log_handle(), end_) != 0) {
         return keep_uncertain_prefix();
     }
+    int source = Files::invalid_handle;
+    if (files_.open(file_name_.data(), Files::Mode::read_existing_no_follow, source) != 0) {
+        return keep_uncertain_prefix();
+    }
+    // A separate read token avoids LittleFS flushing/copying the remaining tail
+    // each time the mutable token switches from writing back to reading. Under
+    // the exclusive namespace lease the source contains the same bytes, and the
+    // writes are identical; no concurrent mutation can change that relationship.
     std::array<uint8_t, chunk_size> chunk{};
+    bool rewritten = true;
     for (uint64_t at = std::min(rewrite_from, end_); at < end_;) {
         const auto count = static_cast<std::size_t>(std::min<uint64_t>(chunk.size(), end_ - at));
-        if (read_exact(log_handle(), at, chunk.data(), count) != 0 ||
+        if (read_exact(source, at, chunk.data(), count) != 0 ||
             files_.write(log_handle(), at, chunk.data(), count) != 0) {
-            return keep_uncertain_prefix();
+            rewritten = false;
+            break;
         }
         at += count;
+    }
+    files_.close(source);
+    if (!rewritten) {
+        return keep_uncertain_prefix();
     }
     // A readable replacement inode does not prove that rename, or the
     // original creation, survives power loss. Confirm its binding too.

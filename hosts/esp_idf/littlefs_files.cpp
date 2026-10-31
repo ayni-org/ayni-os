@@ -170,6 +170,22 @@ int LittleFiles::open(const char *name, Mode mode, int &handle) {
     default:
         return EINVAL;
     }
+    // C-HOST-010: a new reader must see the current bytes of a same-name writer.
+    // POSIX shares that view automatically; raw LittleFS publishes a changed
+    // file's CTZ head/length at sync. Only an existing dirty writer needs it.
+    // This publication does not replace FileLog's subsequent identical rewrite
+    // and final file/namespace confirmation of an inherited uncertain prefix.
+    if (flags == LFS_O_RDONLY) {
+        for (auto &entry : slots_) {
+            if (entry.state == State::open && std::strcmp(entry.name.data(), name) == 0 &&
+                (entry.file.flags & (LFS_F_DIRTY | LFS_F_WRITING)) != 0) {
+                const auto status = lfs_file_sync(&filesystem_, &entry.file);
+                if (status != 0) {
+                    return cause(status);
+                }
+            }
+        }
+    }
     for (std::size_t index = 0; index < slots_.size(); ++index) {
         auto &entry = slots_[index];
         if (entry.state == State::free) {

@@ -28,6 +28,15 @@ TEST(SharedStorage, reservations_match_actual_append_bytes_and_normal_reopen_kee
     EXPECT_EQ(read.outcome, AYNI_WRITE_OK);
     EXPECT_EQ(read.value, found.size());
     EXPECT_EQ(found, payload);
+    // C-HOST-010: normal reopen reconfirms the prefix before a new writer appends.
+    ASSERT_EQ(log.fence(2).outcome, AYNI_FENCE_DRAINED);
+    const auto next = ayni::test::test_batch(2, 128);
+    ASSERT_EQ(log.append(2, next.data(), static_cast<uint32_t>(next.size())).outcome,
+              AYNI_WRITE_OK);
+    found.resize(payload.size() + next.size());
+    EXPECT_EQ(log.read_log(0, found.data(), static_cast<uint32_t>(found.size())).value,
+              found.size());
+    EXPECT_EQ(found, ayni::test::joined({payload, next}));
 }
 
 TEST(SharedStorage, refused_second_engine_does_not_release_the_first_engine_namespace) {

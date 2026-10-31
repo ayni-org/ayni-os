@@ -27,7 +27,8 @@
 //
 // Not thread-safe. open() runs on the caller's thread; afterwards the Host's
 // I/O thread alone calls it until the Host joins that thread and closes the
-// log. Every call may block on the file.
+// log. Every call may block on the file. Reconfirmation temporarily borrows
+// one additional read-only file token, as trim also borrows a second token.
 
 #ifndef AYNI_HOSTS_STORAGE_FILE_LOG_H
 #define AYNI_HOSTS_STORAGE_FILE_LOG_H
