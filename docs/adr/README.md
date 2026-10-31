@@ -12,6 +12,7 @@
 
 | 编号 | 标题 | 状态 | 计划章节 |
 |---|---|---|---|
+| [0089](0089-independent-source-sdk.md) | 独立源码 SDK 与跨平台消费边界 | 已接受，实施中 | §1.1、§8 |
 | [0001](0001-device-governance-and-execution-permits.md) | 设备治理模型与执行许可 | 已接受 | §2.2、§2.6、§2.10、§7.3 |
 | [0002](0002-commit-and-output-gating.md) | 提交与输出门控协议 | 已接受 | §2.4、§2.8、§4.3 |
 | [0003](0003-trust-model-and-adapter-confinement.md) | 信任模型与适配器约束 | 已接受 | §2.5、§3.7 |
